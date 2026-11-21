@@ -1301,9 +1301,9 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_light_frame, 0, "Diagnostic (the one light description, LIGHT-UNIFY U4, the A/B of the flips): which consumers read the light manager's frame of lights instead of their own producer. "
     "A bit mask: 1 the lit shaders' headlight block, 2 the volumetric light's street lamps, headlights and shadow views, 4 the lights the headlight shadow maps pick cars "
-    "and make views from; 7 all three. 0 (the default until the runs have shown the bytes equal): every consumer reads its own producer, as before. The data a flipped "
+    "and make views from; 7 all three; 8 (LIGHT-UNIFY U5) the headlight shadow maps are recorded into the one shared shadow atlas (its layout, clear, the one barrier for the pixel and compute readers, memory fitted to the video memory budget) and the frame's shadow views are read from its published form by light id; 15 all four. 0 (the default until the runs have shown the bytes equal): every consumer reads its own producer, as before. The data a flipped "
     "consumer gets is byte for byte what its own producer made (mcla_gpu_lights_census checks it every frame while it is on, and says so in its line), so the picture "
-    "does not change. Live.", rex::kDebugOnly, rex::Range{0, 7});
+    "does not change. Live.", rex::kDebugOnly, rex::Range{0, 15});
 
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "

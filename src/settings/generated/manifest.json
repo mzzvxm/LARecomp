@@ -2648,10 +2648,10 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (the one light description, LIGHT-UNIFY U4, the A/B of the flips): which consumers read the light manager's frame of lights instead of their own producer. \"\n    \"A bit mask: 1 the lit shaders' headlight block, 2 the volumetric light's street lamps, headlights and shadow views, 4 the lights the headlight shadow maps pick cars \"\n    \"and make views from; 7 all three. 0 (the default until the runs have shown the bytes equal): every consumer reads its own producer, as before. The data a flipped \"\n    \"consumer gets is byte for byte what its own producer made (mcla_gpu_lights_census checks it every frame while it is on, and says so in its line), so the picture \"\n    \"does not change. Live.\"",
+  "help": "\"Diagnostic (the one light description, LIGHT-UNIFY U4, the A/B of the flips): which consumers read the light manager's frame of lights instead of their own producer. \"\n    \"A bit mask: 1 the lit shaders' headlight block, 2 the volumetric light's street lamps, headlights and shadow views, 4 the lights the headlight shadow maps pick cars \"\n    \"and make views from; 7 all three; 8 (LIGHT-UNIFY U5) the headlight shadow maps are recorded into the one shared shadow atlas (its layout, clear, the one barrier for the pixel and compute readers, memory fitted to the video memory budget) and the frame's shadow views are read from its published form by light id; 15 all four. 0 (the default until the runs have shown the bytes equal): every consumer reads its own producer, as before. The data a flipped \"\n    \"consumer gets is byte for byte what its own producer made (mcla_gpu_lights_census checks it every frame while it is on, and says so in its line), so the picture \"\n    \"does not change. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 7}"
+   "rex::Range{0, 15}"
   ],
   "comments": [],
   "pp_depth": 0

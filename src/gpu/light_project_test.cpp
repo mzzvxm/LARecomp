@@ -15,6 +15,9 @@
 //       after it, at every level, over every frame; the deliberate differences of every part of the block are found.
 //   4c  the shadow replay's lights: the lights ProjectShadowLights makes from the frame against the ones PickViews makes from the rig's set (bit for bit), and then the real view machinery
 //       (ViewPicker, PlanViews, FitCar, the publication of the maps) run on each over the drive: the same cars, plans, view specs and published maps, at all three levels.
+//   U5  the shadow atlas (shadow_atlas_rules.h): the frame's shadow views read from the atlas's published form BY LIGHT ID (ShadowFrameBuilder at the trigger, RebindByIds at the next frame) against
+//       the rig's carry and key remap (Collector::SetShadows): the same ShadowFrame, the same lights' refs and rankings, and a headlight block projected from it byte for byte the rig's, at every
+//       level over every frame; the one lookup (light_shadow_lookup.h LightLit) of each light against the block's own views and the variant's kernel, bit for bit.
 //   4b  the volume's light inputs: the lamps (the volume's real LampPicker through VolumeLampPick, the Collector's SetPickedLamps and ProjectVolumeLamps) against FillLamps' (the same
 //       picker run as VolumetricsInputs::FillLamps runs it), the headlights and shadow views (the frame's against FillHeadlights + ApplyHeadlightUnits + FillShadows), every part of VolInputs
 //       byte for byte over every frame, with the core's test lamp, a cut, a gap, level changes and a limit.
@@ -39,8 +42,10 @@
 #include "light_manager_rules.h"
 #include "light_pick_record.h"
 #include "light_project.h"
+#include "light_shadow_lookup.h"
 #include "local_shadow_rules.h"
 #include "local_shadow_types.h"
+#include "shadow_atlas_rules.h"
 #include "vol_lamp_list.h"
 #include "volumetrics_headlights.h"
 #include "volumetrics_lamp_pick.h"
@@ -56,6 +61,8 @@ namespace lb = mcla::gpu::light_budget;
 namespace rec = mcla::gpu::light_pick::record;
 namespace vol = mcla::gpu::volumetrics;
 namespace vl = mcla::gpu::vol_lamps;
+namespace sa = mcla::gpu::shadow_atlas;
+namespace sl = larecomp::gpu::shadow_lookup;
 
 namespace {
 
@@ -1373,6 +1380,239 @@ void TestShadowLightMutations() {
 
 }  // namespace
 
+
+// ---------------------------------------------------------------------------
+// U5: the shadow views from the atlas's published form, by light id
+// ---------------------------------------------------------------------------
+
+// The replay's views made lookup-friendly (the identity as the matrix: the world point IS the atlas uv and the depth; a tile of a third of the atlas): both paths read the same views, the
+// identity test is about which view goes to which light, in which order.
+void ReshapeForLookup(lg::LocalShadowFrame* f) {
+  for (uint32_t v = 0; v < f->count; ++v) {
+    lg::LocalShadowView& x = f->views[v];
+    std::memset(x.world_to_shadow, 0, sizeof(x.world_to_shadow));
+    x.world_to_shadow[0] = x.world_to_shadow[5] = x.world_to_shadow[10] = x.world_to_shadow[15] = 1.0f;
+    x.atlas_rect[0] = float(v % 3) / 3.0f;
+    x.atlas_rect[1] = 0.0f;
+    x.atlas_rect[2] = float(v % 3 + 1) / 3.0f;
+    x.atlas_rect[3] = 1.0f;
+    x.depth_bias = 0.002f;
+    x.texel_size = 1.0f / 512.0f;
+  }
+}
+
+// A depth for texel (ix, iy) of the test atlas (1536 x 512): a quarter nothing drawn, the rest in [0, 1), the index clamped as a sampler's is.
+float StoredDepth(int ix, int iy) {
+  ix = std::clamp(ix, 0, 1535);
+  iy = std::clamp(iy, 0, 511);
+  uint32_t h = uint32_t(ix) * 73856093u ^ uint32_t(iy) * 19349663u;
+  h ^= h >> 13;
+  h *= 0x5bd1e995u;
+  h ^= h >> 15;
+  return (h & 3u) == 0 ? 1.0f : float(h >> 8 & 0xFFFFu) / 65536.0f;
+}
+
+struct AtlasTotals {
+  uint64_t frames = 0, compares = 0, bad = 0;
+  uint64_t block_compares = 0, block_bad = 0;
+  uint64_t lookups = 0, lookups_bad = 0, lookups_shadowed = 0;
+  uint64_t with_views = 0, two_views = 0, kept_across = 0;
+  std::string first;
+};
+
+// The atlas as LocalShadow mirrors the legacy AtlasOf: valid, the texture's slot, the point sampler, the size, one tile size.
+lg::ShadowAtlasInfo LegacyAtlasInfo(const sa::Layout& layout, uint32_t slot, uint32_t sampler) {
+  lg::ShadowAtlasInfo a;
+  a.valid = true;
+  a.slot = slot;
+  a.sampler = sampler;
+  a.width = layout.width;
+  a.height = layout.height;
+  a.tile_small = layout.pools[0].request.tile;
+  return a;
+}
+
+bool SameRefs(const lg::LightFrame& a, const lg::LightFrame& b, std::string* why) {
+  if (a.count != b.count) {
+    *why = "the slots in use differ";
+    return false;
+  }
+  for (uint32_t i = 0; i < a.count; ++i) {
+    const lg::ShadowRef& x = a.lights[i].shadow;
+    const lg::ShadowRef& y = b.lights[i].shadow;
+    if (x.kind != y.kind || x.first_view != y.first_view || x.view_count != y.view_count || x.mask_channel != y.mask_channel || x.weight != y.weight || x.reach != y.reach) {
+      *why = "the shadow ref of slot " + std::to_string(i) + " differs";
+      return false;
+    }
+  }
+  for (uint32_t r = 0; r < lg::kRoleCount; ++r) {
+    if (a.role_count[r] != b.role_count[r] || std::memcmp(a.order[r].data(), b.order[r].data(), a.order[r].size()) != 0) {
+      *why = "the ranking of role " + std::to_string(r) + " differs";
+      return false;
+    }
+  }
+  return true;
+}
+
+AtlasTotals RunAtlas(const std::vector<DriveFrame>& frames, lb::Level level, int views_override) {
+  AtlasTotals t;
+  Replay replay;
+  replay.level = level;
+  replay.views_override = views_override;
+  lm::Collector legacy_c, atlas_c;  // the rig's carry and key remap; the atlas's published form by id
+  lm::ShadowCarry<lg::LocalShadowFrame> carry;
+  legacy_c.Reset();
+  atlas_c.Reset();
+  carry.Clear();
+  const sa::Layout layout = sa::LayoutForLevel(level, views_override);
+  const uint32_t slot = 41, sampler = 2;
+  const lg::ShadowAtlasInfo atlas = LegacyAtlasInfo(layout, slot, sampler);
+  sa::Published kept;  // what the shadow atlas holds: the last trigger's views with their lights' ids
+  bool had_trigger = false;
+  uint64_t seed = 12345;
+  const auto next = [&seed]() {
+    seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+    return float(seed >> 40) / float(1u << 24);
+  };
+  for (const DriveFrame& f : frames) {
+    ++t.frames;
+    const mcla::gpu::HeadlightSet& set = f.set;
+    const float camera[3] = {float(f.camera.eye[0]), float(f.camera.eye[1]), float(f.camera.eye[2])};
+    legacy_c.BeginFrame(uint32_t(f.frame), double(f.frame) / kFps, set);
+    atlas_c.BeginFrame(uint32_t(f.frame), double(f.frame) / kFps, set);
+    if (!had_trigger) {  // the replay gives its maps up when the frame before had no trigger: the carry and the atlas's published form with them
+      carry.Clear();
+      kept = sa::Published{};
+    }
+    const std::array<uint32_t, 4> keys = KeysOf(set);
+    const lg::LocalShadowFrame moved = carry.ForSet(keys.data(), set.count, kRemap);
+    const lg::ShadowAtlasInfo carried = carry.has() ? carry.atlas() : lg::ShadowAtlasInfo{};
+    legacy_c.SetShadows(moved.count != 0 ? &moved : nullptr, carried);
+    std::array<uint64_t, 4> ids{};
+    const uint32_t id_count = atlas_c.RigIds(ids.data());
+    const lg::ShadowFrame rebound = sa::RebindByIds(kept.frame, ids.data(), id_count);
+    atlas_c.AdoptShadows(rebound);
+    t.kept_across += kept.frame.count != 0 && rebound.count != 0 ? 1u : 0u;
+    const auto compare = [&](const lg::LocalShadowFrame* maps, uint32_t atlas_slot, const char* when) {
+      std::string why = sa::DiffShadowFrames(legacy_c.frame().shadow, atlas_c.frame().shadow);
+      if (why.empty()) {
+        SameRefs(legacy_c.frame(), atlas_c.frame(), &why);
+      }
+      ++t.compares;
+      if (!why.empty()) {
+        ++t.bad;
+        if (t.first.empty()) {
+          t.first = std::string(when) + " of frame " + std::to_string(f.frame) + ": " + why;
+        }
+      }
+      // the headlight block projected from the atlas-sourced frame is the rig's, byte for byte
+      const hr::HeadlightConstants legacy_block = RigBlock(set, maps, atlas_slot, sampler, camera);
+      const hr::HeadlightConstants projected = lp::ProjectHeadlightBlock(atlas_c.frame(), camera);
+      ++t.block_compares;
+      if (!SameBytes(&legacy_block, &projected, sizeof(legacy_block))) {
+        ++t.block_bad;
+        if (t.first.empty()) {
+          t.first = std::string(when) + " of frame " + std::to_string(f.frame) + ": the block projected from the atlas's frame is not the rig's";
+        }
+      }
+      // THE ONE LOOKUP: each rig light's visibility at points in and around its views, the block's own views (the variant's kernel: the mean of up to two views, seen / views) against LightLit
+      // of the light's ShadowRef in the frame (weight 1: the mean itself)
+      const lp::RigLights rig = lp::RigLightsOf(atlas_c.frame());
+      for (uint32_t i = 0; i < rig.count && i < set.count; ++i) {
+        const uint32_t views[2] = {legacy_block.shadow_of[i], legacy_block.shadow_of_b[i]};
+        for (int n = 0; n < 6; ++n) {
+          float p[3] = {next() * 1.1f - 0.05f, next(), 0.05f + 0.9f * next()};
+          const uint32_t pick = views[0] != hr::kNoView ? (next() < 0.5f || views[1] == hr::kNoView ? views[0] : views[1]) : hr::kNoView;
+          if (pick != hr::kNoView && pick < lg::kMaxShadowViews) {
+            const lg::LocalShadowView& v = legacy_block.shadow[pick];
+            p[0] = v.atlas_rect[0] + (v.atlas_rect[2] - v.atlas_rect[0]) * (0.02f + 0.96f * next());
+          }
+          const auto depth = [](int x, int y) { return StoredDepth(x, y); };
+          float sum = 0.0f;
+          float count = 0.0f;
+          for (const uint32_t k : views) {
+            if (k != hr::kNoView && k < lg::kMaxShadowViews) {
+              sum += sl::ViewLit(legacy_block.shadow[k], p, 1536, 512, sl::Mode::kSurface, depth);
+              count += 1.0f;
+            }
+          }
+          const float want = count > 0.0f ? sum / count : 1.0f;
+          lg::ShadowFrame view_frame = atlas_c.frame().shadow;
+          view_frame.atlas.width = 1536;
+          view_frame.atlas.height = 512;
+          const float got = sl::LightLit(view_frame, atlas_c.frame().lights[rig.slot[i]].shadow, p, sl::Mode::kSurface, depth);
+          ++t.lookups;
+          t.lookups_shadowed += want < 1.0f ? 1u : 0u;
+          if (std::memcmp(&want, &got, sizeof(float)) != 0) {
+            ++t.lookups_bad;
+            if (t.first.empty()) {
+              t.first = std::string(when) + " of frame " + std::to_string(f.frame) + ": the lookup of rig light " + std::to_string(i) + " differs: " + std::to_string(want) + " against " + std::to_string(got);
+            }
+          }
+        }
+      }
+      return legacy_block;
+    };
+    const hr::HeadlightConstants before = compare(moved.count != 0 ? &moved : nullptr, carry.has() ? slot : hr::kNoSlot, "start");
+    t.with_views += before.shadow_of[0] != hr::kNoView ? 1u : 0u;
+    const bool trigger = set.count > 0 && f.frame % 37 != 0;
+    had_trigger = trigger;
+    if (trigger) {
+      lg::LocalShadowFrame made = PublishViews(&replay, set, f.camera, f.frame);
+      ReshapeForLookup(&made);
+      // the legacy: the rig's carry, the manager's conversion with this set's ids
+      carry.Set(made.count != 0 ? &made : nullptr, atlas, keys.data(), set.count);
+      legacy_c.SetShadows(made.count != 0 ? &made : nullptr, made.count != 0 ? atlas : lg::ShadowAtlasInfo{});
+      // the atlas: the replay hands its views with the id of each rig light (a car's lamp id from the car's key: LocalShadow::CollectViews), the atlas builds the published form
+      ls::Light lights[4];
+      const uint32_t light_count = LegacyShadowLights(set, lights);
+      std::array<uint64_t, 4> published_ids{};
+      for (uint32_t i = 0; i < light_count; ++i) {
+        published_ids[lights[i].index] = lg::light_id::CarLampId(lights[i].car_key);
+      }
+      sa::ShadowFrameBuilder builder;
+      for (uint32_t v = 0; v < made.count; ++v) {
+        builder.AddView(made.views[v], made.views[v].light_index < 4 ? published_ids[made.views[v].light_index] : lg::kNoLightId);
+      }
+      kept = made.count != 0 ? builder.Build(sa::InfoOf(layout, slot, sampler, true)) : sa::Published{};
+      atlas_c.AdoptShadows(kept.frame);
+      const hr::HeadlightConstants after = compare(made.count != 0 ? &made : nullptr, made.count != 0 ? slot : hr::kNoSlot, "trigger");
+      bool two = false;
+      for (uint32_t i = 0; i < 4; ++i) {
+        two = two || after.shadow_of_b[i] != hr::kNoView;
+      }
+      t.two_views += two ? 1u : 0u;
+    } else if (set.count == 0) {
+      carry.Clear();
+      kept = sa::Published{};
+    }
+    legacy_c.EndFrame();
+    atlas_c.EndFrame();
+  }
+  return t;
+}
+
+void TestAtlasOverTheDrive(const std::vector<DriveFrame>& frames, const std::string& name) {
+  for (const lb::Level level : {lb::Level::kMedium, lb::Level::kHigh, lb::Level::kUltra}) {
+    const AtlasTotals t = RunAtlas(frames, level, 0);
+    const std::string at = " (" + name + ", " + LevelName(level) + ")";
+    std::printf("INFO: %s, %s, atlas: %llu frames, %llu compares of the frame's shadow views, %llu of the projected block, %llu lookups (%llu in shadow), views kept across frames %llu, %llu with two\n", name.c_str(),
+                LevelName(level), (unsigned long long)t.frames, (unsigned long long)t.compares, (unsigned long long)t.block_compares, (unsigned long long)t.lookups,
+                (unsigned long long)t.lookups_shadowed, (unsigned long long)t.kept_across, (unsigned long long)t.two_views);
+    Check(t.bad == 0, "the shadow views read from the atlas by id are the carry's, with the same refs and rankings" + at + ": " + t.first);
+    Check(t.block_bad == 0, "the headlight block projected from the atlas-sourced frame is the rig's block, byte for byte" + at + ": " + t.first);
+    Check(t.lookups_bad == 0, "every light's one lookup is the variant's kernel over the block's own views, bit for bit" + at + ": " + t.first);
+    Check(t.compares > frames.size() && t.with_views > frames.size() / 10 && t.kept_across > frames.size() / 10 && t.lookups > 1000 && t.lookups_shadowed > 100,
+          "the drive has frames with views kept across frames and lookups in shadow to compare" + at + " (" + std::to_string(t.with_views) + ", " + std::to_string(t.kept_across) + ", " +
+              std::to_string(t.lookups_shadowed) + ")");
+  }
+  // the debug setting's one view for the car / a view for each lamp: other pool sizes, the same identity
+  for (const int per_car : {1, 2}) {
+    const AtlasTotals t = RunAtlas(frames, lb::Level::kUltra, per_car);
+    Check(t.bad == 0 && t.block_bad == 0 && t.lookups_bad == 0, "the debug views setting " + std::to_string(per_car) + " (" + name + "): " + t.first);
+  }
+}
+
 int main(int argc, char** argv) {
   TestRigLightsOf();
   TestViewsOfRig();
@@ -1403,6 +1643,7 @@ int main(int argc, char** argv) {
   TestVolumeHeadlightsOverTheDrive(frames, "the made-up drive");
   TestShadowLightMutations();
   TestShadowLightsOverTheDrive(frames, "the made-up drive");
+  TestAtlasOverTheDrive(frames, "the made-up drive");
 
   // the game's own recording, when given
   for (int a = 1; a < argc; ++a) {
@@ -1421,6 +1662,7 @@ int main(int argc, char** argv) {
         TestBlockOverTheDrive(recorded, "the recording");
         TestVolumeHeadlightsOverTheDrive(recorded, "the recording");
         TestShadowLightsOverTheDrive(recorded, "the recording");
+        TestAtlasOverTheDrive(recorded, "the recording");
       } else {
         Check(false, "the recording " + path + " is read: " + error);
       }

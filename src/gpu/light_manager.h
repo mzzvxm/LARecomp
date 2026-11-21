@@ -29,6 +29,8 @@
 //   bit 1  4a  the lit shaders' headlight block (HeadlightBlock(): Scene::FillVariantBlock reads it instead of HeadlightRig::Block())
 //   bit 2  4b  the volumetric light's lamps, headlights and shadow views (VolumetricsInputs::Fill)
 //   bit 4  4c  the lights the headlight shadow replay picks cars and makes views from (LocalShadow::PickViews)
+//   bit 8  U5  the shadow views: the replay records into the one shadow atlas (shadow_atlas.h) and the frame's views are the atlas's published form read BY LIGHT ID (shadow_atlas_rules.h
+//              RebindByIds), not the rig's carry moved by the car's key; with the census on both frames are made and compared field by field (Check::kShadowFrame)
 // A flipped consumer asks Serving(bit) first and uses its own producer when it is false (the manager off, the frame not opened yet): nothing breaks if the manager is late. With the census
 // ON the legacy producers' data is made too and compared with the projection every frame (Check::kBlockBytes, kVolumeBytes, kShadowLights; the census line counts them): that is the
 // proof run. With the census OFF and a flip on, only the frame is made: no checks, no upload, no cars' light points (what a flip costs at play). Switching a flip off live goes back to the
@@ -92,6 +94,7 @@ namespace mcla::gpu {
 
 class HeadlightRig;
 class LocalShadow;
+class ShadowAtlas;   // shadow_atlas.h
 class UploadRing;
 
 class LightManager {
@@ -104,6 +107,8 @@ class LightManager {
   // The producers it looks at and the ring it uploads to. Pointers: they must outlive it (the Renderer's members). Never fails the renderer.
   void Initialize(UploadRing& upload, HeadlightRig& rig, LocalShadow& shadow);
   void Shutdown();
+  // LU-5 (mcla_gpu_light_frame bit 8): the one shadow atlas whose published form the frame's shadow views are read from when that flip is on. Null (the default): the carry's. Render thread.
+  void SetShadowAtlas(ShadowAtlas* atlas) { atlas_ = atlas; }
 
   // The Scene opened a frame's first list, BEFORE the shadow replay's BeginFrame (LU-4c: the replay picks its cars from the frame's lights): reads the settings (the census, the flips);
   // when either is on, opens the frame with the rig's lights of this frame. `frame` is the Scene's frame serial, `upload_slot` the frame's slot in the upload ring. A second call of the
@@ -174,6 +179,8 @@ class LightManager {
   UploadRing* upload_ = nullptr;
   HeadlightRig* rig_ = nullptr;
   LocalShadow* shadow_ = nullptr;
+  ShadowAtlas* atlas_ = nullptr;   // LU-5: where the shadow views come from with bit 8
+  uint64_t atlas_adopted_ = 0;     // frames whose shadow views were read from it
 
   light_pick::LightPicker pickers_;  // the one picker and budget (always: the rig and the replay pick with it whether or not the census runs)
   larecomp::gpu::light_manager::Collector collector_;

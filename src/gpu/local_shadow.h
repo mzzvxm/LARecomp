@@ -97,9 +97,15 @@
 // share of a box of 3 x 3 texels that is lit (headlight_rig_rules.h SoftShadow: a soft edge, not a staircase).
 // The rig copies the views and moves them to the lights of the set that reads them by the car (headlight_rig_rules.h RemapShadowViews).
 //
+// THE SHADOW ATLAS (LIGHT-UNIFY U5, shadow_atlas.h). LocalShadow is the FIRST PROVIDER of the one shadow atlas (ShadowProvider: it asks for its pool of tiles, draws into them and hands over its
+// views with the id of the light each is of). With mcla_gpu_light_frame bit 8 (light_project.h kFlipAtlas) it records into the atlas object (the texture, the layout of the tiles, the clear,
+// THE ONE barrier for the pixel and the compute readers, the memory fitted to the video memory budget) instead of its own atlas code below, which stays for the A/B (one release after the
+// default flips). The collection, the replay and the pipelines do not move: the lamp shadows' branch (parked) edits them heavily, and the provider interface is what a second provider needs.
+//
 // Threading: render thread only. Initialize and Shutdown on the lifecycle thread. The pipelines are made on the host builder thread.
 // ===========================================================================
 
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <memory>
@@ -122,6 +128,8 @@
 #include "records.h"
 #include "resolve.h"
 #include "shaders.h"
+#include "shadow_atlas_rules.h"
+#include "shadow_provider.h"
 #include "temporal_identities.h"
 #include "upload.h"
 
@@ -133,6 +141,7 @@ class FrameRing;
 class GuestLayout;
 class LightManager;  // light_manager.h
 class PassTiming;
+class ShadowAtlas;   // shadow_atlas.h
 
 // What the lit draws read: the atlas, as a bindless texture (a depth plane, one float) and its size.
 struct LocalShadowAtlas {
@@ -143,7 +152,7 @@ struct LocalShadowAtlas {
   uint32_t tile = 0;         // texels a view
 };
 
-class LocalShadow {
+class LocalShadow final : public ShadowProvider {
  public:
   // The destination of the game's mid-scene depth copy in the retail build (car_shadow_map.h, ao.h): another build gives another address and
   // then there is no map, never a wrong one.
@@ -165,7 +174,7 @@ class LocalShadow {
   };
 
   LocalShadow();
-  ~LocalShadow();
+  ~LocalShadow() override;
   LocalShadow(const LocalShadow&) = delete;
   LocalShadow& operator=(const LocalShadow&) = delete;
 
@@ -183,6 +192,18 @@ class LocalShadow {
   // The light manager (light_manager.h): with mcla_gpu_light_frame bit 4 the replay picks its cars and makes its views from the manager's frame of lights instead of the rig's set (LIGHT-UNIFY
   // U4c), the same lights bit for bit. Null (the default): the rig's set. Render thread.
   void SetLightManager(LightManager* light_manager) { light_manager_ = light_manager; }
+
+  // The one shadow atlas (shadow_atlas.h): this replay is its first provider. With mcla_gpu_light_frame bit 8 (LIGHT-UNIFY U5, light_project.h kFlipAtlas) it records into the atlas object and
+  // publishes its views through it; without, its own atlas code runs as before. Null: its own. Render thread, before the first frame.
+  void SetShadowAtlas(ShadowAtlas* atlas);
+  // Whether this frame records into the shadow atlas (the flip, decided at BeginFrame).
+  bool using_atlas() const { return use_atlas_; }
+
+  // ShadowProvider (shadow_provider.h): what the replay asks of the atlas, what it is told of the layout, and the views it publishes.
+  shadow_atlas::ProviderId provider_id() const override { return shadow_atlas::ProviderId::kReplay; }
+  void RequestPools(shadow_atlas::AtlasSpec* spec) const override;
+  void OnLayout(const shadow_atlas::Layout& layout) override;
+  void CollectViews(shadow_atlas::ShadowFrameBuilder* builder) const override;
 
   // The Scene opened a frame's first list: reads the settings, forgets the last frame's draws.
   void BeginFrame();
@@ -270,6 +291,10 @@ class LocalShadow {
   void HandOver();
   bool EnsureAtlas(const local_shadow::AtlasLayout& layout);
   void ReleaseImages();
+  // The atlas the frame records into, whichever code makes it (the shadow atlas object with the flip, else the replay's own).
+  uint32_t AtlasSlot() const;
+  uint32_t AtlasWidth() const;
+  uint32_t AtlasHeight() const;
   void Census();
   struct Plan;  // defined in the .cpp: the frame's views and what the pass needs
   bool RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_t slot);
@@ -313,6 +338,11 @@ class LocalShadow {
   uint32_t frame_views_ = 0;
   local_shadow::ViewPicker picker_;
   light_pick::LightPicker* light_picker_ = nullptr;  // the manager's (SetLightPicker)
+  ShadowAtlas* shadow_atlas_ = nullptr;              // the one shadow atlas (SetShadowAtlas, LU-5)
+  bool use_atlas_ = false;                           // this frame records into it (mcla_gpu_light_frame bit 8, decided at BeginFrame)
+  shadow_atlas::Layout atlas_layout_;                // the layout the atlas planned for this frame (OnLayout) and the replay's pool in it
+  int replay_pool_ = -1;
+  std::array<uint64_t, 4> published_ids_{};          // the id of the rig's light i, for the lights the last map was made for (CollectViews)
   LightManager* light_manager_ = nullptr;            // the manager's frame of lights (SetLightManager, LU-4c)
   std::string record_path_;  // mcla_gpu_light_pick_record: the pick's inputs of every frame, for light_pick_test (light_pick_record.h)
   std::ofstream record_file_;

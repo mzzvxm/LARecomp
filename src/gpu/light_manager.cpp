@@ -15,6 +15,7 @@
 #include "headlight_rig.h"
 #include "local_shadow.h"
 #include "mc_engine/cinematic/capture_mode.h"
+#include "shadow_atlas.h"
 #include "upload.h"
 #include "volumetrics_headlights.h"
 
@@ -88,6 +89,7 @@ void LightManager::Shutdown() {
   upload_ = nullptr;
   rig_ = nullptr;
   shadow_ = nullptr;
+  atlas_ = nullptr;
 }
 
 void LightManager::Reset() {
@@ -113,6 +115,7 @@ void LightManager::Reset() {
   volume_from_frame_ = false;
   volume_fills_ = 0;
   shadow_picks_ = 0;
+  atlas_adopted_ = 0;
   volume_seen_ = false;
   presents_ = 0;
   frames_total_ = 0;
@@ -132,7 +135,7 @@ void LightManager::Reset() {
 
 void LightManager::BeginLights(uint64_t frame, uint32_t upload_slot) {
   const int every = larecomp::settings::mcla_gpu_lights_census.Get();
-  const uint32_t flips = uint32_t(std::clamp(int(larecomp::settings::mcla_gpu_light_frame.Get()), 0, int(light_project::kFlipAll)));
+  const uint32_t flips = uint32_t(std::clamp(int(larecomp::settings::mcla_gpu_light_frame.Get()), 0, int(light_project::kFlipMask)));
   if ((every <= 0 && flips == 0) || rig_ == nullptr || shadow_ == nullptr) {
     if (active_) {
       REXLOG_INFO("{} off (mcla_gpu_lights_census = {}, mcla_gpu_light_frame = {})", kPrefix, every, flips);
@@ -151,9 +154,11 @@ void LightManager::BeginLights(uint64_t frame, uint32_t upload_slot) {
                           : std::string(" (no checks, no upload: the census is off)"));
   }
   if (flips != flips_) {
-    REXLOG_INFO("{} flips (mcla_gpu_light_frame = {}): the headlight block {}, the volume's lights {}, the shadow replay's lights {}{}", kPrefix, flips,
+    REXLOG_INFO("{} flips (mcla_gpu_light_frame = {}): the headlight block {}, the volume's lights {}, the shadow replay's lights {}, shadow views from {}{}", kPrefix, flips,
                 (flips & light_project::kFlipHeadlightBlock) != 0 ? "from the frame" : "from the rig", (flips & light_project::kFlipVolume) != 0 ? "from the frame" : "from the volume's producer",
-                (flips & light_project::kFlipShadowLights) != 0 ? "from the frame" : "from the rig", every > 0 ? " (each compared byte for byte with the legacy producer's)" : "");
+                (flips & light_project::kFlipShadowLights) != 0 ? "from the frame" : "from the rig",
+                (flips & light_project::kFlipAtlas) != 0 ? "the shadow atlas's published form (the replay records into the shared atlas)" : "the rig's carry",
+                every > 0 ? " (each compared with the legacy producer's)" : "");
     flips_ = flips;
   }
   every_ = every;
@@ -197,7 +202,20 @@ void LightManager::BeginFrame(uint64_t frame, uint32_t upload_slot) {
       keys.data(), set.count, [](const larecomp::gpu::LocalShadowFrame& f, const uint32_t* old_keys, uint32_t old_count, const uint32_t* new_keys, uint32_t new_count) {
         return headlight_rules::RemapShadowViews(f, old_keys, old_count, new_keys, new_count);
       });
-  collector_.SetShadows(moved.count != 0 ? &moved : nullptr, carry_.has() ? carry_.atlas() : larecomp::gpu::ShadowAtlasInfo{});
+  const larecomp::gpu::ShadowAtlasInfo carried_atlas = carry_.has() ? carry_.atlas() : larecomp::gpu::ShadowAtlasInfo{};
+  if (Serving(light_project::kFlipAtlas) && atlas_ != nullptr) {
+    // LU-5: the atlas's published form (the last trigger's views, each with its light's id) read for this frame's lights by id; the carry's key remap is what it is compared with.
+    std::array<uint64_t, lm::kRigLights> ids{};
+    const uint32_t id_count = collector_.RigIds(ids.data());
+    const larecomp::gpu::ShadowFrame adopted = shadow_atlas::RebindByIds(atlas_->published().frame, ids.data(), id_count);
+    if (Checking()) {
+      check_.Note(lm::Check::kShadowFrame, shadow_atlas::DiffShadowFrames(collector_.ShadowsFromLocal(moved.count != 0 ? &moved : nullptr, carried_atlas), adopted));
+    }
+    collector_.AdoptShadows(adopted);
+    ++atlas_adopted_;
+  } else {
+    collector_.SetShadows(moved.count != 0 ? &moved : nullptr, carried_atlas);
+  }
   block_dirty_ = true;
   CheckBlocks(lm::Check::kBlockBefore);
 }
@@ -249,7 +267,18 @@ void LightManager::OnResolve(bool shadow_recorded) {
   Cost cost(&frame_cpu_);
   RefreshCarry();
   const bool have = Carry::Published(frame, atlas);
-  collector_.SetShadows(have ? &frame : nullptr, have ? atlas : larecomp::gpu::ShadowAtlasInfo{});
+  const larecomp::gpu::ShadowAtlasInfo made_atlas = have ? atlas : larecomp::gpu::ShadowAtlasInfo{};
+  if (Serving(light_project::kFlipAtlas) && atlas_ != nullptr) {
+    // LU-5: this frame's maps as the atlas published them (the trigger's own, not moved: the replay's lights are this frame's).
+    const larecomp::gpu::ShadowFrame& adopted = atlas_->published().frame;
+    if (Checking()) {
+      check_.Note(lm::Check::kShadowFrame, shadow_atlas::DiffShadowFrames(collector_.ShadowsFromLocal(have ? &frame : nullptr, made_atlas), adopted));
+    }
+    collector_.AdoptShadows(adopted);
+    ++atlas_adopted_;
+  } else {
+    collector_.SetShadows(have ? &frame : nullptr, made_atlas);
+  }
   block_dirty_ = true;
   CheckBlocks(lm::Check::kBlockAfter);
 }
@@ -480,9 +509,12 @@ void LightManager::Census() {
   // text above: block bytes, volume bytes, shadow lights).
   const auto flip_name = [&](uint32_t bit) { return (flips_ & bit) != 0 ? "the frame" : "its own producer"; };
   REXLOG_INFO("{} flips (LU-4, mcla_gpu_light_frame = {}): the headlight block reads {} ({} projections made, {} lit draws took one), the volume reads {} ({} fills from it, its lamp pick "
-              "here picked {} of a budget of {}), the shadow replay reads {} ({} picks of its lights from it); the projections are compared with the legacy producers' bytes every frame while the census is on: {}",
+              "here picked {} of a budget of {}), the shadow replay reads {} ({} picks of its lights from it), the shadow views come from {} (LU-5: {} frames adopted{}); the projections are compared with "
+              "the legacy producers' bytes every frame while the census is on: {}",
               kPrefix, flips_, flip_name(light_project::kFlipHeadlightBlock), block_made_, block_draws_, flip_name(light_project::kFlipVolume), volume_fills_,
               vol_pick_.picked().count, vol_pick_.room(), flip_name(light_project::kFlipShadowLights), shadow_picks_,
+              (flips_ & light_project::kFlipAtlas) != 0 ? "the shadow atlas's published form" : "the rig's carry", atlas_adopted_,
+              atlas_ != nullptr && atlas_->has_texture() ? ", " + atlas_->Describe() : std::string(),
               w.Checks() == 0 ? std::string("no check made") : std::format("{} differed in the window", w.Bad()));
   window_ = Window{};
 }

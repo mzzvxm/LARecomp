@@ -55,7 +55,12 @@ namespace ls = ::mcla::gpu::local_shadow;
 inline constexpr uint32_t kFlipHeadlightBlock = 1u << 0;  // 4a: the lit shaders' headlight block
 inline constexpr uint32_t kFlipVolume = 1u << 1;          // 4b: the volumetric light's lamps, headlights and shadow views
 inline constexpr uint32_t kFlipShadowLights = 1u << 2;    // 4c: the lights the headlight shadow replay picks cars and makes views from
-inline constexpr uint32_t kFlipAll = kFlipHeadlightBlock | kFlipVolume | kFlipShadowLights;
+inline constexpr uint32_t kFlipAll = kFlipHeadlightBlock | kFlipVolume | kFlipShadowLights;  // the three consumers of LU-4 (the default of the setting when the runs have shown their bytes equal)
+// LU-5: the shadow views themselves. The headlight replay records into the one shadow atlas (shadow_atlas.h: its texture, layout, clear, THE ONE barrier for the pixel and compute readers, the
+// memory fitted to the budget) and the manager takes the frame's shadow views from the atlas's published form BY LIGHT ID (shadow_atlas_rules.h RebindByIds) instead of the key remap of the
+// rig's carry; with the census on, the two frames are compared field by field every frame (Check::kShadowFrame). Not part of kFlipAll: it has its own proof run (RUNPLAN-lu-5.txt).
+inline constexpr uint32_t kFlipAtlas = 1u << 3;
+inline constexpr uint32_t kFlipMask = kFlipAll | kFlipAtlas;  // every bit the setting knows
 
 // ---------------------------------------------------------------------------
 // the rig's lights of a frame

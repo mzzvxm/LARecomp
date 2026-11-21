@@ -291,16 +291,26 @@ class Collector {
   // again at the trigger (this frame's).
   template <class LocalShadowFrameT>
   void SetShadows(const LocalShadowFrameT* local, const ShadowAtlasInfo& atlas) {
+    AdoptShadows(ShadowsFromLocal(local, atlas));
+  }
+  // The frame's shadow views as the replay's frame says them (what SetShadows adopts): its views grouped by the rig's lights of this frame (ShadowFrameFromLocal), the atlas named when there
+  // are none. LU-5 compares it with the atlas's published form (shadow_atlas_rules.h RebindByIds).
+  template <class LocalShadowFrameT>
+  ShadowFrame ShadowsFromLocal(const LocalShadowFrameT* local, const ShadowAtlasInfo& atlas) const {
     std::array<uint64_t, kRigLights> ids{};
     for (uint32_t i = 0; i < rig_.count; ++i) {
       ids[i] = frame_.lights[rig_.slot[i]].id;
     }
     if (local != nullptr && local->count != 0) {
-      frame_.shadow = ShadowFrameFromLocal(*local, atlas, ids.data(), rig_.count);
-    } else {
-      frame_.shadow = ShadowFrame{};
-      frame_.shadow.atlas = atlas;
+      return ShadowFrameFromLocal(*local, atlas, ids.data(), rig_.count);
     }
+    ShadowFrame empty;
+    empty.atlas = atlas;
+    return empty;
+  }
+  // The frame's shadow views are `shadow` (LU-5: the atlas's published form read for this frame's lights, or what ShadowsFromLocal made): every light names its views, the counts, the rankings.
+  void AdoptShadows(const ShadowFrame& shadow) {
+    frame_.shadow = shadow;
     BindShadowRefs(&frame_);
     stats_.shadowed = 0;
     for (uint32_t i = 0; i < frame_.count; ++i) {
@@ -308,6 +318,13 @@ class Collector {
     }
     stats_.views = frame_.shadow.count;
     RebuildOrder();
+  }
+  // The ids of the rig's lights of this frame, in the rig's order (what a published frame is read for): returns how many.
+  uint32_t RigIds(uint64_t out[kRigLights]) const {
+    for (uint32_t i = 0; i < kRigLights; ++i) {
+      out[i] = i < rig_.count ? frame_.lights[rig_.slot[i]].id : kNoLightId;
+    }
+    return rig_.count;
   }
 
   // What the budgets and the atlas were this frame: a change moves `generation` (what was cached from an older one is dropped: light_frame.h).
@@ -553,6 +570,7 @@ enum class Check : uint32_t {
   kBlockBytes,        // LU-4a: the projection of the frame (light_project.h) against the rig's block, byte for byte (at the frame's start and after the trigger)
   kVolumeBytes,       // LU-4b: the volume's light inputs made from the frame against the legacy producer's, byte for byte
   kShadowLights,      // LU-4c: the lights the shadow replay picks from, made from the frame against the rig's set, bit for bit
+  kShadowFrame,       // LU-5: the frame's shadow views read from the shadow atlas's published form by light id against the ones the rig's carry and key remap make, field by field
   kCount
 };
 inline constexpr uint32_t kCheckCount = uint32_t(Check::kCount);
@@ -567,6 +585,7 @@ inline const char* CheckName(Check c) {
     case Check::kBlockBytes: return "block bytes";
     case Check::kVolumeBytes: return "volume bytes";
     case Check::kShadowLights: return "shadow lights";
+    case Check::kShadowFrame: return "shadow frame";
     case Check::kCount: break;
   }
   return "?";
