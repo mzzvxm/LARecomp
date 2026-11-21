@@ -3489,6 +3489,39 @@ uint32_t AmbientOcclusion::FindCarSunSlot() {
   return slot == kInvalidBindlessSlot ? kNoSlot : slot;
 }
 
+bool AmbientOcclusion::TriggerViewInverse(float out[16], bool* frames_own) const {
+  // The same choice CarSunLookupColumns makes: this frame's own pose where the vertex constants are trusted for it, else the last frame's camera.
+  temporal::Mat4 world = previous_.view_inverse;
+  bool own_pose = false;
+  if (vs_pose_trusted_ && vs_view_inverse_draws_ != 0) {
+    temporal::Mat4 own;
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        own.m[r][c] = double(vs_view_inverse_[r * 4 + c]);
+      }
+    }
+    if (PoseSane(own)) {
+      world = own;
+      own_pose = true;
+    }
+  }
+  if (!own_pose && !trigger_camera_valid_) {
+    return false;  // no camera of the last frame to fall back on
+  }
+  if (!PoseSane(world)) {
+    return false;
+  }
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      out[r * 4 + c] = float(world.m[r][c]);
+    }
+  }
+  if (frames_own != nullptr) {
+    *frames_own = own_pose;
+  }
+  return true;
+}
+
 bool AmbientOcclusion::CarSunLookupColumns(float columns[12]) const {
   // The pose the world's x and z of a pixel are worked out with: the frame's own view inverse when the vertex constants of this frame's draws are trusted
   // for it (FrameMotion's rule), else the last frame's camera (previous_). The game's own lookup truncates the camera's position of this frame, so

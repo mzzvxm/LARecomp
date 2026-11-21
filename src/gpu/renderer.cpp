@@ -187,6 +187,12 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // The passive light manager (light_manager.h): off unless mcla_gpu_lights_census is set; it reads the rig's lights, the replay's maps and the volume's inputs and changes none of them.
     light_manager_.Initialize(upload_, headlights_, local_shadow_);
     vol_inputs_.SetLightManager(&light_manager_);
+    // The deferred local light pass (local_lights.h): makes nothing until mcla_gpu_local_lights is on; reads the G-buffer's planes, the shared products' camera, the AO's pose and the manager's frame.
+    local_lights_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
+    local_lights_.SetGBuffer(&gbuffer_);
+    local_lights_.SetScreenShared(&screen_);
+    local_lights_.SetAmbientOcclusion(&ao_);
+    local_lights_.SetLightManager(&light_manager_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
@@ -243,6 +249,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetCarShadowMap(&car_shadow_);
     scene_.SetLocalShadow(&local_shadow_);
     scene_.SetLightManager(&light_manager_);
+    scene_.SetLocalLights(&local_lights_);
     scene_.SetCarRtScene(&car_rt_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
@@ -301,6 +308,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     fg_.Shutdown();
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
+    local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
     ao_.Shutdown();
     screen_.Shutdown();  // the AO holds a pointer to it: after the AO
     shafts_.Shutdown();
@@ -479,6 +487,7 @@ void Renderer::Shutdown() {
   // Streamline itself is shut down (temporal_.Shutdown below).
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
+  local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
   ao_.Shutdown();
   screen_.Shutdown();  // the AO holds a pointer to it: after the AO
   shafts_.Shutdown();

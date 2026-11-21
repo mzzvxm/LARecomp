@@ -26,6 +26,7 @@
 #include "car_frame.h"
 #include "headlight_rig.h"
 #include "light_manager.h"
+#include "local_lights.h"
 #include "local_shadow.h"
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
@@ -829,6 +830,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  if (local_lights_) {
+    local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
+  }
   if (gbuffer_) {
     gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
   }
@@ -2006,6 +2010,9 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   if (ao_ && ao_->wants_draws()) {
     ao_->OnMainDraw(draw, banks);
+  }
+  if (local_lights_ && local_lights_->wants_draws()) {
+    local_lights_->OnMainDraw(banks, draw.match.color);  // the units' vote (the night light intensity and the height factor of the lit shaders)
   }
   if (shafts_ && shafts_->wants_draws()) {
     shafts_->OnMainDraw(draw.match, banks, vs_identity, ps_identity);
@@ -3567,9 +3574,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   const bool float_scene =
       hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
   const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene);
+  bool gbuffer_published = false;
   if (gbuffer_ && gbuffer_->active()) {
     // The mid-scene depth copy closes the G-buffer's window and publishes the frame (gbuffer.h), before the effects that will read it run.
-    gbuffer_->OnResolve(record, summary, list);
+    gbuffer_published = gbuffer_->OnResolve(record, summary, list);
   }
   if (car_shadow_) {
     // At the same mid-scene depth copy, BEFORE the ambient occlusion's passes record (they read the map): the player car drawn again
@@ -3588,6 +3596,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //      visibility and the contact march, the apply onto the main colour. At the end of its depth chain the shared screen products (screen_shared.h) are
   //      published from it and the Hi-Z is made, when a consumer wants it (the occlusion runs a frame of the depth pass alone for that if it and the contact
   //      shadows are off);
+  //   3b. the deferred local lights (local_lights.h): one additive draw per light from the G-buffer's planes and the main depth, after the apply, before the shafts;
   //   4. the sun shafts (shafts.h);
   //   4b. the volumetric light (volumetrics.h): its compute passes (inject, integrate) read the headlight shadow atlas of step 2b (so that step's
   //      last barrier names the compute stage too, local_shadow.cpp), the depth chain, the cascades and the lamp list; its composite goes
@@ -3614,6 +3623,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
     // below forgets for the next draw.
     ao_->OnResolve(record, summary, list, UpscalerRunning());
+  }
+  if (local_lights_ && local_lights_->wants_draws()) {
+    // Step 3b: the deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3 step 7): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
+    // AFTER the occlusion's apply (so it does not darken the light) and before the sun shafts, the volumetric light and the game's own light volumes and glows. Binds its own layout, pipeline
+    // and framebuffer: the reset below forgets them too.
+    local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);
   }
   if (shafts_ && shafts_->wants_draws()) {
     // At the same mid-scene depth copy the sun shafts take the sky's brightness (their own passes and
@@ -3870,6 +3885,9 @@ void Scene::OnPresent() {
   }
   if (car_frame_) {
     car_frame_->OnPresent();  // the car draw list's frame boundary
+  }
+  if (local_lights_) {
+    local_lights_->OnPresent();  // the interval line
   }
   if (light_manager_) {
     light_manager_->OnPresent();  // passive: this frame's lights are checked and uploaded before the rig makes the next frame's set

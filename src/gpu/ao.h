@@ -555,6 +555,10 @@ class AmbientOcclusion {
   // The world-space unit vector toward the sun of this frame so far: -c16 of the light most main-view draws carried (the
   // world's light; a car's own draws carry a light of their own, which is not the sun). False when no draw had one.
   bool SunDirection(double to_sun[3]) const;
+  // The camera's view inverse a pass at the trigger turns a view-space point into a world one with (row vectors: row 0 right, row 1 up, row 2 back, row 3 position; the game's), as
+  // `float[16]`: the frame's OWN when the vertex constants of this frame's main draws are trusted for it (the pose the car sun lookup uses), else the last frame's camera (a frame behind a
+  // moving one). `frames_own` says which. False when there is neither (no camera yet, or the pose is not a camera's). The deferred local lights (local_lights.h) use it.
+  bool TriggerViewInverse(float out[16], bool* frames_own) const;
   // The contact shadows were gated off in the last frame the AO judged (a low sun or a wet road): a pass made only for them can skip.
   bool ContactGated() const { return contact_state_ == ContactState::kGated; }
   // The contact shadows' strength of the last frame that planned them: the setting times the sun's elevation gate times the wetness

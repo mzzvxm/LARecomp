@@ -70,6 +70,8 @@
 #include "hdr_compose_ps.hlsl.dxil.h"
 #include "layers_resolve_ps.hlsl.dxil.h"
 #include "layers_restore_ps.hlsl.dxil.h"
+#include "local_light_ms_ps.hlsl.dxil.h"
+#include "local_light_ps.hlsl.dxil.h"
 #include "overlay_hdr_ps.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
 #include "overlay_vs.hlsl.dxil.h"
@@ -168,6 +170,8 @@
 #include "hdr_compose_ps.hlsl.spirv.h"
 #include "layers_resolve_ps.hlsl.spirv.h"
 #include "layers_restore_ps.hlsl.spirv.h"
+#include "local_light_ms_ps.hlsl.spirv.h"
+#include "local_light_ps.hlsl.spirv.h"
 #include "overlay_hdr_ps.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
 #include "overlay_vs.hlsl.spirv.h"
@@ -284,6 +288,11 @@ inline HostShaderBlob FullscreenVertexShader() {
 // The G-buffer's debug view (gbuffer.h): the planes with one sample, or the host's MSAA level.
 inline HostShaderBlob GBufferViewPixelShader(bool multisampled) {
   return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ps);
+}
+
+// The deferred local light pass (local_lights.h, hlsl/local_light_ps.hlsl): planes and depth with one sample, or the host's MSAA level.
+inline HostShaderBlob LocalLightPixelShader(bool multisampled) {
+  return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(local_light_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(local_light_ps);
 }
 
 // The shared screen products (screen_shared.h): one level of the Hi-Z chain, and the debug view of the products.
