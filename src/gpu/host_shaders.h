@@ -49,6 +49,7 @@
 #include "car_history_ms_ps.hlsl.dxil.h"
 #include "car_history_ps.hlsl.dxil.h"
 #include "car_rt_ao_cs.hlsl.dxil.h"
+#include "city_rt_shadow_cs.hlsl.dxil.h"
 #include "car_rt_check_cs.hlsl.dxil.h"
 #include "car_rt_refl_cs.hlsl.dxil.h"
 #include "car_rt_refl_denoise_cs.hlsl.dxil.h"
@@ -141,6 +142,7 @@
 #include "car_history_ms_ps.hlsl.spirv.h"
 #include "car_history_ps.hlsl.spirv.h"
 #include "car_rt_ao_cs.hlsl.spirv.h"
+#include "city_rt_shadow_cs.hlsl.spirv.h"
 #include "car_rt_check_cs.hlsl.spirv.h"
 #include "car_rt_refl_cs.hlsl.spirv.h"
 #include "car_rt_refl_denoise_cs.hlsl.spirv.h"
@@ -482,6 +484,11 @@ inline HostShaderBlob CarRtCheckShader() {
 
 inline HostShaderBlob CarRtAoShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_ao_cs);
+}
+
+// The city's ray traced sun shadows (city_rt_shadow.h): inline ray queries against the car scene's top level, which holds the city's sectors beside the cars.
+inline HostShaderBlob CityRtShadowShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(city_rt_shadow_cs);
 }
 
 inline HostShaderBlob CarRtReflShader() {

@@ -337,4 +337,24 @@ inline std::vector<uint8_t> PlanBuilds(const std::vector<BuildItem>& items, uint
   return built;
 }
 
+// ---------------------------------------------------------------------------
+// where a ray traced shadow may be applied
+// ---------------------------------------------------------------------------
+// The RECEIVER of a shadow is the surface the depth image shows, which is the geometry the GAME drew there: its hi detail within `game_hi_radius` of the camera
+// (300 m times lod_city_scale, the owner's auto is 2x) and its lod beyond. A ray from a receiver that the pack holds at another level of detail starts under or
+// above the structure's surface (the lod of a building is a few metres off its hi detail) and the pixel is shadowed by its own surface: acne. So a shadow is
+// applied only within a range where the structures are the hi detail the game drew: the radius of the hi ring, the game's hi radius, and the distance of the
+// nearest sector whose hi structure is wanted but not built yet (until it is, the pixels that could be in it, and everything beyond it, keep the game's shadows).
+// The casters beyond are the lod, which is all a caster needs.
+inline float SafeReceiverRange(const PlanInput& in, const std::vector<SectorInfo>& sectors, const std::vector<SectorState>& states, float game_hi_radius) {
+  float range = std::min(in.budget.hi_radius, game_hi_radius);
+  if (!in.budget.on() || sectors.size() != states.size()) return 0.0f;
+  for (uint32_t i = 0; i < sectors.size(); ++i) {
+    if (!sectors[i].has_hi() || states[i].hi == Residency::kResident) continue;
+    const float d = DistanceToBox(in.camera, sectors[i].box_min, sectors[i].box_max);
+    if (d < range) range = d;
+  }
+  return std::max(range, 0.0f);
+}
+
 }  // namespace mcla::gpu::city_rt

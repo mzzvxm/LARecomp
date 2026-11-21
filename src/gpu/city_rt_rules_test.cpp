@@ -455,6 +455,40 @@ void TestBuildPlan() {
   CHECK(built[0] == 1 && built[1] == 1 && built[2] == 0);
 }
 
+void TestSafeRange() {
+  Budget b = BudgetFor(GpuClass::kHigh, Level::kHigh);  // hi radius 300
+  Sim sim(Grid(10, 200.0f, 50000, 1000), b);
+  PlanInput in;
+  in.budget = b;
+  in.camera[0] = 0;
+  in.camera[1] = 5;
+  in.camera[2] = 0;
+  // nothing built: the range is 0 (the camera is inside a sector that is not built)
+  CHECK(SafeReceiverRange(in, sim.sectors, sim.states, 600.0f) == 0.0f);
+  for (int i = 0; i < 500; ++i) sim.Step(0, 0);
+  // everything within the ring built: the range is the ring's radius
+  CHECK(SafeReceiverRange(in, sim.sectors, sim.states, 600.0f) == b.hi_radius);
+  // the game draws its hi detail only to 200 m: the range is that
+  CHECK(SafeReceiverRange(in, sim.sectors, sim.states, 200.0f) == 200.0f);
+  // one sector within the ring is not built (its read is on its way): the range stops at its distance
+  uint32_t victim = 0;
+  float victim_distance = 1e9f;
+  for (uint32_t i = 0; i < sim.sectors.size(); ++i) {
+    const float d = DistanceToBox(in.camera, sim.sectors[i].box_min, sim.sectors[i].box_max);
+    if (d > 100.0f && d < victim_distance && sim.states[i].hi == Residency::kResident) {
+      victim = i;
+      victim_distance = d;
+    }
+  }
+  sim.states[victim].hi = Residency::kLoading;
+  CHECK(std::fabs(SafeReceiverRange(in, sim.sectors, sim.states, 600.0f) - victim_distance) < 1e-3f);
+  // a sector with no hi mesh never limits it
+  sim.sectors[victim].hi_triangles = 0;
+  CHECK(SafeReceiverRange(in, sim.sectors, sim.states, 600.0f) == b.hi_radius);
+  in.budget = Budget{};
+  CHECK(SafeReceiverRange(in, sim.sectors, sim.states, 600.0f) == 0.0f);
+}
+
 }  // namespace
 
 int main() {
@@ -467,6 +501,7 @@ int main() {
   TestMemoryCap();
   TestDrive();
   TestBuildPlan();
+  TestSafeRange();
   if (g_failures != 0) {
     std::fprintf(stderr, "city_rt_rules_test: %d of %d checks FAILED\n", g_failures, g_checks);
     return 1;
