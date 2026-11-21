@@ -108,6 +108,21 @@ struct TemporalImage {
   plume::RenderTextureFlags flags = plume::RenderTextureFlag::NONE;
 };
 
+// DLSS Ray Reconstruction's guide images (dlss_rr_rules.h, perf/DLSS-RR.md): all at the render size, in SHADER_READ at the COMPUTE stage like the other inputs, linear
+// (never sRGB); a null texture is a guide this frame does not have. Only a context made for ray reconstruction (BackendRequest::ray_reconstruction) reads them; the
+// rules (rr::PlanTags) say which are required and what a missing or wrong one means. Nothing fills them until the guide pass (package RR-2) exists.
+struct TemporalGuides {
+  TemporalImage diffuse_albedo;             // RGB linear
+  TemporalImage specular_albedo;            // RGB linear
+  TemporalImage normal_roughness;           // world normals, the linear roughness in alpha (packed) ...
+  TemporalImage normals;                    // ... or the normals alone
+  TemporalImage roughness;                  // ... and the roughness alone
+  TemporalImage specular_motion;            // the reflection's motion, render pixels like the primary vectors
+  TemporalImage specular_hit_distance;      // world units from the primary surface (the sky: 65504)
+  TemporalImage responsivity;               // optional, signed [-1, 1]
+  TemporalImage color_before_transparency;  // optional, the colour's format
+};
+
 // Everything a frame's dispatch reads (F4-DESIGN.md 6.1, in the conventions the groundwork keeps).
 struct TemporalInputs {
   uint64_t frame = 0;
@@ -129,6 +144,8 @@ struct TemporalInputs {
   // transparencyAndComposition, DLSS's hint of that name.
   TemporalImage transparency;
   TemporalImage output;
+  // Ray Reconstruction's guides (above), read only by a context made for it.
+  TemporalGuides guides;
   float jitter[2] = {};        // render pixels, +y down: what this frame's draws were moved by
   float motion_scale[2] = {1.0f, 1.0f};  // the vectors times this are render pixels
   float frame_time_ms = 16.667f;
@@ -161,10 +178,14 @@ struct BackendRequest {
   // visualization on and its dispatches draw the runtime's own views into the output. Part of the
   // request, so that a change of the setting makes another context (UpscalerDebugView).
   bool debug_view = false;
+  // DLSS only (dlss_rr_rules.h, perf/DLSS-RR.md): the context is made for Ray Reconstruction, which denoises and upscales in one and replaces Super Resolution while
+  // it is the plan. Part of the request, so that the choice changing makes another context (Prepare / Commit).
+  bool ray_reconstruction = false;
   bool operator==(const BackendRequest& o) const {
     return upscaler == o.upscaler && mode == o.mode && render_size[0] == o.render_size[0] &&
            render_size[1] == o.render_size[1] && output_size[0] == o.output_size[0] &&
-           output_size[1] == o.output_size[1] && debug_view == o.debug_view;
+           output_size[1] == o.output_size[1] && debug_view == o.debug_view &&
+           ray_reconstruction == o.ray_reconstruction;
   }
 };
 

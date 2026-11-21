@@ -3,6 +3,7 @@
 #include "temporal_dlss.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -37,6 +38,10 @@
 // GetProcAddress, so none of the SL_API declarations or header helpers is ever called.
 #include <sl.h>
 #include <sl_dlss.h>
+#if defined(LARECOMP_HAS_DLSS_RR)
+// DLSS Ray Reconstruction (perf/DLSS-RR.md): the plugin's options, optimal sizes and state.
+#include <sl_dlss_d.h>
+#endif
 #if defined(LARECOMP_HAS_DLSS_G)
 // DLSS frame generation, and Reflex with the PC latency markers, which it requires.
 // Streamline 2.14's sl_pcl.h reads `#if __cplusplus == 202302L` and then aliases the function
@@ -70,6 +75,7 @@
 
 #include "backend.h"
 #include "device.h"
+#include "dlss_rr_rules.h"
 #include "frame.h"
 #include "latency.h"
 #include "texture_bytes.h"
@@ -82,6 +88,22 @@ namespace {
 
 constexpr const char* kPrefix = "[gpu] dlss:";
 constexpr uint32_t kVendorNvidia = 0x10DE;
+#if defined(LARECOMP_HAS_DLSS_RR)
+// The ids dlss_rr_rules.h pins (and its test checks) are Streamline's own.
+static_assert(rr::kSlFeatureDlssRr == sl::kFeatureDLSS_RR, "Streamline's Ray Reconstruction feature id");
+static_assert(rr::kSlBufferDepth == sl::kBufferTypeDepth && rr::kSlBufferMotionVectors == sl::kBufferTypeMotionVectors &&
+                  rr::kSlBufferScalingInputColor == sl::kBufferTypeScalingInputColor &&
+                  rr::kSlBufferScalingOutputColor == sl::kBufferTypeScalingOutputColor,
+              "Streamline's Super Resolution buffer ids");
+static_assert(rr::kSlBufferNormals == sl::kBufferTypeNormals && rr::kSlBufferRoughness == sl::kBufferTypeRoughness &&
+                  rr::kSlBufferAlbedo == sl::kBufferTypeAlbedo && rr::kSlBufferSpecularAlbedo == sl::kBufferTypeSpecularAlbedo &&
+                  rr::kSlBufferSpecularMotionVectors == sl::kBufferTypeSpecularMotionVectors &&
+                  rr::kSlBufferNormalRoughness == sl::kBufferTypeNormalRoughness &&
+                  rr::kSlBufferColorBeforeTransparency == sl::kBufferTypeColorBeforeTransparency &&
+                  rr::kSlBufferSpecularHitDistance == sl::kBufferTypeSpecularHitDistance &&
+                  rr::kSlBufferResponsivityMask == sl::kBufferTypeResponsivityMask,
+              "Streamline's Ray Reconstruction buffer ids");
+#endif
 // Warnings and errors of Streamline that go to the game's log (its information lines only go to its
 // own log file, sl.log).
 constexpr uint32_t kMaxSlLogLines = 200;
@@ -273,6 +295,74 @@ bool WantFrameGenerationPlugins(Backend backend, const std::string& gpu_name) {
   return backend == Backend::kD3D12 && dlss::NameLooksLikeFrameGeneration(gpu_name);
 }
 
+// --- Ray Reconstruction (perf/DLSS-RR.md; the rules are dlss_rr_rules.h) ---------------------------------------------------------------------
+
+rr::DebugSwitch RrDebugSwitch() {
+  rr::DebugSwitch value = rr::DebugSwitch::kOff;
+  if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_dlss_rr.Get(), &value)) {
+    value = rr::DebugSwitch::kOff;
+  }
+  return value;
+}
+
+#if defined(LARECOMP_HAS_DLSS_RR)
+std::wstring WidenAscii(const char* text) {
+  std::wstring out;
+  for (; text && *text; ++text) {
+    out += wchar_t(static_cast<unsigned char>(*text));
+  }
+  return out;
+}
+
+// Whether the Ray Reconstruction files are there and its plugin signed (`why` says what not). nvngx_dlssd.dll is loaded and checked by the plugin.
+bool RrFilesOk(const std::wstring& dir, std::string* why) {
+  std::string missing;
+  for (const char* file : rr::kFiles) {
+    if (dir.empty() || !FileExists(dir + WidenAscii(file))) {
+      missing += (missing.empty() ? "" : ", ") + std::string(file);
+    }
+  }
+  if (!missing.empty()) {
+    *why = "these files are not next to the game's exe: " + missing;
+    return false;
+  }
+  for (const char* file : rr::kSignedFiles) {
+    if (!VerifiedByNvidia(dir + WidenAscii(file))) {
+      *why = std::format("{} does not carry NVIDIA's signature, or Windows does not trust it", file);
+      return false;
+    }
+  }
+  return true;
+}
+#endif
+
+// Whether Streamline is started with the Ray Reconstruction plugin (InitLocked): the debug switch is not off, this build has it, its files are in place and signed,
+// the card looks like an RTX one, and on Vulkan DLSS is the saved choice (the device is made through Streamline then). Plugins cannot be added after slInit.
+bool WantRayReconstructionPlugin(Backend backend, bool looks_rtx, bool dlss_saved_at_start) {
+  rr::PluginInputs in;
+  in.debug = RrDebugSwitch();
+  in.d3d12 = backend == Backend::kD3D12;
+  in.looks_rtx = looks_rtx;
+  in.dlss_saved_at_start = dlss_saved_at_start;
+#if defined(LARECOMP_HAS_DLSS_RR)
+  in.build_has_rr = true;
+  if (in.debug != rr::DebugSwitch::kOff) {
+    std::string why;
+    in.files_ok = RrFilesOk(ExeDirectory(), &why);
+    if (!in.files_ok) {
+      REXLOG_INFO("{} Ray Reconstruction (mcla_gpu_dlss_rr = {}) is not asked for: {}", kPrefix,
+                  rr::DebugSwitchName(in.debug), why);
+    }
+  }
+#else
+  if (in.debug != rr::DebugSwitch::kOff) {
+    REXLOG_INFO("{} mcla_gpu_dlss_rr = {}, but this build has no DLSS Ray Reconstruction", kPrefix,
+                rr::DebugSwitchName(in.debug));
+  }
+#endif
+  return rr::WantRrPlugin(in);
+}
+
 std::string ResultText(sl::Result result) {
   const char* name = "";
   switch (result) {
@@ -434,6 +524,12 @@ struct SlApi {
   PFun_slDLSSGetOptimalSettings* dlss_optimal = nullptr;
   PFun_slDLSSSetOptions* dlss_set_options = nullptr;
   PFun_slDLSSGetState* dlss_state = nullptr;
+#if defined(LARECOMP_HAS_DLSS_RR)
+  // Ray Reconstruction's own, through slGetFeatureFunction(kFeatureDLSS_RR, ...) once the support query said yes.
+  PFun_slDLSSDGetOptimalSettings* rr_optimal = nullptr;
+  PFun_slDLSSDSetOptions* rr_set_options = nullptr;
+  PFun_slDLSSDGetState* rr_state = nullptr;
+#endif
 #if defined(LARECOMP_HAS_DLSS_G)
   // The frame generation, Reflex and PC latency plugins' functions, taken through slGetFeatureFunction
   // (the frame generation ones again whenever the feature is loaded again).
@@ -471,6 +567,8 @@ struct Runtime {
   // it runs (dlss::LoadFrameGeneration), Reflex and PC latency stay.
   bool frame_gen_asked = false;
   bool frame_gen_loaded = false;  // the frame generation plugin is loaded now
+  // slInit was given the Ray Reconstruction plugin (InitLocked; dlss_rr_rules.h WantRrPlugin): only then can it be asked about or used.
+  bool rr_asked = false;
 };
 
 // The frame generation facts the menu and the module read (dlss::FrameGenerationFacts): written by
@@ -478,6 +576,11 @@ struct Runtime {
 // feature's creation (seconds).
 std::mutex g_fg_mutex;
 dlss::FrameGenerationFacts g_fg_facts;
+// The Ray Reconstruction facts (dlss::RayReconstructionFacts), the same way: written by the worker with Runtime::mu held, read under their own lock.
+std::mutex g_rr_mutex;
+dlss::RayReconstructionFacts g_rr_facts;
+// The last refusal of a frame's guides that was logged (verdict and culprit packed), so that the log says each kind once. Render thread.
+std::atomic<uint32_t> g_rr_refusal_seen{0};
 // The worker is making a feature (or Streamline's start): the render thread's Streamline calls that
 // would wait for the lock say busy instead (Impl::building is this).
 std::atomic<bool> g_building{false};
@@ -591,7 +694,7 @@ bool FrameGenFilesOk(const std::wstring& dir, std::string* why) {
 //
 // Streamline's log: every line goes to sl.log in the logs folder (what a bug report needs); the
 // callback hands the game's log only the warnings and errors (SlLog).
-bool InitLocked(Runtime& rt, sl::RenderAPI api, bool frame_gen, std::string* why) {
+bool InitLocked(Runtime& rt, sl::RenderAPI api, bool frame_gen, bool ray_reconstruction, std::string* why) {
   if (rt.initialized) {
     return true;
   }
@@ -618,6 +721,16 @@ bool InitLocked(Runtime& rt, sl::RenderAPI api, bool frame_gen, std::string* why
   }
 #else
   (void)frame_gen;
+#endif
+#if defined(LARECOMP_HAS_DLSS_RR)
+  if (ray_reconstruction) {
+    features.push_back(sl::kFeatureDLSS_RR);
+    rt.rr_asked = true;
+    REXLOG_INFO("{} Streamline starts with the Ray Reconstruction plugin (mcla_gpu_dlss_rr = {})", kPrefix,
+                rr::DebugSwitchName(RrDebugSwitch()));
+  }
+#else
+  (void)ray_reconstruction;
 #endif
   // Streamline's full log (sl.log: every line it writes, with NGX's) goes next to LARecomp's own log
   // (LarecompLogFolder), which is what a bug report about DLSS needs. No folder, no log file.
@@ -808,6 +921,130 @@ void FillStaticConstants(sl::Constants& consts) {
   consts.motionVectorsJittered = sl::Boolean::eFalse;  // the jitter is taken out of them
 }
 
+// --- Ray Reconstruction: options, support, sizes (perf/DLSS-RR.md) ------------------------------------------------------------------------------
+
+#if defined(LARECOMP_HAS_DLSS_RR)
+rr::Mode RrModeOf(UpscaleMode mode) {
+  switch (mode) {
+    case UpscaleMode::kQuality: return rr::Mode::kQuality;
+    case UpscaleMode::kBalanced: return rr::Mode::kBalanced;
+    case UpscaleMode::kPerformance: return rr::Mode::kPerformance;
+    case UpscaleMode::kUltraPerformance: return rr::Mode::kUltraPerformance;
+    default: return rr::Mode::kDlaa;
+  }
+}
+
+// The options of a Ray Reconstruction viewport: the rules' answer (rr::MakeOptions) in Streamline's struct. NVIDIA's default presets, HDR colour, no alpha upscale;
+// the sharpness, the exposure and the auto exposure are ignored by RR. The camera's matrices change every frame, so a frame's evaluation sets them again.
+sl::DLSSDOptions RrOptionsFor(UpscaleMode mode, const rr::Options& o) {
+  sl::DLSSDOptions options;
+  options.mode = SlMode(mode);
+  options.outputWidth = o.output_size[0];
+  options.outputHeight = o.output_size[1];
+  options.sharpness = 0.0f;
+  options.preExposure = 1.0f;
+  options.exposureScale = 1.0f;
+  options.colorBuffersHDR = o.colour_hdr ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+  options.normalRoughnessMode = o.normal_roughness == rr::NormalRoughnessMode::kPacked ? sl::DLSSDNormalRoughnessMode::ePacked
+                                                                                         : sl::DLSSDNormalRoughnessMode::eUnpacked;
+  options.worldToCameraView = ToSl(o.world_to_view.m);
+  options.cameraViewToWorld = ToSl(o.view_to_world.m);
+  options.alphaUpscalingEnabled = o.alpha_upscaling ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+  return options;
+}
+
+// slDLSSDGetOptimalSettings in the shape the Super Resolution size check takes (the two structs have the same fields).
+sl::DLSSOptimalSettings AsSuperResolution(const sl::DLSSDOptimalSettings& d) {
+  sl::DLSSOptimalSettings out;
+  out.optimalRenderWidth = d.optimalRenderWidth;
+  out.optimalRenderHeight = d.optimalRenderHeight;
+  out.optimalSharpness = d.optimalSharpness;
+  out.renderWidthMin = d.renderWidthMin;
+  out.renderHeightMin = d.renderHeightMin;
+  out.renderWidthMax = d.renderWidthMax;
+  out.renderHeightMax = d.renderHeightMax;
+  return out;
+}
+#endif
+
+// Streamline's answer on Ray Reconstruction, once the device is set (slSetD3DDevice, or the Vulkan device made through the interposer): whether the feature is
+// supported here and its three functions; with mcla_gpu_dlss_rr = probe also the render size it takes for each mode at two output sizes (a size query: no feature,
+// no video memory). Publishes dlss::RayReconstructionFacts. Never fails Super Resolution.
+void QueryRayReconstructionLocked(Runtime& rt, const sl::AdapterInfo& adapter, const std::string& gpu_name) {
+  dlss::RayReconstructionFacts facts;
+  facts.queried = true;
+#if defined(LARECOMP_HAS_DLSS_RR)
+  facts.built = true;
+  facts.asked = rt.rr_asked;
+  facts.files_ok = rt.rr_asked;  // it was asked for only with its files in place and signed
+  if (!rt.rr_asked) {
+    facts.why = RrDebugSwitch() == rr::DebugSwitch::kOff
+                    ? "mcla_gpu_dlss_rr is off"
+                    : "Streamline was started without the Ray Reconstruction plugin (its files are missing, or on Vulkan DLSS was not the saved upscaler at the start)";
+  } else {
+    const sl::Result supported = rt.api.is_supported(sl::kFeatureDLSS_RR, adapter);
+    if (supported != sl::Result::eOk) {
+      facts.why = "Streamline says Ray Reconstruction cannot run on '" + gpu_name + "': " + ResultText(supported);
+    } else {
+      const auto function_of = [&rt, &facts](const char* name) -> void* {
+        void* function = nullptr;
+        const sl::Result r = rt.api.get_function(sl::kFeatureDLSS_RR, name, function);
+        if (r != sl::Result::eOk || !function) {
+          facts.why = std::format("sl.dlss_d.dll has no {}: {}", name, ResultText(r));
+          return nullptr;
+        }
+        return function;
+      };
+      void* get_optimal = function_of("slDLSSDGetOptimalSettings");
+      void* set_options = get_optimal ? function_of("slDLSSDSetOptions") : nullptr;
+      void* get_state = set_options ? function_of("slDLSSDGetState") : nullptr;
+      if (get_optimal && set_options && get_state) {
+        rt.api.rr_optimal = reinterpret_cast<PFun_slDLSSDGetOptimalSettings*>(get_optimal);
+        rt.api.rr_set_options = reinterpret_cast<PFun_slDLSSDSetOptions*>(set_options);
+        rt.api.rr_state = reinterpret_cast<PFun_slDLSSDGetState*>(get_state);
+        facts.supported = true;
+      }
+    }
+  }
+  if (facts.supported) {
+    REXLOG_INFO("{} Ray Reconstruction can run on '{}' (mcla_gpu_dlss_rr = {})", kPrefix, gpu_name,
+                rr::DebugSwitchName(RrDebugSwitch()));
+    if (RrDebugSwitch() == rr::DebugSwitch::kProbe) {
+      // What it takes for each mode at two outputs. CHECK: the same sizes as Super Resolution's (the guide says RR runs in the mode DLSS runs in).
+      const uint32_t outputs[2][2] = {{1920, 1080}, {3840, 2160}};
+      for (const auto& out : outputs) {
+        for (uint32_t m = 0; m < uint32_t(UpscaleMode::kCount); ++m) {
+          const UpscaleMode mode = UpscaleMode(m);
+          rr::TagPlan packed;
+          packed.normal_roughness = rr::NormalRoughnessMode::kPacked;
+          const rr::Options o = rr::MakeOptions(RrModeOf(mode), out[0], out[1], packed, rr::Camera{});
+          sl::DLSSDOptimalSettings optimal;
+          const sl::Result got = rt.api.rr_optimal(RrOptionsFor(mode, o), optimal);
+          if (got != sl::Result::eOk) {
+            REXLOG_INFO("{} probe: Ray Reconstruction {} at {}x{}: slDLSSDGetOptimalSettings failed: {}", kPrefix,
+                        ModeInfoOf(Upscaler::kDlss, mode).name, out[0], out[1], ResultText(got));
+            continue;
+          }
+          REXLOG_INFO("{} probe: Ray Reconstruction {} at {}x{} takes a scene of {}x{} (range {}x{} to {}x{})", kPrefix,
+                      ModeInfoOf(Upscaler::kDlss, mode).name, out[0], out[1], optimal.optimalRenderWidth,
+                      optimal.optimalRenderHeight, optimal.renderWidthMin, optimal.renderHeightMin,
+                      optimal.renderWidthMax, optimal.renderHeightMax);
+        }
+      }
+    }
+  } else if (rt.rr_asked) {
+    REXLOG_INFO("{} Ray Reconstruction is not available: {}", kPrefix, facts.why);
+  }
+#else
+  (void)rt;
+  (void)adapter;
+  (void)gpu_name;
+  facts.why = "this build has no DLSS Ray Reconstruction";
+#endif
+  std::lock_guard rr_lock(g_rr_mutex);
+  g_rr_facts = facts;
+}
+
 void SetIdentity(float (&m)[16]) {
   for (uint32_t i = 0; i < 16; ++i) {
     m[i] = (i % 5 == 0) ? 1.0f : 0.0f;
@@ -826,6 +1063,67 @@ struct Context {
   uint64_t bytes = 0;         // the video memory Streamline reports for it (0 until asked)
   uint64_t made_ms = 0;       // how long its feature took to make (pre-warm steps only: they log it)
 };
+
+// The Streamline feature a context's viewport belongs to (the one its resources are freed under).
+sl::Feature FeatureOf(const Context& context) {
+#if defined(LARECOMP_HAS_DLSS_RR)
+  if (context.request.ray_reconstruction) {
+    return sl::kFeatureDLSS_RR;
+  }
+#endif
+  return sl::kFeatureDLSS;
+}
+
+// A context for a Ray Reconstruction request (MakeContext's other half, with Runtime::mu held): the viewport's options and the check that the scene's size is one
+// RR takes. The feature itself is made by the first dispatch (Build skips the warm-up: it has no guide images).
+std::shared_ptr<Context> MakeRrContext(Runtime& rt, const BackendRequest& request, std::string* why, bool prewarm, bool* refused) {
+#if defined(LARECOMP_HAS_DLSS_RR)
+  if (!rt.rr_asked || !rt.api.rr_optimal || !rt.api.rr_set_options) {
+    *why = "Ray Reconstruction is not running (Streamline was started without its plugin, or this card or driver does not support it)";
+    return {};
+  }
+  rr::TagPlan packed;
+  packed.normal_roughness = rr::NormalRoughnessMode::kPacked;
+  const rr::Options rr_options =
+      rr::MakeOptions(RrModeOf(request.mode), request.output_size[0], request.output_size[1], packed, rr::Camera{});
+  const sl::DLSSDOptions options = RrOptionsFor(request.mode, rr_options);
+  sl::DLSSDOptimalSettings optimal;
+  const sl::Result got = rt.api.rr_optimal(options, optimal);
+  if (got != sl::Result::eOk) {
+    *why = "slDLSSDGetOptimalSettings failed: " + ResultText(got);
+    return {};
+  }
+  const uint32_t rw = request.render_size[0];
+  const uint32_t rh = request.render_size[1];
+  const sl::DLSSOptimalSettings as_sr = AsSuperResolution(optimal);
+  if (!SceneFits(as_sr, rw, rh)) {
+    *why = SceneWhy(as_sr, rw, rh, request.output_size[0], request.output_size[1]);
+    *refused = true;
+    return {};
+  }
+  auto context = std::make_shared<Context>();
+  context->request = request;
+  context->viewport_id = ++rt.last_viewport;
+  const sl::Result set = rt.api.rr_set_options(sl::ViewportHandle(context->viewport_id), options);
+  if (set != sl::Result::eOk) {
+    *why = "slDLSSDSetOptions failed: " + ResultText(set);
+    return {};
+  }
+  REXLOG_INFO("{} Ray Reconstruction {} for {} at {}x{} to {}x{} (viewport {}): it asks for {}x{} (range {}x{} to {}x{})", kPrefix,
+              prewarm ? "warm-up context" : "context", ModeInfoOf(Upscaler::kDlss, request.mode).name, rw, rh,
+              request.output_size[0], request.output_size[1], context->viewport_id, optimal.optimalRenderWidth,
+              optimal.optimalRenderHeight, optimal.renderWidthMin, optimal.renderHeightMin, optimal.renderWidthMax,
+              optimal.renderHeightMax);
+  return context;
+#else
+  (void)rt;
+  (void)request;
+  (void)prewarm;
+  (void)refused;
+  *why = "this build has no DLSS Ray Reconstruction";
+  return {};
+#endif
+}
 
 // What the creation of the feature needs outside the frames' own objects: a command queue of its
 // own (a second direct queue Plume makes: on D3D12 a queue of its own, on Vulkan a queue of the same
@@ -1038,6 +1336,9 @@ struct DlssBackend::Impl {
   // when the worker holds it to make a feature (`building`) `*busy` is set and nothing is recorded.
   std::string Evaluate(void* native_list, Context& context, const TemporalInputs& in, bool wait,
                        bool* busy);
+  // The same for a Ray Reconstruction context (Evaluate hands it over): the guides are tagged with the plan the rules make of what the frame has.
+  std::string EvaluateRr(void* native_list, Context& context, const TemporalInputs& in, bool wait,
+                         bool* busy);
   void FreeContext(const Context& context);
   // Render thread: the contexts go to the worker once the frames that may use them have finished.
   void RetireOutsideLock(std::vector<std::shared_ptr<Context>>& retire);
@@ -1281,7 +1582,10 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
       *why = "on Vulkan Streamline has to start before the device is made";
       return false;
     }
-    if (!InitLocked(rt, sl::RenderAPI::eD3D12, WantFrameGenerationPlugins(api, gpu_name), why)) {
+    if (!InitLocked(rt, sl::RenderAPI::eD3D12, WantFrameGenerationPlugins(api, gpu_name),
+                    WantRayReconstructionPlugin(api, NameLooksLikeRtx(gpu_name),
+                                                ReadUpscalerSettings().upscaler == Upscaler::kDlss),
+                    why)) {
       rt.failure = *why;
       return false;
     }
@@ -1335,6 +1639,7 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
   rt.api.dlss_set_options = reinterpret_cast<PFun_slDLSSSetOptions*>(set_options);
   rt.api.dlss_state = reinterpret_cast<PFun_slDLSSGetState*>(get_state);
   QueryFrameGenerationLocked(rt, adapter, gpu_name);
+  QueryRayReconstructionLocked(rt, adapter, gpu_name);
   if (api == Backend::kD3D12 && rt.api.upgrade_interface) {
     // The plugins have started (slSetD3DDevice ran their start and filled the hook lists the
     // swap chain's wrapper reads): the next present may hand Streamline the swap chain.
@@ -1434,7 +1739,7 @@ void DlssBackend::Impl::FreeContext(const Context& context) {
   if (!rt.initialized || rt.shut_down || !rt.api.free_resources) {
     return;
   }
-  rt.api.free_resources(sl::kFeatureDLSS, sl::ViewportHandle(context.viewport_id));
+  rt.api.free_resources(FeatureOf(context), sl::ViewportHandle(context.viewport_id));
 }
 
 void DlssBackend::Impl::RetireOutsideLock(std::vector<std::shared_ptr<Context>>& retire) {
@@ -1584,6 +1889,9 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
     *why = "Streamline is not running";
     return {};
   }
+  if (request.ray_reconstruction) {
+    return MakeRrContext(rt, request, why, prewarm, refused);
+  }
   const sl::DLSSOptions options =
       OptionsFor(request.mode, request.output_size[0], request.output_size[1]);
 
@@ -1637,6 +1945,12 @@ std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
   std::shared_ptr<Context> context = MakeContext(request, why, prewarm, refused);
   if (!context) {
     return {};
+  }
+  if (request.ray_reconstruction) {
+    // The warm-up (Warmup) has the four Super Resolution images and no guides, so a Ray Reconstruction feature is made by the first dispatch, on the render thread, with
+    // the pause (package RR-3 gives the warm-up the guide images).
+    REXLOG_INFO("{} the Ray Reconstruction feature is made by its first dispatch (the warm-up has no guide images yet)", kPrefix);
+    return context;
   }
   if (!images || !side || !side->usable) {
     if (prewarm) {
@@ -2422,6 +2736,9 @@ void DlssBackend::Prewarm(const BackendRequest& request) {
 // why not.
 std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
                                         const TemporalInputs& in, bool wait, bool* busy) {
+  if (context.request.ray_reconstruction) {
+    return EvaluateRr(native_list, context, in, wait, busy);
+  }
   const backend::NativeImage color_native =
       backend::NativeImageOf(in.color.texture, backend::ImageUse::kComputeRead);
   const backend::NativeImage depth_native =
@@ -2562,6 +2879,211 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   return {};
 }
 
+#if defined(LARECOMP_HAS_DLSS_RR)
+namespace {
+
+rr::Format RrFormatOf(plume::RenderFormat format) {
+  switch (format) {
+    case plume::RenderFormat::R16G16B16A16_FLOAT: return rr::Format::kRgba16Float;
+    case plume::RenderFormat::R32G32B32A32_FLOAT: return rr::Format::kRgba32Float;
+    case plume::RenderFormat::R8G8B8A8_UNORM: return rr::Format::kRgba8Unorm;
+    case plume::RenderFormat::R8G8B8A8_SNORM: return rr::Format::kRgba8Snorm;
+    case plume::RenderFormat::R10G10B10A2_UNORM: return rr::Format::kRgb10A2Unorm;
+    case plume::RenderFormat::R16G16_FLOAT: return rr::Format::kRg16Float;
+    case plume::RenderFormat::R32G32_FLOAT: return rr::Format::kRg32Float;
+    case plume::RenderFormat::R32_FLOAT: return rr::Format::kR32Float;
+    case plume::RenderFormat::D32_FLOAT: return rr::Format::kD32Float;
+    case plume::RenderFormat::R16_FLOAT: return rr::Format::kR16Float;
+    case plume::RenderFormat::R8_UNORM: return rr::Format::kR8Unorm;
+    case plume::RenderFormat::R8_SNORM: return rr::Format::kR8Snorm;
+    default: return rr::Format::kUnknown;
+  }
+}
+
+// The image of a frame's inputs that a rules buffer names.
+const TemporalImage& TemporalImageOf(const TemporalInputs& in, rr::Buffer buffer) {
+  switch (buffer) {
+    case rr::Buffer::kColorIn: return in.color;
+    case rr::Buffer::kColorOut: return in.output;
+    case rr::Buffer::kDepth: return in.depth;
+    case rr::Buffer::kMotion: return in.motion;
+    case rr::Buffer::kDiffuseAlbedo: return in.guides.diffuse_albedo;
+    case rr::Buffer::kSpecularAlbedo: return in.guides.specular_albedo;
+    case rr::Buffer::kNormalRoughness: return in.guides.normal_roughness;
+    case rr::Buffer::kNormals: return in.guides.normals;
+    case rr::Buffer::kRoughness: return in.guides.roughness;
+    case rr::Buffer::kSpecularMotion: return in.guides.specular_motion;
+    case rr::Buffer::kSpecularHitDistance: return in.guides.specular_hit_distance;
+    case rr::Buffer::kResponsivity: return in.guides.responsivity;
+    case rr::Buffer::kColorBeforeTransparency: return in.guides.color_before_transparency;
+    case rr::Buffer::kCount: break;
+  }
+  return in.color;
+}
+
+rr::Image RrImageOf(const TemporalImage& image) {
+  rr::Image out;
+  out.present = image.texture != nullptr;
+  out.width = image.width;
+  out.height = image.height;
+  out.format = RrFormatOf(image.format);
+  return out;
+}
+
+}  // namespace
+
+// One evaluation of a Ray Reconstruction context's viewport recorded into `native_list`, on the render thread (a frame's dispatch): what the frame has goes to the
+// rules (rr::PlanTags), a frame whose guides are not right is refused WITHOUT failing the backend (`*busy` with a log line once per kind: the caller makes the frame
+// plain, Upscale returns false), and otherwise the frame token, the constants, this frame's options (the camera's matrices move every frame) and the tags go in and
+// slEvaluateFeature(kFeatureDLSS_RR) runs. Streamline's lock is taken as Evaluate's is.
+// CHECK (nothing here has run): the constants are the Super Resolution's (same depth, vectors and jitter conventions: RR reads the same ones); the tags' states are the
+// ones the caller transitioned the images to (the guides must be put in SHADER_READ at the COMPUTE stage like the others, and back, by the caller: package RR-3).
+std::string DlssBackend::Impl::EvaluateRr(void* native_list, Context& context, const TemporalInputs& in, bool wait, bool* busy) {
+  rr::Inputs ri;
+  ri.color = RrImageOf(in.color);
+  ri.depth = RrImageOf(in.depth);
+  ri.motion = RrImageOf(in.motion);
+  ri.output = RrImageOf(in.output);
+  ri.diffuse_albedo = RrImageOf(in.guides.diffuse_albedo);
+  ri.specular_albedo = RrImageOf(in.guides.specular_albedo);
+  ri.normal_roughness = RrImageOf(in.guides.normal_roughness);
+  ri.normals = RrImageOf(in.guides.normals);
+  ri.roughness = RrImageOf(in.guides.roughness);
+  ri.specular_motion = RrImageOf(in.guides.specular_motion);
+  ri.specular_hit_distance = RrImageOf(in.guides.specular_hit_distance);
+  ri.responsivity = RrImageOf(in.guides.responsivity);
+  ri.color_before_transparency = RrImageOf(in.guides.color_before_transparency);
+  ri.render_size[0] = in.render_size[0];
+  ri.render_size[1] = in.render_size[1];
+  ri.output_size[0] = in.output_size[0];
+  ri.output_size[1] = in.output_size[1];
+  ri.have_view_matrices = true;  // the options below always carry the camera's matrices
+  const rr::TagPlan plan = rr::PlanTags(ri);
+  if (plan.verdict != rr::Verdict::kOk) {
+    const uint32_t kind = 1u + (uint32_t(plan.verdict) << 8) + uint32_t(plan.culprit);
+    if (g_rr_refusal_seen.exchange(kind) != kind) {
+      REXLOG_WARN("{} Ray Reconstruction cannot take this frame: {} ({}); frames like it are plain until the guides are right",
+                  kPrefix, rr::VerdictText(plan.verdict), rr::InfoOf(plan.culprit).name);
+    }
+    *busy = true;  // nothing was recorded and nothing failed: the frame is plain
+    return "the guides were refused";
+  }
+  g_rr_refusal_seen.store(0);
+
+  // The images and their tags, local to this evaluation like Super Resolution's.
+  std::array<backend::NativeImage, rr::kMaxTags> natives{};
+  std::array<sl::Resource, rr::kMaxTags> resources{};
+  for (uint32_t i = 0; i < plan.count; ++i) {
+    const rr::Tag& tag = plan.tags[i];
+    const TemporalImage& image = TemporalImageOf(in, tag.source);
+    natives[i] = backend::NativeImageOf(image.texture, tag.buffer == rr::Buffer::kColorOut ? backend::ImageUse::kStorage
+                                                                                         : backend::ImageUse::kComputeRead);
+    if (!natives[i].complete) {
+      return std::format("the {} image has no native object, or Plume cannot describe it to Streamline", rr::InfoOf(tag.buffer).name);
+    }
+    resources[i] = MakeSlResource(image, natives[i]);
+  }
+  const sl::Extent render_extent = MakeExtent(in.render_size[0], in.render_size[1]);
+  const sl::Extent output_extent = MakeExtent(in.output_size[0], in.output_size[1]);
+  const sl::ResourceLifecycle lifecycle = sl::ResourceLifecycle::eValidUntilEvaluate;
+  std::vector<sl::ResourceTag> tags;
+  tags.reserve(plan.count);
+  for (uint32_t i = 0; i < plan.count; ++i) {
+    const rr::Tag& tag = plan.tags[i];
+    tags.emplace_back(&resources[i], rr::InfoOf(tag.buffer).sl_type, lifecycle, tag.output_extent ? &output_extent : &render_extent);
+  }
+
+  // The constants: the same as Super Resolution's (Evaluate above has the block inline; to be one function once Ray Reconstruction is proven).
+  const bool reset = in.reset || !context.dispatched;
+  sl::Constants consts;
+  FillStaticConstants(consts);
+  consts.cameraViewToClip = ToSl(in.view_to_clip);
+  consts.clipToCameraView = ToSl(in.clip_to_view);
+  consts.clipToPrevClip = ToSl(in.clip_to_prev_clip);
+  consts.prevClipToClip = ToSl(in.prev_clip_to_clip);
+  consts.jitterOffset = sl::float2(in.jitter[0], in.jitter[1]);
+  consts.mvecScale = sl::float2(in.motion_scale[0] / float(in.render_size[0]), in.motion_scale[1] / float(in.render_size[1]));
+  consts.cameraPos = sl::float3(in.camera_position[0], in.camera_position[1], in.camera_position[2]);
+  consts.cameraUp = sl::float3(in.camera_up[0], in.camera_up[1], in.camera_up[2]);
+  consts.cameraRight = sl::float3(in.camera_right[0], in.camera_right[1], in.camera_right[2]);
+  consts.cameraFwd = sl::float3(in.camera_forward[0], in.camera_forward[1], in.camera_forward[2]);
+  consts.cameraNear = in.camera_near;
+  consts.cameraFar = in.camera_far;
+  consts.cameraFOV = in.camera_fov_y;
+  consts.cameraAspectRatio = in.camera_aspect;
+  consts.reset = reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+
+  // This frame's options: the mode and sizes of the context, the rules' roughness mode, the camera's matrices.
+  rr::Camera camera;
+  for (int k = 0; k < 3; ++k) {
+    camera.position[k] = in.camera_position[k];
+    camera.right[k] = in.camera_right[k];
+    camera.up[k] = in.camera_up[k];
+    camera.forward[k] = in.camera_forward[k];
+  }
+  const rr::Options rr_options =
+      rr::MakeOptions(RrModeOf(context.request.mode), context.request.output_size[0], context.request.output_size[1], plan, camera);
+  const sl::DLSSDOptions options = RrOptionsFor(context.request.mode, rr_options);
+
+  Runtime& rt = Rt();
+  std::unique_lock sl_lock(rt.mu, std::defer_lock);
+  if (wait) {
+    sl_lock.lock();
+  } else if (!sl_lock.try_lock()) {
+    if (building.load()) {
+      *busy = true;
+      return "Streamline is busy";
+    }
+    sl_lock.lock();
+  }
+  if (!rt.initialized || rt.shut_down || !rt.api.rr_set_options) {
+    return "Streamline is not running";
+  }
+  sl::FrameToken* token = nullptr;
+  uint32_t frame_index = ++frame_counter;
+  if (!wait && g_chain_proxied.load(std::memory_order_acquire)) {
+    if (const uint64_t id = latency::RenderFrameId(); id != 0) {
+      frame_index = uint32_t(id);
+    }
+  }
+  sl::Result result = rt.api.new_frame_token(token, &frame_index);
+  if (result != sl::Result::eOk || !token) {
+    return "slGetNewFrameToken failed: " + ResultText(result);
+  }
+  const sl::ViewportHandle viewport(context.viewport_id);
+  result = rt.api.set_constants(consts, *token, viewport);
+  if (result != sl::Result::eOk) {
+    return "slSetConstants failed: " + ResultText(result);
+  }
+  result = rt.api.rr_set_options(viewport, options);
+  if (result != sl::Result::eOk) {
+    return "slDLSSDSetOptions failed: " + ResultText(result);
+  }
+  std::array<const sl::BaseStructure*, rr::kMaxTags + 1> inputs{};
+  uint32_t input_count = 0;
+  inputs[input_count++] = &viewport;
+  for (const sl::ResourceTag& tag : tags) {
+    inputs[input_count++] = &tag;
+  }
+  result = rt.api.evaluate(sl::kFeatureDLSS_RR, *token, inputs.data(), input_count, native_list);
+  if (result != sl::Result::eOk) {
+    return "slEvaluateFeature (Ray Reconstruction) failed: " + ResultText(result);
+  }
+  if (!context.bytes_asked && rt.api.rr_state) {
+    context.bytes_asked = true;
+    sl::DLSSDState state;
+    if (rt.api.rr_state(viewport, state) == sl::Result::eOk) {
+      context.bytes = state.estimatedVRAMUsageInBytes;
+    }
+  }
+  return {};
+}
+#else
+std::string DlssBackend::Impl::EvaluateRr(void*, Context&, const TemporalInputs&, bool, bool*) {
+  return "this build has no DLSS Ray Reconstruction";
+}
+#endif
+
 bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& in) {
   Impl& i = *impl_;
   std::shared_ptr<Context> context;
@@ -2661,7 +3183,7 @@ void DlssBackend::Shutdown() {
     std::lock_guard lock(rt.mu);
     if (rt.initialized && !rt.shut_down) {
       for (const std::shared_ptr<Context>& old : left) {
-        rt.api.free_resources(sl::kFeatureDLSS, sl::ViewportHandle(old->viewport_id));
+        rt.api.free_resources(FeatureOf(*old), sl::ViewportHandle(old->viewport_id));
       }
       rt.api.shutdown();
       rt.initialized = false;
@@ -2738,7 +3260,8 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
   }
   std::string why;
   if (!LoadRuntimeLocked(rt, &why) ||
-      !InitLocked(rt, sl::RenderAPI::eVulkan, frame_gen_chosen, &why)) {
+      !InitLocked(rt, sl::RenderAPI::eVulkan, frame_gen_chosen,
+                  WantRayReconstructionPlugin(Backend::kVulkan, /*an NVIDIA device: checked above*/ true, dlss_chosen), &why)) {
     // The probe reports it (greyed as "needs setup" when the files are the problem).
     rt.failure = why;
     REXLOG_INFO("{} Streamline is not started for Vulkan, so the device is made without it: {}",
@@ -2896,6 +3419,23 @@ bool UpgradeSwapChain(void** swap_chain) {
 // (options, freeing a context) is waited for.
 
 namespace dlss {
+
+RayReconstructionFacts GetRayReconstructionFacts() {
+  RayReconstructionFacts facts;
+  {
+    std::lock_guard lock(g_rr_mutex);
+    facts = g_rr_facts;
+  }
+#if defined(LARECOMP_HAS_DLSS_RR)
+  facts.built = true;
+#else
+  facts.built = false;
+  if (facts.why.empty()) {
+    facts.why = "this build has no DLSS Ray Reconstruction";
+  }
+#endif
+  return facts;
+}
 
 FrameGenerationFacts GetFrameGenerationFacts() {
   std::lock_guard lock(g_fg_mutex);

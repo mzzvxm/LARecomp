@@ -184,6 +184,7 @@
 #include <string>
 
 #include "constants.h"
+#include "dlss_rr_rules.h"
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "edram.h"
@@ -427,6 +428,15 @@ class TemporalSystem {
   // D8: whether FXAA and SMAA are held off this frame (an upscaler is chosen and can run). Logs
   // once per change when `aa_asked` (mcla_gpu_aa is not off).
   bool HoldsAaOff(bool aa_asked);
+  // DLSS Ray Reconstruction (dlss_rr_rules.h, perf/DLSS-RR.md): the guide pass of the frame (package RR-2) hands over the images it made and whether the frame's
+  // G-buffer planes allowed it. Until something calls this the plan stays "ours" ("the guide images are not made yet") and no context asks for Ray Reconstruction.
+  // Render thread, before the anchor.
+  void NoteRrGuides(const TemporalGuides& guides, bool ready) {
+    rr_guides_ = guides;
+    rr_guides_ready_ = ready;
+  }
+  // The plan this frame: whether Ray Reconstruction does the denoising and the upscale (and why not).
+  const rr::Plan& DenoiserPlan() const { return rr_plan_; }
   // The composite marker: the UI starts.
   void OnComposite();
   // The guest's present: the frame ends, the state machine moves on, the log.
@@ -637,6 +647,9 @@ class TemporalSystem {
   // upscaler's context says for its sizes (0: none), else 8 x ratio^2 rounded up; 1 to kMaxPhases.
   static uint32_t JitterPhases(double ratio, uint32_t from_runtime);
   void MakeRequest(BackendRequest* request) const;
+  // Reads the debug switch, what Streamline said about Ray Reconstruction and whether the guides are ready, and makes this frame's plan (rr_plan_); one log line each
+  // time the answer changes.
+  void UpdateDenoiserPlan();
   // The debug levers of this file (mcla_gpu_upscaler_zero_jitter, mcla_gpu_upscaler_post_reads_output):
   // one log line for each change, at the frame boundary.
   void NoteLeverChanges();
@@ -751,6 +764,12 @@ class TemporalSystem {
   UpscaleMode mode_in_use_ = UpscaleMode::kNativeAa;
   bool request_made_ = false;        // a context was asked for and not released
   BackendRequest request_;
+  // Ray Reconstruction: this frame's plan, the guide images the frame's guide pass handed over (NoteRrGuides) and the plan last logged.
+  rr::Plan rr_plan_;
+  TemporalGuides rr_guides_;
+  bool rr_guides_ready_ = false;
+  bool rr_plan_logged_ = false;
+  rr::Plan rr_plan_last_;
   Clock::time_point off_since_{};
   bool stand_in_set_ = false;
   uint64_t last_dispatch_frame_ = ~uint64_t(0);

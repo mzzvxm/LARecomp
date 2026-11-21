@@ -2839,6 +2839,19 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_dlss_rr": {
+  "type": "std::string",
+  "default": "\"off\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B): NVIDIA DLSS Ray Reconstruction (RR), a denoiser and upscaler in one that replaces DLSS \"\n    \"Super Resolution where our effects leave noise it can clean (perf/DLSS-RR.md). off (the default): \"\n    \"nothing of it exists and nothing changes. probe: Streamline is started with the RR plugin (an RTX \"\n    \"card, sl.dlss_d.dll and nvngx_dlssd.dll next to the exe) and the log says whether this card and \"\n    \"driver support it and which sizes it takes, but no frame uses it. on: RR is chosen, as the row's RR value will choose it, which the \"\n    \"log says each time the choice changes and why not (until the guide images it needs are made, this \"\n    \"build says so and Super Resolution goes on). Read at the start (Streamline's plugins are chosen when \"\n    \"it starts; on Vulkan only when DLSS is the saved upscaler).\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRestart",
+   "rex::Allowed(\"off\", \"probe\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_dlss_mode": {
   "type": "std::string",
   "default": "\"dlaa\"",

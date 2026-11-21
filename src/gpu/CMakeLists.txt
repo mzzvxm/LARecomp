@@ -369,6 +369,9 @@ add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.c
 add_executable(larecomp_upscaler_load_policy_test EXCLUDE_FROM_ALL upscaler_load_policy_test.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(larecomp_upscaler_load_policy_test PRIVATE Threads::Threads)
+# DLSS Ray Reconstruction's pure rules (dlss_rr_rules.h: the tag plan, the options, the choice of denoiser, the frame gate) have a check that needs no renderer
+# and no Streamline: cmake --build <dir> --target larecomp_dlss_rr_rules_test, then run src/gpu/larecomp_dlss_rr_rules_test (exit 0 = passed).
+add_executable(larecomp_dlss_rr_rules_test EXCLUDE_FROM_ALL dlss_rr_rules_test.cpp)
 # The rule that gives another pass's use of a side view's EDRAM identity (the night shadow's, which binds the car
 # reflections' depth through a surface of another size) a target of its own (side_views.h):
 #   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.
@@ -477,6 +480,11 @@ if(LARECOMP_STREAMLINE_KIT)
     # temporal_dlss.cpp; dlss_frame_generation.cpp below is Streamline-free and always built).
     if(LARECOMP_STREAMLINE_HAS_FRAMEGEN)
         target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS_G=1)
+    endif()
+    # DLSS Ray Reconstruction (perf/DLSS-RR.md): the plugin's header and its two files (the top-level CMake checked them). Without them temporal_dlss.cpp
+    # builds as before and the debug setting mcla_gpu_dlss_rr says the build has no RR.
+    if(LARECOMP_STREAMLINE_HAS_RR)
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS_RR=1)
     endif()
 endif()
 # Plume's creation hooks for Streamline on Vulkan and the usage flags it keeps of an image

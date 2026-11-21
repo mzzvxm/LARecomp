@@ -306,6 +306,7 @@
 {"mcla_gpu_debug_layer", "MCLA/GPU"},
 {"mcla_gpu_dlss_mask_tags", "MCLA/GPU"},
 {"mcla_gpu_dlss_mode", "MCLA/GPU"},
+{"mcla_gpu_dlss_rr", "MCLA/GPU"},
 {"mcla_gpu_edram_aliasing", "MCLA/GPU"},
 {"mcla_gpu_edram_capture", "MCLA/GPU"},
 {"mcla_gpu_env_resolution", "MCLA/GPU"},

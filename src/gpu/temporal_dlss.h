@@ -368,7 +368,18 @@ enum class ReflexMarker : uint8_t {
 // again soon; kRefused is Streamline saying no (`why` has its answer).
 enum class ReflexModeResult : uint8_t { kDone, kBusy, kRefused };
 
+// What Streamline said about Ray Reconstruction (perf/DLSS-RR.md; any thread, never waits for a feature's creation).
+struct RayReconstructionFacts {
+  bool built = false;      // this build has it (LARECOMP_HAS_DLSS_RR: the plugin's header and its two files were fetched)
+  bool asked = false;      // Streamline was started with the Ray Reconstruction plugin
+  bool files_ok = false;   // sl.dlss_d.dll (signed) and nvngx_dlssd.dll are next to the exe
+  bool queried = false;    // the support question was asked: the start is over, the answer is final
+  bool supported = false;  // this card, this driver and Windows can run it
+  std::string why;         // not built, not asked for, not supported: one plain sentence
+};
+
 #if defined(LARECOMP_HAS_DLSS)
+RayReconstructionFacts GetRayReconstructionFacts();
 FrameGenerationFacts GetFrameGenerationFacts();
 bool FrameGenerationFilesPresent(std::string* missing);
 LoadResult LoadFrameGeneration(bool loaded, std::string* why);
@@ -406,6 +417,12 @@ bool Sleep(uint32_t frame);
 void SetMarker(ReflexMarker marker, uint32_t frame);
 }  // namespace reflex
 #else
+inline RayReconstructionFacts GetRayReconstructionFacts() {
+  RayReconstructionFacts facts;
+  facts.queried = true;
+  facts.why = "this build has no DLSS";
+  return facts;
+}
 inline FrameGenerationFacts GetFrameGenerationFacts() {
   FrameGenerationFacts facts;
   facts.queried = true;

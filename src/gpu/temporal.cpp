@@ -23,6 +23,7 @@
 #include "records.h"
 #include "render_scale.h"
 #include "resolve.h"
+#include "temporal_dlss.h"
 #include "texture_bytes.h"
 #include "textures.h"
 #include "topology.h"
@@ -506,6 +507,7 @@ BackendRequest TemporalSystem::RequestFor(Upscaler upscaler, UpscaleMode mode,
   request.upscaler = upscaler;
   request.mode = mode;
   request.debug_view = UpscalerDebugView(upscaler);
+  request.ray_reconstruction = rr_plan_.use_rr && upscaler == Upscaler::kDlss;
   // The same two edges the anchor reports for a frame (OnAnchor: the main view at the scene's
   // scale, the anchor's own target at the images of the screen's), so that the context made before
   // the switch is the one the first frame asks for.
@@ -1135,6 +1137,7 @@ void TemporalSystem::MakeRequest(BackendRequest* request) const {
   request->upscaler = effective_;
   request->mode = mode_in_use_;
   request->debug_view = UpscalerDebugView(effective_);
+  request->ray_reconstruction = rr_plan_.use_rr && effective_ == Upscaler::kDlss;
   // What the last accepted frame had: the scene at the render size, the output at the size of the
   // images of the screen (one size at Native AA).
   request->render_size[0] = last_render_size_[0];
@@ -1366,6 +1369,9 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
                        kept.transparency->flags};
   }
   in.output = {output_.texture.get(), out_width, out_height, kOutputFormat, kOutputFlags};
+  if (request_.ray_reconstruction && rr_guides_ready_) {
+    in.guides = rr_guides_;  // a context made for Ray Reconstruction reads them; the guide pass (RR-2) states them for the compute stage
+  }
   in.jitter[0] = fr.jitter[0];
   in.jitter[1] = fr.jitter[1];
   in.frame_time_ms = fr.frame_time_ms;
@@ -1520,6 +1526,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
   if (!frame_open_) {
     // A frame is jittered whole or not at all, and drawn at one scale: the path changes only
     // between frames, here, before the frame's first draw.
+    UpdateDenoiserPlan();
     UpdatePath(list);
     PrewarmDlss();
     SyncVectors();
@@ -1606,7 +1613,12 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     frame_.ratio = (last_render_size_[0] != 0 && last_output_size_[0] != 0)
                        ? double(last_output_size_[0]) / double(last_render_size_[0])
                        : 1.0;
-    frame_.phase_count = JitterPhases(frame_.ratio, ready && backend ? backend->JitterPhaseCount() : 0u);
+    uint32_t from_runtime = ready && backend ? backend->JitterPhaseCount() : 0u;
+    if (ready && request_.ray_reconstruction) {
+      // Ray Reconstruction wants at least 32 positions (rr::JitterPhases): the longer of that and Super Resolution's.
+      from_runtime = std::max(from_runtime, rr::JitterPhases(frame_.ratio));
+    }
+    frame_.phase_count = JitterPhases(frame_.ratio, from_runtime);
     // While a scene runs the sequence follows the scene's update number (scene_noise.h): the same scene frame has the same jitter in every run.
     frame_.jitter_index = static_cast<uint32_t>(scene_noise::Active() ? scene_noise::Index(jitter_index_) % frame_.phase_count : jitter_index_ % frame_.phase_count);
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
@@ -1621,6 +1633,40 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     upscaler_math::ApplyZeroJitter(larecomp::settings::mcla_gpu_upscaler_zero_jitter.Get(), frame_.jitter);
   }
   NoteLeverChanges();
+}
+
+void TemporalSystem::UpdateDenoiserPlan() {
+  rr::PlanInputs in;
+  // The row DENOISER does not exist yet (package RR-5): the debug switch stands for it, "on" is the row's RR, the others leave AUTO.
+  if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_dlss_rr.Get(), &in.debug)) {
+    in.debug = rr::DebugSwitch::kOff;
+  }
+  if (in.debug != rr::DebugSwitch::kOff) {
+    const dlss::RayReconstructionFacts facts = dlss::GetRayReconstructionFacts();
+    in.facts.build_has_rr = facts.built;
+    in.facts.files_ok = facts.files_ok || !facts.queried;  // before the support query the files are not the question
+    in.facts.streamline_running = facts.queried;
+    in.facts.supported = facts.supported;
+  }
+  in.setting = in.debug == rr::DebugSwitch::kOn ? rr::Denoiser::kRr : rr::Denoiser::kAuto;
+  in.upscaler_is_dlss = effective_ == Upscaler::kDlss;
+  // CHECK: no effect asks for Ray Reconstruction yet (SSR, city RT reflections, RTGI, the raw modes are package RR-4): AUTO has no consumer, so it stays ours; the
+  // debug switch's "on" is the one that gets past this (it stands for the row's RR value until the row exists, RR-5).
+  in.consumers_active = false;
+  // The guide pass says it every frame (NoteRrGuides, before the anchor): last frame's word is this frame's plan, and the flag is taken back so that a frame the pass
+  // did not run in does not keep it.
+  in.guides_ready = rr_guides_ready_;
+  rr_guides_ready_ = false;
+  rr_plan_ = rr::SelectDenoiser(in);
+  if (!rr_plan_logged_ || rr_plan_.use_rr != rr_plan_last_.use_rr || rr_plan_.why != rr_plan_last_.why) {
+    // Nothing is said while the switch is off (the default): the log of a build without the debug switch is what it was.
+    if (in.debug != rr::DebugSwitch::kOff || rr_plan_logged_) {
+      REXLOG_INFO("{} denoiser: {} ({}; mcla_gpu_dlss_rr = {})", kPrefix, rr_plan_.use_rr ? "Ray Reconstruction" : "ours (no Ray Reconstruction)",
+                  rr::WhyText(rr_plan_.why), rr::DebugSwitchName(in.debug));
+    }
+    rr_plan_last_ = rr_plan_;
+    rr_plan_logged_ = true;
+  }
 }
 
 void TemporalSystem::NoteLeverChanges() {

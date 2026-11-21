@@ -548,6 +548,15 @@ class GPUSettings final : public rex::SettingOwner {
     "the test on, 1 alone, then 2 alone, then 4 alone; the one that makes the picture lose its "
     "smoothness over time is read. Live.", rex::Range{0, 7}, rex::kDebugOnly);
 
+  REX_SETTING(std::string, mcla_gpu_dlss_rr, "off", "Debug (A/B): NVIDIA DLSS Ray Reconstruction (RR), a denoiser and upscaler in one that replaces DLSS "
+    "Super Resolution where our effects leave noise it can clean (perf/DLSS-RR.md). off (the default): "
+    "nothing of it exists and nothing changes. probe: Streamline is started with the RR plugin (an RTX "
+    "card, sl.dlss_d.dll and nvngx_dlssd.dll next to the exe) and the log says whether this card and "
+    "driver support it and which sizes it takes, but no frame uses it. on: RR is chosen, as the row's RR value will choose it, which the "
+    "log says each time the choice changes and why not (until the guide images it needs are made, this "
+    "build says so and Super Resolution goes on). Read at the start (Streamline's plugins are chosen when "
+    "it starts; on Vulkan only when DLSS is the saved upscaler).", rex::kDebugOnly, rex::kRestart, rex::Allowed("off", "probe", "on"));
+
   REX_SETTING(std::string, mcla_gpu_dlss_mode, "dlaa", "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
     "per direction, of the output (the window's 16:9 area, whatever mcla_gpu_resolution_scale "
@@ -1633,6 +1642,7 @@ inline auto& mcla_gpu_coverage_queries = g_gpu.mcla_gpu_coverage_queries;
 inline auto& mcla_gpu_debug_layer = g_gpu.mcla_gpu_debug_layer;
 inline auto& mcla_gpu_dlss_mask_tags = g_gpu.mcla_gpu_dlss_mask_tags;
 inline auto& mcla_gpu_dlss_mode = g_gpu.mcla_gpu_dlss_mode;
+inline auto& mcla_gpu_dlss_rr = g_gpu.mcla_gpu_dlss_rr;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;
