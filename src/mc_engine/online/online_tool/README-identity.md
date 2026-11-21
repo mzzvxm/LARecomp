@@ -24,6 +24,8 @@ Every command names a profile one of two ways (and `--identity-dir D` to use ano
 | `--saves <folder> --gamertag <name>` | The saves folder (`user_data_root`, the folder of `<gamertag>\...`) and the profile's gamertag. The profile's id is read from `<saves>\<gamertag>\profile.xuid`. This is what the launcher knows. |
 | `--profile <id>` (with `--gamertag <name>` when a command needs the nick) | The id itself: 16 hex digits, or `name_<gamertag>` for a profile that still has the shared legacy XUID. |
 
+The `rmr`, `lb` and `tournament` commands take the same options (`--profile`, or `--saves` with `--gamertag`, and `--identity-dir`) to read the player's Rate My Ride token from the same key file, with the same ProfileRef rules (`profile_ref.h`): see README.md, "Rate My Ride, leaderboards, tournament".
+
 `check`, `recover`, `cancel` and `rename` need the gamertag (the nick that is proven or changed). A key that an older SDK filed by name (`name_<gamertag>.key`) is found through the gamertag (`profile.filed_by` is `"name"`); the game moves it to the profile's id at its next start. An id or gamertag that could name another file is refused (`bad_profile`, `bad_gamertag`).
 
 ## Commands

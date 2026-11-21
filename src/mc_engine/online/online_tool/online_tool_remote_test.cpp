@@ -8,16 +8,22 @@
 //   <build dir>/larecomp_online_tool_remote_test
 //
 // or, with no build directory at all (Windows, llvm-mingw or clang; from this folder):
-//   clang++ -std=c++20 -I. -I.. online_tool_remote_test.cpp online_tool.cpp online_tool_remote.cpp
-//           ../server_browser/browser_query.cpp ../relay_info.cpp ../rate_my_ride/rmr_net.cpp ../rate_my_ride/rmr_protocol.cpp
-//           ../rate_my_ride/rmr_store.cpp ../leaderboards/lb_protocol.cpp ../leaderboards/lb_store.cpp
-//           ../tournament_schedule.cpp ../tournament_awards.cpp ../online_tables_core.cpp -lws2_32 -o online_tool_remote_test.exe
+//   clang++ -std=c++23 -D_CRT_SECURE_NO_WARNINGS online_tool_remote_test.cpp online_tool.cpp online_tool_remote.cpp
+//           identity_commands.cpp game_guard.cpp profile_ref.cpp ../server_browser/browser_query.cpp ../relay_info.cpp
+//           ../rate_my_ride/rmr_net.cpp ../rate_my_ride/rmr_protocol.cpp ../rate_my_ride/rmr_store.cpp
+//           ../leaderboards/lb_protocol.cpp ../leaderboards/lb_store.cpp ../tournament_schedule.cpp
+//           ../tournament_awards.cpp ../online_tables_core.cpp ../identity/identity_core.cpp ../identity/identity_net.cpp
+//           ../identity/identity_rename.cpp ../../../profile/larecomp_profile_store.cpp
+//           -x c++ ../../../../thirdparty/monocypher/monocypher.c -lws2_32 -lcrypt32 -o online_tool_remote_test.exe
 //
 // What it pins:
 //   - the command line: every command, every option, every way to get it wrong;
 //   - answers recorded from the real stores (online_tool_remote_recorded.h) read into the documents the launcher reads;
 //   - hostile answers: garbage, truncation, wrong magic, a server that hangs, HTTP errors, hostile text, wrong sizes;
-//   - the game's own tables file (names and columns of stats views) in every state;
+//   - the game's own tables file (names and columns of stats views) in every state, and the file the game's own writer
+//     makes (online_tables_core.cpp), given as the file and as its folder;
+//   - the player's token read from a profile's key file (--profile, --saves with --gamertag) instead of stdin: on the
+//     wire only where it is needed, never in a document, and what is said when there is no key, no token or no profile;
 //   - a live server of the real store code: rides, photos kept in a folder, rating, boards in every shape, the weekly
 //     tournament (the slot's view, the prizes of a week that ended), the request budget of one call;
 //   - the secrets: the player's token is in no document, whatever happens.
@@ -55,6 +61,7 @@
 #include "online_tool_remote.h"
 #include "online_tool_remote_recorded.h"
 #include "../leaderboards/lb_protocol.h"
+#include "../identity/identity_core.h"
 #include "../leaderboards/lb_store.h"
 #include "../online_tables_core.h"
 #include "../rate_my_ride/rmr_protocol.h"
@@ -770,6 +777,11 @@ void CheckJsonPieces() {
     CheckEq(p.S("commands.1"), "rmr", "protocol: rmr");
     CheckEq(p.S("commands.2"), "lb", "protocol: lb");
     CheckEq(p.S("commands.3"), "tournament", "protocol: tournament");
+    CheckEq(p.S("commands.4"), "identity", "protocol: identity (the commands of README-identity.md) is listed with the others");
+    CheckInt(p.Len("commands"), 5, "protocol: five commands");
+    CheckEq(p.S("identity_actions.0"), "show", "protocol: the identity actions are listed");
+    CheckEq(p.S("remote.token_sources.0"), "profile", "protocol: the token can come from a profile");
+    CheckEq(p.S("remote.token_sources.1"), "stdin", "protocol: or from stdin");
     CheckEq(p.S("subcommands.rmr.4"), "rate", "protocol: rmr rate is listed");
     CheckInt(p.Len("subcommands.lb"), 5, "protocol: five lb commands");
     CheckInt(p.Len("subcommands.tournament"), 4, "protocol: four tournament commands");
@@ -795,7 +807,7 @@ void CheckJsonPieces() {
     CheckEq(p.S("remote.tournament.rewards.2.name"), "hydraulics", "protocol: reward 2");
     CheckInt(p.N("remote.tournament.slots.2"), 351, "protocol: the second slot range");
     Check(p.raw.find("26.") == std::string::npos, "protocol: no address of any server");
-    Check(ot::RenderVersion(false).find("\"version\":\"0.2.0\"") != std::string::npos, "version: 0.2.0 (the commands were added)");
+    Check(ot::RenderVersion(false).find("\"version\":\"0.3.0\"") != std::string::npos, "version: 0.3.0 (the rmr, lb, tournament and identity commands and --profile were added)");
 }
 
 // ---- recorded answers ------------------------------------------------------------------------------------------------
@@ -1746,6 +1758,259 @@ void CheckDeadlineAndToken() {
     }
 }
 
+// ---- the token from a profile's key file (--profile) -----------------------------------------------------------------
+
+void CheckProfileToken() {
+    namespace core = larecomp::identity::core;
+    const fs::path base = ScratchDir() / "profile";
+    const fs::path idir = base / "identity";
+    const fs::path saves = base / "saves";
+    std::error_code ec;
+    fs::create_directories(idir, ec);
+    fs::create_directories(saves / "Rowan", ec);
+    const std::string idir_arg = Utf8(idir);
+
+    // A key with a token (0x7C), as the game keeps it: the same functions the game's identity code calls.
+    const std::string id = "001100CD00EF0012";
+    {
+        core::KeyRecord rec;
+        for (int i = 0; i < 32; ++i) rec.seed[i] = uint8_t(0x30 + i);
+        rec.has_rmr = true;
+        rec.rmr = Tok(0x7C);
+        Check(core::SaveKey(idir, id, rec), "profile: the test key was written");
+    }
+    // A key with no token yet, one filed by name, one nobody can read.
+    {
+        core::KeyRecord rec;
+        for (int i = 0; i < 32; ++i) rec.seed[i] = uint8_t(0x50 + i);
+        Check(core::SaveKey(idir, "001100CD00EF0013", rec), "profile: a key with no token was written");
+        rec.has_rmr = true;
+        rec.rmr = Tok(0x7D);
+        Check(core::SaveKey(idir, "name_Legacy", rec), "profile: a key filed by name was written");
+    }
+    WriteFileBytes(core::KeyPath(idir, "001100CD00EF0014"), "this is not a key file");
+    // The saves folder names the profile: <saves>/Rowan/profile.xuid is the SDK's id (a valid XUID: bits 54 and 55 clear).
+    WriteFileBytes(saves / "Rowan" / "profile.xuid", id + "\n");
+
+    HttpServer srv;
+    std::mutex lock;
+    std::vector<std::pair<std::string, std::string>> seen;  // what was asked, the token that came with it
+    srv.handler = [&](const HttpRequest& q, HttpReply& r) {
+        std::string what, token;
+        if (q.path == lb::kHttpPath) {
+            lb::Request req;
+            lb::DecodeRequest(q.body, req);
+            what = std::string("lb ") + lb::OpName(req.op);
+            token = HexOf(Bytes(req.token.begin(), req.token.end()));
+            lb::Response x;
+            x.total = 0;
+            r.body = lb::EncodeResponse(x);
+        } else {
+            rmr::Request req;
+            rmr::DecodeRequest(q.body, req);
+            what = std::string("rmr ") + rmr::OpName(req.op);
+            token = HexOf(Bytes(req.token.begin(), req.token.end()));
+            rmr::Response x;
+            if (req.op == rmr::Op::kTournament) {
+                x.count = 2967;
+                x.data = tournament::EncodeGuest(tournament::Current(rec::kTournamentMoment, {}));
+            }
+            r.body = rmr::EncodeResponse(x);
+        }
+        std::lock_guard<std::mutex> g(lock);
+        seen.push_back({what, token});
+    };
+    srv.Start();
+    const std::string at = srv.Address();
+    const std::string secret = TokHex(0x7C), zeros = HexOf(Bytes(16, 0));
+    const std::string not_a_token = "this must not be read: it is not 32 hex digits";  // stdin is never looked at with a profile
+    auto token_of = [&](std::vector<std::string> cmd, const std::string& want_op) {
+        {
+            std::lock_guard<std::mutex> g(lock);
+            seen.clear();
+        }
+        cmd.push_back("--server");
+        cmd.push_back(at);
+        Run(cmd, &not_a_token);
+        std::lock_guard<std::mutex> g(lock);
+        for (const auto& s : seen)
+            if (s.first == want_op) return s.second;
+        return std::string("<not asked>");
+    };
+    const std::vector<std::string> by_id = {"--profile", id, "--identity-dir", idir_arg};
+    auto with = [&](std::vector<std::string> cmd, const std::vector<std::string>& more) {
+        cmd.insert(cmd.end(), more.begin(), more.end());
+        return cmd;
+    };
+
+    // The same wire rules as with --token-stdin: only rate and rewards send the token, the rest send zeros and use it for
+    // the owner key.
+    CheckEq(token_of(with({"rmr", "rate", "--record", "52000001", "--rating", "5", "--confirm"}, by_id), "rmr rate"), secret, "profile token on the wire: rate sends it");
+    CheckEq(token_of(with({"tournament", "rewards"}, by_id), "rmr rewards"), secret, "profile token on the wire: rewards sends it");
+    CheckEq(token_of(with({"rmr", "mine"}, by_id), "rmr by_owner"), zeros, "profile token on the wire: mine does not");
+    CheckEq(token_of(with({"lb", "around", "--view", "5"}, by_id), "lb ByPivot"), zeros, "profile token on the wire: lb around does not");
+    CheckEq(token_of(with({"tournament", "standings"}, by_id), "rmr tournament"), zeros, "profile token on the wire: standings' definition does not");
+    {
+        Doc d = Run(with({"rmr", "mine", "--server", at}, by_id), &not_a_token);
+        CheckEq(d.S("owner"), ot::Hex64Text(rmr::OwnerKeyFromToken(Tok(0x7C))), "profile: the owner key comes from the key file's token");
+        CheckInt(d.exit_code, 0, "profile: mine ran");
+        // a lower-case id names the same profile
+        Doc lower = Run({"rmr", "mine", "--server", at, "--profile", "001100cd00ef0012", "--identity-dir", idir_arg}, &not_a_token);
+        CheckEq(lower.S("owner"), d.S("owner"), "profile: an id in lower case names the same profile");
+        // an explicit --owner still wins as the owner (the token is not needed for it)
+        Doc other = Run(with({"rmr", "mine", "--server", at, "--owner", "0c50476a8dc2d715"}, by_id), &not_a_token);
+        CheckEq(other.S("owner"), "0c50476a8dc2d715", "profile: --owner wins over the token's owner key");
+    }
+    // The saves folder and the gamertag name the same profile.
+    {
+        Doc d = Run({"rmr", "mine", "--server", at, "--saves", Utf8(saves), "--gamertag", "Rowan", "--identity-dir", idir_arg}, &not_a_token);
+        CheckEq(d.S("owner"), ot::Hex64Text(rmr::OwnerKeyFromToken(Tok(0x7C))), "profile: --saves and --gamertag find the profile.xuid");
+    }
+    // A key an older SDK filed by name is found through the gamertag.
+    {
+        Doc d = Run({"rmr", "mine", "--server", at, "--profile", "001100CD00EF0099", "--gamertag", "Legacy", "--identity-dir", idir_arg}, &not_a_token);
+        CheckEq(d.S("owner"), ot::Hex64Text(rmr::OwnerKeyFromToken(Tok(0x7D))), "profile: a key filed by name is found through the gamertag");
+        Doc named = Run({"rmr", "mine", "--server", at, "--profile", "name_Legacy", "--identity-dir", idir_arg}, &not_a_token);
+        CheckEq(named.S("owner"), d.S("owner"), "profile: name_<gamertag> is an id too");
+    }
+
+    // What goes wrong, and how it is said (exit 1: the profile's files; exit 2: the command line).
+    auto fails = [&](std::vector<std::string> cmd, const std::string& code, int exit_code, const std::string& what) {
+        cmd.push_back("--server");
+        cmd.push_back(at);
+        Doc d = Run(cmd, &not_a_token);
+        Check(d.parsed && !d.B("ok"), "profile: " + what + " is not ok");
+        CheckEq(d.S("error.code"), code, "profile: " + what + " code");
+        CheckInt(d.exit_code, exit_code, "profile: " + what + " exit code");
+        Check(!d.S("error.message").empty() && d.S("error.message").find("<missing") == std::string::npos, "profile: " + what + " says why");
+    };
+    fails(with({"rmr", "mine"}, {"--profile", "001100CD00EF0077", "--identity-dir", idir_arg}), "no_key", 1, "a profile with no key");
+    fails(with({"tournament", "rewards"}, {"--profile", "001100CD00EF0013", "--identity-dir", idir_arg}), "no_token", 1, "a key with no token");
+    fails(with({"tournament", "rewards"}, {"--profile", "001100CD00EF0014", "--identity-dir", idir_arg}), "key_unreadable", 1, "an unreadable key");
+    fails({"rmr", "mine", "--saves", Utf8(saves), "--gamertag", "Nobody", "--identity-dir", idir_arg}, "profile_not_found", 1, "a gamertag with no profile.xuid");
+    fails({"rmr", "mine", "--profile", "../../etc", "--identity-dir", idir_arg}, "bad_profile", 2, "an id that could name another file");
+    fails({"rmr", "mine", "--profile", "xyz", "--identity-dir", idir_arg}, "bad_profile", 2, "an id that is no id");
+    fails({"rmr", "mine", "--saves", Utf8(saves), "--gamertag", "a/b", "--identity-dir", idir_arg}, "bad_gamertag", 2, "a gamertag with a slash");
+    // None of these asked the server for anything.
+    {
+        std::lock_guard<std::mutex> g(lock);
+        seen.clear();
+    }
+    Run({"tournament", "rewards", "--server", at, "--profile", "001100CD00EF0013", "--identity-dir", idir_arg}, &not_a_token);
+    {
+        std::lock_guard<std::mutex> g(lock);
+        Check(seen.empty(), "profile: a profile that gives no token asks the server for nothing");
+    }
+
+    // The command line: one source of the token, a whole profile name, the options only where they belong.
+    auto parse = [](std::initializer_list<const char*> words) { return ot::ParseRemoteArgs(Cmd(words)); };
+    {
+        const auto r = parse({"rmr", "mine", "--profile", "001100CD00EF0012", "--identity-dir", "D"});
+        Check(r.ok && r.args.profile.profile == "001100CD00EF0012" && r.args.profile.identity_dir == "D" && !r.args.token_stdin, "profile args: rmr mine with a profile");
+        Check(r.ok && r.args.HasToken(), "profile args: a profile is a token source");
+        const auto s = parse({"lb", "around", "--view", "5", "--saves", "S", "--gamertag", "G"});
+        Check(s.ok && s.args.profile.saves == "S" && s.args.profile.gamertag == "G", "profile args: lb around with --saves and --gamertag");
+        Check(parse({"rmr", "rate", "--record", "52000001", "--rating", "5", "--confirm", "--profile", "001100CD00EF0012"}).ok, "profile args: rate with a profile");
+        Check(parse({"tournament", "rewards", "--profile", "name_Rowan"}).ok, "profile args: rewards with a profile");
+        Check(parse({"tournament", "standings", "--profile", "001100CD00EF0012"}).ok, "profile args: standings with a profile");
+    }
+    auto bad = [&](std::initializer_list<const char*> words, const std::string& what) {
+        const auto r = parse(words);
+        Check(!r.ok && !r.error.empty(), "profile args: " + what + " is refused");
+    };
+    bad({"rmr", "mine", "--profile", "001100CD00EF0012", "--token-stdin"}, "a profile and stdin together");
+    bad({"rmr", "mine", "--identity-dir", "D"}, "an identity folder alone");
+    bad({"rmr", "mine", "--saves", "S"}, "a saves folder without a gamertag");
+    bad({"rmr", "mine", "--gamertag", "G"}, "a gamertag alone");
+    bad({"rmr", "mine", "--profile"}, "a profile without a value");
+    bad({"rmr", "mine", "--profile", ""}, "an empty profile");
+    bad({"rmr", "top", "--profile", "001100CD00EF0012"}, "a profile on a command that has no player");
+    bad({"lb", "top", "--view", "5", "--profile", "001100CD00EF0012"}, "a profile on lb top");
+    bad({"tournament", "current", "--profile", "001100CD00EF0012"}, "a profile on tournament current");
+    bad({"tournament", "rewards"}, "rewards with no token source");
+    bad({"rmr", "rate", "--record", "52000001", "--rating", "5", "--confirm"}, "rate with no token source");
+    bad({"rmr", "mine", "--profile", "001100CD00EF0012", "--profile", "001100CD00EF0013"}, "a profile twice");
+}
+
+// ---- the game's real tables file -------------------------------------------------------------------------------------
+
+// The file the game writes (online_tables::ToJson, the very code the game calls) through `lb`, given as the file and as the
+// folder it is in.
+void CheckGameTablesFile() {
+    namespace ot_tables = larecomp::online_tables;
+    const fs::path logs = ScratchDir() / "game-logs";
+    std::error_code ec;
+    fs::create_directories(logs, ec);
+
+    ot_tables::Tables t;
+    t.game_version = "PATCH 10 - PREVIEW 2";
+    t.stats_available = true;
+    ot_tables::StatsColumn wins;
+    wins.prop = 0x10000001;  // int32
+    wins.attr = 1;
+    wins.agg = 3;  // sum
+    ot_tables::StatsColumn best;
+    best.prop = 0x20000005;  // int64
+    best.attr = 65534;
+    best.agg = 9;  // min
+    ot_tables::StatsColumn avg;
+    avg.prop = 0x50000007;  // float
+    avg.attr = 4;
+    avg.agg = 11;  // max
+    t.stats.column_sets = {{wins, best}, {avg}};
+    ot_tables::StatsView v382;
+    v382.id = 382;
+    v382.column_set = 0;
+    ot_tables::StatsView v383;
+    v383.id = 383;
+    v383.column_set = 1;
+    t.stats.views = {v382, v383};
+    t.properties_available = true;
+    t.properties = {{0x10000001, "GameMode", {"Race", "Cruise"}}};
+    WriteFileBytes(logs / ot_tables::kFileName, ot_tables::ToJson(t));
+
+    for (const std::string& where : {Utf8(logs / ot_tables::kFileName), Utf8(logs)}) {
+        const std::string how = where == Utf8(logs) ? "the logs folder" : "the file";
+        Doc d = Run({"lb", "views", "--tables", where});
+        CheckEq(d.S("tables.state"), "ok", "game tables, " + how + ": ok");
+        CheckEq(d.S("tables.game_version"), "PATCH 10 - PREVIEW 2", "game tables, " + how + ": the game's version");
+        CheckInt(d.N("tables.views"), 2, "game tables, " + how + ": two views");
+        CheckInt(d.Len("views"), 2, "game tables, " + how + ": two listed");
+        CheckInt(d.N("views.0.id"), 382, "game tables, " + how + ": view 382");
+        CheckInt(d.Len("views.0.columns"), 2, "game tables, " + how + ": its two columns");
+        CheckEq(d.S("views.0.columns.0.prop"), "10000001", "game tables, " + how + ": property id");
+        CheckEq(d.S("views.0.columns.0.type"), "int32", "game tables, " + how + ": int32");
+        CheckEq(d.S("views.0.columns.0.agg"), "sum", "game tables, " + how + ": sum");
+        CheckInt(d.N("views.0.columns.1.attr"), 65534, "game tables, " + how + ": the rating attribute");
+        CheckEq(d.S("views.0.columns.1.type"), "int64", "game tables, " + how + ": int64");
+        CheckEq(d.S("views.0.columns.1.agg"), "min", "game tables, " + how + ": min");
+        CheckEq(d.S("views.1.columns.0.type"), "float", "game tables, " + how + ": float");
+        CheckEq(d.S("views.1.columns.0.agg"), "max", "game tables, " + how + ": max");
+        Check(d.IsNull("views.0.name"), "game tables, " + how + ": the game's dump has no view names (CHECK in online_tables_core.h)");
+    }
+    // A folder with no file in it is a state, not a failure.
+    {
+        const fs::path empty = ScratchDir() / "game-logs-empty";
+        fs::create_directories(empty, ec);
+        Doc d = Run({"lb", "views", "--tables", Utf8(empty)});
+        CheckEq(d.S("tables.state"), "not_found", "game tables: a folder without the file");
+        Check(d.B("ok"), "game tables: and still an answer");
+    }
+    // The game's file with its stats missing (the XVC2 section could not be read).
+    {
+        ot_tables::Tables none;
+        none.game_version = "PATCH 10 - PREVIEW 2";
+        none.stats_available = false;
+        none.stats_error = "no XVC2 section";
+        const fs::path dir = ScratchDir() / "game-logs-nostats";
+        fs::create_directories(dir, ec);
+        WriteFileBytes(dir / ot_tables::kFileName, ot_tables::ToJson(none));
+        Doc d = Run({"lb", "views", "--tables", Utf8(dir)});
+        CheckEq(d.S("tables.state"), "stats_unavailable", "game tables: stats the game could not read");
+        CheckEq(d.S("tables.error"), "no XVC2 section", "game tables: and why");
+    }
+}
+
 // ---- the game's tables file ------------------------------------------------------------------------------------------
 
 void CheckTables() {
@@ -2336,13 +2601,15 @@ int main() {
     CheckRecordedAnswers();
     CheckHostile();
     CheckDeadlineAndToken();
+    CheckProfileToken();
     CheckTables();
+    CheckGameTablesFile();
     CheckLive();
 
     // The player's token is in no document, whatever happened.
     {
         std::set<std::string> secrets;
-        for (int b : {0x11, 0x22, 0x33, 0x44, 0x55, 0x77, 0x7A, 0x5C}) secrets.insert(TokHex(uint8_t(b)));
+        for (int b : {0x11, 0x22, 0x33, 0x44, 0x55, 0x77, 0x7A, 0x5C, 0x7C, 0x7D}) secrets.insert(TokHex(uint8_t(b)));
         secrets.insert(HexOf(Bytes(16, 0)));  // the zero token the reads send must not show either
         size_t scanned = 0;
         for (const std::string& doc : g_all_docs) {

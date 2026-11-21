@@ -12,6 +12,7 @@
 #include "game_guard.h"
 #include "json_writer.h"
 #include "online_tool.h"
+#include "profile_ref.h"
 #include "../identity/identity_core.h"
 #include "../identity/identity_net.h"
 #include "../identity/identity_rename.h"
@@ -287,48 +288,17 @@ IdentityResult Fail(const IdArgs& a, const std::string& code, const std::string&
 
 // ---- the profile -----------------------------------------------------------------------------------------------
 
-struct Profile {
-    std::string id;       // the profile's id as the game names it
-    std::string file_id;  // the id its key file is named by: differs only for a key still filed by name
-    std::string gamertag;
-    fs::path dir;         // the identity folder
-};
-
-bool PlainName(const std::string& s) {
-    if (s.empty() || s.size() > identity::kNickMax) return false;
-    for (char ch : s) {
-        const unsigned char c = static_cast<unsigned char>(ch);
-        if (c < 0x20 || c == 0x7F || std::strchr("<>:\"/\\|?*", c) != nullptr) return false;
-    }
-    return s != "." && s != "..";
-}
+// The profile and where its key file is: shared with the rmr, lb and tournament commands (profile_ref.h).
+using Profile = ProfileFiles;
 
 IdentityResult ResolveProfile(const IdArgs& a, Profile& p) {
-    p.dir = a.identity_dir.empty() ? core::DefaultIdentityDir() : PathFromUtf8(a.identity_dir);
-    p.gamertag = a.gamertag;
-    if (!p.gamertag.empty() && !PlainName(p.gamertag))
-        return Fail(a, "bad_gamertag", "the gamertag is empty, longer than 15 bytes or holds characters a folder name cannot");
-    if (!a.profile.empty()) {
-        if (!core::ValidProfileId(a.profile))
-            return Fail(a, "bad_profile", "a profile id is 16 hex digits, or name_ and the gamertag");
-        p.id = a.profile;
-        if (p.id.size() == 16)
-            for (char& c : p.id) c = (c >= 'a' && c <= 'f') ? char(c - 'a' + 'A') : c;
-        if (p.gamertag.empty() && p.id.rfind("name_", 0) == 0) p.gamertag = p.id.substr(5);
-    } else {
-        uint64_t xuid = 0;
-        if (!PlainName(p.gamertag)) return Fail(a, "bad_gamertag", "name the profile by a gamertag that is a plain folder name");
-        if (!core::ReadProfileXuid(PathFromUtf8(a.saves), p.gamertag, xuid))
-            return Fail(a, "profile_not_found",
-                        "no profile.xuid in the saves folder of that gamertag: the game has not made this profile yet");
-        p.id = core::ProfileId(xuid, p.gamertag);
-    }
-    p.file_id = p.id;
-    // An SDK without per-profile ids filed the key by name; the game moves it at its next start.
-    std::error_code ec;
-    if (p.id.rfind("name_", 0) != 0 && !p.gamertag.empty() && !fs::exists(core::KeyPath(p.dir, p.id), ec) &&
-        fs::exists(core::KeyPath(p.dir, "name_" + p.gamertag), ec))
-        p.file_id = "name_" + p.gamertag;
+    ProfileRef ref;
+    ref.profile = a.profile;
+    ref.saves = a.saves;
+    ref.gamertag = a.gamertag;
+    ref.identity_dir = a.identity_dir;
+    ProfileProblem problem;
+    if (!ResolveProfileFiles(ref, p, problem)) return Fail(a, problem.code, problem.message);
     return {};
 }
 

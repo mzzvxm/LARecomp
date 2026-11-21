@@ -316,6 +316,8 @@ std::string RenderProtocol(bool pretty) {
     j.Field("connect_timeout_ms", rmr::net::kConnectTimeoutMs);
     j.Field("io_timeout_ms", rmr::net::kIoTimeoutMs);
     j.Field("max_requests_per_call", kRemoteMaxRequests);
+    // Where the player's token can come from (<player> in --help): a profile's key file (--profile) or stdin.
+    j.Key("token_sources").BeginArray().String("profile").String("stdin").EndArray();
     j.Key("rmr").BeginObject();
     {
         char magic[5] = {char(rmr::kWireMagic & 255), char((rmr::kWireMagic >> 8) & 255), char((rmr::kWireMagic >> 16) & 255),

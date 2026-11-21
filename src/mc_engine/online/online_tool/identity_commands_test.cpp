@@ -8,9 +8,11 @@
 //
 // or, with no build directory at all (Windows):
 //   clang++ -std=c++23 -D_CRT_SECURE_NO_WARNINGS identity_commands_test.cpp identity_commands.cpp game_guard.cpp
-//           online_tool.cpp ../server_browser/browser_query.cpp ../relay_info.cpp ../rate_my_ride/rmr_net.cpp
-//           ../identity/identity_core.cpp ../identity/identity_net.cpp ../identity/identity_rename.cpp
-//           ../master_server/identity_registry.cpp ../../../profile/larecomp_profile_store.cpp
+//           profile_ref.cpp online_tool.cpp online_tool_remote.cpp ../server_browser/browser_query.cpp ../relay_info.cpp
+//           ../rate_my_ride/rmr_net.cpp ../rate_my_ride/rmr_protocol.cpp ../leaderboards/lb_protocol.cpp
+//           ../tournament_schedule.cpp ../identity/identity_core.cpp ../identity/identity_net.cpp
+//           ../identity/identity_rename.cpp ../master_server/identity_registry.cpp
+//           ../../../profile/larecomp_profile_store.cpp
 //           -x c++ ../../../../thirdparty/monocypher/monocypher.c -lws2_32 -lcrypt32 -o identity_test.exe
 //
 // What it pins:

@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "profile_ref.h"
+
 namespace larecomp::online_tool {
 
 enum class RemoteGroup { kNone, kRmr, kLb, kTournament };
@@ -59,6 +61,11 @@ struct RemoteArgs {
     std::string out_dir;            // --out DIR: where rmr photo writes
     std::string tables;             // --tables FILE|DIR: the game's online_tables.json, or the folder it is in (names and columns of stats views)
     bool token_stdin = false;       // --token-stdin: the player's Rate My Ride token (32 hex digits) is on stdin
+    // --profile <id> | --saves <folder> --gamertag <name> [--identity-dir D]: the token is read from that profile's key
+    // file (the one the game and the identity commands use) instead of stdin. Names() is false when none was given.
+    ProfileRef profile;
+    // Where the player's token comes from: stdin or a profile (never both).
+    bool HasToken() const { return token_stdin || profile.Names(); }
     bool confirm = false;           // --confirm: the command changes the player's data on the server
     int64_t now = 0;                // --now UNIX: the clock for the checks (0 = the PC's clock)
     bool pretty = false;
@@ -88,11 +95,13 @@ constexpr size_t kLbMaxViewsPerCall = 32;
 constexpr uint32_t kRmrMaxPhotoSlots = 2;
 constexpr size_t kTablesMaxBytes = 8 * 1024 * 1024;
 
-// Runs the command (the network, the files) and returns its document; `exit_code` is 0 (the document is the answer)
-// or 2 (the command line asked for something that cannot be done: the document has "ok": false).
+// Runs the command (the network, the files) and returns its document; `exit_code` is 0 (the document is the answer),
+// 1 (the command line was right but the profile's files cannot give a token: no key, an unreadable key, no token yet;
+// the document has "ok": false) or 2 (the command line asked for something that cannot be done: the document has
+// "ok": false).
 // Blocks for as long as the game's own timeouts allow at most, per request; every failure of the server is part of the
 // document, never an exception. Reads stdin only for --token-stdin (one line); the check passes the token's text as
-// `token_text` instead.
+// `token_text` instead. With --profile it reads the profile's key file (read-only) and no stdin.
 std::string RunRemote(const RemoteArgs& args, int* exit_code, const std::string* token_text = nullptr);
 
 // The pieces the check looks at on their own.
