@@ -12,6 +12,7 @@
 #include <rex/logging/log_category.h>
 
 #include "ao.h"
+#include "denoiser_setting.h"
 #include "descriptors.h"
 #include "device.h"
 #include "gbuffer.h"
@@ -257,6 +258,11 @@ void GiApply::BeginFrame() {
   if (screen_ != nullptr) {
     screen_->Want(screen::Consumer::kRtBounce, enabled_ ? screen::ProductBit(screen::kLinDepth) : 0u);
   }
+  // G6: the per-pixel pass is a consumer of the DENOISER row (dlss_rr_rules.h rr::kConsumers kRtGi: its raw mode exists, AUTO does not trust Ray Reconstruction with it before the RR-6 A/B). It says it is
+  // wanted every frame, whatever the plan is: the field runs, the frame's layout has the pass (the strong card at ULTRA, gi_frame.h) and the pass is made. This call comes before the temporal system's frame
+  // boundary (frame_order.h kBeginGiApply before kBeginTemporal: no lag).
+  pixel_wanted_ = enabled_ && pixel_ != nullptr && pixel_->available() && gi_pixel::ConsumerWanted(field_->fit().wanted);
+  denoiser::NoteConsumer(rr::Consumer::kRtGi, pixel_wanted_);
   ssgi_ran_share_ = 0.0f;
   trigger_seen_ = false;
   ran_this_frame_ = false;
@@ -273,16 +279,24 @@ float GiApply::TakeSsgiShare() {
 
 float GiApply::LevelStrength() { return LevelNumbers().strength; }
 
-bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot) {
+bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested) {
   expect_add_ = false;
-  const bool recorded = OnTriggerImpl(summary, list, gbuffer_published, frame_slot);
+  const bool recorded = OnTriggerImpl(summary, list, gbuffer_published, frame_slot, raw_requested);
   if (expect_add_) {
     starved_frames_ = recorded ? 0u : starved_frames_ + 1u;  // the watchdog (Starved): a frame the field stood for and the apply drew nothing
   }
   return recorded;
 }
 
-bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot) {
+const HostImage* GiApply::RawHitImage() const {
+  if (pixel_ == nullptr || !pixel_wanted_) {
+    return nullptr;
+  }
+  const GiPixel::RawOutput out = pixel_->raw_output();
+  return out.valid && out.frame == frame_ ? out.hit : nullptr;   // the pass's own frame is the apply's counter: a frame the trigger did not reach has none
+}
+
+bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested) {
   if (!enabled_ || !list || trigger_seen_ || field_ == nullptr || gbuffer_ == nullptr || screen_ == nullptr || edram_ == nullptr || !summary.source) {
     return false;
   }
@@ -435,6 +449,7 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     pixel_in.lin_slot = sf.lin_depth_slot[0];
     pixel_in.sample0 = gb.sample0;
     pixel_in.multisampled = gb.host_samples > 1;
+    pixel_in.raw = raw_requested;
     if (pixel_->Begin(pixel_in)) {
       pass_timing_->Mark(list, "rt gi pixel");
       pixel_->RecordTrace(list);

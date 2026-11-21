@@ -17,6 +17,7 @@
 #define GIP_MISS_SHARE 1.0f
 #define GIP_FULL_LENGTH 4.0f
 #define GIP_MAX_WEIGHT 1.0f
+#define GIP_RAW_WEIGHT 1.0f
 #define GIP_MISS_DISTANCE 4096.0f
 #define GIP_COSINE_FLOOR 0.02f
 #define GIP_R2_A1 0.7548776662466927f
@@ -149,6 +150,13 @@ float GipWeight(float length, float depthGuide)
         return 0.0f;
     }
     return saturate((length - 1.0f) / (GIP_FULL_LENGTH - 1.0f)) * GIP_MAX_WEIGHT;
+}
+
+// A RAW frame's weight (Ray Reconstruction takes the frame: the signal image is the 1 spp sample itself, alpha 0): the whole of GIP_RAW_WEIGHT where the pass traced the pixel (a depth guide that holds a
+// distance), 0 where it did not.
+float GipRawWeight(float depthGuide)
+{
+    return depthGuide > 0.0f ? GIP_RAW_WEIGHT : 0.0f;
 }
 
 // One tap of a reduced image's read: the bilinear weight times the depth and the normal agreement (the apply's own: gi_apply_common.hlsli GiaDepthWeight, GiaNormalWeight, given as numbers here), floored

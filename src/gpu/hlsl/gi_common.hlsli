@@ -138,6 +138,7 @@ struct GiPixelRow
     uint width;
     uint height;
     uint divisor;
+    uint raw;
 };
 
 GiPixelRow GiLoadPixelRow()
@@ -149,6 +150,7 @@ GiPixelRow GiLoadPixelRow()
     p.width = r.y & 0xFFFFu;
     p.height = r.y >> 16u;
     p.divisor = r.z > 1u ? r.z : 1u;
+    p.raw = r.w & 1u;
     return p;
 }
 

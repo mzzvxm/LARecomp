@@ -11,7 +11,8 @@
 // estimator's pieces (the miss, the car, the clamp, the hit distance as Ray Reconstruction's guide wants it, the origin's lift as the library's); the mix and the weight; the reduced read's tap weight; the surface
 // lights picked from a light manager frame; the denoiser's push block against the plain consumer's words; the camera's motion against a brute force; the layout's numbers against the apply's; the pixel row of the
 // field's frame; then it compiles the .hlsli ITSELF as C++ (hlsl_cpp_shim.h) and compares each function with the twin and every #define with the header's number, and reads the shader, the host, the
-// apply, the CMake lines, host_shaders.h, the frame order, the renderer and the Ray Reconstruction table for the wiring (the raw mode prepared, NOT registered).
+// apply, the CMake lines, host_shaders.h, the frame order, the renderer and the Ray Reconstruction table for the wiring. CITY-RT G6 added: the raw mode (the plan, the weight, the history rule, the consumer
+// rule, the row's raw bit, the shader's text, the host's raw branch, the apply's wiring, the switch).
 
 #include <algorithm>
 #include <array>
@@ -166,7 +167,7 @@ void PlanChecks() {
   raw.raw = true;
   const gp::Plan rp = gp::Decide(raw);
   Check(rp.runs() && rp.raw && !rp.denoise, "RAW: in a raw frame (Ray Reconstruction takes it) the pass runs and the denoiser does not");
-  Check(!gp::Facts{}.raw, "RAW: the facts' default is not raw (nothing registers as a consumer today)");
+  Check(!gp::Facts{}.raw, "RAW: the facts' default is not raw (only a frame Ray Reconstruction takes is: GiApply passes TemporalSystem::RawModes().RtGi())");
   for (uint32_t i = 0; i < uint32_t(gp::Why::kCount); ++i) Check(std::string(gp::WhyName(gp::Why(i))).size() > 3, "PLAN: every reason has a name");
 }
 
@@ -570,9 +571,96 @@ void LayoutChecks() {
 // the .hlsli compiled as C++ against the twin
 // ---------------------------------------------------------------------------
 
+// CITY-RT G6: the raw mode. The plan (the denoiser skipped, the pass still running, every earlier reason first), the weight (1 where traced, whatever the history), the history rule, the consumer rule, the row's raw bit and
+// the mix a raw frame makes.
+void RawChecks() {
+  gp::Facts all;
+  all.layout = gi::Layout::kExtended;
+  all.field_present = all.scene_ok = all.world_ok = all.hit_data_ok = all.planes_ok = all.pipelines_ready = all.resources_ok = true;
+  // the plan over both raw values: raw changes nothing but the denoiser, and only where the pass runs
+  for (bool raw : {false, true}) {
+    gp::Facts f = all;
+    f.raw = raw;
+    const gp::Plan p = gp::Decide(f);
+    Check(p.runs() && p.raw == raw && p.denoise == !raw, std::string("RAW: the pass runs in a ") + (raw ? "raw" : "plain") + " frame, the denoiser only in the plain one");
+  }
+  bool never_raw_when_not_running = true;
+  for (gi::Layout layout : {gi::Layout::kNone, gi::Layout::kLean, gi::Layout::kStandard}) {
+    gp::Facts f = all;
+    f.layout = layout;
+    f.raw = true;
+    const gp::Plan p = gp::Decide(f);
+    never_raw_when_not_running = never_raw_when_not_running && !p.runs() && !p.raw && !p.denoise;
+  }
+  Check(never_raw_when_not_running, "RAW: a layout without the pass is not asked even in a frame Ray Reconstruction takes (the identity holds)");
+  {
+    gp::Facts f = all;
+    f.raw = true;
+    f.pipelines_ready = false;
+    Check(!gp::Decide(f).runs() && !gp::Decide(f).raw && gp::Decide(f).why == gp::Why::kPipelines, "RAW: with the pipelines still being made nothing runs, raw or not");
+    f = all;
+    f.raw = true;
+    f.debug = 0;
+    Check(!gp::Decide(f).runs() && !gp::Decide(f).raw, "RAW: the pass's own switch at 0 stops it, raw or not");
+  }
+  // the weight: the whole where traced, nothing where not, and it does not depend on the history the filter would have made
+  Check(gp::kRawWeight == 1.0f && gp::RawWeight(12.5f) == 1.0f && gp::RawWeight(0.0f) == 0.0f && gp::RawWeight(-1.0f) == 0.0f && gp::RawWeight(std::nanf("")) == 0.0f && gp::RawWeight(0.001f) == 1.0f,
+        "RAW: the weight of the 1 spp term is 1 wherever the depth guide holds a distance and 0 where the pass traced nothing (a NaN is nothing)");
+  Check(gp::Weight(1.0f, 10.0f) == 0.0f && gp::RawWeight(10.0f) == 1.0f && gp::Weight(0.0f, 10.0f) == 0.0f, "RAW: a plain frame's weight of a fresh pixel is 0 and a raw frame's is 1 (the signal's alpha is 0 and means no length)");
+  {
+    const gi::Vec3 field = {0.2f, 0.3f, 0.4f}, pixel = {1.5f, 0.0f, 3.0f};
+    const gi::Vec3 traced = gp::Mix(field, pixel, gp::RawWeight(7.0f)), untraced = gp::Mix(field, pixel, gp::RawWeight(0.0f));
+    Check(NearV(traced, pixel, 1e-6) && SameBits(untraced.x, field.x) && SameBits(untraced.y, field.y) && SameBits(untraced.z, field.z),
+          "RAW: a raw frame's mix is the sample itself where the pass traced and the field's bits where it did not");
+  }
+  // the history: a raw frame is not the next frame's history
+  Check(gp::KeepsHistory(false) && !gp::KeepsHistory(true), "RAW: a plain frame is the next frame's history for the denoiser, a raw one is not (the denoiser starts again after it)");
+  // the consumer: only the extended layout has the pass; the pass's cell and the consumer's word are one
+  {
+    bool one_word = true;
+    int wanted = 0;
+    for (gi::Rung rung : {gi::Rung::kNone, gi::Rung::kWeak, gi::Rung::kStrong}) {
+      for (gi::Level level : {gi::Level::kOff, gi::Level::kHigh, gi::Level::kUltra}) {
+        const gi::Layout layout = gi::LayoutFor(rung, level);
+        one_word = one_word && gp::ConsumerWanted(layout) == gp::CellFor(rung, level).runs;
+        wanted += gp::ConsumerWanted(layout) ? 1 : 0;
+      }
+    }
+    Check(one_word && wanted == 1, "RAW: the consumer is wanted exactly where the pass's cell runs (the strong rung at ULTRA: one of the nine cells), whatever the rest of the frame is");
+    Check(!gp::ConsumerWanted(gi::Layout::kNone) && !gp::ConsumerWanted(gi::Layout::kLean) && !gp::ConsumerWanted(gi::Layout::kStandard) && gp::ConsumerWanted(gi::Layout::kExtended),
+          "RAW: only the extended layout makes the bounce light a consumer of the DENOISER row (HIGH and OFF never are)");
+  }
+  // the row's raw bit (gi_frame.h row 7, word w): zero for a plain frame (the identity), one for a raw one, and nothing else of the frame moves
+  {
+    gi::GiFrame shown;
+    shown.valid = gi::ProductBit(gi::kIrradiance) | gi::ProductBit(gi::kMoments) | gi::ProductBit(gi::kProbeWeight) | gi::ProductBit(gi::kPixelIrradiance);
+    shown.slot[gi::kPixelIrradiance] = 77;
+    shown.pixel.depth_slot = 78;
+    shown.pixel.normal_slot = 79;
+    shown.pixel.width = 960;
+    shown.pixel.height = 540;
+    shown.pixel.divisor = 2;
+    const gi::GpuGiFrame plain = gi::MakeGpuFrame(shown);
+    shown.pixel.raw = true;
+    const gi::GpuGiFrame raw = gi::MakeGpuFrame(shown);
+    bool only_the_bit = true;
+    for (size_t i = 0; i < plain.words.size(); ++i) {
+      if (i == size_t(gi::kRowPixel) * 4 + 3) continue;
+      only_the_bit = only_the_bit && plain.words[i] == raw.words[i];
+    }
+    Check(plain.words[gi::kRowPixel * 4 + 3] == 0 && raw.words[gi::kRowPixel * 4 + 3] == 1 && only_the_bit, "RAW: row 7's last word is the raw bit (0 in a plain frame, as before G6), and nothing else of the frame's rows moves");
+    gi::GiFrame none;
+    none.pixel.raw = true;   // a frame without the pixel image never writes row 7 (raw or not)
+    const gi::GpuGiFrame empty = gi::MakeGpuFrame(none);
+    Check(empty.words[gi::kRowPixel * 4 + 3] == 0 && gi::PixelParams{}.raw == false, "RAW: a frame without the pixel image has a zero row 7 even if the flag was left set, and the default is not raw");
+  }
+  // the log line
+  Check(gp::RawLine(true) != gp::RawLine(false) && gp::RawLine(true).find("raw") != std::string::npos && gp::RawLine(false).find("plain") != std::string::npos, "RAW: the log line says which state the pass is in");
+}
+
 void TwinChecks() {
   Check(GIP_FORMAT_VERSION == int(gp::kFormatVersion) && GIP_REACH_M == gp::kReachM && GIP_MAX_RADIANCE == gp::kMaxRadiance && GIP_CAR_ALBEDO == gp::kCarAlbedo && GIP_MISS_SHARE == gp::kMissShare &&
-            GIP_FULL_LENGTH == gp::kFullLength && GIP_MAX_WEIGHT == gp::kMaxWeight && GIP_MISS_DISTANCE == gp::kMissDistance && GIP_COSINE_FLOOR == gp::kCosineFloor && GIP_R2_A1 == gp::kR2A1 && GIP_R2_A2 == gp::kR2A2 &&
+            GIP_FULL_LENGTH == gp::kFullLength && GIP_MAX_WEIGHT == gp::kMaxWeight && GIP_RAW_WEIGHT == gp::kRawWeight && GIP_MISS_DISTANCE == gp::kMissDistance && GIP_COSINE_FLOOR == gp::kCosineFloor && GIP_R2_A1 == gp::kR2A1 && GIP_R2_A2 == gp::kR2A2 &&
             GIP_TWO_PI == gp::kTwoPi && GIP_LIGHTS_MAX == gp::kLightsMax && GIP_FLAG_STATS == gp::kFlagStats && GIP_MIN_TAP_WEIGHT == gp::kMinTapWeight && GIP_STAT_PIXELS == gp::kStatPixels &&
             GIP_STAT_HITS == gp::kStatHits && GIP_STAT_CAR_HITS == gp::kStatCarHits && GIP_STAT_MISSES == gp::kStatMisses && GIP_STAT_SKIPPED == gp::kStatSkipped && GIP_STAT_NO_DATA == gp::kStatNoData,
         "TWIN: every #define of the .hlsli is the header's number");
@@ -617,6 +705,7 @@ void TwinChecks() {
     check(SameBits(hlsl_shim::GipOriginLift(len), gp::OriginLift(len)));
     const float length = rng.Range(0, 20), depth = rng.Next() > 0.2f ? rng.Range(0.1f, 100) : 0.0f;
     check(SameBits(hlsl_shim::GipWeight(length, depth), gp::Weight(length, depth)));
+    check(SameBits(hlsl_shim::GipRawWeight(depth), gp::RawWeight(depth)));
     const gi::Vec3 p = {rng.Range(0, 9), rng.Range(0, 9), rng.Range(0, 9)};
     const float w = rng.Next() > 0.3f ? rng.Next() : 0.0f;
     check(NearV(C3(hlsl_shim::GipMix(H3(c), H3(p), w)), gp::Mix(c, p, w), 1e-6, 1e-6));
@@ -626,7 +715,7 @@ void TwinChecks() {
     const float bil = rng.Next(), dw = rng.Next(), nw = rng.Next(), td = rng.Next() > 0.3f ? rng.Range(0.1f, 50) : 0.0f;
     check(SameBits(hlsl_shim::GipTapWeight(bil, td, dw, nw), gp::TapWeight(bil, td, dw, nw)));
   }
-  Check(bad == 0, "TWIN: the clamps, the miss, the car, the hit distance, the lift, the weight, the mix and the tap");
+  Check(bad == 0, "TWIN: the clamps, the miss, the car, the hit distance, the lift, the weight (plain and raw), the mix and the tap");
 }
 
 // ---------------------------------------------------------------------------
@@ -695,8 +784,65 @@ void SourceChecks() {
   Check(at_depth != std::string::npos && at_pixel_call > at_depth && at_push > at_pixel_call, "APPLY: the main depth is in the shader-read layout before the pixel pass, and the lookup's push block comes after it");
 
   // the host
-  Check(Has(host_cpp, "facts.raw = false;") && !Has(host_cpp, "NoteConsumer(") && !Has(host_cpp, "kRtGi") && Has(host_h, "rr::kConsumers' kRtGi stays raw_mode_built = false"), "RAW: prepared and not registered: Facts::raw is false, the host never calls NoteConsumer");
-  Check(Has(rr_rules, "{\"ray traced bounce light\", false, false}"), "RAW: the Ray Reconstruction table's bounce light still has raw_mode_built = false (G6 flips it)");
+  Check(Has(host_cpp, "facts.raw = in.raw;") && !Has(host_cpp, "facts.raw = false;") && !Has(host_cpp, "NoteConsumer(") && !Has(host_cpp, "kRtGi") && Has(host_h, "bool raw = false;") && Has(host_h, "RawModes().RtGi()"),
+        "RAW: the host takes the frame's raw flag from its caller (GiApply) and does not register the consumer itself");
+  Check(Has(rr_rules, "{\"ray traced bounce light\", true, false}") && !Has(rr_rules, "{\"ray traced bounce light\", false"), "RAW: the Ray Reconstruction table's bounce light has raw_mode_built = true and AUTO does not trust RR with it (CITY-RT G6)");
+  {
+    // the host's raw branch: the signal is the result, both images go to the read state of the stages that read them, the denoiser's history is not kept, the params carry the flag, a change is logged
+    const size_t at_else = At(host_cpp, "} else if (plan_.raw) {");
+    const size_t at_signal = At(host_cpp, "result_ = &signal_;");
+    const size_t at_barrier = At(host_cpp, "const plume::RenderTextureBarrier raw_reads[2] = {{signal_.texture.get(), Layout::SHADER_READ}, {hit_.texture.get(), Layout::SHADER_READ}};");
+    const size_t at_graphics = At(host_cpp, "list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, raw_reads, 2);");
+    const size_t at_guides = At(host_cpp, "const plume::RenderTextureBarrier reads[2]");
+    Check(at_else != std::string::npos && at_signal > at_else && at_barrier > at_signal && at_graphics > at_barrier && at_guides > at_graphics && At(host_cpp, "if (plan_.denoise) {") < at_else,
+          "RAW: a raw frame (the branch after the denoiser's own) publishes the 1 spp signal and puts it and the hit image in the read state of both stages, before the guides' barrier");
+    Check(Has(host_cpp, "signal_.layout = hit_.layout = Layout::SHADER_READ;") && Has(host_cpp, "params_.raw = plan.raw;") && Has(host_cpp, "have_prev_ = rules::KeepsHistory(plan_.raw);") && Has(host_cpp, "out.frame = frame_;") &&
+              Has(host_cpp, "if (plan_.raw != raw_logged_) {") && Has(host_cpp, "rules::RawLine(plan_.raw)") && Has(host_h, "uint64_t frame = 0;") && Has(host_h, "bool raw_logged_ = false;"),
+          "RAW: the images' layouts are tracked, the apply's row carries the flag, the denoiser starts again after a raw frame, the output names its frame, and a change of state is one log line");
+    Check(CountOf(host_cpp, "denoise_.RecordTemporal(") == 1 && CountOf(host_cpp, "denoise_.RecordSpatial(") == 1 && At(host_cpp, "denoise_.RecordTemporal(") < at_else && At(host_cpp, "denoise_.RecordSpatial(") < at_else,
+          "RAW: the denoiser's two stages are recorded only inside the plain branch (a raw frame records neither)");
+  }
+  {
+    // the apply: the raw flag of the row picks the weight, in both reads; the plain weight is untouched
+    Check(Has(apply_ps, "row.raw != 0u ? GipRawWeight(d) : GipWeight(e.w, d)") && Has(apply_ps, "(row.raw != 0u ? GipRawWeight(1.0f) : GipWeight(lengthSum / wSum, 1.0f)) * saturate(cover)") &&
+              Has(common, "float GipRawWeight(float depthGuide)") && Has(common, "#define GIP_RAW_WEIGHT 1.0f") && Has(gi_common, "p.raw = r.w & 1u;") && Has(gi_common, "    uint raw;\n};"),
+          "RAW: the apply's two reads (nearest, and the four depth and normal weighted taps) take GipRawWeight where the row says raw, the history weight otherwise; the row's last word is the flag");
+    Check(Has(apply_cpp, "pixel_in.raw = raw_requested;") && Has(apply_cpp, "bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested)") &&
+              Has(apply_cpp, "const HostImage* GiApply::RawHitImage() const {") && Has(apply_cpp, "return out.valid && out.frame == frame_ ? out.hit : nullptr;") && Has(apply_h, "bool pixel_pass_wanted() const { return pixel_wanted_; }") &&
+              Has(apply_h, "const HostImage* RawHitImage() const;") && Has(apply_h, "bool raw_requested = false);"),
+          "RAW: GiApply hands the frame's raw flag to the pass, answers the guide pass with the hit image of THIS frame only (none where the pass did not run raw), and tells the Scene whether the pass is wanted");
+    Check(Has(apply_cpp, "denoiser::NoteConsumer(rr::Consumer::kRtGi, pixel_wanted_);") && Has(apply_cpp, "gi_pixel::ConsumerWanted(field_->fit().wanted)") && Has(apply_cpp, "#include \"denoiser_setting.h\""),
+          "RAW: the consumer is registered by GiApply::BeginFrame from the rules' word (the denoiser_setting test reads the order inside the function)");
+  }
+  {
+    // the Scene, the temporal system, the guide pass and the setting
+    std::string scene_cpp, temporal_cpp, temporal_h, settings_h, manifest, meta, guides_h, guides_cpp;
+    const bool read2 = Slurp(g_dir + "/scene.cpp", &scene_cpp) && Slurp(g_dir + "/temporal.cpp", &temporal_cpp) && Slurp(g_dir + "/temporal.h", &temporal_h) && Slurp(g_dir + "/../settings/generated/settings_gpu.h", &settings_h) &&
+                       Slurp(g_dir + "/../settings/generated/manifest.json", &manifest) && Slurp(g_dir + "/../settings/generated/settings_meta.inc", &meta) && Slurp(g_dir + "/rr_guides.h", &guides_h) &&
+                       Slurp(g_dir + "/rr_guides.cpp", &guides_cpp);
+    Check(read2, "RAW: the Scene, the temporal system, the guide pass and the three generated settings files could be read");
+    if (read2) {
+      Check(Has(scene_cpp, "const bool raw_gi = gi_apply_->pixel_pass_wanted() && temporal_ && temporal_->RawModes().RtGi();") && Has(scene_cpp, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);") &&
+                Has(scene_cpp, "temporal_->NoteRrBounceHit(gi_apply_ && rr::BounceHitWanted(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())) ? gi_apply_->RawHitImage() : nullptr);") &&
+                At(scene_cpp, "const bool raw_gi") < At(scene_cpp, "temporal_->NoteRrBounceHit(") && At(scene_cpp, "temporal_->NoteRrHit(") < At(scene_cpp, "temporal_->NoteRrBounceHit("),
+            "RAW: the Scene asks the temporal system for a raw frame only while the pass is wanted, calls the apply with it, and hands the hit image over after the trigger's passes (the switch's value 2 leaves it out)");
+      Check(Has(temporal_cpp, "in.bounce_hit = rr_bounce_hit_;") && Has(temporal_cpp, "rr_bounce_hit_ = nullptr;           // ... nor the bounce light's (CITY-RT G6)") && Has(temporal_h, "void NoteRrBounceHit(const HostImage* bounce) { rr_bounce_hit_ = bounce; }") &&
+                Has(temporal_cpp, "rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get()))") && Has(temporal_cpp, "window_.rr_raw_frames[size_t(rr::RawEffect::kRtGi)] += modes.RtGi() ? 1 : 0;") &&
+                Has(temporal_cpp, "frame_.raw_any = frame_.raw_any || modes.Ssr() || modes.CarRefl() || modes.RtGi();"),
+            "RAW: the temporal system hands the guide pass the image and forgets it at the next boundary, reads the third switch, counts the frames asked and counts a raw GI frame among the ones Super Resolution may have upscaled after all");
+      bool setting_ok = false;
+      {
+        const std::string decl_key = std::string("REX_") + "SETTING(i32, mcla_gpu_dlss_rr_rt_gi, 1,";
+        const size_t decl = settings_h.find(decl_key);
+        const size_t end = decl == std::string::npos ? std::string::npos : settings_h.find(");\n", decl);
+        const std::string body = decl == std::string::npos || end == std::string::npos ? std::string() : settings_h.substr(decl, end - decl);
+        setting_ok = !body.empty() && Has(body, "rex::kDebugOnly, rex::Range{0, 2}") && !Has(body, "kRestart") && Has(settings_h, "inline auto& mcla_gpu_dlss_rr_rt_gi = g_gpu.mcla_gpu_dlss_rr_rt_gi;") &&
+                     Has(manifest, "\"mcla_gpu_dlss_rr_rt_gi\": {") && Has(meta, "{\"mcla_gpu_dlss_rr_rt_gi\", \"MCLA/GPU\"},");
+      }
+      Check(setting_ok, "RAW: the A/B switch mcla_gpu_dlss_rr_rt_gi is debug-only, live, 0 to 2, on (1) by default, in the settings header, its alias, the manifest and the meta list");
+      Check(Has(guides_h, "const HostImage* bounce_hit = nullptr;") && Has(guides_cpp, "push.info[3] = bounce_used ? bounce_used->slot : rr_guides::kNoSlot;"), "RAW: the guide pass takes the image (its own test reads the shader)");
+    }
+  }
   Check(Has(host_h, "RawOutput raw_output() const;") && Has(host_cpp, "out.signal = &signal_;") && Has(host_cpp, "out.hit = &hit_;") && Has(host_cpp, "plan_.raw"), "RAW: the signal and the hit distance image are handed out for a raw frame");
   Check(Has(host_cpp, "denoise_.Initialize(device, frames, heap, passes, /*instance=*/1, \"gi pixel\"") && Has(host_cpp, "RtDenoiseDiffuseShader(false)") && Has(host_cpp, "RtDenoiseDiffuseShader(true)") && Has(host_cpp, "denoise_.RecordTemporal(stage)") &&
             Has(host_cpp, "denoise_.RecordSpatial(stage)") && Has(host_cpp, "rt_denoise::plain::PatchFor()"), "DENOISER: RtDenoise instance 1 with the diffuse compile of the plain consumer, the temporal stage then the spatial one");
@@ -785,6 +931,7 @@ int main(int argc, char** argv) {
   MotionChecks();
   LayoutChecks();
   TwinChecks();
+  RawChecks();
   SourceChecks();
   std::printf("gi_pixel_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

@@ -676,6 +676,7 @@ struct PixelParams {
   uint32_t normal_slot = kNoSlot;
   uint32_t width = 0, height = 0;
   uint32_t divisor = 1;
+  bool raw = false;   // G6: the image is the 1 spp signal itself (a frame DLSS Ray Reconstruction takes: no filter ran, no history length in its alpha): the apply weighs it by gi_pixel_rules.h RawWeight
 };
 
 struct GiFrame {
@@ -730,7 +731,7 @@ constexpr float SsgiShare(float confidence, float fade) {
 //   row 4   float  sun colour rgb, sin of the sun's elevation
 //   row 5   float  ambient up rgb, 0
 //   row 6   float  ambient down rgb, 0
-//   row 7   uint   G5's per-pixel pass (PixelParams; zero where the frame has no kPixelIrradiance): depth guide slot (low 16) | view normal guide slot << 16, image width | height << 16, divisor, 0
+//   row 7   uint   G5's per-pixel pass (PixelParams; zero where the frame has no kPixelIrradiance): depth guide slot (low 16) | view normal guide slot << 16, image width | height << 16, divisor, flags (bit 0 raw: G6)
 //   cascade c at row 8 + 3 c:
 //     +0    int    origin x, y, z, atlas_y (uint)
 //     +1    uint   dims x, y, z, weight_y
@@ -772,7 +773,7 @@ inline GpuGiFrame MakeGpuFrame(const GiFrame& f) {
   put(kRowAmbientUp, Bits(f.ambient_up_rgb[0]), Bits(f.ambient_up_rgb[1]), Bits(f.ambient_up_rgb[2]), 0);
   put(kRowAmbientDown, Bits(f.ambient_down_rgb[0]), Bits(f.ambient_down_rgb[1]), Bits(f.ambient_down_rgb[2]), 0);
   if (f.Has(kPixelIrradiance) && f.pixel.width != 0) {
-    put(kRowPixel, (f.pixel.depth_slot & 0xFFFFu) | (f.pixel.normal_slot << 16), (f.pixel.width & 0xFFFFu) | (f.pixel.height << 16), f.pixel.divisor, 0);
+    put(kRowPixel, (f.pixel.depth_slot & 0xFFFFu) | (f.pixel.normal_slot << 16), (f.pixel.width & 0xFFFFu) | (f.pixel.height << 16), f.pixel.divisor, f.pixel.raw ? 1u : 0u);
   }
   for (uint32_t c = 0; c < kMaxCascades && c < f.cascade_count; ++c) {
     const CascadeFrame& k = f.cascades[c];

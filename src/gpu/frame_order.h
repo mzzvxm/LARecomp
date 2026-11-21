@@ -102,7 +102,8 @@ inline constexpr uint32_t kProbeField = 1u << 23;    // the probe field's publis
 inline constexpr uint32_t kRrGuides = 1u << 24;      // DLSS Ray Reconstruction's five guide images at the render size, made at the anchor by the guide pass (rr_guides.h), only while it is wanted
 inline constexpr uint32_t kRrHitSsr = 1u << 25;      // RR-4a: the screen-space reflections' hit distance image (R16_FLOAT, the picture's size), written at the trigger in a frame DLSS Ray Reconstruction takes (raw mode), read by the guide pass
 inline constexpr uint32_t kRrHitCar = 1u << 26;      // RR-4b: the cars' ray traced reflections' hit distance image (R16_FLOAT, the picture's size), written with the ray traced pass in a frame DLSS Ray Reconstruction takes, read by the guide pass
-inline constexpr uint32_t kAll = (1u << 27) - 1;
+inline constexpr uint32_t kRrHitGi = 1u << 27;       // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (RG16F at the pass's own size), written at the trigger in a frame DLSS Ray Reconstruction takes (raw mode), read by the guide pass as the last choice
+inline constexpr uint32_t kAll = (1u << 28) - 1;
 constexpr const char* NameOf(uint32_t bit) {
   switch (bit) {
     case kLinDepth: return "lin_depth";
@@ -132,6 +133,7 @@ constexpr const char* NameOf(uint32_t bit) {
     case kRrGuides: return "RR guides";
     case kRrHitSsr: return "RR hit distance (SSR)";
     case kRrHitCar: return "RR hit distance (car reflections)";
+    case kRrHitGi: return "RR hit distance (bounce light)";
     default: break;
   }
   return "?";
@@ -355,15 +357,17 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .call = "PublishScreen(list, summary, plan, base);", .label_file = "screen_shared.cpp", .label = "screen hiz", .reads = data::kAoDepth, .soft_reads = data::kAoNormal | data::kColourChain,
      .makes = data::kLinDepth | data::kLinDepthFull | data::kNormal | data::kColourPre | data::kHizMin,
      .note = "ScreenShared::Publish at the END of the AO's frame (after the apply): every reader of the ScreenFrame comes after the whole AO"},
-    {.step = Step::kGiApply, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's apply (additive, multiplied by the occlusion)", .call = "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_)",
+    {.step = Step::kGiApply, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's apply (additive, multiplied by the occlusion)", .call = "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi)",
      .label_file = "gi_apply.cpp", .label = "rt gi pixel", .more_labels = {{"rt gi denoise", "gi lookup"}}, .closing_label = "after gi apply", .reads = data::kPlanes | data::kLinDepth,
-     .soft_reads = data::kProbeField | data::kAoTerm | data::kCarStructures | data::kLights,
+     .soft_reads = data::kProbeField | data::kAoTerm | data::kCarStructures | data::kLights, .makes = data::kRrHitGi,
      .wants_planes = detail::kNormalPlane | detail::kAlbedoPlane, .wants_screen = data::kLinDepth,
      .deps = {{{Step::kAoApply, "right after the occlusion's apply, which has multiplied the colour: the field's bounce is added on top and multiplied by the occlusion's visibility itself"},
                {Step::kGiField, "applies the frame the field's step published"}}},
      .note = "(CITY-RT M3 G3, gi_apply.h) only while a field runs and has a published frame: one full screen additive draw into the main colour, with a lookup draw at the occlusion's traced size before it above 1080 "
              "lines; its own labels are 'gi lookup', 'gi apply' (or 'gi apply view' in a debug view) and the closing mark 'after gi apply'. At ULTRA on a strong ray tracing card (CITY-RT M3 G5, gi_pixel.h) the per-pixel detail "
-             "pass runs first, inside this step: 'rt gi pixel' (the trace) and 'rt gi denoise' (RtDenoise's temporal and spatial stages) are marked only in a frame that runs it, before the lookup. The lamps' direct light comes after it"},
+             "pass runs first, inside this step: 'rt gi pixel' (the trace) and 'rt gi denoise' (RtDenoise's temporal and spatial stages) are marked only in a frame that runs it, before the lookup. "
+             "CITY-RT G6: in a frame DLSS Ray Reconstruction takes (TemporalSystem::RawModes().RtGi()) the denoiser does not run, the lookup mixes the 1 spp signal itself, and the pass's hit distance image "
+             "(kRrHitGi) goes to the guide pass through TemporalSystem::NoteRrBounceHit. The lamps' direct light comes after it"},
     {.step = Step::kLocalLights, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "deferred local lights (additive)", .call = "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_)",
      .label_file = "local_lights.cpp", .label = "local lights", .closing_label = "after local lights", .reads = data::kPlanes | data::kLinDepth | data::kLights,
      .soft_reads = data::kLightMaps | data::kShadowAtlas,
@@ -422,14 +426,15 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     // ======================================================== the anchor (TemporalSystem::RecordUpscale) ===========================================
     {.step = Step::kRrGuides, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "Ray Reconstruction's guide pass (diffuse and specular albedo, normals + roughness, hit distance, responsivity)",
      .file = "temporal.cpp", .call = "RecordRrGuides(list, kept, width, height)", .label_file = "rr_guides.cpp", .label = "rr guides", .closing_label = "after rr guides",
-     .reads = data::kPlanes, .soft_reads = data::kRrHitSsr | data::kRrHitCar, .makes = data::kRrGuides, .wants_planes = detail::kAllPlaneBits,
+     .reads = data::kPlanes, .soft_reads = data::kRrHitSsr | data::kRrHitCar | data::kRrHitGi, .makes = data::kRrGuides, .wants_planes = detail::kAllPlaneBits,
      .deps = {{{Step::kGBufferPublish, "the planes it reads are published at the trigger"}, {Step::kShaftsComposite, "the anchor is the game's post chain: after the end-of-scene copy"}}},
      .note = "RR-2: ONE compute pass, only while the plan wants the guides (the debug switch mcla_gpu_dlss_rr = on with DLSS, or a guide view): the planes (RT1 world normal, RT2 albedo, RT3 material, at the host "
              "sample that is the guest's sample 0), the kept depth and the upscaler's masks to the five guides (hlsl/rr_guides_common.hlsli). It runs right before the backend gets the frame, the guides in the "
              "upscaler's read state when it ends. Its wants are the G-buffer's planes (declared by kBeginTemporal); the noisy colour it does not read: the upscaler takes it itself. RR-3: "
              "RecordRrGuides hands the images (or their absence) to NoteRrGuides right after the pass; the hit distance is written by the pass (0 on a surface, 65504 in the sky) and takes the "
              "reflection effects' images (RR-4: soft reads of kRrHitSsr and kRrHitCar, made at the trigger by the effects when they ran raw in this frame and handed over by Scene through "
-             "TemporalSystem::NoteRrHit; the larger distance wins where both hold one)"},
+             "TemporalSystem::NoteRrHit; the larger distance wins where both hold one; CITY-RT G6: the bounce light's per-pixel pass's image, kRrHitGi, made at the trigger by the apply's step and handed over through "
+             "NoteRrBounceHit, is the last choice, where neither reflection wrote one)"},
     {.step = Step::kUpscale, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "the upscaler's dispatch (Ray Reconstruction where its guides and context are there, else Super Resolution)",
      .file = "temporal.cpp", .call = "backend->Upscale(list, in)", .label_file = "temporal.cpp", .label = "temporal upscale", .soft_reads = data::kRrGuides,
      .deps = {{{Step::kRrGuides, "Ray Reconstruction takes the guides the pass made, in the state it left them"}}},

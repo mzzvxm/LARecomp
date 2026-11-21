@@ -3401,6 +3401,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_dlss_rr_rt_gi": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, CITY-RT G6): what the ray traced bounce light's per-pixel pass (ULTRA on a strong ray tracing card) does while Ray Reconstruction takes the frame. \"\n    \"1 (the default): it hands Ray Reconstruction its raw one-ray-a-pixel diffuse light (no filter of its own: Ray Reconstruction is the denoiser) and the length of each ray as the hit distance guide where no reflection gave one. \"\n    \"2: the same, but without the hit distance (NVIDIA's guide asks for it of the specular only). 0: it keeps its own filter even then (the picture to compare with). With Ray Reconstruction not the plan \"\n    \"(Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_dlss_mode": {
   "type": "std::string",
   "default": "\"dlaa\"",

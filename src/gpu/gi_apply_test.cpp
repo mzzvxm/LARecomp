@@ -877,7 +877,7 @@ void TextChecks(const std::string& dir) {
   // deferred lights (their direct light is multiplied by neither); the frame's start tells the pass before the G-buffer and the shared products read the wants it makes
   const std::string scene = ReadFile(dir + "/scene.cpp");
   const size_t at_ao = scene.find("ao_->OnResolve(record, summary, list, UpscalerRunning());");
-  const size_t at_gi = scene.find("gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_);");
+  const size_t at_gi = scene.find("gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);");
   const size_t at_ll = scene.find("local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);");
   Check(at_ao != std::string::npos && at_gi != std::string::npos && at_ll != std::string::npos && at_ao < at_gi && at_gi < at_ll,
         "ORDER: the occlusion's apply, then the probe field's apply, then the deferred lights (scene.cpp OnResolve)");

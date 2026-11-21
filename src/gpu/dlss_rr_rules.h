@@ -532,15 +532,16 @@ struct Plan {
 //   auto_uses_rr     AUTO trusts RR with it: the A/B pictures and the cost said RR beats ours there (perf/DLSS-RR.md section 3: "keep ours where RR is not better"). The row's own RR value takes every
 //                    consumer with a raw mode; AUTO only these.
 // So AUTO is "RR where it is known to be better", the RR value is "RR wherever it can run", and OURS is "never". RR-4's packages flip these two tables' cells as each raw mode lands and each A/B is
-// read; the test compares them with the table's own words. TODAY (CITY-RT R6): raw_mode_built is true for the three effects that have one (the screen-space reflections, RR-4a; the cars' ray traced
+// read; the test compares them with the table's own words. TODAY (CITY-RT G6): raw_mode_built is true for all four effects (the screen-space reflections, RR-4a; the cars' ray traced
 // reflections, RR-4b; the city's ray traced reflections, the hybrid's fallback, CITY-RT R6: its one ray a pixel goes to RR as it is, in the same raw frame as the picture's own reflections, and RtDenoise is
-// skipped), false for the one that does not exist yet (bounce light); auto_uses_rr is false for ALL of them until the RR-6 A/B has been read (AUTO stays ours, the row's own
-// RR value takes the three with a raw mode). The effects say they are on through denoiser::NoteConsumer (ssr.cpp: kSsr and kCityRtReflections, car_selfrefl.cpp); the plugin is asked for at every RTX start whose row is not OURS (D3D12, or Vulkan with DLSS saved).
+// skipped; the bounce light's per-pixel pass, CITY-RT G6: its 1 spp diffuse radiance and hit distance go to RR as they are, RtDenoise skipped); auto_uses_rr is false for ALL of them until the RR-6 A/B has been
+// read (AUTO stays ours, the row's own RR value takes the four). The effects say they are on through denoiser::NoteConsumer (ssr.cpp: kSsr and kCityRtReflections, car_selfrefl.cpp, gi_apply.cpp: kRtGi);
+// the plugin is asked for at every RTX start whose row is not OURS (D3D12, or Vulkan with DLSS saved).
 enum class Consumer : uint8_t {
   kSsr,                 // the screen-space reflections (REFLECTIONS ON SURFACES): stochastic, additive radiance with a hit distance (the first real candidate)
   kCarRtReflections,    // the car's ray traced self-reflections and the chrome of other cars (car_rt_refl.h): an A/B, expected no gain
   kCityRtReflections,   // the city's ray traced reflections (track 8; today the screen-space reflections' ray traced fallback, ssr_rt.h): designed noisy, RR's reason to exist here
-  kRtGi,                // ray traced bounce light (RT BOUNCE LIGHT, the probe field): designed noisy
+  kRtGi,                // ray traced bounce light (RT BOUNCE LIGHT): the per-pixel detail pass of the probe field (ULTRA on a strong card; the field alone is smooth): designed noisy, 1 ray a pixel
   kCount,
 };
 inline constexpr size_t kConsumerCount = size_t(Consumer::kCount);
@@ -554,7 +555,7 @@ inline constexpr ConsumerTable kConsumers = {{
     {"screen-space reflections", true, false},
     {"ray traced car reflections", true, false},
     {"ray traced city reflections", true, false},
-    {"ray traced bounce light", false, false},
+    {"ray traced bounce light", true, false},
 }};
 constexpr const ConsumerInfo& InfoOf(Consumer c) { return kConsumers[size_t(c)]; }
 constexpr uint32_t ConsumerBit(Consumer c) { return 1u << uint32_t(c); }
@@ -806,7 +807,9 @@ inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 // (rr_guides.h Inputs::hit), how far the reflection it traced went from the surface, which is what RR moves the reflection's history by. The first two effects (RR-4a, RR-4b):
 //   kSsr      screen-space reflections: the trace's one ray a pixel straight into the colour, the accumulation skipped, the distance of the ray's hit written
 //   kCarRefl  the ray traced reflection of the player's car (and the cars beside it): the trace's image is read raw by the paint (the a-trous passes skipped), the distance of the cone's hits written
-// Each has its own debug switch (the A/B: mcla_gpu_dlss_rr_ssr, mcla_gpu_dlss_rr_car_refl: 1 is raw while RR takes the frame, 0 keeps the effect's own filter even then), and with the plan
+//   kRtGi     the bounce light's per-pixel pass (CITY-RT G6, gi_pixel.h): its 1 spp diffuse radiance is mixed into the field's irradiance at the weight 1 where it traced (RtDenoise's temporal and spatial stages
+//             skipped), and the distance of its ray goes to the guide pass as the LAST choice of the hit distance (where no reflection wrote one; mcla_gpu_dlss_rr_rt_gi 2 leaves it out)
+// Each has its own debug switch (the A/B: mcla_gpu_dlss_rr_ssr, mcla_gpu_dlss_rr_car_refl, mcla_gpu_dlss_rr_rt_gi: 1 is raw while RR takes the frame, 0 keeps the effect's own filter even then), and with the plan
 // not RR (Super Resolution, FSR, no upscaler, the row's OURS) nothing here is true, so the effect runs as it always did, the same passes with the same shaders.
 //
 // "RR takes the frame" is what the frame boundary can know: the plan says RR (and DLSS is the upscaler), nothing failed, the RR context is made, and this frame is upscaled at all (armed) and
@@ -815,14 +818,16 @@ inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 //
 // The effects are CONSUMERS of the DENOISER row (RR-5, merged here): rr::kConsumers has raw_mode_built true for kSsr (RR-4a) and kCarRtReflections (RR-4b), auto_uses_rr false for both until the RR-6 A/B says
 // Ray Reconstruction beats ours there. Once a frame, from the render thread, each says whether it runs: mcla::gpu::denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff) in
-// ScreenReflections::BeginFrame (ssr.cpp) and NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active()) in CarSelfRefl::BeginFrame right after rt_->BeginFrame (car_selfrefl.cpp). `on` means the
+// ScreenReflections::BeginFrame (ssr.cpp), NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active()) in CarSelfRefl::BeginFrame right after rt_->BeginFrame (car_selfrefl.cpp) and
+// NoteConsumer(rr::Consumer::kRtGi, pixel_pass_wanted_) in GiApply::BeginFrame (gi_apply.cpp: the frame's layout has the per-pixel pass, the pass is made). `on` means the
 // effect runs this frame whatever the plan is (the effects' raw modes are what the plan then turns on), so there is no circle: the consumer is on first, the plan follows, RawModes() follows the plan.
-// So: the row on OURS never takes a frame; AUTO takes one only for an effect with auto_uses_rr (none yet: ours); DLSS RR takes one while SSR or the cars' reflections are on.
-enum class RawEffect : uint8_t { kSsr, kCarRefl, kCount };
+// So: the row on OURS never takes a frame; AUTO takes one only for an effect with auto_uses_rr (none yet: ours); DLSS RR takes one while any of the four is on.
+enum class RawEffect : uint8_t { kSsr, kCarRefl, kRtGi, kCount };
 constexpr const char* RawEffectName(RawEffect e) {
   switch (e) {
     case RawEffect::kSsr: return "screen-space reflections";
     case RawEffect::kCarRefl: return "the cars' ray traced reflections";
+    case RawEffect::kRtGi: return "the bounce light's per-pixel pass";
     case RawEffect::kCount: break;
   }
   return "?";
@@ -868,13 +873,20 @@ constexpr RawWhy RawWhyOf(const RawFrame& f, bool switch_on) {
 struct RawModes {
   RawWhy ssr = RawWhy::kPlanOurs;
   RawWhy car_refl = RawWhy::kPlanOurs;
+  RawWhy rt_gi = RawWhy::kPlanOurs;
   constexpr bool Ssr() const { return ssr == RawWhy::kRaw; }
   constexpr bool CarRefl() const { return car_refl == RawWhy::kRaw; }
+  constexpr bool RtGi() const { return rt_gi == RawWhy::kRaw; }
   constexpr bool operator==(const RawModes&) const = default;
 };
-constexpr RawModes RawModesOf(const RawFrame& f, bool switch_ssr, bool switch_car_refl) { return {RawWhyOf(f, switch_ssr), RawWhyOf(f, switch_car_refl)}; }
+constexpr RawModes RawModesOf(const RawFrame& f, bool switch_ssr, bool switch_car_refl, bool switch_rt_gi = true) {
+  return {RawWhyOf(f, switch_ssr), RawWhyOf(f, switch_car_refl), RawWhyOf(f, switch_rt_gi)};
+}
 // The debug switches' value: 0 keeps the effect's filter, anything else (the default 1) is raw while RR takes the frame.
 constexpr bool RawSwitchOn(int value) { return value != 0; }
+// The bounce light's switch (mcla_gpu_dlss_rr_rt_gi, 0 to 2) has a third value for the A/B of the hit distance guide: 0 ours (RtDenoise even while RR takes the frame), 1 raw with the ray's hit distance handed to the
+// guide pass (the default: the brief of CITY-RT G6), 2 raw WITHOUT it (the DLSS-RR guide's own advice for a diffuse term: "specular hit distance" is for the specular; a surface is its own for the rest).
+constexpr bool BounceHitWanted(int value) { return value != 2; }
 
 // What a raw effect writes for a pixel: the guide pass's hit distance is 0 where the surface itself is the reflection (nothing traced), the ray's length where one hit, and kRawMissDistance where
 // the ray found nothing (the reflection is the environment's, far behind: the same 4096 the reflections' own virtual image takes, ssr_rules.h). Always under the sky's value, which is the sky's alone.
@@ -894,7 +906,7 @@ inline constexpr std::array<const char*, 1> kSignedFiles = {"sl.dlss_d.dll"};
 
 // Whether Streamline is started with the RR plugin (slInit's featuresToLoad: plugins cannot be added later, like frame generation's). The row decides what the player wants (anything but OURS), the
 // debug switch can force it (probe and on load it whatever the row says: a test of RR itself; off never), and there must be something to use it: an effect with a raw mode (kConsumers: the
-// screen-space reflections and the cars' ray traced reflections have one, RR-INT), so a start with the row on AUTO or DLSS RR loads it on a PC that can. The rest is what the PC can do.
+// screen-space reflections, the cars' and the city's ray traced reflections and the bounce light's per-pixel pass have one: RR-INT, CITY-RT R6, CITY-RT G6), so a start with the row on AUTO or DLSS RR loads it on a PC that can. The rest is what the PC can do.
 struct PluginInputs {
   DebugSwitch debug = DebugSwitch::kRow;
   Denoiser setting = Denoiser::kAuto;  // the row at the start

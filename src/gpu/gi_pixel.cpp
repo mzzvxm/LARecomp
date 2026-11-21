@@ -363,7 +363,7 @@ bool GiPixel::Begin(const Inputs& in) {
   facts.layout = in.field->layout;
   facts.field_present = in.field->FieldPresent();
   facts.debug = -1;
-  facts.raw = false;   // G6: RawModesOf(...).GiPixel() once the Ray Reconstruction consumer exists
+  facts.raw = in.raw;   // G6: Ray Reconstruction takes the frame and this effect's switch is on (GiApply: TemporalSystem::RawModes().RtGi(); false with the plan not RR)
   // The top level of this frame (the city alone, or with the cars) and the world's rows (the light, the camera, the lamps): both are made before the trigger reaches here (scene.cpp).
   const CarRtView& view = car_scene_->View();
   facts.scene_ok = view.scene_valid && view.set != nullptr;
@@ -423,6 +423,7 @@ bool GiPixel::Begin(const Inputs& in) {
   params_.width = image_width_;
   params_.height = image_height_;
   params_.divisor = divisor_;
+  params_.raw = plan.raw;   // the apply weighs a raw frame's image by RawWeight (its alpha is no history length)
   stats_frame_ = in.frame % kStatsEvery == 0;
 
   // THE ROWS: the apply's buffer, the pixel rows, the frame's surface lights.
@@ -538,6 +539,13 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
       stage.push = rules::MakePush(v);
       result_ = denoise_.RecordSpatial(stage);
     }
+  } else if (plan_.raw) {
+    // G6: a RAW frame (Ray Reconstruction takes it and is the denoiser): neither stage runs. The apply reads the 1 spp signal itself, and the guide pass reads the hit distance image (as the last choice of its
+    // hit distance input): both go to the read state of the stages that read them (the pixel stage, the guide pass's compute stage).
+    result_ = &signal_;
+    const plume::RenderTextureBarrier raw_reads[2] = {{signal_.texture.get(), Layout::SHADER_READ}, {hit_.texture.get(), Layout::SHADER_READ}};
+    list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, raw_reads, 2);
+    signal_.layout = hit_.layout = Layout::SHADER_READ;
   }
   // The apply's pixel stage reads the result (the denoiser's last pass made it readable by both stages) and the guides of a reduced image: the guides are moved to the read state of both stages now, after the
   // denoiser's own passes (a later compute-only barrier would take the pixel stage's state away on D3D12).
@@ -547,8 +555,8 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
   if (stamps_ok_ && slot.stamps && slot.stamps_written) {
     list->writeTimestamp(slot.stamps.get(), 1);
   }
-  // This run is the next frame's history.
-  have_prev_ = true;
+  // This run is the next frame's history, unless it was a raw one: the denoiser's own history image was not written in it, so the next frame (raw or plain) starts the denoiser again.
+  have_prev_ = rules::KeepsHistory(plan_.raw);
   prev_frame_ = in_.frame;
   prev_pose_ = pose_;
   prev_tan_[0] = tan_[0];
@@ -563,6 +571,10 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} {}", kPrefix, rules::FirstLine(uint32_t(in_.frame), image_width_, image_height_, divisor_, lights_in_rows_, rules::kReachM));
+  }
+  if (plan_.raw != raw_logged_) {
+    raw_logged_ = plan_.raw;
+    REXLOG_INFO("{} frame {}: {} (logged when it changes)", kPrefix, in_.frame, rules::RawLine(plan_.raw));
   }
   // The counters, every interval: copied to the readback buffer (the next frame's first barrier takes the counters back to the storage state).
   if (in_.frame >= next_readback_ && !readback_busy_) {
@@ -584,10 +596,12 @@ bool GiPixel::Publish(gi::GiFrame* frame) const {
   return true;
 }
 
+// The signal and the hit distance image of a frame the pass ran RAW (Ray Reconstruction took it): the apply reads the signal through Publish's slot, the guide pass the hit image through GiApply::RawHitImage.
 GiPixel::RawOutput GiPixel::raw_output() const {
   RawOutput out;
   if (plan_.runs() && plan_.raw && ran_frame_ == frame_) {
     out.valid = true;
+    out.frame = frame_;
     out.signal = &signal_;
     out.hit = &hit_;
     out.width = image_width_;

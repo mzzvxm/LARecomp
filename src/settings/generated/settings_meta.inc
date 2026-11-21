@@ -350,6 +350,7 @@
 {"mcla_gpu_dlss_rr_test", "MCLA/GPU"},
 {"mcla_gpu_dlss_rr_ssr", "MCLA/GPU"},
 {"mcla_gpu_dlss_rr_car_refl", "MCLA/GPU"},
+{"mcla_gpu_dlss_rr_rt_gi", "MCLA/GPU"},
 {"mcla_gpu_edram_aliasing", "MCLA/GPU"},
 {"mcla_gpu_edram_capture", "MCLA/GPU"},
 {"mcla_gpu_env_resolution", "MCLA/GPU"},

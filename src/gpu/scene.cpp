@@ -3707,7 +3707,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // The probe field's apply (gi_apply.h, CITY-RT M3 G3): the bounce light the field carries, added to the main colour from the G-buffer's normal and albedo and the main depth, multiplied by the
     // occlusion's visibility, right after the occlusion's apply (which has multiplied the colour) and before the lamps' direct light (which neither of them multiplies). Binds its own layout, pipeline and
     // framebuffer: the reset below forgets them too. With no field in the frame it records nothing.
-    const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_);
+    // CITY-RT G6: while DLSS Ray Reconstruction takes the frame the per-pixel pass (ULTRA on a strong card) runs RAW (no filter of its own; its hit distance goes to the guide pass): TemporalSystem::RawModes,
+    // false with the plan not RR, and asked only while the pass is wanted (the census counts the frames asked).
+    const bool raw_gi = gi_apply_->pixel_pass_wanted() && temporal_ && temporal_->RawModes().RtGi();
+    const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);
     order_.Note(frame_order::Step::kGiApply, gi_apply_ran);
   }
   if (local_lights_ && local_lights_->wants_draws()) {
@@ -3761,6 +3764,8 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   if (temporal_) {
     // RR-4: the reflection effects' hit distance images of this frame (null where an effect did not run raw), for the guide pass at the anchor.
     temporal_->NoteRrHit(ssr_ ? ssr_->RawHitImage() : nullptr, car_refl_ ? car_refl_->RawHitImage() : nullptr);
+    // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (only in a frame it ran raw; mcla_gpu_dlss_rr_rt_gi 2 leaves the hit distance out).
+    temporal_->NoteRrBounceHit(gi_apply_ && rr::BounceHitWanted(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())) ? gi_apply_->RawHitImage() : nullptr);
   }
   if (gbuffer_ && gbuffer_->active()) {
     // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).

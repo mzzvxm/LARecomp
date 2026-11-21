@@ -58,6 +58,7 @@ ConstantBuffer<GiaPush> g_push : register(b0, space4);
 // G5: the per-pixel detail pass's term at the traced texel c (the lookup's own coordinates), for the pixel at the view distance t with the world normal n: rgb its denoised irradiance, w its weight against the
 // field's (GipWeight: the history's length in the image's alpha, 0 where the pass did not trace the pixel). A frame without the image gives w = 0 and nothing else is read. A reduced image (divisor 2) is read by
 // the four nearest of its pixels weighted by bilinear x depth x normal agreement (the guides are the pass's own images).
+// G6: in a RAW frame (row.raw: Ray Reconstruction takes the frame, no filter ran) the image is the 1 spp signal itself, whose alpha is no length: the weight is GipRawWeight (the whole of it where the pass traced).
 float4 GiaPixelTerm(int2 c, float t, float3 n, GiaFrame fr)
 {
     if (!GiPixelPresent())
@@ -76,7 +77,7 @@ float4 GiaPixelTerm(int2 c, float t, float3 n, GiaFrame fr)
         int2 q = clamp(c, int2(0, 0), size - 1);
         float4 e = g_textures[slot].Load(int3(q, 0));
         float d = g_textures[row.depthSlot].Load(int3(q, 0)).x;
-        return float4(e.x, e.y, e.z, GipWeight(e.w, d));
+        return float4(e.x, e.y, e.z, row.raw != 0u ? GipRawWeight(d) : GipWeight(e.w, d));
     }
     float2 f0 = (float2(c) + 0.5f) / (float)row.divisor - 0.5f;
     int2 q0 = int2(floor(f0));
@@ -111,7 +112,7 @@ float4 GiaPixelTerm(int2 c, float t, float3 n, GiaFrame fr)
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
     float3 ePixel = eSum * (1.0f / wSum);
-    return float4(ePixel.x, ePixel.y, ePixel.z, GipWeight(lengthSum / wSum, 1.0f) * saturate(cover));
+    return float4(ePixel.x, ePixel.y, ePixel.z, (row.raw != 0u ? GipRawWeight(1.0f) : GipWeight(lengthSum / wSum, 1.0f)) * saturate(cover));
 }
 
 // The lookup's net irradiance with the per-pixel term mixed into the field's irradiance first (GipMix; a weight of 0 is the field's exactly).

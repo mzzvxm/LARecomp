@@ -20,9 +20,11 @@
 //               a-trous iterations (steps 1, 2, 4; a fixed 6 pixel radius that shortens as the history grows). Guides: depth, view normal (roughness 1), hit distance and share.
 //   THE MIX     the apply (gi_apply_rules.h) takes E = lerp(E_field, E_pixel, w) with w = Weight(the history's length): 0 on a fresh or disoccluded pixel, 1 from kFullLength frames on. A pixel the pass
 //               did not trace (a vehicle, no albedo, the sky, no field) has no guide (depth 0) and keeps the field's value.
-//   THE RAW MODE (G6) prepared, not registered: the 1 spp signal image and the hit distance image are what DLSS Ray Reconstruction wants of a noisy diffuse term (hit distance = RawHitDistance: 0 not
-//               traced, kMissDistance for a miss, the ray's length for a hit); GiPixel::RawOutput() hands them out. rr::kConsumers' kRtGi stays raw_mode_built = false and nothing calls NoteConsumer:
-//               G6 flips both, makes the plan's `raw` true (Facts::raw), and the denoiser is skipped in a raw frame (Plan::denoise).
+//   THE RAW MODE (G6, CITY-RT G6: registered) in a frame DLSS Ray Reconstruction takes (Facts::raw: temporal.h RawModes().RtGi()): the denoiser is skipped (Plan::denoise false: RR is the denoiser,
+//               filtering twice is blur), the apply reads the 1 spp SIGNAL image itself and mixes it into the field's irradiance at the weight kRawWeight (1) wherever the pass traced (the history length the
+//               filter's weight is made of does not exist: RR keeps the history), and the hit distance image (RawHitDistance: 0 not traced, kMissDistance for a miss, the ray's length for a hit) goes to the guide
+//               pass as the LAST choice of its specular hit distance input (GiPixel::raw_output() hands both out; rr_guides_rules.h WithBounce). rr::kConsumers' kRtGi has raw_mode_built = true (AUTO does not
+//               trust RR with it before the RR-6 A/B) and GiApply::BeginFrame calls NoteConsumer. The switch mcla_gpu_dlss_rr_rt_gi is the A/B: 0 ours, 1 raw with the hit distance, 2 raw without it.
 //   IDENTITY    nothing is made, recorded or bound unless the extended layout stands (rules below): HIGH, OFF, weak cards and every card without the field are bit for bit as before.
 //
 // THIS FILE is the specification and the twin of hlsl/gi_pixel_common.hlsli (gi_pixel_test.cpp compiles the .hlsli as C++ and compares each function with the one here). It includes nothing of Plume or
@@ -69,6 +71,7 @@ inline constexpr float kHeadlightGain = 1.0f;       // the surface lights' term 
 inline constexpr uint32_t kLightsMax = 6;           // the surface lights the pass reads at a hit (two headlamps of three cars)
 inline constexpr float kFullLength = 4.0f;          // the denoiser's history length (frames) at which the pixel term replaces the field in full
 inline constexpr float kMaxWeight = 1.0f;           // the most the pixel term replaces of the field (1: all)
+inline constexpr float kRawWeight = 1.0f;           // a RAW frame's weight of the 1 spp pixel term where the pass traced (Ray Reconstruction is the history and the filter: nothing to wait for)
 inline constexpr float kMissDistance = 4096.0f;     // the raw mode's hit distance of a ray that found nothing (dlss_rr_rules.h kRawMissDistance, ssr_rules.h)
 inline constexpr float kCosineFloor = 0.02f;        // a ray is kept at least this far (cosine) above the surface's tangent plane
 inline constexpr float kR2A1 = 0.7548776662466927f; // the R2 sequence's two steps (Roberts): the per-pixel offset advances by them each frame
@@ -160,6 +163,10 @@ class Governor {
 // the plan: whether the pass runs this frame, and what it does
 // ---------------------------------------------------------------------------
 
+// The pass is a CONSUMER of the DENOISER row (CITY-RT G6: rr::kConsumers kRtGi; GiApply::BeginFrame says it every frame) while the frame's layout has a per-pixel pass: the extended layout (a strong ray
+// tracing card at ULTRA). The caller adds the rest (the field runs, the pass is made). The pass's own cell is the same word (CellFor).
+constexpr bool ConsumerWanted(gi::Layout layout) { return gi::BudgetOf(layout).pixel_rays_per_pixel != 0; }
+
 struct Facts {
   gi::Layout layout = gi::Layout::kNone;   // the field's frame's layout
   bool field_present = false;              // the field's frame has its three textures
@@ -170,7 +177,7 @@ struct Facts {
   bool planes_ok = false;                  // the G-buffer's normal and albedo planes, the main depth, lin_depth, the camera
   bool pipelines_ready = false;
   bool resources_ok = true;
-  bool raw = false;                        // G6: Ray Reconstruction takes the frame and cleans the 1 spp signal itself (nothing sets it today)
+  bool raw = false;                        // G6: Ray Reconstruction takes the frame and cleans the 1 spp signal itself (GiApply: TemporalSystem::RawModes().RtGi(), false with the plan not RR)
 };
 enum class Why : uint32_t { kRuns, kNotWanted, kDebugOff, kNoField, kNoScene, kNoWorld, kNoHitData, kNoPlanes, kPipelines, kResources, kCount };
 constexpr const char* WhyName(Why why) {
@@ -196,6 +203,9 @@ struct Plan {
   bool runs() const { return why == Why::kRuns; }
 };
 // The first reason that applies is the answer. The layout decides first (identity: no pass, nothing made), the debug switch second (0 turns it off, 1 and -1 leave the layout's say).
+// Whether a frame the pass ran is the NEXT frame's history for the denoiser: a plain frame is (RtDenoise wrote its history image in it), a raw one is not (Ray Reconstruction is the denoiser there; the image
+// the next plain frame would read is old), so the frame after a raw one starts the denoiser again.
+constexpr bool KeepsHistory(bool raw) { return !raw; }
 constexpr Plan Decide(const Facts& f) {
   Plan p;
   if (gi::BudgetOf(f.layout).pixel_rays_per_pixel == 0) return p;
@@ -283,6 +293,8 @@ inline float Weight(float length, float depth_guide) {
   if (!(depth_guide > 0.0f)) return 0.0f;
   return gi::Saturate((length - 1.0f) / (kFullLength - 1.0f)) * kMaxWeight;
 }
+// A RAW frame's weight (hlsl GipRawWeight): the whole of kRawWeight where the pass traced the pixel (its depth guide holds a distance), 0 where it did not (a vehicle, no albedo, the sky: the field's value).
+inline float RawWeight(float depth_guide) { return depth_guide > 0.0f ? kRawWeight : 0.0f; }
 inline constexpr float kMinTapWeight = 1.0e-4f;   // the apply's upsample's floor (gi_apply_rules.h kMinUpsampleWeight)
 // One tap of a reduced image's read (the apply, divisor 2): bilinear x depth agreement x normal agreement, floored; 0 for a tap the pass did not trace (a depth guide of 0).
 inline float TapWeight(float bilinear, float tap_depth, float depth_weight, float normal_weight) {
@@ -364,6 +376,12 @@ inline std::string FirstLine(uint32_t frame, uint32_t width, uint32_t height, ui
   std::snprintf(buf, sizeof(buf), "frame %u: the per-pixel pass runs: %ux%u pixels (traced size / %u), 1 ray a pixel, reach %.1f m, %u surface light(s), RtDenoise diffuse profile", frame, width, height, divisor, double(reach),
                 lights);
   return buf;
+}
+
+// The log line of a change of the raw state (a frame DLSS Ray Reconstruction takes or gives back).
+inline std::string RawLine(bool raw) {
+  return raw ? "raw: Ray Reconstruction takes the frame, so RtDenoise does not run: the 1 spp signal goes to the colour as it is (weight 1 where traced) and the ray's hit distance goes to the guide pass"
+             : "plain: Ray Reconstruction does not take the frame, RtDenoise filters the signal again (its history starts again)";
 }
 
 // ---------------------------------------------------------------------------

@@ -66,6 +66,10 @@ class RrGuides {
     // RR-4: the hit distance writers' images of THIS frame (null: none): R16_FLOAT at the render size, the distance in x (0: nothing traced there), in SHADER_READ. [0] the screen-space reflections'
     // (ssr.h), [1] the cars' ray traced reflections' (car_rt_refl.h). A writer's image that is not the render size, or has no texture or slot, is left out (the other still counts).
     const HostImage* hit[2] = {nullptr, nullptr};
+    // CITY-RT G6: the bounce light's per-pixel pass's hit distance image of THIS frame (null: none): RG16F at the PASS's size (the occlusion's traced size over its divisor: not the render size), the distance
+    // in x (0: nothing traced there), in the read state. The shader takes it as the LAST choice of the hit distance, where neither reflection effect wrote one, at the texel under the pixel
+    // (rr_guides_rules.h BounceTexel). An image with no texture or slot, another format or no size is left out.
+    const HostImage* bounce_hit = nullptr;
     // The camera of the frame's anchor: its axes in the world and the projection's numbers (temporal::Camera).
     float right[3] = {};
     float up[3] = {};
@@ -170,6 +174,7 @@ class RrGuides {
   uint32_t image_for_[2] = {};
   uint64_t passes_run_ = 0;
   uint64_t hits_used_ = 0;   // hit distance images of the reflection effects the pass read (RR-4), summed over the frames
+  uint64_t bounce_hits_used_ = 0;   // ... and the bounce light's (CITY-RT G6)
   uint64_t views_run_ = 0;
   uint64_t not_ready_ = 0;   // frames the pass was wanted and the pipeline was still being made
   uint64_t refused_ = 0;     // frames the pass was wanted and the frame could not have guides

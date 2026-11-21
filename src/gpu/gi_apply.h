@@ -19,6 +19,9 @@
 // THE PER-PIXEL PASS (G5, gi_pixel.h) is recorded by this class right before the lookup, in the same list, while the frame's layout has one (ULTRA on a strong card): the lookup then mixes the pass's denoised
 // term into the field's irradiance where the pass traced the pixel and its history has grown (gi_pixel_rules.h Weight). Its two marks are 'rt gi pixel' and 'rt gi denoise'. At every other layout the pass is
 // never asked and this class does what it did before it existed.
+// G6 (CITY-RT, perf/DLSS-RR.md): the pass is a CONSUMER of the DENOISER row. BeginFrame tells the board whether the pass is wanted (denoiser::NoteConsumer(rr::Consumer::kRtGi, ...): the frame's layout has it and
+// it is made); in a frame DLSS Ray Reconstruction takes (OnTrigger's `raw_requested`, from TemporalSystem::RawModes().RtGi()) the pass skips its filter, the lookup mixes the 1 spp signal at the weight 1, and
+// RawHitImage() gives the guide pass the ray's hit distance. With the plan not RR nothing of this exists.
 //
 // IDENTITY. Nothing is recorded, bound or drawn, and nothing of the occlusion changes, while any of these holds: no GiField is set (G4 sets it), the field is not running this frame, its frame is not
 // published (no field in it), the field's share is 0 (fade 0, or the occlusion's screen-space bounce light ran at its full strength), the strength is 0, or the frame lacks the G-buffer's planes, the
@@ -103,6 +106,9 @@ class GiApply {
   // The Scene opened a frame's first list, BEFORE the G-buffer's and the shared products' own BeginFrame (they read the wants it makes) and after GiField::BeginFrame: reads the debug view, makes
   // the wants (RT1 and RT2, the depth chain: only while the field runs) and forgets the last frame's latch.
   void BeginFrame();
+  // G6: the per-pixel pass is wanted this frame (the field runs, the frame's layout has the pass, the pass is made): what BeginFrame told the DENOISER board. The Scene asks the temporal system for a raw
+  // frame only then.
+  bool pixel_pass_wanted() const { return pixel_wanted_; }
 
   // What the occlusion asks while it plans its bounce light (ao.cpp PlanGi): the share of its strength it may run with this frame, from the field's published frame (gi_apply_rules.h SsgiShareFor);
   // latches it. 1 without a field.
@@ -112,7 +118,11 @@ class GiApply {
 
   // At the trigger, after the occlusion's OnResolve and before the light pass. `gbuffer_published` is the G-buffer's own answer for this resolve. Records the pass and returns true (the caller's list
   // state is gone). `frame_slot` is the frame's slot of the upload ring. Once a frame.
-  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot);
+  // G6: `raw_requested` = DLSS Ray Reconstruction takes this frame and the effect's switch is on (TemporalSystem::RawModes().RtGi()): the per-pixel pass (if it runs) then hands its 1 spp signal on unfiltered.
+  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested = false);
+  // G6: the per-pixel pass's hit distance image of THIS frame, null unless the pass ran raw in it (RG16F at its own size, the distance in x, in the read state): the guide pass's last-choice hit distance.
+  // Valid after OnTrigger, until the next frame's.
+  const HostImage* RawHitImage() const;
   // True while the effect has a field to apply this frame (the Scene calls OnTrigger only then).
   bool wants_draws() const { return enabled_; }
 
@@ -144,7 +154,7 @@ class GiApply {
     std::unique_ptr<plume::RenderPipeline> pipeline;
   };
 
-  bool OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot);
+  bool OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested);
   bool EnsureLayout();
   bool EnsureSlot(uint32_t frame_slot);
   plume::RenderShader* ShaderFor(uint32_t which);
@@ -178,6 +188,7 @@ class GiApply {
 
   // the frame
   bool enabled_ = false;
+  bool pixel_wanted_ = false;      // G6: the field runs, the layout has the per-pixel pass and it is made (BeginFrame: the DENOISER board's word for the bounce light)
   uint32_t view_ = 0;
   float ssgi_ran_share_ = 0.0f;
   bool trigger_seen_ = false;

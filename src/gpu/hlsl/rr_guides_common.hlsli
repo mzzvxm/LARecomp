@@ -219,6 +219,16 @@ float RrHitDistance(bool sky, float source) {
   return (source > 0.0f && source < kRrSkyHitDistance) ? source : 0.0f;
 }
 
+// CITY-RT G6: the bounce light's per-pixel pass hands over its ray's length as the LAST choice of the hit distance: where no reflection wrote a positive distance (`source`), the bounce light's `bounce`
+// stands (0 where its pass traced nothing, so the pixel stays the surface's). The reflections' distances are the specular's own and keep the pixel; the bounce light's image is the pass's own size (the
+// occlusion's traced size over a divisor), so its texel under a render pixel is the pixel scaled by the two sizes, one axis at a time, clamped into the image.
+float RrWithBounce(float source, float bounce) {
+  return source > 0.0f ? source : bounce;
+}
+uint RrBounceTexel(uint pixel, uint size, uint hitSize) {
+  return min(pixel * hitSize / max(size, 1u), max(hitSize, 1u) - 1u);
+}
+
 float RrResponsivity(float reactive, float transparency) {
   return saturate(max(reactive, transparency));
 }
