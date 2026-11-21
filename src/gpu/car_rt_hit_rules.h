@@ -214,7 +214,7 @@ inline float DenoiseScale(float w) { return 1.0f - DecodeAuxSharp(w); }
 //   2. THE AMPLITUDE. What replaces it goes through the paint's own reflectance for the environment, which at the door's grazing view (N.V 0.2 to 0.4) is 1 to 2 percent of what is reflected
 //      (the buildings: 0.0024 of 0.1 to 0.3; the sky: 0.006 of 0.3 to 0.4). The neighbour's flank in the shade of the player's own car is a quarter of its sunlit fender's radiance (the lower flank
 //      0.036 against the fender 0.19 in the same picture), so the car lands at L 0.0013 (8-bit codes 9, 3, 3) where the buildings it replaced were at 0.0049 (codes 8 to 25): over the pixels the
-//      neighbour changes the picture is 0.77 as bright as the environment it removed by day and 0.32 as bright at night. A silhouette against the sky's reflection is a step of 0.0005 of
+//      neighbour changes (the pass rule's pixels, below) the median luminance is 0.29 of the environment's it removed by day (the means 0.44) and 0.22 at night (0.18). A silhouette against the sky's reflection is a step of 0.0005 of
 //      luminance: under two levels of an 8-bit picture. Nothing in the ray tracing is wrong; the paint's reflection of a car is as weak as its reflection of a building, and a shaded flank is darker.
 //   3. THE BLUR. A texel's reflection is the glossy cone (a half angle of 2.5 degrees: 4 rays, mcla_gpu_car_selfrefl_rt_gloss) by (1 - share) and the clear coat's mirror ray by share, and the
 //      share is 0.45 facing the camera to 0.85 at a grazing view by (1 - N.V)^power: 0.52 to 0.58 at the door. So 42 to 48 % of what the door shows of the car is the cone's, and on a flat panel
