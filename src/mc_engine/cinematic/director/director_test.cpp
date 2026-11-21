@@ -31,6 +31,7 @@
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -691,6 +692,13 @@ struct TestClient {
         a.sin_port = htons(port);
         inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
         if (connect(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0) return false;
+        // Two requests sent one after the other must reach the server as soon as they are sent: with Nagle's algorithm (the default) the second small
+        // segment waits for the ACK of the first, which on Linux the server's delayed ACK holds back for about 5 ms, and the case "a held reply comes after a
+        // later fast one" then saw the held reply (5 polls = 5 ms) first on every run. Windows' loopback does not do this; a real client may set it too.
+        {
+            int one = 1;
+            setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
+        }
 #if defined(_WIN32)
         DWORD to = 3000;
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&to), sizeof(to));

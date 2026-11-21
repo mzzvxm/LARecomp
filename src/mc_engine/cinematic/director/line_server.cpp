@@ -22,6 +22,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -313,6 +314,12 @@ void LineServer::AcceptNew() {
         if (!SetNonBlocking(s)) {
             CloseSocket(s);
             continue;
+        }
+        // A line protocol of small replies and events: each goes out as it is written (Nagle's algorithm would hold a reply back until the client's delayed
+        // ACK of the one before it, about 5 ms on Linux and up to 40 ms on a busy link). A failure here changes nothing but that latency.
+        {
+            int one = 1;
+            setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
         }
         size_t open;
         {
