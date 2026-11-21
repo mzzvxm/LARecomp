@@ -318,6 +318,17 @@ add_executable(larecomp_gbuffer_day_test EXCLUDE_FROM_ALL
     hash.cpp)
 target_compile_features(larecomp_gbuffer_day_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_gbuffer_day_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
+# The G-buffer's car, traffic and character families (variants/gbuffer_cars.h: the GB-G0 spike's prototype, not in the pack yet): cmake --build <dir> --target
+# larecomp_gbuffer_cars_test, then run it [<src/gpu/hlsl/gbuffer_common.hlsli> [<folder of translated HLSL> [<folder for the transformed texts>]]] (exit 0 = passed).
+add_executable(larecomp_gbuffer_cars_test EXCLUDE_FROM_ALL
+    variants/gbuffer_cars_test.cpp
+    variants/gbuffer_cars.cpp
+    variants/gbuffer_day.cpp
+    variants/car_selfrefl.cpp
+    variants/car_chrome.cpp
+    hash.cpp)
+target_compile_features(larecomp_gbuffer_cars_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_gbuffer_cars_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
 # The bloom fix variant's text transform, and the proof that its two bilinear fetches at 3x give the three sub-taps' sum, likewise:
 #   cmake --build <dir> --target larecomp_bloom_gauss_test, then run src/shaderpack/larecomp_bloom_gauss_test
 #   [<folder of translated HLSL> [<folder for the results>]] (exit 0 = passed; variants/bloom_gauss_test.cpp).
