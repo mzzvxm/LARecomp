@@ -438,6 +438,11 @@ target_include_directories(larecomp_hud_track_test PRIVATE src src/mc_engine/cin
 add_executable(larecomp_bound_node_guard_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/bound_node_guard_test.cpp)
 target_include_directories(larecomp_bound_node_guard_test PRIVATE src/mc_engine/hooks)
+# How often the guest's fence poll gives up its time slice (src/mc_engine/hooks/fence_spin.h, the rule both OSes share) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_fence_spin_test, then run <build dir>/larecomp_fence_spin_test (exit 0 = passed).
+add_executable(larecomp_fence_spin_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/fence_spin_test.cpp)
+target_include_directories(larecomp_fence_spin_test PRIVATE src/mc_engine/hooks)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).
