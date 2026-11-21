@@ -11,8 +11,9 @@
 //                                   the camera. The Want is (hiz_min, colour_post); the owner's `history` product (the last frame's colour_post) is not used: the accumulation keeps its own images,
 //                                   because what it must carry over is the reflection, which colour_post (made before this pass) does not hold.
 //   G-buffer (gbuffer.h)            RT1 the world normal, RT2 the albedo (a metal's F0), RT3 the smoothness, class and flags (GB-W2 writes it; GB-F1's class table says what reflects: the SSR flag).
-//                                   Until RT3 is in the frame the STUB stands in (hlsl/ssr_common.hlsli): every pixel whose world normal points up and is no vehicle is a road of mcla_gpu_ssr_stub's smoothness,
-//                                   which lets the pass be looked at; the frame says "stub" in the log. The vehicle mark of the depth chain (a stencil ID) keeps the cars out in the stub.
+//                                   RT3 is in the frame whenever this effect asks for the planes (GB-W2 is merged: gbuffer::kAllPlanes), so the class table decides. Only where a frame has no RT3 (or mcla_gpu_ssr_stub 1 forces it)
+//                                   the STUB stands in (hlsl/ssr_common.hlsli): every pixel whose world normal points up and is no vehicle is a road of mcla_gpu_ssr_stub's smoothness, a debug aid for comparing;
+//                                   the frame says "stub" in the log. The vehicle mark of the depth chain (a stencil ID) keeps the cars out in the stub.
 //   the AO (ao.h FrameCameraNow)    the frame's own camera: the right and up axes (RT1 is a WORLD normal) and the motion into the last frame (the history). Without it (or without a camera it
 //                                   trusts) the pass takes the last frame's anchor camera for the axes and runs with no history.
 //

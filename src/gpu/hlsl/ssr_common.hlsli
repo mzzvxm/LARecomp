@@ -13,8 +13,8 @@
 // the tunnel's tiles as SSR eligible), this file's SsrClassGain says how much of the term each class takes and keeps the car's paint and chrome out (they keep their own reflections: the
 // game's env map, the self-reflection history, the ray traced ones). The GGX alpha is (1 - s)^2 (gbuffer_rules.h AlphaOfSmoothness).
 //
-// THE STUB. Until GB-W2 writes RT3 the frame has no material plane: SsrStubGain gives every pixel whose world normal points up (the road, a flat roof) the class ROAD with the stub's smoothness
-// (a debug number), and the vehicle mark of the depth keeps the cars out. It is the only thing that lets the pass be looked at before RT3 exists; the pictures it makes are not the feature's.
+// THE STUB. GB-W2 writes RT3 now, so the frame has a material plane and the stub is only the fallback for a frame without one (and the debug setting mcla_gpu_ssr_stub): SsrStubGain gives every pixel whose
+// world normal points up (the road, a flat roof) the class ROAD with the stub's smoothness (a debug number), and the vehicle mark of the depth keeps the cars out. The pictures it makes are not the feature's.
 
 #ifndef MCLA_GPU_SSR_COMMON_HLSLI
 #define MCLA_GPU_SSR_COMMON_HLSLI

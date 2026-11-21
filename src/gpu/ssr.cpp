@@ -287,7 +287,7 @@ void ScreenReflections::BeginFrame() {
   history_override_ = history >= 0.0 ? ClampSetting(history, 0.0, 0.98, 0.0f) : -1.0f;
   const bool on = level_ != ssr::Level::kOff;
   // What the effect reads of the shared products and of the G-buffer (sticky; read at their next frame boundary): the Hi-Z, colour_post (its Want also makes the mip chain), the camera, and all
-  // three planes (RT3 is not written yet in this branch: the frame then has two and the stub stands in).
+  // three planes (RT3 is written now, GB-W2: the class table decides; the stub only stands in for a frame without RT3, or when mcla_gpu_ssr_stub forces it).
   if (screen_) {
     screen_->Want(screen::Consumer::kReflections, on ? (screen::ProductBit(screen::kHizMin) | screen::ProductBit(screen::kColourPost)) : 0u);
     screen_->WantCamera(screen::Consumer::kReflections, on);
