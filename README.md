@@ -154,6 +154,7 @@ These are the environment variables the build reads. Everything else moved to cv
 | `MCLA_ALLOW_INVALID_FETCH` | `true` | Set `false` if HUD or minimap glitches appear. |
 | `MCLA_NO_STUB_SWEEP` | `0` | `1` skips stubbing unmapped addresses at startup, saving about 400 ms. Only safe while `stubs.txt` stays empty. |
 | `LARECOMP_LOG_FILE` | auto | Log file path. |
+| `LARECOMP_NO_CRASH_DIALOG` | unset | `1` skips the "crashed" message box: a crash writes its report to the log and the game ends at once (exit status `0xC4A50001` for an access violation), for test runs nobody watches. |
 
 `logs/effective_config.txt` is written every launch and lists what actually took effect, including an `ok` or `FAIL` line for each GPU flag. Check it first when a setting seems to do nothing.
 

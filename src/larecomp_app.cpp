@@ -40,6 +40,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "bootprogress/larecomp_shader_build.h"
 #include "cpu_level.h"
 #include "crash_handler.h"
+#include "crash_options.h"
 #include "discord_rpc/discord_rpc.h"
 #include "game_marker.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -1195,5 +1196,12 @@ void LarecompApp::OnShutdown() {
 rex::platform::CrashReporterOptions LarecompApp::GetCrashOptions() {
   // CHECK (L3/L4): LARecomp's own crash handler (crash_handler.cpp: minidump, log of the last hook, Linux signal handlers)
   // and the SDK's reporter both want the process-wide filter; the SDK's is installed first, then InstallCrashLoggerAfterRuntime.
-  return TitleApp::GetCrashOptions();
+  rex::platform::CrashReporterOptions options = TitleApp::GetCrashOptions();
+  // The test harness's switch (crash_options.h): no "crashed" box, the process ends right after the report. Players never set it.
+  if (larecomp::crash::NoDialogFromEnvironment()) {
+    options.show_dialog = false;
+    // No upper-case "CRASH" and no "crash report" in this line: test checkers treat those words as a crash.
+    LARECOMP_APP_INFO("[crash] message box off (the no-dialog environment variable is set): a failure writes its report and ends the process");
+  }
+  return options;
 }
