@@ -1,4 +1,4 @@
-// Check of the G-buffer's car, traffic and character families (gbuffer_cars.h, package GB-G1). A program of its own: it needs no renderer, no ReXGlue, no compiler and no game files, and exits 0
+// Check of the G-buffer's car, traffic and character families (gbuffer_cars.h, packages GB-G1 and GB-G2: the traffic's paint and black matte, the pedestrian, the vertex stage's two rows). A program of its own: it needs no renderer, no ReXGlue, no compiler and no game files, and exits 0
 // when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_gbuffer_cars_test     (src/shaderpack/CMakeLists.txt)
@@ -109,7 +109,7 @@ std::string WithoutCarStage(std::string text, std::string helper, const sp::GBuf
   }
   cut("the DXIL rows", " \\\n    uint4 g_GBufferMode : packoffset(c38); \\\n    float4 g_GBufferRay : packoffset(c39); \\\n    float4 g_GBufferCam : packoffset(c40);");
   cut("the helper", no_cr + "\n\n");
-  if (row.normal == sp::GBufferCarNormal::kDerivative) cut("the derivative block", sp::GBufferDayDerivativeText());
+  if (row.normal != sp::GBufferCarNormal::kInterpolant) cut("the derivative block", sp::GBufferDayDerivativeText());
   if (planes >= 2 && edits.found && edits.insert_at != std::string::npos) cut("the capture", edits.insert_text);
   cut("the sidecar write", sp::GBufferCarsWriteText(row, planes >= 2 ? edits : sp::GBufferCarEdits(), planes));
   return missing.empty() ? text : "<missing or twice there:" + missing + ">";
@@ -330,6 +330,247 @@ void CheckFixture() {
   }
 }
 
+// ---- GB-G2: the traffic's paint and black matte, the pedestrian (fixtures) -------------------------------------------------------------------------------------
+
+// The pedestrian's texel: a plain fetch whose lanes are w x y z (the translator's `.wxyz` of an ARGB texture), read at the end of main.
+constexpr const char* kPedBody =
+    "\tr3.xyzw = tfetch2D(DiffuseSampler_Texture2DDescriptorIndex, DiffuseSampler_SamplerDescriptorIndex, r0.xy, float2(0, 0)).wxyz;\n"
+    "\toC0.xyz = r3.yzw;\n";
+
+void CheckTrafficAndPeds() {
+  // the traffic paint: the vertex stage's colour, written where its w says it is there
+  const sp::GBufferCarShader* paint = sp::FindGBufferCarShader("xAmbientCarPaint__PSAmbientCarPaint");
+  Check(paint && paint->normal == sp::GBufferCarNormal::kInterpolant && paint->slot == 1 && paint->albedo == sp::GBufferCarAlbedo::kVertex && paint->expression == "iTexCoord15" &&
+            paint->material == sp::GBufferCarMaterial::kHost,
+        "the traffic paint: the game's exported normal (TEXCOORD1), the vertex stage's colour (TEXCOORD15)");
+  if (paint) {
+    const std::string text = Fixture("", "\toC0.xyz = r3.xyz;\n");
+    const sp::GBufferCarEdits edits = sp::PlanGBufferCarEdits(*paint, text);
+    Check(edits.found && edits.expression == "iTexCoord15.xyz" && edits.condition == "iTexCoord15.w > 0.5f" && edits.insert_at == std::string::npos && edits.why_not.empty(),
+          "the traffic paint's albedo is the interpolant's xyz where its w says the vertex stage wrote it: " + edits.why_not);
+    for (const uint32_t planes : {1u, 2u, 3u}) {
+      const std::string label = "the traffic paint at " + std::to_string(planes) + " plane(s)";
+      const sp::VariantTransformResult r = sp::TransformGBufferCarsHlsl({paint->name, 0}, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer), planes);
+      Check(r.ok, label + " transforms: " + r.error);
+      if (!r.ok) continue;
+      Check(Count(r.hlsl, "float3 gbN = iTexCoord1.xyz;") == 1 && Count(r.hlsl, "oC1 = GbRt1Encode(gbN);") == 1, label + ": the normal is TEXCOORD1's (the game's own)");
+      Check(Count(r.hlsl, "if ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u && iTexCoord15.w > 0.5f) {") == (planes >= 2 ? 1u : 0u), label + ": the albedo is written only where the vertex stage's flag is set");
+      Check(Count(r.hlsl, "oC2 = float4(GbAlbedoEncode(iTexCoord15.xyz), GbMaterialLit(gbMat));") == (planes >= 2 ? 1u : 0u), label + ": the albedo is the vertex stage's colour");
+      Check(Count(r.hlsl, "gbAlbedo") == 0, label + ": no capture (an input is read at the end of main)");
+      const std::string back = WithoutCarStage(r.hlsl, kHelper, *paint, planes >= 2 ? edits : sp::GBufferCarEdits(), planes);
+      Check(back == LfOnly(text), label + ": the game's text is untouched" + FirstDifference(back, LfOnly(text)));
+    }
+    // a text that does not declare the interpolant keeps its normal and loses the albedo (RT2 "no data"), with the reason
+    std::string no_decl = text;
+    no_decl.replace(no_decl.find("in centroid float4 iTexCoord15 : TEXCOORD15"), 43, "in centroid float4 iTexCoordX : TEXCOORDX");
+    const sp::GBufferCarEdits lost = sp::PlanGBufferCarEdits(*paint, no_decl);
+    Check(!lost.found && lost.why_not.find("iTexCoord15") != std::string::npos, "without TEXCOORD15 declared the colour is lost and named: " + lost.why_not);
+  }
+  // the traffic black matte: black is an albedo, not "no data"; the normal is the derivative
+  const sp::GBufferCarShader* matte = sp::FindGBufferCarShader("xAmbientBlackMatte__PSAmbientBlackMatte");
+  Check(matte && matte->normal == sp::GBufferCarNormal::kDerivative && matte->albedo == sp::GBufferCarAlbedo::kBlack, "the traffic black matte: the derivative normal, a black albedo");
+  if (matte) {
+    const std::string text = Fixture("", "\toC0.xyz = 0.0;\n");
+    const sp::GBufferCarEdits edits = sp::PlanGBufferCarEdits(*matte, text);
+    Check(edits.found && edits.expression == "float3(0.0f, 0.0f, 0.0f)" && edits.condition.empty(), "the black matte's albedo is the literal black: " + edits.why_not);
+    const sp::VariantTransformResult r = sp::TransformGBufferCarsHlsl({matte->name, 0}, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer), 3);
+    Check(r.ok && Count(r.hlsl, "oC2 = float4(GbAlbedoEncode(float3(0.0f, 0.0f, 0.0f)), GbMaterialLit(gbMat));") == 1 && Count(r.hlsl, "float3 gbP = GbWorldPoint(") == 1,
+          "the black matte writes the black albedo with the draw's lit weight, and takes the derivative normal: " + r.error);
+    if (r.ok) {
+      const std::string back = WithoutCarStage(r.hlsl, kHelper, *matte, edits, 3);
+      Check(back == LfOnly(text), "the black matte's game text is untouched" + FirstDifference(back, LfOnly(text)));
+    }
+  }
+  // the day pedestrian: the vertex stage's normal where it is there, the face's where it is not; the diffuse texel
+  const sp::GBufferCarShader* ped = sp::FindGBufferCarShader("xPed__PS");
+  Check(ped && ped->normal == sp::GBufferCarNormal::kVertexOrDerivative && ped->slot == 15 && ped->albedo == sp::GBufferCarAlbedo::kDiffuse && ped->sampler == "DiffuseSampler" && ped->tint.empty(),
+        "the day pedestrian: the vertex stage's normal or the derivative one (TEXCOORD15), the diffuse texel");
+  if (ped) {
+    const std::string text = Fixture("", kPedBody);
+    for (const uint32_t planes : {1u, 2u, 3u}) {
+      const std::string label = "the day pedestrian at " + std::to_string(planes) + " plane(s)";
+      const sp::VariantTransformResult r = sp::TransformGBufferCarsHlsl({ped->name, 0}, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer), planes);
+      Check(r.ok, label + " transforms: " + r.error);
+      if (!r.ok) continue;
+      Check(Count(r.hlsl, "float3 gbN = iTexCoord15.xyz;") == 1 && Count(r.hlsl, "if (dot(gbN, gbN) > 1.0e-8f) {") == 1 && Count(r.hlsl, "gbN = GbFaceNormal(gbDx, gbDy, -gbP);") == 1 &&
+                Count(r.hlsl, "oC1 = GbRt1Encode(gbN);") == 1,
+            label + ": the vertex stage's normal where it is not zero, else the face's");
+      Check(Count(r.hlsl, "float3 gbP = GbWorldPoint(") == 1, label + ": the derivative block is at the top of main");
+      Check(Count(r.hlsl, "if ((g_GBufferMode.x & uint(GB_MODE_FLIP_BACKFACE)) != 0u && !bool(iFace))") == 1, label + ": a back face of a two sided draw is turned to the viewer (the vertex stage's normal)");
+      const sp::GBufferCarEdits edits = planes >= 2 ? sp::PlanGBufferCarEdits(*ped, LfOnly(text)) : sp::GBufferCarEdits();
+      Check(planes < 2 || (edits.found && edits.condition.empty()), label + ": the texel is found: " + edits.why_not);
+      const std::string back = WithoutCarStage(r.hlsl, kHelper, *ped, edits, planes);
+      Check(back == LfOnly(text), label + ": the game's text is untouched" + FirstDifference(back, LfOnly(text)));
+    }
+    // without the screen position the derivative block cannot be made: the transform fails and says so
+    std::string no_pos = text;
+    no_pos.replace(no_pos.find("in float4 iPos : SV_Position"), 28, "in float4 iPosX : SV_Position");
+    const sp::VariantTransformResult r = sp::TransformGBufferCarsHlsl({ped->name, 0}, no_pos, kHelper);
+    Check(!r.ok && !r.skip && r.error.find("iPos") != std::string::npos, "the pedestrian without iPos fails and names it");
+  }
+}
+
+// ---- GB-G2: the vertex stage's two rows --------------------------------------------------------------------------------------------------------------------------
+
+// The shape of the pedestrian's vertex shader the row looks at: TEXCOORD15 only zeroed, the statement once at the top level, the register written again after it.
+constexpr const char* kPedVsFixture =
+    "#ifndef __spirv__\n"
+    "[shader(\"vertex\")]\n"
+    "#endif\n"
+    "void main(\n"
+    "\t[[vk::location(0)]] in float4 iPosition0 : POSITION0,\n"
+    "\t[[vk::ext_decorate(18)]] out precise float4 oPos : SV_Position,\n"
+    "\tout float4 oTexCoord0 : TEXCOORD0,\n"
+    "\tout float4 oTexCoord15 : TEXCOORD15)\n"
+    "{\n"
+    "\toTexCoord0 = 0.0;\n"
+    "\toTexCoord15 = 0.0;\n"
+    "\tfloat4 r0 = float4(0.0, 0.0, 0.0, 0.0);\n"
+    "\tfloat4 r5 = 0.0;\n"
+    "\tr0.x = dot(r5.zxy, r5.zxy);\n"
+    "\tr0.xyz = r5.xyz * r0.xxx;\n"
+    "\tr0.x = saturate(dot(r0.zxy, -gLightPosDir.zxy));\n"
+    "\toPos.xyz = oPos.xyz * g_PosScale.xyz + g_PosOffset.xyz * oPos.w;\n"
+    "\treturn;\n"
+    "}\n";
+
+// The traffic paint's: the statement of the second screen blend is the same text as the first's, which comes before the unique one the row anchors on.
+constexpr const char* kPaintVsFixture =
+    "void main(\n"
+    "\t[[vk::location(0)]] in float4 iPosition0 : POSITION0,\n"
+    "\tout float4 oTexCoord3 : TEXCOORD3,\n"
+    "\tout float4 oTexCoord15 : TEXCOORD15)\n"
+    "{\n"
+    "\toTexCoord3 = 0.0;\n"
+    "\toTexCoord15 = 0.0;\n"
+    "\tfloat4 r1 = 0.0;\n"
+    "\tr1.xyw = saturate(r10.xzy * r9.xzy);\n"
+    "\tr1.xyw = r2.xzy + -r1.xwy;\n"
+    "\tr2.xyz = r1.xwy + r3.xzy;\n"
+    "\tr1.xyw = saturate(r3.xzy * r1.xwy);\n"
+    "\tps = DL5.x * r0.y;\n"
+    "\tr3.x = ps;\n"
+    "\tr1.xyw = r2.xzy + -r1.xwy;\n"
+    "\tr9.xyz = r8.zzz * gWorld(2).xyz + gWorld(3).xyz;\n"
+    "\tr1.xyw = saturate(r5.xzy * r1.xyw);\n"
+    "\toTexCoord3.xyzw = max(r1.wxyz, r1.wxyz);\n"
+    "\treturn;\n"
+    "}\n";
+
+std::string WithoutVsExport(std::string text, const sp::GBufferCarVsShader& row) {
+  const std::string piece = sp::GBufferCarVsExportText(row);
+  const size_t at = text.find(piece);
+  if (at == std::string::npos || text.find(piece, at + piece.size()) != std::string::npos) return "<the export is missing or twice there>";
+  text.erase(at, piece.size());
+  return text;
+}
+
+void CheckVertexRows() {
+  // the table: each row serves a pixel row that reads TEXCOORD15, and each pixel row that reads it has one vertex row
+  Check(sp::kGBufferCarVsShaderCount == 2, "the car stage has two vertex rows: the pedestrian's and the traffic paint's");
+  std::set<std::string_view> served;
+  for (size_t i = 0; i < sp::kGBufferCarVsShaderCount; ++i) {
+    const sp::GBufferCarVsShader& row = sp::kGBufferCarVsShaders[i];
+    const std::string who(row.name);
+    const sp::GBufferCarShader* pixel = sp::FindGBufferCarShader(row.pixel);
+    Check(pixel != nullptr, who + ": its pixel row is in the table");
+    Check(row.name.find("__VS") != std::string_view::npos && !EndsWith(row.name, "Env") && !sp::FindGBufferVsShader(row.name), who + ": a vertex shader of its own, not one of the day families' three");
+    Check(!row.after.empty() && row.after.back() == ';' && row.after.find('\n') == std::string_view::npos && (row.then.empty() || row.then.back() == ';'), who + ": the statements are statements");
+    Check(!row.value.empty() && !row.what.empty(), who + ": it names the register and says what it is");
+    served.insert(row.pixel);
+    if (pixel) {
+      const std::string_view group = row.name.substr(0, row.name.find("__"));
+      Check(pixel->name.substr(0, pixel->name.find("__")) == group, who + ": the same group as its pixel shader");
+      const bool reads = pixel->normal == sp::GBufferCarNormal::kVertexOrDerivative || pixel->albedo == sp::GBufferCarAlbedo::kVertex;
+      Check(reads, who + ": its pixel row reads TEXCOORD15");
+      Check(row.flag == (pixel->albedo == sp::GBufferCarAlbedo::kVertex), who + ": the flag w = 1 is there for the pixel stage that tests it, and for no other");
+    }
+  }
+  for (size_t i = 0; i < sp::kGBufferCarShaderCount; ++i) {
+    const sp::GBufferCarShader& row = sp::kGBufferCarShaders[i];
+    const bool reads = row.normal == sp::GBufferCarNormal::kVertexOrDerivative || row.albedo == sp::GBufferCarAlbedo::kVertex;
+    Check(reads == served.contains(row.name), std::string(row.name) + ": it reads TEXCOORD15 if and only if a vertex row of the car stage writes it");
+  }
+  // the transform on the fixtures
+  const struct {
+    const char* name;
+    const char* text;
+  } kFixtures[] = {{"xPed__VSPedDay", kPedVsFixture}, {"xAmbientCarPaint__VSAmbientCarPaint", kPaintVsFixture}};
+  for (const auto& fixture : kFixtures) {
+    const sp::GBufferCarVsShader* row = sp::FindGBufferCarVsShader(fixture.name);
+    Check(row != nullptr, std::string(fixture.name) + " is a vertex row");
+    if (!row) continue;
+    const std::string who(fixture.name);
+    const sp::VariantTransformResult r = sp::TransformGBufferCarsVsHlsl({fixture.name, 0}, fixture.text);
+    Check(r.ok && !r.skip, who + ": the fixture transforms: " + r.error);
+    if (!r.ok) continue;
+    Check(Count(r.hlsl, "oTexCoord15 = float4(") == 1 && Count(r.hlsl, "oTexCoord15 = float4(" + std::string(row->value) + ", " + (row->flag ? "1.0f" : "0.0f") + ");") == 1, who + ": the export is there once");
+    const std::string diff = FirstDifference(WithoutVsExport(r.hlsl, *row), LfOnly(fixture.text));
+    Check(diff.empty(), who + ": without the export it is the game's text" + diff);
+    // where it is: right after the statement (the second of the pair for the paint: the one after the anchor), before the register is written again
+    const std::string exported = sp::GBufferCarVsExportText(*row);
+    const std::string last = "\n\t" + std::string(row->then.empty() ? row->after : row->then) + "\n";
+    const size_t export_at = r.hlsl.find(exported);
+    const size_t anchor_at = export_at == std::string::npos ? std::string::npos : r.hlsl.rfind(last, export_at);
+    Check(anchor_at != std::string::npos && anchor_at + last.size() == export_at, who + ": the export follows the anchor statement line directly");
+    if (!row->then.empty()) {
+      const size_t first = r.hlsl.find("\n\t" + std::string(row->after) + "\n");
+      const size_t early = r.hlsl.find("\n\t" + std::string(row->then) + "\n");
+      Check(first != std::string::npos && early < first && anchor_at > first, who + ": it follows the second `" + std::string(row->then) + "`, the one after `" + std::string(row->after) + "`, not the first");
+    } else {
+      Check(r.hlsl.find("r0.x = saturate(") > export_at, who + ": it is before the next statement that writes r0");
+    }
+    // what it stands on
+    {
+      std::string twice = fixture.text;
+      twice.insert(twice.find("\treturn;"), "\t" + std::string(row->after) + "\n");
+      const sp::VariantTransformResult t = sp::TransformGBufferCarsVsHlsl({fixture.name, 0}, twice);
+      Check(!t.ok && !t.skip && t.error.find(std::string(row->after)) != std::string::npos, who + ": the anchor twice at the top level fails and names it");
+      std::string nested = fixture.text;
+      const size_t at = nested.find("\n\t" + std::string(row->after) + "\n");
+      nested.replace(at, 2 + row->after.size() + 1, "\n\t\t" + std::string(row->after) + "\n");
+      Check(!sp::TransformGBufferCarsVsHlsl({fixture.name, 0}, nested).ok, who + ": the anchor inside a block does not count");
+      std::string busy = fixture.text;
+      busy.insert(busy.find("\treturn;"), "\toTexCoord15 = float4(1.0, 0.0, 0.0, 0.0);\n");
+      const sp::VariantTransformResult b = sp::TransformGBufferCarsVsHlsl({fixture.name, 0}, busy);
+      Check(!b.ok && !b.skip && b.error.find("TEXCOORD15") != std::string::npos, who + ": a vertex shader that writes TEXCOORD15 itself fails and says so");
+      sp::StageContext with_block = sp::SoloContext(sp::kFeatureGBufferVs);
+      with_block.constants_bytes = 16;
+      Check(!sp::TransformGBufferCarsVsHlsl({fixture.name, 0}, fixture.text, with_block).ok, who + ": no constants block of its own");
+    }
+  }
+  // the paint's pair: without a second statement after the anchor it fails
+  {
+    const sp::GBufferCarVsShader* row = sp::FindGBufferCarVsShader("xAmbientCarPaint__VSAmbientCarPaint");
+    if (row) {
+      std::string text = kPaintVsFixture;
+      const size_t late = text.find("\n\t" + std::string(row->then) + "\n", text.find("\n\t" + std::string(row->after) + "\n"));
+      text.erase(late + 1, row->then.size() + 2);
+      const sp::VariantTransformResult r = sp::TransformGBufferCarsVsHlsl({row->name, 0}, text);
+      Check(!r.ok && !r.skip && r.error.find(std::string(row->then)) != std::string::npos, "the paint's second statement missing after the anchor fails and names it");
+    }
+  }
+  // any other vertex shader is skipped
+  const sp::VariantTransformResult other = sp::TransformGBufferCarsVsHlsl({"xCityRoad__VSCityRoad", 0}, kPedVsFixture);
+  Check(!other.ok && other.skip, "a vertex shader that is not a row is skipped");
+  // the stage's definition: feature 12 with the day families' three and these two, one transform for all
+  const sp::VariantDef vs = sp::MakeGBufferVsVariantAll();
+  const sp::VariantDef day = sp::MakeGBufferVsVariant();
+  Check(vs.feature == sp::kFeatureGBufferVs && vs.vertex && vs.needs_rpf && vs.name == day.name && vs.pixel_name_suffixes.size() == day.pixel_name_suffixes.size() + sp::kGBufferCarVsShaderCount &&
+            vs.version == sp::kGBufferVsVersion + sp::kGBufferCarsVsVersion && static_cast<bool>(vs.transform),
+        "the vertex stage's definition has the day's three names and the two of the car stage, feature 12, the summed version");
+  std::set<std::string_view> names(vs.pixel_name_suffixes.begin(), vs.pixel_name_suffixes.end());
+  Check(names.size() == vs.pixel_name_suffixes.size() && names.contains("xPed__VSPedDay") && names.contains("xAmbientCarPaint__VSAmbientCarPaint") && names.contains("xCityRoad__VSCityRoad"), "the names are all there, once");
+  const sp::VariantTransformResult ped = vs.transform({"xPed__VSPedDay", 0}, kPedVsFixture, sp::SoloContext(sp::kFeatureGBufferVs));
+  Check(ped.ok && Count(ped.hlsl, "oTexCoord15 = float4(r0.xyz, 0.0f);") == 1, "the definition's transform makes the car stage's text for the pedestrian's vertex shader: " + ped.error);
+  const sp::VariantTransformResult road = vs.transform({"xCityRoad__VSCityRoad", 0}, std::string("void main(\n\t[[vk::location(1)]] in uint4 iNormal0 : NORMAL0,\n\tout float4 oTexCoord15 : TEXCOORD15)\n{\n\toTexCoord15 = 0.0;\n"
+                                                                                                    "\tfloat4 r4 = 0.0;\n\tr4.xyz = tfetchR11G11B10(iNormal0).xyz;\n"
+                                                                                                    "\toPos.xyz = oPos.xyz * g_PosScale.xyz + g_PosOffset.xyz * oPos.w;\n\treturn;\n}\n"),
+                                      sp::SoloContext(sp::kFeatureGBufferVs));
+  Check(road.ok && Count(road.hlsl, "oTexCoord15 = float4(tfetchR11G11B10(iNormal0).xyz, 0.0f);") == 1, "and the day stage's text for the city road's: " + road.error);
+  Check(vs.transform({"xCityDefault__PSCityDefault", 0}, "", sp::SoloContext(sp::kFeatureGBufferVs)).skip, "any other shader is skipped");
+}
+
 // ---- the table -------------------------------------------------------------------------------------------------------------------------------------------
 
 // Whether a piece of inserted text assigns a register of the game's (`r12.xyz = ...`, `ps = ...`, `p0 = ...`, `a0 = ...`): the stage only adds names that start with gb, or the outputs.
@@ -358,7 +599,7 @@ bool AssignsGameRegister(std::string_view text) {
 
 void CheckTable() {
   std::set<std::string_view> names;
-  size_t interpolants = 0, derivatives = 0, tinted = 0, own_smoothness = 0;
+  size_t interpolants = 0, derivatives = 0, vertex_stage_normals = 0, tinted = 0, own_smoothness = 0;
   std::map<std::string_view, size_t> by_family;
   std::map<std::string_view, size_t> by_plan;
   std::map<uint32_t, size_t> by_slot;
@@ -368,7 +609,8 @@ void CheckTable() {
     Check(names.insert(row.name).second, who + " is in the table once");
     Check(row.name.find("__") != std::string_view::npos, who + " is named group__entry");
     Check(row.slot < 16, who + ": the slot is an interpolant");
-    Check(row.normal == sp::GBufferCarNormal::kInterpolant || row.slot == 0, who + ": a derivative row has no slot");
+    Check(row.normal == sp::GBufferCarNormal::kInterpolant || (row.normal == sp::GBufferCarNormal::kVertexOrDerivative ? row.slot == sp::kGBufferVsInterpolant : row.slot == 0),
+          who + ": a derivative row has no slot, the vertex stage's is TEXCOORD15");
     Check(!EndsWith(row.name, "__PSMultiLight") && !EndsWith(row.name, "__PSMultiLightEnv") && !EndsWith(row.name, "__PSMultiLightInterior"), who + " is not a night shader (GB-C's stage owns those)");
     Check(!sp::IsGBufferDayShader(row.name), who + " is not a day shader (GB-D's table)");
     // the albedo fields fit the source
@@ -387,6 +629,12 @@ void CheckTable() {
       case sp::GBufferCarAlbedo::kConstant:
         Check(!row.tint.empty() && row.sampler.empty() && row.anchor.empty() && !row.gradient, who + ": the constant colour names its constants");
         break;
+      case sp::GBufferCarAlbedo::kVertex:
+        Check(row.expression == "iTexCoord15" && row.sampler.empty() && !row.gradient && row.tint.empty() && row.anchor.empty(), who + ": the vertex stage's colour names its interpolant, TEXCOORD15, and nothing else");
+        break;
+      case sp::GBufferCarAlbedo::kBlack:
+        Check(row.sampler.empty() && !row.gradient && row.tint.empty() && row.anchor.empty() && row.expression.empty(), who + ": black has no fields");
+        break;
     }
     Check(row.gradient ? row.albedo == sp::GBufferCarAlbedo::kDiffuse : true, who + ": only a diffuse texel is fetched with the gradients");
     Check(row.tint.find("baseColor") == std::string_view::npos || row.albedo == sp::GBufferCarAlbedo::kDiffuse, who + ": baseColor multiplies a texel");
@@ -395,7 +643,7 @@ void CheckTable() {
       Check(row.albedo == sp::GBufferCarAlbedo::kDiffuse && row.tint.find("baseColor.xyz") != std::string_view::npos, who + ": the xBumpSpec family's smoothness goes with its baseColor");
     }
     Check(!AssignsGameRegister(sp::GBufferCarsWriteText(row, sp::GBufferCarEdits(), 3)) && !AssignsGameRegister(sp::GBufferCarsOutputText(3)), who + ": no inserted statement assigns a register of the game's");
-    (row.normal == sp::GBufferCarNormal::kInterpolant ? interpolants : derivatives)++;
+    (row.normal == sp::GBufferCarNormal::kInterpolant ? interpolants : row.normal == sp::GBufferCarNormal::kVertexOrDerivative ? vertex_stage_normals : derivatives)++;
     if (row.normal == sp::GBufferCarNormal::kInterpolant) ++by_slot[row.slot];
     ++by_family[row.family];
     ++by_plan[sp::GBufferCarAlbedoSource(row)];
@@ -405,14 +653,17 @@ void CheckTable() {
     Check(!row.reason.empty(), std::string(row.name) + " is left out with a reason");
     Check(!names.contains(row.name), std::string(row.name) + " is not in both lists");
   }
-  Check(interpolants == 65 && derivatives == 8 && sp::kGBufferCarShaderCount == 73, "the table has 65 exported normals and 8 derivative rows (73)");
+  Check(interpolants == 65 && vertex_stage_normals == 1 && derivatives == 7 && sp::kGBufferCarShaderCount == 73,
+        "the table has 65 exported normals, 1 from the vertex stage (the day pedestrian) and 7 derivative rows (73)");
   Check(sp::kGBufferCarLeftOutCount == 19, "19 shaders are left out");
   Check(sp::kGBufferCarShaderCount + sp::kGBufferCarLeftOutCount == 92, "92 lit pixel shaders in all: 64 of the cars, 8 of the traffic, 20 of the characters");
   Check(by_family["player/racer"] == 48 && by_family["traffic"] == 6 && by_family["ped/character"] == 19, "census by family: 48 cars, 6 traffic, 19 characters edited");
-  Check(by_plan[sp::kPlanDiffuse] + by_plan[sp::kPlanDiffuseTint] == 51 && by_plan[sp::kPlanDiffuseTint] == 22 && by_plan[sp::kPlanPaint] == 4 && by_plan[sp::kPlanConstant] == 2 && by_plan[sp::kPlanNone] == 16,
-        "census by albedo: 51 diffuse texels (22 times colour constants), 4 paint registers, 2 colour constants, 16 none");
+  Check(by_plan[sp::kPlanDiffuse] + by_plan[sp::kPlanDiffuseTint] == 51 && by_plan[sp::kPlanDiffuseTint] == 22 && by_plan[sp::kPlanPaint] == 4 && by_plan[sp::kPlanConstant] == 2 &&
+            by_plan[sp::kPlanVertex] == 1 && by_plan[sp::kPlanBlack] == 1 && by_plan[sp::kPlanNone] == 14,
+        "census by albedo: 51 diffuse texels (22 times colour constants), 4 paint registers, 2 colour constants, 1 vertex stage colour, 1 black, 14 none");
   Check(tinted == 22 && own_smoothness == 11, "22 tinted texels and 11 shaders with a smoothness of their own");
-  std::printf("census: %zu edited (%zu interpolant, %zu derivative), %zu left out; by slot:", sp::kGBufferCarShaderCount, interpolants, derivatives, sp::kGBufferCarLeftOutCount);
+  std::printf("census: %zu edited (%zu interpolant, %zu vertex stage or derivative, %zu derivative), %zu left out; by slot:", sp::kGBufferCarShaderCount, interpolants, vertex_stage_normals, derivatives,
+              sp::kGBufferCarLeftOutCount);
   for (const auto& [slot, n] : by_slot) std::printf(" T%u=%zu", slot, n);
   std::printf("; by albedo source:");
   for (const auto& [plan, n] : by_plan) std::printf(" '%s'=%zu", std::string(plan).c_str(), n);
@@ -612,6 +863,36 @@ std::set<std::string> GameConstantNames(std::string_view text) {
   return names;
 }
 
+// The car stage's vertex rows on the retail vertex shaders: the export is in once, the text is the game's plus it, and the shader is the only one whose name ends with the row's (the pack matches by suffix).
+void CheckRetailVertexRows(const std::filesystem::path& folder, const std::filesystem::path& out) {
+  const std::set<std::string> stems = AllStems(folder);
+  size_t made = 0;
+  for (size_t i = 0; i < sp::kGBufferCarVsShaderCount; ++i) {
+    const sp::GBufferCarVsShader& row = sp::kGBufferCarVsShaders[i];
+    const std::string who(row.name);
+    const std::filesystem::path file = Locate(folder, row.name);
+    if (file.empty()) continue;
+    const std::string text = ReadFile(file);
+    size_t ends = 0;
+    for (const std::string& stem : stems) ends += EndsWith(stem, row.name) ? 1 : 0;
+    Check(ends == 1, who + ": the only shader whose name ends with it (the pack matches by suffix): " + std::to_string(ends));
+    const sp::VariantTransformResult r = sp::TransformGBufferCarsVsHlsl({row.name, 0}, text);
+    Check(r.ok, who + ": the export is made on the retail vertex shader: " + r.error);
+    if (!r.ok) continue;
+    ++made;
+    Check(Count(r.hlsl, "oTexCoord15 = float4(") == 1, who + ": the export is there once");
+    const std::string back = WithoutVsExport(r.hlsl, row);
+    Check(back == LfOnly(text), who + ": without the export it is the game's text" + FirstDifference(back, LfOnly(text)));
+    // the statement after which the export goes is the first one after the anchors; the register is not the one the game writes the next line (the export is before the statement that writes it again)
+    Check(Count(LfOnly(text), "\n\t" + std::string(row.after) + "\n") == 1, who + ": the anchor is at the top level of main once");
+    if (!out.empty()) {
+      std::filesystem::create_directories(out);
+      std::ofstream(out / (who + ".gbcarsvs.hlsl"), std::ios::binary) << r.hlsl;
+    }
+  }
+  std::printf("the car stage's vertex rows on the retail folder: %zu of %zu made\n", made, sp::kGBufferCarVsShaderCount);
+}
+
 void CheckRetail(const std::filesystem::path& folder, const std::string& helper, const std::filesystem::path& out) {
   size_t seen = 0, edited = 0, captured = 0, found_albedo = 0;
   std::map<std::string, size_t> failures;
@@ -752,6 +1033,8 @@ int main(int argc, char** argv) {
     real_helper = true;
   }
   CheckFixture();
+  CheckTrafficAndPeds();
+  CheckVertexRows();
   CheckTable();
   CheckHostWord();
   if (real_helper) {
@@ -765,6 +1048,7 @@ int main(int argc, char** argv) {
   if (argc > 2) {
     const std::filesystem::path out = argc > 3 ? argv[3] : std::filesystem::path();
     CheckRetail(argv[2], helper, out);
+    CheckRetailVertexRows(argv[2], out);
     CheckComposed(argv[2], helper, out);
   }
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
