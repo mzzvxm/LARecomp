@@ -14,7 +14,8 @@
 //          variants/gbuffer_night.cpp (package GB-C), which finds each one's normal itself
 //   CARS:  the 73 car, traffic and character shaders (the player's and the racers' paint, plastics, chrome, rims, tyres; the traffic cars' bodies; the drivers, the pedestrians and the characters) that
 //          are not night shaders: shaderpack/variants/gbuffer_cars.cpp (package GB-G1), which takes the normal the game's own vertex shader exports, the albedo from the diffuse texel / the paint's
-//          register / a colour constant, and the material from the draw's word
+//          register / a colour constant, and the material from the draw's word; two of its vertex shaders (the day pedestrian's, the traffic paint's) are also edited by the G-buffer's vertex
+//          stage, which writes what no interpolant has (GB-G2: the car stage's rows of feature kFeatureGBufferVs, MakeGBufferVsVariantAll in gbuffer_cars.h)
 //   DAY:   the 69 `PSCity*` / `PSProp*` shaders (42 edited), xCityDefault::PSCityDefault among them (its vertex shader, VSCityDefaultDay, exports the vertex's normal as oTexCoord0.xyz and the
 //          position as oTexCoord1.xyz, both in WORLD space): shaderpack/variants/gbuffer_day.cpp (package GB-D); the day table also says which of them are the day stage's vertex shaders'
 //          (feature kFeatureGBufferVs, its own pack entries: gbuffer_day.h) to pair per draw (Scene::GBufferKey)
@@ -72,7 +73,8 @@ namespace larecomp::shaderpack {
 // 5: the car, traffic and character families (gbuffer_cars.h, GB-G1: 73 shaders; the albedo from the diffuse texel, the paint's register or a colour constant; the draw's word). The xBumpSpec shaders'
 //    own `smoothness` constant. gbuffer_albedo.h's analysis takes a sampler and the gradient fetch (the night and the day stages' own results are unchanged). The helper's GbMaterialWord parameter is
 //    gbSmoothness (the file is in the stamp through the fingerprint).
-inline constexpr uint32_t kGBufferVariantVersion = 5;
+// 6: the traffic and the pedestrians (GB-G2, gbuffer_cars.h): the traffic paint's albedo from the vertex stage, the traffic black matte's black albedo, the day pedestrian's normal from the vertex stage (kGBufferCarsVersion 3).
+inline constexpr uint32_t kGBufferVariantVersion = 6;
 
 // The pixel shaders, by name (the group and the entry point, as the translator names its HLSL files). Found by name alone: the identities are whatever
 // the game's containers hold.

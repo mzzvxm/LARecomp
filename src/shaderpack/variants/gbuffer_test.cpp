@@ -267,9 +267,9 @@ void CheckVariantDef() {
     std::sort(sorted.begin(), sorted.end());
     Check(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "no name is in the definition twice");
   }
-  // The version is the pixel stage's stamp line: 5 = the car family in it (a pack stamped with 1 to 4 is built again); the day stage's own number is 2, the car stage's 2.
-  Check(sp::kGBufferVariantVersion == 5, "the variant's version is 5: the night family (2), the day families (3), RT2, the albedo and the lit weight (4) and the car family (5)");
-  Check(sp::kGBufferDayVersion == 2 && sp::kGBufferVsVersion == 1 && sp::kGBufferCarsVersion == 2, "the day stage's own version is 2 (RT2), the vertex stage's is untouched, the car stage's is 2");
+  // The version is the pixel stage's stamp line: 6 = the traffic and the pedestrians (a pack stamped with 1 to 5 is built again); the day stage's own number is 2, the car stage's 3.
+  Check(sp::kGBufferVariantVersion == 6, "the variant's version is 6: the night family (2), the day families (3), RT2, the albedo and the lit weight (4), the car family (5), the traffic and the pedestrians (6)");
+  Check(sp::kGBufferDayVersion == 2 && sp::kGBufferVsVersion == 1 && sp::kGBufferCarsVersion == 3, "the day stage's own version is 2 (RT2), the day vertex stage's is untouched, the car stage's is 3");
   Check(def.input_xxh3 != 0, "the helper is in the fingerprint");
   const sp::VariantDef other = sp::MakeGBufferVariantFromText(std::string(kHelper) + "// changed\n");
   Check(other.input_xxh3 != def.input_xxh3, "a changed helper changes the fingerprint");
