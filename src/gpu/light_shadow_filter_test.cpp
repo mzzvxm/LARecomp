@@ -1023,6 +1023,120 @@ void CheckAlphaToMask() {
   Check(ls::AtlasAlphaToMask(0x87u | 0x100u) == ls::AtlasAlphaToMask(0xAAu | 0x100u | (2u << 9)), "one word for every sample count the main view had");
 }
 
+// ---------------------------------------------------------------------------
+// the edge in motion (HL-SHADOW-QUALITY-3)
+// ---------------------------------------------------------------------------
+
+// The owner (2026-11-21, watching 1080p and 4K night drives of the new exe beside the old one) saw "some really sharp shadows and some full of artifacts"; the 720p stills are clean. A map is a
+// grid of point samples: where a shadow's edge falls in it is quantised to a texel, so as the lamp creeps (an oncoming car at 0.5 m/s, a car's sway) the edge does not move smoothly, it HOPS a
+// texel at a time, and a texel is 1.3 to 3.8 cm at 10 to 20 m (the sizes above) = 2 to 8 pixels at 4K (a pixel is about 0.05 cm for every metre of distance) but under 1.5 pixels at 720p. The kernel
+// cannot hide that (the shadow's edge is a ramp of 0.8 to 2.4 texels). This is not a failure of the lookup: a number for the report. The edge of a wall's shadow on the road is found at every
+// frame (where the lit share crosses 0.5, scanned every half millimetre) while the lamp moves `step_m` a frame, against where the geometry puts it; what is left after the straight line of the
+// true motion is the jitter (metres). INFO only: no limit is set here; the pictures (chain-hl-shadow-quality.ps1 -Stage take) are what a person looks at.
+struct Crawl {
+  double jitter_std = 0.0;   // m
+  double jitter_max = 0.0;   // m
+  double hop_max = 0.0;      // m: the largest change of the edge's place from one frame to the next beyond the true motion
+  double texel = 0.0;        // m: one texel at the receiver's distance
+  int frames = 0;
+  int missing = 0;           // frames in which the edge was not found
+};
+
+Crawl EdgeInMotion(bool old_lookup, int tile, double fov, double slope_bias, double recv_d, bool lateral, double step_m, int frames) {
+  const Street st(180.0);  // the beam along -x
+  const double wall_d = 8.0, wall_edge = -1.0;
+  Scene scene;
+  scene.ground_y = st.ground_y;
+  {
+    const Vec e1 = st.Ground(wall_d, wall_edge), e2 = st.Ground(wall_d, -30.0);
+    scene.boxes.push_back({{e1.x - 0.1, st.ground_y, std::min(e1.z, e2.z)}, {e1.x + 0.1, st.ground_y + 4.0, std::max(e1.z, e2.z)}});
+  }
+  Crawl out;
+  out.frames = frames;
+  std::vector<double> t_axis, residual;
+  for (int t = 0; t < frames; ++t) {
+    const double s = lateral ? step_m * double(t) : 0.0;
+    const double a = lateral ? 0.0 : step_m * double(t);
+    const Vec eye = st.lamp + (lateral ? st.side * s : st.Flat() * a);
+    const Map m = old_lookup ? MakeMap(scene, eye, st.dir, 84.0, 512, 2.0) : MakeMap(scene, eye, st.dir, fov, tile, slope_bias);
+    if (t == 0) {
+      out.texel = ls::TexelMeters(m.spec, uint32_t(m.tile), recv_d);
+    }
+    // where the geometry puts the edge on the road at recv_d (the lateral place from the first lamp's axis): the ray from the lamp through the wall's edge
+    const double e_true = lateral ? s + (wall_edge - s) * recv_d / wall_d : wall_edge * (recv_d - a) / (wall_d - a);
+    const double window = 6.0 * out.texel + 0.03;
+    double prev_v = -1.0, prev_lat = 0.0, cross = std::nan("");
+    for (double lat = e_true - window; lat <= e_true + window; lat += 0.0005) {
+      const Vec p = st.Ground(recv_d, lat);
+      const float v = old_lookup ? OldLookup(m, p) : Lookup(m, p, Vec{0, 1, 0});
+      if (prev_v >= 0.0 && prev_v < 0.5 && v >= 0.5) {
+        cross = prev_lat + (0.5 - prev_v) / (double(v) - prev_v) * (lat - prev_lat);
+        break;
+      }
+      prev_v = v;
+      prev_lat = lat;
+    }
+    if (std::isnan(cross)) {
+      ++out.missing;
+      continue;
+    }
+    t_axis.push_back(double(t));
+    residual.push_back(cross - e_true);
+  }
+  if (residual.size() < 8) {
+    return out;
+  }
+  // the straight line of the residual (the map's own bias and a slow drift) taken out
+  const double n = double(residual.size());
+  double st_ = 0, sr = 0, stt = 0, str = 0;
+  for (size_t i = 0; i < residual.size(); ++i) {
+    st_ += t_axis[i];
+    sr += residual[i];
+    stt += t_axis[i] * t_axis[i];
+    str += t_axis[i] * residual[i];
+  }
+  const double slope = (n * str - st_ * sr) / std::max(1e-12, n * stt - st_ * st_);
+  const double icpt = (sr - slope * st_) / n;
+  double sum2 = 0.0, prev = 0.0;
+  for (size_t i = 0; i < residual.size(); ++i) {
+    const double r = residual[i] - (icpt + slope * t_axis[i]);
+    sum2 += r * r;
+    out.jitter_max = std::max(out.jitter_max, std::fabs(r));
+    if (i > 0 && t_axis[i] - t_axis[i - 1] < 1.5) {
+      out.hop_max = std::max(out.hop_max, std::fabs(r - prev));
+    }
+    prev = r;
+  }
+  out.jitter_std = std::sqrt(sum2 / n);
+  return out;
+}
+
+void CheckEdgeInMotion() {
+  // 4K: a pixel is about 0.048 cm for every metre from the camera (a 55 degree field over 2160 rows), the camera 5 m behind the lamps: at 1080p twice that
+  const auto pixel_cm = [](double recv_d) { return 0.0482 * (recv_d + 5.0); };
+  const struct {
+    const char* name;
+    int tile;
+    double fov;
+  } kLevels[] = {{"medium 768", 768, 72.0}, {"high 1024", 1024, 72.0}, {"ultra 1280", 1280, 80.0}};
+  for (const double recv_d : {9.0, 16.0, 30.0}) {
+    const Crawl old_c = EdgeInMotion(true, 512, 84.0, 2.0, recv_d, true, 0.008, 60);
+    Info("OLD (512, a box of 3), the lamp creeping 0.8 cm a frame across the beam, wall edge seen on the road " + Num(recv_d, 0) + " m out (texel " + Num(100 * old_c.texel, 2) + " cm): the edge's place jitters " + Num(100 * old_c.jitter_std, 2) +
+         " cm (std), " + Num(100 * old_c.jitter_max, 2) + " cm at worst, one frame's jump " + Num(100 * old_c.hop_max, 2) + " cm = " + Num(100 * old_c.jitter_std / pixel_cm(recv_d), 1) + " px at 4K, " + Num(50 * old_c.jitter_std / pixel_cm(recv_d), 1) + " px at 1080p");
+    for (const auto& lv : kLevels) {
+      const Crawl c = EdgeInMotion(false, lv.tile, lv.fov, ls::kSlopeScaledDepthBias, recv_d, true, 0.008, 60);
+      Info(std::string("NEW ") + lv.name + ", the same: texel " + Num(100 * c.texel, 2) + " cm = " + Num(c.texel * 100 / pixel_cm(recv_d), 1) + " px at 4K, " + Num(c.texel * 50 / pixel_cm(recv_d), 1) + " px at 1080p; the edge jitters " + Num(100 * c.jitter_std, 2) +
+           " cm (std), " + Num(100 * c.jitter_max, 2) + " cm at worst, one frame's jump " + Num(100 * c.hop_max, 2) + " cm = " + Num(100 * c.jitter_std / pixel_cm(recv_d), 1) + " px (std) at 4K, " + Num(50 * c.jitter_std / pixel_cm(recv_d), 1) + " px at 1080p");
+      Check(c.missing < 6, std::string("the edge is found in nearly every frame of the motion at ") + Num(recv_d, 0) + " m, " + lv.name + " (" + std::to_string(c.missing) + " missing)");
+    }
+  }
+  // moving toward the wall (a car driving along the beam): the edge hardly moves on the road (1 mm a frame at 8 cm a frame of the lamp), so the map's quantisation is what is seen
+  {
+    const Crawl c = EdgeInMotion(false, 768, 72.0, ls::kSlopeScaledDepthBias, 16.0, false, 0.08, 60);
+    Info("NEW medium 768, the lamp driving along the beam 8 cm a frame (4.8 m/s), edge 16 m out: jitter " + Num(100 * c.jitter_std, 2) + " cm (std), " + Num(100 * c.jitter_max, 2) + " cm at worst (texel " + Num(100 * c.texel, 2) + " cm)");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1036,6 +1150,7 @@ int main(int argc, char** argv) {
   CheckSynthetic();
   CheckLevelSizes();
   CheckAlphaToMask();
+  CheckEdgeInMotion();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }
