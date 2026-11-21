@@ -17,7 +17,9 @@
 //               different guest keys), so two sectors that use one shader instance with one texture name can have two materials: the key is part of a material's identity.
 //   tint        the flat colour of the materials that have one: DiffuseColor (CityGrimeMetalTint ...), TintColor, WindowTintColor, and for a glowing tint NightColor, else DayColor;
 //               (1, 1, 1) otherwise
-//   emissive    for the glowing class only: NeonIntensity, NightIntensity (CityNeonTint, CityStoreSign), 1 where it has neither
+//   emissive    for the glowing class only: NeonIntensity, NightIntensity (CityNeonTint, CityStoreSign), 1 where it has neither; and for a material a GB-F2 row made glow (class=emissive, or a lit
+//               weight under 1: "lights itself": the lit windows of a night) 1 x (1 - the lit weight), the row's way of saying which textures are lit at night (R7)
+//   glow kind   what a glowing material's glow follows (city_hit_format.h kGlow*): a street lamp's lens the street lamps' schedule, a traffic signal always, everything else the night curve
 //   average     tint x the diffuse texture's mean colour where the texture resolved, tint x 0.5 where it has a texture that did not resolve, the tint alone where it has none
 //
 // The per-texture rows of GB-F2 (gbuffer_materials.h: class=, rough=, metal=, ssr=, lit= by `hash:<XXH3-64 of the base level>`) are applied by the same ApplyTextureRow the raster side
@@ -28,6 +30,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -44,6 +47,7 @@ struct MaterialDef {
   uint32_t word = PackMaterialWord(38, 1, 0, 255, 0);  // HitMaterial's default: smoothness 0.15, class world, lit
   float tint[3] = {1.0f, 1.0f, 1.0f};
   float emissive = 0.0f;
+  uint8_t glow_kind = 0;  // kGlow* (only where emissive > 0)
   std::string texture;  // the diffuse texture's file name as the resource has it ("wall_brick_01.dds"), "" none
   uint32_t picture = kNoTexture;  // the texture source's answer for `texture`: the picture (an index in its table); kNoTexture: none, or not found
   uint64_t texture_key = 0;       // ... and the guest key of the dictionary entry (HitMaterial::key)
@@ -62,6 +66,17 @@ struct MaterialFacts {
   bool has_exponent = false;  // the instance has a SpecularExponent
   bool no_params = false;     // the instance's parameters could not be read
 };
+
+// What the glow of a shader group follows (lowercase compare of the group's name: "CityLampGlassTint" a lens, "PropTrafficSignal" always, any other neon, sign or interior the night curve).
+uint32_t GlowKindOfGroup(std::string_view group);
+
+// The glow a GB-F2 row leaves a material with, given its word AFTER the row and the glow it had (R7): a glowing class keeps its scale (1 where it had none), a lit weight under 1 on any other class
+// gives (1 - lit) at least, anything else does not glow. `kind` is kept for a material that glowed already and is the night curve for the ones the row made glow.
+struct RowGlow {
+  float emissive = 0.0f;
+  uint8_t kind = 0;
+};
+RowGlow GlowAfterRow(uint32_t word, float emissive_before, uint8_t kind_before);
 
 // The def of a shader instance: `names` has the group, the preset and the parameters (ParseSector with read_shader_params); `base_class` is the pack's class of the geometry
 // (ClassifyShader), which decides the alpha flag and the interior class. A null `names` or an instance without parameters gives the class's words and no texture.
@@ -138,6 +153,8 @@ struct FinalizeStats {
   uint32_t materials_textured = 0;   // materials that have a texture name
   uint32_t materials_unresolved = 0; // ... whose texture did not resolve (the average stands)
   uint32_t rows_applied = 0;         // materials a GB-F2 row changed
+  uint32_t rows_glow_on = 0;         // ... that a row made glow (class emissive, or a lit weight under 1): the lit windows
+  uint32_t rows_glow_off = 0;        // ... whose glow a row took away
   std::vector<std::string> unresolved_names;  // the first few
 };
 

@@ -38,6 +38,7 @@ namespace gb = mcla::gpu::gbuffer;
 
 namespace {
 
+#define BSN "\n"
 int g_failures = 0;
 int g_checks = 0;
 #define CHECK(cond)                                                          \
@@ -827,6 +828,71 @@ void TestMaterials() {
   CHECK(FinalizeMaterials(set, &textures, &rows, &materials, &table, &with_rows, &error));
   CHECK(with_rows.rows_applied == 1 && WordClass(materials[2].word) == uint32_t(gb::SurfaceClass::kGlass) && WordMetal(materials[2].word) == 255 && WordClass(materials[1].word) == 1 &&
         WordClass(materials[4].word) == 1);  // another entry of another texture: untouched
+  // R7: the glow of a material. The shader's group says what glows and what its glow follows (a lamp lens the street lamps' schedule, a traffic signal always, neon and the rest the night curve); a
+  // GB-F2 row that says "lights itself" (a lit weight under 1) or "emissive" makes a texture glow (the lit windows of a night: the census tells which textures), one that gives a glowing material
+  // another class takes its glow away
+  {
+    const ShaderNames lens = MakeNames("CityLampGlassTint", "p", {Vec("NightColor", 1.0f, 0.8f, 0.5f)});
+    const ShaderNames signal = MakeNames("PropTrafficSignal", "p", {});
+    const ShaderNames neon = MakeNames("CityNeon", "p", {Tex("DiffuseSampler", "known_a.dds"), Vec("NeonIntensity", 3.0f)});
+    MaterialFacts f;
+    const MaterialDef dl = MaterialFromShader(&lens, MaterialClass::kGlass, &f), ds = MaterialFromShader(&signal, MaterialClass::kSolid, &f), dn = MaterialFromShader(&neon, MaterialClass::kSolid, &f);
+    CHECK(WordClass(dl.word) == uint32_t(gb::SurfaceClass::kEmissive) && dl.emissive == 1.0f && dl.glow_kind == kGlowLens);
+    CHECK(WordClass(ds.word) == uint32_t(gb::SurfaceClass::kEmissive) && ds.emissive == 1.0f && ds.glow_kind == kGlowAlways);
+    CHECK(WordClass(dn.word) == uint32_t(gb::SurfaceClass::kEmissive) && dn.emissive == 3.0f && dn.glow_kind == kGlowNight);
+    CHECK(MaterialFromShader(&wall_a, MaterialClass::kSolid, nullptr).emissive == 0.0f);  // a wall does not glow
+    CHECK(GlowKindOfGroup("CityLampGlassTint") == kGlowLens && GlowKindOfGroup("PropLampGlassTint") == kGlowLens && GlowKindOfGroup("PropTrafficSignal") == kGlowAlways &&
+          GlowKindOfGroup("CityNeonTint") == kGlowNight && GlowKindOfGroup("CityStoreSign") == kGlowNight && GlowKindOfGroup("InteriorTexturedEmissive") == kGlowNight && GlowKindOfGroup("") == kGlowNight);
+    // the kind is part of a material's identity: two defs that differ only by it are two materials
+    MaterialSet kinds;
+    MaterialDef a = dl, b = dl;
+    b.glow_kind = kGlowAlways;
+    CHECK(kinds.Add(a) == 1 && kinds.Add(b) == 2 && kinds.Add(a) == 1);
+    // the rows: `lit=0` on a wall texture makes it glow (the night curve), `class=emissive` on another does, `class=world` on a neon sign's texture takes its glow away
+    MaterialSet glow_set;
+    const uint32_t gw = glow_set.Add(resolved(wall_a, d3));   // the lit window: texture known_a
+    const uint32_t gb2 = glow_set.Add(resolved(wall_b, d3));  // known_b: class=emissive
+    const uint32_t gn = glow_set.Add(resolved(neon, d3));     // a neon sign on known_a's texture
+    CHECK(gw == 1 && gb2 == 2 && gn == 3);
+    std::vector<HitMaterial> before;
+    std::vector<HitTexture> before_table;
+    FinalizeStats before_stats;
+    CHECK(FinalizeMaterials(glow_set, &textures, nullptr, &before, &before_table, &before_stats, &error));
+    CHECK(before[gw].emissive == 0.0f && before[gb2].emissive == 0.0f && before[gn].emissive == 3.0f && before[gn].glow_kind == kGlowNight);
+    char rows_text[512];
+    std::snprintf(rows_text, sizeof(rows_text), "@version 1" BSN "hash:%llx lit=0" BSN "hash:%llx class=emissive" BSN, static_cast<unsigned long long>(before[gw].key),
+                  static_cast<unsigned long long>(before[gb2].key));
+    const fs::path glow_rows_file = g_scratch / "rows_glow.txt";
+    { std::ofstream(glow_rows_file) << rows_text; }
+    gb::TextureTable glow_rows;
+    CHECK(LoadTextureRows({glow_rows_file}, &glow_rows, nullptr, nullptr) && glow_rows.size() == 2);
+    std::vector<HitMaterial> after;
+    FinalizeStats after_stats;
+    CHECK(FinalizeMaterials(glow_set, &textures, &glow_rows, &after, &before_table, &after_stats, &error));
+    // material 1 and 3 share known_a's entry key (the same dictionary): the row `lit=0` reaches both; the neon sign keeps its own scale and kind (a glowing class stays), the wall now glows with 1
+    CHECK(after[gw].emissive == 1.0f && after[gw].glow_kind == kGlowNight && WordClass(after[gw].word) == 1 && WordLit(after[gw].word) == 0);
+    CHECK(after[gb2].emissive == 1.0f && WordClass(after[gb2].word) == uint32_t(gb::SurfaceClass::kEmissive));
+    CHECK(after[gn].emissive == 3.0f && after[gn].glow_kind == kGlowNight);  // the same key, lit=0 on an emissive class: nothing changes
+    CHECK(after_stats.rows_glow_on == 2 && after_stats.rows_glow_off == 0 && after_stats.rows_applied == 2);
+    // a partly lit texture: lit=0.5 gives half the scale; and a row that takes the class away takes the glow
+    std::snprintf(rows_text, sizeof(rows_text), "@version 1" BSN "hash:%llx lit=0.5" BSN "hash:%llx class=world" BSN, static_cast<unsigned long long>(before[gb2].key),
+                  static_cast<unsigned long long>(before[gn].key));
+    { std::ofstream(glow_rows_file) << rows_text; }
+    gb::TextureTable glow_rows2;
+    CHECK(LoadTextureRows({glow_rows_file}, &glow_rows2, nullptr, nullptr));
+    std::vector<HitMaterial> after2;
+    FinalizeStats after2_stats;
+    CHECK(FinalizeMaterials(glow_set, &textures, &glow_rows2, &after2, &before_table, &after2_stats, &error));
+    CHECK(Near(after2[gb2].emissive, 1.0f - 128.0f / 255.0f, 1e-6f) && after2[gb2].glow_kind == kGlowNight);
+    // (the neon sign shares known_a's key with the wall: the row class=world applies to every material that texture is in, the sign loses its glow)
+    CHECK(after2[gn].emissive == 0.0f && WordClass(after2[gn].word) == 1 && after2_stats.rows_glow_off >= 1);
+    // the pure rule
+    const uint32_t emissive_word = PackMaterialWord(100, uint32_t(gb::SurfaceClass::kEmissive), 0, 0, 0);
+    CHECK(GlowAfterRow(emissive_word, 0.0f, 0).emissive == 1.0f);
+    CHECK(GlowAfterRow(emissive_word, 7.0f, kGlowLens).emissive == 7.0f && GlowAfterRow(emissive_word, 7.0f, kGlowLens).kind == kGlowLens);
+    CHECK(GlowAfterRow(PackMaterialWord(100, 1, 0, 255, 0), 7.0f, kGlowLens).emissive == 0.0f && GlowAfterRow(PackMaterialWord(100, 0, 0, 0, 0), 0.0f, 0).emissive == 0.0f);  // lit, or no class: no glow
+    CHECK(Near(GlowAfterRow(PackMaterialWord(100, 11, 0, 51, 0), 0.0f, 0).emissive, 0.8f, 1e-6f) && Near(GlowAfterRow(PackMaterialWord(100, 11, 0, 51, 0), 0.9f, kGlowLens).emissive, 0.9f, 1e-6f));
+  }
   CHECK(!FinalizeMaterials(set, nullptr, nullptr, &materials, &table, &stats, &error) && !error.empty());  // pictures the source does not have: refused
   {
     MaterialSet unresolved_set;  // defs that were never resolved (no source in the build): no pictures, the averages stand

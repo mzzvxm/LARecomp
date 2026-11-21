@@ -312,6 +312,34 @@ void RecordChecks() {
   }
   Check(bad == 0, Num("a material record packs, unpacks, writes and reads (%.0f bad of 5000)", bad));
   {
+    // R7: the glow kind rides in the two spare bits of the tint word, only on a material that glows; the tint's ten bit channels are untouched and a record without a kind reads as kGlowNight
+    int wrong = 0;
+    for (uint32_t kind = 0; kind < 4; ++kind) {
+      for (const float emissive : {0.0f, 1.0f, 12.5f}) {
+        HitMaterial m;
+        m.tint[0] = 0.25f;
+        m.tint[1] = 1.0f;
+        m.tint[2] = 2.0f;
+        m.emissive = emissive;
+        m.glow_kind = uint8_t(kind);
+        uint32_t words[8];
+        m.Pack(words);
+        HitMaterial plain = m;
+        plain.glow_kind = 0;
+        uint32_t plain_words[8];
+        plain.Pack(plain_words);
+        const HitMaterial u = HitMaterial::Unpack(words);
+        const uint32_t want_kind = emissive > 0.0f ? kind : 0u;
+        if (u.glow_kind != want_kind || (words[2] >> kGlowShift) != want_kind || (words[2] & 0x3FFFFFFFu) != (plain_words[2] & 0x3FFFFFFFu) || words[3] != plain_words[3]) ++wrong;
+        for (int c = 0; c < 3; ++c) {
+          if (!NearlyEqual(u.tint[c], m.tint[c], 1.0 / 1023.0, 0)) ++wrong;
+        }
+      }
+    }
+    Check(wrong == 0, Num("the glow kind is in bits 30..31 of the tint word of a glowing material and nowhere else (%.0f wrong)", wrong));
+    Check(kGlowNight == 0 && kGlowLens == 1 && kGlowAlways == 2 && kGlowKinds == 3 && kGlowShift == 30, "the glow kinds' numbers");
+  }
+  {
     HitMaterial m;
     m.emissive = -3.0f;
     uint32_t w[8];
@@ -857,6 +885,10 @@ void HlslDefinesChecks(const std::string& text) {
       {"CITY_HIT_WORD_FLAG_SSR", double(kWordFlagSsr)},
       {"CITY_HIT_WORD_FLAG_ALPHA_COVERED", double(kWordFlagAlphaCovered)},
       {"CITY_HIT_WORD_FLAG_VEHICLE", double(kWordFlagVehicle)},
+      {"CITY_HIT_GLOW_NIGHT", double(kGlowNight)},
+      {"CITY_HIT_GLOW_LENS", double(kGlowLens)},
+      {"CITY_HIT_GLOW_ALWAYS", double(kGlowAlways)},
+      {"CITY_HIT_GLOW_SHIFT", double(kGlowShift)},
   };
   Check(defines.size() == want.size(), Num("the .hlsli has %.0f CITY_HIT_ numeric defines (the test knows %.0f)", double(defines.size()), double(want.size())));
   for (const auto& [name, value] : want) {

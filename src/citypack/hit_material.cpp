@@ -45,9 +45,33 @@ bool HasVertexGloss(const std::string& group) {
 
 }  // namespace
 
+uint32_t GlowKindOfGroup(std::string_view group) {
+  std::string lower(group);
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  const auto has = [&](const char* word) { return lower.find(word) != std::string::npos; };
+  if (has("lampglass")) return kGlowLens;
+  if (has("trafficsignal")) return kGlowAlways;
+  return kGlowNight;
+}
+
+RowGlow GlowAfterRow(uint32_t word, float emissive_before, uint8_t kind_before) {
+  RowGlow g;
+  const uint32_t cls = WordClass(word);
+  const bool had = std::isfinite(emissive_before) && emissive_before > 0.0f;
+  const float unlit = 1.0f - float(WordLit(word)) * (1.0f / 255.0f);
+  if (cls == uint32_t(gb::SurfaceClass::kEmissive)) {
+    g.emissive = had ? emissive_before : 1.0f;
+    g.kind = had ? kind_before : uint8_t(kGlowNight);
+  } else if (cls != uint32_t(gb::SurfaceClass::kNone) && unlit > 0.0f) {
+    g.emissive = had ? std::max(emissive_before, unlit) : unlit;
+    g.kind = had ? kind_before : uint8_t(kGlowNight);
+  }
+  return g;
+}
+
 std::string MaterialDef::Key() const {
-  char head[160];
-  std::snprintf(head, sizeof(head), "w%08x|t%08x,%08x,%08x|e%08x|s%08x|f%d|", word, FloatBits(tint[0]), FloatBits(tint[1]), FloatBits(tint[2]), FloatBits(emissive), shader_hash,
+  char head[176];
+  std::snprintf(head, sizeof(head), "w%08x|t%08x,%08x,%08x|e%08x,%u|s%08x|f%d|", word, FloatBits(tint[0]), FloatBits(tint[1]), FloatBits(tint[2]), FloatBits(emissive), unsigned(glow_kind), shader_hash,
                 flat_colour ? 1 : 0);
   char picked[40];
   std::snprintf(picked, sizeof(picked), "p%08x,%08x,%08x|", picture, uint32_t(texture_key), uint32_t(texture_key >> 32));
@@ -101,6 +125,7 @@ MaterialDef MaterialFromShader(const ShaderNames* names, MaterialClass base_clas
   def.flat_colour = found_tint && def.texture.empty();
   if (cls == gb::SurfaceClass::kEmissive) {
     def.emissive = 1.0f;
+    def.glow_kind = uint8_t(GlowKindOfGroup(names->group));
     const ShaderParam* glow = FindFloat(params, kParamNeonIntensity);
     if (!glow) glow = FindFloat(params, kParamNightIntensity);
     if (glow && std::isfinite(glow->value[0]) && glow->value[0] > 0.0f) def.emissive = glow->value[0];
@@ -140,6 +165,7 @@ bool FinalizeMaterials(const MaterialSet& set, const HitTextureSource* textures,
     HitMaterial m;  // the defaults are the default surface's: a mid grey
     m.word = def.word;
     m.emissive = def.emissive;
+    m.glow_kind = def.glow_kind;
     m.shader_hash = def.shader_hash;
     if (index != 0) {
       for (int k = 0; k < 3; ++k) {
@@ -171,7 +197,15 @@ bool FinalizeMaterials(const MaterialSet& set, const HitTextureSource* textures,
         const gb::TextureRow* row = rows->Find(std::string_view(), TextureStem(def.texture), m.key);
         if (row != nullptr) {
           const uint32_t changed = gb::ApplyTextureRow(m.word, *row);
-          if (changed != m.word) ++stats->rows_applied;
+          if (changed != m.word) {
+            ++stats->rows_applied;
+            // a row that says "emissive" or "lights itself" makes a lit window glow; one that takes the class away takes the glow (R7)
+            const RowGlow glow = GlowAfterRow(changed, m.emissive, m.glow_kind);
+            if (glow.emissive > 0.0f && !(m.emissive > 0.0f)) ++stats->rows_glow_on;
+            if (!(glow.emissive > 0.0f) && m.emissive > 0.0f) ++stats->rows_glow_off;
+            m.emissive = glow.emissive;
+            m.glow_kind = glow.kind;
+          }
           m.word = changed;
         }
       }

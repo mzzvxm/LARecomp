@@ -85,6 +85,7 @@ struct HitCensus {
   uint32_t materials_gloss_vertex = 0;
   uint32_t materials_flat_colour = 0;
   uint32_t materials_emissive = 0;
+  uint32_t materials_glow_kind[3] = {};  // ... by kGlowNight, kGlowLens, kGlowAlways (R7)
   uint32_t shader_instances = 0;      // the sectors' and the lod's shader tables, summed
   FinalizeStats finalize;
   CollectStats collect;

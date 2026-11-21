@@ -649,7 +649,10 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
       if (f.gloss_vertex) ++census.materials_gloss_vertex;
     }
     if (set.defs()[m].flat_colour) ++census.materials_flat_colour;
-    if (materials[m].emissive > 0.0f) ++census.materials_emissive;
+    if (materials[m].emissive > 0.0f) {
+      ++census.materials_emissive;
+      ++census.materials_glow_kind[materials[m].glow_kind < kGlowKinds ? materials[m].glow_kind : kGlowNight];
+    }
   }
 
   // The head: header, sector table, materials, textures.
@@ -954,7 +957,9 @@ std::string HitCensus::Report() const {
     if (materials_by_class[c] != 0) out << " " << kClassNames[c] << "=" << materials_by_class[c];
   }
   out << "\n  smoothness from the pixel shader's exponent " << materials_gloss_pixel << ", from the vertex shader's " << materials_gloss_vertex << ", the class default for the rest ("
-      << materials_without_exponent << " have no SpecularExponent); flat colours " << materials_flat_colour << ", glowing " << materials_emissive << "; group not in the class table "
+      << materials_without_exponent << " have no SpecularExponent); flat colours " << materials_flat_colour << ", glowing " << materials_emissive << " (the night curve " << materials_glow_kind[kGlowNight] << ", street lamp lenses "
+      << materials_glow_kind[kGlowLens] << ", always " << materials_glow_kind[kGlowAlways] << "; per-texture rows made " << finalize.rows_glow_on << " glow and took the glow of " << finalize.rows_glow_off
+      << "); group not in the class table "
       << materials_group_unknown << ", without parameters " << materials_without_params << "\n";
   out << "  textures: " << finalize.texture_names << " distinct names in " << finalize.materials_textured << " textured materials; " << finalize.names_resolved << " resolved by the texture set ("
       << textures << " in its table), " << finalize.materials_unresolved << " materials keep their average colour; per-texture rows changed " << finalize.rows_applied << " materials\n";

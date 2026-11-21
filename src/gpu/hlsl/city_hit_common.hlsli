@@ -63,6 +63,11 @@
 #define CITY_HIT_WORD_FLAG_ALPHA_COVERED 2u
 #define CITY_HIT_WORD_FLAG_VEHICLE 4u
 
+#define CITY_HIT_GLOW_NIGHT 0u    // what a glowing material's glow follows (the tint word's bits 30..31: city_hit_format.h kGlow*): the fill lights' night curve
+#define CITY_HIT_GLOW_LENS 1u     // a street lamp's lens: the street lamps' schedule
+#define CITY_HIT_GLOW_ALWAYS 2u   // a traffic signal: always
+#define CITY_HIT_GLOW_SHIFT 30u
+
 // ---- the resources (an includer that has its own names defines CITY_HIT_NO_RESOURCES and declares gCityPool, gCitySectors, gCityMaterials, gCityTextures itself) ----------------
 
 #ifndef CITY_HIT_NO_RESOURCES
@@ -273,6 +278,7 @@ struct CityHitMaterial
     float3 tint;
     float3 average;     // tint x the diffuse's mean: what a hit shows where the texture is not uploaded
     float emissive;     // scale of the glow (0: none)
+    uint glowKind;      // CITY_HIT_GLOW_*: what the glow follows (word 2's bits 30..31; 3 reads as the night curve)
 };
 
 CityHitMaterial CityHitLoadMaterial(uint material)
@@ -292,6 +298,7 @@ CityHitMaterial CityHitLoadMaterial(uint material)
     m.tint = CityHitRgb10(a.z);
     m.average = CityHitRgb10(a.w);
     m.emissive = asfloat(b.x);
+    m.glowKind = a.z >> CITY_HIT_GLOW_SHIFT;
     return m;
 }
 
