@@ -18,6 +18,9 @@
 // the size: the reflection of the car's own body is blurred by the paint's noise anyway).
 //
 // The planes are the EDRAM depth target's (depth and stencil views) and the main colour target's, read as textures.
+//
+// Three compilations (CAR_HISTORY_MS): 0 plain planes, 1 multisampled planes, 2 multisampled depth and stencil planes with the colour read from one single sample image of the picture's size
+// (slots.y is that image's slot: the shared screen products' colour_post, which already holds the mean of the host samples, clamped as below; the same bytes as variant 1 would make).
 
 #include "host_pass_common.hlsli"
 
@@ -73,7 +76,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (id < kFirstVehicleId || id > kLastVehicleId) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);  // not a vehicle: nothing the paint reads
   }
-#if CAR_HISTORY_MS
+#if CAR_HISTORY_MS == 2
+  // The depth and stencil planes are multisampled, the colour is the shared screen products' colour_post at the picture's size (screen_shared.h; hlsl/screen_colour_ps.hlsl made it with the
+  // loop below, in the same order): one load of the pixel.
+  const float stored = g_textures_ms[g_push.slots.x].Load(p, g_push.slots2.x).r;
+  const float3 colour = g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;
+#elif CAR_HISTORY_MS
   const uint samples = max(g_push.slots.w, 1u);
   const float stored = g_textures_ms[g_push.slots.x].Load(p, g_push.slots2.x).r;
   float3 sum = float3(0.0f, 0.0f, 0.0f);

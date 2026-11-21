@@ -30,8 +30,12 @@
 //                   G-buffer's RT1 where valid, else the depth's); present only in the frames whose passes read it.
 //   colour_pre      RGBA16F, the main colour averaged over the MSAA samples at the traced size, 3 levels, CAPPED (the bounce light's rule: a lamp or a neon is not a bounce
 //                   source): before the AO's apply, only while the bounce light is on.
-//   colour_post     RGBA16F, MSAA-averaged, UNCAPPED, after the AO apply and the deferred lights, with a mip chain for rough reflections: SS-1 makes it (not in SS-0).
-//   history         the last frame's colour_post (level 0) and lin_depth (level 0) with both cameras: SS-1 (not in SS-0).
+//   colour_post     RGBA16F, MSAA-averaged, UNCAPPED, after the AO apply and the deferred lights, with a mip chain for rough reflections: SS-1 makes it (ScreenShared::CapturePost), only
+//                   while a consumer outside the car history wants it. Its size is the picture's up to 1080 lines of render height and half of it (rounded up) above (screen_rules.h
+//                   ColourPostSize, the AO's height rule): the Image's width and height say, `traced` is the depth's. Each texel is the mean of the host samples (and of the 2x2 pixels at half size)
+//                   of the main colour in the target's own units, a NaN counted as black and clamped to what a half float keeps.
+//   history         SS-1: the last frame's colour_post (level 0: history_colour_slot) with the camera pair (camera.prev_view_projection); present only while a consumer wants it, and only when the
+//                   last frame was the frame before, of the same kind of view and at the same size. history_depth_slot stays kNoSlot until SS-2 (the depth chain's images are the AO's).
 //   camera          always filled while the frame is published (ScreenCamera below).
 //
 // What exists in a given frame is `valid`; a product that is not in it has slot kNoSlot and must not be read. SS-0 PUBLISHES what the AO already makes (lin_depth, lin_depth_full,
@@ -223,7 +227,9 @@ enum class View : uint8_t {
   kHizCheck = 3,    // the Hi-Z level against lin_depth level 0: RED where the texel is deeper than a pixel it covers (never: the chain is a min), else green, brighter the more the min differs
   kNormal = 4,      // the normal image (0.5 + 0.5 n), black where the frame has none
   kVehicle = 5,     // the vehicle mark of level 0: white on a vehicle's pixels
-  kCount = 6,
+  kColourPost = 6,  // SS-1: colour_post level mcla_gpu_screen_view_level (the same stretch over the pixels it covers), black where the frame has none
+  kHistory = 7,     // SS-1: the history's colour (the last frame's colour_post), black where the frame has none
+  kCount = 8,
 };
 
 }  // namespace mcla::gpu::screen

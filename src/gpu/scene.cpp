@@ -1296,6 +1296,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   if (r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
     edram_->SetScenePhase(false);
     NoteAnchorCut(banks);  // a cut the scene camera asked for: before the histories look at the frame
+    if (screen_ && screen_->tracking()) {
+      screen_->OnAnchor(banks);  // this frame's camera into the shared camera history (screen_shared.h), before the effects that ask it for the cameras (the car self-reflection's)
+    }
     if (ao_ && ao_->wants_draws()) {
       ao_->OnAnchor(banks, anchor_cut_);  // this frame's camera: the next frame's occlusion uses its lens
     }
@@ -1993,6 +1996,10 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   draw.writes_depth = (d.key.depth & 2u) != 0;
   draw.stencil_ids = temporal::StencilIdsWritten(d.state);  // the vehicles' own motion (ao.h)
+  if (screen_ && screen_->tracking()) {
+    // The kind of view of the frame (the camera history keeps the play view's and the pause/map world's apart) and the main colour target's exponent bias (screen_shared.h).
+    screen_->OnMainDraw(draw.match, d.state.color[0].exp_bias);
+  }
   if (ao_ && ao_->wants_draws()) {
     ao_->OnMainDraw(draw, banks);
   }
@@ -3578,8 +3585,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //      last barrier names the compute stage too, local_shadow.cpp), the depth chain, the cascades and the lamp list; its composite goes
   //      into the colour at the frame's end-of-scene copy (BeforeResolve, above);
   //   5. the car ray tracing check pass (mcla_gpu_car_rt_check, debug): reads the occlusion's linear depth, so after step 3;
-  //   6. the car self-reflection's history and its ray traced trace (car_selfrefl.h, car_rt_refl.h): the history is the colour step 3 made,
-  //      the trace uses step 2's top level.
+  //   5b. the shared colour capture (screen_shared.h CapturePost, only while a consumer wants colour_post): the colour step 3 made, averaged over the host samples. (colour_pre, the capped chain
+  //      the bounce light reads, is made inside step 3, before its passes, by CapturePre; the pass is still the occlusion's.)
+  //   6. the car self-reflection's history and its ray traced trace (car_selfrefl.h, car_rt_refl.h): the history is the colour step 3 made (read from step 5b's capture where the frame
+  //      has it at the picture's size), the trace uses step 2's top level.
   if (car_rt_) {
     car_rt_->OnResolve(record, summary, list, slot_);
   }
@@ -3607,6 +3616,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   if (car_rt_) {
     // The check pass of the structures, over the occlusion's linear depth (it exists only after step 3).
     car_rt_->OnAfterOcclusion(summary, list, slot_, ao_);
+  }
+  if (screen_ && screen_->capture_wanted()) {
+    // The shared colour capture (screen_shared.h CapturePost, step 8 of the order above): the main colour as it is after the occlusion's apply, averaged over its host samples into colour_post
+    // (and its history), for the consumers that want it; the car self-reflection's history pass below reads it where it can. Only while a capture is planned.
+    screen_->CapturePost(record, summary, list);
   }
   if (car_refl_ && car_refl_->wants_draws()) {
     // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;
@@ -3679,6 +3693,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   }
   if (car_refl_) {
     car_refl_->OnComposite();
+  }
+  if (screen_) {
+    screen_->OnComposite();  // no trigger of the shared screen products after this
   }
   if (local_shadow_) {
     local_shadow_->OnComposite();
@@ -3832,6 +3849,9 @@ void Scene::OnPresent() {
   }
   if (car_refl_) {
     car_refl_->OnPresent();
+  }
+  if (screen_) {
+    screen_->OnPresent();  // the frame boundary of the shared screen products: the frame is counted, the capture and its history trade places (after NoteMenuWorld above: it asks the camera history)
   }
   if (car_dump_) {
     car_dump_->OnPresent();  // the dump frame's census and OBJ

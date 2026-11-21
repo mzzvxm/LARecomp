@@ -344,6 +344,11 @@ class GPUSettings final : public rex::SettingOwner {
     "driver, 16 the other cars beside it (opponents, traffic, parked cars; mcla_gpu_car_rt_cars says how many are in the scene). 23 (the "
     "default): the body, the glass, the tyres and the other cars. 7 is your car alone. Live.", rex::kDebugOnly, rex::Range{1, 31});
 
+  REX_SETTING(i32, mcla_gpu_car_selfrefl_source, 0, "Diagnostic (car self-reflections, shared screen products): where the history pass takes the scene colour from. 0: the shared colour_post where the "
+    "frame has it at the picture's size (another effect wanted it), else the main colour target's own planes. 1: always the main colour target's planes "
+    "(the old path). 2: as 0, and the car self-reflection asks for the shared colour_post itself, so that the same pictures can be compared with 1 without "
+    "a reflections effect (the bytes of the history image are the same). Live.", rex::kDebugOnly, rex::Range{0, 2});
+
   REX_SETTING(i32, mcla_gpu_car_selfrefl_steps, 12, "Diagnostic: the points on the car self-reflection's ray, 4 to 24 (the cost is one texture read each, and three more for "
     "each segment between two points that holds the outline of a part; they are closer together near the car's surface, and "
     "the step the weight makes at a part's outline is a point's share of the whole hit). Live.", rex::kDebugOnly, rex::Range{4, 24});
@@ -696,11 +701,11 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_screen_view, 0, "Diagnostic (shared screen products): draws one product of the shared screen frame over the main view at the mid-scene depth copy, where the ambient "
     "occlusion runs (it runs a frame of its own for this when it and the contact shadows are off): 1 the linear depth, 2 the Hi-Z level mcla_gpu_screen_view_level (the min of "
     "the linear depth, each texel stretched over the pixels it covers), 3 the Hi-Z level against the pixels it covers (red where it is deeper than one of them, which cannot "
-    "be; green, brighter where the min is nearer than the pixel), 4 the normal image (only in a frame whose passes make it), 5 the vehicle mark of the depth. The rest of the "
-    "frame (particles, tone map, glow) is drawn over it as usual. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 5});
+    "be; green, brighter where the min is nearer than the pixel), 4 the normal image (only in a frame whose passes make it), 5 the vehicle mark of the depth, 6 colour_post (the level mcla_gpu_screen_view_level; only while a consumer or this view makes it), 7 the history's colour (the last frame's colour_post). The rest of the "
+    "frame (particles, tone map, glow) is drawn over it as usual. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
-  REX_SETTING(i32, mcla_gpu_screen_view_level, 0, "Diagnostic (shared screen products): the Hi-Z level the views 2 and 3 of mcla_gpu_screen_view show: 0 is the traced size, "
-    "each level above is half the one below (7 levels at 1080 lines, down to 1/64); a level the chain does not have shows its last. Live.", rex::kDebugOnly, rex::Range{0, 7});
+  REX_SETTING(i32, mcla_gpu_screen_view_level, 0, "Diagnostic (shared screen products): the level the views 2 and 3 (the Hi-Z) and 6 (colour_post) of mcla_gpu_screen_view show: 0 is the traced size (colour_post's own size for the view 6), "
+    "each level above is half the one below (the Hi-Z has 7 levels at 1080 lines, down to 1/64, colour_post up to 5 and only while the reflections want them); a level the chain does not have shows its last. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
   REX_SETTING(u32, mcla_gpu_ghost_log_interval, 0, "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
@@ -1545,6 +1550,7 @@ inline auto& mcla_gpu_car_selfrefl_rt_denoise = g_gpu.mcla_gpu_car_selfrefl_rt_d
 inline auto& mcla_gpu_car_selfrefl_rt_gloss = g_gpu.mcla_gpu_car_selfrefl_rt_gloss;
 inline auto& mcla_gpu_car_selfrefl_rt_length = g_gpu.mcla_gpu_car_selfrefl_rt_length;
 inline auto& mcla_gpu_car_selfrefl_rt_parts = g_gpu.mcla_gpu_car_selfrefl_rt_parts;
+inline auto& mcla_gpu_car_selfrefl_source = g_gpu.mcla_gpu_car_selfrefl_source;
 inline auto& mcla_gpu_car_selfrefl_steps = g_gpu.mcla_gpu_car_selfrefl_steps;
 inline auto& mcla_gpu_car_selfrefl_strength = g_gpu.mcla_gpu_car_selfrefl_strength;
 inline auto& mcla_gpu_car_selfrefl_test = g_gpu.mcla_gpu_car_selfrefl_test;

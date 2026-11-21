@@ -9,15 +9,17 @@
 //           brighter where the min is nearer than the pixel (an edge); level 0 is all dark green (the same depth)
 //   view 4  the normal image (0.5 + 0.5 n), black where the frame has none
 //   view 5  the vehicle mark of level 0: white on a vehicle's pixels, grey elsewhere on geometry, black for the sky
+//   view 6  colour_post level mcla_gpu_screen_view_level (slots.y is that level's image), each texel stretched over the pixels it covers, black where the frame has none
+//   view 7  the history's colour (slots.y: the last frame's colour_post), the same
 
 #include "host_pass_common.hlsli"
 #include "gbuffer_common.hlsli"
 #include "screen_hiz.hlsli"
 
 struct ScreenViewPush {
-  uint4 slots;  // x the linear depth level 0's bindless slot, y the Hi-Z level's slot (0xFFFFFFFF: none), z the normal image's slot (0xFFFFFFFF: none), w the view
+  uint4 slots;  // x the linear depth level 0's bindless slot, y the Hi-Z level's slot (the colour image's for the views 6 and 7; 0xFFFFFFFF: none), z the normal image's slot (0xFFFFFFFF: none), w the view
   uint4 sizes;  // xy the pass's target size (the picture), zw the traced size (the size of level 0)
-  uint4 level;  // x the Hi-Z level shown, yz that level's size
+  uint4 level;  // x the level shown, yz that level's size
 };
 
 #ifdef __spirv__
@@ -76,6 +78,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float d = Load(g_push.slots.x, p0);
     if (d < kSkyLimit) {
       colour = (asuint(d) & 1u) != 0u ? float3(1.0f, 1.0f, 1.0f) : float3(0.2f, 0.2f, 0.2f);
+    }
+  } else if (view == 6u || view == 7u) {
+    if (g_push.slots.y != kNone) {
+      // (the target is the main view's colour: the capture holds the same units, so it shows as the game drew it before the tone map)
+      const int2 size = int2(g_push.level.yz);
+      colour = g_textures[g_push.slots.y].Load(int3(clamp(int2(uv * float2(size)), int2(0, 0), size - 1), 0)).rgb;
     }
   }
   return float4(colour, 1.0f);
