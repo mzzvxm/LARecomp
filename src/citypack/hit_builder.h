@@ -44,8 +44,8 @@ struct HitBuildRequest {
   // What the base pack was built with and from: source_rpf, mods_rpf, out_dir (the base pack's folder: the hit pack goes there too), lzx, threads, worker_start, force,
   // census_only (everything is read, parsed and encoded, nothing is written: the golden counts), app_version. drop_mask and positions are ignored: the base pack's header decides.
   BuildRequest base;
-  // The textures of the materials (package H2); null: none (no texture file, every texture name is counted unresolved).
-  TextureSet* textures = nullptr;
+  // The textures of the materials, already built (package H2's texture set through hit_texture_adapter.h); null: none (no texture file, every texture name is counted unresolved).
+  HitTextureSource* textures = nullptr;
   // GB-F2 per-texture table files (gbuffer_materials.h), read in order; their rows are applied to the materials by the textures' keys. Empty: the F1 words stand.
   std::vector<std::filesystem::path> texture_rows;
   // How much the corners may lose to stay inside the disk budget (hit_collect.h); in the stamp.

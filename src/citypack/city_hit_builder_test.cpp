@@ -559,30 +559,40 @@ ShaderNames MakeNames(const std::string& group, const std::string& preset, std::
   return names;
 }
 
-// A texture set that resolves the names it is given (and not the others), with keys and averages the test knows.
-class FakeTextures final : public TextureSet {
+// A texture source that resolves the names it is given (the "known" ones; not the others): one picture a name, and a KEY PER DICTIONARY ENTRY, as package H2's set has (the same picture
+// sits in several sectors' dictionaries under different guest keys). It records what it was asked.
+class FakeTextures final : public HitTextureSource {
  public:
   std::string Identity() const override { return "fake1"; }
-  bool Resolve(const std::vector<TextureName>& names, std::vector<ResolvedTexture>* answers, std::vector<HitTexture>* table, std::string*) override {
-    asked = names;
-    answers->assign(names.size(), ResolvedTexture());
-    table->clear();
-    for (size_t i = 0; i < names.size(); ++i) {
-      if (names[i].stem.rfind("known", 0) != 0) continue;
+  TextureEntry Resolve(uint32_t dictionary, std::string_view file_name) const override {
+    asked.emplace_back(dictionary, std::string(file_name));
+    TextureEntry e;
+    if (file_name.rfind("known", 0) != 0) return e;
+    uint32_t picture = 0;
+    for (; picture < names_.size(); ++picture) {
+      if (names_[picture] == file_name) break;
+    }
+    if (picture == names_.size()) {
+      names_.emplace_back(file_name);
       HitTexture t;
-      t.key = 0xABC0000000000000ull + i;
+      t.key = 0xABC0000000000000ull + picture;
       t.width = 256;
       t.height = 128;
       t.format = HitTextureFormat::kBc1;
       t.mip_count = 1;
       t.data_size = 16384;
-      (*answers)[i].index = uint16_t(table->size());
-      (*answers)[i].key = t.key;
-      (*answers)[i].average[0] = 0.5f;
-      (*answers)[i].average[1] = 0.25f;
-      (*answers)[i].average[2] = 1.0f;
-      table->push_back(t);
+      table_.push_back(t);
     }
+    e.picture = picture;
+    e.key = 0xABC0000000000000ull + (uint64_t(dictionary) << 16) + picture;  // per entry
+    return e;
+  }
+  const std::vector<HitTexture>& Table() const override { return table_; }
+  bool Average(uint32_t picture, float rgb[3]) const override {
+    if (picture >= table_.size()) return false;
+    rgb[0] = 0.5f;
+    rgb[1] = 0.25f;
+    rgb[2] = 1.0f;
     return true;
   }
   bool Finish(const fs::path& file, uint64_t hit_table_hash, std::string*) override {
@@ -596,8 +606,12 @@ class FakeTextures final : public TextureSet {
     std::ofstream(file, std::ios::binary).write(reinterpret_cast<const char*>(w.bytes().data()), std::streamsize(w.size()));
     return true;
   }
-  std::vector<TextureName> asked;
+  mutable std::vector<std::pair<uint32_t, std::string>> asked;  // (dictionary, name) of every Resolve
   uint64_t finished_hash = 0;
+
+ private:
+  mutable std::vector<std::string> names_;
+  mutable std::vector<HitTexture> table_;
 };
 
 void TestMaterials() {
@@ -664,30 +678,43 @@ void TestMaterials() {
     const MaterialDef b = MaterialFromShader(&bare, MaterialClass::kSolid, &f2);
     CHECK(f2.no_params && f2.group_known && b.texture.empty() && WordClass(b.word) == uint32_t(gb::SurfaceClass::kWorld));
   }
-  // the global table: equal materials are one; material 0 is the default
+  // the global table: equal materials are one; material 0 is the default. A material is resolved in the dictionary of the sector it is used in, and the key is of the ENTRY: the same
+  // shader instance and texture name in two sectors' dictionaries are two materials (two keys) of one picture
+  FakeTextures textures;
   MaterialSet set;
   CHECK(set.size() == 1 && set.defs()[0].word == MaterialDef().word);
+  const auto resolved = [&](const ShaderNames& names, uint32_t dictionary) {
+    MaterialDef d = MaterialFromShader(&names, MaterialClass::kSolid, nullptr);
+    if (!d.texture.empty()) {
+      const TextureEntry e = textures.Resolve(dictionary, d.texture);
+      d.picture = e.picture;
+      d.texture_key = e.found() ? e.key : 0;
+    }
+    return d;
+  };
   const ShaderNames wall_a = MakeNames("CityBumpSpec", "p", {Tex("DiffuseSampler", "known_a.dds"), Vec("SpecularExponent", 15.0f)});
   const ShaderNames wall_a2 = MakeNames("CityBumpSpec", "p", {Tex("DiffuseSampler", "known_a.dds"), Vec("SpecularExponent", 15.0f)});
   const ShaderNames wall_b = MakeNames("CityBumpSpec", "p", {Tex("DiffuseSampler", "known_b.dds"), Vec("SpecularExponent", 15.0f)});
   const ShaderNames wall_c = MakeNames("CityBumpSpec", "p", {Tex("DiffuseSampler", "missing_c.dds"), Vec("SpecularExponent", 40.0f), Vec("DiffuseColor", 0.5f, 1.0f, 1.0f)});
-  const uint32_t ia = set.Add(MaterialFromShader(&wall_a, MaterialClass::kSolid, nullptr));
-  CHECK(ia == 1 && set.Add(MaterialFromShader(&wall_a2, MaterialClass::kSolid, nullptr)) == 1);
-  const uint32_t ib = set.Add(MaterialFromShader(&wall_b, MaterialClass::kSolid, nullptr));
-  const uint32_t ic = set.Add(MaterialFromShader(&wall_c, MaterialClass::kSolid, nullptr));
-  CHECK(ib == 2 && ic == 3 && set.Add(MaterialDef()) == 0 && set.size() == 4);
+  const uint32_t d3 = HitDictionaryOfSector(1), d9 = HitDictionaryOfSector(7);
+  const uint32_t ia = set.Add(resolved(wall_a, d3));
+  CHECK(ia == 1 && set.Add(resolved(wall_a2, d3)) == 1);
+  const uint32_t ib = set.Add(resolved(wall_b, d3));
+  const uint32_t ic = set.Add(resolved(wall_c, d3));
+  const uint32_t ia9 = set.Add(resolved(wall_a, d9));  // the same name from another sector's dictionary: another entry, another key, the same picture
+  CHECK(ib == 2 && ic == 3 && ia9 == 4 && set.Add(MaterialDef()) == 0 && set.size() == 5);
+  CHECK(set.defs()[ia].picture == set.defs()[ia9].picture && set.defs()[ia].texture_key != set.defs()[ia9].texture_key && set.defs()[ic].picture == kNoTexture && set.defs()[ic].texture_key == 0);
+  CHECK(HitDictionaryOfSector(0) == 2 && kHitDictionaryCommon == 0 && kHitDictionaryLod == 1);
 
-  // finalising: the set's answers, the average, the rows
-  FakeTextures textures;
+  // finalising: the pictures, the keys, the average, the rows
   std::vector<HitMaterial> materials;
   std::vector<HitTexture> table;
   FinalizeStats stats;
   std::string error;
   CHECK(FinalizeMaterials(set, &textures, nullptr, &materials, &table, &stats, &error));
-  CHECK(materials.size() == 4 && table.size() == 2 && stats.texture_names == 3 && stats.names_resolved == 2 && stats.materials_textured == 3 && stats.materials_unresolved == 1);
-  CHECK(textures.asked.size() == 3 && textures.asked[0].stem == "known_a" && textures.asked[0].stem_hash == RageHashText("known_a") && textures.asked[2].file == "missing_c.dds");
-  CHECK(materials[1].texture == 0 && materials[2].texture == 1 && materials[3].texture == kNoTexture && materials[0].texture == kNoTexture);
-  CHECK(materials[1].key == table[0].key && materials[3].key == 0);
+  CHECK(materials.size() == 5 && table.size() == 2 && stats.texture_names == 3 && stats.names_resolved == 2 && stats.materials_textured == 4 && stats.materials_unresolved == 1);
+  CHECK(materials[1].texture == 0 && materials[2].texture == 1 && materials[3].texture == kNoTexture && materials[0].texture == kNoTexture && materials[4].texture == 0);
+  CHECK(materials[1].key == set.defs()[1].texture_key && materials[4].key == set.defs()[4].texture_key && materials[1].key != materials[4].key && materials[3].key == 0);
   CHECK(Near(materials[1].average[0], 0.5f, 1e-6f) && Near(materials[1].average[1], 0.25f, 1e-6f) && Near(materials[1].average[2], 1.0f, 1e-6f));  // tint (1,1,1) x the texture's mean
   CHECK(Near(materials[3].average[0], 0.25f, 1e-6f) && Near(materials[3].average[1], 0.5f, 1e-6f));  // an unresolved texture: the tint x a mid grey
   CHECK(materials[0].average[0] == 0.5f && materials[0].tint[0] == 1.0f);  // the default surface
@@ -699,7 +726,7 @@ void TestMaterials() {
 
   // GB-F2 rows by the texture's key: class=glass for known_b only
   char text[160];
-  std::snprintf(text, sizeof(text), "@version 1\nhash:%llx class=glass metal=1\n", static_cast<unsigned long long>(table[1].key));
+  std::snprintf(text, sizeof(text), "@version 1\nhash:%llx class=glass metal=1\n", static_cast<unsigned long long>(materials[2].key));  // the ENTRY's key of known_b
   const fs::path rows_file = g_scratch / "rows.txt";
   fs::create_directories(g_scratch);
   { std::ofstream(rows_file) << text; }
@@ -709,8 +736,14 @@ void TestMaterials() {
   CHECK(LoadTextureRows({rows_file, g_scratch / "absent.txt"}, &rows, &rows_hash, &bad) && rows.size() == 1 && rows_hash != 0 && bad == 0);
   FinalizeStats with_rows;
   CHECK(FinalizeMaterials(set, &textures, &rows, &materials, &table, &with_rows, &error));
-  CHECK(with_rows.rows_applied == 1 && WordClass(materials[2].word) == uint32_t(gb::SurfaceClass::kGlass) && WordMetal(materials[2].word) == 255 && WordClass(materials[1].word) == 1);
-  CHECK(FinalizeMaterials(set, nullptr, nullptr, &materials, &table, &stats, &error) && table.empty() && stats.names_resolved == 0 && materials[1].texture == kNoTexture);  // no set: none
+  CHECK(with_rows.rows_applied == 1 && WordClass(materials[2].word) == uint32_t(gb::SurfaceClass::kGlass) && WordMetal(materials[2].word) == 255 && WordClass(materials[1].word) == 1 &&
+        WordClass(materials[4].word) == 1);  // another entry of another texture: untouched
+  CHECK(!FinalizeMaterials(set, nullptr, nullptr, &materials, &table, &stats, &error) && !error.empty());  // pictures the source does not have: refused
+  {
+    MaterialSet unresolved_set;  // defs that were never resolved (no source in the build): no pictures, the averages stand
+    unresolved_set.Add(MaterialFromShader(&wall_a, MaterialClass::kSolid, nullptr));
+    CHECK(FinalizeMaterials(unresolved_set, nullptr, nullptr, &materials, &table, &stats, &error) && materials[1].texture == kNoTexture && stats.names_resolved == 0 && stats.materials_unresolved == 1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -851,7 +884,8 @@ void TestBuilder() {
     bare.uv = {0, 0, 0, 0, 0, 0, 0, 0};
     return std::vector<SynthGeo>{Quad(100, 0, 150, 50, 1, "CityBumpSpec", "CityBumpSpec_Cloth", {0.5f, 0.5f, 1.5f, 0.5f, 1.5f, 1.5f, 0.5f, 1.5f}, {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu},
                                       {Tex("DiffuseSampler", "known_wall.dds"), Vec("SpecularExponent", 15.0f)}),
-                                 Quad(100, 0, 110, 10, 1.5f, "CityStoreInterior", "i", {0, 0, 1, 0, 1, 1, 0, 1}, {}, {}), bare};
+                                 Quad(100, 0, 110, 10, 1.5f, "CityStoreInterior", "i", {0, 0, 1, 0, 1, 1, 0, 1}, {}, {}), bare,
+                                 asphalt()};  // the same shader instance and texture name as s_a's road, from another sector's dictionary
   };
   const auto lod = [&] {
     return std::vector<SynthGeo>{Quad(0, 0, 100, 100, 20, "CityDefault", "CityDefault", {0, 0, 1, 0, 1, 1, 0, 1}, {0xFF202020u, 0xFF202020u, 0xFF202020u, 0xFF202020u}, {Tex("DiffuseSampler", "known_lod.dds"), Vec("SpecularExponent", 8.0f)}),
@@ -887,11 +921,21 @@ void TestBuilder() {
   CHECK(one.ok && !one.up_to_date);
   if (!one.ok) { std::fprintf(stderr, "hit build failed: %s\n", one.error.c_str()); return; }
   CHECK(one.census.sectors == 3 && one.census.hi_blobs == 2 && one.census.lod_blobs == 2 && one.census.sectors_failed == 0);
-  CHECK(one.census.hi_triangles == 10 && one.census.lod_triangles == 4);   // s_a: road 2 + window 2 + alpha neon 2 (the decal is dropped); s_b: wall 2 + the bare quad 2 (the interior is dropped)
+  CHECK(one.census.hi_triangles == 12 && one.census.lod_triangles == 4);   // s_a: road 2 + window 2 + alpha neon 2 (the decal is dropped); s_b: wall 2 + the bare quad 2 + the road 2 (the interior is dropped)
   CHECK(one.census.hi_runs == one.census.collect.runs - 2 && one.census.hi_runs + one.census.lod_runs == one.census.collect.runs);
-  // materials: the default, the road, the window, the neon sign, the far CityDefault (one for both lod models), the wall, the bare quad = 7; texture names: known_road, known_win,
-  // missing_sign, known_lod, known_wall = 5, of which the four "known" ones resolve (the dropped decal's texture is not asked for)
-  CHECK(one.census.materials == 7 && one.census.finalize.texture_names == 5 && one.census.finalize.names_resolved == 4 && one.census.textures == 4);
+  // materials: the default, the road of s_a, the window, the neon sign, the far CityDefault (one for both lod models), the wall, the bare quad, and the road of s_b = 8: the road's
+  // shader instance and texture name are the same in both sectors but resolve to two dictionary entries (two keys) of one picture; texture names: known_road, known_win,
+  // missing_sign, known_lod, known_wall = 5, of which the four "known" ones resolve (the dropped decal's texture is not asked for), and four pictures
+  CHECK(one.census.materials == 8 && one.census.finalize.texture_names == 5 && one.census.finalize.names_resolved == 4 && one.census.textures == 4);
+  {
+    bool far_asked = false, sector_a_asked = false, sector_b_asked = false;
+    for (const auto& [dictionary, name] : textures.asked) {
+      if (dictionary == kHitDictionaryLod && name == "known_lod.dds") far_asked = true;
+      if (dictionary == HitDictionaryOfSector(0) && name == "known_road.dds") sector_a_asked = true;
+      if (dictionary == HitDictionaryOfSector(1) && name == "known_road.dds") sector_b_asked = true;
+    }
+    CHECK(far_asked && sector_a_asked && sector_b_asked);  // each blob asks in its own dictionary: the far models' for the lod, the sector's for the detail
+  }
   CHECK(!one.census.Report().empty());
 
   HitPackReader reader;
@@ -900,7 +944,7 @@ void TestBuilder() {
   PackReader base_reader;
   CHECK(base_reader.Open(request.out_dir / kPackFileName, &error));
   CHECK(reader.sector_count() == 3 && reader.sector(0).hi_size != 0 && reader.sector(0).lod_size != 0 && reader.sector(2).hi_size == 0 && reader.sector(2).lod_size == 0);
-  CHECK(reader.sector(0).hi_triangles == 6 && reader.sector(1).hi_triangles == 4 && reader.sector(0).name_hash == RageHashText("s_a"));
+  CHECK(reader.sector(0).hi_triangles == 6 && reader.sector(1).hi_triangles == 6 && reader.sector(0).name_hash == RageHashText("s_a"));
   CHECK(reader.header().base_table_hash == base_reader.header().table_hash && reader.header().base_file_size == base_reader.header().file_size);
   CHECK(reader.header().texture_count == reader.textures().size() && reader.materials().size() == reader.header().material_count);
   CHECK(ValidateHitPack(reader, base_reader, nullptr) == 0);
@@ -919,7 +963,7 @@ void TestBuilder() {
   CHECK(road_run.triangle_count == 2 && road_run.flags == (kRunHasUv | kRunHasColour));
   const HitMaterial& road_material = reader.materials()[road_run.material];
   CHECK(WordClass(road_material.word) == uint32_t(gb::SurfaceClass::kRoad) && (WordFlags(road_material.word) & kWordFlagSsr) != 0 && road_material.texture != kNoTexture);
-  CHECK(road_material.key == reader.textures()[road_material.texture].key && road_material.shader_hash == ShaderHash("CityRoad", "CityRoad_Asphalt"));
+  CHECK(road_material.shader_hash == ShaderHash("CityRoad", "CityRoad_Asphalt") && reader.textures()[road_material.texture].width == 256);
   for (uint32_t t = 0; t < 2; ++t) {
     for (uint32_t k = 0; k < 3; ++k) {
       const uint32_t vertex = geos[0].indices[t * 3 + k];
@@ -950,8 +994,14 @@ void TestBuilder() {
   // s_b: the wall (attributes), the bare quad (no channel table: no corner attributes, but a run, a material and the pack's triangles)
   HitBlob blob_b;
   CHECK(reader.ReadHitBlob(1, MeshKind::kHi, &blob_b, &error));
-  CHECK(blob_b.triangle_count == 4 && blob_b.runs.size() == 2 && blob_b.runs[1].flags == 0);
-  CHECK(blob_b.corners.size() == 4 * 6 && blob_b.corners[2 * 6 + 1] == kWhiteCorner && (blob_b.corners[2 * 6] == 0));
+  CHECK(blob_b.triangle_count == 6 && blob_b.runs.size() == 3 && blob_b.runs[1].flags == 0);
+  CHECK(blob_b.corners.size() == 6 * 6 && blob_b.corners[2 * 6 + 1] == kWhiteCorner && (blob_b.corners[2 * 6] == 0));
+  // the road of s_b: the picture s_a's road has, the key of s_b's own entry (the dictionary it is seen from), and the same class and gloss
+  {
+    const HitMaterial& road_b = reader.materials()[blob_b.runs[2].material];
+    CHECK(road_b.texture == road_material.texture && road_b.key != road_material.key && road_b.word == road_material.word && blob_b.runs[2].material != road_run.material);
+    CHECK(road_b.key == 0xABC0000000000000ull + (uint64_t(HitDictionaryOfSector(1)) << 16) + road_b.texture && road_material.key == 0xABC0000000000000ull + (uint64_t(HitDictionaryOfSector(0)) << 16) + road_material.texture);
+  }
   // the whole way to the GPU's layout: the pool block H0's reference writer makes from the base pack's mesh and this blob, read back by H0's decode twin (what the hit shading's
   // library reads): the road's triangle 0 at its corner 1 and at its middle
   {
@@ -1053,7 +1103,7 @@ void TestBuilder() {
     CHECK(!c.current && c.why.find("city pack") != std::string::npos);
     // ... and it is built over the new one, with the base's own drop mask (the decal and the interior are in it now)
     const HitBuildResult kept = BuildCityHitPack(hit, &sink);
-    CHECK(kept.ok && kept.census.hi_triangles == 14);
+    CHECK(kept.ok && kept.census.hi_triangles == 16);
     CHECK(CheckCityHitPack(hit).current);
     HitPackReader kept_reader;
     PackReader kept_base;
@@ -1096,7 +1146,7 @@ void TestBuilder() {
     fs::copy_file(request.out_dir / kPackFileName, census.base.out_dir / kPackFileName, fs::copy_options::overwrite_existing);
     census.base.census_only = true;
     const HitBuildResult c = BuildCityHitPack(census, &sink);
-    CHECK(c.ok && c.census.hi_triangles == 10 && c.census.file_bytes > 0 && !fs::exists(census.base.out_dir / kHitFileName) && !fs::exists(census.base.out_dir / kHitStampFileName));
+    CHECK(c.ok && c.census.hi_triangles == 12 && c.census.file_bytes > 0 && !fs::exists(census.base.out_dir / kHitFileName) && !fs::exists(census.base.out_dir / kHitStampFileName));
     HitBuildRequest cancel = hit;
     cancel.base.out_dir = g_scratch / "out_cancel";
     cancel.base.force = true;

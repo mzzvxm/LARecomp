@@ -11,15 +11,17 @@
 //               from SpecularExponent through the same formula and the same bank (the day city shaders are lit per vertex: the vertex shader's exponent, c73 ...; the others by their
 //               PSMultiLight's: GlossBank, GlossSmoothness), the class default where there is no exponent, the lit weight from the class (0 for what glows), kWordFlagAlphaCovered
 //               for the alpha tested ones (the pack's class), the metal byte 0 (only a texture row gives one)
-//   texture     the DIFFUSE texture's file name: DiffuseSampler, or DiffuseSamplerA (the terrain and the grass have no DiffuseSampler); resolved to an index, a key and an average
-//               colour by the TextureSet (below), which is package H2's
+//   texture     the DIFFUSE texture's file name: DiffuseSampler, or DiffuseSamplerA (the terrain and the grass have no DiffuseSampler); resolved, seen from the dictionary of the sector
+//               the shader is in, to a picture (an index in the texture table) and the guest KEY of the dictionary entry it came from, by the HitTextureSource (below), which package
+//               H2's texture set implements (texture_set.h; hit_texture_adapter.h joins them). The key is per ENTRY (the same picture sits in several sectors' dictionaries under
+//               different guest keys), so two sectors that use one shader instance with one texture name can have two materials: the key is part of a material's identity.
 //   tint        the flat colour of the materials that have one: DiffuseColor (CityGrimeMetalTint ...), TintColor, WindowTintColor, and for a glowing tint NightColor, else DayColor;
 //               (1, 1, 1) otherwise
 //   emissive    for the glowing class only: NeonIntensity, NightIntensity (CityNeonTint, CityStoreSign), 1 where it has neither
 //   average     tint x the diffuse texture's mean colour where the texture resolved, tint x 0.5 where it has a texture that did not resolve, the tint alone where it has none
 //
 // The per-texture rows of GB-F2 (gbuffer_materials.h: class=, rough=, metal=, ssr=, lit= by `hash:<XXH3-64 of the base level>`) are applied by the same ApplyTextureRow the raster side
-// uses, when the builder is given the table files: by the texture's key, which the TextureSet gives. The records written WITHOUT rows are the F1 words; the runtime may apply the rows
+// uses, when the builder is given the table files: by the texture's key, which the texture source gives. The records written WITHOUT rows are the F1 words; the runtime may apply the rows
 // itself when the files change (the key is in the record).
 // ===========================================================================
 
@@ -43,6 +45,8 @@ struct MaterialDef {
   float tint[3] = {1.0f, 1.0f, 1.0f};
   float emissive = 0.0f;
   std::string texture;  // the diffuse texture's file name as the resource has it ("wall_brick_01.dds"), "" none
+  uint32_t picture = kNoTexture;  // the texture source's answer for `texture`: the picture (an index in its table); kNoTexture: none, or not found
+  uint64_t texture_key = 0;       // ... and the guest key of the dictionary entry (HitMaterial::key)
   bool flat_colour = false;  // no texture and the tint is the colour of the surface
   uint32_t shader_hash = 0;  // rage hash of "<group>/<preset>" (the pack's runs carry the same number)
 
@@ -77,42 +81,51 @@ class MaterialSet {
 };
 
 // ---------------------------------------------------------------------------
-// the texture set (package H2 implements it; the builder works without one)
+// the texture source (package H2's texture set is one: hit_texture_adapter.h)
 // ---------------------------------------------------------------------------
 
-struct TextureName {
-  std::string file;  // as the resource has it
-  std::string stem;  // lower case, no ".dds" (TextureStem): what the dictionaries' name hashes are made from
-  uint32_t stem_hash = 0;  // RageHashText(stem)
+// The dictionaries a texture name is seen from (texture_set.h of package H2 numbers them the same way; hit_texture_adapter.h checks it at compile time): the common dictionary,
+// the far level of detail's, and each sector's own, in the city table's order.
+inline constexpr uint32_t kHitDictionaryCommon = 0;
+inline constexpr uint32_t kHitDictionaryLod = 1;
+constexpr uint32_t HitDictionaryOfSector(uint32_t sector_index) { return 2u + sector_index; }
+
+// What a texture name is in one dictionary: the picture (an index in the source's table) and the guest key of the entry the name resolved to (the XXH3-64 of the base level's storage:
+// the number GB-F2's rows and the texture dumps name a texture by). kNoTexture: no dictionary has the name.
+struct TextureEntry {
+  uint32_t picture = kNoTexture;
+  uint64_t key = 0;
+  bool found() const { return picture != kNoTexture; }
 };
 
-struct ResolvedTexture {
-  uint16_t index = kNoTexture;  // in the table Resolve returned; kNoTexture: this name was not found
-  uint64_t key = 0;             // XXH3-64 of the base level (HitMaterial::key)
-  float average[3] = {0.5f, 0.5f, 0.5f};  // the mean colour of the texture, linear (HitMaterial::average is tint x this)
-};
-
-class TextureSet {
+class HitTextureSource {
  public:
-  virtual ~TextureSet() = default;
-  // What the stamp keeps of the set's rules (version, caps): another identity makes the hit pack stale. "none" for no set.
+  virtual ~HitTextureSource() = default;
+  // What the stamp keeps of the source's rules (its version): another identity makes the hit pack stale. "none" for no source.
   virtual std::string Identity() const { return "none"; }
-  // The distinct diffuse textures of the material table, in the order the materials first use them. `answers` gets one entry for each name (the same order); `table` the HitTexture
-  // records the hit file's texture section holds (an answer's index is a position in it). False (with `error`) stops the build.
-  virtual bool Resolve(const std::vector<TextureName>& names, std::vector<ResolvedTexture>* answers, std::vector<HitTexture>* table, std::string* error) = 0;
+  // The name `file_name` ("wall_brick_01.dds", as the shader instance has it) as seen from `dictionary`, with the source's fallbacks (the sector's own dictionary, then the common one).
+  virtual TextureEntry Resolve(uint32_t dictionary, std::string_view file_name) const {
+    (void)dictionary;
+    (void)file_name;
+    return TextureEntry();
+  }
+  // The HitTexture records the hit file's texture section holds (a TextureEntry::picture is a position in it), and the linear mean colour of a picture (false: not known).
+  virtual const std::vector<HitTexture>& Table() const {
+    static const std::vector<HitTexture> none;
+    return none;
+  }
+  virtual bool Average(uint32_t picture, float rgb[3]) const {
+    (void)picture;
+    (void)rgb;
+    return false;
+  }
   // Called once the hit file is in place: write the texture file (kTexFileName) with `hit_table_hash` (HitHeader::table_hash) in its header.
-  virtual bool Finish(const std::filesystem::path& texture_file, uint64_t hit_table_hash, std::string* error) = 0;
-};
-
-// The default: no textures. Every texture name is unresolved, the table is empty and no file is written.
-class NoTextureSet final : public TextureSet {
- public:
-  bool Resolve(const std::vector<TextureName>& names, std::vector<ResolvedTexture>* answers, std::vector<HitTexture>* table, std::string*) override {
-    answers->assign(names.size(), ResolvedTexture());
-    table->clear();
+  virtual bool Finish(const std::filesystem::path& texture_file, uint64_t hit_table_hash, std::string* error) {
+    (void)texture_file;
+    (void)hit_table_hash;
+    (void)error;
     return true;
   }
-  bool Finish(const std::filesystem::path&, uint64_t, std::string*) override { return true; }
 };
 
 // ---------------------------------------------------------------------------
@@ -121,16 +134,16 @@ class NoTextureSet final : public TextureSet {
 
 struct FinalizeStats {
   uint32_t texture_names = 0;        // distinct diffuse texture names
-  uint32_t names_resolved = 0;       // ... the set found
+  uint32_t names_resolved = 0;       // ... some material's name resolved (in the dictionary of the sector it is used in)
   uint32_t materials_textured = 0;   // materials that have a texture name
   uint32_t materials_unresolved = 0; // ... whose texture did not resolve (the average stands)
   uint32_t rows_applied = 0;         // materials a GB-F2 row changed
   std::vector<std::string> unresolved_names;  // the first few
 };
 
-// The records: `set`'s defs turned into HitMaterial (texture index, key, average from the set's answers; the rows applied when `rows` is given) and the texture records. False (with
-// `error`) when the set refuses.
-bool FinalizeMaterials(const MaterialSet& set, TextureSet* textures, const mcla::gpu::gbuffer::TextureTable* rows, std::vector<HitMaterial>* materials, std::vector<HitTexture>* table,
+// The records: `set`'s defs turned into HitMaterial (texture index, key and average from the defs' resolved pictures and the source's means; the rows applied when `rows` is given) and
+// the texture records (the source's table; empty without a source).
+bool FinalizeMaterials(const MaterialSet& set, const HitTextureSource* textures, const mcla::gpu::gbuffer::TextureTable* rows, std::vector<HitMaterial>* materials, std::vector<HitTexture>* table,
                        FinalizeStats* stats, std::string* error);
 
 // The text of the GB-F2 table files (the hit builder's `texture_rows`), read in order into one table; `hash` is a hash of the files' bytes (0: none), for the stamp. Missing files are

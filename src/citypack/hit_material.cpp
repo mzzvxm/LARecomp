@@ -49,7 +49,9 @@ std::string MaterialDef::Key() const {
   char head[160];
   std::snprintf(head, sizeof(head), "w%08x|t%08x,%08x,%08x|e%08x|s%08x|f%d|", word, FloatBits(tint[0]), FloatBits(tint[1]), FloatBits(tint[2]), FloatBits(emissive), shader_hash,
                 flat_colour ? 1 : 0);
-  return std::string(head) + texture;
+  char picked[40];
+  std::snprintf(picked, sizeof(picked), "p%08x,%08x,%08x|", picture, uint32_t(texture_key), uint32_t(texture_key >> 32));
+  return std::string(head) + picked + texture;
 }
 
 MaterialDef MaterialFromShader(const ShaderNames* names, MaterialClass base_class, MaterialFacts* facts) {
@@ -119,47 +121,18 @@ uint32_t MaterialSet::Add(const MaterialDef& def) {
   return it->second;
 }
 
-bool FinalizeMaterials(const MaterialSet& set, TextureSet* textures, const gb::TextureTable* rows, std::vector<HitMaterial>* materials, std::vector<HitTexture>* table, FinalizeStats* stats,
-                       std::string* error) {
+bool FinalizeMaterials(const MaterialSet& set, const HitTextureSource* textures, const gb::TextureTable* rows, std::vector<HitMaterial>* materials, std::vector<HitTexture>* table,
+                       FinalizeStats* stats, std::string* error) {
   FinalizeStats local;
   if (!stats) stats = &local;
   *stats = FinalizeStats();
-  NoTextureSet none;
-  if (!textures) textures = &none;
-  // The distinct texture names, in the order the materials first use them.
-  std::vector<TextureName> names;
-  std::unordered_map<std::string, uint32_t> name_index;
-  for (const MaterialDef& def : set.defs()) {
-    if (def.texture.empty()) continue;
-    ++stats->materials_textured;
-    if (name_index.try_emplace(def.texture, uint32_t(names.size())).second) {
-      TextureName name;
-      name.file = def.texture;
-      name.stem = TextureStem(def.texture);
-      name.stem_hash = RageHashText(name.stem);
-      names.push_back(std::move(name));
-    }
-  }
-  stats->texture_names = uint32_t(names.size());
-  std::vector<ResolvedTexture> answers;
   table->clear();
-  if (!textures->Resolve(names, &answers, table, error)) return false;
-  if (answers.size() != names.size()) {
-    if (error) *error = "the texture set gave another number of answers than texture names";
-    return false;
-  }
-  for (const ResolvedTexture& a : answers) {
-    if (a.index != kNoTexture && a.index >= table->size()) {
-      if (error) *error = "the texture set gave an answer that is not in its table";
-      return false;
-    }
-    if (a.index != kNoTexture) ++stats->names_resolved;
-  }
+  if (textures != nullptr) *table = textures->Table();
   if (table->size() > kMaxTextures) {
-    if (error) *error = "the texture set has more textures than a 16 bit index holds";
+    if (error) *error = "the texture source has more textures than a 16 bit index holds";
     return false;
   }
-
+  std::unordered_map<std::string, bool> names;  // distinct diffuse names -> some material resolved it
   materials->clear();
   materials->reserve(set.size());
   for (size_t index = 0; index < set.defs().size(); ++index) {
@@ -176,14 +149,22 @@ bool FinalizeMaterials(const MaterialSet& set, TextureSet* textures, const gb::T
       }
     }
     if (!def.texture.empty()) {
-      const ResolvedTexture& a = answers[name_index.at(def.texture)];
-      if (a.index != kNoTexture) {
-        m.texture = a.index;
-        m.key = a.key;
-        for (int k = 0; k < 3; ++k) m.average[k] = std::min(def.tint[k] * a.average[k], kHitRgb10Max);
+      ++stats->materials_textured;
+      bool& resolved = names.try_emplace(def.texture, false).first->second;
+      if (def.picture != kNoTexture) {
+        if (def.picture >= table->size()) {
+          if (error) *error = "a material names a picture that is not in the texture source's table";
+          return false;
+        }
+        resolved = true;
+        m.texture = uint16_t(def.picture);
+        m.key = def.texture_key;
+        float mean[3];
+        if (textures != nullptr && textures->Average(def.picture, mean)) {
+          for (int k = 0; k < 3; ++k) m.average[k] = std::min(def.tint[k] * mean[k], kHitRgb10Max);
+        }
       } else {
         ++stats->materials_unresolved;
-        for (int k = 0; k < 3; ++k) m.average[k] = def.tint[k] * 0.5f;  // a textured surface whose texture is not known: a mid grey, tinted
         if (stats->unresolved_names.size() < 12) stats->unresolved_names.push_back(def.texture);
       }
       if (rows != nullptr) {
@@ -196,6 +177,10 @@ bool FinalizeMaterials(const MaterialSet& set, TextureSet* textures, const gb::T
       }
     }
     materials->push_back(m);
+  }
+  stats->texture_names = uint32_t(names.size());
+  for (const auto& entry : names) {
+    if (entry.second) ++stats->names_resolved;
   }
   return true;
 }

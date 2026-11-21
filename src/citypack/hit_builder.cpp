@@ -241,7 +241,7 @@ Stamp MakeHitStamp(const HitStampInputs& in) {
   return stamp;
 }
 
-std::string TextureSetIdentity(const TextureSet* set) { return set ? set->Identity() : std::string("none"); }
+std::string TextureSetIdentity(const HitTextureSource* set) { return set ? set->Identity() : std::string("none"); }
 
 std::filesystem::path TextureFilePath(const BuildRequest& base) { return base.out_dir / kTexFileName; }
 
@@ -453,12 +453,19 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
   };
 
   // Maps a blob's local material numbers to the table's and puts the blob together: the runs and the indexed corner stream a worker made (a blob without corners is H0's plain one).
+  // `dictionary` is what the blob's texture names are seen from (hit_material.h): the sector's own for a detail blob, the far level of detail's for a far one.
   const auto encode = [&](HitBlob* blob, const std::vector<uint8_t>& corner_stream, uint64_t corner_count, const std::vector<MaterialDef>& locals, const std::vector<MaterialFacts>& facts,
-                          uint32_t* run_count) {
+                          uint32_t dictionary, uint32_t* run_count) {
     const auto t = Clock::now();
     std::vector<uint32_t> global(locals.size());
     for (size_t l = 0; l < locals.size(); ++l) {
-      global[l] = set.Add(locals[l]);
+      MaterialDef def = locals[l];
+      if (!def.texture.empty() && request.textures != nullptr) {
+        const TextureEntry entry = request.textures->Resolve(dictionary, def.texture);
+        def.picture = entry.picture;
+        def.texture_key = entry.found() ? entry.key : 0;
+      }
+      global[l] = set.Add(def);
       if (global[l] == set_facts.size()) set_facts.push_back(facts[l]);
     }
     for (HitRun& run : blob->runs) run.material = global[run.material];
@@ -536,7 +543,7 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
       if (census.problems.size() < 40) census.problems.push_back(r.problem);
     } else {
       if (r.has_blob) {
-        std::vector<uint8_t> bytes = encode(&r.blob, r.corner_stream, r.corner_count, r.locals, r.facts, &rec.hi_runs);
+        std::vector<uint8_t> bytes = encode(&r.blob, r.corner_stream, r.corner_count, r.locals, r.facts, HitDictionaryOfSector(i), &rec.hi_runs);
         if (!write_blob(bytes, &rec.hi_offset)) write_failed = true;
         rec.hi_size = uint32_t(bytes.size());
         census.hi_blob_bytes += bytes.size();
@@ -545,7 +552,7 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
         census.hi_runs += rec.hi_runs;
       }
       if (lod_has[i] != 0) {
-        std::vector<uint8_t> bytes = encode(&lod_blobs[i], lod_streams[i], lod_corner_counts[i], lod_locals[i], lod_facts[i], &rec.lod_runs);
+        std::vector<uint8_t> bytes = encode(&lod_blobs[i], lod_streams[i], lod_corner_counts[i], lod_locals[i], lod_facts[i], kHitDictionaryLod, &rec.lod_runs);
         if (!write_blob(bytes, &rec.lod_offset)) write_failed = true;
         rec.lod_size = uint32_t(bytes.size());
         census.lod_blob_bytes += bytes.size();

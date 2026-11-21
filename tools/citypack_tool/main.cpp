@@ -12,6 +12,8 @@
 //   citypack_tool build-hit --game <folder> --out <folder> [--mods <xarchive_mods.rpf>] [--threads N] [--force] [--census] [--rows <table file>]...
 //                          builds the hit pack next to the city pack (--out is the city pack's folder); --census reads, parses and encodes everything and writes nothing (the golden counts
 //                          and the sizes); --rows adds a GB-F2 per-texture table file (applied to the materials by their texture keys)
+//                          the textures: where package H2's texture set is built in (citypack/texture_set.h), build-hit builds it first (the dictionaries of common, lod_0 and the 439 sectors:
+//                          mcla_city_tex.v1.pack beside the hit pack, its table in the hit file, the materials' pictures, keys and averages); --no-textures leaves it out
 //                          --uv-step N (the texture coordinate step is never finer than 2^-N of a repeat; 0 = the full 16 bits), --ao-bits N, --tint-bits N (8 = lossless): hit_collect.h HitRules
 //   citypack_tool check-hit --game <folder> --out <folder> [--rows <table file>]... [--deep]
 //                          stat only: is the hit pack current? (exit 0 = yes); --deep also decodes every blob and compares it with the city pack (exit 0 = whole)
@@ -31,6 +33,7 @@
 
 #include "citypack/builder.h"
 #include "citypack/hit_builder.h"
+#include "citypack/hit_texture_adapter.h"
 #include "citypack/pack_reader.h"
 #include "mc_engine/modloader/xcompress.h"
 
@@ -68,6 +71,7 @@ struct Args {
   bool force = false;
   bool census = false;
   bool deep = false;
+  bool no_textures = false;
 };
 
 bool ParseArgs(int argc, char** argv, int first, Args* args) {
@@ -94,6 +98,7 @@ bool ParseArgs(int argc, char** argv, int first, Args* args) {
     else if (a == "--ao-bits") { std::string t; if (!value(&t)) return false; args->ao_bits = std::atoi(t.c_str()); }
     else if (a == "--tint-bits") { std::string t; if (!value(&t)) return false; args->tint_bits = std::atoi(t.c_str()); }
     else if (a == "--deep") args->deep = true;
+    else if (a == "--no-textures") args->no_textures = true;
     else if (!a.empty() && a[0] == '-') { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return false; }
     else args->positional.push_back(a);
   }
@@ -296,6 +301,11 @@ int main(int argc, char** argv) {
     if (args.uv_step >= 0) hit.rules.uv_step_log2 = uint32_t(args.uv_step);
     if (args.ao_bits >= 0) hit.rules.ao_bits = uint32_t(args.ao_bits);
     if (args.tint_bits >= 0) hit.rules.tint_bits = uint32_t(args.tint_bits);
+#if defined(LARECOMP_HIT_HAS_TEXTURE_SET)
+    CityTextureSource texture_source;  // starts with no set: its identity is all the currency check needs
+    TextureSetResult texture_result;
+    if (!args.no_textures) hit.textures = &texture_source;
+#endif
     if (command == "check-hit") {
       const StampCheck check = CheckCityHitPack(hit);
       std::printf("%s%s\n", check.current ? "current" : "not current: ", check.current ? "" : check.why.c_str());
@@ -316,6 +326,24 @@ int main(int argc, char** argv) {
       return bad == 0 ? 0 : 1;
     }
     PrintSink sink;
+#if defined(LARECOMP_HIT_HAS_TEXTURE_SET)
+    if (hit.textures != nullptr && (hit.base.census_only || args.force || !CheckCityHitPack(hit).current)) {
+      TextureSetRequest texture_request;
+      texture_request.source_rpf = request.source_rpf;
+      texture_request.mods_rpf = request.mods_rpf;
+      texture_request.lzx = request.lzx;
+      texture_request.threads = request.threads;
+      texture_result = BuildTextureSet(texture_request, &sink);
+      if (!texture_result.ok) {
+        std::fprintf(stderr, "failed: the texture set: %s\n", texture_result.error.c_str());
+        return 1;
+      }
+      std::printf("texture set: %u pictures (%llu data bytes) from %llu dictionary entries, %u distinct names, %.1f s\n", texture_result.stats.distinct,
+                  static_cast<unsigned long long>(texture_result.stats.data_bytes), static_cast<unsigned long long>(texture_result.stats.entries), texture_result.stats.distinct_names,
+                  texture_result.stats.seconds);
+      texture_source.SetTextureSet(&texture_result.set);
+    }
+#endif
     const HitBuildResult result = BuildCityHitPack(hit, &sink);
     if (!result.ok) {
       std::fprintf(stderr, "failed: %s\n", result.error.c_str());
