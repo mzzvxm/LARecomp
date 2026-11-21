@@ -730,6 +730,13 @@ inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 // "RR takes the frame" is what the frame boundary can know: the plan says RR (and DLSS is the upscaler), nothing failed, the RR context is made, and this frame is upscaled at all (armed) and
 // is the play view (the pause, garage and map worlds carry no guides: a Super Resolution frame, whose noise nothing cleans). A frame that turns out to be Super Resolution's although these held
 // (the guide pass's pipeline was still being made, an evaluation failed and the backend gave it to SR in the same call) shows the raw noise for that frame: rare, counted by the census.
+//
+// TODO(RR-5 merge, feat/rr-5 eb9eb94f; the names below exist only there, not on this branch): RR-5's DENOISER row decides AUTO by which effects are ON and have a raw mode. When the two branches
+// are merged: (1) in rr::kConsumers set raw_mode_built = true for Consumer::kSsr (this package's RR-4a) and Consumer::kCarRtReflections (RR-4b), and leave auto_uses_rr false until the RR-6 A/B says
+// Ray Reconstruction beats ours there; (2) once a frame, from the render thread, call mcla::gpu::denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff) in
+// ScreenReflections::BeginFrame (ssr.cpp) and NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active()) in CarSelfRefl::BeginFrame right after rt_->BeginFrame (car_selfrefl.cpp);
+// (3) delete `in.consumers_active = false;` in TemporalSystem::UpdateDenoiserPlan (RR-5 replaces it). `on` means the effect runs this frame whatever the plan is (the effects' raw modes are what the
+// plan then turns on), so there is no circle: the consumer is on first, the plan follows, RawModes() follows the plan.
 enum class RawEffect : uint8_t { kSsr, kCarRefl, kCount };
 constexpr const char* RawEffectName(RawEffect e) {
   switch (e) {

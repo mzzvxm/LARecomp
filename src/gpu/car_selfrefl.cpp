@@ -277,6 +277,8 @@ void CarSelfRefl::BeginFrame() {
   if (rt_) {
     rt_->BeginFrame(mode != Mode::kOff);  // the ray traced image of this frame's trigger, where it is wanted and can be made
   }
+  // TODO(RR-5 merge, feat/rr-5 eb9eb94f): here, once a frame, `denoiser::NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active());` (denoiser_setting.h) and
+  // rr::kConsumers[kCarRtReflections].raw_mode_built = true in dlss_rr_rules.h; the names do not exist on this branch (dlss_rr_rules.h RawEffect has the whole list of calls).
 }
 
 uint64_t CarSelfRefl::HeldBytes() const {

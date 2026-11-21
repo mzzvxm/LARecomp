@@ -1739,7 +1739,7 @@ void TemporalSystem::UpdateDenoiserPlan() {
   in.upscaler_is_dlss = effective_ == Upscaler::kDlss;
   // CHECK: no effect asks for Ray Reconstruction yet (SSR, city RT reflections, RTGI, the raw modes are package RR-4): AUTO has no consumer, so it stays ours; the
   // debug switch's "on" is the one that gets past this (it stands for the row's RR value until the row exists, RR-5).
-  in.consumers_active = false;
+  in.consumers_active = false;  // TODO(RR-5 merge): RR-5 replaces this with the DENOISER row's consumer rule (rr::kConsumers + denoiser::NoteConsumer): see dlss_rr_rules.h RawEffect
   // The room in video memory for the context (RR-3), asked only where RR would be the choice: every other reason is named first by the rules, and nothing is asked of the adapter for
   // an RR that is not wanted.
   in.room_ok = true;
