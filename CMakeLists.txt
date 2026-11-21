@@ -1098,6 +1098,12 @@ else()
     add_subdirectory(tools/shaderpack_tool EXCLUDE_FROM_ALL)
     target_link_libraries(larecomp PRIVATE larecomp_shaderpack)
 
+    # The city pack (src/citypack): the city's geometry for ray tracing (CITY-RT M1), built from the player's own game files and read by the
+    # renderer's streamer. tools/citypack_tool is its command line, built on request:  cmake --build <dir> --target larecomp_citypack_tool
+    add_subdirectory(src/citypack)
+    add_subdirectory(tools/citypack_tool EXCLUDE_FROM_ALL)
+    target_link_libraries(larecomp PRIVATE larecomp_citypack)
+
     # rexglue 0.7.4
     if(WIN32)
         # The native_gfx diagnostics use std::fopen on purpose (append-only text
