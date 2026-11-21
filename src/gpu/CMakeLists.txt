@@ -281,6 +281,10 @@ add_executable(larecomp_local_shadow_rules_test EXCLUDE_FROM_ALL local_shadow_ru
 # hlsl/car_rt_common.hlsli use the header's numbers) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_scene_rules_test, then run src/gpu/larecomp_car_rt_scene_rules_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_car_rt_scene_rules_test EXCLUDE_FROM_ALL car_rt_scene_rules_test.cpp)
+# The city as ray tracing structures (city_rt_rules.h, CITY-RT M1: the setting and the class budgets, the instance mask against the car scene's, the streaming plan
+# with its hysteresis and memory cap on a synthetic city, the frame's build schedule) likewise:
+#   cmake --build <dir> --target larecomp_city_rt_rules_test, then run src/gpu/larecomp_city_rt_rules_test (exit 0 = passed).
+add_executable(larecomp_city_rt_rules_test EXCLUDE_FROM_ALL city_rt_rules_test.cpp)
 # The other cars in the car ray tracing scene (car_rt_instances_rules.h: the limits by class, which cars are kept, a car's body centre, the budgets of a
 # car that is new, the instance list) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_instances_rules_test, then run src/gpu/larecomp_car_rt_instances_rules_test (exit 0 = passed).

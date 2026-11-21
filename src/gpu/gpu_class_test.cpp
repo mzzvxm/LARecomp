@@ -96,6 +96,8 @@ const Row kTable[] = {
     // Volumetric light (VOLUMETRICS-SURVEY.md section 4.1): off on Low, medium on Mid, high on High (ultra is a deliberate pick).
     {Effect::kVolumetrics, "mcla_gpu_volumetrics", "off", "medium", "high", "AUTO (OFF)", "AUTO (MEDIUM)",
      "AUTO (HIGH)"},
+    // Ray traced sun shadows (CITY-RT M1, city_rt_rules.h): high on High only; a Mid card gets it by hand.
+    {Effect::kRtShadows, "mcla_gpu_rt_shadows", "off", "off", "high", "AUTO (OFF)", "AUTO (OFF)", "AUTO (HIGH)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
