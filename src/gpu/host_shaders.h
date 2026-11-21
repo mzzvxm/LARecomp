@@ -82,6 +82,8 @@
 #include "gi_field_reset_cs.hlsl.dxil.h"
 #include "gi_field_view_ps.hlsl.dxil.h"
 #include "gi_field_weights_cs.hlsl.dxil.h"
+#include "gi_pixel_trace_cs.hlsl.dxil.h"
+#include "gi_pixel_trace_ms_cs.hlsl.dxil.h"
 #include "gi_update_blend_cs.hlsl.dxil.h"
 #include "gi_update_trace_cs.hlsl.dxil.h"
 #include "hdr_compose_ps.hlsl.dxil.h"
@@ -123,6 +125,8 @@
 #include "ssr_denoise_spatial_cs.hlsl.dxil.h"
 #include "rt_denoise_plain_spatial_cs.hlsl.dxil.h"
 #include "rt_denoise_plain_temporal_cs.hlsl.dxil.h"
+#include "rt_denoise_diffuse_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_diffuse_temporal_cs.hlsl.dxil.h"
 #include "ssr_temporal_ps.hlsl.dxil.h"
 #include "ssr_rt_select_cs.hlsl.dxil.h"
 #include "ssr_rt_trace_cs.hlsl.dxil.h"
@@ -217,6 +221,8 @@
 #include "gi_field_reset_cs.hlsl.spirv.h"
 #include "gi_field_view_ps.hlsl.spirv.h"
 #include "gi_field_weights_cs.hlsl.spirv.h"
+#include "gi_pixel_trace_cs.hlsl.spirv.h"
+#include "gi_pixel_trace_ms_cs.hlsl.spirv.h"
 #include "gi_update_blend_cs.hlsl.spirv.h"
 #include "gi_update_trace_cs.hlsl.spirv.h"
 #include "hdr_compose_ps.hlsl.spirv.h"
@@ -258,6 +264,8 @@
 #include "ssr_denoise_spatial_cs.hlsl.spirv.h"
 #include "rt_denoise_plain_spatial_cs.hlsl.spirv.h"
 #include "rt_denoise_plain_temporal_cs.hlsl.spirv.h"
+#include "rt_denoise_diffuse_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_diffuse_temporal_cs.hlsl.spirv.h"
 #include "ssr_temporal_ps.hlsl.spirv.h"
 #include "ssr_rt_select_cs.hlsl.spirv.h"
 #include "ssr_rt_trace_cs.hlsl.spirv.h"
@@ -384,6 +392,12 @@ inline HostShaderBlob GiUpdateBlendShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(gi_update_blend_cs);
 }
 
+// The probe field's per-pixel detail pass (gi_pixel.h, CITY-RT M3 package G5): the trace (inline ray queries, Shader Model 6.5, the city hit library in GI mode) over plain planes, or over the host's MSAA
+// level (hlsl/gi_pixel_trace_cs.hlsl, GIP_MS).
+inline HostShaderBlob GiPixelTraceShader(bool multisampled) {
+  return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gi_pixel_trace_ms_cs) : MCLA_GPU_HOST_SHADER_BLOB(gi_pixel_trace_cs);
+}
+
 // The probe field's apply (gi_apply.h, CITY-RT M3 package G3): 0 the lookup at the traced size, 1 the same over multisampled planes, 2 the apply, 3 the apply over multisampled planes, 4 the apply that takes
 // the net irradiance from the lookup's image, 5 the same over multisampled planes. All pixel shaders of one source (hlsl/gi_apply_ps.hlsl).
 inline HostShaderBlob GiApplyShader(uint32_t which) {
@@ -454,6 +468,10 @@ inline HostShaderBlob SsrDenoiseSpatialShader() {
 }
 inline HostShaderBlob RtDenoisePlainShader(bool temporal) {
   return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_plain_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_plain_spatial_cs);
+}
+// The same two stages compiled with the DIFFUSE profile (RT_DN_PROFILE_DIFFUSE: a fixed radius, no hit distance, looser weights): the probe field's per-pixel detail pass's denoiser (gi_pixel.h).
+inline HostShaderBlob RtDenoiseDiffuseShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_diffuse_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_diffuse_spatial_cs);
 }
 
 // DLSS Ray Reconstruction's guide pass (rr_guides.h, hlsl/rr_guides_cs.hlsl): over planes with one sample, or the host's MSAA level; and its debug view over the upscaler's output

@@ -356,12 +356,14 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .makes = data::kLinDepth | data::kLinDepthFull | data::kNormal | data::kColourPre | data::kHizMin,
      .note = "ScreenShared::Publish at the END of the AO's frame (after the apply): every reader of the ScreenFrame comes after the whole AO"},
     {.step = Step::kGiApply, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's apply (additive, multiplied by the occlusion)", .call = "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_)",
-     .label_file = "gi_apply.cpp", .label = "gi lookup", .closing_label = "after gi apply", .reads = data::kPlanes | data::kLinDepth, .soft_reads = data::kProbeField | data::kAoTerm,
+     .label_file = "gi_apply.cpp", .label = "rt gi pixel", .more_labels = {{"rt gi denoise", "gi lookup"}}, .closing_label = "after gi apply", .reads = data::kPlanes | data::kLinDepth,
+     .soft_reads = data::kProbeField | data::kAoTerm | data::kCarStructures | data::kLights,
      .wants_planes = detail::kNormalPlane | detail::kAlbedoPlane, .wants_screen = data::kLinDepth,
      .deps = {{{Step::kAoApply, "right after the occlusion's apply, which has multiplied the colour: the field's bounce is added on top and multiplied by the occlusion's visibility itself"},
                {Step::kGiField, "applies the frame the field's step published"}}},
      .note = "(CITY-RT M3 G3, gi_apply.h) only while a field runs and has a published frame: one full screen additive draw into the main colour, with a lookup draw at the occlusion's traced size before it above 1080 "
-             "lines; its own labels are 'gi lookup', 'gi apply' (or 'gi apply view' in a debug view) and the closing mark 'after gi apply'. The lamps' direct light comes after it"},
+             "lines; its own labels are 'gi lookup', 'gi apply' (or 'gi apply view' in a debug view) and the closing mark 'after gi apply'. At ULTRA on a strong ray tracing card (CITY-RT M3 G5, gi_pixel.h) the per-pixel detail "
+             "pass runs first, inside this step: 'rt gi pixel' (the trace) and 'rt gi denoise' (RtDenoise's temporal and spatial stages) are marked only in a frame that runs it, before the lookup. The lamps' direct light comes after it"},
     {.step = Step::kLocalLights, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "deferred local lights (additive)", .call = "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_)",
      .label_file = "local_lights.cpp", .label = "local lights", .closing_label = "after local lights", .reads = data::kPlanes | data::kLinDepth | data::kLights,
      .soft_reads = data::kLightMaps | data::kShadowAtlas,

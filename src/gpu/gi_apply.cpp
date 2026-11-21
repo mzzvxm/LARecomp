@@ -16,6 +16,7 @@
 #include "device.h"
 #include "gbuffer.h"
 #include "gi_field.h"
+#include "gi_pixel.h"
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
@@ -88,6 +89,7 @@ void GiApply::Shutdown() {
   screen_ = nullptr;
   ao_ = nullptr;
   field_ = nullptr;
+  pixel_ = nullptr;
   device_ = nullptr;
   frames_ = nullptr;
   heap_ = nullptr;
@@ -399,15 +401,8 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     fr.paint_power = ov.paint_power;
   }
   fr.view_gain = 1.0f;
-  const ga::Buffer buffer = ga::MakeBuffer(field_->gpu_frame(), fr);
+  const ga::Buffer base_rows = ga::MakeBuffer(field_->gpu_frame(), fr);
   Slot& slot = slots_[frame_slot];
-  void* mapped = slot.buffer->map();
-  if (mapped == nullptr) {
-    Count(ga::Skip::kNoBuffer);
-    return false;
-  }
-  std::memcpy(mapped, buffer.data(), sizeof(buffer));
-  slot.buffer->unmap();
 
   // The colour is drawn into; the depth plane, the G-buffer's planes (published in the shader-read layout), the occlusion's depth and visibility images and the field's three textures are read.
   bool unset = false;
@@ -417,6 +412,46 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     return false;
   }
   edram_->Transition(list, depth, plume::RenderTextureLayout::SHADER_READ);
+
+  // G5, ULTRA on a strong card only (gi_pixel_rules.h): the per-pixel detail pass, BEFORE the lookup (which mixes its denoised term into the field's irradiance). The layout decides first: at HIGH, OFF and on every
+  // card without the extended layout nothing is asked, recorded or marked. The pass is the same trigger's compute work (outside any render pass: the depth plane is in the shader-read layout above), and it
+  // publishes its image in the apply's own copy of the field's frame, so that the rows below carry its slot, its guides and the flag.
+  gi::GiFrame shown = gf;
+  bool pixel_ran = false;
+  if (pixel_ != nullptr && pixel_->available() && gi::BudgetOf(gf.layout).pixel_rays_per_pixel != 0) {
+    GiPixel::Inputs pixel_in;
+    pixel_in.frame = frame_;
+    pixel_in.frame_slot = frame_slot;
+    pixel_in.field = &gf;
+    pixel_in.rows = &base_rows;
+    pixel_in.camera = &fr;
+    pixel_in.traced[0] = sf.traced[0];
+    pixel_in.traced[1] = sf.traced[1];
+    pixel_in.render[0] = gb.width;
+    pixel_in.render[1] = gb.height;
+    pixel_in.depth_slot = summary.sample_slot;
+    pixel_in.normal_slot = gb.slot[gbuffer::kPlaneNormal];
+    pixel_in.albedo_slot = gb.slot[gbuffer::kPlaneAlbedo];
+    pixel_in.lin_slot = sf.lin_depth_slot[0];
+    pixel_in.sample0 = gb.sample0;
+    pixel_in.multisampled = gb.host_samples > 1;
+    if (pixel_->Begin(pixel_in)) {
+      pass_timing_->Mark(list, "rt gi pixel");
+      pixel_->RecordTrace(list);
+      pass_timing_->Mark(list, "rt gi denoise");
+      pixel_->RecordDenoise(list);
+      pixel_ran = pixel_->Publish(&shown);
+    }
+  }
+  // The frame's rows: the field's own as published, or (with the pixel pass's image in it) as the apply's copy says.
+  const ga::Buffer buffer = pixel_ran ? ga::MakeBuffer(gi::MakeGpuFrame(shown), fr) : base_rows;
+  void* mapped = slot.buffer->map();
+  if (mapped == nullptr) {
+    Count(ga::Skip::kNoBuffer);
+    return false;
+  }
+  std::memcpy(mapped, buffer.data(), sizeof(buffer));
+  slot.buffer->unmap();
 
   ga::Push push = {};
   push.slots[0] = summary.sample_slot;
@@ -489,6 +524,9 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
 }
 
 void GiApply::OnPresent() {
+  if (pixel_ != nullptr) {
+    pixel_->OnPresent();  // the per-pixel pass's idle count: its images go back after a spell without a run
+  }
   idle_frames_ = ran_this_frame_ ? 0u : idle_frames_ + 1u;
   if (lookup_.texture && idle_frames_ >= kReleaseAfterIdleFrames) {
     ReleaseImage();  // the pause menu, the setting turned off: the lookup image goes back (made again on the next run)

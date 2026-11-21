@@ -16,6 +16,10 @@
 //             colour chain, no ring: the plain occlusion's visibility runs). The share the occlusion RAN with is latched (NoteSsgiRan) and the field's weight is min(fade, 1 - that share): the two can
 //             never add up to more than one bounce, and a frame the occlusion planned before the field was published gets no field bounce.
 //
+// THE PER-PIXEL PASS (G5, gi_pixel.h) is recorded by this class right before the lookup, in the same list, while the frame's layout has one (ULTRA on a strong card): the lookup then mixes the pass's denoised
+// term into the field's irradiance where the pass traced the pixel and its history has grown (gi_pixel_rules.h Weight). Its two marks are 'rt gi pixel' and 'rt gi denoise'. At every other layout the pass is
+// never asked and this class does what it did before it existed.
+//
 // IDENTITY. Nothing is recorded, bound or drawn, and nothing of the occlusion changes, while any of these holds: no GiField is set (G4 sets it), the field is not running this frame, its frame is not
 // published (no field in it), the field's share is 0 (fade 0, or the occlusion's screen-space bounce light ran at its full strength), the strength is 0, or the frame lacks the G-buffer's planes, the
 // camera or the light. A frame with the field on adds only where the field has something (an empty field, a field of zeros and a field that is the open ground add exactly nothing: gi_apply_test.cpp).
@@ -72,6 +76,7 @@ class Device;
 class FrameRing;
 class GBuffer;
 class GiField;
+class GiPixel;
 class PassTiming;
 class ScreenShared;
 
@@ -92,6 +97,8 @@ class GiApply {
   void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
   void SetAmbientOcclusion(AmbientOcclusion* ao) { ao_ = ao; }
   void SetGiField(const GiField* field) { field_ = field; }
+  // G5's per-pixel detail pass (gi_pixel.h): run by this class before its lookup, at ULTRA on a strong card only; null (or not available): never. Not owned.
+  void SetGiPixel(GiPixel* pixel) { pixel_ = pixel; }
 
   // The Scene opened a frame's first list, BEFORE the G-buffer's and the shared products' own BeginFrame (they read the wants it makes) and after GiField::BeginFrame: reads the debug view, makes
   // the wants (RT1 and RT2, the depth chain: only while the field runs) and forgets the last frame's latch.
@@ -157,6 +164,7 @@ class GiApply {
   ScreenShared* screen_ = nullptr;
   AmbientOcclusion* ao_ = nullptr;
   const GiField* field_ = nullptr;
+  GiPixel* pixel_ = nullptr;
 
   // resources
   plume::RenderDescriptorSetBuilder set_builder_;

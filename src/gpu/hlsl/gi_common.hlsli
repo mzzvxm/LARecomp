@@ -42,6 +42,7 @@
 #define GI_ROW_AMBIENT_UP 5u
 #define GI_ROW_AMBIENT_DOWN 6u
 #define GI_ROW_RESERVED 7u
+#define GI_ROW_PIXEL 7u
 #define GI_ROW_CASCADE0 8u
 #define GI_ROWS_PER_CASCADE 3u
 
@@ -122,6 +123,33 @@ uint GiSlot(uint product)
 {
     uint4 r = GI_FRAME_ROW(GI_ROW_SLOTS);
     return product == 0u ? r.x : (product == 1u ? r.y : (product == 2u ? r.z : r.w));
+}
+
+// G5's per-pixel pass (gi_frame.h PixelParams, row 7): whether the frame has the denoised image, its slot, its guides and its size; the image is the traced size divided by the divisor.
+bool GiPixelPresent()
+{
+    return (GiFlags() & GI_FLAG_PIXEL_PASS) != 0u && GiSlot(GI_PRODUCT_PIXEL_IRRADIANCE) != GI_NO_SLOT;
+}
+
+struct GiPixelRow
+{
+    uint depthSlot;
+    uint normalSlot;
+    uint width;
+    uint height;
+    uint divisor;
+};
+
+GiPixelRow GiLoadPixelRow()
+{
+    uint4 r = GI_FRAME_ROW(GI_ROW_PIXEL);
+    GiPixelRow p;
+    p.depthSlot = r.x & 0xFFFFu;
+    p.normalSlot = r.x >> 16u;
+    p.width = r.y & 0xFFFFu;
+    p.height = r.y >> 16u;
+    p.divisor = r.z > 1u ? r.z : 1u;
+    return p;
 }
 
 bool GiFieldValid()

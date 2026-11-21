@@ -53,6 +53,73 @@ ConstantBuffer<GiaPush> g_push : register(b0, space4);
 #define GI_LOAD_PROBE_WEIGHT(px, py) g_textures[GiSlot(GI_PRODUCT_PROBE_WEIGHT)].Load(int3((int)(px), (int)(py), 0)).x
 #include "gi_common.hlsli"
 #include "gi_apply_common.hlsli"
+#include "gi_pixel_common.hlsli"
+
+// G5: the per-pixel detail pass's term at the traced texel c (the lookup's own coordinates), for the pixel at the view distance t with the world normal n: rgb its denoised irradiance, w its weight against the
+// field's (GipWeight: the history's length in the image's alpha, 0 where the pass did not trace the pixel). A frame without the image gives w = 0 and nothing else is read. A reduced image (divisor 2) is read by
+// the four nearest of its pixels weighted by bilinear x depth x normal agreement (the guides are the pass's own images).
+float4 GiaPixelTerm(int2 c, float t, float3 n, GiaFrame fr)
+{
+    if (!GiPixelPresent())
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    GiPixelRow row = GiLoadPixelRow();
+    if (row.width == 0u || row.height == 0u || row.depthSlot == 0xFFFFu)
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    uint slot = GiSlot(GI_PRODUCT_PIXEL_IRRADIANCE);
+    int2 size = int2(int(row.width), int(row.height));
+    if (row.divisor <= 1u)
+    {
+        int2 q = clamp(c, int2(0, 0), size - 1);
+        float4 e = g_textures[slot].Load(int3(q, 0));
+        float d = g_textures[row.depthSlot].Load(int3(q, 0)).x;
+        return float4(e.x, e.y, e.z, GipWeight(e.w, d));
+    }
+    float2 f0 = (float2(c) + 0.5f) / (float)row.divisor - 0.5f;
+    int2 q0 = int2(floor(f0));
+    float2 f = f0 - float2(q0);
+    float3 nv = float3(dot(n, fr.right), dot(n, fr.up), dot(n, fr.forward));
+    float3 eSum = float3(0.0f, 0.0f, 0.0f);
+    float lengthSum = 0.0f;
+    float wSum = 0.0f;
+    float cover = 0.0f;
+    for (int j = 0; j < 2; ++j)
+    {
+        for (int i = 0; i < 2; ++i)
+        {
+            int2 q = clamp(q0 + int2(i, j), int2(0, 0), size - 1);
+            float bilinear = (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
+            float d = g_textures[row.depthSlot].Load(int3(q, 0)).x;
+            float4 e = g_textures[slot].Load(int3(q, 0));
+            float3 gn = g_textures[row.normalSlot].Load(int3(q, 0)).xyz;
+            if (dot(nv, gn) < 0.0f)
+            {
+                gn = -gn;
+            }
+            float w = GipTapWeight(bilinear, d, GiaDepthWeight(t, d), GiaNormalWeight(nv, gn));
+            eSum = eSum + float3(e.x, e.y, e.z) * w;
+            lengthSum = lengthSum + e.w * w;
+            wSum = wSum + w;
+            cover = cover + (d > 0.0f ? bilinear : 0.0f);
+        }
+    }
+    if (!(wSum > 1.0e-8f))
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    float3 ePixel = eSum * (1.0f / wSum);
+    return float4(ePixel.x, ePixel.y, ePixel.z, GipWeight(lengthSum / wSum, 1.0f) * saturate(cover));
+}
+
+// The lookup's net irradiance with the per-pixel term mixed into the field's irradiance first (GipMix; a weight of 0 is the field's exactly).
+float3 GiaLookupNetMixed(GiSample s, float3 n, float deadBand, float4 pixelTerm)
+{
+    s.irradiance = GipMix(s.irradiance, float3(pixelTerm.x, pixelTerm.y, pixelTerm.z), pixelTerm.w);
+    return GiaLookupNet(s, n, deadBand);
+}
 
 float4 GiaLoadPlane(uint slot, int2 p)
 {
@@ -110,7 +177,7 @@ float4 main(float4 position : SV_Position) : SV_Target
     float3 n = GbRt1Decode(rt1);
     float3 pos = GiaWorldPosition(fr, (float)r.x + 0.5f, (float)r.y + 0.5f, fr.render.x, fr.render.y, t);
     GiSample s = GiLookup(pos, n);
-    float3 e = GiaLookupNet(s, n, fr.deadBand);
+    float3 e = GiaLookupNetMixed(s, n, fr.deadBand, GiaPixelTerm(p, t, n, fr));
     return float4(e.x, e.y, e.z, t);
 }
 
@@ -237,7 +304,7 @@ float4 main(float4 position : SV_Position) : SV_Target
 #else
     {
         GiSample s = GiLookup(pos, n);
-        eNet = GiaLookupNet(s, n, fr.deadBand);
+        eNet = GiaLookupNetMixed(s, n, fr.deadBand, GiaPixelTerm(pixel, t, n, fr));
         vehicle = GiaVehicleMark(g_textures[g_push.slots.w].Load(int3(pixel, 0)).x);
         if (GiaHasVisibility())
         {

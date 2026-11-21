@@ -669,6 +669,15 @@ inline constexpr uint32_t kFlagValid = 1u;          // the field's three texture
 inline constexpr uint32_t kFlagReplacesSsgi = 2u;   // the colour chain's gather may be skipped this frame (GiFrame::ReplacesSsgi)
 inline constexpr uint32_t kFlagPixelPass = 4u;      // kPixelIrradiance is in the frame
 
+// G5's per-pixel pass parameters (GpuGiFrame row 7, written only where kPixelIrradiance is in the frame and the image has a size): the pixel image is the occlusion's traced size divided by `divisor` (1 or 2), with its own
+// depth guide and view normal guide (R32F / RGBA16F bindless slots, each under 65536) for the apply's depth and normal weighted read of a reduced image. Appended into the reserved row: no version.
+struct PixelParams {
+  uint32_t depth_slot = kNoSlot;
+  uint32_t normal_slot = kNoSlot;
+  uint32_t width = 0, height = 0;
+  uint32_t divisor = 1;
+};
+
 struct GiFrame {
   uint32_t generation = 0;     // changes whenever the textures are made again (a new layout, a new size): drop what was cached from them
   uint32_t frame_serial = 0;   // the scene's frame the data belongs to (low 32 bits)
@@ -695,6 +704,7 @@ struct GiFrame {
   float ambient_up_rgb[3] = {0, 0, 0};
   float ambient_down_rgb[3] = {0, 0, 0};
   float ground_albedo = kGroundAlbedo;
+  PixelParams pixel;   // G5: where the per-pixel pass's image and guides are (only read where Has(kPixelIrradiance))
 
   bool Has(Product product) const { return (valid & ProductBit(product)) != 0 && slot[uint32_t(product)] != kNoSlot; }
   bool FieldPresent() const { return Has(kIrradiance) && Has(kMoments) && Has(kProbeWeight) && cascade_count > 0 && cascade_count <= kMaxCascades; }
@@ -720,13 +730,13 @@ constexpr float SsgiShare(float confidence, float fade) {
 //   row 4   float  sun colour rgb, sin of the sun's elevation
 //   row 5   float  ambient up rgb, 0
 //   row 6   float  ambient down rgb, 0
-//   row 7   --     reserved: zero (G5's per-pixel pass parameters are appended here)
+//   row 7   uint   G5's per-pixel pass (PixelParams; zero where the frame has no kPixelIrradiance): depth guide slot (low 16) | view normal guide slot << 16, image width | height << 16, divisor, 0
 //   cascade c at row 8 + 3 c:
 //     +0    int    origin x, y, z, atlas_y (uint)
 //     +1    uint   dims x, y, z, weight_y
 //     +2    float  spacing (m), 1 / spacing, max distance (m), blend band (probes)
 inline constexpr uint32_t kGpuFrameRows = 20;
-inline constexpr uint32_t kRowHeader = 0, kRowSlots = 1, kRowFade = 2, kRowCamera = 3, kRowSun = 4, kRowAmbientUp = 5, kRowAmbientDown = 6, kRowReserved = 7, kRowCascade0 = 8;
+inline constexpr uint32_t kRowHeader = 0, kRowSlots = 1, kRowFade = 2, kRowCamera = 3, kRowSun = 4, kRowAmbientUp = 5, kRowAmbientDown = 6, kRowReserved = 7, kRowPixel = 7, kRowCascade0 = 8;
 inline constexpr uint32_t kRowsPerCascade = 3;
 inline constexpr uint32_t kGpuFrameBytes = kGpuFrameRows * 16;
 
@@ -761,6 +771,9 @@ inline GpuGiFrame MakeGpuFrame(const GiFrame& f) {
   put(kRowSun, Bits(f.sun_rgb[0]), Bits(f.sun_rgb[1]), Bits(f.sun_rgb[2]), Bits(f.sun_sin_elevation));
   put(kRowAmbientUp, Bits(f.ambient_up_rgb[0]), Bits(f.ambient_up_rgb[1]), Bits(f.ambient_up_rgb[2]), 0);
   put(kRowAmbientDown, Bits(f.ambient_down_rgb[0]), Bits(f.ambient_down_rgb[1]), Bits(f.ambient_down_rgb[2]), 0);
+  if (f.Has(kPixelIrradiance) && f.pixel.width != 0) {
+    put(kRowPixel, (f.pixel.depth_slot & 0xFFFFu) | (f.pixel.normal_slot << 16), (f.pixel.width & 0xFFFFu) | (f.pixel.height << 16), f.pixel.divisor, 0);
+  }
   for (uint32_t c = 0; c < kMaxCascades && c < f.cascade_count; ++c) {
     const CascadeFrame& k = f.cascades[c];
     const uint32_t row = kRowCascade0 + kRowsPerCascade * c;

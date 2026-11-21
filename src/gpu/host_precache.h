@@ -106,6 +106,7 @@ class HostPrecache {
     kRrGuides = 31,           // RrGuides: its guide pass (single-sample and multisampled planes) and the debug view's pass (rr_guides.h); 25 to 30 are left for other packages' owners
     kRtDenoise = 32,          // RtDenoise: a consumer's spatial and temporal compute passes, the consumer's number (0 to 15) << 4 | the stage (rt_denoise.h)
     kGiUpdate = 33,           // GiUpdate: the probe update's trace and blend compute passes (gi_update.h Variant); 31 is the guide pass's and 32 RtDenoise's, which were free of it when the update was written
+    kGiPixel = 34,            // GiPixel: the per-pixel detail pass's trace compute passes (gi_pixel.h Variant: plain and multisampled planes); the denoiser is RtDenoise's (instance 1)
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;
