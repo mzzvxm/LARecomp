@@ -248,7 +248,9 @@ void SetIteration(std::array<uint32_t, rt_denoise::kPushWords>& push, uint32_t w
   }
 }
 
-// The images a stage reads are in the compute stage's read state before its first dispatch.
+// The images a stage reads are in the read state of BOTH stages before its first dispatch (D3D12: ALL_SHADER_RESOURCE). They are the effect's own images (the reflections' trace, confidence and
+// accumulation images), which its pixel passes read again after this stage (the resolve, the next frame's temporal pass): Plume's D3D12 barriers name the state by the stage, and a compute-only
+// state (NON_PIXEL_SHADER_RESOURCE) is not one a pixel shader may read.
 void ReadBarriers(plume::RenderCommandList* list, const RtDenoise::Frame& in) {
   plume::RenderTextureBarrier reads[10];
   uint32_t count = 0;
@@ -260,7 +262,7 @@ void ReadBarriers(plume::RenderCommandList* list, const RtDenoise::Frame& in) {
   add(in.signal);
   for (const HostImage* image : in.reads) add(image);
   if (count > 0) {
-    list->barriers(Stage::COMPUTE, reads, count);
+    list->barriers(Stage::GRAPHICS_AND_COMPUTE, reads, count);
   }
 }
 
