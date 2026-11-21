@@ -15,6 +15,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "pass_timing.h"
+#include "rt_tier.h"
 #include "settings/larecomp_settings.h"
 
 namespace mcla::gpu {
@@ -265,6 +266,7 @@ void CityHitScene::BeginFrame(city_rt::Level level, TextureScope textures) {
   ++frame_;
   if (!device_) return;
   level_ = level;
+  class_ = gpu_class::CurrentRtClass();  // the pool's and the textures' budgets follow the ray tracing tier as the structures' do (CityRtScene::BeginFrame)
   scope_ = level != city_rt::Level::kOff ? textures : TextureScope::kNone;
   copied_this_frame_ = false;
   if (level_ != city_rt::Level::kOff) {

@@ -30,6 +30,7 @@
 
 #include "city_pack_state.h"
 #include "gpu_class.h"
+#include "rt_tier.h"
 
 namespace mcla::gpu::city_rt {
 
@@ -74,6 +75,15 @@ constexpr Level LevelFor(gpu_class::GpuClass cls, Choice choice) {
 // What `auto` comes to on this device, for the pause menu's "AUTO (HIGH)" / "AUTO (OFF)": the class's cell where the device can trace (ray queries, the pass made:
 // gpu.h CityRtShadowsAvailable), else off: a High class card without ray queries (RDNA 1, a GTX 1080 Ti is Mid) would otherwise say HIGH and do nothing.
 constexpr Level AutoLevelFor(gpu_class::GpuClass cls, bool available) { return available ? LevelFor(cls, Choice::kAuto) : Level::kOff; }
+
+// The ray tracing tier's say (rt_tier.h): a card that does not trace in hardware (the tier none: a GTX 10 or 16 series card runs DXR in its shaders, far too slowly; the Low class is none too) runs
+// nothing, whatever the class and the choice; every other rung is the class's rule as it was. The budgets follow the tier too: the caller reads BudgetFor with gpu_class::RtClass (a weak card of the
+// High class gets the Mid budget).
+constexpr Level LevelForRung(gpu_class::GpuClass cls, gpu_class::RtTier tier, Choice choice) {
+  if (gpu_class::RtRung(cls, tier) == gpu_class::RtTier::kNone) return Level::kOff;
+  return LevelFor(cls, choice);
+}
+constexpr Level AutoLevelForRung(gpu_class::GpuClass cls, gpu_class::RtTier tier, bool available) { return available ? LevelForRung(cls, tier, Choice::kAuto) : Level::kOff; }
 
 struct Budget {
   float hi_radius = 0.0f;           // metres from the camera to a sector's box: built at its full detail within it

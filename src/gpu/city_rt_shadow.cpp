@@ -103,7 +103,7 @@ void CityRtShadow::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   }
   ready_ = true;
   g_available.store(true, std::memory_order_relaxed);
-  if (listed_at_start && city_rt::LevelFor(gpu_class::Current(), city_rt::ParseChoice(Setting().Get())) != city_rt::Level::kOff) {
+  if (listed_at_start && city_rt::LevelForRung(gpu_class::Current(), gpu_class::CurrentRtTier(), city_rt::ParseChoice(Setting().Get())) != city_rt::Level::kOff) {
     const uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
     listed_ = true;
     passes.precache().Note("ray traced city shadows: on where the setting says (auto: the High class)", added);
@@ -223,7 +223,7 @@ void CityRtShadow::BeginFrame(bool contact_on) {
     ReleaseImage();
     idle_frames_ = 0;
   }
-  level_ = city_rt::LevelFor(gpu_class::Current(), city_rt::ParseChoice(Setting().Get()));
+  level_ = city_rt::LevelForRung(gpu_class::Current(), gpu_class::CurrentRtTier(), city_rt::ParseChoice(Setting().Get()));  // the tier none (no ray tracing units) runs nothing (rt_tier.h)
   if (level_ == city_rt::Level::kOff || !contact_on) {
     return;  // the contact march is the consumer: without it nothing would read the image (the structures go back by their idle count: the service sees no want)
   }

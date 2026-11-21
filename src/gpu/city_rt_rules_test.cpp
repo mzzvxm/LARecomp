@@ -494,6 +494,21 @@ void TestSafeRange() {
 // What `auto` comes to where the device can trace, and what the renderer does with each answer of the app about the city pack (city_pack_state.h).
 void TestAutoAndPackState() {
   // auto: high on a High class card that can trace, off on every other class and on a High card that cannot (the pause menu's "AUTO (HIGH)" / "AUTO (OFF)")
+  // the ray tracing tier's say (rt_tier.h): none runs nothing, weak and strong keep the class's rule
+  {
+    using gpu_class::RtTier;
+    CHECK(LevelForRung(GpuClass::kHigh, RtTier::kNone, Choice::kAuto) == Level::kOff && LevelForRung(GpuClass::kHigh, RtTier::kNone, Choice::kHigh) == Level::kOff &&
+          LevelForRung(GpuClass::kHigh, RtTier::kNone, Choice::kUltra) == Level::kOff);
+    CHECK(LevelForRung(GpuClass::kHigh, RtTier::kWeak, Choice::kAuto) == Level::kHigh && LevelForRung(GpuClass::kHigh, RtTier::kStrong, Choice::kAuto) == Level::kHigh);
+    CHECK(LevelForRung(GpuClass::kHigh, RtTier::kStrong, Choice::kOff) == Level::kOff && LevelForRung(GpuClass::kHigh, RtTier::kWeak, Choice::kUltra) == Level::kUltra);
+    CHECK(LevelForRung(GpuClass::kMid, RtTier::kStrong, Choice::kAuto) == Level::kOff && LevelForRung(GpuClass::kMid, RtTier::kWeak, Choice::kHigh) == Level::kHigh);
+    CHECK(LevelForRung(GpuClass::kLow, RtTier::kStrong, Choice::kHigh) == Level::kOff);
+    CHECK(AutoLevelForRung(GpuClass::kHigh, RtTier::kNone, true) == Level::kOff && AutoLevelForRung(GpuClass::kHigh, RtTier::kWeak, true) == Level::kHigh &&
+          AutoLevelForRung(GpuClass::kHigh, RtTier::kStrong, false) == Level::kOff);
+    // a weak card of the High class is budgeted as Mid, a none card as Low (no structures at all)
+    CHECK(BudgetFor(gpu_class::RtClass(GpuClass::kHigh, RtTier::kWeak), Level::kHigh).hi_radius == BudgetFor(GpuClass::kMid, Level::kHigh).hi_radius &&
+          !BudgetFor(gpu_class::RtClass(GpuClass::kHigh, RtTier::kNone), Level::kHigh).on());
+  }
   CHECK(AutoLevelFor(GpuClass::kHigh, true) == Level::kHigh);
   CHECK(AutoLevelFor(GpuClass::kHigh, false) == Level::kOff);
   CHECK(AutoLevelFor(GpuClass::kMid, true) == Level::kOff);

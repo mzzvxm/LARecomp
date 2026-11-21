@@ -1912,7 +1912,7 @@ std::string RtShadowsLabel(int i) {
     namespace rt = mcla::gpu::city_rt;
     switch (i) {
     case 0:  return mcla::gpu::gpu_class::AutoLabelOf(
-                 rt::LevelName(rt::AutoLevelFor(mcla::gpu::gpu_class::Current(), mcla::gpu::CityRtShadowsAvailable())));
+                 rt::LevelName(rt::AutoLevelForRung(mcla::gpu::gpu_class::Current(), mcla::gpu::gpu_class::CurrentRtTier(), mcla::gpu::CityRtShadowsAvailable())));
     case 1:  return "OFF";
     case 2:  return "HIGH";
     default: return "ULTRA";
@@ -1924,12 +1924,15 @@ bool ContactShadowsOn() {
     return mode == "high" || mode == "ultra";
 }
 bool RtShadowsRuns() {
-    return mcla::gpu::CityRtShadowsAvailable() && mcla::gpu::gpu_class::Current() != mcla::gpu::gpu_class::GpuClass::kLow;
+    // The ray tracing tier none (a card with no ray tracing units: it runs DXR in its shaders) runs nothing (city_rt_rules.h LevelForRung), as the integrated class does.
+    return mcla::gpu::CityRtShadowsAvailable() && mcla::gpu::gpu_class::Current() != mcla::gpu::gpu_class::GpuClass::kLow &&
+           mcla::gpu::gpu_class::CurrentRtTier() != mcla::gpu::gpu_class::RtTier::kNone;
 }
 bool RtShadowsEnabled() { return RtShadowsRuns() && ContactShadowsOn(); }
 const char* RtShadowsSuffix() {
     if (!mcla::gpu::CityRtShadowsAvailable()) return " (NO RT GPU)";
-    return mcla::gpu::gpu_class::Current() == mcla::gpu::gpu_class::GpuClass::kLow ? " (GPU TOO SLOW)" : "";
+    if (mcla::gpu::gpu_class::Current() == mcla::gpu::gpu_class::GpuClass::kLow) return " (GPU TOO SLOW)";
+    return mcla::gpu::gpu_class::CurrentRtTier() == mcla::gpu::gpu_class::RtTier::kNone ? " (NO RT GPU)" : "";
 }
 constexpr RowDynamics kRtShadowsDynamics = {.str_label = RtShadowsLabel, .enabled = RtShadowsEnabled, .suffix = RtShadowsSuffix};
 // Traffic shadows (mcla_gpu_traffic_shadows, gpu/traffic_shadow.h, mc_engine/hooks/traffic_shadow.cpp, live): the other cars
