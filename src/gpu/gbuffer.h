@@ -7,9 +7,9 @@
 // (Scene::GBufferKey -> gbuffer::Decide), widens the pipeline's colour targets by the planes for the draws that carry them, and calls the hooks below.
 //
 // THE PLANES (gbuffer_types.h): RT1 the octahedral world normal (R16G16_UNORM), RT2 the albedo and the lit weight (R8G8B8A8_UNORM), RT3 the smoothness and the
-// class (R8G8_UNORM). The pixel stage of the pack declares as many outputs as gbuffer::kStagePlanes says (the normal alone in this phase: the families' transforms,
-// GB-C and GB-D, write RT1); the images, the framebuffers, the clears, the key's slots and the debug views handle all three the same way, so the day a family writes
-// RT2 and RT3 it is a change of that one constant and of the stage. A frame carries ALL the stage's planes on every draw that carries the sidecar, and publishes as
+// class (R8G8_UNORM). The pixel stage of the pack declares as many outputs as gbuffer::kStagePlanes says (the normal and the albedo in this phase: the families' transforms,
+// GB-C and GB-D, write RT1, and GB-W1's RT2); the images, the framebuffers, the clears, the key's slots and the debug views handle all three the same way, so the day a family
+// writes RT3 it is a change of that one constant and of the stage. A frame carries ALL the stage's planes on every draw that carries the sidecar, and publishes as
 // valid the ones the setting and the consumers asked for.
 //
 // THE SIDECAR. Host images (HostPasses::EnsureImage) at the size and sample count of the main view's colour target (render scale and the host's MSAA level

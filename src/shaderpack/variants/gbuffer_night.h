@@ -38,9 +38,11 @@
 //   - a sun term that is inside a branch and whose normal needs a capture (none on the retail text: the powerlines' term is in a branch, on an untouched interpolant, which is read at the end of main)
 // The census on the retail text (gbuffer_night_test.cpp, with the shaders' folder as an argument) prints every shader, edited or left out, and why.
 //
-// PHASE 2 SEAM (RT2 albedo, RT3 material: src/gpu/gbuffer_types.h): the analysis already finds the shader's diffuse fetch (NightAnalysis::diffuse), which phase 2's
-// albedo write will use, and the write block comes from one function (NightWriteBlock in gbuffer_night.cpp), which phase 2 extends with the plane's outputs. Nothing of
-// that is emitted yet.
+// RT2 (package GB-W1, shaderpack/variants/gbuffer_albedo.h: the albedo and the lit weight): the stage declares a third output, `out float4 oC2 : SV_Target2` (gbuffer_rules.h kStagePlanes
+// is RT1 and RT2), and writes after the normal `oC2 = float4(GbAlbedoEncode(<the shader's DiffuseSampler texel>), GbMaterialLit(<the draw's material word>))`. The texel is found by its own
+// anchor (AnalyseGBufferAlbedo, the first fetch of the texture at the texel's centre that yields x, y and z) and read at the end of main, or captured right after the fetch when the shader
+// writes its register again (`float3 gbAlbedo = r6.xzw;`), the same rule as the normal's. A shader with no such fetch writes the "no data" code (all zero) to RT2. The edits only add lines.
+// PHASE 2 SEAM (RT3 material, GB-W2): the write block comes from one function (NightWriteBlock in gbuffer_night.cpp); RT3's output and write join it.
 // ===========================================================================
 
 #include <cstddef>
@@ -48,6 +50,7 @@
 #include <string_view>
 
 #include "shaderpack/variant_pack.h"
+#include "shaderpack/variants/gbuffer_albedo.h"
 
 namespace larecomp::shaderpack {
 
@@ -80,7 +83,7 @@ struct NightAnalysis {
   std::string capture;           // the line to insert there, indentation and line end included
   int line = -1;                 // the term's line, counted from `void main(` (0): for the census
   std::string detail;            // the census' words: where the normal comes from
-  std::string diffuse;           // PHASE 2 SEAM: the shader's first DiffuseSampler fetch, `r6.xyzw = tex.xwyz`; empty when it has none
+  GBufferAlbedo albedo;          // RT2: the shader's diffuse texel (gbuffer_albedo.h); !albedo.found when it has none (RT2 then gets the "no data" code)
 };
 
 // The text's normal (pure; public for tests and the census). `hlsl` may have any line ends; offsets are into the text with LF line ends.

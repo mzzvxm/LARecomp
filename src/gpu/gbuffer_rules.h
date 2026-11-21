@@ -236,8 +236,9 @@ inline Quat QuatFromBasis(Vec3 right, Vec3 up, Vec3 forward) {
 // SV_Target3 RT3, as many as kStagePlanes says. A pipeline whose pixel shader is a G-buffer word has to carry exactly those targets (a target the shader does not write
 // holds undefined values when its write mask is not 0; an output the pipeline has no target for is a pipeline that does not build), so a draw that carries the sidecar
 // carries ALL the stage's planes, and what a frame asks for decides only which of them hold data (GBufferConstants::mode) and which the frame publishes (valid). The
-// package that makes the stage declare RT2 and RT3 sets this to 7 in the same commit.
-inline constexpr uint32_t kStagePlanes = PlaneBit(kPlaneNormal);
+// package that makes the stage declare RT2 and RT3 sets this to 7 in the same commit. GB-W1 made the stage declare RT2 (the albedo and the lit weight: shaderpack/variants/
+// gbuffer_albedo.h), so it is RT1 and RT2 (3) now; GB-W2's RT3 makes it 7.
+inline constexpr uint32_t kStagePlanes = PlaneBit(kPlaneNormal) | PlaneBit(kPlaneAlbedo);
 // The planes of a stage are consecutive from RT1 (the outputs' numbers are the planes'): 1, 3 or 7.
 constexpr bool IsPlanePrefix(uint32_t planes) { return planes != 0 && planes <= kAllPlanes && (planes & (planes + 1)) == 0; }
 static_assert(IsPlanePrefix(kStagePlanes), "the stage's planes are RT1, then RT2, then RT3");
