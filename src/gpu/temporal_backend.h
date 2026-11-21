@@ -110,7 +110,7 @@ struct TemporalImage {
 
 // DLSS Ray Reconstruction's guide images (dlss_rr_rules.h, perf/DLSS-RR.md): all at the render size, in SHADER_READ at the COMPUTE stage like the other inputs, linear
 // (never sRGB); a null texture is a guide this frame does not have. Only a context made for ray reconstruction (BackendRequest::ray_reconstruction) reads them; the
-// rules (rr::PlanTags) say which are required and what a missing or wrong one means. Nothing fills them until the guide pass (package RR-2) exists.
+// rules (rr::PlanTags) say which are required and what a missing or wrong one means. The guide pass (rr_guides.h, package RR-2) makes them (RrGuides::guides()); the hand-over to the dispatch is RR-3's.
 struct TemporalGuides {
   TemporalImage diffuse_albedo;             // RGB linear
   TemporalImage specular_albedo;            // RGB linear

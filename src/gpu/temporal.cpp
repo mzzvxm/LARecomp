@@ -251,6 +251,7 @@ void TemporalSystem::Shutdown() {
   }
   stand_in_set_ = false;
   output_ = HostImage{};
+  rr_pass_ = nullptr;  // the Renderer shuts it down itself
   if (ffx_) {
     ffx_->Shutdown();
     ffx_.reset();
@@ -398,6 +399,9 @@ uint64_t TemporalSystem::HeldBytes() const {
   }
   if (dlss_) {
     bytes += dlss_->Status().context_bytes;
+  }
+  if (rr_pass_) {
+    bytes += rr_pass_->HeldBytes();  // Ray Reconstruction's guide images (rr_guides.h)
   }
   return bytes;
 }
@@ -1345,6 +1349,10 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
     return false;
   }
 
+  // Ray Reconstruction's guides (rr_guides.h, RR-2), where the pass is wanted: made from the G-buffer's planes and the kept depth before the backend gets the frame. Their layout is the
+  // upscaler's read state when this returns. RR-3 hands them over (NoteRrGuides).
+  RecordRrGuides(list, kept, width, height);
+
   TemporalInputs in;
   in.frame = fr.frame;
   in.render_size[0] = width;
@@ -1474,6 +1482,10 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
     }
     return false;  // this frame is plain
   }
+  // The debug view of a guide (mcla_gpu_dlss_rr_view) replaces what the upscaler made, before anything reads it.
+  if (rr_pass_ && rr_pass_->viewing()) {
+    rr_pass_->RecordView(list, output_);
+  }
 
   // Every fetch of the scene colour from here on reads the output.
   TextureCache::Override stand_in;
@@ -1503,6 +1515,36 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
                 MillisSince(switch_asked_));
   }
   return true;
+}
+
+void TemporalSystem::RecordRrGuides(plume::RenderCommandList* list, const TemporalMotion::Kept& kept, uint32_t width, uint32_t height) {
+  if (!rr_pass_ || !rr_pass_->wanted()) {
+    return;
+  }
+  const temporal::Camera& cam = frame_.camera;
+  RrGuides::Inputs in;
+  in.frame = frame_.frame;
+  in.render_size[0] = width;
+  in.render_size[1] = height;
+  in.depth = kept.depth;
+  in.mask = kept.mask;
+  in.transparency = kept.transparency;
+  in.pause_view = frame_.view == temporal::View::kPause;
+  for (int i = 0; i < 3; ++i) {
+    in.right[i] = float(cam.right[i]);
+    in.up[i] = float(cam.up[i]);
+    in.forward[i] = float(cam.forward[i]);
+  }
+  // The lens as the occlusion reads it (ao.cpp FillPush): tan of half the field of view from the projection's x and y scales, and its depth rows for the linearisation of the stored depth.
+  const temporal::Mat4& p = cam.projection;
+  in.tan_x = float(1.0 / std::max(std::fabs(p.m[0][0]), 1e-9));
+  in.tan_y = float(1.0 / std::max(std::fabs(p.m[1][1]), 1e-9));
+  in.lin[0] = float(p.m[2][2]);
+  in.lin[1] = float(p.m[2][3]);
+  in.lin[2] = float(p.m[3][2]);
+  in.lin[3] = float(p.m[3][3]);
+  // The frame's guides are RR-3's to hand to the upscaler (NoteRrGuides(rr_pass_->guides(), rr_pass_->ready())): until then the plan stays "ours" and nothing but a debug view reads them.
+  rr_pass_->Record(list, in);
 }
 
 void TemporalSystem::ResetRun() {
@@ -1666,6 +1708,10 @@ void TemporalSystem::UpdateDenoiserPlan() {
     }
     rr_plan_last_ = rr_plan_;
     rr_plan_logged_ = true;
+  }
+  // The guide pass (rr_guides.h) is Want-driven: it runs while the plan would be Ray Reconstruction if the guides were there (or is), and for a debug view while an upscaler runs.
+  if (rr_pass_) {
+    rr_pass_->BeginFrame(rr_guides::PassWanted(rr_plan_, RrGuides::ViewSetting(), effective_ != Upscaler::kOff));
   }
 }
 

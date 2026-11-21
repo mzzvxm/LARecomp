@@ -15,6 +15,9 @@
 //   GB-I3        the reflections' place: their wants are declared at the frame's start before the owners read them (lag 0) and are the rules' (ssr_rules.h: nothing while off, the Hi-Z, colour_post and
 //                the three planes at high and ultra); the pass timing labels of the SSR row and the light pass (own labels, the closing mark) exist in their files in the pass's order; the cost arms
 //                (off / high / ultra) are the setting's levels and name the labels a cost run sums; a frame of the off arm and one of the high arm have different census lines.
+//   RR-2         the guide pass's place: the anchor phase after the end of the scene and before the present, the pass after the trigger's publish of the planes, its debug view after it, their calls in
+//                temporal.cpp in the table's order (the pass before the backend's Upscale call, the view after it), the temporal system's frame boundary between the G-buffer's read of its wants and the screen
+//                owner's (the want lags one frame), the pass's wants are the planes' consumer table's (gbuffer_rules.h kRayReconstruction), its labels exist, the guides are made by one step.
 //   THE SOURCES  given the src/gpu folder: every call of the table stands in scene.cpp (or ao.cpp for the AO's own steps) in the table's order, phase by phase; every noted step has its `order_.Note` line right after its
 //                call and no other Note exists; every PassTiming label exists in its file; every Want the table lists is declared by its consumer; the frame start's order the wants' lag rests on.
 //
@@ -98,7 +101,7 @@ bool Before(Step a, Step b) { return PosOf(a) < PosOf(b); }
 void CheckTableItself() {
   const auto problems = Problems(Copy(), true);
   Check(problems.empty(), "the shipped table is consistent: " + Join(problems));
-  Check(Rows().size() == 38 && Rows().back().step == Step::kPresentRig, "38 steps, the present's rig last");
+  Check(Rows().size() == 41 && Rows().back().step == Step::kPresentRig, "41 steps, the present's rig last");
   size_t phase_count[size_t(Phase::kCount)] = {};
   size_t noted = 0;
   size_t inner = 0;
@@ -117,11 +120,13 @@ void CheckTableItself() {
     Check((r.kind == Kind::kNoted || r.kind == Kind::kInner) == (r.phase == Phase::kTrigger || r.phase == Phase::kEndOfScene) || r.kind == Kind::kScanned, std::string(r.name) + ": only trigger and end-of-scene steps are noted");
     if (r.kind == Kind::kInner) Check(std::strcmp(r.file, "ao.cpp") == 0, std::string(r.name) + ": the inner steps are the AO's, in ao.cpp");
     if (r.kind == Kind::kNoted) Check(std::strcmp(r.file, "scene.cpp") == 0, std::string(r.name) + ": a noted call stands in scene.cpp");
+    // RR-2: the anchor's steps are the temporal system's, in temporal.cpp, and held by the source checks alone
+    if (r.phase == Phase::kAnchor) Check(std::strcmp(r.file, "temporal.cpp") == 0 && r.kind == Kind::kScanned, std::string(r.name) + ": an anchor step stands in temporal.cpp and is a scanned one");
   }
-  Check(phase_count[size_t(Phase::kBegin)] == 7 && phase_count[size_t(Phase::kDraws)] == 2 && phase_count[size_t(Phase::kTrigger)] == 23 && phase_count[size_t(Phase::kEndOfScene)] == 2 &&
-            phase_count[size_t(Phase::kPresent)] == 4,
-        "7 at the frame's start, 2 in the draws, 23 at the trigger, 2 at the end of the scene, 4 at the present");
-  Check(noted == 15 && inner == 8 && scanned == 15, "15 noted calls, 8 steps inside the AO's frame, 15 held by the source checks alone");
+  Check(phase_count[size_t(Phase::kBegin)] == 8 && phase_count[size_t(Phase::kDraws)] == 2 && phase_count[size_t(Phase::kTrigger)] == 23 && phase_count[size_t(Phase::kEndOfScene)] == 2 &&
+            phase_count[size_t(Phase::kAnchor)] == 2 && phase_count[size_t(Phase::kPresent)] == 4,
+        "8 at the frame's start, 2 in the draws, 23 at the trigger, 2 at the end of the scene, 2 at the anchor, 4 at the present");
+  Check(noted == 15 && inner == 8 && scanned == 18, "15 noted calls, 8 steps inside the AO's frame, 18 held by the source checks alone");
   // every data bit is made, and made once (nothing is made by two steps: the frame's lights are the frame start's, the rig's present makes nothing)
   for (uint32_t bit = 1; bit <= fo::data::kAll; bit <<= 1) {
     int makers = 0;
@@ -190,6 +195,15 @@ void CheckPinnedOrder() {
     Check(car_after_ssr, "the car history is kept after SSR and the dependency says why it does not see SSR (vehicle pixels only)");
   }
   Check(Before(Step::kBeginLights, Step::kDrawSidecar), "the frame's lights are made before the draws");
+  // RR-2: the temporal system's frame boundary stands between the G-buffer's read of its wants and the screen owner's (scene.cpp), the guide pass at the anchor after everything of the trigger and the end of
+  // the scene, the debug view right after the pass
+  Check(Before(Step::kBeginGBuffer, Step::kBeginTemporal) && Before(Step::kBeginTemporal, Step::kBeginScreen), "RR-2: the temporal system's frame boundary is between the G-buffer's and the screen owner's");
+  Check(Before(Step::kShaftsComposite, Step::kRrGuides) && Before(Step::kGBufferPublish, Step::kRrGuides) && Before(Step::kRrGuides, Step::kPresentWorld) &&
+            fo::RowOf(Step::kRrGuides).phase == Phase::kAnchor && PosOf(Step::kRrGuidesView) == PosOf(Step::kRrGuides) + 1 && PosOf(Step::kPresentWorld) == PosOf(Step::kRrGuidesView) + 1,
+        "RR-2: the guide pass is at the anchor, after the end of the scene and the planes' publish, the debug view right after it, the present next");
+  Check(fo::RowOf(Step::kRrGuides).reads == fo::data::kPlanes && fo::RowOf(Step::kRrGuides).makes == fo::data::kRrGuides && fo::RowOf(Step::kRrGuidesView).reads == fo::data::kRrGuides &&
+            fo::RowOf(Step::kRrGuidesView).makes == 0,
+        "RR-2: the guide pass reads the planes and makes the guides; the view reads the guides and makes nothing");
 }
 
 void CheckWants() {
@@ -240,6 +254,17 @@ void CheckWants() {
   Check(fo::rules::WantLag(Step::kBeginSsr, kPlanes) == 0 && fo::rules::WantLag(Step::kBeginSsr, kScreen) == 0,
         "GB-I3: the reflections' wants are read in the frame they are made (lag 0: the planes, the Hi-Z and the capture are there in the frame the setting changes; it was 1 while the call stood after the owners')");
   Check(fo::rules::WantLag(Step::kBeginAo, kPlanes) == 1 && fo::rules::WantLag(Step::kBeginAo, kScreen) == 1, "the AO's wants lag one frame");
+  // RR-2: the guide pass's wants are the consumer table's, declared by the temporal system's frame boundary, which comes after the G-buffer reads: one frame
+  Check(fo::RowOf(Step::kRrGuides).wants_planes == gb::ConsumerPlanes(gb::Consumer::kRayReconstruction) && gb::ConsumerPlanes(gb::Consumer::kRayReconstruction) == gb::kAllPlanes &&
+            fo::RowOf(Step::kRrGuides).wants_screen == 0 && !fo::RowOf(Step::kRrGuides).wants_lights,
+        "RR-2: the guide pass wants the three planes (gbuffer_rules.h kRayReconstruction) and no screen product");
+  Check(fo::rules::WantLag(Step::kBeginTemporal, kPlanes) == 1 && fo::RowOf(Step::kBeginTemporal).declares_for == Step::kRrGuides,
+        "RR-2: the guide pass's want of the planes is declared at the temporal system's frame boundary and lags one frame");
+  {
+    gb::ConsumerStates rr_on;
+    rr_on.ray_reconstruction = true;
+    Check(gb::AutoPlanes(rr_on) == gb::kAllPlanes && std::string(gb::ConsumerName(gb::Consumer::kRayReconstruction)) == "ray reconstruction", "RR-2: the auto policy makes all three planes while the guide pass is wanted");
+  }
   Check(fo::rules::WantLag(Step::kBeginCarRefl, kScreen) == 1, "the car self-reflection's want of colour_post lags one frame");
   Check(fo::rules::WantLag(Step::kBeginAo, kLights) == 0 || true, "(no step reads a light want after the AO's: the manager's want is the light pass's alone)");
   Check(fo::rules::WantLag(Step::kBeginCarRefl, kPlanes) == 1, "an owner that reads before the declarer lags one frame");
@@ -553,10 +578,10 @@ void CheckRecorder() {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------
 std::string StepEnumName(Step step) {
   // the enumerator as scene.cpp writes it: frame_order::Step::kX, found by the table's own name list
-  static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGBuffer", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight",
+  static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGBuffer", "kBeginTemporal", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
                                        "kAoVisibility", "kContact", "kAoApply", "kScreenPublish", "kLocalLights", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory",
-                                       "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
+                                       "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kRrGuides", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
   static_assert(std::size(kNames) == N, "one name for each step");
   return kNames[size_t(step)];
 }
@@ -640,6 +665,24 @@ void CheckSources(const std::string& gpu) {
   ascending(Phase::kEndOfScene, "scene.cpp", "the end-of-scene composites stand in the table's order");
   ascending(Phase::kPresent, "scene.cpp", "the present's calls stand in the table's order");
   ascending(Phase::kTrigger, "ao.cpp", "the steps of the AO's frame stand in ao.cpp in the table's order");
+  ascending(Phase::kAnchor, "temporal.cpp", "RR-2: the anchor's calls stand in temporal.cpp in the table's order");
+  {
+    // the guide pass is called from RecordUpscale before the backend gets the frame, the view after the backend ran (and failed frames never get one); the pass's wants are declared by its owner
+    const std::string& temporal = text_of("temporal.cpp");
+    const size_t record = At(temporal, "bool TemporalSystem::RecordUpscale(");
+    const size_t pass = pos[PosOf(Step::kRrGuides)];
+    const size_t upscale = At(temporal, "backend->Upscale(list, in)", record);
+    const size_t view = pos[PosOf(Step::kRrGuidesView)];
+    Check(record != std::string::npos && pass != std::string::npos && upscale != std::string::npos && view != std::string::npos && record < pass && pass < upscale && upscale < view,
+          "RR-2: temporal.cpp's RecordUpscale calls the guide pass before the backend's Upscale and the debug view after it");
+    Check(Has(temporal, "rr_pass_->BeginFrame(rr_guides::PassWanted(rr_plan_, RrGuides::ViewSetting(), effective_ != Upscaler::kOff));") && Has(text_of("scene.cpp"), "temporal_->BeginFrame(slot, list)"),
+          "RR-2: the frame boundary tells the guide pass whether it is wanted, from the plan, the view setting and whether an upscaler runs");
+    // the frame boundary stands between the G-buffer's read and the screen owner's in scene.cpp, as the table's rows say
+    const size_t gbuffer_begin = At(scene, "gbuffer_->BeginFrame(frame_serial_)");
+    const size_t temporal_begin = At(scene, "temporal_->BeginFrame(slot, list)");
+    const size_t screen_begin = At(scene, "screen_->BeginFrame(frame_serial_)");
+    Check(gbuffer_begin < temporal_begin && temporal_begin < screen_begin, "RR-2: scene.cpp's temporal frame boundary stands between the G-buffer's BeginFrame and the screen owner's");
+  }
   Check(Has(scene, "light_manager_->BeginLights(frame_serial_, slot)") && At(scene, "light_manager_->BeginLights(frame_serial_, slot)") < At(scene, "local_shadow_->BeginFrame()"),
         "the frame's lights are opened before the shadow replay's frame start (the replay picks its cars from them)");
   Check(At(scene, "light_manager_->BeginFrame(frame_serial_, slot)") > At(scene, "local_shadow_->BeginFrame()"), "... and the manager's second call (the last trigger's maps) after it");
@@ -739,7 +782,8 @@ void CheckSources(const std::string& gpu) {
   const Decl decls[] = {{"local_lights.cpp", "screen_->Want(screen::Consumer::kLocalLights"}, {"local_lights.cpp", "gbuffer_->Want(gbuffer::Consumer::kLocalLights"}, {"local_lights.cpp", "manager_->Want("},
                         {"ssr.cpp", "screen_->Want(screen::Consumer::kReflections"}, {"ssr.cpp", "gbuffer_->Want(gbuffer::Consumer::kReflections"},
                         {"ao.cpp", "screen_->Want(screen::Consumer::kAmbientOcclusion"}, {"ao.cpp", "screen_->Want(screen::Consumer::kContactShadows"}, {"ao.cpp", "screen_->Want(screen::Consumer::kBounceLight"},
-                        {"ao.cpp", "gbuffer_->Want(gbuffer::Consumer::kAmbientOcclusion"}, {"ao.cpp", "gbuffer_->Want(gbuffer::Consumer::kBounceLight"}, {"car_selfrefl.cpp", "screen_->Want(screen::Consumer::kCarHistory"}};
+                        {"ao.cpp", "gbuffer_->Want(gbuffer::Consumer::kAmbientOcclusion"}, {"ao.cpp", "gbuffer_->Want(gbuffer::Consumer::kBounceLight"}, {"car_selfrefl.cpp", "screen_->Want(screen::Consumer::kCarHistory"},
+                        {"rr_guides.cpp", "gbuffer_->Want(gbuffer::Consumer::kRayReconstruction"}};
   for (const Decl& d : decls) Check(Has(text_of(d.file), d.text), std::string(d.file) + " declares '" + d.text + "'");
   {
     const std::string& ll = text_of("local_lights.cpp");

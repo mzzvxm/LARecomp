@@ -104,6 +104,9 @@
 #include "ssr_temporal_ps.hlsl.dxil.h"
 #include "ssr_trace_ms_ps.hlsl.dxil.h"
 #include "ssr_trace_ps.hlsl.dxil.h"
+#include "rr_guides_cs.hlsl.dxil.h"
+#include "rr_guides_ms_cs.hlsl.dxil.h"
+#include "rr_guides_view_cs.hlsl.dxil.h"
 #include "shafts_add_ps.hlsl.dxil.h"
 #include "shafts_blur_ps.hlsl.dxil.h"
 #include "shafts_sky_ms_ps.hlsl.dxil.h"
@@ -209,6 +212,9 @@
 #include "ssr_temporal_ps.hlsl.spirv.h"
 #include "ssr_trace_ms_ps.hlsl.spirv.h"
 #include "ssr_trace_ps.hlsl.spirv.h"
+#include "rr_guides_cs.hlsl.spirv.h"
+#include "rr_guides_ms_cs.hlsl.spirv.h"
+#include "rr_guides_view_cs.hlsl.spirv.h"
 #include "shafts_add_ps.hlsl.spirv.h"
 #include "shafts_blur_ps.hlsl.spirv.h"
 #include "shafts_sky_ms_ps.hlsl.spirv.h"
@@ -333,6 +339,16 @@ inline HostShaderBlob ScreenReflectionsPixelShader(uint32_t pass) {
     case 3: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);
   }
+}
+
+// DLSS Ray Reconstruction's guide pass (rr_guides.h, hlsl/rr_guides_cs.hlsl): over planes with one sample, or the host's MSAA level; and its debug view over the upscaler's output
+// (hlsl/rr_guides_view_cs.hlsl). Plain Shader Model 6.0 compute.
+inline HostShaderBlob RrGuidesShader(bool multisampled) {
+  return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(rr_guides_ms_cs) : MCLA_GPU_HOST_SHADER_BLOB(rr_guides_cs);
+}
+
+inline HostShaderBlob RrGuidesViewShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(rr_guides_view_cs);
 }
 
 inline HostShaderBlob PresentPixelShader() {

@@ -558,6 +558,14 @@ class GPUSettings final : public rex::SettingOwner {
     "build says so and Super Resolution goes on). Read at the start (Streamline's plugins are chosen when "
     "it starts; on Vulkan only when DLSS is the saved upscaler).", rex::kDebugOnly, rex::kRestart, rex::Allowed("off", "probe", "on"));
 
+  REX_SETTING(i32, mcla_gpu_dlss_rr_view, 0, "Debug (Ray Reconstruction guides): draws one of the images the DLSS Ray Reconstruction guide pass makes from the G-buffer over the upscaler's output "
+    "(perf/DLSS-RR.md, RR-2): 1 the diffuse albedo, 2 the normal (0.5 + 0.5 n), 3 the roughness, 4 the specular albedo, 5 the hit distance (black on a "
+    "surface, blue in the sky), 6 the responsivity. The guide pass runs while mcla_gpu_dlss_rr is on (DLSS, an RTX card that supports Ray Reconstruction) "
+    "or, for a view, whenever an upscaler runs; the G-buffer planes it reads are made from the frame after it is asked for. The game's tone map and UI are "
+    "drawn over the view as usual. A frame with no G-buffer (the pause menu, the garage, the map, a cutscene) shows the upscaler's own picture. 0: off. "
+    "Live.",
+    rex::kDebugOnly, rex::Range{0, 6});
+
   REX_SETTING(std::string, mcla_gpu_dlss_mode, "dlaa", "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
     "per direction, of the output (the window's 16:9 area, whatever mcla_gpu_resolution_scale "
@@ -1680,6 +1688,7 @@ inline auto& mcla_gpu_debug_layer = g_gpu.mcla_gpu_debug_layer;
 inline auto& mcla_gpu_dlss_mask_tags = g_gpu.mcla_gpu_dlss_mask_tags;
 inline auto& mcla_gpu_dlss_mode = g_gpu.mcla_gpu_dlss_mode;
 inline auto& mcla_gpu_dlss_rr = g_gpu.mcla_gpu_dlss_rr;
+inline auto& mcla_gpu_dlss_rr_view = g_gpu.mcla_gpu_dlss_rr_view;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;

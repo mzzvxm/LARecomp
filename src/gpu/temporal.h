@@ -189,6 +189,7 @@
 #include "draw_state.h"
 #include "edram.h"
 #include "render_scale.h"
+#include "rr_guides.h"
 #include "scale.h"
 #include "shaders.h"
 #include "temporal_backend.h"
@@ -428,15 +429,19 @@ class TemporalSystem {
   // D8: whether FXAA and SMAA are held off this frame (an upscaler is chosen and can run). Logs
   // once per change when `aa_asked` (mcla_gpu_aa is not off).
   bool HoldsAaOff(bool aa_asked);
-  // DLSS Ray Reconstruction (dlss_rr_rules.h, perf/DLSS-RR.md): the guide pass of the frame (package RR-2) hands over the images it made and whether the frame's
-  // G-buffer planes allowed it. Until something calls this the plan stays "ours" ("the guide images are not made yet") and no context asks for Ray Reconstruction.
-  // Render thread, before the anchor.
+  // DLSS Ray Reconstruction (dlss_rr_rules.h, perf/DLSS-RR.md): the guide pass of the frame hands over the images it made and whether the frame's G-buffer planes allowed it.
+  // The pass exists (rr_guides.h, package RR-2: SetRrGuidePass) but nothing calls this yet: RR-3 calls it right after RecordRrGuides with the pass's guides() and ready(). Until then the plan stays
+  // "ours" ("the guide images are not handed to the upscaler yet") and no context asks for Ray Reconstruction. Render thread, before the upscale.
   void NoteRrGuides(const TemporalGuides& guides, bool ready) {
     rr_guides_ = guides;
     rr_guides_ready_ = ready;
   }
   // The plan this frame: whether Ray Reconstruction does the denoising and the upscale (and why not).
   const rr::Plan& DenoiserPlan() const { return rr_plan_; }
+  // The guide pass (rr_guides.h, RR-2): made and owned by the Renderer, run by RecordUpscale right before the backend is given the frame, and asked at each frame boundary (UpdateDenoiserPlan) whether
+  // it is wanted. It makes the five guide images and hands them over through its own guides() / ready(); nothing here passes them to NoteRrGuides yet: that one call is RR-3's, so while it is
+  // not made the plan stays "ours" and the upscale is the chosen one. Null: no guide pass (a build or a Renderer without one).
+  void SetRrGuidePass(RrGuides* pass) { rr_pass_ = pass; }
   // The composite marker: the UI starts.
   void OnComposite();
   // The guest's present: the frame ends, the state machine moves on, the log.
@@ -650,6 +655,9 @@ class TemporalSystem {
   // Reads the debug switch, what Streamline said about Ray Reconstruction and whether the guides are ready, and makes this frame's plan (rr_plan_); one log line each
   // time the answer changes.
   void UpdateDenoiserPlan();
+  // The upscale's Ray Reconstruction guide pass (rr_guides.h): records it into `list` where it is wanted and the frame has what it reads. `kept` is the frame's kept depth and masks, `width` and
+  // `height` the render size. No effect on the frame's plan or its upscale: RR-3 hands the images on.
+  void RecordRrGuides(plume::RenderCommandList* list, const TemporalMotion::Kept& kept, uint32_t width, uint32_t height);
   // The debug levers of this file (mcla_gpu_upscaler_zero_jitter, mcla_gpu_upscaler_post_reads_output):
   // one log line for each change, at the frame boundary.
   void NoteLeverChanges();
@@ -766,6 +774,7 @@ class TemporalSystem {
   BackendRequest request_;
   // Ray Reconstruction: this frame's plan, the guide images the frame's guide pass handed over (NoteRrGuides) and the plan last logged.
   rr::Plan rr_plan_;
+  RrGuides* rr_pass_ = nullptr;  // the guide pass (SetRrGuidePass)
   TemporalGuides rr_guides_;
   bool rr_guides_ready_ = false;
   bool rr_plan_logged_ = false;

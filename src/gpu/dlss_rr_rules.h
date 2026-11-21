@@ -453,7 +453,7 @@ struct PlanInputs {
   Facts facts;
   bool upscaler_is_dlss = false;     // RR includes the upscale: only where DLSS is the upscaler
   bool consumers_active = false;     // some effect that wants RR (SSR, city RT reflections, RTGI, a raw mode of the car effects) is on
-  bool guides_ready = false;         // the frame's guide images exist (RR-2)
+  bool guides_ready = false;         // the frame's guide images exist and were handed over (TemporalSystem::NoteRrGuides, RR-3; the pass that makes them is RR-2's rr_guides.h)
 };
 
 enum class Why : uint8_t {
@@ -481,7 +481,7 @@ constexpr const char* WhyText(Why w) {
     case Why::kUpscalerNotDlss: return "the upscaler is not DLSS (RR includes the upscale)";
     case Why::kProbeOnly: return "mcla_gpu_dlss_rr is probe: RR is loaded and asked, no frame uses it";
     case Why::kNoConsumer: return "AUTO, and no effect that wants RR is on";
-    case Why::kGuidesNotReady: return "the guide images are not made yet (the guide pass is package RR-2)";
+    case Why::kGuidesNotReady: return "the guide images are not handed to the upscaler yet (the guide pass makes them: rr_guides.h, RR-2; the hand-over is package RR-3)";
   }
   return "?";
 }

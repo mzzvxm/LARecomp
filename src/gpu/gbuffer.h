@@ -146,6 +146,9 @@ class GBuffer {
 
   // What a consumer reads: valid from the trigger to the frame's end (BeginFrame empties it).
   const gbuffer::GBufferFrame& frame() const { return frame_; }
+  // The texture of a plane's image (null for a plane that has none), for a consumer that records a barrier for the plane it reads at another stage than the draws' (the Ray Reconstruction guide pass
+  // reads the planes in a compute shader at the anchor: rr_guides.h). The slots in frame() are what shaders read.
+  plume::RenderTexture* PlaneTexture(gbuffer::Plane plane) const { return plane < gbuffer::kPlaneCount ? images_[plane].texture.get() : nullptr; }
   // The video memory the sidecar holds now.
   uint64_t HeldBytes() const;
 

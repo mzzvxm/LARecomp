@@ -82,6 +82,7 @@ add_library(larecomp_gpu OBJECT
     renderer.cpp
     resolve.cpp
     resolve_memory.cpp
+    rr_guides.cpp
     samplers.cpp
     scene.cpp
     screen_shared.cpp
@@ -406,6 +407,9 @@ target_link_libraries(larecomp_upscaler_load_policy_test PRIVATE Threads::Thread
 # DLSS Ray Reconstruction's pure rules (dlss_rr_rules.h: the tag plan, the options, the choice of denoiser, the frame gate) have a check that needs no renderer
 # and no Streamline: cmake --build <dir> --target larecomp_dlss_rr_rules_test, then run src/gpu/larecomp_dlss_rr_rules_test (exit 0 = passed).
 add_executable(larecomp_dlss_rr_rules_test EXCLUDE_FROM_ALL dlss_rr_rules_test.cpp)
+# DLSS Ray Reconstruction's guide images (rr_guides_rules.h: the images, the views, who runs the pass, the push blocks, and the C++ twin of hlsl/rr_guides_common.hlsli, which the test also
+# compiles as C++): cmake --build <dir> --target larecomp_rr_guides_test, then run src/gpu/larecomp_rr_guides_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_rr_guides_test EXCLUDE_FROM_ALL rr_guides_test.cpp)
 # The rule that gives another pass's use of a side view's EDRAM identity (the night shadow's, which binds the car
 # reflections' depth through a surface of another size) a target of its own (side_views.h):
 #   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.
@@ -773,6 +777,11 @@ larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_
 larecomp_gpu_host_shader(ssr_temporal_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=1)
+# DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): the five guide images from the G-buffer's planes in one compute pass at the anchor (over planes with one sample and over the host's MSAA
+# level), and the debug view that draws one of them over the upscaler's output. Plain Shader Model 6.0 compute for both backends.
+larecomp_gpu_host_shader(rr_guides_cs cs_6_0 DEFINES RR_MS=0)
+larecomp_gpu_host_shader(rr_guides_ms_cs cs_6_0 SOURCE rr_guides_cs DEFINES RR_MS=1)
+larecomp_gpu_host_shader(rr_guides_view_cs cs_6_0)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

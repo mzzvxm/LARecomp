@@ -2945,6 +2945,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_dlss_rr_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (Ray Reconstruction guides): draws one of the images the DLSS Ray Reconstruction guide pass makes from the G-buffer over the upscaler's output \"\n    \"(perf/DLSS-RR.md, RR-2): 1 the diffuse albedo, 2 the normal (0.5 + 0.5 n), 3 the roughness, 4 the specular albedo, 5 the hit distance (black on a \"\n    \"surface, blue in the sky), 6 the responsivity. The guide pass runs while mcla_gpu_dlss_rr is on (DLSS, an RTX card that supports Ray Reconstruction) \"\n    \"or, for a view, whenever an upscaler runs; the G-buffer planes it reads are made from the frame after it is asked for. The game's tone map and UI are \"\n    \"drawn over the view as usual. A frame with no G-buffer (the pause menu, the garage, the map, a cutscene) shows the upscaler's own picture. 0: off. \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 6}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_dlss_mode": {
   "type": "std::string",
   "default": "\"dlaa\"",
