@@ -74,6 +74,7 @@
 #endif
 
 #include "backend.h"
+#include "denoiser_setting.h"
 #include "device.h"
 #include "dlss_rr_rules.h"
 #include "frame.h"
@@ -311,13 +312,19 @@ bool WantFrameGenerationPlugins(Backend backend, const std::string& gpu_name) {
 
 // --- Ray Reconstruction (perf/DLSS-RR.md; the rules are dlss_rr_rules.h) ---------------------------------------------------------------------
 
+// The debug cvar mcla_gpu_dlss_rr (restart, so a plain read is safe): auto leaves the choice to the DENOISER row.
 rr::DebugSwitch RrDebugSwitch() {
-  rr::DebugSwitch value = rr::DebugSwitch::kOff;
+  rr::DebugSwitch value = rr::DebugSwitch::kRow;
   if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_dlss_rr.Get(), &value)) {
-    value = rr::DebugSwitch::kOff;
+    value = rr::DebugSwitch::kRow;
   }
   return value;
 }
+
+// What the start decided about the Ray Reconstruction plugin, kept for the facts (QueryRayReconstructionLocked): `loadable` is whether a start with the row on AUTO would have loaded it (the row was
+// OURS now: a restart brings it), `files_bad` that the files were looked at and are not right. Set once, by WantRayReconstructionPlugin, before slInit.
+std::atomic<bool> g_rr_loadable{false};
+std::atomic<bool> g_rr_files_bad{false};
 
 #if defined(LARECOMP_HAS_DLSS_RR)
 std::wstring WidenAscii(const char* text) {
@@ -350,28 +357,38 @@ bool RrFilesOk(const std::wstring& dir, std::string* why) {
 }
 #endif
 
-// Whether Streamline is started with the Ray Reconstruction plugin (InitLocked): the debug switch is not off, this build has it, its files are in place and signed,
-// the card looks like an RTX one, and on Vulkan DLSS is the saved choice (the device is made through Streamline then). Plugins cannot be added after slInit.
+// Whether Streamline is started with the Ray Reconstruction plugin (InitLocked; the rules are dlss_rr_rules.h WantRrPlugin): the DENOISER row is not OURS (or the debug switch forces it) and an effect has
+// a raw mode, this build has it, its files are in place and signed, the card looks like an RTX one, and on Vulkan DLSS is the saved choice (the device is made through Streamline then). Plugins cannot
+// be added after slInit, so leaving OURS later says "(RESTART)" (denoiser_setting.h). The files are looked at only when the plugin is wanted (a row on OURS costs the player nothing).
 bool WantRayReconstructionPlugin(Backend backend, bool looks_rtx, bool dlss_saved_at_start) {
   rr::PluginInputs in;
   in.debug = RrDebugSwitch();
+  in.setting = denoiser::Setting();
+  in.raw_mode_built = rr::AnyRawModeBuilt();
   in.d3d12 = backend == Backend::kD3D12;
   in.looks_rtx = looks_rtx;
   in.dlss_saved_at_start = dlss_saved_at_start;
+  g_rr_files_bad.store(false, std::memory_order_relaxed);
 #if defined(LARECOMP_HAS_DLSS_RR)
   in.build_has_rr = true;
-  if (in.debug != rr::DebugSwitch::kOff) {
+  // What a start with the row on AUTO would do, files taken as fine (a restart would look at them): the row's restart answer.
+  rr::PluginInputs what_if = in;
+  what_if.setting = rr::Denoiser::kAuto;
+  what_if.files_ok = true;
+  g_rr_loadable.store(rr::WantRrPlugin(what_if), std::memory_order_relaxed);
+  if (rr::PluginWantedByChoice(in)) {
     std::string why;
     in.files_ok = RrFilesOk(ExeDirectory(), &why);
     if (!in.files_ok) {
-      REXLOG_INFO("{} Ray Reconstruction (mcla_gpu_dlss_rr = {}) is not asked for: {}", kPrefix,
+      g_rr_files_bad.store(true, std::memory_order_relaxed);
+      REXLOG_INFO("{} Ray Reconstruction (DENOISER row = {}, mcla_gpu_dlss_rr = {}) is not asked for: {}", kPrefix, denoiser::WordOf(in.setting),
                   rr::DebugSwitchName(in.debug), why);
     }
   }
 #else
-  if (in.debug != rr::DebugSwitch::kOff) {
-    REXLOG_INFO("{} mcla_gpu_dlss_rr = {}, but this build has no DLSS Ray Reconstruction", kPrefix,
-                rr::DebugSwitchName(in.debug));
+  g_rr_loadable.store(false, std::memory_order_relaxed);
+  if (rr::PluginWantedByChoice(in)) {
+    REXLOG_INFO("{} the DENOISER row asks for DLSS Ray Reconstruction (mcla_gpu_dlss_rr = {}), but this build has none", kPrefix, rr::DebugSwitchName(in.debug));
   }
 #endif
   return rr::WantRrPlugin(in);
@@ -756,7 +773,7 @@ bool InitLocked(Runtime& rt, sl::RenderAPI api, bool frame_gen, bool ray_reconst
   if (ray_reconstruction) {
     features.push_back(sl::kFeatureDLSS_RR);
     rt.rr_asked = true;
-    REXLOG_INFO("{} Streamline starts with the Ray Reconstruction plugin (mcla_gpu_dlss_rr = {})", kPrefix,
+    REXLOG_INFO("{} Streamline starts with the Ray Reconstruction plugin (DENOISER row = {}, mcla_gpu_dlss_rr = {})", kPrefix, denoiser::WordOf(denoiser::Setting()),
                 rr::DebugSwitchName(RrDebugSwitch()));
   }
 #else
@@ -1006,11 +1023,14 @@ void QueryRayReconstructionLocked(Runtime& rt, const sl::AdapterInfo& adapter, c
 #if defined(LARECOMP_HAS_DLSS_RR)
   facts.built = true;
   facts.asked = rt.rr_asked;
-  facts.files_ok = rt.rr_asked;  // it was asked for only with its files in place and signed
+  facts.files_ok = !g_rr_files_bad.load(std::memory_order_relaxed);  // false only where the files were looked at and are not right (they are looked at when the plugin is wanted)
+  facts.loadable = !rt.rr_asked && g_rr_loadable.load(std::memory_order_relaxed);
   if (!rt.rr_asked) {
     facts.why = RrDebugSwitch() == rr::DebugSwitch::kOff
                     ? "mcla_gpu_dlss_rr is off"
-                    : "Streamline was started without the Ray Reconstruction plugin (its files are missing, or on Vulkan DLSS was not the saved upscaler at the start)";
+                    : (facts.loadable
+                           ? "Streamline was started without the Ray Reconstruction plugin because the DENOISER row said OURS: it loads at the next start"
+                           : "Streamline was started without the Ray Reconstruction plugin (no effect has a raw mode yet, its files are missing, this is not an RTX card, or on Vulkan DLSS was not the saved upscaler at the start)");
   } else {
     const sl::Result supported = rt.api.is_supported(sl::kFeatureDLSS_RR, adapter);
     if (supported != sl::Result::eOk) {
@@ -1037,7 +1057,7 @@ void QueryRayReconstructionLocked(Runtime& rt, const sl::AdapterInfo& adapter, c
     }
   }
   if (facts.supported) {
-    REXLOG_INFO("{} Ray Reconstruction can run on '{}' (mcla_gpu_dlss_rr = {})", kPrefix, gpu_name,
+    REXLOG_INFO("{} Ray Reconstruction can run on '{}' (DENOISER row = {}, mcla_gpu_dlss_rr = {})", kPrefix, gpu_name, denoiser::WordOf(denoiser::Setting()),
                 rr::DebugSwitchName(RrDebugSwitch()));
     if (RrDebugSwitch() == rr::DebugSwitch::kProbe) {
       // What it takes for each mode at two outputs. CHECK: the same sizes as Super Resolution's (the guide says RR runs in the mode DLSS runs in).

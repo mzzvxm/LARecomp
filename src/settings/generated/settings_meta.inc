@@ -304,6 +304,7 @@
 {"mcla_gpu_contact_skip_stat", "MCLA/GPU"},
 {"mcla_gpu_coverage_queries", "MCLA/GPU"},
 {"mcla_gpu_debug_layer", "MCLA/GPU"},
+{"mcla_gpu_denoiser", "MCLA/GPU"},
 {"mcla_gpu_dlss_mask_tags", "MCLA/GPU"},
 {"mcla_gpu_dlss_mode", "MCLA/GPU"},
 {"mcla_gpu_dlss_rr", "MCLA/GPU"},

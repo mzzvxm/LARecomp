@@ -745,9 +745,9 @@ void RulesChecks(const std::string& gpu) {
   {
     long long cases = 0, wanted_cases = 0;
     bool ok = true;
-    for (int debug = 0; debug < 3; ++debug) {
+    for (int debug = 0; debug < 4; ++debug) {
       for (int setting = 0; setting < 3; ++setting) {
-        for (int mask = 0; mask < 128; ++mask) {
+        for (int mask = 0; mask < 256; ++mask) {
           rr::PlanInputs in;
           in.debug = rr::DebugSwitch(debug);
           in.setting = rr::Denoiser(setting);
@@ -758,6 +758,7 @@ void RulesChecks(const std::string& gpu) {
           in.upscaler_is_dlss = mask & 16;
           in.consumers_active = mask & 32;
           in.guides_ready = mask & 64;
+          in.facts.asked = mask & 128;
           const rr::Plan plan = rr::SelectDenoiser(in);
           rr::PlanInputs with_guides = in;
           with_guides.guides_ready = true;
@@ -770,11 +771,11 @@ void RulesChecks(const std::string& gpu) {
         }
       }
     }
-    Check(ok && cases == 3 * 3 * 128 && wanted_cases > 0 && wanted_cases < cases, "the guide pass is wanted exactly when Ray Reconstruction would run if its guides were there (the whole table of the rules' inputs), and for a view while an upscaler runs");
+    Check(ok && cases == 4 * 3 * 256 && wanted_cases > 0 && wanted_cases < cases, "the guide pass is wanted exactly when Ray Reconstruction would run if its guides were there (the whole table of the rules' inputs), and for a view while an upscaler runs");
     // RR-3: the pass and the RR context are wanted by the same two reasons (dlss_rr_rules.h ContextWanted), and a dropped RR or a card with no room wants neither
     {
       bool same = true;
-      for (int w = 0; w <= int(rr::Why::kNoRoom); ++w) {
+      for (int w = 0; w <= int(rr::Why::kNotLoaded); ++w) {
         rr::Plan plan;
         plan.use_rr = w == int(rr::Why::kRrOn);
         plan.why = rr::Why(w);
@@ -784,7 +785,9 @@ void RulesChecks(const std::string& gpu) {
       rr::PlanInputs failed;
       failed.debug = rr::DebugSwitch::kOn;
       failed.setting = rr::Denoiser::kRr;
-      failed.facts = {true, true, true, true, true};
+      failed.facts = {true, true, true, true, true};  // build, files, started, supported, failed
+      failed.facts.asked = true;
+      failed.consumers_any = true;
       failed.upscaler_is_dlss = true;
       failed.guides_ready = false;
       Check(rg::PassWanted(rr::SelectDenoiser(failed), rg::View::kOff, true) == false, "RR-3: a session that dropped RR does not run the guide pass");

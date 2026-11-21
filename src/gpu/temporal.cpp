@@ -15,6 +15,7 @@
 #include "backend.h"
 #include "scene_noise.h"
 #include "constants.h"
+#include "denoiser_setting.h"
 #include "device.h"
 #include "format.h"
 #include "frame.h"
@@ -1708,31 +1709,42 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
 
 void TemporalSystem::UpdateDenoiserPlan() {
   rr::PlanInputs in;
-  // The row DENOISER does not exist yet (package RR-5): the debug switch stands for it, "on" is the row's RR, the others leave AUTO.
+  // The row DENOISER (mcla_gpu_denoiser, live) is the master switch. The debug cvar mcla_gpu_dlss_rr (restart) only overrides it: off takes RR away whatever the row says, probe loads the plugin and
+  // logs what it can do, on stands for the row's RR value with the consumer rule lifted (the A/B and cost runs); auto, its default, leaves the row to decide.
   if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_dlss_rr.Get(), &in.debug)) {
-    in.debug = rr::DebugSwitch::kOff;
+    in.debug = rr::DebugSwitch::kRow;
   }
-  if (in.debug != rr::DebugSwitch::kOff) {
+  in.setting = denoiser::Setting();
+  // The effects that are on and have a raw mode (they say it every frame: denoiser::NoteConsumer): AUTO takes the ones RR is known to clean better than ours, the row's RR value any of them.
+  const uint32_t consumers_on = denoiser::ConsumersOn();
+  in.consumers_active = rr::AnyAutoConsumerOn(consumers_on);
+  in.consumers_any = rr::AnyConsumerOn(consumers_on);
+  // What Streamline and the files said. Every 16 frames, and every frame while Ray Reconstruction is wanted (the failure flag moves the plan at once); the copy holds two strings and the menu's
+  // row reads the same facts through the snapshot below.
+  if (in.debug != rr::DebugSwitch::kOff && (!rr_facts_valid_ || (frame_number_ & 15u) == 0 || rr::ContextWanted(rr_plan_.why))) {
     const dlss::RayReconstructionFacts facts = dlss::GetRayReconstructionFacts();
-    in.facts.build_has_rr = facts.built;
-    in.facts.files_ok = facts.files_ok || !facts.queried;  // before the support query the files are not the question
-    in.facts.streamline_running = facts.queried;
-    in.facts.supported = facts.supported;
-    in.facts.failed = facts.failed;
+    rr_facts_.build_has_rr = facts.built;
+    rr_facts_.files_ok = facts.files_ok || !facts.queried;  // before the support query the files are not the question
+    rr_facts_.streamline_running = facts.queried;
+    rr_facts_.asked = facts.asked;
+    rr_facts_.loadable = facts.loadable;
+    rr_facts_.supported = facts.supported;
+    rr_facts_.failed = facts.failed;
+    rr_facts_valid_ = true;
     if (facts.failed && !rr_failed_logged_) {
       rr_failed_logged_ = true;
       REXLOG_WARN("{} Ray Reconstruction failed in this session ({}): Super Resolution does every frame from now on", kPrefix, facts.failed_why);
     }
   }
-  in.setting = in.debug == rr::DebugSwitch::kOn ? rr::Denoiser::kRr : rr::Denoiser::kAuto;
+  if (in.debug != rr::DebugSwitch::kOff) {
+    in.facts = rr_facts_;
+  }
   in.upscaler_is_dlss = effective_ == Upscaler::kDlss;
-  // CHECK: no effect asks for Ray Reconstruction yet (SSR, city RT reflections, RTGI, the raw modes are package RR-4): AUTO has no consumer, so it stays ours; the
-  // debug switch's "on" is the one that gets past this (it stands for the row's RR value until the row exists, RR-5).
-  in.consumers_active = false;
-  // The room in video memory for the context (RR-3), asked only where RR would be the choice: every other reason is named first by the rules, and nothing is asked of the adapter for
-  // an RR that is not wanted.
+  // The room in video memory for the context (RR-3), asked only where RR would be the choice (the rules with the room and the guides taken as met): every other reason is named first by the rules, and
+  // nothing is asked of the adapter for an RR that is not wanted.
   in.room_ok = true;
-  if (in.debug == rr::DebugSwitch::kOn && in.facts.supported && !in.facts.failed && in.upscaler_is_dlss && (in.setting == rr::Denoiser::kRr || in.consumers_active)) {
+  in.guides_ready = true;
+  if (rr::SelectDenoiser(in).use_rr) {
     in.room_ok = RrRoomOk();
   }
   // The guide pass says it every frame (NoteRrGuides, before the anchor): last frame's word is this frame's plan, and the flag is taken back so that a frame the pass
@@ -1741,14 +1753,20 @@ void TemporalSystem::UpdateDenoiserPlan() {
   rr_guides_ready_ = false;
   rr_plan_ = rr::SelectDenoiser(in);
   if (!rr_plan_logged_ || rr_plan_.use_rr != rr_plan_last_.use_rr || rr_plan_.why != rr_plan_last_.why) {
-    // Nothing is said while the switch is off (the default): the log of a build without the debug switch is what it was.
-    if (in.debug != rr::DebugSwitch::kOff || rr_plan_logged_) {
-      REXLOG_INFO("{} denoiser: {} ({}; mcla_gpu_dlss_rr = {})", kPrefix, rr_plan_.use_rr ? "Ray Reconstruction" : "ours (no Ray Reconstruction)",
-                  rr::WhyText(rr_plan_.why), rr::DebugSwitchName(in.debug));
-    }
+    REXLOG_INFO("{} denoiser: {} ({}; DENOISER row = {}, mcla_gpu_dlss_rr = {})", kPrefix, rr_plan_.use_rr ? "DLSS Ray Reconstruction" : "ours (no Ray Reconstruction)",
+                rr::WhyText(rr_plan_.why), denoiser::WordOf(in.setting), rr::DebugSwitchName(in.debug));
     rr_plan_last_ = rr_plan_;
     rr_plan_logged_ = true;
   }
+  rr_debug_ = in.debug;
+  // What the pause menu's row reads (any thread): the PC's facts, whether DLSS is the upscaler, whether the context is being made, and the plan.
+  denoiser::Snapshot snapshot;
+  snapshot.debug = in.debug;
+  snapshot.facts = rr_facts_;
+  snapshot.upscaler_is_dlss = in.upscaler_is_dlss;
+  snapshot.context_making = rr_context_asked_ && dlss_ && !dlss_->CompanionReady(rr_request_);
+  snapshot.plan = rr_plan_;
+  denoiser::Publish(snapshot);
   // The guide pass (rr_guides.h) is Want-driven: it runs while the plan would be Ray Reconstruction if the guides were there (or is), and for a debug view while an upscaler runs.
   if (rr_pass_) {
     rr_pass_->BeginFrame(rr_guides::PassWanted(rr_plan_, RrGuides::ViewSetting(), effective_ != Upscaler::kOff));
@@ -2606,9 +2624,9 @@ void TemporalSystem::Report() {
                 MsaaKeptUnderUpscaler() ? "yes" : "no",
                 status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
   }
-  // Ray Reconstruction (RR-3), where the debug switch is on or it ran: the plan, the frames by who upscaled them, what kept RR from the frames it was wanted for, the context and the
+  // Ray Reconstruction (RR-3), where RR is in play (a debug switch is set, the plan wants it or its context exists, or it ran): the plan, the frames by who upscaled them, what kept RR from the frames it was wanted for, the context and the
   // backend's own count of evaluations.
-  if (rr_plan_logged_ && (rr_plan_last_.why != rr::Why::kSwitchOff || w.rr_frames != 0)) {
+  if (rr_plan_logged_ && (rr_debug_ != rr::DebugSwitch::kRow || rr::ContextWanted(rr_plan_last_.why) || rr_plan_last_.use_rr || rr_context_asked_ || w.rr_frames != 0)) {
     const BackendStatus rr_status = dlss_ ? dlss_->Status() : BackendStatus{};
     const std::string context = !rr_context_asked_ ? std::string("none")
                                 : (dlss_ && dlss_->CompanionReady(rr_request_)) ? std::format("made, about {} MB", rr_status.companion_bytes >> 20)

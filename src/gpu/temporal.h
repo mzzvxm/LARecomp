@@ -665,8 +665,8 @@ class TemporalSystem {
   // upscaler's context says for its sizes (0: none), else 8 x ratio^2 rounded up; 1 to kMaxPhases.
   static uint32_t JitterPhases(double ratio, uint32_t from_runtime);
   void MakeRequest(BackendRequest* request) const;
-  // Reads the debug switch, what Streamline said about Ray Reconstruction (including that it failed), the room in video memory and whether the guides are ready, and makes this frame's plan
-  // (rr_plan_); one log line each time the answer changes.
+  // Reads the DENOISER row and the debug switch, the effects that are on (denoiser_setting.h), what Streamline said about Ray Reconstruction (including that it failed), the room in video memory and
+  // whether the guides are ready, and makes this frame's plan (rr_plan_); one log line each time the answer changes. Publishes the frame's snapshot for the pause menu's row.
   void UpdateDenoiserPlan();
   // The upscale's Ray Reconstruction guide pass (rr_guides.h): records it into `list` where it is wanted and the frame has what it reads. `kept` is the frame's kept depth and masks, `width` and
   // `height` the render size. Hands the guides (or their absence) to NoteRrGuides.
@@ -802,6 +802,10 @@ class TemporalSystem {
   bool rr_guides_ready_ = false;
   bool rr_plan_logged_ = false;
   rr::Plan rr_plan_last_;
+  // RR-5: what Streamline and the files said, read again every 16 frames (UpdateDenoiserPlan), whether it was read, and the debug switch of the last plan.
+  rr::Facts rr_facts_;
+  bool rr_facts_valid_ = false;
+  rr::DebugSwitch rr_debug_ = rr::DebugSwitch::kRow;
   // RR-3: the companion context. `rr_keeper_` holds it after the want stops; `rr_request_` is what it was asked for (the Super Resolution request with ray_reconstruction set);
   // `rr_context_asked_` it is asked for now; `rr_asked_at_` for the "made after" line; `rr_ready_reported_` that line was written. The room check's answer, when it is asked again
   // (`rr_room_until_`), the wait of the current refusal series (`rr_room_wait_ms_`) and whether a refusal was logged (`rr_room_refused_logged_`).

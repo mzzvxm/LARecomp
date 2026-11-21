@@ -12,6 +12,8 @@
 //                          primary motion standing in; and why a frame's set is refused (missing, wrong size, wrong format).
 //   MakeOptions            the options of a viewport (DLSSDOptions' content) and the camera matrices RR's hit distance path needs.
 //   SelectDenoiser         DENOISER AUTO / RR / OURS and the debug switch against what the PC and the frame have: RR or our own denoisers, and why.
+//   Consumers              (RR-5) the effects that hand RR their raw noisy radiance (SSR, the car ray traced reflections, the city's ray traced reflections, ray traced bounce light): which have a raw mode
+//                          built, which of them AUTO trusts RR with (the A/B said RR is better than ours there), and what "a consumer is on" means for AUTO and for the row's own RR value.
 //   FrameGate              why a frame cannot be given to RR even when it is the plan (no G-buffer planes: pause world, garage, map, cutscene): that frame is SR's.
 //   JitterPhases           RR wants at least 32 positions in the jitter sequence (SR's 8 x ratio^2 is not enough).
 //   WantRrPlugin           whether Streamline is started with the RR plugin (plugins cannot be added after slInit).
@@ -28,6 +30,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -433,9 +436,10 @@ inline uint32_t RuntimePhaseCount(uint32_t from_runtime, double ratio, bool rr_m
 
 // The row DENOISER (perf/DLSS-RR.md section 5).
 enum class Denoiser : uint8_t { kAuto, kRr, kOurs };
-// The debug cvar mcla_gpu_dlss_rr: off = nothing of RR exists (the plugin is not asked for), probe = the plugin loads and its support and sizes are logged but no
-// frame uses it, on = RR is eligible.
-enum class DebugSwitch : uint8_t { kOff, kProbe, kOn };
+// The debug cvar mcla_gpu_dlss_rr (restart): auto (the default; the row DENOISER decides), off = nothing of RR exists (the plugin is not asked for, whatever the row says), probe = the plugin loads and
+// its support and sizes are logged but no frame uses it, on = RR is chosen as the row's RR value would choose it AND the row's consumer rule is lifted (RR on a frame with nothing to denoise: the A/B runs).
+// The numbers are the order the switch had before RR-5 (off, probe, on); the new default is last.
+enum class DebugSwitch : uint8_t { kOff, kProbe, kOn, kRow };
 
 inline bool ParseDenoiser(std::string_view text, Denoiser* out) {
   if (text == "auto") { *out = Denoiser::kAuto; return true; }
@@ -444,29 +448,37 @@ inline bool ParseDenoiser(std::string_view text, Denoiser* out) {
   return false;
 }
 inline bool ParseDebugSwitch(std::string_view text, DebugSwitch* out) {
+  if (text == "auto") { *out = DebugSwitch::kRow; return true; }
   if (text == "off") { *out = DebugSwitch::kOff; return true; }
   if (text == "probe") { *out = DebugSwitch::kProbe; return true; }
   if (text == "on") { *out = DebugSwitch::kOn; return true; }
   return false;
 }
 constexpr const char* DenoiserName(Denoiser d) { return d == Denoiser::kAuto ? "auto" : (d == Denoiser::kRr ? "rr" : "ours"); }
-constexpr const char* DebugSwitchName(DebugSwitch s) { return s == DebugSwitch::kOff ? "off" : (s == DebugSwitch::kProbe ? "probe" : "on"); }
+constexpr const char* DebugSwitchName(DebugSwitch s) {
+  return s == DebugSwitch::kRow ? "auto" : (s == DebugSwitch::kOff ? "off" : (s == DebugSwitch::kProbe ? "probe" : "on"));
+}
 
 // What the PC and the build can do (Streamline's answers, published by the DLSS backend).
 struct Facts {
   bool build_has_rr = false;         // LARECOMP_HAS_DLSS_RR: the headers and the two files were fetched
-  bool files_ok = false;             // sl.dlss_d.dll and nvngx_dlssd.dll are next to the exe, the plugin is signed
+  bool files_ok = false;             // no known problem with sl.dlss_d.dll and nvngx_dlssd.dll (next to the exe, the plugin signed): false only where a check ran and said no
   bool streamline_running = false;   // slInit and the device are done (a start still going on is not "not supported")
   bool supported = false;            // slIsFeatureSupported(kFeatureDLSS_RR) said yes for this adapter
   bool failed = false;               // (RR-3) RR was dropped for this session: its feature could not be made, or its evaluation failed FailureBook::kMaxErrors times in a row
+  // (RR-5, after the others so that the first five can still be written as a list) The plugin: Streamline was started WITH it in this session (plugins cannot be added later), and where it was not, whether
+  // it is only because of the row (OURS) or the switch: an RTX card, the files fine, a build with it, an effect with a raw mode. A start with another row would load it: a restart.
+  bool asked = false;
+  bool loadable = false;
 };
 
 struct PlanInputs {
   Denoiser setting = Denoiser::kAuto;
-  DebugSwitch debug = DebugSwitch::kOff;
+  DebugSwitch debug = DebugSwitch::kRow;
   Facts facts;
   bool upscaler_is_dlss = false;     // RR includes the upscale: only where DLSS is the upscaler
-  bool consumers_active = false;     // some effect that wants RR (SSR, city RT reflections, RTGI, a raw mode of the car effects) is on
+  bool consumers_active = false;     // AUTO's: some effect that RR cleans better than ours (SSR, city RT reflections, RTGI ...: the A/B said so, see Consumers below) is on
+  bool consumers_any = false;        // (RR-5) the row's RR value's: some effect that has a raw mode built is on (a superset of the one above: the rules treat `active` as implying it)
   bool guides_ready = false;         // the frame's guide images exist and were handed over (TemporalSystem::NoteRrGuides, RR-3; the pass that makes them is RR-2's rr_guides.h)
   bool room_ok = true;               // (RR-3) video memory has room for the RR context (ContextNeedBytes); true where it is not asked (the context exists, or the sizes are not known yet)
 };
@@ -485,6 +497,7 @@ enum class Why : uint8_t {
   kGuidesNotReady,
   kRrFailed,            // (RR-3) RR failed in this session and stays off until the game is started again; Super Resolution goes on
   kNoRoom,              // (RR-3) video memory has no room for the RR context; Super Resolution goes on, the context is asked again after a wait
+  kNotLoaded,           // (RR-5) Streamline was started without the RR plugin (the row said OURS then): it can load only at the next start
 };
 constexpr const char* WhyText(Why w) {
   switch (w) {
@@ -497,10 +510,11 @@ constexpr const char* WhyText(Why w) {
     case Why::kNotSupported: return "Streamline says this graphics card or driver cannot run RR";
     case Why::kUpscalerNotDlss: return "the upscaler is not DLSS (RR includes the upscale)";
     case Why::kProbeOnly: return "mcla_gpu_dlss_rr is probe: RR is loaded and asked, no frame uses it";
-    case Why::kNoConsumer: return "AUTO, and no effect that wants RR is on";
+    case Why::kNoConsumer: return "no effect that RR denoises is on (AUTO needs one RR cleans better than ours, DLSS RR any with a raw mode)";
     case Why::kGuidesNotReady: return "the guide images are not handed to the upscaler yet (the guide pass makes them: rr_guides.h)";
     case Why::kRrFailed: return "Ray Reconstruction failed in this session (the log says why) and stays off until the game is started again; Super Resolution goes on";
     case Why::kNoRoom: return "there is no room in video memory for the Ray Reconstruction context; Super Resolution goes on";
+    case Why::kNotLoaded: return "Streamline was started without the Ray Reconstruction plugin (the row said OURS then): it loads at the next start";
   }
   return "?";
 }
@@ -510,19 +524,85 @@ struct Plan {
   Why why = Why::kSwitchOff;
 };
 
+// --- the consumers (RR-5) -------------------------------------------------------------------------------------------------------------------------------
+
+// The effects that make noisy radiance RR can clean. An effect is a CONSUMER when it has a raw mode (RR-4: it hands RR its 1 spp radiance and the hit distance, and skips its own filter while the plan is
+// RR); two flags each, both measured and decided per effect, never by the row:
+//   raw_mode_built   the raw mode exists. Until it does, the effect is not a consumer (it keeps its own denoiser whatever the row says) and its "on" does not count.
+//   auto_uses_rr     AUTO trusts RR with it: the A/B pictures and the cost said RR beats ours there (perf/DLSS-RR.md section 3: "keep ours where RR is not better"). The row's own RR value takes every
+//                    consumer with a raw mode; AUTO only these.
+// So AUTO is "RR where it is known to be better", the RR value is "RR wherever it can run", and OURS is "never". RR-4's packages flip these two tables' cells as each raw mode lands and each A/B is
+// read; the test compares them with the table's own words. THE CELLS ARE FALSE BECAUSE NO RAW MODE EXISTS YET: with them false nothing is a consumer, AUTO is OURS everywhere, the row is grey, and the
+// plugin is not asked for (WantRrPlugin), so a player's start is exactly what it was before the row.
+enum class Consumer : uint8_t {
+  kSsr,                 // the screen-space reflections (REFLECTIONS ON SURFACES): stochastic, additive radiance with a hit distance (the first real candidate)
+  kCarRtReflections,    // the car's ray traced self-reflections and the chrome of other cars (car_rt_refl.h): an A/B, expected no gain
+  kCityRtReflections,   // the city's ray traced reflections (track 8): designed noisy, RR's reason to exist here
+  kRtGi,                // ray traced bounce light (RT BOUNCE LIGHT, the probe field): designed noisy
+  kCount,
+};
+inline constexpr size_t kConsumerCount = size_t(Consumer::kCount);
+struct ConsumerInfo {
+  const char* name;
+  bool raw_mode_built;
+  bool auto_uses_rr;
+};
+using ConsumerTable = std::array<ConsumerInfo, kConsumerCount>;
+inline constexpr ConsumerTable kConsumers = {{
+    {"screen-space reflections", false, false},
+    {"ray traced car reflections", false, false},
+    {"ray traced city reflections", false, false},
+    {"ray traced bounce light", false, false},
+}};
+constexpr const ConsumerInfo& InfoOf(Consumer c) { return kConsumers[size_t(c)]; }
+constexpr uint32_t ConsumerBit(Consumer c) { return 1u << uint32_t(c); }
+inline constexpr uint32_t kAllConsumers = (1u << uint32_t(kConsumerCount)) - 1u;
+
+// Whether some effect has a raw mode (the plugin is worth loading at all), and the two questions of the plan for a set of effects that are on now (bit i = Consumer i; the effect owners say it each frame,
+// denoiser_setting.h NoteConsumer): any consumer, and any consumer AUTO trusts RR with. The table is a parameter (the shipped one by default) so that the test can ask them of a table with cells flipped.
+constexpr bool AnyRawModeBuilt(const ConsumerTable& table = kConsumers) {
+  for (const ConsumerInfo& c : table) {
+    if (c.raw_mode_built) return true;
+  }
+  return false;
+}
+constexpr bool AnyConsumerOn(uint32_t on_mask, const ConsumerTable& table = kConsumers) {
+  for (size_t i = 0; i < kConsumerCount; ++i) {
+    if (((on_mask >> i) & 1u) != 0 && table[i].raw_mode_built) return true;
+  }
+  return false;
+}
+constexpr bool AnyAutoConsumerOn(uint32_t on_mask, const ConsumerTable& table = kConsumers) {
+  for (size_t i = 0; i < kConsumerCount; ++i) {
+    if (((on_mask >> i) & 1u) != 0 && table[i].raw_mode_built && table[i].auto_uses_rr) return true;
+  }
+  return false;
+}
+
 // RR or our own denoisers; the first reason that applies is the answer.
+//   - The debug switch: off = nothing of RR; on stands for the row's RR value and, like probe, lifts the consumer rule (RR even over a frame with nothing to denoise: the A/B runs and the cost runs).
+//   - OURS never. With the row deciding (the switch on auto): AUTO needs a consumer AUTO trusts RR with, RR needs a consumer with a raw mode (NVIDIA: RR is for ray traced content, "disable when ray tracing
+//     is not enabled": the row is grey then). This rule comes first, so that a PC that cannot run RR, or a build without it, answers "no effect that wants it" and says nothing more while nothing wants it.
+//   - Then what RR needs of the PC (denoiser_setting.h GateOf asks this function again with a consumer made up, to name why the row is grey whatever the setting).
+//   - The plugin must have been asked for at Streamline's start (plugins cannot be added later): a start with the row on OURS leaves it out, and the answer is kNotLoaded (a restart) where the PC
+//     could have loaded it (Facts::loadable), kNotSupported where it could not (not an RTX card, Vulkan without DLSS saved ...).
 inline Plan SelectDenoiser(const PlanInputs& in) {
   const auto no = [](Why why) { return Plan{false, why}; };
   if (in.debug == DebugSwitch::kOff) return no(Why::kSwitchOff);
-  if (in.setting == Denoiser::kOurs) return no(Why::kSettingOurs);
+  const Denoiser setting = in.debug == DebugSwitch::kOn ? Denoiser::kRr : in.setting;
+  if (setting == Denoiser::kOurs) return no(Why::kSettingOurs);
+  if (in.debug == DebugSwitch::kRow) {
+    if (setting == Denoiser::kAuto && !in.consumers_active) return no(Why::kNoConsumer);
+    if (setting == Denoiser::kRr && !in.consumers_active && !in.consumers_any) return no(Why::kNoConsumer);
+  }
   if (!in.facts.build_has_rr) return no(Why::kBuildHasNoRr);
   if (!in.facts.files_ok) return no(Why::kFilesMissing);
   if (!in.facts.streamline_running) return no(Why::kStreamlineNotRunning);
+  if (!in.facts.asked) return no(in.facts.loadable ? Why::kNotLoaded : Why::kNotSupported);
   if (!in.facts.supported) return no(Why::kNotSupported);
   if (in.facts.failed) return no(Why::kRrFailed);
   if (!in.upscaler_is_dlss) return no(Why::kUpscalerNotDlss);
   if (in.debug == DebugSwitch::kProbe) return no(Why::kProbeOnly);
-  if (in.setting == Denoiser::kAuto && !in.consumers_active) return no(Why::kNoConsumer);
   if (!in.room_ok) return no(Why::kNoRoom);
   if (!in.guides_ready) return no(Why::kGuidesNotReady);
   return Plan{true, Why::kRrOn};
@@ -724,17 +804,27 @@ inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 inline constexpr std::array<const char*, 2> kFiles = {"sl.dlss_d.dll", "nvngx_dlssd.dll"};
 inline constexpr std::array<const char*, 1> kSignedFiles = {"sl.dlss_d.dll"};
 
-// Whether Streamline is started with the RR plugin (slInit's featuresToLoad: plugins cannot be added later, like frame generation's).
+// Whether Streamline is started with the RR plugin (slInit's featuresToLoad: plugins cannot be added later, like frame generation's). The row decides what the player wants (anything but OURS), the
+// debug switch can force it (probe and on load it whatever the row says: a test of RR itself; off never), and there must be something to use it: no effect has a raw mode yet (kConsumers), so by default
+// no player's start loads it. The rest is what the PC can do.
 struct PluginInputs {
-  DebugSwitch debug = DebugSwitch::kOff;
+  DebugSwitch debug = DebugSwitch::kRow;
+  Denoiser setting = Denoiser::kAuto;  // the row at the start
+  bool raw_mode_built = false;         // AnyRawModeBuilt()
   bool build_has_rr = false;
   bool files_ok = false;
   bool looks_rtx = false;            // the adapter's name says RTX (the support query is the final word)
   bool d3d12 = false;                // D3D12 starts Streamline after the device and may switch to DLSS live; Vulkan does not
   bool dlss_saved_at_start = false;  // Vulkan: DLSS is the saved upscaler at the start (the device is made through Streamline then)
 };
+// What the row and the switch ask for, before the PC's say: whether a start would load the plugin on a PC that can (also the file check's question: the files are looked at only when this is true).
+constexpr bool PluginWantedByChoice(const PluginInputs& in) {
+  if (in.debug == DebugSwitch::kOff) return false;
+  if (in.debug == DebugSwitch::kProbe || in.debug == DebugSwitch::kOn) return true;
+  return in.setting != Denoiser::kOurs && in.raw_mode_built;
+}
 constexpr bool WantRrPlugin(const PluginInputs& in) {
-  if (in.debug == DebugSwitch::kOff || !in.build_has_rr || !in.files_ok || !in.looks_rtx) return false;
+  if (!PluginWantedByChoice(in) || !in.build_has_rr || !in.files_ok || !in.looks_rtx) return false;
   return in.d3d12 || in.dlss_saved_at_start;
 }
 

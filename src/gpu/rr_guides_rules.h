@@ -8,7 +8,7 @@
 //                  dlss_rr_rules.h accepts (the test runs rr::PlanTags over them), and their size in bytes;
 //   the views      mcla_gpu_dlss_rr_view 0..6, one per guide;
 //   who runs it    PassWanted: the guide pass is Want-driven: it runs while Ray Reconstruction would be the choice if the guides were there (or is), and for a debug view while an upscaler
-//                  runs; with the debug switch off and no view it does nothing and makes nothing;
+//                  runs; while the plan is neither RR nor about to be (the row on OURS, no effect that uses RR on, the switch off ...) and no view is on it does nothing and makes nothing;
 //   the push       the two compute passes' push blocks, which the HLSL declares in the same order (the test reads the HLSL for it);
 //   the decode     the TWIN of hlsl/rr_guides_common.hlsli: the same functions in C++, in the same order of arithmetic, so that the test can run both on the same pixels. The decode is the part
 //                  that is "what each guide means": the G-buffer's planes to the guides Ray Reconstruction reads (see the HLSL's header for the table).
