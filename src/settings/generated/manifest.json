@@ -121,6 +121,54 @@
   "comments": [],
   "pp_depth": 0
  },
+ "build_city_hit": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Builds the city hit data (the hit file and the texture file beside the city pack: the city's surfaces and pictures, for the ray traced effects \"\n    \"that read them) from your game files and closes, without starting the game: no window, no graphics. It needs the city pack (build_city_pack first, or both on one command \"\n    \"line). The launcher runs this in its setup on a PC whose graphics card can ray trace, so that those effects are ready at the first start; the game builds it itself in the \"\n    \"background when it is missing and an effect that reads it is on. Progress is printed to the console like build_city_pack's; the log is logs/city_hit_build.txt. \"\n    \"Exit code 0 when the hit data is in place.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "build_city_hit_force": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"With build_city_hit: build even when the hit data in place is current.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "check_city_hit": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Checks the city hit data and closes, without starting the game: is it in place and current for your game files and the city pack beside it? \"\n    \"Stat only (a moment): exit code 0 and the result 'up to date', or 1 and 'not current' with the reason. With build_city_hit, the check runs after the build. Progress \"\n    \"is printed to the console like build_city_pack's; the log is logs/city_hit_check.txt.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "check_city_hit_deep": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"With check_city_hit: read the files back whole instead of checking the stamp (seconds, not a moment): the city pack, the hit file against \"\n    \"it, and every picture of the texture file. Exit code 0 when all are whole, 1 with the counts of the problems when not.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_native_gfx": {
   "type": "bool",
   "default": "false",

@@ -9,6 +9,7 @@
 
 #include "larecomp_app.h"
 
+#include "bootprogress/city_pack_rules.h"
 #include "settings/larecomp_settings.h"
 
 #include <cmath>
@@ -40,17 +41,25 @@ extern "C" double roundeven(double x) {
 static int LarecompMain(LarecompApp& app, const rex::CLIArgList& args) {
     // The actions end the process before any window or runtime exists, so the app has to know before Init (it decides
     // what systems to ask for). The launcher's setup passes both on one command line: the packs first, then the pipelines.
-    // --build_city_pack builds the city pack for the ray traced shadows (the launcher's setup, one process of its own); given with another action it runs after it.
-    const bool city_pack = args.Has("build_city_pack");
-    if (args.Has("build_shader_packs")) {
-        app.SetBatchMode(LarecompApp::BatchMode::kBuildShaderPacks);
-        app.SetAlsoBuildCityPack(city_pack);
-    } else if (args.Has("precache_pipelines")) {
-        app.SetBatchMode(LarecompApp::BatchMode::kPrecachePipelines);
-        app.SetAlsoBuildCityPack(city_pack);
-    } else if (city_pack) {
-        app.SetBatchMode(LarecompApp::BatchMode::kBuildCityPack);
+    // The city actions (the launcher's setup, one process each): --build_city_pack builds the city pack for the ray traced shadows, --build_city_hit the hit file and the texture file over it,
+    // --check_city_hit checks them; given with another action they run after it, in that order (bootprogress/city_pack_rules.h PlanActions decides what runs first and what follows).
+    larecomp::citypackbuild::ActionFlags flags;
+    flags.shader_packs = args.Has("build_shader_packs");
+    flags.precache = args.Has("precache_pipelines");
+    flags.city_pack = args.Has("build_city_pack");
+    flags.city_hit = args.Has("build_city_hit");
+    flags.check_city_hit = args.Has("check_city_hit");
+    const larecomp::citypackbuild::ActionPlan plan = larecomp::citypackbuild::PlanActions(flags);
+    using larecomp::citypackbuild::ActionKind;
+    switch (plan.first) {
+        case ActionKind::kBuildShaderPacks: app.SetBatchMode(LarecompApp::BatchMode::kBuildShaderPacks); break;
+        case ActionKind::kPrecachePipelines: app.SetBatchMode(LarecompApp::BatchMode::kPrecachePipelines); break;
+        case ActionKind::kBuildCityPack: app.SetBatchMode(LarecompApp::BatchMode::kBuildCityPack); break;
+        case ActionKind::kBuildCityHit: app.SetBatchMode(LarecompApp::BatchMode::kBuildCityHit); break;
+        case ActionKind::kCheckCityHit: app.SetBatchMode(LarecompApp::BatchMode::kCheckCityHit); break;
+        case ActionKind::kNone: break;
     }
+    app.SetAlsoCityActions(plan.then_city_pack, plan.then_city_hit, plan.then_check_city_hit);
     // OnConfigure reads larecomp.toml before the command line is applied: tell it where, when the player says (--config_file).
     if (const auto config = args.Get("config_file"); config && !config->empty()) {
         app.SetConfigFileHint(std::filesystem::path(std::u8string(config->begin(), config->end())));

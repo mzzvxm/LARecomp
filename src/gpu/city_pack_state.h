@@ -69,4 +69,20 @@ constexpr uint32_t ProbeWaitFrames(PackState state, bool build_requested) {
   }
 }
 
+// What the hit data's file probe does with the app's answer (CITY-HIT-ACTION, city_hit_scene.cpp OpenFile): the same vocabulary for the hit file and the texture file beside the pack. The hit scene
+// asks only while a consumer wants the hit data (the level above OFF), after the base pack is open (it is current), so a state of "being built" is the app's own background build of the hit
+// data, started by this very probe (once per session: `build_requested`).
+struct FileProbeStep {
+  bool open = false;           // the files are current: open them now
+  bool request_build = false;  // ask the app to build them (once)
+  uint32_t wait_frames = 0;    // frames until the probe is asked again (ProbeWaitFrames)
+};
+constexpr FileProbeStep DecideFileProbe(PackState state, bool build_requested) {
+  FileProbeStep step;
+  step.open = CanOpenPack(state);
+  step.request_build = WantsBuild(state) && !build_requested;
+  step.wait_frames = ProbeWaitFrames(state, build_requested || step.request_build);
+  return step;
+}
+
 }  // namespace mcla::gpu::city_rt

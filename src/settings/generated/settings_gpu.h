@@ -28,6 +28,21 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, build_city_pack_force, false, "With build_city_pack: build even when the pack in place is current.", rex::kRestart, rex::kDebugOnly);
 
+  REX_SETTING(bool, build_city_hit, false, "Builds the city hit data (the hit file and the texture file beside the city pack: the city's surfaces and pictures, for the ray traced effects "
+    "that read them) from your game files and closes, without starting the game: no window, no graphics. It needs the city pack (build_city_pack first, or both on one command "
+    "line). The launcher runs this in its setup on a PC whose graphics card can ray trace, so that those effects are ready at the first start; the game builds it itself in the "
+    "background when it is missing and an effect that reads it is on. Progress is printed to the console like build_city_pack's; the log is logs/city_hit_build.txt. "
+    "Exit code 0 when the hit data is in place.", rex::kRestart, rex::kDebugOnly);
+
+  REX_SETTING(bool, build_city_hit_force, false, "With build_city_hit: build even when the hit data in place is current.", rex::kRestart, rex::kDebugOnly);
+
+  REX_SETTING(bool, check_city_hit, false, "Checks the city hit data and closes, without starting the game: is it in place and current for your game files and the city pack beside it? "
+    "Stat only (a moment): exit code 0 and the result 'up to date', or 1 and 'not current' with the reason. With build_city_hit, the check runs after the build. Progress "
+    "is printed to the console like build_city_pack's; the log is logs/city_hit_check.txt.", rex::kRestart, rex::kDebugOnly);
+
+  REX_SETTING(bool, check_city_hit_deep, false, "With check_city_hit: read the files back whole instead of checking the stamp (seconds, not a moment): the city pack, the hit file against "
+    "it, and every picture of the texture file. Exit code 0 when all are whole, 1 with the counts of the problems when not.", rex::kRestart, rex::kDebugOnly);
+
   REX_SETTING(std::string, mcla_compare_effect, "bounce", "Developer tool (builds with LARECOMP_DEV_TOOLS only): which graphics effect the compare key flips off and on, to see "
     "what it does: bounce (the bounce light, the default), contact (contact shadows), shafts (sun shafts), occlusion "
     "(ambient occlusion), filter (the sun shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow "
@@ -1711,6 +1726,10 @@ inline auto& build_shader_packs = g_gpu.build_shader_packs;
 inline auto& build_shader_packs_force = g_gpu.build_shader_packs_force;
 inline auto& build_city_pack = g_gpu.build_city_pack;
 inline auto& build_city_pack_force = g_gpu.build_city_pack_force;
+inline auto& build_city_hit = g_gpu.build_city_hit;
+inline auto& build_city_hit_force = g_gpu.build_city_hit_force;
+inline auto& check_city_hit = g_gpu.check_city_hit;
+inline auto& check_city_hit_deep = g_gpu.check_city_hit_deep;
 inline auto& mcla_compare_effect = g_gpu.mcla_compare_effect;
 inline auto& mcla_compare_label_seconds = g_gpu.mcla_compare_label_seconds;
 inline auto& mcla_gpu_a2c_dither_all = g_gpu.mcla_gpu_a2c_dither_all;

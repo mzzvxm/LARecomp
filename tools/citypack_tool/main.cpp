@@ -32,6 +32,9 @@
 //   citypack_tool tex-build  --game <folder> --out <folder> [--threads N]  the same, then the texture file mcla_city_tex.v1.pack (its hit table hash is 0: a development file; the
 //                                                                          hit data build writes the real one) and a read back of every texture
 //
+// build-hit, check-hit and check-tex run the code that larecomp.exe --build_city_hit / --check_city_hit and the game's own background build run (citypack/hit_data.h): the same builders,
+// the same stamp, the same checks.
+//
 // Reads the player's own game files; the pack it writes is game-derived and is never shipped or committed.
 
 #include <algorithm>
@@ -48,6 +51,7 @@
 
 #include "citypack/builder.h"
 #include "citypack/hit_builder.h"
+#include "citypack/hit_data.h"
 #include "citypack/hit_texture_adapter.h"
 #include "citypack/lamp_merge.h"
 #include "citypack/lamp_parse.h"
@@ -531,18 +535,17 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "--out (the folder with the hit pack and the texture file) is required\n");
       return 2;
     }
-    HitPackReader hit;
-    std::string error;
-    if (!hit.Open(fs::path(args.out) / kHitFileName, &error)) {
-      std::fprintf(stderr, "%s\n", error.c_str());
+    HitDataCheckParts parts;
+    parts.pack = false;
+    parts.hit = false;
+    const HitDataCheck check = DeepCheckHitData(args.out, parts, nullptr);
+    if (check.unreadable) {
+      std::fprintf(stderr, "%s\n", check.error.c_str());
       return 1;
     }
-    const auto started = std::chrono::steady_clock::now();
-    std::vector<std::string> problems;
-    const uint32_t bad = ValidateTextureFile(fs::path(args.out) / kTexFileName, hit.textures(), hit.header().table_hash, &problems);
-    for (const std::string& p : problems) std::fprintf(stderr, "  %s\n", p.c_str());
-    std::printf("%u problems in %.2f s (%zu pictures)\n", bad, std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(), hit.textures().size());
-    return bad == 0 ? 0 : 1;
+    for (const std::string& p : check.problems) std::fprintf(stderr, "  %s\n", p.c_str());
+    std::printf("%u problems in %.2f s (%u pictures)\n", check.texture_problems, check.texture_seconds, check.pictures);
+    return check.ok ? 0 : 1;
   }
   if (command == "tex-census") return TextureSetCommand(args, false);
   if (command == "tex-build") return TextureSetCommand(args, true);
@@ -573,7 +576,7 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "--out (the city pack's folder) is required\n");
       return 2;
     }
-    HitBuildRequest hit;
+    HitDataRequest hit;
     hit.base = request;
     hit.base.census_only = command == "build-hit" && args.census;
     for (const std::string& r : args.rows) hit.texture_rows.emplace_back(r);
@@ -581,62 +584,43 @@ int main(int argc, char** argv) {
     if (args.ao_bits >= 0) hit.rules.ao_bits = uint32_t(args.ao_bits);
     if (args.tint_bits >= 0) hit.rules.tint_bits = uint32_t(args.tint_bits);
     if (args.zstd >= 0) hit.zstd_level = args.zstd;
-#if defined(LARECOMP_HIT_HAS_TEXTURE_SET)
-    CityTextureSource texture_source;  // starts with no set: its identity is all the currency check needs
-    TextureSetResult texture_result;
-    if (!args.no_textures) hit.textures = &texture_source;
-#endif
+    hit.textures = !args.no_textures;
     if (command == "check-hit") {
-      const StampCheck check = CheckCityHitPack(hit);
+      const StampCheck check = CheckHitData(hit);
       std::printf("%s%s\n", check.current ? "current" : "not current: ", check.current ? "" : check.why.c_str());
       if (!check.current) return 1;
       if (!args.deep) return 0;
-      PackReader base;
-      HitPackReader reader;
-      std::string error;
-      if (!base.Open(fs::path(args.out) / kPackFileName, &error) || !reader.Open(fs::path(args.out) / kHitFileName, &error)) {
-        std::fprintf(stderr, "%s\n", error.c_str());
+      HitDataCheckParts parts;
+      parts.pack = false;
+      parts.textures = false;
+      const HitDataCheck deep = DeepCheckHitData(args.out, parts, nullptr);
+      if (deep.unreadable) {
+        std::fprintf(stderr, "%s\n", deep.error.c_str());
         return 1;
       }
-      const auto t = std::chrono::steady_clock::now();
-      std::vector<std::string> problems;
-      const uint32_t bad = ValidateHitPack(reader, base, &problems);
-      for (const std::string& p : problems) std::fprintf(stderr, "  %s\n", p.c_str());
-      std::printf("%u problems in %.1f s\n", bad, std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count());
-      return bad == 0 ? 0 : 1;
+      for (const std::string& p : deep.problems) std::fprintf(stderr, "  %s\n", p.c_str());
+      std::printf("%u problems in %.1f s\n", deep.hit_problems, deep.hit_seconds);
+      return deep.ok ? 0 : 1;
     }
     PrintSink sink;
-#if defined(LARECOMP_HIT_HAS_TEXTURE_SET)
-    if (hit.textures != nullptr && (hit.base.census_only || args.force || !CheckCityHitPack(hit).current)) {
-      TextureSetRequest texture_request;
-      texture_request.source_rpf = request.source_rpf;
-      texture_request.mods_rpf = request.mods_rpf;
-      texture_request.lzx = request.lzx;
-      texture_request.threads = request.threads;
-      if (args.zstd >= 0) texture_request.zstd_level = args.zstd;
-      texture_result = BuildTextureSet(texture_request, &sink);
-      if (!texture_result.ok) {
-        std::fprintf(stderr, "failed: the texture set: %s\n", texture_result.error.c_str());
-        return 1;
-      }
-      std::printf("texture set: %u pictures (%llu data bytes, %llu without zstd; zstd level %d took %.2f s) from %llu dictionary entries, %u distinct names, %.1f s\n", texture_result.stats.distinct,
-                  static_cast<unsigned long long>(texture_result.stats.data_bytes), static_cast<unsigned long long>(texture_result.stats.plain_bytes), texture_result.stats.zstd_level,
-                  texture_result.stats.compress_seconds, static_cast<unsigned long long>(texture_result.stats.entries), texture_result.stats.distinct_names, texture_result.stats.seconds);
-      texture_source.SetTextureSet(&texture_result.set);
-    }
-#endif
-    const HitBuildResult result = BuildCityHitPack(hit, &sink);
+    const HitDataResult result = BuildHitData(hit, &sink);
     if (!result.ok) {
       std::fprintf(stderr, "failed: %s\n", result.error.c_str());
       return 1;
+    }
+    if (result.textures_built) {
+      const TextureSetStats& t = result.texture_stats;
+      std::printf("texture set: %u pictures (%llu data bytes, %llu without zstd; zstd level %d took %.2f s) from %llu dictionary entries, %u distinct names, %.1f s\n", t.distinct,
+                  static_cast<unsigned long long>(t.data_bytes), static_cast<unsigned long long>(t.plain_bytes), t.zstd_level, t.compress_seconds, static_cast<unsigned long long>(t.entries),
+                  t.distinct_names, t.seconds);
     }
     if (result.up_to_date) {
       std::printf("current: nothing built\n");
       return 0;
     }
-    std::printf("%s", result.census.Report().c_str());
-    std::printf("total %.1f s%s\n", result.seconds, args.census ? " (census: nothing written)" : "");
-    if (!args.census) std::printf("hit pack %s: %llu bytes\n", result.hit_path.string().c_str(), static_cast<unsigned long long>(result.hit_bytes));
+    std::printf("%s", result.hit.census.Report().c_str());
+    std::printf("total %.1f s%s\n", result.hit.seconds, args.census ? " (census: nothing written)" : "");
+    if (!args.census) std::printf("hit pack %s: %llu bytes\n", result.hit.hit_path.string().c_str(), static_cast<unsigned long long>(result.hit.hit_bytes));
     return 0;
   }
   if (command == "check") {

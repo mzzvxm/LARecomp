@@ -34,7 +34,7 @@ int g_failed = 0;
 struct FakeLookup {
   std::set<std::string> aliases = {"d3d12_adapter",  "vulkan_device",  "texture_cache_memory_limit_soft", "vsync",
                                    "fullscreen",     "log_file",       "mcla_gpu_ao",                     "debug_menu",
-                                   "build_shader_packs_force", "build_city_pack_force", "keybind_a", "user_name", "mcla_gpu_vsync", "fps_limit",
+                                   "build_shader_packs_force", "build_city_pack_force", "build_city_hit_force", "check_city_hit_deep", "keybind_a", "user_name", "mcla_gpu_vsync", "fps_limit",
                                    // the removed names (kRemovedNames in settings/larecomp_settings.cpp): an alias to "", no setting
                                    "mcla_gpu", "mcla_native_gfx_nocp"};
   std::map<std::string, std::string> full = {
@@ -48,6 +48,8 @@ struct FakeLookup {
       {"debug_menu", "larecomp.debug_menu"},
       {"build_shader_packs_force", "larecomp.build_shader_packs_force"},
       {"build_city_pack_force", "larecomp.build_city_pack_force"},
+      {"build_city_hit_force", "larecomp.build_city_hit_force"},
+      {"check_city_hit_deep", "larecomp.check_city_hit_deep"},
       {"mcla_gpu_vsync", "larecomp.mcla_gpu_vsync"},
       {"fps_limit", "larecomp.fps_limit"},
       // "keybind_a" and "user_name" are aliases only the SDK has
@@ -55,6 +57,7 @@ struct FakeLookup {
   std::map<std::string, bool> registered_bool = {
       {"gpu.vsync", true},          {"ui.fullscreen", true},    {"larecomp.debug_menu", true},
       {"larecomp.mcla_gpu_vsync", true}, {"larecomp.build_shader_packs_force", true}, {"larecomp.build_city_pack_force", true},
+      {"larecomp.build_city_hit_force", true}, {"larecomp.check_city_hit_deep", true},
       {"larecomp.mcla_gpu_ao", false}, {"larecomp.fps_limit", false}, {"log.file_name", false},
   };
 
@@ -207,10 +210,16 @@ void TestLauncherFlags() {
   CHECK(RouteOf("game_data_root", no_actions) == Route::kSdk);
   CHECK(Run("build_shader_packs_force", std::nullopt, kBatch).verdict == Verdict::kApply);
   // ... and the city pack step (--build_city_pack, with its force switch): an action the SDK keeps, a setting for the force.
-  const std::vector<std::string_view> setup_actions = {"build_shader_packs", "precache_pipelines", "build_city_pack"};
+  const std::vector<std::string_view> setup_actions = {"build_shader_packs", "precache_pipelines", "build_city_pack", "build_city_hit", "check_city_hit"};
   CHECK(RouteOf("build_city_pack", setup_actions) == Route::kSdk && RouteOf("build_shader_packs", setup_actions) == Route::kSdk);
   CHECK(RouteOf("build_city_pack_force", setup_actions) == Route::kSetting);
   CHECK(Run("build_city_pack_force", std::nullopt, kBatch).verdict == Verdict::kApply);
+  // ... and the hit data's (CITY-HIT-ACTION): --build_city_hit and --check_city_hit are actions the SDK keeps, their two switches settings that wait for OnConfigure
+  CHECK(RouteOf("build_city_hit", setup_actions) == Route::kSdk && RouteOf("check_city_hit", setup_actions) == Route::kSdk);
+  CHECK(RouteOf("build_city_hit_force", setup_actions) == Route::kSetting && RouteOf("check_city_hit_deep", setup_actions) == Route::kSetting);
+  CHECK(Run("build_city_hit_force", std::nullopt, kBatch).verdict == Verdict::kApply);
+  CHECK(Run("check_city_hit_deep", "true", kBatch).verdict == Verdict::kApply);
+  CHECK(Run("check_city_hit_deep", std::nullopt, kBatch).verdict == Verdict::kApply);
   // Its "More options" box and the fork launcher's flags.
   CHECK(Run("log_file", "run.log", kPlume).verdict == Verdict::kApply);
   CHECK(Run("vsync", "false", kPlume).verdict == Verdict::kApply);
@@ -252,7 +261,7 @@ void TestSplit() {
                                        {"larecomp_restart_wait_pid", "123"},
                                        {"precache_pipelines", "true"}};
   const std::vector<std::string> positionals = {"extra.xex"};
-  const std::vector<std::string_view> actions = {"build_shader_packs", "precache_pipelines", "build_city_pack"};
+  const std::vector<std::string_view> actions = {"build_shader_packs", "precache_pipelines", "build_city_pack", "build_city_hit", "check_city_hit"};
   const Split split = SplitCommandLine(options, positionals, actions);
   // The SDK gets the actions, its path flags and the positionals, spelled as typed (a value with a blank stays one token).
   CHECK((split.sdk == std::vector<std::string>{"--build_shader_packs", "--game_data_root=C:/Games/My Game", "--precache_pipelines=true",
@@ -269,6 +278,14 @@ void TestSplit() {
   CHECK(RouteOf("larecomp_restart_wait_handle", actions) == Route::kInternal);
   CHECK(RouteOf("vsync", actions) == Route::kSetting);
   CHECK(RouteOf("no-vsync", actions) == Route::kSetting);
+
+  // What the launcher's city data step passes (CITY-HIT-ACTION): the actions and the game folder go to the SDK as typed, the two switches stay settings, in the order typed.
+  const std::vector<Option> city = {{"build_city_hit", std::nullopt}, {"build_city_hit_force", "true"}, {"check_city_hit", std::nullopt},
+                                    {"game_data_root", "D:/My Game"}, {"check_city_hit_deep", "true"}};
+  const Split city_split = SplitCommandLine(city, std::vector<std::string>{}, actions);
+  CHECK((city_split.sdk == std::vector<std::string>{"--build_city_hit", "--check_city_hit", "--game_data_root=D:/My Game"}));
+  CHECK(city_split.settings.size() == 2 && city_split.settings[0].name == "build_city_hit_force" && city_split.settings[1].name == "check_city_hit_deep");
+  CHECK(city_split.notes.empty());
 }
 
 void TestSelectors() {
