@@ -89,10 +89,10 @@ const Row kTable[] = {
      "AUTO (ULTRA)"},
     // The headlights have one level, `on`: the integrated class (Low) has none.
     {Effect::kHeadlights, "mcla_gpu_headlights", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
-    // Light shadows (local_shadow.h; the headlights now, the street lamps later): high on Mid (two maps of 512: the player's car's lamps and the nearest other car's), ultra on High
-    // (three of 1024: the next nearest car's too), nothing on shared memory.
-    {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "high", "ultra", "AUTO (OFF)",
-     "AUTO (HIGH)", "AUTO (ULTRA)"},
+    // Light shadows (local_shadow.h; the headlights now, the street lamps later), the three level shape (owner 2026-11-20): medium on Mid (two maps of 512: one view for the player's car and one for the
+    // nearest other car), ultra on High (six of 1024: a view for each lamp of the player's car and the two nearest others), nothing on shared memory; high (the player's lamps, 512) is for the player to pick.
+    {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "medium", "ultra", "AUTO (OFF)",
+     "AUTO (MEDIUM)", "AUTO (ULTRA)"},
     // Volumetric light (VOLUMETRICS-SURVEY.md section 4.1): off on Low, medium on Mid, high on High (ultra is a deliberate pick).
     {Effect::kVolumetrics, "mcla_gpu_volumetrics", "off", "medium", "high", "AUTO (OFF)", "AUTO (MEDIUM)",
      "AUTO (HIGH)"},
@@ -159,24 +159,28 @@ void CheckAmbientOcclusion() {
   }
 }
 
-// Light shadows' `auto` (mcla_gpu_light_shadows, local_shadow.h): nothing on shared memory, the small map (high) on Mid, the big one (ultra)
-// on High; a value the player holds is kept in every class, and the classes only go up.
+// Light shadows' `auto` (mcla_gpu_light_shadows, local_shadow.h): nothing on shared memory, one view for a car (medium) on Mid, a view for each lamp of three cars
+// (ultra) on High; high (the player's lamps) is never a cell. A value the player holds (off, medium, high, ultra) is kept in every class, the classes only go up, and nothing is called low.
 void CheckLightShadows() {
   const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
-  const char* const want[] = {"off", "high", "ultra"};
-  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
+  const char* const want[] = {"off", "medium", "ultra"};
+  const char* const own[] = {"off", "medium", "high", "ultra"};
+  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "medium" ? 1 : v == "high" ? 2 : 3; };
   int last = -1;
   for (int k = 0; k < 3; ++k) {
     const GpuClass c = classes[k];
     const std::string at = "light shadows on " + std::string(ClassName(c));
     CheckEq(ResolveFor(c, Effect::kLightShadows, "auto"), want[k], at + ": auto");
-    for (const char* v : {"off", "high", "ultra"}) {
+    for (const char* v : own) {
       CheckEq(ResolveFor(c, Effect::kLightShadows, v), v, at + ": the saved '" + v + "' is kept");
     }
     const int now = rank(Cell(Effect::kLightShadows, c));
     Check(now >= last, at + ": not below the class under it");
+    Check(Cell(Effect::kLightShadows, c) != "high" && Cell(Effect::kLightShadows, c) != "low", at + ": auto never picks high (the player's own pick) or a level called low");
     last = now;
   }
+  CheckEq(AutoLabelFor(GpuClass::kMid, Effect::kLightShadows), "AUTO (MEDIUM)", "the Mid class's row says AUTO (MEDIUM)");
+  CheckEq(AutoLabelFor(GpuClass::kHigh, Effect::kLightShadows), "AUTO (ULTRA)", "the High class's row says AUTO (ULTRA)");
   CheckEq(std::string(CvarName(Effect::kLightShadows)), "mcla_gpu_light_shadows", "the cvar's name");
 }
 
@@ -244,6 +248,12 @@ void CheckWords() {
       const std::string cell(Cell(effect, c));
       Check(cell == "off" || cell == "high" || cell == "ultra", name + " on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off, high or ultra");
     }
+  }
+  // The light shadows have three levels (the three level shape): their cells are words of off / medium / high / ultra.
+  for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+    const std::string cell(Cell(Effect::kLightShadows, c));
+    Check(cell == "off" || cell == "medium" || cell == "high" || cell == "ultra",
+          "mcla_gpu_light_shadows on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off, medium, high or ultra");
   }
   for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
     const std::string cell(Cell(Effect::kCarSelfRefl, c));

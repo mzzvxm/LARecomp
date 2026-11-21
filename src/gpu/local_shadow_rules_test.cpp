@@ -66,7 +66,8 @@ void CheckTypes() {
   using larecomp::gpu::LocalShadowView;
   Check(sizeof(LocalShadowView) == 16 * 4 + 4 * 4 + 4 + 4 + 4 + 4, "LocalShadowView is 96 bytes: matrix, rect, bias, texel, light index, valid");
   LocalShadowFrame frame;
-  Check(frame.views.size() == 4 && frame.count == 0, "LocalShadowFrame holds four views and starts empty");
+  Check(frame.views.size() == 8 && larecomp::gpu::kMaxShadowViews == 8 && frame.count == 0, "LocalShadowFrame holds eight views (two for each of four lights) and starts empty");
+  Check(sizeof(larecomp::gpu::Headlight::lamp_offset) == 12, "a Headlight carries the offset to its right lamp");
   larecomp::gpu::HeadlightSet set;
   Check(set.lights.size() == 4 && set.count == 0, "HeadlightSet holds four lights and starts empty");
   Check(larecomp::gpu::CurrentHeadlights().count == 0, "the stub rig has no lights");
@@ -78,30 +79,44 @@ void CheckTypes() {
 
 void CheckSetting() {
   const gc::GpuClass classes[] = {gc::GpuClass::kLow, gc::GpuClass::kMid, gc::GpuClass::kHigh};
-  const ls::Level want[] = {ls::Level::kOff, ls::Level::kHigh, ls::Level::kUltra};
+  // The class table's cells: off on Low, medium on Mid, ultra on High (the cell of Mid comes to the next level up in a shape without medium).
+  const ls::Level want[] = {ls::Level::kOff, ls::Effective(ls::Level::kMedium), ls::Effective(ls::Level::kUltra)};
   for (int k = 0; k < 3; ++k) {
     const ls::Choice c = ls::Resolve(classes[k], "auto");
     const std::string at = std::string("auto on ") + std::string(gc::ClassName(classes[k]));
-    Check(c.level == want[k] && c.automatic && !c.unknown, at + ": off / high / ultra by class");
+    Check(c.level == want[k] && c.automatic && !c.unknown, at + ": off / medium / ultra by class");
     Check(ls::Resolve(classes[k], "AUTO").level == want[k], at + ": the word is case blind");
     Check(ls::Resolve(classes[k], "off").level == ls::Level::kOff && !ls::Resolve(classes[k], "off").automatic, at + ": off is kept");
     Check(ls::Resolve(classes[k], "high").level == ls::Level::kHigh, at + ": high is kept");
     Check(ls::Resolve(classes[k], "ultra").level == ls::Level::kUltra, at + ": ultra is kept");
+    Check(ls::Resolve(classes[k], "medium").level == ls::Effective(ls::Level::kMedium) && !ls::Resolve(classes[k], "medium").unknown, at + ": medium is a word of the setting in either shape");
     const ls::Choice odd = ls::Resolve(classes[k], "low");
     Check(odd.level == want[k] && odd.automatic && odd.unknown, at + ": the old word low is taken as auto");
   }
-  Check(ls::TileSize(ls::Level::kOff) == 0 && ls::TileSize(ls::Level::kHigh) == 512 && ls::TileSize(ls::Level::kUltra) == 1024,
-        "the tile is 512 on high and 1024 on ultra");
-  Check(ls::MaxViews(ls::Level::kOff, 0) == 0 && ls::MaxViews(ls::Level::kOff, 3) == 0, "off draws no view, whatever the override");
-  Check(ls::MaxViews(ls::Level::kHigh, 0) == 2 && ls::MaxViews(ls::Level::kUltra, 0) == 3, "high shadows two cars (the player's and the nearest other car's), ultra three");
-  Check(ls::MaxViews(ls::Level::kHigh, 3) == 3 && ls::MaxViews(ls::Level::kUltra, 9) == 4, "the debug override takes 1 to 4 views");
+  // The level every class's cell comes to is a level the shape has (a cell the shape lacks takes the next one up).
+  for (const gc::GpuClass cls : classes) {
+    const ls::Level level = ls::Resolve(cls, "auto").level;
+    bool in_table = level == ls::Level::kOff;
+    for (const ls::LevelRow& row : ls::kLevelTable) {
+      in_table = in_table || row.level == level;
+    }
+    Check(in_table, "the class's auto is a level of the table in use");
+  }
+  Check(ls::TileSize(ls::Level::kOff) == 0 && ls::TileSize(ls::Level::kHigh) == 512 && ls::TileSize(ls::Level::kUltra) == 1024, "the tile is 512 on high and 1024 on ultra");
+  Check(ls::MaxViews(ls::Level::kOff, 0) == 0 && ls::MaxViews(ls::Level::kOff, 2) == 0 && ls::MaxCars(ls::Level::kOff) == 0, "off draws no view, whatever the override");
+  Check(ls::MaxCars(ls::Level::kHigh) == 2 && ls::MaxCars(ls::Level::kUltra) == 3, "high shadows two cars (the player's and the nearest other car's), ultra three");
+  Check(ls::kThreeLevelShape && ls::kLevelTable.size() == 3 && ls::kLevelTable[0].word == "medium" && ls::kLevelTable[1].word == "high" && ls::kLevelTable[2].word == "ultra",
+        "the shape in use is the three level one: medium, high, ultra (owner, 2026-11-20)");
+  Check(ls::MaxViews(ls::Level::kMedium, 0) == 2 && ls::MaxViews(ls::Level::kHigh, 0) == 3 && ls::MaxViews(ls::Level::kUltra, 0) == 6,
+        "in use: medium 2 views (one for each car), high 3 (the player's lamps and the nearest car), ultra 6 (every car's lamps)");
+  Check(ls::TileSize(ls::Level::kMedium) == 512 && ls::TileSize(ls::Level::kHigh) == 512 && ls::TileSize(ls::Level::kUltra) == 1024, "in use: 512 on medium and high, 1024 on ultra");
+  Check(ls::LampCars(ls::Level::kMedium, 0) == 0 && ls::LampCars(ls::Level::kHigh, 0) == 1 && ls::LampCars(ls::Level::kUltra, 0) == 3, "in use: lamp views for no car on medium, the player's on high, all three on ultra");
   const ls::Choice mid = ls::Resolve(gc::GpuClass::kMid, "auto");
   const std::string text = ls::Describe(mid, gc::GpuClass::kMid);
-  Check(text.find("high") != std::string::npos && text.find("512x512") != std::string::npos && text.find("auto on the mid class") != std::string::npos,
-        "Describe says the level, the size and why: " + text);
+  Check(text.find("512x512") != std::string::npos && text.find("auto on the mid class") != std::string::npos, "Describe says the size and why: " + text);
   Check(ls::Describe(ls::Resolve(gc::GpuClass::kLow, "auto"), gc::GpuClass::kLow).find("512") == std::string::npos, "an off level has no size in its line");
   // No level is called low.
-  for (const char* c : {"off", "high", "ultra"}) {
+  for (const char* c : {"off", "medium", "high", "ultra"}) {
     Check(std::string(ls::LevelName(ls::Resolve(gc::GpuClass::kHigh, c).level)).find("low") == std::string::npos, "no level is called low");
   }
 }
@@ -117,9 +132,9 @@ void CheckAtlas() {
   Check(two.width() == 2048 && two.height() == 1024, "two views: two tiles side by side");
   const ls::AtlasLayout four = ls::MakeAtlas(512, 4);
   Check(four.width() == 1024 && four.height() == 1024, "four 512 views: a 1024x1024 atlas");
-  Check(ls::MakeAtlas(512, 9).views == 4, "never more than four views");
+  Check(ls::MakeAtlas(512, 9).views == 8 && ls::MakeAtlas(512, 100).views == ls::kMaxViews, "never more than eight views");
   Check(!ls::MakeAtlas(0, 2).valid() && !ls::MakeAtlas(512, 0).valid(), "no tile or no view: no atlas");
-  for (uint32_t views = 1; views <= 4; ++views) {
+  for (uint32_t views = 1; views <= 8; ++views) {
     const ls::AtlasLayout atlas = ls::MakeAtlas(512, views);
     std::unordered_set<uint64_t> seen;
     for (uint32_t k = 0; k < views; ++k) {
@@ -1248,21 +1263,60 @@ void CheckVehicleCensus() {
 // ---------------------------------------------------------------------------
 
 void CheckLevels() {
-  Check(ls::kViewsHigh == 2 && ls::kViewsUltra == 3, "high shadows two cars (the player's and the nearest other car's), ultra three");
-  Check(ls::MaxViews(ls::Level::kHigh, 0) == 2 && ls::MaxViews(ls::Level::kUltra, 0) == 3 && ls::MaxViews(ls::Level::kOff, 0) == 0, "the levels' view counts");
-  Check(ls::MaxViews(ls::Level::kHigh, 1) == 1 && ls::MaxViews(ls::Level::kHigh, 4) == 4 && ls::MaxViews(ls::Level::kUltra, 7) == 4 &&
-            ls::MaxViews(ls::Level::kUltra, -3) == 3,
-        "the debug override takes 1 to 4 views, a negative one is the level's");
-  // Every level draws views the published frame and the headlight variant's block can hold (a view for each lit lamp, a lamp for each car: four).
-  larecomp::gpu::LocalShadowFrame frame;
-  Check(ls::kMaxViews == frame.views.size() && ls::kViewsUltra <= ls::kMaxViews && ls::kViewsHigh < ls::kViewsUltra, "the views a level draws fit the published frame");
+  // THE TWO LEVEL SHAPE (the default, owner 2026-11-20): both levels have a view for every lamp of every car they shadow.
+  const ls::LevelTable two(ls::kTwoLevels);
+  const ls::LevelTable three(ls::kThreeLevels);
+  Check(ls::MaxCars(ls::Level::kHigh, two) == 2 && ls::MaxCars(ls::Level::kUltra, two) == 3 && ls::MaxCars(ls::Level::kOff, two) == 0, "two level shape: two cars on high, three on ultra");
+  Check(ls::LampCars(ls::Level::kHigh, 0, two) == 2 && ls::LampCars(ls::Level::kUltra, 0, two) == 3, "two level shape: both levels have a view for every lamp of every car");
+  Check(ls::MaxViews(ls::Level::kHigh, 0, two) == 4 && ls::MaxViews(ls::Level::kUltra, 0, two) == 6 && ls::MaxViews(ls::Level::kOff, 0, two) == 0, "two level shape: 4 views on high, 6 on ultra");
+  Check(ls::TileSize(ls::Level::kHigh, two) == 512 && ls::TileSize(ls::Level::kUltra, two) == 1024, "two level shape: 512 and 1024");
+  // The debug override is the views of a car: 1 the car's (the first version's), 2 every car's lamps, 0 or less the level's.
+  Check(ls::MaxViews(ls::Level::kHigh, 1, two) == 2 && ls::MaxViews(ls::Level::kUltra, 1, two) == 3 && ls::LampCars(ls::Level::kUltra, 1, two) == 0,
+        "the override 1: one view for each car (the first version's 2 and 3)");
+  Check(ls::MaxViews(ls::Level::kHigh, 2, two) == 4 && ls::MaxViews(ls::Level::kUltra, 2, two) == 6 && ls::MaxViews(ls::Level::kHigh, 9, two) == 4 && ls::MaxViews(ls::Level::kUltra, -3, two) == 6,
+        "the override 2 (and more) is a view for each lamp, a negative one is the level's");
+  // THE THREE LEVEL SHAPE (the fallback): medium is the first version's high, high gives the player's car its lamps' views, ultra every shadowed car's.
+  Check(ls::MaxViews(ls::Level::kMedium, 0, three) == 2 && ls::LampCars(ls::Level::kMedium, 0, three) == 0 && ls::TileSize(ls::Level::kMedium, three) == 512,
+        "three level shape: medium is two cars, one view each, 512");
+  Check(ls::MaxViews(ls::Level::kHigh, 0, three) == 3 && ls::LampCars(ls::Level::kHigh, 0, three) == 1 && ls::MaxCars(ls::Level::kHigh, three) == 2,
+        "three level shape: high is two cars, the player's with a view for each lamp (3 views)");
+  Check(ls::MaxViews(ls::Level::kUltra, 0, three) == 6 && ls::LampCars(ls::Level::kUltra, 0, three) == 3 && ls::TileSize(ls::Level::kUltra, three) == 1024,
+        "three level shape: ultra is three cars, every one with a view for each lamp (6 views of 1024)");
+  Check(ls::MaxViews(ls::Level::kMedium, 2, three) == 4 && ls::MaxViews(ls::Level::kHigh, 1, three) == 2, "three level shape: the override works on any row");
+  // Both shapes are well formed: ascending levels, a tile, a car, no more lamp cars than cars, words that are the setting's.
+  for (const ls::LevelTable table : {two, three}) {
+    ls::Level last = ls::Level::kOff;
+    for (const ls::LevelRow& row : table) {
+      bool known = false;
+      Check(row.level > last && row.tile >= 256 && row.cars >= 1 && row.cars <= ls::kMaxCars && row.lamp_cars <= row.cars, "a row of the table is well formed");
+      Check(ls::ParseLevel(row.word, &known) == row.level && known, "a row's word is the setting's word for its level");
+      Check(ls::MaxViews(row.level, 0, table) <= ls::kMaxViews && ls::MaxViews(row.level, 2, table) <= ls::kMaxViews, "a row's views fit the published frame, the override too");
+      last = row.level;
+    }
+  }
+  // A level a shape lacks comes to the next one up: medium in the two level shape is high; the table of three has all of them.
+  Check(ls::Effective(ls::Level::kMedium, two) == ls::Level::kHigh && ls::Effective(ls::Level::kHigh, two) == ls::Level::kHigh && ls::Effective(ls::Level::kUltra, two) == ls::Level::kUltra &&
+            ls::Effective(ls::Level::kOff, two) == ls::Level::kOff,
+        "two level shape: medium comes to high");
+  Check(ls::Effective(ls::Level::kMedium, three) == ls::Level::kMedium && ls::Effective(ls::Level::kHigh, three) == ls::Level::kHigh, "three level shape: every level is its own");
+  Check(ls::Effective(ls::Level::kUltra, ls::LevelTable(ls::kTwoLevels, 1)) == ls::Level::kHigh, "a table with no level above takes the greatest below");
+  // The pause menu's words: auto, off, then the table's levels in order.
+  const ls::MenuWords menu2 = ls::MakeMenuWords(two), menu3 = ls::MakeMenuWords(three);
+  Check(menu2.count == 4 && menu2.stored[0] == "auto" && menu2.stored[1] == "off" && menu2.stored[2] == "high" && menu2.stored[3] == "ultra" && menu2.shown[3] == "ULTRA",
+        "the row's words in the two level shape: auto, off, high, ultra");
+  Check(menu3.count == 5 && menu3.stored[2] == "medium" && menu3.shown[2] == "MEDIUM" && menu3.stored[3] == "high" && menu3.stored[4] == "ultra", "... and in the three level shape: auto, off, medium, high, ultra");
+  Check(ls::kMenuWords.count == (ls::kThreeLevelShape ? 5u : 4u), "the shape in use gives the row's words");
 
-  // The atlas of every level and every number of views, at both tile sizes: where each tile is, inside the atlas, none on another, and the memory.
+  // Every level draws views the published frame and the headlight variant's block can hold: four cars' lights, a view for each lamp (eight).
+  larecomp::gpu::LocalShadowFrame frame;
+  Check(ls::kMaxViews == frame.views.size() && ls::kMaxCars == 4 && ls::kMaxViews == 2 * ls::kMaxCars, "the published frame holds a view for each lamp of the rig's four cars");
+
+  // The atlas of every number of views, at both tile sizes: where each tile is, inside the atlas, none on another, and the memory.
   struct Case {
     uint32_t tile, views, width, height;
   };
-  const Case cases[] = {{512, 1, 512, 512},   {512, 2, 1024, 512},   {512, 3, 1536, 512},   {512, 4, 1024, 1024},
-                        {1024, 1, 1024, 1024}, {1024, 2, 2048, 1024}, {1024, 3, 3072, 1024}, {1024, 4, 2048, 2048}};
+  const Case cases[] = {{512, 1, 512, 512},   {512, 2, 1024, 512},   {512, 3, 1536, 512},   {512, 4, 1024, 1024},   {512, 5, 1536, 1024},   {512, 6, 1536, 1024},   {512, 7, 2048, 1024},   {512, 8, 2048, 1024},
+                        {1024, 1, 1024, 1024}, {1024, 2, 2048, 1024}, {1024, 3, 3072, 1024}, {1024, 4, 2048, 2048}, {1024, 5, 3072, 2048}, {1024, 6, 3072, 2048}, {1024, 7, 4096, 2048}, {1024, 8, 4096, 2048}};
   for (const Case& c : cases) {
     const std::string at = std::to_string(c.views) + " view(s) of " + std::to_string(c.tile);
     const ls::AtlasLayout atlas = ls::MakeAtlas(c.tile, c.views);
@@ -1281,27 +1335,51 @@ void CheckLevels() {
       CheckNear(rect[2] * atlas.width(), r.x + r.size, 1e-2, at + ": rect u1 of tile " + std::to_string(k));
       CheckNear(rect[3] * atlas.height(), r.y + r.size, 1e-2, at + ": rect v1 of tile " + std::to_string(k));
     }
-    // Unused texels: none for up to three views in a row; a 2x2 atlas of four is full too.
-    Check(uint64_t(atlas.width()) * atlas.height() == uint64_t(c.tile) * c.tile * c.views, at + ": no tile is left over");
+    // Unused texels: none for 1, 2, 3, 4, 6 and 8 views (a row, 2x2, 3x2, 4x2); one tile for 5 and 7.
+    const uint64_t used = uint64_t(c.tile) * c.tile * c.views;
+    Check(uint64_t(atlas.width()) * atlas.height() >= used && uint64_t(atlas.width()) * atlas.height() - used <= uint64_t(c.tile) * c.tile, at + ": at most one tile is left over");
     Check(ls::AtlasBytes(atlas) == uint64_t(c.width) * c.height * 8, at + ": 8 bytes a texel (D32 float + S8)");
+    Check(atlas.width() <= 4096 && atlas.height() <= 4096, at + ": a texture a Vulkan device must support (4096)");
   }
-  // Memory: high 4 MiB (it was 2), ultra 24 MiB (it was 16): the figures in the setting's help.
-  const ls::AtlasLayout high = ls::AtlasFor(ls::Level::kHigh, 0);
-  const ls::AtlasLayout ultra = ls::AtlasFor(ls::Level::kUltra, 0);
-  Check(high.width() == 1024 && high.height() == 512 && high.cols == 2 && high.rows == 1, "high: 1024 x 512, two tiles of 512 side by side");
-  Check(ultra.width() == 3072 && ultra.height() == 1024 && ultra.cols == 3 && ultra.rows == 1, "ultra: 3072 x 1024, three tiles of 1024 in a row");
-  CheckNear(ls::Mib(ls::AtlasBytes(high)), 4.0, 1e-9, "high holds 4 MiB");
-  CheckNear(ls::Mib(ls::AtlasBytes(ultra)), 24.0, 1e-9, "ultra holds 24 MiB (a 2 x 2 layout of three would hold 32)");
+  // Memory of the two shapes: high 4 views of 512 = 8 MiB, ultra 6 of 1024 = 48 MiB (it was 4 and 24 with a view for each car); the three level shape's medium 4 MiB, high 6 MiB.
+  const ls::AtlasLayout high = ls::AtlasFor(ls::Level::kHigh, 0, two);
+  const ls::AtlasLayout ultra = ls::AtlasFor(ls::Level::kUltra, 0, two);
+  Check(high.width() == 1024 && high.height() == 1024 && high.cols == 2 && high.rows == 2, "high: 1024 x 1024, four tiles of 512");
+  Check(ultra.width() == 3072 && ultra.height() == 2048 && ultra.cols == 3 && ultra.rows == 2, "ultra: 3072 x 2048, six tiles of 1024 in three columns");
+  CheckNear(ls::Mib(ls::AtlasBytes(high)), 8.0, 1e-9, "high holds 8 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ultra)), 48.0, 1e-9, "ultra holds 48 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kMedium, 0, three))), 4.0, 1e-9, "three level shape: medium holds 4 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kHigh, 0, three))), 6.0, 1e-9, "three level shape: high holds 6 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kUltra, 0, three))), 48.0, 1e-9, "three level shape: ultra holds 48 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kUltra, 1, two))), 24.0, 1e-9, "ultra with one view for a car (the override 1) is the first version's 24 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kHigh, 1, two))), 4.0, 1e-9, "... and high's 4 MiB");
   Check(ls::AtlasBytes(ls::AtlasFor(ls::Level::kOff, 0)) == 0 && !ls::AtlasFor(ls::Level::kOff, 0).valid(), "off holds nothing");
-  Check(ls::AtlasFor(ls::Level::kUltra, 4).width() == 2048 && ls::AtlasFor(ls::Level::kUltra, 4).height() == 2048, "the debug override of four views is a 2 x 2 atlas");
-  Check(ls::AtlasFor(ls::Level::kHigh, 0).width() <= 3072 && ls::AtlasFor(ls::Level::kUltra, 0).width() <= 4096, "a texture a Vulkan device must support (4096)");
   // The size follows the level, not the number of cars lit: the atlas is the same for one car or three.
-  Check(ls::AtlasFor(ls::Level::kUltra, 0).views == 3 && ls::AtlasFor(ls::Level::kHigh, 0).views == 2, "the atlas has a tile for every view of its level");
+  Check(ls::AtlasFor(ls::Level::kUltra, 0, two).views == 6 && ls::AtlasFor(ls::Level::kHigh, 0, two).views == 4, "the atlas has a tile for every view of its level");
   // What the log says.
-  const std::string text = ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "auto"), gc::GpuClass::kHigh);
-  Check(text.find("ultra") != std::string::npos && text.find("up to 3 views of 1024x1024") != std::string::npos, "Describe says three views of 1024: " + text);
+  const std::string text = ls::Describe(ls::Choice{ls::Level::kUltra, true, false}, gc::GpuClass::kHigh);
+  Check(text.find("ultra") != std::string::npos && text.find("1024x1024") != std::string::npos, "Describe says the level and the size: " + text);
+  Check(text.find("up to 6 views of 1024x1024") != std::string::npos && text.find("3 car(s), a view for each lamp") != std::string::npos, "Describe says six views of 1024, a view for each lamp: " + text);
   const std::string mid = ls::Describe(ls::Resolve(gc::GpuClass::kMid, "auto"), gc::GpuClass::kMid);
-  Check(mid.find("up to 2 views of 512x512") != std::string::npos, "Describe says two views of 512: " + mid);
+  if (ls::kThreeLevelShape) {
+    // The shape in use: Mid's auto is medium (two views of 512, one for each car); high is three views, the player's car's lamps and one for the other car; the override 1 and 2 reach every level.
+    Check(mid.find("light shadows medium") != std::string::npos && mid.find("up to 2 views of 512x512") != std::string::npos && mid.find("2 car(s), one view for each") != std::string::npos &&
+              mid.find("auto on the mid class") != std::string::npos,
+          "Describe says two views of 512, one for each car, on the Mid class: " + mid);
+    const std::string high_text = ls::Describe(ls::Resolve(gc::GpuClass::kMid, "high"), gc::GpuClass::kMid);
+    Check(high_text.find("up to 3 views of 512x512") != std::string::npos && high_text.find("2 car(s), a view for each lamp of the first 1") != std::string::npos && high_text.find("(set)") != std::string::npos,
+          "Describe says three views of 512, the first car's lamps, for a set high: " + high_text);
+    Check(ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "ultra"), gc::GpuClass::kHigh, 1).find("up to 3 views of 1024x1024") != std::string::npos &&
+              ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "ultra"), gc::GpuClass::kHigh, 1).find("one view for each") != std::string::npos,
+          "Describe follows the override");
+    Check(ls::AtlasFor(ls::Level::kMedium, 0).views == 2 && ls::AtlasFor(ls::Level::kHigh, 0).views == 3 && ls::AtlasFor(ls::Level::kUltra, 0).views == 6, "in use: the atlas has a tile for every view of its level");
+    Check(ls::AtlasFor(ls::Level::kHigh, 0).width() == 1536 && ls::AtlasFor(ls::Level::kHigh, 0).height() == 512, "in use: high is a row of three tiles of 512");
+  } else {
+    Check(mid.find("up to 4 views of 512x512") != std::string::npos && mid.find("2 car(s)") != std::string::npos, "Describe says four views of 512: " + mid);
+    Check(ls::Describe(ls::Resolve(gc::GpuClass::kMid, "high"), gc::GpuClass::kMid, 1).find("up to 2 views of 512x512") != std::string::npos &&
+              ls::Describe(ls::Resolve(gc::GpuClass::kMid, "high"), gc::GpuClass::kMid, 1).find("one view for each") != std::string::npos,
+          "Describe follows the override");
+  }
 }
 
 // A point through a published view of a 3-in-a-row atlas lands in its own tile's rectangle and in no other's: what the lit shaders' rectangle test does.
@@ -1364,14 +1442,14 @@ void CheckPicking() {
   ls::Group g[4];
   {
     ls::ViewPicker p;
-    uint32_t n = p.Pick(cars, 4, ls::MaxViews(ls::Level::kHigh, 0), none, g);
+    uint32_t n = p.Pick(cars, 4, ls::MaxCars(ls::Level::kHigh), none, g);
     Check(n == 2 && Same(Keys(g, n), {1, 3}), "high: the player's car and the nearest other car (12 m)");
     ls::ViewPicker q;
-    n = q.Pick(cars, 4, ls::MaxViews(ls::Level::kUltra, 0), none, g);
+    n = q.Pick(cars, 4, ls::MaxCars(ls::Level::kUltra), none, g);
     Check(n == 3 && Same(Keys(g, n), {1, 3, 2}), "ultra: the player's car and the two nearest other cars (12 m, 30 m); the 60 m car has none");
     ls::ViewPicker r;
     n = r.Pick(cars, 4, 4, none, g);
-    Check(n == 4 && Same(Keys(g, n), {1, 3, 2, 4}), "four views: every car, nearest first");
+    Check(n == 4 && Same(Keys(g, n), {1, 3, 2, 4}), "four cars: every one, nearest first");
     ls::ViewPicker s;
     n = s.Pick(cars, 4, 1, none, g);
     Check(n == 1 && g[0].is_player, "one view: the player's");
@@ -1440,6 +1518,184 @@ void CheckPicking() {
   CheckNear(ls::ViewImportance(25.0, true, true), 0.5 * 1.3, 1e-12, "... 1.3 times it for the car that holds a view");
   Check(ls::ViewImportance(10.0, true, false) > ls::ViewImportance(20.0, true, false) && ls::ViewImportance(10.0, false, false) < ls::ViewImportance(10.0, true, false),
         "nearer and on the screen is more important");
+}
+
+// The views of cars at the edge of the frame (HL-EDGE-FADE, owner 2026-11-20: a traffic car's headlights fade near the frame's edge). A car is ranked for a view by how much of
+// its BEAM is in the picture (light_influence.h), not by whether its LAMP is on the screen: the first version ranked a car off the screen at 0.35 and so gave the view to a car
+// whose beam points out of the picture rather than to one at the edge whose beam crosses it.
+void CheckPickingReach() {
+  namespace li = mcla::gpu::light_influence;
+  // The importance's numbers: the first version's 0.35 for a beam that lights nothing, 1 from a reach of 0.45, smooth between; a holder keeps its 1.3.
+  CheckNear(ls::ViewImportanceReach(25.0, 0.0, false), 0.5 * 0.35, 1e-12, "a beam that lights nothing in the picture: 0.35 of the car's importance (a half at 25 m)");
+  CheckNear(ls::ViewImportanceReach(25.0, 0.45, false), 0.5, 1e-12, "a reach of 0.45: in full");
+  CheckNear(ls::ViewImportanceReach(25.0, 1.0, false), 0.5, 1e-12, "a reach of 1: in full");
+  CheckNear(ls::ViewImportanceReach(25.0, 1.0, true), 0.5 * 1.3, 1e-12, "the holder of a view keeps its 1.3");
+  {
+    bool monotone = true;
+    double previous = 0.0;
+    for (double r = 0.0; r <= 1.0; r += 0.01) {
+      const double v = ls::ViewImportanceReach(30.0, r, false);
+      monotone &= v >= previous - 1e-12;
+      previous = v;
+    }
+    Check(monotone, "the importance never falls as the beam's reach grows");
+  }
+
+  // A camera at the origin looking along +z, 90 degrees (the frustum's half width is the depth).
+  ls::ViewSpec view;
+  view.eye[0] = view.eye[1] = view.eye[2] = 0.0;
+  view.dir[0] = 0.0;
+  view.dir[1] = 0.0;
+  view.dir[2] = 1.0;
+  view.fov = ls::Rad(90.0);
+  view.near_m = 0.5;
+  view.far_m = 500.0;
+  tp::Mat4 vp;
+  Check(ls::LightClip(view, false, &vp), "a camera for the reach test");
+  ls::PickContext ctx;
+  ctx.have_reference = true;
+  ctx.have_screen = true;
+  ctx.view_projection = vp;
+  Check(li::MakeViewFrustum(vp.m, view.eye, &ctx.frustum) && ctx.frustum.valid, "the camera's frustum is made from the same matrix");
+  ls::PickContext legacy = ctx;
+  legacy.frustum = li::ViewFrustum{};  // the first version's: the lamp's place on the screen
+
+  // GroupReach: the strongest of a car's lamps. A car with two lamps, one in the view and one far outside pointing out of it: the car's reach is the first one's.
+  {
+    ls::Light two[2] = {Lamp(0.0, 0.7, 20.0, 0.0, 0.0, 1.0, 5, false, 0), Lamp(-60.0, 0.7, 20.0, -1.0, 0.0, 0.0, 5, false, 1)};
+    ls::Group g[4];
+    ls::ViewPicker p;
+    p.Pick(two, 2, 2, legacy, g);
+    const double both = ls::GroupReach(two, g[0], ctx.frustum);
+    ls::Light only_out[1] = {Lamp(-60.0, 0.7, 20.0, -1.0, 0.0, 0.0, 5, false, 0)};
+    ls::Group h[4];
+    ls::ViewPicker q;
+    q.Pick(only_out, 1, 2, legacy, h);
+    const double out_alone = ls::GroupReach(only_out, h[0], ctx.frustum);
+    Check(both > 0.9 && out_alone < 0.01, "a car's reach is its best lamp's: " + std::to_string(both) + " with a lamp in the view, " + std::to_string(out_alone) + " with the other alone");
+  }
+
+  // Two cars for the one other view that high has: E off the RIGHT edge (5 m out at 20 m) with its beam across the picture, F off the LEFT edge with its beam pointing out of it.
+  // Both lamps are off the screen (beyond the margin of 1.3 too): the first version ranks them alike and the lower key, F, wins; the view gives E the view.
+  {
+    ls::Light cars[3] = {Lamp(0.0, 0.7, -3.0, 0.0, 0.0, 1.0, 1, true, 0),     // the player's car behind the camera
+                         Lamp(-40.0, 0.7, 30.0, -1.0, 0.0, 0.0, 2, false, 1),  // F: the lower key, off the left edge, pointing out of the picture
+                         Lamp(40.0, 0.7, 30.0, -1.0, 0.0, 0.0, 3, false, 2)};  // E: off the right edge, pointing across the picture
+    ls::Group g[4];
+    ls::ViewPicker first;
+    uint32_t n = first.Pick(cars, 3, 2, legacy, g);
+    Check(n == 2 && g[1].car_key == 2, "the first version: two cars off the screen tie and the lower key (the car whose beam points out of the picture) has the view");
+    ls::ViewPicker second;
+    n = second.Pick(cars, 3, 2, ctx, g);
+    Check(n == 2 && g[1].car_key == 3, "with the view: the car at the edge whose beam crosses the picture has it");
+    // Hysteresis holds as before with the view: the holder keeps its view against a challenger that is somewhat better.
+    ls::Light now[3] = {cars[0], Lamp(-40.0, 0.7, 30.0, -1.0, 0.0, 0.0, 2, false, 1), Lamp(36.0, 0.7, 30.0, -1.0, 0.0, 0.0, 3, false, 2)};
+    ls::ViewPicker third;
+    third.Pick(now, 3, 2, ctx, g);
+    Check(g[1].car_key == 3, "(the car at the edge holds the view)");
+    // F now turns to point along the road into the picture: its reach rises, but E holds the view with its 1.3 against a challenger that is not clearly better.
+    ls::Light turned[3] = {cars[0], Lamp(-30.0, 0.7, 30.0, 0.0, 0.0, 1.0, 2, false, 1), Lamp(36.0, 0.7, 30.0, -1.0, 0.0, 0.0, 3, false, 2)};
+    const uint32_t m = third.Pick(turned, 3, 2, ctx, g);
+    Check(m == 2 && g[1].car_key == 3, "the holder keeps the view against a challenger whose beam now crosses the picture as well (1.3)");
+  }
+
+  // The car at the edge, seen as the first version saw it: a lamp 10 m beyond the left edge at 30 m depth, beam along the road: lit by the view (its beam is in the picture) and
+  // ranked like a car in the middle at the same distance, where the first version gave it 0.35.
+  {
+    ls::Light edge[2] = {Lamp(0.0, 0.7, -3.0, 0.0, 0.0, 1.0, 1, true, 0), Lamp(-40.0, 0.7, 30.0, 0.0, 0.0, 1.0, 9, false, 1)};
+    ls::Group g[4];
+    ls::ViewPicker p;
+    p.Pick(edge, 2, 2, ctx, g);
+    const double reach = ls::GroupReach(edge, g[1], ctx.frustum);
+    const double distance = std::sqrt(40.0 * 40.0 + 33.0 * 33.0);
+    const double importance = ls::ViewImportanceReach(distance, reach, false);
+    const double middle = ls::ViewImportance(distance, true, false);
+    Check(reach > 0.45 && std::fabs(importance - middle) < 1e-9, "a car at the edge whose beam goes into the picture is as important as one in the middle at its distance (reach " + std::to_string(reach) + ")");
+  }
+
+  // No frustum: nothing is different (the first version's rule is read).
+  {
+    ls::Light cars[3] = {Lamp(0.0, 0.7, -3.0, 0.0, 0.0, 1.0, 1, true, 0), Lamp(0.0, 0.7, -15.0, 0.0, 0.0, 1.0, 2, false, 1), Lamp(0.0, 0.7, 40.0, 0.0, 0.0, 1.0, 3, false, 2)};
+    ls::Group g[4];
+    ls::ViewPicker p;
+    const uint32_t n = p.Pick(cars, 3, 2, legacy, g);
+    Check(n == 2, "the first version's pick still works with no frustum");
+  }
+}
+
+// HL-EDGE-FADE and HL-THREE-LEVELS together (feat/hl-combined): the edge rule decides WHICH cars are shadowed (a car at the edge of the frame whose beam crosses the picture is worth what
+// a car in the middle at its distance is), the level table decides HOW MANY views each of them has (medium one each, high the player's two lamps, ultra every car's two lamps).
+void CheckEdgeRuleWithLevels() {
+  namespace li = mcla::gpu::light_influence;
+  const ls::LevelTable three(ls::kThreeLevels);
+  ls::ViewSpec view;
+  view.eye[0] = view.eye[1] = view.eye[2] = 0.0;
+  view.dir[0] = 0.0;
+  view.dir[1] = 0.0;
+  view.dir[2] = 1.0;
+  view.fov = ls::Rad(90.0);
+  view.near_m = 0.5;
+  view.far_m = 500.0;
+  tp::Mat4 vp;
+  Check(ls::LightClip(view, false, &vp), "a camera for the edge rule with the levels");
+  ls::PickContext edge;
+  edge.have_reference = true;
+  edge.have_screen = true;
+  edge.view_projection = vp;
+  Check(li::MakeViewFrustum(vp.m, view.eye, &edge.frustum) && edge.frustum.valid, "the camera's frustum");
+  ls::PickContext legacy = edge;
+  legacy.frustum = li::ViewFrustum{};
+  // A car's light with its two lamps across its axis (the rig's lamp offset), heading (dx, dz).
+  auto car = [](uint32_t key, double x, double z, double dx, double dz, bool player, uint32_t index) {
+    const double len = std::sqrt(dx * dx + dz * dz);
+    const float pos[3] = {float(x), 0.7f, float(z)};
+    const float dir[3] = {float(dx / len), 0.0f, float(dz / len)};
+    const float offset[3] = {float(0.6 * dz / len), 0.0f, float(-0.6 * dx / len)};
+    ls::Light l;
+    const bool ok = ls::MakeLight(pos, dir, float(std::cos(ls::Rad(38.0))), 70.0f, key, player, index, &l, offset);
+    Check(ok, "a car's light with lamps is accepted");
+    return l;
+  };
+  // P the player's car behind the camera; F off the LEFT edge, its beam pointing out of the picture (the lower key); E off the RIGHT edge, its beam across the picture; D in the middle, far.
+  const ls::Light cars[4] = {car(1, 0.0, -3.0, 0.0, 1.0, true, 0), car(2, -40.0, 30.0, -1.0, 0.0, false, 1), car(3, 40.0, 30.0, -1.0, 0.0, false, 2), car(4, 0.0, 60.0, 0.0, 1.0, false, 3)};
+  struct Want {
+    ls::Level level;
+    uint32_t cars;
+    uint32_t views;
+    uint32_t keys[3];
+    uint32_t per_car[3];
+  };
+  // The first version's rule keeps F where E is worth the view; the edge rule's order is P, E, D, F.
+  const Want wants[] = {{ls::Level::kMedium, 2, 2, {1, 3, 0}, {1, 1, 0}},
+                        {ls::Level::kHigh, 2, 3, {1, 3, 0}, {2, 1, 0}},
+                        {ls::Level::kUltra, 3, 6, {1, 3, 4}, {2, 2, 2}}};
+  for (const Want& w : wants) {
+    const std::string label = std::string(ls::LevelName(w.level)) + ": ";
+    ls::Group g[4];
+    ls::ViewPicker picker;
+    const uint32_t n = picker.Pick(cars, 4, ls::MaxCars(w.level, three), edge, g);
+    Check(n == w.cars, label + "the level's cars are picked");
+    ls::ViewPlan plan;
+    ls::PlanViews(cars, g, n, ls::LampCars(w.level, 0, three), ls::MaxViews(w.level, 0, three), &plan);
+    Check(plan.count == w.views, label + "the table gives " + std::to_string(w.views) + " views, made " + std::to_string(plan.count));
+    bool keys_ok = n == w.cars;
+    for (uint32_t c = 0; c < n && c < 3; ++c) {
+      keys_ok = keys_ok && g[c].car_key == w.keys[c] && plan.view_count[c] == w.per_car[c];
+    }
+    Check(keys_ok, label + "the edge rule's cars (the player, the edge car whose beam crosses the picture, ...) have the table's views each");
+  }
+  // The first version's rule at ultra: the car at the edge that is not worth a view takes it (the lamp is off the screen, the lower key wins the tie): what the edge rule fixes.
+  {
+    ls::Group g[4];
+    ls::ViewPicker picker;
+    const uint32_t n = picker.Pick(cars, 4, 3, legacy, g);
+    bool has_f = false, has_e = false;
+    for (uint32_t c = 0; c < n; ++c) {
+      has_f = has_f || g[c].car_key == 2;
+      has_e = has_e || g[c].car_key == 3;
+    }
+    Check(has_f && !has_e, "without the view, ultra shadows the car whose beam points out of the picture and not the one that lights it");
+  }
 }
 
 void CheckPickingHysteresis() {
@@ -1523,30 +1779,454 @@ void CheckPickingHysteresis() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the views of a car: one for each headlamp (HL-PER-LAMP, owner 2026-11-20)
+// ---------------------------------------------------------------------------
+
+// A car's light (the middle of its two headlamps, the right one `half` metres at +x) facing +z, a cone of `outer_degrees`.
+ls::Light CarWithLamps(uint32_t key, double x, double z, bool player, uint32_t index, double half = 0.6, double outer_degrees = 38.0) {
+  const float pos[3] = {float(x), 0.7f, float(z)};
+  const float dir[3] = {0.0f, 0.0f, 1.0f};
+  const float offset[3] = {float(half), 0.0f, 0.0f};
+  ls::Light l;
+  const bool ok = ls::MakeLight(pos, dir, float(std::cos(ls::Rad(outer_degrees))), 70.0f, key, player, index, &l, offset);
+  Check(ok, "a light with lamps is accepted");
+  return l;
+}
+
+void CheckLampOffsetOfALight() {
+  ls::Light l;
+  const float pos[3] = {1, 2, 3};
+  const float dir[3] = {0, 0, 1};
+  const float offset[3] = {0.6f, 0.0f, 0.0f};
+  Check(ls::MakeLight(pos, dir, 0.8f, 40.0f, 7, true, 0, &l, offset) && l.lamp_offset[0] == double(0.6f) && l.lamp_offset[1] == 0.0 && l.lamp_offset[2] == 0.0, "the lamp offset is kept");
+  Check(ls::MakeLight(pos, dir, 0.8f, 40.0f, 7, true, 0, &l) && ls::LampOffsetLength(l) == 0.0, "no offset given: the lamps are not known");
+  const float nan_offset[3] = {NAN, 0.0f, 0.0f};
+  Check(ls::MakeLight(pos, dir, 0.8f, 40.0f, 7, true, 0, &l, nan_offset) && ls::LampOffsetLength(l) == 0.0, "an offset that is not a number is not believed (the light has one view)");
+  const float wide[3] = {5.0f, 0.0f, 0.0f};
+  Check(ls::MakeLight(pos, dir, 0.8f, 40.0f, 7, true, 0, &l, wide) && ls::LampOffsetLength(l) == 0.0, "lamps 10 m apart are not believed");
+}
+
+void CheckLampViews() {
+  const ls::LevelTable two(ls::kTwoLevels);
+  const ls::LevelTable three(ls::kThreeLevels);
+  const ls::PickContext none;
+  ls::Light cars[3] = {CarWithLamps(1, 0, 0, true, 0), CarWithLamps(2, 10, 30, false, 1), CarWithLamps(3, -12, 50, false, 2)};
+  ls::Group g[4];
+  ls::ViewPicker picker;
+  const uint32_t n = picker.Pick(cars, 3, ls::MaxCars(ls::Level::kUltra, two), none, g);
+  Check(n == 3 && g[0].is_player, "three cars picked for ultra, the player's first");
+  ls::ViewPlan plan;
+  ls::PlanViews(cars, g, n, ls::LampCars(ls::Level::kUltra, 0, two), ls::MaxViews(ls::Level::kUltra, 0, two), &plan);
+  Check(plan.count == 6 && plan.cars == 3, "ultra: three cars, six views");
+  for (uint32_t c = 0; c < 3; ++c) {
+    Check(plan.first_view[c] == 2 * c && plan.view_count[c] == 2, "car " + std::to_string(c) + ": two views, next to each other");
+    const ls::ViewSlot& a = plan.views[plan.first_view[c]];
+    const ls::ViewSlot& b = plan.views[plan.first_view[c] + 1];
+    const ls::Light& car = cars[g[c].members[0]];
+    Check(a.side == ls::LampSide::kA && b.side == ls::LampSide::kB && a.car == c && b.car == c && a.group.car_key == car.car_key && b.group.car_key == car.car_key,
+          "car " + std::to_string(c) + ": the lamps' views, for its car");
+    Check(a.group.count == 1 && b.group.count == 1 && a.group.members[0] == 0, "a lamp's view covers one light");
+    CheckNear(a.lights[0].pos[0], car.pos[0] - 0.6, 1e-6, "lamp A is 0.6 m to the left of the light");
+    CheckNear(b.lights[0].pos[0], car.pos[0] + 0.6, 1e-6, "lamp B is 0.6 m to the right of the light");
+    CheckNear(a.lights[0].pos[2], car.pos[2], 1e-9, "the lamps are level with the light");
+    CheckNear(a.lights[0].dir[2], 1.0, 1e-12, "a lamp shines where the light does");
+    Check(a.lights[0].index == car.index && b.lights[0].index == car.index, "both views are of the car's light (the published views name it twice)");
+    Check(ls::LampOffsetLength(a.lights[0]) == 0.0, "a lamp has no lamps of its own");
+    CheckNear(a.group.eye[0], a.lights[0].pos[0], 1e-9, "the group's eye is the lamp");
+    ls::ViewSpec sa, sb, whole;
+    ls::Group wg;
+    ls::GroupLights(&cars[g[c].members[0]], 1, 1, &wg);
+    Check(ls::FitView(a.lights.data(), a.group, &sa) && ls::FitView(b.lights.data(), b.group, &sb) && ls::FitView(&car, wg, &whole), "the views fit");
+    CheckNear(sa.eye[0], car.pos[0] - 0.6, 1e-6, "the lamp's view is from the lamp (the apex is not pushed back)");
+    CheckNear(sa.lamps_m, 0.0, 1e-9, "... so the lamp is at the eye");
+    Check(sa.fov > whole.fov && sb.fov > whole.fov, "the lamp's view is wider than the car's, to hold the light's cone from the side");
+    Check(sa.fov < ls::Rad(100.0) && std::fabs(sa.fov - sb.fov) < 1e-12, "... but not by much, and the two lamps' are the same");
+    CheckNear(sa.near_m, ls::kNearMeters, 1e-9, "the near plane is 1.5 m from the lamp");
+  }
+  // ONE VIEW FOR A CAR (the first version's, the debug override 1, the three level shape's medium): from the light, as before.
+  {
+    ls::ViewPlan one;
+    ls::PlanViews(cars, g, 2, ls::LampCars(ls::Level::kHigh, 1, two), ls::MaxViews(ls::Level::kHigh, 1, two), &one);
+    Check(one.count == 2 && one.cars == 2 && one.view_count[0] == 1 && one.view_count[1] == 1 && one.views[0].side == ls::LampSide::kWhole, "override 1: one view for each car");
+    ls::ViewSpec spec, before;
+    ls::Group wg;
+    ls::GroupLights(&cars[0], 1, 1, &wg);
+    Check(ls::FitView(one.views[0].lights.data(), one.views[0].group, &spec) && ls::FitView(&cars[0], wg, &before), "fit");
+    Check(Near(spec.eye[0], before.eye[0], 1e-12) && Near(spec.fov, before.fov, 1e-12) && Near(spec.far_m, before.far_m, 1e-12) && one.views[0].group.eye[0] == wg.eye[0],
+          "the car's view is exactly the first version's");
+  }
+  // THE THREE LEVEL SHAPE's high: the player's car has its lamps' views, the other car one.
+  {
+    ls::ViewPlan p3;
+    ls::PlanViews(cars, g, 2, ls::LampCars(ls::Level::kHigh, 0, three), ls::MaxViews(ls::Level::kHigh, 0, three), &p3);
+    Check(p3.count == 3 && p3.view_count[0] == 2 && p3.view_count[1] == 1 && p3.views[0].side == ls::LampSide::kA && p3.views[2].side == ls::LampSide::kWhole,
+          "three level shape, high: the player's lamps and the other car's one view");
+    ls::ViewPlan p3u;
+    ls::PlanViews(cars, g, 3, ls::LampCars(ls::Level::kUltra, 0, three), ls::MaxViews(ls::Level::kUltra, 0, three), &p3u);
+    Check(p3u.count == 6, "three level shape, ultra: every car's lamps");
+    ls::ViewPlan p3m;
+    ls::PlanViews(cars, g, 2, ls::LampCars(ls::Level::kMedium, 0, three), ls::MaxViews(ls::Level::kMedium, 0, three), &p3m);
+    Check(p3m.count == 2 && p3m.view_count[0] == 1, "three level shape, medium: one view for each of two cars");
+  }
+  // A light whose lamps are not known, or are almost together, has one view whatever the level says.
+  {
+    ls::Light plain[2] = {Lamp(0, 0.7, 0, 0, 0, 1, 1, true, 0), CarWithLamps(2, 10, 30, false, 1, 0.1)};
+    ls::Group pg[4];
+    const uint32_t m = ls::GroupLights(plain, 2, 2, pg);
+    ls::ViewPlan pp;
+    ls::PlanViews(plain, pg, m, 2, 4, &pp);
+    Check(m == 2 && pp.count == 2 && pp.view_count[0] == 1 && pp.view_count[1] == 1, "no lamp offset, or lamps 0.2 m apart (under kMinLampOffset): one view for the car");
+  }
+  // The room: a car's two views are never split. With three places the player's lamps take two and the other car one view (not a lamp's alone).
+  {
+    ls::ViewPlan p;
+    ls::PlanViews(cars, g, 3, 3, 3, &p);
+    Check(p.count == 3 && p.cars == 2 && p.view_count[0] == 2 && p.view_count[1] == 1 && p.views[2].side == ls::LampSide::kWhole, "three places: the player's two lamps, the next car one view, the third car none");
+    ls::PlanViews(cars, g, 3, 3, 2, &p);
+    Check(p.count == 2 && p.cars == 1 && p.view_count[0] == 2, "two places: the player's two lamps");
+    ls::PlanViews(cars, g, 3, 3, 1, &p);
+    Check(p.count == 1 && p.cars == 1 && p.view_count[0] == 1 && p.views[0].side == ls::LampSide::kWhole, "one place: the player's car, one view (never half a car)");
+    ls::PlanViews(cars, g, 3, 3, 0, &p);
+    Check(p.count == 0 && p.cars == 0, "no place: no view");
+    ls::PlanViews(cars, g, 0, 3, 6, &p);
+    Check(p.count == 0 && p.cars == 0, "no car: no view");
+    ls::PlanViews(cars, g, 3, 3, 100, &p);
+    Check(p.count == 6, "never more than the published frame holds");
+  }
+  // A CAR'S TWO VIEWS COME AND GO TOGETHER: over a drive that passes cars in and out, a picked car has both its views or the one, never one of two, and the views fit the level.
+  {
+    ls::ViewPicker drive;
+    uint32_t pairs = 0, singles = 0, none_seen = 0;
+    for (int frame = 0; frame < 300; ++frame) {
+      ls::Light set[4] = {CarWithLamps(1, 0, 0, true, 0), CarWithLamps(2, 0, 20 + 18 * std::sin(frame * 0.07), false, 1), CarWithLamps(3, 6, 25 + 20 * std::cos(frame * 0.05), false, 2),
+                          CarWithLamps(4, -6, 40 + 30 * std::sin(frame * 0.11), false, 3)};
+      const uint32_t count = frame % 97 == 0 ? 1u : 4u;  // now and then only the player's lamps are lit
+      ls::Group picked[4];
+      const uint32_t cars_n = drive.Pick(set, count, ls::MaxCars(ls::Level::kHigh, two), none, picked);
+      ls::ViewPlan p;
+      ls::PlanViews(set, picked, cars_n, ls::LampCars(ls::Level::kHigh, 0, two), ls::MaxViews(ls::Level::kHigh, 0, two), &p);
+      Check(p.count <= ls::MaxViews(ls::Level::kHigh, 0, two) && p.cars == cars_n, "the frame's views fit the level, one set for each picked car");
+      uint32_t views = 0;
+      for (uint32_t c = 0; c < p.cars; ++c) {
+        pairs += p.view_count[c] == 2 ? 1u : 0u;
+        singles += p.view_count[c] == 1 ? 1u : 0u;
+        none_seen += p.view_count[c] == 0 ? 1u : 0u;
+        views += p.view_count[c];
+        for (uint32_t k = 0; k < p.view_count[c]; ++k) {
+          Check(p.views[p.first_view[c] + k].car == c && p.views[p.first_view[c] + k].group.car_key == picked[c].car_key, "a car's views are next to each other and are its own");
+        }
+      }
+      Check(views == p.count, "every view belongs to a picked car");
+    }
+    Check(pairs > 0 && singles == 0 && none_seen == 0, "on high (two level shape) every picked car has both its views: " + std::to_string(pairs) + " pairs, " + std::to_string(singles) + " singles");
+  }
+}
+
+// The lamps' views hold the car's light: its cone from 6 m on is inside both views (so a pole near the cone's edge is in both and the mean of the two is a real
+// mean), and the one view that holds both (the cone cull's) holds everything either holds.
+void CheckLampViewsCover() {
+  for (const double half : {0.4, 0.6, 0.8}) {
+    for (const double outer : {30.0, 38.0, 45.0}) {
+      ls::Light cars[1] = {CarWithLamps(1, 0, 0, true, 0, half, outer)};
+      ls::Group g[4];
+      ls::GroupLights(cars, 1, 1, g);
+      ls::ViewPlan plan;
+      ls::PlanViews(cars, g, 1, 1, 2, &plan);
+      Check(plan.count == 2, "the lamps' views");
+      const std::string at = "lamps " + std::to_string(half) + " m off, cone " + std::to_string(int(outer)) + " degrees";
+      for (uint32_t k = 0; k < 2; ++k) {
+        ls::ViewSpec spec;
+        tp::Mat4 clip;
+        Check(ls::FitView(plan.views[k].lights.data(), plan.views[k].group, &spec) && ls::LightClip(spec, true, &clip), at + ": the lamp's view");
+        for (const double d : {6.0, 10.0, 20.0, 40.0}) {
+          for (int step = 0; step < 24; ++step) {
+            const double phi = 2.0 * ls::kPi * step / 24.0;
+            const double theta = ls::Rad(outer) * 0.99;  // the light's cone, its edge, seen from the light
+            const double p[3] = {cars[0].pos[0] + d * std::sin(theta) * std::cos(phi), cars[0].pos[1] + d * std::sin(theta) * std::sin(phi), cars[0].pos[2] + d * std::cos(theta)};
+            Check(InsideClip(clip, p), at + ": the light's cone edge at " + std::to_string(int(d)) + " m (azimuth step " + std::to_string(step) + ") is in lamp view " + std::to_string(k));
+          }
+        }
+      }
+    }
+  }
+  // The union view of a car (the cone cull at collection, one test for both lamps): holds every point either lamp's view holds, and is not much more.
+  ls::Light cars[1] = {CarWithLamps(1, 0, 0, true, 0)};
+  ls::Group g[4];
+  ls::GroupLights(cars, 1, 1, g);
+  ls::ViewPlan plan;
+  ls::PlanViews(cars, g, 1, 1, 2, &plan);
+  ls::ViewSpec spec[2], un, car_only;
+  tp::Mat4 clip[2];
+  for (uint32_t k = 0; k < 2; ++k) {
+    Check(ls::FitView(plan.views[k].lights.data(), plan.views[k].group, &spec[k]) && ls::LightClip(spec[k], true, &clip[k]), "a lamp's view");
+  }
+  Check(ls::FitCar(plan, 0, &un) && !ls::FitCar(plan, 1, &car_only), "the union view of the car with views, none for a car that has none");
+  CheckNear(un.eye[0], 0.0, 1e-9, "the union's apex is between the lamps (x)");
+  Check(un.lamps_m > 0.3 && un.lamps_m < 1.5, "... and behind them (the apex is pushed back until it holds both cones): " + std::to_string(un.lamps_m) + " m");
+  uint32_t state = 12345;
+  const auto rnd = [&]() {
+    state = state * 1664525u + 1013904223u;
+    return double(state >> 8) / double(1 << 24);
+  };
+  uint32_t in_lamps = 0, in_union = 0, missed = 0;
+  for (int i = 0; i < 40000; ++i) {
+    const double p[3] = {(rnd() - 0.5) * 80.0, rnd() * 8.0, rnd() * 70.0};
+    const bool lamps = InsideClip(clip[0], p) || InsideClip(clip[1], p);
+    const bool inside_union = ls::SphereInCarView(un, p, 0.0);
+    in_lamps += lamps ? 1u : 0u;
+    in_union += inside_union ? 1u : 0u;
+    missed += (lamps && !inside_union) ? 1u : 0u;
+  }
+  Check(missed == 0, "the union view holds every point either lamp's view holds (" + std::to_string(missed) + " missed)");
+  Check(in_union >= in_lamps && double(in_union) <= 1.45 * double(in_lamps), "the union takes in at most 45 per cent more than the two views hold: " + std::to_string(in_union) + " against " + std::to_string(in_lamps));
+}
+
+// A POLE BETWEEN THE LAMPS HAS TWO SHADOWS, AND A CAR'S SHADOW THE HALF-LIT BAND OF ONE LAMP: the published matrices of the two views, through a pole and a car in front.
+void CheckTwoShadows() {
+  const ls::LevelTable two(ls::kTwoLevels);
+  ls::Light cars[1] = {CarWithLamps(1, 0, 0, true, 0, 0.6)};
+  ls::Group g[4];
+  ls::GroupLights(cars, 1, 1, g);
+  ls::ViewPlan plan;
+  ls::PlanViews(cars, g, 1, ls::LampCars(ls::Level::kHigh, 0, two), ls::MaxViews(ls::Level::kHigh, 0, two), &plan);
+  const ls::AtlasLayout atlas = ls::AtlasFor(ls::Level::kHigh, 0, two);
+  float m[2][16], rect[2][4];
+  for (uint32_t k = 0; k < 2; ++k) {
+    ls::ViewSpec spec;
+    tp::Mat4 clip;
+    Check(ls::FitView(plan.views[k].lights.data(), plan.views[k].group, &spec) && ls::LightClip(spec, true, &clip), "a lamp's view");
+    float uv[4];
+    ls::UvRect(atlas, k, uv);
+    ls::PublishedRect(uv, rect[k]);
+    ls::WorldToShadow(clip, uv, 1.0, 1.0, m[k]);
+  }
+  const auto in_rect = [&](uint32_t k, double u, double v) { return u >= rect[k][0] && u <= rect[k][2] && v >= rect[k][1] && v <= rect[k][3]; };
+  // The pole: x = 0, 10 m ahead, 1.4 m high from the lamps' height. Its shadow on a wall 30 m ahead lands 1.8 m to the side of the lamp's own side: x = +1.2 from the left lamp
+  // (A, at -0.6 m) and -1.2 from the right lamp (B): two shadows 2.4 m apart.
+  const double pole[3] = {0.0, 1.0, 10.0};
+  double ua = 0, va = 0, da = 0, ub = 0, vb = 0, db = 0;
+  Check(ls::MapPoint(m[0], pole, &ua, &va, &da) && ls::MapPoint(m[1], pole, &ub, &vb, &db), "the pole is in front of both lamps");
+  Check(in_rect(0, ua, va) && in_rect(1, ub, vb) && !in_rect(1, ua, va) && !in_rect(0, ub, vb), "the pole is in each lamp's own tile and in no other");
+  const double wall_a[3] = {1.2, 1.6, 30.0}, wall_b[3] = {-1.2, 1.6, 30.0};  // the lamp is 0.7 m up: a ray over the pole's top at 1.0 m is 1.6 m up at the wall
+  double wu, wv, wd;
+  Check(ls::MapPoint(m[0], wall_a, &wu, &wv, &wd), "the wall is in front of lamp A");
+  CheckNear(wu, ua, 1e-4, "the wall point at x = +1.2 is behind the pole for the left lamp: the same texel (u)");
+  CheckNear(wv, va, 1e-4, "... (v)");
+  Check(wd > da, "... and farther than the pole (it is the shadowed side)");
+  Check(ls::MapPoint(m[1], wall_b, &wu, &wv, &wd), "the wall is in front of lamp B");
+  CheckNear(wu, ub, 1e-4, "the wall point at x = -1.2 is behind the pole for the right lamp: the same texel (u)");
+  CheckNear(wv, vb, 1e-4, "... (v)");
+  Check(wd > db, "... and farther than the pole");
+  Check(ls::MapPoint(m[0], wall_b, &wu, &wv, &wd) && std::fabs(wu - ua) * atlas.width() > 10.0, "the other lamp's shadow is not behind the pole for this lamp: the two shadows are about 20 texels apart in a lamp's tile at 1024 x 1024");
+  // The car in front: a box 1.8 m wide, 10 m ahead, seen from each lamp as a rectangle of the lamp's own tile; a wall point is shadowed by a lamp when it lies in it.
+  // The share of the light a wall point gets is the mean of the two lamps' (what the shader does): 0 behind the middle of the car, a half in the two bands, 1 beyond.
+  double lo[2][2], hi[2][2];  // per lamp: u, v extent of the car's front face
+  for (uint32_t k = 0; k < 2; ++k) {
+    lo[k][0] = lo[k][1] = 1e9;
+    hi[k][0] = hi[k][1] = -1e9;
+    for (const double x : {-0.9, 0.9}) {
+      for (const double y : {0.0, 1.4}) {
+        const double corner[3] = {x, y, 10.0};
+        double u, v, d;
+        Check(ls::MapPoint(m[k], corner, &u, &v, &d), "a corner of the car in front");
+        lo[k][0] = std::min(lo[k][0], u);
+        hi[k][0] = std::max(hi[k][0], u);
+        lo[k][1] = std::min(lo[k][1], v);
+        hi[k][1] = std::max(hi[k][1], v);
+      }
+    }
+  }
+  const auto share = [&](double x) {
+    double lit = 0.0;
+    for (uint32_t k = 0; k < 2; ++k) {
+      const double wall[3] = {x, 0.7, 30.0};
+      double u, v, d;
+      Check(ls::MapPoint(m[k], wall, &u, &v, &d), "a wall point");
+      const bool blocked = u >= lo[k][0] && u <= hi[k][0] && v >= lo[k][1] && v <= hi[k][1];
+      lit += blocked ? 0.0 : 1.0;
+    }
+    return lit / 2.0;
+  };
+  for (const double x : {0.0, 0.5, -1.0, 1.0}) {
+    CheckNear(share(x), 0.0, 0.0, "behind the middle of the car (x = " + std::to_string(x) + "): both lamps are blocked");
+  }
+  for (const double x : {2.0, 3.0, -2.0, -3.0}) {
+    CheckNear(share(x), 0.5, 0.0, "in the band beside the car's shadow (x = " + std::to_string(x) + "): one lamp is blocked, the point gets half the light");
+  }
+  for (const double x : {4.5, 6.0, -4.5}) {
+    CheckNear(share(x), 1.0, 0.0, "beyond the car's shadow (x = " + std::to_string(x) + "): lit");
+  }
+}
+
+// WHAT THE SHARED WORK SAVES, in the units this test can count (no renderer, no game): the cone tests at collection and the commands of the replay.
+// A street of 400 draws ahead of a car, collected against the car's one union view instead of one test for each lamp's view; the replay of the draws both views keep as a
+// command stream (pipeline, vertex and index buffers, constants, viewport and scissor, draw) in the three orders: one view, two views one after the other (what this does) and
+// two views with each caster's binds made once (the draw into both tiles' cheaper cousin, which the viewport changes at every draw make no cheaper).
+struct SimDraw {
+  uint32_t pipe, vertices, indices, bank;
+};
+
+struct Commands {
+  uint32_t total = 0;
+  uint32_t banks = 0;  // 4 KiB constant banks written
+  uint32_t draws = 0;
+};
+
+Commands SimulateViewOuter(const std::vector<SimDraw>& draws, int views) {
+  Commands c;
+  for (int v = 0; v < views; ++v) {
+    c.total += 2;  // the view's viewport and scissor
+    uint32_t pipe = ~0u, vertices = ~0u, indices = ~0u, bank = ~0u;
+    for (const SimDraw& d : draws) {
+      c.total += d.pipe != pipe ? 1u : 0u;
+      c.total += d.vertices != vertices ? 1u : 0u;
+      c.total += d.indices != indices ? 1u : 0u;
+      if (d.bank != bank) {
+        c.total += 1;  // the vertex constants' root descriptor
+        c.banks += 1;  // the bank is copied the first time a view needs it
+      }
+      c.total += 2;  // the pixel constants (a draw's own) and the draw
+      pipe = d.pipe;
+      vertices = d.vertices;
+      indices = d.indices;
+      bank = d.bank;
+      ++c.draws;
+    }
+  }
+  return c;
+}
+
+Commands SimulateCasterOuter(const std::vector<SimDraw>& draws, int views) {
+  Commands c;
+  uint32_t pipe = ~0u, vertices = ~0u, indices = ~0u, bank = ~0u;
+  int tile = -1;
+  for (const SimDraw& d : draws) {
+    c.total += d.pipe != pipe ? 1u : 0u;
+    c.total += d.vertices != vertices ? 1u : 0u;
+    c.total += d.indices != indices ? 1u : 0u;
+    c.total += 1;  // the pixel constants
+    pipe = d.pipe;
+    vertices = d.vertices;
+    indices = d.indices;
+    for (int v = 0; v < views; ++v) {
+      if (tile != v) {
+        c.total += 2;  // viewport and scissor at every change of view: with two views, at every draw
+        tile = v;
+      }
+      // The vertex constants: the bank of this view; the other view's bank was bound by the draw before, so it changes at every draw, or at every change of bank with one view.
+      if (views > 1 || d.bank != bank) {
+        c.total += 1;
+      }
+      c.banks += (d.bank != bank) ? 1u : 0u;  // a bank is copied once for each view that needs it, the first time
+      c.total += 1;  // the draw
+      ++c.draws;
+    }
+    bank = d.bank;
+  }
+  return c;
+}
+
+void CheckSharedWork() {
+  uint32_t state = 777;
+  const auto rnd = [&]() {
+    state = state * 1664525u + 1013904223u;
+    return double(state >> 8) / double(1 << 24);
+  };
+  ls::Light cars[1] = {CarWithLamps(1, 0, 0, true, 0)};
+  ls::Group g[4];
+  ls::GroupLights(cars, 1, 1, g);
+  ls::ViewPlan plan;
+  ls::PlanViews(cars, g, 1, 1, 2, &plan);
+  ls::ViewSpec spec[2], un;
+  for (uint32_t k = 0; k < 2; ++k) {
+    ls::FitView(plan.views[k].lights.data(), plan.views[k].group, &spec[k]);
+  }
+  ls::FitCar(plan, 0, &un);
+  // 1) the collection: 4000 draws of a night street and its side streets (the world's reach 40 m, a car's 7), each tested against the views.
+  uint32_t draws = 0, collect_each = 0, collect_union = 0, tests_each = 0, tests_union = 0, kept_a = 0, kept_b = 0;
+  for (int i = 0; i < 4000; ++i) {
+    const double p[3] = {(rnd() - 0.5) * 400.0, rnd() * 12.0, (rnd() - 0.3) * 350.0};  // a street and its side streets, 200 m either side
+    ++draws;
+    tests_each += 2;   // one cone test for each lamp's view ...
+    tests_union += 1;  // ... or one for the car's union view
+    const bool a = ls::SphereInView(spec[0], p, ls::kWorldReach), b = ls::SphereInView(spec[1], p, ls::kWorldReach);
+    collect_each += (a || b) ? 1u : 0u;
+    collect_union += ls::SphereInCarView(un, p, ls::kWorldReach) ? 1u : 0u;
+    kept_a += a ? 1u : 0u;
+    kept_b += b ? 1u : 0u;
+  }
+  Check(tests_union * 2 == tests_each, "one cone test for a car, not two");
+  Check(collect_union >= collect_each, "the union view collects everything either lamp's view does (" + std::to_string(collect_union) + " against " + std::to_string(collect_each) + ")");
+  Check(double(collect_union) <= 1.10 * double(collect_each), "... and not more than a tenth more draws (their banks are copied at collection): " + std::to_string(collect_union) + " against " + std::to_string(collect_each));
+  Check(kept_a > 0 && kept_b > 0 && std::abs(int(kept_a) - int(kept_b)) < int(draws / 20), "the two lamps' own cones keep about the same draws (" + std::to_string(kept_a) + ", " + std::to_string(kept_b) + ")");
+  std::printf("INFO shared cull: %u draws, collected %u by the union view against %u by the two lamps' views each tested (+%.1f%%), %u cone tests against %u; the lamps keep %u and %u\n", draws,
+              collect_union, collect_each, 100.0 * (double(collect_union) / double(collect_each) - 1.0), tests_union, tests_each, kept_a, kept_b);
+  // 2) the replay's commands. 300 draws that both views keep: a night street's runs of one pipeline (20 shapes), a vertex and an index buffer of their own, a constant bank for each
+  // two or three draws (a car is some 200 draws of 20 shaders: parts share banks).
+  std::vector<SimDraw> stream;
+  uint32_t pipe = 0, bank = 0, serial = 0;
+  for (int i = 0; i < 300; ++i) {
+    if (rnd() < 0.55) {
+      pipe = uint32_t(rnd() * 20.0);
+    }
+    if (rnd() < 0.4) {
+      ++bank;
+    }
+    stream.push_back({pipe, ++serial, serial, bank});
+  }
+  const Commands one = SimulateViewOuter(stream, 1);
+  const Commands outer = SimulateViewOuter(stream, 2);
+  const Commands inner = SimulateCasterOuter(stream, 2);
+  Check(outer.draws == 600 && inner.draws == 600 && one.draws == 300, "the draws are counted");
+  Check(outer.banks == 2 * one.banks && inner.banks == outer.banks, "each view copies its banks, in either order");
+  Check(outer.total == 2 * one.total, "two views one after the other cost twice the commands of one, the viewport and scissor of the second included");
+  // The second view's draw in the interleaved order: its viewport and scissor (2), its constants (1) and the draw (1), and the first view's draw takes the viewport back and
+  // re-binds its constants: the binds made once do not pay for the changes they cause at every draw.
+  const double per_draw_second = double(inner.total - one.total) / 300.0;
+  const double per_draw_pass = double(outer.total - one.total) / 300.0;
+  std::printf("INFO replay commands for 300 draws: one view %u, two views one after the other %u, interleaved with the binds made once %u (%+.0f%%); the second view costs %.2f commands a draw interleaved against %.2f as a pass\n",
+              one.total, outer.total, inner.total, 100.0 * (double(inner.total) / double(outer.total) - 1.0), per_draw_second, per_draw_pass);
+  Check(inner.total >= outer.total, "interleaving the two views to make each caster's binds once is not cheaper than two passes (the viewport and scissor change at every draw): " + std::to_string(inner.total) + " against " + std::to_string(outer.total));
+  Check(per_draw_second > per_draw_pass, "... the second view costs more as an interleaved draw than as a pass: " + std::to_string(per_draw_second) + " against " + std::to_string(per_draw_pass));
+}
+
 }  // namespace
 
 int main() {
-  CheckTypes();
-  CheckSetting();
-  CheckAtlas();
-  CheckLevels();
-  CheckThreeViewsLand();
-  CheckLights();
-  CheckGroups();
-  CheckPicking();
-  CheckPickingHysteresis();
-  CheckFit();
-  CheckWorldToShadow();
-  CheckCamera();
-  CheckReplay();
-  CheckClassification();
-  CheckSelection();
-  CheckViewCull();
-  CheckCullAndKeys();
-  CheckKeyPadding();
-  CheckCarCastsItsSilhouette();
-  CheckSkirtMatrix();
-  CheckVehicleCensus();
+  // LU-3: the whole suite runs twice, once with the unified picker (light_pick.h, the default) and once with the legacy code of ViewPicker (mcla_gpu_light_pick = legacy).
+  for (const mcla::gpu::light_pick::PickMode mode : {mcla::gpu::light_pick::PickMode::kUnified, mcla::gpu::light_pick::PickMode::kLegacy}) {
+    mcla::gpu::light_pick::DefaultMode() = mode;
+    std::printf("-- the view picks through the %s picker\n", std::string(mcla::gpu::light_pick::ModeName(mode)).c_str());
+    CheckTypes();
+    CheckSetting();
+    CheckAtlas();
+    CheckLevels();
+    CheckThreeViewsLand();
+    CheckLights();
+    CheckGroups();
+    CheckPicking();
+    CheckPickingHysteresis();
+    CheckLampOffsetOfALight();
+    CheckLampViews();
+    CheckLampViewsCover();
+    CheckTwoShadows();
+    CheckSharedWork();
+    CheckPickingReach();
+    CheckEdgeRuleWithLevels();
+    CheckFit();
+    CheckWorldToShadow();
+    CheckCamera();
+    CheckReplay();
+    CheckClassification();
+    CheckSelection();
+    CheckViewCull();
+    CheckCullAndKeys();
+    CheckKeyPadding();
+    CheckCarCastsItsSilhouette();
+    CheckSkirtMatrix();
+    CheckVehicleCensus();
+  }
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

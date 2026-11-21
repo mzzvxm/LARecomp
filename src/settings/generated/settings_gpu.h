@@ -389,11 +389,11 @@ class GPUSettings final : public rex::SettingOwner {
     "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
   REX_SETTING(std::string, mcla_gpu_light_shadows, "auto", "Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; "
-    "this draws the scene's opaque objects again from the lights, depth only, into a small map for each car (512 by 512 texels on high, 1024 by 1024 on "
-    "ultra), and the lights' light reads it. high shadows your car's headlights and the nearest other car's, ultra also the next nearest car's, and sharper. off, high, ultra or auto (the "
-    "default): ultra on a fast graphics card, high on a medium one, off on an integrated one. It only runs while a headlight is lit, in the game "
-    "view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each car) and 4 MiB (high) or 24 MiB (ultra) of video "
-    "memory. Live.", rex::Allowed("auto", "off", "high", "ultra"));
+    "this draws the scene's opaque objects again from the lights, depth only, into small maps (512 by 512 texels on medium and high, 1024 by 1024 on ultra), and the lights' light reads them. medium shadows your car's headlights and the nearest other car's, with one map for each car; high gives your car a map for each headlamp, "
+    "so a pole in front of it casts a shadow from each of its two lamps, and the nearest other car still has one; ultra also shadows the next nearest car, gives all three cars a map for each lamp, "
+    "and is sharper. off, medium, high, ultra or auto (the default): ultra on a fast graphics card, medium on a medium one, off on an integrated one. "
+    "It only runs while a headlight is lit, in the game view. Costs graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 MiB (medium), "
+    "6 MiB (high) or 48 MiB (ultra) of video memory. Live.", rex::Allowed("auto", "off", "medium", "high", "ultra"));
 
   REX_SETTING(i32, mcla_gpu_headlight_shadow_test, 0, "Diagnostic: 1 makes a headlight shadow map from a light of its own at the camera (shining where the camera looks, 35 degrees wide, 40 m), "
     "whenever no car's headlight is lit, so that the maps can be looked at by day with mcla_gpu_headlight_shadow_view 1: the map from the camera's own "
@@ -409,8 +409,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_headlight_shadow_cull, 0, "Diagnostic: which faces the headlight shadow maps draw. 0: the faces turned from the light (front faces culled where the game culls back "
     "faces; the default), 1: both faces, 2: the game's own. A pipeline is made for each, so a change takes a moment to build. Live.", rex::kDebugOnly, rex::Range{0, 2});
 
-  REX_SETTING(i32, mcla_gpu_headlight_shadow_views, 0, "Diagnostic: how many cars' headlights get a view in the headlight shadow maps, 1 to 4 (the lamps of one car share a view). 0: the level's "
-    "own (2 on high, 3 on ultra). A change remakes the atlas. Live.", rex::kDebugOnly, rex::Range{0, 4});
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_views, 0, "Diagnostic: how many views each shadowed car gets in the headlight shadow maps. 1: one for the car (made from the middle of its two lamps: "
+    "the first version's); 2: one for each headlamp (a pole in front of the car casts two shadows). 0: the level's own (medium: one for each car; high: one for each lamp of your car and one for the other car; ultra: one for each lamp of every shadowed car). "
+    "A change remakes the atlas. Live.", rex::kDebugOnly, rex::Range{0, 2});
 
   REX_SETTING(f64, mcla_gpu_headlight_shadow_bias, 1.0, "Diagnostic: a factor on the depth bias the headlight shadows' lookup subtracts from a surface's distance from the lamps before it "
     "compares (the map's own slope bias is fixed). Larger: fewer speckles on surfaces that face the lamps and shadows that detach from what casts them. "
@@ -808,6 +809,11 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_headlight_night, -1, "Diagnostic: when the headlights are on. -1: from the game's own lights (each car's headlight points say whether "
     "they are on: 2.0 at night, 0 by day), and from the sun's height for a car whose points were not seen (night below "
     "3 degrees, none above 12; the default). 0: never. 1: always, by the sun's rule alone, to see them by day. Live.", rex::kDebugOnly, rex::Range{-1, 1});
+
+  REX_SETTING(bool, mcla_gpu_headlight_edge, true, "Diagnostic: how the headlights pick the cars at the edge of the frame. On (the default): a car is worth what its beam "
+    "adds to the picture, not where its lamp is, and a car the game stops drawing because it left the frame keeps its light while its beam is still in the view "
+    "(up to 1.5 seconds), fading with the beam and with its distance. Off: the first version, a light dropped within 8 frames of the game's last draw of its car, and "
+    "a car whose lamp is off the screen counted at 0.35. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_headlight_log, false, "Diagnostic: logs a census line of the headlights every 300 frames, with '[headlights]' in front: the sun and the "
     "night factor, the lens draws seen, the cars with a front lens, the lights picked with their place and axis, and the "
@@ -1331,6 +1337,22 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_local_lights_car_gain, 1.0, "Diagnostic (the deferred local light pass, GB-H3): a multiplier on the look of the cars' lights it adds (the police light bars, the head lamps of the cars the forward headlight stage does not light, "
     "the brake, tail, turn and reverse lamps). Their colours and strengths are looks set by eye, not the game's units: this turns them up or down without a build. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
+  REX_SETTING(std::string, mcla_gpu_light_pick, "unified", "Diagnostic (the one picker of the lights, LIGHT-UNIFY U3): how the lights are picked. unified (the default): the headlight rig's four lights and the "
+    "cars that get shadow views are picked by one rule (how much of a beam is in the view, the distance, a place kept by the one that holds it), with every "
+    "fade, linger and coast counted in seconds of the scene clock, so that a light fades in the same time at 30, 60 and 144 frames a second. legacy: the "
+    "first code of the two pickers (frames counted at the game's pace), to compare with: at 60 frames a second the two pick the same lights with the same "
+    "weights. Live.", rex::kDebugOnly, rex::Allowed("unified", "legacy"));
+
+  REX_SETTING(std::string, mcla_gpu_light_pick_record, "", "Diagnostic (the one picker of the lights, LIGHT-UNIFY U3): a file path. With it, the headlight rig writes every guest frame's inputs of its tracker "
+    "(the cars its lens draws showed, the camera's view) to <path>.rig.txt and the headlight shadow replay writes the inputs of its pick of cars (the rig's lights, the cap, the context) to "
+    "<path>.views.txt, in the text format of light_pick_record.h, for the unit test light_pick_test to replay through both pickers. Empty: nothing is written. Live; "
+    "changing the path starts new files.", rex::kDebugOnly);
+
+  REX_SETTING(i32, mcla_gpu_light_frame, 0, "Diagnostic (the one light description, LIGHT-UNIFY U4, the A/B of the flips): which consumers read the light manager's frame of lights instead of their own producer. "
+    "A bit mask: 1 the lit shaders' headlight block, 2 the volumetric light's street lamps, headlights and shadow views, 4 the lights the headlight shadow maps pick cars "
+    "and make views from; 7 all three; 8 (LIGHT-UNIFY U5) the headlight shadow maps are recorded into the one shared shadow atlas (its layout, clear, the one barrier for the pixel and compute readers, memory fitted to the video memory budget) and the frame's shadow views are read from its published form by light id; 15 all four. 0 (the default until the runs have shown the bytes equal): every consumer reads its own producer, as before. The data a flipped "
+    "consumer gets is byte for byte what its own producer made (mcla_gpu_lights_census checks it every frame while it is on, and says so in its line), so the picture "
+    "does not change. Live.", rex::kDebugOnly, rex::Range{0, 15});
 
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "
@@ -1688,6 +1710,7 @@ inline auto& mcla_gpu_hdr_paper_white_nits = g_gpu.mcla_gpu_hdr_paper_white_nits
 inline auto& mcla_gpu_hdr_peak_nits = g_gpu.mcla_gpu_hdr_peak_nits;
 inline auto& mcla_gpu_hdr_test_pattern = g_gpu.mcla_gpu_hdr_test_pattern;
 inline auto& mcla_gpu_headlight_cone = g_gpu.mcla_gpu_headlight_cone;
+inline auto& mcla_gpu_headlight_edge = g_gpu.mcla_gpu_headlight_edge;
 inline auto& mcla_gpu_headlight_log = g_gpu.mcla_gpu_headlight_log;
 inline auto& mcla_gpu_headlight_night = g_gpu.mcla_gpu_headlight_night;
 inline auto& mcla_gpu_headlight_range = g_gpu.mcla_gpu_headlight_range;
@@ -1793,6 +1816,9 @@ inline auto& mcla_gpu_local_lights_sources = g_gpu.mcla_gpu_local_lights_sources
 inline auto& mcla_gpu_local_lights_ab = g_gpu.mcla_gpu_local_lights_ab;
 inline auto& mcla_gpu_local_lights_gain = g_gpu.mcla_gpu_local_lights_gain;
 inline auto& mcla_gpu_local_lights_car_gain = g_gpu.mcla_gpu_local_lights_car_gain;
+inline auto& mcla_gpu_light_pick = g_gpu.mcla_gpu_light_pick;
+inline auto& mcla_gpu_light_pick_record = g_gpu.mcla_gpu_light_pick_record;
+inline auto& mcla_gpu_light_frame = g_gpu.mcla_gpu_light_frame;
 inline auto& mcla_gpu_temporal_jitter_hold = g_gpu.mcla_gpu_temporal_jitter_hold;
 inline auto& mcla_gpu_texture_decode_selftest = g_gpu.mcla_gpu_texture_decode_selftest;
 inline auto& mcla_gpu_texture_decode_threads = g_gpu.mcla_gpu_texture_decode_threads;

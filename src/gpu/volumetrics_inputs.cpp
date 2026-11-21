@@ -12,6 +12,7 @@
 #include <rex/logging/log_category.h>
 
 #include "light_manager.h"
+#include "light_project.h"
 
 // feat/headlights (the rig's set and the shadow replay) is not on every branch this is built on: its headers are the test.
 #if __has_include("headlight_types.h")
@@ -52,11 +53,46 @@ void VolumetricsInputs::Fill(const vol::VolFrameContext& frame, vol::VolInputs* 
   const bool lamps_on = (inputs & 1) != 0 && (test & 1) == 0;
   const bool heads_on = (inputs & 2) != 0 && (test & 2) == 0;
   const uint32_t lamps_before = out->lamp_count;  // the core's test lamp, if any: the game's lamps come after it
-  // The hook only copies the list while somebody wants it.
+  // The hook only copies the list while somebody wants it (the light manager's pick reads the same table).
   vl::SetWanted(lamps_on);
+  const int limit_setting = larecomp::settings::mcla_gpu_vol_lamp_limit.Get();
+  const uint32_t limit = limit_setting > 0 ? uint32_t(limit_setting) : vol::kMaxLamps;
+  // LU-4b: from the light manager's frame (mcla_gpu_light_frame bit 2) or from this producer's own code. The manager answers false when it is off or its frame is not open.
+  const bool from_frame = light_manager_ != nullptr && light_manager_->Serving(light_project::kFlipVolume);
+  if (from_frame != from_frame_) {
+    // A live switch: the producer that was not running has stale picks (or none): it starts afresh, its lamps at full weight.
+    from_frame_ = from_frame;
+    picker_.Reset();
+    picked_ = vol::PickResult{};
+    have_camera_ = false;
+  }
+  if (from_frame) {
+    const bool proof = light_manager_->Checking();
+    vol::VolInputs legacy;  // the proof run: this producer's own result for the same entry, to compare the frame's with
+    if (proof) {
+      legacy = *out;
+      FillLegacy(frame, &legacy, lamps_on, heads_on, limit);
+    }
+    light_manager_->FillVolumeInputs(frame, limit, lamps_on, heads_on, out, proof ? &list_ : nullptr);
+    if (proof) {
+      light_manager_->CheckVolumeBytes(*out, legacy);
+    }
+  } else {
+    FillLegacy(frame, out, lamps_on, heads_on, limit);
+  }
+  if (light_manager_ != nullptr && light_manager_->active()) {
+    light_manager_->NoteVolumeInputs(frame, *out, lamps_on, heads_on, lamps_before);  // the census looks at what the volume was given
+  }
+  const int every = larecomp::settings::mcla_gpu_vol_census.Get();
+  if (every > 0 && (fills_ <= 3 || frame.frame % uint64_t(every) == 0)) {
+    Census(frame, *out, lamps_on, heads_on, from_frame);
+  }
+}
+
+// This producer's own code (what Fill was before LU-4b): the street lamps from the game's list through the volume's picker, the headlights from the rig's set and the replay's frame.
+void VolumetricsInputs::FillLegacy(const vol::VolFrameContext& frame, vol::VolInputs* out, bool lamps_on, bool heads_on, uint32_t limit) {
   if (lamps_on) {
-    const int limit = larecomp::settings::mcla_gpu_vol_lamp_limit.Get();
-    FillLamps(frame, out, limit > 0 ? uint32_t(limit) : vol::kMaxLamps);
+    FillLamps(frame, out, limit);
   } else {
     picker_.Reset();
     picked_ = vol::PickResult{};
@@ -69,13 +105,6 @@ void VolumetricsInputs::Fill(const vol::VolFrameContext& frame, vol::VolInputs* 
   } else {
     head_count_ = 0;
     head_shadowed_ = 0;
-  }
-  if (light_manager_ != nullptr && light_manager_->active()) {
-    light_manager_->NoteVolumeInputs(frame, *out, lamps_on, heads_on, lamps_before);  // passive: the manager only looks at what was filled
-  }
-  const int every = larecomp::settings::mcla_gpu_vol_census.Get();
-  if (every > 0 && (fills_ <= 3 || frame.frame % uint64_t(every) == 0)) {
-    Census(frame, *out, lamps_on, heads_on);
   }
 }
 
@@ -182,7 +211,14 @@ void VolumetricsInputs::FillHeadlightInputs(vol::VolInputs* out) {
 #endif
 }
 
-void VolumetricsInputs::Census(const vol::VolFrameContext& frame, const vol::VolInputs& out, bool lamps_on, bool heads_on) {
+void VolumetricsInputs::Census(const vol::VolFrameContext& frame, const vol::VolInputs& out, bool lamps_on, bool heads_on, bool from_frame) {
+  if (from_frame) {
+    // LU-4b: this producer's own picks are not what the volume was given (the light manager's frame is; its census line has the pick's numbers).
+    REXLOG_INFO("{} inputs, frame {}: from the light manager's frame (mcla_gpu_light_frame): {} street lamps (budget {}), {} headlights, {} shadow views, atlas slot {}", kPrefix, frame.frame,
+                lamps_on ? out.lamp_count : 0u, frame.grid.lamps, heads_on ? out.headlight_count : 0u, out.shadow_view_count,
+                out.shadow_atlas_slot == vol::kNoSlot ? std::string("none") : std::to_string(out.shadow_atlas_slot));
+    return;
+  }
   std::string lamps = "off";
   if (lamps_on) {
     // The nearest picked lamp (where a pole stands: the toolkit scenes of the beam through a pole are placed by it), its distance and the game's intensity.

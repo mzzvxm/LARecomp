@@ -87,6 +87,7 @@ add_library(larecomp_gpu OBJECT
     screen_shared.cpp
     ssr.cpp
     shaders.cpp
+    shadow_atlas.cpp
     shadow_filter.cpp
     shafts.cpp
     side_view_env.cpp
@@ -303,6 +304,23 @@ add_executable(larecomp_local_lights_test EXCLUDE_FROM_ALL local_lights_test.cpp
 # it also reads the sources it is given (the settings, the manager's cars, the mod loader's publish, the pass's wiring):
 #   cmake --build <dir> --target larecomp_local_lights_sources_test, then run src/gpu/larecomp_local_lights_sources_test <src dir> (exit 0 = passed).
 add_executable(larecomp_local_lights_sources_test EXCLUDE_FROM_ALL local_lights_sources_test.cpp)
+# The consumers' shapes as projections of the light manager's frame (light_project.h, LIGHT-UNIFY U4: the headlight variant's constant block, the volume's light inputs, the lights the
+# shadow replay picks from) held to the producers that make them today, byte for byte, over a recorded drive (the rig's real tracker, the replay's real rules at all three levels, the volume's
+# real lamp picker; and the game's own recording when one is given), with each part of each shape deliberately changed and found:
+#   cmake --build <dir> --target larecomp_light_project_test, then run src/gpu/larecomp_light_project_test [<path>.rig.txt] (exit 0 = passed).
+add_executable(larecomp_light_project_test EXCLUDE_FROM_ALL light_project_test.cpp)
+# The one shadow atlas's rules (shadow_atlas_rules.h: pools of tiles by provider laid out in one texture by the level, one pool = local_shadow::MakeAtlas bit for bit; the memory table; the fit of a level to
+# the video memory; the one barrier for the pixel and the compute stage; the clear plan; slots that stay with a light; the published form and its read by light id), the provider interface
+# (shadow_provider.h) and the ONE shadow lookup (light_shadow_lookup.h and its HLSL twin hlsl/light_shadow_lookup.hlsli, compiled as C++ by the test) held to the replay's own rules, the variant's
+# CPU twin (headlight_rules::SoftShadow), the volume's (volumetrics_rules.h ShadowShare) and light_laws.h CombineShadow; light_project_test.cpp holds the published form to a recorded drive:
+#   cmake --build <dir> --target larecomp_shadow_atlas_test, then run src/gpu/larecomp_shadow_atlas_test [<hlsl/light_shadow_lookup.hlsli>] (exit 0 = passed).
+add_executable(larecomp_shadow_atlas_test EXCLUDE_FROM_ALL shadow_atlas_test.cpp)
+# The one picker of the lights and the budget table (light_pick.h: the importance, the keep bonus, the fading and the held pick, the coast, all in seconds of the scene clock; light_budget.h: the
+# headlight, shadow view and volume numbers of each level; light_pick_record.h: the text format of a recording of the pickers' inputs) held to the two pickers it replaced: the old suites' checks
+# ported, a recorded drive through the rig's Tracker and the shadow replay's ViewPicker in both modes (the same picks), the same scenes at 30, 60 and 144 FPS, a switch of the mode in a run;
+# given recordings the game made (mcla_gpu_light_pick_record) it replays those too:
+#   cmake --build <dir> --target larecomp_light_pick_test, then run src/gpu/larecomp_light_pick_test [<path>.rig.txt] [<path>.views.txt] (exit 0 = passed).
+add_executable(larecomp_light_pick_test EXCLUDE_FROM_ALL light_pick_test.cpp)
 # The vehicles' light points, all 19 kinds (light_points.h: the hook's decoder and the table keyed by the light object; car_lights.h: the cars, their frames, sides, directions, bits and levels,
 # the omni lights the lamps make, the census line; mod_light_source.h: a mod's lamps as candidates) held to the night probe's recorded points (the player, two racers, three traffic cars) likewise:
 #   cmake --build <dir> --target larecomp_car_lights_test, then run src/gpu/larecomp_car_lights_test (exit 0 = passed).

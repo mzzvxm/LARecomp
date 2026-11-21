@@ -18,6 +18,11 @@
 // SETTINGS (debug only): mcla_gpu_vol_inputs (1 the lamps, 2 the headlights: the default reads both) and mcla_gpu_vol_lamp_limit (at most this many lamps;
 // 0: the level's). mcla_gpu_vol_test (the core's test lights) turns the game's lamps (bit 1) and headlights (bit 2) off in favour of the test light of that kind.
 //
+// FROM THE LIGHT MANAGER'S FRAME (LIGHT-UNIFY U4b; mcla_gpu_light_frame bit 2, light_manager.h, light_project.h): the lamps, headlights and shadow views can instead come from the one frame
+// of lights the LightManager makes (the lamps picked by the manager's own run of the same pick, volumetrics_lamp_pick.h), with the SAME BYTES. This producer's own code below is left as it
+// was: with the flip off it runs alone; with the flip on and the census on it runs beside the manager's (on the same list copy) and the two results are compared byte for byte every
+// frame (Check::kVolumeBytes); with the flip on and the census off only the manager's runs. Switching live starts the producer that was not running with a fresh pick.
+//
 // Threading: Fill on the render thread. The lamp table is filled by a guest thread (vol_lamp_list.h: a mutex).
 // ===========================================================================
 
@@ -46,9 +51,10 @@ class VolumetricsInputs final : public volumetrics::VolInputSource {
   void SetLightManager(LightManager* light_manager) { light_manager_ = light_manager; }
 
  private:
+  void FillLegacy(const volumetrics::VolFrameContext& frame, volumetrics::VolInputs* out, bool lamps_on, bool heads_on, uint32_t limit);
   void FillLamps(const volumetrics::VolFrameContext& frame, volumetrics::VolInputs* out, uint32_t limit);
   void FillHeadlightInputs(volumetrics::VolInputs* out);
-  void Census(const volumetrics::VolFrameContext& frame, const volumetrics::VolInputs& out, bool lamps_on, bool heads_on);
+  void Census(const volumetrics::VolFrameContext& frame, const volumetrics::VolInputs& out, bool lamps_on, bool heads_on, bool from_frame);
 
   const LocalShadow* local_shadow_ = nullptr;
   LightManager* light_manager_ = nullptr;
@@ -61,6 +67,7 @@ class VolumetricsInputs final : public volumetrics::VolInputSource {
   bool list_stale_ = true;                 // the table had nothing recent at the last Fill
   float last_camera_[3] = {};
   bool have_camera_ = false;
+  bool from_frame_ = false;                // the last Fill was made from the light manager's frame (LU-4b)
 
   // the headlights, for the census
   uint32_t head_count_ = 0;

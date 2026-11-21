@@ -61,6 +61,7 @@
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
 #include "gpu/latency.h"
+#include "gpu/local_shadow_rules.h"
 #include "gpu/renderer_choice.h"
 #include "gpu/shadow_filter.h"
 #include "gpu/side_views.h"
@@ -2041,19 +2042,36 @@ constexpr RowDynamics kCarShadowDynamics = {.str_label = CarShadowLabel};
 // Light shadows (mcla_gpu_light_shadows, gpu/local_shadow.h, live; it was mcla_gpu_headlight_shadows, which stays as an alias): the local lights
 // cast shadows (the game has none from any light but the sun): the scene's opaque objects are drawn again from the lights into a small map the
 // lights' light reads. The row covers the headlights now and the street lamps later (owner, 2026-11-20: one row for every local light's shadows).
-// OFF, HIGH (two views of 512x512 texels: your car's headlights and the nearest car's) or ULTRA (three of 1024x1024: also the next nearest car's, sharper). AUTO says what it comes to on this GPU,
-// like the other AUTO rows (gpu/gpu_class.h Effect::kLightShadows: ULTRA on a fast card, HIGH on a medium one, OFF on an integrated one). The
-// stored words are the shown words (no level is called low). It runs only while a headlight is lit and in the game view; the row stays live
-// whatever the hour is. The label is "LIGHT SHADOWS" (13 characters) with a value of at most 12 ("AUTO (ULTRA)").
-const char* const kNativeLightShadowVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeLightShadowNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-std::string LightShadowLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kLightShadows);
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
+// OFF, MEDIUM (the player's car and the nearest other car, one view for each car: 2 views of 512x512 texels), HIGH (the same two cars, the player's car with a shadow from each
+// headlamp and the other car with one: 3 views of 512x512) or ULTRA (also the next nearest car's, every car with a shadow from each lamp, sharper: 6 views of 1024x1024): the three
+// level shape (owner, 2026-11-20). The levels are the table of gpu/local_shadow_rules.h (kLevelTable, kThreeLevelShape), and so are this row's words (the row's code builds its arrays
+// from kMenuWords: auto, off, medium, high, ultra; three levels are Medium / High / Ultra, never "low"). AUTO says what it comes to on this GPU, like the other AUTO rows
+// (gpu/gpu_class.h Effect::kLightShadows: ULTRA on a fast card, MEDIUM on a medium one, OFF on an integrated one). The stored words are the shown words (no level is called low).
+// It runs only while a headlight is lit and in the game view; the row stays live whatever the hour is. The label is "LIGHT SHADOWS" (13 characters) with a value of at most 13
+// ("AUTO (MEDIUM)").
+struct LightShadowWords {
+    const char* vals[mcla::gpu::local_shadow::kMenuWordMax] = {};
+    const char* names[mcla::gpu::local_shadow::kMenuWordMax] = {};
+    int count = 0;
+};
+constexpr LightShadowWords MakeLightShadowWords() {
+    LightShadowWords w;
+    const mcla::gpu::local_shadow::MenuWords& menu = mcla::gpu::local_shadow::kMenuWords;
+    for (uint32_t i = 0; i < menu.count; ++i) {
+        w.vals[i] = menu.stored[i].data();   // the table's words are string literals: null terminated
+        w.names[i] = menu.shown[i].data();
     }
+    w.count = int(menu.count);
+    return w;
+}
+constexpr LightShadowWords kLightShadowWords = MakeLightShadowWords();
+constexpr const char* const* kNativeLightShadowVals  = kLightShadowWords.vals;
+constexpr const char* const* kNativeLightShadowNames = kLightShadowWords.names;
+std::string LightShadowLabel(int i) {
+    if (i == 0) {
+        return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kLightShadows);
+    }
+    return (i > 0 && i < kLightShadowWords.count) ? kLightShadowWords.names[i] : "";
 }
 // Grey while HEADLIGHTS is off (what AUTO comes to counts): the shadows are the headlights' own for now (when the street lamps get shadows too,
 // the row is grey only while both the headlights and the lamps are off).
@@ -2200,7 +2218,7 @@ const ItemDef kLightItems[] = {
                                 kNativeHeadlightsVals, kNativeHeadlightsNames, 3),
                             &kHeadlightsDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuLightShadows", "mcla_gpu_light_shadows", "LIGHT SHADOWS: ",
-                                kNativeLightShadowVals, kNativeLightShadowNames, 4),
+                                kNativeLightShadowVals, kNativeLightShadowNames, kLightShadowWords.count),
                             &kLightShadowDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "VOLUMETRIC LIGHT: ",
                                 kNativeVolumetricsVals, kNativeVolumetricsNames, 5),

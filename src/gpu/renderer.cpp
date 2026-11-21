@@ -185,8 +185,16 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
     // The headlight shadow maps (local_shadow.h): a second pass over the main view's opaque draws from the cars' lamps; makes nothing until a draw is seen.
     local_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, upload_, shaders_, guest_layout_);
+    // The one shadow atlas (shadow_atlas.h): the replay is its first provider and the light manager reads its published form; both use it only with mcla_gpu_light_frame bit 8 (LU-5).
+    shadow_atlas_.Initialize(device_, frames_, heap_);
+    local_shadow_.SetShadowAtlas(&shadow_atlas_);
+    light_manager_.SetShadowAtlas(&shadow_atlas_);
     // The passive light manager (light_manager.h): off unless mcla_gpu_lights_census is set; it reads the rig's lights, the replay's maps and the volume's inputs and changes none of them.
     light_manager_.Initialize(upload_, headlights_, local_shadow_);
+    // The one picker of the lights (light_pick.h, LIGHT-UNIFY U3): the rig's four lights and the cars that get shadow views are picked by the manager's picker (mcla_gpu_light_pick).
+    headlights_.SetLightPicker(&light_manager_.Pickers());
+    local_shadow_.SetLightPicker(&light_manager_.Pickers());
+    local_shadow_.SetLightManager(&light_manager_);  // the replay picks from the manager's frame of lights when mcla_gpu_light_frame bit 4 says so (LIGHT-UNIFY U4c)
     vol_inputs_.SetLightManager(&light_manager_);
     // The deferred local light pass (local_lights.h): makes nothing until mcla_gpu_local_lights is on; reads the G-buffer's planes, the shared products' camera, the AO's pose and the manager's frame.
     local_lights_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
@@ -286,6 +294,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // Its images and AMD's context are not something the budget's response can release; its lines
     // name them (vram_budget.h), and frame generation asks the budget's rule before it takes any.
     vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
+    // The headlight shadow maps' atlas (the replay's own or the shared one: local_shadow.h HeldBytes counts both) is memory the response cannot release either: the lines name it.
+    vram_.AddHolder("headlight shadow atlas", [this] { return local_shadow_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
@@ -321,6 +331,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
     light_manager_.Shutdown();  // after the volume, whose inputs it looks at
     local_shadow_.Shutdown();
+    shadow_atlas_.Shutdown();  // after the replay, its provider
     gbuffer_.Shutdown();
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
@@ -501,6 +512,7 @@ void Renderer::Shutdown() {
   volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
   light_manager_.Shutdown();  // after the volume, whose inputs it looks at
   local_shadow_.Shutdown();
+  shadow_atlas_.Shutdown();  // after the replay, its provider
   gbuffer_.Shutdown();
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
