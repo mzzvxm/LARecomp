@@ -649,9 +649,6 @@ void AmbientOcclusion::Shutdown() {
     image = HostImage{};
   }
   weight_ = HostImage{};
-  for (HostImage& image : colour_) {
-    image = HostImage{};
-  }
   gi_ = HostImage{};
   gi_dn_ = HostImage{};
   for (HostImage& image : gi_hist_) {
@@ -1141,9 +1138,6 @@ uint64_t AmbientOcclusion::HeldBytes() const {
     add(image);
   }
   add(weight_);
-  for (const HostImage& image : colour_) {
-    add(image);
-  }
   add(gi_);
   add(gi_dn_);
   for (const HostImage& image : gi_hist_) {
@@ -2635,8 +2629,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   if (normals_.on) {
     RecordNormals(list, plan, base, normals_);
   }
-  if (plan.gi.on) {
-    RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot);
+  if (plan.gi.on && screen_) {
+    // The capture is the shared screen products': they keep the chain's images and count it made this frame (screen_shared.h CapturePre, step 5 of the order); the pass, its pipelines and its
+    // constants are still this class's until SS-2, so what is recorded, and where, is what it was.
+    screen_->CapturePre([&] { RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot); });
   }
 
   // The ray traced occlusion and sun terms around the player's car and the cars beside it (car_rt_ao.h): one compute pass over the level 0 depth,
@@ -2704,9 +2700,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     HostImage* main_out = &raw_;
     if (plan.gi.on) {
       Push gi_push = push;
-      gi_push.slots[0] = colour_[0].slot;
-      gi_push.slots[1] = colour_[1].slot;
-      gi_push.slots2[3] = colour_[2].slot;
+      gi_push.slots[0] = Colour(0).slot;
+      gi_push.slots[1] = Colour(1).slot;
+      gi_push.slots2[3] = Colour(2).slot;
       gi_push.shape[2] = plan.gi.thickness;
       gi_push.shape[3] = plan.gi.facing;
       // The far ring: its reach and its steps (hlsl/ao_main_ps.hlsl; none: the near samples only).
@@ -2969,7 +2965,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       // whether it is a source of light); the strength rides in shape.y, the gain limit in the flags' bits 8-15 and
       // the cap (the ceiling) in bits 26-31.
       push.slots[2] = gi_bounce->slot;
-      push.slots2[1] |= colour_[0].slot;
+      push.slots2[1] |= Colour(0).slot;
       push.shape[1] = plan.gi.strength;
       push.slots2[2] = (push.slots2[2] & ~(ssgi_light::kLimitMask | ssgi_light::kCapMask)) |
                        ((ssgi_light::LimitCode(plan.gi.limit) << ssgi_light::kLimitShift) & ssgi_light::kLimitMask) |
@@ -2983,7 +2979,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       // (hlsl/ao_color_ps.hlsl pass 2): 1 the bounce, 2-4 the chain's levels, 5 the bounce cleaned,
       // 6 the visibility.
       const uint32_t v = plan.gi.view;
-      const HostImage& shown = (v >= 2 && v <= 4) ? colour_[v - 2]
+      const HostImage& shown = (v >= 2 && v <= 4) ? Colour(v - 2)
                                : v == 7           ? *gi_history
                                : v == 8           ? *gi_bounce
                                : v == 9           ? gi_weight_
@@ -3179,8 +3175,8 @@ void AmbientOcclusion::PublishScreen(plume::RenderCommandList* list, const Resol
     return;
   }
   // The images this frame's passes made, as they are NOW (the bounce light's ping-pong swap of the depth image is done: linear_depth_image_ is this frame's level 0). The coarser levels
-  // are made by the occlusion and the census's probe only; the normal image while the frame used the G-buffer's plane; the full size depth beside a half size trace; the colour chain by
-  // the bounce light.
+  // are made by the occlusion and the census's probe only; the normal image while the frame used the G-buffer's plane; the full size depth beside a half size trace. (The bounce light's colour
+  // chain is the owner's since SS-1: CapturePre told it the chain was made.)
   // CHECK (not run): a frame for the screen products alone (Plan::screen) in the pause menu's, the garage's and the map's 4x view and with the host's MSAA at 2, 4 and 8: it is the census's
   // probe frame without the readback and the coarser levels, which those views and sample counts already run.
   ScreenShared::Adopted adopted;
@@ -3191,11 +3187,6 @@ void AmbientOcclusion::PublishScreen(plume::RenderCommandList* list, const Resol
   }
   adopted.depth_full = plan.SplitContact() ? &depth_full_ : nullptr;
   adopted.normal = normals_.on ? &normal_ : nullptr;
-  if (plan.gi.on) {
-    for (uint32_t i = 0; i < screen::kColourPreLevels; ++i) {
-      adopted.colour_pre[i] = &colour_[i];
-    }
-  }
   adopted.render[0] = plan.render[0];
   adopted.render[1] = plan.render[1];
   adopted.host_samples = summary.source ? summary.source->host_samples : 1u;
@@ -4054,12 +4045,10 @@ bool AmbientOcclusion::PrepareGi(const ResolveCache::Summary& summary,
 }
 
 bool AmbientOcclusion::EnsureGiImages(const Plan& plan) {
+  // The colour chain's images are the owner's (the same sizes, format and names as before).
+  const uint32_t colour_sizes[screen::kColourPreLevels][2] = {{plan.ao[0], plan.ao[1]}, {plan.level[0][0], plan.level[0][1]}, {plan.level[1][0], plan.level[1][1]}};
   bool ok =
-      passes_->EnsureImage(colour_[0], plan.ao[0], plan.ao[1], kGiFormat, "ssgi colour") &&
-      passes_->EnsureImage(colour_[1], plan.level[0][0], plan.level[0][1], kGiFormat,
-                           "ssgi colour 1/2") &&
-      passes_->EnsureImage(colour_[2], plan.level[1][0], plan.level[1][1], kGiFormat,
-                           "ssgi colour 1/4") &&
+      screen_ && screen_->EnsureColourPre(colour_sizes, kGiFormat) &&
       passes_->EnsureImage(gi_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi visibility and bounce") &&
       passes_->EnsureImage(gi_dn_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi denoised") &&
       passes_->EnsureImage(gi_hist_[0], plan.ao[0], plan.ao[1], kGiFormat, "ssgi history 0") &&
@@ -4080,10 +4069,8 @@ void AmbientOcclusion::ReleaseGiImages() {
   if (!passes_) {
     return;
   }
-  for (HostImage& image : colour_) {
-    if (image.texture) {
-      passes_->ReleaseImage(image);
-    }
+  if (screen_) {
+    screen_->ReleaseColourPre();
   }
   for (HostImage* image : {&gi_, &gi_dn_, &gi_hist_[0], &gi_hist_[1], &depth_prev_, &gi_weight_}) {
     if (image->texture) {
@@ -4095,6 +4082,10 @@ void AmbientOcclusion::ReleaseGiImages() {
     history_valid_ = false;
     history_gi_ = false;
   }
+}
+
+HostImage& AmbientOcclusion::Colour(uint32_t level) const {
+  return screen_->ColourPre(level);
 }
 
 void AmbientOcclusion::RecordColourChain(plume::RenderCommandList* list, const Plan& plan,
@@ -4123,23 +4114,23 @@ void AmbientOcclusion::RecordColourChain(plume::RenderCommandList* list, const P
     push.slots2[2] |= kColourOneSampleFlag;
     push.slots2[0] = base.slots[1];
   }
-  DrawPass(list, colour_[0], Pipeline(ms ? kVColorMs : kVColor), push);
+  DrawPass(list, Colour(0), Pipeline(ms ? kVColorMs : kVColor), push);
   // The coarser levels, one pass each, as the depth chain's.
   plume::RenderPipeline* mip = Pipeline(kVColorMip);
   push = base;
   push.slots2[2] &= ~0xFFu;
-  push.slots[2] = colour_[0].slot;
+  push.slots[2] = Colour(0).slot;
   push.sizes[0] = float(plan.level[0][0]);
   push.sizes[1] = float(plan.level[0][1]);
   push.sizes[2] = float(plan.ao[0]);
   push.sizes[3] = float(plan.ao[1]);
-  DrawPass(list, colour_[1], mip, push);
-  push.slots[2] = colour_[1].slot;
+  DrawPass(list, Colour(1), mip, push);
+  push.slots[2] = Colour(1).slot;
   push.sizes[0] = float(plan.level[1][0]);
   push.sizes[1] = float(plan.level[1][1]);
   push.sizes[2] = float(plan.level[0][0]);
   push.sizes[3] = float(plan.level[0][1]);
-  DrawPass(list, colour_[2], mip, push);
+  DrawPass(list, Colour(2), mip, push);
 }
 
 // ---------------------------------------------------------------------------

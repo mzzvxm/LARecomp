@@ -700,6 +700,10 @@ larecomp_gpu_host_shader(gbuffer_view_ps ps_6_0 DEFINES GB_VIEW_MS=0)
 larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINES GB_VIEW_MS=1)
 # The shared screen products (screen_shared.h): one level of the Hi-Z chain (the min of the linear depth), and the debug view of the products.
 larecomp_gpu_host_shader(screen_hiz_ps ps_6_0)
+# ... and the colour captures: colour_post's level 0 from the main colour (plain or multisampled) and a mip level of it.
+larecomp_gpu_host_shader(screen_colour_ps ps_6_0 DEFINES SCREEN_COLOUR_PASS=0 SCREEN_COLOUR_MS=0)
+larecomp_gpu_host_shader(screen_colour_ms_ps ps_6_0 SOURCE screen_colour_ps DEFINES SCREEN_COLOUR_PASS=0 SCREEN_COLOUR_MS=1)
+larecomp_gpu_host_shader(screen_colour_mip_ps ps_6_0 SOURCE screen_colour_ps DEFINES SCREEN_COLOUR_PASS=1)
 larecomp_gpu_host_shader(screen_view_ps ps_6_0)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
@@ -771,6 +775,8 @@ larecomp_gpu_host_shader(volumetrics_apply_ms_ps ps_6_0 SOURCE volumetrics_apply
 # next frame's car paint variant.
 larecomp_gpu_host_shader(car_history_ps ps_6_0 DEFINES CAR_HISTORY_MS=0)
 larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=1)
+# ... and the same with the colour read from the shared screen products' colour_post (screen_shared.h): the depth and stencil planes multisampled, the colour one single sample image.
+larecomp_gpu_host_shader(car_history_ms_shared_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=2)
 # The player car's sun shadow map (car_shadow_map.h): the depth-only vertex shader of the car's own draws, the 4x1 matrix texture's pass,
 # and the debug view's square.
 larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)

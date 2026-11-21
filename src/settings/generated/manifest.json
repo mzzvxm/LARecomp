@@ -922,6 +922,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_selfrefl_source": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (car self-reflections, shared screen products): where the history pass takes the scene colour from. 0: the shared colour_post where the \"\n    \"frame has it at the picture's size (another effect wanted it), else the main colour target's own planes. 1: always the main colour target's planes \"\n    \"(the old path). 2: as 0, and the car self-reflection asks for the shared colour_post itself, so that the same pictures can be compared with 1 without \"\n    \"a reflections effect (the bytes of the history image are the same). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_selfrefl_steps": {
   "type": "i32",
   "default": "12",
@@ -1264,10 +1276,10 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (shared screen products): draws one product of the shared screen frame over the main view at the mid-scene depth copy, where the ambient \"\n    \"occlusion runs (it runs a frame of its own for this when it and the contact shadows are off): 1 the linear depth, 2 the Hi-Z level mcla_gpu_screen_view_level (the min of \"\n    \"the linear depth, each texel stretched over the pixels it covers), 3 the Hi-Z level against the pixels it covers (red where it is deeper than one of them, which cannot \"\n    \"be; green, brighter where the min is nearer than the pixel), 4 the normal image (only in a frame whose passes make it), 5 the vehicle mark of the depth. The rest of the \"\n    \"frame (particles, tone map, glow) is drawn over it as usual. 0: off. Live.\"",
+  "help": "\"Diagnostic (shared screen products): draws one product of the shared screen frame over the main view at the mid-scene depth copy, where the ambient \"\n    \"occlusion runs (it runs a frame of its own for this when it and the contact shadows are off): 1 the linear depth, 2 the Hi-Z level mcla_gpu_screen_view_level (the min of \"\n    \"the linear depth, each texel stretched over the pixels it covers), 3 the Hi-Z level against the pixels it covers (red where it is deeper than one of them, which cannot \"\n    \"be; green, brighter where the min is nearer than the pixel), 4 the normal image (only in a frame whose passes make it), 5 the vehicle mark of the depth, 6 colour_post (the level mcla_gpu_screen_view_level; only while a consumer or this view makes it), 7 the history's colour (the last frame's colour_post). The rest of the \"\n    \"frame (particles, tone map, glow) is drawn over it as usual. 0: off. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 5}"
+   "rex::Range{0, 7}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1276,7 +1288,7 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (shared screen products): the Hi-Z level the views 2 and 3 of mcla_gpu_screen_view show: 0 is the traced size, \"\n    \"each level above is half the one below (7 levels at 1080 lines, down to 1/64); a level the chain does not have shows its last. Live.\"",
+  "help": "\"Diagnostic (shared screen products): the level the views 2 and 3 (the Hi-Z) and 6 (colour_post) of mcla_gpu_screen_view show: 0 is the traced size (colour_post's own size for the view 6), \"\n    \"each level above is half the one below (the Hi-Z has 7 levels at 1080 lines, down to 1/64, colour_post up to 5 and only while the reflections want them); a level the chain does not have shows its last. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 7}"

@@ -268,6 +268,7 @@
 {"mcla_gpu_car_selfrefl_rt_gloss", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_rt_length", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_rt_parts", "MCLA/GPU"},
+{"mcla_gpu_car_selfrefl_source", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_steps", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_strength", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_test", "MCLA/GPU"},

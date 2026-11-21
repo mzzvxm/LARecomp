@@ -544,8 +544,9 @@ class AmbientOcclusion {
   // The shared screen products (screen_shared.h; SS-0): this class's depth chain, normal image and bounce light colour chain are what the owner publishes, and the owner makes the Hi-Z
   // from the depth. The occlusion, the contact shadows and the bounce light declare what they read (ScreenShared::Want, in BeginFrame); the depth chain is handed over at its end
   // (Run); and while a consumer outside this family wants the depth or the Hi-Z (or the debug view shows them) with the occlusion and the contact shadows off, the trigger runs a
-  // frame of the depth pass alone for them (Plan::screen). Not owned; null: nothing is published and nothing changes. Render thread, before the first frame; the renderer's Shutdown
-  // stops this class before the owner.
+  // frame of the depth pass alone for them (Plan::screen). Since SS-1 the bounce light's colour chain (colour_pre) is the owner's too: its images and the call that records it
+  // (ScreenShared::CapturePre), so there is no bounce light without the owner. Not owned; null: nothing is published and the bounce light is off. Render thread, before the first frame;
+  // the renderer's Shutdown stops this class before the owner.
   void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
 
   // The video memory the images hold now.
@@ -878,9 +879,12 @@ class AmbientOcclusion {
   // levels. The colour target is left in the shader-read layout (the apply pass moves it back).
   void RecordColourChain(plume::RenderCommandList* list, const Plan& plan, const Push& base,
                          EdramTargets::Target& colour, uint32_t colour_slot);
-  // The SSGI images: the colour chain's three and the main pass's; given back when the test is off.
+  // The SSGI images: the main pass's and the others, and the colour chain's three (the owner's: ScreenShared::EnsureColourPre); given back when the test is off. False, with the chain's images
+  // not made, where there is no owner (SetScreenShared): no bounce light then.
   bool EnsureGiImages(const Plan& plan);
   void ReleaseGiImages();
+  // The colour chain's image of `level` (0 the AO's size, 1 and 2 half and a quarter of it): the owner's (screen_shared.h). Only while the bounce light runs (the owner is set then).
+  HostImage& Colour(uint32_t level) const;
   // A resolve of the frame into the game's shadow mask page: remembers its texture key.
   void NoteMaskResolve(const ResolveRecord& record);
   // The bindless slot of the game's shadow mask product, if this frame's resolve made it and it is
@@ -1254,9 +1258,8 @@ class AmbientOcclusion {
   // Debug view 6's picture: the temporal pass's weights, in the same format; only while that view
   // is shown.
   HostImage weight_;
-  // The SSGI test's: the colour chain (RGBA16F: the AO's size, then 1/2 and 1/4 of it) and the main
-  // pass's output (RGBA16F: visibility, bounce r, g, b).
-  HostImage colour_[3];
+  // The SSGI test's main pass's output (RGBA16F: visibility, bounce r, g, b). Its colour chain (RGBA16F: the AO's size, then 1/2 and 1/4 of it) is the shared screen products' colour_pre
+  // since SS-1: the images belong to the owner (screen_shared.h EnsureColourPre / ColourPre), this class records the pass into them (Colour(level)).
   HostImage gi_;
   // The bounce's history and denoise (the second step): the denoise's output (also the a-trous filter's
   // first scratch), the history's two images (RGBA16F: visibility, bounce; they take turns and the idle one

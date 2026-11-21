@@ -47,6 +47,7 @@
 #include "ao_temporal_ms_ps.hlsl.dxil.h"
 #include "ao_temporal_ps.hlsl.dxil.h"
 #include "car_history_ms_ps.hlsl.dxil.h"
+#include "car_history_ms_shared_ps.hlsl.dxil.h"
 #include "car_history_ps.hlsl.dxil.h"
 #include "car_rt_ao_cs.hlsl.dxil.h"
 #include "car_rt_check_cs.hlsl.dxil.h"
@@ -91,6 +92,9 @@
 #include "resolve_memory_depth_ms_cs.hlsl.dxil.h"
 #include "resolve_memory_ps.hlsl.dxil.h"
 #include "resolve_memory_vertex_cs.hlsl.dxil.h"
+#include "screen_colour_mip_ps.hlsl.dxil.h"
+#include "screen_colour_ms_ps.hlsl.dxil.h"
+#include "screen_colour_ps.hlsl.dxil.h"
 #include "screen_hiz_ps.hlsl.dxil.h"
 #include "screen_view_ps.hlsl.dxil.h"
 #include "shafts_add_ps.hlsl.dxil.h"
@@ -141,6 +145,7 @@
 #include "ao_temporal_ms_ps.hlsl.spirv.h"
 #include "ao_temporal_ps.hlsl.spirv.h"
 #include "car_history_ms_ps.hlsl.spirv.h"
+#include "car_history_ms_shared_ps.hlsl.spirv.h"
 #include "car_history_ps.hlsl.spirv.h"
 #include "car_rt_ao_cs.hlsl.spirv.h"
 #include "car_rt_check_cs.hlsl.spirv.h"
@@ -185,6 +190,9 @@
 #include "resolve_memory_depth_ms_cs.hlsl.spirv.h"
 #include "resolve_memory_ps.hlsl.spirv.h"
 #include "resolve_memory_vertex_cs.hlsl.spirv.h"
+#include "screen_colour_mip_ps.hlsl.spirv.h"
+#include "screen_colour_ms_ps.hlsl.spirv.h"
+#include "screen_colour_ps.hlsl.spirv.h"
 #include "screen_hiz_ps.hlsl.spirv.h"
 #include "screen_view_ps.hlsl.spirv.h"
 #include "shafts_add_ps.hlsl.spirv.h"
@@ -285,6 +293,15 @@ inline HostShaderBlob ScreenHizPixelShader() {
 
 inline HostShaderBlob ScreenViewPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(screen_view_ps);
+}
+
+// The shared screen products' colour capture (screen_shared.h CapturePost, hlsl/screen_colour_ps.hlsl): 0 level 0 from a plain colour target, 1 from a multisampled one, 2 a mip level.
+inline HostShaderBlob ScreenColourPixelShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(screen_colour_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(screen_colour_ms_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(screen_colour_mip_ps);
+  }
 }
 
 inline HostShaderBlob PresentPixelShader() {
@@ -479,9 +496,13 @@ inline HostShaderBlob SunShaftsPixelShader(uint32_t pass) {
 }
 
 // The car self-reflection history pass (car_selfrefl.h, hlsl/car_history_ps.hlsl), numbered as CarSelfRefl::Pass: 0 from plain
-// planes, 1 from multisampled planes.
+// planes, 1 from multisampled planes, 2 from multisampled depth and stencil planes with the colour taken from the shared screen products' colour_post.
 inline HostShaderBlob CarHistoryPixelShader(uint32_t pass) {
-  return pass == 0 ? MCLA_GPU_HOST_SHADER_BLOB(car_history_ps) : MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_ps);
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(car_history_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_shared_ps);
+  }
 }
 
 // The player's car as ray tracing structures (car_rt_scene.h): the check pass, a compute shader with inline ray queries (Shader Model 6.5,
