@@ -567,7 +567,7 @@ bool GiField::EnsureSlot(uint32_t frame_slot) {
       frames_->Retire(std::move(s.field_set));
       frames_->Retire(std::move(s.view_set));
     }
-    s.field_set = device_->CreateDescriptorSet(field_set_builder_, 1, 0, "gi field set");
+    s.field_set = device_->CreateDescriptorSet(field_set_builder_, 6, 0, "gi field set");  // six views: D3D12 sizes the set by this count, not by the ranges (the same fix as the city shadow's output set). CHECK (run): the D3D12 debug layer accepts the set
     if (!s.field_set) {
       return false;
     }
@@ -578,7 +578,7 @@ bool GiField::EnsureSlot(uint32_t frame_slot) {
     s.field_set->setTexture(field_weight_index_, weight_.texture.get(), plume::RenderTextureLayout::GENERAL, weight_.view.get());
     s.field_set->setBuffer(field_state_index_, state_buffer_.get(), state_bytes_);
     if (view_layout_) {
-      s.view_set = device_->CreateDescriptorSet(view_set_builder_, 1, 0, "gi field view set");
+      s.view_set = device_->CreateDescriptorSet(view_set_builder_, 2, 0, "gi field view set");  // two views
       if (s.view_set) {
         s.view_set->setBuffer(view_rows_index_, s.rows.get(), kUploadBytes);
         s.view_set->setBuffer(view_state_index_, state_buffer_.get(), state_bytes_);
