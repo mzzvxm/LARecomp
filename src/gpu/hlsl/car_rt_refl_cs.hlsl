@@ -611,7 +611,8 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     const float seenShare = saturate(coverage / kVisibleFullShare);
     // The census (a stats frame only: car_rt_hit_rules.h census::): every ray that hit a part counts, and what became of it.
     const bool stats = StatsOn();
-    const float footprint = 2.0 * (distance * coneTan + PixelMeters(hit.z, g_push.lens.y, g_push.image.y));
+    // abs: the view z of a hit behind the camera is negative, which would make the footprint (and so the texture level the shading reads) negative: the sharpest level, shimmering.
+    const float footprint = 2.0 * (distance * coneTan + PixelMeters(abs(hit.z), g_push.lens.y, g_push.image.y));
     if (stats)
     {
         StatAdd(kStatRays, 1u);
