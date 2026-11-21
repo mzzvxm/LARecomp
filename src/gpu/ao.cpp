@@ -24,6 +24,7 @@
 #include "car_rt_ao.h"
 #include "scene_noise.h"
 #include "car_shadow_map.h"
+#include "city_rt_shadow.h"
 #include "contact_trace.h"
 #include "descriptors.h"
 #include "device.h"
@@ -1070,6 +1071,10 @@ void AmbientOcclusion::BeginFrame() {
     // (The contact shadows' gate is the last frame's judgment: a night's frame with the occlusion off builds nothing for a term that cannot run.)
     rt_ao_->BeginFrame(mode_ != Mode::kOff, contact_mode_ != Mode::kOff && contact_state_ != ContactState::kGated);
   }
+  if (city_shadow_) {
+    // === CITY-RT BLOCK (city_rt_shadow.h, CITY-RT M1): the city's ray traced sun shadows are read by the contact march, so they are wanted where it runs (the same last-frame gate as above).
+    city_shadow_->BeginFrame(contact_mode_ != Mode::kOff && contact_state_ != ContactState::kGated);
+  }
   if (gbuffer_) {
     // The G-buffer's normal plane (GB-E; ao_gbuffer.h): asked for while one of the effects that read it is on, so that the sidecar is made, and its writes paid for, only where they
     // run. The setting is the A/B: off asks for nothing and the passes take the depth's normals, to the bit. Sticky in the G-buffer (it reads the wants at its next frame boundary).
@@ -1123,6 +1128,9 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   add(car_sun_lookup_);
   if (rt_ao_) {
     bytes += rt_ao_->HeldBytes();
+  }
+  if (city_shadow_) {
+    bytes += city_shadow_->HeldBytes();
   }
   return bytes;
 }
@@ -2630,6 +2638,24 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       rt_contact_slot_ = rt.slot;
     }
   }
+  // === CITY-RT BLOCK (city_rt_shadow.h, CITY-RT M1): the sun's rays against the city's structures and the cars, over the whole picture, into an image of the car's layout; where the car's own
+  // pass was recorded its g channel is combined (the darker). The contact march reads this image in place of the car's alone.
+  if (city_shadow_ && city_shadow_->wanted() && contact) {
+    CityRtShadow::Inputs city_in;
+    city_in.depth = &depth_[0];
+    city_in.tan_x = base.lens[0];
+    city_in.tan_y = base.lens[1];
+    for (int i = 0; i < 3; ++i) {
+      city_in.to_sun[i] = base.light[i];
+    }
+    city_in.sun_frame = plan.upscaler ? uint32_t(frame_ & 1023) : 0u;  // a fixed pattern unless a temporal upscaler averages the frames, as the march's
+    city_in.car_slot = (rt.recorded && rt.contact) ? rt.slot : CityRtShadow::kNoSlot;
+    city_in.frame = frame_;
+    const CityRtShadow::Result city = city_shadow_->Record(list, city_in);
+    if (city.recorded) {
+      rt_contact_slot_ = city.slot;
+    }
+  }
 
   // The visibility image the apply pass reads for the occlusion's term (the depth image stands in
   // while the term is off: the apply pass does not read it then).
@@ -3309,6 +3335,12 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
                                       double(contact_trace::kFadeStartMax)));
   c.fade_start = kContactFadeStart;
   c.fade_end = kContactFadeEnd;
+  if (city_shadow_ && city_shadow_->FadeRange() > kContactFadeEnd) {
+    // === CITY-RT BLOCK: the traced sun term holds as far as the structures are the game's own hi detail (city_rt_shadow.h FadeRange), so the contact term reaches that far. CHECK: the short march
+    // runs on the pixels the longer fade keeps, a cost the run plan measures (perf/CITY-RT-M1-RUNPLAN.md R4).
+    c.fade_end = city_shadow_->FadeRange();
+    c.fade_start = 0.5f * c.fade_end;
+  }
   c.mask_gain = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_mask_gain.Get(), 0.5, 4.0));
   c.under_vehicle = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_vehicles.Get(), 0.0, 1.0));
   c.light_chroma = contact_trace::PackChroma(ambient, sun);  // the shadow takes the sun's colour away, not a grey share of it (contact_trace.h)

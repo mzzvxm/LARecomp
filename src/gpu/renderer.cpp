@@ -21,6 +21,7 @@
 #include "backend.h"
 #include "device_fault_format.h"
 #include "gpu.h"
+#include "citypack/pack_format.h"
 #include "guest_capture.h"
 #include "hdr.h"
 #include "native_gfx/guest/guest_fence.h"
@@ -209,6 +210,15 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_refl_.SetCarRtRefl(&car_rt_refl_);
     // And the ray traced occlusion and sun term around the car (ao.h, car_rt_ao.h): the occlusion's own pass, with the same structures.
     ao_.InitializeCarRt(&car_rt_, &car_frame_);
+    // === CITY-RT BLOCK (city_rt_scene.h, city_rt_shadow.h; CITY-RT M1): the city's geometry (the city pack the launcher builds, in the shader pack folder's `city` folder) as ray tracing
+    // structures that join the car scene's top level, and the sun's shadows traced against them, read by the contact march. Both make nothing until the setting asks (mcla_gpu_rt_shadows;
+    // auto is the High class), and nothing at all without ray queries.
+    {
+      city_rt_.Initialize(device_, frames_, upload_, pass_timing_, ShaderPackFolder() / "city" / larecomp::citypack::kPackFileName, gpu_class::Current());
+      car_rt_.SetCityScene(&city_rt_);
+      city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, /*listed_at_start=*/true);
+      ao_.SetCityRtShadow(&city_shadow_);
+    }
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -301,6 +311,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
     car_dump_.Shutdown();
+    city_shadow_.Shutdown();  // before the car scene it traces against and the pipelines' owner
+    city_rt_.Shutdown();
     car_rt_refl_.Shutdown();
     car_rt_.Shutdown();
     car_frame_.Shutdown();
@@ -477,6 +489,8 @@ void Renderer::Shutdown() {
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
   car_dump_.Shutdown();
+  city_shadow_.Shutdown();
+  city_rt_.Shutdown();
   car_rt_refl_.Shutdown();
   car_rt_.Shutdown();
   car_frame_.Shutdown();

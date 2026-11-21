@@ -15,6 +15,7 @@
 
 #include "ao.h"
 #include "car_rt_refl_rules.h"
+#include "city_rt_scene.h"
 #include "descriptors.h"
 #include "device.h"
 #include "edram.h"
@@ -717,8 +718,21 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     std::memcpy(instance.transform.m, item.transform, sizeof(item.transform));
     instances.push_back(instance);
   }
-  const std::vector<rr::InstanceRow>& rows = cars.rows;  // the instances' rows, then the other cars' records: one table
+  // The instances' rows, then the other cars' records: one table. A top level that holds only the city (no car has a built mesh yet) still has a table of one row (the buffer is made
+  // for the set; no instance names it).
+  static const std::vector<rr::InstanceRow> kOneRow(1);
+  const std::vector<rr::InstanceRow>& rows = cars.rows.empty() ? kOneRow : cars.rows;
   // === END OF THE RT-CARS BLOCK ===
+
+  // === CITY-RT BLOCK (city_rt_scene.h, CITY-RT M1): the city's structures join the top level. They are read, planned and built here (recorded on this list), and their instances are
+  // described in the frame's view space with the cars' own transform and the mask kMaskCity, which none of the cars' passes traces and the city's shadow pass does. Nothing when the
+  // city scene is off or has no pack.
+  bool city_recorded = false;
+  if (city_ != nullptr && city_->wanted()) {
+    city_->Prepare(frame.view, flip_z, list, slot, &instances);
+    city_recorded = city_->recorded();
+  }
+  // === END OF THE CITY-RT BLOCK ===
 
   // The top level's own description and the slot's buffers for it (the slot's GPU work is done: the FrameRing waited for it).
   SlotResources& res = slots_[slot];
@@ -730,7 +744,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   const bool slot_ok = count != 0 ? EnsureSlot(res, slot, tlas_info.accelerationStructureSize, std::max(scratch_needed, tlas_info.scratchSize),
                                                 tlas_info.instancesBufferData.size(), uint64_t(rows.size()) * sizeof(rr::InstanceRow))
                                   : (scratch_needed == 0 || EnsureSlot(res, slot, 0, scratch_needed, 0, 0));
-  bool recorded = !placed.empty();
+  bool recorded = !placed.empty() || city_recorded;
   if (!slot_ok) {
     // The builds cannot be recorded (no scratch): a mesh whose structure was never built must not reach a top level, so the meshes
     // placed in this frame go back (their copies are recorded already; the ranges are reused after the GPU is done with them).

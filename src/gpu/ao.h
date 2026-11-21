@@ -428,6 +428,7 @@ class CarFrame;      // car_frame.h: the player's car's draws and box of a frame
 class CarRtAo;       // car_rt_ao.h: the ray traced occlusion and sun term around the player's car
 class CarRtScene;    // car_rt_scene.h: the player's car as ray tracing structures
 class CarShadowMap;  // car_shadow_map.h: the player's car's own sun shadow map; the contact march reads it
+class CityRtShadow;  // city_rt_shadow.h: the city's ray traced sun shadows (CITY-RT M1); the contact march reads its image
 class Device;
 class FrameRing;
 class GBuffer;       // gbuffer.h: the normal plane the passes read (GB-E)
@@ -539,6 +540,9 @@ class AmbientOcclusion {
   // frame that published one, make a normal image from it (see THE G-BUFFER'S NORMALS above). Not owned; null: the passes take the depth's normal, as they always did. Render thread,
   // before the first frame; the renderer's Shutdown stops the occlusion before the G-buffer.
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
+  // The city's ray traced sun shadows (city_rt_shadow.h; CITY-RT M1): BeginFrame tells it whether the contact march runs, Run records its pass after the car's ray traced one and
+  // hands the contact march its image (rt_contact_slot_), and the contact term's distance fade follows the range it holds. Not owned; null: none. Render thread, before the first frame.
+  void SetCityRtShadow(CityRtShadow* shadow) { city_shadow_ = shadow; }
 
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
@@ -1145,6 +1149,7 @@ class AmbientOcclusion {
   // The ray traced occlusion and sun term (car_rt_ao.h), made by InitializeCarRt where the device can trace the car. rt_contact_slot_ is the bindless slot of this
   // frame's traced image for the contact march (the sun ray was traced), 0xFFFFFFFF where none was.
   std::unique_ptr<CarRtAo> rt_ao_;
+  CityRtShadow* city_shadow_ = nullptr;  // the city's ray traced sun shadows (SetCityRtShadow), not owned
   uint32_t rt_contact_slot_ = 0xFFFFFFFFu;
   bool rt_contact_logged_ = false;
 

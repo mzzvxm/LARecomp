@@ -114,6 +114,7 @@ namespace mcla::gpu {
 
 class AmbientOcclusion;
 class BindlessHeap;
+class CityRtScene;
 class Device;
 class EdramTargets;
 class PassTiming;
@@ -202,6 +203,10 @@ class CarRtScene final : public car_frame::Listener {
   const CarRtView& View() const { return view_; }
   // The set's layout, for the caller's pipeline layout.
   const plume::RenderDescriptorSetDesc& SetDesc() const { return set_builder_.descriptorSetDesc; }
+
+  // CITY-RT M1 (city_rt_scene.h): the city's structures join this scene's top level. OnResolve asks the city scene to read, plan and build (on this list) and to describe its
+  // instances in the same view space, with the cars' own transform and the mask kMaskCity (0x80: none of the cars' passes traces that bit). Null: no city.
+  void SetCityScene(CityRtScene* city) { city_ = city; }
 
   // The video memory the structures, the shared buffers and the per-slot buffers hold now.
   uint64_t HeldBytes() const;
@@ -383,6 +388,7 @@ class CarRtScene final : public car_frame::Listener {
   uint32_t staged_triangles_ = 0;        // read this frame
   uint32_t staged_triangles_other_ = 0;  // ... of them for other cars (their own budget inside it)
   CarRtInstances instances_;  // the frame's instance list: the player's draws and the other cars' (car_rt_instances.h)
+  CityRtScene* city_ = nullptr;  // the city's structures (SetCityScene), not owned
   // The cars the camera does not see (car_rt_memory_rules.h): the kits of the cars that were drawn, and this frame's placements.
   car_rt_memory::CarMemory memory_;
   car_rt_memory::CarMemory::Output remembered_;
