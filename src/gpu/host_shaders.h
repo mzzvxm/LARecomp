@@ -79,6 +79,8 @@
 #include "gi_field_reset_cs.hlsl.dxil.h"
 #include "gi_field_view_ps.hlsl.dxil.h"
 #include "gi_field_weights_cs.hlsl.dxil.h"
+#include "gi_update_blend_cs.hlsl.dxil.h"
+#include "gi_update_trace_cs.hlsl.dxil.h"
 #include "hdr_compose_ps.hlsl.dxil.h"
 #include "layers_resolve_ps.hlsl.dxil.h"
 #include "layers_restore_ps.hlsl.dxil.h"
@@ -196,6 +198,8 @@
 #include "gi_field_reset_cs.hlsl.spirv.h"
 #include "gi_field_view_ps.hlsl.spirv.h"
 #include "gi_field_weights_cs.hlsl.spirv.h"
+#include "gi_update_blend_cs.hlsl.spirv.h"
+#include "gi_update_trace_cs.hlsl.spirv.h"
 #include "hdr_compose_ps.hlsl.spirv.h"
 #include "layers_resolve_ps.hlsl.spirv.h"
 #include "layers_restore_ps.hlsl.spirv.h"
@@ -336,6 +340,16 @@ inline HostShaderBlob GiFieldWeightsShader() {
 
 inline HostShaderBlob GiFieldViewShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(gi_field_view_ps);
+}
+
+// The probe update's passes (gi_update.h, CITY-RT M3 package G2): the trace (inline ray queries against the top level, Shader Model 6.5, the city hit library in GI mode) and the blend (Shader Model 6.0,
+// typed RGBA16F / RG16F storage image loads and stores).
+inline HostShaderBlob GiUpdateTraceShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_update_trace_cs);
+}
+
+inline HostShaderBlob GiUpdateBlendShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_update_blend_cs);
 }
 
 // The probe field's apply (gi_apply.h, CITY-RT M3 package G3): 0 the lookup at the traced size, 1 the same over multisampled planes, 2 the apply, 3 the apply over multisampled planes, 4 the apply that takes

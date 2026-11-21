@@ -63,6 +63,8 @@ class PassTiming {
 
   // The labels by GPU time per frame since the last call, then a new window.
   std::string TakeSummary();
+  // The milliseconds a frame spends under `label` over the window so far (0: no such label, or no frame measured yet). Render thread. The probe update's census line reads its two labels with it.
+  double LabelMsPerFrame(std::string_view label) const;
 
   // The passes of the frames whose command lists may still have been on the GPU, in the order
   // they were recorded -- the oldest frame in flight first, the frame being recorded last: what

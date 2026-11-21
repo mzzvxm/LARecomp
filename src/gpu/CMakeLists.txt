@@ -55,6 +55,7 @@ add_library(larecomp_gpu OBJECT
     gi_apply.cpp
     gi_field.cpp
     gi_integration.cpp
+    gi_update.cpp
     gi_setting.cpp
     gbuffer_material.cpp
     gbuffer_materials.cpp
@@ -310,6 +311,11 @@ add_executable(larecomp_gi_frame_test EXCLUDE_FROM_ALL gi_frame_test.cpp)
 # against a brute force, and reads the three gi_field_*.hlsl files for their registers) likewise:
 #   cmake --build <build dir> --target larecomp_gi_field_rules_test, then run src/gpu/larecomp_gi_field_rules_test [-v] [<hlsl dir>] (exit 0 = passed).
 add_executable(larecomp_gi_field_rules_test EXCLUDE_FROM_ALL gi_field_rules_test.cpp)
+# The probe update's rules (gi_update_rules.h, CITY-RT M3 package G2: the ray set and its rotation, the ray record, the inside / back face classification, the blend with adaptive hysteresis, the scheduler
+# (dirty and stale probes, the round robin, the safe range, the warm-up and the governor's scales), the governor, the budgets of the cells, the census lines; it compiles hlsl/gi_update_common.hlsli as C++
+# and compares it with the twin and with gi_frame.h's IntegrateTexel, and reads the two shaders' registers, the CMake lines, host_shaders.h and the wiring) likewise:
+#   cmake --build <dir> --target larecomp_gi_update_rules_test, then run src/gpu/larecomp_gi_update_rules_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_gi_update_rules_test EXCLUDE_FROM_ALL gi_update_rules_test.cpp)
 # The probe field's apply (gi_apply_rules.h, CITY-RT M3 package G3: the identity of an empty or open field, the ceiling and the cap, the parity with the screen-space bounce light's rules, the vehicle share,
 # the SSGI switch, the upsample's weights, the buffer's rows, the leak test; it compiles hlsl/gi_apply_common.hlsli together with gi_common.hlsli as C++ and compares them with the twin, and reads the
 # shader's registers, the CMake lines, host_shaders.h and the settings) likewise:
@@ -984,6 +990,10 @@ larecomp_gpu_host_shader_rt(city_hit_probe_cs cs_6_5)
 larecomp_gpu_host_shader(gi_field_reset_cs cs_6_0)
 larecomp_gpu_host_shader(gi_field_weights_cs cs_6_0)
 larecomp_gpu_host_shader(gi_field_view_ps ps_6_0)
+# The probe update's passes (gi_update.h, CITY-RT M3 package G2): the trace (inline ray queries against the top level, the city hit library in GI mode: Shader Model 6.5, SPIR-V 1.5 on Vulkan) and the blend (typed
+# RGBA16F and RG16F storage image loads and stores with the format given to SPIR-V).
+larecomp_gpu_host_shader_rt(gi_update_trace_cs cs_6_5)
+larecomp_gpu_host_shader(gi_update_blend_cs cs_6_0)
 # The probe field's apply (gi_apply.h, CITY-RT M3 package G3): the lookup at the occlusion's traced size and the additive apply at the picture's size, each for plain and multisampled planes (the apply also
 # without and with the upsample from the lookup's image); one source, hlsl/gi_apply_ps.hlsl.
 larecomp_gpu_host_shader(gi_apply_lookup_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=0 GIA_UP=0)

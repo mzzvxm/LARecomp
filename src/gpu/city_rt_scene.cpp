@@ -557,6 +557,21 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     structure_bytes_ += j.size;
     counts_.triangles += target.triangles;
     ++counts_.builds;
+    {
+      // the probe update's log (DrainBuilt): the sector's box in the world
+      const citypack::SectorRecord& built_rec = pack_.sector(s.sector);
+      if (built_log_.size() < kBuiltLogMax) {
+        BuiltBox box;
+        for (int a = 0; a < 3; ++a) {
+          box.lo[a] = double(built_rec.aabb_min[a]);
+          box.hi[a] = double(built_rec.aabb_max[a]);
+        }
+        box.hi_detail = s.detail == city_rt::Detail::kHi;
+        built_log_.push_back(box);
+      } else {
+        ++built_dropped_;
+      }
+    }
     counts_.build_triangles += target.triangles;
     city_rt::SectorState& st = states_[s.sector];
     (s.detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kResident;
@@ -678,6 +693,17 @@ float CityRtScene::SafeRange(float game_hi_radius) const {
   std::memcpy(in.camera, camera_, sizeof(in.camera));
   in.budget = budget_;
   return city_rt::SafeReceiverRange(in, sectors_, states_, game_hi_radius);
+}
+
+void CityRtScene::DrainBuilt(std::vector<BuiltBox>* out, uint32_t* dropped) {
+  if (out != nullptr) {
+    out->insert(out->end(), built_log_.begin(), built_log_.end());
+  }
+  if (dropped != nullptr) {
+    *dropped = built_dropped_;
+  }
+  built_log_.clear();
+  built_dropped_ = 0;
 }
 
 CityRtScene::Stats CityRtScene::stats() const {
