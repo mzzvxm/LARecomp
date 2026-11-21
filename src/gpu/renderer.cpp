@@ -269,6 +269,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       }
       city_rt_.SetHitScene(&city_hit_);
       rt_scene_.Initialize(&car_rt_, &city_rt_, &city_hit_);
+      car_rt_refl_.SetSceneService(&rt_scene_);  // CITY-RT M2 R1/R2: the city in the car paint's reflections asks the service for the structures, the hit data and the textures (city_refl.h)
       car_rt_.SetCityScene(&city_rt_);
       car_rt_.SetService(&rt_scene_, &city_hit_);
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);

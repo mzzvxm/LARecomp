@@ -387,6 +387,14 @@ void ColourChecks() {
   Check(!sc::ColourPostWithMips(wants, sc::View::kOff, 0), "the car history's want makes no mips");
   wants.Set(Consumer::kReflections, ProductBit(sc::kColourPost));
   Check(sc::ColourPostWithMips(wants, sc::View::kOff, 0), "the reflections' want makes the mips");
+  {
+    // CITY-RT M2: the ray traced reflections of the car paint read the city hits' colour at the mip of the hit's footprint: their want makes the mips too
+    sc::Wants rt;
+    rt.Set(Consumer::kCarRtRefl, ProductBit(sc::kColourPost) | ProductBit(sc::kLinDepth));
+    Check(sc::ColourPostWithMips(rt, sc::View::kOff, 0), "the car ray traced reflections' want of colour_post makes the mips");
+    rt.Set(Consumer::kCarRtRefl, ProductBit(sc::kLinDepth));
+    Check(!sc::ColourPostWithMips(rt, sc::View::kOff, 0), "... a want of lin_depth alone makes none");
+  }
   sc::Wants none;
   Check(sc::ColourPostWithMips(none, sc::View::kColourPost, 2) && !sc::ColourPostWithMips(none, sc::View::kColourPost, 0) && !sc::ColourPostWithMips(none, sc::View::kHistory, 3),
         "a view of colour_post above level 0 makes the mips, level 0 and the history view do not");

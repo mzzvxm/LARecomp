@@ -134,6 +134,7 @@
 #include <plume_render_interface.h>
 
 #include "car_selfrefl_rules.h"
+#include "city_refl.h"
 #include "constants.h"
 #include "draw_state.h"
 #include "edram.h"
@@ -237,6 +238,8 @@ class CarSelfRefl {
   bool IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
   // The shared colour_post when this frame's history pass may read it (the source setting allows, the frame has it, and it is the picture's size: pixel for pixel the pass's own colour); else null.
   const HostImage* SharedColour(uint32_t render_width, uint32_t render_height) const;
+  // CITY-RT M2: the picture's products for the city's hits in the reflection pass's history info (car_rt_refl.h): lin_depth level 0 and colour_post's chain; invalid where the pass wants none or the frame has none.
+  void FillCityScreen(CityRefl::ScreenIn* out) const;
   EdramTargets::Target* ColourTarget(const EdramKey& key, plume::RenderCommandList* list);
   bool RecordHistory(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
   plume::RenderPipeline* Pipeline(uint32_t pass);

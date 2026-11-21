@@ -33,6 +33,7 @@ add_library(larecomp_gpu OBJECT
     local_shadow.cpp
     car_rt_refl.cpp
     car_rt_opp_refl.cpp
+    city_refl.cpp
     capture_readback.cpp
     choice_box.cpp
     constants.cpp
@@ -455,6 +456,12 @@ add_executable(larecomp_city_hit_shade_rules_test EXCLUDE_FROM_ALL city_hit_shad
     "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
 target_include_directories(larecomp_city_hit_shade_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(larecomp_city_hit_shade_rules_test PRIVATE cxx_std_23)
+# The city in the car paint's reflections (CITY-RT M2 R1, R2: city_refl_rules.h: the mask, the levels and cells by class and tier, the opponents' budget, the lamp schedule, the constants rows the shader reads,
+# the counters and the census lines; given the src folder it also checks that hlsl/city_refl.hlsli, car_rt_refl_cs.hlsl, the host and the settings hold the header's numbers):
+#   cmake --build <dir> --target larecomp_city_refl_rules_test, then run src/gpu/larecomp_city_refl_rules_test <src dir> (exit 0 = passed).
+add_executable(larecomp_city_refl_rules_test EXCLUDE_FROM_ALL city_refl_rules_test.cpp)
+target_include_directories(larecomp_city_refl_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_refl_rules_test PRIVATE cxx_std_23)
 # The city's ray traced sun shadows' maths (city_rt_shadow_rules.h: the sun, the disc samples, the lift, the alpha rule, the noise hash; a brute force tracer over made-up
 # triangles checks the penumbra of a roof's edge against the exact disc integral, contact hardening, no acne on a plane at every sun height; given the src/gpu folder it also
 # checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:

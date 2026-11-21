@@ -129,9 +129,10 @@ constexpr uint64_t ColourPostBytes(uint32_t width, uint32_t height, uint32_t lev
   }
   return total;
 }
-// Whether the colour_post chain is made with its mips: while the reflections consumer wants colour_post (nothing else reads a level above 0), or the debug view shows a level above 0.
+// Whether the colour_post chain is made with its mips: while the reflections consumer wants colour_post, or the ray traced reflections of the car paint (CITY-RT M2: a hit on the city is read at the mip of
+// its footprint) do (nothing else reads a level above 0), or the debug view shows a level above 0.
 constexpr bool ColourPostWithMips(const Wants& wants, View view, uint32_t view_level) {
-  return (wants.Of(Consumer::kReflections) & (1u << kColourPost)) != 0 || (view == View::kColourPost && view_level > 0);
+  return (wants.Of(Consumer::kReflections) & (1u << kColourPost)) != 0 || (wants.Of(Consumer::kCarRtRefl) & (1u << kColourPost)) != 0 || (view == View::kColourPost && view_level > 0);
 }
 
 // The exposure bias as the camera carries it: the factor between the shaders' output and what the main colour target (and so colour_post) holds, 2^exp_bias (the main target's bias is 4: 16).

@@ -557,7 +557,8 @@ int main(int argc, char** argv) {
             "the host's push blocks are the shader's: 96 bytes with coat, 112 with the opponents' opp");
       Check(Has(host, "car_rt_hit::LevelWith(car_rt_hit::LevelFor(gpu_class::Current()), double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),") &&
                 Has(host, "double(larecomp::settings::mcla_gpu_car_rt_clearcoat.Get()));") && Has(host, "car_rt_hit::CastReach(parts, self_reach, others_reach)") &&
-                Has(host, "car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays)") && Has(host, "push.coat[0] = self_reach;") && Has(host, "push.coat[1] = others_reach;") &&
+                Has(host, "car_rt_hit::PackPhaseRays(info.pattern_phase, cone_rays)") && Has(host, "const uint32_t cone_rays = city.on ? std::min(level.cone_rays, city.cell.cone_rays) : level.cone_rays;") &&
+                Has(host, "push.coat[0] = self_reach;") && Has(host, "push.coat[1] = others_reach;") &&
                 Has(host, "push.coat[2] = level.others_fade_from;") && Has(host, "push.coat[3] = level.coat;") && Has(host, "float(info.tan_y), length, tan_half);"),
             "the host's push is the level's: the reaches, the fade, the clear coat's gain, the cone's rays; the denoise decodes distances by the reach that was cast");
       Check(Has(opp_cpp, "std::memcpy(&push, f.base_push, kBasePushBytes);"), "the opponents' push is the player's with opp");
@@ -590,14 +591,14 @@ int main(int argc, char** argv) {
         Check(Has(refl, "RWByteAddressBuffer g_stats : register(u2, space1);") && Has(refl, "return (g_push.slots.w & kStatsFlag) != 0u;") && Has(refl, "g_stats.InterlockedAdd(word * 4u, value, original);") &&
                   Has(refl, "return uint(clamp((log2(max(luminance, kLogFloor)) + kLogBias) * kLogScale, 0.0, kLogMax));") && Has(refl, "return dot(colour, float3(0.2126, 0.7152, 0.0722));"),
               "the shader counts in a stats frame only, into the buffer at u2, with the header's luminance and fixed-point log");
-        Check(Has(refl, "if (hitsOther && usable)") && Has(refl, "CensusCalibrate(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, seen);") &&
+        Check(Has(refl, "if (hitsOther && usable)") && Has(refl, "CensusCalibrate(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, seen);") &&
                   Has(refl, "if (gCarHitClass == CAR_MAT_CLASS_PAINT)") && Has(refl, "CensusShaded(seenShare, shaded);") && Has(refl, "StatAdd(kStatDropped, 1u);") && Has(refl, "StatAdd(kStatStandIn, 1u);"),
               "the exposure's samples are hits on another car's parts the history shows in full (the player's own car in the opponents' pass is no sample), the paint's drive the gain; every outcome is counted");
         Check(Near(Constant(hlsli, "static const float kRtHitFillShare"), crm::kFillShare) && Has(hlsli, "const float3 fill = max(f.ambient, f.sun * kRtHitFillShare);") &&
                   Has(hlsli, "return fill * (f.ambientGain * hemisphere);") && Has(hlsli, "const float3 light = RtHitAmbientLight(f, hemisphere) + f.sun * (ndl * visible);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;"),
               "the shader's sky fill is ShadeReference's");
         Check(Has(host, "output_builder_.addReadWriteByteAddressBuffer(2);") && Has(host, "bool CarRtRefl::MakeStatsBuffers(Device& device) {") &&
-                  Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame);") &&
+                  Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, cone_rays), stats_frame);") &&
                   Has(host, "out.set->setBuffer(2, stats, car_rt_hit::census::kBytes);") && Has(host, "stats ? 3u : (second ? 2u : 1u)") &&
                   Has(host, "EnsureSet(trace_set_, output_builder_, image_, &aux_, \"car rt refl output set\", stats_.get())") &&
                   Has(host, "frames_->RetireAction([this, frame = info.frame, generation = stats_generation_] { ProcessStats(frame, generation); });") &&

@@ -274,6 +274,11 @@ void CarSelfRefl::BeginFrame() {
   }
   if (rt_) {
     rt_->BeginFrame(mode != Mode::kOff);  // the ray traced image of this frame's trigger, where it is wanted and can be made
+    if (screen_) {
+      // CITY-RT M2: the city in the reflections reads the picture where a hit is on the screen (ResolveHit): colour_post with its mip chain and lin_depth, wanted while it is on (0 withdraws). Declared after
+      // the owner has read its wants for the frame (frame_order.h kBeginCarRefl), so the first frame after a switch has none: its hits are shaded by the model alone.
+      screen_->Want(screen::Consumer::kCarRtRefl, rt_->ScreenProducts());
+    }
   }
 }
 
@@ -522,9 +527,46 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     // While a scene runs the phase follows the scene's update number like the other noise (scene_noise.h): the same scene frame gets the same ray pattern.
     info.pattern_phase = upscaler_running_ ? uint32_t(scene_noise::Index(frame_) & 7u) : 0u;
     info.exp_bias = exp_bias_;
+    FillCityScreen(&info.screen);
     rt_->OnHistory(list, info);
   }
   return true;
+}
+
+// The picture's products for the city's hits (CITY-RT M2, car_rt_refl.h): lin_depth level 0 and colour_post's mip chain, as the screen owner published them this frame; invalid while the pass wants none,
+// the frame has not got both, or it is the pause menu's or the map's world.
+void CarSelfRefl::FillCityScreen(CityRefl::ScreenIn* out) const {
+  *out = CityRefl::ScreenIn{};
+  if (!screen_ || !rt_ || rt_->ScreenProducts() == 0) {
+    return;
+  }
+  const screen::ScreenFrame& sf = screen_->Frame();
+  if (!sf.Has(screen::kLinDepth) || !sf.Has(screen::kColourPost) || (sf.flags & screen::kFramePause) != 0) {
+    return;
+  }
+  const HostImage* depth = screen_->Image(screen::kLinDepth, 0);
+  const HostImage* colour = screen_->Image(screen::kColourPost, 0);
+  if (!depth || !depth->texture || depth->slot == kNoSlot || !colour || !colour->texture || colour->slot == kNoSlot) {
+    return;
+  }
+  out->depth_slot = depth->slot;
+  out->depth_width = depth->width;
+  out->depth_height = depth->height;
+  out->depth = depth->texture.get();
+  out->colour_width = colour->width;
+  out->colour_height = colour->height;
+  uint32_t levels = 0;
+  for (uint32_t level = 0; level < std::min(sf.colour_post_levels, city_refl::kMaxColourLevels); ++level) {
+    const HostImage* image = screen_->Image(screen::kColourPost, level);
+    if (!image || !image->texture || image->slot == kNoSlot) {
+      break;  // a chain with a gap: the levels before it are what the pass reads
+    }
+    out->colour_slots[level] = image->slot;
+    out->colour[level] = image->texture.get();
+    ++levels;
+  }
+  out->colour_levels = levels;
+  out->valid = levels != 0;
 }
 
 // CHECK (not run): the history pass from the shared colour_post is the same image as from the main colour's planes (mcla_gpu_car_selfrefl_source 1 against 2 at 1080 lines and below, MSAA 1, 2, 4 and 8,

@@ -1001,7 +1001,7 @@ int main(int argc, char** argv) {
                 Has(hlsli, "RtHitSunVisible(hit + normal * (0.004 + 0.002 * hit.z), toSun, f.shadowReach, CAR_RT_MASK_ALL)") && Has(hlsli, "visible = RtHitCascadeVisible(f, hit, normal);") &&
                 Has(hlsli, "const float3 light = RtHitAmbientLight(f, hemisphere) + f.sun * (ndl * visible);") && Has(hlsli, "env = RtHitEnvRead(f, world, lod);"),
             "the car's shading reads the frame's rows from the car's own buffer, and the cascades, the sun's ray, the ambient and the environment map through the shared code");
-      Check(Has(refl, "#include \"car_rt_hit_shade.hlsli\"") && Has(refl, "static const bool kShadePlayerHits = true;") && Has(refl, "isShaded = CarHitShade(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, g_push.up.w, shaded);") &&
+      Check(Has(refl, "#include \"car_rt_hit_shade.hlsli\"") && Has(refl, "static const bool kShadePlayerHits = true;") && Has(refl, "isShaded = CarHitShade(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, g_push.up.w, shaded);") &&
                 Has(refl, "if (seenShare < 1.0 && usable && (hitsOther || kShadePlayerHits))"),
             "the trace shades a hit on another car (and, in the opponents' variant, on the player's) only where the history does not show it in full");
       Check(Has(refl, "hidden = shaded;") && Has(refl, "else if (hitsOther)") && Has(refl, "hidden *= g_push.tune.x;") && Has(refl, "const float known = OtherCarColour(history, CarRtLoadCar(hitInstance), hidden);"),

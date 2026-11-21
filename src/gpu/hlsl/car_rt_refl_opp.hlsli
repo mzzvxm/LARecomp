@@ -54,6 +54,7 @@ float PlayerCarColour(Texture2D<float4> history, out float3 colour)
 float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4 aux)
 {
     aux = float4(0.0, 0.0, 0.0, 0.0);
+    gCityTexel = texel;  // the noise of the city hits' sun rays (city_refl.hlsli)
     const float t = own.a;
     const float divisor = g_push.lens.z;
     const float2 render = g_push.image.zw;
@@ -97,6 +98,11 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
     if (nv < kMinNv)
     {
         return float4(0.0, 0.0, 0.0, 1.0);  // grazing: the paint does not trace it either (a miss: nothing changes)
+    }
+
+    if (CityReflOn(g_push.slots.y) && CityReflStatsOn())
+    {
+        CityStat(kCityStatTexels, 1u);  // a texel of another car's paint that casts city rays (CITY-RT M2 R2), in a frame the city's counters count
     }
 
     // 2. the clear coat's ray and the cone of reflection rays, off the surface along the normal: as the player's, with the push's number of rays (the level's at most)

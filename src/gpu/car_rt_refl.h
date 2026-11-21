@@ -56,6 +56,12 @@
 // the chrome variant (version 2) reads in place of its march. The paint never takes the other cars' own paint from here: it has no data there, as before.
 // mcla_gpu_car_chrome_rt_others (debug) is the A/B; it needs mcla_gpu_car_chrome_occlusion. Nothing changes for the player's own car, nor on a device that cannot trace.
 //
+// THE CITY (CITY-RT M2 R1 and R2; city_refl_rules.h has the design, city_refl.h the host, hlsl/city_refl.hlsli the shader): with mcla_gpu_rt_reflections not off (auto is high on a strong ray tracing card) the
+// reflection ray's parts have the city's bit (0x80) and a ray that finds none of the cars' parts goes on into the city's structures in the same top level: its hit is the picture's own colour where it is on
+// the screen (colour_post and lin_depth at the trigger) and is shaded from its material where it is not (the city hit library), by the fade of its distance over the level's reach (HIGH 150 m, ULTRA 1,000 m).
+// The image's codes are the same, the paint's variant is unchanged. The cast length, the cone's rays and the opponents' budget follow the level's cell; the set 3 of the layout carries the city's rows and counters
+// and the push block is in space 4. The `[city refl]` census lines are CityRefl's.
+//
 // WHAT IT DOES, at the same trigger as the history image (CarSelfRefl::RecordHistory, right after it): one compute pass
 // (hlsl/car_rt_refl_cs.hlsl, cs_6_5, inline ray queries) with a thread for every texel of the history image. A texel that holds a
 // vehicle's pixel casts a primary ray from the camera against the car's opaque parts in a narrow window around the pixel's distance: a hit
@@ -161,6 +167,7 @@
 #include "car_rt_opp_refl.h"
 #include "car_rt_refl_rules.h"
 #include "car_selfrefl_rules.h"
+#include "city_refl.h"
 #include "host_passes.h"
 
 namespace mcla::gpu {
@@ -170,6 +177,7 @@ class CarRtScene;
 class Device;
 class FrameRing;
 class PassTiming;
+class RtSceneService;
 
 class CarRtRefl {
  public:
@@ -205,6 +213,7 @@ class CarRtRefl {
     uint32_t pattern_phase = 0;     // 0 .. 7: the pattern's step for this frame (0 where no upscaler runs: the pattern stands still on the screen)
     int32_t exp_bias = car_selfrefl::kMainTargetExpBias;  // the main colour target's exponent bias: the history's colour is the shaders' output times 2^exp_bias; the pass's own colours
                                                           // (a car's paint, the grey of a remembered car) are in the paint's units and are multiplied by 2^exp_bias (car_selfrefl_rules.h ExpBiasUnits)
+    CityRefl::ScreenIn screen;                            // CITY-RT M2: lin_depth and colour_post's chain as the screen owner published them this frame (the city hits' screen shortcut); invalid: none
   };
   // Records the pass on `list` (outside any render pass, at the trigger, after the history pass and the scene's top-level build). True when
   // recorded. False: not wanted, no structures this frame, or the pass could not be set up; the paint then has no image for the frame.
@@ -213,6 +222,12 @@ class CarRtRefl {
   // The bindless slot of the image the paint draws of the frame after `history_frame` read (the denoise's result: the trace's image after two
   // passes or none, the scratch image after one), or car_selfrefl::kNoRtImage when the pass did not run for that history.
   uint32_t SlotFor(uint64_t history_frame) const;
+
+  // CITY-RT M2: the scene service that merges the reflections' wants (the city's structures and hit data), set once the renderer has made it; and what the pass asks the screen owner for (0 while the city
+  // is not in the reflections). CarSelfRefl declares it to the screen owner at its frame start.
+  void SetSceneService(RtSceneService* service) { city_.SetService(service); }
+  uint32_t ScreenProducts() const { return city_.ScreenProducts(); }
+  const CityRefl& city() const { return city_; }
 
   // The images go back (the history's went: no car for 2 s, or the setting off).
   void ReleaseImage();
@@ -244,11 +259,12 @@ class CarRtRefl {
   };
   static_assert(sizeof(DenoisePush) == 64);
 
-  // The register spaces of the layout: the bindless texture set, the output's, the car's structures' (hlsl CAR_RT_SPACE), the push block.
+  // The register spaces of the layout: the bindless texture set, the output's, the car's structures' (hlsl CAR_RT_SPACE), the city's rows and counters, the push block (space 4: the city's set took 3).
   static constexpr uint32_t kTextureSet = 0;
   static constexpr uint32_t kOutputSet = 1;
   static constexpr uint32_t kSceneSet = 2;
-  static constexpr uint32_t kPushSpace = 3;
+  static constexpr uint32_t kCitySet = CityRefl::kSetIndex;
+  static constexpr uint32_t kPushSpace = CityRefl::kPushSpace;
   // The denoise's layout has no structures' set: the texture set, the output's, the push block.
   static constexpr uint32_t kDenoisePushSpace = 2;
 
@@ -334,6 +350,8 @@ class CarRtRefl {
 
   // The opponents' cars (car_rt_opp_refl.h): a second dispatch of the trace's shader file into the same images, after the player's.
   CarRtOppRefl opp_;
+  // The city in the reflections (city_refl.h): the setting, the rows and counters of set 3, the census.
+  CityRefl city_;
 
   // The frame.
   bool active_ = false;

@@ -103,7 +103,7 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
     passes.precache().Note("ray traced car self-reflections: the denoise's layout or shader could not be made (the raw trace is read)", 0);
   }
   // The opponents' cars' pass (car_rt_opp_refl.h): optional, listed beside the trace's pipeline where the reflection is on at the start.
-  opp_.Initialize(device, passes, heap, pass_timing, *scene, output_builder_,
+  opp_.Initialize(device, passes, heap, pass_timing, *scene, output_builder_, city_.Builder(),
                   reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kAuto);
   // Listed with the start's precache only where the car self-reflections are on at the start and this is not switched off; else it is
   // made in the background when first wanted (PipelineReady).
@@ -142,6 +142,9 @@ bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtSce
     REXLOG_ERROR("{} the census's buffers could not be made", kPrefix);
     return false;
   }
+  if (!city_.Initialize(device, *frames_)) {
+    return false;  // the city's rows and counters could not be made: the layout would have no set 3 (the screen-space version runs)
+  }
   output_builder_.begin();
   output_builder_.addReadWriteTexture(0);  // u0: the image the pass writes
   output_builder_.addReadWriteTexture(1);  // u1: the aux image (hit distance, instance, N.V) for the denoise
@@ -153,9 +156,10 @@ bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtSce
   const uint32_t texture_set = builder.addDescriptorSet(heap_->texture_set_builder());  // space 0: Texture2D<float4>[]
   const uint32_t output_set = builder.addDescriptorSet(output_builder_);                // space 1: the outputs
   const uint32_t scene_set = builder.addDescriptorSet(scene.SetDesc());                 // space 2: the car's structures (CAR_RT_SPACE)
+  const uint32_t city_set = builder.addDescriptorSet(city_.Builder());                  // space 3: the city's rows and counters (city_refl.h)
   builder.addPushConstant(0, kPushSpace, sizeof(Push), plume::RenderShaderStageFlag::COMPUTE);
   builder.end();
-  if (texture_set != kTextureSet || output_set != kOutputSet || scene_set != kSceneSet) {
+  if (texture_set != kTextureSet || output_set != kOutputSet || scene_set != kSceneSet || city_set != kCitySet) {
     REXLOG_ERROR("{} the layout's sets are not in the order the shader declares them", kPrefix);
     return false;
   }
@@ -198,6 +202,7 @@ void CarRtRefl::Shutdown() {
     passes_->precache().Stop();
   }
   opp_.Shutdown();
+  city_.Shutdown();
   // The GPU is idle and the heap goes later: the slot is not handed back (CarSelfRefl::Shutdown).
   image_ = HostImage{};
   aux_ = HostImage{};
@@ -302,6 +307,7 @@ bool CarRtRefl::PipelineReady() {
 
 void CarRtRefl::BeginFrame(bool reflection_on) {
   active_ = false;
+  city_.BeginFrame(false);  // the city's want and cell are this frame's: reset until the pass is known to run
   if (!ready_ || !scene_) {
     return;
   }
@@ -317,6 +323,7 @@ void CarRtRefl::BeginFrame(bool reflection_on) {
   // The scene builds a frame's structures only for a frame that asked in the one before (as CarFrame): ask in every frame this is on.
   // CHECK: the name of CarRtScene's per-frame request (written as CarFrame::Request, car_frame.h).
   scene_->Request();
+  city_.BeginFrame(true);  // CITY-RT M2: the city in the reflections (the setting's cell; the scene service's wants)
 }
 
 bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& info) {
@@ -351,7 +358,17 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   const car_rt_hit::Level level = car_rt_hit::LevelWith(car_rt_hit::LevelFor(gpu_class::Current()), double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),
                                                         double(larecomp::settings::mcla_gpu_car_rt_clearcoat.Get()));
   const float others_reach = level.others_reach > 0.0f ? car_rt_refl::ClampedLength(level.others_reach) : self_reach;
-  const float length = car_rt_hit::CastReach(parts, self_reach, others_reach);  // what is cast, and what the aux image and the denoise decode distances by
+  // CITY-RT M2: the city in the reflections. A stats frame (car_rt_hit_rules.h census::) is decided first: the city's counters ride the same frames. Prepare writes this frame slot's rows and gives the
+  // set the layout's set 3 takes (an off frame: zero rows, the pass as it was); the reflection ray's parts have the city's bit and its length the cell's reach where the city is on.
+  const bool stats_frame = stats_ && stats_readback_ && !stats_busy_ && car_rt_hit::census::StatsDue(info.frame, stats_last_frame_, stats_ever_);
+  const CityRefl::Frame city = city_.Prepare(frames_->slot(), info.screen, info.frame, stats_frame);
+  if (!city.set) {
+    return false;  // the city's rows could not be made (logged): the march answers
+  }
+  const uint32_t reflection_parts = city_refl::ReflectionParts(parts, city.on ? city.cell.level : city_refl::Level::kOff);
+  const float car_length = car_rt_hit::CastReach(parts, self_reach, others_reach);  // the cars' reach
+  const float length = city.on ? city_refl::CastLength(reflection_parts, car_length, city.cell.reach) : car_length;  // what is cast, and what the aux image and the denoise decode distances by
+  const uint32_t cone_rays = city.on ? std::min(level.cone_rays, city.cell.cone_rays) : level.cone_rays;
 
   // The denoise (car_rt_refl.h DENOISE): the passes this frame, where the setting asks for them, the cone has width, the pipeline is made and
   // the scratch image is there; else the raw trace is what the paint reads.
@@ -372,11 +389,10 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   const bool chrome_others = larecomp::settings::mcla_gpu_car_chrome_occlusion.Get() && larecomp::settings::mcla_gpu_car_chrome_rt_others.Get();
   Push push = {};
   push.slots[0] = history.slot;
-  push.slots[1] = parts;
+  push.slots[1] = reflection_parts;
   push.slots[2] = chrome_others ? car_rt_refl::kPrimaryTraceParts : car_rt_refl::kPrimaryParts;
   // A stats frame (car_rt_hit_rules.h census::): the shader counts what became of every hit, and the host reads the counters back (ProcessStats).
-  const bool stats_frame = stats_ && stats_readback_ && !stats_busy_ && car_rt_hit::census::StatsDue(info.frame, stats_last_frame_, stats_ever_);
-  push.slots[3] = car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame);
+  push.slots[3] = car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, cone_rays), stats_frame);
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
   push.image[2] = float(info.render_width);
@@ -412,6 +428,12 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   };
 
   pass_timing_->Mark(list, "car rt refl");
+  if (city.stats) {
+    city_.StatsBegin(list);  // the city's counters, zeroed (the same frame as the cars')
+  }
+  if (city.screen) {
+    CityRefl::BarrierScreen(list, info.screen);  // lin_depth and colour_post's levels in the layout the pass reads them in
+  }
   if (stats_frame) {
     // The counters start at zero (the buffer's last state is the compute stage's, see below).
     list->barriers(Stage::COPY, plume::RenderBufferBarrier(stats_.get(), plume::RenderBufferAccess::WRITE));
@@ -427,6 +449,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   list->setComputeDescriptorSet(heap_->texture_set(), kTextureSet);
   list->setComputeDescriptorSet(trace_set_.set.get(), kOutputSet);
   list->setComputeDescriptorSet(view.set, kSceneSet);
+  list->setComputeDescriptorSet(city.set, kCitySet);
   list->setPipeline(pipeline);
   list->setComputePushConstants(0, &push, 0, sizeof(push));
   list->dispatch((history.width + kGroup - 1) / kGroup, (history.height + kGroup - 1) / kGroup, 1);
@@ -450,7 +473,11 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     opponents.tan_x = info.tan_x;
     opponents.tan_y = info.tan_y;
     opponents.frame = info.frame;
+    opponents.city = &city;  // the city's set and cell: the opponents' paint reflects it within the cell's budget (CITY-RT M2 R2)
     opp_.Record(opponents);
+  }
+  if (city.stats) {
+    city_.StatsEnd(list, info.frame);  // the city's counters to the readback once both dispatches are done
   }
   if (stats_frame) {
     // The counters go to the readback once both dispatches are done; the buffer goes back to the state the pass's descriptor names it in.

@@ -534,9 +534,10 @@ inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
     // The city's sun shadows (CITY-RT-M1): high where the card traces; a weak card runs it with the Mid budget (the sectors within 150 m, not 300), which is
     // the package's own table (city_rt_rules.h BudgetFor with RtClass). First guess; the cost run of perf/CITY-RT-M1-RUNPLAN.md decides.
     {"mcla_gpu_rt_shadows", "off", "high", "high"},
-    // The city in the reflections (CITY-RT-M2, section 8): HIGH on an RTX 3060 class card and up (+1 to 2 ms at 1080p), with the Mid reach on a weak card.
-    // Ultra for the strong tier is the cost pass's call (the design aims it at an RTX 4070 and up).
-    {"mcla_gpu_rt_reflections", "off", "high", "high"},
+    // The city in the reflections (CITY-RT-M2, section 8): the owner's goal is a STRONG card's look (the city clearly identifiable in the paint, as in GT7), so `auto` is HIGH on a strong card and
+    // off on a weak one (a weak card may still be set to high or ultra by hand and then runs the Mid class's cell, city_refl_rules.h CellFor: 60 m, 2 rays, no mirror). R1 (2026-11-21): was
+    // high for the weak tier. Ultra for the strong tier is the cost pass's call (the design aims it at an RTX 4070 and up).
+    {"mcla_gpu_rt_reflections", "off", "off", "high"},
     // The probe field's bounce light (CITY-RT-M3, section 6): +2.5 to 4 ms on an RTX 3060, so a weak card keeps the screen-space bounce light (mcla_gpu_ssgi,
     // which this replaces only where it runs); HIGH on a strong card.
     {"mcla_gpu_rt_gi", "off", "off", "high"},

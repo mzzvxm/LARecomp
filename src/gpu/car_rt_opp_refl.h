@@ -13,8 +13,10 @@
 // image the paint reads, and the denoise's aux image). Everything about it is in car_rt_opp_refl_rules.h (which pixels, each pixel's surface, the rays, the colour of a hit the history cannot show,
 // the blending: the paint variant's own, unchanged, the budget); this file is the host side:
 //
-//   - the pipeline: a layout of its own with the player's three sets (the history's bindless set, the two storage images, the scene's) and a push block of 112 bytes (the player's 96
-//     and `opp`: x, y the first texel of the rectangle, z the row of the player's record in the instances' table, w the rays a texel casts). The pipeline is made ahead on the host
+//   - the pipeline: a layout of its own with the player's four sets (the history's bindless set, the two storage images, the scene's, the city's rows and counters: CITY-RT M2) and a push block of 112 bytes
+//     (the player's 96 and `opp`: x, y the first texel of the rectangle, z the row of the player's record in the instances' table, w the rays a texel casts), in space 4.
+//   - THE CITY (CITY-RT M2 R2, city_refl_rules.h): with the city in the reflections the base push's parts have its bit, so an opponent's paint reflects the city as the player's does; the pass's texel budget
+//     and its rays a texel are capped by the level's cell (HIGH 250 k texels at 2 rays, ULTRA 500 k at 4: Cell::opp_texels, opp_rays). The pipeline is made ahead on the host
 //     builder thread where the reflection is on at the start (host_precache.h key (kCarRtRefl, 2)), in the background where it is switched on later, and is optional: a frame whose pipeline
 //     is not ready goes on without it (the opponents' paint takes the march), it is never waited for.
 //   - the frame: the rectangles of the other cars' boxes (CarRtView::boxes, the scene's view-space boxes) projected into the image with the history's lens (BoxRect), the budget's plan
@@ -46,6 +48,7 @@
 #include <plume_render_interface.h>
 
 #include "car_rt_opp_refl_rules.h"
+#include "city_refl.h"
 #include "host_passes.h"
 
 namespace mcla::gpu {
@@ -67,7 +70,7 @@ class CarRtOppRefl {
   // (the car self-reflections are on at the start and the ray traced setting is not off), else it is made in the background when first wanted. Never fails the renderer: without
   // the shader or the layout the pass does nothing.
   void Initialize(Device& device, HostPasses& passes, BindlessHeap& heap, PassTiming& pass_timing, CarRtScene& scene,
-                  const plume::RenderDescriptorSetBuilder& output_builder, bool list_at_start);
+                  const plume::RenderDescriptorSetBuilder& output_builder, const plume::RenderDescriptorSetBuilder& city_builder, bool list_at_start);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
   bool ready() const { return ready_; }
@@ -81,6 +84,7 @@ class CarRtOppRefl {
     plume::RenderDescriptorSet* output_set = nullptr;  // u0 the image, u1 the aux image: the player's trace set
     HostImage* image = nullptr;                // both are in GENERAL, written by the player's dispatch
     HostImage* aux = nullptr;
+    const CityRefl::Frame* city = nullptr;     // the city's set (bound at set 3) and cell this frame (CITY-RT M2); null: no set, no pass
     uint32_t image_width = 0;                  // the history image's size in texels
     uint32_t image_height = 0;
     uint32_t render_width = 0;                 // the picture's
@@ -112,7 +116,8 @@ class CarRtOppRefl {
   static constexpr uint32_t kTextureSet = 0;
   static constexpr uint32_t kOutputSet = 1;
   static constexpr uint32_t kSceneSet = 2;
-  static constexpr uint32_t kPushSpace = 3;
+  static constexpr uint32_t kCitySet = CityRefl::kSetIndex;
+  static constexpr uint32_t kPushSpace = CityRefl::kPushSpace;
 
   std::unique_ptr<plume::RenderPipeline> MakePipeline();
   plume::RenderPipeline* Pipeline();

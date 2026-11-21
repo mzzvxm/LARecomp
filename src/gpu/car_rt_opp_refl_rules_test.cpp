@@ -420,7 +420,7 @@ int main(int argc, char** argv) {
       Check(Has(refl, "TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, g_push.slots.z, primary)") && Has(refl, "TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, g_push.slots.y, ray)"),
             "the trace functions the opponents' entry reuses are as it expects (the push's masks)");
       Check(Has(host_h, "static_assert(sizeof(Push) == 112);") && Has(host_h, "float coat[4];") && Has(host_h, "uint32_t opp[4];") && Has(host, "push.slots[2] = opp::kPrimaryParts;") && Has(host, "push.opp[2] = view.player_row;") &&
-                Has(host, "push.opp[3] = plan.rays;") && Has(host, "push.opp[0] = uint32_t(r.x0);") && Has(host, "std::memcpy(&push, f.base_push, kBasePushBytes);"),
+                Has(host, "push.opp[3] = city_refl::OppRays(plan.rays, f.city->on ? cell : city_refl::Cell{});") && Has(host, "push.opp[0] = uint32_t(r.x0);") && Has(host, "std::memcpy(&push, f.base_push, kBasePushBytes);"),
             "the host's push block is the shader's (the player's 96 bytes and opp), the primary mask is the header's");
       Check(Has(host, "HostPrecache::Key(HostPrecache::kCarRtRefl, 2)") && Has(player, "HostPrecache::Key(HostPrecache::kCarRtRefl, 0)") && Has(player, "HostPrecache::Key(HostPrecache::kCarRtRefl, 1)"),
             "the pipeline keys of the three passes differ (0 trace, 1 denoise, 2 opponents)");

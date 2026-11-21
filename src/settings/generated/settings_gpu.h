@@ -344,6 +344,26 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_city_hit_probe, false, "Debug: with mcla_gpu_city_hit_data on, a compute pass reads the city hit data's pool and tables through the ray tracing descriptor set every frame, the way the hit shading will, and every 240 frames the log says under [city hit] whether what it read is what was copied (a checksum of every block, the sector table's rows, the first material and texture rows). The proof of the pool's offsets and bindings on this backend. Live.", rex::kDebugOnly);
 
+  REX_SETTING(std::string, mcla_gpu_rt_reflections, "auto", "Ray traced reflections of the real city in the car paint: the player's car, and the cars beside it, reflect the buildings, signs, lamp posts and lamp "
+    "heads around them as the ray tracing finds them (where a reflected point is in the picture it takes the picture's own colour, elsewhere it is shaded "
+    "from the building's own materials), instead of the game's blurred environment map; the sky stays the map. off, high, ultra or auto (the default): high "
+    "on a strong ray tracing graphics card, off on the rest; a weak card may be set to high or ultra by hand and then runs lighter numbers. high reaches "
+    "150 m, ultra 1,000 m. Needs the city pack and the city hit data (built from your game files) and ray queries; without them the paint keeps the game's "
+    "reflection. The pause menu's row comes later. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "high", "ultra"));
+
+  REX_SETTING(bool, mcla_gpu_city_refl_screen, true, "Debug: with mcla_gpu_rt_reflections on, a reflected point that is in the picture takes the picture's own colour (the game's lighting, foliage and "
+    "lamps as drawn). false: every reflected point is shaded from the city's own materials, for comparing. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_city_refl_coat, true, "Debug: with mcla_gpu_rt_reflections on, a reflection of the city is a mirror's, as a reflection of another car is: sharp, with the paint's clear coat "
+    "layer over it, so that what is in it can be told at a glance. false: the paint's soft cone alone. Live.", rex::kDebugOnly);
+
+  REX_SETTING(f64, mcla_gpu_city_refl_reach, 0.0, "Debug: how far a reflection ray looks for the city, in metres, 5 to 3000; 0 (the default) is the level's (high 150 m, ultra 1,000 m, a weak card 60 "
+    "and 150). Live.", rex::kDebugOnly, rex::Range{0.0, 3000.0});
+
+  REX_SETTING(i32, mcla_gpu_city_refl_view, 0, "Debug: with mcla_gpu_rt_reflections on, replaces the colour a city hit shows in the car paint's ray traced image (look at it through "
+    "mcla_gpu_car_selfrefl_view 2): 1 where the colour comes from (green the picture's own, red shaded, yellow both), 2 the kind of surface it hit (a ramp "
+    "over the G-buffer's classes); 0 (the default) the colour. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
   REX_SETTING(bool, mcla_gpu_car_rt_check, false, "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
     "DirectX Raytracing 1.1). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
@@ -1792,6 +1812,11 @@ inline auto& mcla_gpu_city_rt_view = g_gpu.mcla_gpu_city_rt_view;
 inline auto& mcla_gpu_city_hit_data = g_gpu.mcla_gpu_city_hit_data;
 inline auto& mcla_gpu_city_hit_textures = g_gpu.mcla_gpu_city_hit_textures;
 inline auto& mcla_gpu_city_hit_probe = g_gpu.mcla_gpu_city_hit_probe;
+inline auto& mcla_gpu_rt_reflections = g_gpu.mcla_gpu_rt_reflections;
+inline auto& mcla_gpu_city_refl_screen = g_gpu.mcla_gpu_city_refl_screen;
+inline auto& mcla_gpu_city_refl_coat = g_gpu.mcla_gpu_city_refl_coat;
+inline auto& mcla_gpu_city_refl_reach = g_gpu.mcla_gpu_city_refl_reach;
+inline auto& mcla_gpu_city_refl_view = g_gpu.mcla_gpu_city_refl_view;
 inline auto& mcla_gpu_car_rt_opp_refl = g_gpu.mcla_gpu_car_rt_opp_refl;
 inline auto& mcla_gpu_car_rt_opp_refl_rays = g_gpu.mcla_gpu_car_rt_opp_refl_rays;
 inline auto& mcla_gpu_car_rt_opp_refl_texels = g_gpu.mcla_gpu_car_rt_opp_refl_texels;

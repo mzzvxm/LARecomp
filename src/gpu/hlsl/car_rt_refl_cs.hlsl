@@ -64,9 +64,14 @@
 // instance of the primary ray's hit / 255, z N.V of the surface, w 1 (1 - 0.49 the share of the weight the clear coat's mirror ray makes, car_rt_hit_rules.h EncodeAuxSharp); all 0 where the
 // texel has no data.
 //
+// THE CITY (CITY-RT M2 R1 and R2, city_refl_rules.h, hlsl/city_refl.hlsli): where the push's reflection parts have CAR_RT_MASK_CITY (0x80) a reflection ray is traced against the cars AND the city (one top
+// level: the scene service's); a ray whose closest hit is a city triangle shows what the city hit library makes of it (the picture's colour where the hit is seen, the model's where it is not: ResolveHit),
+// by the fade of its distance over the city's reach, and counts as a hit whose colour is known in full (visible 1). The image's codes are unchanged: no variant of the paint changes. With the host's
+// clear-coat flag the hit counts as another car's for the mirror's rule and the paint's coat layer (the owner's goal: the city CLEARLY identifiable in the paint), else the soft cone alone.
+//
 // Shader Model 6.5, inline ray queries (DXR tier 1.1). The layout (car_rt_refl.cpp): set 0 the bindless Texture2D<float4> set (space 0:
-// the history), set 1 the outputs (u0 the image, u1 the aux, space 1), set 2 the car's acceleration structures (CAR_RT_SPACE 2), the push
-// block (b0, space 3).
+// the history), set 1 the outputs (u0 the image, u1 the aux, space 1), set 2 the car's acceleration structures (CAR_RT_SPACE 2), set 3 the city's
+// constants and counters (space 3), the push block (b0, space 4).
 
 #define CAR_RT_SPACE 2
 #include "car_rt_common.hlsli"
@@ -117,10 +122,12 @@ struct CarRtReflPush
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<CarRtReflPush> g_push;
 #else
-ConstantBuffer<CarRtReflPush> g_push : register(b0, space3);
+ConstantBuffer<CarRtReflPush> g_push : register(b0, space4);
 #endif
 
 #include "car_rt_hit_shade.hlsli"
+// CITY-RT M2 R1 and R2: the city in the reflections (hlsl/city_refl.hlsli: set 3, the city hit library, CityReflHit).
+#include "city_refl.hlsli"
 
 // ---------------------------------------------------------------------------------------------------------------------
 // the census and the exposure (car_rt_hit_rules.h census::, the same numbers)
@@ -467,24 +474,103 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     other = false;
     hidden = float3(0.0, 0.0, 0.0);
     car = false;
-    RayDesc ray;
-    ray.Origin = origin;
-    ray.Direction = direction;
-    ray.TMin = 0.0;
-    ray.TMax = reach;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
-    query.TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, g_push.slots.y, ray);
-    while (query.Proceed())
+    // The closest hit. With the city's bit in the parts (CITY-RT M2: the host's rows say on) the ray goes through the library's trace: the cars' parts and the city's triangles in one query, the
+    // cut-outs' exact alpha in its candidate loop; a city hit is resolved here and is the ray's answer. Without it the cars' query as it always was.
+    float distance;
+    uint instance;
+    uint primitive;
+    float2 barycentrics;
+    float3x4 objectToWorld;
+    const bool cityRays = CityReflOn(g_push.slots.y);
+    [branch]
+    if (cityRays)
     {
+        const bool cityStats = CityReflStatsOn();
+        if (cityStats)
+        {
+            CityStat(kCityStatRays, 1u);
+        }
+        const float footprint0 = PixelMeters(origin.z, g_push.lens.y, g_push.image.y);
+        CityHitTraceResult h = CityHitTraceNone();
+        uint traceMask = g_push.slots.y;
+        [loop]
+        for (uint attempt = 0u; attempt < 2u; ++attempt)
+        {
+            h = CityHitTrace(origin, direction, 0.0, reach, traceMask, footprint0, coneTan, 0.5);
+            if (attempt == 0u && h.hit != 0u && !CityHitIsCity(h.inst.instanceId))
+            {
+                // A part of a car past its own reach weighs nothing (below) and must not hide the city behind it: the ray is traced again for the city alone.
+                const bool farCar = (CarRtInstanceMask(CarRtLoadInstance(h.instanceIndex)) & CAR_RT_MASK_OTHERS) != 0u || kShadePlayerHits;
+                const float carReach = farCar ? g_push.coat.y : g_push.coat.x;
+                const float carFrom = farCar ? g_push.coat.z : g_push.tune.z;
+                if (1.0 - smoothstep(carFrom * carReach, carReach, h.t) < 1.0 / 512.0)
+                {
+                    traceMask = CAR_RT_MASK_CITY;
+                    continue;
+                }
+            }
+            break;
+        }
+        if (h.hit == 0u)
+        {
+            if (cityStats)
+            {
+                CityStat(kCityStatMiss, 1u);
+            }
+            return false;  // nothing of the cars or the city in the way: the environment stays
+        }
+        if (CityHitIsCity(h.inst.instanceId))
+        {
+            if (cityStats)
+            {
+                CityStat(kCityStatCity, 1u);
+            }
+            float3 cityColour;
+            float cityFade;
+            if (!CityReflHit(origin, direction, h, coneTan, cityColour, cityFade))
+            {
+                return false;  // past the city's reach, or the hit's data is not in the pool: the environment stays
+            }
+            fade = cityFade;
+            visible = 1.0;  // the colour is the hit's own, in full: the picture's where it was seen, the model's where not
+            seen = min(max(cityColour, 0.0), kMaxColour);
+            hitDistance = h.t;
+            car = (CityReflFrameNow().flags & kCityFlagCoat) != 0u;  // the mirror's rule and the paint's coat layer, as for another car (the host's clear-coat flag)
+            return true;
+        }
+        if (cityStats)
+        {
+            CityStat(kCityStatCar, 1u);
+        }
+        distance = h.t;
+        instance = h.instanceIndex;
+        primitive = h.inst.primitiveIndex;
+        barycentrics = h.inst.barycentrics;
+        objectToWorld = float3x4(float4(h.inst.row0, 0.0), float4(h.inst.row1, 0.0), float4(h.inst.row2, 0.0));
     }
-    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+    else
     {
-        return false;  // nothing of the car in the way: the environment stays
+        RayDesc ray;
+        ray.Origin = origin;
+        ray.Direction = direction;
+        ray.TMin = 0.0;
+        ray.TMax = reach;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+        query.TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, g_push.slots.y, ray);
+        while (query.Proceed())
+        {
+        }
+        if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+        {
+            return false;  // nothing of the car in the way: the environment stays
+        }
+        distance = query.CommittedRayT();
+        instance = query.CommittedInstanceIndex();
+        primitive = query.CommittedPrimitiveIndex();
+        barycentrics = query.CommittedTriangleBarycentrics();
+        objectToWorld = query.CommittedObjectToWorld3x4();
     }
-    const float distance = query.CommittedRayT();
-    const uint instance = query.CommittedInstanceIndex();
-    const uint primitive = query.CommittedPrimitiveIndex();
-    const float3 hitNormal = CarRtHitNormal(instance, primitive, query.CommittedTriangleBarycentrics(), query.CommittedObjectToWorld3x4(), direction);
+    const float3 hitNormal = CarRtHitNormal(instance, primitive, barycentrics, objectToWorld, direction);
     const bool usable = dot(hitNormal, hitNormal) > 0.25;
     if (usable && instance == originInstance && (primitive == originPrimitive || dot(hitNormal, originNormal) > kSelfCos))
     {
@@ -530,14 +616,14 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     [branch]
     if (seenShare < 1.0 && usable && (hitsOther || kShadePlayerHits))
     {
-        isShaded = CarHitShade(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, g_push.up.w, shaded);
+        isShaded = CarHitShade(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, g_push.up.w, shaded);
     }
     if (stats && farHit && seenShare >= 1.0)
     {
         StatAdd(kStatSeen, 1u);
         if (hitsOther && usable)
         {
-            CensusCalibrate(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, seen);
+            CensusCalibrate(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, seen);
         }
     }
     if (isShaded)
@@ -673,6 +759,7 @@ float4 ChromeTexel(float3 hitPoint, float3 viewDirection, float3 normal, float n
 float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4 aux)
 {
     aux = float4(0.0, 0.0, 0.0, 0.0);
+    gCityTexel = texel;  // the noise of the city hits' sun rays (city_refl.hlsli)
     const float t = own.a;
     const float divisor = g_push.lens.z;
     const float2 render = g_push.image.zw;
@@ -729,6 +816,10 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     if (StatsOn())
     {
         StatAdd(kStatTexels, 1u);
+    }
+    if (CityReflOn(g_push.slots.y) && CityReflStatsOn())
+    {
+        CityStat(kCityStatTexels, 1u);  // a texel that casts city rays, in a frame the city's counters count
     }
 
     // 2. the clear coat's ray (one ray along the exact mirror direction, the share of it by the paint's fresnel), then the cone of reflection rays, both off the surface along the normal

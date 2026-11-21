@@ -1062,6 +1062,64 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_reflections": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Ray traced reflections of the real city in the car paint: the player's car, and the cars beside it, reflect the buildings, signs, lamp posts and lamp heads around them as the ray tracing finds them (where a reflected point is in the picture it takes the picture's own colour, elsewhere it is shaded from the building's own materials), instead of the game's blurred environment map; the sky stays the map. off, high, ultra or auto (the default): high on a strong ray tracing graphics card, off on the rest; a weak card may be set to high or ultra by hand and then runs lighter numbers. high reaches 150 m, ultra 1,000 m. Needs the city pack and the city hit data (built from your game files) and ray queries; without them the paint keeps the game's reflection. The pause menu's row comes later. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_screen": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, a reflected point that is in the picture takes the picture's own colour (the game's lighting, foliage and lamps as drawn). false: every reflected point is shaded from the city's own materials, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_coat": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, a reflection of the city is a mirror's, as a reflection of another car is: sharp, with the paint's clear coat layer over it, so that what is in it can be told at a glance. false: the paint's soft cone alone. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_reach": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how far a reflection ray looks for the city, in metres, 5 to 3000; 0 (the default) is the level's (high 150 m, ultra 1,000 m, a weak card 60 and 150). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 3000.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, replaces the colour a city hit shows in the car paint's ray traced image (look at it through mcla_gpu_car_selfrefl_view 2): 1 where the colour comes from (green the picture's own, red shaded, yellow both), 2 the kind of surface it hit (a ramp over the G-buffer's classes); 0 (the default) the colour. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_masks": {
   "type": "i32",
   "default": "0",
