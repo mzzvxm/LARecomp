@@ -158,7 +158,9 @@ struct RuntimeLightsInfo {
 // records, sub_822FE0C8 repacks them; the lamp pass's AddLight unpacks them again each frame): the list at +8 {u32 array, u16 count at +12} is lights.xlm's own (the fill lights) and the list at
 // +24 {array, count at +28} the street lamps. Both are read, in that order (the file's lights keep the offline atlas's indices), each record unpacked by `unpack`. Not time-of-day dependent:
 // the lists exist from the city's load on, so the answer is the same by day and by night. The positions are the game's packed ones (16-bit steps of the grid's extent: about 0.1 m in x, 0.07 m
-// in z; colours and intensities as half floats), so a lights.xlm light read this way is the offline atlas's to 0.15 m, not exactly. On failure `why` says which words were not what the reader knows.
+// in z; colours and intensities as half floats), so a lights.xlm light read this way is the offline atlas's to 0.15 m, not exactly. The pack also CLAMPS a position to the box of its steps (the first
+// full run, 11-21: 295 of the 15,174 file lights differed, every one of them beyond the box: 294 above y 78.998, up to y 377 m, and one west of x -3467.0), so those lights are read where the game keeps
+// them, at the box's edge, and atlas.py compare accepts that (lights_equal). 375 of the 6,298 street lamps have intensity 0 (no light, reach 0). On failure `why` says which words were not what the reader knows.
 bool ReadRuntimeLights(const GuestView& view, uint32_t manager_global, const LightUnpacker& unpack, std::vector<Light>* out, std::string* why, RuntimeLightsInfo* info = nullptr);
 
 // The traffic rail network: `root` is the mcRailnetData (the resource's first object; in the running game `*(railnet + 8)`). `step_m` is the spacing

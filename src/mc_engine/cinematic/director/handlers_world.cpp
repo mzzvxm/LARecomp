@@ -450,8 +450,14 @@ void HandleSpots(const dir::Request& rq, const dir::Responder& rs) {
             list.Push(std::move(o));
         }
     }
+    const bool no_scene = !snap || snap->scene_path.empty();
+    const bool empty = list.size() == 0;
     Json res = Json::Object();
     res.Set("spots", std::move(list));
+    res.Set("scene", snap ? snap->scene_path : std::string());
+    // The spots are the scene's own (the spots.txt beside it, or the shared scenes folder's): with no scene loaded the list is empty by design, and an agent that asked first thing
+    // (director_r.py's session did, 11-21) would take it for "the game has no spots". Say so.
+    if (no_scene && empty) res.Set("note", "no scene is loaded: the spots are the scene's (the spots.txt beside it or in the shared scenes folder): scene.load one, then ask again");
     rs.Done(std::move(res));
 }
 
@@ -598,7 +604,7 @@ const dir::CommandRegistrar kLights(
                 "the lamps near a point, closest first",
                 {Arg("near", dir::ArgType::kAny, true, "[x,y,z] | [x,z] | {x,z} | \"player\" | \"car:id\" | \"spot:name[@r,u,f]\""),
                  Arg("r", dir::ArgType::kNumber, false, "radius in metres, default 60"), Arg("n", dir::ArgType::kInt, false, "most lights returned, default 20"),
-                 Arg("min_intensity", dir::ArgType::kNumber, false, "default 0 (a street lamp is 40 to 100)"), Arg("kind", dir::ArgType::kString, false, "\"spot\" or \"omni\""),
+                 Arg("min_intensity", dir::ArgType::kNumber, false, "default 0; a lit street lamp is 20 to 100, but about 6% of the lamps (375 of 6,298) have intensity 0 and give no light (reach_m 0): pass 1 to leave them out"), Arg("kind", dir::ArgType::kString, false, "\"spot\" or \"omni\""),
                  Arg("src", dir::ArgType::kString, false, "\"lamp\" (the street lamps: spots) or \"file\" (lights.xlm's own lights); default both")},
                 "{count, in_radius, lights:[{i,pos,color,dir,intensity,cone,spread,type,on,src,dist,reach_m}]}; by day too: the lamps exist from the city's load on, `on` is their own switch"});
 const dir::CommandRegistrar kRoad(
@@ -645,9 +651,9 @@ const dir::CommandRegistrar kVisible(
 const dir::CommandRegistrar kSpots(
     "query.spots", HandleSpots,
     dir::Schema{"query",
-                "the scene's named spots (spots.txt)",
+"the scene's named spots (spots.txt): needs a scene loaded, with none the list is empty and `note` says why",
                 {Arg("near", dir::ArgType::kAny, false, "a position: spots within r of it get a dist"), Arg("r", dir::ArgType::kNumber, false, "metres, default all")},
-                "{spots:[{name,pos,heading,text,dist?}]}"});
+                "{spots:[{name,pos,heading,text,dist?}], scene, note?}"});
 
 }  // namespace
 

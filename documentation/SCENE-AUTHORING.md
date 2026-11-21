@@ -76,7 +76,7 @@ World metres: x east, y up, z south. A **heading/yaw** is degrees: 0 faces +Z (s
 | `spot:hw-street@1.5,0,0,180` | the same place offset, and the fourth number turns the heading (the oncoming lane) |
 | `heading spot:hw-street`, `yaw spot:hw-street` | the spot's heading |
 
-`st query spots [--near spot:hw-lot --r 80]` lists them. To add one: put a line in the scene folder's `spots.txt` (name, x y z heading, a one-line note with where the numbers came
+`st query spots [--near spot:hw-lot --r 80]` lists them (from the files, or `--live` from the game: a running game knows the spots of the scene it has loaded, so with no scene the answer is empty and says so in `note`: load a scene first). To add one: put a line in the scene folder's `spots.txt` (name, x y z heading, a one-line note with where the numbers came
 from). Heights are the height a car stands at on the road there.
 
 ## Roads, lights, routes: ask, don't guess
