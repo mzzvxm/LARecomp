@@ -33,6 +33,7 @@
 #include <thread>
 
 #include "larecomp_log.h"
+#include "os/curl_get.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -107,7 +108,29 @@ std::string HttpsGet(const wchar_t* host, const wchar_t* path) {
 
 #else  // !_WIN32
 
-std::string HttpsGet(const wchar_t*, const wchar_t*) { return {}; }
+// Linux: the system's libcurl, loaded when it is first needed (os/curl_get.h). Before this the setting WEATHER: REAL did nothing here. The host and path are ASCII
+// (the two services' own); anything else is refused. One log line per different failure, not one every five minutes.
+std::string HttpsGet(const wchar_t* host, const wchar_t* path) {
+    std::string url = "https://";
+    for (const wchar_t* part : {host, path}) {
+        for (const wchar_t* c = part; *c; ++c) {
+            if (*c < 0x20 || *c > 0x7E) return {};
+            url.push_back(static_cast<char>(*c));
+        }
+    }
+    const larecomp::os::HttpGetResult got = larecomp::os::HttpGet(url, std::chrono::seconds(15));
+    if (!got.ok) {
+        static std::mutex mutex;
+        static std::string last;
+        std::lock_guard<std::mutex> lock(mutex);
+        if (got.why != last) {
+            last = got.why;
+            LARECOMP_APP_INFO("[RealWeather] the request to {} failed: {}", std::string(url.begin(), url.begin() + static_cast<std::ptrdiff_t>(url.find('/', 8))), got.why);
+        }
+        return {};
+    }
+    return got.body;
+}
 
 #endif
 
