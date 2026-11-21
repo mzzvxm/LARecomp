@@ -51,9 +51,12 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "gpu_class.h"
+#include "light_budget.h"
 #include "light_influence.h"
+#include "light_pick.h"
 #include "local_shadow_types.h"
 #include "temporal_math.h"
 
@@ -71,65 +74,36 @@ namespace tp = ::mcla::gpu::temporal;
 // THE LEVELS (owner, 2026-11-20): a level differs by how many cars' lights are shadowed, by how many of those have a view for EACH HEADLAMP (a pole that both lamps light
 // casts two shadows, and a car's shadow has the half-lit band of one lamp) and by how sharp the views are. A car's light is one term (the middle of its two lamps,
 // headlight_types.h) whose shadow is the mean of its lamps' views.
-enum class Level : uint8_t { kOff, kMedium, kHigh, kUltra };
+// THE LEVEL TABLE LIVES IN light_budget.h since LU-3 (the one budget table of the lights): the level words, the rows, the two shapes, and the cars and views a level gives. The names here
+// are the same ones, so nothing that reads them changes.
+using Level = light_budget::Level;
 
 // One row of the level table: the setting's word, the texels of a view's side, the cars it shadows (the player's first, then the nearest others) and, of those, how many
 // (in the same order) have a view for each lamp: the other cars have one view for the car.
-struct LevelRow {
-  Level level = Level::kOff;
-  std::string_view word;
-  uint32_t tile = 0;
-  uint32_t cars = 0;
-  uint32_t lamp_cars = 0;
-};
+using LevelRow = light_budget::ShadowRow;
 
-// THE TWO LEVEL SHAPE (the first plan of 2026-11-20, kept for the tests and as a way back): both levels have a view for every lamp of every car they shadow. High: the
-// player's car and the nearest other car, 4 views of 512 (8 MiB); ultra: the player's car and the two nearest, 6 views of 1024 (48 MiB).
-inline constexpr LevelRow kTwoLevels[] = {
-    {Level::kHigh, "high", 512, 2, 2},
-    {Level::kUltra, "ultra", 1024, 3, 3},
-};
-// THE THREE LEVEL SHAPE (IN USE since 2026-11-20: the cost runs of perf/out/HL-PER-LAMP.txt showed a view for each headlamp adds +0.05 to +0.15 ms of graphics card time and
-// +0.04 to +0.16 ms of render thread time on an RTX 5080, and a weaker PC pays several times that, so the lamps' views are for the higher levels only): medium is the first
-// version's high (one view for each of two cars, 512, 2 views, 4 MiB), high gives the player's car a view for each lamp and the nearest other car one view (3 views of 512,
-// 6 MiB), ultra every shadowed car a view for each lamp (6 views of 1024, 48 MiB). Auto: Mid medium, High ultra, Low off (gpu_class.h).
-inline constexpr LevelRow kThreeLevels[] = {
-    {Level::kMedium, "medium", 512, 2, 0},
-    {Level::kHigh, "high", 512, 2, 1},
-    {Level::kUltra, "ultra", 1024, 3, 3},
-};
+// THE TWO LEVEL SHAPE (the first plan of 2026-11-20, kept for the tests and as a way back) and THE THREE LEVEL SHAPE (IN USE since 2026-11-20): light_budget.h holds both tables and the
+// reasons for the three level shape (medium 2 views of 512, high 3 views of 512, ultra 6 views of 1024; auto: Mid medium, High ultra, Low off: gpu_class.h).
+inline constexpr auto& kTwoLevels = light_budget::kTwoLevels;
+inline constexpr auto& kThreeLevels = light_budget::kThreeLevels;
 // THE ONE DATA CHANGE between the shapes. The rest follows: the pause menu's words (MenuWords), the class table's cells (gpu_class.h kEffects: Mid's `auto` is `medium` in the
 // three level shape and was `high` in the two level one; a cell the table does not have takes the next level up, Row below), the setting's allowed words and help text
 // (settings_gpu.h, manifest.json).
 inline constexpr bool kThreeLevelShape = true;
-inline constexpr std::span<const LevelRow> kLevelTable = kThreeLevelShape ? std::span<const LevelRow>(kThreeLevels) : std::span<const LevelRow>(kTwoLevels);
+inline constexpr std::span<const LevelRow> kLevelTable = kThreeLevelShape ? std::span<const LevelRow>(light_budget::kThreeLevels) : std::span<const LevelRow>(light_budget::kTwoLevels);
 
 using LevelTable = std::span<const LevelRow>;
 
 // The published frame holds this many views (local_shadow_types.h); no level makes more than the table's greatest (6).
 inline constexpr uint32_t kMaxViews = larecomp::gpu::kMaxShadowViews;
 // The cars that can have views: the rig lights four.
-inline constexpr uint32_t kMaxCars = 4;
+inline constexpr uint32_t kMaxCars = light_budget::kMaxShadowCars;
 
 // Every function below takes the table too (default: the shape in use), so that the tests read both shapes without building twice.
 
 // The row a level has in the table: its own, else (a level the shape does not have: `medium` in the two level shape, only the tests' table now) the next one up, else the greatest
 // below. Null for off.
-constexpr const LevelRow* Row(Level level, LevelTable table = kLevelTable) {
-  if (level == Level::kOff || table.empty()) {
-    return nullptr;
-  }
-  const LevelRow* best = nullptr;
-  for (const LevelRow& row : table) {
-    if (row.level == level) {
-      return &row;
-    }
-    if (row.level > level && (!best || row.level < best->level)) {
-      best = &row;
-    }
-  }
-  return best ? best : &table[table.size() - 1];
-}
+constexpr const LevelRow* Row(Level level, LevelTable table = kLevelTable) { return light_budget::ShadowRowOf(level, table); }
 
 // The level a saved level comes to in this shape (off stays off).
 constexpr Level Effective(Level level, LevelTable table = kLevelTable) {
@@ -137,42 +111,21 @@ constexpr Level Effective(Level level, LevelTable table = kLevelTable) {
   return row ? row->level : Level::kOff;
 }
 
-constexpr uint32_t TileSize(Level level, LevelTable table = kLevelTable) {
-  const LevelRow* row = Row(level, table);
-  return row ? row->tile : 0u;
-}
+constexpr uint32_t TileSize(Level level, LevelTable table = kLevelTable) { return light_budget::ShadowTile(level, table); }
 
 constexpr std::string_view LevelName(Level level) {
   return level == Level::kUltra ? "ultra" : level == Level::kHigh ? "high" : level == Level::kMedium ? "medium" : "off";
 }
 
 // The cars a level shadows (the player's car first). The debug setting does not change it: it is the views of a car (below).
-constexpr uint32_t MaxCars(Level level, LevelTable table = kLevelTable) {
-  const LevelRow* row = Row(level, table);
-  return row ? std::min(row->cars, kMaxCars) : 0u;
-}
+constexpr uint32_t MaxCars(Level level, LevelTable table = kLevelTable) { return light_budget::ShadowCars(level, table); }
 
 // How many cars (the first ones, the player's first) have a view for each lamp. `views_per_car` is the debug setting mcla_gpu_headlight_shadow_views: 1 gives every car one
 // view (the first version's), 2 gives every car a view for each lamp, 0 takes the level's own.
-constexpr uint32_t LampCars(Level level, int views_per_car, LevelTable table = kLevelTable) {
-  const LevelRow* row = Row(level, table);
-  if (!row) {
-    return 0;
-  }
-  const uint32_t cars = MaxCars(level, table);
-  if (views_per_car >= 2) {
-    return cars;
-  }
-  if (views_per_car == 1) {
-    return 0;
-  }
-  return std::min(row->lamp_cars, cars);
-}
+constexpr uint32_t LampCars(Level level, int views_per_car, LevelTable table = kLevelTable) { return light_budget::ShadowLampCars(level, views_per_car, table); }
 
 // How many views a level draws at the most: a view for each shadowed car and a second for each car that has its lamps apart.
-constexpr uint32_t MaxViews(Level level, int views_per_car, LevelTable table = kLevelTable) {
-  return std::min(MaxCars(level, table) + LampCars(level, views_per_car, table), kMaxViews);
-}
+constexpr uint32_t MaxViews(Level level, int views_per_car, LevelTable table = kLevelTable) { return light_budget::ShadowViews(level, views_per_car, table); }
 
 struct Choice {
   Level level = Level::kOff;
@@ -546,8 +499,22 @@ inline double ViewImportance(double distance, bool on_screen, bool holds_view) {
 
 // Picks the cars that get a view, frame after frame: it remembers which cars held one in the last pick (the hysteresis). One of these lives as long as the
 // feature does; Forget() when the lights have been off for a while (a new night is a new start).
+// LU-3: the pick itself is light_pick.h's (the held pick of its shadow_cars picker: the importance, the keep bonus of 1.3, the rank); this class finds the groups, the reference and each car's
+// reach and hands them over (the unified mode, the default), or runs the code that was here (mcla_gpu_light_pick = legacy, the A/B). `held_` is the last pick either way.
 class ViewPicker {
  public:
+  ViewPicker() : mode_(light_pick::DefaultMode()) {}
+
+  void SetMode(light_pick::PickMode mode) {
+    if (mode != mode_) {
+      mode_ = mode;
+      seed_pending_ = mode == light_pick::PickMode::kUnified;
+    }
+  }
+  light_pick::PickMode mode() const { return mode_; }
+  // The picker the unified mode uses: the LightManager's (light_pick.h LightPicker::shadow_cars). Null (the default): this picker's own.
+  void SetPicker(light_pick::Picker* picker) { external_ = picker; }
+
   // The groups of `lights`, the player's car first and then by importance (ties: the lower car key), at most `max_cars` of them, into `out` (room for four).
   // Returns how many. Updates the cars that hold views. (A car that holds views has all of them: its lamps' views come and go together.)
   uint32_t Pick(const Light* lights, uint32_t count, uint32_t max_cars, const PickContext& context, Group* out) {
@@ -555,6 +522,7 @@ class ViewPicker {
     const uint32_t groups = BuildGroups(lights, count, all);
     if (max_cars == 0) {
       held_count_ = 0;
+      picker().Forget();
       return 0;
     }
     if (groups == 0) {
@@ -570,6 +538,9 @@ class ViewPicker {
     }
     if (context.have_reference) {
       reference = context.reference;
+    }
+    if (mode_ == light_pick::PickMode::kUnified) {
+      return PickUnified(lights, all, groups, reference, max_cars, context, out);
     }
     std::array<double, 4> score{};
     for (uint32_t g = 0; g < groups; ++g) {
@@ -600,7 +571,10 @@ class ViewPicker {
     return take;
   }
 
-  void Forget() { held_count_ = 0; }
+  void Forget() {
+    held_count_ = 0;
+    picker().Forget();
+  }
   uint32_t held_count() const { return held_count_; }
   uint32_t held_key(uint32_t i) const { return i < held_count_ ? held_[i] : 0u; }
   bool Holds(uint32_t car_key) const {
@@ -613,7 +587,54 @@ class ViewPicker {
   }
 
  private:
-  static constexpr double kPlayerScore = 1.0e9;
+  static constexpr double kPlayerScore = light_pick::kPlayerScore;
+
+  light_pick::Picker& picker() { return external_ ? *external_ : own_picker_; }
+
+  // The unified pick: one entry for each group (a car), the held pick of light_pick.h, the groups it chose in its order.
+  uint32_t PickUnified(const Light* lights, const Group* all, uint32_t groups, const double* reference, uint32_t max_cars, const PickContext& context, Group* out) {
+    light_pick::Picker& pick = picker();
+    pick.SetTuning(light_pick::ShadowCarTuning());
+    if (seed_pending_) {
+      // A switch from the legacy mode in a run: the picker takes who holds views.
+      seed_pending_ = false;
+      pick.Forget();
+      for (uint32_t i = 0; i < held_count_; ++i) {
+        pick.Seed(held_[i], true, 1.0f, false);
+      }
+    }
+    entries_.clear();
+    for (uint32_t g = 0; g < groups; ++g) {
+      light_pick::Entry e;
+      e.id = all[g].car_key;
+      e.player = all[g].is_player;
+      e.distance = detail::Distance(all[g].eye, reference);
+      if (e.player) {
+        e.player_penalty = e.distance * 1e-6;  // a player's lamps in two groups (not made by the rig): the nearer first
+      } else if (context.frustum.valid) {
+        e.view_known = true;
+        e.reach = GroupReach(lights, all[g], context.frustum);
+      } else {
+        e.on_screen = !context.have_screen || OnScreen(context.view_projection, all[g].eye, kViewScreenMargin);
+      }
+      entries_.push_back(e);
+    }
+    const uint32_t take = std::min({groups, max_cars, kMaxCars});
+    pick.PickHeld(entries_, take, &result_);
+    held_count_ = take;
+    for (uint32_t k = 0; k < take; ++k) {
+      out[k] = all[result_.shown[k]];
+      held_[k] = out[k].car_key;
+    }
+    return take;
+  }
+
+  light_pick::PickMode mode_ = light_pick::PickMode::kUnified;
+  light_pick::Picker own_picker_{light_pick::ShadowCarTuning()};
+  light_pick::Picker* external_ = nullptr;
+  bool seed_pending_ = false;
+  std::vector<light_pick::Entry> entries_;
+  light_pick::Result result_;
   std::array<uint32_t, kMaxCars> held_{};
   uint32_t held_count_ = 0;
 };

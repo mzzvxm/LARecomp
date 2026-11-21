@@ -2621,6 +2621,29 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_light_pick": {
+  "type": "std::string",
+  "default": "\"unified\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the one picker of the lights, LIGHT-UNIFY U3): how the lights are picked. unified (the default): the headlight rig's four lights and the \"\n    \"cars that get shadow views are picked by one rule (how much of a beam is in the view, the distance, a place kept by the one that holds it), with every \"\n    \"fade, linger and coast counted in seconds of the scene clock, so that a light fades in the same time at 30, 60 and 144 frames a second. legacy: the \"\n    \"first code of the two pickers (frames counted at the game's pace), to compare with: at 60 frames a second the two pick the same lights with the same \"\n    \"weights. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"unified\", \"legacy\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_light_pick_record": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the one picker of the lights, LIGHT-UNIFY U3): a file path. With it, the headlight rig writes every guest frame's inputs of its tracker \"\n    \"(the cars its lens draws showed, the camera's view) to <path>.rig.txt and the headlight shadow replay writes the inputs of its pick of cars (the rig's \"\n    \"lights, the cap, the context) to <path>.views.txt, in the text format of light_pick_record.h, for the unit test light_pick_test to replay through both \"\n    \"pickers. Empty: nothing is written. Live; changing the path starts new files.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_sync_builds": {
   "type": "bool",
   "default": "false",

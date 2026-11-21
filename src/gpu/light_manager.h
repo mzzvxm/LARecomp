@@ -64,6 +64,7 @@
 #include "car_lights.h"
 #include "light_frame.h"
 #include "light_manager_rules.h"
+#include "light_pick.h"
 #include "local_shadow_types.h"
 #include "vol_lamp_list.h"
 #include "volumetrics_types.h"
@@ -101,6 +102,12 @@ class LightManager {
   // The frame as it is now. Valid on the render thread between BeginFrame and OnPresent (the frame is complete once the volume has filled).
   const larecomp::gpu::LightFrame& Frame() const { return collector_.frame(); }
 
+  // THE ONE PICKER (LIGHT-UNIFY U3, light_pick.h): the picker of each role and the budget, held here whether or not the census runs. The headlight rig's Tracker picks its four lights with
+  // `headlights`, the shadow replay's ViewPicker picks the cars that get views with `shadow_cars` (mcla_gpu_light_pick = legacy runs their own first code instead); the two consumers
+  // note the levels they resolved to into `budget` once a frame. Render thread.
+  light_pick::LightPicker& Pickers() { return pickers_; }
+  const light_pick::LightPicker& Pickers() const { return pickers_; }
+
  private:
   struct Window {
     uint32_t frames = 0, with_lights = 0, with_volume = 0;
@@ -120,6 +127,7 @@ class LightManager {
   HeadlightRig* rig_ = nullptr;
   LocalShadow* shadow_ = nullptr;
 
+  light_pick::LightPicker pickers_;  // the one picker and budget (always: the rig and the replay pick with it whether or not the census runs)
   larecomp::gpu::light_manager::Collector collector_;
   larecomp::gpu::light_manager::ShadowCarry<larecomp::gpu::LocalShadowFrame> carry_;
   larecomp::gpu::light_manager::SelfCheck check_;

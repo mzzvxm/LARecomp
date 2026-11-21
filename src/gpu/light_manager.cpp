@@ -330,6 +330,13 @@ void LightManager::Census() {
   for (uint32_t i = 0; i < cars.count && i < kCensusCars; ++i) {
     REXLOG_INFO("{}", larecomp::gpu::car_lights::FormatCensus(cars.cars[i]));
   }
+  // The one picker (LU-3, light_pick.h): the mode the rig and the replay pick in, the budget the consumers noted, and what the pickers hold now.
+  const light_budget::LightBudget& b = pickers_.budget;
+  REXLOG_INFO("{} picker (LU-3, mcla_gpu_light_pick = {}): budget: {} headlights, {} cars with shadow views ({} with a view for each lamp, at most {} views of {}x{}), the volume's grid reads {} lamps and "
+              "{} headlights, street lamp shadow views {} (+{} spare: reserved); the headlight picker holds {} lights ({} with a place), the shadow picker {} cars",
+              kPrefix, light_pick::ModeName(light_pick::ParseMode(larecomp::settings::mcla_gpu_light_pick.Get())), b.headlights, b.shadow_cars,
+              b.shadow_lamp_cars, b.shadow_views, b.shadow_tile, b.shadow_tile, b.volume_lamps, b.volume_headlights, b.lamp_views, b.lamp_views_spare, pickers_.headlights.state_count(),
+              pickers_.headlights.held_count(), pickers_.shadow_cars.held_count());
   window_ = Window{};
 }
 

@@ -71,6 +71,7 @@
 
 #include <array>
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -83,6 +84,8 @@
 #include "headlight_points.h"
 #include "headlight_rig_rules.h"
 #include "headlight_types.h"
+#include "light_pick.h"
+#include "light_pick_record.h"
 #include "local_shadow_types.h"
 #include "shaders.h"
 #include "topology.h"
@@ -138,7 +141,13 @@ class HeadlightRig {
   // before the present, so that the night factor of this frame's lights is the world's, not that of a lens draw's constants.
   void SetWorldSun(const double* to_sun);
   void OnMainDraw(const MainDraw& draw);
-  void OnPresent();
+  // `scene_frame`: the Scene's frame serial, which the scene clock's virtual time (a trailer take) goes by; the wall clock otherwise. The lights' fades, lingers and coasts are in seconds of it.
+  void OnPresent(uint64_t scene_frame = ~0ull);
+  // The LightManager's picker (light_pick.h LightPicker): the tracker picks with its `headlights` and the rig notes the HEADLIGHTS setting into its budget each frame. Null: the tracker's own.
+  void SetLightPicker(light_pick::LightPicker* picker) {
+    light_picker_ = picker;
+    tracker_.SetPicker(picker ? &picker->headlights : nullptr);
+  }
   // Whether the Scene is to tell the rig of the frame's draws (the setting is on, and it is night or the one frame in 30 that looks at the sun).
   bool wants_draws() const { return enabled_ && observing_; }
 
@@ -205,6 +214,11 @@ class HeadlightRig {
 
   // Across frames.
   headlight_rules::Tracker tracker_;
+  light_pick::LightPicker* light_picker_ = nullptr;  // the manager's (SetLightPicker)
+  // mcla_gpu_light_pick_record: the tracker's inputs of every guest frame, written for light_pick_test to replay (light_pick_record.h).
+  std::string record_path_;
+  std::ofstream record_file_;
+  light_pick::record::RigFrame record_;
   std::unordered_map<uint64_t, LensBox> boxes_;
   car_mesh::Triangles mesh_;
   car_mesh::Scratch scratch_;

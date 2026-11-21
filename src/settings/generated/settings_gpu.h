@@ -1288,6 +1288,17 @@ class GPUSettings final : public rex::SettingOwner {
     "light's inputs hold, and uploads it; nothing reads it, so the picture does not change. Every Nth guest frame one log line says what was collected and how many "
     "checks found a difference. 0: off (the manager is not called). Live.", rex::kDebugOnly, rex::Range{0, 100000});
 
+  REX_SETTING(std::string, mcla_gpu_light_pick, "unified", "Diagnostic (the one picker of the lights, LIGHT-UNIFY U3): how the lights are picked. unified (the default): the headlight rig's four lights and the "
+    "cars that get shadow views are picked by one rule (how much of a beam is in the view, the distance, a place kept by the one that holds it), with every "
+    "fade, linger and coast counted in seconds of the scene clock, so that a light fades in the same time at 30, 60 and 144 frames a second. legacy: the "
+    "first code of the two pickers (frames counted at the game's pace), to compare with: at 60 frames a second the two pick the same lights with the same "
+    "weights. Live.", rex::kDebugOnly, rex::Allowed("unified", "legacy"));
+
+  REX_SETTING(std::string, mcla_gpu_light_pick_record, "", "Diagnostic (the one picker of the lights, LIGHT-UNIFY U3): a file path. With it, the headlight rig writes every guest frame's inputs of its tracker "
+    "(the cars its lens draws showed, the camera's view) to <path>.rig.txt and the headlight shadow replay writes the inputs of its pick of cars (the rig's lights, the cap, the context) to "
+    "<path>.views.txt, in the text format of light_pick_record.h, for the unit test light_pick_test to replay through both pickers. Empty: nothing is written. Live; "
+    "changing the path starts new files.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "
     "the scene lines), and the second draws of the HDR scene and the upscaler masks, wait for it "
@@ -1736,6 +1747,8 @@ inline auto& mcla_gpu_vol_lamp_limit = g_gpu.mcla_gpu_vol_lamp_limit;
 inline auto& mcla_gpu_vol_stable = g_gpu.mcla_gpu_vol_stable;
 inline auto& mcla_gpu_vol_view = g_gpu.mcla_gpu_vol_view;
 inline auto& mcla_gpu_lights_census = g_gpu.mcla_gpu_lights_census;
+inline auto& mcla_gpu_light_pick = g_gpu.mcla_gpu_light_pick;
+inline auto& mcla_gpu_light_pick_record = g_gpu.mcla_gpu_light_pick_record;
 inline auto& mcla_gpu_temporal_jitter_hold = g_gpu.mcla_gpu_temporal_jitter_hold;
 inline auto& mcla_gpu_texture_decode_selftest = g_gpu.mcla_gpu_texture_decode_selftest;
 inline auto& mcla_gpu_texture_decode_threads = g_gpu.mcla_gpu_texture_decode_threads;

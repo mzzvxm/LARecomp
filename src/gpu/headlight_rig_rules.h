@@ -34,6 +34,7 @@
 
 #include "headlight_points.h"
 #include "light_influence.h"
+#include "light_pick.h"
 #include "local_shadow_types.h"
 
 namespace mcla::gpu::headlight_rules {
@@ -784,6 +785,9 @@ inline std::vector<PointLamp> LampsFromPoints(const std::vector<GuestPoint>& poi
 // ---------------------------------------------------------------------------
 // the tracker: keys, the pick of at most four, hysteresis, fades, one frame ahead
 // ---------------------------------------------------------------------------
+// LU-3: the pick (the score, the hysteresis, the fades and the coast's weight) is light_pick.h's: in the unified mode (the default, mcla_gpu_light_pick) EndFrame matches the cars to
+// tracks, moves the unseen ones on and says who left through the edge (what only a source knows), hands the tracks to the picker as entries and writes its answer back; the fades and
+// ages are in scene-clock seconds. The legacy mode runs the code that was here (frame counts) unchanged: the A/B, and the reference light_pick_test.cpp replays the unified pick against.
 
 // A car seen in a frame whose headlights are known.
 struct Candidate {
@@ -838,10 +842,44 @@ struct TrackerTuning {
   double fade_far = light_influence::kFadeFarMetres;    // ... gone from here
 };
 
+// The tracker's tuning as the picker has it: the frame counts and per-frame steps at the reference rate (60 guest frames a second) as seconds and per-second steps.
+inline light_pick::Tuning PickTuningOf(const TrackerTuning& t) {
+  light_pick::Tuning p;
+  p.half_distance = t.score_distance;
+  p.off_screen = t.off_screen;
+  p.keep_bonus = t.keep_bonus;
+  p.player_keeps_bonus = true;
+  p.linger_s = t.linger * light_pick::kReferenceStep;
+  p.coast_linger_s = t.coast_linger * light_pick::kReferenceStep;
+  p.fade_in_per_s = double(t.fade_in) / light_pick::kReferenceStep;
+  p.fade_out_per_s = double(t.fade_out) / light_pick::kReferenceStep;
+  p.drop_s = double(t.drop_after) * light_pick::kReferenceStep;
+  p.fade_near_m = t.fade_near;
+  p.fade_far_m = t.fade_far;
+  p.coast_s = double(t.coast_frames) * light_pick::kReferenceStep;
+  p.coast_taper_from = t.coast_taper_from;
+  p.coast_reach_off = t.coast_reach_off;
+  p.coast_reach_full = t.coast_reach_full;
+  return p;
+}
+
 class Tracker {
  public:
-  Tracker() = default;
-  explicit Tracker(const TrackerTuning& tuning) : tuning_(tuning) {}
+  Tracker() : mode_(light_pick::DefaultMode()) {}
+  explicit Tracker(const TrackerTuning& tuning) : tuning_(tuning), mode_(light_pick::DefaultMode()) {}
+
+  // The mode (mcla_gpu_light_pick): unified, or the legacy code. A switch in a run hands the picker what the tracks hold (picked, weight, coasting), so that nothing pops.
+  void SetMode(light_pick::PickMode mode) {
+    if (mode != mode_) {
+      mode_ = mode;
+      seed_pending_ = mode == light_pick::PickMode::kUnified;
+    }
+  }
+  light_pick::PickMode mode() const { return mode_; }
+  // The picker the unified mode uses: the LightManager's (light_pick.h LightPicker::headlights). Null (the default): the tracker's own.
+  void SetPicker(light_pick::Picker* picker) { external_ = picker; }
+  // The picks of the last unified EndFrame, for the census and the tests.
+  const light_pick::Result& last_pick() const { return result_; }
 
   // The beam the reach is made for (the rig's settings: they change live).
   void SetBeam(double range, double outer_degrees) {
@@ -859,8 +897,49 @@ class Tracker {
   // times how much of its BEAM is in the view (ReachWeight), a car is lit by distance (DistanceFade), and a picked car that the game no longer draws because it left through the
   // picture's edge keeps its light, moved on by its own velocity, for up to coast_frames while its beam reaches the view. Without it the first version's rules: the lamp's place
   // on the screen (Candidate::on_screen) and a fade out of 8 frames as soon as the car is not seen.
-  size_t EndFrame(uint64_t frame, std::array<Tracked, kMaxLights>* out, const light_influence::ViewFrustum* view = nullptr) {
+  //
+  // `now_s`: the scene clock's time of this frame in seconds (mc::cinematic::SceneClockNowMs / 1000), for the unified mode's ages and fades; NaN (the default) is the frame's number at the
+  // reference rate (light_pick.h TimeOfFrame), which is the legacy pick.
+  size_t EndFrame(uint64_t frame, std::array<Tracked, kMaxLights>* out, const light_influence::ViewFrustum* view = nullptr, double now_s = std::numeric_limits<double>::quiet_NaN()) {
+    const bool unified = mode_ == light_pick::PickMode::kUnified;
     const bool influence = view != nullptr && view->valid;
+    if (!std::isfinite(now_s)) {
+      now_s = light_pick::TimeOfFrame(frame);
+    }
+    now_s_ = now_s;
+    double dt = light_pick::kReferenceStep;
+    if (have_last_time_) {
+      dt = std::clamp(now_s - last_time_s_, 0.0, light_pick::kMaxStepSeconds);
+    }
+    have_last_time_ = true;
+    last_time_s_ = now_s;
+    // A coasting car slows by coast_damping a frame (at the reference rate; the unified mode slows it by the same share of a reference step's worth of time).
+    double damping = tuning_.coast_damping;
+    if (unified) {
+      const double steps = dt / light_pick::kReferenceStep;
+      if (std::fabs(steps - 1.0) > 1.0e-9) {
+        damping = std::pow(tuning_.coast_damping, steps);
+      }
+    }
+    Advance(frame, view, influence, damping);
+    return unified ? PickUnified(frame, out, view, influence, dt) : PickLegacy(frame, out, view, influence);
+  }
+
+  void Clear() {
+    tracks_.clear();
+    seen_.clear();
+    coasting_ = 0;
+    have_last_time_ = false;
+    picker().Forget();
+  }
+  size_t track_count() const { return tracks_.size(); }
+  // Lights of the last EndFrame that coast (for the census).
+  uint32_t coasting_count() const { return coasting_; }
+
+ private:
+  // 1. What only a source knows: match the cars seen to the tracks (the player first, then by distance to the camera; each track takes one car), move the ones not seen on by their velocity
+  // and say which left through the picture's edge. Both modes do exactly this.
+  void Advance(uint64_t frame, const light_influence::ViewFrustum* view, bool influence, double damping) {
     // 1. Match: the player first, then by distance to the camera; each track takes one car.
     std::vector<size_t> order(seen_.size());
     for (size_t i = 0; i < order.size(); ++i) {
@@ -924,11 +1003,14 @@ class Tracker {
       }
       if (track.coast_ok) {
         for (int c = 0; c < 3; ++c) {
-          track.velocity[c] *= tuning_.coast_damping;
+          track.velocity[c] *= damping;
         }
       }
     }
+  }
 
+  // The legacy pick (frame counts), exactly as it was: 2 and 3 below.
+  size_t PickLegacy(uint64_t frame, std::array<Tracked, kMaxLights>* out, const light_influence::ViewFrustum* view, bool influence) {
     // 2. Score every track (a track not seen decays with its age) and pick.
     const double outer_radians = tuning_.beam_outer_degrees * kPi / 180.0;
     for (Track& t : tracks_) {
@@ -1045,16 +1127,81 @@ class Tracker {
     return count;
   }
 
-  void Clear() {
-    tracks_.clear();
-    seen_.clear();
+  // The unified pick: the tracks as entries, light_pick.h's answer written back, the output built from the lights that count, the tracks that are gone and weightless forgotten.
+  size_t PickUnified(uint64_t frame, std::array<Tracked, kMaxLights>* out, const light_influence::ViewFrustum* view, bool influence, double dt) {
+    const double outer_radians = tuning_.beam_outer_degrees * kPi / 180.0;
+    light_pick::Picker& pick = picker();
+    pick.SetTuning(PickTuningOf(tuning_));
+    if (seed_pending_) {
+      // A switch from the legacy mode in a run: the picker takes what the tracks hold.
+      seed_pending_ = false;
+      pick.Forget();
+      for (const Track& t : tracks_) {
+        pick.Seed(t.key, t.picked, t.fade, t.coasting);
+      }
+    }
+    entries_.clear();
+    for (Track& t : tracks_) {
+      if (influence) {
+        t.distance = Distance3(t.position, view->eye);
+        double axis[3];
+        BeamAxisOf(t.forward, t.up, axis);
+        t.reach = light_influence::BeamReach(*view, t.position, axis, tuning_.beam_range, outer_radians);
+      } else {
+        t.reach = 1.0;
+      }
+      light_pick::Entry e;
+      e.id = t.key;
+      e.player = t.player;
+      e.observed = t.last_seen == frame;
+      e.age_s = e.observed ? 0.0 : std::max(0.0, now_s_ - t.last_seen_s);
+      e.distance = t.distance;
+      e.view_known = influence;
+      e.reach = t.reach;
+      e.on_screen = t.on_screen;
+      e.coast_ok = t.coast_ok;
+      e.lit = !t.guest || t.on > 0.0;
+      entries_.push_back(e);
+    }
+    pick.PickFading(dt, entries_, kMaxLights, &result_);
+    for (size_t i = 0; i < tracks_.size(); ++i) {
+      Track& t = tracks_[i];
+      const light_pick::Out& o = result_.out[i];
+      t.score = o.score;
+      t.picked_now = o.picked;
+      t.picked = o.picked;
+      t.coasting = o.coasting;
+      t.fade = o.fade;
+    }
+    size_t count = 0;
     coasting_ = 0;
+    for (const uint32_t i : result_.shown) {
+      if (count >= kMaxLights) {
+        break;
+      }
+      const Track& track = tracks_[i];
+      Tracked& light = (*out)[count++];
+      light.key = track.key;
+      light.player = track.player;
+      for (int c = 0; c < 3; ++c) {
+        light.position[c] = track.position[c] + track.velocity[c];
+        light.forward[c] = track.forward[c];
+        light.up[c] = track.up[c];
+      }
+      light.fade = track.fade;
+      light.guest = track.guest;
+      light.on = track.on;
+      light.half_span = track.half_span;
+      light.coasting = track.coasting;
+      light.reach = track.reach;
+      coasting_ += track.coasting ? 1u : 0u;
+    }
+    const double drop_s = pick.tuning().drop_s;
+    tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(), [&](const Track& t) { return now_s_ - t.last_seen_s > drop_s + light_pick::kTimeSlack && t.fade <= 0.0f; }),
+                  tracks_.end());
+    return count;
   }
-  size_t track_count() const { return tracks_.size(); }
-  // Lights of the last EndFrame that coast (for the census).
-  uint32_t coasting_count() const { return coasting_; }
 
- private:
   struct Track {
     uint32_t key = 0;
     bool player = false;
@@ -1069,6 +1216,7 @@ class Tracker {
     double on = 1.0;
     double half_span = 0.0;   // the pair's half distance, smoothed over the sightings that knew it
     uint64_t last_seen = 0;
+    double last_seen_s = 0.0;  // the scene clock's time of the last sighting (the unified mode's ages)
     float fade = 0.0f;
     bool picked = false;      // was picked in the frame before
     bool picked_now = false;
@@ -1124,9 +1272,20 @@ class Tracker {
       t->half_span = t->half_span > 0.0 ? 0.8 * t->half_span + 0.2 * car.lamp.half_span : car.lamp.half_span;
     }
     t->last_seen = frame;
+    t->last_seen_s = now_s_;
   }
 
   TrackerTuning tuning_;
+  light_pick::PickMode mode_ = light_pick::PickMode::kUnified;
+  light_pick::Picker own_picker_;
+  light_pick::Picker* external_ = nullptr;  // the manager's (SetPicker), else own_picker_
+  light_pick::Picker& picker() { return external_ ? *external_ : own_picker_; }
+  bool seed_pending_ = false;
+  std::vector<light_pick::Entry> entries_;
+  light_pick::Result result_;
+  double now_s_ = 0.0;
+  double last_time_s_ = 0.0;
+  bool have_last_time_ = false;
   std::vector<Track> tracks_;
   std::vector<Candidate> seen_;
   uint32_t next_key_ = 1;

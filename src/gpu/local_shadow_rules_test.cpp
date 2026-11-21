@@ -2194,34 +2194,39 @@ void CheckSharedWork() {
 }  // namespace
 
 int main() {
-  CheckTypes();
-  CheckSetting();
-  CheckAtlas();
-  CheckLevels();
-  CheckThreeViewsLand();
-  CheckLights();
-  CheckGroups();
-  CheckPicking();
-  CheckPickingHysteresis();
-  CheckLampOffsetOfALight();
-  CheckLampViews();
-  CheckLampViewsCover();
-  CheckTwoShadows();
-  CheckSharedWork();
-  CheckPickingReach();
-  CheckEdgeRuleWithLevels();
-  CheckFit();
-  CheckWorldToShadow();
-  CheckCamera();
-  CheckReplay();
-  CheckClassification();
-  CheckSelection();
-  CheckViewCull();
-  CheckCullAndKeys();
-  CheckKeyPadding();
-  CheckCarCastsItsSilhouette();
-  CheckSkirtMatrix();
-  CheckVehicleCensus();
+  // LU-3: the whole suite runs twice, once with the unified picker (light_pick.h, the default) and once with the legacy code of ViewPicker (mcla_gpu_light_pick = legacy).
+  for (const mcla::gpu::light_pick::PickMode mode : {mcla::gpu::light_pick::PickMode::kUnified, mcla::gpu::light_pick::PickMode::kLegacy}) {
+    mcla::gpu::light_pick::DefaultMode() = mode;
+    std::printf("-- the view picks through the %s picker\n", std::string(mcla::gpu::light_pick::ModeName(mode)).c_str());
+    CheckTypes();
+    CheckSetting();
+    CheckAtlas();
+    CheckLevels();
+    CheckThreeViewsLand();
+    CheckLights();
+    CheckGroups();
+    CheckPicking();
+    CheckPickingHysteresis();
+    CheckLampOffsetOfALight();
+    CheckLampViews();
+    CheckLampViewsCover();
+    CheckTwoShadows();
+    CheckSharedWork();
+    CheckPickingReach();
+    CheckEdgeRuleWithLevels();
+    CheckFit();
+    CheckWorldToShadow();
+    CheckCamera();
+    CheckReplay();
+    CheckClassification();
+    CheckSelection();
+    CheckViewCull();
+    CheckCullAndKeys();
+    CheckKeyPadding();
+    CheckCarCastsItsSilhouette();
+    CheckSkirtMatrix();
+    CheckVehicleCensus();
+  }
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

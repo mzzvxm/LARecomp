@@ -101,6 +101,7 @@
 // ===========================================================================
 
 #include <cstdint>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -114,6 +115,7 @@
 #include "geometry.h"
 #include "host_passes.h"
 #include "input_layout.h"
+#include "light_pick_record.h"
 #include "local_shadow_rules.h"
 #include "local_shadow_types.h"
 #include "pipelines.h"
@@ -171,6 +173,11 @@ class LocalShadow {
                   UploadRing& upload, ShaderStore& shaders, GuestLayout& layout);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
+  // The LightManager's picker (light_pick.h LightPicker): the cars that get views are picked with its `shadow_cars` and the level is noted into its budget each frame. Null: the replay's own. Render thread.
+  void SetLightPicker(light_pick::LightPicker* picker) {
+    light_picker_ = picker;
+    picker_.SetPicker(picker ? &picker->shadow_cars : nullptr);
+  }
 
   // The Scene opened a frame's first list: reads the settings, forgets the last frame's draws.
   void BeginFrame();
@@ -300,6 +307,9 @@ class LocalShadow {
   local_shadow::ViewPlan frame_plan_;       // the views of those cars: a view for each headlamp, or one for the car (local_shadow_rules.h PlanViews)
   uint32_t frame_views_ = 0;
   local_shadow::ViewPicker picker_;
+  light_pick::LightPicker* light_picker_ = nullptr;  // the manager's (SetLightPicker)
+  std::string record_path_;  // mcla_gpu_light_pick_record: the pick's inputs of every frame, for light_pick_test (light_pick_record.h)
+  std::ofstream record_file_;
   local_shadow::Camera last_camera_;
   uint32_t last_view_count_ = 0;            // cars that held views at the last change
   uint32_t last_view_keys_[local_shadow::kMaxCars] = {};

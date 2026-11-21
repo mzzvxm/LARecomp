@@ -428,6 +428,25 @@ void LocalShadow::PickViews() {
   }
   // The cars that get views (the level's count, the player's first), then the views of each: one for each headlamp of the first cars the level gives lamps to, one for the car
   // for the others (local_shadow_rules.h PlanViews). A car's views come and go together: the picking is of cars, and the plan keeps both of a car's or neither.
+  picker_.SetMode(light_pick::ParseMode(larecomp::settings::mcla_gpu_light_pick.Get()));  // the A/B of the one picker (light_pick.h): unified, or the ViewPicker's own first code
+  const std::string record_path = larecomp::settings::mcla_gpu_light_pick_record.Get();
+  if (record_path != record_path_) {
+    record_path_ = record_path;
+    record_file_.close();
+    if (!record_path.empty()) {
+      record_file_.open(record_path + ".views.txt", std::ios::binary | std::ios::trunc);
+      REXLOG_INFO("{} recording the view pick's inputs to {}.views.txt {} (mcla_gpu_light_pick_record; live)", kPrefix, record_path,
+                  record_file_.is_open() ? "" : "(the file could not be opened)");
+    }
+  }
+  if (record_file_.is_open()) {
+    light_pick::record::ViewFrame recorded;
+    recorded.frame = frame_;
+    recorded.max_cars = rules::MaxCars(choice_.level);
+    recorded.lights.assign(frame_lights_, frame_lights_ + frame_light_count_);
+    recorded.context = context;
+    record_file_ << light_pick::record::FormatView(recorded);
+  }
   frame_cars_ = picker_.Pick(frame_lights_, frame_light_count_, rules::MaxCars(choice_.level), context, frame_groups_);
   rules::PlanViews(frame_lights_, frame_groups_, frame_cars_, rules::LampCars(choice_.level, views_override_), rules::MaxViews(choice_.level, views_override_), &frame_plan_);
   frame_cars_ = frame_plan_.cars;
@@ -544,6 +563,9 @@ void LocalShadow::BeginFrame() {
   frame_cars_ = 0;
   frame_views_ = 0;
   frame_plan_ = rules::ViewPlan{};
+  if (light_picker_ != nullptr) {
+    light_picker_->NoteShadows(choice_.level, views_override_, rules::kLevelTable);  // the one budget (light_budget.h): the level resolved to, noted every frame
+  }
   if (collecting_) {
     PickViews();
   } else {

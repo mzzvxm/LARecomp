@@ -19,6 +19,7 @@
 #include "gpu_class.h"
 #include "guest_memory.h"
 #include "live_text.h"
+#include "mc_engine/cinematic/capture_mode.h"
 
 namespace mcla::gpu {
 
@@ -159,6 +160,19 @@ void HeadlightRig::ReadSettings() {
   outer_degrees_ = float(std::clamp(double(s::mcla_gpu_headlight_cone.Get()), 10.0, 70.0));
   night_override_ = int(s::mcla_gpu_headlight_night.Get());
   edge_ = s::mcla_gpu_headlight_edge.Get();
+  tracker_.SetMode(light_pick::ParseMode(s::mcla_gpu_light_pick.Get()));  // the A/B of the one picker (light_pick.h): unified, or the tracker's own first code
+  if (light_picker_ != nullptr) {
+    light_picker_->NoteHeadlights(enabled_);  // the one budget (light_budget.h)
+  }
+  const std::string record_path = s::mcla_gpu_light_pick_record.Get();
+  if (record_path != record_path_) {
+    record_path_ = record_path;
+    record_file_.close();
+    if (!record_path.empty()) {
+      record_file_.open(record_path + ".rig.txt", std::ios::binary | std::ios::trunc);
+      REXLOG_INFO("{} recording the tracker's inputs to {}.rig.txt {} (mcla_gpu_light_pick_record; live)", kPrefix, record_path, record_file_.is_open() ? "" : "(the file could not be opened)");
+    }
+  }
   log_ = s::mcla_gpu_headlight_log.Get();
   if (was_enabled != enabled_ || !state_logged_) {
     state_logged_ = true;
@@ -385,7 +399,7 @@ void HeadlightRig::OnMainDraw(const MainDraw& d) {
 // the frame's end
 // ---------------------------------------------------------------------------
 
-void HeadlightRig::OnPresent() {
+void HeadlightRig::OnPresent(uint64_t scene_frame) {
   ++frame_;
   ++frames_;
   if (!enabled_) {
@@ -456,6 +470,9 @@ void HeadlightRig::OnPresent() {
       candidate.on_screen = clip[3] > 0.0 && std::fabs(clip[0]) <= kScreenMargin * clip[3] && std::fabs(clip[1]) <= kScreenMargin * clip[3];
     }
     tracker_.Observe(candidate);
+    if (record_file_.is_open()) {
+      record_.cars.push_back(candidate);  // what the tracker was given, for the recording
+    }
     ++lit;
   };
   for (size_t i = 0; i < lens_lamps.size(); ++i) {
@@ -490,7 +507,20 @@ void HeadlightRig::OnPresent() {
   light_influence::ViewFrustum frustum;
   const bool have_view = edge_ && facts_read_ && projection_ok_ && camera_ok_ && light_influence::MakeViewFrustum(view_projection_.m, camera_, &frustum);
   tracker_.SetBeam(double(range_), double(outer_degrees_));
-  const size_t count = tracker_.EndFrame(frame_, &tracked, have_view ? &frustum : nullptr);
+  const double now_s = mc::cinematic::SceneClockNowMs(scene_frame) * 1.0e-3;
+  if (record_file_.is_open()) {
+    record_.frame = frame_;
+    record_.now_s = now_s;
+    record_.has_view = have_view;
+    if (have_view) {
+      record_.frustum = frustum;
+    }
+    record_.beam_range = double(range_);
+    record_.beam_outer_degrees = double(outer_degrees_);
+    record_file_ << light_pick::record::FormatRig(record_);
+    record_.cars.clear();
+  }
+  const size_t count = tracker_.EndFrame(frame_, &tracked, have_view ? &frustum : nullptr, now_s);
   last_view_ = have_view;
   Publish(tracked, count);
   if (night_ > 0.0) {

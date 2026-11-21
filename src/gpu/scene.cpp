@@ -3875,7 +3875,7 @@ void Scene::OnPresent() {
     light_manager_->OnPresent();  // passive: this frame's lights are checked and uploaded before the rig makes the next frame's set
   }
   if (headlights_) {
-    headlights_->OnPresent();  // the headlights seen in this frame become the lights of the next
+    headlights_->OnPresent(frame_serial_);  // the headlights seen in this frame become the lights of the next (their fades are in seconds of the scene clock at this frame)
   }
   if (car_rt_) {
     car_rt_->OnPresent();  // the frame boundary: the top level is gone, the next request counts
