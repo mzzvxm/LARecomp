@@ -37,6 +37,15 @@
 // UNITS. The frame's colours (the sun, the ambient) are in the paint's units (a shader's output); the picture is in those times 2^exp_bias (CityHitParams::units, as the car pass's g_push.up.w).
 // The shaded colour is in the picture's units. The frame's own gain row (the cars' calibration) is NOT applied: a hit on the city has the class gains.
 //
+// WHAT THE CONSUMERS STILL NEED (found while writing the library; none of it is in this package):
+//   R1, R2   the car pass's history image holds only vehicle pixels, so the picture for ResolveHit is ScreenShared's colour_post and lin_depth (SS-1), read at the trigger; the player's pixels are
+//            CITY_HIT_SCREEN_REJECT. CityHitTrace's mask is the city's bit with the cars' (CAR_RT_MASK_ALL | 0x80); a city hit is told from a car's by CityHitIsCity(InstanceID).
+//   R4, G2   the frame's rows exist today only in a frame that has a car (car_rt_scene.cpp BuildMaterialRows: the light is read from the cars' own draws); the top level without a car
+//            (OnResolveCityOnly) writes one empty row, so CityHitShade answers "no data" there. A pass of the world needs a frame of its own: the sun, the ambient, the environment map, the
+//            cascades from the volumetric light or the light frame, written through rt_hit_frame.h MakeFrameRows. The lamp list (CITY_HIT_LAMP_LOAD) is G2b's table (src/citypack/lamp_table.h,
+//            feat/city-rt-g2b) as city_hit_shade_rules.h WorldLamp / MakeGpuLamp, in view space each frame; its schedule is CityHitParams::lampFactor.
+//   G2       GI mode with CITY_HIT_AMBIENT and CITY_HIT_FEEDBACK wired to the probe field, CITY_HIT_P_SUN_RAY | LAMPS | EMISSIVE, no screen.
+//
 // CHECK (nothing here was run against the game): the ambient's hemisphere term for a wall (the cars' 0.6 + 0.4 N.up; M2's 0.5 + 0.5), the vertex colour's rgb (small, ignored), the level's grazing
 // factor, the sun's disc, the wet and glass models, the lamp laws' units against the picture; each has a number below, and the first census says which way to move it.
 

@@ -417,6 +417,7 @@ struct City {
   std::vector<HitMaterial> materials;
   std::vector<hlsl_shim::uint4> slot_rows, material_rows, texture_table;
   HitView view;
+  int blobs_round_tripped = 0, blobs_with_corners = 0;  // the hit blobs written and read back by the format's own encode and decode before they fill the pool
 };
 
 void MakeFakeTexture(Lcg& rng, uint32_t slot, uint32_t width, uint32_t height, uint32_t levels) {
@@ -526,6 +527,18 @@ City BuildCity(Lcg& rng) {
   c.sectors.push_back(MakeSector(rng, 9, true, true, true, kRunHasColour));    // 9 lit window, no uv
   c.sectors.push_back(MakeSector(rng, 7, true, true, true, kRunHasUv));        // 10 water, no vertex colour
   c.sectors.push_back(MakeSector(rng, 1, true, true, false, uv_colour));       // 11 not built
+  // the hit file's way: every blob is encoded (the delta coded corner stream) and decoded by the format before it fills the pool, as the reader does for the file's blobs
+  for (Sector& s : c.sectors) {
+    if (!s.runs) continue;
+    const std::vector<uint8_t> bytes = EncodeHitBlob(s.blob, CornerEncoding::kDelta);
+    HitBlob decoded;
+    std::string error;
+    if (DecodeHitBlob(bytes.data(), bytes.size(), &decoded, &error) && decoded.corners == s.blob.corners && decoded.runs.size() == s.blob.runs.size() && decoded.flags == s.blob.flags) {
+      ++c.blobs_round_tripped;
+      s.blob = decoded;
+    }
+    c.blobs_with_corners += s.corners ? 1 : 0;
+  }
   uint64_t end = 64;
   for (Sector& s : c.sectors) {
     s.plan = PlanPoolBlock(s.mesh.vertex_count(), s.mesh.triangle_count(), s.runs ? uint32_t(s.blob.runs.size()) : 0, s.runs, s.corners);
@@ -1021,6 +1034,7 @@ int main(int argc, char** argv) {
   TwinChecks();
   Lcg rng;
   const City city = BuildCity(rng);
+  Check(city.blobs_round_tripped == 11 && city.blobs_with_corners == 10, Num2("the hit blobs of the synthetic city went through the format's encode and decode before they filled the pool (%.0f round trips, %.0f with corners)", city.blobs_round_tripped, city.blobs_with_corners));
   Coverage cov;
   ShadeChecks(city, rng, 6000, &cov);
   Check(cov.valid > 2500 && cov.invalid > 100, Num2("the random hits are mostly shaded and some are not (%.0f shaded, %.0f without data)", cov.valid, cov.invalid));
