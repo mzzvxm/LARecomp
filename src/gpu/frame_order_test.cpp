@@ -794,7 +794,7 @@ void CheckSources(const std::string& gpu) {
     for (const char* more : ssr_row.more_labels) {
       if (more != nullptr) own.push_back(more);
     }
-    Check(own == std::vector<std::string>({"ssr trace", "ssr rt", "ssr temporal", "ssr apply"}), "the reflections' own labels are the three passes' and the ray traced fallback's (CITY-RT R4; the chains sum the labels that start with 'ssr ')");
+    Check(own == std::vector<std::string>({"ssr trace", "ssr rt", "ssr temporal", "ssr denoise", "ssr apply"}), "the reflections' own labels are the three passes', the ray traced fallback's (CITY-RT R4) and its denoiser's (R6; the chains sum the labels that start with 'ssr ')");
     for (const std::string& label : own) Check(label.rfind("ssr ", 0) == 0, "own label '" + label + "' starts with 'ssr '");
     Check(std::string(ssr_row.closing_label) == "after ssr" && std::string(ssr_row.closing_label).rfind("ssr ", 0) != 0, "the closing label 'after ssr' is not in that sum");
     for (const char* label : fo::cost::kReflectionsProductLabels) {

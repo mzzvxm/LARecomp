@@ -1684,6 +1684,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_denoise": {
+  "type": "i32",
+  "default": "-1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections, the ray traced fallback): RtDenoise, the filter that cleans the fallback's noise where DLSS Ray Reconstruction does not (a bilateral a-trous on the pixels the fallback made: the kernel follows the reflection, wide for a rough surface and a far hit, narrow for a near mirror, and stops at edges of depth, normal, roughness, brightness and hit distance). -1 (the default): the level of REFLECTIONS ON SURFACES gives the number of iterations (high 2, ultra 3); 0: off (the comparison); 1 to 3: that many iterations (steps of 1, 2 and 4 pixels of the half size image). Skipped by itself in a frame Ray Reconstruction takes. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ghost_log_interval": {
   "type": "u32",
   "default": "0",

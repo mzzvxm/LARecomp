@@ -532,13 +532,14 @@ struct Plan {
 //   auto_uses_rr     AUTO trusts RR with it: the A/B pictures and the cost said RR beats ours there (perf/DLSS-RR.md section 3: "keep ours where RR is not better"). The row's own RR value takes every
 //                    consumer with a raw mode; AUTO only these.
 // So AUTO is "RR where it is known to be better", the RR value is "RR wherever it can run", and OURS is "never". RR-4's packages flip these two tables' cells as each raw mode lands and each A/B is
-// read; the test compares them with the table's own words. TODAY (RR-INT): raw_mode_built is true for the two effects that have one (the screen-space reflections, RR-4a; the cars' ray traced
-// reflections, RR-4b), false for the two that do not exist yet (city reflections, bounce light); auto_uses_rr is false for ALL of them until the RR-6 A/B has been read (AUTO stays ours, the row's own
-// RR value takes the two with a raw mode). The effects say they are on through denoiser::NoteConsumer (ssr.cpp, car_selfrefl.cpp); the plugin is asked for at every RTX start whose row is not OURS (D3D12, or Vulkan with DLSS saved).
+// read; the test compares them with the table's own words. TODAY (CITY-RT R6): raw_mode_built is true for the three effects that have one (the screen-space reflections, RR-4a; the cars' ray traced
+// reflections, RR-4b; the city's ray traced reflections, the hybrid's fallback, CITY-RT R6: its one ray a pixel goes to RR as it is, in the same raw frame as the picture's own reflections, and RtDenoise is
+// skipped), false for the one that does not exist yet (bounce light); auto_uses_rr is false for ALL of them until the RR-6 A/B has been read (AUTO stays ours, the row's own
+// RR value takes the three with a raw mode). The effects say they are on through denoiser::NoteConsumer (ssr.cpp: kSsr and kCityRtReflections, car_selfrefl.cpp); the plugin is asked for at every RTX start whose row is not OURS (D3D12, or Vulkan with DLSS saved).
 enum class Consumer : uint8_t {
   kSsr,                 // the screen-space reflections (REFLECTIONS ON SURFACES): stochastic, additive radiance with a hit distance (the first real candidate)
   kCarRtReflections,    // the car's ray traced self-reflections and the chrome of other cars (car_rt_refl.h): an A/B, expected no gain
-  kCityRtReflections,   // the city's ray traced reflections (track 8): designed noisy, RR's reason to exist here
+  kCityRtReflections,   // the city's ray traced reflections (track 8; today the screen-space reflections' ray traced fallback, ssr_rt.h): designed noisy, RR's reason to exist here
   kRtGi,                // ray traced bounce light (RT BOUNCE LIGHT, the probe field): designed noisy
   kCount,
 };
@@ -552,7 +553,7 @@ using ConsumerTable = std::array<ConsumerInfo, kConsumerCount>;
 inline constexpr ConsumerTable kConsumers = {{
     {"screen-space reflections", true, false},
     {"ray traced car reflections", true, false},
-    {"ray traced city reflections", false, false},
+    {"ray traced city reflections", true, false},
     {"ray traced bounce light", false, false},
 }};
 constexpr const ConsumerInfo& InfoOf(Consumer c) { return kConsumers[size_t(c)]; }

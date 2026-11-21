@@ -647,24 +647,23 @@ void CheckPluginAndParsers() {
   Check(int(DebugSwitch::kOff) == 0 && int(DebugSwitch::kProbe) == 1 && int(DebugSwitch::kOn) == 2 && int(DebugSwitch::kRow) == 3, "the switch's numbers");
 }
 
-// RR-5 + RR-INT: the consumers. The shipped table: the screen-space reflections (RR-4a) and the cars' ray traced reflections (RR-4b) have a raw mode; the city's reflections and the bounce light do not exist yet;
+// RR-5 + RR-INT: the consumers. The shipped table: the screen-space reflections (RR-4a) and the cars' ray traced reflections (RR-4b) have a raw mode, and so has the city's ray traced reflections (the screen-space reflections' fallback, CITY-RT R6); the bounce light does not exist yet;
 // NO effect is trusted to AUTO yet (auto_uses_rr waits for the RR-6 A/B), so AUTO is OURS wherever, and the row's RR value takes a frame while SSR or the cars' reflections are on. These checks hold the rules for
 // whichever cells are flipped (written against a made-up table below) and say what the shipped table is.
 void CheckConsumers() {
   Check(kConsumerCount == 4 && kAllConsumers == 0xFu, "four consumers");
-  Check(AnyRawModeBuilt(), "today two effects have a raw mode (RR-INT)");
-  const bool built[kConsumerCount] = {true, true, false, false};
+  Check(AnyRawModeBuilt(), "today three effects have a raw mode (RR-INT, CITY-RT R6)");
+  const bool built[kConsumerCount] = {true, true, true, false};
   for (size_t i = 0; i < kConsumerCount; ++i) {
     Check(kConsumers[i].raw_mode_built == built[i], std::string("today ") + kConsumers[i].name + (built[i] ? " has a raw mode" : " has none (the effect does not exist yet)"));
     Check(!kConsumers[i].auto_uses_rr, std::string("today ") + kConsumers[i].name + ": AUTO does not trust RR with it before the RR-6 A/B");
     Check(!kConsumers[i].auto_uses_rr || kConsumers[i].raw_mode_built, std::string(kConsumers[i].name) + ": AUTO trusts RR only with an effect that has a raw mode");
     Check(kConsumers[i].name != nullptr && kConsumers[i].name[0] != '\0', "every consumer has a name");
   }
-  Check(kConsumers[size_t(Consumer::kSsr)].raw_mode_built && kConsumers[size_t(Consumer::kCarRtReflections)].raw_mode_built, "SSR and the cars' ray traced reflections are the two with a raw mode");
-  Check(!kConsumers[size_t(Consumer::kCityRtReflections)].raw_mode_built && !kConsumers[size_t(Consumer::kRtGi)].raw_mode_built, "the city's reflections and the bounce light have none yet");
-  Check(AnyConsumerOn(ConsumerBit(Consumer::kSsr)) && AnyConsumerOn(ConsumerBit(Consumer::kCarRtReflections)) && AnyConsumerOn(kAllConsumers), "SSR on, the cars' reflections on: a consumer is on");
-  Check(!AnyConsumerOn(0u) && !AnyConsumerOn(ConsumerBit(Consumer::kCityRtReflections)) && !AnyConsumerOn(ConsumerBit(Consumer::kRtGi)) && !AnyConsumerOn(ConsumerBit(Consumer::kCityRtReflections) | ConsumerBit(Consumer::kRtGi)),
-        "nothing on, or only an effect with no raw mode: no consumer");
+  Check(kConsumers[size_t(Consumer::kSsr)].raw_mode_built && kConsumers[size_t(Consumer::kCarRtReflections)].raw_mode_built && kConsumers[size_t(Consumer::kCityRtReflections)].raw_mode_built, "SSR, the cars' ray traced reflections and the city's are the three with a raw mode");
+  Check(!kConsumers[size_t(Consumer::kRtGi)].raw_mode_built, "the bounce light has none yet");
+  Check(AnyConsumerOn(ConsumerBit(Consumer::kSsr)) && AnyConsumerOn(ConsumerBit(Consumer::kCarRtReflections)) && AnyConsumerOn(ConsumerBit(Consumer::kCityRtReflections)) && AnyConsumerOn(kAllConsumers), "SSR on, the cars' reflections on, the city's on: a consumer is on");
+  Check(!AnyConsumerOn(0u) && !AnyConsumerOn(ConsumerBit(Consumer::kRtGi)), "nothing on, or only an effect with no raw mode: no consumer");
   Check(!AnyAutoConsumerOn(kAllConsumers) && !AnyAutoConsumerOn(ConsumerBit(Consumer::kSsr)), "all four on: AUTO still has no consumer it trusts (RR-6's A/B flips auto_uses_rr)");
   Check(ConsumerBit(Consumer::kSsr) == 1u && ConsumerBit(Consumer::kCarRtReflections) == 2u && ConsumerBit(Consumer::kCityRtReflections) == 4u && ConsumerBit(Consumer::kRtGi) == 8u, "the bits");
   Check(std::string(InfoOf(Consumer::kSsr).name) == "screen-space reflections", "InfoOf");
@@ -710,12 +709,12 @@ void CheckConsumers() {
     const Plan p = plan_from_board(Denoiser::kAuto, on, kConsumers);
     Check(!p.use_rr && p.why == Why::kNoConsumer, "AUTO, the shipped table, effects on " + std::to_string(on) + ": ours (no effect AUTO trusts RR with yet)");
   }
-  // The row's RR value with and without consumers: RR while SSR or the cars' reflections are on, ours (kNoConsumer) with nothing on or only effects that do not exist yet.
-  for (const uint32_t on : {ssr, cars, ssr | cars, ssr | city, cars | gi, kAllConsumers}) {
+  // The row's RR value with and without consumers: RR while SSR, the cars' or the city's reflections are on, ours (kNoConsumer) with nothing on or only effects that do not exist yet.
+  for (const uint32_t on : {ssr, cars, city, ssr | cars, ssr | city, cars | gi, city | gi, kAllConsumers}) {
     const Plan p = plan_from_board(Denoiser::kRr, on, kConsumers);
     Check(p.use_rr && p.why == Why::kRrOn, "DLSS RR, the shipped table, effects on " + std::to_string(on) + ": RR");
   }
-  for (const uint32_t on : {0u, city, gi, city | gi}) {
+  for (const uint32_t on : {0u, gi}) {
     const Plan p = plan_from_board(Denoiser::kRr, on, kConsumers);
     Check(!p.use_rr && p.why == Why::kNoConsumer, "DLSS RR, the shipped table, effects on " + std::to_string(on) + ": no effect with a raw mode is on, ours");
   }
@@ -728,10 +727,10 @@ void CheckConsumers() {
   for (int setting = 0; setting < 3; ++setting) {
     for (uint32_t on = 0; on <= kAllConsumers; ++on) {
       const Plan p = plan_from_board(Denoiser(setting), on, kConsumers);
-      whole = whole && (p.use_rr == (Denoiser(setting) == Denoiser::kRr && (on & (ssr | cars)) != 0));
+      whole = whole && (p.use_rr == (Denoiser(setting) == Denoiser::kRr && (on & (ssr | cars | city)) != 0));
     }
   }
-  Check(whole, "the shipped table: RR exactly where the row says DLSS RR and SSR or the cars' reflections are on (3 settings x 16 sets of effects)");
+  Check(whole, "the shipped table: RR exactly where the row says DLSS RR and SSR, the cars' reflections or the city's are on (3 settings x 16 sets of effects)");
   // With AUTO's cell flipped for SSR (what RR-6's A/B may do) AUTO is RR exactly while SSR is on; the cars' reflections, built and not trusted, never bring it.
   ConsumerTable flipped = kConsumers;
   flipped[size_t(Consumer::kSsr)].auto_uses_rr = true;

@@ -42,6 +42,14 @@
 // the apply run unchanged. The levels, caps, classes and the governor are ssr_rt_rules.h's; the debug setting mcla_gpu_ssr_rt (auto, off, high, ultra) is the A/B (auto follows the effect's level on a strong
 // card). With no ray tracing (tier none), the effect off or the debug word off, none of it exists: no confidence image, no storage flags, the plain trace pass, the same passes as before.
 //
+// CITY-RT R6, THE DENOISER AND RAY RECONSTRUCTION (ssr_denoise_rules.h, rt_denoise.h, perf/CITY-RT-M2.md section 7). The fallback's ray is one a pixel, so its pixels are noisy by design, and what cleans them
+// depends on who denoises the frame. In a PLAIN frame RtDenoise (the shared filter, written once for this and the probe field's detail pass) runs its spatial stage between the accumulation and the resolve: up to
+// three iterations of a bilateral a-trous on the pixels the fallback made (share 1 - the picture's confidence), the kernel following the reflection (the lobe's width at the hit seen from the receiver),
+// stopping at edges of depth, normal, roughness, brightness and hit distance; the resolve reads its result and the accumulation's own image stays the next frame's history. In a RAW frame (DLSS Ray
+// Reconstruction takes it) the fallback still follows: its one ray a pixel goes into the trace image with its hit distance in the alpha, the resolve reads the trace itself, the hit pass turns the alpha into the
+// guide pass's hit distance for the filled pixels too, and RtDenoise is skipped (RR is the denoiser; filtering twice is blur). The fallback is a consumer of the DENOISER row (rr::kCityRtReflections,
+// NoteConsumer in BeginFrame): with the plan not RR none of the raw side exists and the frame is the plain one. mcla_gpu_rt_denoise (debug-only, -1 auto, 0 off, 1 to 3 iterations) is the A/B.
+//
 // GB-I2 (the three parts that make it a finished effect):
 //   TEMPORAL     the accumulation clips the history to the trace's neighbourhood (mean +- 1.25 sigma inside its min / max: a variance clip), reads no history at the picture's edge, and moves a REFLECTED
 //                VEHICLE's image with the vehicle's own motion: the trace marks a hit on a vehicle's pixel with its stencil ID in the alpha, and the AO's vehicle table (VehicleTableNow: the very rows its own
@@ -87,7 +95,9 @@
 #include "edram.h"
 #include "host_passes.h"
 #include "resolve.h"
+#include "rt_denoise.h"
 #include "screen_frame.h"
+#include "ssr_denoise_rules.h"
 #include "ssr_rt.h"
 #include "ssr_rules.h"
 #include "temporal_identities.h"
@@ -116,9 +126,7 @@ class ScreenReflections {
   void Initialize(Device& device, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing);
   // CITY-RT R4: the ray traced fallback's layout, shaders and buffers (ssr_rt.h). After the car scene's and the scene service's Initialize (the ray tracing set is in its layout) and before the host
   // precache starts; makes nothing where the device cannot trace rays. The effect is what it was without it.
-  void InitializeRt(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, RtSceneService* service, RtWorldFrame* world) {
-    rt_.Initialize(device, frames, heap, passes, pass_timing, car_scene, service, world);
-  }
+  void InitializeRt(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, RtSceneService* service, RtWorldFrame* world);
   // GPU idle and the FrameRing drained, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
@@ -145,7 +153,7 @@ class ScreenReflections {
   // The video memory the images hold now (the fallback's confidence image, list and control words included).
   uint64_t HeldBytes() const;
   // "; ssr rt: ..." for the renderer's census line: the fallback's frames, caps, counts and the governor's step; empty where it was never wanted.
-  std::string RtCensusText() const { return rt_.CensusText(); }
+  std::string RtCensusText() const { return rt_.CensusText() + ssr_denoise::FormatTotals(denoise_totals_); }
 
  private:
   // The pixel shaders, in the order host_shaders.h ScreenReflectionsPixelShader numbers them (kShaderTraceRt, kShaderTraceRtMs: the trace with the confidence target, CITY-RT R4; kShaderApplyRaw, kShaderHit: the raw
@@ -210,6 +218,10 @@ class ScreenReflections {
   std::unique_ptr<plume::RenderFramebuffer> rt_framebuffer_;
   const plume::RenderTexture* rt_framebuffer_for_[2] = {nullptr, nullptr};
   ScreenReflectionsRt rt_;
+  // CITY-RT R6: RtDenoise, the shared denoiser (rt_denoise.h): its spatial stage between the accumulation and the resolve in a frame the fallback followed (ssr_denoise_rules.h has the rules)
+  RtDenoise denoise_;
+  ssr_denoise::Totals denoise_totals_;
+  uint32_t denoise_why_logged_ = ~0u;
   std::array<HostImage, 2> accum_;
   HostImage hit_;                     // R16_FLOAT, the picture's size (RawHitImage)
   bool hit_ready_ = false;            // this frame ran raw and wrote hit_

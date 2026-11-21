@@ -1781,7 +1781,7 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
   Check(Has(trigger, "  if (!raw) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPass(list, accum_[write_], temporal_pipeline, temporal);\n  }"),
         "RR-4a: the accumulation runs only in a plain frame");
   Check(Has(trigger, "if (raw) {\n    // RR-4a: the resolve reads the trace itself") && Has(trigger, "apply.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));") &&
-            Has(trigger, "  } else {\n    apply.Set(pk::kSrc, ssr::PackSlots(accum_[write_].slot, trace_.slot));\n    apply.Set(pk::kRoadViewApply, road_word);\n  }") &&
+            Has(trigger, "  } else {\n    apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)\n    apply.Set(pk::kRoadViewApply, road_word);\n  }") &&
             Has(trigger, "list->setPipeline(raw ? raw_apply_pipeline : apply_pipeline);") && Has(trigger, "pass_timing_->Mark(list, \"ssr apply raw\");"),
         "RR-4a: the raw resolve reads the trace in both halves of the source word and keeps the Hi-Z words (the road view's borrowing is the plain apply's)");
   const size_t apply_mark = trigger.find("Mark(list, \"ssr apply\")"), hit_mark = trigger.find("Mark(list, \"ssr hit\")"), after_mark = trigger.find("Mark(list, \"after ssr\")"), hit_draw = trigger.find("DrawPass(list, hit_, hit_pipeline, hit_push);");

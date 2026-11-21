@@ -868,12 +868,12 @@ void TestHostSources(const std::string& dir) {
   Check(Has(ssr_cpp, "if (rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1])") &&
             Has(ssr_cpp, "rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET") && Has(ssr_cpp, "} else {\n    DrawPass(list, trace_, trace_pipeline, trace_push);\n  }"),
         "without the fallback the images are the old ones (default flags, no confidence) and the pass is the plain one");
-  Check(Has(ssr_cpp, "rt_.BeginFrame(level_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") && Has(ssr_cpp, "return bytes + rt_.HeldBytes();"), "the effect's frame start, present, shutdown and memory call the fallback");
+  Check(Has(ssr_cpp, "rt_.BeginFrame(level_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") && Has(ssr_cpp, "return bytes + rt_.HeldBytes() + denoise_.HeldBytes();"), "the effect's frame start, present, shutdown and memory call the fallback");
   const size_t m_trace = At(ssr_cpp, "Mark(list, \"ssr trace\")");
   const size_t m_rt = At(ssr_cpp, "Mark(list, \"ssr rt\")");
   const size_t m_temporal = At(ssr_cpp, "Mark(list, \"ssr temporal\")");
   Check(m_trace < m_rt && m_rt < m_temporal && Count(ssr_cpp, "\"ssr rt\"") == 1 && Count(rt_cpp, "\"ssr rt\"") <= 2, "the label 'ssr rt' stands between the trace's and the accumulation's marks, written once");
-  Check(Has(order_h, "{{\"ssr rt\", \"ssr temporal\", \"ssr apply\"}}") && Has(order_h, ".soft_reads = data::kCarStructures"), "the frame order table has the label and the soft read of the top level");
+  Check(Has(order_h, "{{\"ssr rt\", \"ssr temporal\", \"ssr denoise\", \"ssr apply\"}}") && Has(order_h, ".soft_reads = data::kCarStructures"), "the frame order table has the label and the soft read of the top level");
   // the MRT pipeline and its host pass
   Check(Has(passes_h, "const plume::RenderFormat* formats,") && Has(passes_cpp, "desc.renderTargetCount = count;") && Has(passes_cpp, "count < 2"), "the host passes make a pipeline over several targets");
   Check(Has(ssr_cpp, "const plume::RenderFormat formats[2] = {kFormat, kConfidenceFormat};") && Has(ssr_cpp, "kConfidenceFormat = plume::RenderFormat::R8G8_UNORM") && Has(ssr_cpp, "plume::RenderFramebufferDesc(attachments, 2)"),

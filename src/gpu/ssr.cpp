@@ -104,6 +104,15 @@ void ScreenReflections::Initialize(Device& device, BindlessHeap& heap, HostPasse
   ready_ = true;
 }
 
+void ScreenReflections::InitializeRt(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, RtSceneService* service, RtWorldFrame* world) {
+  rt_.Initialize(device, frames, heap, passes, pass_timing, car_scene, service, world);
+  // CITY-RT R6: the shared denoiser's host (rt_denoise.h) with this effect's spatial compile, only where the fallback can run (a card that does not trace makes nothing of it).
+  if (rt_.available()) {
+    const HostShaderBlob spatial = SsrDenoiseSpatialShader();
+    denoise_.Initialize(device, frames, heap, passes, /*instance=*/0, "ssr", RtDenoise::Blob{spatial.data, spatial.size, spatial.name}, RtDenoise::Blob{});
+  }
+}
+
 void ScreenReflections::Shutdown() {
   // The host builder's functions name this object's layout and shaders: stop it first (the other owners do the same; stopping twice is safe).
   if (passes_) {
@@ -122,6 +131,7 @@ void ScreenReflections::Shutdown() {
   rt_framebuffer_.reset();
   rt_framebuffer_for_[0] = rt_framebuffer_for_[1] = nullptr;
   rt_.Shutdown();   // its pipelines are the host builder's too (stopped above)
+  denoise_.Shutdown();
   for (HostImage& image : accum_) {
     image = HostImage{};
   }
@@ -345,7 +355,7 @@ uint64_t ScreenReflections::HeldBytes() const {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
   }
-  return bytes + rt_.HeldBytes();
+  return bytes + rt_.HeldBytes() + denoise_.HeldBytes();
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +378,9 @@ void ScreenReflections::BeginFrame() {
   // board at the temporal system's frame boundary, which comes right after this call (frame_order.h kBeginSsr, kBeginTemporal: lag 0). Only a flag is set; with the plan not RR nothing else changes.
   denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);
   rt_.BeginFrame(level_);   // CITY-RT R4: the ray traced fallback's level (off with the effect, on a card that does not trace, or by the debug word) and its want of the city's structures
+  // CITY-RT R6: the fallback is a consumer of the DENOISER row too (rr::kConsumers kCityRtReflections: its one ray a pixel is what Ray Reconstruction is for). `wanted` is the fallback's own answer: the effect is on, the
+  // card traces and the setting does not say off; the plan reads the board at the temporal system's frame boundary, as for the effect itself.
+  denoiser::NoteConsumer(rr::Consumer::kCityRtReflections, rt_.wanted());
   if (!logged_level_once_ || level != logged_level_) {
     logged_level_once_ = true;
     logged_level_ = level;
@@ -702,6 +715,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   trace_push.Set(pk::kRoadView, road_word);
   trace_push.SetFloat(pk::kFallback, road_why == ssr::RoadViewWhy::kUsed ? road.share : 0.0f);
   pass_timing_->Mark(list, "ssr trace");
+  bool rt_recorded = false;   // the fallback's compute passes were recorded in this frame
   if (rt) {
     DrawPassRt(list, trace_rt_pipeline, trace_push);
     // the ray traced fallback: the pixels the picture could not speak for, traced into the city and added to the trace image (its two compute passes' time is the label 'ssr rt': it runs to the next mark)
@@ -717,7 +731,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     rt_frame.ssr_rays = numbers.rays;
     rt_frame.screen = sf.lin_depth_slot[0] != screen::kNoSlot;
     rt_frame.frame = frames_run_;
-    rt_.Record(rt_frame);
+    rt_recorded = rt_.Record(rt_frame);   // false where the frame has no top level: the trace and the confidence image are the picture's alone
   } else {
     DrawPass(list, trace_, trace_pipeline, trace_push);
   }
@@ -739,13 +753,72 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     DrawPass(list, accum_[write_], temporal_pipeline, temporal);
   }
 
+  // CITY-RT R6, RtDenoise's spatial stage (ssr_denoise_rules.h has when): between the accumulation and the resolve, in a frame the fallback followed, a bilateral a-trous over the accumulated image on the
+  // pixels the fallback made (their share is 1 - the picture's confidence); the resolve reads its result in place of the accumulation. The accumulation's own image stays the next frame's history (a blur
+  // fed back would stack). A raw frame (Ray Reconstruction takes it) skips it: RR is the denoiser of the raw ray.
+  const HostImage* resolve_source = &accum_[write_];
+  ssr_denoise::Facts denoise_facts;
+  denoise_facts.level = level_;
+  denoise_facts.setting = int(larecomp::settings::mcla_gpu_rt_denoise.Get());
+  denoise_facts.raw = raw;
+  denoise_facts.fallback_followed = rt_recorded;
+  denoise_facts.multisampled = ms;
+  denoise_facts.pipelines_ready = true;
+  denoise_facts.images_ok = true;
+  ssr_denoise::Plan denoise = ssr_denoise::Decide(denoise_facts);
+  if (denoise.runs()) {
+    denoise_facts.pipelines_ready = denoise_.SpatialReady();   // everything else says go: ask for the pipeline (listed with the host precache the first time)
+    denoise = ssr_denoise::Decide(denoise_facts);
+  }
+  if (denoise.runs()) {
+    pass_timing_->Mark(list, "ssr denoise");
+    RtDenoise::Frame stage;
+    stage.list = list;
+    stage.signal = &accum_[write_];
+    stage.reads = {&trace_, &confidence_};
+    stage.width = width;
+    stage.height = height;
+    stage.iterations = denoise.iterations;
+    ssr::Push pass = push;   // the planes, the Hi-Z, the lens, the camera's axes and the wetness as the apply has them
+    pass.Set(ssr_denoise::kWordSrc, ssr::PackSlots(accum_[write_].slot, trace_.slot));
+    pass.Set(ssr_denoise::kWordConf, confidence_.slot);
+    pass.Set(ssr_denoise::kWordIteration, 0u);
+    pass.SetFloat(ssr_denoise::kWordLength, ssr_denoise::HistoryLength(use_history));
+    stage.push = pass.w;
+    stage.patch = ssr_denoise::PatchFor();
+    const HostImage* filtered = denoise_.RecordSpatial(stage);
+    if (filtered) {
+      resolve_source = filtered;
+    } else {
+      denoise.why = ssr_denoise::Why::kImages;   // the images or the sets could not be made: the resolve reads the accumulation
+    }
+  }
+  if (rt_.wanted() && denoise_facts.setting != 0) {
+    denoise_totals_.wanted_once = true;
+    denoise_totals_.last_why = denoise.why;
+    denoise_totals_.last_iterations = ssr_denoise::IterationsFor(denoise_facts.level, denoise_facts.setting);
+    if (denoise.runs()) {
+      ++denoise_totals_.frames_run;
+      denoise_totals_.iterations += denoise.iterations;
+    } else if (denoise.why == ssr_denoise::Why::kRawFrame) {
+      ++denoise_totals_.frames_raw;
+    } else if (denoise.why != ssr_denoise::Why::kOff && denoise.why != ssr_denoise::Why::kNoFallback) {
+      ++denoise_totals_.frames_other;
+    }
+    if (uint32_t(denoise.why) != denoise_why_logged_) {
+      denoise_why_logged_ = uint32_t(denoise.why);
+      REXLOG_INFO("{} denoise (RtDenoise, the fallback's pixels): {}{} (logged when it changes)", kPrefix, ssr_denoise::WhyName(denoise.why),
+                  denoise.runs() ? std::format(": {} iteration{} of the bilateral a-trous (steps 1, 2, 4), mcla_gpu_rt_denoise {}", denoise.iterations, denoise.iterations == 1 ? "" : "s", denoise_facts.setting) : std::string());
+    }
+  }
+
   // The apply: the main colour as a colour target in the middle of the frame (the occlusion's way: no depth, the next draw of the game moves things back itself).
   ssr::Push apply = push;
   if (raw) {
     // RR-4a: the resolve reads the trace itself (both halves of the source word); the Hi-Z words stay as pushed (the debug view that borrows the first one is never on in a raw frame).
     apply.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));
   } else {
-    apply.Set(pk::kSrc, ssr::PackSlots(accum_[write_].slot, trace_.slot));
+    apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)
     apply.Set(pk::kRoadViewApply, road_word);
   }
   edram_->Transition(list, *colour, plume::RenderTextureLayout::COLOR_WRITE);
@@ -848,6 +921,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
 
 void ScreenReflections::OnPresent() {
   rt_.OnPresent();
+  denoise_.OnPresent();
   if (ran_) {
     idle_frames_ = 0;
   } else {

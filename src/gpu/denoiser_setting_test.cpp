@@ -255,11 +255,11 @@ void GateChecks() {
   const uint32_t gi = rr::ConsumerBit(rr::Consumer::kRtGi);
   s.consumers_on = 0;
   Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "shipped table, no effect on: (NOT NEEDED), on a PC that could run it");
-  s.consumers_on = city | gi;
-  Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "shipped table, only the effects that have no raw mode (city reflections, bounce light) on: (NOT NEEDED)");
-  for (const uint32_t on : {ssr, cars, ssr | cars, ssr | city, rr::kAllConsumers}) {
+  s.consumers_on = gi;
+  Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "shipped table, only the effect that has no raw mode (bounce light) on: (NOT NEEDED)");
+  for (const uint32_t on : {ssr, cars, city, ssr | cars, ssr | city, city | gi, rr::kAllConsumers}) {
     s.consumers_on = on;
-    Check(dn::GateOf(s) == dn::Gate::kRuns, "shipped table, SSR or the cars' reflections on (set " + std::to_string(on) + "): the row is on, nothing said");
+    Check(dn::GateOf(s) == dn::Gate::kRuns, "shipped table, SSR, the cars' reflections or the city's on (set " + std::to_string(on) + "): the row is on, nothing said");
     Check(dn::AutoLabel(dn::GateOf(s), on) == "AUTO (OURS)" && !dn::AutoIsRr(dn::GateOf(s), on), "... and AUTO says OURS (set " + std::to_string(on) + "): no effect is trusted to AUTO yet");
   }
   // with SSR's cell flipped for AUTO (what RR-6 may do) AUTO says DLSS RR exactly while SSR is on and the row is open
@@ -376,13 +376,15 @@ void MenuChecks(const std::string& dir) {
 void ConsumerWiringChecks(const std::string& dir) {
   const std::string rules = ReadFile(dir + "/dlss_rr_rules.h");
   Check(Has(rules, "{\"screen-space reflections\", true, false},") && Has(rules, "{\"ray traced car reflections\", true, false},"), "dlss_rr_rules.h: SSR and the cars' reflections have a raw mode and are not trusted to AUTO yet");
-  Check(Has(rules, "{\"ray traced city reflections\", false, false},") && Has(rules, "{\"ray traced bounce light\", false, false},"), "dlss_rr_rules.h: the effects that do not exist yet have none");
+  Check(Has(rules, "{\"ray traced city reflections\", true, false},") && Has(rules, "{\"ray traced bounce light\", false, false},"), "dlss_rr_rules.h: the city's reflections (the fallback, CITY-RT R6) have a raw mode and are not trusted to AUTO; the bounce light does not exist yet and has none");
   const std::string ssr = ReadFile(dir + "/ssr.cpp");
   const size_t sb = At(ssr, "void ScreenReflections::BeginFrame() {");
   const size_t se = At(ssr, "\n}\n", sb == std::string::npos ? 0 : sb);
   const std::string sfn = (sb == std::string::npos || se == std::string::npos) ? std::string() : ssr.substr(sb, se - sb);
   Check(!sfn.empty() && Has(sfn, "denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);"), "ScreenReflections::BeginFrame tells the board whether SSR is on");
   Check(Before(sfn, "level_ = level;", "denoiser::NoteConsumer(rr::Consumer::kSsr"), "... after the level is settled (a setting that cannot be made reads as off)");
+  Check(Has(sfn, "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections, rt_.wanted());") && Before(sfn, "rt_.BeginFrame(level_);", "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections"),
+        "ScreenReflections::BeginFrame tells the board whether the ray traced fallback is wanted (CITY-RT R6), after the fallback has decided its level");
   Check(Has(ssr, "#include \"denoiser_setting.h\""), "ssr.cpp includes the board");
   const std::string car = ReadFile(dir + "/car_selfrefl.cpp");
   const size_t cb = At(car, "void CarSelfRefl::BeginFrame() {");
@@ -391,9 +393,9 @@ void ConsumerWiringChecks(const std::string& dir) {
   Check(!cfn.empty() && Has(cfn, "denoiser::NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active());"), "CarSelfRefl::BeginFrame tells the board whether the ray traced reflections run");
   Check(Before(cfn, "rt_->BeginFrame(mode != Mode::kOff);", "denoiser::NoteConsumer(rr::Consumer::kCarRtReflections"), "... after the ray traced pass has decided whether it is wanted");
   Check(Has(car, "#include \"denoiser_setting.h\""), "car_selfrefl.cpp includes the board");
-  // the other two effects do not exist: nothing may claim to be them
+  // the bounce light does not exist: nothing may claim to be it
   const std::string scene = ReadFile(dir + "/scene.cpp");
-  Check(!Has(scene, "NoteConsumer(") && !Has(ssr, "Consumer::kCityRtReflections") && !Has(car, "Consumer::kRtGi"), "no one else calls the board");
+  Check(!Has(scene, "NoteConsumer(") && !Has(ssr, "Consumer::kRtGi") && !Has(car, "Consumer::kRtGi") && !Has(car, "Consumer::kCityRtReflections"), "no one else calls the board");
   const std::string temporal = ReadFile(dir + "/temporal.cpp");
   Check(!Has(temporal, "in.consumers_active = false;") && !Has(temporal, "TODO(RR-5") && !Has(ssr, "TODO(RR-5") && !Has(car, "TODO(RR-5") && !Has(rules, "TODO(RR-5"), "the merge's hooks are done: no placeholder is left");
 }
