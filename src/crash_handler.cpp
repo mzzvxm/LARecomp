@@ -4,6 +4,7 @@
 // This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
 #include "crash_handler.h"
+#include "crash_options.h"
 #include "larecomp_log.h"
 #include "process_exit.h"
 
@@ -144,6 +145,13 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
     }
 
     FlushLogs();
+
+    // The test harness's switch (crash_options.h): the SDK's reporter has written its report and skipped its box (LarecompApp::
+    // GetCrashOptions) and has called this filter last, so nothing is left to write. End the process here with a status of its
+    // own instead of going on to Windows Error Reporting (its box, its minutes-long dump), so a test run sees the end at once.
+    if (larecomp::crash::NoDialogFromEnvironment()) {
+        larecomp::EndProcessNow(static_cast<int>(larecomp::crash::kNoDialogExitCode));
+    }
 
     return EXCEPTION_CONTINUE_SEARCH;
 }

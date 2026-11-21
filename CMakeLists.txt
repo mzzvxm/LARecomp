@@ -536,6 +536,15 @@ add_executable(larecomp_game_marker_test EXCLUDE_FROM_ALL
     src/game_marker_test.cpp)
 target_include_directories(larecomp_game_marker_test PRIVATE src)
 
+# The switch that skips the crash box for a test run (src/crash_options.h: LARECOMP_NO_CRASH_DIALOG, the exit status) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_crash_options_test, then run <build dir>/larecomp_crash_options_test (exit 0 = passed).
+add_executable(larecomp_crash_options_test EXCLUDE_FROM_ALL
+    src/crash_options_test.cpp)
+target_include_directories(larecomp_crash_options_test PRIVATE src)
+if(WIN32)
+    target_compile_definitions(larecomp_crash_options_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # What LARecomp does with each option of the command line (src/settings/cli_rules.h: which options the SDK keeps, which setting
 # belongs to a driver that is not loaded this run, what a name nothing knows costs) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_cli_rules_test, then run <build dir>/larecomp_cli_rules_test (exit 0 = passed).
