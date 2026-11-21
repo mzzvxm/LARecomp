@@ -964,7 +964,7 @@ void TestSources(const std::string& dir) {
         "R6 merge: the pixel shaders' numbers: the fallback's two traces are 5 and 6, the raw resolve 7 and the hit pass 8");
   Check(Has(ssr_h, "RtDenoise denoise_;") && Has(ssr_h, "ssr_denoise::FormatTotals(denoise_totals_)") && Has(ssr_h, "#include \"rt_denoise.h\""), "ssr.h owns the host and adds the census");
   // the setting
-  Check(Has(settings, "REX_SETTING(i32, mcla_gpu_rt_denoise, -1,") && Has(settings, "rex::kDebugOnly, rex::Range{-1, 3});") && Has(settings, "inline auto& mcla_gpu_rt_denoise = g_gpu.mcla_gpu_rt_denoise;") &&
+  Check(Has(settings, "REX_SETTING(i32, " "mcla_gpu_rt_denoise, -1,") && Has(settings, "rex::kDebugOnly, rex::Range{-1, 3});") && Has(settings, "inline auto& mcla_gpu_rt_denoise = g_gpu.mcla_gpu_rt_denoise;") &&
             Has(manifest, "\"mcla_gpu_rt_denoise\": {") && Has(meta, "{\"mcla_gpu_rt_denoise\", \"MCLA/GPU\"},"),
         "mcla_gpu_rt_denoise is a live debug-only setting, -1 (auto) to 3, in the three generated files");
   Check(Has(ssr_cpp, "larecomp::settings::mcla_gpu_rt_denoise.Get()"), "the effect reads it every frame (live)");
