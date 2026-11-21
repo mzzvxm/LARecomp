@@ -703,20 +703,84 @@ VolLamp CarLight(float x, float y, float z) {
   return l;
 }
 
+// The second pass's rule (VOL-STABLE-2), kept here for the comparison: the history's weight fell where the headlights' unshadowed term changed between the volume the history
+// holds and this one. It took the trail away and the smoothing with it; volumetrics_stable.h 4b says what replaced it.
+constexpr float kRuleTolerance = 0.08f;
+float RuleChange(const VolLamp* now, uint32_t n_now, const VolLamp* before, uint32_t n_before, const float p[3], const float ray[3], float g) {
+  float a[3] = {0.0f, 0.0f, 0.0f};
+  float b[3] = {0.0f, 0.0f, 0.0f};
+  for (uint32_t i = 0; i < n_now; ++i) {
+    const float t = HeadlightTermUnshadowed(now[i], p, ray, g);
+    for (int c = 0; c < 3; ++c) {
+      a[c] += now[i].colour[c] * t;
+    }
+  }
+  for (uint32_t i = 0; i < n_before; ++i) {
+    const float t = HeadlightTermUnshadowed(before[i], p, ray, g);
+    for (int c = 0; c < 3; ++c) {
+      b[c] += before[i].colour[c] * t;
+    }
+  }
+  return std::max({std::fabs(a[0] - b[0]), std::fabs(a[1] - b[1]), std::fabs(a[2] - b[2])});
+}
+float RuleWeight(float weight, float change, float total) {
+  const float r = change / std::max(total, 1e-6f) / kRuleTolerance;
+  return weight / (1.0f + r * r);
+}
+
+// The unshadowed terms of a set of lights at `p` (colour included), as the inject's compensation sums them.
+void SetTerm(const VolLamp* set, uint32_t n, const float p[3], const float ray[3], float g, float out[3]) {
+  out[0] = out[1] = out[2] = 0.0f;
+  for (uint32_t i = 0; i < n; ++i) {
+    const float t = HeadlightTermUnshadowed(set[i], p, ray, g);
+    for (int c = 0; c < 3; ++c) {
+      out[c] += set[i].colour[c] * t;
+    }
+  }
+}
+
+enum class History { kFixed, kPass2Rule, kCompensated };
+
 struct BeamRun {
   double lag_m = 0.0;        // how far behind the light's own profile the history's profile lies (their centroids), metres
   double rms_error = 0.0;    // the history's value against this frame's own, as a share of it, over the voxels the beam lights
-  double noise = 0.0;        // the frame to frame jitter of a voxel's value (rms of x(t) - (x(t-1) + x(t+1)) / 2, as a share of the mean) with 10 per cent noise on every frame's sample
+  double mean_weight = 0.0;  // the history's mean weight over the voxels the beam lights (the smoothing the history keeps)
+  std::vector<double> probe;  // the history's value at a voxel 8 m ahead of the light, in the beam, frame by frame
+  std::vector<double> probe_edge;  // the same at 44 m ahead, where the beam's window (the range's 60 m) and its cone make the term fall fast
 };
 
+// The jitter the noise puts into a voxel's value: the rms of the second time difference of (noisy - clean) as a share of the clean mean. The clean run of the same history has the
+// beam's own curvature in it (a light that passes a voxel at 60 m/s changes it by a third in a frame), which is not noise and which the subtraction takes out.
+double NoiseJitter(const BeamRun& noisy, const BeamRun& clean, bool edge = false) {
+  const std::vector<double>& noisy_series = edge ? noisy.probe_edge : noisy.probe;
+  const std::vector<double>& clean_series = edge ? clean.probe_edge : clean.probe;
+  const size_t n = std::min(noisy_series.size(), clean_series.size());
+  double mean = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    mean += clean_series[i];
+  }
+  mean /= double(std::max<size_t>(n, 1));
+  double sh = 0.0;
+  for (size_t i = 1; i + 1 < n; ++i) {
+    const double a = noisy_series[i] - clean_series[i];
+    const double b = noisy_series[i - 1] - clean_series[i - 1];
+    const double c = noisy_series[i + 1] - clean_series[i + 1];
+    const double d = a - 0.5 * (b + c);
+    sh += d * d;
+  }
+  return std::sqrt(sh / double(std::max<size_t>(n - 2, 1))) / std::max(mean, 1e-12);
+}
+
 // A line of voxels along the road at 1.2 m, 2 m to the side of the car's path, a light that drives along it at `speed` m/s at 60 FPS with the history blended at weight 0.9
-// (rule off) or at HistoryWeightUnderLightMotion's (rule on), the haze under it a small constant light.
-BeamRun BeamDrive(float speed, bool rule, float noise_level) {
+// (kFixed), at the second pass's rule (kPass2Rule) or with the history's beam taken to the light's place (kCompensated), the haze under it a small constant light (with
+// `haze_noise` of noise on every frame's sample of it: the base of the compensation is that sample).
+BeamRun BeamDrive(float speed, History mode, float noise_level, float haze_noise = 0.0f) {
   const float dt = 1.0f / 60.0f;
   const int count = 960;
   const float spacing = 0.25f;
   const float haze = 0.002f;                // the voxel's own light with no beam
-  const float gain = 0.0012f * kLightGain;  // sigma x the scene units
+  const float sigma = 0.0012f;
+  const float gain = sigma * kLightGain;    // sigma x the scene units
   const float cam[3] = {0.0f, 1.5f, -12.0f};
   std::vector<double> hist(size_t(count), 0.0);
   std::vector<double> clean(size_t(count), 0.0);
@@ -725,8 +789,11 @@ BeamRun BeamDrive(float speed, bool rule, float noise_level) {
   bool have = false;
   double lag_sum = 0.0;
   double err_sum = 0.0;
+  double weight_sum = 0.0;
+  double weight_n = 0.0;
   int measured = 0;
   std::vector<double> probe_series;
+  std::vector<double> probe_edge_series;
   for (int frame = 0; frame < 420; ++frame) {
     const float x_light = 20.0f + speed * float(frame) * dt;
     const VolLamp lamp = CarLight(x_light, 0.7f, 0.0f);
@@ -738,17 +805,35 @@ BeamRun BeamDrive(float speed, bool rule, float noise_level) {
       const double beam = double(HeadlightTermUnshadowed(lamp, p, ray, 0.6f)) * lamp.colour[1] * gain;
       clean[size_t(i)] = haze + beam;
       peak = std::max(peak, clean[size_t(i)]);
-      const double sample = haze + beam * (1.0 + noise_level * (2.0 * rng.Next() - 1.0));
+      const double base = haze * (1.0 + haze_noise * (2.0 * rng.Next() - 1.0));
+      const double sample = base + beam * (1.0 + noise_level * (2.0 * rng.Next() - 1.0));
       if (!have) {
         hist[size_t(i)] = sample;
         continue;
       }
       double w = 0.9;
-      if (rule) {
-        const float change = HeadlightChange(&lamp, 1, &before, 1, p, ray, 0.6f) * gain;
-        w = HistoryWeightUnderLightMotion(0.9f, change, float(std::max(sample, 1e-9)));
+      double old_value = hist[size_t(i)];
+      if (mode == History::kPass2Rule) {
+        const float change = RuleChange(&lamp, 1, &before, 1, p, ray, 0.6f) * gain;
+        w = RuleWeight(0.9f, change, float(std::max(sample, 1e-9)));
+      } else if (mode == History::kCompensated) {
+        float now_term[3];
+        float then_term[3];
+        SetTerm(&lamp, 1, p, ray, 0.6f, now_term);
+        SetTerm(&before, 1, p, ray, 0.6f, then_term);
+        // the scalar sim is the green channel: the other two carry the lamp's colours' own ratios of it
+        const float old3[3] = {float(old_value), float(old_value), float(old_value)};
+        const float base3[3] = {float(base), float(base), float(base)};
+        float out3[3];
+        const float scale = CompensateHeadlightHistory(old3, base3, now_term, then_term, sigma, sigma, kLightGain, out3);
+        old_value = out3[1];
+        w = 0.9 * double(scale);
       }
-      hist[size_t(i)] = sample + (hist[size_t(i)] - sample) * w;
+      hist[size_t(i)] = sample + (old_value - sample) * w;
+      if (frame >= 150 && clean[size_t(i)] > 0.05 * peak) {
+        weight_sum += w;
+        weight_n += 1.0;
+      }
     }
     before = lamp;
     have = true;
@@ -780,70 +865,329 @@ BeamRun BeamDrive(float speed, bool rule, float noise_level) {
       ++measured;
     }
     probe_series.push_back(hist[size_t(std::clamp(int((x_light + 8.0f) / spacing), 0, count - 1))]);  // a voxel 8 m ahead of the light, in the beam
+    probe_edge_series.push_back(hist[size_t(std::clamp(int((x_light + 44.0f) / spacing), 0, count - 1))]);
   }
   BeamRun out;
   out.lag_m = lag_sum / std::max(measured, 1);
   out.rms_error = err_sum / std::max(measured, 1);
-  double mean = 0.0;
-  for (double v : probe_series) {
-    mean += v;
-  }
-  mean /= double(std::max<size_t>(probe_series.size(), 1));
-  double sh = 0.0;
-  for (size_t i = 1; i + 1 < probe_series.size(); ++i) {
-    const double d = probe_series[i] - 0.5 * (probe_series[i - 1] + probe_series[i + 1]);
-    sh += d * d;
-  }
-  out.noise = std::sqrt(sh / double(std::max<size_t>(probe_series.size() - 2, 1))) / std::max(mean, 1e-12);
+  out.mean_weight = weight_sum / std::max(weight_n, 1.0);
+  out.probe = std::move(probe_series);
+  out.probe_edge = std::move(probe_edge_series);
   return out;
 }
 
-void CheckMovingLight() {
-  // the rule's numbers: no change keeps the weight, a change as large as the voxel's light all but drops it
-  CheckNear(HistoryWeightUnderLightMotion(0.9f, 0.0f, 1.0f), 0.9, 1e-7, "a light that did not move keeps the history's weight");
-  CheckNear(HistoryWeightUnderLightMotion(0.9f, kHeadlightHistoryTolerance, 1.0f), 0.45, 1e-5, "a change of the tolerance's size halves it");
-  Check(HistoryWeightUnderLightMotion(0.9f, 1.0f, 1.0f) < 0.01f, "a change as large as the voxel's light all but drops it");
-  Check(HistoryWeightUnderLightMotion(0.9f, 1.0f, 0.0f) < 0.01f, "a voxel the beam has left (no light now, light before) drops the history");
-  Check(HistoryWeightUnderLightMotion(0.9f, 0.0f, 0.0f) == 0.9f, "a voxel with no light and no change keeps the weight");
-  // the change: none for a light that stayed, a beam's own term for one that appeared or went
-  const VolLamp a = CarLight(10.0f, 0.7f, 0.0f);
-  const float p[3] = {25.0f, 1.2f, 2.0f};
-  float ray[3] = {p[0] - 0.0f, p[1] - 1.5f, p[2] + 12.0f};
-  Normalise(ray);
-  CheckNear(HeadlightChange(&a, 1, &a, 1, p, ray, 0.6f), 0.0, 1e-9, "a light that stayed has no change");
-  const float full = HeadlightChange(&a, 1, nullptr, 0, p, ray, 0.6f);
-  Check(full > 0.0f, "a light that appeared changes the voxel it lights");
-  const VolLamp b = CarLight(10.2f, 0.7f, 0.0f);
-  const float moved = HeadlightChange(&b, 1, &a, 1, p, ray, 0.6f);
-  Check(moved > 0.0f && moved < 0.1f * full, "a light that moved 0.2 m changes the beam's interior by under a tenth of its term (" + std::to_string(moved / full) + ")");
-  const float gone = HeadlightChange(nullptr, 0, &a, 1, p, ray, 0.6f);
-  CheckNear(gone, full, 1e-7, "a light that went changes the voxel by what it lit (the same number as when it appeared)");
+// A shadow that moves with the light: a stripe of the line is dark (6 m wide, 4 m ahead of the light at the start) and it slides along the line at `k` times the light's speed (1: a
+// shadow of the car's own, rigid with the light; over 1: a pole's, which the light sweeps past). Returns the trail of the history's stripe behind the true one (the centroids of the
+// darkness, m) over the frames where the stripe is inside the beam (3 to 40 m ahead of the light).
+struct ShadowRun {
+  double lag_m = 0.0;
+  int frames = 0;
+};
+ShadowRun ShadowDrive(float speed, float k, History mode) {
+  const float dt = 1.0f / 60.0f;
+  const int count = 960;
+  const float spacing = 0.25f;
+  const float haze = 0.002f;
+  const float sigma = 0.0012f;
+  const float gain = sigma * kLightGain;
+  const float cam[3] = {0.0f, 1.5f, -12.0f};
+  std::vector<double> hist(size_t(count), 0.0);
+  VolLamp before = CarLight(20.0f, 0.7f, 0.0f);
+  bool have = false;
+  double lag_sum = 0.0;
+  int measured = 0;
+  for (int frame = 0; frame < 420; ++frame) {
+    const float x_light = 20.0f + speed * float(frame) * dt;
+    const VolLamp lamp = CarLight(x_light, 0.7f, 0.0f);
+    const double stripe0 = 24.0 + double(k) * speed * frame * dt;   // the stripe's near edge, m
+    const double stripe1 = stripe0 + 6.0;
+    std::vector<double> truth_dark(size_t(count), 0.0);
+    std::vector<double> hist_dark(size_t(count), 0.0);
+    std::vector<double> terms(size_t(count), 0.0);
+    for (int i = 0; i < count; ++i) {
+      const float p[3] = {float(i) * spacing, 1.2f, 2.0f};
+      float ray[3] = {p[0] - cam[0], p[1] - cam[1], p[2] - cam[2]};
+      Normalise(ray);
+      const double term = double(HeadlightTermUnshadowed(lamp, p, ray, 0.6f)) * lamp.colour[1] * gain;
+      terms[size_t(i)] = term;
+      const bool dark = double(p[0]) >= stripe0 && double(p[0]) < stripe1;
+      truth_dark[size_t(i)] = dark ? 1.0 : 0.0;
+      const double sample = haze + (dark ? 0.0 : term);
+      if (!have) {
+        hist[size_t(i)] = sample;
+        continue;
+      }
+      double w = 0.9;
+      double old_value = hist[size_t(i)];
+      if (mode == History::kPass2Rule) {
+        w = RuleWeight(0.9f, RuleChange(&lamp, 1, &before, 1, p, ray, 0.6f) * gain, float(std::max(sample, 1e-9)));
+      } else if (mode == History::kCompensated) {
+        float now_term[3];
+        float then_term[3];
+        SetTerm(&lamp, 1, p, ray, 0.6f, now_term);
+        SetTerm(&before, 1, p, ray, 0.6f, then_term);
+        const float old3[3] = {float(old_value), float(old_value), float(old_value)};
+        const float base3[3] = {haze, haze, haze};
+        float out3[3];
+        w = 0.9 * double(CompensateHeadlightHistory(old3, base3, now_term, then_term, sigma, sigma, kLightGain, out3));
+        old_value = out3[1];
+      }
+      hist[size_t(i)] = sample + (old_value - sample) * w;
+    }
+    // the darkness the history holds, as a share of the beam's term now, in the beam's core (over a fifth of its peak) only
+    const double term_peak = *std::max_element(terms.begin(), terms.end());
+    for (int i = 0; i < count; ++i) {
+      if (terms[size_t(i)] > 0.2 * term_peak) {
+        hist_dark[size_t(i)] = std::clamp(1.0 - (hist[size_t(i)] - haze) / terms[size_t(i)], 0.0, 1.0);
+      }
+    }
+    before = lamp;
+    have = true;
+    const double ahead = stripe0 - double(x_light);
+    if (frame < 30 || ahead < 3.0 || ahead + 6.0 > 40.0) {
+      continue;
+    }
+    double t0 = 0.0;
+    double t1 = 0.0;
+    double h0 = 0.0;
+    double h1 = 0.0;
+    for (int i = 0; i < count; ++i) {
+      t0 += truth_dark[size_t(i)];
+      t1 += truth_dark[size_t(i)] * double(i) * spacing;
+      h0 += hist_dark[size_t(i)];
+      h1 += hist_dark[size_t(i)] * double(i) * spacing;
+    }
+    if (t0 > 0.0 && h0 > 0.0) {
+      lag_sum += t1 / t0 - h1 / h0;
+      ++measured;
+    }
+  }
+  ShadowRun out;
+  out.lag_m = lag_sum / std::max(measured, 1);
+  out.frames = measured;
+  return out;
+}
 
-  std::printf("  a car's headlight drives along a line of voxels (60 FPS, history 0.9): the history's profile behind the light's own (m), its error against the frame's (share of the voxel),\n"
-              "  and the jitter of a voxel in the beam with 10 per cent noise on every frame's sample (the history's weight is what averages it)\n");
+void CheckCompensation() {
+  // the numbers of the pieces
+  CheckNear(HeadlightRatio(0.0f, 0.0f), 1.0, 1e-9, "no light now and none before: ratio 1 (nothing to scale)");
+  CheckNear(HeadlightRatio(0.0f, 3.0f), 0.0, 1e-9, "a light that went: ratio 0");
+  CheckNear(HeadlightRatio(2.0f, 1.0f), 2.0, 1e-6, "a light that doubled: ratio 2");
+  Check(HeadlightRatio(1.0f, 0.0f) > 1e10f, "a light that is new: a ratio far over the cap");
+  CheckNear(HeadCompWeightScale(1.0f), 1.0, 1e-9, "a ratio of 1 keeps the weight");
+  CheckNear(HeadCompWeightScale(kHeadCompFullRatio), 1.0, 1e-9, "up to the full ratio the weight stays");
+  CheckNear(HeadCompWeightScale(kHeadCompMaxRatio), 0.0, 1e-9, "at the cap the weight is 0");
+  CheckNear(HeadCompWeightScale(0.0f), 1.0, 1e-9, "a light that went does not lower the weight (the history's beam is taken out instead)");
+  CheckNear(HeadCompWeightScale(3.0f), 0.5, 1e-6, "half way between the two, half the weight");
+  {
+    // a voxel the beam lights at 10 times the haze, the history holding a beam of 0.8 of the term (a visibility of 0.8) and the haze
+    const float haze = 0.002f;
+    const float term_then[3] = {1.0f, 1.0f, 1.0f};
+    const float gain = 0.0012f * kLightGain;
+    const float old_rgb[3] = {haze + 0.8f * gain, haze + 0.8f * gain, haze + 0.8f * gain};
+    const float base[3] = {haze, haze, haze};
+    float out[3];
+    float term_now[3] = {1.0f, 1.0f, 1.0f};
+    float scale = CompensateHeadlightHistory(old_rgb, base, term_now, term_then, 0.0012f, 0.0012f, kLightGain, out);
+    CheckNear(out[1], old_rgb[1], 1e-7, "a light that did not move leaves the history as it is");
+    CheckNear(scale, 1.0, 1e-9, "and its weight");
+    term_now[0] = term_now[1] = term_now[2] = 1.25f;
+    scale = CompensateHeadlightHistory(old_rgb, base, term_now, term_then, 0.0012f, 0.0012f, kLightGain, out);
+    CheckNear(out[1], haze + 0.8f * 1.25f * gain, 1e-7, "a beam a quarter brighter takes the history's beam a quarter up (its visibility kept)");
+    CheckNear(scale, 1.0, 1e-9, "with the weight kept");
+    term_now[0] = term_now[1] = term_now[2] = 0.0f;
+    scale = CompensateHeadlightHistory(old_rgb, base, term_now, term_then, 0.0012f, 0.0012f, kLightGain, out);
+    CheckNear(out[1], haze, 1e-7, "a light that went: the history's beam is taken out in one frame");
+    CheckNear(scale, 1.0, 1e-9, "and the haze keeps its weight");
+    term_now[0] = term_now[1] = term_now[2] = 8.0f;
+    scale = CompensateHeadlightHistory(old_rgb, base, term_now, term_then, 0.0012f, 0.0012f, kLightGain, out);
+    CheckNear(scale, 0.0, 1e-6, "a beam eight times what the history had: the history is dropped");
+    CheckNear(out[1], haze + 0.8f * kHeadCompMaxRatio * gain, 1e-6, "and what is kept of its beam is capped at the cap's ratio");
+    // a fringe of the beam, a hundredth of the haze: no fall of the weight even where the beam is new
+    const float tiny_then[3] = {0.0f, 0.0f, 0.0f};
+    const float tiny_now[3] = {1e-4f, 1e-4f, 1e-4f};
+    scale = CompensateHeadlightHistory(old_rgb, base, tiny_now, tiny_then, 0.0012f, 0.0012f, kLightGain, out);
+    Check(scale > 0.9f, "a new beam that is a hundredth of the haze keeps the weight (" + std::to_string(scale) + ")");
+    CheckNear(out[1], old_rgb[1], 1e-9, "and the history untouched (there was no beam to scale)");
+    // the old beam is bounded by what the old term could have made: a history that is brighter than the haze by more than the beam could (the medium's own noise) is not scaled by the whole excess
+    const float noisy_old[3] = {haze + 5.0f * gain, haze + 5.0f * gain, haze + 5.0f * gain};
+    term_now[0] = term_now[1] = term_now[2] = 2.0f;
+    CompensateHeadlightHistory(noisy_old, base, term_now, term_then, 0.0012f, 0.0012f, kLightGain, out);
+    CheckNear(out[1], noisy_old[1] + kHeadCompOldBound * 1.0f * gain * (2.0f - 1.0f), 1e-6, "the correction takes at most the old term's own share (a bound on the old beam)");
+  }
+
+  std::printf("  a car's headlight drives along a line of voxels (60 FPS, history 0.9, 10 per cent noise on every frame's sample of the beam and 5 per cent on the haze's): the history's profile behind\n"
+              "  the light's own (m), its error against the frame's (share of the voxel), the jitter of a voxel in the beam (share of its value) and the history's mean weight in the beam\n");
   const float speeds[] = {0.0f, 12.0f, 40.0f, 60.0f};
+  BeamRun fixed_clean[4];
   BeamRun fixed[4];
   BeamRun ruled[4];
+  BeamRun ruled_clean[4];
+  BeamRun comp[4];
+  BeamRun comp_clean[4];
+  double fixed_noise[4];
+  double ruled_noise[4];
+  double comp_noise[4];
+  double fixed_edge[4];
+  double ruled_edge[4];
+  double comp_edge[4];
   for (int i = 0; i < 4; ++i) {
-    fixed[i] = BeamDrive(speeds[i], false, 0.1f);
-    ruled[i] = BeamDrive(speeds[i], true, 0.1f);
-    const BeamRun fixed_clean = BeamDrive(speeds[i], false, 0.0f);
-    const BeamRun ruled_clean = BeamDrive(speeds[i], true, 0.0f);
-    std::printf("    %4.0f m/s   fixed weight: lag %5.2f m, error %5.1f%%, jitter %4.1f%%    under the rule: lag %5.2f m, error %5.1f%%, jitter %4.1f%%\n", speeds[i], fixed_clean.lag_m,
-                100.0 * fixed_clean.rms_error, 100.0 * fixed[i].noise, ruled_clean.lag_m, 100.0 * ruled_clean.rms_error, 100.0 * ruled[i].noise);
-    fixed[i].lag_m = fixed_clean.lag_m;
-    fixed[i].rms_error = fixed_clean.rms_error;
-    ruled[i].lag_m = ruled_clean.lag_m;
-    ruled[i].rms_error = ruled_clean.rms_error;
+    fixed[i] = BeamDrive(speeds[i], History::kFixed, 0.1f, 0.05f);
+    ruled[i] = BeamDrive(speeds[i], History::kPass2Rule, 0.1f, 0.05f);
+    comp[i] = BeamDrive(speeds[i], History::kCompensated, 0.1f, 0.05f);
+    fixed_clean[i] = BeamDrive(speeds[i], History::kFixed, 0.0f);
+    ruled_clean[i] = BeamDrive(speeds[i], History::kPass2Rule, 0.0f);
+    comp_clean[i] = BeamDrive(speeds[i], History::kCompensated, 0.0f);
+    // the clean run of each history is the same history with no noise on its samples: the second difference of the two's difference is the noise's own
+    fixed_noise[i] = NoiseJitter(fixed[i], fixed_clean[i]);
+    ruled_noise[i] = NoiseJitter(ruled[i], ruled_clean[i]);
+    comp_noise[i] = NoiseJitter(comp[i], comp_clean[i]);
+    fixed_edge[i] = NoiseJitter(fixed[i], fixed_clean[i], true);
+    ruled_edge[i] = NoiseJitter(ruled[i], ruled_clean[i], true);
+    comp_edge[i] = NoiseJitter(comp[i], comp_clean[i], true);
+    std::printf("    %4.0f m/s   fixed weight: lag %5.2f m, err %5.1f%%, jitter %4.2f%%   pass 2 rule: lag %5.2f m, err %5.1f%%, jitter %4.2f%%, weight %.2f   compensated: lag %5.2f m, err %5.1f%%, "
+                "jitter %4.2f%%, weight %.2f\n",
+                speeds[i], fixed_clean[i].lag_m, 100.0 * fixed_clean[i].rms_error, 100.0 * fixed_noise[i], ruled_clean[i].lag_m, 100.0 * ruled_clean[i].rms_error, 100.0 * ruled_noise[i],
+                ruled[i].mean_weight, comp_clean[i].lag_m, 100.0 * comp_clean[i].rms_error, 100.0 * comp_noise[i], comp[i].mean_weight);
+    std::printf("              at the beam's far edge (44 m ahead): jitter fixed %4.2f%%, pass 2 rule %4.2f%%, compensated %4.2f%%\n", 100.0 * fixed_edge[i], 100.0 * ruled_edge[i], 100.0 * comp_edge[i]);
   }
-  CheckNear(ruled[0].lag_m, fixed[0].lag_m, 1e-6, "a parked car's beam: the rule changes nothing (lag)");
-  CheckNear(ruled[0].noise, fixed[0].noise, 1e-9, "... and nothing in the noise the history averages");
-  Check(fixed[1].lag_m > 1.0, "the fixed weight leaves the beam 1 m or more behind at 12 m/s (the trail the rule is for)");
-  Check(ruled[1].lag_m < 0.6 * fixed[1].lag_m, "the rule takes the trail at 12 m/s to under 0.6 of the fixed weight's");
-  Check(ruled[3].lag_m < 0.3 * fixed[3].lag_m, "and at 60 m/s to under 0.3");
-  Check(ruled[1].rms_error < 0.6 * fixed[1].rms_error, "and the history's error against the frame's at 12 m/s");
-  Check(ruled[3].rms_error < 0.5 * fixed[3].rms_error, "and at 60 m/s to under half");
-  Check(ruled[1].noise < 3.0 * fixed[1].noise, "the shorter history costs under three times the jitter at 12 m/s (the stratified taps are what take it back)");
+  // a parked car's beam: nothing changes
+  CheckNear(comp_clean[0].lag_m, fixed_clean[0].lag_m, 1e-6, "a parked car's beam: the compensation changes nothing (lag)");
+  CheckNear(comp_noise[0], fixed_noise[0], 1e-9, "... and nothing in the noise the history averages");
+  CheckNear(comp[0].mean_weight, 0.9, 1e-6, "... and nothing in the weight");
+  Check(fixed_clean[1].lag_m > 1.0, "the fixed weight leaves the beam 1 m or more behind at 12 m/s (the trail the compensation is for)");
+  // no trail: the history's beam is where the light is (the second pass's rule left 0.96 m at 12 m/s)
+  for (int i = 1; i < 4; ++i) {
+    const std::string at = " at " + std::to_string(int(speeds[i])) + " m/s";
+    const double lag_limit = i == 1 ? 0.1 : 0.3;
+    Check(std::fabs(comp_clean[i].lag_m) < lag_limit, "the compensated history's beam is within " + std::to_string(lag_limit) + " m of the light's own" + at + " (" + std::to_string(comp_clean[i].lag_m) + " m)");
+    Check(std::fabs(comp_clean[i].lag_m) < 0.25 * std::fabs(ruled_clean[i].lag_m) + 1e-3, "and under a quarter of the second pass's rule's trail" + at);
+    Check(comp_clean[i].rms_error < 0.5 * ruled_clean[i].rms_error, "its error against the frame's own is under half the rule's" + at + " (" + std::to_string(comp_clean[i].rms_error) + " against " +
+                                                                        std::to_string(ruled_clean[i].rms_error) + ")");
+    Check(comp_clean[i].rms_error < 0.5 * fixed_clean[i].rms_error, "and under half the fixed weight's" + at);
+    // the smoothing: the jitter the noise puts into a voxel of the beam is the fixed weight's, not the rule's
+    Check(comp_noise[i] < 1.1 * fixed_noise[i], "the jitter the noise puts into a voxel of the beam is within 10 per cent of the fixed weight's" + at + " (" + std::to_string(100.0 * comp_noise[i]) + "% against " +
+                                                  std::to_string(100.0 * fixed_noise[i]) + "%)");
+    Check(comp_noise[i] <= ruled_noise[i] + 1e-12, "and no more than the rule's" + at + " (" + std::to_string(100.0 * ruled_noise[i]) + "%)");
+    Check(comp[i].mean_weight > 0.85, "the history keeps a mean weight over 0.85 in the beam" + at + " (" + std::to_string(comp[i].mean_weight) + ")");
+  }
+  Check(ruled[3].mean_weight < comp[3].mean_weight, "the rule's mean weight in the beam is lower than the compensated one at 60 m/s (the smoothing it took away)");
+
+  // What the compensation does NOT do: the old visibility stays, so a shadow that moves trails by the history's length times its own speed, as it did under the fixed weight and under
+  // the second pass's rule (which only changed the weight where the beam's unshadowed term changed). The darkness is read as 1 - (history - haze) / the term NOW, which is the
+  // visibility only for a history that holds the term of now (the compensated one): the other two histories hold the term of then and read wrong, so only this one is measured.
+  std::printf("  a 6 m shadow that moves with the light (k = 1: the car's own) or is swept by it (k > 1: a pole's), inside the beam: the compensated history's shadow behind the true one (m),\n"
+              "  and the bound the weight's own length gives it (0.9 / 0.1 frames of the shadow's own speed)\n");
+  struct ShadowCase {
+    float speed;
+    float k;
+  };
+  const ShadowCase shadow_cases[] = {{12.0f, 1.0f}, {12.0f, 1.5f}, {40.0f, 1.5f}};
+  for (const ShadowCase& sc : shadow_cases) {
+    const ShadowRun c = ShadowDrive(sc.speed, sc.k, History::kCompensated);
+    const double bound = 9.0 * double(sc.k) * double(sc.speed) / 60.0;
+    std::printf("    %4.0f m/s, k %.1f (%d frames)   trail %5.2f m, bound %5.2f m\n", sc.speed, sc.k, c.frames, c.lag_m, bound);
+    Check(c.frames > 20, "the shadow case has frames to measure");
+    Check(c.lag_m >= 0.0 && c.lag_m < 1.05 * bound + 0.2, "a moving shadow's trail stays inside the weight's own length (" + std::to_string(c.lag_m) + " m, bound " + std::to_string(bound) + " m)");
+  }
+
+  // a light that goes out and one that comes on, as a column of the line sees them: the history's beam is gone in one frame, and the new beam is the frame's own
+  {
+    const float haze = 0.002f;
+    const float gain = 0.0012f * kLightGain;
+    const VolLamp on = CarLight(10.0f, 0.7f, 0.0f);
+    const float p[3] = {25.0f, 1.2f, 2.0f};
+    float ray[3] = {p[0], p[1] - 1.5f, p[2] + 12.0f};
+    Normalise(ray);
+    float t_on[3];
+    SetTerm(&on, 1, p, ray, 0.6f, t_on);
+    const float zero[3] = {0.0f, 0.0f, 0.0f};
+    const float old_beam = haze + 0.9f * t_on[1] * gain;
+    const float old3[3] = {old_beam, old_beam, old_beam};
+    const float base3[3] = {haze, haze, haze};
+    float out3[3];
+    float scale = CompensateHeadlightHistory(old3, base3, zero, t_on, 0.0012f, 0.0012f, kLightGain, out3);
+    CheckNear(out3[1], haze, 1e-7, "a light that is switched off leaves no history of its beam");
+    CheckNear(scale, 1.0, 1e-9, "(the weight is for the haze that is left)");
+    scale = CompensateHeadlightHistory(base3, base3, t_on, zero, 0.0012f, 0.0012f, kLightGain, out3);
+    CheckNear(scale, 0.0, 1e-6, "a light that is switched on has no history to scale: the frame's own value");
+  }
+}
+
+// What the second pass's rule did in the scenes the headlight pairs run (scenes pan and dolly: a car 24 m ahead at the camera's own speed): a world point sees the beam move
+// speed / 60 m a frame, and the rule lowers the history's weight by how much of the voxel's light that changes. Over the froxel grid of the camera (160 x 90 x 64, the beam's light
+// each voxel gives its pixel as the weight), the share of the beam's light whose weight is under 0.8 (0.9 is untouched) and the mean weight. Not a simulation of flicker: a count.
+void CheckSceneBite() {
+  const float dt = 1.0f / 60.0f;
+  const float cam[3] = {0.0f, 1.9f, 0.0f};
+  const float tan_x = 0.83f;
+  const float tan_y = 0.466f;
+  const int nx = 160;
+  const int ny = 90;
+  const int nz = 64;
+  const float znear = 0.5f;
+  const float zfar = 160.0f;
+  const float haze = 0.002f;
+  const float gain = 0.0012f * kLightGain;
+  std::printf("  the second pass's rule in the pan and dolly scenes' geometry (a car 24 m ahead, two lamps, the beam's light in the picture as the weight): the history's weight (0.9 untouched)\n"
+              "  and the share of the beam's light whose weight is under 0.8, at the light's speed in the world\n");
+  double mean_12 = 0.0;
+  double low_12 = 0.0;
+  double low_40 = 0.0;
+  for (float speed : {12.0f, 40.0f}) {
+    const VolLamp now[2] = {CarLight(24.0f, 0.7f, -0.7f), CarLight(24.0f, 0.7f, 0.7f)};
+    const VolLamp before[2] = {CarLight(24.0f - speed * dt, 0.7f, -0.7f), CarLight(24.0f - speed * dt, 0.7f, 0.7f)};
+    double light = 0.0;
+    double weighted = 0.0;
+    double low = 0.0;
+    double comp_weight = 0.0;
+    for (int k = 0; k < nz; ++k) {
+      const float z0 = znear * std::exp(std::log(zfar / znear) * float(k) / float(nz));
+      const float z1 = znear * std::exp(std::log(zfar / znear) * float(k + 1) / float(nz));
+      const float zc = 0.5f * (z0 + z1);
+      for (int j = 0; j < ny; ++j) {
+        for (int i = 0; i < nx; ++i) {
+          const float u = (float(i) + 0.5f) / float(nx);
+          const float v = (float(j) + 0.5f) / float(ny);
+          const float dirv[3] = {1.0f, (1.0f - 2.0f * v) * tan_y, (2.0f * u - 1.0f) * tan_x};
+          const float len = std::sqrt(dirv[0] * dirv[0] + dirv[1] * dirv[1] + dirv[2] * dirv[2]);
+          const float ray[3] = {dirv[0] / len, dirv[1] / len, dirv[2] / len};
+          const float p[3] = {cam[0] + dirv[0] * zc, cam[1] + dirv[1] * zc, cam[2] + dirv[2] * zc};
+          if (p[1] < 0.0f) {
+            continue;  // under the road: the composite never reads it
+          }
+          float t_now[3];
+          float t_then[3];
+          SetTerm(now, 2, p, ray, 0.6f, t_now);
+          SetTerm(before, 2, p, ray, 0.6f, t_then);
+          const double share = double(t_now[1]) * double(gain) * double(z1 - z0) * double(len);
+          if (!(share > 0.0)) {
+            continue;
+          }
+          const float change = std::fabs(t_now[1] - t_then[1]) * gain;
+          const float weight = RuleWeight(0.9f, change, haze + t_now[1] * gain);
+          light += share;
+          weighted += share * double(weight);
+          low += weight < 0.8f ? share : 0.0;
+          const float old3[3] = {haze + 0.8f * t_then[1] * gain, haze + 0.8f * t_then[1] * gain, haze + 0.8f * t_then[1] * gain};
+          const float base3[3] = {haze, haze, haze};
+          float out3[3];
+          comp_weight += share * 0.9 * double(CompensateHeadlightHistory(old3, base3, t_now, t_then, 0.0012f, 0.0012f, kLightGain, out3));
+        }
+      }
+    }
+    std::printf("    light at %4.0f m/s: rule's mean weight %.3f, %4.1f%% of the beam's light under 0.8;   compensation's mean weight %.3f\n", speed, weighted / light, 100.0 * low / light, comp_weight / light);
+    if (speed == 12.0f) {
+      mean_12 = weighted / light;
+      low_12 = low / light;
+      Check(comp_weight / light > 0.89, "the compensation keeps the history's weight over the beam at 12 m/s (" + std::to_string(comp_weight / light) + ")");
+    } else {
+      low_40 = low / light;
+      Check(comp_weight / light > 0.89, "and at 40 m/s (" + std::to_string(comp_weight / light) + ")");
+    }
+  }
+  Check(mean_12 > 0.86 && low_12 < 0.1, "at the pan scene's 12 m/s the rule leaves the weight over the beam within 5 per cent of 0.9 and under 10 per cent of its light under 0.8: it is not what the two scenes measure");
+  Check(low_40 > 3.0 * low_12, "at 40 m/s the rule bites more than three times as much of the beam: it is for a light that moves against the camera");
 }
 
 // --- the camera moved on ---------------------------------------------------------------------------------------------------------------------------
@@ -949,7 +1293,8 @@ int main(int argc, char** argv) {
   CheckFlags();
   CheckDrive();
   CheckStratifiedTaps();
-  CheckMovingLight();
+  CheckCompensation();
+  CheckSceneBite();
   CheckExtrapolation();
   CheckViewGain();
   if (argc > 1) {
@@ -971,8 +1316,13 @@ int main(int argc, char** argv) {
     Check(apply.find("static const float kApplyViewGainHigh = 32.0;") != std::string::npos, "the composite's view 3 gain is the header's");
     Check(inject.find("static const uint kInjectFlagSteadyHeads = " + std::to_string(kInjectFlagSteadyHeads) + "u;") != std::string::npos, "the inject's steady headlights flag is the header's");
     Check(inject.find("static const uint kHeadlightShadowTaps = " + std::to_string(kHeadlightShadowTaps) + "u;") != std::string::npos, "the inject's taps along a slice are the header's");
-    Check(inject.find("static const float kHeadlightHistoryTolerance = 0.08;") != std::string::npos && std::fabs(kHeadlightHistoryTolerance - 0.08f) < 1e-9f, "the inject's tolerance of a moving light is the header's");
-    Check(inject.find("kO_prev_headlights") != std::string::npos && inject.find("weight / (1.0 + over * over)") != std::string::npos, "the inject lowers the history's weight by the headlights' motion");
+    Check(inject.find("static const float kHeadCompFullRatio = " ) != std::string::npos && inject.find("static const float kHeadCompMaxRatio = ") != std::string::npos, "the inject has the compensation's ratios");
+    Check(inject.find("static const float kHeadCompFullRatio = 2.0;") != std::string::npos && kHeadCompFullRatio == 2.0f, "the inject's full ratio is the header's");
+    Check(inject.find("static const float kHeadCompMaxRatio = 4.0;") != std::string::npos && kHeadCompMaxRatio == 4.0f, "the inject's cap ratio is the header's");
+    Check(inject.find("static const float kHeadCompOldBound = 1.25;") != std::string::npos && kHeadCompOldBound == 1.25f, "the inject's bound on the old beam is the header's");
+    Check(inject.find("static const float kHeadCompSignificance = 0.1;") != std::string::npos && kHeadCompSignificance == 0.1f, "the inject's significance is the header's");
+    Check(inject.find("kO_prev_headlights") != std::string::npos && inject.find("CompensateHeadlightHistory(") != std::string::npos, "the inject takes the history's beam to the light's place");
+    Check(inject.find("weight / (1.0 + over * over)") == std::string::npos, "the second pass's rule is gone from the inject");
     Check(inject.find("LampSlice(") != std::string::npos, "the inject has the slice average for the lamps");
   }
   if (g_failed != 0) {

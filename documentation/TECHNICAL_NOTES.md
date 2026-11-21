@@ -154,7 +154,7 @@ One detail worth knowing regardless: with `vsync=false` the interval is `guest_t
 - **`mc_FlushDataCache` (`0x821D5510`)** is a `dcbf`/`dcbst` loop walking a buffer 128 bytes at a time. Host caches are coherent on x86_64, so the hook returns immediately. Measured over an 8.5 minute session: median **4,976 calls/sec**, peak 9,936, and **33.5 GB** of flush range in total, which is roughly 540,000 avoided 128-byte line operations per second and peaks near 1.9 million. Keep the memory fence: the loop is also a publication point, and the XMA decoder and audio worker run on their own host threads. Removing the fence has been linked to audio crackle.
 - **Texture cache**: raising limits to 1536 MB soft, 2048 MB hard and 64 MB render-to-texture takes `texture_cache_misses` to zero. That avenue is closed.
 - **Draw calls run about 70 per frame** at ~50 FPS. Dense-area slowdowns are not draw-call submission; the cost is in the recompiled guest code doing traffic AI, physics and streaming.
-- The startup stub sweep registers about 1.7 million unmapped addresses in 400 to 500 ms. `stubs.txt` stays empty in practice, but the net turns an unmapped indirect call from a crash into a logged no-op, so it stays on.
+- On 0.10 the startup stub sweep registered about 1.7 million unmapped addresses in 400 to 500 ms. `stubs.txt` stayed empty in practice, but the net turned an unmapped indirect call from a crash into a logged no-op. On 0.11 the sweep is gone (a title runtime gives no way to register functions) and `stubs.txt` is no longer written: an unmapped indirect call logs `Call to invalid or unregistered function at guest address 0x...` and aborts. The net never caught anything, and the log names the address.
 
 ---
 

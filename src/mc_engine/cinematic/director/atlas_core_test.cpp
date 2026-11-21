@@ -304,6 +304,168 @@ void TestCityLights() {
     }
 }
 
+// The running game's lights (ReadRuntimeLights): the manager's +8 object holds two lists of PACKED 24-byte records (the file's own lights at +8, the street lamps at +24), and the
+// game's unpacker turns a record into the 96-byte light. The fake unpacker here reads the record as {u32 id, u8 kind} and builds a light whose x is the id, so the test can follow
+// every record through the reader.
+struct FakeCity {
+    std::vector<uint8_t> mem = std::vector<uint8_t>(0x1000, 0);
+    uint32_t global = kP + 0x10, mgr = kP + 0x100, obj = kP + 0x300, fill = kP + 0x400, lamps = kP + 0x600;
+
+    FakeCity(uint32_t n_fill, uint32_t n_lamps, bool with_manager = true, bool with_object = true) {
+        Buf b(0x1000);
+        if (with_manager) b.W32(0x10, mgr);
+        if (with_manager && with_object) b.W32(0x100 + 8, obj);   // the manager's +4 (the load-time set) stays 0
+        b.W32(0x300 + 8, n_fill ? fill : 0);
+        b.W16(0x300 + 12, uint16_t(n_fill));
+        b.W16(0x300 + 14, uint16_t(n_fill));
+        b.W32(0x300 + 24, n_lamps ? lamps : 0);
+        b.W16(0x300 + 28, uint16_t(n_lamps));
+        b.W16(0x300 + 30, uint16_t(n_lamps));
+        for (uint32_t i = 0; i < n_fill; ++i) {
+            b.W32(0x400 + 24 * i, 100 + i);
+            b.d[0x400 + 24 * i + 4] = 0;   // an omni fill light
+        }
+        for (uint32_t i = 0; i < n_lamps; ++i) {
+            b.W32(0x600 + 24 * i, 500 + i);
+            b.d[0x600 + 24 * i + 4] = 1;   // a spot lamp
+        }
+        mem = b.d;
+    }
+};
+
+// What the game's unpacker does, in the test's terms: record id -> x = id, y 4, z -3, type = kind, intensity 60 (lamp) / 20, cone 125 / 360, on 1. Id 999 comes out as NaN (implausible).
+LightUnpacker FakeUnpacker(const BufferView& v, int* calls = nullptr, bool works = true) {
+    return [&v, calls, works](uint32_t rec, uint8_t out[96]) {
+        if (calls) ++*calls;
+        if (!works) return false;
+        const uint32_t id = v.U32(rec);
+        const uint8_t kind = v.U8(rec + 4);
+        Buf b(96);
+        b.WF(0, id == 999 ? std::nanf("") : float(id));
+        b.WF(4, 4.0f);
+        b.WF(8, -3.0f);
+        b.WF(16, 1.0f);
+        b.WF(20, 0.8f);
+        b.WF(24, 0.5f);
+        b.WF(36, -1.0f);
+        b.WF(64, kind ? 60.0f : 20.0f);
+        b.WF(68, kind ? 125.0f : 360.0f);
+        b.d[88] = kind;
+        b.d[89] = 1;
+        std::memcpy(out, b.d.data(), 96);
+        return true;
+    };
+}
+
+void TestRuntimeLights() {
+    {   // 3 file lights then 2 lamps: the file's keep the offline atlas's indices, the lamps follow
+        FakeCity c(3, 2);
+        BufferView v(c.mem.data(), c.mem.size(), kP);
+        std::vector<Light> out;
+        std::string why;
+        RuntimeLightsInfo info;
+        int calls = 0;
+        const bool ok = ReadRuntimeLights(v, c.global, FakeUnpacker(v, &calls), &out, &why, &info);
+        Check(ok && out.size() == 5 && why.empty() && calls == 5 && info.fill == 3 && info.lamps == 2 && info.skipped == 0 && info.object == c.obj,
+              "runtime lights: 3 file lights and 2 lamps read, 5 unpacker calls");
+        Check(ok && out[0].i == 0 && Near(out[0].pos[0], 100.0) && !out[0].lamp && !out[0].spot && out[2].i == 2 && Near(out[2].pos[0], 102.0) && !out[2].lamp,
+              "runtime lights: the file's lights first, indices 0..2, omni");
+        Check(ok && out[3].i == 3 && Near(out[3].pos[0], 500.0) && out[3].lamp && out[3].spot && Near(out[3].intensity, 60.0) && Near(out[3].cone, 125.0) && out[3].on &&
+                  out[4].lamp && Near(out[4].pos[0], 501.0),
+              "runtime lights: the lamps after them, flagged lamp, spot, on");
+    }
+    {   // the manager's +4 set is 0 (the state of the running game) and that does not matter
+        FakeCity c(0, 4);
+        BufferView v(c.mem.data(), c.mem.size(), kP);
+        std::vector<Light> out;
+        std::string why;
+        RuntimeLightsInfo info;
+        Check(v.U32(c.mgr + 4) == 0 && ReadRuntimeLights(v, c.global, FakeUnpacker(v), &out, &why, &info) && out.size() == 4 && info.fill == 0 && info.lamps == 4,
+              "runtime lights: only the lamp list filled, +4 is 0");
+        std::vector<Light> legacy;
+        std::string lwhy;
+        Check(!ReadCityLights(v, c.global, &legacy, &lwhy) && lwhy.find("no light set") != std::string::npos, "runtime lights: the load-time set reader still says 'no light set' on the same memory");
+    }
+    {   // a record that unpacks to garbage is left out and counted
+        FakeCity c(2, 2);
+        c.mem[0x400 + 24 * 1 + 3] = uint8_t(999 & 0xFF);   // fill light 1: id 999 = 0x03E7 -> bytes 03 E7
+        c.mem[0x400 + 24 * 1 + 2] = uint8_t(999 >> 8);
+        c.mem[0x400 + 24 * 1 + 0] = 0;
+        c.mem[0x400 + 24 * 1 + 1] = 0;
+        BufferView v(c.mem.data(), c.mem.size(), kP);
+        std::vector<Light> out;
+        std::string why;
+        RuntimeLightsInfo info;
+        Check(ReadRuntimeLights(v, c.global, FakeUnpacker(v), &out, &why, &info) && out.size() == 3 && info.skipped == 1 && info.fill == 1 && info.lamps == 2 && out[1].i == 1 && out[1].lamp,
+              "runtime lights: an implausible unpacked record is skipped and counted, indices stay dense");
+    }
+    {   // the unpacker cannot run (no guest thread)
+        FakeCity c(2, 2);
+        BufferView v(c.mem.data(), c.mem.size(), kP);
+        std::vector<Light> out;
+        std::string why;
+        Check(!ReadRuntimeLights(v, c.global, FakeUnpacker(v, nullptr, false), &out, &why) && out.empty() && why.find("unpacker could not run") != std::string::npos,
+              "runtime lights: an unpacker that cannot run is an error, nothing half read is kept");
+    }
+    {   // no manager, no object, empty lists, absurd count, an array that ends outside the memory
+        std::vector<Light> out;
+        std::string why;
+        FakeCity none(2, 2, false);
+        BufferView v0(none.mem.data(), none.mem.size(), kP);
+        Check(!ReadRuntimeLights(v0, none.global, FakeUnpacker(v0), &out, &why) && why.find("not made yet") != std::string::npos, "runtime lights: no manager is 'not made yet'");
+        FakeCity noobj(2, 2, true, false);
+        BufferView v1(noobj.mem.data(), noobj.mem.size(), kP);
+        why.clear();
+        Check(!ReadRuntimeLights(v1, noobj.global, FakeUnpacker(v1), &out, &why) && why.find("no light object") != std::string::npos && why.find("+8 is 0") != std::string::npos,
+              "runtime lights: a manager with no +8 object says so");
+        FakeCity empty(0, 0);
+        BufferView v2(empty.mem.data(), empty.mem.size(), kP);
+        why.clear();
+        Check(!ReadRuntimeLights(v2, empty.global, FakeUnpacker(v2), &out, &why) && why.find("holds no lights") != std::string::npos && why.find("count 0") != std::string::npos &&
+                  why.find("0x50000100") != std::string::npos,
+              "runtime lights: two empty lists name both and the manager");
+        FakeCity huge(2, 2);
+        huge.mem[0x300 + 28] = 0xFF;   // 65,535 lamps: above the cap of 200,000? no: within, but the array cannot be read to its end
+        huge.mem[0x300 + 29] = 0xFF;
+        BufferView v3(huge.mem.data(), huge.mem.size(), kP);
+        why.clear();
+        Check(!ReadRuntimeLights(v3, huge.global, FakeUnpacker(v3), &out, &why) && why.find("cannot be read to its end") != std::string::npos,
+              "runtime lights: a count whose records end outside the memory is refused, not read");
+        FakeCity bad(2, 2);
+        bad.mem[0x300 + 24] = 0;   // the lamp list's array pointer is 0 with a count of 2
+        bad.mem[0x300 + 25] = 0;
+        bad.mem[0x300 + 26] = 0;
+        bad.mem[0x300 + 27] = 0;
+        BufferView v4(bad.mem.data(), bad.mem.size(), kP);
+        why.clear();
+        Check(!ReadRuntimeLights(v4, bad.global, FakeUnpacker(v4), &out, &why) && why.find("not a light list") != std::string::npos, "runtime lights: a null array with a count is refused");
+    }
+    {   // the world's files: the lamps do not change the content hash (one city, one folder), carry src, and the src filter selects them
+        FakeCity c(3, 2);
+        BufferView v(c.mem.data(), c.mem.size(), kP);
+        World withl = SynthWorld(), without = SynthWorld();
+        std::string why;
+        std::vector<Light> all;
+        ReadRuntimeLights(v, c.global, FakeUnpacker(v), &all, &why);
+        withl.lights = all;
+        without.lights.clear();
+        for (const Light& l : all)
+            if (!l.lamp) without.lights.push_back(l);
+        Check(!all.empty() && ContentHash(withl) == ContentHash(without), "lights files: the street lamps are not in the content hash");
+        const std::string j = LightsJson(withl);
+        Check(j.find("\"src\":\"lamp\"") != std::string::npos && j.find("\"on\":true,\"src\":\"lamp\"}") != std::string::npos, "lights files: a lamp carries src lamp");
+        size_t n = 0;
+        for (size_t at = j.find("\"src\""); at != std::string::npos; at = j.find("\"src\"", at + 1)) ++n;
+        Check(n == 2, "lights files: only the lamps carry src (2)");
+        Check(MetaJson(withl).find("\"lamps\":2") != std::string::npos, "lights files: meta counts the lamps");
+        const Index index(withl);
+        const LightsAnswer all_a = NearLights(index, 101.0, -3.0, false, 0.0, 600.0, 20, 0.0, "");
+        const LightsAnswer lamp_a = NearLights(index, 101.0, -3.0, false, 0.0, 600.0, 20, 0.0, "", "lamp");
+        const LightsAnswer file_a = NearLights(index, 101.0, -3.0, false, 0.0, 600.0, 20, 0.0, "", "file");
+        Check(all_a.in_radius == 5 && lamp_a.in_radius == 2 && file_a.in_radius == 3, "lights query: src selects the lamps (2) or the file's lights (3) of 5");
+    }
+}
+
 void TestQueries() {
     const World w = SynthWorld();
     const Index index(w);
@@ -467,6 +629,7 @@ int main(int argc, char** argv) {
     }
     TestDecode();
     TestCityLights();
+    TestRuntimeLights();
     TestQueries();
     TestCamera();
     TestFiles();

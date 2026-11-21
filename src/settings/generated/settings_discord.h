@@ -18,7 +18,7 @@ class DiscordSettings final : public rex::SettingOwner {
 
   REX_SETTING(std::string, larecomp_discord_large_image, "mcla_logo", "Discord RPC large image key.", rex::kDebugOnly);
 
-  REX_SETTING(bool, larecomp_discord_rpc, true, "Enable Discord Rich Presence.");
+  REX_SETTING(bool, larecomp_discord_rpc, true, "Enable Discord Rich Presence. Live: off clears the presence at once, on shows the game's current state at once.");
 
   REX_SETTING(std::string, larecomp_discord_rpc_language, "auto", "Rich Presence language. 'auto' follows the game (user_language); or force "
                       "en / pt / es. Discord itself does not translate presence text.", rex::Allowed("auto", "en", "pt", "es"));

@@ -27517,6 +27517,25 @@ address = 0x82688200
 name = "Hook_TriggerLineSweep"
 registers = ["r1", "r31", "r27"]
 
+# The smoke of a closed race checkpoint (hooks/checkpoint_effect_fade.cpp): the game lets go of the checkpoint's
+# smoke effect after writing dt * 25 into its +468, a multiplier applied at every update, which made the smoke last
+# half a second at the console's 30 updates a second and 90 ms at 60 FPS. Each hook is just before one of the three
+# `stfs f13,468(rX)`; f13 = dt * 25 as the game made it, and the hook gives it (25 / 30) ^ (dt * 30).
+[[midasm_hook]]
+address = 0x82264EE4
+name = "Hook_CheckpointFadeDeactivate"
+registers = ["f13"]
+
+[[midasm_hook]]
+address = 0x8226685C
+name = "Hook_CheckpointFadeFlagged"
+registers = ["f13"]
+
+[[midasm_hook]]
+address = 0x82266D6C
+name = "Hook_CheckpointFadeSlotEnd"
+registers = ["f13"]
+
 # Options > Controller > Customize: the "press a button" capture (sub_82727010) only looks at
 # the raw pad, so with a keyboard it never finishes and swallows every key. After its
 # prologue (r28 = out type ptr, r24 = out value ptr), a key that just went down answers it:

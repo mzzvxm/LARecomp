@@ -62,7 +62,7 @@ Every row is live except RENDERER (below): it takes effect at once and is never 
 
 | Page | What it is for |
 |---|---|
-| FIXES | Each fix of the recomp with the switch that turns it off (real frame delta, suspension fix, smooth chase cam, the UI fixes and smooth UI, the dither fix, the neon pulse held on the console's 30 Hz clock), to see whether a fix caused a bug. |
+| FIXES | Each fix of the recomp with the switch that turns it off (real frame delta, suspension fix, smooth chase cam, the UI fixes and smooth UI, the dither fix, the neon pulse held on the console's 30 Hz clock, the closed checkpoint's smoke fading at the console's rate), to see whether a fix caused a bug. |
 | PERFORMANCE | Pacing and speed switches: pace at presentation, fence spin yield, FPS limit spin, single tile, shadow phases, cheap car shadow, foliage, break FPS floor. |
 | RENDERING | RENDERER (below), the Plume renderer's debug views (AO, HDR layers), the glow visibility choice (GLOW VISIBILITY: SOFT, the default, fades a street lamp's glow at an edge instead of letting it pop; GAME is the game's one depth test), performance markers, the ghost and memory logs, and on the Xenia renderer XENIA VSYNC (it only slows the game's pacing to the vblank; it does not stop tearing). |
 | CAMERA | The developer free camera, the free-look collision tests, the camera trace, the menu camera lock. |
@@ -147,9 +147,9 @@ larecomp.exe --debug_menu --mcla_gpu_pass_timing=true
 
 The same text works in the launcher's **More game options**, and as `mcla_gpu_pass_timing = true` in `larecomp.toml`. A switch takes `true` or `false`. An option the game cannot use (an empty or refused value, a name that is not a setting, a setting of a driver this run does not load) is skipped with a `[cli] ... ignored: ...` line in the log and the game starts. F4 shows each of these with its description (use the search box).
 
-**Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
+**Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. `break_pairwise_collision` is not here either: its hook reads it at every call, so it is live (a setting in F4 and a launch argument that also works while the game runs; it has no row). The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
-The list, 122 names in 14 groups (the number in brackets is the group's size):
+The list, 121 names in 14 groups (the number in brackets is the group's size):
 
 **The unlock** (1)
 `debug_menu`
@@ -180,8 +180,8 @@ Which renderer runs is the SDK's `gpu.driver` (`larecomp`, `d3d12` or `vulkan`; 
 **Speed experiments read at start** (8)
 `perf_no_race_shadows`, `perf_no_impostors`, `perf_no_fullscreen_blur`, `fma_float_fast`, `vsync_fast_poll`, `submit_on_primary_buffer_end`, `lzx_native`, `lzx_native_check_all`
 
-**Game patches read at start** (4)
-`disable_rubberbanding`, `showroom_unlimited`, `break_pairwise_collision`, `vehicle_records_relocate`
+**Game patches read at start** (3)
+`disable_rubberbanding`, `showroom_unlimited`, `vehicle_records_relocate`
 
 **Audio and music** (4)
 `audio_mixer_priority`, `mcla_audio_output`, `custom_music`, `music_list`
@@ -669,3 +669,10 @@ python tools\check_settings_exposure.py --dirs gpu mc_engine/hooks   # only thes
 ```
 
 Run it before you push. A short `pending` list in `tools/settings_exposure.toml` names debug-only cvars whose old row is still in a normal table; it shrinks as those rows move.
+
+`tools/check_row_tags.py` keeps the words on the rows honest (the owner wants settings to apply at once, so a word that says RESTART must be true). It exits 1 when a pause-menu row says RESTART for a setting that is not restart-only, or when a row of a restart-only setting says nothing (RESTART or NEXT START, or a dynamic suffix); `--catalog <SettingsSchema.cs>` holds the launcher's Restart tags to the same rule, and `--selftest` checks the rules themselves. A setting that is live but has a part that is read at start (LANGUAGE) is on `PARTLY_LIVE` in the script, with the reason.
+
+```powershell
+python tools\check_row_tags.py
+python tools\check_row_tags.py --catalog <launcher>\src\LARecomp.Launcher.Core\Settings\SettingsSchema.cs
+```

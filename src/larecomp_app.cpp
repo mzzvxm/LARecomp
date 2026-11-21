@@ -41,6 +41,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "bootprogress/larecomp_shader_build.h"
 #include "cpu_level.h"
 #include "crash_handler.h"
+#include "crash_options.h"
 #include "discord_rpc/discord_rpc.h"
 #include "game_marker.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -557,7 +558,7 @@ void LarecompApp::ChooseUserFolder() {
 rex::Result<void> LarecompApp::OnInit() {
   // The window is open, the systems run, app.* is frozen. The order below is the order the 0.10 start-up had.
   settings_config_path_ = rex::GetPathSettings().config_file.Get();
-  InstallCrashLoggerAfterRuntime();  // CHECK: the SDK installed its crash reporter in Init; ours goes behind it
+  NoteCrashLogFile();  // Linux: the crash reports append to the SDK's log file by name (the second half of the logger is in OnTitleLaunch)
   for (const auto& note : path_notes_) LARECOMP_APP_WARN("Game data: {}", note);
   path_notes_.clear();
   // The command line options that could not be used (one line each; the start goes on): ApplyCommandLineSettings, PrepareCommandLine.
@@ -888,6 +889,12 @@ rex::Result<void> LarecompApp::OnTitleLaunch(rex::kernel::TitleRuntime& title) {
   mcla::ui::SetAchievementManager(&title.GetAchievementManager());  // the F7 list
   g_guest_mem = title.GetMembase().GetBase();
   LARECOMP_APP_INFO("by @mzzvxm. base memory: 0x{:016X}", reinterpret_cast<std::uintptr_t>(g_guest_mem));
+  // Linux: the second half of the crash logger goes in HERE and not in OnInit. The SDK puts its own SIGSEGV callback (the guest write
+  // watches the GPU caches rely on, the register blocks) on rex::platform::ExceptionHandler's list while TitleRuntime::Load makes the
+  // guest memory, and the list is called in the order it was filled: the logger's callback, which treats every fault it sees as a crash,
+  // has to come after it (crash_handler.cpp). In OnInit it came before, and the first write to a watched guest page killed the game
+  // (Linux boot check 2026-11-21: SIGSEGV SEGV_ACCERR on a guest store ~30 s in). No-op on Windows.
+  InstallCrashLoggerAfterRuntime();
 
   // The achievement labels from the resource embedded in the exe, layered over the XDBF ones by id.
   // (LoadAchievementMetadata works on rex::xam::IAchievementManager: it lists the catalog the XDBF filled and registers
@@ -1219,5 +1226,12 @@ void LarecompApp::OnShutdown() {
 rex::platform::CrashReporterOptions LarecompApp::GetCrashOptions() {
   // CHECK (L3/L4): LARecomp's own crash handler (crash_handler.cpp: minidump, log of the last hook, Linux signal handlers)
   // and the SDK's reporter both want the process-wide filter; the SDK's is installed first, then InstallCrashLoggerAfterRuntime.
-  return TitleApp::GetCrashOptions();
+  rex::platform::CrashReporterOptions options = TitleApp::GetCrashOptions();
+  // The test harness's switch (crash_options.h): no "crashed" box, the process ends right after the report. Players never set it.
+  if (larecomp::crash::NoDialogFromEnvironment()) {
+    options.show_dialog = false;
+    // No upper-case "CRASH" and no "crash report" in this line: test checkers treat those words as a crash.
+    LARECOMP_APP_INFO("[crash] message box off (the no-dialog environment variable is set): a failure writes its report and ends the process");
+  }
+  return options;
 }

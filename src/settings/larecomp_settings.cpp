@@ -14,6 +14,8 @@
 #include <rex/platform/process.h>
 #include <toml++/toml.hpp>
 
+#include "settings/watch_table.h"
+
 namespace larecomp::settings {
 
 namespace {
@@ -147,6 +149,10 @@ void ApplyLegacyEnvironment() {
 }
 
 void UnregisterAll() {
+  // First: the change callbacks. Their guards lock the watched settings' own mutexes, and some of those settings belong to SDK systems
+  // that are destroyed right after OnShutdown. Not under the State mutex: RegisterChangeCallback takes the callbacks' mutex and then
+  // FlatName takes this one.
+  larecomp::cvar::ReleaseChangeCallbacks();
   State& s = S();
   std::lock_guard lock(s.mutex);
   if (s.registry) {
@@ -492,9 +498,13 @@ FlagEntry BuildCommand(rex::ConsoleCommand& command) {
 }
 
 std::mutex g_cb_mutex;
-std::map<std::string, std::vector<rex::ScopeGuard>>& Guards() {
-  static std::map<std::string, std::vector<rex::ScopeGuard>> g;
-  return g;
+// Never destroyed. Some watched settings are the SDK's (ui.resolution, ui.fullscreen) and die with their system before the exe's static
+// destruction: a table destroyed then released a guard on a freed Setting's mutex (Mtx_lock access violation at exit, about every other
+// run since the 0.11 SDK). The guards are released by ReleaseChangeCallbacks from UnregisterAll, while the settings exist; a path that
+// never gets there leaks them instead of touching a setting that is gone.
+larecomp::settings::WatchTable<rex::ScopeGuard>& Guards() {
+  static auto* g = new larecomp::settings::WatchTable<rex::ScopeGuard>();
+  return *g;
 }
 
 template <typename T>
@@ -505,18 +515,18 @@ void Watch<std::string>(rex::SettingBase& s, const std::string& flat, const Chan
   rex::SettingBase* base = &s;
   // frame_step_cap is not a Setting<std::string> (settings/validated_setting.h): the cast below would be undefined for it.
   if (auto* validated = dynamic_cast<ls::ValidatedString*>(&s)) {
-    Guards()[flat].push_back(validated->OnChange([flat, cb, base](const std::string&) { cb(flat, base->GetText()); }));
+    Guards().Add(flat, validated->OnChange([flat, cb, base](const std::string&) { cb(flat, base->GetText()); }));
     return;
   }
   auto& typed = static_cast<rex::Setting<std::string>&>(s);
-  Guards()[flat].push_back(typed.OnChange([flat, cb, base](const std::string&) { cb(flat, base->GetText()); }));
+  Guards().Add(flat, typed.OnChange([flat, cb, base](const std::string&) { cb(flat, base->GetText()); }));
 }
 
 template <typename T>
 void Watch(rex::SettingBase& s, const std::string& flat, const ChangeCallback& cb) {
   auto& typed = static_cast<rex::Setting<T>&>(s);
   rex::SettingBase* base = &s;
-  Guards()[flat].push_back(typed.OnChange([flat, cb, base](const T&) { cb(flat, base->GetText()); }));
+  Guards().Add(flat, typed.OnChange([flat, cb, base](const T&) { cb(flat, base->GetText()); }));
 }
 
 }  // namespace
@@ -653,7 +663,12 @@ void UnregisterChangeCallbacks(std::string_view name) {
   rex::SettingBase* s = ls::Find(name);
   if (!s) return;
   std::lock_guard lock(g_cb_mutex);
-  Guards().erase(ls::FlatName(*s));
+  Guards().Erase(ls::FlatName(*s));
+}
+
+void ReleaseChangeCallbacks() {
+  std::lock_guard lock(g_cb_mutex);
+  Guards().ReleaseAll();
 }
 
 }  // namespace larecomp::cvar
