@@ -169,7 +169,12 @@ inline constexpr uint32_t kFeatureGBuffer = 10;
 // RESERVED, nothing builds it yet: the lamps' shadows (the PSMultiLight shaders' colour fetch of a street lamp's shadow map; the spike is test/lamp-bspike). It will compose with the headlight's and the
 // G-buffer's stages, so its row in variant_chain.h kFeatures (and its partners' bits in theirs) come with its variant; the index is taken now so that no other change uses it.
 inline constexpr uint32_t kFeatureLampShadow = 11;
-// The next free index is 12: a new feature takes the next one, with its row in variant_chain.h's table.
+// The G-buffer's VERTEX stage (shaderpack/variants/gbuffer_day.h): the three vertex shaders of the day families that fetch a normal and export none (the road, the tunnel road,
+// the foliage props) also write it, in world space, to TEXCOORD15, which no pixel shader of the game reads. The G-buffer's pixel words of those families read it where it is
+// there and take the derivative normal where it is not, so the pixel words never need this one: the renderer only has to pair the two (Scene::GBufferKey). No constants of its
+// own; it has the spec variant 1 twin (the vertex shader's R11G11B10_NORMAL).
+inline constexpr uint32_t kFeatureGBufferVs = 12;
+// The next free index is 13: a new feature takes the next one, with its row in variant_chain.h's table.
 
 // Entry flags of the variant pack (the entry's `flags`).
 inline constexpr uint32_t kVariantEntryVertex = 1u << 0;  // the key is a vertex shader's

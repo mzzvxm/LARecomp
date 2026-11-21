@@ -39,6 +39,10 @@
 // writes the confidence in place of the visibility (the apply pass then shows it); the frame's
 // own run, which makes the history, is made with the view cleared.
 //
+// THE NORMAL. The pass's normal (the plane test of the history and of the wide blur, the vehicle rows' rotation) is the normal image's where the frame has one: its bindless slot is
+// in the high 16 bits of slots.y (the low bits are the host sample the stencil plane is read at, so those reads mask it; 0 in the high half is none: the depth's normal,
+// ao_common.hlsli AoNormalAt).
+//
 // Both the camera's motion and the lens are the previous frame's, and the depth is rendered with a
 // sub-pixel jitter while an upscaler runs: a pixel finds its history within a pixel or so, not
 // exactly. The occlusion is a smooth image and the plane test is wider than that.
@@ -121,7 +125,7 @@ uint AoVehicleId(int2 pixel, float depth) {
   }
   if (!AoLow()) {
 #if AO_DEPTH_MS
-    const uint id = StencilOf(g_utextures_ms[slot].Load(pixel, g_push.slots.y)) >> 2;
+    const uint id = StencilOf(g_utextures_ms[slot].Load(pixel, g_push.slots.y & 0xFFu)) >> 2;
 #else
     const uint id = StencilOf(g_utextures[slot].Load(int3(pixel, 0))) >> 2;
 #endif
@@ -133,7 +137,7 @@ uint AoVehicleId(int2 pixel, float depth) {
   for (int k = 0; k < 4; ++k) {
     const int2 p = pixel * 2 + int2(k & 1, k >> 1);
 #if AO_DEPTH_MS
-    const uint id = StencilOf(g_utextures_ms[slot].Load(p, g_push.slots.y)) >> 2;
+    const uint id = StencilOf(g_utextures_ms[slot].Load(p, g_push.slots.y & 0xFFu)) >> 2;
 #else
     const uint id = StencilOf(g_utextures[slot].Load(int3(p, 0))) >> 2;
 #endif
@@ -170,7 +174,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
 
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc);
   float3 pe = AoToHistory(pc);
   float3 ne = AoDirToHistory(normal);
   // A pixel of a vehicle is found with the vehicle's own motion, as in the plain pass.
@@ -292,7 +296,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
 
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc);
   float3 pe = AoToHistory(pc);
   float3 ne = AoDirToHistory(normal);
   // A pixel of a vehicle is found with the vehicle's own motion (the row of its ID in the vehicle

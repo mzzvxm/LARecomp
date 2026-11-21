@@ -10,6 +10,9 @@
 //   view 4  the class as a colour (a hue per class; a pixel that has a normal and no RT3 is dark green: written, class unknown); black: no data
 //   view 5  coverage: white where RT1 holds a normal, black where it does not (the "missing pixels" picture of the survey's run plan R2)
 //   view 6  the lit weight (RT2.a) as a grey
+//   view 7  the missing pixels: GREEN where RT1 holds a normal, RED where the main view's depth holds geometry (stored depth above 0: the guest's depth is 1 near, 0 far) and RT1
+//           holds no data (a shader with no variant yet, a mirror's window, a masked draw), black where there is neither (the sky). The survey's R2 picture: which families still have
+//           no data.
 //
 // The two compilations: GB_VIEW_MS 0 reads 1 sample planes (Texture2D, space 0), 1 reads planes of the host's MSAA level (Texture2DMS, space 1) at the host sample
 // that is the guest's sample 0. The frame's later passes (particles, the glows, the tone map) are drawn over this as usual: what shows is the game's picture of it
@@ -24,7 +27,7 @@
 
 struct GBufferViewPush {
   uint4 slots;  // x RT1's bindless slot, y RT2's, z RT3's, w the view (gbuffer_types.h View)
-  uint4 info;   // x the host sample to read (the guest's sample 0), y the planes that exist (PlaneBit: 1 normal, 2 albedo, 4 material)
+  uint4 info;   // x the host sample to read (the guest's sample 0), y the planes that exist (PlaneBit: 1 normal, 2 albedo, 4 material), z the main depth plane's slot (view 7)
 };
 
 #ifdef __spirv__
@@ -38,6 +41,15 @@ float4 LoadPlane(uint slot, int2 p) {
   return g_textures_ms[slot].Load(p, g_push.info.x);
 #else
   return g_textures[slot].Load(int3(p, 0));
+#endif
+}
+
+// The main view's stored depth at `p` (the same samples and size as the planes; the guest's depth is 1 near, 0 far).
+float LoadDepth(int2 p) {
+#if GB_VIEW_MS
+  return g_textures_ms[g_push.info.z].Load(p, g_push.info.x).r;
+#else
+  return g_textures[g_push.info.z].Load(int3(p, 0)).r;
 #endif
 }
 
@@ -66,6 +78,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   } else if (view == 5u) {
     colour = valid ? float3(1.0f, 1.0f, 1.0f) : float3(0.0f, 0.0f, 0.0f);
+  } else if (view == 7u) {
+    if (valid) {
+      colour = float3(0.0f, 0.8f, 0.2f);
+    } else if (LoadDepth(p) > 0.0f) {
+      colour = float3(1.0f, 0.0f, 0.0f);
+    }
   } else if (view == 2u) {
     if (have_albedo) {
       const float4 rt2 = LoadPlane(g_push.slots.y, p);

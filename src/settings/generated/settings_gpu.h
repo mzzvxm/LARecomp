@@ -113,6 +113,15 @@ class GPUSettings final : public rex::SettingOwner {
     "comparing the cost and the picture. Live; the first frame after the change makes the other pipeline on the "
     "render thread (a debug switch: a hitch of tens of milliseconds, once).", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_ao_gbuffer_normals, false, "Diagnostic (G-buffer, GB-E; off by default since 2026-11-20: the G-buffer costs 0.04 to 0.2 ms of the graphics card for a small change to these passes, so it stays off until a feature that needs it lands): the ambient occlusion, the contact shadows and the bounce light take each pixel's surface normal from the G-buffer (the "
+    "world normal of the surfaces whose shader has the G-buffer variant, turned into view space) in place of working it out from the depth's neighbours in "
+    "every pass: no depth edge bends it, the passes read one image that a normal pass makes once a frame, and the bounce light's facing test reads the "
+    "sample's normal instead of a second depth. A pixel the G-buffer holds no data for (impostors, billboards, the shaders no family covers yet) takes the "
+    "depth's normal as before, and so does a frame without the plane (the pause menu's world, the garage, the map, a cutscene). While it is on and one of "
+    "those effects is, the effects ask the G-buffer for its normal plane, so the main view's draws also write it (a small cost, paid only then). False: no "
+    "plane is asked for and every pass works out the normal from the depth, the picture as it was (the A/B). Live; the first frame after the change makes "
+    "the normal pass's pipeline in the background.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_ao_half_above_1080, true, "Diagnostic: above 1080 lines of render height (1440p, 4K, an upscaler's larger render size) the ambient "
     "occlusion's passes (depth chain, visibility, blur, history) run at half the picture's size, 720 lines for 1440p "
     "and 1080 for 4K, and the apply pass's depth-aware upsample puts the result back; 1080 lines and below are as "
@@ -664,18 +673,25 @@ class GPUSettings final : public rex::SettingOwner {
     "own default is restored. Passed to the context once it exists and again when it changes. Debug "
     "only. Live.", rex::kDebugOnly, rex::Range{-1.0, 1.0});
 
-  REX_SETTING(std::string, mcla_gpu_gbuffer, "auto", "Diagnostic (G-buffer spike, perf/GBUFFER-SURVEY.md): which planes of the G-buffer the main view's lit shaders write beside the "
-    "game's colour. off: none, and the game's own shaders draw, bit for bit. normals: the world normal of the surfaces whose shader has the G-buffer variant "
-    "(for now the city's default material, by day and by night), into a second render target the main view's draws carry, cleared with the game's own clear of "
-    "the main colour. full: the same, the other planes are not written yet. auto: what the effects that are on ask for, which is nothing yet (so off). The "
-    "colour of the picture is the same with it on. Not in the 4x views behind the pause menu and the map. Live (the first frame with it on builds the "
-    "extra shaders and pipelines: a short stutter).", rex::kDebugOnly, rex::Allowed("auto", "off", "normals", "full"));
+  REX_SETTING(std::string, mcla_gpu_gbuffer, "auto", "Diagnostic (G-buffer, perf/GBUFFER-SURVEY.md): which planes of the G-buffer the main view's lit shaders write beside the "
+    "game's colour. off: none, and the game's own shaders draw, bit for bit. normals: the world normal of the surfaces whose shader has the G-buffer variant, "
+    "into a second render target the main view's draws carry, cleared with the game's own clear of the main colour. full: the same, the other planes are not "
+    "written yet. auto: what the effects that are on ask for (the ambient occlusion, the contact shadows and the bounce light ask for the normal while mcla_gpu_ao_gbuffer_normals is on; none on: no image is made and no shader changes). The colour of the picture "
+    "is the same with it on. Not in the 4x views behind the pause menu and the map, nor in a cutscene. Live (the first frame with it on builds the extra shaders "
+    "and pipelines: a short stutter).", rex::kDebugOnly, rex::Allowed("auto", "off", "normals", "full"));
 
-  REX_SETTING(i32, mcla_gpu_gbuffer_view, 0, "Diagnostic (G-buffer spike): draws one plane of the G-buffer over the main view at the mid-scene depth copy, where the ambient "
+  REX_SETTING(std::string, mcla_gpu_gbuffer_attach, "auto", "Diagnostic (G-buffer): which draws of the main view bind the G-buffer's render targets. writers: only the draws whose shader "
+    "writes it (the planes keep what an earlier draw wrote under a draw of a shader that has no variant yet). all: every draw of the main view's window, the ones that "
+    "write no plane with a blend state that clears (an opaque draw: the pixels become no data) or masks (a blended draw: they stay); no render pass switch, no stale "
+    "pixels. It needs a blend state per render target: Vulkan has it, Direct3D 12 only with the Plume fix that enables independent blending, and forcing all without "
+    "it puts undefined values in the planes. auto: all where the back end has it, writers where not. Live.", rex::kDebugOnly, rex::Allowed("auto", "writers", "all"));
+
+  REX_SETTING(i32, mcla_gpu_gbuffer_view, 0, "Diagnostic (G-buffer): draws one plane of the G-buffer over the main view at the mid-scene depth copy, where the ambient "
     "occlusion runs (only while mcla_gpu_gbuffer makes the plane): 1 the normal as a colour (0.5 + 0.5 n), 2 the albedo, 3 the smoothness, 4 the class "
-    "of each pixel as a colour, 5 which pixels hold data (white) and which do not (black), 6 the lit weight. The planes the spike does not write "
-    "show as no data. The rest of the frame (particles, tone map, glow) is drawn over it as usual, so the colours are the game's after the tone map. 0: off. Live.",
-    rex::kDebugOnly, rex::Range{0, 6});
+    "of each pixel as a colour, 5 which pixels hold data (white) and which do not (black), 6 the lit weight, 7 the missing pixels (green: data; red: the depth "
+    "holds geometry and the planes hold no data; black: the sky). The planes no shader writes yet show as no data. The rest of the frame (particles, tone map, "
+    "glow) is drawn over it as usual, so the colours are the game's after the tone map. 0: off. Live.",
+    rex::kDebugOnly, rex::Range{0, 7});
 
   REX_SETTING(u32, mcla_gpu_ghost_log_interval, 0, "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
@@ -1477,6 +1493,7 @@ inline auto& mcla_gpu_ao_car_reach = g_gpu.mcla_gpu_ao_car_reach;
 inline auto& mcla_gpu_ao_census = g_gpu.mcla_gpu_ao_census;
 inline auto& mcla_gpu_ao_fade_end = g_gpu.mcla_gpu_ao_fade_end;
 inline auto& mcla_gpu_ao_fast_math = g_gpu.mcla_gpu_ao_fast_math;
+inline auto& mcla_gpu_ao_gbuffer_normals = g_gpu.mcla_gpu_ao_gbuffer_normals;
 inline auto& mcla_gpu_ao_half_above_1080 = g_gpu.mcla_gpu_ao_half_above_1080;
 inline auto& mcla_gpu_ao_history = g_gpu.mcla_gpu_ao_history;
 inline auto& mcla_gpu_ao_intensity = g_gpu.mcla_gpu_ao_intensity;
@@ -1577,6 +1594,7 @@ inline auto& mcla_gpu_fsr_shading_change_scale = g_gpu.mcla_gpu_fsr_shading_chan
 inline auto& mcla_gpu_fsr_sharpness = g_gpu.mcla_gpu_fsr_sharpness;
 inline auto& mcla_gpu_fsr_velocity_factor = g_gpu.mcla_gpu_fsr_velocity_factor;
 inline auto& mcla_gpu_gbuffer = g_gpu.mcla_gpu_gbuffer;
+inline auto& mcla_gpu_gbuffer_attach = g_gpu.mcla_gpu_gbuffer_attach;
 inline auto& mcla_gpu_gbuffer_view = g_gpu.mcla_gpu_gbuffer_view;
 inline auto& mcla_gpu_ghost_log_interval = g_gpu.mcla_gpu_ghost_log_interval;
 inline auto& mcla_gpu_glow_visibility = g_gpu.mcla_gpu_glow_visibility;
