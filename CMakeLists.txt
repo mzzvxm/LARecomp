@@ -306,6 +306,9 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/xbox_live.cpp
     src/mc_engine/online/race_props.cpp
     src/mc_engine/online/session_limits.cpp
+    # online_tables.json: the stats views + session property names the game holds in memory, for the launcher.
+    src/mc_engine/online/online_tables.cpp
+    src/mc_engine/online/online_tables_core.cpp
     # Server browser (F6): relay list, rooms, joining a picked room.
     src/mc_engine/online/server_browser/browser_client.cpp
     src/mc_engine/online/server_browser/browser_join.cpp
@@ -541,6 +544,17 @@ endif()
 add_executable(larecomp_game_marker_test EXCLUDE_FROM_ALL
     src/game_marker_test.cpp)
 target_include_directories(larecomp_game_marker_test PRIVATE src)
+
+# The tables the game dumps for the launcher (src/mc_engine/online/online_tables_core.h: the stats views of the XVC2 resource, the session property
+# names, the JSON file) have a check that needs no game; an argument names a file to write the sample JSON to:
+#   cmake --build <build dir> --target larecomp_online_tables_test, then run <build dir>/larecomp_online_tables_test [sample.json] (exit 0 = passed).
+add_executable(larecomp_online_tables_test EXCLUDE_FROM_ALL
+    src/mc_engine/online/online_tables_test.cpp
+    src/mc_engine/online/online_tables_core.cpp)
+target_include_directories(larecomp_online_tables_test PRIVATE src/mc_engine/online)
+if(WIN32)
+    target_compile_definitions(larecomp_online_tables_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 
 # The switch that skips the crash box for a test run (src/crash_options.h: LARECOMP_NO_CRASH_DIALOG, the exit status) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_crash_options_test, then run <build dir>/larecomp_crash_options_test (exit 0 = passed).

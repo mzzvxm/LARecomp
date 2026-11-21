@@ -48,6 +48,7 @@
 #include "../online_common.h"
 #include "lb_client.h"
 #include "lb_protocol.h"
+#include "../online_tables.h"
 #include "larecomp_guest.h"
 
 #include <algorithm>
@@ -72,7 +73,6 @@ REX_EXTERN(__imp__rex_sub_824FED28);
 
 namespace {
 
-constexpr uint32_t kSpaAddress = 0x82950000;   // the XEX's XDBF resource
 constexpr uint32_t kNetMgrPtr = 0x8286D800;
 constexpr uint32_t kLocalUserPtr = 0x8288E5AC;
 constexpr uint32_t kGamersAt = 4284;           // netmgr: gamer array
@@ -101,7 +101,6 @@ uint32_t R32(uint8_t* b, uint32_t a) {
   const uint8_t* p = b + a;
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
-uint16_t R16(uint8_t* b, uint32_t a) { return uint16_t((b[a] << 8) | b[a + 1]); }
 uint64_t R64(uint8_t* b, uint32_t a) { return (uint64_t(R32(b, a)) << 32) | R32(b, a + 4); }
 void W32(uint8_t* b, uint32_t a, uint32_t v) {
   b[a] = uint8_t(v >> 24); b[a + 1] = uint8_t(v >> 16); b[a + 2] = uint8_t(v >> 8); b[a + 3] = uint8_t(v);
@@ -138,60 +137,23 @@ std::once_flag g_schema_once;
 std::unordered_map<uint32_t, ViewDef> g_views;
 
 void LoadSchema() {
-  uint8_t* b = Base();
-  if (!b || std::memcmp(b + kSpaAddress, "XDBF", 4) != 0) {
-    LARECOMP_APP_WARN("[leaderboards] no XDBF at {:08X}; writes cannot be mapped", kSpaAddress);
+  using namespace larecomp::online_tables;
+  StatsSchema schema;
+  const StatsStatus status = ReadStatsSchema(LiveGuestReader(), kSpaAddress, &schema);
+  if (status != StatsStatus::kOk) {
+    LARECOMP_APP_WARN("[leaderboards] {} (at {:08X}); writes cannot be mapped", StatsStatusText(status),
+                      kSpaAddress);
     return;
   }
-  const uint32_t etl = R32(b, kSpaAddress + 8);
-  const uint32_t ec = R32(b, kSpaAddress + 12);
-  const uint32_t fstl = R32(b, kSpaAddress + 16);
-  const uint32_t data = kSpaAddress + 0x18 + etl * 18 + fstl * 8;
-  uint32_t xvc2 = 0, xvc2_len = 0;
-  for (uint32_t i = 0; i < ec && i < etl; ++i) {
-    const uint32_t e = kSpaAddress + 0x18 + i * 18;
-    if (R16(b, e) == 1 && R64(b, e + 2) == 0x58564332ull) {  // section 1, "XVC2"
-      xvc2 = data + R32(b, e + 10);
-      xvc2_len = R32(b, e + 14);
+  for (const StatsView& v : schema.views) {
+    ViewDef& def = g_views[v.id];
+    def.columns.clear();
+    for (const StatsColumn& c : schema.column_sets[v.column_set]) {
+      def.columns.push_back(ColumnDef{c.prop, c.attr, c.agg});
     }
-  }
-  if (!xvc2 || std::memcmp(b + xvc2, "XVC2", 4) != 0) {
-    LARECOMP_APP_WARN("[leaderboards] the SPA has no XVC2 section");
-    return;
-  }
-  const uint32_t end = xvc2 + xvc2_len;
-  uint32_t p = xvc2 + 12;
-  const uint16_t nshared = R16(b, p);
-  p += 2;
-  std::vector<std::vector<ColumnDef>> shared;
-  for (uint16_t s = 0; s < nshared && p < end; ++s) {
-    const uint16_t ncol = R16(b, p), nrow = R16(b, p + 2);
-    p += 12;
-    std::vector<ColumnDef> cols;
-    for (uint16_t c = 0; c < ncol; ++c, p += 32) {
-      ColumnDef d;
-      d.prop = R32(b, p + 4);
-      d.attr = R16(b, p + 12);
-      d.agg = static_cast<uint8_t>(R16(b, p + 16) & 0xFF);
-      cols.push_back(d);
-    }
-    p += 32u * nrow;
-    if (std::memcmp(b + p, "XPBM", 4) != 0) {
-      LARECOMP_APP_WARN("[leaderboards] XVC2 shared view {} is not followed by XPBM", s);
-      return;
-    }
-    p += 20 + 4 * R32(b, p + 16);
-    shared.push_back(std::move(cols));
-  }
-  const uint16_t nviews = R16(b, p);
-  p += 2;
-  for (uint16_t v = 0; v < nviews && p + 16 <= end; ++v, p += 16) {
-    const uint32_t id = R32(b, p);
-    const uint16_t si = R16(b, p + 8);
-    if (si < shared.size()) g_views[id].columns = shared[si];
   }
   LARECOMP_APP_INFO("[leaderboards] {} stats views from the SPA ({} column sets), backend: {}",
-                    g_views.size(), shared.size(), lb::client::DescribeTarget());
+                    g_views.size(), schema.column_sets.size(), lb::client::DescribeTarget());
 }
 
 const ViewDef* FindView(uint32_t id) {
