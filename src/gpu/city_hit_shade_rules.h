@@ -20,6 +20,10 @@
 //   calibration   a hit the picture speaks for in full adds the log of its luminance and of the ungained model's to the class's counters (rt_hit_calibration.h), the host turns the windows
 //                 into one gain a class
 //
+// R7 (CITY-RT M2 R7): the lamps of a hit come from the WORLD FRAME's grid (rt_world_frame_rules.h: LampLightAt walks the 64 m cells around the hit, the twin of the shader's CITY_HIT_LAMP_GRID path): the
+// first kLampMax lamps of the lookup, their light summed and capped in luminance at kLampSumCap (LampsCapped), or ONE lamp chosen with a shadow ray (LampPickCapped) with the same cap; and what a
+// glowing material glows by follows its kind (a lamp lens the street lamps' schedule, neon, signs, lit windows the fill lights', a traffic signal always: Reads::glow_factor, the world rows' row 47).
+//
 // THE LAMPS (src/citypack/lamp_table.h, the game's own laws read from the lit shaders and sub_822FD2C8): term = colour x saturate(I / d^2) x cone x N.L x the schedule: a lamp lights with its
 // full colour out to d = sqrt(I) and falls as I / d^2 beyond (a fill light of 20 reaches 44.7 m where the term is 1 percent); the cone is a ramp in the cosine, full at cos(inner) and zero at
 // cos(outer) (LampConeCosines); an omni light has none (cosOuter -2). Without the shadow flag the light of a hit is the SUM of the lamps in the range; with it ONE lamp is chosen with the
@@ -95,6 +99,12 @@ inline constexpr float kMinDepth = 0.05f;
 inline constexpr float kScreenTrust = 0.98f;
 inline constexpr float kCalFloor = 0.02f;
 inline constexpr float kFacingSpan = 0.15f;
+inline constexpr uint32_t kLampMax = 96;          // R7: the lamps of a lookup one hit examines at most (the shader's kCityHitLampMax)
+inline constexpr float kLampSumCap = 6.0f;        // R7: the lamp light's luminance is capped at this
+inline constexpr float kLampLookup = 64.0f;       // R7: the lookup's radius where the world rows give none
+inline constexpr uint32_t kGlowNight = ch::kGlowNight, kGlowLens = ch::kGlowLens, kGlowAlways = ch::kGlowAlways;
+// the counters of the lamp term and the glow (the shader's CITY_HIT_CENSUS_*)
+inline constexpr uint32_t kCensusLookups = 0, kCensusExamined = 1, kCensusLit = 2, kCensusCapCount = 3, kCensusCapSum = 4, kCensusGlowNight = 5, kCensusWords = 8;
 
 // Per class: the diffuse's share (glass and chrome let most of the light go through or off) and the sky reflection's share.
 inline constexpr float kDiffuseGain[kClassCount] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.1f, 0.5f, 0.25f, 1.0f, 1.0f, 1.0f, 0.15f};
@@ -252,6 +262,67 @@ inline V3 LampPick(float lamp_factor, const Lamp* lamps, uint32_t count, V3 posi
   return blocked(origin, to_chosen, std::max(distance - kLampEnd, 0.0f)) ? V3{} : chosen * (weight_sum / weight);
 }
 
+// R7: the world frame's lookup's lamps in the cursor's order, examined at most kLampMax at a time and their sum capped in luminance (hlsl CityHitLamps with CITY_HIT_LAMP_GRID). `count` is the lookup's
+// whole list: more than kLampMax is a hit that hit the cap.
+struct LampLight {
+  V3 light;
+  uint32_t examined = 0, lit = 0;
+  bool cap_count = false, cap_sum = false;
+};
+inline float LampKeep(float weight_sum) { return weight_sum > kLampSumCap ? kLampSumCap / weight_sum : 1.0f; }
+inline LampLight LampsCapped(float lamp_factor, const Lamp* lamps, uint32_t count, V3 position, V3 normal) {
+  LampLight t;
+  t.examined = std::min(count, kLampMax);
+  t.cap_count = count > kLampMax;
+  float weight_sum = 0.0f;
+  V3 sum;
+  for (uint32_t i = 0; i < t.examined; ++i) {
+    const V3 radiance = LampAt(lamp_factor, lamps[i], position, normal).radiance;
+    const float luma = Luma(radiance);
+    sum = sum + radiance;
+    weight_sum += luma;
+    t.lit += luma > 0.0f ? 1u : 0u;
+  }
+  t.cap_sum = weight_sum > kLampSumCap;
+  t.light = sum * LampKeep(weight_sum);
+  return t;
+}
+// The same with one lamp chosen by its unshadowed brightness and a shadow ray (as LampPick), times the cap's factor; the counters are LampsCapped's.
+inline LampLight LampPickCapped(float lamp_factor, const Lamp* lamps, uint32_t count, V3 position, V3 normal, float noise, float view_z, const std::function<bool(V3, V3, float)>& blocked) {
+  LampLight t = LampsCapped(lamp_factor, lamps, count, position, normal);
+  float weight_sum = 0.0f;
+  for (uint32_t i = 0; i < t.examined; ++i) weight_sum += Luma(LampAt(lamp_factor, lamps[i], position, normal).radiance);
+  if (!(weight_sum > 0.0f)) {
+    return t;
+  }
+  const float keep = LampKeep(weight_sum);
+  const float pick = noise * weight_sum;
+  float running = 0.0f;
+  V3 chosen, to_chosen{0, 1, 0};
+  float distance = 0.0f, weight = 0.0f;
+  for (uint32_t j = 0; j < t.examined && weight <= 0.0f; ++j) {
+    const LampEval e = LampAt(lamp_factor, lamps[j], position, normal);
+    const float w = Luma(e.radiance);
+    running += w;
+    if (w > 0.0f && (running >= pick || j + 1u == t.examined)) {
+      chosen = e.radiance;
+      to_chosen = e.to_lamp;
+      distance = e.distance;
+      weight = w;
+    }
+  }
+  if (!(weight > 0.0f)) {
+    t.light = V3{};
+    return t;
+  }
+  const V3 origin = position + normal * Lift(view_z);
+  t.light = blocked(origin, to_chosen, std::max(distance - kLampEnd, 0.0f)) ? V3{} : chosen * (keep * weight_sum / weight);
+  return t;
+}
+// What a glow kind glows by when the includer gives no schedule: a traffic signal always, the rest by the params' lamp factor (hlsl CityHitGlowFactor); a kind that is not one reads as the night curve.
+inline uint32_t GlowKindOf(uint32_t kind) { return kind == kGlowLens ? kGlowLens : (kind == kGlowAlways ? kGlowAlways : kGlowNight); }
+inline float GlowFactorDefault(uint32_t kind, float lamp_factor) { return GlowKindOf(kind) == kGlowAlways ? 1.0f : Saturate(lamp_factor); }
+
 // The GPU record: three rows of four words. `camera` is the camera's place in the game's world, `axes` the world's axes in view space (rt_hit::FrameInput::world_axes_view): a world
 // point (p) is in the view at sum_k (p_k - camera_k) axes[k], a world direction likewise without the camera. `cone_cos_*` are lamp_table.h LampConeCosines (-2 for no cone).
 struct WorldLamp {
@@ -321,6 +392,12 @@ struct Reads {
   std::function<V3(V3, V3)> feedback;
   // the air between the camera and the hit on a shaded colour (the picture's units) at a distance in metres (null: none)
   std::function<V3(V3, float)> haze;
+  // R7: the world frame's lamp light at a hit (view-space point, unit normal, the lamp shadow flag, the choice noise): the shader's CITY_HIT_LAMP_GRID path. Null: Shade's flat list.
+  std::function<V3(V3, V3, bool, float)> lamps_at;
+  // R7: what a glow kind (kGlow*) glows by, 0..1 (the world rows' row 47). Null: GlowFactorDefault.
+  std::function<float(uint32_t)> glow_factor;
+  // R7: the counters (the census words kCensus*) of the pass: called with (word, value); null: not counted
+  std::function<void(uint32_t, uint32_t)> census;
 };
 
 struct Params {
@@ -426,7 +503,11 @@ inline Shaded Shade(const Params& p, const rt_hit::FrameInput& frame, const Ray&
     }
   }
   light = light + sun * (ndl * visible);
-  if (lamps && (p.flags & kPLamps) != 0 && p.lamp_count != 0 && p.lamp_factor > 0.0f) {
+  if (reads.lamps_at) {
+    if ((p.flags & kPLamps) != 0 && p.lamp_factor > 0.0f) {
+      light = light + reads.lamps_at(hit, normal, (p.flags & kPLampShadow) != 0, p.noise[2]);
+    }
+  } else if (lamps && (p.flags & kPLamps) != 0 && p.lamp_count != 0 && p.lamp_factor > 0.0f) {
     light = light + ((p.flags & kPLampShadow) != 0 ? LampPick(p.lamp_factor, lamps + p.lamp_first, p.lamp_count, hit, normal, p.noise[2], hit.z, reads.lamp_blocked)
                                                     : LampsSum(p.lamp_factor, lamps + p.lamp_first, p.lamp_count, hit, normal));
   }
@@ -453,8 +534,10 @@ inline Shaded Shade(const Params& p, const rt_hit::FrameInput& frame, const Ray&
   }
   float glow = 0.0f;
   if ((p.flags & kPEmissive) != 0 && m.emissive > 0.0f) {
-    glow = Saturate(p.lamp_factor);
+    const uint32_t kind = GlowKindOf(m.glow_kind);
+    glow = Saturate(reads.glow_factor ? reads.glow_factor(kind) : GlowFactorDefault(kind, p.lamp_factor));
     result = result + albedo * (m.emissive * rt_hit::kEmissiveGain * glow);
+    if (reads.census && (p.flags & kPCalibrate) != 0) reads.census(kCensusGlowNight + kind, 1u);
   }
   V3 shaded = Max0(result) * p.units;
   if (reads.haze) {

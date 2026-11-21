@@ -89,7 +89,9 @@
 //            on screen, and GB-F1's word (gbuffer_material.h WordFor) drops in with the metal byte added. A class is the G-buffer's, not the cars' (car_rt_material_rules.h Class:
 //            paint, glass, tyre, chrome, light, interior, other): a city hit is never a car part.
 //   word 1   texture index in bits 0..15 (the diffuse; 0xFFFF none), second layer's texture index in 16..31 (road grime, decal multiply: version 1 never writes it)
-//   word 2   the tint, R10G10B10 over 0..2 (the cars' PackRgb10, bit for bit; the group's parameters: where the shader multiplies the texture), bits 30..31 zero
+//   word 2   the tint, R10G10B10 over 0..2 (the cars' PackRgb10, bit for bit; the group's parameters: where the shader multiplies the texture), bits 30..31 the GLOW KIND (R7: what the
+//            material's glow follows: kGlowNight the fill lights' night curve, kGlowLens the street lamps' schedule, kGlowAlways none; 0 for a material that does not glow, and for a pack
+//            written before R7 whose bits were zero: it reads as kGlowNight, the schedule the glow had)
 //   word 3   the AVERAGE colour, R10G10B10 over 0..2: tint x the mean of the diffuse texture (linear), or the tint alone / the class grey where there is no texture; what a hit shows
 //            where the texture is not uploaded, and all that M3's probes read; bits 30..31 zero
 //   word 4   the emissive scale (float bits; 0 for what does not glow)
@@ -156,7 +158,7 @@ namespace larecomp::citypack {
 inline constexpr char kHitMagic[8] = {'L', 'A', 'R', 'C', 'H', 'I', 'T', '1'};
 inline constexpr char kTexMagic[8] = {'L', 'A', 'R', 'C', 'T', 'E', 'X', '1'};
 inline constexpr uint32_t kHitFormatVersion = 1;
-inline constexpr uint32_t kHitBuilderVersion = 1;
+inline constexpr uint32_t kHitBuilderVersion = 2;  // 2: R7's glow kind in the material's tint word and the glow a GB-F2 row gives (the lit windows)
 inline constexpr const char* kHitFileName = "mcla_city_hit.v1.pack";
 inline constexpr const char* kTexFileName = "mcla_city_tex.v1.pack";
 inline constexpr const char* kHitStampFileName = "mcla_city_hit.stamp";
@@ -200,6 +202,13 @@ inline constexpr uint32_t kWordFlagSsr = 1;            // gbuffer_types.h kMater
 inline constexpr uint32_t kWordFlagAlphaCovered = 2;   // kMaterialFlagAlphaCovered
 inline constexpr uint32_t kWordFlagVehicle = 4;        // kMaterialFlagVehicle
 
+// What a glowing material's glow follows (HitMaterial::glow_kind, bits 30..31 of the tint word; hlsl CITY_HIT_GLOW_*; src/gpu/city_hit_shade_rules.h uses them).
+inline constexpr uint32_t kGlowNight = 0;   // neon, signs, lit windows, interiors: the fill lights' night curve
+inline constexpr uint32_t kGlowLens = 1;    // a street lamp's lens: the street lamps' schedule (the prop pass's on hours)
+inline constexpr uint32_t kGlowAlways = 2;  // a traffic signal: lit by day as well
+inline constexpr uint32_t kGlowKinds = 3;   // the value 3 is not used: it reads as kGlowNight
+inline constexpr uint32_t kGlowShift = 30;
+
 constexpr uint32_t PackMaterialWord(uint32_t smoothness, uint32_t surface_class, uint32_t flags, uint32_t lit, uint32_t metal) {
   return (smoothness & 0xFFu) << kWordSmoothnessShift | (surface_class & kWordClassMask) << kWordClassShift | (flags & 7u) << kWordFlagsShift | (lit & 0xFFu) << kWordLitShift |
          (metal & 0xFFu) << kWordMetalShift;
@@ -237,6 +246,7 @@ struct HitMaterial {
   float tint[3] = {1.0f, 1.0f, 1.0f};                  // linear, 0..kHitRgb10Max
   float average[3] = {0.5f, 0.5f, 0.5f};               // tint x the diffuse texture's mean, linear, 0..kHitRgb10Max
   float emissive = 0.0f;
+  uint8_t glow_kind = 0;                               // kGlow*: what the glow follows (word 2's bits 30..31); only meaningful where emissive > 0
   uint64_t key = 0;                                    // XXH3-64 of the diffuse texture's base level (0: none)
   uint32_t shader_hash = 0;
 

@@ -29,6 +29,11 @@ rust:            name~rust,rusty  => rough=0.80
 
 # --- what lights itself
 emissive-names:  name~neon,emissive,bulb,lampon,lamp_on  => class=emissive
+# Lit windows of a night (CITY-RT R7): the ray traced city hit data (the reflections' and the bounce light's hits) makes a material glow where a row says its texture lights itself: class=emissive, or
+# a lit weight under 1 (the glow is 1 - lit, by the fill lights' night curve; a lamp lens and a traffic signal are known from their shader groups). Use it for the textures that are lit windows or lit
+# signs themselves: on the raster side lit=0 also tells the deferred local lights (headlights, lamps) to add nothing to those pixels, so a facade that only has windows painted on it is left out.
+# Which window textures are lit comes from the census and the pictures, by hash (the first line is a template and matches nothing):
+# lit-windows:     hash=0123456789ABCDEF,FEDCBA9876543210  => lit=0
 
 # --- soft materials and rubber
 rubber:          name~tire,tyre,rubber  => rough=0.92

@@ -1,6 +1,7 @@
 // Check of the city hit library (CITY-RT M2 package H4): hlsl/city_hit_shade.hlsli and its C++ twin src/gpu/city_hit_shade_rules.h. A program of its own: no renderer, no game files, no GPU.
 //
-//   clang++ -std=c++23 -I src -I src/gpu src/gpu/city_hit_shade_rules_test.cpp src/citypack/city_hit_format.cpp src/citypack/pack_format.cpp -o city_hit_shade_rules_test
+//   clang++ -std=c++23 -I src -I src/gpu src/gpu/city_hit_shade_rules_test.cpp src/citypack/city_hit_format.cpp src/citypack/lamp_merge.cpp src/citypack/lamp_table.cpp src/citypack/pack_format.cpp \
+//           -o city_hit_shade_rules_test
 //   city_hit_shade_rules_test <src dir>
 //
 // It checks the twin's own claims (the texture's level, the laws of the lamps and the estimator of the lamp choice, the sun ray's direction, the fresnel, the screen's weight, the mix, the lamp's
@@ -29,12 +30,14 @@
 #include "rt_hit_calibration.h"
 #include "rt_hit_frame.h"
 #include "rt_hit_sample_ref.h"
+#include "rt_world_frame_rules.h"
 
 using namespace larecomp::citypack;
 namespace cs = mcla::gpu::city_hit_shade;
 namespace rh = mcla::gpu::rt_hit;
 namespace hc = mcla::gpu::rt_hit_cal;
 namespace gb = mcla::gpu::gbuffer;
+namespace rw = mcla::gpu::rt_world;
 
 // ---------------------------------------------------------------------------
 // the shader library as C++: the shim, the resources, the fakes of what a GPU would do
@@ -88,6 +91,7 @@ inline bool FakeBlocked(float ox, float oy, float oz, float dx, float dy, float 
 #define CITY_HIT_HAZE(colour, distance) hlsl_shim::HazeFake((colour), (distance))
 
 namespace hlsl_shim {
+namespace flat {  // R7: a namespace of its own (a using-directive below keeps every hlsl_shim:: name of this test), so that the second inclusion in hlsl_shim::grid is not found by argument dependent lookup
 #include "hlsl/city_hit_common.hlsli"
 #include "hlsl/rt_hit_common.hlsli"
 inline bool CityHitSunRay(float3 origin, float3 direction, float reach, float footprint, float sunTan) {
@@ -102,7 +106,13 @@ inline bool CityHitLampRay(float3 origin, float3 direction, float reach, float f
   return FakeBlocked(origin.x, origin.y, origin.z, direction.x, direction.y, direction.z);
 }
 #include "hlsl/city_hit_shade.hlsli"
+}  // namespace flat
+using namespace flat;
 }  // namespace hlsl_shim
+
+// R7: the same library again, in a namespace of its own, with the world frame's grid for its lamps and the world rows' schedule for its glow (city_hit_lamp_term_lib.inc; the checks are in
+// city_hit_lamp_term_checks.inc)
+#include "city_hit_lamp_term_lib.inc"
 
 namespace {
 
@@ -1026,6 +1036,8 @@ void TextChecks(const std::string& src) {
   for (const char* word : {" point,", " point)", " point;", "float3 out ", " out = ", "const float target"}) CHECK(!has(code, word));
 }
 
+#include "city_hit_lamp_term_checks.inc"
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1047,6 +1059,7 @@ int main(int argc, char** argv) {
   ResolveChecks(city, rng, 6000, sources);
   Check(sources[cs::kSourceScreen] > 400 && sources[cs::kSourceShaded] > 400 && sources[cs::kSourceBlend] > 100 && sources[cs::kSourceNone] > 100,
         Num2("the resolve ended in the picture, the model, both and nothing (picture %.0f, model %.0f)", sources[cs::kSourceScreen], sources[cs::kSourceShaded]));
+  LampTermChecks(city, rng, src);
   TextChecks(src);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

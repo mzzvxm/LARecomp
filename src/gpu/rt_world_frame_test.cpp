@@ -8,7 +8,8 @@
 // the street lamps' fraction over the prop pass's jitter, the fill lights' ramp, the midnight wrap, the hint for an unknown hour), the merge of the static table with the game's live list (the
 // street lamps the fresh list covers are not taken twice, the list's order does not matter), the activity folded into the record's colour, the budget (the nearest are kept), the window and its
 // cell table (a partition of the lamps, every lamp in its cell), the lookup against a brute force over the window (complete within the radius, in the order the shader walks, no
-// duplicate), the lamp light through the grid against the library's twin over every lamp (exact for a radius of 100 m, a bound below), and the census. Then it compiles the SHADER FILE ITSELF as
+// duplicate), the lamp light through the grid against the library's twin over every lamp (exact for a radius of 100 m, a bound below), the game's live lamp list as evidence of the street lamps
+// being on or off (R7: the schedule's street part, the table's activity, the row 47 that carries it, the lamp term's census), and the census. Then it compiles the SHADER FILE ITSELF as
 // C++ (hlsl_cpp_shim.h): RtWorldLoad, RtWorldHitFrame, RtWorldClassGain, RtWorldPoint, RtLampRow and the cursor, on the same buffers, against the twin, and every #define against the
 // header's numbers. With the src folder it reads the text of the shaders, the car scene's descriptor set (the counts of D3D12), the wiring in the scene, the renderer and the time of day hook.
 
@@ -203,6 +204,9 @@ void TestNumbers(const std::string& hlsl) {
   CHECK(number("RT_WORLD_ROW_COUNTS") == rw::kRowCounts);
   CHECK(number("RT_WORLD_ROW_CALIBRATION") == rw::kRowCalibration);
   CHECK(number("RT_WORLD_ROW_GAINS") == rw::kRowGains);
+  CHECK(number("RT_WORLD_ROW_SCHEDULE") == rw::kRowSchedule && rw::kRowSchedule == 47 && rw::kRowSchedule < rw::kTotalRows);
+  CHECK(number("RT_WORLD_EVIDENCE_ON") == rw::kEvidenceOn && number("RT_WORLD_EVIDENCE_OFF") == rw::kEvidenceOff);
+  CHECK(number("RT_WORLD_GLOW_NIGHT") == ch::kGlowNight && number("RT_WORLD_GLOW_LENS") == ch::kGlowLens && number("RT_WORLD_GLOW_ALWAYS") == ch::kGlowAlways);
   CHECK(number("RT_WORLD_TOTAL_ROWS") == rw::kTotalRows);
   CHECK(number("RT_WORLD_CLASSES") == rw::kClasses);
   CHECK(number("RT_WORLD_VALID") == rw::kWorldValid);
@@ -723,6 +727,8 @@ rw::WorldInput RandomWorld(Lcg& rng, const rw::LampFrame* lamps) {
   in.calibration_windows = rng.Below(1000);
   in.world_kind = rng.Below(5);
   in.schedule = rw::ScheduleAt(ch::LampHours{}, rng.Below(6) == 0 ? -1.0f : in.hour, rng.Range(0.0f, 1.0f));
+  in.schedule.evidence = rng.Below(4) == 0 ? rng.Below(3) : 0u;
+  in.live_shining = rng.Below(3) == 0 ? rng.Below(90) : 0u;
   in.lamps = lamps;
   for (uint32_t c = 0; c < rw::kClasses; ++c) in.gains[c] = rng.Range(0.5f, 3.0f);
   return in;
@@ -745,7 +751,7 @@ void TestWorldRows() {
     CHECK(std::memcmp(rows, hit_rows, sizeof(hit_rows)) == 0);
     // the reserved rows are zero
     bool zero = true;
-    for (uint32_t r = 44; r < rw::kTotalRows; ++r) for (int c = 0; c < 4; ++c) zero = zero && rows[r][c] == 0;
+    for (uint32_t r = 44; r < rw::kRowSchedule; ++r) for (int c = 0; c < 4; ++c) zero = zero && rows[r][c] == 0;
     CHECK(zero);
     rw::WorldDecoded d = rw::DecodeWorldRows(rows);
     CHECK(d.Valid());
@@ -760,6 +766,8 @@ void TestWorldRows() {
     CHECK(((d.flags & rw::kWorldLight) != 0) == in.world_light);
     CHECK(in.schedule.from_hour ? d.hour == in.hour : d.hour == -1.0f);
     CHECK(d.lamp_factor == in.schedule.factor);
+    CHECK(d.street == std::clamp(in.schedule.street, 0.0f, 1.0f) && d.fill == std::clamp(in.schedule.fill, 0.0f, 1.0f) && d.live_shining == in.live_shining && d.evidence == in.schedule.evidence);
+    CHECK(d.GlowFactor(ch::kGlowAlways) == 1.0f && d.GlowFactor(ch::kGlowLens) == d.street && d.GlowFactor(ch::kGlowNight) == d.fill && d.GlowFactor(3) == d.fill);
     CHECK(d.units == in.units && d.wet == in.wet && d.weather == in.weather && d.time_s == in.time_s);
     for (int c = 0; c < 3; ++c) {
       CHECK(d.camera[c] == (in.camera_known ? in.camera[c] : 0.0f));
@@ -793,6 +801,8 @@ void TestWorldRows() {
     CHECK(w.cx0 == d.cx0 && w.cz0 == d.cz0 && w.nx == d.nx && w.nz == d.nz);
     CHECK(w.lampCount == d.lamp_count && w.lampsInWindow == d.lamps_in_window && w.cells == d.cells && w.liveCount == d.live_count);
     CHECK(w.statsFrame == d.stats_frame && w.windows == d.windows && w.worldKind == d.world_kind);
+    CHECK(w.street == d.street && w.fill == d.fill && w.liveShining == d.live_shining && w.evidence == d.evidence);
+    for (uint32_t kind = 0; kind < 4; ++kind) CHECK(hlsl_shim::RtWorldGlowFactor(kind) == d.GlowFactor(kind));
     CHECK(w.axisX.x == in.hit.world_axes_view[0][0] && w.axisX.y == in.hit.world_axes_view[0][1] && w.axisX.z == in.hit.world_axes_view[0][2]);
     CHECK(w.axisY.x == in.hit.world_axes_view[1][0] && w.axisZ.z == in.hit.world_axes_view[2][2]);
     for (uint32_t cls = 0; cls < rw::kClasses; ++cls) CHECK(hlsl_shim::RtWorldClassGain(cls) == in.gains[cls]);
@@ -1068,6 +1078,163 @@ void TestLampLight() {
 // the census, the clock, the live list's mask, the calibration
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// the game's live lamp list as evidence of the street lamps (CITY-RT R7)
+// ---------------------------------------------------------------------------
+
+rw::LiveLamp ShiningLive(float scale) {
+  rw::LiveLamp g;
+  g.lamp.pos[0] = 10.0f;
+  g.lamp.pos[1] = 7.0f;
+  g.lamp.pos[2] = 10.0f;
+  g.lamp.intensity = 60.0f;
+  g.lamp.spot = 1;
+  g.lamp.cone_deg = 125.0f;
+  g.lamp.source = ch::LampSource::kStreetLamp;
+  g.scale = scale;
+  return g;
+}
+
+void TestLiveEvidence() {
+  const ch::LampHours hours;
+  const rw::Schedule night = rw::ScheduleAt(hours, 22.0f, -1.0f), day = rw::ScheduleAt(hours, 12.0f, -1.0f);
+  // the evidence of a list: its entries that shine, their mean fade
+  {
+    std::vector<rw::LiveLamp> list = {ShiningLive(1.0f), ShiningLive(0.5f), ShiningLive(0.0f), ShiningLive(1.0f)};
+    list[3].lamp.on = 0;
+    const rw::LiveEvidence e = rw::EvidenceOf(true, list, 7);
+    CHECK(e.fresh && e.given == 4 && e.shining == 2 && Near(e.mean_scale, 0.75, 1e-6) && e.table_streets == 7);
+    const rw::LiveEvidence none = rw::EvidenceOf(false, std::vector<rw::LiveLamp>{}, 0);
+    CHECK(!none.fresh && none.given == 0 && none.shining == 0 && none.mean_scale == 0.0f);
+  }
+  // lamps that shine in a fresh list are on: at night nothing changes, by day (a storm, other on hours) the street lamps are on at their mean fade and the fill lights stay the hour's
+  rw::LiveEvidence on;
+  on.fresh = true;
+  on.given = 30;
+  on.shining = 30;
+  on.mean_scale = 0.9f;
+  const rw::Schedule night_on = rw::ApplyLiveEvidence(night, on);
+  CHECK(night_on.evidence == rw::kEvidenceOn && night_on.street == 1.0f && night_on.fill == 1.0f && night_on.factor == 1.0f);
+  const rw::Schedule day_on = rw::ApplyLiveEvidence(day, on);
+  CHECK(day_on.evidence == rw::kEvidenceOn && Near(day_on.street, 0.9, 1e-6) && day_on.fill == 0.0f && Near(day_on.factor, 0.9, 1e-6));
+  CHECK(rw::ApplyLiveEvidence(day_on, on).street == day_on.street && rw::ApplyLiveEvidence(rw::ApplyLiveEvidence(night, on), on).street == 1.0f);  // the hour's own part is kept: applying again is applying once
+  // where the table says how many street lamps there are in the list's reach: the share that shines (the dusk's staircase), at least the hour's; by day the share alone
+  rw::LiveEvidence counted = on;
+  counted.table_streets = 60;  // 30 of 60 shine, their mean fade 0.9
+  const rw::Schedule dusk_hour = rw::ScheduleAt(hours, 17.8f, -1.0f);
+  const rw::Schedule dusk_on = rw::ApplyLiveEvidence(dusk_hour, counted);
+  CHECK(dusk_hour.street > 0.0f && dusk_hour.street < 1.0f && dusk_on.evidence == rw::kEvidenceOn && Near(dusk_on.street, std::max(dusk_hour.street, 0.45f), 1e-6) && dusk_on.hour_street == dusk_hour.street);
+  CHECK(Near(rw::ApplyLiveEvidence(day, counted).street, 0.45, 1e-6) && rw::ApplyLiveEvidence(night, counted).street == 1.0f);
+  // a hour that says some are on keeps its own part where the table cannot say (the mean fade would be all of them)
+  CHECK(rw::ApplyLiveEvidence(dusk_hour, on).street == dusk_hour.street);
+  // an empty fresh list next to street lamps of the table in its reach: they are off, whatever the hour says; the fill lights keep the night
+  rw::LiveEvidence off;
+  off.fresh = true;
+  off.table_streets = 40;
+  const rw::Schedule night_off = rw::ApplyLiveEvidence(night, off);
+  CHECK(night_off.evidence == rw::kEvidenceOff && night_off.street == 0.0f && night_off.fill == 1.0f && night_off.factor == 1.0f);
+  // not enough street lamps in the table to say (the list is empty where none is near), a list that is not fresh, a table without street lamps, the day: the hour decides
+  rw::LiveEvidence few = off;
+  few.table_streets = rw::kEvidenceMinTableStreets - 1;
+  CHECK(rw::ApplyLiveEvidence(night, few).evidence == 0 && rw::ApplyLiveEvidence(night, few).street == 1.0f);
+  rw::LiveEvidence stale = off;
+  stale.fresh = false;
+  CHECK(rw::ApplyLiveEvidence(night, stale).evidence == 0 && rw::ApplyLiveEvidence(night, stale).street == 1.0f);
+  rw::LiveEvidence no_streets = off;
+  no_streets.table_streets = 0;
+  CHECK(rw::ApplyLiveEvidence(night, no_streets).evidence == 0);
+  CHECK(rw::ApplyLiveEvidence(day, off).evidence == 0 && rw::ApplyLiveEvidence(day, off).factor == 0.0f);  // by day the street lamps are off already: nothing to say
+  CHECK(rw::ApplyLiveEvidence(night, rw::LiveEvidence{}).factor == night.factor && rw::ApplyLiveEvidence(night, rw::LiveEvidence{}).evidence == 0);
+  // a list whose entries all have no fade is empty for the evidence
+  {
+    std::vector<rw::LiveLamp> faded = {ShiningLive(0.0f), ShiningLive(0.0f)};
+    const rw::LiveEvidence e = rw::EvidenceOf(true, faded, 12);
+    CHECK(e.shining == 0 && rw::ApplyLiveEvidence(night, e).evidence == rw::kEvidenceOff);
+  }
+  // a hint with no hour (the clock is not up): the evidence still applies
+  const rw::Schedule hinted = rw::ScheduleAt(hours, -1.0f, 0.8f);
+  CHECK(rw::ApplyLiveEvidence(hinted, off).street == 0.0f && rw::ApplyLiveEvidence(hinted, off).fill == 0.8f);
+
+  // a lamp of the table: a street lamp is off under the off evidence and at least the street part under the on evidence; a fill light is the hour's either way
+  ch::Lamp street;
+  street.source = ch::LampSource::kStreetLamp;
+  street.pos[0] = 3.0f;
+  street.spot = 1;
+  street.intensity = 60.0f;
+  ch::Lamp fill;
+  fill.intensity = 20.0f;
+  CHECK(rw::ActivityOf(street, night_off, hours, 22.0f) == 0.0f && rw::ActivityOf(fill, night_off, hours, 22.0f) == 1.0f);
+  CHECK(rw::ActivityOf(street, day, hours, 12.0f) == 0.0f && Near(rw::ActivityOf(street, day_on, hours, 12.0f), 0.9, 1e-6) && rw::ActivityOf(fill, day_on, hours, 12.0f) == 0.0f);
+  CHECK(rw::ActivityOf(street, night_on, hours, 22.0f) == 1.0f);
+  const rw::Schedule dusk = rw::ScheduleAt(hours, 17.8f, -1.0f);  // with no evidence the activity is as it was
+  CHECK(rw::ActivityOf(street, dusk, hours, 17.8f) == (ch::StreetLampOn(hours, 17.8f, ch::LampJitterHours(ch::LampKeyOf(street))) ? 1.0f : 0.0f));
+
+  // the frame's lamps: a table with street lamps (a merged one) and fill lights, at night: the off evidence drops the street lamps, at noon the on evidence lights them
+  Lcg rng;
+  std::vector<ch::Lamp> all = MakeLamps(rng, 300, 120, 150.0f, true);
+  const ch::LampTable table = ch::LampTable::Build(all);
+  uint32_t streets_in_table = 0, fills_in_table = 0;
+  for (const ch::Lamp& l : table.lamps()) (l.source == ch::LampSource::kStreetLamp ? streets_in_table : fills_in_table)++;
+  CHECK(streets_in_table == 120 && fills_in_table == 300);
+  rw::LampFrame f_none, f_off, f_day, f_day_on;
+  rw::LampInput li = NightInput(&table, nullptr, false, 0.0, 0.0, 22.0f, rw::Tier::kHigh);
+  rw::BuildLampFrame(li, &f_none);
+  li.schedule = rw::ApplyLiveEvidence(li.schedule, off);
+  rw::BuildLampFrame(li, &f_off);
+  CHECK(f_none.stats.from_table == streets_in_table + fills_in_table && f_off.stats.from_table == fills_in_table && f_off.lamp_count == fills_in_table && f_off.stats.inactive == streets_in_table);
+  li = NightInput(&table, nullptr, false, 0.0, 0.0, 12.0f, rw::Tier::kHigh);
+  rw::BuildLampFrame(li, &f_day);
+  li.schedule = rw::ApplyLiveEvidence(li.schedule, on);
+  rw::BuildLampFrame(li, &f_day_on);
+  CHECK(f_day.lamp_count == 0 && f_day_on.stats.from_table == streets_in_table && f_day_on.lamp_count == streets_in_table);
+  // the records' colours hold the activity over the factor: by day with the on evidence a lamp's colour is its colour x (the fade / the factor) = its colour
+  {
+    const rw::LampFrame& f = f_day_on;
+    bool ok = f.lamp_count != 0;
+    for (uint32_t i = 0; i < f.lamp_count && ok; ++i) {
+      uint32_t rows[3][4];
+      rw::LampRows(f.words.data(), i, rows);
+      const cs::Lamp l = cs::UnpackGpuLamp(rows);
+      ok = l.colour.x <= 1.0f + 1e-6f && l.colour.x >= 0.0f && Near(l.colour.x, 1.0, 1e-5);  // the street lamps of MakeLamps are (1, 0.8, 0.5)
+    }
+    CHECK(ok);
+  }
+  // the world rows carry the parts and the evidence
+  {
+    rw::WorldInput in;
+    in.schedule = night_off;
+    in.live_shining = 0;
+    in.lamps = &f_off;
+    uint32_t rows[rw::kTotalRows][4];
+    rw::MakeWorldRows(in, rows);
+    const rw::WorldDecoded d = rw::DecodeWorldRows(rows);
+    CHECK(d.street == 0.0f && d.fill == 1.0f && d.evidence == rw::kEvidenceOff && d.lamp_factor == 1.0f && d.GlowFactor(ch::kGlowLens) == 0.0f && d.GlowFactor(ch::kGlowNight) == 1.0f &&
+          d.GlowFactor(ch::kGlowAlways) == 1.0f);
+  }
+
+  // the lamp term's census: eight words of a stats frame, summed; the line
+  {
+    rw::LampCensus c;
+    CHECK(rw::LampCensusText(c).empty());
+    uint32_t w[cs::kCensusWords] = {1000, 24000, 6000, 40, 12, 300, 200, 100};
+    c.Add(w);
+    c.Add(w);
+    const std::string text = rw::LampCensusText(c);
+    CHECK(c.frames == 2 && c.words[cs::kCensusLookups] == 2000 && c.words[cs::kCensusExamined] == 48000);
+    CHECK(text.rfind("; lamp term at hits: 2000 lookups in 2 stats frames", 0) == 0 && Has(text, "24.0 lamps examined a hit (6.0 lit)") && Has(text, "the cap of 96 lamps hit in 4.00%") &&
+          Has(text, "the sum's cap of 6.0 in 1.20%") && Has(text, "night curve 600, street lamp lenses 400, always 200"));
+  }
+  // the census line has the evidence
+  {
+    rw::Census c;
+    c.frames = 200;
+    c.frames_evidence_on = 50;
+    c.frames_evidence_off = 10;
+    const std::string text = rw::CensusText(c, 12.0f, 0.0f, 0, true);
+    CHECK(Has(text, "street lamps are on in 25.0% of the frames and off in 5.0%"));
+  }
+}
+
 void TestMisc() {
   rw::Census c;
   CHECK(rw::CensusText(c, -1.0f, 0.0f, 0, false).empty());
@@ -1265,11 +1432,16 @@ void TestSources(const std::string& src) {
     CHECK(Has(ReadFile(src + "/gpu/city_rt_scene.h"), "const citypack::PackReader* pack_if_open() const { return pack_.is_open() ? &pack_ : nullptr; }"));
     CHECK(Has(cpp, "src_.ao->SetWorldLightWanted(on);") && Has(cpp, "vol_lamps::SetWantedBy(vol_lamps::kWantedByWorldFrame, on);"));
     CHECK(Has(cpp, "pack->ReadLamps(&table, &error)") && Has(cpp, "src_.city->pack_if_open()"));
+    // R7: the game's live list is the evidence of the street lamps being on or off, the lamp term's census is on the census line
+    CHECK(Has(cpp, "rt_world::EvidenceOf(live_fresh_, live_, 0)") && Has(cpp, "table->NearSphere(eye, rt_world::kLiveListReach, &near_table)") &&
+          Has(cpp, "schedule_ = rt_world::ApplyLiveEvidence(schedule_, evidence);") && Has(cpp, "in.live_shining = evidence.shining;") && Has(cpp, "rt_world::LampCensusText(lamp_census_)"));
+    CHECK(Has(ReadFile(src + "/gpu/rt_world_frame.h"), "void AddLampCensus(const uint32_t words[city_hit_shade::kCensusWords]) { lamp_census_.Add(words); }"));
   }
-  // the hit library's lamp loop is still the flat range: the grid is the consumer's to take (R7), the library's text is as H4 left it
+  // the hit library keeps the flat range for a consumer that defines CITY_HIT_LAMP_LOAD and takes the world frame's grid for one that defines CITY_HIT_LAMP_GRID (R7)
   {
     const std::string lib = ReadFile(hlsl_dir + "city_hit_shade.hlsli");
-    CHECK(Has(lib, "for (uint i = 0u; i < p.lampCount; ++i)") && !Has(lib, "RtLamp"));
+    CHECK(Has(lib, "for (uint i = 0u; i < p.lampCount; ++i)") && Has(lib, "#if defined(CITY_HIT_LAMP_GRID)") && Has(lib, "RtLampBegin(w, position, radius)") && Has(lib, "RtLampStep(w, c)") &&
+          Has(lib, "CityHitLampAtIndex(p, w, c.index, position, normal)"));
   }
 }
 
@@ -1285,6 +1457,7 @@ int main(int argc, char** argv) {
   TestWorldRows();
   TestLookup();
   TestLampLight();
+  TestLiveEvidence();
   TestMisc();
   if (!src.empty()) TestSources(src);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

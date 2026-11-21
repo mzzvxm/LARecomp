@@ -379,7 +379,20 @@ bool RtWorldFrame::OnTrigger(uint32_t slot_index) {
   const ch::LampHours& hours = table ? table->hours() : default_hours;
   const float night_hint = hit.light.valid ? rt_hit::NightFactor(hit.light.sun) : -1.0f;
   schedule_ = rt_world::ScheduleAt(hours, hour, night_hint);
+  // R7: the game's live lamp list is the cross-check of the hour (and of the weather the hour does not know: the list is made with the live on hours): lamps that shine in a fresh list are on, an
+  // empty fresh list next to a table that has street lamps within its reach says they are off (rt_world_frame_rules.h ApplyLiveEvidence)
+  rt_world::LiveEvidence evidence = rt_world::EvidenceOf(live_fresh_, live_, 0);
+  if (evidence.fresh && (evidence.shining > 0 || schedule_.hour_street > 0.0f) && table) {
+    const float eye[3] = {float(camera[0]), float(camera[1]), float(camera[2])};
+    std::vector<uint32_t> near_table;
+    table->NearSphere(eye, rt_world::kLiveListReach, &near_table);
+    for (const uint32_t index : near_table) {
+      evidence.table_streets += (*table)[index].source == ch::LampSource::kStreetLamp ? 1u : 0u;
+    }
+  }
+  schedule_ = rt_world::ApplyLiveEvidence(schedule_, evidence);
   in.schedule = schedule_;
+  in.live_shining = evidence.shining;
   rt_world::LampInput li;
   li.table = table.get();
   li.live = &live_;
@@ -411,6 +424,8 @@ bool RtWorldFrame::OnTrigger(uint32_t slot_index) {
   census_.frames_hour += schedule_.from_hour ? 1u : 0u;
   census_.frames_live += live_fresh_ ? 1u : 0u;
   census_.frames_night += schedule_.factor > 0.0f ? 1u : 0u;
+  census_.frames_evidence_on += (schedule_.evidence & rt_world::kEvidenceOn) != 0 ? 1u : 0u;
+  census_.frames_evidence_off += (schedule_.evidence & rt_world::kEvidenceOff) != 0 ? 1u : 0u;
   census_.frames_cascade += (rows_[3] & rt_hit::kFrameCascade) != 0u ? 1u : 0u;
   census_.frames_env += hit.light.env_sharp != 0u ? 1u : 0u;
   census_.lamps_sum += lamp_frame_.lamp_count;
@@ -447,18 +462,19 @@ void RtWorldFrame::Log(const rt_world::WorldInput& in, const rt_world::LampFrame
   const rt_hit::FrameLight& l = in.hit.light;
   REXLOG_INFO("{} frame {}: the world frame{}: light {} (sun {:.3f} {:.3f} {:.3f}, ambient {:.3f} {:.3f} {:.3f}), the sun's direction {}, the environment map {}, the cascades {}; hour {}, weather {}, units {:.0f}, "
               "wetness {:.2f}, the world {}; lamps {} kept of {} within {:.0f} m (the table {}, the live list {} of {}{}, off {}, over the budget {}, outside the window {}), the window {} x {} cells, the "
-              "schedule {:.2f} (street lamps {:.2f}, fill lights {:.2f}){}; the player's car {}",
+              "schedule {:.2f} (street lamps {:.2f}, fill lights {:.2f}{}){}; the player's car {}",
               kPrefix, frame_, first ? " (first)" : "", !l.valid ? "none" : (in.world_light ? "the world's" : "the car's"), l.sun[0], l.sun[1], l.sun[2], l.ambient[0], l.ambient[1], l.ambient[2],
               in.sun_world_known ? "known" : "unknown", l.env_sharp != 0 ? "known" : "unknown", (in.hit.cascades.valid ? "present" : "none"),
               in.schedule.from_hour ? std::format("{:.2f}", in.hour) : std::string("unknown"), in.weather == rt_world::kUnknownWeather ? std::string("unknown") : std::to_string(in.weather), in.units, in.wet,
               in.world_kind == 1 ? "play" : (in.world_kind == 2 ? "pause" : (in.world_kind == 3 ? "garage" : (in.world_kind == 4 ? "map" : "none"))), lamps.lamp_count,
               lamps.stats.kept + lamps.stats.over_budget, radius_m, lamps.stats.from_table, lamps.stats.from_live, lamps.stats.live_given,
               live_fresh_ ? ", fresh" : ", not fresh", lamps.stats.inactive, lamps.stats.over_budget, lamps.stats.outside_window, lamps.nx, lamps.nz, in.schedule.factor, in.schedule.street, in.schedule.fill,
+              (in.schedule.evidence & rt_world::kEvidenceOn) != 0 ? ", the game's lamp list says on" : ((in.schedule.evidence & rt_world::kEvidenceOff) != 0 ? ", the game's lamp list says off" : ""),
               (table_given_ || table_) ? "; the static table is loaded" : "; no static table", in.car ? "is in the top level" : "is not");
 }
 
 std::string RtWorldFrame::CensusText() const {
-  return rt_world::CensusText(census_, decoded_.hour, schedule_.factor, lamp_frame_.lamp_count, bool(table_given_ || table_));
+  return rt_world::CensusText(census_, decoded_.hour, schedule_.factor, lamp_frame_.lamp_count, bool(table_given_ || table_)) + rt_world::LampCensusText(lamp_census_);
 }
 
 }  // namespace mcla::gpu

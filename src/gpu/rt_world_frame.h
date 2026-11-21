@@ -20,8 +20,12 @@
 //      gCarRtMaterials[i], the car's light) defines RT_HIT_FRAME_ROW first and calls RtWorldHitFrame() where it wants the world's light for a city hit.
 //        const RtWorld w = RtWorldLoad();   if ((w.flags & RT_WORLD_VALID) == 0u) { ...no data: keep what you had... }
 //        p.units = w.units;  p.wet = w.wet;  p.lampFactor = w.lampFactor;  (CITY_HIT_P_CALIBRATE when w.statsFrame != 0u)  #define CITY_HIT_GAIN(cls) RtWorldClassGain(cls)
-//      The lamp term (R7: CityHitLamps takes the cursor loop in place of its two loops over [lampFirst, lampFirst + lampCount); the loop below is hlsl/rt_world_lamp_light_cs.hlsl's, which compiles beside
-//      city_hit_shade.hlsli for DXIL and SPIR-V and validates with spirv-val: tools/check_rt_hit_identity.py runs it):
+//      The lamp term and the glow (R7, done): `#define CITY_HIT_LAMP_GRID` before including city_hit_shade.hlsli makes CityHitLamps take the cursor's lamps around the hit (the world rows' lookup radius,
+//      at most kCityHitLampMax = 96 of them, their light's sum capped at kCityHitLampSumCap = 6 in luminance; the params' lampFirst / lampCount are not used, p.lampFactor = w.lampFactor);
+//      `#define CITY_HIT_GLOW_FACTOR(kind) RtWorldGlowFactor(kind)` makes a lens glow by the street lamps' schedule, neon, signs and lit windows by the fill lights', a traffic signal always (row 47);
+//      `#define CITY_HIT_CENSUS_ADD(word, value) <your counter buffer>.InterlockedAdd((word) * 4u, (value))` counts, in a stats frame, the lamp term and the glowing hits (eight words: hand them
+//      to AddLampCensus). hlsl/rt_world_lamp_light_cs.hlsl is the reference consumer: it compiles beside city_hit_shade.hlsli for DXIL and SPIR-V and validates with spirv-val
+//      (tools/check_rt_hit_identity.py runs it). The loop the library does, for a consumer that wants its own:
 //        RtLampCursor c = RtLampBegin(w, hitViewPosition, 64.0);
 //        while (c.done == 0u) { const CityHitLamp lamp = CityHitLampFromRows(RtLampRow(w, c.index, 0u), RtLampRow(w, c.index, 1u), RtLampRow(w, c.index, 2u));
 //                               sum += CityHitLampAt(p, lamp, position, normal).radiance;   c = RtLampStep(w, c); }
@@ -30,7 +34,7 @@
 //      shadow's and the probe field's sets), and Bind(set, bindings, frame slot) each frame before the pass.
 //   3. Tell the scene service it wants the scene (rt_scene_service.h Want): the world frame is made in every frame that has a top level, so a want for the city is a want for this.
 //   4. The calibration: a pass that counts the library's samples (CITY_HIT_STAT_ADD, rt_hit_calibration.h) hands its counters to AddCalibration(words) once its readback is back; the host
-//      closes a window every kWindowFrames frames and the class gains of the rows follow (clamped 0.5 to 3 against the model). One window for every consumer.
+//      closes a window every kWindowFrames frames and the class gains of the rows follow (clamped 0.5 to 3 against the model, the glowing class' 1/4 to 64). One window for every consumer.
 //
 // WHEN THE ROWS ARE MADE (the renderer's wiring; scene.cpp and car_rt_scene.cpp each have one or two calls, marked CITY-RT FRAME):
 //   BeginFrame(frame)       the scene's frame start: the frame's inputs are forgotten
@@ -157,6 +161,8 @@ class RtWorldFrame {
   bool StatsFrame() const { return rt_world::StatsFrameDue(frame_); }
   // A stats frame's counters (rt_hit_calibration.h kStatsWords words) of any consumer, added into the open window.
   void AddCalibration(const uint32_t words[rt_hit_cal::kStatsWords]) { gains_.Add(words); }
+  // A stats frame's lamp term counters (hlsl CITY_HIT_CENSUS_*: eight words) of a consumer that counts them, summed for the census line (R7).
+  void AddLampCensus(const uint32_t words[city_hit_shade::kCensusWords]) { lamp_census_.Add(words); }
   const rt_hit_cal::ClassGains& gains() const { return gains_; }
 
   // ---- the census ----
@@ -214,6 +220,7 @@ class RtWorldFrame {
 
   // calibration
   rt_hit_cal::ClassGains gains_;
+  rt_world::LampCensus lamp_census_;
 
   // census
   rt_world::Census census_;

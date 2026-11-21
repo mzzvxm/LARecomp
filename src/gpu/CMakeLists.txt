@@ -452,10 +452,14 @@ target_include_directories(larecomp_rt_hit_frame_test PRIVATE "${CMAKE_CURRENT_S
 target_compile_features(larecomp_rt_hit_frame_test PRIVATE cxx_std_23)
 # The city hit library (hlsl/city_hit_shade.hlsli compiled as C++ against its twin city_hit_shade_rules.h on a synthetic city of a wall, a road, glass, a lamp lens, metal, a wet road, water, a neon
 # sign and a lit window, thousands of random rays, frames and parameters: CityHitShade, CityHitResolve, the rays they cast, the calibration's counters; the twin's laws: the texture's level, the lamps'
-# laws and the estimator of the lamp choice, the sun ray, the fresnel, the screen's weight, the mix, the lamp's GPU record); given the src folder it also reads the library's text:
+# laws and the estimator of the lamp choice, the sun ray, the fresnel, the screen's weight, the mix, the lamp's GPU record; and (CITY-RT R7, city_hit_lamp_term_lib.inc and
+# city_hit_lamp_term_checks.inc) the library once more with the world frame's lamp grid and glow schedule: the lamp term at hits against the twin, its caps, the glow kinds, the emissive calibration);
+# given the src folder it also reads the library's text:
 #   cmake --build <dir> --target larecomp_city_hit_shade_rules_test, then run src/gpu/larecomp_city_hit_shade_rules_test <src dir> (exit 0 = passed).
 add_executable(larecomp_city_hit_shade_rules_test EXCLUDE_FROM_ALL city_hit_shade_rules_test.cpp
     "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/lamp_merge.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/lamp_table.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
 target_include_directories(larecomp_city_hit_shade_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(larecomp_city_hit_shade_rules_test PRIVATE cxx_std_23)

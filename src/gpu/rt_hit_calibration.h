@@ -51,6 +51,12 @@ struct Params {
 };
 inline constexpr Params kCarParams = {0.02f, 48, -3.0f, 3.0f, 0.5f};
 inline constexpr Params kCityParams = {0.02f, 48, -1.0f, 1.5849625f, 0.5f};  // x0.5 .. x3
+// The glowing class (lamp lenses, neon, signs, lit windows: the G-buffer's emissive, class 13) has a range of its own (CITY-RT M2 R7). Its model is a lens' colour times an authored scale, and
+// the HDR value a lens really shows (the game's neon and lamp glass shaders output colour x an intensity of several, a street lamp's lens a few tens) can be far from a guessed scale: a
+// model that needs x0.5 to x3 is mis-exposed, one that needs x64 never had the scale (the picture is the truth about a lens). The samples are few (a lamp head is small), so a window
+// needs fewer of them (min_samples), and the range reaches 1/4 .. x64.
+inline constexpr uint32_t kEmissiveClass = 13;       // gbuffer_types.h SurfaceClass::kEmissive
+inline constexpr Params kEmissiveParams = {0.02f, 12, -2.0f, 6.0f, 0.5f};
 
 // The mean of the log2 luminance difference (picture over model) of a calibration's samples in stops, and whether there were enough of them to say.
 inline bool Stops(const Params& p, uint64_t count, uint64_t seen_sum, uint64_t model_sum, float* stops) {
@@ -81,11 +87,15 @@ constexpr uint32_t StatsWord(uint32_t cls, uint32_t which) { return (cls < kClas
 // The gains of every class, from the windows of stats frames the host reads back. One per class: a class with too few samples in a window keeps its gain.
 struct ClassGains {
   Params params = kCityParams;
+  Params emissive = kEmissiveParams;  // the glowing class' own range and sample count (kEmissiveClass)
   float stops[kClasses] = {};
   uint64_t count[kClasses] = {};
   uint64_t seen[kClasses] = {};
   uint64_t model[kClasses] = {};
   uint32_t windows = 0;
+
+  // The parameters a class is calibrated with.
+  const Params& ParamsOf(uint32_t cls) const { return cls == kEmissiveClass ? emissive : params; }
 
   // A stats frame's counters (kStatsWords words) added into the open window.
   void Add(const uint32_t words[kStatsWords]) {
@@ -100,8 +110,9 @@ struct ClassGains {
     uint32_t moved = 0;
     for (uint32_t c = 0; c < kClasses; ++c) {
       float residual = 0.0f;
-      if (Stops(params, count[c], seen[c], model[c], &residual)) {
-        stops[c] = NextStops(params, stops[c], residual);
+      const Params& p = ParamsOf(c);
+      if (Stops(p, count[c], seen[c], model[c], &residual)) {
+        stops[c] = NextStops(p, stops[c], residual);
         ++moved;
       }
       count[c] = seen[c] = model[c] = 0;
@@ -109,7 +120,10 @@ struct ClassGains {
     ++windows;
     return moved;
   }
-  float Gain(uint32_t cls) const { return GainOf(params, stops[cls < kClasses ? cls : kClasses - 1]); }
+  float Gain(uint32_t cls) const {
+    const uint32_t c = cls < kClasses ? cls : kClasses - 1;
+    return GainOf(ParamsOf(c), stops[c]);
+  }
   // The table the shader reads (hlsl/city_hit_shade.hlsli CITY_HIT_GAIN): `out[c]` is class c's gain.
   void Table(float out[kClasses]) const {
     for (uint32_t c = 0; c < kClasses; ++c) {
