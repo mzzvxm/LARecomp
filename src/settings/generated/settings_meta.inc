@@ -289,6 +289,8 @@
 {"mcla_gpu_census_scale", "MCLA/GPU"},
 {"mcla_gpu_census_targets", "MCLA/GPU"},
 {"mcla_gpu_class", "MCLA/GPU"},
+{"mcla_gpu_rt_tier", "MCLA/GPU"},
+{"mcla_gpu_rt_bench", "MCLA/GPU"},
 {"mcla_gpu_contact_shadows", "MCLA/GPU"},
 {"mcla_gpu_contact_shadows_car_map_march", "MCLA/GPU"},
 {"mcla_gpu_contact_shadows_car_sun", "MCLA/GPU"},
