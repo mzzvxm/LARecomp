@@ -1767,7 +1767,7 @@ void TestSources(const std::string& dir) {
   for (size_t at = renderer.find("ssr_.Shutdown();"); at != std::string::npos; at = renderer.find("ssr_.Shutdown();", at + 1)) {
     ++shutdowns;
     const size_t ao_at = renderer.find("ao_.Shutdown();", at);
-    before_ao = before_ao && ao_at != std::string::npos && ao_at - at < 400;  // the light pass's Shutdown (GB-H1) sits between them in the merged phase 2 branch
+    before_ao = before_ao && ao_at != std::string::npos && ao_at - at < 1000;  // the light pass's Shutdown (GB-H1) and the probe field's three (CITY-RT M3 G4, each with its comment) sit between them in the merged branches
   }
   Check(shutdowns == 2 && before_ao, "renderer.cpp: shut down before the AO it holds a pointer to, in both Shutdown paths");
   Check(Has(renderer, "ssr_.HeldBytes()") && Has(renderer_h, "ScreenReflections ssr_;") && Has(renderer_h, "#include \"ssr.h\""), "renderer.h / renderer.cpp: the memory line and the member");
