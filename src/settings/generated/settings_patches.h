@@ -75,6 +75,11 @@ class PatchesSettings final : public rex::SettingOwner {
     "them and they played as fast as the host could present. The screens play before the "
     "pause menu can be opened, so a change made there is seen at the next start.");
 
+  REX_SETTING(bool, mcla_fix_checkpoint_fade, true, "Fix: the smoke of a closed race checkpoint dissipates over about half a second at every frame "
+    "rate. The game fades it by dt x 25 at every update, which is 0.83 per update on the console's 30 updates a "
+    "second but 0.42 at 60 FPS and 0.17 at 144 FPS, so above 30 FPS the smoke vanished with the checkpoint. On: the "
+    "same decay per second as the console at any frame rate. Off: the game's own number at every update.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_fix_neon_30hz, true, "Fix: the neon underglow's pulse follows the console's 30 Hz clock, not every frame. A fast flash "
     "rate is a wave of about 30 Hz; the console sampled it 30 times a second and showed a slow throb, "
     "and at 60 FPS or more the same wave blinks about 11 times a second (a strobe). On: every frame "
@@ -129,6 +134,7 @@ inline auto& disable_rubberbanding = g_patches.disable_rubberbanding;
 inline auto& garage_tire_offset = g_patches.garage_tire_offset;
 inline auto& hud_width = g_patches.hud_width;
 inline auto& intro_original_speed = g_patches.intro_original_speed;
+inline auto& mcla_fix_checkpoint_fade = g_patches.mcla_fix_checkpoint_fade;
 inline auto& mcla_fix_neon_30hz = g_patches.mcla_fix_neon_30hz;
 inline auto& real_frame_delta = g_patches.real_frame_delta;
 inline auto& showroom_unlimited = g_patches.showroom_unlimited;
