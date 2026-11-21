@@ -4,6 +4,7 @@
 // This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
 #include "crash_handler.h"
+#include "crash_options.h"
 #include "larecomp_log.h"
 #include "process_exit.h"
 
@@ -145,6 +146,13 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
 
     FlushLogs();
 
+    // The test harness's switch (crash_options.h): the SDK's reporter has written its report and skipped its box (LarecompApp::
+    // GetCrashOptions) and has called this filter last, so nothing is left to write. End the process here with a status of its
+    // own instead of going on to Windows Error Reporting (its box, its minutes-long dump), so a test run sees the end at once.
+    if (larecomp::crash::NoDialogFromEnvironment()) {
+        larecomp::EndProcessNow(static_cast<int>(larecomp::crash::kNoDialogExitCode));
+    }
+
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -284,7 +292,11 @@ std::filesystem::path ExeDir() {
 // (mcla_test_crash) should give one report and the signal's normal exit status.
 //
 // InstallCrashLoggerAfterRuntime() therefore (1) registers OnUnconsumedFault AFTER the runtime's own
-// callback, so it is reached only for a fault that nothing consumed; it writes the report (with the
+// callback (the SDK adds that one when TitleRuntime::Load makes the guest memory, so the call belongs in
+// OnTitleLaunch, not OnInit: from OnInit the logger's callback came first and EVERY fault, a GPU write
+// watch included, was reported as a crash and ended the process; the 2026-11-21 Linux boot check died
+// that way on the first write to a watched guest page, and the guard in the function refuses an early
+// call), so it is reached only for a fault that nothing consumed; it writes the report (with the
 // operation and address the runtime's Exception carries), restores the default action and returns false,
 // and the runtime then forwards the fault to our early handler, which finds the report written and ends
 // the process with the normal status and core dump. CHECK: that forward also reaches FatalSignalHandler with
@@ -483,7 +495,7 @@ void InstallCrashLogger() {
 
     // Where the log sink appends, as an absolute path: the report opens the file again by name. The SDK opens its file in
     // App::Init, after this runs, so only an absolute log.file_name (LARECOMP_LOG_FILE) names it for certain here;
-    // otherwise the early reports go to stderr and InstallCrashLoggerAfterRuntime() sets the path.
+    // otherwise the early reports go to stderr and NoteCrashLogFile() (OnInit) sets the path.
     std::string log_path;
     if (const std::filesystem::path named(rex::GetLogger().file_name.Get()); named.is_absolute()) {
         log_path = named.string();
@@ -502,21 +514,34 @@ void InstallCrashLogger() {
     });
 }
 
-void InstallCrashLoggerAfterRuntime() {
-    static bool installed = false;
-    if (installed) return;
-    installed = true;
-
-    // After the runtime's own callback (MMIOHandler::Install, in Memory::Initialize, which
-    // Runtime::Setup has run by the time OnPostSetup calls this): called in the order installed.
-    rex::platform::ExceptionHandler::Install(&OnUnconsumedFault, nullptr);
-    lx::InstallLate();
-    // OnInit: the SDK has opened this run's log file, so LarecompLogFile() names it (the reports append to it by name).
+// OnInit: the SDK has opened this run's log file by now, so LarecompLogFile() names it (the reports append to it by name). Kept apart
+// from InstallCrashLoggerAfterRuntime() so that a crash while TitleRuntime::Load runs still reaches the file.
+void NoteCrashLogFile() {
     const std::filesystem::path log_file = LarecompLogFile();
     if (!log_file.empty()) {
         std::snprintf(lx::S().log_path, sizeof(lx::S().log_path), "%s", log_file.string().c_str());
     }
-    LARECOMP_CRASH_INFO("Linux crash logger active (log {})", log_file.string());
+}
+
+void InstallCrashLoggerAfterRuntime() {
+    static bool installed = false;
+    if (installed) return;
+
+    // The runtime's own callback (GuestAddressSpace::Initialize, which TitleRuntime::Load calls) has to be on
+    // the ExceptionHandler list already: the list is called in the order installed and this callback ends the
+    // process for every fault it is given. g_guest_mem is set by OnTitleLaunch once that memory exists.
+    if (!g_guest_mem) {
+        LARECOMP_CRASH_ERROR("[crash] the Linux crash logger's second half was asked for before the guest memory exists: "
+                             "not installed (its callback would end the game at the first guest write watch)");
+        return;
+    }
+    installed = true;
+
+    // After the runtime's own callback: called in the order installed.
+    rex::platform::ExceptionHandler::Install(&OnUnconsumedFault, nullptr);
+    lx::InstallLate();
+    NoteCrashLogFile();  // in case OnInit's call found no file yet
+    LARECOMP_CRASH_INFO("Linux crash logger active (log {})", LarecompLogFile().string());
 
     ArmCrashTest();
 }
@@ -524,6 +549,7 @@ void InstallCrashLoggerAfterRuntime() {
 #else  // another POSIX system: no crash logger
 
 void InstallCrashLogger() {}
+void NoteCrashLogFile() {}
 void InstallCrashLoggerAfterRuntime() {}
 
 #endif  // __linux__

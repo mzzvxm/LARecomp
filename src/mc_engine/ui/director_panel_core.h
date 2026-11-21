@@ -210,6 +210,30 @@ void NoteRecent(std::vector<std::string>* recents, const std::string& model, siz
 // "vp_lam_murcielago_06" -> "LAM MURCIELAGO 06": a readable name for a list row.
 std::string ModelTitle(const std::string& model);
 
+// Asking the game for the model names (`cars.models`). The picker's list used to be asked for once and an answer with no names (the game's car table not set up yet, or a failed
+// command) stayed for the whole session, under a line that said it "fills in a moment". Now an empty list is asked again every 2 s, six times at most, and then the picker says so.
+struct ModelsAsk {
+    static constexpr int kMaxAsks = 6;
+    static constexpr double kRetryS = 2.0;
+    int sent = 0;
+    double last = 0.0;
+    bool pending = false;  // a request is on its way
+    // True when a request should go out now: none yet, or the list is still empty after an answer and the retry time has passed.
+    bool Due(double now, size_t have) const {
+        if (pending || have > 0) return false;
+        if (sent == 0) return true;
+        return sent < kMaxAsks && now - last >= kRetryS;
+    }
+    void Sent(double now) {
+        ++sent;
+        last = now;
+        pending = true;
+    }
+    void Answered() { pending = false; }
+    // Asked as often as it will be and still no names: the picker should say so instead of waiting.
+    bool GaveUp(size_t have) const { return have == 0 && !pending && sent >= kMaxAsks; }
+};
+
 // ---------------------------------------------------------------------------------------------------------------- paths
 
 struct WayPt {

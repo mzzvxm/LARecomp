@@ -15,6 +15,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "gpu_class.h"
+#include "rt_tier.h"
 #include "host_precache.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
@@ -153,7 +154,7 @@ bool CarRtOppRefl::Record(const Frame& f) {
     ++window_.no_paint;  // no other car's paint in the list: nothing to find (traffic, cars not drawn this frame, no other car)
     return false;
   }
-  const uint64_t budget = opp::TexelBudget(gpu_class::Current(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), int(larecomp::settings::mcla_gpu_car_rt_opp_refl_texels.Get()));
+  const uint64_t budget = opp::TexelBudget(gpu_class::CurrentRtClass(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), int(larecomp::settings::mcla_gpu_car_rt_opp_refl_texels.Get()));
   if (budget == 0) {
     ++window_.off;
     return false;

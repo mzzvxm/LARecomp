@@ -56,6 +56,7 @@
 #include "car_rt_refl_hit_cs.hlsl.dxil.h"
 #include "car_rt_refl_opp_cs.hlsl.dxil.h"
 #include "car_rt_view_ps.hlsl.dxil.h"
+#include "rt_bench_cs.hlsl.dxil.h"
 #include "fg_compose_ps.hlsl.dxil.h"
 #include "dlssg_ui_hdr_ps.hlsl.dxil.h"
 #include "dlssg_ui_ps.hlsl.dxil.h"
@@ -167,6 +168,7 @@
 #include "car_rt_refl_hit_cs.hlsl.spirv.h"
 #include "car_rt_refl_opp_cs.hlsl.spirv.h"
 #include "car_rt_view_ps.hlsl.spirv.h"
+#include "rt_bench_cs.hlsl.spirv.h"
 #include "fg_compose_ps.hlsl.spirv.h"
 #include "dlssg_ui_hdr_ps.hlsl.spirv.h"
 #include "dlssg_ui_ps.hlsl.spirv.h"
@@ -571,6 +573,12 @@ inline HostShaderBlob CarRtCheckShader() {
 
 inline HostShaderBlob CarRtAoShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_ao_cs);
+}
+
+// The ray tracing benchmark's trace (rt_bench.h, hlsl/rt_bench_cs.hlsl): inline ray queries over a synthetic city, the same kind as the car passes. Created only
+// where CarRtSupported said yes, once, on the first start with a card.
+inline HostShaderBlob RtBenchShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(rt_bench_cs);
 }
 
 inline HostShaderBlob CarRtReflShader() {

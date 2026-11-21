@@ -17,6 +17,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "larecomp_guest.h"
+#include "mc_engine/core/world_detail.h"
 
 // BadassBaboon's Recomp Adjustments: ambient traffic / pedestrian density.
 //
@@ -95,11 +96,18 @@ static void WriteZoneValues(uint8_t* base, uint32_t a, const ZoneDensity& v) {
     WriteGuestF32(base, a + 136, v.dens_high);
 }
 
+// The settings' values as the zones are to be written. The traffic range and the two densities are `auto` by default (below 0, or 0 for the
+// range): the number the GPU class gives (gpu/gpu_class.h kScales; the Low cell until the class is known, which is what they were before the
+// class chose them), so a zone follows the class once the device is open (the tick sees `want` change and writes the zones again).
 static void ReadDensityCvars(bool& enabled, DensityWant& want) {
+    using mcla::gpu::gpu_class::Scale;
     enabled = larecomp::settings::enable_ambient_tuning.Get();
-    want.unspawn = static_cast<float>(larecomp::settings::traffic_unspawn_dist.Get());
-    want.ped = static_cast<float>(larecomp::settings::ped_density_scale.Get());
-    want.parked = static_cast<float>(larecomp::settings::parked_car_scale.Get());
+    want.unspawn = static_cast<float>(
+        mcla::world_detail::InForce(Scale::kTrafficRange, larecomp::settings::traffic_unspawn_dist.Get()));
+    want.ped = static_cast<float>(
+        mcla::world_detail::InForce(Scale::kPedDensity, larecomp::settings::ped_density_scale.Get()));
+    want.parked = static_cast<float>(
+        mcla::world_detail::InForce(Scale::kParkedDensity, larecomp::settings::parked_car_scale.Get()));
     want.traffic = static_cast<float>(larecomp::settings::traffic_density_scale.Get());
 }
 

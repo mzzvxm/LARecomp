@@ -4,6 +4,7 @@
 // coexists with a fork SDK that still exports its own copy.
 
 #include "rpc_client.h"
+#include "rpc_toggle_rules.h"
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 #include <rex/platform.h>
@@ -429,7 +430,9 @@ void WorkerThread() {
                                 .count();
   bool handshake_sent = false;
   bool ready = false;
-  bool last_activity_enabled = larecomp::settings::larecomp_discord_activity.Get();
+  // A presence is shown while larecomp_discord_rpc AND larecomp_discord_activity are on: the first is live (rpc_toggle_rules.h), turning it off
+  // clears the presence from here within a quarter of a second, and the worker goes on idle (stopping it would wait on Discord's pipe).
+  bool last_activity_enabled = ActivityShown(larecomp::settings::larecomp_discord_rpc.Get(), larecomp::settings::larecomp_discord_activity.Get());
 
   while (g_running.load()) {
     if (!IsConnected()) {
@@ -456,7 +459,7 @@ void WorkerThread() {
 
     DrainMessages(&ready);
 
-    const bool activity_enabled = larecomp::settings::larecomp_discord_activity.Get();
+    const bool activity_enabled = ActivityShown(larecomp::settings::larecomp_discord_rpc.Get(), larecomp::settings::larecomp_discord_activity.Get());
     if (activity_enabled != last_activity_enabled) {
       last_activity_enabled = activity_enabled;
       g_dirty = true;

@@ -28,7 +28,7 @@ with `--plan` and ask the main session. `st slots` lists the games that run with
 scene my-shot fps 60 step 1/60                   # name, the take's frame rate (the preview runs at this step too)
 world hour 16.5 hold weather nice traffic off peds off parked off police off   # hold the world still: nothing drives into the cars
 at 0 hud off                                     # the game's own UI off
-at 0.5 car p1 spawn vp_lam_murcielago_06 at spot:hw-street@-1.5,0,-26 heading spot:hw-street     # a spawn takes about 4 s
+at 0.5 car p1 spawn vp_lam_murcielago_06 at spot:hw-lane1@0,0,-25 heading spot:hw-lane1     # a spawn takes about 4 s (hw-lane1: lane 1 of the street, the forward lane)
 at 6 car p1 path my-run.route speed 7            # a route file beside the scene or in its routes\ folder; make it with `st route` (below)
 cam 6 rig chase car:p1 dist 7 height 1.9 lag 0.35 fov 50                  # a shot in one line
 cam 9 rig chase car:p1 dist 3.5 height 1.1 side 1.6 lag 0.2 fov 42 ease inout
@@ -76,7 +76,7 @@ World metres: x east, y up, z south. A **heading/yaw** is degrees: 0 faces +Z (s
 | `spot:hw-street@1.5,0,0,180` | the same place offset, and the fourth number turns the heading (the oncoming lane) |
 | `heading spot:hw-street`, `yaw spot:hw-street` | the spot's heading |
 
-`st query spots [--near spot:hw-lot --r 80]` lists them. To add one: put a line in the scene folder's `spots.txt` (name, x y z heading, a one-line note with where the numbers came
+`st query spots [--near spot:hw-lot --r 80]` lists them (from the files, or `--live` from the game: a running game knows the spots of the scene it has loaded, so with no scene the answer is empty and says so in `note`: load a scene first). To add one: put a line in the scene folder's `spots.txt` (name, x y z heading, a one-line note with where the numbers came
 from). Heights are the height a car stands at on the road there.
 
 ## Roads, lights, routes: ask, don't guess
@@ -86,13 +86,15 @@ and the car models. Offline answers have the shape of the game's `query.*` comma
 
 ```
 st query road   --near spot:hw-street          # the nearest lanes: name, speed, direction, distance
-st query lights --near spot:hw-street --r 60   # lamps: position, colour, reach (a night shot wants some)
-st query route  --from spot:hw-street@-1.5,0,-26 --to spot:hw-street@-1.5,0,24      # a dry run
-st route --from spot:hw-street@-1.5,0,-26 --to spot:hw-street@-1.5,0,24 --name my-run --scene my-shot --speed 12   # writes scenes\routes\my-run.route
+st query lights --near spot:hw-street --r 60   # lamps: position, colour, reach (a night shot wants some); `--arg src=lamp` the street lamps only, `--arg src=file` the file's own lights
+st query route  --from spot:hw-lane1@0,0,-25 --to spot:hw-lane1@0,0,25      # a dry run
+st route --from spot:hw-lane1@0,0,-25 --to spot:hw-lane1@0,0,25 --name my-run --scene my-shot --speed 12   # writes scenes\routes\my-run.route
 st query route --file scenes\routes\my-run.route     # length, time, speeds, how far from a road, and from a lane that runs the route's way
 ```
 
-A hand-written route is usually off: the old `m4c-a.route` is on the road but in the oncoming lane (13 m from a lane that runs its way). Ask the atlas before you trust one.
+A hand-written route is usually off: `m4c-a.route` and `street-lane1.route` ran in the oncoming lane (13 m from a lane that runs their way) until 2026-11-21, and the spot `hw-street` itself
+stands on that oncoming lane (the street is four lanes: the heading-62 ones are `hw-lane1` and 4.5 m beyond it). Ask the atlas before you trust one. The street lamps answer by day too (the
+game keeps the list from the city's load on; `on` is the lamp's own switch, the lamp pass lights them at night).
 
 `route` follows the lanes (the start's heading picks the lane; a start more than 6 m from a lane is warned about), then writes `x,z,speed,y` lines about 2 m apart with the speed from
 the roads' limits and the curves (`--speed` caps it). Without an atlas it makes a smooth line through the stops and says so. Use it as `car p1 path my-run.route [speed x1.2]`.
