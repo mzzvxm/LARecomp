@@ -17,6 +17,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "headlight_rig_rules.h"
 #include "headlight_types.h"
 #include "local_shadow_rules.h"
 #include "local_shadow_types.h"
@@ -2127,6 +2128,95 @@ Commands SimulateCasterOuter(const std::vector<SimDraw>& draws, int views) {
   return c;
 }
 
+// A POST OUTSIDE THE BEAM CASTS NO VISIBLE SHADOW (HL-SHADOW-QUALITY-2, 2026-11-21: "the pole casts no headlight shadow 5 m from the lamps in the old build or the new, 10 and 20 m do").
+// It is no bug of the lookup or of the replay: at the q5 place of hl-shadow-quality-street.scene the lamp pole stands 45 degrees off the lamps' axis, outside the beam (38 degrees) and
+// outside the shadow view (34 degrees + 2), and the shadow of a thin post lies on the ray from the lamp through it, at the post's own angle all along: every receiver of that shadow
+// is outside the beam too, so there is nothing for it to darken. The scene's notes took the pole to be 2.1 m beside the car's axis and 5 m from the lamps (24 degrees: the atlas
+// light 3602 is the arm's END); the three pictures (the foot at 512, 595 and 677 px across a 1600 px frame, 560, 495 and 432 down, camera 3 m up and 6 m behind the car's middle,
+// vertical field 50 degrees) fit a foot 3.5 m beside the axis and 3.5 m ahead of the q5 lamps (10 m of depth from the camera: 11.5 m, f = 950 px, residual 2 px) and the shadow
+// on the dome's left pillar at q10 lands 8.6 m aside where the ray predicts 8.4. The frame here: the light at the origin (0.57 m over the road, the axis dipped 0.03), the road at
+// y = 0, the pavement 0.15 m up, the pole 3.5 m to the side, `ahead` metres in front of the light.
+void CheckPostOutsideTheBeam() {
+  namespace hr = mcla::gpu::headlight_rules;
+  const float pos[3] = {0.0f, 0.57f, 0.0f};
+  const float dir[3] = {0.0f, -0.03f, 1.0f};
+  const float offset[3] = {0.7f, 0.0f, 0.0f};
+  ls::Light light;
+  Check(ls::MakeLight(pos, dir, hr::CosOfDegrees(hr::kOuterDegrees), 70.0f, 1, true, 0, &light, offset), "the player's light, as the rig makes it: a 38 degree beam, lamps 0.7 m off");
+  ls::Group group;
+  group.count = 1;
+  group.members[0] = 0;
+  group.is_player = true;
+  for (int k = 0; k < 3; ++k) {
+    group.eye[k] = light.pos[k];
+  }
+  ls::ViewSpec spec;
+  tp::Mat4 clip;
+  Check(ls::FitView(&light, group, &spec) && ls::LightClip(spec, true, &clip), "the car's shadow view (medium: one view from the light)");
+  float whole[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+  float m[16];
+  ls::WorldToShadow(clip, whole, 1.0, 1.0, m);
+  const auto in_tile = [&](const double p[3], double margin) {
+    double u = 0, v = 0, d = 0;
+    return ls::MapPoint(m, p, &u, &v, &d) && u >= margin && u <= 1.0 - margin && v >= margin && v <= 1.0 - margin && d >= 0.0 && d <= 1.0;
+  };
+  hr::Lamp lamp;
+  for (int k = 0; k < 3; ++k) {
+    lamp.position[k] = pos[k];
+    lamp.direction[k] = dir[k];
+  }
+  {
+    const float norm = std::sqrt(lamp.direction[1] * lamp.direction[1] + 1.0f);
+    lamp.direction[1] /= norm;
+    lamp.direction[2] /= norm;
+  }
+  lamp.range = hr::kRange;
+  lamp.cos_outer = hr::CosOfDegrees(hr::kOuterDegrees);
+  lamp.cos_inner = hr::CosOfDegrees(hr::kInnerDegrees);
+  const auto angle_of = [&](const double p[3]) {
+    const double v[3] = {p[0] - pos[0], p[1] - pos[1], p[2] - pos[2]};
+    const double length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return std::acos((v[0] * lamp.direction[0] + v[1] * lamp.direction[1] + v[2] * lamp.direction[2]) / length) * 180.0 / ls::kPi;
+  };
+  // The beam's share at a pavement point (the shader's term over its peak: 1 at full strength, 0 outside the cone).
+  const auto beam_at = [&](const double p[3]) {
+    hr::Surface surface;
+    for (int k = 0; k < 3; ++k) {
+      surface.position[k] = float(p[k]);
+    }
+    return hr::LampScale(lamp, surface) / hr::kPeak;
+  };
+  struct Place {
+    const char* name;
+    double ahead;    // the pole's foot in front of the light
+    double aside;    // ... and beside its axis
+    bool seen;       // whether its shadow can show
+  };
+  const Place places[] = {{"q5 (the car's first place)", 3.5, 3.5, false}, {"q10", 8.5, 3.5, true}, {"q20", 18.5, 3.5, true}, {"q5 moved 2 m toward the pole", 3.5, 1.5, true}};
+  for (const Place& place : places) {
+    const std::string at = place.name;
+    const double foot[3] = {-place.aside, 0.15, place.ahead};
+    const double angle = angle_of(foot);
+    Check(place.seen == (angle < 36.0), at + ": the pole is " + std::to_string(angle) + " degrees off the axis: inside the shadow view's cone (36) only when its shadow can show");
+    Check(in_tile(foot, 0.05) == place.seen, at + ": the pole is in the view's tile (clear of the border fade) only when its shadow can show");
+    if (!place.seen) {
+      Check(angle > hr::kOuterDegrees, at + ": ... and beyond the beam's own edge (" + std::to_string(angle) + " degrees)");
+    }
+    // The shadow of a thin post lies on the ray from the lamp through it: its pavement receivers are `behind` metres farther along the same horizontal line, at the post's own angle.
+    for (const double behind : {2.0, 6.0, 12.0}) {
+      const double horizontal = std::sqrt(foot[0] * foot[0] + foot[2] * foot[2]);
+      const double on_ray[3] = {foot[0] * (1.0 + behind / horizontal), foot[1], foot[2] * (1.0 + behind / horizontal)};
+      CheckNear(std::atan2(-on_ray[0], on_ray[2]), std::atan2(-foot[0], foot[2]), 1e-9, at + ": a receiver of the post's shadow has the post's own bearing from the lamp");
+      const double share = beam_at(on_ray);
+      if (place.seen) {
+        Check(share > 0.1, at + ": the pavement " + std::to_string(int(behind)) + " m behind the pole is lit by the beam (" + std::to_string(share) + " of its peak, 0.2 and more in the game's light units against the night's ambient of about 0.1): the shadow darkens it");
+      } else {
+        CheckNear(share, 0.0, 0.0, at + ": the pavement " + std::to_string(int(behind)) + " m behind the pole gets no light from the beam: nothing for the shadow to darken");
+      }
+    }
+  }
+}
+
 void CheckSharedWork() {
   uint32_t state = 777;
   const auto rnd = [&]() {
@@ -2207,6 +2297,7 @@ int main() {
   CheckLampViews();
   CheckLampViewsCover();
   CheckTwoShadows();
+  CheckPostOutsideTheBeam();
   CheckSharedWork();
   CheckPickingReach();
   CheckEdgeRuleWithLevels();
