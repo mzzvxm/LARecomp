@@ -1623,6 +1623,81 @@ void CheckPickingReach() {
   }
 }
 
+// HL-EDGE-FADE and HL-THREE-LEVELS together (feat/hl-combined): the edge rule decides WHICH cars are shadowed (a car at the edge of the frame whose beam crosses the picture is worth what
+// a car in the middle at its distance is), the level table decides HOW MANY views each of them has (medium one each, high the player's two lamps, ultra every car's two lamps).
+void CheckEdgeRuleWithLevels() {
+  namespace li = mcla::gpu::light_influence;
+  const ls::LevelTable three(ls::kThreeLevels);
+  ls::ViewSpec view;
+  view.eye[0] = view.eye[1] = view.eye[2] = 0.0;
+  view.dir[0] = 0.0;
+  view.dir[1] = 0.0;
+  view.dir[2] = 1.0;
+  view.fov = ls::Rad(90.0);
+  view.near_m = 0.5;
+  view.far_m = 500.0;
+  tp::Mat4 vp;
+  Check(ls::LightClip(view, false, &vp), "a camera for the edge rule with the levels");
+  ls::PickContext edge;
+  edge.have_reference = true;
+  edge.have_screen = true;
+  edge.view_projection = vp;
+  Check(li::MakeViewFrustum(vp.m, view.eye, &edge.frustum) && edge.frustum.valid, "the camera's frustum");
+  ls::PickContext legacy = edge;
+  legacy.frustum = li::ViewFrustum{};
+  // A car's light with its two lamps across its axis (the rig's lamp offset), heading (dx, dz).
+  auto car = [](uint32_t key, double x, double z, double dx, double dz, bool player, uint32_t index) {
+    const double len = std::sqrt(dx * dx + dz * dz);
+    const float pos[3] = {float(x), 0.7f, float(z)};
+    const float dir[3] = {float(dx / len), 0.0f, float(dz / len)};
+    const float offset[3] = {float(0.6 * dz / len), 0.0f, float(-0.6 * dx / len)};
+    ls::Light l;
+    const bool ok = ls::MakeLight(pos, dir, float(std::cos(ls::Rad(38.0))), 70.0f, key, player, index, &l, offset);
+    Check(ok, "a car's light with lamps is accepted");
+    return l;
+  };
+  // P the player's car behind the camera; F off the LEFT edge, its beam pointing out of the picture (the lower key); E off the RIGHT edge, its beam across the picture; D in the middle, far.
+  const ls::Light cars[4] = {car(1, 0.0, -3.0, 0.0, 1.0, true, 0), car(2, -40.0, 30.0, -1.0, 0.0, false, 1), car(3, 40.0, 30.0, -1.0, 0.0, false, 2), car(4, 0.0, 60.0, 0.0, 1.0, false, 3)};
+  struct Want {
+    ls::Level level;
+    uint32_t cars;
+    uint32_t views;
+    uint32_t keys[3];
+    uint32_t per_car[3];
+  };
+  // The first version's rule keeps F where E is worth the view; the edge rule's order is P, E, D, F.
+  const Want wants[] = {{ls::Level::kMedium, 2, 2, {1, 3, 0}, {1, 1, 0}},
+                        {ls::Level::kHigh, 2, 3, {1, 3, 0}, {2, 1, 0}},
+                        {ls::Level::kUltra, 3, 6, {1, 3, 4}, {2, 2, 2}}};
+  for (const Want& w : wants) {
+    const std::string label = std::string(ls::LevelName(w.level)) + ": ";
+    ls::Group g[4];
+    ls::ViewPicker picker;
+    const uint32_t n = picker.Pick(cars, 4, ls::MaxCars(w.level, three), edge, g);
+    Check(n == w.cars, label + "the level's cars are picked");
+    ls::ViewPlan plan;
+    ls::PlanViews(cars, g, n, ls::LampCars(w.level, 0, three), ls::MaxViews(w.level, 0, three), &plan);
+    Check(plan.count == w.views, label + "the table gives " + std::to_string(w.views) + " views, made " + std::to_string(plan.count));
+    bool keys_ok = n == w.cars;
+    for (uint32_t c = 0; c < n && c < 3; ++c) {
+      keys_ok = keys_ok && g[c].car_key == w.keys[c] && plan.view_count[c] == w.per_car[c];
+    }
+    Check(keys_ok, label + "the edge rule's cars (the player, the edge car whose beam crosses the picture, ...) have the table's views each");
+  }
+  // The first version's rule at ultra: the car at the edge that is not worth a view takes it (the lamp is off the screen, the lower key wins the tie): what the edge rule fixes.
+  {
+    ls::Group g[4];
+    ls::ViewPicker picker;
+    const uint32_t n = picker.Pick(cars, 4, 3, legacy, g);
+    bool has_f = false, has_e = false;
+    for (uint32_t c = 0; c < n; ++c) {
+      has_f = has_f || g[c].car_key == 2;
+      has_e = has_e || g[c].car_key == 3;
+    }
+    Check(has_f && !has_e, "without the view, ultra shadows the car whose beam points out of the picture and not the one that lights it");
+  }
+}
+
 void CheckPickingHysteresis() {
   const ls::PickContext none;
   ls::Group g[4];
@@ -2134,6 +2209,7 @@ int main() {
   CheckTwoShadows();
   CheckSharedWork();
   CheckPickingReach();
+  CheckEdgeRuleWithLevels();
   CheckFit();
   CheckWorldToShadow();
   CheckCamera();
