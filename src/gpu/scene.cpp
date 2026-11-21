@@ -3627,7 +3627,8 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //      visibility and the contact march, the apply onto the main colour. At the end of its depth chain the shared screen products (screen_shared.h) are
   //      published from it and the Hi-Z is made, when a consumer wants it (the occlusion runs a frame of the depth pass alone for that if it and the contact
   //      shadows are off);
-  //   3b. the deferred local lights (local_lights.h): one additive draw per light from the G-buffer's planes and the main depth, after the apply, before the shafts;
+  //   3b. the deferred local lights (local_lights.h): one additive draw per light from the G-buffer's planes and the main depth, after the apply, before the shafts; the headlights
+  //       among them read the maps step 2b has just recorded, through the one shadow lookup (GB-H2: mcla_gpu_headlight_pass takes the forward headlight stage's place);
   //   4. the sun shafts (shafts.h);
   //   4b. the volumetric light (volumetrics.h): its compute passes (inject, integrate) read the headlight shadow atlas of step 2b (so that step's
   //      last barrier names the compute stage too, local_shadow.cpp), the depth chain, the cascades and the lamp list; its composite goes

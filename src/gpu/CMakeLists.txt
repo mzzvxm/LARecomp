@@ -304,6 +304,11 @@ add_executable(larecomp_local_lights_test EXCLUDE_FROM_ALL local_lights_test.cpp
 # it also reads the sources it is given (the settings, the manager's cars, the mod loader's publish, the pass's wiring):
 #   cmake --build <dir> --target larecomp_local_lights_sources_test, then run src/gpu/larecomp_local_lights_sources_test <src dir> (exit 0 = passed).
 add_executable(larecomp_local_lights_sources_test EXCLUDE_FROM_ALL local_lights_sources_test.cpp)
+# The forward headlight stage against the deferred pass (headlight_pass_rules.h, GB-H2: the switch mcla_gpu_headlight_pass and what each route does, the retail census of the stage, the
+# picture-identity rule and the retirement gate on made-up pictures, and the PIXEL IDENTITY: the pass's light, the one law and the one shadow lookup, equals the forward stage's CPU twins on random
+# lights, surfaces and maps at all three levels of LIGHT SHADOWS; it also reads the sources it is given: the route's wiring in the rig, the pass and the pipelines, the setting, the debug row):
+#   cmake --build <dir> --target larecomp_headlight_pass_test, then run src/gpu/larecomp_headlight_pass_test <src dir> (exit 0 = passed).
+add_executable(larecomp_headlight_pass_test EXCLUDE_FROM_ALL headlight_pass_test.cpp)
 # The consumers' shapes as projections of the light manager's frame (light_project.h, LIGHT-UNIFY U4: the headlight variant's constant block, the volume's light inputs, the lights the
 # shadow replay picks from) held to the producers that make them today, byte for byte, over a recorded drive (the rig's real tracker, the replay's real rules at all three levels, the volume's
 # real lamp picker; and the game's own recording when one is given), with each part of each shape deliberately changed and found:

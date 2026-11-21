@@ -17,6 +17,7 @@
 #include "device.h"
 #include "gbuffer.h"
 #include "gpu_class.h"
+#include "headlight_rig.h"
 #include "host_shaders.h"
 #include "light_manager.h"
 #include "live_text.h"
@@ -30,6 +31,7 @@
 namespace mcla::gpu {
 
 namespace ll = larecomp::gpu::local_lights;
+namespace hp = larecomp::gpu::headlight_pass;
 namespace mls = larecomp::gpu::mod_light_source;
 
 namespace {
@@ -102,6 +104,8 @@ void LocalLights::Shutdown() {
   edram_ = nullptr;
   pass_timing_ = nullptr;
   enabled_ = false;
+  planes_wanted_ = false;
+  route_ = hp::Route::kForward;
 }
 
 uint64_t LocalLights::HeldBytes() const {
@@ -213,8 +217,11 @@ plume::RenderPipeline* LocalLights::PipelineFor(plume::RenderFormat format, uint
 
 void LocalLights::BeginFrame() {
   namespace st = larecomp::settings;
-  const bool on = st::mcla_gpu_local_lights.Get();
-  sources_ = uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask;
+  const bool setting_on = st::mcla_gpu_local_lights.Get();
+  // GB-H2: the headlight route (headlight_pass_rules.h): `pass` and `both` give this pass the frame's headlights and run it whatever mcla_gpu_local_lights says.
+  const hp::Route route = hp::ParseRoute(st::mcla_gpu_headlight_pass.Get());
+  const bool on = hp::PassOn(route, setting_on);
+  sources_ = hp::SourcesFor(route, uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask);
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));
   gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_gain.Get()), 0.0, 16.0));
   car_gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_car_gain.Get()), 0.0, 16.0));
@@ -223,32 +230,41 @@ void LocalLights::BeginFrame() {
   if (on != enabled_) {
     enabled_ = on;
     if (on) {
-      REXLOG_INFO("{} on (mcla_gpu_local_lights, live): at the mid-scene depth copy, after the occlusion's apply, one scissored additive draw per light from the G-buffer's normal and albedo "
+      REXLOG_INFO("{} on (mcla_gpu_local_lights {}, headlight route {}; live): at the mid-scene depth copy, after the occlusion's apply, one scissored additive draw per light from the G-buffer's normal and albedo "
                   "and the main depth; sources {} (1 the frame's surface lights, 2 a test lamp, 4 police, 8 the cars' head lamps, 16 their rear lamps, 32 the mods' lamps outside their grid), "
-                  "lamp A/B {} (0 grid, 1 nowhere, 2 pass), gain {:.2f}, the cars' look x {:.2f}, budget tier {} (police {}, head lamps {}, rear lamps {}, mod lamps {}; 32 in all)",
-                  kPrefix, sources_, int(ab_), gain_, car_gain_, ll::TierName(tier_), ll::BudgetOf(tier_).police, ll::BudgetOf(tier_).head, ll::BudgetOf(tier_).rear, ll::BudgetOf(tier_).mod);
+                  "lamp A/B {} (0 grid, 1 nowhere, 2 pass), gain {:.2f}, the cars' look x {:.2f}, budget tier {} (frame {}, police {}, head lamps {}, rear lamps {}, mod lamps {}; 32 in all)",
+                  kPrefix, setting_on ? "on" : "off", hp::RouteName(route), sources_, int(ab_), gain_, car_gain_, ll::TierName(tier_), ll::BudgetOf(tier_).frame, ll::BudgetOf(tier_).police,
+                  ll::BudgetOf(tier_).head, ll::BudgetOf(tier_).rear, ll::BudgetOf(tier_).mod);
       EnsureResources();  // the pipelines are made on the first frame that records
     } else {
       REXLOG_INFO("{} off", kPrefix);
     }
   }
+  if (route != route_) {
+    route_ = route;
+    REXLOG_INFO("{} headlight route {} (mcla_gpu_headlight_pass; live): the forward headlight stage (the lit shaders' variant) is {}, the pass {} the frame's headlights{}", kPrefix, hp::RouteName(route),
+                hp::ForwardStageOn(route) ? "on" : "OFF", hp::PassLightsHeadlights(route) ? "lights" : "does not light",
+                hp::PassLightsHeadlights(route) ? " with their shadows from the atlas (the one lookup)" : "");
+  }
   // The wants (sticky; the G-buffer and the shared products read them at their own BeginFrame, which the Scene runs after this): with the pass off nothing asks for any plane or product,
-  // so no sidecar is made and the AO's depth chain runs for nobody.
+  // so no sidecar is made and the AO's depth chain runs for nobody. A route that gives the pass the headlights (GB-H2) wants them only while HEADLIGHTS is on (a rig with no light has nothing for
+  // the pass to add, and a car passing in and out of the rig's four must not make the sidecar again): the setting's own use wants them always, as before.
+  planes_wanted_ = enabled_ && (setting_on || headlight_rig::SettingOn());
   if (gbuffer_ != nullptr) {
-    gbuffer_->Want(gbuffer::Consumer::kLocalLights, enabled_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights) : 0u);
+    gbuffer_->Want(gbuffer::Consumer::kLocalLights, planes_wanted_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights) : 0u);
   }
   if (screen_ != nullptr) {
-    screen_->Want(screen::Consumer::kLocalLights, enabled_ ? screen::ProductBit(screen::kLinDepth) : 0u);
+    screen_->Want(screen::Consumer::kLocalLights, planes_wanted_ ? screen::ProductBit(screen::kLinDepth) : 0u);
   }
   if (manager_ != nullptr) {
-    manager_->Want(enabled_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);
+    manager_->Want(planes_wanted_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);
   }
   votes_.Reset();
   trigger_seen_ = false;
 }
 
 void LocalLights::OnMainDraw(const ConstantBanks::Banks& banks, bool colour) {
-  if (!enabled_ || !colour || trigger_seen_) {
+  if (!planes_wanted_ || !colour || trigger_seen_) {
     return;
   }
   // The registers the units come from: every colour draw of the main view before the trigger votes with what its banks hold (a draw whose shader does not use them leaves what an earlier one set).
@@ -259,7 +275,7 @@ void LocalLights::OnMainDraw(const ConstantBanks::Banks& banks, bool colour) {
 
 bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot) {
   (void)record;
-  if (!enabled_ || !list || trigger_seen_ || !gbuffer_published || gbuffer_ == nullptr || screen_ == nullptr || edram_ == nullptr || !summary.source) {
+  if (!planes_wanted_ || !list || trigger_seen_ || !gbuffer_published || gbuffer_ == nullptr || screen_ == nullptr || edram_ == nullptr || !summary.source) {
     return false;
   }
   trigger_seen_ = true;  // once a frame
@@ -387,6 +403,8 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   in.units.gain = gain_;
   in.units.exposure = (std::isfinite(sf.camera.exposure_bias) && sf.camera.exposure_bias > 0.0f) ? sf.camera.exposure_bias : 1.0f;
   in.flags = gb.Has(gbuffer::kPlaneMaterial) ? ll::kFlagMaterial : 0u;
+  in.shadow = &frame.shadow;  // GB-H2: the replay's maps of this frame (recorded just before: scene.cpp OnResolve) and their views, which the frame's lights name
+  const bool shadow_table = ll::ShadowTableNeeded(selection, in.shadow);
   ll::BuildBuffer(in, selection, scratch_.data());
   Slot& slot = slots_[frame_slot];
   void* mapped = slot.buffer->map();
@@ -446,6 +464,16 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
 
   Count(Skip::kRecorded);
   lights_drawn_ += drawn;
+  if (shadow_table) {
+    ++shadow_frames_;
+    for (uint32_t i = 0; i < selection.count; ++i) {
+      const larecomp::gpu::ShadowRef& ref = selection.lights[i].shadow;
+      if (!rects[i].Empty() && ref.kind == larecomp::gpu::ShadowKind::kAtlas && ref.view_count != 0 && uint32_t(ref.first_view) < frame.shadow.count) {
+        ++shadowed_lights_;
+        shadow_views_ += ref.view_count;
+      }
+    }
+  }
   for (uint32_t c = 0; c < ll::kSourceClassCount; ++c) {
     class_drawn_[c] += selection.from_class[c];
     class_cut_[c] += selection.cut_class[c];
@@ -453,9 +481,11 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   frames_own_pose_ += own_pose ? 1u : 0u;
   if (!first_logged_) {
     first_logged_ = true;
-    REXLOG_INFO("{} frame {}: the first run: {} lights drawn of {} ({} from the frame, {} handed over: lamp A/B {} / test lamp {}; police {}, head lamps {}, rear lamps {}, mod lamps {}), the picture {}x{} at {} host samples, G-buffer planes {} "
+    REXLOG_INFO("{} frame {}: the first run: {} lights drawn of {} ({} from the frame, {} of them with views of the shadow atlas ({}); {} handed over: lamp A/B {} / test lamp {}; police {}, head lamps {}, rear lamps {}, mod lamps {}), "
+                "the picture {}x{} at {} host samples, G-buffer planes {} "
                 "(RT3 {}), the camera {} (lens {:.3f} x {:.3f}), the units: night {:.3f}, height factor {}, exposure {:.1f}, gain {:.2f} ({} colour draws voted, {} distinct values)",
-                kPrefix, frame_, drawn, selection.count, selection.from_frame, selection.from_extra, int(ab_), (sources_ & ll::kSourceTest) != 0 ? "on" : "off",
+                kPrefix, frame_, drawn, selection.count, selection.from_frame, shadowed_lights_, shadow_table ? "the table is in the buffer" : "no table: no atlas or no views", selection.from_extra, int(ab_),
+                (sources_ & ll::kSourceTest) != 0 ? "on" : "off",
                 selection.from_class[size_t(ll::SourceClass::kPolice)], selection.from_class[size_t(ll::SourceClass::kHeadLamps)], selection.from_class[size_t(ll::SourceClass::kRearLamps)],
                 selection.from_class[size_t(ll::SourceClass::kMod)], gb.width, gb.height,
                 gb.host_samples, gb.valid, gb.Has(gbuffer::kPlaneMaterial) ? "there" : "not written yet", own_pose ? "the frame's own" : "the last frame's", in.tan_x, in.tan_y,
@@ -498,9 +528,9 @@ void LocalLights::LogInterval() {
     }
   }
   REXLOG_INFO("{} {} frames with the pass on: {} lights drawn ({}), {:.1f} MPixels scissored; the trigger frames: {}; the frame's own camera pose in {} frames; the manager held {:.1f} cars a frame; "
-              "budget tier {}; buffers {} B",
+              "budget tier {}; headlight route {}, {} lights drawn with the shadow lookup ({} views) in {} frames with the table; buffers {} B",
               kPrefix, kIntervalFrames, lights_drawn_, classes.empty() ? std::string("none by class") : classes, double(pixels_scissored_) * 1.0e-6, why.empty() ? std::string("none") : why,
-              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), ll::TierName(tier_), HeldBytes());
+              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), ll::TierName(tier_), hp::RouteName(route_), shadowed_lights_, shadow_views_, shadow_frames_, HeldBytes());
   counts_.fill(0);
   lights_drawn_ = 0;
   pixels_scissored_ = 0;
@@ -508,6 +538,9 @@ void LocalLights::LogInterval() {
   class_drawn_.fill(0);
   class_cut_.fill(0);
   cars_seen_ = 0;
+  shadowed_lights_ = 0;
+  shadow_views_ = 0;
+  shadow_frames_ = 0;
 }
 
 }  // namespace mcla::gpu

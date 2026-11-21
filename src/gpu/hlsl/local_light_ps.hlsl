@@ -9,6 +9,9 @@
 //   the position   the main depth plane (the stored depth, 1 near, 0 far) and the camera in the buffer's header: view distance by the projection's rows (as the AO's apply), then the world
 //                  position by the camera's axes. The camera is the frame's own where the vertex constants hold it, else the last frame's (local_lights.cpp).
 //   the light      the GpuLight row of the draw's light (push.info.x) in the buffer (g_lights): hlsl/light_laws.hlsli decodes it and holds the three laws.
+//   the shadow     (GB-H2) a light with views of the shadow atlas (its ShadowRef: GpuLight packed1) is multiplied by the ONE lookup's visibility (hlsl/light_shadow_lookup.hlsli, the lit shaders' box
+//                  kernel: LSL_MODE_SURFACE): the frame's view table follows the lights in the buffer (LP_SHADOW_OFFSET), the atlas is a bindless depth plane read as one float (set 0), the
+//                  views of a light are averaged, the layers of a view multiplied, the share blended by the light's weight. Read only for a pixel the light reaches, after the term is known to be over 0.
 //
 // The pixel shader runs once per pixel whatever the host's MSAA level: the planes and the depth are read at the host sample that is the guest's sample 0 and the result is added to every
 // sample of the pixel (a one pixel fringe at silhouettes, as the AO's apply). LL_PASS_MS 1 reads Texture2DMS planes (host_pass_common.hlsli space 1), 0 plain textures (space 0).
@@ -18,6 +21,7 @@
 #include "host_pass_common.hlsli"
 #include "gbuffer_common.hlsli"
 #include "local_light.hlsli"
+#include "light_shadow_lookup.hlsli"
 
 #ifndef LL_PASS_MS
 #define LL_PASS_MS 0
@@ -35,6 +39,12 @@ ConstantBuffer<LocalLightPush> g_push : register(b0, space5);
 #endif
 
 ByteAddressBuffer g_lights : register(t0, space4);
+
+// The atlas's size and the table's layers, read once from the table's header (main) and held for the seams below: a pixel that is lit by a shadowed light takes 4 to 16 taps of the atlas, and
+// asking the texture for its size each time would cost as much again.
+static uint LpAtlasW = 0u;
+static uint LpAtlasH = 0u;
+static uint LpAtlasLayers = 0u;
 
 float4 LoadPlane(uint slot, int2 p) {
 #if LL_PASS_MS
@@ -79,6 +89,36 @@ LlGpuLight LpLoadLight(uint index) {
   return g;
 }
 
+// The seams of hlsl/light_shadow_lookup.hlsli: the atlas is the heap's depth plane at `slot` (set 0, whatever LL_PASS_MS says: it is no multisampled plane), a tap is Load with the index clamped
+// into the atlas (the lit shaders' sampler clamps at its edge), the views are the table's rows.
+float LslTexel(uint slot, int ix, int iy) {
+  return g_textures[slot].Load(int3(clamp(ix, 0, int(LpAtlasW) - 1), clamp(iy, 0, int(LpAtlasH) - 1), 0)).x;
+}
+uint LslAtlasWidth(uint slot) {
+  return LpAtlasW;
+}
+uint LslAtlasHeight(uint slot) {
+  return LpAtlasH;
+}
+LslView LslLoadView(uint entry) {
+  uint at = uint(LP_SHADOW_VIEWS_OFFSET) + entry * uint(LP_SHADOW_VIEW_BYTES);
+  LslView v;
+  v.m0 = asfloat(g_lights.Load4(at));
+  v.m1 = asfloat(g_lights.Load4(at + 16u));
+  v.m2 = asfloat(g_lights.Load4(at + 32u));
+  v.m3 = asfloat(g_lights.Load4(at + 48u));
+  v.rect = asfloat(g_lights.Load4(at + 64u));
+  uint4 w = g_lights.Load4(at + 80u);
+  v.bias = asfloat(w.x);
+  v.texel = asfloat(w.y);
+  v.light_index = w.z;
+  v.valid = w.w;
+  return v;
+}
+uint LslLayerOf(uint entry) {
+  return LslLayerBits(LpAtlasLayers, entry);
+}
+
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 p = int2(position.xy);
 
@@ -119,7 +159,22 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const LlLight l = LlUnpack(LpLoadLight(g_push.info.x));
   const float3 normal = GbRt1Decode(rt1);
   const float3 albedo = GbAlbedoDecode(rt2.xyz);
-  const float3 add = LpPixelLight(l, g, world, normal, albedo, rt2.w);
+  float3 add = LpPixelLight(l, g, world, normal, albedo, rt2.w);
+  if (!any(add > 0.0f)) {
+    discard;
+  }
+
+  // The shadow: only for a light that has views of the atlas and a pixel it lights. The table's header says which bindless depth plane the views are in.
+  if ((flags & uint(LP_FLAG_SHADOW)) != 0u && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) {
+    const uint4 head = g_lights.Load4(LP_SHADOW_OFF_COUNT);  // count, slot, width, height
+    const uint atlas_slot = head.y;
+    if (atlas_slot != 0xFFFFFFFFu && head.z != 0u && head.w != 0u) {
+      LpAtlasW = head.z;
+      LpAtlasH = head.w;
+      LpAtlasLayers = g_lights.Load(LP_SHADOW_OFF_LAYERS);
+      add *= LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, atlas_slot, uint(LSL_MODE_SURFACE));
+    }
+  }
   if (!any(add > 0.0f)) {
     discard;
   }

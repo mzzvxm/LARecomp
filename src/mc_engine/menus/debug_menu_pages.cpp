@@ -95,6 +95,10 @@ constexpr const char* kHdrViewNames[] = {"OFF", "UI ONLY", "SCENE ONLY", "UI COV
 // The test lamp (2) and the lamp A/B (mcla_gpu_local_lights_ab, read at start) stay cvars of the lamp tests.
 constexpr const char* kLocalLightSourceVals[]  = {"0", "1", "4", "8", "16", "32", "60"};
 constexpr const char* kLocalLightSourceNames[] = {"NONE", "FRAME LIGHTS", "POLICE BARS", "HEAD LAMPS", "REAR LAMPS", "MOD LAMPS", "CARS + MODS"};
+// Which of the two lights the cars' headlights (mcla_gpu_headlight_pass, gpu/headlight_pass_rules.h, GB-H2): the lit shaders' own variant (FORWARD), the deferred local light pass with the
+// atlas shadows (PASS), or both added together (BOTH: the difference pictures).
+constexpr const char* kHeadlightRouteVals[]  = {"forward", "pass", "both"};
+constexpr const char* kHeadlightRouteNames[] = {"FORWARD", "PASS", "BOTH"};
 constexpr const char* kMarkerLevelVals[]  = {"0", "1", "2"};
 constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
@@ -237,6 +241,11 @@ const ItemDef kDebugRenderingItems[] = {
     NativeOnly(Bool("PM_RxDbgLocalLights", "mcla_gpu_local_lights", "LOCAL LIGHT PASS: ")),
     NativeOnly(Str("PM_RxDbgLocalSrc",   "mcla_gpu_local_lights_sources", "LIGHT PASS SOURCES: ",
                    kLocalLightSourceVals, kLocalLightSourceNames, Len(kLocalLightSourceVals))),
+    // The headlights' A/B (GB-H2, live; the forward stage is deleted only after the owner has seen the pictures): FORWARD is the game as it is, PASS takes the lit shaders' headlight variant away and
+    // lights the same cars' headlights in the deferred pass with their shadows (it also reaches what the variant leaves out: the cars' paint, the pedestrians, the interiors; the pass runs for it
+    // whatever LOCAL LIGHT PASS says and needs HEADLIGHTS on), BOTH lights twice. The words are the cvar's, written as the other word rows do.
+    NativeOnly(Str("PM_RxDbgHeadlightVia", "mcla_gpu_headlight_pass", "HEADLIGHTS VIA: ",
+                   kHeadlightRouteVals, kHeadlightRouteNames, Len(kHeadlightRouteVals))),
     // The glow of street lamps (halo and star): the game's one depth test at the glow's centre (GAME), or the
     // share of 24 tests on a small disc (SOFT: it fades at an edge instead of popping). The renderer reads the
     // cvar at each draw, so the row is live; the first time SOFT shows, the shaders are built.

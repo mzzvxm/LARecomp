@@ -55,6 +55,8 @@ constexpr uint64_t kWorldSunKeepFrames = 600;
 // The frame being built, as the render thread last published it.
 HeadlightSet g_set;
 std::atomic<bool> g_selected{false};
+// GB-H2: the headlight route (headlight_pass_rules.h) as the rig last read the setting; the forward stage is `selected` only while the route keeps it.
+std::atomic<uint8_t> g_route{uint8_t(larecomp::gpu::headlight_pass::Route::kForward)};
 // The shadow views of the producer (SetLocalShadows), as a copy (the producer's frame changes in place), with the car key of each light of the set they were
 // made for: the set that reads them is the next frame's and can be another (headlight_rig_rules.h RemapShadowViews).
 larecomp::gpu::LocalShadowFrame g_shadow_frame;
@@ -69,15 +71,6 @@ LiveText& Setting() {
   return text;
 }
 
-// mcla_gpu_headlights with `auto` resolved for this graphics card (gpu_class.h: off on Low, on on Mid and High); a word that is no value counts as `auto`.
-bool SettingOn() {
-  std::string mode = gpu_class::Resolve(gpu_class::Effect::kHeadlights, Setting().Get());
-  if (mode != "on" && mode != "off") {
-    mode = std::string(gpu_class::Cell(gpu_class::Effect::kHeadlights, gpu_class::Current()));
-  }
-  return mode == "on";
-}
-
 double Distance(const double a[3], const double b[3]) {
   const double d[3] = {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
   return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
@@ -89,7 +82,19 @@ const HeadlightSet& CurrentHeadlights() { return g_set; }
 
 namespace headlight_rig {
 
-bool VariantSelected() { return g_selected.load(std::memory_order_relaxed); }
+bool VariantSelected() {
+  return g_selected.load(std::memory_order_relaxed) && larecomp::gpu::headlight_pass::ForwardStageOn(CurrentRoute());
+}
+
+larecomp::gpu::headlight_pass::Route CurrentRoute() { return larecomp::gpu::headlight_pass::Route(g_route.load(std::memory_order_relaxed)); }
+
+bool SettingOn() {
+  std::string mode = gpu_class::Resolve(gpu_class::Effect::kHeadlights, Setting().Get());
+  if (mode != "on" && mode != "off") {
+    mode = std::string(gpu_class::Cell(gpu_class::Effect::kHeadlights, gpu_class::Current()));
+  }
+  return mode == "on";
+}
 
 void SetLocalShadows(const larecomp::gpu::LocalShadowFrame* frame, uint32_t atlas_texture_slot, uint32_t atlas_sampler_slot) {
   g_shadow_frame = larecomp::gpu::LocalShadowFrame{};
@@ -153,7 +158,9 @@ void HeadlightRig::ClearPublished() {
 void HeadlightRig::ReadSettings() {
   namespace s = larecomp::settings;
   const bool was_enabled = enabled_;
-  enabled_ = memory_ != nullptr && SettingOn();
+  enabled_ = memory_ != nullptr && headlight_rig::SettingOn();  // mcla_gpu_headlights with `auto` resolved for this graphics card (gpu_class.h: off on Low, on on Mid and High); a word that is no value counts as `auto`
+  const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(s::mcla_gpu_headlight_pass.Get());
+  g_route.store(uint8_t(route), std::memory_order_relaxed);  // GB-H2: `pass` takes the forward stage away from the draws (VariantSelected); the rig still tracks, ranks and publishes the lights the pass and the volume read
   headlight_points::SetWanted(enabled_);
   strength_ = float(std::clamp(double(s::mcla_gpu_headlight_strength.Get()), 0.0, 8.0));
   range_ = float(std::clamp(double(s::mcla_gpu_headlight_range.Get()), 10.0, 200.0));

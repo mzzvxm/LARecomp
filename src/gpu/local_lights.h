@@ -16,15 +16,22 @@
 // mod's rectangle no grid lights them); one budget a class and a tier (the light shadows' level words), 32 in all. The cars come from the light manager's car lights (the points of all 19 kinds;
 // the manager is told the camera so that it keeps the cars nearest to it), the mods from mod_light_source.h's built sets.
 //
-// WHAT IS NOT IN IT YET: shadows (GB-H2: the atlas read through the one lookup and the forward headlight's A/B and retirement), the specular lobe, the city's lamps (they are the game's grid: LU-3's
-// picker and GB-H4's shadow subtraction), neon (not in v1: the owner's question). It is a debug feature (settings below), off by default: the owner decides after THE LAMP A/B.
+// GB-H2 (headlight_pass_rules.h has the story, the A/B, the identity rule and the retirement gate): the frame's headlights, the lights of the cars the rig lights, are lit by this pass WITH THEIR SHADOWS:
+// a light's ShadowRef (its views of the shadow atlas, one for each headlamp of a car the three level table gives views to) is read through the ONE lookup (hlsl/light_shadow_lookup.hlsli, the lit
+// shaders' box kernel) from the frame's view table, which is written after the lights' rows of the buffer; the atlas is the bindless depth plane the replay recorded THIS frame, just before.
+// mcla_gpu_headlight_pass (forward | pass | both) switches the forward headlight stage off and this pass on for them (the A/B), and the pass then lights what the forward stage leaves out: the
+// 62 lit shaders it does not edit, the cars' paint, the pedestrians. The forward stage is deleted only after the owner has seen the pictures (the retirement steps are in headlight_pass_rules.h).
+//
+// WHAT IS NOT IN IT YET: the specular lobe, the city's lamps (they are the game's grid: LU-3's picker and GB-H4's shadow subtraction), neon (not in v1: the owner's question), shadows for the
+// cars' other lamps (police, rear, mods: they have no views). It is a debug feature (settings below), off by default: the owner decides after THE LAMP A/B and the headlight A/B.
 //
 // THE LAMP A/B (local_lights_rules.h has the story): one mod lamp (lights.bin) through the game's grid (A), through this pass with the grid's copy OFF (B, mcla_gpu_local_lights_ab = 2), and through
 // neither (the control, 1). The A/B's lamps are read from the mod loader's published set (mod_light_source.h) whatever the sources mask says; mod_lights.cpp builds the grid with them off.
 //
 // SETTINGS (settings_gpu.h, all debug only): mcla_gpu_local_lights (the pass, default off, live), mcla_gpu_local_lights_sources (a sum: 1 the frame's surface lights, 2 a test lamp, 4 police,
 // 8 the cars' head lamps the forward stage does not light, 16 the cars' rear lamps, 32 the mods' lamps outside their grid; default 0), mcla_gpu_local_lights_ab (0 grid, 1 nowhere, 2 pass;
-// restart), mcla_gpu_local_lights_gain (a multiplier, 1), mcla_gpu_local_lights_car_gain (the cars' lights' look, a multiplier, 1).
+// restart), mcla_gpu_local_lights_gain (a multiplier, 1), mcla_gpu_local_lights_car_gain (the cars' lights' look, a multiplier, 1), mcla_gpu_headlight_pass (GB-H2: forward | pass | both, live;
+// `pass` and `both` run this pass for the frame's headlights whatever mcla_gpu_local_lights says).
 //
 // BINDING: its own pipeline layout (the host passes' four bindless texture sets at spaces 0-3, the buffer of the header and the lights at (t0, space4), the push block at (b0, space5)), a buffer and
 // a descriptor set per frame in flight, written at the trigger. The pipelines (one per host sample count, RGBA16F colour, blend ADD) are made on first use: the first frame with the pass on stutters.
@@ -58,6 +65,22 @@
 //   LS6  a mod lamp outside its rectangle: the pass lights it from any camera, and the grid takes over when the camera enters the rectangle: the pop at the border (the A/B holds the two
 //        within 10 per cent), and a lamp inside the city's rectangle that is not in the city's grid.
 //   LS7  the tier from the light shadows' level words (off and medium are the smallest): after LU-3 the same words are Level::kMedium / kHigh / kUltra.
+// CHECK (GB-H2, nothing run; the run plan: h11-work\gb-h2-notes\RUNPLAN-gb-h2.txt):
+//   HP1  THE UNITS FOR A HEADLIGHT: the pass multiplies the law's term by the exposure (2^bias, 16), the height factor and the gain, and not by the night light intensity (the headlight's colour has its
+//        own night factor); the forward stage adds the term into the sum the lit shader multiplies by its albedo, the height factor and the exposure. They are the same only if the lit shaders
+//        apply the exposure inside (LL1): the A/B's ratio says (near 16 or 1/16: the exposure is applied twice or not at all).
+//   HP2  THE ATLAS READ IN THE PASS: the replay's record at the trigger leaves the atlas in the shader read layout for the pixel and compute stages (shadow_atlas.h EndRecord); the pass reads it through the
+//        heap's set 0 (Texture2D<float4>, the depth plane viewed as one float): the debug layer and Vulkan validation clean (no SYNC-HAZARD with the volume's compute reads), D3D12 and Vulkan.
+//   HP3  THE SAME MAPS: the forward stage reads the maps of the LAST frame (remapped to this frame's cars), the pass THIS frame's (the record is before it): a moving car's shadow edge differs by a
+//        frame's motion between the two paths; the identity rule is judged on frozen cars (the scenes hold still) and the moving ones are the look, not the rule.
+//   HP4  THE NORMAL: the forward stage lights by the geometric normal turned to the camera, the pass by the G-buffer's (the exported vertex normal; a derivative normal where there is none): a bumpy
+//        surface and a two sided one differ; the surfaces whose G-buffer normal is the derivative one are the same as the forward stage.
+//   HP5  SELF LIGHT: a car's own headlights light its own bonnet and the pass now reaches the cars (the forward stage never lit the player's paint): the near fade (0.8 m, +1.5 m) is the law's; a
+//        replay map that holds the car's own body shadows its bonnet (CHECK: acne on the bonnet at ultra).
+//   HP6  THE COST: one scissored draw per headlight (a spot of 70 m reach: a large rectangle) with the lookup (16 taps where the four outer taps disagree) for the lights with views (2 / 2 / 3 cars at
+//        the three levels), and the G-buffer's planes while HEADLIGHTS is on (day included: CHECK whether they are to be wanted at night only).
+//   HP11 THE OCCLUSION: the forward stage's light is in the main colour when the ambient occlusion applies (it can darken it in a crease), the pass adds its light AFTER the apply (nothing darkens
+//        it): a difference of the two pictures in creases and under overhangs that is the pass's choice (the same as the lamp A/B's); the identity rule's per pixel share will show it.
 // ===========================================================================
 
 #include <array>
@@ -70,6 +93,7 @@
 #include "constants.h"
 #include "edram.h"
 #include "frame.h"
+#include "headlight_pass_rules.h"
 #include "host_passes.h"
 #include "light_frame.h"
 #include "local_lights_rules.h"
@@ -109,7 +133,7 @@ class LocalLights {
   // the last frame's votes.
   void BeginFrame();
   // True while the pass is on: the Scene feeds it the main view's draws.
-  bool wants_draws() const { return enabled_; }
+  bool wants_draws() const { return enabled_ && planes_wanted_; }
   // A prepared draw of the main view (`colour`: it writes the main colour) with its constant banks, before the draw is recorded: votes the frame's units (PS c63.w and c56). Until the trigger.
   void OnMainDraw(const ConstantBanks::Banks& banks, bool colour);
   // At every resolve, after the AO's apply: `gbuffer_published` is the G-buffer's own answer for this resolve (it was the trigger and the planes were published). Records the pass then and
@@ -151,6 +175,8 @@ class LocalLights {
   float gain_ = 1.0f;
   float car_gain_ = 1.0f;
   larecomp::gpu::local_lights::Tier tier_ = larecomp::gpu::local_lights::Tier::kMedium;  // the budgets' tier: the light shadows' level
+  larecomp::gpu::headlight_pass::Route route_ = larecomp::gpu::headlight_pass::Route::kForward;  // GB-H2: which of the two ways lights the frame's headlights (mcla_gpu_headlight_pass)
+  bool planes_wanted_ = false;  // the G-buffer's planes and the shared depth are wanted this frame (the setting is on, or the route's headlights are)
 
   // resources
   plume::RenderDescriptorSetBuilder set_builder_;
@@ -183,6 +209,9 @@ class LocalLights {
   std::array<uint64_t, larecomp::gpu::local_lights::kSourceClassCount> class_drawn_{};  // lights taken, by SourceClass
   std::array<uint64_t, larecomp::gpu::local_lights::kSourceClassCount> class_cut_{};    // wanted and cut by the class's budget or the pass's 32
   uint64_t cars_seen_ = 0;                                                               // sum over the frames of the cars the manager held
+  uint64_t shadowed_lights_ = 0;  // GB-H2: lights drawn that had views of the atlas (the lookup ran for them), summed over the interval
+  uint64_t shadow_views_ = 0;     // ... and the views of those lights
+  uint64_t shadow_frames_ = 0;    // frames the table was written
   bool first_logged_ = false;
   std::array<uint32_t, 4> last_units_bits_{};
   bool units_logged_ = false;

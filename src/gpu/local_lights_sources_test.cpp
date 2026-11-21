@@ -291,8 +291,8 @@ void TierChecks() {
   Check(m.police + m.head + m.rear + m.mod <= lp::kMaxPassLights && h.police + h.head + h.rear + h.mod <= lp::kMaxPassLights, "medium and high fit the pass's 32 whole");
   Check(u.police + u.head + u.rear + u.mod > lp::kMaxPassLights, "ultra's classes together are over the pass's 32: the priority decides (a documented over-ask)");
   Check(lp::CapOf(u, lp::SourceClass::kPolice) == u.police && lp::CapOf(u, lp::SourceClass::kHeadLamps) == u.head && lp::CapOf(u, lp::SourceClass::kRearLamps) == u.rear &&
-            lp::CapOf(u, lp::SourceClass::kMod) == u.mod && lp::CapOf(u, lp::SourceClass::kFrame) == lp::kMaxPassLights && lp::CapOf(u, lp::SourceClass::kHandedOver) == lp::kMaxPassLights,
-        "CapOf names each class's number, the frame's and the handed over ones have the pass's");
+            lp::CapOf(u, lp::SourceClass::kMod) == u.mod && lp::CapOf(u, lp::SourceClass::kFrame) == u.frame && u.frame == 4 && lp::CapOf(u, lp::SourceClass::kHandedOver) == lp::kMaxPassLights,
+        "CapOf names each class's number (GB-H2: the frame's is the rig's four), the handed over ones have the pass's");
   Check(lp::PoliceReach(lp::Tier::kMedium) < lp::PoliceReach(lp::Tier::kHigh) && lp::PoliceReach(lp::Tier::kHigh) < lp::PoliceReach(lp::Tier::kUltra), "the police reach grows with the tier");
   Check(lp::HeadReach(lp::Tier::kMedium) < lp::HeadReach(lp::Tier::kHigh) && lp::HeadReach(lp::Tier::kHigh) < lp::HeadReach(lp::Tier::kUltra) && lp::HeadReach(lp::Tier::kUltra) < 70.0f,
         "the head lamps' reach grows with the tier and stays under the rig's 70 m: small local lights");
@@ -1126,8 +1126,8 @@ void SourceChecks(const std::string& src) {
   Check(At(mod, "PublishBuilt({})") < At(mod, "if (g_grids.empty() || !larecomp::settings::mod_lights.Get()) return;"), "... the empty list before the early return, so a setting that is off leaves none");
 
   // the pass's wiring
-  Check(Has(cpp, "manager_->Want(enabled_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);"), "the manager runs for the cars' sources too");
-  Check(Has(cpp, "sources_ = uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask;"), "the setting is read as the six bits (the clamp is not GB-H1's 0..3)");
+  Check(Has(cpp, "manager_->Want(planes_wanted_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);"), "the manager runs for the cars' sources too");
+  Check(Has(cpp, "sources_ = hp::SourcesFor(route, uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask);"), "the setting is read as the six bits (the clamp is not GB-H1's 0..3), and the headlight route adds the frame's source");
   Check(Has(cpp, "manager_->SetCarReference(reference);") && Has(cpp, "(sources_ & ll::kSourceCars) != 0"), "the pass gives the manager the camera for the cars' sources");
   Check(Has(cpp, "ll::GatherCarLights(cars_in, &candidates_);") && Has(cpp, "ll::GatherModLamps(mls::Global().Built(), active_mod.get(), ab_, rows.position, &candidates_.mod);") &&
             Has(cpp, "ll::HandedOverLamps(ab_, active_mod.get(), rows.position, &extras_);") && Has(cpp, "ll::SelectPassLights(frame, sources_, extras_.data(), uint32_t(extras_.size()), candidates_, tier_);"),

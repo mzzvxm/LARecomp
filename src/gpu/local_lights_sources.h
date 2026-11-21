@@ -63,18 +63,21 @@ enum class Tier : uint8_t { kMedium = 0, kHigh = 1, kUltra = 2 };
 inline constexpr Tier TierOfWord(std::string_view word) { return word == "ultra" ? Tier::kUltra : (word == "high" ? Tier::kHigh : Tier::kMedium); }
 inline constexpr const char* TierName(Tier t) { return t == Tier::kUltra ? "ultra" : (t == Tier::kHigh ? "high" : "medium"); }
 
-// The most lights of each class a tier lets the pass draw (before the pass's 32).
+// The most lights of each class a tier lets the pass draw (before the pass's 32). `frame` (GB-H2) is the frame's own surface lights: the headlights of the cars the rig lights, which are the only
+// ones that can have a shadow (the replay's views are for them) and the dearest per pixel (a 16 tap lookup where the taps disagree): the rig's four at every tier (light_budget.h
+// kMaxHeadlights; the number of cars that have views is the level's, 2 / 2 / 3, and is the replay's, not the pass's). The classes below it are cheaper per light (no lookup).
 struct ClassBudget {
   uint32_t police = 0;
   uint32_t head = 0;
   uint32_t rear = 0;
   uint32_t mod = 0;
+  uint32_t frame = 4;
 };
 inline constexpr ClassBudget BudgetOf(Tier tier) {
   switch (tier) {
-    case Tier::kUltra: return {16, 8, 12, 12};
-    case Tier::kHigh: return {10, 5, 8, 8};
-    default: return {6, 3, 4, 4};
+    case Tier::kUltra: return {16, 8, 12, 12, 4};
+    case Tier::kHigh: return {10, 5, 8, 8, 4};
+    default: return {6, 3, 4, 4, 4};
   }
 }
 inline constexpr uint32_t CapOf(const ClassBudget& b, SourceClass c) {
@@ -83,6 +86,7 @@ inline constexpr uint32_t CapOf(const ClassBudget& b, SourceClass c) {
     case SourceClass::kHeadLamps: return b.head;
     case SourceClass::kRearLamps: return b.rear;
     case SourceClass::kMod: return b.mod;
+    case SourceClass::kFrame: return b.frame;
     default: return kMaxPassLights;
   }
 }
@@ -442,11 +446,11 @@ inline void GatherModLamps(const mls::BuiltSets& built, const mls::Set* active, 
 // the selection
 // ---------------------------------------------------------------------------
 
-// SelectLights' lights (the frame's surface lights, the handed over ones), then the classes in priority order police, mods, head lamps, rear lamps: each, when its bit is in `sources`, up to its tier
+// SelectLights' lights (the frame's surface lights up to the frame class's cap, the handed over ones), then the classes in priority order police, mods, head lamps, rear lamps: each, when its bit is in `sources`, up to its tier
 // cap of what `cand` holds (already ranked and already without the lights that cannot be seen), and up to the pass's 32 over all. Without candidates this is SelectLights.
 inline Selection SelectPassLights(const LightFrame& frame, uint32_t sources, const Light* extra, uint32_t extra_count, const Candidates& cand, Tier tier) {
-  Selection s = SelectLights(frame, sources, extra, extra_count);
   const ClassBudget budget = BudgetOf(tier);
+  Selection s = SelectLights(frame, sources, extra, extra_count, budget.frame);
   const auto append = [&](uint32_t bit, SourceClass cls) {
     if ((sources & bit) == 0) {
       return;
