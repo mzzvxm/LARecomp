@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -686,6 +687,63 @@ void TestBuilder(const fs::path& scratch) {
   const BuildResult f = BuildCityPack(four, &sink);
   CHECK(f.ok && !f.up_to_date);
   CHECK(ReadAll(one.pack_path) == ReadAll(f.pack_path));
+
+  // the mod archive counts only for the city's own files in it (CityOverlayHash): a car or a song in it leaves the pack current, a sector in it (the same size,
+  // other vertices) makes it stale, and a build with it reads the modded sector
+  {
+    const fs::path mods = scratch / "xarchive_mods.rpf";
+    const auto add_mod = [](mc::modloader::Rpf3Writer& w, const std::string& path, std::vector<uint8_t> file) {
+      const uint32_t flag = (uint32_t(file[8]) << 24) | (uint32_t(file[9]) << 16) | (uint32_t(file[10]) << 8) | uint32_t(file[11]);
+      w.Add(path, std::move(file), flag, 1);
+    };
+    fs::remove(mods);
+    CHECK(CityOverlayHash(mods) == 0 && CityOverlayHash(fs::path()) == 0);  // no mod archive
+    BuildRequest with_mods = request;
+    with_mods.mods_rpf = mods;
+    CHECK(CheckCityPack(with_mods).current);  // no archive: as built
+
+    mc::modloader::Rpf3Writer car_mod;
+    add_mod(car_mod, "resources/vehicle/car_a.xdr", MakeSectorFile({Quad(0, 0, 1, 1, 0, "a", "b")}));
+    CHECK(car_mod.Write(mods));
+    CHECK(CityOverlayHash(mods) == 0);       // not the city
+    CHECK(CheckCityPack(with_mods).current);  // a mod archive of another kind: the pack is current, nothing to rebuild
+
+    // s_a with the window quad 5 m longer: the same number of bytes
+    const auto modded_sector = [&] {
+      return MakeSectorFile({Quad(0, 0, 10, 10, 0, "CityRoad", "CityRoad_Asphalt", 20, 4), Quad(0, 0, 5, 5, 0.01f, "CityGrimeDecal", "CityGrimeDecal"),
+                             Quad(10, 0, 25, 10, 0, "CityWindowUpper", "w", 36), Quad(0, 0, 1, 1, 4, "CityNeon", "CityNeonAlpha_Metal")});
+    };
+    mc::modloader::Rpf3Writer sector_mod;
+    add_mod(sector_mod, SectorArchivePath("s_a"), modded_sector());
+    CHECK(sector_mod.Write(mods));
+    const uint64_t overlay = CityOverlayHash(mods);
+    CHECK(overlay != 0 && overlay == CityOverlayHash(mods));  // stable
+    const StampCheck stale = CheckCityPack(with_mods);
+    CHECK(!stale.current && stale.why.find("mods") != std::string::npos);
+
+    BuildRequest build_mod = with_mods;
+    build_mod.out_dir = scratch / "out_mod";
+    build_mod.threads = 2;
+    std::atomic<int> workers_started{0};
+    build_mod.worker_start = [&] { ++workers_started; };
+    const BuildResult m = BuildCityPack(build_mod, &sink);
+    CHECK(m.ok && !m.up_to_date);
+    CHECK(workers_started.load() == 2);  // the hook ran once on each worker
+    PackReader mr;
+    CHECK(mr.Open(m.pack_path, &error));
+    MeshData modded;
+    CHECK(mr.ReadMesh(0, MeshKind::kHi, &modded, &error) && modded.bounds_max[0] == 25.0f);  // the modded window, not the shipped one (20)
+    CHECK(CheckCityPack(build_mod).current);
+    // the mod archive turns into one with no city file in it: the overlay is gone, so the pack is not the stamp's
+    fs::remove(mods);
+    CHECK(car_mod.Write(mods));
+    CHECK(!CheckCityPack(build_mod).current);
+    // an unreadable mod archive is never the same as none
+    { std::ofstream(mods, std::ios::binary) << "x"; }
+    CHECK(CityOverlayHash(mods) != 0 && !CheckCityPack(build_mod).current && !CheckCityPack(with_mods).current);
+    fs::remove(mods);
+    CHECK(CheckCityPack(request).current);
+  }
 
   // the stamp notices a changed archive, a changed option, a changed builder
   {

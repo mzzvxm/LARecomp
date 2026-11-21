@@ -321,10 +321,38 @@ std::string Census::Report() const {
 // the build
 // ---------------------------------------------------------------------------
 
+uint64_t CityOverlayHash(const std::filesystem::path& mods_rpf) {
+  if (mods_rpf.empty() || !StatFile(mods_rpf).exists) return 0;
+  constexpr uint64_t kUnreadable = 0x0BADC17A0BADC17Aull;
+  mc::modloader::Rpf3Reader mods;
+  if (!mods.Open(mods_rpf)) return kUnreadable;
+  std::vector<mc::modloader::Rpf3Entry> entries;
+  if (!mods.ListDirectory("resources/city/sc", entries) || entries.empty()) return 0;
+  uint64_t hash = 0xCBF29CE484222325ull;
+  std::vector<uint8_t> bytes;
+  bool any = false;
+  for (const mc::modloader::Rpf3Entry& entry : entries) {  // table order: ascending hash, the same on every PC
+    if (entry.is_directory()) continue;
+    any = true;
+    hash = Fnv1a64(&entry.hash, sizeof(entry.hash), hash);
+    hash = Fnv1a64(&entry.size, sizeof(entry.size), hash);
+    hash = Fnv1a64(&entry.flag, sizeof(entry.flag), hash);
+    if (mods.ReadFile(entry, bytes)) {
+      hash = Fnv1a64(bytes.data(), bytes.size(), hash);
+    } else {
+      hash = Fnv1a64(&kUnreadable, sizeof(kUnreadable), hash);
+    }
+  }
+  return any ? (hash == 0 ? 1 : hash) : 0;
+}
+
 StampInputs StampInputsFor(const BuildRequest& request) {
   StampInputs in;
   in.source = StatFile(request.source_rpf);
-  if (!request.mods_rpf.empty()) in.mods = StatFile(request.mods_rpf);
+  if (!request.mods_rpf.empty()) {
+    in.mods = StatFile(request.mods_rpf);
+    in.city_overlay = CityOverlayHash(request.mods_rpf);
+  }
   in.drop_mask = request.drop_mask;
   in.positions = static_cast<uint32_t>(request.positions);
   in.app_version = request.app_version;
@@ -360,6 +388,10 @@ BuildResult BuildCityPack(const BuildRequest& request, ProgressSink* sink_in) {
     }
     sink.Log(LogLevel::kInfo, "the city pack is built: " + check.why);
   }
+
+  // What the stamp will say, taken BEFORE the archives are read: a mod archive that changes during the build leaves a stamp that is not current (the pack is built again)
+  // and never one that claims inputs the pack was not made from.
+  const StampInputs stamp_base = StampInputsFor(request);
 
   Archives archives;
   if (!archives.source.Open(request.source_rpf)) return fail("the game archive " + request.source_rpf.string() + " could not be opened as an RPF archive");
@@ -503,6 +535,7 @@ BuildResult BuildCityPack(const BuildRequest& request, ProgressSink* sink_in) {
   std::vector<std::thread> workers;
   for (uint32_t w = 0; w < threads; ++w) {
     workers.emplace_back([&] {
+      if (request.worker_start) request.worker_start();
       for (;;) {
         const uint32_t i = next.fetch_add(1);
         if (i >= count || stop.load()) return;
@@ -621,7 +654,7 @@ BuildResult BuildCityPack(const BuildRequest& request, ProgressSink* sink_in) {
   std::filesystem::rename(temp_path, result.pack_path, ec);
   if (ec) return fail("the pack could not be moved into place: " + ec.message());
 
-  StampInputs stamp_in = StampInputsFor(request);
+  StampInputs stamp_in = stamp_base;
   stamp_in.pack_size = position;
   stamp_in.pack_hash = header.table_hash;
   stamp_in.sectors = count;

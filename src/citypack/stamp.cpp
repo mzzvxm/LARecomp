@@ -158,6 +158,7 @@ Stamp MakeStamp(const StampInputs& in) {
   stamp.Set("source_mtime_us", in.source.exists ? std::to_string(in.source.mtime_us) : std::string("0"));
   stamp.Set("mods_size", in.mods.exists ? in.mods.size : 0);
   stamp.Set("mods_mtime_us", in.mods.exists ? std::to_string(in.mods.mtime_us) : std::string("0"));
+  stamp.SetHex("city_overlay", in.city_overlay);
   stamp.Set("drop_mask", uint64_t(in.drop_mask));
   stamp.Set("positions", uint64_t(in.positions));
   stamp.Set("pack_size", in.pack_size);
@@ -192,9 +193,9 @@ StampCheck CheckStamp(const std::filesystem::path& out_dir, const StampInputs& e
   if (!number("source_size", expect.source.exists ? expect.source.size : 0)) return no("the game archive has another size than the pack was built from");
   if (stamp.Get("source_mtime_us") == nullptr || *stamp.Get("source_mtime_us") != (expect.source.exists ? std::to_string(expect.source.mtime_us) : std::string("0")))
     return no("the game archive has another time than the pack was built from");
-  if (!number("mods_size", expect.mods.exists ? expect.mods.size : 0)) return no("the mod archive has changed since the pack was built");
-  if (stamp.Get("mods_mtime_us") == nullptr || *stamp.Get("mods_mtime_us") != (expect.mods.exists ? std::to_string(expect.mods.mtime_us) : std::string("0")))
-    return no("the mod archive has changed since the pack was built");
+  // The mod archive counts only for what it holds of the city (builder.h CityOverlayHash): its size and time change with every mod of any kind.
+  uint64_t overlay = 0;
+  if (!stamp.GetHex("city_overlay", &overlay) || overlay != expect.city_overlay) return no("the mods' own city files have changed since the pack was built");
   if (!number("drop_mask", expect.drop_mask)) return no("the pack leaves out other classes than were asked for");
   if (!number("positions", expect.positions)) return no("the pack has another position encoding than was asked for");
   check.current = true;

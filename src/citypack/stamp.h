@@ -8,7 +8,11 @@
 //
 //   stamp_format, builder_version, pack_format_version   this library's own rules (pack_format.h): bump the numbers there by hand
 //   source_size, source_mtime_us                         xarchive_cache.rpf, the game file the pack was built from
-//   mods_size, mods_mtime_us                             xarchive_mods.rpf, the mod loader's overlay (a modded sector is built from it); 0 when there is none
+//   city_overlay                                         what xarchive_mods.rpf (the mod loader's overlay: a modded sector is built from it) holds of the CITY: a hash of
+//                                                        the files under resources/city/sc in it (0: no mod archive, or none of those). A mod archive that changes for
+//                                                        another reason (a car, a song, a string table) does not make the pack stale: the first start after the launcher's
+//                                                        setup would otherwise rebuild it for nothing
+//   mods_size, mods_mtime_us                             the mod archive's size and time: information only, never compared
 //   drop_mask, positions                                 what the builder was asked for (a pack with decals in it is not the default's)
 //   pack_size, pack_hash                                 integrity and diagnosis (the hash of the table and the name heap)
 //   sectors, hi_triangles, lod_triangles                 information
@@ -23,7 +27,7 @@
 
 namespace larecomp::citypack {
 
-inline constexpr uint32_t kStampFormat = 1;
+inline constexpr uint32_t kStampFormat = 2;
 
 struct StampLine {
   std::string key;
@@ -62,7 +66,8 @@ FileStat StatFile(const std::filesystem::path& path);
 // What the builder says it built from and with.
 struct StampInputs {
   FileStat source;
-  FileStat mods;
+  FileStat mods;               // information only (the stamp keeps it, the check does not compare it)
+  uint64_t city_overlay = 0;   // CityOverlayHash of the mod archive (builder.h)
   uint32_t drop_mask = 0;
   uint32_t positions = 0;
   uint64_t pack_size = 0;
@@ -78,7 +83,7 @@ struct StampCheck {
   bool current = false;
   std::string why;  // when not current: the first line that did not match, in plain words
 };
-// Is the pack in `out_dir` current for these inputs? `expect` carries source, mods, drop_mask and positions (the others are ignored).
+// Is the pack in `out_dir` current for these inputs? `expect` carries source, city_overlay, drop_mask and positions (the others are ignored).
 StampCheck CheckStamp(const std::filesystem::path& out_dir, const StampInputs& expect);
 
 }  // namespace larecomp::citypack

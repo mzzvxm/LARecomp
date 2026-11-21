@@ -21,6 +21,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -54,6 +55,9 @@ struct BuildRequest {
   uint32_t drop_mask = kDefaultDropMask;
   PositionEncoding positions = PositionEncoding::kFloat32;
   uint32_t threads = 0;              // 0: the PC's hardware threads less one, at least one
+  // Called first thing on every worker thread the build starts (not on the calling thread): the game's background build lowers the workers' priority here, so that
+  // the build never takes a core from the game's own threads. Empty: nothing.
+  std::function<void()> worker_start;
   bool force = false;                // build even when the stamp says the pack is current
   bool census_only = false;          // read and count, write nothing (the tool's census)
   std::string app_version;
@@ -119,9 +123,15 @@ struct BuildResult {
   std::filesystem::path pack_path;
 };
 
-// What the stamp is compared with for `request` (stat only).
+// What the mod archive holds of the city: a hash of every file under resources/city/sc in it (their names, sizes and bytes: a modded sector keeps its size when only
+// its vertices move), 0 when there is no mod archive or none of those files. An archive that exists and cannot be read gives a fixed marker, so that a pack built
+// while it was damaged is built again when it is whole. This is what the stamp compares (stamp.h), so a mod of another kind never makes the pack stale. Reads the
+// mod archive's table and the few city files in it; no game file.
+uint64_t CityOverlayHash(const std::filesystem::path& mods_rpf);
+// What the stamp is compared with for `request` (the game archive's stat, and CityOverlayHash of the mod archive).
 StampInputs StampInputsFor(const BuildRequest& request);
-// Stat only: is the pack in request.out_dir current for these inputs? (BuildCityPack asks this itself unless request.force.)
+// Is the pack in request.out_dir current for these inputs? A few file stats and the mod archive's city files (CityOverlayHash); nothing of the game archive is read.
+// (BuildCityPack asks this itself unless request.force.)
 StampCheck CheckCityPack(const BuildRequest& request);
 
 BuildResult BuildCityPack(const BuildRequest& request, ProgressSink* sink);
