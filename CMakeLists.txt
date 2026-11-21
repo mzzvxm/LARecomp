@@ -1248,6 +1248,11 @@ else()
     #   cmake --build <dir> --target larecomp_row_dependency_test, then run it (exit 0 = passed).
     add_executable(larecomp_row_dependency_test EXCLUDE_FROM_ALL src/mc_engine/menus/row_dependency_test.cpp)
     target_include_directories(larecomp_row_dependency_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine")
+    # The Discord presence switch (larecomp_discord_rpc, live: src/discord_rpc/rpc_toggle_rules.h) has a check that needs no game and no Discord; it
+    # also reads the sources that use the rules, so it takes the src folder: cmake --build <dir> --target larecomp_rpc_toggle_test, then run
+    # <dir>/larecomp_rpc_toggle_test <src folder> (exit 0 = passed).
+    add_executable(larecomp_rpc_toggle_test EXCLUDE_FROM_ALL src/discord_rpc/rpc_toggle_rules_test.cpp)
+    target_include_directories(larecomp_rpc_toggle_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     # The thread priority intents (src/os/thread_priority.h) have a check that needs no game:
     #   cmake --build <dir> --target larecomp_thread_priority_test, then run it (exit 0 = passed).
     add_executable(larecomp_thread_priority_test EXCLUDE_FROM_ALL

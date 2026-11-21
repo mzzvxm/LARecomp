@@ -159,7 +159,7 @@
   "type": "bool",
   "default": "true",
   "category": "Discord",
-  "help": "\"Enable Discord Rich Presence.\"",
+  "help": "\"Enable Discord Rich Presence. Live: off clears the presence at once, on shows the game's current state at once.\"",
   "traits": [],
   "comments": [],
   "pp_depth": 0
@@ -1340,7 +1340,7 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/GPU",
-  "help": "\"Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable \"\n    \"refresh display follows the frames. On presents immediately instead, which tears. Read when \"\n    \"frame generation is switched on.\"",
+  "help": "\"Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable \"\n    \"refresh display follows the frames. On presents immediately instead, which tears. Live: read at \"\n    \"every present while frame generation runs.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -6381,10 +6381,9 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/Patches",
-  "help": "\"Disables pairwise collision resolution.\"",
+  "help": "\"Disables pairwise collision resolution. Live: the game's collision function is skipped \" \"or run again at its next call.\"",
   "traits": [
-   "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

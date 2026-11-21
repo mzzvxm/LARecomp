@@ -495,4 +495,5 @@ def main():
     return 0
 
 
-sys.exit(main())
+if __name__ == "__main__":   # tools\check_row_tags.py imports this file for its parsers
+    sys.exit(main())
