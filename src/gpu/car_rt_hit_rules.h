@@ -233,7 +233,7 @@ inline float DenoiseScale(float w) { return 1.0f - DecodeAuxSharp(w); }
 // THE PASS/RULE PAIR: car_rt_refl_cs.hlsl and car_rt_refl_opp.hlsli (MirrorShare, ConeHitCounts, the sign), car_rt_hit_shade.hlsli (their helpers); the paint: shaderpack/variants/car_selfrefl.cpp (version 8:
 // CarReflCoat, g_CarReflC.w bit 1 = kCoatLayerFlag of car_selfrefl_rules.h, debug views 6 and 7). Switch: mcla_gpu_car_rt_coat_layer (debug).
 // PASS RULE of the rerun (perf\scripts\showcase_rt_post.py, rows `bright`, `contrast`, `sharp`, verdict RT-HIT-SHADING-4; camera b, day and night, FAILS on any): over the pixels the neighbour changes (the player's paint with the
-// others on against off, outside the control's noise) (1) the median linear luminance of the player picture is at least 1.0 times the off picture's (rthit2: 0.29 day, 0.22 night; means 0.44, 0.18), (2) the
+// others on against off, outside the control's noise) (1) the median linear luminance of the player picture is at least 1.0 times the off picture's by day, 0.7 by night (the lamps' glints are in the night's environment; rthit2: 0.29 day, 0.22 night; means 0.44, 0.18), (2) the
 // coefficient of variation of the luminance over the interior of those pixels is at least 1.0 times the off picture's (the buildings': rthit2 0.68, 0.47), (3) in the picture of the debug view 6 (the layer's amount) the car's
 // edge goes from a fifth to four fifths of its level over at most 30 px (the cone of rthit2 by the model of this header's test: 190 to 340 px).
 
