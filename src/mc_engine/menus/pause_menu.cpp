@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mc_engine/core/restart.h"
+#include "mc_engine/core/world_detail.h"
 #include "pause_menu.h"
 #include "mc_engine/gameplay/carbon_parts.h"
 #include "mc_engine/camera/camera_look.h"
@@ -1387,7 +1388,10 @@ constexpr double kCamSmoothVals[] = {0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0};
 
 constexpr double kFovValues[] = {0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4,
                                  1.5, 1.6, 1.7, 1.8, 1.9, 2.0};
-constexpr double kLodValues[] = {0.1, 0.5, 1.0, 2.0, 5.0, 10.0};
+// TRAFFIC LOD: AUTO (the cvar's 0: gpu/gpu_class.h kScales, 3X on a high-end graphics card), then the steps. The old 0.1 and 10 are not
+// steps (5 already keeps the most detailed model to 200 m): a value from an older larecomp.toml that is not a step gets an entry of its
+// own while the cvar holds it (RowDynamics::value_label).
+constexpr double kTrafficLodVals[] = {0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0};
 // 40, 45 and 50 sit between the console's 30 and 60: steady on hardware that can't hold 60, and
 // even divisors of 120 Hz (40), 90 Hz (45) and 100 Hz (50) displays.
 constexpr double kFpsCapVals[] = {30.0, 40.0, 45.0, 50.0, 60.0, 120.0, 144.0, 0.0};
@@ -1396,9 +1400,11 @@ constexpr double kFpsCapVals[] = {30.0, 40.0, 45.0, 50.0, 60.0, 120.0, 144.0, 0.
 // fragment-tune table brackets the two values the engine itself uses — 250 is
 // the fragTuneStruct constructor default and 3000 is what the shipped tune file
 // loads. 0 is "leave the tune file alone" and renders as STOCK.
-constexpr double kUnspawnVals[]      = {100.0, 150.0, 200.0, 250.0, 300.0,
+// TRAFFIC RANGE, PEDESTRIANS and PARKED CARS start with AUTO (the traffic range's 0, the densities' -1, where 0 is "none": gpu/gpu_class.h
+// kScales): what AUTO comes to follows the graphics card, and its label says it ("AUTO (400M)").
+constexpr double kUnspawnVals[]      = {0.0, 100.0, 150.0, 200.0, 250.0, 300.0,
                                         400.0, 500.0, 600.0};
-constexpr double kDensityVals[]      = {0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
+constexpr double kDensityVals[]      = {-1.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
 constexpr double kFragDrawDistVals[] = {0.0, 250.0, 500.0, 1000.0, 1500.0,
                                         2000.0, 3000.0, 4000.0};
 
@@ -1761,18 +1767,41 @@ std::string CityLodLabel(double v) {
 }
 constexpr RowDynamics kCityLodDynamics = {.value_label = CityLodLabel};
 
-// 6 rows, no suffix. Width: the longest label is "PROP DRAW DIST" (14) and the longest value "AUTO (2X)" (9): 23 of the 41 a page can take.
+// The labels of the rows that have an AUTO (world_detail.h: the value the class gives, or the value itself).
+std::string TrafficRangeLabel(double v) {
+    return mcla::world_detail::Label(mcla::gpu::gpu_class::Scale::kTrafficRange, v);
+}
+std::string PedDensityLabel(double v) {
+    return mcla::world_detail::Label(mcla::gpu::gpu_class::Scale::kPedDensity, v);
+}
+std::string ParkedDensityLabel(double v) {
+    return mcla::world_detail::Label(mcla::gpu::gpu_class::Scale::kParkedDensity, v);
+}
+std::string TrafficLodLabel(double v) {
+    return mcla::world_detail::Label(mcla::gpu::gpu_class::Scale::kTrafficLod, v);
+}
+constexpr RowDynamics kTrafficRangeDynamics  = {.value_label = TrafficRangeLabel};
+constexpr RowDynamics kPedDensityDynamics    = {.value_label = PedDensityLabel};
+constexpr RowDynamics kParkedDensityDynamics = {.value_label = ParkedDensityLabel};
+constexpr RowDynamics kTrafficLodDynamics    = {.value_label = TrafficLodLabel};
+
+// 6 rows, no suffix. Width: the longest label is "PROP DRAW DIST" (14) and the longest value "AUTO (0.75X)" (12): 26 of the 41 a page can take.
 const ItemDef kWorldDetailItems[] = {
-    Dbl ("PM_RxUnspawn",     "traffic_unspawn_dist", "TRAFFIC RANGE: ",
-         kUnspawnVals, int(sizeof(kUnspawnVals) / sizeof(kUnspawnVals[0])), "%gM"),
-    Dbl ("PM_RxPedDensity",  "ped_density_scale",    "PEDESTRIANS: ",
-         kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
-    Dbl ("PM_RxParkedCars",  "parked_car_scale",     "PARKED CARS: ",
-         kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
+    WithDynamics(Dbl("PM_RxUnspawn", "traffic_unspawn_dist", "TRAFFIC RANGE: ",
+                     kUnspawnVals, int(sizeof(kUnspawnVals) / sizeof(kUnspawnVals[0])), "%gM"),
+                 &kTrafficRangeDynamics),
+    WithDynamics(Dbl("PM_RxPedDensity", "ped_density_scale", "PEDESTRIANS: ",
+                     kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
+                 &kPedDensityDynamics),
+    WithDynamics(Dbl("PM_RxParkedCars", "parked_car_scale", "PARKED CARS: ",
+                     kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
+                 &kParkedDensityDynamics),
     Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DRAW DIST: ",
          kFragDrawDistVals, int(sizeof(kFragDrawDistVals) / sizeof(kFragDrawDistVals[0])),
          "%gM", "", "STOCK"),
-    Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
+    WithDynamics(Dbl("PM_RxLodTraffic", "lod_traffic_scale", "TRAFFIC LOD: ", kTrafficLodVals,
+                     int(sizeof(kTrafficLodVals) / sizeof(kTrafficLodVals[0])), "%gX"),
+                 &kTrafficLodDynamics),
     WithDynamics(Dbl("PM_RxLodCity", "lod_city_scale", "CITY LOD: ", kCityLodVals,
                      int(sizeof(kCityLodVals) / sizeof(kCityLodVals[0])), "%gX"),
                  &kCityLodDynamics),
@@ -3120,7 +3149,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // SHADOWS: 27 and 3.
 // REFLECTIONS (kReflectionItems, 3 rows): "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CAR
 // REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 37. WORLD DETAIL (kWorldDetailItems): "PROP
-// DRAW DIST" 14, "AUTO (2X)" 9: 23.
+// DRAW DIST" 14, "AUTO (0.75X)" 12: 26.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.

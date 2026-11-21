@@ -5403,13 +5403,18 @@
  },
  "lod_traffic_scale": {
   "type": "f64",
-  "default": "1.0",
+  "default": "0.0",
   "category": "MCLA/LOD",
-  "help": "\"How far away traffic cars keep their detailed models. 1.0 is the original distance; higher \"\n    \"keeps the detail longer and costs speed, lower switches to simpler models sooner (0.1 to 10).\"",
+  "help": "\"How far away traffic cars keep their detailed models, as a multiple of the original distance. \"\n    \"0 (auto, the default) is 3.0 on a high-end graphics card, 2.0 on a mid-range one and 1.5 on integrated graphics. \"\n    \"Higher keeps the detail longer and costs processor time; lower simplifies it sooner (0.1 to 10; the menu has \"\n    \"auto, 0.5, 1, 1.5, 2, 3 and 5).\"",
   "traits": [
-   "rex::Range{0.1, 10.0}"
+   "rex::Range{0.0, 10.0}"
   ],
-  "comments": [],
+  "comments": [
+   "// 0 is auto (gpu/gpu_class.h): 3.0 on a high-end graphics card, 2.0 on a mid-range one, 1.5 on integrated graphics and until the",
+   "// card is known. The scale multiplies the game's own distances for a traffic car (Patch_ScaleTrafficLOD, at 0x827903E0 in the",
+   "// car's LOD pick): at 1.0 the most detailed model ends at about 40 m and the middle one at about 155 m, the coarsest goes on to",
+   "// the 500 m where the car is not drawn. 3.0 puts the steps at 120 m and 465 m; more only pushes the second step past the cull."
+  ],
   "pp_depth": 0
  },
  "lod_city_scale": {
@@ -6563,35 +6568,43 @@
  },
  "traffic_unspawn_dist": {
   "type": "f64",
-  "default": "250.0",
+  "default": "0.0",
   "category": "MCLA/Performance",
-  "help": "\"Traffic vehicle unspawn radius in meters (default 400.0, lower = higher FPS in city).\"",
+  "help": "\"How far from you traffic cars are kept, in metres: a car further away is removed. \"\n    \"0 (auto, the default) is 400 (the game's own) on a high-end graphics card, 300 on a mid-range one and 250 on \"\n    \"integrated graphics. Less is faster (100 to 600; the menu has auto, 100, 150, 200, 250, 300, 400, 500 and 600).\"",
   "traits": [
-   "rex::Range{100.0, 600.0}"
+   "rex::Range{0.0, 600.0}"
   ],
-  "comments": [],
+  "comments": [
+   "// 0 is auto (gpu/gpu_class.h kScales): 400 (the game's own) on a high-end graphics card, 300 on a mid-range one, 250 on",
+   "// integrated graphics and until the card is known. A value set by hand is held to 100 to 600."
+  ],
   "pp_depth": 0
  },
  "ped_density_scale": {
   "type": "f64",
-  "default": "0.5",
+  "default": "-1.0",
   "category": "MCLA/Performance",
-  "help": "\"Pedestrian density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).\"",
+  "help": "\"How many people walk the streets, as a multiple of the game's own amount (0 = none, 1 = the game's). \"\n    \"-1 (auto, the default) is 1.0 on a high-end graphics card, 0.75 on a mid-range one and 0.5 on integrated \"\n    \"graphics. Fewer is faster (0 to 2; the menu has auto, 0, 0.25, 0.5, 0.75, 1, 1.5 and 2).\"",
   "traits": [
-   "rex::Range{0.0, 2.0}"
+   "rex::Range{-1.0, 2.0}"
   ],
-  "comments": [],
+  "comments": [
+   "// Below 0 is auto, as for parked_car_scale."
+  ],
   "pp_depth": 0
  },
  "parked_car_scale": {
   "type": "f64",
-  "default": "0.5",
+  "default": "-1.0",
   "category": "MCLA/Performance",
-  "help": "\"Parked car density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).\"",
+  "help": "\"How many cars are parked along the roads, as a multiple of the game's own amount (0 = none, 1 = the game's). \"\n    \"-1 (auto, the default) is 1.0 on a high-end graphics card, 0.75 on a mid-range one and 0.5 on integrated \"\n    \"graphics. Fewer is faster (0 to 2; the menu has auto, 0, 0.25, 0.5, 0.75, 1, 1.5 and 2).\"",
   "traits": [
-   "rex::Range{0.0, 2.0}"
+   "rex::Range{-1.0, 2.0}"
   ],
-  "comments": [],
+  "comments": [
+   "// Below 0 is auto (gpu/gpu_class.h kScales): 1.0 (the game's own) on a high-end graphics card, 0.75 on a mid-range one, 0.5 on",
+   "// integrated graphics and until the card is known. 0 is none, so it cannot be the sentinel as it is for the LOD scales."
+  ],
   "pp_depth": 0
  },
  "global_max_draw_distance": {
