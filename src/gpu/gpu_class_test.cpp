@@ -98,6 +98,9 @@ const Row kTable[] = {
      "AUTO (HIGH)"},
     // Ray traced sun shadows (CITY-RT M1, city_rt_rules.h): high on High only; a Mid card gets it by hand.
     {Effect::kRtShadows, "mcla_gpu_rt_shadows", "off", "off", "high", "AUTO (OFF)", "AUTO (OFF)", "AUTO (HIGH)"},
+    // Reflections on surfaces (ssr_rules.h; the row REFLECTIONS ON SURFACES, GB-J): off on every class until the owner has seen the pictures. The prepared cells (gpu_class.h) are
+    // Low off, Mid high or off, High ultra or high, by the cost run's figures: switching them on is a change of this row and of CheckSsr.
+    {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)", "AUTO (OFF)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
@@ -203,6 +206,30 @@ void CheckVolumetrics() {
   Check(AutoLabelFor(GpuClass::kHigh, Effect::kVolumetrics).size() <= 13, "the longest value of the row fits the page");
 }
 
+// Reflections on surfaces' `auto` (mcla_gpu_ssr, GB-J): OFF ON EVERY CLASS until the owner approves the pictures, so the effect is off by default as before the row existed; a value the player
+// holds (off, high, ultra) is kept in every class; the classes never go down; nothing is called low. When the owner approves, the cells become the prepared ones (Low off, Mid high or off,
+// High ultra or high: gpu_class.h) and the "all off" check below is what changes.
+void CheckSsr() {
+  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
+  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
+  int last = -1;
+  for (const GpuClass c : classes) {
+    const std::string at = "reflections on surfaces on " + std::string(ClassName(c));
+    CheckEq(ResolveFor(c, Effect::kSsr, "auto"), "off", at + ": auto is off until the pictures are approved");
+    for (const char* v : {"off", "high", "ultra"}) {
+      CheckEq(ResolveFor(c, Effect::kSsr, v), v, at + ": the saved '" + v + "' is kept");
+    }
+    CheckEq(AutoLabelFor(c, Effect::kSsr), "AUTO (OFF)", at + ": the row says AUTO (OFF)");
+    const int now = rank(Cell(Effect::kSsr, c));
+    Check(now >= last, at + ": not below the class under it");
+    last = now;
+    const std::string cell(Cell(Effect::kSsr, c));
+    Check(cell == "off" || cell == "high" || cell == "ultra", at + ": the cell '" + cell + "' is off, high or ultra");
+    Check(AutoLabelFor(c, Effect::kSsr).size() <= 12, at + ": the longest value of the row fits the page (AUTO (ULTRA) is 12)");
+  }
+  CheckEq(std::string(CvarName(Effect::kSsr)), "mcla_gpu_ssr", "the cvar's name");
+}
+
 void CheckLabels() {
   CheckEq(AutoLabelOf("high"), "AUTO (HIGH)", "AutoLabelOf(high)");
   CheckEq(AutoLabelOf("Soft"), "AUTO (SOFT)", "AutoLabelOf(Soft)");
@@ -213,7 +240,7 @@ void CheckLabels() {
 // contact shadows and the bounce light are off / high / ultra, the car self-reflections off / on; every cell of the table is one of the
 // words its setting allows, and no cell and no label of an `auto` says low.
 void CheckWords() {
-  for (const Effect effect : {Effect::kAmbientOcclusion, Effect::kContactShadows, Effect::kSsgi, Effect::kLightShadows}) {
+  for (const Effect effect : {Effect::kAmbientOcclusion, Effect::kContactShadows, Effect::kSsgi, Effect::kLightShadows, Effect::kSsr}) {
     const std::string name(CvarName(effect));
     for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
       const std::string cell(Cell(effect, c));
@@ -700,6 +727,7 @@ int main() {
   CheckAmbientOcclusion();
   CheckLightShadows();
   CheckVolumetrics();
+  CheckSsr();
   CheckLabels();
   CheckWords();
   CheckNames();

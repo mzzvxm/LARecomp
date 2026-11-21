@@ -23,6 +23,7 @@
 #include "ao_stable.h"
 #include "car_rt_ao.h"
 #include "scene_noise.h"
+#include "screen_shared.h"
 #include "car_shadow_map.h"
 #include "city_rt_shadow.h"
 #include "contact_trace.h"
@@ -649,9 +650,6 @@ void AmbientOcclusion::Shutdown() {
     image = HostImage{};
   }
   weight_ = HostImage{};
-  for (HostImage& image : colour_) {
-    image = HostImage{};
-  }
   gi_ = HostImage{};
   gi_dn_ = HostImage{};
   for (HostImage& image : gi_hist_) {
@@ -1082,6 +1080,19 @@ void AmbientOcclusion::BeginFrame() {
     gbuffer_->Want(gbuffer::Consumer::kAmbientOcclusion, ao_gbuffer::PlanesWanted(normals_setting, mode_ != Mode::kOff || contact_mode_ != Mode::kOff));
     gbuffer_->Want(gbuffer::Consumer::kBounceLight, ao_gbuffer::BouncePlanesWanted(normals_setting, gi_active_));
   }
+  screen_wants_ = false;
+  if (screen_) {
+    // The shared screen products (screen_shared.h): what this family reads, declared for the owner's census line (it makes none of them in this step: the depth chain, the normal image and
+    // the colour chain are still this class's, handed over at the end of Run). The debug-only G-buffer normals are asked for as the G-buffer is.
+    const uint32_t normal = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get() ? screen::ProductBit(screen::kNormal) : 0u;
+    const uint32_t depth = screen::ProductBit(screen::kLinDepth);
+    screen_->Want(screen::Consumer::kAmbientOcclusion, mode_ != Mode::kOff ? depth | normal : 0u);
+    screen_->Want(screen::Consumer::kContactShadows, contact_mode_ != Mode::kOff ? depth | normal : 0u);
+    screen_->Want(screen::Consumer::kBounceLight, gi_active_ ? depth | normal | screen::ProductBit(screen::kColourPre) : 0u);
+    // A consumer outside the family (SSR, a debug view of the Hi-Z) wants the depth chain: this trigger runs the depth pass alone for it when the occlusion and the contact shadows are off
+    // (OnResolve). Only once the depth pass's pipelines are made (a frame never waits for a compile).
+    screen_wants_ = ready_ && screen_->NeedsDepthChain() && EnsureScreenDepthPipelines();
+  }
   const bool gi_test = test && gi_active_;
   if (gi_test != gi_test_) {
     gi_test_ = gi_test;
@@ -1089,6 +1100,24 @@ void AmbientOcclusion::BeginFrame() {
                 "mcla_gpu_ao on)",
                 gi_test ? "on" : "off");
   }
+}
+
+bool AmbientOcclusion::EnsureScreenDepthPipelines() {
+  // The depth pass (plain and multisampled) is all a frame for the shared screen products records. At the start it was listed only where the occlusion, the contact shadows or the
+  // census use it; the first frame that needs it without them lists it and makes it on a worker thread of its own (HoldUntilBuilt's way).
+  const std::vector<uint32_t> variants = {kVDepth, kVDepthMs};
+  std::vector<HostPrecache::Item> fresh;
+  for (const uint32_t variant : variants) {
+    if (!listed_[variant] && !pipelines_[variant]) {
+      listed_[variant] = true;
+      fresh.push_back({HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant), VariantName(variant), [this, variant] { return MakePipeline(variant); }});
+    }
+  }
+  if (!fresh.empty()) {
+    const uint32_t count = passes_->precache().AddLive("shared screen products", std::move(fresh));
+    REXLOG_INFO("[gpu] ao: the shared screen products want the depth chain with the occlusion off: {} depth pipelines are made in the background first, and the frames run from the frame they are done", count);
+  }
+  return VariantsReady(variants);
 }
 
 uint64_t AmbientOcclusion::HeldBytes() const {
@@ -1114,9 +1143,6 @@ uint64_t AmbientOcclusion::HeldBytes() const {
     add(image);
   }
   add(weight_);
-  for (const HostImage& image : colour_) {
-    add(image);
-  }
   add(gi_);
   add(gi_dn_);
   for (const HostImage& image : gi_hist_) {
@@ -1593,11 +1619,13 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   PlanContact(&plan);
   const bool contact = plan.contact.mode != Mode::kOff;
   plan.probe = census_every_ != 0 && (probes_done_ < 3 || frame_ % census_every_ == 0);
+  // The occlusion and the contact shadows are off but a consumer of the shared screen products (screen_shared.h) wants the depth chain: a frame of the depth pass alone, at the traced size.
+  plan.screen = screen_wants_ && !plan.occlusion && !contact;
   if (!plan.occlusion && !contact) {
-    if (!plan.probe) {
+    if (!plan.probe && !plan.screen) {
       return false;
     }
-    plan.mode = Mode::kHigh;  // the cheaper size is enough for a statistic
+    plan.mode = Mode::kHigh;  // the cheaper size is enough for a statistic (and for the Hi-Z)
     plan.apply = false;
   }
   plan.upscaler = upscaler_running;
@@ -2074,6 +2102,48 @@ bool AmbientOcclusion::FrameMotion(temporal::Mat4* motion, Pose* source, bool* c
   return true;
 }
 
+bool AmbientOcclusion::FrameCameraNow(FrameCameraOut* out) const {
+  *out = FrameCameraOut{};
+  ao_gbuffer::Rows rows;
+  const ao_gbuffer::Camera camera = FrameCameraRows(&rows);
+  if (camera == ao_gbuffer::Camera::kVertexBank || camera == ao_gbuffer::Camera::kPrevious) {
+    out->have_rows = true;
+    for (int i = 0; i < 3; ++i) {
+      out->right[i] = rows.x[i];
+      out->up[i] = rows.y[i];
+      out->forward[i] = rows.z[i];
+    }
+  }
+  if (have_previous_ && previous_pause_ == trigger_pause_) {
+    temporal::Mat4 motion;
+    Pose pose = Pose::kStill;
+    bool cut = false;
+    if (FrameMotion(&motion, &pose, &cut) && !cut) {
+      // The same three rows ChooseHistory's caller hands the accumulation pass (FillPush): in this renderer's view space the game's motion is S G S, S = diag(1, 1, -1, 1), and the shader's row r is
+      // column r of it.
+      for (int r = 0; r < 3; ++r) {
+        for (int k = 0; k < 4; ++k) {
+          const double sign = ((k == 2) != (r == 2)) ? -1.0 : 1.0;
+          out->motion[r * 4 + k] = float(sign * motion.m[k][r]);
+        }
+      }
+      out->have_motion = true;
+      out->motion_still = pose == Pose::kStill;
+    }
+  }
+  return out->have_rows || out->have_motion;
+}
+
+bool AmbientOcclusion::VehicleTableNow(VehicleTableOut* out) const {
+  *out = VehicleTableOut{};
+  if (vehicle_table_frame_ != frame_ || vehicle_table_ids_ == 0 || vehicle_table_slot_ == kNoSlot) {
+    return false;
+  }
+  out->slot = vehicle_table_slot_;
+  out->ids = vehicle_table_ids_;
+  return true;
+}
+
 AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) const {
   HistoryUse use;
   use.cap = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_history.Get(), 1, 64));
@@ -2229,6 +2299,9 @@ uint32_t AmbientOcclusion::RecordVehicleTable(plume::RenderCommandList* list, co
                                              plume::RenderTextureLayout::SHADER_READ));
   image.layout = plume::RenderTextureLayout::SHADER_READ;
   *slot = image.slot;
+  vehicle_table_frame_ = frame_;
+  vehicle_table_ids_ = mask;
+  vehicle_table_slot_ = image.slot;
   return mask;
 }
 
@@ -2609,8 +2682,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   if (normals_.on) {
     RecordNormals(list, plan, base, normals_);
   }
-  if (plan.gi.on) {
-    RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot);
+  if (plan.gi.on && screen_) {
+    // The capture is the shared screen products': they keep the chain's images and count it made this frame (screen_shared.h CapturePre, step 5 of the order); the pass, its pipelines and its
+    // constants are still this class's until SS-2, so what is recorded, and where, is what it was.
+    screen_->CapturePre([&] { RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot); });
   }
 
   // The ray traced occlusion and sun terms around the player's car and the cars beside it (car_rt_ao.h): one compute pass over the level 0 depth,
@@ -2696,9 +2771,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     HostImage* main_out = &raw_;
     if (plan.gi.on) {
       Push gi_push = push;
-      gi_push.slots[0] = colour_[0].slot;
-      gi_push.slots[1] = colour_[1].slot;
-      gi_push.slots2[3] = colour_[2].slot;
+      gi_push.slots[0] = Colour(0).slot;
+      gi_push.slots[1] = Colour(1).slot;
+      gi_push.slots2[3] = Colour(2).slot;
       gi_push.shape[2] = plan.gi.thickness;
       gi_push.shape[3] = plan.gi.facing;
       // The far ring: its reach and its steps (hlsl/ao_main_ps.hlsl; none: the near samples only).
@@ -2961,7 +3036,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       // whether it is a source of light); the strength rides in shape.y, the gain limit in the flags' bits 8-15 and
       // the cap (the ceiling) in bits 26-31.
       push.slots[2] = gi_bounce->slot;
-      push.slots2[1] |= colour_[0].slot;
+      push.slots2[1] |= Colour(0).slot;
       push.shape[1] = plan.gi.strength;
       push.slots2[2] = (push.slots2[2] & ~(ssgi_light::kLimitMask | ssgi_light::kCapMask)) |
                        ((ssgi_light::LimitCode(plan.gi.limit) << ssgi_light::kLimitShift) & ssgi_light::kLimitMask) |
@@ -2975,7 +3050,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       // (hlsl/ao_color_ps.hlsl pass 2): 1 the bounce, 2-4 the chain's levels, 5 the bounce cleaned,
       // 6 the visibility.
       const uint32_t v = plan.gi.view;
-      const HostImage& shown = (v >= 2 && v <= 4) ? colour_[v - 2]
+      const HostImage& shown = (v >= 2 && v <= 4) ? Colour(v - 2)
                                : v == 7           ? *gi_history
                                : v == 8           ? *gi_bounce
                                : v == 9           ? gi_weight_
@@ -3137,6 +3212,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   linear_depth_tan_[0] = base.lens[0];
   linear_depth_tan_[1] = base.lens[1];
   ran_this_frame_ = true;
+  PublishScreen(list, summary, plan, base);
   if (plan.occlusion && applied) {
     if (runs_ == 0) {
       REXLOG_INFO("[gpu] ao: the first occlusion pass: {} at {}x{} (visibility {}x{}), {} depth, "
@@ -3163,6 +3239,50 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     }
   }
   return true;
+}
+
+void AmbientOcclusion::PublishScreen(plume::RenderCommandList* list, const ResolveCache::Summary& summary, const Plan& plan, const Push& base) {
+  if (!screen_) {
+    return;
+  }
+  // The images this frame's passes made, as they are NOW (the bounce light's ping-pong swap of the depth image is done: linear_depth_image_ is this frame's level 0). The coarser levels
+  // are made by the occlusion and the census's probe only; the normal image while the frame used the G-buffer's plane; the full size depth beside a half size trace. (The bounce light's colour
+  // chain is the owner's since SS-1: CapturePre told it the chain was made.)
+  // CHECK (not run): a frame for the screen products alone (Plan::screen) in the pause menu's, the garage's and the map's 4x view and with the host's MSAA at 2, 4 and 8: it is the census's
+  // probe frame without the readback and the coarser levels, which those views and sample counts already run.
+  ScreenShared::Adopted adopted;
+  adopted.depth[0] = linear_depth_image_;
+  if (plan.occlusion || plan.probe) {
+    adopted.depth[1] = &depth_[1];
+    adopted.depth[2] = &depth_[2];
+  }
+  adopted.depth_full = plan.SplitContact() ? &depth_full_ : nullptr;
+  adopted.normal = normals_.on ? &normal_ : nullptr;
+  adopted.render[0] = plan.render[0];
+  adopted.render[1] = plan.render[1];
+  adopted.host_samples = summary.source ? summary.source->host_samples : 1u;
+  adopted.sample0 = summary.host_sample;
+  adopted.pause_view = trigger_pause_;
+  adopted.owner_generation = generation_;
+  // The lens is the previous frame's anchor camera, the one this trigger's passes were made with (FillPush).
+  screen::ScreenCamera& camera = adopted.camera;
+  camera.tan_half_fov[0] = base.lens[0];
+  camera.tan_half_fov[1] = base.lens[1];
+  for (int i = 0; i < 4; ++i) {
+    camera.lin[i] = base.lin[i];
+  }
+  if (trigger_camera_valid_) {
+    camera.flags = screen::kCameraValid;
+    camera.near_plane = float(trigger_camera_.near_plane);
+    camera.far_plane = float(trigger_camera_.far_plane);
+    for (int row = 0; row < 4; ++row) {
+      for (int col = 0; col < 4; ++col) {
+        camera.view_projection[row * 4 + col] = float(trigger_camera_.view_projection.m[row][col]);
+        camera.view_inverse[row * 4 + col] = float(trigger_camera_.view_inverse.m[row][col]);
+      }
+    }
+  }
+  screen_->Publish(list, adopted);
 }
 
 bool AmbientOcclusion::RecordApply(plume::RenderCommandList* list,
@@ -3444,6 +3564,39 @@ uint32_t AmbientOcclusion::FindCarSunSlot() {
       product->views.Slot(*device_, *heap_, *product->texture, product->format,
                           car_sun_key_.levels(), format::kHostSwizzleRGBA, "ao car sun image view");
   return slot == kInvalidBindlessSlot ? kNoSlot : slot;
+}
+
+bool AmbientOcclusion::TriggerViewInverse(float out[16], bool* frames_own) const {
+  // The same choice CarSunLookupColumns makes: this frame's own pose where the vertex constants are trusted for it, else the last frame's camera.
+  temporal::Mat4 world = previous_.view_inverse;
+  bool own_pose = false;
+  if (vs_pose_trusted_ && vs_view_inverse_draws_ != 0) {
+    temporal::Mat4 own;
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        own.m[r][c] = double(vs_view_inverse_[r * 4 + c]);
+      }
+    }
+    if (PoseSane(own)) {
+      world = own;
+      own_pose = true;
+    }
+  }
+  if (!own_pose && !trigger_camera_valid_) {
+    return false;  // no camera of the last frame to fall back on
+  }
+  if (!PoseSane(world)) {
+    return false;
+  }
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      out[r * 4 + c] = float(world.m[r][c]);
+    }
+  }
+  if (frames_own != nullptr) {
+    *frames_own = own_pose;
+  }
+  return true;
 }
 
 bool AmbientOcclusion::CarSunLookupColumns(float columns[12]) const {
@@ -4002,12 +4155,10 @@ bool AmbientOcclusion::PrepareGi(const ResolveCache::Summary& summary,
 }
 
 bool AmbientOcclusion::EnsureGiImages(const Plan& plan) {
+  // The colour chain's images are the owner's (the same sizes, format and names as before).
+  const uint32_t colour_sizes[screen::kColourPreLevels][2] = {{plan.ao[0], plan.ao[1]}, {plan.level[0][0], plan.level[0][1]}, {plan.level[1][0], plan.level[1][1]}};
   bool ok =
-      passes_->EnsureImage(colour_[0], plan.ao[0], plan.ao[1], kGiFormat, "ssgi colour") &&
-      passes_->EnsureImage(colour_[1], plan.level[0][0], plan.level[0][1], kGiFormat,
-                           "ssgi colour 1/2") &&
-      passes_->EnsureImage(colour_[2], plan.level[1][0], plan.level[1][1], kGiFormat,
-                           "ssgi colour 1/4") &&
+      screen_ && screen_->EnsureColourPre(colour_sizes, kGiFormat) &&
       passes_->EnsureImage(gi_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi visibility and bounce") &&
       passes_->EnsureImage(gi_dn_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi denoised") &&
       passes_->EnsureImage(gi_hist_[0], plan.ao[0], plan.ao[1], kGiFormat, "ssgi history 0") &&
@@ -4028,10 +4179,8 @@ void AmbientOcclusion::ReleaseGiImages() {
   if (!passes_) {
     return;
   }
-  for (HostImage& image : colour_) {
-    if (image.texture) {
-      passes_->ReleaseImage(image);
-    }
+  if (screen_) {
+    screen_->ReleaseColourPre();
   }
   for (HostImage* image : {&gi_, &gi_dn_, &gi_hist_[0], &gi_hist_[1], &depth_prev_, &gi_weight_}) {
     if (image->texture) {
@@ -4043,6 +4192,10 @@ void AmbientOcclusion::ReleaseGiImages() {
     history_valid_ = false;
     history_gi_ = false;
   }
+}
+
+HostImage& AmbientOcclusion::Colour(uint32_t level) const {
+  return screen_->ColourPre(level);
 }
 
 void AmbientOcclusion::RecordColourChain(plume::RenderCommandList* list, const Plan& plan,
@@ -4071,23 +4224,23 @@ void AmbientOcclusion::RecordColourChain(plume::RenderCommandList* list, const P
     push.slots2[2] |= kColourOneSampleFlag;
     push.slots2[0] = base.slots[1];
   }
-  DrawPass(list, colour_[0], Pipeline(ms ? kVColorMs : kVColor), push);
+  DrawPass(list, Colour(0), Pipeline(ms ? kVColorMs : kVColor), push);
   // The coarser levels, one pass each, as the depth chain's.
   plume::RenderPipeline* mip = Pipeline(kVColorMip);
   push = base;
   push.slots2[2] &= ~0xFFu;
-  push.slots[2] = colour_[0].slot;
+  push.slots[2] = Colour(0).slot;
   push.sizes[0] = float(plan.level[0][0]);
   push.sizes[1] = float(plan.level[0][1]);
   push.sizes[2] = float(plan.ao[0]);
   push.sizes[3] = float(plan.ao[1]);
-  DrawPass(list, colour_[1], mip, push);
-  push.slots[2] = colour_[1].slot;
+  DrawPass(list, Colour(1), mip, push);
+  push.slots[2] = Colour(1).slot;
   push.sizes[0] = float(plan.level[1][0]);
   push.sizes[1] = float(plan.level[1][1]);
   push.sizes[2] = float(plan.level[0][0]);
   push.sizes[3] = float(plan.level[0][1]);
-  DrawPass(list, colour_[2], mip, push);
+  DrawPass(list, Colour(2), mip, push);
 }
 
 // ---------------------------------------------------------------------------
@@ -4243,7 +4396,7 @@ void AmbientOcclusion::OnPresent() {
   // Nothing to compute for a second (the occlusion off, the contact shadows off or gated to nothing):
   // the images go back (they are made again by the first trigger after).
   const bool contact_working = contact_mode_ != Mode::kOff && contact_state_ == ContactState::kActive;
-  if (mode_ == Mode::kOff && !contact_working) {
+  if (mode_ == Mode::kOff && !contact_working && !screen_wants_) {
     if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames &&
         census_every_ == 0) {
       ReleaseImages();

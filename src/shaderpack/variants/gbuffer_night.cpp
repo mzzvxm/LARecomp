@@ -177,30 +177,11 @@ std::string LaneList(const Found& f, bool as_interpolant) {
   return std::format("float3({}.{}, {}.{}, {}.{})", name(0), f.lane[0], name(1), f.lane[1], name(2), f.lane[2]);
 }
 
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // The analysis
 // ---------------------------------------------------------------------------
-
-std::string FirstDiffuse(const std::vector<Line>& lines) {
-  static constexpr std::string_view kFetch = "tfetch2D(DiffuseSampler_Texture2DDescriptorIndex";
-  for (const Line& line : lines) {
-    const size_t at = line.code.find(kFetch);
-    if (at == std::string_view::npos) continue;
-    const Dest dest = ParseDest(line.code);
-    if (!dest.valid || !dest.is_register) continue;
-    // the swizzle after the call: `...float2(0, 0)).xwyz;`
-    const size_t close = line.code.rfind(").");
-    std::string swizzle;
-    if (close != std::string_view::npos) {
-      swizzle = std::string(line.code.substr(close + 2));
-      while (!swizzle.empty() && !std::string_view("xyzw").contains(swizzle.back())) swizzle.pop_back();
-    }
-    return std::format("{}.{} = tex.{}", dest.reg, dest.lanes.empty() ? "xyzw" : std::string(dest.lanes), swizzle.empty() ? "xyzw" : swizzle);
-  }
-  return std::string();
-}
-
-}  // namespace
 
 NightAnalysis AnalyseGBufferNight(std::string_view hlsl) {
   NightAnalysis out;
@@ -235,8 +216,6 @@ NightAnalysis AnalyseGBufferNight(std::string_view hlsl) {
     return false;
   };
   const auto distinct3 = [](const std::string& lanes) { return lanes.size() == 3 && lanes[0] != lanes[1] && lanes[1] != lanes[2] && lanes[0] != lanes[2]; };
-
-  out.diffuse = FirstDiffuse(lines);
 
   // 1. The sun term.
   Found found;
@@ -439,6 +418,7 @@ NightAnalysis AnalyseGBufferNight(std::string_view hlsl) {
   out.found = true;
   out.how = found.how;
   out.line = int(found.line);
+  out.albedo = AnalyseGBufferAlbedo(text);  // RT2: the diffuse texel (a shader without one writes the "no data" code there)
   if (all_pristine) {
     out.interpolant = true;
     out.expression = LaneList(found, true);
@@ -464,16 +444,16 @@ NightAnalysis AnalyseGBufferNight(std::string_view hlsl) {
 
 namespace {
 
-// The write of the plane after the game's last colour statement. PHASE 2 SEAM: the albedo (RT2) and material (RT3) outputs of src/gpu/gbuffer_types.h are written here, each
-// under its own mode bit (GB_MODE_WRITE_ALBEDO, GB_MODE_WRITE_MATERIAL), from NightAnalysis::diffuse and the material word in g_GBufferMode.y; the output list below gets
-// `out float4 oC2 : SV_Target2` and `out float2 oC3 : SV_Target3` with them.
-std::string NightWriteBlock(std::string_view normal_expression) {
+// The write of the planes after the game's last colour statement: RT1, the normal (under GB_MODE_WRITE_NORMAL), then RT2, the albedo and the lit weight (gbuffer_albedo.h, under
+// GB_MODE_WRITE_ALBEDO), then RT3, the smoothness, the class and the flags of the draw's material word in g_GBufferMode.y (gbuffer_material_plane.h, under GB_MODE_WRITE_MATERIAL).
+std::string NightWriteBlock(std::string_view normal_expression, const GBufferAlbedo& albedo) {
   return "\n\toC1 = float2(0.0f, 0.0f);\n"
          "\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n"
          "\t\toC1 = GbRt1Encode(" +
          std::string(normal_expression) +
          ");\n"
-         "\t}";
+         "\t}" +
+         GBufferAlbedoWriteText(albedo) + GBufferMaterialWriteText();
 }
 
 }  // namespace
@@ -516,13 +496,28 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
     }
   }
 
-  // 0. The capture of a normal the shader computes, before the statement that uses it (offsets of the text as it is now: first).
-  if (found.capture_at != std::string::npos) text.insert(found.capture_at, found.capture);
+  // 0. The captures: of a normal the shader computes, before the statement that uses it, and of the diffuse texel the shader overwrites later, right after its fetch (offsets of the text
+  // as it is now: first, the later offset first so that the earlier one does not move).
+  {
+    const GBufferAlbedo& albedo = found.albedo;
+    const bool capture_albedo = albedo.found && albedo.captured;
+    const bool capture_normal = found.capture_at != std::string::npos;
+    if (capture_albedo && capture_normal && albedo.capture_at <= found.capture_at) {
+      text.insert(found.capture_at, found.capture);
+      text.insert(albedo.capture_at, albedo.capture);
+    } else {
+      if (capture_albedo) text.insert(albedo.capture_at, albedo.capture);
+      if (capture_normal) text.insert(found.capture_at, found.capture);
+    }
+  }
 
-  // 1. The second output, after the game's colour output (before the SV_Coverage of the alpha test spec variant).
+  // 1. The second, third and fourth outputs, after the game's colour output (before the SV_Coverage of the alpha test spec variant): RT1 the normal, RT2 the albedo and the lit weight, RT3
+  // the smoothness and the class.
   static constexpr Piece kOutput[] = {Lit("\tout float4 oC0 : SV_Target0")};
   if (!ReplaceOnce(text, kOutput, 0, 0, "oC0 : SV_Target0 output",
-                   [](std::string_view group) { return std::string(group) + "\n\t, out float2 oC1 : SV_Target1"; }, &error)) {
+                   [](std::string_view group) {
+                     return std::string(group) + "\n\t, out float2 oC1 : SV_Target1" + std::string(kGBufferAlbedoOutput) + std::string(kGBufferMaterialOutput);
+                   }, &error)) {
     return fail(std::move(error));
   }
 
@@ -542,22 +537,33 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
   // 4. The write, after the game's last statement of the colour (so after the alpha test's discard).
   static constexpr Piece kWrite[] = {Lit("oC0 = applyBlendPremult(oC0);")};
   if (!ReplaceOnce(text, kWrite, 0, 0, "the game's colour write",
-                   [&](std::string_view group) { return std::string(group) + NightWriteBlock(found.expression); }, &error)) {
+                   [&](std::string_view group) { return std::string(group) + NightWriteBlock(found.expression, found.albedo); }, &error)) {
     return fail(std::move(error));
   }
 
-  // What the text must hold now: one second output, one call, the helper once, the capture as many times as it was made.
+  // What the text must hold now: the second, third and fourth outputs, one call each, the helpers once, the captures as many times as they were made.
   const std::string call = "oC1 = GbRt1Encode(" + found.expression + ");";
+  const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + found.albedo.expression + "), GbMaterialLit(g_GBufferMode.y));";
   const struct {
     std::string_view needle;
     size_t want;
   } kChecks[] = {
       {"oC1 : SV_Target1", 1},
+      {"oC2 : SV_Target2", 1},
+      {"oC3 : SV_Target3", 1},
       {call, 1},
+      {"oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);", 1},
+      {"oC3 = float2(0.0f, 0.0f);", 1},
+      {kGBufferMaterialWriteLine, 1},
+      {albedo_call, found.albedo.found ? 1u : 0u},
       {"float2 GbRt1Encode(float3 n)", 1},
       {"float2 GbOctEncode(float3 n)", 1},
+      {"float3 GbAlbedoEncode(float3 albedo)", 1},
+      {"float GbMaterialLit(uint word)", 1},
+      {"float2 GbMaterialRt3(uint word)", 1},
       {"oC0 = applyBlendPremult(oC0);", 1},
       {"float3 gbNormal = ", found.capture_at == std::string::npos ? 0u : 1u},
+      {"float3 gbAlbedo = ", found.albedo.found && found.albedo.captured ? 1u : 0u},
       {"\x01", 0},
   };
   for (const auto& check : kChecks) {

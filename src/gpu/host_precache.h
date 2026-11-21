@@ -100,7 +100,9 @@ class HostPrecache {
     kCarShadowMap = 13,     // CarShadowMap: its matrix pass and the depth-only pipelines of the car's vertex formats (car_shadow_map.h VariantKey)
     kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h)
     kLocalShadow = 22,      // LocalShadow: the depth-only pipelines of the headlight shadow replay, one per (vertex shader, layout, faces...) (local_shadow.h)
-    kGiField = 30,          // GiField: the probe field's reset and weights compute passes (gi_field.h Variant); 23 and 24 are the screen effects' on other branches
+    kGiField = 30,          // GiField: the probe field's reset and weights compute passes (gi_field.h Variant)
+    kScreenShared = 23,     // ScreenShared: its Hi-Z pass (screen_shared.h)
+    kScreenReflections = 24,  // ScreenReflections: its trace, accumulation and resolve passes (ssr.h)
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;

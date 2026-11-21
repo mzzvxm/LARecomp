@@ -48,6 +48,8 @@ add_library(larecomp_gpu OBJECT
     frame.cpp
     gbuffer.cpp
     gi_field.cpp
+    gbuffer_material.cpp
+    gbuffer_materials.cpp
     geometry.cpp
     gpu_class.cpp
     host_passes.cpp
@@ -62,6 +64,8 @@ add_library(larecomp_gpu OBJECT
     latency.cpp
     latency_streamline.cpp
     layout.cpp
+    light_manager.cpp
+    local_lights.cpp
     memory_census.cpp
     msaa_level.cpp
     native_window.cpp
@@ -83,6 +87,8 @@ add_library(larecomp_gpu OBJECT
     resolve_memory.cpp
     samplers.cpp
     scene.cpp
+    screen_shared.cpp
+    ssr.cpp
     shaders.cpp
     shadow_filter.cpp
     shafts.cpp
@@ -277,6 +283,47 @@ add_executable(larecomp_gi_frame_test EXCLUDE_FROM_ALL gi_frame_test.cpp)
 # against a brute force, and reads the three gi_field_*.hlsl files for their registers) likewise:
 #   cmake --build <build dir> --target larecomp_gi_field_rules_test, then run src/gpu/larecomp_gi_field_rules_test [-v] [<hlsl dir>] (exit 0 = passed).
 add_executable(larecomp_gi_field_rules_test EXCLUDE_FROM_ALL gi_field_rules_test.cpp)
+# The one light description (light_frame.h: Light, LightFrame, the 64 byte GpuLight and its bits; light_id.h: the ids, a street lamp's being the old LampKey / KeyOf; light_laws.h: the
+# headlight's, the game's lamp's and the volume's laws held to the rig's LampScale and the game's numbers; light_convert.h: the conversions from the headlight rig, the game's lamp
+# list, the shadow replay and into the volume's lamp; and it compiles hlsl/light_laws.hlsli as C++ and compares it with the twin) likewise:
+#   cmake --build <dir> --target larecomp_light_frame_test, then run src/gpu/larecomp_light_frame_test [<hlsl/light_laws.hlsli>] (exit 0 = passed).
+add_executable(larecomp_light_frame_test EXCLUDE_FROM_ALL light_frame_test.cpp)
+# The shared screen products' frozen interface (screen_frame.h, screen_rules.h: the products, the consumers' Want registry, the Hi-Z chain's sizes, the plan, the frame and its
+# generation; it compiles hlsl/screen_hiz.hlsli as C++ and compares it with the twin, and reads the sources it is given) likewise:
+#   cmake --build <dir> --target larecomp_screen_shared_test, then run src/gpu/larecomp_screen_shared_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.cpp)
+# The screen-space reflections' rules (ssr_rules.h: levels, sizes, the decision, the push block, the wetness) and the pure HLSL (hlsl/ssr_common.hlsli and ssr_trace.hlsli compiled as C++: the class
+# gate, the BRDF, the GGX sampling, the virtual image's reprojection, the Hi-Z march against analytic scenes and a brute force march) likewise; it reads the sources it is given:
+#   cmake --build <dir> --target larecomp_ssr_test, then run src/gpu/larecomp_ssr_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)
+# The material channel (gbuffer_material.h: the class table of the 192 shader groups, the gloss table, the specular exponent's mapping to a smoothness, the material word, the table file the
+# shader pack build writes and the draw's word) likewise; with the folder shaderpack/baseline (hlsl-rpf and hlsl-xex with their shader_report.tsv) it also checks the tables against the
+# translated HLSL of the retail game:
+#   cmake --build <dir> --target larecomp_gbuffer_material_test, then run src/gpu/larecomp_gbuffer_material_test [<shaderpack/baseline>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_material_test EXCLUDE_FROM_ALL gbuffer_material_test.cpp)
+# The passive light manager's rules (light_manager_rules.h: the slot table, the collector that makes one LightFrame from the headlight rig, the replay's maps and the volume's street lamps, the
+# GPU buffer, and the self-checks against the headlight block, the volume's inputs and the frame's own invariants, held to the real structs and the real lamp picker, and each field's
+# deliberate difference found) likewise:
+#   cmake --build <dir> --target larecomp_light_manager_test, then run src/gpu/larecomp_light_manager_test (exit 0 = passed).
+add_executable(larecomp_light_manager_test EXCLUDE_FROM_ALL light_manager_test.cpp)
+# The deferred local light pass's rules (local_lights_rules.h: which lights the pass takes from the frame and from the lamp A/B, the camera's rows and a pixel's world position, the game's night
+# light intensity and height factor, the votes that pick them from the draws' constants, the scissor of a light, the buffer and the push block the shader reads; it compiles
+# hlsl/local_light.hlsli as C++ and compares it with the twin, and reads the sources it is given: the shaders' CMake lines, the settings, the A/B's hook in mod_lights.cpp) likewise:
+#   cmake --build <dir> --target larecomp_local_lights_test, then run src/gpu/larecomp_local_lights_test <src dir> (exit 0 = passed).
+add_executable(larecomp_local_lights_test EXCLUDE_FROM_ALL local_lights_test.cpp)
+# What feeds that pass besides the frame's lights (local_lights_sources.h, GB-H3: the police light bars, the other cars' head, rear, turn and reverse lamps, the mods' lamps the game's grid is not
+# lighting, the budgets a class and a tier), held to the night probe's recorded points (the player, a racer, three traffic cars), to the lamp picker's score and to the one laws' pixel term;
+# it also reads the sources it is given (the settings, the manager's cars, the mod loader's publish, the pass's wiring):
+#   cmake --build <dir> --target larecomp_local_lights_sources_test, then run src/gpu/larecomp_local_lights_sources_test <src dir> (exit 0 = passed).
+add_executable(larecomp_local_lights_sources_test EXCLUDE_FROM_ALL local_lights_sources_test.cpp)
+# The vehicles' light points, all 19 kinds (light_points.h: the hook's decoder and the table keyed by the light object; car_lights.h: the cars, their frames, sides, directions, bits and levels,
+# the omni lights the lamps make, the census line; mod_light_source.h: a mod's lamps as candidates) held to the night probe's recorded points (the player, two racers, three traffic cars) likewise:
+#   cmake --build <dir> --target larecomp_car_lights_test, then run src/gpu/larecomp_car_lights_test (exit 0 = passed).
+add_executable(larecomp_car_lights_test EXCLUDE_FROM_ALL car_lights_test.cpp)
+# The per-texture material table (gbuffer_materials.h: the text format and its parser, the keys, what a row does to a word, the files' hot reload, the census lines, the shader names file) likewise;
+# with tools/gbuffer_materials/sample_table.txt (the file the Python tools' tests also read) it checks that the sample parses:
+#   cmake --build <dir> --target larecomp_gbuffer_materials_test, then run src/gpu/larecomp_gbuffer_materials_test [<tools/gbuffer_materials/sample_table.txt>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_materials_test EXCLUDE_FROM_ALL gbuffer_materials_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
@@ -694,6 +741,23 @@ larecomp_gpu_host_shader(upscaler_masks_ms_ps ps_6_0 SOURCE upscaler_masks_ps DE
 # sample, once for the host's MSAA level.
 larecomp_gpu_host_shader(gbuffer_view_ps ps_6_0 DEFINES GB_VIEW_MS=0)
 larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINES GB_VIEW_MS=1)
+# The deferred local light pass (local_lights.h, GB-H1): one scissored additive draw per light into the main colour, the surface from the G-buffer and the main depth; once for planes with one
+# sample, once for the host's MSAA level.
+larecomp_gpu_host_shader(local_light_ps ps_6_0 DEFINES LL_PASS_MS=0)
+larecomp_gpu_host_shader(local_light_ms_ps ps_6_0 SOURCE local_light_ps DEFINES LL_PASS_MS=1)
+# The shared screen products (screen_shared.h): one level of the Hi-Z chain (the min of the linear depth), and the debug view of the products.
+larecomp_gpu_host_shader(screen_hiz_ps ps_6_0)
+# ... and the colour captures: colour_post's level 0 from the main colour (plain or multisampled) and a mip level of it.
+larecomp_gpu_host_shader(screen_colour_ps ps_6_0 DEFINES SCREEN_COLOUR_PASS=0 SCREEN_COLOUR_MS=0)
+larecomp_gpu_host_shader(screen_colour_ms_ps ps_6_0 SOURCE screen_colour_ps DEFINES SCREEN_COLOUR_PASS=0 SCREEN_COLOUR_MS=1)
+larecomp_gpu_host_shader(screen_colour_mip_ps ps_6_0 SOURCE screen_colour_ps DEFINES SCREEN_COLOUR_PASS=1)
+larecomp_gpu_host_shader(screen_view_ps ps_6_0)
+# The screen-space reflections (ssr.h): the trace (over plain and multisampled planes), the accumulation, the resolve into the main colour (plain and multisampled).
+larecomp_gpu_host_shader(ssr_trace_ps ps_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1)
+larecomp_gpu_host_shader(ssr_temporal_ps ps_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(ssr_apply_ps ps_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=1)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's
@@ -764,6 +828,8 @@ larecomp_gpu_host_shader(volumetrics_apply_ms_ps ps_6_0 SOURCE volumetrics_apply
 # next frame's car paint variant.
 larecomp_gpu_host_shader(car_history_ps ps_6_0 DEFINES CAR_HISTORY_MS=0)
 larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=1)
+# ... and the same with the colour read from the shared screen products' colour_post (screen_shared.h): the depth and stencil planes multisampled, the colour one single sample image.
+larecomp_gpu_host_shader(car_history_ms_shared_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=2)
 # The player car's sun shadow map (car_shadow_map.h): the depth-only vertex shader of the car's own draws, the 4x1 matrix texture's pass,
 # and the debug view's square.
 larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)

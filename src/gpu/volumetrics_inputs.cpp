@@ -11,6 +11,8 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
+#include "light_manager.h"
+
 // feat/headlights (the rig's set and the shadow replay) is not on every branch this is built on: its headers are the test.
 #if __has_include("headlight_types.h")
 #include "headlight_types.h"
@@ -49,6 +51,7 @@ void VolumetricsInputs::Fill(const vol::VolFrameContext& frame, vol::VolInputs* 
   // The core's test lights (mcla_gpu_vol_test) stand in for the game's lights of their kind while they are on.
   const bool lamps_on = (inputs & 1) != 0 && (test & 1) == 0;
   const bool heads_on = (inputs & 2) != 0 && (test & 2) == 0;
+  const uint32_t lamps_before = out->lamp_count;  // the core's test lamp, if any: the game's lamps come after it
   // The hook only copies the list while somebody wants it.
   vl::SetWanted(lamps_on);
   if (lamps_on) {
@@ -66,6 +69,9 @@ void VolumetricsInputs::Fill(const vol::VolFrameContext& frame, vol::VolInputs* 
   } else {
     head_count_ = 0;
     head_shadowed_ = 0;
+  }
+  if (light_manager_ != nullptr && light_manager_->active()) {
+    light_manager_->NoteVolumeInputs(frame, *out, lamps_on, heads_on, lamps_before);  // passive: the manager only looks at what was filled
   }
   const int every = larecomp::settings::mcla_gpu_vol_census.Get();
   if (every > 0 && (fills_ <= 3 || frame.frame % uint64_t(every) == 0)) {

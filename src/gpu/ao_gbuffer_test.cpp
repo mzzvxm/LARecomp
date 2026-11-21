@@ -564,6 +564,8 @@ void RuleChecks() {
   // what the frame asks the G-buffer for
   Check(ag::PlanesWanted(true, true) == gb::PlaneBit(gb::kPlaneNormal), "the occlusion or the contact shadows on, the setting on: the normal plane");
   Check(ag::PlanesWanted(false, true) == 0u && ag::PlanesWanted(true, false) == 0u, "the setting off, or no effect on: nothing");
+  Check(ag::PlanesWanted(true, true) == gb::ConsumerPlanes(gb::Consumer::kAmbientOcclusion) && ag::BouncePlanesWanted(true, true) == gb::ConsumerPlanes(gb::Consumer::kBounceLight),
+        "GB-J: the occlusion's and the bounce light's wants are the auto policy's table (gbuffer_rules.h ConsumerPlanes)");
   Check(ag::BouncePlanesWanted(true, true) == gb::PlaneBit(gb::kPlaneNormal) && ag::BouncePlanesWanted(true, false) == 0u && ag::BouncePlanesWanted(false, true) == 0u,
         "the bounce light asks for the normal plane while it and the setting are on");
   // the plane the GBuffer then attaches: its plan, with the stage as it is (only a normal is written)

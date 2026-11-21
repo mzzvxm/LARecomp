@@ -10,7 +10,8 @@
 // The layout (gbuffer_types.h): RT1 R16G16_UNORM octahedral WORLD normal, 0 = no data; RT2 R8G8B8A8_UNORM sqrt(albedo) + lit weight;
 // RT3 R8G8_UNORM smoothness + (class | flags << 5).
 //
-// The pasted text must not use the names of the game's registers (r0..r31, c0..c255, p0, ps, a0, aL): every name here starts with Gb or GB_.
+// The pasted text must not use the names of the game's registers (r0..r31, c0..c255, p0, ps, a0, aL), nor those of its constants (`smoothness`, `metallic`, `baseColor` ...: in the SPIR-V text each is a
+// `#define` that would expand a parameter of that name, which broke 13 shaders of the car stage): every name here starts with Gb or GB_, parameters included.
 
 #ifndef MCLA_GBUFFER_COMMON_HLSLI
 #define MCLA_GBUFFER_COMMON_HLSLI
@@ -42,6 +43,7 @@
 #define GB_MATERIAL_CLASS_SHIFT 8
 #define GB_MATERIAL_FLAGS_SHIFT 13
 #define GB_MATERIAL_LIT_SHIFT 16
+#define GB_MATERIAL_METAL_SHIFT 24
 
 #define GB_MODE_WRITE_NORMAL 1
 #define GB_MODE_WRITE_ALBEDO 2
@@ -122,8 +124,8 @@ float3 GbAlbedoDecode(float3 stored) {
 // ---- RT3 and the material word -----------------------------------------------------------------------------------------------------------
 
 // The word of a draw (gbuffer_types.h): smoothness 0..1, the class, the flags (GB_FLAG_*), the lit weight 0..1.
-uint GbMaterialWord(float smoothness, uint cls, uint flags, float lit) {
-  uint s = uint(saturate(smoothness) * 255.0f + 0.5f);
+uint GbMaterialWord(float gbSmoothness, uint cls, uint flags, float lit) {
+  uint s = uint(saturate(gbSmoothness) * 255.0f + 0.5f);
   uint l = uint(saturate(lit) * 255.0f + 0.5f);
   return s | ((cls & uint(GB_CLASS_MASK)) << uint(GB_MATERIAL_CLASS_SHIFT)) | ((flags & 7u) << uint(GB_MATERIAL_FLAGS_SHIFT)) |
          (l << uint(GB_MATERIAL_LIT_SHIFT));
@@ -148,6 +150,44 @@ uint GbRt3Class(float2 rt3) {
 }
 uint GbRt3Flags(float2 rt3) {
   return (uint(rt3.y * 255.0f + 0.5f) >> 5u) & 7u;
+}
+
+// ---- the gloss: smoothness, the GGX alpha, the game's Blinn-Phong power (the twin: gbuffer_rules.h part 3) --------------------------------------
+
+// RT3.r and the word's bits 0..7 hold the PERCEPTUAL smoothness s of the lobe: its GGX (Trowbridge-Reitz) alpha is (1 - s)^2. The game's own Blinn-Phong lobe, (N.H)^n, has the
+// alpha sqrt(2 / (n + 2)) (the usual fit: the lobes' widths agree), so a shader that has a power puts GbSmoothnessOfPower(n) in the word and a consumer that shades with GGX takes
+// GbRt3Alpha(rt3) back out. A power that is not above 0 (a NaN too) is a chalk: alpha 1.
+float GbGgxAlphaOfPower(float power) {
+  float n = power > 0.0f ? power : 0.0f;
+  return sqrt(2.0f / (n + 2.0f));
+}
+
+float GbSmoothnessOfAlpha(float alpha) {
+  return 1.0f - sqrt(saturate(alpha));
+}
+
+float GbAlphaOfSmoothness(float gbSmoothness) {
+  float r = 1.0f - saturate(gbSmoothness);
+  return r * r;
+}
+
+float GbSmoothnessOfPower(float power) {
+  return GbSmoothnessOfAlpha(GbGgxAlphaOfPower(power));
+}
+
+// The GGX alpha a consumer shades with, from the RT3 texel (a unorm value).
+float GbRt3Alpha(float2 rt3) {
+  return GbAlphaOfSmoothness(GbRt3Smoothness(rt3));
+}
+
+// The metalness byte of the word (bits 24..31; no plane carries it yet, see gbuffer_rules.h kMaterialMetalShift) and the word with it set.
+float GbMaterialMetal(uint word) {
+  return float((word >> uint(GB_MATERIAL_METAL_SHIFT)) & 255u) * (1.0f / 255.0f);
+}
+
+uint GbMaterialWithMetal(uint word, float metal) {
+  uint m = uint(saturate(metal) * 255.0f + 0.5f);
+  return (word & 0x00FFFFFFu) | (m << uint(GB_MATERIAL_METAL_SHIFT));
 }
 
 // ---- the derivative normal ---------------------------------------------------------------------------------------------------------------

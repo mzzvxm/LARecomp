@@ -1,0 +1,7 @@
+key	stage	group	entry	class	flags	smooth	lit	gloss_bank	gloss_reg
+00000000000A0001	p	xCityDefault	PSMultiLight	world	0	38	255	-	-
+00000000000A0002	p	xCityRoad	PSMultiLight	road	1	77	255	-	-
+00000000000A0003	p	xCityWindowLower	PSMultiLight	glass	1	242	255	-	-
+00000000000A0004	p	xRimMain	PSRimMain	chrome	4	242	255	-	-
+00000000000A0005	p	xAmbientTire	PSAmbientTire	world	4	38	255	-	-
+00000000000B0001	v	xCityDefault	VSCityDefaultDay	-	-	-	-	vertex	73

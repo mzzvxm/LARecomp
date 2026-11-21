@@ -79,6 +79,8 @@
 #include "hdr_tonemap.h"
 #include "host_passes.h"
 #include "layout.h"
+#include "light_manager.h"
+#include "local_lights.h"
 #include "memory_census.h"
 #include "occlusion.h"
 #include "overlay.h"
@@ -96,6 +98,8 @@
 #include "scene.h"
 #include "shaders.h"
 #include "gbuffer.h"
+#include "screen_shared.h"
+#include "ssr.h"
 #include "shafts.h"
 #include "volumetrics.h"
 #include "volumetrics_inputs.h"
@@ -296,11 +300,15 @@ class Renderer final : public RenderThread::Executor {
   VolumetricsInputs vol_inputs_;  // render thread; the volumetric light's street lamps and headlights (volumetrics_inputs.h); before it: it outlives it
   Volumetrics volumetrics_;   // render thread; volumetric light: lamp and headlight beams, haze, sun through the cascades (volumetrics.h)
   GBuffer gbuffer_;           // render thread; the G-buffer's sidecar and debug view (gbuffer.h; debug-only settings in this branch)
+  ScreenReflections ssr_;     // render thread; screen-space reflections (ssr.h; off by default); it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
+  ScreenShared screen_;       // render thread; the shared screen products: the AO's depth chain published, the Hi-Z, the debug view (screen_shared.h); the AO holds a pointer to it: Shutdown stops the AO first
   CarSelfRefl car_refl_;      // render thread; the car paint's self-reflection history (car_selfrefl.h, a debug-only prototype)
   CarDump car_dump_;          // render thread; the debug dump of one frame's cars (car_dump.h)
   CarFrame car_frame_;        // render thread; the player car's draws of every frame a car effect asks for them (car_frame.h)
   HeadlightRig headlights_;   // render thread; the cars' headlights as lights for the lit shaders at night (headlight_rig.h)
   LocalShadow local_shadow_;  // render thread; the headlight shadow maps (local_shadow.h), recorded at the history trigger before the car shadow map's and the AO's passes
+  LocalLights local_lights_;  // render thread; the deferred local light pass (local_lights.h, mcla_gpu_local_lights): reads the G-buffer, the shared screen products, the AO's camera and the light manager
+  LightManager light_manager_;  // render thread; the passive light manager (light_manager.h, mcla_gpu_lights_census): one frame of the lights, checked against the consumers'
   CarShadowMap car_shadow_;   // render thread; the player car's sun shadow map, recorded at the history trigger before the AO's passes (car_shadow_map.h)
   CarRtScene car_rt_;         // render thread; the player's car as ray tracing structures (car_rt_scene.h), where the device has them
   CarRtRefl car_rt_refl_;     // render thread; the player car's ray traced self-reflection pass (car_rt_refl.h), reads car_rt_ (car_rt_scene.h)

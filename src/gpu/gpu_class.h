@@ -81,8 +81,9 @@ enum class Effect : uint8_t {
   kLightShadows,          // mcla_gpu_light_shadows      auto, off, high, ultra (local_shadow.h; was mcla_gpu_headlight_shadows)
   kVolumetrics,           // mcla_gpu_volumetrics        auto, off, medium, high, ultra (volumetrics_level.h)
   kRtShadows,             // mcla_gpu_rt_shadows         auto, off, high, ultra (city_rt_rules.h; the city's real geometry traced for the sun's shadows)
+  kSsr,                   // mcla_gpu_ssr                auto, off, high, ultra (ssr_rules.h; the row REFLECTIONS ON SURFACES)
 };
-inline constexpr int kEffectCount = 14;
+inline constexpr int kEffectCount = 15;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -135,6 +136,16 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // structures, ray queries from the depth), off on Mid and Low. A Mid card (a ray tracing card under 5.5 GiB) may be given high or ultra by hand; the budget
     // for it is in city_rt_rules.h. The cell is a first guess for the owner's runs (perf/CITY-RT-M1-RUNPLAN.md): the cost is measured before it changes.
     {"mcla_gpu_rt_shadows", "off", "off", "high"},
+    // Reflections on surfaces (screen-space reflections: wet roads, sidewalks, glass, metal; ssr.h, ssr_rules.h; GB-I1 + GB-I2): OFF ON EVERY CLASS UNTIL THE OWNER HAS SEEN THE PICTURES (owner,
+    // 2026-11-21: the pictures of the SSR and of the light pass come first), so `auto` is off and the effect is off by default exactly as before the row existed. The cells are PREPARED (the cost limits are
+    // a proposal for the owner to confirm; the numbers come from chain-gb-phase2b.ps1's cost arms):
+    //   High  ULTRA (two rays a pixel, 64 steps, a 12 frame history) if the phase 2b cost run (perf/out, the SSR arms) says ultra costs under about 0.5 ms of graphics card time at 4K on the
+    //         RTX 5080, else HIGH (one ray, 40 steps, a 10 frame history);
+    //   Mid   HIGH only if the same run (the 1080p arms, the RTX 5080 forced to class mid) says high costs under about 0.2 ms at 1080p, since a GTX 1050-class card is several times slower
+    //         than that PC (not measured here): otherwise OFF until a Mid card has measured it;
+    //   Low   OFF (shared memory: the scene alone is 100+ ms there).
+    // To switch them on: change the cells below and the matching row of gpu_class_test.cpp's kTable (and its CheckSsr); nothing else follows (the row and the effect read the cell through Resolve).
+    {"mcla_gpu_ssr", "off", "off", "off"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

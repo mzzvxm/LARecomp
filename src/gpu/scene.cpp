@@ -25,6 +25,8 @@
 #include "car_dump.h"
 #include "car_frame.h"
 #include "headlight_rig.h"
+#include "light_manager.h"
+#include "local_lights.h"
 #include "local_shadow.h"
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
@@ -36,6 +38,8 @@
 #include "draw_state.h"
 #include "format.h"
 #include "gbuffer.h"
+#include "screen_shared.h"
+#include "ssr.h"
 #include "gpu.h"
 #include "layout.h"
 #include "mc_engine/display/ultrawide.h"
@@ -827,6 +831,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  if (local_lights_) {
+    local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
+  }
   if (gbuffer_) {
     gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
   }
@@ -847,6 +854,12 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   msaa_.BeginFrame(list, temporal_ && temporal_->UpscalerNext(),
                    !temporal_ || temporal_->PathSettled(),
                    edram_->change_serial() != targets_before);
+  if (screen_) {
+    screen_->BeginFrame(frame_serial_);  // the shared screen products: reads the consumers' wants and the debug view, before the AO declares its own (screen_shared.h)
+  }
+  if (ssr_) {
+    ssr_->BeginFrame();  // the screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h): read at those owners' next frame boundary
+  }
   if (ao_) {
     ao_->BeginFrame();
   }
@@ -870,6 +883,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   if (local_shadow_) {
     local_shadow_->BeginFrame();
+  }
+  if (light_manager_) {
+    light_manager_->BeginFrame(frame_serial_, slot);  // passive (light_manager.h): off unless mcla_gpu_lights_census is set; after the rig's and the replay's own
   }
   ResetListState();
   marked_framebuffer_ = nullptr;
@@ -1292,6 +1308,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   if (r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
     edram_->SetScenePhase(false);
     NoteAnchorCut(banks);  // a cut the scene camera asked for: before the histories look at the frame
+    if (screen_ && screen_->tracking()) {
+      screen_->OnAnchor(banks);  // this frame's camera into the shared camera history (screen_shared.h), before the effects that ask it for the cameras (the car self-reflection's)
+    }
     if (ao_ && ao_->wants_draws()) {
       ao_->OnAnchor(banks, anchor_cut_);  // this frame's camera: the next frame's occlusion uses its lens
     }
@@ -1647,6 +1666,22 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // The G-buffer (gbuffer.h): a main view draw in the frame's window whose pixel shader has the variant takes it and carries the sidecar as a second colour
   // target, which it writes. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
   PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active()) ? GBufferKey(s, r, d) : d.key;  // not const: the headlight's pending-pipeline fallback below drops its feature from it
+  // The per-texture material row (gbuffer_materials.h) of the texture the draw's pixel shader takes its colour from (the material table's diffuse slot: slot 0 for almost every shader, the
+  // windows', tiles' and metal props' second), looked up once per draw that writes the planes (a cache hit; empty at no cost unless a table file exists or the census is on).
+  // CHECK: not compiled with the rest of Scene (no build in this package).
+  d.gbuffer_texture = {};
+  if (d.gbuffer_attached && d.gbuffer_variant != 0 && d.ps && textures_) {
+    gbuffer_materials_.EnsureLoaded(shaders_.folder());
+    const uint32_t diffuse_slot = gbuffer_materials_.DiffuseSlotOf(d.ps->key);
+    if (diffuse_slot < 32 && (d.ps->texture_fetch_mask & (1u << diffuse_slot)) != 0) {
+      uint32_t diffuse_dwords[6];
+      view.FetchGroup(diffuse_slot, diffuse_dwords);
+      const TextureFetch diffuse = ReadTextureFetch(diffuse_dwords);
+      if (diffuse.is_texture) {
+        d.gbuffer_texture = gbuffer_texmat_.Resolve(*textures_, shaders_.folder(), diffuse.key, frame_serial_);
+      }
+    }
+  }
   // The last draw's pipeline when the key repeats (M6a.3); the key names the
   // shaders, their variants and the input layout.
   ++memo_tries_[size_t(Memo::kPipeline)];
@@ -1989,8 +2024,18 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   draw.writes_depth = (d.key.depth & 2u) != 0;
   draw.stencil_ids = temporal::StencilIdsWritten(d.state);  // the vehicles' own motion (ao.h)
+  if (screen_ && screen_->tracking()) {
+    // The kind of view of the frame (the camera history keeps the play view's and the pause/map world's apart) and the main colour target's exponent bias (screen_shared.h).
+    screen_->OnMainDraw(draw.match, d.state.color[0].exp_bias);
+  }
   if (ao_ && ao_->wants_draws()) {
     ao_->OnMainDraw(draw, banks);
+  }
+  if (local_lights_ && local_lights_->wants_draws()) {
+    local_lights_->OnMainDraw(banks, draw.match.color);  // the units' vote (the night light intensity and the height factor of the lit shaders)
+  }
+  if (ssr_ && ssr_->wants_draws()) {
+    ssr_->OnMainDraw(draw.match, banks);  // the road's wetness (VS c43.x) before the trigger
   }
   if (shafts_ && shafts_->wants_draws()) {
     shafts_->OnMainDraw(draw.match, banks, vs_identity, ps_identity);
@@ -2447,7 +2492,13 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
       }
       const bool two_sided = (d.key.raster & 0xFu) == uint32_t(plume::RenderCullMode::NONE);
       block.mode = gbuffer::ModeBits(gbuffer_ ? gbuffer_->plan().written : gbuffer::PlaneBit(gbuffer::kPlaneNormal), camera, two_sided);
-      block.material = gbuffer::DefaultMaterialWord();
+      // The draw's material word (gbuffer_material.h): its pixel shader's class and flags, the smoothness from the SpecularExponent in the pixel or the vertex shader's own
+      // constants, the alpha test twin's flag. A shader the table does not have (or no table: the pack was built before it existed) gets the default word.
+      // CHECK: this hunk was not compiled with the rest of Scene (no build in this package); the table's own code, the builder's file and the tests were.
+      gbuffer_materials_.EnsureLoaded(shaders_.folder());
+      block.material = gbuffer_materials_.WordFor(d.ps ? d.ps->key : 0, d.vs ? d.vs->key : 0, banks.ps, banks.vs, sp::chain::SpecOf(d.key.ps_variant) != 0);
+      // The texture's row on top of it (gbuffer_materials.h): a texture that says it is glass, chrome or wet asphalt, or how rough it is; the census counts the draw.
+      block.material = gbuffer_texmat_.Finish(block.material, d.gbuffer_texture, d.ps ? d.ps->key : 0, d.geometry.count);
       block.frame = uint32_t(frame_serial_);
       std::memcpy(out, &block, sizeof(block));
       return;
@@ -2569,26 +2620,27 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   if (!decision.attach()) {
     return key;
   }
-  // The planes are the colour slots after the guest's one, each in its format and with the blend state of what the draw does to them: a writer's is no blend and every channel,
-  // a clear's ZERO / ZERO (the pixels it draws become "no data"), a mask's write mask 0. Where the backend has one blend state for all targets (D3D12 until the Plume fix) only
+  // The planes are the colour slots after the guest's one, each in its format and with the blend state of what the draw does to them: a writer's is no blend and every channel
+  // of the plane, a clear's ZERO / ZERO (the pixels it draws become "no data"), a mask's write mask 0. Where the backend has one blend state for all targets (D3D12 until the Plume fix) only
   // writers get here and the slots' states are the writer's.
   static_assert(gbuffer::kMaxColourSlots <= kColorTargetCount, "the guest's colour and the planes fit the pipeline key's slots");
-  const gbuffer::PlaneBlend plane_blend = gbuffer::BlendFor(decision.mode);
-  plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
-  blend.renderTargetWriteMask = plane_blend.write_mask;
-  if (plane_blend.zero) {
-    blend.blendEnabled = true;
-    blend.srcBlend = plume::RenderBlend::ZERO;
-    blend.dstBlend = plume::RenderBlend::ZERO;
-    blend.blendOp = plume::RenderBlendOperation::ADD;
-    blend.srcBlendAlpha = plume::RenderBlend::ZERO;
-    blend.dstBlendAlpha = plume::RenderBlend::ZERO;
-    blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
-  }
+  // Each plane's write mask is its own channels' (gbuffer_rules.h BlendFor(mode, plane): the normal and the material R and G, the albedo and the lit weight all four).
   uint32_t slot = d.key.color_count;
   for (uint32_t p = 0; p < gbuffer::kPlaneCount; ++p) {
     if ((plan.attached & (1u << p)) == 0) {
       continue;
+    }
+    const gbuffer::PlaneBlend plane_blend = gbuffer::BlendFor(decision.mode, gbuffer::Plane(p));
+    plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
+    blend.renderTargetWriteMask = plane_blend.write_mask;
+    if (plane_blend.zero) {
+      blend.blendEnabled = true;
+      blend.srcBlend = plume::RenderBlend::ZERO;
+      blend.dstBlend = plume::RenderBlend::ZERO;
+      blend.blendOp = plume::RenderBlendOperation::ADD;
+      blend.srcBlendAlpha = plume::RenderBlend::ZERO;
+      blend.dstBlendAlpha = plume::RenderBlend::ZERO;
+      blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
     }
     key.color_format[slot] = uint32_t(GBuffer::FormatOf(gbuffer::Plane(p)));
     key.blend[slot] = PackBlend(blend);
@@ -3548,9 +3600,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   const bool float_scene =
       hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
   const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene);
+  bool gbuffer_published = false;
   if (gbuffer_ && gbuffer_->active()) {
     // The mid-scene depth copy closes the G-buffer's window and publishes the frame (gbuffer.h), before the effects that will read it run.
-    gbuffer_->OnResolve(record, summary, list);
+    gbuffer_published = gbuffer_->OnResolve(record, summary, list);
   }
   if (car_shadow_) {
     // At the same mid-scene depth copy, BEFORE the ambient occlusion's passes record (they read the map): the player car drawn again
@@ -3566,27 +3619,43 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //   2b. the headlight shadow maps (local_shadow.h): the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas
   //      the lit draws of the next frame read (independent of the other steps: its own pass and target);
   //   3. the ambient occlusion, the bounce light and the contact shadows (ao.h): the depth chain, the ray traced pass (car_rt_ao.h), the
-  //      visibility and the contact march, the apply onto the main colour;
+  //      visibility and the contact march, the apply onto the main colour. At the end of its depth chain the shared screen products (screen_shared.h) are
+  //      published from it and the Hi-Z is made, when a consumer wants it (the occlusion runs a frame of the depth pass alone for that if it and the contact
+  //      shadows are off);
+  //   3b. the deferred local lights (local_lights.h): one additive draw per light from the G-buffer's planes and the main depth, after the apply, before the shafts;
   //   4. the sun shafts (shafts.h);
   //   4b. the volumetric light (volumetrics.h): its compute passes (inject, integrate) read the headlight shadow atlas of step 2b (so that step's
   //      last barrier names the compute stage too, local_shadow.cpp), the depth chain, the cascades and the lamp list; its composite goes
   //      into the colour at the frame's end-of-scene copy (BeforeResolve, above);
   //   5. the car ray tracing check pass (mcla_gpu_car_rt_check, debug): reads the occlusion's linear depth, so after step 3;
-  //   6. the car self-reflection's history and its ray traced trace (car_selfrefl.h, car_rt_refl.h): the history is the colour step 3 made,
-  //      the trace uses step 2's top level.
+  //   5b. the shared colour capture (screen_shared.h CapturePost, only while a consumer wants colour_post): the colour step 3 made, averaged over the host samples. (colour_pre, the capped chain
+  //      the bounce light reads, is made inside step 3, before its passes, by CapturePre; the pass is still the occlusion's.)
+  //   5c. the screen-space reflections (ssr.h, only while mcla_gpu_ssr is on, in a frame that made the capture): the Hi-Z walk, the accumulation and the additive resolve into the main colour;
+  //   6. the car self-reflection's history and its ray traced trace (car_selfrefl.h, car_rt_refl.h): the history is the colour step 3 made (read from step 5b's capture where the frame
+  //      has it at the picture's size), the trace uses step 2's top level.
   if (car_rt_) {
     car_rt_->OnResolve(record, summary, list, slot_);
   }
+  bool shadow_recorded = false;
   if (local_shadow_) {
     // The same depth copy: the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas the lit draws of the
     // next frame read (local_shadow.h; its own pass and target: the reset below forgets them too).
-    local_shadow_->OnResolve(record, summary, list, slot_);
+    shadow_recorded = local_shadow_->OnResolve(record, summary, list, slot_);
+  }
+  if (light_manager_) {
+    light_manager_->OnResolve(shadow_recorded);  // passive: this frame's maps, and the headlight block is checked against them
   }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
     // below forgets for the next draw.
     ao_->OnResolve(record, summary, list, UpscalerRunning());
+  }
+  if (local_lights_ && local_lights_->wants_draws()) {
+    // Step 3b: the deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3 step 7): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
+    // AFTER the occlusion's apply (so it does not darken the light) and before the sun shafts, the volumetric light and the game's own light volumes and glows. Binds its own layout, pipeline
+    // and framebuffer: the reset below forgets them too.
+    local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);
   }
   if (shafts_ && shafts_->wants_draws()) {
     // At the same mid-scene depth copy the sun shafts take the sky's brightness (their own passes and
@@ -3602,6 +3671,17 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // The check pass of the structures, over the occlusion's linear depth (it exists only after step 3).
     car_rt_->OnAfterOcclusion(summary, list, slot_, ao_);
   }
+  bool colour_captured = false;
+  if (screen_ && screen_->capture_wanted()) {
+    // The shared colour capture (screen_shared.h CapturePost, step 8 of the order above): the main colour as it is after the occlusion's apply, averaged over its host samples into colour_post
+    // (and its history), for the consumers that want it; the car self-reflection's history pass below reads it where it can. Only while a capture is planned.
+    colour_captured = screen_->CapturePost(record, summary, list);
+  }
+  if (colour_captured && ssr_) {
+    // Step 8b: the screen-space reflections (ssr.h): the trace, the accumulation and the additive resolve into the main colour, right after the capture they read (a reflection is not a
+    // reflection of a reflection: colour_post is made before the effect adds to the colour) and before the car self-reflection's history pass.
+    ssr_->OnTrigger(summary, list);
+  }
   if (car_refl_ && car_refl_->wants_draws()) {
     // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;
     // its own pass and target: the reset below forgets them too).
@@ -3610,6 +3690,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   if (gbuffer_ && gbuffer_->active()) {
     // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).
     gbuffer_->DrawView(summary, list);
+  }
+  if (screen_ && screen_->view_active()) {
+    // The shared screen products' debug view (mcla_gpu_screen_view), after the other views.
+    screen_->DrawView(summary, list);
   }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
@@ -3669,6 +3753,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   }
   if (car_refl_) {
     car_refl_->OnComposite();
+  }
+  if (screen_) {
+    screen_->OnComposite();  // no trigger of the shared screen products after this
   }
   if (local_shadow_) {
     local_shadow_->OnComposite();
@@ -3823,11 +3910,23 @@ void Scene::OnPresent() {
   if (car_refl_) {
     car_refl_->OnPresent();
   }
+  if (ssr_) {
+    ssr_->OnPresent();  // the reflections' history and idle count
+  }
+  if (screen_) {
+    screen_->OnPresent();  // the frame boundary of the shared screen products: the frame is counted, the capture and its history trade places (after NoteMenuWorld above: it asks the camera history)
+  }
   if (car_dump_) {
     car_dump_->OnPresent();  // the dump frame's census and OBJ
   }
   if (car_frame_) {
     car_frame_->OnPresent();  // the car draw list's frame boundary
+  }
+  if (local_lights_) {
+    local_lights_->OnPresent();  // the interval line
+  }
+  if (light_manager_) {
+    light_manager_->OnPresent();  // passive: this frame's lights are checked and uploaded before the rig makes the next frame's set
   }
   if (headlights_) {
     headlights_->OnPresent();  // the headlights seen in this frame become the lights of the next
