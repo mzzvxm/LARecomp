@@ -31,6 +31,7 @@
 #include <string_view>
 #include <vector>
 
+#include "gpu/gbuffer_material.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_compose.h"
 #include "shaderpack/variants/gbuffer.h"
@@ -175,8 +176,10 @@ constexpr const char* kHelper =
     "float2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\n"
     "float3 GbAlbedoEncode(float3 albedo) { return albedo; }\n"
     "float GbMaterialLit(uint word) { return 1.0f; }\n"
+    "float2 GbMaterialRt3(uint word) { return float2(0.0f, 0.0f); }\n"
     "#define GB_MODE_WRITE_NORMAL 1\n"
-    "#define GB_MODE_WRITE_ALBEDO 2\n";
+    "#define GB_MODE_WRITE_ALBEDO 2\n"
+    "#define GB_MODE_WRITE_MATERIAL 4\n";
 
 constexpr std::string_view kSunDot = "\tr5.w = saturate(dot(r0.zxy, gMultiLightDynamicLightData(10).zxy));\n";
 
@@ -295,10 +298,12 @@ void CheckTransform() {
   const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
   Check(r.ok && !r.skip && r.error.empty(), "the fixture transforms: " + r.error);
   if (!r.ok) return;
-  Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2") == 1, "the second and third outputs follow the colour output");
+  Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3") == 1,
+        "the second, third and fourth outputs follow the colour output");
   Check(Count(r.hlsl, "oC0 = applyBlendPremult(oC0);\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(gbNormal);\n\t}"
-                      "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\treturn;") == 1,
-        "the writes follow the game's last colour statement (this fixture has no diffuse fetch: RT2 gets the no data code only)");
+                      "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);"
+                      "\n\toC3 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}\n\treturn;") == 1,
+        "the writes follow the game's last colour statement (this fixture has no diffuse fetch: RT2 gets the no data code only; RT3 gets the material word's bytes all the same)");
   Check(Count(r.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
             Count(r.hlsl, "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)") == 1 &&
             Count(r.hlsl, "float2 g_InvResolutionScale : packoffset(c37.x); \\\n    uint4 g_GBufferMode : packoffset(c38); \\\n    float4 g_GBufferRay : packoffset(c39); \\\n    float4 g_GBufferCam : packoffset(c40);") == 1,
@@ -404,6 +409,8 @@ void CheckAlbedoTransform() {
     const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
     Check(r.ok && Count(r.hlsl, "oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(r.hlsl, "GB_MODE_WRITE_ALBEDO") == 1 /* the stand-in helper's define */ && Count(r.hlsl, "gbAlbedo") == 0,
           "a shader with no DiffuseSampler texel: the no data write only, no albedo code " + r.error);
+    Check(r.ok && Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1 && Count(r.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1,
+          "... and RT3 is written all the same: the class and the smoothness are the draw's, not the texel's");
   }
   // 6. a helper without the albedo functions is an error that names them (the real helper has them: the real-helper run checks it)
   {
@@ -521,6 +528,8 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
   std::vector<std::string> no_albedo_names;
   std::map<std::string, std::string> albedo_lanes;
   std::vector<std::string> left_names;
+  std::map<int, int> by_class;  // RT3's class (GB-F1's table) of the edited shaders: the census of what the material plane says
+  int unclassed = 0;
   for (const Shader_* file : family) {
     const std::string text = ReadFile(file->path);
     const std::string kind = file->stem.ends_with("Interior") ? "PSMultiLightInterior" : file->stem.ends_with("Env") ? "PSMultiLightEnv" : "PSMultiLight";
@@ -537,6 +546,14 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
       continue;
     }
     ++edited;
+    {
+      // RT3 (GB-W2) writes the draw's word, whose class comes from the table of GB-F1 by the shader's name: a shader of the stage that the table calls "none" (or does not know) would write class 0,
+      // which a consumer reads as "nothing written here" over a pixel that has a normal. Every shader of the stage has a class.
+      const mcla::gpu::gbuffer::ShaderMaterial material = mcla::gpu::gbuffer::MaterialOfShaderName(file->stem);
+      ++by_class[int(material.cls)];
+      unclassed += !(material.known && material.cls != mcla::gpu::gbuffer::SurfaceClass::kNone);
+      Check(material.known && material.cls != mcla::gpu::gbuffer::SurfaceClass::kNone, file->stem + ": the material table gives it a class (so RT3 never says 'no data' where the stage wrote the normal)");
+    }
     ++by_kind[kind].first;
     ++by_how[HowText(a.how)];
     (a.interpolant ? interpolants : captured)++;
@@ -562,6 +579,10 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
       Check(Count(alone.hlsl, "oC2 : SV_Target2") == 1 && Count(alone.hlsl, "oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(alone.hlsl, albedo_call) == (a.albedo.found ? 1u : 0u) &&
                 Count(alone.hlsl, "float3 gbAlbedo = ") == (a.albedo.found && a.albedo.captured ? 1u : 0u),
             file->stem + ": RT2: one output, the no data write, " + (a.albedo.found ? (a.albedo.captured ? "the albedo from one capture" : "the albedo from the fetch's lanes") : "no albedo"));
+      // RT3 in every shader of the stage, with an albedo or without, and after RT2's write
+      Check(Count(alone.hlsl, "oC3 : SV_Target3") == 1 && Count(alone.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1 && Count(alone.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1 &&
+                alone.hlsl.find("oC3 = GbMaterialRt3(") > alone.hlsl.find("oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);"),
+            file->stem + ": RT3: one output, the no data write and the word's bytes, after RT2's");
     }
     if (!out.empty()) {
       fs::create_directories(out);
@@ -595,6 +616,7 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
               file->stem + ": composed: the headlight's edits leave the albedo's anchor where it was");
         Check(Count(pair.hlsl, "oC2 : SV_Target2") == 1 && Count(pair.hlsl, "GbAlbedoEncode(" + a.albedo.expression + ")") == (a.albedo.found ? 1u : 0u),
               file->stem + ": composed: RT2's output and write are in");
+        Check(Count(pair.hlsl, "oC3 : SV_Target3") == 1 && Count(pair.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1, file->stem + ": composed: RT3's output and write are in");
         if (!out.empty()) std::ofstream(out / (file->stem + ".hlgb.hlsl"), std::ios::binary) << pair.hlsl;
       }
     }
@@ -615,6 +637,11 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
   for (const std::string& name : no_albedo_names) std::printf("      no albedo: %s\n", name.c_str());
   for (const auto& [why, n] : by_reason) std::printf("  left out: %3d  %s\n", n, why.c_str());
   std::printf("  %d texts are the game's with lines added; %d composed with the headlight; %d normals cross-checked with the other anchors\n", identical, composed, cross_checked);
+  {
+    std::printf("  RT3 class of the edited shaders (the table of GB-F1 by name; %d with no class):", unclassed);
+    for (const auto& [cls, n] : by_class) std::printf(" %d:%d", cls, n);
+    std::printf("\n");
+  }
   Check(identical == edited, "every edited shader's colour is the game's");
   // The census pinned: the retail game's numbers (shaderpack/baseline/hlsl-rpf of 2026-11-20). A game or translator that is not the retail one says so here.
   if (family.size() == 115) {

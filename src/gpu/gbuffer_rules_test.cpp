@@ -543,18 +543,21 @@ void RuleChecks() {
 void PlaneChecks() {
   Check(gb::IsPlanePrefix(1) && gb::IsPlanePrefix(3) && gb::IsPlanePrefix(7) && !gb::IsPlanePrefix(0) && !gb::IsPlanePrefix(2) && !gb::IsPlanePrefix(5) && !gb::IsPlanePrefix(15),
         "a stage's planes are a prefix: 1, 3 or 7 (the outputs' numbers are the planes')");
-  Check(gb::kStagePlanes == (gb::PlaneBit(gb::kPlaneNormal) | gb::PlaneBit(gb::kPlaneAlbedo)),
-        "this phase's stage writes the normal and the albedo planes (RT1 and RT2: GB-W1; RT3 is a placeholder until GB-W2)");
+  Check(gb::kStagePlanes == (gb::PlaneBit(gb::kPlaneNormal) | gb::PlaneBit(gb::kPlaneAlbedo) | gb::PlaneBit(gb::kPlaneMaterial)) && gb::kStagePlanes == gb::kAllPlanes,
+        "the stage writes all three planes (RT1, RT2: GB-W1, RT3: GB-W2): the pixel stage of the pack declares oC1, oC2 and oC3");
   Check(gb::ColourSlotOfPlane(gb::kPlaneNormal) == 1 && gb::ColourSlotOfPlane(gb::kPlaneAlbedo) == 2 && gb::ColourSlotOfPlane(gb::kPlaneMaterial) == 3 && gb::kMaxColourSlots == 4,
         "the planes are the key's colour slots 1, 2 and 3 after the guest's colour: four slots in all (draw_state.h kColorTargetCount)");
   Check(gb::PlaneCount(0) == 0 && gb::PlaneCount(1) == 1 && gb::PlaneCount(7) == 3 && gb::PlaneCount(0xFF) == 3, "the plane count");
   // what a frame's request becomes, for the stage as it is and for a stage with all three planes
-  Check(gb::WrittenPlanes(7) == 3 && gb::AttachedPlanes(7) == 3, "a full request of a stage that writes the normal and the albedo: both are written and attached");
-  Check(gb::WrittenPlanes(gb::PlaneBit(gb::kPlaneMaterial)) == 0 && gb::AttachedPlanes(gb::PlaneBit(gb::kPlaneMaterial)) == 0,
-        "a request for a plane no stage writes makes no sidecar (nothing would hold data)");
-  Check(gb::WrittenPlanes(gb::PlaneBit(gb::kPlaneAlbedo)) == 2 && gb::AttachedPlanes(gb::PlaneBit(gb::kPlaneAlbedo)) == 3 &&
-            gb::WrittenPlanes(gb::PlaneBit(gb::kPlaneNormal)) == 1 && gb::AttachedPlanes(gb::PlaneBit(gb::kPlaneNormal)) == 3,
-        "GB-W1: a request for the albedo alone writes it, and a request for the normal alone still attaches both (the shader declares both outputs)");
+  Check(gb::WrittenPlanes(7) == 7 && gb::AttachedPlanes(7) == 7, "a full request of a stage that writes all three planes: all are written and attached");
+  Check(gb::WrittenPlanes(gb::PlaneBit(gb::kPlaneMaterial)) == 4 && gb::AttachedPlanes(gb::PlaneBit(gb::kPlaneMaterial)) == 7,
+        "GB-W2: a request for the material alone writes it (RT3 is in the stage) and attaches all three");
+  Check(gb::WrittenPlanes(gb::PlaneBit(gb::kPlaneMaterial), 3) == 0 && gb::AttachedPlanes(gb::PlaneBit(gb::kPlaneMaterial), 3) == 0,
+        "a request for a plane no stage writes (a stage of two planes, the one before GB-W2) makes no sidecar (nothing would hold data)");
+  Check(gb::WrittenPlanes(gb::PlaneBit(gb::kPlaneAlbedo)) == 2 && gb::AttachedPlanes(gb::PlaneBit(gb::kPlaneAlbedo)) == 7 &&
+            gb::WrittenPlanes(gb::PlaneBit(gb::kPlaneNormal)) == 1 && gb::AttachedPlanes(gb::PlaneBit(gb::kPlaneNormal)) == 7 &&
+            gb::AttachedPlanes(gb::PlaneBit(gb::kPlaneNormal), 3) == 3,
+        "GB-W1, GB-W2: a request for the albedo alone writes it, and a request for the normal alone still attaches all the stage's planes (the shader declares all its outputs: two before GB-W2)");
   Check(gb::WrittenPlanes(0) == 0 && gb::AttachedPlanes(0) == 0, "no request: no sidecar");
   Check(gb::WrittenPlanes(1, 7) == 1 && gb::AttachedPlanes(1, 7) == 7, "a stage with all three planes declares three outputs: a request for the normal still attaches all three (the shader writes them)");
   Check(gb::WrittenPlanes(6, 7) == 6 && gb::AttachedPlanes(6, 7) == 7 && gb::AttachedPlanes(2, 3) == 3, "the attached set is the stage's whole prefix whatever is written");
@@ -571,13 +574,13 @@ void PlaneChecks() {
     Check(plan.requested == 0 && plan.written == 0 && plan.attached == 0, "auto with no consumer: no sidecar at all (made only when a consumer asks)");
     wants.Set(gb::Consumer::kAmbientOcclusion, gb::PlaneBit(gb::kPlaneNormal));
     plan = gb::PlanFrame(gb::Setting::kAuto, wants.Union());
-    Check(plan.requested == 1 && plan.written == 1 && plan.attached == 3, "the ambient occlusion asks for the normal: auto makes it (the draws that carry the sidecar carry both of the stage's planes)");
+    Check(plan.requested == 1 && plan.written == 1 && plan.attached == 7, "the ambient occlusion asks for the normal: auto makes it (the draws that carry the sidecar carry all three of the stage's planes)");
     wants.Set(gb::Consumer::kLocalLights, 0xFF);
     Check(wants.Of(gb::Consumer::kLocalLights) == 7 && wants.Union() == 7, "a want is cut to the three planes; the union of the wants");
     plan = gb::PlanFrame(gb::Setting::kAuto, wants.Union());
-    Check(plan.requested == 7 && plan.written == 3 && plan.attached == 3, "the lights ask for all three: the normal and the albedo are written while the stage writes those two");
-    plan = gb::PlanFrame(gb::Setting::kAuto, wants.Union(), 7);
-    Check(plan.requested == 7 && plan.written == 7 && plan.attached == 7, "... and all three with a stage that writes them");
+    Check(plan.requested == 7 && plan.written == 7 && plan.attached == 7, "the lights ask for all three: all are written (GB-W2: the stage has the material plane)");
+    plan = gb::PlanFrame(gb::Setting::kAuto, wants.Union(), 3);
+    Check(plan.requested == 7 && plan.written == 3 && plan.attached == 3, "... a stage of two planes (before GB-W2) writes the normal and the albedo only");
     wants.Set(gb::Consumer::kLocalLights, 0);
     wants.Set(gb::Consumer::kAmbientOcclusion, 0);
     Check(wants.Union() == 0 && gb::PlanFrame(gb::Setting::kAuto, wants.Union()).attached == 0, "a consumer that turns off withdraws its want: the sidecar goes");
@@ -588,9 +591,9 @@ void PlaneChecks() {
     Check(plan.attached == 0, "off: no sidecar whatever the consumers want");
     wants.Set(gb::Consumer::kAmbientOcclusion, 0);
     plan = gb::PlanFrame(gb::Setting::kNormals, wants.Union());
-    Check(plan.written == 1 && plan.attached == 3, "normals: made with no consumer (the debug switch): the normal is written, the albedo plane is attached and holds no data");
+    Check(plan.written == 1 && plan.attached == 7, "normals: made with no consumer (the debug switch): the normal is written, the albedo and the material planes are attached and hold no data");
     plan = gb::PlanFrame(gb::Setting::kFull, wants.Union());
-    Check(plan.requested == 7 && plan.written == 3, "full: asks for all three, the stage writes what it writes (the normal and the albedo)");
+    Check(plan.requested == 7 && plan.written == 7, "full: asks for all three, the stage writes them all");
     Check(std::string(gb::ConsumerName(gb::Consumer::kAmbientOcclusion)) == "ambient occlusion" && std::string(gb::ConsumerName(gb::Consumer::kCount)) == "?", "the consumers' names");
   }
 }
@@ -658,10 +661,10 @@ void AttachChecks() {
     f.per_target_blend = false;
     f.rt0_write_mask = 0xF;
     Check(gb::Decide(f).why == Why::kWrites, "one blend state, a full RT0 write mask: the planes are written");
-    // GB-W1: the stage's planes are the normal and the albedo (RGBA): RT0's mask has to be all four channels. A stage with the normal alone (a plane set of 1) needed two.
+    // GB-W1, GB-W2: the stage's planes are the normal, the albedo (RGBA) and the material: RT0's mask has to be all four channels. A stage with the normal alone (a plane set of 1) needed two.
     f.rt0_write_mask = 0x7;
     Check(gb::ChannelsNeeded(gb::kStagePlanes) == 0xF && gb::Decide(f).why == Why::kMaskedNarrowMask && !gb::Decide(f).attach(),
-          "the stage as it is (the normal and the albedo): an RGB mask is not enough, the draw is not carried (the lit weight is in alpha)");
+          "the stage as it is (all three planes): an RGB mask is not enough, the draw is not carried (the lit weight is in alpha)");
     f.planes = gb::PlaneBit(gb::kPlaneNormal);
     f.rt0_write_mask = 0x3;
     Check(gb::Decide(f).why == Why::kWrites, "... a stage with the normal alone: red and green are enough for the normal");
@@ -864,6 +867,73 @@ void ModeChecks() {
   Check(gb::ClassOfByte(gb::MaterialRt3ClassAndFlags(word)) == gb::SurfaceClass::kWorld && gb::MaterialRt3Smoothness(word) == 0 && gb::MaterialLitByte(word) == 255 &&
             gb::FlagsOfByte(gb::MaterialRt3ClassAndFlags(word)) == 0,
         "the default material: the world class, smoothness 0, lit by the forward lights");
+}
+
+// ---------------------------------------------------------------------------
+// GB-W2: the material plane written by the stage: its mode bit, its channels, the per target masks, the cost
+// ---------------------------------------------------------------------------
+void MaterialPlaneChecks() {
+  using gb::PlaneMode;
+  using gb::Why;
+  // the stage's plan carries the material plane: `full` writes it (its mode bit is in the draw's block), `normals` and a consumer of the normal alone do not
+  {
+    const gb::FramePlan full = gb::PlanFrame(gb::Setting::kFull, 0);
+    Check((gb::ModeBits(full.written, false, false) & gb::kModeWriteMaterial) != 0 && (gb::ModeBits(full.written, false, false) & gb::kModeWriteAlbedo) != 0, "full: the draws' blocks carry the material and albedo bits");
+    const gb::FramePlan normals = gb::PlanFrame(gb::Setting::kNormals, 0);
+    Check((gb::ModeBits(normals.written, false, false) & (gb::kModeWriteMaterial | gb::kModeWriteAlbedo)) == 0 && normals.attached == gb::kStagePlanes,
+          "normals: the material and albedo planes are attached and the shaders write their no data code (the mode bits are clear)");
+    const gb::FramePlan ssr = gb::PlanFrame(gb::Setting::kAuto, gb::PlaneBit(gb::kPlaneNormal) | gb::PlaneBit(gb::kPlaneMaterial));
+    Check(ssr.written == 5 && (gb::ModeBits(ssr.written, false, false) & gb::kModeWriteMaterial) != 0 && (gb::ModeBits(ssr.written, false, false) & gb::kModeWriteAlbedo) == 0,
+          "a consumer of the normal and the material (the reflections) gets RT3 written and RT2 not");
+  }
+  // RT3 is the word's two bytes: the smoothness, then the class and the flags (the shader's GbMaterialRt3)
+  {
+    const uint32_t word = gb::MaterialWord(0.75f, gb::SurfaceClass::kMetal, gb::kMaterialFlagSsr | gb::kMaterialFlagAlphaCovered, 0.0f);
+    Check(gb::MaterialRt3Smoothness(word) == uint32_t(0.75f * 255.0f + 0.5f) &&
+              gb::MaterialRt3ClassAndFlags(word) == (uint32_t(gb::SurfaceClass::kMetal) | ((gb::kMaterialFlagSsr | gb::kMaterialFlagAlphaCovered) << 5)),
+          "RT3 of a word: the smoothness byte, and the class with the flags above it");
+    const uint32_t with_metal = gb::MaterialWordWithMetal(word, 1.0f);
+    Check(gb::MaterialRt3Smoothness(with_metal) == gb::MaterialRt3Smoothness(word) && gb::MaterialRt3ClassAndFlags(with_metal) == gb::MaterialRt3ClassAndFlags(word) && gb::MaterialMetalByte(with_metal) == 255,
+          "the metalness byte (bits 24 to 31) does not reach RT3: no plane carries it, kMetal and kChrome mean F0 = albedo");
+  }
+  // the channels: RT3 (R and G) adds nothing to what RT1 (R and G) and RT2 (R, G, B, A) need, so the D3D12 writers' rule on RT0's mask is the one GB-W1 made
+  Check(gb::ChannelsNeeded(gb::kStagePlanes) == 0xF && gb::ChannelsNeeded(gb::kStagePlanes) == gb::ChannelsNeeded(3) && gb::ChannelsNeeded(gb::PlaneBit(gb::kPlaneMaterial)) == 3,
+        "all three planes need the channels the first two did (the lit weight's alpha makes it 0xF)");
+  {
+    gb::DrawFacts f = GoodDraw();
+    f.per_target_blend = false;
+    f.planes = gb::kStagePlanes;
+    f.rt0_write_mask = 0xF;
+    Check(gb::Decide(f).why == Why::kWrites, "D3D12 without Plume #15, a full RT0 mask: the writer is carried with all three planes");
+    f.rt0_write_mask = 0x7;
+    Check(gb::Decide(f).why == Why::kMaskedNarrowMask && !gb::Decide(f).attach(), "... an RGB mask is not enough (RT2's lit weight): not carried, the game's shader draws");
+    f.rt0_write_mask = 0x3;
+    Check(gb::Decide(f).why == Why::kMaskedNarrowMask, "... nor is an RG one: RT3 alone would have fitted it, the stage's planes together do not");
+    f.per_target_blend = true;
+    Check(gb::Decide(f).why == Why::kWrites, "with Plume #15 (a blend state per target) the planes' own masks are used and RT0's does not matter");
+  }
+  // the per target masks: each plane's slot has its own channels (what Vulkan uses today and D3D12 will with Plume #15); the one blend state back ends ignore them
+  {
+    for (const PlaneMode mode : {PlaneMode::kWrite, PlaneMode::kClear}) {
+      Check(gb::BlendFor(mode, gb::kPlaneNormal).write_mask == 0x3 && gb::BlendFor(mode, gb::kPlaneAlbedo).write_mask == 0xF && gb::BlendFor(mode, gb::kPlaneMaterial).write_mask == 0x3,
+            "a writer's and a clear's masks: the normal and the material R and G, the albedo and the lit weight all four");
+    }
+    Check(gb::BlendFor(PlaneMode::kClear, gb::kPlaneMaterial).zero && !gb::BlendFor(PlaneMode::kWrite, gb::kPlaneMaterial).zero, "only the clear blends (ZERO / ZERO), RT3 too");
+    for (uint32_t p = 0; p < gb::kPlaneCount; ++p) {
+      Check(gb::BlendFor(PlaneMode::kMask, gb::Plane(p)).write_mask == 0 && !gb::BlendFor(PlaneMode::kMask, gb::Plane(p)).zero, "a mask writes no channel of any plane");
+      Check(gb::BlendFor(PlaneMode::kWrite, gb::Plane(p)).write_mask == gb::ChannelMaskOf(gb::kPlaneFormats[p]), "a writer's mask is the plane format's channels");
+    }
+    Check(gb::BlendFor(PlaneMode::kWrite).write_mask == 0xF && gb::BlendFor(PlaneMode::kMask).write_mask == 0, "the mode's own blend (no plane) is as it was");
+  }
+  // the cost: RT3 is 2 bytes a sample on every draw that carries the sidecar, whatever the consumers want (the stage declares the output)
+  {
+    constexpr uint32_t k4kW = 3840, k4kH = 2160;
+    Check(gb::PlaneBytes(gb::kPlaneMaterial, 1920, 1080, 1) == 4147200ull && gb::SidecarBytes(gb::kStagePlanes, 1920, 1080, 1) - gb::SidecarBytes(3, 1920, 1080, 1) == 4147200ull,
+          "1080p, 1x: RT3 adds 4.1 MB (20.7 MB for the three planes, 16.6 before)");
+    Check(gb::SidecarBytes(gb::kStagePlanes, k4kW, k4kH, 2) == 165888000ull && gb::SidecarBytes(3, k4kW, k4kH, 2) == 132710400ull, "4K, 2x: 166 MB for the three planes (133 MB for two)");
+    Check(gb::SidecarAffordable(3, k4kW, k4kH, 8) && !gb::SidecarAffordable(gb::kStagePlanes, k4kW, k4kH, 8) && gb::SidecarAffordable(gb::kStagePlanes, k4kW, k4kH, 4),
+          "4K at 8x: two planes fitted the 512 MiB cap (531 MB), three (664 MB) do not: no sidecar there, the consumers use the depth; 4K at 4x fits (332 MB)");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,6 +1177,7 @@ int main(int argc, char** argv) {
   ViewMaskChecks();
   PauseAndCameraChecks();
   ModeChecks();
+  MaterialPlaneChecks();
   CameraChecks();
   const std::string text = ReadFile(hlsli);
   Check(!text.empty(), "the .hlsli is readable: " + hlsli);

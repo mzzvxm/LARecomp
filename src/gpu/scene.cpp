@@ -2606,26 +2606,27 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   if (!decision.attach()) {
     return key;
   }
-  // The planes are the colour slots after the guest's one, each in its format and with the blend state of what the draw does to them: a writer's is no blend and every channel,
-  // a clear's ZERO / ZERO (the pixels it draws become "no data"), a mask's write mask 0. Where the backend has one blend state for all targets (D3D12 until the Plume fix) only
+  // The planes are the colour slots after the guest's one, each in its format and with the blend state of what the draw does to them: a writer's is no blend and every channel
+  // of the plane, a clear's ZERO / ZERO (the pixels it draws become "no data"), a mask's write mask 0. Where the backend has one blend state for all targets (D3D12 until the Plume fix) only
   // writers get here and the slots' states are the writer's.
   static_assert(gbuffer::kMaxColourSlots <= kColorTargetCount, "the guest's colour and the planes fit the pipeline key's slots");
-  const gbuffer::PlaneBlend plane_blend = gbuffer::BlendFor(decision.mode);
-  plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
-  blend.renderTargetWriteMask = plane_blend.write_mask;
-  if (plane_blend.zero) {
-    blend.blendEnabled = true;
-    blend.srcBlend = plume::RenderBlend::ZERO;
-    blend.dstBlend = plume::RenderBlend::ZERO;
-    blend.blendOp = plume::RenderBlendOperation::ADD;
-    blend.srcBlendAlpha = plume::RenderBlend::ZERO;
-    blend.dstBlendAlpha = plume::RenderBlend::ZERO;
-    blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
-  }
+  // Each plane's write mask is its own channels' (gbuffer_rules.h BlendFor(mode, plane): the normal and the material R and G, the albedo and the lit weight all four).
   uint32_t slot = d.key.color_count;
   for (uint32_t p = 0; p < gbuffer::kPlaneCount; ++p) {
     if ((plan.attached & (1u << p)) == 0) {
       continue;
+    }
+    const gbuffer::PlaneBlend plane_blend = gbuffer::BlendFor(decision.mode, gbuffer::Plane(p));
+    plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
+    blend.renderTargetWriteMask = plane_blend.write_mask;
+    if (plane_blend.zero) {
+      blend.blendEnabled = true;
+      blend.srcBlend = plume::RenderBlend::ZERO;
+      blend.dstBlend = plume::RenderBlend::ZERO;
+      blend.blendOp = plume::RenderBlendOperation::ADD;
+      blend.srcBlendAlpha = plume::RenderBlend::ZERO;
+      blend.dstBlendAlpha = plume::RenderBlend::ZERO;
+      blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
     }
     key.color_format[slot] = uint32_t(GBuffer::FormatOf(gbuffer::Plane(p)));
     key.blend[slot] = PackBlend(blend);
