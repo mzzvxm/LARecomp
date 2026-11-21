@@ -121,6 +121,11 @@ int main() {
           "lights: closest first, reach, type");
     Check(!AnswerLights(index, Parse("{\"r\":20}"), snap.get(), &res, &err), "lights: near is needed");
     Check(!AnswerLights(index, Parse("{\"near\":[0,0,0],\"kind\":\"x\"}"), snap.get(), &res, &err), "lights: a bad kind");
+    Check(!AnswerLights(index, Parse("{\"near\":[0,0,0],\"src\":\"x\"}"), snap.get(), &res, &err) && err.find("lamp") != std::string::npos, "lights: a bad src names the choices");
+    Check(AnswerLights(index, Parse("{\"near\":[2,2,3],\"r\":20,\"src\":\"lamp\"}"), snap.get(), &res, &err) && res.Get("in_radius").AsInt() == 0, "lights: src lamp (the synth world has none)");
+    Check(AnswerLights(index, Parse("{\"near\":[2,2,3],\"r\":20,\"src\":\"file\"}"), snap.get(), &res, &err) && res.Get("in_radius").AsInt() == 2 &&
+              res.Get("lights").at(0).Get("src").AsString() == "file",
+          "lights: src file, every light carries its src");
 
     Check(AnswerRoad(index, Parse("{\"pos\":[15,0,3]}"), snap.get(), &res, &err) && res.Get("nearest").size() >= 1, "road: answers");
     const Json& r0 = res.Get("nearest").at(0);

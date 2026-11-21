@@ -12,10 +12,12 @@
 // The live world is decoded once from guest memory (atlas_core.h: the layouts) and kept; `atlas.dump {refresh:true}` reads it again. All handlers run on the
 // game thread (director.h). The guest addresses are those the notes derive from the recompiled code:
 //
-//   *0x8287E2F4            mcMultiLightMgr; its +4 is the light set, whose +96 is the run-time list {u32 array, u16 count, u16 capacity} of 96-byte lights
-//                          (sub_822F87E8 builds it from lights.#lm) and whose +80 is the loaded file's own list (atlas_core.h ReadCityLights tries both and, when neither
-//                          answers, names the manager's, set's and file's words in the error) [CHECK C4: the live list is lights.xlm's list; the first real run (11-20)
-//                          read 0 lights in free roam six times over 30 s with "not made yet": the cause is not known]
+//   *0x8287E2F4            mcMultiLightMgr. Its +4 light set exists only while the city loads: sub_822F87E8 builds it from the packed light file, builds the grid from it, then
+//                          deletes it and zeroes +4 (the first real run, 11-20, read 0 lights six times over 30 s: "no light set", day or night, for that reason). What stays is the
+//                          manager's +8, a 56-byte object whose lists hold the lights PACKED (24-byte records): the list at +8 {u32 array, u16 count at +12} is lights.xlm's own
+//                          (15,174: the offline atlas's) and the list at +24 {array, count at +28} the street lamps (6,298 spot lamps: the night probe's count). The reader
+//                          (atlas_core.h ReadRuntimeLights) unpacks each record with the game's own unpacker sub_822F1B08 (a guest call, exact), the way the lamp pass's AddLight
+//                          does every frame. The old set path (ReadCityLights) stays as the fallback for a read made during the load.
 //   *0x8286D8E4            mcAmbientMgr; the traffic mcRailnetAmbient is at +0x641C0 (409,920), its +8 the mcRailnetData (the resource's root object)
 //                          [CHECK C1: the live arrays are the file's]
 //   0x828CD0A8             the car table (cars.cpp)
@@ -76,6 +78,8 @@ constexpr uint32_t kCarTable = 0x828CD0A8;
 constexpr uint32_t kLevelPtr = 0x828DA464;
 constexpr uint32_t kProbeFn = 0x82574418;
 constexpr uint32_t kGuestMallocFn = 0x82130528;
+constexpr uint32_t kGuestFreeFn = 0x82130588;
+constexpr uint32_t kUnpackLightFn = 0x822F1B08;   // (r3 out: the 96-byte light, r4 the 24-byte packed record)
 
 // ---------------------------------------------------------------------------------------------------------------- guest memory
 
@@ -193,6 +197,41 @@ int ProbeSegment(Vec3 a, Vec3 b, Hit* out) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------------------------------------------- the game's light unpacker
+
+uint32_t g_light_scratch = 0;  // guest: the unpacked 96-byte light (16-byte aligned: the unpacker stores it with vector stores)
+uint32_t g_light_scratch_raw = 0;
+
+bool EnsureLightScratch() {
+    if (g_light_scratch) return true;
+    PPCFunc* fn = GuestFn(kGuestMallocFn);
+    const uint32_t raw = fn ? larecomp::guest::Call<uint32_t>(fn, 160u) : 0;
+    if (!raw) return false;
+    g_light_scratch_raw = raw;
+    g_light_scratch = (raw + 15) & ~15u;
+    return true;
+}
+
+void ReleaseLightScratch() {
+    if (!g_light_scratch_raw) return;
+    if (PPCFunc* fn = GuestFn(kGuestFreeFn)) larecomp::guest::Call<uint32_t>(fn, g_light_scratch_raw);
+    g_light_scratch_raw = g_light_scratch = 0;
+}
+
+// The packed light at guest `record` through the game's own sub_822F1B08, into the scratch and out as 96 bytes. The type byte (+88) is the marker that it ran: set to 0xEE first,
+// 0 or 1 after (the call does nothing off a guest thread).
+bool UnpackLight(uint32_t record, uint8_t out[96]) {
+    PPCFunc* fn = GuestFn(kUnpackLightFn);
+    uint8_t* base = Membase();
+    if (!fn || !base || !EnsureLightScratch()) return false;
+    uint8_t* at = base + g_light_scratch;
+    at[88] = 0xEE;
+    larecomp::guest::Call<uint32_t>(fn, g_light_scratch, record);
+    if (at[88] == 0xEE) return false;
+    std::memcpy(out, at, 96);
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------------------------- the live world
 
 struct Live {
@@ -228,7 +267,14 @@ bool EnsureWorld(bool refresh, std::string* error) {
 
     std::string e;
     uint32_t lights_from = 0;
-    if (!ReadCityLights(view, kMultiLightMgrPtr, &w->lights, &e, &lights_from)) note("lights", e);
+    RuntimeLightsInfo linfo;
+    if (ReadRuntimeLights(view, kMultiLightMgrPtr, UnpackLight, &w->lights, &e, &linfo)) {
+        lights_from = 8;
+    } else {
+        std::string e2;
+        if (!ReadCityLights(view, kMultiLightMgrPtr, &w->lights, &e2, &lights_from)) note("lights", e + "; the load-time light set: " + e2);
+    }
+    ReleaseLightScratch();
     e.clear();
     const uint32_t amb = view.U32(kAmbientMgrPtr);
     const uint32_t root = amb ? view.U32(amb + kRailnetAt + kRailnetDataAt) : 0;
@@ -253,7 +299,10 @@ bool EnsureWorld(bool refresh, std::string* error) {
     g_live.index = std::make_unique<Index>(*g_live.world);
     g_live.read_at = now;
     LARECOMP_APP_INFO("[atlas] live world read: {} lights{}, {} rails, {} nodes, {} cars{}", g_live.world->lights.size(),
-                      lights_from == 0 || lights_from == 96 ? std::string() : " (from the light set's +" + std::to_string(lights_from) + " list)", g_live.world->rails.size(),
+                      lights_from == 8 ? " (" + std::to_string(linfo.fill) + " of the file + " + std::to_string(linfo.lamps) + " street lamps, from the light object's packed lists" +
+                                             (linfo.skipped ? ", " + std::to_string(linfo.skipped) + " records left out" : std::string()) + ")"
+                                       : (lights_from == 0 || lights_from == 96 ? std::string() : " (from the light set's +" + std::to_string(lights_from) + " list)"),
+                      g_live.world->rails.size(),
                       g_live.world->nodes.size(), g_live.world->cars.size(), problems.empty() ? std::string() : " (" + problems + ")");
     return true;
 }
@@ -549,8 +598,9 @@ const dir::CommandRegistrar kLights(
                 "the lamps near a point, closest first",
                 {Arg("near", dir::ArgType::kAny, true, "[x,y,z] | [x,z] | {x,z} | \"player\" | \"car:id\" | \"spot:name[@r,u,f]\""),
                  Arg("r", dir::ArgType::kNumber, false, "radius in metres, default 60"), Arg("n", dir::ArgType::kInt, false, "most lights returned, default 20"),
-                 Arg("min_intensity", dir::ArgType::kNumber, false, "default 0 (a street lamp is 20)"), Arg("kind", dir::ArgType::kString, false, "\"spot\" or \"omni\"")},
-                "{count, in_radius, lights:[{i,pos,color,dir,intensity,cone,spread,type,on,dist,reach_m}]}"});
+                 Arg("min_intensity", dir::ArgType::kNumber, false, "default 0 (a street lamp is 40 to 100)"), Arg("kind", dir::ArgType::kString, false, "\"spot\" or \"omni\""),
+                 Arg("src", dir::ArgType::kString, false, "\"lamp\" (the street lamps: spots) or \"file\" (lights.xlm's own lights); default both")},
+                "{count, in_radius, lights:[{i,pos,color,dir,intensity,cone,spread,type,on,src,dist,reach_m}]}; by day too: the lamps exist from the city's load on, `on` is their own switch"});
 const dir::CommandRegistrar kRoad(
     "query.road", HandleRoad,
     dir::Schema{"query",
