@@ -53,6 +53,15 @@ static const uint kLastVehicleId = 23u;
 static const float kMaxDistance = 60000.0f;
 static const float kMaxColour = 60000.0f;
 
+// A colour a half float image keeps, held the same way on both APIs: not negative, at most kMaxColour, and a NaN (any sign or payload) black. The NaN is decided by the bits and the clamp only sees
+// numbers: min(max(NaN, 0), x) is 0 on D3D12 (the DXIL max returns the other operand) but SPIR-V's FMax / FMin leave which operand a NaN gives open, so Vulkan must not lean on it.
+float HeldChannel(float v) {
+  return ((asuint(v) & 0x7FFFFFFFu) <= 0x7F800000u) ? min(max(v, 0.0f), kMaxColour) : 0.0f;
+}
+float3 HeldColour(float3 colour) {
+  return float3(HeldChannel(colour.x), HeldChannel(colour.y), HeldChannel(colour.z));
+}
+
 // The distance along the view direction of a stored depth; 0 for the sky and for anything the linearisation cannot place.
 float LinearDistance(float stored) {
   const float ndc = 1.0f - saturate(stored);
@@ -93,5 +102,5 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float stored = g_textures[g_push.slots.x].Load(int3(p, 0)).r;
   const float3 colour = g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;
 #endif
-  return float4(min(max(colour, 0.0f), kMaxColour), LinearDistance(stored));
+  return float4(HeldColour(colour), LinearDistance(stored));
 }

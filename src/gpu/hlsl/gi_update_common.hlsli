@@ -144,9 +144,18 @@ struct GiuRay
     uint extra;
 };
 
+// A float that is a number (not NaN, not infinite), by the bits: a compiler may fold x == x, and fmax / fmin of a NaN is the API's to say (D3D12 returns the other operand, Vulkan's FMax and FMin
+// leave which one open), so nothing here leans on it.
+bool GiuFinite(float v)
+{
+    return (asuint(v) & 0x7F800000u) != 0x7F800000u;
+}
+
+// One channel of a ray's radiance as the record keeps it: not negative, at most GIU_MAX_RADIANCE, a NaN none (0). The NaN is decided first, by the bits; the clamp only sees numbers (and infinity).
 float GiuRadianceChannel(float v)
 {
-    return min(max(v, 0.0f), GIU_MAX_RADIANCE);
+    const bool nan = (asuint(v) & 0x7FFFFFFFu) > 0x7F800000u;
+    return nan ? 0.0f : min(max(v, 0.0f), GIU_MAX_RADIANCE);
 }
 
 uint4 GiuPackRay(float3 radiance, float distance, uint flags, uint extra)
@@ -368,14 +377,27 @@ float GiuHysteresis(uint updates, bool isNew, bool dirty, bool jumped, float bas
     return h;
 }
 
-float3 GiuBlend3(float3 oldValue, float3 newValue, float h)
+// The blend of a probe's history with this update's value. A value that is not a number must not stay in the probe for good (NaN times 0 is NaN, so the hysteresis would carry it for ever, and infinity
+// times 0 is NaN too): a sample that is not a number leaves the history as it was, a history that is not one is replaced by the sample, and both not: 0. Decided here by the bits, the same on D3D12
+// and on Vulkan; for numbers it is old * h + new * (1 - h).
+float GiuBlend1(float oldValue, float newValue, float h)
 {
+    const bool oldOk = GiuFinite(oldValue);
+    const bool newOk = GiuFinite(newValue);
+    if (!newOk)
+    {
+        return oldOk ? oldValue : 0.0f;
+    }
+    if (!oldOk)
+    {
+        return newValue;
+    }
     return oldValue * h + newValue * (1.0f - h);
 }
 
-float GiuBlend1(float oldValue, float newValue, float h)
+float3 GiuBlend3(float3 oldValue, float3 newValue, float h)
 {
-    return oldValue * h + newValue * (1.0f - h);
+    return float3(GiuBlend1(oldValue.x, newValue.x, h), GiuBlend1(oldValue.y, newValue.y, h), GiuBlend1(oldValue.z, newValue.z, h));
 }
 
 // The census's histogram bin of a probe's mean irradiance luminance: half octaves from 2^-10 (bin 0) to 2^6 (bin 31).

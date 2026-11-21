@@ -191,7 +191,7 @@ struct RayWords {
   uint32_t w[4] = {0, 0, 0, 0};
   bool operator==(const RayWords& o) const { return w[0] == o.w[0] && w[1] == o.w[1] && w[2] == o.w[2] && w[3] == o.w[3]; }
 };
-// (the GPU's max returns the other operand for a NaN: a NaN and a negative value are 0)
+// (a NaN and a negative value are 0: the shader decides the NaN by the bits (GiuRadianceChannel), not by fmax, which Vulkan leaves open for a NaN)
 inline float RadianceChannel(float v) { return v >= 0.0f ? std::min(v, kMaxRadiance) : 0.0f; }
 inline RayWords PackRay(const Ray& r) {
   const uint32_t rr = FloatToHalf(RadianceChannel(r.radiance.x));
@@ -240,8 +240,17 @@ inline float Hysteresis(uint32_t updates, bool is_new, bool dirty, bool jumped, 
   if (dirty || jumped) h = std::min(h, jump);
   return h;
 }
-inline gi::Vec3 Blend(gi::Vec3 old_value, gi::Vec3 new_value, float h) { return old_value * h + new_value * (1.0f - h); }
-inline float Blend(float old_value, float new_value, float h) { return old_value * h + new_value * (1.0f - h); }
+// A value that is not a number (NaN or infinite) must not stay in a probe for good (NaN * 0 is NaN): a sample that is not one leaves the history, a history that is not one is replaced by the sample, both
+// not: 0 (GiuBlend1; for numbers old * h + new * (1 - h)).
+inline float Blend(float old_value, float new_value, float h) {
+  const bool old_ok = std::isfinite(old_value), new_ok = std::isfinite(new_value);
+  if (!new_ok) return old_ok ? old_value : 0.0f;
+  if (!old_ok) return new_value;
+  return old_value * h + new_value * (1.0f - h);
+}
+inline gi::Vec3 Blend(gi::Vec3 old_value, gi::Vec3 new_value, float h) {
+  return {Blend(old_value.x, new_value.x, h), Blend(old_value.y, new_value.y, h), Blend(old_value.z, new_value.z, h)};
+}
 // The census's histogram bin of a probe's mean luminance: half octaves from 2^-10 (bin 0) to 2^6 (bin 31).
 inline uint32_t HistBin(float mean) {
   const float v = (std::log2(std::max(mean, 1.0e-6f)) + 10.0f) * 2.0f;

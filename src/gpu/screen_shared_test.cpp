@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -624,7 +625,8 @@ struct Rgb {
   float r, g, b;
 };
 float ClampColour(float v) {
-  // HLSL min(max(v, 0), 60000): max(NaN, 0) is 0 (the AO's note, ao_color_ps.hlsl)
+  // HeldChannel in both shaders: a NaN (decided by the bits, not by fmax, which Vulkan leaves open for a NaN) is 0, else min(max(v, 0), 60000)
+  if ((std::bit_cast<uint32_t>(v) & 0x7FFFFFFFu) > 0x7F800000u) return 0.0f;
   const float m = (v > 0.0f) ? v : 0.0f;
   return m < 60000.0f ? m : 60000.0f;
 }
@@ -1031,9 +1033,11 @@ void SourceChecksSs1(const std::string& gpu) {
             Has(car_ps, "[loop] for (uint s = 0u; s < samples; ++s) {\n    sum += g_textures_ms[g_push.slots.y].Load(p, s).rgb;\n  }"),
         "both add the host samples one by one in order");
   Check(Has(colour_ps, "total += sum / float(samples);") && Has(car_ps, "const float3 colour = sum / float(samples);"), "both divide the sum by the sample count as a float");
-  Check(Has(colour_ps, "const float3 colour = total / float(ratio * ratio);") && Has(colour_ps, "return float4(min(max(colour, 0.0f), kMaxColour), 1.0f);") &&
-            Has(car_ps, "return float4(min(max(colour, 0.0f), kMaxColour), LinearDistance(stored));"),
-        "both clamp with min(max(colour, 0), kMaxColour), the capture after dividing by 1 at the picture's size");
+  const std::string held = "float HeldChannel(float v) {\n  return ((asuint(v) & 0x7FFFFFFFu) <= 0x7F800000u) ? min(max(v, 0.0f), kMaxColour) : 0.0f;\n}\n"
+                           "float3 HeldColour(float3 colour) {\n  return float3(HeldChannel(colour.x), HeldChannel(colour.y), HeldChannel(colour.z));\n}\n";
+  Check(Has(colour_ps, "const float3 colour = total / float(ratio * ratio);") && Has(colour_ps, "return float4(HeldColour(colour), 1.0f);") &&
+            Has(car_ps, "return float4(HeldColour(colour), LinearDistance(stored));") && Has(colour_ps, held) && Has(car_ps, held),
+        "both clamp with the same HeldColour (a NaN black by the bits, else min(max(c, 0), kMaxColour)), the capture after dividing by 1 at the picture's size");
   Check(Has(colour_ps, "const uint samples = max(g_push.slots.y, 1u);") && Has(car_ps, "const uint samples = max(g_push.slots.w, 1u);"), "both take at least one sample");
   // the car history's variants: 0 and 1 keep their text, 2 reads one load
   Check(Has(car_ps, "#if CAR_HISTORY_MS == 2") && Has(car_ps, "const float3 colour = g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;\n#elif CAR_HISTORY_MS") && Count(car_ps, "#if CAR_HISTORY_MS\n") == 1,

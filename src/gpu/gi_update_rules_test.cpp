@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <regex>
 #include <set>
@@ -224,6 +225,18 @@ void TestHlslTwin() {
     if (std::fabs(t.radiance.x - wanted) > wanted * 1.0e-3f + 1.0e-6f) ray_ok = false;
   }
   Check(ray_ok, "the ray record packs as the twin's, unpacks to the clamped radiance within half precision, and keeps the flags, the distance and the extra word");
+  // A channel that is not a number is 0 in the record and infinity is the cap (the shader decides it by the bits: Vulkan leaves fmax(NaN, 0) open), whatever the NaN's sign or payload
+  bool nan_ok = true;
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nans[] = {std::numeric_limits<float>::quiet_NaN(), -std::numeric_limits<float>::quiet_NaN(), std::bit_cast<float>(0x7F800001u), std::bit_cast<float>(0xFFC12345u)};
+  for (const float nan : nans) {
+    if (GiuRadianceChannel(nan) != 0.0f || gu::RadianceChannel(nan) != 0.0f) nan_ok = false;
+    const uint4 packed = GiuPackRay(float3(nan, 1.0f, nan), 3.0f, 1u, 0u);
+    const GiuRay unpacked = GiuUnpackRay(packed);
+    if (unpacked.radiance.x != 0.0f || unpacked.radiance.y != 1.0f || unpacked.radiance.z != 0.0f) nan_ok = false;
+  }
+  if (GiuRadianceChannel(inf) != gu::kMaxRadiance || GiuRadianceChannel(-inf) != 0.0f || GiuRadianceChannel(-3.0f) != 0.0f || GiuRadianceChannel(5.0f) != 5.0f) nan_ok = false;
+  Check(nan_ok, "a radiance channel that is NaN (either sign, any payload) is 0 in the ray record, infinity is the cap, in the shader and in the twin");
 
   bool border_ok = true;
   float worst_texel = 0;
@@ -292,6 +305,20 @@ void TestHlslTwin() {
   Check(class_ok, "the classification, the back face byte and the inside retest are the twin's on 20,000 inputs");
   Check(blend_ok, "the relative change, the jump, the standard error, the hysteresis and the blends are the twin's on 20,000 inputs");
   Check(hist_ok, "the histogram's bin is the twin's");
+  // A value that is not a number is not carried by the hysteresis: NaN * 0 and infinity * 0 are NaN
+  bool blend_nan_ok = true;
+  const float bad_values[] = {std::numeric_limits<float>::quiet_NaN(), -std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
+  for (const float bad : bad_values) {
+    for (const float h : {0.0f, 0.5f, 0.97f, 1.0f}) {
+      if (GiuBlend1(bad, 2.0f, h) != 2.0f || gu::Blend(bad, 2.0f, h) != 2.0f) blend_nan_ok = false;  // a history that is not a number is replaced
+      if (GiuBlend1(3.0f, bad, h) != 3.0f || gu::Blend(3.0f, bad, h) != 3.0f) blend_nan_ok = false;  // a sample that is not one leaves the history
+      if (GiuBlend1(bad, bad, h) != 0.0f || gu::Blend(bad, bad, h) != 0.0f) blend_nan_ok = false;
+      const float3 mixed = GiuBlend3(float3(bad, 1.0f, 2.0f), float3(4.0f, bad, 6.0f), h);
+      const gi::Vec3 twin_mixed = gu::Blend(gi::Vec3{bad, 1.0f, 2.0f}, gi::Vec3{4.0f, bad, 6.0f}, h);
+      if (mixed.x != 4.0f || mixed.y != 1.0f || std::fabs(mixed.z - (2.0f * h + 6.0f * (1.0f - h))) > 1e-6f || Dist(V(mixed), twin_mixed) > 1e-6f) blend_nan_ok = false;
+    }
+  }
+  Check(blend_nan_ok, "a history or a sample that is NaN or infinite is dropped by the blend (never carried), in the shader and in the twin");
   Check(std::fabs(GiuLuma(float3(1, 1, 1)) - 1.0f) < 1e-6f && std::fabs(gu::Luma({1, 1, 1}) - 1.0f) < 1e-6f, "the luminance weights sum to one");
 }
 
