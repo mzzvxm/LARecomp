@@ -37,6 +37,8 @@ void CheckNear(double got, double want, double tolerance, const std::string& wha
   }
 }
 
+bool Near2(double got, double want, double tolerance) { return std::fabs(got - want) <= tolerance; }
+
 // A lamp at the origin looking along +x (horizontal), the default beam.
 hr::Lamp BeamAlongX() {
   hr::Lamp lamp;
@@ -357,6 +359,7 @@ void CheckCar() {
     for (int c = 0; c < 3; ++c) CheckNear(lamp.position[c], expected[c], 1e-9, "the lamp is the mean of the front lenses, nudged forward");
     CheckNear(hr::Dot3d(lamp.forward, pose.back), -1.0, 1e-9, "forward is minus the third row");
     CheckNear(lamp.spread, 4.1, 1e-9, "the lenses spread over 4.1 m");
+    CheckNear(lamp.half_span, 0.65, 1e-9, "the two front lenses are 1.3 m apart across the car: half the span is 0.65 m");
   }
   // The beam's axis dips below the forward.
   {
@@ -374,6 +377,8 @@ void CheckCar() {
     for (size_t i = 0; i < 2; ++i) flat.insert(flat.end(), lenses[i].begin(), lenses[i].end());
     hr::CarLamp one;
     Check(hr::FrontLamp(pose, reinterpret_cast<const double(*)[3]>(flat.data()), 2, &one) && one.front == 2, "a single cluster ahead of the root is the front");
+    CheckNear(one.half_span, 0.65, 1e-9, "... and the same pair's half span");
+    Check(hr::FrontLamp(pose, reinterpret_cast<const double(*)[3]>(flat.data()), 1, &one) && one.front == 1 && one.half_span == 0.0, "one front lens says nothing of the pair: no span");
     flat.clear();
     for (size_t i = 2; i < 4; ++i) flat.insert(flat.end(), lenses[i].begin(), lenses[i].end());
     Check(!hr::FrontLamp(pose, reinterpret_cast<const double(*)[3]>(flat.data()), 2, &one), "a single cluster behind the root is not a headlight");
@@ -394,6 +399,93 @@ void CheckCar() {
     hr::CarLamp turned;
     Check(hr::FrontLamp(pose2, reinterpret_cast<const double(*)[3]>(flat.data()), 4, &turned), "a turned car has headlights");
     CheckNear(hr::Dot3d(turned.forward, lamp.forward), -1.0, 1e-9, "and they point the other way");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the car's two headlamps (the shadow views are made from each lamp: local_shadow.h)
+// ---------------------------------------------------------------------------
+
+void CheckLampSpan() {
+  // The offset to the right lamp: forward x up (the frame the poses have: right x up = back), half the span, a unit direction times it.
+  const double forward_x[3] = {1, 0, 0}, up[3] = {0, 1, 0};
+  float offset[3];
+  Check(hr::LampOffset(forward_x, up, 0.6, offset), "an offset for a car facing +x");
+  CheckNear(offset[0], 0.0, 1e-6, "no offset along the car");
+  CheckNear(offset[1], 0.0, 1e-6, "none up");
+  CheckNear(offset[2], 0.6, 1e-6, "the right lamp of a car facing +x is at +z (forward x up)");
+  const double forward_z[3] = {0, 0, 1};
+  Check(hr::LampOffset(forward_z, up, 0.6, offset), "an offset for a car facing +z");
+  CheckNear(offset[0], -0.6, 1e-6, "facing +z, forward x up is -x");
+  // The axes need not be unit or at right angles (a tracked car's): the offset is still the half span long, across the car.
+  const double slanted[3] = {3.0, 0.4, 0.0};
+  Check(hr::LampOffset(slanted, up, 0.5, offset), "a slanted forward");
+  CheckNear(std::sqrt(offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]), 0.5, 1e-6, "the offset is the half span long");
+  CheckNear(offset[0] * slanted[0] + offset[1] * slanted[1] + offset[2] * slanted[2], 0.0, 1e-6, "... and at right angles to forward");
+  const double parallel[3] = {0, 2, 0};
+  Check(!hr::LampOffset(parallel, up, 0.6, offset) && offset[0] == 0.0f && offset[2] == 0.0f, "a forward along up makes no right axis: no offset");
+  // A span that is not believed is the default: unknown (0), a lens mesh (0.05), a strip across the grille (2.0), not a number.
+  for (const double measured : {0.0, 0.05, 2.0, std::nan("")}) {
+    Check(hr::LampOffset(forward_x, up, measured, offset), "an offset");
+    CheckNear(offset[2], hr::kDefaultHalfSpan, 1e-6, "a half span that is not believed is the default");
+  }
+  CheckNear(hr::BelievedHalfSpan(0.8), 0.8, 0.0, "a believable half span is kept");
+  Check(hr::kMinHalfSpan < hr::kDefaultHalfSpan && hr::kDefaultHalfSpan < hr::kMaxHalfSpan, "the default is between the limits");
+  // The game's own points: a pair across the car (1.2 m apart, as the player's) gives half the distance; one point gives none; the strongest of the group counts.
+  {
+    hr::GuestPoint a, b, c;
+    a.pos[0] = 10.0f; a.pos[1] = 0.7f; a.pos[2] = 5.0f;
+    b = a;
+    b.pos[2] = 6.2f;
+    c = a;
+    c.pos[0] = 20.0f;  // another lamp, far away
+    const double place[1][3] = {{10.0, 0.7, 5.6}};
+    std::vector<bool> taken;
+    auto matches = hr::AssignPoints({a, b, c}, place, 1, &taken);
+    Check(matches[0].count == 2 && Near2(matches[0].span, 1.2, 1e-5), "two points near a lamp are its pair: 1.2 m apart");
+    hr::CarLamp lamp;
+    double on = 0.0;
+    bool disagrees = false;
+    hr::ApplyPoints(matches[0], &lamp, &on, &disagrees);
+    Check(Near2(lamp.half_span, 0.6, 1e-5), "the lamp's half span is half of that");
+    matches = hr::AssignPoints({a}, place, 1, &taken);
+    hr::CarLamp lone;
+    lone.half_span = 0.7;  // the lens lamp's own guess
+    hr::ApplyPoints(matches[0], &lone, &on, &disagrees);
+    Check(lone.half_span == 0.7, "one point says nothing of the pair: the lens lamp's own half span stays");
+    // Points that no lens lamp took (a racer's, with a direction) make a lamp whose span is their own.
+    a.vehicle = b.vehicle = 0x40;
+    a.has_dir = b.has_dir = true;
+    a.dir[0] = b.dir[0] = -1.0f;
+    const auto made = hr::LampsFromPoints({a, b}, std::vector<bool>(2, false));
+    Check(made.size() == 1 && Near2(made[0].lamp.half_span, 0.6, 1e-5), "a lamp made from a pair of points has their half span");
+    const auto single = hr::LampsFromPoints({a}, std::vector<bool>(1, false));
+    Check(single.size() == 1 && single[0].lamp.half_span == 0.0, "... and none from a single point");
+  }
+  // The tracker smooths the span over the sightings that knew it and keeps the last when one does not.
+  {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out;
+    hr::Candidate car;
+    car.lamp.position[0] = 0.0;
+    car.lamp.position[1] = 0.65;
+    car.lamp.position[2] = 10.0;
+    car.lamp.forward[0] = 1.0;
+    car.lamp.forward[1] = 0.0;
+    car.lamp.forward[2] = 0.0;
+    car.player = true;
+    car.camera_distance = 10.0;
+    car.lamp.half_span = 0.6;
+    tracker.Observe(car);
+    Check(tracker.EndFrame(1, &out) == 1 && Near2(out[0].half_span, 0.6, 1e-12), "the first sighting's span");
+    car.lamp.half_span = 0.8;
+    tracker.Observe(car);
+    tracker.EndFrame(2, &out);
+    Check(Near2(out[0].half_span, 0.8 * 0.6 + 0.2 * 0.8 - 0.0, 1e-12) || Near2(out[0].half_span, 0.64, 1e-12), "the next is smoothed: 0.8 of the old, 0.2 of the new");
+    car.lamp.half_span = 0.0;
+    tracker.Observe(car);
+    tracker.EndFrame(3, &out);
+    Check(Near2(out[0].half_span, 0.64, 1e-12), "a sighting with no span keeps the last");
   }
 }
 
@@ -590,6 +682,24 @@ void CheckShadow() {
   Check(none[0] == hr::kNoView && none[3] == hr::kNoView, "no frame, no views");
   const auto beyond = hr::ShadowViewOfLight(&frame, 2);
   Check(beyond[2] == hr::kNoView, "a view of a light that is not in the set (index 2 of 2 lights) is ignored");
+  // A light is a car's and has up to two views, one for each of its headlamps: the first valid view that names it, then the second; a third is not read.
+  {
+    larecomp::gpu::LocalShadowFrame lamps;
+    lamps.count = 5;
+    const uint32_t names[5] = {1, 1, 0, 1, 0};
+    const uint32_t valid[5] = {1, 1, 1, 1, 0};
+    for (uint32_t v = 0; v < 5; ++v) {
+      lamps.views[v].light_index = names[v];
+      lamps.views[v].valid = valid[v];
+    }
+    const hr::LightViews of2 = hr::ShadowViewsOfLight(&lamps, 3);
+    Check(of2.first[1] == 0 && of2.second[1] == 1, "light 1 has its first two views, 0 and 1 (a third is not read)");
+    Check(of2.first[0] == 2 && of2.second[0] == hr::kNoView, "light 0 has one valid view (the invalid one is skipped)");
+    Check(of2.first[2] == hr::kNoView && of2.second[2] == hr::kNoView, "a light that no view names has none");
+    const auto first_only = hr::ShadowViewOfLight(&lamps, 3);
+    Check(first_only[1] == 0 && first_only[0] == 2, "the one-view table is the first view of each light");
+    Check(hr::ShadowViewsOfLight(nullptr, 3).first[0] == hr::kNoView && hr::ShadowViewsOfLight(nullptr, 3).second[0] == hr::kNoView, "no frame, no views");
+  }
 
   // A matrix that maps x in [0, 10] to u in [0, 1], y in [0, 10] to v in [0, 1] and z in [0, 20] to depth [0, 1], w = 1 (row-major, out = M p).
   larecomp::gpu::LocalShadowView view{};
@@ -637,8 +747,21 @@ void CheckShadow() {
 // the block the shaders read
 // ---------------------------------------------------------------------------
 
+// Four lamps like `a`, in a row.
+const hr::Lamp* many4(const hr::Lamp& a) {
+  static hr::Lamp four[4];
+  for (int i = 0; i < 4; ++i) {
+    four[i] = a;
+    four[i].position[0] = a.position[0] + 10.0f * float(i);
+  }
+  return four;
+}
+
 void CheckBlock() {
-  Check(sizeof(hr::HeadlightConstants) == 672, "the block is 672 bytes");
+  Check(sizeof(hr::HeadlightConstants) == 1072, "the block is 1072 bytes (672 before the lamps' views: eight views and a second view table)");
+  Check(offsetof(hr::HeadlightConstants, shadow_of) == 256 && offsetof(hr::HeadlightConstants, shadow_of_b) == 272 && offsetof(hr::HeadlightConstants, atlas) == 288 &&
+            offsetof(hr::HeadlightConstants, shadow) == 304 && sizeof(hr::HeadlightConstants::shadow) == 768,
+        "the views follow the two view tables and the atlas slots: c42 shadow_of, c43 shadow_of_b, c44 atlas, c45 the first view");
   hr::Lamp a = BeamAlongX();
   a.position[0] = 5.0f;
   a.position[1] = 0.65f;
@@ -681,6 +804,43 @@ void CheckBlock() {
   frame.views[0].valid = 0;
   const hr::HeadlightConstants invalid = hr::MakeConstants(lamps, 2, camera, &frame, 7, 8);
   Check(invalid.atlas[0] == hr::kNoSlot, "an invalid view binds no atlas");
+  // A light with TWO views (a car's two headlamps): the first is shadow_of, the second shadow_of_b, and the views are copied up to eight.
+  {
+    larecomp::gpu::LocalShadowFrame two;
+    two.count = 4;
+    for (uint32_t v = 0; v < 4; ++v) {
+      two.views[v].valid = 1;
+      two.views[v].light_index = v / 2;  // lights 0 and 1 have two views each
+      two.views[v].world_to_shadow[0] = float(v + 1);
+      two.views[v].atlas_rect[2] = 1.0f;
+    }
+    const hr::HeadlightConstants both = hr::MakeConstants(lamps, 2, camera, &two, 7, 8);
+    Check(both.shadow_of[0] == 0 && both.shadow_of_b[0] == 1 && both.shadow_of[1] == 2 && both.shadow_of_b[1] == 3, "each light has its two views, in the order the producer gave them");
+    Check(both.shadow_of[2] == hr::kNoView && both.shadow_of_b[2] == hr::kNoView && both.shadow_of_b[3] == hr::kNoView, "a light that is not in the set has none");
+    CheckNear(both.shadow[3].world_to_shadow[0], 4.0, 0.0, "the fourth view is copied (the block held four before)");
+    larecomp::gpu::LocalShadowFrame eight;
+    eight.count = 8;
+    for (uint32_t v = 0; v < 8; ++v) {
+      eight.views[v].valid = 1;
+      eight.views[v].light_index = v / 2;
+      eight.views[v].world_to_shadow[0] = float(v + 1);
+    }
+    const hr::HeadlightConstants all = hr::MakeConstants(many4(a), 4, camera, &eight, 7, 8);
+    bool ok = true;
+    for (uint32_t light = 0; light < 4; ++light) {
+      ok = ok && all.shadow_of[light] == 2 * light && all.shadow_of_b[light] == 2 * light + 1;
+    }
+    for (uint32_t v = 0; v < 8; ++v) {
+      ok = ok && all.shadow[v].world_to_shadow[0] == float(v + 1);
+    }
+    Check(ok, "four cars with two views each: the eight views are in the block, each light names its two");
+    larecomp::gpu::LocalShadowFrame one;
+    one.count = 1;
+    one.views[0].valid = 1;
+    one.views[0].light_index = 0;
+    const hr::HeadlightConstants single = hr::MakeConstants(lamps, 2, camera, &one, 7, 8);
+    Check(single.shadow_of[0] == 0 && single.shadow_of_b[0] == hr::kNoView, "a light with one view (the car's, not its lamps') has no second");
+  }
   // More than four lamps are cut to four.
   hr::Lamp many[6];
   for (auto& lamp : many) lamp = a;
@@ -1102,7 +1262,8 @@ void CheckShadowRemap() {
   {
     const uint32_t keys[2] = {10, 40};
     const auto out = hr::RemapShadowViews(frame, old_keys, 3, keys, 2);
-    Check(out.count == 1 && out.views[0].light_index == 0 && out.views[0].world_to_shadow[0] == 1.0f, "a car that left takes its view with it; a car with one lamp keeps one");
+    Check(out.count == 2 && out.views[0].light_index == 0 && out.views[1].light_index == 0 && out.views[0].world_to_shadow[0] == 1.0f && out.views[1].world_to_shadow[0] == 2.0f,
+          "a car that left takes its views with it; a car that is one light now has both views on it (the mean of the two lamps')");
   }
   // Bad input: an index past the producer's set, an invalid view, no new lights.
   {
@@ -1116,11 +1277,59 @@ void CheckShadowRemap() {
   }
 }
 
-// The levels of LIGHT SHADOWS (owner, 2026-11-20): high shadows two cars, ultra three, of the four the rig lights. The views of a frame are one for each lit lamp, and the
-// block holds four: a car the rig lights but that has no view is lit without a shadow.
+// A light is a car's, and the views are the car's lamps': two views name one light. The next frame's set is in another order; the views go by the car, both to its light.
+void CheckLampViewsRemap() {
+  larecomp::gpu::LocalShadowFrame frame;
+  frame.count = 6;
+  const uint32_t lights[6] = {0, 0, 1, 1, 2, 2};  // the player's two lamps, another car's, a third car's
+  for (uint32_t v = 0; v < 6; ++v) {
+    frame.views[v].valid = 1;
+    frame.views[v].light_index = lights[v];
+    frame.views[v].world_to_shadow[0] = float(v + 1);
+  }
+  const uint32_t old_keys[3] = {10, 20, 30};
+  {
+    const uint32_t keys[4] = {10, 30, 20, 40};  // the two other cars traded places, a fourth came in
+    const auto out = hr::RemapShadowViews(frame, old_keys, 3, keys, 4);
+    Check(out.count == 6, "all six views find their cars");
+    Check(out.views[0].light_index == 0 && out.views[1].light_index == 0 && out.views[2].light_index == 2 && out.views[3].light_index == 2 && out.views[4].light_index == 1 &&
+              out.views[5].light_index == 1,
+          "each car's two views go to its one light, wherever the light is now");
+    const hr::LightViews of = hr::ShadowViewsOfLight(&out, 4);
+    Check(of.first[0] == 0 && of.second[0] == 1 && of.first[1] == 4 && of.second[1] == 5 && of.first[2] == 2 && of.second[2] == 3 && of.first[3] == hr::kNoView,
+          "the table names the two views of each light; the new car has none");
+    Check(out.views[4].world_to_shadow[0] == 5.0f && out.views[2].world_to_shadow[0] == 3.0f, "the matrices go with them");
+  }
+  // A car that is gone loses both; a car that has one light and three views (not made) keeps two.
+  {
+    const uint32_t keys[2] = {30, 10};
+    const auto out = hr::RemapShadowViews(frame, old_keys, 3, keys, 2);
+    Check(out.count == 4 && out.views[0].light_index == 1 && out.views[1].light_index == 1 && out.views[2].light_index == 0 && out.views[3].light_index == 0,
+          "a car that left takes its two views with it");
+    larecomp::gpu::LocalShadowFrame many = frame;
+    many.count = 3;
+    many.views[0].light_index = many.views[1].light_index = many.views[2].light_index = 0;
+    const uint32_t keys1[1] = {10};
+    Check(hr::RemapShadowViews(many, old_keys, 3, keys1, 1).count == 2, "a light takes two views at most");
+  }
+  // Two lights of one car (the design before the lamps' views: a light for each lamp) still go one view each.
+  {
+    larecomp::gpu::LocalShadowFrame two;
+    two.count = 2;
+    two.views[0].valid = two.views[1].valid = 1;
+    two.views[0].light_index = 0;
+    two.views[1].light_index = 1;
+    const uint32_t keys_old[2] = {10, 10}, keys_new[3] = {20, 10, 10};
+    const auto out = hr::RemapShadowViews(two, keys_old, 2, keys_new, 3);
+    Check(out.count == 2 && out.views[0].light_index == 1 && out.views[1].light_index == 2, "a car with two lights has a view on each");
+  }
+}
+
+// The levels of LIGHT SHADOWS (owner, 2026-11-20): high shadows two cars, ultra three, of the four the rig lights, each with a view for each lamp: up to six views, and the
+// block holds eight. A car the rig lights but that has no view is lit without a shadow.
 void CheckThreeShadowViews() {
-  Check(hr::kMaxLights >= 3 && sizeof(hr::HeadlightConstants::shadow) / sizeof(larecomp::gpu::LocalShadowView) >= 3,
-        "the rig lights and the block holds the three views ultra makes (it holds four)");
+  Check(hr::kMaxLights >= 3 && sizeof(hr::HeadlightConstants::shadow) / sizeof(larecomp::gpu::LocalShadowView) >= 6,
+        "the rig lights three cars and the block holds the six views ultra makes (it holds eight)");
   hr::Lamp lamps[4];
   for (int i = 0; i < 4; ++i) {
     lamps[i].position[0] = 10.0f * float(i);
@@ -1265,6 +1474,8 @@ int main() {
   CheckShadow();
   CheckSoftShadow();
   CheckShadowRemap();
+  CheckLampViewsRemap();
+  CheckLampSpan();
   CheckThreeShadowViews();
   CheckBlock();
   CheckPoints();

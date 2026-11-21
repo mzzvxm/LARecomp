@@ -232,34 +232,50 @@ inline float SoftShadow(float tx, float ty, LitAt&& lit_at) {
   return lit * (1.0f / 9.0f);
 }
 
-// The host's table from a light to its shadow view: view index, or kNoView. A view counts when it is valid and names a light of the set
-// (light_index 0 .. kMaxLights - 1; 100 and up are the lamps', later); a light has the first valid view that names it.
+// The host's table from a light to its shadow views: view index, or kNoView. A view counts when it is valid and names a light of the set
+// (light_index 0 .. kMaxLights - 1; 100 and up are the lamps', later). A light is a car's and has up to TWO views, one for each of its headlamps (a car whose lamps
+// share a view has one): the first valid view that names it is `first`, the second `second`; a third is not read. The shader's term for the light is the mean of the
+// views' it has.
 inline constexpr uint32_t kNoView = 0xFFFFFFFFu;
-inline std::array<uint32_t, kMaxLights> ShadowViewOfLight(const larecomp::gpu::LocalShadowFrame* frame, uint32_t light_count) {
-  std::array<uint32_t, kMaxLights> of;
-  of.fill(kNoView);
+struct LightViews {
+  std::array<uint32_t, kMaxLights> first;
+  std::array<uint32_t, kMaxLights> second;
+};
+inline LightViews ShadowViewsOfLight(const larecomp::gpu::LocalShadowFrame* frame, uint32_t light_count) {
+  LightViews of;
+  of.first.fill(kNoView);
+  of.second.fill(kNoView);
   if (!frame) {
     return of;
   }
   const uint32_t views = std::min<uint32_t>(frame->count, uint32_t(frame->views.size()));
   for (uint32_t v = 0; v < views; ++v) {
     const larecomp::gpu::LocalShadowView& view = frame->views[v];
-    if (view.valid != 0 && view.light_index < light_count && view.light_index < kMaxLights && of[view.light_index] == kNoView) {
-      of[view.light_index] = v;
+    if (view.valid == 0 || view.light_index >= light_count || view.light_index >= kMaxLights) {
+      continue;
+    }
+    if (of.first[view.light_index] == kNoView) {
+      of.first[view.light_index] = v;
+    } else if (of.second[view.light_index] == kNoView) {
+      of.second[view.light_index] = v;
     }
   }
   return of;
+}
+// The first view of each light (the one-view-a-light callers).
+inline std::array<uint32_t, kMaxLights> ShadowViewOfLight(const larecomp::gpu::LocalShadowFrame* frame, uint32_t light_count) {
+  return ShadowViewsOfLight(frame, light_count).first;
 }
 
 // A frame of shadow views made for one set of lights, read for a later one. A view names its light by its place in the set the producer saw
 // (light_index); the set of the frame that reads the map can have another order or another count (a car came into the four, the tracker's hysteresis
 // swapped two), so the views go by the car instead: `old_keys` is the car key of each light of the producer's set, `new_keys` of the set that reads. Each
-// view goes to the first light of its car in the new set that no other view took (a car with two lamps has two views, one for each lamp, with the same
-// matrix); a view whose car is not in the new set is dropped.
+// view goes to the light of its car in the new set that has the fewest views so far (at most two): a car's light with two lamps' views takes both, and a car that
+// is two lights (the first design: a light for each lamp) gives each its own; a view whose car is not in the new set is dropped.
 inline larecomp::gpu::LocalShadowFrame RemapShadowViews(const larecomp::gpu::LocalShadowFrame& frame, const uint32_t* old_keys, uint32_t old_count,
                                                         const uint32_t* new_keys, uint32_t new_count) {
   larecomp::gpu::LocalShadowFrame out;
-  std::array<bool, kMaxLights> taken{};
+  std::array<uint32_t, kMaxLights> taken{};
   const uint32_t views = std::min<uint32_t>(frame.count, uint32_t(frame.views.size()));
   for (uint32_t v = 0; v < views; ++v) {
     const larecomp::gpu::LocalShadowView& view = frame.views[v];
@@ -267,15 +283,19 @@ inline larecomp::gpu::LocalShadowFrame RemapShadowViews(const larecomp::gpu::Loc
       continue;
     }
     const uint32_t key = old_keys[view.light_index];
+    uint32_t best = kMaxLights;
     for (uint32_t i = 0; i < new_count && i < kMaxLights; ++i) {
-      if (new_keys[i] == key && !taken[i]) {
-        taken[i] = true;
-        larecomp::gpu::LocalShadowView moved = view;
-        moved.light_index = i;
-        out.views[out.count++] = moved;
-        break;
+      if (new_keys[i] == key && taken[i] < 2 && (best == kMaxLights || taken[i] < taken[best])) {
+        best = i;
       }
     }
+    if (best == kMaxLights || out.count >= out.views.size()) {
+      continue;
+    }
+    ++taken[best];
+    larecomp::gpu::LocalShadowView moved = view;
+    moved.light_index = best;
+    out.views[out.count++] = moved;
   }
   return out;
 }
@@ -287,22 +307,23 @@ inline larecomp::gpu::LocalShadowFrame RemapShadowViews(const larecomp::gpu::Loc
 inline constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
 
 // The constants the headlight variant reads, after the 608 byte SharedConstants (the variant's declarations: shaderpack/variants/headlight.cpp,
-// c38 to c79 of the block; the SPIR-V side reads them at 608 + the offset). One block a draw: the 4 lights, the box they reach, the camera and the
-// shadow views. 672 bytes.
+// c38 to c105 of the block; the SPIR-V side reads them at 608 + the offset). One block a draw: the 4 lights, the box they reach, the camera and the
+// shadow views (up to two for a light, one for each of a car's lamps, up to eight in all). 1072 bytes (it was 672, four views and one a light, until 2026-11-20).
 struct HeadlightConstants {
   float header[4];             // x = the number of lights (0 to 4)
   float camera[4];             // xyz = the camera's world position
   float bounds_lo[4];          // the box every light reaches: xyz (w 0); a box with lo above hi holds no point
   float bounds_hi[4];
   float lights[12][4];         // per light: [3 i] position xyz + reach, [3 i + 1] axis xyz + cos outer, [3 i + 2] colour rgb + cos inner
-  uint32_t shadow_of[4];       // per light: its shadow view, or kNoView
+  uint32_t shadow_of[4];       // per light: its first shadow view (a lamp's), or kNoView
+  uint32_t shadow_of_b[4];     // per light: its second (the car's other lamp's), or kNoView: the light's share is the mean of the two
   uint32_t atlas[4];           // x = the atlas texture's bindless slot, y = its sampler's; kNoSlot: none (every light is lit)
-  larecomp::gpu::LocalShadowView shadow[4];  // the views, as the producer made them (local_shadow_types.h)
+  larecomp::gpu::LocalShadowView shadow[larecomp::gpu::kMaxShadowViews];  // the views, as the producer made them (local_shadow_types.h)
 };
-static_assert(sizeof(HeadlightConstants) == 672, "the headlight block is 672 bytes (c38 to c79)");
+static_assert(sizeof(HeadlightConstants) == 1072, "the headlight block is 1072 bytes (c38 to c105)");
 static_assert(offsetof(HeadlightConstants, camera) == 16 && offsetof(HeadlightConstants, bounds_lo) == 32 && offsetof(HeadlightConstants, bounds_hi) == 48 &&
-              offsetof(HeadlightConstants, lights) == 64 && offsetof(HeadlightConstants, shadow_of) == 256 &&
-              offsetof(HeadlightConstants, atlas) == 272 && offsetof(HeadlightConstants, shadow) == 288);
+              offsetof(HeadlightConstants, lights) == 64 && offsetof(HeadlightConstants, shadow_of) == 256 && offsetof(HeadlightConstants, shadow_of_b) == 272 &&
+              offsetof(HeadlightConstants, atlas) == 288 && offsetof(HeadlightConstants, shadow) == 304);
 
 // The block for a frame's lights (`lamps`, colours already times the strength and the fade), the camera's world position and the shadow views of the
 // frame (null: none; `atlas_texture` / `atlas_sampler` the bindless slots of the atlas they are in).
@@ -340,16 +361,17 @@ inline HeadlightConstants MakeConstants(const Lamp* lamps, size_t count, const f
     b[3] = lamp.cos_outer;
     d[3] = lamp.cos_inner;
   }
-  const std::array<uint32_t, kMaxLights> of = ShadowViewOfLight(shadows, uint32_t(count));
+  const LightViews of = ShadowViewsOfLight(shadows, uint32_t(count));
   bool any = false;
   for (size_t i = 0; i < kMaxLights; ++i) {
-    block.shadow_of[i] = of[i];
-    any |= of[i] != kNoView;
+    block.shadow_of[i] = of.first[i];
+    block.shadow_of_b[i] = of.second[i];
+    any |= of.first[i] != kNoView;
   }
   if (any && shadows) {
     block.atlas[0] = atlas_texture;
     block.atlas[1] = atlas_sampler;
-    for (size_t v = 0; v < kMaxLights; ++v) {
+    for (size_t v = 0; v < larecomp::gpu::kMaxShadowViews; ++v) {
       block.shadow[v] = shadows->views[v];
     }
   } else {
@@ -465,7 +487,38 @@ struct CarLamp {
   uint32_t front = 0;  // lenses taken as the headlights
   uint32_t total = 0;  // lenses of the car seen
   double spread = 0.0; // the extent of the lenses along the forward axis (a car has lenses at both ends)
+  double half_span = 0.0;  // m: half the distance between the car's two headlamps (across the car); 0: not known (LampOffset then takes kDefaultHalfSpan)
 };
+
+// The headlamps of a car are a pair: the light the rig makes is the middle of the pair, and the shadow maps are made from each lamp (local_shadow.h). Half the distance
+// between the lamps is read from what the rig has (the game's two Headlight points, or the lenses that are on the front half across the car); a number outside
+// [kMinHalfSpan, kMaxHalfSpan] is not believed (a single lens mesh, a lens that is a strip across the whole grille). A car whose lamps are not known is given kDefaultHalfSpan: the
+// player's pair is 1.2 m apart (headlight_points.h), a car is 1.8 m wide.
+inline constexpr double kMinHalfSpan = 0.25;
+inline constexpr double kMaxHalfSpan = 1.1;
+inline constexpr double kDefaultHalfSpan = 0.55;
+
+// `half_span` as the rig believes it: the measured one when it is in range, else the default.
+inline double BelievedHalfSpan(double measured) {
+  return (std::isfinite(measured) && measured >= kMinHalfSpan && measured <= kMaxHalfSpan) ? measured : kDefaultHalfSpan;
+}
+
+// The vector from the light (the middle of the pair) to the car's RIGHT lamp: half the span along the car's right axis, which is forward x up for the right handed frame
+// the poses have (right x up = back). The left lamp is the opposite. `forward` and `up` need not be unit or at right angles (a tracked car's axes); false when they make no
+// right axis.
+inline bool LampOffset(const double forward[3], const double up[3], double half_span, float out[3]) {
+  const double right[3] = {forward[1] * up[2] - forward[2] * up[1], forward[2] * up[0] - forward[0] * up[2], forward[0] * up[1] - forward[1] * up[0]};
+  const double length = std::sqrt(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+  if (!(length > 1e-6) || !std::isfinite(length)) {
+    out[0] = out[1] = out[2] = 0.0f;
+    return false;
+  }
+  const double span = BelievedHalfSpan(half_span);
+  for (int c = 0; c < 3; ++c) {
+    out[c] = float(right[c] / length * span);
+  }
+  return true;
+}
 
 inline constexpr double kEndsApart = 0.9;   // m: lenses spread over more than this along the car have a front and a rear
 inline constexpr double kSingleEndMin = 0.4;  // m: a single cluster counts as the front when its mean is this far ahead of the car's root
@@ -495,6 +548,7 @@ inline bool FrontLamp(const Pose& pose, const double (*lens)[3], size_t count, C
   const double threshold = two_ends ? 0.5 * (fmax + fmin) : kSingleEndMin;
   double sum[3] = {};
   uint32_t front = 0;
+  double side_lo = 1e30, side_hi = -1e30;  // the front lenses' places across the car (along the pose's right axis)
   for (size_t i = 0; i < count; ++i) {
     const bool is_front = two_ends ? along[i] >= threshold : mean >= threshold;
     if (!is_front) {
@@ -503,6 +557,10 @@ inline bool FrontLamp(const Pose& pose, const double (*lens)[3], size_t count, C
     for (int c = 0; c < 3; ++c) {
       sum[c] += lens[i][c];
     }
+    const double offset[3] = {lens[i][0] - pose.position[0], lens[i][1] - pose.position[1], lens[i][2] - pose.position[2]};
+    const double side = Dot3d(offset, pose.right);
+    side_lo = std::min(side_lo, side);
+    side_hi = std::max(side_hi, side);
     ++front;
   }
   if (front == 0) {
@@ -517,6 +575,7 @@ inline bool FrontLamp(const Pose& pose, const double (*lens)[3], size_t count, C
   lamp.front = front;
   lamp.total = uint32_t(count);
   lamp.spread = fmax - fmin;
+  lamp.half_span = front >= 2 ? 0.5 * (side_hi - side_lo) : 0.0;  // one lens mesh says nothing of the pair (BelievedHalfSpan)
   *out = lamp;
   return true;
 }
@@ -552,6 +611,7 @@ struct PointMatch {
   float intensity = 0.0f;    // the strongest
   bool player = false;
   uint32_t vehicle = 0;
+  double span = 0.0;         // the greatest distance between two of the points (a car's two Headlight points are its two lamps, 1.2 m apart on the player's)
 };
 
 // Gives every Headlight point to the nearest of the `count` lamps (positions in `lamps`, world) within kPointRadius; `taken` (size of points) says which point
@@ -559,6 +619,7 @@ struct PointMatch {
 inline std::vector<PointMatch> AssignPoints(const std::vector<GuestPoint>& points, const double (*lamps)[3], size_t count, std::vector<bool>* taken) {
   std::vector<PointMatch> matches(count);
   std::vector<double> dir_sum(count * 3, 0.0);
+  std::vector<std::vector<std::array<double, 3>>> places(count);
   taken->assign(points.size(), false);
   for (size_t p = 0; p < points.size(); ++p) {
     size_t best = count;
@@ -576,6 +637,7 @@ inline std::vector<PointMatch> AssignPoints(const std::vector<GuestPoint>& point
     }
     (*taken)[p] = true;
     PointMatch& m = matches[best];
+    places[best].push_back({double(points[p].pos[0]), double(points[p].pos[1]), double(points[p].pos[2])});
     ++m.count;
     for (int c = 0; c < 3; ++c) {
       m.position[c] += double(points[p].pos[c]);
@@ -607,6 +669,12 @@ inline std::vector<PointMatch> AssignPoints(const std::vector<GuestPoint>& point
         m.back[c] /= length;
       }
     }
+    for (size_t a = 0; a < places[l].size(); ++a) {
+      for (size_t b = a + 1; b < places[l].size(); ++b) {
+        const double d[3] = {places[l][a][0] - places[l][b][0], places[l][a][1] - places[l][b][1], places[l][a][2] - places[l][b][2]};
+        m.span = std::max(m.span, Length3(d));
+      }
+    }
   }
   return matches;
 }
@@ -631,6 +699,9 @@ inline void ApplyPoints(const PointMatch& match, CarLamp* lamp, double* on, bool
   for (int c = 0; c < 3; ++c) {
     lamp->position[c] = match.position[c] + kNudge * lamp->forward[c];
   }
+  if (match.count >= 2) {
+    lamp->half_span = 0.5 * match.span;  // the two Headlight points are the two lamps: their distance is the pair's (the lens lamp's own guess is dropped)
+  }
   *on = OnOf(match.intensity);
 }
 
@@ -646,6 +717,7 @@ inline std::vector<PointLamp> LampsFromPoints(const std::vector<GuestPoint>& poi
   std::vector<PointLamp> out;
   std::vector<std::array<double, 4>> sums;  // per lamp: the position sum and the count
   std::vector<std::array<double, 3>> backs;
+  std::vector<std::vector<std::array<double, 3>>> places;  // per lamp: its points' places (the pair's span)
   for (size_t p = 0; p < points.size(); ++p) {
     if (p < taken.size() && taken[p]) continue;
     const GuestPoint& point = points[p];
@@ -663,7 +735,9 @@ inline std::vector<PointLamp> LampsFromPoints(const std::vector<GuestPoint>& poi
       out.push_back(fresh);
       sums.push_back({0.0, 0.0, 0.0, 0.0});
       backs.push_back({0.0, 0.0, 0.0});
+      places.emplace_back();
     }
+    places[at].push_back({double(point.pos[0]), double(point.pos[1]), double(point.pos[2])});
     for (int c = 0; c < 3; ++c) {
       sums[at][size_t(c)] += double(point.pos[c]);
       backs[at][size_t(c)] += double(point.dir[c]);
@@ -686,6 +760,14 @@ inline std::vector<PointLamp> LampsFromPoints(const std::vector<GuestPoint>& poi
     }
     l.lamp.front = uint32_t(sums[i][3]);
     l.lamp.total = l.lamp.front;
+    double span = 0.0;
+    for (size_t a = 0; a < places[i].size(); ++a) {
+      for (size_t b = a + 1; b < places[i].size(); ++b) {
+        const double d[3] = {places[i][a][0] - places[i][b][0], places[i][a][1] - places[i][b][1], places[i][a][2] - places[i][b][2]};
+        span = std::max(span, Length3(d));
+      }
+    }
+    l.lamp.half_span = places[i].size() >= 2 ? 0.5 * span : 0.0;
     kept.push_back(l);
   }
   return kept;
@@ -717,6 +799,7 @@ struct Tracked {
   float fade = 0.0f;        // 0 .. 1: fades in over a few frames, out over as many once the car is gone or not picked
   bool guest = false;       // the game's own light points said whether the lights are on: `on` is that (0 to 1)
   double on = 1.0;
+  double half_span = 0.0;   // CarLamp::half_span of the track (smoothed; 0: not known)
 };
 
 struct TrackerTuning {
@@ -870,6 +953,7 @@ class Tracker {
       light.fade = track.fade;
       light.guest = track.guest;
       light.on = track.on;
+      light.half_span = track.half_span;
     }
     tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
                                  [&](const Track& t) { return frame - t.last_seen > tuning_.drop_after && t.fade <= 0.0f; }),
@@ -896,6 +980,7 @@ class Tracker {
     bool on_screen = true;
     bool guest = false;
     double on = 1.0;
+    double half_span = 0.0;   // the pair's half distance, smoothed over the sightings that knew it
     uint64_t last_seen = 0;
     float fade = 0.0f;
     bool picked = false;      // was picked in the frame before
@@ -930,6 +1015,10 @@ class Tracker {
     t->on_screen = car.on_screen;
     t->guest = car.guest;
     t->on = car.on;
+    // The lens boxes jitter a little from frame to frame: the pair's span is smoothed over the sightings that had one; a sighting with none keeps the last.
+    if (car.lamp.half_span > 0.0) {
+      t->half_span = t->half_span > 0.0 ? 0.8 * t->half_span + 0.2 * car.lamp.half_span : car.lamp.half_span;
+    }
     t->last_seen = frame;
   }
 

@@ -159,7 +159,7 @@ inline constexpr uint32_t kFeatureCarChrome = 7;
 // console's 720p bitmaps are magnified: Catmull-Rom colour and a steeper alpha edge (16 bytes of constants; shaderpack/variants/ui_sharp.h). It has
 // the alpha test twin: compiled with the shader's ALPHA_TEST spec constants (the main pack's spec variant 1) the word's bit 0 is set (it declares SV_Coverage).
 inline constexpr uint32_t kFeatureUiSharp = 8;
-// The cars' headlights as spot lights in the city's lit pixel shaders (feat/headlights, shaderpack/variants/headlight.h when that file is in the tree; 672 bytes of
+// The cars' headlights as spot lights in the city's lit pixel shaders (feat/headlights, shaderpack/variants/headlight.h when that file is in the tree; 1072 bytes of
 // constants, the alpha test twin). Its old id (version 2 of the pack) was 12 and 13. It composes with the G-buffer's stage on the PSMultiLight shaders: the headlight's edits
 // come first (the lower index), the G-buffer's after them (variant_chain.h, "THE ORDER").
 inline constexpr uint32_t kFeatureHeadlight = 9;

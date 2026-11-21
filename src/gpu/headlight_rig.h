@@ -48,6 +48,11 @@
 // THE SHADOW HOOK (src/gpu/local_shadow_types.h): a producer sets the frame's views and the atlas they are in (SetLocalShadows); the variant's shaders
 // sample the atlas for the lights that have a valid view. None set: every light is lit and no atlas is read.
 //
+// THE LIGHT IS A CAR'S AND ITS LAMPS ARE TWO (HL-PER-LAMP, 2026-11-20). The light is one term for the pair of headlamps (the middle of them), and each Headlight says where
+// its two lamps are (`lamp_offset`: the vector from the light to the car's right lamp) for the shadow maps, which are made from each lamp: half the distance between the
+// lamps is read from the game's two Headlight points (their distance), else from the front lenses across the car, else it is headlight_rules::kDefaultHalfSpan (0.55 m).
+// A light has up to two shadow views (HeadlightConstants::shadow_of and shadow_of_b), and the shader's share of the light is the mean of the two.
+//
 // Threading: render thread only (Initialize and Shutdown on the lifecycle thread). CurrentHeadlights() and VariantSelected() read what the render thread
 // last published.
 // ===========================================================================

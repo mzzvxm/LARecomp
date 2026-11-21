@@ -61,7 +61,7 @@ struct TestView {
   uint32_t valid;
 };
 struct TestFrame {
-  std::array<TestView, 4> views{};
+  std::array<TestView, 8> views{};
   uint32_t count = 0;
 };
 #endif
@@ -267,7 +267,8 @@ void CheckLaw() {
   none.dir[0] = none.dir[1] = none.dir[2] = 0.0f;
   CheckNear(MakeVolLamp(none).dir[1], -1.0, 1e-6, "a lamp with no axis points down");
   // The padding the near radius uses is the shader's: the fourth row's second float.
-  Check(offsetof(VolLamp, shadow_view) == 48 && offsetof(VolLamp, pad) == 52, "VolLamp: shadow_view at 48, the near radius squared (pad[0]) at 52");
+  Check(offsetof(VolLamp, shadow_view) == 48 && offsetof(VolLamp, pad) == 52 && offsetof(VolLamp, shadow_view_b) == 56 && sizeof(VolLamp) == 64,
+        "VolLamp: shadow_view at 48, the near radius squared (pad[0]) at 52, the second shadow view at 56");
 }
 
 // The calibration: the volume's lamp term against the game's, for every intensity the city has.
@@ -729,6 +730,7 @@ void CheckHeadlights() {
   CheckNear(in.shadow_atlas_size[0], 1024.0, 1e-6, "the atlas's width");
   CheckNear(in.shadow_atlas_size[1], 512.0, 1e-6, "and height");
   Check(in.headlights[0].shadow_view == 0 && in.headlights[1].shadow_view == 1 && in.headlights[2].shadow_view == 2, "each light reads its view (a car's two lamps, two entries)");
+  Check(in.headlights[0].shadow_view_b == -1 && in.headlights[1].shadow_view_b == -1 && in.headlights[2].shadow_view_b == -1, "a light with one view has no second");
   CheckNear(in.shadow_views[2].atlas_rect[0], 0.5, 1e-9, "the tile's corner is carried as published (u0)");
   CheckNear(in.shadow_views[2].atlas_rect[2], 1.0, 1e-9, "and its far corner (u1, not a size)");
   // A slot that is not a slot, or a zero size, gives nothing.
@@ -740,6 +742,55 @@ void CheckHeadlights() {
   bad.width = 0;
   FillShadows(&frame, bad, &in);
   Check(in.shadow_view_count == 0, "a zero size, no shadow");
+  // HL-PER-LAMP: a car's light has a view for each headlamp (two views name one light): the light reads both, the share is the mean of the two.
+  {
+    VolInputs lamps_in;
+    TestHeadlightSet one_car;
+    one_car.lights[0] = MakeHeadlight(0.0f, 7, true);
+    one_car.lights[1] = MakeHeadlight(30.0f, 9, false);
+    one_car.count = 2;
+    FillHeadlights(one_car, &lamps_in);
+    TestFrame pair;
+    pair.views[0] = MakeView(0, 0.0f, 0.0f, 0.25f, 0.5f);
+    pair.views[1] = MakeView(0, 0.25f, 0.0f, 0.5f, 0.5f);  // the same light, the other lamp: the next tile
+    pair.views[2] = MakeView(1, 0.5f, 0.0f, 0.75f, 0.5f);
+    pair.views[3] = MakeView(1, 0.75f, 0.0f, 1.0f, 0.5f);
+    pair.count = 4;
+    FillShadows(&pair, atlas, &lamps_in);
+    Check(lamps_in.shadow_view_count == 4 && lamps_in.headlights[0].shadow_view == 0 && lamps_in.headlights[0].shadow_view_b == 1 && lamps_in.headlights[1].shadow_view == 2 &&
+              lamps_in.headlights[1].shadow_view_b == 3,
+          "each light reads the two views of its lamps");
+    // One of the two cannot be read: the light keeps the other as its one.
+    TestFrame half = pair;
+    half.views[0].atlas_rect[2] = half.views[0].atlas_rect[0];  // an empty tile
+    FillHeadlights(one_car, &lamps_in);
+    FillShadows(&half, atlas, &lamps_in);
+    Check(lamps_in.headlights[0].shadow_view == 1 && lamps_in.headlights[0].shadow_view_b == -1, "a lamp whose view cannot be read: the light keeps the other lamp's view as its one");
+    Check(lamps_in.headlights[1].shadow_view == 2 && lamps_in.headlights[1].shadow_view_b == 3, "the other car's views stay");
+    // Both cannot: the light is lit.
+    half.views[1].world_to_shadow[3] = std::nanf("");
+    FillHeadlights(one_car, &lamps_in);
+    FillShadows(&half, atlas, &lamps_in);
+    Check(lamps_in.headlights[0].shadow_view == -1 && lamps_in.headlights[0].shadow_view_b == -1 && lamps_in.headlights[1].shadow_view == 2, "both unreadable: the light is lit, the other car's views stay");
+    // Eight views: four cars, two lamps each.
+    TestHeadlightSet four;
+    for (uint32_t i = 0; i < 4; ++i) {
+      four.lights[i] = MakeHeadlight(10.0f * float(i), 20 + i, i == 0);
+    }
+    four.count = 4;
+    FillHeadlights(four, &lamps_in);
+    TestFrame all;
+    all.count = 8;
+    for (uint32_t v = 0; v < 8; ++v) {
+      all.views[v] = MakeView(v / 2, float(v % 4) * 0.25f, float(v / 4) * 0.5f, float(v % 4 + 1) * 0.25f, float(v / 4 + 1) * 0.5f);
+    }
+    FillShadows(&all, atlas, &lamps_in);
+    bool ok = lamps_in.shadow_view_count == 8;
+    for (uint32_t i = 0; i < 4; ++i) {
+      ok = ok && lamps_in.headlights[i].shadow_view == int32_t(2 * i) && lamps_in.headlights[i].shadow_view_b == int32_t(2 * i + 1);
+    }
+    Check(ok, "four cars, eight views: every light reads its two");
+  }
   // A view that cannot be read is dropped and its light is lit, the others stay.
   TestFrame broken = frame;
   broken.views[0].atlas_rect[2] = broken.views[0].atlas_rect[0];  // an empty tile
@@ -901,6 +952,9 @@ void CheckFiles(const std::string& folder) {
   std::string inject;
   if (ReadFile(folder + "/hlsl/volumetrics_inject_cs.hlsl", &inject)) {
     Check(inject.find("g_vol.Load(offset + " + std::to_string(offsetof(VolLamp, shadow_view)) + "u)") != std::string::npos, "the inject reads the shadow view where VolLamp has it");
+    Check(inject.find("g_vol.Load(offset + " + std::to_string(offsetof(VolLamp, shadow_view_b)) + "u)") != std::string::npos && inject.find("HeadlightLit2(") != std::string::npos &&
+              inject.find("0.5 * (HeadlightLit(p, view_a) + HeadlightLit(p, view_b))") != std::string::npos,
+          "the inject reads the second view too and takes the mean of the two lamps' lookups");
     Check(inject.find("g_vol.Load(offset + " + std::to_string(offsetof(VolLamp, pad)) + "u)") != std::string::npos, "and the near radius squared in pad[0]");
     Check(inject.find("LoadDepthIn") != std::string::npos, "and clamps the shadow taps into the view's tile");
     Check(inject.find("rect.zw") != std::string::npos, "with the tile's far corner (u1 v1)");

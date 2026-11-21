@@ -237,7 +237,7 @@ void CheckFixtures() {
     Check(Contains(moved.hlsl, "#define g_HlHeader vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 624, 0x10)\n") &&
               Contains(moved.hlsl, "g_HlLight(INDEX) vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 688 + (INDEX) * 16, 0x10)") &&
               Contains(moved.hlsl, "float4 g_HlHeader : packoffset(c39); \\\n") && Contains(moved.hlsl, "float4 g_HlLights[12] : packoffset(c43);") &&
-              Contains(moved.hlsl, "float4 g_HlShadowArr[24] : packoffset(c57);") && Count(moved.hlsl, "SharedConstants + 608") == 0,
+              Contains(moved.hlsl, "float4 g_HlShadowArr[48] : packoffset(c58);") && Count(moved.hlsl, "SharedConstants + 608") == 0,
           "composed: every member is 16 bytes further in both backends");
     Check(moved.hlsl.size() == alone.hlsl.size(), "composed: the same text but for the offsets (the digits count the same)");
   }
@@ -254,8 +254,8 @@ void CheckFixtures() {
             def.name == "headlight" && def.needs_rpf && def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 5 && def.transform,
         "the definition: its feature (and the table's row, with the alpha test twin), name, the RPF, five name suffixes, a transform");
   Check(def.version == sp::kHeadlightVariantVersion && def.version >= 1, "the definition carries the version");
-  Check(larecomp::shaderpack::chain::Find(def.feature)->constants_bytes == 672 && larecomp::shaderpack::chain::SoloWord(def.feature) >= larecomp::shaderpack::kFirstPackedVariant,
-        "the table's row says 672 bytes and the word is a packed one");
+  Check(larecomp::shaderpack::chain::Find(def.feature)->constants_bytes == 1072 && larecomp::shaderpack::chain::SoloWord(def.feature) >= larecomp::shaderpack::kFirstPackedVariant,
+        "the table's row says 1072 bytes and the word is a packed one");
   // The lit family is in no other variant by name: none of its suffixes is, or ends with, the shadow collector's (the other variants name single shaders
   // that are not in it: the car paint, the chrome, the sample pass, the UI's textured shaders; shaderpack/variant_overlap.h).
   for (const std::string_view suffix : sp::kHeadlightSuffixes) {
@@ -309,6 +309,13 @@ void CheckHelper() {
   // The shadow hook's number of views and taps, the light count, the loop bound.
   Check(Contains(helper, "min(uint(g_HlHeader.x + 0.5), 4u)") && hr::kMaxLights == 4, "the helper takes at most four lights, as the rules do");
   Check(Contains(helper, "view * 6u + 5u") && sizeof(larecomp::gpu::LocalShadowView) == 96, "a shadow view is six registers (96 bytes) in the block");
+  // A light is a car's and has up to two views, one for each lamp: its share is the mean of the views it has (HL-PER-LAMP).
+  Check(Contains(helper, "uint4 shadowOfB = g_HlShadowOfB;") && Contains(helper, "uint viewA = shadowOf[i];") && Contains(helper, "uint viewB = shadowOfB[i];"),
+        "a light's two views are read from the two tables");
+  Check(Count(helper, "HeadlightShadow(view") == 2 && Contains(helper, "seen += HeadlightShadow(viewA, world);") && Contains(helper, "seen += HeadlightShadow(viewB, world);") &&
+            Contains(helper, "scale *= seen / views;"),
+        "each view of a light is looked up once and the share is the mean of the views it has");
+  Check(Contains(helper, "if (scale > 0.0 && atlas.x != 0xFFFFFFFFu)"), "no shadow lookup for a term that is zero already, and none with no atlas");
   Check(Contains(helper, "dist2 >= range2 || dist2 < 1.0e-6") && Contains(helper, "if (cosine <= b.w)"), "the helper's early-outs are the rules' (reach, cone)");
   Check(Contains(helper, "ddx(world)") && Contains(helper, "ddy(world)"), "the derivatives are taken before the early-out");
   Check(helper.find("ddx(world)") < helper.find("if (count == 0u"), "... in that order");
@@ -328,8 +335,9 @@ void CheckHelper() {
       {"g_HlBoundsHi vk::RawBufferLoad<float4>", "g_HlBoundsHi : packoffset", offsetof(hr::HeadlightConstants, bounds_hi)},
       {"g_HlLight(INDEX) vk::RawBufferLoad<float4>", "g_HlLights[12] : packoffset", offsetof(hr::HeadlightConstants, lights)},
       {"g_HlShadowOf vk::RawBufferLoad<uint4>", "g_HlShadowOf : packoffset", offsetof(hr::HeadlightConstants, shadow_of)},
+      {"g_HlShadowOfB vk::RawBufferLoad<uint4>", "g_HlShadowOfB : packoffset", offsetof(hr::HeadlightConstants, shadow_of_b)},
       {"g_HlAtlas vk::RawBufferLoad<uint4>", "g_HlAtlas : packoffset", offsetof(hr::HeadlightConstants, atlas)},
-      {"g_HlShadow(INDEX) vk::RawBufferLoad<float4>", "g_HlShadowArr[24] : packoffset", offsetof(hr::HeadlightConstants, shadow)},
+      {"g_HlShadow(INDEX) vk::RawBufferLoad<float4>", "g_HlShadowArr[48] : packoffset", offsetof(hr::HeadlightConstants, shadow)},
   };
   for (const auto& f : kFields) {
     const std::string spirv = std::string("#define ") + f.spirv + "(g_PushConstants.SharedConstants + " + std::to_string(608 + f.offset);
@@ -337,9 +345,10 @@ void CheckHelper() {
     const std::string dxil = std::string(f.dxil) + "(c" + std::to_string(38 + f.offset / 16) + ")";
     Check(Contains(out, dxil), std::string("DXIL: ") + f.dxil + " at c" + std::to_string(38 + f.offset / 16));
   }
-  Check(608 + sizeof(hr::HeadlightConstants) == 1280, "the block ends at byte 1280 of the draw's constants");
-  // The cbuffer's last register is c79: 38 + 672 / 16 - 1.
-  Check(38 + sizeof(hr::HeadlightConstants) / 16 - 1 == 79, "the last register is c79");
+  Check(608 + sizeof(hr::HeadlightConstants) == 1680, "the block ends at byte 1680 of the draw's constants");
+  // The cbuffer's last register is c104: 38 + 1072 / 16 - 1.
+  Check(38 + sizeof(hr::HeadlightConstants) / 16 - 1 == 104, "the last register is c104");
+  Check(larecomp::gpu::kMaxShadowViews == 8 && sizeof(hr::HeadlightConstants::shadow) == 8 * sizeof(larecomp::gpu::LocalShadowView), "the block holds eight views (two for each of four lights)");
 }
 
 // ---------------------------------------------------------------------------

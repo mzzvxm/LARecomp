@@ -595,8 +595,8 @@ void CheckConstants() {
   Check(Offsets::cam_pos == 64 && Offsets::prev_pos == 128 && Offsets::world == 192 && Offsets::sun == 304, "camera, history camera, world, sun offsets");
   Check(Offsets::counts == 688 && Offsets::shadow_atlas == 704 && Offsets::lamps == 720, "counts, shadow atlas, lamps offsets");
   Check(Offsets::headlights == 720 + 48 * 64 && Offsets::shadow_views == Offsets::headlights + 4 * 64, "headlights, shadow views offsets");
-  Check(Offsets::prev_counts == Offsets::shadow_views + 4 * 96 && Offsets::prev_headlights == Offsets::prev_counts + 16, "the history's headlights follow the shadow views (VOL-STABLE-2: appended, so that no offset above moved)");
-  Check(sizeof(VolGpuConstants) == Offsets::prev_headlights + 4 * 64 && sizeof(VolGpuConstants) % 16 == 0, "the constants end with the history's headlights");
+  Check(Offsets::prev_counts == Offsets::shadow_views + kMaxShadowViews * 96 && Offsets::prev_headlights == Offsets::prev_counts + 16, "the history's headlights follow the shadow views (VOL-STABLE-2: appended, so that no offset above moved)");
+  Check(sizeof(VolGpuConstants) == Offsets::prev_headlights + 4 * 64 && sizeof(VolGpuConstants) % 16 == 0 && kMaxShadowViews == 8, "the constants end with the history's headlights, after the eight shadow views");
 
   // The builder.
   const GridDesc g = GridFor(Level::kMedium);
@@ -720,7 +720,7 @@ struct TestShadowView {
   uint32_t valid;
 };
 struct TestShadowFrame {
-  std::array<TestShadowView, 4> views{};
+  std::array<TestShadowView, 8> views{};
   uint32_t count = 0;
 };
 
@@ -759,6 +759,31 @@ void CheckAdaptors() {
   Check(in.shadow_atlas_size[0] == 2048.0f && in.shadow_atlas_size[1] == 1024.0f, "the atlas size");
   FillShadowViews(static_cast<const TestShadowFrame*>(nullptr), 9, 1.0f, 1.0f, &in);
   Check(in.shadow_view_count == 0 && in.shadow_atlas_slot == kNoSlot && in.headlights[1].shadow_view == -1, "no frame: every headlight is lit");
+  // A car's light has a view for each of its two headlamps: the first view that names it is shadow_view, the second shadow_view_b, a third is not read.
+  {
+    TestShadowFrame lamps;
+    lamps.count = 5;
+    const uint32_t names[5] = {2, 2, 0, 2, 0};
+    for (uint32_t i = 0; i < 5; ++i) {
+      lamps.views[i].light_index = names[i];
+      lamps.views[i].valid = 1;
+    }
+    FillHeadlights(set, &in);
+    FillShadowViews(&lamps, 9, 1.0f, 1.0f, &in);
+    Check(in.shadow_view_count == 5 && in.headlights[2].shadow_view == 0 && in.headlights[2].shadow_view_b == 1, "light 2 reads its first two views");
+    Check(in.headlights[0].shadow_view == 2 && in.headlights[0].shadow_view_b == 4, "light 0 reads views 2 and 4");
+    Check(in.headlights[1].shadow_view == -1 && in.headlights[1].shadow_view_b == -1, "a light no view names has none");
+    // Eight views (four cars, two lamps each) are all carried.
+    TestShadowFrame eight;
+    eight.count = 8;
+    for (uint32_t i = 0; i < 8; ++i) {
+      eight.views[i].light_index = i / 2;
+      eight.views[i].valid = 1;
+    }
+    FillHeadlights(set, &in);
+    FillShadowViews(&eight, 9, 1.0f, 1.0f, &in);
+    Check(in.shadow_view_count == 8, "eight views are carried (the room is a view for each lamp of four cars)");
+  }
 }
 
 // --- the shaders ---------------------------------------------------------------------------------------------------------------------------
@@ -822,7 +847,7 @@ void CheckShaders(const std::string& folder) {
   // The members of VolSun and VolLamp the shaders read by their own constants: lamp 64 bytes, cascade 80 (box at 64), shadow view 96 (bias at 80).
   Check(offsetof(VolCascade, box) == 64, "the cascade's box is at byte 64");
   Check(offsetof(VolShadowView, depth_bias) == 80, "the shadow view's bias is at byte 80");
-  Check(offsetof(VolLamp, shadow_view) == 48, "the lamp's shadow view is at byte 48");
+  Check(offsetof(VolLamp, shadow_view) == 48 && offsetof(VolLamp, shadow_view_b) == 56, "the lamp's shadow views are at bytes 48 and 56 (a car's two headlamps)");
   Check(offsetof(VolSun, top) == 16 && offsetof(VolSun, cascades) == 32, "the sun's axes and cascades");
   std::string inject;
   if (ReadFile(folder + "/hlsl/volumetrics_inject_cs.hlsl", &inject)) {

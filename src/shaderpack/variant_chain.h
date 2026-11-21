@@ -107,8 +107,9 @@ inline constexpr FeatureInfo kFeatures[] = {
     // The headlights and the G-buffer's normal plane compose: both edit the city's PSMultiLight shaders (xCityDefault's night shader among them), so the builder makes the
     // pair in one text for those (the chain's order: the headlight's edits first, the G-buffer's on the text they leave: shaderpack/variants/gbuffer.h anchors on lines the
     // headlight does not rewrite). Their variants are in feat/headlights (variants/headlight.cpp) and feat/gbuffer-spike (variants/gbuffer.cpp): a row whose variant is not in the
-    // tree is harmless (nothing builds it, nothing picks it). 672 bytes: src/gpu/headlight_rig_rules.h HeadlightConstants; 48 bytes: src/gpu/gbuffer_types.h GBufferConstants.
-    {kFeatureHeadlight, "headlight", Stage::kPixel, 672, FeatureBit(kFeatureGBuffer), true, 0},
+    // tree is harmless (nothing builds it, nothing picks it). 1072 bytes: src/gpu/headlight_rig_rules.h HeadlightConstants (672 until version 4 of the variant, HL-PER-LAMP: eight shadow
+    // views and a second view of each light); 48 bytes: src/gpu/gbuffer_types.h GBufferConstants.
+    {kFeatureHeadlight, "headlight", Stage::kPixel, 1072, FeatureBit(kFeatureGBuffer), true, 0},
     {kFeatureGBuffer, "gbuffer", Stage::kPixel, 48, FeatureBit(kFeatureHeadlight), true, 0},
     // kFeatureLampShadow (11) is reserved: its row comes with its variant, and names the headlight and the G-buffer in composes_with (in all three rows).
     // The G-buffer's vertex stage (variants/gbuffer_day.h): a vertex shader that also writes the vertex normal to TEXCOORD15. It composes with nothing, has no block of constants and the
