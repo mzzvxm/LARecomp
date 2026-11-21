@@ -171,6 +171,9 @@ inline constexpr float kSunReach = 6.0f;
 // The brightness of the sun's colour (its mean) between which the night factor falls from 1 to 0 (the lamps and the lit interior glow at night).
 inline constexpr float kNightLow = 0.02f;
 inline constexpr float kNightHigh = 0.25f;
+// The sky's fill (RT-HIT-SHADING-3, car_rt_hit_rules.h): the ambient light of a hit is at least this share of the sun's colour (in the sun's hue), times the hemisphere term. The cars' draws'
+// c26 was (0.000 0.004 0.004) in a daylight run: no red, so a flank in shadow was black under an orange paint. A clear sky lights a shaded flank at about a fifth of what the sun does.
+inline constexpr float kFillShare = 0.2f;
 // The gamma a customisation record's colour is raised to for a walked car's paint (the paint's units; car_model_rt_rules.h kPaintGamma is the same number: the record's colour is
 // the one the player picked, the shader's constants are the colour linear).
 inline constexpr float kWalkedPaintGamma = 2.0f;
@@ -987,7 +990,8 @@ inline void ShadeReference(const ShadeInput& in, float out[3]) {
   }
   const float fresnel = in.fresnel[0] + (in.fresnel[1] - in.fresnel[0]) * std::pow(std::max(1.0f - nv, 1e-4f), std::max(in.fresnel[2], 0.01f));
   for (int c = 0; c < 3; ++c) {
-    const float light = in.light.ambient[c] * in.tuning.ambient * hemisphere + in.light.sun[c] * ndl * in.sun_visible;
+    const float fill = std::max(in.light.ambient[c], in.light.sun[c] * kFillShare);
+    const float light = fill * in.tuning.ambient * hemisphere + in.light.sun[c] * ndl * in.sun_visible;
     const float env = in.env_known ? in.env[c] : in.light.ambient[c] * (0.6f + 0.4f * Dot3(reflected, in.up));
     const float tint = in.cls == Class::kChrome ? albedo[c] : 1.0f;
     float colour = albedo[c] * light * d.diffuse_gain + env * fresnel * d.spec_gain * in.tuning.spec * tint;

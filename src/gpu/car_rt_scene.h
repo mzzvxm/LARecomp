@@ -191,6 +191,8 @@ class CarRtScene final : public car_frame::Listener {
   // The game's sun cascades of this frame (Volumetrics::SunCascadesForOthers: the shadow collector's constants and the atlas), given before OnResolve in every frame: the frame's rows
   // carry them to the reflection pass, whose shaded hits read the sun's visibility from them (car_rt_hit_rules.h). A frame that is not told has none (the cars' ray alone).
   void SetSunCascades(const car_rt_material::SunCascades& cascades) { sun_cascades_ = cascades; }
+  // The exposure of the shaded colours in stops (CarRtRefl::HitStops: measured against the history's own colours, car_rt_hit_rules.h census::): the frame's gain is multiplied by 2^stops.
+  void SetHitStops(float stops) { hit_stops_ = stops; }
 
   // A user wants the structures: call it in every frame it needs them (any time in the frame). A request counts for the frame and the
   // next, and asks CarFrame to collect the car's draws.
@@ -511,6 +513,7 @@ class CarRtScene final : public car_frame::Listener {
   // RT-HIT-SHADING: the texture cache, the textures asked of it in this frame (by the fetch's dwords), and what the materials were (the window's totals and the log's firsts).
   TextureCache* textures_ = nullptr;
   car_rt_material::SunCascades sun_cascades_;
+  float hit_stops_ = 0.0f;
   std::unordered_map<uint64_t, uint32_t> diffuse_slots_;
   struct MaterialStats {
     uint64_t frames = 0;

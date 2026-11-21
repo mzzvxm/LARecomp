@@ -83,6 +83,9 @@ RWTexture2D<float4> g_output : register(u0, space1);
 [[vk::image_format("rgba8")]]
 #endif
 RWTexture2D<float4> g_aux : register(u1, space1);
+// The census's counters (car_rt_hit_rules.h census::, RT-HIT-SHADING-3): 32 words, counted only in a stats frame (the push's slots.w bit 16); the host zeroes them before such a frame and
+// reads them back after it.
+RWByteAddressBuffer g_stats : register(u2, space1);
 
 struct CarRtReflPush
 {
@@ -118,6 +121,112 @@ ConstantBuffer<CarRtReflPush> g_push : register(b0, space3);
 #endif
 
 #include "car_rt_hit_shade.hlsli"
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the census and the exposure (car_rt_hit_rules.h census::, the same numbers)
+// ---------------------------------------------------------------------------------------------------------------------
+
+static const uint kStatsFlag = 65536u;  // slots.w bit 16: this is a stats frame
+static const uint kStatTexels = 0u;
+static const uint kStatRays = 1u;
+static const uint kStatOwn = 2u;
+static const uint kStatSeen = 3u;
+static const uint kStatBlend = 4u;
+static const uint kStatShaded = 5u;
+static const uint kStatStandIn = 6u;
+static const uint kStatDropped = 7u;
+static const uint kStatByClass = 8u;
+static const uint kStatLogLum = 16u;
+static const uint kStatLit = 17u;
+static const uint kStatShadow = 18u;
+static const uint kStatAway = 19u;
+static const uint kStatGlow = 20u;
+static const uint kStatCalCount = 21u;
+static const uint kStatCalSeen = 22u;
+static const uint kStatCalModel = 23u;
+static const uint kStatAllCalCount = 24u;
+static const uint kStatAllCalSeen = 25u;
+static const uint kStatAllCalModel = 26u;
+static const uint kStatCoat = 27u;
+static const float kCalFloor = 0.02;
+static const float kLogFloor = 0.0001;
+static const float kLogBias = 16.0;
+static const float kLogScale = 64.0;
+static const float kLogMax = 2047.0;
+
+bool StatsOn()
+{
+    return (g_push.slots.w & kStatsFlag) != 0u;
+}
+
+void StatAdd(uint word, uint value)
+{
+    if (value != 0u)
+    {
+        uint original;
+        g_stats.InterlockedAdd(word * 4u, value, original);
+    }
+}
+
+float StatLuminance(float3 colour)
+{
+    return dot(colour, float3(0.2126, 0.7152, 0.0722));
+}
+
+// A luminance as the fixed-point log the counters sum (census::FixedLog2).
+uint StatLog(float luminance)
+{
+    return uint(clamp((log2(max(luminance, kLogFloor)) + kLogBias) * kLogScale, 0.0, kLogMax));
+}
+
+// A hit that was shaded from its material (blended with the history's colour where the history shows part of it): which counter, its class, the brightness, the sun's part in it.
+void CensusShaded(float seenShare, float3 colour)
+{
+    StatAdd(seenShare > 0.0 ? kStatBlend : kStatShaded, 1u);
+    StatAdd(kStatByClass + min(gCarHitClass, 7u), 1u);
+    StatAdd(kStatLogLum, StatLog(StatLuminance(colour)));
+    if (gCarHitNdl <= 0.0)
+    {
+        StatAdd(kStatAway, 1u);
+    }
+    else if (gCarHitVisible > 0.5)
+    {
+        StatAdd(kStatLit, 1u);
+    }
+    else
+    {
+        StatAdd(kStatShadow, 1u);
+    }
+    if (gCarHitGlow > 0.5)
+    {
+        StatAdd(kStatGlow, 1u);
+    }
+}
+
+// The exposure's sample: a hit on another car's part that the history shows in full (`seen`, the game's own colour of it), shaded by the model for the comparison (the model's gain
+// is the one in force, so the difference is what is left to correct). The paint's samples drive the gain, those of every class are the census's.
+void CensusCalibrate(uint instance, uint primitive, float2 barycentrics, float3 normal, float3 direction, float3 hit, float footprint, float coneTan, float3 seen)
+{
+    float3 model;
+    if (!CarHitShade(instance, primitive, barycentrics, normal, direction, hit, footprint, coneTan, g_push.up.w, model))
+    {
+        return;
+    }
+    const float seenLum = StatLuminance(seen);
+    const float modelLum = StatLuminance(model);
+    if (seenLum > kCalFloor && modelLum > kCalFloor)
+    {
+        StatAdd(kStatAllCalCount, 1u);
+        StatAdd(kStatAllCalSeen, StatLog(seenLum));
+        StatAdd(kStatAllCalModel, StatLog(modelLum));
+        if (gCarHitClass == CAR_MAT_CLASS_PAINT)
+        {
+            StatAdd(kStatCalCount, 1u);
+            StatAdd(kStatCalSeen, StatLog(seenLum));
+            StatAdd(kStatCalModel, StatLog(modelLum));
+        }
+    }
+}
 
 // A hit on the PLAYER's car is shaded from its material only in the opponents' variant (the player's own pass keeps the colour of the pixel's own surface for the parts the
 // camera does not see: the pixel IS the player's paint); a hit on another car is shaded in both (car_rt_hit_shade.hlsli).
@@ -394,6 +503,17 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     const float hitNv = usable ? abs(dot(hitNormal, normalize(hit))) : 1.0;
     const float coverage = VisibleAt(history, hit, hitNv, seen);
     const float seenShare = saturate(coverage / kVisibleFullShare);
+    // The census (a stats frame only: car_rt_hit_rules.h census::): every ray that hit a part counts, and what became of it.
+    const bool stats = StatsOn();
+    const float footprint = 2.0 * (distance * coneTan + PixelMeters(hit.z, g_push.lens.y, g_push.image.y));
+    if (stats)
+    {
+        StatAdd(kStatRays, 1u);
+        if (!farHit)
+        {
+            StatAdd(kStatOwn, 1u);
+        }
+    }
     // A hit on a car the history does not show in full is SHADED from the car's own material (car_rt_hit_shade.hlsli: the paint's colour, the diffuse texture, the sun, the
     // environment map, the lamps at night) where the instance has one; the history's colour stays the answer where the camera sees the part (the blend below by `visible`).
     float3 shaded = float3(0.0, 0.0, 0.0);
@@ -401,13 +521,24 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     [branch]
     if (seenShare < 1.0 && usable && (hitsOther || kShadePlayerHits))
     {
-        const float footprint = 2.0 * (distance * coneTan + PixelMeters(hit.z, g_push.lens.y, g_push.image.y));
         isShaded = CarHitShade(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, g_push.up.w, shaded);
+    }
+    if (stats && farHit && seenShare >= 1.0)
+    {
+        StatAdd(kStatSeen, 1u);
+        if (hitsOther && usable)
+        {
+            CensusCalibrate(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, seen);
+        }
     }
     if (isShaded)
     {
         other = true;  // `hidden` is the part's own colour, lit: no shade factor on top
         hidden = shaded;
+        if (stats)
+        {
+            CensusShaded(seenShare, shaded);
+        }
     }
     else if (hitsOther)
     {
@@ -420,6 +551,10 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
             {
                 if (seenShare <= 0.0)
                 {
+                    if (stats)
+                    {
+                        StatAdd(kStatDropped, 1u);
+                    }
                     return false;  // hidden, and the car's colour is not known: nothing (the environment stays)
                 }
                 hidden = seen * g_push.tune.x;  // partly shown: the shown colour stands in for the rest
@@ -428,7 +563,15 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
             {
                 hidden *= g_push.tune.x;
             }
+            if (stats)
+            {
+                StatAdd(kStatStandIn, 1u);
+            }
         }
+    }
+    else if (stats && farHit && seenShare < 1.0)
+    {
+        StatAdd(kStatStandIn, 1u);  // the player's car in the opponents' pass, with no material: the pixel's own surface in shade stands in
     }
     fade = faded;
     visible = seenShare;
@@ -573,6 +716,10 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     {
         return float4(0.0, 0.0, 0.0, 1.0);  // grazing: the paint does not trace it either (a miss: nothing changes)
     }
+    if (StatsOn())
+    {
+        StatAdd(kStatTexels, 1u);
+    }
 
     // 2. the clear coat's ray (one ray along the exact mirror direction, the share of it by the paint's fresnel), then the cone of reflection rays, both off the surface along the normal
     const float3 mirror = reflect(viewDirection, normal);
@@ -596,6 +743,10 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
         coatShare = CarCoatShare(nv, CarMatFresnelPower(primaryInstance), g_push.coat.w);
         coatHit = TraceRay(history, origin, ConeDirection(mirror, normal, 0.0, 0, 0.0), reach, 0.0, primaryInstance, primaryPrimitive, normal, coatFade, coatVisible, coatSeen,
                            coatDistance, coatOther, coatHidden);
+        if (coatHit && coatOther && StatsOn())
+        {
+            StatAdd(kStatCoat, 1u);
+        }
     }
     float fade[4] = {0.0, 0.0, 0.0, 0.0};      // 0: the ray found nothing (or was not cast)
     float visible[4] = {0.0, 0.0, 0.0, 0.0};

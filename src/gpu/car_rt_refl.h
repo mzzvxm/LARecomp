@@ -154,6 +154,7 @@
 
 #include <plume_render_interface.h>
 
+#include "car_rt_hit_rules.h"
 #include "car_rt_opp_refl.h"
 #include "car_rt_refl_rules.h"
 #include "car_selfrefl_rules.h"
@@ -216,6 +217,10 @@ class CarRtRefl {
   // The text CarSelfRefl's census line ends with (the totals, and the interval since the last call); empty where there is no ray tracing.
   std::string CensusText();
 
+  // RT-HIT-SHADING-3 (car_rt_hit_rules.h census::): the exposure of the shaded colours of another car's hidden parts, in stops, measured against the history's own colours of the parts the camera
+  // sees (0 until a window had enough samples; always 0 with mcla_gpu_car_rt_hit_calibrate off). The scene multiplies its frame's gain by GainOf of it.
+  float HitStops() const;
+
  private:
   // The push block of the pass (hlsl/car_rt_refl_cs.hlsl CarRtReflPush), 96 bytes.
   struct Push {
@@ -264,8 +269,13 @@ class CarRtRefl {
   bool EnsureOutput(uint32_t width, uint32_t height);
   // The scratch image of the denoise and the sets of its two passes; false: no denoise this frame (the images are released).
   bool EnsureDenoiseImages(uint32_t width, uint32_t height);
-  bool EnsureSet(OutputSet& out, plume::RenderDescriptorSetBuilder& builder, const HostImage& first, const HostImage* second, const char* name);
+  bool EnsureSet(OutputSet& out, plume::RenderDescriptorSetBuilder& builder, const HostImage& first, const HostImage* second, const char* name,
+                 const plume::RenderBuffer* stats = nullptr);
   void RetireSet(OutputSet& out);
+  // The census's three buffers (the counters, 32 zero words to copy into them, the readback): made with the layout.
+  bool MakeStatsBuffers(Device& device);
+  // A stats frame's counters, read back once the GPU is done with them: the window, the exposure, the log line.
+  void ProcessStats(uint64_t frame, uint64_t generation);
   void ReleaseScratch();
   // One compute dispatch of the denoise: `input` filtered into the image `output` names, `pass` 0 or 1.
   void DispatchDenoise(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, uint32_t history_slot, const HostImage& input,
@@ -282,7 +292,21 @@ class CarRtRefl {
   bool ready_ = false;          // layout and shader exist
   bool listed_ = false;         // the pipeline was listed (at the start, or in the background after it)
   bool pipeline_failed_ = false;
-  plume::RenderDescriptorSetBuilder output_builder_;  // u0 the image, u1 the aux image
+  plume::RenderDescriptorSetBuilder output_builder_;  // u0 the image, u1 the aux image, u2 the census's counters
+  std::unique_ptr<plume::RenderBuffer> stats_;           // u2: car_rt_hit::census::kWords counters, zeroed before a stats frame
+  std::unique_ptr<plume::RenderBuffer> stats_zero_;      // the zero words (an upload buffer written once)
+  std::unique_ptr<plume::RenderBuffer> stats_readback_;
+  bool stats_busy_ = false;         // a stats frame's readback is pending
+  bool stats_ever_ = false;
+  uint64_t stats_last_frame_ = 0;   // the history frame of the last stats frame
+  uint64_t stats_generation_ = 0;   // bumped at Shutdown: a readback of an older one is dropped
+  uint64_t stats_frames_ = 0;       // stats frames read back since the start
+  car_rt_hit::census::Totals window_;  // the counters since the last log line
+  uint32_t window_frames_ = 0;
+  uint64_t cal_count_ = 0;          // the exposure's samples gathered since it last moved
+  uint64_t cal_seen_ = 0;
+  uint64_t cal_model_ = 0;
+  float hit_stops_ = 0.0f;          // the exposure in force, in stops (car_rt_hit::census::NextStops)
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::unique_ptr<plume::RenderShader> shader_;
   std::unique_ptr<plume::RenderPipeline> pipeline_;

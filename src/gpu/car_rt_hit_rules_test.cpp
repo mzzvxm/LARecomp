@@ -15,6 +15,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "car_rt_hit_rules.h"
@@ -269,6 +270,132 @@ int main(int argc, char** argv) {
     Check(hr::PackPhaseRays(9, 4) == hr::PackPhaseRays(1, 4) && hr::RaysOf(hr::PackPhaseRays(0, 9)) == 4 && hr::RaysOf(hr::PackPhaseRays(0, 0)) == 1, "the phase is taken mod 8 and the rays clamped to 1 .. 4");
   }
 
+  // ---- RT-HIT-SHADING-3: the census, the exposure and the sky fill ---------------------------------------------------------------------------
+  {
+    namespace ce = hr::census;
+    // the fixed-point log of a luminance
+    bool round = true;
+    for (float lum : {0.02f, 0.05f, 0.25f, 1.0f, 3.0f, 16.0f, 200.0f}) {
+      const float back = ce::FromFixedLog2(float(ce::FixedLog2(lum)));
+      round = round && std::fabs(std::log2(back) - std::log2(lum)) <= 1.0f / ce::kLogScale + 1e-4f;
+    }
+    Check(round, "a luminance comes back from its fixed-point log within a sixty-fourth of a stop");
+    Check(ce::FixedLog2(0.0f) == ce::FixedLog2(ce::kLogFloor) && ce::FixedLog2(1e-9f) == ce::FixedLog2(ce::kLogFloor) && ce::FixedLog2(-3.0f) == ce::FixedLog2(ce::kLogFloor),
+          "no, zero or negative luminance is the floor's");
+    Check(ce::FixedLog2(1e12f) == ce::kLogMax && ce::FixedLog2(1.0f) == uint32_t(ce::kLogBias * ce::kLogScale), "a huge luminance is clamped; 1 is the bias");
+    Check(uint64_t(ce::kLogMax) * 2000000ull < (1ull << 32), "two million samples at the largest value still sum under 2^32 (the shader words are 32 bits)");
+    Check(ce::kWords * 4 == ce::kBytes && ce::kCoat < ce::kWords && ce::kAllCalModel < ce::kCoat && ce::kByClass + ce::kClassCount == ce::kLogLum,
+          "the counters layout: 32 words, the class words are eight before the log sum, the coat's is the last used");
+
+    // the exposure: samples to stops, the gain's move, convergence on a model that is two stops dark
+    float stops = 0.0f;
+    Check(!ce::CalibrationStops(ce::kCalMinSamples - 1, 1000, 100, &stops) && ce::CalibrationStops(ce::kCalMinSamples, 1000, 100, &stops), "fewer than kCalMinSamples samples say nothing");
+    const uint64_t n = 500;
+    Check(ce::CalibrationStops(n, n * 3000, n * (3000 - 2 * 64), &stops) && Near(stops, 2.0, 1e-4), "a history two stops brighter than the model reads as +2 stops");
+    Check(ce::CalibrationStops(n, n * 3000, n * (3000 + 64), &stops) && Near(stops, -1.0, 1e-4), "a history a stop darker reads as -1");
+    Check(ce::CalibrationStops(n, 0, n * 2047, &stops) && Near(stops, ce::kCalMinStops, 1e-5) && ce::CalibrationStops(n, n * 2047, 0, &stops) && Near(stops, ce::kCalMaxStops, 1e-5),
+          "a measurement is clamped to the gain's range");
+    float gain_stops = 0.0f;
+    const float truth = 2.0f;  // the model is two stops too dark against the game's own picture
+    for (int window = 0; window < 12; ++window) {
+      const float residual = truth - gain_stops;  // the pass shades with the gain in force: what it finds is what is left
+      gain_stops = ce::NextStops(gain_stops, residual);
+    }
+    Check(std::fabs(gain_stops - truth) < 0.01f, "the gain settles on the model's error in a dozen windows (each moves half the way)");
+    Check(Near(ce::NextStops(0.0f, 100.0f), ce::kCalMaxStops) && Near(ce::NextStops(0.0f, -100.0f), ce::kCalMinStops), "one wild window cannot take the gain out of its range");
+    Check(Near(ce::GainOf(0.0f), 1.0) && Near(ce::GainOf(3.0f), 8.0) && Near(ce::GainOf(-3.0f), 0.125) && Near(ce::GainOf(9.0f), 8.0), "the gain is a power of two within a factor of 8");
+    {
+      float g = 0.0f;
+      for (int window = 0; window < 10; ++window) g = ce::NextStops(g, 0.0f - g);  // the day's model fits
+      const float day = g;
+      for (int window = 0; window < 10; ++window) g = ce::NextStops(g, -2.5f - g);  // at night the picture is 2.5 stops under the model
+      Check(std::fabs(day) < 0.01f && std::fabs(g + 2.5f) < 0.01f, "the gain follows the hour (the model's light does not)");
+    }
+
+    // the stats frame: when, and the push word
+    Check(!ce::StatsDue(ce::kStatsFirst - 1, 0, false) && ce::StatsDue(ce::kStatsFirst, 0, false), "the first stats frame is at kStatsFirst");
+    Check(!ce::StatsDue(100 + ce::kStatsEvery - 1, 100, true) && ce::StatsDue(100 + ce::kStatsEvery, 100, true), "then every kStatsEvery frames");
+    bool word = true;
+    for (uint32_t phase = 0; phase < 8; ++phase) {
+      for (uint32_t rays = 1; rays <= 4; ++rays) {
+        const uint32_t w = hr::PackPhaseRays(phase, rays);
+        const uint32_t on = ce::PackWithStats(w, true);
+        word = word && ce::PackWithStats(w, false) == w && hr::PhaseOf(on) == phase && hr::RaysOf(on) == rays && (on & ce::kStatsFlag) != 0 && (w & ce::kStatsFlag) == 0;
+      }
+    }
+    Check(word && ce::kStatsFlag == (1u << 16), "the stats flag is bit 16: the phase (bits 0 to 2) and the cone's rays (8 to 10) are as they were");
+
+    // the log line
+    {
+      ce::Totals t;
+      t.w[ce::kTexels] = 1200;
+      t.w[ce::kRays] = 900;
+      t.w[ce::kOwn] = 100;
+      t.w[ce::kSeen] = 300;
+      t.w[ce::kBlend] = 50;
+      t.w[ce::kShaded] = 400;
+      t.w[ce::kStandIn] = 30;
+      t.w[ce::kDropped] = 20;
+      t.w[ce::kByClass + 1] = 300;
+      t.w[ce::kByClass + 2] = 100;
+      t.w[ce::kByClass + 5] = 50;
+      t.w[ce::kLogLum] = 450ull * uint64_t(ce::FixedLog2(0.5f));
+      t.w[ce::kLit] = 100;
+      t.w[ce::kShadow] = 250;
+      t.w[ce::kAway] = 100;
+      t.w[ce::kGlow] = 7;
+      t.w[ce::kCalCount] = 200;
+      t.w[ce::kCalSeen] = 200ull * 3000;
+      t.w[ce::kCalModel] = 200ull * (3000 - 64);
+      t.w[ce::kAllCalCount] = 260;
+      const std::string text = ce::Text(t, 15, 0.5f, true);
+      Check(Has(text, "15 stats frames") && Has(text, "1200 texels") && Has(text, "300 took the history's colour") && Has(text, "50 shaded and blended") && Has(text, "400 shaded") &&
+                Has(text, "30 the stand-in colour") && Has(text, "20 dropped") && Has(text, "paint 300 glass 100 light 50") && !Has(text, "tyre") && Has(text, "100 lit, 250 in shadow, 100 facing away") &&
+                Has(text, "7 lamps glowing") && Has(text, "luminance 0.5") && Has(text, "+1.00 stops from it") && Has(text, "the gain now +0.50 stops (x1.41)") && !Has(text, "not applied"),
+            "the census line says what the hits did, by class and by the sun, and the exposure against the game's picture: " + text);
+      Check(Has(ce::Text(t, 15, 0.5f, false), "not applied"), "with the calibration off the line says the gain is not applied");
+      t.w[ce::kCalCount] = 3;
+      Check(Has(ce::Text(t, 1, 0.0f, true), "too few"), "a window with too few samples says so and keeps the gain");
+    }
+
+    // the sky fill: a flank the sun does not reach is lit by a fifth of the sun's colour, in its hue, where the cars' c26 has none (a daylight run's was 0, 0.004, 0.004)
+    {
+      crm::ShadeInput in;
+      in.cls = crm::Class::kPaint;
+      in.paint = true;
+      in.tint_a[0] = 0.64f; in.tint_a[1] = 0.19f; in.tint_a[2] = 0.03f;
+      in.tint_b[0] = 0.64f; in.tint_b[1] = 0.19f; in.tint_b[2] = 0.03f;
+      in.flop = 0.0f;
+      in.light.valid = true;
+      in.light.sun[0] = 0.060f; in.light.sun[1] = 0.044f; in.light.sun[2] = 0.024f;
+      in.light.ambient[0] = 0.0f; in.light.ambient[1] = 0.004f; in.light.ambient[2] = 0.004f;
+      in.fresnel[0] = 0.0f; in.fresnel[1] = 0.0f;  // no environment: the diffuse alone
+      in.env_known = false;
+      in.normal[0] = 0.0f; in.normal[1] = 0.0f; in.normal[2] = -1.0f;
+      in.ray[0] = 0.0f; in.ray[1] = 0.0f; in.ray[2] = 1.0f;
+      in.to_sun[0] = 0.0f; in.to_sun[1] = 1.0f; in.to_sun[2] = 0.0f;  // the sun is in the surface's plane: N.L 0
+      in.up[0] = 0.0f; in.up[1] = 1.0f; in.up[2] = 0.0f;
+      float shade[3];
+      crm::ShadeReference(in, shade);
+      const double hemisphere = 0.6;  // the normal is horizontal
+      Check(Near(shade[0], 0.64 * 0.060 * double(crm::kFillShare) * hemisphere, 1e-4) && shade[0] > shade[1] && shade[1] > shade[2],
+            "a shaded orange flank is orange: the fill is the sun's colour times kFillShare, not c26's (which has no red)");
+      in.light.ambient[0] = 0.05f;  // an ambient over the fill is used as it was
+      crm::ShadeReference(in, shade);
+      Check(Near(shade[0], 0.64 * 0.05 * hemisphere, 1e-4), "an ambient brighter than the fill is the ambient");
+      in.light.ambient[0] = 0.0f;
+      crm::ShadeReference(in, shade);
+      in.to_sun[1] = 0.0f; in.to_sun[2] = -1.0f;  // facing the sun
+      float lit[3];
+      crm::ShadeReference(in, lit);
+      Check(lit[0] > shade[0] * 3.0f, "the sun-lit flank is several times the shaded one");
+      in.tuning.gain = ce::GainOf(1.0f);
+      float doubled[3];
+      crm::ShadeReference(in, doubled);
+      Check(Near(doubled[0], lit[0] * 2.0, 1e-4), "the exposure is the gain the reference multiplies by (a stop is twice)");
+    }
+  }
+
   // ---- the shaders, the host and the settings hold the numbers ------------------------------------------------------------------------------
   {
     const std::string hlsli = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli");
@@ -286,6 +413,8 @@ int main(int argc, char** argv) {
     const std::string manifest = ReadFile(src + "/settings/generated/manifest.json");
     const std::string meta = ReadFile(src + "/settings/generated/settings_meta.inc");
     const std::string cmake = ReadFile(src + "/gpu/CMakeLists.txt");
+    const std::string scene_cpp = ReadFile(src + "/gpu/car_rt_scene.cpp");
+    const std::string scene_h = ReadFile(src + "/gpu/car_rt_scene.h");
     if (hlsli.empty() || refl.empty() || host.empty() || settings.empty()) {
       std::printf("the sources were not found under %s: the text checks are skipped\n", src.c_str());
     } else {
@@ -321,7 +450,7 @@ int main(int argc, char** argv) {
             "the host's push blocks are the shader's: 96 bytes with coat, 112 with the opponents' opp");
       Check(Has(host, "car_rt_hit::LevelWith(car_rt_hit::LevelFor(gpu_class::Current()), double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),") &&
                 Has(host, "double(larecomp::settings::mcla_gpu_car_rt_clearcoat.Get()));") && Has(host, "car_rt_hit::CastReach(parts, self_reach, others_reach)") &&
-                Has(host, "push.slots[3] = car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays);") && Has(host, "push.coat[0] = self_reach;") && Has(host, "push.coat[1] = others_reach;") &&
+                Has(host, "car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays)") && Has(host, "push.coat[0] = self_reach;") && Has(host, "push.coat[1] = others_reach;") &&
                 Has(host, "push.coat[2] = level.others_fade_from;") && Has(host, "push.coat[3] = level.coat;") && Has(host, "float(info.tan_y), length, tan_half);"),
             "the host's push is the level's: the reaches, the fade, the clear coat's gain, the cone's rays; the denoise decodes distances by the reach that was cast");
       Check(Has(opp_cpp, "std::memcpy(&push, f.base_push, kBasePushBytes);"), "the opponents' push is the player's with opp");
@@ -332,6 +461,48 @@ int main(int argc, char** argv) {
         Check(Has(settings, std::string(", ") + name + ", ") && Has(settings, std::string("inline auto& ") + name + " = g_gpu." + name + ";") && Has(manifest, std::string("\"") + name + "\": {") &&
                   Has(meta, std::string("{\"") + name + "\", \"MCLA/GPU\"}"),
               std::string("the setting ") + name + " is defined, aliased, in the manifest and in the meta list");
+      }
+
+      // RT-HIT-SHADING-3: the census, the exposure and the fill, in the shaders, the host and the settings
+      {
+        namespace ce = hr::census;
+        const std::pair<const char*, uint32_t> words[] = {{"kStatTexels", ce::kTexels}, {"kStatRays", ce::kRays}, {"kStatOwn", ce::kOwn}, {"kStatSeen", ce::kSeen}, {"kStatBlend", ce::kBlend},
+                                                          {"kStatShaded", ce::kShaded}, {"kStatStandIn", ce::kStandIn}, {"kStatDropped", ce::kDropped}, {"kStatByClass", ce::kByClass},
+                                                          {"kStatLogLum", ce::kLogLum}, {"kStatLit", ce::kLit}, {"kStatShadow", ce::kShadow}, {"kStatAway", ce::kAway}, {"kStatGlow", ce::kGlow},
+                                                          {"kStatCalCount", ce::kCalCount}, {"kStatCalSeen", ce::kCalSeen}, {"kStatCalModel", ce::kCalModel},
+                                                          {"kStatAllCalCount", ce::kAllCalCount}, {"kStatAllCalSeen", ce::kAllCalSeen}, {"kStatAllCalModel", ce::kAllCalModel}, {"kStatCoat", ce::kCoat}};
+        bool same = true;
+        for (const auto& w : words) {
+          same = same && Near(Constant(refl, std::string("static const uint ") + w.first), double(w.second), 0.0);
+        }
+        Check(same, "the shader's counter words are the header's");
+        Check(Near(Constant(refl, "static const uint kStatsFlag"), double(ce::kStatsFlag), 0.0) && Near(Constant(refl, "static const float kCalFloor"), ce::kCalFloor) &&
+                  Near(Constant(refl, "static const float kLogFloor"), ce::kLogFloor) && Near(Constant(refl, "static const float kLogBias"), ce::kLogBias) &&
+                  Near(Constant(refl, "static const float kLogScale"), ce::kLogScale) && Near(Constant(refl, "static const float kLogMax"), double(ce::kLogMax)),
+              "the shader's stats flag, the calibration's floor and the fixed-point log are the header's");
+        Check(Has(refl, "RWByteAddressBuffer g_stats : register(u2, space1);") && Has(refl, "return (g_push.slots.w & kStatsFlag) != 0u;") && Has(refl, "g_stats.InterlockedAdd(word * 4u, value, original);") &&
+                  Has(refl, "return uint(clamp((log2(max(luminance, kLogFloor)) + kLogBias) * kLogScale, 0.0, kLogMax));") && Has(refl, "return dot(colour, float3(0.2126, 0.7152, 0.0722));"),
+              "the shader counts in a stats frame only, into the buffer at u2, with the header's luminance and fixed-point log");
+        Check(Has(refl, "if (hitsOther && usable)") && Has(refl, "CensusCalibrate(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, seen);") &&
+                  Has(refl, "if (gCarHitClass == CAR_MAT_CLASS_PAINT)") && Has(refl, "CensusShaded(seenShare, shaded);") && Has(refl, "StatAdd(kStatDropped, 1u);") && Has(refl, "StatAdd(kStatStandIn, 1u);"),
+              "the exposure's samples are hits on another car's parts the history shows in full (the player's own car in the opponents' pass is no sample), the paint's drive the gain; every outcome is counted");
+        Check(Near(Constant(hlsli, "static const float kFillShare"), crm::kFillShare) && Has(hlsli, "const float3 fill = max(f.ambient, f.sun * kFillShare);") &&
+                  Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere) + f.sun * (ndl * visible);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;"),
+              "the shader's sky fill is ShadeReference's");
+        Check(Has(host, "output_builder_.addReadWriteByteAddressBuffer(2);") && Has(host, "bool CarRtRefl::MakeStatsBuffers(Device& device) {") &&
+                  Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame);") &&
+                  Has(host, "out.set->setBuffer(2, stats, car_rt_hit::census::kBytes);") && Has(host, "stats ? 3u : (second ? 2u : 1u)") &&
+                  Has(host, "EnsureSet(trace_set_, output_builder_, image_, &aux_, \"car rt refl output set\", stats_.get())") &&
+                  Has(host, "frames_->RetireAction([this, frame = info.frame, generation = stats_generation_] { ProcessStats(frame, generation); });") &&
+                  Has(host, "hit_stops_ = census::NextStops(hit_stops_, residual);") && Has(host, "scene_->SetHitStops(HitStops());") &&
+                  Has(host, "census::Text(window_, window_frames_, hit_stops_, calibrating)") && Has(host_h, "float HitStops() const;"),
+              "the host makes the counters' buffers and binds them at u2, zeroes them before a stats frame, reads them back, moves the gain and logs the line");
+        Check(Has(scene_cpp, "float(larecomp::settings::mcla_gpu_car_rt_hit_gain.Get()) * car_rt_hit::census::GainOf(hit_stops_)") && Has(scene_h, "void SetHitStops(float stops) { hit_stops_ = stops; }"),
+              "the scene's frame gain is the setting's times the measured exposure");
+        const std::string name = "mcla_gpu_car_rt_hit_calibrate";
+        Check(Has(settings, std::string(", ") + name + ", ") && Has(settings, std::string("inline auto& ") + name + " = g_gpu." + name + ";") && Has(manifest, std::string("\"") + name + "\": {") &&
+                  Has(meta, std::string("{\"") + name + "\", \"MCLA/GPU\"}"),
+              "the setting mcla_gpu_car_rt_hit_calibrate is defined, aliased, in the manifest and in the meta list");
       }
       Check(!cmake.empty() && Has(cmake, "larecomp_car_rt_hit_rules_test"), "the CMake file builds this test");
     }

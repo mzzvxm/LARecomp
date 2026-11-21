@@ -9571,6 +9571,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_rt_hit_calibrate": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): the shaded colour of another car's hidden parts is brought to the game's own exposure: where the reflection ray hits a part of another car's paint that the \"\n    \"camera sees, the pass also shades it by its model and compares the brightness with the game's colour there, and the shading's gain follows (about a window of twenty frames: it follows the hour). Off: the model's own \"\n    \"light, which does not follow the hour. The census line in the log ([car rt refl] hits) says the difference either way. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_hit_cascade": {
   "type": "bool",
   "default": "true",

@@ -55,7 +55,14 @@
 //   3. the cost against the estimate above, and the memory of more cars in the scene (radius 20 m on High);
 //   4. the mirror ray's self-hit rule on a curved panel (kSelfCos): a coat ray that skims the panel it left is a miss, so a lid or a bonnet must stay the environment's colour;
 //   5. the push blocks (96 and 112 bytes) once Vulkan has ray queries (the limit is 128);
-//   6. part one's lines (the units of the environment map, the paraboloid, the table's constants: car_rt_material_rules.h CHECK).
+//   6. part one's lines (the units of the environment map, the paraboloid, the table's constants: car_rt_material_rules.h CHECK);
+//   7. RT-HIT-SHADING-3 (the census, below): the first run's "[car rt refl] hits, frame N: ..." lines (the first at the 4th trigger, then every 300 triggers) say how many hits took the history, the
+//      blend, the shading or the stand-in, by class and by the sun, and the exposure: "the model, with the gain then in force, is X stops from it": X goes to 0 and "the gain now" settles
+//      (about +1 to +3 stops where the model is dark, near 0 where it fits; it must differ between the day and the night runs: the model's own light does not). Too few paint samples (the line
+//      says so) means the camera saw too little of another car's paint for the exposure to move: the hits are then shaded as before, with the fill. The two switches: mcla_gpu_car_rt_hit_calibrate
+//      false (no gain, the census still runs) and mcla_gpu_car_rt_hit_gain (the fixed gain). The stats frame's atomics are a frame in twenty: look for a 0.1 to 0.5 ms spike in "car rt refl" there;
+//   8. the lamps' night factor is still read from the sun colour (kNightLow, kNightHigh), which was 0.97 at 14 h and 23 h alike: the census's "lamps glowing" counts the shaded hits that glow
+//      with it over a half; a daylight run with a number there means the lamps glow in the sun (a follow-up: the factor from the world's hour, not from c39).
 //
 // This header includes nothing of the renderer; car_rt_hit_rules_test.cpp builds on its own.
 // ===========================================================================
@@ -63,6 +70,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 
 #include "car_rt_material_rules.h"
 #include "car_rt_refl_rules.h"
@@ -206,5 +215,152 @@ inline uint32_t RaysOf(uint32_t word) {
   const uint32_t rays = (word >> 8) & 7u;
   return rays == 0 ? 4u : std::min(rays, 4u);  // a word with no rays in it is the whole cone (a host that does not say)
 }
+
+// ---------------------------------------------------------------------------
+// RT-HIT-SHADING-3: the census of the hits and the exposure of the shaded colour
+// ---------------------------------------------------------------------------
+// WHAT THE FIRST AFTER PICTURES SHOWED (the rthit1 runs of 2026-11-21, ports\run\rthit1-rt-day and -night): the shading was in the exe and on (the log's reach line, "clear-coat ray: on", the
+// materials census: every textured instance found in the cache, the cascades in every frame) and the Camaro's hidden flank WAS shaded (the window, the wheel arch and the body tell apart
+// under a x6 exposure), but it read as a dull flat orange patch for three reasons the numbers below answer:
+//   - the light it was shaded with does not follow the world: the cars' draws' c39 (the "sun") was (0.060 0.044 0.024) at 14 h and (0.060 0.048 0.020) at 23 h, the night factor 0.97 in both, and
+//     the added reflection was 75% as bright at night (0.0077) as in the day (0.0103) while the picture was three times darker (the volumetric light scales the same colour by the sun's
+//     height itself: volumetrics.cpp FillDefaults). The pass cannot know the exposure of the scene from the constants it reads;
+//   - the ambient was c26's (0.000 0.004 0.004): no red at all, so a flank the sun does not reach was black or a teal tint under an orange paint;
+//   - a body panel has no texture in this game (the paint is the colour, the gradient and the livery, car_rt_material_rules.h), so the structure of a flank is its light, its shadow and its
+//     parts (windows, wheels, lamps), all of which were dark.
+// THE FIX has two parts. (1) A sky fill: the ambient is at least kFillShare of the sun's colour (a shaded flank is a fifth as bright as a lit one, in the sun's own hue). (2) The EXPOSURE is
+// measured against the game's own picture: wherever a ray hits a part of another car's PAINT that the history shows in full, the pass also shades it by the model and adds the log of the
+// two colours' brightness to a counter (the sum of log2 of the history's, and of the model's); the host reads the counters back, turns the mean difference into a gain on the model
+// (GainOf, smoothed, in the frame's rows) and the hits the history does not show are shaded with it. The same counters are the CENSUS of the pass: how many hits took the history,
+// the blend, the shading or the stand-in, by class, in the sun or in a shadow, and the brightness of the shaded colour, so that a run's log says what the pass did.
+namespace census {
+
+// The counter words (the shader's own copy, hlsl/car_rt_refl_cs.hlsl kStat*): 32 words of the stats buffer (u2 of the output set), zeroed by the host before a stats frame.
+inline constexpr uint32_t kWords = 32;
+inline constexpr uint32_t kBytes = kWords * 4;
+inline constexpr uint32_t kTexels = 0;       // texels with data: a primary hit on the player's car at the pixel's distance and a view that is not grazing
+inline constexpr uint32_t kRays = 1;         // rays (the cone's and the coat's) that hit a part of the scene within their reach
+inline constexpr uint32_t kOwn = 2;          // ... on the player's own parts
+inline constexpr uint32_t kSeen = 3;         // ... on another car, the history shows the part in full: its colour
+inline constexpr uint32_t kBlend = 4;        // ... on another car, the history shows part of it: shaded and blended
+inline constexpr uint32_t kShaded = 5;       // ... on another car, the history shows none of it: shaded from its material
+inline constexpr uint32_t kStandIn = 6;      // ... on another car, not shaded (no material, shading off, no frame light): the stand-in colour of the car
+inline constexpr uint32_t kDropped = 7;      // ... on another car, hidden and no colour known: a miss
+inline constexpr uint32_t kByClass = 8;      // 8 words: the shaded hits (blended and shaded) by class (none, paint, glass, tyre, chrome, light, interior, other)
+inline constexpr uint32_t kLogLum = 16;      // the sum over the shaded hits of FixedLog2 of the shaded colour's luminance (in the history's units)
+inline constexpr uint32_t kLit = 17;         // shaded hits the sun reaches (N.L > 0 and the visibility over a half)
+inline constexpr uint32_t kShadow = 18;      // ... that face the sun and are in shadow (the cascades' or the cars')
+inline constexpr uint32_t kAway = 19;        // ... that face away from the sun
+inline constexpr uint32_t kGlow = 20;        // ... that glow (a lamp, a lit interior) with the night factor over a half
+inline constexpr uint32_t kCalCount = 21;    // the calibration's samples: hits on another car's PAINT that the history shows in full (and both colours are over kCalFloor)
+inline constexpr uint32_t kCalSeen = 22;     // the sum of FixedLog2 of the history's luminance there
+inline constexpr uint32_t kCalModel = 23;    // the sum of FixedLog2 of the model's luminance for the same hits
+inline constexpr uint32_t kAllCalCount = 24; // the same for a hit of any class (not used for the gain: the census says how the other classes' models do)
+inline constexpr uint32_t kAllCalSeen = 25;
+inline constexpr uint32_t kAllCalModel = 26;
+inline constexpr uint32_t kCoat = 27;        // texels whose clear-coat ray hit another car
+inline constexpr uint32_t kClassCount = 8;
+
+// The push's slots.w bit that makes this frame a stats frame (the shader counts only then); bits 0..2 are the cone pattern's phase, 8..10 the cone's rays.
+inline constexpr uint32_t kStatsFlag = 1u << 16;
+// A stats frame every this many history triggers (the counters cost atomics on a few dozen addresses: a frame in twenty), the first at kStatsFirst.
+inline constexpr uint64_t kStatsEvery = 20;
+inline constexpr uint64_t kStatsFirst = 4;
+// The line in the log: every this many stats frames.
+inline constexpr uint64_t kLogEveryStats = 15;
+
+// A luminance as a fixed-point log: (log2(max(l, kLogFloor)) + kLogBias) x kLogScale, clamped to 0 .. kLogMax (a sum over a million rays stays under 2^32; a step is a sixty-fourth of a stop).
+inline constexpr float kLogFloor = 1e-4f;
+inline constexpr float kLogBias = 16.0f;
+inline constexpr float kLogScale = 64.0f;
+inline constexpr uint32_t kLogMax = 2047;
+inline uint32_t FixedLog2(float luminance) {
+  const float v = (std::log2(std::max(luminance, kLogFloor)) + kLogBias) * kLogScale;
+  return uint32_t(std::clamp(v, 0.0f, float(kLogMax)));
+}
+inline float FromFixedLog2(float mean_fixed) { return std::exp2(mean_fixed / kLogScale - kLogBias); }
+
+// The calibration's samples count only where both colours are over this (in the history's units): a black part (glass, a tyre in shade) has no brightness to compare.
+inline constexpr float kCalFloor = 0.02f;
+inline constexpr uint32_t kCalMinSamples = 48;  // fewer samples in a window and the gain stays where it was
+inline constexpr float kCalMinStops = -3.0f;    // the gain's range, in stops (a factor of 1/8 to 8)
+inline constexpr float kCalMaxStops = 3.0f;
+inline constexpr float kCalRate = 0.5f;         // the share of the way to the new measurement a window moves the gain (in stops)
+inline constexpr float kLuma[3] = {0.2126f, 0.7152f, 0.0722f};
+inline float Luminance(const float rgb[3]) { return kLuma[0] * rgb[0] + kLuma[1] * rgb[1] + kLuma[2] * rgb[2]; }
+
+// A window's counters (64 bits: several frames' sums).
+struct Totals {
+  uint64_t w[kWords] = {};
+  uint64_t operator[](uint32_t i) const { return w[i]; }
+};
+
+// A frame's counters added into a window's.
+inline void Add(Totals* sum, const uint32_t words[kWords]) {
+  for (uint32_t i = 0; i < kWords; ++i) {
+    sum->w[i] += words[i];
+  }
+}
+
+// The mean of the log2 luminance difference (history over model) of a calibration's samples in stops, and whether there were enough of them to say.
+inline bool CalibrationStops(uint64_t count, uint64_t seen_sum, uint64_t model_sum, float* stops) {
+  if (count < kCalMinSamples) {
+    return false;
+  }
+  const float diff = (float(double(seen_sum) - double(model_sum)) / float(count)) / kLogScale;
+  *stops = std::clamp(diff, kCalMinStops, kCalMaxStops);
+  return true;
+}
+
+// The new gain (in stops) from the old one and a window's measurement. The shader shades the comparison's hits WITH the gain in force, so the measurement is what is left to correct (the
+// history's over the model's, in stops): the gain moves kCalRate of the way to cancel it, so it settles where the measurement is 0 and follows the hour as it changes.
+inline float NextStops(float previous, float residual) { return std::clamp(previous + residual * kCalRate, kCalMinStops, kCalMaxStops); }
+inline float GainOf(float stops) { return std::exp2(std::clamp(stops, kCalMinStops, kCalMaxStops)); }
+
+// Is the trigger at `frame` a stats frame? (the first at kStatsFirst, then every kStatsEvery after the last)
+inline bool StatsDue(uint64_t frame, uint64_t last_stats_frame, bool ever) { return ever ? frame >= last_stats_frame + kStatsEvery : frame >= kStatsFirst; }
+
+// The word of the push for a stats frame: the cone pattern's phase and rays as PackPhaseRays has them, and the flag.
+inline uint32_t PackWithStats(uint32_t phase_rays_word, bool stats) { return phase_rays_word | (stats ? kStatsFlag : 0u); }
+
+// The census line's text for a window of stats frames.
+inline unsigned long long ull(uint64_t v) { return static_cast<unsigned long long>(v); }
+inline std::string Text(const Totals& t, uint32_t frames, float gain_stops, bool calibrated) {
+  static const char* const kClassName[kClassCount] = {"none", "paint", "glass", "tyre", "chrome", "light", "interior", "other"};
+  const uint64_t other = t[kSeen] + t[kBlend] + t[kShaded] + t[kStandIn] + t[kDropped];
+  const uint64_t shaded = t[kBlend] + t[kShaded];
+  char head[640];
+  std::snprintf(head, sizeof(head),
+                "%llu stats frames: %llu texels with data, %llu rays hit a part (%llu on the player's own parts, %llu on other cars: %llu took the history's colour, %llu shaded and blended with it, %llu shaded, "
+                "%llu the stand-in colour, %llu dropped); %llu texels' coat ray hit another car",
+                ull(frames), ull(t[kTexels]), ull(t[kRays]), ull(t[kOwn]), ull(other), ull(t[kSeen]), ull(t[kBlend]), ull(t[kShaded]), ull(t[kStandIn]), ull(t[kDropped]), ull(t[kCoat]));
+  std::string out = head;
+  out += "; shaded by class:";
+  for (uint32_t c = 0; c < kClassCount; ++c) {
+    if (t[kByClass + c] != 0) {
+      char part[64];
+      std::snprintf(part, sizeof(part), " %s %llu", kClassName[c], ull(t[kByClass + c]));
+      out += part;
+    }
+  }
+  char tail[640];
+  const float mean_lum = shaded != 0 ? FromFixedLog2(float(t[kLogLum]) / float(shaded)) : 0.0f;
+  std::snprintf(tail, sizeof(tail),
+                "; the sun: %llu lit, %llu in shadow, %llu facing away; %llu lamps glowing with the night factor over a half; the shaded colour's geometric mean luminance %.4f (the history's units)",
+                ull(t[kLit]), ull(t[kShadow]), ull(t[kAway]), ull(t[kGlow]), mean_lum);
+  out += tail;
+  float stops = 0.0f;
+  char cal[512];
+  if (CalibrationStops(t[kCalCount], t[kCalSeen], t[kCalModel], &stops)) {
+    std::snprintf(cal, sizeof(cal), "; exposure against the game's own picture: %llu paint hits the history shows (%llu of any class), the model, with the gain then in force, is %+.2f stops from it (history over model), the gain now %+.2f stops (x%.2f)%s",
+                  ull(t[kCalCount]), ull(t[kAllCalCount]), stops, gain_stops, GainOf(gain_stops), calibrated ? "" : " (not applied: the calibration is off)");
+  } else {
+    std::snprintf(cal, sizeof(cal), "; exposure against the game's own picture: %llu paint hits the history shows (too few: the gain stays %+.2f stops, x%.2f)", ull(t[kCalCount]), gain_stops, GainOf(gain_stops));
+  }
+  out += cal;
+  return out;
+}
+
+}  // namespace census
 
 }  // namespace mcla::gpu::car_rt_hit

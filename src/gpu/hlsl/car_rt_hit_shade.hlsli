@@ -59,6 +59,14 @@ static const uint kMatNoSlot = 0xFFFFFFFFu;
 static const float kMatTintMax = 2.0;
 static const float kConeLodScale = 20.0;
 static const float kEmissiveGain = 3.0;
+static const float kFillShare = 0.2;  // the ambient is at least this share of the sun's colour (car_rt_material_rules.h kFillShare)
+
+// What the last CarHitShade call found out, for the census (car_rt_hit_rules.h census::kLit, kShadow, kAway, kGlow): the hit's class, N.L, the sun's visibility and the night factor
+// where it glows (0 where it does not).
+static uint gCarHitClass = 0u;
+static float gCarHitNdl = 0.0;
+static float gCarHitVisible = 1.0;
+static float gCarHitGlow = 0.0;
 
 // The class's own numbers where the draw's constants say nothing (car_rt_material_rules.h kDefaults: none, paint, glass, tyre, chrome, light, interior, other).
 static const float kClassFresnelMin[8] = {0.04, 0.05, 0.04, 0.02, 0.70, 0.04, 0.02, 0.04};
@@ -418,7 +426,12 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
             visible = min(visible, CarMatSunVisible(hit + normal * (0.004 + 0.002 * hit.z), toSun, f.shadowReach));
         }
     }
-    const float3 light = f.ambient * (f.ambientGain * hemisphere) + f.sun * (ndl * visible);
+    const float3 fill = max(f.ambient, f.sun * kFillShare);
+    const float3 light = fill * (f.ambientGain * hemisphere) + f.sun * (ndl * visible);
+    gCarHitClass = m.cls;
+    gCarHitNdl = ndl;
+    gCarHitVisible = visible;
+    gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;
 
     // the reflection: the environment map at the reflected direction, by the fresnel
     const float3 reflected = reflect(direction, normal);

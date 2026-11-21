@@ -313,6 +313,10 @@ class GPUSettings final : public rex::SettingOwner {
     "fresnel, so that a car beside yours reads sharp in its paint (the way a clear coat does) on top of the glossy base. -1 (the default): by the graphics card's class (on the High class, off on the Mid class); "
     "0 off; above 0 on at that strength (1 is the High class's). Live.", rex::kDebugOnly, rex::Range{-1.0, 4.0});
 
+  REX_SETTING(bool, mcla_gpu_car_rt_hit_calibrate, true, "Debug (the fix's own switch): the shaded colour of another car's hidden parts is brought to the game's own exposure: where the reflection ray hits a part of another car's paint that the "
+    "camera sees, the pass also shades it by its model and compares the brightness with the game's colour there, and the shading's gain follows (about a window of twenty frames: it follows the hour). Off: the model's own "
+    "light, which does not follow the hour. The census line in the log ([car rt refl] hits) says the difference either way. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_car_rt_hit_cascade, true, "Debug: the shaded hit on another car also reads the game's own sun shadow map (its cascades) at the point, so that the reflected car stands in the light of the scene: the shade of buildings, trees "
     "and bridges falls on it as it falls on the road. Off: only the cars' own shadows (mcla_gpu_car_rt_hit_shadow). Needs the volumetric light on (it reads the cascades the game draws). Live.", rex::kDebugOnly);
 
@@ -1553,6 +1557,7 @@ inline auto& mcla_gpu_car_rt_hit_ambient = g_gpu.mcla_gpu_car_rt_hit_ambient;
 inline auto& mcla_gpu_car_rt_hit_spec = g_gpu.mcla_gpu_car_rt_hit_spec;
 inline auto& mcla_gpu_car_rt_hit_reach = g_gpu.mcla_gpu_car_rt_hit_reach;
 inline auto& mcla_gpu_car_rt_clearcoat = g_gpu.mcla_gpu_car_rt_clearcoat;
+inline auto& mcla_gpu_car_rt_hit_calibrate = g_gpu.mcla_gpu_car_rt_hit_calibrate;
 inline auto& mcla_gpu_car_rt_hit_cascade = g_gpu.mcla_gpu_car_rt_hit_cascade;
 inline auto& mcla_gpu_car_rt_masks = g_gpu.mcla_gpu_car_rt_masks;
 inline auto& mcla_gpu_car_rt_opp_refl = g_gpu.mcla_gpu_car_rt_opp_refl;

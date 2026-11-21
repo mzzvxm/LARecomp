@@ -14,6 +14,7 @@
 #include <rex/logging/log_category.h>
 
 #include "ao.h"
+#include "car_rt_hit_rules.h"
 #include "car_rt_refl_rules.h"
 #include "descriptors.h"
 #include "device.h"
@@ -884,7 +885,8 @@ void CarRtScene::BuildMaterialRows(const car_frame::Frame& frame, bool flip_z, c
   in.light = frame.light;
   in.tuning.enabled = larecomp::settings::mcla_gpu_car_rt_hit_shading.Get();
   in.tuning.shadow = larecomp::settings::mcla_gpu_car_rt_hit_shadow.Get();
-  in.tuning.gain = float(larecomp::settings::mcla_gpu_car_rt_hit_gain.Get());
+  // the gain is the setting's times the exposure the reflection pass measured against the history's own colours (car_rt_hit_rules.h census::; 1 until it has, and with the calibration off)
+  in.tuning.gain = float(larecomp::settings::mcla_gpu_car_rt_hit_gain.Get()) * car_rt_hit::census::GainOf(hit_stops_);
   in.tuning.ambient = float(larecomp::settings::mcla_gpu_car_rt_hit_ambient.Get());
   in.tuning.spec = float(larecomp::settings::mcla_gpu_car_rt_hit_spec.Get());
   in.tuning.cascade = larecomp::settings::mcla_gpu_car_rt_hit_cascade.Get();

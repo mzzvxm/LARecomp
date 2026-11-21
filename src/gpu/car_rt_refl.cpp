@@ -108,10 +108,33 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   }
 }
 
+bool CarRtRefl::MakeStatsBuffers(Device& device) {
+  namespace census = car_rt_hit::census;
+  stats_ = device.CreateBuffer(plume::RenderBufferDesc::DefaultBuffer(census::kBytes, plume::RenderBufferFlag::STORAGE | plume::RenderBufferFlag::UNORDERED_ACCESS), "car rt refl stats");
+  stats_zero_ = device.CreateBuffer(plume::RenderBufferDesc::UploadBuffer(census::kBytes), "car rt refl stats zero");
+  stats_readback_ = device.CreateBuffer(plume::RenderBufferDesc::ReadbackBuffer(census::kBytes), "car rt refl stats readback");
+  if (!stats_ || !stats_zero_ || !stats_readback_) {
+    return false;
+  }
+  const plume::RenderRange no_read(0, 0);
+  void* mapped = stats_zero_->map(0, &no_read);
+  if (!mapped) {
+    return false;
+  }
+  std::memset(mapped, 0, census::kBytes);
+  stats_zero_->unmap(0, nullptr);
+  return true;
+}
+
 bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtScene& scene) {
+  if (!MakeStatsBuffers(device)) {
+    REXLOG_ERROR("{} the census's buffers could not be made", kPrefix);
+    return false;
+  }
   output_builder_.begin();
   output_builder_.addReadWriteTexture(0);  // u0: the image the pass writes
   output_builder_.addReadWriteTexture(1);  // u1: the aux image (hit distance, instance, N.V) for the denoise
+  output_builder_.addReadWriteByteAddressBuffer(2);  // u2: the census's counters (car_rt_hit_rules.h census::)
   output_builder_.end();
 
   plume::RenderPipelineLayoutBuilder builder;
@@ -171,6 +194,11 @@ void CarRtRefl::Shutdown() {
   trace_set_ = OutputSet{};
   first_set_ = OutputSet{};
   final_set_ = OutputSet{};
+  stats_.reset();
+  stats_zero_.reset();
+  stats_readback_.reset();
+  stats_busy_ = false;
+  ++stats_generation_;
   pipeline_.reset();
   shader_.reset();
   layout_.reset();
@@ -302,6 +330,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   if (!pipeline || !EnsureOutput(history.width, history.height)) {
     return false;
   }
+  scene_->SetHitStops(HitStops());  // the next frame's material rows carry the exposure
   const float self_reach = car_rt_refl::ClampedLength(float(larecomp::settings::mcla_gpu_car_selfrefl_rt_length.Get()));
   const uint32_t parts = uint32_t(std::clamp<int32_t>(larecomp::settings::mcla_gpu_car_selfrefl_rt_parts.Get(), 1, int32_t(car_rt_refl::kPartAll)));
   const float gloss = car_rt_refl::ClampedGloss(float(larecomp::settings::mcla_gpu_car_selfrefl_rt_gloss.Get()));
@@ -334,7 +363,9 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.slots[0] = history.slot;
   push.slots[1] = parts;
   push.slots[2] = chrome_others ? car_rt_refl::kPrimaryTraceParts : car_rt_refl::kPrimaryParts;
-  push.slots[3] = car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays);
+  // A stats frame (car_rt_hit_rules.h census::): the shader counts what became of every hit, and the host reads the counters back (ProcessStats).
+  const bool stats_frame = stats_ && stats_readback_ && !stats_busy_ && car_rt_hit::census::StatsDue(info.frame, stats_last_frame_, stats_ever_);
+  push.slots[3] = car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame);
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
   push.image[2] = float(info.render_width);
@@ -370,6 +401,12 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   };
 
   pass_timing_->Mark(list, "car rt refl");
+  if (stats_frame) {
+    // The counters start at zero (the buffer's last state is the compute stage's, see below).
+    list->barriers(Stage::COPY, plume::RenderBufferBarrier(stats_.get(), plume::RenderBufferAccess::WRITE));
+    list->copyBufferRegion(plume::RenderBufferReference(stats_.get(), 0), plume::RenderBufferReference(stats_zero_.get(), 0), car_rt_hit::census::kBytes);
+    list->barriers(Stage::COMPUTE, plume::RenderBufferBarrier(stats_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE));
+  }
   // The history is read by a compute shader here (and by the paint's pixel shaders later): a layout both can read. The images are written
   // as storage images; the one the paint reads is read by its pixel shaders afterwards.
   transition(Stage::GRAPHICS_AND_COMPUTE, {{&history, Layout::SHADER_READ}});
@@ -403,6 +440,16 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     opponents.tan_y = info.tan_y;
     opponents.frame = info.frame;
     opp_.Record(opponents);
+  }
+  if (stats_frame) {
+    // The counters go to the readback once both dispatches are done; the buffer goes back to the state the pass's descriptor names it in.
+    list->barriers(Stage::COPY, plume::RenderBufferBarrier(stats_.get(), plume::RenderBufferAccess::READ));
+    list->copyBufferRegion(plume::RenderBufferReference(stats_readback_.get(), 0), plume::RenderBufferReference(stats_.get(), 0), car_rt_hit::census::kBytes);
+    list->barriers(Stage::COMPUTE, plume::RenderBufferBarrier(stats_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE));
+    stats_busy_ = true;
+    stats_ever_ = true;
+    stats_last_frame_ = info.frame;
+    frames_->RetireAction([this, frame = info.frame, generation = stats_generation_] { ProcessStats(frame, generation); });
   }
 
   result_in_scratch_ = false;
@@ -499,7 +546,7 @@ bool CarRtRefl::EnsureOutput(uint32_t width, uint32_t height) {
   if (aux_.texture.get() != aux_before) {
     RetireSet(trace_set_);
   }
-  if (!EnsureSet(trace_set_, output_builder_, image_, &aux_, "car rt refl output set")) {
+  if (!EnsureSet(trace_set_, output_builder_, image_, &aux_, "car rt refl output set", stats_.get())) {
     ReleaseImage();
     return false;
   }
@@ -531,20 +578,23 @@ bool CarRtRefl::EnsureDenoiseImages(uint32_t width, uint32_t height) {
 }
 
 bool CarRtRefl::EnsureSet(OutputSet& out, plume::RenderDescriptorSetBuilder& builder, const HostImage& first, const HostImage* second,
-                          const char* name) {
+                          const char* name, const plume::RenderBuffer* stats) {
   const plume::RenderTexture* first_texture = first.texture.get();
   const plume::RenderTexture* second_texture = second ? second->texture.get() : nullptr;
   if (out.set && out.first == first_texture && out.second == second_texture) {
     return true;
   }
   RetireSet(out);
-  out.set = device_->CreateDescriptorSet(builder, second ? 2u : 1u, 0, name);
+  out.set = device_->CreateDescriptorSet(builder, stats ? 3u : (second ? 2u : 1u), 0, name);
   if (!out.set) {
     return false;
   }
   out.set->setTexture(0, first_texture, plume::RenderTextureLayout::GENERAL, first.view.get());
   if (second) {
     out.set->setTexture(1, second_texture, plume::RenderTextureLayout::GENERAL, second->view.get());
+  }
+  if (stats) {
+    out.set->setBuffer(2, stats, car_rt_hit::census::kBytes);
   }
   out.first = first_texture;
   out.second = second_texture;
@@ -595,6 +645,46 @@ uint64_t CarRtRefl::HeldBytes() const {
     bytes += held->texture ? TextureBytes(held->width, held->height, 1, held->format) : 0;
   }
   return bytes;
+}
+
+float CarRtRefl::HitStops() const { return larecomp::settings::mcla_gpu_car_rt_hit_calibrate.Get() ? hit_stops_ : 0.0f; }
+
+// A stats frame's counters (car_rt_hit_rules.h census::): added to the window, the exposure moved when enough paint samples have come, a log line every kLogEveryStats frames (and for the
+// first). The counters are one frame's (zeroed before it), read back after the GPU finished it.
+void CarRtRefl::ProcessStats(uint64_t frame, uint64_t generation) {
+  namespace census = car_rt_hit::census;
+  stats_busy_ = false;
+  if (generation != stats_generation_ || !stats_readback_) {
+    return;
+  }
+  const void* mapped = stats_readback_->map();
+  if (!mapped) {
+    REXLOG_ERROR("{} the census of frame {}: the readback could not be mapped", kPrefix, frame);
+    return;
+  }
+  uint32_t words[census::kWords];
+  std::memcpy(words, mapped, sizeof(words));
+  stats_readback_->unmap();
+  ++stats_frames_;
+  census::Add(&window_, words);
+  ++window_frames_;
+  const bool calibrating = larecomp::settings::mcla_gpu_car_rt_hit_calibrate.Get();
+  // The exposure: the paint samples of the frames since it last moved; when there are enough, the gain moves to cancel the difference the model (with the gain in force) had to the history.
+  cal_count_ += words[census::kCalCount];
+  cal_seen_ += words[census::kCalSeen];
+  cal_model_ += words[census::kCalModel];
+  float residual = 0.0f;
+  if (census::CalibrationStops(cal_count_, cal_seen_, cal_model_, &residual)) {
+    if (calibrating) {
+      hit_stops_ = census::NextStops(hit_stops_, residual);
+    }
+    cal_count_ = cal_seen_ = cal_model_ = 0;
+  }
+  if (stats_frames_ == 1 || stats_frames_ % census::kLogEveryStats == 0) {
+    REXLOG_INFO("{} hits, frame {}: {}", kPrefix, frame, census::Text(window_, window_frames_, hit_stops_, calibrating));
+    window_ = census::Totals{};
+    window_frames_ = 0;
+  }
 }
 
 std::string CarRtRefl::CensusText() {
