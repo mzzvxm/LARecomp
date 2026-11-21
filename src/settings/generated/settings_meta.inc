@@ -475,6 +475,7 @@
 {"mcla_gpu_local_lights_sources", "MCLA/GPU"},
 {"mcla_gpu_local_lights_ab", "MCLA/GPU"},
 {"mcla_gpu_local_lights_gain", "MCLA/GPU"},
+{"mcla_gpu_local_lights_car_gain", "MCLA/GPU"},
 {"mcla_gpu_vram_budget_mb", "MCLA/GPU"},
 {"mcla_gpu_vram_log", "MCLA/GPU"},
 {"mcla_gpu_vsync", "MCLA/GPU"},

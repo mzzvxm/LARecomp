@@ -298,6 +298,11 @@ add_executable(larecomp_light_manager_test EXCLUDE_FROM_ALL light_manager_test.c
 # hlsl/local_light.hlsli as C++ and compares it with the twin, and reads the sources it is given: the shaders' CMake lines, the settings, the A/B's hook in mod_lights.cpp) likewise:
 #   cmake --build <dir> --target larecomp_local_lights_test, then run src/gpu/larecomp_local_lights_test <src dir> (exit 0 = passed).
 add_executable(larecomp_local_lights_test EXCLUDE_FROM_ALL local_lights_test.cpp)
+# What feeds that pass besides the frame's lights (local_lights_sources.h, GB-H3: the police light bars, the other cars' head, rear, turn and reverse lamps, the mods' lamps the game's grid is not
+# lighting, the budgets a class and a tier), held to the night probe's recorded points (the player, a racer, three traffic cars), to the lamp picker's score and to the one laws' pixel term;
+# it also reads the sources it is given (the settings, the manager's cars, the mod loader's publish, the pass's wiring):
+#   cmake --build <dir> --target larecomp_local_lights_sources_test, then run src/gpu/larecomp_local_lights_sources_test <src dir> (exit 0 = passed).
+add_executable(larecomp_local_lights_sources_test EXCLUDE_FROM_ALL local_lights_sources_test.cpp)
 # The vehicles' light points, all 19 kinds (light_points.h: the hook's decoder and the table keyed by the light object; car_lights.h: the cars, their frames, sides, directions, bits and levels,
 # the omni lights the lamps make, the census line; mod_light_source.h: a mod's lamps as candidates) held to the night probe's recorded points (the player, two racers, three traffic cars) likewise:
 #   cmake --build <dir> --target larecomp_car_lights_test, then run src/gpu/larecomp_car_lights_test (exit 0 = passed).

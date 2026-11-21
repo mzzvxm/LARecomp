@@ -11,6 +11,11 @@
 // the roles of a game-lit lamp: volume, shadow and RT, no surface ADD because the grid already lights the surface), at most `max_out` of them, the nearest by the lamp picker's own score.
 // A lamp outside the city's rectangle is not in the game's per-frame list either (the list is the city's), so these are the only lamps there: LIGHT-UNIFY C14.
 //
+// ALL THE MODS' SETS (GB-H3, LIGHT-UNIFY C14). The set above is the grid the camera is OVER: a lamp of a mod the camera is not over (it is outside that mod's rectangle: the city's grid, or none
+// where the city has none, is what the shaders read there) is lit by NOTHING, however near the camera it is. The deferred local light pass (local_lights_sources.h) can light such a lamp
+// without any grid, so mod_lights.cpp also publishes every set it built (`PublishBuilt`, when the city's lights load) and the pass takes the lamps of the sets the camera is not over:
+// the lamps the game is not lighting. The set the camera is over stays the game's grid's (the pass takes it only in the lamp A/B's pass mode, where the grid is built with it off).
+//
 // Header only, pure (no guest, no renderer, no SDK): car_lights_test.cpp checks it.
 // ===========================================================================
 
@@ -52,6 +57,9 @@ struct Set {
 
 // The set of the grid the camera is over, or null (over the city, or `mod_lights` off): published by mod_lights.cpp's SelectGrid, read by the manager. The generation changes with every
 // publish, so a reader can tell that the set it holds is the old one.
+using SetPtr = std::shared_ptr<const Set>;
+using BuiltSets = std::shared_ptr<const std::vector<SetPtr>>;
+
 class Feed {
  public:
   void Publish(std::shared_ptr<const Set> set) {
@@ -65,9 +73,22 @@ class Feed {
     return set_;
   }
 
+  // Every set the mod loader built (the same objects Publish hands out, so a reader tells the one the camera is over by pointer): replaced whole when the city's lights load; empty when
+  // there is no mod grid or `mod_lights` is off.
+  void PublishBuilt(std::vector<SetPtr> sets) {
+    auto list = std::make_shared<const std::vector<SetPtr>>(std::move(sets));
+    std::lock_guard<std::mutex> guard(lock_);
+    built_ = std::move(list);
+  }
+  BuiltSets Built() const {
+    std::lock_guard<std::mutex> guard(lock_);
+    return built_;
+  }
+
  private:
   mutable std::mutex lock_;
   std::shared_ptr<const Set> set_;
+  BuiltSets built_;
   uint64_t generation_ = 0;
 };
 

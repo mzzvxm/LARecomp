@@ -103,6 +103,17 @@ class LightManager {
   bool active() const { return active_; }
   // The frame as it is now. Valid on the render thread between BeginFrame and OnPresent (the frame is complete once the volume has filled).
   const larecomp::gpu::LightFrame& Frame() const { return collector_.frame(); }
+  // The cars' lamps as the last present's poll made them (car_lights.h; GB-H3's police, head and rear lamps read them): up to eight cars, the player's first and then the nearest to the reference,
+  // one frame old when the pass reads them at the trigger. Empty while the manager is not running.
+  const larecomp::gpu::car_lights::CarLightsFrame& Cars() const { return cars_.Frame(); }
+  // The world point the cars are ranked by (the camera): a consumer of Cars() gives its own at its trigger and the poll at the present that follows uses it; without one the cars are ranked by
+  // their key and a police car can be one of those dropped past eight. Cleared with the manager.
+  void SetCarReference(const double xyz[3]) {
+    for (int i = 0; i < 3; ++i) {
+      car_reference_[i] = xyz[i];
+    }
+    have_car_reference_ = true;
+  }
 
  private:
   struct Window {
@@ -144,6 +155,8 @@ class LightManager {
   // the cars' lights (LU-7): the source polls the hook's table once a frame; `car_frames_` is the renderer's cars (none yet); `point_lights_` the scratch of the police point lights the lamps make
   larecomp::gpu::car_lights::CarLightsSource cars_;
   std::vector<larecomp::gpu::car_lights::FrameIn> car_frames_;
+  double car_reference_[3] = {0.0, 0.0, 0.0};  // SetCarReference
+  bool have_car_reference_ = false;
   std::vector<larecomp::gpu::Light> point_lights_;
   uint32_t cars_now_ = 0, car_lamps_on_ = 0, car_point_lights_ = 0;
 

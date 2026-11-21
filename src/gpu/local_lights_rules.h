@@ -14,7 +14,9 @@
 //
 // WHICH LIGHTS. mcla_gpu_local_lights_sources (a mask): bit 0 the frame's surface lights (LightFrame: the lights that may add surface light and that the game's own shaders do not already
 // light with; today the headlight rig's, which ALSO have the forward headlight stage: GB-H2's A/B, not for a clean look), bit 1 a test lamp 8 m ahead of the camera and 4.5 m up. The lamps the
-// A/B hands over (below) are in the pass whatever the mask says. The game's own lamps (kLightFlagGameLit) are never taken from the frame: its grid lights them.
+// A/B hands over (below) are in the pass whatever the mask says. The game's own lamps (kLightFlagGameLit) are never taken from the frame: its grid lights them. GB-H3's bits 2 to 5 (the police
+// light bars, the head lamps of the cars the forward stage does not light, the cars' rear lamps, the mods' lamps outside their grid) and their budgets are local_lights_sources.h's; the
+// selection of all of it is its SelectPassLights, which starts from the SelectLights below.
 //
 // THE LAMP A/B (mcla_gpu_local_lights_ab, restart): ONE lamp through the game's grid and through the pass, the same lamp in the same place on the same surfaces, so the two pictures differ
 // only by what the two paths do with it. The route is the mod loader's second light grid (mod_lights.cpp): while the camera is over a mod's rectangle the shader globals point at the mod's
@@ -65,10 +67,35 @@ inline constexpr uint32_t kBufferAlloc = (kBufferBytes + 255u) & ~255u;  // an u
 inline constexpr uint32_t kFlagMaterial = 1u << 0;    // RT3 holds this frame's class: the pass skips the classes that take no light
 inline constexpr uint32_t kFlagOcclusion = 1u << 1;   // OcclusionInfo was read: the height factor is applied
 
-// The sources mask of mcla_gpu_local_lights_sources.
+// The sources mask of mcla_gpu_local_lights_sources. Bits 0 and 1 are GB-H1's; bits 2 to 5 are GB-H3's (local_lights_sources.h makes their lights and holds their budgets): the police light bars,
+// the headlights of the cars the forward headlight stage does not light, the cars' brake / tail / turn / reverse lamps, and the mods' lamps the game's grid is not lighting.
 inline constexpr uint32_t kSourceFrame = 1u << 0;
 inline constexpr uint32_t kSourceTest = 1u << 1;
-inline constexpr uint32_t kSourceMask = kSourceFrame | kSourceTest;
+inline constexpr uint32_t kSourcePolice = 1u << 2;
+inline constexpr uint32_t kSourceHeadLamps = 1u << 3;
+inline constexpr uint32_t kSourceRearLamps = 1u << 4;
+inline constexpr uint32_t kSourceMod = 1u << 5;
+inline constexpr uint32_t kSourceMask = kSourceFrame | kSourceTest | kSourcePolice | kSourceHeadLamps | kSourceRearLamps | kSourceMod;
+// The sources that need the cars' light points (the manager's car lights source).
+inline constexpr uint32_t kSourceCars = kSourcePolice | kSourceHeadLamps | kSourceRearLamps;
+// What SelectLights (below) reads: the frame's own lights and the test lamp.
+inline constexpr uint32_t kSourceFrameAndTest = kSourceFrame | kSourceTest;
+
+// Where a light of the pass came from, for the budgets and the log lines (GB-H3). kFrame: the frame's surface lights (the rig's headlights today); kHandedOver: the lamp A/B's mod lamps and the
+// test lamp; the others are local_lights_sources.h's classes.
+enum class SourceClass : uint8_t { kFrame = 0, kHandedOver, kPolice, kHeadLamps, kRearLamps, kMod };
+inline constexpr uint32_t kSourceClassCount = 6;
+inline constexpr const char* SourceClassName(SourceClass c) {
+  switch (c) {
+    case SourceClass::kFrame: return "frame";
+    case SourceClass::kHandedOver: return "handed over";
+    case SourceClass::kPolice: return "police";
+    case SourceClass::kHeadLamps: return "head lamps";
+    case SourceClass::kRearLamps: return "rear lamps";
+    case SourceClass::kMod: return "mod lamps";
+  }
+  return "?";
+}
 
 // mcla_gpu_local_lights_ab.
 enum class Ab : uint8_t { kGrid = 0, kNowhere = 1, kPass = 2 };
@@ -359,6 +386,9 @@ struct Selection {
   uint32_t from_frame = 0;   // taken from the frame
   uint32_t from_extra = 0;   // handed over (the A/B lamps, the test lamp)
   uint32_t dropped = 0;      // wanted and over the budget
+  // GB-H3 (local_lights_sources.h SelectPassLights): the lights taken from each class (SourceClass) and the wanted ones it cut for its class budget or the pass's 32.
+  std::array<uint32_t, kSourceClassCount> from_class{};
+  std::array<uint32_t, kSourceClassCount> cut_class{};
 };
 
 // The lights of the pass: the frame's surface lights in the frame's own ranking (the surface role's, best first; the slots in order where the frame has no ranking) when
@@ -393,6 +423,8 @@ inline Selection SelectLights(const LightFrame& frame, uint32_t sources, const L
   for (uint32_t i = 0; i < extra_count; ++i) {
     add(extra[i], false);
   }
+  s.from_class[size_t(SourceClass::kFrame)] = s.from_frame;
+  s.from_class[size_t(SourceClass::kHandedOver)] = s.from_extra;
   return s;
 }
 

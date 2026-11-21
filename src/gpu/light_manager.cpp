@@ -99,6 +99,7 @@ void LightManager::Reset() {
   list_seq_ = 0;
   cars_.SetEnabled(false);  // the hook notes nothing for the manager while it is not running (light_points.h Want)
   car_frames_.clear();
+  have_car_reference_ = false;
   point_lights_.clear();
   cars_now_ = car_lamps_on_ = car_point_lights_ = 0;
   active_ = false;
@@ -261,9 +262,10 @@ void LightManager::OnPresent() {
 }
 
 // The cars' light points of this frame (LU-7's CarLightsSource::Poll, which car_lights.h says the manager calls once a frame): the points the hook noted within the last 100 ms, made into
-// cars. Counted for the census; the police point lights are what MakePointLights hands the picker (LU-3), made here only to be counted. Nothing goes into the LightFrame.
+// cars. Counted for the census; the police point lights are what MakePointLights hands the picker (LU-3), made here only to be counted. Nothing goes into the LightFrame: a consumer of the
+// cars (the deferred local light pass, GB-H3) reads them through Cars(), and ranks them by the reference it gave (SetCarReference).
 void LightManager::PollCars() {
-  const larecomp::gpu::car_lights::CarLightsFrame& frame = cars_.Poll(car_frames_, nullptr);
+  const larecomp::gpu::car_lights::CarLightsFrame& frame = cars_.Poll(car_frames_, have_car_reference_ ? car_reference_ : nullptr);
   cars_now_ = frame.count;
   car_lamps_on_ = 0;
   point_lights_.clear();
