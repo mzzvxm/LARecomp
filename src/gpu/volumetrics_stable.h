@@ -42,7 +42,11 @@
 //   under 0.8: CheckSceneBite in volumetrics_stable_test.cpp), and the same holds for the compensation. What those two takes measure is the 8-bit floor: dolly-heads' mean
 //   second difference is 0.0085 of one level of the x32 picture, the beam's total light fluctuates 0.05 per cent frame to frame and its centroid 0.09 pixel, and the share of
 //   the metric that is a band's edge moving one level is 89 to 92 per cent (dolly-heads) and 56 (pan-heads, where the picture's own depth edges, 37 per cent of the sum, are
-//   the rest). The rule and the compensation are for a beam that moves against the camera: a passing car (scenes\vol-hl-pass.scene).
+//   the rest). By the picture's light in pan-heads (pixels that are not at an edge, new / first version): the dim haze (2 to 16 levels of x32, 60 per cent of the lit pixels) is 1.18
+//   to 1.32 (the camera pans one pixel a frame, so the haze's gradient drifts across the 8-bit steps: every pixel that crosses one flips; the ratio is the steps' phase), the beam
+//   and the halos (32 levels and up) 0.56 and 0.31. The rule and the compensation are for a beam that moves against the camera: a passing car (scenes\vol-hl-pass.scene).
+//   The haze's thickness read at a random place of the voxel is not it either: in a simulation of the inject's value noise (50 m features, 0.35 deep) along a drive at 12 m/s the
+//   slice's value after the history jitters 0.02 per cent at 19 m and 0.09 at 97 m (a throwaway simulation, not kept).
 //
 //   WHAT THE FIRST RUN'S NUMBERS WERE (VOL-STABLE-2, from the takes, no game run): the chase's and the headlight-only flicker that the first run kept were mostly the test
 //   and the view, not the volume. (i) The chase scene's camera is not smooth: the pole's image in the PICTURE take moves 0.25 to 1.1 pixels a frame (mean 0.69) in the same
