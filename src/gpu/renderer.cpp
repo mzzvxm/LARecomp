@@ -181,6 +181,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     gbuffer_.Initialize(passes_, edram_, pass_timing_);  // and the G-buffer's sidecar (gbuffer.h): made on the first draw that carries it
     screen_.Initialize(passes_, edram_, pass_timing_);  // and the shared screen products (screen_shared.h): the AO's depth chain published, the Hi-Z, made only while wanted
     ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_);  // and the screen-space reflections (ssr.h): the layout and the shaders, the pipelines only when the setting is on
+    rr_guides_.Initialize(device_, frames_, heap_, passes_, pass_timing_);  // and DLSS Ray Reconstruction's guide pass (rr_guides.h): the layouts and shaders; the pipelines only when it is first wanted
+    rr_guides_.SetGBuffer(&gbuffer_);
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);
@@ -286,6 +288,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       car_rt_.SetService(&rt_scene_, &city_hit_);
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);
       ao_.SetCityRtShadow(&city_shadow_);
+      // CITY-RT R4: the screen-space reflections' ray traced fallback (ssr_rt.h): the SSR host pass layout with the output set and this scene's ray tracing set; nothing is made where the device cannot trace.
+      ssr_.InitializeRt(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &rt_scene_, &rt_world_);
       // The probe field's integration (gi_integration.h): the field needs M1's structures for its safe range and (G2) its rays.
       gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);
       // The probe field's update (gi_update.h, CITY-RT M3 G2): the rays of the probes and their blend, in the top level the car scene builds. Its pipelines are listed with the precache when the setting is not off at
@@ -367,6 +371,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
     temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_,
                          edram_);
+    temporal_.SetRrGuidePass(&rr_guides_);  // the upscale runs the guide pass where Ray Reconstruction (or a guide view) wants it
     // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.
     fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_,
                    &resize_requested_);
@@ -407,6 +412,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     fg_.Shutdown();
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
+    rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
     rt_world_.Shutdown();  // it holds pointers to the AO, the car frame, the shared products and the city scene (and asked the AO's draw hook for the light): before them (CITY-RT FRAME)
     gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
@@ -597,6 +603,7 @@ void Renderer::Shutdown() {
   // Streamline itself is shut down (temporal_.Shutdown below).
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
+  rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
   rt_world_.Shutdown();  // the same, CITY-RT FRAME (rt_world_frame.h)
   gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
@@ -1785,7 +1792,7 @@ void Renderer::ReportCityCensus() {
   if (presented_ % kCityCensusPresents != 0) {
     return;
   }
-  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + gi_update_.CensusText();
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + gi_update_.CensusText() + ssr_.RtCensusText();
   if (!text.empty()) {
     REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
   }

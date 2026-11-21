@@ -22,12 +22,24 @@
 // that faces away, the difference is 0 and the game's reflection stays alone (no seam: the fallback IS the colour that is there). The rgb is then signed. Pixels of other classes keep the plain
 // radiance (the game's environment map under them stays, only faded: its dual paraboloid mapping is the game's own and not reproduced here).
 //
-// Compilations: SSR_MS 0 / 1 (ssr_trace_ps, ssr_trace_ms_ps).
+// CITY-RT R4, SSR_RT 1 (ssr_trace_rt_ps, ssr_trace_rt_ms_ps): the same pass for a frame the ray traced fallback follows (ssr_rt.h). It writes a second target, the pixel's CONFIDENCE (hlsl/ssr_rt_common.hlsli: r the class
+// group, g the share of the reflection that is the picture's: the mean of its rays' fades), which the fallback reads to find the pixels the picture could not speak for. The first target is what it always
+// was; the plain compilations do not contain any of this (their code is the same as before the fallback).
+//
+// Compilations: SSR_MS 0 / 1 (ssr_trace_ps, ssr_trace_ms_ps); with SSR_RT 1 the same two (ssr_trace_rt_ps, ssr_trace_rt_ms_ps).
+
+#ifndef SSR_RT
+#define SSR_RT 0
+#endif
 
 #include "ssr_pass.hlsli"
 #include "ssr_trace.hlsli"
+#if SSR_RT
+#include "ssr_rt_common.hlsli"
+static float2 g_confidence = float2(0.0f, 0.0f);   // the second target: left at 0 by every early return (nothing traced here)
+#endif
 
-float4 main(float4 position : SV_Position) : SV_Target {
+float4 SsrTraceBody(float4 position) {
   const int2 pix = int2(position.xy);
   const int2 render = SsrRender();
   const int2 ssr = SsrSize();
@@ -57,6 +69,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (!(gain > 0.0f) || smoothness < SsrF(SSR_W_MIN_SMOOTH)) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
   }
+#if SSR_RT
+  // the class group the fallback may trace for this pixel: none where the term the apply takes is under a tenth of a whole one (a road just wet enough to cross the smoothness floor)
+  const uint rt_group = SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH)) >= kSsrRtMinRamp ? SsrRtGroupOf(surface.cls) : kSsrRtGroupNone;
+  float conf_sum = 0.0f;
+#endif
   const float tan_x = SsrF(SSR_W_TAN_X);
   const float tan_y = SsrF(SSR_W_TAN_Y);
   const float3 pc = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(ssr.x), float(ssr.y), z_block, tan_x, tan_y);
@@ -113,10 +130,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   bool vehicle_hit = false;
   uint vehicle_id = 0u;
   SSR_LOOP for (uint ray = 0u; ray < rays; ++ray) {
-    float3 dir = SsrSampleReflection(n, to_camera, alpha, SsrNoise1(pix.x, pix.y, frame, ray), SsrNoise2(pix.x, pix.y, frame, ray));
-    if (dot(dir, n) < 0.02f) {
-      dir = SsrReflect(n, to_camera);   // a sample that points below the surface: the mirror direction
-    }
+    const float3 dir = SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray);   // (a sample that points below the surface is the mirror direction)
     if (SsrFacingFade(dir.z) <= 0.0f) {
       continue;   // a ray that points back at the camera brings nothing (the screen does not show what is behind the surface it hits): not walked
     }
@@ -153,6 +167,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
       }
     }
     sum += radiance - fallback * conf;
+#if SSR_RT
+    conf_sum += conf;
+#endif
     if (length_to_hit < travelled) {
       travelled = length_to_hit;
       vehicle_hit = is_vehicle;
@@ -165,5 +182,25 @@ float4 main(float4 position : SV_Position) : SV_Target {
     rgb *= cap / peak;
   }
   const float distance_out = clamp(travelled, 0.02f, 60000.0f);
+#if SSR_RT
+  g_confidence = float2(SsrRtGroupOut(rt_group), saturate(conf_sum / float(rays)));
+#endif
   return float4(rgb, SsrPackHit(distance_out, vehicle_hit, vehicle_id));
 }
+
+#if SSR_RT
+struct SsrTraceOut {
+  float4 trace : SV_Target0;
+  float2 confidence : SV_Target1;
+};
+SsrTraceOut main(float4 position : SV_Position) {
+  SsrTraceOut o;
+  o.trace = SsrTraceBody(position);
+  o.confidence = g_confidence;
+  return o;
+}
+#else
+float4 main(float4 position : SV_Position) : SV_Target {
+  return SsrTraceBody(position);
+}
+#endif

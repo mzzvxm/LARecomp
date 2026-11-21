@@ -17,6 +17,15 @@
 // of smoothness above the floor: a road that is just wet enough to cross the floor does not jump to a whole reflection.
 //
 // Compilations: SSR_MS 0 / 1; the pipeline's blend (add, or replace for a view) is the pipeline's.
+//
+// RR-4a, SSR_RAW 1 (ssr_apply_raw_ps; only with SSR_MS 0): the same pass for a frame Ray Reconstruction takes. The accumulation (ssr_temporal_ps) did not run: the image this reads is the TRACE itself, the
+// current frame's one ray a pixel, and Ray Reconstruction is what cleans it. The trace's alpha is the hit (distance and vehicle), not the receiver's depth, so the depth that decides which texels
+// stand for a pixel is the Hi-Z's at the texel (what the accumulation stores there: the receiver's depth); a texel nothing was traced for has alpha 0 in both. Everything else is the plain pass (a
+// debug view makes the frame not raw, ssr_rules.h DecideRaw). The plain compilations do not contain this code.
+
+#ifndef SSR_RAW
+#define SSR_RAW 0
+#endif
 
 #include "ssr_pass.hlsli"
 
@@ -115,10 +124,17 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float wx = (k & 1) != 0 ? f.x : 1.0f - f.x;
     const float wy = (k >> 1) != 0 ? f.y : 1.0f - f.y;
     float w = 0.0f;
+#if SSR_RAW
+    if (t.w != 0.0f) {
+      const float dz = (SsrHizAt(SsrHz(), q.x, q.y) - z) / sigma;
+      w = wx * wy / (1.0f + dz * dz);
+    }
+#else
     if (t.w > 0.0f) {
       const float dz = (t.w - z) / sigma;
       w = wx * wy / (1.0f + dz * dz);
     }
+#endif
     sum += t.xyz * w;
     total += w;
   }

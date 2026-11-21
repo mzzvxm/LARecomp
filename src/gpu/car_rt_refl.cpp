@@ -54,6 +54,9 @@ car_rt_refl::Setting SettingNow() {
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 0); }
 uint64_t DenoiseKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 1); }
+// (variant 2 is the opponents' trace, car_rt_opp_refl.cpp) RR-4b: the raw mode's hit distance pass.
+uint64_t HitKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 3); }
+constexpr const char* kHitName = "car rt refl hit distance (Ray Reconstruction)";
 
 // CarRtReflAvailable()'s answer: set once the layout and the shader exist and the car's structures can be built.
 std::atomic<bool> g_available{false};
@@ -221,6 +224,11 @@ void CarRtRefl::Shutdown() {
   pipeline_.reset();
   shader_.reset();
   layout_.reset();
+  hit_ = HostImage{};
+  hit_set_ = OutputSet{};
+  hit_pipeline_.reset();
+  hit_shader_.reset();
+  hit_ready_ = false;
   denoise_pipeline_.reset();
   denoise_shader_.reset();
   denoise_layout_.reset();
@@ -263,6 +271,45 @@ plume::RenderPipeline* CarRtRefl::DenoisePipeline() {
     REXLOG_ERROR("{} the denoise's pipeline could not be made: the raw trace is read this session", kPrefix);
   }
   return denoise_pipeline_.get();
+}
+
+std::unique_ptr<plume::RenderPipeline> CarRtRefl::MakeHitPipeline() {
+  return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(denoise_layout_.get(), hit_shader_.get(), kGroup, kGroup, 1), kHitName);
+}
+
+plume::RenderPipeline* CarRtRefl::HitPipeline() {
+  if (hit_pipeline_) {
+    return hit_pipeline_.get();
+  }
+  if (!denoise_ready_ || hit_failed_ || !passes_) {
+    return nullptr;  // the denoise's layout is the hit pass's: without it there is no raw mode
+  }
+  if (!hit_shader_) {
+    const HostShaderBlob blob = CarRtReflHitShader();
+    hit_shader_ = passes_->CreateShader(blob.data, blob.size, blob.name);
+    if (!hit_shader_) {
+      hit_failed_ = true;
+      REXLOG_ERROR("{} the hit distance pass's shader could not be made: no raw mode this session", kPrefix);
+      return nullptr;
+    }
+  }
+  HostPrecache& precache = passes_->precache();
+  if (!hit_listed_) {
+    hit_listed_ = true;
+    std::vector<HostPrecache::Item> items;
+    items.push_back({HitKey(), kHitName, [this] { return MakeHitPipeline(); }});
+    precache.AddLive("ray traced car self-reflections: hit distance for Ray Reconstruction", std::move(items));
+    REXLOG_INFO("{} the hit distance pass was asked for (DLSS Ray Reconstruction takes the frame): its pipeline is made in the background, and the raw mode runs from the frame it is done", kPrefix);
+  }
+  if (!precache.Ready(HitKey())) {
+    return nullptr;  // a frame never waits for a compile
+  }
+  hit_pipeline_ = precache.Acquire(HitKey(), kHitName, [this] { return MakeHitPipeline(); });
+  if (!hit_pipeline_) {
+    hit_failed_ = true;
+    REXLOG_ERROR("{} the hit distance pass's pipeline could not be made: no raw mode this session", kPrefix);
+  }
+  return hit_pipeline_.get();
 }
 
 plume::RenderPipeline* CarRtRefl::Pipeline() {
@@ -312,6 +359,7 @@ void CarRtRefl::BeginFrame(bool reflection_on) {
   active_ = false;
   glass_.NewFrame();
   city_.BeginFrame(false);  // the city's want and cell are this frame's: reset until the pass is known to run
+  hit_ready_ = false;
   if (!ready_ || !scene_) {
     return;
   }
@@ -376,7 +424,20 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
 
   // The denoise (car_rt_refl.h DENOISE): the passes this frame, where the setting asks for them, the cone has width, the pipeline is made and
   // the scratch image is there; else the raw trace is what the paint reads.
-  int denoise_passes = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);
+  // RR-4b: in a frame Ray Reconstruction takes it is the denoiser: no filter, and the hit distance pass after the trace. Only where the pass can run (its pipeline made, its image made); a frame
+  // that is asked and cannot is a plain one, as always (logged when the state changes). The pipeline is listed with the host precache only when a frame asks: with the plan not RR it never is.
+  bool raw = false;
+  if (info.raw) {
+    raw_ever_asked_ = true;
+    raw = HitPipeline() != nullptr && info.render_width != 0 && info.render_height != 0 && EnsureHitImage(info.render_width, info.render_height);
+  }
+  if (raw_ever_asked_ && raw_state_logged_ != (raw ? 0u : (info.raw ? 1u : 2u))) {
+    raw_state_logged_ = raw ? 0u : (info.raw ? 1u : 2u);
+    REXLOG_INFO("{} raw mode (DLSS Ray Reconstruction takes the frame): {} (logged when it changes)", kPrefix,
+                raw ? "on: the trace is read as it is (no filter) and its hit distance is written for the guide pass"
+                    : (info.raw ? "asked, not possible yet (the hit distance pass's pipeline or image is not ready): the filter runs as usual" : "not asked: the filter runs as usual"));
+  }
+  int denoise_passes = car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);
   plume::RenderPipeline* denoise = denoise_passes > 0 ? DenoisePipeline() : nullptr;
   if (denoise && !EnsureDenoiseImages(history.width, history.height)) {
     denoise = nullptr;
@@ -544,6 +605,41 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
                   double(TextureBytes(aux_.width, aux_.height, 1, aux_.format)) / (1024.0 * 1024.0));
     }
   }
+  if (raw) {
+    // RR-4b: how far each reflection went, into the image the guide pass reads as the hit distance (hlsl/car_rt_refl_hit_cs.hlsl): from the aux image the trace wrote (this frame's, the opponents'
+    // cars included: they wrote into it too).
+    HitPush hit_push = {};
+    hit_push.slots[0] = aux_.slot;
+    hit_push.image[0] = float(info.render_width);
+    hit_push.image[1] = float(info.render_height);
+    hit_push.image[2] = float(history.width);
+    hit_push.image[3] = float(history.height);
+    hit_push.lens[0] = length;
+    hit_push.lens[1] = float(std::max<uint32_t>(info.divisor, 1));
+    hit_push.lens[2] = car_rt_refl::kRawMissDistance;
+    pass_timing_->Mark(list, "car rt hit");
+    transition(Stage::COMPUTE, {{&aux_, Layout::SHADER_READ}, {&hit_, Layout::GENERAL}});
+    list->setComputePipelineLayout(denoise_layout_.get());
+    list->setComputeDescriptorSet(heap_->texture_set(), kTextureSet);
+    list->setComputeDescriptorSet(hit_set_.set.get(), kOutputSet);
+    list->setPipeline(hit_pipeline_.get());
+    list->setComputePushConstants(0, &hit_push, 0, sizeof(hit_push));
+    list->dispatch((info.render_width + kGroup - 1) / kGroup, (info.render_height + kGroup - 1) / kGroup, 1);
+    transition(Stage::GRAPHICS_AND_COMPUTE, {{&hit_, Layout::SHADER_READ}});
+    hit_ready_ = true;
+    plain_streak_ = 0;
+    if (++raw_passes_ == 1) {
+      REXLOG_INFO("{} the first raw pass (DLSS Ray Reconstruction takes the frame): frame {}, no filter on the {}x{} trace image, the hit distance of its reflections in an R16_FLOAT image of {}x{} "
+                  "({:.1f} MiB) for the guide pass",
+                  kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height,
+                  double(TextureBytes(hit_.width, hit_.height, 1, hit_.format)) / (1024.0 * 1024.0));
+    }
+  } else if (plain_streak_ < car_rt_refl::kRawReleaseAfter) {
+    ++plain_streak_;
+  } else if (hit_.texture) {
+    passes_->ReleaseImage(hit_);  // the raw mode has not been used for a while: the image goes back
+    RetireSet(hit_set_);
+  }
   // What follows is not this pass's: closes its timing segment (PassTiming labels everything up to the next mark).
   pass_timing_->Mark(list, "after car rt refl");
 
@@ -628,6 +724,19 @@ bool CarRtRefl::EnsureOutput(uint32_t width, uint32_t height) {
   return true;
 }
 
+bool CarRtRefl::EnsureHitImage(uint32_t width, uint32_t height) {
+  constexpr plume::RenderTextureFlags kFlags = plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+  const plume::RenderTexture* before = hit_.texture.get();
+  if (!passes_->EnsureImage(hit_, width, height, plume::RenderFormat::R16_FLOAT, "car rt refl hit distance", kFlags)) {
+    RetireSet(hit_set_);
+    return false;
+  }
+  if (hit_.texture.get() != before) {
+    RetireSet(hit_set_);  // a new texture is a new set for it (the old one goes after the lists that name it)
+  }
+  return EnsureSet(hit_set_, denoise_builder_, hit_, nullptr, "car rt refl hit set");
+}
+
 bool CarRtRefl::EnsureDenoiseImages(uint32_t width, uint32_t height) {
   constexpr plume::RenderTextureFlags kFlags = plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
   const plume::RenderTexture* before = scratch_.texture.get();
@@ -703,6 +812,9 @@ void CarRtRefl::ReleaseImage() {
   passes_->ReleaseImage(image_);
   passes_->ReleaseImage(aux_);
   passes_->ReleaseImage(scratch_);
+  passes_->ReleaseImage(hit_);
+  hit_ready_ = false;
+  RetireSet(hit_set_);
   RetireSet(trace_set_);
   RetireSet(first_set_);
   RetireSet(final_set_);
@@ -711,7 +823,7 @@ void CarRtRefl::ReleaseImage() {
 
 uint64_t CarRtRefl::HeldBytes() const {
   uint64_t bytes = 0;
-  for (const HostImage* held : {&image_, &aux_, &scratch_}) {
+  for (const HostImage* held : {&image_, &aux_, &scratch_, &hit_}) {
     bytes += held->texture ? TextureBytes(held->width, held->height, 1, held->format) : 0;
   }
   return bytes + glass_.HeldBytes();
@@ -766,7 +878,7 @@ std::string CarRtRefl::CensusText() {
   return std::format("; ray traced: {} passes since the start ({} in the interval, {} denoised), {} frames wanted but without the car's structures, {} "
                      "waiting for the pipeline",
                      passes_run_, interval, denoise_runs_, no_scene_, not_ready_) +
-         opp_.CensusText() + glass_.CensusText();
+         (raw_ever_asked_ ? std::format("; {} raw (Ray Reconstruction)", raw_passes_) : std::string()) + opp_.CensusText() + glass_.CensusText();
 }
 
 }  // namespace mcla::gpu

@@ -104,6 +104,8 @@ class HostPrecache {
     kGiUpdate = 31,         // GiUpdate: the probe update's trace and blend compute passes (gi_update.h Variant)
     kScreenShared = 23,     // ScreenShared: its Hi-Z pass (screen_shared.h)
     kScreenReflections = 24,  // ScreenReflections: its trace, accumulation and resolve passes (ssr.h)
+    kRrGuides = 31,           // RrGuides: its guide pass (single-sample and multisampled planes) and the debug view's pass (rr_guides.h); 25 to 30 are left for other packages' owners
+    kRtDenoise = 32,          // RtDenoise: a consumer's spatial and temporal compute passes, the consumer's number (0 to 15) << 4 | the stage (rt_denoise.h)
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;

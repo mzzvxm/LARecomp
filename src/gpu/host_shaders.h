@@ -57,6 +57,7 @@
 #include "car_rt_refl_denoise_cs.hlsl.dxil.h"
 #include "car_rt_refl_glass_cs.hlsl.dxil.h"
 #include "car_glass_apply_ps.hlsl.dxil.h"
+#include "car_rt_refl_hit_cs.hlsl.dxil.h"
 #include "car_rt_refl_opp_cs.hlsl.dxil.h"
 #include "car_rt_view_ps.hlsl.dxil.h"
 #include "rt_bench_cs.hlsl.dxil.h"
@@ -117,9 +118,22 @@
 #include "screen_view_ps.hlsl.dxil.h"
 #include "ssr_apply_ms_ps.hlsl.dxil.h"
 #include "ssr_apply_ps.hlsl.dxil.h"
+#include "ssr_apply_raw_ps.hlsl.dxil.h"
+#include "ssr_hit_ps.hlsl.dxil.h"
+#include "ssr_denoise_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_plain_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_plain_temporal_cs.hlsl.dxil.h"
 #include "ssr_temporal_ps.hlsl.dxil.h"
+#include "ssr_rt_select_cs.hlsl.dxil.h"
+#include "ssr_rt_trace_cs.hlsl.dxil.h"
+#include "ssr_rt_trace_ms_cs.hlsl.dxil.h"
 #include "ssr_trace_ms_ps.hlsl.dxil.h"
 #include "ssr_trace_ps.hlsl.dxil.h"
+#include "ssr_trace_rt_ms_ps.hlsl.dxil.h"
+#include "ssr_trace_rt_ps.hlsl.dxil.h"
+#include "rr_guides_cs.hlsl.dxil.h"
+#include "rr_guides_ms_cs.hlsl.dxil.h"
+#include "rr_guides_view_cs.hlsl.dxil.h"
 #include "shafts_add_ps.hlsl.dxil.h"
 #include "shafts_blur_ps.hlsl.dxil.h"
 #include "shafts_sky_ms_ps.hlsl.dxil.h"
@@ -178,6 +192,7 @@
 #include "car_rt_refl_denoise_cs.hlsl.spirv.h"
 #include "car_rt_refl_glass_cs.hlsl.spirv.h"
 #include "car_glass_apply_ps.hlsl.spirv.h"
+#include "car_rt_refl_hit_cs.hlsl.spirv.h"
 #include "car_rt_refl_opp_cs.hlsl.spirv.h"
 #include "car_rt_view_ps.hlsl.spirv.h"
 #include "rt_bench_cs.hlsl.spirv.h"
@@ -238,9 +253,22 @@
 #include "screen_view_ps.hlsl.spirv.h"
 #include "ssr_apply_ms_ps.hlsl.spirv.h"
 #include "ssr_apply_ps.hlsl.spirv.h"
+#include "ssr_apply_raw_ps.hlsl.spirv.h"
+#include "ssr_hit_ps.hlsl.spirv.h"
+#include "ssr_denoise_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_plain_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_plain_temporal_cs.hlsl.spirv.h"
 #include "ssr_temporal_ps.hlsl.spirv.h"
+#include "ssr_rt_select_cs.hlsl.spirv.h"
+#include "ssr_rt_trace_cs.hlsl.spirv.h"
+#include "ssr_rt_trace_ms_cs.hlsl.spirv.h"
 #include "ssr_trace_ms_ps.hlsl.spirv.h"
 #include "ssr_trace_ps.hlsl.spirv.h"
+#include "ssr_trace_rt_ms_ps.hlsl.spirv.h"
+#include "ssr_trace_rt_ps.hlsl.spirv.h"
+#include "rr_guides_cs.hlsl.spirv.h"
+#include "rr_guides_ms_cs.hlsl.spirv.h"
+#include "rr_guides_view_cs.hlsl.spirv.h"
 #include "shafts_add_ps.hlsl.spirv.h"
 #include "shafts_blur_ps.hlsl.spirv.h"
 #include "shafts_sky_ms_ps.hlsl.spirv.h"
@@ -393,15 +421,49 @@ inline HostShaderBlob ScreenColourPixelShader(uint32_t pass) {
 }
 
 // The screen-space reflections (ssr.h, hlsl/ssr_*_ps.hlsl): 0 the trace, 1 the trace over multisampled planes, 2 the accumulation, 3 the resolve into the main colour, 4 the same over a multisampled colour
-// target and planes.
+// target and planes; 5 and 6 (CITY-RT R4) the trace and the multisampled trace with the confidence as a second target, for a frame the ray traced fallback follows (ssr_rt.h); 7 (RR-4a) the resolve that
+// reads the trace itself (the frames DLSS Ray Reconstruction takes: no accumulation), 8 (RR-4a) the pass that writes their hit distance guide.
 inline HostShaderBlob ScreenReflectionsPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ps);
     case 1: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ms_ps);
     case 2: return MCLA_GPU_HOST_SHADER_BLOB(ssr_temporal_ps);
     case 3: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ps);
-    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);
+    case 4: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);
+    case 5: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ps);
+    case 6: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ms_ps);
+    case 7: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_raw_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_hit_ps);
   }
+}
+
+// The ray traced fallback's compute passes (ssr_rt.h, CITY-RT R4): 0 the candidates' tile list, 1 the rays into the city's top level, 2 the same over multisampled planes (inline ray queries: Shader Model 6.5,
+// SPIR-V 1.5 on Vulkan).
+inline HostShaderBlob ScreenReflectionsRtShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_select_cs);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_cs);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_ms_cs);
+  }
+}
+
+// RtDenoise (rt_denoise.h, CITY-RT R6): the screen-space reflections' spatial pass (hlsl/ssr_denoise_spatial_cs.hlsl over plain planes), and the plain-guide compiles of the two stages the other
+// consumers start from (hlsl/rt_denoise_plain_consumer.hlsli). Plain Shader Model 6.0 compute.
+inline HostShaderBlob SsrDenoiseSpatialShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(ssr_denoise_spatial_cs);
+}
+inline HostShaderBlob RtDenoisePlainShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_plain_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_plain_spatial_cs);
+}
+
+// DLSS Ray Reconstruction's guide pass (rr_guides.h, hlsl/rr_guides_cs.hlsl): over planes with one sample, or the host's MSAA level; and its debug view over the upscaler's output
+// (hlsl/rr_guides_view_cs.hlsl). Plain Shader Model 6.0 compute.
+inline HostShaderBlob RrGuidesShader(bool multisampled) {
+  return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(rr_guides_ms_cs) : MCLA_GPU_HOST_SHADER_BLOB(rr_guides_cs);
+}
+
+inline HostShaderBlob RrGuidesViewShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(rr_guides_view_cs);
 }
 
 inline HostShaderBlob PresentPixelShader() {
@@ -640,6 +702,11 @@ inline HostShaderBlob CarRtReflShader() {
 
 inline HostShaderBlob CarRtReflDenoiseShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_denoise_cs);
+}
+
+// RR-4b: the raw mode's hit distance pass (hlsl/car_rt_refl_hit_cs.hlsl), on the denoise's layout.
+inline HostShaderBlob CarRtReflHitShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_hit_cs);
 }
 
 // The opponents' variant of the trace (car_rt_opp_refl.h): hlsl/car_rt_refl_cs.hlsl built with CAR_RT_REFL_OPPONENTS (its own entry point, hlsl/car_rt_refl_opp.hlsli), the same kind as the trace.

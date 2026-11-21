@@ -3,6 +3,7 @@
 #include "temporal_dlss.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -37,6 +38,10 @@
 // GetProcAddress, so none of the SL_API declarations or header helpers is ever called.
 #include <sl.h>
 #include <sl_dlss.h>
+#if defined(LARECOMP_HAS_DLSS_RR)
+// DLSS Ray Reconstruction (perf/DLSS-RR.md): the plugin's options, optimal sizes and state.
+#include <sl_dlss_d.h>
+#endif
 #if defined(LARECOMP_HAS_DLSS_G)
 // DLSS frame generation, and Reflex with the PC latency markers, which it requires.
 // Streamline 2.14's sl_pcl.h reads `#if __cplusplus == 202302L` and then aliases the function
@@ -69,9 +74,12 @@
 #endif
 
 #include "backend.h"
+#include "denoiser_setting.h"
 #include "device.h"
+#include "dlss_rr_rules.h"
 #include "frame.h"
 #include "latency.h"
+#include "rr_guides_rules.h"
 #include "texture_bytes.h"
 #include "vram_budget.h"
 
@@ -82,6 +90,22 @@ namespace {
 
 constexpr const char* kPrefix = "[gpu] dlss:";
 constexpr uint32_t kVendorNvidia = 0x10DE;
+#if defined(LARECOMP_HAS_DLSS_RR)
+// The ids dlss_rr_rules.h pins (and its test checks) are Streamline's own.
+static_assert(rr::kSlFeatureDlssRr == sl::kFeatureDLSS_RR, "Streamline's Ray Reconstruction feature id");
+static_assert(rr::kSlBufferDepth == sl::kBufferTypeDepth && rr::kSlBufferMotionVectors == sl::kBufferTypeMotionVectors &&
+                  rr::kSlBufferScalingInputColor == sl::kBufferTypeScalingInputColor &&
+                  rr::kSlBufferScalingOutputColor == sl::kBufferTypeScalingOutputColor,
+              "Streamline's Super Resolution buffer ids");
+static_assert(rr::kSlBufferNormals == sl::kBufferTypeNormals && rr::kSlBufferRoughness == sl::kBufferTypeRoughness &&
+                  rr::kSlBufferAlbedo == sl::kBufferTypeAlbedo && rr::kSlBufferSpecularAlbedo == sl::kBufferTypeSpecularAlbedo &&
+                  rr::kSlBufferSpecularMotionVectors == sl::kBufferTypeSpecularMotionVectors &&
+                  rr::kSlBufferNormalRoughness == sl::kBufferTypeNormalRoughness &&
+                  rr::kSlBufferColorBeforeTransparency == sl::kBufferTypeColorBeforeTransparency &&
+                  rr::kSlBufferSpecularHitDistance == sl::kBufferTypeSpecularHitDistance &&
+                  rr::kSlBufferResponsivityMask == sl::kBufferTypeResponsivityMask,
+              "Streamline's Ray Reconstruction buffer ids");
+#endif
 // Warnings and errors of Streamline that go to the game's log (its information lines only go to its
 // own log file, sl.log).
 constexpr uint32_t kMaxSlLogLines = 200;
@@ -103,6 +127,19 @@ constexpr plume::RenderTextureFlags kColorFlags = plume::RenderTextureFlag::NONE
 constexpr plume::RenderTextureFlags kDepthMotionFlags = plume::RenderTextureFlag::RENDER_TARGET;
 constexpr plume::RenderTextureFlags kOutputFlags =
     plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+// Ray Reconstruction's guide images (rr_guides.cpp makes the frame's own with these flags and the formats of rr_guides_rules.h SpecOf): the warm-up makes the same ones.
+constexpr plume::RenderTextureFlags kGuideFlags =
+    plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+constexpr plume::RenderFormat WarmGuideFormat(rr_guides::Guide guide) {
+  switch (rr_guides::SpecOf(guide).format) {
+    case rr::Format::kRgba16Float: return plume::RenderFormat::R16G16B16A16_FLOAT;
+    case rr::Format::kR16Float: return plume::RenderFormat::R16_FLOAT;
+    default: break;
+  }
+  return plume::RenderFormat::UNKNOWN;
+}
+// What the player sees when a frame's guides are refused (EvaluateRr's text; Upscale tells the refusal from a Streamline error by it).
+constexpr const char* kGuidesRefusedText = "the guides were refused";
 
 // The files the game folder carries (cmake/FetchStreamline.cmake copies them next to the exe).
 const wchar_t* const kFiles[] = {L"sl.interposer.dll", L"sl.common.dll", L"sl.dlss.dll",
@@ -273,6 +310,90 @@ bool WantFrameGenerationPlugins(Backend backend, const std::string& gpu_name) {
   return backend == Backend::kD3D12 && dlss::NameLooksLikeFrameGeneration(gpu_name);
 }
 
+// --- Ray Reconstruction (perf/DLSS-RR.md; the rules are dlss_rr_rules.h) ---------------------------------------------------------------------
+
+// The debug cvar mcla_gpu_dlss_rr (restart, so a plain read is safe): auto leaves the choice to the DENOISER row.
+rr::DebugSwitch RrDebugSwitch() {
+  rr::DebugSwitch value = rr::DebugSwitch::kRow;
+  if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_dlss_rr.Get(), &value)) {
+    value = rr::DebugSwitch::kRow;
+  }
+  return value;
+}
+
+// What the start decided about the Ray Reconstruction plugin, kept for the facts (QueryRayReconstructionLocked): `loadable` is whether a start with the row on AUTO would have loaded it (the row was
+// OURS now: a restart brings it), `files_bad` that the files were looked at and are not right. Set once, by WantRayReconstructionPlugin, before slInit.
+std::atomic<bool> g_rr_loadable{false};
+std::atomic<bool> g_rr_files_bad{false};
+
+#if defined(LARECOMP_HAS_DLSS_RR)
+std::wstring WidenAscii(const char* text) {
+  std::wstring out;
+  for (; text && *text; ++text) {
+    out += wchar_t(static_cast<unsigned char>(*text));
+  }
+  return out;
+}
+
+// Whether the Ray Reconstruction files are there and its plugin signed (`why` says what not). nvngx_dlssd.dll is loaded and checked by the plugin.
+bool RrFilesOk(const std::wstring& dir, std::string* why) {
+  std::string missing;
+  for (const char* file : rr::kFiles) {
+    if (dir.empty() || !FileExists(dir + WidenAscii(file))) {
+      missing += (missing.empty() ? "" : ", ") + std::string(file);
+    }
+  }
+  if (!missing.empty()) {
+    *why = "these files are not next to the game's exe: " + missing;
+    return false;
+  }
+  for (const char* file : rr::kSignedFiles) {
+    if (!VerifiedByNvidia(dir + WidenAscii(file))) {
+      *why = std::format("{} does not carry NVIDIA's signature, or Windows does not trust it", file);
+      return false;
+    }
+  }
+  return true;
+}
+#endif
+
+// Whether Streamline is started with the Ray Reconstruction plugin (InitLocked; the rules are dlss_rr_rules.h WantRrPlugin): the DENOISER row is not OURS (or the debug switch forces it) and an effect has
+// a raw mode, this build has it, its files are in place and signed, the card looks like an RTX one, and on Vulkan DLSS is the saved choice (the device is made through Streamline then). Plugins cannot
+// be added after slInit, so leaving OURS later says "(RESTART)" (denoiser_setting.h). The files are looked at only when the plugin is wanted (a row on OURS costs the player nothing).
+bool WantRayReconstructionPlugin(Backend backend, bool looks_rtx, bool dlss_saved_at_start) {
+  rr::PluginInputs in;
+  in.debug = RrDebugSwitch();
+  in.setting = denoiser::Setting();
+  in.raw_mode_built = rr::AnyRawModeBuilt();
+  in.d3d12 = backend == Backend::kD3D12;
+  in.looks_rtx = looks_rtx;
+  in.dlss_saved_at_start = dlss_saved_at_start;
+  g_rr_files_bad.store(false, std::memory_order_relaxed);
+#if defined(LARECOMP_HAS_DLSS_RR)
+  in.build_has_rr = true;
+  // What a start with the row on AUTO would do, files taken as fine (a restart would look at them): the row's restart answer.
+  rr::PluginInputs what_if = in;
+  what_if.setting = rr::Denoiser::kAuto;
+  what_if.files_ok = true;
+  g_rr_loadable.store(rr::WantRrPlugin(what_if), std::memory_order_relaxed);
+  if (rr::PluginWantedByChoice(in)) {
+    std::string why;
+    in.files_ok = RrFilesOk(ExeDirectory(), &why);
+    if (!in.files_ok) {
+      g_rr_files_bad.store(true, std::memory_order_relaxed);
+      REXLOG_INFO("{} Ray Reconstruction (DENOISER row = {}, mcla_gpu_dlss_rr = {}) is not asked for: {}", kPrefix, denoiser::WordOf(in.setting),
+                  rr::DebugSwitchName(in.debug), why);
+    }
+  }
+#else
+  g_rr_loadable.store(false, std::memory_order_relaxed);
+  if (rr::PluginWantedByChoice(in)) {
+    REXLOG_INFO("{} the DENOISER row asks for DLSS Ray Reconstruction (mcla_gpu_dlss_rr = {}), but this build has none", kPrefix, rr::DebugSwitchName(in.debug));
+  }
+#endif
+  return rr::WantRrPlugin(in);
+}
+
 std::string ResultText(sl::Result result) {
   const char* name = "";
   switch (result) {
@@ -434,6 +555,12 @@ struct SlApi {
   PFun_slDLSSGetOptimalSettings* dlss_optimal = nullptr;
   PFun_slDLSSSetOptions* dlss_set_options = nullptr;
   PFun_slDLSSGetState* dlss_state = nullptr;
+#if defined(LARECOMP_HAS_DLSS_RR)
+  // Ray Reconstruction's own, through slGetFeatureFunction(kFeatureDLSS_RR, ...) once the support query said yes.
+  PFun_slDLSSDGetOptimalSettings* rr_optimal = nullptr;
+  PFun_slDLSSDSetOptions* rr_set_options = nullptr;
+  PFun_slDLSSDGetState* rr_state = nullptr;
+#endif
 #if defined(LARECOMP_HAS_DLSS_G)
   // The frame generation, Reflex and PC latency plugins' functions, taken through slGetFeatureFunction
   // (the frame generation ones again whenever the feature is loaded again).
@@ -471,6 +598,8 @@ struct Runtime {
   // it runs (dlss::LoadFrameGeneration), Reflex and PC latency stay.
   bool frame_gen_asked = false;
   bool frame_gen_loaded = false;  // the frame generation plugin is loaded now
+  // slInit was given the Ray Reconstruction plugin (InitLocked; dlss_rr_rules.h WantRrPlugin): only then can it be asked about or used.
+  bool rr_asked = false;
 };
 
 // The frame generation facts the menu and the module read (dlss::FrameGenerationFacts): written by
@@ -478,6 +607,27 @@ struct Runtime {
 // feature's creation (seconds).
 std::mutex g_fg_mutex;
 dlss::FrameGenerationFacts g_fg_facts;
+// The Ray Reconstruction facts (dlss::RayReconstructionFacts), the same way: written by the worker with Runtime::mu held, read under their own lock.
+std::mutex g_rr_mutex;
+dlss::RayReconstructionFacts g_rr_facts;
+// The last refusal of a frame's guides that was logged (verdict and culprit packed), so that the log says each kind once. Render thread.
+std::atomic<uint32_t> g_rr_refusal_seen{0};
+// Ray Reconstruction was dropped for the session (its feature could not be made, or its evaluation failed): the plan reads it through dlss::GetRayReconstructionFacts and says so; Super
+// Resolution goes on. Callable from the render thread and the worker (its own lock; never Runtime::mu).
+void PublishRrFailure(const std::string& why) {
+  std::lock_guard lock(g_rr_mutex);
+  g_rr_facts.failed = true;
+  g_rr_facts.failed_why = why;
+}
+// The video memory the first Ray Reconstruction context reported for an output of `pixels` (the room check of a later one scales it).
+void PublishRrMeasured(uint64_t bytes, uint64_t pixels) {
+  if (bytes == 0 || pixels == 0) {
+    return;
+  }
+  std::lock_guard lock(g_rr_mutex);
+  g_rr_facts.measured_bytes = bytes;
+  g_rr_facts.measured_pixels = pixels;
+}
 // The worker is making a feature (or Streamline's start): the render thread's Streamline calls that
 // would wait for the lock say busy instead (Impl::building is this).
 std::atomic<bool> g_building{false};
@@ -591,7 +741,7 @@ bool FrameGenFilesOk(const std::wstring& dir, std::string* why) {
 //
 // Streamline's log: every line goes to sl.log in the logs folder (what a bug report needs); the
 // callback hands the game's log only the warnings and errors (SlLog).
-bool InitLocked(Runtime& rt, sl::RenderAPI api, bool frame_gen, std::string* why) {
+bool InitLocked(Runtime& rt, sl::RenderAPI api, bool frame_gen, bool ray_reconstruction, std::string* why) {
   if (rt.initialized) {
     return true;
   }
@@ -618,6 +768,16 @@ bool InitLocked(Runtime& rt, sl::RenderAPI api, bool frame_gen, std::string* why
   }
 #else
   (void)frame_gen;
+#endif
+#if defined(LARECOMP_HAS_DLSS_RR)
+  if (ray_reconstruction) {
+    features.push_back(sl::kFeatureDLSS_RR);
+    rt.rr_asked = true;
+    REXLOG_INFO("{} Streamline starts with the Ray Reconstruction plugin (DENOISER row = {}, mcla_gpu_dlss_rr = {})", kPrefix, denoiser::WordOf(denoiser::Setting()),
+                rr::DebugSwitchName(RrDebugSwitch()));
+  }
+#else
+  (void)ray_reconstruction;
 #endif
   // Streamline's full log (sl.log: every line it writes, with NGX's) goes next to LARecomp's own log
   // (LarecompLogFolder), which is what a bug report about DLSS needs. No folder, no log file.
@@ -808,6 +968,133 @@ void FillStaticConstants(sl::Constants& consts) {
   consts.motionVectorsJittered = sl::Boolean::eFalse;  // the jitter is taken out of them
 }
 
+// --- Ray Reconstruction: options, support, sizes (perf/DLSS-RR.md) ------------------------------------------------------------------------------
+
+#if defined(LARECOMP_HAS_DLSS_RR)
+rr::Mode RrModeOf(UpscaleMode mode) {
+  switch (mode) {
+    case UpscaleMode::kQuality: return rr::Mode::kQuality;
+    case UpscaleMode::kBalanced: return rr::Mode::kBalanced;
+    case UpscaleMode::kPerformance: return rr::Mode::kPerformance;
+    case UpscaleMode::kUltraPerformance: return rr::Mode::kUltraPerformance;
+    default: return rr::Mode::kDlaa;
+  }
+}
+
+// The options of a Ray Reconstruction viewport: the rules' answer (rr::MakeOptions) in Streamline's struct. NVIDIA's default presets, HDR colour, no alpha upscale;
+// the sharpness, the exposure and the auto exposure are ignored by RR. The camera's matrices change every frame, so a frame's evaluation sets them again.
+sl::DLSSDOptions RrOptionsFor(UpscaleMode mode, const rr::Options& o) {
+  sl::DLSSDOptions options;
+  options.mode = SlMode(mode);
+  options.outputWidth = o.output_size[0];
+  options.outputHeight = o.output_size[1];
+  options.sharpness = 0.0f;
+  options.preExposure = 1.0f;
+  options.exposureScale = 1.0f;
+  options.colorBuffersHDR = o.colour_hdr ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+  options.normalRoughnessMode = o.normal_roughness == rr::NormalRoughnessMode::kPacked ? sl::DLSSDNormalRoughnessMode::ePacked
+                                                                                         : sl::DLSSDNormalRoughnessMode::eUnpacked;
+  options.worldToCameraView = ToSl(o.world_to_view.m);
+  options.cameraViewToWorld = ToSl(o.view_to_world.m);
+  options.alphaUpscalingEnabled = o.alpha_upscaling ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+  return options;
+}
+
+// slDLSSDGetOptimalSettings in the shape the Super Resolution size check takes (the two structs have the same fields).
+sl::DLSSOptimalSettings AsSuperResolution(const sl::DLSSDOptimalSettings& d) {
+  sl::DLSSOptimalSettings out;
+  out.optimalRenderWidth = d.optimalRenderWidth;
+  out.optimalRenderHeight = d.optimalRenderHeight;
+  out.optimalSharpness = d.optimalSharpness;
+  out.renderWidthMin = d.renderWidthMin;
+  out.renderHeightMin = d.renderHeightMin;
+  out.renderWidthMax = d.renderWidthMax;
+  out.renderHeightMax = d.renderHeightMax;
+  return out;
+}
+#endif
+
+// Streamline's answer on Ray Reconstruction, once the device is set (slSetD3DDevice, or the Vulkan device made through the interposer): whether the feature is
+// supported here and its three functions; with mcla_gpu_dlss_rr = probe also the render size it takes for each mode at two output sizes (a size query: no feature,
+// no video memory). Publishes dlss::RayReconstructionFacts. Never fails Super Resolution.
+void QueryRayReconstructionLocked(Runtime& rt, const sl::AdapterInfo& adapter, const std::string& gpu_name) {
+  dlss::RayReconstructionFacts facts;
+  facts.queried = true;
+#if defined(LARECOMP_HAS_DLSS_RR)
+  facts.built = true;
+  facts.asked = rt.rr_asked;
+  facts.files_ok = !g_rr_files_bad.load(std::memory_order_relaxed);  // false only where the files were looked at and are not right (they are looked at when the plugin is wanted)
+  facts.loadable = !rt.rr_asked && g_rr_loadable.load(std::memory_order_relaxed);
+  if (!rt.rr_asked) {
+    facts.why = RrDebugSwitch() == rr::DebugSwitch::kOff
+                    ? "mcla_gpu_dlss_rr is off"
+                    : (facts.loadable
+                           ? "Streamline was started without the Ray Reconstruction plugin because the DENOISER row said OURS: it loads at the next start"
+                           : "Streamline was started without the Ray Reconstruction plugin (the row said OURS at the start, no effect has a raw mode, its files are missing, this is not an RTX card, or on Vulkan DLSS was not the saved upscaler at the start)");
+  } else {
+    const sl::Result supported = rt.api.is_supported(sl::kFeatureDLSS_RR, adapter);
+    if (supported != sl::Result::eOk) {
+      facts.why = "Streamline says Ray Reconstruction cannot run on '" + gpu_name + "': " + ResultText(supported);
+    } else {
+      const auto function_of = [&rt, &facts](const char* name) -> void* {
+        void* function = nullptr;
+        const sl::Result r = rt.api.get_function(sl::kFeatureDLSS_RR, name, function);
+        if (r != sl::Result::eOk || !function) {
+          facts.why = std::format("sl.dlss_d.dll has no {}: {}", name, ResultText(r));
+          return nullptr;
+        }
+        return function;
+      };
+      void* get_optimal = function_of("slDLSSDGetOptimalSettings");
+      void* set_options = get_optimal ? function_of("slDLSSDSetOptions") : nullptr;
+      void* get_state = set_options ? function_of("slDLSSDGetState") : nullptr;
+      if (get_optimal && set_options && get_state) {
+        rt.api.rr_optimal = reinterpret_cast<PFun_slDLSSDGetOptimalSettings*>(get_optimal);
+        rt.api.rr_set_options = reinterpret_cast<PFun_slDLSSDSetOptions*>(set_options);
+        rt.api.rr_state = reinterpret_cast<PFun_slDLSSDGetState*>(get_state);
+        facts.supported = true;
+      }
+    }
+  }
+  if (facts.supported) {
+    REXLOG_INFO("{} Ray Reconstruction can run on '{}' (DENOISER row = {}, mcla_gpu_dlss_rr = {})", kPrefix, gpu_name, denoiser::WordOf(denoiser::Setting()),
+                rr::DebugSwitchName(RrDebugSwitch()));
+    if (RrDebugSwitch() == rr::DebugSwitch::kProbe) {
+      // What it takes for each mode at two outputs. CHECK: the same sizes as Super Resolution's (the guide says RR runs in the mode DLSS runs in).
+      const uint32_t outputs[2][2] = {{1920, 1080}, {3840, 2160}};
+      for (const auto& out : outputs) {
+        for (uint32_t m = 0; m < uint32_t(UpscaleMode::kCount); ++m) {
+          const UpscaleMode mode = UpscaleMode(m);
+          rr::TagPlan packed;
+          packed.normal_roughness = rr::NormalRoughnessMode::kPacked;
+          const rr::Options o = rr::MakeOptions(RrModeOf(mode), out[0], out[1], packed, rr::Camera{});
+          sl::DLSSDOptimalSettings optimal;
+          const sl::Result got = rt.api.rr_optimal(RrOptionsFor(mode, o), optimal);
+          if (got != sl::Result::eOk) {
+            REXLOG_INFO("{} probe: Ray Reconstruction {} at {}x{}: slDLSSDGetOptimalSettings failed: {}", kPrefix,
+                        ModeInfoOf(Upscaler::kDlss, mode).name, out[0], out[1], ResultText(got));
+            continue;
+          }
+          REXLOG_INFO("{} probe: Ray Reconstruction {} at {}x{} takes a scene of {}x{} (range {}x{} to {}x{})", kPrefix,
+                      ModeInfoOf(Upscaler::kDlss, mode).name, out[0], out[1], optimal.optimalRenderWidth,
+                      optimal.optimalRenderHeight, optimal.renderWidthMin, optimal.renderHeightMin,
+                      optimal.renderWidthMax, optimal.renderHeightMax);
+        }
+      }
+    }
+  } else if (rt.rr_asked) {
+    REXLOG_INFO("{} Ray Reconstruction is not available: {}", kPrefix, facts.why);
+  }
+#else
+  (void)rt;
+  (void)adapter;
+  (void)gpu_name;
+  facts.why = "this build has no DLSS Ray Reconstruction";
+#endif
+  std::lock_guard rr_lock(g_rr_mutex);
+  g_rr_facts = facts;
+}
+
 void SetIdentity(float (&m)[16]) {
   for (uint32_t i = 0; i < 16; ++i) {
     m[i] = (i % 5 == 0) ? 1.0f : 0.0f;
@@ -826,6 +1113,67 @@ struct Context {
   uint64_t bytes = 0;         // the video memory Streamline reports for it (0 until asked)
   uint64_t made_ms = 0;       // how long its feature took to make (pre-warm steps only: they log it)
 };
+
+// The Streamline feature a context's viewport belongs to (the one its resources are freed under).
+sl::Feature FeatureOf(const Context& context) {
+#if defined(LARECOMP_HAS_DLSS_RR)
+  if (context.request.ray_reconstruction) {
+    return sl::kFeatureDLSS_RR;
+  }
+#endif
+  return sl::kFeatureDLSS;
+}
+
+// A context for a Ray Reconstruction request (MakeContext's other half, with Runtime::mu held): the viewport's options and the check that the scene's size is one
+// RR takes. The feature itself is made by the first dispatch (Build skips the warm-up: it has no guide images).
+std::shared_ptr<Context> MakeRrContext(Runtime& rt, const BackendRequest& request, std::string* why, bool prewarm, bool* refused) {
+#if defined(LARECOMP_HAS_DLSS_RR)
+  if (!rt.rr_asked || !rt.api.rr_optimal || !rt.api.rr_set_options) {
+    *why = "Ray Reconstruction is not running (Streamline was started without its plugin, or this card or driver does not support it)";
+    return {};
+  }
+  rr::TagPlan packed;
+  packed.normal_roughness = rr::NormalRoughnessMode::kPacked;
+  const rr::Options rr_options =
+      rr::MakeOptions(RrModeOf(request.mode), request.output_size[0], request.output_size[1], packed, rr::Camera{});
+  const sl::DLSSDOptions options = RrOptionsFor(request.mode, rr_options);
+  sl::DLSSDOptimalSettings optimal;
+  const sl::Result got = rt.api.rr_optimal(options, optimal);
+  if (got != sl::Result::eOk) {
+    *why = "slDLSSDGetOptimalSettings failed: " + ResultText(got);
+    return {};
+  }
+  const uint32_t rw = request.render_size[0];
+  const uint32_t rh = request.render_size[1];
+  const sl::DLSSOptimalSettings as_sr = AsSuperResolution(optimal);
+  if (!SceneFits(as_sr, rw, rh)) {
+    *why = SceneWhy(as_sr, rw, rh, request.output_size[0], request.output_size[1]);
+    *refused = true;
+    return {};
+  }
+  auto context = std::make_shared<Context>();
+  context->request = request;
+  context->viewport_id = ++rt.last_viewport;
+  const sl::Result set = rt.api.rr_set_options(sl::ViewportHandle(context->viewport_id), options);
+  if (set != sl::Result::eOk) {
+    *why = "slDLSSDSetOptions failed: " + ResultText(set);
+    return {};
+  }
+  REXLOG_INFO("{} Ray Reconstruction {} for {} at {}x{} to {}x{} (viewport {}): it asks for {}x{} (range {}x{} to {}x{})", kPrefix,
+              prewarm ? "warm-up context" : "context", ModeInfoOf(Upscaler::kDlss, request.mode).name, rw, rh,
+              request.output_size[0], request.output_size[1], context->viewport_id, optimal.optimalRenderWidth,
+              optimal.optimalRenderHeight, optimal.renderWidthMin, optimal.renderHeightMin, optimal.renderWidthMax,
+              optimal.renderHeightMax);
+  return context;
+#else
+  (void)rt;
+  (void)request;
+  (void)prewarm;
+  (void)refused;
+  *why = "this build has no DLSS Ray Reconstruction";
+  return {};
+#endif
+}
 
 // What the creation of the feature needs outside the frames' own objects: a command queue of its
 // own (a second direct queue Plume makes: on D3D12 a queue of its own, on Vulkan a queue of the same
@@ -847,6 +1195,17 @@ struct WarmImages {
   std::unique_ptr<plume::RenderTexture> depth;
   std::unique_ptr<plume::RenderTexture> motion;
   std::unique_ptr<plume::RenderTexture> output;
+  // A Ray Reconstruction request also needs the five guide images (rr_guides_rules.h Guide order) at the render size, in the formats of the frame's own: made with the others, empty for a
+  // Super Resolution request.
+  std::array<std::unique_ptr<plume::RenderTexture>, rr_guides::kGuideCount> guides;
+  bool has_guides() const {
+    for (const auto& g : guides) {
+      if (!g) {
+        return false;
+      }
+    }
+    return true;
+  }
 };
 
 std::unique_ptr<SideKit> MakeSideKit(Device& device, std::string* why) {
@@ -887,6 +1246,17 @@ TemporalInputs MakeWarmupInputs(const BackendRequest& request, const WarmImages&
                kDepthMotionFlags};
   in.output = {images.output.get(), in.output_size[0], in.output_size[1], kColorFormat,
                kOutputFlags};
+  if (request.ray_reconstruction && images.has_guides()) {
+    const auto guide = [&](rr_guides::Guide g) {
+      return TemporalImage{images.guides[size_t(g)].get(), in.render_size[0], in.render_size[1], WarmGuideFormat(g), kGuideFlags};
+    };
+    in.guides.diffuse_albedo = guide(rr_guides::Guide::kDiffuseAlbedo);
+    in.guides.specular_albedo = guide(rr_guides::Guide::kSpecularAlbedo);
+    in.guides.normal_roughness = guide(rr_guides::Guide::kNormalRoughness);
+    in.guides.specular_hit_distance = guide(rr_guides::Guide::kHitDistance);
+    in.guides.responsivity = guide(rr_guides::Guide::kResponsivity);
+    in.ray_reconstruction = true;
+  }
   in.reset = true;
   in.camera_aspect = float(in.output_size[0]) / float(std::max(in.output_size[1], 1u));
   SetIdentity(in.view_to_clip);
@@ -936,6 +1306,19 @@ struct DlssBackend::Impl {
   std::unique_ptr<WarmImages> next_images;
   std::shared_ptr<Context> next_ctx;
   std::vector<std::shared_ptr<Context>> doomed;  // to be freed by the worker
+  // The companion context (RR-3, Ray Reconstruction's): made by the same worker, in the background, beside `ctx` (which is never given up for it), with the guide images of its warm-up.
+  bool comp_want = false;
+  BackendRequest comp_request;
+  std::unique_ptr<WarmImages> comp_images;
+  std::shared_ptr<Context> comp_ctx;
+  bool comp_refused_set = false;  // Ray Reconstruction does not take the sizes of `comp_refused`: not asked for again for it
+  BackendRequest comp_refused;
+  bool rr_dropped = false;        // Ray Reconstruction is off for the session (its feature could not be made, or its evaluation failed): `ctx` goes on
+  // Render thread only: what the evaluations came to, and which kind the last one that recorded was (the history of each context starts again when the kind changes).
+  rr::FailureBook rr_book;
+  enum class Kind : uint8_t { kNone, kSuperResolution, kRayReconstruction };
+  Kind last_kind = Kind::kNone;
+  bool last_used_companion = false;
   std::unique_ptr<SideKit> kit;
   std::atomic<bool>& building = g_building;  // the worker is making a context
   // Streamline's frame index: its own count, always rising, from any thread that evaluates.
@@ -995,6 +1378,19 @@ struct DlssBackend::Impl {
   // Under `mu`: a context is wanted and not there yet, for the current slot and the prepared one.
   bool WantCurrentLocked() const { return want && !ctx && !status.failed; }
   bool WantNextLocked() const { return next_want && !next_ctx && !status.failed; }
+  bool WantCompanionLocked() const { return comp_want && !comp_ctx && !status.failed && !rr_dropped; }
+  // Under `mu`: the companion is not wanted any more (a context being made for it is freed by the worker when it is done).
+  void DropCompanionLocked(std::vector<std::shared_ptr<Context>>* retire) {
+    comp_want = false;
+    comp_images.reset();
+    if (comp_ctx) {
+      retire->push_back(std::move(comp_ctx));
+      comp_ctx.reset();
+    }
+    status.companion_bytes = 0;
+  }
+  // Ray Reconstruction is off for the rest of the session (render thread): the companion goes, the facts say why (the plan reads them), one log line. Super Resolution goes on.
+  void DropRr(const std::string& why);
   // Under `mu`: the prepared request is not wanted any more (a context being made for it is freed
   // by the worker when it is done).
   void DropNextLocked(std::vector<std::shared_ptr<Context>>* retire) {
@@ -1038,6 +1434,9 @@ struct DlssBackend::Impl {
   // when the worker holds it to make a feature (`building`) `*busy` is set and nothing is recorded.
   std::string Evaluate(void* native_list, Context& context, const TemporalInputs& in, bool wait,
                        bool* busy);
+  // The same for a Ray Reconstruction context (Evaluate hands it over): the guides are tagged with the plan the rules make of what the frame has.
+  std::string EvaluateRr(void* native_list, Context& context, const TemporalInputs& in, bool wait,
+                         bool* busy);
   void FreeContext(const Context& context);
   // Render thread: the contexts go to the worker once the frames that may use them have finished.
   void RetireOutsideLock(std::vector<std::shared_ptr<Context>>& retire);
@@ -1281,7 +1680,10 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
       *why = "on Vulkan Streamline has to start before the device is made";
       return false;
     }
-    if (!InitLocked(rt, sl::RenderAPI::eD3D12, WantFrameGenerationPlugins(api, gpu_name), why)) {
+    if (!InitLocked(rt, sl::RenderAPI::eD3D12, WantFrameGenerationPlugins(api, gpu_name),
+                    WantRayReconstructionPlugin(api, NameLooksLikeRtx(gpu_name),
+                                                ReadUpscalerSettings().upscaler == Upscaler::kDlss),
+                    why)) {
       rt.failure = *why;
       return false;
     }
@@ -1335,6 +1737,7 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
   rt.api.dlss_set_options = reinterpret_cast<PFun_slDLSSSetOptions*>(set_options);
   rt.api.dlss_state = reinterpret_cast<PFun_slDLSSGetState*>(get_state);
   QueryFrameGenerationLocked(rt, adapter, gpu_name);
+  QueryRayReconstructionLocked(rt, adapter, gpu_name);
   if (api == Backend::kD3D12 && rt.api.upgrade_interface) {
     // The plugins have started (slSetD3DDevice ran their start and filled the hook lists the
     // swap chain's wrapper reads): the next present may hand Streamline the swap chain.
@@ -1404,6 +1807,7 @@ void DlssBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, const std
     ctx.reset();
   }
   DropNextLocked(&list);
+  DropCompanionLocked(&list);
   PublishLocked();
   PublishModesLocked();  // nothing is refused for a DLSS that is off
   lock.unlock();
@@ -1434,7 +1838,7 @@ void DlssBackend::Impl::FreeContext(const Context& context) {
   if (!rt.initialized || rt.shut_down || !rt.api.free_resources) {
     return;
   }
-  rt.api.free_resources(sl::kFeatureDLSS, sl::ViewportHandle(context.viewport_id));
+  rt.api.free_resources(FeatureOf(context), sl::ViewportHandle(context.viewport_id));
 }
 
 void DlssBackend::Impl::RetireOutsideLock(std::vector<std::shared_ptr<Context>>& retire) {
@@ -1568,6 +1972,16 @@ std::unique_ptr<WarmImages> DlssBackend::Impl::MakeImages(const BackendRequest& 
   if (!images->color || !images->depth || !images->motion || !images->output) {
     return nullptr;
   }
+  if (request.ray_reconstruction) {
+    // Ray Reconstruction's feature is made over the guide images too: the same formats and flags as the frame's own (rr_guides.cpp), at the render size.
+    for (size_t g = 0; g < rr_guides::kGuideCount; ++g) {
+      const rr_guides::Guide guide = rr_guides::Guide(g);
+      images->guides[g] = device->CreateTexture(plume::RenderTextureDesc::Texture2D(rw, rh, 1, WarmGuideFormat(guide), kGuideFlags), rr_guides::SpecOf(guide).name);
+      if (!images->guides[g]) {
+        return nullptr;
+      }
+    }
+  }
   return images;
 }
 
@@ -1583,6 +1997,9 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
   if (!rt.initialized || rt.shut_down || !rt.api.dlss_optimal || !rt.api.dlss_set_options) {
     *why = "Streamline is not running";
     return {};
+  }
+  if (request.ray_reconstruction) {
+    return MakeRrContext(rt, request, why, prewarm, refused);
   }
   const sl::DLSSOptions options =
       OptionsFor(request.mode, request.output_size[0], request.output_size[1]);
@@ -1638,6 +2055,21 @@ std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
   if (!context) {
     return {};
   }
+  if (request.ray_reconstruction) {
+    // A Ray Reconstruction feature is never left to a frame's first dispatch (NGX takes seconds, on the render thread): it is made here, over the guide images, or not at all (the caller
+    // then drops Ray Reconstruction for the session and Super Resolution goes on).
+    std::string refusal;
+    if (!images || !images->has_guides()) {
+      refusal = "the images for its warm-up (the five guides) could not be made";
+    } else if (!side || !side->usable) {
+      refusal = "the side queue for its warm-up could not be made";
+    }
+    if (!refusal.empty()) {
+      *why = refusal;
+      FreeContext(*context);
+      return {};
+    }
+  }
   if (!images || !side || !side->usable) {
     if (prewarm) {
       *why = "the objects for it could not be made";  // created stays false
@@ -1651,6 +2083,11 @@ std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
   const auto started = std::chrono::steady_clock::now();
   std::string error;
   if (!Warmup(*context, *images, *side, &error)) {
+    if (request.ray_reconstruction) {
+      *why = "its feature could not be made in the background: " + error;
+      FreeContext(*context);
+      return {};
+    }
     if (prewarm) {
       *why = error;  // created stays false
     } else {
@@ -1668,9 +2105,10 @@ std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
     context->made_ms = uint64_t(ms);  // the worker's step line says it (JobLoop)
     return context;
   }
-  REXLOG_INFO("{} the feature for {} at {}x{} to {}x{} (viewport {}) was made in the background in "
+  REXLOG_INFO("{} the {} for {} at {}x{} to {}x{} (viewport {}) was made in the background in "
               "{} ms (about {} MB): the game went on meanwhile",
-              kPrefix, ModeInfoOf(Upscaler::kDlss, request.mode).name, request.render_size[0],
+              kPrefix, request.ray_reconstruction ? "Ray Reconstruction feature" : "feature",
+              ModeInfoOf(Upscaler::kDlss, request.mode).name, request.render_size[0],
               request.render_size[1], request.output_size[0], request.output_size[1],
               context->viewport_id, ms, context->bytes >> 20);
   return context;
@@ -1722,6 +2160,14 @@ bool DlssBackend::Impl::Warmup(Context& context, WarmImages& images, SideKit& si
       plume::RenderTextureBarrier(images.depth.get(), plume::RenderTextureLayout::SHADER_READ),
       plume::RenderTextureBarrier(images.motion.get(), plume::RenderTextureLayout::SHADER_READ)};
   list->barriers(Stage::COMPUTE, to_read, 3);
+  if (context.request.ray_reconstruction && images.has_guides()) {
+    // The guides in the state the frame's dispatch has them in (rr_guides.cpp leaves them SHADER_READ at the compute stage).
+    plume::RenderTextureBarrier guide_read[rr_guides::kGuideCount];
+    for (size_t g = 0; g < rr_guides::kGuideCount; ++g) {
+      guide_read[g] = plume::RenderTextureBarrier(images.guides[g].get(), plume::RenderTextureLayout::SHADER_READ);
+    }
+    list->barriers(Stage::COMPUTE, guide_read, uint32_t(rr_guides::kGuideCount));
+  }
   list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(images.output.get(),
                                                               plume::RenderTextureLayout::GENERAL));
   bool busy = false;
@@ -1896,7 +2342,7 @@ void DlssBackend::Impl::JobLoop() {
   for (;;) {
     cv.wait(lock, [this] {
       return stop || FitJobLocked() || !doomed.empty() || WantCurrentLocked() || WantNextLocked() ||
-             PrewarmJobLocked();
+             WantCompanionLocked() || PrewarmJobLocked();
     });
     if (stop) {
       break;
@@ -1917,12 +2363,13 @@ void DlssBackend::Impl::JobLoop() {
       lock.lock();
       continue;
     }
-    // The current slot first (the frames wait for it), then the prepared one.
+    // The current slot first (the frames wait for it), then the prepared one, then the companion (Ray Reconstruction's: Super Resolution goes on without it).
     const bool for_current = WantCurrentLocked();
-    if (for_current || WantNextLocked()) {
-      const BackendRequest request = for_current ? want_request : next_request;
-      std::unique_ptr<WarmImages> images =
-          std::move(for_current ? want_images : next_images);
+    const bool for_next = !for_current && WantNextLocked();
+    const bool for_comp = !for_current && !for_next && WantCompanionLocked();
+    if (for_current || for_next || for_comp) {
+      const BackendRequest request = for_current ? want_request : (for_next ? next_request : comp_request);
+      std::unique_ptr<WarmImages> images = std::move(for_current ? want_images : (for_next ? next_images : comp_images));
       SideKit* side = kit.get();
       building = true;
       lock.unlock();
@@ -1933,7 +2380,16 @@ void DlssBackend::Impl::JobLoop() {
       images.reset();  // Build waited for the side queue: the GPU is done with them
       lock.lock();
       building = false;
-      if (!made && refused) {
+      if (!made && refused && for_comp) {
+        // Ray Reconstruction does not take this size (the sizes DLSS takes for a mode are its own list): not a failure of DLSS or of RR, and not asked again for it. Another request is tried.
+        comp_refused_set = true;
+        comp_refused = request;
+        if (comp_want && comp_request == request) {
+          comp_want = false;
+          comp_images.reset();
+        }
+        REXLOG_INFO("{} Ray Reconstruction does not take this size: {}. Super Resolution goes on (the context is asked for again when the sizes or the mode change)", kPrefix, why);
+      } else if (!made && refused) {
         // DLSS does not take this mode at these sizes: not a failure. It is remembered (a request
         // for it is not made again, and the pause menu says "(N/A)"), nothing is wanted any more
         // for it, and the caller goes on with what runs; it says so (temporal.cpp ResolveDlssMode).
@@ -1947,15 +2403,28 @@ void DlssBackend::Impl::JobLoop() {
           next_want = false;
           next_images.reset();
         }
+      } else if (!made && for_comp) {
+        // The Ray Reconstruction feature could not be made in the background: RR is off for the session, DLSS (Super Resolution) is not.
+        comp_want = false;
+        comp_images.reset();
+        if (!rr_dropped) {
+          rr_dropped = true;
+          PublishRrFailure("its context could not be made: " + why);
+          REXLOG_WARN("{} Ray Reconstruction is off for this session: its context could not be made ({}); Super Resolution goes on", kPrefix, why);
+        }
       } else if (!made) {
         FailLocked(lock, "its context could not be made: " + why, /*render_thread=*/false);
       } else if (for_current && want && want_request == request && !ctx && !status.failed &&
                  !stop) {
         status.context_bytes = made->bytes;
         ctx = std::move(made);
-      } else if (!for_current && next_want && next_request == request && !next_ctx &&
+      } else if (for_next && next_want && next_request == request && !next_ctx &&
                  !status.failed && !stop) {
         next_ctx = std::move(made);
+      } else if (for_comp && comp_want && comp_request == request && !comp_ctx && !status.failed && !rr_dropped && !stop) {
+        status.companion_bytes = made->bytes;
+        PublishRrMeasured(made->bytes, uint64_t(request.output_size[0]) * request.output_size[1]);
+        comp_ctx = std::move(made);
       } else {
         // The request moved on (or DLSS failed, or the game is closing) while it was made: it goes.
         doomed.push_back(std::move(made));
@@ -2038,6 +2507,10 @@ void DlssBackend::Impl::JobLoop() {
     left.push_back(std::move(next_ctx));
     next_ctx.reset();
   }
+  if (comp_ctx) {
+    left.push_back(std::move(comp_ctx));
+    comp_ctx.reset();
+  }
   lock.unlock();
   for (const std::shared_ptr<Context>& old : left) {
     FreeContext(*old);
@@ -2046,6 +2519,9 @@ void DlssBackend::Impl::JobLoop() {
 
 void DlssBackend::Request(const BackendRequest& request) {
   Impl& i = *impl_;
+  if (request.ray_reconstruction) {
+    return;  // Ray Reconstruction is the companion's (RequestCompanion): the current context is Super Resolution's
+  }
   {
     std::lock_guard lock(i.mu);
     if (i.status.failed || i.status.state != BackendState::kAvailable) {
@@ -2144,7 +2620,7 @@ bool DlssBackend::Busy() const {
   std::lock_guard lock(i.mu);
   // The worker is making a context, or is about to (the wanted one is set before it wakes): either
   // way Streamline's mutex is, or is about to be, held for the seconds its first evaluation takes.
-  return i.building.load() || i.WantNextLocked();
+  return i.building.load() || i.WantNextLocked() || i.WantCompanionLocked();
 }
 
 // CHECK: the prepared slot on both APIs: a second viewport alive beside the first (options, feature,
@@ -2156,6 +2632,9 @@ bool DlssBackend::Busy() const {
 // its own viewport, while the current one keeps dispatching; Commit swaps them between two frames.
 void DlssBackend::Prepare(const BackendRequest& request) {
   Impl& i = *impl_;
+  if (request.ray_reconstruction) {
+    return;  // see Request
+  }
   std::vector<std::shared_ptr<Context>> retire;
   {
     std::lock_guard lock(i.mu);
@@ -2270,6 +2749,8 @@ void DlssBackend::Release() {
       i.ctx.reset();
     }
     i.DropNextLocked(&retire);
+    i.DropCompanionLocked(&retire);
+    i.comp_refused_set = false;
     i.status.context_bytes = 0;
   }
   i.RetireOutsideLock(retire);
@@ -2422,6 +2903,9 @@ void DlssBackend::Prewarm(const BackendRequest& request) {
 // why not.
 std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
                                         const TemporalInputs& in, bool wait, bool* busy) {
+  if (context.request.ray_reconstruction) {
+    return EvaluateRr(native_list, context, in, wait, busy);
+  }
   const backend::NativeImage color_native =
       backend::NativeImageOf(in.color.texture, backend::ImageUse::kComputeRead);
   const backend::NativeImage depth_native =
@@ -2562,12 +3046,226 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   return {};
 }
 
+#if defined(LARECOMP_HAS_DLSS_RR)
+namespace {
+
+rr::Format RrFormatOf(plume::RenderFormat format) {
+  switch (format) {
+    case plume::RenderFormat::R16G16B16A16_FLOAT: return rr::Format::kRgba16Float;
+    case plume::RenderFormat::R32G32B32A32_FLOAT: return rr::Format::kRgba32Float;
+    case plume::RenderFormat::R8G8B8A8_UNORM: return rr::Format::kRgba8Unorm;
+    case plume::RenderFormat::R8G8B8A8_SNORM: return rr::Format::kRgba8Snorm;
+    case plume::RenderFormat::R10G10B10A2_UNORM: return rr::Format::kRgb10A2Unorm;
+    case plume::RenderFormat::R16G16_FLOAT: return rr::Format::kRg16Float;
+    case plume::RenderFormat::R32G32_FLOAT: return rr::Format::kRg32Float;
+    case plume::RenderFormat::R32_FLOAT: return rr::Format::kR32Float;
+    case plume::RenderFormat::D32_FLOAT: return rr::Format::kD32Float;
+    case plume::RenderFormat::R16_FLOAT: return rr::Format::kR16Float;
+    case plume::RenderFormat::R8_UNORM: return rr::Format::kR8Unorm;
+    case plume::RenderFormat::R8_SNORM: return rr::Format::kR8Snorm;
+    default: return rr::Format::kUnknown;
+  }
+}
+
+// The image of a frame's inputs that a rules buffer names.
+const TemporalImage& TemporalImageOf(const TemporalInputs& in, rr::Buffer buffer) {
+  switch (buffer) {
+    case rr::Buffer::kColorIn: return in.color;
+    case rr::Buffer::kColorOut: return in.output;
+    case rr::Buffer::kDepth: return in.depth;
+    case rr::Buffer::kMotion: return in.motion;
+    case rr::Buffer::kDiffuseAlbedo: return in.guides.diffuse_albedo;
+    case rr::Buffer::kSpecularAlbedo: return in.guides.specular_albedo;
+    case rr::Buffer::kNormalRoughness: return in.guides.normal_roughness;
+    case rr::Buffer::kNormals: return in.guides.normals;
+    case rr::Buffer::kRoughness: return in.guides.roughness;
+    case rr::Buffer::kSpecularMotion: return in.guides.specular_motion;
+    case rr::Buffer::kSpecularHitDistance: return in.guides.specular_hit_distance;
+    case rr::Buffer::kResponsivity: return in.guides.responsivity;
+    case rr::Buffer::kColorBeforeTransparency: return in.guides.color_before_transparency;
+    case rr::Buffer::kCount: break;
+  }
+  return in.color;
+}
+
+rr::Image RrImageOf(const TemporalImage& image) {
+  rr::Image out;
+  out.present = image.texture != nullptr;
+  out.width = image.width;
+  out.height = image.height;
+  out.format = RrFormatOf(image.format);
+  return out;
+}
+
+}  // namespace
+
+// One evaluation of a Ray Reconstruction context's viewport recorded into `native_list`, on the render thread (a frame's dispatch): what the frame has goes to the
+// rules (rr::PlanTags), a frame whose guides are not right is refused WITHOUT failing the backend (`*busy` with a log line once per kind: the caller makes the frame
+// plain, Upscale returns false), and otherwise the frame token, the constants, this frame's options (the camera's matrices move every frame) and the tags go in and
+// slEvaluateFeature(kFeatureDLSS_RR) runs. Streamline's lock is taken as Evaluate's is.
+// CHECK (nothing here has run): the constants are the Super Resolution's (same depth, vectors and jitter conventions: RR reads the same ones); the tags' states are the
+// ones the caller transitioned the images to (the guides are left in SHADER_READ at the COMPUTE stage by the guide pass, rr_guides.cpp; RecordUpscale does not move them).
+std::string DlssBackend::Impl::EvaluateRr(void* native_list, Context& context, const TemporalInputs& in, bool wait, bool* busy) {
+  rr::Inputs ri;
+  ri.color = RrImageOf(in.color);
+  ri.depth = RrImageOf(in.depth);
+  ri.motion = RrImageOf(in.motion);
+  ri.output = RrImageOf(in.output);
+  ri.diffuse_albedo = RrImageOf(in.guides.diffuse_albedo);
+  ri.specular_albedo = RrImageOf(in.guides.specular_albedo);
+  ri.normal_roughness = RrImageOf(in.guides.normal_roughness);
+  ri.normals = RrImageOf(in.guides.normals);
+  ri.roughness = RrImageOf(in.guides.roughness);
+  ri.specular_motion = RrImageOf(in.guides.specular_motion);
+  ri.specular_hit_distance = RrImageOf(in.guides.specular_hit_distance);
+  ri.responsivity = RrImageOf(in.guides.responsivity);
+  ri.color_before_transparency = RrImageOf(in.guides.color_before_transparency);
+  ri.render_size[0] = in.render_size[0];
+  ri.render_size[1] = in.render_size[1];
+  ri.output_size[0] = in.output_size[0];
+  ri.output_size[1] = in.output_size[1];
+  ri.have_view_matrices = true;  // the options below always carry the camera's matrices
+  const rr::TagPlan plan = rr::PlanTags(ri);
+  if (plan.verdict != rr::Verdict::kOk) {
+    const uint32_t kind = 1u + (uint32_t(plan.verdict) << 8) + uint32_t(plan.culprit);
+    if (g_rr_refusal_seen.exchange(kind) != kind) {
+      REXLOG_WARN("{} Ray Reconstruction cannot take this frame: {} ({}); frames like it are plain until the guides are right",
+                  kPrefix, rr::VerdictText(plan.verdict), rr::InfoOf(plan.culprit).name);
+    }
+    *busy = true;  // nothing was recorded and nothing failed: the caller goes on with Super Resolution (Upscale) and counts the refusal
+    return kGuidesRefusedText;
+  }
+  g_rr_refusal_seen.store(0);
+
+  // The images and their tags, local to this evaluation like Super Resolution's.
+  std::array<backend::NativeImage, rr::kMaxTags> natives{};
+  std::array<sl::Resource, rr::kMaxTags> resources{};
+  for (uint32_t i = 0; i < plan.count; ++i) {
+    const rr::Tag& tag = plan.tags[i];
+    const TemporalImage& image = TemporalImageOf(in, tag.source);
+    natives[i] = backend::NativeImageOf(image.texture, tag.buffer == rr::Buffer::kColorOut ? backend::ImageUse::kStorage
+                                                                                         : backend::ImageUse::kComputeRead);
+    if (!natives[i].complete) {
+      return std::format("the {} image has no native object, or Plume cannot describe it to Streamline", rr::InfoOf(tag.buffer).name);
+    }
+    resources[i] = MakeSlResource(image, natives[i]);
+  }
+  const sl::Extent render_extent = MakeExtent(in.render_size[0], in.render_size[1]);
+  const sl::Extent output_extent = MakeExtent(in.output_size[0], in.output_size[1]);
+  const sl::ResourceLifecycle lifecycle = sl::ResourceLifecycle::eValidUntilEvaluate;
+  std::vector<sl::ResourceTag> tags;
+  tags.reserve(plan.count);
+  for (uint32_t i = 0; i < plan.count; ++i) {
+    const rr::Tag& tag = plan.tags[i];
+    tags.emplace_back(&resources[i], rr::InfoOf(tag.buffer).sl_type, lifecycle, tag.output_extent ? &output_extent : &render_extent);
+  }
+
+  // The constants: the same as Super Resolution's (Evaluate above has the block inline; to be one function once Ray Reconstruction is proven).
+  const bool reset = in.reset || !context.dispatched;
+  sl::Constants consts;
+  FillStaticConstants(consts);
+  consts.cameraViewToClip = ToSl(in.view_to_clip);
+  consts.clipToCameraView = ToSl(in.clip_to_view);
+  consts.clipToPrevClip = ToSl(in.clip_to_prev_clip);
+  consts.prevClipToClip = ToSl(in.prev_clip_to_clip);
+  consts.jitterOffset = sl::float2(in.jitter[0], in.jitter[1]);
+  consts.mvecScale = sl::float2(in.motion_scale[0] / float(in.render_size[0]), in.motion_scale[1] / float(in.render_size[1]));
+  consts.cameraPos = sl::float3(in.camera_position[0], in.camera_position[1], in.camera_position[2]);
+  consts.cameraUp = sl::float3(in.camera_up[0], in.camera_up[1], in.camera_up[2]);
+  consts.cameraRight = sl::float3(in.camera_right[0], in.camera_right[1], in.camera_right[2]);
+  consts.cameraFwd = sl::float3(in.camera_forward[0], in.camera_forward[1], in.camera_forward[2]);
+  consts.cameraNear = in.camera_near;
+  consts.cameraFar = in.camera_far;
+  consts.cameraFOV = in.camera_fov_y;
+  consts.cameraAspectRatio = in.camera_aspect;
+  consts.reset = reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+
+  // This frame's options: the mode and sizes of the context, the rules' roughness mode, the camera's matrices.
+  rr::Camera camera;
+  for (int k = 0; k < 3; ++k) {
+    camera.position[k] = in.camera_position[k];
+    camera.right[k] = in.camera_right[k];
+    camera.up[k] = in.camera_up[k];
+    camera.forward[k] = in.camera_forward[k];
+  }
+  const rr::Options rr_options =
+      rr::MakeOptions(RrModeOf(context.request.mode), context.request.output_size[0], context.request.output_size[1], plan, camera);
+  const sl::DLSSDOptions options = RrOptionsFor(context.request.mode, rr_options);
+
+  Runtime& rt = Rt();
+  std::unique_lock sl_lock(rt.mu, std::defer_lock);
+  if (wait) {
+    sl_lock.lock();
+  } else if (!sl_lock.try_lock()) {
+    if (building.load()) {
+      *busy = true;
+      return "Streamline is busy";
+    }
+    sl_lock.lock();
+  }
+  if (!rt.initialized || rt.shut_down || !rt.api.rr_set_options) {
+    return "Streamline is not running";
+  }
+  sl::FrameToken* token = nullptr;
+  uint32_t frame_index = ++frame_counter;
+  if (!wait && g_chain_proxied.load(std::memory_order_acquire)) {
+    if (const uint64_t id = latency::RenderFrameId(); id != 0) {
+      frame_index = uint32_t(id);
+    }
+  }
+  sl::Result result = rt.api.new_frame_token(token, &frame_index);
+  if (result != sl::Result::eOk || !token) {
+    return "slGetNewFrameToken failed: " + ResultText(result);
+  }
+  const sl::ViewportHandle viewport(context.viewport_id);
+  result = rt.api.set_constants(consts, *token, viewport);
+  if (result != sl::Result::eOk) {
+    return "slSetConstants failed: " + ResultText(result);
+  }
+  result = rt.api.rr_set_options(viewport, options);
+  if (result != sl::Result::eOk) {
+    return "slDLSSDSetOptions failed: " + ResultText(result);
+  }
+  std::array<const sl::BaseStructure*, rr::kMaxTags + 1> inputs{};
+  uint32_t input_count = 0;
+  inputs[input_count++] = &viewport;
+  for (const sl::ResourceTag& tag : tags) {
+    inputs[input_count++] = &tag;
+  }
+  result = rt.api.evaluate(sl::kFeatureDLSS_RR, *token, inputs.data(), input_count, native_list);
+  if (result != sl::Result::eOk) {
+    return "slEvaluateFeature (Ray Reconstruction) failed: " + ResultText(result);
+  }
+  if (!context.bytes_asked && rt.api.rr_state) {
+    context.bytes_asked = true;
+    sl::DLSSDState state;
+    if (rt.api.rr_state(viewport, state) == sl::Result::eOk) {
+      context.bytes = state.estimatedVRAMUsageInBytes;
+    }
+  }
+  return {};
+}
+#else
+std::string DlssBackend::Impl::EvaluateRr(void*, Context&, const TemporalInputs&, bool, bool*) {
+  return "this build has no DLSS Ray Reconstruction";
+}
+#endif
+
+// One dispatch. `in.ray_reconstruction` sends it to the companion context (Ray Reconstruction's) where it exists and its guides are right; any frame the companion cannot take is the
+// current (Super Resolution) context's, in this same call (LastUpscaleUsedCompanion says which ran). A Streamline error of the companion counts against Ray Reconstruction alone
+// (rr::FailureBook: three in a row drop it for the session), the frame is Super Resolution's, and it never fails DLSS. The history of each context starts again when the kind of the dispatch changes: the
+// context that was not used meanwhile has an old history.
 bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& in) {
   Impl& i = *impl_;
+  i.last_used_companion = false;
   std::shared_ptr<Context> context;
+  std::shared_ptr<Context> companion;
   {
     std::lock_guard lock(i.mu);
     context = i.ctx;
+    if (in.ray_reconstruction && !i.rr_dropped) {
+      companion = i.comp_ctx;
+    }
   }
   const auto fail = [this](const std::string& why) {
     Fail(why);
@@ -2580,25 +3278,67 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
   if (!native_list) {
     return fail("the command list has no native object");
   }
-  const bool reset = in.reset || !context->dispatched;
-  bool busy = false;
-  const std::string error = i.Evaluate(native_list, *context, in, /*wait=*/false, &busy);
-  if (busy) {
-    return false;  // nothing was recorded and nothing failed: this frame is plain (Busy())
+  const auto kind_reset = [&i, &in](Impl::Kind kind, const Context& c) { return in.reset || !c.dispatched || i.last_kind != kind; };
+  Context* used = nullptr;
+  bool reset = false;
+  if (companion) {
+    TemporalInputs rr_in = in;
+    rr_in.reset = kind_reset(Impl::Kind::kRayReconstruction, *companion);
+    bool busy = false;
+    const std::string error = in.test_rr_error ? std::string("an error injected by mcla_gpu_dlss_rr_test") : i.Evaluate(native_list, *companion, rr_in, /*wait=*/false, &busy);
+    if (error.empty()) {
+      i.rr_book.Note(rr::FailureBook::Event::kRan);
+      used = companion.get();
+      reset = rr_in.reset;
+      i.last_kind = Impl::Kind::kRayReconstruction;
+      i.last_used_companion = true;
+    } else if (busy) {
+      // Nothing was recorded and nothing failed: the guides were refused by the rules (counted, and the frame is Super Resolution's below), or Streamline is occupied (the
+      // Super Resolution evaluation below finds it busy as well and the frame is plain).
+      if (error == kGuidesRefusedText) {
+        i.rr_book.Note(rr::FailureBook::Event::kRefused);
+      }
+    } else {
+      // Streamline said no after the tags were accepted: the count goes up, the third in a row drops Ray Reconstruction, and this frame is Super Resolution's (below). A plain frame is
+      // not an option: three jittered frames in a row that are not upscaled turn the upscaler off for the session (temporal.cpp EndFrame), which a failing Ray Reconstruction must never cause.
+      const bool dropped = i.rr_book.Note(rr::FailureBook::Event::kError);
+      REXLOG_WARN("{} the Ray Reconstruction evaluation failed ({}), {} in a row: this frame is Super Resolution's{}", kPrefix, error, i.rr_book.errors_in_row(),
+                  dropped ? "; Ray Reconstruction is dropped" : "");
+      if (dropped) {
+        i.DropRr(std::format("its evaluation failed {} times in a row (the last: {})", rr::FailureBook::kMaxErrors, error));
+      }
+    }
   }
-  if (!error.empty()) {
-    return fail(error);
+  if (!used) {
+    TemporalInputs sr_in = in;
+    sr_in.ray_reconstruction = false;
+    sr_in.reset = kind_reset(Impl::Kind::kSuperResolution, *context);
+    bool busy = false;
+    const std::string error = i.Evaluate(native_list, *context, sr_in, /*wait=*/false, &busy);
+    if (busy) {
+      return false;  // nothing was recorded and nothing failed: this frame is plain (Busy())
+    }
+    if (!error.empty()) {
+      return fail(error);
+    }
+    used = context.get();
+    reset = sr_in.reset;
+    i.last_kind = Impl::Kind::kSuperResolution;
+    if (!context->created && !context->dispatched) {
+      REXLOG_INFO("{} the feature was not made in the background: this first dispatch made it, which "
+                  "paused the game for several seconds",
+                  kPrefix);
+    }
   }
-  if (!context->created && !context->dispatched) {
-    REXLOG_INFO("{} the feature was not made in the background: this first dispatch made it, which "
-                "paused the game for several seconds",
-                kPrefix);
-  }
-  if (!context->dispatched) {
-    context->dispatched = true;
-    if (context->bytes != 0) {
+  if (!used->dispatched) {
+    used->dispatched = true;
+    if (used->bytes != 0) {
       std::lock_guard lock(i.mu);
-      i.status.context_bytes = context->bytes;
+      (i.last_used_companion ? i.status.companion_bytes : i.status.context_bytes) = used->bytes;
+    }
+    if (i.last_used_companion) {
+      REXLOG_INFO("{} the first Ray Reconstruction dispatch: {}x{} to {}x{} (viewport {}), reset {}, about {} MB", kPrefix, in.render_size[0], in.render_size[1], in.output_size[0],
+                  in.output_size[1], used->viewport_id, reset ? "yes" : "no", used->bytes >> 20);
     }
   }
   if (i.dispatches++ == 0) {
@@ -2607,9 +3347,97 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
                 kPrefix, in.render_size[0], in.render_size[1], in.output_size[0], in.output_size[1],
                 in.jitter[0], in.jitter[1], in.camera_near, in.camera_far,
                 double(in.camera_fov_y) * 57.29577951308232, reset ? "yes" : "no",
-                context->bytes >> 20);
+                used->bytes >> 20);
   }
   return true;
+}
+
+bool DlssBackend::LastUpscaleUsedCompanion() const {
+  return impl_->last_used_companion;
+}
+
+std::string DlssBackend::CompanionSummary() const {
+  const Impl& i = *impl_;
+  bool dropped = false;
+  {
+    std::lock_guard lock(i.mu);
+    dropped = i.rr_dropped;
+  }
+  return std::format("Ray Reconstruction evaluations: ran {}, guides refused {} (Super Resolution took them), errors {}{}", i.rr_book.ran(), i.rr_book.refused(), i.rr_book.errors(),
+                     dropped ? ", dropped for the session" : "");
+}
+
+// Ray Reconstruction's context, beside the current one (temporal_backend.h). The warm-up images (the guides included) are made here on the render thread; the worker makes the feature.
+void DlssBackend::RequestCompanion(const BackendRequest& request) {
+  Impl& i = *impl_;
+  if (!request.ray_reconstruction) {
+    return;
+  }
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed || i.status.state != BackendState::kAvailable || i.stop || i.rr_dropped || !i.init_done) {
+      return;
+    }
+    if (i.comp_want && i.comp_request == request) {
+      return;
+    }
+    if (i.comp_refused_set && i.comp_refused == request) {
+      return;  // Ray Reconstruction does not take these sizes
+    }
+  }
+  i.EnsureKit();
+  std::unique_ptr<WarmImages> images = i.MakeImages(request);
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed || i.stop || i.rr_dropped) {
+      return;
+    }
+    if (i.comp_ctx && !(i.comp_ctx->request == request)) {
+      retire.push_back(std::move(i.comp_ctx));
+      i.comp_ctx.reset();
+      i.status.companion_bytes = 0;
+    }
+    i.comp_want = true;
+    i.comp_request = request;
+    i.comp_images = std::move(images);
+    i.comp_refused_set = false;
+  }
+  i.cv.notify_all();
+  i.RetireOutsideLock(retire);
+}
+
+void DlssBackend::ReleaseCompanion() {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    i.DropCompanionLocked(&retire);
+    i.comp_refused_set = false;
+  }
+  i.RetireOutsideLock(retire);
+}
+
+bool DlssBackend::CompanionReady(const BackendRequest& request) const {
+  const Impl& i = *impl_;
+  std::lock_guard lock(i.mu);
+  return i.comp_ctx && i.comp_ctx->request == request && !i.status.failed && !i.rr_dropped;
+}
+
+void DlssBackend::Impl::DropRr(const std::string& why) {
+  std::vector<std::shared_ptr<Context>> retire;
+  bool first = false;
+  {
+    std::lock_guard lock(mu);
+    first = !rr_dropped;
+    rr_dropped = true;
+    DropCompanionLocked(&retire);
+  }
+  if (first) {
+    PublishRrFailure(why);
+    REXLOG_WARN("{} Ray Reconstruction is off for this session: {}; Super Resolution goes on", kPrefix, why);
+  }
+  RetireOutsideLock(retire);
 }
 
 void DlssBackend::Shutdown() {
@@ -2621,6 +3449,8 @@ void DlssBackend::Shutdown() {
     i.want_images.reset();
     i.next_want = false;
     i.next_images.reset();
+    i.comp_want = false;
+    i.comp_images.reset();
     i.DropPrewarmLocked();
   }
   i.cv.notify_all();
@@ -2647,6 +3477,10 @@ void DlssBackend::Shutdown() {
       left.push_back(std::move(i.next_ctx));
       i.next_ctx.reset();
     }
+    if (i.comp_ctx) {
+      left.push_back(std::move(i.comp_ctx));
+      i.comp_ctx.reset();
+    }
   }
   if (i.probe_started) {
     // The GPU is idle (the renderer drained its frames): the resources go, then Streamline, before
@@ -2661,7 +3495,7 @@ void DlssBackend::Shutdown() {
     std::lock_guard lock(rt.mu);
     if (rt.initialized && !rt.shut_down) {
       for (const std::shared_ptr<Context>& old : left) {
-        rt.api.free_resources(sl::kFeatureDLSS, sl::ViewportHandle(old->viewport_id));
+        rt.api.free_resources(FeatureOf(*old), sl::ViewportHandle(old->viewport_id));
       }
       rt.api.shutdown();
       rt.initialized = false;
@@ -2738,7 +3572,8 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
   }
   std::string why;
   if (!LoadRuntimeLocked(rt, &why) ||
-      !InitLocked(rt, sl::RenderAPI::eVulkan, frame_gen_chosen, &why)) {
+      !InitLocked(rt, sl::RenderAPI::eVulkan, frame_gen_chosen,
+                  WantRayReconstructionPlugin(Backend::kVulkan, /*an NVIDIA device: checked above*/ true, dlss_chosen), &why)) {
     // The probe reports it (greyed as "needs setup" when the files are the problem).
     rt.failure = why;
     REXLOG_INFO("{} Streamline is not started for Vulkan, so the device is made without it: {}",
@@ -2896,6 +3731,23 @@ bool UpgradeSwapChain(void** swap_chain) {
 // (options, freeing a context) is waited for.
 
 namespace dlss {
+
+RayReconstructionFacts GetRayReconstructionFacts() {
+  RayReconstructionFacts facts;
+  {
+    std::lock_guard lock(g_rr_mutex);
+    facts = g_rr_facts;
+  }
+#if defined(LARECOMP_HAS_DLSS_RR)
+  facts.built = true;
+#else
+  facts.built = false;
+  if (facts.why.empty()) {
+    facts.why = "this build has no DLSS Ray Reconstruction";
+  }
+#endif
+  return facts;
+}
 
 FrameGenerationFacts GetFrameGenerationFacts() {
   std::lock_guard lock(g_fg_mutex);

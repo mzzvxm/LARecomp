@@ -31,6 +31,7 @@
 #include "gbuffer_types.h"
 #include "screen_frame.h"
 #include "screen_rules.h"
+#include "dlss_rr_rules.h"
 #include "frame_order.h"
 #include "ssr_rules.h"
 
@@ -1640,8 +1641,73 @@ void TestLensFunctions() {
 }
 
 // ---------------------------------------------------------------------------
+// RR-4a: the raw mode's rules
+// ---------------------------------------------------------------------------
+
+void TestRaw() {
+  namespace rr = mcla::gpu::rr;
+  // DecideRaw over every combination of its facts, against a second statement of the order of the reasons
+  bool agrees = true, possible_agrees = true, only_raw_has_all = true;
+  int raw_cells = 0;
+  for (int asked = 0; asked < 2; ++asked) {
+    for (int view = 0; view < 2; ++view) {
+      for (int stub = 0; stub < 2; ++stub) {
+        for (uint32_t samples : {1u, 2u, 4u, 8u}) {
+          for (int ready = 0; ready < 2; ++ready) {
+            sr::RawFacts f;
+            f.asked = asked != 0;
+            f.debug_view = view != 0;
+            f.stub = stub != 0;
+            f.host_samples = samples;
+            f.pipelines_ready = ready != 0;
+            const sr::RawWhy got = sr::DecideRaw(f);
+            const sr::RawWhy want = !asked ? sr::RawWhy::kNotAsked : view ? sr::RawWhy::kDebugView : stub ? sr::RawWhy::kStub : samples != 1 ? sr::RawWhy::kMultisampled : !ready ? sr::RawWhy::kPipelines : sr::RawWhy::kRaw;
+            agrees = agrees && got == want;
+            raw_cells += got == sr::RawWhy::kRaw ? 1 : 0;
+            only_raw_has_all = only_raw_has_all && ((got == sr::RawWhy::kRaw) == (asked && !view && !stub && samples == 1 && ready));
+            // the pipelines are asked for only for a frame that could take them: everything but the pipelines
+            possible_agrees = possible_agrees && sr::RawPossible(f) == (asked && !view && !stub && samples == 1);
+          }
+        }
+      }
+    }
+  }
+  Check(agrees, "RR-4a: DecideRaw: not asked, a debug view, the stub, a multisampled colour, pipelines not made: in that order, else raw (2 x 2 x 2 x 4 x 2 facts)");
+  Check(raw_cells == 1 && only_raw_has_all, "RR-4a: exactly one cell of the table is raw: asked, no view, RT3 there, one sample, the pipelines made");
+  Check(possible_agrees, "RR-4a: RawPossible is everything but the pipelines (the raw pipelines are listed with the precache only for such a frame: with the plan not RR none ever is)");
+  {
+    sr::RawFacts f;
+    Check(sr::DecideRaw(f) == sr::RawWhy::kNotAsked && !sr::RawPossible(f), "RR-4a: the default frame (the plan not RR) is not asked: the plain passes");
+    for (int w = 0; w < int(sr::RawWhy::kCount); ++w) {
+      const std::string name = sr::RawWhyName(sr::RawWhy(w));
+      Check(!name.empty() && name != "?", "RR-4a: raw reason " + std::to_string(w) + " has a name");
+    }
+  }
+  // the hit distance image and the held bytes
+  Check(sr::HitImageBytes(1920, 1080) == 1920ull * 1080ull * 2ull && sr::HitImageBytes(3840, 2160) == 3840ull * 2160ull * 2ull && sr::kBytesR16f == 2, "RR-4a: the hit distance image is R16_FLOAT at the picture's size: 4.0 MiB at 1080p, 15.8 MiB at 4K");
+  Check(sr::RawHeldBytes(960, 540, 1920, 1080) == sr::ImageBytes(960, 540) + sr::HitImageBytes(1920, 1080) && sr::RawHeldBytes(960, 540, 1920, 1080) < sr::HeldBytes(960, 540),
+        "RR-4a: a raw frame holds the trace and the hit image, less than the plain three (the accumulation's two are not needed)");
+  Check(sr::kRawReleaseAfter == 120, "RR-4a: the images the mode does not need go back after 120 frames of the other mode");
+  // the miss distance is the same number as the guide side's (dlss_rr_rules.h kRawMissDistance) and as the trace's alpha holds for a ray that found nothing
+  Check(hs::kSsrMissLength == rr::kRawMissDistance && rr::RawHitDistance(true, false, 0.0f) == hs::kSsrMissLength, "RR-4a: a ray that found nothing is 4096 on both sides (the guide's raw rule and the trace's miss length)");
+  // the distance the hit pass reads back from the trace's alpha is the one the trace packed (a vehicle's, rounded to the 3% its ID took)
+  Check(hs::SsrHitDistance(ThroughHalf(hs::SsrPackHit(12.5f, false, 0))) == 12.5f && hs::SsrHitDistance(ThroughHalf(hs::SsrPackHit(12.5f, true, 7))) > 12.0f && hs::SsrHitDistance(ThroughHalf(hs::SsrPackHit(12.5f, true, 7))) < 13.0f,
+        "RR-4a: the hit pass reads the trace's alpha through SsrHitDistance: the distance, within 3% for a vehicle's hit");
+}
+
+// ---------------------------------------------------------------------------
 // the sources
 // ---------------------------------------------------------------------------
+
+// The text of a shader without its RR-4a raw compilation's block: from `#if SSR_RAW` to `#else`, the `#endif` dropped (what the plain compilations contain).
+std::string PlainOf(const std::string& text) {
+  const size_t a = text.find("#if SSR_RAW\n");
+  if (a == std::string::npos) return text;
+  const size_t e = text.find("#else\n", a);
+  const size_t f = text.find("#endif\n", a);
+  if (e == std::string::npos || f == std::string::npos || e > f) return text;
+  return text.substr(0, a) + text.substr(e + 6, f - (e + 6)) + text.substr(f + 7);
+}
 
 std::string Read(const std::string& dir, const std::string& rel) {
   std::string text;
@@ -1667,6 +1733,92 @@ std::vector<std::string> WordsUsed(const std::string& text) {
     if (std::find(out.begin(), out.end(), name) == out.end()) out.push_back(name);
   }
   return out;
+}
+
+// RR-4a: the raw mode's sources: the shaders, their registration, the host's use of the rules (nothing raw unless asked: the plain frame is the old one), the wiring and the debug switch.
+void TestRawSources(const std::string& dir, const std::string& rules, const std::string& header, const std::string& cpp, const std::string& scene, const std::string& cmake, const std::string& shaders_h,
+                    const std::string& pass, const std::string& apply_ps, const std::string& settings, const std::string& manifest, const std::string& meta) {
+  const std::string hit_ps = Read(dir, "hlsl/ssr_hit_ps.hlsl"), trace_ps = Read(dir, "hlsl/ssr_trace_ps.hlsl"), temporal = Read(dir, "temporal.cpp"), temporal_h = Read(dir, "temporal.h");
+  const std::string trigger = FunctionText(cpp, "bool ScreenReflections::OnTrigger(");
+  // the shaders: the raw compilation of the apply and the hit pass
+  Check(Has(cmake, "larecomp_gpu_host_shader(ssr_apply_raw_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=0 SSR_RAW=1)") && Has(cmake, "larecomp_gpu_host_shader(ssr_hit_ps ps_6_0 DEFINES SSR_MS=0)"),
+        "RR-4a: CMake builds the raw resolve (the apply with SSR_RAW) and the hit pass, over plain planes");
+  Check(Has(shaders_h, "case 7: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_raw_ps);") && Has(shaders_h, "default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_hit_ps);") && Has(shaders_h, "case 4: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);") &&
+            Has(shaders_h, "case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ps);") && Has(shaders_h, "case 3: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ps);"),
+        "RR-4a: ScreenReflectionsPixelShader numbers them 7 and 8 (after the old five and R4's two) and the old ones keep their numbers");
+  Check(Has(header, "enum Shader : uint32_t { kShaderTrace, kShaderTraceMs, kShaderTemporal, kShaderApply, kShaderApplyMs, kShaderTraceRt, kShaderTraceRtMs, kShaderApplyRaw, kShaderHit, kShaderCount };") &&
+            Has(header, "enum Variant : uint32_t { kVTrace, kVTraceMs, kVTemporal, kVApplyBase, kVTraceRt = kVApplyBase + 8, kVTraceRtMs, kVApplyRaw, kVHit, kVariantCount };"),
+        "RR-4a: the shader and variant enums add the two after the old ones (the old numbering is untouched)");
+  // the apply: the raw block only in the raw compilation, the plain branch exactly what it was
+  Check(Has(apply_ps, "#ifndef SSR_RAW\n#define SSR_RAW 0\n#endif") && Has(apply_ps, "#if SSR_RAW\n    if (t.w != 0.0f) {\n      const float dz = (SsrHizAt(SsrHz(), q.x, q.y) - z) / sigma;") &&
+            Has(apply_ps, "#else\n    if (t.w > 0.0f) {\n      const float dz = (t.w - z) / sigma;\n      w = wx * wy / (1.0f + dz * dz);\n    }\n#endif") && Count(apply_ps, "#if SSR_RAW") == 1,
+        "RR-4a: the apply's raw compilation weighs the trace's texels by the Hi-Z's receiver depth (the trace's alpha is the hit), and the plain branch is the one it always was; one block only");
+  Check(!Has(PlainOf(apply_ps), "SsrHizAt(") && Has(PlainOf(apply_ps), "if (t.w > 0.0f) {"), "RR-4a: with the raw block out the apply is the old text (no Hi-Z read, the accumulation's alpha test)");
+  // the hit pass: the apply's gates and weights, the trace's alpha through SsrHitDistance, nothing for a vehicle
+  Check(Has(hit_ps, "SsrClassGain(surface.cls, surface.flags)") && Has(hit_ps, "SsrWetSmooth(surface.cls, surface.smoothness, SsrF(SSR_W_WET))") && Has(hit_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))") &&
+            Has(hit_ps, "SsrViewNormalAt(p, pc).w < 0.5f") && Has(hit_ps, "const float sigma = 0.03f * z + 0.03f;") && Has(hit_ps, "w = wx * wy / (1.0f + dz * dz);") && Has(hit_ps, "(SsrHizAt(SsrHz(), q.x, q.y) - z) / sigma") &&
+            Has(hit_ps, "return float4(SsrHitDistance(best_hit), 0.0f, 0.0f, 0.0f);") && Has(hit_ps, "const SsrSurface surface = SsrSurfaceAt(p, false);"),
+        "RR-4a: the hit pass has the apply's gates (class, smoothness, ramp, normal) and the apply's weights, and writes the heaviest trace texel's distance in x");
+  Check(Has(apply_ps, "const float sigma = 0.03f * z + 0.03f;") && Has(apply_ps, "const float2 uv_ssr = (float2(p) + 0.5f) * 0.5f - 0.5f;") && Has(hit_ps, "const float2 uv_ssr = (float2(p) + 0.5f) * 0.5f - 0.5f;") &&
+            Has(apply_ps, "const int2 q = clamp(b0 + int2(k & 1, k >> 1), int2(0, 0), ssr - 1);") && Has(hit_ps, "const int2 q = clamp(b0 + int2(k & 1, k >> 1), int2(0, 0), ssr - 1);"),
+        "RR-4a: the hit pass takes the same four texels of the same place as the apply (the two are one rule: change one, change the other)");
+  Check(!Has(hit_ps, "SSR_W_ROAD_VIEW") && !Has(hit_ps, "SSR_W_STRENGTH") && !Has(hit_ps, "SSR_W_FRAME") && Has(hit_ps, "SsrLo(SsrW(SSR_W_SRC))") && Has(hit_ps, "SsrHizAt(SsrHz(), q.x, q.y)"),
+        "RR-4a: the hit pass reads no word the other passes borrowed (the road view, the strength, the frame): the trace slot in the source word's low half and the Hi-Z");
+  Check(Has(pass, "float SsrHizAt(uint level, int cx, int cy) {"), "RR-4a: the Hi-Z reader the raw compilation and the hit pass use is the pass header's one");
+  // the host: nothing raw unless asked; the pipelines listed only for a frame that could take them; the passes; the order
+  Check(Has(cpp, "constexpr plume::RenderFormat kHitFormat = plume::RenderFormat::R16_FLOAT;") && Has(cpp, "case kVHit: return make(kShaderHit, copy, 1, kHitFormat);") && Has(cpp, "case kVApplyRaw: return make(kShaderApplyRaw, apply_blend(false), 1);"),
+        "RR-4a: the hit image is R16_FLOAT and the pipelines are the raw resolve (adding, one sample) and the hit pass (copy)");
+  const size_t possible_at = trigger.find("if (ssr::RawPossible(raw_facts)) {");
+  const size_t apply_pipe_at = trigger.find("Pipeline(kVApplyRaw)");
+  const size_t hit_pipe_at = trigger.find("Pipeline(kVHit)");
+  Check(possible_at != std::string::npos && apply_pipe_at != std::string::npos && hit_pipe_at != std::string::npos && possible_at < apply_pipe_at && possible_at < hit_pipe_at && Count(cpp, "Pipeline(kVApplyRaw)") == 1 &&
+            Count(cpp, "Pipeline(kVHit)") == 1,
+        "RR-4a: the raw pipelines are asked for in one place, inside the rules' RawPossible: a frame that is not asked never lists them with the host precache");
+  Check(Has(trigger, "raw_facts.asked = raw_requested;") && Has(trigger, "raw_facts.debug_view = debug_view;") && Has(trigger, "raw_facts.stub = decision.stub;") && Has(trigger, "raw_facts.host_samples = depth.host_samples;") &&
+            Has(trigger, "bool raw = raw_why == ssr::RawWhy::kRaw;") && Has(trigger, "raw_why = ssr::RawWhy::kImages;") && Has(header, "bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false);"),
+        "RR-4a: the frame is raw by the rules' decision on what the caller asked (the default is plain), a hit image that cannot be made keeps the frame plain");
+  Check(Has(trigger, "if (raw_ever_asked_ && uint32_t(raw_why) != raw_why_logged_) {") && Has(trigger, "if (raw_requested) {\n    raw_ever_asked_ = true;\n  }"), "RR-4a: nothing is logged until the mode was asked for once: the log of a run with the plan not RR is what it was");
+  Check(Has(trigger, "  if (!raw) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPass(list, accum_[write_], temporal_pipeline, temporal);\n  }"),
+        "RR-4a: the accumulation runs only in a plain frame");
+  Check(Has(trigger, "if (raw) {\n    // RR-4a: the resolve reads the trace itself") && Has(trigger, "apply.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));") &&
+            Has(trigger, "  } else {\n    apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)\n    apply.Set(pk::kRoadViewApply, road_word);\n  }") &&
+            Has(trigger, "list->setPipeline(raw ? raw_apply_pipeline : apply_pipeline);") && Has(trigger, "pass_timing_->Mark(list, \"ssr apply raw\");"),
+        "RR-4a: the raw resolve reads the trace in both halves of the source word and keeps the Hi-Z words (the road view's borrowing is the plain apply's)");
+  const size_t apply_mark = trigger.find("Mark(list, \"ssr apply\")"), hit_mark = trigger.find("Mark(list, \"ssr hit\")"), after_mark = trigger.find("Mark(list, \"after ssr\")"), hit_draw = trigger.find("DrawPass(list, hit_, hit_pipeline, hit_push);");
+  const size_t apply_draw = trigger.find("list->drawInstanced(3, 1, 0, 0);");
+  Check(apply_mark != std::string::npos && hit_mark != std::string::npos && after_mark != std::string::npos && apply_draw != std::string::npos && hit_draw != std::string::npos && apply_draw < hit_mark && hit_mark < hit_draw && hit_draw < after_mark &&
+            Has(trigger, "hit_push.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));") && Has(trigger, "hit_ready_ = true;") && Count(cpp, "DrawPass(list, hit_,") == 1,
+        "RR-4a: in a raw frame the hit pass follows the resolve's draw and comes before the closing mark, reading the trace; the image is announced only then");
+  Check(Has(trigger, "  if (!raw) {\n    last_key_ = now;") && Has(trigger, "  } else {\n    last_key_.valid = false;\n  }") && Has(trigger, "plain_streak_") && Has(trigger, "raw_streak_ >= ssr::kRawReleaseAfter"),
+        "RR-4a: a raw frame leaves no history (the frame after it starts again), and the images of the mode not in use go back after a spell");
+  Check(Has(FunctionText(cpp, "void ScreenReflections::BeginFrame()"), "hit_ready_ = false;") && Has(header, "const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }") &&
+            Has(FunctionText(cpp, "void ScreenReflections::ReleaseImages()"), "&hit_") && Has(FunctionText(cpp, "uint64_t ScreenReflections::HeldBytes() const"), "&hit_"),
+        "RR-4a: the hit image is announced for the frame that wrote it only, released with the others and counted in the memory line");
+  // the wiring: the caller asks the temporal system, which says false with the plan not RR; the image goes to the guide pass
+  Check(Has(scene, "const bool raw_ssr = temporal_ && temporal_->RawModes().Ssr();") && Has(scene, "temporal_->NoteRrHit(ssr_ ? ssr_->RawHitImage() : nullptr,") && Has(temporal_h, "rr::RawModes RawModes();") &&
+            Has(temporal_h, "void NoteRrHit(const HostImage* ssr, const HostImage* car_refl)"),
+        "RR-4a: Scene asks TemporalSystem::RawModes for the effect and hands the hit image over after the trigger's passes");
+  Check(Has(temporal, "in.hit[0] = rr_hit_[0];") && Has(temporal, "in.hit[1] = rr_hit_[1];") && Has(temporal, "rr_hit_[0] = rr_hit_[1] = nullptr;"), "RR-4a: the guide pass gets this frame's hit images; the frame boundary forgets last frame's");
+  const std::string raw_modes = FunctionText(temporal, "rr::RawModes TemporalSystem::RawModes() {");
+  Check(Has(raw_modes, "f.play_view = frame_.samples != 0 && frame_.view == temporal::View::kPlay;") && Has(raw_modes, "rr::RawModesOf(f, rr::RawSwitchOn(") && Has(raw_modes, "if (f.plan_rr || rr_raw_logged_) {"),
+        "RR-4a: RawModes adds the play view to what the boundary knew, takes the two switches, and logs/counts only once the plan has been RR");
+  Check(Has(temporal, "frame_.raw.plan_rr = rr_plan_.use_rr && effective_ == Upscaler::kDlss;") && Has(temporal, "if (frame_.raw.plan_rr) {\n    frame_.raw.failed = dlss::GetRayReconstructionFacts().failed;") &&
+            Has(temporal, "frame_.raw.context_ready = ready && dlss_ && rr_context_asked_ && dlss_->CompanionReady(rr_request_);") && Has(temporal, "frame_.raw.armed = frame_.armed;"),
+        "RR-4a: the boundary's facts (plan RR on DLSS, no failure, the context made, the frame armed) are read only while the plan is RR");
+  // the debug switch: debug-only, live, default 1, in the three generated files
+  const std::string rex_setting = std::string("REX_") + "SETTING(";
+  bool in_all = true;
+  for (const char* name : {"mcla_gpu_dlss_rr_ssr", "mcla_gpu_dlss_rr_car_refl"}) {
+    const std::string n = name;
+    const size_t decl = settings.find(rex_setting + "i32, " + n + ", 1,");
+    const size_t end = decl == std::string::npos ? std::string::npos : settings.find(");\n", decl);
+    const bool tagged = decl != std::string::npos && end != std::string::npos && settings.substr(decl, end - decl).find("rex::kDebugOnly, rex::Range{0, 1}") != std::string::npos;
+    const bool restart = decl != std::string::npos && end != std::string::npos && settings.substr(decl, end - decl).find("kRestart") != std::string::npos;
+    in_all = in_all && tagged && !restart && Has(settings, "inline auto& " + n + " = g_gpu." + n + ";") && Has(manifest, "\"" + n + "\": {") && Has(meta, "{\"" + n + "\", \"MCLA/GPU\"},");
+  }
+  Check(in_all, "RR-4: the two switches (mcla_gpu_dlss_rr_ssr, mcla_gpu_dlss_rr_car_refl) are debug-only, live, 0 or 1, on by default, in the settings header, its aliases, the manifest and the meta list");
+  Check(Has(rules, "kRawReleaseAfter = 120") && Has(rules, "enum class RawWhy : uint8_t {"), "RR-4a: the rules header carries the raw rules");
+  (void)trace_ps;
 }
 
 void TestSources(const std::string& dir) {
@@ -1751,7 +1903,7 @@ void TestSources(const std::string& dir) {
 
   // the order at the trigger: the capture, then the reflections, then the car's history
   const size_t capture_at = scene.find("colour_captured = screen_->CapturePost(record, summary, list);");
-  const size_t ssr_at = scene.find("ssr_->OnTrigger(summary, list);");
+  const size_t ssr_at = scene.find("ssr_->OnTrigger(summary, list, raw_ssr);");
   const size_t car_at = scene.find("car_refl_->OnResolve(record, summary, list);");
   Check(capture_at != std::string::npos && ssr_at != std::string::npos && car_at != std::string::npos && capture_at < ssr_at && ssr_at < car_at, "scene.cpp: the colour capture, then the reflections, then the car self-reflection's history");
   Check(Has(scene, "if (colour_captured && ssr_) {") && Has(scene, "if (ssr_ && ssr_->wants_draws()) {\n    ssr_->OnMainDraw(draw.match, banks);") && Has(scene, "ssr_->BeginFrame();") && Has(scene, "ssr_->OnPresent();"),
@@ -1774,7 +1926,7 @@ void TestSources(const std::string& dir) {
 
   // the build: the sources, the shaders, the test, the registration of the blobs, the precache owner
   Check(Has(cmake, "    ssr.cpp\n") && Has(cmake, "add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)"), "CMake: the source and the test");
-  for (const char* stem : {"ssr_trace_ps", "ssr_trace_ms_ps", "ssr_temporal_ps", "ssr_apply_ps", "ssr_apply_ms_ps"}) {
+  for (const char* stem : {"ssr_trace_ps", "ssr_trace_ms_ps", "ssr_temporal_ps", "ssr_apply_ps", "ssr_apply_ms_ps", "ssr_apply_raw_ps", "ssr_hit_ps"}) {
     const std::string s = stem;
     Check(Has(cmake, "larecomp_gpu_host_shader(" + s + " ps_6_0") && Has(shaders_h, "#include \"" + s + ".hlsl.dxil.h\"") && Has(shaders_h, "#include \"" + s + ".hlsl.spirv.h\"") && Has(shaders_h, "MCLA_GPU_HOST_SHADER_BLOB(" + s + ")"),
           "the shader " + s + " is built, included for both backends and returned by ScreenReflectionsPixelShader");
@@ -1873,12 +2025,14 @@ void TestSources(const std::string& dir) {
   // the aliased words: a pass never reads a word for its first meaning that another use of it has taken
   Check(!Has(trace_ps, "SSR_W_SRC") && !Has(trace_ps, "SSR_W_STRENGTH") && Has(trace_ps, "SsrF(SSR_W_FALLBACK)") && Has(trace_ps, "SsrW(SSR_W_ROAD_VIEW)"), "the trace reads the road view and the share where the other passes read the source images and the strength");
   Check(!Has(temporal_ps, "SSR_W_RT2_RT3") && !Has(temporal_ps, "SsrRt3At(") && !Has(temporal_ps, "SsrRt1At(") && Has(temporal_ps, "SsrW(SSR_W_VEH_TABLE)"), "the temporal pass reads the vehicle table where the others read the planes' word");
-  Check(!Has(apply_ps, "SsrHizAt(") && !Has(apply_ps, "SSR_W_HIZ") && Has(apply_ps, "SsrW(SSR_W_ROAD_VIEW_APPLY)"), "the apply reads no Hi-Z, so its first word carries the road view for the debug view");
+  Check(!Has(PlainOf(apply_ps), "SsrHizAt(") && !Has(apply_ps, "SSR_W_HIZ") && Has(apply_ps, "SsrW(SSR_W_ROAD_VIEW_APPLY)"), "the apply reads no Hi-Z (outside the RR-4a raw compilation, which a debug view never is), so its first word carries the road view for the debug view");
   Check(Has(pass, "SsrHi(SsrW(SSR_W_STENCIL))") && Has(pass, "SsrLo(SsrW(SSR_W_LIN0))") && Has(trace_ps, "SsrVehicleIdAt(hx, hy)") && Has(trace_ps, "SsrPackHit(distance_out, vehicle_hit, vehicle_id)") && Has(temporal_ps, "SsrVehicleImage(m0, m1, m2, v0, v1, v2,"),
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
   Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(SsrRoadViewAt(road_view, screen_uv), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
   Check(Has(temporal_ps, "history = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
+
+  TestRawSources(dir, rules, header, cpp, scene, cmake, shaders_h, pass, apply_ps, settings, manifest, meta);
 
   // the pause world and the effect's own gate are in the rules
   Check(Has(rules, "d.why = Why::kPause;") && Has(trigger, "facts.pause_view = (sf.flags & screen::kFramePause) != 0;"), "the pause menu's, the garage's and the map's world are not reflected");
@@ -1914,6 +2068,7 @@ int main(int argc, char** argv) {
   TestVirtualImage();
   TestWetI2();
   TestHitPacking();
+  TestRaw();
   TestVehicleImage();
   TestClip();
   TestRoadViewRules();

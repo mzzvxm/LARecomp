@@ -10,6 +10,12 @@
 //               shader's), up to 64 steps, 0.92 (about 12 frames). The size is the same for both: the images are HALF the picture's (11.9 MiB at 1080p, 47.5 MiB at 4K), the
 //               resolve into the colour is at the picture's size. The temporal part (clip, edge rule, vehicle rows) is part of both levels; the debug settings below tune it.
 //
+// RR-4a, THE RAW MODE (dlss_rr_rules.h RawModes, ssr_rules.h DecideRaw; mcla_gpu_dlss_rr_ssr is the A/B). While DLSS Ray Reconstruction takes the frame it is the denoiser of this effect's noise: the
+//   trace's one ray a pixel goes straight into the colour (hlsl/ssr_apply_ps.hlsl compiled with SSR_RAW reads the trace itself), the accumulation does not run, and a pass after the resolve
+//   (hlsl/ssr_hit_ps.hlsl) writes how far each ray went into an R16_FLOAT image of the picture's size, which the guide pass reads as the reflection's hit distance (RawHitImage; rr_guides.h Inputs::hit[0]).
+//   Asked for by the caller at the trigger (OnTrigger's `raw_requested`: TemporalSystem::RawModes()); with the plan not RR nothing of it exists in the frame: the same passes, shaders and pipelines
+//   listed as before. A debug view, the stub class, a multisampled colour or pipelines still being made keep the frame plain (logged when it changes).
+//
 // WHERE THINGS COME FROM (all of it shared, nothing is made twice):
 //   ScreenShared (screen_shared.h)  hiz_min (the min chain of the AO's linear depth: the walk), colour_post with its mip chain (the radiance of a hit: the effect's Want of it also turns the mips on),
 //                                   the camera. The Want is (hiz_min, colour_post); the owner's `history` product (the last frame's colour_post) is not used: the accumulation keeps its own images,
@@ -29,6 +35,20 @@
 //   3 apply     the picture's size, into the main colour, additive, alpha untouched (or a debug view in its place): the class's gain, the environment BRDF's Fresnel, the four nearest texels of the
 //               accumulated image weighted by depth agreement
 // What no ray finds stays the game's own reflection (the road's planar view, the glass' env map); a car's paint and chrome never take the effect (the class gate), they keep their own.
+//
+// CITY-RT R4, THE RAY TRACED FALLBACK (ssr_rt.h, ssr_rt_rules.h; perf/CITY-RT-M2.md section 6). On a card that traces rays, with the effect on, the trace pass writes a second target, the CONFIDENCE (the class
+// group and the picture's share of the pixel's reflection), and between the trace and the accumulation two compute passes trace the SAME ray into the city's structures for the pixels the picture could not
+// speak for (off the picture, behind a foreground object, pointing back at the camera), shade the hit with the city hit library and add it to the trace image (a storage image then); the accumulation and
+// the apply run unchanged. The levels, caps, classes and the governor are ssr_rt_rules.h's; the debug setting mcla_gpu_ssr_rt (auto, off, high, ultra) is the A/B (auto follows the effect's level on a strong
+// card). With no ray tracing (tier none), the effect off or the debug word off, none of it exists: no confidence image, no storage flags, the plain trace pass, the same passes as before.
+//
+// CITY-RT R6, THE DENOISER AND RAY RECONSTRUCTION (ssr_denoise_rules.h, rt_denoise.h, perf/CITY-RT-M2.md section 7). The fallback's ray is one a pixel, so its pixels are noisy by design, and what cleans them
+// depends on who denoises the frame. In a PLAIN frame RtDenoise (the shared filter, written once for this and the probe field's detail pass) runs its spatial stage between the accumulation and the resolve: up to
+// three iterations of a bilateral a-trous on the pixels the fallback made (share 1 - the picture's confidence), the kernel following the reflection (the lobe's width at the hit seen from the receiver),
+// stopping at edges of depth, normal, roughness, brightness and hit distance; the resolve reads its result and the accumulation's own image stays the next frame's history. In a RAW frame (DLSS Ray
+// Reconstruction takes it) the fallback still follows: its one ray a pixel goes into the trace image with its hit distance in the alpha, the resolve reads the trace itself, the hit pass turns the alpha into the
+// guide pass's hit distance for the filled pixels too, and RtDenoise is skipped (RR is the denoiser; filtering twice is blur). The fallback is a consumer of the DENOISER row (rr::kCityRtReflections,
+// NoteConsumer in BeginFrame): with the plan not RR none of the raw side exists and the frame is the plain one. mcla_gpu_rt_denoise (debug-only, -1 auto, 0 off, 1 to 3 iterations) is the A/B.
 //
 // GB-I2 (the three parts that make it a finished effect):
 //   TEMPORAL     the accumulation clips the history to the trace's neighbourhood (mean +- 1.25 sigma inside its min / max: a variance clip), reads no history at the picture's edge, and moves a REFLECTED
@@ -66,6 +86,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <plume_render_interface.h>
@@ -74,7 +95,10 @@
 #include "edram.h"
 #include "host_passes.h"
 #include "resolve.h"
+#include "rt_denoise.h"
 #include "screen_frame.h"
+#include "ssr_denoise_rules.h"
+#include "ssr_rt.h"
 #include "ssr_rules.h"
 #include "temporal_identities.h"
 
@@ -82,10 +106,13 @@ namespace mcla::gpu {
 
 class AmbientOcclusion;
 class BindlessHeap;
+class CarRtScene;
 class Device;
 class FrameRing;
 class GBuffer;
 class PassTiming;
+class RtSceneService;
+class RtWorldFrame;
 class ScreenShared;
 
 class ScreenReflections {
@@ -97,6 +124,9 @@ class ScreenReflections {
 
   // Makes the layout and the shaders (the pipelines are made in the background when first wanted). Never fails the renderer: without them nothing runs (logged).
   void Initialize(Device& device, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing);
+  // CITY-RT R4: the ray traced fallback's layout, shaders and buffers (ssr_rt.h). After the car scene's and the scene service's Initialize (the ray tracing set is in its layout) and before the host
+  // precache starts; makes nothing where the device cannot trace rays. The effect is what it was without it.
+  void InitializeRt(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, RtSceneService* service, RtWorldFrame* world);
   // GPU idle and the FrameRing drained, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
@@ -113,18 +143,25 @@ class ScreenReflections {
   // A prepared draw of the main view, before the trigger: its vertex constants' wetness (VS c43.x, gReflectionParams.x: 0.095 dry, 1.17 in rain) is a vote for the road's.
   void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks);
   // The trigger's colour capture was just recorded (ScreenShared::CapturePost returned true): runs the passes. True when passes were recorded (the caller's list state is gone). Once a frame.
-  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
+  // `raw_requested` (RR-4a): DLSS Ray Reconstruction takes this frame and this effect's switch is on (TemporalSystem::RawModes().Ssr()); the frame is raw only if the rules allow it (DecideRaw).
+  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false);
+  // RR-4a: this frame's hit distance image (R16_FLOAT, the picture's size, readable) when the frame ran RAW and wrote it, else null. Valid until the next frame's trigger.
+  const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
   // A guest present: the frame boundary (the history's ping-pong, the idle count).
   void OnPresent();
 
-  // The video memory the images hold now.
+  // The video memory the images hold now (the fallback's confidence image, list and control words included).
   uint64_t HeldBytes() const;
+  // "; ssr rt: ..." for the renderer's census line: the fallback's frames, caps, counts and the governor's step; empty where it was never wanted.
+  std::string RtCensusText() const { return rt_.CensusText() + ssr_denoise::FormatTotals(denoise_totals_); }
 
  private:
-  // The pixel shaders, in the order host_shaders.h ScreenReflectionsPixelShader numbers them.
-  enum Shader : uint32_t { kShaderTrace, kShaderTraceMs, kShaderTemporal, kShaderApply, kShaderApplyMs, kShaderCount };
-  // The pipelines: trace, temporal, then the apply pass for each host sample count (1, 2, 4, 8) and for the add and the view blend.
-  enum Variant : uint32_t { kVTrace, kVTraceMs, kVTemporal, kVApplyBase, kVariantCount = kVApplyBase + 8 };
+  // The pixel shaders, in the order host_shaders.h ScreenReflectionsPixelShader numbers them (kShaderTraceRt, kShaderTraceRtMs: the trace with the confidence target, CITY-RT R4; kShaderApplyRaw, kShaderHit: the raw
+  // mode's resolve and hit distance pass, RR-4a).
+  enum Shader : uint32_t { kShaderTrace, kShaderTraceMs, kShaderTemporal, kShaderApply, kShaderApplyMs, kShaderTraceRt, kShaderTraceRtMs, kShaderApplyRaw, kShaderHit, kShaderCount };
+  // The pipelines: trace, temporal, then the apply pass for each host sample count (1, 2, 4, 8) and for the add and the view blend, then the trace with the confidence target (two render targets; CITY-RT R4), then
+  // (RR-4a, made only for a frame that is asked to be raw) the apply that reads the trace and the hit distance pass.
+  enum Variant : uint32_t { kVTrace, kVTraceMs, kVTemporal, kVApplyBase, kVTraceRt = kVApplyBase + 8, kVTraceRtMs, kVApplyRaw, kVHit, kVariantCount };
 
   const char* VariantName(uint32_t variant) const;
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
@@ -138,8 +175,12 @@ class ScreenReflections {
   void Bind(plume::RenderCommandList* list) const;
   // The same sequence as HostPasses::DrawInto with this layout (128 bytes of push constants), into `image` at its own size.
   void DrawPass(plume::RenderCommandList* list, HostImage& image, const plume::RenderPipeline* pipeline, const ssr::Push& push);
-  bool EnsureImages(uint32_t width, uint32_t height);
+  // `rt`: the frame follows the ray traced fallback: the trace image is a storage image too and the confidence image and the two target framebuffer exist (else they do not). `raw` (RR-4a): the frame is raw: the
+  // accumulation's two images are not needed and the picture's size hit distance image is (`render_*`); the fallback's images are made for a raw frame all the same when `rt` (its compute passes run in it).
+  bool EnsureImages(uint32_t width, uint32_t height, bool rt, bool raw = false, uint32_t render_width = 0, uint32_t render_height = 0);
   void ReleaseImages();
+  // The trace pass with two targets (the trace image and the confidence image), the same sequence as DrawPass.
+  void DrawPassRt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline, const ssr::Push& push);
 
   Device* device_ = nullptr;
   BindlessHeap* heap_ = nullptr;
@@ -170,9 +211,26 @@ class ScreenReflections {
   float fallback_setting_ = 1.0f;     // GB-I2: mcla_gpu_ssr_fallback
   bool vehicle_rows_ = true;          // GB-I2: mcla_gpu_ssr_vehicle_rows
 
-  // the images: the trace, and the accumulated image twice (this frame's output and the last frame's)
+  // the images: the trace, and the accumulated image twice (this frame's output and the last frame's); RR-4a: the hit distance image of a raw frame
   HostImage trace_;
+  // CITY-RT R4: the confidence target (R8G8_UNORM at the SSR size) and the framebuffer of the trace pass with two targets; made only while the fallback is on
+  HostImage confidence_;
+  std::unique_ptr<plume::RenderFramebuffer> rt_framebuffer_;
+  const plume::RenderTexture* rt_framebuffer_for_[2] = {nullptr, nullptr};
+  ScreenReflectionsRt rt_;
+  // CITY-RT R6: RtDenoise, the shared denoiser (rt_denoise.h): its spatial stage between the accumulation and the resolve in a frame the fallback followed (ssr_denoise_rules.h has the rules)
+  RtDenoise denoise_;
+  ssr_denoise::Totals denoise_totals_;
+  uint32_t denoise_why_logged_ = ~0u;
   std::array<HostImage, 2> accum_;
+  HostImage hit_;                     // R16_FLOAT, the picture's size (RawHitImage)
+  bool hit_ready_ = false;            // this frame ran raw and wrote hit_
+  uint32_t raw_streak_ = 0;           // raw frames in a row (the accumulation's images go back after ssr::kRawReleaseAfter)
+  uint32_t plain_streak_ = 0;         // plain frames in a row that ran (the hit image goes back after the same)
+  uint64_t raw_frames_ = 0;
+  uint32_t raw_why_logged_ = ~0u;     // the raw decision last logged (a log line when it changes once the mode was asked for)
+  bool raw_ever_asked_ = false;
+  bool raw_first_logged_ = false;
   uint32_t write_ = 0;                // the accum_ image this frame writes (the other one is the history)
   uint32_t size_[2] = {0, 0};
   uint32_t idle_frames_ = 0;          // frames since the effect last ran (the images go back after a while)

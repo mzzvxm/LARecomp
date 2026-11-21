@@ -17,7 +17,9 @@
 #include "car_dump.h"
 #include "car_rt_hit_rules.h"
 #include "car_rt_refl.h"
+#include "denoiser_setting.h"
 #include "descriptors.h"
+#include "dlss_rr_rules.h"
 #include "draw_decode.h"
 #include "gpu_class.h"
 #include "host_plan.h"
@@ -244,7 +246,10 @@ plume::RenderPipeline* CarSelfRefl::Pipeline(uint32_t pass) {
   return pipelines_[pass].get();
 }
 
+const HostImage* CarSelfRefl::RawHitImage() const { return rt_ ? rt_->RawHitImage() : nullptr; }
+
 void CarSelfRefl::BeginFrame() {
+  raw_ = false;  // RR-4b: the Scene says it again before the trigger's history pass, in a frame Ray Reconstruction takes
   Mode mode = ReadMode();
   if (!ready_ && mode != Mode::kOff && !shaders_failed_ && MakeShaders()) {
     // Off at the start, on now (a live change): the shaders were not made; they are made here (a short call) and the
@@ -280,6 +285,10 @@ void CarSelfRefl::BeginFrame() {
       screen_->Want(screen::Consumer::kCarRtRefl, rt_->ScreenProducts());
     }
   }
+  // RR-INT: the DENOISER row's board (denoiser_setting.h): the ray traced reflections run this frame (the pass is wanted and can run: car_rt_refl.h active()). A consumer of Ray Reconstruction
+  // (rr::kConsumers: its raw mode exists, RR-4b); the temporal system's frame boundary reads the board BEFORE this call (frame_order.h kBeginTemporal, kBeginCarRefl), so the plan lags one frame. Only a
+  // flag is set; with the plan not RR nothing else changes.
+  denoiser::NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active());
 }
 
 uint64_t CarSelfRefl::HeldBytes() const {
@@ -524,6 +533,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     info.tan_y = 1.0 / std::max(std::fabs(p.m[1][1]), 1e-9);
     info.frame = frame_;
     info.upscaler = upscaler_running_;
+    info.raw = raw_;  // RR-4b: DLSS Ray Reconstruction is this frame's denoiser (no filter on the trace, its hit distance written)
     // While a scene runs the phase follows the scene's update number like the other noise (scene_noise.h): the same scene frame gets the same ray pattern.
     info.pattern_phase = upscaler_running_ ? uint32_t(scene_noise::Index(frame_) & 7u) : 0u;
     info.exp_bias = exp_bias_;

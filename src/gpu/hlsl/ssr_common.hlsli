@@ -217,6 +217,16 @@ float3 SsrSampleReflection(float3 n, float3 v, float alpha, float u1, float u2) 
   return SsrReflect(h, v);
 }
 
+// CITY-RT R4: the reflection ray of an SSR pixel (px, py the SSR image's pixel, `frame` the frame's number, `ray` the pixel's ray index), the ONE place both the trace (hlsl/ssr_trace_ps.hlsl) and the ray
+// traced fallback (hlsl/ssr_rt_trace_cs.hlsl) take it from: the fallback regenerates the very ray the trace walked, so nothing is stored. A sample that points below the surface is the mirror direction.
+float3 SsrSampleRay(float3 n, float3 v, float alpha, int px, int py, uint frame, uint ray) {
+  float3 dir = SsrSampleReflection(n, v, alpha, SsrNoise1(px, py, frame, ray), SsrNoise2(px, py, frame, ray));
+  if (dot(dir, n) < 0.02f) {
+    dir = SsrReflect(n, v);
+  }
+  return dir;
+}
+
 // ---- the fades -----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The reflection goes to nothing (and the game's own reflection stays alone) as the hit nears the picture's edge: u, v in 0..1.
 float SsrEdgeFade(float u, float v) {
