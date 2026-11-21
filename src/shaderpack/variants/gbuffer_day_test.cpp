@@ -281,10 +281,10 @@ void CheckPixelFixture() {
     }
     const sp::VariantTransformResult again = sp::TransformGBufferDayHlsl(shader, crlf, std::string(kHelper) + "\r\n");
     Check(again.ok && again.hlsl == r.hlsl, std::string(name) + ": a text with CRLF line ends gives the same variant");
-    // In a composition the block moves where the chain puts it (after the headlight's 672 bytes: 1280).
+    // In a composition the block moves where the chain puts it (after the headlight's 1072 bytes: 1680).
     const sp::StageContext after = sp::ContextIn(sp::kFeatureGBuffer, chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer));
     const sp::VariantTransformResult moved = sp::TransformGBufferDayHlsl(shader, kPixelFixture, kHelper, after);
-    Check(moved.ok && Count(moved.hlsl, "uint4 g_GBufferMode : packoffset(c80);") == 1 && Count(moved.hlsl, "SharedConstants + 608") == 0, std::string(name) + ": composed, the block is at 1280");
+    Check(moved.ok && Count(moved.hlsl, "uint4 g_GBufferMode : packoffset(c105);") == 1 && Count(moved.hlsl, "SharedConstants + 608") == 0, std::string(name) + ": composed, the block is at 1680");
   }
   // Not one of the shaders: left out, no error.
   {

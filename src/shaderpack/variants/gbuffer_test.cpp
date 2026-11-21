@@ -298,16 +298,16 @@ void CheckVariantDef() {
   // the transform through the definition works like the function
   const sp::VariantTransformResult r = def.transform(day, kFixture, sp::SoloContext(sp::kFeatureGBuffer));
   Check(r.ok, "the definition's transform runs");
-  // In a composition the block is where the chain puts it: after the headlight's 672 bytes it is at byte 1280 (c80 to c82), in both backends, and nothing is at 608.
+  // In a composition the block is where the chain puts it: after the headlight's 1072 bytes it is at byte 1680 (c105 to c107), in both backends, and nothing is at 608.
   const sp::StageContext after = sp::ContextIn(sp::kFeatureGBuffer, sp::chain::FeatureBit(sp::kFeatureHeadlight) | sp::chain::FeatureBit(sp::kFeatureGBuffer));
   const sp::VariantTransformResult moved = def.transform(day, kFixture, after);
-  Check(after.constants_offset == 1280 && moved.ok, "composed after the headlight's block the offset is 1280");
-  Check(Count(moved.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 1280, 0x10)") == 1 &&
-            Count(moved.hlsl, "#define g_GBufferRay vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 1296, 0x10)") == 1 &&
-            Count(moved.hlsl, "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 1312, 0x10)") == 1 &&
-            Count(moved.hlsl, "uint4 g_GBufferMode : packoffset(c80);") == 1 && Count(moved.hlsl, "float4 g_GBufferRay : packoffset(c81);") == 1 &&
-            Count(moved.hlsl, "float4 g_GBufferCam : packoffset(c82);") == 1 && Count(moved.hlsl, "SharedConstants + 608") == 0,
-        "composed: the three rows are at 1280, 1296 and 1312 (c80 to c82), once in each backend");
+  Check(after.constants_offset == 1680 && moved.ok, "composed after the headlight's block the offset is 1680");
+  Check(Count(moved.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 1680, 0x10)") == 1 &&
+            Count(moved.hlsl, "#define g_GBufferRay vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 1696, 0x10)") == 1 &&
+            Count(moved.hlsl, "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 1712, 0x10)") == 1 &&
+            Count(moved.hlsl, "uint4 g_GBufferMode : packoffset(c105);") == 1 && Count(moved.hlsl, "float4 g_GBufferRay : packoffset(c106);") == 1 &&
+            Count(moved.hlsl, "float4 g_GBufferCam : packoffset(c107);") == 1 && Count(moved.hlsl, "SharedConstants + 608") == 0,
+        "composed: the three rows are at 1680, 1696 and 1712 (c105 to c107), once in each backend");
 }
 
 // The anchor of RT2's albedo (gbuffer_albedo.h) on small texts: which fetch, which lanes, when it is captured and when it is none.

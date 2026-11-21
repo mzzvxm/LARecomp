@@ -780,6 +780,7 @@ void Volumetrics::FillDefaults(const Light& light, const vol::VolFrameContext& f
     lamp.cos_outer = std::cos(62.0f * vol::kPi / 180.0f);
     lamp.cos_inner = std::cos(30.0f * vol::kPi / 180.0f);
     lamp.shadow_view = -1;
+    lamp.shadow_view_b = -1;
   }
   if ((test & 2) != 0) {
     vol::VolLamp& lamp = in->headlights[in->headlight_count++];
@@ -792,6 +793,7 @@ void Volumetrics::FillDefaults(const Light& light, const vol::VolFrameContext& f
     lamp.cos_outer = std::cos(38.0f * vol::kPi / 180.0f);
     lamp.cos_inner = std::cos(14.0f * vol::kPi / 180.0f);
     lamp.shadow_view = -1;
+    lamp.shadow_view_b = -1;
   }
   if (test != 0) {
     // A test light needs something to show in: at least a hazy night's medium.

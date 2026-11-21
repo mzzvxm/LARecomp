@@ -185,20 +185,41 @@ struct Share {
   int taps_used = 0;  // 8 when the first stage agreed, else 24
 };
 
-// GlowVisibleShare of glow_soft.cpp, again: the outer 8 taps (16..23), the inner 16 only when they disagree.
-Share Model(const std::vector<Vec2>& table, const Picture& picture, double centre_x, double centre_y) {
+// A depth picture with a wall at the screen's right edge and the sampler's clamp: everything at x >= wall_from (guest pixels) is nearer than the glow,
+// and a position outside the screen reads the edge texel (the depth copy of the game, sampled with clamp).
+struct EdgePicture {
+  double wall_from;
+  int scale;
+  bool Occluded(double guest_x, double /*guest_y*/) const {
+    const double clamped = std::min(std::max(guest_x, 0.0), 1280.0 - 1e-9);
+    const double texel = std::floor(clamped * scale);
+    return (texel + 0.5) / scale >= wall_from;
+  }
+};
+
+// How far outside the 1280x720 screen a position is, in guest pixels (the larger of the two axes; 0 on it).
+double OutsideScreen(double x, double y) {
+  return std::max({-x, x - 1280.0, -y, y - 720.0, 0.0});
+}
+
+// GlowVisibleShare of glow_soft.cpp, again: the outer 8 taps (16..23), the inner 16 only when they disagree. A tap outside the screen
+// (the depth copy's sampler clamps: the Picture's own Occluded clamps) counts the less the farther outside it is (kGlowSoftEdgeFade).
+template <class P>
+Share Model(const std::vector<Vec2>& table, const P& picture, double centre_x, double centre_y) {
   const auto passes = [&](int i) {
-    return picture.Occluded(centre_x + table[i].x * sp::kGlowSoftRadius, centre_y + table[i].y * sp::kGlowSoftRadius)
-               ? 0
-               : 1;
+    const double x = centre_x + table[i].x * sp::kGlowSoftRadius;
+    const double y = centre_y + table[i].y * sp::kGlowSoftRadius;
+    const double base = picture.Occluded(x, y) ? 0.0 : 1.0;
+    const double outside = std::min(1.0, OutsideScreen(x, y) / sp::kGlowSoftEdgeFade);
+    return base + (1.0 - base) * outside;
   };
-  int passed = 0;
+  double passed = 0.0;
   const int inner = sp::kGlowSoftTaps - sp::kGlowSoftFirstTaps;
   for (int i = inner; i < sp::kGlowSoftTaps; ++i) passed += passes(i);
   Share out;
   out.taps_used = sp::kGlowSoftFirstTaps;
-  if (passed == 0 || passed == sp::kGlowSoftFirstTaps) {
-    out.share = passed == 0 ? 0.0 : 1.0;
+  if (passed < 0.5 || passed > sp::kGlowSoftFirstTaps - 0.5) {
+    out.share = passed < 0.5 ? 0.0 : 1.0;
     out.vis = out.share;
     return out;
   }
@@ -238,6 +259,9 @@ void CheckRule(const std::string& transformed) {
   Check(Contains(transformed, "for (int i = 16; i < 24; ++i)") && Contains(transformed, "for (int j = 0; j < 16; ++j)"),
         "the helper takes taps 16..23 first and 0..15 after");
   Check(!Contains(transformed, "floor("), "no tap is moved to a guest pixel centre");
+  Check(sp::kGlowSoftEdgeFade == 16.0 && Contains(transformed, "(1.0 / 16.0)") && Contains(transformed, "float2(1280.0, 720.0)") &&
+            Contains(transformed, "lerp(passes, 1.0, saturate("),
+        "the helper blends a tap outside the screen to visible over the 16 pixels of glow_soft.h");
 
   // The first stage's 8 taps (16..23) are the rim, in all directions: radii from 0.8 up, no gap of more than 60
   // degrees between neighbours.
@@ -330,7 +354,7 @@ void CheckRule(const std::string& transformed) {
     double single_low = 2.0;
     double single_high = -1.0;
     for (double sway = -0.3; sway <= 0.3; sway += 0.01) {
-      const Share s = Model(table, {400.0 + sway, 3}, centre, 300.5);
+      const Share s = Model(table, Picture{400.0 + sway, 3}, centre, 300.5);
       low = std::min(low, s.vis);
       high = std::max(high, s.vis);
       const double single = Picture{400.0 + sway, 3}.Occluded(centre, 300.5) ? 0.0 : 1.0;
@@ -345,6 +369,80 @@ void CheckRule(const std::string& transformed) {
     flips += single_high - single_low == 1.0 ? 1 : 0;
   }
   Check(flips >= 1, "the game's single tap flips from 1 to 0 under the same sway at one of the two places");
+}
+
+// ---------------------------------------------------------------------------
+// The screen's edge (HL-EDGE-FADE): a glow whose centre is off the screen is not tested against the edge pixel
+// ---------------------------------------------------------------------------
+
+void CheckEdge(const std::string& transformed) {
+  const std::vector<Vec2> table = ReadTable(transformed);
+  if (table.size() != size_t(sp::kGlowSoftTaps)) return;
+
+  // The scene at the right edge of the screen: a wall (a pole, a car's side) from x = 1270 on, nearer than the glow, which the clamped sampler repeats outside the screen.
+  // The first version's glow whose centre was beyond the edge read the wall at the edge and left the whole sprite out.
+  for (const int scale : {1, 3}) {
+    const EdgePicture wall = {1270.0, scale};
+    const std::string s = " at " + std::to_string(scale) + "x";
+    // Far outside the edge (the disc 40 pixels beyond it): shown in full, from 8 taps, though the clamped edge is a wall.
+    const Share far = Model(table, wall, 1320.0, 300.5);
+    Check(far.vis == 1.0 && far.taps_used == 8, "a glow 40 px beyond the screen's edge is shown in full though the edge pixel is a wall" + s);
+    // The game's rule on the same picture, tap by tap, says hidden (the compare against the clamped edge): the model without the blend.
+    int hidden = 0;
+    for (int i = 0; i < sp::kGlowSoftTaps; ++i) {
+      hidden += wall.Occluded(1320.0 + table[i].x * sp::kGlowSoftRadius, 300.5 + table[i].y * sp::kGlowSoftRadius) ? 1 : 0;
+    }
+    Check(hidden == sp::kGlowSoftTaps, "(without the blend all 24 taps would read the wall: the first version left the glow out)" + s);
+    // Inside the screen the wall is the game's compare: a glow 5 px inside the wall's face (all its taps on the wall) is hidden, 40 px in front of it shown.
+    Check(Model(table, wall, 1275.0, 300.5).vis == 0.0, "a glow behind the wall on the screen is left out as before" + s);
+    Check(Model(table, wall, 1230.0, 300.5).vis == 1.0, "a glow clear of the wall on the screen is shown in full" + s);
+    // A sweep of the centre from 18 px inside the screen to 40 px outside, over the wall (the picture at the edge is the wall from 1270 on): the visibility
+    // only rises once the centre is on the wall, never falls, takes no step above 0.35 per twentieth of a pixel, and is 1 from the fade's end.
+    double previous = -1.0, largest_step = 0.0, first_full = 1e9;
+    bool rises = true;
+    for (double x = 1262.0; x <= 1320.0; x += 0.05) {
+      const double v = Model(table, wall, x, 300.5).vis;
+      if (previous >= 0.0) {
+        largest_step = std::max(largest_step, std::fabs(v - previous));
+        if (x > 1277.0) rises &= v >= previous - 1e-12;
+      }
+      if (x > 1274.0 && v >= 1.0 && first_full == 1e9) first_full = x;
+      previous = v;
+    }
+    Check(rises, "over the wall the visibility rises with the centre's way out of the screen, never falls" + s);
+    Check(largest_step <= 0.35, "no step of the visibility above 0.35 per twentieth of a pixel across the screen's edge" + s + " (largest " +
+                                    std::to_string(largest_step) + ")");
+    Check(first_full <= 1280.0 + sp::kGlowSoftEdgeFade + sp::kGlowSoftRadius + 0.1,
+          "the glow is shown in full from its centre 16 + 2.5 px beyond the edge" + s + " (from x = " + std::to_string(first_full) + ")");
+    std::printf("  glow across the right edge over a wall at 1270, %dx: shown in full from x = %.2f, largest step %.3f\n", scale, first_full, largest_step);
+  }
+
+  // The other three edges alike: a glow on, at and beyond the four edges with nothing in front of it is shown in full everywhere (the blend only raises a tap's answer:
+  // it never hides what the game's compare shows).
+  {
+    const EdgePicture none = {1e9, 3};
+    bool all_full = true;
+    for (const double x : {-60.0, -10.0, 5.0, 640.0, 1275.0, 1290.0, 1340.0}) {
+      for (const double y : {-60.0, -3.0, 4.0, 360.0, 716.0, 724.0, 780.0}) {
+        all_full &= Model(table, none, x, y).vis == 1.0;
+      }
+    }
+    Check(all_full, "with nothing in front of the glow the visibility is 1 at every place on, at and beyond the four edges");
+  }
+  // The same wall on the LEFT edge (mirrored): a glow 30 px beyond the left edge is shown in full, one on the screen behind the wall is hidden.
+  {
+    struct LeftWall {
+      double wall_to;
+      int scale;
+      bool Occluded(double gx, double) const {
+        const double c = std::min(std::max(gx, 0.0), 1280.0 - 1e-9);
+        return (std::floor(c * scale) + 0.5) / scale <= wall_to;
+      }
+    };
+    const LeftWall wall = {10.0, 3};
+    Check(Model(table, wall, -30.0, 300.5).vis == 1.0, "a glow 30 px beyond the left edge is shown in full though the clamped edge is a wall");
+    Check(Model(table, wall, 3.0, 300.5).vis == 0.0, "a glow on the screen behind the left wall is left out");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +543,7 @@ void CheckFixtures() {
         "feature 4 is in the word and is neither the env map's nor the shadow filter's");
 
   CheckRule(trail_text);
+  CheckEdge(trail_text);
 }
 
 // ---------------------------------------------------------------------------
