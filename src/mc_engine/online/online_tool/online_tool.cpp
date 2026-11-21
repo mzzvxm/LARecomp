@@ -12,6 +12,7 @@
 #include "../../../larecomp_version.h"  // LARECOMP_VERSION_LABEL (plain macros, no other includes)
 #include "../protocol/identity_protocol.h"
 #include "../relay_info.h"
+#include "identity_commands.h"
 #include "json_writer.h"
 
 namespace larecomp::online_tool {
@@ -127,6 +128,7 @@ const char* UsageText() {
         "  larecomp_online_tool --version                 the tool's version and JSON schema\n"
         "  larecomp_online_tool --protocol                what it speaks: relay messages, commands, limits\n"
         "  larecomp_online_tool servers [options]         the server list with each relay's details and rooms\n"
+        "  larecomp_online_tool identity ...              the player's online identity (identity --help)\n"
         "\n"
         "servers options:\n"
         "  --master H[:P]           the server list to read (port 31003 when absent); there is no built-in one\n"
@@ -243,7 +245,10 @@ std::string RenderProtocol(bool pretty) {
     BeginDocument(j, "protocol", true);
     j.Field("tool", kToolName);
     j.Field("version", kToolVersion);
-    j.Key("commands").BeginArray().String("servers").EndArray();
+    j.Key("commands").BeginArray().String("servers").String("identity").EndArray();
+    j.Key("identity_actions").BeginArray();
+    for (const auto& action : IdentityActions()) j.String(action);
+    j.EndArray();
     j.Key("relay").BeginObject();
     {
         char magic[5] = {char(br::kMagic & 255), char((br::kMagic >> 8) & 255), char((br::kMagic >> 16) & 255),

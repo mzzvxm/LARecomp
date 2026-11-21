@@ -34,6 +34,7 @@
 #include "../../modloader/modsbrowser/mod_browser_ui.h"
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "identity_client.h"
+#include "identity_rename.h"
 #include "identity_store.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/overlay_support.h"
@@ -363,22 +364,8 @@ private:
         const std::string name = pf::SanitizeName(typed);
         const std::string current = id::Nick();
         const std::filesystem::path root = id::UserDataRoot();
-        if (name.empty() || name != typed) {
-            nick_msg_ = "Use only letters, digits and spaces, up to 15 characters.";
-        } else if (pf::IsReservedName(name)) {
-            nick_msg_ = "That name is reserved.";
-        } else if (pf::SameName(name, current)) {
-            nick_msg_ = "That is already your gamertag.";
-        } else if (root.empty()) {
-            nick_msg_ = "The save folder is not known; change user_name by hand.";
-        } else {
-            std::error_code ec;
-            if (std::filesystem::exists(root / name, ec)) {
-                nick_msg_ = "You already have a save with that name.";
-            } else if (!std::filesystem::exists(root / current, ec)) {
-                nick_msg_ = "Your save folder was not found; change user_name by hand.";
-            }
-        }
+        // The rules (identity_rename.cpp) are shared with `larecomp_online_tool identity rename`.
+        nick_msg_ = id::RenameProblem(typed, current, root);
         if (!nick_msg_.empty()) return;
 
         // The content manager only renames the folder .profile names; make it

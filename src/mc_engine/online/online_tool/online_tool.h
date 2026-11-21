@@ -19,7 +19,7 @@ namespace larecomp::online_tool {
 
 constexpr const char* kToolName = "larecomp_online_tool";
 // The tool's own version: bumps with every command or option added.
-constexpr const char* kToolVersion = "0.1.0";
+constexpr const char* kToolVersion = "0.2.0";
 // The version of the JSON layout. Bumps when a field changes meaning or goes; adding a field does not (readers ignore
 // fields they do not know). The launcher refuses a tool whose schema it does not know.
 constexpr int kSchema = 1;

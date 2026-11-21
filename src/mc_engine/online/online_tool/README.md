@@ -6,6 +6,8 @@ It is built from the game's own code, not a copy of it: the wire messages (`../p
 
 The check is `--target larecomp_online_tool_test` (see `online_tool_test.cpp`): it needs no game and no real server.
 
+The player's online identity (gamertag, key, backup, recovery code, rename) has its own commands, `larecomp_online_tool identity ...`: see [README-identity.md](README-identity.md).
+
 ## For the launcher
 
 ### The server list address is a setting, never built in
@@ -21,7 +23,7 @@ Start it with `ProcessStartInfo.ArgumentList` (no shell, no quoting: the argumen
 | 0 | The document on stdout is the answer. A list or a relay that does not answer is still an answer (the document says so). |
 | 2 | The command line was wrong. stdout has a document with `"ok": false` and `error.code` `"usage"`. |
 
-Do not run it more often than the game does: every 8 seconds at most, never while the Online page is hidden and never while the game is running (the relay answers each address 120 queries a second; one call asks a relay about 20). The tool never writes anything except the icon files below, never reads a key or token, and never sends one.
+Do not run it more often than the game does: every 8 seconds at most, never while the Online page is hidden and never while the game is running (the relay answers each address 120 queries a second; one call asks a relay about 20). `servers` never writes anything except the icon files below, never reads a key or token, and never sends one. (The `identity` commands do read and write the identity files, under the rules in README-identity.md.)
 
 ### Commands
 
@@ -30,6 +32,7 @@ larecomp_online_tool --version
 larecomp_online_tool --protocol
 larecomp_online_tool servers [--master H[:P]] [--servers a,b] [--current H[:P]] [--icons DIR]
                              [--timeout-ms N] [--master-timeout-ms N] [--pretty]
+larecomp_online_tool identity <command> ...        (README-identity.md)
 larecomp_online_tool --help
 ```
 
@@ -58,10 +61,10 @@ Every document starts with `ok` (boolean), `command` (string) and `schema` (inte
 `--version`:
 
 ```json
-{"ok":true,"command":"version","schema":1,"tool":"larecomp_online_tool","version":"0.1.0","game_label":"PATCH 10 - PREVIEW 2"}
+{"ok":true,"command":"version","schema":1,"tool":"larecomp_online_tool","version":"0.2.0","game_label":"PATCH 10 - PREVIEW 2"}
 ```
 
-`--protocol`: `tool`, `version`, `commands` (array of command names the tool has: `["servers"]`), `relay` (`magic` `"MC02"`, `version` 5, `messages` {name: type number}, `bytes` {name: size}: the sizes of the messages on the wire), `limits` (the game's timeouts and caps, the icon limits, the default ports).
+`--protocol`: `tool`, `version`, `commands` (array of command names the tool has: `["servers","identity"]`), `identity_actions` (the identity commands: `["show","check","backup",...]`), `relay` (`magic` `"MC02"`, `version` 5, `messages` {name: type number}, `bytes` {name: size}: the sizes of the messages on the wire), `limits` (the game's timeouts and caps, the icon limits, the default ports).
 
 `servers`:
 
@@ -130,14 +133,14 @@ An icon file is only ever a PNG of at most 64 KB and 512x512 pixels whose CRC-32
 
 ### What the tool does not do (yet)
 
-It does not read or write the identity key, the Rate My Ride token or `larecomp.toml`, does not touch the master's nick registry, and does not fetch mods (the relay's mods manifest and files are plain HTTP on `mods.http_port`: `GET /mods/manifest`, `GET /mods/file/<mod>/<path>`; the launcher's Mods page does that). Rate My Ride, leaderboards, the tournament and the identity commands are later packages (launcher-plan `ONLINE.md`, G2a and G2c).
+`servers` does not read or write the identity key, the Rate My Ride token or `larecomp.toml`, does not touch the master's nick registry, and does not fetch mods (the relay's mods manifest and files are plain HTTP on `mods.http_port`: `GET /mods/manifest`, `GET /mods/file/<mod>/<path>`; the launcher's Mods page does that). The `identity` commands are the ones that touch the key and the nick registry (README-identity.md). Rate My Ride, leaderboards and the tournament are a later package (launcher-plan `ONLINE.md`, G2c).
 
 ## Building it by hand
 
-With a build directory, `cmake --build <dir> --target larecomp_online_tool` (and `larecomp_online_tool_test`). With no build directory, on Windows:
+With a build directory, `cmake --build <dir> --target larecomp_online_tool` (and `larecomp_online_tool_test`, `larecomp_online_tool_identity_test`). With no build directory, on Windows:
 
 ```
-clang++ -O2 -std=c++20 online_tool_main.cpp online_tool.cpp ../server_browser/browser_query.cpp ../relay_info.cpp ../rate_my_ride/rmr_net.cpp -lws2_32 -lshell32 -o larecomp_online_tool.exe
+clang++ -O2 -std=c++23 -D_CRT_SECURE_NO_WARNINGS online_tool_main.cpp online_tool.cpp identity_commands.cpp game_guard.cpp ../server_browser/browser_query.cpp ../relay_info.cpp ../rate_my_ride/rmr_net.cpp ../identity/identity_core.cpp ../identity/identity_net.cpp ../identity/identity_rename.cpp ../../../profile/larecomp_profile_store.cpp -x c++ ../../../../thirdparty/monocypher/monocypher.c -lws2_32 -lshell32 -lcrypt32 -o larecomp_online_tool.exe
 ```
 
-(On Linux: the same without `-lws2_32 -lshell32`, with `-pthread`. The sockets are plain POSIX there, but the game's online play itself is Windows only.)
+(On Linux: the same without `-lws2_32 -lshell32 -lcrypt32` and `-D_CRT_SECURE_NO_WARNINGS`, with `-pthread`. The sockets are plain POSIX there, but the game's online play itself is Windows only.)
