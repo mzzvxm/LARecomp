@@ -24,11 +24,11 @@ The game boots to the menu, free roam and races work, and saves load. On top of 
 
 **Ultrawide and tall windows.** A 21:9 or 32:9 window gets a wider view instead of black bars (the vertical field of view stays the game's), and a taller one (16:10 such as 1920x1200 or the Steam Deck's 1280x800, 4:3, 5:4, even a portrait window) shows more above and below instead (the width of the view stays the game's), with the HUD at 16:9 in the middle either way. HUD WIDTH (pause menu, INTERFACE > UI; `hud_width`, applies at once) moves the HUD's corner pieces (minimap, speedometer, race position, lap and time, the phone) out toward the screen edges (the sides of a wide picture, the top and bottom of a tall one): CENTERED (the default) keeps them in the middle, WIDER moves them halfway, FULL puts each as far from its edge as on a 16:9 screen. The file takes any number from 0 to 100 (50 and 100 are WIDER and FULL). ASPECT RATIO (pause menu, DISPLAY; `aspect_ratio`, applies at once) is AUTO by default, the window's own shape; 16:9, 16:10, 21:9 and 32:9 keep that shape whatever the window is and leave pure black bars where the window is not that shape (21:9 on a 16:9 monitor has bars above and below, 16:9 on an ultrawide one at the sides). The Xenia renderer keeps 16:9 with bars in a window taller than that.
 
-**A settings menu inside the game.** Press Start, open Options, and there are eight tabs: ReXGlue Settings, Recomp Settings, Performance, Fidelity FX, Debug Camera, Time of Day, Carbon Fiber and Languages. Changes apply immediately and save when you leave the submenu.
+**A settings menu inside the game.** Press Start or Escape and open the SETTINGS tab: RECOMP SETTINGS, GRAPHICS, GAMEPLAY, CONTROLLER, INTERFACE and EXTRAS ([documentation/RUNNING.md](documentation/RUNNING.md#pause-menu) lists what each holds). Changes apply immediately and save when you leave the submenu.
 
 **Quality of life.** An ISO install wizard on first launch, save import from Xenia and RPCS3, custom MP3 radio, Discord Rich Presence, a mod loader, a speedometer that switches between mph and km/h, and a language picker for the five translations on the disc: English, Spanish, French, German and Italian (Portuguese too, once a mod supplies its text).
 
-Under the hood there are 112 mid-asm hooks, 155 settings, and 24,927 named function hints driving codegen.
+Under the hood there are 304 mid-asm hooks, more than 700 settings, and 24,927 named function hints driving codegen.
 
 ## Known issues
 
@@ -113,14 +113,14 @@ Everything else is in the pause menu. It defaults to 60 FPS with real frame delt
 
 ### Linux and the Steam Deck
 
-LARecomp runs on Linux and the Steam Deck through Vulkan. Besides a Vulkan driver it needs **libstdc++ 13 or newer** on the system: it uses the C++ library of the distribution and does not carry its own. These have it:
+LARecomp runs on Linux and the Steam Deck through Vulkan. Besides a Vulkan driver, a game installed with the LARecomp launcher needs nothing else: the launcher builds it with its own build kit, which brings its own C++ library (libc++). A build made with the system's compiler (by hand, or by the launcher where its kit cannot start) links the system's libstdc++ instead, and that must be **version 13 or newer**. These have it:
 
 - SteamOS 3.5 or newer (the Steam Deck)
 - Ubuntu 24.04 or newer
 - Fedora 39 or newer
 - Arch Linux, kept up to date (and distributions based on it)
 
-Older ones, such as Ubuntu 22.04 and Debian 12, do not. LARecomp then refuses to start and the terminal says something like:
+Older ones, such as Ubuntu 22.04 and Debian 12, do not. A build that links the system's library then refuses to start and the terminal says something like:
 
 ```
 ./larecomp: /lib/x86_64-linux-gnu/libstdc++.so.6: version `GLIBCXX_3.4.31' not found (required by ./larecomp)
@@ -152,10 +152,9 @@ These are the environment variables the build reads. Everything else moved to cv
 | `MCLA_VSYNC` | `false` | Leave off. On costs about 30% throughput. |
 | `MCLA_REFRESH_RATE` | `60` | Guest video mode refresh rate. |
 | `MCLA_ALLOW_INVALID_FETCH` | `true` | Set `false` if HUD or minimap glitches appear. |
-| `MCLA_NO_STUB_SWEEP` | `0` | `1` skips stubbing unmapped addresses at startup, saving about 400 ms. Only safe while `stubs.txt` stays empty. |
 | `LARECOMP_LOG_FILE` | auto | Log file path. |
 
-`logs/effective_config.txt` is written every launch and lists what actually took effect, including an `ok` or `FAIL` line for each GPU flag. Check it first when a setting seems to do nothing.
+A flag the game cannot use does not stop it: the log (`logs/larecomp_NNN.log`) says `[cli] --name=value ignored: ` and why, and near its start it lists the debug settings that are not at their default (`[settings] name = value (command line)`). Check the log first when a setting seems to do nothing.
 
 ---
 
