@@ -88,8 +88,14 @@ std::string AutoSummary(GpuClass c) {
     out += '=';
     out += Cell(effect, c);
   }
-  out += ", lod_city_scale=";
-  out += CityLodScaleText(CityLodAutoFor(true, c));
+  // The numeric settings (the LOD scales, the traffic range and the densities): `auto` as the value the hooks apply.
+  for (int i = 0; i < kScaleCount; ++i) {
+    const auto scale = static_cast<Scale>(i);
+    out += ", ";
+    out += ScaleCvar(scale);
+    out += '=';
+    out += ScaleText(scale, ScaleCell(scale, c));
+  }
   // Not a setting's `auto`, but chosen by the class too: the sun shafts' ray steps.
   out += ", sun_shafts_steps=";
   out += std::to_string(SunShaftSteps(c));
@@ -117,8 +123,8 @@ void LogClass() {
 
 }  // namespace
 
-void Initialize(const plume::RenderDeviceDescription& description,
-                const plume::RenderDeviceCapabilities& caps) {
+AdapterFacts FactsFor(const plume::RenderDeviceDescription& description,
+                      const plume::RenderDeviceCapabilities& caps) {
   // CHECK: read from Plume's code, not yet seen on the test PC's adapters: D3D12 never fills
   // description.type, so an integrated GPU is known there only by caps.uma (DXGI's UMA flag); Vulkan
   // sets both (uma needs the integrated type and a host-visible device-local memory type). The log
@@ -132,9 +138,15 @@ void Initialize(const plume::RenderDeviceDescription& description,
   facts.dedicated_bytes = description.dedicatedVideoMemory;
   facts.raytracing = caps.raytracing;
   // The speed table reads the name and the PCI vendor id (Plume's RenderDeviceVendor holds the id; it
-  // does not carry the device id).
+  // does not carry the device id: the ray tracing tier asks the backend for that, rt_tier.h).
   facts.name = description.name;
   facts.vendor_id = static_cast<uint32_t>(description.vendor);
+  return facts;
+}
+
+void Initialize(const plume::RenderDeviceDescription& description,
+                const plume::RenderDeviceCapabilities& caps) {
+  const AdapterFacts facts = FactsFor(description, caps);
   const Verdict verdict = Classify(facts);
 
   {
@@ -167,6 +179,14 @@ GpuClass Current() {
   return static_cast<GpuClass>(g_detected.load(std::memory_order_relaxed));
 }
 
+bool ClassForced() {
+  return g_override.load(std::memory_order_relaxed) != kNoOverride;
+}
+
+GpuClass ClassDetected() {
+  return static_cast<GpuClass>(g_detected.load(std::memory_order_relaxed));
+}
+
 bool Known() {
   return g_known.load(std::memory_order_acquire);
 }
@@ -177,6 +197,14 @@ std::string Resolve(Effect effect, std::string_view user_value) {
 
 std::string AutoLabel(Effect effect) {
   return AutoLabelFor(Current(), effect);
+}
+
+double ScaleInForce(Scale scale, double user_value) {
+  return ScaleFor(scale, Known(), Current(), user_value);
+}
+
+std::string ScaleLabel(Scale scale, double user_value) {
+  return ScaleLabelFor(scale, Known(), Current(), user_value);
 }
 
 double CityLodScale(double user_value) {

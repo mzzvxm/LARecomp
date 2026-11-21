@@ -440,6 +440,21 @@ class GPUSettings final : public rex::SettingOwner {
     "detail, ambient occlusion, contact shadows, sun shafts, bounce light); "
     "a choice of the player's own is never changed. Live.", rex::Allowed("auto", "low", "mid", "high"), rex::kDebugOnly);
 
+  REX_SETTING(std::string, mcla_gpu_rt_tier, "auto", "Diagnostic: forces the ray tracing tier the ray traced upgrades' auto values are chosen from (none: "
+    "the card cannot trace rays or has no ray tracing units, weak: it traces at a moderate speed, such as an RTX 3060 or an RX 6600, "
+    "strong: it traces quickly, such as an RTX 5080 or an RX 7900 XT). "
+    "auto: the tier found for this card (its table row and, when it ran, the benchmark of mcla_gpu_rt_bench), logged at start as "
+    "'[gpu] ray tracing tier: ...' with the rule that chose it; while mcla_gpu_class forces a class, the tier follows it (high: strong, "
+    "mid: weak, low: none) so that a test that says a class runs that class's cells. Only the value auto of the ray traced upgrades "
+    "(the car's reflection, occlusion and sun ray; later the city's shadows, reflections and bounce light) follows it, and the "
+    "number of cars they trace and how far; a choice of the player's own is never changed. Live.", rex::Allowed("auto", "none", "weak", "strong"), rex::kDebugOnly);
+
+  REX_SETTING(std::string, mcla_gpu_rt_bench, "auto", "Diagnostic: the ray tracing benchmark that can move a card between the weak and the strong tier. "
+    "auto: on the first start with a card that can trace (and again after its driver or the graphics API changes) a short compute pass "
+    "traces a few million rays through a small synthetic city and logs the speed ('[gpu] rt bench: ...'), which is kept in "
+    "rt_bench.txt next to larecomp.toml; off: no benchmark, and a kept result is not read; force: run it at every start. "
+    "Takes effect at the next start.", rex::Allowed("auto", "off", "force"), rex::kDebugOnly, rex::kRestart);
+
   REX_SETTING(std::string, mcla_gpu_contact_shadows, "auto", "Contact shadows: the short sun shadows the game does not draw (under a car's sills, at the foot "
     "of a kerb or a wall, under props on the pavement), found from the picture's depth and put only "
     "on the sun's light, so they never darken what the game's own shadows already cover. Early in the "
@@ -608,8 +623,8 @@ class GPUSettings final : public rex::SettingOwner {
     "cap counts rendered frames (mcla_gpu_frame_generation_fps_limit). Live.", rex::Range{2, 4});
 
   REX_SETTING(bool, mcla_gpu_frame_generation_tearing, false, "Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable "
-    "refresh display follows the frames. On presents immediately instead, which tears. Read when "
-    "frame generation is switched on.", rex::kDebugOnly);
+    "refresh display follows the frames. On presents immediately instead, which tears. Live: read at "
+    "every present while frame generation runs.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_fsr, false, "FSR1 on the present (M6c.1): when the window's letterbox is larger than the "
     "front buffer on both axes, EASU passes (at most 2x per axis each) up to it, then RCAS. "
@@ -1257,7 +1272,7 @@ class GPUSettings final : public rex::SettingOwner {
     "light's grid instead of sampled once at a random place in it (so it no longer pulses as the camera moves and the history no longer has "
     "noise to average), a pixel at an edge of depth looks the light up at every sample of the picture's anti-aliasing instead of the first, "
     "the history's weight follows time, not the frame count, the lamps fade in a real 0.35 s whatever the frame rate, a shadowed headlight takes three taps of its "
-    "shadow map along each cell of the grid, the history gives way where a car's headlights moved, and a frame whose camera is not known takes the previous one moved on by its "
+    "shadow map along each cell of the grid, the history's beam follows a car's headlights where they moved, and a frame whose camera is not known takes the previous one moved on by its "
     "last step. False: the first version. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_vol_view, 0, "Diagnostic: 1 shows only the light the volumetric light adds, in place of the picture (to see or measure how steady "
@@ -1557,6 +1572,8 @@ inline auto& mcla_gpu_census_ps = g_gpu.mcla_gpu_census_ps;
 inline auto& mcla_gpu_census_scale = g_gpu.mcla_gpu_census_scale;
 inline auto& mcla_gpu_census_targets = g_gpu.mcla_gpu_census_targets;
 inline auto& mcla_gpu_class = g_gpu.mcla_gpu_class;
+inline auto& mcla_gpu_rt_tier = g_gpu.mcla_gpu_rt_tier;
+inline auto& mcla_gpu_rt_bench = g_gpu.mcla_gpu_rt_bench;
 inline auto& mcla_gpu_contact_shadows = g_gpu.mcla_gpu_contact_shadows;
 inline auto& mcla_gpu_contact_shadows_car_map_march = g_gpu.mcla_gpu_contact_shadows_car_map_march;
 inline auto& mcla_gpu_contact_shadows_car_sun = g_gpu.mcla_gpu_contact_shadows_car_sun;

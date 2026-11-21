@@ -24,8 +24,14 @@ class LODSettings final : public rex::SettingOwner {
     "higher adds nothing and costs memory and speed; lower simplifies it sooner (0.1 to 10; the menu "
     "has auto, 0.5, 1, 1.5 and 2).", rex::Range{0.0, 10.0});
 
-  REX_SETTING(f64, lod_traffic_scale, 1.0, "How far away traffic cars keep their detailed models. 1.0 is the original distance; higher "
-    "keeps the detail longer and costs speed, lower switches to simpler models sooner (0.1 to 10).", rex::Range{0.1, 10.0});
+  // 0 is auto (gpu/gpu_class.h): 3.0 on a high-end graphics card, 2.0 on a mid-range one, 1.5 on integrated graphics and until the
+  // card is known. The scale multiplies the game's own distances for a traffic car (Patch_ScaleTrafficLOD, at 0x827903E0 in the
+  // car's LOD pick): at 1.0 the most detailed model ends at about 40 m and the middle one at about 155 m, the coarsest goes on to
+  // the 500 m where the car is not drawn. 3.0 puts the steps at 120 m and 465 m; more only pushes the second step past the cull.
+  REX_SETTING(f64, lod_traffic_scale, 0.0, "How far away traffic cars keep their detailed models, as a multiple of the original distance. "
+    "0 (auto, the default) is 3.0 on a high-end graphics card, 2.0 on a mid-range one and 1.5 on integrated graphics. "
+    "Higher keeps the detail longer and costs processor time; lower simplifies it sooner (0.1 to 10; the menu has "
+    "auto, 0.5, 1, 1.5, 2, 3 and 5).", rex::Range{0.0, 10.0});
 
 };
 

@@ -10,6 +10,7 @@
 
 #include "car_rt_opp_refl_rules.h"
 #include "gpu_class.h"
+#include "rt_tier.h"
 
 namespace mcla::gpu {
 
@@ -25,7 +26,7 @@ constexpr uint64_t kWindowFrames = 300;
 }  // namespace
 
 ci::Limits CarRtInstances::CurrentLimits() const {
-  return ci::LimitsFor(gpu_class::Current(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), double(larecomp::settings::mcla_gpu_car_rt_cars_radius.Get()));
+  return ci::LimitsFor(gpu_class::CurrentRtClass(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), double(larecomp::settings::mcla_gpu_car_rt_cars_radius.Get()));
 }
 
 bool CarRtInstances::RememberedOn() const {

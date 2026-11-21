@@ -107,6 +107,8 @@ set(LARECOMP_SOURCES
     src/os/thread_yield.cpp
     # An HTTPS GET on Linux through the system's libcurl, loaded at run time (os/curl_get.h): the real-world weather's request.
     src/os/curl_get.cpp
+    # SIGTERM, SIGINT and SIGHUP end the game like the window's close button (Linux; os/shutdown_signals.h).
+    src/os/shutdown_signals.cpp
 
     # Steering wheel support.
     src/mc_engine/wheel/wheel_fake.cpp
@@ -158,6 +160,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/road_reflection_cars_test.cpp
     src/mc_engine/hooks/script_input.cpp
     src/mc_engine/hooks/checkpoint_sweep.cpp
+    src/mc_engine/hooks/checkpoint_effect_fade.cpp
     src/mc_engine/hooks/neon_pulse.cpp
     src/mc_engine/hooks/inflate_fast.cpp
     src/mc_engine/hooks/vol_lamps.cpp
@@ -450,6 +453,11 @@ target_include_directories(larecomp_fence_spin_test PRIVATE src/mc_engine/hooks)
 add_executable(larecomp_thread_name_test EXCLUDE_FROM_ALL
     src/os/thread_name_test.cpp)
 target_include_directories(larecomp_thread_name_test PRIVATE src)
+# The fade of a released particle effect (src/mc_engine/hooks/effect_fade.h: the closed checkpoint's smoke held to the console's decay per second) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_effect_fade_test, then run <build dir>/larecomp_effect_fade_test (exit 0 = passed).
+add_executable(larecomp_effect_fade_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/effect_fade_test.cpp)
+target_include_directories(larecomp_effect_fade_test PRIVATE src/mc_engine/hooks)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).
@@ -1254,6 +1262,11 @@ else()
     #   cmake --build <dir> --target larecomp_row_dependency_test, then run it (exit 0 = passed).
     add_executable(larecomp_row_dependency_test EXCLUDE_FROM_ALL src/mc_engine/menus/row_dependency_test.cpp)
     target_include_directories(larecomp_row_dependency_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine")
+    # The Discord presence switch (larecomp_discord_rpc, live: src/discord_rpc/rpc_toggle_rules.h) has a check that needs no game and no Discord; it
+    # also reads the sources that use the rules, so it takes the src folder: cmake --build <dir> --target larecomp_rpc_toggle_test, then run
+    # <dir>/larecomp_rpc_toggle_test <src folder> (exit 0 = passed).
+    add_executable(larecomp_rpc_toggle_test EXCLUDE_FROM_ALL src/discord_rpc/rpc_toggle_rules_test.cpp)
+    target_include_directories(larecomp_rpc_toggle_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     # The thread priority intents (src/os/thread_priority.h) have a check that needs no game:
     #   cmake --build <dir> --target larecomp_thread_priority_test, then run it (exit 0 = passed).
     add_executable(larecomp_thread_priority_test EXCLUDE_FROM_ALL
@@ -1291,6 +1304,15 @@ else()
     target_include_directories(larecomp_curl_get_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_features(larecomp_curl_get_test PRIVATE cxx_std_23)
     target_link_libraries(larecomp_curl_get_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    # The termination signals (src/os/shutdown_signals.h) have a check that needs no game:
+    #   cmake --build <dir> --target larecomp_shutdown_signals_test, then run it (exit 0 = passed).
+    add_executable(larecomp_shutdown_signals_test EXCLUDE_FROM_ALL
+        src/os/shutdown_signals_test.cpp
+        src/os/shutdown_signals.cpp
+    )
+    target_include_directories(larecomp_shutdown_signals_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_features(larecomp_shutdown_signals_test PRIVATE cxx_std_23)
+    target_link_libraries(larecomp_shutdown_signals_test PRIVATE Threads::Threads)
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
         add_custom_command(TARGET larecomp POST_BUILD
