@@ -239,10 +239,10 @@ void CheckLabels() {
 }
 
 // The stored word is the shown word: nothing in the graphics settings is called low (owner, 2026-11-14). The ambient occlusion, the
-// contact shadows and the bounce light are off / high / ultra, the car self-reflections off / on; every cell of the table is one of the
+// contact shadows, the bounce light and the screen-space reflections are off / high / ultra (the light shadows have three levels: the loop below), the car self-reflections off / on; every cell of the table is one of the
 // words its setting allows, and no cell and no label of an `auto` says low.
 void CheckWords() {
-  for (const Effect effect : {Effect::kAmbientOcclusion, Effect::kContactShadows, Effect::kSsgi, Effect::kLightShadows, Effect::kSsr}) {
+  for (const Effect effect : {Effect::kAmbientOcclusion, Effect::kContactShadows, Effect::kSsgi, Effect::kSsr}) {
     const std::string name(CvarName(effect));
     for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
       const std::string cell(Cell(effect, c));
