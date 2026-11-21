@@ -429,6 +429,9 @@ void LocalShadow::PickViews() {
   // The cars that get views (the level's count, the player's first), then the views of each: one for each headlamp of the first cars the level gives lamps to, one for the car
   // for the others (local_shadow_rules.h PlanViews). A car's views come and go together: the picking is of cars, and the plan keeps both of a car's or neither.
   picker_.SetMode(light_pick::ParseMode(larecomp::settings::mcla_gpu_light_pick.Get()));  // the A/B of the one picker (light_pick.h): unified, or the ViewPicker's own first code
+  // The budget (light_budget.h): the manager's, noted from this level at the frame's start; the same numbers from the table when no manager's picker is attached.
+  const light_budget::LightBudget budget = light_picker_ != nullptr ? light_picker_->budget
+                                                                      : light_budget::BudgetFor(true, choice_.level, views_override_, light_budget::Level::kOff, rules::kLevelTable);
   const std::string record_path = larecomp::settings::mcla_gpu_light_pick_record.Get();
   if (record_path != record_path_) {
     record_path_ = record_path;
@@ -442,13 +445,13 @@ void LocalShadow::PickViews() {
   if (record_file_.is_open()) {
     light_pick::record::ViewFrame recorded;
     recorded.frame = frame_;
-    recorded.max_cars = rules::MaxCars(choice_.level);
+    recorded.max_cars = budget.shadow_cars;
     recorded.lights.assign(frame_lights_, frame_lights_ + frame_light_count_);
     recorded.context = context;
     record_file_ << light_pick::record::FormatView(recorded);
   }
-  frame_cars_ = picker_.Pick(frame_lights_, frame_light_count_, rules::MaxCars(choice_.level), context, frame_groups_);
-  rules::PlanViews(frame_lights_, frame_groups_, frame_cars_, rules::LampCars(choice_.level, views_override_), rules::MaxViews(choice_.level, views_override_), &frame_plan_);
+  frame_cars_ = picker_.Pick(frame_lights_, frame_light_count_, budget.shadow_cars, context, frame_groups_);
+  rules::PlanViews(frame_lights_, frame_groups_, frame_cars_, budget.shadow_lamp_cars, budget.shadow_views, &frame_plan_);
   frame_cars_ = frame_plan_.cars;
   frame_views_ = frame_plan_.count;
   // The log: which cars hold the views, when that changes (the first few times in full, the rest as a count in the census line).
@@ -465,7 +468,7 @@ void LocalShadow::PickViews() {
                             frame_plan_.view_count[v], frame_plan_.view_count[v] == 1 ? "" : "s");
       }
       REXLOG_INFO("{} views now: {} view(s) for {} of {} lit car(s), of at most {} car(s) and {} view(s): {} (change {})", kPrefix, frame_views_, frame_cars_, frame_light_count_,
-                  rules::MaxCars(choice_.level), rules::MaxViews(choice_.level, views_override_), cars.empty() ? std::string("none") : cars, view_changes_);
+                  budget.shadow_cars, budget.shadow_views, cars.empty() ? std::string("none") : cars, view_changes_);
     }
     last_view_count_ = frame_cars_;
     for (uint32_t v = 0; v < frame_cars_; ++v) {

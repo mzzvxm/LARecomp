@@ -20,7 +20,9 @@
 // relaxed load.
 // It is PASSIVE: NO CONSUMER READS IT. The lit shaders' block, the volume's lamps and headlights and the replay's maps are made and read exactly as before; the manager only looks (its
 // calls take const references, the one non-const call is HeadlightRig::Block(), which rebuilds the block lazily if the replay's maps changed since: the same rebuild the first lit draw
-// would do, and the camera in the block is overwritten per draw). It does not pick: the lamps in the frame are the ones the volume's picker gave (LU-3 moves the pick here).
+// would do, and the camera in the block is overwritten per draw). The COLLECTING does not pick: the lamps in the frame are the ones the volume's picker gave. The picking of the other two roles IS here since LU-3 (light_pick.h): the manager holds the picker of the
+// rig's four headlights and of the cars that get shadow views, and the one budget (Pickers(), always, with or without the census); the street lamps' pick (the volume's LampPicker, the lamp
+// shadows') is reserved to move in with LU-4 / LU-5.
 //
 // THE SWITCH. mcla_gpu_lights_census N (debug only, default 0: the manager is not called, the cost is one setting read a frame). N > 0: it runs every guest frame, the census line is
 // every N guest frames (300 is the usual), a difference found by a check is logged at once (the first three of each kind) and counted in the next census line. Live.

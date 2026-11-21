@@ -1113,7 +1113,26 @@ void CheckRecordingFile(const std::string& path) {
 
 }  // namespace
 
+// `light_pick_test --write <path>` writes the made up drive to <path>.rig.txt and <path>.views.txt in the recording format (what the game's recorder writes), so that the replay of files can be
+// tried without a game: `light_pick_test <path>.rig.txt <path>.views.txt`.
+int WriteDrive(const std::string& path) {
+  const std::vector<SimCar> drive = MakeDrive();
+  std::ofstream rig(path + ".rig.txt", std::ios::binary | std::ios::trunc);
+  std::ofstream views(path + ".views.txt", std::ios::binary | std::ios::trunc);
+  if (!rig || !views) {
+    std::printf("the files %s.rig.txt and %s.views.txt could not be written\n", path.c_str(), path.c_str());
+    return 2;
+  }
+  rig << TextOf(RecordDrive(drive, 1200, 60.0));
+  for (const rec::ViewFrame& v : RecordViews(drive, 1200)) views << rec::FormatView(v);
+  std::printf("wrote %s.rig.txt and %s.views.txt\n", path.c_str(), path.c_str());
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "--write") {
+    return WriteDrive(argv[2]);
+  }
   CheckBudget();
   CheckLampRow();
   CheckFadingPick();
