@@ -460,8 +460,7 @@ std::string CityRtShadow::CensusText() const {
     return {};
   }
   return std::format("; ray traced city shadows: {} passes since the start, {} frames without the city in the top level, {} without a safe range, {} without the sun, {} waiting for the pipeline",
-                     passes_run_, no_scene_, no_range_, no_sun_, not_ready_) +
-         (service_ != nullptr ? service_->CensusText() : std::string());
+                     passes_run_, no_scene_, no_range_, no_sun_, not_ready_);
 }
 
 }  // namespace mcla::gpu
