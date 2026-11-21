@@ -101,6 +101,7 @@ class HostPrecache {
     kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h)
     kLocalShadow = 22,      // LocalShadow: the depth-only pipelines of the headlight shadow replay, one per (vertex shader, layout, faces...) (local_shadow.h)
     kGiField = 30,          // GiField: the probe field's reset and weights compute passes (gi_field.h Variant)
+    kGiUpdate = 31,         // GiUpdate: the probe update's trace and blend compute passes (gi_update.h Variant)
     kScreenShared = 23,     // ScreenShared: its Hi-Z pass (screen_shared.h)
     kScreenReflections = 24,  // ScreenReflections: its trace, accumulation and resolve passes (ssr.h)
   };

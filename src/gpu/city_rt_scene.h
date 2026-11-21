@@ -121,6 +121,16 @@ class CityRtScene {
   // The camera's world position of the frame Prepare last saw.
   const double* camera() const { return camera_; }
 
+  // CITY-RT M3 G2: the structures built since the last call, as boxes in the world (the sector's box from the pack, metres), for the probe update: the probes near a built sector have data that is stale
+  // (their rays can meet geometry that was not there). At most kBuiltLogMax boxes are kept between two calls; `*dropped` (optional) is how many more were built.
+  static constexpr uint32_t kBuiltLogMax = 256;
+  struct BuiltBox {
+    double lo[3] = {0, 0, 0};
+    double hi[3] = {0, 0, 0};
+    bool hi_detail = false;
+  };
+  void DrainBuilt(std::vector<BuiltBox>* out, uint32_t* dropped);
+
   struct Stats {
     uint32_t sectors = 0;        // in the pack
     uint32_t hi_resident = 0;
@@ -222,6 +232,8 @@ class CityRtScene {
   bool recorded_ = false;
   double camera_[3] = {0, 0, 0};
   bool camera_known_ = false;
+  std::vector<BuiltBox> built_log_;  // see DrainBuilt
+  uint32_t built_dropped_ = 0;
   uint64_t next_priority_frame_ = 0;  // the sectors' distances go to the hit data's texture set again at this frame (CITY-RT M1c)
 
   // The pack and what is built of it.

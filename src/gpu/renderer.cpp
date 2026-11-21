@@ -288,6 +288,17 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       ao_.SetCityRtShadow(&city_shadow_);
       // The probe field's integration (gi_integration.h): the field needs M1's structures for its safe range and (G2) its rays.
       gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);
+      // The probe field's update (gi_update.h, CITY-RT M3 G2): the rays of the probes and their blend, in the top level the car scene builds. Its pipelines are listed with the precache when the setting is not off at
+      // the start as it will be once the update is built in; given to the integration only where the device can trace and its layouts and shaders exist (else the row says NOT READY and no field is made).
+      {
+        const bool update_listed = gi_setting::Decide(gpu_class::Known() ? gpu_class::Current() : gpu_class::GpuClass::kLow, gpu_class::CurrentRtTier(), larecomp::settings::mcla_gpu_rt_gi.Get(), true).level !=
+                                   gi::Level::kOff;
+        gi_update_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_scene_, rt_world_, update_listed);
+        if (gi_update_.available()) {
+          gi_integration_.SetUpdate([this](plume::RenderCommandList* list, uint32_t frame_slot, const gi::GiFrame& update_frame) { gi_update_.Record(list, frame_slot, update_frame); },
+                                    [this](gi::Level level) { gi_update_.OnWant(level); });
+        }
+      }
     }
     // The ray tracing benchmark (rt_bench.h, rt_tier.h): once with a card that can trace (kept next to larecomp.toml), while the GPU is idle and before the
     // precache below starts its builder; it can move the card between the weak and the strong tier, which the ray traced upgrades' `auto` reads.
@@ -368,6 +379,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     vram_.AddHolder("headlight shadow atlas", [this] { return local_shadow_.HeldBytes(); });
     // The probe field's textures (gi_field.h): the OS counts them in the use it reports and the caches' trim cannot give them back; the field asks the room test before it makes any.
     vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); });
+    vram_.AddHolder("probe update", [this] { return gi_update_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
@@ -398,6 +410,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
     rt_world_.Shutdown();  // it holds pointers to the AO, the car frame, the shared products and the city scene (and asked the AO's draw hook for the light): before them (CITY-RT FRAME)
     gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
+    gi_update_.Shutdown();  // it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: before the field (and before HostPasses)
     gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
     gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
     local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
@@ -587,6 +600,7 @@ void Renderer::Shutdown() {
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
   rt_world_.Shutdown();  // the same, CITY-RT FRAME (rt_world_frame.h)
   gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
+  gi_update_.Shutdown();  // it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: before the field (and before HostPasses)
   gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
   gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
   local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
@@ -919,6 +933,7 @@ void Renderer::SubmitFrameWithoutPresent() {
     timing_.OnSubmitted(slot);
     pass_timing_.OnSubmitted(slot);
     occlusion_.OnSubmitted(slot);
+    gi_update_.OnSubmitted(slot);
     latency::OnRenderSubmitted();
   }
   frames_.Advance();
@@ -1379,6 +1394,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
+  gi_update_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
 
   // A scheduled guest frame (gpu.h SetNextPresentTarget) goes to the screen at
@@ -1666,6 +1682,7 @@ void Renderer::ExecutePresentGenerated(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
+  gi_update_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
   // The present markers are the pacer's: it names the frame around the real image's present.
   const uint64_t latency_frame = latency::DetachRenderFrame();
@@ -1768,7 +1785,7 @@ void Renderer::ReportCityCensus() {
   if (presented_ % kCityCensusPresents != 0) {
     return;
   }
-  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText();
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + gi_update_.CensusText();
   if (!text.empty()) {
     REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
   }

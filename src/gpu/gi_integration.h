@@ -21,7 +21,8 @@
 //     for kStarvedHoldFrames (it fades out, the screen-space bounce light crossfades back) and tried again after.
 //
 // THE PROBE UPDATE (G2) IS A SEAM: SetUpdate gives the integration the function that traces and blends (it is called between RecordMaintenance and RecordFinish, with the update's frame), and says the update
-// exists (gi_setting.h NoteUpdateBuilt: until then the RT BOUNCE LIGHT row is grey with "(NOT READY)", the setting resolves to off and no field is made). G2 calls it in the renderer's start.
+// exists (gi_setting.h NoteUpdateBuilt: until then the RT BOUNCE LIGHT row is grey with "(NOT READY)", the setting resolves to off and no field is made). G2 (gi_update.h GiUpdate) calls it in the renderer's start,
+// where the device can trace and its layouts and shaders exist, with its Record as the update and its OnWant as the want.
 // mcla_gpu_rt_gi_dry_run (debug) opens the gate without an update, to run the field's owner and the frame's order alone (nothing traces into the probes: the field never becomes ready, the screen-space bounce
 // light stays the source, 75 MiB are held at HIGH on a strong card).
 //
@@ -66,7 +67,10 @@ class GiIntegration {
   // The probe update (package G2): called between RecordMaintenance and RecordFinish while the field runs, with the field's update frame (the same table the readers get, the products marked present). Giving
   // one says the update exists; an empty function takes it away.
   using UpdateFn = std::function<void(plume::RenderCommandList* list, uint32_t frame_slot, const gi::GiFrame& update_frame)>;
-  void SetUpdate(UpdateFn update);
+  // The update's other seam (G2: gi_update.h OnWant): called every frame in BeginFrame, after the setting is read and BEFORE the field's own BeginFrame, with the level the setting comes to (off where the gate is
+  // shut). The update asks the ray tracing scene service for the city's structures and hit data with it: without them there is no safe range and the field never starts.
+  using WantFn = std::function<void(gi::Level level)>;
+  void SetUpdate(UpdateFn update, WantFn want = nullptr);
 
   // Scene::BeginFrame, before GiApply::BeginFrame. `frame` is the scene's frame serial.
   void BeginFrame(uint64_t frame);
@@ -86,6 +90,7 @@ class GiIntegration {
   AmbientOcclusion* ao_ = nullptr;
   CityRtScene* city_ = nullptr;
   UpdateFn update_;
+  WantFn want_;
 
   uint64_t frame_ = 0;
   uint64_t trigger_frame_ = 0;       // the last frame whose trigger was seen (once a frame)

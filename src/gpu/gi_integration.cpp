@@ -46,14 +46,16 @@ void GiIntegration::Shutdown() {
   gi_setting::NoteReplaced(false);
   gi_setting::NoteUpdateBuilt(false);
   update_ = nullptr;
+  want_ = nullptr;
   field_ = nullptr;
   apply_ = nullptr;
   ao_ = nullptr;
   city_ = nullptr;
 }
 
-void GiIntegration::SetUpdate(UpdateFn update) {
+void GiIntegration::SetUpdate(UpdateFn update, WantFn want) {
   update_ = std::move(update);
+  want_ = std::move(want);
   gi_setting::NoteUpdateBuilt(static_cast<bool>(update_));
 }
 
@@ -119,6 +121,9 @@ void GiIntegration::BeginFrame(uint64_t frame) {
   gi_setting::NoteUpdateBuilt(static_cast<bool>(update_) || larecomp::settings::mcla_gpu_rt_gi_dry_run.Get());
   const gi_setting::Decision decision = gi_setting::Current();
   LogDecision(decision);
+  if (want_) {
+    want_(decision.level);  // G2: the structures and the hit data the field's rays need (rt_scene_service.h)
+  }
 
   GiField::Inputs in;
   in.rung = decision.rung;
