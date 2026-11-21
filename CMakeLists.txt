@@ -1220,6 +1220,12 @@ else()
     # The CAR SELF-REFLECTIONS row's values and how it reads its two settings back (pause_selfrefl_row.h):
     # cmake --build <dir> --target larecomp_pause_selfrefl_test, then run it (exit 0 = passed).
     add_executable(larecomp_pause_selfrefl_test EXCLUDE_FROM_ALL src/mc_engine/menus/pause_selfrefl_row_test.cpp)
+    # The pause menu's "a row that depends on another row" rule (row_dependency.h: FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS grey
+    # while SHADOWS is off), the order of LIGHTING AND SHADOWS and WORLD DETAIL as pause_menu.cpp has them, the page width, and how the cursor, the mouse
+    # and A treat a grey row (needs no game; it reads pause_menu.cpp and the settings files beside it as text):
+    #   cmake --build <dir> --target larecomp_row_dependency_test, then run it (exit 0 = passed).
+    add_executable(larecomp_row_dependency_test EXCLUDE_FROM_ALL src/mc_engine/menus/row_dependency_test.cpp)
+    target_include_directories(larecomp_row_dependency_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine")
     # The thread priority intents (src/os/thread_priority.h) have a check that needs no game:
     #   cmake --build <dir> --target larecomp_thread_priority_test, then run it (exit 0 = passed).
     add_executable(larecomp_thread_priority_test EXCLUDE_FROM_ALL
