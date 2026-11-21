@@ -1,12 +1,13 @@
 # The city pack (src/citypack): the city's geometry for ray tracing, built on the player's PC from their own game files (CITY-RT M1).
 #
-# One static library, larecomp_citypack: the pack format (pack_format.h), the reader of the game's city resources (sector_parse.h), the class of a
+# One static library, larecomp_citypack: the pack format (pack_format.h), the hit data's format (city_hit_format.h: CITY-RT M2), the reader of the game's city resources (sector_parse.h), the class of a
 # shader (material_class.h), the welder (mesh_builder.h), the builder (builder.h) and the reader the streamer uses (pack_reader.h). It has no
 # dependency on the ReXGlue runtime, Plume or libmspack: the builder is given the LZX function, and it expects, from whoever links it
 # (larecomp already has them in LARECOMP_SOURCES; the tool and the test compile them themselves): src/mc_engine/modloader/{rpf3,aes256,texture}.cpp.
 
 add_library(larecomp_citypack STATIC
     builder.cpp
+    city_hit_format.cpp
     material_class.cpp
     mesh_builder.cpp
     pack_format.cpp
@@ -41,4 +42,16 @@ target_compile_features(larecomp_citypack_test PRIVATE cxx_std_23)
 target_link_libraries(larecomp_citypack_test PRIVATE larecomp_citypack)
 if(WIN32)
     target_compile_definitions(larecomp_citypack_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
+
+# The city hit data's interface (city_hit_format.h, CITY-RT M2 package H0): the records, the UV transform, the corner streams, the hit blob, the file's headers, the pool block, and the
+# HLSL decode (src/gpu/hlsl/city_hit_common.hlsli) compiled as C++ and checked against the twin and against the data that went in. It reads two headers of src/gpu (the G-buffer's material word and
+# the instance id) so that the interface cannot drift from them:
+#   cmake --build <dir> --target larecomp_city_hit_format_test, then run src/citypack/larecomp_city_hit_format_test [<hlsl/city_hit_common.hlsli>] (exit 0 = passed).
+add_executable(larecomp_city_hit_format_test EXCLUDE_FROM_ALL city_hit_format_test.cpp)
+target_compile_features(larecomp_city_hit_format_test PRIVATE cxx_std_23)
+target_link_libraries(larecomp_city_hit_format_test PRIVATE larecomp_citypack)
+target_include_directories(larecomp_city_hit_format_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../gpu")
+if(WIN32)
+    target_compile_definitions(larecomp_city_hit_format_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()
