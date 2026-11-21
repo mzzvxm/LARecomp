@@ -42,6 +42,13 @@
 // the chrome variant (version 2) reads in place of its march. The paint never takes the other cars' own paint from here: it has no data there, as before.
 // mcla_gpu_car_chrome_rt_others (debug) is the A/B; it needs mcla_gpu_car_chrome_occlusion. Nothing changes for the player's own car, nor on a device that cannot trace.
 //
+// RR-4b, THE RAW MODE (car_rt_refl_rules.h DenoisePassesFor / RawHitDistance; dlss_rr_rules.h RawModes; mcla_gpu_dlss_rr_car_refl is the A/B). In a frame DLSS Ray Reconstruction takes it is the
+// denoiser, so the filter below does not run: the paint reads the trace's raw image (the cone's grain goes to Ray Reconstruction with the rest of the picture's noise), and one more pass
+// (hlsl/car_rt_refl_hit_cs.hlsl) writes how far each reflection went into an R16_FLOAT image of the picture's size, which the guide pass reads as the hit distance (RawHitImage; rr_guides.h
+// Inputs::hit[1]). The trace's image is the paint's of the NEXT frame (reprojected), so the colour Ray Reconstruction sees on the car is last frame's reflection; the distance is this frame's,
+// in this frame's pixels. Asked for through HistoryInfo::raw; with the plan not RR the pass is what it was: the same dispatches, shaders and pipelines (the hit pass is made, in the background,
+// only for a frame that is asked).
+//
 // WHAT IT DOES, at the same trigger as the history image (CarSelfRefl::RecordHistory, right after it): one compute pass
 // (hlsl/car_rt_refl_cs.hlsl, cs_6_5, inline ray queries) with a thread for every texel of the history image. A texel that holds a
 // vehicle's pixel casts a primary ray from the camera against the car's opaque parts in a narrow window around the pixel's distance: a hit
@@ -188,6 +195,7 @@ class CarRtRefl {
     uint64_t frame = 0;             // the guest frame the history is of (what SlotFor is asked with)
     bool upscaler = false;          // a temporal upscaler works on this frame: the cone's pattern turns by the frame (it averages the pattern out)
     uint32_t pattern_phase = 0;     // 0 .. 7: the pattern's step for this frame (0 where no upscaler runs: the pattern stands still on the screen)
+    bool raw = false;               // RR-4b: DLSS Ray Reconstruction takes this frame and this effect's switch is on (TemporalSystem::RawModes().CarRefl()): no filter, the hit distance written
     int32_t exp_bias = car_selfrefl::kMainTargetExpBias;  // the main colour target's exponent bias: the history's colour is the shaders' output times 2^exp_bias; the pass's own colours
                                                           // (a car's paint, the grey of a remembered car) are in the paint's units and are multiplied by 2^exp_bias (car_selfrefl_rules.h ExpBiasUnits)
   };
@@ -198,6 +206,8 @@ class CarRtRefl {
   // The bindless slot of the image the paint draws of the frame after `history_frame` read (the denoise's result: the trace's image after two
   // passes or none, the scratch image after one), or car_selfrefl::kNoRtImage when the pass did not run for that history.
   uint32_t SlotFor(uint64_t history_frame) const;
+  // RR-4b: this frame's hit distance image (R16_FLOAT, the picture's size, readable) when the frame ran raw and wrote it, else null. Valid until the next frame's pass.
+  const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
 
   // The images go back (the history's went: no car for 2 s, or the setting off).
   void ReleaseImage();
@@ -223,6 +233,14 @@ class CarRtRefl {
     float tune[4];      // the first pass's footprint where it starts and where it is in full, the second pass's
   };
   static_assert(sizeof(DenoisePush) == 64);
+  // The push block of the raw mode's hit distance pass (hlsl/car_rt_refl_hit_cs.hlsl CarRtHitPush), 64 bytes: the denoise's layout (its push range is 64 bytes at space 2).
+  struct HitPush {
+    uint32_t slots[4];  // the aux image's slot
+    float image[4];     // the output's size (the picture's), the trace image's size in texels
+    float lens[4];      // the reflection ray's reach, the divisor, the distance a miss writes
+    float reserved[4];
+  };
+  static_assert(sizeof(HitPush) == 64);
 
   // The register spaces of the layout: the bindless texture set, the output's, the car's structures' (hlsl CAR_RT_SPACE), the push block.
   static constexpr uint32_t kTextureSet = 0;
@@ -246,6 +264,12 @@ class CarRtRefl {
   plume::RenderPipeline* Pipeline();
   // The denoise's pipeline when it is made, else null (the frame goes on with the raw image: the denoise is never waited for).
   plume::RenderPipeline* DenoisePipeline();
+  // RR-4b: the hit distance pass's pipeline when it is made; null while it is being made (listed with the host precache the first time a raw frame asks: a frame never waits for a compile) or
+  // when it could not be.
+  plume::RenderPipeline* HitPipeline();
+  std::unique_ptr<plume::RenderPipeline> MakeHitPipeline();
+  // The hit distance image (R16_FLOAT, STORAGE | UNORDERED_ACCESS) at the picture's size and the set that names it; false: no raw frame (the image could not be made).
+  bool EnsureHitImage(uint32_t width, uint32_t height);
   // The pipeline is made (or being made): false while it is not, so the pass is not wanted for the frame (a live switch to on).
   bool PipelineReady();
   // The trace's image and aux image, and the set that names them.
@@ -292,6 +316,19 @@ class CarRtRefl {
   OutputSet trace_set_;   // u0 image_, u1 aux_
   OutputSet first_set_;   // u0 scratch_
   OutputSet final_set_;   // u0 image_
+
+  // RR-4b: the raw mode's hit distance pass: its shader (made when a raw frame first asks) and pipeline on the denoise's layout, its image and the set that names it.
+  std::unique_ptr<plume::RenderShader> hit_shader_;
+  std::unique_ptr<plume::RenderPipeline> hit_pipeline_;
+  bool hit_listed_ = false;
+  bool hit_failed_ = false;
+  HostImage hit_;
+  OutputSet hit_set_;     // u0 hit_
+  bool hit_ready_ = false;       // this frame ran raw and wrote hit_
+  uint32_t plain_streak_ = 0;    // frames the pass ran without the raw mode (the hit image goes back after car_rt_refl::kRawReleaseAfter)
+  uint64_t raw_passes_ = 0;
+  uint32_t raw_state_logged_ = ~0u;  // 0 raw, 1 asked and not possible, 2 not asked after having been
+  bool raw_ever_asked_ = false;
 
   // The opponents' cars (car_rt_opp_refl.h): a second dispatch of the trace's shader file into the same images, after the player's.
   CarRtOppRefl opp_;

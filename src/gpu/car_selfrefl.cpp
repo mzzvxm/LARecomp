@@ -243,7 +243,10 @@ plume::RenderPipeline* CarSelfRefl::Pipeline(uint32_t pass) {
   return pipelines_[pass].get();
 }
 
+const HostImage* CarSelfRefl::RawHitImage() const { return rt_ ? rt_->RawHitImage() : nullptr; }
+
 void CarSelfRefl::BeginFrame() {
+  raw_ = false;  // RR-4b: the Scene says it again before the trigger's history pass, in a frame Ray Reconstruction takes
   Mode mode = ReadMode();
   if (!ready_ && mode != Mode::kOff && !shaders_failed_ && MakeShaders()) {
     // Off at the start, on now (a live change): the shaders were not made; they are made here (a short call) and the
@@ -518,6 +521,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     info.tan_y = 1.0 / std::max(std::fabs(p.m[1][1]), 1e-9);
     info.frame = frame_;
     info.upscaler = upscaler_running_;
+    info.raw = raw_;  // RR-4b: DLSS Ray Reconstruction is this frame's denoiser (no filter on the trace, its hit distance written)
     // While a scene runs the phase follows the scene's update number like the other noise (scene_noise.h): the same scene frame gets the same ray pattern.
     info.pattern_phase = upscaler_running_ ? uint32_t(scene_noise::Index(frame_) & 7u) : 0u;
     info.exp_bias = exp_bias_;

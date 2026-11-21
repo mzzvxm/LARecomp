@@ -53,6 +53,7 @@
 #include "car_rt_check_cs.hlsl.dxil.h"
 #include "car_rt_refl_cs.hlsl.dxil.h"
 #include "car_rt_refl_denoise_cs.hlsl.dxil.h"
+#include "car_rt_refl_hit_cs.hlsl.dxil.h"
 #include "car_rt_refl_opp_cs.hlsl.dxil.h"
 #include "car_rt_view_ps.hlsl.dxil.h"
 #include "fg_compose_ps.hlsl.dxil.h"
@@ -163,6 +164,7 @@
 #include "car_rt_check_cs.hlsl.spirv.h"
 #include "car_rt_refl_cs.hlsl.spirv.h"
 #include "car_rt_refl_denoise_cs.hlsl.spirv.h"
+#include "car_rt_refl_hit_cs.hlsl.spirv.h"
 #include "car_rt_refl_opp_cs.hlsl.spirv.h"
 #include "car_rt_view_ps.hlsl.spirv.h"
 #include "fg_compose_ps.hlsl.spirv.h"
@@ -577,6 +579,11 @@ inline HostShaderBlob CarRtReflShader() {
 
 inline HostShaderBlob CarRtReflDenoiseShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_denoise_cs);
+}
+
+// RR-4b: the raw mode's hit distance pass (hlsl/car_rt_refl_hit_cs.hlsl), on the denoise's layout.
+inline HostShaderBlob CarRtReflHitShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_hit_cs);
 }
 
 // The opponents' variant of the trace (car_rt_opp_refl.h): hlsl/car_rt_refl_cs.hlsl built with CAR_RT_REFL_OPPONENTS (its own entry point, hlsl/car_rt_refl_opp.hlsli), the same kind as the trace.

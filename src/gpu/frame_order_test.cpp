@@ -206,7 +206,8 @@ void CheckPinnedOrder() {
             fo::RowOf(Step::kUpscale).soft_reads == fo::data::kRrGuides && fo::RowOf(Step::kUpscale).reads == 0 && fo::RowOf(Step::kUpscale).makes == 0 &&
             fo::RowOf(Step::kUpscale).deps[0].before == Step::kRrGuides,
         "RR-3: the upscale is a scanned anchor step in temporal.cpp that reads the guides only where they are there (a Super Resolution frame has none) and makes no shared data");
-  Check(fo::RowOf(Step::kSsr).makes == fo::data::kRrHitSsr && fo::RowOf(Step::kRrGuides).soft_reads == fo::data::kRrHitSsr && Before(Step::kSsr, Step::kRrGuides),
+  Check(fo::RowOf(Step::kSsr).makes == fo::data::kRrHitSsr && fo::RowOf(Step::kRrGuides).soft_reads == (fo::data::kRrHitSsr | fo::data::kRrHitCar) && Before(Step::kSsr, Step::kRrGuides) && Before(Step::kCarHistory, Step::kRrGuides) &&
+            (fo::RowOf(Step::kCarHistory).makes & fo::data::kRrHitCar) != 0,
         "RR-4: the reflections' hit distance image is made at the trigger by the effect (a soft read of the guide pass at the anchor: only the frames the effect ran raw have it)");
   Check(fo::RowOf(Step::kRrGuides).reads == fo::data::kPlanes && fo::RowOf(Step::kRrGuides).makes == fo::data::kRrGuides && fo::RowOf(Step::kRrGuidesView).reads == fo::data::kRrGuides &&
             fo::RowOf(Step::kRrGuidesView).makes == 0,

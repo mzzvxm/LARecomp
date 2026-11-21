@@ -877,6 +877,9 @@ larecomp_gpu_host_shader_rt(car_rt_refl_opp_cs cs_6_5 SOURCE car_rt_refl_cs DEFI
 # Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays), built for
 # both backends like any host shader (the pass runs only where the trace does).
 larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)
+# RR-4b: the hit distance pass of the raw mode (a frame DLSS Ray Reconstruction takes: the denoise above does not run): one compute pass writing an R16_FLOAT image of the picture's size from the aux
+# image, on the denoise's layout.
+larecomp_gpu_host_shader(car_rt_refl_hit_cs cs_6_0)
 # The ray traced occlusion and sun term around the player's car (car_rt_ao.h): one compute pass inside the occlusion's own passes with inline ray queries
 # against the car's structures (car_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan, through the same function as the others (larecomp_gpu_host_shader_rt).
 larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)
