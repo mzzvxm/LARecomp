@@ -3594,12 +3594,14 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   if (vol_ && vol_->wants_draws()) {
     // The same copy (volumetrics.h): the volumetric light is composited into the colour before the copy reads it, and before the sun
     // shafts' own pass below (the shafts' light is added on top of the haze).
-    vol_->BeforeResolve(record, list);
+    const bool vol_composited = vol_->BeforeResolve(record, list);
+    order_.Note(frame_order::Step::kVolumeComposite, vol_composited);
   }
   if (shafts_ && shafts_->wants_draws()) {
     // The end-of-scene copy of the main colour (shafts.h): the sun shafts' light goes into the colour
     // before the copy reads it.
-    shafts_->BeforeResolve(record, list);
+    const bool shafts_composited = shafts_->BeforeResolve(record, list);
+    order_.Note(frame_order::Step::kShaftsComposite, shafts_composited);
   }
   // A frame that can carry the HDR float scene keeps the range of a 7e3 colour (resolve.h).
   const bool float_scene =
@@ -3609,89 +3611,84 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   if (gbuffer_ && gbuffer_->active()) {
     // The mid-scene depth copy closes the G-buffer's window and publishes the frame (gbuffer.h), before the effects that will read it run.
     gbuffer_published = gbuffer_->OnResolve(record, summary, list);
+    order_.Note(frame_order::Step::kGBufferPublish, gbuffer_published);
   }
+  // THE FRAME'S ORDER AT THIS COPY (the game's mid-scene depth copy, 078B0000: the trigger of every pass below) IS THE TABLE IN frame_order.h (LIGHT-UNIFY 5.3, U9): each step, what it makes and
+  // reads, what it must follow and why, what it Wants and the PassTiming label of its time. Every pass below that recorded notes itself right after its call (order_.Note): the notes of a frame are
+  // checked against the table at the present, and frame_order_test.cpp holds this function's calls to the table's order. Move a pass here only together with its row.
   if (car_shadow_) {
     // At the same mid-scene depth copy, BEFORE the ambient occlusion's passes record (they read the map): the player car drawn again
     // from the sun, depth only (car_shadow_map.h; its own pass and target: the reset below forgets them too).
-    car_shadow_->OnResolve(record, summary, list);
+    const bool car_sun_map = car_shadow_->OnResolve(record, summary, list);
+    order_.Note(frame_order::Step::kCarSunMap, car_sun_map);
   }
-  // THE FRAME'S ORDER AT THIS COPY (the game's mid-scene depth copy, 078B0000: the trigger of every pass below). Each step reads what the ones
-  // before it made:
-  //   1. the car's sun shadow map (car_shadow_map.h): the player's car drawn again from the sun; the contact march reads it;
-  //   2. the car ray tracing structures (car_rt_scene.h): the new meshes' bottom level structures and this frame's top level, with the other
-  //      cars. FIRST, before everything that traces: the occlusion's ray traced term and sun ray (car_rt_ao.h) run inside the occlusion's own
-  //      passes, and the self-reflection's trace (car_selfrefl.h) after them, both in this top level;
-  //   2b. the headlight shadow maps (local_shadow.h): the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas
-  //      the lit draws of the next frame read (independent of the other steps: its own pass and target);
-  //   3. the ambient occlusion, the bounce light and the contact shadows (ao.h): the depth chain, the ray traced pass (car_rt_ao.h), the
-  //      visibility and the contact march, the apply onto the main colour. At the end of its depth chain the shared screen products (screen_shared.h) are
-  //      published from it and the Hi-Z is made, when a consumer wants it (the occlusion runs a frame of the depth pass alone for that if it and the contact
-  //      shadows are off);
-  //   3b. the deferred local lights (local_lights.h): one additive draw per light from the G-buffer's planes and the main depth, after the apply, before the shafts; the headlights
-  //       among them read the maps step 2b has just recorded, through the one shadow lookup (GB-H2: mcla_gpu_headlight_pass takes the forward headlight stage's place);
-  //   4. the sun shafts (shafts.h);
-  //   4b. the volumetric light (volumetrics.h): its compute passes (inject, integrate) read the headlight shadow atlas of step 2b (so that step's
-  //      last barrier names the compute stage too, local_shadow.cpp), the depth chain, the cascades and the lamp list; its composite goes
-  //      into the colour at the frame's end-of-scene copy (BeforeResolve, above);
-  //   5. the car ray tracing check pass (mcla_gpu_car_rt_check, debug): reads the occlusion's linear depth, so after step 3;
-  //   5b. the shared colour capture (screen_shared.h CapturePost, only while a consumer wants colour_post): the colour step 3 made, averaged over the host samples. (colour_pre, the capped chain
-  //      the bounce light reads, is made inside step 3, before its passes, by CapturePre; the pass is still the occlusion's.)
-  //   5c. the screen-space reflections (ssr.h, only while mcla_gpu_ssr is on, in a frame that made the capture): the Hi-Z walk, the accumulation and the additive resolve into the main colour;
-  //   6. the car self-reflection's history and its ray traced trace (car_selfrefl.h, car_rt_refl.h): the history is the colour step 3 made (read from step 5b's capture where the frame
-  //      has it at the picture's size), the trace uses step 2's top level.
   if (car_rt_) {
-    car_rt_->OnResolve(record, summary, list, slot_);
+    // The car ray tracing structures (car_rt_scene.h): the new meshes' bottom level structures and this frame's top level, with the other cars. FIRST, before everything that traces: the
+    // occlusion's ray traced term and sun ray (car_rt_ao.h) run inside the occlusion's own passes, and the self-reflection's trace (car_selfrefl.h) after them, both in this top level.
+    const bool car_structures = car_rt_->OnResolve(record, summary, list, slot_);
+    order_.Note(frame_order::Step::kCarStructures, car_structures);
   }
   bool shadow_recorded = false;
   if (local_shadow_) {
     // The same depth copy: the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas the lit draws of the
     // next frame read (local_shadow.h; its own pass and target: the reset below forgets them too).
     shadow_recorded = local_shadow_->OnResolve(record, summary, list, slot_);
+    order_.Note(frame_order::Step::kShadowReplay, shadow_recorded);
   }
   if (light_manager_) {
     light_manager_->OnResolve(shadow_recorded);  // passive: this frame's maps, and the headlight block is checked against them
+    order_.Note(frame_order::Step::kLightMaps, shadow_recorded);
   }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
-    // below forgets for the next draw.
-    ao_->OnResolve(record, summary, list, UpscalerRunning());
+    // below forgets for the next draw. The AO's frame is one call and several steps of the table (depth chain, normals, colour_pre, ray traced term, visibility, contact march, apply, and
+    // at its end the screen products' publish with the Hi-Z): the order inside it is held by frame_order_test.cpp against ao.cpp.
+    const bool ao_ran = ao_->OnResolve(record, summary, list, UpscalerRunning());
+    order_.Note(frame_order::Step::kAo, ao_ran);
   }
   if (local_lights_ && local_lights_->wants_draws()) {
-    // Step 3b: the deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3 step 7): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
+    // The deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
     // AFTER the occlusion's apply (so it does not darken the light) and before the sun shafts, the volumetric light and the game's own light volumes and glows. Binds its own layout, pipeline
-    // and framebuffer: the reset below forgets them too.
-    local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);
+    // and framebuffer: the reset below forgets them too. The headlights among the lights read the maps the replay has just recorded, through the one shadow lookup (GB-H2: mcla_gpu_headlight_pass).
+    const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);
+    order_.Note(frame_order::Step::kLocalLights, local_lights_ran);
   }
   if (shafts_ && shafts_->wants_draws()) {
     // At the same mid-scene depth copy the sun shafts take the sky's brightness (their own passes and
     // targets: the reset below forgets them too).
-    shafts_->OnResolve(record, summary, list, UpscalerRunning());
+    const bool shafts_ran = shafts_->OnResolve(record, summary, list, UpscalerRunning());
+    order_.Note(frame_order::Step::kShafts, shafts_ran);
   }
   if (vol_ && vol_->wants_draws()) {
     // The same depth copy again: the volumetric light's compute passes (volumetrics.h), after the car shadow map, the headlights' shadow replay, the
     // ambient occlusion and the sun shafts have recorded, so that the beams see this frame's maps.
-    vol_->OnResolve(record, summary, list, slot_, UpscalerRunning());
+    const bool vol_ran = vol_->OnResolve(record, summary, list, slot_, UpscalerRunning());
+    order_.Note(frame_order::Step::kVolume, vol_ran);
   }
   if (car_rt_) {
-    // The check pass of the structures, over the occlusion's linear depth (it exists only after step 3).
-    car_rt_->OnAfterOcclusion(summary, list, slot_, ao_);
+    // The check pass of the structures, over the occlusion's linear depth (it exists only after the AO's frame).
+    const bool car_check = car_rt_->OnAfterOcclusion(summary, list, slot_, ao_);
+    order_.Note(frame_order::Step::kCarRtCheck, car_check);
   }
   bool colour_captured = false;
   if (screen_ && screen_->capture_wanted()) {
-    // The shared colour capture (screen_shared.h CapturePost, step 8 of the order above): the main colour as it is after the occlusion's apply, averaged over its host samples into colour_post
+    // The shared colour capture (screen_shared.h CapturePost): the main colour as it is after the occlusion's apply and the deferred lights, averaged over its host samples into colour_post
     // (and its history), for the consumers that want it; the car self-reflection's history pass below reads it where it can. Only while a capture is planned.
     colour_captured = screen_->CapturePost(record, summary, list);
+    order_.Note(frame_order::Step::kColourPost, colour_captured);
   }
   if (colour_captured && ssr_) {
-    // Step 8b: the screen-space reflections (ssr.h): the trace, the accumulation and the additive resolve into the main colour, right after the capture they read (a reflection is not a
+    // The screen-space reflections (ssr.h): the trace, the accumulation and the additive resolve into the main colour, right after the capture they read (a reflection is not a
     // reflection of a reflection: colour_post is made before the effect adds to the colour) and before the car self-reflection's history pass.
-    ssr_->OnTrigger(summary, list);
+    const bool ssr_ran = ssr_->OnTrigger(summary, list);
+    order_.Note(frame_order::Step::kSsr, ssr_ran);
   }
   if (car_refl_ && car_refl_->wants_draws()) {
-    // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;
-    // its own pass and target: the reset below forgets them too).
-    car_refl_->OnResolve(record, summary, list);
+    // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h) and the ray traced reflection of its texels (car_rt_refl.h, in this frame's
+    // top level; its own pass and target: the reset below forgets them too).
+    const bool car_history = car_refl_->OnResolve(record, summary, list);
+    order_.Note(frame_order::Step::kCarHistory, car_history);
   }
   if (gbuffer_ && gbuffer_->active()) {
     // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).
@@ -3939,6 +3936,17 @@ void Scene::OnPresent() {
   }
   if (car_rt_) {
     car_rt_->OnPresent();  // the frame boundary: the top level is gone, the next request counts
+  }
+  {
+    // The frame's passes at the trigger and the end-of-scene copy, held to the table in frame_order.h (LIGHT-UNIFY U9): the first frame of each set of passes that ran is logged with the order they
+    // ran in (the census), and so is every inversion or a pass that read what nothing before it had made (a debug build also asserts on an inversion, where it happens).
+    const frame_order::Recorder::Report order = order_.End(frame_serial_);
+    if (!order.census.empty()) {
+      REXLOG_INFO("[gpu] frame order: {}", order.census);
+    }
+    if (!order.problems.empty()) {
+      REXLOG_WARN("[gpu] frame order: the passes ran against the table in frame_order.h (each reported once): {}", order.problems);
+    }
   }
   if (temporal_) {
     temporal_->EndFrame();

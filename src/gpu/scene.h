@@ -66,6 +66,7 @@
 #include "draw_census.h"
 #include "edram.h"
 #include "frame_layers.h"
+#include "frame_order.h"
 #include "gbuffer_material.h"
 #include "gbuffer_materials.h"
 #include "gbuffer_rules.h"
@@ -514,6 +515,8 @@ class Scene {
   ScreenShared* screen_ = nullptr;
   LocalLights* local_lights_ = nullptr;
   ScreenReflections* ssr_ = nullptr;
+  // The order the frame's passes ran in at the trigger and the end-of-scene copy, held to frame_order.h's table at each guest present (LIGHT-UNIFY U9).
+  frame_order::Recorder order_;
   // The draws' material words (gbuffer_material.h): the table the shader pack build wrote beside the variant pack, read once, on the first G-buffer draw after the pack is attached.
   gbuffer::MaterialTable gbuffer_materials_;
   // The per-texture rows over those words (gbuffer_materials.h): the table files, hot reloaded, and the census of what the G-buffer's draws read (MCLA_GBUFFER_CENSUS=1).

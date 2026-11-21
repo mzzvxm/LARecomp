@@ -284,6 +284,12 @@ add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.c
 # gate, the BRDF, the GGX sampling, the virtual image's reprojection, the Hi-Z march against analytic scenes and a brute force march) likewise; it reads the sources it is given:
 #   cmake --build <dir> --target larecomp_ssr_test, then run src/gpu/larecomp_ssr_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)
+# The frame's order (frame_order.h, LIGHT-UNIFY U9: the one table of every pass that makes or reads the shared screen and light data, what each makes, reads, must follow and Wants, and the recorder the
+# Scene notes its trigger passes in) held to itself (every read has an earlier maker, every step moved before what it needs is found), to the consumers' own wants (gbuffer_rules.h, screen_rules.h), to a model of
+# frames with passes missing and every kind of mistake, and, given the src/gpu folder (it defaults to the one the test is in), to scene.cpp, ao.cpp and the consumers' sources (the calls stand in the table's
+# order, each has its Note line, the PassTiming labels and the Want calls exist) likewise:
+#   cmake --build <dir> --target larecomp_frame_order_test, then run src/gpu/larecomp_frame_order_test [<src/gpu dir>] [--print] (exit 0 = passed).
+add_executable(larecomp_frame_order_test EXCLUDE_FROM_ALL frame_order_test.cpp)
 # The material channel (gbuffer_material.h: the class table of the 192 shader groups, the gloss table, the specular exponent's mapping to a smoothness, the material word, the table file the
 # shader pack build writes and the draw's word) likewise; with the folder shaderpack/baseline (hlsl-rpf and hlsl-xex with their shader_report.tsv) it also checks the tables against the
 # translated HLSL of the retail game:

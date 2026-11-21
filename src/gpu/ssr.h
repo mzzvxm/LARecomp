@@ -22,7 +22,7 @@
 //                                   trusts) the pass takes the last frame's anchor camera for the axes and runs with no history.
 //
 // THE PASSES (hlsl/ssr_trace_ps.hlsl, ssr_temporal_ps.hlsl, ssr_apply_ps.hlsl; the walk is hlsl/ssr_trace.hlsli, checked in ssr_test.cpp against analytic scenes and a brute force march), recorded at the
-// trigger right after the colour capture (scene.cpp OnResolve, step 8b of the order):
+// trigger right after the colour capture (scene.cpp OnResolve; the SSR step of frame_order.h's table):
 //   1 trace     half size, RGBA16F: per pixel the class gate and the smoothness (a pixel that reflects nothing costs the gate's reads), a GGX ray, the Hi-Z walk, the colour of the hit at the mip the
 //               lobe's width asks for (the sky at the vanishing point where the ray ended on the picture), faded at the picture's edge and for a ray that points back at the camera; a = the distance
 //   2 temporal  half size, RGBA16F x 2 (history ping-pong): the virtual image's reprojection, the receiver's surface test, the clamp to the neighbourhood's box, a = the receiver's depth

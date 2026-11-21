@@ -2675,7 +2675,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     RecordNormals(list, plan, base, normals_);
   }
   if (plan.gi.on && screen_) {
-    // The capture is the shared screen products': they keep the chain's images and count it made this frame (screen_shared.h CapturePre, step 5 of the order); the pass, its pipelines and its
+    // The capture is the shared screen products': they keep the chain's images and count it made this frame (screen_shared.h CapturePre, the colour_pre step of frame_order.h's table); the pass, its pipelines and its
     // constants are still this class's until SS-2, so what is recorded, and where, is what it was.
     screen_->CapturePre([&] { RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot); });
   }
