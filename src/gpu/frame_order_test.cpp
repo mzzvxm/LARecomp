@@ -12,6 +12,9 @@
 //                every maker removed, every want dropped, and each is found.
 //   THE RECORDER the full frame passes; frames with passes missing (4000 random subsets of the noted steps, against an independent model) give no order finding and exactly the reads the model says were
 //                made by nobody; an inversion, a second trigger, a step that is not a noted call, a composite before the trigger are each found; a finding is reported once; the census names a new set of passes once.
+//   GB-I3        the reflections' place: their wants are declared at the frame's start before the owners read them (lag 0) and are the rules' (ssr_rules.h: nothing while off, the Hi-Z, colour_post and
+//                the three planes at high and ultra); the pass timing labels of the SSR row and the light pass (own labels, the closing mark) exist in their files in the pass's order; the cost arms
+//                (off / high / ultra) are the setting's levels and name the labels a cost run sums; a frame of the off arm and one of the high arm have different census lines.
 //   THE SOURCES  given the src/gpu folder: every call of the table stands in scene.cpp (or ao.cpp for the AO's own steps) in the table's order, phase by phase; every noted step has its `order_.Note` line right after its
 //                call and no other Note exists; every PassTiming label exists in its file; every Want the table lists is declared by its consumer; the frame start's order the wants' lag rests on.
 //
@@ -35,6 +38,7 @@
 #include "frame_order.h"
 #include "gbuffer_rules.h"
 #include "screen_rules.h"
+#include "ssr_rules.h"
 
 namespace fo = mcla::gpu::frame_order;
 namespace gb = mcla::gpu::gbuffer;
@@ -166,6 +170,25 @@ void CheckPinnedOrder() {
   // the frame's start
   Check(Before(Step::kBeginLocalLights, Step::kBeginGBuffer) && Before(Step::kBeginLocalLights, Step::kBeginScreen) && Before(Step::kBeginLocalLights, Step::kBeginLights), "local lights declare before the three owners read");
   Check(Before(Step::kBeginScreen, Step::kBeginAo), "the screen owner makes its plan before the AO asks it");
+  Check(Before(Step::kBeginLocalLights, Step::kBeginSsr) && Before(Step::kBeginSsr, Step::kBeginGBuffer) && Before(Step::kBeginSsr, Step::kBeginScreen) && Before(Step::kBeginSsr, Step::kBeginAo),
+        "GB-I3: the reflections declare right after the light pass and before the G-buffer and the screen owner read (and before the AO asks the plan)");
+  // the reflections' place at the trigger (GB-I3): the last pass that adds to the colour, right after the capture it reads
+  {
+    const size_t capture = PosOf(Step::kColourPost);
+    const size_t ssr = PosOf(Step::kSsr);
+    Check(ssr == capture + 1, "the reflections are the very next step after the capture (nothing runs between what they read and them)");
+    Check(PosOf(Step::kSsr) + 1 == PosOf(Step::kCarHistory), "... and the car history is the very next after them (a vehicle-only image: the order with SSR is free of data, kept as the design has it)");
+    // everything that adds to the main colour at the trigger comes before the capture except the reflections: the AO's apply and the light pass (kinds of the table that write the colour)
+    for (Step added : {Step::kAoApply, Step::kLocalLights}) Check(Before(added, Step::kColourPost), std::string("'") + fo::RowOf(added).name + "' adds to the colour before the capture");
+    // the shafts and the volume record before the capture and write no colour at the trigger in the play view (composites at the end-of-scene copy)
+    Check(Before(Step::kShafts, Step::kColourPost) && Before(Step::kVolume, Step::kColourPost) && fo::RowOf(Step::kShaftsComposite).phase == Phase::kEndOfScene && fo::RowOf(Step::kVolumeComposite).phase == Phase::kEndOfScene,
+          "the sun shafts' and the volume's passes are before the capture, their composites at the end of the scene (after the reflections)");
+    Check(fo::RowOf(Step::kShafts).note[0] != '\0' && std::string(fo::RowOf(Step::kShafts).note).find("GB-I3 keeps that") != std::string::npos, "the shafts' row says why they stay before the capture");
+    // the car history's dependency on SSR carries the reason
+    bool car_after_ssr = false;
+    for (const fo::Dep& dep : fo::RowOf(Step::kCarHistory).deps) car_after_ssr = car_after_ssr || (dep.before == Step::kSsr && std::string(dep.why).find("vehicle's pixels only") != std::string::npos);
+    Check(car_after_ssr, "the car history is kept after SSR and the dependency says why it does not see SSR (vehicle pixels only)");
+  }
   Check(Before(Step::kBeginLights, Step::kDrawSidecar), "the frame's lights are made before the draws");
 }
 
@@ -179,6 +202,13 @@ void CheckWants() {
   Check(ao.wants_planes == (gb::ConsumerPlanes(gb::Consumer::kAmbientOcclusion) | gb::ConsumerPlanes(gb::Consumer::kBounceLight)), "the AO's frame wants the planes gbuffer_rules.h says (the normals, for the occlusion and the bounce light)");
   Check(ll.wants_planes == gb::kAllPlanes && ssr.wants_planes == gb::kAllPlanes && ao.wants_planes == gb::PlaneBit(gb::kPlaneNormal), "all three planes for the light pass and the reflections, the normal for the AO");
   Check(ll.wants_lights && !ssr.wants_lights && !ao.wants_lights && !car.wants_lights, "only the light pass asks the light manager");
+  // GB-I3: the reflections' row is the rules' wants at high and ultra, and the rules ask for nothing at off
+  Check(ssr.wants_screen == mcla::gpu::ssr::kWantedProducts && ssr.wants_screen == mcla::gpu::ssr::WantedProducts(mcla::gpu::ssr::Level::kHigh) && ssr.wants_screen == mcla::gpu::ssr::WantedProducts(mcla::gpu::ssr::Level::kUltra),
+        "the reflections' row wants the products ssr_rules.h asks for at high and at ultra");
+  Check(ssr.wants_planes == mcla::gpu::ssr::WantedPlanes(mcla::gpu::ssr::Level::kHigh) && ssr.wants_planes == mcla::gpu::ssr::WantedPlanes(mcla::gpu::ssr::Level::kUltra),
+        "the reflections' row wants the planes ssr_rules.h asks for at high and at ultra");
+  Check(mcla::gpu::ssr::WantedProducts(mcla::gpu::ssr::Level::kOff) == 0 && mcla::gpu::ssr::WantedPlanes(mcla::gpu::ssr::Level::kOff) == 0 && !mcla::gpu::ssr::WantsCamera(mcla::gpu::ssr::Level::kOff),
+        "GB-I3: while REFLECTIONS ON SURFACES is off the effect wants no product, no plane and no camera (GBuffer::Want(kReflections) is 0)");
   // the table's screen wants as the frame's plan sees them
   sc::Wants wants;
   wants.Set(sc::Consumer::kLocalLights, ll.wants_screen);
@@ -207,7 +237,8 @@ void CheckWants() {
   using fo::want::kScreen;
   Check(fo::rules::WantLag(Step::kBeginLocalLights, kPlanes) == 0 && fo::rules::WantLag(Step::kBeginLocalLights, kScreen) == 0 && fo::rules::WantLag(Step::kBeginLocalLights, kLights) == 0,
         "the light pass's wants are read in the frame they are made (lag 0)");
-  Check(fo::rules::WantLag(Step::kBeginSsr, kPlanes) == 1 && fo::rules::WantLag(Step::kBeginSsr, kScreen) == 1, "the reflections' wants reach the owners a frame later (lag 1: ssr.h's 'the first frame with the setting on is the one before')");
+  Check(fo::rules::WantLag(Step::kBeginSsr, kPlanes) == 0 && fo::rules::WantLag(Step::kBeginSsr, kScreen) == 0,
+        "GB-I3: the reflections' wants are read in the frame they are made (lag 0: the planes, the Hi-Z and the capture are there in the frame the setting changes; it was 1 while the call stood after the owners')");
   Check(fo::rules::WantLag(Step::kBeginAo, kPlanes) == 1 && fo::rules::WantLag(Step::kBeginAo, kScreen) == 1, "the AO's wants lag one frame");
   Check(fo::rules::WantLag(Step::kBeginCarRefl, kScreen) == 1, "the car self-reflection's want of colour_post lags one frame");
   Check(fo::rules::WantLag(Step::kBeginAo, kLights) == 0 || true, "(no step reads a light want after the AO's: the manager's want is the light pass's alone)");
@@ -406,6 +437,32 @@ void CheckRecorder() {
     Check(rec.finding_count() == 0, "the volume's pass and composites, with the shafts' pass missing, are whole");
     rec.End(3);
   }
+  // GB-I3: the arms of the cost run in the census: the off arm's frame has no capture and no reflections, the high arm's has both after the light pass
+  {
+    fo::Recorder rec(true);
+    for (Step s : {Step::kGBufferPublish, Step::kAo, Step::kLocalLights, Step::kCarHistory}) rec.Note(s);
+    const fo::Recorder::Report off = rec.End(1);
+    for (Step s : {Step::kGBufferPublish, Step::kAo, Step::kLocalLights, Step::kColourPost, Step::kSsr, Step::kCarHistory}) rec.Note(s);
+    const fo::Recorder::Report high = rec.End(2);
+    const std::string ssr_name = fo::RowOf(Step::kSsr).name;
+    const std::string post_name = fo::RowOf(Step::kColourPost).name;
+    Check(!off.census.empty() && off.census.find(ssr_name) == std::string::npos && off.census.find(post_name) == std::string::npos && !off.any_findings, "the off arm's census names neither the capture nor the reflections");
+    Check(!high.census.empty() && high.census.find(ssr_name) != std::string::npos && high.census.find(post_name) != std::string::npos && !high.any_findings &&
+              high.census.find(post_name) < high.census.find(ssr_name),
+          "the high arm's census names the capture, then the reflections: the chains read the arm that ran from it");
+    // the reflections without the capture they read (a frame where the capture was not planned) is a finding: the order table's hard read of colour_post
+    fo::Recorder lone(false);
+    for (Step s : {Step::kGBufferPublish, Step::kAo, Step::kLocalLights, Step::kSsr}) lone.Note(s);
+    bool missing = false;
+    for (size_t i = 0; i < lone.finding_count(); ++i) missing = missing || (lone.finding(i).problem == fo::Recorder::Problem::kReadMissing && lone.finding(i).step == Step::kSsr && (lone.finding(i).bits & fo::data::kColourPost) != 0);
+    Check(missing, "the reflections noted without the capture before them is a finding (colour_post nobody made)");
+    // the reflections before the capture is an inversion
+    fo::Recorder swapped(false);
+    for (Step s : {Step::kGBufferPublish, Step::kAo, Step::kLocalLights, Step::kSsr, Step::kColourPost}) swapped.Note(s);
+    bool inverted = false;
+    for (size_t i = 0; i < swapped.finding_count(); ++i) inverted = inverted || (swapped.finding(i).problem == fo::Recorder::Problem::kOutOfOrder && swapped.finding(i).step == Step::kColourPost && swapped.finding(i).other == Step::kSsr);
+    Check(inverted, "the capture noted after the reflections is an inversion naming both");
+  }
   // an inversion (the recorder that does not assert)
   {
     fo::Recorder rec(false);
@@ -496,7 +553,7 @@ void CheckRecorder() {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------
 std::string StepEnumName(Step step) {
   // the enumerator as scene.cpp writes it: frame_order::Step::kX, found by the table's own name list
-  static const char* const kNames[] = {"kBeginLocalLights", "kBeginGBuffer", "kBeginScreen", "kBeginSsr", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight",
+  static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGBuffer", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
                                        "kAoVisibility", "kContact", "kAoApply", "kScreenPublish", "kLocalLights", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory",
                                        "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
@@ -629,6 +686,51 @@ void CheckSources(const std::string& gpu) {
     if (r.label[0] == '\0') continue;
     Check(r.label_file[0] != '\0' && Has(text_of(r.label_file), std::string("\"") + r.label + "\""), std::string(r.name) + ": the PassTiming label \"" + r.label + "\" is in " + r.label_file);
   }
+  // GB-I3: the other marks of a pass and its closing mark exist in the file, after the pass's first label, in the table's order; the closing mark is the last
+  for (const Row& r : Rows()) {
+    if (r.more_labels[0] == nullptr && r.closing_label[0] == '\0') continue;
+    const std::string& text = text_of(r.label_file);
+    size_t last = At(text, std::string("Mark(list, \"") + r.label + "\")");
+    Check(last != std::string::npos, std::string(r.name) + ": the first label '" + r.label + "' is a Mark in " + r.label_file);
+    for (const char* more : r.more_labels) {
+      if (more == nullptr) continue;
+      const size_t at = At(text, std::string("Mark(list, \"") + more + "\")");
+      Check(at != std::string::npos && at > last, std::string(r.name) + ": the mark '" + more + "' is in " + r.label_file + " after the one before it");
+      last = at == std::string::npos ? last : at;
+    }
+    if (r.closing_label[0] != '\0') {
+      const size_t at = At(text, std::string("Mark(list, \"") + r.closing_label + "\")");
+      Check(at != std::string::npos && at > last, std::string(r.name) + ": the closing mark '" + r.closing_label + "' is in " + r.label_file + " after the pass's own marks");
+      Check(Count(text, std::string("\"") + r.closing_label + "\"") == 1, std::string(r.name) + ": the closing mark '" + r.closing_label + "' is written once");
+      bool also_own = std::strcmp(r.closing_label, r.label) == 0;
+      for (const char* more : r.more_labels) also_own = also_own || (more != nullptr && std::strcmp(more, r.closing_label) == 0);
+      Check(!also_own, std::string(r.name) + ": the closing mark is not one of the pass's own labels (its time is whatever is recorded next)");
+    }
+  }
+  {
+    // the reflections' and the light pass's labels as the cost runs read them
+    const Row& ssr_row = fo::RowOf(fo::cost::kReflectionsStep);
+    std::vector<std::string> own = {ssr_row.label};
+    for (const char* more : ssr_row.more_labels) {
+      if (more != nullptr) own.push_back(more);
+    }
+    Check(own == std::vector<std::string>({"ssr trace", "ssr temporal", "ssr apply"}), "the reflections' own labels are the three passes' (the chains sum the labels that start with 'ssr ')");
+    for (const std::string& label : own) Check(label.rfind("ssr ", 0) == 0, "own label '" + label + "' starts with 'ssr '");
+    Check(std::string(ssr_row.closing_label) == "after ssr" && std::string(ssr_row.closing_label).rfind("ssr ", 0) != 0, "the closing label 'after ssr' is not in that sum");
+    for (const char* label : fo::cost::kReflectionsProductLabels) {
+      Check(Has(text_of("screen_shared.cpp"), std::string("Mark(list, \"") + label + "\")"), std::string("the product label '") + label + "' is a Mark in screen_shared.cpp");
+      Check(std::string(label).rfind("ssr ", 0) != 0, std::string("the product label '") + label + "' is not an SSR label: it is the owner's, timed apart");
+    }
+    const Row& light_row = fo::RowOf(Step::kLocalLights);
+    Check(std::string(light_row.label) == "local lights" && std::string(light_row.closing_label) == "after local lights" && light_row.more_labels[0] == nullptr, "the light pass: one pass, the label 'local lights' and the closing mark 'after local lights'");
+    // the cost arms: the words are the levels of the setting, and a frame of the off arm and one of the high arm have census lines that differ by the capture and the reflections
+    Check(std::string(fo::cost::kReflectionsSetting) == "mcla_gpu_ssr" && Has(text_of("ssr.cpp"), "static LiveText text(\"mcla_gpu_ssr\");"), "the cost arms set the setting the effect reads");
+    for (const fo::cost::Arm& arm : fo::cost::kReflectionsArms) {
+      const mcla::gpu::ssr::Level level = mcla::gpu::ssr::LevelFromText(arm.word);
+      Check(mcla::gpu::ssr::LevelName(level) == arm.word && arm.runs == (level != mcla::gpu::ssr::Level::kOff), std::string("arm '") + arm.word + "' is a level of the setting, and runs unless it is off");
+    }
+    Check(fo::cost::kReflectionsArms.size() == mcla::gpu::ssr::kLevelCount, "one arm for each level of the setting");
+  }
   // the wants the table lists are declared by their consumers
   struct Decl {
     const char* file;
@@ -644,19 +746,25 @@ void CheckSources(const std::string& gpu) {
     const std::string& ssr = text_of("ssr.cpp");
     const std::string& car = text_of("car_selfrefl.cpp");
     Check(ProductsNamedIn(StatementAt(ll, At(ll, "screen_->Want(screen::Consumer::kLocalLights"))) == fo::RowOf(Step::kLocalLights).wants_screen, "the light pass asks the screen owner for the products the table lists");
-    Check(ProductsNamedIn(StatementAt(ssr, At(ssr, "screen_->Want(screen::Consumer::kReflections"))) == fo::RowOf(Step::kSsr).wants_screen, "the reflections ask the screen owner for the products the table lists");
+    const std::string& ssr_rules = text_of("ssr_rules.h");
+    Check(ProductsNamedIn(StatementAt(ssr_rules, At(ssr_rules, "inline constexpr uint32_t kWantedProducts"))) == fo::RowOf(Step::kSsr).wants_screen &&
+              Has(ssr, "screen_->Want(screen::Consumer::kReflections, ssr::WantedProducts(level_))"),
+          "the reflections ask the screen owner, through ssr_rules.h WantedProducts, for the products the table lists");
     Check(ProductsNamedIn(StatementAt(car, At(car, "screen_->Want(screen::Consumer::kCarHistory"))) == fo::RowOf(Step::kCarHistory).wants_screen, "the car self-reflection asks for the product the table lists");
     const size_t from = At(ao, "const uint32_t normal = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get()");
     const size_t bounce = At(ao, "screen_->Want(screen::Consumer::kBounceLight");
     Check(from != std::string::npos && bounce != std::string::npos && from < bounce &&
               ProductsNamedIn(ao.substr(from, bounce - from) + StatementAt(ao, bounce)) == fo::RowOf(Step::kAo).wants_screen,
           "the AO's three wants are lin_depth, normal and colour_pre, as the table's AO row lists");
-    Check(Has(ll, "gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights)") && Has(ssr, "gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections)"),
-          "the light pass and the reflections ask the G-buffer for ConsumerPlanes (which the table's wants equal)");
+    Check(Has(ll, "gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights)") && Has(ssr_rules, "gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections)") &&
+              Has(ssr, "gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(level_))"),
+          "the light pass and the reflections ask the G-buffer for ConsumerPlanes (which the table's wants equal; the reflections through ssr_rules.h WantedPlanes, 0 while off)");
   }
   // the order the lag rests on: the owners read the wants at their BeginFrame, the consumers declare at theirs (frame start, above)
-  Check(At(scene, "gbuffer_->BeginFrame(frame_serial_)") < At(scene, "ssr_->BeginFrame()") && At(scene, "screen_->BeginFrame(frame_serial_)") < At(scene, "ssr_->BeginFrame()"),
-        "SSR declares after the G-buffer and the screen owner read (lag 1)");
+  Check(At(scene, "ssr_->BeginFrame()") < At(scene, "gbuffer_->BeginFrame(frame_serial_)") && At(scene, "ssr_->BeginFrame()") < At(scene, "screen_->BeginFrame(frame_serial_)") &&
+            At(scene, "local_lights_->BeginFrame()") < At(scene, "ssr_->BeginFrame()") && At(scene, "ssr_->BeginFrame()") < At(scene, "ao_->BeginFrame()"),
+        "SSR declares after the light pass and before the G-buffer and the screen owner read (lag 0)");
+  Check(Count(scene, "ssr_->BeginFrame()") == 1, "the reflections' frame start is called once");
 }
 
 }  // namespace

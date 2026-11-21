@@ -14,15 +14,19 @@
 //             AFTER the capture (a reflection is not a reflection of a reflection) ...;
 //   WANTS     what the effect asks for while it is on: the G-buffer's planes, the shared screen products, the light manager; and the frame's start, where they are declared and read.
 //
-// THE FRAME, as scene.cpp runs it today (no step moved by this package; the table is the order the code already has):
-//   start      local lights declare | G-buffer reads its wants | screen products read theirs | SSR declares | AO declares | car reflection declares | light manager opens the frame's lights
+// THE FRAME, as scene.cpp runs it (LU-9 recorded the order the code had; GB-I3 moved one call: the reflections' wants are declared at the frame's start, lag 0, see kBeginSsr):
+//   start      local lights declare | SSR declares | G-buffer reads its wants | screen products read theirs | AO declares | car reflection declares | light manager opens the frame's lights
 //   draws      the main view's draws write the sidecar (the G-buffer's window) | the lit draws' forward headlight (lights of this frame, the maps of the LAST frame)
 //   trigger    G-buffer publish | car sun map | car ray tracing structures | headlight shadow replay | light manager takes this frame's maps |
 //              THE AO'S FRAME: depth chain, normals, colour_pre capture, ray traced occlusion, visibility, contact march, APPLY, screen publish (lin_depth, normal, colour_pre, Hi-Z) |
 //              deferred local lights (additive, after the apply) | sun shafts | volumetric light (inject, integrate) | car ray tracing check |
-//              colour_post capture (after the apply and the lights) | SSR (additive, after the capture) | car history + ray traced reflections | debug views
+//              colour_post capture (after the apply and the lights) | SSR (additive, after the capture: the LAST pass that adds to the colour here) | car history + ray traced reflections | debug views
 //   end of scene   the volumetric composite, the sun shafts' composite
 //   present    world classification | screen products trade their capture with the history | light manager checks and uploads | the rig makes the next frame's lights
+// WHERE THE REFLECTIONS STAND (GB-I3): after the capture they read (a reflection is not a reflection of a reflection) and after the light pass (they show the lights), before the car history (which holds
+// a vehicle's pixels only; SSR adds nothing to a vehicle's pixel) and the debug views. Their wants of the planes and the screen products are declared first thing in the frame (lag 0). Their GPU time is
+// the labels of the SSR row ('ssr trace', 'ssr temporal', 'ssr apply', closed by 'after ssr') and, while they are the products' only consumer, the owner's 'screen hiz' and 'screen colour post'
+// (namespace cost below: the arms a cost run sets, and which labels are the effect's own).
 // Where it differs from LIGHT-UNIFY 5.3's picture: the AO still builds the depth chain, the normals and the colour chain itself (SS-2 moves them into the screen owner; the screen frame, the Hi-Z
 // included, is published at the END of the AO's frame, after its apply, from ScreenShared::Publish); the sun shafts and the volume's inject / integrate record BEFORE the capture and SSR (the
 // design listed them after SSR; they add nothing to the colour at the trigger, their composites are at the end-of-scene copy, so the order between them is free of data and the table keeps the code's).
@@ -146,9 +150,9 @@ constexpr const char* PhaseName(Phase phase) {
 enum class Step : uint8_t {
   // frame start (Scene::BeginFrame)
   kBeginLocalLights,
+  kBeginSsr,
   kBeginGBuffer,
   kBeginScreen,
-  kBeginSsr,
   kBeginAo,
   kBeginCarRefl,
   kBeginLights,
@@ -213,6 +217,8 @@ struct Row {
   const char* call = "";             // the text of the call as it stands in that file, without the closing semicolon
   const char* label_file = "";       // the file holding the PassTiming label
   const char* label = "";            // the PassTiming label of the pass (its GPU time runs to the next mark)
+  std::array<const char*, 3> more_labels{};  // the pass's other marks, in the order it writes them (a pass of several draws: the SSR's trace, temporal and apply); the pass's own time is the sum
+  const char* closing_label = "";    // the mark written after the pass so that the time of what is recorded next is not the pass's ("after local lights"): not part of its own time
   uint32_t reads = 0;                // data:: bits that must exist when it runs (made by an earlier step that ran, or by the frame's start)
   uint32_t soft_reads = 0;           // data:: bits it reads where they are there: they must come from an earlier step
   uint32_t reads_previous = 0;       // data:: bits of the LAST frame it reads (no order inside the frame)
@@ -237,13 +243,14 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     {.step = Step::kBeginLocalLights, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "local lights declare their wants", .call = "local_lights_->BeginFrame()",
      .declares_for = Step::kLocalLights,
      .note = "FIRST: its wants of the planes, the screen products and the light manager are read by the owners below in this very frame (lag 0)"},
+    {.step = Step::kBeginSsr, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "SSR declares its wants", .call = "ssr_->BeginFrame()", .declares_for = Step::kSsr,
+     .note = "SECOND, before the G-buffer and the screen owner read (GB-I3 moved it above them): its wants of the planes, of the Hi-Z and of colour_post (ssr_rules.h WantedPlanes / WantedProducts: "
+             "ONLY while REFLECTIONS ON SURFACES is on; nothing at off) are read in this very frame (lag 0), so the effect can run in the frame the setting changes, and the owners stop making them "
+             "in the frame it is switched off. The call reads settings and sets wants only: nothing in the frame start between the old place and the new one depends on it"},
     {.step = Step::kBeginGBuffer, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "G-buffer reads the planes' wants, opens its window", .call = "gbuffer_->BeginFrame(frame_serial_)",
      .reads_wants = want::kPlanes},
     {.step = Step::kBeginScreen, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "screen products read their wants, make the frame's plan", .call = "screen_->BeginFrame(frame_serial_)",
      .reads_wants = want::kScreen},
-    {.step = Step::kBeginSsr, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "SSR declares its wants", .call = "ssr_->BeginFrame()", .declares_for = Step::kSsr,
-     .note = "AFTER the owners read: its wants of the planes and of Hi-Z and colour_post reach them a frame later (ssr.h: the first frame with the setting on is the one before the effect can run). "
-             "CHECK: moving this call above the two owners' BeginFrame makes it lag 0 (GB-I3's to decide; it changes only the frame after a setting change)"},
     {.step = Step::kBeginAo, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "AO declares its wants", .call = "ao_->BeginFrame()", .declares_for = Step::kAo,
      .note = "after the screen owner's BeginFrame, which it needs: it asks the plan whether a consumer outside its family wants the depth chain"},
     {.step = Step::kBeginCarRefl, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "car self-reflection declares its wants", .call = "car_refl_->BeginFrame()", .declares_for = Step::kCarHistory},
@@ -302,17 +309,20 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .makes = data::kLinDepth | data::kLinDepthFull | data::kNormal | data::kColourPre | data::kHizMin,
      .note = "ScreenShared::Publish at the END of the AO's frame (after the apply): every reader of the ScreenFrame comes after the whole AO"},
     {.step = Step::kLocalLights, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "deferred local lights (additive)", .call = "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_)",
-     .label_file = "local_lights.cpp", .label = "local lights", .reads = data::kPlanes | data::kLinDepth | data::kLights, .soft_reads = data::kLightMaps | data::kShadowAtlas,
+     .label_file = "local_lights.cpp", .label = "local lights", .closing_label = "after local lights", .reads = data::kPlanes | data::kLinDepth | data::kLights,
+     .soft_reads = data::kLightMaps | data::kShadowAtlas,
      .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kLinDepth, .wants_lights = true,
      .deps = {{{Step::kAoApply, "added AFTER the occlusion's apply: nothing darkens the light (HP11), the bounce light does not see it (C10)"}}},
      .note = "the headlights read this frame's maps from the atlas through the one lookup; before the sun shafts, the volume and the game's own light volumes and glows"},
     {.step = Step::kShafts, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "sun shafts' pass", .call = "shafts_->OnResolve(record, summary, list, UpscalerRunning())",
      .label_file = "shafts.cpp", .label = "shafts sky", .makes = data::kShafts,
-     .note = "no data dependency on the steps around it: its composite is at the end-of-scene copy. The design (LIGHT-UNIFY 5.3) lists it after SSR; the code runs it before the capture, as it did"},
+     .note = "sky pass into an image of its own, no data dependency on the steps around it: in the play view its composite is at the end-of-scene copy (after SSR). The design (LIGHT-UNIFY 5.3) lists it after "
+             "SSR; the code runs it before the capture, as it did, and GB-I3 keeps that: the pause and map worlds (and the debug switch, or a build with no copy at the end of the scene) composite the shafts "
+             "right here, at the trigger, so the capture, the car history and, where it runs, SSR see them as the picture they are in. Moving the pass after SSR would drop them from the pause worlds' car history"},
     {.step = Step::kVolume, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "volumetric light: inject and integrate", .call = "vol_->OnResolve(record, summary, list, slot_, UpscalerRunning())",
      .label_file = "volumetrics.cpp", .label = "vol inject", .soft_reads = data::kShadowAtlas | data::kLights, .makes = data::kVolume,
-     .note = "compute passes: they read this frame's maps (the replay's last barrier names the compute stage). The depth is the main depth plane read directly: it does not use lin_depth and does not Want it "
-             "(screen::Consumer::kVolumetrics is never declared; the design said it would read lin_depth)"},
+     .note = "compute passes into the froxels, nothing written to the main colour (its composite is at the end-of-scene copy): they read this frame's maps (the replay's last barrier names the compute stage). "
+             "The depth is the main depth plane read directly: it does not use lin_depth and does not Want it (screen::Consumer::kVolumetrics is never declared; the design said it would read lin_depth)"},
     {.step = Step::kCarRtCheck, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "car ray tracing check (debug)", .call = "car_rt_->OnAfterOcclusion(summary, list, slot_, ao_)",
      .label_file = "car_rt_scene.cpp", .label = "car rt check", .reads = data::kAoDepth | data::kCarStructures,
      .note = "reads the AO's linear depth image, so after the AO's frame"},
@@ -321,13 +331,18 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .deps = {{{Step::kAoApply, "the colour as the occlusion left it"}, {Step::kLocalLights, "UNCAPPED and after the deferred lights: the reflections must see the lights"}}},
      .note = "made only while a consumer wants colour_post; before SSR adds to the colour (a reflection is not a reflection of a reflection)"},
     {.step = Step::kSsr, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "screen-space reflections (additive)", .call = "ssr_->OnTrigger(summary, list)",
-     .label_file = "ssr.cpp", .label = "ssr trace", .reads = data::kHizMin | data::kColourPost | data::kPlanes, .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kHizMin | data::kColourPost,
+     .label_file = "ssr.cpp", .label = "ssr trace", .more_labels = {{"ssr temporal", "ssr apply"}}, .closing_label = "after ssr",
+     .reads = data::kHizMin | data::kColourPost | data::kPlanes, .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kHizMin | data::kColourPost,
      .deps = {{{Step::kColourPost, "reads the capture, which must be made before the effect adds to the colour"}, {Step::kLocalLights, "the reflection shows the lights"}}},
-     .note = "the labels 'ssr trace', 'ssr temporal', 'ssr apply' (GB-I3's pass timing); its Hi-Z comes from the screen frame published inside the AO's frame"},
+     .note = "the last pass that adds to the colour at the trigger: after the capture it reads and the light pass it shows, before the car history, whose vehicle-only image it does not touch (a vehicle's "
+             "pixel takes none of the effect). GPU time: the labels 'ssr trace', 'ssr temporal', 'ssr apply' are its own (the chains sum the labels that start with 'ssr '), 'after ssr' closes the span and is "
+             "not; the products it wants are timed under the owner's 'screen hiz' and 'screen colour post'. Its Hi-Z comes from the screen frame published inside the AO's frame"},
     {.step = Step::kCarHistory, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "car self-reflection history and ray traced reflection", .call = "car_refl_->OnResolve(record, summary, list)",
      .label_file = "car_selfrefl.cpp", .label = "car history", .soft_reads = data::kColourPost | data::kCarStructures, .makes = data::kCarHistory, .wants_screen = data::kColourPost,
-     .deps = {{{Step::kAoApply, "the history is the colour the occlusion left"}, {Step::kSsr, "CHECK: where colour_post is not usable (above 1080 lines) the history takes the main colour, which holds SSR's reflections by then"}}},
-     .note = "the history image and the ray traced reflection of its texels (car_rt_refl.h, with this frame's top level) are read by the NEXT frame's car paint draws"},
+     .deps = {{{Step::kAoApply, "the history is the colour the occlusion left"}, {Step::kSsr, "kept after SSR as the design has it; above 1080 lines (colour_post is half size) the history reads the main colour, which holds "
+                                                                                                "SSR's reflections by then, but the history keeps a vehicle's pixels only and SSR adds nothing to a vehicle's pixel (GB_FLAG_VEHICLE, the stub's stencil mark)"}}},
+     .note = "the history image and the ray traced reflection of its texels (car_rt_refl.h, with this frame's top level) are read by the NEXT frame's car paint draws. "
+             "CHECK (run): the cars' pixels with the reflections on and off at 4K are the same (a car's glass over a road pixel could keep the road's class: the sidecar's mask rule)"},
     {.step = Step::kGBufferView, .phase = Phase::kTrigger, .kind = Kind::kScanned, .name = "G-buffer debug view", .call = "gbuffer_->DrawView(summary, list)",
      .label_file = "gbuffer.cpp", .label = "gbuffer view", .reads = data::kPlanes, .deps = {{{Step::kCarHistory, "the view replaces what the effects above drew"}}},
      .note = "debug; drawn at every resolve while the planes are valid, so not noted as once-a-frame"},
@@ -351,6 +366,31 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
 }};
 
 constexpr const Row& RowOf(Step step) { return kRows[size_t(step)]; }
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------
+// THE COST ARMS of the reflections (GB-I3): what a cost run sets and where its GPU time is
+// ---------------------------------------------------------------------------------------------------------------------------------------------------
+// A cost run (the chains' arms: perf/scripts chain-gb-phase2b.ps1 'ssr-high', 'ssr-ultra', the frame's baseline) sets mcla_gpu_ssr to one of the words below and reads the GPU time of the labels. `auto` (the
+// default) is the GPU class's cell, off everywhere until the owner has seen the pictures, so it is no arm: a run names the level. What each arm must show, in the pass timing and in the order census:
+//   off     none of the SSR labels, no capture (no 'screen colour post', no 'screen hiz': nothing else asks for them at the defaults), no G-buffer planes (the sidecar needs a consumer), no held images:
+//           the effect costs nothing, which is what the defaults' cost runs (P9) check
+//   high    the SSR row's labels (its own time: 'ssr trace' + 'ssr temporal' + 'ssr apply'), plus the products that exist only for it: 'screen hiz' and 'screen colour post', plus the sidecar's cost in the
+//           draws and the planes' memory; the census names the capture and the reflections after the light pass
+//   ultra   the same labels, the trace with two rays and 64 steps (ssr_rules.h NumbersOf): the trace label costs more, the others about the same
+// A chain that wants the effect's whole cost reads: the own labels + the product labels + the frame's difference to the off arm (the planes). frame_order_test.cpp holds the words to ssr_rules.h, the
+// labels to the SSR row and to the sources.
+namespace cost {
+struct Arm {
+  const char* word;  // the value of mcla_gpu_ssr
+  bool runs;         // the capture and the SSR step are in the frame's census, the labels in the pass timing
+};
+inline constexpr const char* kReflectionsSetting = "mcla_gpu_ssr";
+inline constexpr std::array<Arm, 3> kReflectionsArms = {{{"off", false}, {"high", true}, {"ultra", true}}};
+// The labels of the products the owner makes only while a consumer wants them (SSR is the only consumer at the defaults of the other effects): the Hi-Z's pass and the capture's.
+inline constexpr std::array<const char*, 2> kReflectionsProductLabels = {"screen hiz", "screen colour post"};
+// The step whose row carries the effect's own labels (Row::label + Row::more_labels), and its closing label (Row::closing_label).
+inline constexpr Step kReflectionsStep = Step::kSsr;
+}  // namespace cost
 
 // The table's own consistency, in functions over a row list so that a test can run them on a changed copy.
 namespace rules {

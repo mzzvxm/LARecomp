@@ -834,6 +834,11 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (local_lights_) {
     local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
   }
+  if (ssr_) {
+    // The screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h, ssr_rules.h WantedPlanes / WantedProducts: only while the row is on), BEFORE the G-buffer and the
+    // screen owner read their wants just below: the effect's planes, Hi-Z and capture are there in this very frame (frame_order.h kBeginSsr, lag 0; GB-I3: it stood after the owners and lagged a frame).
+    ssr_->BeginFrame();
+  }
   if (gbuffer_) {
     gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
   }
@@ -856,9 +861,6 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
                    edram_->change_serial() != targets_before);
   if (screen_) {
     screen_->BeginFrame(frame_serial_);  // the shared screen products: reads the consumers' wants and the debug view, before the AO declares its own (screen_shared.h)
-  }
-  if (ssr_) {
-    ssr_->BeginFrame();  // the screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h): read at those owners' next frame boundary
   }
   if (ao_) {
     ao_->BeginFrame();
@@ -3680,7 +3682,8 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   }
   if (colour_captured && ssr_) {
     // The screen-space reflections (ssr.h): the trace, the accumulation and the additive resolve into the main colour, right after the capture they read (a reflection is not a
-    // reflection of a reflection: colour_post is made before the effect adds to the colour) and before the car self-reflection's history pass.
+    // reflection of a reflection: colour_post is made before the effect adds to the colour) and before the car self-reflection's history pass, which holds a vehicle's pixels only and so does not see
+    // them (GB-I3, frame_order.h kSsr). The last pass of the trigger that adds to the colour; its GPU time is the labels 'ssr trace', 'ssr temporal' and 'ssr apply' (closed by 'after ssr').
     const bool ssr_ran = ssr_->OnTrigger(summary, list);
     order_.Note(frame_order::Step::kSsr, ssr_ran);
   }

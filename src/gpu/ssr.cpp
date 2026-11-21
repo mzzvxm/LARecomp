@@ -297,15 +297,18 @@ void ScreenReflections::BeginFrame() {
   history_override_ = history >= 0.0 ? ClampSetting(history, 0.0, 0.98, 0.0f) : -1.0f;
   fallback_setting_ = ClampSetting(larecomp::settings::mcla_gpu_ssr_fallback.Get(), 0.0, 1.0, 1.0f);
   vehicle_rows_ = larecomp::settings::mcla_gpu_ssr_vehicle_rows.Get() != 0;
-  const bool on = level_ != ssr::Level::kOff;
-  // What the effect reads of the shared products and of the G-buffer (sticky; read at their next frame boundary): the Hi-Z, colour_post (its Want also makes the mip chain), the camera, and all
-  // three planes (RT3 is written now, GB-W2: the class table decides; the stub only stands in for a frame without RT3, or when mcla_gpu_ssr_stub forces it).
+  // What the effect reads of the shared products and of the G-buffer, asked ONLY WHILE THE ROW IS ON (ssr_rules.h WantedProducts / WantedPlanes / WantsCamera: nothing at off, the same at high and
+  // ultra): the Hi-Z, colour_post (its Want also makes the mip chain), the camera, and all three planes (RT3 is written now, GB-W2: the class table decides; the stub only stands in for a frame
+  // without RT3, or when mcla_gpu_ssr_stub forces it). The wants are sticky and the owners read them at their frame start, which comes AFTER this call (Scene::BeginFrame declares the effect before
+  // the G-buffer and the screen owner open their frames: frame_order.h kBeginSsr): the planes, the Hi-Z and the capture are there in the very frame the setting changes, and gone in the very frame
+  // it is switched off. CHECK (run, not tried): REFLECTIONS ON SURFACES switched on and off live in the play view: the first frame with it on (no history, the images made) and the first
+  // frame with it off (the owners stop at once) show no stall, no flash and no log line other than the level's.
   if (screen_) {
-    screen_->Want(screen::Consumer::kReflections, on ? (screen::ProductBit(screen::kHizMin) | screen::ProductBit(screen::kColourPost)) : 0u);
-    screen_->WantCamera(screen::Consumer::kReflections, on);
+    screen_->Want(screen::Consumer::kReflections, ssr::WantedProducts(level_));
+    screen_->WantCamera(screen::Consumer::kReflections, ssr::WantsCamera(level_));
   }
   if (gbuffer_) {
-    gbuffer_->Want(gbuffer::Consumer::kReflections, on ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections) : 0u);
+    gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(level_));
   }
 }
 
@@ -605,6 +608,9 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     list->drawInstanced(3, 1, 0, 0);
     list->setFramebuffer(nullptr);
   }  // else the trace and the accumulation were recorded and there is no apply this frame: the next one starts from this history all the same
+  // The closing mark (PassTiming: a mark's time runs to the next mark): what is recorded next (the car history, the debug views, the game's draws) is not the apply's. No label of the chains' own
+  // reflection sum (`ssr ...`): the span after this mark is whatever follows.
+  pass_timing_->Mark(list, "after ssr");
 
   // The frame is the history of the next.
   last_key_ = now;
