@@ -645,3 +645,10 @@ python tools\check_settings_exposure.py --dirs gpu mc_engine/hooks   # only thes
 ```
 
 Run it before you push. A short `pending` list in `tools/settings_exposure.toml` names debug-only cvars whose old row is still in a normal table; it shrinks as those rows move.
+
+`tools/check_row_tags.py` keeps the words on the rows honest (the owner wants settings to apply at once, so a word that says RESTART must be true). It exits 1 when a pause-menu row says RESTART for a setting that is not restart-only, or when a row of a restart-only setting says nothing (RESTART or NEXT START, or a dynamic suffix); `--catalog <SettingsSchema.cs>` holds the launcher's Restart tags to the same rule, and `--selftest` checks the rules themselves. A setting that is live but has a part that is read at start (LANGUAGE) is on `PARTLY_LIVE` in the script, with the reason.
+
+```powershell
+python tools\check_row_tags.py
+python tools\check_row_tags.py --catalog <launcher>\src\LARecomp.Launcher.Core\Settings\SettingsSchema.cs
+```
