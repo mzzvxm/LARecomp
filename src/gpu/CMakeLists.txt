@@ -266,6 +266,11 @@ add_executable(larecomp_headlight_rig_test EXCLUDE_FROM_ALL headlight_rig_test.c
 # and the host's pure rules (which draws get the sidecar, the frame window, the trigger) likewise:
 #   cmake --build <dir> --target larecomp_gbuffer_rules_test, then run src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>] (exit 0 = passed).
 add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.cpp)
+# The probe field's frame interface (gi_frame.h, CITY-RT M3 package G0: the budgets and the (ray tracing tier, level) cells, the cascades' toroidal addressing, the octahedral
+# probe maps, the frame rows, the lookup with its weights, the ambient and the ground baseline; it compiles hlsl/gi_common.hlsli as C++ and compares it with the twin, and reads
+# gbuffer_rules.h's octahedral map to check that they are the same) likewise:
+#   cmake --build <build dir> --target larecomp_gi_frame_test, then run src/gpu/larecomp_gi_frame_test [-v] [<hlsl/gi_common.hlsli>] (exit 0 = passed).
+add_executable(larecomp_gi_frame_test EXCLUDE_FROM_ALL gi_frame_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
