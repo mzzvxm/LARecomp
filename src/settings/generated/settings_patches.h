@@ -27,7 +27,11 @@ class PatchesSettings final : public rex::SettingOwner {
     "16:10, 21:9 or 32:9 whatever the window is, with black bars above and below where the window is "
     "narrower than that shape and at the sides where it is wider.", rex::Allowed("auto", "16:9", "16:10", "21:9", "32:9"));
 
-  REX_SETTING(bool, break_pairwise_collision, false, "Disables pairwise collision resolution.", rex::kDebugOnly, rex::kRestart);
+  // Live: Patch_PhysicsCollision (vehicle.cpp) is a return_on_true hook on the collision function's first instruction and reads this on every
+  // call, with no copy. It was tagged kRestart; nothing reads it at start.
+  // CHECK: flipped on and off in a race with cars close together, the cars stop pushing each other and push again, nothing else changes.
+  REX_SETTING(bool, break_pairwise_collision, false, "Disables pairwise collision resolution. Live: the game's collision function is skipped "
+    "or run again at its next call.", rex::kDebugOnly);
 
   REX_SETTING(bool, carbon_all_parts, true, "Carbon fiber can be applied to any body part, not just the hood.", rex::kDebugOnly);
 
@@ -40,7 +44,11 @@ class PatchesSettings final : public rex::SettingOwner {
   // toggle in the fork (its FOLIAGE SHADOWS row has no restart mark and was measured switching during
   // play). It was tagged kRequiresRestart, and its pause row said "(RESTART)".
   // CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart.
-  REX_SETTING(bool, disable_imposter_shadows, true, "Performance Mode: Foliage won't cast shadows.");
+  // The row is on LIGHTING AND SHADOWS right after SHADOWS and is grey while SHADOWS is off (the sun's shadow maps are not drawn then).
+  // CHECK: the hook only skips the refresh, so flipped to true while playing the silhouettes already baked may stay in use (perf\LEGACY-GFX-AUDIT.md B9).
+  REX_SETTING(bool, disable_imposter_shadows, true, "Far trees are drawn as flat cards, and each casts a baked shadow silhouette into the sun's shadows. "
+    "False refreshes those silhouettes, so far trees cast shadows; true skips the refresh, so they cast none. "
+    "Daylight only, and only while perf_no_shadows is false (the pause menu's SHADOWS is on).");
 
   // Live: Patch_DisableMotionBlur reads this at the two sites that load the blur's enable flag, on
   // every pass through them (nothing keeps a copy), and the pause menu's MOTION BLUR row flips it
@@ -70,6 +78,11 @@ class PatchesSettings final : public rex::SettingOwner {
     "They are drawn by a loop that never runs the engine timer, so fps_limit never reached "
     "them and they played as fast as the host could present. The screens play before the "
     "pause menu can be opened, so a change made there is seen at the next start.");
+
+  REX_SETTING(bool, mcla_fix_checkpoint_fade, true, "Fix: the smoke of a closed race checkpoint dissipates over about half a second at every frame "
+    "rate. The game fades it by dt x 25 at every update, which is 0.83 per update on the console's 30 updates a "
+    "second but 0.42 at 60 FPS and 0.17 at 144 FPS, so above 30 FPS the smoke vanished with the checkpoint. On: the "
+    "same decay per second as the console at any frame rate. Off: the game's own number at every update.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_fix_neon_30hz, true, "Fix: the neon underglow's pulse follows the console's 30 Hz clock, not every frame. A fast flash "
     "rate is a wave of about 30 Hz; the console sampled it 30 times a second and showed a slow throb, "
@@ -125,6 +138,7 @@ inline auto& disable_rubberbanding = g_patches.disable_rubberbanding;
 inline auto& garage_tire_offset = g_patches.garage_tire_offset;
 inline auto& hud_width = g_patches.hud_width;
 inline auto& intro_original_speed = g_patches.intro_original_speed;
+inline auto& mcla_fix_checkpoint_fade = g_patches.mcla_fix_checkpoint_fade;
 inline auto& mcla_fix_neon_30hz = g_patches.mcla_fix_neon_30hz;
 inline auto& real_frame_delta = g_patches.real_frame_delta;
 inline auto& showroom_unlimited = g_patches.showroom_unlimited;

@@ -366,6 +366,112 @@ void CheckCityLod() {
   CheckEq(CityLodScaleText(0.5), "0.5X", "CityLodScaleText(0.5)");
 }
 
+// The numeric `auto` settings (kScales: the city LOD, the traffic LOD, the traffic range, the pedestrian and parked car densities):
+// the cell of each class written out again (owner, 2026-11-20: as high as each class affords; the old defaults were one value for every
+// card), `auto` while the class is not known is the Low cell, the player's own value is kept in every state (the traffic range is held to
+// 100 to 600), and what is `auto`: 0 and below for the settings with no 0, below 0 for the two densities (0 is "none" there).
+void CheckScales() {
+  struct Cell {
+    Scale scale;
+    const char* cvar;
+    double low, mid, high;
+    bool zero_is_auto;
+    char unit;
+    const char* label_low;
+    const char* label_mid;
+    const char* label_high;
+  };
+  const Cell cells[] = {
+      {Scale::kCityLod, "lod_city_scale", 1.0, 2.0, 2.0, true, 'X', "AUTO (1X)", "AUTO (2X)", "AUTO (2X)"},
+      {Scale::kTrafficLod, "lod_traffic_scale", 1.5, 2.0, 3.0, true, 'X', "AUTO (1.5X)", "AUTO (2X)", "AUTO (3X)"},
+      {Scale::kTrafficRange, "traffic_unspawn_dist", 250.0, 300.0, 400.0, true, 'M', "AUTO (250M)", "AUTO (300M)", "AUTO (400M)"},
+      {Scale::kPedDensity, "ped_density_scale", 0.5, 0.75, 1.0, false, 'X', "AUTO (0.5X)", "AUTO (0.75X)", "AUTO (1X)"},
+      {Scale::kParkedDensity, "parked_car_scale", 0.5, 0.75, 1.0, false, 'X', "AUTO (0.5X)", "AUTO (0.75X)", "AUTO (1X)"},
+  };
+  CheckNum(kScaleCount, static_cast<double>(sizeof(cells) / sizeof(cells[0])), "every numeric auto setting is in the check");
+
+  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
+  const char* const class_names[] = {"low", "mid", "high"};
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+
+  for (const Cell& c : cells) {
+    const std::string name = c.cvar;
+    CheckEq(std::string(ScaleCvar(c.scale)), c.cvar, name + ": the cvar's name");
+    const double want[3] = {c.low, c.mid, c.high};
+    const char* const labels[3] = {c.label_low, c.label_mid, c.label_high};
+
+    // The cells; a class never gets less than a weaker one.
+    for (int i = 0; i < 3; ++i) {
+      CheckNum(ScaleCell(c.scale, classes[i]), want[i], name + ": the cell of " + class_names[i]);
+      CheckNum(ScaleAutoFor(c.scale, true, classes[i]), want[i], name + ": auto on " + class_names[i]);
+      // Until the class is known, auto is the Low cell, whatever class Current() says (it says High before Initialize).
+      CheckNum(ScaleAutoFor(c.scale, false, classes[i]), c.low, name + ": auto before the class is known (" + class_names[i] + ")");
+      CheckEq(ScaleLabelFor(c.scale, true, classes[i], c.zero_is_auto ? 0.0 : -1.0), labels[i], name + ": the AUTO label on " + class_names[i]);
+    }
+    Check(c.low <= c.mid && c.mid <= c.high, name + ": a stronger class never gets less");
+
+    // What is `auto`: the sentinel, anything below it, a value that is no number.
+    const double autos[] = {-1.0, -0.5, -10.0, nan};
+    for (const double v : autos) {
+      CheckNum(ScaleFor(c.scale, true, GpuClass::kHigh, v), c.high, name + ": " + std::to_string(v) + " is auto");
+      Check(IsAutoValue(c.scale, v), name + ": IsAutoValue(" + std::to_string(v) + ")");
+    }
+    Check(IsAutoValue(c.scale, 0.0) == c.zero_is_auto, name + ": whether 0 is auto");
+    if (c.zero_is_auto) {
+      CheckNum(ScaleFor(c.scale, true, GpuClass::kMid, 0.0), c.mid, name + ": 0 is auto");
+    } else {
+      // 0 is "none" for a density: kept, on every class, and its label is its own.
+      for (int i = 0; i < 3; ++i) {
+        CheckNum(ScaleFor(c.scale, true, classes[i], 0.0), 0.0, name + ": 0 is kept on " + class_names[i]);
+      }
+      CheckEq(ScaleLabelFor(c.scale, true, GpuClass::kHigh, 0.0), "0X", name + ": the label of none");
+    }
+
+    // The player's own values are kept in every state (the steps of the row and a few by hand).
+    const double own_x[] = {0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0};
+    const double own_m[] = {100.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 600.0};
+    const bool metres = c.unit == 'M';
+    const std::size_t count = metres ? sizeof(own_m) / sizeof(own_m[0]) : sizeof(own_x) / sizeof(own_x[0]);
+    for (std::size_t k = 0; k < count; ++k) {
+      const double v = metres ? own_m[k] : own_x[k];
+      for (int i = 0; i < 3; ++i) {
+        CheckNum(ScaleFor(c.scale, true, classes[i], v), v, name + ": the player's " + std::to_string(v) + " on " + class_names[i]);
+        CheckNum(ScaleFor(c.scale, false, classes[i], v), v, name + ": the player's " + std::to_string(v) + " before the class is known");
+      }
+    }
+    CheckEq(ScaleText(c.scale, metres ? 250.0 : 2.0), metres ? "250M" : "2X", name + ": ScaleText");
+    CheckEq(ScaleText(c.scale, metres ? 400.0 : 0.5), metres ? "400M" : "0.5X", name + ": ScaleText 2");
+    CheckEq(ScaleLabelFor(c.scale, true, GpuClass::kHigh, metres ? 250.0 : 2.0), metres ? "250M" : "2X",
+            name + ": the label of the player's value has no AUTO");
+  }
+
+  // The traffic range set by hand is held to the menu's range (the setting accepts 0 to 600 so that 0 can be auto).
+  CheckNum(ScaleFor(Scale::kTrafficRange, true, GpuClass::kHigh, 50.0), 100.0, "traffic range: 50 is held to 100");
+  CheckNum(ScaleFor(Scale::kTrafficRange, true, GpuClass::kHigh, 0.5), 100.0, "traffic range: 0.5 is held to 100");
+  CheckNum(ScaleFor(Scale::kTrafficRange, true, GpuClass::kLow, 700.0), 600.0, "traffic range: 700 is held to 600");
+  CheckEq(ScaleLabelFor(Scale::kTrafficRange, true, GpuClass::kHigh, 50.0), "100M", "traffic range: the label of a held value");
+
+  // The Low cells of the three settings that were one value for every card are those values, so that a build with no class (the Xenia
+  // renderer) and a Low card keep what they had: 250 m, 0.5 and 0.5. The city LOD's Low cell is the game's own 1.
+  CheckNum(ScaleCell(Scale::kTrafficRange, GpuClass::kLow), 250.0, "the old traffic range is the Low cell");
+  CheckNum(ScaleCell(Scale::kPedDensity, GpuClass::kLow), 0.5, "the old pedestrian density is the Low cell");
+  CheckNum(ScaleCell(Scale::kParkedDensity, GpuClass::kLow), 0.5, "the old parked car density is the Low cell");
+  CheckNum(ScaleCell(Scale::kCityLod, GpuClass::kLow), 1.0, "the game's own city LOD is the Low cell");
+
+  // The ceilings: where more adds nothing, so that the best class is never given a number that only costs. The city is loaded to 600 m and
+  // seen in detail to 300 m x scale x up to 1.5; traffic at 1x keeps its middle model to about 155 m and the game draws a car to 500 m
+  // (a scale above 500 / 155 only moves a step past the cull); the game's own traffic range is 400 m; the game's own density is 1.
+  Check(300.0 * ScaleCell(Scale::kCityLod, GpuClass::kHigh) * 1.5 >= 600.0, "the High city LOD already shows every loaded sector (600 m)");
+  Check(300.0 * ScaleCell(Scale::kCityLod, GpuClass::kHigh) <= 600.0, "the High city LOD is not above what the 600 m radius can use");
+  Check(155.0 * ScaleCell(Scale::kTrafficLod, GpuClass::kHigh) <= 500.0, "the High traffic LOD ends the middle model before the 500 m cull");
+  Check(40.0 * ScaleCell(Scale::kTrafficLod, GpuClass::kHigh) >= 100.0, "the High traffic LOD keeps the most detailed model past 100 m");
+  Check(ScaleCell(Scale::kTrafficRange, GpuClass::kHigh) <= 400.0, "the High traffic range is the game's own at most");
+  Check(ScaleCell(Scale::kPedDensity, GpuClass::kHigh) <= 1.0, "the High pedestrian density is the game's own at most");
+  Check(ScaleCell(Scale::kParkedDensity, GpuClass::kHigh) <= 1.0, "the High parked car density is the game's own at most");
+  Check(ScaleCell(Scale::kTrafficRange, GpuClass::kLow) >= kTrafficRangeMin && ScaleCell(Scale::kTrafficRange, GpuClass::kHigh) <= kTrafficRangeMax,
+        "the traffic range cells are inside the range the menu offers");
+}
+
 // The sun shafts' ray steps are chosen by the class and are no setting: Mid 32, High 64, Low (a strength turned on by
 // hand there) the cheaper 32.
 void CheckSunShaftSteps() {
@@ -717,6 +823,7 @@ int main() {
   CheckSeriesNumber();
   CheckSpeedTable();
   CheckCityLod();
+  CheckScales();
   if (g_failed != 0) {
     std::printf("gpu_class_test: %d of %d checks FAILED\n", g_failed, g_checks);
     return 1;

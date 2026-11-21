@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -71,6 +72,10 @@ struct Light {
     float spread = 0.0f;
     bool spot = false;
     bool on = true;
+    // Which of the game's two light lists it came from: false = the file's own list (lights.xlm, the 15,174 omni and spot lights the offline atlas decodes), true = the packed street-lamp list
+    // (lights.#lm, about 6,300 spot lamps: the lamp pass's, lit at night only). `on` is the light's own switch (every street lamp has it set: the lamp pass lights them between the evening and
+    // morning hours), not whether it is lit at this hour.
+    bool lamp = false;
 };
 
 enum class NodeKind : uint8_t { kRoad, kIntersection, kLeftTurn, kRightTurn, kUTurn, kTraffic };
@@ -132,9 +137,31 @@ bool DecodeLights(const GuestView& view, uint32_t list_addr, std::vector<Light>*
 
 // The city's lamps from the multi-light manager: `*manager_global` (0x8287E2F4) is the manager, its +4 the light set (sub_822F9648 loads lights.xlm into it; sub_822F9268 makes an empty one),
 // whose +96 list is the run-time one (sub_822F87E8 appends the packed lights to it and builds the grid from it) and whose +80 list is the file's own (the 15,174 the offline atlas decodes);
-// the manager's +8 is the packed light file. Tries +96, then +80; `list_at` (when given) says which one answered. On failure `why` names what was not there with the raw words
+// the manager's +8 is the packed light file. Tries +96, then +80; `list_at` (when given) says which one answered. ONLY WHILE THE CITY LOADS: sub_822F87E8 deletes the set and zeroes +4 once the
+// grid is built, so a running game answers "no light set" here: ReadRuntimeLights below is the reader of the running game. On failure `why` names what was not there with the raw words
 // (the manager, +4, +8, each list's head), so that a run's log says which of them it was: the first real run (11-20) only had "not made yet" for six reads over 30 s of free roam.
 bool ReadCityLights(const GuestView& view, uint32_t manager_global, std::vector<Light>* out, std::string* why, uint32_t* list_at = nullptr);
+
+// The game's own unpacker for one packed light (sub_822F1B08): the 24-byte record at guest `record` becomes the 96-byte light, written to `out` in the guest's byte order. False when the
+// unpacker could not run (no guest thread). The host's one is a guest call (handlers_world.cpp); a test gives a function of its own.
+using LightUnpacker = std::function<bool(uint32_t record, uint8_t out[96])>;
+
+struct RuntimeLightsInfo {
+    uint32_t object = 0;       // the manager's +8 object (guest address)
+    uint32_t fill = 0;         // lights read from its list at +8 (lights.xlm's own: the "file" lights)
+    uint32_t lamps = 0;        // lights read from its list at +24 (the street lamps)
+    uint32_t skipped = 0;      // records whose unpacked light did not look like one (kept out)
+};
+
+// The city's lights as the RUNNING game keeps them. sub_822F87E8 builds a light set from the packed file at load, builds the grid textures from it, deletes the set and zeroes the manager's +4 (so
+// the first live read of 11-20 found "no light set" in every state of the game, day or night), and replaces the manager's +8 with a 56-byte object whose lists hold the same lights PACKED (24-byte
+// records, sub_822FE0C8 repacks them; the lamp pass's AddLight unpacks them again each frame): the list at +8 {u32 array, u16 count at +12} is lights.xlm's own (the fill lights) and the list at
+// +24 {array, count at +28} the street lamps. Both are read, in that order (the file's lights keep the offline atlas's indices), each record unpacked by `unpack`. Not time-of-day dependent:
+// the lists exist from the city's load on, so the answer is the same by day and by night. The positions are the game's packed ones (16-bit steps of the grid's extent: about 0.1 m in x, 0.07 m
+// in z; colours and intensities as half floats), so a lights.xlm light read this way is the offline atlas's to 0.15 m, not exactly. The pack also CLAMPS a position to the box of its steps (the first
+// full run, 11-21: 295 of the 15,174 file lights differed, every one of them beyond the box: 294 above y 78.998, up to y 377 m, and one west of x -3467.0), so those lights are read where the game keeps
+// them, at the box's edge, and atlas.py compare accepts that (lights_equal). 375 of the 6,298 street lamps have intensity 0 (no light, reach 0). On failure `why` says which words were not what the reader knows.
+bool ReadRuntimeLights(const GuestView& view, uint32_t manager_global, const LightUnpacker& unpack, std::vector<Light>* out, std::string* why, RuntimeLightsInfo* info = nullptr);
 
 // The traffic rail network: `root` is the mcRailnetData (the resource's first object; in the running game `*(railnet + 8)`). `step_m` is the spacing
 // of the polyline samples, at most `max_pts` a rail.
@@ -197,8 +224,8 @@ struct LightsAnswer {
     std::vector<LightHit> hits;  // closest first, at most n
     int in_radius = 0;           // all that matched
 };
-// Lights within r of (x, z) (3-D when has_y). kind: "" any, "spot" or "omni".
-LightsAnswer NearLights(const Index& index, double x, double z, bool has_y, double y, double r, int n, double min_intensity, std::string_view kind);
+// Lights within r of (x, z) (3-D when has_y). kind: "" any, "spot" or "omni". src: "" any, "lamp" the street lamps (Light::lamp), "file" the file's own lights.
+LightsAnswer NearLights(const Index& index, double x, double z, bool has_y, double y, double r, int n, double min_intensity, std::string_view kind, std::string_view src = {});
 
 // What the road under a point is.
 double SpeedOf(const World& world, const Rail& rail);              // m/s: the road's limit, or a turn's default

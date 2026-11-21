@@ -98,6 +98,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "mc_engine/cinematic/native_call.h"
+#include "mc_engine/core/world_detail.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "traffic_probe_core.h"
 
@@ -887,7 +888,7 @@ void TrySpawn(const Guest& g, const ManagerView& m, const Pose& player, double n
         "layout's own convention is CHECK); layout class 0 {}; free roam {}, driving {}, world updates {}; the parked spawner that turns a layout item into a car: enable byte {} "
         "(parked_car_scale {:.2f}), layout byte {}",
         value, wanted, source, ahead, point.x, point.y, point.z, native_heading, DescText(layout0), in.free_roam, in.driving, in.world_updates,
-        unsigned(g.Mapped(kParkedEnableByte, 1) ? g.U8(kParkedEnableByte) : 255), larecomp::settings::parked_car_scale.Get(),
+        unsigned(g.Mapped(kParkedEnableByte, 1) ? g.U8(kParkedEnableByte) : 255), mcla::world_detail::InForce(mcla::gpu::gpu_class::Scale::kParkedDensity, larecomp::settings::parked_car_scale.Get()),
         unsigned((m.mgr && g.Mapped(m.mgr + kMgrParkedLayoutByte, 1)) ? g.U8(m.mgr + kMgrParkedLayoutByte) : 255));
     if (why != Refusal::kNone) {
         LARECOMP_APP_INFO("[traffic-probe] spawn: REFUSED: {} (the set is used up; set the cvar to 0 and to another number to try again)", RefusalText(why));

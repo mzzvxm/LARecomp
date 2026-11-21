@@ -362,6 +362,26 @@ std::string DescribeCapabilities(plume::RenderDevice* device) {
       answer(have_options, options.TypedUAVLoadAdditionalFormats));
 }
 
+AdapterIds QueryAdapterIds(plume::RenderDevice* device) {
+  AdapterIds out;
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->adapter) {
+    return out;
+  }
+  IDXGIAdapter1* adapter = nullptr;
+  if (FAILED(dev->adapter->QueryInterface(IID_PPV_ARGS(&adapter))) || !adapter) {
+    return out;
+  }
+  DXGI_ADAPTER_DESC1 desc{};
+  if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+    out.vendor_id = desc.VendorId;
+    out.device_id = desc.DeviceId;
+    out.revision = desc.Revision;
+  }
+  adapter->Release();
+  return out;
+}
+
 std::string DescribeDevice(plume::RenderDevice* device) {
   auto* dev = static_cast<plume::D3D12Device*>(device);
   if (!dev || !dev->d3d) {

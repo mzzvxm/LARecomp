@@ -136,6 +136,20 @@ bool LooksLikeLight(const GuestView& view, uint32_t a) {
     return std::isfinite(f[6]) && f[6] >= 0.0f && f[6] < 1.0e5f && std::isfinite(f[7]) && f[7] >= 0.0f && f[7] <= 360.5f && type <= 1 && on <= 1;
 }
 
+// The fields of a 96-byte light at `a` (the layout atlas_core.h names).
+void ReadLightRecord(const GuestView& view, uint32_t a, Light* l) {
+    for (int c = 0; c < 3; ++c) {
+        l->pos[c] = view.F32(a + 4 * c);
+        l->color[c] = view.F32(a + 16 + 4 * c);
+        l->dir[c] = view.F32(a + 32 + 4 * c);
+    }
+    l->intensity = view.F32(a + 64);
+    l->cone = view.F32(a + 68);
+    l->spread = view.F32(a + 72);
+    l->spot = view.U8(a + 88) == 1;
+    l->on = view.U8(a + 89) != 0;
+}
+
 }  // namespace
 
 bool DecodeLights(const GuestView& view, uint32_t list_addr, std::vector<Light>* out, std::string* error) {
@@ -168,16 +182,7 @@ bool DecodeLights(const GuestView& view, uint32_t list_addr, std::vector<Light>*
         }
         Light l;
         l.i = static_cast<int>(out->size());
-        for (int c = 0; c < 3; ++c) {
-            l.pos[c] = view.F32(a + 4 * c);
-            l.color[c] = view.F32(a + 16 + 4 * c);
-            l.dir[c] = view.F32(a + 32 + 4 * c);
-        }
-        l.intensity = view.F32(a + 64);
-        l.cone = view.F32(a + 68);
-        l.spread = view.F32(a + 72);
-        l.spot = view.U8(a + 88) == 1;
-        l.on = view.U8(a + 89) != 0;
+        ReadLightRecord(view, a, &l);
         if (view.failed()) {
             Fail(error, "a light is not readable");
             return false;
@@ -233,6 +238,102 @@ bool ReadCityLights(const GuestView& view, uint32_t manager_global, std::vector<
                   static_cast<unsigned>(file));
     Fail(why, buf);
     return false;
+}
+
+bool ReadRuntimeLights(const GuestView& view, uint32_t manager_global, const LightUnpacker& unpack, std::vector<Light>* out, std::string* why, RuntimeLightsInfo* info) {
+    out->clear();
+    RuntimeLightsInfo local;
+    RuntimeLightsInfo& inf = info ? *info : local;
+    inf = RuntimeLightsInfo{};
+    char buf[512];
+    view.ClearFailed();
+    const uint32_t mgr = view.U32(manager_global);
+    if (view.failed()) {
+        std::snprintf(buf, sizeof(buf), "the light manager's pointer at 0x%08X cannot be read", static_cast<unsigned>(manager_global));
+        Fail(why, buf);
+        return false;
+    }
+    if (mgr == 0) {
+        std::snprintf(buf, sizeof(buf), "the light manager is not made yet (the pointer at 0x%08X is 0)", static_cast<unsigned>(manager_global));
+        Fail(why, buf);
+        return false;
+    }
+    const uint32_t obj = view.U32(mgr + 8);
+    if (view.failed()) {
+        std::snprintf(buf, sizeof(buf), "the light manager at 0x%08X cannot be read", static_cast<unsigned>(mgr));
+        Fail(why, buf);
+        return false;
+    }
+    if (obj == 0) {
+        std::snprintf(buf, sizeof(buf), "the light manager at 0x%08X has no light object (its +8 is 0)", static_cast<unsigned>(mgr));
+        Fail(why, buf);
+        return false;
+    }
+    inf.object = obj;
+    constexpr uint32_t kPacked = 24;
+    constexpr uint32_t kUnpackedAt = 0x20000u;
+    const struct {
+        uint32_t at;
+        bool lamp;
+        const char* name;
+    } lists[] = {{8u, false, "the +8 list"}, {24u, true, "the +24 list"}};
+    std::string notes;
+    for (const auto& list : lists) {
+        view.ClearFailed();
+        const uint32_t array = view.U32(obj + list.at);
+        const uint32_t count = view.U16(obj + list.at + 4);
+        if (view.failed()) {
+            std::snprintf(buf, sizeof(buf), "the light object at 0x%08X cannot be read at +%u", static_cast<unsigned>(obj), static_cast<unsigned>(list.at));
+            Fail(why, buf);
+            return false;
+        }
+        if (count == 0) {
+            std::snprintf(buf, sizeof(buf), "%s {array 0x%08X, count 0}; ", list.name, static_cast<unsigned>(array));
+            notes += buf;
+            continue;
+        }
+        if (count > kMaxLights || array == 0) {
+            std::snprintf(buf, sizeof(buf), "the light object at 0x%08X: %s is {array 0x%08X, count %u}, not a light list", static_cast<unsigned>(obj), list.name,
+                          static_cast<unsigned>(array), static_cast<unsigned>(count));
+            Fail(why, buf);
+            return false;
+        }
+        view.U8(array + kPacked * count - 1);   // the last byte of the array must be there
+        if (view.failed()) {
+            std::snprintf(buf, sizeof(buf), "the light object's %s: its array 0x%08X holds %u records and cannot be read to its end", list.name, static_cast<unsigned>(array),
+                          static_cast<unsigned>(count));
+            Fail(why, buf);
+            return false;
+        }
+        out->reserve(out->size() + count);
+        uint8_t raw[96];
+        for (uint32_t k = 0; k < count; ++k) {
+            if (!unpack(array + kPacked * k, raw)) {
+                std::snprintf(buf, sizeof(buf), "the game's light unpacker could not run (light %u of %s)", static_cast<unsigned>(k), list.name);
+                Fail(why, buf);
+                out->clear();
+                return false;
+            }
+            const BufferView one(raw, 96, kUnpackedAt);   // a view of the 96 bytes (LooksLikeLight refuses addresses below 0x10000)
+            if (!LooksLikeLight(one, kUnpackedAt)) {
+                ++inf.skipped;
+                continue;
+            }
+            Light l;
+            l.i = static_cast<int>(out->size());
+            l.lamp = list.lamp;
+            ReadLightRecord(one, kUnpackedAt, &l);
+            out->push_back(l);
+            ++(list.lamp ? inf.lamps : inf.fill);
+        }
+    }
+    if (out->empty()) {
+        std::snprintf(buf, sizeof(buf), "the light object at 0x%08X holds no lights: %s(manager 0x%08X)%s", static_cast<unsigned>(obj), notes.c_str(), static_cast<unsigned>(mgr),
+                      inf.skipped ? " (every unpacked record failed the plausibility test)" : "");
+        Fail(why, buf);
+        return false;
+    }
+    return true;
 }
 
 Vec3 EvalBSpline(const std::vector<Vec3>& cvs, const std::vector<float>& knots, int deg, double t) {
@@ -576,7 +677,7 @@ std::vector<Projection> ProjectOnRails(const Index& index, double x, double z, b
     return out;
 }
 
-LightsAnswer NearLights(const Index& index, double x, double z, bool has_y, double y, double r, int n, double min_intensity, std::string_view kind) {
+LightsAnswer NearLights(const Index& index, double x, double z, bool has_y, double y, double r, int n, double min_intensity, std::string_view kind, std::string_view src) {
     std::vector<int> cand;
     index.LightsNear(x, z, r, &cand);
     const World& w = index.world();
@@ -587,6 +688,7 @@ LightsAnswer NearLights(const Index& index, double x, double z, bool has_y, doub
         const double d = has_y ? std::sqrt(dx * dx + dz * dz + (l.pos[1] - y) * (l.pos[1] - y)) : std::hypot(dx, dz);
         if (d > r || l.intensity < min_intensity) continue;
         if (!kind.empty() && kind != (l.spot ? "spot" : "omni")) continue;
+        if (!src.empty() && src != (l.lamp ? "lamp" : "file")) continue;
         hits.push_back({i, d, std::sqrt(100.0 * std::max(0.0, double(l.intensity)))});
     }
     LightsAnswer a;
@@ -931,7 +1033,8 @@ std::string ContentHash(const World& world) {
         feed(b, 2);
     };
     feed("ATLAS1", 6);
-    u32(static_cast<uint32_t>(world.lights.size()));
+    // The file's own lights only: the street lamps (Light::lamp) exist in the running game and not in the offline atlas (the packed list is not in lights.xlm), so one city keeps one name both ways.
+    u32(static_cast<uint32_t>(std::count_if(world.lights.begin(), world.lights.end(), [](const Light& l) { return !l.lamp; })));
     u32(static_cast<uint32_t>(world.rails.size()));
     for (const Rail& r : world.rails) {
         u16(static_cast<uint16_t>(r.cv.size()));
@@ -960,7 +1063,9 @@ std::string LightsJson(const World& world) {
         s += ",\"spread\":";
         AppendNum(&s, l.spread, 2);
         s += l.spot ? ",\"type\":\"spot\"" : ",\"type\":\"omni\"";
-        s += l.on ? ",\"on\":true}" : ",\"on\":false}";
+        s += l.on ? ",\"on\":true" : ",\"on\":false";
+        if (l.lamp) s += ",\"src\":\"lamp\"";
+        s.push_back('}');
     }
     s += "]}";
     return s;
@@ -1047,7 +1152,8 @@ std::string CarsJson(const World& world) {
 std::string MetaJson(const World& world) {
     std::string s = "{\"version\":1,\"source\":";
     AppendJsonString(world.source, &s);
-    s += ",\"hash\":\"" + ContentHash(world) + "\",\"counts\":{\"lights\":" + std::to_string(world.lights.size()) + ",\"rails\":" +
+    s += ",\"hash\":\"" + ContentHash(world) + "\",\"counts\":{\"lights\":" + std::to_string(world.lights.size()) + ",\"lamps\":" +
+         std::to_string(std::count_if(world.lights.begin(), world.lights.end(), [](const Light& l) { return l.lamp; })) + ",\"rails\":" +
          std::to_string(world.rails.size()) + ",\"nodes\":" + std::to_string(world.nodes.size()) + ",\"garages\":" + std::to_string(world.garages.size()) +
          ",\"cars\":" + std::to_string(world.cars.size()) + "}";
     if (!world.error.empty()) {

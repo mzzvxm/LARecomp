@@ -17,6 +17,9 @@ enum class LarecompDiscordState : uint32_t {
 
 void LARECOMP_Discord_Init();
 void LARECOMP_Discord_Shutdown();
+// Per frame, from the game's thread (RpcOnRaceTick): acts on a change of larecomp_discord_rpc made since the last call, which is live
+// (rpc_toggle_rules.h). A flag read and nothing else while the setting has not changed.
+void LARECOMP_Discord_Poll();
 
 void LARECOMP_Discord_SetState(LarecompDiscordState state);
 void LARECOMP_Discord_SetStateText(LarecompDiscordState state,
