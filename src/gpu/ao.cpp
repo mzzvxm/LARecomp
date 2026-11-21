@@ -2094,6 +2094,38 @@ bool AmbientOcclusion::FrameMotion(temporal::Mat4* motion, Pose* source, bool* c
   return true;
 }
 
+bool AmbientOcclusion::FrameCameraNow(FrameCameraOut* out) const {
+  *out = FrameCameraOut{};
+  ao_gbuffer::Rows rows;
+  const ao_gbuffer::Camera camera = FrameCameraRows(&rows);
+  if (camera == ao_gbuffer::Camera::kVertexBank || camera == ao_gbuffer::Camera::kPrevious) {
+    out->have_rows = true;
+    for (int i = 0; i < 3; ++i) {
+      out->right[i] = rows.x[i];
+      out->up[i] = rows.y[i];
+      out->forward[i] = rows.z[i];
+    }
+  }
+  if (have_previous_ && previous_pause_ == trigger_pause_) {
+    temporal::Mat4 motion;
+    Pose pose = Pose::kStill;
+    bool cut = false;
+    if (FrameMotion(&motion, &pose, &cut) && !cut) {
+      // The same three rows ChooseHistory's caller hands the accumulation pass (FillPush): in this renderer's view space the game's motion is S G S, S = diag(1, 1, -1, 1), and the shader's row r is
+      // column r of it.
+      for (int r = 0; r < 3; ++r) {
+        for (int k = 0; k < 4; ++k) {
+          const double sign = ((k == 2) != (r == 2)) ? -1.0 : 1.0;
+          out->motion[r * 4 + k] = float(sign * motion.m[k][r]);
+        }
+      }
+      out->have_motion = true;
+      out->motion_still = pose == Pose::kStill;
+    }
+  }
+  return out->have_rows || out->have_motion;
+}
+
 AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) const {
   HistoryUse use;
   use.cap = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_history.Get(), 1, 64));
