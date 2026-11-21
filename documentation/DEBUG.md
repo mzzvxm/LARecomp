@@ -123,9 +123,9 @@ larecomp.exe --debug_menu --mcla_gpu_pass_timing=true
 
 The same text works in the launcher's **More game options**, and as `mcla_gpu_pass_timing = true` in `larecomp.toml`. A switch takes `true` or `false`. An option the game cannot use (an empty or refused value, a name that is not a setting, a setting of a driver this run does not load) is skipped with a `[cli] ... ignored: ...` line in the log and the game starts. F4 shows each of these with its description (use the search box).
 
-**Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
+**Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. `break_pairwise_collision` is not here either: its hook reads it at every call, so it is live (a setting in F4 and a launch argument that also works while the game runs; it has no row). The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
-The list, 116 names in 14 groups (the number in brackets is the group's size):
+The list, 115 names in 14 groups (the number in brackets is the group's size):
 
 **The unlock** (1)
 `debug_menu`
@@ -156,8 +156,8 @@ Which renderer runs is the SDK's `gpu.driver` (`larecomp`, `d3d12` or `vulkan`; 
 **Speed experiments read at start** (8)
 `perf_no_race_shadows`, `perf_no_impostors`, `perf_no_fullscreen_blur`, `fma_float_fast`, `vsync_fast_poll`, `submit_on_primary_buffer_end`, `lzx_native`, `lzx_native_check_all`
 
-**Game patches read at start** (4)
-`disable_rubberbanding`, `showroom_unlimited`, `break_pairwise_collision`, `vehicle_records_relocate`
+**Game patches read at start** (3)
+`disable_rubberbanding`, `showroom_unlimited`, `vehicle_records_relocate`
 
 **Audio and music** (4)
 `audio_mixer_priority`, `mcla_audio_output`, `custom_music`, `music_list`

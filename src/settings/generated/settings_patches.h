@@ -27,7 +27,11 @@ class PatchesSettings final : public rex::SettingOwner {
     "16:10, 21:9 or 32:9 whatever the window is, with black bars above and below where the window is "
     "narrower than that shape and at the sides where it is wider.", rex::Allowed("auto", "16:9", "16:10", "21:9", "32:9"));
 
-  REX_SETTING(bool, break_pairwise_collision, false, "Disables pairwise collision resolution.", rex::kDebugOnly, rex::kRestart);
+  // Live: Patch_PhysicsCollision (vehicle.cpp) is a return_on_true hook on the collision function's first instruction and reads this on every
+  // call, with no copy. It was tagged kRestart; nothing reads it at start.
+  // CHECK: flipped on and off in a race with cars close together, the cars stop pushing each other and push again, nothing else changes.
+  REX_SETTING(bool, break_pairwise_collision, false, "Disables pairwise collision resolution. Live: the game's collision function is skipped "
+    "or run again at its next call.", rex::kDebugOnly);
 
   REX_SETTING(bool, carbon_all_parts, true, "Carbon fiber can be applied to any body part, not just the hood.", rex::kDebugOnly);
 

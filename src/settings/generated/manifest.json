@@ -6340,10 +6340,9 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/Patches",
-  "help": "\"Disables pairwise collision resolution.\"",
+  "help": "\"Disables pairwise collision resolution. Live: the game's collision function is skipped \" \"or run again at its next call.\"",
   "traits": [
-   "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
