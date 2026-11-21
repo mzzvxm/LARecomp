@@ -19,7 +19,9 @@
 #include "descriptors.h"
 #include "device.h"
 #include "gbuffer.h"
+#include "gpu_class.h"
 #include "host_shaders.h"
+#include "live_text.h"
 #include "pass_timing.h"
 #include "records.h"
 #include "screen_shared.h"
@@ -45,6 +47,12 @@ double Mib(uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0); }
 float ClampSetting(double value, double lo, double hi, float fallback) {
   if (!std::isfinite(value)) return fallback;
   return float(std::clamp(value, lo, hi));
+}
+
+// mcla_gpu_ssr (the row REFLECTIONS ON SURFACES: auto, off, high, ultra), read through LiveText (the pause menu's thread writes the cvar's string while this one reads it).
+LiveText& Setting() {
+  static LiveText text("mcla_gpu_ssr");
+  return text;
 }
 
 }  // namespace
@@ -267,7 +275,8 @@ void ScreenReflections::BeginFrame() {
   ran_ = false;
   wet_votes_.Reset();
   ++frames_;
-  ssr::Level level = ssr::LevelFromText(larecomp::settings::mcla_gpu_ssr.Get());
+  // `auto` is the GPU class's cell (gpu_class.h kSsr: off on every class until the owner has seen the effect); a word that is no level (a hand-edited file) is off.
+  ssr::Level level = ssr::LevelFromText(gpu_class::Resolve(gpu_class::Effect::kSsr, Setting().Get()));
   if (!ready_ || !screen_ || !gbuffer_) {
     level = ssr::Level::kOff;  // the layout or a shader could not be made, or the owners are not there
   }
@@ -275,7 +284,7 @@ void ScreenReflections::BeginFrame() {
   if (!logged_level_once_ || level != logged_level_) {
     logged_level_once_ = true;
     logged_level_ = level;
-    REXLOG_INFO("{} screen-space reflections {} (mcla_gpu_ssr, live)", kPrefix, ssr::LevelName(level));
+    REXLOG_INFO("{} screen-space reflections {} (mcla_gpu_ssr {}, live)", kPrefix, ssr::LevelName(level), Setting().Get());
   }
   view_ = ssr::ViewFromSetting(larecomp::settings::mcla_gpu_ssr_view.Get());
   strength_ = ClampSetting(larecomp::settings::mcla_gpu_ssr_strength.Get(), 0.0, 4.0, ssr::kDefaultStrength);
@@ -296,7 +305,7 @@ void ScreenReflections::BeginFrame() {
     screen_->WantCamera(screen::Consumer::kReflections, on);
   }
   if (gbuffer_) {
-    gbuffer_->Want(gbuffer::Consumer::kReflections, on ? gbuffer::kAllPlanes : 0u);
+    gbuffer_->Want(gbuffer::Consumer::kReflections, on ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections) : 0u);
   }
 }
 

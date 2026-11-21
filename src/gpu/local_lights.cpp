@@ -235,8 +235,7 @@ void LocalLights::BeginFrame() {
   // The wants (sticky; the G-buffer and the shared products read them at their own BeginFrame, which the Scene runs after this): with the pass off nothing asks for any plane or product,
   // so no sidecar is made and the AO's depth chain runs for nobody.
   if (gbuffer_ != nullptr) {
-    gbuffer_->Want(gbuffer::Consumer::kLocalLights,
-                   enabled_ ? (gbuffer::PlaneBit(gbuffer::kPlaneNormal) | gbuffer::PlaneBit(gbuffer::kPlaneAlbedo) | gbuffer::PlaneBit(gbuffer::kPlaneMaterial)) : 0u);
+    gbuffer_->Want(gbuffer::Consumer::kLocalLights, enabled_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights) : 0u);
   }
   if (screen_ != nullptr) {
     screen_->Want(screen::Consumer::kLocalLights, enabled_ ? screen::ProductBit(screen::kLinDepth) : 0u);

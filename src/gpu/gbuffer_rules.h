@@ -407,6 +407,38 @@ constexpr const char* ConsumerName(Consumer consumer) {
   }
   return "?";
 }
+// THE AUTO POLICY (GB-J): mcla_gpu_gbuffer = auto, the default, and HIDDEN (the setting is debug-only: no pause menu row, no launcher row). The G-buffer exists only while a consumer
+// that is ON wants a plane; with every consumer off no image is made, no draw of the game changes and the cost is nothing. What each consumer asks for while it is on:
+//   the occlusion's normals     RT1 (the occlusion, the contact shadows or the bounce light on, AND mcla_gpu_ao_gbuffer_normals on: off by default since 2026-11-20)
+//   the light pass              RT1 + RT2 + RT3 (mcla_gpu_local_lights: a debug row on the hidden DEBUG menu; there is no LOCAL LIGHTS row for players)
+//   reflections on surfaces     RT1 + RT2 + RT3 (the resolved mcla_gpu_ssr level is high or ultra: the row REFLECTIONS ON SURFACES)
+//   decals                      none yet
+// The consumers' own GBuffer::Want calls use ConsumerPlanes (the ones that cannot: the occlusion's, whose helper in ao_gbuffer.h is checked against this table by ao_gbuffer_test);
+// AutoPlanes is the same rule as a pure function of the consumers' states (what the plan's `requested` is under `auto`), which the tests read.
+constexpr uint32_t ConsumerPlanes(Consumer consumer) {
+  switch (consumer) {
+    case Consumer::kAmbientOcclusion: return PlaneBit(kPlaneNormal);
+    case Consumer::kBounceLight: return PlaneBit(kPlaneNormal);
+    case Consumer::kLocalLights: return kAllPlanes;
+    case Consumer::kReflections: return kAllPlanes;
+    case Consumer::kDecals:
+    case Consumer::kCount: break;
+  }
+  return 0;
+}
+// Which consumers are on (the occlusion's and the bounce light's flags already include mcla_gpu_ao_gbuffer_normals).
+struct ConsumerStates {
+  bool occlusion_normals = false;
+  bool bounce_normals = false;
+  bool light_pass = false;
+  bool reflections = false;
+  bool decals = false;
+};
+constexpr uint32_t AutoPlanes(const ConsumerStates& on) {
+  return (on.occlusion_normals ? ConsumerPlanes(Consumer::kAmbientOcclusion) : 0u) | (on.bounce_normals ? ConsumerPlanes(Consumer::kBounceLight) : 0u) |
+         (on.light_pass ? ConsumerPlanes(Consumer::kLocalLights) : 0u) | (on.reflections ? ConsumerPlanes(Consumer::kReflections) : 0u) |
+         (on.decals ? ConsumerPlanes(Consumer::kDecals) : 0u);
+}
 class Wants {
  public:
   void Set(Consumer consumer, uint32_t planes) {

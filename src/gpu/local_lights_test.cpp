@@ -883,7 +883,7 @@ void SourceChecks(const std::string& src) {
             Count(renderer, "local_lights_.Shutdown();") == 2,
         "the renderer makes, hands over and shuts down the pass (both shutdown paths)");
   // the wants that switch the G-buffer on only while it runs
-  Check(Has(cpp, "gbuffer_->Want(gbuffer::Consumer::kLocalLights,") && Has(cpp, "enabled_ ? (gbuffer::PlaneBit(gbuffer::kPlaneNormal)") && Has(cpp, "screen_->Want(screen::Consumer::kLocalLights, enabled_ ?") &&
+  Check(Has(cpp, "gbuffer_->Want(gbuffer::Consumer::kLocalLights, enabled_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights) : 0u);") && Has(cpp, "screen_->Want(screen::Consumer::kLocalLights, enabled_ ?") &&
             Has(cpp, "manager_->Want(enabled_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);"),
         "the wants are the pass's while it is on and 0 otherwise");
   Check(Has(manager, "(every <= 0 && !wanted_)") && Has(manager, "if (every_ > 0) {\n      Upload();"), "the light manager runs for a consumer of its frame and uploads only for its census");

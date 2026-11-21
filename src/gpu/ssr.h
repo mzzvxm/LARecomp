@@ -4,7 +4,11 @@
 // ===========================================================================
 // Reflections on the surfaces that show them in the screen's own picture: the wet road at night, the sidewalk, glass, metal, water. A Hi-Z ray march of the shared depth at HALF the picture's size, one
 // GGX-sampled ray a pixel (two at ultra), the colour of what it hits read from the shared colour_post, an accumulation over frames by the virtual image's reprojection, and an additive resolve into the
-// main colour at the picture's size. Off by default (mcla_gpu_ssr, debug-only until the owner has seen it).
+// main colour at the picture's size. THE ROW (GB-J): REFLECTIONS ON SURFACES, GRAPHICS > REFLECTIONS (mcla_gpu_ssr: auto, off, high, ultra); OFF by default because `auto` is the GPU class's cell
+// (gpu_class.h Effect::kSsr) and every cell is off until the owner has seen the pictures (the prepared cells are in gpu_class.h).
+//   LEVELS      what each changes (ssr_rules.h NumbersOf): HIGH one ray a pixel, up to 40 Hi-Z steps, the history weight 0.90 (a mean of about 10 frames); ULTRA two rays a pixel (their mean: the trace
+//               shader's), up to 64 steps, 0.92 (about 12 frames). The size is the same for both: the images are HALF the picture's (11.9 MiB at 1080p, 47.5 MiB at 4K), the
+//               resolve into the colour is at the picture's size. The temporal part (clip, edge rule, vehicle rows) is part of both levels; the debug settings below tune it.
 //
 // WHERE THINGS COME FROM (all of it shared, nothing is made twice):
 //   ScreenShared (screen_shared.h)  hiz_min (the min chain of the AO's linear depth: the walk), colour_post with its mip chain (the radiance of a hit: the effect's Want of it also turns the mips on),
@@ -45,7 +49,7 @@
 // WHEN IT RUNS (ssr_rules.h Decide): the setting, the pipelines made (in the background: a frame never waits), the play view's frame (not the pause menu's, the garage's or the map's world), the
 // G-buffer's normal plane, the Hi-Z and colour_post (with its mips) in the frame, a size the rule knows, one host sample count for the depth and the planes. The reason is logged when it changes.
 //
-// SETTINGS (all debug-only, live): mcla_gpu_ssr off | high | ultra; mcla_gpu_ssr_view 0..6; mcla_gpu_ssr_strength; mcla_gpu_ssr_min_smooth; mcla_gpu_ssr_stub; mcla_gpu_ssr_wet; mcla_gpu_ssr_history;
+// SETTINGS (live): the row's mcla_gpu_ssr auto | off | high | ultra (a player setting now), and the debug-only mcla_gpu_ssr_view 0..6; mcla_gpu_ssr_strength; mcla_gpu_ssr_min_smooth; mcla_gpu_ssr_stub; mcla_gpu_ssr_wet; mcla_gpu_ssr_history;
 // mcla_gpu_ssr_fallback (GB-I2); mcla_gpu_ssr_vehicle_rows (GB-I2).
 //
 // CHECK (nothing here was run against the game; ssr_test.cpp pins the maths, the shaders compile for DXIL and SPIR-V): the list is in the RUN PLAN of the commit and in notes\RUNPLAN-gb-i1.txt.

@@ -707,11 +707,12 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_screen_view_level, 0, "Diagnostic (shared screen products): the level the views 2 and 3 (the Hi-Z) and 6 (colour_post) of mcla_gpu_screen_view show: 0 is the traced size (colour_post's own size for the view 6), "
     "each level above is half the one below (the Hi-Z has 7 levels at 1080 lines, down to 1/64, colour_post up to 5 and only while the reflections want them); a level the chain does not have shows its last. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
-  REX_SETTING(std::string, mcla_gpu_ssr, "off", "Diagnostic (screen-space reflections, perf/GBUFFER-SURVEY.md 4.2; off by default until the owner has seen it): reflections on the surfaces the G-buffer's class table says reflect (wet roads, sidewalks, "
-    "metal, glass, water): a ray march of the screen's own picture at half its size (the shared Hi-Z and colour_post), one ray a pixel with the surface's roughness, accumulated over frames, added to the "
-    "colour. A car's paint and chrome keep their own reflections; what the rays miss, and what is near the picture's edge, stays the game's own reflection (the road's planar view, the env map). off, high "
-    "(one ray a pixel, 40 steps) or ultra (two rays, 64 steps, a longer history). Needs the G-buffer's planes (asked for while this is on). Until the material plane (RT3) is written every pixel whose world "
-    "normal points up is taken for a road (the stub). Live.", rex::kDebugOnly, rex::Allowed("off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_ssr, "auto", "Reflections on surfaces: sharp reflections of the scene on wet roads, wet sidewalks, glass, metal and water, traced through the picture itself (screen space) and added to "
+    "the game's own reflections. A car's paint and chrome keep their own (CAR REFLECTIONS, CAR SELF-REFLECTIONS). Only what is on the screen can be reflected: where a ray "
+    "finds nothing, or a surface is near the picture's edge, the game's own reflection stays alone. off, high, ultra or auto (the default: for now off on every graphics card). "
+    "high: one ray a pixel at half the picture's size, up to 40 steps, about 10 frames of history; ultra: two rays a pixel, up to 64 steps, about 12 frames, which is smoother "
+    "and finds more. Costs graphics card time, the G-buffer's planes (made only while this is on) and about 12 MiB (1080p) to 48 MiB (4K) of video memory for the effect's own "
+    "images. A wet road reflects, a dry one does not (the weather's wetness takes about a second to rise or fall). Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(i32, mcla_gpu_ssr_view, 0, "Diagnostic (screen-space reflections): draws one picture over the main view in place of the effect's add, where the ambient occlusion runs: 1 the term the effect adds (alone on black), 2 the class gate "
     "(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at "

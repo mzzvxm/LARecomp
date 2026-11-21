@@ -90,6 +90,11 @@ constexpr double kAoFadeEndVals[]    = {20.0, 40.0, 80.0, 160.0, 320.0, 640.0, 1
 constexpr const char* kHdrViewVals[]  = {"0", "1", "2", "3", "4", "5"};
 constexpr const char* kHdrViewNames[] = {"OFF", "UI ONLY", "SCENE ONLY", "UI COVERAGE",
                                          "OVER WHITE", "DIFFERENCE"};
+// What the deferred local light pass lights (mcla_gpu_local_lights_sources, a sum of bits: gpu/local_lights_rules.h): none, the frame's surface lights, the police light bars, the
+// head lamps of the cars the headlight stage does not light, the cars' rear lamps, the lamps of mods outside their grid, and the police bars + the cars' lamps + the mods' (4 + 8 + 16 + 32).
+// The test lamp (2) and the lamp A/B (mcla_gpu_local_lights_ab, read at start) stay cvars of the lamp tests.
+constexpr const char* kLocalLightSourceVals[]  = {"0", "1", "4", "8", "16", "32", "60"};
+constexpr const char* kLocalLightSourceNames[] = {"NONE", "FRAME LIGHTS", "POLICE BARS", "HEAD LAMPS", "REAR LAMPS", "MOD LAMPS", "CARS + MODS"};
 constexpr const char* kMarkerLevelVals[]  = {"0", "1", "2"};
 constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
@@ -224,6 +229,14 @@ const ItemDef kDebugRenderingItems[] = {
                    kAoFadeEndVals, Len(kAoFadeEndVals), "%g")),
     NativeOnly(Str("PM_RxDbgHdrView",    "mcla_gpu_hdr_layers_view", "HDR LAYERS VIEW: ",
                    kHdrViewVals, kHdrViewNames, Len(kHdrViewVals))),
+    // The deferred local light pass (gpu/local_lights.h, GB-H1 and GB-H3): one additive draw per light from the G-buffer's planes (the planes are made only while this is on:
+    // gbuffer_rules.h AutoPlanes). OFF by default, and a DEBUG row only: there is no LOCAL LIGHTS row for players (owner, 2026-11-21: the pass is a way to light the game's lamps and the
+    // cars' lights, not a setting). Both are live; with SOURCES at NONE the pass draws nothing (the lamp A/B's lamps apart).
+    // CHECK: the SOURCES row writes its words ("0", "4", ...) into an integer cvar as the other 0/1 rows do (frame_pacing); a value that is not one of the seven (a sum a command line set, 28)
+    // shows as the first word until the row is stepped.
+    NativeOnly(Bool("PM_RxDbgLocalLights", "mcla_gpu_local_lights", "LOCAL LIGHT PASS: ")),
+    NativeOnly(Str("PM_RxDbgLocalSrc",   "mcla_gpu_local_lights_sources", "LIGHT PASS SOURCES: ",
+                   kLocalLightSourceVals, kLocalLightSourceNames, Len(kLocalLightSourceVals))),
     // The glow of street lamps (halo and star): the game's one depth test at the glow's centre (GAME), or the
     // share of 24 tests on a small disc (SOFT: it fades at an edge instead of popping). The renderer reads the
     // cvar at each draw, so the row is live; the first time SOFT shows, the shaders are built.

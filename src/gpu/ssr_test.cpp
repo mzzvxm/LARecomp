@@ -1628,32 +1628,61 @@ void TestSources(const std::string& dir) {
                     apply_ps = Read(dir, "hlsl/ssr_apply_ps.hlsl"), trace_h = Read(dir, "hlsl/ssr_trace.hlsli");
   const std::string settings = Read(dir, "../settings/generated/settings_gpu.h"), manifest = Read(dir, "../settings/generated/manifest.json"), meta = Read(dir, "../settings/generated/settings_meta.inc");
 
-  // the setting: off by default, every one debug-only, in the three generated files
+  // the setting: off by default (`auto` whose cells are all off), the row's mcla_gpu_ssr a player setting, the other eight debug-only, in the three generated files
   // (the declaration's text is built here, not written out: tools\check_settings_exposure.py reads every REX_SETTING( in the sources, this file's too)
   const std::string rex_setting = std::string("REX_") + "SETTING(";
-  Check(Has(settings, rex_setting + "std::string, mcla_gpu_ssr, \"off\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"off\", \"high\", \"ultra\")"), "mcla_gpu_ssr is off by default and debug-only");
+  Check(Has(settings, rex_setting + "std::string, mcla_gpu_ssr, \"auto\"") && Has(settings, "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\"));"), "GB-J: mcla_gpu_ssr is auto by default (the class cell, off) and allows auto, off, high, ultra");
   bool every = true;
   for (const char* name : {"mcla_gpu_ssr", "mcla_gpu_ssr_view", "mcla_gpu_ssr_strength", "mcla_gpu_ssr_min_smooth", "mcla_gpu_ssr_stub", "mcla_gpu_ssr_wet", "mcla_gpu_ssr_history", "mcla_gpu_ssr_fallback", "mcla_gpu_ssr_vehicle_rows"}) {
     const std::string n = name;
     const size_t decl = settings.find(", " + n + ", ");
     const size_t end = decl == std::string::npos ? std::string::npos : settings.find(");\n", decl);
-    const bool debug = decl != std::string::npos && end != std::string::npos && settings.substr(decl, end - decl).find("rex::kDebugOnly") != std::string::npos;
+    const bool tagged = decl != std::string::npos && end != std::string::npos && settings.substr(decl, end - decl).find("rex::kDebugOnly") != std::string::npos;
+    const bool debug = (n == "mcla_gpu_ssr") ? !tagged : tagged;   // the row's setting is a player setting, every other one is debug-only
     const bool in_alias = Has(settings, "inline auto& " + n + " = g_gpu." + n + ";");
     const bool in_manifest = Has(manifest, "\"" + n + "\": {");
     const bool in_meta = Has(meta, "{\"" + n + "\", \"MCLA/GPU\"},");
     if (!(debug && in_alias && in_manifest && in_meta)) std::printf("setting %s: debug %d alias %d manifest %d meta %d\n", name, debug, in_alias, in_manifest, in_meta);
     every = every && debug && in_alias && in_manifest && in_meta;
   }
-  Check(every, "all nine settings are debug-only and in the settings header, its aliases, the manifest and the meta list");
+  Check(every, "all nine settings are in the settings header, its aliases, the manifest and the meta list; the eight beside the row's are debug-only, the row's is not");
   const size_t view_decl = settings.find(", mcla_gpu_ssr_view, ");
   const size_t view_end = view_decl == std::string::npos ? std::string::npos : settings.find(");\n", view_decl);
   Check(Has(settings, rex_setting + "f64, mcla_gpu_ssr_fallback, 1.0,") && Has(settings, rex_setting + "i32, mcla_gpu_ssr_vehicle_rows, 1,") && view_end != std::string::npos && settings.substr(view_decl, view_end - view_decl).find("rex::Range{0, 6}") != std::string::npos,
         "GB-I2: the fallback is on by default (1) and the vehicle rows too, the view setting goes to 6");
 
+  // GB-J: the row, the class cell, the debug row of the light pass, the hidden G-buffer setting
+  {
+    const std::string gpu_class_h = Read(dir, "gpu_class.h"), gpu_class_test = Read(dir, "gpu_class_test.cpp"), pause = Read(dir, "../mc_engine/menus/pause_menu.cpp"),
+                      debug_pages = Read(dir, "../mc_engine/menus/debug_menu_pages.cpp");
+    Check(Has(gpu_class_h, "kSsr,                   // mcla_gpu_ssr") && Has(gpu_class_h, "inline constexpr int kEffectCount = 14;") && Has(gpu_class_h, "{\"mcla_gpu_ssr\", \"off\", \"off\", \"off\"},"),
+          "GB-J: the class table has the effect, with a cell of off on every class until the owner has seen the pictures");
+    Check(Has(gpu_class_test, "{Effect::kSsr, \"mcla_gpu_ssr\", \"off\", \"off\", \"off\", \"AUTO (OFF)\", \"AUTO (OFF)\", \"AUTO (OFF)\"},"), "GB-J: the class test pins the cells");
+    Check(Has(cpp, "static LiveText text(\"mcla_gpu_ssr\");") && Has(cpp, "ssr::LevelFromText(gpu_class::Resolve(gpu_class::Effect::kSsr, Setting().Get()))") && !Has(cpp, "mcla_gpu_ssr.Get()"),
+          "GB-J: the level is the setting through LiveText with auto resolved by the class (the cvar's own string is never read by the render thread)");
+    // an `auto` that was not resolved would be off, never a level
+    Check(sr::LevelFromText("auto") == sr::Level::kOff && sr::LevelFromText("HIGH") == sr::Level::kHigh && sr::LevelFromText("Ultra") == sr::Level::kUltra && sr::LevelFromText("") == sr::Level::kOff,
+          "GB-J: a word that is no level (auto before it is resolved, a hand-edited file) is off");
+    const size_t items = pause.find("const ItemDef kReflectionItems[] = {");
+    const size_t items_end = items == std::string::npos ? std::string::npos : pause.find("\n};", items);
+    const std::string reflection_page = items == std::string::npos || items_end == std::string::npos ? "" : pause.substr(items, items_end - items);
+    Check(Has(reflection_page, "Str(\"PM_RxGpuSsr\", \"mcla_gpu_ssr\", \"REFLECTIONS ON SURFACES: \",") && Has(reflection_page, "kNativeSsrVals, kNativeSsrNames, 4") && Has(pause, "const char* const kNativeSsrVals[]  = {\"auto\", \"off\", \"high\", \"ultra\"};") &&
+              Has(pause, "case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSsr);"),
+          "GB-J: the row REFLECTIONS ON SURFACES is on the GRAPHICS > REFLECTIONS page: AUTO (what the class says), OFF, HIGH, ULTRA (nothing called low)");
+    Check(!Has(pause, "\"mcla_gpu_local_lights\"") && !Has(pause, "LOCAL LIGHTS") && Has(debug_pages, "Bool(\"PM_RxDbgLocalLights\", \"mcla_gpu_local_lights\", \"LOCAL LIGHT PASS: \")") &&
+              Has(debug_pages, "\"mcla_gpu_local_lights_sources\", \"LIGHT PASS SOURCES: \""),
+          "GB-J: the light pass has NO row for players (no LOCAL LIGHTS row, owner Q3) and a switch and a sources row on the hidden DEBUG menu's RENDERING page");
+    const size_t gb_decl = settings.find(", mcla_gpu_gbuffer, ");
+    const size_t gb_end = gb_decl == std::string::npos ? std::string::npos : settings.find(");\n", gb_decl);
+    const std::string gb_text = gb_decl == std::string::npos || gb_end == std::string::npos ? "" : settings.substr(gb_decl, gb_end - gb_decl);
+    Check(Has(gb_text, "\"auto\"") && Has(gb_text, "rex::kDebugOnly") && !Has(pause, "\"mcla_gpu_gbuffer\"") && !Has(debug_pages, "\"mcla_gpu_gbuffer\""),
+          "GB-J: mcla_gpu_gbuffer stays `auto` and hidden (debug-only: no pause menu row, no debug menu row, no launcher row): the planes exist only while a consumer wants them");
+  }
+
   // what the effect asks of the owners, and that it asks for nothing while it is off
   const std::string begin = FunctionText(cpp, "void ScreenReflections::BeginFrame()");
   Check(Has(begin, "screen_->Want(screen::Consumer::kReflections, on ? (screen::ProductBit(screen::kHizMin) | screen::ProductBit(screen::kColourPost)) : 0u)") && Has(begin, "screen_->WantCamera(screen::Consumer::kReflections, on)") &&
-            Has(begin, "gbuffer_->Want(gbuffer::Consumer::kReflections, on ? gbuffer::kAllPlanes : 0u)"),
+            Has(begin, "gbuffer_->Want(gbuffer::Consumer::kReflections, on ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections) : 0u)"),
         "BeginFrame asks for the Hi-Z, colour_post, the camera and the G-buffer's planes only while on (0 withdraws)");
   Check(!Has(begin, "kHistory"), "the owner's history product is not asked for (the accumulation keeps its own images)");
   const std::string trigger = FunctionText(cpp, "bool ScreenReflections::OnTrigger(");
@@ -1743,7 +1772,7 @@ void TestSources(const std::string& dir) {
         "the trace gates by class and smoothness before it walks (a pixel that reflects nothing costs the gate's reads)");
   Check(Has(apply_ps, "if (!reflects) {\n    return float4(0.0f, 0.0f, 0.0f, 0.0f);") && Has(apply_ps, "return float4(term, 0.0f);"), "the apply adds 0 where the class keeps its own reflection and writes no alpha");
   Check(Has(cpp, "blend.srcBlend = plume::RenderBlend::ONE;") && Has(cpp, "blend.dstBlend = plume::RenderBlend::ONE;") && Has(cpp, "blend.renderTargetWriteMask = kWriteRgb;"), "the apply pipeline adds and leaves alpha alone");
-  Check(Has(rules, "kStagePlanes") == false && Has(cpp, "gbuffer::kAllPlanes"), "all three planes are asked for (RT3 may not be written yet: the frame then has two)");
+  Check(Has(rules, "kStagePlanes") == false && Has(cpp, "gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections)") && gb::ConsumerPlanes(gb::Consumer::kReflections) == gb::kAllPlanes, "all three planes are asked for, through the auto policy's table (GB-J; RT3 may not be written yet: the frame then has two)");
 
   // the AO's accessor is a read and nothing else
   const std::string accessor = FunctionText(ao_cpp, "bool AmbientOcclusion::FrameCameraNow(FrameCameraOut* out) const {");

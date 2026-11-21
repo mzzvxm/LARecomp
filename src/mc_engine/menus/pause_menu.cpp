@@ -1552,7 +1552,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
 //   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT OCCLUSION, AO
 //                         INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS (kLightItems)
-//   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS (kReflectionItems)
+//   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, REFLECTIONS ON SURFACES (kReflectionItems)
 //   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, FOLIAGE SHADOWS, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
 // On XENIA the hub lists DISPLAY (DISPLAY MODE, RESOLUTION, DISPLAY GAMMA, FPS LIMIT), UPSCALING (RENDER SCALE), IMAGE QUALITY (MSAA,
@@ -1953,6 +1953,25 @@ std::string RoadReflectionLabel(int i) {
     }
 }
 constexpr RowDynamics kRoadReflectionDynamics = {.str_label = RoadReflectionLabel};
+// Reflections on surfaces (mcla_gpu_ssr, gpu/ssr.h and ssr_rules.h, live; GB-J): sharp reflections of the scene on wet roads, wet sidewalks, glass, metal and
+// water, traced through the picture itself on top of the game's own reflections (a car's paint and chrome keep their own: CAR REFLECTIONS, CAR SELF-REFLECTIONS).
+// AUTO, OFF, HIGH (one ray a pixel at half the picture's size, up to 40 steps, about 10 frames of history) or ULTRA (two rays, up to 64 steps, about 12 frames).
+// AUTO says what it comes to on this GPU, like the other AUTO rows (gpu/gpu_class.h Effect::kSsr). THE CELLS ARE OFF ON EVERY CLASS for now: the effect stays off by default
+// until the owner has seen its pictures and the cost run's figures have set the cells (the prepared ones are in gpu_class.h). The effect needs the G-buffer's planes, which
+// exist only while a consumer wants them (this one, the light pass, the occlusion's normals: gbuffer_rules.h AutoPlanes), so OFF costs nothing. The stored words are the
+// shown words (no level is called low). The label is "REFLECTIONS ON SURFACES" (23 characters) with a value of at most 12 ("AUTO (ULTRA)"); the page counts its widest label (this one) plus
+// its widest value over all its rows ("AUTO (RAY TRACED)", 17): 40 of the 41 a page can take.
+const char* const kNativeSsrVals[]  = {"auto", "off", "high", "ultra"};
+const char* const kNativeSsrNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+std::string SsrLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSsr);
+    case 1:  return "OFF";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+constexpr RowDynamics kSsrDynamics = {.str_label = SsrLabel};
 // Shadow detail (mcla_gpu_shadow_resolution, gpu/side_views.h, live): how finely the sun's shadows are drawn,
 // the game's own four 640x640 maps in a 1280x1280 picture (GAME), 2560x2560 (HIGH) or 3840x3840 (ULTRA);
 // with SHADOW FILTER on SOFT the edge of a shadow is half and a third as wide. AUTO says what it comes to on
@@ -2169,9 +2188,10 @@ const ItemDef kLightItems[] = {
 };
 
 #if defined(LARECOMP_HAS_GPU)
-// REFLECTIONS (GRAPHICS > REFLECTIONS, NATIVE only): what the road, the cars' paint and the car itself reflect: ROAD REFLECTIONS, CAR REFLECTIONS
-// and CAR SELF-REFLECTIONS (one row for the screen-space and the ray traced reflection). Every row is live and has an AUTO that follows the
-// graphics card. Width: the longest label is "CAR SELF-REFLECTIONS" (20), the longest value "AUTO (RAY TRACED)" (17): 37 of the 41 a page can take.
+// REFLECTIONS (GRAPHICS > REFLECTIONS, NATIVE only): what the road, the cars' paint, the car itself and the surfaces of the street reflect: ROAD REFLECTIONS, CAR REFLECTIONS,
+// CAR SELF-REFLECTIONS (one row for the screen-space and the ray traced reflection) and REFLECTIONS ON SURFACES (the screen-space reflections of wet roads, sidewalks, glass and
+// metal). Every row is live and has an AUTO that follows the graphics card. Width: the longest label is "REFLECTIONS ON SURFACES" (23), the longest value "AUTO (RAY TRACED)" (17):
+// 40 of the 41 a page can take.
 const ItemDef kReflectionItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
@@ -2182,6 +2202,9 @@ const ItemDef kReflectionItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
                                 "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 1),
                             &kCarSelfReflDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuSsr", "mcla_gpu_ssr", "REFLECTIONS ON SURFACES: ",
+                                kNativeSsrVals, kNativeSsrNames, 4),
+                            &kSsrDynamics)),
 };
 #endif
 
@@ -3097,8 +3120,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL", "SHADOW FILTER" and "LIGHT SHADOWS" 13, "CAR
 // SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
 // (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 35 together.
-// REFLECTIONS (kReflectionItems, 3 rows): "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CAR
-// REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 37. WORLD DETAIL (kWorldDetailItems): "FOLIAGE
+// REFLECTIONS (kReflectionItems, 4 rows): "REFLECTIONS ON SURFACES" 23, "CAR SELF-REFLECTIONS" 20, "ROAD
+// REFLECTIONS" 16, "CAR REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 40. WORLD DETAIL (kWorldDetailItems): "FOLIAGE
 // SHADOWS" 15, "AUTO (2X)" 9: 24.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
