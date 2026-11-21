@@ -415,7 +415,7 @@ constexpr const char* ConsumerName(Consumer consumer) {
 //   the light pass              RT1 + RT2 + RT3 (mcla_gpu_local_lights: a debug row on the hidden DEBUG menu; there is no LOCAL LIGHTS row for players)
 //   reflections on surfaces     RT1 + RT2 + RT3 (the resolved mcla_gpu_ssr level is high or ultra: the row REFLECTIONS ON SURFACES)
 //   decals                      none yet
-//   ray reconstruction          RT1 + RT2 + RT3 (rr_guides.h: the guide pass is wanted: the debug switch mcla_gpu_dlss_rr = on with DLSS on a card that supports it, or a guide view is on)
+//   ray reconstruction          RT1 + RT2 + RT3 (rr_guides.h: the guide pass is wanted: the DENOISER row (or the debug switch mcla_gpu_dlss_rr = on) chooses RR with DLSS on a card that supports it, or a guide view is on)
 // The consumers' own GBuffer::Want calls use ConsumerPlanes (the ones that cannot: the occlusion's, whose helper in ao_gbuffer.h is checked against this table by ao_gbuffer_test);
 // AutoPlanes is the same rule as a pure function of the consumers' states (what the plan's `requested` is under `auto`), which the tests read.
 constexpr uint32_t ConsumerPlanes(Consumer consumer) {

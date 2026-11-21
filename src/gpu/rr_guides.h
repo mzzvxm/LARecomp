@@ -9,7 +9,7 @@
 // (NVIDIA's EnvBRDFApprox2 over the class table's F0) are in hlsl/rr_guides_common.hlsli; the C++ twin and the rules that are not pixels are in rr_guides_rules.h; the check is rr_guides_test.cpp.
 //
 // WANT-DRIVEN. The pass runs only while it is wanted (BeginFrame, called by TemporalSystem at the frame boundary with rr_guides_rules.h PassWanted): the plan says Ray Reconstruction would be the
-// choice if the guides were there (the debug switch mcla_gpu_dlss_rr = on, an RTX card that supports it, DLSS as the upscaler), or a debug view is on while an upscaler runs. While it is wanted
+// choice if the guides were there (the DENOISER row, or the debug switch mcla_gpu_dlss_rr = on, chooses it; an RTX card that supports it, DLSS as the upscaler), or a debug view is on while an upscaler runs. While it is wanted
 // it asks the G-buffer for all three planes (gbuffer::Consumer::kRayReconstruction: no plane is made unless somebody wants it), so the planes are there from the frame after the want. With the switch
 // off and no view this class makes no image, no pipeline and no list command; a frame without the planes (the pause world, the garage, the map, a cutscene, the first frame) makes no guides and
 // says why once (rr::FrameGate), and that frame is Super Resolution's.

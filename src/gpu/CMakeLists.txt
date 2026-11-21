@@ -32,6 +32,7 @@ add_library(larecomp_gpu OBJECT
     constants.cpp
     cut_request.cpp
     cycles.cpp
+    denoiser_setting.cpp
     descriptors.cpp
     device.cpp
     draw_census.cpp
@@ -410,6 +411,10 @@ add_executable(larecomp_dlss_rr_rules_test EXCLUDE_FROM_ALL dlss_rr_rules_test.c
 # DLSS Ray Reconstruction's guide images (rr_guides_rules.h: the images, the views, who runs the pass, the push blocks, and the C++ twin of hlsl/rr_guides_common.hlsli, which the test also
 # compiles as C++): cmake --build <dir> --target larecomp_rr_guides_test, then run src/gpu/larecomp_rr_guides_test [<src/gpu dir>] (exit 0 = passed).
 add_executable(larecomp_rr_guides_test EXCLUDE_FROM_ALL rr_guides_test.cpp)
+# The DENOISER setting (denoiser_setting.h, RR-5: the words, the gate that greys the row and what it says, AUTO's label, the consumers' rule, the launcher's text, and the text of the wiring: the row in
+# upscaling_menu.cpp, the plan in temporal.cpp, the plugin request in temporal_dlss.cpp, the three settings files, the CMake lines): cmake --build <dir> --target larecomp_denoiser_setting_test, then run
+# src/gpu/larecomp_denoiser_setting_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_denoiser_setting_test EXCLUDE_FROM_ALL denoiser_setting_test.cpp)
 # The rule that gives another pass's use of a side view's EDRAM identity (the night shadow's, which binds the car
 # reflections' depth through a surface of another size) a target of its own (side_views.h):
 #   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.

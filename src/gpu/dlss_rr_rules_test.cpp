@@ -313,16 +313,20 @@ void CheckJitter() {
   }
 }
 
+// The shipped state: the debug switch on auto (the row decides), the row on AUTO, an effect that RR cleans better than ours is on (so the consumer rule is met), the plugin was asked for, the PC supports it,
+// DLSS is the upscaler and the frame's guides are there.
 PlanInputs ReadyInputs() {
   PlanInputs in;
   in.setting = Denoiser::kAuto;
-  in.debug = DebugSwitch::kOn;
+  in.debug = DebugSwitch::kRow;
   in.facts.build_has_rr = true;
   in.facts.files_ok = true;
   in.facts.streamline_running = true;
+  in.facts.asked = true;
   in.facts.supported = true;
   in.upscaler_is_dlss = true;
   in.consumers_active = true;
+  in.consumers_any = true;
   in.guides_ready = true;
   return in;
 }
@@ -373,14 +377,45 @@ void CheckSelection() {
   p = SelectDenoiser(in);
   Check(!p.use_rr && p.why == Why::kNotSupported, "probe says what is missing before it says it is a probe");
   in = ReadyInputs();
+  in.debug = DebugSwitch::kProbe;
   in.consumers_active = false;
+  in.consumers_any = false;
+  p = SelectDenoiser(in);
+  Check(!p.use_rr && p.why == Why::kProbeOnly, "probe needs no consumer: it only asks and logs");
+  // RR-5: the consumers. AUTO needs an effect AUTO trusts RR with; the row's RR value any effect with a raw mode; the debug switch's "on" none.
+  in = ReadyInputs();
+  in.consumers_active = false;
+  p = SelectDenoiser(in);
+  Check(!p.use_rr && p.why == Why::kNoConsumer, "AUTO with an effect that has a raw mode but that RR is not known to clean better: ours");
+  in = ReadyInputs();
+  in.consumers_active = false;
+  in.consumers_any = false;
   p = SelectDenoiser(in);
   Check(!p.use_rr && p.why == Why::kNoConsumer, "AUTO with no consumer: ours");
   in = ReadyInputs();
   in.consumers_active = false;
   in.setting = Denoiser::kRr;
   p = SelectDenoiser(in);
-  Check(p.use_rr && p.why == Why::kRrOn, "RR asked for by the player: RR without a consumer");
+  Check(p.use_rr && p.why == Why::kRrOn, "the row's RR value takes any effect with a raw mode, AUTO's list or not");
+  in = ReadyInputs();
+  in.consumers_active = false;
+  in.consumers_any = false;
+  in.setting = Denoiser::kRr;
+  p = SelectDenoiser(in);
+  Check(!p.use_rr && p.why == Why::kNoConsumer, "the row's RR value with nothing to denoise: ours (NVIDIA: disable it where there is no ray traced content; the row is grey)");
+  in = ReadyInputs();
+  in.consumers_active = false;
+  in.consumers_any = false;
+  in.debug = DebugSwitch::kOn;
+  p = SelectDenoiser(in);
+  Check(p.use_rr && p.why == Why::kRrOn, "the debug switch's on lifts the consumer rule: RR over a frame with nothing to denoise (the A/B and cost runs)");
+  in = ReadyInputs();
+  in.consumers_active = false;
+  in.consumers_any = false;
+  in.debug = DebugSwitch::kOn;
+  in.setting = Denoiser::kOurs;
+  p = SelectDenoiser(in);
+  Check(p.use_rr && p.why == Why::kRrOn, "on stands for the row's RR value whatever the row says");
   in = ReadyInputs();
   in.guides_ready = false;
   p = SelectDenoiser(in);
@@ -390,6 +425,34 @@ void CheckSelection() {
   in.setting = Denoiser::kRr;
   p = SelectDenoiser(in);
   Check(!p.use_rr && p.why == Why::kGuidesNotReady, "RR asked for, no guides: ours");
+  // RR-5: the plugin must have been asked for at Streamline's start. A start with the row on OURS leaves it out: where a start with another row would have loaded it, the answer is a restart.
+  in = ReadyInputs();
+  in.facts.asked = false;
+  in.facts.loadable = true;
+  p = SelectDenoiser(in);
+  Check(!p.use_rr && p.why == Why::kNotLoaded, "not asked for at the start, the PC could have: the next start");
+  in = ReadyInputs();
+  in.facts.asked = false;
+  p = SelectDenoiser(in);
+  Check(!p.use_rr && p.why == Why::kNotSupported, "not asked for and the PC could not have: not supported");
+  in = ReadyInputs();
+  in.facts.asked = false;
+  in.facts.loadable = true;
+  in.facts.files_ok = false;
+  p = SelectDenoiser(in);
+  Check(p.why == Why::kFilesMissing, "files that were looked at and are not right are named before the missing plugin");
+  in = ReadyInputs();
+  in.facts.asked = false;
+  in.facts.loadable = true;
+  in.facts.streamline_running = false;
+  p = SelectDenoiser(in);
+  Check(p.why == Why::kStreamlineNotRunning, "a start still going on is named before the missing plugin (the plugin's state is not known yet)");
+  in = ReadyInputs();
+  in.facts.asked = false;
+  in.facts.loadable = true;
+  in.setting = Denoiser::kOurs;
+  p = SelectDenoiser(in);
+  Check(p.why == Why::kSettingOurs, "OURS is named before the missing plugin");
   // RR-3: a session that dropped RR stays on Super Resolution whatever else is true; no room in video memory says so before it says the guides are missing.
   in = ReadyInputs();
   in.facts.failed = true;
@@ -412,20 +475,29 @@ void CheckSelection() {
   in = ReadyInputs();
   in.room_ok = false;
   in.consumers_active = false;
+  in.consumers_any = false;
   p = SelectDenoiser(in);
   Check(p.why == Why::kNoConsumer, "no consumer is named before no room: nothing is asked of memory for an RR that is not wanted");
-  Check(!PlanInputs{}.facts.failed && PlanInputs{}.room_ok, "the defaults: not failed, room");
+  // The consumer rule is the first of the rules after the switch and the row: a PC that cannot run RR, or a build without it, answers "no effect wants it" and nothing more while nothing does.
+  in = ReadyInputs();
+  in.consumers_active = false;
+  in.consumers_any = false;
+  in.facts.build_has_rr = false;
+  p = SelectDenoiser(in);
+  Check(p.why == Why::kNoConsumer, "a build without RR and no consumer: the consumer is named (nothing wants RR, so nothing is missing)");
+  Check(!PlanInputs{}.facts.failed && PlanInputs{}.room_ok && PlanInputs{}.debug == DebugSwitch::kRow && !PlanInputs{}.facts.asked && !PlanInputs{}.facts.loadable && !PlanInputs{}.consumers_any,
+        "the defaults: the row decides, not failed, room, no plugin asked, no consumer");
   // Every reason has a text.
-  for (int w = 0; w <= int(Why::kNoRoom); ++w) {
+  for (int w = 0; w <= int(Why::kNotLoaded); ++w) {
     Check(std::string(WhyText(Why(w))) != "?", "why " + std::to_string(w) + " has a text");
   }
-  // The exhaustive table: RR only for the one combination.
-  // The whole table: 3 settings x 3 switches x 9 yes/no inputs (RR-3 added the failure and the room). RR is chosen for exactly the combinations the rules name.
+  // The whole table: 3 settings x 4 switches x 11 yes/no inputs. The oracle below is written out as the player-visible rules, not computed from the code under test: RR runs for exactly the combinations
+  // it names.
   int rr = 0;
   int rows = 0;
   for (int setting = 0; setting < 3; ++setting) {
-    for (int debug = 0; debug < 3; ++debug) {
-      for (int bits = 0; bits < (1 << 9); ++bits) {
+    for (int debug = 0; debug < 4; ++debug) {
+      for (int bits = 0; bits < (1 << 11); ++bits) {
         PlanInputs t;
         t.setting = Denoiser(setting);
         t.debug = DebugSwitch(debug);
@@ -438,10 +510,16 @@ void CheckSelection() {
         t.guides_ready = (bits >> 6) & 1;
         t.facts.failed = (bits >> 7) & 1;
         t.room_ok = (bits >> 8) & 1;
+        t.facts.asked = (bits >> 9) & 1;
+        t.consumers_any = ((bits >> 10) & 1) || t.consumers_active;  // `active` implies `any`: the rules' own contract
         const Plan q = SelectDenoiser(t);
-        const bool expect = t.debug == DebugSwitch::kOn && t.setting != Denoiser::kOurs && t.facts.build_has_rr && t.facts.files_ok &&
-                            t.facts.streamline_running && t.facts.supported && t.upscaler_is_dlss &&
-                            (t.setting == Denoiser::kRr || t.consumers_active) && t.guides_ready && !t.facts.failed && t.room_ok;
+        // The player-visible rules: the row (or the switch's "on", which stands for RR) must not be OURS and the switch must not be off or probe; the PC must run it (build, files, started, plugin asked,
+        // supported, not failed, DLSS the upscaler); there must be something to clean (AUTO: an effect RR is known to clean better; RR: any effect with a raw mode; the switch's on: nothing); then room and guides.
+        const bool on = t.debug == DebugSwitch::kOn;
+        const Denoiser eff = on ? Denoiser::kRr : t.setting;
+        const bool consumer = on || (eff == Denoiser::kAuto ? t.consumers_active : t.consumers_any);
+        const bool expect = t.debug != DebugSwitch::kOff && t.debug != DebugSwitch::kProbe && eff != Denoiser::kOurs && consumer && t.facts.build_has_rr && t.facts.files_ok &&
+                            t.facts.streamline_running && t.facts.asked && t.facts.supported && !t.facts.failed && t.upscaler_is_dlss && t.room_ok && t.guides_ready;
         Check(q.use_rr == expect, "the table: setting " + std::to_string(setting) + " switch " + std::to_string(debug) + " bits " + std::to_string(bits));
         Check(q.use_rr == (q.why == Why::kRrOn), "the table: use_rr and the reason agree");
         ++rows;
@@ -449,8 +527,11 @@ void CheckSelection() {
       }
     }
   }
-  // AUTO needs every input including a consumer (1 case); RR does not need the consumer (2 cases); OURS never (0): 3 of 4608.
-  Check(rows == 4608 && rr == 3, "the table size and the number of RR cases");
+  // The count, worked out by hand. RR needs the other nine inputs (build, files, started, plugin asked, supported, not failed, DLSS, room, guides) in their one good state, so each (setting, switch, the two
+  // consumer bits) is one row. The consumer bits make four patterns (active, any): (0,0) (0,1) (1,0) (1,1); `any` is true in the last three. Switch off and probe: none. Switch on: all three settings stand for RR and
+  // the consumer rule is lifted: 3 x 4 = 12. Switch auto: AUTO needs `active`: (1,0) (1,1) = 2; the row's RR needs any: 3; OURS: none. 12 + 2 + 3 = 17.
+  Check(rows == 3 * 4 * 2048, "the table size");
+  Check(rr == 17, "the number of RR cases, worked out by hand (" + std::to_string(rr) + " of " + std::to_string(rows) + ")");
 }
 
 void CheckGate() {
@@ -515,6 +596,35 @@ void CheckPluginAndParsers() {
   Check(!WantRrPlugin(p), "Vulkan with DLSS not saved: Streamline is not even started");
   p.dlss_saved_at_start = true;
   Check(WantRrPlugin(p), "Vulkan with DLSS saved at the start");
+  // RR-5: the row decides what a start loads where the switch is on auto: not OURS, and only where an effect has a raw mode (so, today, no player's start loads it).
+  PluginInputs row;
+  row.build_has_rr = true;
+  row.files_ok = true;
+  row.looks_rtx = true;
+  row.d3d12 = true;
+  Check(row.debug == DebugSwitch::kRow && row.setting == Denoiser::kAuto && !row.raw_mode_built, "the defaults: the row on AUTO, no raw mode");
+  Check(!WantRrPlugin(row) && !PluginWantedByChoice(row), "AUTO with no effect that has a raw mode: the plugin is not asked for (a player's start is what it was before the row)");
+  row.raw_mode_built = true;
+  Check(WantRrPlugin(row) && PluginWantedByChoice(row), "AUTO with a raw mode built: asked for");
+  row.setting = Denoiser::kRr;
+  Check(WantRrPlugin(row), "the row's RR: asked for");
+  row.setting = Denoiser::kOurs;
+  Check(!WantRrPlugin(row) && !PluginWantedByChoice(row), "OURS: not asked for (nothing of RR costs a player who chose it)");
+  row.debug = DebugSwitch::kOn;
+  Check(WantRrPlugin(row), "OURS with the switch on: the switch forces it");
+  row.debug = DebugSwitch::kProbe;
+  Check(WantRrPlugin(row), "OURS with the switch on probe: loaded to be asked");
+  row.debug = DebugSwitch::kOff;
+  row.setting = Denoiser::kAuto;
+  Check(!WantRrPlugin(row), "AUTO with the switch off: never");
+  row.debug = DebugSwitch::kRow;
+  row.looks_rtx = false;
+  Check(PluginWantedByChoice(row) && !WantRrPlugin(row), "wanted by the choice but not an RTX card: not asked for (the files are not even looked at for the choice's answer alone)");
+  row.looks_rtx = true;
+  row.d3d12 = false;
+  Check(PluginWantedByChoice(row) && !WantRrPlugin(row), "Vulkan with DLSS not saved: not asked for");
+  row.dlss_saved_at_start = true;
+  Check(WantRrPlugin(row), "Vulkan with DLSS saved: asked for");
   Check(kFiles.size() == 2 && std::string(kFiles[0]) == "sl.dlss_d.dll" && std::string(kFiles[1]) == "nvngx_dlssd.dll", "the files");
   Check(kSignedFiles.size() == 1 && std::string(kSignedFiles[0]) == "sl.dlss_d.dll", "the signed plugin");
 
@@ -522,9 +632,53 @@ void CheckPluginAndParsers() {
   Check(ParseDenoiser("auto", &d) && d == Denoiser::kAuto && ParseDenoiser("rr", &d) && d == Denoiser::kRr && ParseDenoiser("ours", &d) && d == Denoiser::kOurs, "denoiser words");
   Check(!ParseDenoiser("AUTO", &d) && !ParseDenoiser("", &d) && !ParseDenoiser("nrd", &d), "other words are refused");
   DebugSwitch s = DebugSwitch::kOn;
-  Check(ParseDebugSwitch("off", &s) && s == DebugSwitch::kOff && ParseDebugSwitch("probe", &s) && s == DebugSwitch::kProbe && ParseDebugSwitch("on", &s) && s == DebugSwitch::kOn, "switch words");
-  Check(!ParseDebugSwitch("true", &s) && !ParseDebugSwitch("1", &s), "other switch words are refused");
-  Check(std::string(DenoiserName(Denoiser::kRr)) == "rr" && std::string(DebugSwitchName(DebugSwitch::kProbe)) == "probe", "names round trip");
+  Check(ParseDebugSwitch("off", &s) && s == DebugSwitch::kOff && ParseDebugSwitch("probe", &s) && s == DebugSwitch::kProbe && ParseDebugSwitch("on", &s) && s == DebugSwitch::kOn &&
+            ParseDebugSwitch("auto", &s) && s == DebugSwitch::kRow,
+        "switch words (auto is the row deciding)");
+  Check(!ParseDebugSwitch("true", &s) && !ParseDebugSwitch("1", &s) && !ParseDebugSwitch("", &s), "other switch words are refused");
+  Check(std::string(DenoiserName(Denoiser::kRr)) == "rr" && std::string(DebugSwitchName(DebugSwitch::kProbe)) == "probe" && std::string(DebugSwitchName(DebugSwitch::kRow)) == "auto" &&
+            std::string(DebugSwitchName(DebugSwitch::kOff)) == "off" && std::string(DebugSwitchName(DebugSwitch::kOn)) == "on",
+        "names round trip");
+  // The numbers of the first three words are the ones the switch had before RR-5 (the test loops of other files count 0..2); the new default is last.
+  Check(int(DebugSwitch::kOff) == 0 && int(DebugSwitch::kProbe) == 1 && int(DebugSwitch::kOn) == 2 && int(DebugSwitch::kRow) == 3, "the switch's numbers");
+}
+
+// RR-5: the consumers. No effect has a raw mode yet: every cell is false, so nothing is a consumer, AUTO is OURS, and the plugin is not asked for. The packages that build a raw mode flip a cell; these checks hold
+// the rules for whichever cells are flipped (written against a made-up table below) and say what the shipped table is.
+void CheckConsumers() {
+  Check(kConsumerCount == 4 && kAllConsumers == 0xFu, "four consumers");
+  Check(!AnyRawModeBuilt(), "today no effect has a raw mode (RR-4 flips the cells)");
+  for (size_t i = 0; i < kConsumerCount; ++i) {
+    Check(!kConsumers[i].raw_mode_built && !kConsumers[i].auto_uses_rr, std::string("today ") + kConsumers[i].name + " is not a consumer");
+    Check(!kConsumers[i].auto_uses_rr || kConsumers[i].raw_mode_built, std::string(kConsumers[i].name) + ": AUTO trusts RR only with an effect that has a raw mode");
+    Check(kConsumers[i].name != nullptr && kConsumers[i].name[0] != '\0', "every consumer has a name");
+  }
+  Check(!AnyConsumerOn(kAllConsumers) && !AnyAutoConsumerOn(kAllConsumers), "all four on, none built: nothing is a consumer (the effects' own denoisers stand)");
+  Check(ConsumerBit(Consumer::kSsr) == 1u && ConsumerBit(Consumer::kCarRtReflections) == 2u && ConsumerBit(Consumer::kCityRtReflections) == 4u && ConsumerBit(Consumer::kRtGi) == 8u, "the bits");
+  Check(std::string(InfoOf(Consumer::kSsr).name) == "screen-space reflections", "InfoOf");
+  // The rules over a made-up table with cells flipped: SSR built and trusted, the car's reflections built and not trusted, the city's reflections trusted but not built (an A/B verdict that came before the raw
+  // mode: AUTO must still not count it), the bounce light neither.
+  const ConsumerTable made = {{{"a", true, true}, {"b", true, false}, {"c", false, true}, {"d", false, false}}};
+  Check(AnyRawModeBuilt(made) && !AnyRawModeBuilt(kConsumers), "a made-up table has raw modes, the shipped one none");
+  Check(AnyConsumerOn(1u, made) && AnyConsumerOn(2u, made) && !AnyConsumerOn(4u, made) && !AnyConsumerOn(8u, made) && !AnyConsumerOn(0u, made) && AnyConsumerOn(0xFu, made),
+        "a made-up table: the built effects that are on are consumers, the others (and an empty set) are not");
+  Check(AnyAutoConsumerOn(1u, made) && !AnyAutoConsumerOn(2u, made) && AnyAutoConsumerOn(3u, made) && !AnyAutoConsumerOn(4u, made) && !AnyAutoConsumerOn(12u, made) && !AnyAutoConsumerOn(0u, made),
+        "a made-up table: AUTO trusts only an effect that is built AND that RR was measured better with");
+  // Every subset of every table of two flags a cell: the consumers AUTO trusts are always a subset of the consumers, and a table with no raw mode has none of either.
+  bool subset = true;
+  bool empty_ok = true;
+  for (int cells = 0; cells < 256; ++cells) {
+    ConsumerTable tb{};
+    for (size_t i = 0; i < kConsumerCount; ++i) {
+      tb[i] = {"x", ((cells >> (2 * i)) & 1) != 0, ((cells >> (2 * i + 1)) & 1) != 0};
+    }
+    for (uint32_t on = 0; on <= kAllConsumers; ++on) {
+      subset = subset && (!AnyAutoConsumerOn(on, tb) || AnyConsumerOn(on, tb));
+      if (!AnyRawModeBuilt(tb)) empty_ok = empty_ok && !AnyConsumerOn(on, tb) && !AnyAutoConsumerOn(on, tb);
+    }
+  }
+  Check(subset, "AUTO's consumers are always consumers (the plan's `active` implies `any`)");
+  Check(empty_ok, "a table with no raw mode has no consumer");
 }
 
 // --- RR-3 -------------------------------------------------------------------------------------------------------------------------------------------------
@@ -754,8 +908,8 @@ void CheckLiveSwitch() {
   t.Step(true);
   t.Step(true);
   Check(!t.requested, "released after the hold");
-  // And on again: the context is made again and the switch is the same as the first time.
-  t.plan_in.debug = DebugSwitch::kOn;
+  // And on again (the switch back on auto, the row deciding): the context is made again and the switch is the same as the first time.
+  t.plan_in.debug = DebugSwitch::kRow;
   for (int i = 0; i < 12; ++i) t.Step(true);
   Check(t.requests == 2 && t.log.back().kind == Dispatch::kRayReconstruction, "on again: one more context, RR");
   // RR fails in the session (three errors in a row, or the feature could not be made): Super Resolution from then on, every frame, and the context is not wanted any more.
@@ -873,6 +1027,7 @@ int main() {
   CheckSelection();
   CheckGate();
   CheckPluginAndParsers();
+  CheckConsumers();
   CheckDispatch();
   CheckContextKeeper();
   CheckContextNeed();
