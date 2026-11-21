@@ -524,6 +524,7 @@ void RpcOnDistrictChanged(int district_idx) {
 // drops an update whose text has not changed, so Discord only sees real moves.
 void RpcOnRaceTick() {
 #ifndef REXGLUE_HAS_XEO3_TARGET
+  LARECOMP_Discord_Poll();  // larecomp_discord_rpc is live: a change made since the last frame
   if (g_activity != LarecompDiscordState::Race) return;
 
   static int countdown = 0;

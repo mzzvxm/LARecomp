@@ -255,6 +255,8 @@ int main() {
   Check(rt::SettingOf("auto") == rt::Setting::kAuto && rt::SettingOf("off") == rt::Setting::kOff && rt::SettingOf("garbage") == rt::Setting::kAuto &&
             rt::SettingOf("") == rt::Setting::kAuto,
         "off is off, auto and a word that is no value are auto");
+  // The ray tracing tier's `auto` table (rt_tier.h kRtEffects) hands this setting "on" (a strong or a weak card) or "off" (no ray tracing): on is the default
+  Check(rt::SettingOf("on") == rt::Setting::kAuto && rt::SettingOf("off") == rt::Setting::kOff, "the tier's cells: on is the default, off is off");
   Check(rt::Wanted(rt::Setting::kAuto, true, true) && !rt::Wanted(rt::Setting::kOff, true, true) && !rt::Wanted(rt::Setting::kAuto, false, true) &&
             !rt::Wanted(rt::Setting::kAuto, true, false),
         "wanted: auto, on a device that can, with the self-reflection on");

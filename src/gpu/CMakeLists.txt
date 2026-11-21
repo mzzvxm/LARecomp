@@ -82,6 +82,8 @@ add_library(larecomp_gpu OBJECT
     renderer.cpp
     resolve.cpp
     resolve_memory.cpp
+    rt_bench.cpp
+    rt_tier.cpp
     samplers.cpp
     scene.cpp
     screen_shared.cpp
@@ -168,6 +170,12 @@ add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+# The ray tracing tier beside it (rt_tier.h: the tables' every row, the detection's order, the benchmark's decision with synthetic rates, the rungs, the
+# `auto` table's cells, the launcher's words) and the benchmark's rules (rt_bench_rules.h: the synthetic scene, the plan, the rate, the cache record), likewise:
+#   cmake --build <dir> --target larecomp_rt_tier_test, then run src/gpu/larecomp_rt_tier_test (exit 0 = passed).
+#   cmake --build <dir> --target larecomp_rt_bench_rules_test, then run src/gpu/larecomp_rt_bench_rules_test (exit 0 = passed).
+add_executable(larecomp_rt_tier_test EXCLUDE_FROM_ALL rt_tier_test.cpp)
+add_executable(larecomp_rt_bench_rules_test EXCLUDE_FROM_ALL rt_bench_rules_test.cpp)
 # The sun shadow filter's rules (shadow_filter.h: the choice, the taps, the constants) likewise:
 #   cmake --build <dir> --target larecomp_shadow_filter_rules_test, then run src/gpu/larecomp_shadow_filter_rules_test.
 add_executable(larecomp_shadow_filter_rules_test EXCLUDE_FROM_ALL shadow_filter_test.cpp)
@@ -859,6 +867,9 @@ larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)
 # The ray traced occlusion and sun term around the player's car (car_rt_ao.h): one compute pass inside the occlusion's own passes with inline ray queries
 # against the car's structures (car_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan, through the same function as the others (larecomp_gpu_host_shader_rt).
 larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)
+# The ray tracing benchmark's trace (rt_bench.h, rt_bench_rules.h): random rays through a synthetic city, run once on the first start with a card to move it between
+# the weak and the strong ray tracing tier (rt_tier.h). Shader Model 6.5 and SPIR-V 1.5 like the car passes.
+larecomp_gpu_host_shader_rt(rt_bench_cs cs_6_5)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

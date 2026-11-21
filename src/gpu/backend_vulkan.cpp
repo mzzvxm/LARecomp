@@ -200,6 +200,17 @@ std::string DescribeCapabilities(plume::RenderDevice* device) {
       limits.maxBoundDescriptorSets, limits.maxPushConstantsSize);
 }
 
+AdapterIds QueryAdapterIds(plume::RenderDevice* device) {
+  AdapterIds out;
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev) {
+    return out;
+  }
+  out.vendor_id = dev->physicalDeviceProperties.vendorID;
+  out.device_id = dev->physicalDeviceProperties.deviceID;
+  return out;
+}
+
 std::string DescribeDevice(plume::RenderDevice* device) {
   auto* dev = static_cast<plume::VulkanDevice*>(device);
   if (!dev) {
