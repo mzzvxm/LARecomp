@@ -1552,6 +1552,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_headlight_edge": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how the headlights pick the cars at the edge of the frame. On (the default): a car is worth what its beam \"\n    \"adds to the picture, not where its lamp is, and a car the game stops drawing because it left the frame keeps its light while its beam is still in the view \"\n    \"(up to 1.5 seconds), fading with the beam and with its distance. Off: the first version, a light dropped within 8 frames of the game's last draw of its car, and \"\n    \"a car whose lamp is off the screen counted at 0.35. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_headlight_log": {
   "type": "bool",
   "default": "false",

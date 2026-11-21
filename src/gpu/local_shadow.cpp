@@ -421,6 +421,10 @@ void LocalShadow::PickViews() {
     context.have_screen = true;
     std::memcpy(context.reference, last_camera_.eye, sizeof(context.reference));
     context.view_projection = last_camera_.view_projection;
+    // HL-EDGE-FADE: the camera's frustum, so that a car is ranked by how much of its beam is in the view (the rig's ranking, mcla_gpu_headlight_edge, the same switch).
+    if (larecomp::settings::mcla_gpu_headlight_edge.Get()) {
+      light_influence::MakeViewFrustum(last_camera_.view_projection.m, last_camera_.eye, &context.frustum);
+    }
   }
   // The cars that get views (the level's count, the player's first), then the views of each: one for each headlamp of the first cars the level gives lamps to, one for the car
   // for the others (local_shadow_rules.h PlanViews). A car's views come and go together: the picking is of cars, and the plan keeps both of a car's or neither.

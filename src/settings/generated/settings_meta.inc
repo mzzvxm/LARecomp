@@ -339,6 +339,7 @@
 {"mcla_gpu_hdr_peak_nits", "MCLA/GPU"},
 {"mcla_gpu_hdr_test_pattern", "MCLA/GPU"},
 {"mcla_gpu_headlight_cone", "MCLA/GPU"},
+{"mcla_gpu_headlight_edge", "MCLA/GPU"},
 {"mcla_gpu_headlight_log", "MCLA/GPU"},
 {"mcla_gpu_headlight_night", "MCLA/GPU"},
 {"mcla_gpu_headlight_range", "MCLA/GPU"},

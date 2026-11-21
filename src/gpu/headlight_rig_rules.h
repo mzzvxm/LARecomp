@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "headlight_points.h"
+#include "light_influence.h"
 #include "local_shadow_types.h"
 
 namespace mcla::gpu::headlight_rules {
@@ -581,15 +582,22 @@ inline bool FrontLamp(const Pose& pose, const double (*lens)[3], size_t count, C
 }
 
 // The beam's axis: the car's forward turned kDipDegrees down toward minus up (unit).
-inline void BeamAxis(const CarLamp& lamp, float out[3]) {
+inline void BeamAxisOf(const double forward[3], const double up[3], double out[3]) {
   const double dip = double(kDipDegrees) * kPi / 180.0;
   double v[3];
   for (int c = 0; c < 3; ++c) {
-    v[c] = lamp.forward[c] * std::cos(dip) - lamp.up[c] * std::sin(dip);
+    v[c] = forward[c] * std::cos(dip) - up[c] * std::sin(dip);
   }
   const double length = Length3(v);
   for (int c = 0; c < 3; ++c) {
-    out[c] = float(v[c] / (length > 0.0 ? length : 1.0));
+    out[c] = v[c] / (length > 0.0 ? length : 1.0);
+  }
+}
+inline void BeamAxis(const CarLamp& lamp, float out[3]) {
+  double axis[3];
+  BeamAxisOf(lamp.forward, lamp.up, axis);
+  for (int c = 0; c < 3; ++c) {
+    out[c] = float(axis[c]);
   }
 }
 
@@ -782,7 +790,7 @@ struct Candidate {
   CarLamp lamp;
   bool player = false;
   double camera_distance = 0.0;  // m, the lamp to the camera
-  bool on_screen = true;
+  bool on_screen = true;         // the first version's: whether the LAMP is on the screen. Only read when EndFrame is given no view (the reach below replaces it)
   // The lights' state when the game's own light points said (headlight_points.h): `guest` true, `on` 0 to 1 (the point's intensity over the full one). Else
   // the caller's rule (the sun) decides and these are unused.
   bool guest = false;
@@ -800,18 +808,34 @@ struct Tracked {
   bool guest = false;       // the game's own light points said whether the lights are on: `on` is that (0 to 1)
   double on = 1.0;
   double half_span = 0.0;   // CarLamp::half_span of the track (smoothed; 0: not known)
+  bool coasting = false;    // the game no longer draws the car (it left the frame) and its light goes on, moved on by its velocity, while its beam is in the view
+  double reach = 1.0;       // how much of its beam is in the view (light_influence.h BeamReach); 1 when the tracker had no view
 };
 
 struct TrackerTuning {
   double match_radius = 6.0;        // m: a car is the same car when its lamp is this near where the track's was (moved by its velocity)
   double max_step = 5.0;            // m a frame: a faster velocity is not believed (a teleport)
   double score_distance = 25.0;     // m: the distance at which a car's score is a half
-  double off_screen = 0.35;         // the share of the score of a car that is not on the screen
+  double off_screen = 0.35;         // the share of the score of a car whose lamp is not on the screen (the first version's rule, with no view)
   double keep_bonus = 1.5;          // a picked track's score is this times more: a challenger must beat it by that much
   double linger = 6.0;              // frames: a track not seen has its score halved this often
   uint32_t drop_after = 24;         // frames without a sighting before a track is forgotten
   float fade_in = 0.12f;            // a frame's fade step up
   float fade_out = 0.12f;           // ... and down
+
+  // HL-EDGE-FADE (owner 2026-11-20: traffic cars' headlights turn off near the frame's edge). With a view (EndFrame's third argument) a car is worth what its BEAM adds to
+  // the picture, not where its lamp is, and a car the game stops drawing because it left the frame keeps its light while the beam is in the view.
+  double beam_range = kRange;                  // m: the beam the reach is made for (the rig's setting)
+  double beam_outer_degrees = kOuterDegrees;   // ... and its half angle
+  double exit_ndc = 0.5;                       // a car whose last sighting was this far out (a share of the half picture; 1 is the edge) left through the picture's edge
+  uint32_t coast_frames = 90;                  // the longest a car the game stopped drawing keeps its light (1.5 s at 60 FPS: a frame is a guest present)
+  double coast_linger = 30.0;                  // frames: the score of a car that coasts is halved this often (a car in view comes first)
+  double coast_damping = 0.98;                 // the velocity of a car that coasts, a frame's share of it
+  double coast_reach_off = 0.01;               // a car that coasts goes out as its beam leaves the view: its reach below this is out,
+  double coast_reach_full = 0.06;              // ... above this in full, smooth between (the fade steps follow)
+  double coast_taper_from = 0.6;               // and the light tapers off over the last part of the coast (from this share of coast_frames to its end), not at a stroke
+  double fade_near = light_influence::kFadeNearMetres;  // the light of a car fades out with its distance from the camera: in full up to here,
+  double fade_far = light_influence::kFadeFarMetres;    // ... gone from here
 };
 
 class Tracker {
@@ -819,12 +843,24 @@ class Tracker {
   Tracker() = default;
   explicit Tracker(const TrackerTuning& tuning) : tuning_(tuning) {}
 
+  // The beam the reach is made for (the rig's settings: they change live).
+  void SetBeam(double range, double outer_degrees) {
+    tuning_.beam_range = range;
+    tuning_.beam_outer_degrees = outer_degrees;
+  }
+
   // A car seen in the frame being collected.
   void Observe(const Candidate& candidate) { seen_.push_back(candidate); }
 
   // The frame is over (guest frame `frame`, increasing by one a frame): matches the cars seen to the tracks, scores them, picks the lights for the next
   // frame (at most kMaxLights, the player's first, by key order among equals) and returns how many are in `out`.
-  size_t EndFrame(uint64_t frame, std::array<Tracked, kMaxLights>* out) {
+  //
+  // `view`: the frame's camera (light_influence.h), or null when this frame has none (no lens draw gave it, the setting is off): with it a car's score is its distance
+  // times how much of its BEAM is in the view (ReachWeight), a car is lit by distance (DistanceFade), and a picked car that the game no longer draws because it left through the
+  // picture's edge keeps its light, moved on by its own velocity, for up to coast_frames while its beam reaches the view. Without it the first version's rules: the lamp's place
+  // on the screen (Candidate::on_screen) and a fade out of 8 frames as soon as the car is not seen.
+  size_t EndFrame(uint64_t frame, std::array<Tracked, kMaxLights>* out, const light_influence::ViewFrustum* view = nullptr) {
+    const bool influence = view != nullptr && view->valid;
     // 1. Match: the player first, then by distance to the camera; each track takes one car.
     std::vector<size_t> order(seen_.size());
     for (size_t i = 0; i < order.size(); ++i) {
@@ -868,29 +904,56 @@ class Tracker {
       }
     }
     seen_.clear();
-    // A track not seen moves on by its velocity (its position is where the car is thought to be at the frame that just ended).
+    // A track seen in this frame: how far out on the picture its lamp is (a car that goes out of the game's sight from there left through the edge). A track not seen moves on
+    // by its velocity (its position is where the car is thought to be at the frame that just ended); a car that coasts slows a little each frame.
     for (Track& track : tracks_) {
-      if (track.last_seen != frame) {
+      if (track.last_seen == frame) {
+        track.unseen = 0;
+        track.coast_ok = false;
+        track.coasting = false;
+        track.edge = influence && light_influence::NdcExtent(*view, track.position) >= tuning_.exit_ndc;
+        continue;
+      }
+      ++track.unseen;
+      for (int c = 0; c < 3; ++c) {
+        track.position[c] += track.velocity[c];
+      }
+      if (influence && track.unseen == 1) {
+        // The first frame the game did not draw it: did it leave through the edge (its last sighting was out on the picture, or it is thought to be out there now)?
+        track.coast_ok = track.edge || light_influence::NdcExtent(*view, track.position) >= tuning_.exit_ndc;
+      }
+      if (track.coast_ok) {
         for (int c = 0; c < 3; ++c) {
-          track.position[c] += track.velocity[c];
+          track.velocity[c] *= tuning_.coast_damping;
         }
       }
     }
 
     // 2. Score every track (a track not seen decays with its age) and pick.
+    const double outer_radians = tuning_.beam_outer_degrees * kPi / 180.0;
     for (Track& t : tracks_) {
+      if (influence) {
+        t.distance = Distance3(t.position, view->eye);
+        double axis[3];
+        BeamAxisOf(t.forward, t.up, axis);
+        t.reach = light_influence::BeamReach(*view, t.position, axis, tuning_.beam_range, outer_radians);
+      } else {
+        t.reach = 1.0;
+      }
       const uint64_t age = frame - t.last_seen;
       double score;
       if (t.player) {
         score = 1.0e9;
       } else {
         score = 1.0 / (1.0 + (t.distance / tuning_.score_distance) * (t.distance / tuning_.score_distance));
-        if (!t.on_screen) {
+        if (influence) {
+          score *= light_influence::ReachWeight(t.reach);
+        } else if (!t.on_screen) {
           score *= tuning_.off_screen;
         }
       }
       if (age > 0) {
-        score *= std::pow(0.5, double(age) / tuning_.linger);
+        score *= std::pow(0.5, double(age) / (t.coast_ok ? tuning_.coast_linger : tuning_.linger));
       }
       if (t.picked) {
         score *= tuning_.keep_bonus;
@@ -912,20 +975,37 @@ class Tracker {
     }
     size_t picked = 0;
     for (const size_t t : ranked) {
-      if (picked < kMaxLights && frame == tracks_[t].last_seen) {  // only a car seen this frame is newly picked
-        tracks_[t].picked_now = true;
+      Track& track = tracks_[t];
+      if (picked < kMaxLights && frame == track.last_seen) {  // a car seen this frame is newly picked, or kept
+        track.picked_now = true;
         ++picked;
-      } else if (picked < kMaxLights && tracks_[t].picked && tracks_[t].fade > 0.0f) {  // a picked one that is gone fades out in its slot
-        tracks_[t].picked_now = false;
+      } else if (picked < kMaxLights && CanCoast(track, influence)) {  // a car picked before that left the frame keeps its light while its beam is in the view
+        track.picked_now = true;
+        track.coasting = true;
+        ++picked;
+      } else if (picked < kMaxLights && track.picked && track.fade > 0.0f) {  // a picked one that is gone fades out in its slot
+        track.picked_now = false;
         ++picked;
       }
     }
 
-    // 3. Fades, and the output: every track with a fade left, the strongest four (the player's first).
+    // 3. Fades, and the output: every track with a fade left, the strongest four (the player's first). The target is 1 for a picked car, less with a distance beyond fade_near
+    // and, for a car that coasts, less as its beam leaves the view (both are continuous, and the steps below follow them: no pop).
     std::vector<size_t> shown;
     for (const size_t t : ranked) {
       Track& track = tracks_[t];
-      const float target = track.picked_now ? 1.0f : 0.0f;
+      float target = 0.0f;
+      if (track.picked_now) {
+        double goal = 1.0;
+        if (influence) {
+          goal = light_influence::DistanceFade(track.distance, tuning_.fade_near, tuning_.fade_far);
+          if (track.coasting) {
+            goal *= light_influence::SmoothStep(tuning_.coast_reach_off, tuning_.coast_reach_full, track.reach);
+            goal *= 1.0 - light_influence::SmoothStep(tuning_.coast_taper_from * double(tuning_.coast_frames), double(tuning_.coast_frames), double(track.unseen));
+          }
+        }
+        target = float(goal);
+      }
       if (target > track.fade) {
         track.fade = std::min(target, track.fade + tuning_.fade_in);
       } else {
@@ -937,6 +1017,7 @@ class Tracker {
       }
     }
     size_t count = 0;
+    coasting_ = 0;
     for (const size_t t : shown) {
       if (count >= kMaxLights) {
         break;
@@ -954,6 +1035,9 @@ class Tracker {
       light.guest = track.guest;
       light.on = track.on;
       light.half_span = track.half_span;
+      light.coasting = track.coasting;
+      light.reach = track.reach;
+      coasting_ += track.coasting ? 1u : 0u;
     }
     tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
                                  [&](const Track& t) { return frame - t.last_seen > tuning_.drop_after && t.fade <= 0.0f; }),
@@ -964,8 +1048,11 @@ class Tracker {
   void Clear() {
     tracks_.clear();
     seen_.clear();
+    coasting_ = 0;
   }
   size_t track_count() const { return tracks_.size(); }
+  // Lights of the last EndFrame that coast (for the census).
+  uint32_t coasting_count() const { return coasting_; }
 
  private:
   struct Track {
@@ -986,7 +1073,24 @@ class Tracker {
     bool picked = false;      // was picked in the frame before
     bool picked_now = false;
     double score = 0.0;
+    // the view's rules
+    uint32_t unseen = 0;      // frames in a row without a sighting
+    bool edge = false;        // the last sighting was out on the picture (NdcExtent >= exit_ndc)
+    bool coast_ok = false;    // the car left through the edge: its light may go on without the game drawing it
+    bool coasting = false;    // it does, in this frame
+    double reach = 1.0;
   };
+
+  static double Distance3(const double a[3], const double b[3]) {
+    const double d[3] = {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+    return Length3(d);
+  }
+
+  // A picked car the game stopped drawing: its light goes on while it left through the picture's edge, the car was lit, its beam is in the view and not too long has passed.
+  bool CanCoast(const Track& t, bool influence) const {
+    return influence && t.coast_ok && t.picked && t.unseen >= 1 && t.unseen <= tuning_.coast_frames && (!t.guest || t.on > 0.0) &&
+           t.reach >= tuning_.coast_reach_off;
+  }
 
   void Update(Track* t, const Candidate& car, uint64_t frame, bool consecutive) {
     double velocity[3] = {};
@@ -1026,6 +1130,7 @@ class Tracker {
   std::vector<Track> tracks_;
   std::vector<Candidate> seen_;
   uint32_t next_key_ = 1;
+  uint32_t coasting_ = 0;
 };
 
 }  // namespace mcla::gpu::headlight_rules

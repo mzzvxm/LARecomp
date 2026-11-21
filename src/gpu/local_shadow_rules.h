@@ -53,6 +53,7 @@
 #include <string_view>
 
 #include "gpu_class.h"
+#include "light_influence.h"
 #include "local_shadow_types.h"
 #include "temporal_math.h"
 
@@ -474,7 +475,9 @@ inline uint32_t BuildGroups(const Light* lights, uint32_t count, Group out[4]) {
 
 // A level shadows a few cars (MaxCars) and the rig lights up to four: the player's car always has its views (when its lamps are lit), the others compete for the rest
 // by their importance, the same one the rig ranks its own lights by (headlight_rig_rules.h Tracker: 1 / (1 + (d / 25)^2) from the camera, 0.35 times that for a car
-// whose lamps are off the screen, since a shadow nobody can see is wasted): the nearer a car and the more it is on the screen, the more of the picture it lights. A car
+// whose beam lights nothing in the picture, since a shadow nobody can see is wasted, 1 for one whose beam is in the view: light_influence.h BeamReach; the first version
+// asked whether the car's LAMP was on the screen, and so ranked a car at the edge of the frame, whose beam crosses the picture, as if it lit nothing): the nearer a car and the
+// more of its beam is in the picture, the more of the picture it lights. A car
 // that holds a view counts kViewKeepBonus times more than it is worth, so a challenger must beat it by that much: two cars of about the same importance, which
 // swap places with every metre of distance, would otherwise trade the view back and forth (a shadow that pops in and out of the other car's headlights every few
 // frames). The rig's own picking has the same hysteresis (keep_bonus 1.5) for the four lights it lights.
@@ -491,6 +494,10 @@ struct PickContext {
   double reference[3] = {};              // the camera's eye
   bool have_screen = false;
   tp::Mat4 view_projection;              // world -> the game's clip (row vectors: DeriveCamera's)
+  // HL-EDGE-FADE (owner 2026-11-20: a traffic car's headlights fade near the frame's edge): the camera's frustum. When it is valid a car's importance is how much of its BEAM
+  // is in the view (light_influence.h BeamReach of the car's lamps: the strongest), not where its lamp is: a car at the edge of the frame whose beam crosses the picture is
+  // as important as one in the middle of it. Without it (not valid) the first version's rule applies: have_screen and view_projection say whether the lamps are on the screen.
+  light_influence::ViewFrustum frustum;
 };
 
 // A world point inside the screen with `margin` (a share of the clip box: 1.3 is a third beyond each edge); a point behind the camera is not.
@@ -500,6 +507,28 @@ inline bool OnScreen(const tp::Mat4& view_projection, const double p[3], double 
     o[j] = p[0] * view_projection.m[0][j] + p[1] * view_projection.m[1][j] + p[2] * view_projection.m[2][j] + view_projection.m[3][j];
   }
   return o[3] > 0.0 && std::fabs(o[0]) <= margin * o[3] && std::fabs(o[1]) <= margin * o[3];
+}
+
+// The importance of a car for a view from how much of its beam is in the view (0 .. 1: light_influence.h BeamReach): kViewOffScreen (0.35) for a car whose beam lights nothing
+// in the picture, 1 from a reach of light_influence::kReachFull, smooth between (the first version's `on_screen` was a step: 1 or 0.35 by the lamp's place).
+inline double ViewImportanceReach(double distance, double reach, bool holds_view) {
+  const double r = distance / kViewHalfDistance;
+  double score = 1.0 / (1.0 + r * r);
+  score *= light_influence::ReachWeight(reach);
+  if (holds_view) {
+    score *= kViewKeepBonus;
+  }
+  return score;
+}
+
+// How much of a group's beams is in the view: the strongest reach of its lamps (the lights of one car share a view).
+inline double GroupReach(const Light* lights, const Group& group, const light_influence::ViewFrustum& frustum) {
+  double reach = 0.0;
+  for (uint32_t m = 0; m < group.count; ++m) {
+    const Light& l = lights[group.members[m]];
+    reach = std::max(reach, light_influence::BeamReach(frustum, l.pos, l.dir, l.range, std::acos(std::clamp(l.cos_outer, -1.0, 1.0))));
+  }
+  return reach;
 }
 
 // The importance of a car for a view (the player's is above every number this makes).
@@ -546,6 +575,10 @@ class ViewPicker {
     for (uint32_t g = 0; g < groups; ++g) {
       if (all[g].is_player) {
         score[g] = kPlayerScore - detail::Distance(all[g].eye, reference) * 1e-6;  // a player's lamps in two groups (not made by the rig): the nearer first
+        continue;
+      }
+      if (context.frustum.valid) {
+        score[g] = ViewImportanceReach(detail::Distance(all[g].eye, reference), GroupReach(lights, all[g], context.frustum), Holds(all[g].car_key));
         continue;
       }
       const bool on_screen = !context.have_screen || OnScreen(context.view_projection, all[g].eye, kViewScreenMargin);

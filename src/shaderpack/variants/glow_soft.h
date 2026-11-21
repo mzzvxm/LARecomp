@@ -60,6 +60,12 @@
 //                  oC0.xyz = saturate(r1.zyx * r2.xyz) times the share
 //   both:          the helper, before `void main(`
 //
+// THE SCREEN'S EDGE (version 2, HL-EDGE-FADE: the owner saw a traffic car's headlights go weak as the car neared the edge of the frame). The depth copy's
+// sampler clamps, so a tap outside the screen reads the edge pixel, which has nothing to do with a lamp that is off the screen: the lamp was tested
+// against whatever stands at the edge in its row. A tap outside the screen now counts the less the farther outside it is: its answer goes to "visible"
+// over kGlowSoftEdgeFade (16) guest pixels, so a glow whose centre is 16 + 2.5 pixels or more beyond the edge is shown in full, and one that crosses the edge
+// changes its visibility smoothly (the edge pixel's compare, then more and more of "visible"). Taps on the screen are as before.
+//
 // Runtime: src/gpu/pipelines.cpp selects it per draw (the feature kFeatureGlowSoft) while the setting
 // mcla_gpu_glow_visibility is `soft`; `game` selects nothing, so the picture is the game's own, bit for bit.
 // ===========================================================================
@@ -71,8 +77,8 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line
-// variants_glow_soft_version).
-inline constexpr uint32_t kGlowSoftVariantVersion = 1;
+// variants_glow_soft_version). 2: a tap outside the screen is blended to "visible" (kGlowSoftEdgeFade).
+inline constexpr uint32_t kGlowSoftVariantVersion = 2;
 
 // The glow shaders' identities on the retail game (the runtime's own: FNV-1a 64 of the microcode; the
 // names are the translator's HLSL files, group__entry).
@@ -84,6 +90,8 @@ inline constexpr int kGlowSoftTaps = 24;           // taps of the disc
 inline constexpr int kGlowSoftFirstTaps = 8;       // taps of the first stage: the outer 8 of the spiral (16..23)
 inline constexpr double kGlowSoftRadius = 2.5;     // the disc's radius, in pixels of the game's 1280x720 screen
 inline constexpr double kGlowSoftFullShare = 0.5;  // the share of the taps that shows the sprite in full
+inline constexpr double kGlowSoftEdgeFade = 16.0;  // guest pixels: a tap this far outside the screen (or more) counts as visible, nearer in the blend of the clamped edge
+                                                   // pixel's compare (the depth copy's sampler clamps) and "visible"
 
 VariantDef MakeGlowSoftVariant();
 
