@@ -30,6 +30,7 @@
 #include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/gbuffer.h"
 #include "shaderpack/variants/gbuffer_albedo.h"
+#include "shaderpack/variants/gbuffer_cars.h"
 #include "shaderpack/variants/gbuffer_day.h"
 #include "shaderpack/variants/gbuffer_night.h"
 #include "shaderpack/variants/glow_soft.h"
@@ -246,25 +247,29 @@ void CheckVariantDef() {
   const sp::VariantDef def = sp::MakeGBufferVariantFromText(kHelper);
   Check(def.feature == sp::kFeatureGBuffer && def.feature == 10, "its feature is the table's bit 10");
   const sp::chain::FeatureInfo* row = sp::chain::Find(def.feature);
-  Check(row && row->name == def.name && row->spec_twin && row->constants_bytes == 48 && row->composes_with == sp::chain::FeatureBit(sp::kFeatureHeadlight),
-        "the table's row: 48 bytes, the alpha test twin, composes with the headlight's stage");
+  Check(row && row->name == def.name && row->spec_twin && row->constants_bytes == 48 &&
+            row->composes_with == (sp::chain::FeatureBit(sp::kFeatureHeadlight) | sp::chain::FeatureBit(sp::kFeatureCarSelfRefl) | sp::chain::FeatureBit(sp::kFeatureCarChrome)),
+        "the table's row: 48 bytes, the alpha test twin, composes with the headlight's stage and the two car variants");
   Check(def.name == "gbuffer" && def.version == sp::kGBufferVariantVersion && def.needs_rpf, "the name, the version, and it reads the RPF");
-  Check(def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 2 + std::size(sp::kGBufferNightSuffixes) + (sp::kGBufferDayShaderCount - 1) &&
+  Check(def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 2 + std::size(sp::kGBufferNightSuffixes) + (sp::kGBufferDayShaderCount - 1) + sp::kGBufferCarShaderCount &&
             def.pixel_name_suffixes[0] == sp::kGBufferDayShader && def.pixel_name_suffixes[1] == sp::kGBufferNightShader && def.pixel_name_suffixes[2] == sp::kGBufferNightSuffixes[0],
-        "the two shaders, the night family (gbuffer_night.h) and the day table's other shaders (gbuffer_day.h) are found by name");
+        "the two shaders, the night family (gbuffer_night.h), the day table's other shaders (gbuffer_day.h) and the car, traffic and character table (gbuffer_cars.h) are found by name");
   {
     bool all_there = true;
     for (const sp::GBufferDayShader& row : sp::kGBufferDayShaders) {
       all_there &= std::find(def.pixel_name_suffixes.begin(), def.pixel_name_suffixes.end(), row.name) != def.pixel_name_suffixes.end();
     }
     Check(all_there, "every shader of the day table is one the definition finds, once");
+    bool cars_there = true;
+    for (const std::string_view name : sp::GBufferCarShaderNames()) cars_there &= std::find(def.pixel_name_suffixes.begin(), def.pixel_name_suffixes.end(), name) != def.pixel_name_suffixes.end();
+    Check(cars_there, "every shader of the car table is one the definition finds, once");
     std::vector<std::string_view> sorted = def.pixel_name_suffixes;
     std::sort(sorted.begin(), sorted.end());
     Check(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "no name is in the definition twice");
   }
-  // The version is the pixel stage's stamp line: 4 = RT2 in it (a pack stamped with 1, 2 or 3 is built again); the day stage's own number is 2.
-  Check(sp::kGBufferVariantVersion == 4, "the variant's version is 4: the night family (2), the day families (3) and RT2, the albedo and the lit weight (4)");
-  Check(sp::kGBufferDayVersion == 2 && sp::kGBufferVsVersion == 1, "the day stage's own version is 2 (RT2), the vertex stage's is untouched");
+  // The version is the pixel stage's stamp line: 5 = the car family in it (a pack stamped with 1 to 4 is built again); the day stage's own number is 2, the car stage's 2.
+  Check(sp::kGBufferVariantVersion == 5, "the variant's version is 5: the night family (2), the day families (3), RT2, the albedo and the lit weight (4) and the car family (5)");
+  Check(sp::kGBufferDayVersion == 2 && sp::kGBufferVsVersion == 1 && sp::kGBufferCarsVersion == 2, "the day stage's own version is 2 (RT2), the vertex stage's is untouched, the car stage's is 2");
   Check(def.input_xxh3 != 0, "the helper is in the fingerprint");
   const sp::VariantDef other = sp::MakeGBufferVariantFromText(std::string(kHelper) + "// changed\n");
   Check(other.input_xxh3 != def.input_xxh3, "a changed helper changes the fingerprint");
@@ -298,6 +303,20 @@ void CheckVariantDef() {
   // the transform through the definition works like the function
   const sp::VariantTransformResult r = def.transform(day, kFixture, sp::SoloContext(sp::kFeatureGBuffer));
   Check(r.ok, "the definition's transform runs");
+  // a car shader goes to the car stage (gbuffer_cars.h): a character's shader (normal from TEXCOORD0, the diffuse texel read at the end of main) writes RT1 and RT2 (the stage's planes: no RT3 yet)
+  {
+    const sp::VariantShader car{"xCharacter__PS", 4};
+    const sp::VariantTransformResult rc = def.transform(car, kFixture, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(rc.ok && Count(rc.hlsl, "oC1 = GbRt1Encode(gbN);") == 1 && Count(rc.hlsl, "float3 gbN = iTexCoord0.xyz;") == 1 && Count(rc.hlsl, "oC1 : SV_Target1") == 1 && Count(rc.hlsl, "oC2 : SV_Target2") == 1 &&
+              Count(rc.hlsl, "oC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(gbMat));") == 1 && Count(rc.hlsl, "oC3 : SV_Target3") == (sp::kGBufferCarsPlanes >= 3 ? 1u : 0u),
+          "a car shader goes to the car stage through the definition: " + rc.error);
+    const sp::VariantTransformResult via_function = sp::TransformGBufferHlsl(car, kFixture, kHelper);
+    Check(via_function.ok && via_function.hlsl == rc.hlsl, "TransformGBufferHlsl and the definition's transform send a car shader to the same stage");
+    // none of the three tables' names is in another
+    bool clash = false;
+    for (const std::string_view name : sp::GBufferCarShaderNames()) clash |= sp::IsGBufferDayShader(name) || sp::IsGBufferNightShader(name);
+    Check(!clash, "no car shader is a day or a night shader: one stage per shader");
+  }
   // In a composition the block is where the chain puts it: after the headlight's 672 bytes it is at byte 1280 (c80 to c82), in both backends, and nothing is at 608.
   const sp::StageContext after = sp::ContextIn(sp::kFeatureGBuffer, sp::chain::FeatureBit(sp::kFeatureHeadlight) | sp::chain::FeatureBit(sp::kFeatureGBuffer));
   const sp::VariantTransformResult moved = def.transform(day, kFixture, after);

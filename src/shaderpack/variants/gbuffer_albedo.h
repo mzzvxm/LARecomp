@@ -138,8 +138,16 @@ inline bool WritesLanes(std::string_view code, std::string_view reg, std::string
 
 }  // namespace albedo_detail
 
+// Which fetch is the albedo's. The night and the day stages take the default (the `DiffuseSampler` fetch at the vertex's coordinate). The car stage (gbuffer_cars.h) names the sampler of
+// the rage shaders (`TextureSampler`) and takes the gradient fetch of the tyre, the brake rotor and the parallax rubber (`tfetch2DGrad(..., float2(0, 0), tfetchGradientH.xy,
+// tfetchGradientV.xy)`: the game fetches them with the gradients of the coordinate it has bent by the parallax, so the texel offset is still (0, 0) and the texel is still the diffuse one).
+struct GBufferAlbedoSource {
+  std::string_view sampler = "DiffuseSampler";
+  bool gradient = false;
+};
+
 // The albedo of one shader's text (pure; public for the stages, the tests and the census). `hlsl` may have any line ends; offsets are into the text with LF line ends.
-inline GBufferAlbedo AnalyseGBufferAlbedo(std::string_view hlsl) {
+inline GBufferAlbedo AnalyseGBufferAlbedo(std::string_view hlsl, const GBufferAlbedoSource& source = {}) {
   using namespace albedo_detail;
   GBufferAlbedo out;
   const std::string text = textedit::NormalizeNewlines(hlsl);
@@ -148,13 +156,32 @@ inline GBufferAlbedo AnalyseGBufferAlbedo(std::string_view hlsl) {
   if (main_at == std::string::npos) return out;
   const std::vector<Line> lines = LinesFrom(text, main_at + 1);
 
-  static constexpr std::string_view kFetch = " = tfetch2D(DiffuseSampler_Texture2DDescriptorIndex, DiffuseSampler_SamplerDescriptorIndex, ";
-  static constexpr std::string_view kCentre = ", float2(0, 0)).";
+  // the shapes of the fetch: the plain one, and (when the source allows it) the gradient one
+  struct Form {
+    std::string fetch;   // from the ` = ` to the coordinate
+    std::string centre;  // after the coordinate, up to the swizzle's dot
+  };
+  const std::string sampler(source.sampler);
+  std::vector<Form> forms;
+  forms.push_back({" = tfetch2D(" + sampler + "_Texture2DDescriptorIndex, " + sampler + "_SamplerDescriptorIndex, ", ", float2(0, 0))."});
+  if (source.gradient) {
+    forms.push_back({" = tfetch2DGrad(" + sampler + "_Texture2DDescriptorIndex, " + sampler + "_SamplerDescriptorIndex, ", ", float2(0, 0), tfetchGradientH.xy, tfetchGradientV.xy)."});
+  }
   bool nested = false;
   for (size_t i = 0; i < lines.size(); ++i) {
     const std::string_view code = lines[i].code;
-    const size_t at = code.find(kFetch);
-    if (at == std::string_view::npos || !code.ends_with(";")) continue;
+    const Form* form = nullptr;
+    size_t at = std::string_view::npos;
+    for (const Form& candidate : forms) {
+      at = code.find(candidate.fetch);
+      if (at != std::string_view::npos) {
+        form = &candidate;
+        break;
+      }
+    }
+    if (form == nullptr || !code.ends_with(";")) continue;
+    const std::string_view kFetch = form->fetch;
+    const std::string_view kCentre = form->centre;
     // `r6.xyzw` (or a bare `r6`) is the destination: a register of the game's and nothing else
     const std::string_view dest = code.substr(0, at);
     const size_t dot = dest.find('.');

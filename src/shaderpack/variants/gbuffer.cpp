@@ -8,6 +8,7 @@
 
 #include "shaderpack/hash.h"
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variants/gbuffer_cars.h"
 #include "shaderpack/variants/gbuffer_day.h"
 #include "shaderpack/variants/gbuffer_night.h"
 #include "shaderpack/variants/text_edit.h"
@@ -31,6 +32,8 @@ VariantTransformResult TransformGBufferHlsl(const VariantShader& shader, std::st
   // spike's own edits of it, which this function made before, are the night stage's text now: the stage finds the same normal, and adds RT2's albedo and lit weight, gbuffer_albedo.h).
   if (IsGBufferDayShader(shader.name)) return TransformGBufferDayHlsl(shader, hlsl, hlsli_text, ctx);
   if (IsGBufferNightShader(shader.name)) return TransformGBufferNightHlsl(shader, hlsl, hlsli_text, ctx);
+  // The cars, the traffic and the characters (shaderpack/variants/gbuffer_cars.h, package GB-G1): the game's own exported world normal, the paint's register, the draw's word.
+  if (IsGBufferCarShader(shader.name)) return TransformGBufferCarsHlsl(shader, hlsl, hlsli_text, ctx);
   VariantTransformResult result;
   result.skip = true;
   result.error = "not a shader the G-buffer variant is for";
@@ -63,6 +66,7 @@ VariantDef MakeGBufferVariantFromText(std::string_view hlsli_text) {
   for (const std::string_view name : GBufferDayShaderNames()) {                                             // GB-D: the day families (kGBufferDayShader is their first row)
     if (name != kGBufferDayShader) def.pixel_name_suffixes.push_back(name);
   }
+  for (const std::string_view name : GBufferCarShaderNames()) def.pixel_name_suffixes.push_back(name);  // GB-G1: the cars, the traffic and the characters (none of the names above)
   def.transform = [helper = std::string(hlsli_text)](const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
     return TransformGBufferHlsl(shader, hlsl, helper, ctx);
   };

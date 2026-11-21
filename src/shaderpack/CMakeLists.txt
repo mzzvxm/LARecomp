@@ -111,6 +111,7 @@ add_library(larecomp_shaderpack STATIC
     variants/gbuffer.cpp
     variants/gbuffer_night.cpp
     variants/gbuffer_day.cpp
+    variants/gbuffer_cars.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp
@@ -260,7 +261,7 @@ target_compile_features(larecomp_variant_golden_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_variant_golden_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The variants of the branches that are not in every tree (feat/headlights, feat/gbuffer-spike) are checked too when their files are there (variant_golden_test.cpp
 # takes them with __has_include; the G-buffer's helper is `--gbuffer-hlsli src/gpu/hlsl/gbuffer_common.hlsli`): with both, the real pair is composed and compiled.
-foreach(_larecomp_branch_variant IN ITEMS headlight gbuffer gbuffer_night gbuffer_day)
+foreach(_larecomp_branch_variant IN ITEMS headlight gbuffer gbuffer_night gbuffer_day gbuffer_cars)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/variants/${_larecomp_branch_variant}.cpp")
         target_sources(larecomp_variant_golden_test PRIVATE variants/${_larecomp_branch_variant}.cpp)
     endif()
@@ -295,6 +296,7 @@ add_executable(larecomp_gbuffer_variant_test EXCLUDE_FROM_ALL
     variants/gbuffer.cpp
     variants/gbuffer_night.cpp
     variants/gbuffer_day.cpp
+    variants/gbuffer_cars.cpp
     hash.cpp)
 target_compile_features(larecomp_gbuffer_variant_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_gbuffer_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
@@ -305,6 +307,7 @@ add_executable(larecomp_gbuffer_night_test EXCLUDE_FROM_ALL
     variants/gbuffer_night_test.cpp
     variants/gbuffer_night.cpp
     variants/gbuffer_day.cpp
+    variants/gbuffer_cars.cpp
     variants/gbuffer.cpp
     variants/headlight.cpp
     hash.cpp)
@@ -318,7 +321,8 @@ add_executable(larecomp_gbuffer_day_test EXCLUDE_FROM_ALL
     hash.cpp)
 target_compile_features(larecomp_gbuffer_day_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_gbuffer_day_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
-# The G-buffer's car, traffic and character families (variants/gbuffer_cars.h: the GB-G0 spike's prototype, not in the pack yet): cmake --build <dir> --target
+# The G-buffer's car, traffic and character families (variants/gbuffer_cars.h, package GB-G1: 73 shaders, the table, the transform at 1 to 3 planes, the colour identity, the composition with the car
+# variants, the host's word for each class): cmake --build <dir> --target
 # larecomp_gbuffer_cars_test, then run it [<src/gpu/hlsl/gbuffer_common.hlsli> [<folder of translated HLSL> [<folder for the transformed texts>]]] (exit 0 = passed).
 add_executable(larecomp_gbuffer_cars_test EXCLUDE_FROM_ALL
     variants/gbuffer_cars_test.cpp

@@ -12,6 +12,9 @@
 //   NIGHT: every `__PSMultiLight`, `...Env` and `...Interior` pixel shader (the city's materials, the props, the traffic cars' body, the pedestrians), xCityDefault::PSMultiLight
 //          among them (the spike's shader: `r0` is the normal the lamps are lit with, `r5.w = saturate(dot(r0.zxy, gMultiLightDynamicLightData(10).zxy))`, the sun's term): shaderpack/
 //          variants/gbuffer_night.cpp (package GB-C), which finds each one's normal itself
+//   CARS:  the 73 car, traffic and character shaders (the player's and the racers' paint, plastics, chrome, rims, tyres; the traffic cars' bodies; the drivers, the pedestrians and the characters) that
+//          are not night shaders: shaderpack/variants/gbuffer_cars.cpp (package GB-G1), which takes the normal the game's own vertex shader exports, the albedo from the diffuse texel / the paint's
+//          register / a colour constant, and the material from the draw's word
 //   DAY:   the 69 `PSCity*` / `PSProp*` shaders (42 edited), xCityDefault::PSCityDefault among them (its vertex shader, VSCityDefaultDay, exports the vertex's normal as oTexCoord0.xyz and the
 //          position as oTexCoord1.xyz, both in WORLD space): shaderpack/variants/gbuffer_day.cpp (package GB-D); the day table also says which of them are the day stage's vertex shaders'
 //          (feature kFeatureGBufferVs, its own pack entries: gbuffer_day.h) to pair per draw (Scene::GBufferKey)
@@ -66,7 +69,10 @@ namespace larecomp::shaderpack {
 //    for the edits of their own; a change to the day table or the day edits also bumps THIS number, which is the pixel stage's stamp line (variants_gbuffer_version).
 // 4: RT2, the albedo and the lit weight (gbuffer_albedo.h, GB-W1): every shader of the stage declares a third output SV_Target2 (src/gpu/gbuffer_rules.h kStagePlanes is RT1 and RT2 in the same
 //    commit) and writes it; xCityDefault::PSMultiLight takes the night stage's text (the spike's own edits are gone). kGBufferDayVersion is 2.
-inline constexpr uint32_t kGBufferVariantVersion = 4;
+// 5: the car, traffic and character families (gbuffer_cars.h, GB-G1: 73 shaders; the albedo from the diffuse texel, the paint's register or a colour constant; the draw's word). The xBumpSpec shaders'
+//    own `smoothness` constant. gbuffer_albedo.h's analysis takes a sampler and the gradient fetch (the night and the day stages' own results are unchanged). The helper's GbMaterialWord parameter is
+//    gbSmoothness (the file is in the stamp through the fingerprint).
+inline constexpr uint32_t kGBufferVariantVersion = 5;
 
 // The pixel shaders, by name (the group and the entry point, as the translator names its HLSL files). Found by name alone: the identities are whatever
 // the game's containers hold.
