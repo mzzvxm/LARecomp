@@ -38,7 +38,7 @@
 //     normals, 1.1 MiB of indices and 5 to 8 MiB of structures.
 //   - OTHER CARS (car_rt_instances.h, perf/RT-CARS-DESIGN.md): the cars driving alongside (opponents, traffic, parked cars) are in the same top level.
 //     CarFrame recognises their draws (the same recipe of the vertex shader's microcode as the player's, told apart by their stencil IDs) and keeps
-//     the nearest few within a radius of the player's vehicle, by graphics class (Mid 2 cars within 10 m, High 4 within 14 m); OnOtherCarDraw reads
+//     the nearest few within a radius of the player's vehicle, by graphics class (Mid 2 cars within 14 m, High 4 within 20 m); OnOtherCarDraw reads
 //     the triangles of a mesh the scene has not seen within a budget of its own, and the instance list adds a draw of such a car as an instance of
 //     the SAME structure its model's other cars use (the key is the model's triangles in model space) with the mask CAR_RT_MASK_OTHERS: the
 //     reflection's rays hit it, the primary ray that finds the player's car never does. The other cars' share of the memory stops short of the
@@ -61,6 +61,10 @@
 //     by the walk's part matrices through the SAME world-to-view conversion as a draw's instance (PackInstanceTransform), ranked with the other cars by the
 //     distance to the player within the class's count, with the car's paint colour in its record. The walker checks its placements against the draws of the cars the
 //     camera does draw and says the error in metres (the "PLACEMENT PROOF" line). A car that has not been placed for a while gives its meshes back.
+//   - MATERIALS (RT-HIT-SHADING, car_rt_material_rules.h): a mesh read from a draw also keeps its texture coordinates (a half2 a vertex, binding 4), and every instance has a
+//     material (the draw's shader class, its paint colours and fresnel, the fetch constant of its diffuse texture; a walked part's usual one), written every frame with the
+//     frame's lighting into binding 5 once the texture cache (TextureCache::Peek2D) has said which diffuse textures are resident. The reflection pass shades a hit on another car
+//     from them where the history does not show it.
 //   - The top level: one instance a body draw with a built structure, the transform the draw's model-to-world matrix through the frame's
 //     camera (VIEW space, float 3x4), the mask by the draw's kind (hlsl/car_rt_common.hlsli CAR_RT_MASK_*), InstanceID and
 //     InstanceIndex the row of the table (binding 1). The driver (kSkinned draws) is not in the first version. The instance buffer,
@@ -116,6 +120,7 @@ namespace mcla::gpu {
 class AmbientOcclusion;
 class BindlessHeap;
 class CityRtScene;
+class TextureCache;
 class Device;
 class RtSceneService;
 class EdramTargets;
@@ -132,6 +137,8 @@ class UploadRing;
 //                                       that has an instance (CarRtView::box_row): its minimum and its maximum in view space, as float bits
 //   2  ByteAddressBuffer                every mesh's triangle-list indices (uint32, relative to the mesh's first vertex)
 //   3  ByteAddressBuffer                every mesh's vertex normals (float3, 12 bytes a vertex, model space, unit length)
+//   4  ByteAddressBuffer                every mesh's texture coordinates (one uint a vertex: a half2, u in the low half; the ranges of the normals)   [RT-HIT-SHADING]
+//   5  StructuredBuffer<uint4>          the frame's lighting rows, then two rows of material an instance in the instances' order (car_rt_material_rules.h; hlsl/car_rt_hit_shade.hlsli)
 struct CarRtView {
   bool valid = false;                         // this frame's top level was built and recorded on the list before the caller's pass, WITH the player's car (every car effect keeps this gate)
   // CITY-RT M2 H3 (rt_scene_service.h): a top level exists this frame, with or without the player's car. True whenever `valid` is, and also in a frame whose top level holds the city alone (the
@@ -185,6 +192,13 @@ class CarRtScene final : public car_frame::Listener {
   // GPU idle and the FrameRing drained, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
   bool ready() const { return ready_; }
+  // The texture cache the materials' diffuse textures are asked of every frame (TextureCache::Peek2D). Null: no texture, the class colours only. Set once at the start.
+  void SetTextureCache(TextureCache* textures) { textures_ = textures; }
+  // The game's sun cascades of this frame (Volumetrics::SunCascadesForOthers: the shadow collector's constants and the atlas), given before OnResolve in every frame: the frame's rows
+  // carry them to the reflection pass, whose shaded hits read the sun's visibility from them (car_rt_hit_rules.h). A frame that is not told has none (the cars' ray alone).
+  void SetSunCascades(const car_rt_material::SunCascades& cascades) { sun_cascades_ = cascades; }
+  // The exposure of the shaded colours in stops (CarRtRefl::HitStops: measured against the history's own colours, car_rt_hit_rules.h census::): the frame's gain is multiplied by 2^stops.
+  void SetHitStops(float stops) { hit_stops_ = stops; }
 
   // A user wants the structures: call it in every frame it needs them (any time in the frame). A request counts for the frame and the
   // next, and asks CarFrame to collect the car's draws.
@@ -239,6 +253,9 @@ class CarRtScene final : public car_frame::Listener {
     std::vector<float> positions;
     std::vector<float> normals;
     std::vector<uint32_t> indices;
+    std::vector<float> uv_floats;  // the draw's TEXCOORD0 as read (u v a vertex); empty: none (a walked mesh reads none)
+    std::vector<uint32_t> uvs;     // the same as half2 words, one a vertex, once the mesh is cleaned; empty: no texture coordinates
+    float uv_density = 0.0f;       // car_rt_material_rules.h MeshUvDensity
     uint32_t triangles = 0;
     float bounds_min[3] = {};  // the mesh's box in its model space (car_rt_instances_rules.h BoundsOf)
     float bounds_max[3] = {};
@@ -259,6 +276,8 @@ class CarRtScene final : public car_frame::Listener {
     float bounds_min[3] = {};  // the mesh's box in its model space, for the cars' boxes (car_rt_instances_rules.h GrowBox)
     float bounds_max[3] = {};
     bool has_bounds = false;
+    bool has_uv = false;       // its texture coordinates are in the shared buffer from first_vertex
+    float uv_density = 0.0f;
     std::unique_ptr<plume::RenderAccelerationStructure> structure;
   };
   // A shared buffer and what its last barrier left it for (Plume tracks the D3D12 state on the buffer itself; this says whether the next
@@ -291,6 +310,9 @@ class CarRtScene final : public car_frame::Listener {
     std::unique_ptr<plume::RenderBuffer> table;  // the per-instance rows (an upload buffer, mapped)
     uint8_t* table_cpu = nullptr;
     uint64_t table_bytes = 0;
+    std::unique_ptr<plume::RenderBuffer> materials;  // the frame's lighting rows and the instances' material rows (an upload buffer, mapped)
+    uint8_t* materials_cpu = nullptr;
+    uint64_t materials_bytes = 0;
     std::unique_ptr<plume::RenderDescriptorSet> set;        // the car RT set
     std::unique_ptr<plume::RenderDescriptorSet> check_set;  // the check pass's own (u0 the picture, u1 the counters)
   };
@@ -364,7 +386,12 @@ class CarRtScene final : public car_frame::Listener {
   // Uploads the staged meshes within the frame's budget into the shared buffers, places their structures and records their builds.
   void PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std::vector<Placed>* placed);
   bool EnsureSlot(SlotResources& slot, uint32_t index, uint64_t tlas_bytes, uint64_t scratch_bytes, uint64_t instance_bytes,
-                  uint64_t table_bytes);
+                  uint64_t table_bytes, uint64_t material_bytes);
+  // RT-HIT-SHADING: the frame's material rows into `words` (car_rt_material_rules.h: the lighting rows, then two rows an item), the diffuse textures asked of the cache. The
+  // sun's direction and the world's axes in the view space come from the frame.
+  void BuildMaterialRows(const car_frame::Frame& frame, bool flip_z, const car_rt_instances::List& list, std::vector<uint32_t>* words);
+  uint32_t DiffuseSlot(const car_rt_material::FetchInfo& fetch);
+  void NoteMaterials(const car_rt_instances::List& list, const std::vector<uint32_t>& words);
   void LogTotals(const char* why);
   // The cars-from-memory lines of the log: the first kit, a vehicle list that cannot be read, and a line every few hundred frames.
   void LogMemory(const car_frame::Frame& frame);
@@ -477,6 +504,7 @@ class CarRtScene final : public car_frame::Listener {
   // The shared buffers: positions and normals (ranges of vertices, parallel), indices (ranges of uint32), and the structure pages.
   Shared positions_;
   Shared normals_;
+  Shared uvs_;  // texture coordinates, one half2 word a vertex, the ranges of the vertices (RT-HIT-SHADING)
   Shared indices_;
   car_rt_rules::RangeAllocator vertex_ranges_;
   car_rt_rules::RangeAllocator index_ranges_;
@@ -488,6 +516,8 @@ class CarRtScene final : public car_frame::Listener {
   uint32_t table_index_ = 0;
   uint32_t indices_index_ = 0;
   uint32_t normals_index_ = 0;
+  uint32_t uvs_index_ = 0;
+  uint32_t materials_index_ = 0;
   std::array<SlotResources, kFramesInFlight> slots_;
 
   // The check.
@@ -506,6 +536,29 @@ class CarRtScene final : public car_frame::Listener {
   bool readback_busy_ = false;
   uint64_t next_readback_ = 0;
   bool check_unavailable_logged_ = false;
+
+  // RT-HIT-SHADING: the texture cache, the textures asked of it in this frame (by the fetch's dwords), and what the materials were (the window's totals and the log's firsts).
+  TextureCache* textures_ = nullptr;
+  car_rt_material::SunCascades sun_cascades_;
+  float hit_stops_ = 0.0f;
+  std::unordered_map<uint64_t, uint32_t> diffuse_slots_;
+  struct MaterialStats {
+    uint64_t frames = 0;
+    uint64_t instances = 0;                                  // summed over the frames
+    std::array<uint64_t, car_rt_material::kClassCount> by_class{};
+    uint64_t textured = 0;                                   // instances whose material names a diffuse texture
+    uint64_t resolved = 0;                                   // ... that the cache handed out
+    uint64_t unresolved = 0;                                 // ... that it did not (not resident, a write pending, a replacement)
+    uint64_t uv_meshes_read = 0;                             // meshes read with texture coordinates
+    uint64_t no_uv_meshes_read = 0;                          // ... without (the draw has none, or in a format that is not read)
+    uint64_t light_frames = 0;                               // frames with the lighting read from a draw
+    uint64_t env_frames = 0;                                 // ... with the environment map's slot
+    uint64_t sun_frames = 0;
+    uint64_t cascade_frames = 0;                             // frames whose rows carry the game's sun cascades
+    uint64_t first_frame = 0;
+  } material_stats_;
+  std::array<bool, car_rt_material::kClassCount> material_class_logged_{};
+  bool material_frame_logged_ = false;
 
   // What the log has said, and the totals.
   uint64_t logged_resident_ = ~uint64_t(0);

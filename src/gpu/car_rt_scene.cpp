@@ -14,6 +14,7 @@
 #include <rex/logging/log_category.h>
 
 #include "ao.h"
+#include "car_rt_hit_rules.h"
 #include "car_rt_refl_rules.h"
 #include "city_rt_scene.h"
 #include "rt_scene_service.h"
@@ -24,6 +25,7 @@
 #include "menu_world.h"
 #include "pass_timing.h"
 #include "temporal_identities.h"
+#include "textures.h"
 #include "upload.h"
 
 namespace mcla::gpu {
@@ -137,16 +139,18 @@ bool CarRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& uploa
   pass_timing_ = &pass_timing;
   car_frame_ = &car_frame;
 
-  // The car RT set, as car_rt_scene.h says: t0 the top level, t1 the per-instance rows, t2 the indices, t3 the normals.
+  // The car RT set, as car_rt_scene.h says: t0 the top level, t1 the per-instance rows, t2 the indices, t3 the normals, t4 the texture coordinates, t5 the materials.
   set_builder_.begin();
   tlas_index_ = set_builder_.addAccelerationStructure(0);
   table_index_ = set_builder_.addStructuredBuffer(1);
   indices_index_ = set_builder_.addByteAddressBuffer(2);
   normals_index_ = set_builder_.addByteAddressBuffer(3);
+  uvs_index_ = set_builder_.addByteAddressBuffer(4);              // RT-HIT-SHADING: the texture coordinates ...
+  materials_index_ = set_builder_.addStructuredBuffer(5);         // ... and the frame's lighting and the instances' materials
   hit_bindings_ = CityHitScene::AddBindings(set_builder_);  // CITY-RT M2 H3: t6 the pool, t7 the sector table, t8 the materials, t9 the textures (after rt-hit-shading's t4 and t5)
   set_builder_.end();
   for (SlotResources& slot : slots_) {
-    slot.set = device.CreateDescriptorSet(set_builder_, 4 + CityHitScene::kBindingCount, 0, "car rt set");
+    slot.set = device.CreateDescriptorSet(set_builder_, 6 + CityHitScene::kBindingCount, 0, "car rt set");
     if (!slot.set) {
       REXLOG_ERROR("{} the descriptor set could not be made: no car ray tracing this session", kPrefix);
       Shutdown();
@@ -235,6 +239,7 @@ void CarRtScene::Shutdown() {
   walked_present_.clear();
   positions_ = Shared{};
   normals_ = Shared{};
+  uvs_ = Shared{};
   indices_ = Shared{};
   vertex_ranges_.Reset(0);
   index_ranges_.Reset(0);
@@ -246,8 +251,13 @@ void CarRtScene::Shutdown() {
     if (slot.table && slot.table_cpu) {
       slot.table->unmap(0, nullptr);
     }
+    if (slot.materials && slot.materials_cpu) {
+      slot.materials->unmap(0, nullptr);
+    }
     slot = SlotResources{};
   }
+  diffuse_slots_.clear();
+  textures_ = nullptr;
   for (auto& pipeline : view_pipelines_) {
     pipeline.reset();
   }
@@ -291,12 +301,12 @@ void CarRtScene::RequestCollect() {
 }
 
 uint64_t CarRtScene::HeldBytes() const {
-  uint64_t bytes = positions_.bytes + normals_.bytes + indices_.bytes;
+  uint64_t bytes = positions_.bytes + normals_.bytes + uvs_.bytes + indices_.bytes;
   for (const Page& page : pages_) {
     bytes += page.bytes;
   }
   for (const SlotResources& slot : slots_) {
-    bytes += slot.tlas_bytes + slot.scratch_bytes + slot.instances_bytes + slot.table_bytes;
+    bytes += slot.tlas_bytes + slot.scratch_bytes + slot.instances_bytes + slot.table_bytes + slot.materials_bytes;
   }
   if (view_image_.texture) {
     bytes += uint64_t(view_image_.width) * view_image_.height * 4;
@@ -479,6 +489,12 @@ uint32_t CarRtScene::ReadAndStage(uint64_t key, const car_frame::MeshReader& rea
     ++stats_counts_.read_failed;
     return 0;
   }
+  // RT-HIT-SHADING: the draw's texture coordinates, once a mesh (a draw without them, or in a format not read, shades with its class colour).
+  if (reader.ReadTexcoords(&staged.uv_floats)) {
+    ++material_stats_.uv_meshes_read;
+  } else {
+    ++material_stats_.no_uv_meshes_read;
+  }
   return FinishStaged(key, std::move(staged));
 }
 
@@ -505,6 +521,15 @@ uint32_t CarRtScene::FinishStaged(uint64_t key, Staged&& staged_in) {
     return 0;
   }
   staged.has_bounds = car_rt_instances::BoundsOf(staged.positions, staged.bounds_min, staged.bounds_max);
+  // The texture coordinates: one pair a vertex (the clean-up keeps every vertex), as half2 words for the shaders; the mesh's texel density for the mip level.
+  if (staged.uv_floats.size() == vertices * 2) {
+    staged.uvs.resize(size_t(vertices));
+    for (size_t v = 0; v < size_t(vertices); ++v) {
+      staged.uvs[v] = car_rt_material::PackUv(staged.uv_floats[v * 2], staged.uv_floats[v * 2 + 1]);
+    }
+    staged.uv_density = car_rt_material::MeshUvDensity(staged.positions, staged.uv_floats, staged.indices);
+  }
+  std::vector<float>().swap(staged.uv_floats);
   const uint32_t triangles = staged.triangles;
   staged_triangles_ += triangles;
   staged_order_.push_back(key);
@@ -641,7 +666,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     m.page = page;
     m.structure_offset = offset;
     m.structure_size = size;
-    m.bytes = uint64_t(m.vertex_count) * 24 + uint64_t(m.index_count) * 4 + size;
+    m.bytes = uint64_t(m.vertex_count) * 28 + uint64_t(m.index_count) * 4 + size;  // positions, normals and texture coordinates, indices, structure
     m.structure = std::move(structure);
     scratch_needed = std::max(scratch_needed, p.info.scratchSize);
     resident_bytes_ += m.bytes;
@@ -722,6 +747,8 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
         std::memcpy(ref->bounds_min, it->second.bounds_min, sizeof(ref->bounds_min));
         std::memcpy(ref->bounds_max, it->second.bounds_max, sizeof(ref->bounds_max));
         ref->has_bounds = it->second.has_bounds;
+        ref->has_uv = it->second.has_uv;
+        ref->uv_density = it->second.uv_density;
         return true;
       },
       &extra_cars_, &extra_draws_, instances_.ModelMode() != car_model_rt::Mode::kOff ? &paint_infos_ : nullptr);
@@ -758,12 +785,15 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   SlotResources& res = slots_[slot];
   const uint32_t count = uint32_t(instances.size());
   plume::RenderTopLevelASBuildInfo tlas_info;
+  std::vector<uint32_t> material_words;  // RT-HIT-SHADING: the frame's lighting rows and the instances' materials (car_rt_material_rules.h)
   if (count != 0) {
     device_->device()->setTopLevelASBuildInfo(tlas_info, instances.data(), count, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
+    BuildMaterialRows(frame, flip_z, cars, &material_words);
   }
   const bool slot_ok = count != 0 ? EnsureSlot(res, slot, tlas_info.accelerationStructureSize, std::max(scratch_needed, tlas_info.scratchSize),
-                                                tlas_info.instancesBufferData.size(), uint64_t(rows.size()) * sizeof(rr::InstanceRow))
-                                  : (scratch_needed == 0 || EnsureSlot(res, slot, 0, scratch_needed, 0, 0));
+                                                tlas_info.instancesBufferData.size(), uint64_t(rows.size()) * sizeof(rr::InstanceRow),
+                                                uint64_t(material_words.size()) * sizeof(uint32_t))
+                                  : (scratch_needed == 0 || EnsureSlot(res, slot, 0, scratch_needed, 0, 0, 0));
   bool recorded = !placed.empty() || city_recorded;
   if (!slot_ok) {
     // The builds cannot be recorded (no scratch): a mesh whose structure was never built must not reach a top level, so the meshes
@@ -783,6 +813,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   if (positions_.buffer) {
     SetAccess(list, positions_, Access::kRead);
     SetAccess(list, normals_, Access::kRead);
+    SetAccess(list, uvs_, Access::kRead);
     SetAccess(list, indices_, Access::kRead);
   }
   // The bottom levels, one after the other over the same scratch (a barrier between).
@@ -808,6 +839,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     // RAYTRACING_ACCELERATION_STRUCTURE, whose barrier is a UAV barrier.
     std::memcpy(res.instances_cpu, tlas_info.instancesBufferData.data(), tlas_info.instancesBufferData.size());
     std::memcpy(res.table_cpu, rows.data(), rows.size() * sizeof(rr::InstanceRow));
+    std::memcpy(res.materials_cpu, material_words.data(), material_words.size() * sizeof(uint32_t));
     std::vector<plume::RenderBufferBarrier> before_top;
     before_top.reserve(pages_.size() + 1);
     for (const Page& page : pages_) {
@@ -825,8 +857,12 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     res.set->setBuffer(table_index_, res.table.get(), uint64_t(rows.size()) * sizeof(rr::InstanceRow), &rows_view);
     res.set->setBuffer(indices_index_, indices_.buffer.get(), 0);
     res.set->setBuffer(normals_index_, normals_.buffer.get(), 0);
+    const plume::RenderBufferStructuredView materials_view(sizeof(uint32_t) * 4, 0);
+    res.set->setBuffer(uvs_index_, uvs_.buffer.get(), 0);
+    res.set->setBuffer(materials_index_, res.materials.get(), uint64_t(material_words.size()) * sizeof(uint32_t), &materials_view);
+    NoteMaterials(cars, material_words);
     if (hit_) {
-      // CHECK: the set now has 4 more descriptors (t6..t9 after t3); with rt-hit-shading's t4 and t5 the count is 6 + 4 (CreateDescriptorSet's view count in Initialize).
+      // The set has rt-hit-shading's t4 and t5 and the hit data's t6..t9 after them (6 + CityHitScene::kBindingCount views, Initialize).
       hit_->Bind(res.set.get(), hit_bindings_, slot);  // t6..t9: the hit data's pool and tables (city_hit_scene.h)
       hit_->RecordProbe(list, res.set.get(), set_builder_.descriptorSetDesc, *passes_, *heap_);  // debug: reads them back through the set
     }
@@ -898,12 +934,13 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
   plume::RenderTopLevelASBuildInfo tlas_info;
   device_->device()->setTopLevelASBuildInfo(tlas_info, instances.data(), count, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
   static const rr::InstanceRow kOneRow{};  // the table the set names: one row, no instance of this top level looks at it
-  if (!EnsureSlot(res, slot, tlas_info.accelerationStructureSize, tlas_info.scratchSize, tlas_info.instancesBufferData.size(), sizeof(rr::InstanceRow))) {
+  if (!EnsureSlot(res, slot, tlas_info.accelerationStructureSize, tlas_info.scratchSize, tlas_info.instancesBufferData.size(), sizeof(rr::InstanceRow), sizeof(uint32_t) * 4)) {
     REXLOG_ERROR("{} the frame slot's buffers could not be made: no top level of the city this frame", kPrefix);
     return recorded;
   }
   std::memcpy(res.instances_cpu, tlas_info.instancesBufferData.data(), tlas_info.instancesBufferData.size());
   std::memcpy(res.table_cpu, &kOneRow, sizeof(rr::InstanceRow));
+  std::memset(res.materials_cpu, 0, sizeof(uint32_t) * 4);  // RT-HIT-SHADING's materials binding (t5): one empty row, no instance of this top level is a car
   list->barriers(plume::RenderBarrierStage::COMPUTE, plume::RenderBufferBarrier(res.scratch.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE));
   list->buildTopLevelAS(res.tlas.get(), plume::RenderBufferReference(res.scratch.get(), 0), plume::RenderBufferReference(res.instances.get(), 0), tlas_info);
   list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE),
@@ -914,6 +951,9 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
   res.set->setBuffer(table_index_, res.table.get(), sizeof(rr::InstanceRow), &rows_view);
   res.set->setBuffer(indices_index_, indices_.buffer ? indices_.buffer.get() : standin_.get(), 0);
   res.set->setBuffer(normals_index_, normals_.buffer ? normals_.buffer.get() : standin_.get(), 0);
+  const plume::RenderBufferStructuredView materials_view(sizeof(uint32_t) * 4, 0);
+  res.set->setBuffer(uvs_index_, uvs_.buffer ? uvs_.buffer.get() : standin_.get(), 0);
+  res.set->setBuffer(materials_index_, res.materials.get(), sizeof(uint32_t) * 4, &materials_view);
   hit_->Bind(res.set.get(), hit_bindings_, slot);
   hit_->RecordProbe(list, res.set.get(), set_builder_.descriptorSetDesc, *passes_, *heap_);
   view_.scene_valid = true;
@@ -924,6 +964,144 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
     car_rt_instances::ViewVector(view, flip_z, world_up, view_.up);  // false: the default (0, 1, 0) stays
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// RT-HIT-SHADING: the frame's material rows
+// ---------------------------------------------------------------------------
+
+// The diffuse texture of a material as a bindless slot THIS frame, asked of the texture cache by the fetch constant the draw had (the slot a draw bound may be gone by now: a car
+// the camera does not draw holds nothing alive). A texture the cache does not hold shades with the class colour. The answers of a frame are kept by the fetch (a frame's
+// instances share a few dozen textures).
+uint32_t CarRtScene::DiffuseSlot(const car_rt_material::FetchInfo& fetch) {
+  if (!textures_ || !fetch.texture) {
+    return car_rt_material::kNoSlot;
+  }
+  uint64_t key = 0xCBF29CE484222325ull;
+  for (const uint32_t dword : fetch.dwords) {
+    key = (key ^ dword) * 0x100000001B3ull;
+    key ^= key >> 29;
+  }
+  if (const auto found = diffuse_slots_.find(key); found != diffuse_slots_.end()) {
+    return found->second;
+  }
+  const TextureFetch texture = ReadTextureFetch(fetch.dwords);
+  const uint32_t slot = textures_->Peek2D(texture);
+  const uint32_t answer = (slot & ~kTextureGammaBit) == kNullTexture2DSlot ? car_rt_material::kNoSlot : slot;
+  diffuse_slots_.emplace(key, answer);
+  return answer;
+}
+
+// The rows the shaders read at binding 5: the frame's light (the car's own draws' constants, the sun and the world's axes in this frame's view space) and a material an instance.
+void CarRtScene::BuildMaterialRows(const car_frame::Frame& frame, bool flip_z, const car_rt_instances::List& list, std::vector<uint32_t>* words) {
+  namespace crm = car_rt_material;
+  diffuse_slots_.clear();
+  const size_t items = list.items.size();
+  words->assign((size_t(crm::kFrameRows) + items * crm::kMaterialRows) * 4u, 0u);
+  crm::FrameInput in;
+  in.light = frame.light;
+  in.tuning.enabled = larecomp::settings::mcla_gpu_car_rt_hit_shading.Get();
+  in.tuning.shadow = larecomp::settings::mcla_gpu_car_rt_hit_shadow.Get();
+  // the gain is the setting's times the exposure the reflection pass measured against the history's own colours (car_rt_hit_rules.h census::; 1 until it has, and with the calibration off)
+  in.tuning.gain = float(larecomp::settings::mcla_gpu_car_rt_hit_gain.Get()) * car_rt_hit::census::GainOf(hit_stops_);
+  in.tuning.ambient = float(larecomp::settings::mcla_gpu_car_rt_hit_ambient.Get());
+  in.tuning.spec = float(larecomp::settings::mcla_gpu_car_rt_hit_spec.Get());
+  in.tuning.cascade = larecomp::settings::mcla_gpu_car_rt_hit_cascade.Get();
+  in.cascades = sun_cascades_;
+  {
+    double camera[3];
+    if (car_rt_instances::CameraWorld(frame.view, camera)) {
+      in.camera_known = true;
+      for (int c = 0; c < 3; ++c) {
+        in.camera_world[c] = float(camera[c]);
+      }
+    }
+  }
+  const double sun_length = std::sqrt(frame.to_sun[0] * frame.to_sun[0] + frame.to_sun[1] * frame.to_sun[1] + frame.to_sun[2] * frame.to_sun[2]);
+  if (sun_length > 0.5 && std::isfinite(sun_length)) {
+    in.sun_known = car_rt_instances::ViewVector(frame.view, flip_z, frame.to_sun, in.to_sun_view);
+  }
+  for (int axis = 0; axis < 3; ++axis) {
+    const double unit[3] = {axis == 0 ? 1.0 : 0.0, axis == 1 ? 1.0 : 0.0, axis == 2 ? 1.0 : 0.0};
+    car_rt_instances::ViewVector(frame.view, flip_z, unit, in.world_axes_view[axis]);  // false: the identity stays
+  }
+  uint32_t(*rows)[4] = reinterpret_cast<uint32_t(*)[4]>(words->data());
+  crm::MakeFrameRows(in, rows);
+  const crm::InstanceMaterial none;
+  for (size_t i = 0; i < items; ++i) {
+    const crm::InstanceMaterial& im = i < list.materials.size() ? list.materials[i] : none;
+    const uint32_t slot = im.material.diffuse.texture ? DiffuseSlot(im.material.diffuse) : crm::kNoSlot;
+    crm::MakeRows(im, slot, reinterpret_cast<uint32_t(*)[4]>(words->data() + (size_t(crm::kFrameRows) + i * crm::kMaterialRows) * 4u));
+  }
+}
+
+// What the materials were: the window's totals (the class of every instance, the textures asked for and found, the lighting read), the first of each class and of the
+// frame's light in the log. A line every kMaterialLogFrames triggers while the shading is on.
+void CarRtScene::NoteMaterials(const car_rt_instances::List& list, const std::vector<uint32_t>& words) {
+  namespace crm = car_rt_material;
+  constexpr uint64_t kMaterialLogFrames = 300;
+  MaterialStats& m = material_stats_;
+  if (m.first_frame == 0) {
+    m.first_frame = frame_;
+  }
+  const car_frame::Frame& frame = car_frame_->Current();
+  ++m.frames;
+  m.light_frames += frame.light.valid ? 1u : 0u;
+  m.env_frames += frame.light.env_sharp != 0 ? 1u : 0u;
+  m.sun_frames += (frame.to_sun[0] != 0.0 || frame.to_sun[1] != 0.0 || frame.to_sun[2] != 0.0) ? 1u : 0u;
+  m.cascade_frames += (words.size() > 3 && (words[3] & crm::kFrameCascade) != 0u) ? 1u : 0u;
+  for (size_t i = 0; i < list.items.size(); ++i) {
+    const uint32_t* row = words.data() + (size_t(crm::kFrameRows) + i * crm::kMaterialRows) * 4u;
+    const crm::RowsDecoded decoded = crm::DecodeRows(reinterpret_cast<const uint32_t(*)[4]>(row));
+    ++m.instances;
+    ++m.by_class[std::min<uint32_t>(uint32_t(decoded.cls), crm::kClassCount - 1)];
+    const bool textured = i < list.materials.size() && list.materials[i].material.diffuse.texture;
+    if (textured) {
+      ++m.textured;
+      ++(decoded.slot != crm::kNoSlot ? m.resolved : m.unresolved);
+    }
+    const uint32_t cls = uint32_t(decoded.cls);
+    if (cls != 0 && cls < crm::kClassCount && !material_class_logged_[cls] && i < list.materials.size()) {
+      material_class_logged_[cls] = true;
+      const bool player = i < list.stats.player_instances;
+      std::string record;
+      if (decoded.cls == crm::Class::kPaint) {
+        for (const car_model_rt::CarInfo& info : paint_infos_) {
+          if (info.is_player == player && info.paint.known) {
+            record = std::format("; the car's customisation record: A ({:.3f} {:.3f} {:.3f}) B ({:.3f} {:.3f} {:.3f}), A raised to the gamma ({:.3f} {:.3f} {:.3f})", info.paint.a[0],
+                                 info.paint.a[1], info.paint.a[2], info.paint.b[0], info.paint.b[1], info.paint.b[2], std::pow(std::max(info.paint.a[0], 0.0f), crm::kWalkedPaintGamma),
+                                 std::pow(std::max(info.paint.a[1], 0.0f), crm::kWalkedPaintGamma), std::pow(std::max(info.paint.a[2], 0.0f), crm::kWalkedPaintGamma));
+            break;
+          }
+        }
+      }
+      REXLOG_INFO("{} frame {}: the first instance of class {} ({}'s): {}; the row's slot {}, mip bias {:.2f}{}", kPrefix, frame_, crm::ClassName(decoded.cls), player ? "the player's car" : "another car",
+                  crm::Describe(list.materials[i].material, 0), decoded.slot == crm::kNoSlot ? std::string("none") : std::format("{:#x}", decoded.slot), decoded.lod_base, record);
+    }
+  }
+  if (!material_frame_logged_ && frame.light.valid) {
+    material_frame_logged_ = true;
+    REXLOG_INFO("{} frame {}: the cars' light as their draws saw it: sun ({:.3f} {:.3f} {:.3f}), ambient ({:.3f} {:.3f} {:.3f}), sky ({:.3f} {:.3f} {:.3f}), night factor {:.2f}, "
+                "the environment map's slots {:#x} and {:#x}, the sun's direction in the view space ({:.2f} {:.2f} {:.2f}), shading {}", kPrefix, frame_, frame.light.sun[0], frame.light.sun[1],
+                frame.light.sun[2], frame.light.ambient[0], frame.light.ambient[1], frame.light.ambient[2], frame.light.sky[0], frame.light.sky[1], frame.light.sky[2],
+                crm::NightFactor(frame.light.sun), frame.light.env_sharp, frame.light.env_blur, crm::FromBits(words[0]), crm::FromBits(words[1]), crm::FromBits(words[2]),
+                larecomp::settings::mcla_gpu_car_rt_hit_shading.Get() ? "on" : "off (today's stand-in)");
+  }
+  if (frame_ >= m.first_frame + kMaterialLogFrames && m.frames != 0) {
+    std::string classes;
+    for (uint32_t c = 0; c < crm::kClassCount; ++c) {
+      if (m.by_class[c] != 0) {
+        classes += std::format("{}{} {:.1f}", classes.empty() ? "" : ", ", crm::ClassName(crm::Class(c)), double(m.by_class[c]) / double(m.frames));
+      }
+    }
+    REXLOG_INFO("{} materials, frames {}..{}: {} with a top level; instances a frame by class: {}; textured {:.1f} a frame, {:.1f}% found in the cache, {} not found; the lighting read from the "
+                "cars' draws in {} frames, the environment map's slot in {}, the sun's direction in {}, the game's sun cascades (the sun's shadow at a shaded hit) in {}; meshes read with texture coordinates {}, without {}",
+                kPrefix, m.first_frame, frame_, m.frames, classes.empty() ? std::string("none") : classes, double(m.textured) / double(m.frames),
+                m.textured != 0 ? 100.0 * double(m.resolved) / double(m.textured) : 100.0, m.unresolved, m.light_frames, m.env_frames, m.sun_frames, m.cascade_frames, m.uv_meshes_read, m.no_uv_meshes_read);
+    const uint64_t first = frame_;
+    material_stats_ = MaterialStats{};
+    material_stats_.first_frame = first;
+  }
 }
 
 // The cars-from-memory lines. First: the first kit made (a car that was drawn near the player and is matched to the game's list). A warning, once: the lists
@@ -1080,8 +1258,11 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
     const crt::PaintColour paint = infos[index].paint;
     if (paint.known) {
       other.has_paint = true;
+      other.has_paint_ab = true;  // the record's colours A and B: the walked parts of paint class take them (car_rt_material_rules.h WalkedMaterial)
       for (int c = 0; c < 3; ++c) {
         other.paint[c] = paint.rgb[c];
+        other.paint_a[c] = paint.a[c];
+        other.paint_b[c] = paint.b[c];
       }
       ++walked_stats_.painted;
     }
@@ -1101,6 +1282,7 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
       car_rt_instances::OtherDraw draw;
       draw.stencil_id = other.stencil_id;
       draw.order = order++;
+      draw.part = part.part;  // RT-HIT-SHADING: the part's usual material (the model data has no shader to ask)
       draw.mesh_key = part.key;
       draw.indices = part.indices;
       draw.model_to_world = part.world;
@@ -1380,7 +1562,7 @@ void CarRtScene::ReleaseAll(const char* why) {
   walked_present_.clear();
   resident_bytes_ = 0;
   resident_triangles_ = 0;
-  for (Shared* shared : {&positions_, &normals_, &indices_}) {
+  for (Shared* shared : {&positions_, &normals_, &uvs_, &indices_}) {
     if (shared->buffer) {
       frames_->Retire(std::move(shared->buffer));
     }
@@ -1406,14 +1588,19 @@ void CarRtScene::ReleaseSlot(SlotResources& slot) {
   if (slot.table && slot.table_cpu) {
     slot.table->unmap(0, nullptr);
   }
+  if (slot.materials && slot.materials_cpu) {
+    slot.materials->unmap(0, nullptr);
+  }
   frames_->Retire(std::move(slot.tlas));
   frames_->Retire(std::move(slot.tlas_buffer));
   frames_->Retire(std::move(slot.scratch));
   frames_->Retire(std::move(slot.instances));
   frames_->Retire(std::move(slot.table));
-  slot.tlas_bytes = slot.scratch_bytes = slot.instances_bytes = slot.table_bytes = 0;
+  frames_->Retire(std::move(slot.materials));
+  slot.tlas_bytes = slot.scratch_bytes = slot.instances_bytes = slot.table_bytes = slot.materials_bytes = 0;
   slot.instances_cpu = nullptr;
   slot.table_cpu = nullptr;
+  slot.materials_cpu = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -1461,7 +1648,7 @@ void CarRtScene::OrderCopyInto(plume::RenderCommandList* list, Shared& shared, u
 }
 
 bool CarRtScene::GrowVertices(plume::RenderCommandList* list, uint64_t needed_vertices) {
-  const uint64_t limit = rr::kMemoryCapBytes / 24;
+  const uint64_t limit = rr::kMemoryCapBytes / 28;  // positions, normals and texture coordinates
   if (needed_vertices > limit) {
     return false;
   }
@@ -1470,9 +1657,10 @@ bool CarRtScene::GrowVertices(plume::RenderCommandList* list, uint64_t needed_ve
     return true;
   }
   const uint64_t grown = rr::GrownCapacity(capacity, needed_vertices, kVertexStep, limit);
-  Shared positions, normals;
+  Shared positions, normals, uvs;
   if (!MakeShared(positions, grown * 12, plume::RenderBufferFlag::ACCELERATION_STRUCTURE_INPUT, "car rt positions") ||
-      !MakeShared(normals, grown * 12, plume::RenderBufferFlag::STORAGE, "car rt normals")) {
+      !MakeShared(normals, grown * 12, plume::RenderBufferFlag::STORAGE, "car rt normals") ||
+      !MakeShared(uvs, grown * 4, plume::RenderBufferFlag::STORAGE, "car rt texture coordinates")) {
     return false;
   }
   // What the ranges hold moves with the buffers (the structures need none of it again, the shaders read the normals).
@@ -1486,6 +1674,13 @@ bool CarRtScene::GrowVertices(plume::RenderCommandList* list, uint64_t needed_ve
     SetAccess(list, normals, Access::kCopyWrite);
     list->copyBufferRegion(plume::RenderBufferReference(normals.buffer.get(), 0), plume::RenderBufferReference(normals_.buffer.get(), 0),
                            used_bytes);
+    if (uvs_.buffer) {
+      SetAccess(list, uvs_, Access::kCopyRead);
+      SetAccess(list, uvs, Access::kCopyWrite);
+      list->copyBufferRegion(plume::RenderBufferReference(uvs.buffer.get(), 0), plume::RenderBufferReference(uvs_.buffer.get(), 0),
+                             vertex_ranges_.high_water() * 4);
+      uvs.copied_bytes = vertex_ranges_.high_water() * 4;
+    }
     // The copies wrote everything below the high water, the free holes too: a mesh placed into one later in this list is ordered after them
     // (OrderCopyInto).
     positions.copied_bytes = used_bytes;
@@ -1497,8 +1692,12 @@ bool CarRtScene::GrowVertices(plume::RenderCommandList* list, uint64_t needed_ve
   if (normals_.buffer) {
     frames_->Retire(std::move(normals_.buffer));
   }
+  if (uvs_.buffer) {
+    frames_->Retire(std::move(uvs_.buffer));
+  }
   positions_ = std::move(positions);
   normals_ = std::move(normals);
+  uvs_ = std::move(uvs);
   vertex_ranges_.Grow(grown);
   return true;
 }
@@ -1652,7 +1851,9 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
     }
     const uint64_t position_bytes = uint64_t(vertex_count) * 12;
     const uint64_t index_bytes = uint64_t(index_count) * 4;
-    const UploadSpan span = upload_->Allocate(slot, position_bytes * 2 + index_bytes, 16);
+    const bool has_uv = staged.uvs.size() == vertex_count && vertex_count != 0 && uvs_.buffer;
+    const uint64_t uv_bytes = has_uv ? uint64_t(vertex_count) * 4 : 0;
+    const UploadSpan span = upload_->Allocate(slot, position_bytes * 2 + index_bytes + uv_bytes, 16);
     if (!span) {
       vertex_ranges_.Free(first_vertex, vertex_count);
       index_ranges_.Free(first_index, index_count);
@@ -1662,21 +1863,34 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
     std::memcpy(span.cpu, staged.positions.data(), position_bytes);
     std::memcpy(span.cpu + position_bytes, staged.normals.data(), position_bytes);
     std::memcpy(span.cpu + position_bytes * 2, staged.indices.data(), index_bytes);
+    if (has_uv) {
+      std::memcpy(span.cpu + position_bytes * 2 + index_bytes, staged.uvs.data(), uv_bytes);
+    }
     SetAccess(list, positions_, Access::kCopyWrite);
     SetAccess(list, normals_, Access::kCopyWrite);
     SetAccess(list, indices_, Access::kCopyWrite);
+    if (has_uv) {
+      SetAccess(list, uvs_, Access::kCopyWrite);
+    }
     // First fit hands a new mesh the holes below the high water that a growth earlier in this list has copied the old bytes into: the three
     // copies below come after a barrier then (the validation layer's WRITE_AFTER_WRITE on the 0.11 line's model walk, which gives meshes back
     // and places hundreds in a frame).
     OrderCopyInto(list, positions_, uint64_t(first_vertex) * 12, position_bytes);
     OrderCopyInto(list, normals_, uint64_t(first_vertex) * 12, position_bytes);
     OrderCopyInto(list, indices_, uint64_t(first_index) * 4, index_bytes);
+    if (has_uv) {
+      OrderCopyInto(list, uvs_, uint64_t(first_vertex) * 4, uv_bytes);
+    }
     list->copyBufferRegion(plume::RenderBufferReference(positions_.buffer.get(), uint64_t(first_vertex) * 12),
                            plume::RenderBufferReference(span.buffer, span.offset), position_bytes);
     list->copyBufferRegion(plume::RenderBufferReference(normals_.buffer.get(), uint64_t(first_vertex) * 12),
                            plume::RenderBufferReference(span.buffer, span.offset + position_bytes), position_bytes);
     list->copyBufferRegion(plume::RenderBufferReference(indices_.buffer.get(), uint64_t(first_index) * 4),
                            plume::RenderBufferReference(span.buffer, span.offset + position_bytes * 2), index_bytes);
+    if (has_uv) {
+      list->copyBufferRegion(plume::RenderBufferReference(uvs_.buffer.get(), uint64_t(first_vertex) * 4),
+                             plume::RenderBufferReference(span.buffer, span.offset + position_bytes * 2 + index_bytes), uv_bytes);
+    }
     Placed p;
     p.key = key;
     p.mesh.first_vertex = first_vertex;
@@ -1687,6 +1901,8 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
     std::memcpy(p.mesh.bounds_min, staged.bounds_min, sizeof(p.mesh.bounds_min));
     std::memcpy(p.mesh.bounds_max, staged.bounds_max, sizeof(p.mesh.bounds_max));
     p.mesh.has_bounds = staged.has_bounds;
+    p.mesh.has_uv = has_uv;
+    p.mesh.uv_density = has_uv ? staged.uv_density : 0.0f;
     placed->push_back(std::move(p));
     done.push_back(key);
   }
@@ -1697,7 +1913,7 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
 }
 
 bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_bytes, uint64_t scratch_bytes, uint64_t instance_bytes,
-                            uint64_t table_bytes) {
+                            uint64_t table_bytes, uint64_t material_bytes) {
   const auto room = [](uint64_t bytes) { return AlignUp(bytes + bytes / 4, 4096); };
   if (tlas_bytes != 0 && s.tlas_bytes < tlas_bytes) {
     // The top level sits at offset 0 of a buffer of its own: Plume's D3D12 descriptor for an acceleration structure used the buffer's base
@@ -1764,7 +1980,8 @@ bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_byte
   };
   return upload_buffer(s.instances, s.instances_cpu, s.instances_bytes, instance_bytes, plume::RenderBufferFlag::ACCELERATION_STRUCTURE_INPUT,
                        "instances") &&
-         upload_buffer(s.table, s.table_cpu, s.table_bytes, table_bytes, plume::RenderBufferFlag::STORAGE, "table");
+         upload_buffer(s.table, s.table_cpu, s.table_bytes, table_bytes, plume::RenderBufferFlag::STORAGE, "table") &&
+         upload_buffer(s.materials, s.materials_cpu, s.materials_bytes, material_bytes, plume::RenderBufferFlag::STORAGE, "materials");
 }
 
 void CarRtScene::LogTotals(const char* why) {

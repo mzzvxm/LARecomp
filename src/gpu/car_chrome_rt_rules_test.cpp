@@ -498,7 +498,7 @@ int main(int argc, char** argv) {
       Check(Has(host, "chrome_others ? car_rt_refl::kPrimaryTraceParts : car_rt_refl::kPrimaryParts") && Has(host, "larecomp::settings::mcla_gpu_car_chrome_occlusion.Get() && larecomp::settings::mcla_gpu_car_chrome_rt_others.Get()") &&
                 Has(host, "push.up[0] = view.up[0];"),
             "the host gives the primary ray the chrome's bit only where the chrome variant is drawn and the switch is on, and passes the world's up");
-      Check(Has(host_h, "float up[4];") && Has(host_h, "static_assert(sizeof(Push) == 80);"), "the host's push block is the shader's: 80 bytes");
+      Check(Has(host_h, "float up[4];") && Has(host_h, "static_assert(sizeof(Push) == 96);"), "the host's push block is the shader's: 96 bytes");
       Check(Has(scene, "car_rt_instances::ViewVector(frame.view, flip_z, world_up, view_.up)"), "the scene gives the view the world's up");
       Check(Has(variant, "if (t.r < -0.5)") && Has(variant, "saturate(-t.r - 1.0)") && Has(variant, "saturate(code - 1.0)") && Has(variant, "s.state = 6.0;"),
             "the chrome variant reads the texel by the header's rule (red under -0.5 is another car's chrome, the sky weight is -red - 1)");

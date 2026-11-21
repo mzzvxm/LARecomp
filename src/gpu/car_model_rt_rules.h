@@ -21,7 +21,7 @@
 //     header's endian, a list or a strip) into the vectors the scene stages (car_rt_scene.h), cached per buffer address (GeometryKey: the same model's cars share
 //     the keys, so a second car of a model costs instances only).
 //   - THE PAINT. PaintColour: region 0's colour A (the base colour of the gradient), the mean of A and B where the car has a gradient.
-//   - WHICH CARS, HOW MUCH. The class's caps (ci::Limits: High 4 cars within 14 m, Mid 2 within 10 m) ranked by the distance to the player, a walked car
+//   - WHICH CARS, HOW MUCH. The class's caps (ci::Limits: High 4 cars within 20 m, Mid 2 within 14 m) ranked by the distance to the player, a walked car
 //     only where no drawn car is (the draw path keeps the cars it draws) and, by the mode, where no remembered car is; the per-frame budgets of a car that is new
 //     (triangles and KiB read, triangles built); the cleanup when a car leaves (WalkedSet).
 //
