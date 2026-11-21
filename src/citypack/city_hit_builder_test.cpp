@@ -23,6 +23,7 @@
 #include "citypack/hit_corner_codec.h"
 #include "citypack/hit_material.h"
 #include "citypack/hit_params.h"
+#include "citypack/hit_texture_adapter.h"
 #include "citypack/material_class.h"
 #include "citypack/pack_reader.h"
 #include "mc_engine/modloader/rpf3.h"
@@ -746,6 +747,36 @@ void TestMaterials() {
   }
 }
 
+// Package H2's texture set as the builder's texture source (only where H2's headers are: hit_texture_adapter.h). A set made by hand with the numbers of the retail game's shape: two
+// pictures, a name in a sector's own dictionary and a name only in the common one.
+#if defined(LARECOMP_HIT_HAS_TEXTURE_SET)
+void TestTextureAdapter() {
+  TextureSet set;
+  HitTexture a, b;
+  a.key = 0x1111;
+  a.width = a.height = 64;
+  b.key = 0x2222;
+  b.width = b.height = 32;
+  set.textures = {a, b};
+  set.average = {{0.1f, 0.2f, 0.3f}, {0.4f, 0.5f, 0.6f}};
+  set.names[(uint64_t(DictionaryOfSector(3)) << 32) | TextureNameHash("wall_a.dds")] = {0, 0xAAA1};  // the picture 0 as sector 3's entry (its own key)
+  set.names[(uint64_t(kDictionaryCommon) << 32) | TextureNameHash("wall_b.dds")] = {1, 0xBBB1};
+  set.names[(uint64_t(kDictionaryCommon) << 32) | TextureNameHash("wall_a.dds")] = {0, 0xAAA0};    // ... and as the common dictionary's
+  CityTextureSource source(&set);
+  CHECK(source.Identity() == "city-textures:" + std::to_string(kTextureRulesVersion) && CityTextureSource().Identity() == source.Identity());
+  TextureEntry own = source.Resolve(HitDictionaryOfSector(3), "Wall_A.DDS");  // seen from sector 3, the name's case and its extension as the shader has them
+  CHECK(own.found() && own.picture == 0 && own.key == 0xAAA1);
+  TextureEntry other = source.Resolve(HitDictionaryOfSector(5), "wall_a.dds");  // another sector: the common dictionary's entry (its key)
+  CHECK(other.found() && other.picture == 0 && other.key == 0xAAA0);
+  TextureEntry common_only = source.Resolve(HitDictionaryOfSector(3), "wall_b.dds");
+  CHECK(common_only.found() && common_only.picture == 1 && common_only.key == 0xBBB1);
+  CHECK(!source.Resolve(HitDictionaryOfSector(3), "nothing.dds").found() && !CityTextureSource().Resolve(kHitDictionaryLod, "wall_a.dds").found());
+  CHECK(source.Table().size() == 2 && CityTextureSource().Table().empty());
+  float rgb[3];
+  CHECK(source.Average(1, rgb) && Near(rgb[0], 0.4f, 1e-6f) && Near(rgb[2], 0.6f, 1e-6f) && !source.Average(2, rgb) && !CityTextureSource().Average(0, rgb));
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // the collector (corners, runs)
 // ---------------------------------------------------------------------------
@@ -1194,6 +1225,9 @@ int main(int argc, char** argv) {
   TestQuantisation();
   TestIndexedCorners();
   TestMaterials();
+#if defined(LARECOMP_HIT_HAS_TEXTURE_SET)
+  TestTextureAdapter();
+#endif
   TestCollector();
   TestBuilder();
   fs::remove_all(g_scratch, ec);

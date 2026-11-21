@@ -317,10 +317,13 @@ namespace {
 constexpr uint64_t kGoldenHiRuns = 83970;
 constexpr uint64_t kGoldenLodRuns = 1452;
 constexpr uint64_t kGoldenCorners = 67856421;  // 3 a triangle: 66,708,966 detail and 1,147,455 far
-constexpr uint64_t kGoldenMaterials = 5261;    // the default included
+constexpr uint64_t kGoldenMaterials = 5261;    // the default included (no texture source: a material is a shader instance, a texture name and its values)
+constexpr uint64_t kGoldenMaterialsTextured = 6805;  // with package H2's texture set: the key of the dictionary entry is part of a material, so one is split in two where two sectors name
+                                                     // one picture by different keys (4,765 of 4,765 names resolve; 6,235 keys over 4,721 pictures)
 constexpr uint64_t kGoldenTextureNames = 4765; // distinct diffuse texture names
 constexpr uint64_t kGoldenShaderInstances = 54843;
 constexpr uint64_t kGoldenFileBytes = 174174812;
+constexpr uint64_t kGoldenFileBytesTextured = 174491164;  // + the texture table (8,342 records) and the longer material table; the texture file beside it is 244,060,992
 
 }  // namespace
 
@@ -899,13 +902,13 @@ std::string HitCensus::Report() const {
   golden("detail runs", hi_runs, kGoldenHiRuns);
   golden("far runs", lod_runs, kGoldenLodRuns);
   golden("corners (3 a triangle)", corners, kGoldenCorners);
-  golden("materials (the default included)", materials, kGoldenMaterials);
+  golden("materials (the default included)", materials, textures != 0 ? kGoldenMaterialsTextured : kGoldenMaterials);
   golden("shader instances read", shader_instances, kGoldenShaderInstances);
   golden("distinct diffuse texture names", finalize.texture_names, kGoldenTextureNames);
   out << "  runs: " << collect.runs << " in all, " << collect.runs_split << " made by cutting a geometry whose texture coordinates range wider than " << kMaxRunUvRange
       << ", triangles clamped into a transform: " << collect.triangles_uv_clamped << "\n";
   out << "sizes:\n";
-  golden("hit file bytes (default rules)", file_bytes, kGoldenFileBytes);
+  golden("hit file bytes (default rules)", file_bytes, textures != 0 ? kGoldenFileBytesTextured : kGoldenFileBytes);
   out << "  the hit file: " << file_bytes << " bytes (" << mib(file_bytes) << "): head " << head_bytes << ", detail blobs " << hi_blob_bytes << " (" << mib(hi_blob_bytes) << "), far blobs "
       << lod_blob_bytes << "\n";
   out << "  the same blobs with the raw corner encoding: " << raw_equivalent_bytes << " bytes (" << mib(raw_equivalent_bytes) << "); the indexed corner streams are " << corner_stream_bytes
