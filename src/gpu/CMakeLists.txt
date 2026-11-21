@@ -264,6 +264,11 @@ add_executable(larecomp_headlight_rig_test EXCLUDE_FROM_ALL headlight_rig_test.c
 # and the host's pure rules (which draws get the sidecar, the frame window, the trigger) likewise:
 #   cmake --build <dir> --target larecomp_gbuffer_rules_test, then run src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>] (exit 0 = passed).
 add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.cpp)
+# The one light description (light_frame.h: Light, LightFrame, the 64 byte GpuLight and its bits; light_id.h: the ids, a street lamp's being the old LampKey / KeyOf; light_laws.h: the
+# headlight's, the game's lamp's and the volume's laws held to the rig's LampScale and the game's numbers; light_convert.h: the conversions from the headlight rig, the game's lamp
+# list, the shadow replay and into the volume's lamp; and it compiles hlsl/light_laws.hlsli as C++ and compares it with the twin) likewise:
+#   cmake --build <dir> --target larecomp_light_frame_test, then run src/gpu/larecomp_light_frame_test [<hlsl/light_laws.hlsli>] (exit 0 = passed).
+add_executable(larecomp_light_frame_test EXCLUDE_FROM_ALL light_frame_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).

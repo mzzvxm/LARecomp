@@ -342,22 +342,22 @@ struct FakeSet {
 };
 
 void LightSetChecks() {
+  // light_set.h is a thin include of the one light description now (light_frame.h, light_convert.h): a headlight converts with LightFromHeadlight as before. The full checks of
+  // the light description (layout, ids, laws, conversions, the HLSL twin) are light_frame_test.cpp's.
   using namespace larecomp::gpu;
   FakeSet set;
   set.count = 2;
   set.lights[0] = {{1, 2, 3}, {0, 0, 1}, 0.8f, 0.9f, 40.0f, {1, 0.9f, 0.7f}, 77, true};
   set.lights[1] = {{4, 5, 6}, {1, 0, 0}, 0.7f, 0.85f, 30.0f, {0.5f, 0.5f, 0.5f}, 78, false};
-  const LightSet out = LightSetFromHeadlights(set, 12);
-  Check(out.count == 2 && out.frame == 12, "the set carries the count and the frame");
-  Check(out.lights[0].pos[1] == 2.0f && out.lights[0].dir[2] == 1.0f && out.lights[0].cos_outer == 0.8f && out.lights[0].cos_inner == 0.9f &&
-            out.lights[0].range == 40.0f && out.lights[0].color[1] == 0.9f && out.lights[0].car_key == 77,
+  const Light first = LightFromHeadlight(set.lights[0]);
+  const Light second = LightFromHeadlight(set.lights[1]);
+  Check(first.pos[1] == 2.0f && first.dir[2] == 1.0f && first.cos_outer == 0.8f && first.cos_inner == 0.9f && first.range == 40.0f && first.color[1] == 0.9f && first.car_key == 77,
         "a headlight's fields are the light's");
-  Check(out.lights[0].kind == LightKind::kSpot && out.lights[0].source == LightSource::kHeadlight && out.lights[0].shadow_view == kNoShadowView,
-        "a headlight is a spot light of source headlight with no shadow view");
-  Check((out.lights[0].flags & kLightFlagPlayer) != 0 && (out.lights[1].flags & kLightFlagPlayer) == 0, "the player's lamp keeps its flag");
-  Check(kMaxLights == 32 && out.lights.size() == kMaxLights, "the set holds 32 lights");
+  Check(first.kind == LightKind::kSpot && first.source == LightSource::kHeadlight && first.shadow.kind == ShadowKind::kNone, "a headlight is a spot light of source headlight with no shadow");
+  Check((first.flags & kLightFlagPlayer) != 0 && (second.flags & kLightFlagPlayer) == 0, "the player's lamp keeps its flag");
+  Check(kMaxLights == 64 && std::tuple_size<decltype(LightFrame::lights)>::value == kMaxLights, "a frame holds 64 lights");
   Light point;
-  Check(point.kind == LightKind::kSpot && point.cos_outer == -1.0f && point.shadow_view == kNoShadowView && point.range == 0.0f, "the default light is off");
+  Check(point.kind == LightKind::kSpot && point.cos_outer == -1.0f && point.shadow.kind == ShadowKind::kNone && point.range == 0.0f, "the default light is off");
 }
 
 // ---------------------------------------------------------------------------
