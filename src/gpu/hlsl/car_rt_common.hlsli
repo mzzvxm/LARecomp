@@ -25,7 +25,7 @@
 #define CAR_RT_MASK_OTHERS 0x10   // another car (an opponent, traffic, a parked car): the reflection's rays hit it, the primary ray never does
 #define CAR_RT_MASK_OTHER_CHROME 0x20  // ... and, in a draw of the chrome's shader (tailpipes, badges, trim), this bit too: the reflection pass's primary ray finds it
 #define CAR_RT_MASK_OTHER_PAINT 0x40   // ... and, in a draw of the paint's shader, this one: the opponents' reflection pass's primary ray finds it (car_rt_opp_refl.h)
-#define CAR_RT_MASK_ALL 0xFF
+#define CAR_RT_MASK_ALL 0x7F          // every part of a car; the one bit left, 0x80, is the city's (city_rt_rules.h kMaskCity: the city's structures share this top level), which no car pass traces
 #define CAR_RT_FLAG_AFTER_WORLD 0x100  // the draw came after the frame's first world draw
 
 // The set, at registers t0..t3 of space CAR_RT_SPACE.

@@ -393,7 +393,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     return false;
   }
   SlotResources& res = slots_[slot_index];
-  if (scratch_needed != 0 && !EnsureScratch(res, slot_index, scratch_needed)) {
+  if (!EnsureScratch(res, slot_index, std::max<uint64_t>(scratch_needed, 256))) {
     REXLOG_ERROR("{} the builds' scratch ({:.1f} MiB) could not be made: the meshes of this frame wait", kPrefix, double(scratch_needed) / (1024.0 * 1024.0));
     for (Job& j : jobs) {
       if (j.input) frames_->Retire(std::move(j.input));
