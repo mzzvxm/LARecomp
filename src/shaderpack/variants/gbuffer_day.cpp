@@ -133,9 +133,18 @@ VariantTransformResult TransformGBufferDayHlsl(const VariantShader& shader, std:
     }
   }
 
-  // 1. The second output, after the game's colour output (before the SV_Coverage of the alpha test spec variant).
+  // 0. RT2's albedo: the shader's diffuse texel (gbuffer_albedo.h), captured right after its fetch when the shader writes its register again (offsets of the text as it is now: first). The
+  // cards (kMasked) write "no data" in every plane, so they need none.
+  const GBufferAlbedo albedo = row->source == GBufferDaySource::kMasked ? GBufferAlbedo() : AnalyseGBufferAlbedo(text);
+  if (albedo.found && albedo.captured) text.insert(albedo.capture_at, albedo.capture);
+
+  // 1. The second, third and fourth outputs, after the game's colour output (before the SV_Coverage of the alpha test spec variant): RT1 the normal, RT2 the albedo and the lit weight, RT3
+  // the smoothness and the class.
   static constexpr Piece kOutput[] = {Lit("\tout float4 oC0 : SV_Target0")};
-  if (!ReplaceOnce(text, kOutput, 0, 0, "oC0 : SV_Target0 output", [](std::string_view group) { return std::string(group) + "\n\t, out float2 oC1 : SV_Target1"; }, &error)) {
+  if (!ReplaceOnce(text, kOutput, 0, 0, "oC0 : SV_Target0 output",
+                   [](std::string_view group) {
+                     return std::string(group) + "\n\t, out float2 oC1 : SV_Target1" + std::string(kGBufferAlbedoOutput) + std::string(kGBufferMaterialOutput);
+                   }, &error)) {
     return fail(std::move(error));
   }
 
@@ -160,20 +169,32 @@ VariantTransformResult TransformGBufferDayHlsl(const VariantShader& shader, std:
     }
   }
 
-  // 5. The write, after the game's last statement of the colour (so after the alpha test's discard).
+  // 5. The writes, after the game's last statement of the colour (so after the alpha test's discard): RT1, then RT2, then RT3 (the cards write "no data" in all of them).
   static constexpr Piece kWrite[] = {Lit("oC0 = applyBlendPremult(oC0);")};
-  if (!ReplaceOnce(text, kWrite, 0, 0, "the game's colour write", [&](std::string_view group) { return std::string(group) + GBufferDayWriteText(*row); }, &error)) {
+  if (!ReplaceOnce(text, kWrite, 0, 0, "the game's colour write",
+                   [&](std::string_view group) { return std::string(group) + GBufferDayWriteText(*row) + GBufferAlbedoWriteText(albedo) + GBufferMaterialWriteText(row->source == GBufferDaySource::kMasked); }, &error)) {
     return fail(std::move(error));
   }
 
-  // What the text must hold now: one second output, one write, the helper once, the derivative block once or not at all, the game's colour statement once.
+  // What the text must hold now: the second, third and fourth outputs, one write each, the helpers once, the derivative block once or not at all, the game's colour statement once.
+  const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + albedo.expression + "), GbMaterialLit(g_GBufferMode.y));";
   const struct {
     std::string_view needle;
     size_t want;
   } kChecks[] = {
       {"oC1 : SV_Target1", 1},
+      {"oC2 : SV_Target2", 1},
+      {"oC3 : SV_Target3", 1},
       {"oC1 = float2(0.0f, 0.0f);", 1},
+      {"oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);", 1},
+      {"oC3 = float2(0.0f, 0.0f);", 1},
+      {kGBufferMaterialWriteLine, row->source == GBufferDaySource::kMasked ? 0u : 1u},
+      {albedo_call, albedo.found ? 1u : 0u},
+      {"float3 gbAlbedo = ", albedo.found && albedo.captured ? 1u : 0u},
       {"float2 GbRt1Encode(float3 n)", 1},
+      {"float3 GbAlbedoEncode(float3 albedo)", 1},
+      {"float GbMaterialLit(uint word)", 1},
+      {"float2 GbMaterialRt3(uint word)", 1},
       {"float3 gbP = GbWorldPoint(", UsesDerivative(row->source) ? 1u : 0u},
       {"oC1 = GbRt1Encode(", row->source == GBufferDaySource::kMasked ? 0u : 1u},
       {"oC0 = applyBlendPremult(oC0);", 1},

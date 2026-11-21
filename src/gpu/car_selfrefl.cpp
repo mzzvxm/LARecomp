@@ -26,6 +26,7 @@
 #include "menu_world.h"
 #include "pass_timing.h"
 #include "scene_noise.h"
+#include "screen_shared.h"
 #include "texture_bytes.h"
 
 
@@ -38,19 +39,9 @@ constexpr uint32_t kMinRenderSize = 64;
 // Frames without the effect on, or with no paint draw of the variant in them (the car is not on the screen), before the image is
 // given back (2 s at 60 FPS).
 constexpr uint32_t kReleaseAfterFrames = 120;
-// How much a lens number may differ between the frame the history was linearised with and the frame it was made in.
-constexpr double kLensTolerance = 0.05;
 // The log's period while the test is on.
 constexpr uint64_t kCensusFrames = 600;
 constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
-
-double Relative(double a, double b) {
-  return std::fabs(a - b) / std::max(1e-30, std::fabs(b));
-}
-
-float BankFloat(const uint8_t* bank, uint32_t reg, uint32_t comp) {
-  return std::bit_cast<float>(LoadBe32(bank + reg * 16 + comp * 4));
-}
 
 const char* ModeName(CarSelfRefl::Mode mode) {
   switch (mode) {
@@ -109,6 +100,14 @@ car_selfrefl::Tuning ReadTuning() {
 }  // namespace
 
 bool CarSelfRefl::Selected() { return g_selected.load(std::memory_order_relaxed); }
+
+const char* CarSelfRefl::PassName(uint32_t pass) {
+  switch (pass) {
+    case kPassMs: return "car history (multisampled)";
+    case kPassMsShared: return "car history (multisampled, shared colour)";
+    default: return "car history";
+  }
+}
 
 CarSelfRefl::~CarSelfRefl() = default;
 
@@ -187,8 +186,7 @@ void CarSelfRefl::ListPrecache(const std::string& note) {
   HostPrecache& precache = passes_->precache();
   uint32_t added = 0;
   for (uint32_t pass = 0; pass < kPassCount; ++pass) {
-    added += precache.Add(HostPrecache::Key(HostPrecache::kCarSelfRefl, pass),
-                          pass == kPassMs ? "car history (multisampled)" : "car history",
+    added += precache.Add(HostPrecache::Key(HostPrecache::kCarSelfRefl, pass), PassName(pass),
                           [this, pass] { return MakePipeline(pass); })
                  ? 1u
                  : 0u;
@@ -206,9 +204,7 @@ void CarSelfRefl::HoldUntilBuilt(Mode* mode) {
     // Off at the start, on now: made on a worker of their own, in the order of the list.
     std::vector<HostPrecache::Item> fresh;
     for (uint32_t pass = 0; pass < kPassCount; ++pass) {
-      fresh.push_back({HostPrecache::Key(HostPrecache::kCarSelfRefl, pass),
-                       pass == kPassMs ? "car history (multisampled)" : "car history",
-                       [this, pass] { return MakePipeline(pass); }});
+      fresh.push_back({HostPrecache::Key(HostPrecache::kCarSelfRefl, pass), PassName(pass), [this, pass] { return MakePipeline(pass); }});
     }
     listed_ = true;
     const uint32_t count = precache.AddLive("car self-reflections", std::move(fresh));
@@ -228,8 +224,7 @@ void CarSelfRefl::HoldUntilBuilt(Mode* mode) {
 }
 
 std::unique_ptr<plume::RenderPipeline> CarSelfRefl::MakePipeline(uint32_t pass) {
-  return passes_->CreatePipeline(*shaders_[pass], plume::RenderFormat::R16G16B16A16_FLOAT,
-                                 pass == kPassMs ? "car history (multisampled)" : "car history");
+  return passes_->CreatePipeline(*shaders_[pass], plume::RenderFormat::R16G16B16A16_FLOAT, PassName(pass));
 }
 
 plume::RenderPipeline* CarSelfRefl::Pipeline(uint32_t pass) {
@@ -239,9 +234,7 @@ plume::RenderPipeline* CarSelfRefl::Pipeline(uint32_t pass) {
   if (pipeline_failed_[pass]) {
     return nullptr;
   }
-  pipelines_[pass] = passes_->precache().Acquire(
-      HostPrecache::Key(HostPrecache::kCarSelfRefl, pass),
-      pass == kPassMs ? "car history (multisampled)" : "car history", [&] { return MakePipeline(pass); });
+  pipelines_[pass] = passes_->precache().Acquire(HostPrecache::Key(HostPrecache::kCarSelfRefl, pass), PassName(pass), [&] { return MakePipeline(pass); });
   if (!pipelines_[pass]) {
     pipeline_failed_[pass] = true;
     REXLOG_ERROR("{} the history pass's pipeline could not be made: no car self-reflection this session in that "
@@ -272,6 +265,13 @@ void CarSelfRefl::BeginFrame() {
   mode_ = mode;
   g_selected.store(mode != Mode::kOff, std::memory_order_relaxed);
   tuning_ = ReadTuning();
+  source_ = std::clamp(int(larecomp::settings::mcla_gpu_car_selfrefl_source.Get()), 0, 2);
+  if (screen_) {
+    // The shared screen products: this effect reads the frames' cameras while it is on, and (the source setting 2: the A/B) asks for colour_post to be made for it. In the automatic mode it
+    // reads the capture where another effect made it and makes none of its own.
+    screen_->WantCamera(screen::Consumer::kCarHistory, mode != Mode::kOff);
+    screen_->Want(screen::Consumer::kCarHistory, mode != Mode::kOff && source_ == 2 ? screen::ProductBit(screen::kColourPost) : 0u);
+  }
   if (rt_) {
     rt_->BeginFrame(mode != Mode::kOff);  // the ray traced image of this frame's trigger, where it is wanted and can be made
   }
@@ -317,56 +317,38 @@ void CarSelfRefl::OnAnchor(const ConstantBanks::Banks& banks) {
   const bool had_history = history_pending_;
   history_pending_ = false;
   motion_.valid = 0;
-  // The camera of the frame's kind of view (the play view's or the pause/map world's, kept apart as in ao.cpp: the lenses
-  // differ); a frame with draws of both kinds or of neither gives none, and leaves no history.
+  // The frame's camera is the shared screen products' (screen_shared.h Cameras(), read at this same anchor by the owner just before this call): the play view's and the pause/map world's kept
+  // apart as in ao.cpp (the lenses differ), a frame with draws of both kinds or of neither, a size c62 does not say or constants that are no camera give none, and the history starts again.
   if (play_view_ == pause_view_) {
-    have_previous_ = false;
     history_valid_ = false;
     return;
   }
   const bool pause = pause_view_;
-  const uint8_t* ps = banks.ps.data();
-  const float width = BankFloat(ps, 62, 0);
-  const float height = BankFloat(ps, 62, 1);
-  if (!(width >= 16.0f && width <= 16384.0f && height >= 16.0f && height <= 16384.0f)) {
-    have_previous_ = false;
+  const uint64_t shared_frame = screen_ ? screen_->frame_count() : 0;
+  const temporal::Camera* camera = screen_ ? screen_->Cameras().Current(shared_frame) : nullptr;
+  if (!camera) {
     history_valid_ = false;
     return;
   }
-  temporal::Camera camera;
-  if (temporal::ExtractCamera(ps, uint32_t(width + 0.5f), uint32_t(height + 0.5f), frame_, &camera) !=
-      temporal::Reject::kNone) {
-    have_previous_ = false;
-    history_valid_ = false;
-    return;
-  }
-  // The vehicles' own motion over this frame: the next frame repeats it (the constant velocity guess of ao.h). Not in the
-  // pause view: the game's slots of a 4x frame are not trusted there (a car in the garage or under the menu is still).
+  // The vehicles' own motion over this frame: the next frame repeats it (the constant velocity guess of ao.h). Not in the pause view: the game's slots of a 4x frame are not trusted there (a car
+  // in the garage or under the menu is still).
   if (!pause) {
-    temporal::ReadVehicleMotion(ps, stencil_ids_, &motion_);
+    temporal::ReadVehicleMotion(banks.ps.data(), stencil_ids_, &motion_);
     motion_frame_ = frame_;
   }
-  // The history written at this frame's trigger belongs to this camera, when the lens it was linearised with (the
-  // previous frame's) is this frame's.
+  // The history written at this frame's trigger belongs to this camera, when the lens it was linearised with (the previous frame's) is this frame's.
   if (had_history) {
-    const bool lens_agrees = Relative(camera.fov_y, lens_used_.fov_y) < kLensTolerance &&
-                             Relative(camera.aspect, lens_used_.aspect) < kLensTolerance &&
-                             Relative(camera.near_plane, lens_used_.near_plane) < kLensTolerance &&
-                             Relative(camera.far_plane, lens_used_.far_plane) < kLensTolerance;
+    const bool lens_agrees = screen_->Cameras().LensAgrees(shared_frame);
     history_valid_ = lens_agrees;
     if (!lens_agrees) {
       ++lens_changed_;
     }
-    history_camera_ = camera;
+    history_camera_ = *camera;
     history_frame_ = frame_;
     history_pause_ = pause;
   } else {
     history_valid_ = false;  // none made this frame: the image of the frame before is a frame too old
   }
-  previous_ = camera;
-  previous_pause_ = pause;
-  have_previous_ = true;
-  previous_frame_ = frame_;
 }
 
 // ---------------------------------------------------------------------------
@@ -374,32 +356,9 @@ void CarSelfRefl::OnAnchor(const ConstantBanks::Banks& banks) {
 // ---------------------------------------------------------------------------
 
 bool CarSelfRefl::IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const {
-  // The ambient occlusion's trigger (ao.cpp Judge, shafts.cpp IsFirstPoint): the first copy of the main depth that is no
-  // end-of-scene copy, into 078B0000, before the anchor. The play view's rectangle starts at the origin and stays inside the
-  // picture (the game copies the picture in two tiles; the target is whole at the first); the pause view's three tiles come
-  // in an order nobody has looked at, so any rectangle inside the picture will do (the host draws the world once, so the
-  // target is whole at whichever tile comes first) and the destination must be the whole picture (menu_world.h).
-  if (!summary.depth_copy || !summary.source || trigger_seen_) {
-    return false;
-  }
-  const uint32_t samples = temporal::MainDepthSamples(summary.source_key);
-  const bool pause = samples == temporal::kPauseSamples;
-  if (!temporal::IsPlaySamples(samples) && !pause) {
-    return false;
-  }
-  if ((record.flags & kEventInsideEndTiling) || summary.clears_depth ||
-      summary.dest_address != kTriggerDestination || anchor_seen_ || composite_seen_) {
-    return false;
-  }
-  uint32_t width = std::min(summary.dest_width, summary.source->width);
-  uint32_t height = std::min(summary.dest_height, summary.source->height);
-  if (pause) {
-    return menu_world::PauseFirstPointGeometry(summary.x0, summary.y0, summary.x1, summary.y1, width, height,
-                                               summary.source->width, summary.source->height,
-                                               EdramTargets::kHeightAlignment);
-  }
-  return summary.x0 == 0 && summary.y0 == 0 && summary.x1 > summary.x0 && summary.y1 > summary.y0 &&
-         uint32_t(summary.x1) <= width && uint32_t(summary.y1) <= height;
+  // The ambient occlusion's trigger (ao.cpp Judge, shafts.cpp IsFirstPoint): the first copy of the main depth that is no end-of-scene copy, into 078B0000, before the anchor. The rule is the
+  // shared screen products' (ScreenShared::IsTrigger: this class's own text moved there so that every pass at the trigger asks one place), with this class's flags of what the frame has seen.
+  return ScreenShared::IsTrigger(record, summary, anchor_seen_, composite_seen_, trigger_seen_);
 }
 
 EdramTargets::Target* CarSelfRefl::ColourTarget(const EdramKey& key, plume::RenderCommandList* list) {
@@ -427,16 +386,18 @@ bool CarSelfRefl::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     return false;
   }
   const bool pause = temporal::MainDepthSamples(summary.source_key) == temporal::kPauseSamples;
-  // The lens of the history is the previous frame's (this frame's camera comes at its anchor, after this): a frame that
-  // does not follow a frame with a camera of the same kind of view has none.
-  if (!have_previous_ || previous_frame_ + 1 != frame_ || previous_pause_ != pause) {
+  // The lens of the history is the previous frame's (this frame's camera comes at its anchor, after this): a frame that does not follow a frame with a camera of the same kind of view has none
+  // (the shared screen products' camera history says: Previous).
+  const temporal::Camera* previous = screen_ ? screen_->Cameras().Previous(screen_->frame_count(), pause) : nullptr;
+  if (!previous) {
     ++no_camera_;
     history_valid_ = false;
     return false;
   }
+  trigger_camera_ = *previous;
   // The world of the frame by that camera, and whether the effect runs in it: the game view, the pause menu's world and the
   // garage, not the map (menu_world.h).
-  trigger_world_ = pause ? menu_world::Classify(true, menu_world::LensOf(&previous_), menu_world::GarageLighting())
+  trigger_world_ = pause ? menu_world::Classify(true, menu_world::LensOf(&trigger_camera_), menu_world::GarageLighting())
                          : menu_world::World::kPlay;
   if (!menu_world::RulesFor(trigger_world_).car_refl) {
     ++world_skipped_;
@@ -448,7 +409,6 @@ bool CarSelfRefl::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     return false;
   }
   history_pending_ = true;
-  lens_used_ = previous_;
   ++passes_run_;
   return true;
 }
@@ -485,8 +445,12 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     }
     return false;
   }
+  // The colour: the shared screen products' colour_post where the frame has it at the picture's size (CapturePost made each texel with this pass's own arithmetic, the mean of the host samples in the
+  // same order and the same clamp, so the image below is the same bytes: the source setting's A/B), else the main colour target's planes. Only a multisampled scene has a pass of its own for
+  // it: a plain one reads the same single sample either way, from the shared image (a half float holds what the colour target holds).
+  const HostImage* shared = SharedColour(render_w, render_h);
   const bool ms = depth.host_samples > 1;
-  plume::RenderPipeline* pipeline = Pipeline(ms ? kPassMs : kPassPlain);
+  plume::RenderPipeline* pipeline = Pipeline(ms ? (shared ? kPassMsShared : kPassMs) : kPassPlain);
   if (!pipeline) {
     return false;
   }
@@ -523,7 +487,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
 
   Push push = {};
   push.slots[0] = summary.sample_slot;
-  push.slots[1] = colour_slot;
+  push.slots[1] = shared ? shared->slot : colour_slot;
   push.slots[2] = summary.stencil_slot;
   push.slots[3] = depth.host_samples;
   push.slots2[0] = summary.host_sample;
@@ -531,13 +495,16 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   push.sizes[1] = float(render_h);
   push.sizes[2] = float(divisor);
   // The previous frame's lens (view space to clip, row vectors): the rows the linearisation reads.
-  const temporal::Mat4& p = previous_.projection;
+  const temporal::Mat4& p = trigger_camera_.projection;
   push.lin[0] = float(p.m[2][2]);
   push.lin[1] = float(p.m[2][3]);
   push.lin[2] = float(p.m[3][2]);
   push.lin[3] = float(p.m[3][3]);
   pass_timing_->Mark(list, "car history");
   passes_->DrawInto(list, history_, pipeline, &push, sizeof(push));
+  if (shared) {
+    ++passes_shared_;
+  }
   if (dump_) {
     dump_->OnHistoryImage(list, history_, divisor, p);  // the debug car dump reads this frame's image back (car_dump.h)
   }
@@ -558,6 +525,20 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     rt_->OnHistory(list, info);
   }
   return true;
+}
+
+// CHECK (not run): the history pass from the shared colour_post is the same image as from the main colour's planes (mcla_gpu_car_selfrefl_source 1 against 2 at 1080 lines and below, MSAA 1, 2, 4 and 8,
+// the play view and the pause menu's: mcla_gpu_car_selfrefl_view 2, the colour the ray sees, and the car dump's history check, identical); and that nothing changes with the setting at 0 and no
+// effect making colour_post (the frame has none: the old pass runs with the old slot). Above 1080 lines colour_post is half size, the pass keeps reading the planes.
+const HostImage* CarSelfRefl::SharedColour(uint32_t render_width, uint32_t render_height) const {
+  if (source_ == 1 || !screen_ || !screen_->Frame().Has(screen::kColourPost)) {
+    return nullptr;
+  }
+  const HostImage* image = screen_->Image(screen::kColourPost, 0);
+  if (!image || !image->texture || image->slot == kNoSlot || image->width != render_width || image->height != render_height) {
+    return nullptr;
+  }
+  return image;
 }
 
 // ---------------------------------------------------------------------------
@@ -641,8 +622,7 @@ menu_world::World CarSelfRefl::FrameWorld() const {
   if (play_view_) {
     return menu_world::World::kPlay;
   }
-  return menu_world::Classify(true, menu_world::LensOf(have_previous_ && previous_pause_ ? &previous_ : nullptr),
-                              menu_world::GarageLighting());
+  return menu_world::Classify(true, menu_world::LensOf(screen_ ? screen_->Cameras().LastPauseCamera() : nullptr), menu_world::GarageLighting());
 }
 
 const char* CarSelfRefl::Level() const {
@@ -687,12 +667,12 @@ void CarSelfRefl::Census() {
   // The numbers of the interval since the last line come first: the totals alone read as "none" for as long as the car is
   // not on the screen (the title and the loading frames), and in a run's first lines that is all there is.
   REXLOG_INFO("{} frame {}: {} view, mode {}, history {}; paint draws in the last {} frames: {}, {} with a history ({} of "
-              "them in the pause view's worlds); since the start: {} triggers ({} history passes, {} with no paint draw in "
+              "them in the pause view's worlds); since the start: {} triggers ({} history passes, {} of them from the shared colour, {} with no paint draw in "
               "the frame, {} without the previous frame's camera, {} lens changes, {} in a world with no effect), {} paint draws, {} with a history ({} with "
               "the vehicle's motion, {} without a stencil ID, {} with the ray traced image); {:.1f} MiB{}",
               kPrefix, frame_, pause_view_ ? "pause/map" : "play", ModeName(mode_), history_valid_ ? "valid" : "none",
               kCensusFrames, paint_draws_ - census_paint_, paint_with_history_ - census_with_history_,
-              paint_pause_ - census_pause_, triggers_, passes_run_, skipped_no_car_, no_camera_, lens_changed_, world_skipped_,
+              paint_pause_ - census_pause_, triggers_, passes_run_, passes_shared_, skipped_no_car_, no_camera_, lens_changed_, world_skipped_,
               paint_draws_, paint_with_history_, paint_motion_, paint_no_id_, paint_with_rt_, double(HeldBytes()) / (1024.0 * 1024.0),
               rt_ ? rt_->CensusText() : std::string());
   census_paint_ = paint_draws_;

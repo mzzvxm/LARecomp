@@ -11,8 +11,10 @@
 //   - IDENTITY: the transformed text is the game's text line by line with lines added (the DXIL block's last line gets a ` \` to continue), and no added line assigns one of the game's registers or
 //     names oC0: the colour is the game's. Alone, and composed with the headlight's stage (the chain's order: the headlight first), where the text left after the headlight is what is compared
 //   - the normal's source agrees where more than one anchor is there (the sun term's interpolant is the lamp sum's, the normalisation's: the shader is analysed again with its sun term hidden)
-//   - the composed text has both blocks (608 and 1280) once and the same normal
-//   - xCityDefault::PSMultiLight, which the spike's edits keep (gbuffer.cpp), gets the very same text from this stage
+//   - the composed text has both blocks (608 and 1680) once and the same normal
+//   - RT2 (GB-W1, gbuffer_albedo.h): every edited shader declares the third output once; the albedo write is there exactly where the shader has a DiffuseSampler texel at its centre (read at the end
+//     of main, or captured right after the fetch where a later statement writes the register), the "no data" write everywhere
+//   - xCityDefault::PSMultiLight is the stage's like every other shader of the family (gbuffer.cpp's dispatch; the spike's own edits of it are gone)
 // and pins the census' numbers. A third argument is a folder that receives the edited texts (`<name>.gb.hlsl`, and `<name>.hlgb.hlsl` composed with the headlight) for the compile with dxc
 // (perf/scripts/gbuffer_night_compile.py: DXIL and SPIR-V, the spec constants 0 and 2).
 
@@ -29,6 +31,7 @@
 #include <string_view>
 #include <vector>
 
+#include "gpu/gbuffer_material.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_compose.h"
 #include "shaderpack/variants/gbuffer.h"
@@ -171,7 +174,12 @@ std::string Shader(const std::string& body) {
 constexpr const char* kHelper =
     "float2 GbOctEncode(float3 n) { return n.xy; }\n"
     "float2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\n"
-    "#define GB_MODE_WRITE_NORMAL 1\n";
+    "float3 GbAlbedoEncode(float3 albedo) { return albedo; }\n"
+    "float GbMaterialLit(uint word) { return 1.0f; }\n"
+    "float2 GbMaterialRt3(uint word) { return float2(0.0f, 0.0f); }\n"
+    "#define GB_MODE_WRITE_NORMAL 1\n"
+    "#define GB_MODE_WRITE_ALBEDO 2\n"
+    "#define GB_MODE_WRITE_MATERIAL 4\n";
 
 constexpr std::string_view kSunDot = "\tr5.w = saturate(dot(r0.zxy, gMultiLightDynamicLightData(10).zxy));\n";
 
@@ -275,10 +283,12 @@ void CheckAnchors() {
     const sp::NightAnalysis b = sp::AnalyseGBufferNight(Shader("\tr3.xyz = r0.xyz * r1.www;\n"));
     Check(!b.found && b.why_not == sp::kGBufferNightSkipUnlit, "a shader with no light at all");
   }
-  // the diffuse fetch (the phase 2 seam)
+  // the diffuse fetch: RT2's albedo (gbuffer_albedo.h; its own anchors are checked in gbuffer_test.cpp)
   {
     const sp::NightAnalysis a = sp::AnalyseGBufferNight(Shader(std::string(kSunDot) + "\tr6.xyzw = tfetch2D(DiffuseSampler_Texture2DDescriptorIndex, DiffuseSampler_SamplerDescriptorIndex, r2.xy, float2(0, 0)).xwyz;\n"));
-    Check(a.found && a.diffuse == "r6.xyzw = tex.xwyz", "the diffuse fetch is found for phase 2: '" + a.diffuse + "'");
+    Check(a.found && a.albedo.found && a.albedo.lanes == "r6.xzw" && a.albedo.expression == "r6.xzw" && !a.albedo.captured, "the diffuse fetch is found for RT2: '" + a.albedo.detail + "'");
+    const sp::NightAnalysis none = sp::AnalyseGBufferNight(Shader(std::string(kSunDot)));
+    Check(none.found && !none.albedo.found && none.albedo.why_not == sp::kGBufferAlbedoSkipNoFetch, "a shader with a normal and no diffuse fetch has no albedo, for that reason");
   }
 }
 
@@ -288,9 +298,12 @@ void CheckTransform() {
   const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
   Check(r.ok && !r.skip && r.error.empty(), "the fixture transforms: " + r.error);
   if (!r.ok) return;
-  Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1") == 1, "the second output follows the colour output");
-  Check(Count(r.hlsl, "oC0 = applyBlendPremult(oC0);\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(gbNormal);\n\t}") == 1,
-        "the write follows the game's last colour statement");
+  Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3") == 1,
+        "the second, third and fourth outputs follow the colour output");
+  Check(Count(r.hlsl, "oC0 = applyBlendPremult(oC0);\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(gbNormal);\n\t}"
+                      "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);"
+                      "\n\toC3 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}\n\treturn;") == 1,
+        "the writes follow the game's last colour statement (this fixture has no diffuse fetch: RT2 gets the no data code only; RT3 gets the material word's bytes all the same)");
   Check(Count(r.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
             Count(r.hlsl, "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)") == 1 &&
             Count(r.hlsl, "float2 g_InvResolutionScale : packoffset(c37.x); \\\n    uint4 g_GBufferMode : packoffset(c38); \\\n    float4 g_GBufferRay : packoffset(c39); \\\n    float4 g_GBufferCam : packoffset(c40);") == 1,
@@ -299,11 +312,11 @@ void CheckTransform() {
   Check(helper_at != std::string::npos && helper_at < r.hlsl.rfind("void main(") && r.hlsl.find("#define g_GBufferMode") < helper_at, "the declarations, the helper, then main");
   Check(r.hlsl.find("\tfloat3 gbNormal = r0.xyz;\n") > r.hlsl.find("void main(") && r.hlsl.find("\tfloat3 gbNormal = r0.xyz;\n") < r.hlsl.find(kSunDot), "the capture is in main, before the term");
   Check(AdditiveError(text, r.hlsl).empty(), "only lines were added: " + AdditiveError(text, r.hlsl));
-  // the block moves when the stage is composed after the headlight's 672 bytes
+  // the block moves when the stage is composed after the headlight's 1072 bytes
   const sp::StageContext after = sp::ContextIn(sp::kFeatureGBuffer, chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer));
   const sp::VariantTransformResult moved = sp::TransformGBufferNightHlsl(shader, text, kHelper, after);
-  Check(moved.ok && Count(moved.hlsl, "SharedConstants + 1280, 0x10)") == 1 && Count(moved.hlsl, "uint4 g_GBufferMode : packoffset(c80);") == 1 && Count(moved.hlsl, "SharedConstants + 608") == 0,
-        "composed after the headlight the block is at 1280 (c80)");
+  Check(moved.ok && Count(moved.hlsl, "SharedConstants + 1680, 0x10)") == 1 && Count(moved.hlsl, "uint4 g_GBufferMode : packoffset(c105);") == 1 && Count(moved.hlsl, "SharedConstants + 608") == 0,
+        "composed after the headlight the block is at 1680 (c105)");
   // a text with CRLF line ends is the same
   std::string crlf;
   for (const char c : text) {
@@ -335,6 +348,82 @@ void CheckTransform() {
   {
     const sp::VariantTransformResult s = sp::TransformGBufferNightHlsl(shader, Shader("\tr3.xyz = r0.xyz * r1.www;\n"), kHelper, sp::SoloContext(sp::kFeatureGBuffer));
     Check(!s.ok && s.skip && s.error == sp::kGBufferNightSkipUnlit, "no normal: a skip with the reason");
+  }
+}
+
+// RT2 in the night stage's text (GB-W1): the albedo is read at the end of main, or captured right after the fetch; both captures (the normal's and the albedo's) at once; none where the
+// shader has no texel. Only lines are added in every case. (The anchor's own rules are in gbuffer_test.cpp.)
+void CheckAlbedoTransform() {
+  const sp::VariantShader shader = Night("xTest__PSMultiLight");
+  const std::string fetch = "\tr6.xyzw = tfetch2D(DiffuseSampler_Texture2DDescriptorIndex, DiffuseSampler_SamplerDescriptorIndex, r2.xy, float2(0, 0)).xwyz;\n";
+  const std::string kWriteTail = "\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u) {\n\t\toC2 = float4(GbAlbedoEncode(";
+  // 1. the register is untouched after the fetch: read at the end of main, no capture
+  {
+    const std::string text = Shader(fetch + std::string(kSunDot) + "\tr3.xyz = r6.xzw * r1.www;\n");
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(r.ok, "RT2, the register untouched: transforms: " + r.error);
+    if (r.ok) {
+      Check(Count(r.hlsl, kWriteTail + "r6.xzw), GbMaterialLit(g_GBufferMode.y));\n\t}") == 1 && Count(r.hlsl, "gbAlbedo") == 0, "...the write reads the fetch's own lanes at the end of main (r6.xzw), no capture");
+      Check(Count(r.hlsl, "oC2 : SV_Target2") == 1 && Count(r.hlsl, "oC1 = GbRt1Encode(iTexCoord0.xyz);") == 1, "...one third output, the normal still read from the interpolant");
+      Check(AdditiveError(text, r.hlsl).empty(), "...and only lines were added: " + AdditiveError(text, r.hlsl));
+    }
+  }
+  // 2. a later statement writes the register: captured right after the fetch, before whatever follows it
+  {
+    const std::string text = Shader(fetch + std::string(kSunDot) + "\tr6.xyz = r6.xzw * r1.www;\n");
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(r.ok, "RT2, the register written later: transforms: " + r.error);
+    if (r.ok) {
+      Check(Count(r.hlsl, fetch + "\tfloat3 gbAlbedo = r6.xzw;\n" + std::string(kSunDot)) == 1, "...captured on the line right after the fetch");
+      Check(Count(r.hlsl, kWriteTail + "gbAlbedo), GbMaterialLit(g_GBufferMode.y));\n\t}") == 1 && Count(r.hlsl, "float3 gbAlbedo = ") == 1, "...and the write reads the capture, once");
+      Check(AdditiveError(text, r.hlsl).empty(), "...and only lines were added: " + AdditiveError(text, r.hlsl));
+    }
+  }
+  // 3. both values captured (the normal is rewritten before the sun term, the diffuse register after the fetch): each in its place, in either order of the two lines
+  for (const bool fetch_first : {true, false}) {
+    const std::string text = Shader(std::string(fetch_first ? fetch : "") + "\tr0.xyz = r0.xyz * r1.www;\n" + std::string(fetch_first ? "" : fetch) + std::string(kSunDot) + "\tr6.x = r6.x * r1.w;\n");
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    const std::string label = std::string("both captured, the fetch ") + (fetch_first ? "first" : "after the normal's rewrite");
+    Check(r.ok, label + ": transforms: " + r.error);
+    if (r.ok) {
+      Check(Count(r.hlsl, "float3 gbNormal = r0.xyz;\n\tr5.w = saturate(dot(") == 1 && Count(r.hlsl, "float3 gbAlbedo = r6.xzw;\n") == 1, label + ": both captures are there once");
+      Check(Count(r.hlsl, fetch + "\tfloat3 gbAlbedo = r6.xzw;\n") == 1, label + ": the albedo's is right after the fetch");
+      Check(Count(r.hlsl, "oC1 = GbRt1Encode(gbNormal);") == 1 && Count(r.hlsl, "GbAlbedoEncode(gbAlbedo)") == 1, label + ": the writes read them");
+      Check(AdditiveError(text, r.hlsl).empty(), label + ": only lines were added: " + AdditiveError(text, r.hlsl));
+    }
+  }
+  // 4. the fetch directly before the sun term's line, which is also a capture point (the same offset): both lines, each once, the colour statements untouched
+  {
+    const std::string text = Shader("\tr0.xyz = r0.xyz * r1.www;\n" + fetch + std::string(kSunDot) + "\tr6.xyz = r6.xzw * r1.www;\n");
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(r.ok && Count(r.hlsl, "float3 gbNormal = r0.xyz;\n") == 1 && Count(r.hlsl, "float3 gbAlbedo = r6.xzw;\n") == 1 && AdditiveError(text, r.hlsl).empty(),
+          "the albedo's capture and the normal's at one line: both are in once, only lines were added " + r.error + AdditiveError(text, r.hlsl));
+    if (r.ok) {
+      const size_t a = r.hlsl.find("float3 gbAlbedo = r6.xzw;"), n = r.hlsl.find("float3 gbNormal = r0.xyz;"), t = r.hlsl.find(kSunDot);
+      Check(a != std::string::npos && n != std::string::npos && a < t && n < t, "...and both are before the sun term's statement");
+    }
+  }
+  // 5. no texel: RT2 gets the no data code, nothing more
+  {
+    const std::string text = Shader("\tr0.xyz = r0.xyz * r1.www;\n" + std::string(kSunDot));
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(r.ok && Count(r.hlsl, "oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(r.hlsl, "GB_MODE_WRITE_ALBEDO") == 1 /* the stand-in helper's define */ && Count(r.hlsl, "gbAlbedo") == 0,
+          "a shader with no DiffuseSampler texel: the no data write only, no albedo code " + r.error);
+    Check(r.ok && Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1 && Count(r.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1,
+          "... and RT3 is written all the same: the class and the smoothness are the draw's, not the texel's");
+  }
+  // 6. a helper without the albedo functions is an error that names them (the real helper has them: the real-helper run checks it)
+  {
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, Shader(std::string(kSunDot)), "float2 GbOctEncode(float3 n) { return n.xy; }\nfloat2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\n",
+                                                                       sp::SoloContext(sp::kFeatureGBuffer));
+    Check(!r.ok && !r.skip && r.error.find("GbAlbedoEncode") != std::string::npos, "a helper without GbAlbedoEncode: an error that names it (" + r.error.substr(0, 100) + ")");
+  }
+  // 7. composed after the headlight's block: the albedo's write is the same text, the block is at 1680
+  {
+    const std::string text = Shader(fetch + std::string(kSunDot) + "\tr3.xyz = r6.xzw * r1.www;\n");
+    const sp::StageContext after = sp::ContextIn(sp::kFeatureGBuffer, chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer));
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, after);
+    Check(r.ok && Count(r.hlsl, "oC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y));") == 1 && Count(r.hlsl, "SharedConstants + 1680, 0x10)") == 1, "composed: the albedo's write and the block at 1680 " + r.error);
   }
 }
 
@@ -383,7 +472,7 @@ void CheckVariantDef() {
   const sp::VariantTransformResult via = def.transform({"xTest__PSMultiLight", 0}, Shader(std::string(kSunDot)), sp::SoloContext(sp::kFeatureGBuffer));
   Check(via.ok && Count(via.hlsl, "oC1 = GbRt1Encode(iTexCoord0.xyz);") == 1, "the variant's transform sends a family shader to the night stage: " + via.error);
   const sp::VariantTransformResult spike = def.transform({sp::kGBufferNightShader, 0}, Shader(std::string(kSunDot)), sp::SoloContext(sp::kFeatureGBuffer));
-  Check(spike.ok && via.ok && spike.hlsl == via.hlsl, "xCityDefault::PSMultiLight (the spike's edits) and the night stage make the same text on the fixture");
+  Check(spike.ok && via.ok && spike.hlsl == via.hlsl, "xCityDefault::PSMultiLight takes the night stage's text like every other shader of the family (the dispatch)");
 }
 
 // ---- the census on the retail text ------------------------------------------------------------------------------------------------------------------------------------------
@@ -429,13 +518,18 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
   // The real pair's stages, as the pack builder makes them.
   const std::vector<sp::VariantDef> defs = {sp::MakeHeadlightVariant(), sp::MakeGBufferVariantFromText(helper)};
   const uint32_t both = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer);
-  Check(chain::CanCompose(both) && chain::HasTwin(both) && chain::OffsetOf(both, sp::kFeatureGBuffer) == 1280, "the table composes the headlight and the G-buffer, the block at 1280");
+  Check(chain::CanCompose(both) && chain::HasTwin(both) && chain::OffsetOf(both, sp::kFeatureGBuffer) == 1680, "the table composes the headlight and the G-buffer, the block at 1680");
 
   std::printf("\n=== CENSUS of the night family on %s ===\n", folder.string().c_str());
   std::map<std::string, std::pair<int, int>> by_kind;  // kind -> (edited, left out)
   std::map<std::string, int> by_how, by_reason;
-  int edited = 0, left_out = 0, interpolants = 0, captured = 0, composed = 0, with_diffuse = 0, cross_checked = 0, identical = 0;
+  int edited = 0, left_out = 0, interpolants = 0, captured = 0, composed = 0, with_diffuse = 0, albedo_captured = 0, cross_checked = 0, identical = 0;
+  std::map<std::string, int> no_albedo_why;
+  std::vector<std::string> no_albedo_names;
+  std::map<std::string, std::string> albedo_lanes;
   std::vector<std::string> left_names;
+  std::map<int, int> by_class;  // RT3's class (GB-F1's table) of the edited shaders: the census of what the material plane says
+  int unclassed = 0;
   for (const Shader_* file : family) {
     const std::string text = ReadFile(file->path);
     const std::string kind = file->stem.ends_with("Interior") ? "PSMultiLightInterior" : file->stem.ends_with("Env") ? "PSMultiLightEnv" : "PSMultiLight";
@@ -452,12 +546,27 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
       continue;
     }
     ++edited;
+    {
+      // RT3 (GB-W2) writes the draw's word, whose class comes from the table of GB-F1 by the shader's name: a shader of the stage that the table calls "none" (or does not know) would write class 0,
+      // which a consumer reads as "nothing written here" over a pixel that has a normal. Every shader of the stage has a class.
+      const mcla::gpu::gbuffer::ShaderMaterial material = mcla::gpu::gbuffer::MaterialOfShaderName(file->stem);
+      ++by_class[int(material.cls)];
+      unclassed += !(material.known && material.cls != mcla::gpu::gbuffer::SurfaceClass::kNone);
+      Check(material.known && material.cls != mcla::gpu::gbuffer::SurfaceClass::kNone, file->stem + ": the material table gives it a class (so RT3 never says 'no data' where the stage wrote the normal)");
+    }
     ++by_kind[kind].first;
     ++by_how[HowText(a.how)];
     (a.interpolant ? interpolants : captured)++;
-    if (!a.diffuse.empty()) ++with_diffuse;
+    if (a.albedo.found) {
+      ++with_diffuse;
+      albedo_captured += a.albedo.captured;
+      albedo_lanes[file->stem] = a.albedo.lanes;
+    } else {
+      ++no_albedo_why[a.albedo.why_not];
+      no_albedo_names.push_back(file->stem);
+    }
     std::printf("EDITED    %-46s %-14s %-24s %s%s\n", file->stem.c_str(), HowText(a.how), a.expression.c_str(), a.interpolant ? "" : ("capture: " + a.capture.substr(a.capture.find('f'), a.capture.size() - a.capture.find('f') - 1)).c_str(),
-                a.diffuse.empty() ? "" : ("   [diffuse " + a.diffuse + "]").c_str());
+                a.albedo.found ? ("   [albedo " + a.albedo.detail + "]").c_str() : ("   [no albedo: " + a.albedo.why_not + "]").c_str());
     Check(alone.ok, file->stem + ": transforms: " + alone.error);
     if (!alone.ok) continue;
     const std::string identity = AdditiveError(text, alone.hlsl);
@@ -465,6 +574,16 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     identical += identity.empty();
     Check(Count(alone.hlsl, "oC1 : SV_Target1") == 1 && Count(alone.hlsl, "oC1 = GbRt1Encode(" + a.expression + ");") == 1 && Count(alone.hlsl, "float3 gbNormal = ") == (a.interpolant ? 0u : 1u),
           file->stem + ": one output, one write, " + (a.interpolant ? "no capture" : "one capture"));
+    {
+      const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + a.albedo.expression + "), GbMaterialLit(g_GBufferMode.y));";
+      Check(Count(alone.hlsl, "oC2 : SV_Target2") == 1 && Count(alone.hlsl, "oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(alone.hlsl, albedo_call) == (a.albedo.found ? 1u : 0u) &&
+                Count(alone.hlsl, "float3 gbAlbedo = ") == (a.albedo.found && a.albedo.captured ? 1u : 0u),
+            file->stem + ": RT2: one output, the no data write, " + (a.albedo.found ? (a.albedo.captured ? "the albedo from one capture" : "the albedo from the fetch's lanes") : "no albedo"));
+      // RT3 in every shader of the stage, with an albedo or without, and after RT2's write
+      Check(Count(alone.hlsl, "oC3 : SV_Target3") == 1 && Count(alone.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1 && Count(alone.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1 &&
+                alone.hlsl.find("oC3 = GbMaterialRt3(") > alone.hlsl.find("oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);"),
+            file->stem + ": RT3: one output, the no data write and the word's bytes, after RT2's");
+    }
     if (!out.empty()) {
       fs::create_directories(out);
       std::ofstream(out / (file->stem + ".gb.hlsl"), std::ios::binary) << alone.hlsl;
@@ -488,9 +607,16 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
         Check(pair_identity.empty(), file->stem + ": composed, the headlight's text is the game's with lines added: " + pair_identity);
         const sp::NightAnalysis on_hl = sp::AnalyseGBufferNight(hl_alone.hlsl);
         Check(on_hl.found && on_hl.expression == a.expression && on_hl.interpolant == a.interpolant && on_hl.how == a.how, file->stem + ": the headlight's edits leave the normal where it was");
-        Check(Count(pair.hlsl, "float4 g_HlHeader : packoffset(c38);") == 1 && Count(pair.hlsl, "uint4 g_GBufferMode : packoffset(c80);") == 1 && Count(pair.hlsl, "SharedConstants + 1280, 0x10)") == 1 &&
+        Check(Count(pair.hlsl, "float4 g_HlHeader : packoffset(c38);") == 1 && Count(pair.hlsl, "uint4 g_GBufferMode : packoffset(c105);") == 1 && Count(pair.hlsl, "SharedConstants + 1680, 0x10)") == 1 &&
                   Count(pair.hlsl, "hlLight.") == Count(hl_alone.hlsl, "hlLight.") && Count(pair.hlsl, "oC1 = GbRt1Encode(" + a.expression + ");") == 1,
-              file->stem + ": composed: the blocks are at 608 and 1280, the headlight's term and the G-buffer's write are in");
+              file->stem + ": composed: the blocks are at 608 and 1680, the headlight's term and the G-buffer's write are in");
+        // RT2 composed: the analysis runs on the text the headlight left, so the same anchor must be found there (the headlight does not touch the fetch or write its register)
+        const sp::GBufferAlbedo on_hl_albedo = sp::AnalyseGBufferAlbedo(hl_alone.hlsl);
+        Check(on_hl_albedo.found == a.albedo.found && on_hl_albedo.lanes == a.albedo.lanes && on_hl_albedo.captured == a.albedo.captured,
+              file->stem + ": composed: the headlight's edits leave the albedo's anchor where it was");
+        Check(Count(pair.hlsl, "oC2 : SV_Target2") == 1 && Count(pair.hlsl, "GbAlbedoEncode(" + a.albedo.expression + ")") == (a.albedo.found ? 1u : 0u),
+              file->stem + ": composed: RT2's output and write are in");
+        Check(Count(pair.hlsl, "oC3 : SV_Target3") == 1 && Count(pair.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1, file->stem + ": composed: RT3's output and write are in");
         if (!out.empty()) std::ofstream(out / (file->stem + ".hlgb.hlsl"), std::ios::binary) << pair.hlsl;
       }
     }
@@ -504,9 +630,18 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
   std::printf("\nCENSUS: %zu shaders in the night family (%zu debug shaders of the game are not in it): %d EDITED, %d LEFT OUT\n", family.size(), debug, edited, left_out);
   for (const auto& [kind, counts] : by_kind) std::printf("  %-22s edited %3d, left out %3d\n", kind.c_str(), counts.first, counts.second);
   for (const auto& [how, n] : by_how) std::printf("  normal found by the %-14s %3d\n", how.c_str(), n);
-  std::printf("  read from the interpolants (no capture) %d, captured %d; with a diffuse fetch (phase 2) %d\n", interpolants, captured, with_diffuse);
+  std::printf("  read from the interpolants (no capture) %d, captured %d\n", interpolants, captured);
+  std::printf("  RT2: %d of the %d edited shaders have a DiffuseSampler texel for the albedo (%d read at the end of main, %d captured after the fetch); %d have none\n", with_diffuse, edited, with_diffuse - albedo_captured,
+              albedo_captured, edited - with_diffuse);
+  for (const auto& [why, n] : no_albedo_why) std::printf("  no albedo: %3d  %s\n", n, why.c_str());
+  for (const std::string& name : no_albedo_names) std::printf("      no albedo: %s\n", name.c_str());
   for (const auto& [why, n] : by_reason) std::printf("  left out: %3d  %s\n", n, why.c_str());
   std::printf("  %d texts are the game's with lines added; %d composed with the headlight; %d normals cross-checked with the other anchors\n", identical, composed, cross_checked);
+  {
+    std::printf("  RT3 class of the edited shaders (the table of GB-F1 by name; %d with no class):", unclassed);
+    for (const auto& [cls, n] : by_class) std::printf(" %d:%d", cls, n);
+    std::printf("\n");
+  }
   Check(identical == edited, "every edited shader's colour is the game's");
   // The census pinned: the retail game's numbers (shaderpack/baseline/hlsl-rpf of 2026-11-20). A game or translator that is not the retail one says so here.
   if (family.size() == 115) {
@@ -517,6 +652,56 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
         "xCityTunnelTile__PSMultiLight", "xCityTunnelTile__PSMultiLightInterior", "xPropFoliage__PSMultiLight", "xPropFoliageTrunk__PSMultiLight",
         "xPropFoliageTrunk__PSMultiLightInterior", "xglass_break__PSMultiLight", "xmc4_rmptfx_model__PSMultiLight"};
     Check(std::set<std::string>(left_names.begin(), left_names.end()) == want_left, "the shaders left out are the ones the census names");
+    // RT2 (GB-W1): 71 of the 100 edited shaders have a DiffuseSampler texel at its centre that yields x, y and z at the top level of main (51 of them capture it, the shader writes the register again);
+    // the 29 that have none are the ones with no diffuse (the traffic car body, the glass, the neon and lamp lens tints), another diffuse (the road and the tunnel road fetch it as two lanes: a
+    // luminance and something, the grass and the terrain splat three layers A, B, C by a channel map), or a tint of their own (the grime and the bump spec tints) -- GB-W1 follow ups
+    Check(with_diffuse == 71 && albedo_captured == 51, "the retail RT2 census: 71 shaders have the albedo (51 captured) (got " + std::to_string(with_diffuse) + " and " + std::to_string(albedo_captured) + ")");
+    const std::set<std::string> want_no_albedo = {
+        "xAmbientVehicle__PSMultiLight",
+        "xCityGrass__PSMultiLight",
+        "xCityGrass__PSMultiLightInterior",
+        "xCityGrimeMetalTint__PSMultiLight",
+        "xCityGrimeMetalTint__PSMultiLightInterior",
+        "xCityGrimeTintDecal__PSMultiLight",
+        "xCityGrimeTintDecal__PSMultiLightInterior",
+        "xCityGrimeTint__PSMultiLight",
+        "xCityGrimeTint__PSMultiLightInterior",
+        "xCityLampGlassTint__PSMultiLight",
+        "xCityLampGlassTint__PSMultiLightInterior",
+        "xCityNeonTint__PSMultiLight",
+        "xCityNeonTint__PSMultiLightInterior",
+        "xCityRoad__PSMultiLight",
+        "xCityRoad__PSMultiLightEnv",
+        "xCityRoad__PSMultiLightInterior",
+        "xCityTerrain__PSMultiLight",
+        "xCityTerrain__PSMultiLightInterior",
+        "xCityTunnelRoad__PSMultiLight",
+        "xCityTunnelRoad__PSMultiLightEnv",
+        "xCityTunnelRoad__PSMultiLightInterior",
+        "xPropBumpSpecTint__PSMultiLight",
+        "xPropBumpSpecTint__PSMultiLightInterior",
+        "xPropGlass__PSMultiLight",
+        "xPropGlass__PSMultiLightInterior",
+        "xPropLampGlassTint__PSMultiLight",
+        "xPropLampGlassTint__PSMultiLightInterior",
+        "xPropNeonTint__PSMultiLight",
+        "xPropNeonTint__PSMultiLightInterior"};
+    Check(std::set<std::string>(no_albedo_names.begin(), no_albedo_names.end()) == want_no_albedo, "the shaders with no albedo are the ones the census names");
+    const std::map<std::string, std::string> want_lanes = {
+        {"xCityDefault__PSMultiLight", "r6.xzw"},
+        {"xCityDefault__PSMultiLightInterior", "r7.xzw"},
+        {"xCityBumpSpec__PSMultiLight", "r7.yzw"},
+        {"xCityBumpSpec__PSMultiLightEnv", "r2.xyz"},
+        {"xCityNormalMap__PSMultiLight", "r9.xyz"},
+        {"xCityNormalMap__PSMultiLightInterior", "r15.xzy"},
+        {"xPropDefault__PSMultiLight", "r6.yzw"},
+        {"xCityLOD__PSMultiLight", "r4.yzw"},
+        {"xCityGrime__PSMultiLight", "r7.xyw"},
+        {"xCityGrime__PSMultiLightEnv", "r2.xyz"},
+        {"xPropMetal__PSMultiLight", "r7.yzw"}};
+    for (const auto& [name, lanes] : want_lanes) {
+      Check(albedo_lanes.contains(name) && albedo_lanes[name] == lanes, name + ": the albedo is the fetch's lanes " + lanes + " (got " + (albedo_lanes.contains(name) ? albedo_lanes[name] : std::string("none")) + ")");
+    }
     Check(by_how["sun term"] == 89 && by_how["lamp sum"] == 8 && by_how["normalisation"] == 3, "the anchors: 89 sun terms, 8 lamp sums, 3 normalisations (got " + std::to_string(by_how["sun term"]) + ", " +
                                                                                                        std::to_string(by_how["lamp sum"]) + ", " + std::to_string(by_how["normalisation"]) + ")");
   }
@@ -527,6 +712,7 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
 int main(int argc, char** argv) {
   CheckAnchors();
   CheckTransform();
+  CheckAlbedoTransform();
   CheckIdentityCheck();
   CheckVariantDef();
   std::string helper;

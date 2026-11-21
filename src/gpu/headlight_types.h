@@ -15,6 +15,9 @@ namespace mcla::gpu {
 // little below the car's forward), `cos_outer` / `cos_inner` the cosines of the cone's outer and inner half angles, `range` the reach in metres, `color` the
 // light's colour already times the strength, the fade and the night factor (so a light that fades is a dimmer one), `car_key` a number that stays with a car from
 // frame to frame, `is_player` the player's car's.
+// THE LIGHT IS A CAR'S, not a lamp's: `pos` is the middle of the car's two headlamps and one term lights what the pair lights. `lamp_offset` is the vector from `pos`
+// to the car's right lamp (the left one is the opposite), in metres: the shadow maps are made from each lamp (local_shadow.h), so that a pole in front of the car casts
+// two shadows and a car's shadow has the half-lit band of one lamp. Zero: the rig does not know where the lamps are, and the light has one view (from `pos`).
 struct Headlight {
   float pos[3];
   float dir[3];
@@ -24,6 +27,7 @@ struct Headlight {
   float color[3];
   uint32_t car_key;
   bool is_player;
+  float lamp_offset[3];
 };
 
 struct HeadlightSet {

@@ -27,6 +27,10 @@
 //                                amount, 7 what it adds (version 8 of the variant; 2 is the ray traced reflection alone at full intensity)
 //   mcla_gpu_car_selfrefl_rt     auto | off: ray traced reflections of the car in its own paint where the device can (car_rt_refl.h);
 //                                the march of this file is the fallback and the other devices' version
+//   mcla_gpu_car_selfrefl_source a debug-only A/B of where the history pass takes the scene colour from: 0 (the default) the shared screen products' colour_post
+//                                where the frame has it at the picture's size (screen_shared.h: another effect made it), else the main colour target's planes
+//                                as before; 1 always the planes (the old path); 2 as 0 and this effect asks for colour_post itself, so that the two paths can be
+//                                compared without a reflections effect. Both make the same bytes: the capture's arithmetic is the pass's own
 //   mcla_gpu_car_selfrefl_length / _thickness / _strength / _steps / _gain    the tuning of the ray (car_selfrefl_rules.h)
 // With the setting off the game's paint draws, bit for bit: the variant is not chosen (pipelines.cpp WantedFeatures asks
 // Selected()), and no history is made. The compare key (a developer tool, effect_compare.h) flips the setting like the others.
@@ -50,7 +54,8 @@
 // on (it is given back after 2 s without it).
 //
 // THE NUMBERS: the history's own camera (the view-projection of the frame it was made in, read from the game's motion blur
-// draw, the anchor, which comes after the trigger: ExtractCamera) and the vehicle's own motion (vehicle_motion.h: the game's
+// draw, the anchor, which comes after the trigger: since SS-1 the shared screen products read it, screen_shared.h Cameras(), and keep
+// the previous frame's with its lens test; this class asks) and the vehicle's own motion (vehicle_motion.h: the game's
 // c(69 + 4 ID) times the inverse of c69, taken at the last anchor and repeated for this frame as the ambient occlusion
 // does) make the one matrix a draw of the paint is given (CarSelfReflConstants::m): this frame's world position to the
 // history frame's clip space. The variant also tests that the shaded point finds itself in the history at the distance it
@@ -146,6 +151,7 @@ namespace mcla::gpu {
 class CarDump;
 class CarRtRefl;
 class PassTiming;
+class ScreenShared;  // screen_shared.h: the camera history and the colour_post capture this class reads (SS-1)
 
 class CarSelfRefl {
  public:
@@ -176,6 +182,9 @@ class CarSelfRefl {
   // The ray traced half (car_rt_refl.h): where its pass is wanted and can run it makes an image at the history trigger, right after the
   // history, that the paint variant (version 5) reads in place of the march. Null: the march everywhere.
   void SetCarRtRefl(CarRtRefl* rt) { rt_ = rt; }
+  // The shared screen products (screen_shared.h, SS-1): the frames' cameras (the previous frame's lens and camera for the history, whether this frame's lens agrees) and the colour_post capture
+  // the history pass reads where the frame has it. Not owned; null: no camera, so no history. Render thread, before the first frame; the renderer's Shutdown stops this class first.
+  void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
   // True when the effect was on at the start and its pipelines were listed with the host precache (Initialize): what CarRtRefl asks to
   // list its own pipeline the same way.
   bool ListedAtStart() const { return listed_; }
@@ -220,9 +229,14 @@ class CarSelfRefl {
   };
   static_assert(sizeof(Push) == 64 && sizeof(Push) == HostPasses::kPushConstantBytes);
 
-  enum Pass : uint32_t { kPassPlain, kPassMs, kPassCount };
+  // The history pass's compilations (host_shaders.h CarHistoryPixelShader, hlsl/car_history_ps.hlsl CAR_HISTORY_MS): from plain planes, from multisampled planes, and from multisampled depth and
+  // stencil planes with the colour taken from the shared colour_post.
+  enum Pass : uint32_t { kPassPlain, kPassMs, kPassMsShared, kPassCount };
+  static const char* PassName(uint32_t pass);
 
   bool IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
+  // The shared colour_post when this frame's history pass may read it (the source setting allows, the frame has it, and it is the picture's size: pixel for pixel the pass's own colour); else null.
+  const HostImage* SharedColour(uint32_t render_width, uint32_t render_height) const;
   EdramTargets::Target* ColourTarget(const EdramKey& key, plume::RenderCommandList* list);
   bool RecordHistory(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
   plume::RenderPipeline* Pipeline(uint32_t pass);
@@ -238,6 +252,7 @@ class CarSelfRefl {
 
   // Settings, read at the frame's start.
   Mode mode_ = Mode::kOff;
+  int source_ = 0;  // mcla_gpu_car_selfrefl_source
   car_selfrefl::Tuning tuning_;
   uint32_t off_frames_ = 0;
 
@@ -252,13 +267,10 @@ class CarSelfRefl {
   uint32_t frame_paint_draws_ = 0;  // draws of the paint through the variant so far this frame (the car is on the screen)
   bool history_pending_ = false;  // the pass was recorded this frame; the anchor says whose camera it goes with
 
-  // The camera of the last anchor (the previous frame's, for this frame's trigger), the kind of view it was of, and the lens
-  // the history was linearised with.
-  temporal::Camera previous_;
-  bool previous_pause_ = false;
-  bool have_previous_ = false;
-  uint64_t previous_frame_ = 0;
-  temporal::Camera lens_used_;
+  // The camera the trigger worked with: the previous frame's anchor camera, from the shared screen products' camera history (Previous), copied when the history pass is recorded. Its lens
+  // linearised the history's depth; whether this frame's own anchor agrees with it is the owner's LensAgrees.
+  temporal::Camera trigger_camera_;
+  ScreenShared* screen_ = nullptr;
   // The world the frame's trigger was in (menu_world.h): by the previous frame's camera of the same kind of view.
   menu_world::World trigger_world_ = menu_world::World::kNone;
 
@@ -301,6 +313,7 @@ class CarSelfRefl {
   bool pause_paint_logged_ = false;
   uint32_t image_for_[2] = {};
   uint64_t passes_run_ = 0;
+  uint64_t passes_shared_ = 0;  // ... of them with the colour read from the shared colour_post
   uint64_t triggers_ = 0;
   uint64_t no_camera_ = 0;
   uint64_t lens_changed_ = 0;

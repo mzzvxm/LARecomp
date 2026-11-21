@@ -236,8 +236,10 @@ inline Quat QuatFromBasis(Vec3 right, Vec3 up, Vec3 forward) {
 // SV_Target3 RT3, as many as kStagePlanes says. A pipeline whose pixel shader is a G-buffer word has to carry exactly those targets (a target the shader does not write
 // holds undefined values when its write mask is not 0; an output the pipeline has no target for is a pipeline that does not build), so a draw that carries the sidecar
 // carries ALL the stage's planes, and what a frame asks for decides only which of them hold data (GBufferConstants::mode) and which the frame publishes (valid). The
-// package that makes the stage declare RT2 and RT3 sets this to 7 in the same commit.
-inline constexpr uint32_t kStagePlanes = PlaneBit(kPlaneNormal);
+// package that makes the stage declare RT2 and RT3 sets this to 7 in the same commit. GB-W1 made the stage declare RT2 (the albedo and the lit weight: shaderpack/variants/
+// gbuffer_albedo.h), GB-W2 RT3 (the smoothness, the class and the flags: shaderpack/variants/gbuffer_material_plane.h): all three planes, 7. The car stage (GB-G1,
+// shaderpack/variants/gbuffer_cars.h) takes its plane count from this constant, so it declares and writes RT3 from the same commit on.
+inline constexpr uint32_t kStagePlanes = PlaneBit(kPlaneNormal) | PlaneBit(kPlaneAlbedo) | PlaneBit(kPlaneMaterial);
 // The planes of a stage are consecutive from RT1 (the outputs' numbers are the planes'): 1, 3 or 7.
 constexpr bool IsPlanePrefix(uint32_t planes) { return planes != 0 && planes <= kAllPlanes && (planes & (planes + 1)) == 0; }
 static_assert(IsPlanePrefix(kStagePlanes), "the stage's planes are RT1, then RT2, then RT3");
@@ -311,8 +313,14 @@ constexpr bool SidecarAffordable(uint32_t planes, uint32_t width, uint32_t heigh
 // target has a write mask of its own: Vulkan has it (Plume enables every feature the device has, among them independentBlend, and fills colorWriteMask and the blend
 // state per attachment). Plume's D3D12 back end builds the pipeline state from RenderTarget[0] alone (IndependentBlendEnable is never set, plume_d3d12.cpp), so there
 // RT1 would take RT0's mask and blend, and such a draw, whose pixel shader writes no SV_Target1, would put undefined values into the normal plane. The fix is Plume
-// 5d60b70 (fix/d3d12-independent-blend, its own PR to mzzvxm/plume); flip this when the pin has it. Until then on D3D12 only the draws that write the sidecar bind it, and
-// the pixels of the others keep what an earlier draw of the window wrote there (see Why and PlaneMode: that is the one inexactness of the writers only way).
+// 5d60b70 (fix/d3d12-independent-blend, its own PR to mzzvxm/plume: PR #15, open, NOT in the pin 502978a9); flip this when the pin has it. Until then on D3D12 only the draws that
+// write the sidecar bind it, and the pixels of the others keep what an earlier draw of the window wrote there (see Why and PlaneMode: that is the one inexactness of the writers only way).
+//
+// WHAT THAT MEANS FOR THE THREE PLANES (GB-W2: RT3 is the stage's third plane): with one blend state, every sidecar target takes RT0's blend and RT0's write mask, so (1) a writer is
+// carried only when RT0's mask holds every channel any plane has (ChannelsNeeded: the albedo's alpha, the lit weight, makes it 0xF; RT3's R and G add nothing to that), the draws
+// with an RGB mask are left to the game's own shader (Why::kMaskedNarrowMask) and keep the planes' old data under them; (2) the draws that must not write the sidecar (blended glass, a
+// shader with no variant) cannot bind it at all. With #15 each plane has its own mask (BlendFor(mode, plane): RT1 and RT3 R and G, RT2 R, G, B and A), the narrow mask rule goes away
+// and the clears and masks work as on Vulkan: the kMaskedNarrowMask count falls to 0 and `attach=auto` carries the non writers.
 // CHECK: Vulkan's per target blend states with the clear (ZERO / ZERO) and the mask (write mask 0) on a pixel shader that writes no output at that slot, and D3D12's with the fix: not run.
 inline constexpr bool kD3d12PerTargetBlend = false;
 struct Caps {
@@ -398,6 +406,38 @@ constexpr const char* ConsumerName(Consumer consumer) {
     case Consumer::kCount: break;
   }
   return "?";
+}
+// THE AUTO POLICY (GB-J): mcla_gpu_gbuffer = auto, the default, and HIDDEN (the setting is debug-only: no pause menu row, no launcher row). The G-buffer exists only while a consumer
+// that is ON wants a plane; with every consumer off no image is made, no draw of the game changes and the cost is nothing. What each consumer asks for while it is on:
+//   the occlusion's normals     RT1 (the occlusion, the contact shadows or the bounce light on, AND mcla_gpu_ao_gbuffer_normals on: off by default since 2026-11-20)
+//   the light pass              RT1 + RT2 + RT3 (mcla_gpu_local_lights: a debug row on the hidden DEBUG menu; there is no LOCAL LIGHTS row for players)
+//   reflections on surfaces     RT1 + RT2 + RT3 (the resolved mcla_gpu_ssr level is high or ultra: the row REFLECTIONS ON SURFACES)
+//   decals                      none yet
+// The consumers' own GBuffer::Want calls use ConsumerPlanes (the ones that cannot: the occlusion's, whose helper in ao_gbuffer.h is checked against this table by ao_gbuffer_test);
+// AutoPlanes is the same rule as a pure function of the consumers' states (what the plan's `requested` is under `auto`), which the tests read.
+constexpr uint32_t ConsumerPlanes(Consumer consumer) {
+  switch (consumer) {
+    case Consumer::kAmbientOcclusion: return PlaneBit(kPlaneNormal);
+    case Consumer::kBounceLight: return PlaneBit(kPlaneNormal);
+    case Consumer::kLocalLights: return kAllPlanes;
+    case Consumer::kReflections: return kAllPlanes;
+    case Consumer::kDecals:
+    case Consumer::kCount: break;
+  }
+  return 0;
+}
+// Which consumers are on (the occlusion's and the bounce light's flags already include mcla_gpu_ao_gbuffer_normals).
+struct ConsumerStates {
+  bool occlusion_normals = false;
+  bool bounce_normals = false;
+  bool light_pass = false;
+  bool reflections = false;
+  bool decals = false;
+};
+constexpr uint32_t AutoPlanes(const ConsumerStates& on) {
+  return (on.occlusion_normals ? ConsumerPlanes(Consumer::kAmbientOcclusion) : 0u) | (on.bounce_normals ? ConsumerPlanes(Consumer::kBounceLight) : 0u) |
+         (on.light_pass ? ConsumerPlanes(Consumer::kLocalLights) : 0u) | (on.reflections ? ConsumerPlanes(Consumer::kReflections) : 0u) |
+         (on.decals ? ConsumerPlanes(Consumer::kDecals) : 0u);
 }
 class Wants {
  public:
@@ -514,6 +554,15 @@ constexpr PlaneBlend BlendFor(PlaneMode mode) {
   PlaneBlend blend;
   if (mode == PlaneMode::kClear) blend.zero = true;
   if (mode == PlaneMode::kMask) blend.write_mask = 0;
+  return blend;
+}
+// The same for one plane's colour slot, with the write mask of the plane's own channels (the normal R and G, the albedo and the lit weight R, G, B and A, the material R and G) instead of
+// all four: where each target has a blend state of its own (Vulkan; D3D12 once its pin has Plume #15) the pipeline then writes exactly the channels the plane has, and a draw that clears
+// or masks the sidecar touches nothing else. Where the back end has one blend state for every target (D3D12 today) the slots' own masks are not read: RT0's is the sidecar's too, and
+// Decide keeps a writer from being carried when it lacks a channel the planes need (ChannelsNeeded: the union, the albedo's A makes it 0xF whether or not RT3 is there).
+constexpr PlaneBlend BlendFor(PlaneMode mode, Plane plane) {
+  PlaneBlend blend = BlendFor(mode);
+  if (blend.write_mask != 0) blend.write_mask = uint8_t(ChannelMaskOf(kPlaneFormats[plane]));
   return blend;
 }
 

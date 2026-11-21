@@ -17,7 +17,8 @@
 // a depth atlas (D32 float + S8, a bindless slot whose view is the depth plane as one float), at the first point of the frame, BEFORE the volume's passes
 // (Scene::OnResolve: car shadow, headlight replay, occlusion, sun shafts, volumetric light), so the volume reads THIS frame's maps. What it hands over:
 //   LocalShadow::AtlasInfo()  {valid, slot, width, height, tile}: the atlas as a bindless texture and its size in texels
-//   LocalShadow::Frame()      LocalShadowFrame {views[4], count}: one LocalShadowView per LAMP (a car's two lamps share a matrix and a tile): world_to_shadow
+//   LocalShadow::Frame()      LocalShadowFrame {views[8], count}: one LocalShadowView per LAMP (a car has two, one for each headlamp, each with its own tile; the
+//                             light's share is the mean of its two: VolLamp::shadow_view and shadow_view_b; a car with one view has one): world_to_shadow
 //                             (column vectors, row-major: o = M (p, 1); the atlas uv is o.xy / o.w and the depth o.z / o.w), atlas_rect = u0 v0 u1 v1 (the tile's
 //                             far corner, NOT its size: the comment of volumetrics_types.h VolShadowView says "u offset, v offset, u size, v size", which is the replay
 //                             rules' internal form; the published one is the corner and the shaders of both consumers read it so), depth_bias, texel_size (a share
@@ -84,6 +85,40 @@ inline bool UsableView(const VolShadowView& v) {
   return r[0] < r[2] && r[1] < r[3] && std::isfinite(v.depth_bias) && v.depth_bias >= 0.0f && v.depth_bias < 0.5f && std::isfinite(v.texel_size);
 }
 
+// The tail of FillShadows, on its own so that the light manager's projection (light_project.h, LU-4b) ends the same way: the views that cannot be read are dropped (valid 0) and the
+// lights that named them are lit; a light whose only readable view is its second reads it as its first; when not one light reads a view the table and the atlas slot are given up.
+inline void DropUnusableViews(VolInputs* out) {
+  for (uint32_t i = 0; i < out->shadow_view_count; ++i) {
+    if (UsableView(out->shadow_views[i])) {
+      continue;
+    }
+    out->shadow_views[i].valid = 0;
+    for (uint32_t j = 0; j < out->headlight_count; ++j) {
+      if (out->headlights[j].shadow_view == int32_t(i)) {
+        out->headlights[j].shadow_view = -1;
+      }
+      if (out->headlights[j].shadow_view_b == int32_t(i)) {
+        out->headlights[j].shadow_view_b = -1;
+      }
+    }
+  }
+  bool any = false;
+  for (uint32_t j = 0; j < out->headlight_count; ++j) {
+    VolLamp& light = out->headlights[j];
+    if (light.shadow_view < 0 && light.shadow_view_b >= 0) {
+      // Only the car's second lamp has a view that can be read: it is the light's one.
+      light.shadow_view = light.shadow_view_b;
+      light.shadow_view_b = -1;
+    }
+    any = any || light.shadow_view >= 0;
+  }
+  if (!any) {
+    // Not one light reads a view: nothing to bind (the shader's flag stays off and the atlas is not touched).
+    out->shadow_view_count = 0;
+    out->shadow_atlas_slot = kNoSlot;
+  }
+}
+
 // The frame's LocalShadowFrame and the atlas into `out`: FillShadowViews (volumetrics_types.h) first, then the views that cannot be read are dropped and
 // the lights that named them are lit (a light with no usable view takes no lookup). The headlights must be in `out` already. `frame` null, an atlas that
 // is not valid, or no slot: no shadows at all.
@@ -94,26 +129,7 @@ void FillShadows(const LocalShadowFrameT* frame, const ShadowAtlasState& atlas, 
   if (!usable) {
     return;
   }
-  for (uint32_t i = 0; i < out->shadow_view_count; ++i) {
-    if (UsableView(out->shadow_views[i])) {
-      continue;
-    }
-    out->shadow_views[i].valid = 0;
-    for (uint32_t j = 0; j < out->headlight_count; ++j) {
-      if (out->headlights[j].shadow_view == int32_t(i)) {
-        out->headlights[j].shadow_view = -1;
-      }
-    }
-  }
-  bool any = false;
-  for (uint32_t j = 0; j < out->headlight_count; ++j) {
-    any = any || out->headlights[j].shadow_view >= 0;
-  }
-  if (!any) {
-    // Not one light reads a view: nothing to bind (the shader's flag stays off and the atlas is not touched).
-    out->shadow_view_count = 0;
-    out->shadow_atlas_slot = kNoSlot;
-  }
+  DropUnusableViews(out);
 }
 
 }  // namespace mcla::gpu::volumetrics

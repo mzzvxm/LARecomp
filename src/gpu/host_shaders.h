@@ -47,6 +47,7 @@
 #include "ao_temporal_ms_ps.hlsl.dxil.h"
 #include "ao_temporal_ps.hlsl.dxil.h"
 #include "car_history_ms_ps.hlsl.dxil.h"
+#include "car_history_ms_shared_ps.hlsl.dxil.h"
 #include "car_history_ps.hlsl.dxil.h"
 #include "car_rt_ao_cs.hlsl.dxil.h"
 #include "city_rt_shadow_cs.hlsl.dxil.h"
@@ -71,6 +72,8 @@
 #include "hdr_compose_ps.hlsl.dxil.h"
 #include "layers_resolve_ps.hlsl.dxil.h"
 #include "layers_restore_ps.hlsl.dxil.h"
+#include "local_light_ms_ps.hlsl.dxil.h"
+#include "local_light_ps.hlsl.dxil.h"
 #include "overlay_hdr_ps.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
 #include "overlay_vs.hlsl.dxil.h"
@@ -93,6 +96,16 @@
 #include "resolve_memory_depth_ms_cs.hlsl.dxil.h"
 #include "resolve_memory_ps.hlsl.dxil.h"
 #include "resolve_memory_vertex_cs.hlsl.dxil.h"
+#include "screen_colour_mip_ps.hlsl.dxil.h"
+#include "screen_colour_ms_ps.hlsl.dxil.h"
+#include "screen_colour_ps.hlsl.dxil.h"
+#include "screen_hiz_ps.hlsl.dxil.h"
+#include "screen_view_ps.hlsl.dxil.h"
+#include "ssr_apply_ms_ps.hlsl.dxil.h"
+#include "ssr_apply_ps.hlsl.dxil.h"
+#include "ssr_temporal_ps.hlsl.dxil.h"
+#include "ssr_trace_ms_ps.hlsl.dxil.h"
+#include "ssr_trace_ps.hlsl.dxil.h"
 #include "shafts_add_ps.hlsl.dxil.h"
 #include "shafts_blur_ps.hlsl.dxil.h"
 #include "shafts_sky_ms_ps.hlsl.dxil.h"
@@ -141,6 +154,7 @@
 #include "ao_temporal_ms_ps.hlsl.spirv.h"
 #include "ao_temporal_ps.hlsl.spirv.h"
 #include "car_history_ms_ps.hlsl.spirv.h"
+#include "car_history_ms_shared_ps.hlsl.spirv.h"
 #include "car_history_ps.hlsl.spirv.h"
 #include "car_rt_ao_cs.hlsl.spirv.h"
 #include "city_rt_shadow_cs.hlsl.spirv.h"
@@ -165,6 +179,8 @@
 #include "hdr_compose_ps.hlsl.spirv.h"
 #include "layers_resolve_ps.hlsl.spirv.h"
 #include "layers_restore_ps.hlsl.spirv.h"
+#include "local_light_ms_ps.hlsl.spirv.h"
+#include "local_light_ps.hlsl.spirv.h"
 #include "overlay_hdr_ps.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
 #include "overlay_vs.hlsl.spirv.h"
@@ -187,6 +203,16 @@
 #include "resolve_memory_depth_ms_cs.hlsl.spirv.h"
 #include "resolve_memory_ps.hlsl.spirv.h"
 #include "resolve_memory_vertex_cs.hlsl.spirv.h"
+#include "screen_colour_mip_ps.hlsl.spirv.h"
+#include "screen_colour_ms_ps.hlsl.spirv.h"
+#include "screen_colour_ps.hlsl.spirv.h"
+#include "screen_hiz_ps.hlsl.spirv.h"
+#include "screen_view_ps.hlsl.spirv.h"
+#include "ssr_apply_ms_ps.hlsl.spirv.h"
+#include "ssr_apply_ps.hlsl.spirv.h"
+#include "ssr_temporal_ps.hlsl.spirv.h"
+#include "ssr_trace_ms_ps.hlsl.spirv.h"
+#include "ssr_trace_ps.hlsl.spirv.h"
 #include "shafts_add_ps.hlsl.spirv.h"
 #include "shafts_blur_ps.hlsl.spirv.h"
 #include "shafts_sky_ms_ps.hlsl.spirv.h"
@@ -276,6 +302,41 @@ inline HostShaderBlob FullscreenVertexShader() {
 // The G-buffer's debug view (gbuffer.h): the planes with one sample, or the host's MSAA level.
 inline HostShaderBlob GBufferViewPixelShader(bool multisampled) {
   return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ps);
+}
+
+// The deferred local light pass (local_lights.h, hlsl/local_light_ps.hlsl): planes and depth with one sample, or the host's MSAA level.
+inline HostShaderBlob LocalLightPixelShader(bool multisampled) {
+  return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(local_light_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(local_light_ps);
+}
+
+// The shared screen products (screen_shared.h): one level of the Hi-Z chain, and the debug view of the products.
+inline HostShaderBlob ScreenHizPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(screen_hiz_ps);
+}
+
+inline HostShaderBlob ScreenViewPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(screen_view_ps);
+}
+
+// The shared screen products' colour capture (screen_shared.h CapturePost, hlsl/screen_colour_ps.hlsl): 0 level 0 from a plain colour target, 1 from a multisampled one, 2 a mip level.
+inline HostShaderBlob ScreenColourPixelShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(screen_colour_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(screen_colour_ms_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(screen_colour_mip_ps);
+  }
+}
+
+// The screen-space reflections (ssr.h, hlsl/ssr_*_ps.hlsl): 0 the trace, 1 the trace over multisampled planes, 2 the accumulation, 3 the resolve into the main colour, 4 the same over a multisampled colour
+// target and planes.
+inline HostShaderBlob ScreenReflectionsPixelShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ms_ps);
+    case 2: return MCLA_GPU_HOST_SHADER_BLOB(ssr_temporal_ps);
+    case 3: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);
+  }
 }
 
 inline HostShaderBlob PresentPixelShader() {
@@ -470,9 +531,13 @@ inline HostShaderBlob SunShaftsPixelShader(uint32_t pass) {
 }
 
 // The car self-reflection history pass (car_selfrefl.h, hlsl/car_history_ps.hlsl), numbered as CarSelfRefl::Pass: 0 from plain
-// planes, 1 from multisampled planes.
+// planes, 1 from multisampled planes, 2 from multisampled depth and stencil planes with the colour taken from the shared screen products' colour_post.
 inline HostShaderBlob CarHistoryPixelShader(uint32_t pass) {
-  return pass == 0 ? MCLA_GPU_HOST_SHADER_BLOB(car_history_ps) : MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_ps);
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(car_history_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_shared_ps);
+  }
 }
 
 // The player's car as ray tracing structures (car_rt_scene.h): the check pass, a compute shader with inline ray queries (Shader Model 6.5,

@@ -25,11 +25,12 @@ namespace {
 // The constants are declared by the edits below it: g_HlHeader x = the light count, y = 0 (reserved), z = 0, w = 0; g_HlCamera xyz = the camera's world
 // position; g_HlBoundsLo / g_HlBoundsHi = the box every light reaches; g_HlLight(3 i + 0) = position xyz and reach, (3 i + 1) = the axis xyz and the
 // cosine of the outer half angle, (3 i + 2) = the colour rgb (times the strength and the fade) and the cosine of the inner half angle;
-// g_HlShadowOf = the shadow view of each of the four lights (0xFFFFFFFF: none); g_HlAtlas.x / .y = the atlas texture's and its sampler's bindless slots
+// g_HlShadowOf = the first shadow view of each of the four lights and g_HlShadowOfB the second (0xFFFFFFFF: none): a light is a car's, and a car with its two
+// headlamps apart has a view for each, the light's share is the mean of the two; g_HlAtlas.x / .y = the atlas texture's and its sampler's bindless slots
 // (0xFFFFFFFF: none, every light is lit); g_HlShadow(6 v + 0..3) = the view's world_to_shadow rows, + 4 = its atlas rectangle (u0 v0 u1 v1), + 5 = the
-// depth bias and the texel size as a share of the tile (src/gpu/local_shadow_types.h LocalShadowView).
+// depth bias and the texel size as a share of the tile (src/gpu/local_shadow_types.h LocalShadowView), for up to eight views.
 constexpr std::string_view kHelper = R"HLSL(// LARecomp variant headlight (src/shaderpack/variants/headlight.cpp): the cars' headlights as spot lights, one more term of the sum the shader multiplies
-// by the surface. 672 bytes after the shared constants (src/gpu/headlight_rig.h HeadlightConstants).
+// by the surface. 1072 bytes after the shared constants (src/gpu/headlight_rig.h HeadlightConstants).
 static const float kHlPeak = 2.0;
 static const float kHlFalloffDistance = 26.0;
 static const float kHlSurfaceWrap = 0.45;
@@ -113,6 +114,7 @@ float4 HeadlightLight(float3 world)
     if (dot(normal, g_HlCamera.xyz - world) < 0.0)
         normal = -normal;
     uint4 shadowOf = g_HlShadowOf;
+    uint4 shadowOfB = g_HlShadowOfB;
     uint4 atlas = g_HlAtlas;
     float3 sum = float3(0.0, 0.0, 0.0);
     [loop]
@@ -140,9 +142,27 @@ float4 HeadlightLight(float3 world)
         float cutoff = 1.0 - smoothstep(kHlCutLow, kHlCutHigh, -l.y);  // a low beam: nothing a little above the lamp
         float nearFade = saturate((dist - kHlNearStart) * (1.0 / kHlNearSpan));
         float scale = kHlPeak * cone * falloff * window * surface * cutoff * nearFade;
-        uint view = shadowOf[i];
-        if (view != kHlNoView && atlas.x != 0xFFFFFFFFu)
-            scale *= HeadlightShadow(view, world);
+        // The car's light is one term and its two headlamps each see the point or not: the share of the light is the mean of the views' (a pole that both lamps light
+        // has two shadows, each half as dark where only one lamp is blocked). A light with one view takes that view's; no lookup for a term that is zero already.
+        if (scale > 0.0 && atlas.x != 0xFFFFFFFFu)
+        {
+            uint viewA = shadowOf[i];
+            uint viewB = shadowOfB[i];
+            float seen = 0.0;
+            float views = 0.0;
+            if (viewA != kHlNoView)
+            {
+                seen += HeadlightShadow(viewA, world);
+                views += 1.0;
+            }
+            if (viewB != kHlNoView)
+            {
+                seen += HeadlightShadow(viewB, world);
+                views += 1.0;
+            }
+            if (views > 0.0)
+                scale *= seen / views;
+        }
         sum += c.rgb * scale;
     }
     return float4(sum, 0.0);
@@ -439,14 +459,14 @@ VariantTransformResult TransformHeadlightHlsl(const VariantShader& shader, std::
                    &error)) {
     return Failed(shader, std::move(error));
   }
-  // The block of constants (672 bytes: src/gpu/headlight_rig.h HeadlightConstants), declared at the place the chain gives it: byte 608 alone, after the blocks of
+  // The block of constants (1072 bytes: src/gpu/headlight_rig.h HeadlightConstants), declared at the place the chain gives it: byte 608 alone, after the blocks of
   // the stages before it in a composition (the headlight is applied before the G-buffer's: variant_chain.h).
   static constexpr ConstantMember kMembers[] = {
       {"float4", "g_HlHeader"}, {"float4", "g_HlCamera"}, {"float4", "g_HlBoundsLo"}, {"float4", "g_HlBoundsHi"},
       {"float4", "g_HlLights", 12, "g_HlLight(INDEX)"},
-      {"uint4", "g_HlShadowOf"}, {"uint4", "g_HlAtlas"},
-      {"float4", "g_HlShadowArr", 24, "g_HlShadow(INDEX)"}};  // 64 + 192 + 32 + 384 = 672, the table's constants_bytes
-  if (!DeclareConstants(text, ctx, "Headlight variant (src/gpu/headlight_rig.h HeadlightConstants): 672 bytes after the 608.", kMembers, &error)) {
+      {"uint4", "g_HlShadowOf"}, {"uint4", "g_HlShadowOfB"}, {"uint4", "g_HlAtlas"},
+      {"float4", "g_HlShadowArr", 48, "g_HlShadow(INDEX)"}};  // 64 + 192 + 48 + 768 = 1072, the table's constants_bytes
+  if (!DeclareConstants(text, ctx, "Headlight variant (src/gpu/headlight_rig.h HeadlightConstants): 1072 bytes after the 608.", kMembers, &error)) {
     return Failed(shader, std::move(error));
   }
   if (!ReplaceOnce(text, kMain, 0, 6, "pixel shader main",

@@ -336,6 +336,12 @@ class TextureCache {
   // Takes the write notifications of textures and resolve products.
   void Sync();
   uint64_t epoch() const { return epoch_; }
+
+  // The content hash of the base level of the 2D texture `key`: XXH3-64 of its guest storage, the number the texture dumps (`<name>__<hash>.dds`) and the texture mods name a texture
+  // by. Taken once per texture and again when the guest writes it (the entry's version), only for a texture the cache holds (the draws that read it have bound it) and watches (a
+  // texture that is hashed every frame, a render target's contents, has none). 0 when the cache has no such entry yet (the texture's first draw is being prepared), no base level, or
+  // the memory cannot be read. Render thread. The G-buffer's per-texture materials (gbuffer_materials.h) key unnamed textures, most of the city's, by it.
+  uint64_t ContentHashOf(const TextureKey& key);
   // Every memoized binding goes.
   void BumpEpoch() { ++epoch_; }
 
@@ -435,6 +441,8 @@ class TextureCache {
     Mode mode = Mode::kWatched;
     bool armed = false;
     uint64_t version = 1;           // bumped by write notifications
+    uint64_t content_hash = 0;      // ContentHashOf: the base level's XXH3-64 as of content_version
+    uint64_t content_version = 0;   // the `version` it was taken at (0: not taken)
     uint64_t uploaded_version = 0;  // 0 = never uploaded
     uint64_t uploaded_hash = 0;     // hashed mode: the guest bytes uploaded
     uint64_t last_frame = 0;

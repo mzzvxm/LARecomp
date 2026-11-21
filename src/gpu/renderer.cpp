@@ -176,6 +176,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     vol_inputs_.SetLocalShadow(&local_shadow_);  // and the headlights are shadowed by the replay's maps (local_shadow.h)
 #endif
     gbuffer_.Initialize(passes_, edram_, pass_timing_);  // and the G-buffer's sidecar (gbuffer.h): made on the first draw that carries it
+    screen_.Initialize(passes_, edram_, pass_timing_);  // and the shared screen products (screen_shared.h): the AO's depth chain published, the Hi-Z, made only while wanted
+    ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_);  // and the screen-space reflections (ssr.h): the layout and the shaders, the pipelines only when the setting is on
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);
@@ -186,6 +188,23 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
     // The headlight shadow maps (local_shadow.h): a second pass over the main view's opaque draws from the cars' lamps; makes nothing until a draw is seen.
     local_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, upload_, shaders_, guest_layout_);
+    // The one shadow atlas (shadow_atlas.h): the replay is its first provider and the light manager reads its published form; both use it only with mcla_gpu_light_frame bit 8 (LU-5).
+    shadow_atlas_.Initialize(device_, frames_, heap_);
+    local_shadow_.SetShadowAtlas(&shadow_atlas_);
+    light_manager_.SetShadowAtlas(&shadow_atlas_);
+    // The passive light manager (light_manager.h): off unless mcla_gpu_lights_census is set; it reads the rig's lights, the replay's maps and the volume's inputs and changes none of them.
+    light_manager_.Initialize(upload_, headlights_, local_shadow_);
+    // The one picker of the lights (light_pick.h, LIGHT-UNIFY U3): the rig's four lights and the cars that get shadow views are picked by the manager's picker (mcla_gpu_light_pick).
+    headlights_.SetLightPicker(&light_manager_.Pickers());
+    local_shadow_.SetLightPicker(&light_manager_.Pickers());
+    local_shadow_.SetLightManager(&light_manager_);  // the replay picks from the manager's frame of lights when mcla_gpu_light_frame bit 4 says so (LIGHT-UNIFY U4c)
+    vol_inputs_.SetLightManager(&light_manager_);
+    // The deferred local light pass (local_lights.h): makes nothing until mcla_gpu_local_lights is on; reads the G-buffer's planes, the shared products' camera, the AO's pose and the manager's frame.
+    local_lights_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
+    local_lights_.SetGBuffer(&gbuffer_);
+    local_lights_.SetScreenShared(&screen_);
+    local_lights_.SetAmbientOcclusion(&ao_);
+    local_lights_.SetLightManager(&light_manager_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
@@ -248,15 +267,24 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetAmbientOcclusion(&ao_);
     ao_.SetCarShadowMap(&car_shadow_);  // the contact shadows read the car shadow map (car_shadow_map.h)
     ao_.SetGBuffer(&gbuffer_);  // the occlusion, the bounce light and the contact shadows ask for the G-buffer's normal plane and read it (ao.h, GB-E)
+    ao_.SetScreenShared(&screen_);  // ... and hand their depth chain to the shared screen products (ao.h, screen_shared.h)
+    car_refl_.SetScreenShared(&screen_);  // ... and the car self-reflection reads the frames' cameras and the colour capture from them (car_selfrefl.h, SS-1)
     scene_.SetSunShafts(&shafts_);
     scene_.SetVolumetrics(&volumetrics_);
     scene_.SetGBuffer(&gbuffer_);
+    scene_.SetScreenShared(&screen_);
+    ssr_.SetScreenShared(&screen_);  // the reflections read the Hi-Z, colour_post and the camera of the shared products, the G-buffer's planes and the AO's camera (ssr.h)
+    ssr_.SetGBuffer(&gbuffer_);
+    ssr_.SetAmbientOcclusion(&ao_);
+    scene_.SetScreenReflections(&ssr_);
     scene_.SetCarSelfRefl(&car_refl_);
     scene_.SetCarDump(&car_dump_);
     scene_.SetCarFrame(&car_frame_);
     scene_.SetHeadlightRig(&headlights_);
     scene_.SetCarShadowMap(&car_shadow_);
     scene_.SetLocalShadow(&local_shadow_);
+    scene_.SetLightManager(&light_manager_);
+    scene_.SetLocalLights(&local_lights_);
     scene_.SetCarRtScene(&car_rt_);
     car_rt_.SetTextureCache(&textures_);  // the car ray tracing's materials ask it for the textures of the cars beside the player (TextureCache::Peek2D)
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
@@ -291,6 +319,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
     // The city's hit data pool (64 to 256 MiB) is not something the response can release (the structures built over it would be rebuilt): its line names it.
     vram_.AddHolder("city hit data", [this] { return city_hit_.HeldBytes(); });
+    // The headlight shadow maps' atlas (the replay's own or the shared one: local_shadow.h HeldBytes counts both) is memory the response cannot release either: the lines name it.
+    vram_.AddHolder("headlight shadow atlas", [this] { return local_shadow_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
@@ -318,10 +348,15 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     fg_.Shutdown();
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
+    ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+    local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
     ao_.Shutdown();
+    screen_.Shutdown();  // the AO holds a pointer to it: after the AO
     shafts_.Shutdown();
     volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
+    light_manager_.Shutdown();  // after the volume, whose inputs it looks at
     local_shadow_.Shutdown();
+    shadow_atlas_.Shutdown();  // after the replay, its provider
     gbuffer_.Shutdown();
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
@@ -498,10 +533,15 @@ void Renderer::Shutdown() {
   // Streamline itself is shut down (temporal_.Shutdown below).
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
+  ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+  local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
   ao_.Shutdown();
+  screen_.Shutdown();  // the AO holds a pointer to it: after the AO
   shafts_.Shutdown();
   volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
+  light_manager_.Shutdown();  // after the volume, whose inputs it looks at
   local_shadow_.Shutdown();
+  shadow_atlas_.Shutdown();  // after the replay, its provider
   gbuffer_.Shutdown();
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
@@ -1702,6 +1742,8 @@ void Renderer::ReportFrameStats() {
                            ", sun shafts " + mib(shafts_.HeldBytes()) +
                            (volumetrics_.HeldBytes() != 0 ? ", volumetric light " + mib(volumetrics_.HeldBytes()) : std::string()) +
                            (gbuffer_.HeldBytes() != 0 ? ", G-buffer " + mib(gbuffer_.HeldBytes()) : std::string()) +
+                           (screen_.HeldBytes() != 0 ? ", screen products " + mib(screen_.HeldBytes()) : std::string()) +
+                           (ssr_.HeldBytes() != 0 ? ", screen-space reflections " + mib(ssr_.HeldBytes()) : std::string()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())

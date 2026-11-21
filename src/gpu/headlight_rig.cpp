@@ -19,6 +19,7 @@
 #include "gpu_class.h"
 #include "guest_memory.h"
 #include "live_text.h"
+#include "mc_engine/cinematic/capture_mode.h"
 
 namespace mcla::gpu {
 
@@ -43,7 +44,8 @@ constexpr size_t kMaxCars = 32;
 constexpr uint64_t kDayProbeFrames = 30;
 // How old a headlight point of the game's may be and still count (ms): the hook notes a point every frame it is submitted.
 constexpr int kPointAgeMs = 150;
-// How far outside the screen a lamp may be and still count as on it (a share of the clip box).
+// How far outside the screen a lamp may be and still count as on it (a share of the clip box). The first version's rule (mcla_gpu_headlight_edge off): with the view's
+// frustum the tracker ranks a car by how much of its BEAM is in the view (light_influence.h) and this is not read.
 constexpr double kScreenMargin = 1.3;
 // Frames a vertex shader that could not be read is left alone before it is tried again (car_frame.cpp's number).
 constexpr uint32_t kRecipeRetryFrames = 300;
@@ -53,6 +55,8 @@ constexpr uint64_t kWorldSunKeepFrames = 600;
 // The frame being built, as the render thread last published it.
 HeadlightSet g_set;
 std::atomic<bool> g_selected{false};
+// GB-H2: the headlight route (headlight_pass_rules.h) as the rig last read the setting; the forward stage is `selected` only while the route keeps it.
+std::atomic<uint8_t> g_route{uint8_t(larecomp::gpu::headlight_pass::Route::kForward)};
 // The shadow views of the producer (SetLocalShadows), as a copy (the producer's frame changes in place), with the car key of each light of the set they were
 // made for: the set that reads them is the next frame's and can be another (headlight_rig_rules.h RemapShadowViews).
 larecomp::gpu::LocalShadowFrame g_shadow_frame;
@@ -67,15 +71,6 @@ LiveText& Setting() {
   return text;
 }
 
-// mcla_gpu_headlights with `auto` resolved for this graphics card (gpu_class.h: off on Low, on on Mid and High); a word that is no value counts as `auto`.
-bool SettingOn() {
-  std::string mode = gpu_class::Resolve(gpu_class::Effect::kHeadlights, Setting().Get());
-  if (mode != "on" && mode != "off") {
-    mode = std::string(gpu_class::Cell(gpu_class::Effect::kHeadlights, gpu_class::Current()));
-  }
-  return mode == "on";
-}
-
 double Distance(const double a[3], const double b[3]) {
   const double d[3] = {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
   return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
@@ -87,7 +82,19 @@ const HeadlightSet& CurrentHeadlights() { return g_set; }
 
 namespace headlight_rig {
 
-bool VariantSelected() { return g_selected.load(std::memory_order_relaxed); }
+bool VariantSelected() {
+  return g_selected.load(std::memory_order_relaxed) && larecomp::gpu::headlight_pass::ForwardStageOn(CurrentRoute());
+}
+
+larecomp::gpu::headlight_pass::Route CurrentRoute() { return larecomp::gpu::headlight_pass::Route(g_route.load(std::memory_order_relaxed)); }
+
+bool SettingOn() {
+  std::string mode = gpu_class::Resolve(gpu_class::Effect::kHeadlights, Setting().Get());
+  if (mode != "on" && mode != "off") {
+    mode = std::string(gpu_class::Cell(gpu_class::Effect::kHeadlights, gpu_class::Current()));
+  }
+  return mode == "on";
+}
 
 void SetLocalShadows(const larecomp::gpu::LocalShadowFrame* frame, uint32_t atlas_texture_slot, uint32_t atlas_sampler_slot) {
   g_shadow_frame = larecomp::gpu::LocalShadowFrame{};
@@ -151,12 +158,28 @@ void HeadlightRig::ClearPublished() {
 void HeadlightRig::ReadSettings() {
   namespace s = larecomp::settings;
   const bool was_enabled = enabled_;
-  enabled_ = memory_ != nullptr && SettingOn();
+  enabled_ = memory_ != nullptr && headlight_rig::SettingOn();  // mcla_gpu_headlights with `auto` resolved for this graphics card (gpu_class.h: off on Low, on on Mid and High); a word that is no value counts as `auto`
+  const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(s::mcla_gpu_headlight_pass.Get());
+  g_route.store(uint8_t(route), std::memory_order_relaxed);  // GB-H2: `pass` takes the forward stage away from the draws (VariantSelected); the rig still tracks, ranks and publishes the lights the pass and the volume read
   headlight_points::SetWanted(enabled_);
   strength_ = float(std::clamp(double(s::mcla_gpu_headlight_strength.Get()), 0.0, 8.0));
   range_ = float(std::clamp(double(s::mcla_gpu_headlight_range.Get()), 10.0, 200.0));
   outer_degrees_ = float(std::clamp(double(s::mcla_gpu_headlight_cone.Get()), 10.0, 70.0));
   night_override_ = int(s::mcla_gpu_headlight_night.Get());
+  edge_ = s::mcla_gpu_headlight_edge.Get();
+  tracker_.SetMode(light_pick::ParseMode(s::mcla_gpu_light_pick.Get()));  // the A/B of the one picker (light_pick.h): unified, or the tracker's own first code
+  if (light_picker_ != nullptr) {
+    light_picker_->NoteHeadlights(enabled_);  // the one budget (light_budget.h)
+  }
+  const std::string record_path = s::mcla_gpu_light_pick_record.Get();
+  if (record_path != record_path_) {
+    record_path_ = record_path;
+    record_file_.close();
+    if (!record_path.empty()) {
+      record_file_.open(record_path + ".rig.txt", std::ios::binary | std::ios::trunc);
+      REXLOG_INFO("{} recording the tracker's inputs to {}.rig.txt {} (mcla_gpu_light_pick_record; live)", kPrefix, record_path, record_file_.is_open() ? "" : "(the file could not be opened)");
+    }
+  }
   log_ = s::mcla_gpu_headlight_log.Get();
   if (was_enabled != enabled_ || !state_logged_) {
     state_logged_ = true;
@@ -257,14 +280,17 @@ bool HeadlightRig::LensCentre(const MainDraw& d, const car_dump::CarMatrices& m,
   }
   const DrawRecord& r = d.view->record();
   if (r.kind == DrawKind::kInline) {
+    ++lens_inline_;
     return true;
   }
   native_gfx::DeclarationElement element;
   if (!car_mesh::FindElement(*d.view, r, car_mesh::kUsagePosition, &element)) {
+    ++lens_no_element_;
     return true;
   }
   const car_mesh::StreamRef stream = car_mesh::ResolveStream(*d.view, r, element.stream);
   if (!stream.ok) {
+    ++lens_no_stream_;
     return true;
   }
   uint64_t key = car_frame_rules::Mix(uint64_t(stream.address), uint64_t(stream.size));
@@ -286,6 +312,12 @@ bool HeadlightRig::LensCentre(const MainDraw& d, const car_dump::CarMatrices& m,
     LensBox box;
     if (mesh_.problem == car_mesh::Problem::kNone) {
       box.valid = car_frame_rules::BoxOfMesh(mesh_.local.data(), mesh_.local.size() / 3, mesh_.tri.data(), mesh_.tri.size(), box.lo, box.hi);
+    }
+    // The census: a mesh whose box cannot be had puts its lens at the car's root, where it is left out (a car whose front lens cannot be read has no light).
+    if (box.valid) {
+      ++boxes_readable_;
+    } else {
+      ++boxes_unreadable_[std::min<size_t>(size_t(mesh_.problem), boxes_unreadable_.size() - 1)];
     }
     found = boxes_.emplace(key, box).first;
   }
@@ -374,7 +406,7 @@ void HeadlightRig::OnMainDraw(const MainDraw& d) {
 // the frame's end
 // ---------------------------------------------------------------------------
 
-void HeadlightRig::OnPresent() {
+void HeadlightRig::OnPresent(uint64_t scene_frame) {
   ++frame_;
   ++frames_;
   if (!enabled_) {
@@ -445,6 +477,9 @@ void HeadlightRig::OnPresent() {
       candidate.on_screen = clip[3] > 0.0 && std::fabs(clip[0]) <= kScreenMargin * clip[3] && std::fabs(clip[1]) <= kScreenMargin * clip[3];
     }
     tracker_.Observe(candidate);
+    if (record_file_.is_open()) {
+      record_.cars.push_back(candidate);  // what the tracker was given, for the recording
+    }
     ++lit;
   };
   for (size_t i = 0; i < lens_lamps.size(); ++i) {
@@ -474,7 +509,26 @@ void HeadlightRig::OnPresent() {
   last_cars_ = cars;
   last_cars_lit_ = lit;
   std::array<headlight_rules::Tracked, headlight_rules::kMaxLights> tracked{};
-  const size_t count = tracker_.EndFrame(frame_, &tracked);
+  // The frame's camera as a frustum (HL-EDGE-FADE): only when a lens draw gave it in THIS frame (the camera of an older frame is not where the lights are being looked at from),
+  // else the tracker has no view and a car the game did not draw fades out as it did.
+  light_influence::ViewFrustum frustum;
+  const bool have_view = edge_ && facts_read_ && projection_ok_ && camera_ok_ && light_influence::MakeViewFrustum(view_projection_.m, camera_, &frustum);
+  tracker_.SetBeam(double(range_), double(outer_degrees_));
+  const double now_s = mc::cinematic::SceneClockNowMs(scene_frame) * 1.0e-3;
+  if (record_file_.is_open()) {
+    record_.frame = frame_;
+    record_.now_s = now_s;
+    record_.has_view = have_view;
+    if (have_view) {
+      record_.frustum = frustum;
+    }
+    record_.beam_range = double(range_);
+    record_.beam_outer_degrees = double(outer_degrees_);
+    record_file_ << light_pick::record::FormatRig(record_);
+    record_.cars.clear();
+  }
+  const size_t count = tracker_.EndFrame(frame_, &tracked, have_view ? &frustum : nullptr, now_s);
+  last_view_ = have_view;
   Publish(tracked, count);
   if (night_ > 0.0) {
     ++night_frames_;
@@ -511,6 +565,8 @@ void HeadlightRig::Publish(const std::array<headlight_rules::Tracked, headlight_
       lamp.up[c] = t.up[c];
     }
     rules::BeamAxis(lamp, h.dir);
+    // The car's two headlamps, for the shadow views (local_shadow.h): half the pair's span across the car, from the game's two points or the lenses, else the default.
+    rules::LampOffset(t.forward, t.up, t.half_span, h.lamp_offset);
     for (int c = 0; c < 3; ++c) {
       h.pos[c] = float(t.position[c]);
       h.color[c] = rules::kColor[c] * scale;
@@ -560,6 +616,25 @@ const headlight_rules::HeadlightConstants& HeadlightRig::Block() {
   return block_;
 }
 
+uint32_t HeadlightRig::BoxesUnreadable() const {
+  uint32_t total = 0;
+  for (const uint32_t n : boxes_unreadable_) {
+    total += n;
+  }
+  return total;
+}
+
+std::string HeadlightRig::UnreadableReasons() const {
+  std::string out;
+  for (size_t i = 0; i < boxes_unreadable_.size(); ++i) {
+    if (boxes_unreadable_[i] != 0) {
+      // index 0 is kNone: a mesh that was read but holds no box (no triangles, a degenerate box)
+      out += std::format("{}{} {}", out.empty() ? "" : ", ", i == 0 ? "empty box" : car_mesh::ProblemName(car_mesh::Problem(i)), boxes_unreadable_[i]);
+    }
+  }
+  return out.empty() ? std::string("none") : out;
+}
+
 void HeadlightRig::Log(size_t picked) {
   if (frame_ - last_log_ < kLogFrames) {
     return;
@@ -572,14 +647,17 @@ void HeadlightRig::Log(size_t picked) {
                           h.car_key, h.pos[0], h.pos[1], h.pos[2], h.dir[0], h.dir[1], h.dir[2], h.color[0]);
   }
   REXLOG_INFO("{} frame {}: night {:.2f} (the {} sun {} at {:+.1f} degrees{}), {} lens draws in {} frames' windows (player's lens {}, traffic's {}, no vehicle ID {}, "
-              "no pose {}, left out: no bone palette {}, at the car's root {}), game's light points {} recent ({} lit, {} notes since the start), lens lamps with points {}, lamps from points alone {}, forward turned by the points {}, {} cars seen, {} with a front lens, {} lights ({}), {} variant draws ({} with the alpha test, {} more drew the game's own shader while the variant's "
-              "pipeline was being made), {} lens boxes kept",
+              "no pose {}, left out: no bone palette {}, at the car's root {}), game's light points {} recent ({} lit, {} notes since the start), lens lamps with points {}, lamps from points alone {}, forward turned by the points {}, {} cars seen, {} with a front lens, {} lights ({}; {} coasting after the game stopped drawing the car; the view {}), {} variant draws ({} with the alpha test, {} more drew the game's own shader while the variant's "
+              "pipeline was being made), {} lens boxes kept ({} meshes read since the start: {} readable, unreadable by reason [{}]; draws with no mesh to read since the last line: inline {}, no position {}, no stream {})",
               kPrefix, frame_, night_, world_sun_ && frame_ - world_sun_frame_ <= kWorldSunKeepFrames ? "world's" : "lens draw's", sun_seen_ ? "seen" : "NOT seen",
               sun_degrees_, night_override_ >= 0 ? ", overridden" : "", lens_draws_, kLogFrames,
               lens_player_ps_, lens_traffic_ps_, lens_no_id_, lens_no_pose_, lens_no_bone_, lens_at_root_, pts_recent_, pts_on_, headlight_points::Global().notes(), pts_matched_lamps_,
               pts_only_lamps_, pts_disagree_, last_cars_, last_cars_lit_, picked,
-              lights.empty() ? std::string("none") : lights, variant_draws_, variant_alpha_draws_, fallback_draws_, boxes_.size());
+              lights.empty() ? std::string("none") : lights, tracker_.coasting_count(), last_view_ ? "known (the beams count)" : "not known",
+              variant_draws_, variant_alpha_draws_, fallback_draws_, boxes_.size(), boxes_readable_ + BoxesUnreadable(), boxes_readable_, UnreadableReasons(), lens_inline_,
+              lens_no_element_, lens_no_stream_);
   lens_draws_ = lens_player_ps_ = lens_traffic_ps_ = lens_no_pose_ = lens_no_id_ = lens_no_bone_ = lens_at_root_ = 0;
+  lens_inline_ = lens_no_element_ = lens_no_stream_ = 0;
   variant_draws_ = variant_alpha_draws_ = fallback_draws_ = 0;
 }
 

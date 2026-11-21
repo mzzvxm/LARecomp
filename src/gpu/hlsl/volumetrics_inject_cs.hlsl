@@ -215,6 +215,18 @@ float HeadlightLit(float3 p, int view_index) {
   return lerp(lerp(s00, s10, fr.x), lerp(s01, s11, fr.x), fr.y);
 }
 
+// A car's light has a view for each of its two headlamps (HL-PER-LAMP; local_shadow_rules.h PlanViews): its share of the beam at `p` is the mean of the two lamps' (a pole
+// both lamps light has two shadows, each half as dark where one is blocked); a light with one view (a car's, not its lamps') takes that; none, lit.
+float HeadlightLit2(float3 p, int view_a, int view_b) {
+  if (view_b < 0) {
+    return HeadlightLit(p, view_a);
+  }
+  if (view_a < 0) {
+    return HeadlightLit(p, view_b);
+  }
+  return 0.5 * (HeadlightLit(p, view_a) + HeadlightLit(p, view_b));
+}
+
 // One spot light (a lamp or a headlight) of the constants at `offset`: its scattered radiance at `p` seen along the unit ray `ray` (camera to p). `shaped`: the low beam's
 // shape of a headlight; `shadowed`: and its shadow map (only with the shape).
 float3 SpotLightEx(uint offset, float3 p, float3 ray, float g, float strength, bool shaped, bool shadowed) {
@@ -240,7 +252,7 @@ float3 SpotLightEx(uint offset, float3 p, float3 ray, float g, float strength, b
       return 0.0;
     }
     if (shadowed) {
-      lit *= HeadlightLit(p, int(g_vol.Load(offset + 48u)));
+      lit *= HeadlightLit2(p, int(g_vol.Load(offset + 48u)), int(g_vol.Load(offset + 56u)));  // the two views: VolLamp shadow_view (48), shadow_view_b (56)
     }
   }
   const float near_sq = asfloat(g_vol.Load(offset + 52u));  // the light's near radius squared (0: the default 0.8 m)

@@ -89,17 +89,26 @@ void TestTable_() {
     bool twin;
   } expect[] = {{sp::kFeatureHdrScene, 16, false},  {sp::kFeatureBloomGauss, 0, false}, {sp::kFeatureEnvMap, 0, false},  {sp::kFeatureShadowFilter, 16, false},
                 {sp::kFeatureGlowSoft, 0, false},   {sp::kFeatureCarSelfRefl, 112, false}, {sp::kFeatureLuminanceScale, 0, false},
-                {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 672, true}, {sp::kFeatureGBuffer, 48, true}};
+                {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 1072, true}, {sp::kFeatureGBuffer, 48, true}};
   for (const auto& e : expect) {
     const chain::FeatureInfo* row = chain::Find(e.feature);
     Check(row && row->constants_bytes == e.bytes && row->spec_twin == e.twin && row->stage == chain::Stage::kPixel, "row of feature " + std::to_string(e.feature));
   }
-  // The headlights' and the G-buffer's rows are the only pair that composes (both edit PSMultiLight shaders); no pixel stage of the table needs a vertex stage (needs_vs): the G-buffer's pixel
-  // words read the vertex stage's export where it is and take a derivative normal where it is not.
+  // The G-buffer composes with the headlights (both edit PSMultiLight shaders) and with the two car variants (the car family's paint and chrome shaders: gbuffer_cars.h); nothing else composes; no
+  // pixel stage of the table needs a vertex stage (needs_vs): the G-buffer's pixel words read the vertex stage's export where it is and take a derivative normal where it is not.
   for (const chain::FeatureInfo& row : chain::kFeatures) {
-    const uint32_t partner = row.feature == sp::kFeatureHeadlight ? chain::FeatureBit(sp::kFeatureGBuffer) : row.feature == sp::kFeatureGBuffer ? chain::FeatureBit(sp::kFeatureHeadlight) : 0u;
-    Check(row.composes_with == partner && row.needs_vs == 0, std::string(row.name) + (partner ? " composes with its partner only" : " composes with nothing yet"));
+    uint32_t partner = 0;
+    if (row.feature == sp::kFeatureHeadlight || row.feature == sp::kFeatureCarSelfRefl || row.feature == sp::kFeatureCarChrome) partner = chain::FeatureBit(sp::kFeatureGBuffer);
+    if (row.feature == sp::kFeatureGBuffer) {
+      partner = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureCarChrome);
+    }
+    Check(row.composes_with == partner && row.needs_vs == 0, std::string(row.name) + (partner ? " composes with its partner(s) only" : " composes with nothing yet"));
   }
+  Check(chain::CanCompose(chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureGBuffer)) && chain::CanCompose(chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureGBuffer)) &&
+            !chain::CanCompose(chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureCarChrome)) &&
+            !chain::CanCompose(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureGBuffer)) &&
+            !chain::HasTwin(chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureGBuffer)),
+        "a car variant and the G-buffer compose (and the pair has no alpha test twin); the two car variants do not, nor the headlight with a car variant");
   Check(chain::CanCompose(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer)) &&
             !chain::CanCompose(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureShadowFilter)) &&
             chain::HasTwin(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer)),
@@ -161,7 +170,7 @@ void TestLayout() {
   }
   Check(all_disjoint, "no two blocks overlap in any of the 8192 subsets of the table's feature bits");
   Check(all_dense, "the layouts are dense: shared constants plus the blocks of the active features, never more than MaxConstantsBytes");
-  Check(chain::MaxConstantsBytes() == 608 + 16 + 16 + 112 + 112 + 16 + 672 + 48, "the most a draw uploads is every block of the table");
+  Check(chain::MaxConstantsBytes() == 608 + 16 + 16 + 112 + 112 + 16 + 1072 + 48, "the most a draw uploads is every block of the table");
 
   // A table of 31 features with blocks of different sizes, random subsets (a fixed generator).
   std::vector<chain::FeatureInfo> wide;
