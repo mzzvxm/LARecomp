@@ -350,6 +350,33 @@ void TestWallsAndCars() {
   (void)sun_over;
 }
 
+void TestCheckDecoder() {
+  uint32_t words[kStatWords] = {};
+  words[kStatPixels] = 1000;
+  words[kStatHit] = 960;
+  words[kStatWithin1] = 900;
+  words[kStatWithin5] = 950;
+  words[kStatNoHit] = 40;
+  words[kStatLod] = 100;
+  words[kStatHi] = 860;
+  // the histogram: 900 hits in the first bin (under 0.5 percent), 50 in the third, 10 in the last
+  words[kStatHistogram + 0] = 900;
+  words[kStatHistogram + 2] = 50;
+  words[kStatHistogram + kHistogramBins - 1] = 10;
+  const CheckSummary c = DecodeCheck(words);
+  CHECK(c.pixels == 1000 && c.hit == 960 && c.no_hit == 40 && c.lod == 100 && c.hi == 860);
+  CHECK(std::fabs(c.coverage - 0.96) < 1e-9 && std::fabs(c.within1_share - 900.0 / 960.0) < 1e-9 && std::fabs(c.within5_share - 950.0 / 960.0) < 1e-9);
+  CHECK(std::fabs(c.p50 - kHistogramStep) < 1e-9);           // the median is in the first bin: under 0.5 percent
+  CHECK(std::fabs(c.p95 - 3.0 * kHistogramStep) < 1e-9);     // 950 of 960 are in the first three bins: 95 percent at the third's upper edge
+  uint32_t before[kStatWords] = {}, delta[kStatWords] = {};
+  before[kStatPixels] = 400;
+  before[kStatHit] = 390;
+  CheckDelta(words, before, delta);
+  CHECK(delta[kStatPixels] == 600 && delta[kStatHit] == 570);
+  const uint32_t empty[kStatWords] = {};
+  CHECK(DecodeCheck(empty).coverage == 0.0 && DecodeCheck(empty).p95 == 0.0);
+}
+
 double ReadConstant(const std::string& text, const std::string& name, bool* found) {
   const size_t at = text.find(name + " =");
   *found = at != std::string::npos;
@@ -418,6 +445,7 @@ int main(int argc, char** argv) {
   TestAgainstTheDisc();
   TestNoAcne();
   TestWallsAndCars();
+  TestCheckDecoder();
   TestShaderNumbers(argc > 1 ? argv[1] : ".");
   if (g_failures != 0) {
     std::fprintf(stderr, "city_rt_shadow_rules_test: %d of %d checks FAILED\n", g_failures, g_checks);

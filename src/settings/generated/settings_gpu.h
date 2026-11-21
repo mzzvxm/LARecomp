@@ -267,6 +267,42 @@ class GPUSettings final : public rex::SettingOwner {
     "matrices, steer and spin included), not the body and the parts alone. The wheels are placed only after their placement has been checked against the draws of the cars the "
     "camera sees. off: no wheels. Live.", rex::kDebugOnly);
 
+  REX_SETTING(std::string, mcla_gpu_rt_shadows, "auto", "Ray traced sun shadows from the city's own triangles (the city pack the launcher builds from your game files). Rays go "
+    "from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp where it touches what casts it and "
+    "softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows (mcla_gpu_contact_shadows must be "
+    "on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a discrete graphics "
+    "card with 5.5 GiB of video memory or more, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand with less memory) in ray "
+    "tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1) and the city "
+    "pack; without them the game's shadows stand. Live.", rex::Allowed("auto", "off", "high", "ultra"), rex::kDebugOnly);
+
+  REX_SETTING(f64, mcla_gpu_city_rt_sun, 3.0, "Debug: the size of the sun's disc for the ray traced city shadows, as a multiple of the real sun (0.53 degrees across), 0.25 to "
+    "16. The real sun makes a penumbra 6 cm wide for a caster 10 m away; the few rays of a pixel and the filter turn that into noise farther off, so the default is 3. "
+    "Live.", rex::kDebugOnly, rex::Range{0.25, 16.0});
+
+  REX_SETTING(i32, mcla_gpu_city_rt_rays, 0, "Debug: rays a pixel for the ray traced city shadows, 1 to 8; 0 (the default) is the level's (high 2, ultra 4). Live.", rex::kDebugOnly,
+    rex::Range{0, 8});
+
+  REX_SETTING(std::string, mcla_gpu_city_rt_alpha, "stochastic", "Debug: what the ray traced city shadows do with the city's cut-out triangles (fences, grates, some foliage: "
+    "4% of the city, kept apart in the city pack; their textures are not in the structures). exclude leaves them out, opaque makes them solid, stochastic (the default) "
+    "makes half of the rays that meet one a blocker, chosen by a hash, which the filter and the upscaler average into a half tone. Live.", rex::kDebugOnly,
+    rex::Allowed("exclude", "opaque", "stochastic"));
+
+  REX_SETTING(f64, mcla_gpu_city_rt_radius, 0.0, "Debug: how far from the camera the city's sectors are kept at full detail in ray tracing structures, in metres, 25 to 1500; 0 "
+    "(the default) is the level's and the class's (150 m on a smaller card, 300 m, 600 m at ultra). The far level of detail reaches at least four times as far. Live.",
+    rex::kDebugOnly, rex::Range{0.0, 1500.0});
+
+  REX_SETTING(f64, mcla_gpu_city_rt_range, 0.0, "Debug: the farthest from the camera that ray traced city shadows are applied to, in metres, up to 1000; 0 (the default) is as far "
+    "as the structures are the full detail the game drew there (never more than 700 m). A smaller number shows where the game's own shadows stand. Live.",
+    rex::kDebugOnly, rex::Range{0.0, 1000.0});
+
+  REX_SETTING(bool, mcla_gpu_city_rt_check, false, "Debug: proves the city's ray tracing structures on a graphics card that has them. Instead of the sun's rays, one ray is "
+    "traced from the camera through every city pixel of the occlusion's linear depth image and the hit's distance is compared with the pixel's; the log says every 120 "
+    "frames, under [city rt shadow], how many pixels hit, how many are within 1% and 5% of the depth, and the error's median and 95th percentile. Needs "
+    "mcla_gpu_rt_shadows on and the contact shadows on. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_city_rt_view, false, "Debug: with mcla_gpu_city_rt_check on, shows the check's picture through the contact shadows' view 7 "
+    "(mcla_gpu_contact_shadows_view): white within 1% of the depth image's distance, grey within 5%, black otherwise (a miss or a wrong distance). Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_car_rt_check, false, "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
     "DirectX Raytracing 1.1). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
@@ -1520,6 +1556,14 @@ inline auto& mcla_gpu_car_rt_cars_traffic = g_gpu.mcla_gpu_car_rt_cars_traffic;
 inline auto& mcla_gpu_car_rt_cars_wheels = g_gpu.mcla_gpu_car_rt_cars_wheels;
 inline auto& mcla_gpu_car_rt_check = g_gpu.mcla_gpu_car_rt_check;
 inline auto& mcla_gpu_car_rt_masks = g_gpu.mcla_gpu_car_rt_masks;
+inline auto& mcla_gpu_rt_shadows = g_gpu.mcla_gpu_rt_shadows;
+inline auto& mcla_gpu_city_rt_sun = g_gpu.mcla_gpu_city_rt_sun;
+inline auto& mcla_gpu_city_rt_rays = g_gpu.mcla_gpu_city_rt_rays;
+inline auto& mcla_gpu_city_rt_alpha = g_gpu.mcla_gpu_city_rt_alpha;
+inline auto& mcla_gpu_city_rt_radius = g_gpu.mcla_gpu_city_rt_radius;
+inline auto& mcla_gpu_city_rt_range = g_gpu.mcla_gpu_city_rt_range;
+inline auto& mcla_gpu_city_rt_check = g_gpu.mcla_gpu_city_rt_check;
+inline auto& mcla_gpu_city_rt_view = g_gpu.mcla_gpu_city_rt_view;
 inline auto& mcla_gpu_car_rt_opp_refl = g_gpu.mcla_gpu_car_rt_opp_refl;
 inline auto& mcla_gpu_car_rt_opp_refl_rays = g_gpu.mcla_gpu_car_rt_opp_refl_rays;
 inline auto& mcla_gpu_car_rt_opp_refl_texels = g_gpu.mcla_gpu_car_rt_opp_refl_texels;

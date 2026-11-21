@@ -839,6 +839,100 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_shadows": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Ray traced sun shadows from the city's own triangles (the city pack the launcher builds from your game files). Rays go \"\n    \"from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp where it touches what casts it and \"\n    \"softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows (mcla_gpu_contact_shadows must be \"\n    \"on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a discrete graphics \"\n    \"card with 5.5 GiB of video memory or more, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand with less memory) in ray \"\n    \"tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1) and the city \"\n    \"pack; without them the game's shadows stand. Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_sun": {
+  "type": "f64",
+  "default": "3.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the size of the sun's disc for the ray traced city shadows, as a multiple of the real sun (0.53 degrees across), 0.25 to \"\n    \"16. The real sun makes a penumbra 6 cm wide for a caster 10 m away; the few rays of a pixel and the filter turn that into noise farther off, so the default is 3. \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.25, 16.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_rays": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: rays a pixel for the ray traced city shadows, 1 to 8; 0 (the default) is the level's (high 2, ultra 4). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 8}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_alpha": {
+  "type": "std::string",
+  "default": "\"stochastic\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: what the ray traced city shadows do with the city's cut-out triangles (fences, grates, some foliage: \"\n    \"4% of the city, kept apart in the city pack; their textures are not in the structures). exclude leaves them out, opaque makes them solid, stochastic (the default) \"\n    \"makes half of the rays that meet one a blocker, chosen by a hash, which the filter and the upscaler average into a half tone. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"exclude\", \"opaque\", \"stochastic\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_radius": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how far from the camera the city's sectors are kept at full detail in ray tracing structures, in metres, 25 to 1500; 0 \"\n    \"(the default) is the level's and the class's (150 m on a smaller card, 300 m, 600 m at ultra). The far level of detail reaches at least four times as far. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 1500.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_range": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the farthest from the camera that ray traced city shadows are applied to, in metres, up to 1000; 0 (the default) is as far \"\n    \"as the structures are the full detail the game drew there (never more than 700 m). A smaller number shows where the game's own shadows stand. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 1000.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_check": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: proves the city's ray tracing structures on a graphics card that has them. Instead of the sun's rays, one ray is \"\n    \"traced from the camera through every city pixel of the occlusion's linear depth image and the hit's distance is compared with the pixel's; the log says every 120 \"\n    \"frames, under [city rt shadow], how many pixels hit, how many are within 1% and 5% of the depth, and the error's median and 95th percentile. Needs \"\n    \"mcla_gpu_rt_shadows on and the contact shadows on. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_view": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_city_rt_check on, shows the check's picture through the contact shadows' view 7 \"\n    \"(mcla_gpu_contact_shadows_view): white within 1% of the depth image's distance, grey within 5%, black otherwise (a miss or a wrong distance). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_masks": {
   "type": "i32",
   "default": "0",

@@ -152,4 +152,55 @@ inline constexpr uint32_t kHistogramBins = 16;
 inline constexpr float kHistogramStep = 0.005f;
 inline constexpr float kCheckTMin = 0.01f;
 
+
+// What the check's counters say (the readback's words, the difference between two readbacks when the buffer was not cleared).
+struct CheckSummary {
+  uint64_t pixels = 0;
+  uint64_t hit = 0, within1 = 0, within5 = 0, no_hit = 0, lod = 0, hi = 0;
+  double coverage = 0.0;      // hit / pixels
+  double within1_share = 0.0; // within 1 percent / hits
+  double within5_share = 0.0;
+  double p50 = 0.0;           // the relative error's median and 95th percentile, as the upper edge of the histogram's bin that holds them (the last bin: 1.0)
+  double p95 = 0.0;
+};
+
+inline CheckSummary DecodeCheck(const uint32_t words[kStatWords]) {
+  CheckSummary c;
+  c.pixels = words[kStatPixels];
+  // The shader counts kStatHit for every committed hit, within1 for those within 1 percent and within5 for those within 5 (the first are among the second).
+  c.hit = words[kStatHit];
+  c.within1 = words[kStatWithin1];
+  c.within5 = words[kStatWithin5];
+  c.no_hit = words[kStatNoHit];
+  c.lod = words[kStatLod];
+  c.hi = words[kStatHi];
+  c.coverage = c.pixels ? double(c.hit) / double(c.pixels) : 0.0;
+  c.within1_share = c.hit ? double(c.within1) / double(c.hit) : 0.0;
+  c.within5_share = c.hit ? double(c.within5) / double(c.hit) : 0.0;
+  uint64_t total = 0;
+  for (uint32_t b = 0; b < kHistogramBins; ++b) total += words[kStatHistogram + b];
+  if (total != 0) {
+    uint64_t seen = 0;
+    bool got50 = false;
+    for (uint32_t b = 0; b < kHistogramBins; ++b) {
+      seen += words[kStatHistogram + b];
+      const double upper = b + 1 == kHistogramBins ? 1.0 : double(b + 1) * kHistogramStep;
+      if (!got50 && seen * 2 >= total) {
+        c.p50 = upper;
+        got50 = true;
+      }
+      if (seen * 100 >= total * 95) {
+        c.p95 = upper;
+        break;
+      }
+    }
+  }
+  return c;
+}
+
+// The words of the interval between two readbacks (the counters are never cleared: every word only grows).
+inline void CheckDelta(const uint32_t now[kStatWords], const uint32_t before[kStatWords], uint32_t out[kStatWords]) {
+  for (uint32_t i = 0; i < kStatWords; ++i) out[i] = now[i] - before[i];
+}
+
 }  // namespace mcla::gpu::city_rt_shadow
