@@ -41,6 +41,9 @@ void PackHeader::Write(ByteWriter& w) const {
   w.U64(blobs_offset);
   w.U64(file_size);
   w.U64(table_hash);
+  w.U64(lamps_offset);
+  w.U64(lamps_size);
+  w.U64(lamps_hash);
   const size_t written = w.size() - start;
   w.Zeros(kHeaderBytes - written);
 }
@@ -65,6 +68,9 @@ bool PackHeader::Read(ByteReader& r, PackHeader* out, std::string* error) {
   h.blobs_offset = r.U64();
   h.file_size = r.U64();
   h.table_hash = r.U64();
+  h.lamps_offset = r.U64();  // zero in a pack of builder version 1
+  h.lamps_size = r.U64();
+  h.lamps_hash = r.U64();
   if (!r.ok()) {
     if (error) *error = "the city pack's header is cut short";
     return false;

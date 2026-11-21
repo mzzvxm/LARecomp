@@ -11,6 +11,9 @@
 //   sector table          sector_count x kSectorRecordBytes (160), at table_offset
 //   name heap             the sectors' names, no terminators (a record holds offset and length), at names_offset
 //   mesh blobs            at blobs_offset: for each sector its hi detail blob, then its far lod blob (either may be absent)
+//   lamps section         optional, after the last blob (lamps_offset / lamps_size in the header, 0 when there is none): the city's lights from lights.xlm in the game's units and
+//                         a grid of 64 m cells over them (lamp_table.h has the layout and what the file holds and does not). A pack of builder version 1 has none (those header bytes
+//                         were zero), and a reader that does not know the section reads the pack as before: nothing else moved
 //
 // All integers are little endian. A reader opens the file, reads the header and the table (about 70 KB) and then reads ONE blob a
 // sector when the streamer wants it (hi_offset/hi_size, lod_offset/lod_size in the record), so nothing here has to be read whole.
@@ -33,8 +36,9 @@
 // skips every stream id it does not know.
 //
 // VERSIONS. kPackFormatVersion is the reader's contract (this file): a reader refuses another number. kBuilderVersion is the builder's
-// rules (the classes, what is dropped, the weld, the order): it is in the stamp, and a pack of another builder version is rebuilt but still
-// readable. Bump the right one by hand.
+// rules (the classes, what is dropped, the weld, the order, and since 2 the lamps section): it is in the stamp, and a pack of another builder
+// version is rebuilt but still readable. Bump the right one by hand. (The lamps section took bytes of the header that version 1 left zero, so the format
+// number stays 1: a version 1 pack opens with no lamps, a version 2 pack opens in a build that does not know lamps.)
 // ===========================================================================
 
 #include <cstdint>
@@ -48,7 +52,7 @@ namespace larecomp::citypack {
 
 inline constexpr char kPackMagic[8] = {'L', 'A', 'R', 'C', 'I', 'T', 'Y', '1'};
 inline constexpr uint32_t kPackFormatVersion = 1;
-inline constexpr uint32_t kBuilderVersion = 1;
+inline constexpr uint32_t kBuilderVersion = 2;  // 2: the lamps section
 inline constexpr const char* kPackFileName = "mcla_city.v1.pack";
 inline constexpr const char* kStampFileName = "mcla_city.stamp";
 
@@ -142,7 +146,11 @@ struct PackHeader {
   uint64_t blobs_offset = 0;
   uint64_t file_size = 0;
   uint64_t table_hash = 0;  // FNV-1a over the table's bytes and the name heap's
+  uint64_t lamps_offset = 0;  // the lamps section (lamp_table.h): where it is (16 aligned), how long, its FNV-1a; all 0 for a pack with none
+  uint64_t lamps_size = 0;
+  uint64_t lamps_hash = 0;
 
+  bool has_lamps() const { return lamps_size != 0; }
   void Write(ByteWriter& w) const;
   // False (with `error`) for a file that is not a city pack or of another format version.
   static bool Read(ByteReader& r, PackHeader* out, std::string* error);

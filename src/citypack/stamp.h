@@ -15,7 +15,7 @@
 //   mods_size, mods_mtime_us                             the mod archive's size and time: information only, never compared
 //   drop_mask, positions                                 what the builder was asked for (a pack with decals in it is not the default's)
 //   pack_size, pack_hash                                 integrity and diagnosis (the hash of the table and the name heap)
-//   sectors, hi_triangles, lod_triangles                 information
+//   sectors, hi_triangles, lod_triangles, lamps          information
 //   app_version                                          information, deliberately not a trigger: the pack is rebuilt when its inputs change, not on every release
 // ===========================================================================
 
@@ -75,6 +75,7 @@ struct StampInputs {
   uint32_t sectors = 0;
   uint64_t hi_triangles = 0;
   uint64_t lod_triangles = 0;
+  uint32_t lamps = 0;          // the lamps section's lights (information)
   std::string app_version;
 };
 Stamp MakeStamp(const StampInputs& inputs);
