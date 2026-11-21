@@ -26,7 +26,7 @@ uint32_t MeshBuilder::Weld(float x, float y, float z) {
 
 template <typename Index>
 uint32_t MeshBuilder::Add(const float* positions, uint32_t vertex_count, const Index* indices, uint32_t index_count, MaterialClass material,
-                          uint16_t shader_index, uint32_t shader_hash) {
+                          uint16_t shader_index, uint32_t shader_hash, std::vector<uint32_t>* kept_triangles) {
   stats_.source_vertices += vertex_count;
   const bool alpha = !IsOpaqueClass(material);
   std::vector<uint32_t>& list = alpha ? alpha_ : opaque_;
@@ -84,6 +84,7 @@ uint32_t MeshBuilder::Add(const float* positions, uint32_t vertex_count, const I
       if (w == std::numeric_limits<uint32_t>::max()) w = Weld(p[k][0], p[k][1], p[k][2]);
       list.push_back(w);
     }
+    if (kept_triangles) kept_triangles->push_back(t);
     ++kept;
   }
   if (kept != 0) {
@@ -106,13 +107,13 @@ uint32_t MeshBuilder::Add(const float* positions, uint32_t vertex_count, const I
 }
 
 uint32_t MeshBuilder::AddGeometry(const float* positions, uint32_t vertex_count, const uint16_t* indices, uint32_t index_count, MaterialClass material,
-                                  uint16_t shader_index, uint32_t shader_hash) {
-  return Add(positions, vertex_count, indices, index_count, material, shader_index, shader_hash);
+                                  uint16_t shader_index, uint32_t shader_hash, std::vector<uint32_t>* kept_triangles) {
+  return Add(positions, vertex_count, indices, index_count, material, shader_index, shader_hash, kept_triangles);
 }
 
 uint32_t MeshBuilder::AddGeometry(const float* positions, uint32_t vertex_count, const uint32_t* indices, uint32_t index_count, MaterialClass material,
-                                  uint16_t shader_index, uint32_t shader_hash) {
-  return Add(positions, vertex_count, indices, index_count, material, shader_index, shader_hash);
+                                  uint16_t shader_index, uint32_t shader_hash, std::vector<uint32_t>* kept_triangles) {
+  return Add(positions, vertex_count, indices, index_count, material, shader_index, shader_hash, kept_triangles);
 }
 
 MeshData MeshBuilder::Finish() {

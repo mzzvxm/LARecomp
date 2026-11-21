@@ -1,6 +1,7 @@
 # The city pack (src/citypack): the city's geometry for ray tracing, built on the player's PC from their own game files (CITY-RT M1).
 #
-# One static library, larecomp_citypack: the pack format (pack_format.h), the hit data's format (city_hit_format.h: CITY-RT M2), the reader of the game's city resources (sector_parse.h), the class of a
+# One static library, larecomp_citypack: the pack format (pack_format.h), the hit data's format (city_hit_format.h: CITY-RT M2) and its builder (hit_builder.h, with hit_params.h, hit_collect.h,
+# hit_material.h), the reader of the game's city resources (sector_parse.h), the class of a
 # shader (material_class.h), the welder (mesh_builder.h), the builder (builder.h) and the reader the streamer uses (pack_reader.h). It has no
 # dependency on the ReXGlue runtime, Plume or libmspack: the builder is given the LZX function, and it expects, from whoever links it
 # (larecomp already has them in LARECOMP_SOURCES; the tool and the test compile them themselves): src/mc_engine/modloader/{rpf3,aes256,texture}.cpp.
@@ -8,6 +9,11 @@
 add_library(larecomp_citypack STATIC
     builder.cpp
     city_hit_format.cpp
+    hit_builder.cpp
+    hit_collect.cpp
+    hit_corner_codec.cpp
+    hit_material.cpp
+    hit_params.cpp
     material_class.cpp
     mesh_builder.cpp
     pack_format.cpp
@@ -54,4 +60,18 @@ target_link_libraries(larecomp_city_hit_format_test PRIVATE larecomp_citypack)
 target_include_directories(larecomp_city_hit_format_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../gpu")
 if(WIN32)
     target_compile_definitions(larecomp_city_hit_format_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
+
+# The hit data's builder (hit_builder.h, CITY-RT M2 package H1) on a SYNTHETIC archive: the shader instance parameters, the vertex layouts, the corners and the runs, the material table through the G-buffer's rules,
+# the file's bytes (the same with one thread and four), the reader and the validator, the stamp. It needs the same archive writer as the pack's test:
+#   cmake --build <dir> --target larecomp_city_hit_builder_test, then run src/citypack/larecomp_city_hit_builder_test [<scratch folder>] (exit 0 = passed).
+add_executable(larecomp_city_hit_builder_test EXCLUDE_FROM_ALL
+    city_hit_builder_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../mc_engine/modloader/aes256.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../mc_engine/modloader/rpf3.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../mc_engine/modloader/texture.cpp")
+target_compile_features(larecomp_city_hit_builder_test PRIVATE cxx_std_23)
+target_link_libraries(larecomp_city_hit_builder_test PRIVATE larecomp_citypack)
+if(WIN32)
+    target_compile_definitions(larecomp_city_hit_builder_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()

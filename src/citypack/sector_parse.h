@@ -26,10 +26,12 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "citypack/bytes.h"
+#include "citypack/hit_params.h"
 #include "citypack/rsc_image.h"
 
 namespace larecomp::citypack {
@@ -48,6 +50,8 @@ bool ParseCityTable(const RscImage& image, std::vector<SectorInfo>* out, std::st
 struct ShaderNames {
   std::string group;
   std::string preset;
+  // The instance's parameters (hit_params.h), only when the parse was asked for them (ParseSector's `read_shader_params`); null otherwise (the pack builder needs the names alone).
+  std::shared_ptr<const ShaderParams> params;
 };
 
 // One geometry as the game stores it. `vertices` and `indices` point into the image (valid while it is); positions are the first three floats of each
@@ -61,6 +65,7 @@ struct SourceGeometry {
   uint32_t stride = 0;
   uint32_t index_count = 0;
   uint32_t fvf = 0;
+  uint64_t fvf_sizes = 0;       // the declaration's 64 bit table of channel formats (4 bits a channel; vertex_layout.h), 0 when the declaration is shorter than that
   uint32_t bucket_mask = 0;  // the city model record's, 0 where there is none (the lod)
   const uint8_t* vertices = nullptr;
   const uint8_t* indices = nullptr;
@@ -88,9 +93,10 @@ using GeometryCallback = std::function<void(const SourceGeometry&)>;
 
 // A sector's drawable: every geometry of every model of its dictionary, in order. `shaders` receives the shader table (indexed by shader_index); the
 // callback's `shader` pointers point into it. False (with `error`) for a resource that is not a sector.
-bool ParseSector(const RscImage& image, std::vector<ShaderNames>* shaders, const GeometryCallback& on_geometry, ParseStats* stats, std::string* error);
+// `read_shader_params`: also read each shader instance's parameters into ShaderNames::params (the hit data's builder; the pack's own build does not).
+bool ParseSector(const RscImage& image, std::vector<ShaderNames>* shaders, const GeometryCallback& on_geometry, ParseStats* stats, std::string* error, bool read_shader_params = false);
 // lod.xmd: the same for the far level of detail; `model_index` of a geometry is the sector's index.
-bool ParseLod(const RscImage& image, std::vector<ShaderNames>* shaders, const GeometryCallback& on_geometry, ParseStats* stats, std::string* error);
+bool ParseLod(const RscImage& image, std::vector<ShaderNames>* shaders, const GeometryCallback& on_geometry, ParseStats* stats, std::string* error, bool read_shader_params = false);
 
 // A geometry's vertex position `v` (host floats).
 inline void SourcePosition(const SourceGeometry& g, uint32_t v, float out[3]) {
