@@ -50,6 +50,7 @@
 #include "car_history_ps.hlsl.dxil.h"
 #include "car_rt_ao_cs.hlsl.dxil.h"
 #include "city_rt_shadow_cs.hlsl.dxil.h"
+#include "city_hit_probe_cs.hlsl.dxil.h"
 #include "car_rt_check_cs.hlsl.dxil.h"
 #include "car_rt_refl_cs.hlsl.dxil.h"
 #include "car_rt_refl_denoise_cs.hlsl.dxil.h"
@@ -143,6 +144,7 @@
 #include "car_history_ps.hlsl.spirv.h"
 #include "car_rt_ao_cs.hlsl.spirv.h"
 #include "city_rt_shadow_cs.hlsl.spirv.h"
+#include "city_hit_probe_cs.hlsl.spirv.h"
 #include "car_rt_check_cs.hlsl.spirv.h"
 #include "car_rt_refl_cs.hlsl.spirv.h"
 #include "car_rt_refl_denoise_cs.hlsl.spirv.h"
@@ -489,6 +491,11 @@ inline HostShaderBlob CarRtAoShader() {
 // The city's ray traced sun shadows (city_rt_shadow.h): inline ray queries against the car scene's top level, which holds the city's sectors beside the cars.
 inline HostShaderBlob CityRtShadowShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(city_rt_shadow_cs);
+}
+
+// The city hit data's probe (city_hit_probe.h, CITY-RT M2 H3): reads the pool and the tables through the ray tracing descriptor set's t6..t9.
+inline HostShaderBlob CityHitProbeShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(city_hit_probe_cs);
 }
 
 inline HostShaderBlob CarRtReflShader() {

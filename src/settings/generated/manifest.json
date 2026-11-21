@@ -956,6 +956,29 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_city_hit_data": {
+  "type": "std::string",
+  "default": "\"off\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: asks for the city's hit data (the texture coordinates, vertex colours and materials of the city, in the GPU pool the structures are built over: mcla_city_hit.v1.pack beside the city pack) without any effect reading it, to test the pool: off (the default), high or ultra, which also brings the city's structures at that level (and, with no car in the picture, the city alone in the top level). The log says under [city hit] and [rt scene]. A hit file that is missing or stale leaves it off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_hit_probe": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_city_hit_data on, a compute pass reads the city hit data's pool and tables through the ray tracing descriptor set every frame, the way the hit shading will, and every 240 frames the log says under [city hit] whether what it read is what was copied (a checksum of every block, the sector table's rows, the first material and texture rows). The proof of the pool's offsets and bindings on this backend. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_masks": {
   "type": "i32",
   "default": "0",

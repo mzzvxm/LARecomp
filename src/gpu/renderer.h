@@ -59,8 +59,10 @@
 #include "headlight_rig.h"
 #include "car_rt_scene.h"
 #include "car_rt_refl.h"
+#include "city_hit_scene.h"
 #include "city_rt_scene.h"
 #include "city_rt_shadow.h"
+#include "rt_scene_service.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
 #include "local_shadow.h"
@@ -305,6 +307,8 @@ class Renderer final : public RenderThread::Executor {
   CarRtScene car_rt_;         // render thread; the player's car as ray tracing structures (car_rt_scene.h), where the device has them
   CarRtRefl car_rt_refl_;     // render thread; the player car's ray traced self-reflection pass (car_rt_refl.h), reads car_rt_ (car_rt_scene.h)
   CityRtScene city_rt_;       // render thread; the city's geometry as ray tracing structures (city_rt_scene.h; CITY-RT M1), joins car_rt_'s top level
+  CityHitScene city_hit_;     // render thread; the city's hit data (texture coordinates, materials) in the GPU: the pool the structures are built over (city_hit_scene.h; CITY-RT M2 H3)
+  RtSceneService rt_scene_;   // render thread; who wants the ray tracing scene and what its top level holds, car or no car (rt_scene_service.h; CITY-RT M2 H3)
   CityRtShadow city_shadow_;  // render thread; the city's ray traced sun shadows (city_rt_shadow.h), recorded by the occlusion's passes (ao.h)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames

@@ -262,6 +262,8 @@
 {"mcla_gpu_city_rt_range", "MCLA/GPU"},
 {"mcla_gpu_city_rt_check", "MCLA/GPU"},
 {"mcla_gpu_city_rt_view", "MCLA/GPU"},
+{"mcla_gpu_city_hit_data", "MCLA/GPU"},
+{"mcla_gpu_city_hit_probe", "MCLA/GPU"},
 {"mcla_gpu_car_rt_opp_refl", "MCLA/GPU"},
 {"mcla_gpu_car_rt_opp_refl_rays", "MCLA/GPU"},
 {"mcla_gpu_car_rt_opp_refl_texels", "MCLA/GPU"},

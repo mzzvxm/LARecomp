@@ -1314,7 +1314,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       local_shadow_->OnAnchor();  // ... nor the headlight shadow maps'
     }
     if (car_rt_) {
-      car_rt_->OnAnchor();  // ... and the car ray tracing's trigger is behind us
+      car_rt_->OnAnchor(banks, anchor_cut_);  // ... and the car ray tracing's trigger is behind us; the camera goes to the scene service (a frame without the car is placed by it)
     }
     if (gbuffer_ && gbuffer_->tracking()) {
       gbuffer_->OnAnchor(banks.ps.data());  // ... and the next frame's G-buffer writers have the camera for the derivative normal (with or without an upscaler)

@@ -221,8 +221,14 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
         // The app decides whether the pack in place is the player's (stat only) and builds it in the background when it is not; without hooks (a build with no app) the pack is opened as it is.
         city_rt_.SetPackProbe(g_city_pack_hooks.state, g_city_pack_hooks.request_build);
       }
+      // CITY-RT M2 H3: the city's hit data (the file the hit data's builder writes beside the pack; nothing is made until a consumer wants it) and the scene service that every consumer asks for
+      // the top level, the structures and the hit data (rt_scene_service.h).
+      city_hit_.Initialize(device_, frames_, upload_, pass_timing_, CityPackFolder() / larecomp::citypack::kHitFileName, gpu_class::Current());
+      city_rt_.SetHitScene(&city_hit_);
+      rt_scene_.Initialize(&car_rt_, &city_rt_, &city_hit_);
       car_rt_.SetCityScene(&city_rt_);
-      city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, /*listed_at_start=*/true);
+      car_rt_.SetService(&rt_scene_, &city_hit_);
+      city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);
       ao_.SetCityRtShadow(&city_shadow_);
     }
     // The resolve conversions and the decode listed the pipelines a session
@@ -282,6 +288,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // Its images and AMD's context are not something the budget's response can release; its lines
     // name them (vram_budget.h), and frame generation asks the budget's rule before it takes any.
     vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
+    // The city's hit data pool (64 to 256 MiB) is not something the response can release (the structures built over it would be rebuilt): its line names it.
+    vram_.AddHolder("city hit data", [this] { return city_hit_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
@@ -318,7 +326,9 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_refl_.Shutdown();
     car_dump_.Shutdown();
     city_shadow_.Shutdown();  // before the car scene it traces against and the pipelines' owner
+    rt_scene_.Shutdown();
     city_rt_.Shutdown();
+    city_hit_.Shutdown();  // after the structures that evicted their blocks from it
     car_rt_refl_.Shutdown();
     car_rt_.Shutdown();
     car_frame_.Shutdown();
@@ -496,7 +506,9 @@ void Renderer::Shutdown() {
   car_refl_.Shutdown();
   car_dump_.Shutdown();
   city_shadow_.Shutdown();
+  rt_scene_.Shutdown();
   city_rt_.Shutdown();
+  city_hit_.Shutdown();
   car_rt_refl_.Shutdown();
   car_rt_.Shutdown();
   car_frame_.Shutdown();
@@ -1686,6 +1698,8 @@ void Renderer::ReportFrameStats() {
                            (city_rt_.HeldBytes() + city_shadow_.HeldBytes() != 0
                                 ? ", city ray tracing " + mib(city_rt_.HeldBytes() + city_shadow_.HeldBytes())
                                 : std::string()) +
+                           // CITY-RT M2 H3: the hit data's pool, the tables and the material table
+                           (city_hit_.HeldBytes() != 0 ? ", city hit data " + mib(city_hit_.HeldBytes()) : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())

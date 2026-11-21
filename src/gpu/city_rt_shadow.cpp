@@ -25,6 +25,7 @@
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "rt_scene_service.h"
 #include "texture_bytes.h"
 
 namespace mcla::gpu {
@@ -77,7 +78,7 @@ CityRtShadow::~CityRtShadow() = default;
 // ---------------------------------------------------------------------------
 
 void CityRtShadow::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, CityRtScene* city_scene,
-                              bool listed_at_start) {
+                              RtSceneService* service, bool listed_at_start) {
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -85,11 +86,12 @@ void CityRtShadow::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   pass_timing_ = &pass_timing;
   car_scene_ = car_scene;
   city_scene_ = city_scene;
+  service_ = service;
   ready_ = false;
   g_available.store(false, std::memory_order_relaxed);
   listed_ = false;
   pipeline_failed_ = false;
-  const bool supported = car_scene != nullptr && car_scene->ready() && city_scene != nullptr && city_scene->initialized() &&
+  const bool supported = car_scene != nullptr && car_scene->ready() && city_scene != nullptr && city_scene->initialized() && service != nullptr &&
                          CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
   if (!supported) {
     passes.precache().Note("ray traced city shadows: not on this graphics card or backend (the game's shadows stand)", 0);
@@ -162,6 +164,7 @@ void CityRtShadow::Shutdown() {
   pass_timing_ = nullptr;
   car_scene_ = nullptr;
   city_scene_ = nullptr;
+  service_ = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,17 +224,23 @@ void CityRtShadow::BeginFrame(bool contact_on) {
     idle_frames_ = 0;
   }
   level_ = city_rt::LevelFor(gpu_class::Current(), city_rt::ParseChoice(Setting().Get()));
-  // The structures (and their frame counter and idle release) see every frame; they build only for a level that is on.
-  city_scene_->BeginFrame(contact_on ? level_ : city_rt::Level::kOff, float(larecomp::settings::mcla_gpu_city_rt_radius.Get()));
   if (level_ == city_rt::Level::kOff || !contact_on) {
-    return;  // the contact march is the consumer: without it nothing would read the image
+    return;  // the contact march is the consumer: without it nothing would read the image (the structures go back by their idle count: the service sees no want)
   }
+  // The structures: asked of the scene service (CITY-RT M2 H3), which is the one that tells the city scene its level every frame, so that this pass and the reflections share them. They are
+  // built while the pipeline is still being made.
+  rt_scene::Needs needs;
+  needs.city = level_;
+  needs.city_radius = float(larecomp::settings::mcla_gpu_city_rt_radius.Get());
+  service_->Want(rt_scene::Consumer::kCitySunShadow, needs);
   if (!PipelineReady()) {
     ++not_ready_;
     return;
   }
   wanted_ = true;
-  car_scene_->Request();  // the top level is built only for a frame that asked in the one before: ask in every frame this is on
+  // The pass wants the cars in the top level too (their shadows on the street): the top level is built only for a frame that asked in the one before, so ask in every frame this is on.
+  needs.cars = true;
+  service_->Want(rt_scene::Consumer::kCitySunShadow, needs);
 }
 
 CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const Inputs& in) {
@@ -241,13 +250,14 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
   }
   const CarRtView& view = car_scene_->View();
   const CityRtScene::Stats city = city_scene_->stats();
-  if (!view.valid || !view.set || city.instances == 0) {
+  // `scene_valid`, not `valid`: the city is in a top level also in a frame the car is not found in (rt_scene_service.h: the predicted camera places it).
+  if (!view.scene_valid || !view.set || city.instances == 0) {
     ++no_scene_;
-    if (!no_scene_logged_ && (view.valid || city_scene_->pack_ready())) {
+    if (!no_scene_logged_ && (view.scene_valid || city_scene_->pack_ready())) {
       no_scene_logged_ = true;
       REXLOG_INFO("{} no city in the top level at the first frame that wanted it (frame {}: the car's structures {}, the pack {}, {} sectors built so far): the game's shadows stand "
                   "there; counted in the census",
-                  kPrefix, in.frame, view.valid ? "exist" : "do not exist (the car is not found)", city_scene_->pack_ready() ? "is open" : "is not open", city.hi_resident + city.lod_resident);
+                  kPrefix, in.frame, view.scene_valid ? "exist" : "do not exist (the car is not found, and no camera to place the city by)", city_scene_->pack_ready() ? "is open" : "is not open", city.hi_resident + city.lod_resident);
     }
     return result;
   }
@@ -447,7 +457,8 @@ std::string CityRtShadow::CensusText() const {
     return {};
   }
   return std::format("; ray traced city shadows: {} passes since the start, {} frames without the city in the top level, {} without a safe range, {} without the sun, {} waiting for the pipeline",
-                     passes_run_, no_scene_, no_range_, no_sun_, not_ready_);
+                     passes_run_, no_scene_, no_range_, no_sun_, not_ready_) +
+         (service_ != nullptr ? service_->CensusText() : std::string());
 }
 
 }  // namespace mcla::gpu

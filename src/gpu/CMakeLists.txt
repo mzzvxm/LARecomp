@@ -22,8 +22,11 @@ add_library(larecomp_gpu OBJECT
     car_rt_instances.cpp
     car_rt_scene.cpp
     car_rt_ao.cpp
+    city_hit_probe.cpp
+    city_hit_scene.cpp
     city_rt_scene.cpp
     city_rt_shadow.cpp
+    rt_scene_service.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
     local_shadow.cpp
@@ -287,6 +290,18 @@ add_executable(larecomp_car_rt_scene_rules_test EXCLUDE_FROM_ALL car_rt_scene_ru
 # with its hysteresis and memory cap on a synthetic city, the frame's build schedule) likewise:
 #   cmake --build <dir> --target larecomp_city_rt_rules_test, then run src/gpu/larecomp_city_rt_rules_test (exit 0 = passed).
 add_executable(larecomp_city_rt_rules_test EXCLUDE_FROM_ALL city_rt_rules_test.cpp)
+# The ray tracing scene service's rules (rt_scene_rules.h, CITY-RT M2 H3: the Want lifecycle, the merge of the consumers, the top level's plan with and without the player's car, the
+# camera predictor on made-up drives) likewise:
+#   cmake --build <dir> --target larecomp_rt_scene_rules_test, then run src/gpu/larecomp_rt_scene_rules_test (exit 0 = passed).
+add_executable(larecomp_rt_scene_rules_test EXCLUDE_FROM_ALL rt_scene_rules_test.cpp)
+# The city hit data's pool (city_hit_pool_rules.h, CITY-RT M2 H3: the budgets, the pool's cap in the streaming plan, the allocator, the sector table, the book with its deferred frees,
+# 30,000 random operations, the probe's checksum, and the chain from a block through the table to the decode); given the src/gpu folder it also checks hlsl/city_hit_probe_cs.hlsl:
+#   cmake --build <dir> --target larecomp_city_hit_pool_rules_test, then run src/gpu/larecomp_city_hit_pool_rules_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_city_hit_pool_rules_test EXCLUDE_FROM_ALL city_hit_pool_rules_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
+target_include_directories(larecomp_city_hit_pool_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_hit_pool_rules_test PRIVATE cxx_std_23)
 # The city's ray traced sun shadows' maths (city_rt_shadow_rules.h: the sun, the disc samples, the lift, the alpha rule, the noise hash; a brute force tracer over made-up
 # triangles checks the penumbra of a roof's edge against the exact disc integral, contact hardening, no acne on a plane at every sun height; given the src/gpu folder it also
 # checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:
@@ -778,6 +793,8 @@ larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)
 # The city's ray traced sun shadows (city_rt_shadow.h, CITY-RT M1): the same shape, one compute pass with inline ray queries against the same top level, which holds the
 # city's sectors beside the cars (city_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan.
 larecomp_gpu_host_shader_rt(city_rt_shadow_cs cs_6_5)
+# The city hit data's probe (city_hit_probe.h, CITY-RT M2 H3): the pool and the tables read through the ray tracing set's t6..t9.
+larecomp_gpu_host_shader_rt(city_hit_probe_cs cs_6_5)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

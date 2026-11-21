@@ -22,6 +22,11 @@
 //                              city_rt::InstanceId(sector, detail)
 //   the pass               traces against the top level; SafeRange() says how far from the camera its answer holds (the structures are the game's own hi detail there)
 //
+// WITH HIT DATA (CITY-RT M2 H3, city_hit_scene.h): when the scene service says some consumer reads the city's hit data and the pool is made, a mesh is uploaded ONCE, as a block of the pool
+// (indices, positions, run ids, the run table, the corners), the structure is built over those very bytes and the block stays; its sector table row becomes valid when the build is
+// recorded and is cleared when the structure is given back (the range later, when the GPU is done). The worker reads the hit blob beside the base mesh. Structures built before the
+// pool was made (or under another pool) have no blocks: they are given back and built again, once (CityHitScene::epoch). Without hit data nothing below changes.
+//
 // MEMORY. A structure is 57 to 96 bytes a triangle (no compaction: Plume has no post-build compaction query; a Plume change that adds one shrinks this by a third or
 // more, and Budget's cap is in structure bytes, so it needs no change here). The class budgets are city_rt_rules.h BudgetFor: Mid 96 MiB (hi detail within 150 m),
 // High 256 MiB (300 m), ultra 512 MiB (600 m). Everything is given back after kIdleReleaseFrames frames without a request.
@@ -46,6 +51,7 @@
 
 #include <plume_render_interface.h>
 
+#include "citypack/city_hit_format.h"
 #include "citypack/pack_reader.h"
 #include "city_rt_rules.h"
 #include "frame.h"
@@ -55,6 +61,7 @@ namespace mcla::gpu {
 
 namespace citypack = larecomp::citypack;
 
+class CityHitScene;
 class Device;
 class PassTiming;
 class UploadRing;
@@ -88,6 +95,8 @@ class CityRtScene {
     probe_ = std::move(probe);
     request_build_ = std::move(request_build);
   }
+  // CITY-RT M2 H3: the hit data's pool (city_hit_scene.h), before the first frame. Null: no hit data, the structures are built as in M1.
+  void SetHitScene(CityHitScene* hit) { hit_ = hit; }
 
   // Every frame, from the effect that wants the city's structures (the shadow pass's BeginFrame): `level` is the setting's, `radius_override` the debug radius (0 = the class's).
   void BeginFrame(city_rt::Level level, float radius_override);
@@ -146,16 +155,24 @@ class CityRtScene {
     city_rt::Detail detail = city_rt::Detail::kHi;
     citypack::MeshData mesh;
     float distance = 0.0f;
+    bool hit_wanted = false;   // the read was asked to bring the hit blob (the pool was ready at the plan)
+    bool has_hit = false;      // ... and the file had one
+    citypack::HitBlob hit;
+    uint64_t bytes = 0;        // what the mesh will take of the frame's staging (the pool block with hit data, positions and indices without)
   };
   struct LoadRequest {
     uint32_t sector = 0;
     city_rt::Detail detail = city_rt::Detail::kHi;
+    bool with_hit = false;
   };
   struct LoadResult {
     LoadRequest request;
     bool ok = false;
     std::string error;
     citypack::MeshData mesh;
+    bool has_hit = false;
+    citypack::HitBlob hit;
+    std::string hit_error;
   };
   struct SlotResources {
     std::unique_ptr<plume::RenderBuffer> scratch;  // the builds' scratch (one after the other, a barrier between)
@@ -170,6 +187,8 @@ class CityRtScene {
   void Release(uint32_t sector, city_rt::Detail detail);
   void PollLoads();
   void Plan(const double camera[3]);
+  // What a staged mesh takes of the staging: the pool block's bytes when the hit data rides with it, else positions and indices.
+  uint64_t StagedBytesOf(const Staged& staged) const;
   bool EnsureScratch(SlotResources& slot, uint32_t index, uint64_t bytes);
   // Uploads and builds the staged meshes the frame's schedule takes. True when anything was recorded.
   bool BuildStaged(plume::RenderCommandList* list, uint32_t slot);
@@ -179,6 +198,9 @@ class CityRtScene {
   FrameRing* frames_ = nullptr;
   UploadRing* upload_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  CityHitScene* hit_ = nullptr;  // the hit data's pool (SetHitScene), not owned
+  uint64_t hit_epoch_ = 0;       // the pool epoch the built structures were made under
+  bool hit_bad_data_logged_ = false;
   gpu_class::GpuClass class_ = gpu_class::GpuClass::kLow;
   std::filesystem::path pack_file_;
 

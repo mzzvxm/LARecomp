@@ -8,6 +8,7 @@
 add_library(larecomp_citypack STATIC
     builder.cpp
     city_hit_format.cpp
+    hit_reader.cpp
     material_class.cpp
     mesh_builder.cpp
     pack_format.cpp
@@ -54,4 +55,14 @@ target_link_libraries(larecomp_city_hit_format_test PRIVATE larecomp_citypack)
 target_include_directories(larecomp_city_hit_format_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../gpu")
 if(WIN32)
     target_compile_definitions(larecomp_city_hit_format_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
+
+# The runtime's reader of the city hit file (hit_reader.h, CITY-RT M2 package H3): a small hit file written with city_hit_format.h's writers, opened beside a made-up base pack identity;
+# what it reads back and what it refuses (another pack, another name, a cut file, a damaged table, a damaged blob):
+#   cmake --build <dir> --target larecomp_hit_reader_test, then run src/citypack/larecomp_hit_reader_test [<scratch folder>] (exit 0 = passed).
+add_executable(larecomp_hit_reader_test EXCLUDE_FROM_ALL hit_reader_test.cpp)
+target_compile_features(larecomp_hit_reader_test PRIVATE cxx_std_23)
+target_link_libraries(larecomp_hit_reader_test PRIVATE larecomp_citypack)
+if(WIN32)
+    target_compile_definitions(larecomp_hit_reader_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()

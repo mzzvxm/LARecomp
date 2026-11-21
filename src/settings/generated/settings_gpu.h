@@ -310,6 +310,11 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_city_rt_view, false, "Debug: with mcla_gpu_city_rt_check on, shows the check's picture through the contact shadows' view 7 "
     "(mcla_gpu_contact_shadows_view): white within 1% of the depth image's distance, grey within 5%, black otherwise (a miss or a wrong distance). Live.", rex::kDebugOnly);
 
+  REX_SETTING(std::string, mcla_gpu_city_hit_data, "off", "Debug: asks for the city's hit data (the texture coordinates, vertex colours and materials of the city, in the GPU pool the structures are built over: mcla_city_hit.v1.pack beside the city pack) without any effect reading it, to test the pool: off (the default), high or ultra, which also brings the city's structures at that level (and, with no car in the picture, the city alone in the top level). The log says under [city hit] and [rt scene]. A hit file that is missing or stale leaves it off. Live.", rex::kDebugOnly,
+    rex::Allowed("off", "high", "ultra"));
+
+  REX_SETTING(bool, mcla_gpu_city_hit_probe, false, "Debug: with mcla_gpu_city_hit_data on, a compute pass reads the city hit data's pool and tables through the ray tracing descriptor set every frame, the way the hit shading will, and every 240 frames the log says under [city hit] whether what it read is what was copied (a checksum of every block, the sector table's rows, the first material and texture rows). The proof of the pool's offsets and bindings on this backend. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_car_rt_check, false, "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
     "DirectX Raytracing 1.1). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
@@ -1573,6 +1578,8 @@ inline auto& mcla_gpu_city_rt_radius = g_gpu.mcla_gpu_city_rt_radius;
 inline auto& mcla_gpu_city_rt_range = g_gpu.mcla_gpu_city_rt_range;
 inline auto& mcla_gpu_city_rt_check = g_gpu.mcla_gpu_city_rt_check;
 inline auto& mcla_gpu_city_rt_view = g_gpu.mcla_gpu_city_rt_view;
+inline auto& mcla_gpu_city_hit_data = g_gpu.mcla_gpu_city_hit_data;
+inline auto& mcla_gpu_city_hit_probe = g_gpu.mcla_gpu_city_hit_probe;
 inline auto& mcla_gpu_car_rt_opp_refl = g_gpu.mcla_gpu_car_rt_opp_refl;
 inline auto& mcla_gpu_car_rt_opp_refl_rays = g_gpu.mcla_gpu_car_rt_opp_refl_rays;
 inline auto& mcla_gpu_car_rt_opp_refl_texels = g_gpu.mcla_gpu_car_rt_opp_refl_texels;

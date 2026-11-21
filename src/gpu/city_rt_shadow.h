@@ -48,6 +48,7 @@ class CityRtScene;
 class Device;
 class FrameRing;
 class PassTiming;
+class RtSceneService;
 
 class CityRtShadow {
  public:
@@ -60,8 +61,9 @@ class CityRtShadow {
 
   // After the car scene's own Initialize (its descriptor set exists) and before the host precache starts. Never fails the renderer: without the device's ray queries nothing is
   // traced. `listed_at_start`: the setting is not off at the start, so the pipeline goes in the precache; else it is made in the background when first wanted.
+  // `service` (rt_scene_service.h): the pass is a CONSUMER of the ray tracing scene, it asks for the city's structures (and the cars') there instead of driving the scenes itself.
   void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, CityRtScene* city_scene,
-                  bool listed_at_start);
+                  RtSceneService* service, bool listed_at_start);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
   bool available() const { return ready_; }
@@ -126,6 +128,7 @@ class CityRtShadow {
   PassTiming* pass_timing_ = nullptr;
   CarRtScene* car_scene_ = nullptr;
   CityRtScene* city_scene_ = nullptr;
+  RtSceneService* service_ = nullptr;
 
   bool ready_ = false;
   bool listed_ = false;
