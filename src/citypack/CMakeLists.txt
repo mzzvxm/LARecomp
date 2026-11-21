@@ -14,6 +14,8 @@ add_library(larecomp_citypack STATIC
     hit_corner_codec.cpp
     hit_material.cpp
     hit_params.cpp
+    city_texture.cpp
+    guest_hash.cpp
     material_class.cpp
     mesh_builder.cpp
     pack_format.cpp
@@ -21,10 +23,36 @@ add_library(larecomp_citypack STATIC
     rsc_image.cpp
     sector_parse.cpp
     stamp.cpp
+    texture_residency.cpp
+    texture_set.cpp
+    xenos_texture.cpp
+    xtd_reader.cpp
 )
 target_compile_features(larecomp_citypack PUBLIC cxx_std_23)
 # Consumers include "citypack/builder.h" (and the others) from src/.
 target_include_directories(larecomp_citypack PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# xxhash.h for guest_hash.cpp alone (the texture key, XXH3-64: the number the renderer's texture dumps and GB-F2's rows name a texture by). Header only (XXH_INLINE_ALL): an include folder,
+# nothing to link. The same folder src/gpu and src/shaderpack use: LARECOMP_XXHASH_INCLUDE_DIR, else LAR-XenosRecomp's thirdparty/xxHash (they define these cache variables with the same
+# text; whichever runs first wins, and the value is the same).
+set(LARECOMP_XXHASH_INCLUDE_DIR "" CACHE PATH "Folder with xxhash.h (empty: LAR-XenosRecomp's)")
+get_filename_component(_larecomp_citypack_root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(LARECOMP_XENOSRECOMP_DIR "${_larecomp_citypack_root}/thirdparty/LAR-XenosRecomp"
+    CACHE PATH "LAR-XenosRecomp checkout (the shader translator, library target XenosRecompLib)")
+set(_larecomp_citypack_xxhash_include "${LARECOMP_XXHASH_INCLUDE_DIR}")
+if(NOT _larecomp_citypack_xxhash_include)
+    foreach(_candidate "${LARECOMP_XENOSRECOMP_DIR}/thirdparty/xxHash")
+        if(EXISTS "${_candidate}/xxhash.h")
+            set(_larecomp_citypack_xxhash_include "${_candidate}")
+            break()
+        endif()
+    endforeach()
+endif()
+if(NOT _larecomp_citypack_xxhash_include)
+    message(FATAL_ERROR
+        "larecomp_citypack: xxhash.h not found (looked in ${LARECOMP_XENOSRECOMP_DIR}/thirdparty/xxHash: "
+        "git submodule update --init --recursive). Set LARECOMP_XXHASH_INCLUDE_DIR.")
+endif()
+target_include_directories(larecomp_citypack SYSTEM PRIVATE "${_larecomp_citypack_xxhash_include}")
 if(WIN32)
     target_compile_definitions(larecomp_citypack PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 else()
@@ -74,4 +102,25 @@ target_compile_features(larecomp_city_hit_builder_test PRIVATE cxx_std_23)
 target_link_libraries(larecomp_city_hit_builder_test PRIVATE larecomp_citypack)
 if(WIN32)
     target_compile_definitions(larecomp_city_hit_builder_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
+
+# The city texture set (src/citypack/texture_set.h, CITY-RT M2 package H2): the Xenos layout and untiling (checked against the mod loader's own tiler, which writes the synthetic textures), the
+# dictionaries' reader, the BC decoders and means, the set builder on a synthetic archive (one thread and four give the same file), the texture file and the residency rules. With a game folder as
+# the second argument it also builds the retail archive's set and checks the golden counts and the sizes at each class's cap (that part needs the LZX decoder: libmspack, as the tool):
+#   cmake --build <dir> --target larecomp_texture_set_test, then run src/citypack/larecomp_texture_set_test [<scratch folder> [<game folder>]] (exit 0 = passed).
+add_executable(larecomp_texture_set_test EXCLUDE_FROM_ALL
+    texture_set_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../mc_engine/modloader/aes256.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../mc_engine/modloader/rpf3.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../mc_engine/modloader/texture.cpp")
+target_compile_features(larecomp_texture_set_test PRIVATE cxx_std_23)
+target_link_libraries(larecomp_texture_set_test PRIVATE larecomp_citypack)
+if(LARECOMP_MSPACK_DIR AND TARGET larecomp_mspack)
+    target_sources(larecomp_texture_set_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../mc_engine/modloader/xcompress.cpp")
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/../mc_engine/modloader/xcompress.cpp" PROPERTIES INCLUDE_DIRECTORIES "${LARECOMP_MSPACK_DIR}")
+    target_link_libraries(larecomp_texture_set_test PRIVATE larecomp_mspack)
+    target_compile_definitions(larecomp_texture_set_test PRIVATE LARECOMP_TEXTURE_SET_TEST_REAL_LZX=1)
+endif()
+if(WIN32)
+    target_compile_definitions(larecomp_texture_set_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()
