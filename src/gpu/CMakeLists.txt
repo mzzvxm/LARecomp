@@ -47,6 +47,7 @@ add_library(larecomp_gpu OBJECT
     frame_trace.cpp
     frame.cpp
     gbuffer.cpp
+    gi_field.cpp
     geometry.cpp
     gpu_class.cpp
     host_passes.cpp
@@ -271,6 +272,11 @@ add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.c
 # gbuffer_rules.h's octahedral map to check that they are the same) likewise:
 #   cmake --build <build dir> --target larecomp_gi_frame_test, then run src/gpu/larecomp_gi_frame_test [-v] [<hlsl/gi_common.hlsli>] (exit 0 = passed).
 add_executable(larecomp_gi_frame_test EXCLUDE_FROM_ALL gi_frame_test.cpp)
+# The probe field owner's rules (gi_field_rules.h, CITY-RT M3 package G1: the memory of each cell and the order of loss, the windows' toroidal moves and their dirty sets, cuts, the fade,
+# the state word and the weight rule, the reset list; it compiles hlsl/gi_field_common.hlsli as C++ and compares it with the twin, checks the traversal that finds the nearest probe sphere
+# against a brute force, and reads the three gi_field_*.hlsl files for their registers) likewise:
+#   cmake --build <build dir> --target larecomp_gi_field_rules_test, then run src/gpu/larecomp_gi_field_rules_test [-v] [<hlsl dir>] (exit 0 = passed).
+add_executable(larecomp_gi_field_rules_test EXCLUDE_FROM_ALL gi_field_rules_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
@@ -783,6 +789,11 @@ larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)
 # The city's ray traced sun shadows (city_rt_shadow.h, CITY-RT M1): the same shape, one compute pass with inline ray queries against the same top level, which holds the
 # city's sectors beside the cars (city_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan.
 larecomp_gpu_host_shader_rt(city_rt_shadow_cs cs_6_5)
+# The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed storage image
+# stores of RGBA16F, RG16F and R8_UNORM with the format given to SPIR-V), and the debug view's pixel shader (the probes as spheres over the picture).
+larecomp_gpu_host_shader(gi_field_reset_cs cs_6_0)
+larecomp_gpu_host_shader(gi_field_weights_cs cs_6_0)
+larecomp_gpu_host_shader(gi_field_view_ps ps_6_0)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

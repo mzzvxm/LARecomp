@@ -67,6 +67,9 @@
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "gbuffer_view_ms_ps.hlsl.dxil.h"
 #include "gbuffer_view_ps.hlsl.dxil.h"
+#include "gi_field_reset_cs.hlsl.dxil.h"
+#include "gi_field_view_ps.hlsl.dxil.h"
+#include "gi_field_weights_cs.hlsl.dxil.h"
 #include "hdr_compose_ps.hlsl.dxil.h"
 #include "layers_resolve_ps.hlsl.dxil.h"
 #include "layers_restore_ps.hlsl.dxil.h"
@@ -160,6 +163,9 @@
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "gbuffer_view_ms_ps.hlsl.spirv.h"
 #include "gbuffer_view_ps.hlsl.spirv.h"
+#include "gi_field_reset_cs.hlsl.spirv.h"
+#include "gi_field_view_ps.hlsl.spirv.h"
+#include "gi_field_weights_cs.hlsl.spirv.h"
 #include "hdr_compose_ps.hlsl.spirv.h"
 #include "layers_resolve_ps.hlsl.spirv.h"
 #include "layers_restore_ps.hlsl.spirv.h"
@@ -274,6 +280,20 @@ inline HostShaderBlob FullscreenVertexShader() {
 // The G-buffer's debug view (gbuffer.h): the planes with one sample, or the host's MSAA level.
 inline HostShaderBlob GBufferViewPixelShader(bool multisampled) {
   return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ps);
+}
+
+// The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed RGBA16F /
+// RG16F / R8 storage image stores on both APIs), and the debug view's pixel shader.
+inline HostShaderBlob GiFieldResetShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_field_reset_cs);
+}
+
+inline HostShaderBlob GiFieldWeightsShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_field_weights_cs);
+}
+
+inline HostShaderBlob GiFieldViewShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_field_view_ps);
 }
 
 inline HostShaderBlob PresentPixelShader() {
