@@ -595,7 +595,8 @@ void CheckConstants() {
   Check(Offsets::cam_pos == 64 && Offsets::prev_pos == 128 && Offsets::world == 192 && Offsets::sun == 304, "camera, history camera, world, sun offsets");
   Check(Offsets::counts == 688 && Offsets::shadow_atlas == 704 && Offsets::lamps == 720, "counts, shadow atlas, lamps offsets");
   Check(Offsets::headlights == 720 + 48 * 64 && Offsets::shadow_views == Offsets::headlights + 4 * 64, "headlights, shadow views offsets");
-  Check(sizeof(VolGpuConstants) == Offsets::shadow_views + 4 * 96 && sizeof(VolGpuConstants) % 16 == 0, "the constants end with the shadow views");
+  Check(Offsets::prev_counts == Offsets::shadow_views + 4 * 96 && Offsets::prev_headlights == Offsets::prev_counts + 16, "the history's headlights follow the shadow views (VOL-STABLE-2: appended, so that no offset above moved)");
+  Check(sizeof(VolGpuConstants) == Offsets::prev_headlights + 4 * 64 && sizeof(VolGpuConstants) % 16 == 0, "the constants end with the history's headlights");
 
   // The builder.
   const GridDesc g = GridFor(Level::kMedium);
@@ -660,9 +661,23 @@ void CheckConstants() {
   CheckNear(c.history[2], 0.9, 1e-6, "the history's weight");
   CheckNear(c.prev_pos[0], 0.5, 1e-6, "the history's camera");
   Check(c.sun.cascade_count == 4 && c.sun.atlas_slot == 5, "a shadowed sun keeps its cascades");
+  // VOL-STABLE-2: the headlights of the volume the history holds ride with the history, and only with it
+  Check(c.prev_counts[0] == 0, "a history that holds no headlight has none in the constants");
+  history.headlight_count = 2;
+  history.headlights[0].pos[0] = 11.0f;
+  history.headlights[1].pos[0] = 22.0f;
+  MakeGpuConstants(high, in, cam, history, 124, &c);
+  Check(c.prev_counts[0] == 2 && c.prev_headlights[0].pos[0] == 11.0f && c.prev_headlights[1].pos[0] == 22.0f, "the history's headlights are in the constants");
+  history.headlight_count = 9;
+  MakeGpuConstants(high, in, cam, history, 124, &c);
+  Check(c.prev_counts[0] == 4, "and cut to the level's headlights");
+  MakeGpuConstants(GridFor(Level::kMedium), in, cam, history, 124, &c);
+  Check(c.prev_counts[0] == 0, "a level without history carries none");
+  history.headlight_count = 0;
   history.valid = false;
   MakeGpuConstants(high, in, cam, history, 125, &c);
   CheckNear(c.history[2], 0.0, 1e-9, "no valid history: weight 0");
+  Check(c.prev_counts[0] == 0, "... and no history's headlights");
   CheckNear(c.prev_pos[0], 1.0, 1e-6, "... and the history's camera is the frame's");
   // The weight by the camera's move.
   Check(HistoryWeight(high, true, 0.0f, 0.0f) == 0.9f, "a still camera keeps 0.9");
@@ -794,6 +809,7 @@ void CheckShaders(const std::string& folder) {
       {"cascades", Offsets::sun + offsetof(VolSun, cascades)},          {"sun_atlas", Offsets::sun + offsetof(VolSun, atlas_slot)},
       {"sun_size", Offsets::sun + offsetof(VolSun, atlas_size)},        {"counts", Offsets::counts},           {"shadow_atlas", Offsets::shadow_atlas},
       {"lamps", Offsets::lamps},       {"headlights", Offsets::headlights}, {"shadow_views", Offsets::shadow_views},
+      {"prev_counts", Offsets::prev_counts}, {"prev_headlights", Offsets::prev_headlights},
   };
   for (const auto& entry : want) {
     const auto found = offsets.find(entry.first);

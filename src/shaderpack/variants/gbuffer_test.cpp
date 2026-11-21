@@ -1,15 +1,18 @@
 // Check of the G-buffer variant's text transform (gbuffer.h). A program of its own: it needs no renderer, no ReXGlue, no compiler and no game files, and exits 0
-// when every check holds.
+// when every check holds. The spike's own edits are the text of xCityDefault::PSMultiLight now (checked here, byte for byte against the game's text); every other shader of the
+// variant goes to the night stage (gbuffer_night.h) or the day stage (gbuffer_day.h, which has xCityDefault::PSCityDefault): this test checks the dispatch and that the
+// definition lists them all, the stages' own tests (gbuffer_night_test.cpp, gbuffer_day_test.cpp) check their texts.
 //
 //   cmake --build <build dir> --target larecomp_gbuffer_variant_test     (src/shaderpack/CMakeLists.txt)
 //   <build dir>/src/shaderpack/larecomp_gbuffer_variant_test [<src/gpu/hlsl/gbuffer_common.hlsli> [<folder of translated HLSL> [<folder for the results>]]]
 //
 // Without arguments it runs on small texts made here (the shape of the translator's output the edits look at) and a one line stand-in for the helper. With the
 // helper file as the first argument the real one is pasted. With a folder of translated HLSL (the builder's own output: `<group>__<entry>.hlsl` files, for example
-// shaderpack/baseline/hlsl-rpf/city of the development PC) it also runs on xCityDefault__PSCityDefault and xCityDefault__PSMultiLight, the retail text. A third
+// shaderpack/baseline/hlsl-rpf/city of the development PC) it also runs on xCityDefault__PSMultiLight (the spike's text) and xCityDefault__PSCityDefault (the day stage's), the retail text. A third
 // argument is a folder that receives the edited texts, for a compile with dxc (-T ps_6_0 -E main -HV 2021 -spirv -fvk-use-dx-layout, and without -spirv for DXIL;
 // with -DXENOS_SPEC_CONSTANTS=0 and =2 for the alpha test twin).
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -26,6 +29,8 @@
 #include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/gbuffer.h"
+#include "shaderpack/variants/gbuffer_day.h"
+#include "shaderpack/variants/gbuffer_night.h"
 #include "shaderpack/variants/glow_soft.h"
 #include "shaderpack/variants/luminance_scale.h"
 #include "shaderpack/variants/shadow_filter.h"
@@ -124,6 +129,11 @@ constexpr const char* kFixture =
     "\tin float4 iPos : SV_Position,\n"
     "\tin centroid float4 iTexCoord0 : TEXCOORD0,\n"
     "\tin centroid float4 iTexCoord1 : TEXCOORD1,\n"
+    "#ifdef __spirv__\n"
+    "\tin bool iFace : SV_IsFrontFace\n"
+    "#else\n"
+    "\tin uint iFace : SV_IsFrontFace\n"
+    "#endif\n"
     ",\n"
     "\tout float4 oC0 : SV_Target0\n"
     "#if XENOS_ALPHA_COVERAGE\n"
@@ -146,7 +156,17 @@ constexpr const char* kHelper =
 void CheckFixture() {
   const sp::VariantShader day{sp::kGBufferDayShader, 0};
   const sp::VariantShader night{sp::kGBufferNightShader, 0};
-  for (const sp::VariantShader& shader : {day, night}) {
+  // xCityDefault::PSCityDefault is the day stage's (gbuffer_day.h): the same four insertions, the write with the back face flip. The dispatch gives the day stage's own text.
+  {
+    const sp::VariantTransformResult r = sp::TransformGBufferHlsl(day, kFixture, kHelper);
+    Check(r.ok && !r.skip && r.error.empty(), std::string(day.name) + ": the fixture transforms: " + r.error);
+    const sp::VariantTransformResult direct = sp::TransformGBufferDayHlsl(day, kFixture, kHelper);
+    Check(direct.ok && direct.hlsl == r.hlsl, std::string(day.name) + ": the text is the day stage's (TransformGBufferDayHlsl), not the spike's");
+    Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1") == 1 && Count(r.hlsl, "float3 gbN = iTexCoord0.xyz;") == 1 &&
+              Count(r.hlsl, "oC0 = applyBlendPremult(oC0);\n\toC1 = float2(0.0f, 0.0f);") == 1,
+          std::string(day.name) + ": its second output and its write (the interpolant TEXCOORD0, the table's row) follow the game's last colour statement");
+  }
+  for (const sp::VariantShader& shader : {night}) {
     const sp::VariantTransformResult r = sp::TransformGBufferHlsl(shader, kFixture, kHelper);
     Check(r.ok && !r.skip && r.error.empty(), std::string(shader.name) + ": the fixture transforms: " + r.error);
     if (!r.ok) continue;
@@ -177,7 +197,7 @@ void CheckFixture() {
   }
   // not one of the shaders: left out, no error
   {
-    const sp::VariantShader other{"xCityDefault__PSMultiLightInterior", 0};
+    const sp::VariantShader other{"xCityDefault__PSMultiLightDebug", 0};  // the game's debug shader: not in the night family (gbuffer_night.h; Interior is)
     const sp::VariantTransformResult r = sp::TransformGBufferHlsl(other, kFixture, kHelper);
     Check(!r.ok && r.skip, "another shader of the group is left out");
   }
@@ -185,7 +205,7 @@ void CheckFixture() {
   {
     std::string text = kFixture;
     text.replace(text.find("\tin centroid float4 iTexCoord0 : TEXCOORD0,\n"), std::string("\tin centroid float4 iTexCoord0 : TEXCOORD0,\n").size(), "");
-    const sp::VariantTransformResult r = sp::TransformGBufferHlsl({sp::kGBufferDayShader, 0}, text, kHelper);
+    const sp::VariantTransformResult r = sp::TransformGBufferHlsl({sp::kGBufferNightShader, 0}, text, kHelper);
     Check(!r.ok && !r.skip && r.error.find("iTexCoord0") != std::string::npos, "no TEXCOORD0 interpolant: an error that names it");
   }
   {
@@ -193,7 +213,7 @@ void CheckFixture() {
     text += "void second(out float4 oC0 : SV_Target0) {}\n";
     // the output anchor is `\tout float4 oC0 : SV_Target0` with the tab: the second has none, so this is still one; make a real second one
     text += "\tout float4 oC0 : SV_Target0\n";
-    const sp::VariantTransformResult r = sp::TransformGBufferHlsl({sp::kGBufferDayShader, 0}, text, kHelper);
+    const sp::VariantTransformResult r = sp::TransformGBufferHlsl({sp::kGBufferNightShader, 0}, text, kHelper);
     Check(!r.ok && !r.skip && r.error.find("oC0 : SV_Target0") != std::string::npos, "two colour outputs: an error that names the anchor");
   }
   {
@@ -203,8 +223,10 @@ void CheckFixture() {
     Check(!r.ok && !r.skip && r.error.find("colour write") != std::string::npos, "no premultiplied write: an error that names it");
   }
   {
-    const sp::VariantTransformResult r = sp::TransformGBufferHlsl({sp::kGBufferDayShader, 0}, kFixture, "");
+    const sp::VariantTransformResult r = sp::TransformGBufferHlsl({sp::kGBufferNightShader, 0}, kFixture, "");
     Check(!r.ok && !r.skip, "an empty helper is an error");
+    const sp::VariantTransformResult day_empty = sp::TransformGBufferHlsl({sp::kGBufferDayShader, 0}, kFixture, "");
+    Check(!day_empty.ok && !day_empty.skip, "an empty helper is an error for the day stage's shaders too");
   }
 }
 
@@ -215,9 +237,21 @@ void CheckVariantDef() {
   Check(row && row->name == def.name && row->spec_twin && row->constants_bytes == 48 && row->composes_with == sp::chain::FeatureBit(sp::kFeatureHeadlight),
         "the table's row: 48 bytes, the alpha test twin, composes with the headlight's stage");
   Check(def.name == "gbuffer" && def.version == sp::kGBufferVariantVersion && def.needs_rpf, "the name, the version, and it reads the RPF");
-  Check(def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 2 && def.pixel_name_suffixes[0] == sp::kGBufferDayShader &&
-            def.pixel_name_suffixes[1] == sp::kGBufferNightShader,
-        "the two shaders are found by name");
+  Check(def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 2 + std::size(sp::kGBufferNightSuffixes) + (sp::kGBufferDayShaderCount - 1) &&
+            def.pixel_name_suffixes[0] == sp::kGBufferDayShader && def.pixel_name_suffixes[1] == sp::kGBufferNightShader && def.pixel_name_suffixes[2] == sp::kGBufferNightSuffixes[0],
+        "the two shaders, the night family (gbuffer_night.h) and the day table's other shaders (gbuffer_day.h) are found by name");
+  {
+    bool all_there = true;
+    for (const sp::GBufferDayShader& row : sp::kGBufferDayShaders) {
+      all_there &= std::find(def.pixel_name_suffixes.begin(), def.pixel_name_suffixes.end(), row.name) != def.pixel_name_suffixes.end();
+    }
+    Check(all_there, "every shader of the day table is one the definition finds, once");
+    std::vector<std::string_view> sorted = def.pixel_name_suffixes;
+    std::sort(sorted.begin(), sorted.end());
+    Check(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "no name is in the definition twice");
+  }
+  // The version is the pixel stage's stamp line: 3 = night and day families in it (a pack stamped with 1 or 2 is built again).
+  Check(sp::kGBufferVariantVersion == 3, "the variant's version is 3: the night family (2) and the day families (3)");
   Check(def.input_xxh3 != 0, "the helper is in the fingerprint");
   const sp::VariantDef other = sp::MakeGBufferVariantFromText(std::string(kHelper) + "// changed\n");
   Check(other.input_xxh3 != def.input_xxh3, "a changed helper changes the fingerprint");
@@ -270,6 +304,17 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
     Check(r.ok, std::string(name) + ": the retail text transforms: " + r.error);
     if (!r.ok) continue;
     std::printf("%s: %zu -> %zu bytes\n", std::string(name).c_str(), hlsl.size(), r.hlsl.size());
+    if (name == sp::kGBufferDayShader) {
+      // the day stage's text (its own test holds it to the game's plus its insertions): here the dispatch, and the text for the compile + instruction identity scripts of the spike
+      const sp::VariantTransformResult direct = sp::TransformGBufferDayHlsl({name, 0}, hlsl, helper);
+      Check(direct.ok && direct.hlsl == r.hlsl, std::string(name) + ": the retail text goes to the day stage");
+      Check(Count(r.hlsl, "oC1 : SV_Target1") == 1 && Count(r.hlsl, "oC1 = GbRt1Encode(gbN);") == 1, std::string(name) + ": one second output, one write");
+      if (!out.empty()) {
+        std::filesystem::create_directories(out);
+        std::ofstream(out / (std::string(name) + ".gbuffer.hlsl"), std::ios::binary) << r.hlsl;
+      }
+      continue;
+    }
     // the facts the edits stand on, in the retail text
     Check(Count(hlsl, "float4 r0 = iTexCoord0;") == 1, std::string(name) + ": r0 is loaded from TEXCOORD0");
     Check(Count(hlsl, "float4 r1 = iTexCoord1;") == 1, std::string(name) + ": r1 is loaded from TEXCOORD1 (the position)");

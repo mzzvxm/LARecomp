@@ -261,6 +261,11 @@ struct VolGpuConstants {
   std::array<VolLamp, kMaxLamps> lamps;
   std::array<VolLamp, kMaxHeadlights> headlights;
   std::array<VolShadowView, kMaxShadowViews> shadow_views;
+  // VOL-STABLE-2: the headlights of the volume the history holds (the frame before): a light that moved leaves the history wrong where it was and where it is, and the
+  // inject lowers the history's weight there by how much the light's own term changed (volumetrics_stable.h HistoryWeightUnderLightMotion). Appended at the end so that
+  // every offset above stays where it was.
+  uint32_t prev_counts[4];  // x the headlight count of the history's volume (0: none, or no history); yzw unused
+  std::array<VolLamp, kMaxHeadlights> prev_headlights;
 };
 static_assert(sizeof(VolGpuConstants) % 16 == 0);
 static_assert(offsetof(VolGpuConstants, world) == 192);
@@ -281,6 +286,8 @@ struct Offsets {
   static constexpr uint32_t lamps = offsetof(VolGpuConstants, lamps);
   static constexpr uint32_t headlights = offsetof(VolGpuConstants, headlights);
   static constexpr uint32_t shadow_views = offsetof(VolGpuConstants, shadow_views);
+  static constexpr uint32_t prev_counts = offsetof(VolGpuConstants, prev_counts);
+  static constexpr uint32_t prev_headlights = offsetof(VolGpuConstants, prev_headlights);
 };
 
 // ---------------------------------------------------------------------------

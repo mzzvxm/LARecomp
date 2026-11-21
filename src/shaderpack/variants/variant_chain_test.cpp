@@ -72,7 +72,12 @@ void TestWord() {
 void TestTable_() {
   const char* why = nullptr;
   Check(chain::TableIsValid(chain::kFeatures, &why), std::string("the built-in table is valid ") + (why ? why : ""));
-  Check(chain::kFeatureCount == 11, "eleven rows: nine built in this tree, the headlights' and the G-buffer's (their variants are in two other branches)");
+  Check(chain::kFeatureCount == 12, "twelve rows: nine built in this tree, the headlights' and the G-buffer's (their variants are in two other branches) and the G-buffer's vertex stage (feature 12, variants/gbuffer_day.h)");
+  {
+    const chain::FeatureInfo* vertex_row = chain::Find(sp::kFeatureGBufferVs);
+    Check(sp::kFeatureGBufferVs == 12 && vertex_row && vertex_row->stage == chain::Stage::kVertex && vertex_row->constants_bytes == 0 && vertex_row->composes_with == 0 && vertex_row->needs_vs == 0 && vertex_row->spec_twin,
+          "the G-buffer's vertex stage is feature 12: a vertex stage with no block, no partner and the packed normal twin");
+  }
   Check(sp::kFeatureHeadlight == 9 && sp::kFeatureGBuffer == 10 && sp::kFeatureLampShadow == 11 && !chain::Find(sp::kFeatureLampShadow), "the bits 9, 10 and 11 are the headlight's, the G-buffer's and the lamps' shadows' (reserved, no row yet)");
   for (const chain::FeatureInfo& row : chain::kFeatures) {
     Check(chain::Find(row.feature) == &row, "Find returns the row of " + std::string(row.name));
@@ -89,7 +94,8 @@ void TestTable_() {
     const chain::FeatureInfo* row = chain::Find(e.feature);
     Check(row && row->constants_bytes == e.bytes && row->spec_twin == e.twin && row->stage == chain::Stage::kPixel, "row of feature " + std::to_string(e.feature));
   }
-  // The headlights' and the G-buffer's rows are the only pair that composes (both edit PSMultiLight shaders); no stage of the table needs a vertex stage yet.
+  // The headlights' and the G-buffer's rows are the only pair that composes (both edit PSMultiLight shaders); no pixel stage of the table needs a vertex stage (needs_vs): the G-buffer's pixel
+  // words read the vertex stage's export where it is and take a derivative normal where it is not.
   for (const chain::FeatureInfo& row : chain::kFeatures) {
     const uint32_t partner = row.feature == sp::kFeatureHeadlight ? chain::FeatureBit(sp::kFeatureGBuffer) : row.feature == sp::kFeatureGBuffer ? chain::FeatureBit(sp::kFeatureHeadlight) : 0u;
     Check(row.composes_with == partner && row.needs_vs == 0, std::string(row.name) + (partner ? " composes with its partner only" : " composes with nothing yet"));
@@ -143,7 +149,7 @@ void TestLayout() {
   // Every subset of the built-in features: dense, in order, 16 byte aligned, never overlapping, total as the sum.
   bool all_disjoint = true;
   bool all_dense = true;
-  const uint32_t all = (1u << chain::kFeatureCount) - 1;
+  const uint32_t all = (1u << (sp::kFeatureGBufferVs + 1)) - 1;  // every subset of the bits 0..12 (bit 11 is reserved and has no row)
   for (uint32_t set = 0; set <= all; ++set) {
     const chain::ConstantsLayout layout = chain::LayoutConstants(set);
     all_disjoint &= Disjoint(layout);
@@ -153,7 +159,7 @@ void TestLayout() {
     }
     all_dense &= layout.total_bytes == sum && layout.total_bytes <= chain::MaxConstantsBytes();
   }
-  Check(all_disjoint, "no two blocks overlap in any of the 2048 subsets of the table's features");
+  Check(all_disjoint, "no two blocks overlap in any of the 8192 subsets of the table's feature bits");
   Check(all_dense, "the layouts are dense: shared constants plus the blocks of the active features, never more than MaxConstantsBytes");
   Check(chain::MaxConstantsBytes() == 608 + 16 + 16 + 112 + 112 + 16 + 672 + 48, "the most a draw uploads is every block of the table");
 

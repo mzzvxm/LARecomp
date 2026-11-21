@@ -229,6 +229,8 @@ class Volumetrics {
   uint32_t off_frames_ = 0;
   bool keep_cones_ = false;
   float test_flags_ = 0.0f;
+  bool stable_ = true;      // mcla_gpu_vol_stable: the VOL-STABLE rules (volumetrics_stable.h); false is the first version, for the A/B
+  uint32_t view_ = 0;       // mcla_gpu_vol_view: 0 the picture, 1 the volume's light alone, 2 the same x8, 3 x32
 
   // --- the frame ---
   uint64_t frame_ = 0;
@@ -257,6 +259,9 @@ class Volumetrics {
   bool previous_pause_ = false;
   uint64_t previous_frame_ = 0;
   bool vs_pose_trusted_ = false;
+  // The anchor camera of the frame before previous_ (when that was the frame before it), so that a frame whose vertex pose is not trusted can move the previous camera on.
+  volumetrics::VolCamera cam_older_;
+  bool have_older_ = false;
 
   // The collector's constants (the last frame that had any) and the atlas slot.
   struct Collector {
@@ -281,6 +286,11 @@ class Volumetrics {
   bool ground_valid_ = false;
   float wind_[2] = {};
   uint64_t last_fill_frame_ = 0;
+  double last_fill_ms_ = 0.0;      // the scene clock at the last Fill (stable: the producers' dt is real time, not frames over 60)
+  double history_clock_ms_ = 0.0;  // the scene clock when the history's volume was made (the history's weight follows the time between)
+  float motion_ = 0.0f;            // the camera's move, smoothed over about a tenth of a second (volumetrics_stable.h HistoryMotion)
+  float last_weight_ = 0.0f;       // the history's weight of the last volume (the census)
+  uint32_t extrapolated_camera_ = 0;  // the volumes whose camera was the previous one moved on (VOL-STABLE-2; the census)
 
   // --- the GPU side ---
   Device* device_ = nullptr;

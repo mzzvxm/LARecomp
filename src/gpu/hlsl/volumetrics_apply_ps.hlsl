@@ -11,6 +11,11 @@
 // than the cap to a pixel (VOL-LOOK-TUNE: the first look's white ball around the oncoming headlights in rain).
 //
 // The depth is the guest's sample 0 of the (possibly multisampled) depth plane: APPLY_MS 1 reads a Texture2DMS in space 1.
+// VOL-STABLE: with the push's all-samples flag a multisampled pixel reads EVERY sample's depth and looks the volume up at each (one lookup at their mean where they
+// agree within half a slice), and its light is their mean: at a depth edge (a lamp post against the street behind it) the light is the near and the far one by the
+// coverage, an anti-aliased edge, where sample 0 alone gave one of the two by a hard flip that crawled with the motion (volumetrics_stable.h DepthsAgree,
+// AverageOverSamples are the twins). The debug view (the push's slots.w, bits 9 and 10) shows the volume's light alone: the picture is replaced by it (the alpha 0
+// of the ONE, SRC_ALPHA blend), x1, x8 or x32, to measure how steady the volume is without the scene under it.
 
 #include "host_pass_common.hlsli"
 #include "host_pass_samplers.hlsli"
@@ -21,7 +26,8 @@
 
 struct VolApplyPush {
   // x the main depth plane's bindless slot, y the accumulated volume's slot, z the grid packed as nx | ny << 8 | nz << 16 | tiles_x << 24,
-  // w the depth's guest sample (the host sample that is the guest's sample 0)
+  // w bits 0 to 7 the depth's guest sample (the host sample that is the guest's sample 0), bit 8 every sample's depth is used, bits 9 and 10 the debug view
+  // (0 the picture, 1 the volume's light alone, 2 the same times 8, 3 times 32): volumetrics_stable.h ApplyWord
   uint4 slots;
   // xy the picture's size in host pixels, z the extinction scale (0: purely additive), w the cap of the light the pixel may get (scene units, 0: none)
   float4 sizes;
@@ -53,19 +59,13 @@ float3 SoftLimit(float3 c, float cap) {
 ConstantBuffer<VolApplyPush> g_push : register(b0, space4);
 #endif
 
-float4 main(float4 position : SV_Position) : SV_Target {
-  const int2 pixel = int2(position.xy);
-#if APPLY_MS
-  const float stored = g_textures_ms[g_push.slots.x].Load(pixel, g_push.slots.w).r;
-#else
-  const float stored = g_textures[g_push.slots.x].Load(int3(pixel, 0)).r;
-#endif
-  const uint nx = g_push.slots.z & 0xFFu;
-  const uint ny = (g_push.slots.z >> 8u) & 0xFFu;
-  const uint nz = (g_push.slots.z >> 16u) & 0xFFu;
-  const uint tiles_x = (g_push.slots.z >> 24u) & 0xFFu;
-  const uint tiles_y = nz / tiles_x;
-  // the view depth of the pixel; the sky (stored 0) and anything beyond the volume read its far end
+static const uint kApplyFlagAllSamples = 0x100u;
+static const uint kApplyViewShift = 9u;
+static const float kApplyViewGain = 8.0;
+static const float kApplyViewGainHigh = 32.0;
+
+// The view depth of a stored depth value; the sky (stored 0) and anything beyond the volume read its far end.
+float ViewDepthOf(float stored) {
   float t = g_push.depth.y;
   if (stored > 0.0) {
     const float ndc = 1.0 - saturate(stored);
@@ -75,12 +75,17 @@ float4 main(float4 position : SV_Position) : SV_Target {
       t = min(z, g_push.depth.y);
     }
   }
+  return t;
+}
+
+// The volume at the view depth `t` and the picture position `uv`: (the light, soft limited; the transmittance the picture is to keep).
+float4 LookUp(float t, float2 uv, uint nx, uint ny, uint nz, uint tiles_x) {
+  const uint tiles_y = nz / tiles_x;
   const float s = float(nz) * log(max(t, g_push.depth.x) / g_push.depth.x) * g_push.depth.z - 0.5;
   const float s_floor = floor(s);
   const float blend = s - s_floor;
   const uint k0 = uint(clamp(s_floor, 0.0, float(nz) - 1.0));
   const uint k1 = min(uint(clamp(s_floor + 1.0, 0.0, float(nz) - 1.0)), nz - 1u);
-  const float2 uv = position.xy / g_push.sizes.xy;
   const float2 tile_texel = clamp(uv * float2(nx, ny), 0.5, float2(nx, ny) - 0.5);
   const float2 atlas = float2(nx * tiles_x, ny * tiles_y);
   const float2 uv0 = (float2(k0 % tiles_x * nx, k0 / tiles_x * ny) + tile_texel) / atlas;
@@ -92,4 +97,51 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float3 light = SoftLimit(max(v.rgb, 0.0), g_push.sizes.w);
   const float transmittance = lerp(1.0, saturate(v.a), g_push.sizes.z);
   return float4(light, transmittance);
+}
+
+float4 main(float4 position : SV_Position) : SV_Target {
+  const int2 pixel = int2(position.xy);
+  const uint flags = g_push.slots.w;
+  const uint guest_sample = flags & 0xFFu;
+  const uint view = (flags >> kApplyViewShift) & 3u;
+  const uint nx = g_push.slots.z & 0xFFu;
+  const uint ny = (g_push.slots.z >> 8u) & 0xFFu;
+  const uint nz = (g_push.slots.z >> 16u) & 0xFFu;
+  const uint tiles_x = (g_push.slots.z >> 24u) & 0xFFu;
+  const float2 uv = position.xy / g_push.sizes.xy;
+  float4 result;
+#if APPLY_MS
+  uint width, height, count;
+  g_textures_ms[g_push.slots.x].GetDimensions(width, height, count);
+  if ((flags & kApplyFlagAllSamples) != 0u && count > 1u) {
+    float lo = 1e30;
+    float hi = 0.0;
+    float sum = 0.0;
+    [loop] for (uint i = 0u; i < count; ++i) {
+      const float t = ViewDepthOf(g_textures_ms[g_push.slots.x].Load(pixel, i).r);
+      lo = min(lo, t);
+      hi = max(hi, t);
+      sum += t;
+    }
+    // within half a slice's thickness the volume is as good as linear: one lookup at the mean
+    const float tolerance = 0.5 * (exp(1.0 / (g_push.depth.z * float(nz))) - 1.0);
+    if (hi - lo <= tolerance * lo) {
+      result = LookUp(sum / float(count), uv, nx, ny, nz, tiles_x);
+    } else {
+      result = 0.0;
+      [loop] for (uint j = 0u; j < count; ++j) {
+        result += LookUp(ViewDepthOf(g_textures_ms[g_push.slots.x].Load(pixel, j).r), uv, nx, ny, nz, tiles_x);
+      }
+      result /= float(count);
+    }
+  } else {
+    result = LookUp(ViewDepthOf(g_textures_ms[g_push.slots.x].Load(pixel, guest_sample).r), uv, nx, ny, nz, tiles_x);
+  }
+#else
+  result = LookUp(ViewDepthOf(g_textures[g_push.slots.x].Load(int3(pixel, 0)).r), uv, nx, ny, nz, tiles_x);
+#endif
+  if (view != 0u) {
+    return float4(result.rgb * (view == 2u ? kApplyViewGain : (view == 3u ? kApplyViewGainHigh : 1.0)), 0.0);
+  }
+  return result;
 }

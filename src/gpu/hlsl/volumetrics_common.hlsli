@@ -27,7 +27,8 @@ RWTexture2D<float4> g_out : register(u0, space3);
 
 struct VolPush {
   // x the history volume's bindless slot (the scatter of last frame), y the scatter volume's slot (the integrate reads it), z flags (bit 0:
-  // history in use, bit 1: shadows of the headlights in use), w unused
+  // history in use, bit 1: shadows of the headlights in use), w the inject's flags (bit 0: the lamps' term averaged over the slice and sampled at the voxel's centre,
+  // bit 1: the steady headlights, VOL-STABLE-2)
   uint4 slots;
   // unused for now (room for a debug view)
   float4 data;
@@ -59,6 +60,8 @@ static const uint kO_shadow_atlas = 704;
 static const uint kO_lamps = 720;
 static const uint kO_headlights = 3792;
 static const uint kO_shadow_views = 4048;
+static const uint kO_prev_counts = 4432;
+static const uint kO_prev_headlights = 4448;
 
 float4 VolF4(uint offset) { return asfloat(g_vol.Load4(offset)); }
 uint4 VolU4(uint offset) { return g_vol.Load4(offset); }

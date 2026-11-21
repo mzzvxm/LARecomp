@@ -627,7 +627,7 @@ void ShaderConstantsMatch(const std::string& dir) {
             common.find("lerp(strength, on_car, saturate(vehicle))") != std::string::npos,
         "the shader's vehicle strength is the header's formula");
   Check(apply.find("SsgiStrengthFor(g_push.shape.y, gi_vehicle)") != std::string::npos &&
-            apply.find("AoIsVehicle(AoLoadLinear(g_push.slots.w, pixel))") != std::string::npos &&
+            apply.find("AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), pixel))") != std::string::npos &&  // (the depth image's slot is the low half of slots.w since GB-E: the normal image's is the high half)
             apply.find("vehicle_sum += (AoIsVehicle(td) ? 1.0f : 0.0f) * w;") != std::string::npos,
         "the apply takes the strength from the vehicle share of the pixel's depth neighbourhood (the depth pass's mark)");
   // ao.cpp

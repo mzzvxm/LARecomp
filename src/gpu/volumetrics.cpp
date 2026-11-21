@@ -20,11 +20,13 @@
 #include "gpu_class.h"
 #include "host_shaders.h"
 #include "live_text.h"
+#include "mc_engine/cinematic/capture_mode.h"
 #include "pass_timing.h"
 #include "scene_noise.h"
 #include "shaders.h"
 #include "texture_bytes.h"
 #include "vol_lamp_list.h"
+#include "volumetrics_stable.h"
 
 namespace mcla::gpu {
 
@@ -334,6 +336,8 @@ plume::RenderPipeline* Volumetrics::Pipeline(uint32_t variant) {
 void Volumetrics::BeginFrame() {
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_vol_census.Get()));
   keep_cones_ = larecomp::settings::mcla_gpu_vol_keep_cones.Get();
+  stable_ = larecomp::settings::mcla_gpu_vol_stable.Get();
+  view_ = uint32_t(std::clamp(larecomp::settings::mcla_gpu_vol_view.Get(), 0, 3));
   const vol::Choice choice = ReadChoice();
   Level level = choice.level;
   if (!ready_ && vol::On(level) && !shaders_failed_ && MakeLayoutAndShaders()) {
@@ -538,6 +542,7 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
   anchor_seen_ = true;
   if (play_view_ == pause_view_) {
     have_previous_ = false;
+    have_older_ = false;
     vs_pose_trusted_ = false;
     return;
   }
@@ -547,12 +552,14 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
   const float height = BankFloat(ps, 62, 1);
   if (!(width >= 16.0f && width <= 16384.0f && height >= 16.0f && height <= 16384.0f)) {
     have_previous_ = false;
+    have_older_ = false;
     vs_pose_trusted_ = false;
     return;
   }
   temporal::Camera camera;
   if (temporal::ExtractCamera(ps, uint32_t(width + 0.5f), uint32_t(height + 0.5f), frame_, &camera) != temporal::Reject::kNone) {
     have_previous_ = false;
+    have_older_ = false;
     vs_pose_trusted_ = false;
     return;
   }
@@ -575,6 +582,11 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
     }
   } else {
     vs_pose_trusted_ = false;
+  }
+  // The camera of the frame before the previous one, for the volume that has to guess this frame's camera (VOL-STABLE-2: volumetrics_stable.h ExtrapolateCamera).
+  have_older_ = same_kind;
+  if (same_kind) {
+    cam_older_ = CameraOf(previous_);
   }
   previous_ = camera;
   previous_pause_ = pause;
@@ -887,6 +899,16 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   // camera); the lens is always the previous frame's.
   vol::VolCamera camera = CameraOf(previous_);
   const bool current = PoseFromVertexConstants(&camera);
+  // Where the vertex constants are not trusted the previous camera is a frame behind a moving one: the steady rules move it on by its own last step (a still camera stays
+  // where it is; a cut, or an axis that turned half way round, is left alone).
+  bool extrapolated = false;
+  if (!current && stable_ && have_older_) {
+    vol::VolCamera guess;
+    if (vol::ExtrapolateCamera(cam_older_, camera, &guess)) {
+      camera = guess;
+      extrapolated = true;
+    }
+  }
 
   vol::VolFrameContext context;
   context.frame = frame_;
@@ -897,8 +919,15 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   context.render_width = plan.render[0];
   context.render_height = plan.render[1];
   context.upscaler = upscaler_running;
+  // The time since the last volume: the scene clock's (the wall clock, or a take's frames times its step), so that a lamp's fade of 0.35 s and the haze's drift run at
+  // the same speed at any frame rate; the first version counted the frames over 60 (a lamp faded in 88 ms at 240 FPS).
+  const double clock_ms = mc::cinematic::SceneClockNowMs(frame_);
   context.elapsed_s = last_fill_frame_ != 0 && frame_ > last_fill_frame_ ? float(frame_ - last_fill_frame_) / 60.0f : 0.0f;
+  if (stable_ && last_fill_frame_ != 0 && frame_ > last_fill_frame_ && last_fill_ms_ > 0.0 && clock_ms > last_fill_ms_) {
+    context.elapsed_s = float(std::min((clock_ms - last_fill_ms_) * 1e-3, 5.0));
+  }
   last_fill_frame_ = frame_;
+  last_fill_ms_ = clock_ms;
   auto inputs = std::make_unique<vol::VolInputs>();
   FillDefaults(light, context, inputs.get());
   census_sun_fade_ = inputs->world.sun_dir[3];
@@ -950,7 +979,16 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   const bool history_ok = history_wanted && history_.valid && history_frame_ + 1 == frame_ && history_level_ == level_ && !cut;
   vol::HistoryUse use = history_;
   use.valid = history_ok;
-  use.weight = vol::HistoryWeight(grid, history_ok, step, turn);
+  if (stable_) {
+    // a time constant, and a move that is smoothed (volumetrics_stable.h): the noise of a frame does not pump with the steering and the history is as long in time at
+    // 240 FPS as at 60
+    const float dt = history_ok && clock_ms > history_clock_ms_ ? float((clock_ms - history_clock_ms_) * 1e-3) : 1.0f / 60.0f;
+    motion_ = history_ok ? vol::HistoryMotion(motion_, vol::RawMotion(step, turn, dt), dt) : 0.0f;
+    use.weight = vol::HistoryWeightFor(grid, history_ok, dt, motion_);
+  } else {
+    use.weight = vol::HistoryWeight(grid, history_ok, step, turn);
+  }
+  last_weight_ = use.weight;
   vol::VolGpuConstants constants;
   vol::MakeGpuConstants(grid, *inputs, camera, use, uint32_t(frame_), &constants);
   plan.grid = grid;
@@ -985,12 +1023,21 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   if (current) {
     ++current_camera_;
   }
+  if (extrapolated) {
+    ++extrapolated_camera_;
+  }
   history_.valid = true;
   history_.camera = camera;
+  // the headlights this volume was made with: the next frame's inject compares its own with them (a moving light leaves the history wrong where it was)
+  history_.headlight_count = stable_ ? std::min(constants.counts[1], uint32_t(vol::kMaxHeadlights)) : 0u;
+  for (uint32_t i = 0; i < history_.headlight_count; ++i) {
+    history_.headlights[i] = constants.headlights[i];
+  }
   history_.far_m = plan.far_m;
   history_.near_m = grid.near_m;
   history_.weight = 0.0f;
   history_frame_ = frame_;
+  history_clock_ms_ = clock_ms;
   history_level_ = level_;
   parity_ ^= 1u;
   pending_ = plan;
@@ -1053,6 +1100,7 @@ bool Volumetrics::RecordVolume(plume::RenderCommandList* list, uint32_t frame_sl
   push.slots[0] = use_history ? read.slot : 0u;
   push.slots[1] = write.slot;
   push.slots[2] = (use_history ? 1u : 0u) | (use_shadows ? 2u : 0u);
+  push.slots[3] = stable_ ? (vol::kInjectFlagSliceLamps | vol::kInjectFlagSteadyHeads) : 0u;
   list->setComputePipelineLayout(layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), 0);
   list->setComputeDescriptorSet(heap_->sampler_set(), 1);
@@ -1156,7 +1204,7 @@ bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending&
   push.slots[0] = depth_slot;
   push.slots[1] = accum_.slot;
   push.slots[2] = g.nx | (g.ny << 8) | (g.nz << 16) | (g.tiles_x << 24);
-  push.slots[3] = plan.depth_sample;
+  push.slots[3] = vol::ApplyWord(plan.depth_sample, stable_, view_);
   push.sizes[0] = float(plan.render[0]);
   push.sizes[1] = float(plan.render[1]);
   push.sizes[2] = plan.extinction_scale;
@@ -1292,6 +1340,9 @@ void Volumetrics::Census() {
                           "g sun {:.2f} lamp {:.2f} head {:.2f}, dimming {:.2f}, cap {:.1f}",
                           look_weights_.clear, look_weights_.fog, look_weights_.rain, look_weights_.night, look_weights_.low, look_weights_.day, look_.sigma, look_.lamp_strength,
                           look_.head_strength, look_.sun_strength, look_.g_sun, look_.g_lamp, look_.g_head, look_.extinction, look_.cap));
+  // VOL-STABLE: which rules ran (mcla_gpu_vol_stable), the history's weight of the last volume and the camera's smoothed move, the debug view
+  REXLOG_INFO("{} frame {}: steady rules {}, history weight {:.3f} (camera move {:.3f}), camera moved on from the last two frames' in {} of {} volumes, debug view {}", kPrefix, frame_,
+              stable_ ? "on" : "off (the first version)", last_weight_, motion_, extrapolated_camera_, volumes_, view_);
 }
 
 }  // namespace mcla::gpu

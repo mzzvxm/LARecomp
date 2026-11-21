@@ -286,7 +286,7 @@ constexpr Audited kAudited[] = {
     {"textures.cpp", "memcmp(this", 1, "TextureKey::operator==: 24 bytes, no padding (kNoPadding), every member set"},
     {"pipelines.cpp", "XXH3(&", 1, "PipelineKeyHash: the same key"},
     {"textures.cpp", "XXH3(&", 1, "TextureKeyHash: the same key"},
-    {"edram.cpp", "XXH3(&", 1, "FramebufferKeyHash: 64 bytes (five pointers, five generations, a count), no padding, every member set"},
+    {"edram.cpp", "XXH3(&", 1, "FramebufferKeyHash: 104 bytes (eight pointers, five generations, the counts), no padding, every member set"},
     {"scene.cpp", "memcmp(&", 2,
      "the last uploaded SharedConstants (the plain draws' and the variant draws' kept copies): members of 4 bytes only, so no padding is possible; a difference costs one upload "
      "(the variant blocks are compared as arrays of bytes: memcmp(block.data(), ...), not as structs)"},

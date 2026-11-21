@@ -5,7 +5,8 @@
 //   <build dir>/src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>]
 //
 // It checks: the octahedral code (the 16 bit error, "no data" kept free, the fold), the albedo and the material word, the derivative normal's arithmetic,
-// the constants block's layout, the light set's conversion, the draw decision, the window, the trigger and the setting's words; then it compiles the
+// the constants block's layout, the light set's conversion, the draw decision (what each kind of draw does to the planes, under each backend capability), the planes
+// and the frame's plan, the consumers' requests, MSAA and the memory, the views that never write, the window, the trigger and the setting's words; then it compiles the
 // .hlsli ITSELF as C++ (through the shim of the HLSL vector types below) and compares each of its functions with the twin on random inputs, and compares
 // every GB_* define of the .hlsli with the C++ value. Without an argument the .hlsli is found next to this file (hlsl/gbuffer_common.hlsli).
 
@@ -384,9 +385,10 @@ gb::DrawFacts GoodDraw() {
 
 void RuleChecks() {
   using gb::Why;
+  using gb::PlaneMode;
   {
     const gb::DrawDecision d = gb::Decide(GoodDraw());
-    Check(d.why == Why::kWrites && d.variant == kGBufferWord && d.attach(), "an opaque lit draw of the main view takes the variant");
+    Check(d.why == Why::kWrites && d.variant == kGBufferWord && d.attach() && d.writes() && d.mode == PlaneMode::kWrite, "an opaque lit draw of the main view takes the variant");
   }
   {
     gb::DrawFacts f = GoodDraw();
@@ -403,36 +405,51 @@ void RuleChecks() {
     const gb::DrawDecision d = gb::Decide(f);
     Check(d.why == Why::kWrites && d.variant == kHeadlightGBufferWord && d.attach(), "a draw with the headlight takes the headlight and G-buffer word");
     f.variant_word = 0;
-    Check(gb::Decide(f).why == Why::kMaskedOtherVariant && gb::Decide(f).attach() == gb::kMaskedDrawsAttach && gb::Decide(f).variant == 0,
-          "a draw with the headlight on a shader that has no composed word writes nothing: the headlight stays, the G-buffer does not");
+    gb::DrawDecision n = gb::Decide(f);
+    Check(n.why == Why::kMaskedOtherVariant && !n.attach() && n.variant == 0,
+          "a draw with the headlight on a shader that has no composed word writes nothing: the headlight stays, the G-buffer does not (writers only: not carried)");
+    f.masked_attach = true;
+    n = gb::Decide(f);
+    Check(n.why == Why::kMaskedOtherVariant && n.mode == PlaneMode::kClear && n.variant == 0, "... and with the non writers carried it clears what it covers");
   }
   {
     gb::DrawFacts f = GoodDraw();
     f.variant_word = 0;
     f.ps_variant_before = 1;
-    Check(gb::Decide(f).why == Why::kMaskedNoVariant && gb::Decide(f).attach() == gb::kMaskedDrawsAttach && gb::Decide(f).variant == 0, "an alpha draw whose shader has no twin writes nothing (and binds the sidecar masked only when kMaskedDrawsAttach)");
+    Check(gb::Decide(f).why == Why::kMaskedNoVariant && !gb::Decide(f).attach() && gb::Decide(f).variant == 0, "an alpha draw whose shader has no twin writes nothing (not carried while the non writers do not bind the sidecar)");
+    f.masked_attach = true;
+    Check(gb::Decide(f).why == Why::kMaskedNoVariant && gb::Decide(f).mode == PlaneMode::kClear, "... and clears when they do");
   }
   {
     gb::DrawFacts f = GoodDraw();
     f.variant_word = 0;
-    Check(gb::Decide(f).why == Why::kMaskedNoVariant && gb::Decide(f).attach() == gb::kMaskedDrawsAttach, "a shader with no variant writes nothing");
+    Check(gb::Decide(f).why == Why::kMaskedNoVariant && !gb::Decide(f).attach(), "a shader with no variant writes nothing, writers only: not carried");
+    f.masked_attach = true;
+    const gb::DrawDecision d = gb::Decide(f);
+    Check(d.why == Why::kMaskedNoVariant && d.attach() && !d.writes() && d.mode == PlaneMode::kClear,
+          "an opaque shader with no variant CLEARS the planes where it draws (no stale normal of a surface behind it)");
   }
   {
     gb::DrawFacts f = GoodDraw();
     f.rt0_blended = true;
-    Check(gb::Decide(f).why == Why::kMaskedBlended && gb::Decide(f).attach() == gb::kMaskedDrawsAttach, "a blended draw writes nothing");
+    Check(gb::Decide(f).why == Why::kMaskedBlended && !gb::Decide(f).attach(), "a blended draw writes nothing");
+    f.masked_attach = true;
+    Check(gb::Decide(f).why == Why::kMaskedBlended && gb::Decide(f).mode == PlaneMode::kMask, "a blended draw leaves the planes as they are (write mask 0) when the non writers carry the sidecar");
+    f.variant_word = 0;
+    Check(gb::Decide(f).mode == PlaneMode::kMask, "blended wins over no variant: it does not define the surface");
   }
   {
     gb::DrawFacts f = GoodDraw();
     f.rt0_writes = false;
-    Check(gb::Decide(f).why == Why::kMaskedNoColor && gb::Decide(f).attach() == gb::kMaskedDrawsAttach, "a draw that writes no colour writes nothing");
+    Check(gb::Decide(f).why == Why::kMaskedNoColor && !gb::Decide(f).attach(), "a draw that writes no colour writes nothing");
+    f.masked_attach = true;
+    Check(gb::Decide(f).mode == PlaneMode::kMask, "a draw that writes no colour leaves the planes as they are");
   }
   {
     gb::DrawFacts f = GoodDraw();
     f.ps_variant_before = 7;
     f.variant_word = 0;
-    Check(gb::Decide(f).why == Why::kMaskedOtherVariant && gb::Decide(f).attach() == gb::kMaskedDrawsAttach, "a draw with another variant writes nothing");
-    Check(!gb::kMaskedDrawsAttach, "while Plume's D3D12 back end has no independent blend only the draws that write the sidecar bind it (gbuffer_rules.h kMaskedDrawsAttach)");
+    Check(gb::Decide(f).why == Why::kMaskedOtherVariant && !gb::Decide(f).attach(), "a draw with another variant writes nothing");
   }
   {
     gb::DrawFacts f = GoodDraw();
@@ -443,7 +460,7 @@ void RuleChecks() {
     Check(gb::Decide(f).why == Why::kNotMainView && !gb::Decide(f).attach(), "not the main view: nothing");
     f = GoodDraw();
     f.main_samples = 4;
-    Check(gb::Decide(f).why == Why::kPauseView && !gb::Decide(f).attach(), "the pause world (4 samples): nothing in phase 1");
+    Check(gb::Decide(f).why == Why::kPauseView && !gb::Decide(f).attach(), "the pause world (4 samples): nothing");
     f = GoodDraw();
     f.main_samples = 1;
     Check(gb::Decide(f).why == Why::kWrites, "the play view without MSAA (1 sample) writes");
@@ -451,11 +468,10 @@ void RuleChecks() {
     f.guest_color_count = 2;
     Check(gb::Decide(f).why == Why::kNotOneColor, "two guest colour targets: nothing");
     f = GoodDraw();
-    f.has_depth = false;
-    Check(gb::Decide(f).why == Why::kNoDepth, "no depth: nothing");
-    f = GoodDraw();
     f.window_open = false;
     Check(gb::Decide(f).why == Why::kWindowClosed && !gb::Decide(f).attach(), "a closed window: nothing");
+    f.masked_attach = true;
+    Check(gb::Decide(f).why == Why::kWindowClosed && !gb::Decide(f).attach(), "a closed window: nothing, whatever the policy (the consumers read the planes after the trigger)");
   }
   // the window
   {
@@ -512,10 +528,391 @@ void RuleChecks() {
     Check(gb::PlanesFor(gb::Setting::kOff, 7) == 0 && gb::PlanesFor(gb::Setting::kNormals, 0) == 1 && gb::PlanesFor(gb::Setting::kFull, 0) == 7 &&
               gb::PlanesFor(gb::Setting::kAuto, 0) == 0 && gb::PlanesFor(gb::Setting::kAuto, 5) == 5 && gb::PlanesFor(gb::Setting::kAuto, 0xFF) == 7,
           "the planes each setting makes (auto is what the consumers ask for)");
-    Check(gb::ViewOf(0) == gb::View::kOff && gb::ViewOf(1) == gb::View::kNormal && gb::ViewOf(6) == gb::View::kLitWeight && gb::ViewOf(7) == gb::View::kOff &&
-              gb::ViewOf(-1) == gb::View::kOff,
-          "the debug view's number");
+    Check(gb::ViewOf(0) == gb::View::kOff && gb::ViewOf(1) == gb::View::kNormal && gb::ViewOf(6) == gb::View::kLitWeight && gb::ViewOf(7) == gb::View::kMissing &&
+              gb::ViewOf(8) == gb::View::kOff && gb::ViewOf(-1) == gb::View::kOff,
+          "the debug view's number (7 is the missing pixels view, above it off)");
+    Check(int(gb::View::kCount) == 8, "eight views: off and seven");
   }
+}
+
+// ---------------------------------------------------------------------------
+// the planes, the frame's plan, the consumers' requests
+// ---------------------------------------------------------------------------
+void PlaneChecks() {
+  Check(gb::IsPlanePrefix(1) && gb::IsPlanePrefix(3) && gb::IsPlanePrefix(7) && !gb::IsPlanePrefix(0) && !gb::IsPlanePrefix(2) && !gb::IsPlanePrefix(5) && !gb::IsPlanePrefix(15),
+        "a stage's planes are a prefix: 1, 3 or 7 (the outputs' numbers are the planes')");
+  Check(gb::kStagePlanes == gb::PlaneBit(gb::kPlaneNormal), "this phase's stage writes the normal plane alone (RT2 and RT3 are placeholders)");
+  Check(gb::ColourSlotOfPlane(gb::kPlaneNormal) == 1 && gb::ColourSlotOfPlane(gb::kPlaneAlbedo) == 2 && gb::ColourSlotOfPlane(gb::kPlaneMaterial) == 3 && gb::kMaxColourSlots == 4,
+        "the planes are the key's colour slots 1, 2 and 3 after the guest's colour: four slots in all (draw_state.h kColorTargetCount)");
+  Check(gb::PlaneCount(0) == 0 && gb::PlaneCount(1) == 1 && gb::PlaneCount(7) == 3 && gb::PlaneCount(0xFF) == 3, "the plane count");
+  // what a frame's request becomes, for the stage as it is and for a stage with all three planes
+  Check(gb::WrittenPlanes(7) == 1 && gb::AttachedPlanes(7) == 1, "a full request of a stage that writes the normal: the normal is written and attached");
+  Check(gb::WrittenPlanes(gb::PlaneBit(gb::kPlaneAlbedo)) == 0 && gb::AttachedPlanes(gb::PlaneBit(gb::kPlaneAlbedo)) == 0,
+        "a request for a plane no stage writes makes no sidecar (nothing would hold data)");
+  Check(gb::WrittenPlanes(0) == 0 && gb::AttachedPlanes(0) == 0, "no request: no sidecar");
+  Check(gb::WrittenPlanes(1, 7) == 1 && gb::AttachedPlanes(1, 7) == 7, "a stage with all three planes declares three outputs: a request for the normal still attaches all three (the shader writes them)");
+  Check(gb::WrittenPlanes(6, 7) == 6 && gb::AttachedPlanes(6, 7) == 7 && gb::AttachedPlanes(2, 3) == 3, "the attached set is the stage's whole prefix whatever is written");
+  // channels: a draw whose RT0 write mask is the sidecar's too (one blend state) has to write all the channels the planes have
+  Check(gb::ChannelMaskOf(gb::PlaneFormat::kRg16Unorm) == 3 && gb::ChannelMaskOf(gb::PlaneFormat::kRgba8Unorm) == 0xF && gb::ChannelMaskOf(gb::PlaneFormat::kRg8Unorm) == 3,
+        "the formats' channels");
+  Check(gb::ChannelsNeeded(1) == 3 && gb::ChannelsNeeded(3) == 0xF && gb::ChannelsNeeded(7) == 0xF && gb::ChannelsNeeded(4) == 3 && gb::ChannelsNeeded(0) == 0,
+        "the channels a set of planes needs written (the albedo plane has all four)");
+  // the frame's plan from the setting and the consumers
+  {
+    gb::Wants wants;
+    Check(wants.Union() == 0, "no consumer wants anything at the start");
+    gb::FramePlan plan = gb::PlanFrame(gb::Setting::kAuto, wants.Union());
+    Check(plan.requested == 0 && plan.written == 0 && plan.attached == 0, "auto with no consumer: no sidecar at all (made only when a consumer asks)");
+    wants.Set(gb::Consumer::kAmbientOcclusion, gb::PlaneBit(gb::kPlaneNormal));
+    plan = gb::PlanFrame(gb::Setting::kAuto, wants.Union());
+    Check(plan.requested == 1 && plan.written == 1 && plan.attached == 1, "the ambient occlusion asks for the normal: auto makes it");
+    wants.Set(gb::Consumer::kLocalLights, 0xFF);
+    Check(wants.Of(gb::Consumer::kLocalLights) == 7 && wants.Union() == 7, "a want is cut to the three planes; the union of the wants");
+    plan = gb::PlanFrame(gb::Setting::kAuto, wants.Union());
+    Check(plan.requested == 7 && plan.written == 1 && plan.attached == 1, "the lights ask for all three: only the normal is written while the stage writes the normal");
+    plan = gb::PlanFrame(gb::Setting::kAuto, wants.Union(), 7);
+    Check(plan.requested == 7 && plan.written == 7 && plan.attached == 7, "... and all three with a stage that writes them");
+    wants.Set(gb::Consumer::kLocalLights, 0);
+    wants.Set(gb::Consumer::kAmbientOcclusion, 0);
+    Check(wants.Union() == 0 && gb::PlanFrame(gb::Setting::kAuto, wants.Union()).attached == 0, "a consumer that turns off withdraws its want: the sidecar goes");
+    wants.Set(gb::Consumer::kCount, 7);
+    Check(wants.Union() == 0 && wants.Of(gb::Consumer::kCount) == 0, "a want for a consumer the table does not have is ignored");
+    wants.Set(gb::Consumer::kAmbientOcclusion, 1);
+    plan = gb::PlanFrame(gb::Setting::kOff, wants.Union());
+    Check(plan.attached == 0, "off: no sidecar whatever the consumers want");
+    wants.Set(gb::Consumer::kAmbientOcclusion, 0);
+    plan = gb::PlanFrame(gb::Setting::kNormals, wants.Union());
+    Check(plan.written == 1 && plan.attached == 1, "normals: made with no consumer (the debug switch)");
+    plan = gb::PlanFrame(gb::Setting::kFull, wants.Union());
+    Check(plan.requested == 7 && plan.written == 1, "full: asks for all three, the stage writes what it writes");
+    Check(std::string(gb::ConsumerName(gb::Consumer::kAmbientOcclusion)) == "ambient occlusion" && std::string(gb::ConsumerName(gb::Consumer::kCount)) == "?", "the consumers' names");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MSAA and memory
+// ---------------------------------------------------------------------------
+void MsaaChecks() {
+  Check(gb::SidecarSamples(0) == 1 && gb::SidecarSamples(1) == 1 && gb::SidecarSamples(2) == 2 && gb::SidecarSamples(3) == 2 && gb::SidecarSamples(4) == 4 && gb::SidecarSamples(7) == 4 &&
+            gb::SidecarSamples(8) == 8 && gb::SidecarSamples(16) == 8,
+        "the sidecar's samples are the target's: 1, 2, 4 or 8");
+  // the survey's table (3.6) at 4K: normal only 33.2 / 66.4 / 132.7 MB, all three planes 82.9 / 165.9 / 331.8 MB (MB = 10^6 here as there)
+  constexpr uint32_t k4kW = 3840, k4kH = 2160;
+  Check(gb::SidecarBytes(1, k4kW, k4kH, 1) == 33177600ull && gb::SidecarBytes(1, k4kW, k4kH, 2) == 66355200ull && gb::SidecarBytes(1, k4kW, k4kH, 4) == 132710400ull,
+        "the normal plane at 4K takes 33 / 66 / 133 MB at 1x / 2x / 4x");
+  Check(gb::SidecarBytes(7, k4kW, k4kH, 1) == 82944000ull && gb::SidecarBytes(7, k4kW, k4kH, 4) == 331776000ull, "all three planes at 4K take 83 MB at 1x and 332 MB at 4x");
+  Check(gb::SidecarBytes(7, 1920, 1080, 1) == 20736000ull && gb::SidecarBytes(1, 1920, 1080, 2) == 16588800ull, "1080p: 20.7 MB for all three, 16.6 MB for the normal at 2x");
+  Check(gb::PlaneBytes(gb::kPlaneMaterial, 1000, 1000, 2) == 4000000ull && gb::PlaneBytes(gb::kPlaneAlbedo, 1000, 1000, 1) == 4000000ull && gb::PlaneBytes(gb::kPlaneNormal, 1000, 1000, 1) == 4000000ull,
+        "a plane's bytes: the albedo 4 a sample, the material 2, the normal 4");
+  Check(gb::SidecarBytes(0, k4kW, k4kH, 8) == 0, "no planes, no bytes");
+  Check(gb::SidecarAffordable(1, k4kW, k4kH, 8) && gb::SidecarAffordable(7, k4kW, k4kH, 4) && !gb::SidecarAffordable(7, k4kW, k4kH, 8) && gb::SidecarAffordable(7, 1920, 1080, 8),
+        "the cap (512 MiB): all planes at 8x 4K are too much (663 MB), the normal alone at 8x 4K (266 MB) and all three at 8x 1080p (166 MB) are fine");
+  // the pause world's 4x would be 133 MB (normal) / 332 MB (all) at 4K: not made, whatever the cap says
+  gb::DrawFacts f = GoodDraw();
+  f.main_samples = 4;
+  Check(gb::Decide(f).why == gb::Why::kPauseView && !gb::Decide(f).attach(), "the 4x pause world never carries the sidecar");
+  f.masked_attach = true;
+  Check(!gb::Decide(f).attach(), "... not even with the non writers carried");
+  // the 2x and 1x main views are the play view at any host level: Decide only looks at the guest's samples
+  for (uint32_t guest : {1u, 2u}) {
+    f = GoodDraw();
+    f.main_samples = guest;
+    Check(gb::Decide(f).why == gb::Why::kWrites, "the play view at the guest's 1 or 2 samples writes (the host's samples are the sidecar's own business)");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the backend's blend capability, the attach policy, what each draw does to the planes
+// ---------------------------------------------------------------------------
+void AttachChecks() {
+  using gb::PlaneMode;
+  using gb::Why;
+  Check(gb::CapsFor(true).per_target_blend, "Vulkan has a blend state and write mask per colour target");
+  Check(gb::CapsFor(false).per_target_blend == gb::kD3d12PerTargetBlend && !gb::kD3d12PerTargetBlend,
+        "Plume's D3D12 back end has one until its pin has 5d60b70: flip kD3d12PerTargetBlend then (and this check)");
+  Check(gb::AttachOfWord("writers") == gb::AttachSetting::kWriters && gb::AttachOfWord("ALL") == gb::AttachSetting::kAll && gb::AttachOfWord("auto") == gb::AttachSetting::kAuto &&
+            gb::AttachOfWord("") == gb::AttachSetting::kAuto && gb::AttachOfWord("x") == gb::AttachSetting::kAuto,
+        "the attach setting's words (a word that is none is auto)");
+  Check(gb::MaskedDrawsAttach(gb::AttachSetting::kAuto, gb::CapsFor(true)) && !gb::MaskedDrawsAttach(gb::AttachSetting::kAuto, gb::CapsFor(false)),
+        "auto: the non writers bind the sidecar where each target has its own blend state (Vulkan), not on D3D12 without the Plume fix");
+  Check(!gb::MaskedDrawsAttach(gb::AttachSetting::kWriters, gb::CapsFor(true)) && gb::MaskedDrawsAttach(gb::AttachSetting::kAll, gb::CapsFor(false)),
+        "writers: never; all: always (the build is trusted to have the Plume fix)");
+  // the blend of each mode
+  {
+    const gb::PlaneBlend w = gb::BlendFor(PlaneMode::kWrite);
+    const gb::PlaneBlend c = gb::BlendFor(PlaneMode::kClear);
+    const gb::PlaneBlend m = gb::BlendFor(PlaneMode::kMask);
+    Check(!w.zero && w.write_mask == 0xF, "a writer: no blend, every channel");
+    Check(c.zero && c.write_mask == 0xF, "a clear: blend ZERO / ZERO, every channel");
+    Check(!m.zero && m.write_mask == 0, "a mask: write mask 0");
+  }
+  // the backends with one blend state: the writer's RT0 mask is the sidecar's
+  {
+    gb::DrawFacts f = GoodDraw();
+    f.per_target_blend = false;
+    f.rt0_write_mask = 0xF;
+    Check(gb::Decide(f).why == Why::kWrites, "one blend state, a full RT0 write mask: the normal plane is written");
+    f.rt0_write_mask = 0x3;
+    Check(gb::Decide(f).why == Why::kWrites, "... red and green are enough for the normal");
+    f.rt0_write_mask = 0x7;
+    Check(gb::Decide(f).why == Why::kWrites, "... red, green and blue too");
+    f.rt0_write_mask = 0x8;
+    Check(gb::Decide(f).why == Why::kMaskedNarrowMask && !gb::Decide(f).attach() && gb::Decide(f).variant == 0, "an alpha only RT0 mask cannot write the normal: not carried, the game's shader draws");
+    f.rt0_write_mask = 0x1;
+    Check(gb::Decide(f).why == Why::kMaskedNarrowMask, "a red only one cannot either");
+    f.planes = 7;
+    f.rt0_write_mask = 0x7;
+    Check(gb::Decide(f).why == Why::kMaskedNarrowMask, "with the albedo plane (RGBA) RT0's mask has to be all four channels");
+    f.rt0_write_mask = 0xF;
+    Check(gb::Decide(f).why == Why::kWrites, "... and a full one is");
+    f.per_target_blend = true;
+    f.rt0_write_mask = 0x8;
+    Check(gb::Decide(f).why == Why::kWrites && gb::Decide(f).attach(), "with a blend state per target the writer's own mask is used, RT0's does not matter");
+    f.masked_attach = true;
+    Check(gb::Decide(f).mode == PlaneMode::kWrite, "and the policy does not change a writer");
+  }
+  // the draws that are in the main identity and are not the play view
+  {
+    gb::DrawFacts f = GoodDraw();
+    f.per_target_blend = true;
+    f.masked_attach = true;
+    f.sub_view = true;
+    Check(gb::Decide(f).why == Why::kMaskedSubView && gb::Decide(f).mode == PlaneMode::kClear && gb::Decide(f).variant == 0,
+          "a draw into a window of the target (the rear view mirror) never writes the planes: its pixels are not the view's, it clears what it covers");
+    f.masked_attach = false;
+    Check(gb::Decide(f).why == Why::kMaskedSubView && !gb::Decide(f).attach(), "(writers only: not carried: the one inexactness, a window of 229 x 44 pixels keeps the main view's data)");
+    f = GoodDraw();
+    f.masked_attach = true;
+    f.depth_is_main = false;
+    Check(gb::Decide(f).why == Why::kMaskedOtherDepth && gb::Decide(f).mode == PlaneMode::kClear, "the main colour with another depth is not the view: never writes, clears");
+    f = GoodDraw();
+    f.masked_attach = true;
+    f.has_depth = false;
+    Check(gb::Decide(f).why == Why::kMaskedNoDepth && gb::Decide(f).mode == PlaneMode::kClear, "a colour draw with no depth clears what it covers");
+    f.rt0_blended = true;
+    Check(gb::Decide(f).mode == PlaneMode::kMask, "... unless it blends");
+    f = GoodDraw();
+    f.suppressed = true;
+    Check(gb::Decide(f).why == Why::kSuppressed && !gb::Decide(f).attach(), "a cutscene's frame never writes");
+    f.masked_attach = true;
+    Check(!gb::Decide(f).attach(), "not even the masks: the frame has no sidecar");
+    f = GoodDraw();
+    f.active = false;
+    f.suppressed = true;
+    Check(gb::Decide(f).why == Why::kOff, "off is off before anything else");
+  }
+  // the order of the reasons: the identity first, then what the draw does with its colour
+  {
+    gb::DrawFacts f = GoodDraw();
+    f.masked_attach = true;
+    f.main_samples = 4;
+    f.rt0_blended = true;
+    Check(gb::Decide(f).why == Why::kPauseView, "the pause world is told before a blended draw is");
+    f = GoodDraw();
+    f.masked_attach = true;
+    f.rt0_blended = true;
+    f.rt0_writes = false;
+    Check(gb::Decide(f).why == Why::kMaskedNoColor, "a draw with no colour is told before a blended one");
+    f = GoodDraw();
+    f.masked_attach = true;
+    f.sub_view = true;
+    f.variant_word = 0;
+    Check(gb::Decide(f).why == Why::kMaskedSubView, "the mirror is told before a missing variant");
+  }
+  Check(gb::IsMasked(Why::kMaskedBlended) && gb::IsMasked(Why::kMaskedNarrowMask) && gb::IsMasked(Why::kMaskedSubView) && !gb::IsMasked(Why::kWrites) && !gb::IsMasked(Why::kOff) &&
+            !gb::IsMasked(Why::kPauseView) && !gb::IsMasked(Why::kWindowClosed),
+        "the log's masked counts are the draws in the window that did not write");
+}
+
+// ---------------------------------------------------------------------------
+// the views that never write: the mirror's window, the cutscene gate
+// ---------------------------------------------------------------------------
+void ViewMaskChecks() {
+  Check(gb::IsSubViewport(229, 1280) && gb::IsSubViewport(639, 1280) && !gb::IsSubViewport(640, 1280) && !gb::IsSubViewport(1280, 1280) && !gb::IsSubViewport(1000, 1280) &&
+            !gb::IsSubViewport(1, 0),
+        "a viewport narrower than half the pitch is a window (the mirror's 229 of 1280), a whole view is not");
+  Check(gb::IsSubViewport(458, 2560) && !gb::IsSubViewport(1280, 2560) && gb::IsSubViewport(1279, 2560), "at 2x the render scale the same shares hold (host pixels on both sides)");
+  gb::CutsceneGate gate;
+  Check(!gate.active() && !gate.Update(0) && !gate.Update(0), "no cutscene until the hook is called");
+  Check(gate.Update(1) && gate.active(), "the cutscene camera ran: the frame is a cutscene's");
+  Check(gate.Update(2) && gate.Update(3), "it runs every frame of the cutscene");
+  Check(gate.Update(3) && gate.active(), "one frame without a call is still the cutscene (the hook runs on the guest thread, a frame early or late)");
+  Check(!gate.Update(3) && !gate.active(), "the second quiet frame ends it");
+  Check(!gate.Update(3), "and it stays ended");
+  Check(gate.Update(9), "a later cutscene starts it again");
+}
+
+// ---------------------------------------------------------------------------
+// the pause world is the GUEST's 4 samples, never the host's MSAA level; the frame's kind; the camera kept from the last frame's anchor (K5, K9 of the phase-1 run)
+// ---------------------------------------------------------------------------
+gb::CameraAxes MakeAxes(float yaw_degrees) {
+  gb::CameraAxes axes;
+  const float yaw = yaw_degrees * 3.14159265f / 180.0f;
+  axes.right = gb::Vec3{std::cos(yaw), 0.0f, -std::sin(yaw)};
+  axes.up = gb::Vec3{0.0f, 1.0f, 0.0f};
+  axes.forward = gb::Vec3{std::sin(yaw), 0.0f, std::cos(yaw)};
+  axes.tan_half_x = 0.7f;
+  axes.tan_half_y = 0.4f;
+  axes.width = 1280;
+  axes.height = 720;
+  return axes;
+}
+void PauseAndCameraChecks() {
+  using gb::Why;
+  // K9: the pause world is told by the guest's samples. The host's MSAA level (mcla_gpu_msaa 1, 2, 4, 8) is not an input of the decision: the play view at 2 guest samples is the
+  // play view at every host level, and a sidecar at 4 host samples (what the dx-day-m4 run had) belongs to it.
+  Check(gb::kPauseGuestSamples == 4 && gb::IsPauseWorld(4) && !gb::IsPauseWorld(1) && !gb::IsPauseWorld(2) && !gb::IsPauseWorld(8) && !gb::IsPauseWorld(0), "only the guest's 4 samples are the pause world");
+  for (uint32_t host : {1u, 2u, 4u, 8u}) {
+    gb::DrawFacts f = GoodDraw();
+    f.main_samples = 2;  // the play view of the game's MSAA: the guest's samples, whatever the host does with them
+    const gb::DrawDecision play = gb::Decide(f);
+    Check(play.why == Why::kWrites && play.attach() && gb::SidecarSamples(host) == host, Num("the play view carries the sidecar at host MSAA %.0f (a %.0f sample sidecar)", double(host), double(gb::SidecarSamples(host))));
+    f.main_samples = 4;
+    f.masked_attach = true;
+    Check(gb::Decide(f).why == Why::kPauseView && !gb::Decide(f).attach(), Num("the pause world carries nothing, with a host MSAA of %.0f and the non writers carried", double(host)));
+  }
+  for (Why why : {Why::kWrites, Why::kMaskedBlended, Why::kMaskedNoVariant, Why::kMaskedOtherVariant, Why::kMaskedNoColor, Why::kMaskedNoDepth, Why::kMaskedOtherDepth,
+                  Why::kMaskedSubView, Why::kMaskedNarrowMask, Why::kNotOneColor, Why::kWindowClosed}) {
+    Check(gb::IsPlayViewWhy(why), "an outcome of a play view draw is the play view's");
+  }
+  for (Why why : {Why::kOff, Why::kNotMainView, Why::kPauseView, Why::kSuppressed}) {
+    Check(!gb::IsPlayViewWhy(why), "off, a side view, the pause world and a cutscene's frame are not the play view's");
+  }
+  gb::ViewTally pause;
+  pause.Note(Why::kPauseView);
+  pause.Note(Why::kPauseView);
+  pause.Note(Why::kNotMainView);
+  Check(pause.pause_world() && !pause.play_world() && !pause.mixed() && pause.pause == 2 && pause.play == 0, "a frame of pause draws (and side views) is the pause world's");
+  gb::ViewTally play;
+  play.Note(Why::kWrites);
+  play.Note(Why::kMaskedBlended);
+  play.Note(Why::kNotMainView);
+  Check(play.play_world() && !play.pause_world() && !play.mixed() && play.play == 2, "a frame of play draws is the play view's");
+  gb::ViewTally both = play;
+  both.Note(Why::kPauseView);
+  Check(both.mixed() && !both.play_world() && !both.pause_world(), "a frame with both kinds is neither (and is counted)");
+  const gb::ViewTally none;
+  Check(!none.play_world() && !none.pause_world() && !none.mixed(), "a frame with no main view draw is neither");
+
+  // K5: the camera of the last frame, kept by the G-buffer itself at each anchor
+  gb::CameraKeeper keeper;
+  keeper.BeginFrame(100);
+  Check(keeper.Previous() == nullptr, "before any anchor there is no camera");
+  gb::CameraAxes a = MakeAxes(10.0f);
+  keeper.OnAnchor(&a, play);
+  Check(keeper.Previous() == nullptr, "the frame's own anchor comes after its draws: the camera is for the next frame");
+  keeper.BeginFrame(101);
+  const gb::CameraAxes* got = keeper.Previous();
+  Check(got != nullptr && got->width == 1280 && got->height == 720 && std::fabs(got->right.x - a.right.x) < 1e-6f && std::fabs(got->tan_half_x - 0.7f) < 1e-6f,
+        "the next frame has the last frame's camera, with no upscaler involved");
+  float ray[4], rot[4];
+  Check(got != nullptr && gb::MakeCameraRows(got->right, got->up, got->forward, got->tan_half_x, got->tan_half_y, 2560.0f, 1440.0f, ray, rot), "and it makes the constants' camera rows (at the draw's scale)");
+  gb::CameraAxes b = MakeAxes(12.0f);
+  keeper.OnAnchor(&b, play);
+  keeper.BeginFrame(102);
+  Check(keeper.Previous() != nullptr && std::fabs(keeper.Previous()->forward.x - b.forward.x) < 1e-6f, "every frame replaces it");
+  keeper.BeginFrame(103);  // a frame with no anchor (a cutscene's: the G-buffer does not track it): the next one has a gap
+  keeper.BeginFrame(104);
+  Check(keeper.Previous() == nullptr, "a gap of frames (a cutscene, the G-buffer off) leaves the next frame with none");
+  keeper.OnAnchor(&a, play);
+  keeper.BeginFrame(105);
+  Check(keeper.Previous() != nullptr, "and the frame after an anchor has one again");
+  keeper.OnAnchor(&a, pause);
+  keeper.BeginFrame(106);
+  Check(keeper.Previous() == nullptr, "the pause world's camera is not kept (another lens): the first play frame after it has none");
+  keeper.OnAnchor(&a, play);
+  keeper.BeginFrame(107);
+  Check(keeper.Previous() != nullptr, "the second play frame after it has one");
+  keeper.OnAnchor(&a, both);
+  keeper.BeginFrame(108);
+  Check(keeper.Previous() == nullptr, "a frame with both kinds keeps none");
+  keeper.OnAnchor(&a, play);
+  keeper.BeginFrame(109);
+  keeper.OnAnchor(nullptr, play);
+  keeper.BeginFrame(110);
+  Check(keeper.Previous() == nullptr, "an anchor whose constants gave no camera keeps none");
+  keeper.OnAnchor(&a, none);
+  keeper.BeginFrame(111);
+  Check(keeper.Previous() == nullptr, "a frame with no main view keeps none");
+  // the frame count wraps nothing in practice, but a repeated serial is not a "next" frame
+  keeper.OnAnchor(&a, play);
+  keeper.BeginFrame(111);
+  Check(keeper.Previous() == nullptr, "the same frame again is not the next frame");
+}
+
+// ---------------------------------------------------------------------------
+// what a writer's constants block holds
+// ---------------------------------------------------------------------------
+void ModeChecks() {
+  Check(gb::ModeBits(0, false, false) == 0, "nothing written, no bits");
+  Check(gb::ModeBits(1, false, false) == gb::kModeWriteNormal, "the normal plane: its bit");
+  Check(gb::ModeBits(7, false, false) == (gb::kModeWriteNormal | gb::kModeWriteAlbedo | gb::kModeWriteMaterial), "all three planes: three bits");
+  Check(gb::ModeBits(1, true, false) == (gb::kModeWriteNormal | gb::kModeDerivativeNormal), "a camera in the block: the permission for the derivative normal");
+  Check(gb::ModeBits(1, false, true) == (gb::kModeWriteNormal | gb::kModeFlipBackface), "a two sided draw: the back face flip");
+  const uint32_t word = gb::DefaultMaterialWord();
+  Check(gb::ClassOfByte(gb::MaterialRt3ClassAndFlags(word)) == gb::SurfaceClass::kWorld && gb::MaterialRt3Smoothness(word) == 0 && gb::MaterialLitByte(word) == 255 &&
+            gb::FlagsOfByte(gb::MaterialRt3ClassAndFlags(word)) == 0,
+        "the default material: the world class, smoothness 0, lit by the forward lights");
+}
+
+// ---------------------------------------------------------------------------
+// the camera rows of the block: the world point a fragment's position gives back, for a left handed and a right handed world
+// ---------------------------------------------------------------------------
+void CameraChecks() {
+  using gb::Vec3;
+  const float width = 1920.0f, height = 1080.0f;
+  const float tan_y = std::tan(0.5f * 0.9f);  // a vertical field of view of 0.9 radians
+  const float tan_x = tan_y * width / height;
+  int bad = 0;
+  int tried = 0;
+  for (int handed = 0; handed < 2; ++handed) {
+    for (int k = 0; k < 24; ++k) {
+      const float yaw = 0.4f * float(k) - 3.0f;
+      const float pitch = 0.9f * std::sin(0.7f * float(k));
+      const Vec3 forward = {std::cos(pitch) * std::sin(yaw), std::sin(pitch), std::cos(pitch) * std::cos(yaw)};
+      const Vec3 world_up = {0.0f, 1.0f, 0.0f};
+      // left handed: right = up x forward; right handed (a camera that looks along minus z): right = forward x up. up is right x forward or forward x right.
+      const Vec3 right = gb::Normalize(handed == 0 ? gb::Cross(world_up, forward) : gb::Cross(forward, world_up));
+      const Vec3 up = gb::Normalize(handed == 0 ? gb::Cross(forward, right) : gb::Cross(right, forward));
+      const float det = gb::Dot(right, gb::Cross(up, forward));
+      Check((handed == 0 && det > 0.99f) || (handed == 1 && det < -0.99f), Num("the test's camera %d has the expected handedness (det %.3f)", double(handed), double(det)));
+      float ray[4];
+      float cam[4];
+      Check(gb::MakeCameraRows(right, up, forward, tan_x, tan_y, width, height, ray, cam), "a camera's axes make the rows");
+      const gb::Quat q{cam[0], cam[1], cam[2], cam[3]};
+      Check(std::fabs(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w - 1.0f) < 1.0e-4f, "the rotation is a unit quaternion");
+      for (int j = 0; j < 6; ++j) {
+        // a point in front of the camera, by its screen position and distance
+        const float sx = -0.9f + 0.36f * float(j);
+        const float sy = 0.8f - 0.31f * float(j);
+        const float depth = 3.0f + 17.0f * float(j + 1);
+        const Vec3 p = right * (sx * tan_x * depth) + up * (sy * tan_y * depth) + forward * depth;
+        const float px = (sx * 0.5f + 0.5f) * width;
+        const float py = (0.5f - sy * 0.5f) * height;
+        const Vec3 got = gb::WorldPoint(ray, q, px, py, 1.0f / depth);
+        const Vec3 d = got - p;
+        ++tried;
+        if (gb::Length(d) > 2.0e-4f * depth) {
+          ++bad;
+          if (bad < 4) std::printf("camera %d.%d point %d: got (%.3f %.3f %.3f) want (%.3f %.3f %.3f)\n", handed, k, j, got.x, got.y, got.z, p.x, p.y, p.z);
+        }
+      }
+    }
+  }
+  Check(bad == 0, Num("the world point of a fragment is the point it was made from, left and right handed worlds, %d points (%d wrong)", double(tried), double(bad)));
+  // not a camera: a short axis, no field of view, no size, axes that are not square
+  float ray[4];
+  float cam[4];
+  const Vec3 x = {1, 0, 0}, y = {0, 1, 0}, z = {0, 0, 1};
+  Check(gb::MakeCameraRows(x, y, z, 1.0f, 0.5f, 100, 50, ray, cam), "the identity camera is one");
+  Check(!gb::MakeCameraRows(x * 0.5f, y, z, 1.0f, 0.5f, 100, 50, ray, cam), "a short axis is not");
+  Check(!gb::MakeCameraRows(x, y, z, 0.0f, 0.5f, 100, 50, ray, cam) && !gb::MakeCameraRows(x, y, z, 1.0f, 0.5f, 0, 50, ray, cam), "no field of view or no size is not");
+  Check(!gb::MakeCameraRows(x, x, z, 1.0f, 0.5f, 100, 50, ray, cam), "axes that are not square are not");
+  // the identity camera: the ray's numbers are the IF's (gbuffer_types.h: x = 2 tan(half fov x) / width, y = -tan(half fov x), z = -2 tan(half fov y) / height, w = tan(half fov y))
+  gb::MakeCameraRows(x, y, z, 1.0f, 0.5f, 100, 50, ray, cam);
+  Check(std::fabs(ray[0] - 0.02f) < 1e-6f && std::fabs(ray[1] + 1.0f) < 1e-6f && std::fabs(ray[2] + 0.02f) < 1e-6f && std::fabs(ray[3] - 0.5f) < 1e-6f &&
+            std::fabs(cam[3] - 1.0f) < 1e-6f && std::fabs(cam[0]) < 1e-6f,
+        "the identity camera: the IF's ray, no rotation");
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +1051,13 @@ int main(int argc, char** argv) {
   LayoutChecks();
   LightSetChecks();
   RuleChecks();
+  PlaneChecks();
+  MsaaChecks();
+  AttachChecks();
+  ViewMaskChecks();
+  PauseAndCameraChecks();
+  ModeChecks();
+  CameraChecks();
   const std::string text = ReadFile(hlsli);
   Check(!text.empty(), "the .hlsli is readable: " + hlsli);
   if (!text.empty()) HlslDefinesChecks(text);
