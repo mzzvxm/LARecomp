@@ -23,11 +23,15 @@
 //   kMasked              the shader draws cards with no normal (tree impostors, billboards): the plane gets the "no data" code (0), so a consumer falls back to the depth there and the
 //                        sidecar never keeps the wall that was behind the card. (kMaskedDrawsAttach is false today, so a masked draw binds the sidecar like any draw of the variant.)
 //
-// RT2, THE ALBEDO AND THE LIT WEIGHT (package GB-W1, gbuffer_albedo.h): every shader of the table also declares `out float4 oC2 : SV_Target2` (gbuffer_rules.h kStagePlanes is RT1 and RT2) and writes it
+// RT2, THE ALBEDO AND THE LIT WEIGHT (package GB-W1, gbuffer_albedo.h): every shader of the table also declares `out float4 oC2 : SV_Target2` (gbuffer_rules.h kStagePlanes is RT1, RT2 and RT3) and writes it
 // after the normal: `oC2 = float4(GbAlbedoEncode(<the shader's DiffuseSampler texel>), GbMaterialLit(<the draw's material word>))` under the mode bit GB_MODE_WRITE_ALBEDO, else the "no data" code (all
 // zero). The texel is found by AnalyseGBufferAlbedo on the retail text (the fetch at the texel's centre that yields x, y and z, at the top level of main) and read at the end of main, or captured right
 // after the fetch when the shader writes its register again. The shaders with no such fetch (the lamp lens and the traffic signal quads, ...) and the cards (kMasked) write the "no data" code. The edits
 // only add lines, so the colour path is still the game's.
+//
+// RT3, THE SMOOTHNESS, THE CLASS AND THE FLAGS (package GB-W2, gbuffer_material_plane.h): every shader of the table declares a fourth output `out float2 oC3 : SV_Target3` and writes after RT2
+// `oC3 = GbMaterialRt3(<the draw's material word>)` under GB_MODE_WRITE_MATERIAL, else the "no data" code. The word is the host's (the class table, the gloss, the per-texture row), so the
+// shaders with no albedo write it too; the cards (kMasked) write the "no data" code in RT3 as in the other planes.
 //
 // The derivative shaders compute the fragment's world position and its two derivatives at the TOP of main, right after the translator's declarations (`CubeMapData cubeMapData = ...;`),
 // so before the game's alpha test: a pixel that discards ends its invocation on Vulkan (OpKill), and the derivatives of its quad's other pixels would be undefined after it. (At the top they
@@ -47,8 +51,8 @@
 //
 // WIRING (done in feat/gb-phase1, GB-INTEGRATE-1):
 //   1. gbuffer.cpp's TransformGBufferHlsl sends every IsGBufferDayShader name to TransformGBufferDayHlsl (xCityDefault::PSCityDefault included: the table has it with k = 0, the spike's colour
-//      path plus the back face flip), and its VariantDef lists GBufferDayShaderNames() with its other names: one stage, one VariantDef. kGBufferVariantVersion is 4 (2 = the night family, 3 =
-//      the day families, 4 = RT2, the albedo and the lit weight): the pack's variants_gbuffer_version stamp line. kGBufferDayVersion below is the day stage's own number (the stage VariantDef of the tests); a change to the day
+//      path plus the back face flip), and its VariantDef lists GBufferDayShaderNames() with its other names: one stage, one VariantDef. kGBufferVariantVersion is 6 (2 = the night family, 3 =
+//      the day families, 4 = RT2, the albedo and the lit weight, 6 = RT3, the material): the pack's variants_gbuffer_version stamp line. kGBufferDayVersion below is the day stage's own number (the stage VariantDef of the tests); a change to the day
 //      table or edits bumps both.
 //   2. BuiltInVariants() (variant_pack.cpp) adds MakeGBufferVsVariant() (stamp lines variants_gbuffer_vs_*).
 //   3. Scene::GBufferKey pairs the vertex word per draw, after the pixel word was chosen (the vertex word is the renderer's to pair: no pixel word needs it, see above): when the draw's pixel
@@ -69,12 +73,14 @@
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_pack.h"
 #include "shaderpack/variants/gbuffer_albedo.h"
+#include "shaderpack/variants/gbuffer_material_plane.h"
 
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the table or the checks of the day pixel stage / of the vertex stage (a change to the first also bumps gbuffer.h's kGBufferVariantVersion, the second is its own stamp line).
 // 2: RT2 (the albedo and the lit weight: the third output, gbuffer_albedo.h); every pack stamped with 1 is built again.
-inline constexpr uint32_t kGBufferDayVersion = 2;
+// 3: RT3 (the smoothness, the class and the flags: the fourth output, gbuffer_material_plane.h, GB-W2).
+inline constexpr uint32_t kGBufferDayVersion = 3;
 inline constexpr uint32_t kGBufferVsVersion = 1;
 
 // The interpolant the vertex stage writes and the kVertexOrDerivative pixel shaders read: no pixel shader of the game reads TEXCOORD15 and no vertex shader of the families writes it.

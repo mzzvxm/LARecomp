@@ -3,8 +3,9 @@
 // MCLA GPU renderer -- the G-buffer's material channel, part 1 (package GB-F1 of perf/LIGHT-UNIFY.md 11.2; perf/GBUFFER-SURVEY.md 2.4 and 5)
 // ===========================================================================
 // What RT3 (smoothness, class, flags) and RT2.a (the lit weight) hold for the pixels of a DRAW, before any per-pixel refinement: the draw's material word
-// (gbuffer_types.h GBufferConstants::material, the layout in gbuffer_types.h; the encodings and the gloss formula in gbuffer_rules.h part 3). The shaders (GB-W2) put the
-// word's bytes into the planes and multiply the smoothness by their own spec map where they have one; the per-texture table (GB-F2) will refine the word per draw.
+// (gbuffer_types.h GBufferConstants::material, the layout in gbuffer_types.h; the encodings and the gloss formula in gbuffer_rules.h part 3). The shaders (GB-W2:
+// shaderpack/variants/gbuffer_material_plane.h) put the word's bytes into RT3 as they are (a spec map's per-pixel factor on the smoothness is not done); the per-texture table (GB-F2) refines
+// the word per draw.
 //
 // Three tables, all keyed by the game's own names so that nothing here is game content beyond what the shader sources of this repo already name (variants/gbuffer.h):
 //

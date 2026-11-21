@@ -10,7 +10,8 @@
 // The layout (gbuffer_types.h): RT1 R16G16_UNORM octahedral WORLD normal, 0 = no data; RT2 R8G8B8A8_UNORM sqrt(albedo) + lit weight;
 // RT3 R8G8_UNORM smoothness + (class | flags << 5).
 //
-// The pasted text must not use the names of the game's registers (r0..r31, c0..c255, p0, ps, a0, aL): every name here starts with Gb or GB_.
+// The pasted text must not use the names of the game's registers (r0..r31, c0..c255, p0, ps, a0, aL), nor those of its constants (`smoothness`, `metallic`, `baseColor` ...: in the SPIR-V text each is a
+// `#define` that would expand a parameter of that name, which broke 13 shaders of the car stage): every name here starts with Gb or GB_, parameters included.
 
 #ifndef MCLA_GBUFFER_COMMON_HLSLI
 #define MCLA_GBUFFER_COMMON_HLSLI
@@ -123,8 +124,8 @@ float3 GbAlbedoDecode(float3 stored) {
 // ---- RT3 and the material word -----------------------------------------------------------------------------------------------------------
 
 // The word of a draw (gbuffer_types.h): smoothness 0..1, the class, the flags (GB_FLAG_*), the lit weight 0..1.
-uint GbMaterialWord(float smoothness, uint cls, uint flags, float lit) {
-  uint s = uint(saturate(smoothness) * 255.0f + 0.5f);
+uint GbMaterialWord(float gbSmoothness, uint cls, uint flags, float lit) {
+  uint s = uint(saturate(gbSmoothness) * 255.0f + 0.5f);
   uint l = uint(saturate(lit) * 255.0f + 0.5f);
   return s | ((cls & uint(GB_CLASS_MASK)) << uint(GB_MATERIAL_CLASS_SHIFT)) | ((flags & 7u) << uint(GB_MATERIAL_FLAGS_SHIFT)) |
          (l << uint(GB_MATERIAL_LIT_SHIFT));
@@ -165,8 +166,8 @@ float GbSmoothnessOfAlpha(float alpha) {
   return 1.0f - sqrt(saturate(alpha));
 }
 
-float GbAlphaOfSmoothness(float smoothness) {
-  float r = 1.0f - saturate(smoothness);
+float GbAlphaOfSmoothness(float gbSmoothness) {
+  float r = 1.0f - saturate(gbSmoothness);
   return r * r;
 }
 

@@ -1,12 +1,13 @@
 #pragma once
 // ===========================================================================
-// LARecomp shader pack builder -- variant "gbuffer": a lit pixel shader that also writes the G-buffer's normal and albedo
+// LARecomp shader pack builder -- variant "gbuffer": a lit pixel shader that also writes the G-buffer's normal, albedo and material
 // ===========================================================================
 // perf/GBUFFER-SURVEY.md (the hybrid path): the game's forward lighting stays, and the lit pixel shaders are drawn as a variant that, besides the
 // game's colour, writes the G-buffer's planes into the sidecar render targets the main view's pipelines carry (src/gpu/gbuffer_types.h: RT1 the
-// octahedral world normal, RT2 the albedo and the lit weight, RT3 later). The family started as xCityDefault alone (phase 0, the spike); the night's shaders (gbuffer_night.h) and the
-// day's (gbuffer_day.h) are all of it now, each with a transform of its own that this file's TransformGBufferHlsl sends them to. The planes are RT1 (the normal) and RT2 (the albedo
-// and the lit weight: gbuffer_albedo.h, package GB-W1); the stage declares `out float2 oC1 : SV_Target1` and `out float4 oC2 : SV_Target2` (src/gpu/gbuffer_rules.h kStagePlanes).
+// octahedral world normal, RT2 the albedo and the lit weight, RT3 the smoothness, the class and the flags). The family started as xCityDefault alone (phase 0, the spike); the night's shaders (gbuffer_night.h) and the
+// day's (gbuffer_day.h) are all of it now, each with a transform of its own that this file's TransformGBufferHlsl sends them to. The planes are RT1 (the normal), RT2 (the albedo
+// and the lit weight: gbuffer_albedo.h, package GB-W1) and RT3 (the smoothness, the class and the flags of the draw's material word: gbuffer_material_plane.h, package GB-W2); the stage declares
+// `out float2 oC1 : SV_Target1`, `out float4 oC2 : SV_Target2` and `out float2 oC3 : SV_Target3` (src/gpu/gbuffer_rules.h kStagePlanes).
 //
 // The shaders (found by name, in the executable's and the RPF's containers: needs_rpf):
 //   NIGHT: every `__PSMultiLight`, `...Env` and `...Interior` pixel shader (the city's materials, the props, the traffic cars' body, the pedestrians), xCityDefault::PSMultiLight
@@ -18,8 +19,8 @@
 // The other pixel shaders of the group (the shadow, depth and AO passes) are not in the variant.
 //
 // What every transform edits (each anchor must be found the number of times said or the variant is not built: the HLSL is not the one it was written for):
-//   1. the outputs: `, out float2 oC1 : SV_Target1` and `, out float4 oC2 : SV_Target2` after `out float4 oC0 : SV_Target0` (RT1 is R16G16_UNORM, RT2 R8G8B8A8_UNORM; a pixel shader with
-//      more outputs next to SV_Coverage is the shape of the game's own alpha tested shaders)
+//   1. the outputs: `, out float2 oC1 : SV_Target1`, `, out float4 oC2 : SV_Target2` and `, out float2 oC3 : SV_Target3` after `out float4 oC0 : SV_Target0` (RT1 is R16G16_UNORM, RT2 R8G8B8A8_UNORM,
+//      RT3 R8G8_UNORM; a pixel shader with more outputs next to SV_Coverage is the shape of the game's own alpha tested shaders)
 //   2. the constants: the 48 bytes of gbuffer_types.h GBufferConstants after the 608 of SharedConstants, declared as g_GBufferMode (uint4), g_GBufferRay and
 //      g_GBufferCam (float4) with DeclareConstants (variants/stage_constants.h) at the offset the chain gives the block: byte 608 (c38 of the block) alone, for SPIR-V
 //      (RawBufferLoad) and DXIL (packoffset), and byte 1280 after the headlight's 672 bytes when the two are composed
@@ -29,8 +30,10 @@
 //        if ((g_GBufferMode.x & GB_MODE_WRITE_NORMAL) != 0) oC1 = GbRt1Encode(<the shader's normal>);
 //        oC2 = float4(0, 0, 0, 0);
 //        if ((g_GBufferMode.x & GB_MODE_WRITE_ALBEDO) != 0) oC2 = float4(GbAlbedoEncode(<the shader's diffuse texel>), GbMaterialLit(g_GBufferMode.y));
+//        oC3 = float2(0, 0);
+//        if ((g_GBufferMode.x & GB_MODE_WRITE_MATERIAL) != 0) oC3 = GbMaterialRt3(g_GBufferMode.y);
 //      the normal as the game's lighting has it (the encode divides by the L1 norm, so it need not be normalised); the albedo line only where the shader has a DiffuseSampler texel
-//      (gbuffer_albedo.h), the lit weight from the draw's material word
+//      (gbuffer_albedo.h), the lit weight from the draw's material word; the material line in every shader (gbuffer_material_plane.h: the word's smoothness, class and flags bytes)
 //   5. where a value must outlive the register the game keeps it in, one line right after the statement that makes it captures it (`float3 gbNormal = r10.xyz;`,
 //      `float3 gbAlbedo = r6.xzw;`)
 //
@@ -66,7 +69,11 @@ namespace larecomp::shaderpack {
 //    for the edits of their own; a change to the day table or the day edits also bumps THIS number, which is the pixel stage's stamp line (variants_gbuffer_version).
 // 4: RT2, the albedo and the lit weight (gbuffer_albedo.h, GB-W1): every shader of the stage declares a third output SV_Target2 (src/gpu/gbuffer_rules.h kStagePlanes is RT1 and RT2 in the same
 //    commit) and writes it; xCityDefault::PSMultiLight takes the night stage's text (the spike's own edits are gone). kGBufferDayVersion is 2.
-inline constexpr uint32_t kGBufferVariantVersion = 4;
+// 5: the car, traffic and character stage (GB-G1, on its own branch feat/gb-g1: it takes its plane count from kStagePlanes).
+// 6: RT3, the smoothness, the class and the flags (gbuffer_material_plane.h, GB-W2): every shader of the stage declares a fourth output SV_Target3 and writes it (gbuffer_rules.h kStagePlanes is
+//    RT1, RT2 and RT3 in the same commit); the helper's parameters are renamed (`smoothness` is a macro in the cars' shaders); kGBufferDayVersion is 3. The number skips 5 on this branch on purpose: a
+//    pack built from feat/gb-g1 alone has 5 and must be built again when this lands on it (merge both: 7 or more, the packs of either are stale).
+inline constexpr uint32_t kGBufferVariantVersion = 6;
 
 // The pixel shaders, by name (the group and the entry point, as the translator names its HLSL files). Found by name alone: the identities are whatever
 // the game's containers hold.

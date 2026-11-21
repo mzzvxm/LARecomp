@@ -445,7 +445,7 @@ NightAnalysis AnalyseGBufferNight(std::string_view hlsl) {
 namespace {
 
 // The write of the planes after the game's last colour statement: RT1, the normal (under GB_MODE_WRITE_NORMAL), then RT2, the albedo and the lit weight (gbuffer_albedo.h, under
-// GB_MODE_WRITE_ALBEDO). PHASE 2 SEAM (GB-W2): the material plane (RT3, GB_MODE_WRITE_MATERIAL, from the material word in g_GBufferMode.y) joins here with `out float2 oC3 : SV_Target3`.
+// GB_MODE_WRITE_ALBEDO), then RT3, the smoothness, the class and the flags of the draw's material word in g_GBufferMode.y (gbuffer_material_plane.h, under GB_MODE_WRITE_MATERIAL).
 std::string NightWriteBlock(std::string_view normal_expression, const GBufferAlbedo& albedo) {
   return "\n\toC1 = float2(0.0f, 0.0f);\n"
          "\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n"
@@ -453,7 +453,7 @@ std::string NightWriteBlock(std::string_view normal_expression, const GBufferAlb
          std::string(normal_expression) +
          ");\n"
          "\t}" +
-         GBufferAlbedoWriteText(albedo);
+         GBufferAlbedoWriteText(albedo) + GBufferMaterialWriteText();
 }
 
 }  // namespace
@@ -511,10 +511,13 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
     }
   }
 
-  // 1. The second and third outputs, after the game's colour output (before the SV_Coverage of the alpha test spec variant): RT1 the normal, RT2 the albedo and the lit weight.
+  // 1. The second, third and fourth outputs, after the game's colour output (before the SV_Coverage of the alpha test spec variant): RT1 the normal, RT2 the albedo and the lit weight, RT3
+  // the smoothness and the class.
   static constexpr Piece kOutput[] = {Lit("\tout float4 oC0 : SV_Target0")};
   if (!ReplaceOnce(text, kOutput, 0, 0, "oC0 : SV_Target0 output",
-                   [](std::string_view group) { return std::string(group) + "\n\t, out float2 oC1 : SV_Target1" + std::string(kGBufferAlbedoOutput); }, &error)) {
+                   [](std::string_view group) {
+                     return std::string(group) + "\n\t, out float2 oC1 : SV_Target1" + std::string(kGBufferAlbedoOutput) + std::string(kGBufferMaterialOutput);
+                   }, &error)) {
     return fail(std::move(error));
   }
 
@@ -538,7 +541,7 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
     return fail(std::move(error));
   }
 
-  // What the text must hold now: the second and third outputs, one call each, the helpers once, the captures as many times as they were made.
+  // What the text must hold now: the second, third and fourth outputs, one call each, the helpers once, the captures as many times as they were made.
   const std::string call = "oC1 = GbRt1Encode(" + found.expression + ");";
   const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + found.albedo.expression + "), GbMaterialLit(g_GBufferMode.y));";
   const struct {
@@ -547,13 +550,17 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
   } kChecks[] = {
       {"oC1 : SV_Target1", 1},
       {"oC2 : SV_Target2", 1},
+      {"oC3 : SV_Target3", 1},
       {call, 1},
       {"oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);", 1},
+      {"oC3 = float2(0.0f, 0.0f);", 1},
+      {kGBufferMaterialWriteLine, 1},
       {albedo_call, found.albedo.found ? 1u : 0u},
       {"float2 GbRt1Encode(float3 n)", 1},
       {"float2 GbOctEncode(float3 n)", 1},
       {"float3 GbAlbedoEncode(float3 albedo)", 1},
       {"float GbMaterialLit(uint word)", 1},
+      {"float2 GbMaterialRt3(uint word)", 1},
       {"oC0 = applyBlendPremult(oC0);", 1},
       {"float3 gbNormal = ", found.capture_at == std::string::npos ? 0u : 1u},
       {"float3 gbAlbedo = ", found.albedo.found && found.albedo.captured ? 1u : 0u},

@@ -24,6 +24,7 @@
 #include <string_view>
 #include <vector>
 
+#include "gpu/gbuffer_material.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_chain.h"
 #include "shaderpack/variant_compose.h"
@@ -85,7 +86,7 @@ std::string FirstDifference(const std::string& got, const std::string& want) {
          std::to_string(want.size()) + ")";
 }
 
-// Takes the pixel stage's insertions out again (the second and third outputs, the three constants rows, the helper, the derivative block, the albedo's capture, the writes of the sidecar) and
+// Takes the pixel stage's insertions out again (the second, third and fourth outputs, the three constants rows, the helper, the derivative block, the albedo's capture, the writes of the sidecar) and
 // gives back what is left: it must be the game's text, byte for byte, with the line ends of the transform (LF). The colour is then computed by the game's own statements alone. `game` is
 // the game's text (the albedo's anchor is analysed on it, as the stage does; the cards (kMasked) have none).
 std::string WithoutDayStage(std::string text, std::string helper, const sp::GBufferDayShader& row, std::string_view game) {
@@ -101,7 +102,7 @@ std::string WithoutDayStage(std::string text, std::string helper, const sp::GBuf
   };
   while (!helper.empty() && (helper.back() == '\n' || helper.back() == '\r' || helper.back() == ' ' || helper.back() == '\t')) helper.pop_back();
   const std::string no_cr = LfOnly(helper);
-  cut("the second and third outputs", "\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2");
+  cut("the second, third and fourth outputs", "\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3");
   constexpr std::string_view kCamRow = "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)";
   const size_t begin = text.find("\n// G-buffer variant (src/gpu/gbuffer_types.h GBufferConstants)");
   const size_t cam = text.find(kCamRow);
@@ -114,7 +115,7 @@ std::string WithoutDayStage(std::string text, std::string helper, const sp::GBuf
   cut("the helper", no_cr + "\n\n");
   if (row.source == sp::GBufferDaySource::kVertexOrDerivative || row.source == sp::GBufferDaySource::kDerivative) cut("the derivative block", sp::GBufferDayDerivativeText());
   if (albedo.found && albedo.captured) cut("the albedo's capture", albedo.capture);
-  cut("the sidecar writes", sp::GBufferDayWriteText(row) + sp::GBufferAlbedoWriteText(albedo));
+  cut("the sidecar writes", sp::GBufferDayWriteText(row) + sp::GBufferAlbedoWriteText(albedo) + sp::GBufferMaterialWriteText(row.source == sp::GBufferDaySource::kMasked));
   return missing.empty() ? text : "<missing or twice there:" + missing + ">";
 }
 
@@ -171,7 +172,9 @@ constexpr const char* kHelper =
     "float2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\n"
     "float3 GbAlbedoEncode(float3 albedo) { return albedo; }\n"
     "float GbMaterialLit(uint word) { return 1.0f; }\n"
+    "float2 GbMaterialRt3(uint word) { return float2(0.0f, 0.0f); }\n"
     "#define GB_MODE_WRITE_ALBEDO 2\n"
+    "#define GB_MODE_WRITE_MATERIAL 4\n"
     "float3 GbWorldPoint(float4 ray, float4 q, float px, float py, float w) { return ray.xyz; }\n"
     "float3 GbFaceNormal(float3 dpdx, float3 dpdy, float3 to_camera) { return dpdx; }\n"
     "#define GB_MODE_WRITE_NORMAL 1\n"
@@ -210,7 +213,8 @@ void CheckPixelFixture() {
     const sp::VariantTransformResult r = sp::TransformGBufferDayHlsl(shader, kPixelFixture, kHelper);
     Check(r.ok && !r.skip && r.error.empty(), std::string(name) + ": the fixture transforms: " + r.error);
     if (!r.ok) continue;
-    Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2") == 1, std::string(name) + ": the second and third outputs follow the colour output");
+    Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3") == 1,
+          std::string(name) + ": the second, third and fourth outputs follow the colour output");
     Check(Count(r.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
               Count(r.hlsl, "float4 g_GBufferCam : packoffset(c40);") == 1,
           std::string(name) + ": the 48 byte block is at 608 (c38 to c40)");
@@ -252,6 +256,12 @@ void CheckPixelFixture() {
                 Count(r.hlsl, "oC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y));") == (masked ? 0u : 1u) && Count(r.hlsl, "gbAlbedo") == 0,
             std::string(name) + ": RT2: one output, the no data write, " + (masked ? "no albedo (a card)" : "the albedo from the fetch's lanes, no capture"));
       Check(masked || r.hlsl.find("oC2 = float4(GbAlbedoEncode(") > r.hlsl.find("oC1 = float2(0.0f, 0.0f);"), std::string(name) + ": the albedo's write follows the normal's");
+    }
+    // RT3: the word's bytes for every shader that is not a card (with an albedo or without: the class and the smoothness are the draw's), the no data code for the cards; after RT2's
+    {
+      Check(Count(r.hlsl, "oC3 : SV_Target3") == 1 && Count(r.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1 && Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == (masked ? 0u : 1u) &&
+                r.hlsl.find("oC3 = float2(0.0f, 0.0f);") > r.hlsl.find("oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);"),
+            std::string(name) + ": RT3: one output, the no data write, " + (masked ? "no word (a card)" : "the material word's bytes under the mode bit") + ", after RT2's");
     }
     const std::string diff = FirstDifference(WithoutDayStage(r.hlsl, kHelper, *row, kPixelFixture), LfOnly(kPixelFixture));
     Check(diff.empty(), std::string(name) + ": with the stage's insertions taken out the fixture is the game's text again, byte for byte" + diff);
@@ -390,7 +400,7 @@ void CheckTable() {
 }
 
 void CheckDefinitions() {
-  Check(sp::kGBufferDayVersion == 2, "the day stage's version is 2 (RT2: the albedo and the lit weight)");
+  Check(sp::kGBufferDayVersion == 3, "the day stage's version is 3 (RT3: the smoothness, the class and the flags)");
   const sp::VariantDef day = sp::MakeGBufferDayStageFromText(kHelper);
   Check(day.feature == sp::kFeatureGBuffer && day.name == "gbuffer" && !day.vertex && day.needs_rpf && day.pixel_name_suffixes.size() == 42 && day.input_xxh3 != 0,
         "the day stage is the G-buffer's feature 10, 42 shaders by name, a pixel stage, with the helper in its fingerprint");
@@ -537,6 +547,7 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
   std::vector<std::string> no_albedo;
   std::vector<std::string> no_albedo_names;
   std::map<std::string, std::string> albedo_lanes;
+  std::map<int, int> day_by_class;
   for (const sp::GBufferDayShader& row : sp::kGBufferDayShaders) {
     const std::filesystem::path file = folder / (std::string(row.name) + ".hlsl");
     if (!std::filesystem::exists(file)) {
@@ -548,6 +559,18 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
     Check(r.ok, std::string(row.name) + ": the retail text transforms: " + r.error);
     if (!r.ok) continue;
     ++edited;
+    {
+      // RT3 (GB-W2): the class of the draw's word is the table's (GB-F1) by the shader's name, and no shader of the stage may be class 0 ("nothing written here"); the cards write the no data
+      // code on purpose, but their class is counted too
+      const mcla::gpu::gbuffer::ShaderMaterial material = mcla::gpu::gbuffer::MaterialOfShaderName(row.name);
+      ++day_by_class[int(material.cls)];
+      // xPhysics__PSPhysics is the one exception: the day table has it as a stage shader (physics props, a normal from TEXCOORD1) while GB-F1 files its group with the blended effects (class none: "never
+      // written"). A draw of it is blended, which the host masks (Why::kMaskedBlended), so it never writes; if one ever draws opaque it writes class 0 over a normal, which a consumer reads as "no material".
+      // CHECK: that no opaque draw of xPhysics reaches the main view (the family picture's red / the class view's dark green would show it); then drop it from the table or give the group a class.
+      const bool exception = row.name == "xPhysics__PSPhysics";
+      Check(exception ? material.cls == mcla::gpu::gbuffer::SurfaceClass::kNone : (material.known && material.cls != mcla::gpu::gbuffer::SurfaceClass::kNone),
+            std::string(row.name) + ": the material table gives it a class (so RT3 never says 'no data' where the stage wrote the normal; xPhysics is the one listed exception)");
+    }
     const std::string diff = FirstDifference(WithoutDayStage(r.hlsl, helper, row, hlsl), LfOnly(hlsl));
     Check(diff.empty(), std::string(row.name) + ": with the stage's insertions taken out the retail text is the game's again, byte for byte" + diff);
     // RT2: the output once, the no data write once, the albedo from the fetch where there is one (the cards have none)
@@ -569,6 +592,10 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
       }
       std::printf("  %-44s %s\n", std::string(row.name).c_str(), row.source == sp::GBufferDaySource::kMasked ? "[card: no data in every plane]" : albedo.found ? ("[albedo " + albedo.detail + "]").c_str() : ("[no albedo: " + albedo.why_not + "]").c_str());
     }
+    // RT3: the output once, the no data write once, the word's bytes in every shader but the cards (with an albedo or without)
+    Check(Count(r.hlsl, "oC3 : SV_Target3") == 1 && Count(r.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1 &&
+              Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == (row.source == sp::GBufferDaySource::kMasked ? 0u : 1u),
+          std::string(row.name) + ": RT3: one output, the no data write, " + (row.source == sp::GBufferDaySource::kMasked ? "no word (a card)" : "the material word's bytes"));
     // the facts the sources stand on, in the retail text
     Check(Count(hlsl.substr(hlsl.rfind("void main(")), "iTexCoord15") == 1, std::string(row.name) + ": TEXCOORD15 is declared and nothing reads it (the translator declares all sixteen)");
     if (row.source == sp::GBufferDaySource::kInterpolant) {
@@ -587,6 +614,11 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
   // RT2 (GB-W1): 25 of the 40 edited shaders that are not cards have the albedo (8 capture it); the 15 without are the lamp lenses, the neon tints and the tinted bump spec (no diffuse fetch of their own),
   // the road and the tunnel road (a two lane diffuse), the grass and the terrain (three layers by a channel map), the physics props (a ColorSampler), the grime tints, and the store interior (its
   // fetch is in a branch)
+  {
+    std::printf("RT3 class of the edited day shaders (the table of GB-F1 by name):");
+    for (const auto& [cls, n] : day_by_class) std::printf(" %d:%d", cls, n);
+    std::printf("%c", 10);
+  }
   Check(with_albedo == 25 && albedo_captured == 8 && no_albedo.size() == 15, "the retail RT2 census: 25 shaders have the albedo (8 captured), 15 have none (got " + std::to_string(with_albedo) + ", " +
                                                                                std::to_string(albedo_captured) + " and " + std::to_string(no_albedo.size()) + ")");
   const std::set<std::string> want_no_albedo = {

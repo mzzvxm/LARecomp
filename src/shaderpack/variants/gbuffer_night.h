@@ -39,10 +39,12 @@
 // The census on the retail text (gbuffer_night_test.cpp, with the shaders' folder as an argument) prints every shader, edited or left out, and why.
 //
 // RT2 (package GB-W1, shaderpack/variants/gbuffer_albedo.h: the albedo and the lit weight): the stage declares a third output, `out float4 oC2 : SV_Target2` (gbuffer_rules.h kStagePlanes
-// is RT1 and RT2), and writes after the normal `oC2 = float4(GbAlbedoEncode(<the shader's DiffuseSampler texel>), GbMaterialLit(<the draw's material word>))`. The texel is found by its own
+// is RT1, RT2 and RT3), and writes after the normal `oC2 = float4(GbAlbedoEncode(<the shader's DiffuseSampler texel>), GbMaterialLit(<the draw's material word>))`. The texel is found by its own
 // anchor (AnalyseGBufferAlbedo, the first fetch of the texture at the texel's centre that yields x, y and z) and read at the end of main, or captured right after the fetch when the shader
 // writes its register again (`float3 gbAlbedo = r6.xzw;`), the same rule as the normal's. A shader with no such fetch writes the "no data" code (all zero) to RT2. The edits only add lines.
-// PHASE 2 SEAM (RT3 material, GB-W2): the write block comes from one function (NightWriteBlock in gbuffer_night.cpp); RT3's output and write join it.
+// RT3 (package GB-W2, shaderpack/variants/gbuffer_material_plane.h: the smoothness, the class and the flags): a fourth output, `out float2 oC3 : SV_Target3`, and after the albedo
+// `oC3 = GbMaterialRt3(<the draw's material word>)` under GB_MODE_WRITE_MATERIAL (else the "no data" code). The word needs nothing from the shader's text, so every shader of the stage
+// writes it, the ones with no albedo too. The write block comes from one function (NightWriteBlock in gbuffer_night.cpp).
 // ===========================================================================
 
 #include <cstddef>
@@ -51,6 +53,7 @@
 
 #include "shaderpack/variant_pack.h"
 #include "shaderpack/variants/gbuffer_albedo.h"
+#include "shaderpack/variants/gbuffer_material_plane.h"
 
 namespace larecomp::shaderpack {
 

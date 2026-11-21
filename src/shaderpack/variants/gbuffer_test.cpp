@@ -63,7 +63,7 @@ std::string ReadFile(const std::filesystem::path& path) {
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-// Takes the night stage's insertions out again (the second and third outputs, the three constants rows, the helper, the captures, the writes of the sidecar) and gives back what is left: it
+// Takes the night stage's insertions out again (the second, third and fourth outputs, the three constants rows, the helper, the captures, the writes of the sidecar) and gives back what is left: it
 // must be the game's text, byte for byte, with the line ends of the transform (LF). Whatever the game computes its colour with is then untouched by the variant, so a colour that differs
 // with the G-buffer on is not the shader text's doing (the spike's pictures of 2026-11-19 differed in the sky, which is on the game's own clock: perf\out\GBUFFER-SPIKE.txt, S1).
 // `night` is the stage's analysis of the game's text: what it reads the normal from and where the albedo is.
@@ -82,7 +82,7 @@ std::string WithoutVariant(std::string text, std::string helper, const sp::Night
   for (const char c : helper) {
     if (c != '\r') no_cr += c;
   }
-  cut("the second and third outputs", "\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2");
+  cut("the second, third and fourth outputs", "\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3");
   // the SPIR-V rows: a comment line and three #defines after the game's g_InvResolutionScale define
   constexpr std::string_view kCamRow = "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)";
   const size_t begin = text.find("\n// G-buffer variant (src/gpu/gbuffer_types.h GBufferConstants)");
@@ -97,7 +97,7 @@ std::string WithoutVariant(std::string text, std::string helper, const sp::Night
   if (night.capture_at != std::string::npos) cut("the normal's capture", night.capture);
   if (night.albedo.found && night.albedo.captured) cut("the albedo's capture", night.albedo.capture);
   cut("the sidecar write", "\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(" + night.expression + ");\n\t}" +
-                               sp::GBufferAlbedoWriteText(night.albedo));
+                               sp::GBufferAlbedoWriteText(night.albedo) + sp::GBufferMaterialWriteText());
   return missing.empty() ? text : "<missing or twice there:" + missing + ">";
 }
 
@@ -161,8 +161,10 @@ constexpr const char* kHelper =
     "float2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\n"
     "float3 GbAlbedoEncode(float3 albedo) { return albedo; }\n"
     "float GbMaterialLit(uint word) { return 1.0f; }\n"
+    "float2 GbMaterialRt3(uint word) { return float2(0.0f, 0.0f); }\n"
     "#define GB_MODE_WRITE_NORMAL 1\n"
-    "#define GB_MODE_WRITE_ALBEDO 2\n";
+    "#define GB_MODE_WRITE_ALBEDO 2\n"
+    "#define GB_MODE_WRITE_MATERIAL 4\n";
 
 void CheckFixture() {
   const sp::VariantShader day{sp::kGBufferDayShader, 0};
@@ -181,10 +183,12 @@ void CheckFixture() {
     const sp::VariantTransformResult r = sp::TransformGBufferHlsl(shader, kFixture, kHelper);
     Check(r.ok && !r.skip && r.error.empty(), std::string(shader.name) + ": the fixture transforms: " + r.error);
     if (!r.ok) continue;
-    Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2") == 1, "the second and third outputs follow the colour output");
+    Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3") == 1,
+          "the second, third and fourth outputs follow the colour output");
     Check(Count(r.hlsl, "oC0 = applyBlendPremult(oC0);\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(iTexCoord0.xyz);\n\t}"
-                        "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u) {\n\t\toC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y));\n\t}\n\treturn;") == 1,
-          "the writes follow the game's last colour statement: the normal, then the albedo (the fixture's diffuse fetch is at r6.xyzw = tex.xwyz: its lanes r6.xzw, nothing writes them later) and the draw's lit weight");
+                        "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u) {\n\t\toC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y));\n\t}"
+                        "\n\toC3 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}\n\treturn;") == 1,
+          "the writes follow the game's last colour statement: the normal, then the albedo (the fixture's diffuse fetch is at r6.xyzw = tex.xwyz: its lanes r6.xzw, nothing writes them later) and the draw's lit weight, then the material word's two bytes");
     Check(Count(r.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
               Count(r.hlsl, "#define g_GBufferRay vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 624, 0x10)") == 1 &&
               Count(r.hlsl, "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)") == 1,
@@ -263,8 +267,8 @@ void CheckVariantDef() {
     Check(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "no name is in the definition twice");
   }
   // The version is the pixel stage's stamp line: 4 = RT2 in it (a pack stamped with 1, 2 or 3 is built again); the day stage's own number is 2.
-  Check(sp::kGBufferVariantVersion == 4, "the variant's version is 4: the night family (2), the day families (3) and RT2, the albedo and the lit weight (4)");
-  Check(sp::kGBufferDayVersion == 2 && sp::kGBufferVsVersion == 1, "the day stage's own version is 2 (RT2), the vertex stage's is untouched");
+  Check(sp::kGBufferVariantVersion == 6, "the variant's version is 6: the night family (2), the day families (3), RT2, the albedo and the lit weight (4) and RT3, the material (6: 5 is the car stage's on feat/gb-g1)");
+  Check(sp::kGBufferDayVersion == 3 && sp::kGBufferVsVersion == 1, "the day stage's own version is 3 (RT3), the vertex stage's is untouched");
   Check(def.input_xxh3 != 0, "the helper is in the fingerprint");
   const sp::VariantDef other = sp::MakeGBufferVariantFromText(std::string(kHelper) + "// changed\n");
   Check(other.input_xxh3 != def.input_xxh3, "a changed helper changes the fingerprint");
@@ -417,6 +421,12 @@ void CheckAlbedoAnchors() {
   {
     sp::GBufferAlbedo none;
     Check(sp::GBufferAlbedoWriteText(none) == "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);", "no albedo: the no data code only");
+    // RT3's write: the same for every shader, whether or not it has an albedo; a card writes the no data code only
+    Check(sp::GBufferMaterialWriteText() ==
+              "\n\toC3 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}",
+          "the material write: the word's bytes under the mode bit, the no data code else");
+    Check(sp::GBufferMaterialWriteText(true) == "\n\toC3 = float2(0.0f, 0.0f);" && std::string(sp::kGBufferMaterialOutput) == "\n\t, out float2 oC3 : SV_Target3",
+          "a card writes the no data code in RT3; the output is the fourth, a float2");
     const sp::GBufferAlbedo a = sp::AnalyseGBufferAlbedo(MainOf(FetchLine("r6.xyzw", kCentre, "xwyz")));
     Check(sp::GBufferAlbedoWriteText(a) ==
               "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u) {\n\t\toC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y));\n\t}",
@@ -440,7 +450,9 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
       // the day stage's text (its own test holds it to the game's plus its insertions): here the dispatch, and the text for the compile + instruction identity scripts of the spike
       const sp::VariantTransformResult direct = sp::TransformGBufferDayHlsl({name, 0}, hlsl, helper);
       Check(direct.ok && direct.hlsl == r.hlsl, std::string(name) + ": the retail text goes to the day stage");
-      Check(Count(r.hlsl, "oC1 : SV_Target1") == 1 && Count(r.hlsl, "oC1 = GbRt1Encode(gbN);") == 1 && Count(r.hlsl, "oC2 : SV_Target2") == 1, std::string(name) + ": one second output, one write, one third output");
+      Check(Count(r.hlsl, "oC1 : SV_Target1") == 1 && Count(r.hlsl, "oC1 = GbRt1Encode(gbN);") == 1 && Count(r.hlsl, "oC2 : SV_Target2") == 1 &&
+              Count(r.hlsl, "oC3 : SV_Target3") == 1 && Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1,
+          std::string(name) + ": one second output, one write, one third output, one fourth output and its write");
       if (!out.empty()) {
         std::filesystem::create_directories(out);
         std::ofstream(out / (std::string(name) + ".gbuffer.hlsl"), std::ios::binary) << r.hlsl;
@@ -451,7 +463,9 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
     Check(Count(hlsl, "float4 r0 = iTexCoord0;") == 1, std::string(name) + ": r0 is loaded from TEXCOORD0");
     Check(Count(hlsl, "float4 r1 = iTexCoord1;") == 1, std::string(name) + ": r1 is loaded from TEXCOORD1 (the position)");
     Check(Count(hlsl, "if (oCoverage == 0u) discard;") == 1, std::string(name) + ": the alpha test discards before the colour write");
-    Check(Count(r.hlsl, "oC1 : SV_Target1") == 1 && Count(r.hlsl, "GbRt1Encode(iTexCoord0.xyz)") == 1 && Count(r.hlsl, "oC2 : SV_Target2") == 1, std::string(name) + ": one second output, one write, one third output");
+    Check(Count(r.hlsl, "oC1 : SV_Target1") == 1 && Count(r.hlsl, "GbRt1Encode(iTexCoord0.xyz)") == 1 && Count(r.hlsl, "oC2 : SV_Target2") == 1 &&
+              Count(r.hlsl, "oC3 : SV_Target3") == 1 && Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1,
+          std::string(name) + ": one second output, one write, one third output, one fourth output and its write");
     // RT2: the spike's own shader has its diffuse fetch at r6.xyzw = tex.xwyz (lanes r6.xzw)
     const sp::GBufferAlbedo albedo = sp::AnalyseGBufferAlbedo(hlsl);
     Check(albedo.found && albedo.lanes == "r6.xzw" && Count(r.hlsl, "GbAlbedoEncode(" + albedo.expression + ")") == 1, std::string(name) + ": the albedo is the diffuse fetch's lanes (" + albedo.detail + ")");
