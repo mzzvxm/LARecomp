@@ -105,6 +105,8 @@ set(LARECOMP_SOURCES
     src/os/appimage_env.cpp
     # The guest's Sleep on Linux: a yield and a sleep that signals do not cut short (os/thread_yield.h).
     src/os/thread_yield.cpp
+    # SIGTERM, SIGINT and SIGHUP end the game like the window's close button (Linux; os/shutdown_signals.h).
+    src/os/shutdown_signals.cpp
 
     # Steering wheel support.
     src/mc_engine/wheel/wheel_fake.cpp
@@ -1281,6 +1283,15 @@ else()
     target_include_directories(larecomp_thread_yield_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_features(larecomp_thread_yield_test PRIVATE cxx_std_23)
     target_link_libraries(larecomp_thread_yield_test PRIVATE Threads::Threads)
+    # The termination signals (src/os/shutdown_signals.h) have a check that needs no game:
+    #   cmake --build <dir> --target larecomp_shutdown_signals_test, then run it (exit 0 = passed).
+    add_executable(larecomp_shutdown_signals_test EXCLUDE_FROM_ALL
+        src/os/shutdown_signals_test.cpp
+        src/os/shutdown_signals.cpp
+    )
+    target_include_directories(larecomp_shutdown_signals_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_features(larecomp_shutdown_signals_test PRIVATE cxx_std_23)
+    target_link_libraries(larecomp_shutdown_signals_test PRIVATE Threads::Threads)
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
         add_custom_command(TARGET larecomp POST_BUILD
