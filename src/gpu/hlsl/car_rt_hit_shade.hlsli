@@ -11,6 +11,11 @@
 // RT-HIT-SHADING part two (car_rt_hit_rules.h has the design): the sun's visibility at a hit also reads the game's own cascades (CarMatCascadeLit, frame rows 8 to 31: the
 // volumetric light's lookup, copied), the clear coat's helpers (CarCoatShare, CarCoatMix) are here so that the player's pass and the opponents' variant share them.
 //
+// RT-HIT-SHADING-5 (car_rt_material_rules.h "the hit's own detail" has the design, the numbers and the reference): the hit's own detail, so that a reflected car is not a flat colour. The sky's
+// openness at the hit (one ray towards the sky against the cars of the scene), the contact with the ground (the height over the car's ground, from the caller), the clear coat's image of the
+// sun by day and of a street lamp at night (a fresnel by the reflected ray's own view), the class's share of the ambient, the sun's end and a brighter sky at night, the lamps' glow from the
+// sun's height. The frame's detail (row 5's w, mcla_gpu_car_rt_hit_detail) scales them: 0 is the shading as it was.
+//
 // CarHitShade returns false where there is nothing to shade with (hit shading off, no frame light, the instance's class is 0: the shader of that draw is not one the table
 // knows) and the caller keeps today's stand-in colour. The colour it makes is in the paint's units times `units` (2^exp_bias): the history's.
 //
@@ -60,6 +65,22 @@ static const float kMatTintMax = 2.0;
 static const float kConeLodScale = 20.0;
 static const float kEmissiveGain = 3.0;
 static const float kFillShare = 0.2;  // the ambient is at least this share of the sun's colour (car_rt_material_rules.h kFillShare)
+// RT-HIT-SHADING-5 (car_rt_material_rules.h has each number and says what it is)
+static const float kNightFillShare = 0.4;
+static const float kCoatF0 = 0.04;
+static const float kCoatPower = 5.0;
+static const float kSunRadiance = 24.0;
+static const float kSunGlintPower = 160.0;
+static const float kLampRadiance = 40.0;
+static const float kLampGlintPower = 14.0;
+static const float kOpenMin = 0.45;
+static const float kOpenReach = 2.5;
+static const float kOpenJitter = 0.35;
+static const float kOpenMinAbove = 0.2;
+static const float kOpenHashCells = 100.0;
+static const float kContactMin = 0.35;
+static const float kContactHeight = 0.5;
+static const float kCarCentreRise = 0.6;
 
 // What the last CarHitShade call found out, for the census (car_rt_hit_rules.h census::kLit, kShadow, kAway, kGlow): the hit's class, N.L, the sun's visibility and the night factor
 // where it glows (0 where it does not).
@@ -74,6 +95,9 @@ static const float kClassFresnelMax[8] = {0.30, 0.60, 1.00, 0.10, 1.00, 0.90, 0.
 static const float kClassEnvLod[8] = {1.5, 0.5, 0.5, 3.0, 0.7, 0.5, 2.5, 1.5};
 static const float kClassSpecGain[8] = {0.5, 1.0, 1.0, 0.3, 1.0, 1.0, 0.3, 0.5};
 static const float kClassDiffuseGain[8] = {1.0, 1.0, 1.0, 1.0, 0.1, 0.3, 1.0, 1.0};
+// RT-HIT-SHADING-5 (car_rt_material_rules.h kClassAmbient, kClassGlint)
+static const float kClassAmbient[8] = {1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 0.45, 0.85};
+static const float kClassGlint[8] = {0.5, 1.0, 1.0, 0.0, 1.0, 0.8, 0.0, 0.3};
 
 struct CarMatFrame
 {
@@ -92,6 +116,7 @@ struct CarMatFrame
     float3 axisX;      // the world's axes in view space
     float3 axisY;
     float3 axisZ;
+    float detail;      // RT-HIT-SHADING-5: the hit's own detail (0: the shading as it was)
 };
 
 CarMatFrame CarMatLoadFrame()
@@ -117,6 +142,7 @@ CarMatFrame CarMatLoadFrame()
     f.axisX = asfloat(gCarRtMaterials[5].xyz);
     f.axisY = asfloat(gCarRtMaterials[6].xyz);
     f.axisZ = asfloat(gCarRtMaterials[7].xyz);
+    f.detail = asfloat(gCarRtMaterials[5].w);
     return f;
 }
 
@@ -360,9 +386,58 @@ float CarMatSunVisible(float3 origin, float3 toSun, float reach)
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;
 }
 
+// RT-HIT-SHADING-5: a small integer hash (PCG; car_rt_material_rules.h Pcg) and the two numbers in [0, 1) the sky ray's jitter takes from the hit's place (OpenHash).
+uint CarMatPcg(uint v)
+{
+    const uint state = v * 747796405u + 2891336453u;
+    const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// The sky ray's direction (car_rt_material_rules.h SkyRayDirection, the same arithmetic): normal + up spread over a disc of tangent kOpenJitter by the hit's hash, kept kOpenMinAbove over the
+// tangent plane. `normal` is the unit normal facing the ray and `up` the world's up in view space.
+float3 CarMatSkyDirection(float3 hit, float3 normal, float3 up)
+{
+    const int3 cell = int3(floor(hit * kOpenHashCells));
+    const uint h = CarMatPcg(asuint(cell.x) + CarMatPcg(asuint(cell.y) + CarMatPcg(asuint(cell.z))));
+    const float a = float(h & 0xFFFFu) / 65536.0;
+    const float b = float(h >> 16) / 65536.0;
+    float3 d = normal + up;
+    const float length2 = length(d);
+    d = length2 > 0.3 ? d / length2 : up;
+    const float3 helper = abs(d.y) < 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    const float3 t = cross(helper, d) / max(length(cross(helper, d)), 1e-12);
+    const float3 bt = cross(d, t);
+    const float angle = 6.283185307179586 * a;
+    float3 e = normalize(d + (t * cos(angle) + bt * sin(angle)) * (kOpenJitter * sqrt(b)));
+    const float above = dot(e, normal);
+    if (above < kOpenMinAbove)
+    {
+        e = normalize(e + (kOpenMinAbove - above) * normal);
+    }
+    return e;
+}
+
+// The sky's openness at a hit: one ray from the hit along CarMatSkyDirection, kOpenReach metres, against every car of the scene; 0 where it meets one (the hit is closed in), 1 where it does not.
+float CarMatSkyOpen(float3 hit, float3 normal, float3 up)
+{
+    RayDesc ray;
+    ray.Origin = hit + normal * (0.010 + 0.003 * hit.z);
+    ray.Direction = CarMatSkyDirection(hit, normal, up);
+    ray.TMin = 0.0;
+    ray.TMax = kOpenReach;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, CAR_RT_MASK_ALL, ray);
+    while (query.Proceed())
+    {
+    }
+    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;
+}
+
 // The colour of a hit (the history does not show it), in the history's units. `normal` is the unit normal facing the ray, `direction` the ray's unit direction, `hit` the point
-// in view space, `footprint` the cone's width in metres at the hit, `tanHalf` the cone's half angle's tangent, `units` 2^exp_bias.
-bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 normal, float3 direction, float3 hit, float footprint, float tanHalf, float units,
+// in view space, `footprint` the cone's width in metres at the hit, `tanHalf` the cone's half angle's tangent, `units` 2^exp_bias, `height` the hit's height in metres over the ground of its car
+// (-1: not known).
+bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 normal, float3 direction, float3 hit, float footprint, float tanHalf, float units, float height,
                  out float3 colour)
 {
     colour = float3(0.0, 0.0, 0.0);
@@ -405,13 +480,16 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     const float hemisphere = clamp(0.6 + 0.4 * dot(normal, up), 0.2, 1.0);
     const bool sunKnown = (f.flags & CAR_MAT_FRAME_SUN) != 0u;
     const float3 toSun = sunKnown ? f.toSun : up;
+    // the hour from the sun's height (the host's row, NightFromSunHeight) where the frame knows the sun: the sun's light ends at night, the sky's fill and the lamps' images take over
+    const float night = sunKnown ? f.night : 0.0;
+    const float daySun = 1.0 - night;
     const float ndl = saturate(dot(normal, toSun));
     // The sun's visibility: the game's cascades at the hit's world point (the buildings', the trees', the bridges' shadows: the world the reflected car stands in), with the
     // collector's own fade, and one ray towards the sun against the cars (a car's shadow on itself and on its neighbour, which the cascades do not hold). The darker of the two
     // (car_rt_material_rules.h SunVisibility).
     float visible = 1.0;
     [branch]
-    if (ndl > 0.0)
+    if (ndl > 0.0 && daySun > 0.0)
     {
         if ((f.flags & CAR_MAT_FRAME_CASCADE) != 0u)
         {
@@ -426,10 +504,22 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
             visible = min(visible, CarMatSunVisible(hit + normal * (0.004 + 0.002 * hit.z), toSun, f.shadowReach));
         }
     }
-    const float3 fill = max(f.ambient, f.sun * kFillShare);
-    const float3 light = fill * (f.ambientGain * hemisphere) + f.sun * (ndl * visible);
+    // RT-HIT-SHADING-5: what the hit keeps of its ambient and its reflection (the class, the sky's openness, the contact with the ground), each scaled by the frame's detail
+    const float detail = max(f.detail, 0.0);
+    const float strength = saturate(detail);
+    float openness = 1.0;
+    [branch]
+    if (detail > 0.0)
+    {
+        openness = CarMatSkyOpen(hit, normal, up);
+    }
+    const float contact = height >= 0.0 ? kContactMin + (1.0 - kContactMin) * smoothstep(0.0, kContactHeight, height) : 1.0;
+    const float ground = lerp(1.0, kOpenMin + (1.0 - kOpenMin) * openness, strength) * lerp(1.0, contact, strength);
+    const float classAmbient = lerp(1.0, kClassAmbient[m.cls], strength);
+    const float3 fill = max(f.ambient, f.sun * lerp(kFillShare, kNightFillShare, night));
+    const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun);
     gCarHitClass = m.cls;
-    gCarHitNdl = ndl;
+    gCarHitNdl = ndl * daySun;  // at night the sun does not reach anything: "facing away" in the census
     gCarHitVisible = visible;
     gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;
 
@@ -450,7 +540,16 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     const float fresnel = m.fresnelMin + (m.fresnelMax - m.fresnelMin) * pow(max(1.0 - nv, 1e-4), max(m.fresnelPower, 0.01));
     const float3 tint = m.cls == CAR_MAT_CLASS_CHROME ? albedo : float3(1.0, 1.0, 1.0);
 
-    float3 result = albedo * light * kClassDiffuseGain[m.cls] + env * (fresnel * kClassSpecGain[m.cls] * f.specGain) * tint;
+    float3 result = albedo * light * kClassDiffuseGain[m.cls] + env * (fresnel * kClassSpecGain[m.cls] * f.specGain) * tint * ground;
+    // the clear coat's image of the sun (by day) and of a lamp high over the street (at night): a lobe where the reflected ray points at the light, by the coat's fresnel at the ray's own view
+    [branch]
+    if (detail > 0.0 && kClassGlint[m.cls] > 0.0)
+    {
+        const float coat = m.cls == CAR_MAT_CLASS_CHROME ? fresnel : kCoatF0 + (1.0 - kCoatF0) * pow(saturate(1.0 - nv), kCoatPower);
+        const float sunLobe = ndl > 0.0 ? pow(saturate(dot(reflected, toSun)), kSunGlintPower) : 0.0;
+        const float lampLobe = night > 0.0 ? pow(saturate(dot(reflected, up)), kLampGlintPower) : 0.0;
+        result += f.sun * (kSunRadiance * sunLobe * visible * daySun + kLampRadiance * lampLobe * night * openness) * (coat * kClassGlint[m.cls] * detail) * tint;
+    }
     if ((m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u)
     {
         result += albedo * (m.emissive * kEmissiveGain * f.night);

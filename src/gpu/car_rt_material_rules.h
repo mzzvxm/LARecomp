@@ -36,8 +36,9 @@
 //   binding 5  StructuredBuffer<uint4>   kFrameRows rows of the frame's lighting, then kMaterialRows rows an instance, in the instances' order
 //   frame rows   0 xyz the direction to the sun in VIEW space (unit), w flags (kFrameShade, kFrameShadow, kFrameEnv, kFrameSun); 1 xyz the sun's colour (PS c39 of the
 //                car's own draws, in the paint's units), w the sun shadow ray's reach in metres; 2 xyz the ambient (PS c26), w its gain; 3 x the environment map's slot (bit 31
-//                the gamma bit), y the blurred map's slot, z the night factor, w the specular gain; 4 xyz the sky ambient (PS c57 ambYPos), w the overall gain; 5, 6, 7 the
-//                WORLD x, y and z axes in view space (the environment map is in world axes; the pass works in view space)
+//                the gamma bit), y the blurred map's slot, z the night factor (from the sun's height where the frame knows the sun, from the sun's colour where not: RT-HIT-SHADING-5), w the
+//                specular gain; 4 xyz the sky ambient (PS c57 ambYPos), w the overall gain; 5, 6, 7 the WORLD x, y and z axes in view space (the environment map is in world axes; the pass
+//                works in view space), row 5's w the hit's detail (RT-HIT-SHADING-5)
 //   instance rows 0 x class | flags << 4 | fresnel min (8 bits) << 8 | fresnel max << 16 | fresnel power x 16 << 24, y the diffuse texture's bindless slot (0xFFFFFFFF none;
 //                bit 31 the gamma bit), z paint colour A (R10G10B10, 0..2), w paint colour B; 1 x the paint's flop exponent (float bits), y the mip bias of the texture at
 //                the mesh's texel density (float bits), z the emissive scale (float bits), w 0
@@ -164,6 +165,16 @@ inline constexpr std::array<ClassDefaults, kClassCount> kDefaults = {{
 }};
 inline const ClassDefaults& DefaultsOf(Class c) { return kDefaults[std::min<uint32_t>(uint32_t(c), kClassCount - 1)]; }
 
+// RT-HIT-SHADING-5, by class (none, paint, glass, tyre, chrome, light, interior, other; the shader keeps its own copy, kClassAmbient and kClassGlint):
+//   ambient  the share of the sky's ambient the class keeps: a tyre sits in its wheel arch, an interior or an underside (engine bay, subframe) is under the body, a grille and the other
+//            textured parts are set back
+//   glint    the share of the clear coat's mirror image of the sun and the lamps the class shows: the paint's coat, glass and chrome fully, a lamp's lens most, rubber and the interior's matt
+//            trim not at all
+inline constexpr std::array<float, kClassCount> kClassAmbient = {1.0f, 1.0f, 1.0f, 0.8f, 1.0f, 1.0f, 0.45f, 0.85f};
+inline constexpr std::array<float, kClassCount> kClassGlint = {0.5f, 1.0f, 1.0f, 0.0f, 1.0f, 0.8f, 0.0f, 0.3f};
+inline float ClassAmbient(Class c) { return kClassAmbient[std::min<uint32_t>(uint32_t(c), kClassCount - 1)]; }
+inline float ClassGlint(Class c) { return kClassGlint[std::min<uint32_t>(uint32_t(c), kClassCount - 1)]; }
+
 // What the shading adds to the cone's footprint when it picks the environment map's level: log2(1 + kConeLodScale x tan(half angle)) levels.
 inline constexpr float kConeLodScale = 20.0f;
 // The reach of the sun's visibility ray, metres: a car's own shadow on itself and on its neighbour needs a few metres.
@@ -179,6 +190,38 @@ inline constexpr float kFillShare = 0.2f;
 inline constexpr float kWalkedPaintGamma = 2.0f;
 // The glow of a lamp (and of a lit interior) at night, against the paint's units.
 inline constexpr float kEmissiveGain = 3.0f;
+
+// ---------------------------------------------------------------------------
+// RT-HIT-SHADING-5: the hit's own detail (the numbers; "the hit's own detail" below has the design and the functions, hlsl/car_rt_hit_shade.hlsli the shader's copy)
+// ---------------------------------------------------------------------------
+// At night the sky's fill is this share of the sun's colour (kFillShare by day): a city night's sky glows, and a flank the street lamps do not reach is not black.
+inline constexpr float kNightFillShare = 0.4f;
+// The clear coat's Schlick fresnel (a dielectric of the index 1.5: F0 0.04, power 5) at the hit's own view of the reflected ray; chrome keeps its own (high) fresnel.
+inline constexpr float kCoatF0 = 0.04f;
+inline constexpr float kCoatPower = 5.0f;
+// The coat's mirror image of the sun and of a street lamp: the light's colour (the sun's, c39) times this radiance times the lobe pow(cos(angle between the reflected ray and the light),
+// power) times the fresnel. A light's image in a mirror is as bright as the light, which is far brighter than a surface it lights (the sun's disc is ~10^5 times a lit white wall's
+// radiance; the units here hold a few tens of it and the picture's own exposure clips the rest). The sun's lobe is a few degrees wide (the coat is smooth), a lamp's wider (a lamp is
+// a near area light high over the street, and there are several).
+inline constexpr float kSunRadiance = 24.0f;
+inline constexpr float kSunGlintPower = 160.0f;
+inline constexpr float kLampRadiance = 40.0f;
+inline constexpr float kLampGlintPower = 14.0f;
+// The sky's openness at the hit (one ray towards the sky, kOpenReach metres, against every car of the scene): the share of the ambient a hit keeps where it is closed in (between two cars,
+// under a sill) is kOpenMin, and 1 where the sky is open. The ray's direction is normal + up spread over a cone of tangent kOpenJitter, kept kOpenMinAbove above the tangent plane.
+inline constexpr float kOpenMin = 0.45f;
+inline constexpr float kOpenReach = 2.5f;
+inline constexpr float kOpenJitter = 0.35f;
+inline constexpr float kOpenMinAbove = 0.2f;
+// The grid (cells a metre) of the hash that spreads the sky ray over its cone: the hit's place in view space.
+inline constexpr float kOpenHashCells = 100.0f;
+// The contact darkening: from the ground up to kContactHeight metres the ambient and the reflection fall to kContactMin of themselves (the sill, the lower lip of a bumper, a tyre's
+// contact patch: the ground and the car's own underside shade them). The hit's height above ITS car's ground is taken from the car's record (car_rt_instances_rules.h CarRow: the
+// centre is the mean of the car's draws' origins raised kCentreRise = 0.6, which the shader's kCarCentreRise repeats; the origins are on the road).
+inline constexpr float kContactMin = 0.35f;
+inline constexpr float kContactHeight = 0.5f;
+inline constexpr float kCarCentreRise = 0.6f;
+
 // The largest value a packed colour holds (R10G10B10 over 0..kTintMax).
 inline constexpr float kTintMax = 2.0f;
 // A diffuse slot of "none" in a record.
@@ -658,6 +701,8 @@ inline constexpr uint32_t kFrameEnv = 4;      // the environment map's slot is v
 inline constexpr uint32_t kFrameSun = 8;      // the direction to the sun is known
 inline constexpr uint32_t kFrameCascade = 16; // the game's sun cascades and the camera's world position are in the rows: the sun's visibility at a hit is read from them
 
+inline float Dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
 struct Tuning {
   bool enabled = true;
   bool shadow = true;
@@ -665,6 +710,7 @@ struct Tuning {
   float gain = 1.0f;     // everything the shading adds, against the history's units
   float ambient = 1.0f;  // the ambient's share
   float spec = 1.0f;     // the environment reflection's share
+  float detail = 1.0f;   // RT-HIT-SHADING-5: the hit's own detail (the coat's glints, the sky's openness, the contact darkening, the class's ambient); 0 is the shading as it was, above 1 stronger glints
 };
 
 // The lighting of the frame as the car's own draws saw it (PS c26 ambient, c39 sun colour, c57 sky ambient; the environment map's slots in the fetch constants 0 and 1).
@@ -703,12 +749,24 @@ struct FrameInput {
   float shadow_reach = kSunReach;
 };
 
-// 0 in the day, 1 at night, from the sun's colour (its mean).
+// 0 in the day, 1 at night, from the sun's colour (its mean). The colour of the cars' draws (c39) does not follow the hour (0.97 at 14 h and at 23 h, rthit1), so a frame whose sun
+// direction is known takes NightFromSunHeight instead; this is the fallback for a frame that has none.
 inline float NightFactor(const float sun[3]) {
   const float mean = (sun[0] + sun[1] + sun[2]) / 3.0f;
   const float t = std::clamp((mean - kNightLow) / (kNightHigh - kNightLow), 0.0f, 1.0f);
   const float s = t * t * (3.0f - 2.0f * t);
   return 1.0f - s;
+}
+
+// The night factor from the sun's height (RT-HIT-SHADING-5): `sin_elevation` is the sine of the sun's angle over the horizon (the direction to the sun dotted with the world's up). 1 at and under
+// kNightSunLow degrees, 0 from kNightSunHigh degrees up, a smoothstep between: the volumetric light's own rule (volumetrics_rules.h NightFactor(elevation): -4 to 6 degrees, which the test
+// holds this to), so that the lamps glow and the sun's light is gone at the hours the volume says it is night. The sun's light stops at night and the street lamps' stand in (the glints).
+inline constexpr float kNightSunLow = -4.0f;
+inline constexpr float kNightSunHigh = 6.0f;
+inline float NightFromSunHeight(float sin_elevation) {
+  const float degrees = std::asin(std::clamp(sin_elevation, -1.0f, 1.0f)) * (180.0f / 3.14159265358979323846f);
+  const float t = std::clamp((degrees - kNightSunLow) / (kNightSunHigh - kNightSunLow), 0.0f, 1.0f);
+  return 1.0f - t * t * (3.0f - 2.0f * t);
 }
 
 // The cascades are worth reading: a slot, at least one cascade, finite numbers, and a box with an extent. The same judgement as Volumetrics::FillSun's (an empty or stale collector is
@@ -790,9 +848,12 @@ inline void MakeFrameRows(const FrameInput& in, uint32_t rows[kFrameRows][4]) {
   rows[2][3] = Bits(in.tuning.ambient);
   rows[3][0] = in.light.env_sharp;
   rows[3][1] = in.light.env_blur;
-  rows[3][2] = Bits(NightFactor(in.light.sun));
+  // the night factor: the sun's height where the frame knows the sun's direction (and the world's up), the colour's rule where it does not
+  const float night = in.sun_known ? NightFromSunHeight(Dot3(in.to_sun_view, in.world_axes_view[1])) : NightFactor(in.light.sun);
+  rows[3][2] = Bits(night);
   rows[3][3] = Bits(in.tuning.spec);
   rows[4][3] = Bits(in.tuning.gain);
+  rows[5][3] = Bits(std::clamp(std::isfinite(in.tuning.detail) ? in.tuning.detail : 0.0f, 0.0f, 8.0f));
 }
 
 // ---------------------------------------------------------------------------
@@ -917,6 +978,112 @@ inline bool EnvDirection(float u, float v, float r[3]) {
 }
 
 // ---------------------------------------------------------------------------
+// RT-HIT-SHADING-5: the hit's own detail
+// ---------------------------------------------------------------------------
+// WHAT THE rthit3 PICTURES SHOWED (perf\out\SHOWCASE-RT.txt, showcase-rt-day-b-zoom.png): the neighbour reads in the black door now (a sharp 9.9 px edge by day, the colour right, 1.53 times the
+// environment's brightness) but it is FLAT, a uniform orange with a dark window strip: the contrast ratio (the coefficient of variation of the luminance over the interior of the pixels the
+// neighbour changes, against the environment's reflection it replaced) is 0.75 by day and 0.24 at night, wanted at least 1. The reflected car's hidden flank was albedo x one light, so over a
+// flank the only variation was the flop's gradient and the hemisphere term (0.6 at every vertical normal). The environment's reflection it replaced has the buildings, the sky, and at night
+// the street lamp's glint (a coefficient of variation of 1.05 by day, 1.81 at night). The reflected car needs light and shade of its own. What this section adds, all of it to a hit on another
+// car the history does not show (so the part the camera sees keeps the game's own colour), each by the class of the material, all scaled by Tuning::detail (mcla_gpu_car_rt_hit_detail: 0 is the
+// shading as it was):
+//   1. THE SKY'S OPENNESS. One ray from the hit towards the sky (normal + up, jittered over a cone of tangent kOpenJitter by a hash of the hit's place), kOpenReach metres, against every car of the
+//      scene: where it meets a car the hit is closed in (the flank between two cars below the neighbour's roof, the underside of a sill) and keeps kOpenMin of its ambient and its reflection,
+//      where it meets nothing the sky is open and the hit keeps all of it (OpenMultiplier). The edge of the neighbour's shade on a flank follows the neighbour's own shape, so the player's
+//      roof line is a gradient on the other car's door. A hit the sky ray is neutral for (open 1) is as it was: the calibration of the exposure (car_rt_hit_rules.h census) compares the
+//      model with the history on the paint the camera sees, mostly open surfaces, so the model's level there does not move and the gain stays.
+//   2. THE CONTACT DARKENING (ContactMultiplier): from the ground up to kContactHeight metres the ambient and the reflection fall to kContactMin. The height is that of the hit over its car's
+//      ground (the car's record's centre in view space and the world's up: the origins of a car's draws are on the road, the centre is raised kCarCentreRise); -1 where the pass has no record
+//      for the car (no darkening).
+//   3. THE CLEAR COAT'S IMAGE OF THE SUN AND OF A STREET LAMP: the paint is glossy under a smooth coat, so a light shows in it as a small bright lobe where the reflected ray (the ray that hit the
+//      car, mirrored in the car's own normal) points at the light, by the coat's Schlick fresnel at the ray's own view (CoatFresnel: 0.04 head on, 0.2 at 25 degrees from the plane). By day
+//      the light is the sun (GlintLobe(R . to_sun), kSunGlintPower; the visibility the shade already computed); at night it is a lamp high over the street (R . up, a wider lobe) by the
+//      sky's openness. A curved body has such a point along every shoulder and roof edge: a bright streak on a few percent of a car's pixels at 10 to 20 times its bulk, which is what the
+//      environment's reflection of a lamp was (the heavy tail of the night's 1.81).
+//   4. THE HOUR. The sun's light is gone at night and the street lamps (the glints, the sky's fill raised from a fifth to kNightFillShare of the sun's colour) stand in for it; the lamps' glow
+//      (emissive) follows the sun's height too (NightFromSunHeight: the volumetric light's own rule), not the draws' c39 colour, which does not change between 14 h and 23 h.
+//   5. THE CLASS (kClassAmbient, kClassGlint): a tyre sits in its arch, the interior and the underside are under the body, rubber and trim are matt; glass, paint and chrome show the coat's lights.
+// CHECK (nothing was run): every number above is a first guess from the physics, not a fit: kSunRadiance, kLampRadiance, the lobes' powers, kOpenMin, kContactMin, kNightFillShare. The run's pictures
+// say; mcla_gpu_car_rt_hit_detail moves the glints live (and 0 gives the old shading). The street lamps' real places (the game's lamp list, vol_lamp_list.h, which exists only while the
+// volumetric light is on) would give real glints: a lamp straight overhead is the stand-in. The ground's own contact shadow in the reflection (the road under the neighbour in the player's
+// door, the environment map's lit road today) needs a ground plane in the scene and is not here.
+
+inline float CoatFresnel(float nv) { return kCoatF0 + (1.0f - kCoatF0) * std::pow(std::clamp(1.0f - nv, 0.0f, 1.0f), kCoatPower); }
+inline float GlintLobe(float cos_angle, float power) { return std::pow(std::clamp(cos_angle, 0.0f, 1.0f), power); }
+
+// The share of the ambient and the reflection a hit keeps at `height` metres over the ground of its car (kContactMin at the ground to 1 from kContactHeight up; a height under 0 is no
+// knowledge: 1).
+inline float ContactMultiplier(float height) {
+  if (!(height >= 0.0f)) {
+    return 1.0f;
+  }
+  const float t = std::clamp(height / kContactHeight, 0.0f, 1.0f);
+  return kContactMin + (1.0f - kContactMin) * (t * t * (3.0f - 2.0f * t));
+}
+// ... and by the sky's openness (0 closed in, 1 open).
+inline float OpenMultiplier(float openness) { return kOpenMin + (1.0f - kOpenMin) * std::clamp(openness, 0.0f, 1.0f); }
+
+// A small integer hash (PCG, the shader's copy) and the two numbers in [0, 1) the sky ray's jitter takes from the hit's place in view space (cells of 1 / kOpenHashCells metres).
+inline uint32_t Pcg(uint32_t v) {
+  const uint32_t state = v * 747796405u + 2891336453u;
+  const uint32_t word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return (word >> 22u) ^ word;
+}
+inline void OpenHash(const float hit[3], float* a, float* b) {
+  const int32_t x = int32_t(std::floor(hit[0] * kOpenHashCells));
+  const int32_t y = int32_t(std::floor(hit[1] * kOpenHashCells));
+  const int32_t z = int32_t(std::floor(hit[2] * kOpenHashCells));
+  const uint32_t h = Pcg(uint32_t(x) + Pcg(uint32_t(y) + Pcg(uint32_t(z))));
+  *a = float(h & 0xFFFFu) / 65536.0f;
+  *b = float(h >> 16) / 65536.0f;
+}
+
+// The direction of the sky ray from a hit with the unit `normal` (facing the ray) and the world's `up` (view space): normal + up (up where the two cancel, a surface that faces straight down: it
+// then keeps its ray over its own tangent plane, which is on the ground side), spread over a disc of tangent kOpenJitter by the two numbers (angle a, radius sqrt(b): even over the disc), kept kOpenMinAbove over the
+// tangent plane (a lift as ConeDirection's). The shader's CarMatSkyDirection is the same arithmetic.
+inline void SkyRayDirection(const float normal[3], const float up[3], float a, float b, float out[3]) {
+  float d[3];
+  for (int c = 0; c < 3; ++c) {
+    d[c] = normal[c] + up[c];
+  }
+  const float length = std::sqrt(Dot3(d, d));
+  for (int c = 0; c < 3; ++c) {
+    d[c] = length > 0.3f ? d[c] / length : up[c];
+  }
+  const bool use_y = std::fabs(d[1]) < 0.9f;  // the view's axes, as ConeDirection's frame: never parallel to d, whatever way the camera is rolled
+  const float helper[3] = {use_y ? 0.0f : 1.0f, use_y ? 1.0f : 0.0f, 0.0f};
+  float t[3] = {helper[1] * d[2] - helper[2] * d[1], helper[2] * d[0] - helper[0] * d[2], helper[0] * d[1] - helper[1] * d[0]};
+  const float tl = std::sqrt(Dot3(t, t));
+  for (int c = 0; c < 3; ++c) {
+    t[c] /= std::max(tl, 1e-12f);
+  }
+  const float bt[3] = {d[1] * t[2] - d[2] * t[1], d[2] * t[0] - d[0] * t[2], d[0] * t[1] - d[1] * t[0]};
+  const float angle = 6.283185307179586f * a;
+  const float radius = kOpenJitter * std::sqrt(b);
+  float e[3];
+  for (int c = 0; c < 3; ++c) {
+    e[c] = d[c] + (t[c] * std::cos(angle) + bt[c] * std::sin(angle)) * radius;
+  }
+  const float el = std::sqrt(Dot3(e, e));
+  for (int c = 0; c < 3; ++c) {
+    e[c] /= el;
+  }
+  const float above = Dot3(e, normal);
+  if (above < kOpenMinAbove) {
+    for (int c = 0; c < 3; ++c) {
+      e[c] += (kOpenMinAbove - above) * normal[c];
+    }
+    const float fl = std::sqrt(Dot3(e, e));
+    for (int c = 0; c < 3; ++c) {
+      e[c] /= fl;
+    }
+  }
+  for (int c = 0; c < 3; ++c) {
+    out[c] = e[c];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the shading (hlsl/car_rt_hit_shade.hlsli CarHitShade: the same arithmetic)
 // ---------------------------------------------------------------------------
 
@@ -939,11 +1106,12 @@ struct ShadeInput {
   float env[3] = {0, 0, 0};         // the environment map's colour at the reflected direction
   bool env_known = true;
   FrameLight light;
-  float night = 0.0f;
+  float night = 0.0f;               // the frame's night factor (the lamps' glow; with sun_known also the sun's end and the sky's night fill)
+  bool sun_known = true;            // the frame knows the sun's direction (and so the hour: `night` is the sun's height's)
+  float open = 1.0f;                // RT-HIT-SHADING-5: the sky's openness at the hit (the sky ray's answer: 0 closed in, 1 open or not asked)
+  float height = -1.0f;             // metres over the ground of the hit's car; under 0: not known
   Tuning tuning;
 };
-
-inline float Dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 // The surface's albedo: the paint's gradient over the livery, or the texture times the tint, or the tint.
 inline void Albedo(const ShadeInput& in, float nv, float out[3]) {
@@ -978,10 +1146,14 @@ inline void Albedo(const ShadeInput& in, float nv, float out[3]) {
 // The colour of the hit in the paint's units (the pass multiplies it by 2^exp_bias).
 inline void ShadeReference(const ShadeInput& in, float out[3]) {
   const ClassDefaults& d = DefaultsOf(in.cls);
+  const float detail = std::max(in.tuning.detail, 0.0f);
+  const float strength = std::min(detail, 1.0f);
   const float nv = std::clamp(-Dot3(in.normal, in.ray), 0.0f, 1.0f);
   float albedo[3];
   Albedo(in, nv, albedo);
   const float hemisphere = std::clamp(0.6f + 0.4f * Dot3(in.normal, in.up), 0.2f, 1.0f);
+  const float night = in.sun_known ? in.night : 0.0f;  // the sun's end, the night fill and the lamps' images need the hour from the sun's height
+  const float day_sun = 1.0f - night;
   const float ndl = std::clamp(Dot3(in.normal, in.to_sun), 0.0f, 1.0f);
   float reflected[3];
   const float twice = 2.0f * Dot3(in.normal, in.ray);
@@ -989,12 +1161,20 @@ inline void ShadeReference(const ShadeInput& in, float out[3]) {
     reflected[c] = in.ray[c] - twice * in.normal[c];
   }
   const float fresnel = in.fresnel[0] + (in.fresnel[1] - in.fresnel[0]) * std::pow(std::max(1.0f - nv, 1e-4f), std::max(in.fresnel[2], 0.01f));
+  // what the hit keeps of its ambient and its reflection: the class, the sky's openness, the contact with the ground
+  const float class_ambient = 1.0f + (ClassAmbient(in.cls) - 1.0f) * strength;
+  const float ground = (1.0f + (OpenMultiplier(in.open) - 1.0f) * strength) * (1.0f + (ContactMultiplier(in.height) - 1.0f) * strength);
+  const float fill_share = kFillShare + (kNightFillShare - kFillShare) * night;
+  const float glint_gain = detail > 0.0f ? ClassGlint(in.cls) * detail * (in.cls == Class::kChrome ? fresnel : CoatFresnel(nv)) : 0.0f;
+  const float sun_lobe = glint_gain > 0.0f && ndl > 0.0f ? GlintLobe(Dot3(reflected, in.to_sun), kSunGlintPower) : 0.0f;
+  const float lamp_lobe = glint_gain > 0.0f && night > 0.0f ? GlintLobe(Dot3(reflected, in.up), kLampGlintPower) : 0.0f;
   for (int c = 0; c < 3; ++c) {
-    const float fill = std::max(in.light.ambient[c], in.light.sun[c] * kFillShare);
-    const float light = fill * in.tuning.ambient * hemisphere + in.light.sun[c] * ndl * in.sun_visible;
+    const float fill = std::max(in.light.ambient[c], in.light.sun[c] * fill_share);
+    const float light = fill * in.tuning.ambient * hemisphere * class_ambient * ground + in.light.sun[c] * ndl * in.sun_visible * day_sun;
     const float env = in.env_known ? in.env[c] : in.light.ambient[c] * (0.6f + 0.4f * Dot3(reflected, in.up));
     const float tint = in.cls == Class::kChrome ? albedo[c] : 1.0f;
-    float colour = albedo[c] * light * d.diffuse_gain + env * fresnel * d.spec_gain * in.tuning.spec * tint;
+    float colour = albedo[c] * light * d.diffuse_gain + env * fresnel * d.spec_gain * in.tuning.spec * tint * ground;
+    colour += in.light.sun[c] * (kSunRadiance * sun_lobe * in.sun_visible * day_sun + kLampRadiance * lamp_lobe * night * in.open) * glint_gain * tint;
     colour += albedo[c] * in.emissive * kEmissiveGain * in.night;
     out[c] = std::max(colour, 0.0f) * in.tuning.gain;
   }

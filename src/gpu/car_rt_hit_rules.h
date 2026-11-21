@@ -64,6 +64,17 @@
 //   8. the lamps' night factor is still read from the sun colour (kNightLow, kNightHigh), which was 0.97 at 14 h and 23 h alike: the census's "lamps glowing" counts the shaded hits that glow
 //      with it over a half; a daylight run with a number there means the lamps glow in the sun (a follow-up: the factor from the world's hour, not from c39).
 //
+//   9. RT-HIT-SHADING-5 (car_rt_material_rules.h "the hit's own detail": the sky's openness, the contact darkening, the coat's image of the sun and of a street lamp, the class's ambient, the hour from the
+//      sun's height): the rthit3 pictures' rows 'contrast' (0.75 by day and 0.24 at night: wanted at least 1) and the night's 'bright' (0.35 to 0.45: wanted 0.7) are what to read. Every number is a first
+//      guess (the flank model of the unit test says the pieces work together, not that the numbers are right): mcla_gpu_car_rt_hit_detail 0 is the old shading (the A/B), above 1 stronger glints; the
+//      log's "[car rt] ... the cars' light" line prints the night factor by the sun's height and by the colour (the first must be 0 by day and 1 at night: if it is not, the sign of the frame's to_sun
+//      is wrong and the hour, the sun's end and the lamps' glints go wrong with it). Look for: a bright streak along a shoulder or a roof edge of the reflected car (the lamp by night, the sun by day
+//      where the flank is lit), a gradient on a flank below the player's own roof line, a dark lower sill, a window band with the sky in it; speckle in the flank's shade (the sky ray is one ray with a
+//      jitter by the hit's place, so the cone's rays and the denoise average it: a grain there means kOpenJitter is too wide or the ray should be cast per texel); a seam at the history's edge
+//      (the model's openness is neutral where the sky is open, but the camera sees the roof and not the flank). The cost: one more ray a shaded hit (the same count as the sun's), PassTiming "car rt refl".
+//      NOT DONE: the street lamps' real places (the game's lamp list exists only while the volumetric light is on), the road's contact shadow under the neighbour in the player's door (it needs a ground
+//      plane in the scene), the lamps' lens colours (a taillight's red).
+//
 // This header includes nothing of the renderer; car_rt_hit_rules_test.cpp builds on its own.
 // ===========================================================================
 

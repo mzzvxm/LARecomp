@@ -256,6 +256,7 @@
 {"mcla_gpu_car_rt_coat_layer", "MCLA/GPU"},
 {"mcla_gpu_car_rt_hit_calibrate", "MCLA/GPU"},
 {"mcla_gpu_car_rt_hit_cascade", "MCLA/GPU"},
+{"mcla_gpu_car_rt_hit_detail", "MCLA/GPU"},
 {"mcla_gpu_car_rt_hit_gain", "MCLA/GPU"},
 {"mcla_gpu_car_rt_hit_reach", "MCLA/GPU"},
 {"mcla_gpu_car_rt_hit_shading", "MCLA/GPU"},
