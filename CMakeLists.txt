@@ -443,6 +443,11 @@ target_include_directories(larecomp_bound_node_guard_test PRIVATE src/mc_engine/
 add_executable(larecomp_fence_spin_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/fence_spin_test.cpp)
 target_include_directories(larecomp_fence_spin_test PRIVATE src/mc_engine/hooks)
+# The names of our threads on Linux, which keeps 15 bytes of one (src/os/thread_name.h) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_thread_name_test, then run <build dir>/larecomp_thread_name_test (exit 0 = passed).
+add_executable(larecomp_thread_name_test EXCLUDE_FROM_ALL
+    src/os/thread_name_test.cpp)
+target_include_directories(larecomp_thread_name_test PRIVATE src)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).

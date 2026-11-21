@@ -11,6 +11,7 @@
 
 #include "cycles.h"
 #include "present_schedule.h"
+#include "os/thread_name.h"
 #include "thread_load.h"
 
 namespace mcla::gpu {
@@ -59,7 +60,8 @@ bool RenderThread::Stop(std::chrono::milliseconds deadline) {
 }
 
 void RenderThread::Main() {
-  rex::platform::SetCurrentThreadName("larecomp gpu render");
+  // Linux keeps 15 bytes of a thread name (os/thread_name.h): the long name stays on Windows, where the profilers look for it.
+  rex::platform::SetCurrentThreadName(larecomp::os::ThreadNameFor("larecomp gpu render"));
   using Clock = std::chrono::steady_clock;
   auto next_idle = Clock::now() + idle_period_;
   // While records keep coming the idle deadline is checked every

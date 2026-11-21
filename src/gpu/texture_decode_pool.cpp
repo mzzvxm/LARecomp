@@ -23,6 +23,7 @@
 
 #include "mc_engine/core/threading.h"
 #include "os/thread_priority.h"
+#include "os/thread_name.h"
 
 namespace mcla::gpu {
 
@@ -186,7 +187,7 @@ void DecodePool::Quiesce(uint64_t before) {
 }
 
 void DecodePool::WorkerMain(uint32_t index) {
-  rex::platform::SetCurrentThreadName("larecomp texture decode");
+  rex::platform::SetCurrentThreadName(larecomp::os::ThreadNameFor("larecomp texture decode"));
   (void)index;
   // Below the game's threads: what they leave idle is what this uses. Not the background level:
   // the render thread waits for a job a worker is running (Finish).
