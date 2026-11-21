@@ -7,6 +7,10 @@
 //   citypack_tool check    --game <folder> --out <folder>                  stat only: is the pack current? (exit 0 = yes)
 //   citypack_tool validate <pack file>                                     decode every blob and compare with the table (exit 0 = whole)
 //   citypack_tool info     <pack file> [sector name]                       the header, the totals, or one sector's record and mesh
+//   citypack_tool tex-census --game <folder> [--threads N]                 the city texture set (CITY-RT M2 H2): read every dictionary (common.xtd, lod_0.xtd, the sectors' own), decode,
+//                                                                          dedupe, print the counts, the formats and the size at each class's cap; writes nothing
+//   citypack_tool tex-build  --game <folder> --out <folder> [--threads N]  the same, then the texture file mcla_city_tex.v1.pack (its hit table hash is 0: a development file; the
+//                                                                          hit data build writes the real one) and a read back of every texture
 //
 // Reads the player's own game files; the pack it writes is game-derived and is never shipped or committed.
 
@@ -21,6 +25,8 @@
 
 #include "citypack/builder.h"
 #include "citypack/pack_reader.h"
+#include "citypack/texture_residency.h"
+#include "citypack/texture_set.h"
 #include "mc_engine/modloader/xcompress.h"
 
 namespace fs = std::filesystem;
@@ -163,11 +169,60 @@ int Info(const Args& args) {
   return 1;
 }
 
+// The texture set: tex-census (nothing written) and tex-build (the file, read back).
+int TextureSetCommand(const Args& args, bool write) {
+  if (args.game.empty() || (write && args.out.empty())) {
+    std::fprintf(stderr, "--game <folder with xarchive_cache.rpf>%s is required\n", write ? " and --out <folder>" : "");
+    return 2;
+  }
+  BuildRequest base;
+  if (!MakeRequest(args, &base)) return 2;
+  TextureSetRequest request;
+  request.source_rpf = base.source_rpf;
+  request.mods_rpf = base.mods_rpf;
+  request.lzx = base.lzx;
+  request.threads = args.threads;
+  PrintSink sink;
+  const TextureSetResult result = BuildTextureSet(request, &sink);
+  if (!result.ok) {
+    std::fprintf(stderr, "failed: %s\n", result.error.c_str());
+    return 1;
+  }
+  const TextureSetStats& s = result.stats;
+  const auto mb = [](uint64_t bytes) { return double(bytes) / 1048576.0; };
+  std::printf("sources %u (%u failed): common.xtd, lod_0.xtd and %u sectors' own dictionaries\n", s.sources, s.sources_failed, s.sectors);
+  std::printf("dictionary entries %llu (bad pointer %u, not 2D %u, unsupported format %u, no base %u, size mismatch %u, not tiled %u, odd swizzle %u, odd endian %u)\n",
+              static_cast<unsigned long long>(s.entries), s.dictionary.bad_pointer, s.dictionary.not_supported, s.dictionary.unsupported_format, s.dictionary.no_base_level, s.dictionary.size_mismatch,
+              s.dictionary.not_tiled, s.dictionary.odd_swizzle, s.dictionary.odd_endian);
+  std::printf("distinct names %u; distinct guest keys %u; distinct pictures %u (the duplicates would have taken %.1f MB); %u names mean different pictures in different dictionaries, %u twice in one\n",
+              s.distinct_names, s.key_variants, s.distinct, mb(s.duplicate_bytes), s.cross_conflicts, s.name_conflicts);
+  std::printf("formats: BC1 %u, BC2 %u, BC3 %u, RGBA8 %u; single level %u; gamma %u; alpha is coverage %u; damaged %u; decode failed %u\n", s.by_format[0], s.by_format[1], s.by_format[2], s.by_format[3],
+              s.single_level, s.gamma, s.with_alpha, s.damaged, s.decode_failed);
+  std::printf("texture file %.1f MB (%llu bytes); built in %.1f s\n", mb(result.set.file_bytes()), static_cast<unsigned long long>(result.set.file_bytes()), s.seconds);
+  std::printf("resident (the whole set at a class's cap, block data): ");
+  for (const uint32_t cap : {0u, 512u, 256u, 128u}) {
+    const ResidentTotals t = TotalResidentBytes(result.set.textures, cap);
+    std::printf("%s %.1f MB (%u capped)%s", cap == 0 ? "full" : ("cap " + std::to_string(cap)).c_str(), mb(t.bytes), t.capped, cap == 128 ? "\n" : ", ");
+  }
+  if (!write) return 0;
+  const std::filesystem::path path = std::filesystem::path(args.out) / kTexFileName;
+  std::string error;
+  if (!WriteTextureFile(path, result.set, 0, &error)) {
+    std::fprintf(stderr, "failed: %s\n", error.c_str());
+    return 1;
+  }
+  std::vector<std::string> problems;
+  const uint32_t bad = ValidateTextureFile(path, result.set.textures, 0, &problems);
+  for (const std::string& p : problems) std::fprintf(stderr, "  %s\n", p.c_str());
+  std::printf("wrote %s; read back: %u problems\n", path.string().c_str(), bad);
+  return bad == 0 ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::fprintf(stderr, "citypack_tool build|census|check|validate|info (see the top of main.cpp)\n");
+    std::fprintf(stderr, "citypack_tool build|census|check|validate|info|tex-census|tex-build (see the top of main.cpp)\n");
     return 2;
   }
   const std::string command = argv[1];
@@ -175,6 +230,8 @@ int main(int argc, char** argv) {
   if (!ParseArgs(argc, argv, 2, &args)) return 2;
 
   if (command == "info") return Info(args);
+  if (command == "tex-census") return TextureSetCommand(args, false);
+  if (command == "tex-build") return TextureSetCommand(args, true);
   if (command == "validate") {
     if (args.positional.empty()) {
       std::fprintf(stderr, "validate <pack file>\n");
