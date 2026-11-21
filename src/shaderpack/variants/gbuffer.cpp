@@ -1,9 +1,7 @@
-// LARecomp shader pack builder -- variant "gbuffer": a lit pixel shader that also writes the G-buffer's normal (see gbuffer.h).
+// LARecomp shader pack builder -- variant "gbuffer": a lit pixel shader that also writes the G-buffer's normal and albedo (see gbuffer.h).
 
 #include "shaderpack/variants/gbuffer.h"
 
-#include <format>
-#include <iterator>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -12,7 +10,6 @@
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variants/gbuffer_day.h"
 #include "shaderpack/variants/gbuffer_night.h"
-#include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
 
 #ifdef LARECOMP_GBUFFER_HLSLI_EMBEDDED
@@ -29,91 +26,14 @@ namespace larecomp::shaderpack {
 using namespace textedit;
 
 VariantTransformResult TransformGBufferHlsl(const VariantShader& shader, std::string_view hlsl, std::string_view hlsli_text, const StageContext& ctx) {
-  VariantTransformResult result;
-  const auto fail = [&](std::string message) {
-    result.ok = false;
-    result.skip = false;
-    result.hlsl.clear();
-    result.error = std::string(shader.name) + ": " + std::move(message);
-    return result;
-  };
-  // The day families (the PSCity / PSProp shaders: shaderpack/variants/gbuffer_day.h, package GB-D) have their own transform, xCityDefault::PSCityDefault among them: it is the
-  // spike's text plus the back face flip (the table row says where each shader's normal is). The rest of the night family (PSMultiLight, ...Env, ...Interior:
-  // shaderpack/variants/gbuffer_night.h, package GB-C) has its own too; xCityDefault::PSMultiLight keeps the edits below (the text GB-C makes for it is the same,
-  // gbuffer_night_test.cpp checks it).
+  // The day families (the PSCity / PSProp shaders: shaderpack/variants/gbuffer_day.h, package GB-D) have their own transform, xCityDefault::PSCityDefault among them (the table row says where
+  // each shader's normal is); the night family (PSMultiLight, ...Env, ...Interior: shaderpack/variants/gbuffer_night.h, package GB-C) has its own, xCityDefault::PSMultiLight among them (the
+  // spike's own edits of it, which this function made before, are the night stage's text now: the stage finds the same normal, and adds RT2's albedo and lit weight, gbuffer_albedo.h).
   if (IsGBufferDayShader(shader.name)) return TransformGBufferDayHlsl(shader, hlsl, hlsli_text, ctx);
-  if (shader.name != kGBufferNightShader && IsGBufferNightShader(shader.name)) return TransformGBufferNightHlsl(shader, hlsl, hlsli_text, ctx);
-  if (shader.name != kGBufferNightShader) {
-    result.skip = true;
-    result.error = "not a shader the G-buffer variant is for";
-    return result;
-  }
-  std::string text = NormalizeNewlines(hlsl);
-  std::string helper = NormalizeNewlines(hlsli_text);
-  while (!helper.empty() && IsSpace(helper.back())) helper.pop_back();
-  if (helper.empty()) return fail("the helper text (gbuffer_common.hlsli) is empty");
-  std::string error;
-
-  // The normal is the interpolant TEXCOORD0's xyz in both shaders (gbuffer.h): the declaration must be there, once, as the translator makes it.
-  if (CountOccurrences(text, "in centroid float4 iTexCoord0 : TEXCOORD0") != 1) {
-    return fail("the pixel shader does not declare `in centroid float4 iTexCoord0 : TEXCOORD0` once: not the translator's HLSL this was written for");
-  }
-
-  // 1. The second output, after the game's colour output (before the SV_Coverage of the alpha test spec variant).
-  static constexpr Piece kOutput[] = {Lit("\tout float4 oC0 : SV_Target0")};
-  if (!ReplaceOnce(text, kOutput, 0, 0, "oC0 : SV_Target0 output",
-                   [](std::string_view group) { return std::string(group) + "\n\t, out float2 oC1 : SV_Target1"; }, &error)) {
-    return fail(std::move(error));
-  }
-
-  // 2. The block of constants (48 bytes: gbuffer_types.h GBufferConstants), declared at the place the chain gives it: byte 608 alone (c38 to c40), after the blocks of the
-  // stages before it in a composition (the headlight's 672 bytes come first: variant_chain.h, so 1280 there).
-  static constexpr ConstantMember kMembers[] = {{"uint4", "g_GBufferMode"}, {"float4", "g_GBufferRay"}, {"float4", "g_GBufferCam"}};
-  if (!DeclareConstants(text, ctx, "G-buffer variant (src/gpu/gbuffer_types.h GBufferConstants): 48 bytes after the 608.", kMembers, &error)) {
-    return fail(std::move(error));
-  }
-
-  // 3. The helper, before main.
-  static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0), Lit("#endif"), Ws(0), Lit("void main(")};
-  if (!ReplaceOnce(text, kMain, 0, 6, "pixel shader main",
-                   [&](std::string_view group) { return helper + "\n\n" + std::string(group); }, &error)) {
-    return fail(std::move(error));
-  }
-
-  // 4. The write, after the game's last statement of the colour (so after the alpha test's discard).
-  static constexpr Piece kWrite[] = {Lit("oC0 = applyBlendPremult(oC0);")};
-  if (!ReplaceOnce(text, kWrite, 0, 0, "the game's colour write",
-                   [](std::string_view group) {
-                     return std::string(group) +
-                            "\n\toC1 = float2(0.0f, 0.0f);\n"
-                            "\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n"
-                            "\t\toC1 = GbRt1Encode(iTexCoord0.xyz);\n"
-                            "\t}";
-                   },
-                   &error)) {
-    return fail(std::move(error));
-  }
-
-  // What the text must hold now: one second output, one call, the helper once, one declaration of the block in each backend.
-  const struct {
-    std::string_view needle;
-    size_t want;
-  } kChecks[] = {
-      {"oC1 : SV_Target1", 1},
-      {"oC1 = GbRt1Encode(iTexCoord0.xyz);", 1},
-      {"float2 GbRt1Encode(float3 n)", 1},
-      {"float2 GbOctEncode(float3 n)", 1},
-      {"oC0 = applyBlendPremult(oC0);", 1},
-      {"\x01", 0},
-  };
-  for (const auto& check : kChecks) {
-    const size_t count = CountOccurrences(text, check.needle);
-    if (count != check.want) {
-      return fail(std::format("the transformed HLSL has '{}' {} times (need {})", check.needle, count, check.want));
-    }
-  }
-  result.ok = true;
-  result.hlsl = std::move(text);
+  if (IsGBufferNightShader(shader.name)) return TransformGBufferNightHlsl(shader, hlsl, hlsli_text, ctx);
+  VariantTransformResult result;
+  result.skip = true;
+  result.error = "not a shader the G-buffer variant is for";
   return result;
 }
 
