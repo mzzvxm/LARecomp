@@ -25,6 +25,13 @@
 //   CITY_HIT_GAIN(cls)                          optional: the class's gain (a float; 1 without)
 //   CITY_HIT_STAT_ADD(word, value)              optional: the calibration's counters (a uint word index and a uint to add: rt_hit_calibration.h StatsWord); counted only in a stats frame
 //   CITY_HIT_LAMP_LOAD(i)                       optional: lamp i of the frame's list as a CityHitLamp (view space); with it the lamp light of a hit is made, over the range the params give
+//   CITY_HIT_LAMP_GRID                          optional (CITY-RT R7): the lamp light of a hit is made from the WORLD FRAME's lamps (hlsl/rt_world_frame.hlsli, included BEFORE this file: its RtWorld, RtWorldLoad,
+//                                               RtLampBegin, RtLampStep, RtLampRow): the lamps of the 64 m cells around the hit, at most kCityHitLampMax of them, the sum capped at kCityHitLampSumCap;
+//                                               the params' lampFirst and lampCount are not used (the records hold each lamp's activity over p.lampFactor = the world rows' schedule). Wins over CITY_HIT_LAMP_LOAD.
+//   CITY_HIT_GLOW_FACTOR(kind)                  optional (R7): what a glowing material of this kind (CITY_HIT_GLOW_*) glows by, 0..1: the world frame's is RtWorldGlowFactor (a lamp lens by the street lamps'
+//                                               schedule, neon, signs and lit windows by the fill lights', a traffic signal always); without it kind ALWAYS is 1 and everything else saturate(p.lampFactor)
+//   CITY_HIT_CENSUS_ADD(word, value)            optional (R7): the lamp term's and the glow's counters (CITY_HIT_CENSUS_*: words 0..7 of a counter buffer of the includer's choosing: place them beside the calibration's
+//                                               or in a buffer of their own), counted only in a stats frame (CITY_HIT_P_CALIBRATE); src/gpu/rt_world_frame_rules.h LampCensus reads them
 //   CITY_HIT_AMBIENT(P, N, ambient)             optional: replaces the frame's hemisphere ambient at a point with something better (the GI's probe field), given the default
 //   CITY_HIT_FEEDBACK(P, N)                     optional: the GI field's irradiance at a point, a float3, for the hit's bounce (the second bounce of a probe ray)
 //   CITY_HIT_HAZE(colour, distance)             optional: the air between the camera and the hit (the game's distance fog) on a shaded colour, given the colour (picture's units) and the distance in
@@ -119,6 +126,18 @@ static const float kCityHitLogFloor = 0.0001;     // rt_hit_calibration.h: the f
 static const float kCityHitLogBias = 16.0;
 static const float kCityHitLogScale = 64.0;
 static const float kCityHitLogMax = 2047.0;
+static const uint kCityHitLampMax = 96u;           // R7: the lamps of the world frame's lookup that one hit examines at most (a 9 cell lookup holds 60 at night on average in the budget's densest place; the loop is bounded)
+static const float kCityHitLampSumCap = 6.0;       // R7: the lamp light's luminance is capped at this (a lamp's term is at most 1: six lamps at full strength; a cluster of omni lights is not a sun)
+static const float kCityHitLampLookup = 64.0;      // R7: the lookup's radius where the world rows give none (m)
+
+// R7: the lamp term's and the glow's counters (CITY_HIT_CENSUS_ADD word numbers)
+#define CITY_HIT_CENSUS_LOOKUPS 0u      // hits whose lamp light was looked up
+#define CITY_HIT_CENSUS_EXAMINED 1u     // lamps examined, summed
+#define CITY_HIT_CENSUS_LIT 2u          // ... of which the lamp lit the hit
+#define CITY_HIT_CENSUS_CAP_COUNT 3u    // lookups that stopped at kCityHitLampMax with lamps left
+#define CITY_HIT_CENSUS_CAP_SUM 4u      // lookups whose sum was over kCityHitLampSumCap
+#define CITY_HIT_CENSUS_GLOW_NIGHT 5u   // hits on a glowing material, by what its glow follows (this word + the kind: 5 night, 6 lens, 7 always)
+#define CITY_HIT_CENSUS_WORDS 8u
 
 // Per class: the diffuse's share (glass and chrome let most of the light go through or off), the sky reflection's share. Indexed by the G-buffer's class (CITY_HIT_CLASS_*).
 static const float kCityHitDiffuseGain[16] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.5, 0.25, 1.0, 1.0, 1.0, 0.15};
@@ -508,7 +527,106 @@ CityHitLampEval CityHitLampAt(CityHitParams p, CityHitLamp l, float3 position, f
     return e;
 }
 
-#ifdef CITY_HIT_LAMP_LOAD
+// The census (a stats frame only).
+void CityHitCensus(CityHitParams p, uint word, uint value)
+{
+#ifdef CITY_HIT_CENSUS_ADD
+    if ((p.flags & CITY_HIT_P_CALIBRATE) != 0u)
+    {
+        CITY_HIT_CENSUS_ADD(word, value);
+    }
+#endif
+}
+
+#if defined(CITY_HIT_LAMP_GRID)
+// Lamp `index` of the world frame's list at a point: row 0 first (the position and the intensity), rows 1 and 2 (the axis, the cone, the colour) only where the lamp reaches the point (the game's reach, where its
+// term is 1 per cent): the same arithmetic as CityHitLampAt over CityHitLampFromRows, a third of the loads for a lamp that does not reach.
+CityHitLampEval CityHitLampAtIndex(CityHitParams p, RtWorld w, uint index, float3 position, float3 normal)
+{
+    const uint4 a = RtLampRow(w, index, 0u);
+    const float3 lampPosition = float3(asfloat(a.x), asfloat(a.y), asfloat(a.z));
+    const float intensity = asfloat(a.w);
+    const float3 d = lampPosition - position;
+    const float d2 = max(dot(d, d), 1e-6);
+    CityHitLampEval e;
+    e.distance = sqrt(d2);
+    e.toLamp = d * (1.0 / e.distance);
+    e.radiance = float3(0.0, 0.0, 0.0);
+    if (d2 < kCityHitLampReach * intensity)
+    {
+        const CityHitLamp l = CityHitLampFromRows(a, RtLampRow(w, index, 1u), RtLampRow(w, index, 2u));
+        e.radiance = l.colour * (CityHitLampTerm(l.intensity, d2) * CityHitLampCone(l, e.toLamp) * saturate(dot(normal, e.toLamp)) * p.lampFactor);
+    }
+    return e;
+}
+
+// The light of the world frame's lamps at a hit (CITY-RT R7). The lamps are the 64 m cells' around the hit (RtLampBegin: the world rows' lookup radius), the first kCityHitLampMax of them in the cursor's order; the
+// sum of their light is capped in luminance at kCityHitLampSumCap. Without the lamp shadow flag that is the light. With it ONE lamp is chosen by its unshadowed brightness (p.noise.z over the sum), a shadow
+// ray goes toward it, and its light times sum / its own is the estimate of the lit lamps' sum (as the flat range's), times the cap's factor.
+float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footprint)
+{
+    const RtWorld w = RtWorldLoad();
+    const float radius = w.lookupM > 0.0 ? w.lookupM : kCityHitLampLookup;
+    float3 sum = float3(0.0, 0.0, 0.0);
+    float weightSum = 0.0;
+    uint examined = 0u;
+    uint lit = 0u;
+    RtLampCursor c = RtLampBegin(w, position, radius);
+    CITY_HIT_LOOP
+    while (c.done == 0u && examined < kCityHitLampMax)
+    {
+        const CityHitLampEval e = CityHitLampAtIndex(p, w, c.index, position, normal);
+        const float luma = CityHitLuma(e.radiance);
+        sum += e.radiance;
+        weightSum += luma;
+        lit += luma > 0.0 ? 1u : 0u;
+        examined += 1u;
+        c = RtLampStep(w, c);
+    }
+    const bool capSum = weightSum > kCityHitLampSumCap;
+    CityHitCensus(p, CITY_HIT_CENSUS_LOOKUPS, 1u);
+    CityHitCensus(p, CITY_HIT_CENSUS_EXAMINED, examined);
+    CityHitCensus(p, CITY_HIT_CENSUS_LIT, lit);
+    CityHitCensus(p, CITY_HIT_CENSUS_CAP_COUNT, c.done == 0u ? 1u : 0u);
+    CityHitCensus(p, CITY_HIT_CENSUS_CAP_SUM, capSum ? 1u : 0u);
+    const float keep = capSum ? kCityHitLampSumCap / weightSum : 1.0;
+    if ((p.flags & CITY_HIT_P_LAMP_SHADOW) == 0u || !(weightSum > 0.0))
+    {
+        return sum * keep;
+    }
+    const float pick = p.noise.z * weightSum;
+    float running = 0.0;
+    float3 chosen = float3(0.0, 0.0, 0.0);
+    float3 toChosen = float3(0.0, 1.0, 0.0);
+    float distanceChosen = 0.0;
+    float weightChosen = 0.0;
+    uint seen = 0u;
+    RtLampCursor d = RtLampBegin(w, position, radius);
+    CITY_HIT_LOOP
+    while (d.done == 0u && seen < examined && weightChosen <= 0.0)
+    {
+        const CityHitLampEval e = CityHitLampAtIndex(p, w, d.index, position, normal);
+        const float lampWeight = CityHitLuma(e.radiance);
+        running += lampWeight;
+        seen += 1u;
+        if (lampWeight > 0.0 && (running >= pick || seen == examined))
+        {
+            chosen = e.radiance;
+            toChosen = e.toLamp;
+            distanceChosen = e.distance;
+            weightChosen = lampWeight;
+        }
+        d = RtLampStep(w, d);
+    }
+    if (!(weightChosen > 0.0))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const float3 origin = position + normal * CityHitLift(position.z);
+    const bool blocked = CityHitLampRay(origin, toChosen, max(distanceChosen - kCityHitLampEnd, 0.0), footprint);
+    return blocked ? float3(0.0, 0.0, 0.0) : chosen * (keep * weightSum / weightChosen);
+}
+#elif defined(CITY_HIT_LAMP_LOAD)
 // The light of the frame's lamps at a hit. Without the lamp shadow flag: the sum of every lamp of the params' range (a few dozen at night, none by day; no rays). With it: ONE lamp, chosen by its
 // unshadowed brightness (p.noise.z over the sum of them), with a shadow ray toward it, its light times sum / its own (the estimate's expectation is the sum of the lit lamps').
 float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footprint)
@@ -570,6 +688,23 @@ float CityHitSpecWeight(float smoothness)
     return s * s;
 }
 
+// What a glowing material's glow follows (the tint word's bits 30..31): 3 is not a kind and reads as the night curve, a pack written before the kinds has 0 there.
+uint CityHitGlowKindOf(uint kind)
+{
+    return kind == CITY_HIT_GLOW_LENS ? CITY_HIT_GLOW_LENS : (kind == CITY_HIT_GLOW_ALWAYS ? CITY_HIT_GLOW_ALWAYS : CITY_HIT_GLOW_NIGHT);
+}
+
+// How much of its glow a material of this kind shows (CITY-RT R7), 0..1: a traffic signal always; the rest by the includer's schedule (the world frame's: a lens by the street lamps', neon, signs and lit windows by
+// the fill lights'), else by p.lampFactor. The glow itself is the albedo x the material's scale x kRtHitEmissiveGain x this.
+float CityHitGlowFactor(CityHitParams p, uint kind)
+{
+#ifdef CITY_HIT_GLOW_FACTOR
+    return saturate(CITY_HIT_GLOW_FACTOR(kind));
+#else
+    return kind == CITY_HIT_GLOW_ALWAYS ? 1.0 : saturate(p.lampFactor);
+#endif
+}
+
 CityHitShaded CityHitShadedNone()
 {
     CityHitShaded r;
@@ -620,7 +755,13 @@ CityHitShaded CityHitShadeHit(CityHitParams p, RtHitFrame f, CityHitRay ray, Cit
         visible = CityHitSunVisible(p, f, hit, normal, toSun, ray.footprint);
     }
     light += f.sun * (ndl * visible);
-#ifdef CITY_HIT_LAMP_LOAD
+#if defined(CITY_HIT_LAMP_GRID)
+    CITY_HIT_BRANCH
+    if ((p.flags & CITY_HIT_P_LAMPS) != 0u && p.lampFactor > 0.0)
+    {
+        light += CityHitLamps(p, hit, normal, ray.footprint);
+    }
+#elif defined(CITY_HIT_LAMP_LOAD)
     CITY_HIT_BRANCH
     if ((p.flags & CITY_HIT_P_LAMPS) != 0u && p.lampCount != 0u && p.lampFactor > 0.0)
     {
@@ -662,8 +803,10 @@ CityHitShaded CityHitShadeHit(CityHitParams p, RtHitFrame f, CityHitRay ray, Cit
     CITY_HIT_BRANCH
     if ((p.flags & CITY_HIT_P_EMISSIVE) != 0u && m.emissive > 0.0)
     {
-        glow = saturate(p.lampFactor);
+        const uint kind = CityHitGlowKindOf(m.glowKind);
+        glow = CityHitGlowFactor(p, kind);
         result += albedo * (m.emissive * kRtHitEmissiveGain * glow);
+        CityHitCensus(p, CITY_HIT_CENSUS_GLOW_NIGHT + kind, 1u);
     }
 
     float3 shaded = max(result, 0.0) * p.units;

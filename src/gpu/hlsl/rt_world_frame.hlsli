@@ -14,7 +14,7 @@
 //                             and keeps its meaning; RtWorldHitFrame() below always reads the world's rows
 //   RT_WORLD_LOOP             optional: the attribute of the lookup's loops (default [loop]; the test defines it empty)
 //
-// THE LAMP LOOP (what a consumer writes; city_hit_shade.hlsli's CityHitLamps is the one that needs it, R7):
+// THE LAMP LOOP (R7: city_hit_shade.hlsli's CityHitLamps does it with `#define CITY_HIT_LAMP_GRID`, the cap and the sum's cap included; this is the loop it is made of):
 //     const RtWorld w = RtWorldLoad();                                   // once a pass
 //     for (RtLampCursor c = RtLampBegin(w, hitViewPosition, 64.0); c.done == 0u; c = RtLampStep(w, c))
 //     {
@@ -48,6 +48,7 @@
 #define RT_WORLD_ROW_COUNTS 38u
 #define RT_WORLD_ROW_CALIBRATION 39u
 #define RT_WORLD_ROW_GAINS 40u
+#define RT_WORLD_ROW_SCHEDULE 47u
 #define RT_WORLD_TOTAL_ROWS 48u
 #define RT_WORLD_CLASSES 16u
 
@@ -60,6 +61,12 @@
 #define RT_WORLD_STATS_FRAME 64u
 #define RT_WORLD_CAR 128u
 #define RT_WORLD_LIGHT 256u
+
+#define RT_WORLD_EVIDENCE_ON 1u      // the game's live lamp list had lamps that shine: the street lamps are on (rt_world_frame_rules.h kEvidenceOn)
+#define RT_WORLD_EVIDENCE_OFF 2u     // a fresh list with none while the table has street lamps in its reach: they are off
+#define RT_WORLD_GLOW_NIGHT 0u       // the glow kinds (city_hit_format.h kGlow*; hlsl CITY_HIT_GLOW_*)
+#define RT_WORLD_GLOW_LENS 1u
+#define RT_WORLD_GLOW_ALWAYS 2u
 
 #define RT_WORLD_UNKNOWN_WEATHER 0xFFFFFFFFu
 #define RT_WORLD_LOOKUP_AXIS 5       // a lookup reads at most this many cells an axis
@@ -114,6 +121,10 @@ struct RtWorld
     uint statsFrame;    // 1: set CITY_HIT_P_CALIBRATE
     uint windows;       // calibration windows closed
     uint worldKind;     // 0 none, 1 play, 2 pause, 3 garage, 4 map
+    float street;       // row 47 (R7): the street lamps' schedule 0..1: what a lamp lens glows by
+    float fill;         // the fill lights' night factor 0..1: what neon, signs and lit windows glow by
+    uint liveShining;   // the game's live lamp list's lamps that shine now
+    uint evidence;      // RT_WORLD_EVIDENCE_*
     float3 axisX;       // the world's axes in view space
     float3 axisY;
     float3 axisZ;
@@ -159,6 +170,11 @@ RtWorld RtWorldLoad()
     w.axisX = asfloat(gRtWorld[5u].xyz);
     w.axisY = asfloat(gRtWorld[6u].xyz);
     w.axisZ = asfloat(gRtWorld[7u].xyz);
+    const uint4 r8 = gRtWorld[RT_WORLD_ROW_SCHEDULE];
+    w.street = asfloat(r8.x);
+    w.fill = asfloat(r8.y);
+    w.liveShining = r8.z;
+    w.evidence = r8.w;
     return w;
 }
 
@@ -196,6 +212,14 @@ float RtWorldClassGain(uint cls)
     const uint4 r = gRtWorld[RT_WORLD_ROW_GAINS + (c >> 2u)];
     const uint k = c & 3u;
     return asfloat(k == 0u ? r.x : (k == 1u ? r.y : (k == 2u ? r.z : r.w)));
+}
+
+// What a glowing material of this kind glows by (CITY-RT R7; the library's CITY_HIT_GLOW_FACTOR(kind)): a lamp lens by the street lamps' schedule, a traffic signal always, everything else (neon, signs, lit
+// windows, interiors) by the fill lights' night factor. Row 47 only: one load.
+float RtWorldGlowFactor(uint kind)
+{
+    const uint4 r = gRtWorld[RT_WORLD_ROW_SCHEDULE];
+    return kind == RT_WORLD_GLOW_ALWAYS ? 1.0 : asfloat(kind == RT_WORLD_GLOW_LENS ? r.x : r.y);
 }
 
 // A view space point in the game's world: the camera plus the point along the world's axes.

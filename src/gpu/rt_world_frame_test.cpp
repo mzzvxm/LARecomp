@@ -203,6 +203,9 @@ void TestNumbers(const std::string& hlsl) {
   CHECK(number("RT_WORLD_ROW_COUNTS") == rw::kRowCounts);
   CHECK(number("RT_WORLD_ROW_CALIBRATION") == rw::kRowCalibration);
   CHECK(number("RT_WORLD_ROW_GAINS") == rw::kRowGains);
+  CHECK(number("RT_WORLD_ROW_SCHEDULE") == rw::kRowSchedule && rw::kRowSchedule == 47 && rw::kRowSchedule < rw::kTotalRows);
+  CHECK(number("RT_WORLD_EVIDENCE_ON") == rw::kEvidenceOn && number("RT_WORLD_EVIDENCE_OFF") == rw::kEvidenceOff);
+  CHECK(number("RT_WORLD_GLOW_NIGHT") == ch::kGlowNight && number("RT_WORLD_GLOW_LENS") == ch::kGlowLens && number("RT_WORLD_GLOW_ALWAYS") == ch::kGlowAlways);
   CHECK(number("RT_WORLD_TOTAL_ROWS") == rw::kTotalRows);
   CHECK(number("RT_WORLD_CLASSES") == rw::kClasses);
   CHECK(number("RT_WORLD_VALID") == rw::kWorldValid);
@@ -723,6 +726,8 @@ rw::WorldInput RandomWorld(Lcg& rng, const rw::LampFrame* lamps) {
   in.calibration_windows = rng.Below(1000);
   in.world_kind = rng.Below(5);
   in.schedule = rw::ScheduleAt(ch::LampHours{}, rng.Below(6) == 0 ? -1.0f : in.hour, rng.Range(0.0f, 1.0f));
+  in.schedule.evidence = rng.Below(4) == 0 ? rng.Below(3) : 0u;
+  in.live_shining = rng.Below(3) == 0 ? rng.Below(90) : 0u;
   in.lamps = lamps;
   for (uint32_t c = 0; c < rw::kClasses; ++c) in.gains[c] = rng.Range(0.5f, 3.0f);
   return in;
@@ -745,7 +750,7 @@ void TestWorldRows() {
     CHECK(std::memcmp(rows, hit_rows, sizeof(hit_rows)) == 0);
     // the reserved rows are zero
     bool zero = true;
-    for (uint32_t r = 44; r < rw::kTotalRows; ++r) for (int c = 0; c < 4; ++c) zero = zero && rows[r][c] == 0;
+    for (uint32_t r = 44; r < rw::kRowSchedule; ++r) for (int c = 0; c < 4; ++c) zero = zero && rows[r][c] == 0;
     CHECK(zero);
     rw::WorldDecoded d = rw::DecodeWorldRows(rows);
     CHECK(d.Valid());
@@ -760,6 +765,8 @@ void TestWorldRows() {
     CHECK(((d.flags & rw::kWorldLight) != 0) == in.world_light);
     CHECK(in.schedule.from_hour ? d.hour == in.hour : d.hour == -1.0f);
     CHECK(d.lamp_factor == in.schedule.factor);
+    CHECK(d.street == std::clamp(in.schedule.street, 0.0f, 1.0f) && d.fill == std::clamp(in.schedule.fill, 0.0f, 1.0f) && d.live_shining == in.live_shining && d.evidence == in.schedule.evidence);
+    CHECK(d.GlowFactor(ch::kGlowAlways) == 1.0f && d.GlowFactor(ch::kGlowLens) == d.street && d.GlowFactor(ch::kGlowNight) == d.fill && d.GlowFactor(3) == d.fill);
     CHECK(d.units == in.units && d.wet == in.wet && d.weather == in.weather && d.time_s == in.time_s);
     for (int c = 0; c < 3; ++c) {
       CHECK(d.camera[c] == (in.camera_known ? in.camera[c] : 0.0f));
@@ -793,6 +800,8 @@ void TestWorldRows() {
     CHECK(w.cx0 == d.cx0 && w.cz0 == d.cz0 && w.nx == d.nx && w.nz == d.nz);
     CHECK(w.lampCount == d.lamp_count && w.lampsInWindow == d.lamps_in_window && w.cells == d.cells && w.liveCount == d.live_count);
     CHECK(w.statsFrame == d.stats_frame && w.windows == d.windows && w.worldKind == d.world_kind);
+    CHECK(w.street == d.street && w.fill == d.fill && w.liveShining == d.live_shining && w.evidence == d.evidence);
+    for (uint32_t kind = 0; kind < 4; ++kind) CHECK(hlsl_shim::RtWorldGlowFactor(kind) == d.GlowFactor(kind));
     CHECK(w.axisX.x == in.hit.world_axes_view[0][0] && w.axisX.y == in.hit.world_axes_view[0][1] && w.axisX.z == in.hit.world_axes_view[0][2]);
     CHECK(w.axisY.x == in.hit.world_axes_view[1][0] && w.axisZ.z == in.hit.world_axes_view[2][2]);
     for (uint32_t cls = 0; cls < rw::kClasses; ++cls) CHECK(hlsl_shim::RtWorldClassGain(cls) == in.gains[cls]);
@@ -1266,10 +1275,11 @@ void TestSources(const std::string& src) {
     CHECK(Has(cpp, "src_.ao->SetWorldLightWanted(on);") && Has(cpp, "vol_lamps::SetWantedBy(vol_lamps::kWantedByWorldFrame, on);"));
     CHECK(Has(cpp, "pack->ReadLamps(&table, &error)") && Has(cpp, "src_.city->pack_if_open()"));
   }
-  // the hit library's lamp loop is still the flat range: the grid is the consumer's to take (R7), the library's text is as H4 left it
+  // the hit library keeps the flat range for a consumer that defines CITY_HIT_LAMP_LOAD and takes the world frame's grid for one that defines CITY_HIT_LAMP_GRID (R7)
   {
     const std::string lib = ReadFile(hlsl_dir + "city_hit_shade.hlsli");
-    CHECK(Has(lib, "for (uint i = 0u; i < p.lampCount; ++i)") && !Has(lib, "RtLamp"));
+    CHECK(Has(lib, "for (uint i = 0u; i < p.lampCount; ++i)") && Has(lib, "#if defined(CITY_HIT_LAMP_GRID)") && Has(lib, "RtLampBegin(w, position, radius)") && Has(lib, "RtLampStep(w, c)") &&
+          Has(lib, "CityHitLampAtIndex(p, w, c.index, position, normal)"));
   }
 }
 
