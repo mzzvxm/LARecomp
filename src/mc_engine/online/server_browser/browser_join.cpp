@@ -13,7 +13,9 @@
 
 #include "../online_common.h"
 #include "../system_link.h"
+#include "browser_join_core.h"
 #include "larecomp_guest.h"
+#include "mc_engine/menus/pause_menu.h"
 
 namespace larecomp::browser {
 namespace {
@@ -43,6 +45,9 @@ std::atomic<uint32_t> g_target_vip{0};
 std::atomic<bool> g_world_ready{false};
 
 constexpr uint32_t kPlayerManagerPtr = 0x82874374;  // *: mcPlayerManager
+// The pause manager: +4 is the game's paused flag, +10 the run-one-frame-while-paused bit (Game_IsPaused, sub_822BF228). The
+// pause menu holds the game, so this is "the pause menu is up".
+constexpr uint32_t kPauseStatePtr = 0x828CCEA0;
 constexpr uint32_t kGetPlayerFn = 0x822A3998;       // (manager, index) -> player
 constexpr auto kWorldWait = std::chrono::seconds(120);
 
@@ -50,10 +55,24 @@ constexpr auto kWorldWait = std::chrono::seconds(120);
 JoinPhase g_phase = JoinPhase::kIdle;
 Clock::time_point g_phase_deadline{};
 int g_start_step = 0;
+PauseGate g_pause_gate;  // what the join does about an open pause menu (browser_join_core.h)
 
 rex::kernel::GuestAddressSpace* Mem() {
     auto* rt = REX_RUNTIME();
     return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
+}
+
+int64_t NowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+}
+
+// The pause menu is up (the game's own flag, as adaptive_triggers.cpp and the cutscene gallery read it).
+bool GamePaused() {
+    auto* mem = Mem();
+    if (!mem) return false;
+    const uint32_t p = GuestRead32(mem, kPauseStatePtr);
+    if (!IsGuestPtr(p)) return false;
+    return *mem->TranslateVirtual<const uint8_t*>(p + 4) != 0 && *mem->TranslateVirtual<const uint8_t*>(p + 10) == 0;
 }
 
 template <typename... Args>
@@ -146,6 +165,7 @@ void Finish(JoinPhase phase, std::string text) {
     g_target_vip.store(0);
     g_phase = phase;
     g_start_step = 0;
+    g_pause_gate.Reset();
     SetStatus(phase, std::move(text));
 }
 
@@ -216,6 +236,7 @@ void TickServerBrowserJoin() {
     if (fresh) {
         g_target_vip.store(0);
         g_start_step = 0;
+        g_pause_gate.Reset();
         if (!req.host_vip && !req.any_room) {
             g_phase = JoinPhase::kIdle;
             SetStatus(JoinPhase::kIdle, {});
@@ -252,13 +273,40 @@ void TickServerBrowserJoin() {
             break;
         }
         if (g_start_step == 0) {
+            // Not with the pause menu up. The machine is inside the pause screen's own states then, and a goto from there
+            // (or the searching states after it) takes down UI objects the pause screen still holds: the crash of "join
+            // while in the pause menu". Close it the way CONTINUE does, wait until the game runs, and start from free roam,
+            // the path that works (browser_join_core.h).
+            const int64_t now_ms = NowMs();
+            const bool paused = GamePaused();
+            const bool waited = g_pause_gate.SawPause();
+            const PauseGate::Step gate = g_pause_gate.Update(paused, now_ms);
+            if (gate != PauseGate::Step::kProceed) {
+                if (gate == PauseGate::Step::kClose) {
+                    const bool closed = PauseMenuClose();
+                    LARECOMP_APP_INFO("[browser] the pause menu is open: closing it before the join starts (try {}{})",
+                                      g_pause_gate.tries(), closed ? "" : "; the game's close is not available");
+                }
+                const bool by_player = g_pause_gate.NeedsPlayer(now_ms);
+                SetStatus(JoinPhase::kStarting, (by_player ? "Close the pause menu to join " : "Closing the pause menu to join ") +
+                                                    req.label + (by_player ? "" : "..."));
+                if (now > g_phase_deadline) Finish(JoinPhase::kFailed, "Join cancelled: the pause menu stayed open");
+                break;
+            }
+            if (waited) LARECOMP_APP_INFO("[browser] the pause menu is closed; the join starts from free roam");
             // The menu's onenter picks the net mode and clears the options.
             // Already in it (the browser opened from the SYSTEM LINK / XBOX
             // LIVE menu's own row): no goto. Re-entering it reloads the pause
             // movie, and the goto's tail (sub_82221BE0) then walks the parents
             // of the UIObject that reload freed (read of guest 0x50).
             const char* net_state = req.lan ? "LAN" : "Online";
-            if (InState(hsm, net_state)) {
+            const bool in_lan = InState(hsm, "LAN");
+            const bool in_online = InState(hsm, "Online");
+            const bool in_target = req.lan ? in_lan : in_online;
+            // Where the machine is when the goto is made: the next crash report of a join names it.
+            LARECOMP_APP_INFO("[browser] starting from: paused {}, in LAN {}, in Online {}", paused ? 1 : 0, in_lan ? 1 : 0,
+                              in_online ? 1 : 0);
+            if (in_target) {
                 LARECOMP_APP_INFO("[browser] already in '{}'; searching from it", net_state);
             } else if (!GotoState(hsm, net_state)) {
                 Finish(JoinPhase::kFailed, "The game's online menu could not be opened");

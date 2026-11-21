@@ -558,6 +558,13 @@ add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
     src/settings/cli_rules_test.cpp)
 target_include_directories(larecomp_cli_rules_test PRIVATE src)
 
+# What a join of the server browser does about an open pause menu (src/mc_engine/online/server_browser/browser_join_core.h: it closes the menu
+# the way CONTINUE does and starts only when the game runs again) has a check that needs no game and no server:
+#   cmake --build <build dir> --target larecomp_browser_join_core_test, then run <build dir>/larecomp_browser_join_core_test (exit 0 = passed).
+add_executable(larecomp_browser_join_core_test EXCLUDE_FROM_ALL
+    src/mc_engine/online/server_browser/browser_join_core_test.cpp)
+target_include_directories(larecomp_browser_join_core_test PRIVATE src/mc_engine/online/server_browser)
+
 # The table of change-callback guards (src/settings/watch_table.h: released by hand while the SDK's settings still exist, because the exe's
 # static destruction came after the SDK had destroyed them and crashed in Mtx_lock about every other run) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_watch_table_test, then run <build dir>/larecomp_watch_table_test (exit 0 = passed).

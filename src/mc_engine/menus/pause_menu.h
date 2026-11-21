@@ -39,6 +39,11 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out);
 // cutscene gallery calls this when it unpauses the game to play a scene, so no
 // menu of ours is left on the open-form stack holding the pad.
 void PauseMenuLeaveSubmenu();
+// Closes the pause menu the way its CONTINUE row does (the game's own PM_Continue, sub_8265F428: closes the pause form, goes
+// back to the in-game state, clears the menu flag; our menus first, as PauseMenuLeaveSubmenu). Guest thread. The game is
+// unpaused a few frames later, not on return. False when the game's function is not there. The server browser's join uses it:
+// a join must not drive the menu machine while the pause screen is up (online/server_browser/browser_join_core.h).
+bool PauseMenuClose();
 // RESTART GAME (the QUIT form): save, start the game again, close this one.
 void PauseMenuRestartGame();
 
