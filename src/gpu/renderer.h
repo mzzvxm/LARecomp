@@ -277,6 +277,9 @@ class Renderer final : public RenderThread::Executor {
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();
+  // CITY-RT M2 H3: the city ray tracing's census, one line every kCityCensusPresents presents (the interval of the car self-reflection's census) when any of its parts has text:
+  // the structures and the hit data's pool (CityRtScene), the traced shadows (CityRtShadow) and the ray tracing scene's wants (RtSceneService). Called by ReportFrameStats.
+  void ReportCityCensus();
   // Once, on the render thread, after the device was found lost (Device::CheckLost logged the reason
   // and the call that met it, from whichever thread): the renderer's own state at the loss and the
   // passes recorded for the frames that were in flight (only with mcla_gpu_pass_timing).

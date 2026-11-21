@@ -135,7 +135,7 @@ class CityRtScene {
   Stats stats() const;
   // The video memory the structures, their scratch and the meshes waiting hold now.
   uint64_t HeldBytes() const;
-  // The text the renderer's census line ends with; empty where there is nothing.
+  // The text of the renderer's city census line (Renderer::ReportCityCensus: the structures, then the hit data's pool); empty where there is nothing.
   std::string CensusText() const;
 
  private:

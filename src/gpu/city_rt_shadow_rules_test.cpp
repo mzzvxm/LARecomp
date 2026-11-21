@@ -1,15 +1,18 @@
 // The city ray traced sun shadows' maths (city_rt_shadow_rules.h): the disc samples, the lift, the alpha rule and the hash, against a brute force tracer over made-up
 // triangles (the penumbra of a roof's edge against the exact disc integral, contact hardening, no acne on a plane at every sun height and depth error), and that the
-// shader's numbers are the header's.
+// shader's numbers are the header's; and that the literal counts of every CreateDescriptorSet call in src/gpu are the ranges of its builder (D3D12 refuses a set whose count differs).
 //
 //   build: cmake --build <dir> --target larecomp_city_rt_shadow_rules_test, then run src/gpu/larecomp_city_rt_shadow_rules_test [<src/gpu dir>] (exit 0 = passed).
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <random>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -515,6 +518,180 @@ void TestShaderNumbers(const std::string& dir) {
   CHECK(text.find("(flags >> kFlagAlphaRefShift) & 255u") != std::string::npos);  // the reference is the flags' bits 12-19, unorm8
 }
 
+// ---- the descriptor sets' counts --------------------------------------------------------------------------------------------
+//
+// Device::CreateDescriptorSet(builder, views, samplers, name) takes the counts the caller says its builder describes and compares them with what the backend allocated; on D3D12
+// that is one view for every descriptor of every range, and a set whose count differs is thrown away as failed (Vulkan does not count). The city shadow's output set has two
+// ranges (u0 the image, u1 the check's counters) and was made with a count of 1, copied from car_rt_ao's one-image set: every D3D12 run logged "descriptor set 'city rt shadow
+// output set' failed" a frame and the pass never ran (chain-city-rt-m1, 2026-11-21). The check: for every call in src/gpu/*.cpp whose builder is a named variable with literal counts,
+// the ranges between that builder's begin() and end() add up to the counts (a call with a count that is not a number, or whose builder has no begin() in the file, is not judged).
+
+// The text without // comments (a comment may name a call or a builder).
+std::string WithoutLineComments(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  size_t i = 0;
+  while (i < text.size()) {
+    if (text[i] == '/' && i + 1 < text.size() && text[i + 1] == '/') {
+      while (i < text.size() && text[i] != '\n') ++i;
+      continue;
+    }
+    out += text[i++];
+  }
+  return out;
+}
+
+// `needle` in `text` from `from` on, where no identifier character comes before it ("set_builder_" is not in "check_set_builder_").
+size_t FindWord(const std::string& text, const std::string& needle, size_t from = 0) {
+  for (size_t at = text.find(needle, from); at != std::string::npos; at = text.find(needle, at + 1)) {
+    const char before = at == 0 ? ' ' : text[at - 1];
+    if (!(std::isalnum(static_cast<unsigned char>(before)) || before == '_')) return at;
+  }
+  return std::string::npos;
+}
+
+// The text between the parentheses that open at `open` (text[open] == '('), or empty when they do not close.
+std::string BalancedArguments(const std::string& text, size_t open) {
+  int depth = 0;
+  for (size_t i = open; i < text.size(); ++i) {
+    if (text[i] == '(') ++depth;
+    if (text[i] == ')' && --depth == 0) {
+      return text.substr(open + 1, i - open - 1);
+    }
+  }
+  return {};
+}
+
+// The top-level comma separated arguments of a call.
+std::vector<std::string> SplitArguments(const std::string& args) {
+  std::vector<std::string> out;
+  int depth = 0;
+  std::string current;
+  for (char c : args) {
+    if (c == '(' || c == '{') ++depth;
+    if (c == ')' || c == '}') --depth;
+    if (c == ',' && depth == 0) {
+      out.push_back(current);
+      current.clear();
+    } else {
+      current += c;
+    }
+  }
+  out.push_back(current);
+  for (std::string& a : out) {
+    a.erase(0, a.find_first_not_of(" \t\r\n"));
+    a.erase(a.find_last_not_of(" \t\r\n") + 1);
+  }
+  return out;
+}
+
+// A decimal literal (with an optional u), or false.
+bool NumberOf(const std::string& text, uint32_t* value) {
+  static const std::regex number(R"(^(\d+)[uU]?$)");
+  std::smatch m;
+  if (!std::regex_match(text, m, number)) return false;
+  *value = uint32_t(std::stoul(m[1].str()));
+  return true;
+}
+
+// The descriptor sets of a source whose literal counts differ from their builder's ranges (the builder's views and samplers, as D3D12 counts them: a sampler range is samplers,
+// every other range views, one for each descriptor). `judged` counts the calls that could be compared.
+std::vector<std::string> DescriptorCountProblems(const std::string& source, int* judged) {
+  const std::string text = WithoutLineComments(source);
+  std::vector<std::string> problems;
+  const std::string call_name = "CreateDescriptorSet";
+  for (size_t at = text.find(call_name); at != std::string::npos; at = text.find(call_name, at + 1)) {
+    const size_t open = at + call_name.size();
+    if (open >= text.size() || text[open] != '(') continue;
+    const std::vector<std::string> args = SplitArguments(BalancedArguments(text, open));
+    uint32_t views = 0, samplers = 0;
+    if (args.size() < 3 || !NumberOf(args[1], &views) || !NumberOf(args[2], &samplers)) continue;
+    const std::string& builder = args[0];
+    if (builder.empty() || builder.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != std::string::npos) continue;
+    // every region of the builder: begin() .. end()
+    bool any = false;
+    for (size_t from = FindWord(text, builder + ".begin()"); from != std::string::npos; from = FindWord(text, builder + ".begin()", from + 1)) {
+      const size_t end = FindWord(text, builder + ".end(", from);
+      if (end == std::string::npos) break;
+      const std::string region = text.substr(from, end - from);
+      uint32_t have_views = 0, have_samplers = 0;
+      bool exact = true;
+      const std::string prefix = builder + ".add";
+      for (size_t add = FindWord(region, prefix); add != std::string::npos; add = FindWord(region, prefix, add + 1)) {
+        const size_t name_end = region.find('(', add);
+        if (name_end == std::string::npos) break;
+        const std::string kind = region.substr(add + prefix.size(), name_end - add - prefix.size());
+        const std::vector<std::string> range_args = SplitArguments(BalancedArguments(region, name_end));
+        uint32_t count = 1;
+        if (kind != "ImmutableSampler" && range_args.size() >= 2 && !NumberOf(range_args[1], &count)) {
+          exact = false;
+        }
+        (kind == "Sampler" ? have_samplers : have_views) += count;
+      }
+      if (!exact) continue;
+      any = true;
+      if (have_views != views || have_samplers != samplers) {
+        problems.push_back(builder + ": CreateDescriptorSet says " + std::to_string(views) + " views + " + std::to_string(samplers) + " samplers, the ranges add up to " +
+                           std::to_string(have_views) + " + " + std::to_string(have_samplers));
+      }
+    }
+    if (any) ++*judged;
+  }
+  return problems;
+}
+
+void TestDescriptorSetCounts(const std::string& dir) {
+  // the rule itself, on made-up sources: the city shadow's set as it was (two ranges, a count of 1), as it is, a sampler set, a count that is not a number, a comment
+  int judged = 0;
+  const std::string two_ranges =
+      "  output_builder_.begin();\n  output_builder_.addReadWriteTexture(0);\n  output_builder_.addReadWriteByteAddressBuffer(1);\n  output_builder_.end();\n";
+  CHECK(DescriptorCountProblems(two_ranges + "  set_ = device_->CreateDescriptorSet(output_builder_, 1, 0, \"x\");\n", &judged).size() == 1);
+  CHECK(DescriptorCountProblems(two_ranges + "  set_ = device_->CreateDescriptorSet(output_builder_, 2, 0, \"x\");\n", &judged).empty());
+  CHECK(DescriptorCountProblems(two_ranges + "  set_ = device_->CreateDescriptorSet(output_builder_, 2u, 0u, \"x\");\n", &judged).empty());
+  CHECK(DescriptorCountProblems(two_ranges + "  set_ = device_->CreateDescriptorSet(output_builder_, 3, 0, \"x\");\n", &judged).size() == 1);
+  CHECK(DescriptorCountProblems(two_ranges + "  set_ = device_->CreateDescriptorSet(output_builder_, 2, 1, \"x\");\n", &judged).size() == 1);
+  CHECK(DescriptorCountProblems(two_ranges + "  // set_ = device_->CreateDescriptorSet(output_builder_, 1, 0, \"x\");\n", &judged).empty());
+  CHECK(DescriptorCountProblems(two_ranges + "  set_ = device_->CreateDescriptorSet(output_builder_, kViews, 0, \"x\");\n", &judged).empty());
+  CHECK(DescriptorCountProblems(two_ranges + "  set_ = device_->CreateDescriptorSet(builder, 1, 0, \"x\");\n", &judged).empty());  // a builder with no ranges in the file
+  const std::string samplers = "b.begin();\n b.addSampler(0, 8);\n b.addTexture(1);\n b.end();\n";
+  CHECK(DescriptorCountProblems(samplers + "x = d.CreateDescriptorSet(b, 1, 8, \"s\");\n", &judged).empty());
+  CHECK(DescriptorCountProblems(samplers + "x = d.CreateDescriptorSet(b, 9, 0, \"s\");\n", &judged).size() == 1);
+  CHECK(DescriptorCountProblems("b.begin();\n b.addTexture(0, kCount);\n b.end();\nx = d.CreateDescriptorSet(b, 4, 0, \"s\");\n", &judged).empty());  // a count that is not a number
+  CHECK(DescriptorCountProblems("b.begin();\n b.addTexture(0, 4);\n b.addByteAddressBuffer(1);\n b.end();\nx = d.CreateDescriptorSet(b, 5, 0, \"s\");\n", &judged).empty());
+  CHECK(DescriptorCountProblems("b.begin();\n b.addTexture(0, 4);\n b.addByteAddressBuffer(1);\n b.end();\nx = d.CreateDescriptorSet(b, 2, 0, \"s\");\n", &judged).size() == 1);
+  // a builder whose name ends another's ("set_builder_" in "check_set_builder_": car_rt_scene.cpp has both, the longer one first here)
+  const std::string both =
+      "check_set_builder_.begin();\n check_set_builder_.addReadWriteTexture(0);\n check_set_builder_.addReadWriteByteAddressBuffer(1);\n check_set_builder_.end();\n"
+      "set_builder_.begin();\n i = set_builder_.addAccelerationStructure(0);\n set_builder_.addStructuredBuffer(1);\n set_builder_.addByteAddressBuffer(2);\n set_builder_.addByteAddressBuffer(3);\n set_builder_.end();\n";
+  CHECK(DescriptorCountProblems(both + "a = d.CreateDescriptorSet(set_builder_, 4, 0, \"a\");\n b = d.CreateDescriptorSet(check_set_builder_, 2, 0, \"b\");\n", &judged).empty());
+  CHECK(DescriptorCountProblems(both + "a = d.CreateDescriptorSet(set_builder_, 2, 0, \"a\");\n", &judged).size() == 1);
+  CHECK(judged == 12);  // the twelve of those that name a builder with ranges and literal counts
+
+  // the sources
+  int sources = 0;
+  int judged_calls = 0;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    const std::string name = entry.path().filename().string();
+    const bool is_test = name.size() > 9 && name.compare(name.size() - 9, 9, "_test.cpp") == 0;
+    if (entry.path().extension() != ".cpp" || is_test) continue;  // not the tests (this one has made-up calls)
+    std::ifstream in(entry.path());
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    ++sources;
+    for (const std::string& problem : DescriptorCountProblems(buffer.str(), &judged_calls)) {
+      ++g_failures;
+      std::fprintf(stderr, "FAILED %s: %s\n", entry.path().filename().string().c_str(), problem.c_str());
+    }
+  }
+  if (sources == 0) {
+    std::printf("  (no sources in %s: the descriptor sets' counts are not read)\n", dir.c_str());
+    return;
+  }
+  CHECK(judged_calls >= 6);  // car_rt_scene's two, car_rt_ao, the city shadow, volumetrics' two, resolve memory's: the check reads them, not nothing
+  std::printf("  descriptor sets: %d calls with literal counts agree with their builders in %d sources\n", judged_calls, sources);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -528,6 +705,7 @@ int main(int argc, char** argv) {
   TestWallsAndCars();
   TestCheckDecoder();
   TestShaderNumbers(argc > 1 ? argv[1] : ".");
+  TestDescriptorSetCounts(argc > 1 ? argv[1] : ".");
   if (g_failures != 0) {
     std::fprintf(stderr, "city_rt_shadow_rules_test: %d of %d checks FAILED\n", g_failures, g_checks);
     return 1;

@@ -393,7 +393,10 @@ bool CityRtShadow::EnsureOutput(uint32_t width, uint32_t height) {
     RetireSet();  // a new texture is a new set for it (the old one goes after the lists that name it)
   }
   if (!set_) {
-    set_ = device_->CreateDescriptorSet(output_builder_, 1, 0, "city rt shadow output set");
+    // Two views: u0 the image and u1 the check's counters (output_builder_). Device::CreateDescriptorSet compares this count with what the backend allocated, and D3D12 allocates one
+    // view for each descriptor: the 1 copied from car_rt_ao's one-image set failed this set on D3D12 every frame (the pass never ran); Vulkan does not count.
+    // city_rt_shadow_rules_test reads every CreateDescriptorSet call's literal counts against its builder's ranges.
+    set_ = device_->CreateDescriptorSet(output_builder_, 2, 0, "city rt shadow output set");
     if (!set_) {
       return false;
     }
@@ -486,8 +489,7 @@ std::string CityRtShadow::CensusText() const {
     return {};
   }
   return std::format("; ray traced city shadows: {} passes since the start, {} frames without the city in the top level, {} without a safe range, {} without the sun, {} waiting for the pipeline",
-                     passes_run_, no_scene_, no_range_, no_sun_, not_ready_) +
-         (service_ != nullptr ? service_->CensusText() : std::string());
+                     passes_run_, no_scene_, no_range_, no_sun_, not_ready_);
 }
 
 }  // namespace mcla::gpu

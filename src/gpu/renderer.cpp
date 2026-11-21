@@ -1664,7 +1664,22 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   pass_timing_.CompleteFrame(list, slot);
 }
 
+void Renderer::ReportCityCensus() {
+  // The texts CityRtScene (with the hit data's pool inside it), CityRtShadow and RtSceneService define for a census line were never printed by anything: perf/scripts/city_rt_h3_report.py
+  // reads their fragments by name ("city hit data: pool ...", "ray tracing scene: wanted by ...") from a line like this one. Each text starts with "; " and is empty where it has nothing
+  // to say (no pack open, the shadows not ready, nobody wanting the scene).
+  constexpr uint64_t kCityCensusPresents = 600;  // as car_selfrefl.cpp's kCensusFrames
+  if (presented_ % kCityCensusPresents != 0) {
+    return;
+  }
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText();
+  if (!text.empty()) {
+    REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
+  }
+}
+
 void Renderer::ReportFrameStats() {
+  ReportCityCensus();
   // Once a minute at 60 fps: enough to see VRAM creep or a frame ring that
   // stops reclaiming, without a line per frame.
   if (presented_ % 3600 != 0) {
