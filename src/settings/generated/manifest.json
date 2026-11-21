@@ -1647,6 +1647,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_neon_light": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Neon light: the neon underglow of a car lights the ground, the kerbs, the walls and the other cars near it, in the neon's own colour and pulse. \"\n    \"on is the one level; off leaves the neon as the game has it (its own glow under the car). auto (the default) is on for a discrete graphics card and off for an integrated one (a handheld, \"\n    \"or the iGPU of a desktop CPU). It costs the graphics card a little, only while a car with its neon lit is in view, and only on the pixels the neon reaches (a few metres round the car). \"\n    \"Live; the first time it shows, the graphics card builds its pipeline (a short stutter).\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_headlight_strength": {
   "type": "f64",
   "default": "1.0",
@@ -2781,6 +2792,18 @@
   "default": "1.0",
   "category": "MCLA/GPU",
   "help": "\"Diagnostic (the deferred local light pass, GB-H3): a multiplier on the look of the cars' lights it adds (the police light bars, the head lamps of the cars the forward headlight stage does not light, \"\n    \"the brake, tail, turn and reverse lamps). Their colours and strengths are looks set by eye, not the game's units: this turns them up or down without a build. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 16.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_neon_light_gain": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON): a multiplier on the neon's light (1: the game's own colour, pulse and fade as read from the car's light object, shared along \"\n    \"the tube). The neon's strength and its reach are looks set by eye against the game's own underglow light, not the game's units: this turns them up or down without a build. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 16.0}"

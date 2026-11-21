@@ -410,7 +410,8 @@ constexpr const char* ConsumerName(Consumer consumer) {
 // THE AUTO POLICY (GB-J): mcla_gpu_gbuffer = auto, the default, and HIDDEN (the setting is debug-only: no pause menu row, no launcher row). The G-buffer exists only while a consumer
 // that is ON wants a plane; with every consumer off no image is made, no draw of the game changes and the cost is nothing. What each consumer asks for while it is on:
 //   the occlusion's normals     RT1 (the occlusion, the contact shadows or the bounce light on, AND mcla_gpu_ao_gbuffer_normals on: off by default since 2026-11-20)
-//   the light pass              RT1 + RT2 + RT3 (mcla_gpu_local_lights: a debug row on the hidden DEBUG menu; there is no LOCAL LIGHTS row for players)
+//   the light pass              RT1 + RT2 + RT3 (mcla_gpu_local_lights: a debug row on the hidden DEBUG menu; there is no LOCAL LIGHTS row for players; and, GB-NEON, the player's NEON LIGHT row
+//                               while a car with a lit neon is in view: local_lights.cpp BeginFrame, held a second after the last)
 //   reflections on surfaces     RT1 + RT2 + RT3 (the resolved mcla_gpu_ssr level is high or ultra: the row REFLECTIONS ON SURFACES)
 //   decals                      none yet
 // The consumers' own GBuffer::Want calls use ConsumerPlanes (the ones that cannot: the occlusion's, whose helper in ao_gbuffer.h is checked against this table by ao_gbuffer_test);

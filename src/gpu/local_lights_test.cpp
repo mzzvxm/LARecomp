@@ -1194,7 +1194,7 @@ void SourceChecks(const std::string& src) {
         "the renderer makes, hands over and shuts down the pass (both shutdown paths)");
   // the wants that switch the G-buffer on only while it runs
   Check(Has(cpp, "gbuffer_->Want(gbuffer::Consumer::kLocalLights, planes_wanted_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights) : 0u);") && Has(cpp, "screen_->Want(screen::Consumer::kLocalLights, planes_wanted_ ?") &&
-            Has(cpp, "manager_->Want(planes_wanted_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);") && Has(cpp, "planes_wanted_ = enabled_ && (setting_on || headlight_rig::SettingOn());"),
+            Has(cpp, "manager_->Want(planes_wanted_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);") && Has(cpp, "planes_wanted_ = enabled_ && (setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);"),
         "the wants are the pass's while it is on and HEADLIGHTS (or its own setting) wants the planes, and 0 otherwise");
   Check(Has(manager, "(every <= 0 && flips == 0 && !wanted_)") && Has(manager, "if (Checking()) {\n      Upload();") && Has(manager, "const bool cars = every > 0 || wanted_;"),
         "the light manager runs for a consumer of its frame, polls the cars for it and uploads only for its census");

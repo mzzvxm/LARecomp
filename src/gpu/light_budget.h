@@ -9,6 +9,7 @@
 // consumers read them from here: local_shadow_rules.h's `kThreeLevels`, `kTwoLevels`, `MaxCars`, `LampCars` and `MaxViews` are this table, and the volume's grid keeps its own sizes (its
 // lamp and headlight counts are checked against the row below by light_pick_test.cpp).
 //
+// GB-NEON adds a fourth, NEON LIGHT (off | on): the cars' underglow in the deferred pass; its rows are NeonRow below and follow the LIGHT SHADOWS level.
 // Pure: plain numbers, no renderer, no guest. light_pick_test.cpp checks it.
 //
 //   Level            off | medium | high | ultra: the words of the two settings that have levels (the same four in both).
@@ -100,6 +101,29 @@ constexpr const VolumeRow* VolumeRowOf(Level level) {
   return nullptr;
 }
 
+// GB-NEON: a car's underglow in the deferred light pass (neon_light.h, local_lights_sources.h MakeNeonLights). NEON LIGHT (off | on) has one level; how much of it a frame lights follows the
+// LIGHT SHADOWS level the way the pass's other classes do (the three level shape: local_lights_sources.h BudgetOf says the same numbers, a test holds them equal): the nearest `cars` cars whose
+// neon is lit, each as `points` omni lights along its tube, so the class is cars x points lights (4 / 9 / 16) and never half a car. A level of `off` takes the smallest row.
+struct NeonRow {
+  Level level = Level::kOff;
+  uint32_t cars = 0;
+  uint32_t points = 0;
+};
+inline constexpr NeonRow kNeon[] = {
+    {Level::kMedium, 2, 2},
+    {Level::kHigh, 3, 3},
+    {Level::kUltra, 4, 4},
+};
+constexpr const NeonRow& NeonRowOf(Level level) {
+  for (const NeonRow& row : kNeon) {
+    if (row.level == level) {
+      return row;
+    }
+  }
+  return kNeon[0];
+}
+constexpr uint32_t NeonLights(Level level) { return NeonRowOf(level).cars * NeonRowOf(level).points; }
+
 // What the pickers choose from, for one frame.
 struct LightBudget {
   // the headlight block of the lit shaders (the forward headlight stage; the deferred pass later): the lights it holds, the player's first. 0 with HEADLIGHTS off.
@@ -116,6 +140,9 @@ struct LightBudget {
   uint32_t lamp_views = 0;
   uint32_t lamp_views_spare = 0;
   uint32_t lamp_tile = 0;
+  // GB-NEON: the cars whose underglow lights the pass and the points of each tube (0 with NEON LIGHT off).
+  uint32_t neon_cars = 0;
+  uint32_t neon_points = 0;
 
   friend constexpr bool operator==(const LightBudget&, const LightBudget&) = default;
 };
@@ -151,8 +178,8 @@ constexpr uint32_t ShadowViews(Level level, int views_per_car, Table table) {
 }
 
 // The budget of a frame from the three settings: HEADLIGHTS (on or off), LIGHT SHADOWS (`shadows`, the level it resolved to; `views_per_car` the debug setting) and VOLUMETRIC LIGHT
-// (`volume`, the level it resolved to), with the table of the shape in use.
-constexpr LightBudget BudgetFor(bool headlights_on, Level shadows, int views_per_car, Level volume, Table table) {
+// (`volume`, the level it resolved to), with the table of the shape in use; and, GB-NEON, NEON LIGHT (`neon_on`: on or off, its rows follow `shadows`).
+constexpr LightBudget BudgetFor(bool headlights_on, Level shadows, int views_per_car, Level volume, Table table, bool neon_on = false) {
   LightBudget b;
   b.headlights = headlights_on ? kMaxHeadlights : 0u;
   b.shadow_cars = ShadowCars(shadows, table);
@@ -162,6 +189,10 @@ constexpr LightBudget BudgetFor(bool headlights_on, Level shadows, int views_per
   if (const VolumeRow* row = VolumeRowOf(volume)) {
     b.volume_lamps = row->lamps;
     b.volume_headlights = row->headlights;
+  }
+  if (neon_on) {
+    b.neon_cars = NeonRowOf(shadows).cars;
+    b.neon_points = NeonRowOf(shadows).points;
   }
   return b;
 }

@@ -310,6 +310,12 @@ add_executable(larecomp_local_lights_test EXCLUDE_FROM_ALL local_lights_test.cpp
 # it also reads the sources it is given (the settings, the manager's cars, the mod loader's publish, the pass's wiring):
 #   cmake --build <dir> --target larecomp_local_lights_sources_test, then run src/gpu/larecomp_local_lights_sources_test <src dir> (exit 0 = passed).
 add_executable(larecomp_local_lights_sources_test EXCLUDE_FROM_ALL local_lights_sources_test.cpp)
+# A car's neon underglow as lights of that pass (neon_light.h, GB-NEON: the decode of the game's car effect object laid out in a fake guest memory, the colour and the pulse as the game makes them and the
+# console's 30 Hz hold at every frame rate, the tube and the two readings of its four points, the lights, their budget (whole cars, the tier, the pass's 32 and the priority), the pixel term held to
+# the one laws, the table the hook fills, the ids, the one budget table); it includes hooks/neon_pulse.h for the pulse, and reads the sources it is given (the settings, the class table, the row, the hook, the wiring):
+#   cmake --build <dir> --target larecomp_neon_light_test, then run src/gpu/larecomp_neon_light_test <src dir> (exit 0 = passed).
+add_executable(larecomp_neon_light_test EXCLUDE_FROM_ALL neon_light_test.cpp)
+target_include_directories(larecomp_neon_light_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # The forward headlight stage against the deferred pass (headlight_pass_rules.h, GB-H2: the switch mcla_gpu_headlight_pass and what each route does, the retail census of the stage, the
 # picture-identity rule and the retirement gate on made-up pictures, and the PIXEL IDENTITY: the pass's light, the one law and the one shadow lookup, equals the forward stage's CPU twins on random
 # lights, surfaces and maps at all three levels of LIGHT SHADOWS; it also reads the sources it is given: the route's wiring in the rig, the pass and the pipelines, the setting, the debug row):

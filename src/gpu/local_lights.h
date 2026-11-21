@@ -22,13 +22,21 @@
 // mcla_gpu_headlight_pass (forward | pass | both) switches the forward headlight stage off and this pass on for them (the A/B), and the pass then lights what the forward stage leaves out: the
 // 62 lit shaders it does not edit, the cars' paint, the pedestrians. The forward stage is deleted only after the owner has seen the pictures (the retirement steps are in headlight_pass_rules.h).
 //
-// WHAT IS NOT IN IT YET: the specular lobe, the city's lamps (they are the game's grid: LU-3's picker and GB-H4's shadow subtraction), neon (not in v1: the owner's question), shadows for the
-// cars' other lamps (police, rear, mods: they have no views). It is a debug feature (settings below), off by default: the owner decides after THE LAMP A/B and the headlight A/B.
+// GB-NEON (neon_light.h has the story, the layout and the CHECKs N1..N4; local_lights_sources.h the look and the budget): the cars' NEON UNDERGLOW lights the ground, the kerbs, the walls and the other cars
+// near it, in the game's own colour and pulse (read from the car's light object after the game's update: hooks/neon_light.cpp), ON BY DEFAULT (owner, 2026-11-21): the player's row NEON LIGHT
+// (mcla_gpu_neon_light: auto | off | on, `auto` is on for a discrete card, gpu_class.h Effect::kNeonLight) runs the pass for the neon whatever mcla_gpu_local_lights says, as the headlight route does for the
+// headlights, and puts the neon source in (the mask's range stays 0..63: kSourceNeon is not a bit of the debug setting). The G-buffer's planes are wanted only while a car with a lit neon is in the
+// table the hook fills (and a second after the last: no sidecar made and unmade at a pulse's dark half), so a player without a neon car pays nothing; the manager is not needed. The budget is the
+// nearest few neon cars, each as a whole tube of two to four lights (light_budget.h NeonRow, by the LIGHT SHADOWS level), after the police and the mods in the pass's 32.
+//
+// WHAT IS NOT IN IT YET: the specular lobe, the city's lamps (they are the game's grid: LU-3's picker and GB-H4's shadow subtraction), shadows for the cars' other lamps (police, rear, mods, neon: they
+// have no views). The pass is a debug feature (settings below) except for the NEON LIGHT row and the headlight route: the owner decides after THE LAMP A/B and the headlight A/B.
 //
 // THE LAMP A/B (local_lights_rules.h has the story): one mod lamp (lights.bin) through the game's grid (A), through this pass with the grid's copy OFF (B, mcla_gpu_local_lights_ab = 2), and through
 // neither (the control, 1). The A/B's lamps are read from the mod loader's published set (mod_light_source.h) whatever the sources mask says; mod_lights.cpp builds the grid with them off.
 //
-// SETTINGS (settings_gpu.h, all debug only): mcla_gpu_local_lights (the pass, default off, live), mcla_gpu_local_lights_sources (a sum: 1 the frame's surface lights, 2 a test lamp, 4 police,
+// SETTINGS (settings_gpu.h, all debug only but NEON LIGHT): mcla_gpu_neon_light (the player's row, auto | off | on, live), mcla_gpu_neon_light_gain (the neon's multiplier, 1),
+// mcla_gpu_local_lights (the pass, default off, live), mcla_gpu_local_lights_sources (a sum: 1 the frame's surface lights, 2 a test lamp, 4 police,
 // 8 the cars' head lamps the forward stage does not light, 16 the cars' rear lamps, 32 the mods' lamps outside their grid; default 0), mcla_gpu_local_lights_ab (0 grid, 1 nowhere, 2 pass;
 // restart), mcla_gpu_local_lights_gain (a multiplier, 1), mcla_gpu_local_lights_car_gain (the cars' lights' look, a multiplier, 1), mcla_gpu_headlight_pass (GB-H2: forward | pass | both, live;
 // `pass` and `both` run this pass for the frame's headlights whatever mcla_gpu_local_lights says).
@@ -53,6 +61,12 @@
 //   LL6  the camera: the frame's own pose (AmbientOcclusion::TriggerViewInverse) against the last frame's: no swim of a pool at speed; the interval line counts the frames with the own pose.
 //   LL7  the mod grid replaces the city's while the camera is over its rectangle, and a lamp written OFF with no intensity lights nothing in the game's builder (the control run C is the proof).
 //   LL8  mod_lights.cpp could not be compiled here (no simde): the hook is five lines (GB-H3 adds two: the built sets' publish).
+// GB-NEON, nothing run (the run plan: h11-work\gb-neon-notes\RUNPLAN-gb-neon.txt; the checks N1 to N4 are neon_light.h's):
+//   N1   the four points of the game's neon tube read as world or as car space (the first `[neon-light]` line says which) and the tube lies under the car;
+//   N2   the game's own underglow light may already light the road under the car (a second pool with the pass's: mcla_gpu_neon_light_gain and the A/B decide), and the cars' paint the pass lights;
+//   N3   the units (the exposure, the night factor, the height factor) for a colour that is the game's lamp "rgb": the pool's brightness against the game's own;
+//   N4   the player's vehicle record is the effect object's record; the hook is called for every car with an effect object (traffic's neon is off: the enable byte 0);
+//   N5   the G-buffer planes' hold (neon_light.h kHoldFrames) and the cost with a lit neon at 4K / 1080p / 720p on the RTX 5080 and the iGPU's class (off there), and the cut at the reach (6 % of the colour).
 // GB-H3, nothing run (the run plan: h11-work\gb-h3-notes\RUNPLAN-gb-h3.txt):
 //   LS1  THE POLICE KINDS: which of Police0 / 1 / 2 is red, blue or white, which side of the bar, the flash's rhythm and level (a police chase's [car-lights] census lines per kind say what
 //        is on); kind 8 is a siren only away from the headlights (the probe read it beside the headlights of every ordinary car, on all night: local_lights_sources.h kPoliceNearHeadlamp).
@@ -155,7 +169,7 @@ class LocalLights {
   bool EnsureSlot(uint32_t frame_slot);
   plume::RenderPipeline* PipelineFor(plume::RenderFormat format, uint32_t samples);
   void Count(Skip why) { ++counts_[size_t(why)]; }
-  void LogInterval();
+  void LogInterval(bool say);
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
@@ -176,7 +190,14 @@ class LocalLights {
   float car_gain_ = 1.0f;
   larecomp::gpu::local_lights::Tier tier_ = larecomp::gpu::local_lights::Tier::kMedium;  // the budgets' tier: the light shadows' level
   larecomp::gpu::headlight_pass::Route route_ = larecomp::gpu::headlight_pass::Route::kForward;  // GB-H2: which of the two ways lights the frame's headlights (mcla_gpu_headlight_pass)
-  bool planes_wanted_ = false;  // the G-buffer's planes and the shared depth are wanted this frame (the setting is on, or the route's headlights are)
+  bool planes_wanted_ = false;  // the G-buffer's planes and the shared depth are wanted this frame (the setting is on, or the route's headlights are, or a neon car is lit)
+  // GB-NEON: NEON LIGHT (mcla_gpu_neon_light resolved for this card) is on; a car with a lit neon is in the hook's table (held neon_light.h kHoldFrames after the last one: neon_hold_); the gain; the frame's cars.
+  bool on_for_lights_ = false;  // the pass runs for its own setting or the headlight route (not for NEON LIGHT alone): the interval line is always said then
+  bool neon_on_ = false;
+  bool neon_active_ = false;
+  uint32_t neon_hold_ = 0;
+  float neon_gain_ = 1.0f;
+  std::vector<larecomp::gpu::neon_light::NeonCar> neon_cars_;
 
   // resources
   plume::RenderDescriptorSetBuilder set_builder_;
@@ -209,6 +230,12 @@ class LocalLights {
   std::array<uint64_t, larecomp::gpu::local_lights::kSourceClassCount> class_drawn_{};  // lights taken, by SourceClass
   std::array<uint64_t, larecomp::gpu::local_lights::kSourceClassCount> class_cut_{};    // wanted and cut by the class's budget or the pass's 32
   uint64_t cars_seen_ = 0;                                                               // sum over the frames of the cars the manager held
+  uint64_t neon_lit_ = 0;       // GB-NEON, over the interval: the neon cars lit (placed, bright, near, in the budget), and the ones not placed, too far, cut
+  uint64_t neon_unplaced_ = 0;
+  uint64_t neon_far_ = 0;
+  uint64_t neon_cut_ = 0;
+  uint64_t neon_frames_ = 0;    // frames with a neon light drawn
+  larecomp::gpu::neon_light::Space neon_space_ = larecomp::gpu::neon_light::Space::kNone;  // how the last placed tube was read
   uint64_t shadowed_lights_ = 0;  // GB-H2: lights drawn that had views of the atlas (the lookup ran for them), summed over the interval
   uint64_t shadow_views_ = 0;     // ... and the views of those lights
   uint64_t shadow_frames_ = 0;    // frames the table was written

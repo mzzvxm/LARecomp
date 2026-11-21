@@ -157,6 +157,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/script_input.cpp
     src/mc_engine/hooks/checkpoint_sweep.cpp
     src/mc_engine/hooks/neon_pulse.cpp
+    src/mc_engine/hooks/neon_light.cpp
     src/mc_engine/hooks/inflate_fast.cpp
     src/mc_engine/hooks/vol_lamps.cpp
     src/mc_engine/hooks/lzx_native.cpp

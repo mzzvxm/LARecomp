@@ -1553,8 +1553,8 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
 //   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
 //   LIGHTING AND SHADOWS  SHADOWS, FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT
-//                         OCCLUSION, AO INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS, VOLUMETRIC
-//                         LIGHT (kLightItems; FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey while SHADOWS is off)
+//                         OCCLUSION, AO INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS, NEON LIGHT,
+//                         VOLUMETRIC LIGHT (kLightItems; FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey while SHADOWS is off)
 //   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, REFLECTIONS ON SURFACES (kReflectionItems)
 //   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
@@ -2079,6 +2079,20 @@ bool HeadlightsOn() {
     return mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kHeadlights, CvarGet("mcla_gpu_headlights")) == "on";
 }
 constexpr RowDynamics kLightShadowDynamics = {.str_label = LightShadowLabel, .enabled = HeadlightsOn};
+// Neon light (mcla_gpu_neon_light, gpu/neon_light.h, gpu/local_lights_sources.h, live): the neon underglow of a car lights the ground, the kerbs, the walls and the other cars near it, in the neon's own
+// colour and pulse (owner, 2026-11-21: ON by default where the light pass runs). One level, ON: AUTO says what it comes to on this GPU (ON on a discrete card, OFF on an integrated one); OFF leaves the neon
+// as the game has it. How many cars and lights the pass takes follows LIGHT SHADOWS (gpu/light_budget.h), and nothing is drawn while no car with a lit neon is in view. No other row it waits for. The label is
+// "NEON LIGHT" (10 characters) with a value of at most 9 ("AUTO (OFF)").
+const char* const kNativeNeonLightVals[]  = {"auto", "off", "on"};
+const char* const kNativeNeonLightNames[] = {"AUTO", "OFF", "ON"};
+std::string NeonLightLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kNeonLight);
+    case 1:  return "OFF";
+    default: return "ON";
+    }
+}
+constexpr RowDynamics kNeonLightDynamics = {.str_label = NeonLightLabel};
 // Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live, and mcla_gpu_car_selfrefl_rt, gpu/car_rt_refl.h, live): the player's car
 // paint reflects its own body, the wing in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One
 // level, ON (the stored word is `on`; the older low and high cost the same and are gone: a larecomp.toml that still says one of them is ignored and
@@ -2171,12 +2185,12 @@ const ItemDef kImageQualityItems[] = {
 // (FOLIAGE SHADOWS: on both renderers, moved here from WORLD DETAIL on 2026-11-20); the sun's shadows
 // (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the traffic cars' shadows and your car's
 // (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS,
-// LIGHT SHADOWS, VOLUMETRIC LIGHT: the cars' lights, the shadows the local lights cast, then the beams and the haze those lights show in). The ids and the
+// LIGHT SHADOWS, NEON LIGHT, VOLUMETRIC LIGHT: the cars' lights, the shadows the local lights cast, the neon's light on what is near the car, then the beams and the haze those lights show in). The ids and the
 // cvars are the rows' own as they were on DISPLAY, GRAPHICS QUALITY and PERFORMANCE > RENDERING: a saved setting reads the same. AO INTENSITY is
 // grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes), BOUNCE LIGHT STRENGTH while the bounce light is off
 // (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey
-// while SHADOWS is off and say so (ShadowsOn, NeedsShadows); HEADLIGHTS and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
-// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 15 rows of the 24 a page can hold.
+// while SHADOWS is off and say so (ShadowsOn, NeedsShadows); HEADLIGHTS, NEON LIGHT and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
+// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 16 rows of the 24 a page can hold.
 // Width ("Page width" above ItemRowLabel): the longest label is "FOLIAGE SHADOWS (NO SHADOW)" and "TRAFFIC SHADOWS (NO SHADOW)" (27, the four
 // shadow rows' reason is at most 12 characters: row_dependency.h), then "BOUNCE LIGHT STRENGTH" (21) and "AMBIENT OCCLUSION" (17); the longest value
 // "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 41 of the 41 a page can take. Only those four rows have a suffix.
@@ -2220,6 +2234,9 @@ const ItemDef kLightItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuLightShadows", "mcla_gpu_light_shadows", "LIGHT SHADOWS: ",
                                 kNativeLightShadowVals, kNativeLightShadowNames, kLightShadowWords.count),
                             &kLightShadowDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuNeonLight", "mcla_gpu_neon_light", "NEON LIGHT: ",
+                                kNativeNeonLightVals, kNativeNeonLightNames, 3),
+                            &kNeonLightDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "VOLUMETRIC LIGHT: ",
                                 kNativeVolumetricsVals, kNativeVolumetricsNames, 5),
                             &kVolumetricsDynamics)),
@@ -3153,10 +3170,10 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // "AUTO (OFF)"): 38 together.
 // IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
 // FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
-// LIGHTING AND SHADOWS (kLightItems, 15 rows; the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
+// LIGHTING AND SHADOWS (kLightItems, 16 rows; the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
 // SHADOWS while SHADOWS is off): labels at most 27 ("FOLIAGE SHADOWS (NO SHADOW)", "TRAFFIC SHADOWS (NO SHADOW)"), then "SHADOW DETAIL
 // (NO SHADOW)" and "SHADOW FILTER (NO SHADOW)" 25, "BOUNCE LIGHT STRENGTH" 21, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "LIGHT
-// SHADOWS" 13, "CAR SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
+// SHADOWS" 13, "CAR SHADOWS" 11, "SUN SHAFTS" 10, "NEON LIGHT" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
 // (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 41 together. On XENIA the page has SHADOWS and FOLIAGE
 // SHADOWS: 27 and 3.
 // REFLECTIONS (kReflectionItems, 4 rows): "REFLECTIONS ON SURFACES" 23, "CAR SELF-REFLECTIONS" 20, "ROAD

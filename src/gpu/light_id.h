@@ -12,7 +12,8 @@
 //   a car's lamp                   CarLampId(car_key, pair | left | right): `car_key` is the rig's track key (it stays with a car from frame to frame)
 //   a mod's lamp (lights.bin)      ModLampId(mod_key, the record's u32 id): `mod_key` = ModKey(the mod folder's name)
 //   a police / brake / tail point  PointId(vehicle, point index): the guest address of the vehicle and the point's place in its set (headlight_points.h)
-//   neon                           none yet (there is no neon data in the game): NeonId(place) is the place's key in a domain of its own
+//   neon                           a car's underglow: NeonCarId(effect object, point of its tube) (GB-NEON: the car effect object is the game's own light holder and stays with the car);
+//                                  NeonId(place) is a place's key in the same domain (kept, nothing makes one)
 //
 // 0 is no light (kNoLightId). Pure: no renderer, no guest.
 // ===========================================================================
@@ -82,7 +83,7 @@ inline constexpr uint32_t ModKey(std::string_view name) {
 // A light point of the game's vehicle light submit (headlight_points.h Point: the vehicle's guest address and the point's index in its set): police, brake, tail, turn.
 inline constexpr uint64_t PointId(uint32_t vehicle, uint32_t index) { return Make(kDomainPoint, vehicle, index); }
 
-// Neon: a place (to a quarter of a metre) and a number the source gives it. Reserved: nothing makes neon lights yet.
+// Neon: a place (to a quarter of a metre) and a number the source gives it. Nothing makes one (a car's underglow moves with the car: NeonCarId below).
 inline uint64_t NeonId(const float pos[3], uint32_t n = 0) {
   uint64_t h = 0;
   for (int i = 0; i < 3; ++i) {
@@ -90,6 +91,9 @@ inline uint64_t NeonId(const float pos[3], uint32_t n = 0) {
   }
   return Make(kDomainNeon, h, n);
 }
+
+// A car's underglow (GB-NEON): the guest address of the car's effect object (neon_light.h: the object that holds the neon's light) and the number of the point along its tube.
+inline constexpr uint64_t NeonCarId(uint32_t effect_object, uint32_t point) { return Make(kDomainNeon, 0x10000000ull | effect_object, point); }
 
 }  // namespace light_id
 }  // namespace larecomp::gpu

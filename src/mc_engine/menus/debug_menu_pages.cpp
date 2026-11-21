@@ -99,6 +99,8 @@ constexpr const char* kLocalLightSourceNames[] = {"NONE", "FRAME LIGHTS", "POLIC
 // atlas shadows (PASS), or both added together (BOTH: the difference pictures).
 constexpr const char* kHeadlightRouteVals[]  = {"forward", "pass", "both"};
 constexpr const char* kHeadlightRouteNames[] = {"FORWARD", "PASS", "BOTH"};
+// The neon light's multiplier (mcla_gpu_neon_light_gain, gpu/local_lights_sources.h): 1 is the game's own colour as read, 0 puts the neon's light out, 4 is a strong glow for the A/B pictures.
+constexpr double kNeonGainVals[]          = {0.0, 0.5, 1.0, 2.0, 4.0};
 constexpr const char* kMarkerLevelVals[]  = {"0", "1", "2"};
 constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
@@ -246,6 +248,10 @@ const ItemDef kDebugRenderingItems[] = {
     // whatever LOCAL LIGHT PASS says and needs HEADLIGHTS on), BOTH lights twice. The words are the cvar's, written as the other word rows do.
     NativeOnly(Str("PM_RxDbgHeadlightVia", "mcla_gpu_headlight_pass", "HEADLIGHTS VIA: ",
                    kHeadlightRouteVals, kHeadlightRouteNames, Len(kHeadlightRouteVals))),
+    // The neon underglow's light in the pass (GB-NEON, live): its multiplier, for the pictures that set its strength by eye against the game's own underglow light. The player's row is NEON LIGHT
+    // on GRAPHICS > LIGHTING AND SHADOWS; this one is a debug lever like the cars' gain of the light pass.
+    NativeOnly(Dbl("PM_RxDbgNeonGain",   "mcla_gpu_neon_light_gain", "NEON LIGHT GAIN: ",
+                   kNeonGainVals, Len(kNeonGainVals), "%g")),
     // The glow of street lamps (halo and star): the game's one depth test at the glow's centre (GAME), or the
     // share of 24 tests on a small disc (SOFT: it fades at an edge instead of popping). The renderer reads the
     // cvar at each draw, so the row is live; the first time SOFT shows, the shaders are built.

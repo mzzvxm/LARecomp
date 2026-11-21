@@ -74,7 +74,8 @@ inline constexpr uint32_t kFlagOcclusion = 1u << 1;   // OcclusionInfo was read:
 inline constexpr uint32_t kFlagShadow = 1u << 2;      // GB-H2: the shadow view table is in the buffer and its atlas is there: a light with views of the atlas is shadowed
 
 // The sources mask of mcla_gpu_local_lights_sources. Bits 0 and 1 are GB-H1's; bits 2 to 5 are GB-H3's (local_lights_sources.h makes their lights and holds their budgets): the police light bars,
-// the headlights of the cars the forward headlight stage does not light, the cars' brake / tail / turn / reverse lamps, and the mods' lamps the game's grid is not lighting.
+// the headlights of the cars the forward headlight stage does not light, the cars' brake / tail / turn / reverse lamps, and the mods' lamps the game's grid is not lighting. Bit 6 is GB-NEON's:
+// the cars' underglow (neon_light.h); the debug setting's range stays 0..63, NEON LIGHT (mcla_gpu_neon_light) puts the bit in, as the headlight route does for bit 0.
 inline constexpr uint32_t kSourceFrame = 1u << 0;
 inline constexpr uint32_t kSourceTest = 1u << 1;
 inline constexpr uint32_t kSourcePolice = 1u << 2;
@@ -82,15 +83,18 @@ inline constexpr uint32_t kSourceHeadLamps = 1u << 3;
 inline constexpr uint32_t kSourceRearLamps = 1u << 4;
 inline constexpr uint32_t kSourceMod = 1u << 5;
 inline constexpr uint32_t kSourceMask = kSourceFrame | kSourceTest | kSourcePolice | kSourceHeadLamps | kSourceRearLamps | kSourceMod;
+// GB-NEON: the cars' underglow. NOT a bit of the debug setting (its range is 0..kSourceMask): the player's NEON LIGHT row (mcla_gpu_neon_light) puts it in, as the headlight route puts bit 0 in.
+inline constexpr uint32_t kSourceNeon = 1u << 6;
+inline constexpr uint32_t kSourceAll = kSourceMask | kSourceNeon;
 // The sources that need the cars' light points (the manager's car lights source).
 inline constexpr uint32_t kSourceCars = kSourcePolice | kSourceHeadLamps | kSourceRearLamps;
 // What SelectLights (below) reads: the frame's own lights and the test lamp.
 inline constexpr uint32_t kSourceFrameAndTest = kSourceFrame | kSourceTest;
 
 // Where a light of the pass came from, for the budgets and the log lines (GB-H3). kFrame: the frame's surface lights (the rig's headlights today); kHandedOver: the lamp A/B's mod lamps and the
-// test lamp; the others are local_lights_sources.h's classes.
-enum class SourceClass : uint8_t { kFrame = 0, kHandedOver, kPolice, kHeadLamps, kRearLamps, kMod };
-inline constexpr uint32_t kSourceClassCount = 6;
+// test lamp; the others are local_lights_sources.h's classes (kNeon, GB-NEON: the cars' underglow, last so that the numbers of the others stay).
+enum class SourceClass : uint8_t { kFrame = 0, kHandedOver, kPolice, kHeadLamps, kRearLamps, kMod, kNeon };
+inline constexpr uint32_t kSourceClassCount = 7;
 inline constexpr const char* SourceClassName(SourceClass c) {
   switch (c) {
     case SourceClass::kFrame: return "frame";
@@ -99,6 +103,7 @@ inline constexpr const char* SourceClassName(SourceClass c) {
     case SourceClass::kHeadLamps: return "head lamps";
     case SourceClass::kRearLamps: return "rear lamps";
     case SourceClass::kMod: return "mod lamps";
+    case SourceClass::kNeon: return "neon";
   }
   return "?";
 }

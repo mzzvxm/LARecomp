@@ -81,8 +81,9 @@ enum class Effect : uint8_t {
   kLightShadows,          // mcla_gpu_light_shadows      auto, off, medium, high, ultra (local_shadow.h; was mcla_gpu_headlight_shadows)
   kVolumetrics,           // mcla_gpu_volumetrics        auto, off, medium, high, ultra (volumetrics_level.h)
   kSsr,                   // mcla_gpu_ssr                auto, off, high, ultra (ssr_rules.h; the row REFLECTIONS ON SURFACES)
+  kNeonLight,             // mcla_gpu_neon_light         auto, off, on (neon_light.h, local_lights_sources.h; the row NEON LIGHT)
 };
-inline constexpr int kEffectCount = 14;
+inline constexpr int kEffectCount = 15;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -144,6 +145,10 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     //   Low   OFF (shared memory: the scene alone is 100+ ms there).
     // To switch them on: change the cells below and the matching row of gpu_class_test.cpp's kTable (and its CheckSsr); nothing else follows (the row and the effect read the cell through Resolve).
     {"mcla_gpu_ssr", "off", "off", "off"},
+    // A car's neon underglow lights the ground, the kerbs, the walls and the other cars near it (GB-NEON; neon_light.h; owner, 2026-11-21: ON BY DEFAULT where the light pass runs). One level, `on`: the
+    // light pass draws a few small scissored lights (4 / 9 / 16 a frame at most, by the LIGHT SHADOWS level, only while a car with a neon is lit: its G-buffer planes are made only then), so every
+    // card but the integrated one (Low: the scene alone is 100+ ms there) gets it. The cost is the owner's to measure (RUNPLAN-gb-neon.txt, the cost runs); a cell is corrected from it.
+    {"mcla_gpu_neon_light", "off", "on", "on"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little
