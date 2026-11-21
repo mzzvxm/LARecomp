@@ -1272,6 +1272,22 @@ else()
         target_compile_definitions(larecomp_master_server PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_link_libraries(larecomp_master_server PRIVATE ws2_32)
     endif()
+    # The --bind <ip> option of the three servers above (src/mc_engine/online/bind_address.h; also LARECOMP_BIND) has a check
+    # that needs no game, no SDK and no real server, on loopback only (127.0.0.1 and 127.0.0.2; it never opens a socket on
+    # every interface): cmake --build <dir> --target larecomp_bind_address_test, then run it (exit 0 = passed).
+    # src/mc_engine/online/server_bind_check.ps1 checks the real servers (what they listen on, the trio on loopback).
+    add_executable(larecomp_bind_address_test EXCLUDE_FROM_ALL
+        src/mc_engine/online/bind_address_test.cpp
+        src/mc_engine/online/rate_my_ride/rmr_net.cpp
+        src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
+    )
+    if(WIN32)
+        target_compile_definitions(larecomp_bind_address_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_libraries(larecomp_bind_address_test PRIVATE ws2_32)
+    endif()
+    if(Threads_FOUND)
+        target_link_libraries(larecomp_bind_address_test PRIVATE Threads::Threads)
+    endif()
 
     # larecomp_online_tool: the launcher's command-line view of the online side (the server list with each relay's
     # details and rooms and its icon; one JSON document on stdout, see src/mc_engine/online/online_tool/README.md).

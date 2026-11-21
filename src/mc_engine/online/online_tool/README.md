@@ -280,6 +280,18 @@ The game's file carries the week number, the slot, the car rule, the race and th
 
 `larecomp_online_tool_remote_test` (over 1,200 checks): the command line (every command, every option, about 80 ways to get it wrong); answers recorded once from the real stores (`online_tool_remote_recorded.h`: the real `rmr_store`, `lb_store` and `tournament_schedule` code in a throwaway program, frozen as hex of the wire bytes); hostile answers (garbage, truncation, wrong magic, a server that hangs, HTTP errors and 404, hostile text, wrong sizes, NaN and infinity, a tournament file that is short, with controls or from no language); the tables file in every state; the request budget and the deadline; which commands put the token on the wire; and a live server made of the real `larecomp_rmr_server` store code (`rmr_store.cpp`, `lb_store.cpp`, `tournament_awards.cpp`) behind a listener on 127.0.0.1 only, with rides, photos kept in a folder, ratings, boards of every shape, a tournament with the server's own `tournament.txt`, and a week that ends and settles its prizes. `larecomp_rmr_server` itself binds every interface (`rmr_net.cpp`'s `Serve`), so running it asks Windows Firewall: the check uses its store code and handler logic instead; an optional `--bind` for the servers would let the check run the program itself.
 
+### Local test servers: `--bind`
+
+The three servers listen on every interface by default, as a server for other players must. For a test, give each one `--bind 127.0.0.1` (or set `LARECOMP_BIND=127.0.0.1` once for all three): then nothing reaches them from the network and Windows Firewall has nothing to ask about.
+
+```
+larecomp_master_server --bind 127.0.0.1 --port 31003
+larecomp_rmr_server    --bind 127.0.0.1 --port 31002
+larecomp_relay_server  --bind 127.0.0.1 --port 31000
+```
+
+`--bind` takes one local IPv4 address (`localhost` means 127.0.0.1; `0.0.0.0` means every interface). It beats `LARECOMP_BIND`, which beats the default. A wrong value (a name, IPv6, `host:port`, a multicast address) stops the server with a message; it never falls back to every interface. The log says what was bound (`bind: 127.0.0.1 (this machine only), from --bind`). A master bound to one address only lists relays that address can reach (on 127.0.0.1: relays on this machine). The relay still takes its older `[bind_ip] [port]` form, but not mixed with `--bind`/`--port`; its dashboard follows `--bind` only when that is a loopback address. `larecomp_bind_address_test` checks the rules and the listener on loopback; `../server_bind_check.ps1` starts the real servers on 127.0.0.1 and asks Windows what they listen on.
+
 ### What the tool does not do (yet)
 
 It does not read or write the identity key or `larecomp.toml`, does not touch the master's nick registry, does not upload or buy rides, does not write leaderboard rows, and does not fetch mods (the relay's mods manifest and files are plain HTTP on `mods.http_port`: `GET /mods/manifest`, `GET /mods/file/<mod>/<path>`; the launcher's Mods page does that). The identity commands are a later package (launch plan `ONLINE.md`, G2a).

@@ -9,7 +9,14 @@
 // a listed relay is one players can actually reach. A relay that stops
 // answering drops off after ~100 s.
 //
-//   larecomp_master_server [--port 31003]
+//   larecomp_master_server [--port 31003] [--bind <ip>]
+//
+// It listens on every interface unless --bind <ip> (or LARECOMP_BIND in the
+// environment) names one local IPv4 address, for UDP and TCP alike:
+// --bind 127.0.0.1 keeps it on this machine (the local test trio; nothing
+// reaches it from the network, Windows Firewall stays quiet). A master bound
+// to one address sends its probes from that address, so it only lists relays
+// that address can reach (on 127.0.0.1: relays on this machine).
 //
 // UDP <port>  announces in, details probes out (../protocol/browser_protocol.h)
 // TCP <port>  HTTP:
@@ -42,6 +49,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include "../bind_address.h"
 #include "../rate_my_ride/rmr_net.h"
 #include "../protocol/browser_protocol.h"
 #include "identity_registry.h"
@@ -315,6 +323,7 @@ std::string ExeDir(const char* argv0) {
 int main(int argc, char** argv) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);  // registry lines show up as they happen
   uint16_t port = br::kMasterPort;
+  const char* bind_option = nullptr;
   larecomp::identity::RegistryConfig id_config;
   id_config.dir = ExeDir(argc > 0 ? argv[0] : nullptr);
   for (int i = 1; i < argc; ++i) {
@@ -322,6 +331,10 @@ int main(int argc, char** argv) {
     if (arg == "--port" && i + 1 < argc) {
       const int p = std::atoi(argv[++i]);
       if (p > 0 && p < 65536) port = uint16_t(p);
+    } else if (arg == "--bind" && i + 1 < argc) {
+      bind_option = argv[++i];
+    } else if (arg.rfind("--bind=", 0) == 0) {
+      bind_option = argv[i] + 7;
     } else if (arg == "--transfer-hold-hours" && i + 1 < argc) {
       id_config.transfer_hold_sec = int64_t(std::atof(argv[++i]) * 3600);
     } else if (arg == "--expire-days" && i + 1 < argc) {
@@ -331,9 +344,17 @@ int main(int argc, char** argv) {
     } else if (arg == "--expire-sec" && i + 1 < argc) {  // tests
       id_config.expire_sec = std::atoll(argv[++i]);
     } else {
-      std::printf("usage: larecomp_master_server [--port %u] [--transfer-hold-hours 168] "
+      std::printf("usage: larecomp_master_server [--port %u] [--bind <ip>] [--transfer-hold-hours 168] "
                   "[--expire-days 90]\n",
                   unsigned(br::kMasterPort));
+      return 2;
+    }
+  }
+  larecomp::online::BindAddress bind_to;
+  {
+    std::string error;
+    if (!larecomp::online::ResolveBindAddress(bind_option, &bind_to, &error)) {
+      Log(error);
       return 2;
     }
   }
@@ -361,9 +382,10 @@ int main(int argc, char** argv) {
   sockaddr_in a{};
   a.sin_family = AF_INET;
   a.sin_port = htons(port);
-  a.sin_addr.s_addr = htonl(INADDR_ANY);
+  a.sin_addr.s_addr = htonl(bind_to.host_order);
   if (g_sock == INVALID_SOCKET || bind(g_sock, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0) {
-    Log("cannot bind UDP " + std::to_string(port) + " (in use?)");
+    Log("cannot bind UDP " + bind_to.text + ":" + std::to_string(port) +
+        " (in use, or not an address of this machine?)");
     return 1;
   }
 #if defined(_WIN32)
@@ -377,6 +399,8 @@ int main(int argc, char** argv) {
 #endif
   Log("master server: announces on UDP " + std::to_string(port) + ", list on http://<this host>:" +
       std::to_string(port) + "/servers");
+  Log("bind: " + bind_to.text + (bind_to.any ? " (every interface)" : bind_to.loopback ? " (this machine only)" : "") +
+      ", from " + bind_to.source);
   Log("nick registry: " + std::to_string(registry.size()) +
       " nick(s); relays that check nicks set identity_master_key = \"" + master_pub +
       "\" in server.toml");
@@ -419,7 +443,7 @@ int main(int argc, char** argv) {
         }
         res.body.assign(body.begin(), body.end());
       },
-      g_stop, &error);
+      g_stop, &error, bind_to.host_order);
   if (!served) Log("cannot serve HTTP on TCP " + std::to_string(port) + ": " + error);
   g_stop.store(true);
   g_resolve_cv.notify_all();

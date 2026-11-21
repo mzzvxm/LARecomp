@@ -51,7 +51,11 @@ using Handler = std::function<void(const HttpRequest&, HttpResponse&)>;
 
 // Serves until `stop` turns true (checked about once a second). Connections are
 // handled one at a time. Returns false when the port cannot be bound.
+// `bind_ipv4` is the local IPv4 address to listen on as a number (127.0.0.1 =
+// 0x7F000001, BindAddress::host_order); 0 (the default) is every interface.
+// 127.0.0.1 keeps the server on this machine (the --bind option of the
+// servers, ../bind_address.h).
 bool Serve(uint16_t port, const Handler& handler, const std::atomic<bool>& stop,
-           std::string* error);
+           std::string* error, uint32_t bind_ipv4 = 0);
 
 }  // namespace rmr::net

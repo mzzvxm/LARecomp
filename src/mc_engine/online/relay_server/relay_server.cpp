@@ -48,6 +48,7 @@
 #include "../protocol/larecomp_net_protocol.h"
 #include "../protocol/identity_protocol.h"
 #include "../protocol/browser_protocol.h"
+#include "../bind_address.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1504,13 +1505,20 @@ void HttpServer(uint16_t port, uint32_t relay_bind_net) {
 // every kAnnounceEverySec. Own thread and own socket: resolving the master's
 // name can block, and the relay loop must not. The master checks the claim by
 // asking the announced address for details before it lists anything.
-void AnnounceLoop(uint16_t relay_port) {
+// A relay bound to loopback (--bind 127.0.0.1) that announces to a master on
+// loopback sends from loopback too, so that no socket of it sits on every
+// interface; a master anywhere else is announced to from the plain socket, as
+// before (a loopback relay behind a tunnel can still list itself on a public
+// master).
+void AnnounceLoop(uint16_t relay_port, uint32_t relay_bind_net) {
   namespace br = larecomp::browser;
   socket_t s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (s == INVALID_SOCKET) {
     LogInfo("master announce: socket failed (err %d); this relay will not be listed\n", LARECOMP_LASTERR);
     return;
   }
+  bool s_local = false;  // `s` is bound to the relay's loopback address
+  const bool relay_loopback = (ntohl(relay_bind_net) >> 24) == 127;
   std::string last_error = "<nothing sent yet>";
   for (;;) {
     Identity id;
@@ -1526,6 +1534,25 @@ void AnnounceLoop(uint16_t relay_port) {
       const std::string service = std::to_string(id.master_port);
       std::string error;
       if (getaddrinfo(id.master_host.c_str(), service.c_str(), &hints, &res) == 0 && res) {
+        const bool want_local =
+            relay_loopback && (ntohl(reinterpret_cast<const sockaddr_in*>(res->ai_addr)->sin_addr.s_addr) >> 24) == 127;
+        if (want_local != s_local) {
+          socket_t n = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+          bool ok = n != INVALID_SOCKET;
+          if (ok && want_local) {
+            sockaddr_in local{};
+            local.sin_family = AF_INET;
+            local.sin_addr.s_addr = relay_bind_net;
+            ok = bind(n, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != SOCKET_ERROR;
+          }
+          if (ok) {
+            LARECOMP_CLOSESOCK(s);
+            s = n;
+            s_local = want_local;
+          } else if (n != INVALID_SOCKET) {
+            LARECOMP_CLOSESOCK(n);
+          }
+        }
         br::AnnounceMsg m{};
         m.hdr.magic = kMagic;
         m.hdr.version = kProtocolVersion;
@@ -1560,15 +1587,85 @@ int main(int argc, char** argv) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
 
   // Host config -- set it in server.toml next to the exe (see server.toml.example)
-  // or as command-line args:  larecomp_relay_server [bind_ip] [port]
+  // or as command-line args:  larecomp_relay_server [--bind <ip>] [--port <n>]
+  //                       or: larecomp_relay_server [bind_ip] [port]      (the older form)
   //   bind_ip : which local network to listen on. "0.0.0.0" (default) = ALL
   //             interfaces -- normal, and what works for a public IP, playit.gg
   //             or Hamachi. Give a specific LAN/Hamachi IP only to restrict it
-  //             to that one adapter.
+  //             to that one adapter; --bind 127.0.0.1 keeps the relay (and its
+  //             dashboard) on this machine, which is what a local test wants:
+  //             nothing reaches it from the network and Windows Firewall has
+  //             nothing to ask. LARECOMP_BIND in the environment does the same
+  //             when no bind_ip is given.
   //   port    : UDP port (default 31000). Players / the tunnel must use this.
-  std::string bind_ip = (argc >= 2 && argv[1][0]) ? argv[1] : "0.0.0.0";
-  int port_arg = (argc >= 3 && argv[2][0]) ? std::atoi(argv[2]) : kServerPort;
-  uint16_t port = (port_arg > 0 && port_arg <= 65535) ? static_cast<uint16_t>(port_arg) : kServerPort;
+  // The two forms are not mixed. With --bind or --port a wrong value stops the
+  // relay with a message (a typo must not open the port wider than asked);
+  // the positional form keeps its old leniency (a wrong bind_ip warns and
+  // listens on every interface).
+  if (argc == 2 && (!std::strcmp(argv[1], "--help") || !std::strcmp(argv[1], "-h"))) {
+    std::printf("usage: %s [--bind <ip>] [--port <n>]\n   or: %s [bind_ip] [port]\n"
+                "  --bind <ip>  listen on this local IPv4 address only (default: every interface; "
+                "LARECOMP_BIND sets it from the environment)\n  --port <n>   UDP port (default %u)\n",
+                argv[0], argv[0], unsigned(kServerPort));
+    return 0;
+  }
+  const char* bind_option = nullptr;
+  const char* port_option = nullptr;
+  std::vector<const char*> positional;
+  for (int i = 1; i < argc; ++i) {
+    const bool is_bind = !std::strcmp(argv[i], "--bind"), is_port = !std::strcmp(argv[i], "--port");
+    if ((is_bind || is_port) && i + 1 >= argc) {
+      LogInfo("%s needs a value (see --help)\n", argv[i]);
+      return 2;
+    }
+    if (is_bind) {
+      bind_option = argv[++i];
+    } else if (is_port) {
+      port_option = argv[++i];
+    } else if (!std::strncmp(argv[i], "--bind=", 7)) {
+      bind_option = argv[i] + 7;
+    } else if (!std::strncmp(argv[i], "--port=", 7)) {
+      port_option = argv[i] + 7;
+    } else {
+      positional.push_back(argv[i]);
+    }
+  }
+  const bool option_form = bind_option || port_option;
+  if (option_form && !positional.empty()) {
+    LogInfo("give --bind and --port, or the positional [bind_ip] [port], not both (see --help)\n");
+    return 2;
+  }
+  std::string bind_ip;
+  std::string bind_source = "default (all interfaces)";
+  uint16_t port = kServerPort;
+  if (port_option) {
+    char* end = nullptr;
+    const long p = std::strtol(port_option, &end, 10);
+    if (!*port_option || *end || p < 1 || p > 65535) {
+      LogInfo("--port \"%s\": not a port (1..65535)\n", port_option);
+      return 2;
+    }
+    port = static_cast<uint16_t>(p);
+  }
+  if (!option_form && !positional.empty()) {
+    if (positional[0][0]) {
+      bind_ip = positional[0];
+      bind_source = "argument";
+    }
+    const int port_arg = (positional.size() >= 2 && positional[1][0]) ? std::atoi(positional[1]) : kServerPort;
+    port = (port_arg > 0 && port_arg <= 65535) ? static_cast<uint16_t>(port_arg) : kServerPort;
+  }
+  if (bind_ip.empty()) {
+    // --bind, else LARECOMP_BIND, else every interface (strict: a wrong value stops the relay).
+    larecomp::online::BindAddress wanted;
+    std::string error;
+    if (!larecomp::online::ResolveBindAddress(bind_option, &wanted, &error)) {
+      LogInfo("%s\n", error.c_str());
+      return 2;
+    }
+    bind_ip = wanted.text;
+    bind_source = wanted.source;
+  }
 
 #ifdef _WIN32
   WSADATA wsa;
@@ -1642,6 +1739,9 @@ int main(int argc, char** argv) {
   LogInfo("relay v6 (2026-11-16): identity by game session id, rooms by game traffic, server browser, "
           "nick check, address proof, traffic budgets\n");
   LogInfo("matchmaker+relay listening on %s:%u\n", bind_ip.c_str(), port);
+  LogInfo("bind: %s%s, from %s\n", bind_ip.c_str(),
+          bind_net == htonl(INADDR_ANY) ? " (every interface)" : (ntohl(bind_net) >> 24) == 127 ? " (this machine only)" : "",
+          bind_source.c_str());
 
   // Allocator state lives next to the exe, so it is the same file however the
   // relay is started (double click, a .bat, a shortcut with another cwd).
@@ -1801,7 +1901,7 @@ int main(int argc, char** argv) {
   int64_t last_pending_cap_log = 0, last_peer_cap_log = 0, last_incumbent_log = 0,
           last_move_refused_log = 0;
   std::thread(HttpServer, static_cast<uint16_t>(port + 1), bind_net).detach();
-  std::thread(AnnounceLoop, port).detach();
+  std::thread(AnnounceLoop, port, bind_net).detach();
 
   auto send_to = [&](const void* data, int len, const sockaddr_in& dst) {
     int s = sendto(sock, reinterpret_cast<const char*>(data), len, 0,
