@@ -328,6 +328,8 @@
 {"mcla_gpu_gbuffer", "MCLA/GPU"},
 {"mcla_gpu_gbuffer_attach", "MCLA/GPU"},
 {"mcla_gpu_gbuffer_view", "MCLA/GPU"},
+{"mcla_gpu_screen_view", "MCLA/GPU"},
+{"mcla_gpu_screen_view_level", "MCLA/GPU"},
 {"mcla_gpu_ghost_log_interval", "MCLA/GPU"},
 {"mcla_gpu_glow_visibility", "MCLA/GPU"},
 {"mcla_gpu_gpu_based_validation", "MCLA/GPU"},

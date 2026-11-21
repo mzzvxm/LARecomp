@@ -693,6 +693,15 @@ class GPUSettings final : public rex::SettingOwner {
     "glow) is drawn over it as usual, so the colours are the game's after the tone map. 0: off. Live.",
     rex::kDebugOnly, rex::Range{0, 7});
 
+  REX_SETTING(i32, mcla_gpu_screen_view, 0, "Diagnostic (shared screen products): draws one product of the shared screen frame over the main view at the mid-scene depth copy, where the ambient "
+    "occlusion runs (it runs a frame of its own for this when it and the contact shadows are off): 1 the linear depth, 2 the Hi-Z level mcla_gpu_screen_view_level (the min of "
+    "the linear depth, each texel stretched over the pixels it covers), 3 the Hi-Z level against the pixels it covers (red where it is deeper than one of them, which cannot "
+    "be; green, brighter where the min is nearer than the pixel), 4 the normal image (only in a frame whose passes make it), 5 the vehicle mark of the depth. The rest of the "
+    "frame (particles, tone map, glow) is drawn over it as usual. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 5});
+
+  REX_SETTING(i32, mcla_gpu_screen_view_level, 0, "Diagnostic (shared screen products): the Hi-Z level the views 2 and 3 of mcla_gpu_screen_view show: 0 is the traced size, "
+    "each level above is half the one below (7 levels at 1080 lines, down to 1/64); a level the chain does not have shows its last. Live.", rex::kDebugOnly, rex::Range{0, 7});
+
   REX_SETTING(u32, mcla_gpu_ghost_log_interval, 0, "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
     "frame. Hot reload for reproducing the frame ghost.", rex::kDebugOnly);
@@ -1596,6 +1605,8 @@ inline auto& mcla_gpu_fsr_velocity_factor = g_gpu.mcla_gpu_fsr_velocity_factor;
 inline auto& mcla_gpu_gbuffer = g_gpu.mcla_gpu_gbuffer;
 inline auto& mcla_gpu_gbuffer_attach = g_gpu.mcla_gpu_gbuffer_attach;
 inline auto& mcla_gpu_gbuffer_view = g_gpu.mcla_gpu_gbuffer_view;
+inline auto& mcla_gpu_screen_view = g_gpu.mcla_gpu_screen_view;
+inline auto& mcla_gpu_screen_view_level = g_gpu.mcla_gpu_screen_view_level;
 inline auto& mcla_gpu_ghost_log_interval = g_gpu.mcla_gpu_ghost_log_interval;
 inline auto& mcla_gpu_glow_visibility = g_gpu.mcla_gpu_glow_visibility;
 inline auto& mcla_gpu_gpu_based_validation = g_gpu.mcla_gpu_gpu_based_validation;

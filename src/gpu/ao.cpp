@@ -23,6 +23,7 @@
 #include "ao_stable.h"
 #include "car_rt_ao.h"
 #include "scene_noise.h"
+#include "screen_shared.h"
 #include "car_shadow_map.h"
 #include "contact_trace.h"
 #include "descriptors.h"
@@ -1077,6 +1078,19 @@ void AmbientOcclusion::BeginFrame() {
     gbuffer_->Want(gbuffer::Consumer::kAmbientOcclusion, ao_gbuffer::PlanesWanted(normals_setting, mode_ != Mode::kOff || contact_mode_ != Mode::kOff));
     gbuffer_->Want(gbuffer::Consumer::kBounceLight, ao_gbuffer::BouncePlanesWanted(normals_setting, gi_active_));
   }
+  screen_wants_ = false;
+  if (screen_) {
+    // The shared screen products (screen_shared.h): what this family reads, declared for the owner's census line (it makes none of them in this step: the depth chain, the normal image and
+    // the colour chain are still this class's, handed over at the end of Run). The debug-only G-buffer normals are asked for as the G-buffer is.
+    const uint32_t normal = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get() ? screen::ProductBit(screen::kNormal) : 0u;
+    const uint32_t depth = screen::ProductBit(screen::kLinDepth);
+    screen_->Want(screen::Consumer::kAmbientOcclusion, mode_ != Mode::kOff ? depth | normal : 0u);
+    screen_->Want(screen::Consumer::kContactShadows, contact_mode_ != Mode::kOff ? depth | normal : 0u);
+    screen_->Want(screen::Consumer::kBounceLight, gi_active_ ? depth | normal | screen::ProductBit(screen::kColourPre) : 0u);
+    // A consumer outside the family (SSR, a debug view of the Hi-Z) wants the depth chain: this trigger runs the depth pass alone for it when the occlusion and the contact shadows are off
+    // (OnResolve). Only once the depth pass's pipelines are made (a frame never waits for a compile).
+    screen_wants_ = ready_ && screen_->NeedsDepthChain() && EnsureScreenDepthPipelines();
+  }
   const bool gi_test = test && gi_active_;
   if (gi_test != gi_test_) {
     gi_test_ = gi_test;
@@ -1084,6 +1098,24 @@ void AmbientOcclusion::BeginFrame() {
                 "mcla_gpu_ao on)",
                 gi_test ? "on" : "off");
   }
+}
+
+bool AmbientOcclusion::EnsureScreenDepthPipelines() {
+  // The depth pass (plain and multisampled) is all a frame for the shared screen products records. At the start it was listed only where the occlusion, the contact shadows or the
+  // census use it; the first frame that needs it without them lists it and makes it on a worker thread of its own (HoldUntilBuilt's way).
+  const std::vector<uint32_t> variants = {kVDepth, kVDepthMs};
+  std::vector<HostPrecache::Item> fresh;
+  for (const uint32_t variant : variants) {
+    if (!listed_[variant] && !pipelines_[variant]) {
+      listed_[variant] = true;
+      fresh.push_back({HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant), VariantName(variant), [this, variant] { return MakePipeline(variant); }});
+    }
+  }
+  if (!fresh.empty()) {
+    const uint32_t count = passes_->precache().AddLive("shared screen products", std::move(fresh));
+    REXLOG_INFO("[gpu] ao: the shared screen products want the depth chain with the occlusion off: {} depth pipelines are made in the background first, and the frames run from the frame they are done", count);
+  }
+  return VariantsReady(variants);
 }
 
 uint64_t AmbientOcclusion::HeldBytes() const {
@@ -1585,11 +1617,13 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   PlanContact(&plan);
   const bool contact = plan.contact.mode != Mode::kOff;
   plan.probe = census_every_ != 0 && (probes_done_ < 3 || frame_ % census_every_ == 0);
+  // The occlusion and the contact shadows are off but a consumer of the shared screen products (screen_shared.h) wants the depth chain: a frame of the depth pass alone, at the traced size.
+  plan.screen = screen_wants_ && !plan.occlusion && !contact;
   if (!plan.occlusion && !contact) {
-    if (!plan.probe) {
+    if (!plan.probe && !plan.screen) {
       return false;
     }
-    plan.mode = Mode::kHigh;  // the cheaper size is enough for a statistic
+    plan.mode = Mode::kHigh;  // the cheaper size is enough for a statistic (and for the Hi-Z)
     plan.apply = false;
   }
   plan.upscaler = upscaler_running;
@@ -3111,6 +3145,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   linear_depth_tan_[0] = base.lens[0];
   linear_depth_tan_[1] = base.lens[1];
   ran_this_frame_ = true;
+  PublishScreen(list, summary, plan, base);
   if (plan.occlusion && applied) {
     if (runs_ == 0) {
       REXLOG_INFO("[gpu] ao: the first occlusion pass: {} at {}x{} (visibility {}x{}), {} depth, "
@@ -3137,6 +3172,55 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     }
   }
   return true;
+}
+
+void AmbientOcclusion::PublishScreen(plume::RenderCommandList* list, const ResolveCache::Summary& summary, const Plan& plan, const Push& base) {
+  if (!screen_) {
+    return;
+  }
+  // The images this frame's passes made, as they are NOW (the bounce light's ping-pong swap of the depth image is done: linear_depth_image_ is this frame's level 0). The coarser levels
+  // are made by the occlusion and the census's probe only; the normal image while the frame used the G-buffer's plane; the full size depth beside a half size trace; the colour chain by
+  // the bounce light.
+  // CHECK (not run): a frame for the screen products alone (Plan::screen) in the pause menu's, the garage's and the map's 4x view and with the host's MSAA at 2, 4 and 8: it is the census's
+  // probe frame without the readback and the coarser levels, which those views and sample counts already run.
+  ScreenShared::Adopted adopted;
+  adopted.depth[0] = linear_depth_image_;
+  if (plan.occlusion || plan.probe) {
+    adopted.depth[1] = &depth_[1];
+    adopted.depth[2] = &depth_[2];
+  }
+  adopted.depth_full = plan.SplitContact() ? &depth_full_ : nullptr;
+  adopted.normal = normals_.on ? &normal_ : nullptr;
+  if (plan.gi.on) {
+    for (uint32_t i = 0; i < screen::kColourPreLevels; ++i) {
+      adopted.colour_pre[i] = &colour_[i];
+    }
+  }
+  adopted.render[0] = plan.render[0];
+  adopted.render[1] = plan.render[1];
+  adopted.host_samples = summary.source ? summary.source->host_samples : 1u;
+  adopted.sample0 = summary.host_sample;
+  adopted.pause_view = trigger_pause_;
+  adopted.owner_generation = generation_;
+  // The lens is the previous frame's anchor camera, the one this trigger's passes were made with (FillPush).
+  screen::ScreenCamera& camera = adopted.camera;
+  camera.tan_half_fov[0] = base.lens[0];
+  camera.tan_half_fov[1] = base.lens[1];
+  for (int i = 0; i < 4; ++i) {
+    camera.lin[i] = base.lin[i];
+  }
+  if (trigger_camera_valid_) {
+    camera.flags = screen::kCameraValid;
+    camera.near_plane = float(trigger_camera_.near_plane);
+    camera.far_plane = float(trigger_camera_.far_plane);
+    for (int row = 0; row < 4; ++row) {
+      for (int col = 0; col < 4; ++col) {
+        camera.view_projection[row * 4 + col] = float(trigger_camera_.view_projection.m[row][col]);
+        camera.view_inverse[row * 4 + col] = float(trigger_camera_.view_inverse.m[row][col]);
+      }
+    }
+  }
+  screen_->Publish(list, adopted);
 }
 
 bool AmbientOcclusion::RecordApply(plume::RenderCommandList* list,
@@ -4211,7 +4295,7 @@ void AmbientOcclusion::OnPresent() {
   // Nothing to compute for a second (the occlusion off, the contact shadows off or gated to nothing):
   // the images go back (they are made again by the first trigger after).
   const bool contact_working = contact_mode_ != Mode::kOff && contact_state_ == ContactState::kActive;
-  if (mode_ == Mode::kOff && !contact_working) {
+  if (mode_ == Mode::kOff && !contact_working && !screen_wants_) {
     if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames &&
         census_every_ == 0) {
       ReleaseImages();

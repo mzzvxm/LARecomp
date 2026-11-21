@@ -91,6 +91,8 @@
 #include "resolve_memory_depth_ms_cs.hlsl.dxil.h"
 #include "resolve_memory_ps.hlsl.dxil.h"
 #include "resolve_memory_vertex_cs.hlsl.dxil.h"
+#include "screen_hiz_ps.hlsl.dxil.h"
+#include "screen_view_ps.hlsl.dxil.h"
 #include "shafts_add_ps.hlsl.dxil.h"
 #include "shafts_blur_ps.hlsl.dxil.h"
 #include "shafts_sky_ms_ps.hlsl.dxil.h"
@@ -183,6 +185,8 @@
 #include "resolve_memory_depth_ms_cs.hlsl.spirv.h"
 #include "resolve_memory_ps.hlsl.spirv.h"
 #include "resolve_memory_vertex_cs.hlsl.spirv.h"
+#include "screen_hiz_ps.hlsl.spirv.h"
+#include "screen_view_ps.hlsl.spirv.h"
 #include "shafts_add_ps.hlsl.spirv.h"
 #include "shafts_blur_ps.hlsl.spirv.h"
 #include "shafts_sky_ms_ps.hlsl.spirv.h"
@@ -272,6 +276,15 @@ inline HostShaderBlob FullscreenVertexShader() {
 // The G-buffer's debug view (gbuffer.h): the planes with one sample, or the host's MSAA level.
 inline HostShaderBlob GBufferViewPixelShader(bool multisampled) {
   return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ps);
+}
+
+// The shared screen products (screen_shared.h): one level of the Hi-Z chain, and the debug view of the products.
+inline HostShaderBlob ScreenHizPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(screen_hiz_ps);
+}
+
+inline HostShaderBlob ScreenViewPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(screen_view_ps);
 }
 
 inline HostShaderBlob PresentPixelShader() {
