@@ -608,8 +608,8 @@ class GPUSettings final : public rex::SettingOwner {
     "cap counts rendered frames (mcla_gpu_frame_generation_fps_limit). Live.", rex::Range{2, 4});
 
   REX_SETTING(bool, mcla_gpu_frame_generation_tearing, false, "Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable "
-    "refresh display follows the frames. On presents immediately instead, which tears. Read when "
-    "frame generation is switched on.", rex::kDebugOnly);
+    "refresh display follows the frames. On presents immediately instead, which tears. Live: read at "
+    "every present while frame generation runs.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_fsr, false, "FSR1 on the present (M6c.1): when the window's letterbox is larger than the "
     "front buffer on both axes, EASU passes (at most 2x per axis each) up to it, then RCAS. "

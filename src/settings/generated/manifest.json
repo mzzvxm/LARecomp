@@ -1340,7 +1340,7 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/GPU",
-  "help": "\"Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable \"\n    \"refresh display follows the frames. On presents immediately instead, which tears. Read when \"\n    \"frame generation is switched on.\"",
+  "help": "\"Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable \"\n    \"refresh display follows the frames. On presents immediately instead, which tears. Live: read at \"\n    \"every present while frame generation runs.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

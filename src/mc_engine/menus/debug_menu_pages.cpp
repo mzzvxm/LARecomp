@@ -251,9 +251,11 @@ const ItemDef kDebugRenderingItems[] = {
                    kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
     NativeOnly(Dbl("PM_RxDbgVramLog",    "mcla_gpu_vram_log",      "VRAM LOG EVERY: ",
                    kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
-    // Read when frame generation is switched on, so a change shows the next time it is.
-    NativeOnly(Bool("PM_RxDbgFgTearing", "mcla_gpu_frame_generation_tearing", "FRAME GEN TEARING: ",
-                    false, " (ON NEXT USE)")),
+    // Live: Renderer::ExecutePresent asks FrameGeneration::WantsVsync at every present (the same SetVsync that follows mcla_gpu_vsync), so a
+    // change reaches the swap chain at the next frame: Direct3D 12 reads it in the present call, Vulkan changes its present mode with
+    // the chain's next rebuild. It said "(ON NEXT USE)" before: that was the old reading of the setting, which only the log line at start-up still does.
+    // CHECK: with frame generation on, a flip shows in the PRESENT line of the frame log (immediate against FIFO) within a second, no restart of frame generation.
+    NativeOnly(Bool("PM_RxDbgFgTearing", "mcla_gpu_frame_generation_tearing", "FRAME GEN TEARING: ")),
 #endif
     // The SDK's vsync on the Xenia renderer: it sets the guest's vblank interval (the game then paces
     // to it, about 30 % slower) but does not stop tearing, and the start-up flags set it again at every
