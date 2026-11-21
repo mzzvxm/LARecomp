@@ -395,6 +395,7 @@ enum class Consumer : uint8_t {
   kReflections,       // SSR: RT1, RT3 (+ RT2)
   kDecals,
   kRtBounce,          // the probe field's apply (gi_apply.h, CITY-RT M3 G3): RT1 (the world normal) and RT2 (the true albedo and the lit weight)
+  kRayReconstruction, // DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): RT1, RT2, RT3, while the plan wants the guides or a guide view is on
   kCount,
 };
 constexpr const char* ConsumerName(Consumer consumer) {
@@ -405,6 +406,7 @@ constexpr const char* ConsumerName(Consumer consumer) {
     case Consumer::kReflections: return "reflections";
     case Consumer::kDecals: return "decals";
     case Consumer::kRtBounce: return "ray traced bounce light";
+    case Consumer::kRayReconstruction: return "ray reconstruction";
     case Consumer::kCount: break;
   }
   return "?";
@@ -415,6 +417,7 @@ constexpr const char* ConsumerName(Consumer consumer) {
 //   the light pass              RT1 + RT2 + RT3 (mcla_gpu_local_lights: a debug row on the hidden DEBUG menu; there is no LOCAL LIGHTS row for players)
 //   reflections on surfaces     RT1 + RT2 + RT3 (the resolved mcla_gpu_ssr level is high or ultra: the row REFLECTIONS ON SURFACES)
 //   decals                      none yet
+//   ray reconstruction          RT1 + RT2 + RT3 (rr_guides.h: the guide pass is wanted: the DENOISER row (or the debug switch mcla_gpu_dlss_rr = on) chooses RR with DLSS on a card that supports it, or a guide view is on)
 // The consumers' own GBuffer::Want calls use ConsumerPlanes (the ones that cannot: the occlusion's, whose helper in ao_gbuffer.h is checked against this table by ao_gbuffer_test);
 // AutoPlanes is the same rule as a pure function of the consumers' states (what the plan's `requested` is under `auto`), which the tests read.
 constexpr uint32_t ConsumerPlanes(Consumer consumer) {
@@ -424,6 +427,7 @@ constexpr uint32_t ConsumerPlanes(Consumer consumer) {
     case Consumer::kLocalLights: return kAllPlanes;
     case Consumer::kReflections: return kAllPlanes;
     case Consumer::kRtBounce: return PlaneBit(kPlaneNormal) | PlaneBit(kPlaneAlbedo);
+    case Consumer::kRayReconstruction: return kAllPlanes;
     case Consumer::kDecals:
     case Consumer::kCount: break;
   }
@@ -437,11 +441,13 @@ struct ConsumerStates {
   bool reflections = false;
   bool decals = false;
   bool rt_bounce = false;  // the probe field's apply
+  bool ray_reconstruction = false;
 };
 constexpr uint32_t AutoPlanes(const ConsumerStates& on) {
   return (on.occlusion_normals ? ConsumerPlanes(Consumer::kAmbientOcclusion) : 0u) | (on.bounce_normals ? ConsumerPlanes(Consumer::kBounceLight) : 0u) |
          (on.light_pass ? ConsumerPlanes(Consumer::kLocalLights) : 0u) | (on.reflections ? ConsumerPlanes(Consumer::kReflections) : 0u) |
-         (on.decals ? ConsumerPlanes(Consumer::kDecals) : 0u) | (on.rt_bounce ? ConsumerPlanes(Consumer::kRtBounce) : 0u);
+         (on.decals ? ConsumerPlanes(Consumer::kDecals) : 0u) | (on.rt_bounce ? ConsumerPlanes(Consumer::kRtBounce) : 0u) |
+         (on.ray_reconstruction ? ConsumerPlanes(Consumer::kRayReconstruction) : 0u);
 }
 class Wants {
  public:

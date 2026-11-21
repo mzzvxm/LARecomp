@@ -3745,14 +3745,22 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // The screen-space reflections (ssr.h): the trace, the accumulation and the additive resolve into the main colour, right after the capture they read (a reflection is not a
     // reflection of a reflection: colour_post is made before the effect adds to the colour) and before the car self-reflection's history pass, which holds a vehicle's pixels only and so does not see
     // them (GB-I3, frame_order.h kSsr). The last pass of the trigger that adds to the colour; its GPU time is the labels 'ssr trace', 'ssr temporal' and 'ssr apply' (closed by 'after ssr').
-    const bool ssr_ran = ssr_->OnTrigger(summary, list);
+    // RR-4a: while DLSS Ray Reconstruction takes the frame the effect runs RAW (no accumulation of its own, its hit distance written for the guide pass): TemporalSystem::RawModes, false with the plan not RR.
+    const bool raw_ssr = temporal_ && temporal_->RawModes().Ssr();
+    const bool ssr_ran = ssr_->OnTrigger(summary, list, raw_ssr);
     order_.Note(frame_order::Step::kSsr, ssr_ran);
   }
   if (car_refl_ && car_refl_->wants_draws()) {
+    // RR-4b: while DLSS Ray Reconstruction takes the frame the ray traced reflection of the cars runs RAW (no filter, its hit distance written): TemporalSystem::RawModes, false with the plan not RR.
+    car_refl_->SetRawMode(temporal_ && temporal_->RawModes().CarRefl());
     // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h) and the ray traced reflection of its texels (car_rt_refl.h, in this frame's
     // top level; its own pass and target: the reset below forgets them too).
     const bool car_history = car_refl_->OnResolve(record, summary, list);
     order_.Note(frame_order::Step::kCarHistory, car_history);
+  }
+  if (temporal_) {
+    // RR-4: the reflection effects' hit distance images of this frame (null where an effect did not run raw), for the guide pass at the anchor.
+    temporal_->NoteRrHit(ssr_ ? ssr_->RawHitImage() : nullptr, car_refl_ ? car_refl_->RawHitImage() : nullptr);
   }
   if (gbuffer_ && gbuffer_->active()) {
     // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).

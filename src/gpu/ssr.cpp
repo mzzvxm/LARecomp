@@ -16,8 +16,10 @@
 
 #include "ao.h"
 #include "ao_gbuffer.h"
+#include "denoiser_setting.h"
 #include "descriptors.h"
 #include "device.h"
+#include "dlss_rr_rules.h"
 #include "gbuffer.h"
 #include "gpu_class.h"
 #include "host_shaders.h"
@@ -37,6 +39,8 @@ constexpr plume::RenderFormat kFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
 // CITY-RT R4: the confidence target (r the class group, g the picture's share: ssr_rt_rules.h) and the trace image's flags in a frame the fallback follows (its compute passes read and write it).
 constexpr plume::RenderFormat kConfidenceFormat = plume::RenderFormat::R8G8_UNORM;
 constexpr plume::RenderTextureFlags kTraceRtFlags = plume::RenderTextureFlag::RENDER_TARGET | plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+// RR-4a: the hit distance image of a raw frame (the guide pass's input: one float, the distance, in x).
+constexpr plume::RenderFormat kHitFormat = plume::RenderFormat::R16_FLOAT;
 constexpr uint8_t kWriteRgb = uint8_t(plume::RenderColorWriteEnable::RED) | uint8_t(plume::RenderColorWriteEnable::GREEN) | uint8_t(plume::RenderColorWriteEnable::BLUE);
 // The frames the images are kept after the last frame that ran the effect (a pause spell, a menu: not made again at once).
 constexpr uint32_t kReleaseAfterFrames = 120;
@@ -121,6 +125,8 @@ void ScreenReflections::Shutdown() {
   for (HostImage& image : accum_) {
     image = HostImage{};
   }
+  hit_ = HostImage{};
+  hit_ready_ = false;
   last_key_ = ssr::HistoryKey{};
   ready_ = false;
   level_ = ssr::Level::kOff;
@@ -137,6 +143,8 @@ const char* ScreenReflections::VariantName(uint32_t variant) const {
     case kVTemporal: return "ssr temporal";
     case kVTraceRt: return "ssr trace (confidence target)";
     case kVTraceRtMs: return "ssr trace (confidence target, multisampled planes)";
+    case kVApplyRaw: return "ssr apply raw (Ray Reconstruction)";
+    case kVHit: return "ssr hit distance (Ray Reconstruction)";
     default: break;
   }
   static constexpr const char* kApply[8] = {"ssr apply 1x",      "ssr view 1x",      "ssr apply 2x",      "ssr view 2x",
@@ -150,11 +158,26 @@ std::unique_ptr<plume::RenderPipeline> ScreenReflections::MakePipeline(uint32_t 
     return nullptr;
   }
   const plume::RenderBlendDesc copy = plume::RenderBlendDesc::Copy();
-  const auto make = [&](Shader shader, const plume::RenderBlendDesc& blend, uint32_t samples) -> std::unique_ptr<plume::RenderPipeline> {
+  const auto make = [&](Shader shader, const plume::RenderBlendDesc& blend, uint32_t samples, plume::RenderFormat format = kFormat) -> std::unique_ptr<plume::RenderPipeline> {
     if (!shaders_[shader]) {
       return nullptr;
     }
-    return passes_->CreatePipeline(*layout_, *shaders_[shader], kFormat, blend, samples, VariantName(variant));
+    return passes_->CreatePipeline(*layout_, *shaders_[shader], format, blend, samples, VariantName(variant));
+  };
+  // The apply pass's blend: into the main colour (RGBA16F with the target's sample count), alpha untouched. The term is ADDED (the shader writes it); a debug view replaces the rgb.
+  const auto apply_blend = [&](bool view) {
+    plume::RenderBlendDesc blend = copy;
+    if (!view) {
+      blend.blendEnabled = true;
+      blend.srcBlend = plume::RenderBlend::ONE;
+      blend.dstBlend = plume::RenderBlend::ONE;
+      blend.blendOp = plume::RenderBlendOperation::ADD;
+      blend.srcBlendAlpha = plume::RenderBlend::ZERO;
+      blend.dstBlendAlpha = plume::RenderBlend::ONE;
+      blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
+    }
+    blend.renderTargetWriteMask = kWriteRgb;
+    return blend;
   };
   switch (variant) {
     case kVTrace: return make(kShaderTrace, copy, 1);
@@ -169,24 +192,14 @@ std::unique_ptr<plume::RenderPipeline> ScreenReflections::MakePipeline(uint32_t 
       const plume::RenderFormat formats[2] = {kFormat, kConfidenceFormat};
       return passes_->CreatePipeline(*layout_, *shaders_[shader], formats, 2, VariantName(variant));
     }
+    case kVApplyRaw: return make(kShaderApplyRaw, apply_blend(false), 1);   // RR-4a: the same resolve, adding, over the single sample colour
+    case kVHit: return make(kShaderHit, copy, 1, kHitFormat);               // RR-4a: the hit distance image (R16_FLOAT, all channels written)
     default: break;
   }
-  // The apply pass: into the main colour (RGBA16F with the target's sample count), alpha untouched. The term is ADDED (the shader writes it); a debug view replaces the rgb.
   const uint32_t index = variant - kVApplyBase;
   const uint32_t samples = 1u << (index >> 1);
   const bool view = (index & 1u) != 0;
-  plume::RenderBlendDesc blend = copy;
-  if (!view) {
-    blend.blendEnabled = true;
-    blend.srcBlend = plume::RenderBlend::ONE;
-    blend.dstBlend = plume::RenderBlend::ONE;
-    blend.blendOp = plume::RenderBlendOperation::ADD;
-    blend.srcBlendAlpha = plume::RenderBlend::ZERO;
-    blend.dstBlendAlpha = plume::RenderBlend::ONE;
-    blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
-  }
-  blend.renderTargetWriteMask = kWriteRgb;
-  return make(samples > 1 ? kShaderApplyMs : kShaderApply, blend, samples);
+  return make(samples > 1 ? kShaderApplyMs : kShaderApply, apply_blend(view), samples);
 }
 
 plume::RenderPipeline* ScreenReflections::Pipeline(uint32_t variant) {
@@ -275,11 +288,16 @@ void ScreenReflections::DrawPassRt(plume::RenderCommandList* list, const plume::
   trace_.layout = confidence_.layout = plume::RenderTextureLayout::SHADER_READ;
 }
 
-bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt) {
+bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt, bool raw, uint32_t render_width, uint32_t render_height) {
   const plume::RenderTexture* before[4] = {trace_.texture.get(), accum_[0].texture.get(), accum_[1].texture.get(), confidence_.texture.get()};
   // A frame the ray traced fallback follows: the trace image is also a storage image (its compute passes read and write it), and the confidence image exists. Otherwise the images are what they were.
-  bool ok = passes_->EnsureImage(trace_, width, height, kFormat, "ssr trace", rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET) && passes_->EnsureImage(accum_[0], width, height, kFormat, "ssr accumulated 0") &&
-            passes_->EnsureImage(accum_[1], width, height, kFormat, "ssr accumulated 1");
+  // A raw frame (RR-4a) has no accumulation: the trace and the hit distance image at the picture's size are all it needs (the accumulation's two go back after a spell of raw frames: Record's tail).
+  bool ok = passes_->EnsureImage(trace_, width, height, kFormat, "ssr trace", rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET);
+  if (raw) {
+    ok = ok && passes_->EnsureImage(hit_, render_width, render_height, kHitFormat, "ssr hit distance");
+  } else {
+    ok = ok && passes_->EnsureImage(accum_[0], width, height, kFormat, "ssr accumulated 0") && passes_->EnsureImage(accum_[1], width, height, kFormat, "ssr accumulated 1");
+  }
   if (rt) {
     ok = ok && passes_->EnsureImage(confidence_, width, height, kConfidenceFormat, "ssr confidence");
     if (ok && (!rt_framebuffer_ || rt_framebuffer_for_[0] != trace_.texture.get() || rt_framebuffer_for_[1] != confidence_.texture.get())) {
@@ -308,7 +326,8 @@ void ScreenReflections::ReleaseImages() {
   if (!passes_) {
     return;
   }
-  for (HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_}) {
+  hit_ready_ = false;
+  for (HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_}) {
     if (image->texture) {
       passes_->ReleaseImage(*image);
     }
@@ -321,7 +340,7 @@ void ScreenReflections::ReleaseImages() {
 
 uint64_t ScreenReflections::HeldBytes() const {
   uint64_t bytes = 0;
-  for (const HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_}) {
+  for (const HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
@@ -336,6 +355,7 @@ uint64_t ScreenReflections::HeldBytes() const {
 void ScreenReflections::BeginFrame() {
   trigger_done_ = false;
   ran_ = false;
+  hit_ready_ = false;
   wet_votes_.Reset();
   ++frames_;
   // `auto` is the GPU class's cell (gpu_class.h kSsr: off on every class until the owner has seen the effect); a word that is no level (a hand-edited file) is off.
@@ -344,6 +364,9 @@ void ScreenReflections::BeginFrame() {
     level = ssr::Level::kOff;  // the layout or a shader could not be made, or the owners are not there
   }
   level_ = level;
+  // RR-INT: the DENOISER row's board (denoiser_setting.h): this effect is on this frame. It is a consumer of Ray Reconstruction (rr::kConsumers: its raw mode exists, RR-4a), and the plan reads the
+  // board at the temporal system's frame boundary, which comes right after this call (frame_order.h kBeginSsr, kBeginTemporal: lag 0). Only a flag is set; with the plan not RR nothing else changes.
+  denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);
   rt_.BeginFrame(level_);   // CITY-RT R4: the ray traced fallback's level (off with the effect, on a card that does not trace, or by the debug word) and its want of the city's structures
   if (!logged_level_once_ || level != logged_level_) {
     logged_level_once_ = true;
@@ -383,7 +406,7 @@ void ScreenReflections::OnMainDraw(const temporal::MainMatch& match, const Const
   wet_votes_.Add(BankFloat(banks.vs.data(), kVsReflectionParams, 0), BankFloat(banks.vs.data(), kVsReflectionParams, 1));
 }
 
-bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
+bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested) {
   if (level_ == ssr::Level::kOff || trigger_done_ || !list || !summary.source || !screen_ || !gbuffer_ || !passes_) {
     return false;
   }
@@ -439,19 +462,51 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   }
   const uint32_t width = decision.size.size[0];
   const uint32_t height = decision.size.size[1];
+  // RR-4a, the raw mode (ssr.h): asked for by the caller while DLSS Ray Reconstruction takes the frame; the frame decides whether it can (a debug view, the stub, a multisampled colour and the pipelines
+  // still being made keep it plain). The raw pipelines are listed with the host precache only for a frame that is asked and could take them: with the plan not RR none is ever made.
+  ssr::RawFacts raw_facts;
+  raw_facts.asked = raw_requested;
+  raw_facts.debug_view = debug_view;
+  raw_facts.stub = decision.stub;
+  raw_facts.host_samples = depth.host_samples;
+  plume::RenderPipeline* raw_apply_pipeline = nullptr;
+  plume::RenderPipeline* hit_pipeline = nullptr;
+  if (ssr::RawPossible(raw_facts)) {
+    raw_apply_pipeline = Pipeline(kVApplyRaw);
+    hit_pipeline = Pipeline(kVHit);
+    raw_facts.pipelines_ready = raw_apply_pipeline && hit_pipeline;
+  }
+  ssr::RawWhy raw_why = ssr::DecideRaw(raw_facts);
+  bool raw = raw_why == ssr::RawWhy::kRaw;
   // CITY-RT R4: the frame follows the ray traced fallback where it is wanted, the frame has the material plane (the stub class has no use for rays) and its pipelines are made (the compute passes and the
-  // trace with two targets; asked for, so listed with the precache, only while the fallback is wanted). Otherwise nothing of it exists in the frame.
+  // trace with two targets; asked for, so listed with the precache, only while the fallback is wanted). Otherwise nothing of it exists in the frame. A RAW frame follows it too (RR-6: the fallback's ray is
+  // the one Ray Reconstruction takes, its radiance in the trace image and its hit distance in the alpha, which the hit pass turns into the guide): RtDenoise does not run in a raw frame, RR is the denoiser.
   plume::RenderPipeline* trace_rt_pipeline = nullptr;
   bool rt = false;
   if (rt_.wanted() && !decision.stub) {
     trace_rt_pipeline = Pipeline(ms ? kVTraceRtMs : kVTraceRt);
     rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);
   }
-  if (!EnsureImages(width, height, rt)) {
-    if (!rt || !EnsureImages(width, height, false)) {
-      return false;  // the images could not be made (logged by the host passes): asked again every frame
-    }
-    rt = false;      // the confidence image or its framebuffer could not be made: the effect runs as it was
+  // The images, in the order of what a failure costs least: the fallback goes first (the effect runs as it was without it, raw or plain), then the raw mode (the plain effect).
+  bool images_ok = EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1]);
+  if (!images_ok && rt) {
+    rt = false;     // the confidence image or its framebuffer could not be made
+    images_ok = EnsureImages(width, height, false, raw, sf.render[0], sf.render[1]);
+  }
+  if (!images_ok && raw) {
+    raw = false;
+    raw_why = ssr::RawWhy::kImages;   // the hit distance image could not be made (logged by the host passes): this frame is plain
+    images_ok = EnsureImages(width, height, false, false);
+  }
+  if (raw_requested) {
+    raw_ever_asked_ = true;
+  }
+  if (raw_ever_asked_ && uint32_t(raw_why) != raw_why_logged_) {
+    raw_why_logged_ = uint32_t(raw_why);
+    REXLOG_INFO("{} raw mode (DLSS Ray Reconstruction takes the frame): {} (logged when it changes)", kPrefix, ssr::RawWhyName(raw_why));
+  }
+  if (!images_ok) {
+    return false;  // the images could not be made (logged by the host passes): asked again every frame
   }
   // The main view's colour: the identity of the draws that wrote the depth, at the same samples and scale (ao.cpp RecordApply).
   EdramKey key;
@@ -667,55 +722,107 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     DrawPass(list, trace_, trace_pipeline, trace_push);
   }
 
-  ssr::Push temporal = push;
-  temporal.Set(pk::kSrc, ssr::PackSlots(trace_.slot, accum_[write_ ^ 1u].slot));
-  flags.history = use_history;
-  temporal.Set(pk::kFlags, ssr::PackFlags(flags));
-  temporal.SetFloat(pk::kHistoryWeight, use_history ? history_weight : 0.0f);
-  temporal.Set(pk::kVehTable, ssr::PackSlots(vehicle_table_slot, screen::kNoSlot));
-  temporal.SetFloat(pk::kPrevTanX, last_tan_[0]);
-  temporal.SetFloat(pk::kPrevTanY, last_tan_[1]);
-  for (uint32_t i = 0; i < 12; ++i) {
-    temporal.SetFloat(pk::kMotion + i, motion_known ? cam.motion[i] : 0.0f);
+  if (!raw) {
+    // The accumulation. A raw frame (RR-4a) has none: Ray Reconstruction is the denoiser, the resolve reads the trace itself.
+    ssr::Push temporal = push;
+    temporal.Set(pk::kSrc, ssr::PackSlots(trace_.slot, accum_[write_ ^ 1u].slot));
+    flags.history = use_history;
+    temporal.Set(pk::kFlags, ssr::PackFlags(flags));
+    temporal.SetFloat(pk::kHistoryWeight, use_history ? history_weight : 0.0f);
+    temporal.Set(pk::kVehTable, ssr::PackSlots(vehicle_table_slot, screen::kNoSlot));
+    temporal.SetFloat(pk::kPrevTanX, last_tan_[0]);
+    temporal.SetFloat(pk::kPrevTanY, last_tan_[1]);
+    for (uint32_t i = 0; i < 12; ++i) {
+      temporal.SetFloat(pk::kMotion + i, motion_known ? cam.motion[i] : 0.0f);
+    }
+    pass_timing_->Mark(list, "ssr temporal");
+    DrawPass(list, accum_[write_], temporal_pipeline, temporal);
   }
-  pass_timing_->Mark(list, "ssr temporal");
-  DrawPass(list, accum_[write_], temporal_pipeline, temporal);
 
   // The apply: the main colour as a colour target in the middle of the frame (the occlusion's way: no depth, the next draw of the game moves things back itself).
   ssr::Push apply = push;
-  apply.Set(pk::kSrc, ssr::PackSlots(accum_[write_].slot, trace_.slot));
-  apply.Set(pk::kRoadViewApply, road_word);
+  if (raw) {
+    // RR-4a: the resolve reads the trace itself (both halves of the source word); the Hi-Z words stay as pushed (the debug view that borrows the first one is never on in a raw frame).
+    apply.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));
+  } else {
+    apply.Set(pk::kSrc, ssr::PackSlots(accum_[write_].slot, trace_.slot));
+    apply.Set(pk::kRoadViewApply, road_word);
+  }
   edram_->Transition(list, *colour, plume::RenderTextureLayout::COLOR_WRITE);
   EdramTargets::Target* only[1] = {colour};
   plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(only, 1, nullptr);
   if (framebuffer) {
-    pass_timing_->Mark(list, "ssr apply");
+    if (raw) {
+      pass_timing_->Mark(list, "ssr apply raw");
+    } else {
+      pass_timing_->Mark(list, "ssr apply");
+    }
     list->setFramebuffer(framebuffer);
     const plume::RenderViewport viewport{0.0f, 0.0f, float(sf.render[0]), float(sf.render[1])};
     list->setViewports(&viewport, 1);
     const plume::RenderRect scissor(0, 0, int32_t(sf.render[0]), int32_t(sf.render[1]));
     list->setScissors(&scissor, 1);
     Bind(list);
-    list->setPipeline(apply_pipeline);
+    list->setPipeline(raw ? raw_apply_pipeline : apply_pipeline);
     list->setGraphicsPushConstants(0, &apply, 0, sizeof(apply));
     list->drawInstanced(3, 1, 0, 0);
     list->setFramebuffer(nullptr);
   }  // else the trace and the accumulation were recorded and there is no apply this frame: the next one starts from this history all the same
+  if (raw) {
+    // RR-4a: how far each of the reflections the resolve just added went, into the image the guide pass reads as the hit distance (hlsl/ssr_hit_ps.hlsl). It reads the trace like the resolve.
+    ssr::Push hit_push = push;
+    hit_push.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));
+    pass_timing_->Mark(list, "ssr hit");
+    DrawPass(list, hit_, hit_pipeline, hit_push);
+    hit_ready_ = true;
+  }
   // The closing mark (PassTiming: a mark's time runs to the next mark): what is recorded next (the car history, the debug views, the game's draws) is not the apply's. No label of the chains' own
   // reflection sum (`ssr ...`): the span after this mark is whatever follows.
   pass_timing_->Mark(list, "after ssr");
 
-  // The frame is the history of the next.
-  last_key_ = now;
-  last_tan_[0] = sf.camera.tan_half_fov[0];
-  last_tan_[1] = sf.camera.tan_half_fov[1];
-  write_ ^= 1u;
+  // The frame is the history of the next (a raw frame made none: the frame after it starts again, whatever mode it is in).
+  if (!raw) {
+    last_key_ = now;
+    last_tan_[0] = sf.camera.tan_half_fov[0];
+    last_tan_[1] = sf.camera.tan_half_fov[1];
+    write_ ^= 1u;
+  } else {
+    last_key_.valid = false;
+  }
   ran_ = true;
   ++frames_run_;
-  if (use_history) {
+  if (raw) {
+    ++raw_frames_;
+  } else if (use_history) {
     ++history_frames_;
   } else {
     ++no_motion_frames_;
+  }
+  // The images the mode in use does not need go back after a spell of it: the accumulation's two after kRawReleaseAfter raw frames in a row, the hit image after as many plain ones.
+  if (raw) {
+    plain_streak_ = 0;
+    if (++raw_streak_ >= ssr::kRawReleaseAfter && (accum_[0].texture || accum_[1].texture)) {
+      for (HostImage* image : {&accum_[0], &accum_[1]}) {
+        if (image->texture) {
+          passes_->ReleaseImage(*image);
+        }
+      }
+      ++images_generation_;
+      last_key_.valid = false;
+    }
+    if (!raw_first_logged_) {
+      raw_first_logged_ = true;
+      REXLOG_INFO("{} the first raw frame (DLSS Ray Reconstruction takes it): {} ray{} a pixel straight into the colour at {}x{} (no accumulation: its history and images are not used), "
+                  "the hit distance of each in an R16_FLOAT image of {}x{} ({:.1f} MiB) for the guide pass",
+                  kPrefix, numbers.rays, numbers.rays == 1 ? "" : "s", width, height, sf.render[0], sf.render[1], Mib(ssr::HitImageBytes(sf.render[0], sf.render[1])));
+    }
+  } else {
+    raw_streak_ = 0;
+    if (plain_streak_ < ssr::kRawReleaseAfter) {
+      ++plain_streak_;
+    } else if (hit_.texture) {
+      passes_->ReleaseImage(hit_);
+    }
   }
   if (!first_logged_) {
     first_logged_ = true;
@@ -726,8 +833,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
                 decision.stub ? "the stub" : "RT3", wet_, wet_raw_, wet_strength_, road.share, vehicle_rows_ ? "on" : "off");
   }
   if (frames_run_ % 1800 == 0) {
-    REXLOG_INFO("{} {} frames ran: {} with a usable history, {} with the AO's vehicle table, wetness {:.2f} (c43.x {:.2f}, strength {:.2f}), road view: {}", kPrefix, frames_run_, history_frames_, vehicle_table_frames_, wet_,
-                wet_raw_, wet_strength_, ssr::RoadViewWhyName(road_why));
+    REXLOG_INFO("{} {} frames ran: {} with a usable history, {} with the AO's vehicle table, wetness {:.2f} (c43.x {:.2f}, strength {:.2f}), road view: {}{}", kPrefix, frames_run_, history_frames_, vehicle_table_frames_, wet_,
+                wet_raw_, wet_strength_, ssr::RoadViewWhyName(road_why), raw_ever_asked_ ? std::format(", {} raw (Ray Reconstruction)", raw_frames_) : std::string());
   }
   if (size_logged_[0] != width || size_logged_[1] != height) {
     if (size_logged_[0] != 0) {

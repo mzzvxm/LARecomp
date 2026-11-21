@@ -865,7 +865,7 @@ void TestHostSources(const std::string& dir) {
   Check(Has(rt_cpp, "static LiveText text(\"mcla_gpu_ssr_rt\");") && Has(rt_cpp, "ssr_rt::Resolve({ssr_level, ssr_rt::ParseChoice(Setting().Get()), gpu_class::CurrentRtRung()})"), "the level is the setting's word, the effect's level and the card's rung through the rules");
   // the identity: the effect without the fallback
   Check(Has(rt_cpp, "if (!ready_) {\n    resolved_ = ssr_rt::Resolved{};") && Has(rt_cpp, "CarRtSupported(device.capabilities()"), "a device that cannot trace makes none of it and the effect asks for nothing");
-  Check(Has(ssr_cpp, "if (rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt)") &&
+  Check(Has(ssr_cpp, "if (rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1])") &&
             Has(ssr_cpp, "rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET") && Has(ssr_cpp, "} else {\n    DrawPass(list, trace_, trace_pipeline, trace_push);\n  }"),
         "without the fallback the images are the old ones (default flags, no confidence) and the pass is the plain one");
   Check(Has(ssr_cpp, "rt_.BeginFrame(level_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") && Has(ssr_cpp, "return bytes + rt_.HeldBytes();"), "the effect's frame start, present, shutdown and memory call the fallback");
@@ -885,11 +885,11 @@ void TestHostSources(const std::string& dir) {
             Has(cmake, "larecomp_gpu_host_shader_rt(ssr_rt_trace_ms_cs cs_6_5 SOURCE ssr_rt_trace_cs DEFINES SSR_MS=1)") && Has(cmake, "add_executable(larecomp_ssr_rt_rules_test EXCLUDE_FROM_ALL ssr_rt_rules_test.cpp)") &&
             Has(cmake, "larecomp_gpu_host_shader(ssr_trace_ps ps_6_0 DEFINES SSR_MS=0)"),
         "the build lists the fallback's source, its five shaders (the trace with SSR_RT 1 twice, the select pass, the trace pass twice) and the test; the plain trace's line is unchanged");
-  Check(Has(shaders_h, "case 5: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ps);") && Has(shaders_h, "default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ms_ps);") && Has(shaders_h, "case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ps);") &&
+  Check(Has(shaders_h, "case 5: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ps);") && Has(shaders_h, "case 6: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ms_ps);") && Has(shaders_h, "case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ps);") &&
             Has(shaders_h, "ScreenReflectionsRtShader(uint32_t pass)") && Has(shaders_h, "MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_ms_cs)") && Count(shaders_h, "ssr_rt_select_cs.hlsl.dxil.h") == 1 && Count(shaders_h, "ssr_rt_select_cs.hlsl.spirv.h") == 1 &&
             Count(shaders_h, "ssr_trace_rt_ms_ps.hlsl.dxil.h") == 1 && Count(shaders_h, "ssr_trace_rt_ps.hlsl.spirv.h") == 1,
         "the blobs: the plain numbering is unchanged, the new passes come after it");
-  Check(Has(ssr_h, "kShaderTraceRt, kShaderTraceRtMs, kShaderCount") && Has(ssr_h, "kVTraceRt = kVApplyBase + 8, kVTraceRtMs, kVariantCount") && Has(ssr_h, "ScreenReflectionsRt rt_;") && Has(ssr_h, "InitializeRt(") && Has(ssr_h, "RtCensusText()"),
+  Check(Has(ssr_h, "kShaderTraceRt, kShaderTraceRtMs, kShaderApplyRaw, kShaderHit, kShaderCount") && Has(ssr_h, "kVTraceRt = kVApplyBase + 8, kVTraceRtMs, kVApplyRaw, kVHit, kVariantCount") && Has(ssr_h, "ScreenReflectionsRt rt_;") && Has(ssr_h, "InitializeRt(") && Has(ssr_h, "RtCensusText()"),
         "the effect's header has the new shaders, variants, the fallback and its two calls");
   // the renderer's wiring
   const size_t shadow_init = At(renderer_cpp, "city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);");
@@ -898,7 +898,7 @@ void TestHostSources(const std::string& dir) {
   Check(shadow_init != std::string::npos && shadow_init < rt_init && rt_init < precache_start && Has(renderer_cpp, "rt_world_.CensusText() + ssr_.RtCensusText()"),
         "the renderer starts the fallback after the car scene's, the scene service's and the world frame's start, before the precache, and prints its census with the city's");
   // the setting
-  Check(Has(settings, "REX_SETTING(std::string, mcla_gpu_ssr_rt, \"auto\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\"));") && Has(settings, "inline auto& mcla_gpu_ssr_rt = g_gpu.mcla_gpu_ssr_rt;"),
+  Check(Has(settings, "REX_SETTING(std::string, " "mcla_gpu_ssr_rt, \"auto\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\"));") && Has(settings, "inline auto& mcla_gpu_ssr_rt = g_gpu.mcla_gpu_ssr_rt;"),
         "mcla_gpu_ssr_rt is a debug-only setting: auto, off, high, ultra, auto by default");
 }
 }  // namespace

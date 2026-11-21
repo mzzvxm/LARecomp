@@ -191,6 +191,11 @@ class CarSelfRefl {
 
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
+  // RR-4b: DLSS Ray Reconstruction takes this frame and the ray traced reflection's switch is on (TemporalSystem::RawModes().CarRefl()): the ray traced pass (car_rt_refl.h) then runs RAW (no filter,
+  // its hit distance written). Set by the Scene before the trigger's history pass, every frame; forgotten at the frame's start (false with the plan not RR).
+  void SetRawMode(bool raw) { raw_ = raw; }
+  // RR-4b: the ray traced pass's hit distance image of this frame (R16_FLOAT, the picture's size, readable) when it ran raw, else null (car_rt_refl.h RawHitImage).
+  const HostImage* RawHitImage() const;
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return mode_ != Mode::kOff; }
 
@@ -291,6 +296,7 @@ class CarSelfRefl {
   CarDump* dump_ = nullptr;
   CarRtRefl* rt_ = nullptr;
   bool upscaler_running_ = false;  // FillConstants' flag of the frame's last paint draw (its draws come before the trigger)
+  bool raw_ = false;               // RR-4b: SetRawMode
   bool ready_ = false;            // the shaders exist
   bool shaders_failed_ = false;   // they could not be made: not tried again
   bool listed_ = false;           // the pipelines were listed at the start (or in the background after it)

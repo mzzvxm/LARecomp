@@ -1552,8 +1552,8 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //
 //   DISPLAY               DISPLAY MODE, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY GAMMA, VSYNC, FPS LIMIT, then NVIDIA REFLEX or AMD
 //                         ANTI-LAG 2 where the GPU has one (kVideoItems, LowLatencyMenuRows)
-//   UPSCALING             UPSCALING, its mode row, SHARPNESS, FRAME GENERATION, FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT
-//                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
+//   UPSCALING             UPSCALING, its mode row, SHARPNESS, DENOISER, FRAME GENERATION, FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT
+//                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows; DENOISER is gpu/denoiser_setting.h's)
 //   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
 //   LIGHTING AND SHADOWS  SHADOWS, FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, RT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS,
 //                         AMBIENT OCCLUSION, AO INTENSITY, BOUNCE LIGHT, RT BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS,
@@ -3219,12 +3219,13 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // "2560X1440"). A label or a value that is longer than its page's widest needs counting against that
 // before it goes in, in each state a suffix can be in; each page counts its own, here and where it is
 // built:
-// UPSCALING (UpscalingPageRows: the upscaler's rows and frame generation's, 6 at most): its widest label
+// UPSCALING (UpscalingPageRows: the upscaler's rows, DENOISER and frame generation's, 7 at most): its widest label
 // is "RENDER SCALE (RESTART)" (XENIA, 22), then "UPSCALING (APPLYING)", "SHARPNESS (FSR ONLY)" and "FRAME
 // GEN MULTIPLIER" (20); its widest value 18 ("FSR 3.1 (APPLYING)", the frame generation row while it is
 // being made), then 17 ("PERFORMANCE (50%)" and the mode row's other longest: "ULTRA PERF. (33%)",
-// "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)", "FSR 3.1 (NO ROOM)"): 40 together. The upscaling rows' states
-// are counted in upscaling_menu.cpp, frame generation's in frame_generation_menu.h.
+// "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)", "FSR 3.1 (NO ROOM)"): 40 together. DENOISER (NATIVE only, so not on XENIA's page) adds
+// the label "DENOISER (NO RTX GPU)" and "DENOISER (NEEDS DLSS)" (21, the widest of NATIVE's page) and the values "AUTO (DLSS RR)" (14) and
+// shorter: 21 + 18 = 39. The upscaling rows' states are counted in upscaling_menu.cpp, frame generation's in frame_generation_menu.h.
 // DISPLAY (kVideoItems and the latency row, 8 rows): its widest label is the latency row's "AMD ANTI-LAG 2
 // (NOT WORKING)" (28; "RESOLUTION (7680X4320)" is 22, 23 at five digits across, display_menu.h) and its
 // widest value 10 (the DISPLAY MODE values "BORDERLESS" and "FULLSCREEN", the latency row's "ON + BOOST" and

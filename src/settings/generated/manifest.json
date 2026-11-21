@@ -3238,6 +3238,78 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_denoiser": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"DENOISER: who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light): NVIDIA's DLSS Ray Reconstruction, or our own denoisers. \"\n    \"auto (the default): DLSS Ray Reconstruction where an effect that is on looks better with it and this PC can run it (an NVIDIA RTX card, DLSS as the upscaler); our own denoisers everywhere else. \"\n    \"rr (DLSS RR in the menu): DLSS Ray Reconstruction wherever it can run and an effect that it can clean is on. ours: our own denoisers only; Streamline is then started without the Ray Reconstruction plugin, \"\n    \"so leaving ours needs a restart. DLSS Ray Reconstruction does the upscaling too, in place of DLSS Super Resolution, for the frames it takes (not the pause menu's world, the garage, the map or a cutscene); its context is made in the background \"\n    \"beside Super Resolution's, so a switch of this setting is live and the frames in between are Super Resolution's. The pause menu's DENOISER row (GRAPHICS > UPSCALING; grey where it cannot run: no RTX card, DLSS not the upscaler, \"\n    \"no effect that uses it is on). Live; only the plugin is chosen when Streamline starts (the debug setting mcla_gpu_dlss_rr overrides it).\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"rr\", \"ours\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_dlss_rr": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B): overrides the DENOISER row (mcla_gpu_denoiser) for NVIDIA DLSS Ray Reconstruction (RR), a denoiser and upscaler in one that replaces DLSS \"\n    \"Super Resolution where our effects leave noise it can clean (perf/DLSS-RR.md). auto (the default): the row decides. off: nothing of it exists whatever the row says: the plugin is not asked for and nothing changes. probe: Streamline is started with the RR plugin (an RTX \"\n    \"card, sl.dlss_d.dll and nvngx_dlssd.dll next to the exe) and the log says whether this card and driver support it and which sizes it takes, but no frame uses it. on: RR is chosen as the row's DLSS RR value would choose it, \"\n    \"and without the row's rule that an effect it can clean is on (RR over a frame with nothing to denoise, for the A/B and cost runs), which the log says each time the choice changes and why not. While it is chosen, Ray Reconstruction's context is made in the background beside Super Resolution's, which keeps upscaling the frames meanwhile and every frame \"\n    \"Ray Reconstruction cannot take (the pause, garage and map worlds, cutscenes, frames without guides); the switch between them is live and never restarts. Read at the start (Streamline's plugins are chosen when \"\n    \"it starts; on Vulkan only when DLSS is the saved upscaler).\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRestart",
+   "rex::Allowed(\"auto\", \"off\", \"probe\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_dlss_rr_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (Ray Reconstruction guides): draws one of the images the DLSS Ray Reconstruction guide pass makes from the G-buffer over the upscaler's output \"\n    \"(perf/DLSS-RR.md, RR-2): 1 the diffuse albedo, 2 the normal (0.5 + 0.5 n), 3 the roughness, 4 the specular albedo, 5 the hit distance (black on a \"\n    \"surface, blue in the sky), 6 the responsivity. The guide pass runs while mcla_gpu_dlss_rr is on (DLSS, an RTX card that supports Ray Reconstruction) \"\n    \"or, for a view, whenever an upscaler runs; the G-buffer planes it reads are made from the frame after it is asked for. The game's tone map and UI are \"\n    \"drawn over the view as usual. A frame with no G-buffer (the pause menu, the garage, the map, a cutscene) shows the upscaler's own picture. 0: off. \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 6}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_dlss_rr_test": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (Ray Reconstruction fallbacks, perf/DLSS-RR.md, RR-3): makes the frames Ray Reconstruction cannot take happen on purpose, to see that Super Resolution takes them and the switch back needs no rebuild of the context. \"\n    \"0: off. 1: the guide images are withheld from the upscaler for 30 frames in every 60 (the frames are Super Resolution's, the plan says the guides are missing, the context stays). \"\n    \"2: in the same frames the dispatch carries no diffuse albedo, so the rules refuse the guides and Super Resolution takes the frame in the same call (the census counts them). \"\n    \"3: Ray Reconstruction's evaluation fails three frames in a row, once: it is dropped for the session and Super Resolution goes on (the log says so; DLSS stays on). \"\n    \"Only while Ray Reconstruction is the plan (mcla_gpu_dlss_rr on). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_dlss_rr_ssr": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RR-4a): what the screen-space reflections do while Ray Reconstruction takes the frame. \"\n    \"1 (the default): they hand it their raw one-ray-a-pixel result straight into the colour (no accumulation over frames of their own: Ray Reconstruction is the denoiser) and write how far each ray went into \"\n    \"its hit distance guide. 0: they keep their own accumulation even then (the picture to compare with). With Ray Reconstruction not the plan (Super Resolution, FSR, no upscaler) nothing changes, \"\n    \"whatever this says. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_dlss_rr_car_refl": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RR-4b): what the ray traced reflections of the cars do while Ray Reconstruction takes the frame. \"\n    \"1 (the default): the paint reads the trace's raw image (the filter that takes the cone's grain out, mcla_gpu_car_selfrefl_rt_denoise, is skipped: Ray Reconstruction is the denoiser) and the distance of \"\n    \"each reflection's hits is written into its hit distance guide. 0: the filter runs even then (the picture to compare with). With Ray Reconstruction not the plan nothing changes, whatever \"\n    \"this says. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_dlss_mode": {
   "type": "std::string",
   "default": "\"dlaa\"",

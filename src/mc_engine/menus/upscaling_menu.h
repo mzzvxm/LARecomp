@@ -4,11 +4,14 @@
 // greys them, and what the POST AA / MSAA rows (the NATIVE renderer's own anti-aliasing, on the IMAGE
 // QUALITY page) say while an upscaler does its job.
 //
-// Three rows, always the same three (what changes is each one's list, live):
+// Four rows, always the same four on NATIVE (what changes is each one's list, live):
 //
 //   UPSCALING     OFF / FSR 1 / FSR 3.1 / FSR 4 / DLSS    mcla_gpu_upscaler + mcla_gpu_fsr
 //   <mode row>    named for the choice, below
 //   SHARPNESS     OFF / 0.2 .. 1 (FSR 3.1, FSR 4) or 0.2 .. 1 (FSR 1); grey for OFF and DLSS
+//   DENOISER      AUTO / DLSS RR / OURS                   mcla_gpu_denoiser  (live; gpu/denoiser_setting.h: grey with a reason
+//                 where NVIDIA's DLSS Ray Reconstruction cannot be used; "(RESTART)" where the plugin must be loaded at the next
+//                 start; "DLSS RR" is NVIDIA's name shortened for the page's width)
 //
 // UPSCALING lists only what this PC runs: FSR 1 (the renderer's own, on the present) always,
 // FSR 3.1 and FSR 4 where their FidelityFX provider loads, DLSS on an NVIDIA RTX card. DLSS whose
@@ -92,7 +95,7 @@
 const mcla_menu::ItemDef* UpscalingMenuRows(int& count);
 
 // Whether the rows UpscalingMenuRows returns are not the ones the page was built with (MenuDef::
-// relayout). They never are: the three rows are the same whatever the PC can run, and what changes
+// relayout). They never are: the four rows are the same whatever the PC can run, and what changes
 // (the choices UPSCALING lists, a mode row's list) is read each time a row is drawn. Kept as the
 // UPSCALING page's hook for a row set that does change.
 bool UpscalingMenuRelayout(bool apply);

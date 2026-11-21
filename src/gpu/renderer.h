@@ -104,6 +104,7 @@
 #include "scene.h"
 #include "shaders.h"
 #include "gbuffer.h"
+#include "rr_guides.h"
 #include "screen_shared.h"
 #include "ssr.h"
 #include "shafts.h"
@@ -312,6 +313,7 @@ class Renderer final : public RenderThread::Executor {
   GiApply gi_apply_;          // render thread; the probe field's apply (gi_apply.h, CITY-RT M3 G3): the field's bounce light, and the screen-space bounce light's share; it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
   GiField gi_field_;          // render thread; the probe field's owner (gi_field.h, CITY-RT M3 G1): textures, windows, weights; the apply reads it (SetGiField); Shutdown stops the apply first
   GiIntegration gi_integration_;  // render thread; the setting, the field's frame and its trigger work, the watchdog (gi_integration.h, CITY-RT M3 G4); holds pointers to the field, the apply, the AO and the city scene
+  RrGuides rr_guides_;        // render thread; DLSS Ray Reconstruction's guide pass, run by the temporal system's upscale (rr_guides.h); it holds a pointer to the G-buffer: Shutdown stops it first
   ScreenReflections ssr_;     // render thread; screen-space reflections (ssr.h; off by default); it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
   ScreenShared screen_;       // render thread; the shared screen products: the AO's depth chain published, the Hi-Z, the debug view (screen_shared.h); the AO holds a pointer to it: Shutdown stops the AO first
   CarSelfRefl car_refl_;      // render thread; the car paint's self-reflection history (car_selfrefl.h, a debug-only prototype)
