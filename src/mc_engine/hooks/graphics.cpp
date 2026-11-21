@@ -14,6 +14,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "mc_engine/core/world_detail.h"
 #include "mc_engine/display/ultrawide.h"
 #include "larecomp_guest.h"
 #if defined(LARECOMP_HAS_GPU)
@@ -222,8 +223,12 @@ void Patch_DofComposite(PPCRegister& r3) {
     for (int i = 0; i < 16; ++i) base[o + 0xF0 + i] = 0;  // CoC vector = 0 -> no blur
 }
 
+// The traffic car's LOD pick (sub_827902F0) multiplies the car's own LOD distances by f0 at this site, so f0 times the scale is the
+// scale in force: the player's own value, or, for 0 (auto), what the GPU class gives (gpu/gpu_class.h kScales: 3 on High, 2 on Mid, 1.5
+// on Low and until the class is known). Called for every traffic car of every frame: one atomic read of the class and no string.
 void Patch_ScaleTrafficLOD(PPCRegister& f0) {
-    f0.f64 = f0.f64 * larecomp::settings::lod_traffic_scale.Get();
+    f0.f64 = f0.f64 * mcla::world_detail::InForce(mcla::gpu::gpu_class::Scale::kTrafficLod,
+                                                  larecomp::settings::lod_traffic_scale.Get());
 }
 
 // The scale in force for the cvar's value: the player's own when it is above 0, else what auto comes

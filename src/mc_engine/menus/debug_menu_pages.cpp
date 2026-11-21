@@ -154,6 +154,8 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgSmoothUi",   "ui_interpolate",            "SMOOTH UI: "),
     // The neon underglow's pulse held on the console's 30 Hz clock (hooks/neon_pulse.cpp).
     Bool("PM_RxDbgNeonPulse",  "mcla_fix_neon_30hz",        "NEON PULSE 30 HZ: "),
+    // The smoke of a closed race checkpoint fades at the console's rate at every frame rate (hooks/checkpoint_effect_fade.cpp).
+    Bool("PM_RxDbgCpFade",     "mcla_fix_checkpoint_fade",  "CHECKPOINT SMOKE: "),
     // The native keyboard (keyboard_native.cpp) is always on; this turns it off to tell whether a bug is its (off = the keyboard does nothing).
     Bool("PM_RxDbgNativeKb",   "keyboard_native",           "NATIVE KEYBOARD: "),
     // Button prompts follow the device in use on every screen (hooks/ui.cpp, keyboard_native.cpp): the glyph bitmaps are painted, the movies' platform flag stays on Xbox. Off = the
@@ -279,9 +281,11 @@ const ItemDef kDebugRenderingItems[] = {
                    kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
     NativeOnly(Dbl("PM_RxDbgVramLog",    "mcla_gpu_vram_log",      "VRAM LOG EVERY: ",
                    kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
-    // Read when frame generation is switched on, so a change shows the next time it is.
-    NativeOnly(Bool("PM_RxDbgFgTearing", "mcla_gpu_frame_generation_tearing", "FRAME GEN TEARING: ",
-                    false, " (ON NEXT USE)")),
+    // Live: Renderer::ExecutePresent asks FrameGeneration::WantsVsync at every present (the same SetVsync that follows mcla_gpu_vsync), so a
+    // change reaches the swap chain at the next frame: Direct3D 12 reads it in the present call, Vulkan changes its present mode with
+    // the chain's next rebuild. It said "(ON NEXT USE)" before: that was the old reading of the setting, which only the log line at start-up still does.
+    // CHECK: with frame generation on, a flip shows in the PRESENT line of the frame log (immediate against FIFO) within a second, no restart of frame generation.
+    NativeOnly(Bool("PM_RxDbgFgTearing", "mcla_gpu_frame_generation_tearing", "FRAME GEN TEARING: ")),
 #endif
     // The SDK's vsync on the Xenia renderer: it sets the guest's vblank interval (the game then paces
     // to it, about 30 % slower) but does not stop tearing, and the start-up flags set it again at every

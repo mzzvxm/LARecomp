@@ -444,6 +444,20 @@ inline EvictionPlan PlanEviction(const std::vector<MeshUse>& meshes, const Evict
   return plan;
 }
 
+// The mesh a frame's bottom level build is recorded for, found again by its key when the builds are recorded: a mesh placed earlier in the frame can have been given back
+// by then (PlaceWalkedCars drops the cars that left the walk's set, GiveBack -> Evict hands the structure to the frame ring and erases the entry), so the pointer kept from
+// placing it points into an erased node. ppr1, 2026-11-21 (the RT grid scene on D3D12, right after the number of other cars changed): the erased node still read as a null
+// structure, buildBottomLevelAS got a null destination and the render thread read address 0x10. `resident` is the map of key -> mesh (a mesh has a `structure`, a smart pointer).
+// Null when the key is not there, or its mesh has no structure: nothing is built for it.
+template <class Resident>
+inline auto BuildableMesh(Resident& resident, uint64_t key) -> decltype(&resident.find(key)->second) {
+  const auto it = resident.find(key);
+  if (it == resident.end() || !it->second.structure) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
 // How many of the pending meshes (their triangle counts, in order) are taken in one frame: until the budget is reached, at least one.
 inline size_t TakeWithinBudget(const std::vector<uint32_t>& triangles, uint64_t budget) {
   uint64_t sum = 0;
