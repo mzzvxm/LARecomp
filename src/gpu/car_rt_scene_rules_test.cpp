@@ -13,7 +13,10 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "car_rt_scene_rules.h"
@@ -445,6 +448,81 @@ void TestProbe() {
 }
 
 // The shader counts into the header's words with the header's edges and unit.
+// The mesh a bottom level build is recorded for (BuildableMesh): found again by its key, so a mesh given back after it was placed gets no build. The scene's own
+// sequence (car_rt_scene.cpp OnResolve) on a stand-in map: place a mesh, give it back (Evict: the structure retired, the entry erased), record the builds.
+struct FakeMesh {
+  std::unique_ptr<int> structure;
+  uint32_t index_count = 0;
+};
+
+void TestBuildableMesh() {
+  std::unordered_map<uint64_t, FakeMesh> meshes;
+  struct Placed {
+    uint64_t key = 0;
+    FakeMesh* node = nullptr;  // what the scene kept from placing (the pointer the bug read)
+  };
+  std::vector<Placed> placed;
+  for (uint64_t key = 100; key < 140; ++key) {   // a car's worth of parts placed in one frame
+    FakeMesh m;
+    m.structure = std::make_unique<int>(int(key));
+    m.index_count = uint32_t(key) * 3;
+    placed.push_back(Placed{key, &meshes.emplace(key, std::move(m)).first->second});
+  }
+  Check(placed.size() == 40 && meshes.size() == 40, "40 meshes placed");
+  // every placed mesh is found, with its own structure
+  size_t found = 0;
+  for (const Placed& p : placed) {
+    FakeMesh* m = rr::BuildableMesh(meshes, p.key);
+    found += (m != nullptr && m->structure && *m->structure == int(p.key)) ? 1 : 0;
+  }
+  Check(found == 40, "BuildableMesh finds every placed mesh by its key");
+  // the walk's set drops three of them in the same frame (GiveBack -> Evict: the structure goes to the ring, the entry is erased)
+  std::vector<std::unique_ptr<int>> ring;   // the frame ring's retired objects
+  const uint64_t given_back[] = {105, 117, 139};
+  for (uint64_t key : given_back) {
+    FakeMesh& m = meshes.at(key);
+    if (m.structure) {
+      ring.push_back(std::move(m.structure));
+    }
+    meshes.erase(key);
+  }
+  // what the builds are recorded for: never a given-back mesh
+  std::vector<uint64_t> built;
+  size_t null_destinations = 0;
+  for (const Placed& p : placed) {
+    FakeMesh* m = rr::BuildableMesh(meshes, p.key);
+    if (m == nullptr) {
+      continue;
+    }
+    if (!m->structure) {
+      ++null_destinations;
+    }
+    built.push_back(p.key);
+  }
+  Check(built.size() == 37 && null_destinations == 0, "a mesh given back after it was placed gets no build (37 of 40 are built, none with a null structure)");
+  bool none_given_back = true;
+  for (uint64_t key : built) {
+    none_given_back = none_given_back && key != 105 && key != 117 && key != 139;
+  }
+  Check(none_given_back, "and the built ones are the others");
+  Check(ring.size() == 3, "the three structures were retired, not lost");
+  // a mesh with no structure (retired, entry not erased) gets no build either
+  meshes.at(100).structure.reset();
+  Check(rr::BuildableMesh(meshes, 100) == nullptr, "an entry with no structure gets no build");
+  // a key that was never there
+  Check(rr::BuildableMesh(meshes, 7) == nullptr, "an unknown key gets no build");
+  // given back and placed again later: the key finds the NEW entry, not the old node
+  FakeMesh again;
+  again.structure = std::make_unique<int>(4242);
+  FakeMesh* fresh = &meshes.emplace(uint64_t(105), std::move(again)).first->second;
+  FakeMesh* looked = rr::BuildableMesh(meshes, 105);
+  Check(looked == fresh && looked->structure && *looked->structure == 4242, "a key placed again finds its new entry");
+  // a const map works too
+  const auto& view = meshes;
+  const FakeMesh* c = rr::BuildableMesh(view, 105);
+  Check(c == fresh, "a const map is looked up the same way");
+}
+
 void TestShaderParity(const std::string& folder) {
   std::ifstream in(folder + "/hlsl/car_rt_check_cs.hlsl", std::ios::binary);
   if (!in) {
@@ -522,6 +600,7 @@ int main(int argc, char** argv) {
   TestScope();
   TestProbe();
   TestPlumeRayQuery();
+  TestBuildableMesh();
   if (argc > 1) {
     TestShaderParity(argv[1]);
   }
