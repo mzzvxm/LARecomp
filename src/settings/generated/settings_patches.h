@@ -40,7 +40,11 @@ class PatchesSettings final : public rex::SettingOwner {
   // toggle in the fork (its FOLIAGE SHADOWS row has no restart mark and was measured switching during
   // play). It was tagged kRequiresRestart, and its pause row said "(RESTART)".
   // CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart.
-  REX_SETTING(bool, disable_imposter_shadows, true, "Performance Mode: Foliage won't cast shadows.");
+  // The row is on LIGHTING AND SHADOWS right after SHADOWS and is grey while SHADOWS is off (the sun's shadow maps are not drawn then).
+  // CHECK: the hook only skips the refresh, so flipped to true while playing the silhouettes already baked may stay in use (perf\LEGACY-GFX-AUDIT.md B9).
+  REX_SETTING(bool, disable_imposter_shadows, true, "Far trees are drawn as flat cards, and each casts a baked shadow silhouette into the sun's shadows. "
+    "False refreshes those silhouettes, so far trees cast shadows; true skips the refresh, so they cast none. "
+    "Daylight only, and only while perf_no_shadows is false (the pause menu's SHADOWS is on).");
 
   // Live: Patch_DisableMotionBlur reads this at the two sites that load the blur's enable flag, on
   // every pass through them (nothing keeps a copy), and the pause menu's MOTION BLUR row flips it
