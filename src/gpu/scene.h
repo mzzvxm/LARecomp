@@ -101,6 +101,7 @@ class CarFrame;
 class HeadlightRig;
 class CarShadowMap;
 class LocalShadow;
+class LightManager;
 class CarRtScene;
 class GBuffer;
 class PostAa;
@@ -161,6 +162,9 @@ class Scene {
   // The headlight shadow maps (local_shadow.h): offered the main view's colour pass draws while they are on, told of the frame boundary, the
   // anchor and the composite marker, and run at the mid-scene depth copy (before the ambient occlusion's passes, as the car shadow map is). Null: none.
   void SetLocalShadow(LocalShadow* local_shadow) { local_shadow_ = local_shadow; }
+  // The passive light manager (light_manager.h): told of the frame start, of every resolve after the headlight shadow maps' and of the present (before the rig makes the next
+  // frame's set). It only reads; nothing reads it. Null: none.
+  void SetLightManager(LightManager* light_manager) { light_manager_ = light_manager; }
   // The player's car as ray tracing structures (car_rt_scene.h): told of the anchor, the composite and the present, and run at the mid-scene
   // depth copy (the top level is built there, before the car self-reflection's own pass). Null: none.
   void SetCarRtScene(CarRtScene* car_rt) { car_rt_ = car_rt; }
@@ -494,6 +498,7 @@ class Scene {
   HeadlightRig* headlights_ = nullptr;
   CarShadowMap* car_shadow_ = nullptr;
   LocalShadow* local_shadow_ = nullptr;
+  LightManager* light_manager_ = nullptr;
   GBuffer* gbuffer_ = nullptr;
   ScreenShared* screen_ = nullptr;
   // The draws' material words (gbuffer_material.h): the table the shader pack build wrote beside the variant pack, read once, on the first G-buffer draw after the pack is attached.

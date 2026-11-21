@@ -184,6 +184,9 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
     // The headlight shadow maps (local_shadow.h): a second pass over the main view's opaque draws from the cars' lamps; makes nothing until a draw is seen.
     local_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, upload_, shaders_, guest_layout_);
+    // The passive light manager (light_manager.h): off unless mcla_gpu_lights_census is set; it reads the rig's lights, the replay's maps and the volume's inputs and changes none of them.
+    light_manager_.Initialize(upload_, headlights_, local_shadow_);
+    vol_inputs_.SetLightManager(&light_manager_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
@@ -238,6 +241,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetHeadlightRig(&headlights_);
     scene_.SetCarShadowMap(&car_shadow_);
     scene_.SetLocalShadow(&local_shadow_);
+    scene_.SetLightManager(&light_manager_);
     scene_.SetCarRtScene(&car_rt_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
@@ -300,6 +304,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     screen_.Shutdown();  // the AO holds a pointer to it: after the AO
     shafts_.Shutdown();
     volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
+    light_manager_.Shutdown();  // after the volume, whose inputs it looks at
     local_shadow_.Shutdown();
     gbuffer_.Shutdown();
     car_shadow_.Shutdown();
@@ -477,6 +482,7 @@ void Renderer::Shutdown() {
   screen_.Shutdown();  // the AO holds a pointer to it: after the AO
   shafts_.Shutdown();
   volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
+  light_manager_.Shutdown();  // after the volume, whose inputs it looks at
   local_shadow_.Shutdown();
   gbuffer_.Shutdown();
   car_shadow_.Shutdown();

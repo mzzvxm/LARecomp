@@ -60,6 +60,7 @@ add_library(larecomp_gpu OBJECT
     latency.cpp
     latency_streamline.cpp
     layout.cpp
+    light_manager.cpp
     memory_census.cpp
     msaa_level.cpp
     native_window.cpp
@@ -280,6 +281,11 @@ add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.c
 # translated HLSL of the retail game:
 #   cmake --build <dir> --target larecomp_gbuffer_material_test, then run src/gpu/larecomp_gbuffer_material_test [<shaderpack/baseline>] (exit 0 = passed).
 add_executable(larecomp_gbuffer_material_test EXCLUDE_FROM_ALL gbuffer_material_test.cpp)
+# The passive light manager's rules (light_manager_rules.h: the slot table, the collector that makes one LightFrame from the headlight rig, the replay's maps and the volume's street lamps, the
+# GPU buffer, and the self-checks against the headlight block, the volume's inputs and the frame's own invariants, held to the real structs and the real lamp picker, and each field's
+# deliberate difference found) likewise:
+#   cmake --build <dir> --target larecomp_light_manager_test, then run src/gpu/larecomp_light_manager_test (exit 0 = passed).
+add_executable(larecomp_light_manager_test EXCLUDE_FROM_ALL light_manager_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).

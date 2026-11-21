@@ -25,6 +25,7 @@
 #include "car_dump.h"
 #include "car_frame.h"
 #include "headlight_rig.h"
+#include "light_manager.h"
 #include "local_shadow.h"
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
@@ -874,6 +875,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   if (local_shadow_) {
     local_shadow_->BeginFrame();
+  }
+  if (light_manager_) {
+    light_manager_->BeginFrame(frame_serial_, slot);  // passive (light_manager.h): off unless mcla_gpu_lights_census is set; after the rig's and the replay's own
   }
   ResetListState();
   marked_framebuffer_ = nullptr;
@@ -3587,10 +3591,14 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   if (car_rt_) {
     car_rt_->OnResolve(record, summary, list, slot_);
   }
+  bool shadow_recorded = false;
   if (local_shadow_) {
     // The same depth copy: the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas the lit draws of the
     // next frame read (local_shadow.h; its own pass and target: the reset below forgets them too).
-    local_shadow_->OnResolve(record, summary, list, slot_);
+    shadow_recorded = local_shadow_->OnResolve(record, summary, list, slot_);
+  }
+  if (light_manager_) {
+    light_manager_->OnResolve(shadow_recorded);  // passive: this frame's maps, and the headlight block is checked against them
   }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
@@ -3842,6 +3850,9 @@ void Scene::OnPresent() {
   }
   if (car_frame_) {
     car_frame_->OnPresent();  // the car draw list's frame boundary
+  }
+  if (light_manager_) {
+    light_manager_->OnPresent();  // passive: this frame's lights are checked and uploaded before the rig makes the next frame's set
   }
   if (headlights_) {
     headlights_->OnPresent();  // the headlights seen in this frame become the lights of the next
