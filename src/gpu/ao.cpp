@@ -2126,6 +2126,16 @@ bool AmbientOcclusion::FrameCameraNow(FrameCameraOut* out) const {
   return out->have_rows || out->have_motion;
 }
 
+bool AmbientOcclusion::VehicleTableNow(VehicleTableOut* out) const {
+  *out = VehicleTableOut{};
+  if (vehicle_table_frame_ != frame_ || vehicle_table_ids_ == 0 || vehicle_table_slot_ == kNoSlot) {
+    return false;
+  }
+  out->slot = vehicle_table_slot_;
+  out->ids = vehicle_table_ids_;
+  return true;
+}
+
 AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) const {
   HistoryUse use;
   use.cap = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_history.Get(), 1, 64));
@@ -2281,6 +2291,9 @@ uint32_t AmbientOcclusion::RecordVehicleTable(plume::RenderCommandList* list, co
                                              plume::RenderTextureLayout::SHADER_READ));
   image.layout = plume::RenderTextureLayout::SHADER_READ;
   *slot = image.slot;
+  vehicle_table_frame_ = frame_;
+  vehicle_table_ids_ = mask;
+  vehicle_table_slot_ = image.slot;
   return mask;
 }
 
@@ -2662,7 +2675,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     RecordNormals(list, plan, base, normals_);
   }
   if (plan.gi.on && screen_) {
-    // The capture is the shared screen products': they keep the chain's images and count it made this frame (screen_shared.h CapturePre, step 5 of the order); the pass, its pipelines and its
+    // The capture is the shared screen products': they keep the chain's images and count it made this frame (screen_shared.h CapturePre, the colour_pre step of frame_order.h's table); the pass, its pipelines and its
     // constants are still this class's until SS-2, so what is recorded, and where, is what it was.
     screen_->CapturePre([&] { RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot); });
   }

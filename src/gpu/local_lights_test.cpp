@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "local_lights_rules.h"
+#include "local_lights_sources.h"
 #include "mod_light_source.h"
 
 // ---------------------------------------------------------------------------
@@ -187,7 +188,8 @@ std::map<std::string, long long> Defines(const std::string& text) {
 void LayoutChecks(const std::string& hlsli) {
   Check(sizeof(lp::PassHeader) == 128 && sizeof(lp::PassPush) == 32, "the header is 128 bytes, the push block 32");
   Check(lp::kHeaderBytes == 128 && lp::kLightsOffset == 128 && lp::kMaxPassLights == 32 && lp::kMaxPassLights == kMaxSurfaceLights, "the buffer: a 128 byte header, up to 32 lights");
-  Check(lp::kBufferBytes == 128 + 64 * 32 && lp::kBufferAlloc == 2304 && lp::kBufferAlloc % 256 == 0, "the buffer is 2176 bytes, an upload buffer of 2304");
+  Check(lp::kShadowOffset == 128 + 64 * 32 && lp::kShadowBytes == 32 + 96 * 8 && lp::kBufferBytes == lp::kShadowOffset + lp::kShadowBytes && lp::kBufferAlloc == 3072 && lp::kBufferAlloc % 256 == 0,
+        "the buffer is the header, 32 lights and the shadow view table (2976 bytes), an upload buffer of 3072");
   const std::map<std::string, long long> d = Defines(hlsli);
   const auto want = [&](const char* name, long long value) {
     const auto it = d.find(name);
@@ -207,11 +209,22 @@ void LayoutChecks(const std::string& hlsli) {
   want("LP_OFF_EXPOSURE", offsetof(lp::PassHeader, exposure));
   want("LP_FLAG_MATERIAL", lp::kFlagMaterial);
   want("LP_FLAG_OCCLUSION", lp::kFlagOcclusion);
+  want("LP_FLAG_SHADOW", lp::kFlagShadow);
+  // GB-H2: the shadow view table the pass reads after the lights (the offsets of the shader's seams are these defines)
+  want("LP_SHADOW_OFFSET", lp::kShadowOffset);
+  want("LP_SHADOW_HEADER_BYTES", sizeof(shadow_lookup::GpuShadowHeader));
+  want("LP_SHADOW_VIEWS_OFFSET", lp::kShadowOffset + sizeof(shadow_lookup::GpuShadowHeader));
+  want("LP_SHADOW_VIEW_BYTES", sizeof(LocalShadowView));
+  want("LP_SHADOW_OFF_COUNT", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, count));
+  want("LP_SHADOW_OFF_SLOT", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, atlas_slot));
+  want("LP_SHADOW_OFF_SIZE", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, atlas_width));
+  want("LP_SHADOW_OFF_LAYERS", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, layers));
+  Check(offsetof(shadow_lookup::GpuShadowHeader, atlas_height) == offsetof(shadow_lookup::GpuShadowHeader, atlas_width) + 4, "the atlas's height follows its width (one Load of two uints)");
   want("LP_CLASS_NONE", 0);
   want("LP_CLASS_EMISSIVE", 13);
   Check(Has(hlsli, "#define LP_SKY 60000.0f") && lp::kSky == 60000.0f, "the sky's distance is the AO's");
   // the rows after the header are the GpuLight's 64 bytes
-  Check(lp::kLightsOffset + sizeof(GpuLight) * lp::kMaxPassLights == lp::kBufferBytes, "the lights' rows follow the header");
+  Check(lp::kLightsOffset + sizeof(GpuLight) * lp::kMaxPassLights == lp::kShadowOffset && lp::kShadowOffset % 16 == 0, "the lights' rows follow the header and the shadow view table follows them, 16 byte aligned");
   Check(LL_LIGHT_BYTES == int(sizeof(GpuLight)) && LL_BUFFER_HEADER_BYTES == int(sizeof(GpuLightHeader)), "the twin's light row is the GpuLight's size");
 }
 
@@ -492,6 +505,25 @@ void SelectionChecks() {
   s = lp::SelectLights(frame, lp::kSourceFrame, extras.data(), uint32_t(extras.size()));
   Check(s.count == lp::kMaxPassLights && s.dropped == 2 + 41 - lp::kMaxPassLights, "the budget is 32 lights and the rest is counted");
   Check(s.from_frame == 2 && s.from_extra == lp::kMaxPassLights - 2, "the frame's lights come first, the handed over ones after");
+  // GB-H2: the frame class's budget: the rig's four at every tier, the rest counted as cut (a frame is never over it today, but the headlights are the dear lights: a lookup each)
+  {
+    LightFrame many;
+    for (uint32_t i = 0; i < 7; ++i) {
+      many.lights[i] = HeadlightOf(200 + i, float(i) * 10.0f);
+    }
+    many.count = 7;
+    const lp::Selection capped = lp::SelectLights(many, lp::kSourceFrame, nullptr, 0, 4);
+    Check(capped.count == 4 && capped.from_frame == 4 && capped.cut_class[size_t(lp::SourceClass::kFrame)] == 3 && capped.lights[0].id == 200 && capped.lights[3].id == 203,
+          "the frame class takes its four first lights and counts the three it cuts");
+    const lp::Selection uncapped = lp::SelectLights(many, lp::kSourceFrame, nullptr, 0);
+    Check(uncapped.count == 7 && uncapped.cut_class[size_t(lp::SourceClass::kFrame)] == 0, "without a cap (the default) the frame's seven lights are all taken");
+    for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+      Check(lp::BudgetOf(tier).frame == 4 && lp::CapOf(lp::BudgetOf(tier), lp::SourceClass::kFrame) == 4, std::string("the frame class's cap is the rig's four at the tier ") + lp::TierName(tier));
+      const lp::Selection by_tier = lp::SelectPassLights(many, lp::kSourceFrame, nullptr, 0, lp::Candidates{}, tier);
+      Check(by_tier.count == 4 && by_tier.from_class[size_t(lp::SourceClass::kFrame)] == 4 && by_tier.cut_class[size_t(lp::SourceClass::kFrame)] == 3,
+            std::string("SelectPassLights applies the frame class's cap at the tier ") + lp::TierName(tier));
+    }
+  }
 
   // the test lamp
   const Light test = lp::MakeTestLamp(rows);
@@ -681,6 +713,279 @@ void BufferChecks() {
 }
 
 // ---------------------------------------------------------------------------
+// GB-H2: the shadow view table in the buffer and the pass's pixel with a shadow
+// ---------------------------------------------------------------------------
+
+// A frame's shadow views as the replay makes them: `views` views, each a plane facing -z through the origin (so a point's depth is its z), in tiles of a 2 x 2 atlas of `tile` texels.
+ShadowFrame MakeShadowFrame(uint32_t views, uint32_t tile, Lcg& rng) {
+  ShadowFrame f;
+  f.atlas.valid = true;
+  f.atlas.slot = 77;
+  f.atlas.sampler = 5;
+  f.atlas.width = tile * 2;
+  f.atlas.height = tile * 2;
+  f.atlas.tile_small = tile;
+  f.atlas.tile_large = 0;
+  f.count = views;
+  for (uint32_t e = 0; e < views; ++e) {
+    LocalShadowView& v = f.views[e];
+    std::memset(&v, 0, sizeof(v));
+    // out = M * (p, 1): uv = (x * 0.05 + 0.5, y * 0.05 + 0.5) inside the view's tile of the atlas, depth = 0.5 + z * 0.01, w = 1
+    const float u0 = (e % 2) * 0.5f, v0 = (e / 2) * 0.5f;
+    v.world_to_shadow[0] = 0.05f * 0.5f; v.world_to_shadow[3] = u0 + 0.25f;
+    v.world_to_shadow[5] = 0.05f * 0.5f; v.world_to_shadow[7] = v0 + 0.25f;
+    v.world_to_shadow[10] = 0.01f; v.world_to_shadow[11] = 0.5f;
+    v.world_to_shadow[15] = 1.0f;
+    v.atlas_rect[0] = u0; v.atlas_rect[1] = v0; v.atlas_rect[2] = u0 + 0.5f; v.atlas_rect[3] = v0 + 0.5f;
+    v.depth_bias = rng.Range(0.0005f, 0.003f);
+    v.texel_size = 1.0f / float(tile);
+    v.light_index = e / 2;
+    v.valid = 1;
+    f.view_light[e] = 1000 + e / 2;
+    f.view_layer[e] = ShadowLayer::kSingle;
+  }
+  return f;
+}
+
+void ShadowBufferChecks() {
+  Lcg rng;
+  float vi[16];
+  lp::Rows rows;
+  RandomPose(rng, vi, &rows);
+  lp::PassInputs in;
+  in.rows = rows;
+  in.tan_x = 0.77f;
+  in.tan_y = 0.43f;
+  LinOf(0.1f, 10000.0f, in.lin);
+  in.width = 1920;
+  in.height = 1080;
+  in.units.exposure = 16.0f;
+
+  // the three levels of LIGHT SHADOWS (light_budget.h kThreeLevels): medium 2 cars with one view each, high 2 cars with the first's lamps apart (3 views), ultra 3 cars with every lamp's view (6)
+  struct Level { const char* name; uint32_t cars; uint32_t lamp_cars; };
+  for (const Level lv : {Level{"medium", 2, 0}, Level{"high", 2, 1}, Level{"ultra", 3, 3}}) {
+    uint32_t views = 0;
+    std::array<uint32_t, 4> first{}, count{};
+    for (uint32_t c = 0; c < lv.cars; ++c) {
+      first[c] = views;
+      count[c] = c < lv.lamp_cars ? 2u : 1u;
+      views += count[c];
+    }
+    ShadowFrame sf = MakeShadowFrame(views, 64, rng);
+    lp::Selection s;
+    for (uint32_t c = 0; c < 4; ++c) {
+      Light l = HeadlightOf(1000 + c, float(c) * 5.0f);
+      if (c < lv.cars) {
+        l.shadow.kind = ShadowKind::kAtlas;
+        l.shadow.first_view = uint8_t(first[c]);
+        l.shadow.view_count = uint8_t(count[c]);
+        l.shadow.weight = 1.0f;
+      }
+      s.lights[c] = l;
+    }
+    s.count = 4;  // the rig's four lights: the shadowed cars first, the rest unshadowed
+    in.shadow = &sf;
+    std::vector<uint8_t> bytes(lp::kBufferAlloc, 0xAB);
+    lp::BuildBuffer(in, s, bytes.data());
+    lp::PassHeader h;
+    std::memcpy(&h, bytes.data(), sizeof(h));
+    Check((h.flags & lp::kFlagShadow) != 0 && lp::ShadowTableNeeded(s, &sf), std::string("the table is in the buffer at the ") + lv.name + " level");
+    shadow_lookup::GpuShadowBuffer want;
+    shadow_lookup::BuildGpuShadowBuffer(sf, &want);
+    Check(std::memcmp(bytes.data() + lp::kShadowOffset, &want, sizeof(want)) == 0, std::string("the table's bytes are BuildGpuShadowBuffer's, ") + lv.name);
+    // what the shader reads at the LP_SHADOW_* offsets: the header, then each light's views (the seam's own arithmetic)
+    uint32_t head[4];
+    std::memcpy(head, bytes.data() + LP_SHADOW_OFF_COUNT, 16);
+    Check(head[0] == views && head[1] == 77 && head[2] == sf.atlas.width && head[3] == sf.atlas.height, std::string("the header the shader loads: count, slot, width, height, ") + lv.name);
+    uint32_t layers;
+    std::memcpy(&layers, bytes.data() + LP_SHADOW_OFF_LAYERS, 4);
+    Check(layers == 0, "every view is a single layer: the layers' bits are zero");
+    bool views_same = true;
+    for (uint32_t e = 0; e < views; ++e) {
+      LocalShadowView got;
+      std::memcpy(&got, bytes.data() + LP_SHADOW_VIEWS_OFFSET + e * LP_SHADOW_VIEW_BYTES, sizeof(got));
+      views_same = views_same && std::memcmp(&got, &sf.views[e], sizeof(got)) == 0;
+    }
+    Check(views_same, std::string("each view is at LP_SHADOW_VIEWS_OFFSET + entry x 96, ") + lv.name);
+    for (uint32_t c = 0; c < lv.cars; ++c) {
+      GpuLight row;
+      std::memcpy(&row, bytes.data() + lp::kLightsOffset + 64 * c, 64);
+      const Light back = UnpackGpuLight(row);
+      Check(back.shadow.kind == ShadowKind::kAtlas && back.shadow.first_view == first[c] && back.shadow.view_count == count[c], std::string("a shadowed car's light names its views in the row, ") + lv.name);
+    }
+    for (uint32_t c = lv.cars; c < 4; ++c) {
+      GpuLight row;
+      std::memcpy(&row, bytes.data() + lp::kLightsOffset + 64 * c, 64);
+      Check(UnpackGpuLight(row).shadow.kind == ShadowKind::kNone, std::string("a car with no views is unshadowed in its row, ") + lv.name);
+    }
+  }
+
+  // no table when nothing needs it: no atlas, no views, a stale reference, no light with views
+  {
+    ShadowFrame sf = MakeShadowFrame(2, 64, rng);
+    lp::Selection s;
+    s.lights[0] = HeadlightOf(1, 0.0f);
+    s.lights[0].shadow.kind = ShadowKind::kAtlas;
+    s.lights[0].shadow.first_view = 0;
+    s.lights[0].shadow.view_count = 2;
+    s.count = 1;
+    Check(lp::ShadowTableNeeded(s, &sf), "a light with views in a valid atlas needs the table");
+    Check(!lp::ShadowTableNeeded(s, nullptr), "no frame shadow: no table");
+    ShadowFrame no_atlas = sf;
+    no_atlas.atlas.valid = false;
+    Check(!lp::ShadowTableNeeded(s, &no_atlas), "an atlas that is not valid: no table (the lights are lit)");
+    ShadowFrame no_slot = sf;
+    no_slot.atlas.slot = kNoLightSlot;
+    Check(!lp::ShadowTableNeeded(s, &no_slot), "an atlas with no bindless slot: no table");
+    ShadowFrame none = sf;
+    none.count = 0;
+    Check(!lp::ShadowTableNeeded(s, &none), "no views: no table");
+    lp::Selection stale = s;
+    stale.lights[0].shadow.first_view = 5;
+    Check(!lp::ShadowTableNeeded(stale, &sf), "a light whose first view is past the table's count does not ask for it");
+    lp::Selection plain = s;
+    plain.lights[0].shadow.kind = ShadowKind::kNone;
+    Check(!lp::ShadowTableNeeded(plain, &sf), "no light with views: no table");
+    // the bytes of such a buffer: the flag clear and the table region zero
+    in.shadow = &no_atlas;
+    std::vector<uint8_t> bytes(lp::kBufferAlloc, 0xCD);
+    lp::BuildBuffer(in, s, bytes.data());
+    lp::PassHeader h;
+    std::memcpy(&h, bytes.data(), sizeof(h));
+    bool zero = true;
+    for (uint32_t i = lp::kShadowOffset; i < lp::kBufferAlloc; ++i) {
+      zero = zero && bytes[i] == 0;
+    }
+    Check((h.flags & lp::kFlagShadow) == 0 && zero, "without a table the flag is clear and its region is zero");
+    in.shadow = nullptr;
+  }
+}
+
+// The pass's pixel with a shadow against the lookup reading the buffer the way the shader does: the views come out of the buffer's bytes (the offsets of the seams), the atlas is a synthetic depth image.
+void ShadowPixelChecks() {
+  Lcg rng;
+  float vi[16];
+  lp::Rows rows;
+  RandomPose(rng, vi, &rows);
+  lp::PassInputs in;
+  in.rows = rows;
+  in.tan_x = 0.77f;
+  in.tan_y = 0.43f;
+  LinOf(0.1f, 10000.0f, in.lin);
+  in.width = 1280;
+  in.height = 720;
+  in.units.exposure = 16.0f;
+  uint64_t lit_pixels = 0, shadowed_pixels = 0, unshadowed_light = 0;
+  for (int round = 0; round < 300; ++round) {
+    const uint32_t views = 1 + rng.Below(3);
+    ShadowFrame sf = MakeShadowFrame(views, 64, rng);
+    // an atlas of random depth edges: a wall at a depth that cuts across the tiles, so that some taps are lit and some are not
+    const float wall = rng.Range(0.3f, 0.7f);
+    const float tilt = rng.Range(-0.4f, 0.4f);
+    const auto depth_at = [&](int ix, int iy) {
+      ix = std::clamp(ix, 0, int(sf.atlas.width) - 1);
+      iy = std::clamp(iy, 0, int(sf.atlas.height) - 1);
+      return wall + tilt * (float(ix) / float(sf.atlas.width) - 0.5f);
+    };
+    Light l = HeadlightOf(1000, 0.0f);
+    l.pos[0] = 0.0f; l.pos[1] = 1.0f; l.pos[2] = -1.0f;
+    l.dir[0] = 0.0f; l.dir[1] = -0.05f; l.dir[2] = 1.0f;
+    const float len = std::sqrt(l.dir[1] * l.dir[1] + 1.0f);
+    l.dir[1] /= len; l.dir[2] /= len;
+    l.shadow.kind = ShadowKind::kAtlas;
+    l.shadow.first_view = 0;
+    l.shadow.view_count = uint8_t(views);
+    l.shadow.weight = round % 5 == 0 ? rng.Range(0.2f, 1.0f) : 1.0f;
+    lp::Selection s;
+    s.lights[0] = l;
+    s.count = 1;
+    in.shadow = &sf;
+    std::vector<uint8_t> bytes(lp::kBufferAlloc, 0);
+    lp::BuildBuffer(in, s, bytes.data());
+    lp::PassHeader h;
+    std::memcpy(&h, bytes.data(), sizeof(h));
+    const bool table = (h.flags & lp::kFlagShadow) != 0;
+    // the table as the shader decodes it: the views and the layers out of the bytes
+    ShadowFrame decoded;
+    decoded.atlas = sf.atlas;
+    uint32_t head[4];
+    std::memcpy(head, bytes.data() + LP_SHADOW_OFF_COUNT, 16);
+    uint32_t layers;
+    std::memcpy(&layers, bytes.data() + LP_SHADOW_OFF_LAYERS, 4);
+    decoded.atlas.slot = head[1];
+    decoded.atlas.width = head[2];
+    decoded.atlas.height = head[3];
+    decoded.count = head[0];
+    for (uint32_t e = 0; e < head[0]; ++e) {
+      std::memcpy(&decoded.views[e], bytes.data() + LP_SHADOW_VIEWS_OFFSET + e * LP_SHADOW_VIEW_BYTES, sizeof(LocalShadowView));
+      decoded.view_layer[e] = ShadowLayer((layers >> (2 * e)) & 3u);
+    }
+    ShadowRef ref;
+    {
+      GpuLight row;
+      std::memcpy(&row, bytes.data() + lp::kLightsOffset, 64);
+      ref = UnpackGpuLight(row).shadow;
+    }
+    for (int px = 0; px < 12; ++px) {
+      float world[3] = {rng.Range(-8.0f, 8.0f), rng.Range(-2.0f, 3.0f), rng.Range(1.0f, 40.0f)};
+      float n[3];
+      rng.Direction(n);
+      n[1] = std::fabs(n[1]);
+      const float albedo[3] = {rng.Next(), rng.Next(), rng.Next()};
+      float with_table[3], direct[3], plain[3];
+      Light from_row = l;
+      from_row.shadow = ref;
+      const bool a = lp::PixelLightShadowed(from_row, in.units, &decoded, table, world, n, albedo, 0.9f, depth_at, with_table);
+      const bool b = lp::PixelLightShadowed(l, in.units, &sf, true, world, n, albedo, 0.9f, depth_at, direct);
+      lp::PixelLight(l, in.units, world, n, albedo, 0.9f, plain);
+      Check(a == b, "the shader's path (the table decoded from the buffer) and the frame's own views say the same about a pixel");
+      bool same = true;
+      for (int i = 0; i < 3; ++i) {
+        same = same && with_table[i] == direct[i];
+      }
+      Check(same, "... and give the same light, bit for bit");
+      const float visibility = shadow_lookup::LightLit(sf, l.shadow, world, shadow_lookup::Mode::kSurface, depth_at);
+      for (int i = 0; i < 3; ++i) {
+        CheckNear(direct[i], double(plain[i]) * double(visibility), std::fabs(double(plain[i])) * 1.0e-6 + 1.0e-9, "the shadowed light is the term times the lookup's visibility");
+      }
+      Check(visibility >= 0.0f && visibility <= 1.0f, "the visibility is a share");
+      if (plain[0] > 0.0f || plain[1] > 0.0f || plain[2] > 0.0f) {
+        ++lit_pixels;
+        if (visibility < 0.999f) {
+          ++shadowed_pixels;
+          Check(direct[0] <= plain[0] && direct[1] <= plain[1] && direct[2] <= plain[2], "a shadow never adds light");
+        } else {
+          ++unshadowed_light;
+        }
+      }
+    }
+  }
+  in.shadow = nullptr;
+  Check(lit_pixels > 100 && shadowed_pixels > 20 && unshadowed_light > 20, "the random pixels have lit pixels in the open and in a shadow (" + std::to_string(lit_pixels) + " lit, " + std::to_string(shadowed_pixels) + " shadowed)");
+  // a light with no views, or a frame with no table, is the term itself
+  {
+    Light l = HeadlightOf(5, 0.0f);
+    l.pos[2] = -1.0f; l.dir[0] = 0.0f; l.dir[1] = 0.0f; l.dir[2] = 1.0f;
+    const float world[3] = {0.0f, 0.0f, 10.0f}, n[3] = {0.0f, 0.0f, -1.0f}, albedo[3] = {1.0f, 1.0f, 1.0f};
+    ShadowFrame sf;
+    Lcg rng2;
+    sf = MakeShadowFrame(1, 64, rng2);
+    const auto black = [](int, int) { return 0.0f; };  // an atlas that shadows everything in its tiles
+    float plain[3], none[3], off_table[3], full[3];
+    lp::PixelLight(l, lp::Units{}, world, n, albedo, 1.0f, plain);
+    Check(lp::PixelLightShadowed(l, lp::Units{}, &sf, true, world, n, albedo, 1.0f, black, none), "a light with no ShadowRef is lit whatever the atlas holds");
+    Light shadowed = l;
+    shadowed.shadow.kind = ShadowKind::kAtlas;
+    shadowed.shadow.first_view = 0;
+    shadowed.shadow.view_count = 1;
+    shadowed.shadow.weight = 1.0f;
+    Check(lp::PixelLightShadowed(shadowed, lp::Units{}, &sf, false, world, n, albedo, 1.0f, black, off_table) && off_table[0] == plain[0], "with no table in the buffer (the flag is clear) the light is lit");
+    Check(!lp::PixelLightShadowed(shadowed, lp::Units{}, &sf, true, world, n, albedo, 1.0f, black, full), "a point in full shadow takes nothing: the pass discards it");
+    Check(none[0] == plain[0] && none[1] == plain[1] && none[2] == plain[2], "the unshadowed light is exactly the term");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the HLSL twin
 // ---------------------------------------------------------------------------
 
@@ -843,7 +1148,7 @@ void SourceChecks(const std::string& src) {
   Check(Has(cpp, "push.slots[0] = summary.sample_slot;") && Has(cpp, "push.info[2] = gb.sample0;") && Has(cpp, "push.info[0] = i;"), "the push fields the shader reads are filled");
 
   // the settings: in all three generated files, debug only
-  const char* names[] = {"mcla_gpu_local_lights", "mcla_gpu_local_lights_sources", "mcla_gpu_local_lights_ab", "mcla_gpu_local_lights_gain"};
+  const char* names[] = {"mcla_gpu_local_lights", "mcla_gpu_local_lights_sources", "mcla_gpu_local_lights_ab", "mcla_gpu_local_lights_gain", "mcla_gpu_headlight_pass"};
   for (const char* name : names) {
     Check(Has(settings, std::string("REX_SETTING(") ) && Has(settings, std::string(", ") + name + ", "), std::string("settings_gpu.h defines ") + name);
     Check(Has(manifest, std::string("\"") + name + "\": {"), std::string("manifest.json has ") + name);
@@ -862,9 +1167,14 @@ void SourceChecks(const std::string& src) {
     Check(ab_at != std::string::npos && settings.substr(ab_at, ab_end - ab_at).find("rex::kRestart") != std::string::npos, "the lamp A/B is a restart setting (the grid is built when the city's lights load)");
     Check(Has(settings, "bool, mcla_gpu_local_lights, false,"), "the pass is off by default");
     Check(Has(settings, "i32, mcla_gpu_local_lights_sources, 0,") && Has(settings, "i32, mcla_gpu_local_lights_ab, 0,") && Has(settings, "f64, mcla_gpu_local_lights_gain, 1.0,"), "the defaults: no source, the grid, gain 1");
+    Check(Has(settings, "std::string, mcla_gpu_headlight_pass, \"forward\",") && Has(settings, "rex::Allowed(\"forward\", \"pass\", \"both\")"), "the headlight route's default is the forward stage, its words are forward, pass and both");
+    const size_t route_at = settings.find(", mcla_gpu_headlight_pass, ");
+    const size_t route_end = settings.find(");", route_at);
+    Check(route_at != std::string::npos && settings.substr(route_at, route_end - route_at).find("rex::kRestart") == std::string::npos, "the headlight route is live (no restart trait)");
   }
-  Check(Has(cpp, "st::mcla_gpu_local_lights.Get()") && Has(cpp, "mcla_gpu_local_lights_sources.Get()") && Has(cpp, "mcla_gpu_local_lights_ab.Get()") && Has(cpp, "mcla_gpu_local_lights_gain.Get()"),
-        "the class reads the four settings");
+  Check(Has(cpp, "st::mcla_gpu_local_lights.Get()") && Has(cpp, "mcla_gpu_local_lights_sources.Get()") && Has(cpp, "mcla_gpu_local_lights_ab.Get()") && Has(cpp, "mcla_gpu_local_lights_gain.Get()") &&
+            Has(cpp, "hp::ParseRoute(st::mcla_gpu_headlight_pass.Get())"),
+        "the class reads the four settings and the headlight route");
   // the lamp A/B's hook in the mod loader
   Check(Has(mod, "AbWithholdsFromGrid(ab)") && Has(mod, "withhold ? 0.0f : l.intensity * mult") && Has(mod, "(!withhold && (l.flags & kOn)) ? 1 : 0") && Has(mod, "mcla_gpu_local_lights_ab.Get()"),
         "mod_lights.cpp builds the grid with the lamps off in the A/B's pass and control modes");
@@ -883,10 +1193,24 @@ void SourceChecks(const std::string& src) {
             Count(renderer, "local_lights_.Shutdown();") == 2,
         "the renderer makes, hands over and shuts down the pass (both shutdown paths)");
   // the wants that switch the G-buffer on only while it runs
-  Check(Has(cpp, "gbuffer_->Want(gbuffer::Consumer::kLocalLights,") && Has(cpp, "enabled_ ? (gbuffer::PlaneBit(gbuffer::kPlaneNormal)") && Has(cpp, "screen_->Want(screen::Consumer::kLocalLights, enabled_ ?") &&
-            Has(cpp, "manager_->Want(enabled_ && (sources_ & ll::kSourceFrame) != 0);"),
-        "the wants are the pass's while it is on and 0 otherwise");
-  Check(Has(manager, "(every <= 0 && !wanted_)") && Has(manager, "if (every_ > 0) {\n      Upload();"), "the light manager runs for a consumer of its frame and uploads only for its census");
+  Check(Has(cpp, "gbuffer_->Want(gbuffer::Consumer::kLocalLights, planes_wanted_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights) : 0u);") && Has(cpp, "screen_->Want(screen::Consumer::kLocalLights, planes_wanted_ ?") &&
+            Has(cpp, "manager_->Want(planes_wanted_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);") && Has(cpp, "planes_wanted_ = enabled_ && (setting_on || headlight_rig::SettingOn());"),
+        "the wants are the pass's while it is on and HEADLIGHTS (or its own setting) wants the planes, and 0 otherwise");
+  Check(Has(manager, "(every <= 0 && flips == 0 && !wanted_)") && Has(manager, "if (Checking()) {\n      Upload();") && Has(manager, "const bool cars = every > 0 || wanted_;"),
+        "the light manager runs for a consumer of its frame, polls the cars for it and uploads only for its census");
+  // GB-H2: the shadow in the shader and the buffer
+  Check(Has(ps, "#include \"light_shadow_lookup.hlsli\"") && Has(ps, "float LslTexel(uint slot, int ix, int iy)") && Has(ps, "LslView LslLoadView(uint entry)") && Has(ps, "uint LslLayerOf(uint entry)") &&
+            Has(ps, "uint LslAtlasWidth(uint slot)") && Has(ps, "uint LslAtlasHeight(uint slot)"),
+        "the shader includes the one lookup and defines its five seams");
+  Check(Has(ps, "g_textures[slot].Load(int3(clamp(ix, 0, int(LpAtlasW) - 1), clamp(iy, 0, int(LpAtlasH) - 1), 0)).x") && Has(ps, "uint at = uint(LP_SHADOW_VIEWS_OFFSET) + entry * uint(LP_SHADOW_VIEW_BYTES);"),
+        "the seams read the atlas through the plain bindless array (set 0) and the views at the table's offsets");
+  Check(Has(ps, "(flags & uint(LP_FLAG_SHADOW)) != 0u && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u") &&
+            Has(ps, "LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, atlas_slot, uint(LSL_MODE_SURFACE))"),
+        "the shader looks a light's views up in the box mode, only for a light with views and a table");
+  const size_t lit_at = At(ps, "float3 add = LpPixelLight(l, g, world, normal, albedo, rt2.w);");
+  const size_t shadow_at = At(ps, "add *= LslLightLit(");
+  Check(lit_at != std::string::npos && shadow_at != std::string::npos && lit_at < shadow_at, "the lookup runs after the term is known (a pixel the light does not reach takes no tap)");
+  Check(Has(cpp, "in.shadow = &frame.shadow;") && Has(cpp, "ll::ShadowTableNeeded(selection, in.shadow)"), "the pass hands the frame's shadow to the buffer");
 }
 
 }  // namespace
@@ -910,6 +1234,8 @@ int main(int argc, char** argv) {
   SelectionChecks();
   ScissorChecks();
   BufferChecks();
+  ShadowBufferChecks();
+  ShadowPixelChecks();
   TwinChecks();
   SourceChecks(src);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

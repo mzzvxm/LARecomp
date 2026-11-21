@@ -30,6 +30,21 @@
 
 #define LP_FLAG_MATERIAL 1    // RT3 holds this frame's class
 #define LP_FLAG_OCCLUSION 2   // the height factor is applied
+#define LP_FLAG_SHADOW 4      // the shadow view table is in the buffer and its atlas is there (GB-H2)
+
+// ---- the shadow view table (local_lights_rules.h kShadowOffset; light_shadow_lookup.h GpuShadowBuffer) -------------------------------------------
+// After the lights' rows: a 32 byte header (uint count, atlas bindless slot, atlas width, atlas height, layers (two bits an entry), tile small, tile large, reserved), then eight 96 byte views
+// (LocalShadowView: 16 floats of world_to_shadow, the atlas rectangle, depth bias, texel size, the rig's light index, valid). hlsl/light_shadow_lookup.hlsli reads them through the seams the
+// pixel shader defines (hlsl/local_light_ps.hlsl).
+
+#define LP_SHADOW_OFFSET 2176       // = LP_LIGHTS_OFFSET + 64 * LP_MAX_LIGHTS
+#define LP_SHADOW_HEADER_BYTES 32
+#define LP_SHADOW_VIEWS_OFFSET 2208 // = LP_SHADOW_OFFSET + LP_SHADOW_HEADER_BYTES
+#define LP_SHADOW_VIEW_BYTES 96
+#define LP_SHADOW_OFF_COUNT 2176    // the table's header: uint count, then slot, width, height (four uints: one Load4)
+#define LP_SHADOW_OFF_SLOT 2180     // the atlas's bindless slot (a uint)
+#define LP_SHADOW_OFF_SIZE 2184     // the atlas's width and height in texels (two uints)
+#define LP_SHADOW_OFF_LAYERS 2192   // two bits for each entry: 0 single, 1 static, 2 live
 
 // what the depth chain stores for the sky (hlsl/ao_common.hlsli kAoSky)
 #define LP_SKY 60000.0f

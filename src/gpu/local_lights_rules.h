@@ -13,8 +13,10 @@
 // the shader reads and of its push block. Pure: no renderer, no guest, no SDK.
 //
 // WHICH LIGHTS. mcla_gpu_local_lights_sources (a mask): bit 0 the frame's surface lights (LightFrame: the lights that may add surface light and that the game's own shaders do not already
-// light with; today the headlight rig's, which ALSO have the forward headlight stage: GB-H2's A/B, not for a clean look), bit 1 a test lamp 8 m ahead of the camera and 4.5 m up. The lamps the
-// A/B hands over (below) are in the pass whatever the mask says. The game's own lamps (kLightFlagGameLit) are never taken from the frame: its grid lights them.
+// light with; today the headlight rig's, which ALSO have the forward headlight stage: with the forward stage on the two add, so the headlight route mcla_gpu_headlight_pass (headlight_pass_rules.h, GB-H2) takes the forward stage away when this source is wanted for them: `pass`), bit 1 a test lamp 8 m ahead of the camera and 4.5 m up. The lamps the
+// A/B hands over (below) are in the pass whatever the mask says. The game's own lamps (kLightFlagGameLit) are never taken from the frame: its grid lights them. GB-H3's bits 2 to 5 (the police
+// light bars, the head lamps of the cars the forward stage does not light, the cars' rear lamps, the mods' lamps outside their grid) and their budgets are local_lights_sources.h's; the
+// selection of all of it is its SelectPassLights, which starts from the SelectLights below.
 //
 // THE LAMP A/B (mcla_gpu_local_lights_ab, restart): ONE lamp through the game's grid and through the pass, the same lamp in the same place on the same surfaces, so the two pictures differ
 // only by what the two paths do with it. The route is the mod loader's second light grid (mod_lights.cpp): while the camera is over a mod's rectangle the shader globals point at the mod's
@@ -48,6 +50,7 @@
 #include "light_frame.h"
 #include "light_id.h"
 #include "light_laws.h"
+#include "light_shadow_lookup.h"
 
 namespace larecomp::gpu::local_lights {
 
@@ -58,17 +61,47 @@ namespace larecomp::gpu::local_lights {
 inline constexpr uint32_t kMaxPassLights = kMaxSurfaceLights;  // 32: one draw each
 inline constexpr uint32_t kHeaderBytes = 128;
 inline constexpr uint32_t kLightsOffset = kHeaderBytes;
-inline constexpr uint32_t kBufferBytes = kLightsOffset + uint32_t(sizeof(GpuLight)) * kMaxPassLights;
+// GB-H2: after the lights' rows the shadow view table of the frame (light_shadow_lookup.h GpuShadowBuffer: a 32 byte header with the atlas's bindless slot and size and the layers, then eight of the
+// 96 byte views), so that a light with a ShadowRef of the atlas is looked up through the one lookup (hlsl/light_shadow_lookup.hlsli): the pass reads it from the same buffer, no set of its own.
+inline constexpr uint32_t kShadowOffset = kLightsOffset + uint32_t(sizeof(GpuLight)) * kMaxPassLights;
+inline constexpr uint32_t kShadowBytes = uint32_t(sizeof(shadow_lookup::GpuShadowBuffer));
+inline constexpr uint32_t kBufferBytes = kShadowOffset + kShadowBytes;
 inline constexpr uint32_t kBufferAlloc = (kBufferBytes + 255u) & ~255u;  // an upload buffer's size
 
 // PassHeader::flags (LP_FLAG_*).
 inline constexpr uint32_t kFlagMaterial = 1u << 0;    // RT3 holds this frame's class: the pass skips the classes that take no light
 inline constexpr uint32_t kFlagOcclusion = 1u << 1;   // OcclusionInfo was read: the height factor is applied
+inline constexpr uint32_t kFlagShadow = 1u << 2;      // GB-H2: the shadow view table is in the buffer and its atlas is there: a light with views of the atlas is shadowed
 
-// The sources mask of mcla_gpu_local_lights_sources.
+// The sources mask of mcla_gpu_local_lights_sources. Bits 0 and 1 are GB-H1's; bits 2 to 5 are GB-H3's (local_lights_sources.h makes their lights and holds their budgets): the police light bars,
+// the headlights of the cars the forward headlight stage does not light, the cars' brake / tail / turn / reverse lamps, and the mods' lamps the game's grid is not lighting.
 inline constexpr uint32_t kSourceFrame = 1u << 0;
 inline constexpr uint32_t kSourceTest = 1u << 1;
-inline constexpr uint32_t kSourceMask = kSourceFrame | kSourceTest;
+inline constexpr uint32_t kSourcePolice = 1u << 2;
+inline constexpr uint32_t kSourceHeadLamps = 1u << 3;
+inline constexpr uint32_t kSourceRearLamps = 1u << 4;
+inline constexpr uint32_t kSourceMod = 1u << 5;
+inline constexpr uint32_t kSourceMask = kSourceFrame | kSourceTest | kSourcePolice | kSourceHeadLamps | kSourceRearLamps | kSourceMod;
+// The sources that need the cars' light points (the manager's car lights source).
+inline constexpr uint32_t kSourceCars = kSourcePolice | kSourceHeadLamps | kSourceRearLamps;
+// What SelectLights (below) reads: the frame's own lights and the test lamp.
+inline constexpr uint32_t kSourceFrameAndTest = kSourceFrame | kSourceTest;
+
+// Where a light of the pass came from, for the budgets and the log lines (GB-H3). kFrame: the frame's surface lights (the rig's headlights today); kHandedOver: the lamp A/B's mod lamps and the
+// test lamp; the others are local_lights_sources.h's classes.
+enum class SourceClass : uint8_t { kFrame = 0, kHandedOver, kPolice, kHeadLamps, kRearLamps, kMod };
+inline constexpr uint32_t kSourceClassCount = 6;
+inline constexpr const char* SourceClassName(SourceClass c) {
+  switch (c) {
+    case SourceClass::kFrame: return "frame";
+    case SourceClass::kHandedOver: return "handed over";
+    case SourceClass::kPolice: return "police";
+    case SourceClass::kHeadLamps: return "head lamps";
+    case SourceClass::kRearLamps: return "rear lamps";
+    case SourceClass::kMod: return "mod lamps";
+  }
+  return "?";
+}
 
 // mcla_gpu_local_lights_ab.
 enum class Ab : uint8_t { kGrid = 0, kNowhere = 1, kPass = 2 };
@@ -80,7 +113,7 @@ inline constexpr float kSky = 60000.0f;  // what the depth chain stores for the 
 inline constexpr uint64_t kTestLampId = 0x7E57'1A3B'00C0'FFEEull;
 
 // ---------------------------------------------------------------------------
-// the buffer the pixel shader reads (a ByteAddressBuffer: 128 bytes of header, then the GpuLight rows) and its push block
+// the buffer the pixel shader reads (a ByteAddressBuffer: 128 bytes of header, the GpuLight rows, then, GB-H2, the frame's shadow view table) and its push block
 // ---------------------------------------------------------------------------
 
 struct PassHeader {
@@ -225,6 +258,25 @@ inline void PixelLight(const Light& l, const Units& u, const float world[3], con
   }
 }
 
+// GB-H2: the pass's whole per-pixel path, the twin of hlsl/local_light_ps.hlsl main after the surface and the depth are read: the light's term (PixelLight), then, for a light that has views of the
+// atlas and a frame whose table is in the buffer (kFlagShadow), the ONE lookup's visibility (shadow_lookup::LightLit, the lit shaders' box kernel: Mode::kSurface) multiplied in. `depth_at(ix, iy)` is
+// the atlas's stored depth of a texel, the index clamped into the atlas. Returns whether the pixel adds anything (the shader discards otherwise).
+template <class Depth>
+inline bool PixelLightShadowed(const Light& l, const Units& u, const ShadowFrame* shadow, bool table, const float world[3], const float normal[3], const float albedo[3], float lit, Depth&& depth_at,
+                               float out[3]) {
+  PixelLight(l, u, world, normal, albedo, lit, out);
+  if (!(out[0] > 0.0f || out[1] > 0.0f || out[2] > 0.0f)) {
+    return false;
+  }
+  if (table && shadow != nullptr && l.shadow.kind == ShadowKind::kAtlas && l.shadow.view_count != 0) {
+    const float visibility = shadow_lookup::LightLit(*shadow, l.shadow, world, shadow_lookup::Mode::kSurface, depth_at);
+    for (int i = 0; i < 3; ++i) {
+      out[i] *= visibility;
+    }
+  }
+  return out[0] > 0.0f || out[1] > 0.0f || out[2] > 0.0f;
+}
+
 // ---------------------------------------------------------------------------
 // the frame's constants, picked by vote
 // ---------------------------------------------------------------------------
@@ -359,11 +411,15 @@ struct Selection {
   uint32_t from_frame = 0;   // taken from the frame
   uint32_t from_extra = 0;   // handed over (the A/B lamps, the test lamp)
   uint32_t dropped = 0;      // wanted and over the budget
+  // GB-H3 (local_lights_sources.h SelectPassLights): the lights taken from each class (SourceClass) and the wanted ones it cut for its class budget or the pass's 32.
+  std::array<uint32_t, kSourceClassCount> from_class{};
+  std::array<uint32_t, kSourceClassCount> cut_class{};
 };
 
 // The lights of the pass: the frame's surface lights in the frame's own ranking (the surface role's, best first; the slots in order where the frame has no ranking) when
-// `sources` has kSourceFrame, then `extra` (the A/B's lamps and the test lamp), at most kMaxPassLights.
-inline Selection SelectLights(const LightFrame& frame, uint32_t sources, const Light* extra, uint32_t extra_count) {
+// `sources` has kSourceFrame, at most `frame_cap` of them (GB-H2: the frame class's budget, local_lights_sources.h BudgetOf; the headlights' four), then `extra` (the A/B's lamps and the test
+// lamp), at most kMaxPassLights over all. A frame light over the cap is counted in cut_class[kFrame].
+inline Selection SelectLights(const LightFrame& frame, uint32_t sources, const Light* extra, uint32_t extra_count, uint32_t frame_cap = kMaxPassLights) {
   Selection s;
   const auto add = [&](const Light& l, bool from_frame) {
     if (s.count >= kMaxPassLights) {
@@ -373,19 +429,26 @@ inline Selection SelectLights(const LightFrame& frame, uint32_t sources, const L
     s.lights[s.count++] = l;
     ++(from_frame ? s.from_frame : s.from_extra);
   };
+  const auto add_frame = [&](const Light& l) {
+    if (s.from_frame >= frame_cap) {
+      ++s.cut_class[size_t(SourceClass::kFrame)];
+      return;
+    }
+    add(l, true);
+  };
   if ((sources & kSourceFrame) != 0) {
     const uint32_t ranked = std::min<uint32_t>(frame.RoleCount(LightRole::kSurface), kMaxLights);
     if (ranked != 0) {
       for (uint32_t r = 0; r < ranked; ++r) {
         const Light& l = frame.Ranked(LightRole::kSurface, r);
         if (TakesFrameLight(l)) {
-          add(l, true);
+          add_frame(l);
         }
       }
     } else {
       for (uint32_t i = 0; i < frame.count && i < kMaxLights; ++i) {
         if (TakesFrameLight(frame.lights[i])) {
-          add(frame.lights[i], true);
+          add_frame(frame.lights[i]);
         }
       }
     }
@@ -393,6 +456,8 @@ inline Selection SelectLights(const LightFrame& frame, uint32_t sources, const L
   for (uint32_t i = 0; i < extra_count; ++i) {
     add(extra[i], false);
   }
+  s.from_class[size_t(SourceClass::kFrame)] = s.from_frame;
+  s.from_class[size_t(SourceClass::kHandedOver)] = s.from_extra;
   return s;
 }
 
@@ -474,6 +539,8 @@ struct PassInputs {
   uint32_t width = 0, height = 0;
   Units units;
   uint32_t flags = 0;  // kFlag*
+  // GB-H2: the frame's shadow views and atlas as of this trigger (the replay's maps of THIS frame, recorded just before the pass), null: none. kFlagShadow is set by BuildBuffer, not by the caller.
+  const ShadowFrame* shadow = nullptr;
 };
 
 inline void FillHeader(PassHeader* h, const PassInputs& in, uint32_t count) {
@@ -501,15 +568,38 @@ inline void FillHeader(PassHeader* h, const PassInputs& in, uint32_t count) {
   h->flags = in.flags | ((in.units.occ[3] > 0.0f) ? kFlagOcclusion : 0u);
 }
 
-// Writes the whole buffer (kBufferAlloc bytes: the header, the lights' rows, zero past the count).
+// Whether the shadow table is worth writing and reading: the frame has an atlas the pass can name (a valid atlas with a bindless slot) and at least one selected light has views in it.
+// A light whose views are not in the table (first_view past the count) is lit by the shader, so a stale ref never reads past the table.
+inline bool ShadowTableNeeded(const Selection& selection, const ShadowFrame* shadow) {
+  if (shadow == nullptr || !shadow->atlas.valid || shadow->atlas.slot == kNoLightSlot || shadow->count == 0) {
+    return false;
+  }
+  for (uint32_t i = 0; i < selection.count && i < kMaxPassLights; ++i) {
+    const ShadowRef& ref = selection.lights[i].shadow;
+    if (ref.kind == ShadowKind::kAtlas && ref.view_count != 0 && uint32_t(ref.first_view) < shadow->count) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Writes the whole buffer (kBufferAlloc bytes: the header, the lights' rows, zero past the count, then the shadow view table when a selected light reads it: kFlagShadow).
 inline void BuildBuffer(const PassInputs& in, const Selection& selection, uint8_t* out) {
   std::memset(out, 0, kBufferAlloc);
+  PassInputs with = in;
+  const bool shadowed = ShadowTableNeeded(selection, in.shadow);
+  with.flags = in.flags | (shadowed ? kFlagShadow : 0u);
   PassHeader header;
-  FillHeader(&header, in, selection.count);
+  FillHeader(&header, with, selection.count);
   std::memcpy(out, &header, sizeof(header));
   for (uint32_t i = 0; i < selection.count && i < kMaxPassLights; ++i) {
     const GpuLight row = PackGpuLight(selection.lights[i]);
     std::memcpy(out + kLightsOffset + size_t(i) * sizeof(GpuLight), &row, sizeof(row));
+  }
+  if (shadowed) {
+    shadow_lookup::GpuShadowBuffer table;
+    shadow_lookup::BuildGpuShadowBuffer(*in.shadow, &table);
+    std::memcpy(out + kShadowOffset, &table, sizeof(table));
   }
 }
 

@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -36,6 +38,8 @@ void CheckNear(double got, double want, double tolerance, const std::string& wha
     std::printf("FAILED: %s: got %.6f, want %.6f (+- %g)\n", what.c_str(), got, want, tolerance);
   }
 }
+
+bool Near2(double got, double want, double tolerance) { return std::fabs(got - want) <= tolerance; }
 
 // A lamp at the origin looking along +x (horizontal), the default beam.
 hr::Lamp BeamAlongX() {
@@ -357,6 +361,7 @@ void CheckCar() {
     for (int c = 0; c < 3; ++c) CheckNear(lamp.position[c], expected[c], 1e-9, "the lamp is the mean of the front lenses, nudged forward");
     CheckNear(hr::Dot3d(lamp.forward, pose.back), -1.0, 1e-9, "forward is minus the third row");
     CheckNear(lamp.spread, 4.1, 1e-9, "the lenses spread over 4.1 m");
+    CheckNear(lamp.half_span, 0.65, 1e-9, "the two front lenses are 1.3 m apart across the car: half the span is 0.65 m");
   }
   // The beam's axis dips below the forward.
   {
@@ -374,6 +379,8 @@ void CheckCar() {
     for (size_t i = 0; i < 2; ++i) flat.insert(flat.end(), lenses[i].begin(), lenses[i].end());
     hr::CarLamp one;
     Check(hr::FrontLamp(pose, reinterpret_cast<const double(*)[3]>(flat.data()), 2, &one) && one.front == 2, "a single cluster ahead of the root is the front");
+    CheckNear(one.half_span, 0.65, 1e-9, "... and the same pair's half span");
+    Check(hr::FrontLamp(pose, reinterpret_cast<const double(*)[3]>(flat.data()), 1, &one) && one.front == 1 && one.half_span == 0.0, "one front lens says nothing of the pair: no span");
     flat.clear();
     for (size_t i = 2; i < 4; ++i) flat.insert(flat.end(), lenses[i].begin(), lenses[i].end());
     Check(!hr::FrontLamp(pose, reinterpret_cast<const double(*)[3]>(flat.data()), 2, &one), "a single cluster behind the root is not a headlight");
@@ -394,6 +401,93 @@ void CheckCar() {
     hr::CarLamp turned;
     Check(hr::FrontLamp(pose2, reinterpret_cast<const double(*)[3]>(flat.data()), 4, &turned), "a turned car has headlights");
     CheckNear(hr::Dot3d(turned.forward, lamp.forward), -1.0, 1e-9, "and they point the other way");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the car's two headlamps (the shadow views are made from each lamp: local_shadow.h)
+// ---------------------------------------------------------------------------
+
+void CheckLampSpan() {
+  // The offset to the right lamp: forward x up (the frame the poses have: right x up = back), half the span, a unit direction times it.
+  const double forward_x[3] = {1, 0, 0}, up[3] = {0, 1, 0};
+  float offset[3];
+  Check(hr::LampOffset(forward_x, up, 0.6, offset), "an offset for a car facing +x");
+  CheckNear(offset[0], 0.0, 1e-6, "no offset along the car");
+  CheckNear(offset[1], 0.0, 1e-6, "none up");
+  CheckNear(offset[2], 0.6, 1e-6, "the right lamp of a car facing +x is at +z (forward x up)");
+  const double forward_z[3] = {0, 0, 1};
+  Check(hr::LampOffset(forward_z, up, 0.6, offset), "an offset for a car facing +z");
+  CheckNear(offset[0], -0.6, 1e-6, "facing +z, forward x up is -x");
+  // The axes need not be unit or at right angles (a tracked car's): the offset is still the half span long, across the car.
+  const double slanted[3] = {3.0, 0.4, 0.0};
+  Check(hr::LampOffset(slanted, up, 0.5, offset), "a slanted forward");
+  CheckNear(std::sqrt(offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]), 0.5, 1e-6, "the offset is the half span long");
+  CheckNear(offset[0] * slanted[0] + offset[1] * slanted[1] + offset[2] * slanted[2], 0.0, 1e-6, "... and at right angles to forward");
+  const double parallel[3] = {0, 2, 0};
+  Check(!hr::LampOffset(parallel, up, 0.6, offset) && offset[0] == 0.0f && offset[2] == 0.0f, "a forward along up makes no right axis: no offset");
+  // A span that is not believed is the default: unknown (0), a lens mesh (0.05), a strip across the grille (2.0), not a number.
+  for (const double measured : {0.0, 0.05, 2.0, std::nan("")}) {
+    Check(hr::LampOffset(forward_x, up, measured, offset), "an offset");
+    CheckNear(offset[2], hr::kDefaultHalfSpan, 1e-6, "a half span that is not believed is the default");
+  }
+  CheckNear(hr::BelievedHalfSpan(0.8), 0.8, 0.0, "a believable half span is kept");
+  Check(hr::kMinHalfSpan < hr::kDefaultHalfSpan && hr::kDefaultHalfSpan < hr::kMaxHalfSpan, "the default is between the limits");
+  // The game's own points: a pair across the car (1.2 m apart, as the player's) gives half the distance; one point gives none; the strongest of the group counts.
+  {
+    hr::GuestPoint a, b, c;
+    a.pos[0] = 10.0f; a.pos[1] = 0.7f; a.pos[2] = 5.0f;
+    b = a;
+    b.pos[2] = 6.2f;
+    c = a;
+    c.pos[0] = 20.0f;  // another lamp, far away
+    const double place[1][3] = {{10.0, 0.7, 5.6}};
+    std::vector<bool> taken;
+    auto matches = hr::AssignPoints({a, b, c}, place, 1, &taken);
+    Check(matches[0].count == 2 && Near2(matches[0].span, 1.2, 1e-5), "two points near a lamp are its pair: 1.2 m apart");
+    hr::CarLamp lamp;
+    double on = 0.0;
+    bool disagrees = false;
+    hr::ApplyPoints(matches[0], &lamp, &on, &disagrees);
+    Check(Near2(lamp.half_span, 0.6, 1e-5), "the lamp's half span is half of that");
+    matches = hr::AssignPoints({a}, place, 1, &taken);
+    hr::CarLamp lone;
+    lone.half_span = 0.7;  // the lens lamp's own guess
+    hr::ApplyPoints(matches[0], &lone, &on, &disagrees);
+    Check(lone.half_span == 0.7, "one point says nothing of the pair: the lens lamp's own half span stays");
+    // Points that no lens lamp took (a racer's, with a direction) make a lamp whose span is their own.
+    a.vehicle = b.vehicle = 0x40;
+    a.has_dir = b.has_dir = true;
+    a.dir[0] = b.dir[0] = -1.0f;
+    const auto made = hr::LampsFromPoints({a, b}, std::vector<bool>(2, false));
+    Check(made.size() == 1 && Near2(made[0].lamp.half_span, 0.6, 1e-5), "a lamp made from a pair of points has their half span");
+    const auto single = hr::LampsFromPoints({a}, std::vector<bool>(1, false));
+    Check(single.size() == 1 && single[0].lamp.half_span == 0.0, "... and none from a single point");
+  }
+  // The tracker smooths the span over the sightings that knew it and keeps the last when one does not.
+  {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out;
+    hr::Candidate car;
+    car.lamp.position[0] = 0.0;
+    car.lamp.position[1] = 0.65;
+    car.lamp.position[2] = 10.0;
+    car.lamp.forward[0] = 1.0;
+    car.lamp.forward[1] = 0.0;
+    car.lamp.forward[2] = 0.0;
+    car.player = true;
+    car.camera_distance = 10.0;
+    car.lamp.half_span = 0.6;
+    tracker.Observe(car);
+    Check(tracker.EndFrame(1, &out) == 1 && Near2(out[0].half_span, 0.6, 1e-12), "the first sighting's span");
+    car.lamp.half_span = 0.8;
+    tracker.Observe(car);
+    tracker.EndFrame(2, &out);
+    Check(Near2(out[0].half_span, 0.8 * 0.6 + 0.2 * 0.8 - 0.0, 1e-12) || Near2(out[0].half_span, 0.64, 1e-12), "the next is smoothed: 0.8 of the old, 0.2 of the new");
+    car.lamp.half_span = 0.0;
+    tracker.Observe(car);
+    tracker.EndFrame(3, &out);
+    Check(Near2(out[0].half_span, 0.64, 1e-12), "a sighting with no span keeps the last");
   }
 }
 
@@ -572,6 +666,531 @@ void CheckTracker() {
 }
 
 // ---------------------------------------------------------------------------
+// the view's frustum, a beam's reach into it, and the tracker's rules at the frame's edge (HL-EDGE-FADE)
+// ---------------------------------------------------------------------------
+
+namespace li = mcla::gpu::light_influence;
+
+// A world -> clip matrix, row vectors (clip = (p, 1) * M) as the game's, for a camera at `eye` looking along `forward` (world up is +y), a vertical field of view and an
+// aspect: x and y in [-w, w], w the depth along the view. z is a made up finite column (the rules never read it).
+struct TestCamera {
+  double eye[3] = {};
+  double forward[3] = {0, 0, 1};
+  double fov_y_degrees = 50.0;
+  double aspect = 16.0 / 9.0;
+  double m[4][4] = {};
+  li::ViewFrustum frustum;
+  double tan_x = 0.0;
+  double tan_y = 0.0;
+
+  void Build() {
+    double f[3] = {forward[0], forward[1], forward[2]};
+    const double fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    for (double& v : f) v /= fl;
+    const double up_world[3] = {0, 1, 0};
+    double r[3] = {up_world[1] * f[2] - up_world[2] * f[1], up_world[2] * f[0] - up_world[0] * f[2], up_world[0] * f[1] - up_world[1] * f[0]};
+    const double rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+    for (double& v : r) v /= rl;
+    const double u[3] = {f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]};
+    tan_y = std::tan(fov_y_degrees * hr::kPi / 180.0 * 0.5);
+    tan_x = tan_y * aspect;
+    const double er = eye[0] * r[0] + eye[1] * r[1] + eye[2] * r[2];
+    const double eu = eye[0] * u[0] + eye[1] * u[1] + eye[2] * u[2];
+    const double ef = eye[0] * f[0] + eye[1] * f[1] + eye[2] * f[2];
+    for (int i = 0; i < 3; ++i) {
+      m[i][0] = r[i] / tan_x;
+      m[i][1] = u[i] / tan_y;
+      m[i][2] = f[i] * 0.001;
+      m[i][3] = f[i];
+    }
+    m[3][0] = -er / tan_x;
+    m[3][1] = -eu / tan_y;
+    m[3][2] = -ef * 0.001;
+    m[3][3] = -ef;
+    li::MakeViewFrustum(m, eye, &frustum);
+  }
+};
+
+void CheckFrustum() {
+  TestCamera cam;
+  cam.Build();
+  Check(cam.frustum.valid, "a camera's matrix makes a frustum");
+  for (int p = 0; p < 5; ++p) {
+    const double* pl = cam.frustum.planes[p];
+    CheckNear(std::sqrt(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]), 1.0, 1e-9, "plane " + std::to_string(p) + " is a unit plane");
+  }
+  const double axis10[3] = {0, 0, 10};
+  const double left_edge_10[3] = {-10.0 * cam.tan_x, 0, 10};        // on the left plane, 10 m ahead
+  const double right_out_10[3] = {10.0 * cam.tan_x + 3.0, 0, 10};   // 3 m beyond the right plane (not the nearest distance: the plane is tilted)
+  const double behind[3] = {0, 0, -5};
+  const double above_10[3] = {0, 10.0 * cam.tan_y + 2.0, 10};
+  Check(li::InsideDistance(cam.frustum, axis10) > 3.0, "a point on the axis 10 m ahead is well inside");
+  CheckNear(li::InsideDistance(cam.frustum, left_edge_10), 0.0, 1e-9, "a point on the left edge's plane is on the plane");
+  Check(li::InsideDistance(cam.frustum, right_out_10) < -1.0 && li::InsideDistance(cam.frustum, behind) < -4.0 && li::InsideDistance(cam.frustum, above_10) < -1.0,
+        "points beyond the right edge, behind the camera and above the top are outside");
+  // The signed distance is metres: a point 2 m (measured along the plane's normal) beyond the left plane.
+  {
+    const double nx = cam.frustum.planes[0][0], nz = cam.frustum.planes[0][2];
+    const double p[3] = {left_edge_10[0] - 2.0 * nx, 0, 10.0 - 2.0 * nz};
+    CheckNear(li::InsideDistance(cam.frustum, p), -2.0, 1e-9, "a point 2 m out along the plane's normal is 2 m outside");
+  }
+  // NaN in the matrix or the eye: no frustum.
+  {
+    li::ViewFrustum bad;
+    double m[4][4];
+    std::memcpy(m, cam.m, sizeof(m));
+    m[1][2] = std::nan("");
+    Check(!li::MakeViewFrustum(m, cam.eye, &bad) && !bad.valid, "a matrix with a NaN makes no frustum");
+    const double eye_bad[3] = {0, std::numeric_limits<double>::infinity(), 0};
+    Check(!li::MakeViewFrustum(cam.m, eye_bad, &bad) && !bad.valid, "an eye that is not finite makes no frustum");
+    double zero[4][4] = {};
+    Check(!li::MakeViewFrustum(zero, cam.eye, &bad), "a matrix of zeros (a plane with no direction) makes no frustum");
+  }
+  // NdcExtent: 0 on the axis, 1 on the edge, more outside, infinity behind.
+  CheckNear(li::NdcExtent(cam.frustum, axis10), 0.0, 1e-9, "the middle of the picture is 0");
+  CheckNear(li::NdcExtent(cam.frustum, left_edge_10), 1.0, 1e-9, "the left edge is 1");
+  {
+    const double half[3] = {0.5 * 10.0 * cam.tan_x, 0, 10};
+    CheckNear(li::NdcExtent(cam.frustum, half), 0.5, 1e-9, "half way to the edge is 0.5");
+  }
+  Check(li::NdcExtent(cam.frustum, right_out_10) > 1.0 && std::isinf(li::NdcExtent(cam.frustum, behind)), "outside the edge is more than 1, behind the camera infinite");
+  // SphereFactor: 1 with the centre inside, 0 when the sphere only touches from outside, a straight line between.
+  {
+    CheckNear(li::SphereFactor(cam.frustum, axis10, 1.5), 1.0, 1e-12, "a sphere with its centre inside is 1");
+    const double nx = cam.frustum.planes[0][0], nz = cam.frustum.planes[0][2];
+    const double touching[3] = {left_edge_10[0] - 1.5 * nx, 0, 10.0 - 1.5 * nz};
+    const double half_in[3] = {left_edge_10[0] - 0.75 * nx, 0, 10.0 - 0.75 * nz};
+    CheckNear(li::SphereFactor(cam.frustum, touching, 1.5), 0.0, 1e-9, "a sphere that only touches the frustum from outside is 0");
+    CheckNear(li::SphereFactor(cam.frustum, half_in, 1.5), 0.5, 1e-9, "a sphere with its centre half a radius out is 0.5");
+    CheckNear(li::SphereFactor(cam.frustum, left_edge_10, 1.5), 1.0, 1e-9, "a sphere with its centre on the plane is 1");
+  }
+}
+
+void CheckBeamReach() {
+  TestCamera cam;
+  cam.Build();
+  const double outer = hr::kOuterDegrees * hr::kPi / 180.0;
+  const double ahead[3] = {0, 0, 1};
+  // The beam's strength is the shader's: the same fall-off and window (headlight_rig_rules.h LampScale on the axis, over the peak).
+  {
+    Check(li::kBeamFalloffDistance == double(hr::kFalloffDistance), "the beam's fall-off distance is the rig's");
+    const hr::Lamp lamp = BeamAlongX();
+    for (const double t : {3.0, 10.0, 30.0, 60.0}) {
+      const double shader = double(hr::LampScale(lamp, WallFacingLamp(float(t)))) / double(hr::kPeak);
+      CheckNear(li::BeamStrengthAt(t, double(hr::kRange)), shader, 0.01 * std::max(shader, 0.05), "the beam's strength at " + std::to_string(t) + " m is the shader's");
+    }
+    CheckNear(li::BeamStrengthAt(0.0, 70.0), 1.0, 1e-12, "the strength at the lamp is 1");
+    CheckNear(li::BeamStrengthAt(70.0, 70.0), 0.0, 1e-12, "and 0 at the reach");
+  }
+  // A lamp in the view is 1 whatever way it points.
+  {
+    const double pos[3] = {0, 0.7, 20};
+    const double away[3] = {0, 0, 1}, toward[3] = {0, 0, -1}, side[3] = {1, 0, 0};
+    CheckNear(li::BeamReach(cam.frustum, pos, away, 70.0, outer), 1.0, 1e-9, "a lamp in the view pointing away is 1");
+    CheckNear(li::BeamReach(cam.frustum, pos, toward, 70.0, outer), 1.0, 1e-9, "... toward the camera is 1");
+    CheckNear(li::BeamReach(cam.frustum, pos, side, 70.0, outer), 1.0, 1e-9, "... across the view is 1");
+  }
+  // A lamp 6 m beyond the left edge at 20 m depth. Its beam across the view (toward +x) lights the picture; pointing out of it, it does not.
+  {
+    const double x_edge = -20.0 * cam.tan_x;
+    const double pos[3] = {x_edge - 6.0, 0.7, 20};
+    const double across[3] = {1, 0, 0}, outward[3] = {-1, 0, 0}, along[3] = {0, 0, 1}, back[3] = {0, 0, -1};
+    const double r_across = li::BeamReach(cam.frustum, pos, across, 70.0, outer);
+    const double r_out = li::BeamReach(cam.frustum, pos, outward, 70.0, outer);
+    const double r_along = li::BeamReach(cam.frustum, pos, along, 70.0, outer);
+    const double r_back = li::BeamReach(cam.frustum, pos, back, 70.0, outer);
+    Check(r_across > 0.5, "a lamp off the left edge whose beam crosses the picture reaches it (" + std::to_string(r_across) + ")");
+    Check(r_out < 0.05, "the same lamp pointing out of the picture reaches almost nothing (" + std::to_string(r_out) + ")");
+    Check(r_along > 0.5 && r_along > 4.0 * r_out, "pointing along the road, which goes into the picture, it reaches it (" + std::to_string(r_along) + ")");
+    Check(r_back < r_along, "pointing back toward the camera's side, less than along the road");
+    // The reach falls as the lamp goes farther out (a smooth fall: no step above a tenth per 0.2 m).
+    double previous = -1.0, largest = 0.0;
+    for (double out = 0.0; out <= 30.0; out += 0.2) {
+      const double p[3] = {x_edge - out, 0.7, 20};
+      const double r = li::BeamReach(cam.frustum, p, outward, 70.0, outer);
+      if (previous >= 0.0) {
+        Check(r <= previous + 1e-12, "the reach of an outward beam only falls as the lamp goes out (" + std::to_string(out) + ")");
+        largest = std::max(largest, previous - r);
+      }
+      previous = r;
+    }
+    Check(largest <= 0.15, "the reach has no step above 0.15 per 0.2 m (largest " + std::to_string(largest) + ")");
+  }
+  // A lamp behind the camera lights the air in front of it: pointing forward through the view it reaches it; pointing away it does not.
+  {
+    const double pos[3] = {0, 0.7, -10};
+    const double r_fwd = li::BeamReach(cam.frustum, pos, ahead, 70.0, outer);
+    const double back[3] = {0, 0, -1};
+    const double r_back = li::BeamReach(cam.frustum, pos, back, 70.0, outer);
+    Check(r_fwd > 0.5, "a lamp 10 m behind the camera, pointing forward, reaches the view (" + std::to_string(r_fwd) + ")");
+    CheckNear(r_back, 0.0, 1e-9, "pointing away from the view it reaches nothing");
+  }
+  // The far end only: a lamp 60 m to the side pointing across: only the far end of the beam grazes the view.
+  {
+    const double pos[3] = {-70.0, 0.7, 10};
+    const double across[3] = {1, 0, 0};
+    const double r = li::BeamReach(cam.frustum, pos, across, 70.0, outer);
+    Check(r > 0.0 && r < 0.3, "a lamp whose far beam only grazes the picture reaches it a little (" + std::to_string(r) + ")");
+  }
+  // Not a view: nothing. A beam with no reach: nothing.
+  {
+    li::ViewFrustum none;
+    const double pos[3] = {0, 0, 5};
+    CheckNear(li::BeamReach(none, pos, ahead, 70.0, outer), 0.0, 0.0, "no frustum, no reach");
+    CheckNear(li::BeamReach(cam.frustum, pos, ahead, 0.0, outer), 0.0, 0.0, "a beam with no range reaches nothing");
+  }
+  // The importance's numbers and the distance fade.
+  CheckNear(li::ReachWeight(0.0), 0.35, 1e-12, "a beam that lights nothing in the picture weighs 0.35 (the first version's off-screen share)");
+  CheckNear(li::ReachWeight(li::kReachFull), 1.0, 1e-12, "a reach of 0.45 weighs 1");
+  CheckNear(li::ReachWeight(1.0), 1.0, 1e-12, "a reach of 1 weighs 1");
+  {
+    bool monotone = true;
+    double previous = 0.0;
+    for (double r = 0.0; r <= 1.0; r += 0.01) {
+      const double w = li::ReachWeight(r);
+      monotone &= w >= previous - 1e-12;
+      previous = w;
+    }
+    Check(monotone, "the weight never falls as the reach grows");
+  }
+  CheckNear(li::DistanceFade(50.0), 1.0, 1e-12, "a car 50 m away is lit in full");
+  CheckNear(li::DistanceFade(90.0), 1.0, 1e-12, "... 90 m too");
+  CheckNear(li::DistanceFade(115.0), 0.5, 1e-9, "... half at 115 m");
+  CheckNear(li::DistanceFade(140.0), 0.0, 1e-12, "... none at 140 m");
+  CheckNear(li::DistanceFade(300.0), 0.0, 1e-12, "... and none beyond");
+}
+
+// A car that drives along +z at `speed` metres a frame in the lane x = lane_x while the camera drives along +z at `camera_speed`: in the camera's frame the car comes
+// alongside and falls behind. Its lamp is 2 m ahead of its origin at 0.65 m. `seen` is what the game draws: the car's lamp is seen while its place on the picture is
+// within `seen_limit` of the middle (a car is drawn while its bounds are in the view: the lamp itself 0.2 beyond the edge is not).
+struct PassScene {
+  double lane_x = -4.0;
+  double start_z = 40.0;
+  double speed = 0.25;          // m a frame (15 m/s at 60 FPS)
+  double camera_speed = 0.6;    // m a frame (36 m/s)
+  double seen_limit = 1.1;      // the game draws the car while its lamp's NDC extent is under this (a car's bounds are larger than its lamp)
+  bool heading_away = true;     // true: the car drives the camera's way (its beam lights the road ahead of it, which the camera also looks at)
+};
+
+void CheckTrackerView() {
+  // A car being passed in the next lane. The camera drives along +z, the car too, slower: it falls behind and goes out through the picture's left edge with its
+  // beam pointing ahead (+z): the road ahead of it is in the picture. The first version dropped its light within 8 frames of the game's last draw.
+  {
+    PassScene sc;
+    double mean_fade_after = 0.0;
+    int coasted_frames = 0;
+    for (const bool use_view : {false, true}) {
+      hr::Tracker tracker;
+      std::array<hr::Tracked, hr::kMaxLights> out{};
+      uint64_t frame = 0;
+      uint64_t last_seen = 0;
+      std::vector<float> fades;     // the car's light, every frame
+      std::vector<bool> coasting;
+      double largest_step = 0.0;
+      for (frame = 1; frame <= 260; ++frame) {
+        TestCamera cam;
+        cam.eye[2] = sc.camera_speed * double(frame);
+        cam.eye[1] = 1.3;
+        cam.Build();
+        const double car_z = sc.start_z + sc.speed * double(frame) + 2.0;  // the lamp
+        const double lamp[3] = {sc.lane_x, 0.65, car_z};
+        const double extent = li::NdcExtent(cam.frustum, lamp);
+        const bool seen = extent < sc.seen_limit;
+        if (seen) {
+          last_seen = frame;
+          hr::Candidate c;
+          c.lamp.position[0] = lamp[0];
+          c.lamp.position[1] = lamp[1];
+          c.lamp.position[2] = lamp[2];
+          c.lamp.forward[0] = 0.0;
+          c.lamp.forward[1] = 0.0;
+          c.lamp.forward[2] = 1.0;
+          c.camera_distance = std::sqrt((lamp[0] - cam.eye[0]) * (lamp[0] - cam.eye[0]) + (lamp[2] - cam.eye[2]) * (lamp[2] - cam.eye[2]));
+          c.on_screen = extent <= 1.3;
+          c.guest = true;
+          c.on = 1.0;
+          tracker.Observe(c);
+        }
+        const size_t n = tracker.EndFrame(frame, &out, use_view ? &cam.frustum : nullptr);
+        float fade = 0.0f;
+        bool coast = false;
+        for (size_t i = 0; i < n; ++i) {
+          if (!out[i].player) {
+            fade = out[i].fade;
+            coast = out[i].coasting;
+          }
+        }
+        if (!fades.empty()) largest_step = std::max(largest_step, double(std::fabs(fade - fades.back())));
+        fades.push_back(fade);
+        coasting.push_back(coast);
+      }
+      // frames after the game's last draw of the car: how long the light stays above one half
+      size_t held = 0;
+      for (size_t k = size_t(last_seen); k < fades.size() && fades[k] > 0.5f; ++k) {
+        ++held;
+      }
+      const std::string which = use_view ? "with the view: " : "without the view (the first version): ";
+      std::printf("  a car passed in the next lane, %slast drawn at frame %llu, its light above half for %zu frames after it, largest step %.3f\n", which.c_str(),
+                  (unsigned long long)last_seen, held, largest_step);
+      Check(last_seen > 20 && last_seen < 250, which + "the car is drawn for a while and then not (last at " + std::to_string(last_seen) + ")");
+      Check(largest_step <= 0.12 + 1e-6, which + "the light's fade never steps by more than 0.12 a frame (" + std::to_string(largest_step) + ")");
+      if (!use_view) {
+        Check(held <= 8, which + "the light is gone within 8 frames of the car's last draw (" + std::to_string(held) + ")");
+      } else {
+        Check(held >= 25, which + "the light goes on for a second after the car's last draw while its beam is in the picture (" + std::to_string(held) + " frames)");
+        for (size_t k = size_t(last_seen); k < fades.size(); ++k) {
+          coasted_frames += coasting[k] ? 1 : 0;
+        }
+        Check(coasted_frames > 0, which + "the light is marked as coasting after the last draw");
+        Check(fades.back() == 0.0f, which + "and it is gone at the end of the drive");
+        mean_fade_after = 0.0;
+        for (size_t k = size_t(last_seen); k < size_t(last_seen) + 20 && k < fades.size(); ++k) mean_fade_after += fades[k];
+        Check(mean_fade_after / 20.0 > 0.9, which + "the first 20 frames after the last draw are in full (" + std::to_string(mean_fade_after / 20.0) + ")");
+      }
+    }
+  }
+  // The coast stops at coast_frames whatever the beam does: a car that stands just beyond the edge pointing along the road keeps its light for 90 frames, then the light goes.
+  {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out{};
+    TestCamera cam;
+    cam.eye[1] = 1.3;
+    cam.Build();
+    const double x_edge = -25.0 * cam.tan_x;
+    uint64_t frame = 1;
+    for (; frame <= 20; ++frame) {  // seen near the edge (extent 0.95) for 20 frames
+      hr::Candidate c;
+      c.lamp.position[0] = x_edge * 0.95;
+      c.lamp.position[1] = 0.65;
+      c.lamp.position[2] = 25.0;
+      c.camera_distance = 25.0;
+      c.guest = true;
+      c.on = 1.0;
+      tracker.Observe(c);
+      tracker.EndFrame(frame, &out, &cam.frustum);
+    }
+    uint64_t gone_at = 0;
+    for (; frame <= 160; ++frame) {
+      const size_t n = tracker.EndFrame(frame, &out, &cam.frustum);
+      if (n == 0 && gone_at == 0) gone_at = frame - 20;
+    }
+    std::printf("  a car that stood at the edge and was no longer drawn: its light was gone %llu frames later\n", (unsigned long long)gone_at);
+    Check(gone_at >= 90 && gone_at <= 105, "a car that is not drawn any more keeps its light for coast_frames (90) and a few frames of fade (" + std::to_string(gone_at) + ")");
+  }
+  // A car that vanishes in the middle of the picture (not at the edge: a despawn, a hiding) does not coast: it fades out as before.
+  {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out{};
+    TestCamera cam;
+    cam.eye[1] = 1.3;
+    cam.Build();
+    uint64_t frame = 1;
+    for (; frame <= 20; ++frame) {
+      hr::Candidate c;
+      c.lamp.position[0] = 1.0;
+      c.lamp.position[1] = 0.65;
+      c.lamp.position[2] = 25.0;
+      c.camera_distance = 25.0;
+      c.guest = true;
+      c.on = 1.0;
+      tracker.Observe(c);
+      tracker.EndFrame(frame, &out, &cam.frustum);
+    }
+    uint64_t gone_at = 0;
+    for (; frame <= 60; ++frame) {
+      const size_t n = tracker.EndFrame(frame, &out, &cam.frustum);
+      if (n == 0 && gone_at == 0) gone_at = frame - 20;
+    }
+    Check(gone_at >= 6 && gone_at <= 12, "a car that vanishes in the middle of the picture fades out in about 8 frames (" + std::to_string(gone_at) + ")");
+  }
+  // A car that left through the edge with its beam pointing OUT of the picture goes out with the beam: the reach falls to nothing and so does the light, by steps of at most the fade's.
+  {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out{};
+    TestCamera cam;
+    cam.eye[1] = 1.3;
+    cam.Build();
+    const double x_edge = -25.0 * cam.tan_x;
+    uint64_t frame = 1;
+    double lamp_x = x_edge * 0.9;
+    for (; frame <= 20; ++frame, lamp_x -= 0.2) {  // drives out to the left at 0.2 m a frame, pointing left
+      hr::Candidate c;
+      c.lamp.position[0] = lamp_x;
+      c.lamp.position[1] = 0.65;
+      c.lamp.position[2] = 25.0;
+      c.lamp.forward[0] = -1.0;
+      c.lamp.forward[2] = 0.0;
+      c.camera_distance = 25.0;
+      c.guest = true;
+      c.on = 1.0;
+      tracker.Observe(c);
+      tracker.EndFrame(frame, &out, &cam.frustum);
+    }
+    uint64_t gone_at = 0;
+    float previous = out[0].fade;
+    double largest = 0.0;
+    for (; frame <= 160; ++frame) {
+      const size_t n = tracker.EndFrame(frame, &out, &cam.frustum);
+      if (n > 0) {
+        largest = std::max(largest, double(std::fabs(out[0].fade - previous)));
+        previous = out[0].fade;
+      }
+      if (n == 0 && gone_at == 0) gone_at = frame - 20;
+    }
+    std::printf("  a car driving out of the picture with its beam pointing out of it: gone %llu frames after its last draw\n", (unsigned long long)gone_at);
+    Check(gone_at > 0 && gone_at < 60, "a car whose beam leaves the picture with it goes out (" + std::to_string(gone_at) + " frames)");
+    Check(largest <= 0.12 + 1e-6, "... by steps no larger than the fade's (" + std::to_string(largest) + ")");
+  }
+  // The ranking at the edge: six cars for the player's place and three more. X and Y are in the middle of the picture at 30 m. E stands off the RIGHT edge at 40 m with its beam
+  // across the picture, F off the LEFT edge at 40 m with its beam pointing out of it: the same distance, and both lamps off the screen. The first version ranked them alike
+  // (0.35 each: the lamp is off the screen) and took F, the lower key, for the last place: a car at the edge whose beam lights the picture lost to one that lights nothing in it.
+  // With the view E is worth its beam and F is not.
+  for (const bool use_view : {false, true}) {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out{};
+    TestCamera cam;
+    cam.eye[1] = 1.3;
+    cam.Build();
+    const double x_edge = 40.0 * cam.tan_x;  // the right edge's x at 40 m
+    size_t n = 0;
+    for (uint64_t frame = 1; frame <= 30; ++frame) {
+      const auto make = [&](double x, double z, double fx, double fz, bool on_screen) {
+        hr::Candidate c;
+        c.lamp.position[0] = x;
+        c.lamp.position[1] = 0.65;
+        c.lamp.position[2] = z;
+        c.lamp.forward[0] = fx;
+        c.lamp.forward[2] = fz;
+        c.camera_distance = std::sqrt(x * x + z * z);
+        c.on_screen = on_screen;
+        return c;
+      };
+      hr::Candidate player = make(0.0, 2.0, 0.0, 1.0, true);
+      player.player = true;
+      tracker.Observe(player);
+      tracker.Observe(make(-x_edge - 8.0, 40.0, -1.0, 0.0, false));  // F (the lower key): off the left edge, pointing out of the picture
+      tracker.Observe(make(x_edge + 8.0, 40.0, -1.0, 0.0, false));   // E: off the right edge, pointing across the picture
+      tracker.Observe(make(2.0, 30.0, 0.0, 1.0, true));              // X
+      tracker.Observe(make(-3.0, 31.0, 0.0, 1.0, true));             // Y
+      n = tracker.EndFrame(frame, &out, use_view ? &cam.frustum : nullptr);
+    }
+    bool has_e = false, has_f = false;
+    for (size_t i = 0; i < n; ++i) {
+      has_e |= out[i].position[0] > 20.0 && out[i].fade > 0.5f;
+      has_f |= out[i].position[0] < -20.0 && out[i].fade > 0.5f;
+    }
+    const std::string which = use_view ? "with the view: " : "without the view (the first version): ";
+    Check(n == hr::kMaxLights, which + "four lights");
+    if (use_view) {
+      Check(has_e && !has_f, which + "the car at the edge whose beam crosses the picture is lit, the one whose beam points out of it is not");
+    } else {
+      Check(has_f && !has_e, which + "the two cars off the screen tie and the lower key wins: the car that lights the picture loses");
+    }
+  }
+  // A car that coasts gives its place to cars that are in the picture: the player's and three cars in view take the four places, and the car that left the picture (its beam still
+  // in the view) is dropped from the set, by fade steps; with only two other cars in view it keeps its place.
+  for (const int others : {2, 3}) {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out{};
+    TestCamera cam;
+    cam.eye[1] = 1.3;
+    cam.Build();
+    const double x_edge = -25.0 * cam.tan_x;
+    const auto make = [&](double x, double z, bool player) {
+      hr::Candidate c;
+      c.lamp.position[0] = x;
+      c.lamp.position[1] = 0.65;
+      c.lamp.position[2] = z;
+      c.camera_distance = std::sqrt(x * x + z * z);
+      c.player = player;
+      c.guest = true;
+      c.on = 1.0;
+      return c;
+    };
+    uint64_t frame = 1;
+    for (; frame <= 20; ++frame) {  // the car at the left edge is seen with the others
+      tracker.Observe(make(0.0, 3.0, true));
+      tracker.Observe(make(x_edge * 0.95, 25.0, false));
+      for (int k = 0; k < others; ++k) tracker.Observe(make(2.0 + 3.0 * k, 20.0 + 4.0 * k, false));
+      tracker.EndFrame(frame, &out, &cam.frustum);
+    }
+    bool coasting_listed = false;
+    for (int i = 0; i < 40; ++i, ++frame) {  // then it is not drawn any more
+      tracker.Observe(make(0.0, 3.0, true));
+      for (int k = 0; k < others; ++k) tracker.Observe(make(2.0 + 3.0 * k, 20.0 + 4.0 * k, false));
+      const size_t n = tracker.EndFrame(frame, &out, &cam.frustum);
+      if (i >= 25) {
+        coasting_listed = false;
+        for (size_t j = 0; j < n; ++j) coasting_listed |= out[j].coasting && out[j].fade > 0.05f;
+      }
+    }
+    if (others == 2) {
+      Check(coasting_listed, "with room (the player and two cars in view) the car that left the picture keeps its place");
+    } else {
+      Check(!coasting_listed, "with the player and three cars in view the car that left the picture gives its place up");
+    }
+  }
+  // Without a view the first version's rule is intact: the car off the screen scores 0.35 (the existing checks above) and nothing coasts.
+  {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out{};
+    for (uint64_t frame = 1; frame <= 20; ++frame) {
+      tracker.Observe(Car(10.0, 0.0, 20.0));
+      tracker.EndFrame(frame, &out);
+    }
+    uint64_t gone_at = 0;
+    for (uint64_t frame = 21; frame <= 80; ++frame) {
+      const size_t n = tracker.EndFrame(frame, &out);
+      if (n == 0 && gone_at == 0) gone_at = frame - 20;
+      Check(tracker.coasting_count() == 0, "without a view nothing coasts");
+    }
+    Check(gone_at >= 6 && gone_at <= 12, "without a view a car that is not drawn fades out in about 8 frames (" + std::to_string(gone_at) + ")");
+  }
+  // The distance fade: a lone car at 115 m settles at half (the target is the fade of its distance), at 150 m it is not lit, at 60 m in full; continuous.
+  {
+    for (const double distance : {60.0, 115.0, 150.0}) {
+      hr::Tracker tracker;
+      std::array<hr::Tracked, hr::kMaxLights> out{};
+      TestCamera cam;
+      cam.Build();
+      size_t n = 0;
+      for (uint64_t frame = 1; frame <= 40; ++frame) {
+        hr::Candidate c;
+        c.lamp.position[0] = 0.0;
+        c.lamp.position[1] = 0.65;
+        c.lamp.position[2] = distance;
+        c.camera_distance = distance;
+        tracker.Observe(c);
+        n = tracker.EndFrame(frame, &out, &cam.frustum);
+      }
+      const double want = li::DistanceFade(distance);
+      const double got = n > 0 ? double(out[0].fade) : 0.0;
+      CheckNear(got, want, 2e-4, "a lone car " + std::to_string(int(distance)) + " m away settles at the distance fade (" + std::to_string(want) + ")");
+    }
+  }
+  // The first-version path still agrees with the second for a car in the middle of the picture: the same output as the view's.
+  {
+    hr::Tracker a, b;
+    std::array<hr::Tracked, hr::kMaxLights> oa{}, ob{};
+    TestCamera cam;
+    cam.eye[1] = 1.3;
+    cam.Build();
+    for (uint64_t frame = 1; frame <= 20; ++frame) {
+      hr::Candidate c;
+      c.lamp.position[0] = 1.0;
+      c.lamp.position[1] = 0.65;
+      c.lamp.position[2] = 20.0;
+      c.camera_distance = std::sqrt(1.0 + 18.7 * 18.7);
+      a.Observe(c);
+      b.Observe(c);
+      a.EndFrame(frame, &oa);
+      b.EndFrame(frame, &ob, &cam.frustum);
+    }
+    CheckNear(double(oa[0].fade), double(ob[0].fade), 1e-6, "a car in the middle of the picture is lit the same with or without the view");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the shadow hook
 // ---------------------------------------------------------------------------
 
@@ -590,6 +1209,24 @@ void CheckShadow() {
   Check(none[0] == hr::kNoView && none[3] == hr::kNoView, "no frame, no views");
   const auto beyond = hr::ShadowViewOfLight(&frame, 2);
   Check(beyond[2] == hr::kNoView, "a view of a light that is not in the set (index 2 of 2 lights) is ignored");
+  // A light is a car's and has up to two views, one for each of its headlamps: the first valid view that names it, then the second; a third is not read.
+  {
+    larecomp::gpu::LocalShadowFrame lamps;
+    lamps.count = 5;
+    const uint32_t names[5] = {1, 1, 0, 1, 0};
+    const uint32_t valid[5] = {1, 1, 1, 1, 0};
+    for (uint32_t v = 0; v < 5; ++v) {
+      lamps.views[v].light_index = names[v];
+      lamps.views[v].valid = valid[v];
+    }
+    const hr::LightViews of2 = hr::ShadowViewsOfLight(&lamps, 3);
+    Check(of2.first[1] == 0 && of2.second[1] == 1, "light 1 has its first two views, 0 and 1 (a third is not read)");
+    Check(of2.first[0] == 2 && of2.second[0] == hr::kNoView, "light 0 has one valid view (the invalid one is skipped)");
+    Check(of2.first[2] == hr::kNoView && of2.second[2] == hr::kNoView, "a light that no view names has none");
+    const auto first_only = hr::ShadowViewOfLight(&lamps, 3);
+    Check(first_only[1] == 0 && first_only[0] == 2, "the one-view table is the first view of each light");
+    Check(hr::ShadowViewsOfLight(nullptr, 3).first[0] == hr::kNoView && hr::ShadowViewsOfLight(nullptr, 3).second[0] == hr::kNoView, "no frame, no views");
+  }
 
   // A matrix that maps x in [0, 10] to u in [0, 1], y in [0, 10] to v in [0, 1] and z in [0, 20] to depth [0, 1], w = 1 (row-major, out = M p).
   larecomp::gpu::LocalShadowView view{};
@@ -637,8 +1274,21 @@ void CheckShadow() {
 // the block the shaders read
 // ---------------------------------------------------------------------------
 
+// Four lamps like `a`, in a row.
+const hr::Lamp* many4(const hr::Lamp& a) {
+  static hr::Lamp four[4];
+  for (int i = 0; i < 4; ++i) {
+    four[i] = a;
+    four[i].position[0] = a.position[0] + 10.0f * float(i);
+  }
+  return four;
+}
+
 void CheckBlock() {
-  Check(sizeof(hr::HeadlightConstants) == 672, "the block is 672 bytes");
+  Check(sizeof(hr::HeadlightConstants) == 1072, "the block is 1072 bytes (672 before the lamps' views: eight views and a second view table)");
+  Check(offsetof(hr::HeadlightConstants, shadow_of) == 256 && offsetof(hr::HeadlightConstants, shadow_of_b) == 272 && offsetof(hr::HeadlightConstants, atlas) == 288 &&
+            offsetof(hr::HeadlightConstants, shadow) == 304 && sizeof(hr::HeadlightConstants::shadow) == 768,
+        "the views follow the two view tables and the atlas slots: c42 shadow_of, c43 shadow_of_b, c44 atlas, c45 the first view");
   hr::Lamp a = BeamAlongX();
   a.position[0] = 5.0f;
   a.position[1] = 0.65f;
@@ -681,6 +1331,43 @@ void CheckBlock() {
   frame.views[0].valid = 0;
   const hr::HeadlightConstants invalid = hr::MakeConstants(lamps, 2, camera, &frame, 7, 8);
   Check(invalid.atlas[0] == hr::kNoSlot, "an invalid view binds no atlas");
+  // A light with TWO views (a car's two headlamps): the first is shadow_of, the second shadow_of_b, and the views are copied up to eight.
+  {
+    larecomp::gpu::LocalShadowFrame two;
+    two.count = 4;
+    for (uint32_t v = 0; v < 4; ++v) {
+      two.views[v].valid = 1;
+      two.views[v].light_index = v / 2;  // lights 0 and 1 have two views each
+      two.views[v].world_to_shadow[0] = float(v + 1);
+      two.views[v].atlas_rect[2] = 1.0f;
+    }
+    const hr::HeadlightConstants both = hr::MakeConstants(lamps, 2, camera, &two, 7, 8);
+    Check(both.shadow_of[0] == 0 && both.shadow_of_b[0] == 1 && both.shadow_of[1] == 2 && both.shadow_of_b[1] == 3, "each light has its two views, in the order the producer gave them");
+    Check(both.shadow_of[2] == hr::kNoView && both.shadow_of_b[2] == hr::kNoView && both.shadow_of_b[3] == hr::kNoView, "a light that is not in the set has none");
+    CheckNear(both.shadow[3].world_to_shadow[0], 4.0, 0.0, "the fourth view is copied (the block held four before)");
+    larecomp::gpu::LocalShadowFrame eight;
+    eight.count = 8;
+    for (uint32_t v = 0; v < 8; ++v) {
+      eight.views[v].valid = 1;
+      eight.views[v].light_index = v / 2;
+      eight.views[v].world_to_shadow[0] = float(v + 1);
+    }
+    const hr::HeadlightConstants all = hr::MakeConstants(many4(a), 4, camera, &eight, 7, 8);
+    bool ok = true;
+    for (uint32_t light = 0; light < 4; ++light) {
+      ok = ok && all.shadow_of[light] == 2 * light && all.shadow_of_b[light] == 2 * light + 1;
+    }
+    for (uint32_t v = 0; v < 8; ++v) {
+      ok = ok && all.shadow[v].world_to_shadow[0] == float(v + 1);
+    }
+    Check(ok, "four cars with two views each: the eight views are in the block, each light names its two");
+    larecomp::gpu::LocalShadowFrame one;
+    one.count = 1;
+    one.views[0].valid = 1;
+    one.views[0].light_index = 0;
+    const hr::HeadlightConstants single = hr::MakeConstants(lamps, 2, camera, &one, 7, 8);
+    Check(single.shadow_of[0] == 0 && single.shadow_of_b[0] == hr::kNoView, "a light with one view (the car's, not its lamps') has no second");
+  }
   // More than four lamps are cut to four.
   hr::Lamp many[6];
   for (auto& lamp : many) lamp = a;
@@ -1102,7 +1789,8 @@ void CheckShadowRemap() {
   {
     const uint32_t keys[2] = {10, 40};
     const auto out = hr::RemapShadowViews(frame, old_keys, 3, keys, 2);
-    Check(out.count == 1 && out.views[0].light_index == 0 && out.views[0].world_to_shadow[0] == 1.0f, "a car that left takes its view with it; a car with one lamp keeps one");
+    Check(out.count == 2 && out.views[0].light_index == 0 && out.views[1].light_index == 0 && out.views[0].world_to_shadow[0] == 1.0f && out.views[1].world_to_shadow[0] == 2.0f,
+          "a car that left takes its views with it; a car that is one light now has both views on it (the mean of the two lamps')");
   }
   // Bad input: an index past the producer's set, an invalid view, no new lights.
   {
@@ -1116,11 +1804,59 @@ void CheckShadowRemap() {
   }
 }
 
-// The levels of LIGHT SHADOWS (owner, 2026-11-20): high shadows two cars, ultra three, of the four the rig lights. The views of a frame are one for each lit lamp, and the
-// block holds four: a car the rig lights but that has no view is lit without a shadow.
+// A light is a car's, and the views are the car's lamps': two views name one light. The next frame's set is in another order; the views go by the car, both to its light.
+void CheckLampViewsRemap() {
+  larecomp::gpu::LocalShadowFrame frame;
+  frame.count = 6;
+  const uint32_t lights[6] = {0, 0, 1, 1, 2, 2};  // the player's two lamps, another car's, a third car's
+  for (uint32_t v = 0; v < 6; ++v) {
+    frame.views[v].valid = 1;
+    frame.views[v].light_index = lights[v];
+    frame.views[v].world_to_shadow[0] = float(v + 1);
+  }
+  const uint32_t old_keys[3] = {10, 20, 30};
+  {
+    const uint32_t keys[4] = {10, 30, 20, 40};  // the two other cars traded places, a fourth came in
+    const auto out = hr::RemapShadowViews(frame, old_keys, 3, keys, 4);
+    Check(out.count == 6, "all six views find their cars");
+    Check(out.views[0].light_index == 0 && out.views[1].light_index == 0 && out.views[2].light_index == 2 && out.views[3].light_index == 2 && out.views[4].light_index == 1 &&
+              out.views[5].light_index == 1,
+          "each car's two views go to its one light, wherever the light is now");
+    const hr::LightViews of = hr::ShadowViewsOfLight(&out, 4);
+    Check(of.first[0] == 0 && of.second[0] == 1 && of.first[1] == 4 && of.second[1] == 5 && of.first[2] == 2 && of.second[2] == 3 && of.first[3] == hr::kNoView,
+          "the table names the two views of each light; the new car has none");
+    Check(out.views[4].world_to_shadow[0] == 5.0f && out.views[2].world_to_shadow[0] == 3.0f, "the matrices go with them");
+  }
+  // A car that is gone loses both; a car that has one light and three views (not made) keeps two.
+  {
+    const uint32_t keys[2] = {30, 10};
+    const auto out = hr::RemapShadowViews(frame, old_keys, 3, keys, 2);
+    Check(out.count == 4 && out.views[0].light_index == 1 && out.views[1].light_index == 1 && out.views[2].light_index == 0 && out.views[3].light_index == 0,
+          "a car that left takes its two views with it");
+    larecomp::gpu::LocalShadowFrame many = frame;
+    many.count = 3;
+    many.views[0].light_index = many.views[1].light_index = many.views[2].light_index = 0;
+    const uint32_t keys1[1] = {10};
+    Check(hr::RemapShadowViews(many, old_keys, 3, keys1, 1).count == 2, "a light takes two views at most");
+  }
+  // Two lights of one car (the design before the lamps' views: a light for each lamp) still go one view each.
+  {
+    larecomp::gpu::LocalShadowFrame two;
+    two.count = 2;
+    two.views[0].valid = two.views[1].valid = 1;
+    two.views[0].light_index = 0;
+    two.views[1].light_index = 1;
+    const uint32_t keys_old[2] = {10, 10}, keys_new[3] = {20, 10, 10};
+    const auto out = hr::RemapShadowViews(two, keys_old, 2, keys_new, 3);
+    Check(out.count == 2 && out.views[0].light_index == 1 && out.views[1].light_index == 2, "a car with two lights has a view on each");
+  }
+}
+
+// The levels of LIGHT SHADOWS (owner, 2026-11-20): high shadows two cars, ultra three, of the four the rig lights, each with a view for each lamp: up to six views, and the
+// block holds eight. A car the rig lights but that has no view is lit without a shadow.
 void CheckThreeShadowViews() {
-  Check(hr::kMaxLights >= 3 && sizeof(hr::HeadlightConstants::shadow) / sizeof(larecomp::gpu::LocalShadowView) >= 3,
-        "the rig lights and the block holds the three views ultra makes (it holds four)");
+  Check(hr::kMaxLights >= 3 && sizeof(hr::HeadlightConstants::shadow) / sizeof(larecomp::gpu::LocalShadowView) >= 6,
+        "the rig lights three cars and the block holds the six views ultra makes (it holds eight)");
   hr::Lamp lamps[4];
   for (int i = 0; i < 4; ++i) {
     lamps[i].position[0] = 10.0f * float(i);
@@ -1256,18 +1992,29 @@ void CheckSoftShadow() {
 }
 
 int main() {
-  CheckTerm();
-  CheckCalibration();
-  CheckNight();
-  CheckCar();
-  CheckFacing();
-  CheckTracker();
-  CheckShadow();
-  CheckSoftShadow();
-  CheckShadowRemap();
-  CheckThreeShadowViews();
-  CheckBlock();
-  CheckPoints();
+  // LU-3: every check that goes through a Tracker runs twice, once with the unified picker (light_pick.h, the default) and once with the legacy code of the old tracker (mcla_gpu_light_pick =
+  // legacy): the same suite, the same numbers, through both.
+  for (const mcla::gpu::light_pick::PickMode mode : {mcla::gpu::light_pick::PickMode::kUnified, mcla::gpu::light_pick::PickMode::kLegacy}) {
+    mcla::gpu::light_pick::DefaultMode() = mode;
+    std::printf("-- the tracker's picks through the %s picker\n", std::string(mcla::gpu::light_pick::ModeName(mode)).c_str());
+    CheckTerm();
+    CheckCalibration();
+    CheckNight();
+    CheckCar();
+    CheckFacing();
+    CheckTracker();
+    CheckFrustum();
+    CheckBeamReach();
+    CheckTrackerView();
+    CheckShadow();
+    CheckSoftShadow();
+    CheckShadowRemap();
+    CheckLampViewsRemap();
+    CheckLampSpan();
+    CheckThreeShadowViews();
+    CheckBlock();
+    CheckPoints();
+  }
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

@@ -1,4 +1,4 @@
-// MCLA GPU renderer -- screen-space reflections (ssr.h, GB-I1): the pure functions the three passes share, and the push block's words.
+// MCLA GPU renderer -- screen-space reflections (ssr.h, GB-I1 and GB-I2): the pure functions the three passes share, and the push block's words.
 //
 // The passes (ssr_trace_ps, ssr_temporal_ps, ssr_apply_ps) are full-screen triangles on a pipeline layout of their own: the host pass layout with a push range of 128 bytes (the AO's
 // way, ao.cpp), 32 words read through SsrW(). Everything here that does not touch a texture lives in this file and in ssr_trace.hlsli so that src/gpu/ssr_test.cpp can compile them AS C++
@@ -29,8 +29,8 @@
 // ---- the push block's words (ssr_rules.h push::, which the test compares with these) -------------------------------------------------------------------------------------------------
 // 32 words of 32 bits; a slot is 16 bits (bindless slots are below 32768), two to a word, 0xFFFF for none; a float is a word read with asfloat.
 #define SSR_W_DEPTH_RT1 0      // depth plane | RT1 << 16: the guest's depth plane (Texture2DMS when SSR_FLAG_MS) and the G-buffer's normal plane
-#define SSR_W_RT2_RT3 1        // RT2 | RT3 << 16
-#define SSR_W_SRC 2            // the pass's own images: trace: -; temporal: the trace | the history << 16; apply: the accumulated image | the trace << 16 (the debug views)
+#define SSR_W_RT2_RT3 1        // RT2 | RT3 << 16; temporal: the AO's vehicle table's slot in the low 16 bits (SSR_W_VEH_TABLE), 0xFFFF none
+#define SSR_W_SRC 2            // the pass's own images: trace: the road view (SSR_W_ROAD_VIEW); temporal: the trace | the history << 16; apply: the accumulated image | the trace << 16 (the debug views)
 #define SSR_W_HIZ01 3          // the Hi-Z's levels 0 | 1 << 16
 #define SSR_W_HIZ23 4
 #define SSR_W_HIZ45 5
@@ -39,7 +39,7 @@
 #define SSR_W_RENDER 8         // the picture's size in host pixels: width | height << 16
 #define SSR_W_FLAGS 9          // sample0 (4 bits) | hiz levels << 4 | colour levels << 8 | SSR_FLAG_* << 12 | rays - 1 << 18 | view << 20 | max iterations << 24
 #define SSR_W_FRAME 10         // trace, apply: the frame's number (the noise); temporal: the weight the history keeps (float)
-#define SSR_W_LIN0 11          // the depth chain's level 0 (the vehicle mark) | spare << 16
+#define SSR_W_LIN0 11          // the depth chain's level 0 (the vehicle mark) | the depth target's stencil plane << 16 (the trace: the vehicle a hit is on; 0xFFFF none)
 #define SSR_W_TAN_X 12         // floats: tan of the half field of view, x then y
 #define SSR_W_TAN_Y 13
 #define SSR_W_LIN_X 14         // the projection's depth rows, ScreenCamera::lin
@@ -50,7 +50,7 @@
 #define SSR_W_MAX_DIST 19      // float: the longest ray, world units; temporal: tan y of the last frame's lens
 #define SSR_W_RIGHT 20         // 3 floats: the camera's right axis in world space; temporal: the motion's rows (12 floats, words 20 to 31)
 #define SSR_W_UP 23            // 3 floats: the camera's up axis in world space
-#define SSR_W_STRENGTH 26      // float: the term's strength
+#define SSR_W_STRENGTH 26      // float: the term's strength; trace: the share of the road view taken out where a ray finds a reflection (SSR_W_FALLBACK)
 #define SSR_W_MIN_SMOOTH 27    // float: pixels rougher than this are not reflected
 #define SSR_W_STUB_SMOOTH 28   // float: the stub's smoothness
 #define SSR_W_WET 29           // float: the road's wetness 0..1
@@ -62,8 +62,14 @@
 #define SSR_W_PREV_TAN_Y SSR_W_MAX_DIST
 #define SSR_W_HISTORY_WEIGHT SSR_W_FRAME
 #define SSR_W_MOTION 20
+// GB-I2: the words the new parts use, each in a pass that does not read the word's first meaning (ssr_rules.h push::)
+#define SSR_W_ROAD_VIEW 2         // trace: the game's road reflection view (256x256 at the guest's size): its slot (bits 0-15, 0xFFFF none) | its host samples - 1 << 16 (3 bits) | its side in host pixels << 19 (10 bits)
+#define SSR_W_FALLBACK 26         // trace: float, the share of that view the effect takes out of the road where a ray finds a reflection (0 adds the reflection on top, as GB-I1)
+#define SSR_W_VEH_TABLE 1         // temporal: the AO's vehicle table (4 x 24 texels, a row an ID: three rows of the 3x4 motion, then a flag) in the low 16 bits, 0xFFFF none
+#define SSR_W_STENCIL 11          // trace: the high 16 bits of SSR_W_LIN0: the depth target's stencil plane (0xFFFF none)
+#define SSR_W_ROAD_VIEW_APPLY 3   // apply: the same word as SSR_W_ROAD_VIEW, for the debug view that draws the road view (the apply reads no Hi-Z)
 
-#define SSR_FLAG_MS 1u          // the guest's depth and the G-buffer's planes are multisampled (Texture2DMS, read at sample0)
+#define SSR_FLAG_MS 1u         // the guest's depth and the G-buffer's planes are multisampled (Texture2DMS, read at sample0)
 #define SSR_FLAG_HZ 2u          // the Hi-Z level that is the SSR size is 1 (the traced size is the picture's), else 0 (the traced size is half of it)
 #define SSR_FLAG_COL_HALF 4u    // colour_post is half the picture's size
 #define SSR_FLAG_STUB 8u        // the frame has no RT3: SsrStubGain
@@ -87,6 +93,15 @@ static const float kSsrFacingStart = -0.15f;    // a ray that points back at the
 static const float kSsrFacingEnd = 0.15f;
 static const float kSsrConeScale = 0.25f;       // the colour's blur: the lobe's half width at the hit over a colour texel, times this, is the footprint in texels
 static const float kSsrMissLength = 4096.0f;    // what the trace's alpha holds for a ray that found nothing (the virtual image is then nearly at infinity)
+// GB-I2
+static const float kSsrRampSpan = 0.20f;        // a surface goes from "not reflected" (the smoothness floor) to the whole term over this much smoothness (at most up to the wet road's)
+static const float kSsrVehicleRowWeight = 0.8f;     // the history weight kept for a reflected vehicle that has a motion row (the clip does the rest)
+static const float kSsrVehicleNoRowWeight = 0.35f;  // ... and for one that has none (its image is taken as the world's: it smears, so it keeps little)
+static const float kSsrClipGamma = 1.25f;       // the history is clipped to the neighbourhood's mean +- this many standard deviations (and to its min / max widened by kSsrClipMargin)
+static const float kSsrClipMargin = 0.1f;
+static const float kSsrGuard = 0.8f;            // the road view taken out may never leave less than this share's complement of the colour that was there (a bad estimate must not black the road)
+static const float kSsrHistoryBorder = 1.0f;    // a history position nearer than this many texels to the picture's edge is not read (the clamped sample would smear the edge's texel)
+static const uint kSsrVehicleIdMask = 0x1Fu;    // a vehicle's ID (1 to 23) rides in the low five bits of the half float's mantissa in the trace's alpha (SsrPackHit)
 
 // ---- slots and words ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 uint SsrLo(uint word) { return word & 0xFFFFu; }
@@ -132,6 +147,14 @@ float SsrWetSmooth(uint cls, float smoothness, float wet) {
     return lerp(smoothness, max(smoothness, kSsrWetSidewalkSmooth), saturate(wet));
   }
   return smoothness;
+}
+
+// How much of the term a smoothness takes: 0 at the floor (mcla_gpu_ssr_min_smooth: a dry road is below it), 1 from a little above it (smoothstep), so that the wet road does not jump from nothing
+// to a whole reflection at the number the rain's ramp crosses the floor at. The ramp ends no higher than the wet road's smoothness (the floor of a debug run may sit just under it).
+float SsrSmoothRamp(float smoothness, float floor_smooth) {
+  const float end = max(min(floor_smooth + kSsrRampSpan, kSsrWetRoadSmooth), floor_smooth + 0.01f);
+  const float t = saturate((smoothness - floor_smooth) / (end - floor_smooth));
+  return t * t * (3.0f - 2.0f * t);
 }
 
 float SsrAlphaOfSmooth(float smoothness) {
@@ -291,10 +314,87 @@ bool SsrSameSurface(float stored_z, float expected_z) {
   return abs(stored_z - expected_z) <= 0.08f * expected_z + 0.05f;
 }
 
-// The colour a clamp keeps: the history's value pulled into the box of the current neighbourhood, widened by a share of its size.
-float SsrClampToBox(float value, float lo, float hi) {
-  const float margin = 0.1f * (hi - lo);
-  return clamp(value, lo - margin, hi + margin);
+// ---- GB-I2: the history's clip -----------------------------------------------------------------------------------------------------------------------------------------------------
+// One ray a pixel is noise, so the neighbourhood the history is held to is the 3x3 of the TRACE (the pixels that were traced): its mean, its standard deviation and its min and max, per channel.
+// The box is mean +- kSsrClipGamma sigma, no wider than min / max widened by a tenth of their range (the variance clip, Salvi 2016, with the plain clamp's box as its limit), and the history
+// is brought to its inside along the line to its centre, not channel by channel (a clamp turns a colour; the clip keeps it).
+float SsrBoxLoChannel(float mean, float sigma, float lo, float hi) {
+  return max(mean - kSsrClipGamma * sigma, lo - kSsrClipMargin * (hi - lo));
 }
+float SsrBoxHiChannel(float mean, float sigma, float lo, float hi) {
+  return min(mean + kSsrClipGamma * sigma, hi + kSsrClipMargin * (hi - lo));
+}
+// The history `value` held to the box [box_lo, box_hi]: unchanged inside it, else the point of the box's surface on the line from the box's centre to the value.
+float3 SsrClipToBox(float3 value, float3 box_lo, float3 box_hi) {
+  const float3 centre = float3(0.5f * (box_lo.x + box_hi.x), 0.5f * (box_lo.y + box_hi.y), 0.5f * (box_lo.z + box_hi.z));
+  const float3 half_size = float3(max(0.5f * (box_hi.x - box_lo.x), 1.0e-3f), max(0.5f * (box_hi.y - box_lo.y), 1.0e-3f), max(0.5f * (box_hi.z - box_lo.z), 1.0e-3f));
+  const float3 v = value - centre;
+  const float t = max(max(abs(v.x) / half_size.x, abs(v.y) / half_size.y), abs(v.z) / half_size.z);
+  return t > 1.0f ? centre + v * (1.0f / t) : value;
+}
+
+// Whether a history position (u, v in 0..1 of an image of width x height texels) is far enough from the picture's edge to be read.
+bool SsrHistoryInside(float u, float v, float width, float height) {
+  return u * width >= kSsrHistoryBorder && (1.0f - u) * width >= kSsrHistoryBorder && v * height >= kSsrHistoryBorder && (1.0f - v) * height >= kSsrHistoryBorder;
+}
+
+// ---- GB-I2: what the trace says of a hit, in its alpha -----------------------------------------------------------------------------------------------------------------------------------
+// The alpha of the trace is a half float: the distance from the receiver to the hit (the virtual image's), and where the hit is on a VEHICLE's pixel, the sign bit set and the vehicle's ID (the
+// stencil's, 1 to 23; 0 = a vehicle whose ID is not known) in the low five bits of the half's ten mantissa bits (float bits 13 to 17), leaving five bits (3%) for the distance: a 3% error in the length
+// of a reflected vehicle's image moves its reprojection by far less than a texel (the error is second order: the image is hardly parallax at the lengths a car is reflected from). A hit that is no
+// vehicle's keeps its ten bits. The float written has its lower 13 bits clear, so the half conversion is exact.
+float SsrPackHit(float distance, bool vehicle, uint vehicle_id) {
+  if (!vehicle) {
+    return distance;
+  }
+  const uint bits = (asuint(distance) & 0x7FFFE000u & ~(kSsrVehicleIdMask << 13u)) | ((vehicle_id & kSsrVehicleIdMask) << 13u) | 0x80000000u;
+  return asfloat(bits);
+}
+bool SsrHitIsVehicle(float alpha) {
+  return (asuint(alpha) & 0x80000000u) != 0u;
+}
+uint SsrHitVehicleId(float alpha) {
+  return SsrHitIsVehicle(alpha) ? ((asuint(alpha) >> 13u) & kSsrVehicleIdMask) : 0u;
+}
+// The distance of a packed hit: the vehicle's is rounded to the middle of the 3% the ID took.
+float SsrHitDistance(float alpha) {
+  const uint bits = asuint(alpha) & 0x7FFFFFFFu;
+  return SsrHitIsVehicle(alpha) ? asfloat((bits & 0xFFFC0000u) | 0x00020000u) : asfloat(bits);
+}
+
+// ---- GB-I2: the image of a reflected vehicle -----------------------------------------------------------------------------------------------------------------------------------------
+// A point mirrored across the plane through `plane_point` with the unit normal `n`.
+float3 SsrMirror(float3 p, float3 plane_point, float3 n) {
+  return p - n * (2.0f * dot(p - plane_point, n));
+}
+float SsrDot3(float4 row, float3 v) {
+  return row.x * v.x + row.y * v.y + row.z * v.z;
+}
+// Where the reflection of a point of a MOVING vehicle was in the last frame. The virtual image of SsrVirtualPoint is the mirror image of the hit across the receiver's surface; undone with the
+// surface's normal it gives the hit itself (this frame's view space), which the vehicle's own row (v0..v2: the AO's vehicle table, the 3x4 that takes a point of this frame's view space to
+// the last frame's view space where THAT vehicle's point was, camera and vehicle motion together) moves to where it was; the receiver is the world's (m0..m2: the camera's motion alone) and so is
+// the mirror: the last frame's image is the mirror of the old hit across the old surface. Exact for a flat mirror; the receiver's normal is the depth's (the pass has no camera axes).
+SsrPrevious SsrVehicleImage(float4 m0, float4 m1, float4 m2, float4 v0, float4 v1, float4 v2, float3 receiver, float3 n, float length_to_hit, float tan_x, float tan_y) {
+  const float3 virt = SsrVirtualPoint(receiver, length_to_hit);
+  const float3 hit = SsrMirror(virt, receiver, n);
+  const float4 qh = float4(hit.x, hit.y, hit.z, 1.0f);
+  const float3 hit_prev = float3(dot(v0, qh), dot(v1, qh), dot(v2, qh));
+  const float4 qr = float4(receiver.x, receiver.y, receiver.z, 1.0f);
+  const float3 receiver_prev = float3(dot(m0, qr), dot(m1, qr), dot(m2, qr));
+  const float3 n_prev = normalize(float3(SsrDot3(m0, n), SsrDot3(m1, n), SsrDot3(m2, n)));
+  const float3 image = SsrMirror(hit_prev, receiver_prev, n_prev);
+  return SsrToPrevious(float4(1.0f, 0.0f, 0.0f, 0.0f), float4(0.0f, 1.0f, 0.0f, 0.0f), float4(0.0f, 0.0f, 1.0f, 0.0f), image, tan_x, tan_y);
+}
+
+// ---- GB-I2: the road view's share and the guard ------------------------------------------------------------------------------------------------------------------------------------------
+// The apply adds the term to a colour that already holds the game's own reflection, so where the trace took the road view out of the term (the term can then be negative) a bad estimate must not
+// turn the road black: each channel of the term keeps at least kSsrGuard of the colour the pixel had before (colour_post's, at the apply's position) taken away.
+float3 SsrGuardTerm(float3 term, float3 base) {
+  return float3(max(term.x, -kSsrGuard * max(base.x, 0.0f)), max(term.y, -kSsrGuard * max(base.y, 0.0f)), max(term.z, -kSsrGuard * max(base.z, 0.0f)));
+}
+// The road view's side, samples and slot out of the trace's SSR_W_ROAD_VIEW word (ssr_rules.h PackRoadView).
+uint SsrRoadViewSlot(uint word) { return word & 0xFFFFu; }
+uint SsrRoadViewSamples(uint word) { return ((word >> 16u) & 7u) + 1u; }
+uint SsrRoadViewSide(uint word) { return (word >> 19u) & 1023u; }
 
 #endif  // MCLA_GPU_SSR_COMMON_HLSLI

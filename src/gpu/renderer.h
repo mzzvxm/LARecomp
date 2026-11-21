@@ -62,6 +62,7 @@
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
 #include "local_shadow.h"
+#include "shadow_atlas.h"
 #include "descriptors.h"
 #include "device.h"
 #include "dlss_frame_generation.h"
@@ -304,6 +305,7 @@ class Renderer final : public RenderThread::Executor {
   CarDump car_dump_;          // render thread; the debug dump of one frame's cars (car_dump.h)
   CarFrame car_frame_;        // render thread; the player car's draws of every frame a car effect asks for them (car_frame.h)
   HeadlightRig headlights_;   // render thread; the cars' headlights as lights for the lit shaders at night (headlight_rig.h)
+  ShadowAtlas shadow_atlas_;  // render thread; the one shadow atlas (shadow_atlas.h, LIGHT-UNIFY U5): the headlight replay is its first provider (mcla_gpu_light_frame bit 8); before it: it outlives it
   LocalShadow local_shadow_;  // render thread; the headlight shadow maps (local_shadow.h), recorded at the history trigger before the car shadow map's and the AO's passes
   LocalLights local_lights_;  // render thread; the deferred local light pass (local_lights.h, mcla_gpu_local_lights): reads the G-buffer, the shared screen products, the AO's camera and the light manager
   LightManager light_manager_;  // render thread; the passive light manager (light_manager.h, mcla_gpu_lights_census): one frame of the lights, checked against the consumers'

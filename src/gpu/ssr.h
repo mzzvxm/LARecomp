@@ -1,10 +1,14 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- screen-space reflections (package GB-I1 of perf/LIGHT-UNIFY.md 11.2, perf/GBUFFER-SURVEY.md 4.2)
+// MCLA GPU renderer -- screen-space reflections (packages GB-I1 and GB-I2 of perf/LIGHT-UNIFY.md 11.2, perf/GBUFFER-SURVEY.md 4.2)
 // ===========================================================================
 // Reflections on the surfaces that show them in the screen's own picture: the wet road at night, the sidewalk, glass, metal, water. A Hi-Z ray march of the shared depth at HALF the picture's size, one
 // GGX-sampled ray a pixel (two at ultra), the colour of what it hits read from the shared colour_post, an accumulation over frames by the virtual image's reprojection, and an additive resolve into the
-// main colour at the picture's size. Off by default (mcla_gpu_ssr, debug-only until the owner has seen it).
+// main colour at the picture's size. THE ROW (GB-J): REFLECTIONS ON SURFACES, GRAPHICS > REFLECTIONS (mcla_gpu_ssr: auto, off, high, ultra); OFF by default because `auto` is the GPU class's cell
+// (gpu_class.h Effect::kSsr) and every cell is off until the owner has seen the pictures (the prepared cells are in gpu_class.h).
+//   LEVELS      what each changes (ssr_rules.h NumbersOf): HIGH one ray a pixel, up to 40 Hi-Z steps, the history weight 0.90 (a mean of about 10 frames); ULTRA two rays a pixel (their mean: the trace
+//               shader's), up to 64 steps, 0.92 (about 12 frames). The size is the same for both: the images are HALF the picture's (11.9 MiB at 1080p, 47.5 MiB at 4K), the
+//               resolve into the colour is at the picture's size. The temporal part (clip, edge rule, vehicle rows) is part of both levels; the debug settings below tune it.
 //
 // WHERE THINGS COME FROM (all of it shared, nothing is made twice):
 //   ScreenShared (screen_shared.h)  hiz_min (the min chain of the AO's linear depth: the walk), colour_post with its mip chain (the radiance of a hit: the effect's Want of it also turns the mips on),
@@ -18,7 +22,7 @@
 //                                   trusts) the pass takes the last frame's anchor camera for the axes and runs with no history.
 //
 // THE PASSES (hlsl/ssr_trace_ps.hlsl, ssr_temporal_ps.hlsl, ssr_apply_ps.hlsl; the walk is hlsl/ssr_trace.hlsli, checked in ssr_test.cpp against analytic scenes and a brute force march), recorded at the
-// trigger right after the colour capture (scene.cpp OnResolve, step 8b of the order):
+// trigger right after the colour capture (scene.cpp OnResolve; the SSR step of frame_order.h's table):
 //   1 trace     half size, RGBA16F: per pixel the class gate and the smoothness (a pixel that reflects nothing costs the gate's reads), a GGX ray, the Hi-Z walk, the colour of the hit at the mip the
 //               lobe's width asks for (the sky at the vanishing point where the ray ended on the picture), faded at the picture's edge and for a ray that points back at the camera; a = the distance
 //   2 temporal  half size, RGBA16F x 2 (history ping-pong): the virtual image's reprojection, the receiver's surface test, the clamp to the neighbourhood's box, a = the receiver's depth
@@ -26,13 +30,32 @@
 //               accumulated image weighted by depth agreement
 // What no ray finds stays the game's own reflection (the road's planar view, the glass' env map); a car's paint and chrome never take the effect (the class gate), they keep their own.
 //
-// THE ORDER (LIGHT-UNIFY 5.3): after the light pass (GB-H1: step 7) and the colour capture (8), so that the reflection shows the lights; before the volumetric composite and the glows, which are drawn
-// after the trigger. colour_post is made before the effect adds to the colour: a reflection is not a reflection of a reflection.
+// GB-I2 (the three parts that make it a finished effect):
+//   TEMPORAL     the accumulation clips the history to the trace's neighbourhood (mean +- 1.25 sigma inside its min / max: a variance clip), reads no history at the picture's edge, and moves a REFLECTED
+//                VEHICLE's image with the vehicle's own motion: the trace marks a hit on a vehicle's pixel with its stencil ID in the alpha, and the AO's vehicle table (VehicleTableNow: the very rows its own
+//                history uses, vehicle_motion.h) gives that ID's 3x4 (hlsl/ssr_common.hlsli SsrVehicleImage). No row: the image is the world's and the history keeps little (so a car does not smear).
+//   WET ROAD     the game's own scalar, VS c43.x (gReflectionParams.x: 0.095 dry, 1.17 in rain; the census says it is what the road shaders multiply their puddle mask and reflection by), as GB-I1 read it, now
+//                smoothed over a second of TIME (not of frames), with a smooth ramp of the term over the first 0.2 of smoothness above the floor (a road that has just crossed it does not jump to a whole
+//                reflection), and c43.y (the strength the game shows its road view with) next to it. Per-pixel puddles are the game's texture's: the effect has the wetness of the frame, not of the pixel.
+//   FALLBACK     on a ROAD the game's own reflection (the 256 x 256 planar view of the whole screen, side_views.h) is already in the colour. The trace reads that view (the host target of its identity,
+//                found by ScreenReflections::OnTrigger) at the pixel's screen position and brings the DIFFERENCE between the reflection a ray found and the view, so the sharp reflection replaces the
+//                soft one (no doubling) and where the ray found nothing, left the picture or hit a back face the difference is 0 and the game's reflection stays alone (no seam). The share taken out is
+//                mcla_gpu_ssr_fallback (1) times the strength the game shows the view with; 0 adds on top as GB-I1 did. A guard keeps a bad estimate from blacking the road. Other classes (glass, metal,
+//                sidewalk): the game's environment map stays under the term, which is only faded (its dual paraboloid mapping is the game's own and not reproduced here).
+//
+// THE ORDER (LIGHT-UNIFY 5.3; the table is frame_order.h, GB-I3): after the light pass (GB-H1: step 7) and the colour capture (8), so that the reflection shows the lights; before the volumetric composite and
+// the glows, which are drawn after the trigger. colour_post is made before the effect adds to the colour: a reflection is not a reflection of a reflection. Three neighbours, settled by GB-I3:
+//   the car history   is taken AFTER this pass (as the design has it) and does not see it: it holds a vehicle's pixels only (hlsl/car_history_ps.hlsl) and this effect adds nothing to a vehicle's
+//                     pixel (the class gate's vehicle flag, the stub's stencil mark), so what the history reads from the main colour above 1080 lines is the same either side of SSR;
+//   the sun shafts    and the volumetric light's inject / integrate record BEFORE the capture (they write images of their own; the composites are at the end-of-scene copy, after this pass, in the play
+//                     view; only the pause and map worlds and the debug switch composite the shafts at the trigger, where SSR does not run or reflects their light with the rest of the picture);
+//   the wants         are declared at the very start of the frame, before the G-buffer and the screen owner read them (lag 0).
 //
 // WHEN IT RUNS (ssr_rules.h Decide): the setting, the pipelines made (in the background: a frame never waits), the play view's frame (not the pause menu's, the garage's or the map's world), the
 // G-buffer's normal plane, the Hi-Z and colour_post (with its mips) in the frame, a size the rule knows, one host sample count for the depth and the planes. The reason is logged when it changes.
 //
-// SETTINGS (all debug-only, live): mcla_gpu_ssr off | high | ultra; mcla_gpu_ssr_view 0..4; mcla_gpu_ssr_strength; mcla_gpu_ssr_min_smooth; mcla_gpu_ssr_stub; mcla_gpu_ssr_wet; mcla_gpu_ssr_history.
+// SETTINGS (live): the row's mcla_gpu_ssr auto | off | high | ultra (a player setting now), and the debug-only mcla_gpu_ssr_view 0..6; mcla_gpu_ssr_strength; mcla_gpu_ssr_min_smooth; mcla_gpu_ssr_stub; mcla_gpu_ssr_wet; mcla_gpu_ssr_history;
+// mcla_gpu_ssr_fallback (GB-I2); mcla_gpu_ssr_vehicle_rows (GB-I2).
 //
 // CHECK (nothing here was run against the game; ssr_test.cpp pins the maths, the shaders compile for DXIL and SPIR-V): the list is in the RUN PLAN of the commit and in notes\RUNPLAN-gb-i1.txt.
 //
@@ -40,6 +63,7 @@
 // ===========================================================================
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -81,8 +105,8 @@ class ScreenReflections {
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
   void SetAmbientOcclusion(AmbientOcclusion* ao) { ao_ = ao; }
 
-  // A frame's first list: reads the settings, declares what the effect wants of the shared products and of the G-buffer (sticky, read at their next frame boundary: the first frame with the setting
-  // on is the one before the effect can run), forgets the frame's draws.
+  // A frame's first list: reads the settings, declares what the effect wants of the shared products and of the G-buffer (ssr_rules.h WantedProducts / WantedPlanes: only while it is on; sticky; the
+  // owners read them at their own frame start, which Scene::BeginFrame runs AFTER this call, so the wants take effect in this very frame: frame_order.h kBeginSsr, lag 0), forgets the frame's draws.
   void BeginFrame();
   // True while the effect is on: the Scene then tells it the main view's draws (the wetness).
   bool wants_draws() const { return level_ != ssr::Level::kOff; }
@@ -143,6 +167,8 @@ class ScreenReflections {
   bool force_stub_ = false;
   float wet_override_ = -1.0f;
   float history_override_ = -1.0f;
+  float fallback_setting_ = 1.0f;     // GB-I2: mcla_gpu_ssr_fallback
+  bool vehicle_rows_ = true;          // GB-I2: mcla_gpu_ssr_vehicle_rows
 
   // the images: the trace, and the accumulated image twice (this frame's output and the last frame's)
   HostImage trace_;
@@ -158,6 +184,13 @@ class ScreenReflections {
   ssr::WetVotes wet_votes_;
   float wet_ = 0.0f;
   bool wet_known_ = false;
+  float wet_strength_ = 1.0f;         // GB-I2: VS c43.y, the strength the game shows its road view with (smoothed with the wetness)
+  float wet_raw_ = 0.0f;              // the commonest VS c43.x of the last frame that had a vote (the log)
+  std::chrono::steady_clock::time_point wet_clock_;   // the smoothing is in seconds
+  bool wet_clock_valid_ = false;
+  uint32_t road_logged_ = ~0u;        // the road view's last logged reason
+  bool vehicle_table_logged_ = false;
+  uint64_t vehicle_table_frames_ = 0;
   ssr::HistoryKey last_key_;          // the last frame that ran
   float last_tan_[2] = {0.0f, 0.0f};  // the lens it ran with
   uint64_t frames_ = 0;

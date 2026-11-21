@@ -596,6 +596,39 @@ void PlaneChecks() {
     Check(plan.requested == 7 && plan.written == 7, "full: asks for all three, the stage writes them all");
     Check(std::string(gb::ConsumerName(gb::Consumer::kAmbientOcclusion)) == "ambient occlusion" && std::string(gb::ConsumerName(gb::Consumer::kCount)) == "?", "the consumers' names");
   }
+  // GB-J, the hidden auto policy: the G-buffer is made only while a consumer that is on wants a plane
+  {
+    const gb::ConsumerStates none;
+    Check(gb::AutoPlanes(none) == 0 && gb::PlanFrame(gb::Setting::kAuto, gb::AutoPlanes(none)).attached == 0, "GB-J: with every consumer off auto makes no G-buffer (no image, no changed draw, no cost)");
+    gb::ConsumerStates s = none;
+    s.occlusion_normals = true;
+    Check(gb::AutoPlanes(s) == 1, "GB-J: the occlusion's normals ask for RT1 alone");
+    s = none;
+    s.bounce_normals = true;
+    Check(gb::AutoPlanes(s) == 1, "GB-J: the bounce light's normals ask for RT1 alone");
+    s = none;
+    s.light_pass = true;
+    Check(gb::AutoPlanes(s) == 7 && gb::PlanFrame(gb::Setting::kAuto, gb::AutoPlanes(s)).written == 7, "GB-J: the light pass asks for all three planes, all are written");
+    s = none;
+    s.reflections = true;
+    Check(gb::AutoPlanes(s) == 7, "GB-J: the reflections on surfaces ask for all three planes (RT1 normal, RT2 albedo for a metal's F0, RT3 class and smoothness)");
+    s = none;
+    s.decals = true;
+    Check(gb::AutoPlanes(s) == 0, "GB-J: decals ask for nothing yet");
+    s = none;
+    s.occlusion_normals = s.reflections = true;
+    Check(gb::AutoPlanes(s) == 7, "GB-J: the union: the occlusion's normal and the reflections together make all three planes");
+    // the table is the consumers' own wants: every consumer's want is cut to the planes and Wants::Union is AutoPlanes of the same states
+    gb::Wants wants;
+    wants.Set(gb::Consumer::kAmbientOcclusion, gb::ConsumerPlanes(gb::Consumer::kAmbientOcclusion));
+    wants.Set(gb::Consumer::kReflections, gb::ConsumerPlanes(gb::Consumer::kReflections));
+    gb::ConsumerStates two = none;
+    two.occlusion_normals = two.reflections = true;
+    Check(wants.Union() == gb::AutoPlanes(two) && gb::ConsumerPlanes(gb::Consumer::kCount) == 0, "GB-J: the Wants union of the consumers' table is the policy's answer; the table has nothing for a consumer it does not know");
+    for (uint32_t c = 0; c < uint32_t(gb::Consumer::kCount); ++c) {
+      Check((gb::ConsumerPlanes(gb::Consumer(c)) & ~gb::kAllPlanes) == 0, std::string("GB-J: ") + gb::ConsumerName(gb::Consumer(c)) + " asks for the planes of the stage only");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

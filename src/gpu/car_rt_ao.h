@@ -23,7 +23,7 @@
 //   mcla_gpu_ao_view 2       the occlusion's visibility (with the term in it): compare with mcla_gpu_ao_rt off.
 //
 // WHERE IT RUNS. The structures are built at the history trigger (CarRtScene::OnResolve, the game's mid-scene depth copy), and the occlusion's passes
-// run at the same copy, so the Scene builds the structures BEFORE the occlusion's passes in every frame (scene.cpp OnResolve documents the order; the
+// run at the same copy, so the Scene builds the structures BEFORE the occlusion's passes in every frame (frame_order.h's table is the order; the
 // structures' check pass, which reads the occlusion's depth, comes after). The pass is one dispatch inside AmbientOcclusion::Run, after the depth chain
 // and before the visibility pass: it reads the occlusion's level 0 linear depth (vehicle bit in its lowest bit) and writes an image of the same size
 // that the visibility pass (lin.x, flag bit 31: the plain pass and the bounce light's) and the contact march (slots.x, flag bit 31) read.

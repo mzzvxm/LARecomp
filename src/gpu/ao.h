@@ -211,7 +211,7 @@
 // plain one AND the bounce light's (hlsl/ao_main_ps.hlsl THE TRACED TERM: flag bit 31, lin.x the image's slot; the bounce light's x channel, the one its
 // denoise and history read, takes the same rule, the darker of its own visibility and the traced open share raised to the same power; its bounce channels
 // are the screen's), and the contact march, which takes the darker of its shadow, the car's shadow map's and the ray's (flag bit 31, slots.x). It runs
-// inside Run after the depth chain, so the cars' structures are built BEFORE the occlusion's passes in every frame (scene.cpp OnResolve documents the
+// inside Run after the depth chain, so the cars' structures are built BEFORE the occlusion's passes in every frame (frame_order.h's table is the
 // frame's order). Debug cvars (car_rt_ao.cpp): mcla_gpu_ao_rt auto | off | ao | contact (the A/B), mcla_gpu_ao_rt_length, mcla_gpu_ao_rt_rays;
 // mcla_gpu_contact_shadows_view 7 shows the sun term alone (6 is the apply's sun visibility, which main has). CHECK: the pictures and the cost (pass timing label "ao rt"); perf/RT-AO-DESIGN.md has the list.
 //
@@ -587,6 +587,16 @@ class AmbientOcclusion {
     float motion[12] = {};
   };
   bool FrameCameraNow(FrameCameraOut* out) const;
+  // The vehicles' motion table of this frame for another consumer of the trigger (the screen-space reflections' temporal pass, ssr.h; GB-I2): the image RecordVehicleTable drew for the occlusion's own history,
+  // 4 x 24 RGBA32F texels in the shader read layout, a row an ID 1 to 23: texels 0 to 2 the three rows of the 3x4 that takes a point of this frame's view space (this renderer's: x right, y up, z forward) into
+  // the last frame's with that vehicle's own step on top of the camera's, texel 3 x > 0.5 where the row is usable. `ids` has bit k for each ID that got a row. True only in a frame whose history pass drew
+  // it (the occlusion's history is on, the play view, the last anchor's vehicle motion was the frame before); otherwise there is none and the consumer takes a vehicle's pixels as the world's. Valid at
+  // the trigger, after OnResolve. A read: it records and changes nothing.
+  struct VehicleTableOut {
+    uint32_t slot = 0xFFFFFFFFu;
+    uint32_t ids = 0;
+  };
+  bool VehicleTableNow(VehicleTableOut* out) const;
 
  private:
   // The push block of every pass (hlsl/ao_common.hlsli AoPush), 128 bytes.
@@ -1194,6 +1204,10 @@ class AmbientOcclusion {
   uint64_t vehicle_motion_frame_ = 0;
   std::unique_ptr<plume::RenderShader> vehicle_table_shader_;
   HostImage vehicle_table_;  // R32G32B32A32_FLOAT, 4 x 24: a row an ID (hlsl/ao_temporal_ps.hlsl)
+  // The last table RecordVehicleTable drew, for VehicleTableNow: its frame (frame_), the IDs that got a row and the slot.
+  uint64_t vehicle_table_frame_ = ~0ull;
+  uint32_t vehicle_table_ids_ = 0;
+  uint32_t vehicle_table_slot_ = 0xFFFFFFFFu;
   // The totals for the log. Anchor side: what the game's matrices gave. Trigger side: the frames that
   // averaged over a history, the vehicle IDs the main view had written by then and how many of them
   // had a row in the table.
