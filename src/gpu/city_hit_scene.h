@@ -37,6 +37,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -47,6 +48,7 @@
 #include "citypack/hit_reader.h"
 #include "citypack/pack_reader.h"
 #include "city_hit_pool_rules.h"
+#include "city_pack_state.h"
 #include "city_hit_probe.h"
 #include "city_texture_rules.h"
 #include "city_texture_scope.h"
@@ -100,6 +102,14 @@ class CityHitScene {
   TextureScope texture_scope() const { return scope_; }
   // The base pack is open (CityRtScene::OpenPack): the sector table's size and the check the hit file is matched to. Null again when the pack is given up.
   void SetBase(const larecomp::citypack::PackReader* base);
+  // The app's say on the hit data's files (CITY-HIT-ACTION; gpu.h CityPackHooks): `probe` says which state the hit file and the texture file beside the pack are in for the player's game files
+  // (stat only; city_pack_state.h), `request_build` is called ONCE per session when they are missing or stale (the app builds them on a thread of its own, in the background, and `probe` answers
+  // "being built" until it ends). Asked from OpenFile only, i.e. while a consumer wants the hit data (the level above OFF, the base pack open); null (a build with no app): the files are
+  // opened as they are, as before.
+  void SetFileProbe(std::function<city_rt::PackState(std::string* why)> probe, std::function<void()> request_build) {
+    probe_state_ = std::move(probe);
+    request_build_ = std::move(request_build);
+  }
 
   // The pool exists, the table is sized, the file is open: blocks may be reserved this frame.
   bool ready() const { return level_ != city_rt::Level::kOff && pool_ != nullptr && book_ && book_->ready(); }
@@ -252,6 +262,10 @@ class CityHitScene {
   larecomp::citypack::HitReader reader_;
   bool reader_open_ = false;
   std::string file_problem_;
+  std::function<city_rt::PackState(std::string* why)> probe_state_;  // the app's say (SetFileProbe)
+  std::function<void()> request_build_;
+  bool build_requested_ = false;
+  int logged_probe_state_ = -1;
 
   // The pool.
   std::unique_ptr<plume::RenderBuffer> pool_;

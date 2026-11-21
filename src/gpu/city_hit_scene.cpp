@@ -98,14 +98,39 @@ void CityHitScene::SetBase(const cf::PackReader* base) {
 bool CityHitScene::OpenFile() {
   if (reader_open_) return true;
   if (!base_ || !base_->is_open()) return false;
+  if (probe_state_) {
+    // The app's verdict first (stat only): hit data that is missing, or built from other files or another pack than the player's now, is never opened; the structures and the shadows go on
+    // without it until the app has built the right files (in the background: the launcher's setup, larecomp.exe --build_city_hit, has them ready at the first start), which the probe then
+    // reports as current.
+    std::string why;
+    const city_rt::PackState state = probe_state_(&why);
+    const city_rt::FileProbeStep step = city_rt::DecideFileProbe(state, build_requested_);
+    if (!step.open) {
+      if (step.request_build && request_build_) {
+        build_requested_ = true;
+        request_build_();
+      }
+      retry_frame_ = frame_ + step.wait_frames;
+      if (logged_probe_state_ != int(state)) {
+        logged_probe_state_ = int(state);
+        REXLOG_INFO("{} the city hit data is {}{}: the effects that read it wait for it, the structures and the shadows go on without it{}; looked for {}", kPrefix, city_rt::PackStateName(state),
+                    why.empty() ? std::string() : " (" + why + ")",
+                    city_rt::WantsBuild(state) ? "; the game builds it in the background (the launcher's setup runs larecomp.exe --build_city_hit, which has it ready at the first start)"
+                                               : state == city_rt::PackState::kBuilding ? "; it is being built in the background, checked again in 2 s" : "",
+                    hit_file_.string());
+      }
+      return false;
+    }
+    logged_probe_state_ = int(state);
+  }
   std::string error;
   if (!reader_.Open(hit_file_, cf::IdentityOf(*base_), &error)) {
     retry_frame_ = frame_ + city_hit::kFileRetryFrames;
     if (logged_state_ != 1 || file_problem_ != error) {
       logged_state_ = 1;
       file_problem_ = error;
-      REXLOG_INFO("{} the city hit data is not used: {} (looked for {}); the structures and the shadows go on without it; the file is built from the game files (citypack_tool, and the launcher "
-                  "once reflections ask for it), looked for again in a minute",
+      REXLOG_INFO("{} the city hit data is not used: {} (looked for {}); the structures and the shadows go on without it; the files are built from the game files (larecomp.exe --build_city_hit: "
+                  "the launcher's setup runs it, and the game builds them in the background when the stamp is not current), looked for again in a minute",
                   kPrefix, error, hit_file_.string());
     }
     return false;
@@ -140,8 +165,8 @@ bool CityHitScene::OpenTextures() {
     if (logged_texture_state_ != 1 || texture_problem_ != error) {
       logged_texture_state_ = 1;
       texture_problem_ = error;
-      REXLOG_INFO("{} the city textures are not used: {} (looked for {}); the hit data goes on without them (the cut-out shadows use the stochastic rule); the file is built beside the hit file "
-                  "(citypack_tool tex-build), looked for again in a minute",
+      REXLOG_INFO("{} the city textures are not used: {} (looked for {}); the hit data goes on without them (the cut-out shadows use the stochastic rule); the file is built with the hit file "
+                  "(larecomp.exe --build_city_hit), looked for again in a minute",
                   kPrefix, error, texture_file_.string());
     }
     return false;

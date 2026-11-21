@@ -2,7 +2,7 @@
 #
 # One static library, larecomp_citypack: the pack format (pack_format.h), the hit data's format (city_hit_format.h: CITY-RT M2) and its builder (hit_builder.h, with hit_params.h, hit_collect.h,
 # hit_material.h), the reader of the game's city resources (sector_parse.h), the class of a
-# shader (material_class.h), the welder (mesh_builder.h), the builder (builder.h) and the reader the streamer uses (pack_reader.h). It has no
+# shader (material_class.h), the welder (mesh_builder.h), the builder (builder.h), the hit data as one operation for the tool, larecomp.exe and the game (hit_data.h) and the reader the streamer uses (pack_reader.h). It has no
 # dependency on the ReXGlue runtime, Plume or libmspack: the builder is given the LZX function, and it expects, from whoever links it
 # (larecomp already has them in LARECOMP_SOURCES; the tool and the test compile them themselves): src/mc_engine/modloader/{rpf3,aes256,texture}.cpp.
 
@@ -13,6 +13,7 @@ add_library(larecomp_citypack STATIC
     hit_builder.cpp
     hit_collect.cpp
     hit_corner_codec.cpp
+    hit_data.cpp
     hit_material.cpp
     hit_params.cpp
     city_texture.cpp

@@ -119,6 +119,8 @@ constexpr rex::CLIAction kActions[] = {
     REX_CLI_ACTION(build_shader_packs, "Builds the shader packs from the game files and exits (the launcher's setup)."),
     REX_CLI_ACTION(precache_pipelines, "Fills the graphics driver's pipeline cache from the packs and exits."),
     REX_CLI_ACTION(build_city_pack, "Builds the city pack (the city's geometry for ray traced shadows) from the game files and exits (the launcher's setup)."),
+    REX_CLI_ACTION(build_city_hit, "Builds the city hit data (the hit file and the texture file beside the city pack, for the ray traced effects that read the city's surfaces) and exits (the launcher's setup)."),
+    REX_CLI_ACTION(check_city_hit, "Checks the city hit data (stat only; with check_city_hit_deep every file is read back) and exits: exit code 0 when it is in place and current."),
 };
 
 // Dedicated VRAM of the adapter the game will run on, in MiB, or 0. Used to size the texture cache (the limits are what
@@ -856,10 +858,21 @@ void LarecompApp::RunBatchMode() {
     code = larecomp::pipelinebuild::RunCommandLine(game_root);
   } else if (batch_ == BatchMode::kBuildCityPack) {
     code = larecomp::citypackbuild::RunCommandLine(game_root);
+  } else if (batch_ == BatchMode::kBuildCityHit) {
+    code = larecomp::citypackbuild::RunBuildHitCommandLine(game_root);
+  } else if (batch_ == BatchMode::kCheckCityHit) {
+    code = larecomp::citypackbuild::RunCheckHitCommandLine(game_root, ls::check_city_hit_deep.Get());
   }
-  // --build_city_pack with another action: after it, when it succeeded (its own @citypack lines come after the other action's lines).
+  // The city actions given with another one: after it, each when everything before it succeeded, in the order the files depend on each other (the pack, the hit data over it, the check of
+  // the hit data); their own @citypack lines come after the first action's lines, each action ending with its own result line (city_pack_rules.h PlanActions).
   if (also_build_city_pack_ && code == 0) {
     code = larecomp::citypackbuild::RunCommandLine(game_root);
+  }
+  if (also_build_city_hit_ && code == 0) {
+    code = larecomp::citypackbuild::RunBuildHitCommandLine(game_root);
+  }
+  if (also_check_city_hit_ && code == 0) {
+    code = larecomp::citypackbuild::RunCheckHitCommandLine(game_root, ls::check_city_hit_deep.Get());
   }
   // 0.10 also ran the pipeline pre-cache after the packs when both were given: main passes both as one mode in that
   // case (kBuildShaderPacks then kPrecachePipelines), see main.cpp.

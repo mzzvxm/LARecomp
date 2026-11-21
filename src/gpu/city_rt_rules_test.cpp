@@ -520,6 +520,29 @@ void TestAutoAndPackState() {
   CHECK(ProbeWaitFrames(PackState::kMissing, false) == kProbeIdleFrames && ProbeWaitFrames(PackState::kNoSource, false) == kProbeIdleFrames);
   CHECK(ProbeWaitFrames(PackState::kFailed, true) >= 1000000 && ProbeWaitFrames(PackState::kCurrent, false) == 0);
   CHECK(kProbeBuildingFrames < kProbeIdleFrames);
+
+  // the hit data's file probe (CITY-HIT-ACTION): the hit scene asks once a consumer wants the hit data; a current answer opens the files, a missing or stale one asks the app to build them (ONCE:
+  // the second time the same answer comes the request is not repeated and the wait is the building one), a running build is looked at again in 2 s, no archive waits a minute, a failure never
+  {
+    const FileProbeStep current = DecideFileProbe(PackState::kCurrent, false);
+    CHECK(current.open && !current.request_build && current.wait_frames == 0);
+    for (const PackState state : {PackState::kMissing, PackState::kStale}) {
+      const FileProbeStep first = DecideFileProbe(state, false);
+      CHECK(!first.open && first.request_build && first.wait_frames == kProbeBuildingFrames);  // the app answers "being built" from now on: look again in 2 s, not in a minute
+      const FileProbeStep again = DecideFileProbe(state, true);
+      CHECK(!again.open && !again.request_build && again.wait_frames == kProbeBuildingFrames);
+    }
+    const FileProbeStep building = DecideFileProbe(PackState::kBuilding, true);
+    CHECK(!building.open && !building.request_build && building.wait_frames == kProbeBuildingFrames);
+    const FileProbeStep no_archive = DecideFileProbe(PackState::kNoSource, false);
+    CHECK(!no_archive.open && !no_archive.request_build && no_archive.wait_frames == kProbeIdleFrames);
+    const FileProbeStep failed = DecideFileProbe(PackState::kFailed, true);
+    CHECK(!failed.open && !failed.request_build && failed.wait_frames >= 1000000);
+    // only a current answer opens, whatever was asked before
+    for (const PackState state : {PackState::kCurrent, PackState::kBuilding, PackState::kMissing, PackState::kStale, PackState::kNoSource, PackState::kFailed}) {
+      for (const bool asked : {false, true}) CHECK(DecideFileProbe(state, asked).open == (state == PackState::kCurrent));
+    }
+  }
 }
 
 int main() {

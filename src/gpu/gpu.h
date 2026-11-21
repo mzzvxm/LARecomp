@@ -446,6 +446,11 @@ struct CityPackHooks {
   std::function<city_rt::PackState(std::string* why)> state;
   // The renderer wants the pack and it is missing or stale: called once per session; the app builds it on a thread of its own and `state` answers "being built" from then on.
   std::function<void()> request_build;
+  // The same two for the HIT DATA (CITY-HIT-ACTION: the hit file and the texture file beside the pack, built over it): `hit_state` says which state they are in for the player's game files
+  // (stat only), `request_hit_build` is called once per session when they are missing or stale and the renderer wants them (a consumer of the hit data is on, the pack is open). The app builds
+  // them on a thread of its own, in the background, and `hit_state` answers "being built" until it ends. Null: the files are opened as they are.
+  std::function<city_rt::PackState(std::string* why)> hit_state;
+  std::function<void()> request_hit_build;
 };
 void SetCityPackHooks(CityPackHooks hooks);
 // Where the city pack and its stamp are: <ShaderPackFolder()>/city. Any thread; needs no renderer (the launcher's setup, --build_city_pack, builds there).

@@ -224,6 +224,10 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       // CITY-RT M2 H3: the city's hit data (the file the hit data's builder writes beside the pack; nothing is made until a consumer wants it) and the scene service that every consumer asks for
       // the top level, the structures and the hit data (rt_scene_service.h).
       city_hit_.Initialize(device_, frames_, upload_, pass_timing_, heap_, CityPackFolder() / larecomp::citypack::kHitFileName, CityPackFolder() / larecomp::citypack::kTexFileName, gpu_class::Current());
+      if (g_city_pack_hooks.hit_state) {
+        // The app decides whether the hit data in place is the player's (stat only) and builds it in the background when it is not, once a consumer wants it and the pack is open.
+        city_hit_.SetFileProbe(g_city_pack_hooks.hit_state, g_city_pack_hooks.request_hit_build);
+      }
       city_rt_.SetHitScene(&city_hit_);
       rt_scene_.Initialize(&car_rt_, &city_rt_, &city_hit_);
       car_rt_.SetCityScene(&city_rt_);

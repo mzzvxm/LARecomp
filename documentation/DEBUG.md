@@ -125,13 +125,13 @@ The same text works in the launcher's **More game options**, and as `mcla_gpu_pa
 
 **Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
-The list, 118 names in 14 groups (the number in brackets is the group's size):
+The list, 122 names in 14 groups (the number in brackets is the group's size):
 
 **The unlock** (1)
 `debug_menu`
 
-**Shader packs, the city pack and the pipeline cache (the launcher runs `build_shader_packs`, `build_city_pack` and `precache_pipelines` itself)** (10)
-`build_shader_packs`, `build_shader_packs_force`, `build_city_pack`, `build_city_pack_force`, `shader_pack_dir`, `shader_pack_threads`, `precache_pipelines`, `precache_pipelines_backend`, `precache_pipelines_force`, `precache_pipelines_threads`
+**Shader packs, the city data and the pipeline cache (the launcher runs `build_shader_packs`, `build_city_pack`, `build_city_hit`, `check_city_hit` and `precache_pipelines` itself)** (14)
+`build_shader_packs`, `build_shader_packs_force`, `build_city_pack`, `build_city_pack_force`, `build_city_hit`, `build_city_hit_force`, `check_city_hit`, `check_city_hit_deep`, `shader_pack_dir`, `shader_pack_threads`, `precache_pipelines`, `precache_pipelines_backend`, `precache_pipelines_force`, `precache_pipelines_threads`
 
 **The legacy D3D12 runtime** (2)
 `mcla_native_gfx`, `mcla_native_gfx_continuous`

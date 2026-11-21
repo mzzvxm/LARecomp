@@ -108,6 +108,33 @@ Crash diagnostics go into the main log, not a separate file. The SEH and SIGABRT
 
 ---
 
+## City data actions (for the launcher's setup)
+
+The ray tracing effects read files built on the player's PC from their own game files, in `<shader pack folder>\city`: the city pack (`mcla_city.v1.pack`), and the hit data beside it, the hit file (`mcla_city_hit.v1.pack`) and the texture file (`mcla_city_tex.v1.pack`) with one stamp (`mcla_city_hit.stamp`). The release ships `larecomp.exe` only, so it builds and checks all of them. Each action runs without a window and ends the process; the game builds the same files itself in the background when they are missing and an effect wants them, so none of this is required.
+
+| Action | Does | Exit code |
+|---|---|---|
+| `--build_city_pack` | the city pack (and its lamps) | 0 built / up to date / not needed, 1 otherwise |
+| `--build_city_hit` | the textures, then the hit file, over the pack in place; "no pack" when there is none | the same |
+| `--check_city_hit` | stat only: is the hit data in place and current? | 0 up to date, 1 not current |
+| `--check_city_hit --check_city_hit_deep=true` | reads the city pack, the hit file and every picture of the texture file back (seconds) | 0 whole, 1 problems |
+
+`--build_city_hit_force=true` builds even when the stamp is current. Several actions on one command line run in this order and stop at the first failure: `--build_city_pack`, `--build_city_hit`, `--check_city_hit`. The launcher runs one process a step.
+
+Output is `@citypack|` lines on stdout, the same grammar as `--build_shader_packs`' `@shaderpack|` lines (fields separated by `|`, the free text last):
+
+```
+@citypack|folder|<where the files go>
+@citypack|phase|<steps, 0 = unknown>|<name>
+@citypack|step|<done>|<steps>|<item>          at most five a second
+@citypack|log|<info|warn|error>|<text>
+@citypack|result|<status>|<text>              once, last (once per action when several run)
+```
+
+Statuses: `ok` (built), `up to date`, `not needed`, `cancelled`, `failed`, `no archive`, plus `no pack` (the hit data needs the city pack) and `not current` (`--check_city_hit`: missing or built from other files). Phases of the build: `far level of detail`, `lamps`, `city sectors` (the pack); `city textures`, `city texture files`, `far level of detail`, `city hit sectors` (the hit data). Phases of the deep check: `checking the city pack`, `checking the city hit file`, `checking the city textures` (one step each). Ending the process cancels and is safe at any moment: files are written under temporary names and the stamp last. Logs: `logs/city_pack_build.txt`, `logs/city_hit_build.txt`, `logs/city_hit_check.txt`. The line format and the order rules are in `src/bootprogress/city_pack_rules.h`; `tools/citypack_tool` (`build-hit`, `check-hit`, `check-tex`) runs the same code.
+
+---
+
 ## Frame timing instrumentation
 
 ```powershell

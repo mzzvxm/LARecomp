@@ -1,11 +1,13 @@
 // The city hit data's builder (hit_builder.h, CITY-RT M2 package H1) on SYNTHETIC resources in the game's layout (no game files, no renderer): the shader instance parameters, the vertex
 // layouts, the corners and the runs, the quantisation, the material table through the G-buffer's rules, the indexed corner stream (round trips, damage, the old reader's view of it),
 // and the whole builder on a synthetic RPF3 archive: the corners of every triangle against the source, one thread and four give the same bytes, the reader and the validator, the
-// stamp, a census, a cancelled build, a base pack that is not of these files.
+// stamp, a census, a cancelled build, a base pack that is not of these files; and the shared operation the tool, larecomp.exe's --build_city_hit / --check_city_hit and the game's background
+// build call (hit_data.h: build, stat check, deep check, refusals, cancel).
 //
 //   build: see src/citypack/CMakeLists.txt (larecomp_city_hit_builder_test); run it with no argument (exit 0 = passed). It needs src/mc_engine/modloader/{rpf3,aes256,texture}.cpp.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -22,6 +24,7 @@
 #include "citypack/hit_builder.h"
 #include "citypack/hit_collect.h"
 #include "citypack/hit_corner_codec.h"
+#include "citypack/hit_data.h"
 #include "citypack/hit_material.h"
 #include "citypack/hit_params.h"
 #include "citypack/hit_texture_adapter.h"
@@ -1328,6 +1331,164 @@ void TestBuilder() {
     const HitBuildResult w = BuildCityHitPack(wrong, &sink);
     CHECK(!w.ok && w.error.find("base pack") != std::string::npos);
     CHECK(!fs::exists(wrong.base.out_dir / kHitFileName) && !fs::exists(wrong.base.out_dir / kHitStampFileName));
+  }
+
+  // THE SHARED OPERATION (hit_data.h, CITY-HIT-ACTION): citypack_tool build-hit / check-hit / check-tex, larecomp.exe --build_city_hit / --check_city_hit and the game's background build all
+  // call it. Built here WITHOUT the texture set (it reads dictionaries this synthetic archive has not: texture_set_test and the retail run cover that pass); what is tested is the stamp, the
+  // checks, the refusals, the cancel and the deep check.
+  {
+    HitDataRequest data;
+    data.base = request;
+    data.base.out_dir = g_scratch / "out_data";
+    data.base.force = false;
+    data.textures = false;
+    const fs::path dir = data.base.out_dir;
+    const auto fresh_folder = [&](const char* name) {  // a folder holding a copy of the city pack
+      const fs::path folder = g_scratch / name;
+      fs::create_directories(folder);
+      fs::copy_file(request.out_dir / kPackFileName, folder / kPackFileName, fs::copy_options::overwrite_existing);
+      fs::copy_file(request.out_dir / kStampFileName, folder / kStampFileName, fs::copy_options::overwrite_existing);
+      return folder;
+    };
+
+    // no city pack there: "no pack", said before anything is read, nothing written; no archive is said first of all; no decoder is a plain failure
+    {
+      HitDataRequest empty = data;
+      empty.base.out_dir = g_scratch / "out_data_empty";
+      fs::create_directories(empty.base.out_dir);
+      const HitDataResult r = BuildHitData(empty, &sink);
+      CHECK(!r.ok && r.no_pack && !r.no_archive && !r.cancelled && r.error.find("city pack") != std::string::npos && !r.textures_built);
+      CHECK(!fs::exists(empty.base.out_dir / kHitFileName) && !fs::exists(empty.base.out_dir / kHitStampFileName));
+      CHECK(!CheckHitData(empty).current);
+      HitDataRequest gone = data;
+      gone.base.source_rpf = g_scratch / "nowhere" / "xarchive_cache.rpf";
+      const HitDataResult g = BuildHitData(gone, &sink);
+      CHECK(!g.ok && g.no_archive && !g.no_pack && g.error.find("not there") != std::string::npos);
+      HitDataRequest no_decoder = data;
+      no_decoder.base.lzx = nullptr;
+      const HitDataResult n = BuildHitData(no_decoder, &sink);
+      CHECK(!n.ok && !n.no_pack && !n.no_archive && !n.cancelled);
+    }
+
+    fs::create_directories(dir);
+    fs::copy_file(request.out_dir / kPackFileName, dir / kPackFileName, fs::copy_options::overwrite_existing);
+    fs::copy_file(request.out_dir / kStampFileName, dir / kStampFileName, fs::copy_options::overwrite_existing);
+
+    // never built: not current, and the reason says so
+    StampCheck c = CheckHitData(data);
+    CHECK(!c.current && c.why.find("no hit stamp") != std::string::npos);
+    // built: the files and the stamp, no texture file (none asked for)
+    const HitDataResult built = BuildHitData(data, &sink);
+    CHECK(built.ok && !built.up_to_date && !built.cancelled && !built.textures_built && built.texture_bytes == 0 && built.hit.census.sectors == 3 && built.hit.hit_bytes > 0);
+    CHECK(built.hit.census.hi_triangles == 12 && built.seconds >= 0.0);
+    CHECK(fs::exists(dir / kHitFileName) && fs::exists(dir / kHitStampFileName) && !fs::exists(dir / kTexFileName));
+    CHECK(fs::file_size(dir / kHitFileName) == built.hit.hit_bytes);
+    CHECK(CheckHitData(data).current);
+    // the stamp makes the second run a no-op; force builds again, to the same bytes
+    const std::vector<uint8_t> first_bytes = ReadAll(dir / kHitFileName);
+    const HitDataResult again = BuildHitData(data, &sink);
+    CHECK(again.ok && again.up_to_date && !again.textures_built);
+    HitDataRequest forced = data;
+    forced.base.force = true;
+    const HitDataResult rebuilt = BuildHitData(forced, &sink);
+    CHECK(rebuilt.ok && !rebuilt.up_to_date && rebuilt.hit.hit_bytes == built.hit.hit_bytes && ReadAll(dir / kHitFileName) == first_bytes);
+    CHECK(CheckHitData(data).current);
+
+    // what makes the stamp say "not current" (stat only), and the build that follows makes it current again without being forced
+    {
+      { std::ofstream grow(dir / kHitFileName, std::ios::binary | std::ios::app); grow.put('x'); }  // the hit file is not the size the stamp says
+      c = CheckHitData(data);
+      CHECK(!c.current && c.why.find("hit file") != std::string::npos);
+      const HitDataResult repaired = BuildHitData(data, &sink);
+      CHECK(repaired.ok && !repaired.up_to_date && ReadAll(dir / kHitFileName) == first_bytes && CheckHitData(data).current);
+
+      fs::remove(dir / kHitStampFileName);  // the stamp is gone
+      c = CheckHitData(data);
+      CHECK(!c.current && c.why.find("no hit stamp") != std::string::npos);
+      CHECK(BuildHitData(data, &sink).ok && CheckHitData(data).current);
+
+      HitDataRequest other_rules = data;  // other precision rules: another file
+      other_rules.rules.uv_step_log2 = 8;
+      c = CheckHitData(other_rules);
+      CHECK(!c.current && c.why.find("precision rules") != std::string::npos);
+      HitDataRequest with_textures = data;  // built without textures, asked with: another texture set (the texture file would be missing)
+      with_textures.textures = true;
+      c = CheckHitData(with_textures);
+      CHECK(!c.current && c.why.find("texture set") != std::string::npos);
+
+      // the game archive's time changed (a game update): not current; put back, current
+      const auto time = fs::last_write_time(request.source_rpf);
+      fs::last_write_time(request.source_rpf, time + std::chrono::hours(1));
+      c = CheckHitData(data);
+      CHECK(!c.current && c.why.find("game archive") != std::string::npos);
+      fs::last_write_time(request.source_rpf, time);
+      CHECK(CheckHitData(data).current);
+    }
+
+    // the texture set is part of the operation: where it cannot be built (no dictionary in this archive) the run fails, says "texture set", and leaves no hit file and no stamp
+    {
+      HitDataRequest textured = data;
+      textured.textures = true;
+      textured.base.out_dir = fresh_folder("out_data_tex");
+      const HitDataResult t = BuildHitData(textured, &sink);
+      CHECK(!t.ok && !t.cancelled && !t.no_pack && !t.textures_built && t.error.find("texture set") != std::string::npos);
+      CHECK(!fs::exists(textured.base.out_dir / kHitFileName) && !fs::exists(textured.base.out_dir / kHitStampFileName) && !fs::exists(textured.base.out_dir / kTexFileName));
+    }
+
+    // a cancelled run leaves no file, no stamp and no temporary body; a census writes nothing
+    {
+      HitDataRequest cancel = data;
+      cancel.base.out_dir = fresh_folder("out_data_cancel");
+      cancel.base.force = true;
+      CountingSink stopper;
+      stopper.cancel_after = 2;
+      const HitDataResult x = BuildHitData(cancel, &stopper);
+      CHECK(!x.ok && x.cancelled && !x.no_pack && !x.no_archive);
+      CHECK(!fs::exists(cancel.base.out_dir / kHitFileName) && !fs::exists(cancel.base.out_dir / kHitStampFileName) && !fs::exists(cancel.base.out_dir / (std::string(kHitFileName) + ".body")));
+      HitDataRequest census = data;
+      census.base.out_dir = fresh_folder("out_data_census");
+      census.base.census_only = true;
+      const HitDataResult n = BuildHitData(census, &sink);
+      CHECK(n.ok && !n.up_to_date && n.hit.census.hi_triangles == 12 && n.texture_bytes == 0);
+      CHECK(!fs::exists(census.base.out_dir / kHitFileName) && !fs::exists(census.base.out_dir / kHitStampFileName));
+    }
+
+    // the deep check reads the files back: one phase and one step a part that is read (a hit file with no textures skips that part)
+    {
+      CountingSink phases;
+      const HitDataCheck deep = DeepCheckHitData(dir, HitDataCheckParts{}, &phases);
+      CHECK(deep.ok && !deep.unreadable && deep.error.empty() && deep.problems.empty());
+      CHECK(deep.pack_problems == 0 && deep.hit_problems == 0 && deep.texture_problems == 0 && deep.textures_skipped && deep.pictures == 0);
+      CHECK(phases.phases == 2 && phases.steps == 2);
+      CountingSink hit_only;
+      HitDataCheckParts parts;
+      parts.pack = false;
+      parts.textures = false;
+      CHECK(DeepCheckHitData(dir, parts, &hit_only).ok && hit_only.phases == 1 && hit_only.steps == 1);
+      CHECK(DeepCheckHitData(dir, parts, nullptr).ok);  // no sink is fine
+
+      // a flipped byte inside a hit blob: counted, listed with the part's name in front
+      const fs::path broken = fresh_folder("out_data_broken");
+      fs::copy_file(dir / kHitFileName, broken / kHitFileName, fs::copy_options::overwrite_existing);
+      fs::copy_file(dir / kHitStampFileName, broken / kHitStampFileName, fs::copy_options::overwrite_existing);
+      HitPackReader good;
+      std::string error;
+      CHECK(good.Open(broken / kHitFileName, &error));
+      std::vector<uint8_t> bytes = ReadAll(broken / kHitFileName);
+      bytes[size_t(good.sector(0).hi_offset) + 100] ^= 0x40;
+      { std::ofstream(broken / kHitFileName, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size())); }
+      const HitDataCheck bad = DeepCheckHitData(broken, HitDataCheckParts{}, nullptr);
+      CHECK(!bad.ok && !bad.unreadable && bad.hit_problems >= 1 && bad.pack_problems == 0 && !bad.problems.empty() && bad.problems[0].rfind("hit file: ", 0) == 0);
+      // a hit file that is not there (or not whole) is "unreadable": no count of problems
+      fs::remove(broken / kHitFileName);
+      const HitDataCheck gone = DeepCheckHitData(broken, HitDataCheckParts{}, nullptr);
+      CHECK(!gone.ok && gone.unreadable && gone.error.find("hit file") != std::string::npos);
+      // ... and so is a folder with no city pack
+      const fs::path none = g_scratch / "out_data_none";
+      fs::create_directories(none);
+      const HitDataCheck no_pack = DeepCheckHitData(none, HitDataCheckParts{}, nullptr);
+      CHECK(!no_pack.ok && no_pack.unreadable && no_pack.error.find("city pack") != std::string::npos);
+    }
   }
 }
 
