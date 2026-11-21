@@ -1436,6 +1436,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_gi": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Ray traced bounce light: light bounces around the city the way it does in the real world. The sunlit street and walls light the shaded sides of buildings, the ground under bridges \"\n    \"and the insides of alleys with a soft glow in place of a flat ambient, large coloured walls tint what stands near them, and at night each street lamp and neon sign lights the facades, \"\n    \"the sidewalk and the cars around it a little more. What is behind or beside the camera counts too (the screen-space bounce light, mcla_gpu_ssgi, can only use what is in the picture). \"\n    \"It is worked out in a field of probes laid round the camera from the city's own triangles (the city pack) and added to the picture where the G-buffer knows the surface; it never darkens. \"\n    \"Where it stands it takes the place of the screen-space bounce light, which stays for graphics cards that cannot ray trace and for the places the field does not cover, and it is as strong as \"\n    \"BOUNCE LIGHT STRENGTH says (mcla_gpu_ssgi_intensity). off, high, ultra or auto (the default): high on a graphics card that traces rays quickly (the ray tracing tier strong: about an RTX 3070 \"\n    \"and up, an RX 7800 XT and up), off on the rest; a weaker ray tracing card can switch it on by hand, with fewer probes. high is three cascades of probes, 2, 4 and 8 m apart, \"\n    \"or two, 3 and 6 m apart on a weaker card. ultra adds a fourth cascade, 16 m apart, and refreshes the probes twice as often. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, or Vulkan with ray queries) \"\n    \"and the city pack; without them the screen-space bounce light stands. The pause menu's RT BOUNCE LIGHT row (GRAPHICS > LIGHTING AND SHADOWS). Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_rt_gi_view": {
   "type": "i32",
   "default": "0",
@@ -1444,6 +1455,29 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 11}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_gi_bounces": {
+  "type": "f64",
+  "default": "0.5",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (ray traced bounce light): how much of the field's own light the probes take back in when they are updated, which is the second bounce and the ones after it for free: \"\n    \"0 is strictly one bounce, 0.5 (the default) is about two, with brighter canyons; 0.95 at most, so that the loop cannot grow. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 0.95}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_gi_dry_run": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (ray traced bounce light): lets the probe field run while the probe update (package G2 of the design) is not built into this renderer, to prove the field's owner and the order of the frame. \"\n    \"With RT BOUNCE LIGHT on, the field's textures are made, its reset and weights passes run and the apply is told of it, but nothing traces into the probes, so the field never becomes ready, shows nothing, \"\n    \"and the screen-space bounce light stays the source. The RT BOUNCE LIGHT row is grey with (NOT READY) while the update is missing; this makes it live for a test. Has no effect once the update is built. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

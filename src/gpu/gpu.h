@@ -456,6 +456,14 @@ std::filesystem::path CityPackFolder();
 // row is grey with "(NO RT)" where this is false, and its AUTO says OFF there. Any thread.
 bool CityRtShadowsAvailable();
 
+// --- the ray traced bounce light (gi_setting.h, CITY-RT M3 G4) ---------------------------------------
+// True once the probe field's update (package G2) is built into this renderer: until then the RT BOUNCE LIGHT row is grey with "(NOT READY)", its AUTO says OFF and the field is never made.
+// Any thread.
+bool RtGiUpdateBuilt();
+// True while the probe field stands in the picture and the screen-space bounce light is not built (the field's fade is 1): the pause menu's BOUNCE LIGHT row says "(REPLACED)". Set once a frame
+// by the render thread, false before the renderer has started and while no field runs. Any thread.
+bool RtGiReplacesBounceLight();
+
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
 // The scene is drawn smaller than the output only while an upscaler can make it whole again. The
 // scene's first targets are made for the choice read once at the start: the upscaler and mode

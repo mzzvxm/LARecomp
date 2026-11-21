@@ -27,6 +27,7 @@
 #include "headlight_rig.h"
 #include "light_manager.h"
 #include "gi_apply.h"
+#include "gi_integration.h"
 #include "local_lights.h"
 #include "local_shadow.h"
 #include "car_rt_scene.h"
@@ -834,6 +835,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   ++frame_serial_;
   if (local_lights_) {
     local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
+  }
+  if (gi_integration_) {
+    gi_integration_->BeginFrame(frame_serial_);  // the probe field's frame starts (its setting, its Inputs): BEFORE the apply below, which reads whether the field runs to make its wants (gi_integration.h)
   }
   if (gi_apply_) {
     gi_apply_->BeginFrame();  // the probe field's apply: its wants (RT1 and RT2, the depth chain) only while the field runs, and the frame's latch of the screen-space bounce light's share
@@ -3622,6 +3626,8 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //      passes, and the self-reflection's trace (car_selfrefl.h) after them, both in this top level;
   //   2b. the headlight shadow maps (local_shadow.h): the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas
   //      the lit draws of the next frame read (independent of the other steps: its own pass and target);
+  //   2c. the probe field's frame (gi_integration.h, CITY-RT M3 G4): the field's maintenance, the probe update (G2) and the weights pass, so that the field is published BEFORE the occlusion plans its frame and
+  //      asks whether the screen-space bounce light may be skipped where the field stands (step 3 and 3a);
   //   3. the ambient occlusion, the bounce light and the contact shadows (ao.h): the depth chain, the ray traced pass (car_rt_ao.h), the
   //      visibility and the contact march, the apply onto the main colour. At the end of its depth chain the shared screen products (screen_shared.h) are
   //      published from it and the Hi-Z is made, when a consumer wants it (the occlusion runs a frame of the depth pass alone for that if it and the contact
@@ -3649,6 +3655,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   }
   if (light_manager_) {
     light_manager_->OnResolve(shadow_recorded);  // passive: this frame's maps, and the headlight block is checked against them
+  }
+  if (gi_integration_) {
+    // Step 2c: the probe field's maintenance, update and weights (gi_integration.h): outside any render pass, before the occlusion plans; records nothing while no field runs. Its own layouts and pipelines:
+    // the reset below forgets them too.
+    gi_integration_->OnResolve(summary, list, slot_);
   }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the

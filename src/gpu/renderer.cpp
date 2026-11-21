@@ -21,6 +21,7 @@
 #include "backend.h"
 #include "device_fault_format.h"
 #include "gpu.h"
+#include "gi_setting.h"
 #include "citypack/pack_format.h"
 #include "guest_capture.h"
 #include "hdr.h"
@@ -206,6 +207,10 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     gi_apply_.SetScreenShared(&screen_);
     gi_apply_.SetAmbientOcclusion(&ao_);
     ao_.SetGiApply(&gi_apply_);
+    // The probe field (gi_field.h, CITY-RT M3 G1): its layouts and shaders now, its pipelines listed with the precache below when the setting is not off at the start, its textures made when a frame
+    // first wants them. The integration (gi_integration.h, G4) gives it the setting and the frame (its city scene is set below, with the city block); the apply reads it.
+    gi_field_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_setting::Current().level != gi::Level::kOff);
+    gi_apply_.SetGiField(&gi_field_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
@@ -250,6 +255,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       car_rt_.SetCityScene(&city_rt_);
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, /*listed_at_start=*/true);
       ao_.SetCityRtShadow(&city_shadow_);
+      // The probe field's integration (gi_integration.h): the field needs M1's structures for its safe range and (G2) its rays.
+      gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);
     }
     // The ray tracing benchmark (rt_bench.h, rt_tier.h): once with a card that can trace (kept next to larecomp.toml), while the GPU is idle and before the
     // precache below starts its builder; it can move the card between the weak and the strong tier, which the ray traced upgrades' `auto` reads.
@@ -290,6 +297,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetLightManager(&light_manager_);
     scene_.SetLocalLights(&local_lights_);
     scene_.SetGiApply(&gi_apply_);
+    scene_.SetGiIntegration(&gi_integration_);
     scene_.SetCarRtScene(&car_rt_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
@@ -321,6 +329,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // Its images and AMD's context are not something the budget's response can release; its lines
     // name them (vram_budget.h), and frame generation asks the budget's rule before it takes any.
     vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
+    // The probe field's textures (gi_field.h): the OS counts them in the use it reports and the caches' trim cannot give them back; the field asks the room test before it makes any.
+    vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
@@ -349,7 +359,9 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+    gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
     gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
+    gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
     local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
     ao_.Shutdown();
     screen_.Shutdown();  // the AO holds a pointer to it: after the AO
@@ -532,7 +544,9 @@ void Renderer::Shutdown() {
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+  gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
   gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
+  gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
   local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
   ao_.Shutdown();
   screen_.Shutdown();  // the AO holds a pointer to it: after the AO
@@ -1726,6 +1740,7 @@ void Renderer::ReportFrameStats() {
                            (screen_.HeldBytes() != 0 ? ", screen products " + mib(screen_.HeldBytes()) : std::string()) +
                            (ssr_.HeldBytes() != 0 ? ", screen-space reflections " + mib(ssr_.HeldBytes()) : std::string()) +
                            (gi_apply_.HeldBytes() != 0 ? ", ray traced bounce light's apply " + mib(gi_apply_.HeldBytes()) : std::string()) +
+                           (gi_field_.HeldBytes() != 0 ? ", probe field " + mib(gi_field_.HeldBytes()) : std::string()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())

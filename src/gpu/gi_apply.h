@@ -108,6 +108,15 @@ class GiApply {
   bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot);
   // True while the effect has a field to apply this frame (the Scene calls OnTrigger only then).
   bool wants_draws() const { return enabled_; }
+
+  // The bounce light level's strength (mcla_gpu_ssgi_intensity with its debug overrides): the number the apply multiplies by, and the one the integration puts in the field's frame (gi_integration.h). Any thread.
+  static float LevelStrength();
+  // THE WATCHDOG (G4). The screen-space bounce light is skipped for the frames the field stands (TakeSsgiShare 0); when the field stood and the apply could not add its light all the same (no G-buffer
+  // planes in a cutscene, no pipeline, no camera or light, no colour target) for kStarvedFrames trigger frames in a row, the picture has had no bounce light for nothing: Starved() says so, the integration
+  // idles the field for a while (it fades out and the screen-space bounce light crossfades back) and clears it. A frame with a strength of 0 (the level's own choice) is not starved.
+  static constexpr uint32_t kStarvedFrames = 8;
+  bool Starved() const { return starved_frames_ >= kStarvedFrames; }
+  void ClearStarved() { starved_frames_ = 0; }
   // A guest present: the interval line and the idle count (the lookup image goes back after a while without use).
   void OnPresent();
 
@@ -128,6 +137,7 @@ class GiApply {
     std::unique_ptr<plume::RenderPipeline> pipeline;
   };
 
+  bool OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot);
   bool EnsureLayout();
   bool EnsureSlot(uint32_t frame_slot);
   plume::RenderShader* ShaderFor(uint32_t which);
@@ -164,6 +174,8 @@ class GiApply {
   float ssgi_ran_share_ = 0.0f;
   bool trigger_seen_ = false;
   bool ran_this_frame_ = false;
+  bool expect_add_ = false;        // this trigger frame the field stood with a strength above 0: the apply was expected to add its light (the watchdog's test)
+  uint32_t starved_frames_ = 0;    // consecutive trigger frames that expected it and did not (Starved)
   uint64_t frame_ = 0;
   uint32_t idle_frames_ = 0;
 

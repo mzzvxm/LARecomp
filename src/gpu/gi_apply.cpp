@@ -269,7 +269,18 @@ float GiApply::TakeSsgiShare() {
   return share;
 }
 
+float GiApply::LevelStrength() { return LevelNumbers().strength; }
+
 bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot) {
+  expect_add_ = false;
+  const bool recorded = OnTriggerImpl(summary, list, gbuffer_published, frame_slot);
+  if (expect_add_) {
+    starved_frames_ = recorded ? 0u : starved_frames_ + 1u;  // the watchdog (Starved): a frame the field stood for and the apply drew nothing
+  }
+  return recorded;
+}
+
+bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot) {
   if (!enabled_ || !list || trigger_seen_ || field_ == nullptr || gbuffer_ == nullptr || screen_ == nullptr || edram_ == nullptr || !summary.source) {
     return false;
   }
@@ -283,6 +294,7 @@ bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderComma
   const float field_share = ga::FieldShare(gf, ssgi_ran_share_);
   const ssgi_level::Effective numbers = LevelNumbers();
   const bool nothing_to_add = !(field_share > 0.0f) || !(numbers.strength > 0.0f);
+  expect_add_ = !nothing_to_add;
   if (nothing_to_add && view_ == 0) {  // a debug view is still drawn: it is how the first frames of a fade are looked at
     Count(ga::Skip::kNoStrength);
     return false;
