@@ -82,6 +82,7 @@
 #include "light_project.h"
 #include "local_shadow_types.h"
 #include "vol_lamp_list.h"
+#include "volumetrics_lamp_pick.h"
 #include "volumetrics_types.h"
 
 namespace mcla::gpu {
@@ -110,6 +111,16 @@ class LightManager {
   void BeginFrame(uint64_t frame, uint32_t upload_slot);
   // After the replay's OnResolve of every resolve (`shadow_recorded` is its return value): when it was the trigger, this frame's maps; then the block is checked again.
   void OnResolve(bool shadow_recorded);
+  // 4b (mcla_gpu_light_frame bit 2): the volume's lamps, headlights and shadow views made from the frame instead of by the volume's own producer, into `out` (which holds the core's
+  // defaults and its test lamp: the lamps come after it, the way FillLamps appends them). The street lamps are picked HERE, by the same pick the volume runs (volumetrics_lamp_pick.h: the
+  // list's freshness is the caller's, the camera's step, the room and the picker are the class's), and kept in the frame as Lights with their exact weights; the headlights and the
+  // views are the frame's rig lights and maps. `limit` = mcla_gpu_vol_lamp_limit (0: the level's), `lamps_on` / `heads_on` = which of the two the volume reads. `list`: the newest copy of
+  // the game's lamp list when the caller has one it also hands its own producer (the proof run, so that both pick from the same list), else null and the manager takes its own.
+  // Call only when Serving(light_project::kFlipVolume).
+  void FillVolumeInputs(const volumetrics::VolFrameContext& context, uint32_t limit, bool lamps_on, bool heads_on, volumetrics::VolInputs* out,
+                        const std::vector<vol_lamps::GameLamp>* list);
+  // 4b's proof, when Checking(): what FillVolumeInputs made (`from_frame`) against what the volume's own producer made from the same entry (`legacy`), byte for byte.
+  void CheckVolumeBytes(const volumetrics::VolInputs& from_frame, const volumetrics::VolInputs& legacy);
   // The volume's inputs of the frame, at the end of VolumetricsInputs::Fill: `first_lamp` = how many lamps `in` held before the producer put the game's in (the core's test lamp),
   // `lamps_on` / `heads_on` = which of the two the producer filled.
   void NoteVolumeInputs(const volumetrics::VolFrameContext& context, const volumetrics::VolInputs& in, bool lamps_on, bool heads_on, uint32_t first_lamp);
@@ -187,6 +198,12 @@ class LightManager {
   uint64_t block_made_ = 0, block_draws_ = 0;  // for the census: projections made, draws that took the block
 
   void CheckBlocks(larecomp::gpu::light_manager::Check kind);
+  bool RefreshList();
+
+  // LU-4b: the manager's own lamp pick for the volume (the pick of VolumetricsInputs::FillLamps, run here while the flip is on), and what it took
+  volumetrics::VolumeLampPick vol_pick_;
+  bool volume_from_frame_ = false;  // the volume's inputs of this frame were made from the frame: the frame's lamps are the pick's, not read back from the volume
+  uint64_t volume_fills_ = 0;       // fills made from the frame
 
   // the volume's budgets of the last fill, for the census
   uint32_t grid_lamps_ = 0, grid_headlights_ = 0;

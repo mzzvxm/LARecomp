@@ -10,7 +10,8 @@
 // wrong is only the DATA (a light that is not the rig's, a view in another order), and that is what the checks below look for and light_project_test.cpp holds to recorded frames.
 //
 //   4a  ProjectHeadlightBlock   the headlight variant's constant block (headlight_rig_rules.h HeadlightConstants, 1072 bytes), the camera as the caller gives it
-//   4b  ProjectVolume*          the volume's lamps, headlights, shadow views and atlas (VolInputs), a later step of this package
+//   4b  ProjectVolumeLamps,     the volume's street lamps, headlights, shadow views and atlas (VolInputs: volumetrics_types.h), as VolumetricsInputs::FillLamps and FillHeadlightInputs
+//       ProjectVolumeHeadlights  make them
 //   4c  ProjectShadowLights     the lights the shadow replay's pick reads (local_shadow::Light), a later step of this package
 // and, for each, the check the manager runs while the census is on: the same data made by the legacy producer and by the projection, compared as bytes (CheckBlockBytes, ...).
 //
@@ -38,12 +39,15 @@
 #include "light_frame.h"
 #include "light_manager_rules.h"
 #include "local_shadow_types.h"
+#include "volumetrics_headlights.h"
+#include "volumetrics_types.h"
 
 namespace mcla::gpu::light_project {
 
 namespace lg = ::larecomp::gpu;
 namespace lm = ::larecomp::gpu::light_manager;
 namespace hr = ::mcla::gpu::headlight_rules;
+namespace vol = ::mcla::gpu::volumetrics;
 
 // The A/B of the flips (mcla_gpu_light_frame, a bit mask): which consumers read the frame instead of their own producer. 0 (the default until the runs prove the bytes equal): none.
 inline constexpr uint32_t kFlipHeadlightBlock = 1u << 0;  // 4a: the lit shaders' headlight block
@@ -133,6 +137,62 @@ inline hr::HeadlightConstants ProjectHeadlightBlock(const lg::LightFrame& frame,
 }
 
 // ---------------------------------------------------------------------------
+// 4b: the volume's light inputs
+// ---------------------------------------------------------------------------
+
+// The street lamps of the frame's volume ranking (in the order the pick gave them: the fades' spare slots last) appended to the volume's inputs after the lamps that are in already (the
+// core's test lamp), each as the volume's lamp (light_convert.h ToVolLamp: the Light's colour x the weight the picker folded in). Returns how many were appended. Only the game's lamps
+// (source kLamp): the volume's own other lights are not here yet.
+inline uint32_t ProjectVolumeLamps(const lg::LightFrame& frame, vol::VolInputs* out) {
+  uint32_t added = 0;
+  const uint32_t n = std::min<uint32_t>(frame.role_count[uint32_t(lg::LightRole::kVolume)], lg::kMaxLights);
+  for (uint32_t r = 0; r < n && out->lamp_count < vol::kMaxLamps; ++r) {
+    const lg::Light& l = frame.Ranked(lg::LightRole::kVolume, r);
+    if (l.id == lg::kNoLightId || l.source != lg::LightSource::kLamp) {
+      continue;
+    }
+    out->lamps[out->lamp_count++] = lg::ToVolLamp<vol::VolLamp>(l);
+    ++added;
+  }
+  return added;
+}
+
+// The volume's headlights and the shadow views they read, as FillHeadlightInputs makes them from the rig's set and the replay's frame: each rig light as the volume's lamp in the volume's
+// units (ToVolLamp), the frame's view table as the volume's (VolShadowView: the same 96 bytes), each light's one or two views by its ShadowRef, the views the volume cannot read dropped
+// (the same DropUnusableViews as FillShadows), the atlas's slot and size. An empty rig leaves `out` as it is (the legacy producer does). No atlas, or no view: the volume has none.
+inline void ProjectVolumeHeadlights(const lg::LightFrame& frame, vol::VolInputs* out) {
+  const RigLights rig = RigLightsOf(frame);
+  if (rig.count == 0) {
+    return;
+  }
+  uint32_t n = 0;
+  for (uint32_t i = 0; i < rig.count && n < vol::kMaxHeadlights; ++i) {
+    out->headlights[n++] = lg::ToVolLamp<vol::VolLamp>(frame.lights[rig.slot[i]]);
+  }
+  out->headlight_count = n;
+  const lg::ShadowAtlasInfo& atlas = frame.shadow.atlas;
+  const bool usable = atlas.valid && atlas.slot != vol::kNoSlot && atlas.width != 0 && atlas.height != 0 && frame.shadow.count != 0;
+  out->shadow_view_count = 0;
+  out->shadow_atlas_slot = vol::kNoSlot;
+  if (!usable) {
+    for (uint32_t i = 0; i < out->headlight_count; ++i) {
+      out->headlights[i].shadow_view = -1;
+      out->headlights[i].shadow_view_b = -1;
+    }
+    return;
+  }
+  const uint32_t views = std::min<uint32_t>(frame.shadow.count, vol::kMaxShadowViews);
+  for (uint32_t e = 0; e < views; ++e) {
+    out->shadow_views[e] = lg::ToVolShadowView<vol::VolShadowView>(frame.shadow.views[e]);
+  }
+  out->shadow_view_count = views;
+  out->shadow_atlas_slot = atlas.slot;
+  out->shadow_atlas_size[0] = float(atlas.width);
+  out->shadow_atlas_size[1] = float(atlas.height);
+  vol::DropUnusableViews(out);
+}
+
+// ---------------------------------------------------------------------------
 // the checks: the legacy producer's bytes against the projection's
 // ---------------------------------------------------------------------------
 
@@ -178,6 +238,66 @@ inline void CheckBlockBytes(const lg::LightFrame& frame, const hr::HeadlightCons
   }
   sc->Note(kind, std::format("the projected headlight block differs from the rig's at byte {} ({}); {} lights in the frame, {} in the rig's block", at, detail::BlockPart(at),
                              RigLightsOf(frame).count, legacy.header[0]));
+}
+
+// 4b: the volume's light inputs made from the frame (`projected`) against what the legacy producer made from the same entry (`legacy`): the lamps (all of the array, so a lamp past the
+// count is a difference too), the headlights, the shadow views, the counts, the atlas's slot and size, byte for byte. Names the first lamp or headlight that differs and the part of it.
+inline const char* VolLampPart(size_t offset) {
+  if (offset < 12) return "its position";
+  if (offset < 16) return "its range";
+  if (offset < 28) return "its axis";
+  if (offset < 32) return "its outer cone";
+  if (offset < 44) return "its colour";
+  if (offset < 48) return "its inner cone";
+  if (offset < 52) return "which view it reads";
+  if (offset < 56) return "its near radius";
+  if (offset < 60) return "which second view it reads";
+  return "its last word";
+}
+
+inline void CheckVolumeBytes(const vol::VolInputs& projected, const vol::VolInputs& legacy, lm::SelfCheck* sc) {
+  static_assert(sizeof(vol::VolLamp) == 64 && sizeof(vol::VolShadowView) == 96, "the volume's lamps and views are compared as bytes: no padding, no member added unseen");
+  std::string fail;
+  const auto add = [&](const std::string& what) {
+    if (fail.size() < 360) {
+      fail += fail.empty() ? what : "; " + what;
+    }
+  };
+  size_t at = 0;
+  if (projected.lamp_count != legacy.lamp_count) {
+    add(std::format("the frame gives {} lamps, the legacy producer {}", projected.lamp_count, legacy.lamp_count));
+  }
+  if (projected.headlight_count != legacy.headlight_count) {
+    add(std::format("the frame gives {} headlights, the legacy producer {}", projected.headlight_count, legacy.headlight_count));
+  }
+  if (projected.shadow_view_count != legacy.shadow_view_count) {
+    add(std::format("the frame gives {} shadow views, the legacy producer {}", projected.shadow_view_count, legacy.shadow_view_count));
+  }
+  if (projected.shadow_atlas_slot != legacy.shadow_atlas_slot) {
+    add(std::format("the atlas slot is {} against {}", projected.shadow_atlas_slot, legacy.shadow_atlas_slot));
+  }
+  if (!detail::SameBytes(projected.shadow_atlas_size, legacy.shadow_atlas_size, sizeof(legacy.shadow_atlas_size), &at)) {
+    add(std::format("the atlas size is {}x{} against {}x{}", projected.shadow_atlas_size[0], projected.shadow_atlas_size[1], legacy.shadow_atlas_size[0], legacy.shadow_atlas_size[1]));
+  }
+  for (uint32_t i = 0; i < vol::kMaxLamps; ++i) {
+    if (!detail::SameBytes(&projected.lamps[i], &legacy.lamps[i], sizeof(vol::VolLamp), &at)) {
+      add(std::format("lamp {} of {} differs at byte {} ({})", i, legacy.lamp_count, at, VolLampPart(at)));
+      break;
+    }
+  }
+  for (uint32_t i = 0; i < vol::kMaxHeadlights; ++i) {
+    if (!detail::SameBytes(&projected.headlights[i], &legacy.headlights[i], sizeof(vol::VolLamp), &at)) {
+      add(std::format("headlight {} of {} differs at byte {} ({})", i, legacy.headlight_count, at, VolLampPart(at)));
+      break;
+    }
+  }
+  for (uint32_t i = 0; i < vol::kMaxShadowViews; ++i) {
+    if (!detail::SameBytes(&projected.shadow_views[i], &legacy.shadow_views[i], sizeof(vol::VolShadowView), &at)) {
+      add(std::format("shadow view {} of {} differs at byte {}", i, legacy.shadow_view_count, at));
+      break;
+    }
+  }
+  sc->Note(lm::Check::kVolumeBytes, fail);
 }
 
 }  // namespace mcla::gpu::light_project

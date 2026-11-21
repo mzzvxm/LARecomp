@@ -109,6 +109,9 @@ void LightManager::Reset() {
   block_ = headlight_rules::HeadlightConstants{};
   block_dirty_ = true;
   block_made_ = block_draws_ = 0;
+  vol_pick_.Reset();
+  volume_from_frame_ = false;
+  volume_fills_ = 0;
   volume_seen_ = false;
   presents_ = 0;
   frames_total_ = 0;
@@ -167,6 +170,10 @@ void LightManager::BeginLights(uint64_t frame, uint32_t upload_slot) {
   shadows_begun_ = false;
   block_dirty_ = true;
   volume_seen_ = false;
+  volume_from_frame_ = false;
+  if ((flips_ & light_project::kFlipVolume) == 0) {
+    vol_pick_.Reset();  // the pick is not running: the next one after a flip starts at full weight, as a fresh producer's does
+  }
   frame_ = frame;
   const double now_s = mc::cinematic::SceneClockNowMs(frame) * 1.0e-3;
   collector_.BeginFrame(uint32_t(frame), now_s, CurrentHeadlights());
@@ -246,6 +253,59 @@ void LightManager::OnResolve(bool shadow_recorded) {
   CheckBlocks(lm::Check::kBlockAfter);
 }
 
+// The game's lamp list as the hook's table has it: a new copy when the hook has published one since ours (true), none recent drops what we hold. The volume has its own copy and its
+// own sequence number.
+bool LightManager::RefreshList() {
+  bool stale = false;
+  bool changed = vol_lamps::Global().Latest(&list_, &list_seq_, &stale, kMaxListAge);
+  if (stale) {
+    changed = changed || !list_.empty();
+    list_.clear();
+    list_seq_ = 0;
+  }
+  return changed;
+}
+
+void LightManager::FillVolumeInputs(const volumetrics::VolFrameContext& context, uint32_t limit, bool lamps_on, bool heads_on, volumetrics::VolInputs* out,
+                                    const std::vector<vol_lamps::GameLamp>* list) {
+  if (!Serving(light_project::kFlipVolume)) {
+    return;
+  }
+  Cost cost(&frame_cpu_);
+  volume_seen_ = true;
+  volume_from_frame_ = true;
+  ++volume_fills_;
+  if (lamps_on) {
+    if (list == nullptr) {
+      RefreshList();
+      list = &list_;
+    }
+    const volumetrics::PickResult& pick = vol_pick_.Update(*list, context, out->lamp_count, limit);
+    collector_.SetPickedLamps(pick.records.data(), pick.weights.data(), pick.count, pick.listed);
+  } else {
+    vol_pick_.Reset();  // as the volume's own producer does when it does not read the lamps
+    collector_.SetPickedLamps<vol_lamps::GameLamp>(nullptr, nullptr, 0, 0);
+  }
+  const LocalShadowAtlas& atlas = shadow_->AtlasInfo();
+  grid_lamps_ = context.grid.lamps;
+  grid_headlights_ = context.grid.headlights;
+  collector_.NoteBudgets(atlas.slot, atlas.width, atlas.height, grid_lamps_, grid_headlights_);
+  light_project::ProjectVolumeLamps(collector_.frame(), out);
+  if (heads_on) {
+    light_project::ProjectVolumeHeadlights(collector_.frame(), out);
+  }
+  volume_lamp_count_ = out->lamp_count;
+  volume_headlight_count_ = out->headlight_count;
+}
+
+void LightManager::CheckVolumeBytes(const volumetrics::VolInputs& from_frame, const volumetrics::VolInputs& legacy) {
+  if (!Checking()) {
+    return;
+  }
+  Cost cost(&frame_cpu_);
+  light_project::CheckVolumeBytes(from_frame, legacy, &check_);
+}
+
 void LightManager::NoteVolumeInputs(const volumetrics::VolFrameContext& context, const volumetrics::VolInputs& in, bool lamps_on, bool heads_on, uint32_t first_lamp) {
   if (!active_ || !begun_ || every_ <= 0) {
     return;  // only the census looks at what the volume was given
@@ -253,15 +313,10 @@ void LightManager::NoteVolumeInputs(const volumetrics::VolFrameContext& context,
   Cost cost(&frame_cpu_);
   volume_seen_ = true;
   const uint32_t first = std::min<uint32_t>(first_lamp, in.lamp_count);
-  if (lamps_on) {
-    // The game's list as the hook's table has it (the volume's own copy is private to it): a new copy when the hook has published one since ours.
-    bool stale = false;
-    bool changed = vol_lamps::Global().Latest(&list_, &list_seq_, &stale, kMaxListAge);
-    if (stale) {
-      changed = changed || !list_.empty();
-      list_.clear();
-      list_seq_ = 0;
-    }
+  if (lamps_on && !volume_from_frame_) {
+    // The game's list as the hook's table has it (the volume's own copy is private to it): a new copy when the hook has published one since ours. (Made from the frame, the volume's
+    // lamps ARE the frame's: nothing to read back.)
+    const bool changed = RefreshList();
     collector_.SetLamps(list_.data(), uint32_t(list_.size()), changed, in.lamps.data() + first, in.lamp_count - first);
   }
   const LocalShadowAtlas& atlas = shadow_->AtlasInfo();
@@ -405,9 +460,10 @@ void LightManager::Census() {
   // The flips (LU-4): which consumers read the frame, how much they took from it, and how the byte compares of the projections came out (the checks' own counts are in the self-check
   // text above: block bytes, volume bytes, shadow lights).
   const auto flip_name = [&](uint32_t bit) { return (flips_ & bit) != 0 ? "the frame" : "its own producer"; };
-  REXLOG_INFO("{} flips (LU-4, mcla_gpu_light_frame = {}): the headlight block reads {} ({} projections made, {} lit draws took one), the volume reads {}, the shadow replay reads {}; the "
-              "projections are compared with the legacy producers' bytes every frame while the census is on: {}",
-              kPrefix, flips_, flip_name(light_project::kFlipHeadlightBlock), block_made_, block_draws_, flip_name(light_project::kFlipVolume), flip_name(light_project::kFlipShadowLights),
+  REXLOG_INFO("{} flips (LU-4, mcla_gpu_light_frame = {}): the headlight block reads {} ({} projections made, {} lit draws took one), the volume reads {} ({} fills from it, its lamp pick "
+              "here picked {} of a budget of {}), the shadow replay reads {}; the projections are compared with the legacy producers' bytes every frame while the census is on: {}",
+              kPrefix, flips_, flip_name(light_project::kFlipHeadlightBlock), block_made_, block_draws_, flip_name(light_project::kFlipVolume), volume_fills_,
+              vol_pick_.picked().count, vol_pick_.room(), flip_name(light_project::kFlipShadowLights),
               w.Checks() == 0 ? std::string("no check made") : std::format("{} differed in the window", w.Bad()));
   window_ = Window{};
 }

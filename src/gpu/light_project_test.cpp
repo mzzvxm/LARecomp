@@ -13,6 +13,9 @@
 // (mcla_gpu_light_pick_record = <path>, <path>.rig.txt) the same chain runs over THOSE frames too (the tracker's inputs of a real night drive).
 //   4a  the headlight block: ProjectHeadlightBlock of the frame against HeadlightRig's block (MakeConstants over the rig's lamps and the remapped maps), 1072 bytes, before the trigger and
 //       after it, at every level, over every frame; the deliberate differences of every part of the block are found.
+//   4b  the volume's light inputs: the lamps (the volume's real LampPicker through VolumeLampPick, the Collector's SetPickedLamps and ProjectVolumeLamps) against FillLamps' (the same
+//       picker run as VolumetricsInputs::FillLamps runs it), the headlights and shadow views (the frame's against FillHeadlights + ApplyHeadlightUnits + FillShadows), every part of VolInputs
+//       byte for byte over every frame, with the core's test lamp, a cut, a gap, level changes and a limit.
 
 #include <algorithm>
 #include <array>
@@ -36,6 +39,11 @@
 #include "light_project.h"
 #include "local_shadow_rules.h"
 #include "local_shadow_types.h"
+#include "vol_lamp_list.h"
+#include "volumetrics_headlights.h"
+#include "volumetrics_lamp_pick.h"
+#include "volumetrics_lamps.h"
+#include "volumetrics_types.h"
 
 namespace lg = larecomp::gpu;
 namespace lm = larecomp::gpu::light_manager;
@@ -44,6 +52,8 @@ namespace hr = mcla::gpu::headlight_rules;
 namespace ls = mcla::gpu::local_shadow;
 namespace lb = mcla::gpu::light_budget;
 namespace rec = mcla::gpu::light_pick::record;
+namespace vol = mcla::gpu::volumetrics;
+namespace vl = mcla::gpu::vol_lamps;
 
 namespace {
 
@@ -647,6 +657,542 @@ void TestUngroupedTableIsFound() {
   Check(sc.total_bad() == 1, "ungrouped: maps the replay published apart are found by the byte check (the table's order is the replay's)");
 }
 
+// ---------------------------------------------------------------------------
+// 4b: the volume's lamps
+// ---------------------------------------------------------------------------
+
+std::vector<vl::GameLamp> MakeStreet(uint32_t n, float seed) {
+  std::vector<vl::GameLamp> list;
+  for (uint32_t i = 0; i < n; ++i) {
+    vl::GameLamp g;
+    g.pos[0] = 12.0f + 0.37f * seed + 6.5f * float(i);
+    g.pos[1] = 9.2f;
+    g.pos[2] = (i % 2 == 0 ? 7.0f : -7.0f) + 0.01f * float(i);
+    g.colour[0] = 1.0f;
+    g.colour[1] = 0.84f - 0.002f * float(i);
+    g.colour[2] = 0.6f;
+    g.dir[0] = 0.0f;
+    g.dir[1] = -1.0f;
+    g.dir[2] = 0.0f;
+    g.intensity = 55.0f + float((i * 7) % 46);
+    g.cone_deg = 125.0f;
+    g.spread_deg = -50.5f;
+    g.scale = i % 5 == 0 ? 0.8f : (i % 7 == 0 ? 0.37f : 1.0f);  // the prop pass's fade: a lamp at 80 and at 37 per cent
+    g.type = 1;
+    g.on = 1;
+    list.push_back(g);
+  }
+  vl::GameLamp omni = list[3];  // an omni lamp (a window), and one of intensity 0.4 (a record the pick finds no use for)
+  omni.pos[0] += 1.1f;
+  omni.type = 0;
+  omni.cone_deg = 360.0f;
+  list.push_back(omni);
+  vl::GameLamp dim = list[5];
+  dim.pos[2] += 2.0f;
+  dim.intensity = 0.4f;
+  list.push_back(dim);
+  vl::GameLamp twin = list[8];  // two records at one place: the pick keeps the better scoring one
+  twin.intensity += 30.0f;
+  list.push_back(twin);
+  return list;
+}
+
+vol::VolCamera CameraAt(float x, float yaw) {
+  vol::VolCamera cam;
+  cam.pos[0] = x;
+  cam.pos[1] = 1.6f;
+  cam.pos[2] = 0.0f;
+  cam.forward[0] = std::cos(yaw);
+  cam.forward[1] = 0.0f;
+  cam.forward[2] = std::sin(yaw);
+  cam.right[0] = -std::sin(yaw);
+  cam.right[1] = 0.0f;
+  cam.right[2] = std::cos(yaw);
+  cam.up[0] = 0.0f;
+  cam.up[1] = 1.0f;
+  cam.up[2] = 0.0f;
+  cam.tan_x = 1.0f;
+  cam.tan_y = 0.5625f;
+  return cam;
+}
+
+// VolumetricsInputs::FillLamps' own lines (volumetrics_inputs.cpp), on the same types: the legacy producer of the lamps.
+class LegacyLamps {
+ public:
+  void Fill(const std::vector<vl::GameLamp>& list, const vol::VolFrameContext& frame, vol::VolInputs* out, uint32_t limit) {
+    bool reset = false;
+    if (have_camera_) {
+      float step2 = 0.0f;
+      for (int i = 0; i < 3; ++i) {
+        const float d = frame.camera.pos[i] - last_camera_[i];
+        step2 += d * d;
+      }
+      reset = step2 > vol::kCutMetres * vol::kCutMetres;
+    }
+    reset = reset || frame.elapsed_s > 0.5f;
+    for (int i = 0; i < 3; ++i) {
+      last_camera_[i] = frame.camera.pos[i];
+    }
+    have_camera_ = true;
+    const uint32_t room_all = std::min(frame.grid.lamps, vol::kMaxLamps);
+    const uint32_t have = out->lamp_count;
+    const uint32_t room = std::min(limit, room_all > have ? room_all - have : 0u);
+    vol::PickParams params;
+    params.budget = room;
+    params.dt = frame.elapsed_s;
+    params.near_m = frame.grid.near_m;
+    params.far_m = frame.grid.far_m;
+    params.reset = reset;
+    picker_.Update(list, frame.camera, params, &picked_);
+    uint32_t n = have;
+    for (uint32_t i = 0; i < picked_.count && n < vol::kMaxLamps; ++i) {
+      out->lamps[n++] = picked_.lamps[i];
+    }
+    out->lamp_count = n;
+  }
+  void Reset() {
+    picker_.Reset();
+    picked_ = vol::PickResult{};
+  }
+  const vol::PickResult& picked() const { return picked_; }
+
+ private:
+  vol::LampPicker picker_;
+  vol::PickResult picked_;
+  float last_camera_[3] = {};
+  bool have_camera_ = false;
+};
+
+// The volume's entry of a frame: the core's defaults, and a test lamp on some frames.
+vol::VolInputs Entry(bool test_lamp) {
+  vol::VolInputs in;
+  in.valid = true;
+  if (test_lamp) {
+    vol::VolLamp t{};
+    t.pos[0] = 3.0f;
+    t.pos[1] = 5.0f;
+    t.pos[2] = 3.0f;
+    t.range = 30.0f;
+    t.dir[1] = -1.0f;
+    t.cos_outer = 0.5f;
+    t.cos_inner = 0.8f;
+    t.colour[0] = t.colour[1] = t.colour[2] = 40.0f;
+    t.shadow_view = -1;
+    t.shadow_view_b = -1;
+    t.pad[0] = 30.0f;
+    in.lamps[in.lamp_count++] = t;
+  }
+  return in;
+}
+
+struct LampRun {
+  uint64_t frames = 0, compares = 0, bad = 0, with_lamps = 0, fading = 0, resets = 0, test_lamp_frames = 0, max_lamps = 0;
+  std::string first;
+};
+
+// One camera drive over a street of 70 lamps, the volume's level going 12 -> 32 -> 48 lamps, a cut at frame 200, a gap at frame 280, the debug limit in a stretch.
+LampRun RunLamps(float seed) {
+  LampRun run;
+  const std::vector<vl::GameLamp> list = MakeStreet(140, seed);
+  LegacyLamps legacy;
+  vol::VolumeLampPick pick;
+  lm::Collector c;
+  c.Reset();
+  mcla::gpu::HeadlightSet none;
+  double clock = 50.0;
+  float x = 20.0f;
+  for (uint32_t frame = 0; frame < 420; ++frame) {
+    clock += 1.0 / 60.0;
+    x += frame == 200 ? 400.0f : 0.35f;  // a cut
+    c.BeginFrame(frame, clock, none);
+    c.SetShadows<lg::LocalShadowFrame>(nullptr, lg::ShadowAtlasInfo{});
+    vol::VolFrameContext ctx;
+    ctx.frame = frame;
+    ctx.camera = CameraAt(x, 0.3f * std::sin(0.02f * float(frame)));
+    ctx.grid.lamps = frame < 120 ? 12u : (frame < 240 ? 32u : 48u);
+    ctx.grid.near_m = 0.5f;
+    ctx.grid.far_m = 160.0f;
+    ctx.elapsed_s = frame == 0 ? 0.0f : (frame == 280 ? 0.9f : 1.0f / 60.0f);  // a long gap at 280 (a menu)
+    const uint32_t limit = (frame >= 330 && frame < 380) ? 7u : vol::kMaxLamps;  // mcla_gpu_vol_lamp_limit in a stretch
+    const bool test_lamp = frame % 3 == 0;
+    const bool lamps_on = frame < 380 || frame >= 400;  // the setting's off for 20 frames (mcla_gpu_vol_inputs)
+    vol::VolInputs a = Entry(test_lamp), b = Entry(test_lamp);
+    if (lamps_on) {
+      legacy.Fill(list, ctx, &a, limit);
+      const vol::PickResult& picked = pick.Update(list, ctx, b.lamp_count, limit);
+      c.SetPickedLamps(picked.records.data(), picked.weights.data(), picked.count, picked.listed);
+    } else {
+      legacy.Reset();
+      pick.Reset();
+      c.SetPickedLamps<vl::GameLamp>(nullptr, nullptr, 0, 0);
+    }
+    lp::ProjectVolumeLamps(c.frame(), &b);
+    lm::SelfCheck sc;
+    lp::CheckVolumeBytes(b, a, &sc);
+    const bool same = SameBytes(&a, &b, sizeof(vol::VolInputs)) || (SameBytes(a.lamps.data(), b.lamps.data(), sizeof(a.lamps)) && a.lamp_count == b.lamp_count);
+    ++run.frames;
+    ++run.compares;
+    if (sc.total_bad() != 0 || !same) {
+      ++run.bad;
+      if (run.first.empty()) {
+        run.first = "frame " + std::to_string(frame) + ": " + sc.TakeWindow().first;
+      }
+    }
+    run.with_lamps += a.lamp_count > (test_lamp ? 1u : 0u) ? 1u : 0u;
+    run.test_lamp_frames += test_lamp ? 1u : 0u;
+    run.max_lamps = std::max<uint64_t>(run.max_lamps, a.lamp_count);
+    for (uint32_t k = 0; k < c.lamp_count(); ++k) {
+      run.fading += c.frame().lights[c.lamp_slot(k)].vol_weight < 0.999f ? 1u : 0u;
+    }
+    lm::SelfCheck inv;
+    lm::CheckFrameInvariants(c.frame(), c.has_previous() ? &c.previous() : nullptr, &inv);
+    Check(inv.total_bad() == 0, "volume lamps: the frame's own invariants hold with the manager's lamps (frame " + std::to_string(frame) + ")");
+    c.EndFrame();
+  }
+  return run;
+}
+
+void TestVolumeLamps() {
+  for (const float seed : {0.0f, 3.1f, 11.7f}) {
+    const LampRun run = RunLamps(seed);
+    const std::string at = " (street seed " + std::to_string(seed) + ")";
+    Check(run.bad == 0, "volume lamps: the lamps made from the frame are the volume's own lamps byte for byte in each of " + std::to_string(run.compares) + " frames" + at + ", " +
+                            std::to_string(run.bad) + " differed: " + run.first);
+    Check(run.with_lamps > 350 && run.max_lamps >= 30 && run.fading > 100, "volume lamps: the drive has lamps, fades and the larger levels" + at + " (" + std::to_string(run.with_lamps) + " frames with lamps, at most " +
+                                                                           std::to_string(run.max_lamps) + ", " + std::to_string(run.fading) + " lamp-frames fading)");
+    std::printf("INFO: volume lamps%s: %llu frames compared, %llu with lamps, at most %llu in the inputs, %llu lamp-frames with a weight under 1\n", at.c_str(), (unsigned long long)run.frames,
+                (unsigned long long)run.with_lamps, (unsigned long long)run.max_lamps, (unsigned long long)run.fading);
+  }
+  // The pick class is the picker's driver: a cut and a gap start the lamps again at full weight, and the room is the level's less what is in.
+  const std::vector<vl::GameLamp> list = MakeStreet(140, 0.0f);
+  vol::VolumeLampPick pick;
+  vol::VolFrameContext ctx;
+  ctx.camera = CameraAt(20.0f, 0.0f);
+  ctx.grid.lamps = 12;
+  ctx.elapsed_s = 0.0f;
+  vol::PickResult first = pick.Update(list, ctx, 1, 0);
+  Check(pick.room() == 11 && first.count <= 11 && first.count > 0, "pick: the room is the level's twelve less the test lamp (" + std::to_string(pick.room()) + ")");
+  bool all_full = true;
+  for (uint32_t k = 0; k < first.count; ++k) {
+    all_full = all_full && first.weights[k] == 1.0f;
+  }
+  Check(all_full, "pick: the first pick is at full weight");
+  ctx.elapsed_s = 1.0f / 60.0f;
+  ctx.camera = CameraAt(25.0f, 0.0f);
+  ctx.grid.lamps = 32;
+  const vol::PickResult second = pick.Update(list, ctx, 0, 0);
+  bool some_fading_in = false;
+  for (uint32_t k = 0; k < second.count; ++k) {
+    some_fading_in = some_fading_in || second.weights[k] < 1.0f;
+  }
+  Check(some_fading_in && second.count > first.count, "pick: lamps that join with a bigger budget fade in");
+  ctx.camera = CameraAt(500.0f, 0.0f);  // a cut
+  const vol::PickResult cut = pick.Update(list, ctx, 0, 0);
+  bool cut_full = cut.count > 0;
+  for (uint32_t k = 0; k < cut.count; ++k) {
+    cut_full = cut_full && cut.weights[k] == 1.0f;
+  }
+  Check(cut_full, "pick: after a camera cut every lamp is at full weight");
+  Check(pick.Update(list, ctx, 0, 5).count <= 5 && pick.room() == 5, "pick: the debug limit caps the room");
+  Check(pick.Update(list, ctx, 28, 0).count <= 4 && pick.room() == 4, "pick: and so do the lamps already in");
+  Check(pick.Update(list, ctx, 40, 0).count == 0 && pick.room() == 0, "pick: more lamps in than the level reads leaves no room");
+  // a record's weight and the Light's: the volume's colour is the Light's colour x units x weight, bit for bit
+  vl::GameLamp g = list[10];
+  lg::Light light = lg::LightFromGameLamp(g);
+  light.vol_weight = 0.3721f;
+  vol::VolLamp made = vol::MakeVolLamp(g);
+  for (int i = 0; i < 3; ++i) {
+    made.colour[i] *= 0.3721f;
+  }
+  const vol::VolLamp projected = lg::ToVolLamp<vol::VolLamp>(light);
+  Check(SameBytes(&made, &projected, sizeof(made)), "pick: a lamp's volume lamp from its Light is the picker's lamp byte for byte (the near radius, the cone, the views, the weight)");
+  Check(projected.shadow_view == -1 && projected.shadow_view_b == -1, "pick: a street lamp reads no shadow view (both -1)");
+}
+
+// ---------------------------------------------------------------------------
+// 4b: the volume's headlights and the shadow views they read
+// ---------------------------------------------------------------------------
+
+// VolumetricsInputs::FillHeadlightInputs' lines on the same types.
+void LegacyHeadlights(const mcla::gpu::HeadlightSet& set, const lg::LocalShadowFrame* local, const lg::ShadowAtlasInfo& atlas, vol::VolInputs* out) {
+  if (set.count == 0) {
+    return;
+  }
+  vol::FillHeadlights(set, out);
+  for (uint32_t i = 0; i < out->headlight_count; ++i) {
+    vol::ApplyHeadlightUnits(&out->headlights[i]);
+  }
+  const vol::ShadowAtlasState state{atlas.valid, atlas.slot, atlas.width, atlas.height};
+  vol::FillShadows(local, state, out);
+}
+
+struct HeadRun {
+  uint64_t frames = 0, bad = 0, with_views = 0, two_views = 0, dropped_views = 0;
+  std::string first;
+};
+
+// Over the drive: the volume's fill after the trigger of each frame, the lamps of the street beside them.
+HeadRun RunHeadlights(const std::vector<DriveFrame>& frames, lb::Level level, bool spoil_views) {
+  HeadRun run;
+  Replay replay;
+  replay.level = level;
+  lm::Collector c;
+  lm::ShadowCarry<lg::LocalShadowFrame> carry;
+  c.Reset();
+  carry.Clear();
+  const lg::ShadowAtlasInfo atlas = MakeAtlas(52);
+  const std::vector<vl::GameLamp> list = MakeStreet(70, 1.5f);
+  LegacyLamps legacy_lamps;
+  vol::VolumeLampPick pick;
+  bool had_trigger = false;
+  for (const DriveFrame& f : frames) {
+    const mcla::gpu::HeadlightSet& set = f.set;
+    c.BeginFrame(uint32_t(f.frame), double(f.frame) / kFps, set);
+    if (!had_trigger) {
+      carry.Clear();
+    }
+    const std::array<uint32_t, 4> keys = KeysOf(set);
+    const lg::LocalShadowFrame moved = carry.ForSet(keys.data(), set.count, kRemap);
+    c.SetShadows(moved.count != 0 ? &moved : nullptr, carry.has() ? carry.atlas() : lg::ShadowAtlasInfo{});
+    const bool trigger = set.count > 0 && f.frame % 37 != 0;
+    had_trigger = trigger;
+    lg::LocalShadowFrame made;
+    if (set.count > 0 && !trigger) {
+      c.EndFrame();  // the replay made no map in this frame: the volume reads the last trigger's maps moved to this set (TestVolumeWithoutTrigger)
+      continue;
+    }
+    if (trigger) {
+      made = PublishViews(&replay, set, f.camera, f.frame);
+      if (spoil_views && made.count > 1 && f.frame % 5 == 0) {
+        made.views[made.count - 1].atlas_rect[2] = 3.0f;  // a tile outside the atlas: the volume cannot read it
+      }
+      carry.Set(made.count != 0 ? &made : nullptr, atlas, keys.data(), set.count);
+      c.SetShadows(made.count != 0 ? &made : nullptr, made.count != 0 ? atlas : lg::ShadowAtlasInfo{});
+    }
+    // The volume's fill (after the trigger): the legacy producer's lamps and headlights, and the frame's.
+    vol::VolFrameContext ctx;
+    ctx.frame = f.frame;
+    ctx.camera = CameraAt(float(f.camera.eye[0]), 0.1f);
+    ctx.grid.lamps = level == lb::Level::kMedium ? 12u : 32u;
+    ctx.grid.headlights = level == lb::Level::kMedium ? 2u : 4u;
+    ctx.elapsed_s = f.frame == 1 ? 0.0f : 1.0f / 60.0f;
+    const bool test_lamp = f.frame % 4 == 0;
+    vol::VolInputs a = Entry(test_lamp), b = Entry(test_lamp);
+    legacy_lamps.Fill(list, ctx, &a, vol::kMaxLamps);
+    LegacyHeadlights(set, trigger && made.count != 0 ? &made : nullptr, trigger && made.count != 0 ? atlas : lg::ShadowAtlasInfo{}, &a);
+    const vol::PickResult& picked = pick.Update(list, ctx, b.lamp_count, 0);
+    c.SetPickedLamps(picked.records.data(), picked.weights.data(), picked.count, picked.listed);
+    lp::ProjectVolumeLamps(c.frame(), &b);
+    lp::ProjectVolumeHeadlights(c.frame(), &b);
+    lm::SelfCheck sc;
+    lp::CheckVolumeBytes(b, a, &sc);
+    const bool same = SameBytes(&a.lamps, &b.lamps, sizeof(a.lamps)) && SameBytes(&a.headlights, &b.headlights, sizeof(a.headlights)) &&
+                      SameBytes(&a.shadow_views, &b.shadow_views, sizeof(a.shadow_views)) && a.lamp_count == b.lamp_count && a.headlight_count == b.headlight_count &&
+                      a.shadow_view_count == b.shadow_view_count && a.shadow_atlas_slot == b.shadow_atlas_slot && SameBytes(a.shadow_atlas_size, b.shadow_atlas_size, sizeof(a.shadow_atlas_size));
+    ++run.frames;
+    if (sc.total_bad() != 0 || !same) {
+      ++run.bad;
+      if (run.first.empty()) {
+        run.first = "frame " + std::to_string(f.frame) + ": " + sc.TakeWindow().first;
+      }
+    }
+    Check(same == (sc.total_bad() == 0), "volume headlights: the check agrees with a byte compare of the two inputs");
+    run.with_views += a.shadow_view_count != 0 ? 1u : 0u;
+    for (uint32_t i = 0; i < a.headlight_count; ++i) {
+      run.two_views += a.headlights[i].shadow_view_b >= 0 ? 1u : 0u;
+    }
+    for (uint32_t i = 0; i < a.shadow_view_count; ++i) {
+      run.dropped_views += a.shadow_views[i].valid == 0 ? 1u : 0u;
+    }
+    lm::SelfCheck inv;
+    lm::CheckFrameInvariants(c.frame(), c.has_previous() ? &c.previous() : nullptr, &inv);
+    Check(inv.total_bad() == 0, "volume headlights: the frame's own invariants hold");
+    c.EndFrame();
+  }
+  return run;
+}
+
+void TestVolumeHeadlightsOverTheDrive(const std::vector<DriveFrame>& frames, const std::string& name) {
+  for (const lb::Level level : {lb::Level::kMedium, lb::Level::kHigh, lb::Level::kUltra}) {
+    for (const bool spoil : {false, true}) {
+      const HeadRun run = RunHeadlights(frames, level, spoil);
+      const std::string at = " (" + name + ", " + LevelName(level) + (spoil ? ", some views unusable" : "") + ")";
+      std::printf("INFO: volume inputs%s: %llu frames compared, %llu with shadow views, %llu headlight-frames reading two views, %llu views dropped as unusable\n", at.c_str(),
+                  (unsigned long long)run.frames, (unsigned long long)run.with_views, (unsigned long long)run.two_views, (unsigned long long)run.dropped_views);
+      Check(run.bad == 0, "volume headlights: the lamps, headlights and shadow views made from the frame are the volume's own byte for byte in each of " + std::to_string(run.frames) + " frames" + at +
+                              ", " + std::to_string(run.bad) + " differed: " + run.first);
+      Check(run.with_views > run.frames / 2, "volume headlights: most frames have shadow views in the inputs" + at);
+      if (level != lb::Level::kMedium) {
+        Check(run.two_views > 0, "volume headlights: a headlight reading two views was seen" + at);
+      }
+      if (spoil) {
+        Check(run.dropped_views > 0, "volume headlights: views the volume cannot read were dropped by both" + at);
+      }
+    }
+  }
+}
+
+// A frame in which the volume fills but the replay made no map of its own: the frame holds the last trigger's maps moved to this frame's set (by the car), the legacy volume reads the
+// replay's stale ones with the light indices of the frame they were made for. The same bytes while the rig's order did not change; when it did, the frame's lights read the views of
+// THEIR cars (the legacy ones read another car's), so the frame is the right one and the proof run will say so (CHECK).
+void TestVolumeWithoutTrigger() {
+  const lg::ShadowAtlasInfo atlas = MakeAtlas(31);
+  const mcla::gpu::HeadlightSet before = MakeSet(3, 20);
+  lm::Collector c;
+  lm::ShadowCarry<lg::LocalShadowFrame> carry;
+  c.Reset();
+  c.BeginFrame(1, 1.0, before);
+  lg::LocalShadowFrame made;
+  made.views[made.count++] = MakeView(0, 1, 0, 4);
+  made.views[made.count++] = MakeView(0, 1, 1, 4);
+  made.views[made.count++] = MakeView(2, 1, 2, 4);
+  carry.Set(&made, atlas, KeysOf(before).data(), before.count);
+  c.SetShadows(&made, atlas);
+  c.EndFrame();
+  const auto compare = [&](const mcla::gpu::HeadlightSet& now, uint32_t frame) {
+    c.BeginFrame(frame, 1.0 + double(frame) / 60.0, now);
+    const std::array<uint32_t, 4> keys = KeysOf(now);
+    const lg::LocalShadowFrame moved = carry.ForSet(keys.data(), now.count, kRemap);
+    c.SetShadows(moved.count != 0 ? &moved : nullptr, atlas);
+    vol::VolInputs a = Entry(false), b = Entry(false);
+    LegacyHeadlights(now, &made, atlas, &a);  // the replay's published frame is still the last trigger's
+    lp::ProjectVolumeHeadlights(c.frame(), &b);
+    lm::SelfCheck sc;
+    lp::CheckVolumeBytes(b, a, &sc);
+    c.EndFrame();
+    return sc.total_bad() == 0;
+  };
+  mcla::gpu::HeadlightSet moved_on = before;
+  for (uint32_t i = 0; i < moved_on.count; ++i) {
+    moved_on.lights[i].pos[0] += 0.3f;  // the cars moved, the rig's order did not change
+  }
+  Check(compare(moved_on, 2), "without a trigger: the rig's order is the same, so the frame and the legacy volume have the same bytes");
+  mcla::gpu::HeadlightSet swapped = moved_on;
+  std::swap(swapped.lights[0], swapped.lights[2]);  // the rig now ranks the third car first
+  Check(!compare(swapped, 3), "without a trigger: the rig ranked its cars another way: the frame's views follow their cars, the legacy volume's follow the old places (a difference the proof run reports)");
+  // and in that frame the frame's lights read the right views
+  lm::Collector d;
+  d.Reset();
+  d.BeginFrame(4, 1.0, swapped);
+  const std::array<uint32_t, 4> keys = KeysOf(swapped);
+  const lg::LocalShadowFrame moved = carry.ForSet(keys.data(), swapped.count, kRemap);
+  d.SetShadows(&moved, atlas);
+  vol::VolInputs b = Entry(false);
+  lp::ProjectVolumeHeadlights(d.frame(), &b);
+  Check(b.headlight_count == 3 && b.headlights[0].shadow_view >= 0 && b.headlights[0].shadow_view_b < 0 && b.headlights[2].shadow_view >= 0 && b.headlights[2].shadow_view_b >= 0 &&
+            b.headlights[1].shadow_view < 0,
+        "without a trigger: the car that was third (one view) is first now and reads one; the one that was first (two views) is third and reads two");
+}
+
+// Every part of the volume's inputs that is not the legacy producer's is found.
+void TestVolumeMutations() {
+  const std::vector<vl::GameLamp> list = MakeStreet(70, 0.0f);
+  const mcla::gpu::HeadlightSet set = MakeSet(3);
+  lm::Collector c;
+  c.Reset();
+  c.BeginFrame(1, 1.0, set);
+  lg::LocalShadowFrame made;
+  made.views[made.count++] = MakeView(0, 1, 0, 6);
+  made.views[made.count++] = MakeView(0, 1, 1, 6);
+  made.views[made.count++] = MakeView(1, 1, 2, 6);
+  const lg::ShadowAtlasInfo atlas = MakeAtlas(91);
+  c.SetShadows(&made, atlas);
+  vol::VolFrameContext ctx;
+  ctx.camera = CameraAt(40.0f, 0.2f);
+  ctx.grid.lamps = 12;
+  vol::VolumeLampPick pick;
+  const vol::PickResult& picked = pick.Update(list, ctx, 0, 0);
+  c.SetPickedLamps(picked.records.data(), picked.weights.data(), picked.count, picked.listed);
+  vol::VolInputs good = Entry(false), mine = Entry(false);
+  LegacyLamps legacy;
+  legacy.Fill(list, ctx, &good, vol::kMaxLamps);
+  LegacyHeadlights(set, &made, atlas, &good);
+  lp::ProjectVolumeLamps(c.frame(), &mine);
+  lp::ProjectVolumeHeadlights(c.frame(), &mine);
+  const auto bad = [&](const vol::VolInputs& b) {
+    lm::SelfCheck sc;
+    lp::CheckVolumeBytes(mine, b, &sc);
+    return sc.TakeWindow().first;
+  };
+  Check(bad(good).empty(), "volume mutations: the legacy inputs pass");
+  Check(good.lamp_count >= 8 && good.headlight_count == 3 && good.shadow_view_count == 3, "volume mutations: the inputs have lamps, three headlights and three views to change");
+  const auto mutate = [&](const char* what, const char* part, auto&& edit) {
+    vol::VolInputs b = good;
+    edit(b);
+    const std::string first = bad(b);
+    Check(!first.empty(), std::string("volume mutations: a difference in ") + what + " is found");
+    Check(first.find(part) != std::string::npos, std::string("volume mutations: ") + what + " is reported with '" + part + "' (" + first + ")");
+  };
+  mutate("the lamp count", "lamps", [](vol::VolInputs& b) { b.lamp_count -= 1; });
+  mutate("a lamp's position", "its position", [](vol::VolInputs& b) { b.lamps[2].pos[1] = std::nextafter(b.lamps[2].pos[1], 100.0f); });
+  mutate("a lamp's range", "its range", [](vol::VolInputs& b) { b.lamps[1].range += 0.5f; });
+  mutate("a lamp's colour by one unit in the last place", "its colour", [](vol::VolInputs& b) { b.lamps[3].colour[2] = std::nextafter(b.lamps[3].colour[2], 0.0f); });
+  mutate("a lamp's near radius", "its near radius", [](vol::VolInputs& b) { b.lamps[0].pad[0] += 0.01f; });
+  mutate("a lamp's second view word", "which second view it reads", [](vol::VolInputs& b) { b.lamps[0].shadow_view_b = 0; });
+  mutate("a lamp's first view word", "which view it reads", [](vol::VolInputs& b) { b.lamps[0].shadow_view = 0; });
+  mutate("a lamp past the count", "lamp", [](vol::VolInputs& b) { b.lamps[b.lamp_count + 1].range = 1.0f; });
+  mutate("a headlight's colour", "headlight 1", [](vol::VolInputs& b) { b.headlights[1].colour[0] += 1.0f; });
+  mutate("a headlight's near radius", "headlight 2", [](vol::VolInputs& b) { b.headlights[2].pad[0] = 9.0f; });
+  mutate("which view a headlight reads", "which view it reads", [](vol::VolInputs& b) { b.headlights[0].shadow_view = 2; });
+  mutate("the headlight count", "headlights", [](vol::VolInputs& b) { b.headlight_count = 2; });
+  mutate("a view's matrix", "shadow view 1", [](vol::VolInputs& b) { b.shadow_views[1].world_to_shadow[7] += 0.25f; });
+  mutate("a view's tile", "shadow view 2", [](vol::VolInputs& b) { b.shadow_views[2].atlas_rect[3] = 0.9f; });
+  mutate("a view that is not there", "shadow view 5", [](vol::VolInputs& b) { b.shadow_views[5].valid = 1; });
+  mutate("the view count", "shadow views", [](vol::VolInputs& b) { b.shadow_view_count = 2; });
+  mutate("the atlas's slot", "atlas slot", [](vol::VolInputs& b) { b.shadow_atlas_slot += 1; });
+  mutate("the atlas's size", "atlas size", [](vol::VolInputs& b) { b.shadow_atlas_size[1] = 2048.0f; });
+  // an empty rig leaves the entry alone; no atlas gives the volume none; a frame whose lamp is another record is found
+  lm::Collector e;
+  e.Reset();
+  e.BeginFrame(1, 1.0, MakeSet(0));
+  e.SetShadows<lg::LocalShadowFrame>(nullptr, lg::ShadowAtlasInfo{});
+  vol::VolInputs entry = Entry(true), projected = Entry(true);
+  lp::ProjectVolumeHeadlights(e.frame(), &projected);
+  lm::SelfCheck sempty;
+  lp::CheckVolumeBytes(projected, entry, &sempty);
+  Check(sempty.total_bad() == 0 && projected.headlight_count == 0 && projected.shadow_atlas_slot == vol::kNoSlot, "volume headlights: an empty rig leaves the volume's inputs as they were");
+  lm::Collector n;
+  n.Reset();
+  n.BeginFrame(1, 1.0, set);
+  n.SetShadows<lg::LocalShadowFrame>(nullptr, lg::ShadowAtlasInfo{});
+  vol::VolInputs a = Entry(false), b = Entry(false);
+  LegacyHeadlights(set, nullptr, lg::ShadowAtlasInfo{}, &a);
+  lp::ProjectVolumeHeadlights(n.frame(), &b);
+  lm::SelfCheck sn;
+  lp::CheckVolumeBytes(b, a, &sn);
+  Check(sn.total_bad() == 0 && b.shadow_atlas_slot == vol::kNoSlot && b.headlights[0].shadow_view == -1 && b.headlight_count == 3,
+        "volume headlights: lights with no maps are the volume's lights with no views and no atlas slot");
+  // views only the second of which the volume can read: the second is the light's first (DropUnusableViews, shared with FillShadows)
+  lg::LocalShadowFrame two;
+  two.views[two.count++] = MakeView(0, 1, 0, 3);
+  two.views[two.count++] = MakeView(0, 1, 1, 3);
+  two.views[0].atlas_rect[2] = 5.0f;  // the first view's tile is outside the atlas
+  lm::Collector d;
+  d.Reset();
+  d.BeginFrame(1, 1.0, set);
+  d.SetShadows(&two, atlas);
+  vol::VolInputs la = Entry(false), lb2 = Entry(false);
+  LegacyHeadlights(set, &two, atlas, &la);
+  lp::ProjectVolumeHeadlights(d.frame(), &lb2);
+  lm::SelfCheck sd;
+  lp::CheckVolumeBytes(lb2, la, &sd);
+  Check(sd.total_bad() == 0 && lb2.headlights[0].shadow_view == 1 && lb2.headlights[0].shadow_view_b == -1, "volume headlights: only the second view readable: it becomes the light's first, as the legacy producer does");
+  // when no light reads a readable view the volume has no table and no atlas slot
+  lg::LocalShadowFrame bad_only;
+  bad_only.views[bad_only.count++] = MakeView(0, 1, 0, 3);
+  bad_only.views[0].atlas_rect[2] = 5.0f;
+  lm::Collector f;
+  f.Reset();
+  f.BeginFrame(1, 1.0, set);
+  f.SetShadows(&bad_only, atlas);
+  vol::VolInputs fa = Entry(false), fb = Entry(false);
+  LegacyHeadlights(set, &bad_only, atlas, &fa);
+  lp::ProjectVolumeHeadlights(f.frame(), &fb);
+  lm::SelfCheck sf;
+  lp::CheckVolumeBytes(fb, fa, &sf);
+  Check(sf.total_bad() == 0 && fb.shadow_view_count == 0 && fb.shadow_atlas_slot == vol::kNoSlot, "volume headlights: no readable view: no table, no atlas slot, the same as the legacy producer");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -673,6 +1219,10 @@ int main(int argc, char** argv) {
   }
   Check(max_lights == 4 && light_changes > 10, "the drive fills the rig's four lights and changes them (" + std::to_string(light_changes) + " changes of the set)");
   TestBlockOverTheDrive(frames, "the made-up drive");
+  TestVolumeLamps();
+  TestVolumeMutations();
+  TestVolumeWithoutTrigger();
+  TestVolumeHeadlightsOverTheDrive(frames, "the made-up drive");
 
   // the game's own recording, when given
   for (int a = 1; a < argc; ++a) {
@@ -689,6 +1239,7 @@ int main(int argc, char** argv) {
         const std::vector<DriveFrame> recorded = RunRecording(rig);
         std::printf("INFO: %zu frames of %s\n", recorded.size(), path.c_str());
         TestBlockOverTheDrive(recorded, "the recording");
+        TestVolumeHeadlightsOverTheDrive(recorded, "the recording");
       } else {
         Check(false, "the recording " + path + " is read: " + error);
       }

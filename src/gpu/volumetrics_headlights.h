@@ -85,16 +85,9 @@ inline bool UsableView(const VolShadowView& v) {
   return r[0] < r[2] && r[1] < r[3] && std::isfinite(v.depth_bias) && v.depth_bias >= 0.0f && v.depth_bias < 0.5f && std::isfinite(v.texel_size);
 }
 
-// The frame's LocalShadowFrame and the atlas into `out`: FillShadowViews (volumetrics_types.h) first, then the views that cannot be read are dropped and
-// the lights that named them are lit (a light with no usable view takes no lookup). The headlights must be in `out` already. `frame` null, an atlas that
-// is not valid, or no slot: no shadows at all.
-template <class LocalShadowFrameT>
-void FillShadows(const LocalShadowFrameT* frame, const ShadowAtlasState& atlas, VolInputs* out) {
-  const bool usable = frame != nullptr && atlas.valid && atlas.slot != kNoSlot && atlas.width != 0 && atlas.height != 0 && frame->count != 0;
-  FillShadowViews(usable ? frame : static_cast<const LocalShadowFrameT*>(nullptr), usable ? atlas.slot : kNoSlot, float(atlas.width), float(atlas.height), out);
-  if (!usable) {
-    return;
-  }
+// The tail of FillShadows, on its own so that the light manager's projection (light_project.h, LU-4b) ends the same way: the views that cannot be read are dropped (valid 0) and the
+// lights that named them are lit; a light whose only readable view is its second reads it as its first; when not one light reads a view the table and the atlas slot are given up.
+inline void DropUnusableViews(VolInputs* out) {
   for (uint32_t i = 0; i < out->shadow_view_count; ++i) {
     if (UsableView(out->shadow_views[i])) {
       continue;
@@ -124,6 +117,19 @@ void FillShadows(const LocalShadowFrameT* frame, const ShadowAtlasState& atlas, 
     out->shadow_view_count = 0;
     out->shadow_atlas_slot = kNoSlot;
   }
+}
+
+// The frame's LocalShadowFrame and the atlas into `out`: FillShadowViews (volumetrics_types.h) first, then the views that cannot be read are dropped and
+// the lights that named them are lit (a light with no usable view takes no lookup). The headlights must be in `out` already. `frame` null, an atlas that
+// is not valid, or no slot: no shadows at all.
+template <class LocalShadowFrameT>
+void FillShadows(const LocalShadowFrameT* frame, const ShadowAtlasState& atlas, VolInputs* out) {
+  const bool usable = frame != nullptr && atlas.valid && atlas.slot != kNoSlot && atlas.width != 0 && atlas.height != 0 && frame->count != 0;
+  FillShadowViews(usable ? frame : static_cast<const LocalShadowFrameT*>(nullptr), usable ? atlas.slot : kNoSlot, float(atlas.width), float(atlas.height), out);
+  if (!usable) {
+    return;
+  }
+  DropUnusableViews(out);
 }
 
 }  // namespace mcla::gpu::volumetrics

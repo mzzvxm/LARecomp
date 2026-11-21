@@ -390,6 +390,40 @@ class Collector {
     RebuildOrder();
   }
 
+  // LU-4b: the street lamps the manager's OWN pick chose for the volume (volumetrics_lamp_pick.h: PickResult::records and weights), `count` of them in the picker's order. Each is the
+  // list's record made a Light by the one conversion, with the weight the picker folded into its colour exactly (no division to infer it: ToVolLamp of the Light is then the picker's
+  // VolLamp bit for bit), one lamp a place, `listed` = the records the pick was given. Replaces what an earlier call of this or of SetLamps put in the frame.
+  template <class GameLampT>
+  void SetPickedLamps(const GameLampT* records, const float* weights, uint32_t count, uint32_t listed) {
+    stats_.listed = listed;
+    stats_.lamps = stats_.from_list = stats_.differs = stats_.unlisted = stats_.lamps_dropped = 0;
+    for (uint32_t k = 0; k < lamp_count_; ++k) {
+      frame_.lights[lamp_slot_[k]] = Light{};
+    }
+    lamp_count_ = 0;
+    for (uint32_t k = 0; k < count && k < kMaxVolumeLamps; ++k) {
+      Light light = LightFromGameLamp(records[k]);
+      light.vol_weight = std::clamp(weights[k], 0.0f, 1.0f);
+      if (frame_.Find(light.id) >= 0) {
+        ++stats_.lamps_dropped;  // the same place twice
+        continue;
+      }
+      const uint32_t slot = Place(light);
+      if (slot == kNoLightSlot) {
+        ++stats_.lamps_dropped;  // no room
+        continue;
+      }
+      lamp_slot_[lamp_count_] = slot;
+      lamp_source_[lamp_count_] = LampSource::kList;
+      lamp_input_[lamp_count_] = k;
+      ++lamp_count_;
+      ++stats_.lamps;
+      ++stats_.from_list;
+    }
+    BindShadowRefs(&frame_);
+    RebuildOrder();
+  }
+
   // The guest frame is over: the ids not seen lose their slots, this frame becomes the one the next compares with.
   void EndFrame() {
     slots_.End();
