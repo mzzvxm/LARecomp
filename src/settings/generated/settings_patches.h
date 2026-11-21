@@ -40,7 +40,11 @@ class PatchesSettings final : public rex::SettingOwner {
   // toggle in the fork (its FOLIAGE SHADOWS row has no restart mark and was measured switching during
   // play). It was tagged kRequiresRestart, and its pause row said "(RESTART)".
   // CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart.
-  REX_SETTING(bool, disable_imposter_shadows, true, "Performance Mode: Foliage won't cast shadows.");
+  // The default is false (foliage casts shadows) since 2026-11-20, the owner's LOD defaults pass: the fork measured foliage shadows at -0.07 ms of 8.3 on an RTX 5080 and
+  // -0.09 to -0.10 ms of 39 to 43 on the 2-CU integrated GPU (launcher/dev/aniso-2026-10-27.md, the detail options table), so the shadows of
+  // trees are on for every graphics card. CHECK: a tree-heavy scene on the integrated GPU (perf\scripts\chain-lod-defaults.ps1, arm foliage).
+  REX_SETTING(bool, disable_imposter_shadows, false, "Trees and plants do not cast shadows. Off (the default) lets them cast shadows; on is a little faster "
+    "on a weak graphics card.");
 
   // Live: Patch_DisableMotionBlur reads this at the two sites that load the blur's enable flag, on
   // every pass through them (nothing keeps a copy), and the pause menu's MOTION BLUR row flips it

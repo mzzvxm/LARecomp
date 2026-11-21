@@ -33,14 +33,15 @@
 // to, like the low latency row's "AUTO (ON)":
 //     case 0: return gpu_class::AutoLabel(gpu_class::Effect::kSunShafts);   // "AUTO (DEFAULT)"
 //
-// One setting is not a string table: the city LOD scale (lod_city_scale, a number whose 0 is `auto`),
-// with its own rule below (CityLodScaleFor, CityLodLabelFor).
+// Five settings are not a string table: the numbers whose `auto` is a number too (the city LOD scale, the traffic LOD scale, the traffic
+// range and the pedestrian and parked car densities), with their own table and rule below (kScales, ScaleFor, ScaleLabelFor; the city LOD
+// keeps its old names CityLodScaleFor and CityLodLabelFor).
 //
 // Everything that decides something is a pure inline function here (Classify, Cell, ResolveFor,
-// AutoLabelFor, CityLodScaleFor), and this header includes nothing of Plume or ReXGlue:
+// AutoLabelFor, ScaleFor), and this header includes nothing of Plume or ReXGlue:
 // gpu_class_test.cpp builds on its own and checks every cell of the table and the class rule.
-// Current(), Resolve(), AutoLabel() and the CityLod... pair (gpu_class.cpp) only add the class this
-// process found.
+// Current(), Resolve(), AutoLabel(), ScaleInForce() / ScaleLabel() and the CityLod... pair (gpu_class.cpp)
+// only add the class this process found.
 //
 // The cells are a first guess from the costs in the design file; the main session corrects a cell
 // from the measured cost of its package, and the owner tunes the threshold (design question 1).
@@ -227,44 +228,129 @@ inline std::string AutoLabelFor(GpuClass c, Effect effect) {
   return AutoLabelOf(Cell(effect, c));
 }
 
-// --- the city LOD scale -------------------------------------------------------------------------
-// lod_city_scale (the pause menu's CITY LOD, the launcher's City LOD) is how far a city sector keeps
-// its detailed model, as a multiple of the game's own 300 m. 0 stands for `auto`; any other value is
-// the player's own and is used as it is (an older larecomp.toml may hold 0.1, 5 or 10).
-// Measured (perf BACKLOG-opt.md, the LOD line): a sector is drawn detailed when it is loaded and nearer
-// than 300 m x the scale x a camera factor (up to 1.5), and loading stops at the 600 m streaming
-// radius, so 2 already makes every loaded sector detailed and 5 and 10 add nothing. It costs about
-// +6% CPU frame time on a fast CPU and +36 MB, so `auto` is 2 where the GPU class is Mid or High and
-// the game's own 1 on Low (integrated GPUs, handhelds, software adapters).
-// The class is only known once Plume has opened the device (Initialize); with the Xenia renderer
-// (debug only) it never is, and until it is known `auto` is the game's own 1 too.
+// --- the numeric `auto` settings: LOD distances and densities ------------------------------------
+// Five settings are numbers, not words, and their `auto` is a number too: how far a city sector keeps its detailed model
+// (lod_city_scale), how far a traffic car does (lod_traffic_scale), how far from you traffic is kept (traffic_unspawn_dist) and how
+// many pedestrians and parked cars there are (ped_density_scale, parked_car_scale). Each one's own value is used as it is; `auto`
+// (0 for the first three, a negative number for the two densities, where 0 is "none") is the table's cell for the class (kScales).
+// The pause rows say what `auto` comes to ("AUTO (3X)"), like the other AUTO rows.
+//
+// What the cells stand for (owner, 2026-11-20: "bump the defaults of all LOD related settings, as high as appropriate for the
+// hardware class"; the old defaults were one value for every card: 1x, 250 m, 0.5 and 0.5, and the city LOD 2 / 1):
+//   * CITY LOD is the game's 300 m times the scale (a camera factor of up to 1.5 on top), and the city is loaded to 600 m, so 2 shows every
+//     loaded sector in detail and more adds nothing (a ceiling). It costs about +6% of the render thread's time on a fast CPU and +36 MB
+//     (perf BACKLOG-opt.md, the LOD line), so the class with shared memory keeps the game's own 1.
+//   * TRAFFIC LOD is a multiple of the game's distances for a car: at 1x the most detailed model ends at about 40 m, the middle one at about
+//     155 m, and a car further out than that has the coarsest model, up to the 500 m where the game stops drawing it (TRAFFICPROBE-LOG.txt:
+//     244 cars at LOD 0 under 39 m, 336 at LOD 1 from 40 to 154 m, 11 at LOD 2 from 156 m). At 4K a car at 40 m is more than 200 pixels
+//     long, so the step to the middle model shows. 3x puts the first step at 120 m and the second at 465 m, where almost nothing is left to see
+//     (3.2x and more only moves the second step past the cull). The cost is render thread time, a draw call for every part of each
+//     detailed car (about +0.3 ms for 2x on an RTX 5080 at 189 FPS, perf\out\LOD.txt lod-rtx1x-t2) and almost no graphics card time (0.2 to
+//     0.4 ms for 0.5x against 1x on a 2-CU integrated GPU of 39 ms, the fork's measurement).
+//   * TRAFFIC RANGE is the radius beyond which a traffic car is removed: the game's is 400 m (cars are drawn to 500 m), the old default
+//     250 m. More cars are alive and simulated far away; 400 is the original and the ceiling that matters.
+//   * PEDESTRIANS and PARKED CARS are multiples of the game's own density (1 is the original; its pools are 64 pedestrians and 50
+//     parked cars, so more than 1 adds little): the ceiling is 1.
+// The class is only known once Plume has opened the device (Initialize); with the Xenia renderer (debug only) it never is, and until it
+// is known `auto` is the Low cell (the weakest class's, as for every setting whose auto differs between classes).
 inline constexpr double kCityLodAutoGame = 1.0;
 inline constexpr double kCityLodAutoFull = 2.0;
 
-// What `auto` stands for: `known` is whether the class has been found (Known()), `c` the class.
-constexpr double CityLodAutoFor(bool known, GpuClass c) {
-  return (known && c != GpuClass::kLow) ? kCityLodAutoFull : kCityLodAutoGame;
+enum class Scale : uint8_t {
+  kCityLod,        // lod_city_scale         0 = auto   a multiple of the game's 300 m
+  kTrafficLod,     // lod_traffic_scale      0 = auto   a multiple of the game's traffic car distances
+  kTrafficRange,   // traffic_unspawn_dist   0 = auto   metres (100 to 600 when set by hand)
+  kPedDensity,     // ped_density_scale      below 0 = auto   a multiple of the game's density (0 is none)
+  kParkedDensity,  // parked_car_scale       below 0 = auto   a multiple of the game's density (0 is none)
+};
+inline constexpr int kScaleCount = 5;
+
+struct ScaleInfo {
+  std::string_view cvar;
+  double low, mid, high;  // what `auto` stands for per class
+  bool zero_is_auto;      // 0 is `auto` too (no value of the setting is 0); else only a number below 0 is
+  char unit;              // the row's suffix: 'X' (a multiple) or 'M' (metres)
+};
+
+inline constexpr ScaleInfo kScales[kScaleCount] = {
+    {"lod_city_scale", kCityLodAutoGame, kCityLodAutoFull, kCityLodAutoFull, true, 'X'},
+    {"lod_traffic_scale", 1.5, 2.0, 3.0, true, 'X'},
+    {"traffic_unspawn_dist", 250.0, 300.0, 400.0, true, 'M'},
+    {"ped_density_scale", 0.5, 0.75, 1.0, false, 'X'},
+    {"parked_car_scale", 0.5, 0.75, 1.0, false, 'X'},
+};
+
+// The traffic range is held to the menu's range when it is set by hand (the setting accepts 0 to 600 so that 0 can be `auto`).
+inline constexpr double kTrafficRangeMin = 100.0;
+inline constexpr double kTrafficRangeMax = 600.0;
+
+constexpr const ScaleInfo& ScaleOf(Scale scale) { return kScales[static_cast<int>(scale)]; }
+
+constexpr std::string_view ScaleCvar(Scale scale) { return ScaleOf(scale).cvar; }
+
+// What `auto` stands for in a class.
+constexpr double ScaleCell(Scale scale, GpuClass c) {
+  const ScaleInfo& info = ScaleOf(scale);
+  switch (c) {
+    case GpuClass::kLow:
+      return info.low;
+    case GpuClass::kMid:
+      return info.mid;
+    default:
+      return info.high;
+  }
 }
 
-// The scale to apply for the cvar's value: the player's own if it is above 0, else what `auto` comes to.
-constexpr double CityLodScaleFor(bool known, GpuClass c, double user_value) {
-  return user_value > 0.0 ? user_value : CityLodAutoFor(known, c);
+// What `auto` stands for now: `known` is whether the class has been found (Known()), `c` the class; until it is found, the Low cell.
+constexpr double ScaleAutoFor(Scale scale, bool known, GpuClass c) {
+  return ScaleCell(scale, known ? c : GpuClass::kLow);
 }
 
-// "2X", "0.5X", "1.5X": a scale as the pause row shows it.
-inline std::string CityLodScaleText(double scale) {
-  char buf[32];
-  std::snprintf(buf, sizeof(buf), "%gX", scale);
+// Whether the cvar's value is `auto`: below 0 (and 0 where it is no value), and a value that is no number.
+constexpr bool IsAutoValue(Scale scale, double user_value) {
+  return ScaleOf(scale).zero_is_auto ? !(user_value > 0.0) : !(user_value >= 0.0);
+}
+
+// The value to apply for the cvar's value: the player's own, or what `auto` comes to.
+constexpr double ScaleFor(Scale scale, bool known, GpuClass c, double user_value) {
+  if (IsAutoValue(scale, user_value)) {
+    return ScaleAutoFor(scale, known, c);
+  }
+  if (scale == Scale::kTrafficRange) {
+    return std::clamp(user_value, kTrafficRangeMin, kTrafficRangeMax);
+  }
+  return user_value;
+}
+
+// "2X", "0.5X", "1.5X", "400M": a value as the pause row shows it.
+inline std::string ScaleText(Scale scale, double value) {
+  char buf[40];
+  std::snprintf(buf, sizeof(buf), "%g%c", value, ScaleOf(scale).unit);
   return buf;
 }
 
-// The pause row's label for the cvar's value: "AUTO (2X)" for 0 (what `auto` comes to now), else the
-// scale itself.
-inline std::string CityLodLabelFor(bool known, GpuClass c, double user_value) {
-  if (user_value > 0.0) {
-    return CityLodScaleText(user_value);
+// The pause row's label for the cvar's value: "AUTO (3X)" for `auto` (what it comes to now), else the value itself.
+inline std::string ScaleLabelFor(Scale scale, bool known, GpuClass c, double user_value) {
+  if (IsAutoValue(scale, user_value)) {
+    return AutoLabelOf(ScaleText(scale, ScaleAutoFor(scale, known, c)));
   }
-  return AutoLabelOf(CityLodScaleText(CityLodAutoFor(known, c)));
+  return ScaleText(scale, ScaleFor(scale, known, c, user_value));
+}
+
+// The city LOD scale is the first of them (the names the pause row and the tests have always used).
+constexpr double CityLodAutoFor(bool known, GpuClass c) { return ScaleAutoFor(Scale::kCityLod, known, c); }
+
+// The scale to apply for the cvar's value: the player's own if it is above 0, else what `auto` comes to.
+constexpr double CityLodScaleFor(bool known, GpuClass c, double user_value) {
+  return ScaleFor(Scale::kCityLod, known, c, user_value);
+}
+
+// "2X", "0.5X", "1.5X": a scale as the pause row shows it.
+inline std::string CityLodScaleText(double scale) { return ScaleText(Scale::kCityLod, scale); }
+
+// The pause row's label for the cvar's value: "AUTO (2X)" for 0 (what `auto` comes to now), else the scale itself.
+inline std::string CityLodLabelFor(bool known, GpuClass c, double user_value) {
+  return ScaleLabelFor(Scale::kCityLod, known, c, user_value);
 }
 
 // --- speed: the table of GPU names ---------------------------------------------------------------
@@ -647,6 +733,11 @@ bool Known();
 // ResolveFor / AutoLabelFor for Current(). Any thread.
 std::string Resolve(Effect effect, std::string_view user_value);
 std::string AutoLabel(Effect effect);
+
+// ScaleFor / ScaleLabelFor for Known() and Current(): the value to apply for a numeric setting's value, and the pause row's label
+// for it. Any thread, cheap (the hooks call ScaleInForce on every traffic car of every frame).
+double ScaleInForce(Scale scale, double user_value);
+std::string ScaleLabel(Scale scale, double user_value);
 
 // CityLodScaleFor / CityLodLabelFor for Known() and Current(). Any thread.
 double CityLodScale(double user_value);

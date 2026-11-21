@@ -88,8 +88,14 @@ std::string AutoSummary(GpuClass c) {
     out += '=';
     out += Cell(effect, c);
   }
-  out += ", lod_city_scale=";
-  out += CityLodScaleText(CityLodAutoFor(true, c));
+  // The numeric settings (the LOD scales, the traffic range and the densities): `auto` as the value the hooks apply.
+  for (int i = 0; i < kScaleCount; ++i) {
+    const auto scale = static_cast<Scale>(i);
+    out += ", ";
+    out += ScaleCvar(scale);
+    out += '=';
+    out += ScaleText(scale, ScaleCell(scale, c));
+  }
   // Not a setting's `auto`, but chosen by the class too: the sun shafts' ray steps.
   out += ", sun_shafts_steps=";
   out += std::to_string(SunShaftSteps(c));
@@ -177,6 +183,14 @@ std::string Resolve(Effect effect, std::string_view user_value) {
 
 std::string AutoLabel(Effect effect) {
   return AutoLabelFor(Current(), effect);
+}
+
+double ScaleInForce(Scale scale, double user_value) {
+  return ScaleFor(scale, Known(), Current(), user_value);
+}
+
+std::string ScaleLabel(Scale scale, double user_value) {
+  return ScaleLabelFor(scale, Known(), Current(), user_value);
 }
 
 double CityLodScale(double user_value) {
