@@ -548,12 +548,28 @@ add_executable(larecomp_game_marker_test EXCLUDE_FROM_ALL
     src/game_marker_test.cpp)
 target_include_directories(larecomp_game_marker_test PRIVATE src)
 
+# The switch that skips the crash box for a test run (src/crash_options.h: LARECOMP_NO_CRASH_DIALOG, the exit status) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_crash_options_test, then run <build dir>/larecomp_crash_options_test (exit 0 = passed).
+add_executable(larecomp_crash_options_test EXCLUDE_FROM_ALL
+    src/crash_options_test.cpp)
+target_include_directories(larecomp_crash_options_test PRIVATE src)
+if(WIN32)
+    target_compile_definitions(larecomp_crash_options_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # What LARecomp does with each option of the command line (src/settings/cli_rules.h: which options the SDK keeps, which setting
 # belongs to a driver that is not loaded this run, what a name nothing knows costs) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_cli_rules_test, then run <build dir>/larecomp_cli_rules_test (exit 0 = passed).
 add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
     src/settings/cli_rules_test.cpp)
 target_include_directories(larecomp_cli_rules_test PRIVATE src)
+
+# The table of change-callback guards (src/settings/watch_table.h: released by hand while the SDK's settings still exist, because the exe's
+# static destruction came after the SDK had destroyed them and crashed in Mtx_lock about every other run) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_watch_table_test, then run <build dir>/larecomp_watch_table_test (exit 0 = passed).
+add_executable(larecomp_watch_table_test EXCLUDE_FROM_ALL
+    src/settings/watch_table_test.cpp)
+target_include_directories(larecomp_watch_table_test PRIVATE src)
 
 # Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
 # own default for cache_root) has a check that needs no game:
