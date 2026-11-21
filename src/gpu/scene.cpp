@@ -36,6 +36,7 @@
 #include "draw_state.h"
 #include "format.h"
 #include "gbuffer.h"
+#include "screen_shared.h"
 #include "gpu.h"
 #include "layout.h"
 #include "mc_engine/display/ultrawide.h"
@@ -847,6 +848,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   msaa_.BeginFrame(list, temporal_ && temporal_->UpscalerNext(),
                    !temporal_ || temporal_->PathSettled(),
                    edram_->change_serial() != targets_before);
+  if (screen_) {
+    screen_->BeginFrame(frame_serial_);  // the shared screen products: reads the consumers' wants and the debug view, before the AO declares its own (screen_shared.h)
+  }
   if (ao_) {
     ao_->BeginFrame();
   }
@@ -3566,7 +3570,9 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //   2b. the headlight shadow maps (local_shadow.h): the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas
   //      the lit draws of the next frame read (independent of the other steps: its own pass and target);
   //   3. the ambient occlusion, the bounce light and the contact shadows (ao.h): the depth chain, the ray traced pass (car_rt_ao.h), the
-  //      visibility and the contact march, the apply onto the main colour;
+  //      visibility and the contact march, the apply onto the main colour. At the end of its depth chain the shared screen products (screen_shared.h) are
+  //      published from it and the Hi-Z is made, when a consumer wants it (the occlusion runs a frame of the depth pass alone for that if it and the contact
+  //      shadows are off);
   //   4. the sun shafts (shafts.h);
   //   4b. the volumetric light (volumetrics.h): its compute passes (inject, integrate) read the headlight shadow atlas of step 2b (so that step's
   //      last barrier names the compute stage too, local_shadow.cpp), the depth chain, the cascades and the lamp list; its composite goes
@@ -3610,6 +3616,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   if (gbuffer_ && gbuffer_->active()) {
     // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).
     gbuffer_->DrawView(summary, list);
+  }
+  if (screen_ && screen_->view_active()) {
+    // The shared screen products' debug view (mcla_gpu_screen_view), after the other views.
+    screen_->DrawView(summary, list);
   }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.

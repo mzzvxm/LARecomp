@@ -80,6 +80,7 @@ add_library(larecomp_gpu OBJECT
     resolve_memory.cpp
     samplers.cpp
     scene.cpp
+    screen_shared.cpp
     shaders.cpp
     shadow_filter.cpp
     shafts.cpp
@@ -269,6 +270,10 @@ add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.c
 # list, the shadow replay and into the volume's lamp; and it compiles hlsl/light_laws.hlsli as C++ and compares it with the twin) likewise:
 #   cmake --build <dir> --target larecomp_light_frame_test, then run src/gpu/larecomp_light_frame_test [<hlsl/light_laws.hlsli>] (exit 0 = passed).
 add_executable(larecomp_light_frame_test EXCLUDE_FROM_ALL light_frame_test.cpp)
+# The shared screen products' frozen interface (screen_frame.h, screen_rules.h: the products, the consumers' Want registry, the Hi-Z chain's sizes, the plan, the frame and its
+# generation; it compiles hlsl/screen_hiz.hlsli as C++ and compares it with the twin, and reads the sources it is given) likewise:
+#   cmake --build <dir> --target larecomp_screen_shared_test, then run src/gpu/larecomp_screen_shared_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
@@ -677,6 +682,9 @@ larecomp_gpu_host_shader(upscaler_masks_ms_ps ps_6_0 SOURCE upscaler_masks_ps DE
 # sample, once for the host's MSAA level.
 larecomp_gpu_host_shader(gbuffer_view_ps ps_6_0 DEFINES GB_VIEW_MS=0)
 larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINES GB_VIEW_MS=1)
+# The shared screen products (screen_shared.h): one level of the Hi-Z chain (the min of the linear depth), and the debug view of the products.
+larecomp_gpu_host_shader(screen_hiz_ps ps_6_0)
+larecomp_gpu_host_shader(screen_view_ps ps_6_0)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

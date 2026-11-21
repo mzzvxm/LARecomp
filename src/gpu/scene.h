@@ -92,6 +92,7 @@ class GuestLayout;
 class GuestOcclusion;
 class PassTiming;
 class SunShafts;
+class ScreenShared;
 class Volumetrics;
 class CarSelfRefl;
 class CarDump;
@@ -165,6 +166,9 @@ class Scene {
   // The G-buffer's sidecar (gbuffer.h): the main view's lit draws carry a second colour target and, for the shaders that have the variant, write the
   // normal into it; told of the frame's start, the guest's clears of the main colour and the mid-scene depth copy. Null: none (no draw is touched).
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
+  // The shared screen products (screen_shared.h): told of the frame's start (before the ambient occlusion's, which declares its wants after it) and asked to draw their debug view
+  // at the mid-scene depth copy, after the other effects. Their frame is published by the ambient occlusion's depth chain. Null: none.
+  void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -490,6 +494,7 @@ class Scene {
   CarShadowMap* car_shadow_ = nullptr;
   LocalShadow* local_shadow_ = nullptr;
   GBuffer* gbuffer_ = nullptr;
+  ScreenShared* screen_ = nullptr;
   CarRtScene* car_rt_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;

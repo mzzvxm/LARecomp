@@ -173,6 +173,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     vol_inputs_.SetLocalShadow(&local_shadow_);  // and the headlights are shadowed by the replay's maps (local_shadow.h)
 #endif
     gbuffer_.Initialize(passes_, edram_, pass_timing_);  // and the G-buffer's sidecar (gbuffer.h): made on the first draw that carries it
+    screen_.Initialize(passes_, edram_, pass_timing_);  // and the shared screen products (screen_shared.h): the AO's depth chain published, the Hi-Z, made only while wanted
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);
@@ -226,9 +227,11 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetAmbientOcclusion(&ao_);
     ao_.SetCarShadowMap(&car_shadow_);  // the contact shadows read the car shadow map (car_shadow_map.h)
     ao_.SetGBuffer(&gbuffer_);  // the occlusion, the bounce light and the contact shadows ask for the G-buffer's normal plane and read it (ao.h, GB-E)
+    ao_.SetScreenShared(&screen_);  // ... and hand their depth chain to the shared screen products (ao.h, screen_shared.h)
     scene_.SetSunShafts(&shafts_);
     scene_.SetVolumetrics(&volumetrics_);
     scene_.SetGBuffer(&gbuffer_);
+    scene_.SetScreenShared(&screen_);
     scene_.SetCarSelfRefl(&car_refl_);
     scene_.SetCarDump(&car_dump_);
     scene_.SetCarFrame(&car_frame_);
@@ -294,6 +297,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
     ao_.Shutdown();
+    screen_.Shutdown();  // the AO holds a pointer to it: after the AO
     shafts_.Shutdown();
     volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
     local_shadow_.Shutdown();
@@ -470,6 +474,7 @@ void Renderer::Shutdown() {
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   ao_.Shutdown();
+  screen_.Shutdown();  // the AO holds a pointer to it: after the AO
   shafts_.Shutdown();
   volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
   local_shadow_.Shutdown();
@@ -1654,6 +1659,7 @@ void Renderer::ReportFrameStats() {
                            ", sun shafts " + mib(shafts_.HeldBytes()) +
                            (volumetrics_.HeldBytes() != 0 ? ", volumetric light " + mib(volumetrics_.HeldBytes()) : std::string()) +
                            (gbuffer_.HeldBytes() != 0 ? ", G-buffer " + mib(gbuffer_.HeldBytes()) : std::string()) +
+                           (screen_.HeldBytes() != 0 ? ", screen products " + mib(screen_.HeldBytes()) : std::string()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())

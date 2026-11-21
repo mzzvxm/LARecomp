@@ -431,6 +431,7 @@ class CarShadowMap;  // car_shadow_map.h: the player's car's own sun shadow map;
 class Device;
 class FrameRing;
 class GBuffer;       // gbuffer.h: the normal plane the passes read (GB-E)
+class ScreenShared;  // screen_shared.h: the shared screen products, which this class's depth chain is the source of (SS-0)
 class PassTiming;
 
 class AmbientOcclusion {
@@ -498,7 +499,7 @@ class AmbientOcclusion {
   // True while the draw hooks have anything to do (the occlusion or the contact shadows are on, or
   // the census).
   bool wants_draws() const {
-    return mode_ != Mode::kOff || contact_mode_ != Mode::kOff || census_every_ != 0;
+    return mode_ != Mode::kOff || contact_mode_ != Mode::kOff || census_every_ != 0 || screen_wants_;
   }
 
   // A prepared draw into the main view's identities (the play view's or the pause/map view's), with
@@ -539,6 +540,13 @@ class AmbientOcclusion {
   // frame that published one, make a normal image from it (see THE G-BUFFER'S NORMALS above). Not owned; null: the passes take the depth's normal, as they always did. Render thread,
   // before the first frame; the renderer's Shutdown stops the occlusion before the G-buffer.
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
+
+  // The shared screen products (screen_shared.h; SS-0): this class's depth chain, normal image and bounce light colour chain are what the owner publishes, and the owner makes the Hi-Z
+  // from the depth. The occlusion, the contact shadows and the bounce light declare what they read (ScreenShared::Want, in BeginFrame); the depth chain is handed over at its end
+  // (Run); and while a consumer outside this family wants the depth or the Hi-Z (or the debug view shows them) with the occlusion and the contact shadows off, the trigger runs a
+  // frame of the depth pass alone for them (Plan::screen). Not owned; null: nothing is published and nothing changes. Render thread, before the first frame; the renderer's Shutdown
+  // stops this class before the owner.
+  void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
 
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
@@ -785,7 +793,8 @@ class AmbientOcclusion {
   struct Plan {
     Mode mode = Mode::kUltra;      // the occlusion's own quality (slices, steps)
     bool probe = false;            // read the coarsest level back for the census
-    bool apply = true;             // the apply pass runs (false: the census's probe only)
+    bool apply = true;             // the apply pass runs (false: the census's probe only, or a frame for the shared screen products)
+    bool screen = false;           // a frame run for the shared screen products alone (the occlusion and the contact shadows are off; no apply, no coarser levels)
     bool occlusion = true;         // the occlusion's term is computed (the AO setting is not off)
     bool low = false;              // the occlusion's and the bounce light's passes run at half the picture's size (the trace; a size, not a quality level)
     bool by_height = false;        // ... only because of the height rule (above 1080 lines: ao_size.h), not the old one
@@ -832,6 +841,9 @@ class AmbientOcclusion {
   // Records the passes for the trigger `summary` (whose source target is the depth). True when
   // anything was recorded.
   bool Run(const ResolveCache::Summary& summary, plume::RenderCommandList* list, const Plan& plan);
+  // The end of the depth chain: hands the frame's images to the shared screen products (screen_shared.h Publish), which makes the Hi-Z when it is wanted. After Run's passes, with
+  // `base` the frame's push block (the lens).
+  void PublishScreen(plume::RenderCommandList* list, const ResolveCache::Summary& summary, const Plan& plan, const Push& base);
   // --- the contact shadows (hlsl/ao_contact_ps.hlsl) ---
   // Decides what they do in this frame: the setting, the sun's elevation and the wetness gates from
   // the light constants and the wetness the frame's draws carried before the trigger (the same
@@ -907,6 +919,9 @@ class AmbientOcclusion {
   void HoldUntilBuilt(Mode* occlusion, Mode* contact, Mode* bounce);
   // Every variant of `variants` is made, taken or failed (nothing is being made for it).
   bool VariantsReady(const std::vector<uint32_t>& variants) const;
+  // The shared screen products want the depth chain while the occlusion and the contact shadows are off: lists the depth pass's pipelines (plain and multisampled) that the start did not,
+  // to be made in the background, and says whether they are made (screen_wants_ follows it: a frame never waits for a compile).
+  bool EnsureScreenDepthPipelines();
   void Bind(plume::RenderCommandList* list) const;
   // A full-screen triangle into `image` (all of it) with `pipeline` and `push`.
   void DrawPass(plume::RenderCommandList* list, HostImage& image,
@@ -1197,6 +1212,8 @@ class AmbientOcclusion {
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   GBuffer* gbuffer_ = nullptr;       // the normal plane (SetGBuffer); not owned
+  ScreenShared* screen_ = nullptr;   // the shared screen products (SetScreenShared); not owned
+  bool screen_wants_ = false;        // this frame: a consumer outside this family wants the depth chain (ScreenShared::NeedsDepthChain), read in BeginFrame
   ResolveCache* resolve_ = nullptr;  // finds the game's shadow mask (contact shadows)
   bool ready_ = false;  // the layout and the shaders exist (the contact march's only when it is on: Initialize)
   bool contact_shader_failed_ = false;

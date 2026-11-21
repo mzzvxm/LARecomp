@@ -1260,6 +1260,30 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_screen_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (shared screen products): draws one product of the shared screen frame over the main view at the mid-scene depth copy, where the ambient \"\n    \"occlusion runs (it runs a frame of its own for this when it and the contact shadows are off): 1 the linear depth, 2 the Hi-Z level mcla_gpu_screen_view_level (the min of \"\n    \"the linear depth, each texel stretched over the pixels it covers), 3 the Hi-Z level against the pixels it covers (red where it is deeper than one of them, which cannot \"\n    \"be; green, brighter where the min is nearer than the pixel), 4 the normal image (only in a frame whose passes make it), 5 the vehicle mark of the depth. The rest of the \"\n    \"frame (particles, tone map, glow) is drawn over it as usual. 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 5}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_screen_view_level": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (shared screen products): the Hi-Z level the views 2 and 3 of mcla_gpu_screen_view show: 0 is the traced size, \"\n    \"each level above is half the one below (7 levels at 1080 lines, down to 1/64); a level the chain does not have shows its last. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 7}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ghost_log_interval": {
   "type": "u32",
   "default": "0",
