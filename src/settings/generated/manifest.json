@@ -1653,6 +1653,31 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_tier": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: forces the ray tracing tier the ray traced upgrades' auto values are chosen from (none: \"\n    \"the card cannot trace rays or has no ray tracing units, weak: it traces at a moderate speed, such as an RTX 3060 or an RX 6600, \"\n    \"strong: it traces quickly, such as an RTX 5080 or an RX 7900 XT). \"\n    \"auto: the tier found for this card (its table row and, when it ran, the benchmark of mcla_gpu_rt_bench), logged at start as \"\n    \"'[gpu] ray tracing tier: ...' with the rule that chose it; while mcla_gpu_class forces a class, the tier follows it (high: strong, \"\n    \"mid: weak, low: none) so that a test that says a class runs that class's cells. Only the value auto of the ray traced upgrades \"\n    \"(the car's reflection, occlusion and sun ray; later the city's shadows, reflections and bounce light) follows it, and the \"\n    \"number of cars they trace and how far; a choice of the player's own is never changed. Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"none\", \"weak\", \"strong\")",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_bench": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the ray tracing benchmark that can move a card between the weak and the strong tier. \"\n    \"auto: on the first start with a card that can trace (and again after its driver or the graphics API changes) a short compute pass \"\n    \"traces a few million rays through a small synthetic city and logs the speed ('[gpu] rt bench: ...'), which is kept in \"\n    \"rt_bench.txt next to larecomp.toml; off: no benchmark, and a kept result is not read; force: run it at every start. \"\n    \"Takes effect at the next start.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"force\")",
+   "rex::kDebugOnly",
+   "rex::kRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_readable_cache": {
   "type": "bool",
   "default": "true",

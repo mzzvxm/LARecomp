@@ -32,6 +32,8 @@
 #include "renderer_choice.h"
 #include "choice_box.h"
 #include "renderer_fallback.h"
+#include "rt_bench.h"
+#include "rt_tier.h"
 #include "native_window.h"
 #include "temporal_dlss.h"
 #include "thread_load.h"
@@ -212,7 +214,13 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       if (!why.empty()) {
         REXLOG_INFO("[gpu] car ray tracing: not available: {}", why);
       } else if (car_rt_.Initialize(device_, frames_, upload_, heap_, passes_, edram_, pass_timing_, car_frame_)) {
-        if (vulkan) {
+        if (gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) {
+          // The device can trace, but the ray tracing tier (rt_tier.h) is none: a card with no ray tracing units (the GTX 10 and 16 series run DXR in the
+          // shaders, far too slowly) or the Low class (shared memory). The effects stay off and the pause row does not offer RAY TRACED (CarRtReflAvailable);
+          // the structures are still set up, so mcla_gpu_rt_tier can force a tier for a test. The launcher reads this line like the others.
+          REXLOG_INFO("[gpu] car ray tracing: not available: the ray tracing tier is none on this graphics card or class (see the '[gpu] ray tracing tier' line), "
+                      "so the ray traced car effects stay off");
+        } else if (vulkan) {
           REXLOG_INFO("[gpu] car ray tracing: available (Vulkan ray queries, VK_KHR_ray_query): the player's car is built into ray tracing "
                       "structures while an effect asks for them");
         } else {
@@ -243,6 +251,9 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, /*listed_at_start=*/true);
       ao_.SetCityRtShadow(&city_shadow_);
     }
+    // The ray tracing benchmark (rt_bench.h, rt_tier.h): once with a card that can trace (kept next to larecomp.toml), while the GPU is idle and before the
+    // precache below starts its builder; it can move the card between the weak and the strong tier, which the ray traced upgrades' `auto` reads.
+    rt_bench::RunIfWanted(device_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
