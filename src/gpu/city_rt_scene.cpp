@@ -14,6 +14,7 @@
 #include "car_rt_scene_rules.h"
 #include "citypack/pack_format.h"
 #include "city_hit_scene.h"
+#include "city_refl_setting.h"
 #include "device.h"
 #include "pass_timing.h"
 #include "upload.h"
@@ -49,6 +50,7 @@ bool CityRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& uplo
 void CityRtScene::Shutdown() {
   StopWorker();
   ReleaseAll("shutdown");
+  city_refl_setting::NoteBase(city_refl_setting::Data::kUnknown);
   for (SlotResources& slot : slots_) {
     slot.scratch.reset();
     slot.scratch_bytes = 0;
@@ -81,6 +83,8 @@ bool CityRtScene::OpenPack() {
     std::string why;
     const city_rt::PackState state = probe_(&why);
     probe_wait_ = city_rt::ProbeWaitFrames(state, build_requested_);
+    // The pause menu's RT CITY REFLECTIONS row says how the pack stands (city_refl_setting.h): a missing or stale pack is "being built" where the app can build it (asked just below).
+    city_refl_setting::NoteBase(city_refl_setting::DataOf(state, bool(request_build_)));
     if (!city_rt::CanOpenPack(state)) {
       if (city_rt::WantsBuild(state) && !build_requested_ && request_build_) {
         build_requested_ = true;
@@ -103,6 +107,7 @@ bool CityRtScene::OpenPack() {
   }
   std::string error;
   if (!pack_.Open(pack_file_, &error)) {
+    city_refl_setting::NoteBase(city_refl_setting::Data::kUnavailable);
     if (!pack_missing_logged_) {
       pack_missing_logged_ = true;
       if (probe_) {
@@ -137,6 +142,7 @@ bool CityRtScene::OpenPack() {
   counts_.sectors = count;
   REXLOG_INFO("{} the city pack is open: {} sectors, {} hi detail triangles and {} lod triangles, {:.0f} MiB on disk, builder version {}, classes left out: mask {:#x}", kPrefix, count,
               hi_triangles, lod_triangles, double(pack_.header().file_size) / (1024.0 * 1024.0), pack_.header().builder_version, pack_.header().drop_mask);
+  city_refl_setting::NoteBase(city_refl_setting::Data::kReady);
   if (hit_) hit_->SetBase(&pack_);  // the hit file is opened beside the pack, when the hit data is wanted
   StartWorker();
   return true;

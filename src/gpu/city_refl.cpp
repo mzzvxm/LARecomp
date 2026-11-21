@@ -10,6 +10,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
+#include "city_refl_setting.h"
 #include "device.h"
 #include "gpu_class.h"
 #include "live_text.h"
@@ -96,17 +97,22 @@ void CityRefl::BeginFrame(bool pass_active) {
   if (!ready_ || !pass_active) {
     return;
   }
-  const cr::Level level = cr::LevelFor(gpu_class::Current(), gpu_class::CurrentRtTier(), Setting().Get());
-  const cr::Cell cell = cr::WithReach(cr::CellFor(level, gpu_class::CurrentRtClass()), float(larecomp::settings::mcla_gpu_city_refl_reach.Get()));
+  // What the word comes to on this card, and whether the city's data stands (city_refl_setting.h: the pause menu's row reads the same decision). The pass is running here, so the ray traced car
+  // reflection is on; the data's state is the scenes' (the pack's and the hit file's probes).
+  namespace crs = city_refl_setting;
+  const crs::Decision decision = crs::Decide(gpu_class::Current(), gpu_class::CurrentRtTier(), Setting().Get(), true, crs::DataNow());
+  NoteGate(decision);
+  if (decision.wanted == cr::Level::kOff) {
+    return;
+  }
+  const cr::Cell cell = cr::WithReach(cr::CellFor(decision.wanted, gpu_class::CurrentRtClass()), float(larecomp::settings::mcla_gpu_city_refl_reach.Get()));
   if (cell.level == cr::Level::kOff) {
     return;
   }
-  cell_ = cell;
-  cell_.coat_layer = cell.coat_layer && larecomp::settings::mcla_gpu_city_refl_coat.Get();
-  pass_active_ = true;
   if (service_ != nullptr) {
-    // The structures, the hit data and every texture at the level, and the cars (the pass is the car's): the scene service merges it with the other consumers' wants.
-    const cr::Wants want = cr::WantsFor(cell_);
+    // The structures, the hit data and every texture at the level, and the cars (the pass is the car's): the scene service merges it with the other consumers' wants. The wants go out while the data
+    // is still missing or being built: they are what makes the app build it.
+    const cr::Wants want = cr::WantsFor(cell);
     rt_scene::Needs needs;
     needs.cars = want.cars;
     needs.city = want.city;
@@ -114,6 +120,12 @@ void CityRefl::BeginFrame(bool pass_active) {
     needs.textures = want.textures;
     service_->Want(rt_scene::Consumer::kCityReflections, needs);
   }
+  if (decision.level == cr::Level::kOff) {
+    return;  // the data is not there yet (asked, being built, or not to be had this session): the paint keeps the game's reflection, the pass casts no city rays and asks the screen owner for nothing
+  }
+  cell_ = cell;
+  cell_.coat_layer = cell.coat_layer && larecomp::settings::mcla_gpu_city_refl_coat.Get();
+  pass_active_ = true;
   if (!wanted_logged_) {
     wanted_logged_ = true;
     REXLOG_INFO("{} the city is in the car paint's reflections: level {} (mcla_gpu_rt_reflections = {}), reach {:.0f} m with the weight full to {:.0f}%, {} cone rays at most, the opponents' paint {} texels at {} rays at most, "
@@ -121,6 +133,23 @@ void CityRefl::BeginFrame(bool pass_active) {
                 kPrefix, std::string(city_rt::LevelName(cell_.level)), Setting().Get(), double(cell_.reach), 100.0 * double(cell_.fade_from), cell_.cone_rays, static_cast<unsigned long long>(cell_.opp_texels),
                 cell_.opp_rays, cell_.coat_layer ? "on (a city hit is a mirror's, as another car's)" : "off (the soft cone)");
   }
+}
+
+// One line when the state of the setting changes, for the log and the report: what the word comes to, and what the effect is waiting for.
+void CityRefl::NoteGate(const city_refl_setting::Decision& decision) {
+  const int now = int(decision.gate) * 16 + int(decision.data) * 4 + int(decision.level);
+  if (now == last_gate_state_) {
+    return;
+  }
+  last_gate_state_ = now;
+  if (decision.wanted == cr::Level::kOff && decision.gate == city_refl_setting::Gate::kRuns) {
+    REXLOG_INFO("{} the city is not in the car paint's reflections: mcla_gpu_rt_reflections = {} comes to off on this graphics card (ray tracing tier {})", kPrefix, Setting().Get(),
+                std::string(gpu_class::RtTierName(gpu_class::CurrentRtTier())));
+    return;
+  }
+  REXLOG_INFO("{} the city in the car paint's reflections: {} (mcla_gpu_rt_reflections = {} comes to {}; the city's data is {}){}", kPrefix, std::string(city_refl_setting::GateName(decision.gate)), Setting().Get(),
+              std::string(city_rt::LevelName(decision.wanted)), std::string(city_refl_setting::DataName(decision.data)),
+              decision.level == cr::Level::kOff ? ": the paint keeps the game's reflection until then" : "");
 }
 
 uint32_t CityRefl::ScreenProducts() const {

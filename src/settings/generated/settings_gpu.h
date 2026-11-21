@@ -348,8 +348,10 @@ class GPUSettings final : public rex::SettingOwner {
     "heads around them as the ray tracing finds them (where a reflected point is in the picture it takes the picture's own colour, elsewhere it is shaded "
     "from the building's own materials), instead of the game's blurred environment map; the sky stays the map. off, high, ultra or auto (the default): high "
     "on a strong ray tracing graphics card, off on the rest; a weak card may be set to high or ultra by hand and then runs lighter numbers. high reaches "
-    "150 m, ultra 1,000 m. Needs the city pack and the city hit data (built from your game files) and ray queries; without them the paint keeps the game's "
-    "reflection. The pause menu's row comes later. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "high", "ultra"));
+    "150 m, ultra 1,000 m. Rides on the ray traced car self-reflections (mcla_gpu_car_selfrefl with mcla_gpu_car_selfrefl_rt: the row is grey until that one is on RAY TRACED), "
+    "needs ray queries and needs the city pack and the city hit data, which the launcher's setup builds from your game files (the game builds them in the background if they are "
+    "not there, and the row says BUILDING DATA until they are done); without them the paint keeps the game's reflection. The pause menu's RT CITY REFLECTIONS row "
+    "(GRAPHICS > REFLECTIONS). Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(bool, mcla_gpu_city_refl_screen, true, "Debug: with mcla_gpu_rt_reflections on, a reflected point that is in the picture takes the picture's own colour (the game's lighting, foliage and "
     "lamps as drawn). false: every reflected point is shaded from the city's own materials, for comparing. Live.", rex::kDebugOnly);

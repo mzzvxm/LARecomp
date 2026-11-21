@@ -11,6 +11,7 @@
 #include <rex/logging/log_category.h>
 
 #include "backend.h"
+#include "city_refl_setting.h"
 #include "descriptors.h"
 #include "device.h"
 #include "pass_timing.h"
@@ -54,6 +55,7 @@ bool CityHitScene::Initialize(Device& device, FrameRing& frames, UploadRing& upl
 }
 
 void CityHitScene::Shutdown() {
+  city_refl_setting::NoteHit(city_refl_setting::Data::kUnknown);
   DropPool("shutdown", true);
   CloseTextures();
   probe_.Shutdown();
@@ -87,6 +89,7 @@ void CityHitScene::SetBase(const cf::PackReader* base) {
   if (base_ == base) return;
   base_ = base;
   sector_count_ = base ? base->sector_count() : 0;
+  city_refl_setting::NoteHit(city_refl_setting::Data::kUnknown);  // another pack, the hit data is asked about again
   reader_open_ = false;
   reader_ = cf::HitReader{};
   retry_frame_ = 0;
@@ -105,6 +108,8 @@ bool CityHitScene::OpenFile() {
     std::string why;
     const city_rt::PackState state = probe_state_(&why);
     const city_rt::FileProbeStep step = city_rt::DecideFileProbe(state, build_requested_);
+    // The pause menu's RT CITY REFLECTIONS row says how the hit data stands (city_refl_setting.h): missing or stale is "being built" where the app can build it (asked just below).
+    city_refl_setting::NoteHit(city_refl_setting::DataOf(state, bool(request_build_)));
     if (!step.open) {
       if (step.request_build && request_build_) {
         build_requested_ = true;
@@ -125,6 +130,7 @@ bool CityHitScene::OpenFile() {
   }
   std::string error;
   if (!reader_.Open(hit_file_, cf::IdentityOf(*base_), &error)) {
+    city_refl_setting::NoteHit(city_refl_setting::Data::kUnavailable);
     retry_frame_ = frame_ + city_hit::kFileRetryFrames;
     if (logged_state_ != 1 || file_problem_ != error) {
       logged_state_ = 1;
@@ -136,6 +142,7 @@ bool CityHitScene::OpenFile() {
     return false;
   }
   reader_open_ = true;
+  city_refl_setting::NoteHit(city_refl_setting::Data::kReady);
   logged_state_ = 2;
   textures_.Reset(std::max<uint32_t>(1, uint32_t(reader_.textures().size())));
   REXLOG_INFO("{} the city hit file is open: {} sectors, {} materials, {} textures, {:.0f} MiB on disk, builder version {}", kPrefix, reader_.sector_count(), reader_.material_count(),
