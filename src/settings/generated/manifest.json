@@ -159,7 +159,7 @@
   "type": "bool",
   "default": "true",
   "category": "Discord",
-  "help": "\"Enable Discord Rich Presence.\"",
+  "help": "\"Enable Discord Rich Presence. Live: off clears the presence at once, on shows the game's current state at once.\"",
   "traits": [],
   "comments": [],
   "pp_depth": 0
