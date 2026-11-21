@@ -85,6 +85,7 @@ add_library(larecomp_gpu OBJECT
     samplers.cpp
     scene.cpp
     screen_shared.cpp
+    ssr.cpp
     shaders.cpp
     shadow_filter.cpp
     shafts.cpp
@@ -278,6 +279,10 @@ add_executable(larecomp_light_frame_test EXCLUDE_FROM_ALL light_frame_test.cpp)
 # generation; it compiles hlsl/screen_hiz.hlsli as C++ and compares it with the twin, and reads the sources it is given) likewise:
 #   cmake --build <dir> --target larecomp_screen_shared_test, then run src/gpu/larecomp_screen_shared_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.cpp)
+# The screen-space reflections' rules (ssr_rules.h: levels, sizes, the decision, the push block, the wetness) and the pure HLSL (hlsl/ssr_common.hlsli and ssr_trace.hlsli compiled as C++: the class
+# gate, the BRDF, the GGX sampling, the virtual image's reprojection, the Hi-Z march against analytic scenes and a brute force march) likewise; it reads the sources it is given:
+#   cmake --build <dir> --target larecomp_ssr_test, then run src/gpu/larecomp_ssr_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)
 # The material channel (gbuffer_material.h: the class table of the 192 shader groups, the gloss table, the specular exponent's mapping to a smoothness, the material word, the table file the
 # shader pack build writes and the draw's word) likewise; with the folder shaderpack/baseline (hlsl-rpf and hlsl-xex with their shader_report.tsv) it also checks the tables against the
 # translated HLSL of the retail game:
@@ -720,6 +725,12 @@ larecomp_gpu_host_shader(screen_colour_ps ps_6_0 DEFINES SCREEN_COLOUR_PASS=0 SC
 larecomp_gpu_host_shader(screen_colour_ms_ps ps_6_0 SOURCE screen_colour_ps DEFINES SCREEN_COLOUR_PASS=0 SCREEN_COLOUR_MS=1)
 larecomp_gpu_host_shader(screen_colour_mip_ps ps_6_0 SOURCE screen_colour_ps DEFINES SCREEN_COLOUR_PASS=1)
 larecomp_gpu_host_shader(screen_view_ps ps_6_0)
+# The screen-space reflections (ssr.h): the trace (over plain and multisampled planes), the accumulation, the resolve into the main colour (plain and multisampled).
+larecomp_gpu_host_shader(ssr_trace_ps ps_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1)
+larecomp_gpu_host_shader(ssr_temporal_ps ps_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(ssr_apply_ps ps_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=1)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

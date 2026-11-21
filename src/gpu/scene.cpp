@@ -39,6 +39,7 @@
 #include "format.h"
 #include "gbuffer.h"
 #include "screen_shared.h"
+#include "ssr.h"
 #include "gpu.h"
 #include "layout.h"
 #include "mc_engine/display/ultrawide.h"
@@ -855,6 +856,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
                    edram_->change_serial() != targets_before);
   if (screen_) {
     screen_->BeginFrame(frame_serial_);  // the shared screen products: reads the consumers' wants and the debug view, before the AO declares its own (screen_shared.h)
+  }
+  if (ssr_) {
+    ssr_->BeginFrame();  // the screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h): read at those owners' next frame boundary
   }
   if (ao_) {
     ao_->BeginFrame();
@@ -2029,6 +2033,9 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   if (local_lights_ && local_lights_->wants_draws()) {
     local_lights_->OnMainDraw(banks, draw.match.color);  // the units' vote (the night light intensity and the height factor of the lit shaders)
+  }
+  if (ssr_ && ssr_->wants_draws()) {
+    ssr_->OnMainDraw(draw.match, banks);  // the road's wetness (VS c43.x) before the trigger
   }
   if (shafts_ && shafts_->wants_draws()) {
     shafts_->OnMainDraw(draw.match, banks, vs_identity, ps_identity);
@@ -3623,6 +3630,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //   5. the car ray tracing check pass (mcla_gpu_car_rt_check, debug): reads the occlusion's linear depth, so after step 3;
   //   5b. the shared colour capture (screen_shared.h CapturePost, only while a consumer wants colour_post): the colour step 3 made, averaged over the host samples. (colour_pre, the capped chain
   //      the bounce light reads, is made inside step 3, before its passes, by CapturePre; the pass is still the occlusion's.)
+  //   5c. the screen-space reflections (ssr.h, only while mcla_gpu_ssr is on, in a frame that made the capture): the Hi-Z walk, the accumulation and the additive resolve into the main colour;
   //   6. the car self-reflection's history and its ray traced trace (car_selfrefl.h, car_rt_refl.h): the history is the colour step 3 made (read from step 5b's capture where the frame
   //      has it at the picture's size), the trace uses step 2's top level.
   if (car_rt_) {
@@ -3663,10 +3671,16 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // The check pass of the structures, over the occlusion's linear depth (it exists only after step 3).
     car_rt_->OnAfterOcclusion(summary, list, slot_, ao_);
   }
+  bool colour_captured = false;
   if (screen_ && screen_->capture_wanted()) {
     // The shared colour capture (screen_shared.h CapturePost, step 8 of the order above): the main colour as it is after the occlusion's apply, averaged over its host samples into colour_post
     // (and its history), for the consumers that want it; the car self-reflection's history pass below reads it where it can. Only while a capture is planned.
-    screen_->CapturePost(record, summary, list);
+    colour_captured = screen_->CapturePost(record, summary, list);
+  }
+  if (colour_captured && ssr_) {
+    // Step 8b: the screen-space reflections (ssr.h): the trace, the accumulation and the additive resolve into the main colour, right after the capture they read (a reflection is not a
+    // reflection of a reflection: colour_post is made before the effect adds to the colour) and before the car self-reflection's history pass.
+    ssr_->OnTrigger(summary, list);
   }
   if (car_refl_ && car_refl_->wants_draws()) {
     // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;
@@ -3895,6 +3909,9 @@ void Scene::OnPresent() {
   }
   if (car_refl_) {
     car_refl_->OnPresent();
+  }
+  if (ssr_) {
+    ssr_->OnPresent();  // the reflections' history and idle count
   }
   if (screen_) {
     screen_->OnPresent();  // the frame boundary of the shared screen products: the frame is counted, the capture and its history trade places (after NoteMenuWorld above: it asks the camera history)

@@ -101,6 +101,7 @@ class HostPrecache {
     kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h)
     kLocalShadow = 22,      // LocalShadow: the depth-only pipelines of the headlight shadow replay, one per (vertex shader, layout, faces...) (local_shadow.h)
     kScreenShared = 23,     // ScreenShared: its Hi-Z pass (screen_shared.h)
+    kScreenReflections = 24,  // ScreenReflections: its trace, accumulation and resolve passes (ssr.h)
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;

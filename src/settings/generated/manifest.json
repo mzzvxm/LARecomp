@@ -1296,6 +1296,90 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ssr": {
+  "type": "std::string",
+  "default": "\"off\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections, perf/GBUFFER-SURVEY.md 4.2; off by default until the owner has seen it): reflections on the surfaces the G-buffer's class table says reflect (wet roads, sidewalks, \"\n    \"metal, glass, water): a ray march of the screen's own picture at half its size (the shared Hi-Z and colour_post), one ray a pixel with the surface's roughness, accumulated over frames, added to the \"\n    \"colour. A car's paint and chrome keep their own reflections; what the rays miss, and what is near the picture's edge, stays the game's own reflection (the road's planar view, the env map). off, high \"\n    \"(one ray a pixel, 40 steps) or ultra (two rays, 64 steps, a longer history). Needs the G-buffer's planes (asked for while this is on). Until the material plane (RT3) is written every pixel whose world \"\n    \"normal points up is taken for a road (the stub). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): draws one picture over the main view in place of the effect's add, where the ambient occlusion runs: 1 the term the effect adds (alone on black), 2 the class gate \"\n    \"(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at \"\n    \"half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, red a ray that found nothing, black not traced). 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_strength": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the effect's strength, 0 to 4: the added reflection is multiplied by it (the class's own gain, the Fresnel term and the picture's edge fades come on top). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_min_smooth": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): a pixel rougher than this (0 rough to 1 mirror; the G-buffer's smoothness after the road's wetness raised it) is not reflected. -1: the default, 0.40 (a dry road at 0.30 is not, \"\n    \"a wet one at 0.92 is). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1.0, 1.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_stub": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): 0 uses the G-buffer's material plane (RT3) where the frame has it and the stub where it does not (every pixel whose world normal points up and is no vehicle is a road of \"\n    \"smoothness 0.85); 1 always the stub. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_wet": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the road's wetness, 0 dry to 1 pouring rain: it raises a road's and a sidewalk's smoothness. -1: what the game says (the vertex constant c43.x of the main view's draws, \"\n    \"0.095 dry and 1.17 in rain, smoothed over about a second). A value forces it, to look at the wet road without rain. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1.0, 1.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_history": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the share of the last frames the accumulation keeps, 0 to 0.98 (0.9 is a mean of about ten frames; 0 draws the raw ray, noise and all). -1: the level's (high 0.90, ultra 0.92). \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 0.98}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ghost_log_interval": {
   "type": "u32",
   "default": "0",

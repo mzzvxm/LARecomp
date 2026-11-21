@@ -572,6 +572,21 @@ class AmbientOcclusion {
     float tan_half_fov[2] = {};
   };
   bool FrameLinearDepth(LinearDepthView* out) const;
+  // The frame's camera for another consumer of the trigger (the screen-space reflections, ssr.h), as this class works it out: the camera's right, up and forward axes in world space (the rows of
+  // ao_gbuffer.h Rows: the G-buffer's normals are WORLD normals) from the frame's own view inverse where the vertex constants are trusted, else the last frame's camera; and, when the last
+  // frame had a camera of the same kind of view and this frame's is no cut, the motion that takes a point of this frame's view space into the last frame's: three rows of four floats in this
+  // renderer's view space (x right, y up, z forward; the rows the accumulation pass takes in AoPush lin, shape and light, the game's motion with the z axis turned). Valid at the trigger, after
+  // OnResolve. True when either part is there.
+  struct FrameCameraOut {
+    bool have_rows = false;
+    float right[3] = {};
+    float up[3] = {};
+    float forward[3] = {};
+    bool have_motion = false;
+    bool motion_still = false;   // the motion is the identity because nothing better was known (the vertex constants are not trusted yet, no last step): right only for a camera that does not move
+    float motion[12] = {};
+  };
+  bool FrameCameraNow(FrameCameraOut* out) const;
 
  private:
   // The push block of every pass (hlsl/ao_common.hlsli AoPush), 128 bytes.
