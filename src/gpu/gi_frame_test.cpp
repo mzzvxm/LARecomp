@@ -1123,6 +1123,7 @@ void DefineChecks(const std::string& text) {
       {"GI_ROW_AMBIENT_UP", double(gi::kRowAmbientUp)},
       {"GI_ROW_AMBIENT_DOWN", double(gi::kRowAmbientDown)},
       {"GI_ROW_RESERVED", double(gi::kRowReserved)},
+      {"GI_ROW_PIXEL", double(gi::kRowPixel)},
       {"GI_ROW_CASCADE0", double(gi::kRowCascade0)},
       {"GI_ROWS_PER_CASCADE", double(gi::kRowsPerCascade)},
       {"GI_FLAG_VALID", double(gi::kFlagValid)},

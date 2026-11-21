@@ -125,7 +125,7 @@ constexpr uint32_t Groups(uint32_t extent) { return (extent + kGroup - 1) / kGro
 struct GuidesPush {
   uint32_t slots[4];   // x RT1's bindless slot, y RT2's, z RT3's, w the kept depth's (R32_FLOAT, 1 near / 0 far)
   uint32_t slots2[4];  // x the reactive mask's slot, y the transparency mask's (kNoSlot: none), z a hit distance writer's image, w a second writer's (kNoSlot: none; RR-4: the reflection effects')
-  uint32_t info[4];    // x the width, y the height of the render size, z the host sample that is the guest's sample 0, w unused
+  uint32_t info[4];    // x the width, y the height of the render size, z the host sample that is the guest's sample 0, w the bounce light's hit image's slot (kNoSlot: none; CITY-RT G6)
   float right[4];      // xyz the camera's right axis in world space, w tan of half the horizontal field of view
   float up[4];         // xyz the up axis, w tan of half the vertical field of view
   float forward[4];    // xyz the forward axis, w unused
@@ -312,6 +312,11 @@ inline float CombineHitSources(float first, float second) {
   if (std::isnan(second)) return first;
   return std::max(first, second);
 }
+
+// CITY-RT G6, RrWithBounce / RrBounceTexel: the bounce light's per-pixel pass's ray length is the LAST choice of the hit distance (a reflection's own positive distance keeps the pixel; a NaN is not one), read
+// from its own image (the traced size over a divisor): the texel under a render pixel, one axis, is the pixel scaled by the two sizes and clamped into the image.
+inline float WithBounce(float source, float bounce) { return source > 0.0f ? source : bounce; }
+inline uint32_t BounceTexel(uint32_t pixel, uint32_t size, uint32_t hit_size) { return std::min(pixel * hit_size / std::max(size, 1u), std::max(hit_size, 1u) - 1u); }
 
 // RrResponsivity.
 inline float Responsivity(float reactive, float transparency) { return Sat(std::max(reactive, transparency)); }

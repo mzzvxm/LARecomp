@@ -302,6 +302,11 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
           gi_integration_.SetUpdate([this](plume::RenderCommandList* list, uint32_t frame_slot, const gi::GiFrame& update_frame) { gi_update_.Record(list, frame_slot, update_frame); },
                                     [this](gi::Level level) { gi_update_.OnWant(level); });
         }
+        // The per-pixel detail pass (gi_pixel.h, CITY-RT M3 G5): the apply runs it, at ULTRA on a strong card only. Its pipelines are made in the background the first time it is wanted; nothing is made now.
+        gi_pixel_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_world_, &light_manager_);
+        if (gi_pixel_.available()) {
+          gi_apply_.SetGiPixel(&gi_pixel_);
+        }
       }
     }
     // The ray tracing benchmark (rt_bench.h, rt_tier.h): once with a card that can trace (kept next to larecomp.toml), while the GPU is idle and before the
@@ -385,6 +390,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // The probe field's textures (gi_field.h): the OS counts them in the use it reports and the caches' trim cannot give them back; the field asks the room test before it makes any.
     vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); });
     vram_.AddHolder("probe update", [this] { return gi_update_.HeldBytes(); });
+    vram_.AddHolder("per-pixel bounce light", [this] { return gi_pixel_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
@@ -412,6 +418,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     fg_.Shutdown();
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
+    gi_pixel_.Shutdown();  // CITY-RT M3 G5: holds pointers to the field, the scenes, the world frame and the lights, and the apply holds it: before them
     rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
     rt_world_.Shutdown();  // it holds pointers to the AO, the car frame, the shared products and the city scene (and asked the AO's draw hook for the light): before them (CITY-RT FRAME)
@@ -603,6 +610,7 @@ void Renderer::Shutdown() {
   // Streamline itself is shut down (temporal_.Shutdown below).
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
+  gi_pixel_.Shutdown();  // the same, CITY-RT M3 G5 (gi_pixel.h)
   rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
   rt_world_.Shutdown();  // the same, CITY-RT FRAME (rt_world_frame.h)
@@ -941,6 +949,7 @@ void Renderer::SubmitFrameWithoutPresent() {
     pass_timing_.OnSubmitted(slot);
     occlusion_.OnSubmitted(slot);
     gi_update_.OnSubmitted(slot);
+    gi_pixel_.OnSubmitted(slot);
     latency::OnRenderSubmitted();
   }
   frames_.Advance();
@@ -1402,6 +1411,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
   gi_update_.OnSubmitted(slot);
+  gi_pixel_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
 
   // A scheduled guest frame (gpu.h SetNextPresentTarget) goes to the screen at
@@ -1690,6 +1700,7 @@ void Renderer::ExecutePresentGenerated(PresentSource source) {
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
   gi_update_.OnSubmitted(slot);
+  gi_pixel_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
   // The present markers are the pacer's: it names the frame around the real image's present.
   const uint64_t latency_frame = latency::DetachRenderFrame();
@@ -1792,7 +1803,7 @@ void Renderer::ReportCityCensus() {
   if (presented_ % kCityCensusPresents != 0) {
     return;
   }
-  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + ssr_.RtCensusText() + gi_update_.CensusText();
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + ssr_.RtCensusText() + gi_update_.CensusText() + gi_pixel_.CensusText();
   if (!text.empty()) {
     REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
   }

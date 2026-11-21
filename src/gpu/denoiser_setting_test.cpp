@@ -245,7 +245,7 @@ void GateChecks() {
   m.setting = rr::Denoiser::kAuto;
   m.facts.streamline_running = false;
   Check(dn::GateOf(m, made) == dn::Gate::kStarting, "Streamline still starting: on, nothing said yet");
-  // the shipped table (RR-INT): SSR and the cars' reflections have a raw mode. The row is grey (NOT NEEDED) while neither is on, on for a PC that could use it while one is, and AUTO says OURS either way.
+  // the shipped table (RR-INT, CITY-RT R6, CITY-RT G6): all four effects have a raw mode. The row is grey (NOT NEEDED) while none is on, on for a PC that could use it while one is, and AUTO says OURS either way.
   dn::MenuInputs s;
   s.dlss_listed = s.dlss_chosen = true;
   s.facts = {true, true, true, true, false, true, false};
@@ -255,11 +255,9 @@ void GateChecks() {
   const uint32_t gi = rr::ConsumerBit(rr::Consumer::kRtGi);
   s.consumers_on = 0;
   Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "shipped table, no effect on: (NOT NEEDED), on a PC that could run it");
-  s.consumers_on = gi;
-  Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "shipped table, only the effect that has no raw mode (bounce light) on: (NOT NEEDED)");
-  for (const uint32_t on : {ssr, cars, city, ssr | cars, ssr | city, city | gi, rr::kAllConsumers}) {
+  for (const uint32_t on : {ssr, cars, city, gi, ssr | cars, ssr | city, city | gi, rr::kAllConsumers}) {
     s.consumers_on = on;
-    Check(dn::GateOf(s) == dn::Gate::kRuns, "shipped table, SSR, the cars' reflections or the city's on (set " + std::to_string(on) + "): the row is on, nothing said");
+    Check(dn::GateOf(s) == dn::Gate::kRuns, "shipped table, SSR, the cars' reflections, the city's or the bounce light's pass on (set " + std::to_string(on) + "): the row is on, nothing said");
     Check(dn::AutoLabel(dn::GateOf(s), on) == "AUTO (OURS)" && !dn::AutoIsRr(dn::GateOf(s), on), "... and AUTO says OURS (set " + std::to_string(on) + "): no effect is trusted to AUTO yet");
   }
   // with SSR's cell flipped for AUTO (what RR-6 may do) AUTO says DLSS RR exactly while SSR is on and the row is open
@@ -376,7 +374,8 @@ void MenuChecks(const std::string& dir) {
 void ConsumerWiringChecks(const std::string& dir) {
   const std::string rules = ReadFile(dir + "/dlss_rr_rules.h");
   Check(Has(rules, "{\"screen-space reflections\", true, false},") && Has(rules, "{\"ray traced car reflections\", true, false},"), "dlss_rr_rules.h: SSR and the cars' reflections have a raw mode and are not trusted to AUTO yet");
-  Check(Has(rules, "{\"ray traced city reflections\", true, false},") && Has(rules, "{\"ray traced bounce light\", false, false},"), "dlss_rr_rules.h: the city's reflections (the fallback, CITY-RT R6) have a raw mode and are not trusted to AUTO; the bounce light does not exist yet and has none");
+  Check(Has(rules, "{\"ray traced city reflections\", true, false},") && Has(rules, "{\"ray traced bounce light\", true, false},"),
+        "dlss_rr_rules.h: the city's reflections (the fallback, CITY-RT R6) and the bounce light's per-pixel pass (CITY-RT G6) have a raw mode and are not trusted to AUTO");
   const std::string ssr = ReadFile(dir + "/ssr.cpp");
   const size_t sb = At(ssr, "void ScreenReflections::BeginFrame() {");
   const size_t se = At(ssr, "\n}\n", sb == std::string::npos ? 0 : sb);
@@ -393,9 +392,21 @@ void ConsumerWiringChecks(const std::string& dir) {
   Check(!cfn.empty() && Has(cfn, "denoiser::NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active());"), "CarSelfRefl::BeginFrame tells the board whether the ray traced reflections run");
   Check(Before(cfn, "rt_->BeginFrame(mode != Mode::kOff);", "denoiser::NoteConsumer(rr::Consumer::kCarRtReflections"), "... after the ray traced pass has decided whether it is wanted");
   Check(Has(car, "#include \"denoiser_setting.h\""), "car_selfrefl.cpp includes the board");
-  // the bounce light does not exist: nothing may claim to be it
+  // CITY-RT G6: the bounce light's per-pixel pass says it is wanted from the probe field's apply (gi_apply.cpp) at the frame's start, before the temporal system's boundary (frame_order.h: kBeginGiApply is before
+  // kBeginTemporal, so the plan does not lag); nobody else claims to be it
+  const std::string gi_apply = ReadFile(dir + "/gi_apply.cpp");
+  const size_t gb = At(gi_apply, "void GiApply::BeginFrame() {");
+  const size_t ge = At(gi_apply, "\n}\n", gb == std::string::npos ? 0 : gb);
+  const std::string gfn = (gb == std::string::npos || ge == std::string::npos) ? std::string() : gi_apply.substr(gb, ge - gb);
+  Check(!gfn.empty() && Has(gfn, "denoiser::NoteConsumer(rr::Consumer::kRtGi, pixel_wanted_);") &&
+            Has(gfn, "pixel_wanted_ = enabled_ && pixel_ != nullptr && pixel_->available() && gi_pixel::ConsumerWanted(field_->fit().wanted);") &&
+            Before(gfn, "pixel_wanted_ = enabled_", "denoiser::NoteConsumer(rr::Consumer::kRtGi") && Before(gfn, "enabled_ = field_ != nullptr && field_->running();", "pixel_wanted_ = enabled_"),
+        "GiApply::BeginFrame tells the board whether the bounce light's per-pixel pass is wanted (the field runs, the frame's layout has the pass, the pass is made), after the field's running state is known, every frame");
+  Check(Has(gi_apply, "#include \"denoiser_setting.h\""), "gi_apply.cpp includes the board");
   const std::string scene = ReadFile(dir + "/scene.cpp");
-  Check(!Has(scene, "NoteConsumer(") && !Has(ssr, "Consumer::kRtGi") && !Has(car, "Consumer::kRtGi") && !Has(car, "Consumer::kCityRtReflections"), "no one else calls the board");
+  Check(!Has(scene, "NoteConsumer(") && !Has(ssr, "Consumer::kRtGi") && !Has(car, "Consumer::kRtGi") && !Has(car, "Consumer::kCityRtReflections") && !Has(gi_apply, "Consumer::kSsr") && !Has(gi_apply, "Consumer::kCarRtReflections") &&
+            !Has(gi_apply, "Consumer::kCityRtReflections") && !Has(ReadFile(dir + "/gi_pixel.cpp"), "NoteConsumer("),
+        "no one else calls the board (the pass's host does not either: its apply does)");
   const std::string temporal = ReadFile(dir + "/temporal.cpp");
   Check(!Has(temporal, "in.consumers_active = false;") && !Has(temporal, "TODO(RR-5") && !Has(ssr, "TODO(RR-5") && !Has(car, "TODO(RR-5") && !Has(rules, "TODO(RR-5"), "the merge's hooks are done: no placeholder is left");
 }

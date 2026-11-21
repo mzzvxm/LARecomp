@@ -750,6 +750,12 @@ class GPUSettings final : public rex::SettingOwner {
     "this says. Live.",
     rex::kDebugOnly, rex::Range{0, 1});
 
+  REX_SETTING(i32, mcla_gpu_dlss_rr_rt_gi, 1, "Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, CITY-RT G6): what the ray traced bounce light's per-pixel pass (ULTRA on a strong ray tracing card) does while Ray Reconstruction takes the frame. "
+    "1 (the default): it hands Ray Reconstruction its raw one-ray-a-pixel diffuse light (no filter of its own: Ray Reconstruction is the denoiser) and the length of each ray as the hit distance guide where no reflection gave one. "
+    "2: the same, but without the hit distance (NVIDIA's guide asks for it of the specular only). 0: it keeps its own filter even then (the picture to compare with). With Ray Reconstruction not the plan "
+    "(Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.",
+    rex::kDebugOnly, rex::Range{0, 2});
+
   REX_SETTING(std::string, mcla_gpu_dlss_mode, "dlaa", "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
     "per direction, of the output (the window's 16:9 area, whatever mcla_gpu_resolution_scale "
@@ -1944,6 +1950,7 @@ inline auto& mcla_gpu_dlss_rr_view = g_gpu.mcla_gpu_dlss_rr_view;
 inline auto& mcla_gpu_dlss_rr_test = g_gpu.mcla_gpu_dlss_rr_test;
 inline auto& mcla_gpu_dlss_rr_ssr = g_gpu.mcla_gpu_dlss_rr_ssr;
 inline auto& mcla_gpu_dlss_rr_car_refl = g_gpu.mcla_gpu_dlss_rr_car_refl;
+inline auto& mcla_gpu_dlss_rr_rt_gi = g_gpu.mcla_gpu_dlss_rr_rt_gi;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;

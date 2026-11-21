@@ -84,6 +84,7 @@
 #include "gi_apply.h"
 #include "gi_field.h"
 #include "gi_integration.h"
+#include "gi_pixel.h"
 #include "gi_update.h"
 #include "layout.h"
 #include "light_manager.h"
@@ -314,6 +315,7 @@ class Renderer final : public RenderThread::Executor {
   GiApply gi_apply_;          // render thread; the probe field's apply (gi_apply.h, CITY-RT M3 G3): the field's bounce light, and the screen-space bounce light's share; it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
   GiField gi_field_;          // render thread; the probe field's owner (gi_field.h, CITY-RT M3 G1): textures, windows, weights; the apply reads it (SetGiField); Shutdown stops the apply first
   GiUpdate gi_update_;        // render thread; the probe field's update (gi_update.h, CITY-RT M3 G2): the rays of the probes and their blend; it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: Shutdown stops it with the integration
+  GiPixel gi_pixel_;          // render thread; the probe field's per-pixel detail pass (gi_pixel.h, CITY-RT M3 G5): ULTRA on a strong ray tracing card; the apply runs it (SetGiPixel); it holds pointers to the field, the car scene, the city scene, the hit data, the world frame and the light manager: Shutdown stops it before them
   GiIntegration gi_integration_;  // render thread; the setting, the field's frame and its trigger work, the watchdog (gi_integration.h, CITY-RT M3 G4); holds pointers to the field, the apply, the AO and the city scene
   RrGuides rr_guides_;        // render thread; DLSS Ray Reconstruction's guide pass, run by the temporal system's upscale (rr_guides.h); it holds a pointer to the G-buffer: Shutdown stops it first
   ScreenReflections ssr_;     // render thread; screen-space reflections (ssr.h; off by default); it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first

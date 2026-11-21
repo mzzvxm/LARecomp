@@ -1557,6 +1557,7 @@ void TemporalSystem::RecordRrGuides(plume::RenderCommandList* list, const Tempor
   in.transparency = kept.transparency;
   in.hit[0] = rr_hit_[0];  // RR-4: the reflection effects' hit distance images of this frame (the guide pass checks each one's size and format)
   in.hit[1] = rr_hit_[1];
+  in.bounce_hit = rr_bounce_hit_;  // CITY-RT G6: the bounce light's (the guide pass checks its format and takes it only where no reflection wrote a distance)
   in.pause_view = frame_.view == temporal::View::kPause;
   for (int i = 0; i < 3; ++i) {
     in.right[i] = float(cam.right[i]);
@@ -1719,6 +1720,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
 
 void TemporalSystem::UpdateDenoiserPlan() {
   rr_hit_[0] = rr_hit_[1] = nullptr;  // RR-4: last frame's hit distance images are not this frame's
+  rr_bounce_hit_ = nullptr;           // ... nor the bounce light's (CITY-RT G6)
   rr::PlanInputs in;
   // The row DENOISER (mcla_gpu_denoiser, live) is the master switch. The debug cvar mcla_gpu_dlss_rr (restart) only overrides it: off takes RR away whatever the row says, probe loads the plugin and
   // logs what it can do, on stands for the row's RR value with the consumer rule lifted (the A/B and cost runs); auto, its default, leaves the row to decide.
@@ -1890,20 +1892,22 @@ rr::RawModes TemporalSystem::RawModes() {
   rr::RawFrame f = frame_.raw;
   // The frame's own view is known from its first main draw (OnMainView); a frame that has seen none, and the pause, garage and map worlds, are not ones Ray Reconstruction takes (no guides there).
   f.play_view = frame_.samples != 0 && frame_.view == temporal::View::kPlay;
-  const rr::RawModes modes = rr::RawModesOf(f, rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_ssr.Get())), rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_car_refl.Get())));
+  const rr::RawModes modes = rr::RawModesOf(f, rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_ssr.Get())), rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_car_refl.Get())),
+                                            rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())));
   if (f.plan_rr || rr_raw_logged_) {
     if (!rr_raw_logged_ || !(modes == rr_raw_last_)) {
       rr_raw_logged_ = true;
       rr_raw_last_ = modes;
-      REXLOG_INFO("{} raw modes for Ray Reconstruction (frame {}): {}: {}; {}: {} (logged when it changes)", kPrefix, frame_.frame, rr::RawEffectName(rr::RawEffect::kSsr), rr::RawWhyText(modes.ssr),
-                  rr::RawEffectName(rr::RawEffect::kCarRefl), rr::RawWhyText(modes.car_refl));
+      REXLOG_INFO("{} raw modes for Ray Reconstruction (frame {}): {}: {}; {}: {}; {}: {} (logged when it changes)", kPrefix, frame_.frame, rr::RawEffectName(rr::RawEffect::kSsr), rr::RawWhyText(modes.ssr),
+                  rr::RawEffectName(rr::RawEffect::kCarRefl), rr::RawWhyText(modes.car_refl), rr::RawEffectName(rr::RawEffect::kRtGi), rr::RawWhyText(modes.rt_gi));
     }
     if (!frame_.raw_counted) {
       frame_.raw_counted = true;
       window_.rr_raw_frames[size_t(rr::RawEffect::kSsr)] += modes.Ssr() ? 1 : 0;
       window_.rr_raw_frames[size_t(rr::RawEffect::kCarRefl)] += modes.CarRefl() ? 1 : 0;
+      window_.rr_raw_frames[size_t(rr::RawEffect::kRtGi)] += modes.RtGi() ? 1 : 0;
     }
-    frame_.raw_any = frame_.raw_any || modes.Ssr() || modes.CarRefl();
+    frame_.raw_any = frame_.raw_any || modes.Ssr() || modes.CarRefl() || modes.RtGi();
   }
   return modes;
 }
@@ -2672,8 +2676,8 @@ void TemporalSystem::Report() {
                 kPrefix, rr_plan_last_.use_rr ? "Ray Reconstruction" : "ours", rr::WhyText(rr_plan_last_.why), w.rr_frames, w.rr_sr_frames[size_t(rr::DispatchWhy::kNoGuides)],
                 w.rr_sr_frames[size_t(rr::DispatchWhy::kContextNotReady)], w.rr_sr_frames[size_t(rr::DispatchWhy::kRrFailed)], w.rr_backend_fallbacks, context,
                 dlss_ ? dlss_->CompanionSummary() : std::string("no DLSS backend"),
-                rr_raw_logged_ ? std::format(" | raw modes (RR-4): frames asked: screen-space reflections {}, the cars' reflections {}; of the asked frames Super Resolution upscaled {} after all (noise not cleaned)",
-                                             w.rr_raw_frames[size_t(rr::RawEffect::kSsr)], w.rr_raw_frames[size_t(rr::RawEffect::kCarRefl)], w.rr_raw_but_sr)
+                rr_raw_logged_ ? std::format(" | raw modes (RR-4, CITY-RT G6): frames asked: screen-space reflections {}, the cars' reflections {}, the bounce light's per-pixel pass {}; of the asked frames Super Resolution upscaled {} after all (noise not cleaned)",
+                                             w.rr_raw_frames[size_t(rr::RawEffect::kSsr)], w.rr_raw_frames[size_t(rr::RawEffect::kCarRefl)], w.rr_raw_frames[size_t(rr::RawEffect::kRtGi)], w.rr_raw_but_sr)
                                : std::string());
   }
 }

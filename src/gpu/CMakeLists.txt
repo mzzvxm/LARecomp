@@ -57,6 +57,7 @@ add_library(larecomp_gpu OBJECT
     frame.cpp
     gbuffer.cpp
     gi_apply.cpp
+    gi_pixel.cpp
     gi_field.cpp
     gi_integration.cpp
     gi_update.cpp
@@ -328,6 +329,11 @@ add_executable(larecomp_gi_update_rules_test EXCLUDE_FROM_ALL gi_update_rules_te
 # shader's registers, the CMake lines, host_shaders.h and the settings) likewise:
 #   cmake --build <dir> --target larecomp_gi_apply_test, then run src/gpu/larecomp_gi_apply_test [-v] [<src/gpu dir>] (exit 0 = passed).
 add_executable(larecomp_gi_apply_test EXCLUDE_FROM_ALL gi_apply_test.cpp)
+# The per-pixel detail pass (gi_pixel_rules.h, CITY-RT M3 package G5: the cell and the identity of the other cells, the governor, the plan, the ray's direction and noise, the estimator's pieces, the mix with the
+# field, the surface lights picked from the light manager's frame, the denoiser's push block and the camera's motion; it compiles hlsl/gi_pixel_common.hlsli as C++ and compares it with the twin, and reads the
+# shader, the host and the CMake lines) likewise:
+#   cmake --build <dir> --target larecomp_gi_pixel_test, then run src/gpu/larecomp_gi_pixel_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_gi_pixel_test EXCLUDE_FROM_ALL gi_pixel_test.cpp)
 # The ray traced bounce light's setting and its pause row (gi_setting.h, CITY-RT M3 package G4: what a word comes to on each class and ray tracing tier, the gate that greys the row and what it says, AUTO's
 # label, the launcher's line, the BOUNCE LIGHT rows' "(REPLACED)" and the strength row's rule, the debug feedback; it also reads gi_integration.h / .cpp, scene.cpp, renderer.cpp, pause_menu.cpp, the settings and
 # the CMake lines for the order and the wiring) likewise:
@@ -956,6 +962,9 @@ larecomp_gpu_host_shader(ssr_hit_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_denoise_spatial_cs cs_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(rt_denoise_plain_spatial_cs cs_6_0)
 larecomp_gpu_host_shader(rt_denoise_plain_temporal_cs cs_6_0)
+# The same two stages with the DIFFUSE profile (the probe field's per-pixel detail pass's denoiser, gi_pixel.h): a fixed radius of six pixels that shortens as the history grows, no hit distance, looser weights.
+larecomp_gpu_host_shader(rt_denoise_diffuse_spatial_cs cs_6_0 SOURCE rt_denoise_plain_spatial_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE)
+larecomp_gpu_host_shader(rt_denoise_diffuse_temporal_cs cs_6_0 SOURCE rt_denoise_plain_temporal_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE)
 # DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): the five guide images from the G-buffer's planes in one compute pass at the anchor (over planes with one sample and over the host's MSAA
 # level), and the debug view that draws one of them over the upscaler's output. Plain Shader Model 6.0 compute for both backends.
 larecomp_gpu_host_shader(rr_guides_cs cs_6_0 DEFINES RR_MS=0)
@@ -1076,6 +1085,10 @@ larecomp_gpu_host_shader(gi_field_view_ps ps_6_0)
 # RGBA16F and RG16F storage image loads and stores with the format given to SPIR-V).
 larecomp_gpu_host_shader_rt(gi_update_trace_cs cs_6_5)
 larecomp_gpu_host_shader(gi_update_blend_cs cs_6_0)
+# The probe field's per-pixel detail pass (gi_pixel.h, CITY-RT M3 package G5): one cosine ray a pixel into the city and the cars, shaded by the city hit library in GI mode; once over plain planes, once over the
+# host's MSAA level. Shader Model 6.5 with inline ray queries, as the probe update's trace.
+larecomp_gpu_host_shader_rt(gi_pixel_trace_cs cs_6_5 DEFINES GIP_MS=0)
+larecomp_gpu_host_shader_rt(gi_pixel_trace_ms_cs cs_6_5 SOURCE gi_pixel_trace_cs DEFINES GIP_MS=1)
 # The probe field's apply (gi_apply.h, CITY-RT M3 package G3): the lookup at the occlusion's traced size and the additive apply at the picture's size, each for plain and multisampled planes (the apply also
 # without and with the upsample from the lookup's image); one source, hlsl/gi_apply_ps.hlsl.
 larecomp_gpu_host_shader(gi_apply_lookup_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=0 GIA_UP=0)
