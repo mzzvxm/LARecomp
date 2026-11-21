@@ -7,6 +7,13 @@
 //   citypack_tool check    --game <folder> --out <folder>                  stat only: is the pack current? (exit 0 = yes)
 //   citypack_tool validate <pack file>                                     decode every blob and compare with the table (exit 0 = whole)
 //   citypack_tool info     <pack file> [sector name]                       the header, the totals, or one sector's record and mesh (a city pack, or a hit pack: it tells by the magic)
+//   citypack_tool lamps    --game <folder> [--golden]                      read lights.xlm from the archive (the mod archive's first), print the census and the 64 m grid;
+//                                                                          --golden: exit 1 unless the counts are the ones the survey and this file's reading found
+//                          --simulate-live: the merge rule (lamp_merge.h) on the real file: every light packed the way the game packs it (a model: 16 bit position steps,
+//                                                                          half floats), merged in the file's order and in a shuffled one: all 15,174 must match, 1:1
+//   citypack_tool lamps    <pack file> [--near x,z,r] [--strongest x,y,z,r,n [--hour h]] [--cell x,z]
+//                                                                          the pack's lamps section: its totals, the lamps around a point, the strongest at a point,
+//                                                                          one cell's emitter
 //
 //   the HIT DATA (mcla_city_hit.v1.pack, built over the city pack in --out: hit_builder.h; the same game files):
 //   citypack_tool build-hit --game <folder> --out <folder> [--mods <xarchive_mods.rpf>] [--threads N] [--force] [--census] [--rows <table file>]...
@@ -35,15 +42,19 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
 
 #include "citypack/builder.h"
 #include "citypack/hit_builder.h"
 #include "citypack/hit_texture_adapter.h"
+#include "citypack/lamp_merge.h"
+#include "citypack/lamp_parse.h"
 #include "citypack/pack_reader.h"
 #include "citypack/texture_residency.h"
 #include "citypack/texture_set.h"
+#include "mc_engine/modloader/rpf3.h"
 #include "mc_engine/modloader/xcompress.h"
 
 namespace fs = std::filesystem;
@@ -75,6 +86,7 @@ struct Args {
   std::vector<std::string> positional;
   std::string game, out, mods, positions, keep;
   std::vector<std::string> rows;
+  std::string near_query, strongest_query, cell_query, hour;
   int uv_step = -1, ao_bits = -1, tint_bits = -1;  // build-hit: the precision rules (hit_collect.h HitRules); -1: the defaults
   int zstd = -1;                                   // build-hit, tex-census, tex-build: the zstd level (city_zstd.h); -1: the default
   uint32_t threads = 0;
@@ -82,6 +94,8 @@ struct Args {
   bool census = false;
   bool deep = false;
   bool no_textures = false;
+  bool golden = false;
+  bool simulate_live = false;
 };
 
 bool ParseArgs(int argc, char** argv, int first, Args* args) {
@@ -102,6 +116,12 @@ bool ParseArgs(int argc, char** argv, int first, Args* args) {
     else if (a == "--keep") { if (!value(&args->keep)) return false; }
     else if (a == "--rows") { std::string r; if (!value(&r)) return false; args->rows.push_back(r); }
     else if (a == "--threads") { std::string t; if (!value(&t)) return false; args->threads = uint32_t(std::strtoul(t.c_str(), nullptr, 10)); }
+    else if (a == "--near") { if (!value(&args->near_query)) return false; }
+    else if (a == "--strongest") { if (!value(&args->strongest_query)) return false; }
+    else if (a == "--cell") { if (!value(&args->cell_query)) return false; }
+    else if (a == "--hour") { if (!value(&args->hour)) return false; }
+    else if (a == "--golden") args->golden = true;
+    else if (a == "--simulate-live") args->simulate_live = true;
     else if (a == "--force") args->force = true;
     else if (a == "--census") args->census = true;
     else if (a == "--uv-step") { std::string t; if (!value(&t)) return false; args->uv_step = std::atoi(t.c_str()); }
@@ -241,6 +261,8 @@ int Info(const Args& args) {
   const PackHeader& h = reader.header();
   std::printf("city pack: format %u, builder %u, %u sectors, drop mask 0x%x, positions %u, %llu bytes\n", h.format_version, h.builder_version, h.sector_count, h.drop_mask,
               h.position_encoding, static_cast<unsigned long long>(h.file_size));
+  if (h.has_lamps()) std::printf("lamps section: %llu bytes at %llu (citypack_tool lamps <pack> reads it)\n", static_cast<unsigned long long>(h.lamps_size), static_cast<unsigned long long>(h.lamps_offset));
+  else std::printf("no lamps section (builder version %u)\n", h.builder_version);
   if (args.positional.size() < 2) {
     uint64_t hi_t = 0, hi_v = 0, lod_t = 0, lod_v = 0, hi_b = 0, lod_b = 0;
     for (const SectorRecord& s : reader.sectors()) {
@@ -323,11 +345,180 @@ int TextureSetCommand(const Args& args, bool write) {
   return bad == 0 ? 0 : 1;
 }
 
+// "1.5,2,3" -> numbers; false unless there are exactly `count`.
+bool ParseNumbers(const std::string& text, size_t count, float* out) {
+  size_t at = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (at > text.size()) return false;
+    char* end = nullptr;
+    out[i] = std::strtof(text.c_str() + at, &end);
+    if (end == text.c_str() + at) return false;
+    at = size_t(end - text.c_str());
+    if (i + 1 < count) {
+      if (at >= text.size() || text[at] != ',') return false;
+      ++at;
+    }
+  }
+  return at == text.size();
+}
+
+void PrintLamp(const LampTable& table, uint32_t i, const char* extra = "") {
+  const Lamp& l = table[i];
+  static const char* kSource[] = {"file", "live fill", "street lamp"};
+  std::printf("  #%u file %d %s %s at (%.2f %.2f %.2f) colour (%.3f %.3f %.3f) intensity %.1f cone %.1f spread %.1f dir (%.3f %.3f %.3f)%s\n", i, l.file_index == kNoLampIndex ? -1 : int(l.file_index),
+              kSource[size_t(l.source) % 3], l.is_spot() ? "spot" : "omni", l.pos[0], l.pos[1], l.pos[2], l.colour[0], l.colour[1], l.colour[2], l.intensity, l.cone_deg, l.spread_deg, l.dir[0],
+              l.dir[1], l.dir[2], extra);
+}
+
+// lights.xlm out of the archive the way the builder does it: the mod archive's first.
+bool ReadLightsFromArchive(const Args& args, std::vector<Lamp>* lamps, LampParseStats* parse, bool* from_mods, std::string* error) {
+  const fs::path source = fs::path(args.game) / "xarchive_cache.rpf";
+  fs::path mods = args.mods.empty() ? fs::path(args.game) / "xarchive_mods.rpf" : fs::path(args.mods);
+  mc::modloader::Rpf3Reader archive, mod_archive;
+  if (!archive.Open(source)) {
+    *error = "the game archive " + source.string() + " could not be opened";
+    return false;
+  }
+  const bool has_mods = fs::exists(mods) && mod_archive.Open(mods);
+  mc::modloader::Rpf3Entry entry;
+  std::vector<uint8_t> file;
+  *from_mods = false;
+  if (has_mods && mod_archive.Find(kLightsPath, entry) && !entry.is_directory() && mod_archive.ReadFile(entry, file)) {
+    *from_mods = true;
+  } else if (!(archive.Find(kLightsPath, entry) && !entry.is_directory() && archive.ReadFile(entry, file))) {
+    *error = std::string(kLightsPath) + " is not in the archive";
+    return false;
+  }
+  RscImage image;
+  const LzxFunction lzx = [](const uint8_t* src, size_t src_len, std::vector<uint8_t>& dst, size_t dst_len) { return mc::modloader::LzxDecompress(src, src_len, dst, dst_len); };
+  return DecodeResourceFile(file, lzx, &image, error) && ParseLightsResource(image, lamps, parse, error);
+}
+
+int Lamps(const Args& args) {
+  LampTable table;
+  LampCensus census;
+  std::string error;
+  bool from_archive = false;
+  if (!args.game.empty()) {
+    std::vector<Lamp> lamps;
+    LampParseStats parse;
+    bool from_mods = false;
+    if (!ReadLightsFromArchive(args, &lamps, &parse, &from_mods, &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    census = CensusOfLamps(lamps, parse);
+    census.from_mods = from_mods;
+    table = LampTable::Build(lamps, kDefaultLampCellMetres, from_mods ? kLampTableFromMods : 0);
+    from_archive = true;
+    std::printf("%s", LampCensusReport(census).c_str());
+  } else if (!args.positional.empty()) {
+    PackReader reader;
+    if (!reader.Open(args.positional[0], &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    if (!reader.has_lamps()) {
+      std::fprintf(stderr, "this pack has no lamps section (built by builder version %u)\n", reader.header().builder_version);
+      return 1;
+    }
+    if (!reader.ReadLamps(&table, &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    std::printf("lamps section: %llu bytes at %llu\n", static_cast<unsigned long long>(reader.header().lamps_size), static_cast<unsigned long long>(reader.header().lamps_offset));
+  } else {
+    std::fprintf(stderr, "lamps --game <folder> [--golden]   or   lamps <pack file> [--near x,z,r] [--strongest x,y,z,r,n [--hour h]] [--cell x,z]\n");
+    return 2;
+  }
+  const LampStats st = table.Stats();
+  std::printf("table: %u lamps (%u spot, %u omni; file %u, live fill %u, street %u), grid %u x %u cells of %.0f m from (%.0f, %.0f), hash %016llx, section %zu bytes\n", st.count, st.spots, st.omni,
+              st.by_source[0], st.by_source[1], st.by_source[2], table.grid().nx, table.grid().nz, table.grid().cell_m, table.grid().origin_x, table.grid().origin_z,
+              static_cast<unsigned long long>(table.ContentHash()), table.Encode().size());
+  int exit_code = 0;
+  if (args.golden) {
+    if (!from_archive) {
+      std::fprintf(stderr, "--golden needs --game\n");
+      return 2;
+    }
+    const LampGolden golden = CheckLampGolden(table, census);
+    std::printf("golden:\n%s%s\n", golden.report.c_str(), golden.ok ? "the lamps are the golden ones" : "the lamps DIFFER from the golden ones");
+    exit_code = golden.ok ? 0 : 1;
+  }
+  if (args.simulate_live) {
+    if (!from_archive) {
+      std::fprintf(stderr, "--simulate-live needs --game\n");
+      return 2;
+    }
+    // the file's lights in the file's order, packed the way the game packs them (CHECK: the packer's own box; this one holds every light and the street lamps' extent)
+    const PackingBox box = {{-3470.0f, -31.0f, -2360.0f}, {2830.0f, 380.0f, 2110.0f}};
+    std::vector<const Lamp*> by_index;
+    for (const Lamp& l : table.lamps()) by_index.push_back(&l);
+    std::sort(by_index.begin(), by_index.end(), [](const Lamp* a, const Lamp* b) { return a->file_index < b->file_index; });
+    std::vector<LiveLight> live;
+    for (const Lamp* l : by_index) live.push_back(SimulateGamePacking(*l, false, box));
+    MergeReport ordered, shuffled_report;
+    const LampTable merged = MergeLive(table, live, MergeOptions{}, &ordered);
+    std::mt19937_64 rng(2026);
+    std::shuffle(live.begin(), live.end(), rng);
+    const LampTable merged_shuffled = MergeLive(table, live, MergeOptions{}, &shuffled_report);
+    const uint32_t n = table.size();
+    std::printf("simulated live read, file order: %s\nsimulated live read, shuffled:   %s\n", ordered.Summary().c_str(), shuffled_report.Summary().c_str());
+    const bool ok = ordered.matched == n && ordered.matched_by_ordinal == n && ordered.live_only_fill == 0 && ordered.file_only == 0 && shuffled_report.matched == n &&
+                    shuffled_report.live_only_fill == 0 && shuffled_report.file_only == 0 && merged.Encode() == merged_shuffled.Encode() && merged.size() == n;
+    std::printf("%s\n", ok ? "the merge rule matches every file light 1:1, in either order" : "the merge rule did NOT match every file light 1:1");
+    if (!ok) exit_code = 1;
+  }
+  float v[5];
+  if (!args.near_query.empty()) {
+    if (!ParseNumbers(args.near_query, 3, v)) {
+      std::fprintf(stderr, "--near x,z,r\n");
+      return 2;
+    }
+    std::vector<uint32_t> near;
+    table.Near(v[0], v[1], v[2], &near);
+    std::printf("%zu lamps within %.1f m of (%.1f, %.1f):\n", near.size(), v[2], v[0], v[1]);
+    for (const uint32_t i : near) PrintLamp(table, i);
+  }
+  if (!args.cell_query.empty()) {
+    if (!ParseNumbers(args.cell_query, 2, v)) {
+      std::fprintf(stderr, "--cell x,z\n");
+      return 2;
+    }
+    uint32_t cx = 0, cz = 0;
+    if (!table.CellOf(v[0], v[1], &cx, &cz)) {
+      std::printf("(%.1f, %.1f) is outside the grid\n", v[0], v[1]);
+    } else {
+      const CellEmitter e = table.EmitterOfCell(cx, cz);
+      std::printf("cell (%u, %u): %u lamps, centre (%.1f %.1f %.1f), radiance (%.1f %.1f %.1f), reach %.1f m\n", cx, cz, e.count, e.centre[0], e.centre[1], e.centre[2], e.radiance[0], e.radiance[1],
+                  e.radiance[2], e.reach_m);
+    }
+  }
+  if (!args.strongest_query.empty()) {
+    if (!ParseNumbers(args.strongest_query, 5, v)) {
+      std::fprintf(stderr, "--strongest x,y,z,r,n\n");
+      return 2;
+    }
+    LampQuery query;
+    if (!args.hour.empty()) query.hour = std::strtof(args.hour.c_str(), nullptr);
+    const float p[3] = {v[0], v[1], v[2]};
+    const std::vector<LampPick> picks = table.Strongest(p, v[3], uint32_t(std::max(v[4], 0.0f)), query);
+    const std::string at_hour = args.hour.empty() ? std::string() : " at hour " + args.hour;
+    std::printf("the %zu strongest lamps at (%.1f %.1f %.1f) within %.1f m%s:\n", picks.size(), p[0], p[1], p[2], v[3], at_hour.c_str());
+    for (const LampPick& pick : picks) {
+      char extra[64];
+      std::snprintf(extra, sizeof(extra), "  score %.3f at %.1f m", pick.score, pick.distance);
+      PrintLamp(table, pick.index, extra);
+    }
+  }
+  return exit_code;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::fprintf(stderr, "citypack_tool build|census|check|validate|info|build-hit|check-hit|check-tex|tex-census|tex-build (see the top of main.cpp)\n");
+    std::fprintf(stderr, "citypack_tool build|census|check|validate|info|lamps|build-hit|check-hit|check-tex|tex-census|tex-build (see the top of main.cpp)\n");
     return 2;
   }
   const std::string command = argv[1];
@@ -355,6 +546,7 @@ int main(int argc, char** argv) {
   }
   if (command == "tex-census") return TextureSetCommand(args, false);
   if (command == "tex-build") return TextureSetCommand(args, true);
+  if (command == "lamps") return Lamps(args);
   if (command == "validate") {
     if (args.positional.empty()) {
       std::fprintf(stderr, "validate <pack file>\n");

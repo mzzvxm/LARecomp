@@ -6,7 +6,7 @@
 // first start runs it after the shader packs, like them (src/shaderpack/builder.h): progress and cancel through a sink, stat-only up-to-date check,
 // temporary file then rename, the stamp written last, a cancelled or failed build leaves nothing that reads as a pack.
 //
-//   inputs   <game>/xarchive_cache.rpf   resources/city/sc/city.xct, <sector>.xcs for each sector of the table, lod.xmd
+//   inputs   <game>/xarchive_cache.rpf   resources/city/sc/city.xct, <sector>.xcs for each sector of the table, lod.xmd, and lights.xlm (the lamps section: lamp_table.h)
 //            <game>/xarchive_mods.rpf    (optional) the mod loader's overlay: a path found there wins, as it does in the game (CHECK C4: the overlay's order)
 //   output   <out_dir>/mcla_city.v1.pack and mcla_city.stamp
 //
@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "citypack/lamp_parse.h"
 #include "citypack/mesh_builder.h"
 #include "citypack/pack_format.h"
 #include "citypack/rsc_image.h"
@@ -60,6 +61,7 @@ struct BuildRequest {
   std::function<void()> worker_start;
   bool force = false;                // build even when the stamp says the pack is current
   bool census_only = false;          // read and count, write nothing (the tool's census)
+  float lamp_cell_m = kDefaultLampCellMetres;  // the lamp grid's cell (the cascades' queries and the shadows' candidates read 64 m cells)
   std::string app_version;
 };
 
@@ -96,6 +98,7 @@ struct Census {
   uint32_t lod_best_is_index = 0;       // lod models whose bounds overlap their own sector's box more than any other sector's (C5: the pairing by index)
   uint32_t max_sector_triangles = 0;
   std::string max_sector_name;
+  LampCensus lamps;                     // the light list of lights.xlm (not summed over sectors: made once)
   uint64_t hi_blob_bytes = 0;
   uint64_t lod_blob_bytes = 0;
   double read_seconds = 0.0;            // summed over the workers (C3)

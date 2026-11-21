@@ -166,6 +166,7 @@ Stamp MakeStamp(const StampInputs& in) {
   stamp.Set("sectors", uint64_t(in.sectors));
   stamp.Set("hi_triangles", in.hi_triangles);
   stamp.Set("lod_triangles", in.lod_triangles);
+  stamp.Set("lamps", uint64_t(in.lamps));
   stamp.Set("app_version", in.app_version);
   return stamp;
 }

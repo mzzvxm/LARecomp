@@ -288,6 +288,7 @@ std::string Census::Report() const {
   out << "  lod: " << lod_kept_triangles << " triangles, " << lod_kept_vertices << " vertices; weld dropped " << lod_weld.dropped_degenerate << " degenerate\n";
   out << "  largest sector: " << max_sector_name << " with " << max_sector_triangles << " triangles\n";
   if (hi_blob_bytes != 0) out << "  blobs: hi " << hi_blob_bytes << " bytes, lod " << lod_blob_bytes << " bytes\n";
+  out << LampCensusReport(lamps);
   out << "classes (hi sources' triangles; dropped = left out by the mask):\n";
   for (size_t c = 0; c < triangles_by_class.size(); ++c) {
     out << "  " << ClassName(static_cast<MaterialClass>(c)) << ": " << triangles_by_class[c] << " (" << (hi.triangles ? 100.0 * double(triangles_by_class[c]) / double(hi.triangles) : 0.0)
@@ -471,6 +472,30 @@ BuildResult BuildCityPack(const BuildRequest& request, ProgressSink* sink_in) {
     }
     sink.Step("lod.xmd");
   }
+  // The lamps: lights.xlm, the file lights in the game's units and a grid over them (lamp_table.h). Not fatal when the file is missing or does not read: the geometry is the pack's job
+  // and the shadows need nothing else, so the pack is built without the section and says why (the census and the log).
+  std::vector<uint8_t> lamp_section;
+  {
+    sink.BeginPhase("lamps", 1);
+    bool from_mods = false;
+    std::vector<Lamp> lamps;
+    LampParseStats parse;
+    std::string lamp_error;
+    if (!archives.Read(kLightsPath, &file, &from_mods)) {
+      lamp_error = "not in the archive";
+    } else if (!DecodeResourceFile(file, request.lzx, &image, &lamp_error) || !ParseLightsResource(image, &lamps, &parse, &lamp_error)) {
+      // lamp_error says why
+    } else {
+      census.lamps = CensusOfLamps(lamps, parse);
+      census.lamps.from_mods = from_mods;
+      if (!request.census_only) lamp_section = LampTable::Build(std::move(lamps), request.lamp_cell_m, from_mods ? kLampTableFromMods : 0).Encode();
+    }
+    if (!lamp_error.empty()) {
+      census.problems.push_back(std::string(kLightsPath) + ": " + lamp_error + " (the pack has no lamps)");
+      sink.Log(LogLevel::kWarning, std::string(kLightsPath) + ": " + lamp_error + ": the pack is built without lamps");
+    }
+    sink.Step("lights.xlm");
+  }
   if (sink.Cancelled()) {
     result.cancelled = true;
     result.seconds = SecondsSince(started);
@@ -621,6 +646,19 @@ BuildResult BuildCityPack(const BuildRequest& request, ProgressSink* sink_in) {
     return result;
   }
 
+  // The lamps section follows the last blob.
+  if (!lamp_section.empty()) {
+    write_blob(lamp_section, &header.lamps_offset);
+    header.lamps_size = lamp_section.size();
+    header.lamps_hash = Fnv1a64(lamp_section.data(), lamp_section.size());
+    if (!out) {
+      out.close();
+      std::error_code ec;
+      std::filesystem::remove(temp_path, ec);
+      return fail("the pack file could not be written completely (disk full?)");
+    }
+  }
+
   result.census = std::move(census);
   if (request.census_only) {
     result.ok = true;
@@ -660,6 +698,7 @@ BuildResult BuildCityPack(const BuildRequest& request, ProgressSink* sink_in) {
   stamp_in.sectors = count;
   stamp_in.hi_triangles = result.census.hi_kept_triangles;
   stamp_in.lod_triangles = result.census.lod_kept_triangles;
+  stamp_in.lamps = lamp_section.empty() ? 0 : result.census.lamps.parse.kept;
   std::string stamp_error;
   if (!MakeStamp(stamp_in).Write(request.out_dir / kStampFileName, &stamp_error)) return fail(stamp_error);
 

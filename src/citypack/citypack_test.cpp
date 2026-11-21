@@ -18,6 +18,8 @@
 #include <vector>
 
 #include "citypack/builder.h"
+#include "citypack/lamp_parse.h"
+#include "citypack/lamp_table.h"
 #include "citypack/material_class.h"
 #include "citypack/mesh_builder.h"
 #include "citypack/pack_format.h"
@@ -244,6 +246,64 @@ SynthGeo Quad(float x0, float z0, float x1, float z1, float y, const char* group
   g.positions = {x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1};
   g.indices = {0, 1, 2, 0, 2, 3};
   return g;
+}
+
+// lights.xlm (lamp_parse.h): the list at the root's +0x50 {pointer, count, capacity}, the lights of 96 bytes from 0x80.
+struct SynthLight {
+  float pos[3];
+  float colour[3];
+  float intensity, cone, spread;
+  uint8_t type, on;
+};
+std::vector<uint8_t> MakeLightsFile(const std::vector<SynthLight>& lights) {
+  Img img;
+  img.Alloc(0x80);
+  const uint32_t array = img.Alloc(96 * lights.size(), 16);
+  img.U32(0x50, Img::P(array));
+  img.U16(0x54, uint16_t(lights.size()));
+  img.U16(0x56, uint16_t(lights.size()));
+  for (size_t i = 0; i < lights.size(); ++i) {
+    const uint32_t o = array + 96 * uint32_t(i);
+    for (uint32_t a = 0; a < 3; ++a) {
+      img.F32(o + 4 * a, lights[i].pos[a]);
+      img.F32(o + 16 + 4 * a, lights[i].colour[a]);
+    }
+    img.F32(o + 36, -1.0f);  // the axis: straight down
+    img.F32(o + 64, lights[i].intensity);
+    img.F32(o + 68, lights[i].cone);
+    img.F32(o + 72, lights[i].spread);
+    img.F32(o + 80, 1.0f);
+    img.d[o + 88] = lights[i].type;
+    img.d[o + 89] = lights[i].on;
+  }
+  return StoredFile(img, 2018, nullptr);
+}
+
+// 300 lights over the synthetic city (x 0 .. 300, z 0 .. 100): omni fill lights of the file's usual intensities and a spot in every tenth.
+std::vector<SynthLight> SynthLights() {
+  std::vector<SynthLight> lights;
+  for (uint32_t i = 0; i < 300; ++i) {
+    SynthLight l{};
+    l.pos[0] = float((i * 37u) % 300u) + 0.25f * float(i % 4);
+    l.pos[1] = float(i % 9) - 2.0f;
+    l.pos[2] = float((i * 11u) % 100u) + 0.125f;
+    l.colour[0] = float(i % 8) / 8.0f;
+    l.colour[1] = 0.5f;
+    l.colour[2] = float(i % 5) / 5.0f;
+    l.intensity = (i % 3 == 0) ? 20.0f : (i % 3 == 1 ? 10.0f : 15.0f);
+    l.cone = 360.0f;
+    l.type = 0;
+    l.on = 1;
+    if (i % 10 == 0) {
+      l.type = 1;
+      l.cone = 100.0f;
+      l.spread = 30.0f;
+      l.intensity = 60.0f;
+    }
+    lights.push_back(l);
+  }
+  lights[7].pos[0] = std::nanf("");  // one that is not a place: left out, and the others keep their indices
+  return lights;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +690,8 @@ void TestBuilder(const fs::path& scratch) {
       1);
   add(SectorArchivePath("s_b"), MakeSectorFile({Quad(100, 0, 150, 50, 1, "CityBumpSpec", "CityBumpSpec_Cloth"), Quad(100, 0, 110, 10, 1.5f, "CityStoreInterior", "i")}), 1);
   add(kLodPath, MakeLodFile({Quad(0, 0, 100, 100, 20, "CityDefault", "CityDefault"), Quad(100, 0, 200, 100, 20, "CityDefault", "CityDefault"), SynthGeo{}}), 1);
+  const std::vector<SynthLight> lights = SynthLights();
+  add(kLightsPath, MakeLightsFile(lights), 2018);
   CHECK(writer.Write(rpf));
 
   BuildRequest request;
@@ -654,6 +716,10 @@ void TestBuilder(const fs::path& scratch) {
   CHECK(one.census.lod_kept_triangles == 4 && one.census.lod_models_checked == 2 && one.census.lod_models_outside_box == 0);
   CHECK(one.census.vertices_outside_box == 0);
   CHECK(!one.census.Report().empty());
+  CHECK(one.census.Report().find("lamps (lights.xlm)") != std::string::npos);
+  // the lamps: 300 listed, one not a place
+  CHECK(one.census.lamps.present && !one.census.lamps.from_mods && one.census.lamps.parse.listed == 300 && one.census.lamps.parse.kept == 299 && one.census.lamps.parse.skipped == 1 &&
+        one.census.lamps.parse.spots == 30 && one.census.lamps.parse.omni == 269);
 
   PackReader reader;
   std::string error;
@@ -673,6 +739,33 @@ void TestBuilder(const fs::path& scratch) {
   CHECK(reader.ReadMesh(1, MeshKind::kLod, &mesh, &error) && mesh.triangle_count() == 2);
   std::vector<std::string> problems;
   CHECK(ValidatePack(reader, &problems) == 0);
+
+  // the lamps section: where the header says, the lights the file listed (the file's own indices), the grid around them
+  CHECK(reader.has_lamps() && reader.header().lamps_size > kLampHeaderBytes && reader.header().lamps_offset % 16 == 0 &&
+        reader.header().lamps_offset + reader.header().lamps_size == reader.header().file_size);
+  {
+    LampTable lamps;
+    CHECK(reader.ReadLamps(&lamps, &error) && error.empty());
+    CHECK(lamps.size() == 299 && lamps.flags() == 0 && lamps.grid().cell_m == kDefaultLampCellMetres);
+    CHECK(lamps.FindByFileIndex(7) == kNoLampIndex && lamps.FindByFileIndex(8) != kNoLampIndex && lamps.FindByFileIndex(299) != kNoLampIndex);
+    const Lamp& spot = lamps[lamps.FindByFileIndex(10)];
+    CHECK(spot.is_spot() && spot.cone_deg == 100.0f && spot.spread_deg == 30.0f && spot.intensity == 60.0f && spot.pos[0] == lights[10].pos[0] && spot.pos[2] == lights[10].pos[2] &&
+          spot.dir[1] == -1.0f && spot.source == LampSource::kFile && spot.on == 1);
+    const Lamp& omni = lamps[lamps.FindByFileIndex(13)];  // 13 % 3 == 1: intensity 10
+    CHECK(!omni.is_spot() && omni.intensity == 10.0f && omni.colour[1] == 0.5f && omni.cone_deg == 360.0f);
+    std::vector<uint32_t> near;
+    lamps.Near(150.0f, 50.0f, 40.0f, &near);
+    uint32_t brute = 0;
+    for (uint32_t i = 0; i < lights.size(); ++i) {
+      if (i == 7) continue;
+      const double dx = double(lights[i].pos[0]) - 150.0, dz = double(lights[i].pos[2]) - 50.0;
+      if (dx * dx + dz * dz <= 1600.0) ++brute;
+    }
+    CHECK(near.size() == brute && brute > 10);
+    Stamp lamp_stamp;
+    CHECK(Stamp::Read(one.pack_path.parent_path() / kStampFileName, &lamp_stamp, &error));
+    CHECK(lamp_stamp.Get("lamps") != nullptr && *lamp_stamp.Get("lamps") == "299");
+  }
 
   // up to date now
   CHECK(CheckCityPack(request).current);
@@ -788,6 +881,7 @@ void TestBuilder(const fs::path& scratch) {
     census.census_only = true;
     const BuildResult c = BuildCityPack(census, &sink);
     CHECK(c.ok && c.census.hi.triangles == 12 && !fs::exists(census.out_dir / kPackFileName));
+    CHECK(c.census.lamps.parse.kept == 299 && c.census.lamps.table.count == 299);  // the census counts the lamps too
   }
 
   // a cancelled build leaves no pack and no stamp
@@ -814,6 +908,93 @@ void TestBuilder(const fs::path& scratch) {
     { std::ofstream(damaged, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size() - 7)); }
     CHECK(!d.Open(damaged, &error));
     CHECK(!d.Open(scratch / "no_such.pack", &error));
+  }
+
+  // the lamps' own cases (lamp_table.h): an archive with no lights.xlm gives a whole pack without lamps and says so; lights in the mod archive win, as every city file does; a
+  // flipped byte in the section is found by the reader and the validator; a pack of builder version 1 (those header bytes zero) reads as before; a section the header puts outside
+  // the file is refused
+  {
+    const auto add_to = [](mc::modloader::Rpf3Writer& w, const std::string& path, std::vector<uint8_t> file, uint32_t type) {
+      const uint32_t flag = (uint32_t(file[8]) << 24) | (uint32_t(file[9]) << 16) | (uint32_t(file[10]) << 8) | uint32_t(file[11]);
+      w.Add(path, std::move(file), flag, type & 0xFF);
+    };
+    const fs::path bare_dir = scratch / "nolights";
+    fs::create_directories(bare_dir);
+    mc::modloader::Rpf3Writer bare;
+    add_to(bare, kCityTablePath, MakeCityTable(table), 50);
+    add_to(bare, SectorArchivePath("s_a"), MakeSectorFile({Quad(0, 0, 10, 10, 0, "CityRoad", "CityRoad_Asphalt", 20, 4)}), 1);
+    add_to(bare, kLodPath, MakeLodFile({Quad(0, 0, 100, 100, 20, "CityDefault", "CityDefault"), SynthGeo{}, SynthGeo{}}), 1);
+    CHECK(bare.Write(bare_dir / "xarchive_cache.rpf"));
+    BuildRequest bare_request = request;
+    bare_request.source_rpf = bare_dir / "xarchive_cache.rpf";
+    bare_request.out_dir = scratch / "out_bare";
+    CountingSink bare_sink;
+    const BuildResult b = BuildCityPack(bare_request, &bare_sink);
+    CHECK(b.ok && !b.census.lamps.present);
+    bool said = false;
+    for (const std::string& p : b.census.problems) said = said || p.find("lights.xlm") != std::string::npos;
+    for (const std::string& line : bare_sink.lines) said = said && (line.find("lights.xlm") == std::string::npos || line.find("without lamps") != std::string::npos);
+    CHECK(said && b.census.Report().find("not in the archive") != std::string::npos);
+    PackReader bare_reader;
+    CHECK(bare_reader.Open(b.pack_path, &error) && !bare_reader.has_lamps() && bare_reader.header().lamps_size == 0);
+    LampTable none;
+    CHECK(!bare_reader.ReadLamps(&none, &error) && error.empty());  // none is not an error
+    CHECK(ValidatePack(bare_reader, nullptr) == 0);
+    Stamp bare_stamp;
+    CHECK(Stamp::Read(b.pack_path.parent_path() / kStampFileName, &bare_stamp, &error) && *bare_stamp.Get("lamps") == "0");
+
+    // lights.xlm of the mod archive wins
+    const fs::path mods_lamps = scratch / "xarchive_mods_lamps.rpf";
+    mc::modloader::Rpf3Writer lamp_mod;
+    add_to(lamp_mod, kLightsPath, MakeLightsFile({SynthLight{{1, 2, 3}, {1, 1, 1}, 20.0f, 360.0f, 0.0f, 0, 1}, SynthLight{{40, 2, 30}, {1, 0.5f, 0.25f}, 55.0f, 125.0f, -50.5f, 1, 1},
+                                                  SynthLight{{80, 5, 60}, {0, 0, 1}, 12.0f, 360.0f, 0.0f, 0, 1}}), 2018);
+    CHECK(lamp_mod.Write(mods_lamps));
+    CHECK(CityOverlayHash(mods_lamps) != 0);  // a light file under resources/city/sc counts as the city's
+    BuildRequest mod_request = request;
+    mod_request.mods_rpf = mods_lamps;
+    mod_request.out_dir = scratch / "out_lamps_mod";
+    CountingSink mod_sink;
+    const BuildResult mr = BuildCityPack(mod_request, &mod_sink);
+    CHECK(mr.ok && mr.census.lamps.from_mods && mr.census.lamps.parse.kept == 3 && mr.census.lamps.parse.spots == 1);
+    PackReader mod_reader;
+    CHECK(mod_reader.Open(mr.pack_path, &error));
+    LampTable mod_lamps;
+    CHECK(mod_reader.ReadLamps(&mod_lamps, &error) && mod_lamps.size() == 3 && (mod_lamps.flags() & kLampTableFromMods) != 0);
+    CHECK(mod_lamps[mod_lamps.FindByFileIndex(1)].spread_deg == -50.5f);
+    fs::remove(mods_lamps);
+
+    // a flipped byte inside the section
+    const std::vector<uint8_t> bytes = ReadAll(one.pack_path);
+    PackReader good;
+    CHECK(good.Open(one.pack_path, &error));
+    const size_t section = size_t(good.header().lamps_offset);
+    std::vector<uint8_t> hit = bytes;
+    hit[section + kLampHeaderBytes + 40] ^= 0x01;
+    const fs::path damaged_lamps = scratch / "damaged_lamps.pack";
+    const auto write_pack = [&](const std::vector<uint8_t>& content) { std::ofstream(damaged_lamps, std::ios::binary).write(reinterpret_cast<const char*>(content.data()), std::streamsize(content.size())); };
+    write_pack(hit);
+    PackReader damaged_reader;
+    CHECK(damaged_reader.Open(damaged_lamps, &error));  // the table is whole
+    CHECK(!damaged_reader.ReadLamps(&none, &error) && error.find("hash") != std::string::npos);
+    std::vector<std::string> section_problems;
+    CHECK(ValidatePack(damaged_reader, &section_problems) == 1 && section_problems.size() == 1 && section_problems[0].find("lamps") == 0);
+
+    // a pack of builder version 1: the header bytes of the lamps section are zero
+    std::vector<uint8_t> old_pack = bytes;
+    std::fill(old_pack.begin() + 80, old_pack.begin() + 104, uint8_t(0));
+    write_pack(old_pack);
+    PackReader old_reader;
+    CHECK(old_reader.Open(damaged_lamps, &error) && !old_reader.has_lamps() && old_reader.sector_count() == 3 && ValidatePack(old_reader, nullptr) == 0);
+    MeshData old_mesh;
+    CHECK(old_reader.ReadMesh(0, MeshKind::kHi, &old_mesh, &error) && old_mesh.triangle_count() == 6);
+
+    // a section the header puts past the end of the file
+    std::vector<uint8_t> outside = bytes;
+    for (int i = 0; i < 8; ++i) outside[88 + size_t(i)] = 0xFF;  // lamps_size
+    write_pack(outside);
+    PackReader outside_reader;
+    CHECK(!outside_reader.Open(damaged_lamps, &error) && error.find("lamp section") != std::string::npos);
+    fs::remove(damaged_lamps);
   }
 }
 

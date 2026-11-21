@@ -27,6 +27,8 @@ bool PackReader::Open(const std::filesystem::path& file, std::string* error) {
   if (header_.file_size != file_size) return fail("the city pack is not the size its header says (cut short, or still being written)");
   const uint64_t table_bytes = uint64_t(header_.sector_count) * kSectorRecordBytes;
   if (header_.table_offset + table_bytes > file_size || header_.names_offset + header_.names_bytes > file_size) return fail("the city pack's table runs past its end");
+  if (header_.has_lamps() && (header_.lamps_offset > file_size || header_.lamps_size > file_size - header_.lamps_offset || header_.lamps_size < kLampHeaderBytes))
+    return fail("the city pack's lamp section is outside the file");
 
   std::vector<uint8_t> table(static_cast<size_t>(table_bytes));
   in.seekg(std::streamoff(header_.table_offset));
@@ -81,6 +83,23 @@ bool PackReader::ReadBlob(uint32_t sector, MeshKind kind, std::vector<uint8_t>* 
   return true;
 }
 
+bool PackReader::ReadLamps(LampTable* out, std::string* error) const {
+  if (error) error->clear();
+  if (!open_ || !header_.has_lamps()) return false;  // not an error: the pack has none
+  const auto fail = [&](const char* why) {
+    if (error) *error = why;
+    return false;
+  };
+  std::ifstream in(path_, std::ios::binary);
+  if (!in) return fail("the city pack cannot be opened");
+  std::vector<uint8_t> bytes(static_cast<size_t>(header_.lamps_size));
+  in.seekg(std::streamoff(header_.lamps_offset));
+  in.read(reinterpret_cast<char*>(bytes.data()), std::streamsize(bytes.size()));
+  if (!in) return fail("the lamp section of the city pack could not be read");
+  if (Fnv1a64(bytes.data(), bytes.size()) != header_.lamps_hash) return fail("the lamp section does not match the hash in the pack's header (the file is damaged)");
+  return LampTable::Decode(bytes.data(), bytes.size(), out, error);
+}
+
 bool PackReader::ReadMesh(uint32_t sector, MeshKind kind, MeshData* out, std::string* error) const {
   std::vector<uint8_t> blob;
   if (!ReadBlob(sector, kind, &blob, error)) return false;
@@ -109,6 +128,14 @@ uint32_t ValidatePack(const PackReader& reader, std::vector<std::string>* proble
       uint64_t in_runs = 0;
       for (const GeometryRun& run : mesh.runs) in_runs += run.triangle_count;
       if (in_runs != mesh.triangle_count()) note(i, "the runs do not cover the triangles");
+    }
+  }
+  if (reader.has_lamps()) {
+    LampTable lamps;
+    std::string error;
+    if (!reader.ReadLamps(&lamps, &error)) {
+      ++count;
+      if (problems && problems->size() < 20) problems->push_back("lamps: " + (error.empty() ? std::string("the section could not be read") : error));
     }
   }
   return count;

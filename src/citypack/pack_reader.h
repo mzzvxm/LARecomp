@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 
+#include "citypack/lamp_table.h"
 #include "citypack/pack_format.h"
 
 namespace larecomp::citypack {
@@ -33,6 +34,11 @@ class PackReader {
   // The raw bytes of a blob (one read), and the decoded mesh. A sector without that mesh: false with an empty `error`.
   bool ReadBlob(uint32_t sector, MeshKind kind, std::vector<uint8_t>* out, std::string* error) const;
   bool ReadMesh(uint32_t sector, MeshKind kind, MeshData* out, std::string* error) const;
+
+  // The lamps section (lamp_table.h): one read, checked against the header's hash and decoded. A pack without one (builder version 1, or lights.xlm was not readable when it was built):
+  // false with an empty `error`; any other false is a damaged section.
+  bool has_lamps() const { return open_ && header_.has_lamps(); }
+  bool ReadLamps(LampTable* out, std::string* error) const;
 
  private:
   bool open_ = false;
