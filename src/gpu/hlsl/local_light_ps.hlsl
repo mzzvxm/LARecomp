@@ -13,6 +13,10 @@
 //                  kernel: LSL_MODE_SURFACE): the frame's view table follows the lights in the buffer (LP_SHADOW_OFFSET), the atlas is a bindless depth plane read as one float (set 0), the
 //                  views of a light are averaged, the layers of a view multiplied, the share blended by the light's weight. Read only for a pixel the light reaches, after the term is known to be over 0.
 //
+//   the street lamps (LAMP-SHADOWS-4, hlsl/lamp_shadow_lookup.hlsli): a light whose source is the street lamp names its entries in the COMBINED entry space (8 + the row of the lamps' table, which follows
+//                  the headlights' in the buffer: LP_LAMP_*); the same one lookup runs over it with the edge fade, and a lamp the game lights has its shadowed share taken away (a negative colour: the blend is
+//                  ADD), a lamp the pass owns is multiplied by the visibility. LP_OFF_DEBUG draws the shadow's own picture instead (mcla_gpu_lamp_shadows_view).
+//
 // The pixel shader runs once per pixel whatever the host's MSAA level: the planes and the depth are read at the host sample that is the guest's sample 0 and the result is added to every
 // sample of the pixel (a one pixel fringe at silhouettes, as the AO's apply). LL_PASS_MS 1 reads Texture2DMS planes (host_pass_common.hlsli space 1), 0 plain textures (space 0).
 //
@@ -21,7 +25,10 @@
 #include "host_pass_common.hlsli"
 #include "gbuffer_common.hlsli"
 #include "local_light.hlsli"
+// the most entries a light may name: the headlights' table (8) and the street lamps' (20), one combined entry space (hlsl/lamp_shadow_lookup.hlsli)
+#define LSL_MAX_VIEWS 28
 #include "light_shadow_lookup.hlsli"
+#include "lamp_shadow_lookup.hlsli"
 
 #ifndef LL_PASS_MS
 #define LL_PASS_MS 0
@@ -45,6 +52,8 @@ ByteAddressBuffer g_lights : register(t0, space4);
 static uint LpAtlasW = 0u;
 static uint LpAtlasH = 0u;
 static uint LpAtlasLayers = 0u;
+static uint LpLampLayersLo = 0u;  // LAMP-SHADOWS-4: the layers of the lamps' table's entries 0..15 and 16..31
+static uint LpLampLayersHi = 0u;
 
 float4 LoadPlane(uint slot, int2 p) {
 #if LL_PASS_MS
@@ -102,6 +111,9 @@ uint LslAtlasHeight(uint slot) {
 }
 LslView LslLoadView(uint entry) {
   uint at = uint(LP_SHADOW_VIEWS_OFFSET) + entry * uint(LP_SHADOW_VIEW_BYTES);
+  if (entry >= uint(LSL_LAMP_ENTRY_BASE)) {  // the combined entry space: the street lamps' table follows the headlights' (LAMP-SHADOWS-4)
+    at = uint(LP_LAMP_VIEWS_OFFSET) + (entry - uint(LSL_LAMP_ENTRY_BASE)) * uint(LP_SHADOW_VIEW_BYTES);
+  }
   LslView v;
   v.m0 = asfloat(g_lights.Load4(at));
   v.m1 = asfloat(g_lights.Load4(at + 16u));
@@ -116,6 +128,10 @@ LslView LslLoadView(uint entry) {
   return v;
 }
 uint LslLayerOf(uint entry) {
+  if (entry >= uint(LSL_LAMP_ENTRY_BASE)) {
+    uint e = entry - uint(LSL_LAMP_ENTRY_BASE);
+    return LslLayerBits(e < 16u ? LpLampLayersLo : LpLampLayersHi, e & 15u);
+  }
   return LslLayerBits(LpAtlasLayers, entry);
 }
 
@@ -162,6 +178,46 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float3 add = LpPixelLight(l, g, world, normal, albedo, rt2.w);
   if (!any(add > 0.0f)) {
     discard;
+  }
+
+  // A STREET LAMP's light with views of the lamps' table (LAMP-SHADOWS-4): the one lookup plus the edge fade over the lamps' table, then, for a lamp the game lights (its grid already added the term)
+  // the shadowed share is TAKEN AWAY (the blend is ADD: the pixel's colour is negative), for a lamp the pass owns the light is multiplied by the visibility. The pixel is read only after the term
+  // is known to be over 0, as the headlights'. A game lamp with no table has nothing to take away.
+  if (l.source == uint(LL_SOURCE_LAMP) && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) {
+    const bool game_lit = (l.flags & uint(LL_FLAG_GAME_LIT)) != 0u;
+    if (g_lights.Load(LP_OFF_DEBUG) == uint(LP_DEBUG_REMOVE)) {  // the units check: the whole term of a game lamp taken away, nothing added for an owned one
+      if (!game_lit) {
+        discard;
+      }
+      return float4(-add, 0.0f);
+    }
+    const uint4 lamp_head = g_lights.Load4(LP_LAMP_OFF_COUNT);  // count, slot, width, height
+    if ((flags & uint(LP_FLAG_LAMP_SHADOW)) == 0u || lamp_head.y == 0xFFFFFFFFu || lamp_head.z == 0u || lamp_head.w == 0u) {
+      if (game_lit) {
+        discard;
+      }
+      return float4(add, 0.0f);
+    }
+    LpAtlasW = lamp_head.z;
+    LpAtlasH = lamp_head.w;
+    const uint2 lamp_layers = g_lights.Load2(LP_LAMP_OFF_LAYERS);
+    LpLampLayersLo = lamp_layers.x;
+    LpLampLayersHi = lamp_layers.y;
+    const float lamp_vis = LslLampLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, l.pos.x, l.pos.y, l.pos.z, world.x, world.y, world.z, lamp_head.y, uint(LSL_MODE_SURFACE));
+    const uint debug = g_lights.Load(LP_OFF_DEBUG);
+    if (debug == uint(LP_DEBUG_VISIBILITY)) {
+      return float4(float3(1.0f - lamp_vis, lamp_vis, 0.0f) * (g.exposure * 0.15f), 0.0f);
+    }
+    if (debug == uint(LP_DEBUG_LAMPS)) {
+      float f = float(l.first_view);
+      float k = g.exposure * (0.05f + 0.25f * (1.0f - lamp_vis));
+      return float4(frac(f * 0.37f) * k, frac(f * 0.61f + 0.3f) * k, frac(f * 0.83f + 0.6f) * k, 0.0f);
+    }
+    add = game_lit ? -add * (1.0f - lamp_vis) : add * lamp_vis;
+    if (!any(add != 0.0f)) {
+      discard;
+    }
+    return float4(add, 0.0f);
   }
 
   // The shadow: only for a light that has views of the atlas and a pixel it lights. The table's header says which bindless depth plane the views are in.

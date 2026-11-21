@@ -26,7 +26,10 @@
 #define LSL_MODE_SURFACE 0
 #define LSL_MODE_AIR 1
 #define LSL_KERNEL 3.0f
+// the most entries a light may name: the headlights' table (8). The deferred light pass raises it to its combined entry space (the street lamps' table after the headlights': local_light_ps.hlsl).
+#ifndef LSL_MAX_VIEWS
 #define LSL_MAX_VIEWS 8
+#endif
 
 #define LSL_LAYER_SINGLE 0
 #define LSL_LAYER_STATIC 1
@@ -156,9 +159,9 @@ float LslViewLit(LslView v, float px, float py, float pz, uint slot, uint mode) 
   return LslBilinear(slot, su, sv, v.rect, depth);
 }
 
-// A light's visibility from its ShadowRef (GpuLight: shadow kind, first view, view count; shadow_weight): the one combine rule (light_laws.h CombineShadow). The valid views are averaged,
-// a LSL_LAYER_STATIC entry followed by its LSL_LAYER_LIVE twin is one view whose visibility is their product, and the share is blended by the weight. A light with no atlas views is lit.
-float LslLightLit(uint shadow_kind, uint first_view, uint view_count, float weight, float px, float py, float pz, uint slot, uint mode) {
+// A light's MEAN visibility from its entries (GpuLight: shadow kind, first view, view count): the one combine rule without the weight (light_laws.h CombineShadow). The valid views are
+// averaged and a LSL_LAYER_STATIC entry followed by its LSL_LAYER_LIVE twin is one view whose visibility is their product. A light with no atlas views is lit (1).
+float LslLightMean(uint shadow_kind, uint first_view, uint view_count, float px, float py, float pz, uint slot, uint mode) {
   if (shadow_kind != LSL_SHADOW_ATLAS || view_count == 0u) {
     return 1.0f;
   }
@@ -180,8 +183,21 @@ float LslLightLit(uint shadow_kind, uint first_view, uint view_count, float weig
   if (n == 0u) {
     return 1.0f;
   }
-  float mean = sum / float(n);
+  return sum / float(n);
+}
+
+// The mean blended by the light's weight: lit = lerp(1, mean, weight), exact at weight 1.
+float LslBlend(float mean, float weight) {
   return weight >= 1.0f ? mean : 1.0f + (mean - 1.0f) * weight;
+}
+
+// A light's visibility from its ShadowRef (GpuLight: shadow kind, first view, view count; shadow_weight): the one combine rule (light_laws.h CombineShadow). The valid views are averaged,
+// a LSL_LAYER_STATIC entry followed by its LSL_LAYER_LIVE twin is one view whose visibility is their product, and the share is blended by the weight. A light with no atlas views is lit.
+float LslLightLit(uint shadow_kind, uint first_view, uint view_count, float weight, float px, float py, float pz, uint slot, uint mode) {
+  if (shadow_kind != LSL_SHADOW_ATLAS || view_count == 0u) {
+    return 1.0f;
+  }
+  return LslBlend(LslLightMean(shadow_kind, first_view, view_count, px, py, pz, slot, mode), weight);
 }
 
 #endif  // LARECOMP_LIGHT_SHADOW_LOOKUP_HLSLI

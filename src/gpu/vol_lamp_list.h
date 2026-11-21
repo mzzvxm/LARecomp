@@ -100,10 +100,20 @@ inline bool Plausible(const GameLamp& l) {
 // the table the hook fills (game thread) and the producer reads (render thread)
 // ---------------------------------------------------------------------------
 
-// Whether the hook is to do anything: the volumetric light sets it while it is on (one relaxed load in the hook otherwise).
-inline std::atomic<bool> g_wanted{false};
-inline bool Wanted() { return g_wanted.load(std::memory_order_relaxed); }
-inline void SetWanted(bool wanted) { g_wanted.store(wanted, std::memory_order_relaxed); }
+// Whether the hook is to do anything: a reader sets its bit while it is on (one relaxed load in the hook otherwise). The volumetric light is bit 0 (SetWanted: what it always called), the street
+// lamps' shadows (lamp_shadows.h) bit 1: the hook runs while either is set and one reader's switch never takes the other's away.
+inline constexpr uint32_t kWantedVolume = 1u << 0;
+inline constexpr uint32_t kWantedLampShadows = 1u << 1;
+inline std::atomic<uint32_t> g_wanted{0};
+inline bool Wanted() { return g_wanted.load(std::memory_order_relaxed) != 0; }
+inline void SetWantedBy(uint32_t bit, bool wanted) {
+  if (wanted) {
+    g_wanted.fetch_or(bit, std::memory_order_relaxed);
+  } else {
+    g_wanted.fetch_and(~bit, std::memory_order_relaxed);
+  }
+}
+inline void SetWanted(bool wanted) { SetWantedBy(kWantedVolume, wanted); }
 
 class Table {
  public:

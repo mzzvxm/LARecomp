@@ -188,8 +188,9 @@ std::map<std::string, long long> Defines(const std::string& text) {
 void LayoutChecks(const std::string& hlsli) {
   Check(sizeof(lp::PassHeader) == 128 && sizeof(lp::PassPush) == 32, "the header is 128 bytes, the push block 32");
   Check(lp::kHeaderBytes == 128 && lp::kLightsOffset == 128 && lp::kMaxPassLights == 32 && lp::kMaxPassLights == kMaxSurfaceLights, "the buffer: a 128 byte header, up to 32 lights");
-  Check(lp::kShadowOffset == 128 + 64 * 32 && lp::kShadowBytes == 32 + 96 * 8 && lp::kBufferBytes == lp::kShadowOffset + lp::kShadowBytes && lp::kBufferAlloc == 3072 && lp::kBufferAlloc % 256 == 0,
-        "the buffer is the header, 32 lights and the shadow view table (2976 bytes), an upload buffer of 3072");
+  Check(lp::kShadowOffset == 128 + 64 * 32 && lp::kShadowBytes == 32 + 96 * 8 && lp::kLampOffset == lp::kShadowOffset + lp::kShadowBytes && lp::kLampBytes == 32 + 96 * 20 &&
+            lp::kBufferBytes == lp::kLampOffset + lp::kLampBytes && lp::kBufferAlloc == 5120 && lp::kBufferAlloc % 256 == 0,
+        "the buffer is the header, 32 lights, the shadow view table (2976 bytes) and the street lamps' table (4928 bytes), an upload buffer of 5120");
   const std::map<std::string, long long> d = Defines(hlsli);
   const auto want = [&](const char* name, long long value) {
     const auto it = d.find(name);
@@ -220,6 +221,22 @@ void LayoutChecks(const std::string& hlsli) {
   want("LP_SHADOW_OFF_SIZE", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, atlas_width));
   want("LP_SHADOW_OFF_LAYERS", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, layers));
   Check(offsetof(shadow_lookup::GpuShadowHeader, atlas_height) == offsetof(shadow_lookup::GpuShadowHeader, atlas_width) + 4, "the atlas's height follows its width (one Load of two uints)");
+  // LAMP-SHADOWS-4: the street lamps' table after the headlights' (the shader's seams read these offsets), the flag and the debug word
+  want("LP_OFF_DEBUG", offsetof(lp::PassHeader, debug));
+  want("LP_FLAG_LAMP_SHADOW", lp::kFlagLampShadow);
+  want("LP_DEBUG_NONE", lp::kDebugNone);
+  want("LP_DEBUG_VISIBILITY", lp::kDebugVisibility);
+  want("LP_DEBUG_LAMPS", lp::kDebugLamps);
+  want("LP_DEBUG_REMOVE", lp::kDebugRemove);
+  want("LP_LAMP_OFFSET", lp::kLampOffset);
+  want("LP_LAMP_HEADER_BYTES", sizeof(GpuLampHeader));
+  want("LP_LAMP_VIEWS_OFFSET", lp::kLampOffset + sizeof(GpuLampHeader));
+  want("LP_LAMP_MAX_ENTRIES", kMaxLampEntries);
+  want("LP_LAMP_OFF_COUNT", lp::kLampOffset + offsetof(GpuLampHeader, count));
+  want("LP_LAMP_OFF_LAYERS", lp::kLampOffset + offsetof(GpuLampHeader, layers_lo));
+  Check(offsetof(GpuLampHeader, layers_hi) == offsetof(GpuLampHeader, layers_lo) + 4 && offsetof(GpuLampHeader, atlas_height) == offsetof(GpuLampHeader, atlas_width) + 4,
+        "the lamps' layers are two words in a row (one Load2) and the atlas's size two uints (one Load4 with the count and the slot)");
+  Check(lp::kLampOffset % 16 == 0 && lp::kLampOffset == lp::kShadowOffset + lp::kShadowBytes, "the lamps' table follows the headlights' table, 16 byte aligned");
   want("LP_CLASS_NONE", 0);
   want("LP_CLASS_EMISSIVE", 13);
   Check(Has(hlsli, "#define LP_SKY 60000.0f") && lp::kSky == 60000.0f, "the sky's distance is the AO's");
