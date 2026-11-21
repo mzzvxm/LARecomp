@@ -5343,14 +5343,16 @@
   "type": "bool",
   "default": "true",
   "category": "MCLA/Patches",
-  "help": "\"Performance Mode: Foliage won't cast shadows.\"",
+  "help": "\"Far trees are drawn as flat cards, and each casts a baked shadow silhouette into the sun's shadows. \"\n    \"False refreshes those silhouettes, so far trees cast shadows; true skips the refresh, so they cast none. \"\n    \"Daylight only, and only while perf_no_shadows is false (the pause menu's SHADOWS is on).\"",
   "traits": [],
   "comments": [
    "// Live: Patch_DisableImposterShadows reads this on every pass through its site in the imposter",
    "// shadow submission (sub_8230C860) and nothing keeps a copy; the same hook is a plain, switchable",
    "// toggle in the fork (its FOLIAGE SHADOWS row has no restart mark and was measured switching during",
    "// play). It was tagged kRequiresRestart, and its pause row said \"(RESTART)\".",
-   "// CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart."
+   "// CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart.",
+   "// The row is on LIGHTING AND SHADOWS right after SHADOWS and is grey while SHADOWS is off (the sun's shadow maps are not drawn then).",
+   "// CHECK: the hook only skips the refresh, so flipped to true while playing the silhouettes already baked may stay in use (perf\\LEGACY-GFX-AUDIT.md B9)."
   ],
   "pp_depth": 0
  },

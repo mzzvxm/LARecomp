@@ -12,6 +12,7 @@
 #include "menu_items.h"
 #include "pause_parity_rows.h"
 #include "pause_selfrefl_row.h"
+#include "row_dependency.h"
 #include "upscaling_menu.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/modloader/modloader.h"
@@ -1550,13 +1551,14 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //   UPSCALING             UPSCALING, its mode row, SHARPNESS, FRAME GENERATION, FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT
 //                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
 //   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
-//   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT OCCLUSION, AO
-//                         INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS (kLightItems)
+//   LIGHTING AND SHADOWS  SHADOWS, FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT
+//                         OCCLUSION, AO INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS, VOLUMETRIC
+//                         LIGHT (kLightItems; FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey while SHADOWS is off)
 //   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS (kReflectionItems)
-//   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, FOLIAGE SHADOWS, TRAFFIC LOD, CITY LOD
+//   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
 // On XENIA the hub lists DISPLAY (DISPLAY MODE, RESOLUTION, DISPLAY GAMMA, FPS LIMIT), UPSCALING (RENDER SCALE), IMAGE QUALITY (MSAA,
-// ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR), LIGHTING AND SHADOWS (SHADOWS) and WORLD DETAIL.
+// ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR), LIGHTING AND SHADOWS (SHADOWS, FOLIAGE SHADOWS) and WORLD DETAIL.
 // CHECK: on XENIA (started with the XENIA renderer: the hidden fallback, gpu/renderer_fallback.h) the hub lists those five pages in that
 // order and no page is empty. MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER SCALE says "(RESTART)", lists
 // 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu after changing either of those two offers "Restart now?".
@@ -1722,9 +1724,9 @@ const ItemDef kControllerItems[] = {
 
 // WORLD DETAIL (GRAPHICS > WORLD DETAIL): how much of the world is there and how far it is drawn, in two runs (the old WORLD DENSITY and
 // LOD AND FOLIAGE pages): what is in the streets (TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST), then the level of detail
-// (FOLIAGE SHADOWS, TRAFFIC LOD, CITY LOD), kWorldDetailItems below. Everything here trades image quality for framerate. The old PERFORMANCE
-// hub is gone with its RENDERING page: SHADOWS is on LIGHTING AND SHADOWS, DEPTH OF FIELD on IMAGE QUALITY and the vendor's latency
-// reducer on DISPLAY.
+// (TRAFFIC LOD, CITY LOD), kWorldDetailItems below. Everything here trades image quality for framerate. The old PERFORMANCE
+// hub is gone with its RENDERING page: SHADOWS is on LIGHTING AND SHADOWS, and so is FOLIAGE SHADOWS (the far trees' shadows are a shadow row:
+// it moved there on 2026-11-20, right after SHADOWS), DEPTH OF FIELD is on IMAGE QUALITY and the vendor's latency reducer on DISPLAY.
 //
 // The developer switches that used to be here are not rows of the normal menus any more
 // (SETTINGS-REVIEW.md, SX-G5). The live ones (SHADOW PHASES, CHEAP CAR SHADOW, FOLIAGE, SINGLE TILE,
@@ -1759,7 +1761,7 @@ std::string CityLodLabel(double v) {
 }
 constexpr RowDynamics kCityLodDynamics = {.value_label = CityLodLabel};
 
-// 7 rows, no suffix. Width: the longest label is "FOLIAGE SHADOWS" (15) and the longest value "AUTO (2X)" (9): 24 of the 41 a page can take.
+// 6 rows, no suffix. Width: the longest label is "PROP DRAW DIST" (14) and the longest value "AUTO (2X)" (9): 23 of the 41 a page can take.
 const ItemDef kWorldDetailItems[] = {
     Dbl ("PM_RxUnspawn",     "traffic_unspawn_dist", "TRAFFIC RANGE: ",
          kUnspawnVals, int(sizeof(kUnspawnVals) / sizeof(kUnspawnVals[0])), "%gM"),
@@ -1770,13 +1772,28 @@ const ItemDef kWorldDetailItems[] = {
     Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DRAW DIST: ",
          kFragDrawDistVals, int(sizeof(kFragDrawDistVals) / sizeof(kFragDrawDistVals[0])),
          "%gM", "", "STOCK"),
-    // Live: the hook reads the cvar on every pass (graphics.cpp).
-    Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     WithDynamics(Dbl("PM_RxLodCity", "lod_city_scale", "CITY LOD: ", kCityLodVals,
                      int(sizeof(kCityLodVals) / sizeof(kCityLodVals[0])), "%gX"),
                  &kCityLodDynamics),
 };
+
+// Rows that need SHADOWS (perf_no_shadows, the first row of LIGHTING AND SHADOWS, on both renderers): FOLIAGE SHADOWS (the far trees' baked
+// shadow silhouettes are drawn into the sun's cascades, which SHADOWS off clears), and on the NATIVE renderer SHADOW DETAIL, SHADOW FILTER and
+// TRAFFIC SHADOWS (they size, smooth and add to those same cascades). With SHADOWS off they do nothing, so they are shown grey and say why
+// ("SHADOW DETAIL (NO SHADOW)"); the value each had stays, and comes back with SHADOWS. The rule is mcla_menu::DependentRow (row_dependency.h:
+// grey while a function says no, the reason after the label), read live on every draw and poll. A grey row is the game's own disabled row: the
+// cursor lands on it, A, left, right and a click do nothing (MenuFormAccept, PollNativeRows).
+// CHECK: with SHADOWS flipped OFF and ON in the open LIGHTING AND SHADOWS page the four rows grey and un-grey at once (also when SHADOWS is
+// changed from the F4 panel behind the menu), the label says "(NO SHADOW)" while grey and nothing after it otherwise, the cursor lands on a grey
+// row, A / left / right on it change nothing, and the page is not cut on the right (27 + 14 = 41 of 41 characters).
+bool ShadowsOn() { return !CvarGetBool("perf_no_shadows"); }
+constexpr RowDynamics NeedsShadows(RowDynamics own = {}) {
+    return mcla_menu::DependentRow<ShadowsOn, mcla_menu::kNeedsShadowsReason>(own);
+}
+// FOLIAGE SHADOWS (disable_imposter_shadows, row inverted: ON = the far trees' shadows are refreshed): live, the hook reads the cvar on every
+// pass (graphics.cpp). On both renderers.
+constexpr RowDynamics kFoliageDynamics = NeedsShadows();
 
 #if defined(LARECOMP_HAS_GPU)
 // POST AA (mcla_gpu_aa, the NATIVE renderer's post pass, M6c, live): FXAA or SMAA on the finished
@@ -1831,7 +1848,7 @@ std::string ShadowFilterLabel(int i) {
     default: return mcla::gpu::shadow_filter::PcssRuns() ? "PCSS" : "PCSS (SOFT)";
     }
 }
-constexpr RowDynamics kShadowFilterDynamics = {.str_label = ShadowFilterLabel};
+constexpr RowDynamics kShadowFilterDynamics = NeedsShadows({.str_label = ShadowFilterLabel});
 // Contact shadows (gpu/ao.h, live): the short sun shadows the game does not draw. AUTO is the default
 // and says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on
 // a discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h). Stored values off / high / ultra, shown OFF / HIGH /
@@ -1862,7 +1879,7 @@ std::string TrafficShadowsLabel(int i) {
     default: return "ALL";
     }
 }
-constexpr RowDynamics kTrafficShadowsDynamics = {.str_label = TrafficShadowsLabel};
+constexpr RowDynamics kTrafficShadowsDynamics = NeedsShadows({.str_label = TrafficShadowsLabel});
 // Sun shafts (gpu/shafts.h, shafts_level.h, live): how strong they are. AUTO picks by the graphics card and
 // the row says what it comes to ("AUTO (DEFAULT)", "AUTO (OFF)" on integrated graphics); OFF is the game's own
 // picture; then LIGHT, DEFAULT, STRONG, STRONGER and STRONGEST (1x to 5x the built-in strength). The ray quality follows
@@ -1967,7 +1984,7 @@ std::string ShadowDetailLabel(int i) {
     default: return "ULTRA";
     }
 }
-constexpr RowDynamics kShadowDetailDynamics = {.str_label = ShadowDetailLabel};
+constexpr RowDynamics kShadowDetailDynamics = NeedsShadows({.str_label = ShadowDetailLabel});
 // Car reflections (mcla_gpu_env_resolution, gpu/side_view_env.cpp, live): how sharp the world the paint,
 // windows and bonnet of the cars reflect is, the game's own 512x256 (GAME), 1024x512 (HIGH) or 1536x768
 // (ULTRA). The same values and the same label rule as the road reflections' row. Width: the label is 17
@@ -2113,18 +2130,22 @@ const ItemDef kImageQualityItems[] = {
 
 // LIGHTING AND SHADOWS (GRAPHICS > LIGHTING AND SHADOWS, the old GRAPHICS QUALITY page): the shadows, then the occlusion and the light. SHADOWS
 // (perf_no_shadows) is on both renderers: off is the biggest single FPS win and is live (render_phases.cpp). The rest are the NATIVE renderer's
-// graphics upgrades, each with an AUTO that follows the graphics card (gpu/gpu_class.h), every one live. The order: SHADOWS; the sun's shadows
+// graphics upgrades, each with an AUTO that follows the graphics card (gpu/gpu_class.h), every one live. The order: SHADOWS; the far trees' shadows
+// (FOLIAGE SHADOWS: on both renderers, moved here from WORLD DETAIL on 2026-11-20); the sun's shadows
 // (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the traffic cars' shadows and your car's
 // (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS,
 // LIGHT SHADOWS, VOLUMETRIC LIGHT: the cars' lights, the shadows the local lights cast, then the beams and the haze those lights show in). The ids and the
 // cvars are the rows' own as they were on DISPLAY, GRAPHICS QUALITY and PERFORMANCE > RENDERING: a saved setting reads the same. AO INTENSITY is
 // grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes), BOUNCE LIGHT STRENGTH while the bounce light is off
-// (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); HEADLIGHTS and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
-// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 14 rows of the 24 a page can hold.
-// Width ("Page width" above ItemRowLabel): the longest label is "BOUNCE LIGHT STRENGTH" (21), then "AMBIENT OCCLUSION" (17); the longest value
-// "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 35 of the 41 a page can take. No row has a suffix.
+// (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey
+// while SHADOWS is off and say so (ShadowsOn, NeedsShadows); HEADLIGHTS and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
+// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 15 rows of the 24 a page can hold.
+// Width ("Page width" above ItemRowLabel): the longest label is "FOLIAGE SHADOWS (NO SHADOW)" and "TRAFFIC SHADOWS (NO SHADOW)" (27, the four
+// shadow rows' reason is at most 12 characters: row_dependency.h), then "BOUNCE LIGHT STRENGTH" (21) and "AMBIENT OCCLUSION" (17); the longest value
+// "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 41 of the 41 a page can take. Only those four rows have a suffix.
 const ItemDef kLightItems[] = {
     Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
+    WithDynamics(Bool("PM_RxFoliage", "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true), &kFoliageDynamics),
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(WithDynamics(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
                                 "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
@@ -2919,10 +2940,8 @@ const char* ItemCvar(const ItemDef& it) {
     return it.dynamics && it.dynamics->cvar ? it.dynamics->cvar() : it.cvar;
 }
 
-// RowDynamics::enabled; a row without one is always enabled.
-bool ItemEnabled(const ItemDef& it) {
-    return !it.dynamics || !it.dynamics->enabled || it.dynamics->enabled();
-}
+// RowDynamics::enabled; a row without one is always enabled (row_dependency.h: the same predicate the row dependency test runs).
+bool ItemEnabled(const ItemDef& it) { return mcla_menu::RowEnabled(it); }
 
 // A kDblCycle row whose values are labeled by RowDynamics::value_label.
 bool ItemLabelsValues(const ItemDef& it) {
@@ -3093,13 +3112,15 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // "AUTO (OFF)"): 38 together.
 // IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
 // FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
-// LIGHTING AND SHADOWS (kLightItems, 13 rows, no suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
-// "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL", "SHADOW FILTER" and "LIGHT SHADOWS" 13, "CAR
-// SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
-// (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 35 together.
+// LIGHTING AND SHADOWS (kLightItems, 15 rows; the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
+// SHADOWS while SHADOWS is off): labels at most 27 ("FOLIAGE SHADOWS (NO SHADOW)", "TRAFFIC SHADOWS (NO SHADOW)"), then "SHADOW DETAIL
+// (NO SHADOW)" and "SHADOW FILTER (NO SHADOW)" 25, "BOUNCE LIGHT STRENGTH" 21, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "LIGHT
+// SHADOWS" 13, "CAR SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
+// (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 41 together. On XENIA the page has SHADOWS and FOLIAGE
+// SHADOWS: 27 and 3.
 // REFLECTIONS (kReflectionItems, 3 rows): "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CAR
-// REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 37. WORLD DETAIL (kWorldDetailItems): "FOLIAGE
-// SHADOWS" 15, "AUTO (2X)" 9: 24.
+// REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 37. WORLD DETAIL (kWorldDetailItems): "PROP
+// DRAW DIST" 14, "AUTO (2X)" 9: 23.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
