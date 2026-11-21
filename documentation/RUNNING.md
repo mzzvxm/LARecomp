@@ -2,7 +2,7 @@
 
 Setup and build instructions are in the [README](../README.md). This file covers running the game and reading what it writes.
 
-On Linux and the Steam Deck the system needs libstdc++ 13 or newer (SteamOS 3.5+, Ubuntu 24.04+, Fedora 39+, Arch). Without it the game does not start and the terminal shows `version 'GLIBCXX_3.4.xx' not found`; details in the README's [Linux and the Steam Deck](../README.md#linux-and-the-steam-deck).
+On Linux and the Steam Deck a game installed with the launcher needs no particular C++ library: the launcher's build kit brings its own (libc++). A build made with the system's compiler (by hand, or by the launcher where its kit cannot start) needs libstdc++ 13 or newer (SteamOS 3.5+, Ubuntu 24.04+, Fedora 39+, Arch); without it that build does not start and the terminal shows `version 'GLIBCXX_3.4.xx' not found`. Details in the README's [Linux and the Steam Deck](../README.md#linux-and-the-steam-deck).
 
 ---
 
@@ -87,7 +87,6 @@ Only these are read. Everything else is a cvar.
 | `MCLA_VSYNC` | `false` | On costs about 30% throughput. |
 | `MCLA_REFRESH_RATE` | `60` | Guest video mode refresh rate. |
 | `MCLA_ALLOW_INVALID_FETCH` | `true` | Set `false` if HUD or minimap glitches appear. |
-| `MCLA_NO_STUB_SWEEP` | `0` | `1` skips the startup stub sweep, saving about 400 ms. Only safe while `stubs.txt` stays empty. |
 | `LARECOMP_LOG_FILE` | auto | Log file path. |
 | `LARECOMP_NO_CRASH_DIALOG` | unset | `1` skips the "crashed" message box: a crash writes its report to the log and the game ends at once (exit status `0xC4A50001` for an access violation), for test runs nobody watches. |
 
@@ -99,10 +98,8 @@ Only these are read. Everything else is a cvar.
 
 | File | Contents |
 |---|---|
-| `logs/larecomp_NNN.log` | Main log, rolling, up to 10 files of 20 MB. |
-| `logs/effective_config.txt` | Written every launch: active cvar values, an `ok` or `FAIL` line per GPU flag, the env vars this build reads, and the cvar-only settings listed separately. **Check this first when a setting appears to do nothing.** |
+| `logs/larecomp_NNN.log` | Main log, rolling, up to 10 files of 20 MB. A flag the game cannot use is logged as `[cli] --name=value ignored: ` and why, and the debug settings that are not at their default are listed as `[settings] name = value (command line)`. **Check it first when a setting appears to do nothing.** |
 | `logs/timing_<date>_<time>_cap<N>.log` | Frame timing, when `MCLA_TIMING_LOG=1`. |
-| `stubs.txt` | Unregistered guest addresses hit at runtime. Empty means nothing was missed. |
 | `larecomp.toml` | Saved settings, written when you leave a pause submenu with a changed value. |
 
 Crash diagnostics go into the main log, not a separate file. The SEH and SIGABRT handler in `crash_handler.cpp` resolves and writes the call stack there.

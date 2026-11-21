@@ -1062,6 +1062,28 @@ void TestCars() {
     CheckEq(recents[0], "m5", "a model used again moves to the front");
     Check(std::count(recents.begin(), recents.end(), std::string("m5")) == 1, "once");
     CheckEq(ModelTitle("vp_lam_murcielago_06"), "LAM MURCIELAGO 06", "a readable title");
+    // asking the game for the names: an empty answer is asked again (the 2026-11-20 mouse run saw an empty picker that never filled)
+    {
+        ModelsAsk ask;
+        Check(ask.Due(0.0, 0), "the first ask goes out at once");
+        ask.Sent(0.0);
+        Check(!ask.Due(5.0, 0), "no second ask while one is on its way");
+        ask.Answered();
+        Check(!ask.Due(1.0, 0), "an empty answer is asked again only after the retry time");
+        Check(ask.Due(2.0, 0), "... and then it is");
+        Check(!ask.Due(2.0, 5), "a list that has names is not asked again");
+        for (int i = 1; i < ModelsAsk::kMaxAsks; ++i) {
+            ask.Sent(2.0 * i);
+            ask.Answered();
+        }
+        Check(ask.sent == ModelsAsk::kMaxAsks, "six asks in all");
+        Check(!ask.Due(100.0, 0), "it stops asking after the last try");
+        Check(ask.GaveUp(0), "and says the game gave no names");
+        Check(!ask.GaveUp(3), "a list with names never gives up");
+        ModelsAsk waiting;
+        waiting.Sent(0.0);
+        Check(!waiting.GaveUp(0), "a request on its way is not a give-up");
+    }
     CheckEq(CarIds(snap)[0], "player", "the player is first in the pickers");
 }
 
