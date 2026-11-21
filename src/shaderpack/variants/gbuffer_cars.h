@@ -22,7 +22,7 @@
 //   day stages take it: the shader writes what the host says, no table is kept here a second time (the unit test compares the word the host will send with the classes this stage was
 //   designed for: paint, chrome, glass, light, tyre, interior). One refinement lives in the shader: the 11 shaders of the xBumpSpec family have a constant of their own named
 //   `smoothness` (PS c104 or c105: the game's own material parameter), which replaces the word's smoothness byte (kBumpSpec). `metallic` has no plane. RT3 is written when the core carries
-//   it (kGBufferCarsPlanes below: gbuffer_rules.h kStagePlanes; today RT1 and RT2).
+//   it (kGBufferCarsPlanes below: gbuffer_rules.h kStagePlanes; RT1, RT2 and RT3 since GB-W2 is merged).
 //
 // WHAT THE STAGE EDITS (each anchor must be found the number of times said or the variant is not built: the HLSL is not the one it was written for):
 //   1. the outputs: `, out float2 oC1 : SV_Target1` (+ `oC2 : SV_Target2` float4 and `oC3 : SV_Target3` float2 as the planes say), after `out float4 oC0 : SV_Target0`
@@ -73,8 +73,8 @@ inline constexpr uint32_t kGBufferCarsVersion = 3;
 inline constexpr uint32_t kGBufferCarsVsVersion = 1;
 
 // How many planes the stage declares (1: the normal, 2: + the albedo and the lit weight, 3: + the material): the core's, so that the car stage declares exactly what every pipeline
-// that carries the sidecar has (gbuffer_rules.h: a draw that carries it carries ALL the stage's planes). The night and the day stages declare RT1 and RT2 in their own text; the package
-// that raises kStagePlanes (GB-W2) raises them in the same commit, and this stage follows by itself.
+// that carries the sidecar has (gbuffer_rules.h: a draw that carries it carries ALL the stage's planes). The night and the day stages declare RT1, RT2 and RT3 in their own text (GB-W2, which raised
+// kStagePlanes in the same commit); this stage follows by itself.
 inline constexpr uint32_t kGBufferCarsPlanes = mcla::gpu::gbuffer::PlaneCount(mcla::gpu::gbuffer::kStagePlanes);
 
 enum class GBufferCarNormal : uint8_t {
