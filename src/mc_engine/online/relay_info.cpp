@@ -5,8 +5,6 @@
 #include <cstring>
 #include <random>
 
-#include "settings/larecomp_settings.h"
-
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -64,6 +62,9 @@ struct IconChunkMsg {
     uint8_t data[kIconChunkBytes];
 };
 #pragma pack(pop)
+// What the relay sends, byte for byte (the tool's --protocol reports them, its check pins them).
+static_assert(sizeof(InfoMsg) == kInfoMsgBytes, "relay_info.h's size of the info answer is wrong");
+static_assert(sizeof(IconChunkMsg) == kIconChunkMsgBytes, "relay_info.h's size of the icon chunk is wrong");
 // A query is padded to the size of its answer, so the relay never sends back
 // more than it was sent.
 using InfoQueryMsg = InfoMsg;
@@ -184,18 +185,6 @@ std::vector<uint8_t> FetchIcon(const std::string& host, uint16_t port, uint32_t 
     CloseSocket(s);
     if (offset != size) icon.clear();
     return icon;
-}
-
-void ConfiguredServer(std::string& host, uint16_t& port) {
-    host = larecomp::cvar::GetFlagByName("mcla_online_server");
-    const int cfg = std::atoi(larecomp::cvar::GetFlagByName("mcla_online_port").c_str());
-    port = (cfg > 0 && cfg < 65536) ? uint16_t(cfg) : uint16_t(31000);
-    if (const size_t colon = host.rfind(':'); colon != std::string::npos) {
-        const int p = std::atoi(host.c_str() + colon + 1);
-        if (p > 0 && p < 65536) port = uint16_t(p);
-        host.resize(colon);
-    }
-    if (host.empty()) host = "127.0.0.1";
 }
 
 }  // namespace larecomp::relay_info

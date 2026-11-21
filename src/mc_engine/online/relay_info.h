@@ -7,6 +7,7 @@
 // older than 16/10/2026 does not answer them; Query then reports !ok.
 //
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -31,7 +32,13 @@ std::vector<uint8_t> FetchIcon(const std::string& host, uint16_t port, uint32_t 
                                uint32_t size, int timeout_ms);
 
 // mcla_online_server / mcla_online_port as the online client reads them:
-// "host" or "host:port", the port cvar otherwise.
+// "host" or "host:port", the port cvar otherwise. The game only: defined in
+// relay_info_config.cpp, which reads the settings (this file's other functions
+// need nothing but sockets, so larecomp_online_tool builds them too).
 void ConfiguredServer(std::string& host, uint16_t& port);
+
+// The sizes of the legacy info answer (type 21) and the icon chunk (type 23) on the wire.
+constexpr size_t kInfoMsgBytes = 73;
+constexpr size_t kIconChunkMsgBytes = 1047;
 
 }  // namespace larecomp::relay_info

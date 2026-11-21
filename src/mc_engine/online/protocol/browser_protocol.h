@@ -3,11 +3,13 @@
 // Server browser wire protocol: what the relay says about itself and its
 // rooms, and how a relay gets itself listed on the master server.
 //
-// Shared by three programs, so there is one copy of it:
+// Shared by four programs, so there is one copy of it:
 //   - the relay (relay_server/relay_server.cpp) answers the queries;
 //   - the master (master_server/master_server_main.cpp) takes announces and
 //     checks them with a details query;
-//   - the game (server_browser/*.cpp) asks.
+//   - the game (server_browser/*.cpp) asks;
+//   - the launcher's tool (online_tool/, through server_browser/browser_query.cpp) asks the
+//     same way.
 //
 // Every message starts with the relay protocol's v5 header (magic "MC02",
 // version 5) and uses types the SDK's online client never sends (it uses
