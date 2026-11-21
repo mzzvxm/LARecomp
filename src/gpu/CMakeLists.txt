@@ -45,6 +45,7 @@ add_library(larecomp_gpu OBJECT
     frame_trace.cpp
     frame.cpp
     gbuffer.cpp
+    gbuffer_material.cpp
     geometry.cpp
     gpu_class.cpp
     host_passes.cpp
@@ -264,6 +265,11 @@ add_executable(larecomp_headlight_rig_test EXCLUDE_FROM_ALL headlight_rig_test.c
 # and the host's pure rules (which draws get the sidecar, the frame window, the trigger) likewise:
 #   cmake --build <dir> --target larecomp_gbuffer_rules_test, then run src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>] (exit 0 = passed).
 add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.cpp)
+# The material channel (gbuffer_material.h: the class table of the 192 shader groups, the gloss table, the specular exponent's mapping to a smoothness, the material word, the table file the
+# shader pack build writes and the draw's word) likewise; with the folder shaderpack/baseline (hlsl-rpf and hlsl-xex with their shader_report.tsv) it also checks the tables against the
+# translated HLSL of the retail game:
+#   cmake --build <dir> --target larecomp_gbuffer_material_test, then run src/gpu/larecomp_gbuffer_material_test [<shaderpack/baseline>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_material_test EXCLUDE_FROM_ALL gbuffer_material_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
