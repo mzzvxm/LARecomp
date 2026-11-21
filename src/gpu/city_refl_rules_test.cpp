@@ -2,6 +2,7 @@
 // budget class, the opponents' budget, the weight of a hit by its distance (against car_rt_hit_rules.h's HitFade), the footprint, the lamp schedule (against the headlight rig's night curve), the constants
 // rows the shader reads, the counters and the census lines (against the report's own parser, perf/scripts/city_rt_m2_report.py); and, given the src folder, that hlsl/city_refl.hlsli, hlsl/car_rt_refl_cs.hlsl, the
 // opponents' variant, the host and the settings files hold the header's numbers.
+// REFL-LAMPS: the lamp flag in the rows and the library's flags, the lamp term's decision and glow factor (LampTermFor, LampFlags, GlowFactorFor), the lamp census words and line, and the shader, host and setting text.
 // A program of its own: it needs no renderer, no ReXGlue and no game files, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_city_refl_rules_test, then run src/gpu/larecomp_city_refl_rules_test [<src dir>]
@@ -53,6 +54,11 @@ std::string ReadFile(const std::string& path) {
   return ss.str();
 }
 bool Has(const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; }
+size_t CountOf(const std::string& text, const std::string& needle) {
+  size_t n = 0;
+  for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) ++n;
+  return n;
+}
 
 // The number a `static const <type> <name> = <value>;` line of an HLSL text holds (u or f suffix and a trailing .0 allowed); NaN when the line is not there.
 double HlslNumber(const std::string& text, const std::string& name) {
@@ -325,6 +331,68 @@ int main(int argc, char** argv) {
     cr::MakeRows(in, rows);
     Check((rows[cr::kRowControl][0] & (cr::kFlagStats | cr::kFlagCoat)) == 0 && (rows[cr::kRowControl][3] & cr::kPCalibrate) == 0, "no stats and no coat flag when the frame has none");
     Check(cr::ParamFlags(false, false) == (cr::kPSunRay | cr::kPEmissive) && cr::kPCalibrate == 32 && cr::kPScreen == 64 && cr::kPSunRay == 1 && cr::kPEmissive == 16, "the library's flags (hlsl CITY_HIT_P_*)");
+    // REFL-LAMPS: the lamp flag: the host's switch in the control flags and the library's lamp flag in the params, only together, never in an off frame; the flags of old are unchanged without it
+    Check(cr::kFlagLamps == 16 && cr::kFlagLamps != cr::kFlagOn && cr::kFlagLamps != cr::kFlagScreen && cr::kFlagLamps != cr::kFlagStats && cr::kFlagLamps != cr::kFlagCoat, "the lamp flag is a control flag of its own (16)");
+    Check(cr::ParamFlags(false, false, true) == (cr::kPSunRay | cr::kPEmissive | cr::kPLamps) && cr::kPLamps == 4 && cr::ParamFlags(true, true, true) == (cr::kPSunRay | cr::kPEmissive | cr::kPLamps | cr::kPScreen | cr::kPCalibrate) &&
+              cr::ParamFlags(true, false) == (cr::kPSunRay | cr::kPEmissive | cr::kPScreen) && cr::ParamFlags(false, true) == (cr::kPSunRay | cr::kPEmissive | cr::kPCalibrate) && (cr::ParamFlags(true, true, true) & cr::kPLampShadow) == 0,
+          "the params' flags with the lamp term: the lamp flag only on request, no lamp shadow ray (the unshadowed sum)");
+    in.lamps = true;
+    in.stats = true;
+    cr::MakeRows(in, rows);
+    Check((rows[cr::kRowControl][0] & cr::kFlagLamps) != 0 && (rows[cr::kRowControl][3] & cr::kPLamps) != 0 && (rows[cr::kRowControl][3] & cr::kPLampShadow) == 0 &&
+              rows[cr::kRowControl][3] == cr::ParamFlags((rows[cr::kRowControl][0] & cr::kFlagScreen) != 0, true, true),
+          "the rows carry the lamp flag and the library's lamp flag together");
+    in.lamps = false;
+    cr::MakeRows(in, rows);
+    Check((rows[cr::kRowControl][0] & cr::kFlagLamps) == 0 && (rows[cr::kRowControl][3] & cr::kPLamps) == 0, "no lamp flag in either word when the setting is off (the rows of old)");
+    in.lamps = true;
+    in.level = cr::Level::kOff;
+    cr::MakeRows(in, rows);
+    bool lamps_all_zero = true;
+    for (uint32_t r = 0; r < cr::kRows; ++r) {
+      for (uint32_t w = 0; w < cr::kRowWords; ++w) {
+        lamps_all_zero = lamps_all_zero && rows[r][w] == 0;
+      }
+    }
+    Check(lamps_all_zero, "an off frame is all zero even with the lamp switch on");
+  }
+
+  // ---- the lamp term's decision and glow (REFL-LAMPS) -------------------------------------------------------------------------------------------------
+  {
+    const float kSun = 0.37f, kWorld = 0.82f;
+    // the switch on and the rows valid: the world's lamp factor, the lamp flag kept, the glow by the world's schedule
+    const cr::LampTerm on = cr::LampTermFor(true, cr::kWorldValidFlag | 2u | 32u, kWorld, kSun);
+    Check(on.world && on.lamp_factor == kWorld && cr::LampFlags(cr::ParamFlags(false, false, true), on) == cr::ParamFlags(false, false, true), "switch on and rows valid: the world's lamp factor and the lamp flag stay");
+    // the switch off, or the rows not valid: the sun's schedule, the lamp flag dropped
+    const cr::LampTerm off = cr::LampTermFor(false, cr::kWorldValidFlag, kWorld, kSun);
+    const cr::LampTerm blind = cr::LampTermFor(true, 0u, kWorld, kSun);
+    const cr::LampTerm both = cr::LampTermFor(false, 0u, kWorld, kSun);
+    Check(!off.world && off.lamp_factor == kSun && !blind.world && blind.lamp_factor == kSun && !both.world && both.lamp_factor == kSun, "switch off or rows not valid: the sun's schedule");
+    for (const cr::LampTerm& t : {off, blind, both}) {
+      Check(cr::LampFlags(cr::ParamFlags(true, true, true), t) == cr::ParamFlags(true, true, false), "no lamp flag where the world is not used");
+    }
+    // the world frame's flag is the valid bit only: the other flags of the status word decide nothing
+    Check(!cr::LampTermFor(true, 2u | 4u | 8u | 16u | 32u | 64u | 128u | 256u, kWorld, kSun).world && cr::LampTermFor(true, 1u, kWorld, kSun).world && cr::kWorldValidFlag == 1,
+          "the status row's valid bit alone says the rows are this frame's");
+    // the glow: a signal always, a lens by the street lamps', everything else by the fill lights'; without the world the sun's schedule, a signal always
+    for (const float street : {0.0f, 0.4f, 1.0f}) {
+      for (const float fill : {0.0f, 0.7f, 1.0f}) {
+        Check(cr::GlowFactorFor(on, cr::kGlowAlways, street, fill) == 1.0f && cr::GlowFactorFor(on, cr::kGlowLens, street, fill) == street && cr::GlowFactorFor(on, cr::kGlowNight, street, fill) == fill &&
+                  cr::GlowFactorFor(on, 3, street, fill) == fill,
+              "with the world frame: a signal always, a lens the street lamps' schedule, the rest the fill lights'");
+        Check(cr::GlowFactorFor(off, cr::kGlowAlways, street, fill) == 1.0f && cr::GlowFactorFor(off, cr::kGlowLens, street, fill) == kSun && cr::GlowFactorFor(off, cr::kGlowNight, street, fill) == kSun &&
+                  cr::GlowFactorFor(blind, 3, street, fill) == kSun,
+              "without it: a signal always, everything else the sun's schedule (the library's own default)");
+      }
+    }
+    Check(cr::GlowFactorFor(cr::LampTermFor(false, 0u, 1.7f, 1.7f), cr::kGlowLens, 0.0f, 0.0f) == 1.0f && cr::GlowFactorFor(cr::LampTermFor(true, 1u, 0.5f, 0.0f), cr::kGlowLens, 1.7f, 0.0f) == 1.0f &&
+              cr::GlowFactorFor(cr::LampTermFor(true, 1u, 0.5f, 0.0f), cr::kGlowNight, 0.0f, -0.5f) == 0.0f,
+          "the glow factor is held in 0..1");
+    // by day (both schedules 0) the lamp term does nothing and nothing glows but a signal, with or without the world
+    const cr::LampTerm day = cr::LampTermFor(true, 1u, 0.0f, 0.0f);
+    Check(day.lamp_factor == 0.0f && cr::GlowFactorFor(day, cr::kGlowLens, 0.0f, 0.0f) == 0.0f && cr::GlowFactorFor(day, cr::kGlowAlways, 0.0f, 0.0f) == 1.0f, "by day nothing glows but a signal");
+    // the schedule of old is the headlight rig's night curve (kept as the fallback)
+    Check(cr::LampSchedule(-0.3f, true) == 1.0f && cr::LampSchedule(0.9f, true) == 0.0f && cr::LampSchedule(0.9f, false) == 0.0f, "the sun's schedule: full at night, none by day, none without a sun direction");
   }
 
   // ---- the counters and the census lines --------------------------------------------------------------------------------------------------------------
@@ -350,6 +418,34 @@ int main(int argc, char** argv) {
     t.Add(words);
     Check(t.frames == 2 && t.texels == 2000 && t.rays == 8000 && t.city == 5000 && t.car == 600 && t.miss == 2400 && t.screen == 3000 && t.shaded == 1800 && t.lamps == 80 && t.samples == 300, "the window sums the stats frames");
     Check(t.city + t.car + t.miss == t.rays, "city + car + miss = rays (the README's identity)");
+    // REFL-LAMPS: the lamp term's eight counters follow the census, inside the buffer, and sum over a window
+    Check(cr::kStatLampCensus == 60 && cr::kStatLampCensus >= cr::kStatNoData + 1 && cr::kLampCensusWords == 8 && cr::kStatsWords == cr::kStatLampCensus + cr::kLampCensusWords && cr::kStatsWords == 68 &&
+              cr::kStatsBytes == 272,
+          "the lamp term's counters are the eight words after the census: 60 to 67, the buffer 272 bytes");
+    {
+      uint32_t lamp_words[cr::kStatsWords] = {};
+      const uint32_t per_frame[cr::kLampCensusWords] = {100, 200, 300, 4, 5, 600, 700, 800};  // lookups, examined, lit, count cap, light cap, glow night, lens, always
+      for (uint32_t i = 0; i < cr::kLampCensusWords; ++i) {
+        lamp_words[cr::kStatLampCensus + i] = per_frame[i];
+      }
+      cr::Totals lt;
+      lt.Add(lamp_words);
+      lt.Add(lamp_words);
+      bool sums = lt.frames == 2;
+      for (uint32_t i = 0; i < cr::kLampCensusWords; ++i) {
+        sums = sums && lt.lamp_words[i] == 2u * per_frame[i];
+      }
+      Check(sums && lt.texels == 0 && lt.samples == 0, "the window sums the lamp term's words and nothing else");
+      // the line: its own prefix (the report's census and gain patterns do not take it), the per-lookup means, the caps in percent, the glow's hits by kind a stats frame
+      const std::string line = cr::LampCensusText(1200, lt);
+      const std::regex census_re("\\[city refl\\] frame (\\d+): (.*)$"), gain_re("\\[city refl\\] gain frame (\\d+): (.*)$");
+      std::smatch m;
+      Check(Has(line, "[city refl] lamp term frame 1200: lookups 100, lamps examined 2.0, lit 3.0 a lookup, stopped at the lamp cap 4.0%, over the light cap 5.0%, glow: night 600, lens 700, always 800") &&
+                !std::regex_search(line, m, census_re) && !std::regex_search(line, m, gain_re),
+            "the lamp term's line: " + line);
+      cr::Totals empty;
+      Check(Has(cr::LampCensusText(0, empty), "lookups 0, lamps examined 0.0, lit 0.0 a lookup"), "an empty window prints zeros (no division by zero)");
+    }
     // the lines, through the report's own regular expressions (perf/scripts/city_rt_m2_report.py CENSUS_RE, GAIN_RE, PAIR_RE)
     const std::string census = cr::CensusText(1200, cm::Level::kHigh, 150.0f, t);
     const std::regex census_re("\\[city refl\\] frame (\\d+): (.*)$");
@@ -433,7 +529,8 @@ int main(int argc, char** argv) {
                                                         {"kCityRowGains", cr::kRowGains},     {"kCityFlagOn", cr::kFlagOn},     {"kCityFlagScreen", cr::kFlagScreen}, {"kCityFlagStats", cr::kFlagStats},
                                                         {"kCityFlagCoat", cr::kFlagCoat},     {"kCityStatTexels", cr::kStatTexels}, {"kCityStatRays", cr::kStatRays}, {"kCityStatCity", cr::kStatCity},
                                                         {"kCityStatCar", cr::kStatCar},       {"kCityStatMiss", cr::kStatMiss}, {"kCityStatScreen", cr::kStatScreen}, {"kCityStatShaded", cr::kStatShaded},
-                                                        {"kCityStatLamps", cr::kStatLamps},   {"kCityStatNoData", cr::kStatNoData}, {"kCityClassEmissive", cr::kClassEmissive}};
+                                                        {"kCityStatLamps", cr::kStatLamps},   {"kCityStatNoData", cr::kStatNoData}, {"kCityClassEmissive", cr::kClassEmissive},
+                                                        {"kCityFlagLamps", cr::kFlagLamps},   {"kCityStatLampCensus", cr::kStatLampCensus}};
       for (const auto& r : rows) {
         Check(HlslNumber(hlsli, r.first) == double(r.second), std::string("hlsl/city_refl.hlsli: ") + r.first + " is " + std::to_string(r.second));
       }
@@ -447,6 +544,34 @@ int main(int argc, char** argv) {
       Check(Has(hlsli, "(size + (1u << level) - 1u) >> level"), "hlsl/city_refl.hlsli: a mip's size is LevelSize");
       Check(Has(hlsli, "r.screen >= 0.5 ? kCityStatScreen : kCityStatShaded"), "hlsl/city_refl.hlsli: a hit counts as the picture's at a weight of a half");
       Check(Has(hlsli, "r.cls == kCityClassEmissive"), "hlsl/city_refl.hlsli: lamps are the emissive class");
+      // REFL-LAMPS: the world frame's lamp term in CityReflHit, and what leaves it out
+      {
+        const size_t world_at = hlsli.find("#define RT_WORLD_SPACE CAR_RT_SPACE");
+        const size_t include_at = hlsli.find("#include \"rt_world_frame.hlsli\"");
+        const size_t lib_at = hlsli.find("#include \"city_hit_shade.hlsli\"");
+        const size_t grid_at = hlsli.find("#define CITY_HIT_LAMP_GRID");
+        Check(world_at != std::string::npos && include_at != std::string::npos && grid_at != std::string::npos && lib_at != std::string::npos && world_at < include_at && include_at < lib_at && grid_at < lib_at,
+              "hlsl/city_refl.hlsli: the world frame (in the car set's space) is included before the library, and the lamp grid is the library's lamp loop");
+        Check(Has(hlsli, "#define CITY_HIT_GLOW_FACTOR(kind) CityReflGlowFactor(kind)") && Has(hlsli, "#define CITY_HIT_CENSUS_ADD(word, value) CityReflLampCensus(word, value)") &&
+                  Has(hlsli, "CityStat(kCityStatLampCensus + word, value);"),
+              "hlsl/city_refl.hlsli: the glow factor and the lamp term's counters are the library's hooks");
+        Check(Has(hlsli, "if (kind == RT_WORLD_GLOW_ALWAYS)") && Has(hlsli, "return gCityGlowWorld ? RtWorldGlowFactor(kind) : gCityGlowOld;"), "hlsl/city_refl.hlsli: a signal always, else the world rows' glow or the sun's schedule (GlowFactorFor)");
+        Check(Has(hlsli, "if ((c.flags & kCityFlagLamps) != 0u)") && Has(hlsli, "const uint4 status = gRtWorld[RT_WORLD_ROW_STATUS];") && Has(hlsli, "lampsWorld = (status.y & RT_WORLD_VALID) != 0u;") &&
+                  Has(hlsli, "lampFactor = asfloat(status.w);") && Has(hlsli, "lampFactor = CityReflLampSchedule(f);") && Has(hlsli, "p.flags = p.flags & ~CITY_HIT_P_LAMPS;") && Has(hlsli, "p.lampFactor = lampFactor;") &&
+                  Has(hlsli, "gCityGlowWorld = lampsWorld;"),
+              "hlsl/city_refl.hlsli: the world's lamp factor and grid where the switch is on and the rows valid (one load of the status row), else the sun's schedule and no lamp flag (LampTermFor, LampFlags)");
+        const std::string world_hlsli = ReadFile(src + "/gpu/hlsl/rt_world_frame.hlsli");
+        Check(Has(world_hlsli, "#define RT_WORLD_ROW_STATUS 32u") && Has(world_hlsli, "#define RT_WORLD_VALID 1u") && cr::kWorldValidFlag == 1 && Has(world_hlsli, "#define RT_WORLD_GLOW_ALWAYS 2u") &&
+                  Has(world_hlsli, "#define RT_WORLD_GLOW_LENS 1u") && Has(world_hlsli, "#define RT_WORLD_GLOW_NIGHT 0u") && cr::kGlowNight == 0 && cr::kGlowLens == 1 && cr::kGlowAlways == 2 &&
+                  Has(world_hlsli, "StructuredBuffer<uint4> gRtWorld : register(t10, RT_WORLD_SPACE_NAME);") && Has(world_hlsli, "StructuredBuffer<uint4> gRtLamps : register(t11, RT_WORLD_SPACE_NAME);"),
+              "hlsl/rt_world_frame.hlsli: the status row, the valid bit, the glow kinds and t10 and t11 are the numbers of the header");
+        // the no-lamps compile is the code of before: the whole lamp part is inside the guards, nothing outside them reads the world frame
+        Check(Has(hlsli, "#ifdef CITY_REFL_NO_LAMPS\n    p.lampFactor = CityReflLampSchedule(f);\n#else") && CountOf(hlsli, "gRtWorld[") == 1 && CountOf(hlsli, "RtWorldGlowFactor(") == 1 && CountOf(hlsli, "#ifndef CITY_REFL_NO_LAMPS") == 2 && CountOf(hlsli, "#ifdef CITY_REFL_NO_LAMPS") == 1,
+              "hlsl/city_refl.hlsli: with CITY_REFL_NO_LAMPS the file is the one of before (the lamp part is inside the guards)");
+        // the paint, the opponents' variant and the glass pass share the shader file and the car set (space CAR_RT_SPACE 2, where t10 and t11 are): nothing to add to their layouts
+        Check(Has(refl, "#define CAR_RT_SPACE 2") && Has(refl, "#include \"city_refl.hlsli\"") && Has(refl, "#include \"car_rt_refl_glass.hlsli\"") && Has(refl, "#include \"car_rt_refl_opp.hlsli\""),
+              "hlsl/car_rt_refl_cs.hlsl: the player's pass, the opponents' variant and the glass variant are one file with the car set in space 2");
+      }
       // the trace
       Check(Has(refl, "register(b0, space4)") && !Has(refl, "register(b0, space3)"), "hlsl/car_rt_refl_cs.hlsl: the push block is in space 4");
       Check(Has(refl, "#include \"city_refl.hlsli\"") && Has(refl, "uint traceMask = g_push.slots.y;") && Has(refl, "CityHitTrace(origin, direction, 0.0, reach, traceMask, footprint0, coneTan, 0.5)") &&
@@ -468,6 +593,11 @@ int main(int argc, char** argv) {
                 Has(opp_host_h, "kPushSpace = CityRefl::kPushSpace"),
             "car_rt_opp_refl: the city's set, the cell's budget and rays, the push space");
       Check(Has(host, "set_builder_.addByteAddressBuffer(0);") && Has(host, "set_builder_.addReadWriteByteAddressBuffer(1);") && Has(host, "CreateDescriptorSet(set_builder_, 2, 0, \"city refl set\")"), "city_refl.cpp: the set's two views, t0 and u1");
+      // REFL-LAMPS: the host's switch and the census line; no set grew (the counters are words of u1's buffer, the world frame is in the car scene's set)
+      Check(Has(host, "in.lamps = on && larecomp::settings::mcla_gpu_city_refl_lamps.Get();") && Has(host, "cr::LampCensusText(frame, window_)") && Has(host, "window_.lamp_words[0] != 0") &&
+                Has(host, "DefaultBuffer(cr::kStatsBytes,") && Has(host, "s.set->setBuffer(1, stats_.get(), cr::kStatsBytes);"),
+            "city_refl.cpp: the lamp switch is the setting's, the lamp term's line is logged, the counters stay in u1's buffer (no view added)");
+      Check(Has(host_h, "mcla_gpu_city_refl_lamps") && Has(host_h, "t10 and t11 are in the car scene's 12 view set"), "city_refl.h names the setting and says where t10 and t11 are");
       Check(Has(host, "rt_scene::Consumer::kCityReflections") && Has(host, "cr::WantsFor(cell)") && Has(host, "screen::ProductBit(screen::kColourPost) | screen::ProductBit(screen::kLinDepth)"), "city_refl.cpp: the wants");
       Check(Has(host, "gpu_class::CurrentRtClass()") && Has(host, "gpu_class::CurrentRtTier()") && Has(host, "LiveText text(\"mcla_gpu_rt_reflections\")"), "city_refl.cpp: the setting is read live and the cell is the RT class's");
       Check(Has(host, "constexpr uint32_t kCloseEveryStats = 4;") && Has(host, "cr::kLogEveryFrames"), "city_refl.cpp: the calibration's window and the census's period");
@@ -480,10 +610,20 @@ int main(int argc, char** argv) {
       const std::string settings = ReadFile(src + "/settings/generated/settings_gpu.h");
       const std::string manifest = ReadFile(src + "/settings/generated/manifest.json");
       const std::string meta = ReadFile(src + "/settings/generated/settings_meta.inc");
-      for (const char* name : {"mcla_gpu_rt_reflections", "mcla_gpu_city_refl_screen", "mcla_gpu_city_refl_coat", "mcla_gpu_city_refl_reach", "mcla_gpu_city_refl_view"}) {
+      for (const char* name : {"mcla_gpu_rt_reflections", "mcla_gpu_city_refl_screen", "mcla_gpu_city_refl_coat", "mcla_gpu_city_refl_reach", "mcla_gpu_city_refl_view", "mcla_gpu_city_refl_lamps"}) {
         const std::string n = name;
         Check(Has(settings, "REX_SETTING(") && Has(settings, ", " + n + ", ") && Has(settings, "inline auto& " + n + " = g_gpu." + n + ";"), "settings_gpu.h defines and aliases " + n);
         Check(Has(manifest, "\"" + n + "\": {") && Has(meta, "{\"" + n + "\", \"MCLA/GPU\"},"), "the manifest and the meta list " + n);
+      }
+      {
+        // REFL-LAMPS: the lamp term's switch is a debug-only bool, true by default (no player-visible off switch: the owner's rule)
+        const size_t lamps_at = settings.find("bool, mcla_gpu_city_refl_lamps, true, ");
+        const size_t lamps_next = lamps_at == std::string::npos ? std::string::npos : settings.find("\n  REX_SET" "TING(", lamps_at);
+        const std::string lamps_def = lamps_at == std::string::npos ? "" : settings.substr(lamps_at, lamps_next == std::string::npos ? std::string::npos : lamps_next - lamps_at);
+        Check(!lamps_def.empty() && lamps_def.find("rex::kDebugOnly") != std::string::npos, "mcla_gpu_city_refl_lamps is a debug-only bool, true by default");
+        const size_t key = manifest.find("\"mcla_gpu_city_refl_lamps\": {");
+        const std::string entry = key == std::string::npos ? "" : manifest.substr(key, manifest.find("\n },", key) - key);
+        Check(!entry.empty() && Has(entry, "\"type\": \"bool\"") && Has(entry, "\"default\": \"true\"") && Has(entry, "rex::kDebugOnly"), "the manifest has mcla_gpu_city_refl_lamps as a debug-only bool, true");
       }
       const size_t at = settings.find("std::string, mcla_gpu_rt_reflections, \"auto\", ");
       const size_t next = at == std::string::npos ? std::string::npos : settings.find("\n  REX_SET" "TING(", at);

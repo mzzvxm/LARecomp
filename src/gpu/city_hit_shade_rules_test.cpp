@@ -25,6 +25,7 @@
 
 #include "citypack/city_hit_format.h"
 #include "city_hit_shade_rules.h"
+#include "city_refl_rules.h"  // REFL-LAMPS: the reflection passes' lamp term in front of the library (ReflectionGlueChecks)
 #include "gbuffer_types.h"
 #include "hlsl_cpp_shim.h"
 #include "rt_hit_calibration.h"

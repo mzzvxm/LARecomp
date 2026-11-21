@@ -239,6 +239,8 @@ CityRefl::Frame CityRefl::Prepare(uint32_t frame_slot, const ScreenIn& screen, u
   in.sun_tan = cr::kSunTan;
   in.wet = 0.0f;
   in.view = std::clamp<int32_t>(int32_t(larecomp::settings::mcla_gpu_city_refl_view.Get()), 0, 2);
+  // REFL-LAMPS: the lamp term of a city hit (the world frame's lamp grid and glow schedule; the shader also needs the frame's world rows to be valid). No binding of its own: t10 and t11 are in the car scene's set.
+  in.lamps = on && larecomp::settings::mcla_gpu_city_refl_lamps.Get();
   const bool calibrating = larecomp::settings::mcla_gpu_car_rt_hit_calibrate.Get();
   for (uint32_t c = 0; c < rt_hit_cal::kClasses; ++c) {
     in.gains[c] = calibrating ? gains_.Gain(c) : 1.0f;
@@ -336,6 +338,9 @@ void CityRefl::ProcessStats(uint64_t frame, uint64_t generation) {
     last_log_frame_ = frame;
     REXLOG_INFO("{}", cr::CensusText(frame, last_level_, last_reach_, window_));
     REXLOG_INFO("{}", cr::GainText(frame, gains_, window_.samples));
+    if (window_.lamp_words[0] != 0) {
+      REXLOG_INFO("{}", cr::LampCensusText(frame, window_));  // the lamp term's counters (REFL-LAMPS), only while a hit was lit through the world frame's grid in the window
+    }
     window_ = cr::Totals{};
   }
 }

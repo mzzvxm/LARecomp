@@ -25,7 +25,9 @@
 //      `#define CITY_HIT_GLOW_FACTOR(kind) RtWorldGlowFactor(kind)` makes a lens glow by the street lamps' schedule, neon, signs and lit windows by the fill lights', a traffic signal always (row 47);
 //      `#define CITY_HIT_CENSUS_ADD(word, value) <your counter buffer>.InterlockedAdd((word) * 4u, (value))` counts, in a stats frame, the lamp term and the glowing hits (eight words: hand them
 //      to AddLampCensus). hlsl/rt_world_lamp_light_cs.hlsl is the reference consumer: it compiles beside city_hit_shade.hlsli for DXIL and SPIR-V and validates with spirv-val
-//      (tools/check_rt_hit_identity.py runs it). The loop the library does, for a consumer that wants its own:
+//      (tools/check_rt_hit_identity.py runs it). The first consumer that shades with it is the car reflections' (REFL-LAMPS, hlsl/city_refl.hlsli: the paint, the other cars' paint and the glass in one shader
+//      file, the chrome through the paint's image; the car scene's set they bind has t10 and t11 already, no binding added; mcla_gpu_city_refl_lamps is its switch). The loop the library does, for a
+//      consumer that wants its own:
 //        RtLampCursor c = RtLampBegin(w, hitViewPosition, 64.0);
 //        while (c.done == 0u) { const CityHitLamp lamp = CityHitLampFromRows(RtLampRow(w, c.index, 0u), RtLampRow(w, c.index, 1u), RtLampRow(w, c.index, 2u));
 //                               sum += CityHitLampAt(p, lamp, position, normal).radiance;   c = RtLampStep(w, c); }

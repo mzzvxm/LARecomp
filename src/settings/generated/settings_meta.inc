@@ -288,6 +288,7 @@
 {"mcla_gpu_city_refl_view", "MCLA/GPU"},
 {"mcla_gpu_city_refl_chrome", "MCLA/GPU"},
 {"mcla_gpu_city_refl_glass", "MCLA/GPU"},
+{"mcla_gpu_city_refl_lamps", "MCLA/GPU"},
 {"mcla_gpu_car_rt_opp_refl", "MCLA/GPU"},
 {"mcla_gpu_car_rt_opp_refl_rays", "MCLA/GPU"},
 {"mcla_gpu_car_rt_opp_refl_texels", "MCLA/GPU"},

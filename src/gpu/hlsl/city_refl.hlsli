@@ -12,8 +12,17 @@
 // THE PICTURE. lin_depth level 0 (a bindless slot: the vehicle's mark in the lowest bit of a float), colour_post's mip chain (one slot a level): a hit whose point is in the picture takes the picture's
 // colour at the mip of its footprint, trilinear by hand (the heap's textures are read with Load: there is no sampler in the layout).
 //
-// CHECK (nothing was run): the units (the frame's colours are the paint's; p.units 2^exp_bias makes the shaded colour the picture's: the same factor as the history's), the lamp schedule (the sun's
-// elevation only), no haze (CITY_HIT_HAZE is not wired), the wetness 0, the registers of set 3 on both APIs (t0 and u1: distinct numbers in one set, as gi_field's).
+// THE LAMPS (CITY-RT R7's lamp term and glow factor, REFL-LAMPS): a shaded city hit is lit by the world frame's lamps and what glows glows by the world's schedule, unless the host's row says no (kCityFlagLamps,
+// mcla_gpu_city_refl_lamps) or the frame's world rows are not valid (then the hit is lit as it was: the sun's elevation's schedule, no lamp light). The world frame is t10 (the rows) and t11 (the lamps) of the car
+// scene's set, which this pass's layout already carries (space CAR_RT_SPACE: car_rt_scene.cpp's set has 12 views), so this file binds nothing new. The library's lamp loop is CITY_HIT_LAMP_GRID: the lamps of the 64 m
+// cells around the hit in view space (the top level's), 96 at most, their light's luminance capped at 6, no shadow ray (CITY_HIT_P_LAMP_SHADOW is not set: the mirror's ray is not denoised); the glow of a lamp lens
+// follows the street lamps' schedule, neon, signs and lit windows the fill lights', a traffic signal is always on (CITY_HIT_GLOW_FACTOR = CityReflGlowFactor). The lamp term's counters (the library's census) are
+// words kCityStatLampCensus.. of the city's counter buffer. `#define CITY_REFL_NO_LAMPS` before including leaves all of this out: the file is then what it was before REFL-LAMPS, line for line (the identity
+// check, tools/check_rt_hit_identity.py, compiles it that way against the parent's).
+//
+// CHECK (nothing was run): the units (the frame's colours are the paint's; p.units 2^exp_bias makes the shaded colour the picture's: the same factor as the history's), the world rows' lamp factor in
+// this pass (rt_world_frame.h: the lamps are in the VIEW space of the top level, which is the space the hits are in), no haze (CITY_HIT_HAZE is not wired), the wetness 0, the registers of set 3 on both APIs
+// (t0 and u1: distinct numbers in one set, as gi_field's), t10 and t11 in space 2 on both APIs.
 
 #ifndef MCLA_CITY_REFL_HLSLI
 #define MCLA_CITY_REFL_HLSLI
@@ -37,6 +46,7 @@ static const uint kCityFlagOn = 1u;
 static const uint kCityFlagScreen = 2u;
 static const uint kCityFlagStats = 4u;
 static const uint kCityFlagCoat = 8u;
+static const uint kCityFlagLamps = 16u;
 // the counters (city_refl_rules.h kStat*: the calibration's 48 words come first)
 static const uint kCityStatTexels = 48u;
 static const uint kCityStatRays = 49u;
@@ -47,6 +57,7 @@ static const uint kCityStatScreen = 53u;
 static const uint kCityStatShaded = 54u;
 static const uint kCityStatLamps = 55u;
 static const uint kCityStatNoData = 56u;
+static const uint kCityStatLampCensus = 60u;   // eight words: the library's CITY_HIT_CENSUS_* (the lamp term's and the glow's counters)
 static const uint kCityClassEmissive = 13u;
 static const float kCityNightFull = 3.0;
 static const float kCityNightNone = 12.0;
@@ -218,13 +229,46 @@ void CityReflCalAdd(uint word, uint value)
     CityStat(word, value);
 }
 
-// The library's hooks (hlsl/city_hit_shade.hlsli lists them): the picture, the vehicle rule, the class gains, the calibration's counters. No lamp list (R7), no haze, no probe field.
+#ifndef CITY_REFL_NO_LAMPS
+// ---- the world frame's lamps and glow (CITY-RT R7, REFL-LAMPS) ----------------------------------------------------------------------------------
+
+// t10 the world rows and t11 the lamps of the car scene's set (rt_world_frame.hlsli declares them in space RT_WORLD_SPACE); the hit frame stays the car's own (RT_HIT_FRAME_ROW is gCarRtMaterials, set by
+// car_rt_hit_shade.hlsli before this file), the world frame's rows are read for the lamps, the schedule and the glow only.
+#define RT_WORLD_SPACE CAR_RT_SPACE
+#include "rt_world_frame.hlsli"
+
+// What a glowing material glows by while this hit is shaded: the world rows' schedule (gCityGlowWorld), or the sun's elevation's (gCityGlowOld, the lamp factor of old).
+static bool gCityGlowWorld = false;
+static float gCityGlowOld = 0.0;
+
+float CityReflGlowFactor(uint kind)
+{
+    if (kind == RT_WORLD_GLOW_ALWAYS)
+    {
+        return 1.0;
+    }
+    return gCityGlowWorld ? RtWorldGlowFactor(kind) : gCityGlowOld;
+}
+
+void CityReflLampCensus(uint word, uint value)
+{
+    CityStat(kCityStatLampCensus + word, value);
+}
+#endif
+
+// The library's hooks (hlsl/city_hit_shade.hlsli lists them): the picture, the vehicle rule, the class gains, the calibration's counters, and (REFL-LAMPS) the world frame's lamp grid, glow schedule and the lamp
+// term's counters. No haze, no probe field.
 #define CITY_HIT_SPACE CAR_RT_SPACE
 #define CITY_HIT_SCREEN_DEPTH(texel) CityReflDepth(texel)
 #define CITY_HIT_SCREEN_COLOUR(uv, mip) CityReflColour(uv, mip)
 #define CITY_HIT_SCREEN_REJECT(texel) CityReflReject(texel)
 #define CITY_HIT_GAIN(cls) CityReflGain(cls)
 #define CITY_HIT_STAT_ADD(word, value) CityReflCalAdd(word, value)
+#ifndef CITY_REFL_NO_LAMPS
+#define CITY_HIT_LAMP_GRID
+#define CITY_HIT_GLOW_FACTOR(kind) CityReflGlowFactor(kind)
+#define CITY_HIT_CENSUS_ADD(word, value) CityReflLampCensus(word, value)
+#endif
 #include "city_hit_shade.hlsli"
 
 // ---- the lamp schedule ----------------------------------------------------------------------------------------------------------------------
@@ -274,7 +318,28 @@ bool CityReflHit(float3 origin, float3 direction, CityHitTraceResult h, float co
     p.units = g_push.up.w;
     p.sunReach = c.sunReach;
     p.sunTan = c.sunTan;
+#ifdef CITY_REFL_NO_LAMPS
     p.lampFactor = CityReflLampSchedule(f);
+#else
+    // REFL-LAMPS (city_refl_rules.h LampTermFor, LampFlags, GlowFactorFor): the world frame's lamp factor, lamp grid and glow schedule when the host's row says so and the frame's world rows are valid (the status row's
+    // flags and factor: one load); else the sun's elevation's schedule as of old, no lamp light.
+    float lampFactor = 0.0;
+    bool lampsWorld = false;
+    if ((c.flags & kCityFlagLamps) != 0u)
+    {
+        const uint4 status = gRtWorld[RT_WORLD_ROW_STATUS];
+        lampsWorld = (status.y & RT_WORLD_VALID) != 0u;
+        lampFactor = asfloat(status.w);
+    }
+    if (!lampsWorld)
+    {
+        lampFactor = CityReflLampSchedule(f);
+        p.flags = p.flags & ~CITY_HIT_P_LAMPS;
+    }
+    gCityGlowWorld = lampsWorld;
+    gCityGlowOld = lampFactor;
+    p.lampFactor = lampFactor;
+#endif
     p.wet = c.wet;
     p.aoMix = c.aoMix;
     p.lodBias = c.lodBias;

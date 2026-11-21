@@ -1141,6 +1141,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_city_refl_lamps": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, a point of the city that a reflection ray hit (in the car paint, the chrome, the other cars' paint and the glass) is lit by the street lamps and the fill lights around it, and lamp lenses, signs and lit windows glow by the world's lamp schedule (the ray tracing world frame's lamp grid, 96 lamps and a cap on their light), so a night street reflects lit lamps, signs and windows. false: the reflections as before (no lamp light on a hit, the glow by the sun's height). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_masks": {
   "type": "i32",
   "default": "0",

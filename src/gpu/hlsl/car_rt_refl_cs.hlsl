@@ -68,6 +68,9 @@
 // level: the scene service's); a ray whose closest hit is a city triangle shows what the city hit library makes of it (the picture's colour where the hit is seen, the model's where it is not: ResolveHit),
 // by the fade of its distance over the city's reach, and counts as a hit whose colour is known in full (visible 1). The image's codes are unchanged: no variant of the paint changes. With the host's
 // clear-coat flag the hit counts as another car's for the mirror's rule and the paint's coat layer (the owner's goal: the city CLEARLY identifiable in the paint), else the soft cone alone.
+// LAMPS (REFL-LAMPS, hlsl/city_refl.hlsli): the same city hit is lit by the world frame's lamp grid (t10 and t11 of the car set above: no binding of this file's is new) and its glow follows the world's lamp
+// schedule, so a night street reflects lit lamps, signs and windows: in the player's pass, the opponents' variant and the glass variant alike (one CityReflHit), and in the chrome through the image.
+// `#define CITY_REFL_NO_LAMPS` compiles the file as it was before.
 //
 // THE PLAYER'S GLASS (CITY-RT M2 R3b, hlsl/car_rt_refl_glass.hlsli, car_glass_rules.h): the glass variant of this file (CAR_RT_REFL_GLASS) has an entry point of its own that finds the pane at a pixel
 // with a primary ray against the player's glass alone, nearer than the picture's depth, casts one mirror ray through TraceRay and writes the reflection times the glass's Fresnel for an additive pass.

@@ -28,8 +28,16 @@
 // (the screen shortcut of ResolveHit, with the mip chain of colour_post). A frame whose products are not there (the want lags one frame: the first frame after a switch, a pause view) resolves
 // by the model alone. The shader's constants are a small buffer of rows (GpuRows, bound as set 3), written by the host every frame.
 //
-// THE NUMBERS THE PASS DOES NOT MAKE UP: the sun (frame rows), the lamp schedule (the sun's elevation, the headlight rig's night curve: LampSchedule; the lamp list and the game's own
-// lamp rule are R7), the wetness (0: the rain's wetness is R4's), the haze (none: CITY_HIT_HAZE is not wired). Each is a CHECK in city_refl.h.
+// THE LAMPS (CITY-RT R7's lamp term, wired here by REFL-LAMPS): a city hit is lit by the street lamps and the fill lights around it, and what glows glows by the world's own schedule: the shader reads the
+// ray tracing world frame's rows and lamp grid (rt_world_frame_rules.h: t10 and t11 of the car scene's set, which every pass of this file's layout already binds) with the city hit library's
+// CITY_HIT_LAMP_GRID: the lamps of the 64 m cells around the hit, at most 96 of them, their light capped, no shadow ray (the unshadowed sum: a reflection's mirror ray is not denoised, one chosen lamp
+// with a ray would be noise there); the hit's lamp lenses glow by the street lamps' schedule, neon, signs and lit windows by the fill lights', a traffic signal always (LampTermFor and
+// GlowFactorFor are the twins of the shader's CityReflHit). A debug setting turns it off (mcla_gpu_city_refl_lamps: the row's kFlagLamps): with it off, or in a frame whose world rows are not valid, the
+// hit is lit as it was (the lamp schedule below, no lamp light). The chrome's stage reads the paint's image, and the glass pass and the opponents' variant share the paint's shader file, so one change
+// lights all four.
+//
+// THE NUMBERS THE PASS DOES NOT MAKE UP: the sun (frame rows), the wetness (0: the rain's wetness is R4's), the haze (none: CITY_HIT_HAZE is not wired). The lamp schedule below is the fallback (the sun's
+// elevation, the headlight rig's night curve: LampSchedule) for a frame with no world rows. Each is a CHECK in city_refl.h.
 //
 // This header includes no renderer: city_refl_rules_test.cpp builds on its own.
 // ===========================================================================
@@ -215,6 +223,45 @@ inline float LampSchedule(float sun_sine, bool sun_known) {
 }
 
 // ---------------------------------------------------------------------------
+// the lamp term of a city hit (the world frame's lamp grid and glow schedule: the twin of hlsl CityReflHit's lamp part)
+// ---------------------------------------------------------------------------
+
+// The world rows' flag that says the frame's rows were filled (rt_world_frame_rules.h kWorldValid; hlsl RT_WORLD_VALID): a frame without it has no lamps and no schedule to read.
+inline constexpr uint32_t kWorldValidFlag = 1;
+// The glow kinds (src/citypack/city_hit_format.h kGlow*; hlsl CITY_HIT_GLOW_*): what a glowing material's glow follows.
+inline constexpr uint32_t kGlowNight = 0;   // neon, signs, lit windows, interiors: the fill lights' night factor
+inline constexpr uint32_t kGlowLens = 1;    // a street lamp's lens: the street lamps' schedule
+inline constexpr uint32_t kGlowAlways = 2;  // a traffic signal
+inline constexpr uint32_t kLampsFlag = 4;   // the library's CITY_HIT_P_LAMPS (kPLamps below, with the other flags)
+
+// What a hit's lamp light and glow take in a frame: the world frame's, or the lamp schedule of old.
+struct LampTerm {
+  bool world = false;        // the lamp grid and the world's glow schedule are used
+  float lamp_factor = 0.0f;  // CityHitParams::lampFactor: the world rows' (0 by day .. 1 at night) or the sun's elevation's
+};
+// `lamps_flag`: the row's kFlagLamps (the host's switch); `world_flags` and `world_lamp_factor`: the world rows' status row 32 (y the flags, w the factor); `sun_schedule`: LampSchedule's.
+// The world is used only with the switch on and the rows valid; the lamp factor is then the world's.
+constexpr LampTerm LampTermFor(bool lamps_flag, uint32_t world_flags, float world_lamp_factor, float sun_schedule) {
+  LampTerm t;
+  t.world = lamps_flag && (world_flags & kWorldValidFlag) != 0;
+  t.lamp_factor = t.world ? world_lamp_factor : sun_schedule;
+  return t;
+}
+// The library's flags of the hit: the params' flags as the host wrote them, with the lamp light only where the world is used (a frame whose rows are not valid lights nothing, as before).
+constexpr uint32_t LampFlags(uint32_t flags, const LampTerm& t) { return t.world ? flags : (flags & ~kLampsFlag); }
+// What a glowing material of `kind` glows by, 0..1 (hlsl CityReflGlowFactor): the world rows' row 47 (a lens by `street`, the rest by `fill`) where the world is used, else the library's own default with
+// the sun's schedule (the lamp factor); a traffic signal always.
+constexpr float GlowFactorFor(const LampTerm& t, uint32_t kind, float street, float fill) {
+  if (kind == kGlowAlways) {
+    return 1.0f;
+  }
+  if (t.world) {
+    return std::clamp(kind == kGlowLens ? street : fill, 0.0f, 1.0f);
+  }
+  return std::clamp(t.lamp_factor, 0.0f, 1.0f);
+}
+
+// ---------------------------------------------------------------------------
 // the shader's numbers (the sun's disc, the picture's trust)
 // ---------------------------------------------------------------------------
 
@@ -239,7 +286,9 @@ inline constexpr uint32_t kPLampShadow = 8;
 inline constexpr uint32_t kPEmissive = 16;
 inline constexpr uint32_t kPCalibrate = 32;
 inline constexpr uint32_t kPScreen = 64;
-constexpr uint32_t ParamFlags(bool screen, bool stats) { return kPSunRay | kPEmissive | (screen ? kPScreen : 0u) | (stats ? kPCalibrate : 0u); }
+// `lamps`: the lamp light of the world frame's grid (the row's kFlagLamps; the shader drops the flag again in a frame whose world rows are not valid: LampFlags).
+constexpr uint32_t ParamFlags(bool screen, bool stats, bool lamps = false) { return kPSunRay | kPEmissive | (lamps ? kPLamps : 0u) | (screen ? kPScreen : 0u) | (stats ? kPCalibrate : 0u); }
+static_assert(kPLamps == kLampsFlag, "the lamp flag is the library's");
 
 // The size of colour_post's mip level `level` for a level 0 of `size`: halved with the odd edge rounded up (screen_frame.h HizLevelSize; hlsl CityReflLevelSize).
 constexpr uint32_t LevelSize(uint32_t size, uint32_t level) { return std::max<uint32_t>(1, (size + (1u << level) - 1u) >> level); }
@@ -274,6 +323,7 @@ inline constexpr uint32_t kFlagOn = 1;        // the pass traces the city this f
 inline constexpr uint32_t kFlagScreen = 2;    // lin_depth and colour_post are in the constants
 inline constexpr uint32_t kFlagStats = 4;     // a stats frame: the counters count
 inline constexpr uint32_t kFlagCoat = 8;      // a city hit takes the paint's clear-coat layer (the image's sign)
+inline constexpr uint32_t kFlagLamps = 16;    // a city hit is lit by the world frame's lamps and glows by its schedule (mcla_gpu_city_refl_lamps; the shader also needs the world rows to be valid)
 
 struct RowsIn {
   Level level = Level::kOff;
@@ -289,6 +339,7 @@ struct RowsIn {
   float sun_tan = kSunTan;
   float wet = 0.0f;
   int32_t view = 0;
+  bool lamps = false;  // the lamp term (kFlagLamps)
   float gains[rt_hit_cal::kClasses] = {};
 };
 
@@ -315,10 +366,11 @@ inline void MakeRows(const RowsIn& in, uint32_t rows[kRows][kRowWords]) {
   flags |= screen ? kFlagScreen : 0u;
   flags |= in.stats ? kFlagStats : 0u;
   flags |= in.cell.coat_layer ? kFlagCoat : 0u;
+  flags |= in.lamps ? kFlagLamps : 0u;
   rows[kRowControl][0] = flags;
   rows[kRowControl][1] = in.level == Level::kUltra ? 2u : 1u;
   rows[kRowControl][2] = in.serial;
-  rows[kRowControl][3] = ParamFlags(screen, in.stats);
+  rows[kRowControl][3] = ParamFlags(screen, in.stats, in.lamps);
   if (screen) {
     rows[kRowDepth][0] = in.depth_slot;
     rows[kRowDepth][1] = in.depth_width;
@@ -362,7 +414,9 @@ inline constexpr uint32_t kStatScreen = kCalWords + 5;          // city hits the
 inline constexpr uint32_t kStatShaded = kCalWords + 6;          // ... the model does
 inline constexpr uint32_t kStatLamps = kCalWords + 7;           // city hits on lamp lenses, neon signs, lit windows (class emissive)
 inline constexpr uint32_t kStatNoData = kCalWords + 8;          // city hits the library could not resolve (no data in the pool): counted as misses too
-inline constexpr uint32_t kStatsWords = kCalWords + 12;
+inline constexpr uint32_t kStatLampCensus = kCalWords + 12;     // the lamp term's and the glow's counters (the library's CITY_HIT_CENSUS_*, city_hit_shade_rules.h kCensus*): eight words
+inline constexpr uint32_t kLampCensusWords = 8;
+inline constexpr uint32_t kStatsWords = kStatLampCensus + kLampCensusWords;
 inline constexpr uint32_t kStatsBytes = kStatsWords * 4;
 inline constexpr uint32_t kClassEmissive = 13;                  // gbuffer_types.h SurfaceClass
 
@@ -371,8 +425,12 @@ struct Totals {
   uint64_t frames = 0;
   uint64_t texels = 0, rays = 0, city = 0, car = 0, miss = 0, screen = 0, shaded = 0, lamps = 0, no_data = 0;
   uint64_t samples = 0;  // the calibration's samples (every class)
+  uint64_t lamp_words[kLampCensusWords] = {};  // the lamp term's counters
   void Add(const uint32_t words[kStatsWords]) {
     ++frames;
+    for (uint32_t i = 0; i < kLampCensusWords; ++i) {
+      lamp_words[i] += words[kStatLampCensus + i];
+    }
     texels += words[kStatTexels];
     rays += words[kStatRays];
     city += words[kStatCity];
@@ -398,6 +456,20 @@ inline std::string CensusText(uint64_t frame, Level level, float reach, const To
   std::snprintf(buf, sizeof(buf), "[city refl] frame %llu: level %s, reach %.0f m, texels %.0f, rays %.0f, city %.0f, car %.0f, miss %.0f, screen %.0f, shaded %.0f, lamps %.0f",
                 static_cast<unsigned long long>(frame), std::string(city_rt::LevelName(level)).c_str(), double(reach), double(t.texels) / n, double(t.rays) / n, double(t.city) / n,
                 double(t.car) / n, double(t.miss) / n, double(t.screen) / n, double(t.shaded) / n, double(t.lamps) / n);
+  return buf;
+}
+// The lamp term's line (REFL-LAMPS; a prefix of its own, so that the report's census and gain patterns do not take it): the lookups of a stats frame (mean) and what they found, the share that hit a cap,
+// the glowing hits by kind. The words are city_hit_shade_rules.h kCensus*: lookups, lamps examined, lamps that lit the hit, lookups that stopped at the lamp cap with lamps left, lookups over the light's
+// cap, glowing hits whose glow follows the night curve, the street lamps' schedule, always.
+inline std::string LampCensusText(uint64_t frame, const Totals& t) {
+  const double n = double(std::max<uint64_t>(t.frames, 1));
+  const double lookups = double(t.lamp_words[0]);
+  const double per = lookups > 0.0 ? 1.0 / lookups : 0.0;
+  char buf[320];
+  std::snprintf(buf, sizeof(buf),
+                "[city refl] lamp term frame %llu: lookups %.0f, lamps examined %.1f, lit %.1f a lookup, stopped at the lamp cap %.1f%%, over the light cap %.1f%%, glow: night %.0f, lens %.0f, always %.0f",
+                static_cast<unsigned long long>(frame), lookups / n, double(t.lamp_words[1]) * per, double(t.lamp_words[2]) * per, 100.0 * double(t.lamp_words[3]) * per,
+                100.0 * double(t.lamp_words[4]) * per, double(t.lamp_words[5]) / n, double(t.lamp_words[6]) / n, double(t.lamp_words[7]) / n);
   return buf;
 }
 // The classes of the gain line: G-buffer classes 1 (world) for the solid, 2 (road) for the ground, 11 (glass), 13 (emissive).

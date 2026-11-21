@@ -13,7 +13,8 @@ Two levels of "the same": IDENTICAL (every line equal) and EQUIVALENT: the same 
 order of the phi nodes at the head of a block. dxc's output has no fixed phi order (LLVM orders them by pointer, so a rename or a moved function can swap two of them: the gamma curve's
 `scale` and `offset` did when the shared code moved), which changes no value and no operation; the check canonicalises it away (a block's phi run is sorted by its text, the values and
 labels are numbered by first appearance) and then compares, so a changed operand or constant or operation still fails.
-The entry points are the car's: car_rt_refl_cs (the player's pass), the same with CAR_RT_REFL_OPPONENTS=1 (the opponents' pass), car_rt_refl_denoise_cs, car_rt_ao_cs, car_rt_check_cs
+The entry points are the car's: car_rt_refl_cs (the player's pass), the same with CAR_RT_REFL_OPPONENTS=1 (the opponents' pass) and CAR_RT_REFL_GLASS=1 (the glass pass), all three with
+CITY_REFL_NO_LAMPS=1 (REFL-LAMPS: the world frame's lamp term of hlsl/city_refl.hlsli left out: the parent's code) and without it (the *_lamps_cs entries, no base), car_rt_refl_denoise_cs, car_rt_ao_cs, car_rt_check_cs
 and the city's shadow pass city_rt_shadow_cs (which does not use the shared file; it is the control: it must not change either). The city hit library's reference consumer
 (city_hit_shade_check_cs) and the world frame's (rt_world_probe_cs, rt_world_lamp_light_cs) have no base: they are compiled for DXIL and SPIR-V and validated (spirv-val), nothing more.
 Exit 0 when every entry point is identical or equivalent, 1 when one is not (the first differing lines are printed), 2 when a tool or a source is missing.
@@ -29,9 +30,16 @@ import tempfile
 
 DEFAULT_DXC = r'C:\mcv\larecomp\downloads\dxc-v1.9.2609\x\bin\x64\dxc.exe'
 DEFAULT_SPIRV_BIN = r'C:\VulkanSDK\1.4.363.0\Bin'
+# REFL-LAMPS: the reflection passes (the player's paint, the opponents' variant, the glass variant) take the world frame's lamp term and glow in hlsl/city_refl.hlsli unless CITY_REFL_NO_LAMPS is defined. The
+# three compiled WITH that define must still be what the parent's were (the lamp term left out changes no instruction: the A/B of the debug setting is a runtime flag on top of this); the same three without
+# it (the *_lamps_cs entries) have no base: they only have to compile (DXIL, SPIR-V) and validate.
 ENTRIES = [
-    ('car_rt_refl_cs', 'car_rt_refl_cs.hlsl', []),
-    ('car_rt_refl_opp_cs', 'car_rt_refl_cs.hlsl', ['CAR_RT_REFL_OPPONENTS=1']),
+    ('car_rt_refl_cs', 'car_rt_refl_cs.hlsl', ['CITY_REFL_NO_LAMPS=1']),
+    ('car_rt_refl_opp_cs', 'car_rt_refl_cs.hlsl', ['CAR_RT_REFL_OPPONENTS=1', 'CITY_REFL_NO_LAMPS=1']),
+    ('car_rt_refl_glass_cs', 'car_rt_refl_cs.hlsl', ['CAR_RT_REFL_GLASS=1', 'CITY_REFL_NO_LAMPS=1']),
+    ('car_rt_refl_lamps_cs', 'car_rt_refl_cs.hlsl', []),  # REFL-LAMPS: the paint with the world frame's lamp term: new, it only has to compile and validate
+    ('car_rt_refl_opp_lamps_cs', 'car_rt_refl_cs.hlsl', ['CAR_RT_REFL_OPPONENTS=1']),
+    ('car_rt_refl_glass_lamps_cs', 'car_rt_refl_cs.hlsl', ['CAR_RT_REFL_GLASS=1']),
     ('car_rt_refl_denoise_cs', 'car_rt_refl_denoise_cs.hlsl', []),
     ('car_rt_ao_cs', 'car_rt_ao_cs.hlsl', []),
     ('car_rt_check_cs', 'car_rt_check_cs.hlsl', []),
@@ -238,6 +246,9 @@ def main():
         results = {}
         for tag, directory in (('base', base_dir), ('new', new_dir)):
             path = os.path.join(directory, source)
+            if tag == 'base' and name.endswith('_lamps_cs'):
+                results[tag] = None  # REFL-LAMPS: the entries with the lamp term have no base
+                continue
             if not os.path.exists(path):
                 print('%-24s %s: no %s' % (name, tag, path))
                 results[tag] = None

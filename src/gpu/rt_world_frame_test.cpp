@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "hlsl_cpp_shim.h"
+#include "city_refl_rules.h"  // REFL-LAMPS: the reflection passes' lamp term, checked against the world frame's numbers (TestSources)
 #include "rt_world_frame_rules.h"
 #include "world_clock.h"
 
@@ -1436,6 +1437,58 @@ void TestSources(const std::string& src) {
     CHECK(Has(cpp, "rt_world::EvidenceOf(live_fresh_, live_, 0)") && Has(cpp, "table->NearSphere(eye, rt_world::kLiveListReach, &near_table)") &&
           Has(cpp, "schedule_ = rt_world::ApplyLiveEvidence(schedule_, evidence);") && Has(cpp, "in.live_shining = evidence.shining;") && Has(cpp, "rt_world::LampCensusText(lamp_census_)"));
     CHECK(Has(ReadFile(src + "/gpu/rt_world_frame.h"), "void AddLampCensus(const uint32_t words[city_hit_shade::kCensusWords]) { lamp_census_.Add(words); }"));
+  }
+  // REFL-LAMPS: the car reflection passes (the player's paint, the opponents' variant, the glass: one shader file) are consumers of the world frame through the car scene's set, which they all bind as set 2
+  // (scene.SetDesc()) and which holds t10 and t11 since the frame package: no layout of theirs gained a binding and no D3D12 descriptor count changed (recounted here: the car scene's set 12 views, the
+  // city's own set 2: its rows and its counters).
+  {
+    const std::string refl_hlsl = ReadFile(hlsl_dir + "car_rt_refl_cs.hlsl");
+    const std::string city_hlsli = ReadFile(hlsl_dir + "city_refl.hlsli");
+    const std::string player = ReadFile(src + "/gpu/car_rt_refl.cpp");
+    const std::string opp = ReadFile(src + "/gpu/car_rt_opp_refl.cpp");
+    const std::string glass = ReadFile(src + "/gpu/car_rt_glass_refl.cpp");
+    const std::string city_cpp = ReadFile(src + "/gpu/city_refl.cpp");
+    CHECK(!refl_hlsl.empty() && !city_hlsli.empty() && !player.empty() && !opp.empty() && !glass.empty() && !city_cpp.empty());
+    CHECK(Has(refl_hlsl, "#define CAR_RT_SPACE 2") && Has(city_hlsli, "#define RT_WORLD_SPACE CAR_RT_SPACE\n#include \"rt_world_frame.hlsli\""));
+    for (const std::string* pass : {&player, &opp, &glass}) {
+      CHECK(Has(*pass, "builder.addDescriptorSet(scene.SetDesc());") && Has(*pass, "scene_set != kSceneSet"));
+    }
+    CHECK(Has(player, "list->setComputeDescriptorSet(view.set, kSceneSet);") && Has(opp, "list->setComputeDescriptorSet(view.set, kSceneSet);") && Has(glass, "list->setComputeDescriptorSet(view.set, kSceneSet);"));
+    CHECK(Has(city_cpp, "CreateDescriptorSet(set_builder_, 2, 0, \"city refl set\")") && Has(city_cpp, "set_builder_.addByteAddressBuffer(0);") && Has(city_cpp, "set_builder_.addReadWriteByteAddressBuffer(1);"));
+    // the identity tool compiles the three passes both ways (the lamp term left out against the parent's code, and with it: it must compile and validate)
+    const std::string tool2 = ReadFile(src + "/../tools/check_rt_hit_identity.py");
+    CHECK(Has(tool2, "('car_rt_refl_cs', 'car_rt_refl_cs.hlsl', ['CITY_REFL_NO_LAMPS=1'])") && Has(tool2, "'CAR_RT_REFL_OPPONENTS=1', 'CITY_REFL_NO_LAMPS=1'") && Has(tool2, "'CAR_RT_REFL_GLASS=1', 'CITY_REFL_NO_LAMPS=1'") &&
+          Has(tool2, "('car_rt_refl_lamps_cs', 'car_rt_refl_cs.hlsl', [])") && Has(tool2, "('car_rt_refl_opp_lamps_cs', 'car_rt_refl_cs.hlsl', ['CAR_RT_REFL_OPPONENTS=1'])") &&
+          Has(tool2, "('car_rt_refl_glass_lamps_cs', 'car_rt_refl_cs.hlsl', ['CAR_RT_REFL_GLASS=1'])"));
+    // the twin's decision is built on the world frame's numbers
+    namespace cr = mcla::gpu::city_refl;
+    CHECK(cr::kWorldValidFlag == rw::kWorldValid && cr::kGlowNight == cs::kGlowNight && cr::kGlowLens == cs::kGlowLens && cr::kGlowAlways == cs::kGlowAlways && cr::kPLamps == cs::kPLamps && cr::kLampsFlag == cs::kPLamps &&
+          cr::kLampCensusWords == cs::kCensusWords && cr::kPLampShadow == cs::kPLampShadow);
+    // the glow factor of the reflections is the world rows' for every kind and every schedule; the lamp factor is the status row's
+    {
+      Lcg rng;
+      int wrong = 0, cases = 0;
+      for (int i = 0; i < 400; ++i) {
+        rw::WorldInput in = RandomWorld(rng, nullptr);
+        in.schedule.street = rng.Range(0.0f, 1.0f);
+        in.schedule.fill = rng.Range(0.0f, 1.0f);
+        in.schedule.factor = std::max(in.schedule.street, in.schedule.fill);
+        uint32_t rows[rw::kTotalRows][4];
+        rw::MakeWorldRows(in, rows);
+        const rw::WorldDecoded d = rw::DecodeWorldRows(rows);
+        const float sun = rng.Range(0.0f, 1.0f);
+        const cr::LampTerm term = cr::LampTermFor(true, rows[rw::kRowStatus][1], rh::FromBits(rows[rw::kRowStatus][3]), sun);
+        ++cases;
+        if (!term.world || term.lamp_factor != d.lamp_factor) ++wrong;
+        for (uint32_t kind = 0; kind < 4; ++kind) {
+          const float want = kind == cs::kGlowAlways ? 1.0f : std::clamp(d.GlowFactor(kind), 0.0f, 1.0f);
+          if (cr::GlowFactorFor(term, kind, rh::FromBits(rows[rw::kRowSchedule][0]), rh::FromBits(rows[rw::kRowSchedule][1])) != want) ++wrong;
+        }
+        const cr::LampTerm blind = cr::LampTermFor(true, 0u, d.lamp_factor, sun);
+        if (blind.world || blind.lamp_factor != sun || cr::GlowFactorFor(blind, 1, d.street, d.fill) != sun) ++wrong;
+      }
+      CHECK(wrong == 0 && cases == 400);
+    }
   }
   // the hit library keeps the flat range for a consumer that defines CITY_HIT_LAMP_LOAD and takes the world frame's grid for one that defines CITY_HIT_LAMP_GRID (R7)
   {

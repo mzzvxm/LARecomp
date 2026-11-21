@@ -22,11 +22,16 @@
 //                frame and mcla_gpu_city_refl_chrome on (pipelines.cpp WantedFeatures reads it at every draw; the flag is set here, at the frame's start, like the paint's CarSelfRefl::Selected). The glass is a pass of its own
 //                (car_rt_glass_refl.h) that asks GlassWanted() of the same cell and mcla_gpu_city_refl_glass.
 //
-// DEBUG SETTINGS (all live): mcla_gpu_city_refl_chrome and mcla_gpu_city_refl_glass (false: the chrome / the glass as before, the A/B of R3), mcla_gpu_city_refl_screen (false: the picture's colour is never the answer, every hit is shaded: the A/B of the shortcut), mcla_gpu_city_refl_coat (false: a city hit is a soft
+//   THE LAMPS    (REFL-LAMPS) a shaded city hit is lit by the world frame's lamp grid and what glows glows by its schedule (the paint, the other cars' paint and the glass in one shader file; the chrome reads
+//                the paint's image): the rows' kFlagLamps from mcla_gpu_city_refl_lamps, nothing new to bind (t10 and t11 are in the car scene's 12 view set), the lamp term's counters in the city's counter buffer and
+//                one more census line `[city refl] lamp term frame N: ...` (city_refl_rules.h LampCensusText).
+//
+// DEBUG SETTINGS (all live): mcla_gpu_city_refl_lamps (false: no lamp light and the sun's glow schedule on a hit, as before REFL-LAMPS), mcla_gpu_city_refl_chrome and mcla_gpu_city_refl_glass (false: the chrome / the glass as before, the A/B of R3), mcla_gpu_city_refl_screen (false: the picture's colour is never the answer, every hit is shaded: the A/B of the shortcut), mcla_gpu_city_refl_coat (false: a city hit is a soft
 // cone's hit as before, not a mirror's and the coat layer's), mcla_gpu_city_refl_reach (the cell's reach in metres, 0: the level's), mcla_gpu_city_refl_view (1 the hit's source, 2 its class, drawn in the
 // paint through mcla_gpu_car_selfrefl_view 2, the colour the ray sees).
 //
-// CHECK (nothing here was run): the set's registers on both APIs (t0 and u1 in space 3, the push block in space 4); the D3D12 descriptor count of the set (2 views); the upload buffers' reads by the
+// CHECK (nothing here was run): the set's registers on both APIs (t0 and u1 in space 3, the push block in space 4); the D3D12 descriptor count of the set (2 views: the lamp term's counters are in u1's buffer,
+// no view added; the car scene's set the pass binds as set 2 holds t10 and t11 since CITY-RT FRAME: 12 views); the upload buffers' reads by the
 // pass; the screen images' layouts at the trigger (SHADER_READ, as the car history's own read of colour_post: a barrier to the same layout is recorded); the first stats frame's readback; the lag of the
 // screen wants (one frame: the first frame after a switch resolves by the model alone).
 //

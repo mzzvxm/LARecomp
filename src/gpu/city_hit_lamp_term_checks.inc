@@ -8,6 +8,8 @@
 //   the grid       the shader's CityHitShade over the world frame's buffers against the twin's Shade with rw::LampLightAt, on thousands of random hits: the colour, the glow, the rays cast, the census
 //   the caps       a dense place (more lamps than the cap), a bright cluster (the sum over its cap), day (nothing), a lookup that finds nothing
 //   the glow kinds a lens glows by the street lamps' schedule, neon and lit windows by the fill lights', a signal always
+//   the reflections' glue (REFL-LAMPS) city_refl_rules.h's LampTermFor / LampFlags / GlowFactorFor in front of the twin's Shade: switch off or world rows not valid = the shading of old (no lamp light, the sun's
+//                  schedule for the glow), exactly; on and valid = the grid's lamp light and the world rows' glow by kind
 
 namespace ch = larecomp::citypack;
 
@@ -449,6 +451,108 @@ void EmissiveCalibrationChecks() {
   CHECK(Near(table[lens], gains.Gain(lens)) && table[lens] > 3.0f && table[wall] <= 3.0f + 1e-4f);
 }
 
+
+// REFL-LAMPS: what the car reflection passes' CityReflHit does in front of the library (city_refl_rules.h LampTermFor, LampFlags, GlowFactorFor), run through the twin's Shade on random hits and random worlds.
+// With the switch off, or with world rows that are not valid, the shading is the shading of old: the host's flags without the lamp flag, the sun's schedule as the lamp factor, the library's own default glow:
+// EXACTLY the same colour and glow, no lamp lookup at all. With the switch on and valid rows it is the grid's lamp light and the world rows' glow by kind.
+void ReflectionGlueChecks(const City& city, const std::vector<uint32_t>& words, Lcg& rng, int rounds) {
+  namespace cr = mcla::gpu::city_refl;
+  int off_cases = 0, on_cases = 0, wrong_off = 0, wrong_on = 0, wrong_glow = 0, lamp_lookups_off = 0, on_lit = 0, on_differs = 0, glow_cases = 0;
+  std::vector<hlsl_shim::uint4> frame_rows;
+  for (int round = 0; round < rounds; ++round) {
+    Case k = RandomCase(rng, uint32_t(city.sectors.size()));
+    k.frame.camera_known = true;
+    for (int c = 0; c < 3; ++c) k.frame.camera_world[c] = rng.Range(-300.0f, 300.0f);
+    const bool lamps_flag = rng.Below(2) == 0;
+    const bool valid = rng.Below(4) != 0;
+    const float sun_schedule = rng.Below(3) == 0 ? 0.0f : rng.Range(0.0f, 1.0f);
+    const bool stats = rng.Below(3) == 0;
+    const uint32_t host_flags = cr::ParamFlags(false, stats, lamps_flag);
+    // the world: lamps near the hit at a night hour (the schedule lights them)
+    const cs::V3 hit = k.ray.origin + k.ray.direction * k.ray.t;
+    const float view[3] = {hit.x, hit.y, hit.z};
+    float centre[3];
+    rh::WorldPoint(k.frame.camera_world, k.frame.world_axes_view, view, centre);
+    GridWorld w;
+    MakeGridWorld(&w, k.frame, LampsAround(rng, centre, rng.Below(30), rng.Below(12), rng.Range(10.0f, 60.0f), 15.0f, 90.0f), rng.Range(21.0f, 23.5f), rng.Below(2) == 0 ? -1.0f : rng.Range(0.0f, 1.0f),
+                  rng.Below(2) == 0 ? -1.0f : rng.Range(0.0f, 1.0f), stats);
+    const uint32_t world_flags = valid ? w.decoded.flags : 0u;
+    const cr::LampTerm term = cr::LampTermFor(lamps_flag, world_flags, w.decoded.lamp_factor, sun_schedule);
+    // the decision itself
+    CHECK(term.world == (lamps_flag && valid));
+    CHECK(term.lamp_factor == (term.world ? w.decoded.lamp_factor : sun_schedule));
+    BindFrame(k.frame, &frame_rows);
+    const Decoded d = DecodeCaseWith(city, words, k);
+    // what the pass gives the library
+    Case now = k;
+    now.p.flags = cr::LampFlags(host_flags, term) & ~cs::kPScreen;
+    now.p.lamp_factor = term.lamp_factor;
+    now.p.lamp_first = 0;
+    now.p.lamp_count = 0;
+    const auto glow = [&](uint32_t kind) { return cr::GlowFactorFor(term, kind, w.decoded.street, w.decoded.fill); };
+    TwinCensus census;
+    census.calibrate = (now.p.flags & cs::kPCalibrate) != 0;
+    GridCoverage cov;
+    cs::Reads reads_now = term.world ? MakeGridReads(now, w, &census, &cov) : MakeReads(now);
+    reads_now.glow_factor = glow;
+    int lookups = 0;
+    if (term.world) {
+      const auto inner = reads_now.lamps_at;
+      reads_now.lamps_at = [&lookups, inner](cs::V3 position, cs::V3 normal, bool shadow, float noise) {
+        ++lookups;
+        return inner(position, normal, shadow, noise);
+      };
+    }
+    const cs::Shaded got = cs::Shade(now.p, now.frame, now.ray, now.inst, d.hit, d.material, d.texture, reads_now, nullptr);
+    if (!got.valid) continue;
+    if (!term.world) {
+      // the shading of old: the host's flags as they were (no lamp flag), the sun's schedule as the lamp factor, no glow schedule hook
+      Case old = k;
+      old.p.flags = (cr::ParamFlags(false, stats, false)) & ~cs::kPScreen;
+      old.p.lamp_factor = sun_schedule;
+      old.p.lamp_first = 0;
+      old.p.lamp_count = 0;
+      const cs::Shaded want = cs::Shade(old.p, old.frame, old.ray, old.inst, d.hit, d.material, d.texture, MakeReads(old), nullptr);
+      ++off_cases;
+      lamp_lookups_off += lookups;
+      if (!(want.valid && got.colour.x == want.colour.x && got.colour.y == want.colour.y && got.colour.z == want.colour.z && got.glow == want.glow)) ++wrong_off;
+      continue;
+    }
+    // on: the grid's light and the world rows' glow: the same call with the world's own glow hook (decoded.GlowFactor) and the lamp flag as the host wrote it
+    Case ref = k;
+    ref.p.flags = host_flags & ~cs::kPScreen;
+    ref.p.lamp_factor = w.decoded.lamp_factor;
+    ref.p.lamp_first = 0;
+    ref.p.lamp_count = 0;
+    TwinCensus census_ref;
+    census_ref.calibrate = (ref.p.flags & cs::kPCalibrate) != 0;
+    GridCoverage cov_ref;
+    const cs::Shaded want = cs::Shade(ref.p, ref.frame, ref.ray, ref.inst, d.hit, d.material, d.texture, MakeGridReads(ref, w, &census_ref, &cov_ref), nullptr);
+    ++on_cases;
+    if (!(want.valid && got.colour.x == want.colour.x && got.colour.y == want.colour.y && got.colour.z == want.colour.z && got.glow == want.glow)) ++wrong_on;
+    on_lit += cov.lit_cases;
+    // the glow factor of every kind is the world rows' (a signal always, a lens the street lamps', the rest the fill lights')
+    for (uint32_t kind = 0; kind < 3; ++kind) {
+      ++glow_cases;
+      if (glow(kind) != std::clamp(w.decoded.GlowFactor(kind), 0.0f, 1.0f)) ++wrong_glow;
+    }
+    // a hit the lamps light differs from the same hit without the lamp light (the term does something)
+    if (cov.lit_cases != 0) {
+      Case dark = ref;
+      dark.p.flags &= ~cs::kPLamps;
+      const cs::Shaded none = cs::Shade(dark.p, dark.frame, dark.ray, dark.inst, d.hit, d.material, d.texture, MakeGridReads(dark, w, &census_ref, &cov_ref), nullptr);
+      on_differs += (none.colour.x != got.colour.x || none.colour.y != got.colour.y || none.colour.z != got.colour.z) ? 1 : 0;
+    }
+  }
+  std::printf("reflection lamp glue: %d cases with the old shading (switch off or no world rows), %d with the world frame's lamps (%d lit by a lamp, %d changed by it)\n", off_cases, on_cases, on_lit, on_differs);
+  Check(off_cases > 400 && on_cases > 400 && on_lit > 40, Num2("the glue's random hits covered both sides (old %.0f, with the lamps %.0f)", off_cases, on_cases));
+  Check(wrong_off == 0, Num("with the lamp switch off or the world rows not valid the shading is the shading of old, exactly (%.0f differ)", wrong_off));
+  Check(lamp_lookups_off == 0, Num("... and no lamp lookup is made (%.0f)", lamp_lookups_off));
+  Check(wrong_on == 0, Num("with the lamp switch on and valid rows the shading is the grid's lamp light and the world rows' glow (%.0f differ)", wrong_on));
+  Check(wrong_glow == 0, Num("the glow factor of each kind is the world rows' (%.0f wrong)", wrong_glow));
+  Check(on_differs > 0 && on_differs * 2 > on_lit, Num2("a lamp-lit hit is lit differently without the lamp term (%.0f of %.0f)", on_differs, on_lit));
+}
+
 // The lamp term's library text and the consumers: what the host and the other passes rely on.
 void LampTermTextChecks(const std::string& src) {
   const std::string lib = ReadFile(src + "/gpu/hlsl/city_hit_shade.hlsli");
@@ -528,6 +632,7 @@ void LampTermChecks(const City& city, Lcg& rng, const std::string& src) {
   Check(cov.glow_kind[0] > 100 && cov.glow_kind[1] > 20 && cov.glow_kind[2] > 20, Num2("every glow kind was hit (night %.0f, lens %.0f)", cov.glow_kind[0], cov.glow_kind[1]));
   GridCapChecks(rng);
   GlowKindChecks();
+  ReflectionGlueChecks(city, words, rng, 3000);
   Check(hlsl_shim::gCityMaterials.errors == 0 && hlsl_shim::gRtWorld.errors == 0 && hlsl_shim::gRtLamps.errors == 0, "no misaligned or out of range load on the world rows or the lamps");
   // the table back as the first part of the test had it
   hlsl_shim::gCityMaterials.data = city.material_rows.data();
