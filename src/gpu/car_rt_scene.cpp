@@ -113,7 +113,7 @@ struct CarRtScene::Placed {
   uint64_t key = 0;
   Mesh mesh;
   plume::RenderBottomLevelASBuildInfo info;
-  Mesh* node = nullptr;  // in meshes_ once the structure exists
+  Mesh* node = nullptr;  // in meshes_ once the structure exists; valid until PlaceWalkedCars (it can give the mesh back): later, look the mesh up by `key`
   bool ok = false;
 };
 
@@ -770,9 +770,15 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     if (!p.ok) {
       continue;
     }
+    // Found again by its key: PlaceWalkedCars (above) gives back the meshes of the cars that left the walk's set, and one of them can be a mesh placed in this very frame:
+    // its entry is erased and its structure retired, so p.node would point into an erased node and the build would get a null structure (ppr1, 2026-11-21).
+    Mesh* const mesh = rr::BuildableMesh(meshes_, p.key);
+    if (mesh == nullptr) {
+      continue;
+    }
     list->barriers(plume::RenderBarrierStage::COMPUTE,
                    plume::RenderBufferBarrier(res.scratch.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE));
-    list->buildBottomLevelAS(p.node->structure.get(), plume::RenderBufferReference(res.scratch.get(), 0), p.info);
+    list->buildBottomLevelAS(mesh->structure.get(), plume::RenderBufferReference(res.scratch.get(), 0), p.info);
     recorded = true;
   }
 
