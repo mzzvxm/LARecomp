@@ -6,7 +6,7 @@
 //   run: larecomp_denoiser_setting_test [-v] [<src/gpu dir>]   (without the path the sources are found from this file's own place; -v prints every check)
 //
 // It checks: the row's words (stored, menu, launcher) against NVIDIA's guidelines (the feature's name, the tooltip word for word, OFF and AUTO, nothing called low); the gate that greys the row, over the WHOLE table of
-// what the menu knows (against an oracle written out here, for the shipped consumer table, where no effect has a raw mode yet, and for a made-up one with cells flipped); what the row says in each state and that it fits the
+// what the menu knows (against an oracle written out here, for the shipped consumer table, where two effects have a raw mode and none is trusted to AUTO yet, and for a made-up one with cells flipped); what the row says in each state and that it fits the
 // page (41 characters of the widest label plus the widest value); AUTO's label; then the TEXT of the wiring: the row in upscaling_menu.cpp, the plan and the snapshot in temporal.cpp, the plugin request in
 // temporal_dlss.cpp, the three settings files, the exposure check's lists, the CMake lines.
 
@@ -195,7 +195,7 @@ void GateChecks() {
   const rr::ConsumerTable made = {{{"a", true, true}, {"b", true, false}, {"c", false, true}, {"d", false, false}}};
   for (int which = 0; which < 2; ++which) {
     const rr::ConsumerTable& table = which == 0 ? rr::kConsumers : made;
-    const char* name = which == 0 ? "the shipped table (no raw mode)" : "a made-up table (two effects built)";
+    const char* name = which == 0 ? "the shipped table (SSR and the cars' reflections built, none trusted to AUTO)" : "a made-up table (two effects built)";
     long long cases = 0;
     long long counts[dn::kGateCount] = {};
     GateTable(table, name, &cases, counts);
@@ -245,16 +245,36 @@ void GateChecks() {
   m.setting = rr::Denoiser::kAuto;
   m.facts.streamline_running = false;
   Check(dn::GateOf(m, made) == dn::Gate::kStarting, "Streamline still starting: on, nothing said yet");
-  // the shipped table: no raw mode, so on auto the row is grey for every PC that could use it, and only the PC's own limits come before that
+  // the shipped table (RR-INT): SSR and the cars' reflections have a raw mode. The row is grey (NOT NEEDED) while neither is on, on for a PC that could use it while one is, and AUTO says OURS either way.
   dn::MenuInputs s;
   s.dlss_listed = s.dlss_chosen = true;
   s.facts = {true, true, true, true, false, true, false};
-  s.consumers_on = rr::kAllConsumers;
-  Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "today (no effect has a raw mode): (NOT NEEDED) even with every effect on, on a PC that could run it");
+  const uint32_t ssr = rr::ConsumerBit(rr::Consumer::kSsr);
+  const uint32_t cars = rr::ConsumerBit(rr::Consumer::kCarRtReflections);
+  const uint32_t city = rr::ConsumerBit(rr::Consumer::kCityRtReflections);
+  const uint32_t gi = rr::ConsumerBit(rr::Consumer::kRtGi);
+  s.consumers_on = 0;
+  Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "shipped table, no effect on: (NOT NEEDED), on a PC that could run it");
+  s.consumers_on = city | gi;
+  Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "shipped table, only the effects that have no raw mode (city reflections, bounce light) on: (NOT NEEDED)");
+  for (const uint32_t on : {ssr, cars, ssr | cars, ssr | city, rr::kAllConsumers}) {
+    s.consumers_on = on;
+    Check(dn::GateOf(s) == dn::Gate::kRuns, "shipped table, SSR or the cars' reflections on (set " + std::to_string(on) + "): the row is on, nothing said");
+    Check(dn::AutoLabel(dn::GateOf(s), on) == "AUTO (OURS)" && !dn::AutoIsRr(dn::GateOf(s), on), "... and AUTO says OURS (set " + std::to_string(on) + "): no effect is trusted to AUTO yet");
+  }
+  // with SSR's cell flipped for AUTO (what RR-6 may do) AUTO says DLSS RR exactly while SSR is on and the row is open
+  rr::ConsumerTable trusted = rr::kConsumers;
+  trusted[size_t(rr::Consumer::kSsr)].auto_uses_rr = true;
+  Check(dn::AutoLabel(dn::Gate::kRuns, ssr, trusted) == "AUTO (DLSS RR)" && dn::AutoLabel(dn::Gate::kRuns, cars, trusted) == "AUTO (OURS)" && dn::AutoLabel(dn::Gate::kRuns, 0u, trusted) == "AUTO (OURS)" &&
+            dn::AutoLabel(dn::Gate::kNotNeeded, ssr, trusted) == "AUTO (OURS)",
+        "AUTO's cell flipped for SSR: AUTO (DLSS RR) while SSR is on and the row open, AUTO (OURS) otherwise");
+  s.consumers_on = ssr;
   s.setting = rr::Denoiser::kRr;
-  Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "... and the row's RR value does not change that");
+  Check(dn::GateOf(s) == dn::Gate::kRuns, "the row's RR value with SSR on: on");
+  s.consumers_on = 0;
+  Check(dn::GateOf(s) == dn::Gate::kNotNeeded, "... and with nothing on: (NOT NEEDED)");
   s.debug = rr::DebugSwitch::kOn;
-  Check(dn::GateOf(s) == dn::Gate::kRuns, "... the debug switch's on does");
+  Check(dn::GateOf(s) == dn::Gate::kRuns, "... the debug switch's on lifts that");
   s.debug = rr::DebugSwitch::kOff;
   Check(dn::GateOf(s) == dn::Gate::kNotAvailable, "... and its off says (N/A)");
   s.debug = rr::DebugSwitch::kProbe;
@@ -315,7 +335,11 @@ void AutoChecks() {
       Check(dn::AutoLabel(g, on, made) == (open && trusted ? "AUTO (DLSS RR)" : "AUTO (OURS)"), "AUTO's label (gate " + std::to_string(int(g)) + ", on " + std::to_string(on) + ")");
     }
   }
-  Check(dn::AutoLabel(dn::Gate::kRuns, rr::kAllConsumers) == "AUTO (OURS)", "today (the shipped table): AUTO is OURS wherever, whatever is on");
+  for (const dn::Gate g : kGates) {
+    for (uint32_t on = 0; on <= rr::kAllConsumers; ++on) {
+      Check(dn::AutoLabel(g, on) == "AUTO (OURS)", "today (the shipped table): AUTO is OURS wherever, whatever is on (gate " + std::to_string(int(g)) + ", on " + std::to_string(on) + ")");
+    }
+  }
   Check(dn::AutoLabel(dn::Gate::kRestart, 1u, made) == "AUTO (OURS)", "(RESTART): the plugin is not loaded, so AUTO is OURS until the restart");
 }
 
@@ -346,6 +370,32 @@ void MenuChecks(const std::string& dir) {
   // the exposure check finds the row's cvar in a normal file
   const std::string toml = ReadFile(dir + "/../../tools/settings_exposure.toml");
   Check(Has(toml, "normal_files = [") && Has(toml.substr(At(toml, "normal_files = ["), 260), "\"menus/upscaling_menu.cpp\""), "tools/settings_exposure.toml lists upscaling_menu.cpp among the files whose rows are for every player (so the row's cvar needs no entry)");
+}
+
+// RR-INT: the effects are consumers (the table's cells and the calls of the effects' BeginFrame, as text).
+void ConsumerWiringChecks(const std::string& dir) {
+  const std::string rules = ReadFile(dir + "/dlss_rr_rules.h");
+  Check(Has(rules, "{\"screen-space reflections\", true, false},") && Has(rules, "{\"ray traced car reflections\", true, false},"), "dlss_rr_rules.h: SSR and the cars' reflections have a raw mode and are not trusted to AUTO yet");
+  Check(Has(rules, "{\"ray traced city reflections\", false, false},") && Has(rules, "{\"ray traced bounce light\", false, false},"), "dlss_rr_rules.h: the effects that do not exist yet have none");
+  const std::string ssr = ReadFile(dir + "/ssr.cpp");
+  const size_t sb = At(ssr, "void ScreenReflections::BeginFrame() {");
+  const size_t se = At(ssr, "\n}\n", sb == std::string::npos ? 0 : sb);
+  const std::string sfn = (sb == std::string::npos || se == std::string::npos) ? std::string() : ssr.substr(sb, se - sb);
+  Check(!sfn.empty() && Has(sfn, "denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);"), "ScreenReflections::BeginFrame tells the board whether SSR is on");
+  Check(Before(sfn, "level_ = level;", "denoiser::NoteConsumer(rr::Consumer::kSsr"), "... after the level is settled (a setting that cannot be made reads as off)");
+  Check(Has(ssr, "#include \"denoiser_setting.h\""), "ssr.cpp includes the board");
+  const std::string car = ReadFile(dir + "/car_selfrefl.cpp");
+  const size_t cb = At(car, "void CarSelfRefl::BeginFrame() {");
+  const size_t ce = At(car, "\n}\n", cb == std::string::npos ? 0 : cb);
+  const std::string cfn = (cb == std::string::npos || ce == std::string::npos) ? std::string() : car.substr(cb, ce - cb);
+  Check(!cfn.empty() && Has(cfn, "denoiser::NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active());"), "CarSelfRefl::BeginFrame tells the board whether the ray traced reflections run");
+  Check(Before(cfn, "rt_->BeginFrame(mode != Mode::kOff);", "denoiser::NoteConsumer(rr::Consumer::kCarRtReflections"), "... after the ray traced pass has decided whether it is wanted");
+  Check(Has(car, "#include \"denoiser_setting.h\""), "car_selfrefl.cpp includes the board");
+  // the other two effects do not exist: nothing may claim to be them
+  const std::string scene = ReadFile(dir + "/scene.cpp");
+  Check(!Has(scene, "NoteConsumer(") && !Has(ssr, "Consumer::kCityRtReflections") && !Has(car, "Consumer::kRtGi"), "no one else calls the board");
+  const std::string temporal = ReadFile(dir + "/temporal.cpp");
+  Check(!Has(temporal, "in.consumers_active = false;") && !Has(temporal, "TODO(RR-5") && !Has(ssr, "TODO(RR-5") && !Has(car, "TODO(RR-5") && !Has(rules, "TODO(RR-5"), "the merge's hooks are done: no placeholder is left");
 }
 
 void PlanChecks(const std::string& dir) {
@@ -462,6 +512,7 @@ int main(int argc, char** argv) {
   RowChecks();
   AutoChecks();
   MenuChecks(dir);
+  ConsumerWiringChecks(dir);
   PlanChecks(dir);
   PluginChecks(dir);
   SettingsChecks(dir);

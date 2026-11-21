@@ -532,8 +532,9 @@ struct Plan {
 //   auto_uses_rr     AUTO trusts RR with it: the A/B pictures and the cost said RR beats ours there (perf/DLSS-RR.md section 3: "keep ours where RR is not better"). The row's own RR value takes every
 //                    consumer with a raw mode; AUTO only these.
 // So AUTO is "RR where it is known to be better", the RR value is "RR wherever it can run", and OURS is "never". RR-4's packages flip these two tables' cells as each raw mode lands and each A/B is
-// read; the test compares them with the table's own words. THE CELLS ARE FALSE BECAUSE NO RAW MODE EXISTS YET: with them false nothing is a consumer, AUTO is OURS everywhere, the row is grey, and the
-// plugin is not asked for (WantRrPlugin), so a player's start is exactly what it was before the row.
+// read; the test compares them with the table's own words. TODAY (RR-INT): raw_mode_built is true for the two effects that have one (the screen-space reflections, RR-4a; the cars' ray traced
+// reflections, RR-4b), false for the two that do not exist yet (city reflections, bounce light); auto_uses_rr is false for ALL of them until the RR-6 A/B has been read (AUTO stays ours, the row's own
+// RR value takes the two with a raw mode). The effects say they are on through denoiser::NoteConsumer (ssr.cpp, car_selfrefl.cpp); the plugin is asked for at every RTX start whose row is not OURS (D3D12, or Vulkan with DLSS saved).
 enum class Consumer : uint8_t {
   kSsr,                 // the screen-space reflections (REFLECTIONS ON SURFACES): stochastic, additive radiance with a hit distance (the first real candidate)
   kCarRtReflections,    // the car's ray traced self-reflections and the chrome of other cars (car_rt_refl.h): an A/B, expected no gain
@@ -549,8 +550,8 @@ struct ConsumerInfo {
 };
 using ConsumerTable = std::array<ConsumerInfo, kConsumerCount>;
 inline constexpr ConsumerTable kConsumers = {{
-    {"screen-space reflections", false, false},
-    {"ray traced car reflections", false, false},
+    {"screen-space reflections", true, false},
+    {"ray traced car reflections", true, false},
     {"ray traced city reflections", false, false},
     {"ray traced bounce light", false, false},
 }};
@@ -811,12 +812,11 @@ inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 // is the play view (the pause, garage and map worlds carry no guides: a Super Resolution frame, whose noise nothing cleans). A frame that turns out to be Super Resolution's although these held
 // (the guide pass's pipeline was still being made, an evaluation failed and the backend gave it to SR in the same call) shows the raw noise for that frame: rare, counted by the census.
 //
-// TODO(RR-5 merge, feat/rr-5 eb9eb94f; the names below exist only there, not on this branch): RR-5's DENOISER row decides AUTO by which effects are ON and have a raw mode. When the two branches
-// are merged: (1) in rr::kConsumers set raw_mode_built = true for Consumer::kSsr (this package's RR-4a) and Consumer::kCarRtReflections (RR-4b), and leave auto_uses_rr false until the RR-6 A/B says
-// Ray Reconstruction beats ours there; (2) once a frame, from the render thread, call mcla::gpu::denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff) in
-// ScreenReflections::BeginFrame (ssr.cpp) and NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active()) in CarSelfRefl::BeginFrame right after rt_->BeginFrame (car_selfrefl.cpp);
-// (3) delete `in.consumers_active = false;` in TemporalSystem::UpdateDenoiserPlan (RR-5 replaces it). `on` means the effect runs this frame whatever the plan is (the effects' raw modes are what the
-// plan then turns on), so there is no circle: the consumer is on first, the plan follows, RawModes() follows the plan.
+// The effects are CONSUMERS of the DENOISER row (RR-5, merged here): rr::kConsumers has raw_mode_built true for kSsr (RR-4a) and kCarRtReflections (RR-4b), auto_uses_rr false for both until the RR-6 A/B says
+// Ray Reconstruction beats ours there. Once a frame, from the render thread, each says whether it runs: mcla::gpu::denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff) in
+// ScreenReflections::BeginFrame (ssr.cpp) and NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active()) in CarSelfRefl::BeginFrame right after rt_->BeginFrame (car_selfrefl.cpp). `on` means the
+// effect runs this frame whatever the plan is (the effects' raw modes are what the plan then turns on), so there is no circle: the consumer is on first, the plan follows, RawModes() follows the plan.
+// So: the row on OURS never takes a frame; AUTO takes one only for an effect with auto_uses_rr (none yet: ours); DLSS RR takes one while SSR or the cars' reflections are on.
 enum class RawEffect : uint8_t { kSsr, kCarRefl, kCount };
 constexpr const char* RawEffectName(RawEffect e) {
   switch (e) {
@@ -892,8 +892,8 @@ inline constexpr std::array<const char*, 2> kFiles = {"sl.dlss_d.dll", "nvngx_dl
 inline constexpr std::array<const char*, 1> kSignedFiles = {"sl.dlss_d.dll"};
 
 // Whether Streamline is started with the RR plugin (slInit's featuresToLoad: plugins cannot be added later, like frame generation's). The row decides what the player wants (anything but OURS), the
-// debug switch can force it (probe and on load it whatever the row says: a test of RR itself; off never), and there must be something to use it: no effect has a raw mode yet (kConsumers), so by default
-// no player's start loads it. The rest is what the PC can do.
+// debug switch can force it (probe and on load it whatever the row says: a test of RR itself; off never), and there must be something to use it: an effect with a raw mode (kConsumers: the
+// screen-space reflections and the cars' ray traced reflections have one, RR-INT), so a start with the row on AUTO or DLSS RR loads it on a PC that can. The rest is what the PC can do.
 struct PluginInputs {
   DebugSwitch debug = DebugSwitch::kRow;
   Denoiser setting = Denoiser::kAuto;  // the row at the start

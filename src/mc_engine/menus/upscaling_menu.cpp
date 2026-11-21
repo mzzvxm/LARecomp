@@ -528,7 +528,7 @@ void SharpnessSet(int i, CvarWriter write) {
 // ("AUTO (DLSS RR)" where an effect that RR cleans better than ours is on and RR can run, else "AUTO (OURS)"). The row is grey, with its reason after the label, where RR cannot be used (NVIDIA's guidelines:
 // disable it where the hardware or the driver cannot run it, where DLSS Super Resolution is not on and where there is no ray traced content): " (NO RTX GPU)", " (N/A)", " (NEEDS DLSS)", " (SETUP)",
 // " (FAILED)", " (NOT NEEDED)"; and it says " (RESTART)" while the row has left OURS in a game whose Streamline was started without the plugin (the "Restart now?" prompt reads the word) and
-// " (APPLYING)" while RR's context is being made. It is grey for every player until an effect has a raw mode (RR-4): nothing is shown as unavailable that a restart or a setting would bring.
+// " (APPLYING)" while RR's context is being made. It is grey (NOT NEEDED) while no effect that has a raw mode is on (RR-INT: the screen-space reflections, the cars' ray traced reflections): nothing is shown as unavailable that a restart or a setting would bring.
 // Width: "DENOISER" is 8, "DENOISER (NO RTX GPU)" 21, the widest label of this page without XENIA's; the values are "AUTO (DLSS RR)" 14, "DLSS RR" 7, "OURS" 4, under the page's widest value (18).
 const char* const kDenoiserVals[] = {"auto", "rr", "ours"};
 const char* const kDenoiserNames[] = {"AUTO", "DLSS RR", "OURS"};

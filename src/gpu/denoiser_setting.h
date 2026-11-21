@@ -12,7 +12,9 @@
 //   DLSS RR            Ray Reconstruction wherever it can run: an RTX card Streamline says supports it, DLSS as the upscaler, and an effect on that has a raw mode (a CONSUMER: dlss_rr_rules.h kConsumers).
 //   AUTO (the default) Ray Reconstruction where an effect is on that RR is known to clean better than ours (kConsumers' auto_uses_rr: the A/B pictures say so); our denoisers everywhere else.
 // So the order of the owner's rule (2026-11-19: DLSS Ray Reconstruction when the GPU supports it, ours otherwise) holds: where RR can run AND has something to clean, AUTO is RR; where it cannot, ours.
-// No effect has a raw mode yet (RR-4), so today AUTO is OURS everywhere, the row is grey with " (NOT NEEDED)", and the plugin is not loaded: a player's game is exactly what it was before the row. A
+// Two effects have a raw mode (RR-INT: the screen-space reflections, RR-4a, and the cars' ray traced reflections, RR-4b; they say they are on through NoteConsumer), but none is trusted to AUTO yet (kConsumers'
+// auto_uses_rr waits for the RR-6 A/B), so today AUTO is OURS everywhere: the frames are what they were before the row, and the row is grey with " (NOT NEEDED)" until one of the two is on. The DLSS RR value takes
+// a frame while one is on. Streamline is started with the plugin wherever the row is not OURS (and the PC can: an RTX card, D3D12 or Vulkan with DLSS saved). A
 // switch of the row is live (the next frame): RR's context is made in the background beside Super Resolution's (RR-3), and the frames in between are Super Resolution's. The one thing that is not live is
 // the plugin itself: Streamline loads it at its start (the start with the row on OURS leaves it out), so leaving OURS in such a game says " (RESTART)" and the usual "Restart now?" prompt follows.
 //
@@ -134,7 +136,7 @@ inline Gate GateOf(const MenuInputs& m, const rr::ConsumerTable& table = rr::kCo
   if (m.dlss_chosen && m.dlss_waits_for_restart) return m.setting == rr::Denoiser::kOurs ? Gate::kRuns : Gate::kRestart;
   if (!m.dlss_chosen) return Gate::kNeedsDlss;
   if (m.dlss_needs_setup) return Gate::kSetup;
-  // While no effect has a raw mode (rr::kConsumers) there is nothing RR could clean and the plugin is not asked for: nothing is "not available", nothing is needed.
+  // While no effect has a raw mode (a table with every raw_mode_built false: the shipped one before RR-INT) there is nothing RR could clean and the plugin is not asked for: nothing is "not available", nothing is needed.
   if (m.debug == rr::DebugSwitch::kRow && !rr::AnyRawModeBuilt(table)) return Gate::kNotNeeded;
   rr::PlanInputs in;
   in.setting = rr::Denoiser::kRr;

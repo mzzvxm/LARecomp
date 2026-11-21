@@ -1030,7 +1030,7 @@ void QueryRayReconstructionLocked(Runtime& rt, const sl::AdapterInfo& adapter, c
                     ? "mcla_gpu_dlss_rr is off"
                     : (facts.loadable
                            ? "Streamline was started without the Ray Reconstruction plugin because the DENOISER row said OURS: it loads at the next start"
-                           : "Streamline was started without the Ray Reconstruction plugin (no effect has a raw mode yet, its files are missing, this is not an RTX card, or on Vulkan DLSS was not the saved upscaler at the start)");
+                           : "Streamline was started without the Ray Reconstruction plugin (the row said OURS at the start, no effect has a raw mode, its files are missing, this is not an RTX card, or on Vulkan DLSS was not the saved upscaler at the start)");
   } else {
     const sl::Result supported = rt.api.is_supported(sl::kFeatureDLSS_RR, adapter);
     if (supported != sl::Result::eOk) {

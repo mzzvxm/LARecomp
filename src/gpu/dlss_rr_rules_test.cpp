@@ -596,7 +596,7 @@ void CheckPluginAndParsers() {
   Check(!WantRrPlugin(p), "Vulkan with DLSS not saved: Streamline is not even started");
   p.dlss_saved_at_start = true;
   Check(WantRrPlugin(p), "Vulkan with DLSS saved at the start");
-  // RR-5: the row decides what a start loads where the switch is on auto: not OURS, and only where an effect has a raw mode (so, today, no player's start loads it).
+  // RR-5: the row decides what a start loads where the switch is on auto: not OURS, and only where an effect has a raw mode (RR-INT: the shipped table has two, so a start on AUTO loads it on an RTX card).
   PluginInputs row;
   row.build_has_rr = true;
   row.files_ok = true;
@@ -604,8 +604,12 @@ void CheckPluginAndParsers() {
   row.d3d12 = true;
   Check(row.debug == DebugSwitch::kRow && row.setting == Denoiser::kAuto && !row.raw_mode_built, "the defaults: the row on AUTO, no raw mode");
   Check(!WantRrPlugin(row) && !PluginWantedByChoice(row), "AUTO with no effect that has a raw mode: the plugin is not asked for (a player's start is what it was before the row)");
-  row.raw_mode_built = true;
-  Check(WantRrPlugin(row) && PluginWantedByChoice(row), "AUTO with a raw mode built: asked for");
+  // What temporal_dlss.cpp fills in: AnyRawModeBuilt() of the shipped table, and of a table with no raw mode at all.
+  const ConsumerTable none_built = {{{"a", false, false}, {"b", false, false}, {"c", false, false}, {"d", false, false}}};
+  row.raw_mode_built = AnyRawModeBuilt(none_built);
+  Check(!WantRrPlugin(row) && !PluginWantedByChoice(row), "a table with no raw mode: the plugin is not asked for");
+  row.raw_mode_built = AnyRawModeBuilt();
+  Check(WantRrPlugin(row) && PluginWantedByChoice(row), "the shipped table has raw modes (RR-INT): AUTO's start asks for the plugin");
   row.setting = Denoiser::kRr;
   Check(WantRrPlugin(row), "the row's RR: asked for");
   row.setting = Denoiser::kOurs;
@@ -643,23 +647,32 @@ void CheckPluginAndParsers() {
   Check(int(DebugSwitch::kOff) == 0 && int(DebugSwitch::kProbe) == 1 && int(DebugSwitch::kOn) == 2 && int(DebugSwitch::kRow) == 3, "the switch's numbers");
 }
 
-// RR-5: the consumers. No effect has a raw mode yet: every cell is false, so nothing is a consumer, AUTO is OURS, and the plugin is not asked for. The packages that build a raw mode flip a cell; these checks hold
-// the rules for whichever cells are flipped (written against a made-up table below) and say what the shipped table is.
+// RR-5 + RR-INT: the consumers. The shipped table: the screen-space reflections (RR-4a) and the cars' ray traced reflections (RR-4b) have a raw mode; the city's reflections and the bounce light do not exist yet;
+// NO effect is trusted to AUTO yet (auto_uses_rr waits for the RR-6 A/B), so AUTO is OURS wherever, and the row's RR value takes a frame while SSR or the cars' reflections are on. These checks hold the rules for
+// whichever cells are flipped (written against a made-up table below) and say what the shipped table is.
 void CheckConsumers() {
   Check(kConsumerCount == 4 && kAllConsumers == 0xFu, "four consumers");
-  Check(!AnyRawModeBuilt(), "today no effect has a raw mode (RR-4 flips the cells)");
+  Check(AnyRawModeBuilt(), "today two effects have a raw mode (RR-INT)");
+  const bool built[kConsumerCount] = {true, true, false, false};
   for (size_t i = 0; i < kConsumerCount; ++i) {
-    Check(!kConsumers[i].raw_mode_built && !kConsumers[i].auto_uses_rr, std::string("today ") + kConsumers[i].name + " is not a consumer");
+    Check(kConsumers[i].raw_mode_built == built[i], std::string("today ") + kConsumers[i].name + (built[i] ? " has a raw mode" : " has none (the effect does not exist yet)"));
+    Check(!kConsumers[i].auto_uses_rr, std::string("today ") + kConsumers[i].name + ": AUTO does not trust RR with it before the RR-6 A/B");
     Check(!kConsumers[i].auto_uses_rr || kConsumers[i].raw_mode_built, std::string(kConsumers[i].name) + ": AUTO trusts RR only with an effect that has a raw mode");
     Check(kConsumers[i].name != nullptr && kConsumers[i].name[0] != '\0', "every consumer has a name");
   }
-  Check(!AnyConsumerOn(kAllConsumers) && !AnyAutoConsumerOn(kAllConsumers), "all four on, none built: nothing is a consumer (the effects' own denoisers stand)");
+  Check(kConsumers[size_t(Consumer::kSsr)].raw_mode_built && kConsumers[size_t(Consumer::kCarRtReflections)].raw_mode_built, "SSR and the cars' ray traced reflections are the two with a raw mode");
+  Check(!kConsumers[size_t(Consumer::kCityRtReflections)].raw_mode_built && !kConsumers[size_t(Consumer::kRtGi)].raw_mode_built, "the city's reflections and the bounce light have none yet");
+  Check(AnyConsumerOn(ConsumerBit(Consumer::kSsr)) && AnyConsumerOn(ConsumerBit(Consumer::kCarRtReflections)) && AnyConsumerOn(kAllConsumers), "SSR on, the cars' reflections on: a consumer is on");
+  Check(!AnyConsumerOn(0u) && !AnyConsumerOn(ConsumerBit(Consumer::kCityRtReflections)) && !AnyConsumerOn(ConsumerBit(Consumer::kRtGi)) && !AnyConsumerOn(ConsumerBit(Consumer::kCityRtReflections) | ConsumerBit(Consumer::kRtGi)),
+        "nothing on, or only an effect with no raw mode: no consumer");
+  Check(!AnyAutoConsumerOn(kAllConsumers) && !AnyAutoConsumerOn(ConsumerBit(Consumer::kSsr)), "all four on: AUTO still has no consumer it trusts (RR-6's A/B flips auto_uses_rr)");
   Check(ConsumerBit(Consumer::kSsr) == 1u && ConsumerBit(Consumer::kCarRtReflections) == 2u && ConsumerBit(Consumer::kCityRtReflections) == 4u && ConsumerBit(Consumer::kRtGi) == 8u, "the bits");
   Check(std::string(InfoOf(Consumer::kSsr).name) == "screen-space reflections", "InfoOf");
   // The rules over a made-up table with cells flipped: SSR built and trusted, the car's reflections built and not trusted, the city's reflections trusted but not built (an A/B verdict that came before the raw
   // mode: AUTO must still not count it), the bounce light neither.
   const ConsumerTable made = {{{"a", true, true}, {"b", true, false}, {"c", false, true}, {"d", false, false}}};
-  Check(AnyRawModeBuilt(made) && !AnyRawModeBuilt(kConsumers), "a made-up table has raw modes, the shipped one none");
+  const ConsumerTable none_cells = {{{"a", false, false}, {"b", false, false}, {"c", false, false}, {"d", false, false}}};
+  Check(AnyRawModeBuilt(made) && AnyRawModeBuilt(kConsumers) && !AnyRawModeBuilt(none_cells), "a made-up table has raw modes, the shipped one has two, a table of false cells none");
   Check(AnyConsumerOn(1u, made) && AnyConsumerOn(2u, made) && !AnyConsumerOn(4u, made) && !AnyConsumerOn(8u, made) && !AnyConsumerOn(0u, made) && AnyConsumerOn(0xFu, made),
         "a made-up table: the built effects that are on are consumers, the others (and an empty set) are not");
   Check(AnyAutoConsumerOn(1u, made) && !AnyAutoConsumerOn(2u, made) && AnyAutoConsumerOn(3u, made) && !AnyAutoConsumerOn(4u, made) && !AnyAutoConsumerOn(12u, made) && !AnyAutoConsumerOn(0u, made),
@@ -679,6 +692,69 @@ void CheckConsumers() {
   }
   Check(subset, "AUTO's consumers are always consumers (the plan's `active` implies `any`)");
   Check(empty_ok, "a table with no raw mode has no consumer");
+
+  // RR-INT: the plan the way TemporalSystem::UpdateDenoiserPlan makes it from the board of the effects that are on (denoiser::NoteConsumer): the shipped table, a PC that could run RR, DLSS as the upscaler.
+  const auto plan_from_board = [](Denoiser setting, uint32_t on, const ConsumerTable& table) {
+    PlanInputs in = ReadyInputs();
+    in.setting = setting;
+    in.consumers_active = AnyAutoConsumerOn(on, table);
+    in.consumers_any = AnyConsumerOn(on, table);
+    return SelectDenoiser(in);
+  };
+  const uint32_t ssr = ConsumerBit(Consumer::kSsr);
+  const uint32_t cars = ConsumerBit(Consumer::kCarRtReflections);
+  const uint32_t city = ConsumerBit(Consumer::kCityRtReflections);
+  const uint32_t gi = ConsumerBit(Consumer::kRtGi);
+  // AUTO with and without consumers, the shipped table (nothing trusted yet): ours in every case, the reason the missing consumer.
+  for (const uint32_t on : {0u, ssr, cars, ssr | cars, city, gi, kAllConsumers}) {
+    const Plan p = plan_from_board(Denoiser::kAuto, on, kConsumers);
+    Check(!p.use_rr && p.why == Why::kNoConsumer, "AUTO, the shipped table, effects on " + std::to_string(on) + ": ours (no effect AUTO trusts RR with yet)");
+  }
+  // The row's RR value with and without consumers: RR while SSR or the cars' reflections are on, ours (kNoConsumer) with nothing on or only effects that do not exist yet.
+  for (const uint32_t on : {ssr, cars, ssr | cars, ssr | city, cars | gi, kAllConsumers}) {
+    const Plan p = plan_from_board(Denoiser::kRr, on, kConsumers);
+    Check(p.use_rr && p.why == Why::kRrOn, "DLSS RR, the shipped table, effects on " + std::to_string(on) + ": RR");
+  }
+  for (const uint32_t on : {0u, city, gi, city | gi}) {
+    const Plan p = plan_from_board(Denoiser::kRr, on, kConsumers);
+    Check(!p.use_rr && p.why == Why::kNoConsumer, "DLSS RR, the shipped table, effects on " + std::to_string(on) + ": no effect with a raw mode is on, ours");
+  }
+  for (const uint32_t on : {0u, ssr, kAllConsumers}) {
+    const Plan p = plan_from_board(Denoiser::kOurs, on, kConsumers);
+    Check(!p.use_rr && p.why == Why::kSettingOurs, "OURS, effects on " + std::to_string(on) + ": ours");
+  }
+  // The whole small table: the shipped plan is RR exactly where the row says DLSS RR and SSR or the cars' reflections are on.
+  bool whole = true;
+  for (int setting = 0; setting < 3; ++setting) {
+    for (uint32_t on = 0; on <= kAllConsumers; ++on) {
+      const Plan p = plan_from_board(Denoiser(setting), on, kConsumers);
+      whole = whole && (p.use_rr == (Denoiser(setting) == Denoiser::kRr && (on & (ssr | cars)) != 0));
+    }
+  }
+  Check(whole, "the shipped table: RR exactly where the row says DLSS RR and SSR or the cars' reflections are on (3 settings x 16 sets of effects)");
+  // With AUTO's cell flipped for SSR (what RR-6's A/B may do) AUTO is RR exactly while SSR is on; the cars' reflections, built and not trusted, never bring it.
+  ConsumerTable flipped = kConsumers;
+  flipped[size_t(Consumer::kSsr)].auto_uses_rr = true;
+  bool flip_ok = true;
+  for (uint32_t on = 0; on <= kAllConsumers; ++on) {
+    const Plan p = plan_from_board(Denoiser::kAuto, on, flipped);
+    flip_ok = flip_ok && (p.use_rr == ((on & ssr) != 0)) && (p.use_rr || p.why == Why::kNoConsumer);
+  }
+  Check(flip_ok, "AUTO's cell flipped for SSR: AUTO is RR exactly while SSR is on");
+  // The PC's own limits still come after: the RR value with SSR on on a PC that cannot (no support, not DLSS, files missing, failed) is ours with the PC's reason.
+  PlanInputs pc = ReadyInputs();
+  pc.setting = Denoiser::kRr;
+  pc.consumers_active = false;
+  pc.consumers_any = true;
+  pc.facts.supported = false;
+  Check(!SelectDenoiser(pc).use_rr && SelectDenoiser(pc).why == Why::kNotSupported, "DLSS RR with SSR on, a card that cannot: ours, not supported");
+  pc.facts.supported = true;
+  pc.upscaler_is_dlss = false;
+  Check(!SelectDenoiser(pc).use_rr && SelectDenoiser(pc).why == Why::kUpscalerNotDlss, "DLSS RR with SSR on, FSR as the upscaler: ours");
+  pc.upscaler_is_dlss = true;
+  pc.debug = DebugSwitch::kOn;
+  pc.consumers_any = false;
+  Check(SelectDenoiser(pc).use_rr, "the debug switch's on lifts the consumer rule (the A/B and cost runs)");
 }
 
 // --- RR-3 -------------------------------------------------------------------------------------------------------------------------------------------------

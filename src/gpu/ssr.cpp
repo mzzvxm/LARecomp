@@ -16,8 +16,10 @@
 
 #include "ao.h"
 #include "ao_gbuffer.h"
+#include "denoiser_setting.h"
 #include "descriptors.h"
 #include "device.h"
+#include "dlss_rr_rules.h"
 #include "gbuffer.h"
 #include "gpu_class.h"
 #include "host_shaders.h"
@@ -306,8 +308,9 @@ void ScreenReflections::BeginFrame() {
     level = ssr::Level::kOff;  // the layout or a shader could not be made, or the owners are not there
   }
   level_ = level;
-  // TODO(RR-5 merge, feat/rr-5 eb9eb94f): here, once a frame, `denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);` (denoiser_setting.h) and rr::kConsumers[kSsr].raw_mode_built = true
-  // in dlss_rr_rules.h; the names do not exist on this branch (dlss_rr_rules.h RawEffect has the whole list of calls).
+  // RR-INT: the DENOISER row's board (denoiser_setting.h): this effect is on this frame. It is a consumer of Ray Reconstruction (rr::kConsumers: its raw mode exists, RR-4a), and the plan reads the
+  // board at the temporal system's frame boundary, which comes right after this call (frame_order.h kBeginSsr, kBeginTemporal: lag 0). Only a flag is set; with the plan not RR nothing else changes.
+  denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);
   if (!logged_level_once_ || level != logged_level_) {
     logged_level_once_ = true;
     logged_level_ = level;
