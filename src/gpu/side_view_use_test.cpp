@@ -25,6 +25,7 @@
 #include <string>
 #include <tuple>
 
+#include "setting_source.h"
 #include "side_views.h"
 
 using namespace mcla::gpu;
@@ -337,7 +338,9 @@ void CheckSource(const std::string& dir) {
         "side_view_ui_map.cpp has the menus' page: colour at tile 960 and depth at tile 0, pitch 960, 2 samples, declared 960x640");
   Check(Has(ui_map, "key.reserved != 0") && Has(ui_map, "return guest_samples;") && Has(ui_map, ".follows_output = true"),
         "the UI map rule matches layer 0 only, keeps the guest's samples and follows the output");
-  Check(Has(ui_map, "mcla_ui_minimap_scale, true") && !Has(ui_map, ".debug_only()"), "the setting is on by default and is no debug setting any more");
+  // The setting is a REX_SETTING row of src/settings/generated (or, before the conversion, the REXCVAR_DEFINE call of side_view_ui_map.cpp): setting_source.h reads either form.
+  const setting_source::Info minimap = setting_source::Find(dir, ui_map, "mcla_ui_minimap_scale");
+  Check(setting_source::DefaultIsTrue(minimap) && !minimap.debug_only, "the setting is on by default and is no debug setting any more");
   Check(Has(edram, "side_views::Wanted(resolution_scale_)") && Has(edram, "side_views::FollowOutput(side_scales_, output)"),
         "EdramTargets asks for the classes at the screen's scale, and a change of the render scale moves the followers with it");
   Check(!Has(edram, "{SideView::kShadow, SideView::kEnv, SideView::kReflection}"), "no loop over the classes names three of them any more");
