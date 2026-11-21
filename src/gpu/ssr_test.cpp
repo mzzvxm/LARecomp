@@ -4,6 +4,9 @@
 //   cmake --build <build dir> --target larecomp_ssr_test     (src/gpu/CMakeLists.txt)
 //   <build dir>/src/gpu/larecomp_ssr_test [<src/gpu dir>] [--print]
 //
+// GB-I2 adds: the wetness in seconds and the ramp of the term over the smoothness, the share of the game's road view, the hit packed into the trace's alpha (a vehicle's ID in the half float's mantissa), the
+// image of a reflected MOVING vehicle against the analytic mirror, the history's variance clip, border and guard, the road view's rules and word, and the sources' use of all of it.
+//
 // It checks: the levels, sizes, memory, the frame's decision and its reasons, the history's rule, the wetness (the votes, the ramp), the push block's words against the .hlsli's #defines
 // and the packing; then it compiles hlsl/ssr_common.hlsli and hlsl/ssr_trace.hlsli ITSELF as C++ (through the shim of the HLSL types below) and checks the class gate (every class and flag), the
 // wet road, the environment BRDF, the noise, the GGX visible-normal sampling, the fades and the cone's mip, the reprojection of the virtual image against the analytic mirror (a flat road, a
@@ -324,12 +327,12 @@ void TestWet() {
   for (int i = 0; i < 5; ++i) votes.Add(1.17f);
   Check(votes.Pick(&v) && Near(v, 1.2, 1e-6) && votes.draws() == 5, "after a reset: rain");
   float wet = 0.0f;
-  int frames = 0;
-  while (wet < 0.95f && frames < 500) {
-    wet = sr::SmoothWet(wet, 1.0f);
-    ++frames;
+  double seconds = 0.0;
+  while (wet < 0.95f && seconds < 10.0) {
+    wet = sr::SmoothWetDt(wet, 1.0f, 1.0f / 60.0f);
+    seconds += 1.0 / 60.0;
   }
-  Check(frames > 20 && frames < 90, Num("the start of rain ramps over a second or so (%.0f frames to 95%%)", frames));
+  Check(seconds > 0.8 && seconds < 1.6, Num("the start of rain ramps over a second or so (%.2f s to 95%%)", seconds));
   // the shaders' use of it
   Check(hs::SsrWetSmooth(uint(GB_CLASS_ROAD), 0.30f, 0.0f) == 0.30f && Near(hs::SsrWetSmooth(uint(GB_CLASS_ROAD), 0.30f, 1.0f), 0.92, 1e-6) && Near(hs::SsrWetSmooth(uint(GB_CLASS_ROAD), 0.30f, 0.5f), 0.61, 1e-6),
         "a road's smoothness rises with the wetness");
@@ -403,7 +406,7 @@ void TestPush() {
     Check(!sr::SameCamera(a, b), "a NaN is not a camera");
   }
   Check(sr::CapFor(16.0f) == 64.0f && sr::CapFor(0.0f) == sr::kCapSceneWhites * sr::kDefaultExposure, "the cap is a number of white walls in the target's units");
-  Check(sr::ViewFromSetting(0) == sr::View::kOff && sr::ViewFromSetting(4) == sr::View::kHit && sr::ViewFromSetting(5) == sr::View::kOff && sr::ViewFromSetting(-1) == sr::View::kOff, "the debug views");
+  Check(sr::ViewFromSetting(0) == sr::View::kOff && sr::ViewFromSetting(4) == sr::View::kHit && sr::ViewFromSetting(7) == sr::View::kOff && sr::ViewFromSetting(-1) == sr::View::kOff, "the debug views");
 }
 
 // ---------------------------------------------------------------------------
@@ -743,7 +746,399 @@ void TestVirtualImage() {
   // the same surface test
   Check(hs::SsrSameSurface(20.0f, 20.0f) && hs::SsrSameSurface(20.0f, 21.0f) && !hs::SsrSameSurface(20.0f, 25.0f) && hs::SsrSameSurface(0.5f, 0.54f) && !hs::SsrSameSurface(0.5f, 0.7f), "the same surface: within 8% and a few centimetres");
   Check(!hs::SsrToPrevious(rows[0], rows[1], rows[2], hs::float3(0.0f, 0.0f, -5.0f), 0.9f, 0.5f).ok, "a point behind the last camera has no history");
-  Check(hs::SsrClampToBox(5.0f, 0.0f, 1.0f) == 1.1f && hs::SsrClampToBox(-3.0f, 0.0f, 1.0f) == -0.1f && hs::SsrClampToBox(0.5f, 0.0f, 1.0f) == 0.5f, "the history is clamped to the current neighbourhood's box");
+  // (the history's clip: TestClip)
+}
+
+
+// ---------------------------------------------------------------------------
+// GB-I2: the wetness in seconds, the ramp, the share of the road view
+// ---------------------------------------------------------------------------
+
+void TestWetI2() {
+  // the votes carry the game's reflection strength (VS c43.y): the strength of the commonest wetness
+  sr::WetVotes votes;
+  float x = -1.0f, y = -1.0f;
+  for (int i = 0; i < 30; ++i) votes.Add(1.17f, 1.19f);
+  for (int i = 0; i < 10; ++i) votes.Add(0.095f, 0.095f);
+  Check(votes.Pick(&x, &y) && Near(x, 1.2, 1e-6) && Near(y, 1.19, 1e-5), Num("the commonest wetness %.2f with its strength %.3f", x, y));
+  votes.Reset();
+  votes.Add(0.095f, 0.10f);
+  votes.Add(0.095f, 0.09f);
+  votes.Add(0.095f, std::nanf(""));
+  Check(votes.Pick(&x, &y) && Near(y, (0.10 + 0.09 + sr::WetVotes::kDefaultGameStrength) / 3.0, 1e-5), "a strength that is no number counts as the default (a draw gave none)");
+  votes.Reset();
+  votes.Add(0.5f);
+  Check(votes.Pick(&x, &y) && Near(y, sr::WetVotes::kDefaultGameStrength, 1e-6), "a vote without a strength carries the default one");
+  Check(votes.Pick(&x) && Near(x, 0.5, 1e-6), "and the strength is optional to ask for");
+
+  // the smoothing is in seconds: the same ramp at 30, 60 and 144 frames a second
+  const auto ramp = [](double fps, double seconds) {
+    float wet = 0.0f;
+    const int n = int(seconds * fps + 0.5);
+    for (int i = 0; i < n; ++i) wet = sr::SmoothWetDt(wet, 1.0f, float(1.0 / fps));
+    return double(wet);
+  };
+  const double a30 = ramp(30, 0.5), a60 = ramp(60, 0.5), a144 = ramp(144, 0.5);
+  Check(Near(a30, a60, 2e-3) && Near(a60, a144, 2e-3), Num("half a second of rain is %.4f at 30 FPS, %.4f at 60, %.4f at 144: the frame rate does not change the ramp", a30, a60, a144));
+  Check(ramp(60, 0.5) < 0.75 && ramp(60, 1.25) > 0.94, Num("the start of rain is a ramp of about a second (%.2f after 0.5 s, %.2f after 1.25 s)", ramp(60, 0.5), ramp(60, 1.25)));
+  Check(sr::SmoothWetDt(0.0f, 1.0f, 10.0f) <= 1.0f - std::exp(-sr::kWetMaxDt / sr::kWetTauSeconds) + 1e-6f && sr::SmoothWetDt(0.2f, 1.0f, std::nanf("")) == 0.2f && sr::SmoothWetDt(0.2f, 1.0f, -1.0f) == 0.2f && sr::SmoothWetDt(0.2f, 1.0f, 0.0f) == 0.2f,
+        "a pause spell is a step of a quarter of a second at most; no time, a negative time and a NaN move nothing");
+  Check(sr::SmoothWetDt(1.0f, 0.0f, 0.05f) < 1.0f && sr::SmoothWetDt(1.0f, 0.0f, 0.05f) > 0.0f, "and the rain stopping ramps down the same way");
+
+  // FallbackShare: never more than the game shows, never more than the setting
+  Check(sr::FallbackShare(1.0f, 1.19f) == 1.0f && Near(sr::FallbackShare(1.0f, 0.095f), 0.095, 1e-6) && sr::FallbackShare(0.0f, 1.0f) == 0.0f && Near(sr::FallbackShare(0.5f, 0.8f), 0.4, 1e-6), "the share taken out: setting x the game's strength");
+  Check(sr::FallbackShare(2.0f, 1.0f) == 1.0f && sr::FallbackShare(-1.0f, 1.0f) == 0.0f && sr::FallbackShare(std::nanf(""), 1.0f) == 0.0f && sr::FallbackShare(1.0f, std::nanf("")) == 0.0f && sr::FallbackShare(1.0f, -3.0f) == 0.0f,
+        "out of range or no number: clamped, or none");
+
+  // the ramp of the term over the smoothness
+  const float floor_smooth = sr::kDefaultMinSmooth;
+  Check(hs::SsrSmoothRamp(0.30f, floor_smooth) == 0.0f && hs::SsrSmoothRamp(floor_smooth, floor_smooth) == 0.0f && hs::SsrSmoothRamp(0.0f, floor_smooth) == 0.0f, "a dry road (0.30) and everything under the floor take nothing");
+  Check(Near(hs::SsrSmoothRamp(floor_smooth + hs::kSsrRampSpan, floor_smooth), 1.0, 1e-6) && hs::SsrSmoothRamp(0.92f, floor_smooth) == 1.0f && hs::SsrSmoothRamp(1.0f, floor_smooth) == 1.0f, "a wet road (0.92) takes the whole term");
+  bool monotone = true;
+  float last = 0.0f;
+  for (int i = 0; i <= 200; ++i) {
+    const float g = hs::SsrSmoothRamp(float(i) / 200.0f, floor_smooth);
+    monotone = monotone && g >= last - 1e-6f && g >= 0.0f && g <= 1.0f;
+    last = g;
+  }
+  Check(monotone, "the ramp rises monotonically from 0 to 1");
+  // the rain's ramp through the floor: from a dry road to a wet one the term takes in over a stretch of wetness, with no jump
+  float prev = 0.0f, worst_step = 0.0f, first_on = -1.0f, full_at = -1.0f;
+  for (int i = 0; i <= 200; ++i) {
+    const float wet = float(i) / 200.0f;
+    const float g = hs::SsrSmoothRamp(hs::SsrWetSmooth(uint(GB_CLASS_ROAD), 0.30f, wet), floor_smooth);
+    if (i > 0) worst_step = std::max(worst_step, g - prev);
+    if (first_on < 0.0f && g > 0.0f) first_on = wet;
+    if (full_at < 0.0f && g >= 1.0f - 1e-6f) full_at = wet;
+    prev = g;
+  }
+  Check(first_on > 0.1f && full_at < 0.6f && full_at > first_on && worst_step < 0.05f, Num("the wet road takes the reflection in from wetness %.2f to %.2f, by at most %.3f in a step of 0.005 (no jump at the floor)", first_on, full_at, worst_step));
+  // a debug floor just under the wet road's smoothness still gives the wet road its whole term (the run plan's trick)
+  Check(Near(hs::SsrSmoothRamp(0.92f, 0.9f), 1.0, 1e-6) && hs::SsrSmoothRamp(0.85f, 0.9f) == 0.0f, "a floor of 0.9: the wet road (0.92) reflects, the stub's 0.85 does not");
+  Check(Near(hs::SsrSmoothRamp(0.5f, 0.95f), 0.0, 1e-6) && hs::SsrSmoothRamp(1.0f, 0.95f) == 1.0f, "a floor above the wet road's smoothness: the ramp is short (0.01) and stays defined");
+}
+
+// ---------------------------------------------------------------------------
+// GB-I2: what the trace says of a hit (the half float's mantissa)
+// ---------------------------------------------------------------------------
+
+uint16_t FloatToHalf(float f) {
+  uint32_t x;
+  std::memcpy(&x, &f, sizeof(x));
+  const uint32_t sign = (x >> 16) & 0x8000u;
+  const int32_t exp = int32_t((x >> 23) & 0xFFu) - 127 + 15;
+  const uint32_t mant = x & 0x7FFFFFu;
+  if (exp <= 0) return uint16_t(sign);          // the tests stay in the normal range (the shader clamps a distance to 0.02 and up)
+  if (exp >= 31) return uint16_t(sign | 0x7C00u);
+  uint32_t half = (uint32_t(exp) << 10) | (mant >> 13);
+  const uint32_t rem = mant & 0x1FFFu;
+  if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) ++half;   // round to nearest even, what the ROP does
+  return uint16_t(sign | half);
+}
+float HalfToFloat(uint16_t h) {
+  const uint32_t sign = uint32_t(h & 0x8000u) << 16;
+  const uint32_t exp = (h >> 10) & 31u;
+  const uint32_t mant = h & 1023u;
+  uint32_t bits;
+  if (exp == 0) {
+    return (sign ? -1.0f : 1.0f) * float(mant) * std::ldexp(1.0f, -24);
+  } else if (exp == 31) {
+    bits = sign | 0x7F800000u | (mant << 13);
+  } else {
+    bits = sign | ((exp - 15u + 127u) << 23) | (mant << 13);
+  }
+  float f;
+  std::memcpy(&f, &bits, sizeof(f));
+  return f;
+}
+float ThroughHalf(float f) { return HalfToFloat(FloatToHalf(f)); }
+
+void TestHitPacking() {
+  // a hit that is no vehicle's: the distance as it is (the half's own rounding), no sign, no ID
+  Check(!hs::SsrHitIsVehicle(hs::SsrPackHit(12.5f, false, 0)) && hs::SsrHitVehicleId(hs::SsrPackHit(12.5f, false, 7)) == 0 && hs::SsrPackHit(12.5f, false, 7) == 12.5f, "no vehicle: the distance, no flag, no ID");
+  Check(Near(hs::SsrHitDistance(ThroughHalf(hs::SsrPackHit(12.34f, false, 0))), 12.34, 12.34 * 0.001), "a plain hit keeps its ten bits (0.1%)");
+  // a vehicle's: every ID, over the whole range of distances, through the half float the image stores
+  bool ids_ok = true, flag_ok = true, nonzero_ok = true, finite_ok = true;
+  double worst = 0.0;
+  Lcg rng;
+  for (uint id = 0; id <= 31; ++id) {
+    for (int k = 0; k < 400; ++k) {
+      const float d = std::exp(rng.Range(std::log(0.02f), std::log(60000.0f)));
+      const float stored = ThroughHalf(hs::SsrPackHit(d, true, id));
+      ids_ok = ids_ok && hs::SsrHitVehicleId(stored) == id;
+      flag_ok = flag_ok && hs::SsrHitIsVehicle(stored);
+      nonzero_ok = nonzero_ok && stored != 0.0f && stored < 0.0f;
+      const float back = hs::SsrHitDistance(stored);
+      finite_ok = finite_ok && std::isfinite(back) && back > 0.0f;
+      worst = std::max(worst, std::fabs(double(back) - double(d)) / double(d));
+    }
+  }
+  Check(ids_ok && flag_ok, "a vehicle's ID (0 to 31, 1 to 23 are real) and flag survive the half float exactly");
+  Check(nonzero_ok && finite_ok, "the alpha is never 0 (0 means 'not traced') and the distance back is positive and finite");
+  if (g_print) std::printf("[hit packing] worst distance error of a vehicle's hit %.2f%%\n", worst * 100.0);
+  Check(worst < 0.032, Num("the distance of a vehicle's hit is within %.2f%% of the true one (the ID took five of the ten mantissa bits)", worst * 100.0));
+  // the extremes
+  Check(hs::SsrHitVehicleId(ThroughHalf(hs::SsrPackHit(60000.0f, true, 23))) == 23 && std::isfinite(hs::SsrHitDistance(ThroughHalf(hs::SsrPackHit(60000.0f, true, 23)))), "60000 metres and ID 23");
+  Check(hs::SsrHitDistance(ThroughHalf(hs::SsrPackHit(0.02f, true, 1))) > 0.0f && hs::SsrHitVehicleId(ThroughHalf(hs::SsrPackHit(0.02f, true, 1))) == 1, "2 cm and ID 1");
+  Check(Near(hs::SsrHitDistance(ThroughHalf(hs::SsrPackHit(sr::kDefaultMaxDistance, false, 0))), 150.0, 0.2) && hs::SsrHitDistance(ThroughHalf(hs::kSsrMissLength)) == hs::kSsrMissLength && !hs::SsrHitIsVehicle(hs::kSsrMissLength),
+        "a miss (4096) is stored whole and is no vehicle");
+  // an ID wider than five bits cannot leak into the exponent or the sign
+  const float wide = ThroughHalf(hs::SsrPackHit(100.0f, true, 0xFFu));
+  Check(hs::SsrHitVehicleId(wide) == 31 && Near(hs::SsrHitDistance(wide), 100.0, 3.5), "an ID is masked to its five bits");
+}
+
+// ---------------------------------------------------------------------------
+// GB-I2: the image of a reflected moving vehicle, against the analytic mirror
+// ---------------------------------------------------------------------------
+
+struct Rows3x4 {
+  hs::float4 r[3];
+};
+// The 3x4 that maps a point of `now`'s view space to `before`'s view space of the point that was `shift` earlier in the world (the camera's motion alone for a zero shift, the vehicle's own for a moving one).
+Rows3x4 MotionRows(const Pose& now, const Pose& before, Vec shift) {
+  const auto map = [&](Vec p) {
+    Vec world = ToWorld(now, p);
+    world = Sub(world, shift);
+    return ToView(before, world);
+  };
+  const Vec o = map({{0.0, 0.0, 0.0}});
+  const Vec ex = Sub(map({{1.0, 0.0, 0.0}}), o), ey = Sub(map({{0.0, 1.0, 0.0}}), o), ez = Sub(map({{0.0, 0.0, 1.0}}), o);
+  Rows3x4 rows;
+  for (int k = 0; k < 3; ++k) rows.r[k] = hs::float4(float(ex.v[k]), float(ey.v[k]), float(ez.v[k]), float(o.v[k]));
+  return rows;
+}
+
+void TestVehicleImage() {
+  const double tan_x = 0.9, tan_y = 0.5;
+  struct Result {
+    double du, dv, dz, static_miss_px;
+    bool ok;
+  };
+  // one configuration: a camera that moves, a vehicle's point H that moves by `vel` a frame, the road y = 0
+  const auto run = [&](const Pose& before, const Pose& now, Vec H, Vec vel) {
+    Result res{1e9, 1e9, 1e9, 0.0, false};
+    const Vec H_prev = Sub(H, vel);
+    const Vec Hmirror{{H.v[0], -H.v[1], H.v[2]}};
+    const Vec cam{{now.pos[0], now.pos[1], now.pos[2]}};
+    const Vec dir = Sub(Hmirror, cam);
+    if (std::fabs(dir.v[1]) < 1e-6) return res;
+    const double t = (0.0 - cam.v[1]) / dir.v[1];
+    if (t <= 0.0 || t >= 1.0) return res;
+    const Vec P_world{{cam.v[0] + dir.v[0] * t, 0.0, cam.v[2] + dir.v[2] * t}};
+    const Vec P_view = ToView(now, P_world);
+    const Vec H_view = ToView(now, H);
+    if (P_view.v[2] < 1.0 || H_view.v[2] < 1.0) return res;
+    const double length = std::sqrt(DotV(Sub(H_view, P_view), Sub(H_view, P_view)));
+    // the receiver's normal in this frame's view space: the world's up axis
+    Vec r, u, f;
+    Axes(now, &r, &u, &f);
+    const hs::float3 n(float(r.v[1]), float(u.v[1]), float(f.v[1]));
+    const Rows3x4 cam_rows = MotionRows(now, before, {{0.0, 0.0, 0.0}});
+    const Rows3x4 veh_rows = MotionRows(now, before, vel);
+    const hs::float3 P(float(P_view.v[0]), float(P_view.v[1]), float(P_view.v[2]));
+    const hs::SsrPrevious img = hs::SsrVehicleImage(cam_rows.r[0], cam_rows.r[1], cam_rows.r[2], veh_rows.r[0], veh_rows.r[1], veh_rows.r[2], P, n, float(length), float(tan_x), float(tan_y));
+    // where the image of the vehicle's point was in the last frame: the mirror of H_prev seen from the last camera
+    const Vec Hm_old = ToView(before, {{H_prev.v[0], -H_prev.v[1], H_prev.v[2]}});
+    if (Hm_old.v[2] < 1.0) return res;
+    const double u_old = 0.5 + 0.5 * Hm_old.v[0] / (tan_x * Hm_old.v[2]);
+    const double v_old = 0.5 - 0.5 * Hm_old.v[1] / (tan_y * Hm_old.v[2]);
+    if (u_old < 0.0 || u_old > 1.0 || v_old < 0.0 || v_old > 1.0) return res;
+    res.ok = img.ok;
+    res.du = img.u - u_old;
+    res.dv = img.v - v_old;
+    res.dz = img.z - Hm_old.v[2];
+    // what the world's reprojection (the virtual image with the camera's motion alone) would have said
+    const hs::SsrPrevious world = hs::SsrToPrevious(cam_rows.r[0], cam_rows.r[1], cam_rows.r[2], hs::SsrVirtualPoint(P, float(length)), float(tan_x), float(tan_y));
+    res.static_miss_px = world.ok ? std::hypot((world.u - u_old) * 1920.0, (world.v - v_old) * 1080.0) : 1e9;
+    return res;
+  };
+  const Pose before{{0.0, 1.5, 0.0}, 0.00, 0.02};
+  const Pose now{{0.4, 1.5, 1.3}, 0.03, 0.02};
+  const Vec H{{3.0, 1.2, 12.0}};   // a car's roof light over the road, 12 m ahead
+  // a car driving away at 15 m a second at 60 FPS (0.25 m a frame), across, and fast
+  const Vec velocities[] = {{{0.0, 0.0, 0.25}}, {{0.20, 0.0, 0.0}}, {{-0.3, 0.0, 0.6}}};
+  bool exact = true, worse_static = true;
+  double worst = 0.0, smallest_static = 1e9;
+  for (const Vec& vel : velocities) {
+    const Result r = run(before, now, H, vel);
+    exact = exact && r.ok && std::fabs(r.du) < 2e-4 && std::fabs(r.dv) < 2e-4 && std::fabs(r.dz) < 5e-3;
+    worst = std::max(worst, std::max(std::fabs(r.du), std::fabs(r.dv)));
+    smallest_static = std::min(smallest_static, r.static_miss_px);
+    worse_static = worse_static && r.static_miss_px > 2.0;
+  }
+  Check(exact, Num("a reflected moving vehicle's image is found in the last frame to within %.1e of the picture (analytic mirror, three speeds)", worst));
+  Check(worse_static, Num("taken as the world's it would have missed by at least %.1f pixels (that is the smear)", smallest_static));
+  // a parked vehicle: its row is the camera's, and the image is the world's virtual image
+  const Result parked = run(before, now, H, {{0.0, 0.0, 0.0}});
+  Check(parked.ok && std::fabs(parked.du) < 2e-4 && std::fabs(parked.dv) < 2e-4 && parked.static_miss_px < 0.5, "a parked vehicle: the vehicle's row is the camera's, and the image is the world's (the same answer)");
+  // random cameras, heights and velocities: the analytic mirror holds, every time
+  Lcg rng;
+  int cases = 0, bad = 0;
+  double worst_random = 0.0;
+  for (int i = 0; i < 400; ++i) {
+    const Pose b{{rng.Range(-5, 5), rng.Range(1.0f, 3.0f), rng.Range(-5, 5)}, rng.Range(-0.3f, 0.3f), rng.Range(-0.1f, 0.1f)};
+    const Pose n{{b.pos[0] + rng.Range(-1, 1), b.pos[1] + rng.Range(-0.05f, 0.05f), b.pos[2] + rng.Range(0, 2)}, b.yaw + rng.Range(-0.05f, 0.05f), b.pitch + rng.Range(-0.02f, 0.02f)};
+    const Vec h{{n.pos[0] + rng.Range(-15, 15), rng.Range(0.3f, 6.0f), n.pos[2] + rng.Range(8, 80)}};
+    const Vec v{{rng.Range(-0.5f, 0.5f), 0.0, rng.Range(-0.5f, 0.5f)}};
+    const Result r = run(b, n, h, v);
+    if (r.du > 1e8) continue;   // not a valid configuration (off the picture, behind a camera)
+    ++cases;
+    const double e = std::max(std::fabs(r.du), std::fabs(r.dv));
+    worst_random = std::max(worst_random, e);
+    if (!r.ok || e > 3e-4 || std::fabs(r.dz) > 2e-2) ++bad;
+  }
+  if (g_print) std::printf("[vehicle image] %d random configurations, worst error %.2e of the picture; the three speeds: worst %.2e, the world's reprojection misses by at least %.1f px\n", cases, worst_random, worst, smallest_static);
+  Check(cases > 100 && bad == 0, Num("%.0f random configurations (cameras, heights, speeds): every reprojection is on the analytic mirror (worst %.1e of the picture)", cases, worst_random));
+  // a vehicle that was not there (a row that maps behind the last camera) has no history
+  const Rows3x4 cam_rows = MotionRows(now, before, {{0.0, 0.0, 0.0}});
+  const hs::float4 behind0(1.0f, 0.0f, 0.0f, 0.0f), behind1(0.0f, 1.0f, 0.0f, 0.0f), behind2(0.0f, 0.0f, 1.0f, -100.0f);
+  const hs::SsrPrevious gone = hs::SsrVehicleImage(cam_rows.r[0], cam_rows.r[1], cam_rows.r[2], behind0, behind1, behind2, hs::float3(0.0f, -1.5f, 10.0f), hs::float3(0.0f, 1.0f, 0.0f), 5.0f, float(tan_x), float(tan_y));
+  Check(!gone.ok, "a point the row puts behind the last camera has no history");
+  // the host's weights for the three kinds of hit
+  Check(sr::kVehicleRowWeight == hs::kSsrVehicleRowWeight && sr::kVehicleNoRowWeight == hs::kSsrVehicleNoRowWeight, "the host and the shaders agree on the vehicle weights");
+  Check(sr::VehicleHistoryScale(false, false) == 1.0f && sr::VehicleHistoryScale(false, true) == 1.0f && sr::VehicleHistoryScale(true, true) > sr::VehicleHistoryScale(true, false) && sr::VehicleHistoryScale(true, true) < 1.0f &&
+            sr::VehicleHistoryScale(true, false) > 0.0f,
+        "the world keeps all of its history, a vehicle with a row most of it, one without a row little");
+}
+
+// ---------------------------------------------------------------------------
+// GB-I2: the history's clip, the border, the guard
+// ---------------------------------------------------------------------------
+
+void TestClip() {
+  const hs::float3 lo(0.0f, 0.0f, 0.0f), hi(1.0f, 2.0f, 4.0f);
+  const hs::float3 inside(0.5f, 1.0f, 2.0f);
+  const hs::float3 same = hs::SsrClipToBox(inside, lo, hi);
+  Check(same.x == inside.x && same.y == inside.y && same.z == inside.z, "a history inside the box is kept as it is");
+  const hs::float3 centre(0.5f, 1.0f, 2.0f);
+  Lcg rng;
+  bool on_box = true, along_line = true, idempotent = true;
+  for (int i = 0; i < 500; ++i) {
+    const hs::float3 h(rng.Range(-5, 6), rng.Range(-5, 7), rng.Range(-5, 9));
+    const hs::float3 c = hs::SsrClipToBox(h, lo, hi);
+    const bool was_outside = h.x < lo.x || h.x > hi.x || h.y < lo.y || h.y > hi.y || h.z < lo.z || h.z > hi.z;
+    on_box = on_box && c.x >= lo.x - 1e-4f && c.x <= hi.x + 1e-4f && c.y >= lo.y - 1e-4f && c.y <= hi.y + 1e-4f && c.z >= lo.z - 1e-4f && c.z <= hi.z + 1e-4f;
+    if (was_outside) {
+      // collinear with the box's centre and the history: the colour's hue is kept (a clamp would turn it)
+      const hs::float3 a = h - centre, b = c - centre;
+      const hs::float3 cr = hs::cross(a, b);
+      const double len = std::sqrt(double(hs::dot(a, a)) * double(hs::dot(b, b)));
+      along_line = along_line && std::sqrt(double(hs::dot(cr, cr))) < 1e-4 * std::max(len, 1.0);
+    }
+    const hs::float3 c2 = hs::SsrClipToBox(c, lo, hi);
+    idempotent = idempotent && std::fabs(c2.x - c.x) < 1e-4f && std::fabs(c2.y - c.y) < 1e-4f && std::fabs(c2.z - c.z) < 1e-4f;
+  }
+  Check(on_box, "the clip puts any history into the box");
+  Check(along_line, "on the line from the box's centre to the history (the hue is kept, a clamp turns it)");
+  Check(idempotent, "and clipping twice is clipping once");
+  // a flat box (a neighbourhood of one colour) pulls the history to it
+  const hs::float3 flat = hs::SsrClipToBox(hs::float3(5.0f, 5.0f, 5.0f), hs::float3(1.0f, 1.0f, 1.0f), hs::float3(1.0f, 1.0f, 1.0f));
+  Check(std::fabs(flat.x - 1.0f) < 2e-3f && std::fabs(flat.y - 1.0f) < 2e-3f && std::fabs(flat.z - 1.0f) < 2e-3f, "a box of one colour pulls the history to that colour");
+  // the box: ordered, around the mean, never wider than the plain clamp's, and narrower than it where the neighbourhood is steady
+  bool ordered = true, within_clamp = true;
+  for (int i = 0; i < 500; ++i) {
+    const float a = rng.Range(0, 5), b = rng.Range(0, 5);
+    const float vlo = std::min(a, b), vhi = std::max(a, b);
+    const float mean = rng.Range(vlo, vhi), sigma = rng.Range(0.0f, 2.0f) * (vhi - vlo);
+    const float bl = hs::SsrBoxLoChannel(mean, sigma, vlo, vhi), bh = hs::SsrBoxHiChannel(mean, sigma, vlo, vhi);
+    ordered = ordered && bl <= mean + 1e-6f && bh >= mean - 1e-6f;
+    within_clamp = within_clamp && bl >= vlo - hs::kSsrClipMargin * (vhi - vlo) - 1e-5f && bh <= vhi + hs::kSsrClipMargin * (vhi - vlo) + 1e-5f;
+  }
+  Check(ordered && within_clamp, "the box holds the mean and is never wider than the min / max widened by a tenth (the old clamp)");
+  Check(hs::SsrBoxHiChannel(1.0f, 0.05f, 0.0f, 3.0f) < 1.1f && hs::SsrBoxLoChannel(1.0f, 0.05f, 0.0f, 3.0f) > 0.9f && hs::SsrBoxHiChannel(1.0f, 5.0f, 0.0f, 3.0f) > 3.2f, "a steady neighbourhood gives a narrow box, a noisy one the plain clamp's");
+  // a noisy single-ray neighbourhood and a ghost: the clip takes the ghost in to the noise's edge, and leaves a plausible history alone
+  float samples[9];
+  double sum = 0.0, sum2 = 0.0;
+  float smin = 1e9f, smax = -1e9f;
+  for (float& s : samples) {
+    s = 1.0f + rng.Range(-0.4f, 0.4f);
+    sum += s;
+    sum2 += double(s) * s;
+    smin = std::min(smin, s);
+    smax = std::max(smax, s);
+  }
+  const float mean = float(sum / 9.0), sigma = float(std::sqrt(std::max(sum2 / 9.0 - double(mean) * mean, 0.0)));
+  const float bl = hs::SsrBoxLoChannel(mean, sigma, smin, smax), bh = hs::SsrBoxHiChannel(mean, sigma, smin, smax);
+  const hs::float3 ghost = hs::SsrClipToBox(hs::float3(3.0f, 3.0f, 3.0f), hs::float3(bl, bl, bl), hs::float3(bh, bh, bh));
+  const hs::float3 plausible = hs::SsrClipToBox(hs::float3(mean, mean, mean), hs::float3(bl, bl, bl), hs::float3(bh, bh, bh));
+  Check(ghost.x <= bh + 1e-4f && ghost.x < 1.6f && plausible.x == mean, Num("a ghost of 3.0 over a neighbourhood around 1.0 is taken to %.2f; a history at the mean is kept", ghost.x));
+
+  // the picture's border
+  Check(hs::SsrHistoryInside(0.5f, 0.5f, 960.0f, 540.0f) && !hs::SsrHistoryInside(0.0f, 0.5f, 960.0f, 540.0f) && !hs::SsrHistoryInside(1.0f, 0.5f, 960.0f, 540.0f) && !hs::SsrHistoryInside(0.5f, 0.0005f, 960.0f, 540.0f) &&
+            hs::SsrHistoryInside(0.5f, 0.01f, 960.0f, 540.0f),
+        "a history position within a texel of the edge is not read");
+
+  // the guard
+  const hs::float3 g = hs::SsrGuardTerm(hs::float3(-10.0f, -0.1f, 2.0f), hs::float3(1.0f, 1.0f, 1.0f));
+  Check(Near(g.x, -0.8, 1e-6) && Near(g.y, -0.1, 1e-6) && g.z == 2.0f, "the guard keeps a fifth of the colour at least, leaves a small negative alone and a positive whole");
+  const hs::float3 g0 = hs::SsrGuardTerm(hs::float3(-1.0f, -1.0f, -1.0f), hs::float3(0.0f, -2.0f, 0.0f));
+  Check(g0.x == 0.0f && g0.y == 0.0f && g0.z == 0.0f, "a pixel with no colour (or a negative one) has nothing taken away");
+}
+
+// ---------------------------------------------------------------------------
+// GB-I2: the road view's rules and its push word
+// ---------------------------------------------------------------------------
+
+void TestRoadViewRules() {
+  sr::RoadViewFacts f;
+  f.share = 1.0f;
+  f.has_target = true;
+  f.is_reflection_class = true;
+  f.drawn_this_frame = true;
+  f.slot_ok = true;
+  f.side = 256;
+  f.host_samples = 2;
+  Check(sr::DecideRoadView(f) == sr::RoadViewWhy::kUsed, "a drawn road view with a slot is used");
+  sr::RoadViewFacts g = f;
+  g.share = 0.0f;
+  Check(sr::DecideRoadView(g) == sr::RoadViewWhy::kOff, "off by the setting (or by the game showing none of it)");
+  g = f;
+  g.has_target = false;
+  Check(sr::DecideRoadView(g) == sr::RoadViewWhy::kNoTarget, "no target");
+  g = f;
+  g.is_reflection_class = false;
+  Check(sr::DecideRoadView(g) == sr::RoadViewWhy::kNotClassified, "another use of the identity");
+  g = f;
+  g.drawn_this_frame = false;
+  Check(sr::DecideRoadView(g) == sr::RoadViewWhy::kNotDrawn, "another frame's picture is not read");
+  g = f;
+  g.slot_ok = false;
+  Check(sr::DecideRoadView(g) == sr::RoadViewWhy::kNoSlot, "no shader view");
+  for (const uint32_t side : {0u, 1024u, 5000u}) {
+    g = f;
+    g.side = side;
+    Check(sr::DecideRoadView(g) == sr::RoadViewWhy::kBadSize, Num("a side of %.0f does not fit the word", side));
+  }
+  g = f;
+  g.host_samples = 9;
+  Check(sr::DecideRoadView(g) == sr::RoadViewWhy::kBadSize, "nine samples do not fit");
+  g = f;
+  g.side = 768;
+  g.host_samples = 1;
+  Check(sr::DecideRoadView(g) == sr::RoadViewWhy::kUsed, "the 3x view (768, one sample) fits");
+  bool named = true;
+  for (uint32_t i = 0; i < uint32_t(sr::RoadViewWhy::kCount); ++i) named = named && std::string(sr::RoadViewWhyName(sr::RoadViewWhy(i))) != "?";
+  Check(named && std::string(sr::RoadViewWhyName(sr::RoadViewWhy::kCount)) == "?", "every reason has a name");
+  // the word
+  bool word_ok = true;
+  for (const uint32_t slot : {0u, 5u, 1234u, 32767u}) {
+    for (const uint32_t samples : {1u, 2u, 4u, 8u}) {
+      for (const uint32_t side : {256u, 512u, 768u, 1023u}) {
+        const uint32_t w = sr::PackRoadView(slot, samples, side);
+        word_ok = word_ok && hs::SsrRoadViewSlot(w) == slot && hs::SsrRoadViewSamples(w) == samples && hs::SsrRoadViewSide(w) == side && hs::SsrHasSlot(hs::SsrRoadViewSlot(w));
+      }
+    }
+  }
+  Check(word_ok, "the road view's word: slot, host samples and side come back");
+  Check(!hs::SsrHasSlot(hs::SsrRoadViewSlot(sr::kNoRoadView)) && hs::SsrRoadViewSide(sr::kNoRoadView) == 0 && !hs::SsrHasSlot(hs::SsrRoadViewSlot(sr::PackRoadView(0xFFFFFFFFu, 2, 256))), "no view: no slot, and a none slot stays none");
+  Check(sr::PackRoadView(7, 0, 256) == sr::PackRoadView(7, 1, 256), "no samples is one");
+  // the push block's words of the three new uses
+  namespace p = sr::push;
+  Check(SSR_W_ROAD_VIEW == int(p::kRoadView) && SSR_W_FALLBACK == int(p::kFallback) && SSR_W_VEH_TABLE == int(p::kVehTable) && SSR_W_STENCIL == int(p::kStencil) && SSR_W_ROAD_VIEW_APPLY == int(p::kRoadViewApply),
+        "the new words are the same in the .hlsli and the host");
+  Check(p::kRoadView == p::kSrc && p::kFallback == p::kStrength && p::kStencil == p::kLin0 && p::kVehTable == p::kRt2Rt3 && p::kRoadViewApply == p::kHiz01, "and each sits in a word its pass does not read for its first meaning");
+  // the debug views
+  Check(sr::ViewFromSetting(5) == sr::View::kRoadView && sr::ViewFromSetting(6) == sr::View::kDiff && sr::ViewFromSetting(7) == sr::View::kOff && int(sr::View::kCount) == 7 && int(sr::View::kCount) <= 16, "views 5 (the road view) and 6 (the term's sign)");
 }
 
 
@@ -1238,7 +1633,7 @@ void TestSources(const std::string& dir) {
   const std::string rex_setting = std::string("REX_") + "SETTING(";
   Check(Has(settings, rex_setting + "std::string, mcla_gpu_ssr, \"off\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"off\", \"high\", \"ultra\")"), "mcla_gpu_ssr is off by default and debug-only");
   bool every = true;
-  for (const char* name : {"mcla_gpu_ssr", "mcla_gpu_ssr_view", "mcla_gpu_ssr_strength", "mcla_gpu_ssr_min_smooth", "mcla_gpu_ssr_stub", "mcla_gpu_ssr_wet", "mcla_gpu_ssr_history"}) {
+  for (const char* name : {"mcla_gpu_ssr", "mcla_gpu_ssr_view", "mcla_gpu_ssr_strength", "mcla_gpu_ssr_min_smooth", "mcla_gpu_ssr_stub", "mcla_gpu_ssr_wet", "mcla_gpu_ssr_history", "mcla_gpu_ssr_fallback", "mcla_gpu_ssr_vehicle_rows"}) {
     const std::string n = name;
     const size_t decl = settings.find(", " + n + ", ");
     const size_t end = decl == std::string::npos ? std::string::npos : settings.find(");\n", decl);
@@ -1249,7 +1644,11 @@ void TestSources(const std::string& dir) {
     if (!(debug && in_alias && in_manifest && in_meta)) std::printf("setting %s: debug %d alias %d manifest %d meta %d\n", name, debug, in_alias, in_manifest, in_meta);
     every = every && debug && in_alias && in_manifest && in_meta;
   }
-  Check(every, "all seven settings are debug-only and in the settings header, its aliases, the manifest and the meta list");
+  Check(every, "all nine settings are debug-only and in the settings header, its aliases, the manifest and the meta list");
+  const size_t view_decl = settings.find(", mcla_gpu_ssr_view, ");
+  const size_t view_end = view_decl == std::string::npos ? std::string::npos : settings.find(");\n", view_decl);
+  Check(Has(settings, rex_setting + "f64, mcla_gpu_ssr_fallback, 1.0,") && Has(settings, rex_setting + "i32, mcla_gpu_ssr_vehicle_rows, 1,") && view_end != std::string::npos && settings.substr(view_decl, view_end - view_decl).find("rex::Range{0, 6}") != std::string::npos,
+        "GB-I2: the fallback is on by default (1) and the vehicle rows too, the view setting goes to 6");
 
   // what the effect asks of the owners, and that it asks for nothing while it is off
   const std::string begin = FunctionText(cpp, "void ScreenReflections::BeginFrame()");
@@ -1307,7 +1706,8 @@ void TestSources(const std::string& dir) {
       {"SSR_W_TAN_X", "kTanX"},         {"SSR_W_TAN_Y", "kTanY"},    {"SSR_W_LIN_X", "kLinX"},    {"SSR_W_LIN_Y", "kLinY"},   {"SSR_W_LIN_Z", "kLinZ"},   {"SSR_W_LIN_W", "kLinW"},
       {"SSR_W_NEAR", "kNear"},          {"SSR_W_MAX_DIST", "kMaxDist"}, {"SSR_W_RIGHT", "kRight"}, {"SSR_W_UP", "kUp"},        {"SSR_W_STRENGTH", "kStrength"}, {"SSR_W_MIN_SMOOTH", "kMinSmooth"},
       {"SSR_W_STUB_SMOOTH", "kStubSmooth"}, {"SSR_W_WET", "kWet"},   {"SSR_W_THICK", "kThick"},   {"SSR_W_CAP", "kCap"},      {"SSR_W_MOTION", "kMotion"}, {"SSR_W_PREV_TAN_X", "kPrevTanX"},
-      {"SSR_W_PREV_TAN_Y", "kPrevTanY"}, {"SSR_W_HISTORY_WEIGHT", "kHistoryWeight"}};
+      {"SSR_W_PREV_TAN_Y", "kPrevTanY"}, {"SSR_W_HISTORY_WEIGHT", "kHistoryWeight"},
+      {"SSR_W_ROAD_VIEW", "kRoadView"}, {"SSR_W_FALLBACK", "kFallback"}, {"SSR_W_VEH_TABLE", "kVehTable"}, {"SSR_W_STENCIL", "kStencil"}, {"SSR_W_ROAD_VIEW_APPLY", "kRoadViewApply"}};
   bool defined = true, filled = true;
   for (const std::string* text : {&pass, &trace_ps, &temporal_ps, &apply_ps}) {
     for (const std::string& word : WordsUsed(*text)) {
@@ -1349,6 +1749,42 @@ void TestSources(const std::string& dir) {
   const std::string accessor = FunctionText(ao_cpp, "bool AmbientOcclusion::FrameCameraNow(FrameCameraOut* out) const {");
   Check(!accessor.empty() && Has(ao_h, "bool FrameCameraNow(FrameCameraOut* out) const;") && Has(accessor, "FrameCameraRows(&rows)") && Has(accessor, "FrameMotion(&motion, &pose, &cut)") && Has(accessor, "((k == 2) != (r == 2)) ? -1.0 : 1.0"),
         "ao.h / ao.cpp: the camera accessor is const, uses the AO's own camera and motion, and turns the motion into this renderer's view space as FillPush does");
+  // GB-I2: the AO's vehicle table accessor is a read and nothing else, and the effect asks for it only for its vehicles
+  const std::string table_accessor = FunctionText(ao_cpp, "bool AmbientOcclusion::VehicleTableNow(VehicleTableOut* out) const {");
+  Check(!table_accessor.empty() && Has(ao_h, "bool VehicleTableNow(VehicleTableOut* out) const;") && Has(table_accessor, "vehicle_table_frame_ != frame_") && !Has(table_accessor, "list->") && Has(ao_cpp, "  vehicle_table_frame_ = frame_;\n  vehicle_table_ids_ = mask;"),
+        "ao.h / ao.cpp: the vehicle table accessor is const, answers only for a table drawn in this frame and records nothing");
+  Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") && Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackSlots(vehicle_table_slot, screen::kNoSlot));") &&
+            Has(trigger, "push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));"),
+        "ssr.cpp: the vehicle table goes to the temporal pass, the stencil plane to the trace");
+  // GB-I2: the road view: found by its identity, classified, drawn this frame, moved to a shader read before the trace, asked for only while the share is above 0; its numbers are the side view's own
+  const std::string reflection_rule = Read(dir, "side_view_reflection.cpp");
+  Check(Has(reflection_rule, "constexpr uint16_t kPitch = " + std::to_string(sr::roadview::kPitch) + ";") && Has(reflection_rule, "constexpr uint8_t kSamples = " + std::to_string(sr::roadview::kGuestSamples) + ";") &&
+            Has(reflection_rule, "constexpr uint16_t kColorBase = " + std::to_string(sr::roadview::kColorBase) + ";") && Has(reflection_rule, "constexpr uint32_t kDeclared = " + std::to_string(sr::roadview::kDeclared) + ";") &&
+            Has(reflection_rule, "key.format == uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT)") && Has(trigger, "road_key.format = uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT);"),
+        "ssr_rules.h roadview:: is the road reflection side view's identity (tile, pitch, samples, declared size, format)");
+  const size_t road_find = trigger.find("edram_->Find(road_key)");
+  const size_t road_transition = trigger.find("edram_->Transition(list, *road_target, plume::RenderTextureLayout::SHADER_READ)");
+  const size_t trace_draw = trigger.find("DrawPass(list, trace_, trace_pipeline, trace_push);");
+  const size_t road_share = trigger.find("if (road.share > 0.0f) {");
+  Check(road_find != std::string::npos && road_share != std::string::npos && road_share < road_find && road_transition != std::string::npos && road_transition < trace_draw && trace_draw != std::string::npos,
+        "ssr.cpp: the road view is looked for only while the share is above 0, and is a shader read before the trace");
+  Check(Has(trigger, "road_found->side_view == SideView::kReflection") && Has(trigger, "uint32_t(road_found->drawn_frame) == sf.frame_serial") && Has(trigger, "road_found->scale.Edge(ssr::roadview::kDeclared)") &&
+            Has(trigger, "ssr::DecideRoadView(road)") && Has(trigger, "road_word = ssr::PackRoadView(road_slot, road.host_samples, road.side);") && Has(trigger, "trace_push.Set(pk::kRoadView, road_word);") &&
+            Has(trigger, "apply.Set(pk::kRoadViewApply, road_word);"),
+        "ssr.cpp: classified by the side view rule, drawn this frame, its host side from the scale, decided by the rules and handed to the trace and the debug view");
+  Check(Has(trigger, "ssr::FallbackShare(fallback_setting_, wet_strength_)") && Has(trigger, "ssr::SmoothWetDt(wet_, target, dt)") && Has(trigger, "std::chrono::steady_clock::now()") && !Has(cpp, "SmoothWet("),
+        "ssr.cpp: the wetness is smoothed in seconds and the share is the setting times the game's strength");
+  Check(Has(FunctionText(cpp, "void ScreenReflections::OnMainDraw("), "wet_votes_.Add(BankFloat(banks.vs.data(), kVsReflectionParams, 0), BankFloat(banks.vs.data(), kVsReflectionParams, 1))"), "the votes carry VS c43.x and c43.y");
+  // the aliased words: a pass never reads a word for its first meaning that another use of it has taken
+  Check(!Has(trace_ps, "SSR_W_SRC") && !Has(trace_ps, "SSR_W_STRENGTH") && Has(trace_ps, "SsrF(SSR_W_FALLBACK)") && Has(trace_ps, "SsrW(SSR_W_ROAD_VIEW)"), "the trace reads the road view and the share where the other passes read the source images and the strength");
+  Check(!Has(temporal_ps, "SSR_W_RT2_RT3") && !Has(temporal_ps, "SsrRt3At(") && !Has(temporal_ps, "SsrRt1At(") && Has(temporal_ps, "SsrW(SSR_W_VEH_TABLE)"), "the temporal pass reads the vehicle table where the others read the planes' word");
+  Check(!Has(apply_ps, "SsrHizAt(") && !Has(apply_ps, "SSR_W_HIZ") && Has(apply_ps, "SsrW(SSR_W_ROAD_VIEW_APPLY)"), "the apply reads no Hi-Z, so its first word carries the road view for the debug view");
+  Check(Has(pass, "SsrHi(SsrW(SSR_W_STENCIL))") && Has(pass, "SsrLo(SsrW(SSR_W_LIN0))") && Has(trace_ps, "SsrVehicleIdAt(hx, hy)") && Has(trace_ps, "SsrPackHit(distance_out, vehicle_hit, vehicle_id)") && Has(temporal_ps, "SsrVehicleImage(m0, m1, m2, v0, v1, v2,"),
+        "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
+  Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(SsrRoadViewAt(road_view, screen_uv), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
+        "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
+  Check(Has(temporal_ps, "history = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
+
   // the pause world and the effect's own gate are in the rules
   Check(Has(rules, "d.why = Why::kPause;") && Has(trigger, "facts.pause_view = (sf.flags & screen::kFramePause) != 0;"), "the pause menu's, the garage's and the map's world are not reflected");
   // the effect does not touch the colour capture or the history of the owner
@@ -1380,6 +1816,11 @@ int main(int argc, char** argv) {
   TestGgx();
   TestFades();
   TestVirtualImage();
+  TestWetI2();
+  TestHitPacking();
+  TestVehicleImage();
+  TestClip();
+  TestRoadViewRules();
   TestMarchAnalytic();
   TestMarchBrute();
   TestMarchEdges();

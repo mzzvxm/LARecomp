@@ -1,6 +1,6 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- screen-space reflections: the host's pure rules (no GPU), package GB-I1 of perf/LIGHT-UNIFY.md 11.2
+// MCLA GPU renderer -- screen-space reflections: the host's pure rules (no GPU), packages GB-I1 and GB-I2 of perf/LIGHT-UNIFY.md 11.2
 // ===========================================================================
 // ssr.cpp asks here what a frame does (whether the reflections run and why not), how big the images are and what they cost, which numbers the passes get, what the road's wetness is,
 // how the push block is filled; ssr_test.cpp checks it all and compiles hlsl/ssr_common.hlsli and hlsl/ssr_trace.hlsli as C++ against analytic scenes. The numbers of the push block and
@@ -126,7 +126,10 @@ constexpr uint32_t ColourLevelsUsed(uint32_t colour_levels) { return colour_leve
 // ---------------------------------------------------------------------------
 
 // The road's wetness as the game says it: VS c43.x (gReflectionParams.x), 0.095 dry, 1.17 in rain (ao.cpp, census 6A.2). The wet number of the passes is 0 up to kWetDry and 1 from
-// kWetDry + kWetSpan (the AO's contact gate has the same two).
+// kWetDry + kWetSpan (the AO's contact gate has the same two). GB-I2 (CHECK C5, "a wetness / rain scalar the host can read"): that constant IS the game's own scalar, the one its road shaders
+// multiply their puddle mask and reflection by (census 6A.2 item 4: x the wetness, y the reflection's strength, z the plane's height, every draw of the city's materials carries all of them, the
+// weather's one-hot weights 0x827E1B30 only say which weather it is). The passes use x for the smoothness a road takes (SsrWetSmooth) and y for how much of the road view the game
+// shows (kDefaultGameStrength: 0.095 dry, 1.19 in rain).
 inline constexpr float kWetDry = 0.2f;
 inline constexpr float kWetSpan = 0.5f;
 inline float Wet01(float c43x) {
@@ -140,32 +143,54 @@ class WetVotes {
  public:
   void Reset() {
     bins_.fill(0);
+    strength_sum_.fill(0.0f);
     draws_ = 0;
   }
-  void Add(float c43x) {
+  // `c43y` (the reflection's strength, gReflectionParams.y) is summed in the bin of its draw's wetness, so that the pick answers with the strength of the commonest wetness.
+  void Add(float c43x, float c43y = kDefaultGameStrength) {
     if (std::isfinite(c43x) && c43x >= 0.0f && c43x <= 4.0f) {
-      ++bins_[uint32_t(c43x * 10.0f + 0.5f)];
+      const uint32_t bin = uint32_t(c43x * 10.0f + 0.5f);
+      ++bins_[bin];
+      strength_sum_[bin] += std::isfinite(c43y) ? std::clamp(c43y, 0.0f, 4.0f) : kDefaultGameStrength;
       ++draws_;
     }
   }
-  bool Pick(float* value) const {
+  bool Pick(float* value, float* strength = nullptr) const {
     if (draws_ == 0) return false;
     uint32_t best = 0;
     for (uint32_t i = 1; i < kBins; ++i) {
       if (bins_[i] > bins_[best]) best = i;
     }
     *value = 0.1f * float(best);
+    if (strength) *strength = strength_sum_[best] / float(bins_[best]);
     return true;
   }
   uint32_t draws() const { return draws_; }
   static constexpr uint32_t kBins = 41;
+  static constexpr float kDefaultGameStrength = 1.0f;   // when a draw gave none
 
  private:
   std::array<uint16_t, kBins> bins_{};
+  std::array<float, kBins> strength_sum_{};
   uint32_t draws_ = 0;
 };
-inline constexpr float kWetSmoothing = 0.08f;   // the share of the way to the frame's value taken each frame
-inline float SmoothWet(float previous, float target) { return previous + (target - previous) * kWetSmoothing; }
+// The smoothing is in SECONDS (GB-I1's was a share a frame: the ramp was 0.3 s at 144 FPS and 1.5 s at 30): the start of rain is a ramp of about a second whatever the frame rate. `dt` is the time since the
+// last frame that ran the effect (clamped: a pause spell or a hitch is a step of a quarter of a second at most, a frame the history was lost in starts from the new value: ssr.cpp).
+inline constexpr float kWetTauSeconds = 0.4f;
+inline constexpr float kWetMaxDt = 0.25f;
+inline float SmoothWetDt(float previous, float target, float dt_seconds) {
+  const float dt = std::isfinite(dt_seconds) ? std::clamp(dt_seconds, 0.0f, kWetMaxDt) : 0.0f;
+  return previous + (target - previous) * (1.0f - std::exp(-dt / kWetTauSeconds));
+}
+
+// The share of the game's road reflection view the effect takes out of the road where a ray finds a reflection (hlsl/ssr_trace_ps.hlsl): the setting (mcla_gpu_ssr_fallback, 0 adds the reflection on top of
+// the game's, as GB-I1 did) times the strength the game itself shows the view with (VS c43.y saturated: it shows 0.095 of it on a dry road and 1.19 in rain, so the dry road, where nothing is traced
+// anyway, loses next to nothing). Never more than the game shows.
+inline float FallbackShare(float setting, float game_strength) {
+  const float a = std::isfinite(setting) ? std::clamp(setting, 0.0f, 1.0f) : 0.0f;
+  const float b = std::isfinite(game_strength) ? std::clamp(game_strength, 0.0f, 1.0f) : 0.0f;
+  return a * b;
+}
 
 // ---------------------------------------------------------------------------
 // the frame's decision
@@ -329,6 +354,14 @@ inline constexpr uint32_t kPrevTanX = kNear;
 inline constexpr uint32_t kPrevTanY = kMaxDist;
 inline constexpr uint32_t kHistoryWeight = kFrame;
 inline constexpr uint32_t kMotion = 20;
+// GB-I2: the words of the new parts, each a word the pass does not read for its first meaning. The trace: the road view (slot, host samples - 1, side: PackRoadView) in the source word and the share of it taken
+// out (a float) in the strength word; the stencil plane's slot in the high half of the lin depth word. The temporal pass: the AO's vehicle table in the low half of the planes' word. The apply (its
+// debug view of the road view): the road view in the Hi-Z's first word, which it does not read.
+inline constexpr uint32_t kRoadView = kSrc;
+inline constexpr uint32_t kFallback = kStrength;
+inline constexpr uint32_t kStencil = kLin0;
+inline constexpr uint32_t kVehTable = kRt2Rt3;
+inline constexpr uint32_t kRoadViewApply = kHiz01;
 
 // The flag bits of the flags word, above the 12 low bits (sample0, the Hi-Z's and the colour's levels).
 inline constexpr uint32_t kFlagMs = 1;
@@ -439,9 +472,82 @@ enum class View : uint8_t {
   kTerm = 1,       // the colour the effect adds, alone on black
   kGate = 2,       // the class gate: green (a pixel the effect reflects), red (its class keeps its own reflection), blue (stub pixel), black (no data), brighter with the share
   kTrace = 3,      // the raw trace at the SSR size, before the history (premultiplied radiance)
-  kHit = 4,        // the trace's alpha: hit distance in blue to white (a log scale), red for a miss, black where nothing was traced
-  kCount = 5,
+  kHit = 4,        // the trace's alpha: hit distance in blue to white (a log scale), orange where the hit is a vehicle's, red for a miss, black where nothing was traced
+  kRoadView = 5,   // GB-I2: the game's road reflection view as the trace reads it, over the whole picture (black: no view in the frame)
+  kDiff = 6,       // GB-I2: the term's sign: green what the effect adds, red what it takes out of the game's own reflection
+  kCount = 7,
 };
 inline View ViewFromSetting(int value) { return value > 0 && value < int(View::kCount) ? View(value) : View::kOff; }
+
+// ---------------------------------------------------------------------------
+// GB-I2: the game's road reflection view (the off-screen fallback)
+// ---------------------------------------------------------------------------
+
+// The identity of the view's colour target (side_view_reflection.cpp, which says the same numbers and is read by the test): the whole screen drawn with the roads' mirrored geometry, colour
+// k_2_10_10_10_FLOAT at EDRAM tile 128, pitch 320, the guest's 2 samples, declared 256 x 256; at a side view scale above 1x it has host samples of its own and a side of 256 x the scale.
+namespace roadview {
+inline constexpr uint32_t kColorBase = 128;
+inline constexpr uint32_t kPitch = 320;
+inline constexpr uint32_t kGuestSamples = 2;
+inline constexpr uint32_t kDeclared = 256;
+inline constexpr uint32_t kMaxSide = 1023;    // the push word's ten bits (3x of the guest's size is 768)
+inline constexpr uint32_t kMaxSamples = 8;    // three bits, samples - 1
+}  // namespace roadview
+
+// Why the trace takes the road view into account or not (the log says it when it changes).
+enum class RoadViewWhy : uint8_t {
+  kUsed,           // the trace reads it
+  kOff,            // mcla_gpu_ssr_fallback is 0 (the reflection is added on top of the game's, as GB-I1 did)
+  kNoTarget,       // the view's colour target does not exist (yet): the game has not drawn it
+  kNotClassified,  // the target is not the road reflection class's (another use of the identity)
+  kNotDrawn,       // not drawn in this frame: its picture is another frame's
+  kNoSlot,         // its shader view could not be made
+  kBadSize,        // a side or a sample count the push word cannot hold
+  kCount,
+};
+constexpr const char* RoadViewWhyName(RoadViewWhy why) {
+  switch (why) {
+    case RoadViewWhy::kUsed: return "used";
+    case RoadViewWhy::kOff: return "off (mcla_gpu_ssr_fallback is 0)";
+    case RoadViewWhy::kNoTarget: return "the game has not drawn the road reflection view";
+    case RoadViewWhy::kNotClassified: return "the target is not the road reflection side view's";
+    case RoadViewWhy::kNotDrawn: return "the view was not drawn in this frame";
+    case RoadViewWhy::kNoSlot: return "the view's shader view could not be made";
+    case RoadViewWhy::kBadSize: return "the view's size or samples do not fit the push word";
+    case RoadViewWhy::kCount: break;
+  }
+  return "?";
+}
+struct RoadViewFacts {
+  float share = 0.0f;               // FallbackShare
+  bool has_target = false;
+  bool is_reflection_class = false;
+  bool drawn_this_frame = false;
+  bool slot_ok = false;
+  uint32_t side = 0;                // host pixels of the 256 x 256 guest view
+  uint32_t host_samples = 1;
+};
+constexpr RoadViewWhy DecideRoadView(const RoadViewFacts& f) {
+  if (!(f.share > 0.0f)) return RoadViewWhy::kOff;
+  if (!f.has_target) return RoadViewWhy::kNoTarget;
+  if (!f.is_reflection_class) return RoadViewWhy::kNotClassified;
+  if (!f.drawn_this_frame) return RoadViewWhy::kNotDrawn;
+  if (!f.slot_ok) return RoadViewWhy::kNoSlot;
+  if (f.side == 0 || f.side > roadview::kMaxSide || f.host_samples < 1 || f.host_samples > roadview::kMaxSamples) return RoadViewWhy::kBadSize;
+  return RoadViewWhy::kUsed;
+}
+// The road view's word (hlsl/ssr_common.hlsli SsrRoadViewSlot / Samples / Side): slot in 16 bits (0xFFFF none), host samples - 1 in three, the side in ten.
+constexpr uint32_t PackRoadView(uint32_t slot, uint32_t host_samples, uint32_t side) {
+  return Slot16(slot) | (((host_samples < 1 ? 1u : host_samples) - 1u) & 7u) << 16 | (side & roadview::kMaxSide) << 19;
+}
+constexpr uint32_t kNoRoadView = 0xFFFFu;   // the word of a frame without it: no slot, one sample, no side
+
+// The history weight a reflected vehicle's hit keeps, as a share of the level's (hlsl/ssr_common.hlsli kSsrVehicleRowWeight and kSsrVehicleNoRowWeight; the test compares them): a vehicle whose
+// motion row the AO gave moves right and keeps most of it, one without a row is a smear and keeps little.
+inline constexpr float kVehicleRowWeight = 0.8f;
+inline constexpr float kVehicleNoRowWeight = 0.35f;
+constexpr float VehicleHistoryScale(bool vehicle_hit, bool has_row) {
+  return !vehicle_hit ? 1.0f : (has_row ? kVehicleRowWeight : kVehicleNoRowWeight);
+}
 
 }  // namespace mcla::gpu::ssr

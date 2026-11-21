@@ -1312,10 +1312,10 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (screen-space reflections): draws one picture over the main view in place of the effect's add, where the ambient occlusion runs: 1 the term the effect adds (alone on black), 2 the class gate \"\n    \"(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at \"\n    \"half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, red a ray that found nothing, black not traced). 0: off. Live.\"",
+  "help": "\"Diagnostic (screen-space reflections): draws one picture over the main view in place of the effect's add, where the ambient occlusion runs: 1 the term the effect adds (alone on black), 2 the class gate \"\n    \"(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at \"\n    \"half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, orange where the hit is a vehicle's, red a ray that found nothing, black not traced), 5 the game's road reflection view as the effect reads it, over the whole picture (black: none in this frame), 6 the term's sign (green what is added, red what is taken out of the game's own reflection). 0: off. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 4}"
+   "rex::Range{0, 6}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1376,6 +1376,30 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 0.98}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_fallback": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the share of the game's own road reflection (its 256 x 256 planar view of the whole screen) the effect takes out of a road where its rays find a reflection of their own, 0 to 1 (times the strength the game shows that view with, VS c43.y): 1 replaces the soft reflection with the sharp one, 0 adds the effect on top of it (the reflection is then doubled, as before the fallback). Where no ray finds anything the game's reflection stays alone. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 1.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_vehicle_rows": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): 1 moves the reflection of a moving vehicle with the vehicle's own motion (the ambient occlusion's vehicle table), 0 treats it as the world's, which smears it (the comparison). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
   ],
   "comments": [],
   "pp_depth": 0

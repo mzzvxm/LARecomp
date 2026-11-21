@@ -715,7 +715,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_ssr_view, 0, "Diagnostic (screen-space reflections): draws one picture over the main view in place of the effect's add, where the ambient occlusion runs: 1 the term the effect adds (alone on black), 2 the class gate "
     "(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at "
-    "half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, red a ray that found nothing, black not traced). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 4});
+    "half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, orange where the hit is a vehicle's, red a ray that found nothing, black not traced), 5 the game's road reflection view as the effect reads it, over the whole picture (black: none in this frame), 6 the term's sign (green what is added, red what is taken out of the game's own reflection). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 6});
 
   REX_SETTING(f64, mcla_gpu_ssr_strength, 1.0, "Diagnostic (screen-space reflections): the effect's strength, 0 to 4: the added reflection is multiplied by it (the class's own gain, the Fresnel term and the picture's edge fades come on top). Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
 
@@ -730,6 +730,10 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_ssr_history, -1.0, "Diagnostic (screen-space reflections): the share of the last frames the accumulation keeps, 0 to 0.98 (0.9 is a mean of about ten frames; 0 draws the raw ray, noise and all). -1: the level's (high 0.90, ultra 0.92). "
     "Live.", rex::kDebugOnly, rex::Range{0.0, 0.98});
+
+  REX_SETTING(f64, mcla_gpu_ssr_fallback, 1.0, "Diagnostic (screen-space reflections): the share of the game's own road reflection (its 256 x 256 planar view of the whole screen) the effect takes out of a road where its rays find a reflection of their own, 0 to 1 (times the strength the game shows that view with, VS c43.y): 1 replaces the soft reflection with the sharp one, 0 adds the effect on top of it (the reflection is then doubled, as before the fallback). Where no ray finds anything the game's reflection stays alone. Live.", rex::kDebugOnly, rex::Range{0.0, 1.0});
+
+  REX_SETTING(i32, mcla_gpu_ssr_vehicle_rows, 1, "Diagnostic (screen-space reflections): 1 moves the reflection of a moving vehicle with the vehicle's own motion (the ambient occlusion's vehicle table), 0 treats it as the world's, which smears it (the comparison). Live.", rex::kDebugOnly, rex::Range{0, 1});
 
   REX_SETTING(u32, mcla_gpu_ghost_log_interval, 0, "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
@@ -1670,6 +1674,8 @@ inline auto& mcla_gpu_ssr_min_smooth = g_gpu.mcla_gpu_ssr_min_smooth;
 inline auto& mcla_gpu_ssr_stub = g_gpu.mcla_gpu_ssr_stub;
 inline auto& mcla_gpu_ssr_wet = g_gpu.mcla_gpu_ssr_wet;
 inline auto& mcla_gpu_ssr_history = g_gpu.mcla_gpu_ssr_history;
+inline auto& mcla_gpu_ssr_fallback = g_gpu.mcla_gpu_ssr_fallback;
+inline auto& mcla_gpu_ssr_vehicle_rows = g_gpu.mcla_gpu_ssr_vehicle_rows;
 inline auto& mcla_gpu_ghost_log_interval = g_gpu.mcla_gpu_ghost_log_interval;
 inline auto& mcla_gpu_glow_visibility = g_gpu.mcla_gpu_glow_visibility;
 inline auto& mcla_gpu_gpu_based_validation = g_gpu.mcla_gpu_gpu_based_validation;

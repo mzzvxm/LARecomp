@@ -2126,6 +2126,16 @@ bool AmbientOcclusion::FrameCameraNow(FrameCameraOut* out) const {
   return out->have_rows || out->have_motion;
 }
 
+bool AmbientOcclusion::VehicleTableNow(VehicleTableOut* out) const {
+  *out = VehicleTableOut{};
+  if (vehicle_table_frame_ != frame_ || vehicle_table_ids_ == 0 || vehicle_table_slot_ == kNoSlot) {
+    return false;
+  }
+  out->slot = vehicle_table_slot_;
+  out->ids = vehicle_table_ids_;
+  return true;
+}
+
 AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) const {
   HistoryUse use;
   use.cap = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_history.Get(), 1, 64));
@@ -2281,6 +2291,9 @@ uint32_t AmbientOcclusion::RecordVehicleTable(plume::RenderCommandList* list, co
                                              plume::RenderTextureLayout::SHADER_READ));
   image.layout = plume::RenderTextureLayout::SHADER_READ;
   *slot = image.slot;
+  vehicle_table_frame_ = frame_;
+  vehicle_table_ids_ = mask;
+  vehicle_table_slot_ = image.slot;
   return mask;
 }
 
