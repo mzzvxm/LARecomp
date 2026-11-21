@@ -196,6 +196,11 @@ inline constexpr float kEmissiveGain = 3.0f;
 // ---------------------------------------------------------------------------
 // At night the sky's fill is this share of the sun's colour (kFillShare by day): a city night's sky glows, and a flank the street lamps do not reach is not black.
 inline constexpr float kNightFillShare = 0.4f;
+// RT-HIT-SHADING-6: at night a street lamp over the street lights the hit as well (the glints below are its image in the coat; this is its light on the paint): a surface that faces the lamp,
+// straight up, takes this share of the sun's colour times N.up, by the sky's openness (a hit under another car's roof is in its shade) and the frame's detail. A vertical flank has none of it, a roof, a
+// bonnet or a shoulder has it: the night's flank was one even colour (the fill by a hemisphere term of 0.6 at every vertical normal), now its top is lit and its sill is not, so the car has a shape.
+// 0 at day: the hour's night factor is the only thing that brings it in.
+inline constexpr float kLampDiffuse = 0.6f;
 // The clear coat's Schlick fresnel (a dielectric of the index 1.5: F0 0.04, power 5) at the hit's own view of the reflected ray; chrome keeps its own (high) fresnel.
 inline constexpr float kCoatF0 = 0.04f;
 inline constexpr float kCoatPower = 5.0f;
@@ -1003,6 +1008,12 @@ inline bool EnvDirection(float u, float v, float r[3]) {
 //   4. THE HOUR. The sun's light is gone at night and the street lamps (the glints, the sky's fill raised from a fifth to kNightFillShare of the sun's colour) stand in for it; the lamps' glow
 //      (emissive) follows the sun's height too (NightFromSunHeight: the volumetric light's own rule), not the draws' c39 colour, which does not change between 14 h and 23 h.
 //   5. THE CLASS (kClassAmbient, kClassGlint): a tyre sits in its arch, the interior and the underside are under the body, rubber and trim are matt; glass, paint and chrome show the coat's lights.
+//   6. THE LAMP'S LIGHT AT NIGHT (RT-HIT-SHADING-6, kLampDiffuse). rthit4 (night b): the reflected car read (the median 1.43 times the environment's) but its contrast was 0.91 where 1 was wanted: the
+//      night's flank had no light, only the fill by a hemisphere term, so the whole car was one dim colour and the lamp's glint was its only structure (a few sparkles on the roof rail), while the environment it
+//      replaced has the street lamps as bright blobs (the coefficient of variation of the luminance over the door is 1.65 there, 1.02 by day). A street lamp lights a car, not only its image in the coat: at night
+//      what faces up (a roof, a bonnet, a shoulder) takes kLampDiffuse of the sun's colour times N.up, by the sky's openness (the neighbour's roof line shades the flank under it), by the detail. A vertical flank
+//      takes none; a roof takes the fill and the lamp (about four times a flank), a shoulder at 45 degrees about three times. By day it is 0 (the night factor is the only way in), so the day's pictures do not move.
+//      The exposure's calibration (census) is against the history's own paint, so the level of the lit top and the dim flank is the history's on average; what the lamp changes is their ratio.
 // CHECK (nothing was run): every number above is a first guess from the physics, not a fit: kSunRadiance, kLampRadiance, the lobes' powers, kOpenMin, kContactMin, kNightFillShare. The run's pictures
 // say; mcla_gpu_car_rt_hit_detail moves the glints live (and 0 gives the old shading). The street lamps' real places (the game's lamp list, vol_lamp_list.h, which exists only while the
 // volumetric light is on) would give real glints: a lamp straight overhead is the stand-in. The ground's own contact shadow in the reflection (the road under the neighbour in the player's
@@ -1165,12 +1176,14 @@ inline void ShadeReference(const ShadeInput& in, float out[3]) {
   const float class_ambient = 1.0f + (ClassAmbient(in.cls) - 1.0f) * strength;
   const float ground = (1.0f + (OpenMultiplier(in.open) - 1.0f) * strength) * (1.0f + (ContactMultiplier(in.height) - 1.0f) * strength);
   const float fill_share = kFillShare + (kNightFillShare - kFillShare) * night;
+  // RT-HIT-SHADING-6: the lamp's light on the hit (the sun's colour times this), only at night, only facing up, by the sky's openness, scaled by the detail (0: as it was)
+  const float lamp_light = kLampDiffuse * night * std::max(Dot3(in.normal, in.up), 0.0f) * in.open * strength;
   const float glint_gain = detail > 0.0f ? ClassGlint(in.cls) * detail * (in.cls == Class::kChrome ? fresnel : CoatFresnel(nv)) : 0.0f;
   const float sun_lobe = glint_gain > 0.0f && ndl > 0.0f ? GlintLobe(Dot3(reflected, in.to_sun), kSunGlintPower) : 0.0f;
   const float lamp_lobe = glint_gain > 0.0f && night > 0.0f ? GlintLobe(Dot3(reflected, in.up), kLampGlintPower) : 0.0f;
   for (int c = 0; c < 3; ++c) {
     const float fill = std::max(in.light.ambient[c], in.light.sun[c] * fill_share);
-    const float light = fill * in.tuning.ambient * hemisphere * class_ambient * ground + in.light.sun[c] * ndl * in.sun_visible * day_sun;
+    const float light = fill * in.tuning.ambient * hemisphere * class_ambient * ground + in.light.sun[c] * ndl * in.sun_visible * day_sun + in.light.sun[c] * lamp_light;
     const float env = in.env_known ? in.env[c] : in.light.ambient[c] * (0.6f + 0.4f * Dot3(reflected, in.up));
     const float tint = in.cls == Class::kChrome ? albedo[c] : 1.0f;
     float colour = albedo[c] * light * d.diffuse_gain + env * fresnel * d.spec_gain * in.tuning.spec * tint * ground;

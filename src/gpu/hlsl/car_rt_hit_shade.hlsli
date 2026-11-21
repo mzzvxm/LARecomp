@@ -67,6 +67,7 @@ static const float kEmissiveGain = 3.0;
 static const float kFillShare = 0.2;  // the ambient is at least this share of the sun's colour (car_rt_material_rules.h kFillShare)
 // RT-HIT-SHADING-5 (car_rt_material_rules.h has each number and says what it is)
 static const float kNightFillShare = 0.4;
+static const float kLampDiffuse = 0.6;  // RT-HIT-SHADING-6 (car_rt_material_rules.h kLampDiffuse): the street lamp's light on a surface that faces up, at night
 static const float kCoatF0 = 0.04;
 static const float kCoatPower = 5.0;
 static const float kSunRadiance = 24.0;
@@ -517,7 +518,9 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     const float ground = lerp(1.0, kOpenMin + (1.0 - kOpenMin) * openness, strength) * lerp(1.0, contact, strength);
     const float classAmbient = lerp(1.0, kClassAmbient[m.cls], strength);
     const float3 fill = max(f.ambient, f.sun * lerp(kFillShare, kNightFillShare, night));
-    const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun);
+    // RT-HIT-SHADING-6: the lamp over the street lights what faces up (a roof, a bonnet, a shoulder), at night, by the sky's openness: the flank under the neighbour's roof line stays in its shade
+    const float lampLight = kLampDiffuse * night * saturate(dot(normal, up)) * openness * strength;
+    const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);
     gCarHitClass = m.cls;
     gCarHitNdl = ndl * daySun;  // at night the sun does not reach anything: "facing away" in the census
     gCarHitVisible = visible;

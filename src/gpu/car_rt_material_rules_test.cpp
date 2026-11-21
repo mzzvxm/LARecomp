@@ -941,6 +941,74 @@ int main(int argc, char** argv) {
       Check(Near(out[0], 0.0, 1e-6), "with no sun direction the frame has no hour and no lamp image");
     }
     {
+      // RT-HIT-SHADING-6: the street lamp's LIGHT on a hit at night (the glints above are its image): the sun's colour times kLampDiffuse times N.up, by the openness and the detail, at night only
+      crm::ShadeInput in = base();
+      for (int c = 0; c < 3; ++c) {
+        in.tint_a[c] = in.tint_b[c] = 1.0f;  // a white matt surface: the colour is the light
+        in.light.ambient[c] = 0.0f;
+        in.light.sun[c] = 0.06f;
+      }
+      in.fresnel[0] = in.fresnel[1] = 0.0f;  // no reflection of the environment
+      in.env_known = true;
+      for (int c = 0; c < 3; ++c) {
+        in.env[c] = 0.0f;
+      }
+      in.ray[0] = 0.0f;  // along the surface (every normal below is across it): the reflected ray is the ray itself, level, so the coat's lamp lobe (the reflected ray pointing up) is off
+      in.ray[1] = 0.0f;
+      in.ray[2] = 1.0f;
+      in.to_sun[0] = 0.0f;
+      in.to_sun[1] = -1.0f;
+      in.to_sun[2] = 0.0f;
+      in.sun_visible = 1.0f;
+      in.sun_known = true;
+      in.night = 1.0f;
+      in.open = 1.0f;
+      in.tuning.detail = 1.0f;
+      in.tuning.ambient = 1.0f;
+      in.height = -1.0f;
+      in.normal[0] = 0.0f;
+      in.normal[1] = 1.0f;
+      in.normal[2] = 0.0f;
+      float roof = 0.0f, flank = 0.0f;
+      crm::ShadeReference(in, out);
+      roof = out[0];
+      const double fill_roof = 0.06 * crm::kNightFillShare * 1.0;  // the hemisphere term is 1 facing up
+      Check(Near(roof, fill_roof + 0.06 * crm::kLampDiffuse, 1e-4), "at night a roof takes the sky's fill and the lamp's light, the sun's colour times kLampDiffuse");
+      in.normal[0] = -1.0f;
+      in.normal[1] = 0.0f;
+      crm::ShadeReference(in, out);
+      flank = out[0];
+      Check(Near(flank, 0.06 * crm::kNightFillShare * 0.6, 1e-4), "a vertical flank has the fill by the hemisphere term (0.6) and none of the lamp's light");
+      Check(roof > 2.5 * flank, "the night's roof is lit and its flank is not: at least 2.5 times (the car has a top and a side)");
+      in.normal[0] = -0.70710678f;
+      in.normal[1] = 0.70710678f;
+      crm::ShadeReference(in, out);
+      const double shoulder = out[0];
+      Check(shoulder > flank && shoulder < roof, "a shoulder at 45 degrees is between the roof and the flank");
+      Check(Near(shoulder, 0.06 * (crm::kNightFillShare * (0.6 + 0.4 * 0.70710678) + crm::kLampDiffuse * 0.70710678), 1e-4), "the lamp's light follows N.up (the cosine)");
+      in.normal[0] = 0.0f;
+      in.normal[1] = 1.0f;
+      in.open = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], roof - 0.06 * crm::kLampDiffuse - 0.06 * crm::kNightFillShare * (1.0 - crm::kOpenMin), 1e-4), "a roof closed in by another car loses the lamp's light and a share of its fill");
+      in.open = 1.0f;
+      in.tuning.detail = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.06 * crm::kNightFillShare, 1e-4), "with no detail there is no lamp light (the shading as it was)");
+      in.tuning.detail = 0.5f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.06 * (crm::kNightFillShare + 0.5 * crm::kLampDiffuse) * 1.0, 3e-3) && out[0] > 0.06 * crm::kNightFillShare && out[0] < roof, "half the detail, about half the lamp's light");
+      in.tuning.detail = 1.0f;
+      in.night = 0.0f;
+      in.to_sun[1] = -1.0f;  // the sun under the horizon, no sun on the roof either
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.06 * crm::kFillShare, 1e-4), "by day there is no lamp light at all (the daytime fill only: the day's picture does not move)");
+      in.night = 1.0f;
+      in.sun_known = false;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.06 * crm::kFillShare, 1e-4), "a frame that does not know the sun has no hour and no lamp light");
+    }
+    {
       // the hour: the sun's end and the sky's night fill
       crm::ShadeInput in = base();
       in.tuning.detail = 0.0f;
@@ -1471,7 +1539,7 @@ int main(int argc, char** argv) {
                 Has(scene_h, "void SetSunCascades(const car_rt_material::SunCascades& cascades) { sun_cascades_ = cascades; }"),
             "the scene puts the cascades it was given and the camera's world place into the frame's rows");
       // RT-HIT-SHADING-5: the shader's numbers, tables and arithmetic are the header's
-      Check(Near(Constant(hlsli, "static const float kNightFillShare"), crm::kNightFillShare) && Near(Constant(hlsli, "static const float kCoatF0"), crm::kCoatF0) && Near(Constant(hlsli, "static const float kCoatPower"), crm::kCoatPower) &&
+      Check(Near(Constant(hlsli, "static const float kNightFillShare"), crm::kNightFillShare) && Near(Constant(hlsli, "static const float kLampDiffuse"), crm::kLampDiffuse) && Near(Constant(hlsli, "static const float kCoatF0"), crm::kCoatF0) && Near(Constant(hlsli, "static const float kCoatPower"), crm::kCoatPower) &&
                 Near(Constant(hlsli, "static const float kSunRadiance"), crm::kSunRadiance) && Near(Constant(hlsli, "static const float kSunGlintPower"), crm::kSunGlintPower) &&
                 Near(Constant(hlsli, "static const float kLampRadiance"), crm::kLampRadiance) && Near(Constant(hlsli, "static const float kLampGlintPower"), crm::kLampGlintPower) &&
                 Near(Constant(hlsli, "static const float kOpenMin"), crm::kOpenMin) && Near(Constant(hlsli, "static const float kOpenReach"), crm::kOpenReach) && Near(Constant(hlsli, "static const float kOpenJitter"), crm::kOpenJitter) &&
@@ -1494,6 +1562,9 @@ int main(int argc, char** argv) {
                 Has(hlsli, "e = normalize(e + (kOpenMinAbove - above) * normal);") && Has(hlsli, "ray.Origin = hit + normal * (0.010 + 0.003 * hit.z);") && Has(hlsli, "ray.TMax = kOpenReach;") &&
                 Has(hlsli, "return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;"),
             "the shader's sky ray is SkyRayDirection's, cast kOpenReach metres against every car");
+      Check(Has(hlsli, "const float lampLight = kLampDiffuse * night * saturate(dot(normal, up)) * openness * strength;") &&
+                Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);"),
+            "the shader's lamp light is ShadeReference's (RT-HIT-SHADING-6: kLampDiffuse times the night factor times N.up times the sky's openness times the detail, in the sun's colour)");
       Check(Has(hlsli, "const float night = sunKnown ? f.night : 0.0;") && Has(hlsli, "const float daySun = 1.0 - night;") && Has(hlsli, "if (ndl > 0.0 && daySun > 0.0)") &&
                 Has(hlsli, "const float contact = height >= 0.0 ? kContactMin + (1.0 - kContactMin) * smoothstep(0.0, kContactHeight, height) : 1.0;") &&
                 Has(hlsli, "const float ground = lerp(1.0, kOpenMin + (1.0 - kOpenMin) * openness, strength) * lerp(1.0, contact, strength);") &&
