@@ -1263,6 +1263,11 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_vol_view, 0, "Diagnostic: 1 shows only the light the volumetric light adds, in place of the picture (to see or measure how steady "
     "it is), 2 the same eight times brighter, 3 thirty-two times brighter (for the faint headlights), 0 the picture. The bloom and the tone map still follow it. Live.", rex::kDebugOnly, rex::Range{0, 3});
 
+  REX_SETTING(i32, mcla_gpu_lights_census, 0, "Diagnostic (the one light description, LIGHT-UNIFY U2): every guest frame the light manager collects the headlight rig's lights, the "
+    "headlight shadow maps and the volumetric light's street lamps into one frame of lights, checks it against what the lit shaders' headlight block and the volumetric "
+    "light's inputs hold, and uploads it; nothing reads it, so the picture does not change. Every Nth guest frame one log line says what was collected and how many "
+    "checks found a difference. 0: off (the manager is not called). Live.", rex::kDebugOnly, rex::Range{0, 100000});
+
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "
     "the scene lines), and the second draws of the HDR scene and the upscaler masks, wait for it "
@@ -1706,6 +1711,7 @@ inline auto& mcla_gpu_vol_inputs = g_gpu.mcla_gpu_vol_inputs;
 inline auto& mcla_gpu_vol_lamp_limit = g_gpu.mcla_gpu_vol_lamp_limit;
 inline auto& mcla_gpu_vol_stable = g_gpu.mcla_gpu_vol_stable;
 inline auto& mcla_gpu_vol_view = g_gpu.mcla_gpu_vol_view;
+inline auto& mcla_gpu_lights_census = g_gpu.mcla_gpu_lights_census;
 inline auto& mcla_gpu_temporal_jitter_hold = g_gpu.mcla_gpu_temporal_jitter_hold;
 inline auto& mcla_gpu_texture_decode_selftest = g_gpu.mcla_gpu_texture_decode_selftest;
 inline auto& mcla_gpu_texture_decode_threads = g_gpu.mcla_gpu_texture_decode_threads;

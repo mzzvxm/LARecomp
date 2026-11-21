@@ -31,6 +31,7 @@
 namespace mcla::gpu {
 
 class LocalShadow;  // local_shadow.h
+class LightManager;  // light_manager.h
 
 class VolumetricsInputs final : public volumetrics::VolInputSource {
  public:
@@ -41,12 +42,16 @@ class VolumetricsInputs final : public volumetrics::VolInputSource {
   // Null (the default): no shadows. It must outlive this.
   void SetLocalShadow(const LocalShadow* shadow) { local_shadow_ = shadow; }
 
+  // The passive light manager (light_manager.h), told of the inputs of every Fill when it is on (it only looks: the volume's inputs are what they were). Null: none.
+  void SetLightManager(LightManager* light_manager) { light_manager_ = light_manager; }
+
  private:
   void FillLamps(const volumetrics::VolFrameContext& frame, volumetrics::VolInputs* out, uint32_t limit);
   void FillHeadlightInputs(volumetrics::VolInputs* out);
   void Census(const volumetrics::VolFrameContext& frame, const volumetrics::VolInputs& out, bool lamps_on, bool heads_on);
 
   const LocalShadow* local_shadow_ = nullptr;
+  LightManager* light_manager_ = nullptr;
 
   // the lamps
   volumetrics::LampPicker picker_;

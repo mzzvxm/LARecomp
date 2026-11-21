@@ -460,6 +460,7 @@
 {"mcla_gpu_vol_lamp_limit", "MCLA/GPU"},
 {"mcla_gpu_vol_stable", "MCLA/GPU"},
 {"mcla_gpu_vol_view", "MCLA/GPU"},
+{"mcla_gpu_lights_census", "MCLA/GPU"},
 {"mcla_gpu_vram_budget_mb", "MCLA/GPU"},
 {"mcla_gpu_vram_log", "MCLA/GPU"},
 {"mcla_gpu_vsync", "MCLA/GPU"},

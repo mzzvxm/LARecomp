@@ -2562,6 +2562,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_lights_census": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the one light description, LIGHT-UNIFY U2): every guest frame the light manager collects the headlight rig's lights, the \"\n    \"headlight shadow maps and the volumetric light's street lamps into one frame of lights, checks it against what the lit shaders' headlight block and the volumetric \"\n    \"light's inputs hold, and uploads it; nothing reads it, so the picture does not change. Every Nth guest frame one log line says what was collected and how many \"\n    \"checks found a difference. 0: off (the manager is not called). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 100000}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_sync_builds": {
   "type": "bool",
   "default": "false",
