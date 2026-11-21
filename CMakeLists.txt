@@ -543,6 +543,13 @@ add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
     src/settings/cli_rules_test.cpp)
 target_include_directories(larecomp_cli_rules_test PRIVATE src)
 
+# The table of change-callback guards (src/settings/watch_table.h: released by hand while the SDK's settings still exist, because the exe's
+# static destruction came after the SDK had destroyed them and crashed in Mtx_lock about every other run) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_watch_table_test, then run <build dir>/larecomp_watch_table_test (exit 0 = passed).
+add_executable(larecomp_watch_table_test EXCLUDE_FROM_ALL
+    src/settings/watch_table_test.cpp)
+target_include_directories(larecomp_watch_table_test PRIVATE src)
+
 # Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
 # own default for cache_root) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pack_folder_test, then run <build dir>/larecomp_pack_folder_test (exit 0 = passed).

@@ -193,6 +193,9 @@ bool InvokeCommand(std::string_view name, std::string_view args);
 using ChangeCallback = std::function<void(std::string_view name, std::string_view new_value)>;
 bool RegisterChangeCallback(std::string_view name, ChangeCallback callback);
 void UnregisterChangeCallbacks(std::string_view name);
+// Releases every callback guard now (UnregisterAll does it first). The settings must still exist: some are the SDK's, owned by systems
+// that are gone before the exe's static destruction.
+void ReleaseChangeCallbacks();
 template <typename T>
 T Query(std::string_view name) {
   return larecomp::settings::ParseAs<T>(GetFlagByName(name));
