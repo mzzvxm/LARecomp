@@ -25,6 +25,8 @@ namespace lm = larecomp::gpu::light_manager;
 namespace {
 
 constexpr const char* kPrefix = "[lights]";
+// The census line names this many cars (the player's first, then the nearest: car_lights.h Build's order) in `[car-lights]` lines of their own.
+constexpr uint32_t kCensusCars = 4;
 // A copy of the lamp list this old is not the game's list any more (the volume's own limit: volumetrics_inputs.cpp).
 constexpr std::chrono::milliseconds kMaxListAge{500};
 // The upload's alignment (a constant buffer's).
@@ -82,7 +84,7 @@ void LightManager::Initialize(UploadRing& upload, HeadlightRig& rig, LocalShadow
 }
 
 void LightManager::Shutdown() {
-  Reset();
+  Reset();  // the cars' source is switched off there too: the hook is one relaxed load again
   upload_ = nullptr;
   rig_ = nullptr;
   shadow_ = nullptr;
@@ -95,6 +97,10 @@ void LightManager::Reset() {
   check_.SetOnFail(&OnCheckFailed);
   list_.clear();
   list_seq_ = 0;
+  cars_.SetEnabled(false);  // the hook notes nothing for the manager while it is not running (light_points.h Want)
+  car_frames_.clear();
+  point_lights_.clear();
+  cars_now_ = car_lamps_on_ = car_point_lights_ = 0;
   active_ = false;
   begun_ = false;
   volume_seen_ = false;
@@ -126,8 +132,10 @@ void LightManager::BeginFrame(uint64_t frame, uint32_t upload_slot) {
   if (!active_) {
     Reset();
     active_ = true;
+    cars_.SetEnabled(true);  // the hook now notes every kind of every car's light points (LU-7); polled at the present
     REXLOG_INFO("{} on (mcla_gpu_lights_census = {}, live): collects the headlight rig's lights, the replay's shadow views and the volume's street lamps into one frame every guest frame, "
-                "checks it against the headlight block and the volume's inputs, uploads {} bytes of GpuLights a frame; nothing reads it (the picture is unchanged)",
+                "checks it against the headlight block and the volume's inputs, uploads {} bytes of GpuLights a frame, polls the cars' light points of all 19 kinds; nothing reads it "
+                "(the picture is unchanged)",
                 kPrefix, every, sizeof(larecomp::gpu::GpuLightBuffer));
   }
   every_ = every;
@@ -219,6 +227,7 @@ void LightManager::OnPresent() {
     Cost cost(&frame_cpu_);
     lm::CheckFrameInvariants(collector_.frame(), collector_.has_previous() ? &collector_.previous() : nullptr, &check_);
     Upload();
+    PollCars();
     collector_.EndFrame();
   }
   ++presents_;
@@ -233,6 +242,10 @@ void LightManager::OnPresent() {
   window_.kept += st.slots_kept;
   window_.added += st.slots_added;
   window_.gone += st.slots_gone;
+  window_.max_cars = std::max(window_.max_cars, cars_now_);
+  window_.max_car_lamps_on = std::max(window_.max_car_lamps_on, car_lamps_on_);
+  window_.max_point_lights = std::max(window_.max_point_lights, car_point_lights_);
+  window_.car_frames += cars_now_ != 0 ? 1u : 0u;
   window_.cpu_ns += ns;
   window_.cpu_max_ns = std::max(window_.cpu_max_ns, ns);
   frame_cpu_ = {};
@@ -243,6 +256,23 @@ void LightManager::OnPresent() {
   } else if (every_ > 0 && presents_ % uint64_t(every_) == 0) {
     Census();
   }
+}
+
+// The cars' light points of this frame (LU-7's CarLightsSource::Poll, which car_lights.h says the manager calls once a frame): the points the hook noted within the last 100 ms, made into
+// cars. Counted for the census; the police point lights are what MakePointLights hands the picker (LU-3), made here only to be counted. Nothing goes into the LightFrame.
+void LightManager::PollCars() {
+  const larecomp::gpu::car_lights::CarLightsFrame& frame = cars_.Poll(car_frames_, nullptr);
+  cars_now_ = frame.count;
+  car_lamps_on_ = 0;
+  point_lights_.clear();
+  for (uint32_t i = 0; i < frame.count; ++i) {
+    const larecomp::gpu::car_lights::Car& car = frame.cars[i];
+    for (uint32_t k = 0; k < car.lamp_count; ++k) {
+      car_lamps_on_ += car.lamps[k].on ? 1u : 0u;
+    }
+    larecomp::gpu::car_lights::MakePointLights(car, larecomp::gpu::car_lights::kFamiliesPolice, &point_lights_);
+  }
+  car_point_lights_ = uint32_t(point_lights_.size());
 }
 
 void LightManager::Upload() {
@@ -290,6 +320,16 @@ void LightManager::Census() {
               f.role_count[uint32_t(larecomp::gpu::LightRole::kShadow)], sizeof(larecomp::gpu::GpuLightBuffer), uploads_,
               upload_failed_ != 0 ? std::format(", {} failed", upload_failed_) : std::string(), last_upload_offset_, double(window_.cpu_ns) / frames * 1.0e-3,
               double(window_.cpu_max_ns) * 1.0e-3, check_text);
+  // The cars' lights (LU-7, passive): what the last frame's points made, and the first few cars' own lines (FormatCensus: per kind the points seen, how many are on, the largest intensity).
+  const larecomp::gpu::car_lights::CarLightsFrame& cars = cars_.Frame();
+  REXLOG_INFO("{} car lights (LU-7, passive; the cars' frames are derived from their lamps: the renderer's own are not passed yet): {} cars in the last frame ({} points in, {} cars seen, {} dropped, "
+              "{} joined to a renderer frame), {} lamps on, {} police point lights (what MakePointLights hands the picker); in the window at most {} cars, {} lamps on, {} police point lights, "
+              "cars in {} of {} frames",
+              kPrefix, cars.count, cars.points_in, cars.cars_seen, cars.cars_dropped, cars.frames_matched, car_lamps_on_, car_point_lights_, window_.max_cars, window_.max_car_lamps_on,
+              window_.max_point_lights, window_.car_frames, window_.frames);
+  for (uint32_t i = 0; i < cars.count && i < kCensusCars; ++i) {
+    REXLOG_INFO("{}", larecomp::gpu::car_lights::FormatCensus(cars.cars[i]));
+  }
   window_ = Window{};
 }
 

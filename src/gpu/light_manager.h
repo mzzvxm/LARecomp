@@ -12,6 +12,12 @@
 //   - the volume's inputs (VolumetricsInputs::Fill, at its end): the street lamps through ToVolLamp (bit for bit but for the picker's weight), the headlights in the volume's units,
 //     the shadow views each reads and the atlas;
 //   - its own invariants: unique ids, a light that lived keeps its slot, the rankings, the GPU twin's round trip, the id formulas.
+// CAR LIGHTS (LIGHT-UNIFY U7, wired in the groundwork branch): while the manager runs it also switches the hook's every-kind notes on (car_lights.h CarLightsSource::SetEnabled: the
+// game's light points of all 19 kinds of every car in sight) and polls them once a frame at the present (Poll), as car_lights.h says the manager must; the census line adds a second
+// line `[lights] car lights ...` (the cars, their lamps on, the police point lights MakePointLights would hand the picker) and up to kCensusCars `[car-lights]` lines (FormatCensus). The
+// cars' frames are NOT passed yet (no frame of the renderer's own cars: `car_frames_` stays empty, so every car's frame is derived from its lamps), and nothing of it goes into the
+// LightFrame, so the self-checks and the GPU buffer are what they were: LU-3 puts the point lights and the per car bits in. Off (the setting 0): SetEnabled(false), the hook costs one
+// relaxed load.
 // It is PASSIVE: NO CONSUMER READS IT. The lit shaders' block, the volume's lamps and headlights and the replay's maps are made and read exactly as before; the manager only looks (its
 // calls take const references, the one non-const call is HeadlightRig::Block(), which rebuilds the block lazily if the replay's maps changed since: the same rebuild the first lit draw
 // would do, and the camera in the block is overwritten per draw). It does not pick: the lamps in the frame are the ones the volume's picker gave (LU-3 moves the pick here).
@@ -55,6 +61,7 @@
 #include <string>
 #include <vector>
 
+#include "car_lights.h"
 #include "light_frame.h"
 #include "light_manager_rules.h"
 #include "local_shadow_types.h"
@@ -100,10 +107,13 @@ class LightManager {
     uint32_t max_headlights = 0, max_lamps = 0;
     uint64_t kept = 0, added = 0, gone = 0;
     uint64_t cpu_ns = 0, cpu_max_ns = 0;
+    uint32_t max_cars = 0, max_car_lamps_on = 0, max_point_lights = 0;  // the cars' lights (LU-7), the most of the window
+    uint64_t car_frames = 0;                                           // frames of the window in which the table gave any car
   };
   void RefreshCarry();
   void Upload();
   void Census();
+  void PollCars();
   void Reset();
 
   UploadRing* upload_ = nullptr;
@@ -126,6 +136,12 @@ class LightManager {
   // the game's lamp list, as the hook table gave the newest copy (the volume has its own copy and its own sequence number)
   std::vector<vol_lamps::GameLamp> list_;
   uint64_t list_seq_ = 0;
+
+  // the cars' lights (LU-7): the source polls the hook's table once a frame; `car_frames_` is the renderer's cars (none yet); `point_lights_` the scratch of the police point lights the lamps make
+  larecomp::gpu::car_lights::CarLightsSource cars_;
+  std::vector<larecomp::gpu::car_lights::FrameIn> car_frames_;
+  std::vector<larecomp::gpu::Light> point_lights_;
+  uint32_t cars_now_ = 0, car_lamps_on_ = 0, car_point_lights_ = 0;
 
   // the volume's budgets of the last fill, for the census
   uint32_t grid_lamps_ = 0, grid_headlights_ = 0;
