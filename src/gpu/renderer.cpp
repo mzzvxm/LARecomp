@@ -1682,6 +1682,10 @@ void Renderer::ReportFrameStats() {
                                                            : std::string()) +
                            (car_rt_.HeldBytes() != 0 ? ", car ray tracing " + mib(car_rt_.HeldBytes())
                                                      : std::string()) +
+                           // CITY-RT BLOCK: the city's structures, their scratch and the traced shadow image (perf/CITY-RT-M1-RUNPLAN.md R4 reads this)
+                           (city_rt_.HeldBytes() + city_shadow_.HeldBytes() != 0
+                                ? ", city ray tracing " + mib(city_rt_.HeldBytes() + city_shadow_.HeldBytes())
+                                : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())
