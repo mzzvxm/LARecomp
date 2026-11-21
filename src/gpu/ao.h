@@ -432,6 +432,7 @@ class CityRtShadow;  // city_rt_shadow.h: the city's ray traced sun shadows (CIT
 class Device;
 class FrameRing;
 class GBuffer;       // gbuffer.h: the normal plane the passes read (GB-E)
+class GiApply;       // gi_apply.h: the probe field's apply (CITY-RT M3 G3): where the field stands it replaces the colour chain's gather, and it reads the occlusion's visibility
 class ScreenShared;  // screen_shared.h: the shared screen products, which this class's depth chain is the source of (SS-0)
 class PassTiming;
 
@@ -552,6 +553,28 @@ class AmbientOcclusion {
   // (ScreenShared::CapturePre), so there is no bounce light without the owner. Not owned; null: nothing is published and the bounce light is off. Render thread, before the first frame;
   // the renderer's Shutdown stops this class before the owner.
   void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
+  // The probe field's apply (gi_apply.h; CITY-RT M3 G3). When the field stands (GiApply::TakeSsgiShare below 1) the screen-space bounce light runs at that share of its strength, and not at all
+  // at 0: no colour chain, no ring, the plain occlusion (PlanGi). Not owned; null: the bounce light is as it was. Render thread, before the first frame; the renderer's Shutdown stops the apply first.
+  void SetGiApply(GiApply* apply) { gi_apply_ = apply; }
+
+  // What the probe field's apply reads of this frame's occlusion (gi_apply.h): the image that holds the denoised visibility in its x channel (the plain occlusion's, or the bounce light's when it runs),
+  // at the traced size, whether the traced size is half the picture's, and the look's numbers the apply's own term is multiplied by (strength = AO INTENSITY, the distance fade's end, the paint's
+  // power: ao_paint.h PowerOf). Valid at the trigger after OnResolve, in a frame whose apply pass drew; `has_visibility` is false where the occlusion's term is off (the contact shadows alone).
+  struct OcclusionView {
+    bool valid = false;
+    bool has_visibility = false;
+    uint32_t visibility_slot = 0xFFFFFFFFu;
+    uint32_t traced[2] = {0, 0};
+    uint32_t render[2] = {0, 0};
+    bool low = false;
+    float strength = 0.0f;
+    float fade_end = 100.0f;
+    float paint_power = 1.0f;
+  };
+  bool FrameOcclusionNow(OcclusionView* out) const;
+  // The frame's light constants as the apply's maths take them: the ambient's and the sun's colour (PS c26 and c39, the commonest of the main view's draws, the units the colour is in) and the
+  // world-space direction to the sun (SunDirection). False when no draw had a light.
+  bool FrameLight(float ambient[3], float sun[3], double to_sun[3]) const;
 
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
@@ -1106,6 +1129,8 @@ class AmbientOcclusion {
   bool frame_had_main_view_ = false;
   bool ran_this_frame_ = false;
   bool applied_this_frame_ = false;   // ... and the apply pass drew into the colour target
+  OcclusionView occlusion_view_;      // what the probe field's apply reads (FrameOcclusionNow), set with the apply
+  GiApply* gi_apply_ = nullptr;       // the probe field's apply: the bounce light's share (SetGiApply)
   const HostImage* linear_depth_image_ = nullptr;  // the frame's level 0 depth, set when the passes ran (FrameLinearDepth)
   float linear_depth_tan_[2] = {};
 

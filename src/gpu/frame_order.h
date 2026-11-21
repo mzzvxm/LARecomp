@@ -14,12 +14,15 @@
 //             AFTER the capture (a reflection is not a reflection of a reflection) ...;
 //   WANTS     what the effect asks for while it is on: the G-buffer's planes, the shared screen products, the light manager; and the frame's start, where they are declared and read.
 //
-// THE FRAME, as scene.cpp runs it (LU-9 recorded the order the code had; GB-I3 moved one call: the reflections' wants are declared at the frame's start, lag 0, see kBeginSsr):
-//   start      local lights declare | SSR declares | G-buffer reads its wants | screen products read theirs | AO declares | car reflection declares | light manager opens the frame's lights
+// THE FRAME, as scene.cpp runs it (LU-9 recorded the order the code had; GB-I3 moved one call: the reflections' wants are declared at the frame's start, lag 0, see kBeginSsr; the city ray tracing
+// integration (CITY-RT-INT) added the probe field's four steps, which CITY-RT M3 G4 wired into the frame before this table stood):
+//   start      local lights declare | SSR declares | probe field starts its frame | probe field's apply declares | G-buffer reads its wants | screen products read theirs | AO declares |
+//              car reflection declares | light manager opens the frame's lights
 //   draws      the main view's draws write the sidecar (the G-buffer's window) | the lit draws' forward headlight (lights of this frame, the maps of the LAST frame)
-//   trigger    G-buffer publish | car sun map | car ray tracing structures | headlight shadow replay | light manager takes this frame's maps |
+//   trigger    G-buffer publish | car sun map | car ray tracing structures | headlight shadow replay | light manager takes this frame's maps | PROBE FIELD'S FRAME (maintenance, update, weights:
+//              published BEFORE the AO plans, which asks whether the screen-space bounce light may be skipped) |
 //              THE AO'S FRAME: depth chain, normals, colour_pre capture, ray traced occlusion, visibility, contact march, APPLY, screen publish (lin_depth, normal, colour_pre, Hi-Z) |
-//              deferred local lights (additive, after the apply) | sun shafts | volumetric light (inject, integrate) | car ray tracing check |
+//              probe field's apply (additive, after the AO's apply) | deferred local lights (additive, after both) | sun shafts | volumetric light (inject, integrate) | car ray tracing check |
 //              colour_post capture (after the apply and the lights) | SSR (additive, after the capture: the LAST pass that adds to the colour here) | car history + ray traced reflections | debug views
 //   end of scene   the volumetric composite, the sun shafts' composite
 //   present    world classification | screen products trade their capture with the history | light manager checks and uploads | the rig makes the next frame's lights
@@ -87,7 +90,8 @@ inline constexpr uint32_t kContactTerm = 1u << 19;   // the contact shadows' vis
 inline constexpr uint32_t kVolume = 1u << 20;        // the volumetric light's integrated froxels (volumetrics.h)
 inline constexpr uint32_t kShafts = 1u << 21;        // the sun shafts' light image (shafts.h)
 inline constexpr uint32_t kCarHistory = 1u << 22;    // the car self-reflection's history image and the ray traced reflection of its texels: read by the NEXT frame's car paint draws
-inline constexpr uint32_t kAll = (1u << 23) - 1;
+inline constexpr uint32_t kProbeField = 1u << 23;    // the probe field's published frame (gi_field.h RecordFinish): the apply reads it, and the AO asks it whether the screen-space bounce light may be skipped
+inline constexpr uint32_t kAll = (1u << 24) - 1;
 constexpr const char* NameOf(uint32_t bit) {
   switch (bit) {
     case kLinDepth: return "lin_depth";
@@ -113,6 +117,7 @@ constexpr const char* NameOf(uint32_t bit) {
     case kVolume: return "volume";
     case kShafts: return "shafts";
     case kCarHistory: return "car history";
+    case kProbeField: return "probe field";
     default: break;
   }
   return "?";
@@ -151,6 +156,8 @@ enum class Step : uint8_t {
   // frame start (Scene::BeginFrame)
   kBeginLocalLights,
   kBeginSsr,
+  kBeginGiField,
+  kBeginGiApply,
   kBeginGBuffer,
   kBeginScreen,
   kBeginAo,
@@ -165,6 +172,7 @@ enum class Step : uint8_t {
   kCarStructures,
   kShadowReplay,
   kLightMaps,
+  kGiField,
   kAo,          // the AO's frame: the call, and the steps inside it
   kAoDepth,
   kAoNormals,
@@ -174,6 +182,7 @@ enum class Step : uint8_t {
   kContact,
   kAoApply,
   kScreenPublish,
+  kGiApply,
   kLocalLights,
   kShafts,
   kVolume,
@@ -235,6 +244,7 @@ struct Row {
 namespace detail {
 inline constexpr uint32_t kAllPlaneBits = gbuffer::kAllPlanes;
 inline constexpr uint32_t kNormalPlane = gbuffer::PlaneBit(gbuffer::kPlaneNormal);
+inline constexpr uint32_t kAlbedoPlane = gbuffer::PlaneBit(gbuffer::kPlaneAlbedo);
 }  // namespace detail
 
 // THE TABLE. Row i is Step(i); the phases do not go back; a kInner row follows its umbrella with only its own steps between.
@@ -247,6 +257,12 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .note = "SECOND, before the G-buffer and the screen owner read (GB-I3 moved it above them): its wants of the planes, of the Hi-Z and of colour_post (ssr_rules.h WantedPlanes / WantedProducts: "
              "ONLY while REFLECTIONS ON SURFACES is on; nothing at off) are read in this very frame (lag 0), so the effect can run in the frame the setting changes, and the owners stop making them "
              "in the frame it is switched off. The call reads settings and sets wants only: nothing in the frame start between the old place and the new one depends on it"},
+    {.step = Step::kBeginGiField, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "probe field starts its frame", .call = "gi_integration_->BeginFrame(frame_serial_)",
+     .note = "(CITY-RT M3 G4, gi_integration.h) reads the setting and starts the field's frame, BEFORE the apply's BeginFrame, which reads whether the field runs to make its wants; it declares no wants itself"},
+    {.step = Step::kBeginGiApply, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "probe field's apply declares its wants", .call = "gi_apply_->BeginFrame()", .declares_for = Step::kGiApply,
+     .deps = {{{Step::kBeginGiField, "its wants follow whether the field runs this frame (GiField::running(), set by the integration's BeginFrame)"}}},
+     .note = "before the G-buffer and the screen owner read, like the reflections (lag 0): RT1 and RT2 (gbuffer_rules.h Consumer::kRtBounce) and lin_depth, ONLY while the field runs; nothing at off, so the "
+             "sidecar and the occlusion's depth chain are not made for it"},
     {.step = Step::kBeginGBuffer, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "G-buffer reads the planes' wants, opens its window", .call = "gbuffer_->BeginFrame(frame_serial_)",
      .reads_wants = want::kPlanes},
     {.step = Step::kBeginScreen, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "screen products read their wants, make the frame's plan", .call = "screen_->BeginFrame(frame_serial_)",
@@ -281,10 +297,15 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     {.step = Step::kLightMaps, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "light manager takes this frame's maps", .call = "light_manager_->OnResolve(shadow_recorded)",
      .reads = data::kShadowAtlas, .makes = data::kLightMaps, .deps = {{{Step::kShadowReplay, "its maps are what it takes"}}},
      .note = "passive (light_manager.h): the block is checked against them; noted when the replay recorded"},
+    {.step = Step::kGiField, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's frame (maintenance, update, weights)", .call = "gi_integration_->OnResolve(summary, list, slot_)",
+     .label_file = "gi_field.cpp", .label = "gi reset", .more_labels = {{"gi weights"}}, .soft_reads = data::kCarStructures, .makes = data::kProbeField,
+     .note = "(CITY-RT M3 G4, gi_integration.h) outside any render pass, BEFORE the AO plans: the occlusion asks GiApply::TakeSsgiShare while it plans, so the field must be published by then (a frame whose field is "
+             "not published yet leaves the screen-space bounce light whole). Reads the city's structures for its safe range (M1) and, with the probe update (G2), its rays; records nothing while no field runs"},
     {.step = Step::kAo, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "the AO's frame (occlusion, bounce light, contact shadows, screen products)",
-     .call = "ao_->OnResolve(record, summary, list, UpscalerRunning())", .label_file = "ao.cpp", .label = "ao depth",
+     .call = "ao_->OnResolve(record, summary, list, UpscalerRunning())", .label_file = "ao.cpp", .label = "ao depth", .soft_reads = data::kProbeField,
      .wants_planes = detail::kNormalPlane, .wants_screen = data::kLinDepth | data::kNormal | data::kColourPre,
-     .note = "runs a depth-only frame for a consumer outside its family when the occlusion and the contact shadows are off (screen_wants_); the steps below run inside it, in this order"},
+     .note = "runs a depth-only frame for a consumer outside its family when the occlusion and the contact shadows are off (screen_wants_); the steps below run inside it, in this order. "
+             "It plans its bounce light with the probe field's share (GiApply::TakeSsgiShare), which is why the field's frame is before it"},
     {.step = Step::kAoDepth, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "depth chain (lin_depth's owner)", .file = "ao.cpp",
      .call = "DrawPass(list, depth_[0], depth_pipeline, push);", .label_file = "ao.cpp", .label = "ao depth", .makes = data::kAoDepth},
     {.step = Step::kAoNormals, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "normals (G-buffer RT1 where valid, else the depth's)", .file = "ao.cpp",
@@ -308,11 +329,19 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .call = "PublishScreen(list, summary, plan, base);", .label_file = "screen_shared.cpp", .label = "screen hiz", .reads = data::kAoDepth, .soft_reads = data::kAoNormal | data::kColourChain,
      .makes = data::kLinDepth | data::kLinDepthFull | data::kNormal | data::kColourPre | data::kHizMin,
      .note = "ScreenShared::Publish at the END of the AO's frame (after the apply): every reader of the ScreenFrame comes after the whole AO"},
+    {.step = Step::kGiApply, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's apply (additive, multiplied by the occlusion)", .call = "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_)",
+     .label_file = "gi_apply.cpp", .label = "gi lookup", .closing_label = "after gi apply", .reads = data::kPlanes | data::kLinDepth, .soft_reads = data::kProbeField | data::kAoTerm,
+     .wants_planes = detail::kNormalPlane | detail::kAlbedoPlane, .wants_screen = data::kLinDepth,
+     .deps = {{{Step::kAoApply, "right after the occlusion's apply, which has multiplied the colour: the field's bounce is added on top and multiplied by the occlusion's visibility itself"},
+               {Step::kGiField, "applies the frame the field's step published"}}},
+     .note = "(CITY-RT M3 G3, gi_apply.h) only while a field runs and has a published frame: one full screen additive draw into the main colour, with a lookup draw at the occlusion's traced size before it above 1080 "
+             "lines; its own labels are 'gi lookup', 'gi apply' (or 'gi apply view' in a debug view) and the closing mark 'after gi apply'. The lamps' direct light comes after it"},
     {.step = Step::kLocalLights, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "deferred local lights (additive)", .call = "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_)",
      .label_file = "local_lights.cpp", .label = "local lights", .closing_label = "after local lights", .reads = data::kPlanes | data::kLinDepth | data::kLights,
      .soft_reads = data::kLightMaps | data::kShadowAtlas,
      .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kLinDepth, .wants_lights = true,
-     .deps = {{{Step::kAoApply, "added AFTER the occlusion's apply: nothing darkens the light (HP11), the bounce light does not see it (C10)"}}},
+     .deps = {{{Step::kAoApply, "added AFTER the occlusion's apply: nothing darkens the light (HP11), the bounce light does not see it (C10)"},
+               {Step::kGiApply, "added AFTER the probe field's apply: the lamps' direct light is not multiplied by the occlusion nor bounced by the field"}}},
      .note = "the headlights read this frame's maps from the atlas through the one lookup; before the sun shafts, the volume and the game's own light volumes and glows"},
     {.step = Step::kShafts, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "sun shafts' pass", .call = "shafts_->OnResolve(record, summary, list, UpscalerRunning())",
      .label_file = "shafts.cpp", .label = "shafts sky", .makes = data::kShafts,

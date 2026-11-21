@@ -57,6 +57,7 @@
 #include "car_rt_refl_denoise_cs.hlsl.dxil.h"
 #include "car_rt_refl_opp_cs.hlsl.dxil.h"
 #include "car_rt_view_ps.hlsl.dxil.h"
+#include "rt_bench_cs.hlsl.dxil.h"
 #include "fg_compose_ps.hlsl.dxil.h"
 #include "dlssg_ui_hdr_ps.hlsl.dxil.h"
 #include "dlssg_ui_ps.hlsl.dxil.h"
@@ -69,6 +70,15 @@
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "gbuffer_view_ms_ps.hlsl.dxil.h"
 #include "gbuffer_view_ps.hlsl.dxil.h"
+#include "gi_apply_lookup_ms_ps.hlsl.dxil.h"
+#include "gi_apply_lookup_ps.hlsl.dxil.h"
+#include "gi_apply_ms_ps.hlsl.dxil.h"
+#include "gi_apply_ps.hlsl.dxil.h"
+#include "gi_apply_up_ms_ps.hlsl.dxil.h"
+#include "gi_apply_up_ps.hlsl.dxil.h"
+#include "gi_field_reset_cs.hlsl.dxil.h"
+#include "gi_field_view_ps.hlsl.dxil.h"
+#include "gi_field_weights_cs.hlsl.dxil.h"
 #include "hdr_compose_ps.hlsl.dxil.h"
 #include "layers_resolve_ps.hlsl.dxil.h"
 #include "layers_restore_ps.hlsl.dxil.h"
@@ -164,6 +174,7 @@
 #include "car_rt_refl_denoise_cs.hlsl.spirv.h"
 #include "car_rt_refl_opp_cs.hlsl.spirv.h"
 #include "car_rt_view_ps.hlsl.spirv.h"
+#include "rt_bench_cs.hlsl.spirv.h"
 #include "fg_compose_ps.hlsl.spirv.h"
 #include "dlssg_ui_hdr_ps.hlsl.spirv.h"
 #include "dlssg_ui_ps.hlsl.spirv.h"
@@ -176,6 +187,15 @@
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "gbuffer_view_ms_ps.hlsl.spirv.h"
 #include "gbuffer_view_ps.hlsl.spirv.h"
+#include "gi_apply_lookup_ms_ps.hlsl.spirv.h"
+#include "gi_apply_lookup_ps.hlsl.spirv.h"
+#include "gi_apply_ms_ps.hlsl.spirv.h"
+#include "gi_apply_ps.hlsl.spirv.h"
+#include "gi_apply_up_ms_ps.hlsl.spirv.h"
+#include "gi_apply_up_ps.hlsl.spirv.h"
+#include "gi_field_reset_cs.hlsl.spirv.h"
+#include "gi_field_view_ps.hlsl.spirv.h"
+#include "gi_field_weights_cs.hlsl.spirv.h"
 #include "hdr_compose_ps.hlsl.spirv.h"
 #include "layers_resolve_ps.hlsl.spirv.h"
 #include "layers_restore_ps.hlsl.spirv.h"
@@ -302,6 +322,33 @@ inline HostShaderBlob FullscreenVertexShader() {
 // The G-buffer's debug view (gbuffer.h): the planes with one sample, or the host's MSAA level.
 inline HostShaderBlob GBufferViewPixelShader(bool multisampled) {
   return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ps);
+}
+
+// The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed RGBA16F /
+// RG16F / R8 storage image stores on both APIs), and the debug view's pixel shader.
+inline HostShaderBlob GiFieldResetShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_field_reset_cs);
+}
+
+inline HostShaderBlob GiFieldWeightsShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_field_weights_cs);
+}
+
+inline HostShaderBlob GiFieldViewShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_field_view_ps);
+}
+
+// The probe field's apply (gi_apply.h, CITY-RT M3 package G3): 0 the lookup at the traced size, 1 the same over multisampled planes, 2 the apply, 3 the apply over multisampled planes, 4 the apply that takes
+// the net irradiance from the lookup's image, 5 the same over multisampled planes. All pixel shaders of one source (hlsl/gi_apply_ps.hlsl).
+inline HostShaderBlob GiApplyShader(uint32_t which) {
+  switch (which) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_lookup_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_lookup_ms_ps);
+    case 2: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_ps);
+    case 3: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_ms_ps);
+    case 4: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_up_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_up_ms_ps);
+  }
 }
 
 // The deferred local light pass (local_lights.h, hlsl/local_light_ps.hlsl): planes and depth with one sample, or the host's MSAA level.
@@ -561,6 +608,12 @@ inline HostShaderBlob CityRtShadowShader() {
 // The city hit data's probe (city_hit_probe.h, CITY-RT M2 H3): reads the pool and the tables through the ray tracing descriptor set's t6..t9.
 inline HostShaderBlob CityHitProbeShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(city_hit_probe_cs);
+}
+
+// The ray tracing benchmark's trace (rt_bench.h, hlsl/rt_bench_cs.hlsl): inline ray queries over a synthetic city, the same kind as the car passes. Created only
+// where CarRtSupported said yes, once, on the first start with a card.
+inline HostShaderBlob RtBenchShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(rt_bench_cs);
 }
 
 inline HostShaderBlob CarRtReflShader() {

@@ -432,7 +432,8 @@ bool MsaaKeptUnderUpscaler();
 
 // --- the ray traced car self-reflection ----------------------------------------------------------
 // True when this device can run it: Direct3D 12 with DXR 1.1 and shader model 6.5, or Vulkan with VK_KHR_ray_query
-// (CarRtSupported in car_rt_scene.h), the car's structures set up and the pass's layout and shader made (car_rt_refl.h). False
+// (CarRtSupported in car_rt_scene.h), the car's structures set up and the pass's layout and shader made (car_rt_refl.h), and the ray
+// tracing tier (rt_tier.h) above none (a card with no ray tracing units, and the Low class, trace nothing). False
 // before the renderer has started and on a card or driver that cannot ray trace. The pause menu's
 // CAR SELF-REFLECTIONS row lists RAY TRACED only where this is true. Any thread.
 bool CarRtReflAvailable();
@@ -454,6 +455,14 @@ std::filesystem::path CityPackFolder();
 // Vulkan with VK_KHR_ray_query) and the pass's layout and shader made. False before the renderer has started and on a card or driver that cannot. The pause menu's RT SHADOWS
 // row is grey with "(NO RT)" where this is false, and its AUTO says OFF there. Any thread.
 bool CityRtShadowsAvailable();
+
+// --- the ray traced bounce light (gi_setting.h, CITY-RT M3 G4) ---------------------------------------
+// True once the probe field's update (package G2) is built into this renderer: until then the RT BOUNCE LIGHT row is grey with "(NOT READY)", its AUTO says OFF and the field is never made.
+// Any thread.
+bool RtGiUpdateBuilt();
+// True while the probe field stands in the picture and the screen-space bounce light is not built (the field's fade is 1): the pause menu's BOUNCE LIGHT row says "(REPLACED)". Set once a frame
+// by the render thread, false before the renderer has started and while no field runs. Any thread.
+bool RtGiReplacesBounceLight();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
 // The scene is drawn smaller than the output only while an upscaler can make it whole again. The

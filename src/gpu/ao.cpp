@@ -32,6 +32,7 @@
 #include "format.h"
 #include "frame.h"
 #include "gbuffer.h"
+#include "gi_apply.h"
 #include "gpu_class.h"
 #include "host_plan.h"
 #include "host_shaders.h"
@@ -2585,6 +2586,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     } else {
       // This frame is the plain occlusion: its history is what EnsureImages left out for the test.
       plan.gi = GiPlan{};
+      if (gi_apply_) {
+        gi_apply_->NoteSsgiRan(0.0f);  // the colour chain did not run after all: the probe field takes the frame's whole share
+      }
       if (!EnsureImages(plan)) {
         return false;
       }
@@ -3070,6 +3074,22 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     }
     applied = RecordApply(list, summary, plan, push);
     applied_this_frame_ = applied;
+    // What the probe field's apply reads of this occlusion (FrameOcclusionNow): the image whose x channel is the denoised visibility (the bounce light's own when it ran, else the plain
+    // occlusion's), at the traced size.
+    occlusion_view_ = OcclusionView{};
+    if (applied && plan.view == 0u && plan.gi.view == 0u && plan.gi.apply_view == 0u) {  // not under one of the occlusion's own debug pictures
+      occlusion_view_.valid = true;
+      occlusion_view_.has_visibility = plan.occlusion;
+      occlusion_view_.visibility_slot = (plan.gi.apply && gi_bounce) ? gi_bounce->slot : ao_slot;
+      occlusion_view_.traced[0] = plan.ao[0];
+      occlusion_view_.traced[1] = plan.ao[1];
+      occlusion_view_.render[0] = plan.render[0];
+      occlusion_view_.render[1] = plan.render[1];
+      occlusion_view_.low = plan.low;
+      occlusion_view_.strength = look_.strength;
+      occlusion_view_.fade_end = push.extra[1];
+      occlusion_view_.paint_power = ao_paint::PowerOf(look_.paint_code);
+    }
   }
   if (plan.gi.on) {
     if (gi_runs_ == 0) {
@@ -4052,6 +4072,17 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   g.level = uint32_t(level);
   g.overridden = numbers.overridden;
   g.strength = numbers.strength;
+  // WHERE THE PROBE FIELD STANDS it replaces this bounce light (gi_apply.h, CITY-RT M3): the share of the strength it runs with is (1 - the field's fade), and with the field standing (share 0) the
+  // colour chain, the ring and the bounce's passes are not built: the plain occlusion's visibility pass keeps running (they share samples), and the field's apply multiplies its light by that visibility.
+  // The debug override (mcla_gpu_ssgi_test) is the test's own and is left alone. With no field in the frame the share is 1 and nothing here changes.
+  if (gi_apply_ && !gi_test_) {
+    const float share = gi_apply_->TakeSsgiShare();
+    if (gi_apply::SsgiSkipped(share)) {
+      plan->gi = GiPlan{};
+      return;
+    }
+    g.strength *= share;
+  }
   g.limit = numbers.limit;
   g.cap = numbers.cap;
   g.reach = numbers.reach;
@@ -4437,7 +4468,27 @@ void AmbientOcclusion::OnPresent() {
   outcome_ = Outcome::kNoTrigger;
   ran_this_frame_ = false;
   applied_this_frame_ = false;
+  occlusion_view_ = OcclusionView{};
   ++frame_;
+}
+
+bool AmbientOcclusion::FrameOcclusionNow(OcclusionView* out) const {
+  if (!applied_this_frame_ || !occlusion_view_.valid) {
+    return false;
+  }
+  *out = occlusion_view_;
+  return true;
+}
+
+bool AmbientOcclusion::FrameLight(float ambient[3], float sun[3], double to_sun[3]) const {
+  LightRaw light;
+  uint32_t with_it = 0;
+  if (!PickLight(&light, &with_it)) {
+    return false;
+  }
+  float dir[3];
+  DecodeLight(light, ambient, sun, dir);
+  return SunDirection(to_sun);
 }
 
 bool AmbientOcclusion::FrameLinearDepth(LinearDepthView* out) const {

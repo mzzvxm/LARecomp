@@ -21,6 +21,7 @@
 #include "backend.h"
 #include "device_fault_format.h"
 #include "gpu.h"
+#include "gi_setting.h"
 #include "citypack/pack_format.h"
 #include "guest_capture.h"
 #include "hdr.h"
@@ -32,6 +33,8 @@
 #include "renderer_choice.h"
 #include "choice_box.h"
 #include "renderer_fallback.h"
+#include "rt_bench.h"
+#include "rt_tier.h"
 #include "native_window.h"
 #include "temporal_dlss.h"
 #include "thread_load.h"
@@ -205,6 +208,17 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     local_lights_.SetScreenShared(&screen_);
     local_lights_.SetAmbientOcclusion(&ao_);
     local_lights_.SetLightManager(&light_manager_);
+    // The probe field's apply (gi_apply.h, CITY-RT M3 G3): makes nothing until a probe field runs (SetGiField: the integration, G4, gives it); reads the G-buffer's RT1 and RT2, the shared products' depth
+    // and camera, and the AO's visibility, light and pose. The AO asks it for the screen-space bounce light's share (SetGiApply).
+    gi_apply_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
+    gi_apply_.SetGBuffer(&gbuffer_);
+    gi_apply_.SetScreenShared(&screen_);
+    gi_apply_.SetAmbientOcclusion(&ao_);
+    ao_.SetGiApply(&gi_apply_);
+    // The probe field (gi_field.h, CITY-RT M3 G1): its layouts and shaders now, its pipelines listed with the precache below when the setting is not off at the start, its textures made when a frame
+    // first wants them. The integration (gi_integration.h, G4) gives it the setting and the frame (its city scene is set below, with the city block); the apply reads it.
+    gi_field_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_setting::Current().level != gi::Level::kOff);
+    gi_apply_.SetGiField(&gi_field_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
@@ -213,7 +227,13 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       if (!why.empty()) {
         REXLOG_INFO("[gpu] car ray tracing: not available: {}", why);
       } else if (car_rt_.Initialize(device_, frames_, upload_, heap_, passes_, edram_, pass_timing_, car_frame_)) {
-        if (vulkan) {
+        if (gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) {
+          // The device can trace, but the ray tracing tier (rt_tier.h) is none: a card with no ray tracing units (the GTX 10 and 16 series run DXR in the
+          // shaders, far too slowly) or the Low class (shared memory). The effects stay off and the pause row does not offer RAY TRACED (CarRtReflAvailable);
+          // the structures are still set up, so mcla_gpu_rt_tier can force a tier for a test. The launcher reads this line like the others.
+          REXLOG_INFO("[gpu] car ray tracing: not available: the ray tracing tier is none on this graphics card or class (see the '[gpu] ray tracing tier' line), "
+                      "so the ray traced car effects stay off");
+        } else if (vulkan) {
           REXLOG_INFO("[gpu] car ray tracing: available (Vulkan ray queries, VK_KHR_ray_query): the player's car is built into ray tracing "
                       "structures while an effect asks for them");
         } else {
@@ -249,7 +269,12 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       car_rt_.SetService(&rt_scene_, &city_hit_);
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);
       ao_.SetCityRtShadow(&city_shadow_);
+      // The probe field's integration (gi_integration.h): the field needs M1's structures for its safe range and (G2) its rays.
+      gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);
     }
+    // The ray tracing benchmark (rt_bench.h, rt_tier.h): once with a card that can trace (kept next to larecomp.toml), while the GPU is idle and before the
+    // precache below starts its builder; it can move the card between the weak and the strong tier, which the ray traced upgrades' `auto` reads.
+    rt_bench::RunIfWanted(device_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -285,6 +310,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetLocalShadow(&local_shadow_);
     scene_.SetLightManager(&light_manager_);
     scene_.SetLocalLights(&local_lights_);
+    scene_.SetGiApply(&gi_apply_);
+    scene_.SetGiIntegration(&gi_integration_);
     scene_.SetCarRtScene(&car_rt_);
     car_rt_.SetTextureCache(&textures_);  // the car ray tracing's materials ask it for the textures of the cars beside the player (TextureCache::Peek2D)
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
@@ -321,6 +348,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     vram_.AddHolder("city hit data", [this] { return city_hit_.HeldBytes(); });
     // The headlight shadow maps' atlas (the replay's own or the shared one: local_shadow.h HeldBytes counts both) is memory the response cannot release either: the lines name it.
     vram_.AddHolder("headlight shadow atlas", [this] { return local_shadow_.HeldBytes(); });
+    // The probe field's textures (gi_field.h): the OS counts them in the use it reports and the caches' trim cannot give them back; the field asks the room test before it makes any.
+    vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
@@ -349,6 +378,9 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+    gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
+    gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
+    gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
     local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
     ao_.Shutdown();
     screen_.Shutdown();  // the AO holds a pointer to it: after the AO
@@ -534,6 +566,9 @@ void Renderer::Shutdown() {
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+  gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
+  gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
+  gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
   local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
   ao_.Shutdown();
   screen_.Shutdown();  // the AO holds a pointer to it: after the AO
@@ -1744,6 +1779,8 @@ void Renderer::ReportFrameStats() {
                            (gbuffer_.HeldBytes() != 0 ? ", G-buffer " + mib(gbuffer_.HeldBytes()) : std::string()) +
                            (screen_.HeldBytes() != 0 ? ", screen products " + mib(screen_.HeldBytes()) : std::string()) +
                            (ssr_.HeldBytes() != 0 ? ", screen-space reflections " + mib(ssr_.HeldBytes()) : std::string()) +
+                           (gi_apply_.HeldBytes() != 0 ? ", ray traced bounce light's apply " + mib(gi_apply_.HeldBytes()) : std::string()) +
+                           (gi_field_.HeldBytes() != 0 ? ", probe field " + mib(gi_field_.HeldBytes()) : std::string()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())

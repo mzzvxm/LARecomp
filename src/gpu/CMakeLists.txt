@@ -51,6 +51,10 @@ add_library(larecomp_gpu OBJECT
     frame_trace.cpp
     frame.cpp
     gbuffer.cpp
+    gi_apply.cpp
+    gi_field.cpp
+    gi_integration.cpp
+    gi_setting.cpp
     gbuffer_material.cpp
     gbuffer_materials.cpp
     geometry.cpp
@@ -88,6 +92,8 @@ add_library(larecomp_gpu OBJECT
     renderer.cpp
     resolve.cpp
     resolve_memory.cpp
+    rt_bench.cpp
+    rt_tier.cpp
     samplers.cpp
     scene.cpp
     screen_shared.cpp
@@ -174,6 +180,12 @@ add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+# The ray tracing tier beside it (rt_tier.h: the tables' every row, the detection's order, the benchmark's decision with synthetic rates, the rungs, the
+# `auto` table's cells, the launcher's words) and the benchmark's rules (rt_bench_rules.h: the synthetic scene, the plan, the rate, the cache record), likewise:
+#   cmake --build <dir> --target larecomp_rt_tier_test, then run src/gpu/larecomp_rt_tier_test (exit 0 = passed).
+#   cmake --build <dir> --target larecomp_rt_bench_rules_test, then run src/gpu/larecomp_rt_bench_rules_test (exit 0 = passed).
+add_executable(larecomp_rt_tier_test EXCLUDE_FROM_ALL rt_tier_test.cpp)
+add_executable(larecomp_rt_bench_rules_test EXCLUDE_FROM_ALL rt_bench_rules_test.cpp)
 # The sun shadow filter's rules (shadow_filter.h: the choice, the taps, the constants) likewise:
 #   cmake --build <dir> --target larecomp_shadow_filter_rules_test, then run src/gpu/larecomp_shadow_filter_rules_test.
 add_executable(larecomp_shadow_filter_rules_test EXCLUDE_FROM_ALL shadow_filter_test.cpp)
@@ -287,6 +299,26 @@ add_executable(larecomp_headlight_rig_test EXCLUDE_FROM_ALL headlight_rig_test.c
 # and the host's pure rules (which draws get the sidecar, the frame window, the trigger) likewise:
 #   cmake --build <dir> --target larecomp_gbuffer_rules_test, then run src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>] (exit 0 = passed).
 add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.cpp)
+# The probe field's frame interface (gi_frame.h, CITY-RT M3 package G0: the budgets and the (ray tracing tier, level) cells, the cascades' toroidal addressing, the octahedral
+# probe maps, the frame rows, the lookup with its weights, the ambient and the ground baseline; it compiles hlsl/gi_common.hlsli as C++ and compares it with the twin, and reads
+# gbuffer_rules.h's octahedral map to check that they are the same) likewise:
+#   cmake --build <build dir> --target larecomp_gi_frame_test, then run src/gpu/larecomp_gi_frame_test [-v] [<hlsl/gi_common.hlsli>] (exit 0 = passed).
+add_executable(larecomp_gi_frame_test EXCLUDE_FROM_ALL gi_frame_test.cpp)
+# The probe field owner's rules (gi_field_rules.h, CITY-RT M3 package G1: the memory of each cell and the order of loss, the windows' toroidal moves and their dirty sets, cuts, the fade,
+# the state word and the weight rule, the reset list; it compiles hlsl/gi_field_common.hlsli as C++ and compares it with the twin, checks the traversal that finds the nearest probe sphere
+# against a brute force, and reads the three gi_field_*.hlsl files for their registers) likewise:
+#   cmake --build <build dir> --target larecomp_gi_field_rules_test, then run src/gpu/larecomp_gi_field_rules_test [-v] [<hlsl dir>] (exit 0 = passed).
+add_executable(larecomp_gi_field_rules_test EXCLUDE_FROM_ALL gi_field_rules_test.cpp)
+# The probe field's apply (gi_apply_rules.h, CITY-RT M3 package G3: the identity of an empty or open field, the ceiling and the cap, the parity with the screen-space bounce light's rules, the vehicle share,
+# the SSGI switch, the upsample's weights, the buffer's rows, the leak test; it compiles hlsl/gi_apply_common.hlsli together with gi_common.hlsli as C++ and compares them with the twin, and reads the
+# shader's registers, the CMake lines, host_shaders.h and the settings) likewise:
+#   cmake --build <dir> --target larecomp_gi_apply_test, then run src/gpu/larecomp_gi_apply_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_gi_apply_test EXCLUDE_FROM_ALL gi_apply_test.cpp)
+# The ray traced bounce light's setting and its pause row (gi_setting.h, CITY-RT M3 package G4: what a word comes to on each class and ray tracing tier, the gate that greys the row and what it says, AUTO's
+# label, the launcher's line, the BOUNCE LIGHT rows' "(REPLACED)" and the strength row's rule, the debug feedback; it also reads gi_integration.h / .cpp, scene.cpp, renderer.cpp, pause_menu.cpp, the settings and
+# the CMake lines for the order and the wiring) likewise:
+#   cmake --build <dir> --target larecomp_gi_setting_test, then run src/gpu/larecomp_gi_setting_test [-v] [<src dir>] (exit 0 = passed).
+add_executable(larecomp_gi_setting_test EXCLUDE_FROM_ALL gi_setting_test.cpp)
 # The one light description (light_frame.h: Light, LightFrame, the 64 byte GpuLight and its bits; light_id.h: the ids, a street lamp's being the old LampKey / KeyOf; light_laws.h: the
 # headlight's, the game's lamp's and the volume's laws held to the rig's LampScale and the game's numbers; light_convert.h: the conversions from the headlight rig, the game's lamp
 # list, the shadow replay and into the volume's lamp; and it compiles hlsl/light_laws.hlsli as C++ and compares it with the twin) likewise:
@@ -935,6 +967,22 @@ larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)
 larecomp_gpu_host_shader_rt(city_rt_shadow_cs cs_6_5)
 # The city hit data's probe (city_hit_probe.h, CITY-RT M2 H3): the pool and the tables read through the ray tracing set's t6..t9.
 larecomp_gpu_host_shader_rt(city_hit_probe_cs cs_6_5)
+# The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed storage image
+# stores of RGBA16F, RG16F and R8_UNORM with the format given to SPIR-V), and the debug view's pixel shader (the probes as spheres over the picture).
+larecomp_gpu_host_shader(gi_field_reset_cs cs_6_0)
+larecomp_gpu_host_shader(gi_field_weights_cs cs_6_0)
+larecomp_gpu_host_shader(gi_field_view_ps ps_6_0)
+# The probe field's apply (gi_apply.h, CITY-RT M3 package G3): the lookup at the occlusion's traced size and the additive apply at the picture's size, each for plain and multisampled planes (the apply also
+# without and with the upsample from the lookup's image); one source, hlsl/gi_apply_ps.hlsl.
+larecomp_gpu_host_shader(gi_apply_lookup_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=0 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_lookup_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=1 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_ps ps_6_0 DEFINES GIA_PASS=1 GIA_MS=0 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=1 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_up_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=0 GIA_UP=1)
+larecomp_gpu_host_shader(gi_apply_up_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=1 GIA_UP=1)
+# The ray tracing benchmark's trace (rt_bench.h, rt_bench_rules.h): random rays through a synthetic city, run once on the first start with a card to move it between
+# the weak and the strong ray tracing tier (rt_tier.h). Shader Model 6.5 and SPIR-V 1.5 like the car passes.
+larecomp_gpu_host_shader_rt(rt_bench_cs cs_6_5)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

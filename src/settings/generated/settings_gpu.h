@@ -544,6 +544,21 @@ class GPUSettings final : public rex::SettingOwner {
     "detail, ambient occlusion, contact shadows, sun shafts, bounce light); "
     "a choice of the player's own is never changed. Live.", rex::Allowed("auto", "low", "mid", "high"), rex::kDebugOnly);
 
+  REX_SETTING(std::string, mcla_gpu_rt_tier, "auto", "Diagnostic: forces the ray tracing tier the ray traced upgrades' auto values are chosen from (none: "
+    "the card cannot trace rays or has no ray tracing units, weak: it traces at a moderate speed, such as an RTX 3060 or an RX 6600, "
+    "strong: it traces quickly, such as an RTX 5080 or an RX 7900 XT). "
+    "auto: the tier found for this card (its table row and, when it ran, the benchmark of mcla_gpu_rt_bench), logged at start as "
+    "'[gpu] ray tracing tier: ...' with the rule that chose it; while mcla_gpu_class forces a class, the tier follows it (high: strong, "
+    "mid: weak, low: none) so that a test that says a class runs that class's cells. Only the value auto of the ray traced upgrades "
+    "(the car's reflection, occlusion and sun ray; later the city's shadows, reflections and bounce light) follows it, and the "
+    "number of cars they trace and how far; a choice of the player's own is never changed. Live.", rex::Allowed("auto", "none", "weak", "strong"), rex::kDebugOnly);
+
+  REX_SETTING(std::string, mcla_gpu_rt_bench, "auto", "Diagnostic: the ray tracing benchmark that can move a card between the weak and the strong tier. "
+    "auto: on the first start with a card that can trace (and again after its driver or the graphics API changes) a short compute pass "
+    "traces a few million rays through a small synthetic city and logs the speed ('[gpu] rt bench: ...'), which is kept in "
+    "rt_bench.txt next to larecomp.toml; off: no benchmark, and a kept result is not read; force: run it at every start. "
+    "Takes effect at the next start.", rex::Allowed("auto", "off", "force"), rex::kDebugOnly, rex::kRestart);
+
   REX_SETTING(std::string, mcla_gpu_contact_shadows, "auto", "Contact shadows: the short sun shadows the game does not draw (under a car's sills, at the foot "
     "of a kerb or a wall, under props on the pavement), found from the picture's depth and put only "
     "on the sun's light, so they never darken what the game's own shadows already cover. Early in the "
@@ -816,6 +831,25 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_ssr_view, 0, "Diagnostic (screen-space reflections): draws one picture over the main view in place of the effect's add, where the ambient occlusion runs: 1 the term the effect adds (alone on black), 2 the class gate "
     "(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at "
     "half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, orange where the hit is a vehicle's, red a ray that found nothing, black not traced), 5 the game's road reflection view as the effect reads it, over the whole picture (black: none in this frame), 6 the term's sign (green what is added, red what is taken out of the game's own reflection). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 6});
+
+  REX_SETTING(std::string, mcla_gpu_rt_gi, "auto", "Ray traced bounce light: light bounces around the city the way it does in the real world. The sunlit street and walls light the shaded sides of buildings, the ground under bridges "
+    "and the insides of alleys with a soft glow in place of a flat ambient, large coloured walls tint what stands near them, and at night each street lamp and neon sign lights the facades, "
+    "the sidewalk and the cars around it a little more. What is behind or beside the camera counts too (the screen-space bounce light, mcla_gpu_ssgi, can only use what is in the picture). "
+    "It is worked out in a field of probes laid round the camera from the city's own triangles (the city pack) and added to the picture where the G-buffer knows the surface; it never darkens. "
+    "Where it stands it takes the place of the screen-space bounce light, which stays for graphics cards that cannot ray trace and for the places the field does not cover, and it is as strong as "
+    "BOUNCE LIGHT STRENGTH says (mcla_gpu_ssgi_intensity). off, high, ultra or auto (the default): high on a graphics card that traces rays quickly (the ray tracing tier strong: about an RTX 3070 "
+    "and up, an RX 7800 XT and up), off on the rest; a weaker ray tracing card can switch it on by hand, with fewer probes. high is three cascades of probes, 2, 4 and 8 m apart, "
+    "or two, 3 and 6 m apart on a weaker card. ultra adds a fourth cascade, 16 m apart, and refreshes the probes twice as often. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, or Vulkan with ray queries) "
+    "and the city pack; without them the screen-space bounce light stands. The pause menu's RT BOUNCE LIGHT row (GRAPHICS > LIGHTING AND SHADOWS). Live.", rex::Allowed("auto", "off", "high", "ultra"));
+
+  REX_SETTING(i32, mcla_gpu_rt_gi_view, 0, "Diagnostic (ray traced bounce light, the probe field's apply): draws one picture over the main view in place of the bounce light's add, at the trigger where the field runs: 1 the irradiance the field holds at the pixel, 2 the confidence (red the field has nothing there, green it stands), 3 the sky visibility (dark blue closed, white open), 5 the ground baseline the field's irradiance is reduced by, 6 the leak test (green no probe is hidden from the point by geometry, red all of them are), 9 the light the pass adds (alone on black, four times as bright), 10 the net irradiance after the baseline, the dead band and the cap, 11 the occlusion's term the bounce is multiplied by. 4, 7 and 8 are the field's own pictures (the probes as spheres). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 11});
+
+  REX_SETTING(f64, mcla_gpu_rt_gi_bounces, 0.5, "Diagnostic (ray traced bounce light): how much of the field's own light the probes take back in when they are updated, which is the second bounce and the ones after it for free: "
+    "0 is strictly one bounce, 0.5 (the default) is about two, with brighter canyons; 0.95 at most, so that the loop cannot grow. Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
+
+  REX_SETTING(bool, mcla_gpu_rt_gi_dry_run, false, "Diagnostic (ray traced bounce light): lets the probe field run while the probe update (package G2 of the design) is not built into this renderer, to prove the field's owner and the order of the frame. "
+    "With RT BOUNCE LIGHT on, the field's textures are made, its reset and weights passes run and the apply is told of it, but nothing traces into the probes, so the field never becomes ready, shows nothing, "
+    "and the screen-space bounce light stays the source. The RT BOUNCE LIGHT row is grey with (NOT READY) while the update is missing; this makes it live for a test. Has no effect once the update is built. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_ssr_strength, 1.0, "Diagnostic (screen-space reflections): the effect's strength, 0 to 4: the added reflection is multiplied by it (the class's own gain, the Fresnel term and the picture's edge fades come on top). Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
 
@@ -1777,6 +1811,8 @@ inline auto& mcla_gpu_census_ps = g_gpu.mcla_gpu_census_ps;
 inline auto& mcla_gpu_census_scale = g_gpu.mcla_gpu_census_scale;
 inline auto& mcla_gpu_census_targets = g_gpu.mcla_gpu_census_targets;
 inline auto& mcla_gpu_class = g_gpu.mcla_gpu_class;
+inline auto& mcla_gpu_rt_tier = g_gpu.mcla_gpu_rt_tier;
+inline auto& mcla_gpu_rt_bench = g_gpu.mcla_gpu_rt_bench;
 inline auto& mcla_gpu_contact_shadows = g_gpu.mcla_gpu_contact_shadows;
 inline auto& mcla_gpu_contact_shadows_car_map_march = g_gpu.mcla_gpu_contact_shadows_car_map_march;
 inline auto& mcla_gpu_contact_shadows_car_sun = g_gpu.mcla_gpu_contact_shadows_car_sun;
@@ -1820,6 +1856,10 @@ inline auto& mcla_gpu_screen_view = g_gpu.mcla_gpu_screen_view;
 inline auto& mcla_gpu_screen_view_level = g_gpu.mcla_gpu_screen_view_level;
 inline auto& mcla_gpu_ssr = g_gpu.mcla_gpu_ssr;
 inline auto& mcla_gpu_ssr_view = g_gpu.mcla_gpu_ssr_view;
+inline auto& mcla_gpu_rt_gi = g_gpu.mcla_gpu_rt_gi;
+inline auto& mcla_gpu_rt_gi_view = g_gpu.mcla_gpu_rt_gi_view;
+inline auto& mcla_gpu_rt_gi_bounces = g_gpu.mcla_gpu_rt_gi_bounces;
+inline auto& mcla_gpu_rt_gi_dry_run = g_gpu.mcla_gpu_rt_gi_dry_run;
 inline auto& mcla_gpu_ssr_strength = g_gpu.mcla_gpu_ssr_strength;
 inline auto& mcla_gpu_ssr_min_smooth = g_gpu.mcla_gpu_ssr_min_smooth;
 inline auto& mcla_gpu_ssr_stub = g_gpu.mcla_gpu_ssr_stub;

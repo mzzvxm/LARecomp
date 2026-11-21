@@ -59,8 +59,10 @@
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/car_shadow_map_rules.h"
 #include "gpu/city_rt_rules.h"
+#include "gpu/gi_setting.h"
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
+#include "gpu/rt_tier.h"
 #include "gpu/latency.h"
 #include "gpu/local_shadow_rules.h"
 #include "gpu/renderer_choice.h"
@@ -1554,8 +1556,8 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
 //   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
 //   LIGHTING AND SHADOWS  SHADOWS, FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, RT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS,
-//                         AMBIENT OCCLUSION, AO INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS, VOLUMETRIC
-//                         LIGHT (kLightItems; FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey while SHADOWS is off)
+//                         AMBIENT OCCLUSION, AO INTENSITY, BOUNCE LIGHT, RT BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS,
+//                         VOLUMETRIC LIGHT (kLightItems; FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey while SHADOWS is off)
 //   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, REFLECTIONS ON SURFACES (kReflectionItems)
 //   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
@@ -1975,20 +1977,53 @@ std::string SsgiLabel(int i) {
     default: return "ULTRA";
     }
 }
-constexpr RowDynamics kSsgiDynamics = {.str_label = SsgiLabel, .enabled = AoOn};
-// How strong the bounce light looks (mcla_gpu_ssgi_intensity, gpu/ssgi_level.h, live), the row under it: grey
-// while the bounce light is off, as AO INTENSITY is while the occlusion is. The bounce light is off when the
-// occlusion is, or when BOUNCE LIGHT says OFF, or says AUTO and AUTO comes to OFF on this graphics card (gpu/gpu_class.h).
+// While the probe field stands and the screen-space bounce light is not built (RT BOUNCE LIGHT is on and its field is in the picture: gpu/gi_setting.h ReplacedBy, set once a frame by the renderer) the label
+// says " (REPLACED)": the row still sets what runs where the field does not (a cut, the first moments, the places it does not cover). "BOUNCE LIGHT (REPLACED)" is 23 characters, under the page's 27.
+const char* SsgiSuffix() { return mcla::gpu::RtGiReplacesBounceLight() ? mcla::gpu::gi_setting::kReplacedSuffix : ""; }
+constexpr RowDynamics kSsgiDynamics = {.str_label = SsgiLabel, .enabled = AoOn, .suffix = SsgiSuffix};
+// Ray traced bounce light (mcla_gpu_rt_gi, gpu/gi_setting.h, gpu/gi_integration.h, gpu/gi_field.h, gpu/gi_apply.h, live): the same light as BOUNCE LIGHT, worked out in a field of probes laid round the camera
+// from the city's own triangles instead of from the picture, so it knows what is behind the camera and what is not lit in this frame's picture: the sunlit street lights the shaded wall across it, a lamp's pool
+// lights the facades around it. Where it stands it takes the place of BOUNCE LIGHT (that row then says "(REPLACED)"), which stays for graphics cards that cannot ray trace and for the places the field does not
+// cover; BOUNCE LIGHT STRENGTH sets how strong either looks. AUTO says what it comes to on this graphics card: HIGH where the ray tracing tier is strong, OFF on the rest (the weaker ray tracing cards can switch it
+// on by hand, with fewer probes). The stored words are the shown words. The row is grey, with the reason after its label, where the card cannot trace rays (" (NO RT GPU)"), is too slow for it (the integrated
+// class: " (TOO SLOW)": " (GPU TOO SLOW)" would make the page 44 wide) or the probe update is not in this build yet (" (NOT READY)"); it does not depend on the ambient occlusion. The label is "RT BOUNCE LIGHT"
+// (15 characters, 27 with its longest suffix, like FOLIAGE SHADOWS (NO SHADOW)) with a value of at most 11 ("AUTO (HIGH)").
+const char* const kNativeRtGiVals[]  = {"auto", "off", "high", "ultra"};
+const char* const kNativeRtGiNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+mcla::gpu::gi_setting::Decision RtGiDecision() {
+    namespace gc = mcla::gpu::gpu_class;
+    return mcla::gpu::gi_setting::Decide(gc::Known() ? gc::Current() : gc::GpuClass::kLow, gc::CurrentRtTier(),
+                                         CvarGet("mcla_gpu_rt_gi"), mcla::gpu::RtGiUpdateBuilt());
+}
+std::string RtGiLabel(int i) {
+    namespace gc = mcla::gpu::gpu_class;
+    switch (i) {
+    case 0:  return mcla::gpu::gi_setting::AutoLabel(gc::Known() ? gc::Current() : gc::GpuClass::kLow,
+                                                     gc::CurrentRtTier(), mcla::gpu::RtGiUpdateBuilt());
+    case 1:  return "OFF";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+bool RtGiEnabled() { return mcla::gpu::gi_setting::RowEnabled(RtGiDecision().gate); }
+const char* RtGiSuffix() { return mcla::gpu::gi_setting::RowSuffix(RtGiDecision().gate); }
+constexpr RowDynamics kRtGiDynamics = {.str_label = RtGiLabel, .enabled = RtGiEnabled, .suffix = RtGiSuffix};
+// How strong the bounce light looks (mcla_gpu_ssgi_intensity, gpu/ssgi_level.h, live), the row under them: grey
+// while no bounce light runs, as AO INTENSITY is while the occlusion is. The screen-space bounce light is off when the
+// occlusion is, or when BOUNCE LIGHT says OFF, or says AUTO and AUTO comes to OFF on this graphics card (gpu/gpu_class.h); the probe field's
+// (RT BOUNCE LIGHT) is off when its row says OFF, or AUTO comes to OFF, or its gate is shut. Both are as strong as this row says.
 // Five levels, no AUTO: LIGHT, DEFAULT, STRONG, STRONGER, STRONGEST. The row is "BOUNCE LIGHT STRENGTH" (21
 // characters) with a value of at most 9 ("STRONGEST"): 30 together, under the page's 41.
 const char* const kNativeSsgiLevelVals[]  = {"light", "default", "strong", "stronger", "strongest"};
 const char* const kNativeSsgiLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "STRONGER", "STRONGEST"};
-bool SsgiOn() {
+bool ScreenSpaceBounceOn() {
     if (!AoOn()) return false;
     const std::string mode = mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kSsgi,
                                                            CvarGet("mcla_gpu_ssgi"));
     return mode == "high" || mode == "ultra";
 }
+// Either bounce light runs: the screen-space one, or the probe field (RT BOUNCE LIGHT on and not gated shut).
+bool SsgiOn() { return mcla::gpu::gi_setting::AnyBounceLight(ScreenSpaceBounceOn(), RtGiDecision()); }
 constexpr RowDynamics kSsgiLevelDynamics = {.enabled = SsgiOn};
 // Road reflections (mcla_gpu_reflection_resolution, gpu/side_views.h, live): how sharp the mirror image
 // on wet roads, windows and water is, the game's own 256x256 stretched over the screen (GAME), 512x512
@@ -2206,16 +2241,17 @@ const ItemDef kImageQualityItems[] = {
 // (FOLIAGE SHADOWS: on both renderers, moved here from WORLD DETAIL on 2026-11-20); the sun's shadows
 // (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the sun's shadows traced from the city's own triangles
 // (RT SHADOWS: grey while CONTACT SHADOWS is off and where the graphics card cannot ray trace), the traffic cars' shadows and your car's
-// (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS,
+// (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, RT BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS,
 // LIGHT SHADOWS, VOLUMETRIC LIGHT: the cars' lights, the shadows the local lights cast, then the beams and the haze those lights show in). The ids and the
 // cvars are the rows' own as they were on DISPLAY, GRAPHICS QUALITY and PERFORMANCE > RENDERING: a saved setting reads the same. AO INTENSITY is
-// grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes), BOUNCE LIGHT STRENGTH while the bounce light is off
+// grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes; it says " (REPLACED)" while RT BOUNCE LIGHT's field stands in its place), RT BOUNCE LIGHT where the graphics
+// card cannot ray trace (" (NO RT GPU)"), is too slow (" (TOO SLOW)") or the probe update is not built yet (" (NOT READY)"), BOUNCE LIGHT STRENGTH while neither bounce light runs
 // (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey
 // while SHADOWS is off and say so (ShadowsOn, NeedsShadows); HEADLIGHTS and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
-// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 16 rows of the 24 a page can hold (RT SHADOWS sits after CONTACT SHADOWS, which its pass needs).
+// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 17 rows of the 24 a page can hold (RT SHADOWS sits after CONTACT SHADOWS, which its pass needs; RT BOUNCE LIGHT after BOUNCE LIGHT, whose strength row it shares).
 // Width ("Page width" above ItemRowLabel): the longest label is "FOLIAGE SHADOWS (NO SHADOW)" and "TRAFFIC SHADOWS (NO SHADOW)" (27, the four
 // shadow rows' reason is at most 12 characters: row_dependency.h), then "BOUNCE LIGHT STRENGTH" (21) and "AMBIENT OCCLUSION" (17); the longest value
-// "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 41 of the 41 a page can take. Only those four rows have a suffix.
+// "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 41 of the 41 a page can take. Only those four rows, RT SHADOWS, RT BOUNCE LIGHT (27 with " (NO RT GPU)") and BOUNCE LIGHT ("BOUNCE LIGHT (REPLACED)" 23) have a suffix.
 const ItemDef kLightItems[] = {
     Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
     WithDynamics(Bool("PM_RxFoliage", "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true), &kFoliageDynamics),
@@ -2247,6 +2283,9 @@ const ItemDef kLightItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",
                                 kNativeSsgiVals, kNativeSsgiNames, 4),
                             &kSsgiDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuRtGi", "mcla_gpu_rt_gi", "RT BOUNCE LIGHT: ",
+                                kNativeRtGiVals, kNativeRtGiNames, 4),
+                            &kRtGiDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE LIGHT STRENGTH: ",
                                 kNativeSsgiLevelVals, kNativeSsgiLevelNames, 5),
                             &kSsgiLevelDynamics)),
@@ -3192,7 +3231,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // "AUTO (OFF)"): 38 together.
 // IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
 // FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
-// LIGHTING AND SHADOWS (kLightItems, 16 rows; RT SHADOWS has the suffixes " (NO RT GPU)" and " (GPU TOO SLOW)", at most 25 as a label; the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
+// LIGHTING AND SHADOWS (kLightItems, 17 rows; RT SHADOWS has the suffixes " (NO RT GPU)" and " (GPU TOO SLOW)", at most 25 as a label, and RT BOUNCE LIGHT " (NO RT GPU)", " (TOO SLOW)" and " (NOT READY)", at most 27 as a label (BOUNCE LIGHT says " (REPLACED)", 23); the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
 // SHADOWS while SHADOWS is off): labels at most 27 ("FOLIAGE SHADOWS (NO SHADOW)", "TRAFFIC SHADOWS (NO SHADOW)"), then "SHADOW DETAIL
 // (NO SHADOW)" and "SHADOW FILTER (NO SHADOW)" 25, "BOUNCE LIGHT STRENGTH" 21, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "LIGHT
 // SHADOWS" 13, "CAR SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
@@ -3353,7 +3392,7 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 
 // Sizes the tables below, nothing else: the form's own row list is made with the page's row count
 // (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 16 rows
-// (kLightItems, 16); a page over the cap is refused whole (BuildNativeRows), so there is room.
+// (kLightItems, 17); a page over the cap is refused whole (BuildNativeRows), so there is room.
 constexpr int kMaxRowsPerMenu = 24;
 
 struct NativeRows {

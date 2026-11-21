@@ -271,9 +271,11 @@ void PageWidthOfLighting(const std::vector<Row>& rows) {
   const L labels[] = {
       {"PM_RxNoShadows", "SHADOWS", false},          {"PM_RxFoliage", "FOLIAGE SHADOWS", true},
       {"PM_RxGpuShadowDetail", "SHADOW DETAIL", true}, {"PM_RxGpuShadowFilter", "SHADOW FILTER", true},
-      {"PM_RxGpuContact", "CONTACT SHADOWS", false},   {"PM_RxGpuTrafficShadows", "TRAFFIC SHADOWS", true},
-      {"PM_RxGpuCarShadowMap", "CAR SHADOWS", false},  {"PM_RxGpuAo", "AMBIENT OCCLUSION", false},
-      {"PM_RxGpuAoLevel", "AO INTENSITY", false},      {"PM_RxGpuSsgi", "BOUNCE LIGHT", false},
+      {"PM_RxGpuContact", "CONTACT SHADOWS", false},   {"PM_RxGpuRtShadows", "RT SHADOWS (GPU TOO SLOW)", false},
+      {"PM_RxGpuTrafficShadows", "TRAFFIC SHADOWS", true}, {"PM_RxGpuCarShadowMap", "CAR SHADOWS", false},
+      {"PM_RxGpuAo", "AMBIENT OCCLUSION", false},
+      {"PM_RxGpuAoLevel", "AO INTENSITY", false},      {"PM_RxGpuSsgi", "BOUNCE LIGHT (REPLACED)", false},
+      {"PM_RxGpuRtGi", "RT BOUNCE LIGHT (NO RT GPU)", false},
       {"PM_RxGpuSsgiLevel", "BOUNCE LIGHT STRENGTH", false}, {"PM_RxGpuSunShafts", "SUN SHAFTS", false},
       {"PM_RxGpuHeadlights", "HEADLIGHTS", false},     {"PM_RxGpuLightShadows", "LIGHT SHADOWS", false},
       {"PM_RxGpuVolumetrics", "VOLUMETRIC LIGHT", false},
@@ -306,8 +308,8 @@ void Page(const std::string& dir) {
   const std::vector<Row> world = Rows(TableBody(code, "kWorldDetailItems"));
   const std::vector<std::string> light_expected = {
       "PM_RxNoShadows",       "PM_RxFoliage",       "PM_RxGpuShadowDetail", "PM_RxGpuShadowFilter", "PM_RxGpuContact",
-      "PM_RxGpuTrafficShadows", "PM_RxGpuCarShadowMap", "PM_RxGpuAo",         "PM_RxGpuAoLevel",      "PM_RxGpuSsgi",
-      "PM_RxGpuSsgiLevel",    "PM_RxGpuSunShafts",  "PM_RxGpuHeadlights",   "PM_RxGpuLightShadows", "PM_RxGpuVolumetrics"};
+      "PM_RxGpuRtShadows",    "PM_RxGpuTrafficShadows", "PM_RxGpuCarShadowMap", "PM_RxGpuAo",         "PM_RxGpuAoLevel",      "PM_RxGpuSsgi",
+      "PM_RxGpuRtGi",         "PM_RxGpuSsgiLevel",    "PM_RxGpuSunShafts",  "PM_RxGpuHeadlights",   "PM_RxGpuLightShadows", "PM_RxGpuVolumetrics"};
   const std::vector<std::string> world_expected = {"PM_RxUnspawn", "PM_RxPedDensity", "PM_RxParkedCars",
                                                    "PM_RxFragDist", "PM_RxLodTraffic", "PM_RxLodCity"};
   Check(Keys(light) == light_expected, "LIGHTING AND SHADOWS has its rows in the approved order, FOLIAGE SHADOWS right after SHADOWS");

@@ -117,8 +117,8 @@ void LogClass() {
 
 }  // namespace
 
-void Initialize(const plume::RenderDeviceDescription& description,
-                const plume::RenderDeviceCapabilities& caps) {
+AdapterFacts FactsFor(const plume::RenderDeviceDescription& description,
+                      const plume::RenderDeviceCapabilities& caps) {
   // CHECK: read from Plume's code, not yet seen on the test PC's adapters: D3D12 never fills
   // description.type, so an integrated GPU is known there only by caps.uma (DXGI's UMA flag); Vulkan
   // sets both (uma needs the integrated type and a host-visible device-local memory type). The log
@@ -132,9 +132,15 @@ void Initialize(const plume::RenderDeviceDescription& description,
   facts.dedicated_bytes = description.dedicatedVideoMemory;
   facts.raytracing = caps.raytracing;
   // The speed table reads the name and the PCI vendor id (Plume's RenderDeviceVendor holds the id; it
-  // does not carry the device id).
+  // does not carry the device id: the ray tracing tier asks the backend for that, rt_tier.h).
   facts.name = description.name;
   facts.vendor_id = static_cast<uint32_t>(description.vendor);
+  return facts;
+}
+
+void Initialize(const plume::RenderDeviceDescription& description,
+                const plume::RenderDeviceCapabilities& caps) {
+  const AdapterFacts facts = FactsFor(description, caps);
   const Verdict verdict = Classify(facts);
 
   {
@@ -164,6 +170,14 @@ GpuClass Current() {
   if (forced != kNoOverride) {
     return static_cast<GpuClass>(forced);
   }
+  return static_cast<GpuClass>(g_detected.load(std::memory_order_relaxed));
+}
+
+bool ClassForced() {
+  return g_override.load(std::memory_order_relaxed) != kNoOverride;
+}
+
+GpuClass ClassDetected() {
   return static_cast<GpuClass>(g_detected.load(std::memory_order_relaxed));
 }
 

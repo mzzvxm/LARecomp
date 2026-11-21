@@ -26,6 +26,7 @@
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "rt_tier.h"
 #include "texture_bytes.h"
 
 // pipelines.cpp: the chrome variant's own switch (the pass leaves another car's chrome alone where the variant is not drawn).
@@ -45,6 +46,12 @@ LiveText& Setting() {
   return text;
 }
 
+// The setting as the ray tracing tier resolves it (rt_tier.h kRtEffects): `auto` is on where the card traces (off with no ray tracing and in the Low class,
+// as the car's reflection is itself); an `off` is the player's own and stays.
+car_rt_refl::Setting SettingNow() {
+  return car_rt_refl::SettingOf(gpu_class::ResolveRt(gpu_class::RtEffect::kCarSelfReflRt, Setting().Get()));
+}
+
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 0); }
 uint64_t DenoiseKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 1); }
 
@@ -53,7 +60,11 @@ std::atomic<bool> g_available{false};
 
 }  // namespace
 
-bool CarRtReflAvailable() { return g_available.load(std::memory_order_relaxed); }
+// The device can run it AND the ray tracing tier lets it: a card with no ray tracing units (the GTX 10 and 16 series run DXR in the shaders) and the Low
+// class (shared memory) trace nothing, so the pause row does not offer RAY TRACED there (rt_tier.h: the rung is none).
+bool CarRtReflAvailable() {
+  return g_available.load(std::memory_order_relaxed) && gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone;
+}
 
 CarRtRefl::~CarRtRefl() = default;
 
@@ -93,10 +104,10 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   }
   // The opponents' cars' pass (car_rt_opp_refl.h): optional, listed beside the trace's pipeline where the reflection is on at the start.
   opp_.Initialize(device, passes, heap, pass_timing, *scene, output_builder_,
-                  reflection_on_at_start && car_rt_refl::SettingOf(Setting().Get()) == car_rt_refl::Setting::kAuto);
+                  reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kAuto);
   // Listed with the start's precache only where the car self-reflections are on at the start and this is not switched off; else it is
   // made in the background when first wanted (PipelineReady).
-  if (reflection_on_at_start && car_rt_refl::SettingOf(Setting().Get()) == car_rt_refl::Setting::kAuto) {
+  if (reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kAuto) {
     uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
     if (denoise_ready_) {
       added += passes.precache().Add(DenoiseKey(), kDenoiseName, [this] { return MakeDenoisePipeline(); }) ? 1u : 0u;
@@ -294,7 +305,7 @@ void CarRtRefl::BeginFrame(bool reflection_on) {
   if (!ready_ || !scene_) {
     return;
   }
-  const bool wanted = car_rt_refl::Wanted(car_rt_refl::SettingOf(Setting().Get()), supported_, reflection_on);
+  const bool wanted = car_rt_refl::Wanted(SettingNow(), supported_, reflection_on);
   if (!wanted) {
     return;
   }

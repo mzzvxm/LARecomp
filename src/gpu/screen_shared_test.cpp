@@ -127,7 +127,7 @@ void FrozenChecks() {
   // The consumers' numbers (an index into the registry).
   Check(int(sc::Consumer::kAmbientOcclusion) == 0 && int(sc::Consumer::kContactShadows) == 1 && int(sc::Consumer::kBounceLight) == 2 && int(sc::Consumer::kCarRtAo) == 3 &&
             int(sc::Consumer::kCarRtCheck) == 4 && int(sc::Consumer::kReflections) == 5 && int(sc::Consumer::kCarHistory) == 6 && int(sc::Consumer::kCarRtRefl) == 7 &&
-            int(sc::Consumer::kVolumetrics) == 8 && int(sc::Consumer::kLocalLights) == 9 && int(sc::Consumer::kDebugView) == 10 && int(sc::Consumer::kCount) == 11,
+            int(sc::Consumer::kVolumetrics) == 8 && int(sc::Consumer::kLocalLights) == 9 && int(sc::Consumer::kDebugView) == 10 && int(sc::Consumer::kRtBounce) == 11 && int(sc::Consumer::kCount) == 12,
         "the consumers keep their numbers");
   Check(int(sc::View::kOff) == 0 && int(sc::View::kLinDepth) == 1 && int(sc::View::kHizMin) == 2 && int(sc::View::kHizCheck) == 3 && int(sc::View::kNormal) == 4 &&
             int(sc::View::kVehicle) == 5 && int(sc::View::kColourPost) == 6 && int(sc::View::kHistory) == 7 && int(sc::View::kCount) == 8,

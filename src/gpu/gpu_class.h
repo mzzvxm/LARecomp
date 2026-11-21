@@ -36,6 +36,9 @@
 // One setting is not a string table: the city LOD scale (lod_city_scale, a number whose 0 is `auto`),
 // with its own rule below (CityLodScaleFor, CityLodLabelFor).
 //
+// The ray traced effects have a second axis, how well the card traces rays (an RTX 3060 and an RTX 5080 are both High): the RT tier (none / weak /
+// strong) and the `auto` table of those effects (columns none / weak / strong) are rt_tier.h, which reads this file's class and name rules.
+//
 // Everything that decides something is a pure inline function here (Classify, Cell, ResolveFor,
 // AutoLabelFor, CityLodScaleFor), and this header includes nothing of Plume or ReXGlue:
 // gpu_class_test.cpp builds on its own and checks every cell of the table and the class rule.
@@ -647,6 +650,11 @@ inline Verdict Classify(const AdapterFacts& facts) {
 
 // --- this process's class (gpu_class.cpp) ------------------------------------------------------
 
+// What Initialize reads from the device, as the rule's plain values (the software names, the type, the memory, the ray tracing flag, the name and the
+// vendor id). `name` points into `description`, which must outlive the result. rt_tier.cpp reads the same facts.
+AdapterFacts FactsFor(const plume::RenderDeviceDescription& description,
+                      const plume::RenderDeviceCapabilities& caps);
+
 // Finds the class from the device Plume made, logs the "[gpu] class: ..." line and the values
 // `auto` comes to. Device::Open calls it once the device exists (again if a second backend is
 // tried; the last call stands). mcla_gpu_class overrides it from then on, live.
@@ -656,6 +664,11 @@ void Initialize(const plume::RenderDeviceDescription& description,
 // The class in force: mcla_gpu_class if it is not `auto`, else what Initialize found; kHigh before
 // Initialize (nothing is drawn before the device exists). Any thread, cheap.
 GpuClass Current();
+
+// Whether mcla_gpu_class forces the class (Current() is then the forced one, not what the adapter said), and the class the adapter alone said
+// (kHigh before Initialize). The ray tracing tier follows a forced class in a test (rt_tier.h). Any thread, cheap.
+bool ClassForced();
+GpuClass ClassDetected();
 
 // Whether Current() is a class this process really found: false until Initialize has run, and for the
 // whole run with the Xenia renderer (debug only), which makes its own device and never calls it. A

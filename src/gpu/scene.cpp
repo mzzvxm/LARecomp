@@ -26,6 +26,8 @@
 #include "car_frame.h"
 #include "headlight_rig.h"
 #include "light_manager.h"
+#include "gi_apply.h"
+#include "gi_integration.h"
 #include "local_lights.h"
 #include "local_shadow.h"
 #include "car_rt_scene.h"
@@ -838,6 +840,12 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     // The screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h, ssr_rules.h WantedPlanes / WantedProducts: only while the row is on), BEFORE the G-buffer and the
     // screen owner read their wants just below: the effect's planes, Hi-Z and capture are there in this very frame (frame_order.h kBeginSsr, lag 0; GB-I3: it stood after the owners and lagged a frame).
     ssr_->BeginFrame();
+  }
+  if (gi_integration_) {
+    gi_integration_->BeginFrame(frame_serial_);  // the probe field's frame starts (its setting, its Inputs): BEFORE the apply below, which reads whether the field runs to make its wants (gi_integration.h)
+  }
+  if (gi_apply_) {
+    gi_apply_->BeginFrame();  // the probe field's apply: its wants (RT1 and RT2, the depth chain) only while the field runs, and the frame's latch of the screen-space bounce light's share
   }
   if (gbuffer_) {
     gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
@@ -3670,6 +3678,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     light_manager_->OnResolve(shadow_recorded);  // passive: this frame's maps, and the headlight block is checked against them
     order_.Note(frame_order::Step::kLightMaps, shadow_recorded);
   }
+  if (gi_integration_) {
+    // The probe field's maintenance, update and weights (gi_integration.h, CITY-RT M3 G4): outside any render pass, before the occlusion plans (it asks the field's share while it plans); records nothing
+    // while no field runs. Its own layouts and pipelines: the reset below forgets them too.
+    const bool gi_field_ran = gi_integration_->OnResolve(summary, list, slot_);
+    order_.Note(frame_order::Step::kGiField, gi_field_ran);
+  }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
@@ -3677,6 +3691,13 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // at its end the screen products' publish with the Hi-Z): the order inside it is held by frame_order_test.cpp against ao.cpp.
     const bool ao_ran = ao_->OnResolve(record, summary, list, UpscalerRunning());
     order_.Note(frame_order::Step::kAo, ao_ran);
+  }
+  if (gi_apply_ && gi_apply_->wants_draws()) {
+    // The probe field's apply (gi_apply.h, CITY-RT M3 G3): the bounce light the field carries, added to the main colour from the G-buffer's normal and albedo and the main depth, multiplied by the
+    // occlusion's visibility, right after the occlusion's apply (which has multiplied the colour) and before the lamps' direct light (which neither of them multiplies). Binds its own layout, pipeline and
+    // framebuffer: the reset below forgets them too. With no field in the frame it records nothing.
+    const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_);
+    order_.Note(frame_order::Step::kGiApply, gi_apply_ran);
   }
   if (local_lights_ && local_lights_->wants_draws()) {
     // The deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
@@ -3947,6 +3968,9 @@ void Scene::OnPresent() {
   }
   if (ssr_) {
     ssr_->OnPresent();  // the reflections' history and idle count
+  }
+  if (gi_apply_) {
+    gi_apply_->OnPresent();  // the interval line and the lookup image's idle count
   }
   if (screen_) {
     screen_->OnPresent();  // the frame boundary of the shared screen products: the frame is counted, the capture and its history trade places (after NoteMenuWorld above: it asks the camera history)

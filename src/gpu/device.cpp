@@ -4,7 +4,9 @@
 
 #include "device_fault_format.h"
 #include "format.h"
+#include "car_rt_scene.h"
 #include "gpu_class.h"
+#include "rt_tier.h"
 #include "temporal_dlss.h"
 #include "windows_floor.h"
 
@@ -306,6 +308,18 @@ bool Device::Open(const Options& options) {
   // The class (low, mid, high) the graphics upgrades' `auto` values follow, from the facts above
   // (gpu_class.h): its own "[gpu] class: ..." line says which and why.
   gpu_class::Initialize(device_->getDescription(), caps);
+  // The ray tracing tier beside it (rt_tier.h): whether this renderer can trace rays on the device (the same answer the car's ray tracing asks for:
+  // CarRtSupported), the PCI device id Plume's description does not carry, and the tables; its own "[gpu] ray tracing tier: ..." line says which and
+  // why. The benchmark, if it runs, comes later (the renderer's start, rt_bench.h).
+  {
+    gpu_class::RtProbe probe;
+    probe.vulkan = ActiveBackend() == Backend::kVulkan;
+    probe.api_reason = CarRtUnsupportedReason(caps, probe.vulkan);
+    probe.api_rt = probe.api_reason.empty();
+    probe.device_id = backend::QueryAdapterIds(device_.get()).device_id;
+    probe.driver_version = device_->getDescription().driverVersion;
+    gpu_class::InitializeRt(device_->getDescription(), caps, probe);
+  }
 
   // A kD24S8 surface (the shadow atlas) is a D24_UNORM_S8_UINT target on the host. AMD's
   // Vulkan driver lists no 24-bit depth format, yet creates the image when asked; nothing

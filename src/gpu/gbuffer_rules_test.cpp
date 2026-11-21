@@ -616,6 +616,10 @@ void PlaneChecks() {
     s.decals = true;
     Check(gb::AutoPlanes(s) == 0, "GB-J: decals ask for nothing yet");
     s = none;
+    s.rt_bounce = true;
+    Check(gb::AutoPlanes(s) == 3 && gb::PlanFrame(gb::Setting::kAuto, gb::AutoPlanes(s)).written == 3 && std::string(gb::ConsumerName(gb::Consumer::kRtBounce)) == "ray traced bounce light",
+          "CITY-RT M3 G3: the probe field's apply asks for RT1 (the world normal) and RT2 (the true albedo and the lit weight), and not for RT3");
+    s = none;
     s.occlusion_normals = s.reflections = true;
     Check(gb::AutoPlanes(s) == 7, "GB-J: the union: the occlusion's normal and the reflections together make all three planes");
     // the table is the consumers' own wants: every consumer's want is cut to the planes and Wants::Union is AutoPlanes of the same states
