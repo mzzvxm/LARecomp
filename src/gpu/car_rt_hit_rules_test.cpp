@@ -301,7 +301,7 @@ int main(int argc, char** argv) {
                 Has(hlsli, "const float coneWeight = min(coneWeightSum / rays, 1.0);"),
             "the shader's mix of the two lobes is MixCoat's");
       Check(Has(refl, "float4 coat;") && Has(refl, "uint LevelRays(uint word)") && Has(refl, "const uint rays = (word >> 8) & 7u;") && Has(refl, "return rays == 0u ? 4u : min(rays, 4u);") &&
-                Has(refl, "const float hitReach = hitsOther ? g_push.coat.y : g_push.coat.x;") && Has(refl, "const float hitFadeFrom = hitsOther ? g_push.coat.z : g_push.tune.z;") &&
+                Has(refl, "const bool farHit = hitsOther || kShadePlayerHits;") && Has(refl, "const float hitReach = farHit ? g_push.coat.y : g_push.coat.x;") && Has(refl, "const float hitFadeFrom = farHit ? g_push.coat.z : g_push.tune.z;") &&
                 Has(refl, "const float faded = 1.0 - smoothstep(hitFadeFrom * hitReach, hitReach, distance);"),
             "the trace's reach is the push's: the player's own parts' coat.x from tune.z of it, another car's coat.y from coat.z of it (HitFade), the cone's rays from slots.w bit 8 (RaysOf)");
       Check(Has(refl, "ConeRotation(texel, g_push.slots.w & 7u)") && Has(opp, "ConeRotation(texel, g_push.slots.w & 7u)"), "the pattern's phase is the low three bits of slots.w in both variants (PhaseOf)");

@@ -380,9 +380,11 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     }
     const CarRtInstance hitInstance = CarRtLoadInstance(instance);
     const bool hitsOther = (CarRtInstanceMask(hitInstance) & CAR_RT_MASK_OTHERS) != 0u;
-    // the weight falls over the reach of the part that was hit: the player's own parts' (4 m), another car's (the level's, 18 m on the High class)
-    const float hitReach = hitsOther ? g_push.coat.y : g_push.coat.x;
-    const float hitFadeFrom = hitsOther ? g_push.coat.z : g_push.tune.z;
+    // the weight falls over the reach of the part that was hit: the player's own parts' (4 m), another car's (the level's, 18 m on the High class); in the opponents' variant the player's
+    // car is another car to the pixel (kShadePlayerHits), so it has the long reach too
+    const bool farHit = hitsOther || kShadePlayerHits;
+    const float hitReach = farHit ? g_push.coat.y : g_push.coat.x;
+    const float hitFadeFrom = farHit ? g_push.coat.z : g_push.tune.z;
     const float faded = 1.0 - smoothstep(hitFadeFrom * hitReach, hitReach, distance);
     if (faded < 1.0 / 512.0)
     {
