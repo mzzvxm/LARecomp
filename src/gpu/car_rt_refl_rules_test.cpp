@@ -14,10 +14,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "car_rt_refl_rules.h"
+#include "dlss_rr_rules.h"
 
 namespace rt = mcla::gpu::car_rt_refl;
 namespace cr = mcla::gpu::car_selfrefl;
@@ -36,6 +39,21 @@ void Check(bool ok, const std::string& what) {
 }
 
 bool Near(double a, double b, double tolerance = 1e-6) { return std::fabs(a - b) <= tolerance * std::max(1.0, std::fabs(b)); }
+
+bool Has(const std::string& text, const std::string& needle) { return text.find(needle) != std::string::npos; }
+size_t Count(const std::string& text, const std::string& needle) {
+  size_t n = 0;
+  for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + needle.size())) ++n;
+  return n;
+}
+std::string Read(const std::string& dir, const std::string& rel) {
+  std::ifstream in(dir + "/" + rel, std::ios::binary);
+  std::ostringstream out;
+  out << in.rdbuf();
+  const std::string text = out.str();
+  Check(!text.empty(), "the source " + rel + " can be read");
+  return text;
+}
 
 // A half float round trip (round to nearest even), what the image's alpha goes through on the GPU.
 float ThroughHalf(float value) {
@@ -250,7 +268,136 @@ EdgeStats MeasureEdge(const Image& img, float edge, float radius) {
 
 }  // namespace
 
-int main() {
+// the text of a function from its first line to the next function at column 0 (a rough but stable cut)
+std::string FunctionOf(const std::string& text, const std::string& head) {
+  const size_t at = text.find(head);
+  if (at == std::string::npos) return "";
+  const size_t end = text.find("\n}\n", at);
+  return text.substr(at, end == std::string::npos ? std::string::npos : end - at);
+}
+
+// RR-4b: the raw mode's rules, the hit pass as a C++ twin of the shader, and the sources (given the src/gpu folder).
+void RawChecks(const std::string& dir) {
+  namespace rr = mcla::gpu::rr;
+  // the filter's passes: the setting's, and none in a raw frame whatever the setting says
+  bool same_when_plain = true, none_when_raw = true;
+  for (int setting = -3; setting <= 9; ++setting) {
+    for (float tan_half : {0.0f, 0.0437f, 0.2f}) {
+      same_when_plain = same_when_plain && rt::DenoisePassesFor(false, setting, tan_half) == rt::DenoisePassCount(setting, tan_half);
+      none_when_raw = none_when_raw && rt::DenoisePassesFor(true, setting, tan_half) == 0;
+    }
+  }
+  Check(same_when_plain, "RR-4b: a frame that is not raw has the setting's passes exactly (the plan not RR: the filter is what it was)");
+  Check(none_when_raw, "RR-4b: a raw frame has no filter pass, whatever the setting");
+  // the hit distance of a texel
+  const float reach = 4.0f;
+  Check(rt::RawHitDistance(0.7f, 0.0f, reach) == 0.0f && rt::RawHitDistance(0.0f, 0.0f, reach) == 0.0f && rt::RawHitDistance(1.0f, 0.4f, reach) == 0.0f,
+        "RR-4b: a texel with no data in the aux image (w under a half) holds no car: nothing was traced, 0 (the surface itself)");
+  Check(rt::RawHitDistance(0.0f, 1.0f, reach) == rt::kRawMissDistance && rt::kRawMissDistance == 4096.0f && rt::RawHitDistance(0.0f, 1.0f, reach, 100.0f) == 100.0f,
+        "RR-4b: a car's texel whose cone hit no part is the environment's distance (4096), or what the caller says");
+  Check(rt::kRawMissDistance == rr::kRawMissDistance, "RR-4b: the same miss distance as the guide side's raw rule (and the screen-space reflections', 4096)");
+  bool survives = true, monotone = true, within_reach = true;
+  float previous = 0.0f;
+  for (int k = 1; k <= 255; ++k) {
+    const float code = float(k) / 255.0f;
+    const float d = rt::RawHitDistance(code, 1.0f, reach);
+    monotone = monotone && d > previous;
+    within_reach = within_reach && d > 0.0f && d <= reach + 1e-5f;
+    previous = d;
+  }
+  for (float d : {0.02f, 0.1f, 0.5f, 1.0f, 2.5f, 4.0f}) {
+    const float back = rt::RawHitDistance(rt::EncodeHitDistance(d, reach), 1.0f, reach);
+    survives = survives && std::fabs(back - d) <= 0.03f * d + 0.001f;
+  }
+  Check(survives && monotone && within_reach, "RR-4b: a hit's distance is the aux code decoded as the denoise decodes it (the code squared times the reach): within 3% of what the trace encoded, rising with the code, never past the reach");
+  Check(rt::kRawReleaseAfter == 120, "RR-4b: the hit image goes back after 120 frames of the pass running without the raw mode");
+  // the pass as a C++ twin of hlsl/car_rt_refl_hit_cs.hlsl: the pixel's texel is its coordinates over the divisor, clamped to the image
+  {
+    struct Aux { float x, w; };
+    const int tex_w = 4, tex_h = 3;
+    std::vector<Aux> aux(size_t(tex_w * tex_h), Aux{0.0f, 0.0f});
+    aux[size_t(1 * tex_w + 2)] = Aux{0.5f, 1.0f};   // texel (2, 1): a hit
+    aux[size_t(2 * tex_w + 3)] = Aux{0.0f, 1.0f};   // texel (3, 2): a car, no hit
+    const auto pass = [&](int px, int py, int divisor, int out_w, int out_h) {
+      if (px >= out_w || py >= out_h) return -1.0f;
+      const int tx = std::min(px / std::max(divisor, 1), tex_w - 1);
+      const int ty = std::min(py / std::max(divisor, 1), tex_h - 1);
+      const Aux a = aux[size_t(ty * tex_w + tx)];
+      return rt::RawHitDistance(a.x, a.w, reach);
+    };
+    Check(Near(pass(5, 3, 2, 8, 6), 0.25 * reach) && Near(pass(4, 2, 2, 8, 6), 0.25 * reach) && Near(pass(5, 2, 2, 8, 6), 0.25 * reach) && Near(pass(4, 3, 2, 8, 6), 0.25 * reach),
+          "RR-4b: at divisor 2 the 2x2 block of pixels over texel (2, 1) takes that texel's distance (0.5 squared times the reach)");
+    Check(pass(3, 3, 2, 8, 6) == 0.0f && pass(6, 3, 2, 8, 6) == 0.0f, "RR-4b: the neighbouring blocks, no car there, are 0");
+    Check(pass(7, 5, 2, 8, 6) == rt::kRawMissDistance && pass(9, 9, 1, 8, 6) == -1.0f, "RR-4b: the block over the car's texel with no hit is the miss distance; a thread past the image writes nothing");
+    Check(pass(11, 8, 2, 12, 9) == 0.0f || pass(11, 8, 2, 12, 9) == rt::kRawMissDistance, "RR-4b: a pixel past the last texel's block reads the last texel (clamped), never outside the image");
+    Check(Near(pass(2, 1, 1, 4, 3), 0.25 * reach) && pass(3, 2, 1, 4, 3) == rt::kRawMissDistance, "RR-4b: at divisor 1 the pixel is the texel");
+  }
+  if (dir.empty()) return;
+  const std::string rules = Read(dir, "car_rt_refl_rules.h"), header = Read(dir, "car_rt_refl.h"), cpp = Read(dir, "car_rt_refl.cpp"), hit = Read(dir, "hlsl/car_rt_refl_hit_cs.hlsl"),
+                    denoise = Read(dir, "hlsl/car_rt_refl_denoise_cs.hlsl"), cmake = Read(dir, "CMakeLists.txt"), shaders = Read(dir, "host_shaders.h"), self_cpp = Read(dir, "car_selfrefl.cpp"),
+                    self_h = Read(dir, "car_selfrefl.h"), scene = Read(dir, "scene.cpp"), settings = Read(dir, "../settings/generated/settings_gpu.h"), manifest = Read(dir, "../settings/generated/manifest.json"),
+                    meta = Read(dir, "../settings/generated/settings_meta.inc"), opp = Read(dir, "car_rt_opp_refl.cpp");
+  // the shader: what the C++ twin says
+  Check(Has(hit, "const int divisor = int(max(g_push.lens.y, 1.0));") && Has(hit, "const int2 texel = min(pixel / divisor, texels - 1);") && Has(hit, "if (aux.w > 0.5)") &&
+            Has(hit, "result = aux.x > 0.0 ? aux.x * aux.x * g_push.lens.x : g_push.lens.z;") && Has(hit, "g_output[pixel] = result;") && Has(hit, "[[vk::image_format(\"r16f\")]]") &&
+            Has(hit, "RWTexture2D<float> g_output : register(u0, space1);") && Has(hit, "ConstantBuffer<CarRtHitPush> g_push : register(b0, space2);"),
+        "RR-4b: the hit shader is the twin's arithmetic: the texel over the divisor clamped, 0 without a car, the squared code times the reach, the miss distance where no ray hit; R16F storage, the denoise's registers");
+  Check(Has(denoise, "const float hitDistance = tapAux.x * tapAux.x * reach;") && Has(hit, "aux.x * aux.x * g_push.lens.x"), "RR-4b: the hit shader decodes the aux's x as the denoise does");
+  Check(Has(hit, "uint4 slots;") && Has(hit, "float4 image;") && Has(hit, "float4 lens;") && Has(hit, "float4 reserved;") && Has(header, "static_assert(sizeof(HitPush) == 64);") &&
+            Has(header, "uint32_t slots[4];  // the aux image's slot") && Has(header, "float lens[4];      // the reflection ray's reach, the divisor, the distance a miss writes") && Has(denoise, "float4 tune;"),
+        "RR-4b: the hit pass's push block is four rows of 16 bytes (64, the denoise layout's push range) in the host's and the shader's order");
+  Check(Has(cpp, "hit_push.slots[0] = aux_.slot;") && Has(cpp, "hit_push.lens[2] = car_rt_refl::kRawMissDistance;") && Has(cpp, "hit_push.lens[1] = float(std::max<uint32_t>(info.divisor, 1));") &&
+            Has(cpp, "hit_push.image[2] = float(history.width);"),
+        "RR-4b: the host fills the push as the shader reads it");
+  // the build
+  Check(Has(cmake, "larecomp_gpu_host_shader(car_rt_refl_hit_cs cs_6_0)") && Has(shaders, "#include \"car_rt_refl_hit_cs.hlsl.dxil.h\"") && Has(shaders, "#include \"car_rt_refl_hit_cs.hlsl.spirv.h\"") &&
+            Has(shaders, "inline HostShaderBlob CarRtReflHitShader() {\n  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_hit_cs);\n}"),
+        "RR-4b: the hit shader is built for both backends (plain Shader Model 6.0) and handed out");
+  // the host: nothing raw unless asked
+  Check(Has(header, "bool raw = false;") && Has(header, "const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }"), "RR-4b: HistoryInfo::raw is false by default; the hit image is announced for the frame that wrote it only");
+  const size_t asked_at = cpp.find("  if (info.raw) {\n    raw_ever_asked_ = true;");
+  const size_t call_at = cpp.find("HitPipeline() != nullptr");
+  Check(asked_at != std::string::npos && call_at != std::string::npos && asked_at < call_at && Count(cpp, "raw = HitPipeline() != nullptr") == 1 && Count(cpp, "= HitPipeline()") == 1 && Count(cpp, "HitKey()") >= 3,
+        "RR-4b: the hit pass's pipeline is asked for in one place, inside `if (info.raw)`: a frame that is not asked never makes its shader or lists its pipeline with the host precache");
+  Check(Has(cpp, "car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half)") && !Has(cpp, "car_rt_refl::DenoisePassCount("),
+        "RR-4b: the filter's passes go through the rules' DenoisePassesFor (the setting's, none when raw)");
+  Check(Has(cpp, "raw = HitPipeline() != nullptr && info.render_width != 0 && info.render_height != 0 && EnsureHitImage(info.render_width, info.render_height);"),
+        "RR-4b: a frame is raw only with the pipeline made and the image made (else it is a plain frame with its filter)");
+  const size_t trace_at = cpp.find("list->dispatch((history.width + kGroup - 1) / kGroup, (history.height + kGroup - 1) / kGroup, 1);");
+  const size_t opp_at = cpp.find("opp_.Record(opponents);");
+  const size_t hit_at = cpp.find("  if (raw) {\n    // RR-4b: how far each reflection went");
+  const size_t closing_at = cpp.find("pass_timing_->Mark(list, \"after car rt refl\");");
+  const size_t hit_mark = cpp.find("pass_timing_->Mark(list, \"car rt hit\");");
+  Check(trace_at != std::string::npos && opp_at != std::string::npos && hit_at != std::string::npos && closing_at != std::string::npos && trace_at < opp_at && opp_at < hit_at && hit_at < hit_mark && hit_mark < closing_at &&
+            Has(cpp, "transition(Stage::COMPUTE, {{&aux_, Layout::SHADER_READ}, {&hit_, Layout::GENERAL}});") && Has(cpp, "transition(Stage::GRAPHICS_AND_COMPUTE, {{&hit_, Layout::SHADER_READ}});") &&
+            Has(cpp, "list->setPipeline(hit_pipeline_.get());") && Has(cpp, "hit_ready_ = true;"),
+        "RR-4b: in a raw frame the hit pass follows the trace and the opponents' trace (the aux image holds both) and comes before the closing mark; the aux is read, the hit image written, then readable");
+  Check(Has(FunctionOf(cpp, "void CarRtRefl::BeginFrame(bool reflection_on) {"), "hit_ready_ = false;") && Has(FunctionOf(cpp, "void CarRtRefl::ReleaseImage() {"), "passes_->ReleaseImage(hit_);") &&
+            Has(FunctionOf(cpp, "uint64_t CarRtRefl::HeldBytes() const {"), "&hit_"),
+        "RR-4b: the hit image is announced for the frame that wrote it only, released with the others and counted in the memory line");
+  Check(Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 3)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 0)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 1)") && Has(opp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 2)"),
+        "RR-4b: the hit pass's pipeline has a precache key of its own (variant 3; 0 the trace, 1 the denoise, 2 the opponents')");
+  Check(Has(cpp, "device_->CreateComputePipeline(plume::RenderComputePipelineDesc(denoise_layout_.get(), hit_shader_.get(), kGroup, kGroup, 1), kHitName)"), "RR-4b: the hit pass is a pipeline on the denoise's layout");
+  // the wiring
+  Check(Has(self_h, "void SetRawMode(bool raw) { raw_ = raw; }") && Has(self_h, "const HostImage* RawHitImage() const;") && Has(self_cpp, "info.raw = raw_;") &&
+            Has(FunctionOf(self_cpp, "void CarSelfRefl::BeginFrame() {"), "raw_ = false;") && Has(self_cpp, "const HostImage* CarSelfRefl::RawHitImage() const { return rt_ ? rt_->RawHitImage() : nullptr; }"),
+        "RR-4b: CarSelfRefl hands the raw flag to the ray traced pass (false at the frame's start) and the hit image back");
+  const size_t set_at = scene.find("car_refl_->SetRawMode(temporal_ && temporal_->RawModes().CarRefl());");
+  const size_t resolve_at = scene.find("car_refl_->OnResolve(record, summary, list);");
+  Check(set_at != std::string::npos && resolve_at != std::string::npos && set_at < resolve_at && Has(scene, "temporal_->NoteRrHit(ssr_ ? ssr_->RawHitImage() : nullptr, car_refl_ ? car_refl_->RawHitImage() : nullptr);"),
+        "RR-4b: Scene says whether the frame is raw before the trigger's history pass and hands both hit images to the guide pass afterwards");
+  bool in_all = true;
+  const size_t decl = settings.find(std::string("REX_") + "SETTING(i32, mcla_gpu_dlss_rr_car_refl, 1,");
+  const size_t end = decl == std::string::npos ? std::string::npos : settings.find(");\n", decl);
+  in_all = decl != std::string::npos && end != std::string::npos && Has(settings.substr(decl, end - decl), "rex::kDebugOnly, rex::Range{0, 1}") && !Has(settings.substr(decl, end - decl), "kRestart") &&
+           Has(settings, "inline auto& mcla_gpu_dlss_rr_car_refl = g_gpu.mcla_gpu_dlss_rr_car_refl;") && Has(manifest, "\"mcla_gpu_dlss_rr_car_refl\": {") && Has(meta, "{\"mcla_gpu_dlss_rr_car_refl\", \"MCLA/GPU\"},");
+  Check(in_all, "RR-4b: the switch mcla_gpu_dlss_rr_car_refl is debug-only, live, 0 or 1, on by default, in the settings header, its alias, the manifest and the meta list");
+  (void)rules;
+}
+
+int main(int argc, char** argv) {
+  const std::string src_dir = argc > 1 && argv[1][0] != '-' ? argv[1] : std::string();
+  RawChecks(src_dir);
   // the setting
   Check(rt::SettingOf("auto") == rt::Setting::kAuto && rt::SettingOf("off") == rt::Setting::kOff && rt::SettingOf("garbage") == rt::Setting::kAuto &&
             rt::SettingOf("") == rt::Setting::kAuto,

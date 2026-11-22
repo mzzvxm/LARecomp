@@ -10,6 +10,12 @@
 //               shader's), up to 64 steps, 0.92 (about 12 frames). The size is the same for both: the images are HALF the picture's (11.9 MiB at 1080p, 47.5 MiB at 4K), the
 //               resolve into the colour is at the picture's size. The temporal part (clip, edge rule, vehicle rows) is part of both levels; the debug settings below tune it.
 //
+// RR-4a, THE RAW MODE (dlss_rr_rules.h RawModes, ssr_rules.h DecideRaw; mcla_gpu_dlss_rr_ssr is the A/B). While DLSS Ray Reconstruction takes the frame it is the denoiser of this effect's noise: the
+//   trace's one ray a pixel goes straight into the colour (hlsl/ssr_apply_ps.hlsl compiled with SSR_RAW reads the trace itself), the accumulation does not run, and a pass after the resolve
+//   (hlsl/ssr_hit_ps.hlsl) writes how far each ray went into an R16_FLOAT image of the picture's size, which the guide pass reads as the reflection's hit distance (RawHitImage; rr_guides.h Inputs::hit[0]).
+//   Asked for by the caller at the trigger (OnTrigger's `raw_requested`: TemporalSystem::RawModes()); with the plan not RR nothing of it exists in the frame: the same passes, shaders and pipelines
+//   listed as before. A debug view, the stub class, a multisampled colour or pipelines still being made keep the frame plain (logged when it changes).
+//
 // WHERE THINGS COME FROM (all of it shared, nothing is made twice):
 //   ScreenShared (screen_shared.h)  hiz_min (the min chain of the AO's linear depth: the walk), colour_post with its mip chain (the radiance of a hit: the effect's Want of it also turns the mips on),
 //                                   the camera. The Want is (hiz_min, colour_post); the owner's `history` product (the last frame's colour_post) is not used: the accumulation keeps its own images,
@@ -114,7 +120,10 @@ class ScreenReflections {
   // A prepared draw of the main view, before the trigger: its vertex constants' wetness (VS c43.x, gReflectionParams.x: 0.095 dry, 1.17 in rain) is a vote for the road's.
   void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks);
   // The trigger's colour capture was just recorded (ScreenShared::CapturePost returned true): runs the passes. True when passes were recorded (the caller's list state is gone). Once a frame.
-  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
+  // `raw_requested` (RR-4a): DLSS Ray Reconstruction takes this frame and this effect's switch is on (TemporalSystem::RawModes().Ssr()); the frame is raw only if the rules allow it (DecideRaw).
+  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false);
+  // RR-4a: this frame's hit distance image (R16_FLOAT, the picture's size, readable) when the frame ran RAW and wrote it, else null. Valid until the next frame's trigger.
+  const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
   // A guest present: the frame boundary (the history's ping-pong, the idle count).
   void OnPresent();
 
@@ -123,9 +132,10 @@ class ScreenReflections {
 
  private:
   // The pixel shaders, in the order host_shaders.h ScreenReflectionsPixelShader numbers them.
-  enum Shader : uint32_t { kShaderTrace, kShaderTraceMs, kShaderTemporal, kShaderApply, kShaderApplyMs, kShaderCount };
-  // The pipelines: trace, temporal, then the apply pass for each host sample count (1, 2, 4, 8) and for the add and the view blend.
-  enum Variant : uint32_t { kVTrace, kVTraceMs, kVTemporal, kVApplyBase, kVariantCount = kVApplyBase + 8 };
+  enum Shader : uint32_t { kShaderTrace, kShaderTraceMs, kShaderTemporal, kShaderApply, kShaderApplyMs, kShaderApplyRaw, kShaderHit, kShaderCount };
+  // The pipelines: trace, temporal, then the apply pass for each host sample count (1, 2, 4, 8) and for the add and the view blend, then (RR-4a, made only for a frame that is asked to be raw) the apply that
+  // reads the trace and the hit distance pass.
+  enum Variant : uint32_t { kVTrace, kVTraceMs, kVTemporal, kVApplyBase, kVApplyRaw = kVApplyBase + 8, kVHit, kVariantCount };
 
   const char* VariantName(uint32_t variant) const;
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
@@ -140,6 +150,8 @@ class ScreenReflections {
   // The same sequence as HostPasses::DrawInto with this layout (128 bytes of push constants), into `image` at its own size.
   void DrawPass(plume::RenderCommandList* list, HostImage& image, const plume::RenderPipeline* pipeline, const ssr::Push& push);
   bool EnsureImages(uint32_t width, uint32_t height);
+  // RR-4a: the images of a raw frame: the trace at the SSR size and the hit distance image at the picture's size (the accumulation's two are not needed).
+  bool EnsureRawImages(uint32_t width, uint32_t height, uint32_t render_width, uint32_t render_height);
   void ReleaseImages();
 
   Device* device_ = nullptr;
@@ -171,9 +183,17 @@ class ScreenReflections {
   float fallback_setting_ = 1.0f;     // GB-I2: mcla_gpu_ssr_fallback
   bool vehicle_rows_ = true;          // GB-I2: mcla_gpu_ssr_vehicle_rows
 
-  // the images: the trace, and the accumulated image twice (this frame's output and the last frame's)
+  // the images: the trace, and the accumulated image twice (this frame's output and the last frame's); RR-4a: the hit distance image of a raw frame
   HostImage trace_;
   std::array<HostImage, 2> accum_;
+  HostImage hit_;                     // R16_FLOAT, the picture's size (RawHitImage)
+  bool hit_ready_ = false;            // this frame ran raw and wrote hit_
+  uint32_t raw_streak_ = 0;           // raw frames in a row (the accumulation's images go back after ssr::kRawReleaseAfter)
+  uint32_t plain_streak_ = 0;         // plain frames in a row that ran (the hit image goes back after the same)
+  uint64_t raw_frames_ = 0;
+  uint32_t raw_why_logged_ = ~0u;     // the raw decision last logged (a log line when it changes once the mode was asked for)
+  bool raw_ever_asked_ = false;
+  bool raw_first_logged_ = false;
   uint32_t write_ = 0;                // the accum_ image this frame writes (the other one is the history)
   uint32_t size_[2] = {0, 0};
   uint32_t idle_frames_ = 0;          // frames since the effect last ran (the images go back after a while)

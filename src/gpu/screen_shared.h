@@ -240,6 +240,8 @@ class ScreenShared {
   screen::CaptureKey last_capture_;  // the last frame's capture, for the history's rule
   screen::CaptureKey this_capture_;
   bool post_images_failed_logged_ = false;
+  uint32_t colour_missing_run_ = 0;       // trigger frames in a row whose depth had no colour target at its samples (screen_rules.h JudgeColourPartner)
+  bool colour_missing_noted_ = false;     // the one note about such a frame was logged
   bool post_first_logged_ = false;
   uint64_t post_captures_ = 0;
   uint32_t post_logged_size_[2] = {};

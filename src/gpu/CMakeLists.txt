@@ -32,6 +32,7 @@ add_library(larecomp_gpu OBJECT
     constants.cpp
     cut_request.cpp
     cycles.cpp
+    denoiser_setting.cpp
     descriptors.cpp
     device.cpp
     draw_census.cpp
@@ -84,6 +85,7 @@ add_library(larecomp_gpu OBJECT
     resolve_memory.cpp
     rt_bench.cpp
     rt_tier.cpp
+    rr_guides.cpp
     samplers.cpp
     scene.cpp
     screen_shared.cpp
@@ -508,6 +510,16 @@ target_link_libraries(larecomp_upscaler_load_policy_test PRIVATE Threads::Thread
 # GPU class, a level to a scale, the step down when the video memory is short, the class that follows the render scale, the declared sizes) have a check that
 # needs no renderer: cmake --build <dir> --target larecomp_side_view_scales_test, then run src/gpu/larecomp_side_view_scales_test (exit 0 = passed).
 add_executable(larecomp_side_view_scales_test EXCLUDE_FROM_ALL side_view_scales_test.cpp)
+# DLSS Ray Reconstruction's pure rules (dlss_rr_rules.h: the tag plan, the options, the choice of denoiser, the frame gate) have a check that needs no renderer
+# and no Streamline: cmake --build <dir> --target larecomp_dlss_rr_rules_test, then run src/gpu/larecomp_dlss_rr_rules_test (exit 0 = passed).
+add_executable(larecomp_dlss_rr_rules_test EXCLUDE_FROM_ALL dlss_rr_rules_test.cpp)
+# DLSS Ray Reconstruction's guide images (rr_guides_rules.h: the images, the views, who runs the pass, the push blocks, and the C++ twin of hlsl/rr_guides_common.hlsli, which the test also
+# compiles as C++): cmake --build <dir> --target larecomp_rr_guides_test, then run src/gpu/larecomp_rr_guides_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_rr_guides_test EXCLUDE_FROM_ALL rr_guides_test.cpp)
+# The DENOISER setting (denoiser_setting.h, RR-5: the words, the gate that greys the row and what it says, AUTO's label, the consumers' rule, the launcher's text, and the text of the wiring: the row in
+# upscaling_menu.cpp, the plan in temporal.cpp, the plugin request in temporal_dlss.cpp, the three settings files, the CMake lines): cmake --build <dir> --target larecomp_denoiser_setting_test, then run
+# src/gpu/larecomp_denoiser_setting_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_denoiser_setting_test EXCLUDE_FROM_ALL denoiser_setting_test.cpp)
 # The rule that gives another pass's use of a side view's EDRAM identity (the night shadow's, which binds the car
 # reflections' depth through a surface of another size) a target of its own (side_views.h):
 #   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.
@@ -625,6 +637,11 @@ if(LARECOMP_STREAMLINE_KIT)
     # temporal_dlss.cpp; dlss_frame_generation.cpp below is Streamline-free and always built).
     if(LARECOMP_STREAMLINE_HAS_FRAMEGEN)
         target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS_G=1)
+    endif()
+    # DLSS Ray Reconstruction (perf/DLSS-RR.md): the plugin's header and its two files (the top-level CMake checked them). Without them temporal_dlss.cpp
+    # builds as before and the debug setting mcla_gpu_dlss_rr says the build has no RR.
+    if(LARECOMP_STREAMLINE_HAS_RR)
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS_RR=1)
     endif()
 endif()
 # Plume's creation hooks for Streamline on Vulkan and the usage flags it keeps of an image
@@ -879,6 +896,15 @@ larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_
 larecomp_gpu_host_shader(ssr_temporal_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=1)
+# RR-4a: the same resolve for a frame DLSS Ray Reconstruction takes (it reads the trace itself: the accumulation does not run), and the pass that writes the reflections' hit distance guide (an R16_FLOAT image
+# of the picture's size). Plain planes only: a raw frame has one host sample.
+larecomp_gpu_host_shader(ssr_apply_raw_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=0 SSR_RAW=1)
+larecomp_gpu_host_shader(ssr_hit_ps ps_6_0 DEFINES SSR_MS=0)
+# DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): the five guide images from the G-buffer's planes in one compute pass at the anchor (over planes with one sample and over the host's MSAA
+# level), and the debug view that draws one of them over the upscaler's output. Plain Shader Model 6.0 compute for both backends.
+larecomp_gpu_host_shader(rr_guides_cs cs_6_0 DEFINES RR_MS=0)
+larecomp_gpu_host_shader(rr_guides_ms_cs cs_6_0 SOURCE rr_guides_cs DEFINES RR_MS=1)
+larecomp_gpu_host_shader(rr_guides_view_cs cs_6_0)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's
@@ -972,6 +998,9 @@ larecomp_gpu_host_shader_rt(car_rt_refl_opp_cs cs_6_5 SOURCE car_rt_refl_cs DEFI
 # Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays), built for
 # both backends like any host shader (the pass runs only where the trace does).
 larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)
+# RR-4b: the hit distance pass of the raw mode (a frame DLSS Ray Reconstruction takes: the denoise above does not run): one compute pass writing an R16_FLOAT image of the picture's size from the aux
+# image, on the denoise's layout.
+larecomp_gpu_host_shader(car_rt_refl_hit_cs cs_6_0)
 # The ray traced occlusion and sun term around the player's car (car_rt_ao.h): one compute pass inside the occlusion's own passes with inline ray queries
 # against the car's structures (car_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan, through the same function as the others (larecomp_gpu_host_shader_rt).
 larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)

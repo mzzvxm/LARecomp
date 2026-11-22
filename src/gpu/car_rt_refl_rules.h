@@ -624,6 +624,22 @@ inline float DecodeHitDistance(float code, float reach) { return code * code * r
 inline float EncodeInstance(uint32_t instance) { return float(std::min<uint32_t>(instance, 255u)) / 255.0f; }
 inline int InstanceOfCode(float code) { return int(std::floor(code * 255.0f + 0.5f)); }
 
+// RR-4b, THE RAW MODE (dlss_rr_rules.h RawModes; mcla_gpu_dlss_rr_car_refl is the A/B): in a frame DLSS Ray Reconstruction takes it is the denoiser, so the filter above does not run (the paint
+// reads the trace's raw image: the cone's grain goes to Ray Reconstruction with the rest of the picture's noise) and a pass (hlsl/car_rt_refl_hit_cs.hlsl) writes how far each reflection went into
+// an R16_FLOAT image of the picture's size, which the guide pass reads as the hit distance (rr_guides.h Inputs::hit[1]).
+inline int DenoisePassesFor(bool raw, int setting, float tan_half) { return raw ? 0 : DenoisePassCount(setting, tan_half); }
+// What the pass writes for a texel of the aux image: 0 where the texel holds no car (the trace found none: nothing was traced), the cone's mean hit distance in metres where some ray hit, and `miss`
+// where the car's cone found no part (the paint shows the environment: far). The same number as the screen-space reflections' miss (ssr_rules.h, 4096).
+inline constexpr float kRawMissDistance = 4096.0f;
+// The hit distance image goes back after this many frames of the pass running without the raw mode.
+inline constexpr uint32_t kRawReleaseAfter = 120;
+inline float RawHitDistance(float aux_x, float aux_w, float reach, float miss = kRawMissDistance) {
+  if (!(aux_w > 0.5f)) {
+    return 0.0f;
+  }
+  return aux_x > 0.0f ? DecodeHitDistance(aux_x, reach) : miss;
+}
+
 // The width of the cone at its hit, in texels of the surface at the texel's distance (`texel_m` metres): the penumbra of a part's edge.
 inline float ConeFootprint(float hit_distance, float tan_half, float texel_m) {
   return texel_m > 0.0f ? 2.0f * hit_distance * tan_half / texel_m : 0.0f;

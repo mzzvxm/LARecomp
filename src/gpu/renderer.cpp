@@ -198,6 +198,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     gbuffer_.Initialize(passes_, edram_, pass_timing_);  // and the G-buffer's sidecar (gbuffer.h): made on the first draw that carries it
     screen_.Initialize(passes_, edram_, pass_timing_);  // and the shared screen products (screen_shared.h): the AO's depth chain published, the Hi-Z, made only while wanted
     ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_);  // and the screen-space reflections (ssr.h): the layout and the shaders, the pipelines only when the setting is on
+    rr_guides_.Initialize(device_, frames_, heap_, passes_, pass_timing_);  // and DLSS Ray Reconstruction's guide pass (rr_guides.h): the layouts and shaders; the pipelines only when it is first wanted
+    rr_guides_.SetGBuffer(&gbuffer_);
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);
@@ -321,6 +323,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
     temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_,
                          edram_);
+    temporal_.SetRrGuidePass(&rr_guides_);  // the upscale runs the guide pass where Ray Reconstruction (or a guide view) wants it
     // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.
     fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_,
                    &resize_requested_);
@@ -356,6 +359,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     fg_.Shutdown();
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
+    rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
     local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
     ao_.Shutdown();
@@ -543,6 +547,7 @@ void Renderer::Shutdown() {
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   clock.Mark("DLSS frame generation and the upscaler (Streamline)");
+  rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
   local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
   ao_.Shutdown();

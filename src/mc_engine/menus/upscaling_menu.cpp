@@ -15,6 +15,7 @@
 #include "mc_engine/display/display_mode.h"
 
 #if defined(LARECOMP_HAS_GPU)
+#include "gpu/denoiser_setting.h"
 #include "gpu/gpu.h"
 #endif
 
@@ -520,6 +521,44 @@ void SharpnessSet(int i, CvarWriter write) {
         write(list.cvar, list.entries[size_t(i)].text.c_str());
 }
 
+// ── DENOISER ───────────────────────────────────────────────────────────────────────────────────
+//
+// Who cleans the grain out of the noisy effects: NVIDIA's DLSS Ray Reconstruction (shown "DLSS RR": the page is 41 characters wide at most, so NVIDIA's name is written out in the launcher, the wiki and the
+// log) or our own denoisers (mcla_gpu_denoiser: auto, rr, ours; live; gpu/denoiser_setting.h has every rule and the words, gpu/dlss_rr_rules.h the choice itself). AUTO's label says what it comes to now
+// ("AUTO (DLSS RR)" where an effect that RR cleans better than ours is on and RR can run, else "AUTO (OURS)"). The row is grey, with its reason after the label, where RR cannot be used (NVIDIA's guidelines:
+// disable it where the hardware or the driver cannot run it, where DLSS Super Resolution is not on and where there is no ray traced content): " (NO RTX GPU)", " (N/A)", " (NEEDS DLSS)", " (SETUP)",
+// " (FAILED)", " (NOT NEEDED)"; and it says " (RESTART)" while the row has left OURS in a game whose Streamline was started without the plugin (the "Restart now?" prompt reads the word) and
+// " (APPLYING)" while RR's context is being made. It is grey (NOT NEEDED) while no effect that has a raw mode is on (RR-INT: the screen-space reflections, the cars' ray traced reflections): nothing is shown as unavailable that a restart or a setting would bring.
+// Width: "DENOISER" is 8, "DENOISER (NO RTX GPU)" 21, the widest label of this page without XENIA's; the values are "AUTO (DLSS RR)" 14, "DLSS RR" 7, "OURS" 4, under the page's widest value (18).
+const char* const kDenoiserVals[] = {"auto", "rr", "ours"};
+const char* const kDenoiserNames[] = {"AUTO", "DLSS RR", "OURS"};
+
+mcla::gpu::denoiser::MenuInputs DenoiserInputs() {
+    namespace dn = mcla::gpu::denoiser;
+    const UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
+    const dn::Snapshot snapshot = dn::Current();
+    dn::MenuInputs m;
+    m.dlss_listed = DlssListed(a);
+    m.dlss_chosen = Chosen() == Upscaler::kDlss;
+    m.dlss_waits_for_restart = DlssWaitsForRestart();
+    m.dlss_needs_setup = a.dlss_needs_setup && !a.dlss;
+    m.facts = snapshot.facts;
+    m.debug = snapshot.valid ? snapshot.debug : mcla::gpu::rr::DebugSwitch::kRow;
+    m.setting = dn::Parse(Cvar("mcla_gpu_denoiser"));
+    m.consumers_on = dn::ConsumersOn();
+    m.context_making = snapshot.context_making;
+    return m;
+}
+mcla::gpu::denoiser::Gate DenoiserGate() { return mcla::gpu::denoiser::GateOf(DenoiserInputs()); }
+
+std::string DenoiserValueLabel(int i) {
+    namespace dn = mcla::gpu::denoiser;
+    if (i == 0) return dn::AutoLabel(DenoiserGate(), dn::ConsumersOn());
+    return i == 1 ? dn::kMenuNames[1] : dn::kMenuNames[2];
+}
+bool DenoiserEnabled() { return mcla::gpu::denoiser::RowEnabled(DenoiserGate()); }
+const char* DenoiserSuffix() { return mcla::gpu::denoiser::RowSuffix(DenoiserGate()); }
+
 // ── The rows ───────────────────────────────────────────────────────────────────────────────────
 //
 // Width: these rows are on UPSCALING, which stays within 41 characters of its widest label plus its
@@ -536,6 +575,8 @@ void SharpnessSet(int i, CvarWriter write) {
 //               (300%)" 14.
 //   SHARPNESS   label 9, with " (FSR ONLY)" 20. Values "OFF", "0.2" to "1", an entry of its own such as
 //               "0.85" 4.
+//   DENOISER    label 8, with " (NO RTX GPU)" 21, " (NEEDS DLSS)" 21, " (NOT NEEDED)" 20, " (APPLYING)" 19, " (RESTART)" 18, " (SETUP)" 16, " (FAILED)" 17,
+//               " (N/A)" 14. Values "AUTO (DLSS RR)" 14, "AUTO (OURS)" 11, "DLSS RR" 7, "OURS" 4.
 // These rows' widest label comes to 22 (RENDER SCALE (RESTART), XENIA) and the widest value to 17. With frame
 // generation's rows the page's widest value is 18 ("FSR 3.1 (APPLYING)", frame_generation_menu.h): 40 of the
 // page's 41.
@@ -568,6 +609,9 @@ constexpr RowDynamics kSharpnessDynamics = {.str_label = SharpnessValueLabel,
                                             .value_count = SharpnessCount,
                                             .value_index = SharpnessIndex,
                                             .set_value = SharpnessSet};
+constexpr RowDynamics kDenoiserDynamics = {.str_label = DenoiserValueLabel,
+                                           .enabled = DenoiserEnabled,
+                                           .suffix = DenoiserSuffix};
 
 // The rows never change; their lists and labels follow the PC and the settings every time a row is
 // drawn. The mode row and SHARPNESS write several cvars, depending on the choice, so they name none
@@ -583,6 +627,10 @@ constexpr ItemDef kRows[] = {
     NativeOnly(WithDynamics(
         Str("PM_RxGpuUpscSharp", nullptr, "SHARPNESS: ", nullptr, nullptr, 0),
         &kSharpnessDynamics)),
+    // After the upscaler's rows: RR is the DLSS upscaler's companion (it does the upscale where it takes a frame). Written by one cvar, so the "Restart now?" prompt finds it.
+    NativeOnly(WithDynamics(
+        Str("PM_RxGpuDenoiser", "mcla_gpu_denoiser", "DENOISER: ", kDenoiserVals, kDenoiserNames, 3),
+        &kDenoiserDynamics)),
 };
 
 // ── The AA rows (the page width is counted above) ──────────────────────────────────────────────

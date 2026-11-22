@@ -572,4 +572,63 @@ constexpr float VehicleHistoryScale(bool vehicle_hit, bool has_row) {
   return !vehicle_hit ? 1.0f : (has_row ? kVehicleRowWeight : kVehicleNoRowWeight);
 }
 
+// ---------------------------------------------------------------------------
+// RR-4a: the raw mode (DLSS Ray Reconstruction takes the frame; perf/DLSS-RR.md, dlss_rr_rules.h RawModes)
+// ---------------------------------------------------------------------------
+// While Ray Reconstruction takes the frame it is the denoiser, so the reflections hand it their noise as it is: the trace's one ray a pixel (two at ultra) goes into the colour at once (a
+// resolve that reads the TRACE: hlsl/ssr_apply_ps.hlsl compiled with SSR_RAW), the accumulation over frames does not run (no history is read or kept: the clip, the virtual image's reprojection and
+// the vehicle rows are the accumulation's, and Ray Reconstruction does its own), and a pass after the resolve (hlsl/ssr_hit_ps.hlsl) writes how far each ray went into an R16_FLOAT image of the
+// picture's size, which the guide pass reads as the reflection's hit distance (rr_guides.h Inputs::hit[0]). With the plan not RR, or the effect's switch (mcla_gpu_dlss_rr_ssr) at 0, none of this
+// exists in the frame: the three passes, their shaders and the pipelines listed are what they were.
+//   what the frame rules out   a debug view of the effect (the views are the plain passes'), the stub class (no RT3: the planes the guide pass needs are not all there anyway), a multisampled colour
+//                              (the raw resolve is the single sample one: Ray Reconstruction holds the host MSAA at 1 except with the debug lever mcla_gpu_msaa_with_upscaler), and pipelines that are
+//                              still being made (a frame never waits: it runs as it always did, and the next one tries again)
+enum class RawWhy : uint8_t {
+  kRaw,           // the raw passes run
+  kNotAsked,      // the plan or the switch did not ask (dlss_rr_rules.h RawModes): the plain passes, as always
+  kDebugView,     // mcla_gpu_ssr_view is on
+  kStub,          // the frame has no RT3
+  kMultisampled,  // the colour target has more than one host sample
+  kPipelines,     // the raw resolve or the hit pass is still being made (or could not be)
+  kImages,        // the hit distance image could not be made (ssr.cpp: decided after the rules, never by DecideRaw)
+  kCount,
+};
+constexpr const char* RawWhyName(RawWhy why) {
+  switch (why) {
+    case RawWhy::kRaw: return "raw";
+    case RawWhy::kNotAsked: return "not asked (Ray Reconstruction does not take this frame, or the effect's switch is 0)";
+    case RawWhy::kDebugView: return "a debug view of the effect is on";
+    case RawWhy::kStub: return "the frame has no material plane (the stub class stands in)";
+    case RawWhy::kMultisampled: return "the colour target is multisampled";
+    case RawWhy::kPipelines: return "the raw passes' pipelines are not made yet";
+    case RawWhy::kImages: return "the hit distance image could not be made";
+    case RawWhy::kCount: break;
+  }
+  return "?";
+}
+struct RawFacts {
+  bool asked = false;            // TemporalSystem::RawModes() says raw for this effect
+  bool debug_view = false;
+  bool stub = false;             // Decision::stub
+  uint32_t host_samples = 1;     // the main colour target's
+  bool pipelines_ready = false;  // the raw resolve's and the hit pass's pipelines are made
+};
+// Whether the frame itself would take the raw passes (everything but the pipelines): ssr.cpp lists the raw pipelines with the host precache only when this is true, so a frame that is not asked
+// never causes one to be made.
+constexpr bool RawPossible(const RawFacts& f) { return f.asked && !f.debug_view && !f.stub && f.host_samples == 1; }
+constexpr RawWhy DecideRaw(const RawFacts& f) {
+  if (!f.asked) return RawWhy::kNotAsked;
+  if (f.debug_view) return RawWhy::kDebugView;
+  if (f.stub) return RawWhy::kStub;
+  if (f.host_samples != 1) return RawWhy::kMultisampled;
+  if (!f.pipelines_ready) return RawWhy::kPipelines;
+  return RawWhy::kRaw;
+}
+// The hit distance image: R16_FLOAT at the PICTURE's size (the guide pass reads it pixel for pixel). A raw frame holds the trace and this, the accumulation's two images are not needed (they go back
+// after kRawReleaseAfter raw frames in a row); a plain frame needs no hit image (it goes back after the same count of plain frames).
+inline constexpr uint32_t kBytesR16f = 2;
+constexpr uint64_t HitImageBytes(uint32_t render_w, uint32_t render_h) { return uint64_t(render_w) * render_h * kBytesR16f; }
+constexpr uint64_t RawHeldBytes(uint32_t w, uint32_t h, uint32_t render_w, uint32_t render_h) { return ImageBytes(w, h) + HitImageBytes(render_w, render_h); }
+inline constexpr uint32_t kRawReleaseAfter = 120;
+
 }  // namespace mcla::gpu::ssr

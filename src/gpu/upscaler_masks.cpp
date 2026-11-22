@@ -10,6 +10,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
+#include "backend.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
 #include "pipelines.h"
@@ -21,7 +22,11 @@ namespace {
 
 constexpr const char* kPrefix = "[gpu] upscaler masks:";
 constexpr plume::RenderFormat kCoverageFormat = plume::RenderFormat::R8G8B8A8_UNORM;
-constexpr plume::RenderFormat kMaskFormat = plume::RenderFormat::R8_UNORM;
+
+// The format of both masks, by the back end (upscaler_mask_plan.h Storage: Vulkan's Streamline has no format of its own for R8_UNORM). Fixed for the process, so the pipeline and the images agree.
+plume::RenderFormat MaskFormat() {
+  return upscaler_mask_plan::StorageFor(ActiveBackend() == Backend::kVulkan) == upscaler_mask_plan::Storage::kR16Float ? plume::RenderFormat::R16_FLOAT : plume::RenderFormat::R8_UNORM;
+}
 
 using Kind = UpscalerMasks::Kind;
 
@@ -368,7 +373,7 @@ bool UpscalerMasks::Prepare(bool multisampled) {
   const HostShaderBlob blob = multisampled ? UpscalerMasksMsPixelShader() : UpscalerMasksPixelShader();
   shader = passes_->CreateShader(blob.data, blob.size, blob.name);
   if (shader) {
-    pipeline = passes_->CreatePipeline(*shader, kMaskFormat,
+    pipeline = passes_->CreatePipeline(*shader, MaskFormat(),
                                        multisampled ? "upscaler mask (multisampled)" : "upscaler mask");
   }
   if (!pipeline) {
@@ -416,7 +421,7 @@ bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_widt
     // its samples' masks when it has several. The all-ones diagnostic reads nothing.
     const uint32_t samples = ones ? 1u : std::max<uint32_t>(l.coverage.samples, 1u);
     if (!Prepare(samples > 1) ||
-        !passes_->EnsureImage(l.mask, render_width, render_height, kMaskFormat, name)) {
+        !passes_->EnsureImage(l.mask, render_width, render_height, MaskFormat(), name)) {
       ++stats_.image_failures;
       continue;
     }
