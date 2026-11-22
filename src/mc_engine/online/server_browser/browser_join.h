@@ -52,8 +52,10 @@ void CancelJoin();
 void ShowJoinFailure(const std::string& text);
 JoinStatus GetJoinStatus();
 
-// The local player is in the city: the online menus can open. Their fill
-// reads the player's car (sub_822A5680) and crashes on the boot screens.
+// The local player is in the city with a car: the online menus can open. Their fill
+// reads the player's car (sub_822A5680) and crashes on the boot screens, and the net
+// menu's own camera probe (setMenuCam) reads the car entity, which the city behind the
+// title screen does not have yet: a join from there crashed the game (browser_join_core.h).
 // Updated by the guest tick; any thread.
 bool WorldReady();
 

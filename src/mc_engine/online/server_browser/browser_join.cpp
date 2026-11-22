@@ -19,6 +19,21 @@
 #include "larecomp_guest.h"
 #include "mc_engine/menus/pause_menu.h"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#else
+#include <sys/uio.h>
+#include <unistd.h>
+
+#include <cerrno>
+#endif
+
 namespace larecomp::browser {
 namespace {
 
@@ -58,6 +73,7 @@ constexpr auto kWorldWait = std::chrono::seconds(120);
 JoinPhase g_phase = JoinPhase::kIdle;
 Clock::time_point g_phase_deadline{};
 int g_start_step = 0;
+bool g_world_wait_logged = false;  // the "waiting for the player's car" line was written for this join
 PauseGate g_pause_gate;  // what the join does about an open pause menu (browser_join_core.h)
 
 rex::kernel::GuestAddressSpace* Mem() {
@@ -76,6 +92,52 @@ bool GamePaused() {
     const uint32_t p = GuestRead32(mem, kPauseStatePtr);
     if (!IsGuestPtr(p)) return false;
     return *mem->TranslateVirtual<const uint8_t*>(p + 4) != 0 && *mem->TranslateVirtual<const uint8_t*>(p + 10) == 0;
+}
+
+// Whether `len` bytes at the host address `p` can be read (committed, not a guard page). A guest word that was never filled in
+// (the player's car before it exists) is read as a pointer by the game; asking first keeps the probe below from faulting the game
+// on a pointer that is not backed.
+bool HostReadable(const uint8_t* p, size_t len) {
+    if (!p || len == 0) return false;
+#if defined(_WIN32)
+    constexpr DWORD kRead = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                            PAGE_EXECUTE_WRITECOPY;
+    size_t done = 0;
+    while (done < len) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(p + done, &mbi, sizeof(mbi))) return false;
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD) != 0 || (mbi.Protect & kRead) == 0) return false;
+        const uint8_t* end = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+        if (end <= p + done) return false;
+        done = size_t(end - p);
+    }
+    return true;
+#else
+    // No VirtualQuery: the kernel reads one byte of every page of this very process, and says EFAULT for one that is reserved
+    // and not committed (cars.cpp Mapped does the same).
+    constexpr uintptr_t kPage = 0x1000;
+    const uintptr_t first = reinterpret_cast<uintptr_t>(p);
+    const uintptr_t end = first + len;
+    for (uintptr_t page = first & ~(kPage - 1); page < end; page += kPage) {
+        const uintptr_t at = page < first ? first : page;
+        uint8_t probe = 0;
+        iovec local{&probe, 1};
+        iovec remote{reinterpret_cast<void*>(at), 1};
+        const ssize_t n = process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+        if (n < 0 && (errno == ENOSYS || errno == EPERM)) return true;  // not allowed here: the caller's range check is all there is
+        if (n != 1) return false;
+    }
+    return true;
+#endif
+}
+
+// One big-endian guest word, or false when its memory is not readable.
+bool ReadGuestWord(uint32_t ea, uint32_t* out) {
+    auto* mem = Mem();
+    if (!mem || !PlausibleGuestPtr(ea)) return false;
+    if (!HostReadable(mem->TranslateVirtual<const uint8_t*>(ea), 4)) return false;
+    *out = GuestRead32(mem, ea);
+    return true;
 }
 
 template <typename... Args>
@@ -207,8 +269,11 @@ JoinStatus GetJoinStatus() {
     return g_status;
 }
 
-// Mirrors what the online menus' fill dereferences (sub_822A5680):
-// player -> +880 -> +16 -> +48, an object with a vtable.
+// The city is up and the player is in it: what the online menus' fill dereferences (sub_822A5680: player -> +880 -> +16 -> +48, an
+// object with a vtable) AND the player's car, which the menu's setMenuCam probe reads (sub_82654738: racer+48 -> entity, entity+28 ->
+// matrix, no null check). The front-end city behind the title screen has the first and not the second: a goto into the net menu
+// from there was the crash of ojnew-cli (browser_join_core.h, "the player's car"). So this is false until the player has pressed
+// Start and the car is on the road.
 bool ProbeWorld() {
     auto* mem = Mem();
     if (!mem) return false;
@@ -221,7 +286,8 @@ bool ProbeWorld() {
     const uint32_t b = GuestRead32(mem, a + 16);
     if (!IsGuestPtr(b)) return false;
     const uint32_t c = GuestRead32(mem, b + 48);
-    return IsGuestPtr(c) && IsGuestPtr(GuestRead32(mem, c));
+    if (!IsGuestPtr(c) || !IsGuestPtr(GuestRead32(mem, c))) return false;
+    return PlayerCarReady(player, ReadGuestWord);
 }
 
 bool WorldReady() { return g_world_ready.load(std::memory_order_relaxed); }
@@ -249,6 +315,7 @@ void TickServerBrowserJoin() {
     if (fresh) {
         g_target_vip.store(0);
         g_start_step = 0;
+        g_world_wait_logged = false;
         g_pause_gate.Reset();
         if (!req.host_vip && !req.any_room) {
             g_phase = JoinPhase::kIdle;
@@ -278,8 +345,13 @@ void TickServerBrowserJoin() {
     case JoinPhase::kStarting: {
         const uint32_t hsm = Hsm();
         if (!hsm || !g_world_ready.load(std::memory_order_relaxed)) {
-            // Boot screens, a load, the garage: wait for the city.
+            // Boot screens, the title screen, a load, the garage: wait for the city with the player's car in it (a goto into
+            // the net menu without the car crashed the game, browser_join_core.h).
             if (g_start_step == 0) {
+                if (!g_world_wait_logged) {
+                    g_world_wait_logged = true;
+                    LARECOMP_APP_INFO("[browser] the join waits for the player's car (none at the title screen, in a load or the garage)");
+                }
                 SetStatus(JoinPhase::kStarting, "Waiting for the city to load to join " + req.label + "...");
                 if (now > g_phase_deadline) Finish(JoinPhase::kFailed, reason::kWorldTimeout, "Join cancelled: the city never loaded");
             }

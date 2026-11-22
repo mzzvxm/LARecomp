@@ -18,6 +18,36 @@
 
 namespace larecomp::browser {
 
+// ---------------------------------------------------------------------------------------------------------- the player's car
+//
+// WHY (measured, 2026-11-21, run ojnew-cli: --join_server=127.0.0.1:41000, no pause menu anywhere). The join waited for "the
+// city", and the front-end city behind the TITLE screen ("PRESS START") passed that test: the player's racer exists there, the
+// chain the online menus' fill reads (racer+880 -> +16 -> +48) is there, but the racer has NO CAR yet (racer+48, the car entity, is
+// 0). The join went to the "Online" state, whose onenter runs the flash command setMenuCam; its slot picker (sub_82654960) probes
+// the shot with sub_82654738, which loads racer+48 and then reads entity+28 without a null check (`lwz r31,28(r8)` with r8 = 0):
+// an access violation, "unhandled title read of 0x0000001C" on the Main XThread, mcla.exe+0x240536D. The stack: GotoState >
+// the HSM goto (sub_82224678) > sub_82691300 > sub_8268DD70 > sub_8268CD08 > sub_82220FE0 (flash command 13) > sub_82654960 >
+// sub_82654738.
+//
+// So the join starts only when the player's car exists: racer+48 -> entity, entity+28 -> matrix (the pose chain the Director's
+// car registry reads, cinematic/cars.cpp ReadCarMatrix), and the matrix is readable. The test is pure: the caller hands in how
+// a guest word is read (and says no for memory that is not mapped), so a unit test can walk it over a fake memory.
+constexpr uint32_t kRacerEntityAt = 48;
+constexpr uint32_t kEntityMatrixAt = 28;
+constexpr uint32_t kMatrixRowsAt = 16;  // the 16 floats of the pose start here (the picker's probe loads them)
+
+constexpr bool PlausibleGuestPtr(uint32_t ea) { return ea >= 0x10000u && ea < 0xFFFF0000u; }
+
+// `read_word(address, &value)` returns false when the 4 bytes at `address` cannot be read.
+template <typename ReadWord>
+bool PlayerCarReady(uint32_t racer, ReadWord read_word) {
+    if (!PlausibleGuestPtr(racer)) return false;
+    uint32_t entity = 0, matrix = 0, row = 0;
+    if (!read_word(racer + kRacerEntityAt, &entity) || !PlausibleGuestPtr(entity)) return false;
+    if (!read_word(entity + kEntityMatrixAt, &matrix) || !PlausibleGuestPtr(matrix)) return false;
+    return read_word(matrix + kMatrixRowsAt, &row);
+}
+
 class PauseGate {
 public:
     enum class Step {

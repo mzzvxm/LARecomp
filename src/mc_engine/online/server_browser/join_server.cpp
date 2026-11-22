@@ -229,7 +229,7 @@ void ReadArgument() {
     }
     g_phase = Phase::kWaitCity;
     SetState(js::State::kWaiting, "",
-             "Waiting for the game to reach the city to join: " + js::Describe(g_target) + " (up to " +
+             "Waiting for you to press Start and the game to reach the city, to join: " + js::Describe(g_target) + " (up to " +
                  std::to_string(std::chrono::duration_cast<std::chrono::minutes>(kCityWait).count()) + " minutes).");
 }
 

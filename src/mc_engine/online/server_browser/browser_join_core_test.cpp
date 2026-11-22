@@ -19,10 +19,18 @@
 //   4. The same from SYSTEM LINK > SERVER BROWSER (the machine sits in "LAN"), from XBOX LIVE > SERVER BROWSER ("Online": a LAN
 //      join goes to "LAN" from there), and from a page of ours (EXTRAS) over the pause screen.
 //   5. With --join_server=127.0.0.1:31000,cruise (join_server_core.h): open the pause menu while the city loads and leave it open.
+//   6. (the measured crash, run ojnew-cli) --join_server=127.0.0.1:31000 and NO key: the game sits at the title screen ("PRESS
+//      START"); the join must not start (before the fix: an access violation at 0x1C on the Main XThread at the goto). Log: the
+//      [join_server] "state=waiting" line and "[browser] the join waits for the player's car" once a join is asked for; then Start:
+//      the "city is up" line comes only after the car is on the road.
 //   A toolkit scene cannot press Start; a Director verb that opens and closes the pause menu (ui.pause) would make 3-5 a scene.
+//
+// The second part of the file (the player's car) walks the pure car test over a fake guest memory: the title screen's racer has
+// no car entity (racer+48 = 0) and the join must wait, whatever else the world looks like.
 
 #include <cstdint>
 #include <cstdio>
+#include <map>
 
 #include "browser_join_core.h"
 
@@ -184,9 +192,97 @@ void TestSimulated() {
     }
 }
 
+// ------------------------------------------------------------------------------------------------ the player's car
+// A fake guest memory: the words that exist (a read of any other address fails, as an unmapped page does).
+struct FakeMemory {
+    std::map<uint32_t, uint32_t> words;
+    int reads = 0;
+    bool operator()(uint32_t ea, uint32_t* out) {
+        ++reads;
+        const auto it = words.find(ea);
+        if (it == words.end()) return false;
+        *out = it->second;
+        return true;
+    }
+};
+
+using larecomp::browser::kEntityMatrixAt;
+using larecomp::browser::kMatrixRowsAt;
+using larecomp::browser::kRacerEntityAt;
+using larecomp::browser::PlayerCarReady;
+
+constexpr uint32_t kRacer = 0x40100000, kEntity = 0x40200000, kMatrix = 0x40300000;
+
+bool Ready(FakeMemory& m, uint32_t racer = kRacer) {
+    return PlayerCarReady(racer, [&](uint32_t ea, uint32_t* out) { return m(ea, out); });
+}
+
+// The measured crash (ojnew-cli, the title screen): the racer is there, racer+48 is 0. The join must not start.
+void TestTitleScreenHasNoCar() {
+    FakeMemory m;
+    m.words[kRacer + kRacerEntityAt] = 0;
+    CHECK(!Ready(m));
+    CHECK(m.reads == 1);  // it stops at the null entity, it never reads entity+28 (guest 0x1C, the fault address)
+    CHECK(!Ready(m, 0));  // no racer at all
+    FakeMemory none;      // the racer's memory is not readable
+    CHECK(!Ready(none));
+}
+
+void TestCarChain() {
+    FakeMemory m;
+    m.words[kRacer + kRacerEntityAt] = kEntity;
+    CHECK(!Ready(m));  // an entity without a matrix word (not readable)
+    m.words[kEntity + kEntityMatrixAt] = 0;
+    CHECK(!Ready(m));  // the entity has no matrix yet
+    m.words[kEntity + kEntityMatrixAt] = kMatrix;
+    CHECK(!Ready(m));  // the matrix is not readable
+    m.words[kMatrix + kMatrixRowsAt] = 0x3F800000;
+    CHECK(Ready(m));   // the car is on the road: the join may start
+}
+
+// Junk where a pointer should be (the 0xCDCDCDCD fill, a tiny value, the top of the address space): no start, no read of it.
+void TestJunkPointers() {
+    for (const uint32_t junk : {0xFFFFFFFFu, 0xFFFF0000u, 0x00000001u, 0x0000FFFFu}) {
+        FakeMemory m;
+        m.words[kRacer + kRacerEntityAt] = junk;
+        CHECK(!Ready(m));
+        CHECK(m.reads == 1);
+    }
+    FakeMemory m;
+    m.words[kRacer + kRacerEntityAt] = kEntity;
+    m.words[kEntity + kEntityMatrixAt] = 0x00000010;
+    CHECK(!Ready(m));
+    CHECK(m.reads == 2);
+}
+
+// The title screen turns into free roam: the same fake game, frame by frame. The join waits, then starts once, with the car.
+void TestStartPressed() {
+    FakeMemory m;
+    m.words[kRacer + kRacerEntityAt] = 0;
+    int started_at = -1;
+    bool started_without_car = false;
+    for (int f = 0; f < 200 && started_at < 0; ++f) {
+        if (f == 120) {  // Start pressed, the city loaded, the car spawned
+            m.words[kRacer + kRacerEntityAt] = kEntity;
+            m.words[kEntity + kEntityMatrixAt] = kMatrix;
+            m.words[kMatrix + kMatrixRowsAt] = 0;
+        }
+        if (Ready(m)) {
+            started_at = f;
+            started_without_car = m.words[kRacer + kRacerEntityAt] == 0;
+        }
+    }
+    CHECK(started_at == 120);
+    CHECK(!started_without_car);
+}
+
 }  // namespace
 
 int main() {
+    TestTitleScreenHasNoCar();
+    TestCarChain();
+    TestJunkPointers();
+    TestStartPressed();
     TestNeverPaused();
     TestCloseThenSettle();
     TestRetriesThenPlayer();
