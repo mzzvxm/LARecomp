@@ -391,6 +391,7 @@ bool SunShafts::EnsureImages(const Pending& plan) {
       passes_->EnsureImage(sky_, plan.image[0], plan.image[1], kImageFormat, "shafts sky") &&
       passes_->EnsureImage(shaft_, plan.image[0], plan.image[1], kImageFormat, "shafts blurred");
   // NOISE-RESOLVE: the history's two images while the frames are averaged here (no temporal upscaler); given back when an upscaler takes over or the setting goes off.
+  const plume::RenderTexture* hist_before[2] = {hist_[0].texture.get(), hist_[1].texture.get()};
   if (ok && plan.history) {
     ok = passes_->EnsureImage(hist_[0], plan.image[0], plan.image[1], kImageFormat, "shafts history 0") &&
          passes_->EnsureImage(hist_[1], plan.image[0], plan.image[1], kImageFormat, "shafts history 1");
@@ -398,6 +399,13 @@ bool SunShafts::EnsureImages(const Pending& plan) {
     passes_->ReleaseImage(hist_[0]);
     passes_->ReleaseImage(hist_[1]);
     hist_valid_ = false;
+  }
+  // A history image that was made again (a new size: the render scale, the window, an upscaler switch; or one that could not be made) holds nothing, and the counters below still describe the old
+  // images: RecordTemporal's size test cannot see it (the images already have the new size), so the next frame would read a never-written image with up to kShaftsHistoryWeight (review F1). The texture
+  // pointer compare is what ssr.cpp's EnsureImages does.
+  if (hist_[0].texture.get() != hist_before[0] || hist_[1].texture.get() != hist_before[1]) {
+    hist_valid_ = false;
+    hist_frames_ = 0;
   }
   if (ok && (images_made_for_[0] != plan.image[0] || images_made_for_[1] != plan.image[1])) {
     images_made_for_[0] = plan.image[0];
@@ -1186,16 +1194,17 @@ const HostImage* SunShafts::RecordTemporal(plume::RenderCommandList* list, const
     hist_valid_ = false;
     return nullptr;
   }
-  // The history is the frame before's (the same kind of view, the same size) and the sun has not moved too far for the picture to be the same one.
+  // The history is the frame before's (the same kind of view, the same size) and the sun has not moved too far for the picture to be the same one. The image the pass would read must also have been
+  // drawn into since it was made (its layout is no longer unknown): the belt to EnsureImages' braces (review F1).
   const bool pause = pause_view_;
   const float shift_u = hist_sun_[0] - plan.sun_uv[0];
   const float shift_v = hist_sun_[1] - plan.sun_uv[1];
   const float aspect = float(plan.image[0]) / float(std::max(plan.image[1], 1u));
-  const bool keep = hist_valid_ && hist_frame_ + 1 == frame_ && hist_pause_ == pause && std::isfinite(shift_u) && std::isfinite(shift_v) &&
-                    noise_resolve::ShaftsKeepsHistory(shift_u, shift_v, aspect);
   const uint32_t out_index = 1 - hist_index_;
   HostImage& history_in = hist_[hist_index_];
   HostImage& history_out = hist_[out_index];
+  const bool keep = hist_valid_ && hist_frame_ + 1 == frame_ && hist_pause_ == pause && std::isfinite(shift_u) && std::isfinite(shift_v) &&
+                    noise_resolve::ShaftsKeepsHistory(shift_u, shift_v, aspect) && history_in.layout != plume::RenderTextureLayout::UNKNOWN;
   Push push = {};
   push.slots[0] = keep ? history_in.slot : shaft_.slot;  // without a history any readable image: the shader does not read it
   push.slots[1] = shaft_.slot;
