@@ -205,7 +205,7 @@ void LampShadows::Pick(lb::Level level, const ls::Camera& last_camera, bool came
                 "frustum of about {:.0f} degrees from the lamp down along its axis, its map reaches sqrt(8 I) = 14 to 30 m",
                 kPrefix, pick_.listed, pick_.usable, pick_.wanted, pick_.fading, budget_.wanted, pick_.best_score, la::Describe(budget_), int(mode_),
                 mode_ == la::LampMode::kOwn ? "own: the pass adds the lamp, the grid has it off" : "subtract: the pass takes the shadowed share of the grid's light away",
-                2.0 * (62.5 + ls::kFovMarginDegrees));
+                2.0 * (la::kConeCapDegrees + ls::kFovMarginDegrees));
   }
   if (state != last_budget_logged_) {
     last_budget_logged_ = state;
