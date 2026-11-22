@@ -357,6 +357,10 @@ add_executable(larecomp_msaa_plan_test EXCLUDE_FROM_ALL msaa_plan_test.cpp)
 # the setting is live) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_aniso_rules_test, then run src/gpu/larecomp_aniso_rules_test (exit 0 = passed).
 add_executable(larecomp_aniso_rules_test EXCLUDE_FROM_ALL aniso_rules_test.cpp)
+# The upscalers' words, mode tables and ratios (upscale_modes.h: mcla_gpu_upscaler and the three mode settings, which the temporal system reads at every
+# frame boundary, and the scene's size each mode gives at an output) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_upscale_modes_test, then run src/gpu/larecomp_upscale_modes_test (exit 0 = passed).
+add_executable(larecomp_upscale_modes_test EXCLUDE_FROM_ALL upscale_modes_test.cpp)
 # The rules for when the upscalers' libraries are loaded (upscaler_load_policy.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_upscaler_load_policy_test, then run src/gpu/larecomp_upscaler_load_policy_test (exit 0 = passed).
 add_executable(larecomp_upscaler_load_policy_test EXCLUDE_FROM_ALL upscaler_load_policy_test.cpp)
