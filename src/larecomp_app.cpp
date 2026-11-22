@@ -322,11 +322,7 @@ void LarecompApp::OnRegisterModules(std::vector<rex::IModule*>& modules) {
 // So everything set here is the TITLE layer: LARecomp's own default, which a value from any of those layers overrides.
 // That replaces the 0.10 FlagWasConfigured/NoteStartupCvar bookkeeping.
 rex::Result<void> LarecompApp::OnConfigure(rex::SettingsRegistry& settings) {
-  if (auto* logger = rex::AppInterfaces::Get<rex::ILogger>()) {
-    static constexpr std::array<const rex::log::LogCategory*, 3> kCategories = {&larecomp::log::App, &larecomp::log::Crash,
-                                                                                &mc::log::mc};
-    (void)logger->AddCategories(kCategories);
-  }
+  // The log categories are added by InitLarecompLogging (spdlog_console.cpp): AppInterfaces::Get<ILogger>() is null in OnConfigure.
   REX_TRY_VOID(ls::RegisterAll(settings));  // the owners and the aliases of the old flat names
   ls::ApplyLegacyEnvironment();             // REX_DEBUG_MENU, REX_MCLA_GPU_AO ... as 0.10 spelled them
 

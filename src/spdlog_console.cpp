@@ -13,12 +13,17 @@
 #include <rex/settings_registry.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <string_view>
 #include <system_error>
+
+#include "larecomp_log.h"
+#include "mc_engine/core/logging.h"
 
 namespace {
 
@@ -56,12 +61,27 @@ std::filesystem::path LogRoot() {
 
 }  // namespace
 
+rex::Result<void> AddLarecompLogCategories() {
+  static constexpr std::array<const rex::log::LogCategory*, 3> kCategories = {&larecomp::log::App, &larecomp::log::Crash,
+                                                                              &mc::log::mc};
+  return rex::GetLogger().AddCategories(kCategories);
+}
+
 void InitLarecompLogging() {
   static bool initialized = false;
   if (initialized) {
     return;
   }
   initialized = true;
+
+  // The categories first, through the process logger (rex::GetLogger(): it exists from its first use, long before rex::Init). They used to be
+  // added in OnConfigure through AppInterfaces::Get<ILogger>(), which is null there (the SDK publishes its interface factory only after the
+  // select-plugins step that runs OnConfigure), so the call never ran: larecomp_app and mc each opened with "log category ... is not
+  // registered", larecomp_crash did so at the last line of every run ("Process exiting normally"), and none had its log.categories.<name>
+  // setting (the "trace" below for larecomp_crash had nothing to land on).
+  if (const auto added = AddLarecompLogCategories(); !added) {
+    std::fprintf(stderr, "log: adding LARecomp's log categories failed, %s\n", added.error().message.c_str());
+  }
 
   // By name through the registry: a setting that is not registered yet (the category settings appear when their module
   // connects) keeps the value for its owner, so nothing here depends on the order of start-up.

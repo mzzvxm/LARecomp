@@ -2,6 +2,8 @@
 
 #include <filesystem>
 
+#include <rex/result.h>
+
 // LARecomp's logging set-up. The file name is historical: up to rexglue 0.10 this configured spdlog (console and file
 // sinks, category levels); on 0.11 the SDK's own logger (rex/logging/logger.h, REX_LOGGER()) writes the console, the
 // debugger and the numbered log file, so this only sets LARecomp's defaults on the SDK's log.* settings and finds the
@@ -9,7 +11,12 @@
 // logger); nothing here adds a sink, and nothing links spdlog (a second copy would be a second registry that never sees
 // the SDK's lines).
 
-// Call first thing in the app constructor, before the settings apply. Sets, at the TITLE layer (a value from larecomp.toml,
+// Adds LARecomp's three log categories (larecomp_app, larecomp_crash and mc) to the process logger, which also gives each its
+// log.categories.<name> setting. InitLarecompLogging does it before its first line; it is not safe to call twice (the SDK refuses a
+// category it has added: the error comes back). A category that is written to without it opens with a "not registered" warning.
+rex::Result<void> AddLarecompLogCategories();
+
+// Call first thing in the app constructor, before the settings apply. Adds the categories (above), then sets, at the TITLE layer (a value from larecomp.toml,
 // the environment or the command line wins): log.level = debug, the 0.10 line layout (log.pattern), cpu and gpu at info
 // and the crash handler's category at trace. LARECOMP_LOG_FILE (a path, relative to the working folder) and the 0.10
 // spellings of REX_LOG_LEVEL ("warning", "err") are translated to the SDK's settings. Safe to call twice.
