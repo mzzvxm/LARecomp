@@ -13,8 +13,8 @@
 //   car traced sun ray, city traced sun rays disc sample (blue tile + R2 by sun_frame)      the same history: the march takes the darker of its shadow and     ao.cpp (the rays go through the march)
 //                                                                                          the ray's, the filter and the history follow
 //   sun shafts                               ray start (blue tile + R2 by the frame)        a reprojected blend of the blurred image with the last frame's     shafts.cpp RecordShafts, shafts_temporal_ps.hlsl
-//   car reflection cone                      cone turn (blue tile + golden step by phase)   the a-trous passes, then a blend with the last frame's result      car_rt_refl.cpp, car_rt_refl_denoise_cs.hlsl (pass 2)
-//                                                                                          while the view of the car stands still
+//   car reflection cone                      cone turn (blue tile + golden step by phase)   the a-trous passes, then a texel for texel blend with the last        car_rt_refl.cpp, car_rt_refl_denoise_cs.hlsl (pass 2)
+//                                                                                          frame's result, clamped to the 3x3 neighbourhood
 //   sun shadow filter's disk                 (not varied: see shadow_filter_resolve_test.cpp for the numbers; the disk keeps its fixed turn)
 //
 // mcla_gpu_noise_resolve_no_upscaler (debug, on) is the A/B: off, every effect is what the first fixes made it (a fixed blue pattern without an upscaler).
@@ -59,17 +59,17 @@ inline bool ShaftsKeepsHistory(float shift_u, float shift_v, float aspect) {
 // ---------------------------------------------------------------------------
 // the car reflection cone's history (hlsl/car_rt_refl_denoise_cs.hlsl pass 2)
 // ---------------------------------------------------------------------------
-// The cone's penumbra moves with the VIEW (car_rt_refl_rules.h "NOT TEMPORAL": 0.5 degrees a frame in an orbit is a fifth of a 2.5 degree cone), so a history that reprojects the texel still holds the
-// last frame's direction and trails the edge. The blend is therefore gated by how still the view of the car stands: the history's weight is kConeHistoryWeight while the car's screen motion is under
-// kConeStillTexels and falls to 0 at kConeMovingTexels (the motion is measured on the host from the camera's and the car's own steps), and a texel whose data kind, instance or distance differs from
-// the history's takes the frame's own value. A car at rest (the pause menu, the garage orbit's pauses, a stop at a light), where a pattern that stands still is most visible, resolves fully; a car in
-// motion keeps the per frame pattern and the a-trous passes alone (their residual is under 1% of the weight).
+// The cone's turn changes every frame (the blue tile + the golden step by the frame's phase 0..7), the two a-trous passes take most of its grain out (the residual is under 1% of the weight) and the third
+// pass averages the finished image with the last frame's, TEXEL FOR TEXEL (no reprojection). car_rt_refl_rules.h "NOT TEMPORAL" weighed a temporal accumulation and left it out because the cone's penumbra
+// moves with the VIEW: a reprojected texel still holds the last frame's direction, the whole penumbra moves by the angle the view turned (0.5 degrees a frame in an orbit: a fifth of a 2.5 degree cone), and
+// its rejection rule (the history's depth and instance) cannot see that. A rule that can is the clamp: the history's weight, hidden share and premultiplied colour are each clamped to the range of the finished
+// image's 3 x 3 neighbourhood plus a margin, so wherever the penumbra's ramp moved the history is cut to what the neighbourhood holds NOW: the ghost is at most the ramp's change over the neighbourhood
+// (about a texel of a ramp that is several texels wide, a fifth of the cone's width at its steepest), and where the ramp is a binary edge (a part within a few centimetres of the panel: a penumbra under a
+// texel) the view's turn moves it by under a texel anyway. The same rule bounds a texel whose history is another surface (a car that moved on the screen). A texel with no data in either image, or whose
+// weight is the clear coat's mirror, is the finished image's own. noise_resolve_test.cpp measures the grain's fall, the ghost under a moving penumbra and the cost.
 inline constexpr float kConeHistoryWeight = 0.75f;   // 1 - 1/4: a history of about 4 frames
-inline constexpr float kConeStillTexels = 0.15f;     // the car's motion on the screen, in texels of the image, under which the history is whole
-inline constexpr float kConeMovingTexels = 0.75f;    // ... and over which there is none
-inline float ConeHistoryWeight(float motion_texels) {
-  const float t = std::clamp((motion_texels - kConeStillTexels) / (kConeMovingTexels - kConeStillTexels), 0.0f, 1.0f);
-  return kConeHistoryWeight * (1.0f - t * t * (3.0f - 2.0f * t));
-}
+inline constexpr float kConeClampMargin = 0.05f;     // of the weight; of the premultiplied colour as a share of the neighbourhood's top (the shader's kTemporalMargin)
+// The weight the history keeps when it already holds `frames` frames (the plain mean for the first ones, then the exponential average at kConeHistoryWeight).
+inline float ConeHistoryWeight(uint32_t frames) { return std::min(kConeHistoryWeight, 1.0f - 1.0f / float(frames + 2u)); }
 
 }  // namespace mcla::gpu::noise_resolve

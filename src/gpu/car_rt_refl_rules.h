@@ -308,7 +308,7 @@ inline float ConeRotationLegacy(uint32_t texel_x, uint32_t texel_y, uint32_t pha
   return sum - std::floor(sum);
 }
 // The angle the texel's pattern is turned by, in turns: the blue noise tile at the texel's coordinates (blue_noise.h: no spatial frequency stands out) plus a golden step per phase, the same for every
-// texel (0 where no temporal upscaler runs: the pattern then stands still on the screen, a fixed blue grain the denoise takes the rest out of; 0 .. 7 by the frame where one does, which averages the
+// texel (0 where nothing averages it: the pattern then stands still on the screen, a fixed blue grain the denoise takes the rest out of; 0 .. 7 by the frame where a temporal upscaler runs, or the denoise's own history does (NOISE-RESOLVE), which averages the
 // pattern out; eight golden steps leave no gap over 0.15 of the circle).
 inline float ConeRotation(uint32_t texel_x, uint32_t texel_y, uint32_t phase) {
   static const blue_noise::Tile tile = blue_noise::MakeTile();
@@ -591,6 +591,10 @@ inline Reflection CombineRays(const RayShare shares[], int count, float rays) {
 // cannot see that, and a cut, a pause view, a garage orbit and the vehicle's own motion having no valid matrix some frames would each need
 // its own. With an upscaler the upscaler is the temporal filter (the pattern turns by the frame). A ghost is worse than grain; this does not
 // ghost, and holds nothing from the frame before.
+// NOISE-RESOLVE (2026-11-22) REVISITED THIS for the frames without an upscaler (AGENT-RULE-NOISE: the pattern must change every frame and something must resolve it): the pattern now turns by the frame there too, and
+// a third pass of the denoise (noise_resolve.h "the car reflection cone's history") averages the finished image with the last frame's, texel for texel, with the history clamped to the 3 x 3 neighbourhood of the
+// finished image: a clamp does see a penumbra that moved (it compares values, not depths), and it bounds the ghost to the neighbourhood's own range, about a texel of the ramp. mcla_gpu_noise_resolve_no_upscaler off
+// gives the pattern that stands still back.
 inline constexpr int kDenoisePasses = 2;               // the passes (a-trous steps 1, 2); mcla_gpu_car_selfrefl_rt_denoise 0 .. 2 (0: the raw image)
 inline constexpr float kDenoiseFootprintFrom = 0.4f;   // texels: a cone this wide or less at its hit leaves the texel as it is
 inline constexpr float kDenoiseFootprintTo = 2.5f;     // texels: from this width the first pass is applied in full
