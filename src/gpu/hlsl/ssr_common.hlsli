@@ -106,6 +106,7 @@ static const float kSsrClipGamma = 1.25f;       // the history is clipped to the
 static const float kSsrClipMargin = 0.1f;
 static const float kSsrGuard = 0.8f;            // the road view taken out may never leave less than this share's complement of the colour that was there (a bad estimate must not black the road)
 static const float kSsrClipKeep = 0.75f;       // the clip may take away at most 1 - this of a positive history in one frame (the box of ONE noisy frame is no proof that a bright reflection is gone)
+// CHECK: not run on a device: a take of a moving bright reflection (a lamp across a puddle, a tail light) with DLSS on should show no trail of ours now; if the dimming without the floor is the worse of the two, move this one number (0.5 keeps half of the floor's brightness gain with a tenth after 3 frames).
 static const float kSsrClipKeepUpscaler = 0.0f; // ... and with a temporal upscaler (no floor: the upscaler's history is on top of ours). ssr_test.cpp's sweep of the Monte Carlo: 0 fades a lamp in 1 / 1 frames (half / a tenth) and keeps 0.83 / 0.48 / 0.90 of the lobe's mean
                                                 //   (three small bright things); 0.5: 1 / 3 frames, 0.86 / 0.55 / 0.92; 0.75 (without an upscaler): 2 / 6 frames, 0.89 / 0.66 / 0.94; the flicker is the tent average's in all (0.18 to 0.23)
 static const float kSsrHistoryBorder = 1.0f;    // a history position nearer than this many texels to the picture's edge is not read (the clamped sample would smear the edge's texel)
