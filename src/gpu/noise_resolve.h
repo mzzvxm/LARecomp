@@ -36,6 +36,22 @@ constexpr uint32_t FrameTerm(bool temporal_upscaler, bool own_history, uint64_t 
 }
 
 // ---------------------------------------------------------------------------
+// the contact image's history: when its noise may move (stack review F6 against noise review S6, reconciled)
+// ---------------------------------------------------------------------------
+// The contact march's and the traced sun rays' noise moves on a frame only when something averages it, and the history pass is what averages it without an upscaler (Varies). A frame whose noise moved and whose
+// pass did not run shows GRAIN (nothing averages it); a frame whose noise holds while a history is wanted shows the old fixed pattern, STALE for as long as that lasts (a lattice, the owner's rule is that noise
+// varies). So `Plan::contact_history` must be true exactly when the pass is recorded this frame, and each case of "it cannot be" is decided by what the pass needs:
+//   * its pipeline is not made yet (start-up, a variant switch): the pass cannot be recorded, the noise holds for that frame (the fixed pattern, as before the resolve) and nothing is read from the images;
+//   * the depth target has NO STENCIL PLANE view: not a reason. The pass reads no vehicle then (hlsl/ao_temporal_ps.hlsl AoVehicleId and ao_depth_ps.hlsl IsVehiclePixel answer "no vehicle" for the empty slot, as the
+//     occlusion's own pass does, and car_selfrefl.cpp's error line says the state is understood), so a car's own pixels are followed with the world's motion, which is what any surface that moved gets: the
+//     clamp bounds the ghost (noise_resolve_test.cpp, the moving shadow edge). Without the plane the alternatives are all worse: the fixed pattern for as long as the plane is missing (stale), or the moving noise
+//     with no history (grain). Stack review F6 cleared the plan for it, and that clear goes where the two branches meet;
+//   * the first frame, a frame gap, a cut, a view switch, a size change (the images are made again at the new size): the pass RUNS with its history switched off (weight 0: the frame as it is, ChooseContactHistory),
+//     so the noise moves, one frame is as noisy as the fixed pattern was, and no old image is read.
+// `planned`: the plan asked for the history (no upscaler, the switch on, a history of 2 frames or more, no contact debug picture). `pass_made`: the temporal pass's pipeline exists.
+constexpr bool ContactHistoryRuns(bool planned, bool pass_made) { return planned && pass_made; }
+
+// ---------------------------------------------------------------------------
 // the sun shafts' history (hlsl/shafts_temporal_ps.hlsl)
 // ---------------------------------------------------------------------------
 // The shafts' image is the sky's brightness blurred along the rays to the sun, a smooth low frequency picture (half the picture's size, 960 x 540 at most); the noise is the ray's start inside one step,
