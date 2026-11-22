@@ -37,6 +37,7 @@ constexpr auto kRoomWait = std::chrono::seconds(45);
 constexpr auto kRoomPoll = std::chrono::seconds(3);
 // The worker's whole run is 3 asks of the relay, the mods and up to 45 s for a room. One that is still going after this (a relay
 // that answers a byte at a time, a name that never resolves) is given up on: the join fails and the thread ends on its own.
+// CHECK: not run against a stalled relay; 3 minutes is far above the worker's own limits (about a minute) and was not measured.
 constexpr auto kResolveLimit = std::chrono::minutes(3);
 
 const char* kStatusFile = "join_server.txt";
