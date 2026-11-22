@@ -18,6 +18,9 @@
 //    frames keep the previous result: the numbers of the samples (speed profile) are up to 1 / hz old, the
 //    samples themselves are never out of step with the ring, because a layout change always runs the job.
 //    The cap is a change in what the game computes, not an exact replacement: an A/B check is in RACE-LINE.md.
+//    The cap counts time on the trailer toolkit's scene clock (cinematic/capture_mode.h SceneClockNowNs): the steady clock, but in a
+//    take the take's updates times its step, so a take at any rate (fixed step, lock-step with the readback) gets 30 jobs per second of
+//    game time, not of wall time. perf\scripts\chain-raceline-ai.ps1 (the AI gate) runs the races as takes for that reason.
 // 2. Native versions (race_line_native_mask, default 3, read at start): bit 0 the backward speed pass
 //    (sub_8216CBC0), bit 1 the forward pass (sub_8216CDD0). Bit for bit the recompiled functions' results
 //    (race_line_test.cpp); they need FMA3 and plain guest RAM, and otherwise the recompiled function runs.
@@ -47,6 +50,7 @@
 #include <string>
 #include <vector>
 
+#include "../cinematic/capture_mode.h"
 #include "larecomp_log.h"
 #include "race_line_native.h"
 #include "settings/larecomp_settings.h"
@@ -63,6 +67,12 @@ using Clock = std::chrono::steady_clock;
 
 int64_t NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count(); }
 
+// The clock of the rate cap: the trailer toolkit's scene clock (cinematic/capture_mode.h), which is the steady clock except during a take, where it is
+// the take's updates times its step. So "30 jobs a second" is 30 a second of GAME time in a take (a take at 144 FPS that takes 9 ms of wall time a frame
+// or one at 30 FPS that takes 60 ms still gives 30 per game second), and the same as before everywhere else (two atomic loads and the steady clock).
+// The stats and the recorder keep the plain steady clock (they measure wall time).
+int64_t CapNowNs() { return mc::cinematic::SceneClockNowNs(); }
+
 // ---------------------------------------------------------------------------------------------- stats
 
 std::atomic<uint64_t> g_queued{0}, g_skipped_time{0}, g_run{0}, g_run_ns{0}, g_run_max_ns{0};
@@ -71,6 +81,8 @@ std::atomic<uint32_t> g_checked_report[2];
 std::atomic<uint64_t> g_declined_report{0};
 std::atomic<bool> g_off_report[2];
 std::atomic<int64_t> g_last_report_ns{0};
+
+std::string TakePlannerSummary();  // below, with the planner table: "addr q/s ..." of this window (and resets the window), empty when none ran
 
 void MaybeReport() {
     const int64_t now = NowNs();
@@ -88,6 +100,10 @@ void MaybeReport() {
                       secs, q, static_cast<double>(q) / secs, s, r, r ? static_cast<double>(ns) / static_cast<double>(r) / 1e6 : 0.0, static_cast<double>(mx) / 1e6,
                       static_cast<double>(ns) / 1e6 / secs, g_checked_report[0].load(), g_checked_report[1].load(), g_declined_report.load(), g_off_report[0].load() ? "backward" : "-",
                       g_off_report[1].load() ? "forward" : "-");
+    // Per AI racer (a planner is one racer's brain): the same window's queue calls it let through (q) and skipped (s). The AI gate (perf\scripts\chain-raceline-ai.ps1) reads
+    // how many racers have a planner and how their jobs spread.
+    const std::string planners = TakePlannerSummary();
+    if (!planners.empty()) LARECOMP_APP_INFO("[RaceLine] planners (window {:.1f} s, guest address queued/skipped): {}", secs, planners);
 }
 
 // ---------------------------------------------------------------------------------------------- the rate cap
@@ -105,49 +121,100 @@ struct Planner {
     bool valid = false;
     uint32_t layout[kLayoutWords] = {};
     int64_t next_due_ns = 0;
+    int64_t last_now_ns = 0;   // the cap clock at the last call: a clock that stepped back (a take ended, the scene clock went back to the steady one) restarts the schedule
+    uint64_t queued = 0;       // this stats window's queue calls let through / skipped (race_line_stats; the report line names them per planner)
+    uint64_t skipped = 0;
 };
 
 std::mutex g_planner_mutex;
 Planner g_planners[kMaxPlanners];
 
-// True when a job for this planner should run now (and notes it). cap_hz > 0.
-bool JobDue(const uint8_t* base, uint32_t planner, int cap_hz) {
+Planner* FindPlanner(uint32_t planner, Planner** free_slot) {  // g_planner_mutex held
+    for (Planner& p : g_planners) {
+        if (p.valid && p.key == planner) return &p;
+        if (!p.valid && free_slot && !*free_slot) *free_slot = &p;
+    }
+    return nullptr;
+}
+
+// The stats window's per-planner counts (see MaybeReport); resets them.
+std::string TakePlannerSummary() {
+    std::string out;
+    std::lock_guard<std::mutex> lock(g_planner_mutex);
+    for (Planner& p : g_planners) {
+        if (!p.valid || (p.queued == 0 && p.skipped == 0)) continue;
+        char text[48];
+        std::snprintf(text, sizeof text, "%s%08x %llu/%llu", out.empty() ? "" : ", ", p.key, static_cast<unsigned long long>(p.queued), static_cast<unsigned long long>(p.skipped));
+        out += text;
+        p.queued = 0;
+        p.skipped = 0;
+    }
+    return out;
+}
+
+// With no cap (every frame) the queue call is let through as before; the planner's count is noted for the report only.
+void CountCall(uint32_t planner, bool queued) {
+    Planner* free_slot = nullptr;
+    std::lock_guard<std::mutex> lock(g_planner_mutex);
+    Planner* slot = FindPlanner(planner, &free_slot);
+    if (!slot) {
+        if (!free_slot) return;  // table full: not counted
+        slot = free_slot;
+        *slot = Planner{};
+        slot->key = planner;
+        slot->valid = true;
+    }
+    (queued ? slot->queued : slot->skipped) += 1;
+}
+
+// True when a job for this planner should run now (and notes it). cap_hz > 0. `count`: keep the report's per-planner counts (race_line_stats).
+bool JobDue(const uint8_t* base, uint32_t planner, int cap_hz, bool count) {
     if (!race_line::PlainBlock(planner, kPathOffset + 5376)) return true;  // not a planner we understand: never skip
     uint32_t layout[kLayoutWords];
     for (size_t i = 0; i < kLayoutWords; ++i) layout[i] = race_line::Ld32(base, planner + kLayoutOffsets[i]);
-    const int64_t now = NowNs();
+    const int64_t now = CapNowNs();
     const int64_t interval = 1'000'000'000ll / cap_hz;
     std::lock_guard<std::mutex> lock(g_planner_mutex);
-    Planner* slot = nullptr;
     Planner* free_slot = nullptr;
-    for (Planner& p : g_planners) {
-        if (p.valid && p.key == planner) {
-            slot = &p;
-            break;
-        }
-        if (!p.valid && !free_slot) free_slot = &p;
-    }
+    Planner* slot = FindPlanner(planner, &free_slot);
     if (!slot) {
         if (!free_slot) free_slot = &g_planners[planner % kMaxPlanners];  // table full: reuse a slot (a wrong entry only costs one run)
         slot = free_slot;
+        *slot = Planner{};
         slot->key = planner;
         slot->valid = true;
         std::memcpy(slot->layout, layout, sizeof(layout));
         slot->next_due_ns = now + interval;
+        slot->last_now_ns = now;
+        if (count) slot->queued += 1;
         return true;
     }
+    const bool clock_back = now < slot->last_now_ns;  // the scene clock stepped back (a take ended with the game ahead of the wall clock): start the schedule again
+    slot->last_now_ns = now;
     const bool same_layout = std::memcmp(slot->layout, layout, sizeof(layout)) == 0;
-    if (same_layout && now < slot->next_due_ns) return false;
+    if (same_layout && !clock_back && now < slot->next_due_ns) {
+        if (count) slot->skipped += 1;
+        return false;
+    }
     // keep the long-run rate at cap_hz: the next slot follows the last one, unless the planner fell far behind (or the layout forced this run)
-    slot->next_due_ns = (!same_layout || now - slot->next_due_ns > interval) ? now + interval : slot->next_due_ns + interval;
+    slot->next_due_ns = (!same_layout || clock_back || now - slot->next_due_ns > interval) ? now + interval : slot->next_due_ns + interval;
     std::memcpy(slot->layout, layout, sizeof(layout));
+    if (count) slot->queued += 1;
     return true;
 }
 
 bool Skip(const uint8_t* base, uint32_t planner) {
     const int cap = larecomp::settings::race_line_max_hz.Get();
-    if (cap <= 0) return false;
-    if (JobDue(base, planner, cap)) return false;
+    const bool stats = larecomp::settings::race_line_stats.Get();
+    if (cap <= 0) {
+        if (stats) CountCall(planner, true);
+        return false;
+    }
+    static std::atomic<int> said_cap{-1};
+    if (said_cap.exchange(cap, std::memory_order_relaxed) != cap) {
+        LARECOMP_APP_INFO("[RaceLine] the rate cap: {} jobs a second per racer, counted on the scene clock (the steady clock, or a take's updates x its step)", cap);
+    }
+    if (JobDue(base, planner, cap, stats)) return false;
     g_skipped_time.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
