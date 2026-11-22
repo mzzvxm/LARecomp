@@ -327,6 +327,9 @@ bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt, b
     ++images_generation_;
     last_key_.valid = false;  // a new image has no history
   }
+  if (trace_.texture.get() != before[0]) {
+    rt_.NoteTraceChanged();  // the fallback's output set names the trace image: a new image is a new set, whatever address it was made at
+  }
   size_[0] = width;
   size_[1] = height;
   return ok;
@@ -346,6 +349,7 @@ void ScreenReflections::ReleaseImages() {
   rt_framebuffer_for_[0] = rt_framebuffer_for_[1] = nullptr;
   ++images_generation_;
   last_key_.valid = false;
+  rt_.NoteTraceChanged();  // the trace image is gone: the fallback's set names it
 }
 
 uint64_t ScreenReflections::HeldBytes() const {
