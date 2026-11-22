@@ -160,10 +160,10 @@ void TestLevelsMakeTheReplaysAtlas() {
       }
     }
   }
-  // the memory of the three level shape (local_shadow.h: medium 4 MiB, high 6, ultra 48)
-  CheckNear(sa::Mib(sa::Bytes(sa::LayoutForLevel(lb::Level::kMedium, 0))), 4.0, 1e-9, "medium holds 4 MiB");
-  CheckNear(sa::Mib(sa::Bytes(sa::LayoutForLevel(lb::Level::kHigh, 0))), 6.0, 1e-9, "high holds 6 MiB");
-  CheckNear(sa::Mib(sa::Bytes(sa::LayoutForLevel(lb::Level::kUltra, 0))), 48.0, 1e-9, "ultra holds 48 MiB");
+  // the memory of the three level shape (local_shadow.h: medium 9 MiB, high 24, ultra 75: the tiles of HL-SHADOW-QUALITY, 768 / 1024 / 1280)
+  CheckNear(sa::Mib(sa::Bytes(sa::LayoutForLevel(lb::Level::kMedium, 0))), 9.0, 1e-9, "medium holds 9 MiB");
+  CheckNear(sa::Mib(sa::Bytes(sa::LayoutForLevel(lb::Level::kHigh, 0))), 24.0, 1e-9, "high holds 24 MiB");
+  CheckNear(sa::Mib(sa::Bytes(sa::LayoutForLevel(lb::Level::kUltra, 0))), 75.0, 1e-9, "ultra holds 75 MiB");
   Check(sa::LayoutForLevel(lb::Level::kOff, 0).slot_count == 0 && !sa::LayoutForLevel(lb::Level::kOff, 0).valid(), "off makes no atlas");
 }
 
@@ -202,12 +202,12 @@ void TestBudgetSpec() {
 }
 
 void TestMemoryTable() {
-  // perf/LIGHT-UNIFY.md 4.2: with the lamps' live pool, the figures the doc counts (4 / 6 / 48 for the replay; the rows of the lamps rounded up to a whole row)
+  // perf/LIGHT-UNIFY.md 4.2: with the lamps' live pool, the figures the doc counted (4 / 6 / 48 for the replay before HL-SHADOW-QUALITY, now 9 / 24 / 75; the rows of the lamps rounded up to a whole row)
   struct Row {
     lb::Level level;
     double replay, with_lamps, with_static;
   };
-  const Row rows[] = {{lb::Level::kMedium, 4.0, 12.0, 18.0}, {lb::Level::kHigh, 6.0, 18.0, 30.0}, {lb::Level::kUltra, 48.0, 72.0, 96.0}};
+  const Row rows[] = {{lb::Level::kMedium, 9.0, 15.0, 21.0}, {lb::Level::kHigh, 24.0, 36.0, 48.0}, {lb::Level::kUltra, 75.0, 105.0, 135.0}};
   for (const Row& r : rows) {
     const std::string at = std::string(" (") + LevelName(r.level) + ")";
     const sa::Layout a = sa::LayoutForLevel(r.level, 0, false);
@@ -223,12 +223,12 @@ void TestMemoryTable() {
           "each pool is found by its provider and role" + at);
     Check(sa::Bytes(b) >= sa::Bytes(a) + 3 * 512ull * 512 * 8, "the lamps' tiles are inside the bytes" + at);
   }
-  // ultra with the lamps: the large tiles first, the lamps' 512 tiles in six columns under them (3072 x 3072), not four columns in a texture three tiles wide
+  // ultra with the lamps: the large tiles first, the lamps' 512 tiles in seven columns under them (3840 x 3584: the 1280 tiles are three columns wide), not four columns in a texture three tiles wide
   const sa::Layout u = sa::LayoutForLevel(lb::Level::kUltra, 0, true, false);
-  Check(u.width == 3072 && u.height == 3072 && u.pools[0].request.provider == sa::ProviderId::kReplay && u.pools[1].request.provider == sa::ProviderId::kLamps && u.pools[1].cols == 6 &&
-            u.pools[1].rows == 2 && u.pools[1].y0 == 2048,
-        "ultra with the lamps: 6 x 1024 tiles at the top, the lamps' 10 tiles of 512 in 6 columns below");
-  Check(u.SmallestTile() == 512 && u.LargestTile() == 1024, "the two tile classes");
+  Check(u.width == 3840 && u.height == 3584 && u.pools[0].request.provider == sa::ProviderId::kReplay && u.pools[1].request.provider == sa::ProviderId::kLamps && u.pools[1].cols == 7 &&
+            u.pools[1].rows == 2 && u.pools[1].y0 == 2560,
+        "ultra with the lamps: 6 x 1280 tiles at the top, the lamps' 10 tiles of 512 in 7 columns (the width holds seven) below");
+  Check(u.SmallestTile() == 512 && u.LargestTile() == 1280, "the two tile classes");
 }
 
 void TestLayoutFuzz() {
@@ -723,10 +723,10 @@ void TestDiffFindsEveryField() {
 void TestInfoAndMasks() {
   const sa::Layout one = sa::LayoutForLevel(lb::Level::kUltra, 0);
   lg::ShadowAtlasInfo i = sa::InfoOf(one, 7, 2, true);
-  Check(i.valid && i.slot == 7 && i.sampler == 2 && i.width == 3072 && i.height == 2048 && i.tile_small == 1024 && i.tile_large == 0, "one tile size: tile_small only, as the manager's AtlasOf made it");
+  Check(i.valid && i.slot == 7 && i.sampler == 2 && i.width == 3840 && i.height == 2560 && i.tile_small == 1280 && i.tile_large == 0, "one tile size: tile_small only, as the manager's AtlasOf made it");
   const sa::Layout two = sa::LayoutForLevel(lb::Level::kUltra, 0, true, false);
   i = sa::InfoOf(two, 7, 2, true);
-  Check(i.tile_small == 512 && i.tile_large == 1024, "two sizes: small 512, large 1024");
+  Check(i.tile_small == 512 && i.tile_large == 1280, "two sizes: small 512, large 1280");
   Check(!sa::InfoOf(two, 7, 2, false).valid && !sa::InfoOf(sa::Layout{}, 7, 2, true).valid, "no valid atlas without a layout or the flag");
   // the ray traced masks bind to lights that have no atlas views
   lg::LightFrame frame;

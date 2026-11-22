@@ -110,15 +110,16 @@ inline constexpr uint64_t kCarSelfReflConstantsOffset = sizeof(SharedConstants);
 // SharedConstants followed by ui_sharp::UiSharpConstants (Scene::FillVariantBlock).
 inline constexpr uint64_t kUiSharpConstantsOffset = sizeof(SharedConstants);
 
-// The headlight variant (headlight_rig.h, shaderpack/variants/headlight.h, shaders.h kHeadlightVariant and its alpha test twin) reads 672 bytes at the same
-// place when it is the draw's only feature, in the draws of the city's lit shaders that take it: headlight_rules::HeadlightConstants (c38 to c79 of
-// the block), uploaded after SharedConstants by Scene::FillVariantBlock. In a composed shader (with the G-buffer's stage) its block is at the place
+// The headlight variant (headlight_rig.h, shaderpack/variants/headlight.h, shaders.h kHeadlightVariant and its alpha test twin) reads 1072 bytes (672 until
+// HL-PER-LAMP) at the same place when it is the draw's only feature, in the draws of the city's lit shaders that take it: headlight_rules::HeadlightConstants
+// (c38 to c104 of the block), uploaded after SharedConstants by Scene::FillVariantBlock. In a composed shader (with the G-buffer's stage) its block is at the place
 // shaderpack/variant_chain.h OffsetOf gives for the draw's feature set; this constant is for a draw with no other feature only.
 inline constexpr uint64_t kHeadlightConstantsOffset = sizeof(SharedConstants);
 // The G-buffer variants (gbuffer_types.h GBufferConstants, 48 bytes: c38 to c40 of the block; shaders.h kGBufferVariant and its alpha test twin) read their
 // block at the same place when it is the draw's only feature, in the draws that take one, which upload SharedConstants followed by it (Scene::FillVariantBlock).
-// Where another variant's block is in the same shader (the headlight's 672 bytes) the chain's layout (shaderpack/variant_chain.h OffsetOf) puts it after that one, at
-// 1280; the variant's HLSL reads it through names the transform defines at that offset (gbuffer_types.h).
+// Where another variant's block is in the same shader (the headlight's 1072 bytes) the chain's layout (shaderpack/variant_chain.h OffsetOf) puts it after that one, at
+// 1680 (608 + the headlight's size: no code names the number, the layout adds the table's sizes up); the variant's HLSL reads it through names the transform defines
+// at that offset (gbuffer_types.h).
 inline constexpr uint64_t kGBufferConstantsOffset = sizeof(SharedConstants);
 
 class ConstantBanks {

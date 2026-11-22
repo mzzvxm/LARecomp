@@ -200,7 +200,10 @@ inline bool ProjectToShadow(const larecomp::gpu::LocalShadowView& view, const fl
 // The compare of one tap: lit when the map's stored depth is not nearer than the receiver's (moved toward the lamp by the bias).
 inline float ShadowTap(float stored, float receiver_depth, float bias) { return stored >= receiver_depth - bias ? 1.0f : 0.0f; }
 
-// THE SOFT LOOKUP (the shader's HeadlightShadow; src/shaderpack/variants/headlight.cpp kHlShadowKernel is this number). The first version compared FOUR taps half a
+// THE FIRST VERSION'S SOFT LOOKUP, kept for the tests that hold the new one to it (light_shadow_filter_test.cpp runs both on the same scenes): the shader's HeadlightShadow is now
+// light_shadow_filter.h ViewLit (four gathers of the 4 x 4 footprint at the receiver's plane, a contact hardening kernel, a fade at the tile's border), because this box with its four
+// tap shortcut lost every shadow thinner than 3 texels (a post, a bollard, a sign: HL-SHADOW-QUALITY, 2026-11-21).
+// (The shader's HeadlightShadow was this, src/shaderpack/variants/headlight.cpp kHlShadowKernel was this number.) The first version compared FOUR taps half a
 // texel from the receiver's place, each tap one texel of a point sampled map: five levels, and every edge of a shadow a staircase of texels, hard and grainy (the owner's
 // "hard-edged stripes", 2026-11-20). Now the answer is the share of a box `kShadowKernel` texels square, centred on the receiver's place in the map, whose texels are
 // lit, each texel counted by the part of it the box covers (a texel the box covers by a third counts a third): the share changes smoothly as the receiver moves, and

@@ -46,19 +46,23 @@ struct ShadowRow {
 };
 
 // THE TWO LEVEL SHAPE (the first plan of 2026-11-20, kept for the tests and as a way back): both levels have a view for every lamp of every car they shadow. High: the player's car and the
-// nearest other car, 4 views of 512 (8 MiB); ultra: the player's car and the two nearest, 6 views of 1024 (48 MiB).
+// nearest other car, 4 views of 512 (8 MiB); ultra: the player's car and the two nearest, 6 views of 1024 (48 MiB). (The first plan's sizes, kept as they were for the tests and as a way back:
+// the three level shape below has the bigger tiles of HL-SHADOW-QUALITY.)
 inline constexpr ShadowRow kTwoLevels[] = {
     {Level::kHigh, "high", 512, 2, 2},
     {Level::kUltra, "ultra", 1024, 3, 3},
 };
 // THE THREE LEVEL SHAPE (IN USE since 2026-11-20: the cost runs of perf/out/HL-PER-LAMP.txt showed a view for each headlamp adds +0.05 to +0.15 ms of graphics card time and +0.04 to
 // +0.16 ms of render thread time on an RTX 5080, and a weaker PC pays several times that, so the lamps' views are for the higher levels only): medium is the first version's high (one
-// view for each of two cars, 512, 2 views, 4 MiB), high gives the player's car a view for each lamp and the nearest other car one view (3 views of 512, 6 MiB), ultra every shadowed car a
-// view for each lamp (6 views of 1024, 48 MiB). Auto: Mid medium, High ultra, Low off (gpu_class.h).
+// view for each of two cars, 2 views), high gives the player's car a view for each lamp and the nearest other car one view (3 views), ultra every shadowed car a view for each lamp
+// (6 views). Auto: Mid medium, High ultra, Low off (gpu_class.h).
+// THE SIZE OF A VIEW (HL-SHADOW-QUALITY, 2026-11-21: the owner saw the poles', signs' and kerbs' shadows "extremely dither-y and nowhere near as sharp as they should be" on 4K): the first
+// version's 512 texels gave a texel of 3.5 cm at 10 m from the lamps and 7 cm at 20 m, so a bollard (10 cm) or a sign post was 1.4 to 3 texels wide. The tile is now chosen so that a texel
+// stays small in the world whatever the level (local_shadow_rules.h TexelMeters): medium 768 (1.9 cm at 10 m, 9 MiB), high 1024 (1.4 to 1.6 cm, 24 MiB), ultra 1280 (1.3 cm, 75 MiB).
 inline constexpr ShadowRow kThreeLevels[] = {
-    {Level::kMedium, "medium", 512, 2, 0},
-    {Level::kHigh, "high", 512, 2, 1},
-    {Level::kUltra, "ultra", 1024, 3, 3},
+    {Level::kMedium, "medium", 768, 2, 0},
+    {Level::kHigh, "high", 1024, 2, 1},
+    {Level::kUltra, "ultra", 1280, 3, 3},
 };
 // THE ONE DATA CHANGE between the shapes (local_shadow_rules.h's kThreeLevelShape picks the table in use).
 using Table = std::span<const ShadowRow>;
