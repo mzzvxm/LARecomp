@@ -746,8 +746,21 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   profile_ = larecomp::settings::mcla_gpu_scene_profile.Get();
   census_scale_ = larecomp::settings::mcla_gpu_census_scale.Get();
   geometry_->SetProfile(profile_);
+  render_cpu_mask_ = larecomp::settings::render_cpu_mask.Get();
+  ApplyRenderCpu();
   draw_census_.Configure();
   target_census_.Configure();
+}
+
+void Scene::ApplyRenderCpu() {
+  // Each saving also follows ab::B() (ab.h): with mcla_gpu_ab_interleave on, the statistics windows alternate it, so one run
+  // measures both; off, B() is always true and the mask alone decides.
+  const bool candidate = ab::B();
+  const bool sampled = candidate && render_cpu::Has(render_cpu_mask_, render_cpu::kSampledDrawTimers);
+  draw_sampler_.Configure(sampled);
+  geometry_->SetSampledTiming(sampled);
+  device_cache_ = candidate && render_cpu::Has(render_cpu_mask_, render_cpu::kDeviceCache);
+  banks_.SetDeviceCache(device_cache_);
 }
 
 void Scene::LapStart() {
@@ -823,6 +836,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   slot_ = slot;
   scale_depth_bias_ = larecomp::settings::mcla_gpu_scale_depth_bias.Get() && larecomp::settings::mcla_gpu_work_17oct.Get();
   geometry_->BeginFrame(slot);
+  draw_sampler_.NextFrame();  // the statistic's timed draws move on by one each frame (render_cpu.h)
   edram_->BeginFrame(list, slot);
   textures_->BeginFrame(slot);
   resolve_->BeginFrame(slot);
@@ -904,7 +918,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     hdr_tone_->BeginFrame();
   }
   // Uploads of the previous frame live in another slot's memory.
-  device_uploads_.clear();
+  ForgetDeviceUploads();
   last_shared_span_ = UploadSpan{};
   for (VariantUpload& upload : variant_uploads_) {
     upload.span = UploadSpan{};  // a span of the previous frame's slot must not be handed out again
@@ -929,7 +943,7 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   geometry_->EndFrame(list);
   ResetListState();
   list_ = nullptr;
-  device_uploads_.clear();
+  ForgetDeviceUploads();
   last_shared_span_ = UploadSpan{};
   for (VariantUpload& upload : variant_uploads_) {
     upload.span = UploadSpan{};  // a span of the previous frame's slot must not be handed out again
@@ -1282,7 +1296,10 @@ void Scene::PrefetchTextures(uint64_t sequence, const uint8_t* payload) {
 }
 
 void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
-  const uint64_t c0 = cycles::Now();
+  // The prepare statistic sums the time of every draw: one draw in seven is timed and counted seven times (render_cpu.h), not
+  // every draw (two TSC reads, 7 ns each, on ~3800 draws a frame).
+  const bool timed = draw_sampler_.Take();
+  const uint64_t c0 = timed ? cycles::Now() : 0;
   LapStart();
   const DrawView view(payload);
   const DrawRecord& r = view.record();
@@ -1396,7 +1413,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       }
     }
   }
-  window_.prepare_cycles += cycles::Now() - c0;
+  if (timed) {
+    window_.prepare_cycles += draw_sampler_.Scale(cycles::Now() - c0);
+  }
 }
 
 Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -2392,7 +2411,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
 
 bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                             const SharedConstants& shared, PreparedDraw& d) {
-  DeviceUpload& u = device_uploads_[device];
+  DeviceUpload& u = last_device_upload_.Find(device_uploads_, device, device_cache_);
   if (u.vs_version != banks.vs_version) {
     UploadSpan span = upload_->Allocate(slot_, guest::kConstantBankBytes, kConstantAlignment);
     if (!span) {
@@ -4139,6 +4158,7 @@ void Scene::Report(const char* why) {
                 mean(ab_cpu_sum_, 0), ab_count_[0], mean(ab_sum_, 1), mean(ab_cpu_sum_, 1),
                 ab_count_[1]);
     ab::NextWindow();
+    ApplyRenderCpu();
   }
   if (present_intervals_.size() >= 2) {
     // Frame pacing: the median, the 99th percentile, the longest, and how many

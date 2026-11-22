@@ -166,6 +166,9 @@ Which renderer runs is the SDK's `gpu.driver` (`larecomp`, `d3d12` or `vulkan`; 
 **Speed experiments read at start** (9)
 `perf_no_race_shadows`, `perf_no_impostors`, `perf_no_fullscreen_blur`, `fma_float_fast`, `vsync_fast_poll`, `submit_on_primary_buffer_end`, `lzx_native`, `lzx_native_check_all`, `host_helpers_mask`
 
+**Render-thread CPU savings read at start** (1)
+`render_cpu_mask`
+
 **Game patches read at start** (3)
 `disable_rubberbanding`, `showroom_unlimited`, `vehicle_records_relocate`
 

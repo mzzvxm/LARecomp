@@ -79,6 +79,7 @@
 #include "pipelines.h"
 #include "thread_load.h"
 #include "records.h"
+#include "render_cpu.h"
 #include "shaders.h"
 #include "shadow_filter.h"
 #include "topology.h"
@@ -545,6 +546,14 @@ class Scene {
     UploadSpan ps;
   };
   std::unordered_map<uint32_t, DeviceUpload> device_uploads_;
+  // render_cpu_mask bit 4: the last device's entry of device_uploads_ (UploadConstants). Every clear of the map goes through
+  // ForgetDeviceUploads, which also drops this.
+  render_cpu::LastEntry<std::unordered_map<uint32_t, DeviceUpload>> last_device_upload_;
+  bool device_cache_ = false;
+  void ForgetDeviceUploads() {
+    device_uploads_.clear();
+    last_device_upload_.Forget();
+  }
   SharedConstants last_shared_{};
   UploadSpan last_shared_span_;
   // The last uploads of UploadVariantConstants, one per feature set (round robin over four): the shadow collector's draws and the UI's
@@ -819,6 +828,11 @@ class Scene {
   };
   void LapStart();
   void Lap(Stage stage);
+  // render_cpu_mask (read at start) and ab::B(): which of the render thread's small CPU savings run in this statistics window
+  // (render_cpu.h). Called at the start and at each window's end, where ab::NextWindow() may have changed the variant.
+  void ApplyRenderCpu();
+  int32_t render_cpu_mask_ = 0;
+  render_cpu::DrawSampler draw_sampler_;  // the timers of OnDraw's prepare statistic (window_.prepare_cycles)
   void ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load);
   bool profile_ = false;
   bool scale_depth_bias_ = true;  // mcla_gpu_scale_depth_bias, read each frame

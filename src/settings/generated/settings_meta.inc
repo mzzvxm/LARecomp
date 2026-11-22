@@ -766,6 +766,7 @@
 {"rearview_window_dy", "MCLA/HUD"},
 {"rearview_window_h", "MCLA/HUD"},
 {"rearview_window_w", "MCLA/HUD"},
+{"render_cpu_mask", "MCLA/Performance"},
 {"right_stick_deadzone", "MCLA/Input"},
 {"rmr_diag", "MCLA/Multiplayer"},
 {"rmr_enabled", "MCLA/Multiplayer"},

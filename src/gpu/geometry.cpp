@@ -260,6 +260,7 @@ void GeometryCache::BeginFrame(uint32_t slot) {
   slot_ = slot;
   ++frame_;
   zero_ring_ = UploadSpan{};
+  prepare_sampler_.NextFrame();  // the statistic's timed draws move on by one each frame (render_cpu.h)
 }
 
 UploadSpan GeometryCache::Ring(uint64_t size, uint64_t alignment) {
@@ -780,10 +781,14 @@ GeometryCache::Result GeometryCache::Prepare(const DrawView& view, const XenosSt
                                              bool computed_fetch, DrawGeometry& out,
                                              std::string* detail,
                                              plume::RenderCommandList* list) {
-  const uint64_t c0 = cycles::Now();
+  // The statistic sums the time of every draw: one draw in seven is timed and counted seven times (render_cpu.h).
+  const bool timed = prepare_sampler_.Take();
+  const uint64_t c0 = timed ? cycles::Now() : 0;
   const Result result =
       PrepareDraw(view, state, layout, primitive, computed_fetch, out, detail, list);
-  stats_.prepare_cycles += cycles::Now() - c0;
+  if (timed) {
+    stats_.prepare_cycles += prepare_sampler_.Scale(cycles::Now() - c0);
+  }
   return result;
 }
 
