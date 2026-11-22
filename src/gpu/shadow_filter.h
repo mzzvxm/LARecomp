@@ -13,7 +13,8 @@
 //     pcss   contact hardening (package G1c): the same variant and pipeline with a blocker search in front (8
 //            taps) and the kernel that the sun's size gives at the distance of the blockers: sharp where a
 //            shadow touches its caster, softer with distance. A Low class has no search: pcss is soft there.
-//     auto   gpu_class.h's table: game on Low, pcss on Mid and High (decided by the owner on 2026-11-19)
+//     auto   gpu_class.h's table: game on Low, pcss on Mid and High (decided by the owner on 2026-11-19); soft on a handheld (the Steam
+//            Deck: kHandheldCells, a Low class with the sun shadow's filter at the Mid values that it can run)
 //
 // pipelines.cpp WantedFeatures asks VariantSelected() per draw; Scene::Prepare uploads the 16 bytes the
 // variant reads after the shared constants (ShadowFilterConstants, byte 608 of the draw's SharedConstants
@@ -54,9 +55,9 @@ constexpr Mode ModeOfCell(std::string_view cell) {
 // the table's own cell for Low is `game`; a hand set `pcss` there is soft, with its 8 taps.
 constexpr bool PcssAvailable(gpu_class::GpuClass cls) { return cls != gpu_class::GpuClass::kLow; }
 
-// The mode a choice comes to on a class: `auto` is the table's cell, `pcss` is the contact hardening on a class
-// that has the search and soft on one that has not.
-constexpr Mode ModeFor(gpu_class::GpuClass cls, Choice choice) {
+// The mode a choice comes to on a class: `auto` is the table's cell (the handheld's, where `handheld` says the adapter is the Steam Deck and the
+// class is its Low: gpu_class.h CellFor), `pcss` is the contact hardening on a class that has the search and soft on one that has not.
+constexpr Mode ModeFor(gpu_class::GpuClass cls, Choice choice, bool handheld = false) {
   Mode mode = Mode::kSoft;
   switch (choice) {
     case Choice::kGame:
@@ -67,7 +68,7 @@ constexpr Mode ModeFor(gpu_class::GpuClass cls, Choice choice) {
       mode = Mode::kPcss;
       break;
     default:
-      mode = ModeOfCell(gpu_class::Cell(gpu_class::Effect::kShadowFilter, cls));
+      mode = ModeOfCell(gpu_class::CellFor(gpu_class::Effect::kShadowFilter, cls, handheld));
       break;
   }
   return mode == Mode::kPcss && !PcssAvailable(cls) ? Mode::kSoft : mode;

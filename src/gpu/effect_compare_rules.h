@@ -26,6 +26,7 @@ namespace mcla::gpu::compare {
 struct Saved {
   gpu_class::GpuClass cls = gpu_class::GpuClass::kLow;
   bool class_known = false;
+  bool handheld = false;  // gpu_class::Handheld(): the Steam Deck's cells (a soft shadow filter for `auto`)
   std::string occlusion;  // mcla_gpu_ao
   std::string contact;    // mcla_gpu_contact_shadows
   std::string shafts;     // mcla_gpu_sun_shafts
@@ -63,7 +64,7 @@ inline Standing StandingOf(Effect effect, const Saved& saved) {
       std::string text = host_plan::Lower(saved.filter);
       // On is the variant being drawn: soft or pcss (the game's own filter is the only off).
       out.on = shadow_filter::ModeFor(saved.class_known ? saved.cls : gpu_class::GpuClass::kLow,
-                                      shadow_filter::ParseChoice(text)) !=
+                                      shadow_filter::ParseChoice(text), saved.class_known && saved.handheld) !=
                shadow_filter::Mode::kGame;
       break;
     }

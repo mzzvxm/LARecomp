@@ -22,6 +22,16 @@
 // mcla_gpu_class (auto | low | mid | high, debug only, live) forces a class for tests; it wins over all
 // of the above.
 //
+// The Steam Deck is kLow with a few cells of its own (the handheld cells, kHandheldCells below). It is kLow for everything that is
+// the CPU's or the whole GPU's (every effect that is off on shared memory stays off, the LOD scales are the game's, no ray tracing),
+// but its GPU is 8 compute units of RDNA 2, four times the 2-CU iGPU the Low cells were written for, and the GPU-only cells that
+// cost the least (the sun shadow's filter and detail, the reflections' detail) get the Mid values. It is found by name
+// (kHandheldTable: RADV's "VANGOGH", AMD's "Custom GPU 0405" and "0932") on an adapter that shares memory, so ClassName() is
+// still "low" everywhere a class is read; only the `auto` cells differ (CellFor, ResolveFor and AutoLabelFor with `handheld`;
+// Resolve and AutoLabel pass it). mcla_gpu_class = low gives the plain Low cells on a Deck, mid and high the others (a forced class
+// is never a handheld: Handheld() is false then), so the A/B of DECK1-NOTES.md step 8 is the default against `--mcla_gpu_class=low`
+// and `=mid`. What the three cells cost on a Deck is not measured (no hardware): the numbers are perf\COMPAT-AUDIT.md section 11.4.
+//
 // The `auto` table: for each effect, the value `auto` stands for in each class (kEffects below, the
 // table of GFX-UPGRADES-DESIGN.md section 9). An effect's package keeps its own cvar and its own
 // values; at the place it reads the cvar it calls
@@ -209,12 +219,49 @@ constexpr std::string_view Cell(Effect effect, GpuClass c) {
   }
 }
 
+// The handheld cells: the cells a handheld's GPU (the Steam Deck, found by name: kHandheldTable below) takes in place of the Low class's,
+// for the effects listed here and no other (every other cell of the Low column stays). The Deck's GPU is 8 compute units of RDNA 2 (about 1.6
+// TFLOPs, four times the 2-CU iGPU the Low column was written for) on 16 GB of shared memory, and what it can carry on top of Low is what
+// costs the least GPU time and little memory, at Mid's values (perf\COMPAT-AUDIT.md section 11.4, DECK1-NOTES.md R5): the sun shadow's
+// filter (Mid's cell is pcss, which a Low class cannot run, so soft: 8 taps, no blocker search), its detail and the reflections' detail (the
+// side views' targets at 2x, about 60 MiB in all, of the 16 GB). Everything else is what Low says: no contact shadows, ambient occlusion, sun
+// shafts, bounce light, headlights, light shadows, volumetric light or screen-space reflections, the game's own environment detail, the
+// game's LOD scales (the CPU is a 4-core Zen 2). A cell here is a guess at what fits in the Deck's frame (a shadow pass costs 1.2 to 1.4 ms on the
+// 2-CU iGPU at the game's own size; the Deck should be a third of that [inference]): it is measured by DECK1-NOTES.md step 8 and corrected
+// there, here and in gpu_class_test.cpp.
+struct HandheldCell {
+  Effect effect;
+  std::string_view value;  // what `auto` stands for on a handheld
+};
+inline constexpr HandheldCell kHandheldCells[] = {
+    {Effect::kShadowFilter, "soft"},
+    {Effect::kShadowResolution, "high"},
+    {Effect::kReflectionResolution, "high"},
+};
+inline constexpr int kHandheldCellCount = static_cast<int>(sizeof(kHandheldCells) / sizeof(kHandheldCells[0]));
+
+// What `auto` stands for in a class on this kind of device: a handheld (only meaningful in kLow; any other class ignores it) takes
+// kHandheldCells where it lists the effect and the Low cell otherwise.
+constexpr std::string_view CellFor(Effect effect, GpuClass c, bool handheld) {
+  if (handheld && c == GpuClass::kLow) {
+    for (const HandheldCell& cell : kHandheldCells) {
+      if (cell.effect == effect) {
+        return cell.value;
+      }
+    }
+  }
+  return Cell(effect, c);
+}
+
 // `auto` -> the cell; anything else comes back unchanged.
-inline std::string ResolveFor(GpuClass c, Effect effect, std::string_view user_value) {
+inline std::string ResolveFor(GpuClass c, bool handheld, Effect effect, std::string_view user_value) {
   if (user_value == "auto") {
-    return std::string(Cell(effect, c));
+    return std::string(CellFor(effect, c, handheld));
   }
   return std::string(user_value);
+}
+inline std::string ResolveFor(GpuClass c, Effect effect, std::string_view user_value) {
+  return ResolveFor(c, false, effect, user_value);
 }
 
 // Upper case (ASCII), for the pause menu's capitals.
@@ -241,8 +288,11 @@ constexpr uint32_t SunShaftSteps(GpuClass c) {
 // "AUTO (ULTRA)": the pause row's label for `auto`, with the cell's value in capitals. The stored word is the word the player sees
 // (no graphics setting has a level called low: the ambient occlusion, the contact shadows and the bounce light are off / high / ultra,
 // the car self-reflections off / on), so the cell is shown as it is.
+inline std::string AutoLabelFor(GpuClass c, bool handheld, Effect effect) {
+  return AutoLabelOf(CellFor(effect, c, handheld));
+}
 inline std::string AutoLabelFor(GpuClass c, Effect effect) {
-  return AutoLabelOf(Cell(effect, c));
+  return AutoLabelFor(c, false, effect);
 }
 
 // --- the numeric `auto` settings: LOD distances and densities ------------------------------------
@@ -495,6 +545,22 @@ inline constexpr SpeedRow kIntegratedMidTable[] = {
 inline constexpr int kIntegratedMidRows =
     static_cast<int>(sizeof(kIntegratedMidTable) / sizeof(kIntegratedMidTable[0]));
 
+// The handheld table: the integrated GPUs that take the handheld cells (kHandheldCells) on top of Low. Read by Classify only for an adapter
+// that shares memory (never a software one), vendor-gated and matched like the other tables, on the normalised name; the class stays kLow
+// (`cap` is kLow in every row). Today that is the Steam Deck, and only it: add another handheld's GPU (a ROG Ally's 780M, a Legion Go's) only
+// once it is measured at a class between Low and Mid, since the same names are on laptops with a cooler and a bigger power budget.
+//   * RADV names the chip by its code name, "VANGOGH" (the LCD and the OLED models alike); the text before it is "AMD Custom GPU 0405" on
+//     the older Mesa and "AMD Radeon Graphics" on the newer one [M]: only the code name is read.
+//   * AMD's own driver (the Deck run with Windows, AMDVLK) prints the device's marketing name: "AMD Custom GPU 0405" (LCD), "AMD Custom GPU
+//     0932" (OLED) [M].
+// CHECK: none of these names is seen on a real Deck; the log's "[gpu] class:" line has the adapter's name between quotes.
+inline constexpr SpeedRow kHandheldTable[] = {
+    {kVendorAmd, "vangogh", "", 0, 0, GpuClass::kLow, "Steam Deck (RADV VANGOGH)"},
+    {kVendorAmd, "custom gpu 0405", "", 0, 0, GpuClass::kLow, "Steam Deck LCD (AMD Custom GPU 0405)"},
+    {kVendorAmd, "custom gpu 0932", "", 0, 0, GpuClass::kLow, "Steam Deck OLED (AMD Custom GPU 0932)"},
+};
+inline constexpr int kHandheldRows = static_cast<int>(sizeof(kHandheldTable) / sizeof(kHandheldTable[0]));
+
 // The name as the table reads it: lower case, "(R)" and "(TM)" dropped, everything that is not a letter or
 // a digit one space ("NVIDIA GeForce GTX 1060 6GB" -> "nvidia geforce gtx 1060 6gb"; "Intel(R) Arc(TM) A380
 // Graphics" -> "intel arc a380 graphics"; "AMD Radeon RX 580 Series (RADV POLARIS10)" -> "amd radeon rx 580
@@ -647,6 +713,11 @@ inline SpeedMatch MatchIntegratedMid(uint32_t vendor, std::string_view name) {
   return MatchRows(kIntegratedMidTable, kIntegratedMidRows, vendor, name);
 }
 
+// The row of kHandheldTable that names this integrated GPU, or row -1.
+inline SpeedMatch MatchHandheld(uint32_t vendor, std::string_view name) {
+  return MatchRows(kHandheldTable, kHandheldRows, vendor, name);
+}
+
 // What the class rule looks at, as plain values (gpu_class.cpp fills it from the device).
 //
 // The cues that tell a fast discrete card from a slow one of the same memory, and why only the table is in
@@ -682,6 +753,7 @@ struct Verdict {
   GpuClass cls = GpuClass::kHigh;
   std::string why;  // one phrase for the log line: starts with "by adapter type:", "by memory:" or "by name:"
   Rule rule = Rule::kMemory;
+  bool handheld = false;  // a Steam Deck (kHandheldTable): cls is kLow, the `auto` cells are CellFor's with kHandheldCells
 };
 
 inline Verdict Classify(const AdapterFacts& facts) {
@@ -699,11 +771,20 @@ inline Verdict Classify(const AdapterFacts& facts) {
                   "; shares memory with the CPU like any integrated GPU, which would be low, but is about a mid-range card's speed)",
               Rule::kName};
     }
-    if (facts.uma) {
-      return {GpuClass::kLow, "by adapter type: UMA, the GPU shares memory with the CPU (an integrated GPU or an APU)",
-              Rule::kAdapterType};
+    Verdict shared;
+    shared.cls = GpuClass::kLow;
+    shared.rule = Rule::kAdapterType;
+    shared.why = facts.uma ? "by adapter type: UMA, the GPU shares memory with the CPU (an integrated GPU or an APU)"
+                           : "by adapter type: the graphics API calls it an integrated GPU";
+    // A handheld (the Steam Deck) is Low with its own cells for the GPU-only effects: the class and the rule stay as they are, the name only adds
+    // the flag and a phrase to the reason.
+    const SpeedMatch deck = MatchHandheld(facts.vendor_id, facts.name);
+    if (deck.row >= 0) {
+      shared.handheld = true;
+      shared.why += "; by name: " + std::string(kHandheldTable[deck.row].family) +
+                    " is a handheld, so the sun shadow's filter and detail and the reflections' detail take the Mid values (kHandheldCells)";
     }
-    return {GpuClass::kLow, "by adapter type: the graphics API calls it an integrated GPU", Rule::kAdapterType};
+    return shared;
   }
   if (facts.dedicated_bytes == 0) {
     return {GpuClass::kLow, "by adapter type: no dedicated video memory is reported", Rule::kAdapterType};
@@ -760,7 +841,11 @@ GpuClass ClassDetected();
 // that a player is never given the strong class's cost before it is known. Any thread, cheap.
 bool Known();
 
-// ResolveFor / AutoLabelFor for Current(). Any thread.
+// Whether the handheld cells are in force: the adapter is a handheld (Initialize found Verdict::handheld) and mcla_gpu_class does not force
+// a class (low then gives the plain Low cells). False before Initialize. Any thread, cheap.
+bool Handheld();
+
+// ResolveFor / AutoLabelFor for Current() and Handheld(). Any thread.
 std::string Resolve(Effect effect, std::string_view user_value);
 std::string AutoLabel(Effect effect);
 

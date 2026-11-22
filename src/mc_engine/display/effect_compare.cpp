@@ -73,6 +73,7 @@ cmp::Saved ReadSaved() {
   cmp::Saved saved;
   saved.cls = gpu::gpu_class::Current();
   saved.class_known = gpu::gpu_class::Known();
+  saved.handheld = gpu::gpu_class::Handheld();
   saved.occlusion = larecomp::cvar::GetFlagByName("mcla_gpu_ao");
   saved.contact = larecomp::cvar::GetFlagByName("mcla_gpu_contact_shadows");
   saved.shafts = larecomp::cvar::GetFlagByName("mcla_gpu_sun_shafts");

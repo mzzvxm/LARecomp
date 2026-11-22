@@ -21,6 +21,7 @@ constexpr int kNoOverride = -1;
 
 std::atomic<uint8_t> g_detected{static_cast<uint8_t>(GpuClass::kHigh)};
 std::atomic<bool> g_known{false};  // Initialize has run: g_detected is what the adapter said
+std::atomic<bool> g_handheld{false};  // the adapter is a handheld (a Steam Deck, Verdict::handheld): the cells of kHandheldCells, unless a class is forced
 std::atomic<int> g_override{kNoOverride};
 
 std::mutex g_text_mutex;     // guards the three strings of the log line
@@ -72,7 +73,7 @@ void ApplyOverride(std::string_view text) {
 }
 
 // What `auto` comes to for every effect, in one line.
-std::string AutoSummary(GpuClass c) {
+std::string AutoSummary(GpuClass c, bool handheld) {
   std::string out;
   constexpr std::string_view kPrefix = "mcla_gpu_";
   for (int i = 0; i < kEffectCount; ++i) {
@@ -86,7 +87,7 @@ std::string AutoSummary(GpuClass c) {
     }
     out += name;
     out += '=';
-    out += Cell(effect, c);
+    out += CellFor(effect, c, handheld);
   }
   // The numeric settings (the LOD scales, the traffic range and the densities): `auto` as the value the hooks apply.
   for (int i = 0; i < kScaleCount; ++i) {
@@ -112,13 +113,18 @@ void LogClass() {
   }
   const GpuClass detected = static_cast<GpuClass>(g_detected.load(std::memory_order_relaxed));
   const GpuClass now = Current();
+  const bool handheld = Handheld();
   if (now == detected) {
     REXLOG_INFO("[gpu] class: {} ({}; {})", ClassName(now), why, adapter);
   } else {
     REXLOG_INFO("[gpu] class: {} (forced by mcla_gpu_class={}; the adapter alone says {}: {}; {})",
                 ClassName(now), ClassName(now), ClassName(detected), why, adapter);
   }
-  REXLOG_INFO("[gpu] class {}: auto is {}", ClassName(now), AutoSummary(now));
+  // A handheld says so, and says when a forced class has put its cells away (the line the launcher and a tester's log read).
+  REXLOG_INFO("[gpu] class {}{}: auto is {}", ClassName(now),
+              handheld ? " (handheld cells)"
+              : g_handheld.load(std::memory_order_relaxed) ? " (a handheld, its own cells off while the class is forced)" : "",
+              AutoSummary(now, handheld));
 }
 
 }  // namespace
@@ -156,6 +162,7 @@ void Initialize(const plume::RenderDeviceDescription& description,
                 (facts.raytracing ? ", ray tracing yes" : ", ray tracing no");
   }
   g_detected.store(static_cast<uint8_t>(verdict.cls), std::memory_order_relaxed);
+  g_handheld.store(verdict.handheld, std::memory_order_relaxed);
 
   ApplyOverride(larecomp::settings::mcla_gpu_class.Get());
   g_known.store(true, std::memory_order_release);
@@ -191,12 +198,16 @@ bool Known() {
   return g_known.load(std::memory_order_acquire);
 }
 
+bool Handheld() {
+  return g_handheld.load(std::memory_order_relaxed) && !ClassForced() && Known();
+}
+
 std::string Resolve(Effect effect, std::string_view user_value) {
-  return ResolveFor(Current(), effect, user_value);
+  return ResolveFor(Current(), Handheld(), effect, user_value);
 }
 
 std::string AutoLabel(Effect effect) {
-  return AutoLabelFor(Current(), effect);
+  return AutoLabelFor(Current(), Handheld(), effect);
 }
 
 double ScaleInForce(Scale scale, double user_value) {
