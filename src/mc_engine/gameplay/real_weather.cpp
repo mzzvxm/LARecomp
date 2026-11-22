@@ -126,7 +126,7 @@ std::string HttpsGet(const wchar_t* host, const wchar_t* path) {
         std::lock_guard<std::mutex> lock(mutex);
         if (got.why != last) {
             last = got.why;
-            LARECOMP_APP_INFO("[RealWeather] the request to {} failed: {}", std::string(url.begin(), url.begin() + static_cast<std::ptrdiff_t>(url.find('/', 8))), got.why);
+            LARECOMP_APP_INFO("[RealWeather] the request to {} failed: {}", url.substr(0, url.find('/', 8)), got.why);
         }
         return {};
     }
