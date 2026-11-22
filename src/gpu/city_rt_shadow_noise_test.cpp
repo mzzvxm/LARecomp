@@ -95,7 +95,7 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(cs, "#include \"city_rt_shadow_noise.hlsli\"") && nc::Has(cs, "CityRtShadowNoise(int(pixel.x), int(pixel.y), g_push.noise.x)") && !nc::Has(cs, "52.9829189") && !nc::Has(cs, "float Ign("),
           "city_rt_shadow_cs.hlsl takes the disc noise from city_rt_shadow_noise.hlsli and carries no gradient noise of its own");
   g_check(nc::Has(noise, "static const uint kCityNoiseBlueFlag = 1u << 29;") && as::kBlueNoiseFlag == (1u << 29), "the word's blue flag is bit 29, ao_stable.h's");
-  g_check(nc::Has(ao, "city_in.sun_frame = (plan.upscaler ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u) | (larecomp::settings::mcla_gpu_ao_blue_noise.Get() ? ao_stable::kBlueNoiseFlag : 0u);"),
+  g_check(nc::Has(ao, "city_in.sun_frame = (noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u) | (larecomp::settings::mcla_gpu_ao_blue_noise.Get() ? ao_stable::kBlueNoiseFlag : 0u);"),
           "ao.cpp sets the flag from mcla_gpu_ao_blue_noise and the frame from the scene's noise index (NoiseIndex) only while an upscaler runs");
 }
 

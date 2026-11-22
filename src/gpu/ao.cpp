@@ -2775,9 +2775,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     for (int i = 0; i < 3; ++i) {
       city_in.to_sun[i] = base.light[i];
     }
-    // The frame the rays' noise is shifted by (the scene's noise index while a scene runs: scene_noise.h NoiseIndex): a fixed (blue) pattern unless a temporal upscaler averages the frames, as the march's; bit 29 says the blue noise tile
+    // The frame the rays' noise is shifted by (the scene's noise index while a scene runs: scene_noise.h NoiseIndex): a fixed (blue) pattern unless a temporal upscaler averages the frames or (NOISE-RESOLVE) the contact image's own history does, as the march's; bit 29 says the blue noise tile
     // (mcla_gpu_ao_blue_noise, hlsl/city_rt_shadow_noise.hlsli), else the first version's gradient noise.
-    city_in.sun_frame = (plan.upscaler ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u) | (larecomp::settings::mcla_gpu_ao_blue_noise.Get() ? ao_stable::kBlueNoiseFlag : 0u);
+    city_in.sun_frame = (noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u) | (larecomp::settings::mcla_gpu_ao_blue_noise.Get() ? ao_stable::kBlueNoiseFlag : 0u);
     city_in.car_slot = (rt.recorded && rt.contact) ? rt.slot : CityRtShadow::kNoSlot;
     city_in.frame = frame_;
     const CityRtShadow::Result city = city_shadow_->Record(list, city_in);
