@@ -62,6 +62,7 @@
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
 #include "gpu/latency.h"
+#include "gpu/local_shadow_rules.h"
 #include "gpu/renderer_choice.h"
 #include "gpu/shadow_filter.h"
 #include "gpu/side_views.h"
@@ -1560,7 +1561,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //   LIGHTING AND SHADOWS  SHADOWS, FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT
 //                         OCCLUSION, AO INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS, VOLUMETRIC
 //                         LIGHT (kLightItems; FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey while SHADOWS is off)
-//   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS (kReflectionItems)
+//   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, REFLECTIONS ON SURFACES (kReflectionItems)
 //   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
 // On XENIA the hub lists DISPLAY (DISPLAY MODE, RESOLUTION, DISPLAY GAMMA, FPS LIMIT), UPSCALING (RENDER SCALE), IMAGE QUALITY (MSAA,
@@ -1863,7 +1864,7 @@ constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 // game's own four taps (GAME: the picture is the game's), more taps on a disk (SOFT) or that with contact
 // hardening (PCSS: a shadow is sharp where it touches what casts it and softer with the distance from it).
 // AUTO says what it comes to on this GPU (the first value's label, like the latency reducer's): GAME on an
-// integrated GPU, PCSS on the rest (gpu/gpu_class.h; decided by the owner on 2026-11-19).
+// integrated GPU (SOFT on the Steam Deck, whose GPU can carry that much), PCSS on the rest (gpu/gpu_class.h; decided by the owner on 2026-11-19).
 // PCSS on an integrated GPU has no blocker search (the same cost rule as its AUTO) and says so: "PCSS (SOFT)".
 // The row is "SHADOW FILTER" (13 characters) with a value of at most 11 ("AUTO (PCSS)", "AUTO (GAME)",
 // "PCSS (SOFT)").
@@ -1999,6 +2000,25 @@ std::string RoadReflectionLabel(int i) {
     }
 }
 constexpr RowDynamics kRoadReflectionDynamics = {.str_label = RoadReflectionLabel};
+// Reflections on surfaces (mcla_gpu_ssr, gpu/ssr.h and ssr_rules.h, live; GB-J): sharp reflections of the scene on wet roads, wet sidewalks, glass, metal and
+// water, traced through the picture itself on top of the game's own reflections (a car's paint and chrome keep their own: CAR REFLECTIONS, CAR SELF-REFLECTIONS).
+// AUTO, OFF, HIGH (one ray a pixel at half the picture's size, up to 40 steps, about 10 frames of history) or ULTRA (two rays, up to 64 steps, about 12 frames).
+// AUTO says what it comes to on this GPU, like the other AUTO rows (gpu/gpu_class.h Effect::kSsr). THE CELLS ARE OFF ON EVERY CLASS for now: the effect stays off by default
+// until the owner has seen its pictures and the cost run's figures have set the cells (the prepared ones are in gpu_class.h). The effect needs the G-buffer's planes, which
+// exist only while a consumer wants them (this one, the light pass, the occlusion's normals: gbuffer_rules.h AutoPlanes), so OFF costs nothing. The stored words are the
+// shown words (no level is called low). The label is "REFLECTIONS ON SURFACES" (23 characters) with a value of at most 12 ("AUTO (ULTRA)"); the page counts its widest label (this one) plus
+// its widest value over all its rows ("AUTO (RAY TRACED)", 17): 40 of the 41 a page can take.
+const char* const kNativeSsrVals[]  = {"auto", "off", "high", "ultra"};
+const char* const kNativeSsrNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+std::string SsrLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSsr);
+    case 1:  return "OFF";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+constexpr RowDynamics kSsrDynamics = {.str_label = SsrLabel};
 // Shadow detail (mcla_gpu_shadow_resolution, gpu/side_views.h, live): how finely the sun's shadows are drawn,
 // the game's own four 640x640 maps in a 1280x1280 picture (GAME), 2560x2560 (HIGH) or 3840x3840 (ULTRA);
 // with SHADOW FILTER on SOFT the edge of a shadow is half and a third as wide. AUTO says what it comes to on
@@ -2051,19 +2071,36 @@ constexpr RowDynamics kCarShadowDynamics = {.str_label = CarShadowLabel};
 // Light shadows (mcla_gpu_light_shadows, gpu/local_shadow.h, live; it was mcla_gpu_headlight_shadows, which stays as an alias): the local lights
 // cast shadows (the game has none from any light but the sun): the scene's opaque objects are drawn again from the lights into a small map the
 // lights' light reads. The row covers the headlights now and the street lamps later (owner, 2026-11-20: one row for every local light's shadows).
-// OFF, HIGH (two views of 512x512 texels: your car's headlights and the nearest car's) or ULTRA (three of 1024x1024: also the next nearest car's, sharper). AUTO says what it comes to on this GPU,
-// like the other AUTO rows (gpu/gpu_class.h Effect::kLightShadows: ULTRA on a fast card, HIGH on a medium one, OFF on an integrated one). The
-// stored words are the shown words (no level is called low). It runs only while a headlight is lit and in the game view; the row stays live
-// whatever the hour is. The label is "LIGHT SHADOWS" (13 characters) with a value of at most 12 ("AUTO (ULTRA)").
-const char* const kNativeLightShadowVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeLightShadowNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-std::string LightShadowLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kLightShadows);
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
+// OFF, MEDIUM (the player's car and the nearest other car, one view for each car: 2 views of 512x512 texels), HIGH (the same two cars, the player's car with a shadow from each
+// headlamp and the other car with one: 3 views of 512x512) or ULTRA (also the next nearest car's, every car with a shadow from each lamp, sharper: 6 views of 1024x1024): the three
+// level shape (owner, 2026-11-20). The levels are the table of gpu/local_shadow_rules.h (kLevelTable, kThreeLevelShape), and so are this row's words (the row's code builds its arrays
+// from kMenuWords: auto, off, medium, high, ultra; three levels are Medium / High / Ultra, never "low"). AUTO says what it comes to on this GPU, like the other AUTO rows
+// (gpu/gpu_class.h Effect::kLightShadows: ULTRA on a fast card, MEDIUM on a medium one, OFF on an integrated one). The stored words are the shown words (no level is called low).
+// It runs only while a headlight is lit and in the game view; the row stays live whatever the hour is. The label is "LIGHT SHADOWS" (13 characters) with a value of at most 13
+// ("AUTO (MEDIUM)").
+struct LightShadowWords {
+    const char* vals[mcla::gpu::local_shadow::kMenuWordMax] = {};
+    const char* names[mcla::gpu::local_shadow::kMenuWordMax] = {};
+    int count = 0;
+};
+constexpr LightShadowWords MakeLightShadowWords() {
+    LightShadowWords w;
+    const mcla::gpu::local_shadow::MenuWords& menu = mcla::gpu::local_shadow::kMenuWords;
+    for (uint32_t i = 0; i < menu.count; ++i) {
+        w.vals[i] = menu.stored[i].data();   // the table's words are string literals: null terminated
+        w.names[i] = menu.shown[i].data();
     }
+    w.count = int(menu.count);
+    return w;
+}
+constexpr LightShadowWords kLightShadowWords = MakeLightShadowWords();
+constexpr const char* const* kNativeLightShadowVals  = kLightShadowWords.vals;
+constexpr const char* const* kNativeLightShadowNames = kLightShadowWords.names;
+std::string LightShadowLabel(int i) {
+    if (i == 0) {
+        return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kLightShadows);
+    }
+    return (i > 0 && i < kLightShadowWords.count) ? kLightShadowWords.names[i] : "";
 }
 // Grey while HEADLIGHTS is off (what AUTO comes to counts): the shadows are the headlights' own for now (when the street lamps get shadows too,
 // the row is grey only while both the headlights and the lamps are off).
@@ -2210,7 +2247,7 @@ const ItemDef kLightItems[] = {
                                 kNativeHeadlightsVals, kNativeHeadlightsNames, 3),
                             &kHeadlightsDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuLightShadows", "mcla_gpu_light_shadows", "LIGHT SHADOWS: ",
-                                kNativeLightShadowVals, kNativeLightShadowNames, 4),
+                                kNativeLightShadowVals, kNativeLightShadowNames, kLightShadowWords.count),
                             &kLightShadowDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "VOLUMETRIC LIGHT: ",
                                 kNativeVolumetricsVals, kNativeVolumetricsNames, 5),
@@ -2219,9 +2256,10 @@ const ItemDef kLightItems[] = {
 };
 
 #if defined(LARECOMP_HAS_GPU)
-// REFLECTIONS (GRAPHICS > REFLECTIONS, NATIVE only): what the road, the cars' paint and the car itself reflect: ROAD REFLECTIONS, CAR REFLECTIONS
-// and CAR SELF-REFLECTIONS (one row for the screen-space and the ray traced reflection). Every row is live and has an AUTO that follows the
-// graphics card. Width: the longest label is "CAR SELF-REFLECTIONS" (20), the longest value "AUTO (RAY TRACED)" (17): 37 of the 41 a page can take.
+// REFLECTIONS (GRAPHICS > REFLECTIONS, NATIVE only): what the road, the cars' paint, the car itself and the surfaces of the street reflect: ROAD REFLECTIONS, CAR REFLECTIONS,
+// CAR SELF-REFLECTIONS (one row for the screen-space and the ray traced reflection) and REFLECTIONS ON SURFACES (the screen-space reflections of wet roads, sidewalks, glass and
+// metal). Every row is live and has an AUTO that follows the graphics card. Width: the longest label is "REFLECTIONS ON SURFACES" (23), the longest value "AUTO (RAY TRACED)" (17):
+// 40 of the 41 a page can take.
 const ItemDef kReflectionItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
@@ -2232,6 +2270,9 @@ const ItemDef kReflectionItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
                                 "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 1),
                             &kCarSelfReflDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuSsr", "mcla_gpu_ssr", "REFLECTIONS ON SURFACES: ",
+                                kNativeSsrVals, kNativeSsrNames, 4),
+                            &kSsrDynamics)),
 };
 #endif
 
@@ -3144,11 +3185,11 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // LIGHTING AND SHADOWS (kLightItems, 15 rows; the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
 // SHADOWS while SHADOWS is off): labels at most 27 ("FOLIAGE SHADOWS (NO SHADOW)", "TRAFFIC SHADOWS (NO SHADOW)"), then "SHADOW DETAIL
 // (NO SHADOW)" and "SHADOW FILTER (NO SHADOW)" 25, "BOUNCE LIGHT STRENGTH" 21, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "LIGHT
-// SHADOWS" 13, "CAR SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
-// (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 41 together. On XENIA the page has SHADOWS and FOLIAGE
+// SHADOWS" 13, "CAR SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 13 (LIGHT SHADOWS' "AUTO
+// (MEDIUM)"), 12 ("AUTO (ULTRA)", "AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 41 together. On XENIA the page has SHADOWS and FOLIAGE
 // SHADOWS: 27 and 3.
-// REFLECTIONS (kReflectionItems, 3 rows): "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CAR
-// REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 37. WORLD DETAIL (kWorldDetailItems): "PROP
+// REFLECTIONS (kReflectionItems, 4 rows): "REFLECTIONS ON SURFACES" 23, "CAR SELF-REFLECTIONS" 20, "ROAD
+// REFLECTIONS" 16, "CAR REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 40. WORLD DETAIL (kWorldDetailItems): "PROP
 // DRAW DIST" 14, "AUTO (0.75X)" 12: 26.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
@@ -3301,8 +3342,8 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // of the game's own value class, handed to the list through its widget array.
 
 // Sizes the tables below, nothing else: the form's own row list is made with the page's row count
-// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 12 rows
-// (kLightItems, 13); a page over the cap is refused whole (BuildNativeRows), so there is room.
+// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 15 rows
+// (kLightItems); a page over the cap is refused whole (BuildNativeRows), so there is room.
 constexpr int kMaxRowsPerMenu = 24;
 
 struct NativeRows {

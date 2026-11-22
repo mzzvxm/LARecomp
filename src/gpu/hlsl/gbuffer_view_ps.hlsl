@@ -5,7 +5,7 @@
 // class), each in a bindless slot; a plane the frame does not have is a slot that is not read (info.y has a bit for each plane that exists) and shows as no data.
 //
 //   view 1  the normal as a colour (0.5 + 0.5 n); black where RT1 holds no data
-//   view 2  the albedo (RT2.rgb squared), black where there is none
+//   view 2  the albedo (RT2.rgb squared), black where there is none (RT2 all zero: no data; an emissive pixel has its albedo and a lit weight of 0)
 //   view 3  the smoothness (RT3.r) as a grey
 //   view 4  the class as a colour (a hue per class; a pixel that has a normal and no RT3 is dark green: written, class unknown); black: no data
 //   view 5  coverage: white where RT1 holds a normal, black where it does not (the "missing pixels" picture of the survey's run plan R2)
@@ -87,7 +87,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   } else if (view == 2u) {
     if (have_albedo) {
       const float4 rt2 = LoadPlane(g_push.slots.y, p);
-      if (rt2.a > 0.0f) {
+      // RT2 = (0, 0, 0, 0) is "no albedo"; an emissive pixel has an albedo and a lit weight of 0 (GB-W1): it shows here too
+      if (any(rt2 > 0.0f)) {
         colour = GbAlbedoDecode(rt2.rgb);
       }
     }

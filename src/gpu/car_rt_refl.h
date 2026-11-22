@@ -82,11 +82,14 @@
 // binary edge: nothing to take out, nothing to blur), the first pass in full from 2.5 texels, the second (wider) from 10. On the pure model of a
 // straight penumbra (the unit test) the grain along the edge falls 2 to 7 times (to under 0.011 of the weight) and the edge's ramp grows by at most a
 // fifth, the 50% point stays where it was to 0.05 texels. The paint's variant is unchanged (the image has the same codes and the same size: version 6).
-// A TEMPORAL accumulation was weighed and left out (car_rt_refl_rules.h says why: the reflection moves with the view, so a reprojected texel holds the
+// A TEMPORAL accumulation was weighed and left out at first (car_rt_refl_rules.h says why: the reflection moves with the view, so a reprojected texel holds the
 // last frame's direction and an accumulation over a few frames trails the edge; its rejection rule cannot see that, and the cut, pause, garage and
-// no-motion frames each need their own; with an upscaler the upscaler is the temporal filter and the pattern turns by the frame). The passes are
+// no-motion frames each need their own; with an upscaler the upscaler is the temporal filter and the pattern turns by the frame). NOISE-RESOLVE (noise_resolve.h) added a third pass
+// for the frames WITHOUT an upscaler: the pattern turns by the frame there too and the finished image is averaged with the last frame's result texel for texel, the history clamped to the
+// finished image's 3 x 3 neighbourhood (which sees a penumbra that moved and bounds the ghost to about a texel); two more images of the image's size while it runs (mcla_gpu_noise_resolve_no_upscaler).
+// The passes are
 // skipped for a gloss of 0 (one ray: no noise), for the setting 0, and for the frames the denoise's pipeline or images are not ready (the raw image
-// is read then). One pass leaves its result in the scratch image, which the paint then reads (SlotFor); two leave it in the trace's own.
+// is read then). One pass leaves its result in the scratch image, which the paint then reads (SlotFor); two leave it in the trace's own (the history pass, where it runs, leaves it in its own image).
 //
 // RESOLUTION (decided with numbers): the image stays at the history's size (half of the picture at 4K: 1920x1080), not the picture's. A
 // 4K picture has about 215k vehicle texels at half size and 860k at full: with a primary ray and a cone of 4 that is 1.1 M against 4.3 M rays
@@ -202,7 +205,7 @@ class CarRtRefl {
     double tan_y = 0.0;             //   (1 / |P00| and 1 / |P11| of the previous frame's projection, as the AO takes them)
     uint64_t frame = 0;             // the guest frame the history is of (what SlotFor is asked with)
     bool upscaler = false;          // a temporal upscaler works on this frame: the cone's pattern turns by the frame (it averages the pattern out)
-    uint32_t pattern_phase = 0;     // 0 .. 7: the pattern's step for this frame (0 where no upscaler runs: the pattern stands still on the screen)
+    uint32_t pattern_phase = 0;     // 0 .. 7: the pattern's step for this frame (the scene's noise index): used while an upscaler runs or the pass's own history does (NOISE-RESOLVE: OnHistory says which); else the pattern stands still
     int32_t exp_bias = car_selfrefl::kMainTargetExpBias;  // the main colour target's exponent bias: the history's colour is the shaders' output times 2^exp_bias; the pass's own colours
                                                           // (a car's paint, the grey of a remembered car) are in the paint's units and are multiplied by 2^exp_bias (car_selfrefl_rules.h ExpBiasUnits)
   };
@@ -280,9 +283,13 @@ class CarRtRefl {
   // A stats frame's counters, read back once the GPU is done with them: the window, the exposure, the log line.
   void ProcessStats(uint64_t frame, uint64_t generation);
   void ReleaseScratch();
-  // One compute dispatch of the denoise: `input` filtered into the image `output` names, `pass` 0 or 1.
+  // One compute dispatch of the denoise: `input` filtered into the image `output` names, `pass` 0 or 1; pass 2 (NOISE-RESOLVE) averages `input` with the image in bindless slot `previous_slot` at the weight `keep`.
   void DispatchDenoise(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, uint32_t history_slot, const HostImage& input,
-                       const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length, float tan_half);
+                       const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length, float tan_half, float keep = 0.0f,
+                       uint32_t previous_slot = 0);
+  // NOISE-RESOLVE: the history's two images (the finished image averaged with the last frame's, hlsl/car_rt_refl_denoise_cs.hlsl pass 2), made while the pass's own history runs.
+  bool EnsureStableImages(uint32_t width, uint32_t height);
+  void ReleaseStable();
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
@@ -331,6 +338,17 @@ class CarRtRefl {
   OutputSet trace_set_;   // u0 image_, u1 aux_
   OutputSet first_set_;   // u0 scratch_
   OutputSet final_set_;   // u0 image_
+  // NOISE-RESOLVE: while no temporal upscaler runs the cone's pattern changes every frame and the finished image is averaged with the last frame's result (noise_resolve.h): two images of the same size
+  // that take turns (the paint reads the one written last), their sets, and what the next frame needs to know of it.
+  HostImage stable_[2];
+  OutputSet stable_set_[2];       // u0 stable_[i]
+  uint32_t stable_index_ = 0;
+  bool stable_valid_ = false;     // stable_[stable_index_] holds the result of `stable_frame_`
+  uint64_t stable_frame_ = 0;
+  uint32_t stable_frames_ = 0;    // frames of history the last result holds
+  bool result_in_stable_ = false; // the paint reads stable_[stable_index_] for the frame `recorded_frame_`
+  uint64_t stable_runs_ = 0;
+  bool stable_logged_ = false;
 
   // The opponents' cars (car_rt_opp_refl.h): a second dispatch of the trace's shader file into the same images, after the player's.
   CarRtOppRefl opp_;

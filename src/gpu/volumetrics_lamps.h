@@ -138,6 +138,7 @@ inline VolLamp MakeVolLamp(const GameLamp& g, float units = 1.0f) {
     ConeCosines(g.cone_deg, g.spread_deg, &v.cos_outer, &v.cos_inner);
   }
   v.shadow_view = -1;
+  v.shadow_view_b = -1;  // none (it was left 0, a view's index that nothing reads: a street lamp is not shaped, the inject takes no shadow view for it); light_convert.h ToVolLamp says -1 too
   LampNearSq(v) = std::max(kLampNearShare * intensity, kLampNear * kLampNear);
   return v;
 }
@@ -236,6 +237,10 @@ struct PickParams {
 struct PickResult {
   std::array<VolLamp, kMaxLamps> lamps{};
   uint32_t count = 0;
+  // LU-4b: what each lamp above was made from (the list's record, or the last one a lamp that fades out had) and the weight that was folded into its colour, so that the light
+  // manager's frame can hold the lamp itself (light_convert.h LightFromGameLamp + Light::vol_weight) and project the very same bytes (light_project.h).
+  std::array<GameLamp, kMaxLamps> records{};
+  std::array<float, kMaxLamps> weights{};
   // for the census
   uint32_t listed = 0;    // the records given
   uint32_t usable = 0;    // those that light anything (on, a colour, in reach of the view)
@@ -373,6 +378,8 @@ class LampPicker {
       for (int i = 0; i < 3; ++i) {
         v.colour[i] *= t.weight;
       }
+      out->records[out->count] = t.lamp;
+      out->weights[out->count] = t.weight;
       out->lamps[out->count++] = v;
       if (t.wanted) {
         ++out->wanted;

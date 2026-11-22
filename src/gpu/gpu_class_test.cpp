@@ -89,13 +89,16 @@ const Row kTable[] = {
      "AUTO (ULTRA)"},
     // The headlights have one level, `on`: the integrated class (Low) has none.
     {Effect::kHeadlights, "mcla_gpu_headlights", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
-    // Light shadows (local_shadow.h; the headlights now, the street lamps later): high on Mid (two maps of 512: the player's car's lamps and the nearest other car's), ultra on High
-    // (three of 1024: the next nearest car's too), nothing on shared memory.
-    {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "high", "ultra", "AUTO (OFF)",
-     "AUTO (HIGH)", "AUTO (ULTRA)"},
+    // Light shadows (local_shadow.h; the headlights now, the street lamps later), the three level shape (owner 2026-11-20): medium on Mid (two maps of 512: one view for the player's car and one for the
+    // nearest other car), ultra on High (six of 1024: a view for each lamp of the player's car and the two nearest others), nothing on shared memory; high (the player's lamps, 512) is for the player to pick.
+    {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "medium", "ultra", "AUTO (OFF)",
+     "AUTO (MEDIUM)", "AUTO (ULTRA)"},
     // Volumetric light (VOLUMETRICS-SURVEY.md section 4.1): off on Low, medium on Mid, high on High (ultra is a deliberate pick).
     {Effect::kVolumetrics, "mcla_gpu_volumetrics", "off", "medium", "high", "AUTO (OFF)", "AUTO (MEDIUM)",
      "AUTO (HIGH)"},
+    // Reflections on surfaces (ssr_rules.h; the row REFLECTIONS ON SURFACES, GB-J): off on every class until the owner has seen the pictures. The prepared cells (gpu_class.h) are
+    // Low off, Mid high or off, High ultra or high, by the cost run's figures: switching them on is a change of this row and of CheckSsr.
+    {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)", "AUTO (OFF)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
@@ -156,24 +159,28 @@ void CheckAmbientOcclusion() {
   }
 }
 
-// Light shadows' `auto` (mcla_gpu_light_shadows, local_shadow.h): nothing on shared memory, the small map (high) on Mid, the big one (ultra)
-// on High; a value the player holds is kept in every class, and the classes only go up.
+// Light shadows' `auto` (mcla_gpu_light_shadows, local_shadow.h): nothing on shared memory, one view for a car (medium) on Mid, a view for each lamp of three cars
+// (ultra) on High; high (the player's lamps) is never a cell. A value the player holds (off, medium, high, ultra) is kept in every class, the classes only go up, and nothing is called low.
 void CheckLightShadows() {
   const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
-  const char* const want[] = {"off", "high", "ultra"};
-  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
+  const char* const want[] = {"off", "medium", "ultra"};
+  const char* const own[] = {"off", "medium", "high", "ultra"};
+  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "medium" ? 1 : v == "high" ? 2 : 3; };
   int last = -1;
   for (int k = 0; k < 3; ++k) {
     const GpuClass c = classes[k];
     const std::string at = "light shadows on " + std::string(ClassName(c));
     CheckEq(ResolveFor(c, Effect::kLightShadows, "auto"), want[k], at + ": auto");
-    for (const char* v : {"off", "high", "ultra"}) {
+    for (const char* v : own) {
       CheckEq(ResolveFor(c, Effect::kLightShadows, v), v, at + ": the saved '" + v + "' is kept");
     }
     const int now = rank(Cell(Effect::kLightShadows, c));
     Check(now >= last, at + ": not below the class under it");
+    Check(Cell(Effect::kLightShadows, c) != "high" && Cell(Effect::kLightShadows, c) != "low", at + ": auto never picks high (the player's own pick) or a level called low");
     last = now;
   }
+  CheckEq(AutoLabelFor(GpuClass::kMid, Effect::kLightShadows), "AUTO (MEDIUM)", "the Mid class's row says AUTO (MEDIUM)");
+  CheckEq(AutoLabelFor(GpuClass::kHigh, Effect::kLightShadows), "AUTO (ULTRA)", "the High class's row says AUTO (ULTRA)");
   CheckEq(std::string(CvarName(Effect::kLightShadows)), "mcla_gpu_light_shadows", "the cvar's name");
 }
 
@@ -201,6 +208,30 @@ void CheckVolumetrics() {
   Check(AutoLabelFor(GpuClass::kHigh, Effect::kVolumetrics).size() <= 13, "the longest value of the row fits the page");
 }
 
+// Reflections on surfaces' `auto` (mcla_gpu_ssr, GB-J): OFF ON EVERY CLASS until the owner approves the pictures, so the effect is off by default as before the row existed; a value the player
+// holds (off, high, ultra) is kept in every class; the classes never go down; nothing is called low. When the owner approves, the cells become the prepared ones (Low off, Mid high or off,
+// High ultra or high: gpu_class.h) and the "all off" check below is what changes.
+void CheckSsr() {
+  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
+  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
+  int last = -1;
+  for (const GpuClass c : classes) {
+    const std::string at = "reflections on surfaces on " + std::string(ClassName(c));
+    CheckEq(ResolveFor(c, Effect::kSsr, "auto"), "off", at + ": auto is off until the pictures are approved");
+    for (const char* v : {"off", "high", "ultra"}) {
+      CheckEq(ResolveFor(c, Effect::kSsr, v), v, at + ": the saved '" + v + "' is kept");
+    }
+    CheckEq(AutoLabelFor(c, Effect::kSsr), "AUTO (OFF)", at + ": the row says AUTO (OFF)");
+    const int now = rank(Cell(Effect::kSsr, c));
+    Check(now >= last, at + ": not below the class under it");
+    last = now;
+    const std::string cell(Cell(Effect::kSsr, c));
+    Check(cell == "off" || cell == "high" || cell == "ultra", at + ": the cell '" + cell + "' is off, high or ultra");
+    Check(AutoLabelFor(c, Effect::kSsr).size() <= 12, at + ": the longest value of the row fits the page (AUTO (ULTRA) is 12)");
+  }
+  CheckEq(std::string(CvarName(Effect::kSsr)), "mcla_gpu_ssr", "the cvar's name");
+}
+
 void CheckLabels() {
   CheckEq(AutoLabelOf("high"), "AUTO (HIGH)", "AutoLabelOf(high)");
   CheckEq(AutoLabelOf("Soft"), "AUTO (SOFT)", "AutoLabelOf(Soft)");
@@ -208,15 +239,21 @@ void CheckLabels() {
 }
 
 // The stored word is the shown word: nothing in the graphics settings is called low (owner, 2026-11-14). The ambient occlusion, the
-// contact shadows and the bounce light are off / high / ultra, the car self-reflections off / on; every cell of the table is one of the
+// contact shadows, the bounce light and the screen-space reflections are off / high / ultra (the light shadows have three levels: the loop below), the car self-reflections off / on; every cell of the table is one of the
 // words its setting allows, and no cell and no label of an `auto` says low.
 void CheckWords() {
-  for (const Effect effect : {Effect::kAmbientOcclusion, Effect::kContactShadows, Effect::kSsgi, Effect::kLightShadows}) {
+  for (const Effect effect : {Effect::kAmbientOcclusion, Effect::kContactShadows, Effect::kSsgi, Effect::kSsr}) {
     const std::string name(CvarName(effect));
     for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
       const std::string cell(Cell(effect, c));
       Check(cell == "off" || cell == "high" || cell == "ultra", name + " on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off, high or ultra");
     }
+  }
+  // The light shadows have three levels (the three level shape): their cells are words of off / medium / high / ultra.
+  for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+    const std::string cell(Cell(Effect::kLightShadows, c));
+    Check(cell == "off" || cell == "medium" || cell == "high" || cell == "ultra",
+          "mcla_gpu_light_shadows on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off, medium, high or ultra");
   }
   for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
     const std::string cell(Cell(Effect::kCarSelfRefl, c));
@@ -796,6 +833,193 @@ void CheckSpeedTable() {
   }
 }
 
+// ---- the Steam Deck: kLow with the handheld cells (gpu_class.h kHandheldCells; perf\COMPAT-AUDIT.md section 11.4, DECK1-NOTES.md R5) ----
+
+int g_handheld_row_hits[8] = {};
+
+// What a Deck's adapter looks like to Classify: shared memory, the integrated type and a 1 GiB carve-out, AMD's vendor id and the name RADV or AMD's driver gives.
+AdapterFacts DeckFacts(const char* name) {
+  AdapterFacts f = Named(kVendorAmd, name, 1024);
+  f.uma = true;
+  f.integrated = true;
+  return f;
+}
+
+void CheckHandheldCells() {
+  const GpuClass kL = GpuClass::kLow;
+  // The cells written out again: the Low column of the table above, except these three, which are the Mid values the Deck's GPU can run (soft for the
+  // sun shadow's filter, since the blocker search of Mid's pcss is not run on a Low class).
+  struct Want {
+    Effect effect;
+    const char* value;
+  };
+  const Want kWant[] = {
+      {Effect::kShadowFilter, "soft"},
+      {Effect::kShadowResolution, "high"},
+      {Effect::kReflectionResolution, "high"},
+  };
+  Check(kHandheldCellCount == static_cast<int>(sizeof(kWant) / sizeof(kWant[0])), "the handheld cells are the three of the test");
+  Check(sizeof(kHandheldCells) / sizeof(kHandheldCells[0]) == static_cast<std::size_t>(kHandheldCellCount), "kHandheldCellCount counts the cells");
+  for (int i = 0; i < kHandheldCellCount; ++i) {
+    for (int k = i + 1; k < kHandheldCellCount; ++k) {
+      Check(kHandheldCells[i].effect != kHandheldCells[k].effect, "no effect has two handheld cells");
+    }
+  }
+
+  for (int i = 0; i < kEffectCount; ++i) {
+    const Effect effect = static_cast<Effect>(i);
+    const std::string name(CvarName(effect));
+    std::string expected(Cell(effect, kL));
+    bool listed = false;
+    for (const Want& w : kWant) {
+      if (w.effect == effect) {
+        expected = w.value;
+        listed = true;
+      }
+    }
+    const std::string at = name + " on a handheld";
+    CheckEq(std::string(CellFor(effect, kL, true)), expected, at + ": cell");
+    CheckEq(ResolveFor(kL, true, effect, "auto"), expected, at + ": Resolve(auto)");
+    CheckEq(AutoLabelFor(kL, true, effect), AutoLabelOf(expected), at + ": AutoLabel");
+    // A handheld cell is not the Low cell (else it would not be a cell of its own), and a cell that is not listed is.
+    CheckEq(CellFor(effect, kL, true) == Cell(effect, kL) ? "same" : "different", listed ? "different" : "same",
+            at + ": differs from Low's cell exactly where a handheld cell is listed");
+    // A player's own choice is never touched, listed or not.
+    for (const char* own : kOwnChoices) {
+      CheckEq(ResolveFor(kL, true, effect, own), own, at + ": Resolve('" + own + "') is unchanged");
+    }
+    // Without the flag it is the Low column; and the flag does nothing to Mid or High (it only means anything on Low).
+    CheckEq(std::string(CellFor(effect, kL, false)), std::string(Cell(effect, kL)), name + " on Low without the flag: the Low cell");
+    CheckEq(ResolveFor(kL, effect, "auto"), std::string(Cell(effect, kL)), name + ": the three argument ResolveFor is the Low cell");
+    CheckEq(AutoLabelFor(kL, effect), AutoLabelFor(kL, false, effect), name + ": the two argument AutoLabelFor is the Low label");
+    for (const GpuClass c : {GpuClass::kMid, GpuClass::kHigh}) {
+      CheckEq(std::string(CellFor(effect, c, true)), std::string(Cell(effect, c)),
+              name + " on " + std::string(ClassName(c)) + ": the handheld flag changes nothing");
+      CheckEq(ResolveFor(c, true, effect, "auto"), std::string(Cell(effect, c)), name + " on " + std::string(ClassName(c)) + ": Resolve ignores the flag");
+    }
+    // No label of a handheld's `auto` says low.
+    Check(AutoLabelFor(kL, true, effect).find("LOW") == std::string::npos, at + ": no LOW in the label");
+  }
+
+  // Where the Deck can carry what Mid does: the resolutions are Mid's cells exactly; the filter is Mid's pcss without the blocker search.
+  CheckEq(std::string(CellFor(Effect::kShadowResolution, kL, true)), std::string(Cell(Effect::kShadowResolution, GpuClass::kMid)),
+          "the Deck's shadow detail is Mid's");
+  CheckEq(std::string(CellFor(Effect::kReflectionResolution, kL, true)), std::string(Cell(Effect::kReflectionResolution, GpuClass::kMid)),
+          "the Deck's reflection detail is Mid's");
+  CheckEq(std::string(Cell(Effect::kShadowFilter, GpuClass::kMid)), "pcss", "Mid's shadow filter is pcss, which the Deck cannot run (soft is its pcss)");
+
+  // What stays off or the game's on the Deck: every effect that costs the GPU more than these three, and the light stack's consumers (the headlights, the
+  // light shadows, the volumetric light, the reflections on surfaces, the ambient occlusion and the bounce light).
+  for (const Effect effect : {Effect::kContactShadows, Effect::kSunShafts, Effect::kSsgi, Effect::kTrafficShadows, Effect::kCarSelfRefl,
+                              Effect::kAmbientOcclusion, Effect::kHeadlights, Effect::kLightShadows, Effect::kVolumetrics, Effect::kSsr}) {
+    CheckEq(std::string(CellFor(effect, kL, true)), "off", std::string(CvarName(effect)) + " stays off on a handheld");
+  }
+  CheckEq(std::string(CellFor(Effect::kEnvResolution, kL, true)), "game", "the environment detail stays the game's on a handheld");
+
+  // The numbers that are the CPU's stay Low's: the Deck's four Zen 2 cores keep the game's city detail (the scales have no handheld cells).
+  for (int i = 0; i < kScaleCount; ++i) {
+    const Scale scale = static_cast<Scale>(i);
+    CheckNum(ScaleFor(scale, true, kL, scale == Scale::kPedDensity || scale == Scale::kParkedDensity ? -1.0 : 0.0), ScaleCell(scale, kL),
+             std::string(ScaleCvar(scale)) + ": a handheld keeps Low's number");
+  }
+}
+
+void CheckHandheldDetect() {
+  const GpuClass kL = GpuClass::kLow;
+  // The Deck: RADV's names (the older Mesa prints the device's marketing name, the newer one a generic one; both end in the code name) and AMD's own driver's.
+  const char* const kDeckNames[] = {
+      "AMD Custom GPU 0405 (RADV VANGOGH)",  // the LCD model, SteamOS stable
+      "AMD Custom GPU 0932 (RADV VANGOGH)",  // the OLED model
+      "AMD Radeon Graphics (RADV VANGOGH)",  // the generic name a newer Mesa prints
+      "AMD Radeon(TM) Graphics (RADV VANGOGH)",
+      "AMD RADV VANGOGH",
+      "amd custom gpu 0405 (radv vangogh)",  // any case
+      "AMD Custom GPU 0405",                 // the AMD driver's name, LCD
+      "AMD Custom GPU 0932",                 // the OLED
+      "AMD Custom GPU 0405 (AMD open-source driver)",
+  };
+  for (const char* name : kDeckNames) {
+    const std::string at = std::string("'") + name + "'";
+    // Shared memory only, by either flag: Vulkan sets both, D3D12 only the UMA one.
+    AdapterFacts both = DeckFacts(name);
+    AdapterFacts uma_only = both;
+    uma_only.integrated = false;
+    AdapterFacts integrated_only = both;
+    integrated_only.uma = false;
+    for (const AdapterFacts& f : {both, uma_only, integrated_only}) {
+      const Verdict v = Classify(f);
+      Check(v.handheld, at + ": found as a handheld");
+      Check(v.cls == kL, at + ": a handheld is class low");
+      Check(v.rule == Rule::kAdapterType, at + ": by adapter type, as every integrated GPU");
+      Check(v.why.rfind("by adapter type: ", 0) == 0, at + ": the reason starts as an integrated GPU's: " + v.why);
+      Check(v.why.find("Steam Deck") != std::string::npos, at + ": the reason names the Steam Deck: " + v.why);
+      Check(v.why.find("kHandheldCells") != std::string::npos, at + ": the reason names where the cells are: " + v.why);
+    }
+    const SpeedMatch m = MatchHandheld(kVendorAmd, name);
+    Check(m.row >= 0 && kHandheldTable[m.row].cap == kL, at + ": a handheld row");
+    if (m.row >= 0 && m.row < 8) {
+      ++g_handheld_row_hits[m.row];
+    }
+  }
+
+  // Not a handheld: another integrated GPU, a Strix Halo (Mid, not a handheld), a discrete card, another vendor's chip, a software adapter, no name.
+  const auto not_handheld = [&](const AdapterFacts& f, GpuClass want, const std::string& what) {
+    const Verdict v = Classify(f);
+    Check(!v.handheld, what + ": not a handheld");
+    Check(v.cls == want, what + ": class " + std::string(ClassName(want)) + " as before");
+  };
+  not_handheld(DeckFacts("AMD Radeon(TM) Graphics"), kL, "the 2-CU iGPU of the desktop CPUs");
+  not_handheld(DeckFacts("AMD Radeon(TM) 780M Graphics"), kL, "a 780M (a laptop's and the ROG Ally's, measured nowhere)");
+  not_handheld(DeckFacts("AMD Radeon Graphics (RADV PHOENIX)"), kL, "a Phoenix on RADV");
+  not_handheld(DeckFacts("AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)"), kL, "a Raphael on RADV");
+  not_handheld(DeckFacts("AMD Radeon Graphics (RADV GFX1150)"), kL, "Strix Point");
+  not_handheld(DeckFacts("AMD Custom GPU 0406"), kL, "another custom GPU");
+  not_handheld(DeckFacts("AMD Custom GPU 04051"), kL, "a custom GPU whose number only starts like the Deck's");
+  not_handheld(DeckFacts("AMD Custom GPU"), kL, "a custom GPU without a number");
+  not_handheld(DeckFacts("AMD Radeon(TM) 8060S Graphics"), GpuClass::kMid, "a Strix Halo is Mid by name and no handheld");
+  not_handheld(DeckFacts("AMD Radeon Graphics (RADV GFX1151)"), GpuClass::kMid, "a Strix Halo on RADV");
+  {
+    AdapterFacts f = DeckFacts("AMD Custom GPU 0405 (RADV VANGOGH)");
+    f.vendor_id = kVendorIntel;  // a row applies to its own vendor only
+    not_handheld(f, kL, "the Deck's name on another vendor");
+    f.vendor_id = 0;
+    not_handheld(f, kL, "the Deck's name without a vendor id");
+    f.vendor_id = kVendorNvidia;
+    not_handheld(f, kL, "the Deck's name on NVIDIA");
+  }
+  {
+    AdapterFacts f = DeckFacts("AMD Custom GPU 0405 (RADV VANGOGH)");
+    f.software = true;  // a software adapter is Low by type before any name is read
+    not_handheld(f, kL, "a software adapter with the Deck's name");
+  }
+  {
+    AdapterFacts f = Named(kVendorAmd, "AMD Custom GPU 0405 (RADV VANGOGH)", 8192);  // not shared memory: the table is not read for a discrete card
+    not_handheld(f, GpuClass::kHigh, "the Deck's name on a discrete card with 8 GB");
+    f.dedicated_bytes = 4096ull << 20;
+    not_handheld(f, GpuClass::kMid, "the Deck's name on a discrete card with 4 GB");
+  }
+  not_handheld(DeckFacts(""), kL, "an adapter without a name");
+  not_handheld(Named(kVendorAmd, "AMD Radeon RX 580 Series (RADV POLARIS10)", 8192), GpuClass::kMid, "an RX 580 (a name that is no Deck)");
+  not_handheld(Named(kVendorNvidia, "NVIDIA GeForce RTX 5080", 16303), GpuClass::kHigh, "the test PC's card");
+
+  // The Deck is still found by adapter type and the rest of the facts are as for any integrated GPU: the log line's phrase for the rule.
+  CheckAdapter(DeckFacts("AMD Custom GPU 0405 (RADV VANGOGH)"), kL, Rule::kAdapterType, "by adapter type: UMA");
+  CheckAdapter(DeckFacts("AMD Custom GPU 0932 (RADV VANGOGH)"), kL, Rule::kAdapterType, "Steam Deck");
+
+  // The table's own shape.
+  Check(kHandheldRows >= 1 && kHandheldRows <= 8, "the handheld table has rows");
+  for (int i = 0; i < kHandheldRows; ++i) {
+    const SpeedRow& r = kHandheldTable[i];
+    const std::string at = "handheld row " + std::to_string(i) + " (" + std::string(r.family) + ")";
+    Check(!r.family.empty(), at + ": a family name for the log");
+    Check(r.vendor == kVendorAmd, at + ": AMD only (the Deck's chip)");
+    Check(r.cap == GpuClass::kLow, at + ": the class stays low");
+    Check(!(r.word.empty() && r.series.empty()), at + ": has a word or a series to match");
+    Check(NormalizeName(r.word) == r.word && NormalizeName(r.series) == r.series, at + ": written the way NormalizeName writes a name");
+    Check(g_handheld_row_hits[i] > 0, at + ": has a test name that it decides");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -804,6 +1028,7 @@ int main() {
   CheckAmbientOcclusion();
   CheckLightShadows();
   CheckVolumetrics();
+  CheckSsr();
   CheckLabels();
   CheckWords();
   CheckNames();
@@ -812,6 +1037,8 @@ int main() {
   CheckSpeedRows();
   CheckSeriesNumber();
   CheckSpeedTable();
+  CheckHandheldCells();
+  CheckHandheldDetect();
   CheckCityLod();
   CheckScales();
   if (g_failed != 0) {

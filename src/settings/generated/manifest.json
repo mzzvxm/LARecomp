@@ -301,6 +301,50 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ao_blue_noise": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the ambient occlusion's, the bounce light's and the contact shadows' sampling noise (which direction and how far along it each pixel \"\n    \"looks) comes from a blue noise tile that has no lattice in it, so what the blur and the average over frames leave of the noise is a fine grain no \"\n    \"pattern can be read from. False: the first version's interleaved gradient noise, a diagonal lattice whose leftovers show as thin diagonal lines on \"\n    \"roads and kerbs, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_noise_blue": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the other stochastic passes' sampling noise (the ray traced car occlusion's and reflection cones' directions, the sun shafts' ray starts, \"\n    \"the fog's sample offsets, the sun shadow filter's disk turn and the city reflections' sun and lamp samples) comes from the blue noise tile stepped \"\n    \"along the R2 sequence every frame, so what the filters and the average over frames leave of it is a fine grain no pattern can be read from. False: the \"\n    \"first versions' interleaved gradient noise, a lattice whose leftovers show as thin diagonal lines, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_noise_held": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a scene the harness holds still (the trailer toolkit's stills, scene_at) shows the same game frame number in every frame, so the noise of \"\n    \"every stochastic effect (the occlusion, the sun rays, the reflection cone, the shafts, the shadow filter) stood on one sample for ever and its history \"\n    \"averaged copies of it. True: the noise index also counts the frames the scene's number has been held, so a held scene keeps varying (a picture taken \"\n    \"after the same number of frames is still repeatable). False: the scene's own number alone, for pictures that must match whatever number of frames was \"\n    \"waited. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_noise_resolve_no_upscaler": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: with no temporal upscaler running (plain MSAA, the default) the contact shadows' march, the ray traced sun rays of the car and the city, \"\n    \"the sun shafts' ray starts and the car reflection cone's turn changed their noise every frame only while an upscaler averaged it; without one they held one pattern. \"\n    \"True: the noise changes every frame here too, and each effect resolves it itself: the contact shadows and the sun rays through the occlusion's own history (reprojected by depth and the \"\n    \"camera, 12 frames), the shafts and the reflection cone through a short history of their own. False: the first fixes' fixed blue pattern without an upscaler. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ao_fast_math": {
   "type": "bool",
   "default": "true",
@@ -922,6 +966,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_selfrefl_source": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (car self-reflections, shared screen products): where the history pass takes the scene colour from. 0: the shared colour_post where the \"\n    \"frame has it at the picture's size (another effect wanted it), else the main colour target's own planes. 1: always the main colour target's planes \"\n    \"(the old path). 2: as 0, and the car self-reflection asks for the shared colour_post itself, so that the same pictures can be compared with 1 without \"\n    \"a reflections effect (the bytes of the history image are the same). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_selfrefl_steps": {
   "type": "i32",
   "default": "12",
@@ -1008,9 +1064,9 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; \"\n    \"this draws the scene's opaque objects again from the lights, depth only, into a small map for each car (512 by 512 texels on high, 1024 by 1024 on \"\n    \"ultra), and the lights' light reads it. high shadows your car's headlights and the nearest other car's, ultra also the next nearest car's, and sharper. off, high, ultra or auto (the \"\n    \"default): ultra on a fast graphics card, high on a medium one, off on an integrated one. It only runs while a headlight is lit, in the game \"\n    \"view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each car) and 4 MiB (high) or 24 MiB (ultra) of video \"\n    \"memory. Live.\"",
+  "help": "\"Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; \"\n    \"this draws the scene's opaque objects again from the lights, depth only, into small maps (768 by 768 texels on medium, 1024 by 1024 on high, 1280 by 1280 on ultra: a texel is 1 to 2 cm wide 10 m from the car), and the lights' light reads them. medium shadows your car's headlights and the nearest other car's, with one map for each car; high gives your car a map for each headlamp, \"\n    \"so a pole in front of it casts a shadow from each of its two lamps, and the nearest other car still has one; ultra also shadows the next nearest car, gives all three cars a map for each lamp, \"\n    \"and is sharper. off, medium, high, ultra or auto (the default): ultra on a fast graphics card, medium on a medium one, off on an integrated one. \"\n    \"It only runs while a headlight is lit, in the game view. Costs graphics card time and render thread time (the frame's opaque draws once more for each map) and 9 MiB (medium), \"\n    \"24 MiB (high) or 75 MiB (ultra) of video memory. Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+   "rex::Allowed(\"auto\", \"off\", \"medium\", \"high\", \"ultra\")"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1067,10 +1123,10 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: how many cars' headlights get a view in the headlight shadow maps, 1 to 4 (the lamps of one car share a view). 0: the level's \"\n    \"own (2 on high, 3 on ultra). A change remakes the atlas. Live.\"",
+  "help": "\"Diagnostic: how many views each shadowed car gets in the headlight shadow maps. 1: one for the car (made from the middle of its two lamps: \"\n    \"the first version's); 2: one for each headlamp (a pole in front of the car casts two shadows). 0: the level's own (medium: one for each car; high: one for each lamp of your car and one for the other car; ultra: one for each lamp of every shadowed car). \"\n    \"A change remakes the atlas. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 4}"
+   "rex::Range{0, 2}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1256,6 +1312,159 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 7}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_screen_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (shared screen products): draws one product of the shared screen frame over the main view at the mid-scene depth copy, where the ambient \"\n    \"occlusion runs (it runs a frame of its own for this when it and the contact shadows are off): 1 the linear depth, 2 the Hi-Z level mcla_gpu_screen_view_level (the min of \"\n    \"the linear depth, each texel stretched over the pixels it covers), 3 the Hi-Z level against the pixels it covers (red where it is deeper than one of them, which cannot \"\n    \"be; green, brighter where the min is nearer than the pixel), 4 the normal image (only in a frame whose passes make it), 5 the vehicle mark of the depth, 6 colour_post (the level mcla_gpu_screen_view_level; only while a consumer or this view makes it), 7 the history's colour (the last frame's colour_post). The rest of the \"\n    \"frame (particles, tone map, glow) is drawn over it as usual. 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 7}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_screen_view_level": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (shared screen products): the level the views 2 and 3 (the Hi-Z) and 6 (colour_post) of mcla_gpu_screen_view show: 0 is the traced size (colour_post's own size for the view 6), \"\n    \"each level above is half the one below (the Hi-Z has 7 levels at 1080 lines, down to 1/64, colour_post up to 5 and only while the reflections want them); a level the chain does not have shows its last. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 7}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Reflections on surfaces: sharp reflections of the scene on wet roads, wet sidewalks, glass, metal and water, traced through the picture itself (screen space) and added to \"\n    \"the game's own reflections. A car's paint and chrome keep their own (CAR REFLECTIONS, CAR SELF-REFLECTIONS). Only what is on the screen can be reflected: where a ray \"\n    \"finds nothing, or a surface is near the picture's edge, the game's own reflection stays alone. off, high, ultra or auto (the default: for now off on every graphics card). \"\n    \"high: one ray a pixel at half the picture's size, up to 40 steps, about 10 frames of history; ultra: two rays a pixel, up to 64 steps, about 12 frames, which is smoother \"\n    \"and finds more. Costs graphics card time, the G-buffer's planes (made only while this is on) and about 12 MiB (1080p) to 48 MiB (4K) of video memory for the effect's own \"\n    \"images. A wet road reflects, a dry one does not (the weather's wetness takes about a second to rise or fall). Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): draws one picture over the main view in place of the effect's add, where the ambient occlusion runs: 1 the term the effect adds (alone on black), 2 the class gate \"\n    \"(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at \"\n    \"half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, orange where the hit is a vehicle's, red a ray that found nothing, black not traced), 5 the game's road reflection view as the effect reads it, over the whole picture (black: none in this frame), 6 the term's sign (green what is added, red what is taken out of the game's own reflection). 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 6}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_strength": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the effect's strength, 0 to 4: the added reflection is multiplied by it (the class's own gain, the Fresnel term and the picture's edge fades come on top). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_min_smooth": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): a pixel rougher than this (0 rough to 1 mirror; the G-buffer's smoothness after the road's wetness raised it) is not reflected. -1: the default, 0.40 (a dry road at 0.30 is not, \"\n    \"a wet one at 0.92 is). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1.0, 1.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_stub": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): 0 uses the G-buffer's material plane (RT3) where the frame has it and the stub where it does not (every pixel whose world normal points up and is no vehicle is a road of \"\n    \"smoothness 0.85); 1 always the stub. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_wet": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the road's wetness, 0 dry to 1 pouring rain: it raises a road's and a sidewalk's smoothness. -1: what the game says (the vertex constant c43.x of the main view's draws, \"\n    \"0.095 dry and 1.17 in rain, smoothed over about a second). A value forces it, to look at the wet road without rain. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1.0, 1.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_history": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the share of the last frames the accumulation keeps, 0 to 0.98 (0.9 is a mean of about ten frames; 0 draws the raw ray, noise and all). -1: the level's (high 0.90, ultra 0.92). \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 0.98}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_fallback": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the share of the game's own road reflection (its 256 x 256 planar view of the whole screen) the effect takes out of a road where its rays find a reflection of their own, 0 to 1 (times the strength the game shows that view with, VS c43.y): 1 replaces the soft reflection with the sharp one, 0 adds the effect on top of it (the reflection is then doubled, as before the fallback). Where no ray finds anything the game's reflection stays alone. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 1.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_vehicle_rows": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): 1 moves the reflection of a moving vehicle with the vehicle's own motion (the ambient occlusion's vehicle table), 0 treats it as the world's, which smears it (the comparison). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_blue_noise": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_resolve": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the accumulation averages the trace's 3x3 over the pixels of one surface before it takes the history (nine rays of one lobe are nearer its mean than one), looks the history of a pixel whose ray found nothing up with the nearest hit of its neighbours, and does not let one frame whose rays all missed wipe a bright reflection (the clip takes at most a quarter of it a frame). A lamp's or a tail light's reflection flickered with the sparse hits. False: the first version's resolve (the centre pixel alone, the clip whole), for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1573,6 +1782,17 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{-1, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_edge": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how the headlights pick the cars at the edge of the frame. On (the default): a car is worth what its beam \"\n    \"adds to the picture, not where its lamp is, and a car the game stops drawing because it left the frame keeps its light while its beam is still in the view \"\n    \"(up to 1.5 seconds), fading with the beam and with its distance. Off: the first version, a light dropped within 8 frames of the game's last draw of its car, and \"\n    \"a car whose lamp is off the screen counted at 0.35. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2583,6 +2803,125 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lights_census": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the one light description, LIGHT-UNIFY U2): every guest frame the light manager collects the headlight rig's lights, the \"\n    \"headlight shadow maps and the volumetric light's street lamps into one frame of lights, checks it against what the lit shaders' headlight block and the volumetric \"\n    \"light's inputs hold, and uploads it; nothing reads it, so the picture does not change. Every Nth guest frame one log line says what was collected and how many \"\n    \"checks found a difference. 0: off (the manager is not called). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 100000}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_local_lights": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the deferred local light pass, LIGHT-UNIFY GB-H1; off until the lamp A/B is judged): at the game's mid-scene depth copy, after the ambient occlusion, one draw per light adds \"\n    \"the light to the main colour from the G-buffer's normal, albedo and lit weight and the depth, in the city's units (a lamp here is a lamp of the game's own light grid: \"\n    \"mcla_gpu_local_lights_ab holds one lamp through both to compare them). While it is on the main view's draws also write the G-buffer's normal and albedo (a small cost, paid only then). \"\n    \"Which lights it adds is mcla_gpu_local_lights_sources and mcla_gpu_local_lights_ab; with both at 0 it adds none. Not in the 4x views behind the pause menu and the map, nor in a cutscene. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_local_lights_sources": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the deferred local light pass, GB-H1 and GB-H3): which lights it adds besides the lamps mcla_gpu_local_lights_ab hands it. A sum: 1 the lights of the frame that add surface light and \"\n    \"that the game's own shaders do not already light with (today the cars' headlights, which the forward headlight stage lights as well: the two add, so use it with HEADLIGHTS off), \"\n    \"2 a test lamp 8 m ahead of the camera and 4.5 m up, 4 the police light bars (the game's own flash), 8 the headlights of the cars the forward headlight stage does not light, \"\n    \"16 the cars' brake, tail, turn and reverse lamps, 32 the lamps of a mod's lights.bin that the game's grid is not lighting (the camera is outside the mod's rectangle). The cars' and mods' classes \"\n    \"have a budget each that grows with the LIGHT SHADOWS level, 32 lights in all. 0: only the A/B's lamps. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 63}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_local_lights_ab": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the lamp A/B of the deferred local light pass, GB-H1): what happens to the lamps of a mod's lights.bin (mod_lights.cpp; while the camera is over the mod's rectangle the game lights the scene \"\n    \"with that lamp set alone). 0: the game's own light grid lights them (A). 2: the grid is built with them off and the local light pass adds the same lamps (B; needs mcla_gpu_local_lights). \"\n    \"1: neither (the control: A and B each minus the control are the lamp's own light in each path). Read when the city's lights are loaded: it applies at the next start.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRestart",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_local_lights_gain": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the deferred local light pass, GB-H1): a multiplier on the light the pass adds (1: the game's units as read: the lamp's colour times the night light intensity and the height factor of the lit \"\n    \"shaders). The lamp A/B says whether 1 is right. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 16.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_local_lights_car_gain": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the deferred local light pass, GB-H3): a multiplier on the look of the cars' lights it adds (the police light bars, the head lamps of the cars the forward headlight stage does not light, \"\n    \"the brake, tail, turn and reverse lamps). Their colours and strengths are looks set by eye, not the game's units: this turns them up or down without a build. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 16.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_pass": {
+  "type": "std::string",
+  "default": "\"forward\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the forward headlight stage against the deferred local light pass, GB-H2, the A/B): which of the two lights the cars' headlights. forward (the default): the lit shaders' headlight variant lights, as the game has always had it. \"\n    \"pass: the variant is not used and the deferred local light pass lights the headlights of the same cars with their shadows from the atlas (it also reaches the lit shaders the variant leaves out, the cars' paint and the pedestrians; needs the G-buffer's planes, which it asks for while HEADLIGHTS is on, and runs whatever mcla_gpu_local_lights says). \"\n    \"both: the variant lights and the pass adds the same lights again (the sum of the two: for the difference pictures). HEADLIGHTS (mcla_gpu_headlights) stays the master of both. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"forward\", \"pass\", \"both\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_light_pick": {
+  "type": "std::string",
+  "default": "\"unified\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the one picker of the lights, LIGHT-UNIFY U3): how the lights are picked. unified (the default): the headlight rig's four lights and the \"\n    \"cars that get shadow views are picked by one rule (how much of a beam is in the view, the distance, a place kept by the one that holds it), with every \"\n    \"fade, linger and coast counted in seconds of the scene clock, so that a light fades in the same time at 30, 60 and 144 frames a second. legacy: the \"\n    \"first code of the two pickers (frames counted at the game's pace), to compare with: at 60 frames a second the two pick the same lights with the same \"\n    \"weights. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"unified\", \"legacy\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_light_pick_record": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the one picker of the lights, LIGHT-UNIFY U3): a file path. With it, the headlight rig writes every guest frame's inputs of its tracker \"\n    \"(the cars its lens draws showed, the camera's view) to <path>.rig.txt and the headlight shadow replay writes the inputs of its pick of cars (the rig's \"\n    \"lights, the cap, the context) to <path>.views.txt, in the text format of light_pick_record.h, for the unit test light_pick_test to replay through both \"\n    \"pickers. Empty: nothing is written. Live; changing the path starts new files.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_light_frame": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the one light description, LIGHT-UNIFY U4, the A/B of the flips): which consumers read the light manager's frame of lights instead of their own producer. \"\n    \"A bit mask: 1 the lit shaders' headlight block, 2 the volumetric light's street lamps, headlights and shadow views, 4 the lights the headlight shadow maps pick cars \"\n    \"and make views from; 7 all three; 8 (LIGHT-UNIFY U5) the headlight shadow maps are recorded into the one shared shadow atlas (its layout, clear, the one barrier for the pixel and compute readers, memory fitted to the video memory budget) and the frame's shadow views are read from its published form by light id; 15 all four. 0 (the default until the runs have shown the bytes equal): every consumer reads its own producer, as before. The data a flipped \"\n    \"consumer gets is byte for byte what its own producer made (mcla_gpu_lights_census checks it every frame while it is on, and says so in its line), so the picture \"\n    \"does not change. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 15}"
   ],
   "comments": [],
   "pp_depth": 0

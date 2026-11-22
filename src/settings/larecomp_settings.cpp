@@ -14,6 +14,7 @@
 #include <rex/platform/process.h>
 #include <toml++/toml.hpp>
 
+#include "settings/immortal.h"
 #include "settings/watch_table.h"
 
 namespace larecomp::settings {
@@ -67,9 +68,13 @@ struct State {
   std::unordered_map<std::string, std::string> category;
 };
 
+// Never destroyed (immortal.h): a thread still running at exit (a guest thread the SDK left running, most likely, through the game's hooks)
+// still called Find while the exe's static destruction ran, and the table it read was freed under it (an access violation 2 ms after
+// "Process exiting normally", 2026-11-21). UnregisterAll empties what points into the SDK; a late reader then finds nothing, in memory
+// that is still there.
 State& S() {
-  static State s;
-  return s;
+  static larecomp::Immortal<State> s;
+  return *s;
 }
 
 constexpr std::string_view kScope = "larecomp.";
@@ -452,8 +457,8 @@ Source SourceOf(rex::SettingLayer layer) {
 
 std::mutex g_marks_mutex;
 std::set<std::string>& DebugMarks() {
-  static std::set<std::string> marks;
-  return marks;
+  static larecomp::Immortal<std::set<std::string>> marks;  // read through Build (the settings panel's rows, the config save): not destroyed at exit either
+  return *marks;
 }
 
 bool IsMarkedDebug(const std::string& full, const std::string& flat) {

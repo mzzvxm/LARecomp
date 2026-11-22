@@ -90,6 +90,15 @@ constexpr double kAoFadeEndVals[]    = {20.0, 40.0, 80.0, 160.0, 320.0, 640.0, 1
 constexpr const char* kHdrViewVals[]  = {"0", "1", "2", "3", "4", "5"};
 constexpr const char* kHdrViewNames[] = {"OFF", "UI ONLY", "SCENE ONLY", "UI COVERAGE",
                                          "OVER WHITE", "DIFFERENCE"};
+// What the deferred local light pass lights (mcla_gpu_local_lights_sources, a sum of bits: gpu/local_lights_rules.h): none, the frame's surface lights, the police light bars, the
+// head lamps of the cars the headlight stage does not light, the cars' rear lamps, the lamps of mods outside their grid, and the police bars + the cars' lamps + the mods' (4 + 8 + 16 + 32).
+// The test lamp (2) and the lamp A/B (mcla_gpu_local_lights_ab, read at start) stay cvars of the lamp tests.
+constexpr const char* kLocalLightSourceVals[]  = {"0", "1", "4", "8", "16", "32", "60"};
+constexpr const char* kLocalLightSourceNames[] = {"NONE", "FRAME LIGHTS", "POLICE BARS", "HEAD LAMPS", "REAR LAMPS", "MOD LAMPS", "CARS + MODS"};
+// Which of the two lights the cars' headlights (mcla_gpu_headlight_pass, gpu/headlight_pass_rules.h, GB-H2): the lit shaders' own variant (FORWARD), the deferred local light pass with the
+// atlas shadows (PASS), or both added together (BOTH: the difference pictures).
+constexpr const char* kHeadlightRouteVals[]  = {"forward", "pass", "both"};
+constexpr const char* kHeadlightRouteNames[] = {"FORWARD", "PASS", "BOTH"};
 constexpr const char* kMarkerLevelVals[]  = {"0", "1", "2"};
 constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
@@ -169,6 +178,24 @@ const ItemDef kDebugFixesItems[] = {
     // before (the ray traced one where the card can trace) darken it under the bumper. Off = the game's own chrome, which glows there. The variant is chosen at each
     // draw (pipelines.cpp WantedFeatures), so the row is live; the first draw after turning it on builds the shader (a short stutter).
     NativeOnly(Bool("PM_RxDbgCarChrome", "mcla_gpu_car_chrome_occlusion", "CAR CHROME FIX: ")),
+    // The sampling noise of the ambient occlusion, the bounce light and the contact shadows is a blue noise tile (gpu/blue_noise.h): the first version's interleaved gradient noise
+    // is a diagonal lattice, and what the blur and the history leave of it shows as thin diagonal lines on roads and kerbs. Off = the first version's noise. Read at each draw, so live.
+    NativeOnly(Bool("PM_RxDbgAoBlue", "mcla_gpu_ao_blue_noise", "BLUE NOISE AO: ")),
+    // The other stochastic passes (the ray traced car occlusion and reflection cones, the sun shafts, the fog, the sun shadow filter, the city reflections) draw their per-pixel noise from the blue noise tile
+    // stepped along the R2 sequence every frame (gpu/hlsl/blue_noise_frame.hlsli); the first versions' interleaved gradient noise is a lattice. Off = the first versions' noise. Read at each draw, so live.
+    NativeOnly(Bool("PM_RxDbgNoiseBlue", "mcla_gpu_noise_blue", "BLUE NOISE EFFECTS: ")),
+    // A scene the harness holds still carries one game frame number in every frame: with this on the noise index of every stochastic effect also counts the frames it has been held (gpu/scene_noise.h
+    // NoiseIndex), so the noise keeps varying and the history averages it. Off = the scene's own number alone. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgNoiseHeld", "mcla_gpu_noise_held", "NOISE IN HELD SCENES: ")),
+    // Without a temporal upscaler (plain MSAA, the default) the contact shadows, the ray traced sun rays, the sun shafts and the car reflection cone used to hold one noise pattern; with this on their noise changes every
+    // frame like the other effects' and each resolves it with a history of its own (gpu/noise_resolve.h). Off = the fixed pattern. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgNoiseResolve", "mcla_gpu_noise_resolve_no_upscaler", "NOISE RESOLVE, NO UPSCALER: ")),
+    // The reflections' ray noise is a blue noise tile stepped along the R2 sequence every frame (gpu/blue_noise.h, hlsl/ssr_common.hlsli): the first version's interleaved gradient noise slid
+    // across the picture and read as stripes crawling over a puddle. Off = the first version's noise. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgSsrBlue", "mcla_gpu_ssr_blue_noise", "BLUE NOISE REFLECTIONS: ")),
+    // The reflections' accumulation averages the trace's 3x3 of one surface and keeps a bright reflection through a frame whose rays all missed (hlsl/ssr_temporal_ps.hlsl): a lamp's or a tail light's
+    // reflection flickered with the sparse hits. Off = the first version's resolve (the centre pixel alone, the clip whole). Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgSsrResolve", "mcla_gpu_ssr_resolve", "SPATIAL RESOLVE REFLECTIONS: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
@@ -226,6 +253,19 @@ const ItemDef kDebugRenderingItems[] = {
                    kAoFadeEndVals, Len(kAoFadeEndVals), "%g")),
     NativeOnly(Str("PM_RxDbgHdrView",    "mcla_gpu_hdr_layers_view", "HDR LAYERS VIEW: ",
                    kHdrViewVals, kHdrViewNames, Len(kHdrViewVals))),
+    // The deferred local light pass (gpu/local_lights.h, GB-H1 and GB-H3): one additive draw per light from the G-buffer's planes (the planes are made only while this is on:
+    // gbuffer_rules.h AutoPlanes). OFF by default, and a DEBUG row only: there is no LOCAL LIGHTS row for players (owner, 2026-11-21: the pass is a way to light the game's lamps and the
+    // cars' lights, not a setting). Both are live; with SOURCES at NONE the pass draws nothing (the lamp A/B's lamps apart).
+    // CHECK: the SOURCES row writes its words ("0", "4", ...) into an integer cvar as the other 0/1 rows do (frame_pacing); a value that is not one of the seven (a sum a command line set, 28)
+    // shows as the first word until the row is stepped.
+    NativeOnly(Bool("PM_RxDbgLocalLights", "mcla_gpu_local_lights", "LOCAL LIGHT PASS: ")),
+    NativeOnly(Str("PM_RxDbgLocalSrc",   "mcla_gpu_local_lights_sources", "LIGHT PASS SOURCES: ",
+                   kLocalLightSourceVals, kLocalLightSourceNames, Len(kLocalLightSourceVals))),
+    // The headlights' A/B (GB-H2, live; the forward stage is deleted only after the owner has seen the pictures): FORWARD is the game as it is, PASS takes the lit shaders' headlight variant away and
+    // lights the same cars' headlights in the deferred pass with their shadows (it also reaches what the variant leaves out: the cars' paint, the pedestrians, the interiors; the pass runs for it
+    // whatever LOCAL LIGHT PASS says and needs HEADLIGHTS on), BOTH lights twice. The words are the cvar's, written as the other word rows do.
+    NativeOnly(Str("PM_RxDbgHeadlightVia", "mcla_gpu_headlight_pass", "HEADLIGHTS VIA: ",
+                   kHeadlightRouteVals, kHeadlightRouteNames, Len(kHeadlightRouteVals))),
     // The glow of street lamps (halo and star): the game's one depth test at the glow's centre (GAME), or the
     // share of 24 tests on a small disc (SOFT: it fades at an edge instead of popping). The renderer reads the
     // cvar at each draw, so the row is live; the first time SOFT shows, the shaders are built.

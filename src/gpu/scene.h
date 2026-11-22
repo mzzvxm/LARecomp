@@ -66,6 +66,9 @@
 #include "draw_census.h"
 #include "edram.h"
 #include "frame_layers.h"
+#include "frame_order.h"
+#include "gbuffer_material.h"
+#include "gbuffer_materials.h"
 #include "gbuffer_rules.h"
 #include "gbuffer_types.h"
 #include "geometry.h"
@@ -92,6 +95,9 @@ class GuestLayout;
 class GuestOcclusion;
 class PassTiming;
 class SunShafts;
+class LocalLights;
+class ScreenReflections;
+class ScreenShared;
 class Volumetrics;
 class CarSelfRefl;
 class CarDump;
@@ -99,6 +105,7 @@ class CarFrame;
 class HeadlightRig;
 class CarShadowMap;
 class LocalShadow;
+class LightManager;
 class CarRtScene;
 class GBuffer;
 class PostAa;
@@ -159,12 +166,23 @@ class Scene {
   // The headlight shadow maps (local_shadow.h): offered the main view's colour pass draws while they are on, told of the frame boundary, the
   // anchor and the composite marker, and run at the mid-scene depth copy (before the ambient occlusion's passes, as the car shadow map is). Null: none.
   void SetLocalShadow(LocalShadow* local_shadow) { local_shadow_ = local_shadow; }
+  // The passive light manager (light_manager.h): told of the frame start, of every resolve after the headlight shadow maps' and of the present (before the rig makes the next
+  // frame's set). It only reads; nothing reads it. Null: none.
+  void SetLightManager(LightManager* light_manager) { light_manager_ = light_manager; }
   // The player's car as ray tracing structures (car_rt_scene.h): told of the anchor, the composite and the present, and run at the mid-scene
   // depth copy (the top level is built there, before the car self-reflection's own pass). Null: none.
   void SetCarRtScene(CarRtScene* car_rt) { car_rt_ = car_rt; }
   // The G-buffer's sidecar (gbuffer.h): the main view's lit draws carry a second colour target and, for the shaders that have the variant, write the
   // normal into it; told of the frame's start, the guest's clears of the main colour and the mid-scene depth copy. Null: none (no draw is touched).
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
+  // The shared screen products (screen_shared.h): told of the frame's start (before the ambient occlusion's, which declares its wants after it) and asked to draw their debug view
+  // at the mid-scene depth copy, after the other effects. Their frame is published by the ambient occlusion's depth chain. Null: none.
+  void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
+  // The deferred local light pass (local_lights.h): told of the frame's start (before the G-buffer's and the shared products', which read the wants it makes), fed the main view's colour
+  // draws' constants (the units' vote) while it is on, and run at the mid-scene depth copy right after the ambient occlusion's apply. Null: none.
+  void SetLocalLights(LocalLights* local_lights) { local_lights_ = local_lights; }
+  // The screen-space reflections (ssr.h; null: none). Not owned.
+  void SetScreenReflections(ScreenReflections* ssr) { ssr_ = ssr; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -305,6 +323,9 @@ class Scene {
     uint32_t gbuffer_variant = 0;
     uint32_t gbuffer_planes = 0;  // the planes the key carries (PlaneCount: the colour slots after the guest's)
     gbuffer::PlaneMode gbuffer_mode = gbuffer::PlaneMode::kNone;
+    // The per-texture material row of the texture the draw reads in its pixel shader's diffuse slot (gbuffer_materials.h): found in Prepare for a draw that writes the planes, applied to the
+    // draw's material word in FillVariantBlock. Empty when there is no table, no census, or no such texture.
+    gbuffer::TextureMaterials::Hit gbuffer_texture;
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
@@ -317,7 +338,9 @@ class Scene {
   static constexpr uint32_t kPipelineSkipFrames = 30;
   // What Pipelines::Get asks on a miss (Deferral): may the draw be left out?
   // Only when every target the draw renders into was drawn into in each of the
-  // last kPipelineSkipFrames frames.
+  // last kPipelineSkipFrames frames. (A draw whose key carries the headlight's
+  // word or the G-buffer's planes is not asked this: its fallback, the game's
+  // own pipeline, draws instead, so it waits whatever this says: variant_wait.h.)
   struct SkipAsk {
     const Scene* scene;
     const PreparedDraw* draw;
@@ -489,7 +512,17 @@ class Scene {
   HeadlightRig* headlights_ = nullptr;
   CarShadowMap* car_shadow_ = nullptr;
   LocalShadow* local_shadow_ = nullptr;
+  LightManager* light_manager_ = nullptr;
   GBuffer* gbuffer_ = nullptr;
+  ScreenShared* screen_ = nullptr;
+  LocalLights* local_lights_ = nullptr;
+  ScreenReflections* ssr_ = nullptr;
+  // The order the frame's passes ran in at the trigger and the end-of-scene copy, held to frame_order.h's table at each guest present (LIGHT-UNIFY U9).
+  frame_order::Recorder order_;
+  // The draws' material words (gbuffer_material.h): the table the shader pack build wrote beside the variant pack, read once, on the first G-buffer draw after the pack is attached.
+  gbuffer::MaterialTable gbuffer_materials_;
+  // The per-texture rows over those words (gbuffer_materials.h): the table files, hot reloaded, and the census of what the G-buffer's draws read (MCLA_GBUFFER_CENSUS=1).
+  gbuffer::TextureMaterials gbuffer_texmat_;
   CarRtScene* car_rt_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;

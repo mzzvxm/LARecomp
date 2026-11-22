@@ -45,6 +45,8 @@ add_library(larecomp_gpu OBJECT
     frame_trace.cpp
     frame.cpp
     gbuffer.cpp
+    gbuffer_material.cpp
+    gbuffer_materials.cpp
     geometry.cpp
     gpu_class.cpp
     host_passes.cpp
@@ -59,6 +61,8 @@ add_library(larecomp_gpu OBJECT
     latency.cpp
     latency_streamline.cpp
     layout.cpp
+    light_manager.cpp
+    local_lights.cpp
     memory_census.cpp
     msaa_level.cpp
     native_window.cpp
@@ -82,7 +86,10 @@ add_library(larecomp_gpu OBJECT
     rt_tier.cpp
     samplers.cpp
     scene.cpp
+    screen_shared.cpp
+    ssr.cpp
     shaders.cpp
+    shadow_atlas.cpp
     shadow_filter.cpp
     shafts.cpp
     side_view_env.cpp
@@ -144,6 +151,42 @@ add_executable(larecomp_ao_fast_test EXCLUDE_FROM_ALL ao_fast_test.cpp)
 # (ao_stable_twin.h: a still camera over a road, a wall and a car at 3840x2160 and 1280x720; about half a minute) likewise:
 #   cmake --build <dir> --target larecomp_ao_stable_noise_test, then run src/gpu/larecomp_ao_stable_noise_test [--print].
 add_executable(larecomp_ao_stable_noise_test EXCLUDE_FROM_ALL ao_stable_noise_test.cpp)
+# The blue noise tile the screen-space effects sample with (blue_noise.h; hlsl/blue_noise.hlsli is its table: the check compares them, and `--emit` writes the
+# file): a permutation, uniform, deterministic, blue (no low frequencies, no peak) against interleaved gradient noise, which is a lattice; no renderer needed:
+#   cmake --build <dir> --target larecomp_blue_noise_test, then run src/gpu/larecomp_blue_noise_test [--print | --emit > src/gpu/hlsl/blue_noise.hlsli].
+add_executable(larecomp_blue_noise_test EXCLUDE_FROM_ALL blue_noise_test.cpp)
+# What the blue noise does to the occlusion, the bounce light and the contact shadows (ao_halo.h's twin of the main pass over a wall, through the real blur and history:
+# the error's lattice against interleaved gradient noise; given the src/gpu folder it also reads the shaders', ao.cpp's, the setting's and the debug row's use of it):
+#   cmake --build <dir> --target larecomp_ao_blue_noise_test, then run src/gpu/larecomp_ao_blue_noise_test <src/gpu dir> [--print] (about ten seconds).
+add_executable(larecomp_ao_blue_noise_test EXCLUDE_FROM_ALL ao_blue_noise_test.cpp)
+# The shared per-frame blue noise (hlsl/blue_noise_frame.hlsli: the tile stepped along the R2 sequence, which the stochastic passes other than the occlusion and the reflections of the screen use;
+# NOISE-AUDIT) and the debug setting mcla_gpu_noise_blue that switches them to the first versions' gradient noise: uniform, changes every frame, nothing slides, no lattice after the average:
+#   cmake --build <dir> --target larecomp_noise_frame_test, then run src/gpu/larecomp_noise_frame_test [<src/gpu dir>] [--print] (a second or two).
+add_executable(larecomp_noise_frame_test EXCLUDE_FROM_ALL noise_frame_test.cpp)
+# The ray traced car occlusion's and sun ray's noise (hlsl/car_rt_ao_noise.hlsli: the blue noise tile in place of gradient noise; NOISE-AUDIT): numbers, history, sources:
+#   cmake --build <dir> --target larecomp_car_rt_ao_noise_test, then run src/gpu/larecomp_car_rt_ao_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_car_rt_ao_noise_test EXCLUDE_FROM_ALL car_rt_ao_noise_test.cpp)
+# The ray traced car reflection's cone turn (hlsl/car_rt_refl_cs.hlsl ConeRotation and its twin: the blue noise tile in place of gradient noise; NOISE-AUDIT): turns, error after the average, flag, sources:
+#   cmake --build <dir> --target larecomp_car_refl_noise_test, then run src/gpu/larecomp_car_refl_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_car_refl_noise_test EXCLUDE_FROM_ALL car_refl_noise_test.cpp)
+# The sun shafts' ray-start noise (hlsl/shafts_noise.hlsli: the blue noise tile in place of gradient noise; NOISE-AUDIT): numbers, error after the average, still pattern, sources:
+#   cmake --build <dir> --target larecomp_shafts_noise_test, then run src/gpu/larecomp_shafts_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_shafts_noise_test EXCLUDE_FROM_ALL shafts_noise_test.cpp)
+# The fog volume per-voxel sample offset (hlsl/volumetrics_noise.hlsli: the blue noise tile, no sliding gradient noise; NOISE-AUDIT): offsets, history error, sources:
+#   cmake --build <dir> --target larecomp_volumetrics_noise_test, then run src/gpu/larecomp_volumetrics_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_volumetrics_noise_test EXCLUDE_FROM_ALL volumetrics_noise_test.cpp)
+# The sun shadow filter disk turn (shaderpack/variants/shadow_filter.cpp ShadowFilterNoise and its blue noise table, shadow_filter.h mode bit 5; NOISE-AUDIT): table, turn, penumbra error, host:
+#   cmake --build <dir> --target larecomp_shadow_filter_noise_test, then run src/gpu/larecomp_shadow_filter_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_shadow_filter_noise_test EXCLUDE_FROM_ALL shadow_filter_noise_test.cpp)
+# What the sun shadow filter's disk does while no temporal upscaler runs (NOISE-RESOLVE, noise_resolve.h): the model of the variant's disk (a straight edge, the weights, the golden angle taps) against the options
+# (fixed turn, a per pixel turn, more taps, an average over frames) with the numbers the decision rests on:
+#   cmake --build <dir> --target larecomp_shadow_filter_resolve_test, then run src/gpu/larecomp_shadow_filter_resolve_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_shadow_filter_resolve_test EXCLUDE_FROM_ALL shadow_filter_resolve_test.cpp)
+# NOISE-RESOLVE (noise_resolve.h, NOISE-AUDIT.md CHECK 1 and 2): the effects that held one pattern without a temporal upscaler (the contact march, the traced sun rays, the shafts, the car reflection cone) change their noise
+# every frame and resolve it with a history; the twins of the passes measure the per-frame variation, the error after the history under a still and a moving camera, the flicker and the ghost; the upscaler's jitter in
+# a pinned still; the memory; the sources:
+#   cmake --build <dir> --target larecomp_noise_resolve_test, then run src/gpu/larecomp_noise_resolve_test [<src/gpu dir>] [--print] (about ten seconds).
+add_executable(larecomp_noise_resolve_test EXCLUDE_FROM_ALL noise_resolve_test.cpp)
 # The size of the occlusion's and the bounce light's images (ao_size.h: half the picture's size above 1080 lines of render height, the
 # contact shadows keeping their own size, the memory each frame holds and the cost model; given the src/gpu folder it also checks that the
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:
@@ -160,6 +203,11 @@ add_executable(larecomp_setting_source_test EXCLUDE_FROM_ALL setting_source_test
 # The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
 add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
+# Which draws wait in the background for a pipeline whatever the game's rule says (variant_wait.h: a draw whose key has the headlight's word or the G-buffer's
+# planes has the game's own shader as its fallback, so the lit world draws that write the stencil no longer make those pipelines on the render thread):
+#   cmake --build <dir> --target larecomp_variant_wait_test, then run src/gpu/larecomp_variant_wait_test (exit 0 = passed).
+add_executable(larecomp_variant_wait_test EXCLUDE_FROM_ALL variant_wait_test.cpp)
+target_include_directories(larecomp_variant_wait_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # Every descriptor set the renderer makes agrees with its builder (descriptor_count_test.cpp; tools/check_descriptor_counts.py is its Python twin): D3D12 refuses a set
 # whose CreateDescriptorSet counts are not the builder's ranges (Vulkan does not count: the city shadow pass never ran on D3D12 for that), and the binding code's indices,
 # range types and structured views are read against the ranges. Reads the .cpp / .h files of the folder it is given, no renderer needed:
@@ -287,6 +335,75 @@ add_executable(larecomp_headlight_rig_test EXCLUDE_FROM_ALL headlight_rig_test.c
 # and the host's pure rules (which draws get the sidecar, the frame window, the trigger) likewise:
 #   cmake --build <dir> --target larecomp_gbuffer_rules_test, then run src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>] (exit 0 = passed).
 add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.cpp)
+# The one light description (light_frame.h: Light, LightFrame, the 64 byte GpuLight and its bits; light_id.h: the ids, a street lamp's being the old LampKey / KeyOf; light_laws.h: the
+# headlight's, the game's lamp's and the volume's laws held to the rig's LampScale and the game's numbers; light_convert.h: the conversions from the headlight rig, the game's lamp
+# list, the shadow replay and into the volume's lamp; and it compiles hlsl/light_laws.hlsli as C++ and compares it with the twin) likewise:
+#   cmake --build <dir> --target larecomp_light_frame_test, then run src/gpu/larecomp_light_frame_test [<hlsl/light_laws.hlsli>] (exit 0 = passed).
+add_executable(larecomp_light_frame_test EXCLUDE_FROM_ALL light_frame_test.cpp)
+# The shared screen products' frozen interface (screen_frame.h, screen_rules.h: the products, the consumers' Want registry, the Hi-Z chain's sizes, the plan, the frame and its
+# generation; it compiles hlsl/screen_hiz.hlsli as C++ and compares it with the twin, and reads the sources it is given) likewise:
+#   cmake --build <dir> --target larecomp_screen_shared_test, then run src/gpu/larecomp_screen_shared_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.cpp)
+# The screen-space reflections' rules (ssr_rules.h: levels, sizes, the decision, the push block, the wetness) and the pure HLSL (hlsl/ssr_common.hlsli and ssr_trace.hlsli compiled as C++: the class
+# gate, the BRDF, the GGX sampling, the virtual image's reprojection, the Hi-Z march against analytic scenes and a brute force march) likewise; it reads the sources it is given:
+#   cmake --build <dir> --target larecomp_ssr_test, then run src/gpu/larecomp_ssr_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)
+# The frame's order (frame_order.h, LIGHT-UNIFY U9: the one table of every pass that makes or reads the shared screen and light data, what each makes, reads, must follow and Wants, and the recorder the
+# Scene notes its trigger passes in) held to itself (every read has an earlier maker, every step moved before what it needs is found), to the consumers' own wants (gbuffer_rules.h, screen_rules.h), to a model of
+# frames with passes missing and every kind of mistake, and, given the src/gpu folder (it defaults to the one the test is in), to scene.cpp, ao.cpp and the consumers' sources (the calls stand in the table's
+# order, each has its Note line, the PassTiming labels and the Want calls exist) likewise:
+#   cmake --build <dir> --target larecomp_frame_order_test, then run src/gpu/larecomp_frame_order_test [<src/gpu dir>] [--print] (exit 0 = passed).
+add_executable(larecomp_frame_order_test EXCLUDE_FROM_ALL frame_order_test.cpp)
+# The material channel (gbuffer_material.h: the class table of the 192 shader groups, the gloss table, the specular exponent's mapping to a smoothness, the material word, the table file the
+# shader pack build writes and the draw's word) likewise; with the folder shaderpack/baseline (hlsl-rpf and hlsl-xex with their shader_report.tsv) it also checks the tables against the
+# translated HLSL of the retail game:
+#   cmake --build <dir> --target larecomp_gbuffer_material_test, then run src/gpu/larecomp_gbuffer_material_test [<shaderpack/baseline>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_material_test EXCLUDE_FROM_ALL gbuffer_material_test.cpp)
+# The passive light manager's rules (light_manager_rules.h: the slot table, the collector that makes one LightFrame from the headlight rig, the replay's maps and the volume's street lamps, the
+# GPU buffer, and the self-checks against the headlight block, the volume's inputs and the frame's own invariants, held to the real structs and the real lamp picker, and each field's
+# deliberate difference found) likewise:
+#   cmake --build <dir> --target larecomp_light_manager_test, then run src/gpu/larecomp_light_manager_test (exit 0 = passed).
+add_executable(larecomp_light_manager_test EXCLUDE_FROM_ALL light_manager_test.cpp)
+# The deferred local light pass's rules (local_lights_rules.h: which lights the pass takes from the frame and from the lamp A/B, the camera's rows and a pixel's world position, the game's night
+# light intensity and height factor, the votes that pick them from the draws' constants, the scissor of a light, the buffer and the push block the shader reads; it compiles
+# hlsl/local_light.hlsli as C++ and compares it with the twin, and reads the sources it is given: the shaders' CMake lines, the settings, the A/B's hook in mod_lights.cpp) likewise:
+#   cmake --build <dir> --target larecomp_local_lights_test, then run src/gpu/larecomp_local_lights_test <src dir> (exit 0 = passed).
+add_executable(larecomp_local_lights_test EXCLUDE_FROM_ALL local_lights_test.cpp)
+# What feeds that pass besides the frame's lights (local_lights_sources.h, GB-H3: the police light bars, the other cars' head, rear, turn and reverse lamps, the mods' lamps the game's grid is not
+# lighting, the budgets a class and a tier), held to the night probe's recorded points (the player, a racer, three traffic cars), to the lamp picker's score and to the one laws' pixel term;
+# it also reads the sources it is given (the settings, the manager's cars, the mod loader's publish, the pass's wiring):
+#   cmake --build <dir> --target larecomp_local_lights_sources_test, then run src/gpu/larecomp_local_lights_sources_test <src dir> (exit 0 = passed).
+add_executable(larecomp_local_lights_sources_test EXCLUDE_FROM_ALL local_lights_sources_test.cpp)
+# The forward headlight stage against the deferred pass (headlight_pass_rules.h, GB-H2: the switch mcla_gpu_headlight_pass and what each route does, the retail census of the stage, the
+# picture-identity rule and the retirement gate on made-up pictures, and the PIXEL IDENTITY: the pass's light, the one law and the one shadow lookup, equals the forward stage's CPU twins on random
+# lights, surfaces and maps at all three levels of LIGHT SHADOWS; it also reads the sources it is given: the route's wiring in the rig, the pass and the pipelines, the setting, the debug row):
+#   cmake --build <dir> --target larecomp_headlight_pass_test, then run src/gpu/larecomp_headlight_pass_test <src dir> (exit 0 = passed).
+add_executable(larecomp_headlight_pass_test EXCLUDE_FROM_ALL headlight_pass_test.cpp)
+# The consumers' shapes as projections of the light manager's frame (light_project.h, LIGHT-UNIFY U4: the headlight variant's constant block, the volume's light inputs, the lights the
+# shadow replay picks from) held to the producers that make them today, byte for byte, over a recorded drive (the rig's real tracker, the replay's real rules at all three levels, the volume's
+# real lamp picker; and the game's own recording when one is given), with each part of each shape deliberately changed and found:
+#   cmake --build <dir> --target larecomp_light_project_test, then run src/gpu/larecomp_light_project_test [<path>.rig.txt] (exit 0 = passed).
+add_executable(larecomp_light_project_test EXCLUDE_FROM_ALL light_project_test.cpp)
+# The one shadow atlas's rules (shadow_atlas_rules.h: pools of tiles by provider laid out in one texture by the level, one pool = local_shadow::MakeAtlas bit for bit; the memory table; the fit of a level to
+# the video memory; the one barrier for the pixel and the compute stage; the clear plan; slots that stay with a light; the published form and its read by light id), the provider interface
+# (shadow_provider.h) and the ONE shadow lookup (light_shadow_lookup.h and its HLSL twin hlsl/light_shadow_lookup.hlsli, compiled as C++ by the test) held to the replay's own rules, the variant's
+# CPU twin (headlight_rules::SoftShadow), the volume's (volumetrics_rules.h ShadowShare) and light_laws.h CombineShadow; light_project_test.cpp holds the published form to a recorded drive:
+#   cmake --build <dir> --target larecomp_shadow_atlas_test, then run src/gpu/larecomp_shadow_atlas_test [<hlsl/light_shadow_lookup.hlsli>] (exit 0 = passed).
+add_executable(larecomp_shadow_atlas_test EXCLUDE_FROM_ALL shadow_atlas_test.cpp)
+# The one picker of the lights and the budget table (light_pick.h: the importance, the keep bonus, the fading and the held pick, the coast, all in seconds of the scene clock; light_budget.h: the
+# headlight, shadow view and volume numbers of each level; light_pick_record.h: the text format of a recording of the pickers' inputs) held to the two pickers it replaced: the old suites' checks
+# ported, a recorded drive through the rig's Tracker and the shadow replay's ViewPicker in both modes (the same picks), the same scenes at 30, 60 and 144 FPS, a switch of the mode in a run;
+# given recordings the game made (mcla_gpu_light_pick_record) it replays those too:
+#   cmake --build <dir> --target larecomp_light_pick_test, then run src/gpu/larecomp_light_pick_test [<path>.rig.txt] [<path>.views.txt] (exit 0 = passed).
+add_executable(larecomp_light_pick_test EXCLUDE_FROM_ALL light_pick_test.cpp)
+# The vehicles' light points, all 19 kinds (light_points.h: the hook's decoder and the table keyed by the light object; car_lights.h: the cars, their frames, sides, directions, bits and levels,
+# the omni lights the lamps make, the census line; mod_light_source.h: a mod's lamps as candidates) held to the night probe's recorded points (the player, two racers, three traffic cars) likewise:
+#   cmake --build <dir> --target larecomp_car_lights_test, then run src/gpu/larecomp_car_lights_test (exit 0 = passed).
+add_executable(larecomp_car_lights_test EXCLUDE_FROM_ALL car_lights_test.cpp)
+# The per-texture material table (gbuffer_materials.h: the text format and its parser, the keys, what a row does to a word, the files' hot reload, the census lines, the shader names file) likewise;
+# with tools/gbuffer_materials/sample_table.txt (the file the Python tools' tests also read) it checks that the sample parses:
+#   cmake --build <dir> --target larecomp_gbuffer_materials_test, then run src/gpu/larecomp_gbuffer_materials_test [<tools/gbuffer_materials/sample_table.txt>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_materials_test EXCLUDE_FROM_ALL gbuffer_materials_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
@@ -299,6 +416,10 @@ add_executable(larecomp_car_shadow_map_rules_test EXCLUDE_FROM_ALL car_shadow_ma
 # the camera out of a draw's bank, which draws are casters, the face culling and the pipeline key) likewise:
 #   cmake --build <dir> --target larecomp_local_shadow_rules_test, then run src/gpu/larecomp_local_shadow_rules_test (exit 0 = passed).
 add_executable(larecomp_local_shadow_rules_test EXCLUDE_FROM_ALL local_shadow_rules_test.cpp)
+# The headlight shadows' lookup (light_shadow_filter.h, the CPU twin of the lit shaders' HeadlightShadow: four gathers at the receiver's plane, contact hardening, the
+# fade at the tile's border) on ray cast maps of a road, a post, a kerb and a wall, against the first version's box, and the levels' sizes (HL-SHADOW-QUALITY):
+#   cmake --build <dir> --target larecomp_light_shadow_filter_test, then run src/gpu/larecomp_light_shadow_filter_test (exit 0 = passed).
+add_executable(larecomp_light_shadow_filter_test EXCLUDE_FROM_ALL light_shadow_filter_test.cpp)
 # The player's car as ray tracing structures (car_rt_scene_rules.h: the instance transform and the camera's z, the masks, the mesh clean-up, the
 # range allocator, the eviction policy, the check pass's statistics; given the src/gpu folder it also checks that hlsl/car_rt_check_cs.hlsl and
 # hlsl/car_rt_common.hlsli use the header's numbers) likewise:
@@ -698,6 +819,23 @@ larecomp_gpu_host_shader(upscaler_masks_ms_ps ps_6_0 SOURCE upscaler_masks_ps DE
 # sample, once for the host's MSAA level.
 larecomp_gpu_host_shader(gbuffer_view_ps ps_6_0 DEFINES GB_VIEW_MS=0)
 larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINES GB_VIEW_MS=1)
+# The deferred local light pass (local_lights.h, GB-H1): one scissored additive draw per light into the main colour, the surface from the G-buffer and the main depth; once for planes with one
+# sample, once for the host's MSAA level.
+larecomp_gpu_host_shader(local_light_ps ps_6_0 DEFINES LL_PASS_MS=0)
+larecomp_gpu_host_shader(local_light_ms_ps ps_6_0 SOURCE local_light_ps DEFINES LL_PASS_MS=1)
+# The shared screen products (screen_shared.h): one level of the Hi-Z chain (the min of the linear depth), and the debug view of the products.
+larecomp_gpu_host_shader(screen_hiz_ps ps_6_0)
+# ... and the colour captures: colour_post's level 0 from the main colour (plain or multisampled) and a mip level of it.
+larecomp_gpu_host_shader(screen_colour_ps ps_6_0 DEFINES SCREEN_COLOUR_PASS=0 SCREEN_COLOUR_MS=0)
+larecomp_gpu_host_shader(screen_colour_ms_ps ps_6_0 SOURCE screen_colour_ps DEFINES SCREEN_COLOUR_PASS=0 SCREEN_COLOUR_MS=1)
+larecomp_gpu_host_shader(screen_colour_mip_ps ps_6_0 SOURCE screen_colour_ps DEFINES SCREEN_COLOUR_PASS=1)
+larecomp_gpu_host_shader(screen_view_ps ps_6_0)
+# The screen-space reflections (ssr.h): the trace (over plain and multisampled planes), the accumulation, the resolve into the main colour (plain and multisampled).
+larecomp_gpu_host_shader(ssr_trace_ps ps_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1)
+larecomp_gpu_host_shader(ssr_temporal_ps ps_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(ssr_apply_ps ps_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=1)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's
@@ -758,6 +896,8 @@ larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)
 larecomp_gpu_host_shader(shafts_sky_ms_ps ps_6_0 SOURCE shafts_sky_ps DEFINES SHAFTS_MS=1)
 larecomp_gpu_host_shader(shafts_blur_ps ps_6_0)
 larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
+# The blurred image averaged over frames while no temporal upscaler runs (NOISE-RESOLVE, noise_resolve.h):
+larecomp_gpu_host_shader(shafts_temporal_ps ps_6_0)
 # The volumetric light's passes (volumetrics.h): the inject and the integrate (compute, Shader Model 6.0, a typed RGBA16F storage image store on both
 # APIs) and the composite (plain or multisampled depth plane).
 larecomp_gpu_host_shader(volumetrics_inject_cs cs_6_0)
@@ -768,6 +908,8 @@ larecomp_gpu_host_shader(volumetrics_apply_ms_ps ps_6_0 SOURCE volumetrics_apply
 # next frame's car paint variant.
 larecomp_gpu_host_shader(car_history_ps ps_6_0 DEFINES CAR_HISTORY_MS=0)
 larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=1)
+# ... and the same with the colour read from the shared screen products' colour_post (screen_shared.h): the depth and stencil planes multisampled, the colour one single sample image.
+larecomp_gpu_host_shader(car_history_ms_shared_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=2)
 # The player car's sun shadow map (car_shadow_map.h): the depth-only vertex shader of the car's own draws, the 4x1 matrix texture's pass,
 # and the debug view's square.
 larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)

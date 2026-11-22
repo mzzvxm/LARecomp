@@ -45,6 +45,8 @@
 #include <cstdint>
 #include <functional>
 
+#include "blue_noise.h"
+
 namespace mcla::gpu::ao_halo {
 
 // ---------------------------------------------------------------------------
@@ -145,6 +147,11 @@ struct Params {
   // The shader's cheaper forms of the same arithmetic (ao_fast.h, "THE SAME WORK"): 1 / size and 1 / distance as factors, the
   // tangents as -sin n and sin n, the sample's level from comparing its length with 16 and 32 pixels. False: the forms of before.
   bool lossless = false;
+  // The pixel's noise (hlsl/ao_common.hlsli AoSpatialNoise, AoNoiseShift). Without these two, the first version's: interleaved gradient noise and a
+  // shift of the R2 sequence a frame. `noise_lattice` 13: the shift is the lattice of 13 frames (ao_stable.h, mcla_gpu_ao_stable). `blue`: the pixel's
+  // own part is the blue noise tile's two channels (blue_noise.h, mcla_gpu_ao_blue_noise) in place of interleaved gradient noise.
+  int noise_lattice = 0;
+  const blue_noise::Tile* blue = nullptr;
 };
 
 inline constexpr float kSky = 60000.0f;
@@ -231,11 +238,20 @@ inline float Visibility(const Scene& s, const Params& p, int px, int py, int fra
     return 1.0f;
   }
   const float ratio = std::max(p.ratio, 0.01f);
-  const float spatial_x = Noise(float(px), float(py));
-  const float spatial_y = Noise(float(py) + 31.0f, float(px) + 11.0f);
-  const float fr = float(frame & 1023);
-  const float noise_x = Frac(spatial_x + fr * 0.75487766624669f);
-  const float noise_y = Frac(spatial_y + fr * 0.56984029099806f);
+  const float spatial_x = p.blue ? blue_noise::Sample(*p.blue, 0, px, py) : Noise(float(px), float(py));
+  const float spatial_y = p.blue ? blue_noise::Sample(*p.blue, 1, px, py) : Noise(float(py) + 31.0f, float(px) + 11.0f);
+  float shift_x, shift_y;
+  if (p.noise_lattice == 13) {
+    const int m = ((frame % 13) + 13) % 13;
+    shift_x = float(m) / 13.0f;
+    shift_y = float((m * 8) % 13) / 13.0f;
+  } else {
+    const float fr = float(frame & 1023);
+    shift_x = fr * 0.75487766624669f;
+    shift_y = fr * 0.56984029099806f;
+  }
+  const float noise_x = Frac(spatial_x + shift_x);
+  const float noise_y = Frac(spatial_y + shift_y);
   const float min_offset = kMinOffsetPixels / radius_px;
   const int slices = std::max(p.slices, 1);
   const int steps = std::max(p.steps, 1);

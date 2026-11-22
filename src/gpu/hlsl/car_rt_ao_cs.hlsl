@@ -18,7 +18,7 @@
 // takes min(its own visibility, the pass's r raised to the look's power), the contact march takes the darker of its own shadow and 1 - g.
 //
 // THE OCCLUSION RAYS: kRays (the push's) cosine weighted directions about the pixel's normal, the radius squared stratified by the ray's number, the
-// angle turned by the golden angle a ray, the whole pattern rotated by the pixel's interleaved gradient noise and shifted by the occlusion's own
+// angle turned by the golden angle a ray, the whole pattern rotated by the pixel's blue noise (car_rt_ao_noise.hlsli) and shifted by the occlusion's own
 // 13 frame lattice (ao_stable.h: so that the history, which averages 12 frames, sees each rotation once). Each ray is as long as reach (1 - sqrt(u))
 // with u from a stratum of its own (not its direction's), so it is stopped by a blocker at distance d with probability (1 - d / reach)^2: yes or
 // no answers (a first hit ends the query) average to an occlusion that falls off with distance. The ray is lifted to at least kMinAbove of cosine
@@ -42,6 +42,7 @@
 #define CAR_RT_SPACE 2
 #include "car_rt_common.hlsli"
 #include "car_rt_refl_common.hlsli"
+#include "car_rt_ao_noise.hlsli"
 
 Texture2D<float4> g_textures[] : register(t0, space0);
 #ifdef __spirv__
@@ -93,11 +94,8 @@ static const float kSnapFootprint = 0.75;     // car_rt_refl_cs.hlsl's primary r
 static const float kBoxGrowSun = 0.1;         // the sun ray's box test is a little roomy: the origin is the depth's, not the surface's
 static const uint kLatticeFlag = 1u << 30;    // ao_stable.h kLatticeFlag
 
-// Interleaved gradient noise (ao_common.hlsli AoNoise).
-float Ign(float2 p)
-{
-    return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715))));
-}
+// The noise code's bit 29: the pixel's part of the noise is the blue noise tile (ao_stable.h kBlueNoiseFlag, mcla_gpu_ao_blue_noise; car_rt_ao_noise.hlsli), else the first version's gradient noise.
+static const uint kBlueNoiseFlag = 1u << 29;
 
 // The frame's shift of the noise (ao_common.hlsli AoNoiseShift).
 float2 NoiseShift()
@@ -342,8 +340,7 @@ float4 TracePixel(uint2 pixel, uint2 size)
     if (want_ao)
     {
         const uint rays = clamp((flags >> 8) & 0xFu, 1u, 4u);
-        const float2 spatial = float2(Ign(float2(pixel)), Ign(float2(pixel).yx + float2(31.0, 11.0)));
-        const float2 noise = frac(spatial + NoiseShift());
+        const float2 noise = CarRtOcclusionNoise(int(pixel.x), int(pixel.y), (g_push.noise.x & kBlueNoiseFlag) != 0u, NoiseShift());
         float3 tangent;
         float3 bitangent;
         Frame(n, tangent, bitangent);
@@ -381,9 +378,9 @@ float4 TracePixel(uint2 pixel, uint2 size)
     float open_sun = 1.0;
     if (want_sun && dot(n, to_sun) > kSunFacingLow)
     {
-        const float frame_shift = float(g_push.noise.z & 1023u);
-        const float u1 = frac(Ign(float2(pixel) + float2(17.0, 5.0)) + frame_shift * 0.75487766624669);
-        const float u2 = frac(Ign(float2(pixel).yx + float2(3.0, 29.0)) + frame_shift * 0.56984029099806);
+        const float2 sun_noise = CarRtSunNoise(int(pixel.x), int(pixel.y), (g_push.noise.x & kBlueNoiseFlag) != 0u, g_push.noise.z & 1023u);
+        const float u1 = sun_noise.x;
+        const float u2 = sun_noise.y;
         float3 sx;
         float3 sy;
         Frame(to_sun, sx, sy);

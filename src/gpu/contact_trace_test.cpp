@@ -4253,7 +4253,7 @@ void ShaderConstantsMatch(const std::string& dir) {
             contact.find("const uint filter_mode = filter_code >> 8;") != std::string::npos &&
             contact.find("const float sun_times = float(filter_code & 255u) * (1.0f / 16.0f);") != std::string::npos &&
             contact.find("const float reach = filter_mode == kCarMapFilterPcss ? kCarMapFilterMaxRadii * soft : soft;") != std::string::npos &&
-            contact.find("sincos((g_push.slots2.y != 0u) ? noise * 6.28318530718f : kCarMapFixedAngle, direction.y, direction.x);") != std::string::npos &&
+            contact.find("sincos(((g_push.slots2.y & ~kAoNoiseBlueFlag) != 0u) ? noise * 6.28318530718f : kCarMapFixedAngle, direction.y, direction.x);") != std::string::npos &&
             contact.find("radius = clamp(blocker_sum / blocker_count * kCarMapSunTan * sun_times / texel_m, kCarMapMinFilterTexels, reach);") != std::string::npos &&
             contact.find("const float w = 1.0f - 0.5f * at;") != std::string::npos &&
             contact.find("return saturate(sum / weights) * saturate(edge / kCarMapEdgeTexels);") != std::string::npos,

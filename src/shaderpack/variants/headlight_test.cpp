@@ -26,11 +26,13 @@
 #include <vector>
 
 #include "gpu/headlight_rig_rules.h"
+#include "gpu/light_shadow_filter.h"
 #include "shaderpack/variants/headlight.h"
 #include "shaderpack/variants/shadow_filter.h"
 
 namespace sp = larecomp::shaderpack;
 namespace hr = mcla::gpu::headlight_rules;
+namespace sf = larecomp::gpu::shadow_filter;
 
 namespace {
 
@@ -237,7 +239,7 @@ void CheckFixtures() {
     Check(Contains(moved.hlsl, "#define g_HlHeader vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 624, 0x10)\n") &&
               Contains(moved.hlsl, "g_HlLight(INDEX) vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 688 + (INDEX) * 16, 0x10)") &&
               Contains(moved.hlsl, "float4 g_HlHeader : packoffset(c39); \\\n") && Contains(moved.hlsl, "float4 g_HlLights[12] : packoffset(c43);") &&
-              Contains(moved.hlsl, "float4 g_HlShadowArr[24] : packoffset(c57);") && Count(moved.hlsl, "SharedConstants + 608") == 0,
+              Contains(moved.hlsl, "float4 g_HlShadowArr[48] : packoffset(c58);") && Count(moved.hlsl, "SharedConstants + 608") == 0,
           "composed: every member is 16 bytes further in both backends");
     Check(moved.hlsl.size() == alone.hlsl.size(), "composed: the same text but for the offsets (the digits count the same)");
   }
@@ -254,8 +256,8 @@ void CheckFixtures() {
             def.name == "headlight" && def.needs_rpf && def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 5 && def.transform,
         "the definition: its feature (and the table's row, with the alpha test twin), name, the RPF, five name suffixes, a transform");
   Check(def.version == sp::kHeadlightVariantVersion && def.version >= 1, "the definition carries the version");
-  Check(larecomp::shaderpack::chain::Find(def.feature)->constants_bytes == 672 && larecomp::shaderpack::chain::SoloWord(def.feature) >= larecomp::shaderpack::kFirstPackedVariant,
-        "the table's row says 672 bytes and the word is a packed one");
+  Check(larecomp::shaderpack::chain::Find(def.feature)->constants_bytes == 1072 && larecomp::shaderpack::chain::SoloWord(def.feature) >= larecomp::shaderpack::kFirstPackedVariant,
+        "the table's row says 1072 bytes and the word is a packed one");
   // The lit family is in no other variant by name: none of its suffixes is, or ends with, the shadow collector's (the other variants name single shaders
   // that are not in it: the car paint, the chrome, the sample pass, the UI's textured shaders; shaderpack/variant_overlap.h).
   for (const std::string_view suffix : sp::kHeadlightSuffixes) {
@@ -287,28 +289,68 @@ void CheckHelper() {
   } kConstants[] = {
       {"kHlPeak", hr::kPeak},           {"kHlFalloffDistance", hr::kFalloffDistance}, {"kHlSurfaceWrap", hr::kSurfaceWrap},
       {"kHlCutLow", hr::kCutLow},       {"kHlCutHigh", hr::kCutHigh},                 {"kHlNearStart", hr::kNearStart},
-      {"kHlNearSpan", hr::kNearSpan},     {"kHlShadowKernel", hr::kShadowKernel},
+      {"kHlNearSpan", hr::kNearSpan},     {"kHlPcfMinRadius", sf::kPcfMinRadius},   {"kHlPcfMaxRadius", sf::kPcfMaxRadius},
+      {"kHlLampRadius", sf::kLampRadius}, {"kHlMaxSlope", sf::kMaxSlope},           {"kHlSlopeBias", sf::kSlopeBias},
+      {"kHlBorderFade", sf::kBorderFade}, {"kHlDegenerate", sf::kDegenerate},
   };
   for (const auto& c : kConstants) {
     const double got = ConstantOf(helper, c.name);
     Check(std::fabs(got - c.want) < 1e-6, std::string("the helper's ") + c.name + " is the rules' (" + std::to_string(got) + " against " + std::to_string(c.want) + ")");
   }
-  // The shadow hook's soft lookup (hr::SoftShadow is its CPU twin): a box of kShadowKernel = 3 texels square read as 4 x 4 texels, the four outer ones first and
-  // then the other twelve, each texel's weight along an axis (1 - f, 1, 1, f), their sum over 9.
-  Check(hr::kShadowKernel == 3.0f, "the box is three texels wide, so it covers four texels along an axis");
-  Check(Contains(helper, "float HeadlightShadowTexel(") && Count(helper, "HeadlightShadowTexel(") == 6, "one fetch function, four outer fetches and the loop's one");
-  Check(Contains(helper, "float2 low = s.xy / t - 0.5 * kHlShadowKernel;") && Contains(helper, "float2 f = low - base;"), "the box's low corner is the place less half the box");
-  Check(Contains(helper, "float4 wx = float4(1.0 - f.x, 1.0, 1.0, f.x);") && Contains(helper, "float4 wy = float4(1.0 - f.y, 1.0, 1.0, f.y);"),
-        "the weights along an axis are (1 - f, 1, 1, f) for a box of three");
-  Check(Contains(helper, "uv0 + float2(3.0, 0.0) * t") && Contains(helper, "uv0 + float2(0.0, 3.0) * t") && Contains(helper, "uv0 + float2(3.0, 3.0) * t"),
-        "the outer fetches are the box's corners, three texels from the first");
-  Check(Contains(helper, "if (corners == 0.0 || corners == 4.0)") && Contains(helper, "return corners * 0.25;"), "the shortcut when the outer four agree");
-  Check(Contains(helper, "return lit * (1.0 / 9.0);"), "the box's weights sum to nine");
-  Check(Count(helper, "[unroll]") == 2 && Contains(helper, "for (int j = 0; j < 4; ++j)") && Contains(helper, "for (int i = 0; i < 4; ++i)"), "the sixteen fetches are two unrolled loops");
-  Check(Contains(helper, ">= depth ? 1.0 : 0.0") && Count(helper, ">= depth ? 1.0 : 0.0") == 1, "the one compare is the game's `>=`");
+  // The shadow hook's lookup (src/gpu/light_shadow_filter.h ViewLit is its CPU twin, light_shadow_filter_test.cpp holds the twin to the scenes): FOUR GATHERS cover the 4 x 4 texels
+  // around the point (every texel is read: nothing thinner than a texel falls between taps), each compared with the receiver's depth at that texel on the receiver's plane; the
+  // kernel is a box of 2 r texels, r from the lamp's penumbra through the average blocker held to [0.5, 1.5]; the shadow fades out at the tile's border.
+  Check(sf::kPcfMaxRadius == 1.5f && sf::kPcfMinRadius == 0.5f, "the kernel's half width is 0.5 to 1.5 texels: the 4 x 4 footprint holds a box of half width 1.5 wherever the point is in its texel");
+  Check(Contains(helper, "float4 HeadlightQuadLit(") && Contains(helper, "float HeadlightShadow(uint view, float3 world, float3 normal)"), "the quad compare and the lookup (it takes the surface's normal)");
+  Check(Count(helper, ".GatherRed(mapSampler, ") == 4 && Contains(helper, "map.GatherRed(mapSampler, corner);") && Contains(helper, "corner + float2(2.0 * t.x, 0.0)") &&
+            Contains(helper, "corner + float2(0.0, 2.0 * t.y)") && Contains(helper, "corner + 2.0 * t"),
+        "four gathers, at the corners of the four quads of the footprint");
+  Check(Contains(helper, "float2 first = floor(c - 0.5) - 1.0;") && Contains(helper, "float2 corner = (first + 1.0) * t;"), "the footprint starts one texel before the bilinear footprint, the quads' corner is a texel in");
+  Check(Contains(helper, "Texture2D<float4> map = g_Texture2DDescriptorHeap[TFETCH_INDEX(atlas.x)];") && Contains(helper, "SamplerState mapSampler = g_SamplerDescriptorHeap[atlas.y];"),
+        "the atlas is read through the guest's heaps, as tfetch2DLod does");
+  Check(!Contains(helper, "HeadlightShadowTexel") && !Contains(helper, "corners == 0.0") && !Contains(helper, "kHlShadowKernel"), "the 3 x 3 box and its four tap shortcut are gone");
+  // The plane: the Jacobians of u, v and z in the world point, the receiver's slope over one texel from the normal, its limit and the degenerate case.
+  Check(Contains(helper, "float3 ju = (row0.xyz - s.x * axis) * (invW / t.x);") && Contains(helper, "float3 jv = (row1.xyz - s.y * axis) * (invW / t.y);") &&
+            Contains(helper, "float3 jz = (row2.xyz - s.z * axis) * invW;"),
+        "the Jacobians of u and v (in texels) and of the depth");
+  Check(Contains(helper, "float scaleA = dot(row2.xyz, axis) / dot(axis, axis);") && Contains(helper, "float2 limit = kHlMaxSlope * (scaleA - s.z) * invW / float2(lenU, lenV);"),
+        "A = f / (f - n) comes from the matrix's own rows, the slope limit from it");
+  Check(Contains(helper, "float3 vn = cross(jv, normal);") && Contains(helper, "float det = dot(ju, vn);") &&
+            Contains(helper, "slope = clamp(float2(dot(jz, vn), dot(jz, cross(normal, ju))) / det, -limit, limit);") && Contains(helper, "if (abs(det) > kHlDegenerate * lenU * lenV)"),
+        "the slope of the plane over one texel along u and v, held to the limit, none when the plane is edge on");
+  Check(Contains(helper, "float depth = s.z - (shadowParams.x + kHlSlopeBias * (abs(slope.x) + abs(slope.y)));"), "the bias is the view's constant and a share of the plane's own change over a texel");
+  Check(Contains(helper, "float4 need = min(depth + slope.x * rx + slope.y * ry, 1.0);") && Contains(helper, "return float4(stored >= need);") && Count(helper, ">= need") == 1,
+        "the one compare is the game's `>=` against the plane's depth at the texel's centre, never above 1");
+  // The quads' component order and the offsets of each texel's centre from the point.
+  Check(Contains(helper, "float4 ox = o0.x + float4(0.0, 1.0, 2.0, 3.0);") && Contains(helper, "float2 o0 = first + 0.5 - c;"), "the offsets of the footprint's centres from the point");
+  Check(Contains(helper, "HeadlightQuadLit(q00, depth, slope, float4(ox.x, ox.y, ox.y, ox.x), float4(oy.y, oy.y, oy.x, oy.x))") &&
+            Contains(helper, "HeadlightQuadLit(q10, depth, slope, float4(ox.z, ox.w, ox.w, ox.z), float4(oy.y, oy.y, oy.x, oy.x))") &&
+            Contains(helper, "HeadlightQuadLit(q01, depth, slope, float4(ox.x, ox.y, ox.y, ox.x), float4(oy.w, oy.w, oy.z, oy.z))") &&
+            Contains(helper, "HeadlightQuadLit(q11, depth, slope, float4(ox.z, ox.w, ox.w, ox.z), float4(oy.w, oy.w, oy.z, oy.z))"),
+        "each quad's components x y z w are the texels (0, 1) (1, 1) (1, 0) (0, 0) of the quad: its columns and rows are offset accordingly");
+  // The shortcuts: nothing nearer in all 16 texels is lit, all 16 nearer is in shadow (the fade still applies); the penumbra and the weights.
+  Check(Contains(helper, "if (blockers < 0.5)") && Contains(helper, "if (blockers > 15.5)") && Contains(helper, "return lerp(1.0, 0.0, fade);"), "the shortcuts: no blocker in the footprint is lit, all sixteen is in shadow");
+  Check(Contains(helper, "float radius = kHlLampRadius * 0.5 * (lenU + lenV) * (s.z - blockerSum / blockers) / max(scaleA - s.z, 1.0e-6);") &&
+            Contains(helper, "radius = clamp(radius, kHlPcfMinRadius, kHlPcfMaxRadius);"),
+        "the kernel's half width is the lamp's disc through the average blocker, held to its range");
+  Check(Contains(helper, "float4 wx = saturate(min(edgeX + 1.0, c.x + radius) - max(edgeX, c.x - radius));") && Contains(helper, "float4 wy = saturate(min(edgeY + 1.0, c.y + radius) - max(edgeY, c.y - radius));") &&
+            Contains(helper, "share = saturate(share / (4.0 * radius * radius));"),
+        "each texel is counted by the part of it the box covers, the weights sum to 2 r on each axis");
+  Check(Contains(helper, "float4 row0Lit = float4(l00.w, l00.z, l10.w, l10.z);") && Contains(helper, "float4 row1Lit = float4(l00.x, l00.y, l10.x, l10.y);") &&
+            Contains(helper, "float4 row2Lit = float4(l01.w, l01.z, l11.w, l11.z);") && Contains(helper, "float4 row3Lit = float4(l01.x, l01.y, l11.x, l11.y);"),
+        "the footprint's rows are put together from the quads in the order the twin does");
+  Check(Contains(helper, "float fade = saturate(min(border.x, border.y) * (1.0 / kHlBorderFade));") && Contains(helper, "return lerp(1.0, share, fade);"), "the shadow fades out toward the tile's border");
+  Check(!Contains(helper, "SV_Position") && !Contains(helper, "iPos") && !Contains(helper, "Noise(") && !Contains(helper, "frac(sin"), "nothing reads the screen position or a noise: no grain for anything to resolve");
   // The shadow hook's number of views and taps, the light count, the loop bound.
   Check(Contains(helper, "min(uint(g_HlHeader.x + 0.5), 4u)") && hr::kMaxLights == 4, "the helper takes at most four lights, as the rules do");
   Check(Contains(helper, "view * 6u + 5u") && sizeof(larecomp::gpu::LocalShadowView) == 96, "a shadow view is six registers (96 bytes) in the block");
+  // A light is a car's and has up to two views, one for each lamp: its share is the mean of the views it has (HL-PER-LAMP).
+  Check(Contains(helper, "uint4 shadowOfB = g_HlShadowOfB;") && Contains(helper, "uint viewA = shadowOf[i];") && Contains(helper, "uint viewB = shadowOfB[i];"),
+        "a light's two views are read from the two tables");
+  Check(Count(helper, "HeadlightShadow(view") == 2 && Contains(helper, "seen += HeadlightShadow(viewA, world, normal);") && Contains(helper, "seen += HeadlightShadow(viewB, world, normal);") &&
+            Contains(helper, "scale *= seen / views;"),
+        "each view of a light is looked up once and the share is the mean of the views it has");
+  Check(Contains(helper, "if (scale > 0.0 && atlas.x != 0xFFFFFFFFu)"), "no shadow lookup for a term that is zero already, and none with no atlas");
   Check(Contains(helper, "dist2 >= range2 || dist2 < 1.0e-6") && Contains(helper, "if (cosine <= b.w)"), "the helper's early-outs are the rules' (reach, cone)");
   Check(Contains(helper, "ddx(world)") && Contains(helper, "ddy(world)"), "the derivatives are taken before the early-out");
   Check(helper.find("ddx(world)") < helper.find("if (count == 0u"), "... in that order");
@@ -328,8 +370,9 @@ void CheckHelper() {
       {"g_HlBoundsHi vk::RawBufferLoad<float4>", "g_HlBoundsHi : packoffset", offsetof(hr::HeadlightConstants, bounds_hi)},
       {"g_HlLight(INDEX) vk::RawBufferLoad<float4>", "g_HlLights[12] : packoffset", offsetof(hr::HeadlightConstants, lights)},
       {"g_HlShadowOf vk::RawBufferLoad<uint4>", "g_HlShadowOf : packoffset", offsetof(hr::HeadlightConstants, shadow_of)},
+      {"g_HlShadowOfB vk::RawBufferLoad<uint4>", "g_HlShadowOfB : packoffset", offsetof(hr::HeadlightConstants, shadow_of_b)},
       {"g_HlAtlas vk::RawBufferLoad<uint4>", "g_HlAtlas : packoffset", offsetof(hr::HeadlightConstants, atlas)},
-      {"g_HlShadow(INDEX) vk::RawBufferLoad<float4>", "g_HlShadowArr[24] : packoffset", offsetof(hr::HeadlightConstants, shadow)},
+      {"g_HlShadow(INDEX) vk::RawBufferLoad<float4>", "g_HlShadowArr[48] : packoffset", offsetof(hr::HeadlightConstants, shadow)},
   };
   for (const auto& f : kFields) {
     const std::string spirv = std::string("#define ") + f.spirv + "(g_PushConstants.SharedConstants + " + std::to_string(608 + f.offset);
@@ -337,9 +380,10 @@ void CheckHelper() {
     const std::string dxil = std::string(f.dxil) + "(c" + std::to_string(38 + f.offset / 16) + ")";
     Check(Contains(out, dxil), std::string("DXIL: ") + f.dxil + " at c" + std::to_string(38 + f.offset / 16));
   }
-  Check(608 + sizeof(hr::HeadlightConstants) == 1280, "the block ends at byte 1280 of the draw's constants");
-  // The cbuffer's last register is c79: 38 + 672 / 16 - 1.
-  Check(38 + sizeof(hr::HeadlightConstants) / 16 - 1 == 79, "the last register is c79");
+  Check(608 + sizeof(hr::HeadlightConstants) == 1680, "the block ends at byte 1680 of the draw's constants");
+  // The cbuffer's last register is c104: 38 + 1072 / 16 - 1.
+  Check(38 + sizeof(hr::HeadlightConstants) / 16 - 1 == 104, "the last register is c104");
+  Check(larecomp::gpu::kMaxShadowViews == 8 && sizeof(hr::HeadlightConstants::shadow) == 8 * sizeof(larecomp::gpu::LocalShadowView), "the block holds eight views (two for each of four lights)");
 }
 
 // ---------------------------------------------------------------------------

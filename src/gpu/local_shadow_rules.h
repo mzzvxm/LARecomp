@@ -5,11 +5,12 @@
 // The renderer's half is local_shadow.h (perf/LOCAL-SHADOWS-SURVEY.md, option A). This header holds what needs no Plume, no ReXGlue and
 // no game, as pure functions on plain numbers, so that local_shadow_rules_test.cpp builds on its own:
 //
-//   - the setting: mcla_gpu_light_shadows' words, the size of a view per level and how many views a level draws (Resolve, MaxViews: high 2 views of 512,
-//     ultra 3 of 1024);
-//   - the lights: which of the rig's lights share a view (BuildGroups: one view covers all the lamps of a car), which cars get one of the views a level has
-//     (ViewPicker: the player's car, then the others by their importance, with a hysteresis so that two cars of the same importance do not trade a view back
-//     and forth), the view that covers a group (FitView: eye, direction, field of view, near and far planes) and its matrices (LightClip, WorldToShadow);
+//   - the setting: mcla_gpu_light_shadows' words and THE LEVEL TABLE (kLevelTable: the size of a view, how many cars a level shadows and for how many of them each
+//     headlamp has a view of its own; the three level shape is the one in use since 2026-11-20, kThreeLevelShape picks the table: one constant), Resolve, MaxViews;
+//   - the lights: which of the rig's lights share a view (BuildGroups: one view covers all the lamps of a car), which cars get views (ViewPicker: the player's car,
+//     then the others by their importance, with a hysteresis so that two cars of the same importance do not trade a view back and forth), the views of a car (PlanViews:
+//     one for each headlamp, or one for the car), the view that covers a group (FitView: eye, direction, field of view, near and far planes) and its matrices (LightClip,
+//     WorldToShadow);
 //   - the atlas: where view k sits in it, in texels and in uv, and what it holds in video memory (MakeAtlas, TileRect, UvRect, AtlasBytes);
 //   - the replay's matrix: a main-view draw's gWorldViewProj (VS c8-c11) turned into model -> light clip (ReplaceWvp), and the main camera's
 //     view-projection found from the draws' own constants (DeriveCamera);
@@ -47,10 +48,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "gpu_class.h"
+#include "light_budget.h"
+#include "light_influence.h"
+#include "light_pick.h"
+#include "local_shadow_types.h"
 #include "temporal_math.h"
 
 namespace mcla::gpu::local_shadow {
@@ -61,35 +68,70 @@ namespace tp = ::mcla::gpu::temporal;
 // the setting
 // ---------------------------------------------------------------------------
 
-// mcla_gpu_light_shadows (was mcla_gpu_headlight_shadows): auto, off, high or ultra. No level is called low (owner, 2026-11-14): two sizes are high and ultra.
-// The levels differ by how many cars' lights are shadowed as well as by how sharp (owner, 2026-11-20): high the player's car and the nearest other car at 512 texels
-// a view, ultra the player's car and the two nearest other cars at 1024. (It was one view and two: the resolution alone is hard to see and costs almost nothing, a
-// view costs 0.02 ms of the graphics card and 0.05 to 0.1 ms of the render thread.)
-enum class Level : uint8_t { kOff, kHigh, kUltra };
+// mcla_gpu_light_shadows (was mcla_gpu_headlight_shadows): auto, off, medium, high or ultra (the three level shape below; the two level shape has no medium). No level is
+// called low (owner, 2026-11-14): the levels are the table's.
+//
+// THE LEVELS (owner, 2026-11-20): a level differs by how many cars' lights are shadowed, by how many of those have a view for EACH HEADLAMP (a pole that both lamps light
+// casts two shadows, and a car's shadow has the half-lit band of one lamp) and by how sharp the views are. A car's light is one term (the middle of its two lamps,
+// headlight_types.h) whose shadow is the mean of its lamps' views.
+// THE LEVEL TABLE LIVES IN light_budget.h since LU-3 (the one budget table of the lights): the level words, the rows, the two shapes, and the cars and views a level gives. The names here
+// are the same ones, so nothing that reads them changes.
+using Level = light_budget::Level;
 
-inline constexpr uint32_t kTileHigh = 512;    // texels a view
-inline constexpr uint32_t kTileUltra = 1024;
-inline constexpr uint32_t kViewsHigh = 2;     // cars a level shadows: the player's and the nearest other car's
-inline constexpr uint32_t kViewsUltra = 3;    // ... and the next nearest's
-// The most views anything here draws: the published frame holds four (local_shadow_types.h: a view for each lit lamp, and the rig makes one lamp for a car), and the
-// headlight variant's block reads four (headlight_rig_rules.h HeadlightConstants: g_HlShadowArr, 4 views of 96 bytes). The debug override can ask for all four.
-inline constexpr uint32_t kMaxViews = 4;
+// One row of the level table: the setting's word, the texels of a view's side, the cars it shadows (the player's first, then the nearest others) and, of those, how many
+// (in the same order) have a view for each lamp: the other cars have one view for the car.
+using LevelRow = light_budget::ShadowRow;
 
-constexpr uint32_t TileSize(Level level) { return level == Level::kUltra ? kTileUltra : level == Level::kHigh ? kTileHigh : 0u; }
+// THE TWO LEVEL SHAPE (the first plan of 2026-11-20, kept for the tests and as a way back) and THE THREE LEVEL SHAPE (IN USE since 2026-11-20): light_budget.h holds both tables and the
+// reasons for the three level shape (medium 2 views, high 3 views, ultra 6 views; auto: Mid medium, High ultra, Low off: gpu_class.h).
+// THE SIZE OF A VIEW (HL-SHADOW-QUALITY, 2026-11-21: the owner saw the poles', signs' and kerbs' shadows "extremely dither-y and nowhere near as sharp as they should be" on 4K):
+// the tile is chosen so that one texel stays small in the WORLD where the shadows are looked at, whatever the level: TexelMeters below says how many centimetres a texel is at 10 m
+// from the lamps (the view's field is about 72 degrees for a car's view and 80 for a lamp's: kShadowConeCapDegrees). The first version's 512 gave 3.5 cm at 10 m, 7 cm at 20 m
+// and a bollard (10 cm) or a sign post 1.4 to 3 texels wide: thinner than the old lookup's 3 texel box, so its shadow came and went as the car moved. Now medium 768 (1.9 cm at
+// 10 m, 9 MiB), high 1024 (1.4 to 1.6 cm, 24 MiB), ultra 1280 (1.3 cm for a lamp's view, 75 MiB): the numbers are in light_budget.h kThreeLevels. The graphics card time of a view
+// hardly depends on its size (the replay is vertex bound: perf/out/HL-PER-LAMP.txt), what grows is the video memory and the clear of the atlas.
+inline constexpr auto& kTwoLevels = light_budget::kTwoLevels;
+inline constexpr auto& kThreeLevels = light_budget::kThreeLevels;
+// THE ONE DATA CHANGE between the shapes. The rest follows: the pause menu's words (MenuWords), the class table's cells (gpu_class.h kEffects: Mid's `auto` is `medium` in the
+// three level shape and was `high` in the two level one; a cell the table does not have takes the next level up, Row below), the setting's allowed words and help text
+// (settings_gpu.h, manifest.json).
+inline constexpr bool kThreeLevelShape = true;
+inline constexpr std::span<const LevelRow> kLevelTable = kThreeLevelShape ? std::span<const LevelRow>(light_budget::kThreeLevels) : std::span<const LevelRow>(light_budget::kTwoLevels);
 
-constexpr std::string_view LevelName(Level level) { return level == Level::kUltra ? "ultra" : level == Level::kHigh ? "high" : "off"; }
+using LevelTable = std::span<const LevelRow>;
 
-// How many cars' lamps get a view of their own (a car's lamps share one): high two cars (the player's and the nearest other car's), ultra three (and the next
-// nearest). `override_views` (mcla_gpu_headlight_shadow_views, debug) 1 to 4 replaces it; 0 takes the level's.
-constexpr uint32_t MaxViews(Level level, int override_views) {
-  if (level == Level::kOff) {
-    return 0;
-  }
-  if (override_views >= 1) {
-    return uint32_t(override_views > int(kMaxViews) ? int(kMaxViews) : override_views);
-  }
-  return level == Level::kUltra ? kViewsUltra : kViewsHigh;
+// The published frame holds this many views (local_shadow_types.h); no level makes more than the table's greatest (6).
+inline constexpr uint32_t kMaxViews = larecomp::gpu::kMaxShadowViews;
+// The cars that can have views: the rig lights four.
+inline constexpr uint32_t kMaxCars = light_budget::kMaxShadowCars;
+
+// Every function below takes the table too (default: the shape in use), so that the tests read both shapes without building twice.
+
+// The row a level has in the table: its own, else (a level the shape does not have: `medium` in the two level shape, only the tests' table now) the next one up, else the greatest
+// below. Null for off.
+constexpr const LevelRow* Row(Level level, LevelTable table = kLevelTable) { return light_budget::ShadowRowOf(level, table); }
+
+// The level a saved level comes to in this shape (off stays off).
+constexpr Level Effective(Level level, LevelTable table = kLevelTable) {
+  const LevelRow* row = Row(level, table);
+  return row ? row->level : Level::kOff;
 }
+
+constexpr uint32_t TileSize(Level level, LevelTable table = kLevelTable) { return light_budget::ShadowTile(level, table); }
+
+constexpr std::string_view LevelName(Level level) {
+  return level == Level::kUltra ? "ultra" : level == Level::kHigh ? "high" : level == Level::kMedium ? "medium" : "off";
+}
+
+// The cars a level shadows (the player's car first). The debug setting does not change it: it is the views of a car (below).
+constexpr uint32_t MaxCars(Level level, LevelTable table = kLevelTable) { return light_budget::ShadowCars(level, table); }
+
+// How many cars (the first ones, the player's first) have a view for each lamp. `views_per_car` is the debug setting mcla_gpu_headlight_shadow_views: 1 gives every car one
+// view (the first version's), 2 gives every car a view for each lamp, 0 takes the level's own.
+constexpr uint32_t LampCars(Level level, int views_per_car, LevelTable table = kLevelTable) { return light_budget::ShadowLampCars(level, views_per_car, table); }
+
+// How many views a level draws at the most: a view for each shadowed car and a second for each car that has its lamps apart.
+constexpr uint32_t MaxViews(Level level, int views_per_car, LevelTable table = kLevelTable) { return light_budget::ShadowViews(level, views_per_car, table); }
 
 struct Choice {
   Level level = Level::kOff;
@@ -108,39 +150,70 @@ inline std::string Lower(std::string_view text) {
   return out;
 }
 
+// The words of the setting, the table's or not (a word the shape does not have, `medium` in the two level one, is a value that comes to the next level up: Effective). The three
+// level shape has all of them.
 inline Level ParseLevel(std::string_view text, bool* known) {
   *known = true;
   if (text == "off") return Level::kOff;
+  if (text == "medium") return Level::kMedium;
   if (text == "high") return Level::kHigh;
   if (text == "ultra") return Level::kUltra;
   *known = false;
   return Level::kOff;
 }
 
-// `auto` is the class table's cell (gpu_class.h Effect::kLightShadows: off on shared memory, high on Mid, ultra on High); a word that is
-// no value of the setting (the low of an older larecomp.toml) counts as `auto`.
+// `auto` is the class table's cell (gpu_class.h Effect::kLightShadows: off on shared memory, medium on Mid, ultra on High); a word that is
+// no value of the setting (the low of an older larecomp.toml) counts as `auto`. The level a Choice holds is always one the table has.
 inline Choice Resolve(gpu_class::GpuClass cls, std::string_view saved) {
   Choice choice;
   const std::string text = Lower(saved);
   bool known = false;
   const Level own = ParseLevel(text, &known);
   if (known) {
-    choice.level = own;
+    choice.level = Effective(own);
     return choice;
   }
   choice.automatic = true;
   choice.unknown = text != "auto";
   bool cell_known = false;
-  choice.level = ParseLevel(gpu_class::Cell(gpu_class::Effect::kLightShadows, cls), &cell_known);
+  choice.level = Effective(ParseLevel(gpu_class::Cell(gpu_class::Effect::kLightShadows, cls), &cell_known));
   return choice;
 }
 
-// "light shadows high, 2 views of 512x512 (auto on the mid class)".
-inline std::string Describe(const Choice& choice, gpu_class::GpuClass cls) {
+// The pause menu's row: the stored words (and the shown ones, upper case) in the order the row lists them: auto, off, then the table's levels. The row's own code builds its
+// arrays from this, so that a change of shape is one change (kThreeLevelShape).
+inline constexpr uint32_t kMenuWordMax = 5;  // auto, off and up to three levels
+struct MenuWords {
+  std::array<std::string_view, kMenuWordMax> stored{};
+  std::array<std::string_view, kMenuWordMax> shown{};
+  uint32_t count = 0;
+};
+constexpr MenuWords MakeMenuWords(LevelTable table = kLevelTable) {
+  MenuWords w;
+  w.stored[w.count] = "auto";
+  w.shown[w.count++] = "AUTO";
+  w.stored[w.count] = "off";
+  w.shown[w.count++] = "OFF";
+  for (const LevelRow& row : table) {
+    if (w.count < kMenuWordMax) {
+      w.stored[w.count] = row.word;
+      w.shown[w.count++] = row.level == Level::kUltra ? "ULTRA" : row.level == Level::kHigh ? "HIGH" : "MEDIUM";
+    }
+  }
+  return w;
+}
+inline constexpr MenuWords kMenuWords = MakeMenuWords();
+
+// "light shadows high, up to 3 views of 512x512: 2 car(s), a view for each lamp of the first 1 (set)".
+inline std::string Describe(const Choice& choice, gpu_class::GpuClass cls, int views_per_car = 0) {
   std::string text = "light shadows ";
   text += LevelName(choice.level);
   if (choice.level != Level::kOff) {
-    text += ", up to " + std::to_string(MaxViews(choice.level, 0)) + " views of " + std::to_string(choice.tile()) + "x" + std::to_string(choice.tile());
+    const uint32_t cars = MaxCars(choice.level);
+    const uint32_t lamps = LampCars(choice.level, views_per_car);
+    text += ", up to " + std::to_string(MaxViews(choice.level, views_per_car)) + " views of " + std::to_string(choice.tile()) + "x" + std::to_string(choice.tile()) + ": " +
+            std::to_string(cars) + " car(s), ";
+    text += lamps == 0 ? "one view for each" : lamps >= cars ? "a view for each lamp" : "a view for each lamp of the first " + std::to_string(lamps);
   }
   text += " (";
   if (choice.unknown) {
@@ -162,9 +235,8 @@ inline std::string Describe(const Choice& choice, gpu_class::GpuClass cls) {
 // the atlas
 // ---------------------------------------------------------------------------
 
-// `views` square tiles of `tile` texels: one row for up to three views (1 view 1x1 tiles, 2 views 2x1, 3 views 3x1: 3072 x 1024 for ultra, not 2048 x 2048 with a
-// tile left over), 2 x 2 for four (only the debug override asks for four). The size follows the level, never the number of cars lit at the moment, so the atlas is
-// not made again when a car comes into view.
+// `views` square tiles of `tile` texels: one row for up to three views (1 view 1x1 tiles, 2 views 2x1, 3 views 3x1), 2 x 2 for four, 3 x 2 for five and six (ultra: 3072 x
+// 2048), 4 x 2 for seven and eight. The size follows the level, never the number of cars lit at the moment, so the atlas is not made again when a car comes into view.
 struct AtlasLayout {
   uint32_t tile = 0;
   uint32_t cols = 0;
@@ -183,16 +255,19 @@ inline AtlasLayout MakeAtlas(uint32_t tile, uint32_t views) {
   }
   atlas.tile = tile;
   atlas.views = views;
-  atlas.cols = views <= 3 ? views : 2u;
+  atlas.cols = views <= 3 ? views : views == 4 ? 2u : views <= 6 ? 3u : 4u;
   atlas.rows = (views + atlas.cols - 1) / atlas.cols;
   return atlas;
 }
 
-// The atlas a level makes (`override_views` as MaxViews): high 1024 x 512, ultra 3072 x 1024.
-inline AtlasLayout AtlasFor(Level level, int override_views) { return MakeAtlas(TileSize(level), MaxViews(level, override_views)); }
+// The atlas a level makes (`views_per_car` as MaxViews): medium 2 tiles of 768 (1536 x 768), high 3 of 1024 (3072 x 1024), ultra 6 of 1280 (3840 x 2560); in the two level shape
+// high is 4 tiles of 512 (1024 x 1024).
+inline AtlasLayout AtlasFor(Level level, int views_per_car, LevelTable table = kLevelTable) {
+  return MakeAtlas(TileSize(level, table), MaxViews(level, views_per_car, table));
+}
 
-// What the atlas holds in video memory: D32 float + S8 is 8 bytes a texel (plume's RenderFormatSize: 24 bits unused), a lower bound (the driver pads). High is 4 MiB,
-// ultra 24 MiB (it was 2 and 16 with one and two views).
+// What the atlas holds in video memory: D32 float + S8 is 8 bytes a texel (plume's RenderFormatSize: 24 bits unused), a lower bound (the driver pads). In the three level shape
+// medium is 9 MiB, high 24 MiB and ultra 75 MiB (the first sizes, 512 / 512 / 1024, were 4 / 6 / 48; the two level shape's high is 8 MiB; the first version's ultra was 24 with one view for each car). CHECK: D32 float alone (4 bytes a texel: half of this) needs the depth plane read as it is on both backends.
 inline constexpr uint64_t kAtlasTexelBytes = 8;
 inline uint64_t AtlasBytes(const AtlasLayout& atlas) { return uint64_t(atlas.width()) * atlas.height() * kAtlasTexelBytes; }
 
@@ -236,10 +311,12 @@ struct Light {
   double pos[3] = {};
   double dir[3] = {0.0, 0.0, 1.0};  // unit, the way the light shines
   double cos_outer = 0.8;
+  double shadow_half = 0.0;         // the half angle the shadow view must hold (radians): the cone's, held to kShadowConeCapDegrees by MakeLight; 0: the cone's own (a Light made by hand)
   double range = 40.0;
   uint32_t car_key = 0;
   bool is_player = false;
   uint32_t index = 0;               // the light's place in the rig's set (LocalShadowView::light_index)
+  double lamp_offset[3] = {};       // from the light to the car's right headlamp (the left one is the opposite): headlight_types.h; zero: the lamps are not known
 };
 
 inline constexpr double kNearMeters = 1.5;     // casters nearer to the lamps than this are left out (the near plane: the car's own nose)
@@ -248,7 +325,11 @@ inline constexpr double kMaxRange = 80.0;
 inline constexpr double kDefaultRange = 40.0;
 inline constexpr double kMinFovDegrees = 20.0;
 inline constexpr double kMaxFovDegrees = 150.0;
-inline constexpr double kFovMarginDegrees = 4.0;
+inline constexpr double kFovMarginDegrees = 2.0;
+// A view holds the beam's cone up to this half angle only (the beam's own is 38 degrees, the weight of the light there is 12 percent at 34 and falling: light_influence / the rig's
+// smoothstep from the outer to the inner cosine): the field is about 72 degrees instead of 84, so every texel is a fifth smaller in the world for the same tile. A receiver outside
+// the view's rectangle is lit, and the lookup fades the shadow out over the last kHlBorderFade of the tile so that the edge of the view is no line in the picture.
+inline constexpr double kShadowConeCapDegrees = 34.0;
 inline constexpr double kOwnCarRadius = 3.5;   // a vehicle's draw whose root is nearer to the view's eye than this is the lamps' own car
 inline constexpr uint32_t kMaxDrawsPerView = 1024;
 
@@ -279,7 +360,7 @@ inline double Distance(const double a[3], const double b[3]) {
 
 // A light the rig gave: finite, a direction that can be normalised, a cone with an angle. A bad light is left out of every view.
 inline bool MakeLight(const float pos[3], const float dir[3], float cos_outer, float range, uint32_t car_key, bool is_player, uint32_t index,
-                      Light* out) {
+                      Light* out, const float* lamp_offset = nullptr) {
   Light l;
   for (int k = 0; k < 3; ++k) {
     l.pos[k] = double(pos[k]);
@@ -292,10 +373,25 @@ inline bool MakeLight(const float pos[3], const float dir[3], float cos_outer, f
     return false;
   }
   l.cos_outer = double(cos_outer);
+  l.shadow_half = std::min(std::acos(l.cos_outer), Rad(kShadowConeCapDegrees));
   l.range = (std::isfinite(range) && range > 0.0f) ? std::clamp(double(range), kMinRange, kMaxRange) : kDefaultRange;
   l.car_key = car_key;
   l.is_player = is_player;
   l.index = index;
+  if (lamp_offset) {
+    // A lamp offset that is not a number or longer than a car is wide is not believed: the light then has one view.
+    double length2 = 0.0;
+    bool finite = true;
+    for (int k = 0; k < 3; ++k) {
+      finite = finite && std::isfinite(lamp_offset[k]);
+      length2 += double(lamp_offset[k]) * double(lamp_offset[k]);
+    }
+    if (finite && length2 <= 2.0 * 2.0) {
+      for (int k = 0; k < 3; ++k) {
+        l.lamp_offset[k] = double(lamp_offset[k]);
+      }
+    }
+  }
   *out = l;
   return true;
 }
@@ -342,9 +438,11 @@ inline uint32_t BuildGroups(const Light* lights, uint32_t count, Group out[4]) {
 // which cars get a view
 // ---------------------------------------------------------------------------
 
-// A level has a few views (MaxViews) and the rig lights up to four cars: the player's car always has one (when its lamps are lit), the others compete for the rest
+// A level shadows a few cars (MaxCars) and the rig lights up to four: the player's car always has its views (when its lamps are lit), the others compete for the rest
 // by their importance, the same one the rig ranks its own lights by (headlight_rig_rules.h Tracker: 1 / (1 + (d / 25)^2) from the camera, 0.35 times that for a car
-// whose lamps are off the screen, since a shadow nobody can see is wasted): the nearer a car and the more it is on the screen, the more of the picture it lights. A car
+// whose beam lights nothing in the picture, since a shadow nobody can see is wasted, 1 for one whose beam is in the view: light_influence.h BeamReach; the first version
+// asked whether the car's LAMP was on the screen, and so ranked a car at the edge of the frame, whose beam crosses the picture, as if it lit nothing): the nearer a car and the
+// more of its beam is in the picture, the more of the picture it lights. A car
 // that holds a view counts kViewKeepBonus times more than it is worth, so a challenger must beat it by that much: two cars of about the same importance, which
 // swap places with every metre of distance, would otherwise trade the view back and forth (a shadow that pops in and out of the other car's headlights every few
 // frames). The rig's own picking has the same hysteresis (keep_bonus 1.5) for the four lights it lights.
@@ -361,6 +459,10 @@ struct PickContext {
   double reference[3] = {};              // the camera's eye
   bool have_screen = false;
   tp::Mat4 view_projection;              // world -> the game's clip (row vectors: DeriveCamera's)
+  // HL-EDGE-FADE (owner 2026-11-20: a traffic car's headlights fade near the frame's edge): the camera's frustum. When it is valid a car's importance is how much of its BEAM
+  // is in the view (light_influence.h BeamReach of the car's lamps: the strongest), not where its lamp is: a car at the edge of the frame whose beam crosses the picture is
+  // as important as one in the middle of it. Without it (not valid) the first version's rule applies: have_screen and view_projection say whether the lamps are on the screen.
+  light_influence::ViewFrustum frustum;
 };
 
 // A world point inside the screen with `margin` (a share of the clip box: 1.3 is a third beyond each edge); a point behind the camera is not.
@@ -370,6 +472,28 @@ inline bool OnScreen(const tp::Mat4& view_projection, const double p[3], double 
     o[j] = p[0] * view_projection.m[0][j] + p[1] * view_projection.m[1][j] + p[2] * view_projection.m[2][j] + view_projection.m[3][j];
   }
   return o[3] > 0.0 && std::fabs(o[0]) <= margin * o[3] && std::fabs(o[1]) <= margin * o[3];
+}
+
+// The importance of a car for a view from how much of its beam is in the view (0 .. 1: light_influence.h BeamReach): kViewOffScreen (0.35) for a car whose beam lights nothing
+// in the picture, 1 from a reach of light_influence::kReachFull, smooth between (the first version's `on_screen` was a step: 1 or 0.35 by the lamp's place).
+inline double ViewImportanceReach(double distance, double reach, bool holds_view) {
+  const double r = distance / kViewHalfDistance;
+  double score = 1.0 / (1.0 + r * r);
+  score *= light_influence::ReachWeight(reach);
+  if (holds_view) {
+    score *= kViewKeepBonus;
+  }
+  return score;
+}
+
+// How much of a group's beams is in the view: the strongest reach of its lamps (the lights of one car share a view).
+inline double GroupReach(const Light* lights, const Group& group, const light_influence::ViewFrustum& frustum) {
+  double reach = 0.0;
+  for (uint32_t m = 0; m < group.count; ++m) {
+    const Light& l = lights[group.members[m]];
+    reach = std::max(reach, light_influence::BeamReach(frustum, l.pos, l.dir, l.range, std::acos(std::clamp(l.cos_outer, -1.0, 1.0))));
+  }
+  return reach;
 }
 
 // The importance of a car for a view (the player's is above every number this makes).
@@ -387,15 +511,30 @@ inline double ViewImportance(double distance, bool on_screen, bool holds_view) {
 
 // Picks the cars that get a view, frame after frame: it remembers which cars held one in the last pick (the hysteresis). One of these lives as long as the
 // feature does; Forget() when the lights have been off for a while (a new night is a new start).
+// LU-3: the pick itself is light_pick.h's (the held pick of its shadow_cars picker: the importance, the keep bonus of 1.3, the rank); this class finds the groups, the reference and each car's
+// reach and hands them over (the unified mode, the default), or runs the code that was here (mcla_gpu_light_pick = legacy, the A/B). `held_` is the last pick either way.
 class ViewPicker {
  public:
-  // The groups of `lights`, the player's car first and then by importance (ties: the lower car key), at most `max_views` of them, into `out` (room for four).
-  // Returns how many. Updates the cars that hold a view.
-  uint32_t Pick(const Light* lights, uint32_t count, uint32_t max_views, const PickContext& context, Group* out) {
+  ViewPicker() : mode_(light_pick::DefaultMode()) {}
+
+  void SetMode(light_pick::PickMode mode) {
+    if (mode != mode_) {
+      mode_ = mode;
+      seed_pending_ = mode == light_pick::PickMode::kUnified;
+    }
+  }
+  light_pick::PickMode mode() const { return mode_; }
+  // The picker the unified mode uses: the LightManager's (light_pick.h LightPicker::shadow_cars). Null (the default): this picker's own.
+  void SetPicker(light_pick::Picker* picker) { external_ = picker; }
+
+  // The groups of `lights`, the player's car first and then by importance (ties: the lower car key), at most `max_cars` of them, into `out` (room for four).
+  // Returns how many. Updates the cars that hold views. (A car that holds views has all of them: its lamps' views come and go together.)
+  uint32_t Pick(const Light* lights, uint32_t count, uint32_t max_cars, const PickContext& context, Group* out) {
     Group all[4];
     const uint32_t groups = BuildGroups(lights, count, all);
-    if (max_views == 0) {
+    if (max_cars == 0) {
       held_count_ = 0;
+      picker().Forget();
       return 0;
     }
     if (groups == 0) {
@@ -412,10 +551,17 @@ class ViewPicker {
     if (context.have_reference) {
       reference = context.reference;
     }
+    if (mode_ == light_pick::PickMode::kUnified) {
+      return PickUnified(lights, all, groups, reference, max_cars, context, out);
+    }
     std::array<double, 4> score{};
     for (uint32_t g = 0; g < groups; ++g) {
       if (all[g].is_player) {
         score[g] = kPlayerScore - detail::Distance(all[g].eye, reference) * 1e-6;  // a player's lamps in two groups (not made by the rig): the nearer first
+        continue;
+      }
+      if (context.frustum.valid) {
+        score[g] = ViewImportanceReach(detail::Distance(all[g].eye, reference), GroupReach(lights, all[g], context.frustum), Holds(all[g].car_key));
         continue;
       }
       const bool on_screen = !context.have_screen || OnScreen(context.view_projection, all[g].eye, kViewScreenMargin);
@@ -428,7 +574,7 @@ class ViewPicker {
       }
       return all[a].car_key < all[b].car_key;
     });
-    const uint32_t take = std::min({groups, max_views, kMaxViews});
+    const uint32_t take = std::min({groups, max_cars, kMaxCars});
     held_count_ = take;
     for (uint32_t k = 0; k < take; ++k) {
       out[k] = all[order[k]];
@@ -437,7 +583,10 @@ class ViewPicker {
     return take;
   }
 
-  void Forget() { held_count_ = 0; }
+  void Forget() {
+    held_count_ = 0;
+    picker().Forget();
+  }
   uint32_t held_count() const { return held_count_; }
   uint32_t held_key(uint32_t i) const { return i < held_count_ ? held_[i] : 0u; }
   bool Holds(uint32_t car_key) const {
@@ -450,8 +599,55 @@ class ViewPicker {
   }
 
  private:
-  static constexpr double kPlayerScore = 1.0e9;
-  std::array<uint32_t, kMaxViews> held_{};
+  static constexpr double kPlayerScore = light_pick::kPlayerScore;
+
+  light_pick::Picker& picker() { return external_ ? *external_ : own_picker_; }
+
+  // The unified pick: one entry for each group (a car), the held pick of light_pick.h, the groups it chose in its order.
+  uint32_t PickUnified(const Light* lights, const Group* all, uint32_t groups, const double* reference, uint32_t max_cars, const PickContext& context, Group* out) {
+    light_pick::Picker& pick = picker();
+    pick.SetTuning(light_pick::ShadowCarTuning());
+    if (seed_pending_) {
+      // A switch from the legacy mode in a run: the picker takes who holds views.
+      seed_pending_ = false;
+      pick.Forget();
+      for (uint32_t i = 0; i < held_count_; ++i) {
+        pick.Seed(held_[i], true, 1.0f, false);
+      }
+    }
+    entries_.clear();
+    for (uint32_t g = 0; g < groups; ++g) {
+      light_pick::Entry e;
+      e.id = all[g].car_key;
+      e.player = all[g].is_player;
+      e.distance = detail::Distance(all[g].eye, reference);
+      if (e.player) {
+        e.player_penalty = e.distance * 1e-6;  // a player's lamps in two groups (not made by the rig): the nearer first
+      } else if (context.frustum.valid) {
+        e.view_known = true;
+        e.reach = GroupReach(lights, all[g], context.frustum);
+      } else {
+        e.on_screen = !context.have_screen || OnScreen(context.view_projection, all[g].eye, kViewScreenMargin);
+      }
+      entries_.push_back(e);
+    }
+    const uint32_t take = std::min({groups, max_cars, kMaxCars});
+    pick.PickHeld(entries_, take, &result_);
+    held_count_ = take;
+    for (uint32_t k = 0; k < take; ++k) {
+      out[k] = all[result_.shown[k]];
+      held_[k] = out[k].car_key;
+    }
+    return take;
+  }
+
+  light_pick::PickMode mode_ = light_pick::PickMode::kUnified;
+  light_pick::Picker own_picker_{light_pick::ShadowCarTuning()};
+  light_pick::Picker* external_ = nullptr;
+  bool seed_pending_ = false;
+  std::vector<light_pick::Entry> entries_;
+  light_pick::Result result_;
+  std::array<uint32_t, kMaxCars> held_{};
   uint32_t held_count_ = 0;
 };
 
@@ -471,6 +667,9 @@ struct ViewSpec {
   double far_m = kDefaultRange;
   double lamps_m = 0.0; // how far behind the lamps the eye sits (the lamps are inside the frustum)
 };
+
+// The half angle (radians) of the cone a light's shadow view must hold: shadow_half when MakeLight made it, else the cone's own.
+inline double ShadowHalf(const Light& l) { return l.shadow_half > 0.0 ? l.shadow_half : std::acos(std::clamp(l.cos_outer, -1.0, 1.0)); }
 
 // One cone from the mean of the lamps, pushed back along the axis until it holds every lamp's own cone: a lamp offset a from the axis
 // needs an apex a / tan(half angle) behind it (the cone from there has radius a at the lamp's plane, and from then on contains the lamp's).
@@ -498,7 +697,7 @@ inline bool FitView(const Light* lights, const Group& group, ViewSpec* out) {
   for (uint32_t m = 0; m < group.count; ++m) {
     const Light& l = lights[group.members[m]];
     const double tilt = std::acos(std::clamp(detail::Dot(l.dir, dir), -1.0, 1.0));
-    half = std::max(half, tilt + std::acos(std::clamp(l.cos_outer, -1.0, 1.0)));
+    half = std::max(half, tilt + ShadowHalf(l));
     const double offset[3] = {l.pos[0] - group.eye[0], l.pos[1] - group.eye[1], l.pos[2] - group.eye[2]};
     const double along = detail::Dot(offset, dir);
     const double lateral[3] = {offset[0] - along * dir[0], offset[1] - along * dir[1], offset[2] - along * dir[2]};
@@ -517,6 +716,130 @@ inline bool FitView(const Light* lights, const Group& group, ViewSpec* out) {
   v.far_m = std::max(back + std::clamp(range, kMinRange, kMaxRange), v.near_m + 1.0);
   *out = v;
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// the views of a car: one for each headlamp, or one for the car
+// ---------------------------------------------------------------------------
+
+// The rig's light is a CAR's (the middle of its two headlamps, one term); what a level shadows is the lamps: a car that has its lamps apart (the light's lamp_offset)
+// and is among the first LampCars of a level gets a view from each headlamp, so that a pole in front of it casts two shadows (the shader's share of the light is the mean
+// of the two) and a car's shadow has the half-lit band of one lamp. The other cars, and a light whose lamps are not known, have one view from the light.
+enum class LampSide : uint8_t { kWhole, kA, kB };  // from the car's light, from the lamp at light - offset, from the lamp at light + offset
+
+inline constexpr double kMinLampOffset = 0.15;   // m: a light whose lamps are nearer together than this has one view
+// A lamp is off the light's axis by the offset, so a point at the edge of the light's cone, near the car, is outside the cone of the lamp's own view: the lamp's view is
+// widened to hold the light's whole cone from this distance on. (A point nearer than that, at the very edge of the cone, where the light is faint, is outside one of the
+// two views and counts as lit by it: the mean then takes half of the other's shadow.)
+inline constexpr double kLampCoverMeters = 6.0;
+
+// The outer half angle (radians) a lamp's view needs, `offset` metres off the light's axis, to hold the light's cone (`outer_half`) from kLampCoverMeters on.
+inline double LampOuterHalfAngle(double outer_half, double offset) {
+  return std::atan2(kLampCoverMeters * std::sin(outer_half) + std::fabs(offset), kLampCoverMeters * std::cos(outer_half));
+}
+
+inline double LampOffsetLength(const Light& light) {
+  return std::sqrt(light.lamp_offset[0] * light.lamp_offset[0] + light.lamp_offset[1] * light.lamp_offset[1] + light.lamp_offset[2] * light.lamp_offset[2]);
+}
+
+// One view to make: the lights it covers (FitView's input) and whose view it is.
+struct ViewSlot {
+  std::array<Light, 4> lights{};  // a lamp's view: one light at the lamp, its cone widened; a car's view: the car's lights as the rig made them
+  Group group;                    // its members index `lights`
+  uint32_t car = 0;               // the car's place among the picked cars
+  LampSide side = LampSide::kWhole;
+};
+
+struct ViewPlan {
+  std::array<ViewSlot, kMaxViews> views{};
+  uint32_t count = 0;
+  uint32_t cars = 0;                            // cars that have views
+  std::array<uint32_t, kMaxCars> first_view{};  // each car's first view and how many it has: the views of a car are next to each other and come and go together
+  std::array<uint32_t, kMaxCars> view_count{};
+};
+
+// The views for the picked cars (`cars`, from ViewPicker::Pick: the player's first), at most `max_views` (MaxViews): a car that does not fit has none, and a lamp car that
+// would take the last place alone gets one view for the car instead (the two views of a car are never split). `lamp_cars` is LampCars(level, ...).
+inline void PlanViews(const Light* lights, const Group* cars, uint32_t car_count, uint32_t lamp_cars, uint32_t max_views, ViewPlan* out) {
+  *out = ViewPlan{};
+  max_views = std::min(max_views, kMaxViews);
+  for (uint32_t c = 0; c < car_count && c < kMaxCars; ++c) {
+    const Group& car = cars[c];
+    if (car.count == 0 || out->count >= max_views) {
+      break;
+    }
+    const bool lamps = c < lamp_cars && car.count == 1 && LampOffsetLength(lights[car.members[0]]) >= kMinLampOffset && out->count + 2 <= max_views;
+    out->first_view[c] = out->count;
+    if (lamps) {
+      const Light& light = lights[car.members[0]];
+      const double offset = LampOffsetLength(light);
+      const double widened = LampOuterHalfAngle(ShadowHalf(light), offset);
+      for (uint32_t k = 0; k < 2; ++k) {
+        ViewSlot& v = out->views[out->count++];
+        v.car = c;
+        v.side = k == 0 ? LampSide::kA : LampSide::kB;
+        Light lamp = light;
+        const double sign = k == 0 ? -1.0 : 1.0;
+        for (int m = 0; m < 3; ++m) {
+          lamp.pos[m] = light.pos[m] + sign * light.lamp_offset[m];
+          lamp.lamp_offset[m] = 0.0;
+        }
+        lamp.cos_outer = std::cos(widened);
+        lamp.shadow_half = widened;
+        v.lights[0] = lamp;
+        v.group = Group{};
+        v.group.members[0] = 0;
+        v.group.count = 1;
+        v.group.car_key = car.car_key;
+        v.group.is_player = car.is_player;
+        for (int m = 0; m < 3; ++m) {
+          v.group.eye[m] = lamp.pos[m];
+        }
+      }
+    } else {
+      ViewSlot& v = out->views[out->count++];
+      v.car = c;
+      v.side = LampSide::kWhole;
+      v.group = car;
+      v.group.count = std::min<uint32_t>(car.count, 4);
+      for (uint32_t m = 0; m < v.group.count; ++m) {
+        v.lights[m] = lights[car.members[m]];
+        v.group.members[m] = m;
+      }
+    }
+    out->view_count[c] = out->count - out->first_view[c];
+    out->cars = c + 1;
+  }
+}
+
+// The one view that holds all the views of a car: the frame's cone cull tests a draw against it once for a car, not once for each lamp (a car's two views share the
+// casters the collection keeps, and the draws they keep for themselves are told apart at the replay, against each view's own cone). False when the car has no view.
+inline bool FitCar(const ViewPlan& plan, uint32_t car, ViewSpec* out) {
+  if (car >= plan.cars || plan.view_count[car] == 0) {
+    return false;
+  }
+  std::array<Light, 4> lights{};
+  Group group;
+  group.car_key = plan.views[plan.first_view[car]].group.car_key;
+  group.is_player = plan.views[plan.first_view[car]].group.is_player;
+  uint32_t n = 0;
+  for (uint32_t k = 0; k < plan.view_count[car]; ++k) {
+    const ViewSlot& v = plan.views[plan.first_view[car] + k];
+    for (uint32_t m = 0; m < v.group.count && n < 4; ++m) {
+      lights[n] = v.lights[v.group.members[m]];
+      group.members[n] = n;
+      ++n;
+    }
+  }
+  group.count = n;
+  for (int k = 0; k < 3; ++k) {
+    double sum = 0.0;
+    for (uint32_t m = 0; m < n; ++m) {
+      sum += lights[m].pos[k];
+    }
+    group.eye[k] = n ? sum / double(n) : 0.0;
+  }
+  return FitView(lights.data(), group, out);
 }
 
 // The handedness of the game's camera, from the rows of its view inverse (VS c12 right, c13 up, c14 backward): true when right x up = backward.
@@ -604,6 +927,11 @@ inline bool SphereInView(const ViewSpec& spec, const double centre[3], double re
   return (sideways - along * tan_diagonal) * cos_diagonal <= reach;
 }
 
+// The cone cull at collection tests a draw against the car's one union view (FitCar), whose apex is behind the lamps (lamps_m): a sphere that reaches the plane of a lamp is
+// "in" for that lamp's own view by its early-out, and for the union only when it reaches `lamps_m` farther. The reach is raised by that much so that a draw either lamp's view
+// keeps is never dropped by the union (the test is conservative: it may keep a draw no view needs, never drop one a view does).
+inline bool SphereInCarView(const ViewSpec& car_spec, const double centre[3], double reach) { return SphereInView(car_spec, centre, reach + car_spec.lamps_m); }
+
 // The published matrix (local_shadow_types.h): column-vector, row-major, world p -> (u w, v w, depth w, w) of the ATLAS, so that
 // (M * float4(p, 1)).xy / w is the atlas uv and .z / w the depth. `uv_rect` is {u offset, v offset, u size, v size} of the tile; `sx` and `sy`
 // are the signs of the pass's NDC x and y (the main view's pos_scale signs: +1 and +1 in a normal view).
@@ -645,10 +973,25 @@ inline bool MapPoint(const float world_to_shadow[16], const double p[3], double*
   return true;
 }
 
-// The constant bias the reader subtracts from a receiver's depth (z/w units). The slope scaled part is the pipeline's. For the nearest
-// receivers (3 m) it is a fraction of a millimetre, 20 m out about 5 cm and 40 m out 20 cm: shadows far from the car are soft and dim.
+// The constant bias the reader subtracts from a receiver's depth (z/w units). It only has to cover the float error of the two depths that are compared (the replay's vertices
+// and the lit pixel's own: about 1e-5 at world coordinates near 1000, both transformed by a matrix that carries the translation), because the lookup compares at the RECEIVER'S
+// PLANE (light_shadow_filter.h: the depth the receiver's own surface has at each texel it reads, so a road seen at 4 degrees needs no bias for its own slope). For the nearest
+// receivers (3 m) it is a fraction of a millimetre, 20 m out about 4 cm and 40 m out 15 cm.
 inline constexpr float kDepthBias = 2e-4f;
-inline constexpr float kSlopeScaledDepthBias = 2.0f;
+// The map's own slope scaled bias (the pipeline's: SlopeScaledDepthBias times the largest depth change over one pixel of the tile, in z/w). The first versions made it 2 because
+// the lookup read a 3 x 3 texel box at one depth, so a surface at a grazing angle needed a margin for two texels of its own slope (a road at 4 degrees from a lamp 0.7 m up: about
+// 1 m of depth at 10 m); that margin pushed every grazing blocker (a kerb's top, a sill, a car's roof) away from the lamps and left a bollard's or a pole's thin shadow with nothing
+// to start from. The plane compare replaces it: 1 keeps a small margin for the surfaces that are not planes (a car's curved panels) and for the rasteriser's own rounding.
+inline constexpr float kSlopeScaledDepthBias = 1.0f;
+
+// ---------------------------------------------------------------------------
+// how big a texel is in the world
+// ---------------------------------------------------------------------------
+
+// The size, in metres, of one texel of a view's tile at `distance` metres along its axis (the view is square): 2 d tan(fov / 2) / tile. The levels' tile sizes are chosen by it.
+inline double TexelMeters(const ViewSpec& spec, uint32_t tile, double distance) {
+  return tile == 0 ? 0.0 : 2.0 * distance * std::tan(spec.fov * 0.5) / double(tile);
+}
 
 // ---------------------------------------------------------------------------
 // the replay's matrices
@@ -955,6 +1298,20 @@ inline Cull ResolveCasterCull(int policy, Cull game, bool vehicle) {
   }
   return ResolveCull(policy, game);
 }
+
+// ---------------------------------------------------------------------------
+// alpha to mask in the atlas
+// ---------------------------------------------------------------------------
+
+// The game's alpha tested colour draws (foliage, fences, the LOD cross-fades of the city's props: alpha written by the shader, not 1) end with the Xbox 360's alpha to mask: the
+// alpha is turned into a coverage by a 2 x 2 ordered dither on the PIXEL's parity (shared constants word 540, shader_recompiler.cpp computeAlphaToMask: offsets 3, 1, 0, 2 of the
+// game's colour passes with MSAA, one of four thresholds 0.625 / 0.875 / 1.0 / 0.75 at 2 samples). In the main view that pattern is one pixel of a 720p picture resolved by the MSAA;
+// replayed into the atlas it is one TEXEL: a prop that is fading by distance, and any cut-out with a soft edge, casts a shadow with one texel in two missing, a stipple the lookup
+// cannot tell from a real dither (HL-SHADOW-QUALITY, 2026-11-21: the "dither-y" shadows of the world's objects). The atlas has ONE sample, so the replay hands those draws the solid
+// offsets (2, 2, 2, 2: coverage when alpha >= 0.5, a plain cut-out that the lookup filters like any edge): the same pixel shader, only the constant differs.
+inline constexpr uint32_t kAlphaToMaskEnable = 0x100u;                                 // bit 8 of the word: alpha to mask is on for the draw
+inline constexpr uint32_t kAtlasAlphaToMask = 0xAAu | kAlphaToMaskEnable;               // offsets 2 2 2 2, samples log2 0 (bits 9 and up)
+constexpr uint32_t AtlasAlphaToMask(uint32_t game_word) { return (game_word & kAlphaToMaskEnable) != 0 ? kAtlasAlphaToMask : 0u; }
 
 // ---------------------------------------------------------------------------
 // the ground skirt

@@ -34,6 +34,11 @@
 //   no history at all (a cut, the first frame, the pause view switching, a new size) had its two
 //   denoise passes already and passes through.
 //
+// THE CONTACT SHADOWS' HISTORY (NOISE-RESOLVE, mcla_gpu_noise_resolve_no_upscaler). With no temporal upscaler the contact march's start noise and the ray traced sun rays' sample change every frame and
+// nothing averaged them; ao.cpp runs this same pass over the contact filter's result (plain visibilities: the filter has taken the vehicle march's marks out) with a history of its own, flag bit 22
+// (AoContactHistory): the wide blur is not taken where the history does not hold. Everything else, the reprojection, the plane and depth tests, the vehicles' rows, the clamp and the weight, is
+// the occlusion's: a moving shadow's ghost is bounded by the same clamp.
+//
 // Output: RG16_FLOAT, (the result, the linear depth of this frame as the sky-capped distance), the
 // next frame's history. Debug view 6 is a second run of the pass, into an image of its own, that
 // writes the confidence in place of the visibility (the apply pass then shows it); the frame's
@@ -91,6 +96,9 @@ static const uint kLastVehicleId = 23u;
 static const uint kNoSlot = 0xFFFFFFFFu;
 
 bool AoHistoryOn() { return (g_push.slots2.z & (1u << 20)) != 0u; }
+// NOISE-RESOLVE (ao.cpp RecordContactHistory): the pass runs over the contact shadows' filtered image. A thin contact shadow is lost in the wide blur the occlusion's pixels without a history take, so
+// where the history does not hold this frame's own (already filtered) value stands. Bit 22 of slots2.z, which the apply's flags use but this pass does not.
+bool AoContactHistory() { return (g_push.slots2.z & (1u << 22)) != 0u; }
 // The pause and map view: a vehicle pixel moves with the camera like the world (nothing moves by
 // itself there), so it takes no row of the vehicle table.
 bool AoVehiclesAsWorld() { return (g_push.slots2.z & (1u << 21)) != 0u; }
@@ -370,9 +378,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   history = clamp(history, lo - kClampMargin, hi + kClampMargin);
 
-  // Where the history does not hold, the wide blur of this frame instead of its own value.
+  // Where the history does not hold, the wide blur of this frame instead of its own value (not on the contact shadows' image: AoContactHistory).
   float fresh = current;
-  if (confidence < 1.0f) {
+  if (confidence < 1.0f && !AoContactHistory()) {
     const float wide = AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal, AoWideRadius());
     fresh = lerp(wide, current, confidence);
   }

@@ -211,7 +211,7 @@
 // plain one AND the bounce light's (hlsl/ao_main_ps.hlsl THE TRACED TERM: flag bit 31, lin.x the image's slot; the bounce light's x channel, the one its
 // denoise and history read, takes the same rule, the darker of its own visibility and the traced open share raised to the same power; its bounce channels
 // are the screen's), and the contact march, which takes the darker of its shadow, the car's shadow map's and the ray's (flag bit 31, slots.x). It runs
-// inside Run after the depth chain, so the cars' structures are built BEFORE the occlusion's passes in every frame (scene.cpp OnResolve documents the
+// inside Run after the depth chain, so the cars' structures are built BEFORE the occlusion's passes in every frame (frame_order.h's table is the
 // frame's order). Debug cvars (car_rt_ao.cpp): mcla_gpu_ao_rt auto | off | ao | contact (the A/B), mcla_gpu_ao_rt_length, mcla_gpu_ao_rt_rays;
 // mcla_gpu_contact_shadows_view 7 shows the sun term alone (6 is the apply's sun visibility, which main has). CHECK: the pictures and the cost (pass timing label "ao rt"); perf/RT-AO-DESIGN.md has the list.
 //
@@ -431,6 +431,7 @@ class CarShadowMap;  // car_shadow_map.h: the player's car's own sun shadow map;
 class Device;
 class FrameRing;
 class GBuffer;       // gbuffer.h: the normal plane the passes read (GB-E)
+class ScreenShared;  // screen_shared.h: the shared screen products, which this class's depth chain is the source of (SS-0)
 class PassTiming;
 
 class AmbientOcclusion {
@@ -498,7 +499,7 @@ class AmbientOcclusion {
   // True while the draw hooks have anything to do (the occlusion or the contact shadows are on, or
   // the census).
   bool wants_draws() const {
-    return mode_ != Mode::kOff || contact_mode_ != Mode::kOff || census_every_ != 0;
+    return mode_ != Mode::kOff || contact_mode_ != Mode::kOff || census_every_ != 0 || screen_wants_;
   }
 
   // A prepared draw into the main view's identities (the play view's or the pause/map view's), with
@@ -540,12 +541,24 @@ class AmbientOcclusion {
   // before the first frame; the renderer's Shutdown stops the occlusion before the G-buffer.
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
 
+  // The shared screen products (screen_shared.h; SS-0): this class's depth chain, normal image and bounce light colour chain are what the owner publishes, and the owner makes the Hi-Z
+  // from the depth. The occlusion, the contact shadows and the bounce light declare what they read (ScreenShared::Want, in BeginFrame); the depth chain is handed over at its end
+  // (Run); and while a consumer outside this family wants the depth or the Hi-Z (or the debug view shows them) with the occlusion and the contact shadows off, the trigger runs a
+  // frame of the depth pass alone for them (Plan::screen). Since SS-1 the bounce light's colour chain (colour_pre) is the owner's too: its images and the call that records it
+  // (ScreenShared::CapturePre), so there is no bounce light without the owner. Not owned; null: nothing is published and the bounce light is off. Render thread, before the first frame;
+  // the renderer's Shutdown stops this class before the owner.
+  void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
+
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
 
   // The world-space unit vector toward the sun of this frame so far: -c16 of the light most main-view draws carried (the
   // world's light; a car's own draws carry a light of their own, which is not the sun). False when no draw had one.
   bool SunDirection(double to_sun[3]) const;
+  // The camera's view inverse a pass at the trigger turns a view-space point into a world one with (row vectors: row 0 right, row 1 up, row 2 back, row 3 position; the game's), as
+  // `float[16]`: the frame's OWN when the vertex constants of this frame's main draws are trusted for it (the pose the car sun lookup uses), else the last frame's camera (a frame behind a
+  // moving one). `frames_own` says which. False when there is neither (no camera yet, or the pose is not a camera's). The deferred local lights (local_lights.h) use it.
+  bool TriggerViewInverse(float out[16], bool* frames_own) const;
   // The contact shadows were gated off in the last frame the AO judged (a low sun or a wet road): a pass made only for them can skip.
   bool ContactGated() const { return contact_state_ == ContactState::kGated; }
   // The contact shadows' strength of the last frame that planned them: the setting times the sun's elevation gate times the wetness
@@ -559,6 +572,31 @@ class AmbientOcclusion {
     float tan_half_fov[2] = {};
   };
   bool FrameLinearDepth(LinearDepthView* out) const;
+  // The frame's camera for another consumer of the trigger (the screen-space reflections, ssr.h), as this class works it out: the camera's right, up and forward axes in world space (the rows of
+  // ao_gbuffer.h Rows: the G-buffer's normals are WORLD normals) from the frame's own view inverse where the vertex constants are trusted, else the last frame's camera; and, when the last
+  // frame had a camera of the same kind of view and this frame's is no cut, the motion that takes a point of this frame's view space into the last frame's: three rows of four floats in this
+  // renderer's view space (x right, y up, z forward; the rows the accumulation pass takes in AoPush lin, shape and light, the game's motion with the z axis turned). Valid at the trigger, after
+  // OnResolve. True when either part is there.
+  struct FrameCameraOut {
+    bool have_rows = false;
+    float right[3] = {};
+    float up[3] = {};
+    float forward[3] = {};
+    bool have_motion = false;
+    bool motion_still = false;   // the motion is the identity because nothing better was known (the vertex constants are not trusted yet, no last step): right only for a camera that does not move
+    float motion[12] = {};
+  };
+  bool FrameCameraNow(FrameCameraOut* out) const;
+  // The vehicles' motion table of this frame for another consumer of the trigger (the screen-space reflections' temporal pass, ssr.h; GB-I2): the image RecordVehicleTable drew for the occlusion's own history,
+  // 4 x 24 RGBA32F texels in the shader read layout, a row an ID 1 to 23: texels 0 to 2 the three rows of the 3x4 that takes a point of this frame's view space (this renderer's: x right, y up, z forward) into
+  // the last frame's with that vehicle's own step on top of the camera's, texel 3 x > 0.5 where the row is usable. `ids` has bit k for each ID that got a row. True only in a frame whose history pass drew
+  // it (the occlusion's history is on, the play view, the last anchor's vehicle motion was the frame before); otherwise there is none and the consumer takes a vehicle's pixels as the world's. Valid at
+  // the trigger, after OnResolve. A read: it records and changes nothing.
+  struct VehicleTableOut {
+    uint32_t slot = 0xFFFFFFFFu;
+    uint32_t ids = 0;
+  };
+  bool VehicleTableNow(VehicleTableOut* out) const;
 
  private:
   // The push block of every pass (hlsl/ao_common.hlsli AoPush), 128 bytes.
@@ -785,12 +823,17 @@ class AmbientOcclusion {
   struct Plan {
     Mode mode = Mode::kUltra;      // the occlusion's own quality (slices, steps)
     bool probe = false;            // read the coarsest level back for the census
-    bool apply = true;             // the apply pass runs (false: the census's probe only)
+    bool apply = true;             // the apply pass runs (false: the census's probe only, or a frame for the shared screen products)
+    bool screen = false;           // a frame run for the shared screen products alone (the occlusion and the contact shadows are off; no apply, no coarser levels)
     bool occlusion = true;         // the occlusion's term is computed (the AO setting is not off)
     bool low = false;              // the occlusion's and the bounce light's passes run at half the picture's size (the trace; a size, not a quality level)
     bool by_height = false;        // ... only because of the height rule (above 1080 lines: ao_size.h), not the old one
     bool contact_full = false;     // the contact shadows keep the picture's size (their own depth and images) while `low`
     bool upscaler = false;
+    // NOISE-RESOLVE (mcla_gpu_noise_resolve_no_upscaler): no temporal upscaler averages the frames, so the contact shadows' march and the ray traced sun rays (the car's, and the city's)
+    // change their noise every frame and the contact image has a history of its own (the occlusion's temporal pass over the filtered image: ContactHistory below). Then the filter is a pass
+    // of its own (not inside the apply) and the apply reads the history's result.
+    bool contact_history = false;
     uint32_t render[2] = {};       // the main view, host pixels
     uint32_t ao[2] = {};           // the traced passes' size (the depth chain's level 0)
     uint32_t level[2][2] = {};     // the coarser levels' sizes
@@ -801,7 +844,7 @@ class AmbientOcclusion {
     // The contact filter is done by the apply pass (mcla_gpu_contact_shadows_fast): the march's image goes to it as
     // it is and the denoise pass does not run for the contact shadows. Only at the picture's size: at half size the
     // apply upsamples a filtered image (hlsl/ao_apply_ps.hlsl VisibilityAt), and that pass is a quarter of the pixels.
-    bool ContactFilterInApply() const { return ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }
+    bool ContactFilterInApply() const { return !contact_history && ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }
     // The contact shadows have images and a depth of their own (the full size ones) beside a half size trace.
     bool SplitContact() const { return contact.mode != Mode::kOff && contact_full; }
     // The bounce light's colour chain takes one sample of the colour target's MSAA samples (per pixel of a 2x2 block), not all.
@@ -832,6 +875,9 @@ class AmbientOcclusion {
   // Records the passes for the trigger `summary` (whose source target is the depth). True when
   // anything was recorded.
   bool Run(const ResolveCache::Summary& summary, plume::RenderCommandList* list, const Plan& plan);
+  // The end of the depth chain: hands the frame's images to the shared screen products (screen_shared.h Publish), which makes the Hi-Z when it is wanted. After Run's passes, with
+  // `base` the frame's push block (the lens).
+  void PublishScreen(plume::RenderCommandList* list, const ResolveCache::Summary& summary, const Plan& plan, const Push& base);
   // --- the contact shadows (hlsl/ao_contact_ps.hlsl) ---
   // Decides what they do in this frame: the setting, the sun's elevation and the wetness gates from
   // the light constants and the wetness the frame's draws carried before the trigger (the same
@@ -844,6 +890,10 @@ class AmbientOcclusion {
   // pass filters it (its flag bit 25). `mask_slot` is the game's sun shadow mask (FindMaskSlot, kNoSlot without it): the
   // march skips the pixels under it that the apply cannot use (the apply is given the same slot).
   uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base, uint32_t mask_slot);
+  // NOISE-RESOLVE: the contact image's own history (Plan::contact_history): the occlusion's temporal pass (hlsl/ao_temporal_ps.hlsl, flag kContactHistoryFlag: no wide blur where the history does
+  // not hold) over `filtered` (the contact filter's result, plain visibilities), reprojected by the depth and the camera's motion into the last frame's result. Returns the slot of the result,
+  // which the apply reads in place of the filter's image. The decision, which images and why a frame has no history are ChooseContactHistory's.
+  uint32_t RecordContactHistory(plume::RenderCommandList* list, const Plan& plan, const Push& base, const HostImage& filtered, const HostImage& depth);
   // The statistics of the skip (mcla_gpu_contact_skip_stat): one more march into contact_stat_ with the statistics flag, copied to a
   // readback buffer, and counted when the GPU has run it (ProcessContactStat). `march_push` is the march's push (its skip fields);
   // `limit` the skip's limit, -1 where the skip is not on.
@@ -866,9 +916,12 @@ class AmbientOcclusion {
   // levels. The colour target is left in the shader-read layout (the apply pass moves it back).
   void RecordColourChain(plume::RenderCommandList* list, const Plan& plan, const Push& base,
                          EdramTargets::Target& colour, uint32_t colour_slot);
-  // The SSGI images: the colour chain's three and the main pass's; given back when the test is off.
+  // The SSGI images: the main pass's and the others, and the colour chain's three (the owner's: ScreenShared::EnsureColourPre); given back when the test is off. False, with the chain's images
+  // not made, where there is no owner (SetScreenShared): no bounce light then.
   bool EnsureGiImages(const Plan& plan);
   void ReleaseGiImages();
+  // The colour chain's image of `level` (0 the AO's size, 1 and 2 half and a quarter of it): the owner's (screen_shared.h). Only while the bounce light runs (the owner is set then).
+  HostImage& Colour(uint32_t level) const;
   // A resolve of the frame into the game's shadow mask page: remembers its texture key.
   void NoteMaskResolve(const ResolveRecord& record);
   // The bindless slot of the game's shadow mask product, if this frame's resolve made it and it is
@@ -907,6 +960,9 @@ class AmbientOcclusion {
   void HoldUntilBuilt(Mode* occlusion, Mode* contact, Mode* bounce);
   // Every variant of `variants` is made, taken or failed (nothing is being made for it).
   bool VariantsReady(const std::vector<uint32_t>& variants) const;
+  // The shared screen products want the depth chain while the occlusion and the contact shadows are off: lists the depth pass's pipelines (plain and multisampled) that the start did not,
+  // to be made in the background, and says whether they are made (screen_wants_ follows it: a frame never waits for a compile).
+  bool EnsureScreenDepthPipelines();
   void Bind(plume::RenderCommandList* list) const;
   // A full-screen triangle into `image` (all of it) with `pipeline` and `push`.
   void DrawPass(plume::RenderCommandList* list, HostImage& image,
@@ -989,6 +1045,8 @@ class AmbientOcclusion {
   // Decides the frame's history: its use, and the matrix that moves this frame's view space into
   // the history's.
   HistoryUse ChooseHistory(const Plan& plan) const;
+  // The same for the contact image's own history (NOISE-RESOLVE): the contact_hist_ state in place of the occlusion's, the same camera motion and cap.
+  HistoryUse ChooseContactHistory(const Plan& plan) const;
   // The motion of the trigger's frame's camera into the previous frame's (true unless the
   // matrix is not finite); *cut says that the frame's own camera jumped (vertex bank only).
   bool FrameMotion(temporal::Mat4* motion, Pose* source, bool* cut) const;
@@ -1156,6 +1214,10 @@ class AmbientOcclusion {
   uint64_t vehicle_motion_frame_ = 0;
   std::unique_ptr<plume::RenderShader> vehicle_table_shader_;
   HostImage vehicle_table_;  // R32G32B32A32_FLOAT, 4 x 24: a row an ID (hlsl/ao_temporal_ps.hlsl)
+  // The last table RecordVehicleTable drew, for VehicleTableNow and the contact image's history: its frame (frame_), the IDs that got a row and the slot.
+  uint64_t vehicle_table_frame_ = ~0ull;
+  uint32_t vehicle_table_ids_ = 0;
+  uint32_t vehicle_table_slot_ = 0xFFFFFFFFu;
   // The totals for the log. Anchor side: what the game's matrices gave. Trigger side: the frames that
   // averaged over a history, the vehicle IDs the main view had written by then and how many of them
   // had a row in the table.
@@ -1197,6 +1259,8 @@ class AmbientOcclusion {
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   GBuffer* gbuffer_ = nullptr;       // the normal plane (SetGBuffer); not owned
+  ScreenShared* screen_ = nullptr;   // the shared screen products (SetScreenShared); not owned
+  bool screen_wants_ = false;        // this frame: a consumer outside this family wants the depth chain (ScreenShared::NeedsDepthChain), read in BeginFrame
   ResolveCache* resolve_ = nullptr;  // finds the game's shadow mask (contact shadows)
   bool ready_ = false;  // the layout and the shaders exist (the contact march's only when it is on: Initialize)
   bool contact_shader_failed_ = false;
@@ -1230,6 +1294,24 @@ class AmbientOcclusion {
   HostImage depth_full_;
   HostImage contact_raw_;
   HostImage contact_dn_;
+  // NOISE-RESOLVE: the contact image's history (visibility, linear depth; R16G16_FLOAT at the contact image's size), two images that take turns, and what the next frame needs to know of it.
+  struct ContactHistory {
+    HostImage image[2];
+    uint32_t index = 0;           // image[index] is the one written last
+    bool valid = false;           // it holds a picture the next frame may lean on
+    bool cut = false;             // ... and was dropped by a cut (for the census)
+    uint64_t frame = 0;           // the frame that wrote it
+    bool pause = false;           // ... which kind of view it was
+    uint32_t size[2] = {};        // ... at which image size
+    float tan[2] = {};            // ... with which lens
+    uint32_t age = 0;             // pictures averaged into it, less the first
+    uint64_t used = 0;            // frames that averaged over it
+    uint64_t resets = 0;          // frames that could not
+    bool logged = false;
+  };
+  ContactHistory contact_hist_;
+  bool stencil_ms_ = false;       // ... and whether that depth target is multisampled (which temporal pipeline reads it)
+  uint32_t stencil_slot_ = ~0u;  // the depth target's stencil plane view of this frame's Run (the contact history's temporal pass reads the vehicles' IDs from it)
   // The history: (visibility, linear depth) of the last frame that ran the passes, R16G16_FLOAT,
   // two images that take turns (a pass does not read the image it writes); history_[history_index_]
   // is the one written last.
@@ -1237,9 +1319,8 @@ class AmbientOcclusion {
   // Debug view 6's picture: the temporal pass's weights, in the same format; only while that view
   // is shown.
   HostImage weight_;
-  // The SSGI test's: the colour chain (RGBA16F: the AO's size, then 1/2 and 1/4 of it) and the main
-  // pass's output (RGBA16F: visibility, bounce r, g, b).
-  HostImage colour_[3];
+  // The SSGI test's main pass's output (RGBA16F: visibility, bounce r, g, b). Its colour chain (RGBA16F: the AO's size, then 1/2 and 1/4 of it) is the shared screen products' colour_pre
+  // since SS-1: the images belong to the owner (screen_shared.h EnsureColourPre / ColourPre), this class records the pass into them (Colour(level)).
   HostImage gi_;
   // The bounce's history and denoise (the second step): the denoise's output (also the a-trous filter's
   // first scratch), the history's two images (RGBA16F: visibility, bounce; they take turns and the idle one

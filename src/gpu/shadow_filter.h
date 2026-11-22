@@ -13,7 +13,8 @@
 //     pcss   contact hardening (package G1c): the same variant and pipeline with a blocker search in front (8
 //            taps) and the kernel that the sun's size gives at the distance of the blockers: sharp where a
 //            shadow touches its caster, softer with distance. A Low class has no search: pcss is soft there.
-//     auto   gpu_class.h's table: game on Low, pcss on Mid and High (decided by the owner on 2026-11-19)
+//     auto   gpu_class.h's table: game on Low, pcss on Mid and High (decided by the owner on 2026-11-19); soft on a handheld (the Steam
+//            Deck: kHandheldCells, a Low class with the sun shadow's filter at the Mid values that it can run)
 //
 // pipelines.cpp WantedFeatures asks VariantSelected() per draw; Scene::Prepare uploads the 16 bytes the
 // variant reads after the shared constants (ShadowFilterConstants, byte 608 of the draw's SharedConstants
@@ -54,9 +55,9 @@ constexpr Mode ModeOfCell(std::string_view cell) {
 // the table's own cell for Low is `game`; a hand set `pcss` there is soft, with its 8 taps.
 constexpr bool PcssAvailable(gpu_class::GpuClass cls) { return cls != gpu_class::GpuClass::kLow; }
 
-// The mode a choice comes to on a class: `auto` is the table's cell, `pcss` is the contact hardening on a class
-// that has the search and soft on one that has not.
-constexpr Mode ModeFor(gpu_class::GpuClass cls, Choice choice) {
+// The mode a choice comes to on a class: `auto` is the table's cell (the handheld's, where `handheld` says the adapter is the Steam Deck and the
+// class is its Low: gpu_class.h CellFor), `pcss` is the contact hardening on a class that has the search and soft on one that has not.
+constexpr Mode ModeFor(gpu_class::GpuClass cls, Choice choice, bool handheld = false) {
   Mode mode = Mode::kSoft;
   switch (choice) {
     case Choice::kGame:
@@ -67,7 +68,7 @@ constexpr Mode ModeFor(gpu_class::GpuClass cls, Choice choice) {
       mode = Mode::kPcss;
       break;
     default:
-      mode = ModeOfCell(gpu_class::Cell(gpu_class::Effect::kShadowFilter, cls));
+      mode = ModeOfCell(gpu_class::CellFor(gpu_class::Effect::kShadowFilter, cls, handheld));
       break;
   }
   return mode == Mode::kPcss && !PcssAvailable(cls) ? Mode::kSoft : mode;
@@ -88,6 +89,7 @@ constexpr int TapsFor(gpu_class::GpuClass cls, int forced_taps) {
 inline constexpr uint32_t kModeGather = 1u;  // true PCF taps (a bilinear weighted compare of 4 texels, each at the receiver's plane) instead of the sampler's
 inline constexpr uint32_t kModePcss = 2u;    // contact hardening (G1c): the blocker search and the penumbra's kernel
 inline constexpr uint32_t kModeNoise = 4u;   // the disk is turned per pixel by noise (interleaved gradient noise + the R2 shift of noise_frame)
+inline constexpr uint32_t kModeBlueNoise = 32u;  // with kModeNoise: that noise is the blue noise tile stepped along the R2 sequence by noise_frame (mcla_gpu_noise_blue), not the first version's gradient noise, a lattice
 // With kModePcss, bits 8 to 15 hold the sun's size, in sixteenths of its real angular radius (0.27 degrees). The real
 // sun's penumbra is under one texel of the nearest cascade for every caster lower than about 3 m (6 m at the second
 // cascade), so a sun that shows at a car's height is bigger than the real one: 4 times by default (to be decided
@@ -136,14 +138,14 @@ constexpr float AtlasRadiusScale(Scale atlas_scale) {
 constexpr ShadowFilterConstants MakeConstants(gpu_class::GpuClass cls, int forced_taps, double radius_tuning,
                                               float atlas_scale_inverse, bool gather, bool temporal_frame_valid,
                                               uint64_t frame, bool pcss = false,
-                                              double sun_tuning = kDefaultSunTuning) {
+                                              double sun_tuning = kDefaultSunTuning, bool blue_noise = false) {
   ShadowFilterConstants constants{};
   constants.taps = static_cast<float>(TapsFor(cls, forced_taps));
   constants.radius_scale =
       static_cast<float>(std::clamp(radius_tuning, kMinRadiusTuning, kMaxRadiusTuning)) * atlas_scale_inverse;
   constants.noise_frame = temporal_frame_valid ? static_cast<float>(frame & 1023u) : 0.0f;
   uint32_t mode = gather ? kModeGather : 0u;
-  if (temporal_frame_valid) mode |= kModeNoise;
+  if (temporal_frame_valid) mode |= kModeNoise | (blue_noise ? kModeBlueNoise : 0u);
   if (pcss && PcssAvailable(cls)) mode |= kModePcss | (SunBits(sun_tuning) << kSunShift);
   constants.mode = static_cast<float>(mode);
   return constants;

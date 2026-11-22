@@ -80,6 +80,17 @@ void CheckModes() {
             gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kMid) == "pcss" &&
             gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kLow) == "game",
         "the table's cells are game on Low, pcss on Mid and High");
+  // A handheld (the Steam Deck: kLow with gpu_class.h's kHandheldCells): auto is soft, 8 taps (the Low class's), no blocker search; the other choices
+  // are as on Low, and the flag means nothing on Mid or High.
+  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kAuto, true) == Mode::kSoft, "auto is soft on a handheld");
+  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kAuto, false) == Mode::kGame, "auto is the game's on a plain Low class");
+  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kAuto) == Mode::kGame, "the two argument ModeFor is the plain Low class");
+  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kGame, true) == Mode::kGame, "game is never overridden on a handheld");
+  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kSoft, true) == Mode::kSoft, "soft on a handheld");
+  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kPcss, true) == Mode::kSoft, "pcss on a handheld is soft: no blocker search on a Low class");
+  Check(shadow_filter::ModeFor(GpuClass::kMid, Choice::kAuto, true) == Mode::kPcss, "the handheld flag changes nothing on Mid");
+  Check(shadow_filter::ModeFor(GpuClass::kHigh, Choice::kAuto, true) == Mode::kPcss, "the handheld flag changes nothing on High");
+  Check(shadow_filter::TapsFor(GpuClass::kLow, 0) == 8, "a handheld keeps Low's 8 taps");
   // The mode that is selected as a variant: soft and pcss, not game (pipelines.cpp: one shader for both).
   Check(shadow_filter::Mode::kGame != shadow_filter::Mode::kSoft && shadow_filter::Mode::kSoft != shadow_filter::Mode::kPcss,
         "three modes");

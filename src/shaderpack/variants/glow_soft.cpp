@@ -24,6 +24,14 @@ namespace {
 // `strictCompare` is the star's (the limit above the scene's depth), the other the round glow's (the depth not
 // above the limit). `testOn` is the round glow's `TexCoord0.z > 0` guard: with it off the sprite is not tested
 // at all (share 1), as in the game.
+//
+// THE SCREEN'S EDGE (HL-EDGE-FADE, version 2). The depth copy's sampler clamps, so a tap outside the screen reads the EDGE pixel
+// of the copy, which is not what covers a lamp that is off the screen (a lamp 40 pixels beyond the edge is tested against the pixel at
+// the edge in its row: a pole, a wall or the car's own side there hides the whole glow, and a traffic car's headlight halo goes out
+// as the car reaches the edge of the frame). A tap that is outside the screen now counts the less the farther outside it is: its answer
+// is blended to "visible" over 16 pixels (kGlowSoftEdgeFade), so a tap a few pixels outside still reads the edge pixel beside the
+// lamp, and a glow whose centre is 16 pixels or more outside is shown in full (what of its halo is on the screen is not tested: nothing
+// on the screen can say what hides a lamp that is not on it). A tap on the screen is the game's compare, as before.
 constexpr std::string_view kHelper = R"HLSL(// LARecomp variant glow_soft (src/shaderpack/variants/glow_soft.cpp): the visibility of a glow sprite as the
 // share of 24 depth taps on a disc of radius 2.5 pixels of the game's 1280x720 screen round its projected centre
 // that pass the game's compare, in place of the one tap at the centre. The disc is in guest pixels, so it is the
@@ -43,7 +51,9 @@ static const float2 kGlowDisc[24] = {
 float GlowTapPasses(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 guestPixel, float limit, bool strictCompare)
 {
     float depth = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex, guestPixel * float2(1.0 / 1280.0, 1.0 / 720.0), float2(0.0, 0.0), 0.0).x;
-    return (strictCompare ? (limit > depth) : !(depth > limit)) ? 1.0 : 0.0;
+    float passes = (strictCompare ? (limit > depth) : !(depth > limit)) ? 1.0 : 0.0;
+    float2 outside = max(max(-guestPixel, guestPixel - float2(1280.0, 720.0)), 0.0);
+    return lerp(passes, 1.0, saturate(max(outside.x, outside.y) * (1.0 / 16.0)));
 }
 
 float GlowVisibleShare(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 uv, float limit, bool testOn, bool strictCompare)

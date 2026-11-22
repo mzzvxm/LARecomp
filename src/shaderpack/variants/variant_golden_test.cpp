@@ -22,7 +22,7 @@
 //     and with `--dxc DIR` (the folder of dxc.exe and dxil.dll) the composed text compiles to DXIL and SPIR-V with the pack's arguments. A vertex stage is
 //     composed with a real vertex shader the same way.
 //     2b. THE REAL PAIR. A tree that has both the headlight's and the G-buffer's variants (feat/headlights and feat/gbuffer-spike together) also composes the two on the
-//     retail shaders they share (xCityDefault's night shader) and compiles that: the headlight's block at 608, the G-buffer's at 1280, both helpers once, and DXIL and SPIR-V
+//     retail shaders they share (xCityDefault's night shader) and compiles that: the headlight's block at 608, the G-buffer's at 1680, both helpers once, and DXIL and SPIR-V
 //     with the shader's spec constants 0 and 2 (the alpha test twin).
 //
 //     2c. THE G-BUFFER'S VERTEX STAGE (feature 12, shaderpack/variants/gbuffer_day.h). It composes with nothing: each of its three real vertex shaders (the road, the tunnel road, the foliage
@@ -513,7 +513,7 @@ int main(int argc, char** argv) {
 
   // ---- 2b. the real pair: the headlight and the G-buffer on the shaders both edit (xCityDefault's night shader) ---------------------------------------
   // The chain applies the headlight's edits (feature 9) first and the G-buffer's (feature 10) on the text they leave: the headlight's block is at 608 and the G-buffer's follows it
-  // at 1280, each member once in each backend, both helpers before main, the term in the ambient sum and the second output; the text compiles to DXIL and SPIR-V, with and without
+  // at 1680, each member once in each backend, both helpers before main, the term in the ambient sum and the second output; the text compiles to DXIL and SPIR-V, with and without
   // the alpha test's spec constants (the twin: both stages have it). Only when the tree has both variants (each branch alone has one).
   {
     const sp::VariantDef* headlight = nullptr;
@@ -525,7 +525,7 @@ int main(int argc, char** argv) {
     if (headlight && gbuffer) {
       const uint32_t both = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer);
       Check(chain::CanCompose(both) && chain::HasTwin(both), "the table composes the headlight and the G-buffer, with the twin");
-      Check(chain::OffsetOf(both, sp::kFeatureHeadlight) == 608 && chain::OffsetOf(both, sp::kFeatureGBuffer) == 608 + 672, "the headlight's block is at 608, the G-buffer's at 1280");
+      Check(chain::OffsetOf(both, sp::kFeatureHeadlight) == 608 && chain::OffsetOf(both, sp::kFeatureGBuffer) == 608 + 1072, "the headlight's block is at 608, the G-buffer's at 1680");
       std::vector<sp::VariantShader> hl_shaders;
       const std::vector<const Shader*> hl_targets = TargetsOf(*headlight, files, &hl_shaders);
       int pairs = 0, pair_compiles = 0;
@@ -548,9 +548,9 @@ int main(int argc, char** argv) {
         const std::string& t = composed.hlsl;
         Check(CountOccurrences(t, "#define g_HlHeader vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
                   CountOccurrences(t, "float4 g_HlHeader : packoffset(c38);") == 1 &&
-                  CountOccurrences(t, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 1280, 0x10)") == 1 &&
-                  CountOccurrences(t, "uint4 g_GBufferMode : packoffset(c80);") == 1 && CountOccurrences(t, "float4 g_GBufferCam : packoffset(c82);") == 1,
-              label + ": the blocks are at 608 (c38) and 1280 (c80), once in each backend");
+                  CountOccurrences(t, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 1680, 0x10)") == 1 &&
+                  CountOccurrences(t, "uint4 g_GBufferMode : packoffset(c105);") == 1 && CountOccurrences(t, "float4 g_GBufferCam : packoffset(c107);") == 1,
+              label + ": the blocks are at 608 (c38) and 1680 (c105), once in each backend");
         Check(CountOccurrences(t, "float4 HeadlightLight(") == 1 && CountOccurrences(t, "float2 GbRt1Encode(float3 n)") == 1 &&
                   t.find("float4 HeadlightLight(") < t.rfind("void main(") && t.find("float2 GbRt1Encode(float3 n)") < t.rfind("void main("),
               label + ": both helpers are before main (the last `void main(`: the G-buffer helper's header comment names it too), once");

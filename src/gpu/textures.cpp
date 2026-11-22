@@ -1372,6 +1372,26 @@ TextureCache::Replacement* TextureCache::ReplacementFor(uint64_t hash,
   return raw;
 }
 
+uint64_t TextureCache::ContentHashOf(const TextureKey& key) {
+  const auto it = entries_.find(key);
+  if (it == entries_.end()) {
+    return 0;
+  }
+  Entry& e = *it->second;
+  if (e.mode != Mode::kWatched || !e.ranges[0][1]) {
+    return 0;
+  }
+  if (e.content_version != e.version) {
+    // The guest wrote the texture (or it was never hashed): the number is taken again.
+    e.content_hash = 0;
+    if (const uint8_t* src = memory_->Read(e.ranges[0][0], e.ranges[0][1])) {
+      e.content_hash = XXH3_64bits(src, e.ranges[0][1]);
+    }
+    e.content_version = e.version;
+  }
+  return e.content_hash;
+}
+
 void TextureCache::ReloadMods() {
   mods_.Initialize();
   // Every replacement goes, refusals too: a refused file may have been fixed.
