@@ -3,8 +3,8 @@
 // MCLA GPU renderer -- the shadow atlas's rules: one atlas for every provider of shadow views (perf/LIGHT-UNIFY.md section 4 and step U5, package LU-5)
 // ===========================================================================
 // Pure: no renderer, no guest, no SDK, no GPU (shadow_atlas_test.cpp holds it to the replay's own rules, and light_project_test.cpp to a recorded drive). The renderer's half is
-// shadow_atlas.{h,cpp}; the providers (shadow_provider.h) are the draw replay (local_shadow.h, the first), the street lamps' shadows (feat/lamp-shadows, PARKED by the owner: the slot
-// is kept, nothing lands here) and the ray traced mask (CITY-RT CP-D, later: it makes no tiles at all, only channels).
+// shadow_atlas.{h,cpp}; the providers (shadow_provider.h) are the draw replay (local_shadow.h, the first), the street lamps' shadows (lamp_shadows.h: LAMP-SHADOWS-4, read by the deferred light pass,
+// joined only while the lamps are shadowed) and the ray traced mask (CITY-RT CP-D, later: it makes no tiles at all, only channels).
 //
 //   POOLS AND LAYOUT   A provider asks for POOLS (PoolRequest): `slots` square tiles of `tile` texels, a role (single, live or static: ShadowLayer) and whether a slot STAYS with a light
 //                      id (sticky). MakeLayout puts the pools into ONE texture: the largest tiles first, each pool a block of columns x rows, a narrower pool re-shaped to the width of the
@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 
 #include "light_budget.h"
 #include "light_convert.h"
@@ -52,7 +53,7 @@ namespace ls = ::mcla::gpu::local_shadow;
 
 enum class ProviderId : uint8_t {
   kReplay = 0,  // the headlight draw replay (local_shadow.h)
-  kLamps = 1,   // the street lamps' shadows (feat/lamp-shadows: PARKED; the slot is kept)
+  kLamps = 1,   // the street lamps' shadows (lamp_shadows.h; joined only while they are shadowed)
   kRtMask = 2,  // the ray traced mask (CITY-RT CP-D): no tiles, it publishes channels
   kCount
 };
@@ -289,9 +290,10 @@ inline double Mib(uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0); }
 // budgets: the pools of a level
 // ---------------------------------------------------------------------------
 
-// The street lamps' shadow views a level wants, their spare slots (a lamp whose shadow fades out) and the tile (lamp_shadow_rules.h of feat/lamp-shadows: 2 (+1) at medium, 4 (+1) at
-// high, 8 (+2) at ultra, 512 texels). PARKED: light_budget.h keeps them RESERVED (0) until the lamp picker is in the manager; this is where their numbers go, so that the memory table and the
-// layout are written once. `live` pools: one tile for each view; `static` pools: the same count again when the static cache is on (a setting of that branch).
+// The street lamps' shadow views a level wants, their spare slots (a lamp whose shadow fades out) and the tile (lamp_shadows_rules.h: 2 (+1) at medium, 4 (+1) at high, 8 (+2) at ultra,
+// 512 texels: a texel is 5.4 cm straight below a 9 m lamp). light_budget.h keeps its own lamp numbers RESERVED (0); this is where the lamps' numbers are, so that the memory table and the layout
+// are written once. The atlas grows by whole rows of its shelf: the lamps' 512 tiles fill 3 of 3 / 5 of 6 / 7 of 7.5 columns of the headlights' 768 / 1024 / 1280 tiles (12 / 24 / 60 MiB for 12 / 20 / 40
+// MiB of tiles; the whole atlas 21 / 48 / 135 MiB with the headlights' 9 / 24 / 75). `live` pools: one tile for each view; `static` pools: the same count again when the static cache is on (a setting of that branch).
 struct LampRow {
   lb::Level level = lb::Level::kOff;
   uint32_t views = 0;
@@ -312,7 +314,7 @@ constexpr const LampRow* LampRowOf(lb::Level level) {
   return nullptr;
 }
 
-// The pools of a frame's budget. `lamps`: the street lamps' provider is registered (it is not: PARKED), so its live (and, with `lamp_static`, static) pool is asked from the lamp row of the
+// The pools of a frame's budget. `lamps`: the street lamps' provider is registered (lamp_shadows.h joins while the lamps are shadowed), so its live (and, with `lamp_static`, static) pool is asked from the lamp row of the
 // level, or from the budget's reserved numbers when they are set.
 inline AtlasSpec SpecFor(const lb::LightBudget& b, lb::Level level, bool lamps = false, bool lamp_static = false) {
   AtlasSpec s;
@@ -351,7 +353,7 @@ struct Fit {
   bool stepped = false;
 };
 template <class HasRoom>
-inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, uint64_t held_bytes, HasRoom&& has_room, ls::LevelTable table = ls::kLevelTable) {
+inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, bool lamp_static, uint64_t held_bytes, HasRoom&& has_room, ls::LevelTable table = ls::kLevelTable) {
   Fit fit;
   fit.level = lb::Level::kOff;
   if (wanted == lb::Level::kOff) {
@@ -362,7 +364,7 @@ inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, uint64_t he
     if (ls::Row(level, table) == nullptr) {
       continue;
     }
-    const uint64_t bytes = Bytes(LayoutForLevel(level, views_per_car, lamps, false, table));
+    const uint64_t bytes = Bytes(LayoutForLevel(level, views_per_car, lamps, lamps && lamp_static, table));
     const uint64_t extra = bytes > held_bytes ? bytes - held_bytes : 0;
     if (extra == 0 || has_room(extra)) {
       fit.level = ls::Effective(level, table);
@@ -373,6 +375,12 @@ inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, uint64_t he
   }
   fit.stepped = true;
   return fit;
+}
+
+// The same with the lamps' live pool only (the first form: LU-5, kept for its callers and tests).
+template <class HasRoom>
+inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, uint64_t held_bytes, HasRoom&& has_room, ls::LevelTable table = ls::kLevelTable) {
+  return FitLevel(wanted, views_per_car, lamps, false, held_bytes, std::forward<HasRoom>(has_room), table);
 }
 
 // ---------------------------------------------------------------------------

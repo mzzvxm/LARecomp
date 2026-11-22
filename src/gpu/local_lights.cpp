@@ -18,6 +18,7 @@
 #include "gbuffer.h"
 #include "gpu_class.h"
 #include "headlight_rig.h"
+#include "lamp_shadows.h"
 #include "host_shaders.h"
 #include "light_manager.h"
 #include "live_text.h"
@@ -217,9 +218,15 @@ plume::RenderPipeline* LocalLights::PipelineFor(plume::RenderFormat format, uint
 
 void LocalLights::BeginFrame() {
   namespace st = larecomp::settings;
-  const bool setting_on = st::mcla_gpu_local_lights.Get();
   // GB-H2: the headlight route (headlight_pass_rules.h): `pass` and `both` give this pass the frame's headlights and run it whatever mcla_gpu_local_lights says.
   const hp::Route route = hp::ParseRoute(st::mcla_gpu_headlight_pass.Get());
+  // LAMP-SHADOWS-4: the street lamps' shadows are drawn by this pass. mcla_gpu_lamp_shadows -1 (auto, the default) follows the LIGHT SHADOWS row while the pass runs for anything else (the provider is told
+  // whether it does), 1 runs the pass for the lamps (and wants the planes) whatever mcla_gpu_local_lights says, 0 is off.
+  if (lamp_shadows_ != nullptr) {
+    lamp_shadows_->SetPassRuns(hp::PassOn(route, st::mcla_gpu_local_lights.Get()));
+  }
+  const bool lamps_on = lamp_shadows_ != nullptr && lamp_shadows_->active();  // lamps are live now (enabled, by night): by day the pass and the G-buffer's planes cost nothing for them
+  const bool setting_on = st::mcla_gpu_local_lights.Get() || lamps_on;
   const bool on = hp::PassOn(route, setting_on);
   sources_ = hp::SourcesFor(route, uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask);
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));
@@ -331,6 +338,11 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   if ((sources_ & ll::kSourceTest) != 0) {
     extras_.push_back(ll::MakeTestLamp(rows));
   }
+  const uint32_t extras_before_lamps = uint32_t(extras_.size());
+  if (lamp_shadows_ != nullptr) {
+    lamp_shadows_->AppendPassLights(&extras_);  // the picked street lamps with views (this trigger's: the replay recorded them just before)
+  }
+  const uint32_t lamp_extras = uint32_t(extras_.size()) - extras_before_lamps;
   const bool manager_on = manager_ != nullptr && manager_->active();
   const larecomp::gpu::LightFrame& frame = manager_on ? manager_->Frame() : EmptyFrame();
   candidates_.Clear();
@@ -404,6 +416,11 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   in.units.exposure = (std::isfinite(sf.camera.exposure_bias) && sf.camera.exposure_bias > 0.0f) ? sf.camera.exposure_bias : 1.0f;
   in.flags = gb.Has(gbuffer::kPlaneMaterial) ? ll::kFlagMaterial : 0u;
   in.shadow = &frame.shadow;  // GB-H2: the replay's maps of this frame (recorded just before: scene.cpp OnResolve) and their views, which the frame's lights name
+  if (lamp_shadows_ != nullptr) {
+    in.lamp_shadow = &lamp_shadows_->Frame();  // LAMP-SHADOWS-4: the street lamps' views of this trigger, which the lamps' lights name (the combined entry space)
+    in.debug = lamp_shadows_->debug_view();
+  }
+  const bool lamp_table = ll::LampTableNeeded(selection, in.lamp_shadow);
   const bool shadow_table = ll::ShadowTableNeeded(selection, in.shadow);
   ll::BuildBuffer(in, selection, scratch_.data());
   Slot& slot = slots_[frame_slot];
@@ -464,6 +481,10 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
 
   Count(Skip::kRecorded);
   lights_drawn_ += drawn;
+  if (lamp_table) {
+    ++lamp_frames_;
+    lamp_lights_ += lamp_extras;
+  }
   if (shadow_table) {
     ++shadow_frames_;
     for (uint32_t i = 0; i < selection.count; ++i) {
@@ -528,9 +549,10 @@ void LocalLights::LogInterval() {
     }
   }
   REXLOG_INFO("{} {} frames with the pass on: {} lights drawn ({}), {:.1f} MPixels scissored; the trigger frames: {}; the frame's own camera pose in {} frames; the manager held {:.1f} cars a frame; "
-              "budget tier {}; headlight route {}, {} lights drawn with the shadow lookup ({} views) in {} frames with the table; buffers {} B",
+              "budget tier {}; headlight route {}, {} lights drawn with the shadow lookup ({} views) in {} frames with the table; street lamps: {} lights drawn with the lamps' table in {} frames; buffers {} B",
               kPrefix, kIntervalFrames, lights_drawn_, classes.empty() ? std::string("none by class") : classes, double(pixels_scissored_) * 1.0e-6, why.empty() ? std::string("none") : why,
-              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), ll::TierName(tier_), hp::RouteName(route_), shadowed_lights_, shadow_views_, shadow_frames_, HeldBytes());
+              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), ll::TierName(tier_), hp::RouteName(route_), shadowed_lights_, shadow_views_, shadow_frames_, lamp_lights_, lamp_frames_,
+              HeldBytes());
   counts_.fill(0);
   lights_drawn_ = 0;
   pixels_scissored_ = 0;
@@ -541,6 +563,8 @@ void LocalLights::LogInterval() {
   shadowed_lights_ = 0;
   shadow_views_ = 0;
   shadow_frames_ = 0;
+  lamp_lights_ = 0;
+  lamp_frames_ = 0;
 }
 
 }  // namespace mcla::gpu

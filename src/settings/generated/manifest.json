@@ -1344,7 +1344,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; \"\n    \"this draws the scene's opaque objects again from the lights, depth only, into small maps (512 by 512 texels on medium and high, 1024 by 1024 on ultra), and the lights' light reads them. medium shadows your car's headlights and the nearest other car's, with one map for each car; high gives your car a map for each headlamp, \"\n    \"so a pole in front of it casts a shadow from each of its two lamps, and the nearest other car still has one; ultra also shadows the next nearest car, gives all three cars a map for each lamp, \"\n    \"and is sharper. off, medium, high, ultra or auto (the default): ultra on a fast graphics card, medium on a medium one, off on an integrated one. \"\n    \"It only runs while a headlight is lit, in the game view. Costs graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 MiB (medium), \"\n    \"6 MiB (high) or 48 MiB (ultra) of video memory. Live.\"",
+  "help": "\"Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; \"\n    \"this draws the scene's opaque objects again from the lights, depth only, into small maps (768 by 768 texels on medium, 1024 by 1024 on high, 1280 by 1280 on ultra: a texel is 1 to 2 cm wide 10 m from the car), and the lights' light reads them. medium shadows your car's headlights and the nearest other car's, with one map for each car; high gives your car a map for each headlamp, \"\n    \"so a pole in front of it casts a shadow from each of its two lamps, and the nearest other car still has one; ultra also shadows the next nearest car, gives all three cars a map for each lamp, \"\n    \"and is sharper. off, medium, high, ultra or auto (the default): ultra on a fast graphics card, medium on a medium one, off on an integrated one. \"\n    \"It only runs while a headlight is lit, in the game view. Costs graphics card time and render thread time (the frame's opaque draws once more for each map) and 9 MiB (medium), \"\n    \"24 MiB (high) or 75 MiB (ultra) of video memory. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"medium\", \"high\", \"ultra\")"
   ],
@@ -3203,6 +3203,66 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 16.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows": {
+  "type": "i32",
+  "default": "-1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): the nearest street lamps get a shadow from the shadow atlas (cars, poles and people on the road under them), drawn by the deferred local light pass \"\n    \"at the mid-scene depth copy with the same lookup as the headlights'. -1 (the default): they follow the LIGHT SHADOWS row - while the deferred local light pass runs for anything else (mcla_gpu_local_lights on, or \"\n    \"mcla_gpu_headlight_pass pass or both) and LIGHT SHADOWS is not off, the lamps have a shadow, how many by its level (medium 2, high 4, ultra 8; Auto: Low off, Mid medium, High ultra). 0: none. 1: on whatever \"\n    \"the pass's own settings say (the pass runs for the lamps). The shadow replay records into the shared atlas while it is on. Live. See mcla_gpu_lamp_shadows_mode for how the pass uses the shadow.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_mode": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): how the deferred local light pass uses a lamp's shadow. 0 (the default): subtract - the game's own light grid still lights the lamp and the pass takes the \"\n    \"shadowed share of that light away (the lamp's light as the grid has it, times one minus the visibility), for every surface the G-buffer holds, cars and people included. 1: own - the lamp is not in \"\n    \"the grid (the lamp A/B's mod lamps) and the pass adds its light times the visibility. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): what the deferred local light pass draws for a shadowed street lamp instead of its light. 0 (the default): the light. 1: the shadow itself as a picture, red \"\n    \"where the lamp's shadow takes light and green where it is lit. 2: a colour for each lamp's row of the shadow table (brighter in the shadow), which shows the pick and its hysteresis. 3: the lamp's whole light is taken away whatever the shadow (the units check: the pool must go to the ambient and no pixel may go negative). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_lamps": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): how many lamps have a shadow at once. 0 (the default): the LIGHT SHADOWS level's number. A number from 1 to 10: that many (with a spare tile for a lamp whose \"\n    \"shadow fades out). -1: no lamp (the headlights keep their views). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 10}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_cache": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): 1 (the default) gives each lamp two tiles, a static one for the world that does not move (drawn when the lamp takes its tile and added to, kept) and a live one \"\n    \"for the cars and people (drawn every frame), which costs one more tile of video memory a lamp and saves the world's draws. 0: one tile a lamp, everything drawn every frame. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
   ],
   "comments": [],
   "pp_depth": 0

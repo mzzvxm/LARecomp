@@ -10,7 +10,7 @@
 //             the edits do not know: the interiors and a few more), the cars' paint (the player's, the racers'), the pedestrians and everything the game draws with another family of shaders get
 //             NOTHING. It reads the maps of the LAST frame (the lit draws of frame N are recorded before the replay's trigger of N).
 //   pass      the deferred local light pass (local_lights.h): one scissored additive draw per light from the G-buffer (normal, albedo, lit weight, class) and the depth, the light a row of the frame's
-//             GpuLight buffer, the term the one law (light_laws.h, hlsl/light_laws.hlsli), the shadow the ONE lookup (hlsl/light_shadow_lookup.hlsli, the box kernel of the lit shaders) read from the
+//             GpuLight buffer, the term the one law (light_laws.h, hlsl/light_laws.hlsli), the shadow the ONE lookup (hlsl/light_shadow_lookup.hlsli, the plane lookup of the lit shaders: light_shadow_filter.h) read from the
 //             atlas through the frame's view table. It lights every pixel the G-buffer holds a normal and an albedo for: the shaders the forward stage edits AND, where the G-buffer's stage writes
 //             them (GB-W1: an albedo from the diffuse texel on 71 of the 100 night and 25 of the 40 day shaders that have one), the ones it leaves out, the cars (73 car, traffic and character
 //             shaders: GB-G1, GB-G2) and the pedestrians; and it reads THIS frame's maps (the replay recorded them at the same trigger, before the pass).

@@ -1385,13 +1385,23 @@ void TestShadowLightMutations() {
 // U5: the shadow views from the atlas's published form, by light id
 // ---------------------------------------------------------------------------
 
-// The replay's views made lookup-friendly (the identity as the matrix: the world point IS the atlas uv and the depth; a tile of a third of the atlas): both paths read the same views, the
-// identity test is about which view goes to which light, in which order.
+// The replay's views made lookup-friendly (a perspective view of a tile of a third of the atlas that looks along +z from the origin, w = z, the unit axis in row 3 and A times it in row 2, a field
+// of 70 degrees, near plane 0.1, far plane 100: PointInView below gives the world point that is at an atlas place and depth; it was the identity until the lookup read the receiver's plane, which
+// needs a real view: HL-SHADOW-QUALITY): both paths read the same views, the identity test is about which view goes to which light, in which order.
+constexpr float kLookupNear = 0.1f, kLookupFar = 100.0f;
+constexpr float kLookupA = kLookupFar / (kLookupFar - kLookupNear);
 void ReshapeForLookup(lg::LocalShadowFrame* f) {
   for (uint32_t v = 0; v < f->count; ++v) {
     lg::LocalShadowView& x = f->views[v];
     std::memset(x.world_to_shadow, 0, sizeof(x.world_to_shadow));
-    x.world_to_shadow[0] = x.world_to_shadow[5] = x.world_to_shadow[10] = x.world_to_shadow[15] = 1.0f;
+    const float u0 = float(v % 3) / 3.0f, u1 = float(v % 3 + 1) / 3.0f;
+    x.world_to_shadow[0] = 0.5f * (u1 - u0) / 0.7f;
+    x.world_to_shadow[2] = 0.5f * (u0 + u1);
+    x.world_to_shadow[5] = 0.5f / 0.7f;
+    x.world_to_shadow[6] = 0.5f;
+    x.world_to_shadow[10] = kLookupA;
+    x.world_to_shadow[11] = -kLookupA * kLookupNear;
+    x.world_to_shadow[14] = 1.0f;
     x.atlas_rect[0] = float(v % 3) / 3.0f;
     x.atlas_rect[1] = 0.0f;
     x.atlas_rect[2] = float(v % 3 + 1) / 3.0f;
@@ -1399,6 +1409,14 @@ void ReshapeForLookup(lg::LocalShadowFrame* f) {
     x.depth_bias = 0.002f;
     x.texel_size = 1.0f / 512.0f;
   }
+}
+
+// The world point of a view made by ReshapeForLookup that is at the atlas place (su, sv) with the depth sz: the perspective inverted.
+void PointInView(const lg::LocalShadowView& v, float su, float sv, float sz, float p[3]) {
+  const float z = kLookupA * kLookupNear / (kLookupA - sz);
+  p[0] = (su - v.world_to_shadow[2]) * z / v.world_to_shadow[0];
+  p[1] = (sv - v.world_to_shadow[6]) * z / v.world_to_shadow[5];
+  p[2] = z;
 }
 
 // A depth for texel (ix, iy) of the test atlas (1536 x 512): a quarter nothing drawn, the rest in [0, 1), the index clamped as a sampler's is.
@@ -1521,11 +1539,19 @@ AtlasTotals RunAtlas(const std::vector<DriveFrame>& frames, lb::Level level, int
       for (uint32_t i = 0; i < rig.count && i < set.count; ++i) {
         const uint32_t views[2] = {legacy_block.shadow_of[i], legacy_block.shadow_of_b[i]};
         for (int n = 0; n < 6; ++n) {
-          float p[3] = {next() * 1.1f - 0.05f, next(), 0.05f + 0.9f * next()};
+          // an atlas place and a depth; the world point there in the view that is picked (the first lamp's view when the light has none to pick)
+          float su = next() * 1.1f - 0.05f, sv = next();
+          const float sz = 0.05f + 0.9f * next();
           const uint32_t pick = views[0] != hr::kNoView ? (next() < 0.5f || views[1] == hr::kNoView ? views[0] : views[1]) : hr::kNoView;
           if (pick != hr::kNoView && pick < lg::kMaxShadowViews) {
             const lg::LocalShadowView& v = legacy_block.shadow[pick];
-            p[0] = v.atlas_rect[0] + (v.atlas_rect[2] - v.atlas_rect[0]) * (0.02f + 0.96f * next());
+            su = v.atlas_rect[0] + (v.atlas_rect[2] - v.atlas_rect[0]) * (0.02f + 0.96f * next());
+          }
+          float p[3];
+          if (pick != hr::kNoView && pick < lg::kMaxShadowViews) {
+            PointInView(legacy_block.shadow[pick], su, sv, sz, p);
+          } else {
+            p[0] = su, p[1] = sv, p[2] = sz;  // the light has no view to look through: any point is lit
           }
           const auto depth = [](int x, int y) { return StoredDepth(x, y); };
           float sum = 0.0f;

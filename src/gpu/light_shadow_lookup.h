@@ -2,24 +2,27 @@
 // ===========================================================================
 // MCLA GPU renderer -- ONE lookup of a light's shadow, for every reader of the atlas (perf/LIGHT-UNIFY.md 4.2 "one lookup source", package LU-5)
 // ===========================================================================
-// Three readers look at the atlas's depth plane with a light's views: the lit shaders' headlight variant (shaderpack/variants/headlight.cpp HeadlightShadow: a soft BOX of 3 x 3
-// texels), the volumetric light's inject (hlsl/volumetrics_inject_cs.hlsl HeadlightLit: a BILINEAR compare inside the tile, in the air) and, later, the deferred light pass (GB-H1/H2).
-// They agree on everything but the filter: the view's matrix, rectangle, bias and texel size (the 96 byte LocalShadowView), what is lit (stored depth >= receiver depth - bias, a stored 1
-// is nothing drawn), what is outside (lit), and what a light's views make (the views of a light are AVERAGED, the layers of a view are MULTIPLIED, the share is blended by the light's
-// weight: light_laws.h CombineShadow). This file is that one source:
+// Three readers look at the atlas's depth plane with a light's views: the lit shaders' headlight variant (shaderpack/variants/headlight.cpp HeadlightShadow: four gathers of the 4 x 4 footprint
+// compared at the receiver's own plane, a contact hardening kernel, a fade at the tile's border: light_shadow_filter.h is its CPU twin), the volumetric light's inject
+// (hlsl/volumetrics_inject_cs.hlsl HeadlightLit: a BILINEAR compare inside the tile, in the air) and the deferred light pass (GB-H1/H2). They agree on everything but the filter: the view's
+// matrix, rectangle, bias and texel size (the 96 byte LocalShadowView), what is lit (stored depth >= receiver depth - bias, a stored 1 is nothing drawn), what is outside (lit), and what a
+// light's views make (the views of a light are AVERAGED, the layers of a view are MULTIPLIED, the share is blended by the light's weight: light_laws.h CombineShadow). This file is that one
+// source:
 //
-//   ViewLit      one view at a world point, by a Mode: kSurface (the variant's kernel and its edge rules) or kAir (the volume's).
+//   ViewLit      one view at a world point, by a Mode: kSurface (the variant's lookup: it needs the surface's unit normal, the receiver's plane) or kAir (the volume's).
 //   LightLit     a light's visibility from its ShadowRef (kind, first_view, view_count, weight) in the frame's ShadowFrame: the one combine rule. 1 = lit.
 //   GpuShadow*   the layout of the view table a GPU pass reads (a 32 byte header and kMaxLightShadowViews rows of the 96 byte view): the data of the lookup for GB-H, with its builder.
 //
 // IT IS THE REFERENCE the other copies are held to. hlsl/light_shadow_lookup.hlsli is the HLSL twin written for a NEW reader (GB-H1/H2 includes it); shadow_atlas_test.cpp compiles it as
-// C++ and compares it with this on random views and atlases, and holds this file to headlight_rules::SoftShadow (the variant's CPU twin, itself held to the variant's text) and to a port of
-// the volume's HeadlightLit. The two live copies (the variant's helper text, the volume's inject) are NOT changed by LU-5: a text change moves the variant pack, and the volume's shader is
-// compiled; they change when a run has shown the pictures equal, one at a time, and the goldens say what they must still equal (CHECK: the main session decides when).
+// C++ and compares it with this on random views and atlases, and holds this file to light_shadow_filter.h ViewLit (the variant's CPU twin, itself held to the variant's text) and to a port of
+// the volume's HeadlightLit. The volume's inject is NOT changed by HL-SHADOW-QUALITY; it changes when a run has shown the pictures equal, and the goldens say what it must still equal (CHECK:
+// the main session decides when).
 //
-// WHAT A MODE FIXES (the rules that differ between the live copies, kept as they are so that the golden is exact):
-//   kSurface  box of kKernel texels square centred on the receiver's place in the atlas, taps NOT clamped to the tile (the sampler clamps at the atlas's edge), a receiver whose depth is
-//             outside [0, 1] (inclusive) is lit, the taps compare stored >= depth - bias.
+// WHAT A MODE FIXES:
+//   kSurface  light_shadow_filter.h ViewLit: four gathers (here: sixteen texel reads) of the 4 x 4 footprint, each texel compared with the receiver's depth AT ITS OWN PLANE (the slope from the
+//             unit normal `n` and the view's matrix, so a road seen at a grazing angle needs no bias margin), a box of 1 to 3 texels by contact hardening, a fade over the last 5 percent of
+//             the tile; the taps are NOT clamped to the tile (the sampler clamps at the atlas's edge), a receiver whose depth is outside [0, 1] (inclusive) is lit. The overloads without a
+//             normal look at a receiver that faces the light (the view's axis, reversed): the plane is parallel to the map and the slope is 0.
 //   kAir      bilinear weights of the 2 x 2 texels around the place, every tap clamped INTO THE VIEW'S TILE (a neighbour tile is another light's view), a receiver whose depth is not in
 //             (0, 1) (exclusive) is lit, a stored 1 is lit whatever the bias.
 //
@@ -34,19 +37,43 @@
 #include <type_traits>
 
 #include "light_frame.h"
+#include "light_shadow_filter.h"
 #include "local_shadow_types.h"
 
 namespace larecomp::gpu::shadow_lookup {
 
 enum class Mode : uint32_t { kSurface = 0, kAir = 1 };
-inline constexpr float kKernel = 3.0f;  // the box's side in texels (headlight_rig_rules.h kShadowKernel, the variant's kHlShadowKernel)
 
-// One view at the world point `p`: 1 lit .. 0 in shadow. `depth_at(ix, iy)` = the atlas's stored depth of texel (ix, iy), the index clamped into the atlas by the caller (the sampler's or
-// Load's clamp). `atlas_w` / `atlas_h` = the atlas's size in texels. A view that is not valid, a point behind it or outside its rectangle or depth range is lit.
+// One view at the world point `p` whose surface has the unit normal `normal` (null: facing the light): 1 lit .. 0 in shadow. `depth_at(ix, iy)` = the atlas's stored depth of texel (ix, iy), the
+// index clamped into the atlas by the caller (the sampler's or Load's clamp). `atlas_w` / `atlas_h` = the atlas's size in texels. A view that is not valid, a point behind it or outside its
+// rectangle or depth range is lit.
 template <class Depth>
-inline float ViewLit(const LocalShadowView& v, const float p[3], uint32_t atlas_w, uint32_t atlas_h, Mode mode, Depth&& depth_at) {
+inline float ViewLitImpl(const LocalShadowView& v, const float p[3], const float* normal, uint32_t atlas_w, uint32_t atlas_h, Mode mode, Depth&& depth_at) {
   if (v.valid == 0) {
     return 1.0f;
+  }
+  if (mode == Mode::kSurface) {
+    float facing[3];
+    if (normal == nullptr) {
+      // a receiver that faces the light: the reverse of the view's axis (row 3 of the matrix, the unit direction the view looks along)
+      const float* m = v.world_to_shadow;
+      const float len = std::sqrt(m[12] * m[12] + m[13] * m[13] + m[14] * m[14]);
+      const float k = len > 0.0f ? -1.0f / len : 0.0f;
+      facing[0] = m[12] * k;
+      facing[1] = m[13] * k;
+      facing[2] = m[14] * k;
+      normal = facing;
+    }
+    // the four texels one Gather returns, in the order the hardware does: x = (0, 1), y = (1, 1), z = (1, 0), w = (0, 0) of the quad whose lowest texel is (ix, iy)
+    const auto gather = [&](int ix, int iy) {
+      shadow_filter::Quad q;
+      q.x = depth_at(ix, iy + 1);
+      q.y = depth_at(ix + 1, iy + 1);
+      q.z = depth_at(ix + 1, iy);
+      q.w = depth_at(ix, iy);
+      return q;
+    };
+    return shadow_filter::ViewLit(v, p, normal, gather);
   }
   float c[4];
   for (int r = 0; r < 4; ++r) {
@@ -60,38 +87,9 @@ inline float ViewLit(const LocalShadowView& v, const float p[3], uint32_t atlas_
   const float sv = c[1] / c[3];
   const float sz = c[2] / c[3];
   const float* rect = v.atlas_rect;
-  const bool depth_out = mode == Mode::kAir ? !(sz > 0.0f && sz < 1.0f) : (sz < 0.0f || sz > 1.0f);
+  const bool depth_out = !(sz > 0.0f && sz < 1.0f);
   if (depth_out || su < rect[0] || sv < rect[1] || su > rect[2] || sv > rect[3]) {
     return 1.0f;
-  }
-  if (mode == Mode::kSurface) {
-    const float depth = sz - v.depth_bias;
-    const float tux = (rect[2] - rect[0]) * v.texel_size;  // one texel of the tile in atlas uv, on each axis
-    const float tuy = (rect[3] - rect[1]) * v.texel_size;
-    const float lx = su / tux - 0.5f * kKernel;
-    const float ly = sv / tuy - 0.5f * kKernel;
-    const float bx = std::floor(lx);
-    const float by = std::floor(ly);
-    const float fx = lx - bx;
-    const float fy = ly - by;
-    const int ix = int(bx);
-    const int iy = int(by);
-    const auto tap = [&](int x, int y) { return depth_at(x, y) >= depth ? 1.0f : 0.0f; };
-    const float corners = tap(ix, iy) + tap(ix + 3, iy) + tap(ix, iy + 3) + tap(ix + 3, iy + 3);
-    if (corners == 0.0f || corners == 4.0f) {
-      return corners * 0.25f;
-    }
-    float lit = 0.0f;
-    for (int j = 0; j < 4; ++j) {
-      const float wy = j == 0 ? 1.0f - fy : j == 3 ? fy : 1.0f;
-      float row = 0.0f;
-      for (int i = 0; i < 4; ++i) {
-        const float wx = i == 0 ? 1.0f - fx : i == 3 ? fx : 1.0f;
-        row += wx * tap(ix + i, iy + j);
-      }
-      lit += wy * row;
-    }
-    return lit * (1.0f / 9.0f);
   }
   const float sx = float(atlas_w);
   const float sy = float(atlas_h);
@@ -117,26 +115,41 @@ inline float ViewLit(const LocalShadowView& v, const float p[3], uint32_t atlas_
   return lerp(lerp(s00, s10, frx), lerp(s01, s11, frx), fry);
 }
 
+// A receiver that faces the light (no normal): the plane is parallel to the map. The air mode never reads a normal.
+template <class Depth>
+inline float ViewLit(const LocalShadowView& v, const float p[3], uint32_t atlas_w, uint32_t atlas_h, Mode mode, Depth&& depth_at) {
+  return ViewLitImpl(v, p, nullptr, atlas_w, atlas_h, mode, depth_at);
+}
+
+// A receiver of the unit normal `normal` (the surface's own, turned to the camera: the pass takes the depth plane's quad normal, the lit shaders' variant the derivatives of the world position).
+template <class Depth>
+inline float ViewLit(const LocalShadowView& v, const float p[3], const float normal[3], uint32_t atlas_w, uint32_t atlas_h, Mode mode, Depth&& depth_at) {
+  return ViewLitImpl(v, p, normal, atlas_w, atlas_h, mode, depth_at);
+}
+
 // The blend of a light's mean visibility by its weight: lit = lerp(1, visibility, weight). EXACT at weight 1 (the answer is the mean itself: the live readers' `seen / views`), unlike 1 + (m - 1)
 // that can differ in the last place.
 inline float Blend(float mean, float weight) { return weight >= 1.0f ? mean : 1.0f + (mean - 1.0f) * weight; }
 
-// A light's visibility at `p` from its ShadowRef: the views [first_view, first_view + view_count) of the frame, the valid ones averaged (a kStatic entry followed by its kLive twin is ONE
-// view whose visibility is their product), blended by the weight. A light with no atlas views (kNone, or kRtMask: the mask's own channel is read by its consumer) or none valid is lit.
-// This is light_laws.h CombineShadow with each entry's lookup made here.
-template <class Depth>
-inline float LightLit(const ShadowFrame& frame, const ShadowRef& ref, const float p[3], Mode mode, Depth&& depth_at) {
+// A light's visibility at `p` (whose surface has the unit normal `normal`, null: facing the light) from its ShadowRef: the views [first_view, first_view + view_count) of the frame, the valid ones
+// averaged (a kStatic entry followed by its kLive twin is ONE view whose visibility is their product), blended by the weight. A light with no atlas views (kNone, or kRtMask: the mask's own
+// channel is read by its consumer) or none valid is lit. This is light_laws.h CombineShadow with each entry's lookup made here.
+//
+// `Frame` is anything with `atlas`, `views` and `view_layer` (a std::array each): the frame's ShadowFrame (8 entries) or the street lamps' LampShadowFrame (lamp_shadow_frame.h, whose entries a
+// lamp's light names from 0 here: lamp_shadow_lookup.h LampLit).
+template <class Frame, class Depth>
+inline float LightLitImpl(const Frame& frame, const ShadowRef& ref, const float p[3], const float* normal, Mode mode, Depth&& depth_at) {
   if (ref.kind != ShadowKind::kAtlas || ref.view_count == 0) {
     return 1.0f;
   }
   float sum = 0.0f;
   uint32_t n = 0;
-  const uint32_t end = std::min<uint32_t>(uint32_t(ref.first_view) + ref.view_count, kMaxLightShadowViews);
+  const uint32_t end = std::min<uint32_t>(uint32_t(ref.first_view) + ref.view_count, uint32_t(frame.views.size()));
   for (uint32_t e = ref.first_view; e < end; ++e) {
     const bool valid = frame.views[e].valid != 0;
-    float vis = ViewLit(frame.views[e], p, frame.atlas.width, frame.atlas.height, mode, depth_at);
+    float vis = ViewLitImpl(frame.views[e], p, normal, frame.atlas.width, frame.atlas.height, mode, depth_at);
     if (frame.view_layer[e] == ShadowLayer::kStatic && e + 1 < end && frame.view_layer[e + 1] == ShadowLayer::kLive) {
-      vis *= ViewLit(frame.views[e + 1], p, frame.atlas.width, frame.atlas.height, mode, depth_at);
+      vis *= ViewLitImpl(frame.views[e + 1], p, normal, frame.atlas.width, frame.atlas.height, mode, depth_at);
       ++e;
     }
     if (valid) {
@@ -148,6 +161,17 @@ inline float LightLit(const ShadowFrame& frame, const ShadowRef& ref, const floa
     return 1.0f;
   }
   return Blend(sum / float(n), ref.weight);
+}
+
+// The overloads: a receiver that faces the light (no normal), and a receiver of the unit normal `normal`.
+template <class Frame, class Depth>
+inline float LightLit(const Frame& frame, const ShadowRef& ref, const float p[3], Mode mode, Depth&& depth_at) {
+  return LightLitImpl(frame, ref, p, nullptr, mode, depth_at);
+}
+
+template <class Frame, class Depth>
+inline float LightLit(const Frame& frame, const ShadowRef& ref, const float p[3], const float normal[3], Mode mode, Depth&& depth_at) {
+  return LightLitImpl(frame, ref, p, normal, mode, depth_at);
 }
 
 // ---------------------------------------------------------------------------

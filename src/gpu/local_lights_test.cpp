@@ -188,8 +188,9 @@ std::map<std::string, long long> Defines(const std::string& text) {
 void LayoutChecks(const std::string& hlsli) {
   Check(sizeof(lp::PassHeader) == 128 && sizeof(lp::PassPush) == 32, "the header is 128 bytes, the push block 32");
   Check(lp::kHeaderBytes == 128 && lp::kLightsOffset == 128 && lp::kMaxPassLights == 32 && lp::kMaxPassLights == kMaxSurfaceLights, "the buffer: a 128 byte header, up to 32 lights");
-  Check(lp::kShadowOffset == 128 + 64 * 32 && lp::kShadowBytes == 32 + 96 * 8 && lp::kBufferBytes == lp::kShadowOffset + lp::kShadowBytes && lp::kBufferAlloc == 3072 && lp::kBufferAlloc % 256 == 0,
-        "the buffer is the header, 32 lights and the shadow view table (2976 bytes), an upload buffer of 3072");
+  Check(lp::kShadowOffset == 128 + 64 * 32 && lp::kShadowBytes == 32 + 96 * 8 && lp::kLampOffset == lp::kShadowOffset + lp::kShadowBytes && lp::kLampBytes == 32 + 96 * 20 &&
+            lp::kBufferBytes == lp::kLampOffset + lp::kLampBytes && lp::kBufferAlloc == 5120 && lp::kBufferAlloc % 256 == 0,
+        "the buffer is the header, 32 lights, the shadow view table (2976 bytes) and the street lamps' table (4928 bytes), an upload buffer of 5120");
   const std::map<std::string, long long> d = Defines(hlsli);
   const auto want = [&](const char* name, long long value) {
     const auto it = d.find(name);
@@ -220,6 +221,22 @@ void LayoutChecks(const std::string& hlsli) {
   want("LP_SHADOW_OFF_SIZE", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, atlas_width));
   want("LP_SHADOW_OFF_LAYERS", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, layers));
   Check(offsetof(shadow_lookup::GpuShadowHeader, atlas_height) == offsetof(shadow_lookup::GpuShadowHeader, atlas_width) + 4, "the atlas's height follows its width (one Load of two uints)");
+  // LAMP-SHADOWS-4: the street lamps' table after the headlights' (the shader's seams read these offsets), the flag and the debug word
+  want("LP_OFF_DEBUG", offsetof(lp::PassHeader, debug));
+  want("LP_FLAG_LAMP_SHADOW", lp::kFlagLampShadow);
+  want("LP_DEBUG_NONE", lp::kDebugNone);
+  want("LP_DEBUG_VISIBILITY", lp::kDebugVisibility);
+  want("LP_DEBUG_LAMPS", lp::kDebugLamps);
+  want("LP_DEBUG_REMOVE", lp::kDebugRemove);
+  want("LP_LAMP_OFFSET", lp::kLampOffset);
+  want("LP_LAMP_HEADER_BYTES", sizeof(GpuLampHeader));
+  want("LP_LAMP_VIEWS_OFFSET", lp::kLampOffset + sizeof(GpuLampHeader));
+  want("LP_LAMP_MAX_ENTRIES", kMaxLampEntries);
+  want("LP_LAMP_OFF_COUNT", lp::kLampOffset + offsetof(GpuLampHeader, count));
+  want("LP_LAMP_OFF_LAYERS", lp::kLampOffset + offsetof(GpuLampHeader, layers_lo));
+  Check(offsetof(GpuLampHeader, layers_hi) == offsetof(GpuLampHeader, layers_lo) + 4 && offsetof(GpuLampHeader, atlas_height) == offsetof(GpuLampHeader, atlas_width) + 4,
+        "the lamps' layers are two words in a row (one Load2) and the atlas's size two uints (one Load4 with the count and the slot)");
+  Check(lp::kLampOffset % 16 == 0 && lp::kLampOffset == lp::kShadowOffset + lp::kShadowBytes, "the lamps' table follows the headlights' table, 16 byte aligned");
   want("LP_CLASS_NONE", 0);
   want("LP_CLASS_EMISSIVE", 13);
   Check(Has(hlsli, "#define LP_SKY 60000.0f") && lp::kSky == 60000.0f, "the sky's distance is the AO's");
@@ -716,7 +733,8 @@ void BufferChecks() {
 // GB-H2: the shadow view table in the buffer and the pass's pixel with a shadow
 // ---------------------------------------------------------------------------
 
-// A frame's shadow views as the replay makes them: `views` views, each a plane facing -z through the origin (so a point's depth is its z), in tiles of a 2 x 2 atlas of `tile` texels.
+// A frame's shadow views as the replay makes them: `views` views, each a perspective view looking along +z from the origin (w = z; the unit axis in row 3 and A times it in row 2, as the lookup
+// reads a view: HL-SHADOW-QUALITY), in tiles of a 2 x 2 atlas of `tile` texels.
 ShadowFrame MakeShadowFrame(uint32_t views, uint32_t tile, Lcg& rng) {
   ShadowFrame f;
   f.atlas.valid = true;
@@ -730,12 +748,13 @@ ShadowFrame MakeShadowFrame(uint32_t views, uint32_t tile, Lcg& rng) {
   for (uint32_t e = 0; e < views; ++e) {
     LocalShadowView& v = f.views[e];
     std::memset(&v, 0, sizeof(v));
-    // out = M * (p, 1): uv = (x * 0.05 + 0.5, y * 0.05 + 0.5) inside the view's tile of the atlas, depth = 0.5 + z * 0.01, w = 1
+    // out = M * (p, 1), w = z: uv = the tile's middle + 0.357 (x, y) / z (a field of 70 degrees across the tile), depth = A (1 - 5 / z) (near plane 5, far plane 50: 0 at z = 5, 0.97 at z = 40)
     const float u0 = (e % 2) * 0.5f, v0 = (e / 2) * 0.5f;
-    v.world_to_shadow[0] = 0.05f * 0.5f; v.world_to_shadow[3] = u0 + 0.25f;
-    v.world_to_shadow[5] = 0.05f * 0.5f; v.world_to_shadow[7] = v0 + 0.25f;
-    v.world_to_shadow[10] = 0.01f; v.world_to_shadow[11] = 0.5f;
-    v.world_to_shadow[15] = 1.0f;
+    constexpr float kA = 50.0f / 45.0f;
+    v.world_to_shadow[0] = 0.25f / 0.7f; v.world_to_shadow[2] = u0 + 0.25f;
+    v.world_to_shadow[5] = 0.25f / 0.7f; v.world_to_shadow[6] = v0 + 0.25f;
+    v.world_to_shadow[10] = kA; v.world_to_shadow[11] = -kA * 5.0f;
+    v.world_to_shadow[14] = 1.0f;
     v.atlas_rect[0] = u0; v.atlas_rect[1] = v0; v.atlas_rect[2] = u0 + 0.5f; v.atlas_rect[3] = v0 + 0.5f;
     v.depth_bias = rng.Range(0.0005f, 0.003f);
     v.texel_size = 1.0f / float(tile);
@@ -932,11 +951,14 @@ void ShadowPixelChecks() {
       rng.Direction(n);
       n[1] = std::fabs(n[1]);
       const float albedo[3] = {rng.Next(), rng.Next(), rng.Next()};
+      // the shadow's plane takes the GEOMETRIC normal (QuadNormal), not the shading one the term takes: a direction of its own
+      float sn[3];
+      rng.Direction(sn);
       float with_table[3], direct[3], plain[3];
       Light from_row = l;
       from_row.shadow = ref;
-      const bool a = lp::PixelLightShadowed(from_row, in.units, &decoded, table, world, n, albedo, 0.9f, depth_at, with_table);
-      const bool b = lp::PixelLightShadowed(l, in.units, &sf, true, world, n, albedo, 0.9f, depth_at, direct);
+      const bool a = lp::PixelLightShadowed(from_row, in.units, &decoded, table, world, n, albedo, 0.9f, depth_at, with_table, sn);
+      const bool b = lp::PixelLightShadowed(l, in.units, &sf, true, world, n, albedo, 0.9f, depth_at, direct, sn);
       lp::PixelLight(l, in.units, world, n, albedo, 0.9f, plain);
       Check(a == b, "the shader's path (the table decoded from the buffer) and the frame's own views say the same about a pixel");
       bool same = true;
@@ -944,9 +966,16 @@ void ShadowPixelChecks() {
         same = same && with_table[i] == direct[i];
       }
       Check(same, "... and give the same light, bit for bit");
-      const float visibility = shadow_lookup::LightLit(sf, l.shadow, world, shadow_lookup::Mode::kSurface, depth_at);
+      const float visibility = shadow_lookup::LightLit(sf, l.shadow, world, sn, shadow_lookup::Mode::kSurface, depth_at);
       for (int i = 0; i < 3; ++i) {
-        CheckNear(direct[i], double(plain[i]) * double(visibility), std::fabs(double(plain[i])) * 1.0e-6 + 1.0e-9, "the shadowed light is the term times the lookup's visibility");
+        CheckNear(direct[i], double(plain[i]) * double(visibility), std::fabs(double(plain[i])) * 1.0e-6 + 1.0e-9, "the shadowed light is the term times the lookup's visibility (at the shadow normal)");
+      }
+      // no shadow normal given: the pixel's own normal is the shadow's
+      float own[3];
+      lp::PixelLightShadowed(l, in.units, &sf, true, world, n, albedo, 0.9f, depth_at, own);
+      const float own_visibility = shadow_lookup::LightLit(sf, l.shadow, world, n, shadow_lookup::Mode::kSurface, depth_at);
+      for (int i = 0; i < 3; ++i) {
+        CheckNear(own[i], double(plain[i]) * double(own_visibility), std::fabs(double(plain[i])) * 1.0e-6 + 1.0e-9, "with no shadow normal the pixel's normal is the shadow's");
       }
       Check(visibility >= 0.0f && visibility <= 1.0f, "the visibility is a share");
       if (plain[0] > 0.0f || plain[1] > 0.0f || plain[2] > 0.0f) {
@@ -1205,12 +1234,77 @@ void SourceChecks(const std::string& src) {
   Check(Has(ps, "g_textures[slot].Load(int3(clamp(ix, 0, int(LpAtlasW) - 1), clamp(iy, 0, int(LpAtlasH) - 1), 0)).x") && Has(ps, "uint at = uint(LP_SHADOW_VIEWS_OFFSET) + entry * uint(LP_SHADOW_VIEW_BYTES);"),
         "the seams read the atlas through the plain bindless array (set 0) and the views at the table's offsets");
   Check(Has(ps, "(flags & uint(LP_FLAG_SHADOW)) != 0u && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u") &&
-            Has(ps, "LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, atlas_slot, uint(LSL_MODE_SURFACE))"),
-        "the shader looks a light's views up in the box mode, only for a light with views and a table");
+            Has(ps, "LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, shadow_normal.x, shadow_normal.y, shadow_normal.z, atlas_slot, uint(LSL_MODE_SURFACE))"),
+        "the shader looks a light's views up in the surface mode (the plane lookup), only for a light with views and a table");
+  // HL-SHADOW-QUALITY on the pass: the lookup takes the surface's geometric normal, from the depth plane's pixel quad (the lit shaders take it from the derivatives of the world position), the
+  // G-buffer's normal only where the quad is not there
+  Check(Has(ps, "float3 LpShadowNormal(LpGlobals g, int2 p, float3 world, float3 fallback)") && Has(ps, "const int2 q = int2(p.x & ~1, p.y & ~1);") &&
+            Has(ps, "float3 n = cross(w01 - w00, w10 - w00);") && Has(ps, "if (dot(n, g.position - world) < 0.0f)") && Has(ps, "const float3 shadow_normal = LpShadowNormal(g, p, world, normal);"),
+        "the shadow normal is the depth plane's quad normal turned to the camera, the G-buffer's where the quad is not there");
+  Check(Has(ps, "bool LpWorldAt(LpGlobals g, int2 p, out float3 world)") && Has(ps, "float LpStoredAt(int2 p)") && Has(ps, "return g_textures_ms[g_push.slots.x].Load(p, g_push.info.z).r;") &&
+            Has(ps, "return g_textures[g_push.slots.x].Load(int3(p, 0)).r;"),
+        "the quad's pixels are read at the guest's sample, as the pixel's own depth is");
   const size_t lit_at = At(ps, "float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, rt2.w));");
   const size_t shadow_at = At(ps, "add *= LslLightLit(");
   Check(lit_at != std::string::npos && shadow_at != std::string::npos && lit_at < shadow_at, "the lookup runs after the term is known (a pixel the light does not reach takes no tap)");
   Check(Has(cpp, "in.shadow = &frame.shadow;") && Has(cpp, "ll::ShadowTableNeeded(selection, in.shadow)"), "the pass hands the frame's shadow to the buffer");
+}
+
+// HL-SHADOW-QUALITY on the pass: the shadow lookup's surface normal is the depth plane's quad normal (QuadNormal, the twin of local_light_ps.hlsl LpShadowNormal): a unit vector perpendicular to the
+// quad's two edges, turned to the camera, with the G-buffer's normal where a quad pixel is the sky and where the quad is degenerate.
+void QuadNormalChecks() {
+  Lcg rng;
+  int facing = 0, flipped = 0;
+  for (int n = 0; n < 4000; ++n) {
+    float base[3] = {rng.Range(-30.0f, 30.0f), rng.Range(-3.0f, 3.0f), rng.Range(2.0f, 60.0f)};
+    float u[3], v[3];
+    rng.Direction(u);
+    rng.Direction(v);
+    const float a = rng.Range(0.01f, 0.2f), b = rng.Range(0.01f, 0.2f);
+    const float w00[3] = {base[0], base[1], base[2]};
+    const float w10[3] = {base[0] + a * u[0], base[1] + a * u[1], base[2] + a * u[2]};
+    const float w01[3] = {base[0] + b * v[0], base[1] + b * v[1], base[2] + b * v[2]};
+    const float camera[3] = {rng.Range(-5.0f, 5.0f), rng.Range(0.5f, 3.0f), rng.Range(-5.0f, 0.0f)};
+    const float fallback[3] = {0.0f, 1.0f, 0.0f};
+    float out[3];
+    lp::QuadNormal(w00, w10, w01, true, w00, camera, fallback, out);
+    const float cross_len = std::sqrt((u[1] * v[2] - u[2] * v[1]) * (u[1] * v[2] - u[2] * v[1]) + (u[2] * v[0] - u[0] * v[2]) * (u[2] * v[0] - u[0] * v[2]) + (u[0] * v[1] - u[1] * v[0]) * (u[0] * v[1] - u[1] * v[0]));
+    if (cross_len < 0.05f) {
+      continue;  // two nearly parallel edges: the quad is a sliver, the plane is not believed (the next check covers the degenerate case)
+    }
+    const float len = std::sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+    const float dx[3] = {w10[0] - w00[0], w10[1] - w00[1], w10[2] - w00[2]};
+    const float dy[3] = {w01[0] - w00[0], w01[1] - w00[1], w01[2] - w00[2]};
+    const float along_x = std::fabs(out[0] * dx[0] + out[1] * dx[1] + out[2] * dx[2]) / (a * len);
+    const float along_y = std::fabs(out[0] * dy[0] + out[1] * dy[1] + out[2] * dy[2]) / (b * len);
+    const float to_camera = out[0] * (camera[0] - w00[0]) + out[1] * (camera[1] - w00[1]) + out[2] * (camera[2] - w00[2]);
+    Check(std::fabs(len - 1.0f) < 1.0e-5f && along_x < 1.0e-4f && along_y < 1.0e-4f && to_camera >= 0.0f, "the quad normal is a unit vector, perpendicular to both edges, turned to the camera");
+    facing += to_camera >= 0.0f ? 1 : 0;
+    float raw[3] = {dy[1] * dx[2] - dy[2] * dx[1], dy[2] * dx[0] - dy[0] * dx[2], dy[0] * dx[1] - dy[1] * dx[0]};
+    flipped += raw[0] * out[0] + raw[1] * out[1] + raw[2] * out[2] < 0.0f ? 1 : 0;
+  }
+  Check(facing > 3000 && flipped > 500 && flipped < 3500, "the random quads face the camera, and about half needed the flip of cross(dy, dx) (" + std::to_string(flipped) + ")");
+  // the floor seen from above: edges along +x and +z (z away from the camera, screen y down = +z for a floor): cross(dy, dx) = z x x = +y, the camera is above: up
+  {
+    const float w00[3] = {0.0f, 0.0f, 10.0f}, w10[3] = {0.1f, 0.0f, 10.0f}, w01[3] = {0.0f, 0.0f, 10.2f};
+    const float camera[3] = {0.0f, 1.5f, 0.0f}, fallback[3] = {1.0f, 0.0f, 0.0f};
+    float out[3];
+    lp::QuadNormal(w00, w10, w01, true, w00, camera, fallback, out);
+    Check(std::fabs(out[0]) < 1.0e-6f && std::fabs(out[1] - 1.0f) < 1.0e-6f && std::fabs(out[2]) < 1.0e-6f, "a floor seen from above has the normal up");
+    // a camera below it: down
+    const float below[3] = {0.0f, -1.5f, 0.0f};
+    lp::QuadNormal(w00, w10, w01, true, w00, below, fallback, out);
+    Check(std::fabs(out[1] + 1.0f) < 1.0e-6f, "... and from below the normal down (turned to the camera)");
+    // a quad pixel that is the sky or off the plane: the G-buffer's normal
+    lp::QuadNormal(w00, w10, w01, false, w00, camera, fallback, out);
+    Check(out[0] == 1.0f && out[1] == 0.0f && out[2] == 0.0f, "a quad with a pixel that is not there gives the fallback");
+    // a degenerate quad (three equal points, or collinear ones): the fallback
+    const float same[3] = {0.0f, 0.0f, 10.0f}, line[3] = {0.2f, 0.0f, 10.0f};
+    lp::QuadNormal(w00, same, same, true, w00, camera, fallback, out);
+    Check(out[0] == 1.0f && out[1] == 0.0f && out[2] == 0.0f, "a quad that is a point gives the fallback");
+    lp::QuadNormal(w00, w10, line, true, w00, camera, fallback, out);
+    Check(out[0] == 1.0f && out[1] == 0.0f && out[2] == 0.0f, "a quad whose edges are collinear gives the fallback");
+  }
 }
 
 }  // namespace
@@ -1236,6 +1330,7 @@ int main(int argc, char** argv) {
   BufferChecks();
   ShadowBufferChecks();
   ShadowPixelChecks();
+  QuadNormalChecks();
   TwinChecks();
   SourceChecks(src);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

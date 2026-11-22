@@ -8,6 +8,7 @@ Texture2D<float4> g_textures[8] : register(t0, space1);  // the bindless depth a
 StructuredBuffer<float4> g_views : register(t0, space2); // GpuShadowBuffer's rows: 6 float4 a view (LocalShadowView), the header in the cbuffer below
 cbuffer ProbeConstants : register(b0) {
   float4 g_point;   // world point
+  float4 g_normal;  // the surface's unit normal (the surface mode reads it)
   uint4 g_light;    // x shadow kind, y first view, z view count, w atlas slot
   float4 g_weight;  // x the light's shadow weight
   uint4 g_layers;   // x GpuShadowHeader::layers
@@ -50,6 +51,6 @@ uint LslLayerOf(uint entry) {
 
 [numthreads(1, 1, 1)]
 void main() {
-  g_out[0] = LslLightLit(g_light.x, g_light.y, g_light.z, g_weight.x, g_point.x, g_point.y, g_point.z, g_light.w, LSL_MODE_SURFACE);
-  g_out[1] = LslLightLit(g_light.x, g_light.y, g_light.z, g_weight.x, g_point.x, g_point.y, g_point.z, g_light.w, LSL_MODE_AIR);
+  g_out[0] = LslLightLit(g_light.x, g_light.y, g_light.z, g_weight.x, g_point.x, g_point.y, g_point.z, g_normal.x, g_normal.y, g_normal.z, g_light.w, LSL_MODE_SURFACE);
+  g_out[1] = LslLightLit(g_light.x, g_light.y, g_light.z, g_weight.x, g_point.x, g_point.y, g_point.z, g_normal.x, g_normal.y, g_normal.z, g_light.w, LSL_MODE_AIR);
 }

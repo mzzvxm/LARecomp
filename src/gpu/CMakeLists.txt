@@ -76,6 +76,7 @@ add_library(larecomp_gpu OBJECT
     headlight_rig.cpp
     input_layout.cpp
     latency.cpp
+    lamp_shadows.cpp
     latency_streamline.cpp
     layout.cpp
     light_manager.cpp
@@ -411,6 +412,11 @@ add_executable(larecomp_light_project_test EXCLUDE_FROM_ALL light_project_test.c
 # CPU twin (headlight_rules::SoftShadow), the volume's (volumetrics_rules.h ShadowShare) and light_laws.h CombineShadow; light_project_test.cpp holds the published form to a recorded drive:
 #   cmake --build <dir> --target larecomp_shadow_atlas_test, then run src/gpu/larecomp_shadow_atlas_test [<hlsl/light_shadow_lookup.hlsli>] (exit 0 = passed).
 add_executable(larecomp_shadow_atlas_test EXCLUDE_FROM_ALL shadow_atlas_test.cpp)
+# The street lamps' shadows, second try (lamp_shadows_rules.h, lamp_shadow_frame.h, lamp_shadow_lookup.h, hlsl/lamp_shadow_lookup.hlsli, LAMP-SHADOWS-4: the lamps' sources and ids, the game's
+# half float, the level budgets and pools, the pick and its fades in scene seconds, the movers and the static layers' rules, the passes' plan, the published table, the pass's light and its pixel path
+# in both modes, the buffer, the shader's text; the HLSL twin is compiled as C++ and compared bit for bit):
+#   cmake --build <dir> --target larecomp_lamp_shadows_test, then run src/gpu/larecomp_lamp_shadows_test [<src/gpu folder>] (exit 0 = passed).
+add_executable(larecomp_lamp_shadows_test EXCLUDE_FROM_ALL lamp_shadows_test.cpp)
 # The one picker of the lights and the budget table (light_pick.h: the importance, the keep bonus, the fading and the held pick, the coast, all in seconds of the scene clock; light_budget.h: the
 # headlight, shadow view and volume numbers of each level; light_pick_record.h: the text format of a recording of the pickers' inputs) held to the two pickers it replaced: the old suites' checks
 # ported, a recorded drive through the rig's Tracker and the shadow replay's ViewPicker in both modes (the same picks), the same scenes at 30, 60 and 144 FPS, a switch of the mode in a run;
@@ -437,6 +443,10 @@ add_executable(larecomp_car_shadow_map_rules_test EXCLUDE_FROM_ALL car_shadow_ma
 # the camera out of a draw's bank, which draws are casters, the face culling and the pipeline key) likewise:
 #   cmake --build <dir> --target larecomp_local_shadow_rules_test, then run src/gpu/larecomp_local_shadow_rules_test (exit 0 = passed).
 add_executable(larecomp_local_shadow_rules_test EXCLUDE_FROM_ALL local_shadow_rules_test.cpp)
+# The headlight shadows' lookup (light_shadow_filter.h, the CPU twin of the lit shaders' HeadlightShadow: four gathers at the receiver's plane, contact hardening, the
+# fade at the tile's border) on ray cast maps of a road, a post, a kerb and a wall, against the first version's box, and the levels' sizes (HL-SHADOW-QUALITY):
+#   cmake --build <dir> --target larecomp_light_shadow_filter_test, then run src/gpu/larecomp_light_shadow_filter_test (exit 0 = passed).
+add_executable(larecomp_light_shadow_filter_test EXCLUDE_FROM_ALL light_shadow_filter_test.cpp)
 # The player's car as ray tracing structures (car_rt_scene_rules.h: the instance transform and the camera's z, the masks, the mesh clean-up, the
 # range allocator, the eviction policy, the check pass's statistics; given the src/gpu folder it also checks that hlsl/car_rt_check_cs.hlsl and
 # hlsl/car_rt_common.hlsli use the header's numbers) likewise:

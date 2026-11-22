@@ -17,6 +17,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "headlight_rig_rules.h"
 #include "headlight_types.h"
 #include "local_shadow_rules.h"
 #include "local_shadow_types.h"
@@ -102,19 +103,19 @@ void CheckSetting() {
     }
     Check(in_table, "the class's auto is a level of the table in use");
   }
-  Check(ls::TileSize(ls::Level::kOff) == 0 && ls::TileSize(ls::Level::kHigh) == 512 && ls::TileSize(ls::Level::kUltra) == 1024, "the tile is 512 on high and 1024 on ultra");
+  Check(ls::TileSize(ls::Level::kOff) == 0 && ls::TileSize(ls::Level::kHigh) == 1024 && ls::TileSize(ls::Level::kUltra) == 1280, "the tile is 1024 on high and 1280 on ultra");
   Check(ls::MaxViews(ls::Level::kOff, 0) == 0 && ls::MaxViews(ls::Level::kOff, 2) == 0 && ls::MaxCars(ls::Level::kOff) == 0, "off draws no view, whatever the override");
   Check(ls::MaxCars(ls::Level::kHigh) == 2 && ls::MaxCars(ls::Level::kUltra) == 3, "high shadows two cars (the player's and the nearest other car's), ultra three");
   Check(ls::kThreeLevelShape && ls::kLevelTable.size() == 3 && ls::kLevelTable[0].word == "medium" && ls::kLevelTable[1].word == "high" && ls::kLevelTable[2].word == "ultra",
         "the shape in use is the three level one: medium, high, ultra (owner, 2026-11-20)");
   Check(ls::MaxViews(ls::Level::kMedium, 0) == 2 && ls::MaxViews(ls::Level::kHigh, 0) == 3 && ls::MaxViews(ls::Level::kUltra, 0) == 6,
         "in use: medium 2 views (one for each car), high 3 (the player's lamps and the nearest car), ultra 6 (every car's lamps)");
-  Check(ls::TileSize(ls::Level::kMedium) == 512 && ls::TileSize(ls::Level::kHigh) == 512 && ls::TileSize(ls::Level::kUltra) == 1024, "in use: 512 on medium and high, 1024 on ultra");
+  Check(ls::TileSize(ls::Level::kMedium) == 768 && ls::TileSize(ls::Level::kHigh) == 1024 && ls::TileSize(ls::Level::kUltra) == 1280, "in use: 768 on medium, 1024 on high, 1280 on ultra (HL-SHADOW-QUALITY)");
   Check(ls::LampCars(ls::Level::kMedium, 0) == 0 && ls::LampCars(ls::Level::kHigh, 0) == 1 && ls::LampCars(ls::Level::kUltra, 0) == 3, "in use: lamp views for no car on medium, the player's on high, all three on ultra");
   const ls::Choice mid = ls::Resolve(gc::GpuClass::kMid, "auto");
   const std::string text = ls::Describe(mid, gc::GpuClass::kMid);
-  Check(text.find("512x512") != std::string::npos && text.find("auto on the mid class") != std::string::npos, "Describe says the size and why: " + text);
-  Check(ls::Describe(ls::Resolve(gc::GpuClass::kLow, "auto"), gc::GpuClass::kLow).find("512") == std::string::npos, "an off level has no size in its line");
+  Check(text.find("768x768") != std::string::npos && text.find("auto on the mid class") != std::string::npos, "Describe says the size and why: " + text);
+  Check(ls::Describe(ls::Resolve(gc::GpuClass::kLow, "auto"), gc::GpuClass::kLow).find("768") == std::string::npos, "an off level has no size in its line");
   // No level is called low.
   for (const char* c : {"off", "medium", "high", "ultra"}) {
     Check(std::string(ls::LevelName(ls::Resolve(gc::GpuClass::kHigh, c).level)).find("low") == std::string::npos, "no level is called low");
@@ -1276,12 +1277,12 @@ void CheckLevels() {
   Check(ls::MaxViews(ls::Level::kHigh, 2, two) == 4 && ls::MaxViews(ls::Level::kUltra, 2, two) == 6 && ls::MaxViews(ls::Level::kHigh, 9, two) == 4 && ls::MaxViews(ls::Level::kUltra, -3, two) == 6,
         "the override 2 (and more) is a view for each lamp, a negative one is the level's");
   // THE THREE LEVEL SHAPE (the fallback): medium is the first version's high, high gives the player's car its lamps' views, ultra every shadowed car's.
-  Check(ls::MaxViews(ls::Level::kMedium, 0, three) == 2 && ls::LampCars(ls::Level::kMedium, 0, three) == 0 && ls::TileSize(ls::Level::kMedium, three) == 512,
-        "three level shape: medium is two cars, one view each, 512");
+  Check(ls::MaxViews(ls::Level::kMedium, 0, three) == 2 && ls::LampCars(ls::Level::kMedium, 0, three) == 0 && ls::TileSize(ls::Level::kMedium, three) == 768,
+        "three level shape: medium is two cars, one view each, 768");
   Check(ls::MaxViews(ls::Level::kHigh, 0, three) == 3 && ls::LampCars(ls::Level::kHigh, 0, three) == 1 && ls::MaxCars(ls::Level::kHigh, three) == 2,
         "three level shape: high is two cars, the player's with a view for each lamp (3 views)");
-  Check(ls::MaxViews(ls::Level::kUltra, 0, three) == 6 && ls::LampCars(ls::Level::kUltra, 0, three) == 3 && ls::TileSize(ls::Level::kUltra, three) == 1024,
-        "three level shape: ultra is three cars, every one with a view for each lamp (6 views of 1024)");
+  Check(ls::MaxViews(ls::Level::kUltra, 0, three) == 6 && ls::LampCars(ls::Level::kUltra, 0, three) == 3 && ls::TileSize(ls::Level::kUltra, three) == 1280,
+        "three level shape: ultra is three cars, every one with a view for each lamp (6 views of 1280)");
   Check(ls::MaxViews(ls::Level::kMedium, 2, three) == 4 && ls::MaxViews(ls::Level::kHigh, 1, three) == 2, "three level shape: the override works on any row");
   // Both shapes are well formed: ascending levels, a tile, a car, no more lamp cars than cars, words that are the setting's.
   for (const ls::LevelTable table : {two, three}) {
@@ -1348,9 +1349,9 @@ void CheckLevels() {
   Check(ultra.width() == 3072 && ultra.height() == 2048 && ultra.cols == 3 && ultra.rows == 2, "ultra: 3072 x 2048, six tiles of 1024 in three columns");
   CheckNear(ls::Mib(ls::AtlasBytes(high)), 8.0, 1e-9, "high holds 8 MiB");
   CheckNear(ls::Mib(ls::AtlasBytes(ultra)), 48.0, 1e-9, "ultra holds 48 MiB");
-  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kMedium, 0, three))), 4.0, 1e-9, "three level shape: medium holds 4 MiB");
-  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kHigh, 0, three))), 6.0, 1e-9, "three level shape: high holds 6 MiB");
-  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kUltra, 0, three))), 48.0, 1e-9, "three level shape: ultra holds 48 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kMedium, 0, three))), 9.0, 1e-9, "three level shape: medium holds 9 MiB (2 views of 768)");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kHigh, 0, three))), 24.0, 1e-9, "three level shape: high holds 24 MiB (3 views of 1024)");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kUltra, 0, three))), 75.0, 1e-9, "three level shape: ultra holds 75 MiB (6 views of 1280)");
   CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kUltra, 1, two))), 24.0, 1e-9, "ultra with one view for a car (the override 1) is the first version's 24 MiB");
   CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kHigh, 1, two))), 4.0, 1e-9, "... and high's 4 MiB");
   Check(ls::AtlasBytes(ls::AtlasFor(ls::Level::kOff, 0)) == 0 && !ls::AtlasFor(ls::Level::kOff, 0).valid(), "off holds nothing");
@@ -1358,22 +1359,22 @@ void CheckLevels() {
   Check(ls::AtlasFor(ls::Level::kUltra, 0, two).views == 6 && ls::AtlasFor(ls::Level::kHigh, 0, two).views == 4, "the atlas has a tile for every view of its level");
   // What the log says.
   const std::string text = ls::Describe(ls::Choice{ls::Level::kUltra, true, false}, gc::GpuClass::kHigh);
-  Check(text.find("ultra") != std::string::npos && text.find("1024x1024") != std::string::npos, "Describe says the level and the size: " + text);
-  Check(text.find("up to 6 views of 1024x1024") != std::string::npos && text.find("3 car(s), a view for each lamp") != std::string::npos, "Describe says six views of 1024, a view for each lamp: " + text);
+  Check(text.find("ultra") != std::string::npos && text.find("1280x1280") != std::string::npos, "Describe says the level and the size: " + text);
+  Check(text.find("up to 6 views of 1280x1280") != std::string::npos && text.find("3 car(s), a view for each lamp") != std::string::npos, "Describe says six views of 1280, a view for each lamp: " + text);
   const std::string mid = ls::Describe(ls::Resolve(gc::GpuClass::kMid, "auto"), gc::GpuClass::kMid);
   if (ls::kThreeLevelShape) {
     // The shape in use: Mid's auto is medium (two views of 512, one for each car); high is three views, the player's car's lamps and one for the other car; the override 1 and 2 reach every level.
-    Check(mid.find("light shadows medium") != std::string::npos && mid.find("up to 2 views of 512x512") != std::string::npos && mid.find("2 car(s), one view for each") != std::string::npos &&
+    Check(mid.find("light shadows medium") != std::string::npos && mid.find("up to 2 views of 768x768") != std::string::npos && mid.find("2 car(s), one view for each") != std::string::npos &&
               mid.find("auto on the mid class") != std::string::npos,
-          "Describe says two views of 512, one for each car, on the Mid class: " + mid);
+          "Describe says two views of 768, one for each car, on the Mid class: " + mid);
     const std::string high_text = ls::Describe(ls::Resolve(gc::GpuClass::kMid, "high"), gc::GpuClass::kMid);
-    Check(high_text.find("up to 3 views of 512x512") != std::string::npos && high_text.find("2 car(s), a view for each lamp of the first 1") != std::string::npos && high_text.find("(set)") != std::string::npos,
-          "Describe says three views of 512, the first car's lamps, for a set high: " + high_text);
-    Check(ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "ultra"), gc::GpuClass::kHigh, 1).find("up to 3 views of 1024x1024") != std::string::npos &&
+    Check(high_text.find("up to 3 views of 1024x1024") != std::string::npos && high_text.find("2 car(s), a view for each lamp of the first 1") != std::string::npos && high_text.find("(set)") != std::string::npos,
+          "Describe says three views of 1024, the first car's lamps, for a set high: " + high_text);
+    Check(ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "ultra"), gc::GpuClass::kHigh, 1).find("up to 3 views of 1280x1280") != std::string::npos &&
               ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "ultra"), gc::GpuClass::kHigh, 1).find("one view for each") != std::string::npos,
           "Describe follows the override");
     Check(ls::AtlasFor(ls::Level::kMedium, 0).views == 2 && ls::AtlasFor(ls::Level::kHigh, 0).views == 3 && ls::AtlasFor(ls::Level::kUltra, 0).views == 6, "in use: the atlas has a tile for every view of its level");
-    Check(ls::AtlasFor(ls::Level::kHigh, 0).width() == 1536 && ls::AtlasFor(ls::Level::kHigh, 0).height() == 512, "in use: high is a row of three tiles of 512");
+    Check(ls::AtlasFor(ls::Level::kHigh, 0).width() == 3072 && ls::AtlasFor(ls::Level::kHigh, 0).height() == 1024, "in use: high is a row of three tiles of 1024");
   } else {
     Check(mid.find("up to 4 views of 512x512") != std::string::npos && mid.find("2 car(s)") != std::string::npos, "Describe says four views of 512: " + mid);
     Check(ls::Describe(ls::Resolve(gc::GpuClass::kMid, "high"), gc::GpuClass::kMid, 1).find("up to 2 views of 512x512") != std::string::npos &&
@@ -1942,7 +1943,7 @@ void CheckLampViewsCover() {
         for (const double d : {6.0, 10.0, 20.0, 40.0}) {
           for (int step = 0; step < 24; ++step) {
             const double phi = 2.0 * ls::kPi * step / 24.0;
-            const double theta = ls::Rad(outer) * 0.99;  // the light's cone, its edge, seen from the light
+            const double theta = ls::Rad(std::min(outer, ls::kShadowConeCapDegrees)) * 0.99;  // the light's cone, its edge (held to the shadow views' cap: kShadowConeCapDegrees), seen from the light
             const double p[3] = {cars[0].pos[0] + d * std::sin(theta) * std::cos(phi), cars[0].pos[1] + d * std::sin(theta) * std::sin(phi), cars[0].pos[2] + d * std::cos(theta)};
             Check(InsideClip(clip, p), at + ": the light's cone edge at " + std::to_string(int(d)) + " m (azimuth step " + std::to_string(step) + ") is in lamp view " + std::to_string(k));
           }
@@ -2127,6 +2128,95 @@ Commands SimulateCasterOuter(const std::vector<SimDraw>& draws, int views) {
   return c;
 }
 
+// A POST OUTSIDE THE BEAM CASTS NO VISIBLE SHADOW (HL-SHADOW-QUALITY-2, 2026-11-21: "the pole casts no headlight shadow 5 m from the lamps in the old build or the new, 10 and 20 m do").
+// It is no bug of the lookup or of the replay: at the q5 place of hl-shadow-quality-street.scene the lamp pole stands 45 degrees off the lamps' axis, outside the beam (38 degrees) and
+// outside the shadow view (34 degrees + 2), and the shadow of a thin post lies on the ray from the lamp through it, at the post's own angle all along: every receiver of that shadow
+// is outside the beam too, so there is nothing for it to darken. The scene's notes took the pole to be 2.1 m beside the car's axis and 5 m from the lamps (24 degrees: the atlas
+// light 3602 is the arm's END); the three pictures (the foot at 512, 595 and 677 px across a 1600 px frame, 560, 495 and 432 down, camera 3 m up and 6 m behind the car's middle,
+// vertical field 50 degrees) fit a foot 3.5 m beside the axis and 3.5 m ahead of the q5 lamps (10 m of depth from the camera: 11.5 m, f = 950 px, residual 2 px) and the shadow
+// on the dome's left pillar at q10 lands 8.6 m aside where the ray predicts 8.4. The frame here: the light at the origin (0.57 m over the road, the axis dipped 0.03), the road at
+// y = 0, the pavement 0.15 m up, the pole 3.5 m to the side, `ahead` metres in front of the light.
+void CheckPostOutsideTheBeam() {
+  namespace hr = mcla::gpu::headlight_rules;
+  const float pos[3] = {0.0f, 0.57f, 0.0f};
+  const float dir[3] = {0.0f, -0.03f, 1.0f};
+  const float offset[3] = {0.7f, 0.0f, 0.0f};
+  ls::Light light;
+  Check(ls::MakeLight(pos, dir, hr::CosOfDegrees(hr::kOuterDegrees), 70.0f, 1, true, 0, &light, offset), "the player's light, as the rig makes it: a 38 degree beam, lamps 0.7 m off");
+  ls::Group group;
+  group.count = 1;
+  group.members[0] = 0;
+  group.is_player = true;
+  for (int k = 0; k < 3; ++k) {
+    group.eye[k] = light.pos[k];
+  }
+  ls::ViewSpec spec;
+  tp::Mat4 clip;
+  Check(ls::FitView(&light, group, &spec) && ls::LightClip(spec, true, &clip), "the car's shadow view (medium: one view from the light)");
+  float whole[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+  float m[16];
+  ls::WorldToShadow(clip, whole, 1.0, 1.0, m);
+  const auto in_tile = [&](const double p[3], double margin) {
+    double u = 0, v = 0, d = 0;
+    return ls::MapPoint(m, p, &u, &v, &d) && u >= margin && u <= 1.0 - margin && v >= margin && v <= 1.0 - margin && d >= 0.0 && d <= 1.0;
+  };
+  hr::Lamp lamp;
+  for (int k = 0; k < 3; ++k) {
+    lamp.position[k] = pos[k];
+    lamp.direction[k] = dir[k];
+  }
+  {
+    const float norm = std::sqrt(lamp.direction[1] * lamp.direction[1] + 1.0f);
+    lamp.direction[1] /= norm;
+    lamp.direction[2] /= norm;
+  }
+  lamp.range = hr::kRange;
+  lamp.cos_outer = hr::CosOfDegrees(hr::kOuterDegrees);
+  lamp.cos_inner = hr::CosOfDegrees(hr::kInnerDegrees);
+  const auto angle_of = [&](const double p[3]) {
+    const double v[3] = {p[0] - pos[0], p[1] - pos[1], p[2] - pos[2]};
+    const double length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return std::acos((v[0] * lamp.direction[0] + v[1] * lamp.direction[1] + v[2] * lamp.direction[2]) / length) * 180.0 / ls::kPi;
+  };
+  // The beam's share at a pavement point (the shader's term over its peak: 1 at full strength, 0 outside the cone).
+  const auto beam_at = [&](const double p[3]) {
+    hr::Surface surface;
+    for (int k = 0; k < 3; ++k) {
+      surface.position[k] = float(p[k]);
+    }
+    return hr::LampScale(lamp, surface) / hr::kPeak;
+  };
+  struct Place {
+    const char* name;
+    double ahead;    // the pole's foot in front of the light
+    double aside;    // ... and beside its axis
+    bool seen;       // whether its shadow can show
+  };
+  const Place places[] = {{"q5 (the car's first place)", 3.5, 3.5, false}, {"q10", 8.5, 3.5, true}, {"q20", 18.5, 3.5, true}, {"q5 moved 2 m toward the pole", 3.5, 1.5, true}};
+  for (const Place& place : places) {
+    const std::string at = place.name;
+    const double foot[3] = {-place.aside, 0.15, place.ahead};
+    const double angle = angle_of(foot);
+    Check(place.seen == (angle < 36.0), at + ": the pole is " + std::to_string(angle) + " degrees off the axis: inside the shadow view's cone (36) only when its shadow can show");
+    Check(in_tile(foot, 0.05) == place.seen, at + ": the pole is in the view's tile (clear of the border fade) only when its shadow can show");
+    if (!place.seen) {
+      Check(angle > hr::kOuterDegrees, at + ": ... and beyond the beam's own edge (" + std::to_string(angle) + " degrees)");
+    }
+    // The shadow of a thin post lies on the ray from the lamp through it: its pavement receivers are `behind` metres farther along the same horizontal line, at the post's own angle.
+    for (const double behind : {2.0, 6.0, 12.0}) {
+      const double horizontal = std::sqrt(foot[0] * foot[0] + foot[2] * foot[2]);
+      const double on_ray[3] = {foot[0] * (1.0 + behind / horizontal), foot[1], foot[2] * (1.0 + behind / horizontal)};
+      CheckNear(std::atan2(-on_ray[0], on_ray[2]), std::atan2(-foot[0], foot[2]), 1e-9, at + ": a receiver of the post's shadow has the post's own bearing from the lamp");
+      const double share = beam_at(on_ray);
+      if (place.seen) {
+        Check(share > 0.1, at + ": the pavement " + std::to_string(int(behind)) + " m behind the pole is lit by the beam (" + std::to_string(share) + " of its peak, 0.2 and more in the game's light units against the night's ambient of about 0.1): the shadow darkens it");
+      } else {
+        CheckNear(share, 0.0, 0.0, at + ": the pavement " + std::to_string(int(behind)) + " m behind the pole gets no light from the beam: nothing for the shadow to darken");
+      }
+    }
+  }
+}
+
 void CheckSharedWork() {
   uint32_t state = 777;
   const auto rnd = [&]() {
@@ -2211,6 +2301,7 @@ int main() {
     CheckLampViews();
     CheckLampViewsCover();
     CheckTwoShadows();
+    CheckPostOutsideTheBeam();
     CheckSharedWork();
     CheckPickingReach();
     CheckEdgeRuleWithLevels();
