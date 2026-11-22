@@ -3680,7 +3680,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"DENOISER: who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light): NVIDIA's DLSS Ray Reconstruction, or our own denoisers. \"\n    \"auto (the default): DLSS Ray Reconstruction where an effect that is on looks better with it and this PC can run it (an NVIDIA RTX card, DLSS as the upscaler); our own denoisers everywhere else. \"\n    \"rr (DLSS RR in the menu): DLSS Ray Reconstruction wherever it can run and an effect that it can clean is on. ours: our own denoisers only; Streamline is then started without the Ray Reconstruction plugin, \"\n    \"so leaving ours needs a restart. DLSS Ray Reconstruction does the upscaling too, in place of DLSS Super Resolution, for the frames it takes (not the pause menu's world, the garage, the map or a cutscene); its context is made in the background \"\n    \"beside Super Resolution's, so a switch of this setting is live and the frames in between are Super Resolution's. The pause menu's DENOISER row (GRAPHICS > UPSCALING; grey where it cannot run: no RTX card, DLSS not the upscaler, \"\n    \"no effect that uses it is on). Live; only the plugin is chosen when Streamline starts (the debug setting mcla_gpu_dlss_rr overrides it).\"",
+  "help": "\"DENOISER: who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light): NVIDIA's DLSS Ray Reconstruction (RTX cards), AMD FSR Ray Regeneration (Radeon RX 9000 series cards, Direct3D 12), or our own denoisers. \"\n    \"auto (the default): DLSS Ray Reconstruction where an effect that is on looks better with it and this PC can run it (an NVIDIA RTX card, DLSS as the upscaler); our own denoisers everywhere else. \"\n    \"rr (DLSS RR in the menu): DLSS Ray Reconstruction wherever it can run and an effect that it can clean is on. ours: our own denoisers only; Streamline is then started without the Ray Reconstruction plugin, \"\n    \"so leaving ours needs a restart. DLSS Ray Reconstruction does the upscaling too, in place of DLSS Super Resolution, for the frames it takes (not the pause menu's world, the garage, the map or a cutscene); its context is made in the background \"\n    \"beside Super Resolution's, so a switch of this setting is live and the frames in between are Super Resolution's. The pause menu's DENOISER row (GRAPHICS > UPSCALING; grey where it cannot run: no RTX card, DLSS not the upscaler, \"\n    \"no effect that uses it is on). On a Radeon RX 9000 series card the middle value reads FSR RAY REGEN in the menu and means AMD FSR Ray Regeneration: it cleans the reflections on surfaces before the upscaler runs, whatever the upscaler is, and needs no restart (AMD's runtime is opened when the row asks for it); auto never picks it until a Radeon A/B says it beats ours. Live; only the plugin is chosen when Streamline starts (the debug setting mcla_gpu_dlss_rr overrides it).\"",
   "traits": [
    "rex::Allowed(\"auto\", \"rr\", \"ours\")"
   ],
@@ -3696,6 +3696,31 @@
    "rex::kDebugOnly",
    "rex::kRequiresRestart",
    "rex::Allowed(\"auto\", \"off\", \"probe\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ray_regen": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (AMD FSR Ray Regeneration, perf/RAY-REGEN.md, RG-1): whether AMD's denoiser runtime is opened and asked at the start. auto (the default): only when an effect that can hand it a signal exists (the screen-space reflections do, and the DENOISER row is not OURS: nothing is opened for OURS, and a row that leaves OURS opens it live). off: never. probe: on a Radeon RX 9000 series card on Direct3D 12 (never on any other PC) amd_fidelityfx_loader_dx12.dll and amd_fidelityfx_denoiser_dx12.dll are opened on a worker thread, the runtime's providers are listed and a small trial context is made: the log's '[gpu] ray regen:' lines say whether this card and driver take it and what a context costs, and no frame uses it. on: the DENOISER row's AMD value with the rule that an effect it can clean is on lifted (the A/B and cost runs). Read at the start.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRestart",
+   "rex::Allowed(\"auto\", \"off\", \"probe\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ray_regen_ssr": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B, AMD FSR Ray Regeneration, perf/RAY-REGEN.md, RG-3): what the screen-space reflections do while AMD FSR Ray Regeneration takes the frame. 1 (the default): the trace is the signal it denoises (radiance at the trace's half size with the ray's hit distance, next to guides in AMD's formats) and the reflections' resolve reads its output, with no accumulation over frames of their own. 0: they keep their own accumulation even then (the picture to compare with). With AMD FSR Ray Regeneration not the choice (every PC but a Radeon RX 9000 series card on Direct3D 12 with the DENOISER row on its value) nothing changes, whatever this says. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
   ],
   "comments": [],
   "pp_depth": 0

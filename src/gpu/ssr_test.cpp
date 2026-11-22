@@ -2158,25 +2158,26 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
   const size_t possible_at = trigger.find("if (ssr::RawPossible(raw_facts)) {");
   const size_t apply_pipe_at = trigger.find("Pipeline(kVApplyRaw)");
   const size_t hit_pipe_at = trigger.find("Pipeline(kVHit)");
-  Check(possible_at != std::string::npos && apply_pipe_at != std::string::npos && hit_pipe_at != std::string::npos && possible_at < apply_pipe_at && possible_at < hit_pipe_at && Count(cpp, "Pipeline(kVApplyRaw)") == 1 &&
+  Check(possible_at != std::string::npos && apply_pipe_at != std::string::npos && hit_pipe_at != std::string::npos && possible_at < apply_pipe_at && possible_at < hit_pipe_at && Count(cpp, "Pipeline(kVApplyRaw)") == 2 &&   // the raw mode's, and AMD FSR Ray Regeneration's (RG-3: the same resolve over the denoised image, asked inside rgd::RegenPossible)
+            
             Count(cpp, "Pipeline(kVHit)") == 1,
         "RR-4a: the raw pipelines are asked for in one place, inside the rules' RawPossible: a frame that is not asked never lists them with the host precache");
   Check(Has(trigger, "raw_facts.asked = raw_requested;") && Has(trigger, "raw_facts.debug_view = debug_view;") && Has(trigger, "raw_facts.stub = decision.stub;") && Has(trigger, "raw_facts.host_samples = depth.host_samples;") &&
-            Has(trigger, "bool raw = raw_why == ssr::RawWhy::kRaw;") && Has(trigger, "raw_why = ssr::RawWhy::kImages;") && Has(header, "bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false);"),
+            Has(trigger, "bool raw = raw_why == ssr::RawWhy::kRaw;") && Has(trigger, "raw_why = ssr::RawWhy::kImages;") && Has(header, "bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false, const RegenAsk& regen = RegenAsk{});"),
         "RR-4a: the frame is raw by the rules' decision on what the caller asked (the default is plain), a hit image that cannot be made keeps the frame plain");
   Check(Has(trigger, "if (raw_ever_asked_ && uint32_t(raw_why) != raw_why_logged_) {") && Has(trigger, "if (raw_requested) {\n    raw_ever_asked_ = true;\n  }"), "RR-4a: nothing is logged until the mode was asked for once: the log of a run with the plan not RR is what it was");
-  Check(Has(trigger, "  if (!raw) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPass(list, accum_[write_], temporal_pipeline, temporal);\n  }"),
+  Check(Has(trigger, "  if (!raw && !regen_ok) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPass(list, accum_[write_], temporal_pipeline, temporal);\n  }"),
         "RR-4a: the accumulation runs only in a plain frame");
   Check(Has(trigger, "if (raw) {\n    // RR-4a: the resolve reads the trace itself") && Has(trigger, "apply.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));") &&
             Has(trigger, "  } else {\n    apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)\n    apply.Set(pk::kRoadViewApply, road_word);\n  }") &&
-            Has(trigger, "list->setPipeline(raw ? raw_apply_pipeline : apply_pipeline);") && Has(trigger, "pass_timing_->Mark(list, \"ssr apply raw\");"),
+            Has(trigger, "list->setPipeline(raw ? raw_apply_pipeline : (regen_ok ? regen_apply_pipeline : apply_pipeline));") && Has(trigger, "pass_timing_->Mark(list, \"ssr apply raw\");"),
         "RR-4a: the raw resolve reads the trace in both halves of the source word and keeps the Hi-Z words (the road view's borrowing is the plain apply's)");
   const size_t apply_mark = trigger.find("Mark(list, \"ssr apply\")"), hit_mark = trigger.find("Mark(list, \"ssr hit\")"), after_mark = trigger.find("Mark(list, \"after ssr\")"), hit_draw = trigger.find("DrawPass(list, hit_, hit_pipeline, hit_push);");
   const size_t apply_draw = trigger.find("list->drawInstanced(3, 1, 0, 0);");
   Check(apply_mark != std::string::npos && hit_mark != std::string::npos && after_mark != std::string::npos && apply_draw != std::string::npos && hit_draw != std::string::npos && apply_draw < hit_mark && hit_mark < hit_draw && hit_draw < after_mark &&
             Has(trigger, "hit_push.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));") && Has(trigger, "hit_ready_ = true;") && Count(cpp, "DrawPass(list, hit_,") == 1,
         "RR-4a: in a raw frame the hit pass follows the resolve's draw and comes before the closing mark, reading the trace; the image is announced only then");
-  Check(Has(trigger, "  if (!raw) {\n    last_key_ = now;") && Has(trigger, "  } else {\n    last_key_.valid = false;\n  }") && Has(trigger, "plain_streak_") && Has(trigger, "raw_streak_ >= ssr::kRawReleaseAfter"),
+  Check(Has(trigger, "  if (!raw && !regen_ok) {\n    last_key_ = now;") && Has(trigger, "  } else {\n    last_key_.valid = false;\n  }") && Has(trigger, "plain_streak_") && Has(trigger, "raw_streak_ >= ssr::kRawReleaseAfter"),
         "RR-4a: a raw frame leaves no history (the frame after it starts again), and the images of the mode not in use go back after a spell");
   Check(Has(FunctionText(cpp, "void ScreenReflections::BeginFrame()"), "hit_ready_ = false;") && Has(header, "const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }") &&
             Has(FunctionText(cpp, "void ScreenReflections::ReleaseImages()"), "&hit_") && Has(FunctionText(cpp, "uint64_t ScreenReflections::HeldBytes() const"), "&hit_"),
@@ -2308,13 +2309,13 @@ void TestSources(const std::string& dir) {
 
   // the order at the trigger: the capture, then the reflections, then the car's history
   const size_t capture_at = scene.find("colour_captured = screen_->CapturePost(record, summary, list);");
-  const size_t ssr_at = scene.find("ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning());");
+  const size_t ssr_at = scene.find("ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning(), regen_ask);");
   const size_t car_at = scene.find("car_refl_->OnResolve(record, summary, list);");
   Check(capture_at != std::string::npos && ssr_at != std::string::npos && car_at != std::string::npos && capture_at < ssr_at && ssr_at < car_at, "scene.cpp: the colour capture, then the reflections, then the car self-reflection's history");
   Check(Has(scene, "if (colour_captured && ssr_) {") && Has(scene, "if (ssr_ && ssr_->wants_draws()) {\n    ssr_->OnMainDraw(draw.match, banks);") && Has(scene, "ssr_->BeginFrame();") && Has(scene, "ssr_->OnPresent();"),
         "scene.cpp: the reflections run only in a frame that made the capture, hear the draws only while on, begin and end the frame");
   Check(Has(scene_h, "void SetScreenReflections(ScreenReflections* ssr)") && Has(scene_h, "ScreenReflections* ssr_ = nullptr;"), "scene.h holds the pointer");
-  const size_t init_at = renderer.find("ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_);");
+  const size_t init_at = renderer.find("ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_, &frames_);");
   const size_t screen_init = renderer.find("screen_.Initialize(device_, heap_, passes_, edram_, pass_timing_);");  // SS-2 gave the owner the device and the heap (its extraction's layout)
   Check(init_at != std::string::npos && screen_init != std::string::npos && screen_init < init_at && Has(renderer, "ssr_.SetScreenShared(&screen_);") && Has(renderer, "ssr_.SetGBuffer(&gbuffer_);") &&
             Has(renderer, "ssr_.SetAmbientOcclusion(&ao_);") && Has(renderer, "scene_.SetScreenReflections(&ssr_);"),

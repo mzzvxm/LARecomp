@@ -16,6 +16,13 @@
 //   Asked for by the caller at the trigger (OnTrigger's `raw_requested`: TemporalSystem::RawModes()); with the plan not RR nothing of it exists in the frame: the same passes, shaders and pipelines
 //   listed as before. A debug view, the stub class, a multisampled colour or pipelines still being made keep the frame plain (logged when it changes).
 //
+// RG-3, AMD FSR RAY REGENERATION (ray_regen_guides.h, ray_regen_plan.h; perf/RAY-REGEN.md; the DENOISER row's AMD value on a Radeon RX 9000, Direct3D 12, mcla_gpu_ray_regen_ssr is the A/B). While the plan says
+//   Ray Regeneration and its context is ready the frame is a REGEN frame (RegenAsk::asked; DecideRegen: no debug view, no stub, no host MSAA, the pipelines made): the trace is the SIGNAL (radiance never below
+//   0, a road's negative difference left to the game's own reflection) and ONE compute pass at the trace's size (hlsl/ray_regen_ssr_cs.hlsl) writes it with the guides in AMD's formats; the runtime denoises it;
+//   and the resolve (the raw mode's, hlsl/ssr_apply_ps.hlsl SSR_RAW) reads the denoised image where the accumulation's would be, multiplying the Fresnel and the class gain in after the denoise, as AMD
+//   wants the first bounce's albedo put back. No accumulation of its own runs. A dispatch that is refused (the plan of the dispatch, the runtime, an image that could not be made) makes the frame the
+//   effect's OWN: the accumulation and the plain resolve run as ever, never black. A frame that is not a regen frame is what it always was.
+//
 // WHERE THINGS COME FROM (all of it shared, nothing is made twice):
 //   ScreenShared (screen_shared.h)  hiz_min (the min chain of the AO's linear depth: the walk), colour_post with its mip chain (the radiance of a hit: the effect's Want of it also turns the mips on),
 //                                   the camera. The Want is (hiz_min, colour_post); the owner's `history` product (the last frame's colour_post) is not used: the accumulation keeps its own images,
@@ -95,6 +102,7 @@
 #include "edram.h"
 #include "guest_frame.h"
 #include "host_passes.h"
+#include "ray_regen_guides.h"
 #include "resolve.h"
 #include "rt_denoise.h"
 #include "screen_frame.h"
@@ -116,6 +124,19 @@ class RtSceneService;
 class RtWorldFrame;
 class ScreenShared;
 
+// What the caller asks of the reflections for AMD FSR Ray Regeneration at the trigger (TemporalSystem::RegenAsk()): whether this frame is Ray Regeneration's for the effect, and the frame's jitter in render pixels.
+struct RegenAsk {
+  bool asked = false;
+  float jitter[2] = {0.0f, 0.0f};
+};
+// The frame's own camera as the occlusion has it at the trigger (ao.h FrameCameraOut): the axes in the world and the 3x4 into the last frame's view space.
+struct RegenCameraRows {
+  float right[3] = {};
+  float up[3] = {};
+  float forward[3] = {};
+  float motion[12] = {};
+};
+
 class ScreenReflections {
  public:
   ScreenReflections() = default;
@@ -124,7 +145,8 @@ class ScreenReflections {
   ScreenReflections& operator=(const ScreenReflections&) = delete;
 
   // Makes the layout and the shaders (the pipelines are made in the background when first wanted). Never fails the renderer: without them nothing runs (logged).
-  void Initialize(Device& device, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing);
+  // `frames` (RG-3) retires the Ray Regeneration pass's descriptor sets; null: that pass is not made (the effect is what it was).
+  void Initialize(Device& device, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing, FrameRing* frames = nullptr);
   // CITY-RT R4: the ray traced fallback's layout, shaders and buffers (ssr_rt.h). After the car scene's and the scene service's Initialize (the ray tracing set is in its layout) and before the host
   // precache starts; makes nothing where the device cannot trace rays. The effect is what it was without it.
   void InitializeRt(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, RtSceneService* service, RtWorldFrame* world);
@@ -146,7 +168,8 @@ class ScreenReflections {
   // The trigger's colour capture was just recorded (ScreenShared::CapturePost returned true): runs the passes. True when passes were recorded (the caller's list state is gone). Once a frame.
   // `raw_requested` (RR-4a): DLSS Ray Reconstruction takes this frame and this effect's switch is on (TemporalSystem::RawModes().Ssr()); the frame is raw only if the rules allow it (DecideRaw).
   // `upscaler_running` (SSR-NOISE review): a temporal upscaler works on this frame (the accumulation then takes no floor for its clip: hlsl/ssr_common.hlsli SsrClipKeepFor); a raw frame has no accumulation.
-  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false);
+  // `regen` (RG-3): AMD FSR Ray Regeneration takes this frame (TemporalSystem::RegenAsk()); the frame is a regen frame only if the rules allow it (rgd::DecideRegen), else the effect's own.
+  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false, const RegenAsk& regen = RegenAsk{});
   // RR-4a: this frame's hit distance image (R16_FLOAT, the picture's size, readable) when the frame ran RAW and wrote it, else null. Valid until the next frame's trigger.
   const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
   // A guest present: the frame boundary (the history's ping-pong, the idle count).
@@ -180,6 +203,9 @@ class ScreenReflections {
   // `rt`: the frame follows the ray traced fallback: the trace image is a storage image too and the confidence image and the two target framebuffer exist (else they do not). `raw` (RR-4a): the frame is raw: the
   // accumulation's two images are not needed and the picture's size hit distance image is (`render_*`); the fallback's images are made for a raw frame all the same when `rt` (its compute passes run in it).
   bool EnsureImages(uint32_t width, uint32_t height, bool rt, bool raw = false, uint32_t render_width = 0, uint32_t render_height = 0);
+  // RG-3: the guide and signal pass and the runtime's dispatch of a regen frame, after the trace. False: nothing the resolve can read was made (the frame is the effect's own).
+  bool RecordRegen(plume::RenderCommandList* list, const ssr::Push& base, const screen::ScreenFrame& sf, const RegenCameraRows* cam, bool motion_usable, const RegenAsk& ask, uint32_t width,
+                   uint32_t height, const ssr::HistoryKey& now);
   void ReleaseImages();
   // The trace pass with two targets (the trace image and the confidence image), the same sequence as DrawPass.
   void DrawPassRt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline, const ssr::Push& push);
@@ -225,6 +251,14 @@ class ScreenReflections {
   ssr_denoise::Totals denoise_totals_;
   uint32_t denoise_why_logged_ = ~0u;
   std::array<HostImage, 2> accum_;
+  RayRegenSsrPass regen_pass_;        // RG-3: the guide and signal pass (and its images: the signal, the guides, the denoised image)
+  ssr::HistoryKey regen_key_;         // the last frame that was a regen frame (its dispatch's history)
+  uint32_t regen_why_logged_ = ~0u;
+  bool regen_ever_asked_ = false;
+  bool regen_first_logged_ = false;
+  bool regen_frame_ = false;          // this frame's dispatch was recorded
+  uint64_t regen_frames_ = 0;
+  uint64_t regen_fallbacks_ = 0;      // regen frames whose pass or dispatch was refused: the effect's own filter ran
   HostImage hit_;                     // R16_FLOAT, the picture's size (RawHitImage)
   bool hit_ready_ = false;            // this frame ran raw and wrote hit_
   uint32_t raw_streak_ = 0;           // raw frames in a row (the accumulation's images go back after ssr::kRawReleaseAfter)

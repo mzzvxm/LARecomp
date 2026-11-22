@@ -3843,7 +3843,14 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // them (GB-I3, frame_order.h kSsr). The last pass of the trigger that adds to the colour; its GPU time is the labels 'ssr trace', 'ssr temporal' and 'ssr apply' (closed by 'after ssr').
     // RR-4a: while DLSS Ray Reconstruction takes the frame the effect runs RAW (no accumulation of its own, its hit distance written for the guide pass): TemporalSystem::RawModes, false with the plan not RR.
     const bool raw_ssr = temporal_ && temporal_->RawModes().Ssr();
-    const bool ssr_ran = ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning());
+    // RG-3: while AMD FSR Ray Regeneration takes the frame (the DENOISER row's AMD value on a Radeon RX 9000: TemporalSystem::RegenModes, false on every other PC) the trace is the signal it denoises and the
+    // resolve reads its output; a regen frame that is refused is the effect's own (ssr.h).
+    RegenAsk regen_ask;
+    if (temporal_ && temporal_->RegenModes().Ssr()) {
+      regen_ask.asked = true;
+      temporal_->FrameJitter(regen_ask.jitter);
+    }
+    const bool ssr_ran = ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning(), regen_ask);
     order_.Note(frame_order::Step::kSsr, ssr_ran);
   }
   if (car_refl_ && car_refl_->wants_draws()) {

@@ -25,6 +25,8 @@
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "ray_regen.h"
+#include "ray_regen_plan.h"
 #include "records.h"
 #include "screen_shared.h"
 #include "ssr_rt.h"
@@ -67,7 +69,7 @@ LiveText& Setting() {
 
 ScreenReflections::~ScreenReflections() = default;
 
-void ScreenReflections::Initialize(Device& device, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing) {
+void ScreenReflections::Initialize(Device& device, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing, FrameRing* frames) {
   device_ = &device;
   heap_ = &heap;
   passes_ = &passes;
@@ -76,6 +78,9 @@ void ScreenReflections::Initialize(Device& device, BindlessHeap& heap, HostPasse
   listed_.fill(false);
   failed_.fill(false);
   ready_ = false;
+  if (frames) {
+    regen_pass_.Initialize(device, *frames, heap, passes, pass_timing);   // RG-3: Direct3D 12 only (nothing is made on another backend)
+  }
   // The host pass layout (host_passes.h) with a push block of 128 bytes instead of its 64, as the occlusion's: the four texture sets, the sampler set, the push range at (b0, space4), for both
   // stages. CHECK: the same signature as ao.cpp's, which the same devices take (Vulkan guarantees 128 bytes of push constants; D3D12 gets 32 root constants).
   plume::RenderPipelineLayoutBuilder builder;
@@ -137,6 +142,8 @@ void ScreenReflections::Shutdown() {
   }
   hit_ = HostImage{};
   hit_ready_ = false;
+  regen_pass_.Shutdown();
+  regen_key_ = ssr::HistoryKey{};
   last_key_ = ssr::HistoryKey{};
   ready_ = false;
   level_ = ssr::Level::kOff;
@@ -353,7 +360,7 @@ void ScreenReflections::ReleaseImages() {
 }
 
 uint64_t ScreenReflections::HeldBytes() const {
-  uint64_t bytes = 0;
+  uint64_t bytes = regen_pass_.HeldBytes();   // RG-3: the signal, the guides and the denoised image while a regen frame ran lately
   for (const HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
@@ -372,6 +379,7 @@ void ScreenReflections::BeginFrame() {
   if (guest_.Begin()) {
     trigger_done_ = false;
     ran_ = false;
+    regen_frame_ = false;
     hit_ready_ = false;  // RR-4a: the raw frame's hit distance is this guest frame's (a second list of the same frame keeps it for the guide pass)
     wet_votes_.Reset();
     ++frames_;
@@ -429,7 +437,7 @@ void ScreenReflections::OnMainDraw(const temporal::MainMatch& match, const Const
   wet_votes_.Add(BankFloat(banks.vs.data(), kVsReflectionParams, 0), BankFloat(banks.vs.data(), kVsReflectionParams, 1));
 }
 
-bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested, bool upscaler_running) {
+bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested, bool upscaler_running, const RegenAsk& ask) {
   if (level_ == ssr::Level::kOff || trigger_done_ || !list || !summary.source || !screen_ || !gbuffer_ || !passes_) {
     return false;
   }
@@ -528,6 +536,27 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   if (raw_ever_asked_ && uint32_t(raw_why) != raw_why_logged_) {
     raw_why_logged_ = uint32_t(raw_why);
     REXLOG_INFO("{} raw mode (DLSS Ray Reconstruction takes the frame): {} (logged when it changes)", kPrefix, ssr::RawWhyName(raw_why));
+  }
+  // RG-3, AMD FSR Ray Regeneration (ssr.h): asked for by the caller while the DENOISER row's AMD value takes the frame; one vendor, so never together with the raw mode. The context's size is the trace's.
+  rayregen::NoteSsrTraced(width, height);
+  rgd::RegenFacts regen_facts;
+  regen_facts.asked = ask.asked && !raw;
+  regen_facts.debug_view = debug_view;
+  regen_facts.stub = decision.stub;
+  regen_facts.host_samples = depth.host_samples;
+  plume::RenderPipeline* regen_apply_pipeline = nullptr;   // the raw mode's resolve: it reads the image it is given as it stands (hlsl/ssr_apply_ps.hlsl SSR_RAW)
+  if (rgd::RegenPossible(regen_facts)) {
+    regen_apply_pipeline = Pipeline(kVApplyRaw);
+    regen_facts.pipelines_ready = regen_pass_.Available() && regen_pass_.PipelineReady() && regen_apply_pipeline != nullptr;
+  }
+  const rgd::RegenWhy regen_why = rgd::DecideRegen(regen_facts);
+  const bool regen = regen_why == rgd::RegenWhy::kRegen;
+  if (ask.asked) {
+    regen_ever_asked_ = true;
+  }
+  if (regen_ever_asked_ && uint32_t(regen_why) != regen_why_logged_) {
+    regen_why_logged_ = uint32_t(regen_why);
+    REXLOG_INFO("{} AMD FSR Ray Regeneration: {} (logged when it changes)", kPrefix, rgd::RegenWhyName(regen_why));
   }
   if (!images_ok) {
     return false;  // the images could not be made (logged by the host passes): asked again every frame
@@ -748,8 +777,29 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     DrawPass(list, trace_, trace_pipeline, trace_push);
   }
 
-  if (!raw) {
-    // The accumulation. A raw frame (RR-4a) has none: Ray Reconstruction is the denoiser, the resolve reads the trace itself.
+  // RG-3: the signal and its guides, the runtime's dispatch. Refused (no camera rows, an image, the plan of the dispatch, the runtime): the effect's own accumulation runs below, this frame.
+  bool regen_ok = false;
+  if (regen) {
+    RegenCameraRows rows;
+    const bool have_rows = have_camera && cam.have_rows && axes.ok;
+    if (have_rows) {
+      for (int i = 0; i < 3; ++i) {
+        rows.right[i] = cam.right[i];
+        rows.up[i] = cam.up[i];
+        rows.forward[i] = cam.forward[i];
+      }
+      for (int i = 0; i < 12; ++i) {
+        rows.motion[i] = cam.motion[i];
+      }
+    }
+    regen_ok = RecordRegen(list, push, sf, have_rows ? &rows : nullptr, motion_known, ask, width, height, now);
+    if (!regen_ok) {
+      ++regen_fallbacks_;
+    }
+  }
+
+  if (!raw && !regen_ok) {
+    // The accumulation. A raw frame (RR-4a) has none: Ray Reconstruction is the denoiser, the resolve reads the trace itself. A regen frame (RG-3) has none either, unless its dispatch was refused.
     ssr::Push temporal = push;
     temporal.Set(pk::kSrc, ssr::PackSlots(trace_.slot, accum_[write_ ^ 1u].slot));
     flags.history = use_history;
@@ -775,6 +825,11 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   denoise_facts.level = level_;
   denoise_facts.setting = int(larecomp::settings::mcla_gpu_rt_denoise.Get());
   denoise_facts.raw = raw;
+  if (regen_ok) {
+    // RG-3: AMD FSR Ray Regeneration denoised this frame and no accumulation was written: this stage would filter an image no pass made this frame, and the resolve reads the runtime's output. Counted with the raw
+    // frames (another denoiser took the frame; ssr_denoise_rules.h Why::kRawFrame).
+    denoise_facts.raw = true;
+  }
   denoise_facts.fallback_followed = rt_recorded;
   denoise_facts.multisampled = ms;
   denoise_facts.pipelines_ready = true;
@@ -831,6 +886,10 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   if (raw) {
     // RR-4a: the resolve reads the trace itself (both halves of the source word); the Hi-Z words stay as pushed (the debug view that borrows the first one is never on in a raw frame).
     apply.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));
+  } else if (regen_ok) {
+    // RG-3: the same resolve over the DENOISED image (rgb the runtime's radiance, alpha the hit distance it preserved: not 0 where a ray was traced, which is all the resolve asks of the alpha).
+    const uint32_t denoised_slot = regen_pass_.image(rgd::Image::kDenoised).slot;
+    apply.Set(pk::kSrc, ssr::PackSlots(denoised_slot, denoised_slot));
   } else {
     apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)
     apply.Set(pk::kRoadViewApply, road_word);
@@ -841,6 +900,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   if (framebuffer) {
     if (raw) {
       pass_timing_->Mark(list, "ssr apply raw");
+    } else if (regen_ok) {
+      pass_timing_->Mark(list, "ssr apply denoised");
     } else {
       pass_timing_->Mark(list, "ssr apply");
     }
@@ -850,7 +911,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     const plume::RenderRect scissor(0, 0, int32_t(sf.render[0]), int32_t(sf.render[1]));
     list->setScissors(&scissor, 1);
     Bind(list);
-    list->setPipeline(raw ? raw_apply_pipeline : apply_pipeline);
+    list->setPipeline(raw ? raw_apply_pipeline : (regen_ok ? regen_apply_pipeline : apply_pipeline));
     list->setGraphicsPushConstants(0, &apply, 0, sizeof(apply));
     list->drawInstanced(3, 1, 0, 0);
     list->setFramebuffer(nullptr);
@@ -867,8 +928,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // reflection sum (`ssr ...`): the span after this mark is whatever follows.
   pass_timing_->Mark(list, "after ssr");
 
-  // The frame is the history of the next (a raw frame made none: the frame after it starts again, whatever mode it is in).
-  if (!raw) {
+  // The frame is the history of the next (a raw frame made none: the frame after it starts again, whatever mode it is in; a regen frame's history is the runtime's, and ours is the lens and the key).
+  if (!raw && !regen_ok) {
     last_key_ = now;
     last_tan_[0] = sf.camera.tan_half_fov[0];
     last_tan_[1] = sf.camera.tan_half_fov[1];
@@ -876,10 +937,20 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   } else {
     last_key_.valid = false;
   }
+  if (regen_ok) {
+    regen_key_ = now;
+    last_tan_[0] = sf.camera.tan_half_fov[0];
+    last_tan_[1] = sf.camera.tan_half_fov[1];
+  } else {
+    regen_key_.valid = false;   // the next regen frame starts the runtime's history again
+  }
+  regen_frame_ = regen_ok;
   ran_ = true;
   ++frames_run_;
   if (raw) {
     ++raw_frames_;
+  } else if (regen_ok) {
+    ++regen_frames_;
   } else if (use_history) {
     ++history_frames_;
   } else {
@@ -911,6 +982,12 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
       passes_->ReleaseImage(hit_);
     }
   }
+  if (regen_ok && !regen_first_logged_) {
+    regen_first_logged_ = true;
+    REXLOG_INFO("{} the first AMD FSR Ray Regeneration frame: the trace ({}x{}, {} ray{} a pixel) is the indirect specular signal with its hit distance in the alpha, five guides and the denoised image ({:.1f} MiB) are made at "
+                "that size, the runtime's output goes through the resolve (the Fresnel and the class gain are multiplied in after the denoise); no accumulation of its own runs while it does",
+                kPrefix, width, height, numbers.rays, numbers.rays == 1 ? "" : "s", Mib(regen_pass_.HeldBytes()));
+  }
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first frame: {}x{} RGBA16F images (trace + two accumulated: {:.1f} MiB) for a {}x{} picture traced at {}x{} (Hi-Z level {} has the size), {} ray{} a pixel, up to {} Hi-Z "
@@ -921,7 +998,9 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   }
   if (frames_run_ % 1800 == 0) {
     REXLOG_INFO("{} {} frames ran: {} with a usable history, {} with the AO's vehicle table, wetness {:.2f} (c43.x {:.2f}, strength {:.2f}), road view: {}{}", kPrefix, frames_run_, history_frames_, vehicle_table_frames_, wet_,
-                wet_raw_, wet_strength_, ssr::RoadViewWhyName(road_why), raw_ever_asked_ ? std::format(", {} raw (Ray Reconstruction)", raw_frames_) : std::string());
+                wet_raw_, wet_strength_, ssr::RoadViewWhyName(road_why),
+                (raw_ever_asked_ ? std::format(", {} raw (Ray Reconstruction)", raw_frames_) : std::string()) +
+                    (regen_ever_asked_ ? std::format(", {} Ray Regeneration ({} refused: the effect's own filter)", regen_frames_, regen_fallbacks_) : std::string()));
   }
   if (size_logged_[0] != width || size_logged_[1] != height) {
     if (size_logged_[0] != 0) {
@@ -933,9 +1012,93 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   return true;
 }
 
+// RG-3: AMD FSR Ray Regeneration's part of a regen frame, after the trace: the guide and signal pass, then the runtime's dispatch at the trace's size. The camera is the occlusion's own of THIS frame (its axes and its
+// motion into the last frame: the game's real camera exists only at the anchor, after the trigger) with the lens of the screen frame (ray_regen_guides_rules.h BuildCamera); the history of the runtime is kept
+// only while the last frame was a regen frame of the same size and the camera motion is known (else the dispatch resets it). False: no image the resolve can read exists, and the frame is the effect's own.
+// CHECK (not run on a Radeon): C8 the states of what the pass and the runtime read and write (the shared products in the layout their owners left them in, the trace moved to a state both stages read, the five
+// outputs in SHADER_READ at the compute stage, the denoised image in unordered access, with the D3D12 debug layer on); C25 the runtime's output alpha is the hit distance preserved (the resolve reads alpha != 0 as
+// "traced here": a runtime that wrote 0 would make the reflections vanish, never black: the game's own stays); C22 the reflections of moving cars carry the camera's motion only.
+bool ScreenReflections::RecordRegen(plume::RenderCommandList* list, const ssr::Push& base, const screen::ScreenFrame& sf, const RegenCameraRows* cam, bool motion_usable, const RegenAsk& ask, uint32_t width,
+                                    uint32_t height, const ssr::HistoryKey& now) {
+  namespace pk = ssr::push;
+  if (!cam || !trace_.texture) {
+    return false;   // no camera of this frame (the occlusion's rows): nothing to hand the runtime's matrices from
+  }
+  const bool use_motion = ssr::HistoryUsable(regen_key_, now, motion_usable) && last_tan_[0] > 0.0f && last_tan_[1] > 0.0f;
+  rgd::Push gp;
+  gp.base = base;
+  gp.base.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));   // the trace, which the pass reads
+  // The last frame's lens in the words the accumulation uses for it (the near and distance words: the pass reads neither).
+  gp.base.SetFloat(pk::kPrevTanX, last_tan_[0] > 0.0f ? last_tan_[0] : sf.camera.tan_half_fov[0]);
+  gp.base.SetFloat(pk::kPrevTanY, last_tan_[1] > 0.0f ? last_tan_[1] : sf.camera.tan_half_fov[1]);
+  for (uint32_t i = 0; i < 12; ++i) {
+    gp.SetFloat(rgd::push::kMotion + i, use_motion ? cam->motion[i] : 0.0f);
+  }
+  gp.SetFloat(rgd::push::kJitterX, ask.jitter[0]);
+  gp.SetFloat(rgd::push::kJitterY, ask.jitter[1]);
+  gp.SetFloat(rgd::push::kDepthSign, rgd::DepthSign());
+  gp.x[rgd::push::kFlags] = use_motion ? rgd::push::kFlagHaveMotion : 0u;
+  if (!regen_pass_.Record(list, gp, trace_, width, height)) {
+    return false;
+  }
+
+  rgd::CameraInputs camera;
+  for (int i = 0; i < 3; ++i) {
+    camera.right[i] = cam->right[i];
+    camera.up[i] = cam->up[i];
+    camera.forward[i] = cam->forward[i];
+  }
+  for (int i = 0; i < 12; ++i) {
+    camera.motion[i] = cam->motion[i];
+  }
+  camera.have_motion = use_motion;
+  for (int i = 0; i < 4; ++i) {
+    camera.lin[i] = sf.camera.lin[i];
+  }
+  camera.tan_half_fov[0] = sf.camera.tan_half_fov[0];
+  camera.tan_half_fov[1] = sf.camera.tan_half_fov[1];
+  camera.near_plane = sf.camera.near_plane;
+  camera.far_plane = sf.camera.far_plane;
+  const rgd::RegenCamera matrices = rgd::BuildCamera(camera);
+
+  rayregen::DispatchFrame frame;
+  frame.game_frame = now.frame;
+  frame.force_reset = !use_motion;
+  frame.render_size[0] = width;
+  frame.render_size[1] = height;
+  frame.linear_depth = regen_pass_.Tagged(rgd::Image::kDepth);
+  frame.motion = regen_pass_.Tagged(rgd::Image::kMotion);
+  frame.normals = regen_pass_.Tagged(rgd::Image::kNormals);
+  frame.specular_albedo = regen_pass_.Tagged(rgd::Image::kSpecular);
+  // The indirect specular signal alone: its albedo is the specular one (the diffuse albedo may stay empty: AMD's rule, ray_regen_rules.h NeedsDiffuseAlbedo).
+  frame.signals[size_t(rayregen::Signal::kIndirectSpecular)] = {regen_pass_.Tagged(rgd::Image::kSignal), regen_pass_.Tagged(rgd::Image::kDenoised)};
+  frame.dispatch_signals = rayregen::FlagOf(rayregen::Signal::kIndirectSpecular);
+  frame.jitter[0] = rgd::JitterAtSize(ask.jitter[0], sf.render[0], width);
+  frame.jitter[1] = rgd::JitterAtSize(ask.jitter[1], sf.render[1], height);
+  for (int i = 0; i < 3; ++i) {
+    frame.camera_position_delta[i] = matrices.position_delta[i];
+  }
+  std::memcpy(frame.view, matrices.view, sizeof(frame.view));
+  std::memcpy(frame.projection, matrices.projection, sizeof(frame.projection));
+  frame.depth_bounds = matrices.bounds;
+  frame.motion_in_pixels = false;
+  frame.shared_linear_albedo = true;
+  pass_timing_->Mark(list, "ray regen denoise");
+  regen_pass_.PrepareDenoised(list);
+  const bool dispatched = rayregen::Instance().Dispatch(list, frame);
+  pass_timing_->Mark(list, "after ray regen denoise");
+  if (!dispatched) {
+    return false;   // refused (logged once by the runtime): the effect's own filter runs this frame
+  }
+  regen_pass_.ReadDenoised(list);   // the runtime left the output in unordered access: readable by the resolve
+  return true;
+}
+
 void ScreenReflections::OnPresent() {
   rt_.OnPresent();
   denoise_.OnPresent();
+  regen_pass_.OnFrame(regen_frame_);
+  regen_frame_ = false;
   if (ran_) {
     idle_frames_ = 0;
   } else {
