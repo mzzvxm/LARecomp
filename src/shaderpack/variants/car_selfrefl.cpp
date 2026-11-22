@@ -34,8 +34,10 @@ constexpr std::string_view kAfterSharpRead =
     "\n\tcarRefl = CarReflTrace(iTexCoord1.xyz, iTexCoord2.xyz, iTexCoord6.xyz);"
     "\n\tr10.xyz = CarReflApply(r10.xyz, carRefl, 1.0);";
 constexpr std::string_view kAfterBlurredRead = "\n\tr13.xyz = CarReflApply(r13.xyz, carRefl, 0.5);";
-// The debug view: replaces the colour; iTexCoord4.w is the baked vertex AO (r4.w of the game's lines).
+// Version 8: the clear coat's layer over the paint's finished colour (CarReflCoat: a reflection of another car at the coat's own fresnel), then the debug view, which replaces the colour;
+// iTexCoord4.w is the baked vertex AO (r4.w of the game's lines).
 constexpr std::string_view kAfterFinalWrite =
+    "\n\toC0.xyz = CarReflCoat(oC0.xyz, carRefl);"
     "\n\t[branch] if (g_CarReflB.y > 0.5) { oC0.xyz = CarReflDebug(carRefl, iTexCoord4.w); }";
 
 // The helper and its types, before main. The constants are declared by the two edits below it. (Three raw strings that join: the
@@ -69,7 +71,9 @@ struct CarReflResult
     float face;     // 0..1: 1 the ray met the surface the camera sees from its front, 0 it reached it from behind (a hidden face)
     float dist;     // the hit's distance as a share of the ray length
     float state;    // debug: 0 off, 1 the shaded point is not in the history, 2 the ray left the picture, 3 no hit, 4 hit
-    float rt;       // debug, version 5: 0 the ray traced image was not read, 1 it has no data here (the march ran), 2 it says no hit, 3 a hit on a part the camera sees, 4 on one it does not
+    float rt;       // debug, version 5: 0 the ray traced image was not read, 1 it has no data here (the march ran), 2 it says no hit, 3 a hit on the player's own part (or nothing of another car), 4 on another car (version 8: the sign of the image's code)
+    float coat;     // version 8: the weight of the hit that is on ANOTHER CAR (hit x the share of the image's weight with the sign): what the clear coat's layer takes by the fresnel
+    float nv;       // version 8: N.V of the shaded point (the layer's fresnel)
 };
 
 // What the helpers need of the ray: the matrix to the history frame's clip space, the ray, the image's size, the slack of a slanted
@@ -235,12 +239,14 @@ bool CarReflInWindow(CarReflPoint p, CarReflRay ray)
 // half size image's blocks at a hit's edge; only the texels the history shows at the paint's own distance (the same surface) count, a
 // texel with no data is left out, and the image answers where the texels with data are at least half of those that are that surface
 // (else the march). The weight is the share of the footprint that hits, the colour the mean of the hits' (a miss's black does not darken a hit).
+// Version 8: the code's sign is "mostly on ANOTHER CAR" (it was "mostly on parts the camera does not see"): `car` is the share of the weight with that sign over the footprint.
 struct CarReflRtRead
 {
     float use;       // 1: the image answers
     float weight;    // 0..1
     float3 colour;   // in the history's units
-    float state;     // 1 no data, 2 no hit, 3 a hit on a part the camera sees, 4 on one it does not
+    float car;       // 0..1: the share of the weight that is on another car
+    float state;     // 1 no data, 2 no hit, 3 a hit on the player's own part, 4 on another car
 };
 
 CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot)
@@ -257,7 +263,7 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
     float geometry = 0.0;
     float known = 0.0;
     float weight = 0.0;
-    float hidden = 0.0;
+    float car = 0.0;
     float3 colour = float3(0.0, 0.0, 0.0);
     [unroll]
     for (int k = 0; k < 9; ++k)
@@ -276,7 +282,7 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
             const float wt = saturate(code - 1.0);
             known += wg;
             weight += wg * wt;
-            hidden += (t.a < 0.0) ? wg * wt : 0.0;
+            car += (t.a < 0.0) ? wg * wt : 0.0;
             colour += wg * wt * t.rgb;
         }
     }
@@ -285,7 +291,8 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
         r.use = 1.0;
         r.weight = weight / known;
         r.colour = (weight > 1e-5) ? colour / weight : float3(0.0, 0.0, 0.0);
-        r.state = (r.weight <= 0.02) ? 2.0 : ((hidden > 0.5 * weight) ? 4.0 : 3.0);
+        r.car = (weight > 1e-5) ? saturate(car / weight) : 0.0;
+        r.state = (r.weight <= 0.02) ? 2.0 : ((car > 0.5 * weight) ? 4.0 : 3.0);
     }
     return r;
 }
@@ -419,6 +426,7 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     {
         return result;
     }
+    result.nv = nv;
 
     CarReflRay ray;
     ray.m0 = g_CarReflM0;
@@ -469,6 +477,7 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
             result.colour = min(max(rt.colour, 0.0) * more.z, 64.0);
             result.face = 1.0;
             result.hit = rt.weight * agreement;
+            result.coat = result.hit * rt.car;
             result.state = (result.hit > 0.02) ? 4.0 : 3.0;
             return result;
         }
@@ -544,10 +553,35 @@ float3 CarReflApply(float3 env, CarReflResult hit, float share)
     return env * (1.0 - kCarReflDark * weight);
 }
 
-// The debug views of g_CarReflB.y: 1 the hit weight, 2 the colour the ray sees, 3 the paint's baked vertex AO, 4 the
-// state of the trace (red: the point is not in the history, blue: the ray left the picture, green: no hit, yellow: a hit,
-// orange where the hit is the hidden face; brighter the heavier), 5 the ray traced image's state at the pixel. The write of the colour is scaled by the exponent bias of
-// the target, so they are in its units.
+// Version 8 (RT-HIT-SHADING-4; car_rt_hit_rules.h CoatLayerFresnel, CoatLayerAmount, CoatLayerMix are the same arithmetic): the clear coat's LAYER over the paint's finished colour. The paint's own
+// reflection of the environment is a few percent of what it reflects at a grazing view (a door seen along its plane); a real clear coat, a dielectric over the paint, reflects a car beside it
+// at its own fresnel (Schlick, F0 0.04, power 5: 0.07 at N.V 0.5, 0.20 at 0.3, 0.36 at 0.2). For the reflection of ANOTHER CAR only (the ray traced image's sign) the layer takes
+// that fresnel of the paint's colour by the hit's weight: lerp(paint, the car's colour, amount). Mode 2 only, and only where the host asks (g_CarReflC.w bit 1: mcla_gpu_car_rt_coat_layer).
+static const float kCarReflCoatF0 = 0.04;      // the clear coat's reflectance facing the camera
+static const float kCarReflCoatPower = 5.0;    // Schlick's exponent
+static const float kCarReflCoatMax = 0.6;      // the most of the paint the layer takes
+
+float CarReflCoatAmount(CarReflResult hit)
+{
+    const float fresnel = min(kCarReflCoatF0 + (1.0 - kCarReflCoatF0) * pow(saturate(1.0 - hit.nv), kCarReflCoatPower), kCarReflCoatMax);
+    return saturate(hit.coat) * fresnel;
+}
+
+float3 CarReflCoat(float3 paint, CarReflResult hit)
+{
+    if ((g_CarReflC.w & 2u) == 0u || g_CarReflA.x < 1.5 || hit.coat <= 0.0)
+    {
+        return paint;
+    }
+    return lerp(paint, hit.colour, CarReflCoatAmount(hit));
+}
+
+// The debug views of g_CarReflB.y: 1 the hit weight, 2 the colour the ray sees (the ray traced reflection alone, at full intensity: no weight, no fresnel; black where it has no hit), 3 the paint's baked
+// vertex AO, 4 the state of the trace (red: the point is not in the history, blue: the ray left the picture, green: no hit, yellow: a hit, orange where the march's hit is the hidden face; brighter the heavier),
+// 5 the ray traced image's state at the pixel, 6 (version 8) the clear coat's layer's amount (the fresnel times the share of the hit on another car; white is 1), 7 (version 8) what the layer adds: the
+// car's colour times that amount. The write of the colour is scaled by the exponent bias of the target, so they are in its units.
+static const float kCarReflAmountViewGain = 64.0;  // debug view 6: the amount, times the target's unit, times this
+
 float3 CarReflDebug(CarReflResult hit, float bakedAo)
 {
     const uint view = uint(g_CarReflB.y + 0.5);
@@ -564,11 +598,21 @@ float3 CarReflDebug(CarReflResult hit, float bakedAo)
     {
         return float3(bakedAo, bakedAo, bakedAo) * unit;
     }
+    if (view == 6u)
+    {
+        // RT-HIT-SHADING-6: a script reads the edge's ramp off this picture, and 0.04 to 0.3 at the unit were 8-bit codes 2 to 4 (rthit4)
+        const float amount = CarReflCoatAmount(hit);
+        return float3(amount, amount, amount) * (unit * kCarReflAmountViewGain);
+    }
+    if (view == 7u)
+    {
+        return hit.colour * CarReflCoatAmount(hit);
+    }
     if (view == 5u)
     {
         // The ray traced image at the paint's pixel: red the shaded point is not in the history, purple no image this frame, grey the image was
-        // not read (a grazing view), cyan it has no data here (the march ran), green no hit, yellow a hit on a part the camera sees, orange on one
-        // it does not; brighter the heavier.
+        // not read (a grazing view), cyan it has no data here (the march ran), green no hit, yellow a hit on the player's own part, orange on another car
+        // (version 8; it was "on a part the camera does not see"); brighter the heavier.
         float3 tint = float3(0.0, 0.0, 0.0);
         if (hit.state > 0.5 && hit.state < 1.5)
         {
@@ -677,6 +721,8 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
       {"CarReflApply(r13.xyz, carRefl, 0.5)", 1},
       {"float3 CarReflDebug(", 1},        {"CarReflDebug(carRefl, iTexCoord4.w)", 1},
       {"CarReflResult carRefl = (CarReflResult)0;", 1},
+      {"float3 CarReflCoat(", 1},         {"oC0.xyz = CarReflCoat(oC0.xyz, carRefl);", 1},
+      {"float CarReflCoatAmount(", 1},
       {"history.SampleLevel(", 0},        {"history.Sample(", 0},
       {"CarReflLoad(history, ray.size, uv)", 1}, {"CarReflLoad(history, ray.size, startUv)", 1},
   };

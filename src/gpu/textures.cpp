@@ -906,6 +906,39 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
   return bound(slot, e->mode == Mode::kHashed);
 }
 
+uint32_t TextureCache::Peek2D(const TextureFetch& fetch) {
+  const TextureKey& key = fetch.key;
+  if (!fetch.is_texture || key.dimension != uint8_t(xe::DataDimension::k2DOrStacked) || key.stacked) {
+    return kNullTexture2DSlot;
+  }
+  const format::TextureHostFormat host = format::TextureHost(key.format);
+  if (host.status != format::Status::kOk) {
+    return kNullTexture2DSlot;
+  }
+  const uint32_t gamma_bit = fetch.gamma ? kTextureGammaBit : 0u;
+  const uint16_t host_swizzle = GuestToHostSwizzle(fetch.swizzle, host.host_swizzle);
+  // A resolve product of this image (the vinyl's render target, a car's livery): read as it is. A product made by a depth source is no colour to shade with.
+  if (ResolveCache::Product* product = resolve_->Find(key, fetch.image_base_page)) {
+    if (product->depth_source || !product->texture) {
+      return kNullTexture2DSlot;
+    }
+    const uint32_t slot = product->views.Slot(*device_, *heap_, *product->texture, product->format, key.levels(), host_swizzle, "resolve product view");
+    return slot == kInvalidBindlessSlot ? kNullTexture2DSlot : (slot | gamma_bit);
+  }
+  const auto it = entries_.find(key);
+  if (it == entries_.end()) {
+    return kNullTexture2DSlot;
+  }
+  Entry& e = *it->second;
+  // Uploaded, and no write since: what the guest's draws would read too. A replacement (a texture mod) is bound by its own path only.
+  if (!e.texture || e.uploaded_version == 0 || e.replacement != nullptr || (e.mode == Mode::kWatched && e.uploaded_version != e.version)) {
+    return kNullTexture2DSlot;
+  }
+  e.last_frame = frame_;
+  const uint32_t slot = e.views.Slot(*device_, *heap_, *e.texture, e.host_format, key.levels(), host_swizzle, "guest texture view");
+  return slot == kInvalidBindlessSlot ? kNullTexture2DSlot : (slot | gamma_bit);
+}
+
 TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFetch& fetch,
                                           std::string* why, const uint32_t (*known_ranges)[2]) {
   (void)fetch;

@@ -663,18 +663,37 @@ bool Volumetrics::ComputeLight(Light* out) const {
 void Volumetrics::FillCascades(vol::VolInputs* in) const {
   in->sun_valid = false;
   in->sun = vol::VolSun{};
+  vol::VolSun sun;
+  if (FillSun(&sun)) {
+    in->sun = sun;
+    in->sun_valid = true;
+  }
+}
+
+bool Volumetrics::CurrentSun(vol::VolSun* sun, float* fade) const {
+  if (!FillSun(sun)) {
+    return false;
+  }
+  if (fade) {
+    *fade = std::clamp(collector_.shader_globals_z, 0.0f, 1.0f);
+  }
+  return true;
+}
+
+bool Volumetrics::FillSun(vol::VolSun* out) const {
+  *out = vol::VolSun{};
   if (!collector_.valid || collector_.frame + kCollectorMaxAge < frame_ || collector_.atlas_slot == vol::kNoSlot) {
-    return;
+    return false;
   }
   const float(*regs)[4] = collector_.regs;
   for (uint32_t r = 0; r < kPsCollectorCount; ++r) {
     for (uint32_t c = 0; c < 4; ++c) {
       if (!std::isfinite(regs[r][c])) {
-        return;
+        return false;
       }
     }
   }
-  vol::VolSun& sun = in->sun;
+  vol::VolSun& sun = *out;
   for (int i = 0; i < 3; ++i) {
     sun.right[i] = regs[85 - kPsCollectorFirst][i];
     sun.top[i] = regs[82 - kPsCollectorFirst][i];
@@ -697,11 +716,12 @@ void Volumetrics::FillCascades(vol::VolInputs* in) const {
     extent = extent || (sun.cascades[i].box[1] > 0.0f && sun.cascades[i].box[3] > 0.0f);
   }
   if (!extent) {
-    return;
+    *out = vol::VolSun{};
+    return false;
   }
   sun.cascade_count = vol::kMaxCascades;
   sun.atlas_slot = collector_.atlas_slot;
-  in->sun_valid = true;
+  return true;
 }
 
 void Volumetrics::FillDefaults(const Light& light, const vol::VolFrameContext& frame, vol::VolInputs* in) {
