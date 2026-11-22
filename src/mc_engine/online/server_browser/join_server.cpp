@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -10,6 +11,8 @@
 #include <vector>
 
 #include "discord_rpc/discord_rpc.h"  // RpcInFreeRoam: the game's state machine is in Cruising
+#include "mc_engine/input/synthetic_start.h"  // PressPadStart: the pause menu is opened the way a player does
+#include "mc_engine/keyboard_native.h"           // MenuScreenUp, CurrentMovieName: the pause menu is on screen
 #include "settings/larecomp_settings.h"
 #include "spdlog_console.h"  // LarecompLogFolder()
 
@@ -47,6 +50,7 @@ enum class Phase {
     kOff,        // no --join_server in this run (or it is not allowed here)
     kWaitCity,   // waiting for the city
     kResolving,  // the worker asks the relay
+    kOpenPause,  // the pause menu is opened the way a player does, before the join is filed (join_server_core.h, PauseOpener)
     kJoining,    // the browser's join runs; it reports through JoinServerNoteFinish
     kEnded,      // done or failed, final
 };
@@ -64,6 +68,7 @@ js::SearchGate g_search_gate;  // the game can start a search (the words its own
 bool g_search_wait_logged = false;  // the "cannot start a search yet" line was written
 Clock::time_point g_join_started;   // the browser's join was requested: the probe samples count from here
 int64_t g_probe_due_ms = 0;         // the next probe sample, in ms after g_join_started
+js::PauseOpener g_pause_opener;     // the pause menu is opened before the join is filed (join_server_core.h, PauseOpener)
 
 std::mutex g_failure_mutex;
 std::string g_failure_text;  // guarded
@@ -80,6 +85,7 @@ struct Job {
 };
 std::shared_ptr<Job> g_job;
 Clock::time_point g_resolve_started;
+std::shared_ptr<Job> g_ready_job;  // the worker's answer, held while the pause menu is opened (Phase::kOpenPause)
 
 int64_t UnixSeconds() {
     return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -269,6 +275,54 @@ void StartJoin(const Job& job) {
     SetState(js::State::kConnecting, "", "Joining " + js::Describe(g_target) + ".");
 }
 
+int64_t SteadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+}
+
+// The pause menu is on screen: the UI's current movie is the pause movie and a menu screen is up (keyboard_native's tracker, as of the
+// last input poll: the same facts the prompts' "screen -> form+movie PAUSEMOVIE" log line is made of). Any thread.
+bool PauseMenuShown() {
+    if (!larecomp::keyboard::GameEntered() || !larecomp::keyboard::MenuScreenUp()) return false;
+    char movie[32] = {};
+    larecomp::keyboard::CurrentMovieName(movie, sizeof(movie));
+    return std::strcmp(movie, "PAUSEMOVIE") == 0;
+}
+
+// The step between the worker's answer and the browser's join: the pause menu is opened the way a player does (Start in free roam), and
+// the join is filed once it has been up for a moment (join_server_core.h, PauseOpener). The join then finds the menu open, closes it the
+// way CONTINUE does and goes to the net menu and the search from free roam: the sequence of the pause-menu joins that worked.
+void OpenPauseTick() {
+    const int64_t now_ms = SteadyMs();
+    // Free roam and no message box: a Start press goes nowhere under a box, and not in a race or a load. (A join in a session the game is
+    // in already is refused by the browser's own join.)
+    const bool can_press = WorldReady() && RpcInFreeRoam() && !ModalMessageUp();
+    const bool up = PauseMenuShown();
+    const js::PauseOpener::Step step = g_pause_opener.Update(up, can_press, now_ms);
+    switch (step) {
+    case js::PauseOpener::Step::kPress:
+        LARECOMP_APP_INFO("[join_server] opening the pause menu the way a player does, before the join (Start, press {} of up to {}): the pause menu was open "
+                          "in every join that worked",
+                          g_pause_opener.Presses(), js::PauseOpener::kMaxPresses);
+        larecomp::input::PressPadStart();
+        break;
+    case js::PauseOpener::Step::kReady:
+    case js::PauseOpener::Step::kGaveUp: {
+        if (step == js::PauseOpener::Step::kReady)
+            LARECOMP_APP_INFO("[join_server] the pause menu is open (after {} ms, {} press(es)): the join starts from it", g_pause_opener.WaitedMs(now_ms),
+                              g_pause_opener.Presses());
+        else
+            LARECOMP_APP_WARN("[join_server] the pause menu did not open ({} press(es), {} ms; free roam {}): the join goes on without it",
+                              g_pause_opener.Presses(), g_pause_opener.WaitedMs(now_ms), can_press ? "and no message box" : "not reached or a message box up");
+        const std::shared_ptr<Job> job = std::move(g_ready_job);
+        g_ready_job.reset();
+        if (job) StartJoin(*job);
+        break;
+    }
+    case js::PauseOpener::Step::kWait:
+        break;
+    }
+}
+
 const char* JoinPhaseName(JoinPhase p) {
     switch (p) {
     case JoinPhase::kIdle: return "idle";
@@ -370,16 +424,24 @@ void JoinServerTick() {
         if (g_job && g_job->done.load(std::memory_order_acquire)) {
             const std::shared_ptr<Job> job = std::move(g_job);
             g_job.reset();
-            if (job->ok)
-                StartJoin(*job);
-            else
+            if (job->ok) {
+                // The relay answered. Before the join is filed the pause menu is opened, as every join that worked had it open.
+                g_ready_job = job;
+                g_pause_opener = js::PauseOpener{};
+                g_phase = Phase::kOpenPause;
+            } else {
                 FailWith(job->why, job->detail);
+            }
         } else if (g_job && Clock::now() - g_resolve_started > kResolveLimit) {
             g_job.reset();  // the worker holds its own reference and its answer is dropped
             LARECOMP_APP_WARN("[join_server] asking {} took more than {} minutes: the join is cancelled", g_target.Address(),
                               std::chrono::duration_cast<std::chrono::minutes>(kResolveLimit).count());
             FailWith(js::reason::kServerUnreachable);
         }
+        break;
+
+    case Phase::kOpenPause:
+        OpenPauseTick();
         break;
 
     case Phase::kJoining: {

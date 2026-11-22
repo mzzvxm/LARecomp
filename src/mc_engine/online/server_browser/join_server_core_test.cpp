@@ -16,6 +16,12 @@
 //      A fresh game, the log also has "[join_server] the city is up, but the game cannot start a search yet (...)" while the game's
 //      start-up work is going on, then "the game can start a search now"; with --online_diag=true a "[join_server] probe +N ms" line every
 //      250 ms to 1 s (the words of SearchFacts) for the first 30 s of the join, and one line "the search facts when it ended" at a failure.
+//      The join starts from the pause menu: after "the city is up after N s ...: asking" and "answers: ..." the log has "[join_server]
+//      opening the pause menu the way a player does" (the [flash-cmd] 'gotoWait' + PAUSEMOVIE lines, "[prompts] screen -> form+movie
+//      PAUSEMOVIE", "[pause-menu] ... button added"), then "the pause menu is open (after N ms, 1 press(es))", "joining ...", "[browser] join
+//      asked for: pause screen 1, paused flag 1, pause movie 1, activity free roam", "the pause menu is open: closing it before the join
+//      starts", "the pause menu is closed; the join starts from free roam", goto(LAN) 1, goto(QuickMatchSearching) 1, and the relay sees the
+//      game (peer registered, REGISTER ... host=1): the sequence of the loopback scenes opjrev-ps-live and opjrev-ps-lan.
 //   5. larecomp.toml has no join_server / mcla_online_server / mcla_online_enable line afterwards (the argument is for one run).
 //   6. --join_server=127.0.0.1:31000 (Cruise) and ,race: with a Cruise / Race session hosted by the second game, and with none
 //      (the game hosts one itself).
@@ -25,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include "../../input/synthetic_start.h"
 #include "join_server_core.h"
 
 namespace js = larecomp::browser::joinserver;
@@ -438,6 +445,190 @@ void TestSearchGate() {
     }
 }
 
+void TestPauseOpener() {
+    using Step = js::PauseOpener::Step;
+    const int64_t shown = js::PauseOpener::kShownMs;
+    const int64_t attempt = js::PauseOpener::kAttemptMs;
+    const int64_t cap = js::PauseOpener::kMaxWaitMs;
+    CHECK(js::PauseOpener::kMaxPresses == 3);
+    {
+        // The measured order: press at once, the menu comes up a moment later, the join is filed after it has stayed up for kShownMs.
+        js::PauseOpener o;
+        CHECK(o.Update(false, true, 1000) == Step::kPress);
+        CHECK(o.Presses() == 1);
+        for (int64_t t = 1016; t < 1100; t += 16) CHECK(o.Update(false, true, t) == Step::kWait);  // the press is not repeated at once
+        CHECK(o.Update(true, true, 1100) == Step::kWait);
+        CHECK(o.Update(true, true, 1100 + shown - 1) == Step::kWait);
+        CHECK(o.Update(true, true, 1100 + shown) == Step::kReady);
+        CHECK(o.Update(true, true, 1100 + shown + 500) == Step::kReady);  // and stays ready
+        CHECK(o.Presses() == 1);
+        CHECK(o.WaitedMs(1100 + shown) == 100 + shown);
+    }
+    {
+        // Already open when the step starts (the player pressed Start themselves): no press, and can_press is not asked about.
+        js::PauseOpener o;
+        CHECK(o.Update(true, false, 0) == Step::kWait);
+        CHECK(o.Update(true, false, shown) == Step::kReady);
+        CHECK(o.Presses() == 0);
+    }
+    {
+        // A box on screen or the game not in free roam: no press until nothing stands in the way, then at once.
+        js::PauseOpener o;
+        for (int64_t t = 0; t < 10000; t += 100) CHECK(o.Update(false, false, t) == Step::kWait);
+        CHECK(o.Presses() == 0);
+        CHECK(o.Update(false, true, 10000) == Step::kPress);
+        CHECK(o.Presses() == 1);
+    }
+    {
+        // A press that opened nothing is repeated every kAttemptMs, three in all, and the step gives up when the last one has had its time.
+        js::PauseOpener o;
+        CHECK(o.Update(false, true, 0) == Step::kPress);
+        CHECK(o.Update(false, true, attempt - 1) == Step::kWait);
+        CHECK(o.Update(false, true, attempt) == Step::kPress);
+        CHECK(o.Update(false, true, 2 * attempt - 1) == Step::kWait);
+        CHECK(o.Update(false, true, 2 * attempt) == Step::kPress);
+        CHECK(o.Presses() == 3);
+        CHECK(o.Update(false, true, 3 * attempt - 1) == Step::kWait);
+        CHECK(o.Update(false, true, 3 * attempt) == Step::kGaveUp);
+        CHECK(o.Presses() == 3);  // never a fourth
+    }
+    {
+        // The menu that comes up during the last attempt is not given up on.
+        js::PauseOpener o;
+        CHECK(o.Update(false, true, 0) == Step::kPress);
+        CHECK(o.Update(false, true, attempt) == Step::kPress);
+        CHECK(o.Update(false, true, 2 * attempt) == Step::kPress);
+        CHECK(o.Update(true, true, 3 * attempt - 100) == Step::kWait);
+        CHECK(o.Update(true, true, 3 * attempt - 100 + shown) == Step::kReady);
+    }
+    {
+        // Never able to press (the game is not in free roam for good): given up at the cap, not before.
+        js::PauseOpener o;
+        CHECK(o.Update(false, false, 5) == Step::kWait);
+        CHECK(o.Update(false, false, 5 + cap - 1) == Step::kWait);
+        CHECK(o.Update(false, false, 5 + cap) == Step::kGaveUp);
+        CHECK(o.Presses() == 0);
+    }
+    {
+        // The menu closes again before it has settled (the player's own close): the time it must stay up starts over, and it is not
+        // pressed open again before the attempt time of the first press is up.
+        js::PauseOpener o;
+        CHECK(o.Update(false, true, 0) == Step::kPress);
+        CHECK(o.Update(true, true, 100) == Step::kWait);
+        CHECK(o.Update(true, true, 100 + shown - 1) == Step::kWait);
+        CHECK(o.Update(false, true, 100 + shown) == Step::kWait);
+        CHECK(o.Update(true, true, 200 + shown) == Step::kWait);
+        CHECK(o.Update(true, true, 200 + 2 * shown - 1) == Step::kWait);
+        CHECK(o.Update(true, true, 200 + 2 * shown) == Step::kReady);
+    }
+    {
+        // A fresh opener (the next join) forgets the old one.
+        js::PauseOpener o;
+        CHECK(o.Update(false, true, 0) == Step::kPress);
+        o = js::PauseOpener{};
+        CHECK(o.Presses() == 0 && o.WaitedMs(99999) == 0);
+        CHECK(o.Update(false, true, 50000) == Step::kPress);
+    }
+}
+
+void TestSyntheticStart() {
+    namespace in = larecomp::input;
+    constexpr int kPolls = in::SyntheticStart::kMinPolls;
+    constexpr int64_t kMs = in::SyntheticStart::kMinMs;
+    // The hold: at least kMinPolls polls AND at least kMinMs, whichever ends later.
+    {
+        in::SyntheticStart s;
+        CHECK(!s.Pending() && !s.OnPoll(1000) && !s.Held(1000));  // nothing asked for: nothing held
+        s.Request(1000);
+        CHECK(s.Pending() && s.Held(1000) && s.Requests() == 1);
+        for (int i = 0; i < kPolls; ++i) CHECK(s.OnPoll(1000 + i));  // fast polls: the polls count
+        CHECK(s.OnPoll(1000 + kMs - 1));                              // ... and the time still holds it
+        CHECK(!s.OnPoll(1000 + kMs));
+        CHECK(!s.Pending() && !s.Held(5000));
+        CHECK(!s.OnPoll(1000 + kMs + 1));
+    }
+    {
+        // Slow polls (one every 50 ms): the polls hold it longer than the time does, and no more than kMinPolls of them.
+        in::SyntheticStart s;
+        s.Request(0);
+        int held = 0;
+        for (int64_t t = 0; t < 2000; t += 50) held += s.OnPoll(t) ? 1 : 0;
+        CHECK(held == kPolls);
+        CHECK(!s.Pending());
+    }
+    {
+        // A request while a press is going on starts it over: the full number of polls again.
+        in::SyntheticStart s;
+        s.Request(0);
+        for (int i = 0; i < kPolls; ++i) CHECK(s.OnPoll(10 * kMs));  // the time is long past, the polls are used up
+        CHECK(!s.OnPoll(10 * kMs));
+        s.Request(10 * kMs);
+        int again = 0;
+        while (s.OnPoll(11 * kMs)) ++again;  // asked for at 10 kMs, so its time is over at 11 kMs: only the polls count
+        CHECK(again == kPolls);
+        CHECK(s.Requests() == 2);
+    }
+    {
+        // The packet numbers go up and stay clear of the small ones the SDK's state has.
+        in::SyntheticStart s;
+        const uint32_t a = s.NextPacket(), b = s.NextPacket();
+        CHECK(a >= 0x7F000000u && b == a + 1);
+    }
+    // The state the game reads: big-endian packet number at +0 and wButtons at +4; Start is OR'd in, the other buttons stay.
+    {
+        uint8_t mem[64] = {};
+        const uint32_t state = 16;
+        mem[state + 4] = 0x10;  // A (0x1000), big endian
+        mem[state + 5] = 0x00;
+        mem[state + 6] = 77;  // the left trigger stays
+        in::PutStartInState(mem, state, 0x7F000102u);
+        CHECK(mem[state + 0] == 0x7F && mem[state + 1] == 0x00 && mem[state + 2] == 0x01 && mem[state + 3] == 0x02);
+        CHECK(mem[state + 4] == 0x10 && mem[state + 5] == 0x10);  // 0x1010: A and Start
+        CHECK(mem[state + 6] == 77);
+        CHECK(mem[0] == 0 && mem[state - 1] == 0 && mem[state + 16] == 0);  // nothing around it
+    }
+    // One poll, with every reason for no press.
+    {
+        in::SyntheticStart s;
+        s.Request(0);
+        uint8_t mem[64] = {};
+        const uint32_t state = 8;
+        CHECK(!in::ApplySyntheticStart(s, 0, mem, 1, state, 0));        // user 1: not the player's pad
+        CHECK(!in::ApplySyntheticStart(s, 0, mem, 0, 0, 0));            // no state to fill
+        CHECK(!in::ApplySyntheticStart(s, 0, nullptr, 0, state, 0));    // no memory
+        CHECK(!in::ApplySyntheticStart(s, 0, mem, 0, state, 0x48F));    // no pad answered (the pad-loss window): left alone
+        for (uint8_t b : mem) CHECK(b == 0);
+        CHECK(s.Held(0));                                               // and none of those used up the press
+        CHECK(in::ApplySyntheticStart(s, 0, mem, 0, state, 0));         // user 0
+        CHECK(((mem[state + 4] << 8) | mem[state + 5]) == 0x0010);
+        CHECK(mem[state + 0] == 0x7F);
+        CHECK(in::ApplySyntheticStart(s, 1, mem, 0xFF, state, 0));      // the "any user" index works too
+    }
+    {
+        // The scope on the poll's stack: nothing asked for = no change; a press asked for = Start in the state, not when no pad answered.
+        uint8_t mem[64] = {};
+        const uint32_t state = 8;
+        uint64_t r3 = 0;
+        {
+            in::SyntheticStartScope scope(mem, 0, state, r3);
+        }
+        for (uint8_t b : mem) CHECK(b == 0);
+        in::PressPadStart();
+        {
+            uint64_t failed = 0x48F;
+            in::SyntheticStartScope scope(mem, 0, state, failed);
+        }
+        for (uint8_t b : mem) CHECK(b == 0);
+        {
+            in::SyntheticStartScope scope(mem, 0, state, r3);
+            CHECK(mem[state + 5] == 0);  // not before the poll ends
+        }
+        CHECK(((mem[state + 4] << 8) | mem[state + 5]) == 0x0010);
+        for (int i = 0; i < 20 && in::Synthetic().Pending(); ++i) in::Synthetic().OnPoll(in::SyntheticNowMs() + 100000);  // let it end
+        CHECK(!in::Synthetic().Pending());
+    }
+}
+
 void TestMessages() {
     const js::Target t = P("h:5,room:Pat").target;
     for (const char* why : {js::reason::kBadArgument, js::reason::kOnlineUnavailable, js::reason::kServerUnreachable,
@@ -475,6 +666,8 @@ int main() {
     TestQuietGate();
     TestQuietGateForThePlayer();
     TestSearchGate();
+    TestPauseOpener();
+    TestSyntheticStart();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
