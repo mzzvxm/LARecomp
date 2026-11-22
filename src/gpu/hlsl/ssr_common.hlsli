@@ -4,7 +4,7 @@
 // way, ao.cpp), 32 words read through SsrW(). Everything here that does not touch a texture lives in this file and in ssr_trace.hlsli so that src/gpu/ssr_test.cpp can compile them AS C++
 // (through a shim of the HLSL types) and check them against analytic scenes: the class gate, the wet road, the environment BRDF, the GGX visible-normal sampling, the noise, the fades, the
 // virtual image's reprojection. So the text keeps to a subset both languages read: scalar and small vector arithmetic with .x .y .z .w, no swizzles of more than one component, no `out`
-// parameters, no `static const` arrays, no attributes ([loop] is SSR_LOOP, which the passes define).
+// parameters, no `static const` arrays (but the blue noise tile's, which is hlsl/blue_noise.hlsli: plain enough for both languages), no attributes ([loop] is SSR_LOOP, which the passes define).
 //
 // View space is the AO's (hlsl/ao_common.hlsli): x right, y up, z forward = the linear depth t, in the game's world units; pixels y down; the guest's depth is 1 near and 0 far. The
 // world's y is up. A "texel" is a pixel of the Hi-Z's level 0 (the AO's traced size); "SSR pixel" is a pixel of the SSR images, which are half the picture's size (ssr_rules.h SsrSize).
@@ -22,6 +22,7 @@
 #include "gbuffer_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
 #include "nan_guard.hlsli"
+#include "blue_noise.hlsli"
 
 #ifndef SSR_LOOP
 #define SSR_LOOP
@@ -39,7 +40,7 @@
 #define SSR_W_COL23 7
 #define SSR_W_RENDER 8         // the picture's size in host pixels: width | height << 16
 #define SSR_W_FLAGS 9          // sample0 (4 bits) | hiz levels << 4 | colour levels << 8 | SSR_FLAG_* << 12 | rays - 1 << 18 | view << 20 | max iterations << 24
-#define SSR_W_FRAME 10         // trace, apply: the frame's number (the noise); temporal: the weight the history keeps (float)
+#define SSR_W_FRAME 10         // trace, apply: the frame's number (the noise) in bits 0-30, bit 31 SSR_FRAME_LEGACY_NOISE; temporal: the weight the history keeps (float)
 #define SSR_W_LIN0 11          // the depth chain's level 0 (the vehicle mark) | the depth target's stencil plane << 16 (the trace: the vehicle a hit is on; 0xFFFF none)
 #define SSR_W_TAN_X 12         // floats: tan of the half field of view, x then y
 #define SSR_W_TAN_Y 13
@@ -58,6 +59,7 @@
 #define SSR_W_THICK 30         // float: the surface's thickness as a share of its depth
 #define SSR_W_CAP 31           // float: the brightest colour a reflection brings (the target's units)
 #define SSR_PUSH_WORDS 32
+#define SSR_FRAME_LEGACY_NOISE 0x80000000u   // bit 31 of SSR_W_FRAME: the first version's noise (interleaved gradient noise sliding across the picture), for mcla_gpu_ssr_blue_noise false
 // the temporal pass's own names for words it reuses (ssr_rules.h push::kPrevTanX ...)
 #define SSR_W_PREV_TAN_X SSR_W_NEAR
 #define SSR_W_PREV_TAN_Y SSR_W_MAX_DIST
@@ -175,17 +177,42 @@ float2 SsrEnvBrdf(float rough, float nov) {
 }
 
 // ---- the noise -----------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// Interleaved gradient noise (Jimenez 2014): a value in 0..1 per pixel, well spread in space; the frame moves it by a step that keeps the sequence of one pixel low discrepancy.
+// THE PIXEL'S PART is the blue noise tile (blue_noise.hlsli: 32 x 32, no lattice and no low spatial frequencies; channel 1 is the same tile 13 pixels right and 8 down), THE FRAME'S PART a step along the
+// R2 sequence (Roberts 2018: 1/g and 1/g^2 of the plastic number, as 32 bit fractions so that the product wraps exactly), the same for every pixel: value = frac(tile + sample * step), the sample's
+// number frame * rays + ray. A pixel's own numbers over the frames are a low discrepancy sequence in the square (the history averages them to the lobe's mean), a frame's picture of the noise is the tile
+// moved round the circle, and the pattern STAYS where it is. The first version's noise (SSR_FRAME_LEGACY_NOISE, mcla_gpu_ssr_blue_noise false) was interleaved gradient noise (Jimenez 2014) read at a
+// position moved by 5.588 pixels a frame along the diagonal: a lattice, whose few sharp frequencies the history left as a pattern, and that slid across the picture: a position moved along a linear phase is
+// the same as the phase moved, so what the history left of it (a function of the phase, advanced every frame) crawled over the road, and on a mirror-smooth puddle read as moving stripes.
 float SsrIgn(float x, float y) {
   return frac(52.9829189f * frac(0.06711056f * x + 0.00583715f * y));
 }
-float SsrNoise1(int px, int py, uint frame, uint ray) {
+float SsrLegacyNoise1(int px, int py, uint frame, uint ray) {
   const float f = float(frame & 255u) + float(ray) * 97.0f;
   return SsrIgn(float(px) + 5.588238f * f, float(py) + 5.588238f * f);
 }
-float SsrNoise2(int px, int py, uint frame, uint ray) {
+float SsrLegacyNoise2(int px, int py, uint frame, uint ray) {
   const float f = float(frame & 255u) + float(ray) * 97.0f;
   return SsrIgn(float(py) + 4.4f * f + 31.0f, float(px) + 6.2f * f + 17.0f);
+}
+static const uint kSsrR2StepA = 3242174889u;   // 0.7548776662466927 * 2^32
+static const uint kSsrR2StepB = 2447445413u;   // 0.5698402909980532 * 2^32
+float SsrNoiseOf(int px, int py, uint frame, uint ray, uint rays, uint channel, uint step) {
+  const uint sample_index = (frame & 0x7FFFFFFFu) * rays + ray;
+  return frac(BlueNoiseTileAt(px, py, channel) + float(sample_index * step) * (1.0f / 4294967296.0f));
+}
+// The ray's two uniform numbers (u1 for the lobe's radius, u2 for its angle) for the pixel (px, py) in the frame word `frame` (the number, and bit 31 for the first version's noise), the ray's number `ray`
+// of `rays` a pixel.
+float SsrNoise1(int px, int py, uint frame, uint ray, uint rays) {
+  if ((frame & SSR_FRAME_LEGACY_NOISE) != 0u) {
+    return SsrLegacyNoise1(px, py, frame, ray);
+  }
+  return SsrNoiseOf(px, py, frame, ray, rays, 0u, kSsrR2StepA);
+}
+float SsrNoise2(int px, int py, uint frame, uint ray, uint rays) {
+  if ((frame & SSR_FRAME_LEGACY_NOISE) != 0u) {
+    return SsrLegacyNoise2(px, py, frame, ray);
+  }
+  return SsrNoiseOf(px, py, frame, ray, rays, 1u, kSsrR2StepB);
 }
 
 // ---- the reflection direction: GGX visible normals (Heitz 2018) ---------------------------------------------------------------------------------------------------------------
@@ -218,10 +245,10 @@ float3 SsrSampleReflection(float3 n, float3 v, float alpha, float u1, float u2) 
   return SsrReflect(h, v);
 }
 
-// CITY-RT R4: the reflection ray of an SSR pixel (px, py the SSR image's pixel, `frame` the frame's number, `ray` the pixel's ray index), the ONE place both the trace (hlsl/ssr_trace_ps.hlsl) and the ray
+// CITY-RT R4: the reflection ray of an SSR pixel (px, py the SSR image's pixel, `frame` the frame's word (the number, bit 31 for the first version's noise), `ray` the pixel's ray index of `rays`, which the noise's sample number needs: frame * rays + ray), the ONE place both the trace (hlsl/ssr_trace_ps.hlsl) and the ray
 // traced fallback (hlsl/ssr_rt_trace_cs.hlsl) take it from: the fallback regenerates the very ray the trace walked, so nothing is stored. A sample that points below the surface is the mirror direction.
-float3 SsrSampleRay(float3 n, float3 v, float alpha, int px, int py, uint frame, uint ray) {
-  float3 dir = SsrSampleReflection(n, v, alpha, SsrNoise1(px, py, frame, ray), SsrNoise2(px, py, frame, ray));
+float3 SsrSampleRay(float3 n, float3 v, float alpha, int px, int py, uint frame, uint ray, uint rays) {
+  float3 dir = SsrSampleReflection(n, v, alpha, SsrNoise1(px, py, frame, ray, rays), SsrNoise2(px, py, frame, ray, rays));
   if (dot(dir, n) < 0.02f) {
     dir = SsrReflect(n, v);
   }

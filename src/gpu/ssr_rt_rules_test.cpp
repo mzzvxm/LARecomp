@@ -351,9 +351,9 @@ void TestRayIsTheTraces() {
     const uint32_t frame = uint32_t(rng.Range(0.0f, 100000.0f));
     const uint32_t ray = uint32_t(rng.Range(0.0f, 2.0f));
     // the trace's own sequence, as it stood before the function (hlsl/ssr_trace_ps.hlsl)
-    hs::float3 old = hs::SsrSampleReflection(n, v, alpha, hs::SsrNoise1(px, py, frame, ray), hs::SsrNoise2(px, py, frame, ray));
+    hs::float3 old = hs::SsrSampleReflection(n, v, alpha, hs::SsrNoise1(px, py, frame, ray, 2), hs::SsrNoise2(px, py, frame, ray, 2));
     if (hs::dot(old, n) < 0.02f) old = hs::SsrReflect(n, v);
-    const hs::float3 now = hs::SsrSampleRay(n, v, alpha, px, py, frame, ray);
+    const hs::float3 now = hs::SsrSampleRay(n, v, alpha, px, py, frame, ray, 2);
     same = same && old.x == now.x && old.y == now.y && old.z == now.z;
     unit = unit && Near(hs::dot(now, now), 1.0, 1e-3) && hs::dot(now, n) >= 0.019f;
   }
@@ -362,10 +362,10 @@ void TestRayIsTheTraces() {
   // the ray differs from pixel to pixel, frame to frame and ray to ray (the noise is the trace's)
   const hs::float3 n(0.0f, 1.0f, 0.0f);
   const hs::float3 v = hs::normalize(hs::float3(0.0f, 0.6f, -0.8f));
-  const hs::float3 a = hs::SsrSampleRay(n, v, 0.2f, 10, 10, 5, 0);
-  const hs::float3 b = hs::SsrSampleRay(n, v, 0.2f, 11, 10, 5, 0);
-  const hs::float3 c = hs::SsrSampleRay(n, v, 0.2f, 10, 10, 6, 0);
-  const hs::float3 d = hs::SsrSampleRay(n, v, 0.2f, 10, 10, 5, 1);
+  const hs::float3 a = hs::SsrSampleRay(n, v, 0.2f, 10, 10, 5, 0, 2);
+  const hs::float3 b = hs::SsrSampleRay(n, v, 0.2f, 11, 10, 5, 0, 2);
+  const hs::float3 c = hs::SsrSampleRay(n, v, 0.2f, 10, 10, 6, 0, 2);
+  const hs::float3 d = hs::SsrSampleRay(n, v, 0.2f, 10, 10, 5, 1, 2);
   Check((a.x != b.x || a.z != b.z) && (a.x != c.x || a.z != c.z) && (a.x != d.x || a.z != d.z), "another pixel, frame or ray index is another ray");
 }
 
@@ -798,8 +798,8 @@ void TestShaderSources(const std::string& dir) {
             DefineOf(common, "SSR_W_RT_THRESHOLD") == rt::push::kThreshold && DefineOf(common, "SSR_W_RT_FRAME") == rt::push::kFrame && DefineOf(common, "SSR_RT_STAT_WORDS") == rt::buf::kStatWords,
         "the text of ssr_rt_common.hlsli holds the header's words");
   // one ray: the trace and the fallback take it from the same function
-  Check(Count(ssr_common, "float3 SsrSampleRay(") == 1 && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray)") && Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k)"),
-        "the trace and the fallback regenerate the ray with the one function SsrSampleRay (the same pixel, frame and ray index)");
+  Check(Count(ssr_common, "float3 SsrSampleRay(") == 1 && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays)") && Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, rays)"),
+        "the trace and the fallback regenerate the ray with the one function SsrSampleRay (the same pixel, frame, ray index and rays a pixel: the noise's sample number is frame * rays + ray)");
   Check(!Has(trace_ps, "SsrSampleReflection("), "the trace has no copy of the ray's formula left");
   // the identity of the plain compilations: the trace's plain entry and everything the confidence adds is under SSR_RT
   Check(Has(trace_ps, "#ifndef SSR_RT\n#define SSR_RT 0\n#endif") && Has(trace_ps, "float4 main(float4 position : SV_Position) : SV_Target {\n  return SsrTraceBody(position);\n}") && Count(trace_ps, "#if SSR_RT") == 5 &&

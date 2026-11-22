@@ -347,6 +347,8 @@ inline constexpr uint32_t kCol23 = 7;
 inline constexpr uint32_t kRender = 8;
 inline constexpr uint32_t kFlags = 9;
 inline constexpr uint32_t kFrame = 10;
+// The frame word's bit 31 (the trace pass; hlsl/ssr_common.hlsli SSR_FRAME_LEGACY_NOISE): the first version's noise, mcla_gpu_ssr_blue_noise false. The frame's number is in the low 31 bits.
+inline constexpr uint32_t kFrameLegacyNoise = 0x80000000u;
 inline constexpr uint32_t kLin0 = 11;
 inline constexpr uint32_t kTanX = 12;
 inline constexpr uint32_t kTanY = 13;

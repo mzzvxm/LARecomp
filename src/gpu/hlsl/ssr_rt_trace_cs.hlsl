@@ -197,7 +197,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   float nearest = kSsrMissLength;
   bool any_hit = false;
   [loop] for (uint k = 0u; k < rays; ++k) {
-    const float3 dir = SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k);
+    const float3 dir = SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, rays);
     SsrRtCount(stats, SSR_RT_CENSUS_RAYS);
     const CityHitTraceResult hit = CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask, pixel_angle * receiver_distance, cone_tan, 0.5f);
     if (hit.hit == 0u) {
@@ -209,7 +209,7 @@ void main(uint3 id : SV_DispatchThreadID) {
       continue;   // a car's part: its own passes shade it
     }
     SsrRtCount(stats, SSR_RT_CENSUS_CITY);
-    p.noise = float3(SsrNoise1(pix.x, pix.y, frame, k + 4u), SsrNoise2(pix.x, pix.y, frame, k + 4u), SsrNoise1(pix.y, pix.x, frame, k + 6u));
+    p.noise = float3(SsrNoise1(pix.x, pix.y, frame, k + 4u, rays), SsrNoise2(pix.x, pix.y, frame, k + 4u, rays), SsrNoise1(pix.y, pix.x, frame, k + 6u, rays));
     CityHitRay ray;
     ray.origin = origin;
     ray.direction = dir;

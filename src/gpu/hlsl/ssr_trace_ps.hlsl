@@ -130,7 +130,7 @@ float4 SsrTraceBody(float4 position) {
   bool vehicle_hit = false;
   uint vehicle_id = 0u;
   SSR_LOOP for (uint ray = 0u; ray < rays; ++ray) {
-    const float3 dir = SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray);   // (a sample that points below the surface is the mirror direction)
+    const float3 dir = SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays);   // (a sample that points below the surface is the mirror direction)
     if (SsrFacingFade(dir.z) <= 0.0f) {
       continue;   // a ray that points back at the camera brings nothing (the screen does not show what is behind the surface it hits): not walked
     }
