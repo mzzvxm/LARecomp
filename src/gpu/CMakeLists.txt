@@ -199,11 +199,13 @@ add_executable(larecomp_volumetrics_rules_test EXCLUDE_FROM_ALL volumetrics_rule
 # of feat/headlights when they are in the tree) likewise:
 #   cmake --build <dir> --target larecomp_volumetrics_inputs_test, then run src/gpu/larecomp_volumetrics_inputs_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_volumetrics_inputs_test EXCLUDE_FROM_ALL volumetrics_inputs_test.cpp)
+target_include_directories(larecomp_volumetrics_inputs_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # settings/immortal.h (vol_lamp_list.h, cut_request.cpp)
 # The volumetric light's stability rules (volumetrics_stable.h: a lamp's term averaged over a slice of the grid, the composite's samples, the history's weight as a time
 # constant) and a simulation of the passes for a camera driving at a street lamp, which puts a number on the flicker of the first version and of the fixes; given the
 # src/gpu folder it also checks that the shaders' flags are the header's, likewise:
 #   cmake --build <dir> --target larecomp_volumetrics_stable_test, then run src/gpu/larecomp_volumetrics_stable_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_volumetrics_stable_test EXCLUDE_FROM_ALL volumetrics_stable_test.cpp)
+target_include_directories(larecomp_volumetrics_stable_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # settings/immortal.h (vol_lamp_list.h, cut_request.cpp)
 # The sun shafts' image size rule (shafts_image.h: half the picture, capped at a 960x540 box; the sky pass's taps; given the hlsl folder it
 # also checks that the shaders say what the header says) likewise:
 #   cmake --build <dir> --target larecomp_shafts_image_test, then run src/gpu/larecomp_shafts_image_test [<src/gpu/hlsl dir>].
@@ -377,6 +379,7 @@ add_executable(larecomp_side_view_use_test EXCLUDE_FROM_ALL side_view_use_test.c
 # The camera cut requests and the motion blur constants of a cut (cut_request.h) have one too:
 #   cmake --build <dir> --target larecomp_cut_request_test, then run src/gpu/larecomp_cut_request_test (exit 0 = passed).
 add_executable(larecomp_cut_request_test EXCLUDE_FROM_ALL cut_request_test.cpp cut_request.cpp)
+target_include_directories(larecomp_cut_request_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # settings/immortal.h (vol_lamp_list.h, cut_request.cpp)
 # The HUD fade's alpha clamp and ramp (ui_fade.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_ui_fade_test, then run src/gpu/larecomp_ui_fade_test (exit 0 = passed).
 add_executable(larecomp_ui_fade_test EXCLUDE_FROM_ALL ui_fade_test.cpp)
