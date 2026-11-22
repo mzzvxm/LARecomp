@@ -2,13 +2,18 @@
 // renderer, no ReXGlue and no GPU, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_variant_wait_test     (src/gpu/CMakeLists.txt)
-//   <build dir>/src/gpu/larecomp_variant_wait_test
+//   <build dir>/src/gpu/larecomp_variant_wait_test [<src/gpu folder>]
 //
 // Standalone: clang++ -std=c++20 -I <repo>/src -I <repo>/src/gpu variant_wait_test.cpp
+//
+// The checks of the ladder are on the header's model (LadderOf); SourceChecks reads Scene::Prepare in scene.cpp (the folder of this file, or the one given) and checks it walks
+// the same ladder: every lookup of a key asks through the header, in the order the model has.
 
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <set>
+#include <sstream>
 #include <string>
 
 #include "shaderpack/variant_chain.h"
@@ -123,13 +128,65 @@ void TestWordWithoutHeadlight() {
   Check(vw::WordWithoutHeadlight(gbuffer, all) == gbuffer && vw::WordWithoutHeadlight(0, none) == 0, "no headlight: the word is the same");
 }
 
+std::string ReadFile(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::stringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+size_t Count(const std::string& text, const std::string& what) {
+  size_t n = 0;
+  for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + what.size())) {
+    ++n;
+  }
+  return n;
+}
+
+// Scene::Prepare walks the ladder by hand (three lookups of the pipeline, each asking through variant_wait::AskFor): a fourth lookup that asks the game's rule alone, or a
+// rung moved, would bring the render thread's builds back without any check above noticing.
+void SourceChecks(const std::string& gpu) {
+  const std::string scene = ReadFile(gpu + "/scene.cpp");
+  Check(!scene.empty(), "scene.cpp is readable in " + gpu);
+  const size_t begin = scene.find("const SkipAsk ask{this, &d};");
+  const size_t end = scene.find("pipeline_memo_key_ = pipeline_key;", begin);
+  Check(begin != std::string::npos && end != std::string::npos && begin < end, "Scene::Prepare's lookup of the pipeline is where the check expects it");
+  if (begin == std::string::npos || end == std::string::npos || begin >= end) {
+    return;
+  }
+  const std::string lookup = scene.substr(begin, end - begin);
+  Check(scene.find("#include \"variant_wait.h\"") != std::string::npos, "scene.cpp includes variant_wait.h");
+  Check(Count(lookup, "pipelines_->Get(") == 3, "the ladder has three lookups: the full key, the key without the planes, the key without the headlight");
+  Check(Count(lookup, "pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending)") == 3, "every lookup asks through ask_for, none asks the game's rule alone");
+  Check(Count(lookup, "&deferral") == 1 && lookup.find("? &waits : &deferral;") != std::string::npos, "the game's rule is used in one place: ask_for's answer for a key with no extra");
+  Check(lookup.find("const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw};") != std::string::npos, "the deferral of a key with a fallback always says pending and counts as a guest draw");
+  Check(lookup.find("variant_wait::AskFor(variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant)}) == variant_wait::Ask::kAlways") != std::string::npos,
+        "ask_for reads the extras of the key being asked: the planes the draw carries, the headlight in the pixel word");
+  const size_t first = lookup.find("pipelines_->Get(");
+  const size_t planes = lookup.find("if (!d.pipeline && pending && d.gbuffer_attached) {");
+  const size_t headlight = lookup.find("if (!d.pipeline && pending && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {");
+  Check(first != std::string::npos && planes != std::string::npos && headlight != std::string::npos && first < planes && planes < headlight,
+        "the ladder is the model's: the full key, then the key without the planes, then the key without the headlight");
+  Check(lookup.find("variant_wait::WordWithoutHeadlight(pipeline_key.ps_variant,") != std::string::npos, "the headlight's fallback takes the word the header names");
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  std::string gpu = argc > 1 ? argv[1] : std::string();
+  if (gpu.empty()) {
+    std::string here = __FILE__;
+    for (char& c : here) {
+      if (c == '\\') c = '/';
+    }
+    const size_t slash = here.rfind('/');
+    gpu = slash == std::string::npos ? std::string(".") : here.substr(0, slash);
+  }
   TestFallback();
   TestTheStencilWritingLitDraw();
   TestLadders();
   TestWordWithoutHeadlight();
+  SourceChecks(gpu);
   std::printf("variant_wait_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }
