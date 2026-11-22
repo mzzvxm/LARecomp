@@ -42,7 +42,7 @@ constexpr std::string_view kHelper = R"HLSL(// LARecomp variant shadow_filter (s
 // frame number), w the mode bits (1: true PCF taps, each a bilinear weighted compare of four texels taken at the
 // receiver's own plane, instead of the sampler's own bilinear depth; 2: contact hardening, a blocker search first;
 // 4: the disk is turned per pixel by noise, which only a temporal upscaler's history can average out: without
-// the bit every pixel takes the same disk, so there is no grain; bits 8 to 15: the sun's size for the contact
+// the bit every pixel takes the same disk, so there is no grain; 32: that noise is the blue noise tile stepped along the R2 sequence, not the first version's gradient noise (a lattice); bits 8 to 15: the sun's size for the contact
 // hardening, in sixteenths of the real sun's).
 static const float kShadowFilterRadiusGain = 1.05;     // the weighted disk is as wide as the game's four taps
 static const float kShadowFilterGoldenCos = -0.7373688780783197;  // cos and sin of the golden angle, 137.5 degrees
@@ -54,9 +54,59 @@ static const int kShadowFilterSearchTaps = 8;
 static const float kShadowFilterFixedAngle = 2.399963;  // the disk's turn without noise (a radian count that no tap row lines up with)
 static const float kShadowFilterMaxSlope = 8.0;         // the steepest receiver plane believed: 8 metres of depth per metre across
 
-// Interleaved gradient noise of a host pixel, plus the R2 shift of the frame (as the ambient occlusion's).
-float ShadowFilterNoise(float2 pixel, float frame)
+// The blue noise tile (src/gpu/blue_noise.h, hlsl/blue_noise.hlsli: 32 x 32 pixels, one byte a pixel, four to a word, pixel 4 w in the low byte; written by larecomp_blue_noise_test --emit,
+// and the same words are checked against it by larecomp_shadow_filter_noise_test).
+static const uint kShadowFilterTile[256] = {
+    0x60183DD2u, 0x7AF84DBCu, 0xA1FE8CDBu, 0xAE16D46Eu, 0x6E143F75u, 0xE6A5094Au, 0xABDE0AC3u, 0x59E76D45u,
+    0xE3A0F990u, 0x1A6A9906u, 0x1F4A30AEu, 0x296633E9u, 0xC0E597F7u, 0x217639DAu, 0x89374F64u, 0x20A809C5u,
+    0x45286E4Eu, 0xC238D77Du, 0xBE73CF59u, 0xC1E19C89u, 0x2A5D034Bu, 0x92FDAF8Au, 0x15F6B9D4u, 0xBF80D55Du,
+    0xAC8ACE0Du, 0x86F024C9u, 0x06F2980Fu, 0x820F583Cu, 0xB77CA5D4u, 0x044C6210u, 0x9F6A832Du, 0xF33C27E9u,
+    0x12EF34A5u, 0x43A56550u, 0xAA5F29E6u, 0x24B5FACCu, 0x47FA356Au, 0xE59FC6E0u, 0xB61C42B1u, 0x629A774Bu,
+    0xB75B76DFu, 0xBA0191E3u, 0x7F48D775u, 0x94437319u, 0x8C1ABFECu, 0x79361771u, 0x87CEF25Fu, 0x19BCD901u,
+    0x3B8705C5u, 0x57F86F21u, 0xE394B21Eu, 0x5CD09F31u, 0xCF9C5014u, 0xBE8FF33Eu, 0x572A960Du, 0x528D34FCu,
+    0xD3FE9A41u, 0xCE34C2A1u, 0xBD083A85u, 0xB002F164u, 0x2768DE7Cu, 0x24D657ACu, 0xC576DB51u, 0xF1236CA0u,
+    0x12692BA8u, 0x9E0C7E49u, 0x4FFD66E8u, 0xE83F8C23u, 0xE80FA62Bu, 0xA36B0282u, 0x0BAF3EECu, 0x7CB4D844u,
+    0xACCC57E3u, 0x44DC61EBu, 0x7BC4A91Au, 0xC06FDBA2u, 0x4DC93B88u, 0xCB42FABAu, 0xF0671389u, 0x0A601B8Au,
+    0x387A1D8Fu, 0x8EB82292u, 0x330E5676u, 0x0B5417CBu, 0x6D90FE5Eu, 0x791D972Fu, 0x2995C231u, 0xC7EB50BEu,
+    0x03F7BD3Cu, 0x2DF952D1u, 0xE196EECDu, 0x9DF4B548u, 0x08B11ED6u, 0xE2B05CD9u, 0xDC52F860u, 0x712FA478u,
+    0x6B9E51DFu, 0x6D1282B3u, 0x7F2240AEu, 0x72248D69u, 0xF0447D32u, 0x0B4CC681u, 0x03B21FA0u, 0x9C13FC3Du,
+    0x46278408u, 0xE5A436E7u, 0xFBBD6301u, 0xAD41D10Du, 0xA45AE4C4u, 0x8EF5152Cu, 0x688344D5u, 0x63B989CDu,
+    0xD5ABC6F5u, 0x4CCA5E1Cu, 0x589BDF8Eu, 0x53EBA137u, 0xC1179300u, 0x37649D72u, 0xA6EFBB74u, 0x37D95426u,
+    0x8D105A73u, 0x2398FF73u, 0xD618327Au, 0x7F1C65B4u, 0x3AEA68D3u, 0xC3E446D8u, 0x11592C05u, 0xA71977E7u,
+    0x4DED2AE2u, 0xC43E0CBBu, 0x854EADF4u, 0xB896F605u, 0x87AA4929u, 0x7F1FB507u, 0x8BC79BFFu, 0x4793B336u,
+    0x3195C380u, 0x56A981DDu, 0xE5C86707u, 0xDF324774u, 0x5F1DFD70u, 0xAD5591F1u, 0xDE6F3D61u, 0x0FCCFB4Bu,
+    0xAF6C1CA9u, 0x71EA2261u, 0x283D96D8u, 0x135EC4A7u, 0x35BB84A2u, 0xDC2E71CBu, 0xAB20CF12u, 0x5D2D6A00u,
+    0x04FA3CD1u, 0x309048CAu, 0x8EFB1BB6u, 0xCD91EA10u, 0x4ED70442u, 0x46EC0C99u, 0x56F1869Du, 0xEF87C199u,
+    0x88559870u, 0xF214A3E4u, 0xC05D7D4Au, 0xF3216D4Fu, 0xF56BAA58u, 0xB282C325u, 0x79BC2867u, 0x0941DD16u,
+    0x20BEE12Eu, 0x66C67739u, 0xD70AA2D0u, 0x86B63B81u, 0x7E19E22Eu, 0xD2385CA4u, 0x3448E705u, 0xB79E5AF5u,
+    0xEF7B1551u, 0x8B08B25Cu, 0x2DED3F25u, 0xC706E6ACu, 0x45B89462u, 0x78F715DDu, 0x8BD6A355u, 0xD57D26B1u,
+    0xA043AE8Au, 0x54FC30D4u, 0x6490B4DDu, 0x45709A1Du, 0x31D00BF9u, 0x2B94AF69u, 0x09681FBAu, 0xFE116CCAu,
+    0x6C01CC61u, 0xA675911Au, 0xC84B6F16u, 0xA8D856FDu, 0x8B537922u, 0xDA4A00EEu, 0x519AFB85u, 0x35A740EDu,
+    0xF697E921u, 0x39E14CB5u, 0x7C00F4BFu, 0x2F83113Au, 0x1BE89BBFu, 0x63CB7AC2u, 0x2EC13F0Eu, 0xBDDC9580u,
+    0x5A39804Eu, 0x5F07C725u, 0xD99B2C88u, 0x5EEB93BCu, 0xAA673BD3u, 0xF03A972Cu, 0x17E475B4u, 0x700658D0u,
+    0xDAB90EE2u, 0xEAA2788Cu, 0x62AD49D1u, 0x04B04D20u, 0x49DA187Eu, 0xA1185BFFu, 0x66A65326u, 0x8FF826B6u,
+    0x136B9CC9u, 0x1E33F443u, 0x38E60D72u, 0x42CE74F7u, 0x0788B3F9u, 0x7ED2B774u, 0xF20292E0u, 0x36B07841u,
+    0xABFC2347u, 0x55B963D2u, 0x8F7BC099u, 0x982BA314u, 0x9FC8546Eu, 0x690E40E0u, 0x8435C846u, 0x65169ED3u,
+    0x305286ECu, 0xCD840A92u, 0xDE502AEEu, 0x0CEE5BC5u, 0x601E33E0u, 0xB1F69327u, 0xBA5BED1Bu, 0xB8DB5310u,
+    0x77C9A702u, 0x40A828E9u, 0x03B36511u, 0x4FBB833Eu, 0xF3A9CF8Du, 0x3259CA85u, 0x25729D81u, 0x7B2F95FFu,
+};
+
+// The tile at a host pixel: uniform on (0, 1), no lattice and no low spatial frequencies.
+float ShadowFilterTile(float2 pixel)
 {
+    int2 p = int2(floor(pixel));
+    uint i = ((uint(p.y) & 31u) << 5u) | (uint(p.x) & 31u);
+    return (float((kShadowFilterTile[i >> 2u] >> ((i & 3u) * 8u)) & 0xFFu) + 0.5) * (1.0 / 256.0);
+}
+
+// The disk's turn in turns, from a host pixel and the frame (0 to 1023). With `blue` (mode bit 5) the tile plus a step along the R2 sequence by the frame, the same for every pixel, as a 32 bit
+// fraction so that the product wraps exactly; else the first version's interleaved gradient noise (a lattice) plus the R2 shift of the frame (as the ambient occlusion's).
+float ShadowFilterNoise(float2 pixel, float frame, bool blue)
+{
+    if (blue)
+    {
+        return frac(ShadowFilterTile(pixel) + float(uint(frame) * 3242174889u) * (1.0 / 4294967296.0));
+    }
     float gradient = frac(52.9829189 * frac(dot(floor(pixel), float2(0.06711056, 0.00583715))));
     return frac(gradient + frame * 0.75487766624669);
 }
@@ -154,7 +204,7 @@ float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex
     bool gather = (mode & 1u) != 0u;
     // Noise turns the disk from pixel to pixel: a grain that a temporal upscaler's history averages out. Without one
     // (plain MSAA, no upscaler) nothing would, so the disk keeps its turn and the edge has none.
-    float angle = (mode & 4u) != 0u ? 6.28318530718 * ShadowFilterNoise(pixel, constants.z) : kShadowFilterFixedAngle;
+    float angle = (mode & 4u) != 0u ? 6.28318530718 * ShadowFilterNoise(pixel, constants.z, (mode & 32u) != 0u) : kShadowFilterFixedAngle;
     float2 direction = float2(cos(angle), sin(angle));
     float2 kernel = float2(radius, radius);
     // The true PCF taps (mode bit 1) read the shadow map at the receiver's plane; the blocker search does too.

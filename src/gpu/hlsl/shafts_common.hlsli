@@ -16,7 +16,7 @@
 struct ShaftsPush {
   // sky:  x the main depth plane's bindless slot, y the main colour plane's, z the host samples
   //       of both (1: plain textures, more: Texture2DMS)
-  // blur: y the sky image's slot, w the number of steps
+  // blur: y the sky image's slot, z the flags (bit 0: the start noise is the blue noise tile's), w the number of steps
   // add:  y the image it reads (the sky image or the blurred one for a debug view, else the
   //       blurred one), w the view (0: add the light, 1 and 2: the sky or the blurred image as a
   //       grey, 3: the light alone)

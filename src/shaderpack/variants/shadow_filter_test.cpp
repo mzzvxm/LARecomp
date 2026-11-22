@@ -203,7 +203,7 @@ void CheckEdited(const Shape& shape, const std::string& hlsl) {
         what + "the penumbra and the receiver plane's helpers read the four rows of the cascade by its base");
   // The noise: only with mode bit 4 (a temporal upscaler); the plane: only with bit 1 (true PCF taps), derivatives of the
   // pixel's own centre and depth, held to a slope limit; the search and the PCF taps both compare at the plane.
-  Check(Contains(out, "(mode & 4u) != 0u ? 6.28318530718 * ShadowFilterNoise(pixel, constants.z) : kShadowFilterFixedAngle"),
+  Check(Contains(out, "(mode & 4u) != 0u ? 6.28318530718 * ShadowFilterNoise(pixel, constants.z, (mode & 32u) != 0u) : kShadowFilterFixedAngle"),
         what + "the disk is turned by noise only with mode bit 4");
   Check(Count(out, "float2 ShadowFilterPlane(") == 1 && Count(out, "ShadowFilterPlane(centre, depth, cascadeBase)") == 1 &&
             Contains(out, "ddx(centre)") && Contains(out, "ddy(depth)") && Contains(out, "kShadowFilterMaxSlope"),

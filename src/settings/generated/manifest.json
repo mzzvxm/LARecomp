@@ -301,6 +301,50 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ao_blue_noise": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the ambient occlusion's, the bounce light's and the contact shadows' sampling noise (which direction and how far along it each pixel \"\n    \"looks) comes from a blue noise tile that has no lattice in it, so what the blur and the average over frames leave of the noise is a fine grain no \"\n    \"pattern can be read from. False: the first version's interleaved gradient noise, a diagonal lattice whose leftovers show as thin diagonal lines on \"\n    \"roads and kerbs, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_noise_blue": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the other stochastic passes' sampling noise (the ray traced car occlusion's and reflection cones' directions, the sun shafts' ray starts, \"\n    \"the fog's sample offsets, the sun shadow filter's disk turn and the city reflections' sun and lamp samples) comes from the blue noise tile stepped \"\n    \"along the R2 sequence every frame, so what the filters and the average over frames leave of it is a fine grain no pattern can be read from. False: the \"\n    \"first versions' interleaved gradient noise, a lattice whose leftovers show as thin diagonal lines, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_noise_held": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a scene the harness holds still (the trailer toolkit's stills, scene_at) shows the same game frame number in every frame, so the noise of \"\n    \"every stochastic effect (the occlusion, the sun rays, the reflection cone, the shafts, the shadow filter) stood on one sample for ever and its history \"\n    \"averaged copies of it. True: the noise index also counts the frames the scene's number has been held, so a held scene keeps varying (a picture taken \"\n    \"after the same number of frames is still repeatable). False: the scene's own number alone, for pictures that must match whatever number of frames was \"\n    \"waited. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_noise_resolve_no_upscaler": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: with no temporal upscaler running (plain MSAA, the default) the contact shadows' march, the ray traced sun rays of the car and the city, \"\n    \"the sun shafts' ray starts and the car reflection cone's turn changed their noise every frame only while an upscaler averaged it; without one they held one pattern. \"\n    \"True: the noise changes every frame here too, and each effect resolves it itself: the contact shadows and the sun rays through the occlusion's own history (reprojected by depth and the \"\n    \"camera, 12 frames), the shafts and the reflection cone through a short history of their own. False: the first fixes' fixed blue pattern without an upscaler. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ao_fast_math": {
   "type": "bool",
   "default": "true",

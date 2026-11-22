@@ -952,8 +952,11 @@ int main() {
         Check(both.alpha == raw.alpha && both.rgb == raw.rgb,
               "a cone narrower than " + std::to_string(rt::kDenoiseFootprintFrom) + " texels (a part a few cm off the panel): the image is left exactly as the trace made it");
       } else if (width >= 4.0f) {
-        Check(s2.grain <= 0.45 * s0.grain && s2.grain < 0.012,
-              "cone " + std::to_string(width) + " texels wide: the grain along the edge falls to under 0.45 of the raw's and under 0.012 (" + std::to_string(s0.grain) + " -> " + std::to_string(s2.grain) + ")");
+        // The turn is the blue noise tile's (NOISE-AUDIT), no longer interleaved gradient noise: the gradient noise is even over any 3 x 3 block, which the first pass of the filter (all a 4 texel cone gets)
+        // takes out well, but a lattice that the filter leaves as thin diagonal lines (car_refl_noise_test.cpp: 9% of the error in one frequency, a direction 4 times the mean, against 0.6% and 2).
+        // The blue tile leaves a little more grain at the narrowest cone (0.015 against 0.010) and the same, or less, from 8 texels (0.010 against 0.0085).
+        Check(s2.grain <= 0.55 * s0.grain && s2.grain < 0.017,
+              "cone " + std::to_string(width) + " texels wide: the grain along the edge falls to under 0.55 of the raw's and under 0.017 (" + std::to_string(s0.grain) + " -> " + std::to_string(s2.grain) + ")");
         Check(s2.ramp <= 1.3 * s0.ramp + 0.2,
               "cone " + std::to_string(width) + " texels wide: the edge's ramp (0.9 to 0.1) grows by at most 30% (" + std::to_string(s0.ramp) + " -> " + std::to_string(s2.ramp) + ")");
         Check(std::fabs(s2.crossing - double(edge)) < 0.12, "cone " + std::to_string(width) + " texels wide: the edge stays where it was (50% at " + std::to_string(s2.crossing) + ")");

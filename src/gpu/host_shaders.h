@@ -107,6 +107,7 @@
 #include "ssr_trace_ps.hlsl.dxil.h"
 #include "shafts_add_ps.hlsl.dxil.h"
 #include "shafts_blur_ps.hlsl.dxil.h"
+#include "shafts_temporal_ps.hlsl.dxil.h"
 #include "shafts_sky_ms_ps.hlsl.dxil.h"
 #include "shafts_sky_ps.hlsl.dxil.h"
 #include "volumetrics_apply_ms_ps.hlsl.dxil.h"
@@ -213,6 +214,7 @@
 #include "ssr_trace_ps.hlsl.spirv.h"
 #include "shafts_add_ps.hlsl.spirv.h"
 #include "shafts_blur_ps.hlsl.spirv.h"
+#include "shafts_temporal_ps.hlsl.spirv.h"
 #include "shafts_sky_ms_ps.hlsl.spirv.h"
 #include "shafts_sky_ps.hlsl.spirv.h"
 #include "volumetrics_apply_ms_ps.hlsl.spirv.h"
@@ -518,13 +520,14 @@ inline HostShaderBlob VolumetricsApplyShader(bool multisampled) {
 
 // The sun shafts' passes (shafts.h, hlsl/shafts_*_ps.hlsl), numbered as SunShafts::Pass: 0 the sky's
 // brightness from the depth and colour planes, 1 the same from multisampled planes, 2 the radial
-// blur toward the sun, 3 the light added to the scene colour.
+// blur toward the sun, 3 the light added to the scene colour, 4 the blurred image averaged over frames (no temporal upscaler: noise_resolve.h).
 inline HostShaderBlob SunShaftsPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(shafts_sky_ps);
     case 1: return MCLA_GPU_HOST_SHADER_BLOB(shafts_sky_ms_ps);
     case 2: return MCLA_GPU_HOST_SHADER_BLOB(shafts_blur_ps);
-    default: return MCLA_GPU_HOST_SHADER_BLOB(shafts_add_ps);
+    case 3: return MCLA_GPU_HOST_SHADER_BLOB(shafts_add_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(shafts_temporal_ps);
   }
 }
 

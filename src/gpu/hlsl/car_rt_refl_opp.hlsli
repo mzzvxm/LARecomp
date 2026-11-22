@@ -106,7 +106,7 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
     const float tanHalf = maxRays >= 2u ? g_push.tune.w : 0.0;
     const float rays = tanHalf > 0.0 ? float(min(maxRays, 4u)) : 1.0;
     const float3 origin = direction * hitT + normal * (0.004 + 0.002 * hitT);
-    const float turns = ConeRotation(texel, g_push.slots.w & 7u);
+    const float turns = ConeRotation(texel, g_push.slots.w & 7u, (g_push.slots.w & kConeBlueFlag) != 0u);
     float coatShare = 0.0;
     float coatFade = 0.0;
     float coatVisible = 0.0;
