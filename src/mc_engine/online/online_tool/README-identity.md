@@ -2,7 +2,7 @@
 
 The player's online identity from the command line, for the launcher: see the gamertag and the key's fingerprint, ask a relay and its nick server what they say about the nick, make a backup file, put a backup back, handle the recovery code, move a nick with its code, stop someone else moving it, and use another gamertag. Everything else about the tool (running it, exit codes, `servers`) is in [README.md](README.md).
 
-There is no account and no password. A profile has a **key** (made when the game first starts with it); the first player to use a gamertag on a server's nick server **owns** it there; the **recovery code** the nick server hands out once, or a **backup file**, is how a nick follows a player to another PC. See `launcher-plan\ONLINE.md` for the whole picture.
+There is no account and no password. A profile has a **key** (made when the game first starts with it); the first player to use a gamertag on a server's nick server **owns** it there; the **recovery code** the nick server hands out once, or a **backup file**, is how a nick follows a player to another PC.
 
 The commands are built from the game's own identity code, not a copy of it: the key file, its seal, the ticket cache and the backup file are `identity/identity_core.cpp` (the game's `identity_store.cpp` is a thin layer around it), the relay and nick server exchange is `identity/identity_net.cpp` (the game's `identity_client.cpp` calls the same code), and the gamertag rules are `identity/identity_rename.cpp` (the game's F8 window calls them too). A key written here is the game's key and the other way round.
 
