@@ -113,7 +113,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   bool vehicle_hit = false;
   uint vehicle_id = 0u;
   SSR_LOOP for (uint ray = 0u; ray < rays; ++ray) {
-    float3 dir = SsrSampleReflection(n, to_camera, alpha, SsrNoise1(pix.x, pix.y, frame, ray), SsrNoise2(pix.x, pix.y, frame, ray));
+    float3 dir = SsrSampleReflection(n, to_camera, alpha, SsrNoise1(pix.x, pix.y, frame, ray, rays), SsrNoise2(pix.x, pix.y, frame, ray, rays));
     if (dot(dir, n) < 0.02f) {
       dir = SsrReflect(n, to_camera);   // a sample that points below the surface: the mirror direction
     }

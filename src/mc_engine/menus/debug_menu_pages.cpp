@@ -190,6 +190,12 @@ const ItemDef kDebugFixesItems[] = {
     // Without a temporal upscaler (plain MSAA, the default) the contact shadows, the ray traced sun rays, the sun shafts and the car reflection cone used to hold one noise pattern; with this on their noise changes every
     // frame like the other effects' and each resolves it with a history of its own (gpu/noise_resolve.h). Off = the fixed pattern. Read at each frame, so live.
     NativeOnly(Bool("PM_RxDbgNoiseResolve", "mcla_gpu_noise_resolve_no_upscaler", "NOISE RESOLVE, NO UPSCALER: ")),
+    // The reflections' ray noise is a blue noise tile stepped along the R2 sequence every frame (gpu/blue_noise.h, hlsl/ssr_common.hlsli): the first version's interleaved gradient noise slid
+    // across the picture and read as stripes crawling over a puddle. Off = the first version's noise. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgSsrBlue", "mcla_gpu_ssr_blue_noise", "BLUE NOISE REFLECTIONS: ")),
+    // The reflections' accumulation averages the trace's 3x3 of one surface and keeps a bright reflection through a frame whose rays all missed (hlsl/ssr_temporal_ps.hlsl): a lamp's or a tail light's
+    // reflection flickered with the sparse hits. Off = the first version's resolve (the centre pixel alone, the clip whole). Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgSsrResolve", "mcla_gpu_ssr_resolve", "SPATIAL RESOLVE REFLECTIONS: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
