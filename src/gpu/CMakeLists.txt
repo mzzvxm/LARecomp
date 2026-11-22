@@ -152,6 +152,10 @@ add_executable(larecomp_blue_noise_test EXCLUDE_FROM_ALL blue_noise_test.cpp)
 # the error's lattice against interleaved gradient noise; given the src/gpu folder it also reads the shaders', ao.cpp's, the setting's and the debug row's use of it):
 #   cmake --build <dir> --target larecomp_ao_blue_noise_test, then run src/gpu/larecomp_ao_blue_noise_test <src/gpu dir> [--print] (about ten seconds).
 add_executable(larecomp_ao_blue_noise_test EXCLUDE_FROM_ALL ao_blue_noise_test.cpp)
+# The shared per-frame blue noise (hlsl/blue_noise_frame.hlsli: the tile stepped along the R2 sequence, which the stochastic passes other than the occlusion and the reflections of the screen use;
+# NOISE-AUDIT) and the debug setting mcla_gpu_noise_blue that switches them to the first versions' gradient noise: uniform, changes every frame, nothing slides, no lattice after the average:
+#   cmake --build <dir> --target larecomp_noise_frame_test, then run src/gpu/larecomp_noise_frame_test [<src/gpu dir>] [--print] (a second or two).
+add_executable(larecomp_noise_frame_test EXCLUDE_FROM_ALL noise_frame_test.cpp)
 # The size of the occlusion's and the bounce light's images (ao_size.h: half the picture's size above 1080 lines of render height, the
 # contact shadows keeping their own size, the memory each frame holds and the cost model; given the src/gpu folder it also checks that the
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:

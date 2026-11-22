@@ -172,6 +172,9 @@ const ItemDef kDebugFixesItems[] = {
     // The sampling noise of the ambient occlusion, the bounce light and the contact shadows is a blue noise tile (gpu/blue_noise.h): the first version's interleaved gradient noise
     // is a diagonal lattice, and what the blur and the history leave of it shows as thin diagonal lines on roads and kerbs. Off = the first version's noise. Read at each draw, so live.
     NativeOnly(Bool("PM_RxDbgAoBlue", "mcla_gpu_ao_blue_noise", "BLUE NOISE AO: ")),
+    // The other stochastic passes (the ray traced car occlusion and reflection cones, the sun shafts, the fog, the sun shadow filter, the city reflections) draw their per-pixel noise from the blue noise tile
+    // stepped along the R2 sequence every frame (gpu/hlsl/blue_noise_frame.hlsli); the first versions' interleaved gradient noise is a lattice. Off = the first versions' noise. Read at each draw, so live.
+    NativeOnly(Bool("PM_RxDbgNoiseBlue", "mcla_gpu_noise_blue", "BLUE NOISE EFFECTS: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };

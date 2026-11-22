@@ -366,6 +366,7 @@
 {"mcla_gpu_memory_census", "MCLA/GPU"},
 {"mcla_gpu_msaa", "MCLA/GPU"},
 {"mcla_gpu_msaa_with_upscaler", "MCLA/GPU"},
+{"mcla_gpu_noise_blue", "MCLA/GPU"},
 {"mcla_gpu_object_names", "MCLA/GPU"},
 {"mcla_gpu_pass_timing", "MCLA/GPU"},
 {"mcla_gpu_pause_vehicle_vectors", "MCLA/GPU"},
