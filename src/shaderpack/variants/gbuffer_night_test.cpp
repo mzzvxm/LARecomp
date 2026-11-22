@@ -571,6 +571,57 @@ void CheckAlbedoRecipes() {
     Check(v.ok && Count(v.hlsl, "float3 gbAlbedo") == 0 && Count(v.hlsl, "oC2 = float4(GbAlbedoEncode(float3(1.0f, 1.0f, 1.0f)), GbMaterialLit(g_GBufferMode.y));") == 1,
           "a recipe of constants writes the expression itself: " + v.error);
   }
+  // GB-H2-REVIEW: the road's planar reflection mix (kGBufferNightMixRows): the lit weight keeps `1 - w` of itself where the game's colour is lerped to the reflection by w
+  {
+    bool sorted = true, family = true, with_occlusion = true, with_albedo = true, not_exempt = true;
+    for (size_t i = 0; i < sp::kGBufferNightMixRowCount; ++i) {
+      const sp::NightMixRow& row = sp::kGBufferNightMixRows[i];
+      if (i > 0 && !(sp::kGBufferNightMixRows[i - 1].name < row.name)) sorted = false;
+      family = family && sp::IsGBufferNightShader(row.name);
+      with_occlusion = with_occlusion && sp::FindGBufferNightOcclusionRow(row.name) != nullptr;
+      with_albedo = with_albedo && sp::FindGBufferNightAlbedoRow(row.name) != nullptr;  // the mix is a factor of the lit weight, which only a shader with an albedo has
+      not_exempt = not_exempt && sp::FindGBufferNightHeadlightExempt(row.name) == nullptr;
+    }
+    Check(sp::kGBufferNightMixRowCount == 2 && sorted && family, "the mix table: the road and the tunnel road, sorted, in the night family");
+    Check(with_occlusion && with_albedo && not_exempt, "a mix row is a lit road shader with an occlusion row and an albedo recipe");
+    Check(sp::FindGBufferNightMixRow("xCityRoad__PSMultiLight") != nullptr && sp::FindGBufferNightMixRow("xCityRiverRoad__PSMultiLight") == nullptr,
+          "the road has a row; the river road, which adds its reflection, has none");
+    // the text: the road's recipe anchor and the mix anchor, then a statement that reads the weight
+    const sp::NightMixRow* mix = sp::FindGBufferNightMixRow("xCityRoad__PSMultiLight");
+    const sp::NightAlbedoRow* recipe = sp::FindGBufferNightAlbedoRow("xCityRoad__PSMultiLight");
+    const std::string road_text =
+        Shader(std::string(kSunDot) + "\tr7.xyz = r1.xyz;\n\t" + std::string(recipe->anchor) + "\n\tr3.w = r7.x;\n\t" + std::string(mix->anchor) + "\n\tr4.w = r5.w * r7.x;\n");
+    const sp::VariantShader shader{"xCityRoad__PSMultiLight", 0};
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, road_text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(r.ok && Count(r.hlsl, "\t" + std::string(mix->anchor) + "\n\tfloat gbMix = r5.w;\n\tr4.w = r5.w * r7.x;\n") == 1 &&
+              Count(r.hlsl, "oC2 = float4(GbAlbedoEncode(gbAlbedo), GbMaterialLit(g_GBufferMode.y) * saturate(iColor1.w) * saturate(1.0f - gbMix));") == 1 && Count(r.hlsl, "float gbMix = ") == 1 &&
+              Count(r.hlsl, "float3 gbAlbedo = ") == 1 && AdditiveError(road_text, r.hlsl).empty(),
+          "the road's lit weight keeps 1 - w: the weight is captured right after its statement, and only lines are added: " + r.error);
+    const sp::NightAnalysis a = sp::AnalyseGBufferNight(road_text, "xCityRoad__PSMultiLight");
+    const sp::NightAnalysis b = sp::AnalyseGBufferNight(road_text);
+    Check(a.found && a.mix_row && a.mix.found && a.mix.capture == "\tfloat gbMix = r5.w;\n" && b.found && !b.mix_row && !b.mix.found, "the analysis finds the row by the shader's name only");
+    // the HLSL is not the one the row was written for: the variant is not built, never a lit weight that keeps what the game does not
+    const std::string no_mix = Shader(std::string(kSunDot) + "\tr7.xyz = r1.xyz;\n\t" + std::string(recipe->anchor) + "\n\tr3.w = r7.x;\n");
+    const sp::VariantTransformResult bad = sp::TransformGBufferNightHlsl(shader, no_mix, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(!bad.ok && !bad.skip && bad.error.find("reflection mix") != std::string::npos, "a mix anchor that is not found makes the transform fail (not skip): " + bad.error);
+    const sp::VariantTransformResult twice = sp::TransformGBufferNightHlsl(shader, road_text + "\t" + std::string(mix->anchor) + "\n", kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(!twice.ok && !twice.skip, "a mix anchor found twice makes it fail too");
+    // a shader with no mix row keeps the lit weight it had
+    const sp::VariantTransformResult plain = sp::TransformGBufferNightHlsl({"xCityTunnelRoad__PSMultiLightEnv", 0}, road_text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(plain.ok && Count(plain.hlsl, "gbMix") == 0, "a shader with no mix row has no gbMix: " + plain.error);
+    // the albedo's capture (after its anchor) and the weight's (after its own) are both made, in the order of the text
+    const size_t at_albedo = r.hlsl.find("float3 gbAlbedo = ");
+    const size_t at_mix = r.hlsl.find("float gbMix = ");
+    Check(at_albedo != std::string::npos && at_mix != std::string::npos && at_albedo < at_mix, "the captures are in the order of the statements they follow");
+    // the write text itself
+    sp::GBufferAlbedo albedo;
+    albedo.found = true;
+    albedo.expression = "gbAlbedo";
+    Check(sp::GBufferAlbedoWriteText(albedo, "iColor1.w", "gbMix").find("GbMaterialLit(g_GBufferMode.y) * saturate(iColor1.w) * saturate(1.0f - gbMix));") != std::string::npos &&
+              sp::GBufferAlbedoWriteText(albedo, {}, "gbMix").find("GbMaterialLit(g_GBufferMode.y) * saturate(1.0f - gbMix));") != std::string::npos &&
+              sp::GBufferAlbedoWriteText(albedo, "iColor1.w") == sp::GBufferAlbedoWriteText(albedo, "iColor1.w", {}),
+          "the lit weight's factors: the occlusion, then the mix; no mix is the text without it");
+  }
 }
 
 void CheckIdentityCheck() {
@@ -724,7 +775,8 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     Check(Count(alone.hlsl, "oC1 : SV_Target1") == 1 && Count(alone.hlsl, "oC1 = GbRt1Encode(" + a.expression + ");") == 1 && Count(alone.hlsl, "float3 gbNormal = ") == (a.interpolant ? 0u : 1u),
           file->stem + ": one output, one write, " + (a.interpolant ? "no capture" : "one capture"));
     {
-      const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + a.albedo.expression + "), GbMaterialLit(g_GBufferMode.y)" + (a.occlusion.empty() ? std::string() : " * saturate(" + a.occlusion + ")") + ");";
+      const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + a.albedo.expression + "), GbMaterialLit(g_GBufferMode.y)" + (a.occlusion.empty() ? std::string() : " * saturate(" + a.occlusion + ")") +
+                                      (a.mix_row && a.albedo.found ? std::string(" * saturate(1.0f - gbMix)") : std::string()) + ");";
       Check(Count(alone.hlsl, "oC2 : SV_Target2") == 1 && Count(alone.hlsl, "oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(alone.hlsl, albedo_call) == (a.albedo.found ? 1u : 0u) &&
                 Count(alone.hlsl, "float3 gbAlbedo = ") == (a.albedo.found && a.albedo.captured ? 1u : 0u),
             file->stem + ": RT2: one output, the no data write, " + (a.albedo.found ? (a.albedo.captured ? "the albedo from one capture" : "the albedo from the fetch's lanes") : "no albedo"));
@@ -888,6 +940,48 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
                 std::string(row.name) + ": the anchor is one line at the top level of main");
         }
       }
+    }
+    // GB-H2-REVIEW: the mix rows (gbuffer_night_albedo.h kGBufferNightMixRows) fit the retail text: the anchor once at the top level of main, and no later statement writes the weight's register
+    {
+      int fitted = 0;
+      for (const sp::NightMixRow& row : sp::kGBufferNightMixRows) {
+        const Shader_* hit = nullptr;
+        for (const Shader_* file : family) {
+          if (file->stem == row.name) hit = file;
+        }
+        Check(hit != nullptr, std::string(row.name) + ": the mix row's shader is in the retail game");
+        if (hit == nullptr) continue;
+        const std::string text = ReadFile(hit->path);
+        const sp::NightAnalysis a = sp::AnalyseGBufferNight(text, row.name);
+        Check(a.found && a.mix_row && a.mix.found && a.albedo.found, std::string(row.name) + ": the mix row fits (" + a.mix.why_not + ")");
+        fitted += a.mix.found ? 1 : 0;
+        const std::string lf = LfOnly(text);
+        const size_t main_at = lf.rfind("\nvoid main(");
+        const std::string anchor_line = "\t" + std::string(row.anchor) + "\n";
+        const size_t anchor_at = lf.find(anchor_line, main_at);
+        Check(main_at != std::string::npos && anchor_at != std::string::npos && Count(lf.substr(main_at), anchor_line) == 1, std::string(row.name) + ": the mix anchor is once in main");
+        if (anchor_at == std::string::npos) continue;
+        // the register the weight is in (`r5`): a later `r5 = ...` or `r5.<lanes with the weight's> = ...` would change it before the end of main. The capture is right after the anchor, so this
+        // is only the proof that the lit weight reads the very value the game's lerp reads.
+        const std::string reg(row.weight.substr(0, row.weight.find('.')));
+        const char lane = row.weight.back();
+        int later_writes = 0;
+        size_t at = anchor_at + anchor_line.size();
+        while (at < lf.size()) {
+          size_t end = lf.find('\n', at);
+          if (end == std::string::npos) end = lf.size();
+          const std::string_view line = std::string_view(lf).substr(at, end - at);
+          const size_t eq = line.find(" = ");
+          const size_t first = line.find_first_not_of("\t ");
+          if (eq != std::string_view::npos && first != std::string_view::npos && first < eq) {
+            const std::string_view dest = line.substr(first, eq - first);
+            if (dest == reg || (dest.starts_with(reg + ".") && dest.find(lane) != std::string_view::npos)) ++later_writes;
+          }
+          at = end + 1;
+        }
+        Check(later_writes == 0, std::string(row.name) + ": nothing writes " + std::string(row.weight) + " after the anchor (" + std::to_string(later_writes) + " writes)");
+      }
+      Check(fitted == int(sp::kGBufferNightMixRowCount), "the retail census: both mix rows fit the text");
     }
     const std::set<std::string> want_no_albedo = {
         "xCityGrimeMetalTint__PSMultiLightInterior",

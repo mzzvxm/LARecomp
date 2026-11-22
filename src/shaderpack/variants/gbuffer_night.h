@@ -92,6 +92,8 @@ struct NightAnalysis {
   GBufferAlbedo albedo;          // RT2: the shader's diffuse texel (gbuffer_albedo.h), or its recipe's colour (gbuffer_night_albedo.h); !albedo.found when it has none (RT2 then gets the "no data" code)
   std::string occlusion;         // RT2.a: the shader's baked occlusion as HLSL (`iColor1.w`), "" for none (gbuffer_night_albedo.h kGBufferNightOcclusionRows)
   bool recipe = false;           // the shader has a recipe in kGBufferNightAlbedoRows (the albedo is the recipe's; when its anchor is not found the transform fails instead of writing "no data")
+  bool mix_row = false;          // the shader has a row in kGBufferNightMixRows (GB-H2-REVIEW: the road's planar reflection; when its anchor is not found the transform fails)
+  NightMixCapture mix;           // that row's capture: `float gbMix = r5.w;` after the weight's statement; the lit weight takes saturate(1 - gbMix)
 };
 
 // The text's normal (pure; public for tests and the census). `hlsl` may have any line ends; offsets are into the text with LF line ends. `name` (the group and the entry point) says which
