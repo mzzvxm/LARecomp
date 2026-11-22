@@ -16,6 +16,9 @@
 //     lines and the process exits at once. With its flush hook registered all five are in the file; without the hook none is (the control: the
 //     queue is lost when the process ends without running the destructors, which is what the hooks are for).
 //   * STDIO: a FILE* written with fprintf and never flushed is complete after Finish (fflush(nullptr)); after EndProcessNow alone it is not.
+//   * THE WATCHDOG (EXIT-SMALL M5): EndAfterHang, what the 5 s close watchdog calls when the shutdown hung. The hooks that have not run do run (on a helper
+//     thread; the hook the hung thread is inside is neither run again nor waited for), the "before" and "after" lines come in order, the note hook does not
+//     run, and the status is kWatchdogExitCode (not 0). When the helper itself is stuck (a hook that never returns) the process still ends within the bound.
 //   * THE TABLE: AddFlush keeps a function once, refuses a null hook and the 33rd one, RunFlushes runs each hook once.
 // The straggler's table says "destroyed" through a flag instead of reading freed memory, so the control is a clean status, not an access violation.
 
@@ -134,6 +137,12 @@ void OrderFlush1() { AppendOrder("flush1"); }
 void OrderThrows() { AppendOrder("throws"); throw std::runtime_error("a hook that fails"); }
 void OrderFlush3() { AppendOrder("flush3"); }
 void OrderNote() { AppendOrder("note"); }
+void OrderHangs() {  // a hook that never returns (a full disk, a scanner, a lock a stuck thread holds)
+  AppendOrder("hang-start");
+  for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+}
+void OrderBefore() { AppendOrder("before"); }
+void OrderAfter(const larecomp::exitfast::Report& report) { AppendOrder(report.ran == 1 ? "after ran=1" : "after ran=other"); }
 
 // ---- the children
 int RunRace(bool fast, const char* flag_path) {
@@ -165,6 +174,30 @@ int RunOrder(const char* path) {
   larecomp::exitfast::SetNote(&OrderNote);
   larecomp::exitfast::Arm(true);
   return larecomp::exitfast::Finish(0);
+}
+
+// The shutdown hangs inside the second hook (on the exiting thread); the watchdog (this thread, 300 ms later) ends the process.
+int RunHangOtherThread(const char* path) {
+  g_order_path = path;
+  StartWatchdog();
+  larecomp::exitfast::AddFlush("one", &OrderFlush1);
+  larecomp::exitfast::AddFlush("hangs", &OrderHangs);
+  larecomp::exitfast::AddFlush("three", &OrderFlush3);
+  larecomp::exitfast::SetNote(&OrderNote);
+  larecomp::exitfast::Arm(true);
+  std::thread([] { larecomp::exitfast::EndNow(0); }).detach();  // flush1, then stuck in the hook that hangs
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  larecomp::exitfast::EndAfterHang(larecomp::exitfast::kWatchdogExitCode, 2000, &OrderBefore, &OrderAfter);
+}
+
+// No other thread: the helper itself runs into the hook that never returns, and the watcher gives up after its bound.
+int RunHangInHelper(const char* path) {
+  g_order_path = path;
+  StartWatchdog();
+  larecomp::exitfast::AddFlush("hangs", &OrderHangs);
+  larecomp::exitfast::AddFlush("three", &OrderFlush3);
+  larecomp::exitfast::SetNote(&OrderNote);
+  larecomp::exitfast::EndAfterHang(larecomp::exitfast::kWatchdogExitCode, 300, &OrderBefore, &OrderAfter);
 }
 
 int RunLegacyFlush(const char* path) {
@@ -280,6 +313,8 @@ int main(int argc, char** argv) {
   if (argc >= 3 && std::strcmp(argv[1], "code") == 0) return RunCode();
   if (argc >= 3 && std::strcmp(argv[1], "order") == 0) return RunOrder(argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "legacy-flush") == 0) return RunLegacyFlush(argv[2]);
+  if (argc >= 3 && std::strcmp(argv[1], "hang-other") == 0) return RunHangOtherThread(argv[2]);
+  if (argc >= 3 && std::strcmp(argv[1], "hang-helper") == 0) return RunHangInHelper(argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "queued-hook") == 0) return RunQueued(true, argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "queued-nohook") == 0) return RunQueued(false, argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "stdio-finish") == 0) return RunStdio(true, argv[2]);
@@ -320,6 +355,30 @@ int main(int argc, char** argv) {
   std::printf("off switch: status %d, text '%s'\n", legacy_flush_status, Strip(ReadAll(legacy_flush_path)).c_str());
   CHECK(legacy_flush_status == 5);
   CHECK(Strip(ReadAll(legacy_flush_path)) == "flush1\n");
+
+  // the watchdog: the hook the hung thread is inside is skipped, the ones behind it run, the status is the watchdog's own
+  CHECK(larecomp::exitfast::kWatchdogExitCode != 0 && larecomp::exitfast::kWatchdogExitCode != 3 && larecomp::exitfast::kWatchdogExitCode != kMetDestroyed &&
+        larecomp::exitfast::kWatchdogExitCode != kWatchdog);
+  const std::string hang_other_path = file("hang-other.txt");
+  const auto hang_t0 = std::chrono::steady_clock::now();
+  const int hang_other_status = Spawn(argv[0], "hang-other", hang_other_path);
+  const auto hang_other_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - hang_t0).count();
+  std::printf("watchdog (a hung hook on another thread): status %d in %lld ms, text '%s'\n", hang_other_status, static_cast<long long>(hang_other_ms),
+              Strip(ReadAll(hang_other_path)).c_str());
+  CHECK(hang_other_status == larecomp::exitfast::kWatchdogExitCode);
+  // flush1 ran on the exiting thread; hang-start is the hook it is stuck in; the helper then runs before, the hook behind the hung one (flush3) and after,
+  // in that order; no "flush1" a second time, no second "hang-start", and no "note" (the note says "exiting normally")
+  CHECK(Strip(ReadAll(hang_other_path)) == "flush1\nhang-start\nbefore\nflush3\nafter ran=1\n");
+  CHECK(hang_other_ms < 6000);  // the process did not wait for the hung hook
+  const std::string hang_helper_path = file("hang-helper.txt");
+  const auto hang_t1 = std::chrono::steady_clock::now();
+  const int hang_helper_status = Spawn(argv[0], "hang-helper", hang_helper_path);
+  const auto hang_helper_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - hang_t1).count();
+  std::printf("watchdog (the helper stuck in a hook): status %d in %lld ms, text '%s'\n", hang_helper_status, static_cast<long long>(hang_helper_ms),
+              Strip(ReadAll(hang_helper_path)).c_str());
+  CHECK(hang_helper_status == larecomp::exitfast::kWatchdogExitCode);  // the bound held: not the test's own 10 s watchdog (status 99)
+  CHECK(Strip(ReadAll(hang_helper_path)) == "before\nhang-start\n");  // the hooks behind the stuck one and the "after" line never ran
+  CHECK(hang_helper_ms < 6000);
 
   // a write queued just before the exit
   const std::string hook_path = file("queued-hook.txt");

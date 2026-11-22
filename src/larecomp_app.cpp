@@ -85,6 +85,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/settings.h"
 #include "mc_engine/display/ultrawide.h"
+#include "mc_engine/wheel/wheel_ffb.h"
 #include "mc_engine/wheel/wheel_input.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "native_gfx/nocp/nocp_driver.h"
@@ -599,6 +600,7 @@ rex::Result<void> LarecompApp::OnInit() {
   // writes (the settings file, the career save, the log) is finished by the orderly shutdown before this point; EXIT-HARD.md lists each.
   larecomp::exitfast::AddFlush("state log", &mc::cinematic::statelog::CloseForExit);
   larecomp::exitfast::AddFlush("free camera recording", &mc::cinematic::FreecamStopForExit);
+  larecomp::exitfast::AddFlush("trailer take's WAV", &mc::cinematic::capture_audio::CloseForExit);  // a take cut by the close: the real sizes into its header
   for (const auto& note : path_notes_) LARECOMP_APP_WARN("Game data: {}", note);
   path_notes_.clear();
   // The command line options that could not be used (one line each; the start goes on): ApplyCommandLineSettings, PrepareCommandLine.
@@ -1194,6 +1196,16 @@ void LarecompApp::OnUIEvent(const rex::ui::UIEvent& event) {
 // runs its own binds (so a handler skips a key a bind owns: ui/overlay_support.h IsBoundKey).
 void LarecompApp::OnInputEvent(rex::InputEvent& event) { larecomp::uievents::DispatchInput(event); }
 
+// The close watchdog's two lines (EndAfterHang runs them on its helper thread). The first keeps the words the checkers read ("still running 5 s").
+static void WatchdogSaysSo() {
+  LARECOMP_APP_ERROR("[quit] the process was still running 5 s after the window was asked to close; exiting");
+}
+static void WatchdogDone(const larecomp::exitfast::Report& report) {
+  LARECOMP_APP_ERROR("[quit] close watchdog: {} flush hook(s) ran in {} ms{}; the process ends with code {} (a hung shutdown, not a normal exit)", report.ran,
+                     report.ms, report.threw > 0 ? ", some threw" : "", larecomp::exitfast::kWatchdogExitCode);
+  if (auto* logger = rex::AppInterfaces::Get<rex::ILogger>()) logger->Flush();
+}
+
 // What the close needs before the title ends: shader build told to stop, saves finished, devices released. Latched: the event can come
 // twice, and StopBeforeTitleEnds does it again for a shutdown that did not come from the window. The renderer is NOT stopped here (0.10 did): this
 // runs inside the delivery of the close event, on the UI thread, and the renderer stops with the UI loop still served (StopBeforeTitleEnds).
@@ -1208,6 +1220,8 @@ void LarecompApp::FinishWindowCloseWork() {
   larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
   larecomp::devwatch::Stop();
   larecomp::impulse::Shutdown();   // the Xbox triggers back to still
+  // The wheel's force effects stopped and its device released, by the wheel thread that owns them; bounded, a thread stuck in a device call is left alone.
+  if (!larecomp::wheel::ffb::StopForExit(250)) LARECOMP_APP_WARN("[quit] the wheel's force feedback did not answer within 250 ms: left as it is");
   mcla::display::Shutdown();       // the display's own mode back after FULLSCREEN
   LARECOMP_APP_INFO("[quit] LARecomp's shutdown took {} ms",
                     std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
@@ -1216,9 +1230,10 @@ void LarecompApp::FinishWindowCloseWork() {
   // normally; this watchdog only covers a hang.
   std::thread([]() {
     std::this_thread::sleep_for(std::chrono::seconds(5));
-    LARECOMP_APP_ERROR("[quit] the process was still running 5 s after the window was asked to close; exiting");
-    if (auto* logger = rex::AppInterfaces::Get<rex::ILogger>()) logger->Flush();
-    larecomp::EndProcessNow(0);  // not std::_Exit: process_exit.h says why (the 2026-11-18 Vulkan crash at exit)
+    // Something hung, possibly holding a lock that a log line or a flush hook needs: EndAfterHang runs the log line, the hooks that have not run and the
+    // log's flush on a helper thread and waits for it at most 2 s (exit_fast.h), then ends the process with a status of its own (not 0: the hang was
+    // hidden behind a normal exit code). EndProcessNow inside: not std::_Exit, process_exit.h says why (the 2026-11-18 Vulkan crash at exit).
+    larecomp::exitfast::EndAfterHang(larecomp::exitfast::kWatchdogExitCode, 2000, &WatchdogSaysSo, &WatchdogDone);
   }).detach();
 }
 

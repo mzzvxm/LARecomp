@@ -389,6 +389,12 @@ void Abort() {
     Mixer().Disarm();
 }
 
+void CloseForExit() {
+    uint64_t frames = 0;
+    if (!g_session.CloseWavForExit(&frames)) return;
+    LARECOMP_APP_WARN("[cap] audio: the game ended during a take: its WAV was closed with the {} sample frames written so far (the take is incomplete)", frames);
+}
+
 bool Active() { return g_active.load(std::memory_order_acquire); }
 
 const Summary& LastSummary() {
