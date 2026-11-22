@@ -442,7 +442,7 @@ void CheckSources(const std::string& gpu) {
         "slots2.y of the apply: the colour slot in the low 16 bits, the contact depth's in the high 16, in ao.cpp and in the shader");
   Check(Has(cpp, "static_assert(kBindlessTextureCount <= (1u << kApplyHighSlotShift)"), "ao.cpp: two bindless slots are asserted to fit one word");
   Check(Has(cpp, "push.slots2[1] |= Colour(0).slot;"), "ao.cpp: the colour slot (the colour chain's level 0 from the screen owner, ScreenShared::ColourPre) is OR-ed beside the contact depth's");
-  Check(Has(cpp, "depth_full_.slot << kApplyHighSlotShift"), "ao.cpp: the contact depth slot is packed into the high bits");
+  Check(Has(cpp, "DepthFull().slot << kApplyHighSlotShift"), "ao.cpp: the contact depth slot (the screen owner's full size depth, SS-2) is packed into the high bits");
   // The bits the flags use must not overlap in the apply (limit 8-15 and cap 26-31 of the bounce light; 22-25 the apply's own).
   {
     const uint32_t limit_cap = 0xFFu << 8 | 0x3Fu << 26;
@@ -451,7 +451,7 @@ void CheckSources(const std::string& gpu) {
     const uint32_t radius_bits = 0x7u << 17;
     Check(((1u << 21) & radius_bits) == 0u, "bit 21 is clear in the pass flags FillPush builds (the radius is bits 17-19)");
   }
-  Check(Has(cpp, "plan.SplitContact()") && Has(cpp, "depth_full_") && Has(cpp, "contact_raw_"), "ao.cpp: the split has its own depth and contact images");
+  Check(Has(cpp, "plan.SplitContact()") && Has(cpp, "DepthFull()") && Has(cpp, "contact_raw_"), "ao.cpp: the split has its own depth (the screen owner's DepthFull) and contact images");
   Check(Has(cpp, "push.slots2[2] &= ~(1u << 16);"), "ao.cpp: the contact depth pass is drawn without the half size flag");
   Check(Has(header, "bool SplitContact() const") && Has(header, "bool OneSampleColour() const"), "ao.h: the plan has the split and the one sample rules");
   Check(Has(header, "ContactFilterInApply() const { return !contact_history && ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }"),
