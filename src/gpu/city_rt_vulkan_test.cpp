@@ -176,12 +176,17 @@ const ImagePair kImages[] = {
     {"gi_field_weights_cs.hlsl", "g_weight", "r8", "gi_field.cpp", "kWeightFormat", true, "R8_UNORM"},
     {"gi_update_blend_cs.hlsl", "g_irradiance", "rgba16f", "gi_field.cpp", "kIrradianceFormat", true, "R16G16B16A16_FLOAT"},
     {"gi_update_blend_cs.hlsl", "g_moments", "rg16f", "gi_field.cpp", "kMomentsFormat", true, "R16G16_FLOAT"},
+    // INTEGRATION (feat/rt-lights-d1 on the city line): the ray traced light visibility's images, the normal one in the SNORM format the typed store of the D3D12 table needs
+    {"rt_lights_trace_cs.hlsl", "g_signal0", "rgba8", "rt_lights.cpp", "rt lights signal", false, "R8G8B8A8_UNORM"},
+    {"rt_lights_trace_cs.hlsl", "g_depth", "r16f", "rt_lights.cpp", "rt lights depth 0", false, "R16_FLOAT"},
+    {"rt_lights_trace_cs.hlsl", "g_normal", "rgba8snorm", "rt_lights.cpp", "rt lights normal and share", false, "R8G8B8A8_SNORM"},
 };
 
 // The Vulkan format a [[vk::image_format]] name stands for, as the host format that has it: the table Plume's toVk(RenderFormat) and the SPIR-V image formats agree on.
 std::string HostFormatOf(const std::string& spirv_format) {
   static const std::map<std::string, std::string> kMap = {{"rgba8", "R8G8B8A8_UNORM"}, {"rgba16f", "R16G16B16A16_FLOAT"}, {"rg16f", "R16G16_FLOAT"},
-                                                          {"r16f", "R16_FLOAT"},        {"r32f", "R32_FLOAT"},            {"r8", "R8_UNORM"}};
+                                                          {"r16f", "R16_FLOAT"},        {"r32f", "R32_FLOAT"},            {"r8", "R8_UNORM"},
+                                                          {"rgba8snorm", "R8G8B8A8_SNORM"}};
   const auto it = kMap.find(spirv_format);
   return it == kMap.end() ? std::string() : it->second;
 }
@@ -211,14 +216,14 @@ void TestStorageImageFormats(const std::filesystem::path& folder) {
     std::set<std::string> seen;
     std::string shader;
     Closure(hlsl, p.hlsl, &seen, &shader);
-    const std::regex declaration(std::string(R"(\[\[vk::image_format\(\")") + p.format + R"(\"\)\]\]\s*(?:#endif\s*)?RWTexture2D<[^>]+>\s+)" + p.variable + R"(\b)");
+    const std::regex declaration(std::string(R"(\[\[vk::image_format\(\")") + p.format + R"(\"\)\]\]\s*(?:#endif\s*)*RWTexture2D<[^>]+>\s+)" + p.variable + R"(\b)");
     Check(std::regex_search(shader, declaration), label + ": the shader declares the image with that format for SPIR-V");
     Check(HostFormatOf(p.format) == p.host, label + ": the name stands for the host format " + p.host);
     const std::string cpp = ReadAll(folder / p.cpp);
     const std::string made = CppFormatOf(cpp, p.marker, p.constant);
     Check(made == p.host, label + ": the C++ makes the image in " + p.host + " (found '" + made + "')");
   }
-  // Every image format the shaders name is one of the six the table knows: a new one is a new row above.
+  // Every image format the shaders name is one of the seven the table knows: a new one is a new row above.
   std::set<std::string> named;
   for (const auto& entry : std::filesystem::directory_iterator(folder / "hlsl")) {
     const std::string text = ReadAll(entry.path());

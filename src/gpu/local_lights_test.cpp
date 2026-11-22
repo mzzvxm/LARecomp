@@ -2233,9 +2233,9 @@ void ContactChecks(const std::string& src) {
   Check(Has(ps, "vehicle = (GbRt3Flags(rt3) & uint(GB_FLAG_VEHICLE)) != 0u;") && Has(ps, "bool vehicle = false;"), "the vehicle flag is RT3's, false where the frame has no RT3");
   // (GB-NEON-COST: the lights' sum is LpOneLight; the contact term is its own step of one light, so a pixel the reach test discarded, and a light that adds nothing, take no read)
   const size_t one_at = At(ps, "float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, float3 world, float3 normal, float3 albedo, float lit) {");
-  const size_t lit_at = At(ps, "float3 add = LpPixelLight(l, g, world, normal, albedo, lit);");
+  const size_t lit_at = At(ps, "float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));");
   const size_t contact_at = At(ps, "if (LpTakesContact(l, contact)) {");
-  const size_t shadow_at = At(ps, "add = LpShadowed(l, g, flags, p, world, normal, add);");
+  const size_t shadow_at = At(ps, "return LpShadowed(l, g, flags, p, world, normal, add);");
   const size_t capped_at = At(ps, "float4 LpCappedLights(");
   Check(Has(ps, "add *= LpContactVisibility(g, world, normal, l.pos);") && one_at < lit_at && lit_at < contact_at && contact_at < shadow_at && shadow_at < capped_at,
         "the contact term runs inside the light's turn, after the law's term is known (a pixel the light does not light takes no read) and before the shadow's lookup");
@@ -2245,11 +2245,11 @@ void ContactChecks(const std::string& src) {
             Has(ps, "const bool capped = contact && count > uint(LP_CONTACT_MARCHES) && (g_push.info.w & uint(LP_PUSH_FULL_CONTACT)) == 0u;") && Has(ps, "if (capped) {\n    const float4 tube = LpCappedLights(first, count, g, flags, p, world, normal, albedo, rt2.w);"),
         "the shader: the contact term is the vehicle pixel's unless LP_PUSH_NO_CONTACT, and a draw of more than two lights takes the capped path unless LP_PUSH_FULL_CONTACT");
   {
-    const size_t terms = At(ps, "add[i] = LpPixelLight(l[i], g, world, normal, albedo, lit);");
+    const size_t terms = At(ps, "add[i] = NgFinite3(LpPixelLight(l[i], g, world, normal, albedo, lit));");
     const size_t donors = At(ps, "const uint donors = LpContactDonors(strength[0], strength[1], strength[2], strength[3], count);");
     const size_t march = At(ps, "visibility[m] = LpContactVisibility(g, world, normal, l[m].pos);");
     const size_t copy = At(ps, "visibility[k] = visibility[(donors >> (4u * k)) & 3u];");
-    const size_t shadow_in_tube = At(ps, "one = LpShadowed(l[j], g, flags, p, world, normal, one);");
+    const size_t shadow_in_tube = At(ps, "const float4 shadowed = LpShadowed(l[j], g, flags, p, world, normal, one);");
     Check(capped_at != std::string::npos && terms != std::string::npos && donors != std::string::npos && march != std::string::npos && copy != std::string::npos && shadow_in_tube != std::string::npos &&
               capped_at < terms && terms < donors && donors < march && march < copy && copy < shadow_in_tube && Has(ps, "if (((donors >> (4u * m)) & 7u) == (m | 4u)) {") && Has(ps, "LpTakesContact(l[i], true)"),
           "LpCappedLights: every term first, then the donors, the marches of the lights that are their own donor, the copies, and the shadow after the visibility");

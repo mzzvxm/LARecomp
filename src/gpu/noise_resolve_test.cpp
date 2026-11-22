@@ -897,8 +897,9 @@ void TestSources(const std::string& dir) {
     const size_t ensure_at = ao.find("if (!EnsureImages(plan)) {", run_at);
     g_check(!nr::Varies(false, false) && nr::FrameTerm(false, false, 77, 1023) == 0u && nr::FrameTerm(false, true, 77, 1023) == 77u && nr::FrameTerm(true, false, 77, 1023) == 77u && run_at != std::string::npos &&
                 pipeline_at != std::string::npos && stencil_at != std::string::npos && ensure_at != std::string::npos && pipeline_at < stencil_at && stencil_at < ensure_at &&
-                nc::Has(ao, "if (!accumulate || !h.image[0].texture || !h.image[1].texture || stencil_slot_ == kNoSlot) {"),
-            "ao.cpp (review F6): Run clears plan.contact_history when the depth target has no stencil plane view, before EnsureImages, next to the missing pipeline's clear; without the history the noise holds");
+                (nc::Has(ao, "if (!accumulate || !h.image[0].texture || !h.image[1].texture || stencil_slot_ == kNoSlot) {") || nc::Has(ao, "if (!accumulate || !h.image[0].texture || !h.image[1].texture) {")),
+            "ao.cpp (review F6): Run clears plan.contact_history when the depth target has no stencil plane view, before EnsureImages, next to the missing pipeline's clear; without the history the noise holds "
+            "(INTEGRATION: the history pass itself gives up without a slot in the first form, fix/noise-all-review 5d0c0cfc lets it run without a stencil plane: either form of the pass's guard)");
   }
   // the contact march and the car's sun ray
   g_check(nc::Has(ao, "noise_resolve::Varies(plan.upscaler, plan.contact_history) ? base.slots2[1] : (base.slots2[1] & ao_stable::kBlueNoiseFlag)") &&

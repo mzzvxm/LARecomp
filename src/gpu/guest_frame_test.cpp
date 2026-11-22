@@ -231,7 +231,10 @@ void TestSources(const std::string& dir) {
     return;
   }
   const std::string ssr_begin = Between(ssr, "void ScreenReflections::BeginFrame() {", "\nvoid ScreenReflections::OnMainDraw(");
-  Check(Has(ssr_begin, "if (guest_.Begin()) {\n    trigger_done_ = false;\n    ran_ = false;\n    wet_votes_.Reset();\n    ++frames_;\n  } else if (guest_frame::LogDue(guest_.repeats())) {") &&
+  // (feat/rr-int RR-4a puts `hit_ready_ = false;` between the ran mark and the wet votes: the raw frame's hit distance is the guest frame's)
+  Check((Has(ssr_begin, "if (guest_.Begin()) {\n    trigger_done_ = false;\n    ran_ = false;\n    wet_votes_.Reset();\n    ++frames_;\n  } else if (guest_frame::LogDue(guest_.repeats())) {") ||
+         (Has(ssr_begin, "if (guest_.Begin()) {\n    trigger_done_ = false;\n    ran_ = false;\n    hit_ready_ = false;") &&
+          Has(ssr_begin, "\n    wet_votes_.Reset();\n    ++frames_;\n  } else if (guest_frame::LogDue(guest_.repeats())) {"))) &&
             Has(ssr_begin, "BeginFrame ran twice in one guest frame") && ssr_begin.find("guest_.Begin()") < ssr_begin.find("Setting().Get()"),
         "ssr.cpp: BeginFrame resets the trigger, the ran mark, the wet votes and the frame count only for the first list of a guest frame, and logs the repeats (before it reads the settings)");
   Check(Has(ssr, "trigger_done_ = true;  // once a frame, whatever comes of it\n  guest_.Worked();") &&
