@@ -213,6 +213,10 @@ target_include_directories(larecomp_variant_wait_test PRIVATE ${CMAKE_SOURCE_DIR
 #   cmake --build <dir> --target larecomp_guest_frame_test, then run src/gpu/larecomp_guest_frame_test [<src/gpu dir>] (exit 0 = passed).
 add_executable(larecomp_guest_frame_test EXCLUDE_FROM_ALL guest_frame_test.cpp)
 target_include_directories(larecomp_guest_frame_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+# The render thread's own pipeline builds and waits as log lines (sync_build_log.h: the rate limit, the counts, the wording that perf/scripts/stall_check.py reads) have a check
+# that needs no renderer:
+#   cmake --build <dir> --target larecomp_sync_build_log_test, then run src/gpu/larecomp_sync_build_log_test (exit 0 = passed).
+add_executable(larecomp_sync_build_log_test EXCLUDE_FROM_ALL sync_build_log_test.cpp)
 # Every descriptor set the renderer makes agrees with its builder (descriptor_count_test.cpp; tools/check_descriptor_counts.py is its Python twin): D3D12 refuses a set
 # whose CreateDescriptorSet counts are not the builder's ranges (Vulkan does not count: the city shadow pass never ran on D3D12 for that), and the binding code's indices,
 # range types and structured views are read against the ranges. Reads the .cpp / .h files of the folder it is given, no renderer needed:

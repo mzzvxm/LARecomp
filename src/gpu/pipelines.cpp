@@ -543,6 +543,10 @@ Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
 void Pipelines::Shutdown() {
   StopPrecache();
   JoinAutosave();
+  if (sync_log_.builds != 0 || sync_log_.waits != 0) {
+    REXLOG_INFO("{}", sync_build_log::FormatSession(sync_log_));
+  }
+  sync_log_ = sync_build_log::Counters{};
   if (persist_ && shaders_) {
     SaveRecords();
   }
@@ -1131,9 +1135,11 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
       ++boot_waits_;
     }
     ++stats_.precache_waits;
-    stats_.precache_wait_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+    const uint64_t waited_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                             std::chrono::steady_clock::now() - t0)
                                             .count());
+    stats_.precache_wait_ns += waited_ns;
+    LogSyncWait(key, "list", waited_ns);
   }
   std::lock_guard<std::mutex> lock(precache_mutex_);
   if (p.state.load() != kReady) {
@@ -1225,9 +1231,11 @@ plume::RenderPipeline* Pipelines::TakeRequested(const PipelineKey& key, Miss& mi
       std::unique_lock<std::mutex> lock(precache_mutex_);
       precache_done_.wait(lock, [&] { return r.state.load() != kBuilding; });
       ++stats_.request_waits;
-      stats_.request_wait_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                             std::chrono::steady_clock::now() - t0)
-                                             .count());
+      const uint64_t waited_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - t0)
+                                              .count());
+      stats_.request_wait_ns += waited_ns;
+      LogSyncWait(key, "request", waited_ns);
     }
   }
   plume::RenderPipeline* raw = AdoptRequest(key, r);
@@ -2154,6 +2162,42 @@ void Pipelines::NoteSyncWait(const PipelineKey& key, sync_builds::Kind kind,
   }
 }
 
+namespace {
+
+sync_build_log::KeyWords WordsOf(const PipelineKey& key) {
+  sync_build_log::KeyWords w;
+  w.vs = key.vs;
+  w.ps = key.ps;
+  w.vs_variant = key.vs_variant;
+  w.ps_variant = key.ps_variant;
+  w.color_count = key.color_count;
+  w.sample_count = key.sample_count;
+  w.stencil = (key.stencil & 1u) != 0;
+  return w;
+}
+
+}  // namespace
+
+void Pipelines::LogSyncBuild(const PipelineKey& key, const Miss& miss, uint64_t ns) {
+  const uint64_t n = sync_log_.NoteBuild(ns);
+  if (!sync_build_log::LogThis(n)) {
+    return;
+  }
+  const sync_build_log::Why why = miss.take == Take::kMakeHere ? sync_build_log::Why::kClaimed
+                                  : miss.take == Take::kFailed ? sync_build_log::Why::kAgain
+                                                               : sync_build_log::Why::kNew;
+  // Whether the draw's own rule would have let it wait for a builder thread (asked only for a line that is written).
+  const bool skippable = miss.deferral && miss.deferral->may_skip && miss.deferral->may_skip(miss.deferral->context);
+  REXLOG_INFO("{}", sync_build_log::FormatBuild(n, frame_, ns, why, WordsOf(key), skippable));
+}
+
+void Pipelines::LogSyncWait(const PipelineKey& key, const char* source, uint64_t ns) {
+  const uint64_t n = sync_log_.NoteWait(ns);
+  if (sync_build_log::LogThis(n)) {
+    REXLOG_INFO("{}", sync_build_log::FormatWait(n, frame_, ns, source, WordsOf(key)));
+  }
+}
+
 plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const PipelineInputs& inputs,
                                               Miss& miss, bool* pending) {
   // A background build asked for earlier, then the precache list's entry.
@@ -2201,11 +2245,13 @@ plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const Pipe
       pipeline = device_->CreateGraphicsPipeline(desc, "guest pipeline");
     }
   }
-  stats_.create_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                   std::chrono::steady_clock::now() - t0)
-                                   .count());
+  const uint64_t built_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - t0)
+                                         .count());
+  stats_.create_ns += built_ns;
   if (pipeline) {
     ++stats_.created;
+    LogSyncBuild(key, miss, built_ns);  // the same builds as the window lines' "+N created"
     if (persist_) {
       RecordPipeline(key, *inputs.input_layout);
     }
