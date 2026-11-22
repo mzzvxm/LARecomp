@@ -33,6 +33,7 @@
 
 #include "settings/larecomp_settings.h"
 #include "backend.h"
+#include "denoiser_setting.h"
 #include "device.h"
 #include "ffx_common.h"
 #include "frame.h"
@@ -220,17 +221,26 @@ void RayRegen::Probe(Device& device, FrameRing& frames) {
   facts.device = DeviceOk(in);
   if (facts.device != DeviceVerdict::kOk) {
     REXLOG_INFO("{} not offered on this device: {} (vendor {:#06x}, shader model {}.{})", kPrefix, DeviceVerdictText(facts.device), in.vendor_id, in.shader_model >> 4, in.shader_model & 0xF);
-    Publish([&](Published& p) { p.facts = facts; });
+    Publish([&](Published& p) {
+      p.facts = facts;
+      p.vendor_id = in.vendor_id;
+    });
     return;
   }
   const std::wstring dir = ExeDirectory();
   facts.files_ok = !dir.empty() && FileExists(dir + L"amd_fidelityfx_loader_dx12.dll") && FileExists(dir + L"amd_fidelityfx_denoiser_dx12.dll");
   if (!facts.files_ok) {
     REXLOG_WARN("{} AMD's amd_fidelityfx_loader_dx12.dll and amd_fidelityfx_denoiser_dx12.dll are not next to the game's exe: Ray Regeneration is off. Run the game's setup again to get them.", kPrefix);
-    Publish([&](Published& p) { p.facts = facts; });
+    Publish([&](Published& p) {
+      p.facts = facts;
+      p.vendor_id = in.vendor_id;
+    });
     return;
   }
-  Publish([&](Published& p) { p.facts = facts; });
+  Publish([&](Published& p) {
+    p.facts = facts;
+    p.vendor_id = in.vendor_id;
+  });
   REXLOG_INFO("{} this device can run it (an AMD GPU, Direct3D 12, shader model {}.{}); opening AMD's runtime on a worker thread", kPrefix, in.shader_model >> 4, in.shader_model & 0xF);
   i.worker = std::thread([&i] { i.WorkerMain(); });
 }
@@ -488,6 +498,7 @@ void RayRegen::Impl::WorkerMain() {
         }
         Publish([&](Published& p) {
           p.context_bytes = made->bytes;
+          p.context_signals = made->signals;
           p.context_making = false;
         });
       } else {
@@ -550,6 +561,7 @@ void RayRegen::Request(uint32_t signals, uint32_t max_w, uint32_t max_h) {
     i.Retire(std::move(release));
     Publish([&](Published& p) {
       p.context_bytes = 0;
+      p.context_signals = 0;
       p.context_making = false;
     });
     return;
@@ -624,7 +636,8 @@ bool RayRegen::Dispatch(plume::RenderCommandList* list, const DispatchFrame& fra
   // The albedos may stay empty only where no signal reads them (AMD: zero-initialised); the plan checked that.
   if (frame.specular_albedo.texture) images = images && MakeResource(frame.specular_albedo, in_state, &d.specularAlbedo);
   if (frame.diffuse_albedo.texture) images = images && MakeResource(frame.diffuse_albedo, in_state, &d.diffuseAlbedo);
-  const MotionScale scale = MotionScaleFor(frame.render_size[0], frame.render_size[1]);
+  // The motion image is PreviousUV - CurrentUV already when the guide pass made it (scale 1), render pixels (scale 1 / size) when it is the kept vectors of the upscaler.
+  const MotionScale scale = frame.motion_in_pixels ? MotionScaleFor(frame.render_size[0], frame.render_size[1]) : MotionScale{};
   d.motionVectorScale = {scale.x, scale.y, scale.z};
   d.jitterOffsets = {frame.jitter[0], frame.jitter[1]};
   d.cameraPositionDelta = {frame.camera_position_delta[0], frame.camera_position_delta[1], frame.camera_position_delta[2]};
@@ -731,15 +744,34 @@ RayRegen& Instance() {
   return runtime;
 }
 
-void StartIfWanted(Device& device, FrameRing& frames) {
+namespace {
+
+rr::DebugSwitch ReadDebugSwitch() {
   rr::DebugSwitch debug = rr::DebugSwitch::kRow;
   if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_ray_regen.Get(), &debug)) {
     debug = rr::DebugSwitch::kRow;
   }
-  if (!ProbeWanted(debug, AnySignalBuilt())) {
+  return debug;
+}
+
+}  // namespace
+
+void StartIfWanted(Device& device, FrameRing& frames) {
+  const rr::DebugSwitch debug = ReadDebugSwitch();
+  const bool row_is_ours = denoiser::Setting() == rr::Denoiser::kOurs;
+  if (!ProbeWanted(debug, AnySignalBuilt(), row_is_ours)) {
     return;
   }
-  REXLOG_INFO("{} mcla_gpu_ray_regen = {}: asking this device", kPrefix, rr::DebugSwitchName(debug));
+  REXLOG_INFO("{} mcla_gpu_ray_regen = {}, DENOISER row = {}: asking this device", kPrefix, rr::DebugSwitchName(debug), denoiser::WordOf(denoiser::Setting()));
+  Instance().Probe(device, frames);
+}
+
+void ProbeNow(Device& device, FrameRing& frames) {
+  // The plan reaches here only once it wants Ray Regeneration (the row is not OURS, an effect with a signal writer is on): the runtime is opened now, live, if the start did not (Probe is a no-op the second time).
+  if (ReadDebugSwitch() == rr::DebugSwitch::kOff || Current().vendor_id != 0) {
+    return;  // switched off, or the probe has run (the vendor is published at its start)
+  }
+  REXLOG_INFO("{} the DENOISER row asks for Ray Regeneration: asking this device", kPrefix);
   Instance().Probe(device, frames);
 }
 

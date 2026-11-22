@@ -7,6 +7,7 @@
 //   <build dir>/src/gpu/larecomp_ray_regen_rules_test
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -83,11 +84,18 @@ ConsumerTable Cells(bool built0, bool auto0, bool built1, bool auto1, bool built
 
 void CheckConsumers() {
   Check(rr::kConsumerCount == 4, "the table has the four consumers it is written for");
-  Check(!AnySignalBuilt(), "shipped: no effect writes a signal yet (RG-1 is plumbing: the DLL is not even loaded)");
+  // RG-3: the screen-space reflections have their signal writer; no cell is trusted by AUTO until a Radeon A/B; the cars' reflections are not a fit (RAY-REGEN.md 4.2); the city's and the bounce light's
+  // effects are on other branches.
+  Check(AnySignalBuilt(), "shipped: an effect writes a signal (the screen-space reflections)");
   for (size_t i = 0; i < rr::kConsumerCount; ++i) {
-    Check(!kConsumers[i].signal_built && !kConsumers[i].auto_uses, "shipped cell " + std::to_string(i) + " is false, false (AUTO stays ours until a Radeon A/B)");
+    Check(!kConsumers[i].auto_uses, "shipped cell " + std::to_string(i) + " is not trusted by AUTO (until a Radeon A/B)");
+    Check(kConsumers[i].signal_built == (i == size_t(rr::Consumer::kSsr)), "shipped cell " + std::to_string(i) + (i == 0 ? " has a signal writer" : " has none (the car's is not a fit, the others are not in this tree)"));
   }
-  Check(!AnyConsumerOn(rr::kAllConsumers) && !AnyAutoConsumerOn(rr::kAllConsumers), "with every cell false no effect counts");
+  Check(AnyConsumerOn(rr::kAllConsumers) && AnyConsumerOn(rr::ConsumerBit(rr::Consumer::kSsr)) && !AnyConsumerOn(rr::ConsumerBit(rr::Consumer::kCarRtReflections)) && !AnyConsumerOn(0) &&
+            !AnyAutoConsumerOn(rr::kAllConsumers),
+        "with the shipped table the reflections count, the cars' do not, and AUTO counts nothing");
+  const ConsumerTable none = Cells(false, false, false, false, false, false, false, false);
+  Check(!AnySignalBuilt(none) && !AnyConsumerOn(rr::kAllConsumers, none) && !AnyAutoConsumerOn(rr::kAllConsumers, none), "with every cell false no effect counts");
   const ConsumerTable ssr_built = Cells(true, false, false, false, false, false, false, false);
   Check(AnySignalBuilt(ssr_built), "a table with SSR built has a signal mode");
   Check(AnyConsumerOn(rr::ConsumerBit(rr::Consumer::kSsr), ssr_built) && !AnyConsumerOn(rr::ConsumerBit(rr::Consumer::kRtGi), ssr_built) && !AnyConsumerOn(0, ssr_built),
@@ -105,7 +113,10 @@ void CheckConsumers() {
   Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, all, mixed) == (FlagOf(Signal::kIndirectSpecular) | FlagOf(Signal::kIndirectDiffuse)), "the row's value: every built effect (specular and diffuse)");
   Check(ContextSignals(rr::Denoiser::kAuto, rr::DebugSwitch::kOn, all, mixed) == (FlagOf(Signal::kIndirectSpecular) | FlagOf(Signal::kIndirectDiffuse)), "the debug switch on stands for the row's value even over AUTO");
   Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, rr::ConsumerBit(rr::Consumer::kRtGi), mixed) == FlagOf(Signal::kIndirectDiffuse), "only the effects that are on");
-  Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, all) == 0, "shipped table: no context");
+  Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, all) == FlagOf(Signal::kIndirectSpecular), "shipped table: the row's value makes a context for the reflections' indirect specular signal");
+  Check(ContextSignals(rr::Denoiser::kAuto, rr::DebugSwitch::kRow, all) == 0, "shipped table: AUTO makes none (no effect is trusted yet)");
+  Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, rr::ConsumerBit(rr::Consumer::kCarRtReflections)) == 0, "shipped table: the cars' reflections alone make none");
+  Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, 0) == 0, "no effect on: no context (it is freed after the hold)");
   Check(ContextSignals(rr::Denoiser::kAuto, rr::DebugSwitch::kRow, rr::ConsumerBit(rr::Consumer::kCarRtReflections), mixed) == 0, "AUTO: an untrusted effect alone makes no context");
 }
 
@@ -113,7 +124,9 @@ void CheckProbeWanted() {
   Check(!ProbeWanted(rr::DebugSwitch::kOff, true) && !ProbeWanted(rr::DebugSwitch::kOff, false), "off never opens the runtime");
   Check(ProbeWanted(rr::DebugSwitch::kProbe, false) && ProbeWanted(rr::DebugSwitch::kOn, false), "probe and on open it even with no effect to use it");
   Check(!ProbeWanted(rr::DebugSwitch::kRow, false) && ProbeWanted(rr::DebugSwitch::kRow, true), "auto opens it only where an effect has a signal mode");
-  Check(!ProbeWanted(rr::DebugSwitch::kRow, AnySignalBuilt()), "the shipped table has none: a start with the default opens nothing");
+  Check(ProbeWanted(rr::DebugSwitch::kRow, AnySignalBuilt()), "the shipped table has a signal writer: a start with the row not on OURS may open the runtime (on a Radeon only: ray_regen.cpp checks the vendor)");
+  Check(!ProbeWanted(rr::DebugSwitch::kRow, true, true), "the row on OURS opens nothing at the start (no memory, no start time): a row that leaves OURS opens it live");
+  Check(ProbeWanted(rr::DebugSwitch::kProbe, false, true) && ProbeWanted(rr::DebugSwitch::kOn, false, true) && !ProbeWanted(rr::DebugSwitch::kOff, true, false), "the debug switch decides over the row: probe and on open it, off never");
   rr::DebugSwitch parsed = rr::DebugSwitch::kRow;
   Check(rr::ParseDebugSwitch("probe", &parsed) && parsed == rr::DebugSwitch::kProbe && rr::ParseDebugSwitch("auto", &parsed) && parsed == rr::DebugSwitch::kRow, "the cvar's words are the DLSS switch's");
 }
@@ -308,7 +321,10 @@ void CheckSignalModes() {
   f.context_ready = true;
   f.armed = false;  // no upscaler this frame (native, or the frame is not upscaled): Ray Regeneration does not care
   f.play_view = true;
-  Check(SignalModesOf(f, true, true).Ssr() && SignalModesOf(f, true, true).CarRefl(), "an unarmed frame still takes the signals (Ray Regeneration needs no upscaler)");
+  const ConsumerTable both_built = Cells(true, false, true, false, false, false, false, false);
+  Check(SignalModesOf(f, true, true, both_built).Ssr() && SignalModesOf(f, true, true, both_built).CarRefl(), "an unarmed frame still takes the signals (Ray Regeneration needs no upscaler)");
+  Check(SignalModesOf(f, true, true).Ssr() && !SignalModesOf(f, true, true).CarRefl() && SignalModesOf(f, true, true).car_refl == rr::RawWhy::kPlanOurs,
+        "the shipped table: the reflections take the frame, the cars' reflections have no signal writer and keep their own filter whatever the plan says");
   Check(rr::RawModesOf(f, true, true).ssr == rr::RawWhy::kNoRrFrame, "while DLSS RR's raw modes refuse the same frame (the twin that differs on purpose)");
   f.armed = true;
   f.play_view = false;
@@ -323,7 +339,7 @@ void CheckSignalModes() {
   f.failed = true;
   Check(SignalModesOf(f, true, true).ssr == rr::RawWhy::kFailed, "failed: ours");
   f.failed = false;
-  Check(SignalModesOf(f, false, true).ssr == rr::RawWhy::kSwitchOff && SignalModesOf(f, false, true).CarRefl(), "the effect's own switch is the last word");
+  Check(SignalModesOf(f, false, true, both_built).ssr == rr::RawWhy::kSwitchOff && SignalModesOf(f, false, true, both_built).CarRefl(), "the effect's own switch is the last word");
   // AUTO: an effect it does not trust keeps its own filter in a frame taken for another.
   f.row_auto = true;
   const ConsumerTable ssr_only_trusted = Cells(true, true, true, false, false, false, false, false);
@@ -703,7 +719,11 @@ void CheckGate() {
   Check(GateOf(f, rr::DebugSwitch::kRow, 0, false, built) == Gate::kNotNeeded, "nothing to denoise is on: not needed");
   Check(GateOf(f, rr::DebugSwitch::kOn, 0, false, built) == Gate::kRuns, "the debug switch on lifts the consumer rule");
   Check(GateOf(f, rr::DebugSwitch::kOff, ssr, false, built) == Gate::kNotAvailable, "the debug switch off: not available");
-  Check(GateOf(f, rr::DebugSwitch::kRow, ssr, false) == Gate::kNotNeeded, "the shipped table has no signal mode: not needed, nothing 'not available'");
+  Check(GateOf(f, rr::DebugSwitch::kRow, ssr, false) == Gate::kRuns && GateOf(f, rr::DebugSwitch::kRow, 0, false) == Gate::kNotNeeded &&
+            GateOf(f, rr::DebugSwitch::kRow, rr::ConsumerBit(rr::Consumer::kCarRtReflections), false) == Gate::kNotNeeded,
+        "the shipped table: the row runs while the reflections are on, and is grey 'not needed' with nothing on or only the cars' reflections (no signal writer)");
+  const ConsumerTable none = Cells(false, false, false, false, false, false, false, false);
+  Check(GateOf(f, rr::DebugSwitch::kRow, ssr, false, none) == Gate::kNotNeeded, "a table with no signal writer: not needed, nothing 'not available'");
   Facts nv = f;
   nv.device = DeviceVerdict::kNotAmd;
   Check(GateOf(nv, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kNotThisGpu, "an NVIDIA PC's row is DLSS RR's, this one says: not this GPU");
@@ -711,7 +731,12 @@ void CheckGate() {
   Check(GateOf(nv, rr::DebugSwitch::kOff, ssr, false, built) == Gate::kNotThisGpu, "and before the debug switch's 'off'");
   Facts vk = f;
   vk.device = DeviceVerdict::kNotD3D12;
-  Check(GateOf(vk, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kNotThisGpu, "Vulkan: not this GPU (Direct3D 12 only)");
+  Check(GateOf(vk, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kNeedsD3D12 && std::string(RowSuffix(Gate::kNeedsD3D12)) == " (D3D12 ONLY)" && RowEnabled(Gate::kNotThisGpu) == false && !RowEnabled(Gate::kNeedsD3D12),
+        "a Radeon on Vulkan: AMD ships no Vulkan provider, the row says so (not 'NO RX 9000')");
+  Facts sm = f;
+  sm.device = DeviceVerdict::kShaderModelTooLow;
+  Check(GateOf(sm, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kNotAvailable, "a card or driver below shader model 6.6: not available");
+  Check(GateOf(nv, rr::DebugSwitch::kRow, 0, false, built) == Gate::kNotThisGpu && GateOf(vk, rr::DebugSwitch::kOff, ssr, false, built) == Gate::kNeedsD3D12, "the PC's reason comes first, for Vulkan too");
   Facts loading = f;
   loading.probed = false;
   Check(GateOf(loading, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kStarting, "the runtime is still opening: silent");
@@ -727,6 +752,78 @@ void CheckGate() {
   Facts nobuild = f;
   nobuild.build_has = false;
   Check(GateOf(nobuild, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kNotAvailable, "a build without it: not available");
+}
+
+// --- the DENOISER row's AMD value, end to end (RG-5) --------------------------------------------------------------------------------------------------
+
+// The row on a Radeon RX 9000 with the shipped table: what each setting and each set of effects comes to, with the plan's own function (the row's gate asks the same one), and the live switch that needs
+// no restart.
+void CheckRowEndToEnd() {
+  const uint32_t ssr = rr::ConsumerBit(rr::Consumer::kSsr);
+  const uint32_t cars = rr::ConsumerBit(rr::Consumer::kCarRtReflections);
+  const auto plan = [&](rr::Denoiser setting, uint32_t on_mask, DeviceVerdict device = DeviceVerdict::kOk) {
+    PlanInputs in = Ready();
+    in.setting = setting;
+    in.facts.device = device;
+    in.consumers_on = on_mask;
+    in.consumers_active = AnyAutoConsumerOn(on_mask);
+    in.consumers_any = AnyConsumerOn(on_mask);
+    return SelectRayRegen(in);
+  };
+  Check(plan(rr::Denoiser::kRr, ssr).use && plan(rr::Denoiser::kRr, ssr).why == Why::kOn, "the row's AMD value with the reflections on: Ray Regeneration takes the frame");
+  Check(!plan(rr::Denoiser::kAuto, ssr).use && plan(rr::Denoiser::kAuto, ssr).why == Why::kNoConsumer, "AUTO keeps today's choice (ours): nothing is trusted to AUTO until a Radeon A/B");
+  Check(!plan(rr::Denoiser::kOurs, ssr).use && plan(rr::Denoiser::kOurs, ssr).why == Why::kSettingOurs, "OURS never");
+  Check(plan(rr::Denoiser::kRr, 0).why == Why::kNoConsumer && plan(rr::Denoiser::kRr, cars).why == Why::kNoConsumer, "no effect it can clean is on (the cars' reflections have no signal writer): nothing to do");
+  Check(plan(rr::Denoiser::kRr, ssr, DeviceVerdict::kNotAmd).why == Why::kNotThisGpu && plan(rr::Denoiser::kRr, ssr, DeviceVerdict::kNotD3D12).why == Why::kNotThisGpu &&
+            plan(rr::Denoiser::kRr, ssr, DeviceVerdict::kShaderModelTooLow).why == Why::kNotThisGpu,
+        "an RTX card, Vulkan, shader model below 6.6: the plan refuses, ours");
+  // the live switch: the plan changes with the setting alone, and no reason of the plan is a restart
+  bool no_restart = true;
+  for (int w = 0; w <= int(Why::kGuidesNotReady); ++w) {
+    std::string text = WhyText(Why(w));
+    for (char& c : text) c = char(std::tolower(static_cast<unsigned char>(c)));
+    no_restart = no_restart && text.find("restart") == std::string::npos;
+  }
+  Check(no_restart, "no reason of the plan asks for a restart: the runtime is opened when the row asks");
+  Check(std::string(WhyText(Why::kFailed)).find("started again") != std::string::npos, "a session's failure waits for the next start, and says so");
+  PlanInputs live = Ready();
+  live.consumers_on = ssr;
+  live.consumers_any = true;
+  live.setting = rr::Denoiser::kOurs;
+  const bool before = SelectRayRegen(live).use;
+  live.setting = rr::Denoiser::kRr;
+  const bool after = SelectRayRegen(live).use;
+  live.setting = rr::Denoiser::kOurs;
+  Check(!before && after && !SelectRayRegen(live).use, "switching the row there and back changes the plan at the next frame, with no restart");
+  // the choice beside DLSS RR's plan: never both on one PC, ours when neither
+  Check(ChooseDenoiser(plan(rr::Denoiser::kRr, ssr), rr::Plan{false, rr::Why::kBuildHasNoRr}) == DenoiserKind::kRayRegen && ChooseDenoiser(plan(rr::Denoiser::kAuto, ssr), rr::Plan{false, rr::Why::kBuildHasNoRr}) == DenoiserKind::kOurs,
+        "a Radeon with the row on its value is Ray Regeneration's, with AUTO ours");
+  // the context lives while the plan is on and for kContextHoldFrames after, then it is freed (only while the option is selected)
+  rr::ContextKeeper keeper;
+  bool held = true;
+  for (int frame = 0; frame < 5; ++frame) held = held && keeper.Update(ContextWanted(Why::kOn));
+  Check(held && keeper.keep(), "the context is wanted while the plan is on");
+  int frames_kept = 0;
+  while (keeper.Update(ContextWanted(Why::kSettingOurs)) && frames_kept < 5000) ++frames_kept;
+  Check(frames_kept == int(rr::kContextHoldFrames) && !keeper.keep(), "after the row leaves its value the context is kept " + std::to_string(rr::kContextHoldFrames) + " frames, then freed");
+  Check(ContextWanted(Why::kOn) && !ContextWanted(Why::kNoRoom) && !ContextWanted(Why::kFailed) && !ContextWanted(Why::kNotSupported) && !ContextWanted(Why::kNoConsumer) && !ContextWanted(Why::kNotThisGpu),
+        "only a plan that is on wants the context: no room, a failure, a card that cannot, nothing to clean: none is made");
+  // a refused dispatch is never a count against Ray Regeneration; three errors in a row drop it for the session (ours from then on)
+  rr::FailureBook book;
+  bool dropped = false;
+  for (int i = 0; i < 10; ++i) dropped = dropped || book.Note(rr::FailureBook::Event::kRefused);
+  Check(!dropped, "refused dispatches (the effect keeps its own filter for the frame) never drop the runtime");
+  Check(!book.Note(rr::FailureBook::Event::kError) && !book.Note(rr::FailureBook::Event::kError) && book.Note(rr::FailureBook::Event::kError), "three errors in a row drop it for the session");
+  PlanInputs failed = Ready();
+  failed.consumers_on = ssr;
+  failed.facts.failed = true;
+  Check(SelectRayRegen(failed).why == Why::kFailed, "dropped: the plan says failed, ours");
+  // the video memory: the row's context for the reflections at 1080p (the trace is half of it), and the room check says no where it does not fit
+  Check(EstimateBytes(FlagOf(Signal::kIndirectSpecular), 960, 540) / rr::kMiB == 90, "the context for the 1080p trace's indirect specular is AMD's 90 MiB");
+  PlanInputs no_room = Ready();
+  no_room.consumers_on = ssr;
+  no_room.room_ok = false;
+  Check(SelectRayRegen(no_room).why == Why::kNoRoom, "no room in video memory: the effects keep their own denoisers");
 }
 
 }  // namespace
@@ -750,6 +847,7 @@ int main() {
   CheckMemory();
   CheckWords();
   CheckGate();
+  CheckRowEndToEnd();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

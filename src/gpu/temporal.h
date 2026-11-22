@@ -188,6 +188,7 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "edram.h"
+#include "ray_regen_plan.h"
 #include "render_scale.h"
 #include "rr_guides.h"
 #include "scale.h"
@@ -455,6 +456,16 @@ class TemporalSystem {
   // upscaled and the play view, and the effect's own debug switch is on). Asked by the effects at their trigger (Scene), after the frame's main view is known; with the plan not RR it says "not raw" for
   // every effect and nothing else happens (no log, no count). Logs the answer each time it changes once the plan has been RR. Render thread.
   rr::RawModes RawModes();
+  // RG-3, AMD FSR RAY REGENERATION (ray_regen_plan.h, perf/RAY-REGEN.md): the plan is made at the frame boundary beside DLSS Ray Reconstruction's (UpdateDenoiserPlan: the DENOISER row, the effects that are
+  // on, the runtime, the video memory; the context is made while the plan is on and freed after rr::kContextHoldFrames), and the effects ask at their trigger which of them are Ray Regeneration's this
+  // frame: the twin of RawModes() (the effect's own debug switch is the A/B; no upscaled frame is needed). With the plan not Ray Regeneration (every PC but a Radeon RX 9000 with the row on its value) it
+  // says "not Ray Regeneration's" for every effect and nothing else happens. The frame's jitter, render pixels +y down, is what the effect's guide pass takes the jitter out with.
+  rr::RawModes RegenModes();
+  void FrameJitter(float out[2]) const {
+    out[0] = frame_.jitter[0];
+    out[1] = frame_.jitter[1];
+  }
+  const rayregen::Planner& RegenPlanner() const { return regen_; }
   // RR-4: the effects' hit distance images of this frame (R16_FLOAT at the render size; null where an effect did not write one), handed over by Scene after the trigger's passes and read by the guide
   // pass at the anchor (rr_guides.h Inputs::hit): [0] the screen-space reflections', [1] the cars' ray traced reflections'. Forgotten at the next frame boundary.
   void NoteRrHit(const HostImage* ssr, const HostImage* car_refl) {
@@ -816,6 +827,7 @@ class TemporalSystem {
   // Ray Reconstruction: this frame's plan, the guide images the frame's guide pass handed over (NoteRrGuides) and the plan last logged.
   rr::Plan rr_plan_;
   rr::RawModes rr_raw_last_;               // RR-4: the raw answer last logged
+  rayregen::Planner regen_;                // RG-3: AMD FSR Ray Regeneration's plan, context and modes
   bool rr_raw_logged_ = false;
   const HostImage* rr_hit_[2] = {nullptr, nullptr};   // RR-4: this frame's hit distance images (NoteRrHit)
   RrGuides* rr_pass_ = nullptr;  // the guide pass (SetRrGuidePass)

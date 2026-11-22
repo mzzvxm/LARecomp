@@ -34,6 +34,7 @@
 #include "rt_bench.h"
 #include "rt_tier.h"
 #include "native_window.h"
+#include "ray_regen.h"
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
@@ -176,7 +177,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
 #endif
     gbuffer_.Initialize(passes_, edram_, pass_timing_);  // and the G-buffer's sidecar (gbuffer.h): made on the first draw that carries it
     screen_.Initialize(passes_, edram_, pass_timing_);  // and the shared screen products (screen_shared.h): the AO's depth chain published, the Hi-Z, made only while wanted
-    ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_);  // and the screen-space reflections (ssr.h): the layout and the shaders, the pipelines only when the setting is on
+    ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_, &frames_);  // and the screen-space reflections (ssr.h): the layout and the shaders, the pipelines only when the setting is on
     rr_guides_.Initialize(device_, frames_, heap_, passes_, pass_timing_);  // and DLSS Ray Reconstruction's guide pass (rr_guides.h): the layouts and shaders; the pipelines only when it is first wanted
     rr_guides_.SetGBuffer(&gbuffer_);
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
@@ -1713,6 +1714,7 @@ void Renderer::ReportFrameStats() {
                            (gbuffer_.HeldBytes() != 0 ? ", G-buffer " + mib(gbuffer_.HeldBytes()) : std::string()) +
                            (screen_.HeldBytes() != 0 ? ", screen products " + mib(screen_.HeldBytes()) : std::string()) +
                            (ssr_.HeldBytes() != 0 ? ", screen-space reflections " + mib(ssr_.HeldBytes()) : std::string()) +
+                           (rayregen::Current().context_bytes != 0 ? ", AMD FSR Ray Regeneration's context " + mib(rayregen::Current().context_bytes) : std::string()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())

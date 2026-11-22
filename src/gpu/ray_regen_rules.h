@@ -130,10 +130,15 @@ struct ConsumerCell {
   bool auto_uses;
 };
 using ConsumerTable = std::array<ConsumerCell, rr::kConsumerCount>;
-// TODAY (RG-1, nothing writes a signal yet): every cell is false, so the plugin is not even loaded and no frame changes. Each package flips its cell to signal_built when its writer lands; auto_uses
-// only after a Radeon RX 9000 A/B (RAY-REGEN.md section 8): the DLL costs 2.6 ms at 1080p for one specular signal on an RX 9070 XT, against our own denoisers' 0.03 ms.
+// TODAY (RG-3): the screen-space reflections have their signal writer (ray_regen_guides.h, hlsl/ray_regen_ssr_cs.hlsl: the trace's radiance and hit distance and the guides in AMD's formats, composed by the
+// reflections' own resolve), so signal_built is true for them and the DENOISER row's AMD value takes them; auto_uses stays false for every effect until a Radeon RX 9000 A/B (RAY-REGEN.md section 8: the
+// DLL costs 2.6 ms at 1080p for one specular signal on an RX 9070 XT, against our own denoisers' 0.03 ms), so AUTO is ours on every PC.
+//   the cars' ray traced reflections: NOT a fit, so the cell stays false (RAY-REGEN.md section 4.2): their image is read by the NEXT frame's paint at the texels of the car's history image, with a weight
+//     code in the alpha that a hit distance has no room for, and a denoiser that costs the same for the whole picture (2.6 ms) would run for a car that fills a tenth of it, to replace a filter that costs 0.03 ms.
+//   the city's ray traced reflections, the ray traced bounce light, the lights' visibility: their effects are not in this tree (feat/city-rt-r6, feat/city-rt-g6, feat/rt-lights-d1); each flips its cell when
+//     it lands with a writer of its signal (indirect specular / indirect diffuse / dominant light visibility) and a compose step.
 inline constexpr ConsumerTable kConsumers = {{
-    {false, false},  // screen-space reflections
+    {true, false},   // screen-space reflections
     {false, false},  // ray traced car reflections
     {false, false},  // ray traced city reflections
     {false, false},  // ray traced bounce light
@@ -170,13 +175,14 @@ constexpr uint32_t ContextSignals(rr::Denoiser setting, rr::DebugSwitch debug, u
 }
 
 // Whether the runtime is opened at the start: the debug switch (mcla_gpu_ray_regen): off never, probe and on always (the device check inside Probe keeps every PC but a Radeon RX 9000 out), auto only where an
-// effect has a signal mode to hand it (ConsumerTable has a built cell): today none, so a start with the default opens nothing.
-constexpr bool ProbeWanted(rr::DebugSwitch debug, bool any_signal_built) {
+// effect has a signal mode to hand it (ConsumerTable has a built cell) and the DENOISER row is not OURS (OURS opens nothing: no memory, no start time). A row that leaves OURS later opens it live (the plan
+// asks ray_regen.h ProbeNow): Ray Regeneration needs no restart.
+constexpr bool ProbeWanted(rr::DebugSwitch debug, bool any_signal_built, bool row_is_ours = false) {
   switch (debug) {
     case rr::DebugSwitch::kOff: return false;
     case rr::DebugSwitch::kProbe:
     case rr::DebugSwitch::kOn: return true;
-    case rr::DebugSwitch::kRow: return any_signal_built;
+    case rr::DebugSwitch::kRow: return any_signal_built && !row_is_ours;
   }
   return false;
 }
@@ -263,6 +269,8 @@ enum class Why : uint8_t {
   kNoRoom,
   kGuidesNotReady,
 };
+// The context exists exactly while the plan is on and for kContextHoldFrames after (rr::ContextKeeper): created only while the option is selected and an effect that uses it runs, freed when it is not.
+constexpr bool ContextWanted(Why w) { return w == Why::kOn; }
 constexpr const char* WhyText(Why w) {
   switch (w) {
     case Why::kOn: return "AMD FSR Ray Regeneration is on";
@@ -346,12 +354,16 @@ constexpr Vendor VendorOf(uint32_t pci_vendor_id) { return pci_vendor_id == kVen
 // The twin of rr::RawModesOf. An effect writes its SIGNAL image (radiance without the albedo, the hit distance in the alpha) and takes the denoised one back for its compose step when the plan says
 // Ray Regeneration, its context is made, nothing failed and the frame is the play view. Unlike DLSS RR no upscaled frame is needed: Ray Regeneration denoises at the render size whatever the upscaler
 // does, so `armed` is not asked. The row's AUTO takes only the effects with auto_uses (an effect it does not trust keeps its own filter in a frame Ray Regeneration takes for another one).
-constexpr rr::RawWhy SignalWhyOf(rr::RawFrame f, bool switch_on, bool auto_uses) {
+// An effect with no signal writer (signal_built false) is never taken, whatever the plan says: it keeps its own filter (reported as kPlanOurs: "not Ray Regeneration's").
+constexpr rr::RawWhy SignalWhyOf(rr::RawFrame f, bool switch_on, bool auto_uses, bool signal_built = true) {
+  if (!signal_built) return rr::RawWhy::kPlanOurs;
   f.armed = true;
   return rr::RawWhyOf(f, switch_on, auto_uses);
 }
 constexpr rr::RawModes SignalModesOf(const rr::RawFrame& f, bool switch_ssr, bool switch_car_refl, const ConsumerTable& table = kConsumers) {
-  return {SignalWhyOf(f, switch_ssr, table[size_t(rr::Consumer::kSsr)].auto_uses), SignalWhyOf(f, switch_car_refl, table[size_t(rr::Consumer::kCarRtReflections)].auto_uses)};
+  const ConsumerCell& ssr = table[size_t(rr::Consumer::kSsr)];
+  const ConsumerCell& car = table[size_t(rr::Consumer::kCarRtReflections)];
+  return {SignalWhyOf(f, switch_ssr, ssr.auto_uses, ssr.signal_built), SignalWhyOf(f, switch_car_refl, car.auto_uses, car.signal_built)};
 }
 
 // --- the inputs: what we already make, what is new -----------------------------------------------------------------------------------------------------------
@@ -682,19 +694,21 @@ enum class Gate : uint8_t {
   kRuns,
   kStarting,      // the runtime is being opened (nothing is said)
   kApplying,      // on; the context is being made
-  kNotThisGpu,    // grey: not an AMD card on Direct3D 12 with shader model 6.6
-  kNotAvailable,  // grey: the runtime offers it for no card of this PC (RDNA 3 and older, an old driver), or this build has none
+  kNotThisGpu,    // grey: not an AMD card (the row of an RTX card is DLSS RR's: denoiser_setting.h)
+  kNeedsD3D12,    // grey: an AMD card, but the renderer runs on Vulkan (AMD ships no Vulkan provider for Ray Regeneration)
+  kNotAvailable,  // grey: the runtime offers it for no card of this PC (RDNA 3 and older, an old driver, a shader model below 6.6), or this build has none
   kSetup,         // grey: the DLLs are missing
   kFailed,
   kNotNeeded,     // grey: no effect that uses it is on
 };
-inline constexpr int kGateCount = 8;
+inline constexpr int kGateCount = 9;
 constexpr bool RowEnabled(Gate g) { return g == Gate::kRuns || g == Gate::kStarting || g == Gate::kApplying; }
 // At most 13 characters after the label (the page's width rule).
 constexpr const char* RowSuffix(Gate g) {
   switch (g) {
     case Gate::kApplying: return " (APPLYING)";
     case Gate::kNotThisGpu: return " (NO RX 9000)";
+    case Gate::kNeedsD3D12: return " (D3D12 ONLY)";
     case Gate::kNotAvailable: return " (N/A)";
     case Gate::kSetup: return " (SETUP)";
     case Gate::kFailed: return " (FAILED)";
@@ -705,7 +719,8 @@ constexpr const char* RowSuffix(Gate g) {
 constexpr const char* LauncherReason(Gate g) {
   switch (g) {
     case Gate::kApplying: return "AMD FSR Ray Regeneration is being prepared";
-    case Gate::kNotThisGpu: return "Needs a Radeon RX 9000 series graphics card and Direct3D 12";
+    case Gate::kNotThisGpu: return "Needs a Radeon RX 9000 series graphics card";
+    case Gate::kNeedsD3D12: return "Needs Direct3D 12 (AMD FSR Ray Regeneration has no Vulkan version)";
     case Gate::kNotAvailable: return "Not available on this graphics card or driver";
     case Gate::kSetup: return "Setup needed: the AMD FSR Ray Regeneration files are missing";
     case Gate::kFailed: return "AMD FSR Ray Regeneration failed in this session; ours goes on";
@@ -717,7 +732,11 @@ constexpr const char* LauncherReason(Gate g) {
 // The row's state, asked of the plan's own rules with the setting forced to the vendor's value and the frame's needs met (so the row and the plan can never disagree about what the PC can do), then the
 // one thing the rules cannot know here: whether an effect that uses it is on.
 inline Gate GateOf(const Facts& facts, rr::DebugSwitch debug, uint32_t consumers_on, bool context_making, const ConsumerTable& table = kConsumers) {
-  if (facts.device != DeviceVerdict::kOk && facts.build_has) return Gate::kNotThisGpu;
+  if (facts.build_has) {
+    if (facts.device == DeviceVerdict::kNotD3D12) return Gate::kNeedsD3D12;
+    if (facts.device == DeviceVerdict::kShaderModelTooLow) return Gate::kNotAvailable;
+    if (facts.device != DeviceVerdict::kOk) return Gate::kNotThisGpu;
+  }
   if (debug == rr::DebugSwitch::kOff) return Gate::kNotAvailable;
   // Nothing has a signal mode (the shipped table before RG-3): nothing could use it, so nothing is "not available".
   if (debug == rr::DebugSwitch::kRow && !AnySignalBuilt(table)) return Gate::kNotNeeded;

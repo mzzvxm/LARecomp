@@ -25,9 +25,7 @@
 #include "render_scale.h"
 #include "resolve.h"
 #include "temporal_dlss.h"
-#if defined(LARECOMP_HAS_RAY_REGEN)
 #include "ray_regen.h"
-#endif
 #include "texture_bytes.h"
 #include "textures.h"
 #include "topology.h"
@@ -245,10 +243,10 @@ void TemporalSystem::Initialize(Device& device, FrameRing& frames, BindlessHeap&
   if (dlss_) {
     dlss_->Probe(device, frames);
   }
-#if defined(LARECOMP_HAS_RAY_REGEN)
-  // AMD FSR Ray Regeneration (perf/RAY-REGEN.md, RG-1): opened only where mcla_gpu_ray_regen asks for it and the device is a Radeon RX 9000 on Direct3D 12. Nothing uses it yet.
+  // AMD FSR Ray Regeneration (perf/RAY-REGEN.md): the card's vendor is noted first (the DENOISER row names its value by it), and the runtime is opened here only where the debug cvar or the row asks for it and
+  // the device is a Radeon on Direct3D 12 (never on any other PC); a row that leaves OURS later opens it live (the plan: ray_regen_plan.h).
+  rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12);
   rayregen::StartIfWanted(device, frames);
-#endif
 }
 
 void TemporalSystem::Shutdown() {
@@ -260,9 +258,7 @@ void TemporalSystem::Shutdown() {
   stand_in_set_ = false;
   output_ = HostImage{};
   rr_pass_ = nullptr;  // the Renderer shuts it down itself
-#if defined(LARECOMP_HAS_RAY_REGEN)
   rayregen::StopAll();
-#endif
   if (ffx_) {
     ffx_->Shutdown();
     ffx_.reset();
@@ -1791,6 +1787,17 @@ void TemporalSystem::UpdateDenoiserPlan() {
   snapshot.context_making = rr_context_asked_ && dlss_ && !dlss_->CompanionReady(rr_request_);
   snapshot.plan = rr_plan_;
   denoiser::Publish(snapshot);
+  // RG-3: AMD FSR Ray Regeneration's plan beside it (one vendor: at most one of the two is ever on). Nothing happens on a PC that is not a Radeon RX 9000 on Direct3D 12 with the row on its value.
+  {
+    rayregen::Planner::Inputs regen_in;
+    regen_in.device = device_;
+    regen_in.frames = frames_;
+    regen_in.setting = in.setting;
+    regen_in.consumers_on = consumers_on;
+    regen_in.frame = frame_number_;
+    regen_in.dlss_plan = rr_plan_;
+    regen_.Update(regen_in);
+  }
   // The guide pass (rr_guides.h) is Want-driven: it runs while the plan would be Ray Reconstruction if the guides were there (or is), and for a debug view while an upscaler runs.
   if (rr_pass_) {
     rr_pass_->BeginFrame(rr_guides::PassWanted(rr_plan_, RrGuides::ViewSetting(), effective_ != Upscaler::kOff));
@@ -1919,6 +1926,12 @@ rr::RawModes TemporalSystem::RawModes() {
     frame_.raw_any = frame_.raw_any || modes.Ssr() || modes.CarRefl();
   }
   return modes;
+}
+
+rr::RawModes TemporalSystem::RegenModes() {
+  // The frame's own view is known from its first main draw (OnMainView), as RawModes(): the pause, garage and map worlds are not ones the effects' guides exist for.
+  const bool play_view = frame_.samples != 0 && frame_.view == temporal::View::kPlay;
+  return regen_.Modes(play_view, rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_ray_regen_ssr.Get())), false);   // the cars' reflections have no signal writer (ray_regen_rules.h kConsumers)
 }
 
 void TemporalSystem::NoteRrDispatch(const rr::DispatchChoice& choice, bool used_rr, uint32_t width, uint32_t height, uint32_t out_width, uint32_t out_height) {

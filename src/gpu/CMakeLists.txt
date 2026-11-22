@@ -87,6 +87,7 @@ add_library(larecomp_gpu OBJECT
     rt_tier.cpp
     rr_guides.cpp
     ray_regen_guides.cpp
+    ray_regen_plan.cpp
     samplers.cpp
     scene.cpp
     screen_shared.cpp
