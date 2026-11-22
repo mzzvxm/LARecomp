@@ -5,7 +5,7 @@
 //   user_root -> app.user_root      cache_root -> app.cache_root     config_file -> app.config_file
 //   game_root -> title.game_root    update_root -> title.update_root metadata_root -> title.metadata_root
 // LarecompApp::CurrentPaths() reads them; the wizards that change one (the installer: game_root) write the setting
-// back with Setting::Set before LaunchTitle (title.* are kUntilLaunch; app.* are frozen when OnInit starts).
+// back with Setting::Set before LaunchTitle (title.* are kLockedInGame; app.* are frozen when OnInit starts).
 //
 #include <filesystem>
 

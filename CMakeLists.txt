@@ -560,12 +560,16 @@ add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
     src/settings/cli_rules_test.cpp)
 target_include_directories(larecomp_cli_rules_test PRIVATE src)
 
-# The table of change-callback guards (src/settings/watch_table.h: released by hand while the SDK's settings still exist, because the exe's
-# static destruction came after the SDK had destroyed them and crashed in Mtx_lock about every other run) has a check that needs no game:
+# The table of change-callback guards (src/settings/watch_table.h) and the exit crash of 2026-11-21 (the exe's static destruction released a
+# guard of a setting the SDK had already destroyed, an access violation in Mtx_lock about every other run) have a check that needs no game, but
+# it uses the SDK's own settings, so it links rex::base (rexbase.dll next to it or on the PATH) and, like every SDK executable, takes the SDK's
+# operator new and delete forwarders (a guard is allocated in rexbase.dll and freed in the test: two heaps would corrupt it):
 #   cmake --build <build dir> --target larecomp_watch_table_test, then run <build dir>/larecomp_watch_table_test (exit 0 = passed).
 add_executable(larecomp_watch_table_test EXCLUDE_FROM_ALL
     src/settings/watch_table_test.cpp)
 target_include_directories(larecomp_watch_table_test PRIVATE src)
+target_link_libraries(larecomp_watch_table_test PRIVATE rex::base)
+rexglue_link_host_allocator(larecomp_watch_table_test)
 
 # Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
 # own default for cache_root) has a check that needs no game:

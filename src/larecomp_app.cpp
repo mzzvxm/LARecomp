@@ -612,7 +612,7 @@ rex::Result<void> LarecompApp::OnInit() {
   // CHECK: ILogger has no flush_on level: log.flush_interval (hot) covers it.
   larecomp::InitDebugMenu();  // the command line, the environment and larecomp.toml are all read by now
   // The game's language: LARecomp's `language` choice becomes the console's user language before the title launches
-  // (kernel.user_language is kUntilLaunch: writable until then). Needs the player's `language` line, so not before OnInit.
+  // (kernel.user_language is kLockedInGame: writable until then). Needs the player's `language` line, so not before OnInit.
   InitLanguageSetting();
 
   // The game files: when nothing valid is set, look around as the 0.10 start-up did; the wizard handles the rest.
@@ -844,7 +844,7 @@ bool LarecompApp::RunSetupFrame() {
             rex::app::RequestShutdown(1);
             return false;
           } else {
-            // The folder the player installed to becomes the game root (title.game_root is kUntilLaunch: writable until
+            // The folder the player installed to becomes the game root (title.game_root is kLockedInGame: writable until
             // LaunchTitle); the next step and the SDK's LaunchTitle read it from there.
             larecomp::ShowRexglueIsoInstallWizard(ui, paths, [this](larecomp::Paths installed) {
               if (auto set = GetTitleRuntime().GetTitlePaths().game_root.Set(installed.game_root); !set) {

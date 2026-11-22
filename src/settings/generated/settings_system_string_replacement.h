@@ -16,7 +16,7 @@ class SystemStringReplacementSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, string_dump_enabled, false, "Capture encountered strings to TOML for translation/modding", rex::kDebugOnly);  // was inside a #if in the .cpp: check
 
-  REX_SETTING(std::string, string_folder, "", "Override the strings folder (empty = <game data>/strings)", rex::kDebugOnly, rex::kRestart);  // was inside a #if in the .cpp: check
+  REX_SETTING(std::string, string_folder, "", "Override the strings folder (empty = <game data>/strings)", rex::kDebugOnly, rex::kRequiresRestart);  // was inside a #if in the .cpp: check
 
   REX_SETTING(std::string, string_language, "", "Language code for string replacements (e.g. pt_BR, es_ES)", rex::kDebugOnly);  // was inside a #if in the .cpp: check
 

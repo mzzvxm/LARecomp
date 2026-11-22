@@ -24,7 +24,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
     "target).", rex::kDebugOnly);
 
   // The cvars native_gfx.cpp defines and the guest-side files Plume shares read.
-  REX_SETTING(bool, mcla_native_gfx, false, "The D3D12 native graphics runtime. Not built on this platform.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(bool, mcla_native_gfx, false, "The D3D12 native graphics runtime. Not built on this platform.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_native_gfx_ab_cvar, "", "Performance A/B within one session: the name of a boolean cvar to flip "
                       "every mcla_native_gfx_ab_frames frames. Each perfwin line in "
@@ -72,7 +72,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
     "Applies only to a sampler that is already filtering with mipmaps, which is the same\n"
     "eligibility rule the emulated path uses: forcing anisotropy onto a point-sampled or\n"
     "base-map sampler would change what the game asked for rather than how sharply it is\n"
-    "filtered.", rex::kDebugOnly, rex::kRestart);
+    "filtered.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_native_gfx_aniso_census, false, "TEMP DIAG: count texture binds by whether the sampler is eligible for "
                     "anisotropy and whether the texture actually has a mip chain to filter "
@@ -166,7 +166,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
                     "pipeline and present it, instead of the one-shot capture. Keeps all caches "
                     "across frames, so the HDR exposure adaptation converges. Does NOT suppress "
                     "the guest swap (avoids the command-processor TDR), so the guest still runs "
-                    "underneath. Requires mcla_native_gfx.", rex::kDebugOnly, rex::kRestart);
+                    "underneath. Requires mcla_native_gfx.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_native_gfx_decl_float, true, "Read the two 32-bit float vertex declaration types at their measured width.", rex::kDebugOnly);
 
@@ -301,7 +301,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
     "kBaseMap e ZERO deles carrega cadeia -- o jogo marca base-map porque a textura tem "
     "um nivel so -- e 70% desses (9.0M) sao formato 6 (k_8_8_8_8), que e box filter na "
     "CPU sem precisar recomprimir BC. E MELHORIA, nao paridade: o 360 tambem aliasava "
-    "nessas superficies, por isso o default e off.", rex::kDebugOnly, rex::kRestart);
+    "nessas superficies, por isso o default e off.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_native_gfx_geomdump, false, "Dump a per-draw geometry snapshot (streams, strides, input layout, index "
                     "buffer, slicing) built from guest state, to "
@@ -406,7 +406,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
     "tree's colour to oC0 and its packed normal to oC1, and the game resolves the two into\n"
     "different addresses. With one target bound, both resolves copied target 0, the impostor\n"
     "shader read the colour atlas as its normal atlas, and normalize(colour*2-1) came out a\n"
-    "constant -- a flat, uniformly lit canopy.", rex::kDebugOnly, rex::kRestart);
+    "constant -- a flat, uniformly lit canopy.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(u32, mcla_native_gfx_msaa, 0, "Multisample count for the HDR scene target: 2, 4 or 8. Anything else (including the "
     "default) keeps every target single-sampled, which is what the runtime did unconditionally "
@@ -427,7 +427,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
     "Depth is resolved with ResolveSubresourceRegion in MAX mode -- D3D12 has no sample-0\n"
     "depth resolve, and MAX keeps the nearest surface under the reverse-Z main pass.\n"
     "Measured at 4x on the menu camera: silhouette transitions widened 34-39% against the\n"
-    "same scene at 1x, with zero validation errors.", rex::kDebugOnly, rex::kRestart);
+    "same scene at 1x, with zero validation errors.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_native_gfx_msaa_depth_cs, true, "Resolve a multisampled depth surface with the compute pass. Off restores "
                     "the shipped behaviour, an all-zero depth copy, which is what killed the "
@@ -458,7 +458,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
                     "adapter selection, Agility SDK features, and drops the shared submit mutex. "
                     "Off by default, like mcla_native_gfx_own_swapchain: without that one the "
                     "presenter shows the frame from its own queue, which nothing orders after the "
-                    "blit on this one.", rex::kDebugOnly, rex::kRestart);
+                    "blit on this one.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(u32, mcla_native_gfx_own_heap_kb, 0, "Size of the guest-addressable block the runtime allocates its D3D objects out of, in KiB. "
     "0 uses the built-in default (4096). Rounded down to a power of two -- o1heap only uses the "
@@ -466,14 +466,14 @@ class NativeGfxSettings final : public rex::SettingOwner {
     "Taken from the guest VIRTUAL window, never from a physical one: the physical windows are "
     "views of the console's 512 MiB of RAM, and taking 32 MiB of it killed the title during "
     "loading with 'PhysicalHeap::Alloc unable to alloc physical memory in parent heap'. "
-    "Raise this if the exhaustion report fires.", rex::kDebugOnly, rex::kRestart);
+    "Raise this if the exhaustion report fires.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_native_gfx_own_swapchain, false, "Use NativeSwapChain (FLIP_DISCARD, tearing, frame latency waitable object) "
                     "presenting directly to the HWND backbuffer, eliminating intermediate blits "
                     "and enabling full ReShade / Reno DX DevKit visibility. Off by default: it "
                     "bypasses rex::ui::Presenter, so present_effect (FSR) and every ImGui overlay "
                     "(console, F3, toasts) are gone and the frame is stretched bilinearly. Needs "
-                    "mcla_native_gfx_own_device.", rex::kDebugOnly, rex::kRestart);
+                    "mcla_native_gfx_own_device.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(u32, mcla_native_gfx_own_textures, 0, "Resource ownership, step two: who allocates the 52-byte D3DTexture header. "
     "0 = the guest, as always. "
@@ -514,7 +514,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
                     "processor is still consuming the game's draws: without swaps its D3D12 "
                     "submission never closes and the GPU eventually TDRs (observed DEVICE_HUNG). "
                     "It becomes the default path once the native runtime executes the draws "
-                    "itself and the guest command stream is empty.", rex::kDebugOnly, rex::kRestart);
+                    "itself and the guest command stream is empty.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_native_gfx_present_anchor, false, "Continuous mode: present the anchor (raw scene target) instead of the "
                     "readback (composite) pass. The continuous readback comes out flat/black "
@@ -736,7 +736,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
     "R8G8B8A8 surfaces, and merging them by shape is what lands all of it in the target that "
     "gets displayed -- with this on, the whole 2D layer disappears, HUD included. The merge is "
     "load-bearing: it stands in for the composition the native runtime deliberately does not "
-    "model. Kept as a bisection switch, not as a fix.", rex::kDebugOnly, rex::kRestart);
+    "model. Kept as a bisection switch, not as a fix.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_native_gfx_swapped_texcoords, true, "Fill SharedConstants.g_SwappedTexcoords from the vertex declaration. A RAGE "
                     "vertex packs a 32-bit POSITION and a 16-bit TEXCOORD in one stream, but a "
@@ -845,7 +845,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
                       "One/One/ReversedSubtract punch, so a white mask subtracts nothing and the "
                       "minimap keeps its square corners instead of being clipped to a circle. "
                       "Intermittent by nature -- it only bites on a frame where the burst leaves "
-                      "less than 4 MiB. Measured need was 31.7 MiB in use plus the 4 MiB request.", rex::kDebugOnly, rex::kRestart);
+                      "less than 4 MiB. Measured need was 31.7 MiB in use plus the 4 MiB request.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_native_gfx_vblank_probe, false, "Read-only probe of the guest's vblank and flip machinery, for the port to a runtime with no "
     "command processor. Reports the vblank counter, the flip counter and the pending-flip queue "

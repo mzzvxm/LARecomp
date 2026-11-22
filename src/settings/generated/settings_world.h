@@ -37,7 +37,7 @@ class WorldSettings final : public rex::SettingOwner {
   REX_SETTING(std::string, start_garage, "hollywood", "Which district garage the car starts the session at: hollywood (what the game "
     "always does), beaches, sc, or last (the garage nearest the car when the game was "
     "closed). The car is moved there once, when it first appears at Hollywood's door, so a "
-    "change is seen at the next start of the game.", rex::kRestart);
+    "change is seen at the next start of the game.", rex::kRequiresRestart);
 
   REX_SETTING(std::string, start_garage_last, "hollywood", "The garage nearest the car the last time it was driven (hollywood, beaches or sc); "
     "start_garage = last starts the session there. The game keeps it up to date.", rex::kDebugOnly);

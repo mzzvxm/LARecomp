@@ -20,7 +20,7 @@ class AudioSettings final : public rex::SettingOwner {
     "and registered with the Windows multimedia scheduler (\"Pro Audio\"), -1 = automatic: 3 on "
     "a PC with 6 or fewer logical processors, 0 otherwise. On Linux 1 to 3 raise the threads' "
     "nice value if the system allows it (it usually does not for an ordinary user). Takes "
-    "effect at the next start.", rex::Range{-1, 3}, rex::kDebugOnly, rex::kRestart);
+    "effect at the next start.", rex::Range{-1, 3}, rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, custom_music, false, "Old host player: decodes <exe>/music/*.mp3 outside the game and plays them "
     "over it, with the guest radio carrying only the row. Off, because the "
@@ -28,7 +28,7 @@ class AudioSettings final : public rex::SettingOwner {
     "objects, real cues and real streaming wave banks -- the radio then behaves "
     "exactly as it does for a shipped song. This only ever sees a file the "
     "native route could not take, and playing that one a second-class way hides "
-    "the reason instead of showing it.", rex::kRestart, rex::kDebugOnly);
+    "the reason instead of showing it.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, custom_music_announce, true, "Print the song name on the HUD info strip (the bar under the speedometer "
     "that normally carries the district name) whenever the radio moves to a new "
@@ -47,7 +47,7 @@ class AudioSettings final : public rex::SettingOwner {
     "The shipped radio goes through the RAGE mixer and its ducking curves, "
     "which the host player does not, so 1.0 comes out noticeably louder.", rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_audio_output, "auto", "auto: the default device, or silence when none opens. null: always silent.", rex::kDebugOnly, rex::kRestart);
+  REX_SETTING(std::string, mcla_audio_output, "auto", "auto: the default device, or silence when none opens. null: always silent.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, music_bank_log, false, "Log every streaming wave bank the audio engine opens: the bank id (an index "
     "into the sounds.dat string table) and whether the file was found. Use it "
@@ -58,7 +58,7 @@ class AudioSettings final : public rex::SettingOwner {
     "every genre bucket with each song's hash code and title. This is how you "
     "tell whether a song added through the audio metadata (a rebuilt game.dat "
     "plus its wave bank) actually reached AddSong, since the game's own log "
-    "line for that was compiled out.", rex::kRestart, rex::kDebugOnly);
+    "line for that was compiled out.", rex::kRequiresRestart, rex::kDebugOnly);
 
 };
 

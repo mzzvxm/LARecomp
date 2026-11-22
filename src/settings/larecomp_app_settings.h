@@ -25,7 +25,7 @@ class AppSettings final : public rex::SettingOwner {
   REX_SETTING(std::string, graphics_backend, "auto",
               "Graphics API of the Plume renderer: auto, d3d12, vulkan. Read at start-up. The XENIA renderer's API is "
               "the SDK's gpu.driver (d3d12 or vulkan), which also picks the renderer (larecomp, or the SDK's Xenia GPU)",
-              rex::Allowed("auto", "d3d12", "vulkan"), rex::kRestart);
+              rex::Allowed("auto", "d3d12", "vulkan"), rex::kRequiresRestart);
 
   // The three below were REXCVAR_DEFINE lines that cvar_convert.py cannot move (a validator, a default that is a
   // constant of another file); the script removes the old definitions (HAND_DEFINED) and rewrites their uses.
@@ -34,20 +34,20 @@ class AppSettings final : public rex::SettingOwner {
   // `git grep "validator(" 4538f255 -- src`; the script's HAND_DEFINED set keeps their definitions out of the generated
   // headers):
   //   debug_menu       (mc_engine/debug_menu.cpp)         refused a write once InitDebugMenu had run.
-  //                    NOW NATIVE: kStartupOnly. The SDK freezes it just before OnInit (App::Init,
-  //                    ISettingsRegistryControl::Freeze(kStartupOnly)); a write after that fails with "can no longer
+  //                    NOW NATIVE: kInitOnly. The SDK freezes it just before OnInit (App::Init,
+  //                    ISettingsRegistryControl::Freeze(kInitOnly)); a write after that fails with "can no longer
   //                    change", for the console, the settings panel and code. The old comment said the SDK never
   //                    enforced kInitOnly (nothing called FinalizeInit): 0.11 does.
   //   frame_step_cap   (mc_engine/hooks/frame_timing.cpp) "adaptive" or a number of ms (positive, finite).
   //                    RE-ADDED as settings/validated_setting.h's ValidatedString (the model has no validator trait;
-  //                    a SettingBase whose Store tests the text), with the same functions the reader uses
+  //                    a SettingBase whose Commit tests the text), with the same functions the reader uses
   //                    (settings/step_cap.h).
   REX_SETTING(bool, debug_menu, false,
               "Unlock the hidden DEBUG menu and the developer settings, for testing and for bug reports. "
               "Turn it on with --debug_menu on the command line, REX_DEBUG_MENU=1 (or REX_LARECOMP_DEBUG_MENU=1) in the "
               "environment, or debug_menu = true in larecomp.toml. It cannot be changed while the game runs, and the "
               "game never writes it to the file. Settings changed in the DEBUG menu are not saved either.",
-              rex::kStartupOnly, rex::kDebugOnly);
+              rex::kInitOnly, rex::kDebugOnly);
 
   // A test of the compatibility renderer offer (gpu/renderer_fallback.h), for the main session and testers: no graphics card is needed that
   // the native renderer refuses. Read in mcla::gpu::Startup, which hands it to Device::Options, so the real failure path runs (Plume's device
@@ -56,7 +56,7 @@ class AppSettings final : public rex::SettingOwner {
               "A test of the box that offers the compatibility renderer: both graphics APIs are refused on purpose, as if the graphics card "
               "could not run the native renderer, so the game shows that box (with its Use the compatibility renderer button) and stops instead "
               "of starting. Read at start. Debug only: use it as a launch argument; it is never saved.",
-              rex::kStartupOnly, rex::kDebugOnly);
+              rex::kInitOnly, rex::kDebugOnly);
 
   ValidatedString frame_step_cap{
       this, "frame_step_cap", "adaptive",

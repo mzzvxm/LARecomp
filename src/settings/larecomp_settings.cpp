@@ -149,9 +149,9 @@ void ApplyLegacyEnvironment() {
 }
 
 void UnregisterAll() {
-  // First: the change callbacks. Their guards lock the watched settings' own mutexes, and some of those settings belong to SDK systems
-  // that are destroyed right after OnShutdown. Not under the State mutex: RegisterChangeCallback takes the callbacks' mutex and then
-  // FlatName takes this one.
+  // First: the change callbacks, so that none runs into LARecomp code that is being torn down, and a call in progress on another thread
+  // is waited for here (a guard's release waits for it). Not under the State mutex: RegisterChangeCallback takes the callbacks' mutex and
+  // then FlatName takes this one.
   larecomp::cvar::ReleaseChangeCallbacks();
   State& s = S();
   std::lock_guard lock(s.mutex);
@@ -470,10 +470,10 @@ FlagEntry Build(rex::SettingBase& s) {
   rex::SettingBase* p = &s;
   e.getter = [p] { return p->GetText(); };
   const rex::SettingConstraints& c = s.GetConstraints();
-  // kStartupOnly closes before OnInit and kUntilLaunch when the title launches: either way it is read-only to anything
+  // kInitOnly closes before OnInit and kLockedInGame when the title launches: either way it is read-only to anything
   // that runs afterwards (the settings panel, the pause menu).
-  e.lifecycle = c.life == rex::SettingLife::kRestart ? Lifecycle::kRequiresRestart
-                : (c.life == rex::SettingLife::kStartupOnly || c.life == rex::SettingLife::kUntilLaunch) ? Lifecycle::kInitOnly
+  e.lifecycle = c.mode == rex::SettingMode::kRequiresRestart ? Lifecycle::kRequiresRestart
+                : (c.mode == rex::SettingMode::kInitOnly || c.mode == rex::SettingMode::kLockedInGame) ? Lifecycle::kInitOnly
                                                                                                          : Lifecycle::kHotReload;
   e.constraints.min = c.min;
   e.constraints.max = c.max;
@@ -498,13 +498,13 @@ FlagEntry BuildCommand(rex::ConsoleCommand& command) {
 }
 
 std::mutex g_cb_mutex;
-// Never destroyed. Some watched settings are the SDK's (ui.resolution, ui.fullscreen) and die with their system before the exe's static
-// destruction: a table destroyed then released a guard on a freed Setting's mutex (Mtx_lock access violation at exit, about every other
-// run since the 0.11 SDK). The guards are released by ReleaseChangeCallbacks from UnregisterAll, while the settings exist; a path that
-// never gets there leaks them instead of touching a setting that is gone.
+// The guards of the change callbacks, under g_cb_mutex. An ordinary static: a guard released after its setting is gone (the SDK's settings
+// are destroyed with their systems before the exe's static destruction) only drops its reference, because the SDK detaches the watches
+// of a setting when the setting is destroyed (settings/watch_table.h). A guard is never released under g_cb_mutex: its release waits for
+// a call in progress on another thread, and that call may ask for this mutex.
 larecomp::settings::WatchTable<rex::ScopeGuard>& Guards() {
-  static auto* g = new larecomp::settings::WatchTable<rex::ScopeGuard>();
-  return *g;
+  static larecomp::settings::WatchTable<rex::ScopeGuard> g;
+  return g;
 }
 
 template <typename T>
@@ -596,7 +596,9 @@ bool RestoreValue(std::string_view name, std::string_view value, Source source) 
   if (!s) return false;
   // A layer only rises, so the setting goes back to its default first (layer kDefault) and the value is stored again at
   // the layer it came from. A default that came from LARecomp's own start-up code (the title layer, reported as kDefault)
-  // is restored at the title layer.
+  // is restored at the title layer. One batch: both writes store at once, and each function watching the setting is called
+  // once, with the restored value, instead of once with the default and once with the value.
+  const rex::SettingsBatch batch;
   if (!s->Reset()) return false;
   if (source == Source::kDefault && value == s->GetDefaultText()) return true;
   rex::SettingLayer layer = rex::SettingLayer::kTitle;
@@ -662,13 +664,20 @@ bool RegisterChangeCallback(std::string_view name, ChangeCallback callback) {
 void UnregisterChangeCallbacks(std::string_view name) {
   rex::SettingBase* s = ls::Find(name);
   if (!s) return;
-  std::lock_guard lock(g_cb_mutex);
-  Guards().Erase(ls::FlatName(*s));
+  std::vector<rex::ScopeGuard> released;
+  {
+    std::lock_guard lock(g_cb_mutex);
+    released = Guards().Take(ls::FlatName(*s));
+  }
+  // The guards go here, after the unlock: each waits for a call of its function that runs on another thread.
 }
 
 void ReleaseChangeCallbacks() {
-  std::lock_guard lock(g_cb_mutex);
-  Guards().ReleaseAll();
+  std::vector<rex::ScopeGuard> released;
+  {
+    std::lock_guard lock(g_cb_mutex);
+    released = Guards().TakeAll();
+  }
 }
 
 }  // namespace larecomp::cvar

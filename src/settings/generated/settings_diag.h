@@ -26,7 +26,7 @@ class DiagSettings final : public rex::SettingOwner {
     "session need not be launched from a shell to get it. The periodic report says "
     "where frame time goes; the stall dump is the one that matters when a load "
     "never finishes, because the thread the sampler follows is parked in a wait by "
-    "then and the stuck one is somebody else. Reports land in logs/profile_*.log.", rex::kDebugOnly, rex::kRestart);  // was inside a #if in the .cpp: check
+    "then and the stuck one is somebody else. Reports land in logs/profile_*.log.", rex::kDebugOnly, rex::kRequiresRestart);  // was inside a #if in the .cpp: check
 
   REX_SETTING(bool, inflate_trace, false, "Log every call into zlibInflater's decode step, for the first few hundred.\n"
     "\n"
@@ -41,7 +41,7 @@ class DiagSettings final : public rex::SettingOwner {
   REX_SETTING(bool, input_probe, false, "Log what the SDK's input system hands the game for users 0 to 3 whenever it changes: "
     "the status, the packet number, the buttons and the sticks. Off by default. Polling it "
     "pumps the same input path the game uses, so it can only make a pad look better, never worse; "
-    "if a pad shows nothing here, the game gets nothing either.", rex::kDebugOnly, rex::kRestart);
+    "if a pad shows nothing here, the game gets nothing either.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, segment_trace, "", "Dump the segment table of every resource whose file name contains this "
     "text, as the streamer allocates it.\n"
