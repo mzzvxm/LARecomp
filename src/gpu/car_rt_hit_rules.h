@@ -277,9 +277,12 @@ inline float CoatLayerMix(float paint, float car_colour, float amount) { return 
 // the push block's packed word
 // ---------------------------------------------------------------------------
 
-// slots.w of the push: the cone pattern's phase (0..7) in the low byte, the cone's rays (1 to 4) from bit 8.
-inline uint32_t PackPhaseRays(uint32_t phase, uint32_t rays) { return (phase & 7u) | (std::clamp<uint32_t>(rays, 1u, 4u) << 8); }
-inline uint32_t PhaseOf(uint32_t word) { return word & 7u; }
+// slots.w of the push: the cone's rays (1 to 4) from bit 8 (bits 16 and 17 are the stats flag and the blue flag) and the cone pattern's phase, 0..1023, in bits 18 to 27 (NOISE-FOLLOW: the scene's noise index
+// masked like the other effects' frame terms; it was 0..7 in the low byte, which repeated the cone's pattern every 8 frames and left a third of its noise as a 7.5 Hz shimmer under the history's weight of 0.75).
+inline constexpr uint32_t kPhaseShift = 18;
+inline constexpr uint32_t kPhaseMask = 1023u;
+inline uint32_t PackPhaseRays(uint32_t phase, uint32_t rays) { return ((phase & kPhaseMask) << kPhaseShift) | (std::clamp<uint32_t>(rays, 1u, 4u) << 8); }
+inline uint32_t PhaseOf(uint32_t word) { return (word >> kPhaseShift) & kPhaseMask; }
 inline uint32_t RaysOf(uint32_t word) {
   const uint32_t rays = (word >> 8) & 7u;
   return rays == 0 ? 4u : std::min(rays, 4u);  // a word with no rays in it is the whole cone (a host that does not say)
@@ -330,7 +333,7 @@ inline constexpr uint32_t kAllCalModel = 26;
 inline constexpr uint32_t kCoat = 27;        // texels whose clear-coat ray hit another car
 inline constexpr uint32_t kClassCount = 8;
 
-// The push's slots.w bit that makes this frame a stats frame (the shader counts only then); bits 0..2 are the cone pattern's phase, 8..10 the cone's rays.
+// The push's slots.w bit that makes this frame a stats frame (the shader counts only then); bits 8..10 are the cone's rays, 18..27 the cone pattern's phase.
 inline constexpr uint32_t kStatsFlag = 1u << 16;
 // A stats frame every this many history triggers (the counters cost atomics on a few dozen addresses: a frame in twenty), the first at kStatsFirst.
 inline constexpr uint64_t kStatsEvery = 20;

@@ -91,7 +91,7 @@ RWByteAddressBuffer g_stats : register(u2, space1);
 struct CarRtReflPush
 {
     // x the history image's bindless slot, y the reflection ray's parts (CAR_RT_MASK_*), z the primary ray's parts (the player's body, and another car's chrome),
-    // w the pattern's phase (the low three bits: 0, or 0 .. 7 by the frame where a temporal upscaler runs) and, from bit 8, the cone's rays the level allows (1 to 4; 0 is 4)
+    // w the cone's rays the level allows from bit 8 (1 to 4; 0 is 4), the flags in bits 16 and 17 and the pattern's phase in bits 18 to 27 (0, or the frame's number 0 .. 1023 where an upscaler or the pass's own history averages it)
     uint4 slots;
     // xy the image's size in texels, zw the render size in pixels
     float4 image;
@@ -287,7 +287,7 @@ static const float kConeRadius[4] = {0.5, 0.8660254037844386, 0.5, 0.86602540378
 static const int kConeOrder[4] = {1, 3, 0, 2};
 
 // The angle the texel's pattern is turned by, in turns: the blue noise tile at the texel (no lattice: the first version's interleaved gradient noise was one, which the 3x3 passes of the denoise left
-// as thin diagonal lines on a body panel) plus a golden step per phase, the same for every texel (0 .. 7 by the frame where a temporal upscaler averages the pattern, 0 where none runs: the pattern
+// as thin diagonal lines on a body panel) plus a golden step per phase, the same for every texel (0 .. 1023 by the frame where a temporal upscaler or the pass's own history averages the pattern, 0 where none runs: the pattern
 // then stands still), modulo 1. `blue` is slots.w's kConeBlueFlag (mcla_gpu_noise_blue); without it the first version's noise.
 float ConeRotation(uint2 texel, uint phase, bool blue)
 {
@@ -453,6 +453,12 @@ uint LevelRays(uint word)
 {
     const uint rays = (word >> 8) & 7u;
     return rays == 0u ? 4u : min(rays, 4u);
+}
+
+// The cone pattern's phase (the push's slots.w bits 18 to 27: the frame's number 0 to 1023, or 0 where nothing averages the pattern; car_rt_hit_rules.h PhaseOf).
+uint ConePhase(uint word)
+{
+    return (word >> 18u) & 1023u;
 }
 
 // RT-HIT-SHADING-5: the height in metres of a hit over the ground of its car (the contact darkening, car_rt_material_rules.h ContactMultiplier). The car's record (hlsl/car_rt_common.hlsli CarRtCar:
@@ -777,7 +783,7 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     const uint levelRays = LevelRays(g_push.slots.w);
     const float rays = tanHalf > 0.0 ? float(levelRays) : 1.0;
     const float3 origin = direction * hitT + normal * (0.004 + 0.002 * hitT);
-    const float turns = ConeRotation(texel, g_push.slots.w & 7u, (g_push.slots.w & kConeBlueFlag) != 0u);
+    const float turns = ConeRotation(texel, ConePhase(g_push.slots.w), (g_push.slots.w & kConeBlueFlag) != 0u);
     float coatShare = 0.0;
     float coatFade = 0.0;
     float coatVisible = 0.0;

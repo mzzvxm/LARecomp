@@ -206,7 +206,7 @@ class CarRtRefl {
     double tan_y = 0.0;             //   (1 / |P00| and 1 / |P11| of the previous frame's projection, as the AO takes them)
     uint64_t frame = 0;             // the guest frame the history is of (what SlotFor is asked with)
     bool upscaler = false;          // a temporal upscaler works on this frame: the cone's pattern turns by the frame (it averages the pattern out)
-    uint32_t pattern_phase = 0;     // 0 .. 7: the pattern's step for this frame (the scene's noise index): used while an upscaler runs or the pass's own history does (NOISE-RESOLVE: OnHistory says which); else the pattern stands still
+    uint32_t pattern_phase = 0;     // 0 .. 1023: the pattern's step for this frame (the scene's noise index): used while an upscaler runs or the pass's own history does (NOISE-RESOLVE: OnHistory says which); else the pattern stands still
     int32_t exp_bias = car_selfrefl::kMainTargetExpBias;  // the main colour target's exponent bias: the history's colour is the shaders' output times 2^exp_bias; the pass's own colours
                                                           // (a car's paint, the grey of a remembered car) are in the paint's units and are multiplied by 2^exp_bias (car_selfrefl_rules.h ExpBiasUnits)
   };

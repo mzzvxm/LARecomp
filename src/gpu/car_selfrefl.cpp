@@ -554,7 +554,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     info.upscaler = upscaler_running_;
     // While a scene runs the phase follows the scene's noise index like the other noise (scene_noise.h): the same scene frame gets the same ray pattern. It is the pattern's step for this frame; whether it is used
     // (an upscaler averages it, or the pass's own history does: NOISE-RESOLVE) is CarRtRefl::OnHistory's to say, which sets the pattern still where nothing averages it.
-    info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 7u);
+    info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 1023u);
     info.exp_bias = exp_bias_;
     rt_->OnHistory(list, info);
   }
