@@ -18,6 +18,7 @@
 
 #include "host_pass_common.hlsli"
 #include "gbuffer_common.hlsli"
+#include "blue_noise.hlsli"
 
 #ifndef AO_DEPTH_MS
 #define AO_DEPTH_MS 0
@@ -202,9 +203,32 @@ float3 AoNormalAt(uint normal_slot, uint depth_slot, int2 p, int2 size, float tc
   return GbOctDecode(g_textures[normal_slot].Load(int3(p, 0)).xy);
 }
 
-// Interleaved gradient noise (Jimenez 2014) of a pixel position.
+// Interleaved gradient noise (Jimenez 2014) of a pixel position. The first version's per-pixel noise, kept for mcla_gpu_ao_blue_noise false. It is a lattice (a linear
+// phase of the position: its spectrum is a few sharp peaks), so the sampling error it leaves after the blur and the average over frames is a diagonal lattice of
+// thin lines on the road and on the kerbs (blue_noise.h has the numbers).
 float AoNoise(float2 p) {
   return frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f))));
+}
+
+// WHICH PER-PIXEL NOISE: bit 29 of slots2.y (ao_stable.h kBlueNoiseFlag), set by ao.cpp unless mcla_gpu_ao_blue_noise is off. The tile (blue_noise.hlsli: 32 x 32
+// pixels, two channels, each every value of 0 to 1 once) has no energy at the low spatial frequencies and no peak: the error of neighbouring pixels does not add up
+// in any direction and the 3x3 blur takes what is left. The pass's frame shift (AoNoiseShift) is added to it as it was added to the gradient noise.
+static const uint kAoNoiseBlueFlag = 1u << 29;
+bool AoBlueNoise() { return (g_push.slots2.y & kAoNoiseBlueFlag) != 0u; }
+// The pixel's two noises (the slice rotation's and the step offsets').
+float2 AoSpatialNoise(int2 pixel) {
+  if (AoBlueNoise()) {
+    return BlueNoiseTile2At(pixel.x, pixel.y);
+  }
+  const float2 p = float2(pixel);
+  return float2(AoNoise(p), AoNoise(p.yx + float2(31.0f, 11.0f)));
+}
+// The pixel's first noise alone (the contact march's start offset).
+float AoSpatialNoise1(int2 pixel) {
+  if (AoBlueNoise()) {
+    return BlueNoiseTileAt(pixel.x, pixel.y, 0u);
+  }
+  return AoNoise(float2(pixel));
 }
 
 // The frame's shift of the main pass's noise, from slots2.y (ao_stable.h DecodeShift): the phase m (0 to 12) of a lattice of 13 frames,

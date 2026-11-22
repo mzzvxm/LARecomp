@@ -172,6 +172,11 @@ class GPUSettings final : public rex::SettingOwner {
     "wide blur at every size, its additive recurrence, its 2 a-trous iterations and its clip of 1.25 "
     "deviations, for comparing. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_ao_blue_noise, true, "Diagnostic: the ambient occlusion's, the bounce light's and the contact shadows' sampling noise (which direction and how far along it each pixel "
+    "looks) comes from a blue noise tile that has no lattice in it, so what the blur and the average over frames leave of the noise is a fine grain no "
+    "pattern can be read from. False: the first version's interleaved gradient noise, a diagonal lattice whose leftovers show as thin diagonal lines on "
+    "roads and kerbs, for comparing. Live.", rex::kDebugOnly);
+
   REX_SETTING(i32, mcla_gpu_ao_view, 0, "Diagnostic: shows a stage of the ambient occlusion as a grey picture instead of applying it "
     "(only while it is on): 1 the factor the picture is multiplied by (white: none), 2 the "
     "visibility, 3 the share of the light that is ambient, 4 the surface normals, 5 the distance "
@@ -1544,6 +1549,7 @@ inline auto& mcla_gpu_ab_interleave = g_gpu.mcla_gpu_ab_interleave;
 inline auto& mcla_gpu_adapter = g_gpu.mcla_gpu_adapter;
 inline auto& mcla_gpu_anisotropy = g_gpu.mcla_gpu_anisotropy;
 inline auto& mcla_gpu_ao = g_gpu.mcla_gpu_ao;
+inline auto& mcla_gpu_ao_blue_noise = g_gpu.mcla_gpu_ao_blue_noise;
 inline auto& mcla_gpu_ao_car_reach = g_gpu.mcla_gpu_ao_car_reach;
 inline auto& mcla_gpu_ao_census = g_gpu.mcla_gpu_ao_census;
 inline auto& mcla_gpu_ao_fade_end = g_gpu.mcla_gpu_ao_fade_end;

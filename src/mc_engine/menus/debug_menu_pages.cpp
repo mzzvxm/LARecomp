@@ -169,6 +169,9 @@ const ItemDef kDebugFixesItems[] = {
     // before (the ray traced one where the card can trace) darken it under the bumper. Off = the game's own chrome, which glows there. The variant is chosen at each
     // draw (pipelines.cpp WantedFeatures), so the row is live; the first draw after turning it on builds the shader (a short stutter).
     NativeOnly(Bool("PM_RxDbgCarChrome", "mcla_gpu_car_chrome_occlusion", "CAR CHROME FIX: ")),
+    // The sampling noise of the ambient occlusion, the bounce light and the contact shadows is a blue noise tile (gpu/blue_noise.h): the first version's interleaved gradient noise
+    // is a diagonal lattice, and what the blur and the history leave of it shows as thin diagonal lines on roads and kerbs. Off = the first version's noise. Read at each draw, so live.
+    NativeOnly(Bool("PM_RxDbgAoBlue", "mcla_gpu_ao_blue_noise", "BLUE NOISE AO: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
