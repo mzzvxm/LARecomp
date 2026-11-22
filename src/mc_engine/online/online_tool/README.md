@@ -146,14 +146,14 @@ larecomp_online_tool rmr mine   (--owner HEX | --token-stdin) [--photos DIR [--p
 larecomp_online_tool rmr photo  --file ID[,ID] --out DIR
 larecomp_online_tool rmr rate   --record ID --rating 1..10 --confirm --token-stdin        (changes the player's rating)
 
-larecomp_online_tool lb views   [--tables FILE]                                           (no server)
-larecomp_online_tool lb size    --view N[,N] [--tables FILE]
-larecomp_online_tool lb top     --view N [--start N] [--count N] [--owner HEX] [--tables FILE]
-larecomp_online_tool lb around  --view N (--owner HEX | --token-stdin) [--span N] [--tables FILE]
-larecomp_online_tool lb owners  --view N --owner HEX[,HEX...] [--tables FILE]
+larecomp_online_tool lb views   [--tables FILE|DIR]                                           (no server)
+larecomp_online_tool lb size    --view N[,N] [--tables FILE|DIR]
+larecomp_online_tool lb top     --view N [--start N] [--count N] [--owner HEX] [--tables FILE|DIR]
+larecomp_online_tool lb around  --view N (--owner HEX | --token-stdin) [--span N] [--tables FILE|DIR]
+larecomp_online_tool lb owners  --view N --owner HEX[,HEX...] [--tables FILE|DIR]
 
 larecomp_online_tool tournament current
-larecomp_online_tool tournament standings [--start N] [--count N] [--owner HEX | --token-stdin] [--view N] [--tables FILE]
+larecomp_online_tool tournament standings [--start N] [--count N] [--owner HEX | --token-stdin] [--view N] [--tables FILE|DIR]
 larecomp_online_tool tournament next      [--weeks N]                                     (no server)
 larecomp_online_tool tournament rewards   --token-stdin
 ```
@@ -176,7 +176,7 @@ Where the server is (the game's rule, `rmr_client.cpp`'s `ResolveTarget`): `--se
 | `--view N[,N]` | Stats view numbers, 1 to 65535 (`lb size` takes up to 32, the others one). |
 | `--span N` | `lb around`: rows each side of the player, 1 to 49 (default 5: 11 rows). |
 | `--weeks N` | `tournament next`: 1 to 52 weeks (default 4). |
-| `--tables FILE` | The game's `online_tables.json` (the log folder): which views exist and what their columns are. See below. |
+| `--tables FILE|DIR` | The game's `online_tables.json`, or the folder it is in (the game's `logs` folder): which views exist and what their columns are. See below. |
 | `--now UNIX` | The clock for the checks (the tournament's "time left"); the PC's clock when absent. |
 
 What each command asks, so the launcher knows the cost:
@@ -250,7 +250,7 @@ All documents start with `ok`, `command`, `schema` and `sub` (the word after the
 
 `kind` (of the view; from `--tables`, so `"unknown"` without it) is `"time"` for a race-time board, `"score"` for a board whose rating is a sum or the last value, else `"unknown"`. A time board is the game's own shape (its XVC2, views 13 to 500; `../tournament_schedule.h`, `kTimeBoardTimeAttr`): the rating is the NEGATED time aggregated by max (so highest first is fastest first, the rows need no re-sorting) and the time itself is an int64 column aggregated by min (`time_attr`, 2 in the game). On a time board every row has `"time"`: the best time (the value of that column; for a row written without it the negated rating; `null` when neither is there) in `time_unit` (`"ms"`, see the CHECK). A launcher shows `time`, not the negative rating. Views 1 to 12 are score boards (the rating is a sum). `lb around` and the tournament standings use the same fields.
 
-`--tables FILE`: the game writes `online_tables.json` into its log folder (`../online_tables_core.h`): the title's stats views and their columns (property id, attribute, aggregation rule) read from the player's own install at run time. With it a board's `view` says whether the game knows the view (`known`) and lists the columns `{attr, prop (8 hex digits), type, agg}`, where `agg` is `last`, `sum`, `min` or `max`. The dump has no view names today (its own CHECK), so `name` is `null` and the launcher shows the numbers; a later dump with a `"name"` on a view is shown as it is. A missing or damaged file is a `tables.state`, never a failure of the command. Nothing of the game is in the repository: the file only exists on a PC that has the game.
+`--tables FILE|DIR`: the game writes `online_tables.json` into its log folder (`../online_tables_core.h`); a folder stands for the file in it, so the launcher can pass `<game>\logs`: the title's stats views and their columns (property id, attribute, aggregation rule) read from the player's own install at run time. With it a board's `view` says whether the game knows the view (`known`) and lists the columns `{attr, prop (8 hex digits), type, agg}`, where `agg` is `last`, `sum`, `min` or `max`. The dump has no view names today (its own CHECK), so `name` is `null` and the launcher shows the numbers; a later dump with a `"name"` on a view is shown as it is. A missing or damaged file is a `tables.state`, never a failure of the command. Nothing of the game is in the repository: the file only exists on a PC that has the game.
 
 `tournament current`: `tournament` (or `null` when the server did not answer):
 

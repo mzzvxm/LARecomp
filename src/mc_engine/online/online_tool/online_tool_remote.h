@@ -57,7 +57,7 @@ struct RemoteArgs {
     int rating = 0;                 // --rating 1..10
     std::string photos_dir;         // --photos DIR: keep the photos of the rides listed
     std::string out_dir;            // --out DIR: where rmr photo writes
-    std::string tables;             // --tables FILE: the game's online_tables.json (names and columns of stats views)
+    std::string tables;             // --tables FILE|DIR: the game's online_tables.json, or the folder it is in (names and columns of stats views)
     bool token_stdin = false;       // --token-stdin: the player's Rate My Ride token (32 hex digits) is on stdin
     bool confirm = false;           // --confirm: the command changes the player's data on the server
     int64_t now = 0;                // --now UNIX: the clock for the checks (0 = the PC's clock)

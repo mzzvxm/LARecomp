@@ -24,6 +24,7 @@
 #endif
 
 #include "../leaderboards/lb_protocol.h"
+#include "../online_tables_core.h"  // kFileName: the name of the game's file (the header only: nothing of it is linked)
 #include "../rate_my_ride/rmr_net.h"
 #include "../rate_my_ride/rmr_protocol.h"
 #include "../server_browser/browser_query.h"
@@ -388,7 +389,9 @@ Tables LoadTables(const std::string& path) {
     Tables t;
     if (path.empty()) return t;
     std::error_code ec;
-    const fs::path p = PathFromUtf8(path);
+    fs::path p = PathFromUtf8(path);
+    // A folder (the game's log folder) stands for the file the game writes there.
+    if (fs::is_directory(p, ec)) p /= online_tables::kFileName;
     if (!fs::exists(p, ec)) {
         t.state = "not_found";
         t.error = "the file does not exist";
@@ -1516,13 +1519,13 @@ const char* RemoteUsageText() {
         "  rmr mine --owner HEX | --token-stdin [--photos DIR [--photo-slots 1|2]]\n"
         "  rmr photo --file ID[,ID] --out DIR              fetch photos (JPEG, kept as <id>-<size>.jpg)\n"
         "  rmr rate --record ID --rating 1..10 --confirm --token-stdin   CHANGES the player's rating of a ride\n"
-        "  lb views [--tables FILE]                        the stats views the game's online_tables.json lists\n"
-        "  lb size --view N[,N] [--tables FILE]            rows in each view\n"
-        "  lb top --view N [--start N] [--count N] [--owner HEX] [--tables FILE]\n"
-        "  lb around --view N --owner HEX | --token-stdin [--span N] [--tables FILE]\n"
-        "  lb owners --view N --owner HEX[,HEX] [--tables FILE]\n"
+        "  lb views [--tables FILE|DIR]                        the stats views the game's online_tables.json lists\n"
+        "  lb size --view N[,N] [--tables FILE|DIR]            rows in each view\n"
+        "  lb top --view N [--start N] [--count N] [--owner HEX] [--tables FILE|DIR]\n"
+        "  lb around --view N --owner HEX | --token-stdin [--span N] [--tables FILE|DIR]\n"
+        "  lb owners --view N --owner HEX[,HEX] [--tables FILE|DIR]\n"
         "  tournament current                              this week's race, car rule, prizes, start and end\n"
-        "  tournament standings [--start N] [--count N] [--owner HEX | --token-stdin] [--view N] [--tables FILE]\n"
+        "  tournament standings [--start N] [--count N] [--owner HEX | --token-stdin] [--view N] [--tables FILE|DIR]\n"
         "  tournament next [--weeks N]                     the default rotation of the next weeks (no server)\n"
         "  tournament rewards --token-stdin                the player's prizes\n"
         "\n"
@@ -1646,7 +1649,7 @@ RemoteParse ParseRemoteArgs(const std::vector<std::string>& v) {
             if (value.empty()) return fail("--out needs a folder");
             a.out_dir = value;
         } else if (name == "--tables") {
-            if (value.empty()) return fail("--tables needs a file");
+            if (value.empty()) return fail("--tables needs a file or a folder");
             a.tables = value;
         } else if (name == "--now") {
             if (!ParseNumber(value, 1, 4102444800LL, n)) return fail("--now is a Unix time in seconds");
