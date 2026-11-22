@@ -161,7 +161,7 @@ The same text works in the launcher's **More game options**, and as `mcla_gpu_pa
 
 **Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. `break_pairwise_collision` is not here either: its hook reads it at every call, so it is live (a setting in F4 and a launch argument that also works while the game runs; it has no row). The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
-The list, 119 names in 15 groups (the number in brackets is the group's size):
+The list, 129 names in 15 groups (the number in brackets is the group's size):
 
 **The unlock** (1)
 `debug_menu`
@@ -177,14 +177,14 @@ Which renderer runs is the SDK's `gpu.driver` (`larecomp`, `d3d12` or `vulkan`; 
 **Plume renderer: timing and statistics** (7)
 `mcla_gpu_pass_timing`, `mcla_gpu_scene_profile`, `mcla_gpu_ab_interleave`, `mcla_gpu_memory_census`, `mcla_gpu_census_ps`, `mcla_gpu_census_targets`, `mcla_gpu_census_scale`
 
-**Plume renderer: finding picture bugs** (17)
-`mcla_gpu_edram_aliasing`, `mcla_gpu_coverage_queries`, `mcla_gpu_edram_capture`, `mcla_gpu_flicker_probe`, `mcla_gpu_flicker_probe_dumps`, `mcla_gpu_flicker_probe_shots`, `mcla_gpu_verify_constants`, `mcla_gpu_validate`, `mcla_gpu_watch_base`, `mcla_gpu_watch_size`, `mcla_gpu_watch_capture`, `mcla_gpu_texture_decode_selftest`, `mcla_gpu_resolve_memory_check`, `mcla_gpu_lock_ahead_verify`, `mcla_gpu_readable_cache_check`, `mcla_gpu_shader_memo_check`, `mcla_gpu_present_release_check`
+**Plume renderer: finding picture bugs** (18)
+`mcla_gpu_edram_aliasing`, `mcla_gpu_coverage_queries`, `mcla_gpu_edram_capture`, `mcla_gpu_flicker_probe`, `mcla_gpu_flicker_probe_dumps`, `mcla_gpu_flicker_probe_shots`, `mcla_gpu_verify_constants`, `mcla_gpu_validate`, `mcla_gpu_watch_base`, `mcla_gpu_watch_size`, `mcla_gpu_watch_capture`, `mcla_gpu_texture_decode_selftest`, `mcla_gpu_resolve_memory_check`, `mcla_gpu_lock_ahead_verify`, `mcla_gpu_readable_cache_check`, `mcla_gpu_shader_memo_check`, `mcla_gpu_present_release_check`, `mcla_gpu_local_lights_ab`
 
-**Plume renderer: graphics-API debugging** (3)
-`mcla_gpu_debug_layer`, `mcla_gpu_gpu_based_validation`, `mcla_gpu_object_names`
+**Plume renderer: graphics-API debugging** (4)
+`mcla_gpu_debug_layer`, `mcla_gpu_gpu_based_validation`, `mcla_gpu_object_names`, `mcla_gpu_force_refusal`
 
-**Plume renderer: tuning and driver workarounds** (8)
-`mcla_gpu_batch_draws`, `mcla_gpu_present_wait`, `mcla_gpu_present_release`, `mcla_gpu_pipeline_cache`, `mcla_gpu_readable_cache`, `mcla_gpu_texture_decode_threads`, `mcla_gpu_skip_shaders`, `mcla_gpu_upscaler_lazy_load`
+**Plume renderer: tuning and driver workarounds** (10)
+`mcla_gpu_batch_draws`, `mcla_gpu_present_wait`, `mcla_gpu_present_release`, `mcla_gpu_pipeline_cache`, `mcla_gpu_readable_cache`, `mcla_gpu_texture_decode_threads`, `mcla_gpu_skip_shaders`, `mcla_gpu_upscaler_lazy_load`, `mcla_gpu_rt_bench`, `mcla_gpu_dlss_rr`
 
 **Legacy native D3D12 runtime (Windows, experimental)** (11)
 `mcla_native_gfx_present`, `mcla_native_gfx_aniso`, `mcla_native_gfx_gen_mips`, `mcla_native_gfx_mrt`, `mcla_native_gfx_msaa`, `mcla_native_gfx_own_device`, `mcla_native_gfx_own_heap_kb`, `mcla_native_gfx_own_swapchain`, `mcla_native_gfx_surface_key`, `mcla_native_gfx_upload_mb`, `mcla_gfx_probe`
