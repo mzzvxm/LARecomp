@@ -172,6 +172,10 @@ add_executable(larecomp_ao_fast_test EXCLUDE_FROM_ALL ao_fast_test.cpp)
 # (ao_stable_twin.h: a still camera over a road, a wall and a car at 3840x2160 and 1280x720; about half a minute) likewise:
 #   cmake --build <dir> --target larecomp_ao_stable_noise_test, then run src/gpu/larecomp_ao_stable_noise_test [--print].
 add_executable(larecomp_ao_stable_noise_test EXCLUDE_FROM_ALL ao_stable_noise_test.cpp)
+# The blue noise tile the screen-space effects sample with (blue_noise.h; hlsl/blue_noise.hlsli is its table: the check compares them, and `--emit` writes the
+# file): a permutation, uniform, deterministic, blue (no low frequencies, no peak) against interleaved gradient noise, which is a lattice; no renderer needed:
+#   cmake --build <dir> --target larecomp_blue_noise_test, then run src/gpu/larecomp_blue_noise_test [--print | --emit > src/gpu/hlsl/blue_noise.hlsli].
+add_executable(larecomp_blue_noise_test EXCLUDE_FROM_ALL blue_noise_test.cpp)
 # The size of the occlusion's and the bounce light's images (ao_size.h: half the picture's size above 1080 lines of render height, the
 # contact shadows keeping their own size, the memory each frame holds and the cost model; given the src/gpu folder it also checks that the
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:
