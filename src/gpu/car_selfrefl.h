@@ -21,9 +21,11 @@
 //   mcla_gpu_car_selfrefl_view   a debug view in place of the paint's colour: 1 the hit weight, 2 the colour the ray
 //                                sees (the hit pixel's, or the paint's own in shade for a hidden face), 3 the baked vertex AO,
 //                                4 the state of the trace (yellow a hit, orange a hit that is probably the hidden face of a
-//                                part, brighter the heavier; green no hit; the other colours in the variant's text), 5 the ray
+//                                part of the march's, brighter the heavier; green no hit; the other colours in the variant's text), 5 the ray
 //                                traced image at the paint's pixel (car_rt_refl.h: purple no image, cyan no data there, green no
-//                                hit, yellow a hit on a visible part, orange on a hidden one)
+//                                hit, yellow a hit on the player's own part, orange on another car), 6 the clear coat's layer's
+//                                amount (written 64 times the target's unit so that a script can read it, RT-HIT-SHADING-6: it shows as about itself),
+//                                7 what it adds (version 8 of the variant; 2 is the ray traced reflection alone at full intensity)
 //   mcla_gpu_car_selfrefl_rt     auto | off: ray traced reflections of the car in its own paint where the device can (car_rt_refl.h);
 //                                the march of this file is the fallback and the other devices' version
 //   mcla_gpu_car_selfrefl_source a debug-only A/B of where the history pass takes the scene colour from: 0 (the default) the shared screen products' colour_post
@@ -304,6 +306,7 @@ class CarSelfRefl {
   bool no_stencil_logged_ = false;
   bool failed_logged_ = false;
   bool bias_logged_ = false;
+  bool coat_layer_logged_ = false;
   // The main colour target's exponent bias as the last paint draw saw it (RT0's color_exp_bias): the ray traced pass multiplies the colours it makes up from a paint constant by
   // 2^bias to be in the history's units. A paint draw comes after the trigger in a frame, so the pass uses the frame before's (the game keeps one bias); 4 until a draw has told.
   int32_t exp_bias_ = car_selfrefl::kMainTargetExpBias;

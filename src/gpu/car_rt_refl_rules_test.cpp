@@ -255,6 +255,8 @@ int main() {
   Check(rt::SettingOf("auto") == rt::Setting::kAuto && rt::SettingOf("off") == rt::Setting::kOff && rt::SettingOf("garbage") == rt::Setting::kAuto &&
             rt::SettingOf("") == rt::Setting::kAuto,
         "off is off, auto and a word that is no value are auto");
+  // The ray tracing tier's `auto` table (rt_tier.h kRtEffects) hands this setting "on" (a strong or a weak card) or "off" (no ray tracing): on is the default
+  Check(rt::SettingOf("on") == rt::Setting::kAuto && rt::SettingOf("off") == rt::Setting::kOff, "the tier's cells: on is the default, off is off");
   Check(rt::Wanted(rt::Setting::kAuto, true, true) && !rt::Wanted(rt::Setting::kOff, true, true) && !rt::Wanted(rt::Setting::kAuto, false, true) &&
             !rt::Wanted(rt::Setting::kAuto, true, false),
         "wanted: auto, on a device that can, with the self-reflection on");
@@ -266,12 +268,12 @@ int main() {
         "a miss is alpha 1 and carries no weight");
   for (float w : {0.004f, 0.1f, 0.25f, 0.5f, 0.73f, 1.0f}) {
     const rt::Texel hit = rt::DecodeAlpha(ThroughHalf(rt::EncodeAlpha(rt::Kind::kHit, w)));
-    const rt::Texel hidden = rt::DecodeAlpha(ThroughHalf(rt::EncodeAlpha(rt::Kind::kHidden, w)));
-    Check(hit.kind == rt::Kind::kHit && Near(hit.weight, w, 1.0 / 1024.0), "a visible hit's weight " + std::to_string(w) + " survives a half float");
-    Check(hidden.kind == rt::Kind::kHidden && Near(hidden.weight, w, 1.0 / 1024.0), "a hidden hit's weight " + std::to_string(w) + " survives it too, by its sign");
+    const rt::Texel car = rt::DecodeAlpha(ThroughHalf(rt::EncodeAlpha(rt::Kind::kOtherCar, w)));
+    Check(hit.kind == rt::Kind::kHit && Near(hit.weight, w, 1.0 / 1024.0), "a hit's weight " + std::to_string(w) + " survives a half float");
+    Check(car.kind == rt::Kind::kOtherCar && Near(car.weight, w, 1.0 / 1024.0), "a hit on another car's weight " + std::to_string(w) + " survives it too, by its sign");
   }
   Check(rt::DecodeAlpha(ThroughHalf(rt::EncodeAlpha(rt::Kind::kHit, 1.0f))).weight == 1.0f && rt::EncodeAlpha(rt::Kind::kHit, 5.0f) == 2.0f &&
-            rt::EncodeAlpha(rt::Kind::kHidden, -1.0f) == -1.0f,
+            rt::EncodeAlpha(rt::Kind::kOtherCar, -1.0f) == -1.0f,
         "weights are clamped to 0..1");
   Check(rt::DecodeAlpha(0.4f).kind == rt::Kind::kNoData && rt::DecodeAlpha(-0.4f).kind == rt::Kind::kNoData,
         "a value below one half is no data (a stray number is not a trace)");
@@ -592,8 +594,27 @@ int main() {
     shares[1] = back;
     shares[2] = back;
     all = rt::CombineRays(shares, 4, 4.0f);
-    Check(all.kind == rt::Kind::kHidden && Near(all.weight, (3.0 * 0.85 + 1.0) / 4.0) && all.rgb[0] > surface[0] * 0.4f && all.rgb[0] < 0.9f,
-          "three hidden hits and a visible one: hidden by the majority of the weight, the colour between the shade and the hit's");
+    Check(all.kind == rt::Kind::kHit && Near(all.weight, (3.0 * 0.85 + 1.0) / 4.0) && all.rgb[0] > surface[0] * 0.4f && all.rgb[0] < 0.9f,
+          "three hidden hits and a visible one, none of them on another car: still a plain hit (the sign says another car, not what the camera sees), the colour between the shade and the hit's");
+    // RT-HIT-SHADING-4: the code's sign is the weight's majority ON ANOTHER CAR, whatever the camera sees
+    for (auto& share : shares) {
+      share = rt::MakeShare(1.0f, length, hidden, surface, true);
+    }
+    shares[3] = rt::MakeShare(1.0f, length, seen, surface, false);
+    all = rt::CombineRays(shares, 4, 4.0f);
+    Check(all.kind == rt::Kind::kOtherCar && Near(all.weight, (3.0 * 0.85 + 1.0) / 4.0), "three hits on another car and one on the player's own part: another car, by the majority of the weight");
+    shares[0] = rt::MakeShare(1.0f, length, seen, surface, false);
+    shares[1] = rt::MakeShare(1.0f, length, seen, surface, false);
+    shares[2] = rt::MakeShare(1.0f, length, seen, surface, true);
+    shares[3] = rt::MakeShare(1.0f, length, seen, surface, true);
+    all = rt::CombineRays(shares, 4, 4.0f);
+    Check(all.kind == rt::Kind::kOtherCar, "half the weight on another car is another car (the sign's rule is >= a half)");
+    shares[1] = rt::MakeShare(1.0f, length, seen, surface, true);
+    shares[2] = rt::MakeShare(1.0f, length, seen, surface, false);
+    shares[3] = rt::MakeShare(1.0f, length, seen, surface, false);
+    shares[0] = rt::MakeShare(1.0f, length, seen, surface, false);
+    all = rt::CombineRays(shares, 4, 4.0f);
+    Check(all.kind == rt::Kind::kHit, "a quarter of the weight on another car: the player's own");
     rt::RayShare faint;
     faint.weight = 0.001f;
     faint.rgb[0] = 1.0f;
@@ -703,12 +724,18 @@ int main() {
       auto all = nine(tap(9.0f, rt::Kind::kHit, 1.0f, 0.6f));
       Check(!rt::ReadForPaint(wx, wy, all.data(), depth, tolerance).use, "no texel is the surface the paint is on: no answer");
     }
-    // hidden hits: the debug kind
+    // hits on another car: the sign (the clear coat's layer follows the share of the weight that is on a car)
     {
-      auto grid = nine(tap(5.0f, rt::Kind::kHidden, 0.5f, 0.2f));
+      auto grid = nine(tap(5.0f, rt::Kind::kOtherCar, 0.5f, 0.2f));
       grid[8] = tap(5.0f, rt::Kind::kHit, 0.5f, 0.9f);
       const rt::PaintRead read = rt::ReadForPaint(wx, wy, grid.data(), depth, tolerance);
-      Check(read.use && read.kind == rt::Kind::kHidden && Near(read.weight, 0.5, 1e-5), "mostly hidden hits are a hidden hit, at their weight");
+      Check(read.use && read.kind == rt::Kind::kOtherCar && Near(read.weight, 0.5, 1e-5), "mostly hits on another car are a hit on another car, at their weight");
+      Check(read.car > 0.9f && read.car < 1.0f, "and the share of the weight that is on a car is what the layer takes (0.9 to 1 with one ninth of the weight on the player's own part)");
+      const auto none = nine(tap(5.0f, rt::Kind::kHit, 0.5f, 0.2f));
+      const rt::PaintRead own = rt::ReadForPaint(wx, wy, none.data(), depth, tolerance);
+      Check(own.use && own.kind == rt::Kind::kHit && own.car == 0.0f, "hits on the player's own parts have no car share: no layer");
+      const auto all_car = nine(tap(5.0f, rt::Kind::kOtherCar, 0.5f, 0.2f));
+      Check(Near(rt::ReadForPaint(wx, wy, all_car.data(), depth, tolerance).car, 1.0, 1e-5), "all of it on a car: a share of 1");
     }
   }
 
@@ -880,11 +907,11 @@ int main() {
       const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
       Check(rt::DecodeAlpha(o.alpha).weight > 0.5f, "a texel whose rays all missed, among texels that hit with a wide cone, takes their share of the weight (the penumbra's tail)");
     }
-    // hidden against visible: the majority of the weight decides the sign, and the colour is the weighted mean
+    // another car against the player's own: the majority of the weight decides the sign, and the colour is the weighted mean
     {
-      auto taps = make(rt::EncodeAlpha(rt::Kind::kHidden, 1.0f), 0.2f, kPanelDistance, 3, wide_hit, true);
+      auto taps = make(rt::EncodeAlpha(rt::Kind::kOtherCar, 1.0f), 0.2f, kPanelDistance, 3, wide_hit, true);
       const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
-      Check(o.alpha < -1.0f && Near(o.rgb[0], (4.0 * 1.0 + 12.0 * 0.2) / 16.0, 0.01), "a visible hit among hidden hits (12/16 of the weight): hidden, and the colours are mixed by weight");
+      Check(o.alpha < -1.0f && Near(o.rgb[0], (4.0 * 1.0 + 12.0 * 0.2) / 16.0, 0.01), "a hit on the player's own part among hits on another car (12/16 of the weight): another car, and the colours are mixed by weight");
     }
     // a slope: the depth changes 17 mm a texel at N.V 0.3, and the taps of step 2 are still the same surface
     {
@@ -1001,7 +1028,11 @@ int main() {
     const cr::CarSelfReflConstants on = cr::MakeConstants(cr::Mode::kReflection, tuning, matrix, 77, 3, 1.0f, 1234);
     Check(on.c[0] == 77 && on.c[1] == 3 && on.c[2] == 1234 && (on.c[3] & cr::kRtImageFlag) != 0 && sizeof(on) == 112,
           "the image's bindless slot in c[2] and the flag in c[3]; the block is still 112 bytes");
-    Check(cr::kMaxView == 5, "the debug view has a fifth value, the image");
+    Check(cr::kMaxView == 7, "the debug view has a fifth value, the image, and (version 8) a sixth and seventh, the clear coat's layer");
+    const cr::CarSelfReflConstants coat = cr::MakeConstants(cr::Mode::kReflection, tuning, matrix, 77, 3, 1.0f, 1234, true);
+    Check((coat.c[3] & cr::kRtImageFlag) != 0 && (coat.c[3] & cr::kCoatLayerFlag) != 0 && cr::kCoatLayerFlag == 2u && (on.c[3] & cr::kCoatLayerFlag) == 0 &&
+              (cr::MakeConstants(cr::Mode::kReflection, tuning, matrix, 77, 3, 1.0f).c[3] & cr::kCoatLayerFlag) == 0,
+          "the coat layer's flag is bit 1 of c[3], set only with the image and when asked");
   }
 
   // the other cars (hlsl/car_rt_refl_cs.hlsl OtherCarColour; car_rt_instances_rules.h)

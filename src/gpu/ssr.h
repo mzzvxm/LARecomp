@@ -22,7 +22,7 @@
 //                                   trusts) the pass takes the last frame's anchor camera for the axes and runs with no history.
 //
 // THE PASSES (hlsl/ssr_trace_ps.hlsl, ssr_temporal_ps.hlsl, ssr_apply_ps.hlsl; the walk is hlsl/ssr_trace.hlsli, checked in ssr_test.cpp against analytic scenes and a brute force march), recorded at the
-// trigger right after the colour capture (scene.cpp OnResolve, step 8b of the order):
+// trigger right after the colour capture (scene.cpp OnResolve; the SSR step of frame_order.h's table):
 //   1 trace     half size, RGBA16F: per pixel the class gate and the smoothness (a pixel that reflects nothing costs the gate's reads), a GGX ray, the Hi-Z walk, the colour of the hit at the mip the
 //               lobe's width asks for (the sky at the vanishing point where the ray ended on the picture), faded at the picture's edge and for a ray that points back at the camera; a = the distance
 //   2 temporal  half size, RGBA16F x 2 (history ping-pong): the virtual image's reprojection, the receiver's surface test, the clamp to the neighbourhood's box, a = the receiver's depth
@@ -43,8 +43,13 @@
 //                mcla_gpu_ssr_fallback (1) times the strength the game shows the view with; 0 adds on top as GB-I1 did. A guard keeps a bad estimate from blacking the road. Other classes (glass, metal,
 //                sidewalk): the game's environment map stays under the term, which is only faded (its dual paraboloid mapping is the game's own and not reproduced here).
 //
-// THE ORDER (LIGHT-UNIFY 5.3): after the light pass (GB-H1: step 7) and the colour capture (8), so that the reflection shows the lights; before the volumetric composite and the glows, which are drawn
-// after the trigger. colour_post is made before the effect adds to the colour: a reflection is not a reflection of a reflection.
+// THE ORDER (LIGHT-UNIFY 5.3; the table is frame_order.h, GB-I3): after the light pass (GB-H1: step 7) and the colour capture (8), so that the reflection shows the lights; before the volumetric composite and
+// the glows, which are drawn after the trigger. colour_post is made before the effect adds to the colour: a reflection is not a reflection of a reflection. Three neighbours, settled by GB-I3:
+//   the car history   is taken AFTER this pass (as the design has it) and does not see it: it holds a vehicle's pixels only (hlsl/car_history_ps.hlsl) and this effect adds nothing to a vehicle's
+//                     pixel (the class gate's vehicle flag, the stub's stencil mark), so what the history reads from the main colour above 1080 lines is the same either side of SSR;
+//   the sun shafts    and the volumetric light's inject / integrate record BEFORE the capture (they write images of their own; the composites are at the end-of-scene copy, after this pass, in the play
+//                     view; only the pause and map worlds and the debug switch composite the shafts at the trigger, where SSR does not run or reflects their light with the rest of the picture);
+//   the wants         are declared at the very start of the frame, before the G-buffer and the screen owner read them (lag 0).
 //
 // WHEN IT RUNS (ssr_rules.h Decide): the setting, the pipelines made (in the background: a frame never waits), the play view's frame (not the pause menu's, the garage's or the map's world), the
 // G-buffer's normal plane, the Hi-Z and colour_post (with its mips) in the frame, a size the rule knows, one host sample count for the depth and the planes. The reason is logged when it changes.
@@ -100,8 +105,8 @@ class ScreenReflections {
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
   void SetAmbientOcclusion(AmbientOcclusion* ao) { ao_ = ao; }
 
-  // A frame's first list: reads the settings, declares what the effect wants of the shared products and of the G-buffer (sticky, read at their next frame boundary: the first frame with the setting
-  // on is the one before the effect can run), forgets the frame's draws.
+  // A frame's first list: reads the settings, declares what the effect wants of the shared products and of the G-buffer (ssr_rules.h WantedProducts / WantedPlanes: only while it is on; sticky; the
+  // owners read them at their own frame start, which Scene::BeginFrame runs AFTER this call, so the wants take effect in this very frame: frame_order.h kBeginSsr, lag 0), forgets the frame's draws.
   void BeginFrame();
   // True while the effect is on: the Scene then tells it the main view's draws (the wetness).
   bool wants_draws() const { return level_ != ssr::Level::kOff; }

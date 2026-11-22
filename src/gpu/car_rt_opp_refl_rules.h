@@ -10,7 +10,7 @@
 // The instance of such a draw carries kMaskOtherPaint (0x40, car_rt_scene_rules.h) beside kMaskOthers (OtherMask); the pass's primary ray has that bit alone, in the
 // window around the history's distance, so it finds an opponent's paint at a texel and nothing else (glass, tyres, lights, chrome, traffic's own shaders are not
 // found: they keep their march, the chrome its own ray traced texel). The CARS are the ones the scene already holds: the selection by stencil ID and distance from the
-// player's vehicle (CarSelector, the class's cell: High 4 cars within 14 m, Mid 2 within 10 m, none on Low), so no opponent outside those limits has a triangle in the
+// player's vehicle (CarSelector, the class's cell: High 4 cars within 20 m, Mid 2 within 14 m, none on Low), so no opponent outside those limits has a triangle in the
 // top level and none of its pixels finds a hit. Where the pass looks is further limited to the screen rectangles of the cars' boxes (BoxRect): the dispatch covers
 // those, not the picture.
 //

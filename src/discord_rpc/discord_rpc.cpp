@@ -7,6 +7,7 @@
 
 #include "settings/larecomp_settings.h"
 #include "discord_rpc/rpc_client.h"
+#include "discord_rpc/rpc_toggle_rules.h"
 
 // -----------------------------------------------------------------------------
 // Notes
@@ -99,9 +100,12 @@ namespace {
 std::mutex g_rpc_mutex;
 std::atomic_bool g_rpc_started{false};
 
-LarecompDiscordState g_current_state = LarecompDiscordState::Unknown;
-std::string g_current_details;
-std::string g_current_state_text;
+// larecomp_discord_rpc changed since the last poll (set by the change callback, taken by LARECOMP_Discord_Poll).
+std::atomic_bool g_toggle_pending{false};
+
+// The game's last presence text, kept whether or not the presence is on (under g_rpc_mutex): a switch turned on in the middle of a race shows
+// the race at once. rpc_toggle_rules.h has the rules.
+larecomp::discord_rpc::PresenceMemory g_memory;
 
 constexpr const char* kDiscordApplicationId = "1503923771264729309";
 
@@ -147,7 +151,37 @@ void LogStateChange(const std::string& details, const std::string& state_text) {
 
 }  // namespace
 
+namespace {
+
+// Starts the worker with the kept text (g_rpc_mutex held, the switch on, the worker not running).
+void StartWorkerLocked() {
+  if (!g_memory.seen()) g_memory.Note(static_cast<uint32_t>(LarecompDiscordState::Boot), "", "");
+
+  larecomp::discord_rpc::Presence rpc;
+
+  rpc.details_ = g_memory.details();
+  rpc.state_ = g_memory.text();
+  rpc.large_image_key_ = larecomp::settings::larecomp_discord_large_image.Get();
+  rpc.large_image_text_ = "LARecomp";
+
+  larecomp::discord_rpc::Start(kDiscordApplicationId, rpc);
+
+  g_rpc_started.store(true);
+
+  LogStateChange(g_memory.details(), g_memory.text());
+}
+
+}  // namespace
+
 void LARECOMP_Discord_Init() {
+  // The setting is live: the callback only sets a flag (it runs under the settings' lock), the per-frame poll acts on it.
+  static std::once_flag registered;
+  std::call_once(registered, [] {
+    larecomp::cvar::RegisterChangeCallback("larecomp_discord_rpc", [](std::string_view, std::string_view) {
+      g_toggle_pending.store(true, std::memory_order_release);
+    });
+  });
+
   if (!larecomp::settings::larecomp_discord_rpc.Get()) {
     return;
   }
@@ -158,21 +192,33 @@ void LARECOMP_Discord_Init() {
     return;
   }
 
-  larecomp::discord_rpc::Presence rpc;
+  StartWorkerLocked();
+}
 
-  rpc.details_ = "";
-  rpc.state_ = "";
-  rpc.large_image_key_ = larecomp::settings::larecomp_discord_large_image.Get();
-  rpc.large_image_text_ = "LARecomp";
+// CHECK: with a Discord client open, `set larecomp_discord_rpc false` (console or F4) clears the presence within about a second and `true` brings
+// the current state back, in a menu, the garage and a race, and a game started with it false starts the worker when it is turned on.
+// Per frame (RpcOnRaceTick, the game's thread): the switch changed. Off needs nothing: the worker shows a presence only while the switch is on
+// and clears it by itself. On starts the worker (a game that started with it off) or sends the kept text again (it was turned off and on).
+void LARECOMP_Discord_Poll() {
+  if (!g_toggle_pending.exchange(false, std::memory_order_acquire)) {
+    return;
+  }
+  const bool wanted = larecomp::settings::larecomp_discord_rpc.Get();
 
-  larecomp::discord_rpc::Start(kDiscordApplicationId, rpc);
+  std::lock_guard<std::mutex> lock(g_rpc_mutex);
 
-  g_rpc_started.store(true);
-  g_current_state = LarecompDiscordState::Boot;
-  g_current_details = rpc.details_;
-  g_current_state_text = rpc.state_;
-
-  LogStateChange(g_current_details, g_current_state_text);
+  switch (larecomp::discord_rpc::DecideToggle(wanted, g_rpc_started.load())) {
+    case larecomp::discord_rpc::ToggleAction::kStart:
+      StartWorkerLocked();
+      break;
+    case larecomp::discord_rpc::ToggleAction::kRefresh:
+      larecomp::discord_rpc::SetDetails(g_memory.details());
+      larecomp::discord_rpc::SetState(g_memory.text());
+      LogStateChange(g_memory.details(), g_memory.text());
+      break;
+    case larecomp::discord_rpc::ToggleAction::kNothing:
+      break;
+  }
 }
 
 void LARECOMP_Discord_Shutdown() {
@@ -189,7 +235,11 @@ void LARECOMP_Discord_Shutdown() {
 void LARECOMP_Discord_SetStateText(LarecompDiscordState state,
                                    std::string_view details,
                                    std::string_view state_text) {
-  if (!larecomp::settings::larecomp_discord_rpc.Get()) {
+  std::lock_guard<std::mutex> lock(g_rpc_mutex);
+
+  // The text is kept first, whether or not the presence is on: a switch turned on later shows it (LARECOMP_Discord_Poll). A text that has
+  // not changed is dropped, so a hook that runs many times does not hammer Discord.
+  if (!g_memory.Note(static_cast<uint32_t>(state), details, state_text)) {
     return;
   }
 
@@ -197,26 +247,12 @@ void LARECOMP_Discord_SetStateText(LarecompDiscordState state,
     return;
   }
 
-  std::lock_guard<std::mutex> lock(g_rpc_mutex);
+  larecomp::discord_rpc::SetDetails(g_memory.details());
+  larecomp::discord_rpc::SetState(g_memory.text());
 
-  const std::string new_details(details);
-  const std::string new_state_text(state_text);
-
-  // Prevent hook spam from hammering Discord if a hook runs many times.
-  if (g_current_state == state &&
-      g_current_details == new_details &&
-      g_current_state_text == new_state_text) {
-    return;
+  if (larecomp::settings::larecomp_discord_rpc.Get()) {
+    LogStateChange(g_memory.details(), g_memory.text());
   }
-
-  g_current_state = state;
-  g_current_details = new_details;
-  g_current_state_text = new_state_text;
-
-  larecomp::discord_rpc::SetDetails(g_current_details);
-  larecomp::discord_rpc::SetState(g_current_state_text);
-
-  LogStateChange(g_current_details, g_current_state_text);
 }
 
 void LARECOMP_Discord_SetState(LarecompDiscordState state) {

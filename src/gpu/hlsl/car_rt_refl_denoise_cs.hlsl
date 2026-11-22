@@ -7,7 +7,8 @@
 //   input    the image to filter (bindless slot): rgb the colour of the hits, alpha the code (0 no data, 1 a miss, 1 + w a hit of weight w, -(1 + w)
 //            a hit on a part the camera does not see)
 //   history  the history image's alpha: the view distance of the vehicle pixel (0 elsewhere)
-//   aux      the trace's second output: x the hit distance, y the instance, z N.V, w 1 (car_rt_refl_cs.hlsl)
+//   aux      the trace's second output: x the hit distance, y the instance, z N.V, w 1 (down to 0.51: 1 - 0.49 the share of the texel's weight that is the clear coat's mirror ray,
+//            car_rt_hit_rules.h EncodeAuxSharp; car_rt_refl_cs.hlsl)
 //   output   the image's codes again; a texel with no data is copied as it is (alpha 0: the paint's march answers there)
 //
 // A 3x3 kernel of 1 2 1 / 2 4 2 / 1 2 1 over the taps that (1) hold data (a miss counts, as a weight of 0), (2) are the same instance, (3) are the
@@ -16,7 +17,8 @@
 // the texel's own value by a strength that follows the cone: the width in texels of the cone at the hit (2 distance tan(half angle) / the texel's
 // metres), the largest among the taps that count. Under a texel's half the texel is left exactly as it was (the penumbra is narrower than a texel:
 // a binary edge, no noise to take out); the first pass is in full from 2.5 texels, the second (the wider kernel) from 10, which keeps the glossy
-// edge: a ramp grows by at most a fifth. Everything here is car_rt_refl_rules.h's DenoiseTexel in HLSL; change one, change the other.
+// edge: a ramp grows by at most a fifth. The strength is multiplied by what the texel's clear-coat share leaves (car_rt_hit_rules.h DenoiseScale): the cone's grain is taken out,
+// the mirror ray's sharp reflection is not blurred. Everything here is car_rt_refl_rules.h's DenoiseTexel in HLSL (and car_rt_hit_rules.h for that scale); change one, change the other.
 //
 // Shader Model 6.0. The layout (car_rt_refl.cpp): set 0 the bindless Texture2D<float4> set (space 0), set 1 the output (u0, space 1), the push
 // block (b0, space 2).
@@ -49,6 +51,7 @@ ConstantBuffer<CarRtDenoisePush> g_push : register(b0, space2);
 #endif
 
 static const float kMinCode = 0.5;
+static const float kAuxSharpScale = 0.49;
 static const float kMinWeight = 1.0 / 512.0;
 
 [numthreads(8, 8, 1)]
@@ -130,7 +133,9 @@ void main(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    const float strength = pass == 0u ? smoothstep(g_push.tune.x, g_push.tune.y, footprint) : smoothstep(g_push.tune.z, g_push.tune.w, footprint);
+    // the part of the texel's weight that is the clear coat's mirror (the aux's w, EncodeAuxSharp) is left as it is
+    const float sharp = saturate((1.0 - ownAux.w) / kAuxSharpScale);
+    const float strength = (pass == 0u ? smoothstep(g_push.tune.x, g_push.tune.y, footprint) : smoothstep(g_push.tune.z, g_push.tune.w, footprint)) * (1.0 - sharp);
     if (!(strength > 0.0))
     {
         g_output[centre] = own;  // no cone wide enough around to have noise: as the trace made it

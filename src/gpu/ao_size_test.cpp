@@ -441,7 +441,7 @@ void CheckSources(const std::string& gpu) {
   Check(Has(cpp, "kApplyHighSlotShift = 16") && Has(apply, "g_push.slots2.y >> 16") && Has(apply, "g_push.slots2.y & 0xFFFFu"),
         "slots2.y of the apply: the colour slot in the low 16 bits, the contact depth's in the high 16, in ao.cpp and in the shader");
   Check(Has(cpp, "static_assert(kBindlessTextureCount <= (1u << kApplyHighSlotShift)"), "ao.cpp: two bindless slots are asserted to fit one word");
-  Check(Has(cpp, "push.slots2[1] |= colour_[0].slot;"), "ao.cpp: the colour slot is OR-ed beside the contact depth's");
+  Check(Has(cpp, "push.slots2[1] |= Colour(0).slot;"), "ao.cpp: the colour slot (the colour chain's level 0 from the screen owner, ScreenShared::ColourPre) is OR-ed beside the contact depth's");
   Check(Has(cpp, "depth_full_.slot << kApplyHighSlotShift"), "ao.cpp: the contact depth slot is packed into the high bits");
   // The bits the flags use must not overlap in the apply (limit 8-15 and cap 26-31 of the bounce light; 22-25 the apply's own).
   {

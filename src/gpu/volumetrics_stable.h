@@ -32,10 +32,21 @@
 //      inside it, but the voxel took ONE jittered sample, so an edge voxel flipped between lit and shadowed by its jitter and the history only averaged it over a few
 //      frames. Now a shadowed headlight takes kHeadlightShadowTaps samples, one in each third of the slice with the frame's one offset (StratifiedDepth), and averages
 //      them. (b) A MOVING light against the history. The history is the volume at the previous camera, reprojected: a light that moved 0.2 m (12 m/s) or 1 m (60 m/s)
-//      leaves its old beam in the history, and a weight of 0.9 keeps it for 8 frames: a trail of 1.7 m at 12 m/s and 8 m at 60 m/s behind the beam's edges and shadows.
-//      The inject now compares the headlights of this frame with the ones of the volume the history holds (the constants carry both) and lowers the history's weight
-//      where the light's own term changed by more than a few per cent of the voxel's light (HistoryWeightUnderLightMotion): a parked car's beam keeps the full history,
-//      a passing one's edges take the frame's own value.
+//      leaves its old beam in the history, and a weight of 0.9 keeps it for 8 frames: a trail of 1.8 m at 12 m/s and 8 m at 60 m/s behind the beam. The second pass lowered
+//      the history's weight where the light's own term changed by more than a few per cent; VOL-HL-STEADY (section 4b) takes the history's beam to the light's place instead
+//      (CompensateHeadlightHistory): the weight stays, the trail is under 0.3 m up to 60 m/s, and a parked car's beam is untouched.
+//
+//   VOL-HL-STEADY (2026-11-20, from the takes of the second pass, no game run): the headlights alone kept 78 and 90 per cent of the first version's flicker (dolly-heads, pan-heads)
+//   and the second pass's rule was the suspect. It is not what those two scenes measure: the car drives 24 m ahead at the camera's own speed, so a world point sees the beam move
+//   0.2 m a frame and the rule changes the history's weight by under a tenth in the beam's interior (97 per cent of the beam's light has a weight of 0.81 to 0.9; 2 to 7 per cent
+//   under 0.8: CheckSceneBite in volumetrics_stable_test.cpp), and the same holds for the compensation. What those two takes measure is the 8-bit floor: dolly-heads' mean
+//   second difference is 0.0085 of one level of the x32 picture, the beam's total light fluctuates 0.05 per cent frame to frame and its centroid 0.09 pixel, and the share of
+//   the metric that is a band's edge moving one level is 89 to 92 per cent (dolly-heads) and 56 (pan-heads, where the picture's own depth edges, 37 per cent of the sum, are
+//   the rest). By the picture's light in pan-heads (pixels that are not at an edge, new / first version): the dim haze (2 to 16 levels of x32, 60 per cent of the lit pixels) is 1.18
+//   to 1.32 (the camera pans one pixel a frame, so the haze's gradient drifts across the 8-bit steps: every pixel that crosses one flips; the ratio is the steps' phase), the beam
+//   and the halos (32 levels and up) 0.56 and 0.31. The rule and the compensation are for a beam that moves against the camera: a passing car (scenes\vol-hl-pass.scene).
+//   The haze's thickness read at a random place of the voxel is not it either: in a simulation of the inject's value noise (50 m features, 0.35 deep) along a drive at 12 m/s the
+//   slice's value after the history jitters 0.02 per cent at 19 m and 0.09 at 97 m (a throwaway simulation, not kept).
 //
 //   WHAT THE FIRST RUN'S NUMBERS WERE (VOL-STABLE-2, from the takes, no game run): the chase's and the headlight-only flicker that the first run kept were mostly the test
 //   and the view, not the volume. (i) The chase scene's camera is not smooth: the pole's image in the PICTURE take moves 0.25 to 1.1 pixels a frame (mean 0.69) in the same
@@ -308,36 +319,61 @@ inline float HeadlightTermUnshadowed(const VolLamp& l, const float p[3], const f
   return spot * shape * LampFalloff(dist, l.range, l.pad[0]) * HenyeyGreenstein(-(travel[0] * ray[0] + travel[1] * ray[1] + travel[2] * ray[2]), g);
 }
 
-// How much the headlights' light at `p` differs between this frame's (`now`) and the history's (`before`): the largest channel of |sum now - sum before| of colour x term,
-// both without shadows (a shadow's edge moves with the light and is the same kind of change; the shadow lookup is left to the sample). 0 for a light that did not move.
-inline float HeadlightChange(const VolLamp* now, uint32_t n_now, const VolLamp* before, uint32_t n_before, const float p[3], const float ray[3], float g) {
-  float a[3] = {0.0f, 0.0f, 0.0f};
-  float b[3] = {0.0f, 0.0f, 0.0f};
-  for (uint32_t i = 0; i < n_now; ++i) {
-    const float t = HeadlightTermUnshadowed(now[i], p, ray, g);
-    for (int c = 0; c < 3; ++c) {
-      a[c] += now[i].colour[c] * t;
-    }
+// ---------------------------------------------------------------------------
+// 4b. a moving light against the history (VOL-HL-STEADY): the history's beam taken to where the light is now
+// ---------------------------------------------------------------------------
+//
+// The history is the volume at the previous camera, so a light that moves leaves its old beam in it (1.8 m of trail at 12 m/s, 8 m at 60 m/s with a weight of 0.9). The
+// second pass of VOL-STABLE answered with a rule that lowered the history's weight wherever the beam's own term had changed by a few per cent: it took the trail away
+// and the smoothing with it (the headlights alone flickered at 78 to 90 per cent of the first version's, where the first pass had 47). The history was only wrong by how
+// much the BEAM moved, and the beam is analytic: the history's headlight part is (about) colour x term(then) x visibility, so the volume takes its own old beam and makes it
+// colour x term(NOW) x the same visibility, by the ratio of the two terms, which the inject can evaluate at the voxel (both sets of lights are in the constants). The history
+// then averages the visibility (a shadow, the haze, the jitter) and follows the light exactly, so the weight stays where the time constant puts it.
+//   old' = old + head_old x (ratio - 1),   head_old = clamp(old - base, 0, 1.25 x term(then) x sigma x gain),   ratio = luma(term(now)) / luma(term(then))
+// `base` is this frame's light of everything but the headlights at the voxel (the haze, the sun, the lamps): the part of the old light the beam did not make. The bound on
+// head_old (a visibility is at most 1) keeps the medium's own noise out of the correction where the beam is faint.
+// Where the light does not exist yet at the voxel (ratio over kHeadCompFullRatio: the beam's leading edge, a light that came on) the old beam has nothing to be scaled from, and
+// the weight falls to 0 by kHeadCompMaxRatio, but only where the beam is a real part of the voxel's light (kHeadCompSignificance of the rest): a fringe a hundredth of the haze
+// is not worth a frame of noise. A light that went out has ratio 0: the old beam is taken out in one frame.
+// What it does not do: the visibility is the old one. A shadow's edge that moves with the light (a pole's shadow sweeping a wall) trails by the history's length as it did
+// before the rule; the weight's own time constant is all that bounds it.
+
+inline constexpr float kHeadCompFullRatio = 2.0f;       // up to this ratio of the new term to the old one the history keeps its weight
+inline constexpr float kHeadCompMaxRatio = 4.0f;        // from this ratio (and over) the history is dropped; the correction's own ratio is capped here
+inline constexpr float kHeadCompOldBound = 1.25f;       // the old beam's part is at most this times the old term (a visibility is at most 1; the rest is the medium's difference)
+inline constexpr float kHeadCompSignificance = 0.1f;    // a beam under this share of the voxel's other light does not lower the weight
+
+inline float HeadlightLuma(const float c[3]) { return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2]; }
+
+// The ratio of the headlights' term now to the one the history was made with, from their luminances: 1 where neither lights the voxel, 0 where the light went, huge where it is new.
+inline float HeadlightRatio(float luma_now, float luma_then) {
+  if (!(luma_now > 0.0f)) {
+    return luma_then > 0.0f ? 0.0f : 1.0f;
   }
-  for (uint32_t i = 0; i < n_before; ++i) {
-    const float t = HeadlightTermUnshadowed(before[i], p, ray, g);
-    for (int c = 0; c < 3; ++c) {
-      b[c] += before[i].colour[c] * t;
-    }
-  }
-  return std::max({std::fabs(a[0] - b[0]), std::fabs(a[1] - b[1]), std::fabs(a[2] - b[2])});
+  return luma_now / std::max(luma_then, 1e-20f);
 }
 
-// The history may be this far off (as a share of the voxel's light) before its weight is halved: 8 per cent is under what an eye sees in a glow and over the change a
-// beam's interior has in one frame of a car at 12 m/s (under 1 per cent).
-inline constexpr float kHeadlightHistoryTolerance = 0.08f;
+// The weight's fall for a ratio: 1 up to kHeadCompFullRatio, 0 from kHeadCompMaxRatio.
+inline float HeadCompWeightScale(float ratio) { return std::clamp((kHeadCompMaxRatio - ratio) / (kHeadCompMaxRatio - kHeadCompFullRatio), 0.0f, 1.0f); }
 
-// The history's weight after the light's motion: weight / (1 + (change / total / tolerance)^2), `change` and `total` in the same units (the voxel's scattered light of the
-// frame, its largest channel, and the part of it that the light's motion changed). No change keeps the weight; a change as large as the voxel's light all but drops the history.
-inline float HistoryWeightUnderLightMotion(float weight, float change, float total) {
-  const float rel = change / std::max(total, 1e-6f);
-  const float r = rel / kHeadlightHistoryTolerance;
-  return weight / (1.0f + r * r);
+// The history's light at a voxel `old_rgb` taken to the light's place now (the twin of the inject's compensation): `base` this frame's light of everything but the headlights,
+// `term_now` / `term_then` the headlights' unshadowed term summed over the set of this frame and of the volume the history holds (colour included, no sigma and no gain), `sigma_now`
+// and `sigma_old` the extinctions, `gain` the scene units' multiplier (kLightGain times the strength). Writes the corrected light and returns the weight's multiplier (0 to 1).
+inline float CompensateHeadlightHistory(const float old_rgb[3], const float base[3], const float term_now[3], const float term_then[3], float sigma_now, float sigma_old, float gain,
+                                        float out_rgb[3]) {
+  const float luma_now = HeadlightLuma(term_now);
+  const float luma_then = HeadlightLuma(term_then);
+  const float ratio = HeadlightRatio(luma_now, luma_then);
+  const float used = std::min(ratio, kHeadCompMaxRatio);
+  for (int c = 0; c < 3; ++c) {
+    const float bound = term_then[c] * (kHeadCompOldBound * sigma_old * gain);
+    const float head_old = std::clamp(old_rgb[c] - base[c], 0.0f, std::max(bound, 0.0f));
+    out_rgb[c] = old_rgb[c] + head_old * (used - 1.0f);
+  }
+  const float fall = 1.0f - HeadCompWeightScale(ratio);
+  const float beam = std::max(luma_now * sigma_now, luma_then * sigma_old) * gain;
+  const float significance = std::clamp(beam / std::max(kHeadCompSignificance * HeadlightLuma(base), 1e-6f), 0.0f, 1.0f);
+  return 1.0f - significance * fall;
 }
 
 // ---------------------------------------------------------------------------

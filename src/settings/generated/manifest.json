@@ -159,7 +159,7 @@
   "type": "bool",
   "default": "true",
   "category": "Discord",
-  "help": "\"Enable Discord Rich Presence.\"",
+  "help": "\"Enable Discord Rich Presence. Live: off clears the presence at once, on shows the game's current state at once.\"",
   "traits": [],
   "comments": [],
   "pp_depth": 0
@@ -878,10 +878,10 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: shows a stage of the car self-reflection instead of the paint (only while the car self-reflections are on): \"\n    \"1 the weight of the hit, 2 the colour the ray found, 3 the paint's baked vertex occlusion, 4 the state of the trace \"\n    \"(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit, \"\n    \"orange where the hit is probably the hidden face of a part, the brighter the more of the reflection it takes), 5 the \"\n    \"ray traced image at the paint's pixel (purple: no image this frame, cyan: no data there, so the march ran, green: no hit, \"\n    \"yellow: a hit on a part the camera sees, orange: on a part it does not). 0: off. Live.\"",
+  "help": "\"Diagnostic: shows a stage of the car self-reflection instead of the paint (only while the car self-reflections are on): \"\n    \"1 the weight of the hit, 2 the colour the ray found, 3 the paint's baked vertex occlusion, 4 the state of the trace \"\n    \"(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit, \"\n    \"orange where the march's hit is probably the hidden face of a part, the brighter the more of the reflection it takes), 5 the \"\n    \"ray traced image at the paint's pixel (purple: no image this frame, cyan: no data there, so the march ran, green: no hit, \"\n    \"yellow: a hit on the player's own part, orange: on another car), 6 the clear coat's layer's amount (its fresnel by the share of the hit on another car, white is 1), \"\n    \"7 what that layer adds (the other car's colour by the amount). 2 is the ray traced reflection alone at full intensity. 0: off. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 5}"
+   "rex::Range{0, 7}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1483,7 +1483,7 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/GPU",
-  "help": "\"Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable \"\n    \"refresh display follows the frames. On presents immediately instead, which tears. Read when \"\n    \"frame generation is switched on.\"",
+  "help": "\"Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable \"\n    \"refresh display follows the frames. On presents immediately instead, which tears. Live: read at \"\n    \"every present while frame generation runs.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -1520,6 +1520,31 @@
   "traits": [
    "rex::Allowed(\"auto\", \"low\", \"mid\", \"high\")",
    "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_tier": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: forces the ray tracing tier the ray traced upgrades' auto values are chosen from (none: \"\n    \"the card cannot trace rays or has no ray tracing units, weak: it traces at a moderate speed, such as an RTX 3060 or an RX 6600, \"\n    \"strong: it traces quickly, such as an RTX 5080 or an RX 7900 XT). \"\n    \"auto: the tier found for this card (its table row and, when it ran, the benchmark of mcla_gpu_rt_bench), logged at start as \"\n    \"'[gpu] ray tracing tier: ...' with the rule that chose it; while mcla_gpu_class forces a class, the tier follows it (high: strong, \"\n    \"mid: weak, low: none) so that a test that says a class runs that class's cells. Only the value auto of the ray traced upgrades \"\n    \"(the car's reflection, occlusion and sun ray; later the city's shadows, reflections and bounce light) follows it, and the \"\n    \"number of cars they trace and how far; a choice of the player's own is never changed. Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"none\", \"weak\", \"strong\")",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_bench": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the ray tracing benchmark that can move a card between the weak and the strong tier. \"\n    \"auto: on the first start with a card that can trace (and again after its driver or the graphics API changes) a short compute pass \"\n    \"traces a few million rays through a small synthetic city and logs the speed ('[gpu] rt bench: ...'), which is kept in \"\n    \"rt_bench.txt next to larecomp.toml; off: no benchmark, and a kept result is not read; force: run it at every start. \"\n    \"Takes effect at the next start.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"force\")",
+   "rex::kDebugOnly",
+   "rex::kRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2697,7 +2722,7 @@
   "type": "bool",
   "default": "true",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: keeps the volumetric light steady in motion: a street lamp's glow is averaged over each slice of the \"\n    \"light's grid instead of sampled once at a random place in it (so it no longer pulses as the camera moves and the history no longer has \"\n    \"noise to average), a pixel at an edge of depth looks the light up at every sample of the picture's anti-aliasing instead of the first, \"\n    \"the history's weight follows time, not the frame count, the lamps fade in a real 0.35 s whatever the frame rate, a shadowed headlight takes three taps of its \"\n    \"shadow map along each cell of the grid, the history gives way where a car's headlights moved, and a frame whose camera is not known takes the previous one moved on by its \"\n    \"last step. False: the first version. Live.\"",
+  "help": "\"Diagnostic: keeps the volumetric light steady in motion: a street lamp's glow is averaged over each slice of the \"\n    \"light's grid instead of sampled once at a random place in it (so it no longer pulses as the camera moves and the history no longer has \"\n    \"noise to average), a pixel at an edge of depth looks the light up at every sample of the picture's anti-aliasing instead of the first, \"\n    \"the history's weight follows time, not the frame count, the lamps fade in a real 0.35 s whatever the frame rate, a shadowed headlight takes three taps of its \"\n    \"shadow map along each cell of the grid, the history's beam follows a car's headlights where they moved, and a frame whose camera is not known takes the previous one moved on by its \"\n    \"last step. False: the first version. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -5651,13 +5676,18 @@
  },
  "lod_traffic_scale": {
   "type": "f64",
-  "default": "1.0",
+  "default": "0.0",
   "category": "MCLA/LOD",
-  "help": "\"How far away traffic cars keep their detailed models. 1.0 is the original distance; higher \"\n    \"keeps the detail longer and costs speed, lower switches to simpler models sooner (0.1 to 10).\"",
+  "help": "\"How far away traffic cars keep their detailed models, as a multiple of the original distance. \"\n    \"0 (auto, the default) is 3.0 on a high-end graphics card, 2.0 on a mid-range one and 1.5 on integrated graphics. \"\n    \"Higher keeps the detail longer and costs processor time; lower simplifies it sooner (0.1 to 10; the menu has \"\n    \"auto, 0.5, 1, 1.5, 2, 3 and 5).\"",
   "traits": [
-   "rex::Range{0.1, 10.0}"
+   "rex::Range{0.0, 10.0}"
   ],
-  "comments": [],
+  "comments": [
+   "// 0 is auto (gpu/gpu_class.h): 3.0 on a high-end graphics card, 2.0 on a mid-range one, 1.5 on integrated graphics and until the",
+   "// card is known. The scale multiplies the game's own distances for a traffic car (Patch_ScaleTrafficLOD, at 0x827903E0 in the",
+   "// car's LOD pick): at 1.0 the most detailed model ends at about 40 m and the middle one at about 155 m, the coarsest goes on to",
+   "// the 500 m where the car is not drawn. 3.0 puts the steps at 120 m and 465 m; more only pushes the second step past the cull."
+  ],
   "pp_depth": 0
  },
  "lod_city_scale": {
@@ -5781,6 +5811,17 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::kRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_fix_checkpoint_fade": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Fix: the smoke of a closed race checkpoint dissipates over about half a second at every frame \"\n    \"rate. The game fades it by dt x 25 at every update, which is 0.83 per update on the console's 30 updates a \"\n    \"second but 0.42 at 60 FPS and 0.17 at 144 FPS, so above 30 FPS the smoke vanished with the checkpoint. On: the \"\n    \"same decay per second as the console at any frame rate. Off: the game's own number at every update.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -6613,10 +6654,9 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/Patches",
-  "help": "\"Disables pairwise collision resolution.\"",
+  "help": "\"Disables pairwise collision resolution. Live: the game's collision function is skipped \" \"or run again at its next call.\"",
   "traits": [
-   "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -6811,35 +6851,43 @@
  },
  "traffic_unspawn_dist": {
   "type": "f64",
-  "default": "250.0",
+  "default": "0.0",
   "category": "MCLA/Performance",
-  "help": "\"Traffic vehicle unspawn radius in meters (default 400.0, lower = higher FPS in city).\"",
+  "help": "\"How far from you traffic cars are kept, in metres: a car further away is removed. \"\n    \"0 (auto, the default) is 400 (the game's own) on a high-end graphics card, 300 on a mid-range one and 250 on \"\n    \"integrated graphics. Less is faster (100 to 600; the menu has auto, 100, 150, 200, 250, 300, 400, 500 and 600).\"",
   "traits": [
-   "rex::Range{100.0, 600.0}"
+   "rex::Range{0.0, 600.0}"
   ],
-  "comments": [],
+  "comments": [
+   "// 0 is auto (gpu/gpu_class.h kScales): 400 (the game's own) on a high-end graphics card, 300 on a mid-range one, 250 on",
+   "// integrated graphics and until the card is known. A value set by hand is held to 100 to 600."
+  ],
   "pp_depth": 0
  },
  "ped_density_scale": {
   "type": "f64",
-  "default": "0.5",
+  "default": "-1.0",
   "category": "MCLA/Performance",
-  "help": "\"Pedestrian density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).\"",
+  "help": "\"How many people walk the streets, as a multiple of the game's own amount (0 = none, 1 = the game's). \"\n    \"-1 (auto, the default) is 1.0 on a high-end graphics card, 0.75 on a mid-range one and 0.5 on integrated \"\n    \"graphics. Fewer is faster (0 to 2; the menu has auto, 0, 0.25, 0.5, 0.75, 1, 1.5 and 2).\"",
   "traits": [
-   "rex::Range{0.0, 2.0}"
+   "rex::Range{-1.0, 2.0}"
   ],
-  "comments": [],
+  "comments": [
+   "// Below 0 is auto, as for parked_car_scale."
+  ],
   "pp_depth": 0
  },
  "parked_car_scale": {
   "type": "f64",
-  "default": "0.5",
+  "default": "-1.0",
   "category": "MCLA/Performance",
-  "help": "\"Parked car density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).\"",
+  "help": "\"How many cars are parked along the roads, as a multiple of the game's own amount (0 = none, 1 = the game's). \"\n    \"-1 (auto, the default) is 1.0 on a high-end graphics card, 0.75 on a mid-range one and 0.5 on integrated \"\n    \"graphics. Fewer is faster (0 to 2; the menu has auto, 0, 0.25, 0.5, 0.75, 1, 1.5 and 2).\"",
   "traits": [
-   "rex::Range{0.0, 2.0}"
+   "rex::Range{-1.0, 2.0}"
   ],
-  "comments": [],
+  "comments": [
+   "// Below 0 is auto (gpu/gpu_class.h kScales): 1.0 (the game's own) on a high-end graphics card, 0.75 on a mid-range one, 0.5 on",
+   "// integrated graphics and until the card is known. 0 is none, so it cannot be the sentinel as it is for the LOD scales."
+  ],
   "pp_depth": 0
  },
  "global_max_draw_distance": {
@@ -9760,6 +9808,133 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_shading": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): where the graphics card can ray trace and the car self-reflection runs, a reflection ray that hits ANOTHER car shows the part in its own material: its paint \"\n    \"colour (the gradient of the paint's constants, the livery over it), its diffuse texture, the sun and the sky's light on it, the environment map's reflection, and the lamps lit at night. Where \"\n    \"the camera sees the part its own colour in the picture is used as before. Off: a part the camera does not see takes the stand-in colour (the colour the camera sees of that car, in shade, or \"\n    \"its paint), as before. Needs the other cars in the scene (mcla_gpu_car_rt_cars). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_shadow": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the shaded hit on another car casts one ray towards the sun against the cars of the scene, so that a car's own shadow falls on itself and on its neighbour (the world's shadows \"\n    \"come from the game's cascades: mcla_gpu_car_rt_hit_cascade). Off: the sun lights every part that faces it, but for the world's shadows. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_gain": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the brightness of the shaded hits on other cars against the colours the camera sees (1, the default). A flank that is too bright or too dark against the part of the same car \"\n    \"the camera sees: move it. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_ambient": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the share of the frame's ambient light (the cars' own pixel constants) in a shaded hit on another car (1, the default). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_spec": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the share of the environment map's reflection (the game's own 512x256 map, read at the reflected direction and scaled by the fresnel) in a shaded hit on another car (1, the \"\n    \"default). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_detail": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the detail of the shaded hit on another car (the car the reflection shows): the sky's openness (one ray from the hit towards the sky: a flank between two cars is darker), the contact with the ground \"\n    \"(the lowest half metre of the car is darker), the clear coat's image of the sun by day and of a street lamp at night (a bright streak along a shoulder or a roof edge), and what each kind of part \"\n    \"keeps of the ambient light. 1, the default; 0 is the shading as it was, above 1 makes the glints stronger. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_reach": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). \"\n    \"The weight of a hit falls over this from three quarters of it. Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours \"\n    \"(mcla_gpu_car_rt_cars_radius moves that). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 20.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_clearcoat": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the clear-coat ray of the ray traced car reflection: one more ray along the exact mirror direction (no cone, no filter) beside the glossy cone, added to it by a share that follows the paint's \"\n    \"fresnel, so that a car beside yours reads sharp in its paint (the way a clear coat does) on top of the glossy base. -1 (the default): by the graphics card's class (on the High class, off on the Mid class); \"\n    \"0 off; above 0 on at that strength (1 is the High class's). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_coat_layer": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): the paint adds the clear coat's layer over the reflection of ANOTHER CAR in the ray traced image: the car's colour by the coat's own fresnel \"\n    \"(0.07 at N.V 0.5, 0.20 at 0.3, 0.36 at 0.2), so that a car beside yours reads in your door at the strength a real clear coat gives it (the game's own paint reflects a few percent of what it \"\n    \"reflects at a grazing view). Off: the car replaces the environment's reflection as before, which is as weak as the environment's. Your own car's parts are untouched either way. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_calibrate": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): the shaded colour of another car's hidden parts is brought to the game's own exposure: where the reflection ray hits a part of another car's paint that the \"\n    \"camera sees, the pass also shades it by its model and compares the brightness with the game's colour there, and the shading's gain follows (about a window of twenty frames: it follows the hour). Off: the model's own \"\n    \"light, which does not follow the hour. The census line in the log ([car rt refl] hits) says the difference either way. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_cascade": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the shaded hit on another car also reads the game's own sun shadow map (its cascades) at the point, so that the reflected car stands in the light of the scene: the shade of buildings, trees \"\n    \"and bridges falls on it as it falls on the road. Off: only the cars' own shadows (mcla_gpu_car_rt_hit_shadow). Needs the volumetric light on (it reads the cascades the game draws). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

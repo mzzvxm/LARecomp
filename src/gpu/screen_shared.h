@@ -17,10 +17,10 @@
 //
 // SS-1 is the MOVE step for the colour captures and the history:
 //   - colour_pre (the bounce light's colour chain, capped): the IMAGES are the owner's (EnsureColourPre / ColourPre / ReleaseColourPre: their lifetime, their memory, their publication) and
-//     the call that records the chain is the owner's (CapturePre, step 5 of the order below). The pass itself, its pipelines and its constants (AoPush: the cap and the source share are
+//     the call that records the chain is the owner's (CapturePre, the colour_pre step of frame_order.h's table). The pass itself, its pipelines and its constants (AoPush: the cap and the source share are
 //     the AO's frame constants) stay in ao.cpp, which records it inside CapturePre: the same commands in the same place, so the picture and the pass timings are the ones of SS-0. SS-2 moves the
 //     pass.
-//   - colour_post: a new capture, CapturePost (step 8): the main colour averaged over its host samples into RGBA16F, uncapped, after the AO's apply, with a mip chain while the reflections
+//   - colour_post: a new capture, CapturePost (the colour_post step of frame_order.h's table): the main colour averaged over its host samples into RGBA16F, uncapped, after the AO's apply, with a mip chain while the reflections
 //     want it. Made ONLY while a consumer wants it (a Want of colour_post by anything but the car history in its automatic mode, or the debug view): the car self-reflection's history reads it
 //     when the frame has it (below) and does not make it for itself, so the effects that run today cost what they cost.
 //   - history: the last frame's colour_post (a ping-pong with the capture: no copy) with the camera pair, while a consumer wants it; and the CAMERA HISTORY (screen_history.h), kept here for
@@ -34,9 +34,8 @@
 // WantCamera(consumer, on) says the consumer reads the camera history (it costs a matrix read a frame, no GPU work).
 //
 // THE ORDER (scene.cpp OnResolve): BeginFrame at the frame's start, before the AO's; OnMainDraw for each draw of the main view, OnAnchor at the game's motion blur draw (before the effects'
-// own), OnComposite, OnPresent at the frame's end; at the trigger: Publish inside the AO's frame (step 3 of the order comment, after its depth chain, normal pass and colour chain, before the
-// ray traced pass), CapturePre inside the AO's frame before that (step 5), CapturePost after the AO, the sun shafts and the volumetric light and before the car history (step 8), DrawView
-// after the effects of the trigger, with the G-buffer's view. SS-2 moves the AO's depth, normal and colour passes here: the frame then has one more caller and ao.cpp one less.
+// own), OnComposite, OnPresent at the frame's end; at the trigger (frame_order.h is the order, and the test holds it to scene.cpp and ao.cpp): CapturePre inside the AO's frame after its depth chain and normals, Publish at the END of the AO's frame (after its
+// apply), CapturePost after the AO, the light pass, the sun shafts and the volumetric light and before the reflections and the car history, DrawView after the effects of the trigger, with the G-buffer's view. SS-2 moves the AO's depth, normal and colour passes here: the frame then has one more caller and ao.cpp one less.
 //
 // RUN PLAN (the main session; this agent ran nothing): see the commit message of SS-1 and the CHECK lines in screen_shared.cpp.
 //
@@ -141,7 +140,7 @@ class ScreenShared {
   // colour_pre. Called only while the bounce light runs (its want of colour_pre).
   void CapturePre(const std::function<void()>& record);
 
-  // colour_post (and the history): step 8 of the order. At the frame's trigger, after the AO's apply, records the capture when the plan makes it (a consumer wants it, or the history, or the view
+  // colour_post (and the history): the colour_post step of frame_order.h's table. At the frame's trigger, after the AO's apply, records the capture when the plan makes it (a consumer wants it, or the history, or the view
   // shows it). True when passes were recorded (the caller's list state is gone). Once a frame.
   bool CapturePost(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list);
   // True while a capture is planned and not made yet this frame (the Scene calls CapturePost only then).

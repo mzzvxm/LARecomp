@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 
+#include "gbuffer_rules.h"
 #include "screen_frame.h"
 
 namespace mcla::gpu::ssr {
@@ -63,6 +64,21 @@ inline constexpr LevelNumbers NumbersOf(Level level) {
 }
 inline constexpr uint32_t kMaxRays = 2;
 inline constexpr uint32_t kMaxIterations = 255;   // the push's 8 bits
+
+// ---------------------------------------------------------------------------
+// what the effect asks of the shared owners (GB-I3): only while it is on
+// ---------------------------------------------------------------------------
+// ScreenReflections::BeginFrame passes these to ScreenShared::Want / WantCamera and GBuffer::Want(kReflections) every frame (the wants are sticky: a level that goes back to off withdraws them at the
+// next frame start). While the effect is OFF (the row REFLECTIONS ON SURFACES at OFF, or `auto` on a class whose cell is off: the default everywhere), nothing is asked: no Hi-Z, no colour_post, no planes
+// are made for it (with no other consumer the sidecar images do not exist and no draw of the game changes), the camera is not kept for it and no image is held. At high and at ultra the same things are
+// asked for (the levels differ in the rays and the steps of the trace, not in what they read).
+//   products   the Hi-Z (the min chain of the AO's linear depth: the walk) and colour_post with its mips (the radiance of a hit)
+//   planes     all three (RT1 the normal, RT2 the albedo, RT3 the smoothness and the class): gbuffer_rules.h ConsumerPlanes(kReflections)
+//   camera     the frame's own camera and its motion (the axes of RT1's world normal, the history's reprojection)
+inline constexpr uint32_t kWantedProducts = screen::ProductBit(screen::kHizMin) | screen::ProductBit(screen::kColourPost);
+constexpr uint32_t WantedProducts(Level level) { return level == Level::kOff ? 0u : kWantedProducts; }
+constexpr uint32_t WantedPlanes(Level level) { return level == Level::kOff ? 0u : gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections); }
+constexpr bool WantsCamera(Level level) { return level != Level::kOff; }
 
 // The numbers no setting names (hlsl/ssr_common.hlsli and ssr_trace.hlsli have the rest as constants); the debug settings replace the ones that have one.
 inline constexpr float kDefaultMaxDistance = 150.0f;   // the longest ray, world units (metres)

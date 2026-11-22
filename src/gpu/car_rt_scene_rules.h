@@ -444,6 +444,20 @@ inline EvictionPlan PlanEviction(const std::vector<MeshUse>& meshes, const Evict
   return plan;
 }
 
+// The mesh a frame's bottom level build is recorded for, found again by its key when the builds are recorded: a mesh placed earlier in the frame can have been given back
+// by then (PlaceWalkedCars drops the cars that left the walk's set, GiveBack -> Evict hands the structure to the frame ring and erases the entry), so the pointer kept from
+// placing it points into an erased node. ppr1, 2026-11-21 (the RT grid scene on D3D12, right after the number of other cars changed): the erased node still read as a null
+// structure, buildBottomLevelAS got a null destination and the render thread read address 0x10. `resident` is the map of key -> mesh (a mesh has a `structure`, a smart pointer).
+// Null when the key is not there, or its mesh has no structure: nothing is built for it.
+template <class Resident>
+inline auto BuildableMesh(Resident& resident, uint64_t key) -> decltype(&resident.find(key)->second) {
+  const auto it = resident.find(key);
+  if (it == resident.end() || !it->second.structure) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
 // How many of the pending meshes (their triangle counts, in order) are taken in one frame: until the budget is reached, at least one.
 inline size_t TakeWithinBudget(const std::vector<uint32_t>& triangles, uint64_t budget) {
   uint64_t sum = 0;
@@ -499,7 +513,7 @@ inline constexpr double kErrorUnit = 1000.0;
 inline constexpr double kNearFarTolerance = 0.02;
 
 // THE SCOPE: which vehicle pixels the scene is meant to hold. The scene keeps the player's car and the nearest few other cars of the frame (by the
-// class: High up to 4 within 14 m, Mid up to 2 within 10 m; none with the cars 0 switch), and leaves the driver out; a vehicle pixel of any other car
+// class: High up to 4 within 20 m, Mid up to 2 within 14 m; none with the cars 0 switch), and leaves the driver out; a vehicle pixel of any other car
 // is not a miss but not in the scene by design. The depth image says only "vehicle" (one bit), not which car, so the shader places the pixel's
 // view-space position (the ray's direction times the image's distance) in the boxes of the kept cars: the player's car's box (the transformed mesh
 // boxes of its listed instances, grown on the host) and each kept other car's box (the same, from the top level's table, grown in the shader), both

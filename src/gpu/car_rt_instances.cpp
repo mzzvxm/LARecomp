@@ -8,8 +8,10 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
+#include "car_model_walk.h"
 #include "car_rt_opp_refl_rules.h"
 #include "gpu_class.h"
+#include "rt_tier.h"
 
 namespace mcla::gpu {
 
@@ -25,7 +27,7 @@ constexpr uint64_t kWindowFrames = 300;
 }  // namespace
 
 ci::Limits CarRtInstances::CurrentLimits() const {
-  return ci::LimitsFor(gpu_class::Current(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), double(larecomp::settings::mcla_gpu_car_rt_cars_radius.Get()));
+  return ci::LimitsFor(gpu_class::CurrentRtClass(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), double(larecomp::settings::mcla_gpu_car_rt_cars_radius.Get()));
 }
 
 bool CarRtInstances::RememberedOn() const {
@@ -53,6 +55,7 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
                                       const std::vector<car_model_rt::CarInfo>* paints) {
   list_.Clear();
   drawn_painted_ = 0;
+  const float paint_gamma = car_model_walk::CurrentPaintTuning().gamma;  // the record's colour to the paint's units (mcla_gpu_car_rt_paint_gamma)
   if (list_.items.capacity() < rr::kMaxInstances) {
     list_.items.reserve(rr::kMaxInstances);
     list_.rows.reserve(rr::kMaxInstances + ci::kMaxCars);
@@ -77,6 +80,13 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
     item.mask = rr::InstanceMask(draw.vs == rr::kTyreVs, draw.after_world, glass_rule);
     list_.items.push_back(item);
     list_.rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, i));
+    {
+      car_rt_material::InstanceMaterial im;
+      im.material = draw.material;
+      im.has_uv = ref.has_uv;
+      im.uv_density = ref.uv_density;
+      list_.materials.push_back(im);
+    }
     ++list_.stats.player_instances;
     if (ref.has_bounds) {
       ci::GrowBox(&list_.player_box, item.transform, ref);  // (a mesh without a box would add its origin alone: left out)
@@ -105,9 +115,9 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
         merged_cars_.insert(merged_cars_.end(), extra_cars->begin(), extra_cars->end());
         merged_draws_.insert(merged_draws_.end(), extra_draws->begin(), extra_draws->end());
       }
-      ci::AppendOthers(&list_, merged_draws_, merged_cars_, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars);
+      ci::AppendOthers(&list_, merged_draws_, merged_cars_, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars, paint_gamma);
     } else {
-      ci::AppendOthers(&list_, frame.other_draws, frame.other_cars, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars);
+      ci::AppendOthers(&list_, frame.other_draws, frame.other_cars, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars, paint_gamma);
     }
   }
   car_rt_opp_refl::AppendPlayerRecord(&list_, paints);  // the player's record for the opponents' reflection (car_rt_opp_refl_rules.h)

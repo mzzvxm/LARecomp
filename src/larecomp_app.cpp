@@ -40,6 +40,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "bootprogress/larecomp_shader_build.h"
 #include "cpu_level.h"
 #include "crash_handler.h"
+#include "crash_options.h"
 #include "discord_rpc/discord_rpc.h"
 #include "game_marker.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -84,6 +85,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "native_gfx/nocp/nocp_app.h"
 #include "native_gfx/nocp/nocp_driver.h"
 #include "os/appimage_env.h"
+#include "os/shutdown_signals.h"
 #include "os/thread_priority.h"
 #include "profile/larecomp_profile_picker.h"
 #include "profile/larecomp_profile_store.h"
@@ -550,10 +552,42 @@ void LarecompApp::ChooseUserFolder() {
 }
 
 // -----------------------------------------------------------------------------------------------------------------
+// Linux (Steam and the Steam Deck stop a game with SIGTERM, a terminal's Ctrl+C is SIGINT, closing the terminal SIGHUP): the three end the game
+// the way the pause menu's QUIT does, rex::app::RequestShutdown(0): the frame loop ends, Run returns, StopBeforeTitleEnds does the close work
+// (saves finished, devices given back), then the SDK's Shutdown. The SDK's App::Init already did that for SIGINT and SIGTERM and says nothing
+// in the log; this adds SIGHUP, a log line, and an exit for a quit that hangs: a signal later than a quarter of a second after the first ends
+// the process at once (os/shutdown_signals.h has the rule). Nothing on Windows (the SDK's console handler does Ctrl+C there).
+//
+// The helper thread outlives the app (a second Ctrl+C has to work during the shutdown too), so once OnShutdown has begun its callbacks stop
+// using the logger, which rex::Stop takes away a moment later: a signal in that time still asks for the shutdown (already under way) or,
+// as a later one, ends the process, both without a log line.
+// CHECK: OnShutdown does not run when Init failed; a signal in the last moments of such a start may still log after the logger is gone.
+static std::atomic<bool> g_termination_log_closed{false};
+
+static void InstallTerminationSignals() {
+  larecomp::os::ShutdownSignalActions actions;
+  actions.quit = [](int signal) {
+    if (!g_termination_log_closed.load(std::memory_order_acquire)) {
+      LARECOMP_APP_INFO("[quit] {} received: closing the game like the window's close button does", larecomp::os::ShutdownSignalName(signal));
+    }
+    rex::app::RequestShutdown(0);
+  };
+  actions.force = [](int signal) {
+    if (!g_termination_log_closed.load(std::memory_order_acquire)) {
+      LARECOMP_APP_ERROR("[quit] {} received again: ending the process now", larecomp::os::ShutdownSignalName(signal));
+      if (auto* logger = rex::AppInterfaces::Get<rex::ILogger>()) logger->Flush();
+    }
+    larecomp::EndProcessNow(128 + signal);  // the status a shell shows for a process that a signal ended
+  };
+  if (larecomp::os::InstallShutdownSignals(std::move(actions))) {
+    LARECOMP_APP_INFO("[quit] SIGTERM, SIGINT and SIGHUP close the game like the window's close button does; a second one ends it at once");
+  }
+}
+
 rex::Result<void> LarecompApp::OnInit() {
   // The window is open, the systems run, app.* is frozen. The order below is the order the 0.10 start-up had.
   settings_config_path_ = rex::GetPathSettings().config_file.Get();
-  InstallCrashLoggerAfterRuntime();  // CHECK: the SDK installed its crash reporter in Init; ours goes behind it
+  NoteCrashLogFile();  // Linux: the crash reports append to the SDK's log file by name (the second half of the logger is in OnTitleLaunch)
   for (const auto& note : path_notes_) LARECOMP_APP_WARN("Game data: {}", note);
   path_notes_.clear();
   // The command line options that could not be used (one line each; the start goes on): ApplyCommandLineSettings, PrepareCommandLine.
@@ -571,6 +605,7 @@ rex::Result<void> LarecompApp::OnInit() {
     return rex::Ok();
   }
 
+  InstallTerminationSignals();  // Linux: from here on, before the long steps (the boot build pumps the frame loop and ends on a quit)
   MoveUserDataIfNeeded();
 
   // log flush: a warning flushed the file at once, so a repeating warning cost a disk write each time (0.10 comment).
@@ -865,6 +900,12 @@ rex::Result<void> LarecompApp::OnTitleLaunch(rex::kernel::TitleRuntime& title) {
   mcla::ui::SetAchievementManager(&title.GetAchievementManager());  // the F7 list
   g_guest_mem = title.GetMembase().GetBase();
   LARECOMP_APP_INFO("by @mzzvxm. base memory: 0x{:016X}", reinterpret_cast<std::uintptr_t>(g_guest_mem));
+  // Linux: the second half of the crash logger goes in HERE and not in OnInit. The SDK puts its own SIGSEGV callback (the guest write
+  // watches the GPU caches rely on, the register blocks) on rex::platform::ExceptionHandler's list while TitleRuntime::Load makes the
+  // guest memory, and the list is called in the order it was filled: the logger's callback, which treats every fault it sees as a crash,
+  // has to come after it (crash_handler.cpp). In OnInit it came before, and the first write to a watched guest page killed the game
+  // (Linux boot check 2026-11-21: SIGSEGV SEGV_ACCERR on a guest store ~30 s in). No-op on Windows.
+  InstallCrashLoggerAfterRuntime();
 
   // The achievement labels from the resource embedded in the exe, layered over the XDBF ones by id.
   // (LoadAchievementMetadata works on rex::xam::IAchievementManager: it lists the catalog the XDBF filled and registers
@@ -1179,6 +1220,7 @@ void LarecompApp::OnRun() {
 
 // After the title stopped, before the drivers shut down (logging and settings still work).
 void LarecompApp::OnShutdown() {
+  g_termination_log_closed.store(true, std::memory_order_release);  // the signal helper thread (InstallTerminationSignals) stops logging
   // The UI system's event guard and the cached interface pointers go before rex::Stop takes the systems away.
   ui_listener_ = {};
   larecomp::sdk::Reset();
@@ -1195,5 +1237,12 @@ void LarecompApp::OnShutdown() {
 rex::platform::CrashReporterOptions LarecompApp::GetCrashOptions() {
   // CHECK (L3/L4): LARecomp's own crash handler (crash_handler.cpp: minidump, log of the last hook, Linux signal handlers)
   // and the SDK's reporter both want the process-wide filter; the SDK's is installed first, then InstallCrashLoggerAfterRuntime.
-  return TitleApp::GetCrashOptions();
+  rex::platform::CrashReporterOptions options = TitleApp::GetCrashOptions();
+  // The test harness's switch (crash_options.h): no "crashed" box, the process ends right after the report. Players never set it.
+  if (larecomp::crash::NoDialogFromEnvironment()) {
+    options.show_dialog = false;
+    // No upper-case "CRASH" and no "crash report" in this line: test checkers treat those words as a crash.
+    LARECOMP_APP_INFO("[crash] message box off (the no-dialog environment variable is set): a failure writes its report and ends the process");
+  }
+  return options;
 }

@@ -176,6 +176,15 @@ bool TimestampsSupported(plume::RenderDevice* device);
 // "D3D12 12_2" / "Vulkan 1.3.290": the version a driver bug report needs.
 std::string DescribeDevice(plume::RenderDevice* device);
 
+// The adapter's PCI ids, which Plume's device description does not carry: the ray tracing tier's table reads the device id (rt_tier.h). D3D12: DXGI's
+// VendorId, DeviceId and Revision; Vulkan: the physical device's vendorID and deviceID (revision 0). All 0 when the backend cannot say.
+struct AdapterIds {
+  uint32_t vendor_id = 0;
+  uint32_t device_id = 0;
+  uint32_t revision = 0;
+};
+AdapterIds QueryAdapterIds(plume::RenderDevice* device);
+
 // What the renderer needs of the device that Plume does not check when it opens one, and that
 // would otherwise fail later (a root signature or every pipeline refused, a black window), in
 // plain words; empty when the device has it all or when this cannot tell. D3D12: shader model

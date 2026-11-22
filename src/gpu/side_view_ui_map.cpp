@@ -5,6 +5,8 @@
 // INFERENCE for what each one is): in play the game draws three small views into EDRAM targets of their own, with 4 guest samples each, and resolves them into
 // textures that the HUD and the 3D UI draw as bitmaps:
 //   colour k_8_8_8_8 at tile 224, pitch 160, 4 samples + depth kD24FS8 at tile 0, pitch 160, 4 samples, declared 128x128   (about 25 draws a frame)
+//     and, AT NIGHT, a second colour of the same pass, k_8_8_8_8 at tile 288, pitch 160, 4 samples, declared 128x128 (the rthit4 night run's log: "colour k_8_8_8_8@288 pitch 160 4x made at 3x
+//     (an image of the screen; declared 128x128, first use 128 rows)", right after @224 and the depth; no such target in a day run) -- the same draws bind it as their second render target
 //   colour k_8_8_8_8 at tile 224, pitch 280, 4 samples + depth kD24FS8 at tile 0, pitch 280, 4 samples, declared 256x256   (about 37 draws a frame)
 //   colour k_8_8_8_8 at tile 168, pitch 240, 4 samples, no depth,                                       declared 220x220   (43 to 84 draws a frame)
 // and in the menus that are drawn over a world (the pause menu and its pages, the race pause, the garage and the showroom, the GPS map: the tags pause-tab0, pause-rb0,
@@ -45,6 +47,11 @@
 //    (ResolveCache::Activate, "a class has to take all of its sources"): the 128x128 target is a member of the class but the gamma 128x128 colour target
 //    (k_8_8_8_8_GAMMA at tile 1601, pitch 160, 1 sample) that the census also lists is not, so if the game copies the 128x128 view into it (CHECK) that chain
 //    stays at 1x and the gain is lost there; and a product the guest CPU reads back would be reduced to the guest's size (the unscaled copy of the resolve rules).
+//  - ONE PASS, ONE CLASS (the second colour of the 128x128 pass, rthit4 night): a draw's targets must all be at one scale, and a target that is no class's is made at the draw's scale the first time
+//    (Get: the scale a use asks for, here the class's 3x) but is moved by the next live change of any scale (Retarget) to what its declared size classifies at (EdramTargets::ScaleAfter: a 128x128 surface is no
+//    image of the screen, so 1x). The pass's colour at tile 288 was left out of this class, so after the first live change of a side view (the tour's ULTRA -> game at 8 s) its two companions were at 3x and it
+//    at 1x: "targets of different resolution scales", all 25 draws a frame of the pass left out for the rest of the run (15,000 skipped draws every 600 frames in the log; CHECK: what the view
+//    shows on screen). On main too: any live change of the shadows', the reflections' or the road reflection's resolution at 1.25x and over, at night. Every identity that the pass binds is in the table.
 //  - The identities share EDRAM tiles with other passes (tile 224 is also the 8x8 target at pitch 80; tile 0 is the depth of several): the declared size tells the
 //    uses apart (Matches asks for 128, 256, 220 or 960x640 whenever it is known), and another pass's use of the depth identity is a foreign use with a target of its own.
 //  - Cost: 2.25x makes 288x288, 576x576 and 495x495 targets at 4 samples (a few MiB each) and a 2160x1440 page at 2 samples with its depth (about 50 MiB; 88 MiB at 3x),
@@ -92,6 +99,7 @@ struct Identity {
 };
 constexpr Identity kIdentities[] = {
     {false, 224, 160, 4, 128, 128},  // colour k_8_8_8_8, with the depth below
+    {false, 288, 160, 4, 128, 128},  // the same pass's second colour (at night): a target of the pass is a member of the class, or the pass is left out after the next scale step (below)
     {true, 0, 160, 4, 128, 128},     // depth kD24FS8
     {false, 224, 280, 4, 256, 256},
     {true, 0, 280, 4, 256, 256},

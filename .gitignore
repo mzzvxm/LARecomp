@@ -9,13 +9,17 @@ generated_xeo3/
 # which has to travel with the history it backs up, the tool that builds
 # the starter pipeline list in assets/, and the shader pack builder's command
 # line (it builds from src/shaderpack), and the settings exposure check with its
-# exception list (every cvar is a row, an exception or debug-only), and the G-buffer's per-texture material tools (census, authoring script, rules, their tests).
+# exception list (every cvar is a row, an exception or debug-only), the check
+# that the words on the rows (RESTART, NEXT START) say what the settings do, the check that every descriptor set is made with the counts of its builder, and
+# the G-buffer's per-texture material tools (census, authoring script, rules, their tests).
 tools/*
 !tools/backup/
 !tools/gbuffer_materials/
 !tools/pipelines/
 !tools/shaderpack_tool/
 !tools/check_settings_exposure.py
+!tools/check_row_tags.py
+!tools/check_descriptor_counts.py
 !tools/settings_exposure.toml
 
 # Backup bundles belong next to the repository, never inside it.

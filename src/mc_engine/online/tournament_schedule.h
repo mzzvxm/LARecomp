@@ -14,7 +14,7 @@
 //
 //   +0   u32  version
 //   +4   u32  table id: the tournament leaderboard slot, 13..39 or 351..381
-//             (the game maps 351.. to stats views 382..412)
+//             (its stats view is StatsViewForSlot: the slot itself below 351, slot + 31 from 351)
 //   +8   u32  restriction type: 0 car model, 1 the car's +4 field, 2 car class
 //   +12  u32  restriction data (0xFFFFFFFF = any car)
 //   +16  u32  race key: the race's entry in the city's race map (race+148)
@@ -30,6 +30,11 @@
 #include <vector>
 
 namespace tournament {
+
+// The stats view that holds a slot's times. The game's own code does this twice, with the same rule: the write (sub_8229D2E0, the
+// view id it hands the Stats Worker) and the read of the player's best time (sub_822CF070) both do `slot >= 351 ? slot + 31 : slot`,
+// so slots 13..39 are views 13..39 and slots 351..381 are views 382..412 (the game's slot check is sub_822D0438's: 13..39 or 351..381).
+inline constexpr uint32_t StatsViewForSlot(uint32_t slot) { return slot >= 351 ? slot + 31 : slot; }
 
 inline constexpr uint32_t kDefinitionSize = 1556;
 inline constexpr uint32_t kDescriptionSize = 1536;

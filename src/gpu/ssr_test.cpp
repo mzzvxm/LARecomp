@@ -31,6 +31,7 @@
 #include "gbuffer_types.h"
 #include "screen_frame.h"
 #include "screen_rules.h"
+#include "frame_order.h"
 #include "ssr_rules.h"
 
 // ---------------------------------------------------------------------------
@@ -175,6 +176,54 @@ void TestLevels() {
   Check(high.rays == 1 && ultra.rays == 2 && high.max_iterations < ultra.max_iterations && high.history_weight < ultra.history_weight, "ultra costs more: two rays, more steps, a longer history");
   Check(sr::NumbersOf(sr::Level::kOff).rays == 0, "off has no rays");
   Check(ultra.rays <= sr::kMaxRays && ultra.max_iterations <= sr::kMaxIterations && high.history_weight < 1.0f && ultra.history_weight < 1.0f, "within the push's fields");
+}
+
+// GB-I3: what the effect asks of the shared owners at each level, and the cost arms the chains set
+void TestWantsAndArms() {
+  const uint32_t hiz_and_post = sc::ProductBit(sc::kHizMin) | sc::ProductBit(sc::kColourPost);
+  Check(sr::WantedProducts(sr::Level::kOff) == 0 && sr::WantedPlanes(sr::Level::kOff) == 0 && !sr::WantsCamera(sr::Level::kOff), "off asks for nothing: no Hi-Z, no colour_post, no planes, no camera");
+  for (sr::Level level : {sr::Level::kHigh, sr::Level::kUltra}) {
+    Check(sr::WantedProducts(level) == hiz_and_post && sr::WantedProducts(level) == sr::kWantedProducts, std::string(sr::LevelName(level)) + " wants the Hi-Z and colour_post, and no other product (not the history)");
+    Check(sr::WantedPlanes(level) == gb::kAllPlanes && sr::WantedPlanes(level) == gb::ConsumerPlanes(gb::Consumer::kReflections), std::string(sr::LevelName(level)) + " wants all three planes (the auto policy's table)");
+    Check(sr::WantsCamera(level), std::string(sr::LevelName(level)) + " wants the frame's camera");
+  }
+  Check(sr::WantedProducts(sr::Level::kHigh) == sr::WantedProducts(sr::Level::kUltra) && sr::WantedPlanes(sr::Level::kHigh) == sr::WantedPlanes(sr::Level::kUltra), "high and ultra read the same things (they differ in the trace's rays and steps)");
+  // the G-buffer's auto policy: the planes exist only while a consumer that is on wants one
+  gb::ConsumerStates states;
+  Check(gb::AutoPlanes(states) == 0, "no consumer on: no planes (the sidecar is not made, no draw changes)");
+  states.reflections = true;
+  Check(gb::AutoPlanes(states) == sr::WantedPlanes(sr::Level::kHigh), "the reflections on: the auto policy asks for the planes the effect wants");
+  // through the owners' wants, as the frame's plan sees them
+  gb::Wants gwants;
+  gwants.Set(gb::Consumer::kReflections, sr::WantedPlanes(sr::Level::kOff));
+  Check(gwants.Union() == 0 && gwants.Of(gb::Consumer::kReflections) == 0, "off withdraws the planes' want");
+  gwants.Set(gb::Consumer::kReflections, sr::WantedPlanes(sr::Level::kUltra));
+  Check(gwants.Union() == gb::kAllPlanes, "ultra wants the three planes");
+  sc::Wants swants;
+  sc::Plan plan = sc::PlanFrame(swants, sc::View::kOff, 0);
+  Check(plan.make == 0 && !plan.NeedsDepthChain(), "nothing wanted: the owner makes nothing and the AO runs no depth frame for it");
+  swants.Set(sc::Consumer::kReflections, sr::WantedProducts(sr::Level::kOff));
+  plan = sc::PlanFrame(swants, sc::View::kOff, 0);
+  Check(plan.make == 0 && !plan.NeedsDepthChain(), "off asks for no product: no Hi-Z pass, no capture, no depth-only frame (the cost of the off arm is nothing)");
+  swants.Set(sc::Consumer::kReflections, sr::WantedProducts(sr::Level::kHigh));
+  plan = sc::PlanFrame(swants, sc::View::kOff, 0);
+  Check(plan.make == hiz_and_post && plan.NeedsDepthChain(), "high makes the Hi-Z and the capture and needs the depth chain");
+
+  // the arms of the cost runs (frame_order.h cost::kReflectionsArms): the words are the setting's levels, the off arm runs nothing, the others the same set
+  using mcla::gpu::frame_order::cost::kReflectionsArms;
+  Check(kReflectionsArms.size() == sr::kLevelCount, "one arm for each level");
+  for (size_t i = 0; i < kReflectionsArms.size(); ++i) {
+    const sr::Level level = sr::LevelFromText(kReflectionsArms[i].word);
+    Check(size_t(level) == i && sr::LevelName(level) == kReflectionsArms[i].word, std::string("arm ") + kReflectionsArms[i].word + " is level " + std::to_string(i));
+    Check(kReflectionsArms[i].runs == (sr::NumbersOf(level).rays > 0) && kReflectionsArms[i].runs == (sr::WantedProducts(level) != 0) && kReflectionsArms[i].runs == (sr::WantedPlanes(level) != 0),
+          std::string("arm ") + kReflectionsArms[i].word + ": it runs exactly when it has rays and asks for the products and the planes");
+  }
+  Check(std::string(mcla::gpu::frame_order::cost::kReflectionsSetting) == "mcla_gpu_ssr", "the cost arms set mcla_gpu_ssr");
+  // cost: the arms in order of cost (the trace's work): off < high < ultra
+  const sr::LevelNumbers off = sr::NumbersOf(sr::Level::kOff), high = sr::NumbersOf(sr::Level::kHigh), ultra = sr::NumbersOf(sr::Level::kUltra);
+  Check(off.rays * off.max_iterations < high.rays * high.max_iterations && high.rays * high.max_iterations < ultra.rays * ultra.max_iterations, "the trace's work grows from off to high to ultra (rays x steps)");
+  // memory: the images the effect holds exist only while it ran lately; the sizes the cost run reads
+  Check(sr::HeldBytes(1920, 1080) < sr::HeldBytes(3840, 2160) && sr::HeldBytes(0, 0) == 0, "the held images grow with the picture and are none for none");
 }
 
 void TestSizes() {
@@ -1681,9 +1730,15 @@ void TestSources(const std::string& dir) {
 
   // what the effect asks of the owners, and that it asks for nothing while it is off
   const std::string begin = FunctionText(cpp, "void ScreenReflections::BeginFrame()");
-  Check(Has(begin, "screen_->Want(screen::Consumer::kReflections, on ? (screen::ProductBit(screen::kHizMin) | screen::ProductBit(screen::kColourPost)) : 0u)") && Has(begin, "screen_->WantCamera(screen::Consumer::kReflections, on)") &&
-            Has(begin, "gbuffer_->Want(gbuffer::Consumer::kReflections, on ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections) : 0u)"),
-        "BeginFrame asks for the Hi-Z, colour_post, the camera and the G-buffer's planes only while on (0 withdraws)");
+  Check(Has(begin, "screen_->Want(screen::Consumer::kReflections, ssr::WantedProducts(level_))") && Has(begin, "screen_->WantCamera(screen::Consumer::kReflections, ssr::WantsCamera(level_))") &&
+            Has(begin, "gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(level_))") && !Has(begin, "on ? ") && !Has(begin, "const bool on"),
+        "BeginFrame asks for the Hi-Z, colour_post, the camera and the G-buffer's planes through the rules (ssr_rules.h WantedProducts / WantsCamera / WantedPlanes: only while on, 0 withdraws) and by the RESOLVED level (GB-I3)");
+  Check(Has(rules, "constexpr uint32_t WantedPlanes(Level level) { return level == Level::kOff ? 0u : gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections); }") &&
+            Has(rules, "inline constexpr uint32_t kWantedProducts = screen::ProductBit(screen::kHizMin) | screen::ProductBit(screen::kColourPost);"),
+        "the rules' wants are the planes of the auto policy's table and the Hi-Z with colour_post");
+  Check(Has(scene, "ssr_->BeginFrame();") && scene.find("ssr_->BeginFrame()") < scene.find("gbuffer_->BeginFrame(frame_serial_)") && scene.find("ssr_->BeginFrame()") < scene.find("screen_->BeginFrame(frame_serial_)") &&
+            scene.find("local_lights_->BeginFrame()") < scene.find("ssr_->BeginFrame()"),
+        "GB-I3: Scene::BeginFrame declares the reflections' wants right after the light pass's and before the G-buffer and the screen owner read them (lag 0)");
   Check(!Has(begin, "kHistory"), "the owner's history product is not asked for (the accumulation keeps its own images)");
   const std::string trigger = FunctionText(cpp, "bool ScreenReflections::OnTrigger(");
   const size_t first_command = std::min({trigger.find("DrawPass("), trigger.find("list->"), trigger.find("edram_->Transition")});
@@ -1772,7 +1827,18 @@ void TestSources(const std::string& dir) {
         "the trace gates by class and smoothness before it walks (a pixel that reflects nothing costs the gate's reads)");
   Check(Has(apply_ps, "if (!reflects) {\n    return float4(0.0f, 0.0f, 0.0f, 0.0f);") && Has(apply_ps, "return float4(term, 0.0f);"), "the apply adds 0 where the class keeps its own reflection and writes no alpha");
   Check(Has(cpp, "blend.srcBlend = plume::RenderBlend::ONE;") && Has(cpp, "blend.dstBlend = plume::RenderBlend::ONE;") && Has(cpp, "blend.renderTargetWriteMask = kWriteRgb;"), "the apply pipeline adds and leaves alpha alone");
-  Check(Has(rules, "kStagePlanes") == false && Has(cpp, "gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections)") && gb::ConsumerPlanes(gb::Consumer::kReflections) == gb::kAllPlanes, "all three planes are asked for, through the auto policy's table (GB-J; RT3 may not be written yet: the frame then has two)");
+  Check(Has(rules, "kStagePlanes") == false && Has(rules, "gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections)") && gb::ConsumerPlanes(gb::Consumer::kReflections) == gb::kAllPlanes, "all three planes are asked for, through the auto policy's table (GB-J; RT3 may not be written yet: the frame then has two)");
+  // the pass timing (GB-I3): a mark before each of the three passes and a closing mark after the apply, each once
+  for (const char* label : {"ssr trace", "ssr temporal", "ssr apply", "after ssr"}) {
+    Check(Count(cpp, std::string("pass_timing_->Mark(list, \"") + label + "\");") == 1, std::string("ssr.cpp marks '") + label + "' once");
+  }
+  {
+    const std::string trigger_text = FunctionText(cpp, "bool ScreenReflections::OnTrigger(");
+    const size_t t = trigger_text.find("Mark(list, \"ssr trace\")"), p = trigger_text.find("Mark(list, \"ssr temporal\")"), a = trigger_text.find("Mark(list, \"ssr apply\")"), c = trigger_text.find("Mark(list, \"after ssr\")");
+    Check(t != std::string::npos && t < p && p < a && a < c, "the marks come in the passes' order, the closing one last (a mark's time runs to the next mark)");
+    const size_t draw = trigger_text.find("list->drawInstanced(3, 1, 0, 0);");
+    Check(draw != std::string::npos && a < draw && draw < c, "the closing mark follows the apply's draw (outside the render pass the apply closed)");
+  }
 
   // the AO's accessor is a read and nothing else
   const std::string accessor = FunctionText(ao_cpp, "bool AmbientOcclusion::FrameCameraNow(FrameCameraOut* out) const {");
@@ -1833,6 +1899,7 @@ int main(int argc, char** argv) {
     }
   }
   TestLevels();
+  TestWantsAndArms();
   TestSizes();
   TestDecision();
   TestHistory();

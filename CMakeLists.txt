@@ -105,6 +105,8 @@ set(LARECOMP_SOURCES
     src/os/appimage_env.cpp
     # The guest's Sleep on Linux: a yield and a sleep that signals do not cut short (os/thread_yield.h).
     src/os/thread_yield.cpp
+    # SIGTERM, SIGINT and SIGHUP end the game like the window's close button (Linux; os/shutdown_signals.h).
+    src/os/shutdown_signals.cpp
 
     # Steering wheel support.
     src/mc_engine/wheel/wheel_fake.cpp
@@ -156,6 +158,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/road_reflection_cars_test.cpp
     src/mc_engine/hooks/script_input.cpp
     src/mc_engine/hooks/checkpoint_sweep.cpp
+    src/mc_engine/hooks/checkpoint_effect_fade.cpp
     src/mc_engine/hooks/neon_pulse.cpp
     src/mc_engine/hooks/inflate_fast.cpp
     src/mc_engine/hooks/vol_lamps.cpp
@@ -438,6 +441,11 @@ target_include_directories(larecomp_hud_track_test PRIVATE src src/mc_engine/cin
 add_executable(larecomp_bound_node_guard_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/bound_node_guard_test.cpp)
 target_include_directories(larecomp_bound_node_guard_test PRIVATE src/mc_engine/hooks)
+# The fade of a released particle effect (src/mc_engine/hooks/effect_fade.h: the closed checkpoint's smoke held to the console's decay per second) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_effect_fade_test, then run <build dir>/larecomp_effect_fade_test (exit 0 = passed).
+add_executable(larecomp_effect_fade_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/effect_fade_test.cpp)
+target_include_directories(larecomp_effect_fade_test PRIVATE src/mc_engine/hooks)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).
@@ -536,12 +544,28 @@ add_executable(larecomp_game_marker_test EXCLUDE_FROM_ALL
     src/game_marker_test.cpp)
 target_include_directories(larecomp_game_marker_test PRIVATE src)
 
+# The switch that skips the crash box for a test run (src/crash_options.h: LARECOMP_NO_CRASH_DIALOG, the exit status) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_crash_options_test, then run <build dir>/larecomp_crash_options_test (exit 0 = passed).
+add_executable(larecomp_crash_options_test EXCLUDE_FROM_ALL
+    src/crash_options_test.cpp)
+target_include_directories(larecomp_crash_options_test PRIVATE src)
+if(WIN32)
+    target_compile_definitions(larecomp_crash_options_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # What LARecomp does with each option of the command line (src/settings/cli_rules.h: which options the SDK keeps, which setting
 # belongs to a driver that is not loaded this run, what a name nothing knows costs) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_cli_rules_test, then run <build dir>/larecomp_cli_rules_test (exit 0 = passed).
 add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
     src/settings/cli_rules_test.cpp)
 target_include_directories(larecomp_cli_rules_test PRIVATE src)
+
+# The table of change-callback guards (src/settings/watch_table.h: released by hand while the SDK's settings still exist, because the exe's
+# static destruction came after the SDK had destroyed them and crashed in Mtx_lock about every other run) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_watch_table_test, then run <build dir>/larecomp_watch_table_test (exit 0 = passed).
+add_executable(larecomp_watch_table_test EXCLUDE_FROM_ALL
+    src/settings/watch_table_test.cpp)
+target_include_directories(larecomp_watch_table_test PRIVATE src)
 
 # Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
 # own default for cache_root) has a check that needs no game:
@@ -1192,6 +1216,20 @@ else()
         target_compile_definitions(larecomp_rmr_server PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_link_libraries(larecomp_rmr_server PRIVATE ws2_32)
     endif()
+    # The weekly tournament's prize settling (tournament_awards.cpp) and the slot-to-view rule (StatsViewForSlot) have a check that
+    # needs no game, no SDK and no network: the real Awards class on the real leaderboard store in a temporary folder.
+    # cmake --build <dir> --target larecomp_tournament_awards_test, then run it (exit 0 = passed).
+    add_executable(larecomp_tournament_awards_test EXCLUDE_FROM_ALL
+        src/mc_engine/online/tournament_awards_test.cpp
+        src/mc_engine/online/tournament_schedule.cpp
+        src/mc_engine/online/tournament_awards.cpp
+        src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
+        src/mc_engine/online/leaderboards/lb_protocol.cpp
+        src/mc_engine/online/leaderboards/lb_store.cpp
+    )
+    if(WIN32)
+        target_compile_definitions(larecomp_tournament_awards_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
 
     # The online relay (UDP 31000) anyone can host, and the master server
     # (UDP+TCP 31003) that lists those relays in the in-game server browser.
@@ -1226,6 +1264,11 @@ else()
     #   cmake --build <dir> --target larecomp_row_dependency_test, then run it (exit 0 = passed).
     add_executable(larecomp_row_dependency_test EXCLUDE_FROM_ALL src/mc_engine/menus/row_dependency_test.cpp)
     target_include_directories(larecomp_row_dependency_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine")
+    # The Discord presence switch (larecomp_discord_rpc, live: src/discord_rpc/rpc_toggle_rules.h) has a check that needs no game and no Discord; it
+    # also reads the sources that use the rules, so it takes the src folder: cmake --build <dir> --target larecomp_rpc_toggle_test, then run
+    # <dir>/larecomp_rpc_toggle_test <src folder> (exit 0 = passed).
+    add_executable(larecomp_rpc_toggle_test EXCLUDE_FROM_ALL src/discord_rpc/rpc_toggle_rules_test.cpp)
+    target_include_directories(larecomp_rpc_toggle_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     # The thread priority intents (src/os/thread_priority.h) have a check that needs no game:
     #   cmake --build <dir> --target larecomp_thread_priority_test, then run it (exit 0 = passed).
     add_executable(larecomp_thread_priority_test EXCLUDE_FROM_ALL
@@ -1254,6 +1297,15 @@ else()
     target_include_directories(larecomp_thread_yield_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_features(larecomp_thread_yield_test PRIVATE cxx_std_23)
     target_link_libraries(larecomp_thread_yield_test PRIVATE Threads::Threads)
+    # The termination signals (src/os/shutdown_signals.h) have a check that needs no game:
+    #   cmake --build <dir> --target larecomp_shutdown_signals_test, then run it (exit 0 = passed).
+    add_executable(larecomp_shutdown_signals_test EXCLUDE_FROM_ALL
+        src/os/shutdown_signals_test.cpp
+        src/os/shutdown_signals.cpp
+    )
+    target_include_directories(larecomp_shutdown_signals_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_features(larecomp_shutdown_signals_test PRIVATE cxx_std_23)
+    target_link_libraries(larecomp_shutdown_signals_test PRIVATE Threads::Threads)
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
         add_custom_command(TARGET larecomp POST_BUILD
