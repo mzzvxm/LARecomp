@@ -1309,7 +1309,7 @@ void TestPass(const std::string& gpu_dir) {
         "the shader looks a street lamp up through the lamps' lookup, with the depth plane's geometric normal as the headlights");
   Check(Has(ps, "add = game_lit ? -add * (1.0f - lamp_vis) : add * lamp_vis;") && Has(ps, "(l.flags & uint(LL_FLAG_GAME_LIT)) != 0u"),
         "a game lamp's shadowed share is taken away, an owned lamp's light is multiplied");
-  const size_t lit_at = ps.find("float3 add = LpPixelLight(l, g, world, normal, albedo, rt2.w);");
+  const size_t lit_at = ps.find("float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, rt2.w));");
   const size_t lamp_at = ps.find("LslLampLit(");
   const size_t head_at = ps.find("add *= LslLightLit(");
   Check(lit_at != std::string::npos && lamp_at != std::string::npos && head_at != std::string::npos && lit_at < lamp_at && lamp_at < head_at,
