@@ -61,7 +61,7 @@ class RrGuides {
     uint64_t frame = 0;
     uint32_t render_size[2] = {};
     const HostImage* depth = nullptr;          // the kept depth: R32_FLOAT, render size, 1 near / 0 far, SHADER_READ
-    const HostImage* mask = nullptr;           // the upscaler's reactive mask (R8_UNORM, render size), or null
+    const HostImage* mask = nullptr;           // the upscaler's reactive mask (R8_UNORM, R16_FLOAT on Vulkan; render size), or null
     const HostImage* transparency = nullptr;   // the transparency and composition mask, or null
     // RR-4: the hit distance writers' images of THIS frame (null: none): R16_FLOAT at the render size, the distance in x (0: nothing traced there), in SHADER_READ. [0] the screen-space reflections'
     // (ssr.h), [1] the cars' ray traced reflections' (car_rt_refl.h). A writer's image that is not the render size, or has no texture or slot, is left out (the other still counts).

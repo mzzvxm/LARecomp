@@ -134,9 +134,25 @@ void TestMask() {
 
 }  // namespace
 
+// How the mask images are stored: 8 bits on D3D12, half floats on Vulkan (Streamline's Vulkan back end has no format of its own for R8_UNORM and logs "Cannot have undefined format" four times a frame
+// for the reactive mask it is tagged with). The mask's values are in [0, 1] and a half float holds them to 11 bits near 1: the same mask to within the 8 bit step.
+void TestStorage() {
+  Check(StorageFor(true) == Storage::kR16Float, "Vulkan: the masks are half floats");
+  Check(StorageFor(false) == Storage::kR8Unorm, "D3D12: the masks stay 8 bits");
+  // A half float (1 sign, 5 exponent, 10 mantissa bits) keeps the 8 bit mask's 256 levels apart: the step of the 8 bit form is 1/255, a half float's spacing in [0.5, 1] is 2^-11.
+  const double eight_bit_step = 1.0 / 255.0;
+  const double half_step_near_one = 1.0 / 2048.0;
+  Check(half_step_near_one < eight_bit_step / 2.0, "a half float resolves finer than the 8 bit step everywhere in [0, 1]");
+  // The mean mask over 8 samples is a multiple of 1/8: exact in both forms.
+  Layers s[8] = {};
+  for (int i = 0; i < 3; ++i) s[i] = Layers{0, 0, 0, 1.0f};
+  CheckNear(MeanMask(s, 8, kTransparencyGain, kAddedLightGain), 0.375, 1e-7, "3 of 8 samples: 0.375, a value a half float holds exactly");
+}
+
 int main() {
   TestViews();
   TestMask();
+  TestStorage();
   if (g_failed != 0) {
     std::printf("upscaler masks: %d of %d checks FAILED\n", g_failed, g_checks);
     return 1;

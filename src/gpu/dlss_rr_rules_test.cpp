@@ -12,9 +12,11 @@
 #include <vector>
 
 #include "dlss_rr_rules.h"
+#include "upscaler_mask_plan.h"
 #include "upscaler_math.h"
 
 using namespace mcla::gpu::rr;
+namespace mp = mcla::gpu::upscaler_mask_plan;
 
 namespace {
 
@@ -532,6 +534,47 @@ void CheckSelection() {
   // the consumer rule is lifted: 3 x 4 = 12. Switch auto: AUTO needs `active`: (1,0) (1,1) = 2; the row's RR needs any: 3; OURS: none. 12 + 2 + 3 = 17.
   Check(rows == 3 * 4 * 2048, "the table size");
   Check(rr == 17, "the number of RR cases, worked out by hand (" + std::to_string(rr) + " of " + std::to_string(rows) + ")");
+}
+
+// What Streamline's Vulkan back end knows (StreamlineVulkanKnows) and every image the renderer tags for Super Resolution on Vulkan: each must be a format it names, or it logs "Cannot have undefined format"
+// four times a frame for the image (the Vulkan DLSS runs of chain-rr, 2026-11-21: the reactive mask in R8_UNORM). The Ray Reconstruction guides' own formats are checked in rr_guides_test.cpp.
+Format MaskFormatOf(mp::Storage s) { return s == mp::Storage::kR16Float ? Format::kR16Float : Format::kR8Unorm; }
+
+void CheckStreamlineVulkanFormats() {
+  // The table: only the two 8-bit one-channel formats (and unknown) are outside it.
+  const Format all[] = {Format::kUnknown, Format::kR8Unorm, Format::kR8Snorm, Format::kR16Float, Format::kR32Float, Format::kD32Float, Format::kRg16Float, Format::kRg32Float,
+                        Format::kRgba8Unorm, Format::kRgba8Snorm, Format::kRgba8Srgb, Format::kRgb10A2Unorm, Format::kRgba16Float, Format::kRgba32Float};
+  int known = 0;
+  for (Format f : all) known += StreamlineVulkanKnows(f) ? 1 : 0;
+  Check(known == 11, "Streamline's Vulkan table names 11 of the 14 formats (not R8_UNORM, R8_SNORM, unknown)");
+  Check(!StreamlineVulkanKnows(Format::kR8Unorm) && !StreamlineVulkanKnows(Format::kR8Snorm) && !StreamlineVulkanKnows(Format::kUnknown), "R8_UNORM, R8_SNORM and an unknown format are not in it");
+  // Every format the rules accept for a buffer of Ray Reconstruction is a known one except where the rules allow an 8-bit one for a separate roughness or the responsivity (not used by the renderer:
+  // it makes the packed normals and an R16F responsivity).
+  const Buffer used_by_renderer[] = {Buffer::kColorIn, Buffer::kColorOut, Buffer::kDepth, Buffer::kMotion, Buffer::kDiffuseAlbedo, Buffer::kSpecularAlbedo, Buffer::kNormalRoughness, Buffer::kSpecularHitDistance,
+                                     Buffer::kResponsivity};
+  // The renderer's formats for Super Resolution's four inputs and for the masks, by back end (temporal.cpp RecordUpscale: kOutputFormat R16G16B16A16_FLOAT for the colour and the output; temporal_mv: the kept
+  // depth R32_FLOAT and the vectors R16G16_FLOAT; upscaler_masks.cpp MaskFormat for both masks).
+  const struct {
+    const char* what;
+    Format format;
+  } sr_vulkan[] = {{"colour in", Format::kRgba16Float}, {"colour out", Format::kRgba16Float}, {"depth", Format::kR32Float}, {"motion vectors", Format::kRg16Float},
+                   {"reactive mask (the bias-current-colour hint)", MaskFormatOf(mp::StorageFor(true))},
+                   {"transparency and composition mask", MaskFormatOf(mp::StorageFor(true))}};
+  for (const auto& tag : sr_vulkan) {
+    Check(StreamlineVulkanKnows(tag.format), std::string("Super Resolution on Vulkan: the ") + tag.what + " is a format Streamline's Vulkan back end names");
+    Check(Channels(tag.format) != 0, std::string("Super Resolution on Vulkan: the ") + tag.what + " has a defined format");
+  }
+  Check(MaskFormatOf(mp::StorageFor(true)) == Format::kR16Float, "the masks are half floats on Vulkan");
+  Check(MaskFormatOf(mp::StorageFor(false)) == Format::kR8Unorm, "the masks stay 8 bits on D3D12 (no change there)");
+  Check(mp::StorageFor(true) != mp::StorageFor(false), "the two back ends differ in the masks' storage");
+  // The same formats satisfy the rules for the buffers Ray Reconstruction is given.
+  for (Buffer b : used_by_renderer) {
+    bool any_known = false;
+    for (Format f : all) any_known = any_known || (FormatOk(b, f) && StreamlineVulkanKnows(f));
+    Check(any_known, std::string("RR buffer '") + InfoOf(b).name + "' has at least one format that both the guide accepts and Streamline's Vulkan back end names");
+  }
+  Check(FormatOk(Buffer::kColorIn, Format::kRgba16Float) && FormatOk(Buffer::kDepth, Format::kR32Float) && FormatOk(Buffer::kMotion, Format::kRg16Float) && FormatOk(Buffer::kColorOut, Format::kRgba16Float),
+        "the colour, depth, vectors and output formats of Super Resolution are the ones RR takes as well");
 }
 
 void CheckGate() {
@@ -1150,6 +1193,7 @@ int main() {
   CheckJitter();
   CheckSelection();
   CheckGate();
+  CheckStreamlineVulkanFormats();
   CheckPluginAndParsers();
   CheckConsumers();
   CheckDispatch();

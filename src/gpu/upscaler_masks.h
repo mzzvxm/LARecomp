@@ -182,7 +182,7 @@ class UpscalerMasks {
 
   struct LayerState {
     HostImage coverage;  // RGBA8: the second draws' coverage, cleared at the layer's first draw of a frame
-    HostImage mask;      // R8_UNORM, the upscaler's input
+    HostImage mask;      // R8_UNORM (R16_FLOAT on Vulkan: upscaler_mask_plan.h Storage), the upscaler's input
     // The coverage image's framebuffer with the game's depth beside it, for the draws that test depth.
     std::unique_ptr<plume::RenderFramebuffer> depth_framebuffer;
     const plume::RenderTexture* fb_depth = nullptr;

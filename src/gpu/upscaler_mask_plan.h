@@ -47,6 +47,17 @@ constexpr bool FramebufferAgrees(uint32_t depth_samples, uint32_t coverage_sampl
   return depth_samples != 0 && depth_samples == coverage_samples;
 }
 
+// ---- how the mask images are stored ----------------------------------------------------------------
+
+// Each mask is one value in [0, 1] a pixel at the render size. D3D12 keeps it in 8 bits (R8_UNORM). Vulkan keeps it in a half float (R16_FLOAT): Streamline's Vulkan back end (sl.chi vulkan.cpp getFormat,
+// 2.14.16) names no format of its own for VK_FORMAT_R8_UNORM, so every frame the DLSS plugin described the bias-current-colour image (the reactive mask, tagged for the plugin) it logged "isFormatSupported:
+// Cannot have undefined format" four times (the four format questions of one image, about 4 lines a frame in every Vulkan DLSS run of chain-rr, 2026-11-21). R16_FLOAT is in its table, holds
+// the 0..1 value to 11 bits, and costs one more byte a pixel (2 MB at 1080p for both masks); FSR reads it as a float texture either way (ffx_common.h names both formats).
+enum class Storage : uint8_t { kR8Unorm, kR16Float };
+constexpr Storage StorageFor(bool vulkan) {
+  return vulkan ? Storage::kR16Float : Storage::kR8Unorm;
+}
+
 // ---- the mask pass (hlsl/upscaler_masks_ps.hlsl) ---------------------------------------------------
 
 struct Layers {  // what a second draw left in one sample of the coverage image
