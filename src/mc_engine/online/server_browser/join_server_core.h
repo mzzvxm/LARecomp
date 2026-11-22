@@ -237,9 +237,9 @@ inline FindResult FindRoom(const std::vector<RoomInfo>& rooms, std::string_view 
 // join ran out of time. Every join that started with no message box up searched and hosted within 20 ms of the goto (four runs: the
 // goto returned 1, the game registered with the relay and hosted). A player cannot start a search under that box either: the box
 // takes the input first. So --join_server waits until none has been up for a short while.
-// CHECK: this is the one difference the logs show at the moment of the goto, not a traced cause. Two other things differ in those runs:
-// the game's own profile sync ends 30 s after Start, and the pause screen was never opened before. If a join still does not search
-// after this wait, look at those two.
+// RESULT (opjrev-pcli, 2026-11-22, with this wait in): the join began 10 s after Start, the box was long gone (it held the join back for
+// 2.5 s) and the join failed the same way: goto(QuickMatchSearching) 0, then 1 on the retry, no socket, reason=no_session. So the box
+// was not the cause; SearchGate below is the next step.
 //
 // The clock is handed in, so the test needs no game.
 class QuietGate {
@@ -272,6 +272,121 @@ private:
     bool saw_ = false;
     int64_t first_up_ms_ = 0;
     int64_t clear_since_ms_ = -1;
+};
+
+// ------------------------------------------------------------------------------------ can the game start a search now ---
+//
+// WHY. The loopback runs of 2026-11-21/22 split cleanly: every join that began 8 to 10 s after Start (all of the --join_server runs:
+// ojold-cli, ojnew-cli, opjold-pcli, opjnew-pcli, and opjrev-pcli even with the message box gone) was dropped by the game: goto(LAN) 1,
+// goto(QuickMatchSearching) 0 with no search command, a retry that returned 1 and showed the SEARCHING panel, and no socket ever bound
+// (no "[mcla-online] peer registered (port N)" after the goto, so the relay never heard the game). Every join that began about 45 s or more
+// after Start (the pause-menu scenes) bound its search socket 17 ms after the goto and hosted.
+//
+// What the game's own search start asks (read in the generated code of native\tree-t11: sub_8226C038, the net manager's quick match, >
+// sub_82298F60 > sub_824FD470; the net manager is *0x8286D800). The start returns 0 without a socket, and without a word to anyone, when
+//   - the search manager's busy word (*(netmgr+4292)+0) is set, or
+//   - the search object (that manager + 528) reports a search in progress (sub_824FBD50: *(object+1436) is a record whose first word is 1), or
+//   - for a System Link search (the net mode word *(options+2352) is above 0 after the goto into the LAN page) the search object's
+//     handle (*(object+0)) is 0, or
+//   - the player's slot (*(netmgr+4284) + 10832 * the local player's index) is not signed in: bit 0x80 of the byte at slot+108
+//     (sub_824E70E0), or (for a Live search) not signed in to Live, bit 0x40 (sub_824E70F0).
+// None of it is visible in the logs of those runs, and the game's profile sync (14 statistics reads, the prizes fetch, "[rmr] ... identity
+// created" and "[tourney] no prizes" 30 s after Start) is still running at the moment of the early joins. SearchFacts is those words;
+// SearchGate holds the join until the ones that can be true before the goto hold for a moment, and gives up after a minute so that a
+// reading that is wrong in some game build cannot keep the join from trying.
+// CHECK: none of this was run. The words were read from the generated code, not watched; the join logs them (join_server.cpp) at the gate,
+// every 250 ms to 1 s for the first 30 s of a join with the debug setting online_diag on, and once when the join ends in a failure. If the
+// first run after this shows the gate open at once and the search still not starting, the cause is not among these words: read the
+// samples to see which of them change at the moment the search is entered (net_mode first).
+//
+// The clock is handed in, so the test needs no game.
+struct SearchFacts {
+    bool read = false;             // every word below was read
+    const char* failed_at = "";    // when !read: the first read that failed, for the log
+    uint32_t search_flag = 0;      // the search manager's busy word, *(netmgr+4292)+0
+    uint32_t handle = 0;           // the search object's handle, *(search manager+528)+0
+    uint32_t busy_record = 0;      // *(search object+1436): the record sub_824FBD50 looks at (0 before the first search)
+    uint32_t busy_state = 0;       // that record's first word: 1 = a search in progress
+    uint32_t player_slot = 0;      // the local player's index (the slot is *(netmgr+4284) + 10832 * this)
+    uint32_t player_flags = 0;     // the byte at slot+108: 0x80 signed in, 0x40 signed in to Live
+    int32_t net_mode = 0;          // *(*(*(netmgr+4304))+2352): above 0 = a System Link search (read before the goto into the page: usually 0)
+    uint32_t session_state = 0;    // the net session manager's +696: 3 once the game's quick match has started a search
+};
+
+inline bool SearchBusy(const SearchFacts& f) { return f.busy_record != 0 && f.busy_state == 1; }
+inline bool PlayerSignedIn(const SearchFacts& f) { return (f.player_flags & 0x80u) != 0; }
+inline bool PlayerOnLive(const SearchFacts& f) { return (f.player_flags & 0x40u) != 0; }
+
+// What can be true before the goto into the net page: nothing is running, the search object has its handle, the player is signed in.
+// (net_mode is set by the page's own entry; the Live bit is not needed for a System Link search.)
+inline bool SearchReady(const SearchFacts& f) {
+    return f.read && f.search_flag == 0 && !SearchBusy(f) && f.handle != 0 && PlayerSignedIn(f);
+}
+
+// The first thing that stands in the way, in the words the log uses ("" when nothing does).
+inline std::string SearchMissing(const SearchFacts& f) {
+    if (!f.read) return std::string("not readable: ") + (f.failed_at ? f.failed_at : "?");
+    if (f.search_flag != 0) return "a search is already marked as running";
+    if (SearchBusy(f)) return "the search object is busy";
+    if (f.handle == 0) return "the search object has no handle yet";
+    if (!PlayerSignedIn(f)) return "the player is not signed in to the network layer yet";
+    return "";
+}
+
+namespace detail {
+inline std::string Hex(uint32_t v) {
+    static const char* digits = "0123456789ABCDEF";
+    std::string s = "0x";
+    bool started = false;
+    for (int shift = 28; shift >= 0; shift -= 4) {
+        const uint32_t d = (v >> shift) & 0xFu;
+        if (d != 0 || started || shift == 0) {
+            s += digits[d];
+            started = true;
+        }
+    }
+    return s;
+}
+}  // namespace detail
+
+// One line of words for the log.
+inline std::string DescribeSearchFacts(const SearchFacts& f) {
+    using detail::Hex;
+    if (!f.read) return std::string("not readable: ") + (f.failed_at ? f.failed_at : "?");
+    return "search_flag=" + Hex(f.search_flag) + " busy=" + (SearchBusy(f) ? "1" : "0") + " (record " + Hex(f.busy_record) + " state " +
+           Hex(f.busy_state) + ") handle=" + Hex(f.handle) + " player " + std::to_string(f.player_slot) + " flags " + Hex(f.player_flags) +
+           " (signed_in " + (PlayerSignedIn(f) ? "1" : "0") + ", live " + (PlayerOnLive(f) ? "1" : "0") + ") net_mode=" +
+           std::to_string(f.net_mode) + " session_state=" + std::to_string(f.session_state) + " ready=" + (SearchReady(f) ? "1" : "0");
+}
+
+class SearchGate {
+public:
+    static constexpr int64_t kStableMs = 500;       // the words must hold this long without a break
+    static constexpr int64_t kMaxWaitMs = 60 * 1000;  // then the join goes on whatever they say: the game's own answer is the last word
+
+    enum class Verdict {
+        kWait,    // not yet
+        kReady,   // they hold: go on
+        kGaveUp,  // kMaxWaitMs passed: go on anyway (the caller logs what was missing)
+    };
+
+    // One call per tick while the join is otherwise ready.
+    Verdict Update(const SearchFacts& f, int64_t now_ms) {
+        if (first_ms_ < 0) first_ms_ = now_ms;
+        if (SearchReady(f)) {
+            if (ready_since_ms_ < 0) ready_since_ms_ = now_ms;
+            return now_ms - ready_since_ms_ >= kStableMs ? Verdict::kReady : Verdict::kWait;
+        }
+        ready_since_ms_ = -1;
+        if (now_ms - first_ms_ >= kMaxWaitMs) return Verdict::kGaveUp;
+        return Verdict::kWait;
+    }
+    // How long the gate has been looking, as of `now_ms` (0 before the first call): for the log line.
+    int64_t WaitedMs(int64_t now_ms) const { return first_ms_ < 0 ? 0 : now_ms - first_ms_; }
+
+private:
+    int64_t first_ms_ = -1;
+    int64_t ready_since_ms_ = -1;
 };
 
 // ----------------------------------------------------------------------------------------------------------- status ---

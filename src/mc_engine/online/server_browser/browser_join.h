@@ -15,6 +15,7 @@
 #include <rex/ppc/context.h>
 
 #include "../protocol/browser_protocol.h"
+#include "join_server_core.h"  // SearchFacts
 
 namespace larecomp::browser {
 
@@ -63,6 +64,11 @@ bool WorldReady();
 // first one after Start stays up for about 9 s while the state machine is already in free roam; a join that goes into the net menu under
 // it does not get its search going (join_server_core.h, QuietGate). --join_server's tick and the F6 join's start both wait on it. Guest thread.
 bool ModalMessageUp();
+
+// The words the game's own search start asks about (join_server_core.h, SearchFacts / SearchGate): the search manager's busy word, the
+// search object's state and handle, the local player's sign-in bits, the net mode. Read only; a word that cannot be read says so in
+// failed_at. Guest thread.
+joinserver::SearchFacts ReadSearchFacts();
 
 // Guest thread, once per frame (Patch_DeltaTimePre).
 void TickServerBrowserJoin();

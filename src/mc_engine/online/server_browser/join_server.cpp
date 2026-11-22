@@ -60,6 +60,10 @@ bool g_status_known = false;
 bool g_open_browser = false;  // a failure: the browser opens with the sentence once the city is up
 js::QuietGate g_quiet;        // no message box on screen for a short while (the join waits for it, join_server_core.h)
 bool g_quiet_logged = false;  // the "message box is still up" line was written
+js::SearchGate g_search_gate;  // the game can start a search (the words its own start asks about, join_server_core.h, SearchGate)
+bool g_search_wait_logged = false;  // the "cannot start a search yet" line was written
+Clock::time_point g_join_started;   // the browser's join was requested: the probe samples count from here
+int64_t g_probe_due_ms = 0;         // the next probe sample, in ms after g_join_started
 
 std::mutex g_failure_mutex;
 std::string g_failure_text;  // guarded
@@ -258,9 +262,35 @@ void StartJoin(const Job& job) {
         req.cruise = g_target.mode == js::Mode::kCruise;
     }
     LARECOMP_APP_INFO("[join_server] joining {}", req.label);
+    g_join_started = Clock::now();
+    g_probe_due_ms = 0;
     RequestJoin(req);
     g_phase = Phase::kJoining;
     SetState(js::State::kConnecting, "", "Joining " + js::Describe(g_target) + ".");
+}
+
+const char* JoinPhaseName(JoinPhase p) {
+    switch (p) {
+    case JoinPhase::kIdle: return "idle";
+    case JoinPhase::kGoingOnline: return "going online";
+    case JoinPhase::kStarting: return "starting";
+    case JoinPhase::kSearching: return "searching";
+    case JoinPhase::kJoining: return "joining";
+    case JoinPhase::kFailed: return "failed";
+    }
+    return "?";
+}
+
+// The words the game's search start asks about, sampled while the browser's join runs (debug setting online_diag, which the loopback chain
+// sets for this run): every 250 ms for the first 6 s after the join was requested (the goto into the page and into the search are in there),
+// then every second up to 30 s. The sample at which net_mode, session_state or the busy words change is the moment the game took or
+// dropped the search (join_server_core.h, SearchFacts). Guest thread.
+void ProbeSearch(JoinPhase phase) {
+    if (!larecomp::settings::online_diag.Get()) return;
+    const int64_t since = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - g_join_started).count();
+    if (since < g_probe_due_ms || since > 30000) return;
+    g_probe_due_ms = since + (since < 6000 ? 250 : 1000);
+    LARECOMP_APP_INFO("[join_server] probe +{} ms ({}): {}", since, JoinPhaseName(phase), js::DescribeSearchFacts(ReadSearchFacts()));
 }
 
 }  // namespace
@@ -283,10 +313,36 @@ void JoinServerTick() {
         // And no message box on screen: the first one after Start is still up when the machine reaches "Cruising", and a join that
         // went into the net menu under it never got its search going (join_server_core.h, QuietGate).
         const bool in_city = WorldReady() && RpcInFreeRoam();
-        if (!in_city) g_quiet = js::QuietGate{};  // a load or the title again: the quiet time counts from the city's return
+        if (!in_city) {
+            g_quiet = js::QuietGate{};  // a load or the title again: the quiet time counts from the city's return
+            g_search_gate = js::SearchGate{};
+        }
         const bool message_up = in_city && ModalMessageUp();
         const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+        // And the game able to start a search: the join that began 8 to 10 s after Start was dropped by the game with no search socket,
+        // while every join 45 s or more after Start searched (join_server_core.h, SearchGate). Checked once the screen is quiet.
+        bool ready = false;
         if (in_city && g_quiet.Update(message_up, now_ms)) {
+            const js::SearchFacts facts = ReadSearchFacts();
+            const js::SearchGate::Verdict verdict = g_search_gate.Update(facts, now_ms);
+            if (verdict == js::SearchGate::Verdict::kWait) {
+                if (!g_search_wait_logged) {
+                    g_search_wait_logged = true;
+                    LARECOMP_APP_INFO("[join_server] the city is up after {} s, but the game cannot start a search yet ({}): the join waits for it: {}",
+                                      std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - g_started).count(),
+                                      js::SearchMissing(facts), js::DescribeSearchFacts(facts));
+                }
+            } else {
+                ready = true;
+                if (verdict == js::SearchGate::Verdict::kGaveUp)
+                    LARECOMP_APP_WARN("[join_server] the game could not start a search for {} s ({}): asking anyway: {}",
+                                      g_search_gate.WaitedMs(now_ms) / 1000, js::SearchMissing(facts), js::DescribeSearchFacts(facts));
+                else if (g_search_wait_logged)
+                    LARECOMP_APP_INFO("[join_server] the game can start a search now (the join waited {} ms for it): {}", g_search_gate.WaitedMs(now_ms),
+                                      js::DescribeSearchFacts(facts));
+            }
+        }
+        if (ready) {
             const int64_t held_ms = g_quiet.HeldMs(now_ms);
             LARECOMP_APP_INFO("[join_server] the city is up after {} s{}: asking {}",
                               std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - g_started).count(),
@@ -329,6 +385,7 @@ void JoinServerTick() {
     case Phase::kJoining: {
         // The browser's join runs; failure and the end come through JoinServerNoteFinish.
         const JoinStatus st = GetJoinStatus();
+        ProbeSearch(st.phase);
         if (st.phase == JoinPhase::kSearching)
             SetState(js::State::kSearching, "", "Searching for " + js::Describe(g_target) + ".");
         else if (st.phase == JoinPhase::kJoining)
@@ -344,6 +401,9 @@ void JoinServerTick() {
 void JoinServerNoteFinish(bool failed, const std::string& reason, const std::string& text) {
     if (g_phase != Phase::kJoining) return;
     if (failed) {
+        // A join that ended without a search: the words the game's search start asks about, as they are now (the join's own log lines
+        // say what was asked of the game; this says what the game saw).
+        LARECOMP_APP_INFO("[join_server] the search facts when the join failed ({}): {}", reason, js::DescribeSearchFacts(ReadSearchFacts()));
         // The sentences of the join's own steps; the ones that name the server come from the core.
         const bool known = reason == js::reason::kOnlineFailed || reason == js::reason::kHostNoAnswer ||
                            reason == js::reason::kPauseOpen || reason == js::reason::kMenuUnavailable ||
