@@ -27,6 +27,8 @@
 #include <vector>
 
 #include "ao_gbuffer.h"
+#include "blue_noise.h"
+#include "blue_noise_spectrum.h"
 #include "gbuffer_rules.h"
 #include "gbuffer_types.h"
 #include "screen_frame.h"
@@ -108,6 +110,7 @@ float SsrHizAt(uint level, int cx, int cy) {
 }
 #include "hlsl/gbuffer_common.hlsli"
 #include "hlsl/ao_gbuffer_normal.hlsli"
+#include "hlsl/blue_noise.hlsli"
 #include "hlsl/ssr_common.hlsli"
 #include "hlsl/ssr_trace.hlsli"
 }  // namespace hlsl_shim
@@ -579,14 +582,15 @@ void TestBrdf() {
 }
 
 void TestNoise() {
+  constexpr uint32_t kLegacy = 0x80000000u;
   double sum = 0.0, sum2 = 0.0;
   int n = 0;
   float lo = 1.0f, hi = 0.0f;
   for (uint32_t frame = 0; frame < 16; ++frame) {
     for (int y = 0; y < 64; ++y) {
       for (int x = 0; x < 64; ++x) {
-        const float a = hs::SsrNoise1(x, y, frame, 0);
-        const float b = hs::SsrNoise2(x, y, frame, 0);
+        const float a = hs::SsrNoise1(x, y, frame, 0, 1);
+        const float b = hs::SsrNoise2(x, y, frame, 0, 1);
         sum += a + b;
         sum2 += double(a) * a + double(b) * b;
         n += 2;
@@ -597,25 +601,178 @@ void TestNoise() {
   }
   const double mean = sum / n;
   const double var = sum2 / n - mean * mean;
-  Check(Near(mean, 0.5, 0.02) && Near(var, 1.0 / 12.0, 0.01) && lo >= 0.0f && hi < 1.0f, Num("the noise is uniform on 0..1 (mean %.3f, variance %.4f)", mean, var));
-  // the temporal sequence of one pixel: 8 frames fall in different eighths most of the time
-  int covered = 0;
+  Check(Near(mean, 0.5, 0.01) && Near(var, 1.0 / 12.0, 0.005) && lo >= 0.0f && hi < 1.0f, Num("the noise is uniform on 0..1 (mean %.3f, variance %.4f)", mean, var));
+  // the temporal sequence of one pixel: the R2 sequence is low discrepancy in the SQUARE (the lobe's two numbers together; each number alone is not the golden ratio's: 4 steps of its first
+  // increment come back to 0.02): 8 frames fall in 4 x 4 cells nearly all apart (random pairs give about 6.4 of 8), 16 frames in at least 11 of 16
+  int cells8 = 0, cells16 = 0;
   for (int y = 0; y < 16; ++y) {
-    bool seen[8] = {};
-    for (uint32_t frame = 0; frame < 8; ++frame) {
-      seen[std::min(7, int(hs::SsrNoise1(5, y, frame, 0) * 8.0f))] = true;
+    bool seen8[16] = {}, seen16[16] = {};
+    for (uint32_t frame = 0; frame < 16; ++frame) {
+      const int a = std::min(3, int(hs::SsrNoise1(9, y, frame, 0, 1) * 4.0f)), b = std::min(3, int(hs::SsrNoise2(9, y, frame, 0, 1) * 4.0f));
+      seen16[a * 4 + b] = true;
+      if (frame < 8) seen8[a * 4 + b] = true;
     }
-    int bins = 0;
-    for (bool b : seen) bins += b ? 1 : 0;
-    covered += bins;
+    for (bool c : seen8) cells8 += c ? 1 : 0;
+    for (bool c : seen16) cells16 += c ? 1 : 0;
   }
-  Check(covered / 16.0 > 4.5, Num("one pixel's eight frames cover %.1f of 8 bins on average", covered / 16.0));
-  // the two rays of a pixel are not the same
-  Check(hs::SsrNoise1(10, 10, 3, 0) != hs::SsrNoise1(10, 10, 3, 1) && hs::SsrNoise2(10, 10, 3, 0) != hs::SsrNoise2(10, 10, 3, 1), "the second ray of a pixel has its own numbers");
-  // neighbours differ (the noise is not a smooth ramp)
+  if (g_print) std::printf("a pixel's frames in 4 x 4 cells of the square: %.2f of 8, %.2f of 16\n", cells8 / 16.0, cells16 / 16.0);
+  Check(cells8 / 16.0 > 6.8, Num("one pixel's eight frames fall in %.2f different cells of the 4 x 4 grid on average (random pairs: 6.4)", cells8 / 16.0));
+  Check(cells16 / 16.0 >= 11.0, Num("one pixel's sixteen frames cover %.1f of 16 cells of the square on average", cells16 / 16.0));
+  // the rays of a pixel are consecutive numbers of one sequence: the second ray of frame f with two rays is the sample 2 f + 1 of the one-ray sequence
+  bool same_sequence = true;
+  for (uint32_t frame = 0; frame < 20; ++frame) {
+    same_sequence = same_sequence && hs::SsrNoise1(10, 10, frame, 1, 2) == hs::SsrNoise1(10, 10, 2 * frame + 1, 0, 1) && hs::SsrNoise2(10, 10, frame, 0, 2) == hs::SsrNoise2(10, 10, 2 * frame, 0, 1);
+  }
+  Check(same_sequence, "the rays of a pixel are consecutive samples of one sequence (the second ray of frame f with two rays is sample 2 f + 1)");
+  Check(hs::SsrNoise1(10, 10, 3, 0, 2) != hs::SsrNoise1(10, 10, 3, 1, 2) && hs::SsrNoise2(10, 10, 3, 0, 2) != hs::SsrNoise2(10, 10, 3, 1, 2), "the second ray of a pixel has its own numbers");
+  // neighbours differ (the noise is not a smooth ramp: a blue noise's mean step is 1/3)
   double diff = 0.0;
-  for (int x = 0; x < 63; ++x) diff += std::fabs(hs::SsrNoise1(x, 7, 2, 0) - hs::SsrNoise1(x + 1, 7, 2, 0));
-  Check(diff / 63.0 > 0.1, "neighbouring pixels differ");
+  for (int x = 0; x < 63; ++x) diff += std::fabs(hs::SsrNoise1(x, 7, 2, 0, 1) - hs::SsrNoise1(x + 1, 7, 2, 0, 1));
+  Check(diff / 63.0 > 0.2, Num("neighbouring pixels differ (mean step %.2f)", diff / 63.0));
+  // THE PATTERN STAYS WHERE IT IS: the step a pixel's number takes from one frame to the next is the same for every pixel (the frame's step is added to the tile), so the picture of the noise is the
+  // tile moved round the circle and nothing slides; with the first version's noise the step differs from pixel to pixel
+  const auto spread = [&](uint32_t flag) {
+    double worst = 0.0;
+    for (uint32_t frame = 0; frame < 4; ++frame) {
+      double lo_d = 2.0, hi_d = -1.0;
+      for (int y = 0; y < 48; ++y) {
+        for (int x = 0; x < 48; ++x) {
+          double d = double(hs::SsrNoise1(x, y, (frame + 1) | flag, 0, 1)) - double(hs::SsrNoise1(x, y, frame | flag, 0, 1));
+          d -= std::floor(d);
+          lo_d = std::min(lo_d, d);
+          hi_d = std::max(hi_d, d);
+        }
+      }
+      // the differences sit on the circle: take the shortest arc that holds them all (the spread of a value just under 1 and one just over 0 is small)
+      double spread_arc = hi_d - lo_d;
+      if (spread_arc > 0.5) {
+        double lo2 = 2.0, hi2 = -1.0;
+        for (int y = 0; y < 48; ++y) {
+          for (int x = 0; x < 48; ++x) {
+            double d = double(hs::SsrNoise1(x, y, (frame + 1) | flag, 0, 1)) - double(hs::SsrNoise1(x, y, frame | flag, 0, 1));
+            d -= std::floor(d);
+            if (d < 0.5) d += 1.0;
+            lo2 = std::min(lo2, d);
+            hi2 = std::max(hi2, d);
+          }
+        }
+        spread_arc = std::min(spread_arc, hi2 - lo2);
+      }
+      worst = std::max(worst, spread_arc);
+    }
+    return worst;
+  };
+  const double now = spread(0u), then = spread(kLegacy);
+  Check(now < 1e-5, Num("the step from frame to frame is the same at every pixel (spread %.2g): the pattern stays where it is", now));
+  Check(then > 0.01, Num("... which the first version's noise (bit 31) did not do (spread %.3f)", then));
+  // the first version's switch: bit 31 of the frame word gives exactly the old numbers
+  bool legacy_same = true;
+  for (uint32_t frame = 0; frame < 6; ++frame) {
+    for (uint32_t ray = 0; ray < 2; ++ray) {
+      const float f = float(frame & 255u) + float(ray) * 97.0f;
+      legacy_same = legacy_same && hs::SsrNoise1(13, 29, frame | kLegacy, ray, 2) == hs::SsrIgn(13.0f + 5.588238f * f, 29.0f + 5.588238f * f) &&
+                    hs::SsrNoise2(13, 29, frame | kLegacy, ray, 2) == hs::SsrIgn(29.0f + 4.4f * f + 31.0f, 13.0f + 6.2f * f + 17.0f);
+    }
+  }
+  Check(legacy_same, "the frame word's bit 31 gives the first version's interleaved gradient noise, number for number");
+  Check(SSR_FRAME_LEGACY_NOISE == kLegacy && sr::push::kFrameLegacyNoise == kLegacy, "the bit is the same in the shader and in ssr_rules.h");
+  // The frame number's bit 31 is not part of the sequence: a frame number with it clear and the same number without are the same, and a frame number of 2^30 and more still steps along the sequence
+  Check(hs::SsrNoise1(3, 4, 7u, 0, 1) == hs::SsrNoise1(3, 4, 7u, 0, 1) && hs::SsrNoise1(3, 4, 7u + (1u << 30), 0, 1) != hs::SsrNoise1(3, 4, 7u, 0, 1) + 100.0f, "the numbers of a high frame count are finite and in range");
+}
+
+// What the accumulation leaves of the noise, and whether it moves. The response of a pixel to its two numbers is a smooth periodic function (a reflection's brightness against the lobe's sample), the
+// temporal pass keeps 0.9 of the history (an exponential mean of about ten frames: the high level's), and the picture of what is left is read the way the eye reads a pattern: its spectrum (how much of it is in
+// ONE frequency, how unevenly it is spread over the directions) and its MOTION (the shift of the picture between two frames that gives the best match: a pattern that crawls shows as a shift).
+void TestNoiseResolve() {
+  constexpr uint32_t kLegacy = 0x80000000u;
+  const int N = 128;
+  const int frames_of_history = 60;
+  const double weight = 0.9;
+  const auto response = [](float u1, float u2) { return double(std::cos(6.2831853f * u1 + 0.7f)) + 0.6 * double(std::cos(6.2831853f * u2)); };
+  // The error image of frame `t`: the exponential mean of the response over the frames before it, the picture's mean taken out.
+  const auto image = [&](uint32_t t, uint32_t flag) {
+    std::vector<double> img(size_t(N) * size_t(N), 0.0);
+    for (int y = 0; y < N; ++y) {
+      for (int x = 0; x < N; ++x) {
+        double acc = 0.0, w = 1.0 - weight, norm = 0.0;
+        for (int k = 0; k < frames_of_history; ++k) {
+          const uint32_t f = (t - uint32_t(k)) | flag;
+          acc += w * response(hs::SsrNoise1(x, y, f, 0, 1), hs::SsrNoise2(x, y, f, 0, 1));
+          norm += w;
+          w *= weight;
+        }
+        img[size_t(y) * size_t(N) + size_t(x)] = acc / norm;
+      }
+    }
+    return img;
+  };
+  struct Result {
+    blue_noise_spectrum::Shape shape;
+    double zero_corr = 0.0;
+    double best_corr = 0.0;
+    int best_dx = 0, best_dy = 0;
+    double rms = 0.0;
+  };
+  const auto measure = [&](uint32_t flag) {
+    const uint32_t t = 100;
+    const std::vector<double> a = image(t, flag), b = image(t + 1, flag);
+    Result r;
+    r.shape = blue_noise_spectrum::Analyse(blue_noise_spectrum::Power(a, N, true), N);
+    double mean = 0.0;
+    for (double v : a) mean += v;
+    mean /= double(a.size());
+    for (double v : a) r.rms += (v - mean) * (v - mean);
+    r.rms = std::sqrt(r.rms / double(a.size()));
+    // the best match of frame t + 1 with frame t shifted by (dx, dy), over the middle of the picture (|corr|: a pattern that comes back inverted is the same pattern)
+    const int m = 12;
+    for (int dy = -8; dy <= 8; ++dy) {
+      for (int dx = -8; dx <= 8; ++dx) {
+        double sab = 0.0, saa = 0.0, sbb = 0.0, ma = 0.0, mb = 0.0;
+        int cnt = 0;
+        for (int y = m; y < N - m; ++y) {
+          for (int x = m; x < N - m; ++x) {
+            ma += a[size_t(y) * size_t(N) + size_t(x)];
+            mb += b[size_t(y + dy) * size_t(N) + size_t(x + dx)];
+            ++cnt;
+          }
+        }
+        ma /= cnt;
+        mb /= cnt;
+        for (int y = m; y < N - m; ++y) {
+          for (int x = m; x < N - m; ++x) {
+            const double va = a[size_t(y) * size_t(N) + size_t(x)] - ma, vb = b[size_t(y + dy) * size_t(N) + size_t(x + dx)] - mb;
+            sab += va * vb;
+            saa += va * va;
+            sbb += vb * vb;
+          }
+        }
+        const double c = std::fabs(sab / std::sqrt(std::max(saa * sbb, 1e-30)));
+        if (dx == 0 && dy == 0) r.zero_corr = c;
+        if (c > r.best_corr) {
+          r.best_corr = c;
+          r.best_dx = dx;
+          r.best_dy = dy;
+        }
+      }
+    }
+    return r;
+  };
+  const Result legacy = measure(kLegacy), blue = measure(0u);
+  if (g_print) {
+    std::printf("the resolved error: first version rms %.4f, one frequency %.4f of it, strongest direction %.2f x the mean, best match with the next frame at shift (%d, %d): %.2f (at 0: %.2f)\n", legacy.rms,
+                legacy.shape.peak_share, legacy.shape.wedge_ratio, legacy.best_dx, legacy.best_dy, legacy.best_corr, legacy.zero_corr);
+    std::printf("                    blue noise    rms %.4f, one frequency %.4f of it, strongest direction %.2f x the mean, best match with the next frame at shift (%d, %d): %.2f (at 0: %.2f)\n", blue.rms,
+                blue.shape.peak_share, blue.shape.wedge_ratio, blue.best_dx, blue.best_dy, blue.best_corr, blue.zero_corr);
+  }
+  Check(legacy.shape.peak_share > 0.02 && legacy.shape.wedge_ratio > 2.5, Num("the first version's error is a lattice: %.3f of it in one frequency (over 0.02) and a direction %.1f times the mean (over 2.5)", legacy.shape.peak_share, legacy.shape.wedge_ratio));
+  Check(blue.shape.peak_share < 0.012 && blue.shape.wedge_ratio < 2.4, Num("the blue noise's has no frequency that stands out (%.4f, under 0.012) and no direction (%.2f, under 2.4)", blue.shape.peak_share, blue.shape.wedge_ratio));
+  // it crawls: the next frame's picture is the same picture moved, at a shift of a few pixels, and better than in place
+  Check((legacy.best_dx != 0 || legacy.best_dy != 0) && legacy.best_corr > 0.9 && legacy.zero_corr < 0.85 * legacy.best_corr,
+        Num("the first version's error crawls: frame t + 1 matches frame t moved by (%.0f, %.0f) at %.2f, and in place at only %.2f", double(legacy.best_dx), double(legacy.best_dy), legacy.best_corr, legacy.zero_corr));
+  // it does not: no shift of the picture matches the next frame (the response moves along the circle from frame to frame, so the picture flickers; it never drifts)
+  Check(blue.best_corr < 0.35, Num("the blue noise's error does not crawl: no shift up to 8 pixels makes the next frame's picture match the last (the best is %.2f, under 0.35)", blue.best_corr));
+  // and it is not bigger
+  Check(blue.rms < 1.3 * legacy.rms, Num("the blue noise's error rms %.4f is within 1.3 times the first version's (%.4f)", blue.rms, legacy.rms));
 }
 
 void TestGgx() {
@@ -1122,6 +1279,219 @@ void TestClip() {
   Check(Near(g.x, -0.8, 1e-6) && Near(g.y, -0.1, 1e-6) && g.z == 2.0f, "the guard keeps a fifth of the colour at least, leaves a small negative alone and a positive whole");
   const hs::float3 g0 = hs::SsrGuardTerm(hs::float3(-1.0f, -1.0f, -1.0f), hs::float3(0.0f, -2.0f, 0.0f));
   Check(g0.x == 0.0f && g0.y == 0.0f && g0.z == 0.0f, "a pixel with no colour (or a negative one) has nothing taken away");
+}
+
+// ---------------------------------------------------------------------------
+// the spatial resolve and the clip's floor (SSR-STRIPES-2, 2026-11-22): what is left of the noise on a SPARSE bright reflection
+// ---------------------------------------------------------------------------
+// The scene: a small bright thing (a lamp, a tail light) of radius `lamp` pixels whose image the lobe's jitter (the shader's own numbers: the blue noise tile stepped along the R2 sequence, a GGX tail
+// radius R * sqrt(u / (1 - u)), the angle 2 pi u) reaches from the pixels round it: a pixel's ray finds it, or finds the road, a frame at a time. The pipeline is the temporal pass's own
+// arithmetic on a scalar image (hlsl/ssr_temporal_ps.hlsl: the tent over the 3x3, the variance clip's box of the same 3x3, the history's keep, 0.9 of the history): `resolve` false is the first version's
+// (the centre pixel alone, the clip whole). A still camera, the world still: everything that is left is the noise. The truth is the lobe's mean (a dense Monte Carlo of the same distribution).
+namespace {
+constexpr int kResolveN = 48;
+constexpr float kResolveHit = 100.0f, kResolveBg = 1.0f;
+struct ResolveScene {
+  float lobe = 2.0f;    // R: the jitter's scale in pixels (alpha times the distance)
+  float lamp = 4.0f;    // the thing's radius in pixels
+};
+float ResolveSample(const ResolveScene& sc, int x, int y, uint32_t frame, bool lamp_on) {
+  const float u1 = hs::SsrNoise1(x, y, frame, 0, 1), u2 = hs::SsrNoise2(x, y, frame, 0, 1);
+  const float m = sc.lobe * std::sqrt(u1 / std::max(1.0f - u1, 1e-6f));
+  const float phi = 6.2831853f * u2;
+  const float px = float(x) + m * std::cos(phi) - float(kResolveN / 2), py = float(y) + m * std::sin(phi) - float(kResolveN / 2);
+  return (lamp_on && px * px + py * py < sc.lamp * sc.lamp) ? kResolveHit : kResolveBg;
+}
+std::vector<float> ResolveTruth(const ResolveScene& sc) {
+  std::vector<float> t(size_t(kResolveN) * kResolveN, kResolveBg);
+  Lcg rng;
+  const int samples = 1200;
+  for (int y = 0; y < kResolveN; ++y) {
+    for (int x = 0; x < kResolveN; ++x) {
+      double acc = 0.0;
+      for (int k = 0; k < samples; ++k) {
+        const float u1 = rng.Next() * 0.9999f, u2 = rng.Next();
+        const float m = sc.lobe * std::sqrt(u1 / (1.0f - u1));
+        const float phi = 6.2831853f * u2;
+        const float px = float(x) + m * std::cos(phi) - float(kResolveN / 2), py = float(y) + m * std::sin(phi) - float(kResolveN / 2);
+        acc += (px * px + py * py < sc.lamp * sc.lamp) ? kResolveHit : kResolveBg;
+      }
+      t[size_t(y) * kResolveN + size_t(x)] = float(acc / samples);
+    }
+  }
+  return t;
+}
+// The images of `frames` frames of the pass; the lamp is on until frame `off_at` (a number past `frames`: never off).
+std::vector<std::vector<float>> ResolveRun(const ResolveScene& sc, bool resolve, int frames, int off_at) {
+  const int N = kResolveN;
+  std::vector<float> trace(size_t(N) * N), history(size_t(N) * N, 0.0f), out(size_t(N) * N, 0.0f);
+  std::vector<std::vector<float>> all;
+  for (int f = 0; f < frames; ++f) {
+    for (int y = 0; y < N; ++y) {
+      for (int x = 0; x < N; ++x) trace[size_t(y) * N + size_t(x)] = ResolveSample(sc, x, y, uint32_t(f), f < off_at);
+    }
+    for (int y = 0; y < N; ++y) {
+      for (int x = 0; x < N; ++x) {
+        const float centre = trace[size_t(y) * N + size_t(x)];
+        float lo = centre, hi = centre, sum = 0.0f, sum2 = 0.0f, count = 0.0f, tent = 0.0f, tent_weight = 0.0f;
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            const float t = trace[size_t(std::clamp(y + dy, 0, N - 1)) * N + size_t(std::clamp(x + dx, 0, N - 1))];
+            lo = std::min(lo, t);
+            hi = std::max(hi, t);
+            sum += t;
+            sum2 += t * t;
+            count += 1.0f;
+            if ((dx == 0 && dy == 0) || (resolve && hs::SsrTapSameSurface(10.0f, 10.0f))) {
+              const float k = hs::SsrTapKernel(dx, dy);
+              tent += t * k;
+              tent_weight += k;
+            }
+          }
+        }
+        const float value = tent / tent_weight;
+        float o = value;
+        if (f > 0) {
+          const float h = history[size_t(y) * N + size_t(x)];
+          const float mean = sum / count, sigma = std::sqrt(std::max(sum2 / count - mean * mean, 0.0f));
+          const float bl = hs::SsrBoxLoChannel(mean, sigma, lo, hi), bh = hs::SsrBoxHiChannel(mean, sigma, lo, hi);
+          const hs::float3 clipped = hs::SsrClipToBox(hs::float3(h, h, h), hs::float3(bl, bl, bl), hs::float3(bh, bh, bh));
+          const float kept = resolve ? hs::SsrKeepClip(hs::float3(h, h, h), clipped).x : clipped.x;
+          o = value * (1.0f - 0.9f) + kept * 0.9f;
+        }
+        out[size_t(y) * N + size_t(x)] = o;
+      }
+    }
+    history = out;
+    all.push_back(out);
+  }
+  return all;
+}
+struct ResolveNumbers {
+  double flicker = 0.0;   // the temporal std over the lamp's pixels, as a share of the truth there
+  double energy = 0.0;    // the time mean of the output over the truth, over the lamp's pixels (1 = the right brightness)
+  int fade_half = 0;      // frames after the lamp goes out until what is left is below half / a tenth of what the lamp added
+  int fade_tenth = 0;
+};
+ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve) {
+  const std::vector<float> truth = ResolveTruth(sc);
+  const std::vector<std::vector<float>> run = ResolveRun(sc, resolve, 240, 1000);
+  ResolveNumbers r;
+  double flicker = 0.0, out_sum = 0.0, truth_sum = 0.0;
+  int n = 0;
+  for (size_t i = 0; i < truth.size(); ++i) {
+    if (truth[i] < kResolveBg * 1.5f) continue;
+    double m = 0.0, m2 = 0.0;
+    for (int f = 120; f < 240; ++f) {
+      m += run[size_t(f)][i];
+      m2 += double(run[size_t(f)][i]) * run[size_t(f)][i];
+    }
+    m /= 120.0;
+    m2 /= 120.0;
+    flicker += std::sqrt(std::max(m2 - m * m, 0.0)) / truth[i];
+    out_sum += m;
+    truth_sum += truth[i];
+    ++n;
+  }
+  r.flicker = flicker / std::max(n, 1);
+  r.energy = out_sum / std::max(truth_sum, 1e-9);
+  const std::vector<std::vector<float>> gone = ResolveRun(sc, resolve, 200, 100);
+  const auto added = [&](int f) {
+    double a = 0.0;
+    for (size_t i = 0; i < truth.size(); ++i) {
+      if (truth[i] >= kResolveBg * 1.5f) a += double(gone[size_t(f)][i]) - kResolveBg;
+    }
+    return a;
+  };
+  const double start = added(99);
+  r.fade_half = r.fade_tenth = 999;
+  for (int f = 100; f < 200; ++f) {
+    if (r.fade_half == 999 && added(f) < 0.5 * start) r.fade_half = f - 99;
+    if (r.fade_tenth == 999 && added(f) < 0.1 * start) r.fade_tenth = f - 99;
+  }
+  return r;
+}
+}  // namespace
+
+void TestResolve() {
+  // the kernel: a tent of 16, the centre 4 times a corner
+  float total = 0.0f;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) total += hs::SsrTapKernel(dx, dy);
+  }
+  Check(total == 16.0f && hs::SsrTapKernel(0, 0) == 4.0f && hs::SsrTapKernel(1, 0) == 2.0f && hs::SsrTapKernel(0, -1) == 2.0f && hs::SsrTapKernel(1, 1) == 1.0f && hs::SsrTapKernel(-1, 1) == 1.0f,
+        "the resolve's kernel is a tent: 4 in the centre, 2 on the edges, 1 in the corners (sum 16)");
+  // the same surface: a few per cent and a few centimetres of receiver depth (a road is flat; a kerb, a car, a pole are not)
+  Check(hs::SsrTapSameSurface(20.0f, 20.0f) && hs::SsrTapSameSurface(20.0f, 20.8f) && !hs::SsrTapSameSurface(20.0f, 22.0f) && hs::SsrTapSameSurface(0.5f, 0.54f) && !hs::SsrTapSameSurface(0.5f, 0.6f) &&
+            !hs::SsrTapSameSurface(5.0f, 5.5f),
+        "a neighbour joins the average only within 8% and 5 centimetres of the centre's receiver depth (the history's own rule)");
+  {
+    bool same_rule = true;
+    for (float z : {0.5f, 5.0f, 20.0f, 60.0f}) {
+      for (float k : {0.8f, 0.9f, 0.95f, 1.0f, 1.05f, 1.1f, 1.2f}) same_rule = same_rule && hs::SsrTapSameSurface(z * k, z) == hs::SsrSameSurface(z * k, z);
+    }
+    Check(same_rule, "and it is the history's rule, not a tighter one (a road at a grazing angle runs away by metres a row at 50 metres)");
+  }
+  // the clip's floor: a positive history is not taken below the keep; a raise, a negative history and a history inside the box are the clip's
+  const hs::float3 down = hs::SsrKeepClip(hs::float3(10.0f, 10.0f, 10.0f), hs::float3(1.0f, 9.0f, 5.0f));
+  Check(Near(down.x, 10.0 * hs::kSsrClipKeep, 1e-5) && down.y == 9.0f && Near(down.z, 10.0 * hs::kSsrClipKeep, 1e-5), "the clip takes at most 1 - keep of a positive history away in a frame, and its small steps whole");
+  const hs::float3 raised = hs::SsrKeepClip(hs::float3(1.0f, 0.0f, 3.0f), hs::float3(4.0f, 2.0f, 3.0f));
+  Check(raised.x == 4.0f && raised.y == 2.0f && raised.z == 3.0f, "a history the clip raises or leaves is the clip's");
+  const hs::float3 negative = hs::SsrKeepClip(hs::float3(-5.0f, -5.0f, -5.0f), hs::float3(-9.0f, -1.0f, -5.0f));
+  Check(negative.x == -9.0f && negative.y == -1.0f && negative.z == -5.0f, "a negative history (the road's term can be) is the clip's, whole");
+  Check(hs::kSsrClipKeep > 0.5f && hs::kSsrClipKeep < 0.95f, "the keep is a real floor, not a switch");
+  // the reprojection's distance: the pixel's own when its ray found something, else the nearest hit round it
+  Check(hs::SsrReprojectDistance(30.0f, 12.0f) == 30.0f && hs::SsrReprojectDistance(hs::kSsrMissLength, 40.0f) == 40.0f && hs::SsrReprojectDistance(hs::kSsrMissLength, hs::kSsrMissLength) == hs::kSsrMissLength &&
+            hs::SsrReprojectDistance(hs::kSsrMissLength, 5.0f) == 5.0f,
+        "where the ray found nothing the nearest hit of the same-surface neighbours gives the reprojection's distance; a pixel that hit keeps its own");
+  // and why it matters: with the first version's hit or miss a pixel round a lamp's image looked its history up in two places (the lamp's parallax, the sky's), a few pixels apart on a moving camera
+  {
+    const Vec H{{3.0, 6.0, 40.0}};
+    const Vec Hmirror{{H.v[0], -H.v[1], H.v[2]}};
+    const Pose before{{0.0, 1.5, 0.0}, 0.0, 0.02};
+    const Pose now{{0.0, 1.5, 0.55}, 0.0, 0.02};   // 0.55 m a frame at 60 Hz is 120 km/h
+    const double tan_x = 0.9, tan_y = 0.5;
+    const Vec cam{{now.pos[0], now.pos[1], now.pos[2]}};
+    const Vec dir = Sub(Hmirror, cam);
+    const double t = (0.0 - cam.v[1]) / dir.v[1];
+    const Vec P_view = ToView(now, {{cam.v[0] + dir.v[0] * t, 0.0, cam.v[2] + dir.v[2] * t}});
+    const Vec H_view = ToView(now, H);
+    const double length_to_hit = std::sqrt(DotV(Sub(H_view, P_view), Sub(H_view, P_view)));
+    hs::float4 rows[3];
+    {
+      Vec r, u, f, r0, u0, f0;
+      Axes(now, &r, &u, &f);
+      Axes(before, &r0, &u0, &f0);
+      const Vec dp = Sub({{now.pos[0], now.pos[1], now.pos[2]}}, {{before.pos[0], before.pos[1], before.pos[2]}});
+      const Vec axes_old[3] = {r0, u0, f0};
+      for (int k = 0; k < 3; ++k) rows[k] = hs::float4(float(DotV(r, axes_old[k])), float(DotV(u, axes_old[k])), float(DotV(f, axes_old[k])), float(DotV(dp, axes_old[k])));
+    }
+    const hs::float3 P(float(P_view.v[0]), float(P_view.v[1]), float(P_view.v[2]));
+    const auto where = [&](float distance) {
+      const hs::SsrPrevious p = hs::SsrToPrevious(rows[0], rows[1], rows[2], hs::SsrVirtualPoint(P, distance), float(tan_x), float(tan_y));
+      return std::array<double, 2>{p.u * 960.0, p.v * 540.0};   // the SSR images of a 1920 x 1080 picture
+    };
+    const auto hit = where(float(length_to_hit)), miss = where(hs::kSsrMissLength), stable = where(hs::SsrReprojectDistance(hs::kSsrMissLength, float(length_to_hit)));
+    const double apart = std::hypot(hit[0] - miss[0], hit[1] - miss[1]), after = std::hypot(hit[0] - stable[0], hit[1] - stable[1]);
+    if (g_print) std::printf("a pixel round a lamp's image on a camera at 120 km/h: hit and miss look the history up %.2f SSR pixels apart; with the nearest hit %.2f\n", apart, after);
+    Check(apart > 0.4 && after < 1e-6, Num("a miss next to a hit looked its history up %.2f pixels from the hit's place; with the nearest hit it is the same place (%.4f)", apart, after));
+  }
+  // THE NOISE THAT IS LEFT (the pipeline above on three small bright things)
+  struct Case {
+    const char* name;
+    ResolveScene scene;
+  };
+  const Case cases[] = {{"a lamp 4 pixels wide, a lobe of 2", {2.0f, 4.0f}}, {"a tail light 2 pixels wide, a lobe of 3", {3.0f, 2.0f}}, {"a lamp 3 pixels wide, a lobe of 1", {1.0f, 3.0f}}};
+  for (const Case& c : cases) {
+    const ResolveNumbers then = ResolveMeasure(c.scene, false), now = ResolveMeasure(c.scene, true);
+    if (g_print) {
+      std::printf("%s: first resolve flicker %.3f energy %.3f fade %d / %d frames; resolve flicker %.3f energy %.3f fade %d / %d frames\n", c.name, then.flicker, then.energy, then.fade_half, then.fade_tenth, now.flicker, now.energy,
+                  now.fade_half, now.fade_tenth);
+    }
+    Check(now.flicker < 0.70 * then.flicker, std::string(c.name) + Num(": the flicker on the lamp's pixels is %.0f%% of what the first version left", 100.0 * now.flicker / then.flicker) + Num(" (%.2f of the truth against %.2f)", now.flicker, then.flicker));
+    Check(now.energy > then.energy - 1e-3 && now.energy > 0.45, Num("... and it keeps the reflection's brightness at least as well: %.2f of the lobe's mean against %.2f", now.energy, then.energy));
+    Check(now.fade_half <= 6 && now.fade_tenth <= 14 && then.fade_half <= 2, Num("... and a lamp that goes out leaves half of its reflection after %.0f frames (at most 6; the first version took 1 or 2)", double(now.fade_half)) + Num(", a tenth after %.0f (at most 14)", double(now.fade_tenth)));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1700,6 +2070,24 @@ void TestSources(const std::string& dir) {
   Check(Has(settings, rex_setting + "f64, mcla_gpu_ssr_fallback, 1.0,") && Has(settings, rex_setting + "i32, mcla_gpu_ssr_vehicle_rows, 1,") && view_end != std::string::npos && settings.substr(view_decl, view_end - view_decl).find("rex::Range{0, 6}") != std::string::npos,
         "GB-I2: the fallback is on by default (1) and the vehicle rows too, the view setting goes to 6");
 
+  // the blue noise: the setting, the frame word's flag, the trace's call, the debug row
+  {
+    const std::string debug_pages_blue = Read(dir, "../mc_engine/menus/debug_menu_pages.cpp");
+    const std::string decl = std::string("REX_") + "SETTING(bool, mcla_gpu_ssr_blue_noise, true,";
+    const size_t at = settings.find(decl);
+    const size_t end = at == std::string::npos ? std::string::npos : settings.find(");\n", at);
+    Check(at != std::string::npos && end != std::string::npos && settings.substr(at, end - at).find("rex::kDebugOnly") != std::string::npos && Has(settings, "inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;") &&
+              Has(manifest, "\"mcla_gpu_ssr_blue_noise\": {") && Has(meta, "{\"mcla_gpu_ssr_blue_noise\", \"MCLA/GPU\"},"),
+          "mcla_gpu_ssr_blue_noise: a live debug setting, on by default, in the settings header, its alias, the manifest and the meta list");
+    Check(Has(cpp, "push.Set(pk::kFrame, (uint32_t(frames_) & ~pk::kFrameLegacyNoise) | (larecomp::settings::mcla_gpu_ssr_blue_noise.Get() ? 0u : pk::kFrameLegacyNoise));"),
+          "ssr.cpp: the frame word carries the first version's flag when mcla_gpu_ssr_blue_noise is off");
+    Check(Has(trace_ps, "SsrNoise1(pix.x, pix.y, frame, ray, rays), SsrNoise2(pix.x, pix.y, frame, ray, rays)"), "the trace pass gives the noise the ray's number and the rays a pixel");
+    Check(Has(common, "#include \"blue_noise.hlsli\"") && Has(common, "static const uint kSsrR2StepA = 3242174889u;") && Has(common, "static const uint kSsrR2StepB = 2447445413u;") &&
+              uint32_t(0.7548776662466927 * 4294967296.0) == 3242174889u && uint32_t(0.5698402909980532 * 4294967296.0) == 2447445413u,
+          "ssr_common.hlsli: the frame's steps are the R2 sequence's, as 32 bit fractions");
+    Check(Has(debug_pages_blue, "\"mcla_gpu_ssr_blue_noise\""), "the debug menu's FIXES page has the A/B row");
+  }
+
   // GB-J: the row, the class cell, the debug row of the light pass, the hidden G-buffer setting
   {
     const std::string gpu_class_h = Read(dir, "gpu_class.h"), gpu_class_test = Read(dir, "gpu_class_test.cpp"), pause = Read(dir, "../mc_engine/menus/pause_menu.cpp"),
@@ -1848,7 +2236,7 @@ void TestSources(const std::string& dir) {
   const std::string table_accessor = FunctionText(ao_cpp, "bool AmbientOcclusion::VehicleTableNow(VehicleTableOut* out) const {");
   Check(!table_accessor.empty() && Has(ao_h, "bool VehicleTableNow(VehicleTableOut* out) const;") && Has(table_accessor, "vehicle_table_frame_ != frame_") && !Has(table_accessor, "list->") && Has(ao_cpp, "  vehicle_table_frame_ = frame_;\n  vehicle_table_ids_ = mask;"),
         "ao.h / ao.cpp: the vehicle table accessor is const, answers only for a table drawn in this frame and records nothing");
-  Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") && Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackSlots(vehicle_table_slot, screen::kNoSlot));") &&
+  Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") && Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get()));") &&
             Has(trigger, "push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));"),
         "ssr.cpp: the vehicle table goes to the temporal pass, the stencil plane to the trace");
   // GB-I2: the road view: found by its identity, classified, drawn this frame, moved to a shader read before the trace, asked for only while the share is above 0; its numbers are the side view's own
@@ -1878,7 +2266,7 @@ void TestSources(const std::string& dir) {
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
   Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(SsrRoadViewAt(road_view, screen_uv), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
-  Check(Has(temporal_ps, "history = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
+  Check(Has(temporal_ps, "const float3 clipped = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "history = resolve ? SsrKeepClip(history, clipped) : clipped;") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
 
   // the pause world and the effect's own gate are in the rules
   Check(Has(rules, "d.why = Why::kPause;") && Has(trigger, "facts.pause_view = (sf.flags & screen::kFramePause) != 0;"), "the pause menu's, the garage's and the map's world are not reflected");
@@ -1909,6 +2297,7 @@ int main(int argc, char** argv) {
   TestGate();
   TestBrdf();
   TestNoise();
+  TestNoiseResolve();
   TestGgx();
   TestFades();
   TestVirtualImage();
@@ -1916,6 +2305,7 @@ int main(int argc, char** argv) {
   TestHitPacking();
   TestVehicleImage();
   TestClip();
+  TestResolve();
   TestRoadViewRules();
   TestMarchAnalytic();
   TestMarchBrute();

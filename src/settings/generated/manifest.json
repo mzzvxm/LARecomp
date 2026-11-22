@@ -1447,6 +1447,28 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ssr_blue_noise": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_resolve": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the accumulation averages the trace's 3x3 over the pixels of one surface before it takes the history (nine rays of one lobe are nearer its mean than one), looks the history of a pixel whose ray found nothing up with the nearest hit of its neighbours, and does not let one frame whose rays all missed wipe a bright reflection (the clip takes at most a quarter of it a frame). A lamp's or a tail light's reflection flickered with the sparse hits. False: the first version's resolve (the centre pixel alone, the clip whole), for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ghost_log_interval": {
   "type": "u32",
   "default": "0",
