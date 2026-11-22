@@ -549,6 +549,29 @@ void TestCore(const fs::path& tmp) {
         Check(core::SetAsideUnreadable(dir, "B13E000000000002") && fs::exists(core::KeyPath(dir, "B13E000000000002").string() + ".unreadable") &&
                   !fs::exists(core::KeyPath(dir, "B13E000000000002")),
               "an unreadable key is moved aside, never overwritten");
+        // A second unreadable file does not take the first one's place: it was perhaps the only copy of a key.
+        {
+            std::ofstream(core::KeyPath(dir, "B13E000000000002"), std::ios::binary) << "second garbage";
+            fs::path kept;
+            const fs::path first = core::KeyPath(dir, "B13E000000000002").string() + ".unreadable";
+            Check(core::SetAsideUnreadable(dir, "B13E000000000002", &kept) && kept.filename().string().find(".unreadable-2") != std::string::npos &&
+                      ReadAll(first) == "garbage that is not a key" && ReadAll(kept) == "second garbage" &&
+                      !fs::exists(core::KeyPath(dir, "B13E000000000002")),
+                  "a second unreadable key is kept beside the first, which is not overwritten");
+        }
+        // The key a backup replaces is copied first; nothing to copy is fine.
+        {
+            fs::path copy;
+            Check(core::KeepCopyOfKey(dir, "B13E0000000000FF", &copy) && copy.empty(), "no key file, nothing to keep");
+            Check(core::KeepCopyOfKey(dir, "B13E000000000001", &copy) && !copy.empty() &&
+                      ReadAll(copy) == ReadAll(core::KeyPath(dir, "B13E000000000001")) &&
+                      copy.filename().string().find(".key.replaced-") != std::string::npos,
+                  "the key about to be replaced is copied to .replaced-<time>");
+            core::KeyRecord back;
+            Check(core::LoadKey(dir, "B13E000000000001", back) == core::Load::kLoaded && back.SameKeyAs(a), "the copy left the key itself alone");
+        }
+        // A saved key leaves no temporary file behind.
+        Check(!fs::exists(core::KeyPath(dir, "B13E000000000001").string() + ".tmp"), "SaveKey leaves no .tmp file");
         // By name -> by id.
         core::SaveKey(dir, "name_Old", a);
         core::SaveTicket(dir, "name_Old", {}, idn::Ticket{});

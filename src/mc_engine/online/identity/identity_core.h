@@ -91,8 +91,12 @@ enum class Load { kLoaded, kMissing, kUnreadable };
 Load LoadKey(const fs::path& dir, const std::string& profile_id, KeyRecord& out);
 // Seals and writes the whole record. False when it could not be written.
 bool SaveKey(const fs::path& dir, const std::string& profile_id, const KeyRecord& record);
-// "<id>.key" -> "<id>.key.unreadable", for a file that cannot be read: a backup may still restore it.
-bool SetAsideUnreadable(const fs::path& dir, const std::string& profile_id);
+// "<id>.key" -> "<id>.key.unreadable", for a file that cannot be read: a backup may still restore it. An earlier set-aside file is
+// never overwritten (the next is ".unreadable-2" and so on). False when nothing was moved; `kept` (optional) names the new file.
+bool SetAsideUnreadable(const fs::path& dir, const std::string& profile_id, fs::path* kept = nullptr);
+// Copies a key file that is about to be replaced by another identity to "<id>.key.replaced-<unix time>" (a free name), so the
+// replaced key can be put back. True when there was no key file or the copy was made.
+bool KeepCopyOfKey(const fs::path& dir, const std::string& profile_id, fs::path* kept = nullptr);
 // An SDK without per-profile XUIDs filed the key by name; once it has them, that key is this profile's and moves to the
 // new id (and its tickets with it). True when something moved.
 bool MoveKeyFiledByName(const fs::path& dir, const std::string& profile_id, const std::string& nick);

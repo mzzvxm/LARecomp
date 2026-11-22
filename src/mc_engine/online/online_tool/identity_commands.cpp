@@ -528,7 +528,9 @@ IdentityResult DoShow(const IdArgs& a, const Profile& p) {
     if (have) j.String(Hex16(identity::XuidFromPublicKey(kp.pub))); else j.Null();
     j.Key("rmr_token");  // only whether there is one
     if (have) j.Bool(rec.has_rmr); else j.Null();
-    j.Field("unreadable_copy", fs::exists(key_path.string() + ".unreadable", ec));
+    fs::path unreadable_copy = key_path;
+    unreadable_copy += ".unreadable";
+    j.Field("unreadable_copy", fs::exists(unreadable_copy, ec));
     j.EndObject();
 
     j.Key("recovery").BeginObject();
@@ -746,8 +748,10 @@ IdentityResult DoRestore(const IdArgs& a, const Profile& p, const ReadSecretLine
     std::error_code exists_ec;
     if (!has_current && fs::exists(key_path, exists_ec)) {
         // A file that is there and cannot be read: kept aside, never overwritten (the game does the same).
-        core::SetAsideUnreadable(p.dir, p.file_id);
-        kept = Utf8(key_path) + ".unreadable";
+        fs::path aside;
+        if (!core::SetAsideUnreadable(p.dir, p.file_id, &aside))
+            return Fail(a, "cannot_keep_old_key", "the unreadable key file could not be set aside: nothing was changed");
+        kept = Utf8(aside);
     } else if (different) {
         kept = Utf8(key_path) + ".replaced-" + std::to_string(identity::NowUnix());
         std::error_code mv;

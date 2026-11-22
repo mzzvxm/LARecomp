@@ -26,6 +26,7 @@ namespace {
 struct State {
     bool loaded = false;
     bool restart_needed = false;
+    bool read_only = false;  // the key file is one that could not be read or moved aside: nothing is written over it
     std::string profile_id;
     std::string nick;
     core::KeyRecord rec;  // the seed, RMR token and pending recovery code, as in the key file
@@ -45,6 +46,7 @@ void DeriveFromSeed(State& s) {
 }
 
 bool SaveLocked() {
+    if (g.read_only) return false;  // already reported when it was found
     const bool ok = core::SaveKey(IdentityDir(), g.profile_id, g.rec);
     if (!ok) LARECOMP_APP_ERROR("[identity] cannot save {}", KeyPath().string());
     return ok;
@@ -81,9 +83,15 @@ void ApplyProfileIdentity() {
         case core::Load::kUnreadable:
             // Not ours to read (another Windows user, or damaged). Keep it
             // aside instead of overwriting: a backup may still restore it.
-            core::SetAsideUnreadable(IdentityDir(), g.profile_id);
-            LARECOMP_APP_ERROR("[identity] {} is unreadable here; moved aside, starting a new identity",
-                               KeyPath().string());
+            if (core::SetAsideUnreadable(IdentityDir(), g.profile_id)) {
+                LARECOMP_APP_ERROR("[identity] {} is unreadable here; moved aside, starting a new identity",
+                                   KeyPath().string());
+            } else {
+                g.read_only = true;
+                LARECOMP_APP_ERROR("[identity] {} is unreadable here and could not be moved aside; this session uses a "
+                                   "new identity that is not saved, and the file is left alone",
+                                   KeyPath().string());
+            }
             break;
         case core::Load::kMissing:
             break;
@@ -248,6 +256,11 @@ bool ImportBackup(const fs::path& path, const std::string& password, std::string
     // the restored identity for the next launch.
     core::KeyRecord next = g.rec;
     std::memcpy(next.seed, restored.seed, 32);
+    // The key being replaced (or a file that could not be read) is kept beside the new one, so a wrong backup can be undone.
+    if ((g.read_only || !next.SameKeyAs(g.rec)) && !core::KeepCopyOfKey(IdentityDir(), g.profile_id)) {
+        if (error) *error = "cannot keep a copy of the current key in " + IdentityDir().string();
+        return false;
+    }
     next.has_rmr = restored.has_rmr;
     next.rmr = restored.rmr;
     next.pending_code.clear();
@@ -256,6 +269,7 @@ bool ImportBackup(const fs::path& path, const std::string& password, std::string
         return false;
     }
     core::ForgetTickets(IdentityDir(), g.profile_id);  // tickets name the old key
+    g.read_only = false;  // the file is a readable key of the backup's now
     g.restart_needed = true;
     LARECOMP_APP_INFO("[identity] backup {} imported; restart the game to use it", path.string());
     return true;

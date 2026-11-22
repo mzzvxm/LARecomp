@@ -15,7 +15,11 @@
 #include <wincrypt.h>
 #pragma comment(lib, "crypt32.lib")
 #else
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
+
+#include <cerrno>
 #endif
 
 namespace larecomp::identity::core {
@@ -134,20 +138,79 @@ bool ReadFile(const fs::path& p, std::string& out) {
     return true;
 }
 
+namespace {
+
+// Writes `data` to a new file at `path` and has it on the disk before it returns (false on any failure): the rename that follows
+// must not be able to put a file with no content in a good file's place after a power loss. On Linux the file is created with
+// mode 0600 from the start (a chmod afterwards leaves a window in which a copy of the plain key is readable by other users).
+bool WriteAndFlush(const fs::path& path, const std::string& data) {
+#ifdef _WIN32
+    const HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    bool ok = true;
+    const char* at = data.data();
+    size_t left = data.size();
+    while (ok && left > 0) {
+        const DWORD chunk = DWORD(left > (size_t(1) << 30) ? (size_t(1) << 30) : left);
+        DWORD wrote = 0;
+        ok = WriteFile(h, at, chunk, &wrote, nullptr) && wrote > 0;
+        at += wrote;
+        left -= wrote;
+    }
+    ok = ok && FlushFileBuffers(h);
+    return CloseHandle(h) && ok;
+#else
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+    ::fchmod(fd, 0600);  // a leftover file of an earlier run keeps its old mode otherwise
+    bool ok = true;
+    const char* at = data.data();
+    size_t left = data.size();
+    while (ok && left > 0) {
+        const ssize_t n = ::write(fd, at, left);
+        if (n < 0 && errno == EINTR) continue;
+        ok = n > 0;
+        if (ok) {
+            at += n;
+            left -= size_t(n);
+        }
+    }
+    ok = ok && ::fsync(fd) == 0;
+    return ::close(fd) == 0 && ok;
+#endif
+}
+
+// `path` with `suffix` appended to its last element. Not path.string() + suffix: on Windows string() is the ANSI code page, and a
+// folder with a name outside it (a Cyrillic or Chinese user name on an English Windows) comes back with '?' in it.
+fs::path WithSuffix(const fs::path& path, const char* suffix) {
+    fs::path out = path;
+    out += suffix;
+    return out;
+}
+
+// The first of "<path><suffix>", "<path><suffix>-2", ... that does not exist; empty when there are 99 of them.
+fs::path FreeCopyName(const fs::path& path, const std::string& suffix) {
+    std::error_code ec;
+    for (int n = 1; n < 100; ++n) {
+        const fs::path candidate = WithSuffix(path, (n == 1 ? suffix : suffix + "-" + std::to_string(n)).c_str());
+        if (!fs::exists(candidate, ec)) return candidate;
+    }
+    return {};
+}
+
+}  // namespace
+
 // Through a temp file and a rename, so a crash never leaves half a key.
 bool WriteFileAtomic(const fs::path& p, const std::string& data) {
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
-    const fs::path tmp = p.string() + ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        out.write(data.data(), std::streamsize(data.size()));
-        if (!out) return false;
+    const fs::path tmp = WithSuffix(p, ".tmp");
+    if (!WriteAndFlush(tmp, data)) {
+        fs::remove(tmp, ec);  // a half-written temporary file is not left behind (it may hold a sealed key)
+        return false;
     }
-#ifndef _WIN32
-    ::chmod(tmp.c_str(), 0600);
-#endif
     fs::rename(tmp, p, ec);
+    if (ec) fs::remove(tmp, ec);
     return !ec;
 }
 
@@ -217,9 +280,24 @@ bool SaveKey(const fs::path& dir, const std::string& id, const KeyRecord& record
     return ok;
 }
 
-bool SetAsideUnreadable(const fs::path& dir, const std::string& id) {
+bool SetAsideUnreadable(const fs::path& dir, const std::string& id, fs::path* kept) {
+    // An earlier set-aside key is never overwritten: it may be the only copy of an identity that a backup cannot restore.
+    const fs::path to = FreeCopyName(KeyPath(dir, id), ".unreadable");
+    if (to.empty()) return false;
     std::error_code ec;
-    fs::rename(KeyPath(dir, id), KeyPath(dir, id).string() + ".unreadable", ec);
+    fs::rename(KeyPath(dir, id), to, ec);
+    if (!ec && kept) *kept = to;
+    return !ec;
+}
+
+bool KeepCopyOfKey(const fs::path& dir, const std::string& id, fs::path* kept) {
+    std::error_code ec;
+    const fs::path from = KeyPath(dir, id);
+    if (!fs::exists(from, ec)) return true;  // nothing to keep
+    const fs::path to = FreeCopyName(from, ".replaced-" + std::to_string(NowUnix()));
+    if (to.empty()) return false;
+    fs::copy_file(from, to, fs::copy_options::none, ec);
+    if (!ec && kept) *kept = to;
     return !ec;
 }
 
