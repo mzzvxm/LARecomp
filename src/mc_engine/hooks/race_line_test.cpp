@@ -2,7 +2,8 @@
 // against the game's own recompiled functions, on random inputs and (when a recording exists) on recorded jobs.
 //
 // (1) always runs: the arithmetic helpers against the standard library's (fma, the truncating conversion), the address
-//     rules, the constants' addresses against a seeded image page.
+//     rules, the constants' addresses against a seeded image page; and (race_line_cap.h) the rate cap's clock and schedule: jobs per second of GAME
+//     time under a fixed step at any wall FPS, the steady clock without one, a clock that steps back, a changed layout.
 // (2) runs when compiled with -DRL_WITH_ORIGINALS and an include path that holds rl_originals.inc, which tools/race_line_extract.py
 //     makes from a generated tree (the game's recompiled code, never committed). Each random case builds a planner tuning block, a
 //     vehicle tuning block and a path (up to 66 samples of 56 bytes) in a guest arena, runs the recompiled function on one copy and
@@ -36,6 +37,7 @@
 #include <string>
 #include <vector>
 
+#include "race_line_cap.h"
 #include "race_line_native.h"
 
 #ifdef _WIN32
@@ -251,6 +253,74 @@ void TestHelpers(const char* image) {
 #else
     (void)image;
 #endif
+}
+
+// ---------------------------------------------------------------------------------------------- the rate cap
+
+// The jobs one planner (its layout never changing) gets in `game_seconds` of game time, update by update: the game moves `step_fps` steps a second
+// when a fixed step is set (0: none, and the game then moves with the wall clock), the wall clock `wall_fps` updates a second, the cap is `cap_hz`.
+long CapJobs(double step_fps, double wall_fps, int cap_hz, double game_seconds) {
+    const uint64_t ticks = step_fps > 0.0 ? static_cast<uint64_t>(std::llround(1.0 / step_fps / mc::cinematic::capture::kGameTickSeconds)) : 0;
+    const double game_dt = step_fps > 0.0 ? 1.0 / step_fps : 1.0 / wall_fps;
+    const int64_t steady0 = 5'000'000'000'000ll;  // a PC that has run for a while: the steady clock's origin is not zero
+    const int64_t interval = 1'000'000'000ll / cap_hz;
+    race_line::RateSchedule schedule;
+    long jobs = 0;
+    const uint64_t updates = static_cast<uint64_t>(game_seconds / game_dt);
+    for (uint64_t u = 1; u <= updates; ++u) {
+        const int64_t steady = steady0 + static_cast<int64_t>(static_cast<double>(u) * 1e9 / wall_fps);
+        const int64_t now = race_line::CapClockNs(ticks, u, steady);
+        if (u == 1) {
+            schedule.Start(now, interval);
+            ++jobs;
+        } else if (schedule.Due(true, now, interval)) {
+            ++jobs;
+        }
+    }
+    return jobs;
+}
+
+void TestRateCap() {
+    namespace cap = mc::cinematic::capture;
+    // the clock: 60 updates of the 60 fps step (831250 ticks) are one second of game time; no step: the steady clock as it is
+    EXPECT(std::llround(1.0 / 60.0 / cap::kGameTickSeconds) == 831250, "the 60 fps step is 831250 ticks");
+    const int64_t one_second = race_line::CapClockNs(831250, 60, 123);
+    EXPECT(one_second > 999'990'000ll && one_second < 1'000'010'000ll, "60 updates of the 60 fps step are %lld ns", static_cast<long long>(one_second));
+    EXPECT(race_line::CapClockNs(0, 60, 123456789ll) == 123456789ll, "no fixed step: the steady clock");
+
+    // jobs per GAME second over 20 game seconds (a step of 1/30 s at 240 wall FPS is the dev fixed-step mode the cap used to get wrong: the game runs
+    // 8 times faster than the wall clock, and on the wall clock "30 a second" was one job per 8 updates)
+    struct Case {
+        const char* what;
+        double step_fps, wall_fps;
+        int cap_hz;
+        long expect;
+    };
+    const Case cases[] = {
+        {"fixed step 30, 240 wall FPS, cap 30", 30.0, 240.0, 30, 600},
+        {"fixed step 30, 240 wall FPS, cap 12", 30.0, 240.0, 12, 240},
+        {"fixed step 60, 20 wall FPS (a slow capture), cap 30", 60.0, 20.0, 30, 600},
+        {"fixed step 144, 30 wall FPS, cap 30", 144.0, 30.0, 30, 600},
+        {"no step, 144 wall FPS, cap 30 (normal play)", 0.0, 144.0, 30, 600},
+        {"no step, 60 wall FPS, cap 30 (normal play)", 0.0, 60.0, 30, 600},
+    };
+    for (const Case& c : cases) {
+        const long jobs = CapJobs(c.step_fps, c.wall_fps, c.cap_hz, 20.0);
+        EXPECT(jobs >= c.expect - c.expect / 50 && jobs <= c.expect + c.expect / 50, "%s: %ld jobs in 20 game seconds, expected about %ld", c.what, jobs, c.expect);
+    }
+
+    // the schedule: a clock that steps back (a take ends, the fixed step is switched on or off) runs the job at once and counts on from there; a changed
+    // layout always runs it
+    const int64_t interval = 1'000'000'000ll / 30;
+    race_line::RateSchedule s;
+    s.Start(5'000'000'000'000ll, interval);
+    EXPECT(!s.Due(true, 5'000'000'000'000ll + interval / 2, interval), "not due half an interval after the first job");
+    EXPECT(s.Due(true, 5'000'000'000'000ll + interval, interval), "due one interval after the first job");
+    EXPECT(s.Due(true, 3'000'000'000ll, interval), "the clock stepped back: the job runs");
+    EXPECT(!s.Due(true, 3'000'000'000ll + interval / 2, interval), "after the step back it counts on from there (not due)");
+    EXPECT(s.Due(true, 3'000'000'000ll + interval, interval), "after the step back it counts on from there (due)");
+    EXPECT(s.Due(false, 3'000'000'000ll + interval + 1, interval), "a changed layout runs the job at once");
+    EXPECT(!s.Due(true, 3'000'000'000ll + interval + 2, interval), "and the next job is an interval later");
 }
 
 // ---------------------------------------------------------------------------------------------- random cases
@@ -674,6 +744,7 @@ int main(int argc, char** argv) {
         else if (a == "--cases" && i + 1 < argc) cases = std::atol(argv[++i]);
     }
     TestHelpers(image);
+    TestRateCap();
     if (replay) {
         std::vector<Record> recs;
         if (!ReadRecords(replay, recs)) return 2;

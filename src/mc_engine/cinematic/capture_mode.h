@@ -114,6 +114,9 @@ CaptureStatus CaptureGetStatus();
 uint64_t FixedStepTicks();
 // A fixed step is in force: the FPS limiter, the step cap and frame pacing stand aside. Any thread.
 bool FixedStepActive();
+// The updates the game thread has started: CaptureGate counts one before every update, in every mode (a take, the fixed step alone, or neither).
+// Under a fixed step the game's own time is this times FixedStepTicks(). Any thread.
+uint64_t UpdateCount();
 
 // ---------------------------------------------------------------------------------------------------------------- scene clock
 
