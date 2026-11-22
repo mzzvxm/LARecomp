@@ -92,8 +92,9 @@ inline uint64_t NeonId(const float pos[3], uint32_t n = 0) {
   return Make(kDomainNeon, h, n);
 }
 
-// A car's underglow (GB-NEON): the guest address of the car's effect object (neon_light.h: the object that holds the neon's light) and the number of the point along its tube.
-inline constexpr uint64_t NeonCarId(uint32_t effect_object, uint32_t point) { return Make(kDomainNeon, 0x10000000ull | effect_object, point); }
+// A car's underglow (GB-NEON): the guest address of the car's effect object (neon_light.h: the object that holds the neon's light) and the number of the point along its tube. The tag that keeps these
+// apart from NeonId's place hashes is bit 32, above every guest address: a tag in the address bits (0x10000000 | address) made two objects 256 MB apart share an id.
+inline constexpr uint64_t NeonCarId(uint32_t effect_object, uint32_t point) { return Make(kDomainNeon, (1ull << 32) | effect_object, point); }
 
 }  // namespace light_id
 }  // namespace larecomp::gpu

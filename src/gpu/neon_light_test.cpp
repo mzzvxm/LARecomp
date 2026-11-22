@@ -872,6 +872,11 @@ void IdChecks() {
             light_id::NeonCarId(kSelf, 0) != light_id::PointId(kSelf, 0),
         "neon ids are not the place's, nor a car point's");
   Check(LightSource::kNeon != LightSource::kPolice && uint8_t(LightSource::kNeon) == 2, "the neon source keeps its number");
+  // NEONALL-REVIEW: two effect objects that differ in one address bit only (the bit the old tag 0x10000000 swallowed) are two cars
+  for (uint32_t bit = 0; bit < 32; ++bit) {
+    const uint32_t a = 0x40123000u, b = a ^ (1u << bit);
+    Check(light_id::NeonCarId(a, 0) != light_id::NeonCarId(b, 0) && light_id::NeonCarId(a, 3) != light_id::NeonCarId(b, 3), "objects that differ in address bit " + std::to_string(bit) + " have their own ids");
+  }
 }
 
 // ---------------------------------------------------------------------------
