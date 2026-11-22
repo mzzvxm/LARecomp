@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -114,7 +115,7 @@ class CutscenesSettings final : public rex::SettingOwner {
 
 };
 
-inline CutscenesSettings g_cutscenes;
+inline CutscenesSettings& g_cutscenes = larecomp::Leak<CutscenesSettings>();
 
 inline auto& cutscene_bind_coordsys = g_cutscenes.cutscene_bind_coordsys;
 inline auto& cutscene_debug = g_cutscenes.cutscene_debug;

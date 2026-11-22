@@ -3,6 +3,7 @@
 // ===========================================================================
 
 #include "texture_names.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <mutex>
@@ -37,7 +38,7 @@ struct Registry {
 };
 
 Registry& registry() {
-  static Registry r;
+  static Registry& r = larecomp::Leak<Registry>();
   return r;
 }
 

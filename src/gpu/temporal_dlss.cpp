@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the DLSS (Streamline) upscaler backend. See temporal_dlss.h.
 
 #include "temporal_dlss.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -477,7 +478,7 @@ struct Runtime {
 // the worker with Runtime::mu held, read under their own lock so that a reader never waits for a
 // feature's creation (seconds).
 std::mutex g_fg_mutex;
-dlss::FrameGenerationFacts g_fg_facts;
+dlss::FrameGenerationFacts& g_fg_facts = larecomp::Leak<dlss::FrameGenerationFacts>();
 // The worker is making a feature (or Streamline's start): the render thread's Streamline calls that
 // would wait for the lock say busy instead (Impl::building is this).
 std::atomic<bool> g_building{false};
@@ -507,7 +508,7 @@ std::atomic<bool> g_swap_chain_offered{false};
 std::atomic<bool> g_swap_chain_again{false};
 
 Runtime& Rt() {
-  static Runtime runtime;
+  static Runtime& runtime = larecomp::Leak<Runtime>();
   return runtime;
 }
 

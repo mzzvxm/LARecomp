@@ -21,6 +21,7 @@
 #include <string>
 
 #include "../camera.h"
+#include "settings/immortal.h"
 #include "../cars.h"
 #include "../scene_runtime.h"
 #include "director_internal.h"
@@ -120,7 +121,7 @@ constexpr double kRefreshSeconds = 1.0;  // the cars move: the path of a rig ove
 constexpr size_t kMaxSamples = 600;
 
 void ContributeCameraPath(Snapshot& snap) {
-    static PathCache cache;
+    static PathCache& cache = larecomp::Leak<PathCache>();
     const Scene* scene = LoadedScene();
     if (!scene) {
         cache.scene = nullptr;

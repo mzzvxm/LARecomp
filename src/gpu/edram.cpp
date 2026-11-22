@@ -20,6 +20,7 @@
 #include "format.h"
 #include "frame.h"
 #include "gpu.h"
+#include "msaa_plan.h"
 #include "records.h"
 #include "render_scale.h"
 #include "temporal_identities.h"
@@ -256,33 +257,18 @@ void EdramTargets::NoteMainViews(const Target& target) {
 }
 
 EdramTargets::MsaaSetting EdramTargets::ReadMsaaSetting() {
+  // The parse is msaa_plan.h's (pure, msaa_plan_test.cpp); this reads the setting's text.
   MsaaSetting setting;
   setting.text = larecomp::settings::mcla_gpu_msaa.Get();
-  std::string v;
-  for (unsigned char c : setting.text) {
-    if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
-  }
-  if (!v.empty() && v.back() == 'x') v.pop_back();
-  if (v == "4") {
-    setting.level = 4;
-  } else if (v == "8") {
-    setting.level = 8;
-  } else if (v == "off" || v == "1") {
-    // One host sample over the game's own 2 sample layout.
-    setting.level = 1;
-    setting.off = true;
-  } else if (v != "2") {
-    setting.invalid = true;
-  }
+  const msaa_plan::Parsed parsed = msaa_plan::ParseText(setting.text);
+  setting.level = parsed.level;
+  setting.off = parsed.off;
+  setting.invalid = parsed.invalid;
   return setting;
 }
 
 uint32_t EdramTargets::LevelWithin(uint32_t supported_samples, uint32_t wanted) {
-  uint32_t level = wanted;
-  while (level > 2 && (supported_samples & level) == 0) {
-    level >>= 1;
-  }
-  return level;
+  return msaa_plan::LevelWithin(supported_samples, wanted);
 }
 
 uint32_t EdramTargets::SupportedScreenSamples(plume::RenderDevice* device) {

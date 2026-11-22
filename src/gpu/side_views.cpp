@@ -69,28 +69,9 @@ std::string SettingText(SideView view) {
   return rule.setting ? Lower(rule.setting()) : std::string("game");
 }
 
-bool ParseLevel(const std::string& text, SideLevel* level) {
-  if (text == "game") {
-    *level = SideLevel::kGame;
-  } else if (text == "high") {
-    *level = SideLevel::kHigh;
-  } else if (text == "ultra") {
-    *level = SideLevel::kUltra;
-  } else {
-    return false;
-  }
-  return true;
-}
-
 SideLevel LevelOf(SideView view) {
-  const SideViewRule& rule = Rule(view);
-  SideLevel level = SideLevel::kGame;
-  if (!ParseLevel(gpu_class::Resolve(rule.effect, SettingText(view)), &level)) {
-    // auto resolves in the line above; what is left is not a value (a hand-edited file): the
-    // default, which is auto.
-    ParseLevel(gpu_class::Resolve(rule.effect, "auto"), &level);
-  }
-  return level;
+  // The pure part (the `auto` table, a word that is no level) is side_views.h's LevelFor.
+  return LevelFor(gpu_class::Current(), Rule(view).effect, SettingText(view));
 }
 
 std::string AutoLabel(SideView view) {
@@ -131,15 +112,6 @@ SideScales FollowOutput(const SideScales& side, Scale output) {
 uint32_t HostSamples(SideView view, Scale scale, uint32_t guest_samples) {
   const SideViewRule& rule = Rule(view);
   return rule.host_samples ? std::max(1u, rule.host_samples(scale, guest_samples)) : guest_samples;
-}
-
-Scale StepDown(Scale scale) {
-  // The whole scale below (3x -> 2x -> 1x; 1.5x -> 1x): never below the guest's size.
-  if (scale.n <= Scale::kDenominator) {
-    return Scale{};
-  }
-  return Scale{std::max(Scale::kDenominator,
-                        (scale.n - 1) / Scale::kDenominator * Scale::kDenominator)};
 }
 
 }  // namespace side_views

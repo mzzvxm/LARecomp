@@ -5,7 +5,7 @@
   "category": "MCLA/Debug",
   "help": "\"Crash test for the Linux crash logger: MODE or MODE:SECONDS (5 seconds by default), a few \"\n    \"seconds after the game has started. segv writes to address 0x10 on a worker thread; guest \"\n    \"reads the guest's null page (the runtime logs 'Unhandled guest access violation' first, as for \"\n    \"a real guest crash); stack runs a worker thread out of stack (it has a signal stack); abort \"\n    \"calls abort(); terminate throws an exception nobody catches; illegal runs an illegal \"\n    \"instruction; fpe divides by zero. The log must end with '!!! CRASH DETECTED !!!' (or '!!! \"\n    \"ABORT DETECTED !!!') and a stack trace, and the game dies with the signal's status. Only works \"\n    \"with the debug menu unlocked. Linux only.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -17,7 +17,7 @@
   "category": "MCLA/GPU",
   "help": "\"Prepares the graphics pipelines the game compiles while it starts, and closes, without \"\n    \"starting the game: no window, no graphics output. The launcher runs this at the end of its \"\n    \"setup (after the shader packs are built), so that the first start has no shaders to compile \"\n    \"and no pipeline pending. It fills the graphics driver's own cache for this PC; it does not \"\n    \"have to be repeated until the driver, the game files or LARecomp change (the next run \"\n    \"notices and does nothing when everything is current). Progress is printed to the console. \"\n    \"Exit code 0 when the pipelines are prepared or need nothing.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -29,7 +29,7 @@
   "category": "MCLA/GPU",
   "help": "\"With precache_pipelines: which graphics API to prepare. Empty (or auto) is the one the game \"\n    \"runs on (graphics_backend). d3d12 or vulkan prepares that one; one API per run.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -41,7 +41,7 @@
   "category": "MCLA/GPU",
   "help": "\"With precache_pipelines: prepare even when the last run says the pipelines are current. For \"\n    \"after the graphics driver's shader cache was cleared (Windows' Disk Cleanup does that).\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -54,7 +54,7 @@
   "help": "\"With precache_pipelines: how many threads compile the pipelines. 0 uses every processor but \"\n    \"one. A lower number leaves the PC more usable meanwhile, and the preparation takes longer.\"",
   "traits": [
    "rex::Range{0, 16}",
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -67,7 +67,7 @@
   "help": "\"How many threads build the shader packs from your game files on the first start. 0 chooses \"\n    \"by itself from the processor's cores and the free memory. A lower number leaves the PC more \"\n    \"usable during the build, which then takes longer.\"",
   "traits": [
    "rex::Range{0, 64}",
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -79,7 +79,7 @@
   "category": "MCLA/GPU",
   "help": "\"Builds the shader packs from your game files and closes, without starting the game: no \"\n    \"window, no graphics. The launcher runs this at the end of its setup so that the first start \"\n    \"has nothing to build. Progress is printed to the console; the log is logs/shader_build.txt. \"\n    \"Exit code 0 when the packs are in place.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -91,7 +91,7 @@
   "category": "MCLA/GPU",
   "help": "\"With build_shader_packs: build even when the packs in place are current.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -103,7 +103,7 @@
   "category": "MCLA/NativeGfx",
   "help": "\"The D3D12 native graphics runtime. Not built on this platform.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [
@@ -215,7 +215,7 @@
   "help": "\"Diagnostic (M6a): alternate the render thread's code under test between its old \"\n    \"(A) and candidate (B) path every statistics window, and log each window's prepare time \"\n    \"under its variant. Off: the candidate path always runs.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -762,7 +762,7 @@
   "help": "\"With mcla_gpu_debug_layer on D3D12, enable GPU-based validation before device creation. \"\n    \"Diagnostic; requires the matching D3D12SDKLayers.dll and a restart.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1204,7 +1204,7 @@
   "help": "\"Give the GPU's textures, buffers, shaders and pipelines their debug names, which \"\n    \"RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few \"\n    \"microseconds, and a world loads hundreds of textures in one frame, so they are set only \"\n    \"when something can read them: on their own when RenderDoc, PIX or Nsight Graphics started \"\n    \"the game, with mcla_gpu_debug_layer, and with mcla_gpu_perf_markers. This turns them on for \"\n    \"a tool that does not load a DLL (Radeon GPU Profiler) or that attaches later. Read when the \"\n    \"device opens.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1227,7 +1227,7 @@
   "help": "\"Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per \"\n    \"guest frame, the draws and vertices recorded with each; per report window, their \"\n    \"distribution. Empty: off.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1239,7 +1239,7 @@
   "help": "\"Diagnostic: per report window, every pass the frames drew into (its EDRAM \"\n    \"targets) with its draws per frame and the pixel shaders that drew there.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1251,7 +1251,7 @@
   "help": "\"EDRAM inheritance detector (M5.2d): per EDRAM \"\n    \"tile and aspect, the identity that wrote it last, reporting a draw or a resolve that would \"\n    \"see another identity's bytes on the console -- which the host does not carry over. Off: \"\n    \"none of its work is done.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1263,7 +1263,7 @@
   "help": "\"With mcla_gpu_edram_aliasing: an occlusion query around each opaque draw the detector \"\n    \"takes to cover its scissor, checking that it did. Costs GPU time, for \"\n    \"checking a report. Off: no query pool is made, read or reset, and such takes go \"\n    \"unchecked (listed once per pair).\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1275,7 +1275,7 @@
   "help": "\"With mcla_gpu_edram_aliasing: a RenderDoc capture of the frame after the first report of \"\n    \"each kind picked by these bits, 4 at most: 1 a pair met by a write that keeps \"\n    \"or blends another identity's bytes, 2 a pair met by a read, 4 the first reader of \"\n    \"inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1496,7 +1496,7 @@
   "help": "\"Diagnostic: read every guest frame back, as the window shows it, and log \"\n    \"the blocks of 16x16 pixels that change for 1-5 frames and come back to exactly their \"\n    \"old bytes (a flicker). Meant for a static scene such as the pause menu. Costs a copy of \"\n    \"the image per frame on the GPU and about a millisecond of render-thread CPU. Off: \"\n    \"nothing is made.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1508,7 +1508,7 @@
   "help": "\"With mcla_gpu_flicker_probe: how many flicker events also write the frame before, the \"\n    \"first frame of the blip and the frame after as mcla_flicker_<event>_<frame>_<what>.tga \"\n    \"next to the executable (3.7 MB each at 1280x720).\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1520,7 +1520,7 @@
   "help": "\"With mcla_gpu_flicker_probe: a comma-separated list of guest frame numbers, each written \"\n    \"as mcla_flicker_000_<frame>_shot.tga next to the executable whether or not it flickered. \"\n    \"For comparing what two platforms or builds put in the window at the same frame.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1610,7 +1610,7 @@
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"force\")",
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1622,7 +1622,7 @@
   "help": "\"Ask the guest heap whether a guest range is readable once a guest frame per 4 KiB page \"\n    \"instead of once a draw: the capture checks about ten ranges a draw, and each check takes \"\n    \"the heap's lock (about 0.2 ms a frame at 2,600 draws). The pages found readable are \"\n    \"forgotten at every present. A page the guest unmaps within the frame and that a later draw \"\n    \"still points at would be read as before the unmapping (the memory stays mapped, so it \"\n    \"cannot fault); off asks the heap at every check, as before.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1634,7 +1634,7 @@
   "help": "\"Diagnostic, with mcla_gpu_readable_cache: also ask the heap at every check the cache answers, \"\n    \"and count and log (the first 16) the answers that differ. The count is in the \"\n    \"'[gpu] readable cache:' line at shutdown; it must be 0. The heap is asked as often as without \"\n    \"the cache.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1646,7 +1646,7 @@
   "help": "\"Diagnostic: no draw takes its shaders from the frame's identity memo; every draw reads the \"\n    \"guest's shader objects and looks the identity up in full, and the memo's answer, address, \"\n    \"size and variant are compared with it. The differences are counted and logged (the first 16); \"\n    \"the count is in the '[gpu] shader memo:' line at shutdown and must be 0. The lookups cost as \"\n    \"much as without the memo.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1835,7 +1835,7 @@
   "help": "\"Watch every vertex and index range the executed draws read, the way the buffer cache will, \"\n    \"and log every 600 frames what that cache would upload (\"\n    \"24.21). Diagnostic: it write-protects guest pages.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1880,7 +1880,7 @@
   "help": "\"Workaround for a driver that dies compiling one particular shader combination: a \"\n    \"comma-separated list of shader identities (the 16 hex digits of the pack's keys). A \"\n    \"guest pipeline that uses any of them is not built, and its draws are treated like those \"\n    \"of a pipeline that failed. Measured on Mesa's dzn (Vulkan over D3D12 in WSL2), which \"\n    \"overflows its stack in vkCreateGraphicsPipelines for the pair b000e9d48f010bd8 + \"\n    \"68387d4a0b431769 (each alone is fine).\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -1892,7 +1892,7 @@
   "help": "\"Keep the pipelines the game asked for across sessions (\"\n    \"24.35, M5.3): their keys go to cache/mcla_gpu_pipelines_<backend>.bin beside the \"\n    \"executable on exit, and are read back at start -- the other backend's file too, so what one \"\n    \"API saw is ready in the other (24.40 V2). Off: nothing is read, recorded or written.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2010,7 +2010,7 @@
   "help": "\"Measure GPU time per pass: a timestamp at every pass boundary (target change, resolve, \"\n    \"clear, present, overlay), summed per pass and logged by cost with the frame statistics. \"\n    \"A measurement for the performance work, off by \"\n    \"default.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2022,7 +2022,7 @@
   "help": "\"Pace presents with the swap chain's latency wait (DXGI waitable object / \"\n    \"VK_KHR_present_wait) when the device has it. On D3D12 Plume then presents with sync \"\n    \"interval 0 and the wait alone paces the frame, so measure before turning it on.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2033,7 +2033,7 @@
   "category": "MCLA/GPU",
   "help": "\"Adapter name to create the device on. Empty: on D3D12 the adapter Windows' \"\n                      \"graphics setting for this app names, else the high-performance GPU; on \"\n                      \"Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for. The \"\n                      \"emulated GPU (RENDERER: XENIA) runs on the same one unless d3d12_adapter or \"\n                      \"vulkan_device is set.\"",
   "traits": [
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2045,7 +2045,7 @@
   "help": "\"Compare every 64-byte block of both constant banks on every draw, not only the blocks the \"\n    \"guest's dirty masks name, and send (and count) any that changed without its dirty bit. \"\n    \"Costs guest CPU per draw. Off by default since M3 measured no block outside the masks; the \"\n    \"guest's XXH3 of both banks every 32 draws still checks the rebuilt banks \"\n    \".\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2057,7 +2057,7 @@
   "help": "\"Run the milestone M3 validator on every record besides the replay: per-record counters and \"\n    \"the mcla_gpu_validation_*.csv files next to the executable. Decodes every draw a second \"\n    \"time on the render thread (3.5-7 ms/frame measured in M3).\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2069,7 +2069,7 @@
   "help": "\"Submit the guest frame's command list to the GPU every this many prepared draws, unfenced, \"\n    \"and continue in a new list (0: one submission per guest frame, the default). For measuring \"\n    \"submission batching.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2081,7 +2081,7 @@
   "help": "\"Release the guest's Swap as soon as the render thread has read the last guest memory a \"\n    \"present needs (after the scene's end-of-frame work and the front buffer's texture), and \"\n    \"before it submits the frame and presents. Without it the guest waits for the whole present, \"\n    \"about 0.2 ms a frame at 240 FPS. Not used with mcla_gpu_vsync, nor when the previous present \"\n    \"took longer than 1 ms after that point (the GPU is behind): the guest then waits as before, \"\n    \"so it never runs more than that ahead.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2093,7 +2093,7 @@
   "help": "\"Diagnostic, with mcla_gpu_present_release: checks what that rests on. It releases the guest at \"\n    \"every guest present (also when the GPU is behind), and from the release to the end of the \"\n    \"present it counts, and logs the first 16, each read or write of guest memory by the render \"\n    \"thread. The count is in the '[gpu] present release:' line at shutdown; it must be 0.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2105,7 +2105,7 @@
   "help": "\"Enable the D3D12 debug layer before the device exists and log its warnings \"\n                    \"and errors. Needs D3D12SDKLayers.dll from the same Agility SDK release as \"\n                    \"D3D12\\\\D3D12Core.dll, placed next to it (the system's copy belongs to the OS \"\n                    \"runtime). Vulkan validation is a property of a Debug build of Plume and \"\n                    \"cannot be switched on here.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2168,7 +2168,7 @@
   "help": "\"Diagnostic: a lock whose pages an earlier lock read ahead still reads them from the pool (it \"\n    \"waits for the GPU as before), and the bytes are compared with the ones kept. Reported in the \"\n    \"log with the prefix 'lock read-ahead check:' (an error line for every page that differs, the \"\n    \"first 8). The vinyl editor is where it counts. Off: nothing is done.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2191,7 +2191,7 @@
   "help": "\"Diagnostic, slow: every encode also runs at once into a second, reference pool (what \"\n    \"mcla_gpu_resolve_memory_encode_delay 0 gives), and at each reader of the real pool (decode, \"\n    \"vertex copy, lock write-back) and for the whole pool every 600 frames the bytes are compared \"\n    \"with it. Reported in the log with the prefix 'resolve memory check:' every 600 frames and \"\n    \"at shutdown (RESULT PASS or FAIL). For wrong or flickering textures that the delayed encode \"\n    \"may cause: the answer is in the log. Off: nothing is done.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2212,7 +2212,7 @@
   "help": "\"Diagnostic (M6a): the render thread's time per stage of a draw (constant banks, \"\n    \"state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, \"\n    \"draw), one line per window of 600 frames. Off: nothing is timed.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2250,7 +2250,7 @@
   "help": "\"Diagnostic (M6e.0): logs once per case each resolve product a draw at another resolution \"\n    \"scale reads (with the fetch's filters) and each copy of an image of the screen that lands \"\n    \"away from its source. Off: nothing is checked.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2298,7 +2298,7 @@
   "help": "\"The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_variants.v3.pack) are read from \"\n    \"and built into. Empty: the cache/shaders folder next to the program or, where that folder \"\n    \"cannot be written to, larecomp/cache/shaders in the local application data folder; a pack \"\n    \"left in the program's assets folder by an older install is still used when there is none \"\n    \"in that folder. When this is set, only this folder is used.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3037,7 +3037,7 @@
   "help": "\"Debug (A/B): load the upscalers' libraries only when they are needed. On (the default): \"\n    \"AMD's FidelityFX runtime (amd_fidelityfx_upscaler_*.dll, 35 to 55 MiB) is opened when an FSR \"\n    \"is first used, not at every start (an AMD graphics card still asks it at the start, because \"\n    \"only the runtime can say whether FSR 4 is offered), and NVIDIA's Streamline and DLSS (D3D12 on \"\n    \"an RTX card) start their background warm-up only once the pause menu's UPSCALING row has been \"\n    \"shown or DLSS frame generation is chosen, not five seconds after every start; DLSS and FSR \"\n    \"chosen at the start load at the start as always. Off: the old behaviour, FidelityFX opened by \"\n    \"every start and the DLSS warm-up five seconds after the game first draws. Read at the start.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3195,7 +3195,7 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{-1, 8}",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3207,7 +3207,7 @@
   "help": "\"Test only: at start-up, decodes a few thousand random texture levels (every block size, \"\n    \"endian, tiled and linear, packed-tail offsets, DXT decompression) with the fast decoder and \"\n    \"with the plain per-block one, and logs whether every byte matched.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3253,7 +3253,7 @@
   "help": "\"Diagnostic: a guest physical address in hex. Every resolve into, product \"\n    \"activated or deactivated over, texture fetched from and resolve-memory decode of \"\n    \"[base, base + mcla_gpu_watch_size) is logged in order with the guest frame and draw: the \"\n    \"last 1500 events are kept until the first decode of the range, then written out with \"\n    \"every later one (at most 20000 lines). Empty: off.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3265,7 +3265,7 @@
   "help": "\"Diagnostic: the length, in hex, of mcla_gpu_watch_base's range.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3277,7 +3277,7 @@
   "help": "\"Diagnostic, with mcla_gpu_watch_base: a RenderDoc capture of the frame after 1 = the first \"\n    \"decode of the range from the resolve memory, 2 = the first product over it deactivated by \"\n    \"another resolve. 0: none. Needs the game started under RenderDoc.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3341,7 +3341,7 @@
   "help": "\"auto: the default device, or silence when none opens. null: always silent.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3930,7 +3930,7 @@
   "help": "\"On a CPU without FMA3 (Intel before Haswell, AMD before Piledriver), fused multiply-adds \"\n    \"whose operands are single-precision values are computed with a double multiply and add, \"\n    \"which gives the same bits, instead of the C runtime's software fma (157 to 165 cycles a \"\n    \"call). Nothing changes on a CPU with FMA3. Off passes every call to the runtime. Takes \"\n    \"effect at the next start.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 1
@@ -3942,7 +3942,7 @@
   "help": "\"Sample the busiest threads, and photograph every thread when the game stops. \"\n    \"The same thing MCLA_PROFILE=1 turns on, reachable from the config file so a \"\n    \"session need not be launched from a shell to get it. The periodic report says \"\n    \"where frame time goes; the stall dump is the one that matters when a load \"\n    \"never finishes, because the thread the sampler follows is parked in a wait by \"\n    \"then and the stuck one is somebody else. Reports land in logs/profile_*.log.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 1
@@ -4597,7 +4597,7 @@
   "category": "MCLA/World",
   "help": "\"Which district garage the car starts the session at: hollywood (what the game \"\n    \"always does), beaches, sc, or last (the garage nearest the car when the game was \"\n    \"closed). The car is moved there once, when it first appears at Hollywood's door, so a \"\n    \"change is seen at the next start of the game.\"",
   "traits": [
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -4830,7 +4830,7 @@
   "help": "\"Override the strings folder (empty = <game data>/strings)\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 1
@@ -5382,7 +5382,7 @@
   "traits": [
    "rex::Range{-1, 3}",
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -5551,7 +5551,7 @@
   "help": "\"Enable DbgPrint console outputs.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -5618,7 +5618,7 @@
   "help": "\"Log what the SDK's input system hands the game for users 0 to 3 whenever it changes: \"\n    \"the status, the packet number, the buttons and the sticks. Off by default. Polling it \"\n    \"pumps the same input path the game uses, so it can only make a pad look better, never worse; \"\n    \"if a pad shows nothing here, the game gets nothing either.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -5691,7 +5691,7 @@
   "help": "\"Drive the SDK's gpu_vsync_fast_poll. With vsync off the guest vblank interval is 1 ms, so \"\n    \"fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -5772,7 +5772,7 @@
   "category": "MCLA/Patches",
   "help": "\"Disable Anti-Aliasing (MSAA).\"",
   "traits": [
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -5872,7 +5872,7 @@
   "help": "\"Drive the SDK's d3d12_submit_on_primary_buffer_end. Ends a D3D12 submission at every PM4 \"\n    \"primary buffer end instead of batching the frame. Measured ~7% slower on a GTX 1650. \"\n    \"With graphics_backend = vulkan the SDK's own vulkan_submit_on_primary_buffer_end (on by \"\n    \"default) applies instead; not measured here, so it is left alone.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [
    "// Off, because it was measured off. e0d9e94 turned the SDK flag on for the",
@@ -5910,7 +5910,7 @@
   "help": "\"Decompress the game's streamed resources (LZX) with native code instead of the recompiled \"\n    \"XMemDecompressStream.\\n\"\n    \"\\n\"\n    \"The first streams are decoded by both and compared; any difference switches the native decoder \"\n    \"off for the rest of the session. Read at start.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -5922,7 +5922,18 @@
   "help": "\"Run the recompiled LZX decoder next to the native one for every stream, not only the first few, \"\n    \"and compare every call. Slower than either alone: for validating a whole session. Read at start.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_fast_exit": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Fix: the game ends its process right after its orderly shutdown (saves, settings and logs written, the renderer \"\n    \"and audio stopped), without running the destructors of its global objects. The SDK leaves a game thread that is \"\n    \"slow to leave running while the game ends; a thread like that could still use an object the exit had just \"\n    \"destroyed, and the game crashed a few milliseconds after it said it was exiting (about once in 1400 exits). On: \"\n    \"the process ends at once, with the same exit code. Off: the old end through the C runtime's exit.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -6200,7 +6211,7 @@
   "help": "\"Drop the shadow pass during races only (dev switch 'noraceshadows').\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -6236,7 +6247,7 @@
   "help": "\"Do not allocate the foliage impostor render targets (dev switch 'noimpostors'). \"\n    \"Distant trees lose their billboards. Applies at the next start of the game.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [
    "// Load-time, not per-frame: sub_8230B778 skips allocating the ImpostorDepth /",
@@ -6274,7 +6285,7 @@
   "help": "\"Skip the full-screen blur pass (dev switch 'nofsblur'). Applies at the next start of \"\n    \"the game.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [
    "// Read once, at start-up. The recompiled code reads the switch in sub_82306860, the constructor of",
@@ -6315,7 +6326,7 @@
   "help": "\"Disable the AI RubberBand system outright. Note this also removes MinThrottle, the \"\n    \"leash that slows the AI when it is AHEAD \u2014 so it makes races harder, not fairer. \"\n    \"Prefer the rubberband_* scales under MCLA/Difficulty.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -6530,7 +6541,7 @@
   "help": "\"The garage's showroom lists every vehicle on sale. Off = the game's own showroom: 70 rows, \"\n    \"and a picture for at most 7 vehicles past the game's own.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -6610,7 +6621,7 @@
   "category": "MCLA/Patches",
   "help": "\"Skip the intro videos to prevent graphical issues.\"",
   "traits": [
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -6847,7 +6858,7 @@
   "help": "\"Keep the parts bought for each car model in a table sized to the roster, so the game \"\n    \"takes more than 77 vehicles. Off = the game's own 77-slot table: past 77 vehicles it \"\n    \"overwrites other profile data, and a large roster crashes the boot.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -6867,7 +6878,7 @@
   "category": "MCLA/Garage",
   "help": "\"Raise the front/rear BUMPER vinyl caps from 16 to 31 layers each \"\n    \"(64/64/64/31/31). Top and side caps stay at 64 because MCLA's vinyl \"\n    \"composite pipeline hard-caps a single surface at 64 layers (fixed-64 \"\n    \"work-area buffers; >64 overflows and crashes). Bumpers stay <=64 and keep \"\n    \"their 5-bit save field, so existing garage/online cars are 100% compatible.\"",
   "traits": [
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -7049,7 +7060,7 @@
   "category": "MCLA/Mods",
   "help": "\"Load model replacements from <exe>/modloader/<mod>/<asset>.obj (or mods/, \"\n    \"models/). Each .obj is \"\n    \"baked into a native drawable and packed into xarchive_mods.rpf, which is \"\n    \"appended to the archive list -- the engine's own last-mounted-wins rule \"\n    \"makes it override per file. Game archives are never modified.\"",
   "traits": [
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -7060,7 +7071,7 @@
   "category": "MCLA/Mods",
   "help": "\"-1 keeps a skinned mesh's own weights (glTF with JOINTS_0/WEIGHTS_0), \"\n    \"matching its joints to the driver's bones by bind-pose position, so the \"\n    \"model follows the seated pose. Any value >= 0 ignores the weights and \"\n    \"rides the whole mesh rigidly on that one bone, which is all a .obj can do.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7072,7 +7083,7 @@
   "category": "MCLA/Mods",
   "help": "\"Extra height for the replacement model, in metres, on top of the automatic \"\n    \"lift onto its bone. Positive raises it. Use this if the model still sits \"\n    \"below or above the seat -- it takes a restart but no rebuild.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7084,7 +7095,7 @@
   "category": "MCLA/Mods",
   "help": "\"Sideways nudge for the replacement model, in metres.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7096,7 +7107,7 @@
   "category": "MCLA/Mods",
   "help": "\"Forward/back nudge for the replacement model, in metres.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7108,7 +7119,7 @@
   "category": "MCLA/Mods",
   "help": "\"Turns the replacement model about the vertical axis, in degrees. Source \"\n    \"models rarely face the same way the game does -- 180 turns a model that \"\n    \"sits with its back to the wheel.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7120,7 +7131,7 @@
   "category": "MCLA/Mods",
   "help": "\"Tips the replacement model forward or back, in degrees.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7132,7 +7143,7 @@
   "category": "MCLA/Mods",
   "help": "\"Rolls the replacement model sideways, in degrees.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7144,7 +7155,7 @@
   "category": "MCLA/Mods",
   "help": "\"Size multiplier on top of the automatic fit, which matches the model's \"\n    \"height to the driver's. 1.0 leaves it alone.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7156,7 +7167,7 @@
   "category": "MCLA/Mods",
   "help": "\"Spread the replacement mesh across every submesh of the character instead \"\n    \"of the largest one alone. The resource cannot be made bigger, but the \"\n    \"driver is fifteen submeshes holding 8208 vertices and 37512 indices \"\n    \"between them, against 2320 and 12957 in the biggest -- so this raises what \"\n    \"a mod can bring by three and a half times, and most characters then arrive \"\n    \"with no welding at all. Every submesh borrowed this way is repointed at \"\n    \"the shader whose textures were replaced. Turn it off to go back to filling \"\n    \"one submesh, which is the conservative path if a model renders oddly.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7168,7 +7179,7 @@
   "category": "MCLA/Mods",
   "help": "\"Whether a replacement mesh larger than the slot it has to live in may be \"\n    \"welded down to fit: a character, a rim, or a part replaced on a shipped \"\n    \"car. A car built on a donor is always welded to its ceilings \"\n    \"(model_mods_car_budget for the body) and ignores this. The slot is fixed \"\n    \"-- for a character, the drawable's largest submesh, around 2300 vertices, \"\n    \"and a few hundred on the low LOD -- and the welding is a blunt instrument: \"\n    \"vertices that share a cell of a spatial grid are merged and averaged, \"\n    \"which on a detailed model rounds off faces and hands. Off, a mesh still \"\n    \"too big is refused with the reason in the log and that variant keeps the \"\n    \"shipped model, so what a mod shows is what it brought; decimate it \"\n    \"yourself in a modelling tool, where you can see what you are giving up. \"\n    \"Expect the low LOD to be refused first, so the original driver reappears \"\n    \"at a distance. On welds it in instead.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7180,7 +7191,7 @@
   "category": "MCLA/Mods",
   "help": "\"How much of the replacement model's own build to keep when it is reposed \"\n    \"onto the driver's skeleton, 0 to 1. At 0 every joint lands exactly on the \"\n    \"bone it was matched to, which is what the game's skinning expects and what \"\n    \"a human-shaped model wants. A model built to other proportions gets \"\n    \"stretched to reach those bones -- a cartoon character with a six centimetre \"\n    \"neck has it pulled out to the driver's twenty-six -- and raising this \"\n    \"keeps its own bone lengths instead, taking only the pose from the \"\n    \"skeleton. The cost is that limbs no longer end where the game thinks they \"\n    \"do, so hands drift off the wheel as it goes up. Try 1 for anything that is \"\n    \"not roughly human.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7192,7 +7203,7 @@
   "category": "MCLA/Mods",
   "help": "\"Use the replacement model's own textures. The images embedded in a .glb \"\n    \"(one per material) are packed into a single atlas, each primitive's UVs \"\n    \"are remapped into its own cell, and the result is written over the \"\n    \"character's diffuse map in place -- same address, same size, same format. \"\n    \"Off leaves the mesh wearing the original driver's skin.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7204,7 +7215,7 @@
   "category": "MCLA/Mods",
   "help": "\"Give a replacement car body its own textures. A car is drawn by several \"\n    \"shaders of one drawable and each of them samples at most one image, so the \"\n    \"mod's materials are grouped by the shader they were mapped to, packed into \"\n    \"one atlas per shader with their UVs remapped, and written over that \"\n    \"shader's colour map in the car's material packs (.xtl and .xtp) in place.\\n\"\n    \"\\n\"\n    \"Only shaders that sample anything get one. CarPaintCustomizable, CarGlass, \"\n    \"BlackMatte and Chrome read no texture at all -- the effect decides that, \"\n    \"not the data -- so their materials keep the UVs they came with, which is \"\n    \"what paint needs for its vinyls to sit right.\\n\"\n    \"\\n\"\n    \"Off ships the donor's packs exactly as the game holds them, and the body \"\n    \"comes back wearing the donor's own artwork.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7216,7 +7227,7 @@
   "category": "MCLA/Mods",
   "help": "\"Put a replacement wheel on the game's axle, in two steps. First the turn: \"\n    \"every shipped wheel spins about X and is half as wide as it is tall, so the \"\n    \"thinnest axis of the model is taken to be its axle and rotated onto that \"\n    \"one -- a wheel exported lying flat comes in standing up without anyone \"\n    \"having to work out which ninety degrees it needed. Then the depth: a wheel \"\n    \"is not centred in its own bounding box, it keeps its hub and spokes in the \"\n    \"negative half of the axle with only a thin lip at the far edge, so a bare \"\n    \"rim left centred sits sunk inside the tyre. Its face is pushed out flush \"\n    \"with the shipped wheel's instead, turning the model around first if it came \"\n    \"in facing inward. The manual rim angles and nudge below are applied on top. \"\n    \"Turn this off to place a wheel entirely by hand.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7272,7 +7283,7 @@
   "category": "MCLA/Mods",
   "help": "\"Bake the wheel's shade lane from occlusion measured on the replacement.\"\n    \"\\n\"\n    \"A shipped wheel carries a baked lane: measured on three of them it runs \"\n    \"0..252 with a deviation near fifty (bbs_ch 0..252 mean 155 dev 52, \"\n    \"amer_razor 5..254 mean 186 dev 45, 5zigen_5zr 0..249 mean 144 dev 55). \"\n    \"A modded wheel had none: flooding one average gives a deviation of ZERO, \"\n    \"and the only shading left is the material's specular, which is pinned to \"\n    \"the geometry and sweeps round as the wheel turns. That is what \\\"the \"\n    \"normals change with rotation\\\" is, and it is not the normals.\"\n    \"\\n\"\n    \"The other answer -- model_mods_rim_inherit_shade -- carries the \"\n    \"template's lane across by proximity, and lights the wheel NEON: the lane's \"\n    \"colour is 0x000000 on every shipped wheel, so what moves is the UV1 band \"\n    \"beside it, and a band picks a material (RimMaterialA..E). Scattered across \"\n    \"a shape that does not share them, some vertices land on the emissive one.\"\n    \"\\n\"\n    \"So the lane is measured instead of copied or invented. Validated before \"\n    \"being switched on: this car's rim comes out 0..255 mean 156 deviation 77 \"\n    \"against a target of mean 155 deviation 52 -- the mean lands on its own, \"\n    \"and only the contrast is pulled in. Off falls back to the flat fill.\"\n    \"\\n\"\n    \"Takes precedence over model_mods_rim_shade_profile, which guesses the same \"\n    \"lane from statistics and which its own comment scores at R^2 -0.09 across \"\n    \"wheels -- no better than the flat average it replaces.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7284,7 +7295,7 @@
   "category": "MCLA/Mods",
   "help": "\"Diagnostic. Copy the shipped wheel's per-vertex shading onto the \"\n    \"replacement, vertex by vertex from whichever original vertex is nearest. \"\n    \"This is what a character replacement does, and it works there because the \"\n    \"mesh has been reposed onto the very skeleton it replaces. A wheel shares \"\n    \"nothing with the wheel it replaces, so what arrives is the old wheel's \"\n    \"baked shadows printed onto the new spokes, and its four material bands \"\n    \"scattered by proximity across a shape that does not have them. Off, which \"\n    \"is the default, gives the whole wheel one band and that band's own average \"\n    \"shade, both read off the template.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7296,7 +7307,7 @@
   "category": "MCLA/Mods",
   "help": "\"Nudge for a replacement wheel along its axle, where one unit is the \"\n    \"wheel's own diameter. Positive pushes it further into the tyre, negative \"\n    \"pulls it out. Only needed when the automatic flush above lands slightly \"\n    \"off for a particular model.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7308,7 +7319,7 @@
   "category": "MCLA/Mods",
   "help": "\"Turns a replacement wheel about the vertical axis, in degrees. Separate \"\n    \"from the character angles because a wheel and a driver never want the same \"\n    \"correction.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7320,7 +7331,7 @@
   "category": "MCLA/Mods",
   "help": "\"Tips a replacement wheel forward or back, in degrees.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7332,7 +7343,7 @@
   "category": "MCLA/Mods",
   "help": "\"Rolls a replacement wheel sideways, in degrees.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7344,7 +7355,7 @@
   "category": "MCLA/Mods",
   "help": "\"Size multiplier for a replacement wheel, on top of the automatic fit to \"\n    \"the shipped wheel's own bounds. 1.0 leaves it alone.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7356,7 +7367,7 @@
   "category": "MCLA/Mods",
   "help": "\"Turns a replacement car about the vertical axis before its parts are \"\n    \"placed, in degrees. 180 is the normal value and the default: glTF has a \"\n    \"model face +Z and MCLA has it face -Z, which is checked rather than \"\n    \"assumed -- the shipped cars keep their headlights at negative Z and their \"\n    \"tail lights at positive Z, and an exported car has it the other way round.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7368,7 +7379,7 @@
   "category": "MCLA/Mods",
   "help": "\"Size multiplier for a replacement car, on top of the automatic fit. The \"\n    \"fit matches the length of the mod's body to the length of the body it \"\n    \"replaces, and every part of the car is then moved by that one factor -- \"\n    \"scaling each part into its own slot instead would leave a hood a size \"\n    \"larger than the doors beside it. 1.0 leaves it alone.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7380,7 +7391,7 @@
   "category": "MCLA/Mods",
   "help": "\"Give a replacement wheel or car part buffers of its own instead of welding \"\n    \"it down into the ones the shipped resource came with. The resource is made \"\n    \"longer and the submesh is pointed at the new space; nothing already in it \"\n    \"moves. This is what removes the detail ceiling -- a wheel slot holds 3,701 \"\n    \"vertices and a modern wheel model is fifty times that -- and it was thought \"\n    \"impossible until the streamer's read budget turned out to be what had been \"\n    \"corrupting grown resources. 65535 vertices per submesh remains, because a \"\n    \"submesh counts and indexes its vertices in sixteen bits. Characters are not \"\n    \"affected: a skinned submesh also caps its bone palette, which is a separate \"\n    \"allocation, so they stay on the path that already works. Turn this off to \"\n    \"go back to welding everything into the shipped buffers.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7392,7 +7403,7 @@
   "category": "MCLA/Mods",
   "help": "\"The largest a replaced car body may be grown to, in bytes for LOD 0; the \"\n    \"lower LODs get a quarter of it. Anything the mod brings beyond what fits \"\n    \"is welded away, whatever model_mods_decimate says. It is a ceiling, not a \"\n    \"size: a body that needs less is grown only to what it needs.\\n\"\n    \"\\n\"\n    \"Growing a drawable has no natural limit -- the mod hands over whatever it \"\n    \"modelled and the resource follows -- but the game has one in practice. \"\n    \"Counted over the 8849 vehicle drawables the game ships, the largest \"\n    \"declares 1,163,264 bytes and the median 45,056; counted over body_lod_0 \"\n    \"alone the largest is 884,736 and the median 266,240. The default used to \"\n    \"sit just under that largest, so a mod could be as heavy as the heaviest \"\n    \"thing the engine already streams and no heavier.\\n\"\n    \"\\n\"\n    \"It cannot any more. Each large buffer now starts on a block boundary and \"\n    \"the padding counts against the ceiling; the shader passes are dealt their \"\n    \"share in order, so by the last ones the padding has eaten the room: at \"\n    \"4,194,304 the BMW came back with Chrome at 4 of 7353 triangles, CarLight \"\n    \"at 124 of 2660 and CarGlass at 112 of 830. At 16,777,216 every pass \"\n    \"arrives whole, a 7,340,032-byte body_lod_0, and the car drives \"\n    \"correctly.\\n\"\n    \"\\n\"\n    \"0 lifts the ceiling entirely, which is the setting to try when you want to \"\n    \"know whether size is what a car is failing on.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7404,7 +7415,7 @@
   "category": "MCLA/Mods",
   "help": "\"Write the mod's atlases into the car's material packs.\"\n    \"\\n\"\n    \"A probe, not a feature. model_mods_car_textures gates TWO things at once: \"\n    \"the atlas, which rewrites the mesh's UVs, and the pack rewrite, which \"\n    \"unpacks .xtl/.xtp, drops the atlases in and repacks them through \"\n    \"BuildRsc5File instead of shipping the donor's bytes as they came. \"\n    \"Switching that cvar off made a broken car whole again, which says the \"\n    \"fault is in one of those two and not which.\"\n    \"\\n\"\n    \"Off keeps the atlas and its UV rewrite and ships the packs untouched. The \"\n    \"car then wears the donor's artwork through the mod's UVs, which looks \"\n    \"wrong on purpose -- what is being read is the GEOMETRY. Whole means the \"\n    \"pack rewrite is at fault; in pieces means the UV rewrite is.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7416,7 +7427,7 @@
   "category": "MCLA/Mods",
   "help": "\"Let two materials that name the same picture share one cell of the atlas.\"\n    \"\\n\"\n    \"A textures/ folder is keyed by material name, so a car whose three lamp \"\n    \"materials all draw 750i_taillight ships three identical files and they \"\n    \"take three cells. Collapsing them by content is free resolution -- the \"\n    \"lamp shader went from six images in a 1024 atlas to two in a 512, which is \"\n    \"128 pixels a material against 256.\"\n    \"\\n\"\n    \"OFF, because it is not free. Turning it on is the ONE change between the \"\n    \"last build of this car that drew correctly and the one that came back as \"\n    \"flat slabs, isolated by switching model_mods_car_textures off: with the \"\n    \"atlas gone the geometry was whole again and the car merely wore the \"\n    \"donor's artwork. Sharing a cell makes that cell cover the UNION of what \"\n    \"every part sharing it asks for, which is the only thing here that changes \"\n    \"a UV by more than a texel -- and something downstream of that is not \"\n    \"surviving it. Until that is understood this stays off and each material \"\n    \"keeps its own cell.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7428,7 +7439,7 @@
   "category": "MCLA/Mods",
   "help": "\"Give a replacement car's cabin (the car-space part slots, interior0) the \"\n    \"donor's per-vertex interior lighting, read off the donor's cabin vertex \"\n    \"nearest each new one, instead of one flooded average.\\n\"\n    \"\\n\"\n    \"The colour word of a cabin vertex is how much of each of the car's three \"\n    \"interior lights (siColor0..2: the interior neon among them) reaches it. \"\n    \"Flooded with one average the BMW's cabin barely answered the interior neon \"\n    \"being switched on. Off restores the flood.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7462,7 +7473,7 @@
   "category": "MCLA/Mods",
   "help": "\"Give a replacement body's glass the pane number of the donor glass nearest \"\n    \"each piece of it, instead of the dominant pane of the submesh it is written \"\n    \"into. texcoord1.x on CarGlass says which pane a vertex is -- 0 windscreen, \"\n    \"1 rear, 2/3 doors -- and the window film tints 1-3 only, so a body flooded \"\n    \"with 0 takes no film at all. See MeshOffset::band_by_piece. Read at archive \"\n    \"build time.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7474,7 +7485,7 @@
   "category": "MCLA/Mods",
   "help": "\"How much larger than the donor's own a replacement PART may be, as a \"\n    \"multiple of the shipped resource.\\n\"\n    \"\\n\"\n    \"A part is not a body and does not need the body's machinery: the Impala's \"\n    \"front bumper is 1731 vertices where its shell is three thousand-odd, and \"\n    \"the whole of a car's sixty parts together weigh less than one of its LODs. \"\n    \"Eight times the shipped size is room for a part modelled far more finely \"\n    \"than the one it stands in for, and still small enough that nothing has to \"\n    \"be dealt out between shaders the way the body's room is.\\n\"\n    \"\\n\"\n    \"1 keeps every part at exactly the size the donor shipped, which is the \"\n    \"setting to try when a car loads without its parts.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7486,7 +7497,7 @@
   "category": "MCLA/Mods",
   "help": "\"Diagnostic, cars only. Copies each part's shipped file into the mod \"\n    \"archive exactly as it lies in the game's own -- same bytes, same \"\n    \"compressed length, same flag -- instead of decompressing it and packing it \"\n    \"back. Everything else about the mod archive stays as it is, so this \"\n    \"separates the two halves of a failure: if the game is happy with the \"\n    \"verbatim copy, what it dislikes is the repack; if it still refuses, the \"\n    \"repack is innocent and the problem is in serving a vehicle resource from a \"\n    \"second archive at all. `model_mods_passthrough` cannot answer that on its \"\n    \"own, because it still re-encodes the stream -- and an LZX of stored blocks \"\n    \"is larger than the compressed original it replaces.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7498,7 +7509,7 @@
   "category": "MCLA/Mods",
   "help": "\"Diagnostic. Repacks the original character resource without touching its \"\n    \"geometry, so the .obj is ignored. If the driver still renders correctly \"\n    \"with this on, the packing path (LZX, archive, mount, flags) is sound and \"\n    \"any breakage belongs to the mesh rewrite; if it breaks, the packing path \"\n    \"is at fault.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7510,7 +7521,7 @@
   "category": "MCLA/Mods",
   "help": "\"Whether the repose plants each of the mod's joints on the bone it was \"\n    \"matched to. On (the default) a hand lands exactly on the bone the game \"\n    \"drives a hand with, and the body pays for it: a model's chest joint sits \"\n    \"lower than the driver's chest bone, so the chest is hauled up and back \"\n    \"while the collarbone barely moves, and the flesh between them loses 21 mm \"\n    \"of shape -- the crease across the chest, the angular shoulder, and the \"\n    \"belly pulled in behind a spine bone that sits at the back of a torso where \"\n    \"the model's sits down the middle. Off, joints keep the offsets they were \"\n    \"authored with and only turn: measured on the driver mod that halves the \"\n    \"distortion, 5.7 mm to 2.8 mm averaged over every bone, at the cost of the \"\n    \"wrist landing 38 mm and the foot 96 mm off their bones, which swings them \"\n    \"on the wrong lever once animation starts. Standing still, off looks \"\n    \"better; in motion is what only the game can answer.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7522,7 +7533,7 @@
   "category": "MCLA/Mods",
   "help": "\"How many rounds of neighbour averaging the mod's skin weights get before \"\n    \"the model is reposed onto the driver's skeleton. 0 keeps them exactly as \"\n    \"authored. The models people bring are rigidly weighted -- a GTA-era \"\n    \"character puts every vertex at full strength on one bone and zero on the \"\n    \"rest -- and the repose hands each bone its own rigid transform, built from \"\n    \"a skeleton with different bone lengths. Two neighbouring vertices bound \"\n    \"hard to different bones then get two unrelated transforms and the edge \"\n    \"between them is torn: measured on the driver mod, edges came out at 7.6x \"\n    \"their own length, which is the flat blade that was hanging off that \"\n    \"character's back. Smoothing gives a seam vertex a share of both bones so \"\n    \"the seam bends instead. Four rounds took the worst edge to 2.1x; away from \"\n    \"a seam it changes nothing.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7534,7 +7545,7 @@
   "category": "MCLA/Mods",
   "help": "\"Room left unused at the end of a resource `model_mods_grow` has enlarged. \"\n    \"The tail of a grown segment does not arrive intact, and this is what keeps \"\n    \"the mesh out of it -- measured on a wheel: buffers ending 16 KB short of \"\n    \"the segment's end came back with holes, and ending 82 KB short came back \"\n    \"clean. Where between those two the boundary sits has not been pinned down, \"\n    \"so the default is the distance that was measured to work rather than the \"\n    \"smallest that might. 0 restores the old behaviour and the holes with it.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7546,7 +7557,7 @@
   "category": "MCLA/Mods",
   "help": "\"Write a donor car's replacement mesh only into the models the donor authors \"\n    \"in the CAR's frame, and silence the pass's submeshes in the others.\\n\"\n    \"\\n\"\n    \"A vehicle body is several models and the game draws each with its own part \"\n    \"matrix -- a bumper, a lamp, a door window. Geometry that arrives in car \"\n    \"space and lands in one of those goes wherever that bone is, which is the \"\n    \"nose in the ground and the lamps above the roof.\\n\"\n    \"\\n\"\n    \"Silencing here zeroes the index and vertex counts and leaves the buffer \"\n    \"pointers, which is the technique that twice failed in game when it emptied a \"\n    \"whole part; applied to some submeshes of a shader rather than all, it has \"\n    \"always been fine. It was suspected once of causing blades and cleared: those \"\n    \"were buffers crossing a resource block boundary, and the fix for that is \"\n    \"elsewhere (MeshOffset::block_align). Kept switchable because it is the one \"\n    \"thing between a car in its right place and a car whose nose is in the \"\n    \"ground. Read at archive build time, so it needs a restart and no rebuild.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7558,7 +7569,7 @@
   "category": "MCLA/Mods",
   "help": "\"With `model_mods_grow` on: 1 grows the resource and stops there, the segment \"\n    \"gets bigger and nothing else changes -- no buffer moves, no pointer is \"\n    \"rewritten, no count is touched, and the mesh is decimated into the buffers \"\n    \"the template already owned. Growing and repointing have only ever been \"\n    \"tried together, so the first attempt could be written off without saying \"\n    \"which of the two was at fault. If this renders, a resource can be made \"\n    \"larger safely and the fault is in the repointing; if it does not, growth \"\n    \"alone is the fault and the rest never mattered. 2 goes one rung further: \"\n    \"the buffers are put in the new space and repointed, but the counts are \"\n    \"left alone, so the mesh is still decimated to what the template shipped. \"\n    \"That is what says whether the bytes written into the grown space actually \"\n    \"arrive and can be fetched from -- 1 never reads them. Only when both pass \"\n    \"is a changed count worth trying.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7570,7 +7581,7 @@
   "category": "MCLA/Mods",
   "help": "\"Write a `.diag` folder beside the mods: one .txt per rebuilt asset \"\n    \"holding the template's submesh table, both rigs with the joint-to-bone \"\n    \"mapping, and how the mesh was dealt across the submeshes -- plus the mesh \"\n    \"itself as .obj before and after the retarget. A character that comes out \"\n    \"mangled is one of three things (a joint on the wrong bone, a bad deal, or \"\n    \"a submesh the writer could not describe and therefore left drawing what it \"\n    \"shipped) and they all look alike on screen; this tells them apart.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7681,7 +7692,7 @@
   "category": "MCLA/Audio",
   "help": "\"Old host player: decodes <exe>/music/*.mp3 outside the game and plays them \"\n    \"over it, with the guest radio carrying only the row. Off, because the \"\n    \"native route (mc_engine/music) turns the same files into real game \"\n    \"objects, real cues and real streaming wave banks -- the radio then behaves \"\n    \"exactly as it does for a shipped song. This only ever sees a file the \"\n    \"native route could not take, and playing that one a second-class way hides \"\n    \"the reason instead of showing it.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -7746,7 +7757,7 @@
   "category": "MCLA/Audio",
   "help": "\"Log the whole radio once, right after mcMusicManager finishes building it: \"\n    \"every genre bucket with each song's hash code and title. This is how you \"\n    \"tell whether a song added through the audio metadata (a rebuilt game.dat \"\n    \"plus its wave bank) actually reached AddSong, since the game's own log \"\n    \"line for that was compiled out.\"",
   "traits": [
-   "rex::kRestart",
+   "rex::kRequiresRestart",
    "rex::kDebugOnly"
   ],
   "comments": [],
@@ -8541,7 +8552,7 @@
   "help": "\"Native presentation takeover (smoke-test stage): suppress the guest swap \"\n                    \"and present the native frame instead. MUST stay off while the Xenia command \"\n                    \"processor is still consuming the game's draws: without swaps its D3D12 \"\n                    \"submission never closes and the GPU eventually TDRs (observed DEVICE_HUNG). \"\n                    \"It becomes the default path once the native runtime executes the draws \"\n                    \"itself and the guest command stream is empty.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -8553,7 +8564,7 @@
   "help": "\"EXPERIMENTAL gameplay mode: render every guest frame through the native \"\n                    \"pipeline and present it, instead of the one-shot capture. Keeps all caches \"\n                    \"across frames, so the HDR exposure adaptation converges. Does NOT suppress \"\n                    \"the guest swap (avoids the command-processor TDR), so the guest still runs \"\n                    \"underneath. Requires mcla_native_gfx.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -8565,7 +8576,7 @@
   "help": "\"Transient upload ring per in-flight frame, in MiB. 0 uses the built-in \"\n                      \"default. Geometry region uploads share this ring with constants and \"\n                      \"textures; at the old fixed 16 MiB the ring was exhausted by geometry on \"\n                      \"every frame, so no draw was ever recorded and the native runtime only \"\n                      \"published a frame when the geometry happened to fit. Raise it if the \"\n                      \"exhaustion report still fires, lower it to save host memory \"\n                      \"(the buffer is committed once per in-flight frame).\\n\"\n                      \"\\n\"\n                      \"Was 32, which silently halved the 64 the built-in default and its comment \"\n                      \"in context.cpp argue for. Raised because the report fired on the frame the \"\n                      \"HUD first loads: 21 texture uploads had taken 30952 KiB of the 32 MiB ring \"\n                      \"and the 22nd -- the 1024x1024 minimap mask atlas, 4 MiB -- did not fit. \"\n                      \"That is not a cosmetic loss: the mask falls back to the neutral 1x1 white, \"\n                      \"and xAlphaModulate__PS_Textured computes `1 - mask` for a \"\n                      \"One/One/ReversedSubtract punch, so a white mask subtracts nothing and the \"\n                      \"minimap keeps its square corners instead of being clipped to a circle. \"\n                      \"Intermittent by nature -- it only bites on a frame where the burst leaves \"\n                      \"less than 4 MiB. Measured need was 31.7 MiB in use plus the 4 MiB request.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -8621,7 +8632,7 @@
   "help": "\"Gerar cadeia de mip no host para textura de nivel unico, por box filter 2x2, \"\n    \"restrito a 32 bits por texel sem compressao. Anisotropia so escolhe um nivel mais \"\n    \"fino ao longo do eixo maior: sem cadeia, um sampler ANISOTROPIC 16x perfeito nao \"\n    \"muda pixel nenhum. Medido no passe de cena: de 16.1M de binds >= 512x512, 12.7M sao \"\n    \"kBaseMap e ZERO deles carrega cadeia -- o jogo marca base-map porque a textura tem \"\n    \"um nivel so -- e 70% desses (9.0M) sao formato 6 (k_8_8_8_8), que e box filter na \"\n    \"CPU sem precisar recomprimir BC. E MELHORIA, nao paridade: o 360 tambem aliasava \"\n    \"nessas superficies, por isso o default e off.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -8952,7 +8963,7 @@
   "help": "\"Anisotropic filtering override, with the same numbering as the emulated path's\\n\"\n    \"anisotropic_override: -1 leaves the guest's own choice alone (the default), 0 disables\\n\"\n    \"it, and 1 to 5 force 1x, 2x, 4x, 8x or 16x. The native runtime already honoured what\\n\"\n    \"the game asks for -- it reads the ratio out of the fetch constant -- but had no way to\\n\"\n    \"raise it, while the emulated path was running with anisotropic_override=5 from the\\n\"\n    \"same toml. That is a texture-sharpness difference at oblique angles (road and ground\\n\"\n    \"surfaces above all) that has nothing to do with MSAA.\\n\"\n    \"\\n\"\n    \"Applies only to a sampler that is already filtering with mipmaps, which is the same\\n\"\n    \"eligibility rule the emulated path uses: forcing anisotropy onto a point-sampled or\\n\"\n    \"base-map sampler would change what the game asked for rather than how sharply it is\\n\"\n    \"filtered.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -8975,7 +8986,7 @@
   "help": "\"Include what the guest asked for -- its requested sample count and surface pitch -- in the \"\n    \"render target pool's key, so two guest surfaces of the same shape stop sharing one pooled \"\n    \"target.\\n\"\n    \"\\n\"\n    \"OFF BY DEFAULT BECAUSE IT MEASURED WORSE. The HUD is drawn spread across TWO 1280x720 \"\n    \"R8G8B8A8 surfaces, and merging them by shape is what lands all of it in the target that \"\n    \"gets displayed -- with this on, the whole 2D layer disappears, HUD included. The merge is \"\n    \"load-bearing: it stands in for the composition the native runtime deliberately does not \"\n    \"model. Kept as a bisection switch, not as a fix.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -8987,7 +8998,7 @@
   "help": "\"Second render target support, as a bitmask -- one bit per piece, so a fault can be\\n\"\n    \"bisected without a rebuild. 0 is exactly what the runtime did before; 0x3F is the lot.\\n\"\n    \"\\n\"\n    \"  0x01  the resolve honours RB_COPY_CONTROL.copy_src_select instead of always\\n\"\n    \"        reading colour target 0.\\n\"\n    \"  0x02  RB_COLOR1_INFO attaches a second colour surface to the pass's target.\\n\"\n    \"  0x04  the pass's clear wipes that second surface too.\\n\"\n    \"  0x08  it is transitioned back to RENDER_TARGET with target 0.\\n\"\n    \"  0x10  a resolve naming target 1 copies FROM it.\\n\"\n    \"  0x20  both targets are bound and the PSO declares two, with RB_BLENDCONTROL1 as\\n\"\n    \"        target 1's equation.\\n\"\n    \"\\n\"\n    \"MCLA needs this for the impostor bake: xPropFoliage__PSGenerateImposterNight writes the\\n\"\n    \"tree's colour to oC0 and its packed normal to oC1, and the game resolves the two into\\n\"\n    \"different addresses. With one target bound, both resolves copied target 0, the impostor\\n\"\n    \"shader read the colour atlas as its normal atlas, and normalize(colour*2-1) came out a\\n\"\n    \"constant -- a flat, uniformly lit canopy.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -8999,7 +9010,7 @@
   "help": "\"Multisample count for the HDR scene target: 2, 4 or 8. Anything else (including the \"\n    \"default) keeps every target single-sampled, which is what the runtime did unconditionally \"\n    \"and why the native path has no antialiasing while the emulated one does -- measured, all \"\n    \"2737 textures of a native capture are msSamp=1 against six at 2x and sixteen at 4x in an \"\n    \"emulated capture of the same game. Scoped to the scene: the LDR composite is read back for \"\n    \"presentation and the aux passes (shadow 640x640, minimap 220x220) are left alone. Costs \"\n    \"memory and bandwidth in proportion to the count.\\n\"\n    \"\\n\"\n    \"Working since 2026-09-03. Four things had to agree with the sample count, and each one\\n\"\n    \"was found by measurement, not by reading: the pooled target and the PSO (the two that\\n\"\n    \"hardcoded 1), the RESOLVE key in native_gfx.cpp (its Find() asked for one sample and\\n\"\n    \"missed the target, so the scene resolved 1200 times into nothing and every fetch of it\\n\"\n    \"took the neutral white fallback -- a white screen), and every readback of a pooled\\n\"\n    \"target (CopyTextureRegion refuses a multisampled source, and that single error killed\\n\"\n    \"the command list for the rest of the session: Close failed, then every Reset failed).\\n\"\n    \"\\n\"\n    \"Depth is resolved with ResolveSubresourceRegion in MAX mode -- D3D12 has no sample-0\\n\"\n    \"depth resolve, and MAX keeps the nearest surface under the reverse-Z main pass.\\n\"\n    \"Measured at 4x on the menu camera: silhouette transitions widened 34-39% against the\\n\"\n    \"same scene at 1x, with zero validation errors.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -9121,7 +9132,7 @@
   "help": "\"Use native DeviceManager to own the D3D12 device and direct command queue \"\n                    \"instead of borrowing from RexGlue/Xenia provider. Enables high-performance \"\n                    \"adapter selection, Agility SDK features, and drops the shared submit mutex. \"\n                    \"Off by default, like mcla_native_gfx_own_swapchain: without that one the \"\n                    \"presenter shows the frame from its own queue, which nothing orders after the \"\n                    \"blit on this one.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -9353,7 +9364,7 @@
   "help": "\"Use NativeSwapChain (FLIP_DISCARD, tearing, frame latency waitable object) \"\n                    \"presenting directly to the HWND backbuffer, eliminating intermediate blits \"\n                    \"and enabling full ReShade / Reno DX DevKit visibility. Off by default: it \"\n                    \"bypasses rex::ui::Presenter, so present_effect (FSR) and every ImGui overlay \"\n                    \"(console, F3, toasts) are gone and the frame is stretched bilinearly. Needs \"\n                    \"mcla_native_gfx_own_device.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -9387,7 +9398,7 @@
   "help": "\"Size of the guest-addressable block the runtime allocates its D3D objects out of, in KiB. \"\n    \"0 uses the built-in default (4096). Rounded down to a power of two -- o1heap only uses the \"\n    \"largest power-of-two span of its arena. \"\n    \"Taken from the guest VIRTUAL window, never from a physical one: the physical windows are \"\n    \"views of the console's 512 MiB of RAM, and taking 32 MiB of it killed the title during \"\n    \"loading with 'PhysicalHeap::Alloc unable to alloc physical memory in parent heap'. \"\n    \"Raise this if the exhaustion report fires.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
@@ -9432,7 +9443,7 @@
   "help": "\"Milestone 0: passive D3D9-Xenon probe. Renders nothing, changes nothing. \"\n                    \"Writes mcla_gfx_probe_*.csv next to the executable.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0

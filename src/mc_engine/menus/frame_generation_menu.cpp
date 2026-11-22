@@ -1,6 +1,7 @@
 // The pause menu's FRAME GENERATION rows. See frame_generation_menu.h.
 
 #include "frame_generation_menu.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -247,7 +248,7 @@ const mcla_menu::ItemDef* UpscalingPageRows(int& count) {
         std::vector<mcla_menu::ItemDef> rows;
     };
     static std::mutex mutex;
-    static std::vector<std::unique_ptr<Combined>> tables;
+    static std::vector<std::unique_ptr<Combined>>& tables = larecomp::Leak<std::vector<std::unique_ptr<Combined>>>();
     std::lock_guard lock(mutex);
     for (const std::unique_ptr<Combined>& t : tables) {
         if (t->upscaling == upscaling && t->upscaling_count == upscaling_count &&

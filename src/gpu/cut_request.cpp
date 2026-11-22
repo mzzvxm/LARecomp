@@ -1,6 +1,7 @@
 // Camera cuts the game asked for, and the motion blur on a cut: see cut_request.h.
 
 #include "cut_request.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cmath>
@@ -113,7 +114,7 @@ Requests::Counts Requests::counts() const {
 }
 
 Requests& Global() {
-  static Requests requests;
+  static Requests& requests = larecomp::Leak<Requests>();
   return requests;
 }
 

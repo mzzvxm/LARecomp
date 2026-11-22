@@ -47,6 +47,7 @@
 //
 
 #include "cars.h"
+#include "settings/immortal.h"
 
 #include <rex/ppc/context.h>
 #include <rex/ppc/call.h>
@@ -401,7 +402,7 @@ struct State {
     std::map<int32_t, uint32_t> ambient_items;  // layout item id -> the item's address (found by a walk of the layout pool's lists, then kept while the id still reads there)
     std::vector<ForcedNote> forced;             // the ambient cars whose paint seed is held (the table of atomics is g_forced)
 };
-State g;
+State& g = larecomp::Leak<State>();
 std::atomic<bool> g_active{false};  // anything to do: the one flag TickCars tests
 
 void FlushEvents() {

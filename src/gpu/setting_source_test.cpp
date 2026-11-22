@@ -76,11 +76,13 @@ const std::string kRows = Expand(R"ROWS(
   @ROW(f64, mcla_gpu_ao_car_reach, 0.4, "Diagnostic: how far what a car blocks reaches (0.4 of the default 3 m is 1.2 m: the dark line, not a halo); "
     "the car's own body is darkened with the whole radius, as before. 1 (or 0): a wall. Live.", rex::kDebugOnly, rex::Range{0.0, 1.0});
 
-  @ROW(bool, mcla_gpu_ssgi_half, true, "Half size above 1080 lines. Live; needs the images again.", rex::kRestart, rex::kDebugOnly);  // a comment, with a ")"
+  @ROW(bool, mcla_gpu_ssgi_half, true, "Half size above 1080 lines. Live; needs the images again.", rex::kRequiresRestart, rex::kDebugOnly);  // a comment, with a ")"
 
   @ROW(f64, mcla_gpu_ao_paint, 0.3125, "Rounded to sixteenths, 1/16 to 1. Live.", rex::kDebugOnly, rex::Range{0.0625, 1.0});
 
-  @ROW(std::string, mcla_gpu_mode, "auto", "One of auto, off.", rex::Allowed("auto", "off"), rex::kStartupOnly);
+  @ROW(std::string, mcla_gpu_mode, "auto", "One of auto, off.", rex::Allowed("auto", "off"), rex::kInitOnly);
+
+  @ROW(bool, mcla_gpu_locked, false, "Fixed while a game runs.", rex::kLockedInGame);
 
   @ROW(bool, mcla_gpu_plain, true, "No traits at all (live, a player's setting).");
 )ROWS");
@@ -92,13 +94,16 @@ void CheckRows() {
   Check(ss::DefaultIs(reach, 0.4f) && !ss::DefaultIs(reach, 0.5), "a row: the default compares as a number (to a float constant too)");
 
   const ss::Info half = ss::FromRow(kRows, "mcla_gpu_ssgi_half");
-  Check(half.found && ss::DefaultIsTrue(half) && half.debug_only && !half.live && !half.has_range, "a row: kRestart is not live, no range");
+  Check(half.found && ss::DefaultIsTrue(half) && half.debug_only && !half.live && !half.has_range, "a row: kRequiresRestart is not live, no range");
 
   const ss::Info paint = ss::FromRow(kRows, "mcla_gpu_ao_paint");
   Check(paint.found && paint.live && paint.has_range && paint.range_lo == 0.0625 && paint.range_hi == 1.0, "a row: the range 1/16 to 1");
 
   const ss::Info mode = ss::FromRow(kRows, "mcla_gpu_mode");
-  Check(mode.found && mode.default_text == "\"auto\"" && !mode.live && !mode.debug_only && !mode.has_range, "a row: a string setting with an Allowed list and kStartupOnly");
+  Check(mode.found && mode.default_text == "\"auto\"" && !mode.live && !mode.debug_only && !mode.has_range, "a row: a string setting with an Allowed list and kInitOnly");
+
+  const ss::Info locked = ss::FromRow(kRows, "mcla_gpu_locked");
+  Check(locked.found && !locked.live && !locked.debug_only, "a row: kLockedInGame is not live");
 
   const ss::Info plain = ss::FromRow(kRows, "mcla_gpu_plain");
   Check(plain.found && plain.live && !plain.debug_only, "a row with no traits is live and not debug-only");

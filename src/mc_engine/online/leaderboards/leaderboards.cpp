@@ -46,6 +46,7 @@
 //
 
 #include "../online_common.h"
+#include "settings/immortal.h"
 #include "lb_client.h"
 #include "lb_protocol.h"
 #include "../online_tables.h"
@@ -134,7 +135,7 @@ struct ViewDef {
 };
 
 std::once_flag g_schema_once;
-std::unordered_map<uint32_t, ViewDef> g_views;
+std::unordered_map<uint32_t, ViewDef>& g_views = larecomp::Leak<std::unordered_map<uint32_t, ViewDef>>();
 
 void LoadSchema() {
   using namespace larecomp::online_tables;
@@ -197,7 +198,7 @@ std::string LocalGamertag(uint8_t* b) {
 
 // ── XUIDs handed to the game ───────────────────────────────────────────────
 std::mutex g_xuid_mutex;
-std::unordered_map<uint64_t, uint64_t> g_owner_by_xuid;  // made-up XUID -> owner
+std::unordered_map<uint64_t, uint64_t>& g_owner_by_xuid = larecomp::Leak<std::unordered_map<uint64_t, uint64_t>>();  // made-up XUID -> owner
 
 // The XUID the game itself signed in with.
 uint64_t LocalXuid() {
@@ -239,7 +240,7 @@ struct Pending {
 };
 
 std::mutex g_pending_mutex;
-std::unordered_map<uint32_t, Pending> g_pending;  // by command
+std::unordered_map<uint32_t, Pending>& g_pending = larecomp::Leak<std::unordered_map<uint32_t, Pending>>();  // by command
 
 uint32_t BufferSize(uint32_t rows, size_t columns) {
   return kResultsSize + kViewSize + rows * (kRowSize + static_cast<uint32_t>(columns) * kColumnSize);

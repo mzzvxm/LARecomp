@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- diagnostic watch of one guest memory range. See watch.h.
 
 #include "watch.h"
+#include "settings/immortal.h"
 
 #include <charconv>
 #include <deque>
@@ -19,7 +20,7 @@ namespace {
 // it), then written out with everything after, up to kMaxLines.
 constexpr uint32_t kRingLines = 1500;
 constexpr uint32_t kMaxLines = 20000;
-std::deque<std::string> g_ring;
+std::deque<std::string>& g_ring = larecomp::Leak<std::deque<std::string>>();
 bool g_flushed = false;
 
 bool g_active = false;
@@ -31,7 +32,7 @@ uint64_t g_ps = 0;     // the current draw's pixel shader identity
 uint32_t g_lines = 0;
 uint32_t g_capture_moment = 0;
 bool g_captured = false;
-std::function<void()> g_capture;
+std::function<void()>& g_capture = larecomp::Leak<std::function<void()>>();
 
 bool ParseHex(std::string text, uint32_t* out) {
   if (text.starts_with("0x") || text.starts_with("0X")) {

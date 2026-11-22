@@ -4,6 +4,7 @@
 #if defined(LARECOMP_DEV_TOOLS)
 
 #include "effect_compare.h"
+#include "settings/immortal.h"
 
 #include <imgui.h>
 
@@ -53,7 +54,7 @@ struct Shown {
   Clock::time_point at{};
   bool visible = false;
 };
-Shown g_shown;
+Shown& g_shown = larecomp::Leak<Shown>();
 
 void Show(const cmp::Label& label) {
   std::lock_guard lock(g_shown.mutex);

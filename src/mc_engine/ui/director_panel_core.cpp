@@ -1,6 +1,7 @@
 // The Director panel's logic, the pure half: see director_panel_core.h.
 
 #include "director_panel_core.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cmath>
@@ -362,17 +363,17 @@ std::vector<Cmd> GoToKeyCmds(const dir::Snapshot& snap, int direction) {
 // ---------------------------------------------------------------------------------------------------------------- rigs
 
 const std::vector<std::string>& RigKinds() {
-    static const std::vector<std::string> kinds = {"chase", "orbit", "tripod", "flyby", "hood", "bumper", "roof"};
+    static const std::vector<std::string>& kinds = *new const std::vector<std::string>{"chase", "orbit", "tripod", "flyby", "hood", "bumper", "roof"};
     return kinds;
 }
 
 const std::vector<RigKnob>& KnobsFor(const std::string& kind) {
-    static const std::vector<RigKnob> chase = {{"dist", "DISTANCE", 1.0, 30.0, 6.0, 1}, {"height", "HEIGHT", 0.0, 10.0, 1.8, 1}, {"side", "SIDE", -8.0, 8.0, 0.0, 1},
+    static const std::vector<RigKnob>& chase = *new const std::vector<RigKnob>{{"dist", "DISTANCE", 1.0, 30.0, 6.0, 1}, {"height", "HEIGHT", 0.0, 10.0, 1.8, 1}, {"side", "SIDE", -8.0, 8.0, 0.0, 1},
                                                {"lag", "LAG", 0.0, 2.0, 0.3, 2},       {"aim", "AIM HEIGHT", 0.0, 4.0, 1.0, 1}, {"ahead", "LOOK AHEAD", 0.0, 20.0, 0.0, 1}};
-    static const std::vector<RigKnob> orbit = {{"r", "RADIUS", 2.0, 40.0, 8.0, 1}, {"el", "ELEVATION", -10.0, 80.0, 10.0, 0}, {"lag", "LAG", 0.0, 2.0, 0.0, 2}};
-    static const std::vector<RigKnob> tripod = {{"aimlag", "AIM LAG", 0.0, 3.0, 0.0, 2}};
-    static const std::vector<RigKnob> flyby = {{"up", "HEIGHT OVER ROUTE", 0.0, 30.0, 2.0, 1}, {"aimlag", "AIM LAG", 0.0, 3.0, 0.0, 2}};
-    static const std::vector<RigKnob> mount = {{"ahead", "LOOK AHEAD", 0.0, 80.0, 30.0, 0}, {"lag", "LAG", 0.0, 1.0, 0.0, 2}};
+    static const std::vector<RigKnob>& orbit = *new const std::vector<RigKnob>{{"r", "RADIUS", 2.0, 40.0, 8.0, 1}, {"el", "ELEVATION", -10.0, 80.0, 10.0, 0}, {"lag", "LAG", 0.0, 2.0, 0.0, 2}};
+    static const std::vector<RigKnob>& tripod = *new const std::vector<RigKnob>{{"aimlag", "AIM LAG", 0.0, 3.0, 0.0, 2}};
+    static const std::vector<RigKnob>& flyby = *new const std::vector<RigKnob>{{"up", "HEIGHT OVER ROUTE", 0.0, 30.0, 2.0, 1}, {"aimlag", "AIM LAG", 0.0, 3.0, 0.0, 2}};
+    static const std::vector<RigKnob>& mount = *new const std::vector<RigKnob>{{"ahead", "LOOK AHEAD", 0.0, 80.0, 30.0, 0}, {"lag", "LAG", 0.0, 1.0, 0.0, 2}};
     static const std::vector<RigKnob> none;
     if (kind == "chase") return chase;
     if (kind == "orbit") return orbit;
@@ -383,7 +384,7 @@ const std::vector<RigKnob>& KnobsFor(const std::string& kind) {
 }
 
 const std::vector<RigKnob>& KeyKnobs() {
-    static const std::vector<RigKnob> knobs = {{"fov", "FIELD OF VIEW", 10.0, 110.0, 50.0, 0}, {"roll", "ROLL", -45.0, 45.0, 0.0, 1}};
+    static const std::vector<RigKnob>& knobs = *new const std::vector<RigKnob>{{"fov", "FIELD OF VIEW", 10.0, 110.0, 50.0, 0}, {"roll", "ROLL", -45.0, 45.0, 0.0, 1}};
     return knobs;
 }
 

@@ -56,6 +56,7 @@
 #include <chrono>
 
 #include "../scene_runtime.h"
+#include "settings/immortal.h"
 #include "atlas_answers.h"
 #include "atlas_core.h"
 #include "director.h"
@@ -239,7 +240,7 @@ struct Live {
     std::unique_ptr<Index> index;
     std::chrono::steady_clock::time_point read_at;
 };
-Live g_live;
+Live& g_live = larecomp::Leak<Live>();
 
 // Reads the world from guest memory (or again, with refresh). False with `error` when no city is loaded (a menu, a loading screen: the ambient manager is
 // built at the boot, with its rail network, but the lights and the player's car are not there until a city is: run 1 of 11-20 dumped a menu's world, kept it,

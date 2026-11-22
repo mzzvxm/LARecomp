@@ -5,6 +5,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/call.h>
 #include <rex/ppc/recompiled_code.h>
 #include <rex/kernel/title_runtime.h>
@@ -451,11 +452,11 @@ struct Movie {
 };
 
 std::mutex g_pacing_mutex;
-std::vector<Movie> g_movies;
-std::vector<Screen> g_screens;  // the manager's map, read once per game frame
-std::vector<std::string> g_paced_names;
+std::vector<Movie>& g_movies = larecomp::Leak<std::vector<Movie>>();
+std::vector<Screen>& g_screens = larecomp::Leak<std::vector<Screen>>();  // the manager's map, read once per game frame
+std::vector<std::string>& g_paced_names = larecomp::Leak<std::vector<std::string>>();
 bool g_paced_all = false;
-std::string g_paced_list;
+std::string& g_paced_list = larecomp::Leak<std::string>();
 bool g_paced_list_read = false;
 uint64_t g_resolved_frame = ~0ull;
 int64_t g_pacing_report_ns = 0;

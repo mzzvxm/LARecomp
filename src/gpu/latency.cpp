@@ -9,6 +9,7 @@
 // frame generation, which has no counterpart in this renderer, is left out.
 
 #include "latency.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -178,7 +179,7 @@ struct Module {
 };
 
 Module& M() {
-  static Module module;
+  static Module& module = larecomp::Leak<Module>();
   return module;
 }
 

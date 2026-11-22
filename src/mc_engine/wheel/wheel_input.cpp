@@ -19,6 +19,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "wheel_input.h"
+#include "settings/immortal.h"
 #include "wheel_ffb.h"
 
 #include "settings/larecomp_settings.h"
@@ -264,7 +265,7 @@ bool KnownWheel(uint16_t vid, uint16_t pid) {
 // ---------------------------------------------------------------------------
 
 uint16_t ButtonByName(const std::string& n) {
-    static const std::map<std::string, uint16_t> m = {
+    static const std::map<std::string, uint16_t>& m = *new const std::map<std::string, uint16_t>{
         {"a", kBtnA}, {"b", kBtnB}, {"x", kBtnX}, {"y", kBtnY}, {"lb", kLb}, {"rb", kRb},
         {"start", kStart}, {"back", kBack}, {"l3", kL3}, {"r3", kR3}, {"up", kDpadUp},
         {"down", kDpadDown}, {"left", kDpadLeft}, {"right", kDpadRight}, {"none", 0}};
@@ -1650,7 +1651,7 @@ struct IgnoreAtStart {
 };
 
 IgnoreAtStart& AtStart() {
-    static IgnoreAtStart a;
+    static IgnoreAtStart& a = larecomp::Leak<IgnoreAtStart>();
     return a;
 }
 

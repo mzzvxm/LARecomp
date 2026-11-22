@@ -1,4 +1,5 @@
 #include "mc_engine/core/boot_progress.h"
+#include "settings/immortal.h"
 
 #include <mutex>
 
@@ -6,11 +7,11 @@ namespace mc::boot {
 namespace {
 
 std::mutex g_lock;
-std::vector<Phase> g_phases;
+std::vector<Phase>& g_phases = larecomp::Leak<std::vector<Phase>>();
 
 // Enough to fill the popup without it scrolling away from what is happening.
 constexpr size_t kRecentKept = 6;
-std::vector<std::string> g_recent;
+std::vector<std::string>& g_recent = larecomp::Leak<std::vector<std::string>>();
 
 }  // namespace
 

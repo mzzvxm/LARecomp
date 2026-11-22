@@ -46,6 +46,7 @@
 #include <rex/module.h>
 
 #include "audio_tap.h"
+#include "settings/immortal.h"
 #include "larecomp_log.h"
 #include "settings/larecomp_settings.h"
 
@@ -67,7 +68,7 @@ inline rex::IInterfaceFactory*& Factory() {
 
 // The tap in front of the real device's fill (audio_tap.h); lives for the whole process.
 inline MixTap& Tap() {
-  static MixTap tap;
+  static MixTap& tap = larecomp::Leak<MixTap>();
   return tap;
 }
 

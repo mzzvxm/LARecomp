@@ -42,10 +42,13 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "crash_handler.h"
 #include "crash_options.h"
 #include "discord_rpc/discord_rpc.h"
+#include "exit_fast.h"
 #include "game_marker.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "larecomp_log.h"
 #include "mc_engine/cinematic/capture_audio.h"
+#include "mc_engine/cinematic/freecam_runtime.h"
+#include "mc_engine/cinematic/state_log.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "mc_engine/music/audio_output.h"
@@ -588,6 +591,10 @@ rex::Result<void> LarecompApp::OnInit() {
   // The window is open, the systems run, app.* is frozen. The order below is the order the 0.10 start-up had.
   settings_config_path_ = rex::GetPathSettings().config_file.Get();
   NoteCrashLogFile();  // Linux: the crash reports append to the SDK's log file by name (the second half of the logger is in OnTitleLaunch)
+  // What the fast exit (exit_fast.h) runs before it ends the process: writers whose destructor used to finish their file. Everything else that
+  // writes (the settings file, the career save, the log) is finished by the orderly shutdown before this point; EXIT-HARD.md lists each.
+  larecomp::exitfast::AddFlush("state log", &mc::cinematic::statelog::CloseForExit);
+  larecomp::exitfast::AddFlush("free camera recording", &mc::cinematic::FreecamStopForExit);
   for (const auto& note : path_notes_) LARECOMP_APP_WARN("Game data: {}", note);
   path_notes_.clear();
   // The command line options that could not be used (one line each; the start goes on): ApplyCommandLineSettings, PrepareCommandLine.
@@ -612,7 +619,7 @@ rex::Result<void> LarecompApp::OnInit() {
   // CHECK: ILogger has no flush_on level: log.flush_interval (hot) covers it.
   larecomp::InitDebugMenu();  // the command line, the environment and larecomp.toml are all read by now
   // The game's language: LARecomp's `language` choice becomes the console's user language before the title launches
-  // (kernel.user_language is kUntilLaunch: writable until then). Needs the player's `language` line, so not before OnInit.
+  // (kernel.user_language is kLockedInGame: writable until then). Needs the player's `language` line, so not before OnInit.
   InitLanguageSetting();
 
   // The game files: when nothing valid is set, look around as the 0.10 start-up did; the wizard handles the rest.
@@ -844,7 +851,7 @@ bool LarecompApp::RunSetupFrame() {
             rex::app::RequestShutdown(1);
             return false;
           } else {
-            // The folder the player installed to becomes the game root (title.game_root is kUntilLaunch: writable until
+            // The folder the player installed to becomes the game root (title.game_root is kLockedInGame: writable until
             // LaunchTitle); the next step and the SDK's LaunchTitle read it from there.
             larecomp::ShowRexglueIsoInstallWizard(ui, paths, [this](larecomp::Paths installed) {
               if (auto set = GetTitleRuntime().GetTitlePaths().game_root.Set(installed.game_root); !set) {
@@ -1221,6 +1228,8 @@ void LarecompApp::OnRun() {
 // After the title stopped, before the drivers shut down (logging and settings still work).
 void LarecompApp::OnShutdown() {
   g_termination_log_closed.store(true, std::memory_order_release);  // the signal helper thread (InstallTerminationSignals) stops logging
+  // The fast exit's switch is read here, while the settings still work (FinishProcess runs after the SDK has stopped, exit_fast.h).
+  larecomp::exitfast::Arm(ls::mcla_fast_exit.Get());
   // The UI system's event guard and the cached interface pointers go before rex::Stop takes the systems away.
   ui_listener_ = {};
   larecomp::sdk::Reset();
@@ -1232,6 +1241,24 @@ void LarecompApp::OnShutdown() {
   mc::DisableHighResTimer();
   ls::UnregisterAll();
   ShutdownLarecompLogging();
+}
+
+// After Shutdown() returned: the saves are finished, the settings and the log are written, the renderer, the audio and the guest are stopped.
+// What the exit used to do next (the C runtime's atexit handlers and static destructors, then the DLL detach of the SDK's libraries) is what a
+// guest thread the SDK left running could still meet half destroyed (exit_fast.h has the history: three exit crashes), and nothing in it writes
+// anything the process needs, so with mcla_fast_exit on (the default) the process ends here. The exit code is the SDK's.
+// CHECK: rex::Shutdown() (App's destructor, which this skips) also logs the settings notices still queued, ends the SDK's profiler (perf.profiler,
+// a developer setting) and the log session: a notice that came after the last Init is not logged on this path, the profiler's trace is not finished
+// (use mcla_fast_exit=false for a profile); the log itself is flushed (rex::log::Flush in OnShutdown and again in the note hook).
+int LarecompApp::FinishProcess(int code) {
+  if (!larecomp::exitfast::Armed()) {
+    LARECOMP_APP_INFO("[quit] mcla_fast_exit is off: the process ends through the C runtime's exit, with every static destructor");
+    return code;
+  }
+  const larecomp::exitfast::Report report = larecomp::exitfast::RunFlushes();
+  LARECOMP_APP_INFO("[quit] fast exit: the orderly shutdown is done ({} flush hook(s) in {} ms{}); the process ends now with code {}, without the static destructors (mcla_fast_exit)",
+                    report.ran, report.ms, report.threw > 0 ? ", some threw" : "", code);
+  larecomp::exitfast::EndNow(code);
 }
 
 rex::platform::CrashReporterOptions LarecompApp::GetCrashOptions() {

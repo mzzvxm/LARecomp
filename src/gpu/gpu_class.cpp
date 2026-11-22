@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the GPU class and the `auto` value. See gpu_class.h.
 
 #include "gpu_class.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -25,8 +26,8 @@ std::atomic<bool> g_handheld{false};  // the adapter is a handheld (a Steam Deck
 std::atomic<int> g_override{kNoOverride};
 
 std::mutex g_text_mutex;     // guards the three strings of the log line
-std::string g_detected_why;  // why Initialize chose g_detected
-std::string g_adapter;       // "name (vendor)" for the log line
+std::string& g_detected_why = larecomp::Leak<std::string>();  // why Initialize chose g_detected
+std::string& g_adapter = larecomp::Leak<std::string>();  // "name (vendor)" for the log line
 
 bool ContainsNoCase(std::string_view text, std::string_view part) {
   const auto it = std::search(text.begin(), text.end(), part.begin(), part.end(),

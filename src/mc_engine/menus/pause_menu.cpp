@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mc_engine/core/restart.h"
+#include "settings/immortal.h"
 #include "mc_engine/core/world_detail.h"
 #include "pause_menu.h"
 #include "mc_engine/gameplay/carbon_parts.h"
@@ -844,7 +845,7 @@ uint32_t CreateUIMenuState(const char* name) {
 // _dlss_mode) were never held: the renderer makes its targets again at the new
 // size at a frame boundary (TemporalSystem::UpdatePath, EdramTargets::SetScales).
 std::mutex g_deferred_mutex;
-std::vector<std::pair<std::string, std::string>> g_deferred;
+std::vector<std::pair<std::string, std::string>>& g_deferred = larecomp::Leak<std::vector<std::pair<std::string, std::string>>>();
 
 void SetDeferred(const char* name, const char* value) {
     std::lock_guard<std::mutex> lock(g_deferred_mutex);
@@ -3372,7 +3373,7 @@ struct NativeRows {
 };
 // A disabled row whose select moved anyway was reported (PollNativeRows; once).
 bool g_disabled_step_reported = false;
-NativeRows g_rows[kNumMenus];
+NativeRows (&g_rows)[kNumMenus] = *new NativeRows[1][kNumMenus]();
 
 // The value list a row steps through: {vtable, char** keys, count, stride}.
 // vfunc4 returns +8 and vfunc12 returns keys[stride * row + col], which is
@@ -3823,7 +3824,7 @@ struct RestartWatch {
     std::string orig;   // its value before the menu first changed it
     std::string asked;  // its value when the player was last offered a restart
 };
-std::vector<RestartWatch> g_restart_watch;
+std::vector<RestartWatch>& g_restart_watch = larecomp::Leak<std::vector<RestartWatch>>();
 // Set when one of our menus closes after B (MenuFormClosed); taken by RestartPromptTick.
 std::atomic<bool> g_restart_check{false};
 

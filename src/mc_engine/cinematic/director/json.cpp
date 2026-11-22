@@ -1,6 +1,7 @@
 // The Director's JSON value: see json.h.
 
 #include "json.h"
+#include "settings/immortal.h"
 
 #include <charconv>
 #include <cmath>
@@ -162,7 +163,7 @@ const Json& Json::Get(std::string_view key) const {
 
 Json& Json::Set(std::string_view key, Json value) {
     if (type_ == Type::kNull) type_ = Type::kObject;
-    static Json sink;
+    static Json& sink = larecomp::Leak<Json>();
     if (type_ != Type::kObject) return sink;
     for (Member& m : members_) {
         if (m.first == key) {

@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -18,7 +19,7 @@ class DebugSettings final : public rex::SettingOwner {
     "appended to <exe>/lzx_stats.txt. For diagnosing streaming stutter (South Central).", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gfx_probe, false, "Milestone 0: passive D3D9-Xenon probe. Renders nothing, changes nothing. "
-                    "Writes mcla_gfx_probe_*.csv next to the executable.", rex::kDebugOnly, rex::kRestart);
+                    "Writes mcla_gfx_probe_*.csv next to the executable.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(i32, mcla_gfx_probe_frames, 900, "Milestone 0: number of guest frames to capture before the probe dumps its "
                      "report and goes idle (0 = never stop).", rex::kDebugOnly, rex::Range{0, 100000});
@@ -30,11 +31,11 @@ class DebugSettings final : public rex::SettingOwner {
     "calls abort(); terminate throws an exception nobody catches; illegal runs an illegal "
     "instruction; fpe divides by zero. The log must end with '!!! CRASH DETECTED !!!' (or '!!! "
     "ABORT DETECTED !!!') and a stack trace, and the game dies with the signal's status. Only works "
-    "with the debug menu unlocked. Linux only.", rex::kRestart, rex::kDebugOnly);  // was inside a #if in the .cpp: check
+    "with the debug menu unlocked. Linux only.", rex::kRequiresRestart, rex::kDebugOnly);  // was inside a #if in the .cpp: check
 
 };
 
-inline DebugSettings g_debug;
+inline DebugSettings& g_debug = larecomp::Leak<DebugSettings>();
 
 inline auto& lzx_stats = g_debug.lzx_stats;
 inline auto& mcla_gfx_probe = g_debug.mcla_gfx_probe;

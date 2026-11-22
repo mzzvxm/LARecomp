@@ -1,6 +1,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 // larecomp - Save picker
 #include "larecomp_profile_picker.h"
+#include "settings/immortal.h"
 
 #include "larecomp_profile_store.h"
 
@@ -114,7 +115,7 @@ struct Plan {
   std::string preselect;
 };
 
-Plan g_plan;
+Plan& g_plan = larecomp::Leak<Plan>();
 
 std::string FormatTime(fs::file_time_type when) {
   using namespace std::chrono;

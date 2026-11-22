@@ -2,6 +2,7 @@
 // See render_scale.h.
 
 #include "render_scale.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <format>
@@ -52,7 +53,7 @@ std::atomic<uint64_t> g_status{0};
 
 // The preset text that was reported as not one (the live choice reads it at every frame boundary).
 std::mutex g_reported_mutex;
-std::string g_reported_preset;
+std::string& g_reported_preset = larecomp::Leak<std::string>();
 
 // The preset the cvar names; custom, with an error line for a text that is none (`once`: only the
 // first time the same text is seen).

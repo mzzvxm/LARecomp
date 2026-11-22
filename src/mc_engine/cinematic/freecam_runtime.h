@@ -28,6 +28,10 @@ void FreecamObservePad(uint8_t* base, uint32_t user, uint32_t state);
 // True while the camera is the flight's.
 bool FreecamActive();
 
+// The game is ending: a recording that is still running writes its last rows and closes its file. The fast exit (exit_fast.h) runs no destructor,
+// and the file's destructor was what flushed them.
+void FreecamStopForExit();
+
 // ---------------------------------------------------------------------------------------------------------------- the Director (src/mc_engine/cinematic/director)
 // Game thread, except FreecamFeedPad (any thread).
 

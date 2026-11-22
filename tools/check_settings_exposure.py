@@ -6,7 +6,7 @@ Reads, under <src dir> (default: the src folder next to tools\):
   * every setting definition, in either form: the old REXCVAR_DEFINE_* (BOOL, INT32, ..., COMMAND) with its chained calls and whether the chain has
     `.debug_only()` (rexglue 0.10 and main), or the rexglue 0.11 REX_SETTING(type, name, default, "description", traits...) inside a SettingOwner
     (src/settings/generated/*.h, src/settings/larecomp_app_settings.h; also the Validated* members there) with the trait `kDebugOnly`. For both
-    forms "restart-only" is Lifecycle::kRequiresRestart / kInitOnly, or the traits kRestart / kStartupOnly / kUntilLaunch (no trait = live).
+    forms "restart-only" is Lifecycle::kRequiresRestart / kInitOnly, or the traits kRequiresRestart / kInitOnly / kLockedInGame (rexglue 0.11 after the SettingMode rename; the old names kRestart / kStartupOnly / kUntilLaunch of rexglue 0.11.0 still count; no trait = live).
     A console command (REX_COMMAND) is not a setting and is not checked;
   * the rows of the pause menu (pause_menu.cpp and the menu files named in settings_exposure.toml): the cvar each Bool / Str / Dbl / Color row
     writes, and the cvars a row writes that its constructor does not name (the upscaling mode row, VSYNC's native cvar);
@@ -47,7 +47,7 @@ SETTING = re.compile(r"\bREX_SETTING\s*\(")                          # rexglue 0
 VALIDATED = re.compile(r"\bValidated\w+\s+(\w+)\s*\{\s*this\s*,")    # larecomp_app_settings.h: ValidatedString name{this, "name", default, help, ...}
 COMMAND = re.compile(r"\bREX_COMMAND\w*\s*\(")
 DEBUG_TRAIT = re.compile(r"\bkDebugOnly\b")
-RESTART_TRAIT = re.compile(r"\b(?:kRestart|kStartupOnly|kUntilLaunch)\b")
+RESTART_TRAIT = re.compile(r"\b(?:kRequiresRestart|kInitOnly|kLockedInGame|kRestart|kStartupOnly|kUntilLaunch)\b")
 ROW = re.compile(r'\b(Bool|Str|Dbl|Color)\s*\(\s*"PM_\w+"\s*,\s*(?:"(\w+)"|(\w+))')
 TABLE = re.compile(r"\bItemDef\s+(\w+)\s*\[\s*\]\s*=\s*\{")
 CONST = re.compile(r'\bconstexpr\s+const\s+char\s*\*\s*(\w+)\s*=\s*"(\w+)"\s*;')
@@ -477,7 +477,7 @@ def main():
     print(f"  {n_defs} definitions, {len(checked)} cvars checked")
     if "setting" in forms:
         restart_only = sorted(n for n in checked if any(d["restart"] for d in defs[n] if in_dirs(d["file"], dirs)))
-        print(f"  {len(restart_only)} are restart-only (kRestart / kStartupOnly / kUntilLaunch), the rest are live; {console_commands(src)} console commands (REX_COMMAND) are not settings and are not checked")
+        print(f"  {len(restart_only)} are restart-only (kRequiresRestart / kInitOnly / kLockedInGame), the rest are live; {console_commands(src)} console commands (REX_COMMAND) are not settings and are not checked")
         show("restart-only", restart_only, args.verbose)
     print(f"  {len(tagged)} are {DBG}" + (f", {len(still_pending)} of them still have a normal pause-menu row (pending SX-G4/G5)" if still_pending else ""))
     show("pending", still_pending, args.verbose)

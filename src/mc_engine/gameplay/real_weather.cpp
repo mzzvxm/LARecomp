@@ -21,6 +21,7 @@
 //
 
 #include "real_weather.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <chrono>
@@ -54,7 +55,7 @@ std::atomic<int> g_index{-1};
 std::atomic<bool> g_enabled{false};
 
 std::mutex g_loc_mutex;
-std::string g_location;
+std::string& g_location = larecomp::Leak<std::string>();
 
 #if defined(_WIN32)
 
@@ -293,7 +294,7 @@ private:
 };
 
 Poller& GetPoller() {
-    static Poller poller;
+    static Poller& poller = larecomp::Leak<Poller>();
     return poller;
 }
 

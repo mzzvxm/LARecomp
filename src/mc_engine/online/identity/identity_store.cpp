@@ -1,4 +1,5 @@
 #include "identity_store.h"
+#include "settings/immortal.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -35,7 +36,7 @@ struct State {
 };
 
 std::mutex g_mtx;
-State g;
+State& g = larecomp::Leak<State>();
 
 fs::path IdentityDir() { return core::DefaultIdentityDir(); }
 fs::path KeyPath() { return core::KeyPath(IdentityDir(), g.profile_id); }
@@ -122,7 +123,7 @@ std::string Nick() {
 }
 
 namespace {
-fs::path g_user_data_root;
+fs::path& g_user_data_root = larecomp::Leak<fs::path>();
 }
 
 void SetUserDataRoot(const fs::path& root) {

@@ -1,4 +1,5 @@
 #include "imgui_theme.h"
+#include "settings/immortal.h"
 #include "fonts/larecomp_embedded_fonts.h"
 
 #include <algorithm>
@@ -72,7 +73,7 @@ static void StretchFace(ImFont* font, float px, float factor) {
     const ImFontBaked* baked = nullptr;
     int glyphs = 0;
   };
-  static std::unordered_map<const ImFont*, Done> done;
+  static std::unordered_map<const ImFont*, Done>& done = larecomp::Leak<std::unordered_map<const ImFont*, Done>>();
   if (!font || !font->OwnerAtlas || !font->OwnerAtlas->TexIsBuilt) return;
   ImFontBaked* baked = font->GetFontBaked(px);
   if (!baked) return;
@@ -139,8 +140,8 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
 
   // The titles are the same face, loaded at title size and kerned when drawn
   // (BeginPanel), so their bytes are kept for RegisterKerning.
-  static std::vector<unsigned char> title_ttf =
-      FaceBytes(dir, "LARecomp Font.ttf", fonts::kFontLarecomp, fonts::kFontLarecompSize);
+  static std::vector<unsigned char>& title_ttf = larecomp::Leak<std::vector<unsigned char>>(
+      FaceBytes(dir, "LARecomp Font.ttf", fonts::kFontLarecomp, fonts::kFontLarecompSize));
   ImFontConfig title_cfg = font_cfg;
   title_cfg.FontDataOwnedByAtlas = false;
   title_cfg.RasterizerMultiply = kBodyWeight;
@@ -155,8 +156,8 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
   // The banner faces (see MclaFonts::banner), rasterized near the size the
   // picker draws them at and limited to the banner's characters so the large
   // glyphs cost little atlas space. The ranges must outlive the atlas build.
-  static ImVector<ImWchar> word_ranges;
-  static ImVector<ImWchar> credit_ranges;
+  static ImVector<ImWchar>& word_ranges = larecomp::Leak<ImVector<ImWchar>>();
+  static ImVector<ImWchar>& credit_ranges = larecomp::Leak<ImVector<ImWchar>>();
   if (word_ranges.empty()) {
     ImFontGlyphRangesBuilder word;
     word.AddText(kBannerWord);
@@ -168,12 +169,12 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
   // Rasterized a little above the size they are drawn at on common screens,
   // so they are scaled down (sharp) rather than up. The bytes are kept: the
   // banner also reads the faces' kerning from them (RegisterKerning).
-  static std::vector<unsigned char> word_ttf =
+  static std::vector<unsigned char>& word_ttf = larecomp::Leak<std::vector<unsigned char>>(
       FaceBytes(dir, "LARecomp Logo Font Alt.ttf", fonts::kFontLarecompLogoAlt,
-                fonts::kFontLarecompLogoAltSize);
-  static std::vector<unsigned char> credit_ttf =
+                fonts::kFontLarecompLogoAltSize));
+  static std::vector<unsigned char>& credit_ttf = larecomp::Leak<std::vector<unsigned char>>(
       FaceBytes(dir, "LARecomp Wide Font.ttf", fonts::kFontLarecompWide,
-                fonts::kFontLarecompWideSize);
+                fonts::kFontLarecompWideSize));
   ImFontConfig banner_cfg = font_cfg;
   banner_cfg.FontDataOwnedByAtlas = false;
   banner_cfg.OversampleH = 1;
@@ -608,7 +609,7 @@ const char* CloseKeyLabel(const char* dialog) {
   const larecomp::input::GlyphFamily family = larecomp::input::ActiveGlyphFamily();
   const char* word = CloseKeyWord(family);
   // One line per dialog when its prompt changes (and the first time it draws), not one per frame; the dialogs draw on the UI thread only.
-  static std::unordered_map<std::string, int> logged;
+  static std::unordered_map<std::string, int>& logged = larecomp::Leak<std::unordered_map<std::string, int>>();
   const std::string key = dialog ? dialog : "dialog";
   auto [at, fresh] = logged.try_emplace(key, static_cast<int>(family));
   if (fresh || at->second != static_cast<int>(family)) {

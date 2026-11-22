@@ -43,6 +43,7 @@
 //
 
 #include "freecam_runtime.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 
@@ -167,7 +168,7 @@ struct State {
     double t = 0.0;
     fc::RawTrack record;
 };
-State g;
+State& g = larecomp::Leak<State>();
 
 // A vector of the slots' frame (a row or the position).
 cam::Vec3 SlotVec(const uint8_t* base, uint32_t sp, uint32_t off) {
@@ -524,6 +525,10 @@ bool FreecamActive() {
     return g_flying.load(std::memory_order_relaxed);
 }
 
+void FreecamStopForExit() {
+    StopRecording("the game is ending");
+}
+
 }  // namespace mc::cinematic
 
 #else  // REXGLUE_HAS_XEO3_TARGET
@@ -534,6 +539,7 @@ namespace mc::cinematic {
 bool FreecamApply(uint8_t*, uint32_t, uint32_t) { return false; }
 void FreecamObservePad(uint8_t*, uint32_t, uint32_t) {}
 bool FreecamActive() { return false; }
+void FreecamStopForExit() {}
 void FreecamSetPose(const freecam::Pose&) {}
 bool FreecamGetPose(freecam::Pose*) { return false; }
 void FreecamSetOverride(CameraOverride) {}

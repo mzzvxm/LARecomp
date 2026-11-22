@@ -11,7 +11,7 @@
 namespace {
 
 // Set once by InitDebugMenu, and DebugMenuUnlocked() reads g_unlocked, not the setting. The setting itself cannot change
-// any more by then either: it is kStartupOnly, which the SDK closes just before OnInit (the 0.10 validator that refused a
+// any more by then either: it is kInitOnly, which the SDK closes just before OnInit (the 0.10 validator that refused a
 // write after InitDebugMenu is that freeze now: settings/larecomp_app_settings.h). The settings panel shows it read-only.
 std::atomic<bool> g_latched{false};
 std::atomic<bool> g_unlocked{false};

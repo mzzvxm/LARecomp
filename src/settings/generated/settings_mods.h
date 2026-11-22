@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -18,7 +19,7 @@ class ModsSettings final : public rex::SettingOwner {
     "models/). Each .obj is "
     "baked into a native drawable and packed into xarchive_mods.rpf, which is "
     "appended to the archive list -- the engine's own last-mounted-wins rule "
-    "makes it override per file. Game archives are never modified.", rex::kRestart);
+    "makes it override per file. Game archives are never modified.", rex::kRequiresRestart);
 
   REX_SETTING(bool, model_mods_anchor_bones, true, "Whether the repose plants each of the mod's joints on the bone it was "
     "matched to. On (the default) a hand lands exactly on the bone the game "
@@ -32,12 +33,12 @@ class ModsSettings final : public rex::SettingOwner {
     "distortion, 5.7 mm to 2.8 mm averaged over every bone, at the cost of the "
     "wrist landing 38 mm and the foot 96 mm off their bones, which swings them "
     "on the wrong lever once animation starts. Standing still, off looks "
-    "better; in motion is what only the game can answer.", rex::kRestart, rex::kDebugOnly);
+    "better; in motion is what only the game can answer.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(i32, model_mods_bone, -1, "-1 keeps a skinned mesh's own weights (glTF with JOINTS_0/WEIGHTS_0), "
     "matching its joints to the driver's bones by bind-pose position, so the "
     "model follows the seated pose. Any value >= 0 ignores the weights and "
-    "rides the whole mesh rigidly on that one bone, which is all a .obj can do.", rex::kRestart, rex::kDebugOnly);
+    "rides the whole mesh rigidly on that one bone, which is all a .obj can do.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_cabin_light, true, "Give a replacement car's cabin (the car-space part slots, interior0) the "
     "donor's per-vertex interior lighting, read off the donor's cabin vertex "
@@ -46,7 +47,7 @@ class ModsSettings final : public rex::SettingOwner {
     "The colour word of a cabin vertex is how much of each of the car's three "
     "interior lights (siColor0..2: the interior neon among them) reaches it. "
     "Flooded with one average the BMW's cabin barely answered the interior neon "
-    "being switched on. Off restores the flood.", rex::kRestart, rex::kDebugOnly);
+    "being switched on. Off restores the flood.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(u32, model_mods_car_budget, 16777216, "The largest a replaced car body may be grown to, in bytes for LOD 0; the "
     "lower LODs get a quarter of it. Anything the mod brings beyond what fits "
@@ -70,7 +71,7 @@ class ModsSettings final : public rex::SettingOwner {
     "correctly.\n"
     "\n"
     "0 lifts the ceiling entirely, which is the setting to try when you want to "
-    "know whether size is what a car is failing on.", rex::kRestart, rex::kDebugOnly);
+    "know whether size is what a car is failing on.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_car_lod1_copy, true, "Ship a replacement car's LOD 1 as a byte copy of the LOD 0 just built, for "
     "the body and for every part slot the donor gives a LOD 1.\n"
@@ -103,13 +104,13 @@ class ModsSettings final : public rex::SettingOwner {
     "Off keeps the atlas and its UV rewrite and ships the packs untouched. The "
     "car then wears the donor's artwork through the mod's UVs, which looks "
     "wrong on purpose -- what is being read is the GEOMETRY. Whole means the "
-    "pack rewrite is at fault; in pieces means the UV rewrite is.", rex::kRestart, rex::kDebugOnly);
+    "pack rewrite is at fault; in pieces means the UV rewrite is.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(f64, model_mods_car_scale, 1.0, "Size multiplier for a replacement car, on top of the automatic fit. The "
     "fit matches the length of the mod's body to the length of the body it "
     "replaces, and every part of the car is then moved by that one factor -- "
     "scaling each part into its own slot instead would leave a hood a size "
-    "larger than the doors beside it. 1.0 leaves it alone.", rex::kRestart, rex::kDebugOnly);
+    "larger than the doors beside it. 1.0 leaves it alone.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_car_space_only, true, "Write a donor car's replacement mesh only into the models the donor authors "
     "in the CAR's frame, and silence the pass's submeshes in the others.\n"
@@ -126,7 +127,7 @@ class ModsSettings final : public rex::SettingOwner {
     "were buffers crossing a resource block boundary, and the fix for that is "
     "elsewhere (MeshOffset::block_align). Kept switchable because it is the one "
     "thing between a car in its right place and a car whose nose is in the "
-    "ground. Read at archive build time, so it needs a restart and no rebuild.", rex::kRestart, rex::kDebugOnly);
+    "ground. Read at archive build time, so it needs a restart and no rebuild.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_car_textures, true, "Give a replacement car body its own textures. A car is drawn by several "
     "shaders of one drawable and each of them samples at most one image, so the "
@@ -140,7 +141,7 @@ class ModsSettings final : public rex::SettingOwner {
     "what paint needs for its vinyls to sit right.\n"
     "\n"
     "Off ships the donor's packs exactly as the game holds them, and the body "
-    "comes back wearing the donor's own artwork.", rex::kRestart, rex::kDebugOnly);
+    "comes back wearing the donor's own artwork.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_car_verbatim, false, "Diagnostic, cars only. Copies each part's shipped file into the mod "
     "archive exactly as it lies in the game's own -- same bytes, same "
@@ -151,13 +152,13 @@ class ModsSettings final : public rex::SettingOwner {
     "repack is innocent and the problem is in serving a vehicle resource from a "
     "second archive at all. `model_mods_passthrough` cannot answer that on its "
     "own, because it still re-encodes the stream -- and an LZX of stored blocks "
-    "is larger than the compressed original it replaces.", rex::kRestart, rex::kDebugOnly);
+    "is larger than the compressed original it replaces.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(f64, model_mods_car_yaw, 180.0, "Turns a replacement car about the vertical axis before its parts are "
     "placed, in degrees. 180 is the normal value and the default: glTF has a "
     "model face +Z and MCLA has it face -Z, which is checked rather than "
     "assumed -- the shipped cars keep their headlights at negative Z and their "
-    "tail lights at positive Z, and an exported car has it the other way round.", rex::kRestart, rex::kDebugOnly);
+    "tail lights at positive Z, and an exported car has it the other way round.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_decimate, false, "Whether a replacement mesh larger than the slot it has to live in may be "
     "welded down to fit: a character, a rim, or a part replaced on a shipped "
@@ -171,7 +172,7 @@ class ModsSettings final : public rex::SettingOwner {
     "shipped model, so what a mod shows is what it brought; decimate it "
     "yourself in a modelling tool, where you can see what you are giving up. "
     "Expect the low LOD to be refused first, so the original driver reappears "
-    "at a distance. On welds it in instead.", rex::kRestart, rex::kDebugOnly);
+    "at a distance. On welds it in instead.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_diag, false, "Write a `.diag` folder beside the mods: one .txt per rebuilt asset "
     "holding the template's submesh table, both rigs with the joint-to-bone "
@@ -179,14 +180,14 @@ class ModsSettings final : public rex::SettingOwner {
     "itself as .obj before and after the retarget. A character that comes out "
     "mangled is one of three things (a joint on the wrong bone, a bad deal, or "
     "a submesh the writer could not describe and therefore left drawing what it "
-    "shipped) and they all look alike on screen; this tells them apart.", rex::kRestart, rex::kDebugOnly);
+    "shipped) and they all look alike on screen; this tells them apart.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_glass_band, true, "Give a replacement body's glass the pane number of the donor glass nearest "
     "each piece of it, instead of the dominant pane of the submesh it is written "
     "into. texcoord1.x on CarGlass says which pane a vertex is -- 0 windscreen, "
     "1 rear, 2/3 doors -- and the window film tints 1-3 only, so a body flooded "
     "with 0 takes no film at all. See MeshOffset::band_by_piece. Read at archive "
-    "build time.", rex::kRestart, rex::kDebugOnly);
+    "build time.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_grow, false, "Give a replacement wheel or car part buffers of its own instead of welding "
     "it down into the ones the shipped resource came with. The resource is made "
@@ -198,7 +199,7 @@ class ModsSettings final : public rex::SettingOwner {
     "submesh counts and indexes its vertices in sixteen bits. Characters are not "
     "affected: a skinned submesh also caps its bone palette, which is a separate "
     "allocation, so they stay on the path that already works. Turn this off to "
-    "go back to welding everything into the shipped buffers.", rex::kRestart, rex::kDebugOnly);
+    "go back to welding everything into the shipped buffers.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(i32, model_mods_grow_probe, 0, "With `model_mods_grow` on: 1 grows the resource and stops there, the segment "
     "gets bigger and nothing else changes -- no buffer moves, no pointer is "
@@ -212,7 +213,7 @@ class ModsSettings final : public rex::SettingOwner {
     "left alone, so the mesh is still decimated to what the template shipped. "
     "That is what says whether the bytes written into the grown space actually "
     "arrive and can be fetched from -- 1 never reads them. Only when both pass "
-    "is a changed count worth trying.", rex::kRestart, rex::kDebugOnly);
+    "is a changed count worth trying.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(u32, model_mods_grow_slack, 65536, "Room left unused at the end of a resource `model_mods_grow` has enlarged. "
     "The tail of a grown segment does not arrive intact, and this is what keeps "
@@ -220,15 +221,15 @@ class ModsSettings final : public rex::SettingOwner {
     "the segment's end came back with holes, and ending 82 KB short came back "
     "clean. Where between those two the boundary sits has not been pinned down, "
     "so the default is the distance that was measured to work rather than the "
-    "smallest that might. 0 restores the old behaviour and the holes with it.", rex::kRestart, rex::kDebugOnly);
+    "smallest that might. 0 restores the old behaviour and the holes with it.", rex::kRequiresRestart, rex::kDebugOnly);
 
-  REX_SETTING(f64, model_mods_offset_x, 0.0, "Sideways nudge for the replacement model, in metres.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(f64, model_mods_offset_x, 0.0, "Sideways nudge for the replacement model, in metres.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(f64, model_mods_offset_y, 0.0, "Extra height for the replacement model, in metres, on top of the automatic "
     "lift onto its bone. Positive raises it. Use this if the model still sits "
-    "below or above the seat -- it takes a restart but no rebuild.", rex::kRestart, rex::kDebugOnly);
+    "below or above the seat -- it takes a restart but no rebuild.", rex::kRequiresRestart, rex::kDebugOnly);
 
-  REX_SETTING(f64, model_mods_offset_z, 0.0, "Forward/back nudge for the replacement model, in metres.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(f64, model_mods_offset_z, 0.0, "Forward/back nudge for the replacement model, in metres.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(u32, model_mods_part_growth, 8, "How much larger than the donor's own a replacement PART may be, as a "
     "multiple of the shipped resource.\n"
@@ -241,7 +242,7 @@ class ModsSettings final : public rex::SettingOwner {
     "be dealt out between shaders the way the body's room is.\n"
     "\n"
     "1 keeps every part at exactly the size the donor shipped, which is the "
-    "setting to try when a car loads without its parts.", rex::kRestart, rex::kDebugOnly);
+    "setting to try when a car loads without its parts.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_part_probe, false, "TEMPORARY diagnostic: every second, while the player's car is waiting to "
     "reattach its parts (car+6467) -- which is when the game draws none of it, "
@@ -253,9 +254,9 @@ class ModsSettings final : public rex::SettingOwner {
     "geometry, so the .obj is ignored. If the driver still renders correctly "
     "with this on, the packing path (LZX, archive, mount, flags) is sound and "
     "any breakage belongs to the mesh rewrite; if it breaks, the packing path "
-    "is at fault.", rex::kRestart, rex::kDebugOnly);
+    "is at fault.", rex::kRequiresRestart, rex::kDebugOnly);
 
-  REX_SETTING(f64, model_mods_pitch, 0.0, "Tips the replacement model forward or back, in degrees.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(f64, model_mods_pitch, 0.0, "Tips the replacement model forward or back, in degrees.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(f64, model_mods_proportions, 0.0, "How much of the replacement model's own build to keep when it is reposed "
     "onto the driver's skeleton, 0 to 1. At 0 every joint lands exactly on the "
@@ -266,7 +267,7 @@ class ModsSettings final : public rex::SettingOwner {
     "keeps its own bone lengths instead, taking only the pose from the "
     "skeleton. The cost is that limbs no longer end where the game thinks they "
     "do, so hands drift off the wheel as it goes up. Try 1 for anything that is "
-    "not roughly human.", rex::kRestart, rex::kDebugOnly);
+    "not roughly human.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_rim_autoalign, true, "Put a replacement wheel on the game's axle, in two steps. First the turn: "
     "every shipped wheel spins about X and is half as wide as it is tall, so the "
@@ -278,7 +279,7 @@ class ModsSettings final : public rex::SettingOwner {
     "rim left centred sits sunk inside the tyre. Its face is pushed out flush "
     "with the shipped wheel's instead, turning the model around first if it came "
     "in facing inward. The manual rim angles and nudge below are applied on top. "
-    "Turn this off to place a wheel entirely by hand.", rex::kRestart, rex::kDebugOnly);
+    "Turn this off to place a wheel entirely by hand.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_rim_band_profile, false, "Carry the template wheel's material bands onto the replacement instead of "
     "flooding one."
@@ -313,7 +314,7 @@ class ModsSettings final : public rex::SettingOwner {
     "baked shadows printed onto the new spokes, and its four material bands "
     "scattered by proximity across a shape that does not have them. Off, which "
     "is the default, gives the whole wheel one band and that band's own average "
-    "shade, both read off the template.", rex::kRestart, rex::kDebugOnly);
+    "shade, both read off the template.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_rim_keep_badge, true, "Leave the wheel's badge quad as it shipped instead of silencing it.\n"
     "\n"
@@ -330,14 +331,14 @@ class ModsSettings final : public rex::SettingOwner {
   REX_SETTING(f64, model_mods_rim_offset_x, 0.0, "Nudge for a replacement wheel along its axle, where one unit is the "
     "wheel's own diameter. Positive pushes it further into the tyre, negative "
     "pulls it out. Only needed when the automatic flush above lands slightly "
-    "off for a particular model.", rex::kRestart, rex::kDebugOnly);
+    "off for a particular model.", rex::kRequiresRestart, rex::kDebugOnly);
 
-  REX_SETTING(f64, model_mods_rim_pitch, 0.0, "Tips a replacement wheel forward or back, in degrees.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(f64, model_mods_rim_pitch, 0.0, "Tips a replacement wheel forward or back, in degrees.", rex::kRequiresRestart, rex::kDebugOnly);
 
-  REX_SETTING(f64, model_mods_rim_roll, 0.0, "Rolls a replacement wheel sideways, in degrees.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(f64, model_mods_rim_roll, 0.0, "Rolls a replacement wheel sideways, in degrees.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(f64, model_mods_rim_scale, 1.0, "Size multiplier for a replacement wheel, on top of the automatic fit to "
-    "the shipped wheel's own bounds. 1.0 leaves it alone.", rex::kRestart, rex::kDebugOnly);
+    "the shipped wheel's own bounds. 1.0 leaves it alone.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_rim_shade_occlusion, true, "Bake the wheel's shade lane from occlusion measured on the replacement."
     "\n"
@@ -362,7 +363,7 @@ class ModsSettings final : public rex::SettingOwner {
     "\n"
     "Takes precedence over model_mods_rim_shade_profile, which guesses the same "
     "lane from statistics and which its own comment scores at R^2 -0.09 across "
-    "wheels -- no better than the flat average it replaces.", rex::kRestart, rex::kDebugOnly);
+    "wheels -- no better than the flat average it replaces.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_rim_shade_profile, true, "Rebuild a replaced wheel's baked shading from the template instead of "
     "flooding it with one average.\n"
@@ -410,12 +411,12 @@ class ModsSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, model_mods_rim_yaw, 0.0, "Turns a replacement wheel about the vertical axis, in degrees. Separate "
     "from the character angles because a wheel and a driver never want the same "
-    "correction.", rex::kRestart, rex::kDebugOnly);
+    "correction.", rex::kRequiresRestart, rex::kDebugOnly);
 
-  REX_SETTING(f64, model_mods_roll, 0.0, "Rolls the replacement model sideways, in degrees.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(f64, model_mods_roll, 0.0, "Rolls the replacement model sideways, in degrees.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(f64, model_mods_scale, 1.0, "Size multiplier on top of the automatic fit, which matches the model's "
-    "height to the driver's. 1.0 leaves it alone.", rex::kRestart, rex::kDebugOnly);
+    "height to the driver's. 1.0 leaves it alone.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_share_images, false, "Let two materials that name the same picture share one cell of the atlas."
     "\n"
@@ -433,7 +434,7 @@ class ModsSettings final : public rex::SettingOwner {
     "every part sharing it asks for, which is the only thing here that changes "
     "a UV by more than a texel -- and something downstream of that is not "
     "surviving it. Until that is understood this stays off and each material "
-    "keeps its own cell.", rex::kRestart, rex::kDebugOnly);
+    "keeps its own cell.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_submeshes, true, "Spread the replacement mesh across every submesh of the character instead "
     "of the largest one alone. The resource cannot be made bigger, but the "
@@ -442,13 +443,13 @@ class ModsSettings final : public rex::SettingOwner {
     "a mod can bring by three and a half times, and most characters then arrive "
     "with no welding at all. Every submesh borrowed this way is repointed at "
     "the shader whose textures were replaced. Turn it off to go back to filling "
-    "one submesh, which is the conservative path if a model renders oddly.", rex::kRestart, rex::kDebugOnly);
+    "one submesh, which is the conservative path if a model renders oddly.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, model_mods_textures, true, "Use the replacement model's own textures. The images embedded in a .glb "
     "(one per material) are packed into a single atlas, each primitive's UVs "
     "are remapped into its own cell, and the result is written over the "
     "character's diffuse map in place -- same address, same size, same format. "
-    "Off leaves the mesh wearing the original driver's skin.", rex::kRestart, rex::kDebugOnly);
+    "Off leaves the mesh wearing the original driver's skin.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(i32, model_mods_weight_smoothing, 4, "How many rounds of neighbour averaging the mod's skin weights get before "
     "the model is reposed onto the driver's skeleton. 0 keeps them exactly as "
@@ -461,15 +462,15 @@ class ModsSettings final : public rex::SettingOwner {
     "their own length, which is the flat blade that was hanging off that "
     "character's back. Smoothing gives a seam vertex a share of both bones so "
     "the seam bends instead. Four rounds took the worst edge to 2.1x; away from "
-    "a seam it changes nothing.", rex::kRestart, rex::kDebugOnly);
+    "a seam it changes nothing.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(f64, model_mods_yaw, 0.0, "Turns the replacement model about the vertical axis, in degrees. Source "
     "models rarely face the same way the game does -- 180 turns a model that "
-    "sits with its back to the wheel.", rex::kRestart, rex::kDebugOnly);
+    "sits with its back to the wheel.", rex::kRequiresRestart, rex::kDebugOnly);
 
 };
 
-inline ModsSettings g_mods;
+inline ModsSettings& g_mods = larecomp::Leak<ModsSettings>();
 
 inline auto& model_mods = g_mods.model_mods;
 inline auto& model_mods_anchor_bones = g_mods.model_mods_anchor_bones;

@@ -69,6 +69,11 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   // The six folders, from the settings (valid from OnInit on).
   larecomp::Paths CurrentPaths();  // not const: GetTitleRuntime() is not
 
+  // What main does with the exit code of Shutdown() (exit_fast.h): with mcla_fast_exit on (the default) the process ends here, after the flush
+  // hooks and the log's flush, without the C runtime's exit (no static destructor, no DLL detach); with it off the code comes back and main
+  // returns it the old way. Static: the app object is not needed (and, on the fast path, never destroyed).
+  static int FinishProcess(int code);
+
  protected:
   rex::AppSysRequirements GetRequirements() const override;
   rex::Result<void> OnConfigure(rex::SettingsRegistry& settings) override;

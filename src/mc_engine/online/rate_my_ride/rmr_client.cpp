@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "rmr_client.h"
+#include "settings/immortal.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -91,7 +92,7 @@ std::string Describe(const Target& t) {
 // ------------------------------------------------------------ local -------
 
 std::mutex g_local_mutex;
-std::unique_ptr<Store> g_local;
+std::unique_ptr<Store>& g_local = larecomp::Leak<std::unique_ptr<Store>>();
 
 Store* LocalStore() {
   std::lock_guard<std::mutex> lock(g_local_mutex);
@@ -156,7 +157,7 @@ struct Job {
 
 std::mutex g_queue_mutex;
 std::condition_variable g_queue_cv;
-std::deque<Job> g_queue;
+std::deque<Job>& g_queue = larecomp::Leak<std::deque<Job>>();
 bool g_worker_started = false;
 
 void WorkerMain() {
@@ -175,7 +176,7 @@ void WorkerMain() {
 // ------------------------------------------------------------ identity ----
 
 std::mutex g_token_mutex;
-std::string g_token_profile;
+std::string& g_token_profile = larecomp::Leak<std::string>();
 Token g_token{};
 
 bool ParseHex(const std::string& hex, Token& out) {

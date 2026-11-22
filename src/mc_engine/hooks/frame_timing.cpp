@@ -5,6 +5,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/chrono.h>
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/logging/log_category.h>
 #include <rex/kernel/title_runtime.h>
 #include <algorithm>
@@ -395,7 +396,7 @@ static uint64_t StepCapForFrame(uint64_t measured) {
 
     // The mode, worked out again whenever the cvar's text changes (and logged then).
     static bool mode_known = false;
-    static std::string mode_text;
+    static std::string& mode_text = larecomp::Leak<std::string>();
     static bool adaptive = true;
     static double fixed_ms = kStepCapCeilingMs;
 

@@ -2,6 +2,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "ultrawide.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
@@ -53,7 +54,7 @@ bool g_logged_tall = false;
 // The setting's text, as the last change left it (a change callback is given the new value; reading
 // the cvar inside the callback is not safe, it may run with the registry locked).
 std::mutex g_ask_mutex;
-std::string g_ask;
+std::string& g_ask = larecomp::Leak<std::string>();
 bool g_ask_known = false;  // Init ran
 
 // The SDK presenter (the Xenia renderer) fits the 1280x720 picture into the window with black bars
@@ -391,7 +392,7 @@ const uint8_t* GuestBase() {
 // pieces when the expanded map keeps them in the middle.
 std::atomic<uint32_t> g_pieces_logged{0};
 std::mutex g_kept_mutex;
-std::vector<std::string> g_kept_logged;
+std::vector<std::string>& g_kept_logged = larecomp::Leak<std::vector<std::string>>();
 std::atomic<bool> g_expanded_logged{false};
 constexpr size_t kMaxKeptLogged = 16;
 

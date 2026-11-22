@@ -66,6 +66,7 @@
 //
 
 #include "scene_runtime.h"
+#include "settings/immortal.h"
 #include "scene_want.h"
 #include "spots.h"
 
@@ -344,7 +345,7 @@ struct Runner {
     // The scene's named places (spots.h): the table of the spots files read for the last parse and the stamps they had, so a changed spots file reloads the scene.
     LoadedSpots spots;
 };
-Runner g;
+Runner& g = larecomp::Leak<Runner>();
 
 // What the Director installed: the observer of loads and keys, the gate that holds t = 0 until the cars and the streaming are ready, and whether a changed
 // file is loaded in place. Not part of the Runner: they outlive a scene that is armed again.
@@ -959,7 +960,7 @@ void Step(uint8_t* base) {
 //
 // What scene is asked for is kept by SceneWant (scene_want.h: no lock and no allocation on a quiet tick, and why the change callback is
 // hooked up on the first ask and not from a static initializer here: on 0.11 the setting does not exist yet at static initialization).
-SceneWant g_want(SceneWant::Source{
+SceneWant& g_want = larecomp::Leak<SceneWant>(SceneWant::Source{
     [](SceneWant::Notify notify) {
         return larecomp::cvar::RegisterChangeCallback(
             "mcla_scene", [notify = std::move(notify)](std::string_view, std::string_view value) { notify(value); });

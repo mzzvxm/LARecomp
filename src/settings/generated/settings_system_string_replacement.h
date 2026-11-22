@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -16,7 +17,7 @@ class SystemStringReplacementSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, string_dump_enabled, false, "Capture encountered strings to TOML for translation/modding", rex::kDebugOnly);  // was inside a #if in the .cpp: check
 
-  REX_SETTING(std::string, string_folder, "", "Override the strings folder (empty = <game data>/strings)", rex::kDebugOnly, rex::kRestart);  // was inside a #if in the .cpp: check
+  REX_SETTING(std::string, string_folder, "", "Override the strings folder (empty = <game data>/strings)", rex::kDebugOnly, rex::kRequiresRestart);  // was inside a #if in the .cpp: check
 
   REX_SETTING(std::string, string_language, "", "Language code for string replacements (e.g. pt_BR, es_ES)", rex::kDebugOnly);  // was inside a #if in the .cpp: check
 
@@ -24,7 +25,7 @@ class SystemStringReplacementSettings final : public rex::SettingOwner {
 
 };
 
-inline SystemStringReplacementSettings g_system_string_replacement;
+inline SystemStringReplacementSettings& g_system_string_replacement = larecomp::Leak<SystemStringReplacementSettings>();
 
 inline auto& string_dump_enabled = g_system_string_replacement.string_dump_enabled;
 inline auto& string_folder = g_system_string_replacement.string_folder;

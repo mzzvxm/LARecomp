@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "lb_client.h"
+#include "settings/immortal.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -40,10 +41,10 @@ std::string Key(const Target& t) { return t.host + ":" + std::to_string(t.port);
 
 // Servers seen answering 404 on /lb/v1 (a Rate My Ride server from before the
 // leaderboards). Guarded by the worker: only it touches this.
-std::string g_no_service;
+std::string& g_no_service = larecomp::Leak<std::string>();
 
 std::mutex g_local_mutex;
-std::unique_ptr<Store> g_local;
+std::unique_ptr<Store>& g_local = larecomp::Leak<std::unique_ptr<Store>>();
 
 Store* LocalStore() {
   std::lock_guard<std::mutex> lock(g_local_mutex);
@@ -121,7 +122,7 @@ struct Job {
 
 std::mutex g_queue_mutex;
 std::condition_variable g_queue_cv;
-std::deque<Job> g_queue;
+std::deque<Job>& g_queue = larecomp::Leak<std::deque<Job>>();
 bool g_worker_started = false;
 
 void WorkerMain() {

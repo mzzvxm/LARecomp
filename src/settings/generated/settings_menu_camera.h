@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -50,7 +51,7 @@ class MenuCameraSettings final : public rex::SettingOwner {
 
 };
 
-inline MenuCameraSettings g_menu_camera;
+inline MenuCameraSettings& g_menu_camera = larecomp::Leak<MenuCameraSettings>();
 
 inline auto& menu_cam_custom = g_menu_camera.menu_cam_custom;
 inline auto& menu_cam_cycle = g_menu_camera.menu_cam_cycle;

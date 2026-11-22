@@ -3,6 +3,7 @@
 // See guest_gpu.h for what this replaces and why.
 
 #include "guest_gpu.h"
+#include "settings/immortal.h"
 #include "nocp_app.h"
 
 #include <algorithm>
@@ -99,7 +100,7 @@ uint8_t* GuestMembaseNow() {
 }
 
 State& state() {
-  static State s;
+  static State& s = larecomp::Leak<State>();
   return s;
 }
 
