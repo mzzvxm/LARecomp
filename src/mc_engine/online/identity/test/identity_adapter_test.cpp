@@ -8,7 +8,8 @@
 // (identity_adapter_compare.ps1 does that). Nothing here knows how the code is organised inside: the key files are
 // written and read by the check's own independent code (the file format, DPAPI, Argon2id for the backup).
 //
-//   identity_adapter_test <scenario>        scenario: fresh | existing | unreadable | legacy | ops | client
+//   identity_adapter_test <scenario>        scenario: fresh | existing | unreadable | legacy | legacyxuid | ops | client
+//                                           and, for the code after the split only: setaside2 | importkeeps | locked (Windows)
 //
 // It needs LOCALAPPDATA (Windows) or XDG_DATA_HOME to point at a scratch folder: the scenarios set it themselves.
 
@@ -394,6 +395,81 @@ void Ops(const fs::path& tmp) {
     Check(std::string(idn::DefaultBackupPath().filename().string()) == "LARecomp identity - Tester.lrid", "the default backup name");
 }
 
+// ---- what the online review changed: scenarios for the code after the split only --------------------------------------
+//
+// The code before the split had none of these rules, so identity_adapter_compare.ps1 runs them on the "after" build alone (it
+// takes their exit status as the verdict). The scenarios above stay the same program on both sides.
+
+// The key files the game kept beside a key it replaced: "<id>.key.replaced-<time>".
+std::vector<fs::path> ReplacedCopies() {
+    std::vector<fs::path> found;
+    const std::string prefix = Hex16(kXuid) + ".key.replaced-";
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(IdentityDir(), ec))
+        if (e.path().filename().string().rfind(prefix, 0) == 0) found.push_back(e.path());
+    return found;
+}
+
+// A file that cannot be read is set aside under a free name: an earlier set-aside file is the first copy, and may be the only one.
+void SetAsideTwice(const fs::path&) {
+    SetProfile("Tester", kXuid);
+    const fs::path key = IdentityDir() / (Hex16(kXuid) + ".key");
+    Spit(key.string() + ".unreadable", "the first file that was set aside");
+    Spit(key, "the second file that cannot be read");
+    idn::ApplyProfileIdentity();
+    Check(idn::Loaded(), "a new identity is made");
+    CheckEq(Slurp(key.string() + ".unreadable"), "the first file that was set aside", "the earlier set-aside file is untouched");
+    CheckEq(Slurp(key.string() + ".unreadable-2"), "the second file that cannot be read", "the new one is kept under the next name");
+    const auto f = ReadKeyFile(key);
+    Check(f.count("magic_ok") && f.at("magic_ok") == "1", "and a readable key stands where it was");
+}
+
+// An import of another key keeps the key it replaces beside the new one, byte for byte.
+void ImportKeepsOldKey(const fs::path& tmp) {
+    SetProfile("Tester", kXuid);
+    idn::ApplyProfileIdentity();
+    const fs::path key = IdentityDir() / (Hex16(kXuid) + ".key");
+    const std::string before = Slurp(key);
+    Check(ReplacedCopies().empty(), "no copy before");
+    const fs::path out = tmp / "import-out";
+    Spit(out / "golden.lrid", FromHexText(kGoldenBackup));
+    std::string err;
+    Check(idn::ImportBackup(out / "golden.lrid", "correct horse battery staple", &err), "the import works (" + err + ")");
+    const auto copies = ReplacedCopies();
+    Check(copies.size() == 1, "one copy of the replaced key is kept");
+    if (!copies.empty()) CheckEq(Slurp(copies[0]), before, "it is the file that was replaced, byte for byte");
+    CheckEq(ReadKeyFile(key)["seed"], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "and the key file holds the backup's seed");
+    Check(!fs::exists(IdentityDir() / (Hex16(kXuid) + ".key.tmp")), "no temp file is left");
+}
+
+#ifdef _WIN32
+// A file that cannot be read and cannot be moved (held open without the right to delete): the file is left alone, the session runs on
+// an identity it does not save, and a later import keeps the file's bytes before it writes the new key.
+void UnreadableAndLocked(const fs::path& tmp) {
+    SetProfile("Tester", kXuid);
+    const fs::path key = IdentityDir() / (Hex16(kXuid) + ".key");
+    const std::string junk = "unreadable, and held open by something else";
+    Spit(key, junk);
+    HANDLE hold = CreateFileW(key.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(hold != INVALID_HANDLE_VALUE, "the file is held open for reading only");
+    idn::ApplyProfileIdentity();
+    Check(idn::Loaded(), "the session runs on a new identity");
+    Check(!fs::exists(key.string() + ".unreadable"), "the file could not be moved, and was not");
+    idn::SetPendingRecoveryCode("ABCDE-FGHJK-MNPQR-STVWX");  // a change that would be saved
+    if (hold != INVALID_HANDLE_VALUE) CloseHandle(hold);
+    CheckEq(Slurp(key), junk, "nothing was written over the file, not at the start and not by a later change");
+    Check(!fs::exists(IdentityDir() / (Hex16(kXuid) + ".key.tmp")), "no temp file is left");
+    const fs::path out = tmp / "locked-out";
+    Spit(out / "golden.lrid", FromHexText(kGoldenBackup));
+    std::string err;
+    Check(idn::ImportBackup(out / "golden.lrid", "correct horse battery staple", &err), "an import is allowed (" + err + ")");
+    const auto copies = ReplacedCopies();
+    Check(copies.size() == 1, "the unreadable file is kept before the new key is written");
+    if (!copies.empty()) CheckEq(Slurp(copies[0]), junk, "...byte for byte");
+    CheckEq(ReadKeyFile(key)["seed"], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "and the key file holds the backup's seed");
+}
+#endif
+
 // A request to the master by hand (the check's rival player), independent of the code under test.
 std::string RivalCall(uint16_t port, const std::string& op, const std::string& nick, const idn::KeyPair& kp, const std::string& code) {
     const std::string pub = idn::ToHex(kp.pub, 32);
@@ -491,7 +567,7 @@ void Client(const fs::path& tmp) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::printf("usage: identity_adapter_test fresh|existing|unreadable|legacy|legacyxuid|ops|client\n");
+        std::printf("usage: identity_adapter_test fresh|existing|unreadable|legacy|legacyxuid|ops|client|setaside2|importkeeps|locked\n");
         return 2;
     }
     const std::string scenario = argv[1];
@@ -504,6 +580,11 @@ int main(int argc, char** argv) {
     else if (scenario == "legacyxuid") LegacyXuid(scratch.path());
     else if (scenario == "ops") Ops(scratch.path());
     else if (scenario == "client") Client(scratch.path());
+    else if (scenario == "setaside2") SetAsideTwice(scratch.path());
+    else if (scenario == "importkeeps") ImportKeepsOldKey(scratch.path());
+#ifdef _WIN32
+    else if (scenario == "locked") UnreadableAndLocked(scratch.path());
+#endif
     else {
         std::printf("unknown scenario\n");
         return 2;

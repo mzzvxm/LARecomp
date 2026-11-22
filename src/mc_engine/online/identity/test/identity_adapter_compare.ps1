@@ -4,7 +4,12 @@
 # against the tree as it was at -OldRef and once against this tree, runs every scenario on both, and compares what they
 # print: the checks (all must pass on both) and the lines the code logged (must be identical).
 #
-#   powershell -NoProfile -File identity_adapter_compare.ps1 [-OldRef 4364d9ca] [-Clang <clang++.exe>] [-Work <folder>]
+# The online review (2026-11-22) added rules the code before the split never had: a second unreadable key never replaces the first
+# set-aside copy, an import of another key keeps the key it replaces, a file that cannot be moved is left alone. They are scenarios
+# of their own ($AfterOnly: setaside2, importkeeps, locked); the "before" build is not asked to run them, only the "after" build
+# must pass them. The scenarios above them are unchanged and still have to agree line for line with the code before the split.
+#
+#   powershell -NoProfile -File identity_adapter_compare.ps1 [-OldRef 4364d9ca] [-Clang <clang++.exe>] [-Work <folder>] [-Scenarios a,b,...]
 #
 # Needs git and tar on the PATH and a clang++ that targets Windows (the repo's labuild\tools\clang+llvm-... is the
 # default). No game, no SDK, no real server: the only network is 127.0.0.1. Exit code 0 = both passed and agree.
@@ -12,12 +17,13 @@
 param(
     [string]$OldRef = '4364d9ca',
     [string]$Clang = 'C:\mcv\larecomp\labuild\tools\clang+llvm-20.1.8-x86_64-pc-windows-msvc\bin\clang++.exe',
-    [string]$Work = (Join-Path $env:TEMP 'identity-adapter-compare')
+    [string]$Work = (Join-Path $env:TEMP 'identity-adapter-compare'),
+    # All of them by default. 'client' is the one that talks to a fake relay and the nick registry on 127.0.0.1; the rest open no socket.
+    [string[]]$Scenarios = @('fresh', 'existing', 'unreadable', 'legacy', 'legacyxuid', 'ops', 'client', 'setaside2', 'importkeeps', 'locked')
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..\..')).Path
-$scenarios = 'fresh', 'existing', 'unreadable', 'legacy', 'legacyxuid', 'ops', 'client'
 
 if (Test-Path $Work) { Remove-Item -Recurse -Force $Work }
 $oldTree = Join-Path $Work 'old'
@@ -67,8 +73,20 @@ function Get-Normalized([string]$exe, [string]$scenario) {
     return [pscustomobject]@{ Code = $code; Text = $text }
 }
 
+$afterOnly = 'setaside2', 'importkeeps', 'locked'
 $bad = 0
-foreach ($sc in $scenarios) {
+foreach ($sc in $Scenarios) {
+    if ($afterOnly -contains $sc) {
+        $after = Get-Normalized $newExe $sc
+        if ($after.Code -ne 0) {
+            $bad++
+            Write-Host ("{0}: FAILED on the code after the split (exit {1})" -f $sc, $after.Code)
+            $after.Text | Select-Object -First 12 | Out-Host
+        } else {
+            Write-Host ("{0}: passes on the code after the split ({1}; not run on the code before)" -f $sc, ($after.Text | Select-Object -Last 1))
+        }
+        continue
+    }
     $before = Get-Normalized $oldExe $sc
     $after = Get-Normalized $newExe $sc
     $same = (($before.Text -join "`n") -eq ($after.Text -join "`n"))
