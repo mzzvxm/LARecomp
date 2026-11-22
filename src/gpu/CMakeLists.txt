@@ -171,6 +171,10 @@ add_executable(larecomp_volumetrics_noise_test EXCLUDE_FROM_ALL volumetrics_nois
 # The sun shadow filter disk turn (shaderpack/variants/shadow_filter.cpp ShadowFilterNoise and its blue noise table, shadow_filter.h mode bit 5; NOISE-AUDIT): table, turn, penumbra error, host:
 #   cmake --build <dir> --target larecomp_shadow_filter_noise_test, then run src/gpu/larecomp_shadow_filter_noise_test [<src/gpu dir>] [--print] (a few seconds).
 add_executable(larecomp_shadow_filter_noise_test EXCLUDE_FROM_ALL shadow_filter_noise_test.cpp)
+# What the sun shadow filter's disk does while no temporal upscaler runs (NOISE-RESOLVE, noise_resolve.h): the model of the variant's disk (a straight edge, the weights, the golden angle taps) against the options
+# (fixed turn, a per pixel turn, more taps, an average over frames) with the numbers the decision rests on:
+#   cmake --build <dir> --target larecomp_shadow_filter_resolve_test, then run src/gpu/larecomp_shadow_filter_resolve_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_shadow_filter_resolve_test EXCLUDE_FROM_ALL shadow_filter_resolve_test.cpp)
 # The size of the occlusion's and the bounce light's images (ao_size.h: half the picture's size above 1080 lines of render height, the
 # contact shadows keeping their own size, the memory each frame holds and the cost model; given the src/gpu folder it also checks that the
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:
