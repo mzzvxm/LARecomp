@@ -89,6 +89,8 @@
 //   N3   the units (the exposure, the night factor, the height factor) for a colour that is the game's lamp "rgb": the pool's brightness against the game's own;
 //   N4   the player's vehicle record is the effect object's record; the hook is called for every car with an effect object (traffic's neon is off: the enable byte 0);
 //   N5   the G-buffer planes' hold (neon_light.h kHoldFrames) and the cost with a lit neon at 4K / 1080p / 720p on the RTX 5080 and the iGPU's class (off there), and the cut at the reach (6 % of the colour).
+//   N6   (NEONALL-REVIEW M2) the planes are asked for only while a lit neon car has a light that can reach the picture, by the LAST frame's camera widened by a quarter: with a lit AI racer 100 m away
+//        or behind the camera and no neon car of the player's own, the sidecar must not exist (the "G-buffer" lines, the pass's label); a car that comes into view lights at most a frame late.
 // GB-H3, nothing run (the run plan: h11-work\gb-h3-notes\RUNPLAN-gb-h3.txt):
 //   LS1  THE POLICE KINDS: which of Police0 / 1 / 2 is red, blue or white, which side of the bar, the flash's rhythm and level (a police chase's [car-lights] census lines per kind say what
 //        is on); kind 8 is a siren only away from the headlights (the probe read it beside the headlights of every ordinary car, on all night: local_lights_sources.h kPoliceNearHeadlamp).
@@ -201,6 +203,8 @@ class LocalLights {
     std::unique_ptr<plume::RenderDescriptorSet> set;
   };
 
+  // GB-NEON: whether a neon car is lit and has a light that can reach a pixel of the picture, by the last frame's camera (neon_light.h LitNow): what makes the neon ask for the planes.
+  bool NeonLightReachesPicture();
   bool EnsureResources();
   bool EnsureSlot(uint32_t frame_slot);
   plume::RenderPipeline* PipelineFor(plume::RenderFormat format, uint32_t samples);
@@ -230,8 +234,8 @@ class LocalLights {
   bool contact_on_ = true;  // GB-NEON-CONTACT: mcla_gpu_neon_contact: a neon light is shut out of the car's own panels (the contact term of GB-NEON-BLEED), live
   larecomp::gpu::local_lights::Tier tier_ = larecomp::gpu::local_lights::Tier::kMedium;  // the budgets' tier: the light shadows' level
   larecomp::gpu::headlight_pass::Route route_ = larecomp::gpu::headlight_pass::Route::kForward;  // GB-H2: which of the two ways lights the frame's headlights (mcla_gpu_headlight_pass)
-  bool planes_wanted_ = false;  // the G-buffer's planes and the shared depth are wanted this frame (the setting is on, or the route's headlights are, or a neon car is lit)
-  // GB-NEON: NEON LIGHT (mcla_gpu_neon_light resolved for this card) is on; a car with a lit neon is in the hook's table (held neon_light.h kHoldFrames after the last one: neon_hold_); the gain; the frame's cars.
+  bool planes_wanted_ = false;  // the G-buffer's planes and the shared depth are wanted this frame (the setting is on, or the route's headlights are, or a neon car is lit and has a light that can reach the picture)
+  // GB-NEON: NEON LIGHT (mcla_gpu_neon_light resolved for this card) is on; a car with a lit neon is in the hook's table and one of its lights can reach the picture (held neon_light.h kHoldFrames after the last one: neon_hold_); the gain; the frame's cars.
   bool on_for_lights_ = false;  // the pass runs for its own setting or the headlight route (not for NEON LIGHT alone): the interval line is always said then
   bool neon_on_ = false;
   bool neon_active_ = false;

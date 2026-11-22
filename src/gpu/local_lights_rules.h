@@ -225,6 +225,42 @@ inline bool RowsFromViewInverse(const float m[16], Rows* out) {
   return true;
 }
 
+// GB-NEON (NEONALL-REVIEW M2): the camera the neon asks "does any of my lights reach a pixel of the picture" with at the START of a frame, before the frame's own camera exists (the game's motion
+// blur draw, the anchor, comes after the trigger): the LAST frame's (screen_shared.h Cameras().Previous), its lens widened by kNeonProbeLensMargin so that a car that comes into the picture in
+// the frame between is not missed (a miss would only light it a frame late: the hold keeps the planes once they are wanted). The numbers are those of temporal::Camera, as doubles.
+inline constexpr float kNeonProbeLensMargin = 1.25f;
+struct ProbeView {
+  Rows rows;
+  float tan_x = 0.0f;  // tan of half the horizontal and vertical field of view, already widened
+  float tan_y = 0.0f;
+  uint32_t width = 0;  // the picture in guest pixels (the scissor test only needs its shape)
+  uint32_t height = 0;
+};
+// False when the numbers are no camera (a position or an axis that is not finite, an axis that is not a unit vector, a field of view or aspect outside what a game lens is, no picture size).
+inline bool ProbeViewOf(const double right[3], const double up[3], const double forward[3], const double position[3], double fov_y, double aspect, uint32_t width, uint32_t height, ProbeView* out) {
+  if (!(fov_y > 0.01 && fov_y < 3.1) || !(aspect > 0.1 && aspect < 10.0) || width == 0 || height == 0) {
+    return false;
+  }
+  float m[16] = {};
+  for (int c = 0; c < 3; ++c) {
+    m[c] = float(right[c]);
+    m[4 + c] = float(up[c]);
+    m[8 + c] = -float(forward[c]);  // the view looks along minus row 2
+    m[12 + c] = float(position[c]);
+  }
+  ProbeView view;
+  if (!RowsFromViewInverse(m, &view.rows)) {
+    return false;
+  }
+  const double tan_y = std::tan(0.5 * fov_y);
+  view.tan_y = float(tan_y) * kNeonProbeLensMargin;
+  view.tan_x = float(tan_y * aspect) * kNeonProbeLensMargin;
+  view.width = width;
+  view.height = height;
+  *out = view;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // a pixel's world position (the twin of hlsl/local_light.hlsli LpLinearDepth, LpWorldPosition)
 // ---------------------------------------------------------------------------

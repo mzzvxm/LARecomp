@@ -145,7 +145,7 @@ float LpOcclusion(float4 occ, float world_y) {
   return 1.0f + ramp * (occ.z - 1.0f);
 }
 
-// Whether a light of centre `pos` and `range` can add anything at `world` (local_lights_rules.h Reaches): the three laws of hlsl/light_laws.hlsli all return 0 at or past the range
+// Whether a light of centre `pos` and `range` can add anything at `world` (its exactness is held by local_lights_test.cpp CostChecks through hlsl_shim::LpReaches): the three laws of hlsl/light_laws.hlsli all return 0 at or past the range
 // (dist2 >= range2), so a pixel that fails this test takes nothing from the light whatever its surface is, and the pixel shader asks it BEFORE it reads the G-buffer's planes. Written as the
 // negation of the laws' own test so that a range that is not a number (the laws go on with it) is not left out here either: the pixel then goes the whole way, as it always did.
 bool LpReaches(float3 pos, float range, float3 world) {

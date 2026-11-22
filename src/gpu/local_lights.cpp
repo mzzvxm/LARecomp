@@ -233,6 +233,21 @@ plume::RenderPipeline* LocalLights::PipelineFor(plume::RenderFormat format, uint
 // the frame
 // ---------------------------------------------------------------------------
 
+bool LocalLights::NeonLightReachesPicture() {
+  if (!nl::Global().AnyLit(ll::kNeonMinColour)) {
+    return false;  // no car with its neon lit (one lock, no copy): the usual frame of a player with no neon car about
+  }
+  // The camera of the last frame (the play view's: a pause or garage view, a cut, the first frame have none): a car is "in reach" when one of its lights passes the pass's own visibility test (the
+  // scissor of its reach is not empty) against it, the lens widened (local_lights_rules.h kNeonProbeLensMargin). Without a camera a lit car alone asks, as before.
+  const temporal::Camera* camera = screen_ != nullptr ? screen_->Cameras().Previous(screen_->frame_count(), false) : nullptr;
+  ll::ProbeView view;
+  if (camera == nullptr || !ll::ProbeViewOf(camera->right, camera->up, camera->forward, camera->position, camera->fov_y, camera->aspect, camera->width, camera->height, &view)) {
+    return nl::LitNow(true, false, false);
+  }
+  nl::Global().Recent(&neon_cars_);
+  return nl::LitNow(true, true, ll::NeonReachesView(neon_cars_, tier_, neon_gain_, view));
+}
+
 void LocalLights::BeginFrame() {
   namespace st = larecomp::settings;
   // GB-H2: the headlight route (headlight_pass_rules.h): `pass` and `both` give this pass the frame's headlights and run it whatever mcla_gpu_local_lights says.
@@ -316,8 +331,13 @@ void LocalLights::BeginFrame() {
   // The wants (sticky; the G-buffer and the shared products read them at their own BeginFrame, which the Scene runs after this): with the pass off nothing asks for any plane or product,
   // so no sidecar is made and the AO's depth chain runs for nobody. A route that gives the pass the headlights (GB-H2) wants them only while HEADLIGHTS is on (a rig with no light has nothing for
   // the pass to add, and a car passing in and out of the rig's four must not make the sidecar again): the setting's own use wants them always, as before.
-  // GB-NEON: a lit neon car in the hook's table (held for neon_light.h kHoldFrames frames after the last) wants them too; NEON LIGHT alone does not, so a player with no neon car pays nothing.
-  neon_hold_ = nl::NextHold(neon_on_, neon_on_ && nl::Global().AnyLit(ll::kNeonMinColour), neon_hold_);
+  // GB-NEON: a lit neon car in the hook's table with a light that can reach a pixel of the picture (held for neon_light.h kHoldFrames frames after the last) wants them too; NEON LIGHT alone does not, so a
+  // player with no neon car, or with only cars out of reach (100 m away, behind the camera), pays nothing. Every consumer has its own want: the reflections' and the others' stay whatever this says.
+  // The camera history is kept while NEON LIGHT is on (the frame's own camera comes after the trigger: the probe uses the last frame's).
+  if (screen_ != nullptr) {
+    screen_->WantCamera(screen::Consumer::kLocalLights, neon_on_);
+  }
+  neon_hold_ = nl::NextHold(neon_on_, neon_on_ && NeonLightReachesPicture(), neon_hold_);
   neon_active_ = neon_on_ && neon_hold_ > 0;
   planes_wanted_ = enabled_ && (setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);
   if (gbuffer_ != nullptr) {

@@ -164,6 +164,11 @@ inline constexpr float kNeonCutShare = 0.06f;
 inline constexpr float kNeonTubeGain = 1.0f;
 // A neon whose brightest channel is below this adds nothing a picture could show (the dark half of a pulse at night): it takes no budget and no G-buffer.
 inline constexpr float kNeonMinColour = 0.003f;
+// The brightest channel a neon light's colour may have when it goes to the pass (NEONALL-REVIEW M4). The game's colour is the config colour (0 to 1) x intensity (1.5 in the checks) x pulse (0 to 1) x fade
+// (0.2 at night, 0.125 by day): about 2 at most, and the console's own colour target (7e3) holds 31.875 a channel at most, so a light of 32 is no light the game could show. The pass adds colour x
+// the law's term x the exposure (16) into a half-float target (max 65504): 32 keeps a tube's light under 2000 at the default gain, where a colour from a wrong offset or a stale object (1e30)
+// would be Inf in the target and NaN in the bloom after it.
+inline constexpr float kNeonMaxColour = 32.0f;
 // A neon car farther from the camera than this is not lit (its light's reach is a few metres: the picture around it is far away and small, and the pass's draw is a scissored one a light).
 inline constexpr float kNeonSeenMetres = 40.0f;
 
@@ -450,7 +455,13 @@ inline void GatherCarLights(const CarSourceInputs& in, Candidates* out) {
 inline Light MakeNeonLight(const nl::NeonCar& car, uint32_t i, uint32_t n, const float pos[3], Tier tier, float gain) {
   const float reach = NeonReach(tier);
   const float plateau = kNeonCutShare * reach * reach;
-  Light l = MakeOmniLight(LightSource::kNeon, pos, car.colour, plateau * std::max(gain, 0.0f) * kNeonTubeGain / float(std::max<uint32_t>(n, 1u)), plateau, reach,
+  // The colour is the game's, kept finite and not negative by the decode (neon_light.h ReadNeonCar); here it is bounded too (kNeonMaxColour: nothing the game makes comes near it), and a value that is
+  // not a number counts as 0, so that a wrong read cannot put an Inf or a NaN into the half-float target.
+  float colour[3];
+  for (int k = 0; k < 3; ++k) {
+    colour[k] = car.colour[k] > 0.0f ? std::min(car.colour[k], kNeonMaxColour) : 0.0f;
+  }
+  Light l = MakeOmniLight(LightSource::kNeon, pos, colour, plateau * std::max(gain, 0.0f) * kNeonTubeGain / float(std::max<uint32_t>(n, 1u)), plateau, reach,
                           light_id::NeonCarId(car.object, i));
   l.roles = kRoleMaskSurface;
   l.car_key = cars::PointCarKey(car.object);
@@ -554,6 +565,30 @@ inline void GatherNeonLights(const NeonSourceInputs& in, std::vector<Light>* out
     r.space = p.tube.space;
     out->insert(out->end(), tube_lights.begin(), tube_lights.end());
   }
+}
+
+// Whether the gather would light at least one car with these inputs: some car with its neon on and bright, placed, within kNeonSeenMetres, one of whose lights can be seen (`in.can_be_seen`,
+// or any light when it is empty). It IS the gather's rule (the tier's car budget is at least one car), so the planes the light pass asks for are made exactly when it will have a neon light to
+// draw: the G-buffer's planes cost about 0.22 ms at 1080p on D3D12 and a lit car 100 m away, or behind the camera, has nothing in the picture to use them for (NEONALL-REVIEW M2).
+inline bool AnyNeonLightSeen(const NeonSourceInputs& in) {
+  std::vector<Light> lights;
+  NeonReport report;
+  GatherNeonLights(in, &lights, &report);
+  return report.lit != 0;
+}
+
+// The same question against a camera's picture (the pass's own visibility test: the scissor of the light's reach is not empty), for the frame's start: `view` is the last frame's camera, widened
+// (ProbeViewOf).
+inline bool NeonReachesView(const std::vector<nl::NeonCar>& cars, Tier tier, float gain, const ProbeView& view) {
+  NeonSourceInputs in;
+  in.cars = &cars;
+  in.tier = tier;
+  in.gain = gain;
+  for (int i = 0; i < 3; ++i) {
+    in.camera[i] = view.rows.position[i];
+  }
+  in.can_be_seen = [&view](const Light& l) { return !ScissorOfLight(l, view.rows, view.tan_x, view.tan_y, view.width, view.height).Empty(); };
+  return AnyNeonLightSeen(in);
 }
 
 // ---------------------------------------------------------------------------

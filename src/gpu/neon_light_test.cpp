@@ -16,12 +16,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include "gbuffer_rules.h"
 #include "headlight_pass_rules.h"
 #include "local_lights_sources.h"
 #include "mc_engine/hooks/neon_pulse.h"
@@ -401,6 +403,61 @@ void LightChecks() {
     for (size_t i = 0; i < again.size() && i < lights.size(); ++i) {
       Check(again[i].id == lights[i].id && std::memcmp(again[i].pos, lights[i].pos, sizeof(again[i].pos)) == 0, "a light keeps its id and place" + at);
     }
+  }
+  // NEONALL-REVIEW M4: the guest's colour is bounded before it becomes a light (a wrong read or a stale object must not put an Inf or a NaN into the half-float target)
+  {
+    const nl::NeonCar base = CarAt(kSelf, camera, 1.5f, 0.8f, true);
+    nl::Tube tube;
+    Check(nl::ResolveTube(base, &tube), "the car for the colour checks is placed");
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::nanf("");
+    for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+      const std::string at = std::string(" at ") + lp::TierName(tier);
+      const float reach = lp::NeonReach(tier);
+      const float plateau = lp::kNeonCutShare * reach * reach;
+      for (const float gain : {0.0f, 1.0f, 16.0f}) {
+        for (const uint32_t n : {1u, 2u, 4u}) {
+          const float level = plateau * gain * lp::kNeonTubeGain / float(n);
+          // the game's own colour (about 0.2 here, up to a few in the game): the light is the colour times the level, bit for bit as before
+          Light normal = lp::MakeNeonLight(base, 0, n, tube.a, tier, gain);
+          for (int k = 0; k < 3; ++k) {
+            Check(normal.color[k] == std::max(base.colour[k], 0.0f) * level, "an ordinary colour is not changed" + at);
+          }
+          // a colour at the bound is not changed either; one past it, or Inf, is the bound; NaN and negative are 0
+          const float colours[6] = {lp::kNeonMaxColour, 1.0e30f, inf, nan, -3.0f, 0.5f * lp::kNeonMaxColour};
+          const float want[6] = {lp::kNeonMaxColour, lp::kNeonMaxColour, lp::kNeonMaxColour, 0.0f, 0.0f, 0.5f * lp::kNeonMaxColour};
+          for (int c = 0; c < 6; ++c) {
+            nl::NeonCar wild = base;
+            wild.colour[0] = wild.colour[1] = wild.colour[2] = colours[c];
+            const Light l = lp::MakeNeonLight(wild, 0, n, tube.a, tier, gain);
+            for (int k = 0; k < 3; ++k) {
+              Check(std::isfinite(l.color[k]) && l.color[k] >= 0.0f && l.color[k] == want[c] * level, "a colour of " + std::to_string(colours[c]) + " becomes " + std::to_string(want[c]) + " x the level" + at);
+            }
+          }
+        }
+      }
+    }
+    // through the gather: a car whose colour is 1e30 is lit (it is bright), with finite lights of the bounded colour
+    nl::NeonCar wild = base;
+    wild.colour[0] = 1.0e30f;
+    wild.colour[1] = inf;
+    wild.colour[2] = 0.2f;
+    const std::vector<nl::NeonCar> wild_cars = {wild};
+    lp::NeonSourceInputs in;
+    in.cars = &wild_cars;
+    in.tier = lp::Tier::kUltra;
+    std::memcpy(in.camera, camera, sizeof(camera));
+    std::vector<Light> lights;
+    lp::GatherNeonLights(in, &lights);
+    Check(lights.size() == lp::BudgetOf(lp::Tier::kUltra).neon_points, "a car with a wild colour is still lit");
+    bool finite = true, bounded = true;
+    for (const Light& l : lights) {
+      for (int k = 0; k < 3; ++k) {
+        finite = finite && std::isfinite(l.color[k]);
+        bounded = bounded && l.color[k] <= lp::kNeonMaxColour * lp::NeonReach(lp::Tier::kUltra) * lp::NeonReach(lp::Tier::kUltra) * lp::kNeonCutShare * 1.0001f;
+      }
+    }
+    Check(finite && bounded, "and its lights are finite and bounded");
   }
   // the points of a tube sit along it, under the car, in equal parts
   {
@@ -856,6 +913,179 @@ void HoldChecks() {
 }
 
 // ---------------------------------------------------------------------------
+// the planes' want follows the neon light that can reach the picture (NEONALL-REVIEW M2)
+// ---------------------------------------------------------------------------
+
+// A camera at `at` looking along +x (right +z, up +y), a 1 rad vertical field of view at 16:9, 1280 x 720.
+lp::ProbeView ViewAt(const float at[3], double fov_y = 1.0) {
+  const double right[3] = {0.0, 0.0, 1.0}, up[3] = {0.0, 1.0, 0.0}, forward[3] = {1.0, 0.0, 0.0};
+  const double position[3] = {double(at[0]), double(at[1]), double(at[2])};
+  lp::ProbeView view;
+  const bool ok = lp::ProbeViewOf(right, up, forward, position, fov_y, 16.0 / 9.0, 1280, 720, &view);
+  Check(ok, "the probe's camera is made");
+  return view;
+}
+
+void ReachChecks() {
+  const float camera[3] = {820.0f, 18.0f, -800.0f};
+  const lp::ProbeView view = ViewAt(camera);
+  const auto car_at = [&](uint32_t n, float dx, float dz, float intensity = 1.5f) {
+    const float origin[3] = {camera[0] + dx, 17.4f, camera[2] + dz};
+    return CarAt(kSelf + 0x10000u * n, origin, intensity);
+  };
+  // the decision: a lit car in the table asks for the planes only when a light of it can reach the picture; with no camera of the last frame it asks as it always did
+  Check(nl::LitNow(true, true, true) && !nl::LitNow(true, true, false) && nl::LitNow(true, false, false) && nl::LitNow(true, false, true), "a lit car asks when its light can reach the picture, or when there is no camera to tell by");
+  Check(!nl::LitNow(false, true, true) && !nl::LitNow(false, false, false) && !nl::LitNow(false, true, false) && !nl::LitNow(false, false, true), "no lit car, no ask");
+
+  for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+    const std::string at = std::string(" at ") + lp::TierName(tier);
+    const auto reaches = [&](const std::vector<nl::NeonCar>& cars) { return lp::NeonReachesView(cars, tier, 1.0f, view); };
+    // no neon car in reach: far away, behind the camera, beyond the 40 m, off the side of the picture, its neon off or dark
+    const std::vector<nl::NeonCar> none;
+    Check(!reaches(none), "no cars: nothing in reach" + at);
+    Check(!reaches({car_at(1, 100.0f, 0.0f)}), "a lit car 100 m ahead is not in reach" + at);
+    Check(!reaches({car_at(1, -12.0f, 0.0f)}), "a lit car 12 m behind the camera is not in reach" + at);
+    Check(!reaches({car_at(1, 41.0f, 0.0f)}), "a lit car 41 m ahead is beyond the neon's 40 m" + at);
+    {
+      const std::vector<nl::NeonCar> side = {car_at(1, 12.0f, 38.0f)};
+      lp::NeonSourceInputs plain;  // (without the picture the car would be lit: the side is what keeps it out)
+      plain.cars = &side;
+      plain.tier = tier;
+      std::memcpy(plain.camera, camera, sizeof(camera));
+      std::vector<Light> out;
+      lp::NeonReport report;
+      lp::GatherNeonLights(plain, &out, &report);
+      Check(report.lit == 1, "the car off the side is within 40 m and lit when nothing is asked of the picture" + at);
+      Check(!reaches(side), "a lit car 38 m off the side of the picture is not in reach" + at);
+    }
+    nl::NeonCar off = car_at(1, 15.0f, 0.0f);
+    off.on = false;
+    Check(!reaches({off}), "a car in front with its neon off is not in reach" + at);
+    Check(!reaches({car_at(1, 15.0f, 0.0f, 0.0001f)}), "a car in front with a dark neon is not in reach" + at);
+    // one car in reach is enough, whatever else the table holds
+    Check(reaches({car_at(1, 15.0f, 0.0f)}), "a lit car 15 m ahead is in reach" + at);
+    Check(reaches({car_at(1, 38.0f, 0.0f)}), "a lit car 38 m ahead is in reach" + at);
+    Check(reaches({car_at(1, 100.0f, 0.0f), car_at(2, -12.0f, 0.0f), car_at(3, 15.0f, 6.0f)}), "one car in reach among the ones that are not" + at);
+    Check(!reaches({car_at(1, 100.0f, 0.0f), car_at(2, -12.0f, 0.0f), car_at(3, 150.0f, 6.0f), off}), "the cars that are not in reach do not add up to one" + at);
+    // the table: the old test (AnyLit) said yes for the far car, the new decision says no
+    nl::Table table;
+    const auto t0 = nl::Table::Clock::now();
+    table.Note(car_at(1, 100.0f, 0.0f), t0);
+    std::vector<nl::NeonCar> recent;
+    table.Recent(&recent, nl::Table::kMaxAge, t0);
+    Check(table.AnyLit(lp::kNeonMinColour, nl::Table::kMaxAge, t0), "the table has a lit car (what the planes' want used to ask)" + at);
+    Check(!nl::LitNow(table.AnyLit(lp::kNeonMinColour, nl::Table::kMaxAge, t0), true, lp::NeonReachesView(recent, tier, 1.0f, view)), "... and with the far car alone the neon does not want the planes" + at);
+    table.Note(car_at(2, 15.0f, 0.0f), t0);
+    table.Recent(&recent, nl::Table::kMaxAge, t0);
+    Check(nl::LitNow(table.AnyLit(lp::kNeonMinColour, nl::Table::kMaxAge, t0), true, lp::NeonReachesView(recent, tier, 1.0f, view)), "with one car in reach it does" + at);
+  }
+
+  // the hold: the planes stay for kHoldFrames after the last frame in reach, and then go
+  {
+    uint32_t hold = 0;
+    hold = nl::NextHold(true, nl::LitNow(true, true, true), hold);
+    Check(hold == nl::kHoldFrames, "a car in reach fills the hold");
+    uint32_t frames = 0;
+    while (hold > 0 && frames < 1000) {
+      hold = nl::NextHold(true, nl::LitNow(true, true, false), hold);
+      ++frames;
+    }
+    Check(frames == nl::kHoldFrames, "a lit car out of reach lets the hold run down");
+  }
+
+  // the planes are shared: the neon's own want is the pass's, and the reflections' (and every other consumer's) want stays whatever the neon says
+  {
+    namespace gb = mcla::gpu::gbuffer;
+    namespace hp = larecomp::gpu::headlight_pass;
+    const auto planes = [](bool enabled, bool setting_on, bool headlights_on, bool neon_active) {
+      return enabled && (setting_on || (hp::PassLightsHeadlights(hp::Route::kForward) && headlights_on) || neon_active);
+    };
+    const bool neon_far = nl::LitNow(true, true, false);
+    const bool neon_near = nl::LitNow(true, true, true);
+    Check(!planes(true, false, true, neon_far), "the default player (NEON LIGHT on, HEADLIGHTS on) with only a far neon car: the pass wants no plane");
+    Check(planes(true, false, true, neon_near), "... and with a car in reach it wants them");
+    gb::Wants wants;
+    wants.Set(gb::Consumer::kLocalLights, planes(true, false, true, neon_far) ? gb::ConsumerPlanes(gb::Consumer::kLocalLights) : 0u);
+    Check(wants.Union() == 0u, "nothing else on: no plane is wanted at all");
+    wants.Set(gb::Consumer::kReflections, gb::ConsumerPlanes(gb::Consumer::kReflections));
+    Check(wants.Of(gb::Consumer::kLocalLights) == 0u && wants.Union() == gb::ConsumerPlanes(gb::Consumer::kReflections) && wants.Union() == gb::kAllPlanes, "with the reflections on the planes are still wanted, by them");
+    wants.Set(gb::Consumer::kLocalLights, planes(true, false, true, neon_near) ? gb::ConsumerPlanes(gb::Consumer::kLocalLights) : 0u);
+    Check(wants.Of(gb::Consumer::kLocalLights) == gb::kAllPlanes && wants.Union() == gb::kAllPlanes, "a car in reach: the pass wants the planes again");
+  }
+
+  // the probe's camera: the numbers must be a camera, the lens is widened
+  {
+    const double right[3] = {0, 0, 1}, up[3] = {0, 1, 0}, forward[3] = {1, 0, 0}, position[3] = {1, 2, 3};
+    lp::ProbeView v;
+    Check(lp::ProbeViewOf(right, up, forward, position, 1.0, 16.0 / 9.0, 1280, 720, &v), "a camera is a camera");
+    CheckNear(v.tan_y, std::tan(0.5) * double(lp::kNeonProbeLensMargin), 1.0e-5, "the vertical lens is widened by the margin");
+    CheckNear(v.tan_x, std::tan(0.5) * 16.0 / 9.0 * double(lp::kNeonProbeLensMargin), 1.0e-5, "the horizontal one too");
+    Check(v.rows.position[0] == 1.0f && v.rows.forward[0] == 1.0f && v.rows.right[2] == 1.0f && v.rows.up[1] == 1.0f, "the axes and the place are the camera's");
+    const double nan = std::nan("");
+    const double bad_position[3] = {nan, 0, 0}, bad_axis[3] = {2, 0, 0};
+    lp::ProbeView untouched;
+    Check(!lp::ProbeViewOf(right, up, forward, bad_position, 1.0, 1.7, 1280, 720, &untouched), "a position that is not a number is no camera");
+    Check(!lp::ProbeViewOf(bad_axis, up, forward, position, 1.0, 1.7, 1280, 720, &untouched), "an axis that is not a unit vector is no camera");
+    Check(!lp::ProbeViewOf(right, up, forward, position, 0.0, 1.7, 1280, 720, &untouched) && !lp::ProbeViewOf(right, up, forward, position, nan, 1.7, 1280, 720, &untouched), "no field of view, no camera");
+    Check(!lp::ProbeViewOf(right, up, forward, position, 1.0, 0.0, 1280, 720, &untouched) && !lp::ProbeViewOf(right, up, forward, position, 1.0, 1.7, 0, 720, &untouched), "no aspect or no picture, no camera");
+    Check(untouched.width == 0 && untouched.tan_x == 0.0f, "a refused camera leaves the output alone");
+  }
+
+  // THE RESULT IS THE SAME WHEN NEON LIGHT REACHES THE SCREEN: whenever the pass's own gather, with the frame's exact camera, lights a car, the start of the frame's probe (the same camera, widened) says
+  // yes, so the planes are there; the probe may say yes for more (the lens is wider). A sweep of cameras and cars.
+  {
+    uint32_t seed = 12345u;
+    const auto rnd = [&seed]() {
+      seed = seed * 1664525u + 1013904223u;
+      return float((seed >> 8) & 0xFFFFu) / 65535.0f;
+    };
+    uint32_t both = 0, neither = 0, widened_only = 0, missed = 0;
+    for (int n = 0; n < 3000; ++n) {
+      const float yaw = rnd() * 6.2831853f;
+      const double c = std::cos(double(yaw)), s = std::sin(double(yaw));
+      const double forward[3] = {c, 0.0, s}, up[3] = {0.0, 1.0, 0.0}, right[3] = {-s, 0.0, c};
+      const double position[3] = {820.0 + 30.0 * double(rnd()), 18.0, -800.0 + 30.0 * double(rnd())};
+      const double fov = 0.5 + 0.8 * double(rnd());
+      lp::ProbeView widened;
+      if (!lp::ProbeViewOf(right, up, forward, position, fov, 16.0 / 9.0, 1280, 720, &widened)) {
+        Check(false, "the sweep's camera is a camera");
+        break;
+      }
+      lp::ProbeView exact = widened;
+      exact.tan_x /= lp::kNeonProbeLensMargin;
+      exact.tan_y /= lp::kNeonProbeLensMargin;
+      std::vector<nl::NeonCar> cars;
+      const uint32_t count = 1u + uint32_t(rnd() * 4.0f);
+      for (uint32_t i = 0; i < count; ++i) {
+        const float origin[3] = {float(position[0]) + (rnd() - 0.5f) * 140.0f, 17.4f, float(position[2]) + (rnd() - 0.5f) * 140.0f};
+        cars.push_back(CarAt(kSelf + 0x10000u * (i + 1), origin));
+      }
+      const lp::Tier tier = n % 3 == 0 ? lp::Tier::kMedium : (n % 3 == 1 ? lp::Tier::kHigh : lp::Tier::kUltra);
+      // what the pass does at the trigger: the gather with the picture's visibility test
+      lp::NeonSourceInputs in;
+      in.cars = &cars;
+      in.tier = tier;
+      for (int k = 0; k < 3; ++k) {
+        in.camera[k] = exact.rows.position[k];
+      }
+      in.can_be_seen = [&exact](const Light& l) { return !lp::ScissorOfLight(l, exact.rows, exact.tan_x, exact.tan_y, exact.width, exact.height).Empty(); };
+      std::vector<Light> lit;
+      lp::NeonReport report;
+      lp::GatherNeonLights(in, &lit, &report);
+      const bool pass_lights = report.lit != 0;
+      const bool probe = lp::NeonReachesView(cars, tier, 1.0f, widened);
+      missed += (pass_lights && !probe) ? 1u : 0u;
+      both += (pass_lights && probe) ? 1u : 0u;
+      neither += (!pass_lights && !probe) ? 1u : 0u;
+      widened_only += (!pass_lights && probe) ? 1u : 0u;
+    }
+    Check(missed == 0, "whenever the pass lights a neon car the probe wants the planes (" + std::to_string(missed) + " misses)");
+    Check(both > 100 && neither > 100, "the sweep has both kinds of frame (" + std::to_string(both) + " lit, " + std::to_string(neither) + " not)");
+    (void)widened_only;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the ids
 // ---------------------------------------------------------------------------
 
@@ -969,8 +1199,23 @@ void SourceChecks(const std::string& src) {
     Check(gather != std::string::npos && gather < unseen && unseen < select, "gather, then drop the unseen, then select");
     Check(Has(cpp, "planes_wanted_ = enabled_ && (setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);"),
           "the G-buffer's planes are wanted for the setting, for the headlight route while HEADLIGHTS is on, and while a neon car is lit (not for NEON LIGHT alone)");
-    Check(Has(cpp, "neon_hold_ = nl::NextHold(neon_on_, neon_on_ && nl::Global().AnyLit(ll::kNeonMinColour), neon_hold_);"), "the planes are held a while after the last lit neon car (no sidecar flapping)");
-    Check(Has(cpp, "nl::Global().AnyLit(ll::kNeonMinColour)"), "the pass asks the table for a lit car before it wants the planes");
+    Check(Has(cpp, "neon_hold_ = nl::NextHold(neon_on_, neon_on_ && NeonLightReachesPicture(), neon_hold_);"), "the planes are held a while after the last lit neon car in reach (no sidecar flapping)");
+    // NEONALL-REVIEW M2: the planes are asked for only while a lit car has a light that can reach the picture (the last frame's camera, widened), and the camera history is kept for it while NEON LIGHT is on
+    {
+      const size_t fn = At(cpp, "bool LocalLights::NeonLightReachesPicture() {");
+      const size_t lit = At(cpp, "if (!nl::Global().AnyLit(ll::kNeonMinColour)) {");
+      const size_t previous = At(cpp, "screen_->Cameras().Previous(screen_->frame_count(), false)");
+      const size_t probe = At(cpp, "ll::ProbeViewOf(camera->right, camera->up, camera->forward, camera->position, camera->fov_y, camera->aspect, camera->width, camera->height, &view)");
+      const size_t reach = At(cpp, "return nl::LitNow(true, true, ll::NeonReachesView(neon_cars_, tier_, neon_gain_, view));");
+      const size_t fallback = At(cpp, "return nl::LitNow(true, false, false);");
+      Check(fn != std::string::npos && lit != std::string::npos && previous != std::string::npos && probe != std::string::npos && fallback != std::string::npos && reach != std::string::npos && fn < lit && lit < previous &&
+                previous < probe && probe < fallback && fallback < reach,
+            "the probe asks the table for a lit car first (one lock), then the last frame's play camera, and says yes for a lit car when it has none");
+      const size_t want_camera = At(cpp, "screen_->WantCamera(screen::Consumer::kLocalLights, neon_on_);");
+      const size_t hold = At(cpp, "neon_hold_ = nl::NextHold(neon_on_, neon_on_ && NeonLightReachesPicture(), neon_hold_);");
+      Check(want_camera != std::string::npos && hold != std::string::npos && want_camera < hold, "the camera history is kept while NEON LIGHT is on, before the probe reads it");
+      Check(Has(cpp, "neon_on_ && NeonLightReachesPicture()") && !Has(cpp, "neon_on_ && nl::Global().AnyLit(ll::kNeonMinColour)"), "the table's lit car alone does not make the planes wanted any more");
+    }
   }
   Check(Has(header, "neon_light.h") && Has(header, "neon_active_") && Has(header, "NEON"), "local_lights.h tells the neon's story");
 }
@@ -988,6 +1233,7 @@ int main(int argc, char** argv) {
   PixelChecks();
   TableChecks();
   HoldChecks();
+  ReachChecks();
   IdChecks();
   if (!src.empty()) {
     SourceChecks(src);
