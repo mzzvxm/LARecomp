@@ -2636,14 +2636,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   if (contact) {
     contact_pipeline = Pipeline(kVContact);
   }
-  if (plan.contact_history && !Pipeline(ms ? kVTemporalMs : kVTemporal)) {
-    plan.contact_history = false;  // NOISE-RESOLVE: the temporal pass is not made yet: this frame has no history for the contact image, and its noise holds (Varies)
-  }
-  if (plan.contact_history && summary.stencil_slot == kNoSlot) {
-    // The history's pass reads the vehicles' IDs from the stencil plane (RecordContactHistory returns without a slot for it): without a plane view the history cannot run, so the march and the traced sun
-    // rays must not take the per-frame noise either (they would show it filtered by the 3x3 alone: shimmer). Review F6.
-    plan.contact_history = false;
-  }
+  // NOISE-RESOLVE: the noise moves only on a frame whose history pass runs (Varies). The pass cannot run while its pipeline is not made: this frame has no history for the contact image, and its noise holds. A
+  // depth target with no stencil plane view is not a reason (the pass reads no vehicle then), nor is a first frame, a gap or a size change (the pass runs with its history off): noise_resolve.h ContactHistoryRuns.
+  plan.contact_history = noise_resolve::ContactHistoryRuns(plan.contact_history, Pipeline(ms ? kVTemporalMs : kVTemporal) != nullptr);
   if ((extract ? !screen_->ChainReady(screen::extract::KindsFor(true, levels, false, false, ms, false)) : (!depth_pipeline || (levels && !mip_pipeline))) ||
       (plan.occlusion && (!main_pipeline || !temporal_pipeline)) ||
       (plan.apply && !denoise_pipeline) || (contact && !contact_pipeline)) {

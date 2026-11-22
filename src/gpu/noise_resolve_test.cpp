@@ -385,6 +385,106 @@ void TestContactGhost() {
 }
 
 // ---------------------------------------------------------------------------
+// when the contact history is planned (noise_resolve.h ContactHistoryRuns): stack review F6 against noise review S6, the three situations
+// ---------------------------------------------------------------------------
+
+// What one frame of the contact image is told: whether the history is wanted (Plan::contact_history before Run's decision), whether its pass can be recorded (its pipeline is made), and whether the pass starts over
+// (the first frame, a gap, a cut, a view switch or a new size: ChooseContactHistory turns the history off for that frame, the pass still runs).
+struct FramePlan {
+  bool planned = true;
+  bool pass_made = true;
+  bool reset = false;
+};
+
+// RunContact with the plan of each frame: the noise moves only on a frame whose pass runs (nr::FrameTerm, as ao.cpp does), the pass starts from the frame as it is after a frame that did not run (the images are
+// kept or made again, their old content is never read: ChooseContactHistory). `each` takes every frame's result.
+Run RunContactPlanned(const Visibility& vis, const std::function<double(double, double)>& truth, bool noise_free, int frames, const std::function<FramePlan(int)>& plan_of, std::vector<Image>* each = nullptr) {
+  Run run;
+  Image prev;
+  bool have = false;
+  int age = 0;
+  for (int f = 0; f < frames; ++f) {
+    const FramePlan p = plan_of(f);
+    const bool runs = nr::ContactHistoryRuns(p.planned, p.pass_made);
+    Image raw;
+    for (int y = 0; y < kN; ++y) {
+      for (int x = 0; x < kN; ++x) {
+        raw.At(x, y) = noise_free ? float(truth(double(x), double(y))) : vis(x, y, nr::FrameTerm(false, runs, uint64_t(100 + f), 1023u), double(x), double(y));
+      }
+    }
+    const Image filtered = Filter(raw);
+    Image result = filtered;
+    if (runs) {
+      const bool use = have && !p.reset;
+      result = Accumulate(filtered, use ? &prev : nullptr, use ? 1.0 - 1.0 / double(std::min(age + 2, 12)) : 0.0, 0.0, 0.0);
+      age = use ? std::min(age + 1, 12) : 0;
+      have = true;
+    } else {
+      have = false;  // no pass this frame: the next one starts from its own frame
+    }
+    run.before_last = run.last;
+    run.last = result;
+    prev = result;
+    if (each) {
+      each->push_back(result);
+    }
+  }
+  return run;
+}
+
+void TestContactHistoryPlan() {
+  g_check(nr::ContactHistoryRuns(true, true) && !nr::ContactHistoryRuns(true, false) && !nr::ContactHistoryRuns(false, true) && !nr::ContactHistoryRuns(false, false),
+          "ContactHistoryRuns: the history runs when it is planned and its pass is made, and for no other reason (the stencil plane is not an input)");
+  g_check(nr::FrameTerm(false, nr::ContactHistoryRuns(true, true), 77, 1023) == 77u && nr::FrameTerm(false, nr::ContactHistoryRuns(true, false), 77, 1023) == 0u &&
+              nr::FrameTerm(false, nr::ContactHistoryRuns(false, true), 77, 1023) == 0u,
+          "the noise moves on a frame exactly when the history's pass runs (no upscaler): a frame whose pass cannot be recorded holds its noise, none moves it for nothing");
+  const Visibility& vis = SoftVisibility;
+  const auto& truth = SoftTruth;
+  const int frames = 14;
+  const auto always = [](bool planned) { return [planned](int) { return FramePlan{planned, true, false}; }; };
+  const Run clean_fixed = RunContactPlanned(vis, truth, true, frames, always(false));
+  const Run clean_resolved = RunContactPlanned(vis, truth, true, frames, always(true));
+  // 1. NO STENCIL PLANE AT ALL, every frame. F6 cleared the plan (the fixed pattern for as long as the plane is missing); the rule leaves it (the pass reads no vehicle: AoVehicleId is 0). The frozen pattern is
+  // the stale picture the owner does not want, the moving noise with no pass would be the grain: only the pass leaves less error than the one and less boil than the other.
+  const Metrics frozen = Compare(RunContactPlanned(vis, truth, false, frames, always(false)), clean_fixed, false);
+  const Metrics resolved = Compare(RunContactPlanned(vis, truth, false, frames, always(true)), clean_resolved, false);
+  const Metrics grain = Compare(RunContact(vis, truth, true, false, false, frames, 0, 0), RunContact(vis, truth, false, false, true, frames, 0, 0), false);
+  if (g_check.print) {
+    std::printf("  contact history without a stencil plane: frozen pattern (F6) rms %.4f flicker %.4f | grain (moving noise, no pass) rms %.4f flicker %.4f | the pass runs: rms %.4f flicker %.4f\n", frozen.rms, frozen.flicker,
+                grain.rms, grain.flicker, resolved.rms, resolved.flicker);
+  }
+  g_check(resolved.rms < 0.45 * frozen.rms && resolved.flicker < 0.2 * grain.flicker && frozen.flicker < 1e-6,
+          nc::Num("no stencil plane: the pass that runs leaves a noise rms of %.4f against the frozen pattern's %.4f and a flicker of %.4f against the unaveraged noise's %.4f", resolved.rms, frozen.rms, resolved.flicker, grain.flicker));
+  // 2. A SKIPPED FRAME: the pass cannot be recorded at frame 6 (its pipeline is not made). That frame is the fixed pattern, exactly (no boil of a moving noise nothing averages); the frames after start over from
+  // their own and recover.
+  std::vector<Image> skipped_frames, fixed_frames;
+  const Run skipped = RunContactPlanned(vis, truth, false, frames, [](int f) { return FramePlan{true, f != 6, false}; }, &skipped_frames);
+  RunContactPlanned(vis, truth, false, frames, always(false), &fixed_frames);
+  const Run clean_skipped = RunContactPlanned(vis, truth, true, frames, [](int f) { return FramePlan{true, f != 6, false}; });
+  const Metrics after_skip = Compare(skipped, clean_skipped, false);
+  g_check(skipped_frames[6].v == fixed_frames[6].v,
+          "a frame whose pass cannot be recorded is the fixed pattern through the filter, frame for frame: its noise held");
+  g_check(after_skip.rms < 0.7 * frozen.rms && after_skip.flicker < 0.4 * grain.flicker,
+          nc::Num("the frames after a skipped frame recover: noise rms %.4f against the frozen pattern's %.4f, flicker %.4f against the unaveraged noise's %.4f (the history starts over from the frame as it is)", after_skip.rms, frozen.rms,
+                  after_skip.flicker, grain.flicker));
+  // 3. A SIZE CHANGE (or a gap, a cut, a view switch): at frame 6 the pass runs with its history off. The noise moves on that frame (the pass averages it from the next on), and the old history is not read.
+  std::vector<Image> resized_frames;
+  const auto restart_at_6 = [](int f) { return FramePlan{true, true, f == 6}; };
+  const Run resized = RunContactPlanned(vis, truth, false, frames, restart_at_6, &resized_frames);
+  const Metrics after_resize = Compare(resized, RunContactPlanned(vis, truth, true, frames, restart_at_6), false);
+  Image moving_noise;  // the frame's own noise through the filter, with nothing before it
+  for (int y = 0; y < kN; ++y) {
+    for (int x = 0; x < kN; ++x) {
+      moving_noise.At(x, y) = vis(x, y, nr::FrameTerm(false, true, uint64_t(100 + 6), 1023u), double(x), double(y));
+    }
+  }
+  g_check(resized_frames[6].v != fixed_frames[6].v && resized_frames[6].v == Filter(moving_noise).v,
+          "a frame whose history starts over (a new size, a gap, a cut) takes its moving noise through the filter alone: the old history's content is not read");
+  g_check(after_resize.rms < 0.7 * frozen.rms && after_resize.flicker < 0.4 * grain.flicker,
+          nc::Num("the frames after a restart of the history recover: noise rms %.4f against the frozen pattern's %.4f, flicker %.4f against the unaveraged noise's %.4f", after_resize.rms, frozen.rms, after_resize.flicker, grain.flicker));
+}
+
+// ---------------------------------------------------------------------------
 // the shafts: the radial blur's start noise, averaged with the last frame's image shifted by the sun's own move
 // ---------------------------------------------------------------------------
 
@@ -991,19 +1091,10 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(settings, decl.c_str()) && nc::Has(settings, "inline auto& mcla_gpu_noise_resolve_no_upscaler = g_gpu.mcla_gpu_noise_resolve_no_upscaler;") && nc::Has(manifest, "\"mcla_gpu_noise_resolve_no_upscaler\": {") &&
               nc::Has(meta, "{\"mcla_gpu_noise_resolve_no_upscaler\", \"MCLA/GPU\"},") && nc::Has(pages, "NativeOnly(Bool(\"PM_RxDbgNoiseResolve\", \"mcla_gpu_noise_resolve_no_upscaler\""),
           "mcla_gpu_noise_resolve_no_upscaler: a live debug setting, on by default, in the settings header, its alias, the manifest, the meta list and the debug menu's FIXES page");
-  // REVIEW F6: the contact history that cannot run this frame (its pipeline is not made, or the depth target has no stencil plane view for the vehicles' IDs) is not planned, so the march's and the
-  // traced sun ray's noise holds (Varies is false without an upscaler and without the history), and the history's images go back (EnsureImages)
-  {
-    const size_t run_at = ao.find("bool AmbientOcclusion::Run(const ResolveCache::Summary& summary");
-    const size_t pipeline_at = ao.find("if (plan.contact_history && !Pipeline(ms ? kVTemporalMs : kVTemporal)) {", run_at);
-    const size_t stencil_at = ao.find("if (plan.contact_history && summary.stencil_slot == kNoSlot) {\n", run_at);
-    const size_t ensure_at = ao.find("if (!EnsureImages(plan)) {", run_at);
-    g_check(!nr::Varies(false, false) && nr::FrameTerm(false, false, 77, 1023) == 0u && nr::FrameTerm(false, true, 77, 1023) == 77u && nr::FrameTerm(true, false, 77, 1023) == 77u && run_at != std::string::npos &&
-                pipeline_at != std::string::npos && stencil_at != std::string::npos && ensure_at != std::string::npos && pipeline_at < stencil_at && stencil_at < ensure_at &&
-                (nc::Has(ao, "if (!accumulate || !h.image[0].texture || !h.image[1].texture || stencil_slot_ == kNoSlot) {") || nc::Has(ao, "if (!accumulate || !h.image[0].texture || !h.image[1].texture) {")),
-            "ao.cpp (review F6): Run clears plan.contact_history when the depth target has no stencil plane view, before EnsureImages, next to the missing pipeline's clear; without the history the noise holds "
-            "(INTEGRATION: the history pass itself gives up without a slot in the first form, fix/noise-all-review 5d0c0cfc lets it run without a stencil plane: either form of the pass's guard)");
-  }
+  // REVIEW F6 against fix/noise-all-review 5d0c0cfc (S6), reconciled (7315e407): a missing stencil plane view does NOT stop the contact history (the pass reads no vehicle then); only a pass that cannot be recorded does,
+  // and the noise holds on exactly those frames. Run's decision and the shaders' empty-slot answers are pinned in the block below (the first form of F6's clear, `plan.contact_history && summary.stencil_slot == kNoSlot`, is gone).
+  g_check(!nr::Varies(false, false) && nr::FrameTerm(false, false, 77, 1023) == 0u && nr::FrameTerm(false, true, 77, 1023) == 77u && nr::FrameTerm(true, false, 77, 1023) == 77u,
+          "the noise of an effect with its own history moves while the history runs, holds while it does not (Varies)");
   // the contact march and the car's sun ray
   g_check(nc::Has(ao, "noise_resolve::Varies(plan.upscaler, plan.contact_history) ? base.slots2[1] : (base.slots2[1] & ao_stable::kBlueNoiseFlag)") &&
               nc::Has(ao, "in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;") && !nc::Has(ao, "plan.upscaler ? base.slots2[1]"),
@@ -1014,6 +1105,22 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(ao, "uint32_t AmbientOcclusion::RecordContactHistory(") && nc::Has(ao, "plume::RenderPipeline* accumulate = Pipeline(stencil_ms_ ? kVTemporalMs : kVTemporal);") &&
               nc::Has(ao, "const uint32_t slot = RecordContactHistory(list, plan, base, contact_dn, contact_depth);") && nc::Has(ao, "constexpr uint32_t kContactHistoryFlag = 1u << 22;"),
           "the contact image's history is the occlusion's own temporal pass (the same pipeline, ao_temporal_ps) over the contact filter's result, in the flag mode of bit 22");
+  // stack review F6 against noise review S6, reconciled: the plan keeps the history exactly when its pass can run (the pipeline is made); a depth target with no stencil plane view is no reason, because the pass
+  // reads no vehicle then. Run decides before EnsureImages with ContactHistoryRuns, nothing in it or in the pass's own guard looks at the stencil slot, and the shaders answer "no vehicle" for the empty slot.
+  {
+    const size_t run_at = ao.find("bool AmbientOcclusion::Run(const ResolveCache::Summary& summary");
+    const size_t decide_at = ao.find("plan.contact_history = noise_resolve::ContactHistoryRuns(plan.contact_history, Pipeline(ms ? kVTemporalMs : kVTemporal) != nullptr);", run_at);
+    const size_t ensure_at = ao.find("if (!EnsureImages(plan)) {", run_at);
+    const size_t record_at = ao.find("uint32_t AmbientOcclusion::RecordContactHistory(");
+    const size_t guard_at = ao.find("if (!accumulate || !h.image[0].texture || !h.image[1].texture) {", record_at);
+    const std::string run_text = run_at != std::string::npos && ensure_at != std::string::npos ? ao.substr(run_at, ensure_at - run_at) : std::string();
+    const std::string depth_ps = nc::ReadFile(dir + "/hlsl/ao_depth_ps.hlsl");
+    g_check(run_at != std::string::npos && decide_at != std::string::npos && ensure_at != std::string::npos && decide_at < ensure_at && !nc::Has(run_text, "plan.contact_history = false;") &&
+                !nc::Has(run_text, "summary.stencil_slot == kNoSlot") && record_at != std::string::npos && guard_at != std::string::npos && nc::Has(ao, "push.slots2[3] = stencil_slot_;"),
+            "ao.cpp: Run keeps the contact history exactly when its pass is made (ContactHistoryRuns, before EnsureImages) and neither it nor RecordContactHistory gives up for a missing stencil plane view");
+    g_check(nc::Has(temporal_cs, "const uint slot = g_push.slots2.w;\n  if (slot == kNoSlot) {\n    return 0u;\n  }") && nc::Has(depth_ps, "const uint slot = g_push.slots.z;\n  if (slot == 0xFFFFFFFFu) {\n    return false;\n  }"),
+            "the passes answer \"no vehicle\" for an empty stencil slot (ao_temporal_ps AoVehicleId, ao_depth_ps IsVehiclePixel): the history's pass and the depth chain run without the plane");
+  }
   g_check(nc::Has(temporal_cs, "bool AoContactHistory() { return (g_push.slots2.z & (1u << 22)) != 0u; }") && nc::Has(temporal_cs, "if (confidence < 1.0f && !AoContactHistory()) {") && nc::Has(temporal_cs, "static const float kClampMargin = 0.08f;") &&
               nc::Has(ao, "kHistoryFlag = 1u << 20;"),
           "the shader's flag mode skips the wide blur and keeps the occlusion's clamp margin (0.08), plane test and weight: the same ghost as the occlusion's");
@@ -1090,6 +1197,7 @@ int main(int argc, char** argv) {
   TestContact("contact march (soft edge)", SoftVisibility, SoftTruth);
   TestContact("traced sun ray", SunVisibility, SunTruth);
   TestContactGhost();
+  TestContactHistoryPlan();
   TestShafts();
   TestShaftsHistoryGate();
   TestCone();

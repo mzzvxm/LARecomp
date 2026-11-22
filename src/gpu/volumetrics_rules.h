@@ -517,6 +517,7 @@ inline void MakeGpuConstants(const GridDesc& g, const VolInputs& in, const VolCa
   out->history[2] = use_history ? std::clamp(history.weight, 0.0f, 0.98f) : 0.0f;
   // The frame's offset inside the voxel: the Halton terms of the frame's number (the shader adds the voxel's own blue noise). NOISE-FOLLOW: the number counts to 1024 like the other effects' frame terms (`& 1023`);
   // it was `frame % 16`, which repeated the offsets every 16 frames and left a quarter of their amplitude as a 3.75 Hz shimmer under a history of 0.9 (any 16 frames in a row still leave no gap over 0.16 of the voxel in any of the three terms: 0.15 before).
+  // CHECK: not run on a device: the beams and the sun shadow's edges in a take should show no 3.75 Hz shimmer now.
   out->jitter[0] = Halton((frame & 1023u) + 1u, 2);
   out->jitter[1] = Halton((frame & 1023u) + 1u, 3);
   out->jitter[2] = Halton((frame & 1023u) + 1u, 5);
