@@ -124,10 +124,12 @@ struct Planner {
     int64_t last_now_ns = 0;   // the cap clock at the last call: a clock that stepped back (a take ended, the scene clock went back to the steady one) restarts the schedule
     uint64_t queued = 0;       // this stats window's queue calls let through / skipped (race_line_stats; the report line names them per planner)
     uint64_t skipped = 0;
+    uint64_t used = 0;         // g_planner_use at the planner's last queue call: the slot with the smallest one is the one a new planner takes when the table is full
 };
 
 std::mutex g_planner_mutex;
 Planner g_planners[kMaxPlanners];
+uint64_t g_planner_use = 0;  // counts the queue calls that reach the table (g_planner_mutex held)
 
 Planner* FindPlanner(uint32_t planner, Planner** free_slot) {  // g_planner_mutex held
     for (Planner& p : g_planners) {
@@ -178,7 +180,15 @@ bool JobDue(const uint8_t* base, uint32_t planner, int cap_hz, bool count) {
     Planner* free_slot = nullptr;
     Planner* slot = FindPlanner(planner, &free_slot);
     if (!slot) {
-        if (!free_slot) free_slot = &g_planners[planner % kMaxPlanners];  // table full: reuse a slot (a wrong entry only costs one run)
+        // Table full (the planners of earlier races stay in it; a racer's address is the key): the planner that asked longest ago goes. (Not `planner % kMaxPlanners`: the
+        // guest's allocations are aligned, so that reaches few of the slots, live racers evict each other, and every call of an evicted one is a first call, which is let
+        // through: the cap would be gone for those racers for the rest of the session.)
+        if (!free_slot) {
+            free_slot = &g_planners[0];
+            for (Planner& p : g_planners) {
+                if (p.used < free_slot->used) free_slot = &p;
+            }
+        }
         slot = free_slot;
         *slot = Planner{};
         slot->key = planner;
@@ -186,9 +196,11 @@ bool JobDue(const uint8_t* base, uint32_t planner, int cap_hz, bool count) {
         std::memcpy(slot->layout, layout, sizeof(layout));
         slot->next_due_ns = now + interval;
         slot->last_now_ns = now;
+        slot->used = ++g_planner_use;
         if (count) slot->queued += 1;
         return true;
     }
+    slot->used = ++g_planner_use;
     const bool clock_back = now < slot->last_now_ns;  // the scene clock stepped back (a take ended with the game ahead of the wall clock): start the schedule again
     slot->last_now_ns = now;
     const bool same_layout = std::memcmp(slot->layout, layout, sizeof(layout)) == 0;
