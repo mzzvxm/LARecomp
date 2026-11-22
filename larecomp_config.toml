@@ -25448,6 +25448,43 @@ name = "Patch_RearViewCullBits"
 registers = ["r3"]
 after_instruction = false
 
+# The rear view mirror's cheap options (perf/MIRRORS-SURVEY.md section 4, B to E; hooks/rear_view.cpp, hooks/rear_view_cheap.h). Four hooks; every one is a
+# few compares while its debug setting is off.
+#
+# 0x82308120: the `bl sub_8217D460` in sub_82307F28, the mirror's camera step (run from the phase callback sub_82306500 at phase 0x10000's begin): f1 = the
+# field of view ([pass+20]), f2 = the aspect (the stamp's w/h), f3 and f4 = the near and far planes (the main camera's), all set by the instructions before it. The hook
+# narrows f1 (rearview_fov_scale) and pulls in f4 (rearview_far); the camera's frustum, which the game's culling of the mirror's phase uses, is built from them.
+[[midasm_hook]]
+address = 0x82308120
+name = "Patch_RearViewCamera"
+registers = ["f1", "f4"]
+after_instruction = false
+
+# 0x822D5704: the `bl sub_822D7120` in the city's per-sector walk (sub_822D5618): f1 = the sector's hi detail radius (mcCity+36 x mcCity+24, set by the `fmuls`
+# before it). Inside the mirror's phase the hook cuts it (rearview_lod_distance), so a sector beyond it is the coarse one-model-a-sector city.
+[[midasm_hook]]
+address = 0x822D5704
+name = "Patch_RearViewCityLod"
+registers = ["f1"]
+after_instruction = false
+
+# 0x822E6634: the `cmpwi cr6,r10,0` right after `and r21,r17,r11` in the renderer's phase loop (sub_822E6408), once a frame before the first phase: r17 = [r27+364]
+# (the phases the renderer may run), r21 = r17 & the requested ones, r27 = the renderer. With rearview_every above 1 a held frame takes the mirror's bit out of r17,
+# r21 and renderer+364, so no part of the phase runs (the picture is not held yet: the main view shows in the rectangle). A camera cut draws at once.
+[[midasm_hook]]
+address = 0x822E6634
+name = "Patch_RearViewCadence"
+registers = ["r17", "r21", "r27"]
+after_instruction = false
+
+# 0x822E68D8: the `mr r4,r30` before the phase's end call (sub_822F7570) in sub_822E6408; reached for every phase, r30 = the phase. For the mirror's (0x1000000) it
+# ends the city radius cut and puts back the bit a held frame took out of renderer+364.
+[[midasm_hook]]
+address = 0x822E68D8
+name = "Patch_RearViewPhaseEnd"
+registers = ["r30"]
+after_instruction = false
+
 # 0x8236066C: the `cmplwi cr6,r11,0` after `lbz r11,594(r30)` in mcCarModel's draw (sub_82360518),
 # on the way to the sun shadow phases (0x20 0x40 0x80 0x100 the cascades). This is the item draw of the
 # renderer's mcCarModelClass client, the player's and the racers' cars (TRAFFIC is NOT here: see the two

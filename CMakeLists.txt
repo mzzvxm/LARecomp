@@ -494,6 +494,11 @@ target_include_directories(larecomp_effect_fade_test PRIVATE src/mc_engine/hooks
 add_executable(larecomp_neon_pulse_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/neon_pulse_test.cpp)
 target_include_directories(larecomp_neon_pulse_test PRIVATE src/mc_engine/hooks)
+# The rules of the rear view mirror's cheap options (src/mc_engine/hooks/rear_view_cheap.h: the far plane, the field of view, the city radius, the racers, the camera cut and the every-Nth-frame cadence) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_rear_view_cheap_test, then run <build dir>/larecomp_rear_view_cheap_test (exit 0 = passed).
+add_executable(larecomp_rear_view_cheap_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/rear_view_cheap_test.cpp)
+target_include_directories(larecomp_rear_view_cheap_test PRIVATE src/mc_engine/hooks)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).

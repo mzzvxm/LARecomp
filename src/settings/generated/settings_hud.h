@@ -23,8 +23,33 @@ class HUDSettings final : public rex::SettingOwner {
     "again with the mirror's camera and draws it with the colour pass. Don't combine it with "
     "rearview_traffic: traffic draws the same cars as black silhouettes. Needs rearview on.");
 
+  REX_SETTING(i32, rearview_cars_lod, 0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md D): the least detailed level of the racers' models in the mirror: "
+    "0 (the default) the level the game chose for the main view, 1 at least the middle one, 2 only the coarsest. Only makes a car coarser, never finer; "
+    "the main view's choice is put back after the mirror. Needs rearview_cars. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
+  REX_SETTING(i32, rearview_cars_max, 0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md D): the most racers drawn in the mirror a frame: the first this many, in the game's own "
+    "list order, that the mirror's camera sees. 0 (the default) draws every one it sees. Needs rearview_cars. Live.", rex::kDebugOnly, rex::Range{0, 16});
+
   REX_SETTING(bool, rearview_diag, false, "Log, every couple of seconds, how many objects each render client holds when the mirror's "
     "phase begins. For working out why cars and traffic do not draw in it.", rex::kDebugOnly);
+
+  REX_SETTING(i32, rearview_every, 1, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md E): the mirror's view is drawn every this many frames (1, the default, every frame). "
+    "A frame that skips it asks for no mirror phase at all, so it costs nothing. The held picture is not made yet (it needs the host to keep the "
+    "stamp's pixels): until it is, a skipped frame shows the main view in the mirror's rectangle, so this is a measuring switch. A camera cut (the eye "
+    "jumps more than 20 m between frames) draws the mirror at once. Live.", rex::kDebugOnly, rex::Range{1, 8});
+
+  REX_SETTING(f64, rearview_far, 0.0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md B): the far plane of the mirror's camera in metres; the game uses the main camera's. "
+    "0 (the default) leaves it. Only ever pulls the plane in (never beyond the main camera's), and never under 20 m. Takes effect when the "
+    "game next builds the mirror's camera (every frame the mirror is up). Live.", rex::Range{0.0, 5000.0}, rex::kDebugOnly);
+
+  REX_SETTING(f64, rearview_fov_scale, 1.0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md B): a multiple of the mirror camera's field of view (the stamp is 5.2:1, so the "
+    "game's own is very wide). 1.0 (the default) leaves it; 0.5 shows roughly half the angle, so the game's own culling keeps fewer draws. "
+    "Only narrows (0.1 to 1.0); the picture changes. Live.", rex::Range{0.1, 1.0}, rex::kDebugOnly);
+
+  REX_SETTING(f64, rearview_lod_distance, 0.0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md C): while the mirror's phase runs, a city sector is drawn in detail only within "
+    "this many metres (the game's own radius is 300 m times lod_city_scale); the rest is the coarse one-model-a-sector city. 0 (the default) leaves it. "
+    "Only ever shrinks the radius. CHECK: it works only if the game walks the city's sectors inside the mirror's phase (rearview_diag and the log's "
+    "mirror draw count say). Live.", rex::Range{0.0, 2000.0}, rex::kDebugOnly);
 
   REX_SETTING(bool, rearview_frame, true, "Draw the mirror's frame. The retail game ships the frame meshes without their textures "
     "(black_small.dds and rearView.dds are gone), so the frame comes out solid white. Off hides "
@@ -71,8 +96,14 @@ inline HUDSettings& g_hud = larecomp::Leak<HUDSettings>();
 
 inline auto& rearview = g_hud.rearview;
 inline auto& rearview_cars = g_hud.rearview_cars;
+inline auto& rearview_cars_lod = g_hud.rearview_cars_lod;
+inline auto& rearview_cars_max = g_hud.rearview_cars_max;
 inline auto& rearview_diag = g_hud.rearview_diag;
+inline auto& rearview_every = g_hud.rearview_every;
+inline auto& rearview_far = g_hud.rearview_far;
+inline auto& rearview_fov_scale = g_hud.rearview_fov_scale;
 inline auto& rearview_frame = g_hud.rearview_frame;
+inline auto& rearview_lod_distance = g_hud.rearview_lod_distance;
 inline auto& rearview_position = g_hud.rearview_position;
 inline auto& rearview_shift_x = g_hud.rearview_shift_x;
 inline auto& rearview_shift_y = g_hud.rearview_shift_y;

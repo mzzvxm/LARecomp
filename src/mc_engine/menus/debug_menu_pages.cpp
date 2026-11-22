@@ -85,6 +85,17 @@ constexpr double kBreakFpsVals[]        = {0.0, 5.0, 10.0, 15.0, 20.0, 30.0, 60.
 constexpr double kFixedStepVals[]       = {0.0, 24.0, 30.0, 60.0, 120.0, 240.0};
 constexpr double kCaptureFpsVals[]      = {0.0, 24.0, 30.0, 60.0, 120.0};
 
+// The cheap rear view mirror (perf/MIRRORS-SURVEY.md B to E; hooks/rear_view_cheap.h): all off by default. The distances are metres, 0 is off.
+constexpr double kRearFarVals[]            = {0.0, 100.0, 150.0, 250.0, 400.0};
+constexpr double kRearFovVals[]            = {1.0, 0.8, 0.6, 0.5, 0.4, 0.3};
+constexpr double kRearCityVals[]           = {0.0, 40.0, 60.0, 100.0, 150.0, 250.0};
+constexpr const char* kRearCarsMaxVals[]   = {"0", "1", "2", "3", "4", "6"};
+constexpr const char* kRearCarsMaxNames[]  = {"ALL", "1", "2", "3", "4", "6"};
+constexpr const char* kRearCarsLevelVals[]  = {"0", "1", "2"};
+constexpr const char* kRearCarsLevelNames[] = {"AS CHOSEN", "MID+", "COARSEST"};
+constexpr const char* kRearEveryVals[]     = {"1", "2", "3", "4"};
+constexpr const char* kRearEveryNames[]    = {"EVERY FRAME", "1 IN 2", "1 IN 3", "1 IN 4"};
+
 #if defined(LARECOMP_HAS_GPU)
 constexpr const char* kAoViewVals[]  = {"0", "1", "2", "3", "4", "5", "6"};
 constexpr const char* kAoViewNames[] = {"OFF", "FACTOR", "VISIBILITY", "AMBIENT SHARE",
@@ -316,6 +327,9 @@ const ItemDef kDebugRenderingItems[] = {
     NativeOnly(Bool("PM_RxDbgFsrView",   "mcla_gpu_fsr_debug_view", "FSR DEBUG VIEW: ")),
     NativeOnly(Bool("PM_RxDbgPostOut",   "mcla_gpu_upscaler_post_reads_output",
                     "POST CHAIN ON UPSCALED: ")),
+    // The rear view mirror's draws (the ones into its rectangle) stay out of the main view's per-draw effects (perf/MIRRORS-SURVEY.md A, gpu/mirror_draws.h). The
+    // scene line of the log counts them either way ("mirror: N draws/frame").
+    NativeOnly(Bool("PM_RxDbgMirClass",  "mcla_gpu_mirror_class",  "MIRROR DRAW CLASS: ")),
     NativeOnly(Bool("PM_RxDbgMarkers",   "mcla_gpu_perf_markers",  "PERF MARKERS: ")),
     NativeOnly(Str("PM_RxDbgMarkerLvl",  "mcla_gpu_perf_markers_level", "PERF MARKERS LEVEL: ",
                    kMarkerLevelVals, kMarkerLevelNames, Len(kMarkerLevelVals))),
@@ -346,6 +360,16 @@ const ItemDef kDebugCameraItems[] = {
     Bool("PM_RxDbgMenuCamLock", "menu_cam_lock",        "MENU CAM LOCK: "),
     Dbl ("PM_RxDbgMenuCamSlot", "menu_cam_slot",        "MENU CAM SLOT: ", kMenuCamSlots.v, 64,
          "%g"),
+    // The cheap rear view mirror (gameplay > camera > rear view must be on): each row is one option of perf/MIRRORS-SURVEY.md and changes nothing at its first value.
+    // Camera: the mirror's field of view scaled down and its far plane pulled in; the city's detail radius while the mirror draws; the racers' number and model level
+    // (they need CARS IN REAR VIEW); every Nth frame (a held frame shows the main view in the rectangle until the host keeps the picture). The cost chain's "cheap" tier
+    // has an arm for each. The host side (MIRROR DRAW CLASS) is on the RENDERING page.
+    Dbl ("PM_RxDbgRvFov",     "rearview_fov_scale",     "REAR VIEW FOV X: ", kRearFovVals, Len(kRearFovVals), "%g"),
+    Dbl ("PM_RxDbgRvFar",     "rearview_far",           "REAR VIEW FAR: ", kRearFarVals, Len(kRearFarVals), "%g", " M", "OFF"),
+    Dbl ("PM_RxDbgRvCity",    "rearview_lod_distance",  "REAR VIEW CITY: ", kRearCityVals, Len(kRearCityVals), "%g", " M", "OFF"),
+    Str ("PM_RxDbgRvCarsMax", "rearview_cars_max",      "REAR VIEW CARS: ", kRearCarsMaxVals, kRearCarsMaxNames, Len(kRearCarsMaxVals)),
+    Str ("PM_RxDbgRvCarsLvl", "rearview_cars_lod",      "REAR VIEW MODELS: ", kRearCarsLevelVals, kRearCarsLevelNames, Len(kRearCarsLevelVals)),
+    Str ("PM_RxDbgRvEvery",   "rearview_every",         "REAR VIEW RATE: ", kRearEveryVals, kRearEveryNames, Len(kRearEveryVals)),
 };
 
 // TOOLS: the modder's texture tools, the panels, a leftover test button, the trailer toolkit's HUD fade.

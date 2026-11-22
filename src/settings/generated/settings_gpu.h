@@ -1133,6 +1133,11 @@ class GPUSettings final : public rex::SettingOwner {
     "and log every 600 frames what that cache would upload ("
     "24.21). Diagnostic: it write-protects guest pages.", rex::kDebugOnly, rex::kRequiresRestart);
 
+  REX_SETTING(bool, mcla_gpu_mirror_class, false, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md A): the rear view mirror's draws (the ones whose viewport is the mirror's rectangle, "
+    "rearview_window_*) are their own class: they skip the per-draw work of the main view's effects (ambient occlusion, contact shadows, "
+    "sun shafts, volumetric light, car reflections, the car dump and frame, the headlights, the light shadows), which would otherwise see "
+    "a second camera's draws. The scene line of the log always counts them (mirror: N draws/frame), on or off. Live.", rex::kDebugOnly);
+
   REX_SETTING(std::string, mcla_gpu_msaa, "2", "MSAA of the images of the screen the game multisamples (M6d.2): off (1 sample), 2 (the "
     "console's), 4 or 8 samples on the host. The game itself always draws its own 2 sample "
     "layout; the host gives its images of the screen the samples chosen here, so its pause menu "
@@ -2150,6 +2155,7 @@ inline auto& mcla_gpu_lock_dump = g_gpu.mcla_gpu_lock_dump;
 inline auto& mcla_gpu_low_latency = g_gpu.mcla_gpu_low_latency;
 inline auto& mcla_gpu_luminance_scale_fix = g_gpu.mcla_gpu_luminance_scale_fix;
 inline auto& mcla_gpu_memory_census = g_gpu.mcla_gpu_memory_census;
+inline auto& mcla_gpu_mirror_class = g_gpu.mcla_gpu_mirror_class;
 inline auto& mcla_gpu_msaa = g_gpu.mcla_gpu_msaa;
 inline auto& mcla_gpu_msaa_with_upscaler = g_gpu.mcla_gpu_msaa_with_upscaler;
 inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;
