@@ -2,7 +2,7 @@
 
   python pipeline_list.py info FILE...
   python pipeline_list.py merge -o assets/mcla_pipelines.bin FILE...
-  python pipeline_list.py add --base assets/mcla_pipelines.bin [-o OUT] [--skip-level-copies] FILE...
+  python pipeline_list.py add --base assets/mcla_pipelines.bin [-o OUT] [--skip-level-copies] [--max-colour-targets N] FILE...
   python pipeline_list.py check --pack mcla_shaders.v8.pack [--variant-pack mcla_shaders_variants.v3.pack] FILE...
   python pipeline_list.py reorder -o assets/mcla_pipelines.bin --base assets/mcla_pipelines.bin FILE...
   python pipeline_list.py lacks --base assets/mcla_pipelines.bin FILE...
@@ -32,7 +32,9 @@ already had, how many are new, those by sample count, and how many of the new ar
 count of a record the list holds with more than one sample (what the setup precache and a level change make
 by themselves, Pipelines::MakeLevelCopies). --skip-level-copies leaves those out of the output: for a run at
 an MSAA level other than the default 2, or under an upscaler (1 sample), whose records are the same
-pipelines at 4, 8 or 1 samples.
+pipelines at 4, 8 or 1 samples. --max-colour-targets N leaves out the records with more colour targets: 1 takes the main view's own pipelines and not the G-buffer's 4-target twins of them, whose
+draws have a fallback key and are made in the background (src/gpu/variant_wait.h), so the starter needs only those whose draws may not wait (VK-FIRST-FRAME: a D3D12 race of the integrated tree
+made 62 to 80 such pipelines on the render thread that the starter lacked).
 
 check --pack: records whose vertex or pixel shader the pack does not have (the game drops them at load:
 "N dropped: a shader the pack does not have"), a spec variant on a shader with no spec mask, and with
@@ -210,9 +212,12 @@ def merge(paths, out):
     write_list(out, c.layouts, c.records)
 
 
-def add(base, files, out, skip_level_copies=False):
+def add(base, files, out, skip_level_copies=False, max_colour_targets=0):
     """BASE as it is, then the records of each FILE that BASE and the earlier FILEs lack (the depth bias
-    is not compared). Writes OUT when it is given. Returns the Collector."""
+    is not compared). Writes OUT when it is given. Returns the Collector.
+    max_colour_targets (0: no limit): records with more colour targets are left out. The G-buffer's planes make
+    4-target twins of the main view's pipelines; their draws have a fallback key (src/gpu/variant_wait.h) and are
+    made in the background, so the starter needs only the pipelines whose draws may not wait (VK-FIRST-FRAME)."""
     _, base_layouts, base_records = read_list(base)
     c = Collector()
     seen = set()  # keys without the bias
@@ -224,11 +229,14 @@ def add(base, files, out, skip_level_copies=False):
     print(f"{base}: {len(base_records)} records, kept as they are")
     for p in files:
         _, file_layouts, file_records = read_list(p)
-        present = skipped = copies = 0
+        present = skipped = copies = many_targets = 0
         new = []
         for key, layout in file_records:
             if without_bias(key) in seen:
                 present += 1
+                continue
+            if max_colour_targets and u32(key, COLOR_COUNT_AT) > max_colour_targets:
+                many_targets += 1
                 continue
             s = samples_of(key)
             copy = any(t > 1 and t != s for t in held.get(canonical(key), ()))
@@ -242,7 +250,8 @@ def add(base, files, out, skip_level_copies=False):
             held.setdefault(canonical(key), set()).add(s)
         print(f"{p}: {len(file_records)} records, {present} already in the list, {len(new)} new "
               f"(by sample count {fmt_counts(by_samples(new))}); {copies} of the new are a copy of a record at "
-              f"another sample count" + (f", {skipped} left out" if skip_level_copies else ""))
+              f"another sample count" + (f", {skipped} left out" if skip_level_copies else "") +
+              (f"; {many_targets} more with over {max_colour_targets} colour target(s) left out" if max_colour_targets else ""))
     if out:
         write_list(out, c.layouts, c.records)
     else:
@@ -344,9 +353,10 @@ def check(pack, variant_pack, paths):
 
 # --- selftest: made-up lists and packs, no game data -----------------------------------------------------
 
-def _key(vs, ps, samples=2, bias=0, ps_variant=0, vs_variant=0):
+def _key(vs, ps, samples=2, bias=0, ps_variant=0, vs_variant=0, colours=0):
     k = bytearray(KEY_SIZE)
     struct.pack_into("<2Q", k, VS_AT, vs, ps)
+    struct.pack_into("<I", k, COLOR_COUNT_AT, colours)
     struct.pack_into("<I", k, VS_VARIANT_AT, vs_variant)
     struct.pack_into("<I", k, PS_VARIANT_AT, ps_variant)
     struct.pack_into("<I", k, SAMPLES_AT, samples)
@@ -469,6 +479,17 @@ def selftest():
         _quiet(reorder, path("base.bin"), [path("run1.bin")], path("re.bin"))
         expect([k for k, _ in read_list(path("re.bin"))[2]] == [a, b, c4], "reorder keeps the records")
 
+        # --max-colour-targets: the main view's own pipelines are added, the G-buffer's 4-target twins are left out
+        one, four, zero = _key(21, 22, 2, colours=1), _key(21, 22, 2, ps_variant=2048, colours=4), _key(23, 24, 2, colours=0)
+        write("gb.bin", [(one, 0), (four, 0), (zero, 0)], [_layout(10)])
+        _quiet(add, path("base.bin"), [path("gb.bin")], path("onetarget.bin"), False, 1)
+        keys = [k for k, _ in read_list(path("onetarget.bin"))[2]]
+        expect(keys[3:] == [one, zero] and four not in keys, "--max-colour-targets 1 leaves the 4-target twin out")
+        _, text = _quiet(add, path("base.bin"), [path("gb.bin")], "", False, 1)
+        expect("1 more with over 1 colour target(s) left out" in text, f"the count of the left out is said ({text.splitlines()[-2]})")
+        _quiet(add, path("base.bin"), [path("gb.bin")], path("alltargets.bin"))
+        expect(four in [k for k, _ in read_list(path("alltargets.bin"))[2]], "without the limit the 4-target record is added")
+
         # info
         _, text = _quiet(info, [path("base.bin")])
         expect("3 records" in text and "2:2 4:1" in text, f"info says the sample counts ({text.strip()})")
@@ -529,6 +550,8 @@ def main():
     ad.add_argument("--base", required=True)
     ad.add_argument("-o", "--out", default="")
     ad.add_argument("--skip-level-copies", action="store_true")
+    ad.add_argument("--max-colour-targets", type=int, default=0,
+                    help="leave out records with more colour targets than this (1: the main view's own pipelines, not the G-buffer's 4-target twins)")
     ad.add_argument("files", nargs="+")
     lk = sub.add_parser("lacks")
     lk.add_argument("--base", required=True)
@@ -549,7 +572,7 @@ def main():
         elif a.cmd == "merge":
             merge(a.files, a.out)
         elif a.cmd == "add":
-            add(a.base, a.files, a.out, a.skip_level_copies)
+            add(a.base, a.files, a.out, a.skip_level_copies, a.max_colour_targets)
         elif a.cmd == "lacks":
             lacks(a.base, a.files)
         elif a.cmd == "check":
