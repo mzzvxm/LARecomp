@@ -1723,20 +1723,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     }
     if (!d.pipeline && pending && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {
       // The headlight variant's pipeline is being made in the background (the first night, or the first time the setting is on): this draw is the same shader without
-      // the headlight meanwhile (the other features of a composed word stay when the pack has that word: the G-buffer's, else the game's own shader), with no headlight,
-      // instead of being left out of the frame; the key stays asked for and the next frame that has it takes it. It is the pipeline's key that changes (the guest's
-      // d.key has no sidecar and no G-buffer word).
-      namespace chain = larecomp::shaderpack::chain;
+      // the headlight meanwhile (the other features of a composed word stay when the pack has that word, else the game's own shader), with no headlight, instead of
+      // being left out of the frame; the key stays asked for and the next frame that has it takes it. It is the pipeline's key that changes. The sidecar's planes are
+      // already gone here: the planes' rung above comes first and takes the draw to the guest's own key (d.key) whenever the draw carries them.
       const uint32_t word = variant_wait::WordWithoutHeadlight(pipeline_key.ps_variant, [&](uint32_t rest) { return d.ps && d.ps->HasWord(rest); });
-      if (d.gbuffer_attached && !chain::HasFeature(word, larecomp::shaderpack::kFeatureGBuffer)) {
-        // The word that is left has no G-buffer stage (the pack has no word of the G-buffer alone for this shader): the draw goes without the sidecar, as a draw
-        // the G-buffer did not take, because a shader that writes no second output must not be recorded with one.
-        pipeline_key = d.key;
-        d.gbuffer_attached = false;
-        d.gbuffer_variant = 0;
-        d.gbuffer_planes = 0;
-        d.gbuffer_mode = gbuffer::PlaneMode::kNone;
-      }
       pipeline_key.ps_variant = word;
       pending = false;
       if (headlights_) {
