@@ -7,10 +7,11 @@
 // The image is smooth (the sky's brightness blurred along the rays to the sun, half the picture's size or less) and everything in it is far, so a camera that turns moves it as the sun moves in the
 // picture: the history is read at the texel's place shifted by the sun's own move (push tint.xy = the last frame's sun uv minus this frame's; the history texel of uv is at uv + shift), bilinearly,
 // no matrices and no depth. It is clamped to the range of this frame's 3 x 3 neighbourhood plus a margin (sun.w), the clamp of a temporal anti-aliasing filter, so that a silhouette that moved by
-// parallax (a tree beside the road) leaves a ghost only inside the margin; a texel the shift takes off the image has no history. The weight is sun.z (noise_resolve.h ShaftsHistoryWeight).
+// parallax (a tree beside the road) leaves a ghost only inside the margin, and a history that differs from this frame's value by more than the noise does (tint.z to tint.w: noise_resolve.h kShaftsStaleFrom, kShaftsStaleTo)
+// is dropped; a texel the shift takes off the image has no history. The weight is sun.z (noise_resolve.h ShaftsHistoryWeight).
 //
 // Push (shafts_common.hlsli): slots.x the history image's slot, slots.y the blurred image's, slots.z bit 0 the history is on (else the pass copies the blurred image: the first frame, a cut, a
-// frame whose sun moved too far); sizes.xy the target's size; sun.z the weight the history keeps; sun.w the clamp's margin; tint.xy the shift.
+// frame whose sun moved too far); sizes.xy the target's size; sun.z the weight the history keeps; sun.w the clamp's margin; tint.xy the shift; tint.zw where the history starts to count less and where it counts no more.
 // Output R16_FLOAT: the next frame's history and what the add pass reads.
 
 #include "shafts_common.hlsli"
@@ -40,5 +41,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const float history = g_textures[g_push.slots.x].SampleLevel(g_samplers[kSamplerLinearClamp], uv, 0).x;
   const float held = clamp(history, lo - g_push.sun.w, hi + g_push.sun.w);
-  return float4(lerp(current, held, g_push.sun.z), 0.0f, 0.0f, 0.0f);
+  // a history that differs from this frame's value by tint.w or more is stale (a silhouette that moved by parallax), not noisy: it is dropped, its weight falls smoothly from tint.z
+  const float kept = g_push.sun.z * (1.0f - smoothstep(g_push.tint.z, g_push.tint.w, abs(history - current)));
+  return float4(lerp(current, held, kept), 0.0f, 0.0f, 0.0f);
 }

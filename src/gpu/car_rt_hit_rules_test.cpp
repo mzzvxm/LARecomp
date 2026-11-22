@@ -558,7 +558,7 @@ int main(int argc, char** argv) {
             "the host's push blocks are the shader's: 96 bytes with coat, 112 with the opponents' opp");
       Check(Has(host, "car_rt_hit::LevelWith(car_rt_hit::LevelFor(gpu_class::Current()), double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),") &&
                 Has(host, "double(larecomp::settings::mcla_gpu_car_rt_clearcoat.Get()));") && Has(host, "car_rt_hit::CastReach(parts, self_reach, others_reach)") &&
-                Has(host, "car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays)") && Has(host, "push.coat[0] = self_reach;") && Has(host, "push.coat[1] = others_reach;") &&
+                Has(host, "car_rt_hit::PackPhaseRays(pattern_phase, level.cone_rays)") && Has(host, "push.coat[0] = self_reach;") && Has(host, "push.coat[1] = others_reach;") &&
                 Has(host, "push.coat[2] = level.others_fade_from;") && Has(host, "push.coat[3] = level.coat;") && Has(host, "float(info.tan_y), length, tan_half);"),
             "the host's push is the level's: the reaches, the fade, the clear coat's gain, the cone's rays; the denoise decodes distances by the reach that was cast");
       Check(Has(opp_cpp, "std::memcpy(&push, f.base_push, kBasePushBytes);"), "the opponents' push is the player's with opp");
@@ -598,7 +598,7 @@ int main(int argc, char** argv) {
                   Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;"),
               "the shader's sky fill is ShadeReference's");
         Check(Has(host, "output_builder_.addReadWriteByteAddressBuffer(2);") && Has(host, "bool CarRtRefl::MakeStatsBuffers(Device& device) {") &&
-                  Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame) |") &&
+                  Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(pattern_phase, level.cone_rays), stats_frame) |") &&
                   Has(host, "out.set->setBuffer(2, stats, car_rt_hit::census::kBytes);") && Has(host, "stats ? 3u : (second ? 2u : 1u)") &&
                   Has(host, "EnsureSet(trace_set_, output_builder_, image_, &aux_, \"car rt refl output set\", stats_.get())") &&
                   Has(host, "frames_->RetireAction([this, frame = info.frame, generation = stats_generation_] { ProcessStats(frame, generation); });") &&

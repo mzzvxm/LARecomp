@@ -43,8 +43,10 @@ constexpr uint32_t FrameTerm(bool temporal_upscaler, bool own_history, uint64_t 
 // turns moves it with the sun's place in the picture: the history is read at the texel's place shifted by the sun's own move (a 2D shift, no matrices). A texel the shift takes off the image, or a
 // frame whose sun moved more than kShaftsMaxShift of the image's height, has no history (a cut, a very fast turn, the first frame). The history is clamped to the range of the frame's 3 x 3
 // neighbourhood plus a margin (the clamp of a temporal anti-aliasing filter), so a silhouette that moved by parallax leaves a ghost only inside the margin.
-inline constexpr float kShaftsHistoryWeight = 0.8f;      // the share of the history in the blend: 1 - 1/5, a history of about 5 frames (the image is smooth: few frames resolve a start noise)
+inline constexpr float kShaftsHistoryWeight = 0.6f;      // the share of the history in the blend: a history of about 2.5 frames (the image is smooth and the noise a few thousandths: few frames resolve it, and a short one trails less)
 inline constexpr float kShaftsClampMargin = 0.02f;       // of the brightness (the image holds 0 to about 1)
+inline constexpr float kShaftsStaleFrom = 0.02f;         // a history that differs from the frame's value by this much (of the brightness) starts to count less (the noise is a few thousandths) ...
+inline constexpr float kShaftsStaleTo = 0.05f;           // ... and by this much not at all (a silhouette that moved by parallax)
 inline constexpr float kShaftsMaxShift = 0.15f;          // of the image's height: the largest shift of the sun between two frames that keeps the history
 // The history's weight for a frame that has `frames` frames of history (the plain mean for the first ones, then the exponential average at kShaftsHistoryWeight).
 inline float ShaftsHistoryWeight(uint32_t frames) {
@@ -69,7 +71,27 @@ inline bool ShaftsKeepsHistory(float shift_u, float shift_v, float aspect) {
 // weight is the clear coat's mirror, is the finished image's own. noise_resolve_test.cpp measures the grain's fall, the ghost under a moving penumbra and the cost.
 inline constexpr float kConeHistoryWeight = 0.75f;   // 1 - 1/4: a history of about 4 frames
 inline constexpr float kConeClampMargin = 0.05f;     // of the weight; of the premultiplied colour as a share of the neighbourhood's top (the shader's kTemporalMargin)
+inline constexpr float kConeStaleFrom = 0.02f;       // a history that differs from the finished image by this much (of the weight, or of the colour's range) starts to count less (the noise is a few hundredths) ...
+inline constexpr float kConeStaleTo = 0.05f;         // ... and by this much not at all (a ramp that moved)
+// The share of the history's weight that is kept when it differs from the frame's own value by `stale`: 1 for a difference the noise makes, 0 for a reflection or a silhouette that moved (the shaders' smoothstep).
+inline float StaleKeep(float stale, float from, float to) {
+  const float t = std::clamp((stale - from) / (to - from), 0.0f, 1.0f);
+  return 1.0f - t * t * (3.0f - 2.0f * t);
+}
 // The weight the history keeps when it already holds `frames` frames (the plain mean for the first ones, then the exponential average at kConeHistoryWeight).
 inline float ConeHistoryWeight(uint32_t frames) { return std::min(kConeHistoryWeight, 1.0f - 1.0f / float(frames + 2u)); }
+
+// ---------------------------------------------------------------------------
+// what the histories hold (memory) at a picture size, for the logs and the owner's optimisation pass
+// ---------------------------------------------------------------------------
+// The contact shadows' history: two R16G16_FLOAT images (visibility, linear depth) at the contact image's size (the picture's, or half of it where the old rule says so), and, where the filter was inside the
+// apply (mcla_gpu_contact_shadows_fast at the picture's size: Plan::ContactFilterInApply) and is a pass of its own now, its R16_FLOAT image (the filter's output; at the occlusion's own size it is
+// the occlusion's scratch image, which exists anyway).
+inline constexpr uint64_t ContactHistoryBytes(uint32_t width, uint32_t height) { return 2ull * width * height * 4ull; }
+inline constexpr uint64_t ContactFilterImageBytes(uint32_t width, uint32_t height) { return 1ull * width * height * 2ull; }
+// The shafts' history: two R16_FLOAT images at the blurred image's size (shafts_image.h: half the picture, at most 960 x 540).
+inline constexpr uint64_t ShaftsHistoryBytes(uint32_t width, uint32_t height) { return 2ull * width * height * 2ull; }
+// The cone's history: two R16G16B16A16_FLOAT images at the history image's size (car_selfrefl_rules.h HistoryEdge: the picture's, or half of it from 2560 across).
+inline constexpr uint64_t ConeHistoryBytes(uint32_t width, uint32_t height) { return 2ull * width * height * 8ull; }
 
 }  // namespace mcla::gpu::noise_resolve

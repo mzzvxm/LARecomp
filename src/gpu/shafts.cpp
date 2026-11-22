@@ -1206,6 +1206,8 @@ const HostImage* SunShafts::RecordTemporal(plume::RenderCommandList* list, const
   push.sun[3] = noise_resolve::kShaftsClampMargin;
   push.tint[0] = shift_u;
   push.tint[1] = shift_v;
+  push.tint[2] = noise_resolve::kShaftsStaleFrom;
+  push.tint[3] = noise_resolve::kShaftsStaleTo;
   pass_timing_->Mark(list, "shafts temporal");
   passes_->DrawInto(list, history_out, temporal, &push, sizeof(push));
   hist_index_ = out_index;
@@ -1220,7 +1222,7 @@ const HostImage* SunShafts::RecordTemporal(plume::RenderCommandList* list, const
     if (!hist_logged_) {
       hist_logged_ = true;
       REXLOG_INFO("[gpu] shafts: the first frame that averages the blurred image over a history (no temporal upscaler: the ray starts' noise changes every frame, mcla_gpu_noise_resolve_no_upscaler): "
-                  "weight {:.2f} at most, the history read shifted by the sun's own move, clamped to the 3x3 neighbourhood +- {:.2f}, images {}x{} R16_FLOAT x2 (reported once)",
+                  "weight {:.2f} at most, the history read shifted by the sun's own move, clamped to the 3x3 neighbourhood +- {:.2f} and dropped where it differs from the frame by more than the noise does, images {}x{} R16_FLOAT x2 (reported once)",
                   noise_resolve::kShaftsHistoryWeight, noise_resolve::kShaftsClampMargin, plan.image[0], plan.image[1]);
     }
   }

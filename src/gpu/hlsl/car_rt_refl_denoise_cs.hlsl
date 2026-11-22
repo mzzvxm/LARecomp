@@ -26,7 +26,9 @@
 // holds only where the car's picture stands where it stood; the rest is the clamp's: the history's weight, hidden share and premultiplied colour are each clamped to the range of F's 3 x 3 neighbourhood
 // (the texels that hold data) plus a margin, so a reflection that moved (the cone's penumbra moves with the view: car_rt_refl_rules.h "NOT TEMPORAL" weighed 0.5 degrees a frame against a 2.5 degree cone)
 // leaves a ghost only inside the neighbourhood's own range: about a texel of the ramp, a fifth of the cone's width. A texel with no data in F or in S, or a texel whose clear coat's sharp share (the
-// aux image's w) is the whole of it, is F's own. The weight is image.z (0: the pass copies F: the first frame, a gap, a new size). Nothing is read from the history image or written to a second image.
+// aux image's w) is the whole of it, is F's own. A history that differs from F by 0.05 (of the weight, or of the colour's range) or more is dropped: it is stale, not noisy (what the two passes leave of the noise is
+// a few hundredths), and from 0.02 its weight falls smoothly: a ramp that moved is held to the difference at which the history stops counting, about a third of a texel of it. The weight is image.z (0: the pass
+// copies F: the first frame, a gap, a new size). Nothing is read from the history image or written to a second image.
 //
 // Shader Model 6.0. The layout (car_rt_refl.cpp): set 0 the bindless Texture2D<float4> set (space 0), set 1 the output (u0, space 1), the push
 // block (b0, space 2).
@@ -61,8 +63,11 @@ ConstantBuffer<CarRtDenoisePush> g_push : register(b0, space2);
 static const float kMinCode = 0.5;
 static const float kAuxSharpScale = 0.49;
 static const float kMinWeight = 1.0 / 512.0;
-// NOISE-RESOLVE, pass 2: the margin the history may lie outside the neighbourhood's range, in weight and, of the premultiplied colour, as a share of the range's top (noise_resolve.h kConeClampMargin)
+// NOISE-RESOLVE, pass 2: the margin the history may lie outside the neighbourhood's range, in weight and, of the premultiplied colour, as a share of the range's top (noise_resolve.h kConeClampMargin), and how far the history may differ from the finished image (in the same units) before it is dropped: it is blended in full under kStaleFrom, not at all from kStaleTo
+// (noise_resolve.h kConeStaleFrom, kConeStaleTo): the noise left after the two passes is a few hundredths of the weight, a reflection that moved is a ramp's change over the move, a tenth and more
 static const float kTemporalMargin = 0.05;
+static const float kStaleFrom = 0.02;
+static const float kStaleTo = 0.05;
 
 // One texel's decoded value: the weight, the part of it that is on another car's parts, and the weight-premultiplied colour (a miss is weight 0).
 struct Decoded
@@ -127,14 +132,20 @@ void Temporal(int2 centre, int2 size)
         lo.colour = min(lo.colour, d.colour);
         hi.colour = max(hi.colour, d.colour);
     }
-    Decoded before = Decode(last);
+    const Decoded raw = Decode(last);
+    Decoded before = raw;
     before.weight = clamp(before.weight, lo.weight - kTemporalMargin, hi.weight + kTemporalMargin);
     before.hidden = clamp(before.hidden, lo.hidden - kTemporalMargin, hi.hidden + kTemporalMargin);
     const float3 colourMargin = kTemporalMargin * (hi.colour + 0.01);
     before.colour = clamp(before.colour, lo.colour - colourMargin, hi.colour + colourMargin);
-    const float mixedWeight = lerp(now.weight, before.weight, keep);
-    const float mixedHidden = lerp(now.hidden, before.hidden, keep);
-    const float3 mixedColour = lerp(now.colour, before.colour, keep);
+    // how far the history is from the finished image: the noise left is a few hundredths of the weight, a reflection that moved by a part of a texel of its ramp differs by a tenth: that history is stale and is not blended
+    // (the clamp alone would let it trail the ramp by up to a texel: the neighbourhood's own range)
+    const float3 colourDiff = abs(raw.colour - now.colour) / (hi.colour + 0.01);
+    const float stale = max(max(abs(raw.weight - now.weight), abs(raw.hidden - now.hidden)), max(colourDiff.x, max(colourDiff.y, colourDiff.z)));
+    const float kept = keep * (1.0 - smoothstep(kStaleFrom, kStaleTo, stale));
+    const float mixedWeight = lerp(now.weight, before.weight, kept);
+    const float mixedHidden = lerp(now.hidden, before.hidden, kept);
+    const float3 mixedColour = lerp(now.colour, before.colour, kept);
     float4 result = float4(0.0, 0.0, 0.0, 1.0);  // a miss
     if (mixedWeight >= kMinWeight)
     {

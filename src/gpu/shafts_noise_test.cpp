@@ -88,8 +88,8 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(blur, "#include \"shafts_noise.hlsli\"") && nc::Has(blur, "ShaftsStartNoise(int(position.x), int(position.y), position.xy, (g_push.slots.z & kBlueNoiseFlag) != 0u, uint(g_push.tint.w))") &&
               nc::Has(blur, "static const uint kBlueNoiseFlag = 1u;") && !nc::Has(blur, "52.9829189"),
           "shafts_blur_ps.hlsl takes the start from shafts_noise.hlsli with the flag of slots.z bit 0 and carries no gradient noise of its own");
-  g_check(nc::Has(host, "push.slots[2] = larecomp::settings::mcla_gpu_noise_blue.Get() ? 1u : 0u;") && nc::Has(host, "plan.noise_shift = upscaler_running ? float(scene_noise::NoiseIndex(frame_) & 1023u) : 0.0f;"),
-          "shafts.cpp sets the flag from mcla_gpu_noise_blue (live) and still shifts the noise by the scene's noise index (NoiseIndex: a held scene keeps counting) only while an upscaler runs");
+  g_check(nc::Has(host, "push.slots[2] = larecomp::settings::mcla_gpu_noise_blue.Get() ? 1u : 0u;") && nc::Has(host, "plan.noise_shift = float(noise_resolve::FrameTerm(upscaler_running, plan.history, scene_noise::NoiseIndex(frame_), 1023u));"),
+          "shafts.cpp sets the flag from mcla_gpu_noise_blue (live) and shifts the noise by the scene's noise index (NoiseIndex: a held scene keeps counting) while an upscaler runs or the blurred image's own history does (NOISE-RESOLVE)");
 }
 
 }  // namespace
