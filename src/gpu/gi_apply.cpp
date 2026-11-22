@@ -328,7 +328,7 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   // The camera: the lens and the projection's depth rows from the shared products' camera, the pose from the occlusion's trigger pose where it trusts the vertex constants, else the last frame's.
   const screen::ScreenFrame& sf = screen_->Frame();
   if ((sf.camera.flags & screen::kCameraValid) == 0 || sf.frame_serial != gb.frame_serial || (sf.flags & screen::kFramePause) != 0 || !(sf.camera.tan_half_fov[0] > 0.0f) ||
-      !(sf.camera.tan_half_fov[1] > 0.0f) || !sf.Has(screen::kLinDepth) || sf.lin_depth_slot[0] == screen::kNoSlot || sf.traced[0] == 0 || sf.traced[1] == 0) {
+      !(sf.camera.tan_half_fov[1] > 0.0f) || !sf.Has(screen::kLinDepth) || sf.lin_depth_slot[0] == screen::kNoSlot || sf.traced[0] == 0 || sf.traced[1] == 0 || sf.render[0] == 0 || sf.render[1] == 0) {
     Count(ga::Skip::kNoCamera);
     return false;
   }
@@ -366,7 +366,11 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   }
 
   // The sizes: the picture's, the occlusion's traced one (half above 1080 lines: the lookup is made there and upsampled), and the occlusion's visibility image where there is one.
-  const bool up = sf.traced[0] != gb.width || sf.traced[1] != gb.height;
+  // The traced images are half the picture's size (the lookup is made there and upsampled) or the picture's own: the shared frame says which. The G-buffer's planes are NOT the picture: they are the
+  // main colour target's, which the guest pads (1280x736 for a 1280x720 picture, 1920x1088 for 1080 lines, 832x478 for 832x468: 612e6dee), so comparing the traced size with them took a full size trace
+  // (the picture's own at 1080 lines and below, with the occlusion or the contact shadows at ultra: the High class's auto) for a half size one, and the upsample then read the occlusion's visibility
+  // and the vehicle mark at half the coordinates.
+  const bool up = (sf.flags & screen::kFrameHalfTraced) != 0;
   AmbientOcclusion::OcclusionView ov;
   const bool has_visibility = ao_->FrameOcclusionNow(&ov) && ov.has_visibility && ov.visibility_slot != ga::kNoSlot && ov.traced[0] == sf.traced[0] && ov.traced[1] == sf.traced[1];
   const bool view_run = view_ != 0;
@@ -397,8 +401,9 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   for (int i = 0; i < 4; ++i) {
     fr.lin[i] = sf.camera.lin[i];
   }
-  fr.render[0] = float(gb.width);
-  fr.render[1] = float(gb.height);
+  // The picture's size, which the lens spans (the occlusion's own), not the planes': a pixel's place in the picture is its row over the picture's height (the pad is below the picture).
+  fr.render[0] = float(sf.render[0]);
+  fr.render[1] = float(sf.render[1]);
   fr.traced[0] = float(sf.traced[0]);
   fr.traced[1] = float(sf.traced[1]);
   for (int i = 0; i < 3; ++i) {
@@ -441,8 +446,8 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     pixel_in.camera = &fr;
     pixel_in.traced[0] = sf.traced[0];
     pixel_in.traced[1] = sf.traced[1];
-    pixel_in.render[0] = gb.width;
-    pixel_in.render[1] = gb.height;
+    pixel_in.render[0] = sf.render[0];
+    pixel_in.render[1] = sf.render[1];
     pixel_in.depth_slot = summary.sample_slot;
     pixel_in.normal_slot = gb.slot[gbuffer::kPlaneNormal];
     pixel_in.albedo_slot = gb.slot[gbuffer::kPlaneAlbedo];
