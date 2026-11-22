@@ -37,6 +37,7 @@ void GiIntegration::Initialize(GiField* field, GiApply* apply, AmbientOcclusion*
   world_frame_ = 0;
   world_play_ = false;
   idle_until_ = 0;
+  cut_pending_ = false;
   have_camera_ = false;
   have_light_ = false;
   logged_any_ = false;
@@ -141,7 +142,8 @@ void GiIntegration::BeginFrame(uint64_t frame) {
   in.safe_range_m = city_ != nullptr && city_->initialized() ? city_->SafeRange(GameHiRadius()) : 0.0f;
   in.strength = GiApply::LevelStrength();
   in.bounce_weight = gi_setting::BounceWeightNow();
-  in.cut = gi_field::CutKind::kNone;  // CHECK G4f
+  in.cut = gi_field::CutFor(cut_pending_);  // G4f: a cut the game asked for; the camera's own step is GiField::Move's
+  cut_pending_ = false;
   in.frame = frame;
   field_->BeginFrame(in);
 }

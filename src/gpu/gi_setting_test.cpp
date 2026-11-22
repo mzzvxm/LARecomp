@@ -292,7 +292,10 @@ void SceneChecks(const std::string& dir) {
   Check(Before(scene, ao, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);"), "ORDER: ... and the apply still follows the occlusion's apply");
   // after the structures' build (the car scene's top level holds the city), which the probe update traces against
   Check(Before(scene, "car_rt_->OnResolve(record, summary, list, slot_);", "gi_integration_->OnResolve(summary, list, slot_);"), "ORDER: the field's trigger work comes after the ray tracing structures' (the top level the update traces)");
-  Check(Count(scene, "gi_integration_->") == 2 && Has(scene, "void SetGiIntegration") == false, "scene.cpp calls the integration at the frame's start and at the trigger, once each");
+  Check(Count(scene, "gi_integration_->") == 3 && Has(scene, "void SetGiIntegration") == false, "scene.cpp calls the integration at the frame's start, at the trigger and (the game's camera cut) at the anchor, once each");
+  // THE ANCHOR: a camera cut the game asked for (Scene::NoteAnchorCut sets anchor_cut_ first) goes to the field as a teleport at the next frame's start (CITY-RT-REVIEW M4)
+  Check(Before(scene, "NoteAnchorCut(banks);", "gi_integration_->NoteRequestedCut();") && Has(scene, "if (gi_integration_ && anchor_cut_) {"),
+        "ORDER: the anchor's requested cut is read (NoteAnchorCut) before the integration is told, and only when there is one");
   const std::string header = ReadFile(dir + "/scene.h");
   Check(Has(header, "void SetGiIntegration(GiIntegration* gi_integration)") && Has(header, "GiIntegration* gi_integration_ = nullptr;") && Has(header, "class GiIntegration;"), "scene.h has the setter, the member and the forward declaration");
 }
@@ -314,6 +317,10 @@ void IntegrationChecks(const std::string& dir) {
                             "in.safe_range_m =", "in.strength = GiApply::LevelStrength();", "in.bounce_weight = gi_setting::BounceWeightNow();", "in.frame = frame;"}) {
     Check(Has(cpp, field), std::string("the field's Inputs are filled: ") + field);
   }
+  Check(Has(cpp, "in.cut = gi_field::CutFor(cut_pending_);") && Has(cpp, "cut_pending_ = false;") && Before(cpp, "in.cut = gi_field::CutFor(cut_pending_);", "field_->BeginFrame(in);") && !Has(cpp, "CHECK G4f"),
+        "the field's Inputs carry the game's camera cut once (CutFor) and the request is spent");
+  Check(Has(ReadFile(dir + "/gi_integration.h"), "void NoteRequestedCut() { cut_pending_ = true; }") && Has(ReadFile(dir + "/gi_field_rules.h"), "constexpr CutKind CutFor(bool game_cut) { return game_cut ? CutKind::kTeleport : CutKind::kNone; }"),
+        "the integration takes the request and the rule maps it to a teleport");
   Check(Has(cpp, "SceneClockNowMs(frame)") && Has(cpp, "city_->SafeRange(GameHiRadius())") && Has(cpp, "300.0 * gpu_class::CityLodScale"), "the clock is the scene clock's and the safe range is M1's, asked with the game's hi radius");
   Check(Has(cpp, "update_ = nullptr;") && Has(cpp, "gi_setting::NoteUpdateBuilt(static_cast<bool>(update_))"), "the update's seam says the update exists (the setting's gate) and Shutdown takes it away");
   Check(Before(cpp, "gi_setting::NoteUpdateBuilt(static_cast<bool>(update_) || larecomp::settings::mcla_gpu_rt_gi_dry_run.Get());", "const gi_setting::Decision decision = gi_setting::Current();"),

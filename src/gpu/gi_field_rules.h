@@ -440,6 +440,11 @@ inline ResetProbe ResetProbeOf(const ResetList& list, uint32_t g) {
 // marks every probe dirty (traced first, without history: the update is G2's).
 enum class CutKind : uint8_t { kNone, kTeleport, kRelight };
 
+// What the integration hands the field for a frame (gi_integration.cpp BeginFrame): a cut the GAME asked for (cut_request.h: the trailer toolkit's camera cuts on purpose, the first frame of a shot) is a
+// teleport, so every probe and the pixel pass's history start again even where the camera's step is under gi::kCutMetres (a shot that starts 50 m away, or a turn only); no request is no cut. An hour
+// jump (kRelight) has no signal in the renderer yet (CITY-RT-REVIEW M4).
+constexpr CutKind CutFor(bool game_cut) { return game_cut ? CutKind::kTeleport : CutKind::kNone; }
+
 struct MoveReport {
   bool running = false;
   bool fresh = false;       // the first Move after Start (every probe is new)

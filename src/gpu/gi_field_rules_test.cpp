@@ -532,6 +532,21 @@ void TestCutsAndWarmup() {
   state.RequestCut(gf::CutKind::kTeleport);
   r = state.Move(camera);
   Check(r.cut && r.moved == 0 && r.exposed == gi::BudgetProbes(b) && state.TotalDirty() == gi::BudgetProbes(b), "a requested teleport clears everything though the camera did not move");
+  // a camera cut the game asked for (the integration's CutFor, CITY-RT-REVIEW M4): a shot that starts 50 m away is a cut though the step is under kCutMetres; no request is no cut
+  static_assert(gf::CutFor(true) == gf::CutKind::kTeleport && gf::CutFor(false) == gf::CutKind::kNone);
+  for (uint32_t c = 0; c < b.cascade_count; ++c) state.TakeDirty(c, 16384, {0, 0, 0}, out.data());
+  for (int i = 0; i < 20; ++i) state.Move(camera);
+  camera[0] += 50.0;
+  state.RequestCut(gf::CutFor(false));
+  r = state.Move(camera);
+  Check(!r.cut && !r.relight && r.exposed < gi::BudgetProbes(b), "a step of 50 m with no request from the game is not a cut");
+  for (uint32_t c = 0; c < b.cascade_count; ++c) state.TakeDirty(c, 16384, {0, 0, 0}, out.data());
+  for (int i = 0; i < 20; ++i) state.Move(camera);
+  camera[0] += 50.0;
+  state.RequestCut(gf::CutFor(true));
+  r = state.Move(camera);
+  Check(r.cut && r.exposed == gi::BudgetProbes(b) && state.TotalDirty() == gi::BudgetProbes(b) && state.BudgetScale() == gi::kCutWarmupBudgetScale,
+        "a camera cut the game asked for clears every probe and starts the warm-up though the step (50 m) is under kCutMetres");
   // a relight keeps the data: nothing exposed, everything dirty
   for (uint32_t c = 0; c < b.cascade_count; ++c) state.TakeDirty(c, 16384, {0, 0, 0}, out.data());
   for (int i = 0; i < 20; ++i) state.Move(camera);

@@ -35,7 +35,9 @@
 //   G4c  the camera and the light are the last trigger's (AmbientOcclusion::TriggerViewInverse, FrameLight): the field's windows follow the camera one frame late, which the cascades' 2 to 16 m cells never show
 //   G4d  GiField::Inputs' ambient_down is the same registers as ambient_up (PS c26): the car hit's frame rows have a c57 sky colour that this branch does not read; only the apply's baseline reads the up colour
 //   G4e  the game's cutscenes: the G-buffer has no planes there, so the watchdog is what brings SSGI back after 8 frames; if the cutscene's first frames show no bounce light, world_ok can read the G-buffer
-//   G4f  a time of day jump or a warp (the Director) is a cut by the camera's step only (GiField::Move, 200 m): Inputs::cut stays kNone until the Director's hooks give kRelight / kTeleport
+//   G4f  a camera cut the game asked for (the trailer toolkit's shots: Scene::NoteAnchorCut, cut_request.h) is a teleport for the field (NoteRequestedCut, Inputs::cut = kTeleport on the next frame's start: every
+//        probe and the pixel pass's history start again, whatever the camera's step); any other jump is a cut by the camera's step only (GiField::Move, 200 m, by design: the probes are fixed to the world, a jump under
+//        200 m moves the windows and keeps the data that is still in them). A time of day jump (kRelight) has no signal in the renderer yet: the old light fades by the update's hysteresis (about 33 updates)
 // ===========================================================================
 
 #include <cstdint>
@@ -77,6 +79,9 @@ class GiIntegration {
   // Scene::OnResolve, for every resolve, before the occlusion's OnResolve. True when the field's frame was recorded (the caller's list state is gone then, as for the other passes).
   bool OnResolve(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t frame_slot);
 
+  // Scene, at the anchor draw: the game asked for a camera cut at this frame (cut_request.h). The next BeginFrame hands the field a teleport (GiField::Inputs::cut), once.
+  void NoteRequestedCut() { cut_pending_ = true; }
+
   // What the frame knows (for the tests of the order and the log).
   bool world_play() const { return world_play_; }
   bool idle_by_watchdog(uint64_t frame) const { return frame < idle_until_; }
@@ -98,6 +103,7 @@ class GiIntegration {
   bool world_play_ = false;          // ... and it was the play view's (not the 4 sample pause / garage / map identity)
   uint64_t idle_until_ = 0;          // the watchdog's hold: no field before this frame
   uint64_t watchdog_trips_ = 0;
+  bool cut_pending_ = false;         // the game asked for a camera cut at the last anchor: the next frame's Inputs say so (once)
 
   // The last trigger's camera and light (the next frame's Inputs).
   bool have_camera_ = false;
