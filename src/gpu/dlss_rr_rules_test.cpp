@@ -1253,8 +1253,67 @@ void CheckRawModes() {
 
 }  // namespace
 
+// The row AUTO takes RR for the effects kConsumers' auto_uses_rr trusts it with; the frame is one, so an effect it does not trust must keep its own filter in a frame RR takes for another effect.
+// The DLSS RR value (row_auto false) takes every effect with a raw mode.
+void CheckAutoRawModes() {
+  ConsumerTable shipped = kConsumers;
+  ConsumerTable ssr_only = kConsumers;
+  ssr_only[size_t(Consumer::kSsr)].auto_uses_rr = true;
+  ConsumerTable car_only = kConsumers;
+  car_only[size_t(Consumer::kCarRtReflections)].auto_uses_rr = true;
+  ConsumerTable both = ssr_only;
+  both[size_t(Consumer::kCarRtReflections)].auto_uses_rr = true;
+  Check(ConsumerOfEffect(RawEffect::kSsr) == Consumer::kSsr && ConsumerOfEffect(RawEffect::kCarRefl) == Consumer::kCarRtReflections, "each raw effect maps to its consumer of the board");
+
+  RawFrame ok;
+  ok.plan_rr = ok.context_ready = ok.armed = ok.play_view = true;
+  // row_auto false: the table is not asked, every effect with a raw mode and its switch on is raw (the DLSS RR value, the debug switch's on, and every frame before this rule existed)
+  for (const ConsumerTable* t : {&shipped, &ssr_only, &car_only, &both}) {
+    const RawModes m = RawModesOf(ok, true, true, *t);
+    Check(m.Ssr() && m.CarRefl(), "the DLSS RR value takes every effect with a raw mode whatever AUTO trusts");
+  }
+  RawFrame autoframe = ok;
+  autoframe.row_auto = true;
+  {
+    const RawModes m = RawModesOf(autoframe, true, true, shipped);
+    Check(!m.Ssr() && !m.CarRefl() && m.ssr == RawWhy::kAutoKeepsOurs && m.car_refl == RawWhy::kAutoKeepsOurs, "AUTO with nothing trusted: no effect is raw (the shipped table: the frame is RR's only through another effect, never through these)");
+  }
+  {
+    const RawModes m = RawModesOf(autoframe, true, true, ssr_only);
+    Check(m.Ssr() && !m.CarRefl() && m.car_refl == RawWhy::kAutoKeepsOurs, "AUTO trusting only the screen-space reflections: the cars' reflections keep their own filter in the frame RR takes for the SSR");
+    const RawModes c = RawModesOf(autoframe, true, true, car_only);
+    Check(!c.Ssr() && c.CarRefl() && c.ssr == RawWhy::kAutoKeepsOurs, "and the other way round");
+    const RawModes b = RawModesOf(autoframe, true, true, both);
+    Check(b.Ssr() && b.CarRefl(), "AUTO trusting both: both are raw");
+  }
+  // the order: the plan, a failure, the context, the frame come first; the AUTO rule comes before the effect's own switch
+  bool order = true;
+  for (int bits = 0; bits < 32; ++bits) {
+    for (int sw = 0; sw < 2; ++sw) {
+      for (int trust = 0; trust < 2; ++trust) {
+        for (int row = 0; row < 2; ++row) {
+          RawFrame f;
+          f.plan_rr = (bits & 1) != 0;
+          f.failed = (bits & 2) != 0;
+          f.context_ready = (bits & 4) != 0;
+          f.armed = (bits & 8) != 0;
+          f.play_view = (bits & 16) != 0;
+          f.row_auto = row != 0;
+          const RawWhy got = RawWhyOf(f, sw != 0, trust != 0);
+          const RawWhy want = !f.plan_rr ? RawWhy::kPlanOurs : f.failed ? RawWhy::kFailed : !f.context_ready ? RawWhy::kNoContext : (!f.armed || !f.play_view) ? RawWhy::kNoRrFrame
+                              : (f.row_auto && !trust) ? RawWhy::kAutoKeepsOurs : !sw ? RawWhy::kSwitchOff : RawWhy::kRaw;
+          order = order && got == want;
+        }
+      }
+    }
+  }
+  Check(order, "the reasons: plan, failed, context, frame, AUTO's trust, the effect's switch (32 frames x switch x trust x row)");
+  Check(RawWhyOf(ok, true) == RawWhy::kRaw && RawWhyOf(autoframe, true) == RawWhy::kRaw, "the trust defaults to true: a caller that does not ask the table gets the rule it had");
+}
+
 int main() {
   CheckRawModes();
+  CheckAutoRawModes();
   CheckIds();
   CheckFormats();
   CheckPlanHappyPaths();

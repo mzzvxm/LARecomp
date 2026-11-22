@@ -1684,6 +1684,8 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
   // RR-4: what the boundary knows of whether Ray Reconstruction takes this frame (RawModes adds the play view, known at the first main draw). Nothing is asked of Streamline or the backend unless the
   // plan is RR: with Super Resolution, FSR or no upscaler the facts stay false.
   frame_.raw.plan_rr = rr_plan_.use_rr && effective_ == Upscaler::kDlss;
+  // Under AUTO (the debug switch leaving the row to decide) RR takes the frame for the effects kConsumers' auto_uses_rr trusts it with; the others keep their own filter in that frame (RawWhyOf).
+  frame_.raw.row_auto = rr_debug_ == rr::DebugSwitch::kRow && rr_setting_ == rr::Denoiser::kAuto;
   if (frame_.raw.plan_rr) {
     frame_.raw.failed = dlss::GetRayReconstructionFacts().failed;
     frame_.raw.context_ready = ready && dlss_ && rr_context_asked_ && dlss_->CompanionReady(rr_request_);
@@ -1770,6 +1772,7 @@ void TemporalSystem::UpdateDenoiserPlan() {
     rr_plan_logged_ = true;
   }
   rr_debug_ = in.debug;
+  rr_setting_ = in.setting;
   // What the pause menu's row reads (any thread): the PC's facts, whether DLSS is the upscaler, whether the context is being made, and the plan.
   denoiser::Snapshot snapshot;
   snapshot.debug = in.debug;
