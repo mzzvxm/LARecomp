@@ -61,8 +61,10 @@ const AppIdAtProcessStart g_app_id_at_process_start;
 
 void SetWindowIcon(rex::ui::IUISystem& ui) {
   // One line saying what SDL was given (the window is open: the app id went into its app_id / class when it was made).
+  // The id SDL was given, which a player's own SDL_APP_ID may have made another than kAppId: the entry named in the line is the one of that id.
   const char* app_id = std::getenv(kAppIdVariable);
-  MC_INFO("[display] window app id: {} (the desktop shows the icon of {}.desktop for it)", app_id && *app_id ? app_id : "(none)", kAppId);
+  const char* shown = app_id && *app_id ? app_id : "(none)";
+  MC_INFO("[display] window app id: {} (the desktop shows the icon of {}.desktop for it)", shown, shown);
 
   auto native = ui.GetNativeWindow();
   SDL_Window* sdl = native ? static_cast<SDL_Window*>(native->sdl) : nullptr;
