@@ -2588,6 +2588,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   if (plan.contact_history && !Pipeline(ms ? kVTemporalMs : kVTemporal)) {
     plan.contact_history = false;  // NOISE-RESOLVE: the temporal pass is not made yet: this frame has no history for the contact image, and its noise holds (Varies)
   }
+  if (plan.contact_history && summary.stencil_slot == kNoSlot) {
+    // The history's pass reads the vehicles' IDs from the stencil plane (RecordContactHistory returns without a slot for it): without a plane view the history cannot run, so the march and the traced sun
+    // rays must not take the per-frame noise either (they would show it filtered by the 3x3 alone: shimmer). Review F6.
+    plan.contact_history = false;
+  }
   if (!depth_pipeline || (levels && !mip_pipeline) ||
       (plan.occlusion && (!main_pipeline || !temporal_pipeline)) ||
       (plan.apply && !denoise_pipeline) || (contact && !contact_pipeline)) {
