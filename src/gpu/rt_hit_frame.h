@@ -16,9 +16,11 @@
 //   0 xyz the direction to the sun in VIEW space (unit), w flags (kFrameShade, kFrameShadow, kFrameEnv, kFrameSun, kFrameCascade)
 //   1 xyz the sun's colour (PS c39 of the car's own draws, in the paint's units), w the sun shadow ray's reach in metres
 //   2 xyz the ambient (PS c26), w its gain
-//   3 x the environment map's slot (bit 31 the gamma bit), y the blurred map's slot, z the night factor, w the specular gain
+//   3 x the environment map's slot (bit 31 the gamma bit), y the blurred map's slot, z the night factor (from the sun's height where the frame knows the sun, from the sun's colour where not:
+//     RT-HIT-SHADING-5), w the specular gain
 //   4 xyz the sky ambient (PS c57 ambYPos), w the overall gain
-//   5, 6, 7 the WORLD x, y and z axes in view space (the environment map is in world axes; the passes work in view space)
+//   5, 6, 7 the WORLD x, y and z axes in view space (the environment map is in world axes; the passes work in view space), row 5's w the hit's detail (the car's: RT-HIT-SHADING-5; the city's
+//     shading ignores it)
 //   8..31 the cascades (below)
 // This header includes nothing of the renderer.
 // ===========================================================================
@@ -146,6 +148,8 @@ inline constexpr uint32_t kFrameEnv = 4;      // the environment map's slot is v
 inline constexpr uint32_t kFrameSun = 8;      // the direction to the sun is known
 inline constexpr uint32_t kFrameCascade = 16; // the game's sun cascades and the camera's world position are in the rows: the sun's visibility at a hit is read from them
 
+inline float Dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
 struct Tuning {
   bool enabled = true;
   bool shadow = true;
@@ -153,6 +157,7 @@ struct Tuning {
   float gain = 1.0f;     // everything the shading adds, against the history's units
   float ambient = 1.0f;  // the ambient's share
   float spec = 1.0f;     // the environment reflection's share
+  float detail = 1.0f;   // RT-HIT-SHADING-5: the hit's own detail (the coat's glints, the sky's openness, the contact darkening, the class's ambient); 0 is the shading as it was, above 1 stronger glints
 };
 
 // The lighting of the frame as the car's own draws saw it (PS c26 ambient, c39 sun colour, c57 sky ambient; the environment map's slots in the fetch constants 0 and 1).
@@ -191,12 +196,24 @@ struct FrameInput {
   float shadow_reach = kSunReach;
 };
 
-// 0 in the day, 1 at night, from the sun's colour (its mean).
+// 0 in the day, 1 at night, from the sun's colour (its mean). The colour of the cars' draws (c39) does not follow the hour (0.97 at 14 h and at 23 h, rthit1), so a frame whose sun
+// direction is known takes NightFromSunHeight instead; this is the fallback for a frame that has none.
 inline float NightFactor(const float sun[3]) {
   const float mean = (sun[0] + sun[1] + sun[2]) / 3.0f;
   const float t = std::clamp((mean - kNightLow) / (kNightHigh - kNightLow), 0.0f, 1.0f);
   const float s = t * t * (3.0f - 2.0f * t);
   return 1.0f - s;
+}
+
+// The night factor from the sun's height (RT-HIT-SHADING-5): `sin_elevation` is the sine of the sun's angle over the horizon (the direction to the sun dotted with the world's up). 1 at and under
+// kNightSunLow degrees, 0 from kNightSunHigh degrees up, a smoothstep between: the volumetric light's own rule (volumetrics_rules.h NightFactor(elevation): -4 to 6 degrees, which the test
+// holds this to), so that the lamps glow and the sun's light is gone at the hours the volume says it is night. The sun's light stops at night and the street lamps' stand in (the glints).
+inline constexpr float kNightSunLow = -4.0f;
+inline constexpr float kNightSunHigh = 6.0f;
+inline float NightFromSunHeight(float sin_elevation) {
+  const float degrees = std::asin(std::clamp(sin_elevation, -1.0f, 1.0f)) * (180.0f / 3.14159265358979323846f);
+  const float t = std::clamp((degrees - kNightSunLow) / (kNightSunHigh - kNightSunLow), 0.0f, 1.0f);
+  return 1.0f - t * t * (3.0f - 2.0f * t);
 }
 
 // The cascades are worth reading: a slot, at least one cascade, finite numbers, and a box with an extent. The same judgement as Volumetrics::FillSun's (an empty or stale collector is
@@ -278,9 +295,12 @@ inline void MakeFrameRows(const FrameInput& in, uint32_t rows[kFrameRows][4]) {
   rows[2][3] = Bits(in.tuning.ambient);
   rows[3][0] = in.light.env_sharp;
   rows[3][1] = in.light.env_blur;
-  rows[3][2] = Bits(NightFactor(in.light.sun));
+  // the night factor: the sun's height where the frame knows the sun's direction (and the world's up), the colour's rule where it does not
+  const float night = in.sun_known ? NightFromSunHeight(Dot3(in.to_sun_view, in.world_axes_view[1])) : NightFactor(in.light.sun);
+  rows[3][2] = Bits(night);
   rows[3][3] = Bits(in.tuning.spec);
   rows[4][3] = Bits(in.tuning.gain);
+  rows[5][3] = Bits(std::clamp(std::isfinite(in.tuning.detail) ? in.tuning.detail : 0.0f, 0.0f, 8.0f));
 }
 
 // ---------------------------------------------------------------------------
@@ -320,8 +340,6 @@ inline bool EnvDirection(float u, float v, float r[3]) {
   r[2] = -b;
   return true;
 }
-
-inline float Dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 // ---------------------------------------------------------------------------
 // the sun's visibility at a hit: the game's cascades and the cars' ray

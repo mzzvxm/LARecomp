@@ -202,6 +202,7 @@ RtHitFrame RtWorldHitFrame()
     f.axisX = asfloat(gRtWorld[5u].xyz);
     f.axisY = asfloat(gRtWorld[6u].xyz);
     f.axisZ = asfloat(gRtWorld[7u].xyz);
+    f.detail = asfloat(gRtWorld[5u].w);
     return f;
 }
 

@@ -3081,11 +3081,17 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     scales_agree &= colors[i]->scale == target_scale;
   }
   if (!scales_agree) {
-    const EdramTargets::Target* first = d.key.color_count ? colors[0] : depth;
-    *detail = std::format("targets of different resolution scales (pitch {}): {} at {}x, {} at {}x",
-                          pitch, DescribeEdramKey(first->key), first->scale,
-                          depth ? DescribeEdramKey(depth->key) : std::string("no depth"),
-                          depth ? depth->scale : Scale::None());
+    // Every target of the draw, each with its scale: the disagreeing one is not always the first (the
+    // rthit4 night log named colour 0 and the depth, both at 3x, and the second colour, at 1x, was not
+    // in the line: side_view_ui_map.cpp, "one pass, one class").
+    std::string all;
+    for (uint32_t i = 0; i < d.key.color_count; ++i) {
+      all += std::format("{}{} at {}x", all.empty() ? "" : ", ", DescribeEdramKey(colors[i]->key),
+                         colors[i]->scale);
+    }
+    *detail = std::format("targets of different resolution scales (pitch {}): {}, {}", pitch, all,
+                          depth ? std::format("{} at {}x", DescribeEdramKey(depth->key), depth->scale)
+                                : std::string("no depth"));
     return Skip::kTarget;
   }
   // And one sample count on the host, the one the pipeline was made for: a

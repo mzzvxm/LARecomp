@@ -187,6 +187,11 @@ add_executable(larecomp_setting_source_test EXCLUDE_FROM_ALL setting_source_test
 # The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
 add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
+# Every descriptor set the renderer makes agrees with its builder (descriptor_count_test.cpp; tools/check_descriptor_counts.py is its Python twin): D3D12 refuses a set
+# whose CreateDescriptorSet counts are not the builder's ranges (Vulkan does not count: the city shadow pass never ran on D3D12 for that), and the binding code's indices,
+# range types and structured views are read against the ranges. Reads the .cpp / .h files of the folder it is given, no renderer needed:
+#   cmake --build <dir> --target larecomp_descriptor_count_test, then run src/gpu/larecomp_descriptor_count_test <src dir> [--print] [--strict] (exit 0 = passed).
+add_executable(larecomp_descriptor_count_test EXCLUDE_FROM_ALL descriptor_count_test.cpp)
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)

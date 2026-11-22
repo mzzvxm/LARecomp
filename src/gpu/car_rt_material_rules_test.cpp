@@ -22,6 +22,7 @@
 
 #include "car_rt_instances_rules.h"
 #include "car_rt_material_rules.h"
+#include "volumetrics_rules.h"
 
 namespace ci = mcla::gpu::car_rt_instances;
 namespace tp = mcla::gpu::temporal;
@@ -365,8 +366,9 @@ int main(int argc, char** argv) {
     Check(Near(crm::FromBits(rows[3][2]), 0.0), "in the sun the night factor is 0");
     crm::FrameInput night = in;
     night.light.sun[0] = night.light.sun[1] = night.light.sun[2] = 0.01f;
+    night.sun_known = false;  // no sun direction: the colour's rule
     crm::MakeFrameRows(night, rows);
-    Check(Near(crm::FromBits(rows[3][2]), 1.0), "in a dim light the night factor is 1");
+    Check(Near(crm::FromBits(rows[3][2]), 1.0), "in a dim light, with no sun direction, the night factor is 1 (the colour's rule)");
     crm::FrameInput off = in;
     off.tuning.enabled = false;
     off.tuning.shadow = false;
@@ -487,6 +489,7 @@ int main(int argc, char** argv) {
   // ---- the shading ---------------------------------------------------------------------------------------------------------------------
   {
     crm::ShadeInput in;
+    in.tuning.detail = 0.0f;  // the shading as it was (RT-HIT-SHADING-5's detail has its own checks below)
     in.cls = crm::Class::kOther;
     in.tint_a[0] = in.tint_a[1] = in.tint_a[2] = 1.0f;
     in.light.valid = true;
@@ -623,6 +626,526 @@ int main(int argc, char** argv) {
       prev = c;
     }
     Check(smooth, "the blend has no step: a hundredth of the visible share moves the colour by a hundredth of the difference");
+  }
+
+  // ---- RT-HIT-SHADING-5: the hit's own detail ------------------------------------------------------------------------------------------
+  {
+    const auto unit = [](float v[3]) {
+      const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+      for (int c = 0; c < 3; ++c) {
+        v[c] /= l;
+      }
+    };
+    // the hash: the published values of PCG, the hit's cell and the spread of the two numbers it gives
+    Check(crm::Pcg(0) == 129708002u && crm::Pcg(1) == 2831084092u && crm::Pcg(12345) == 4099845390u && crm::Pcg(0xFFFFFFFFu) == 3861530882u, "the sky ray's hash gives PCG's values");
+    {
+      const float hit[3] = {0.5f, 0.25f, 3.0f};
+      float a = 0.0f, b = 0.0f;
+      crm::OpenHash(hit, &a, &b);
+      Check(Near(a, 0.95782470703125, 1e-6) && Near(b, 0.6495361328125, 1e-6), "the hit's cell (centimetres in view space) gives the same two numbers as the reference");
+      double sum_a = 0.0, sum_b = 0.0;
+      int count = 0;
+      std::mt19937 rng(7);
+      std::uniform_real_distribution<float> place(-8.0f, 8.0f);
+      for (int i = 0; i < 20000; ++i) {
+        const float p[3] = {place(rng), place(rng), place(rng) + 8.0f};
+        crm::OpenHash(p, &a, &b);
+        sum_a += a;
+        sum_b += b;
+        ++count;
+      }
+      Check(std::fabs(sum_a / count - 0.5) < 0.01 && std::fabs(sum_b / count - 0.5) < 0.01, "the two numbers the hash gives are spread evenly over [0, 1)");
+    }
+    // the sky ray's direction
+    {
+      const float up[3] = {0.0f, 1.0f, 0.0f};
+      float normal[3] = {-1.0f, 0.0f, 0.0f};  // a vertical flank
+      std::mt19937 rng(11);
+      std::uniform_real_distribution<float> unit01(0.0f, 1.0f);
+      double widest = 0.0;
+      bool above = true, unit_ok = true;
+      for (int i = 0; i < 4000; ++i) {
+        float e[3];
+        crm::SkyRayDirection(normal, up, unit01(rng), unit01(rng), e);
+        const float length = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+        unit_ok = unit_ok && std::fabs(length - 1.0f) < 1e-4f;
+        above = above && crm::Dot3(e, normal) >= crm::kOpenMinAbove - 1e-4f;
+        const float centre[3] = {-0.70710678f, 0.70710678f, 0.0f};
+        widest = std::max(widest, std::acos(std::clamp(double(crm::Dot3(e, centre)), -1.0, 1.0)) * 180.0 / 3.14159265358979);
+      }
+      Check(unit_ok && above, "the sky ray is a unit vector kept over the tangent plane");
+      Check(widest > 15.0 && widest < 19.6, "the sky ray of a vertical flank leaves at 45 degrees up and spreads over a cone of the jitter's tangent (widest " + std::to_string(widest) + " degrees)");
+      float roof[3] = {0.0f, 1.0f, 0.0f};
+      float e[3];
+      crm::SkyRayDirection(roof, up, 0.3f, 0.7f, e);
+      Check(e[1] > 0.93f, "the sky ray of a roof is within the jitter of straight up");
+      float under[3] = {0.0f, -1.0f, 0.0f};
+      crm::SkyRayDirection(under, up, 0.3f, 0.7f, e);
+      Check(crm::Dot3(e, under) >= crm::kOpenMinAbove - 1e-4f, "a surface that faces the ground keeps its ray over its own tangent plane (the ground side)");
+      float slope[3] = {-0.6f, 0.8f, 0.0f};
+      bool slope_up = true;
+      for (int i = 0; i < 100; ++i) {
+        crm::SkyRayDirection(slope, up, unit01(rng), unit01(rng), e);
+        slope_up = slope_up && e[1] > 0.5f;
+      }
+      Check(slope_up, "the sky ray of a surface that tilts up leans further up");
+      // any normal and any way the camera is rolled: a finite unit ray over the tangent plane
+      bool sane = true;
+      std::normal_distribution<float> gauss(0.0f, 1.0f);
+      for (int i = 0; i < 4000; ++i) {
+        float nn[3] = {gauss(rng), gauss(rng), gauss(rng)};
+        float uu[3] = {gauss(rng), gauss(rng), gauss(rng)};
+        if (i % 7 == 0) {
+          uu[0] = 1.0f;
+          uu[1] = uu[2] = 0.0f;  // the world's up along the view's x
+        }
+        unit(nn);
+        unit(uu);
+        crm::SkyRayDirection(nn, uu, unit01(rng), unit01(rng), e);
+        const float length = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+        sane = sane && std::isfinite(length) && std::fabs(length - 1.0f) < 1e-4f && crm::Dot3(e, nn) >= 0.95f * crm::kOpenMinAbove;  // the lift (as ConeDirection's) is a push along the normal, not an exact angle
+      }
+      Check(sane, "the sky ray is a finite unit ray over the tangent plane for every normal and every roll of the camera");
+    }
+    // the fresnel, the lobe, the contact, the openness
+    Check(Near(crm::CoatFresnel(1.0f), 0.04) && Near(crm::CoatFresnel(0.5f), 0.04 + 0.96 * std::pow(0.5, 5.0), 1e-4) && Near(crm::CoatFresnel(0.0f), 1.0), "the coat's fresnel is Schlick's with F0 0.04 and power 5");
+    Check(Near(crm::GlintLobe(1.0f, crm::kSunGlintPower), 1.0) && crm::GlintLobe(0.9848f, crm::kSunGlintPower) < 0.1 && crm::GlintLobe(-0.5f, crm::kSunGlintPower) == 0.0f, "the sun's lobe is 1 on the axis, a tenth at 10 degrees and nothing behind");
+    Check(Near(crm::ContactMultiplier(0.0f), crm::kContactMin) && Near(crm::ContactMultiplier(crm::kContactHeight), 1.0) && Near(crm::ContactMultiplier(2.0f), 1.0) && Near(crm::ContactMultiplier(-1.0f), 1.0) &&
+              Near(crm::ContactMultiplier(0.5f * crm::kContactHeight), 0.5 * (1.0 + crm::kContactMin)),
+          "the contact darkening is kContactMin on the ground, 1 from kContactHeight up and where the height is not known");
+    {
+      bool monotonic = true;
+      float last = 0.0f;
+      for (int i = 0; i <= 100; ++i) {
+        const float v = crm::ContactMultiplier(crm::kContactHeight * float(i) / 100.0f);
+        monotonic = monotonic && v >= last - 1e-6f;
+        last = v;
+      }
+      Check(monotonic, "the contact darkening never falls with the height");
+    }
+    Check(Near(crm::OpenMultiplier(0.0f), crm::kOpenMin) && Near(crm::OpenMultiplier(1.0f), 1.0) && Near(crm::OpenMultiplier(0.5f), 0.5 * (1.0 + crm::kOpenMin)), "the sky's openness keeps kOpenMin closed in and all open");
+    Check(crm::kContactMin > 0.0f && crm::kOpenMin > 0.0f && crm::kCarCentreRise == float(ci::kCentreRise), "the shader's ground is the car's record's centre taken down by the instances' own rise");
+
+    // the night factor from the sun's height is the volumetric light's own
+    {
+      float worst = 0.0f;
+      for (int i = -100; i <= 400; ++i) {
+        const float degrees = float(i) * 0.1f;
+        const float sine = std::sin(degrees * 3.14159265358979f / 180.0f);
+        worst = std::max(worst, std::fabs(crm::NightFromSunHeight(sine) - mcla::gpu::volumetrics::NightFactor(degrees)));
+      }
+      Check(worst < 2e-4f && crm::kNightSunLow == -4.0f && crm::kNightSunHigh == 6.0f, "the night factor from the sun's height is the volumetric light's NightFactor(elevation) (worst " + std::to_string(worst) + ")");
+      Check(crm::NightFromSunHeight(-1.0f) == 1.0f && crm::NightFromSunHeight(1.0f) == 0.0f, "straight under the world is night and straight over it is day");
+    }
+    // the frame's rows: the night factor from the sun's height where the sun is known, from the colour where it is not; the detail
+    {
+      crm::FrameInput in;
+      in.light.valid = true;
+      in.light.sun[0] = in.light.sun[1] = in.light.sun[2] = 0.05f;  // the draws' c39 at 14 h and at 23 h alike (rthit1): the colour's rule says night
+      in.sun_known = true;
+      const float elevation = 2.0f * 3.14159265358979f / 180.0f;
+      in.to_sun_view[0] = 0.0f;
+      in.to_sun_view[1] = std::sin(elevation);
+      in.to_sun_view[2] = std::cos(elevation);
+      uint32_t rows[crm::kFrameRows][4];
+      crm::MakeFrameRows(in, rows);
+      Check(Near(crm::FromBits(rows[3][2]), mcla::gpu::volumetrics::NightFactor(2.0f), 1e-3), "a sun 2 degrees over the horizon is a dusk's night factor, whatever the draws' colour says");
+      in.to_sun_view[1] = std::sin(40.0f * 3.14159265358979f / 180.0f);
+      in.to_sun_view[2] = std::cos(40.0f * 3.14159265358979f / 180.0f);
+      crm::MakeFrameRows(in, rows);
+      Check(Near(crm::FromBits(rows[3][2]), 0.0), "a sun high in the sky is day by the sun's height though the colour is dim");
+      in.to_sun_view[1] = -std::sin(30.0f * 3.14159265358979f / 180.0f);
+      crm::MakeFrameRows(in, rows);
+      Check(Near(crm::FromBits(rows[3][2]), 1.0), "a sun under the horizon is night");
+      in.world_axes_view[1][1] = 0.0f;
+      in.world_axes_view[1][2] = 1.0f;  // a camera that looks straight down: the world's up is the view's z
+      in.to_sun_view[1] = 0.0f;
+      in.to_sun_view[2] = 1.0f;
+      crm::MakeFrameRows(in, rows);
+      Check(Near(crm::FromBits(rows[3][2]), 0.0), "the height is the sun's direction against the world's up in the view space, not the view's y");
+      Check(Near(crm::FromBits(rows[5][3]), 1.0), "the frame's detail is in row 5's w (1 by default)");
+      in.tuning.detail = 2.5f;
+      crm::MakeFrameRows(in, rows);
+      Check(Near(crm::FromBits(rows[5][3]), 2.5), "the detail setting is in the rows");
+      in.tuning.detail = std::nanf("");
+      crm::MakeFrameRows(in, rows);
+      Check(Near(crm::FromBits(rows[5][3]), 0.0), "a detail that is not a number is 0");
+    }
+
+    // the shading: one input for every check below (a paint with no diffuse of its own light, to isolate each term)
+    const auto base = []() {
+      crm::ShadeInput in;
+      in.cls = crm::Class::kPaint;
+      in.light.valid = true;
+      for (int c = 0; c < 3; ++c) {
+        in.light.ambient[c] = 0.2f;
+        in.light.sun[c] = 0.0f;
+        in.tint_a[c] = in.tint_b[c] = 1.0f;
+      }
+      in.fresnel[0] = in.fresnel[1] = 0.0f;
+      in.normal[1] = 1.0f;
+      in.ray[1] = -1.0f;
+      return in;
+    };
+    float out[3];
+    {
+      // the sky's openness
+      crm::ShadeInput in = base();
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.2, 1e-4), "an open hit (the sky ray found nothing) is as it was");
+      in.open = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.2 * crm::kOpenMin, 1e-4), "a hit closed in by another car keeps kOpenMin of its ambient");
+      in.tuning.detail = 0.5f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.2 * (1.0 - 0.5 * (1.0 - crm::kOpenMin)), 1e-4), "half the detail is half the way");
+      in.tuning.detail = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.2, 1e-4), "no detail: the openness does not matter");
+      // the contact with the ground
+      in = base();
+      in.height = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.2 * crm::kContactMin, 1e-4), "on the ground the ambient is kContactMin of itself");
+      in.height = 0.8f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.2, 1e-4), "over kContactHeight the contact does nothing");
+      in.height = 0.0f;
+      in.open = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.2 * crm::kContactMin * crm::kOpenMin, 1e-4), "closed in at the ground the two multiply");
+      // the reflection of the environment is darkened by the same ground
+      crm::ShadeInput glass = base();
+      glass.cls = crm::Class::kOther;
+      glass.tint_a[0] = glass.tint_a[1] = glass.tint_a[2] = 0.0f;
+      for (int c = 0; c < 3; ++c) {
+        glass.env[c] = 1.0f;
+      }
+      glass.fresnel[0] = glass.fresnel[1] = 0.3f;
+      glass.tuning.detail = 0.0f;
+      crm::ShadeReference(glass, out);
+      const double open_env = out[0];
+      glass.tuning.detail = 1.0f;
+      glass.open = 0.0f;
+      crm::ShadeReference(glass, out);
+      Check(Near(out[0], open_env * crm::kOpenMin, 1e-4) && open_env > 0.0, "the environment's reflection is shut off with the sky");
+      // the class's share of the ambient
+      crm::ShadeInput tyre = base();
+      tyre.cls = crm::Class::kTyre;
+      crm::ShadeReference(tyre, out);
+      Check(Near(out[0], 0.2 * 0.8, 1e-4), "a tyre keeps 0.8 of the ambient (the arch)");
+      tyre.cls = crm::Class::kInterior;
+      crm::ShadeReference(tyre, out);
+      Check(Near(out[0], 0.2 * 0.45, 1e-4), "an interior or an underside keeps 0.45 of it (under the body)");
+      tyre.tuning.detail = 0.0f;
+      crm::ShadeReference(tyre, out);
+      Check(Near(out[0], 0.2, 1e-4), "with no detail every class keeps all of it");
+    }
+    {
+      // the clear coat's image of the sun by day: a lobe where the reflected ray points at the sun
+      crm::ShadeInput in = base();
+      for (int c = 0; c < 3; ++c) {
+        in.tint_a[c] = in.tint_b[c] = 0.0f;
+        in.light.ambient[c] = 0.0f;
+      }
+      in.light.sun[0] = 0.06f;
+      in.light.sun[1] = 0.044f;
+      in.light.sun[2] = 0.024f;
+      in.night = 0.0f;
+      in.ray[0] = 0.0f;
+      in.ray[1] = -0.8f;
+      in.ray[2] = 0.6f;  // down and away: the surface is a ground-facing roof tilted
+      float n[3] = {0.0f, 1.0f, 0.0f};
+      for (int c = 0; c < 3; ++c) {
+        in.normal[c] = n[c];
+      }
+      const float nv = -crm::Dot3(in.normal, in.ray);
+      float reflected[3];
+      for (int c = 0; c < 3; ++c) {
+        reflected[c] = in.ray[c] + 2.0f * nv * in.normal[c];
+      }
+      for (int c = 0; c < 3; ++c) {
+        in.to_sun[c] = reflected[c];
+      }
+      crm::ShadeReference(in, out);
+      const double peak = out[0];
+      Check(Near(peak, 0.06 * crm::kSunRadiance * crm::CoatFresnel(nv), 1e-3) && peak > 0.0, "where the reflected ray points at the sun the coat shows the sun's colour times its radiance and the fresnel");
+      Check(Near(out[1] / out[0], 0.044 / 0.06, 1e-3), "the glint has the sun's colour");
+      // 10 degrees off: a tenth
+      const float turn = 10.0f * 3.14159265358979f / 180.0f;
+      const float off[3] = {0.0f, reflected[1] * std::cos(turn) - reflected[2] * std::sin(turn), reflected[2] * std::cos(turn) + reflected[1] * std::sin(turn)};
+      float to_sun[3] = {off[0], off[1], off[2]};
+      unit(to_sun);
+      for (int c = 0; c < 3; ++c) {
+        in.to_sun[c] = to_sun[c];
+      }
+      crm::ShadeReference(in, out);
+      Check(out[0] < 0.2 * peak && out[0] > 0.0, "10 degrees off the lobe is a tenth of its peak or less");
+      for (int c = 0; c < 3; ++c) {
+        in.to_sun[c] = reflected[c];
+      }
+      in.sun_visible = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.0, 1e-6), "a sun the cascades or a car's shadow hide has no image");
+      in.sun_visible = 1.0f;
+      in.tuning.detail = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.0, 1e-6), "with no detail there is no glint");
+      in.tuning.detail = 2.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 2.0 * peak, 1e-3), "the glint is scaled by the detail above 1");
+      in.tuning.detail = 1.0f;
+      in.cls = crm::Class::kTyre;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.0, 1e-6), "rubber has no coat");
+      in.cls = crm::Class::kChrome;
+      in.fresnel[0] = 0.7f;
+      in.fresnel[1] = 1.0f;
+      in.fresnel[2] = 5.0f;
+      for (int c = 0; c < 3; ++c) {
+        in.tint_a[c] = 0.9f;
+      }
+      crm::ShadeReference(in, out);
+      const double with_glint = out[0];
+      in.tuning.detail = 0.0f;
+      crm::ShadeReference(in, out);
+      const float chrome_fresnel = 0.7f + 0.3f * std::pow(1.0f - nv, 5.0f);
+      Check(Near(with_glint - out[0], 0.06 * crm::kSunRadiance * chrome_fresnel * 0.9, 2e-3), "chrome shows the sun by its own fresnel and tint");
+      // at night the sun is gone and a lamp over the street shows where the reflected ray points up
+      in = base();
+      for (int c = 0; c < 3; ++c) {
+        in.tint_a[c] = in.tint_b[c] = 0.0f;
+        in.light.ambient[c] = 0.0f;
+        in.light.sun[c] = 0.06f;
+      }
+      in.ray[0] = 1.0f;
+      in.ray[1] = 0.0f;
+      in.ray[2] = 0.0f;
+      in.normal[0] = -0.70710678f;
+      in.normal[1] = 0.70710678f;
+      in.normal[2] = 0.0f;
+      in.to_sun[0] = -0.7f;
+      in.to_sun[1] = -0.5f;
+      in.to_sun[2] = 0.5f;
+      unit(in.to_sun);
+      in.night = 1.0f;
+      crm::ShadeReference(in, out);
+      const double lamp_nv = 0.70710678;
+      Check(Near(out[0], 0.06 * crm::kLampRadiance * crm::CoatFresnel(float(lamp_nv)), 1e-3), "at night a 45 degree shoulder mirrors a lamp straight up: the coat shows the lamp's glint");
+      in.open = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.0, 1e-6), "a hit closed in by another car does not see the lamp");
+      in.open = 1.0f;
+      in.sun_known = false;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.0, 1e-6), "with no sun direction the frame has no hour and no lamp image");
+    }
+    {
+      // RT-HIT-SHADING-6: the street lamp's LIGHT on a hit at night (the glints above are its image): the sun's colour times kLampDiffuse times N.up, by the openness and the detail, at night only
+      crm::ShadeInput in = base();
+      for (int c = 0; c < 3; ++c) {
+        in.tint_a[c] = in.tint_b[c] = 1.0f;  // a white matt surface: the colour is the light
+        in.light.ambient[c] = 0.0f;
+        in.light.sun[c] = 0.06f;
+      }
+      in.fresnel[0] = in.fresnel[1] = 0.0f;  // no reflection of the environment
+      in.env_known = true;
+      for (int c = 0; c < 3; ++c) {
+        in.env[c] = 0.0f;
+      }
+      in.ray[0] = 0.0f;  // along the surface (every normal below is across it): the reflected ray is the ray itself, level, so the coat's lamp lobe (the reflected ray pointing up) is off
+      in.ray[1] = 0.0f;
+      in.ray[2] = 1.0f;
+      in.to_sun[0] = 0.0f;
+      in.to_sun[1] = -1.0f;
+      in.to_sun[2] = 0.0f;
+      in.sun_visible = 1.0f;
+      in.sun_known = true;
+      in.night = 1.0f;
+      in.open = 1.0f;
+      in.tuning.detail = 1.0f;
+      in.tuning.ambient = 1.0f;
+      in.height = -1.0f;
+      in.normal[0] = 0.0f;
+      in.normal[1] = 1.0f;
+      in.normal[2] = 0.0f;
+      float roof = 0.0f, flank = 0.0f;
+      crm::ShadeReference(in, out);
+      roof = out[0];
+      const double fill_roof = 0.06 * crm::kNightFillShare * 1.0;  // the hemisphere term is 1 facing up
+      Check(Near(roof, fill_roof + 0.06 * crm::kLampDiffuse, 1e-4), "at night a roof takes the sky's fill and the lamp's light, the sun's colour times kLampDiffuse");
+      in.normal[0] = -1.0f;
+      in.normal[1] = 0.0f;
+      crm::ShadeReference(in, out);
+      flank = out[0];
+      Check(Near(flank, 0.06 * crm::kNightFillShare * 0.6, 1e-4), "a vertical flank has the fill by the hemisphere term (0.6) and none of the lamp's light");
+      Check(roof > 2.5 * flank, "the night's roof is lit and its flank is not: at least 2.5 times (the car has a top and a side)");
+      in.normal[0] = -0.70710678f;
+      in.normal[1] = 0.70710678f;
+      crm::ShadeReference(in, out);
+      const double shoulder = out[0];
+      Check(shoulder > flank && shoulder < roof, "a shoulder at 45 degrees is between the roof and the flank");
+      Check(Near(shoulder, 0.06 * (crm::kNightFillShare * (0.6 + 0.4 * 0.70710678) + crm::kLampDiffuse * 0.70710678), 1e-4), "the lamp's light follows N.up (the cosine)");
+      in.normal[0] = 0.0f;
+      in.normal[1] = 1.0f;
+      in.open = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], roof - 0.06 * crm::kLampDiffuse - 0.06 * crm::kNightFillShare * (1.0 - crm::kOpenMin), 1e-4), "a roof closed in by another car loses the lamp's light and a share of its fill");
+      in.open = 1.0f;
+      in.tuning.detail = 0.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.06 * crm::kNightFillShare, 1e-4), "with no detail there is no lamp light (the shading as it was)");
+      in.tuning.detail = 0.5f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.06 * (crm::kNightFillShare + 0.5 * crm::kLampDiffuse) * 1.0, 3e-3) && out[0] > 0.06 * crm::kNightFillShare && out[0] < roof, "half the detail, about half the lamp's light");
+      in.tuning.detail = 1.0f;
+      in.night = 0.0f;
+      in.to_sun[1] = -1.0f;  // the sun under the horizon, no sun on the roof either
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.06 * crm::kFillShare, 1e-4), "by day there is no lamp light at all (the daytime fill only: the day's picture does not move)");
+      in.night = 1.0f;
+      in.sun_known = false;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.06 * crm::kFillShare, 1e-4), "a frame that does not know the sun has no hour and no lamp light");
+    }
+    {
+      // the hour: the sun's end and the sky's night fill
+      crm::ShadeInput in = base();
+      in.tuning.detail = 0.0f;
+      for (int c = 0; c < 3; ++c) {
+        in.light.ambient[c] = 0.0f;
+        in.light.sun[c] = 1.0f;
+      }
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], crm::kFillShare + 1.0, 1e-4), "by day a surface facing the sun shows the fill and the sun");
+      in.night = 1.0f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], crm::kNightFillShare, 1e-4), "at night the sun's light is gone and the sky's fill is kNightFillShare of its colour");
+      in.night = 0.5f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], 0.5 * (crm::kFillShare + crm::kNightFillShare) + 0.5, 1e-4), "at dusk both are halfway");
+      in.sun_known = false;
+      in.night = 0.97f;
+      crm::ShadeReference(in, out);
+      Check(Near(out[0], crm::kFillShare + 1.0, 1e-4), "a frame that does not know the sun keeps the sun and the day's fill (the colour's night factor only drives the lamps' glow)");
+    }
+
+    // A MODEL of the neighbour's flank as the player's door sees it (this is no picture, and its numbers say only that the pieces work together): a car side 4 m long and 1.5 m high, its body tucking
+    // in under the sill and the beltline and leaning in above it, a glass band, two wheel arches; the ray goes along +x; by day in the shade of the player's car (the sky open above the player's roof line),
+    // and at night. The coefficient of variation of the luminance over the flank against the shading as it was, and the mean.
+    {
+      struct Stats {
+        double mean = 0.0;
+        double cv = 0.0;
+        double tail = 0.0;  // the share of the samples over four times the mean
+      };
+      const auto smooth = [](double a, double b, double x) {
+        const double t = std::clamp((x - a) / (b - a), 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+      };
+      const auto flank = [&](bool night_scene, bool detail_on) {
+        std::vector<double> lum;
+        for (int i = 0; i < 60; ++i) {
+          const double h = 0.03 + 1.44 * double(i) / 59.0;
+          // the normal's tilt over the horizon by height: under the sill, the door, the shoulder, the glass, the roof's edge
+          double tilt = 0.0;
+          if (h < 0.35) {
+            tilt = -28.0 * (1.0 - h / 0.35);
+          } else if (h < 0.75) {
+            tilt = 0.0;
+          } else if (h < 1.0) {
+            tilt = 35.0 * (h - 0.75) / 0.25;
+          } else if (h < 1.38) {
+            tilt = 28.0;
+          } else {
+            tilt = 28.0 + 40.0 * (h - 1.38) / 0.12;
+          }
+          for (int j = 0; j < 80; ++j) {
+            const double x = 4.0 * (double(j) + 0.5) / 80.0;
+            const double yaw = (x - 2.0) / 2.0 * 30.0 * std::fabs((x - 2.0) / 2.0);  // the ends curve away
+            const double pitch_rad = tilt * 3.14159265358979 / 180.0, yaw_rad = yaw * 3.14159265358979 / 180.0;
+            crm::ShadeInput in;
+            const bool glass = h > 1.0 && h < 1.4 && x > 0.4 && x < 3.6;
+            const bool arch = h < 0.62 && (std::fabs(x - 0.8) < 0.38 || std::fabs(x - 3.2) < 0.38);
+            in.cls = glass ? crm::Class::kGlass : arch ? crm::Class::kTyre : crm::Class::kPaint;
+            in.paint = in.cls == crm::Class::kPaint;
+            in.flop = 2.0f;
+            const float a[3] = {0.8f, 0.25f, 0.05f}, b[3] = {0.2f, 0.05f, 0.01f};
+            for (int c = 0; c < 3; ++c) {
+              in.tint_a[c] = glass ? 0.02f : arch ? 0.04f : a[c];
+              in.tint_b[c] = glass ? 0.02f : arch ? 0.04f : b[c];
+            }
+            in.fresnel[0] = glass ? 0.04f : arch ? 0.02f : 0.05f;
+            in.fresnel[1] = glass ? 1.0f : arch ? 0.1f : 0.6f;
+            in.fresnel[2] = 4.0f;
+            in.light.valid = true;
+            in.light.sun[0] = 0.06f;
+            in.light.sun[1] = 0.044f;
+            in.light.sun[2] = 0.024f;
+            in.light.ambient[1] = 0.004f;
+            in.light.ambient[2] = 0.004f;
+            in.ray[0] = 1.0f;
+            in.ray[1] = 0.0f;
+            in.ray[2] = 0.0f;
+            in.normal[0] = float(-std::cos(pitch_rad) * std::cos(yaw_rad));
+            in.normal[1] = float(std::sin(pitch_rad));
+            in.normal[2] = float(std::cos(pitch_rad) * std::sin(yaw_rad));
+            in.to_sun[0] = night_scene ? -0.5f : -0.4f;  // the sun is behind the player's car: the flank is in its shadow by day
+            in.to_sun[1] = night_scene ? -0.4f : 0.8f;
+            in.to_sun[2] = 0.45f;
+            unit(in.to_sun);
+            in.sun_visible = 0.0f;
+            // the environment at the reflected direction: the sky over the horizon, the buildings round it, the road under
+            float r[3];
+            const float twice = 2.0f * crm::Dot3(in.normal, in.ray);
+            for (int c = 0; c < 3; ++c) {
+              r[c] = in.ray[c] - twice * in.normal[c];
+            }
+            const double sky = smooth(0.15, 0.5, r[1]);
+            const double road = 1.0 - smooth(-0.35, -0.05, r[1]);
+            const double level = night_scene ? 0.02 : 0.35;
+            const double e = 0.15 * level / 0.35 * (1.0 - sky) * (1.0 - road) + level * sky + 0.05 * level / 0.35 * road;
+            for (int c = 0; c < 3; ++c) {
+              in.env[c] = float(e);
+            }
+            in.night = night_scene ? 1.0f : 0.0f;
+            in.sun_known = detail_on;
+            if (!detail_on) {
+              in.tuning.detail = 0.0f;
+              in.night = night_scene ? 0.97f : 0.0f;
+            } else {
+              in.open = float(smooth(0.7, 1.15, h));  // the player's roof line over the flank
+              in.height = float(h);
+            }
+            float rgb[3];
+            crm::ShadeReference(in, rgb);
+            lum.push_back(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]);
+          }
+        }
+        Stats s;
+        for (const double v : lum) {
+          s.mean += v;
+        }
+        s.mean /= double(lum.size());
+        double var = 0.0;
+        size_t over = 0;
+        for (const double v : lum) {
+          var += (v - s.mean) * (v - s.mean);
+          over += v > 4.0 * s.mean ? 1u : 0u;
+        }
+        s.cv = std::sqrt(var / double(lum.size())) / s.mean;
+        s.tail = double(over) / double(lum.size());
+        return s;
+      };
+      const Stats day_old = flank(false, false), day_new = flank(false, true), night_old = flank(true, false), night_new = flank(true, true);
+      std::printf("  the flank model: day CV %.2f -> %.2f (mean %.5f -> %.5f, %.1f%% over 4 x the mean), night CV %.2f -> %.2f (mean %.5f -> %.5f, %.1f%% over 4 x the mean)\n", day_old.cv, day_new.cv, day_old.mean,
+                  day_new.mean, 100.0 * day_new.tail, night_old.cv, night_new.cv, night_old.mean, night_new.mean, 100.0 * night_new.tail);
+      Check(day_new.cv > 1.2 * day_old.cv, "the flank model: by day the luminance varies at least a fifth more across the flank with the detail (CV " + std::to_string(day_old.cv) + " -> " + std::to_string(day_new.cv) + ")");
+      Check(day_new.mean > 0.6 * day_old.mean && day_new.mean < 1.4 * day_old.mean, "the flank model: the detail does not move the flank's mean far (by day " + std::to_string(day_new.mean / day_old.mean) + " times)");
+      Check(night_new.cv > 1.5 * night_old.cv && night_new.tail > 0.005, "the flank model: at night the lamp's glint is a heavy tail the flank had not (CV " + std::to_string(night_old.cv) + " -> " + std::to_string(night_new.cv) + ", " +
+                                                                              std::to_string(100.0 * night_new.tail) + "% of the samples over 4 x the mean)");
+      Check(night_new.mean > night_old.mean, "the flank model: the sky's night fill makes the flank at night brighter");
+    }
   }
 
   // ---- the instance list's materials ----------------------------------------------------------------------------------------------------
@@ -999,9 +1522,9 @@ int main(int argc, char** argv) {
             "the shader's lighting is ShadeReference's (the hemisphere term, the fresnel, the emissive, the paint's gradient)");
       Check(Has(hlsli, "#define RT_HIT_FRAME_ROW(i) gCarRtMaterials[i]") && Has(hlsli, "#define RT_HIT_TLAS gCarRtTlas") && Has(hlsli, "#include \"rt_hit_frame.hlsli\"") && Has(hlsli, "#include \"rt_hit_sample.hlsli\"") &&
                 Has(hlsli, "RtHitSunVisible(hit + normal * (0.004 + 0.002 * abs(hit.z)), toSun, f.shadowReach, CAR_RT_MASK_ALL)") && Has(hlsli, "visible = RtHitCascadeVisible(f, hit, normal);") &&
-                Has(hlsli, "const float3 light = RtHitAmbientLight(f, hemisphere) + f.sun * (ndl * visible);") && Has(hlsli, "env = RtHitEnvRead(f, world, lod);"),
+                Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);") && Has(hlsli, "env = RtHitEnvRead(f, world, lod);"),
             "the car's shading reads the frame's rows from the car's own buffer, and the cascades, the sun's ray, the ambient and the environment map through the shared code");
-      Check(Has(refl, "#include \"car_rt_hit_shade.hlsli\"") && Has(refl, "static const bool kShadePlayerHits = true;") && Has(refl, "isShaded = CarHitShade(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, g_push.up.w, shaded);") &&
+      Check(Has(refl, "#include \"car_rt_hit_shade.hlsli\"") && Has(refl, "static const bool kShadePlayerHits = true;") && Has(refl, "isShaded = CarHitShade(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, g_push.up.w, CarHitHeight(hitInstance, hitsOther, hit), shaded);") &&
                 Has(refl, "if (seenShare < 1.0 && usable && (hitsOther || kShadePlayerHits))"),
             "the trace shades a hit on another car (and, in the opponents' variant, on the player's) only where the history does not show it in full");
       Check(Has(refl, "hidden = shaded;") && Has(refl, "else if (hitsOther)") && Has(refl, "hidden *= g_push.tune.x;") && Has(refl, "const float known = OtherCarColour(history, CarRtLoadCar(hitInstance), hidden);"),
@@ -1020,6 +1543,46 @@ int main(int argc, char** argv) {
       Check(Has(scene, "crm::MakeFrameRows(in, rows);") && Has(scene, "in.cascades = sun_cascades_;") && Has(scene, "car_rt_instances::CameraWorld(frame.view, camera)") &&
                 Has(scene_h, "void SetSunCascades(const car_rt_material::SunCascades& cascades) { sun_cascades_ = cascades; }"),
             "the scene puts the cascades it was given and the camera's world place into the frame's rows");
+      // RT-HIT-SHADING-5: the shader's numbers, tables and arithmetic are the header's
+      Check(Near(Constant(hlsli, "static const float kNightFillShare"), crm::kNightFillShare) && Near(Constant(hlsli, "static const float kLampDiffuse"), crm::kLampDiffuse) && Near(Constant(hlsli, "static const float kCoatF0"), crm::kCoatF0) && Near(Constant(hlsli, "static const float kCoatPower"), crm::kCoatPower) &&
+                Near(Constant(hlsli, "static const float kSunRadiance"), crm::kSunRadiance) && Near(Constant(hlsli, "static const float kSunGlintPower"), crm::kSunGlintPower) &&
+                Near(Constant(hlsli, "static const float kLampRadiance"), crm::kLampRadiance) && Near(Constant(hlsli, "static const float kLampGlintPower"), crm::kLampGlintPower) &&
+                Near(Constant(hlsli, "static const float kOpenMin"), crm::kOpenMin) && Near(Constant(hlsli, "static const float kOpenReach"), crm::kOpenReach) && Near(Constant(hlsli, "static const float kOpenJitter"), crm::kOpenJitter) &&
+                Near(Constant(hlsli, "static const float kOpenMinAbove"), crm::kOpenMinAbove) && Near(Constant(hlsli, "static const float kOpenHashCells"), crm::kOpenHashCells) &&
+                Near(Constant(hlsli, "static const float kContactMin"), crm::kContactMin) && Near(Constant(hlsli, "static const float kContactHeight"), crm::kContactHeight) &&
+                Near(Constant(hlsli, "static const float kCarCentreRise"), crm::kCarCentreRise),
+            "the shader's detail numbers (the night fill, the coat's fresnel, the glints, the sky's openness, the contact) are the header's");
+      const std::vector<double> class_ambient = Array(hlsli, "static const float kClassAmbient"), class_glint = Array(hlsli, "static const float kClassGlint");
+      bool detail_classes = class_ambient.size() == 8 && class_glint.size() == 8;
+      for (uint32_t c = 0; c < crm::kClassCount && detail_classes; ++c) {
+        detail_classes = Near(class_ambient[c], crm::kClassAmbient[c]) && Near(class_glint[c], crm::kClassGlint[c]);
+      }
+      Check(detail_classes, "the shader's class tables of the ambient's share and the coat's glint are the header's");
+      Check(Has(hlsli, "const uint state = v * 747796405u + 2891336453u;") && Has(hlsli, "const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;") && Has(hlsli, "return (word >> 22u) ^ word;") &&
+                Has(hlsli, "const int3 cell = int3(floor(hit * kOpenHashCells));") && Has(hlsli, "CarMatPcg(asuint(cell.x) + CarMatPcg(asuint(cell.y) + CarMatPcg(asuint(cell.z))))") &&
+                Has(hlsli, "const float a = float(h & 0xFFFFu) / 65536.0;") && Has(hlsli, "const float b = float(h >> 16) / 65536.0;"),
+            "the shader's hash and the hit's cell are the header's (Pcg, OpenHash)");
+      Check(Has(hlsli, "d = length2 > 0.3 ? d / length2 : up;") && Has(hlsli, "const float3 helper = abs(d.y) < 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);") &&
+                Has(hlsli, "const float angle = 6.283185307179586 * a;") && Has(hlsli, "(kOpenJitter * sqrt(b))") && Has(hlsli, "if (above < kOpenMinAbove)") &&
+                Has(hlsli, "e = normalize(e + (kOpenMinAbove - above) * normal);") && Has(hlsli, "ray.Origin = hit + normal * (0.010 + 0.003 * hit.z);") && Has(hlsli, "ray.TMax = kOpenReach;") &&
+                Has(hlsli, "return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;"),
+            "the shader's sky ray is SkyRayDirection's, cast kOpenReach metres against every car");
+      Check(Has(hlsli, "const float lampLight = kLampDiffuse * night * saturate(dot(normal, up)) * openness * strength;") &&
+                Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);"),
+            "the shader's lamp light is ShadeReference's (RT-HIT-SHADING-6: kLampDiffuse times the night factor times N.up times the sky's openness times the detail, in the sun's colour)");
+      Check(Has(hlsli, "const float night = sunKnown ? f.night : 0.0;") && Has(hlsli, "const float daySun = 1.0 - night;") && Has(hlsli, "if (ndl > 0.0 && daySun > 0.0)") &&
+                Has(hlsli, "const float contact = height >= 0.0 ? kContactMin + (1.0 - kContactMin) * smoothstep(0.0, kContactHeight, height) : 1.0;") &&
+                Has(hlsli, "const float ground = lerp(1.0, kOpenMin + (1.0 - kOpenMin) * openness, strength) * lerp(1.0, contact, strength);") &&
+                Has(hlsli, "const float classAmbient = lerp(1.0, kClassAmbient[m.cls], strength);") && Has(hlsli, "env * (fresnel * kClassSpecGain[m.cls] * f.specGain) * tint * ground;") &&
+                Has(hlsli, "const float coat = m.cls == CAR_MAT_CLASS_CHROME ? fresnel : kCoatF0 + (1.0 - kCoatF0) * pow(saturate(1.0 - nv), kCoatPower);") &&
+                Has(hlsli, "pow(saturate(dot(reflected, toSun)), kSunGlintPower)") && Has(hlsli, "pow(saturate(dot(reflected, up)), kLampGlintPower)") &&
+                Has(hlsli, "result += f.sun * (kSunRadiance * sunLobe * visible * daySun + kLampRadiance * lampLobe * night * openness) * (coat * kClassGlint[m.cls] * detail) * tint;") &&
+                Has(hlsli, "f.detail = asfloat(RT_HIT_FRAME_ROW(5).w);"),
+            "the shader's detail is ShadeReference's: the hour, the contact, the openness, the class, the coat's glints");
+      Check(Has(refl, "return max(dot(hit - car.centre, g_push.up.xyz) + kCarCentreRise, 0.0);") && Has(refl, "row = hitInstance.draw;") && Has(refl, "row = g_push.opp.z;") && Has(refl, "if (car.radius == 0.0)"),
+            "the pass takes a hit's height over its car's ground from the car's record (the instance's, or the player's in the opponents' variant)");
+      Check(Has(scene, "in.tuning.detail = float(larecomp::settings::mcla_gpu_car_rt_hit_detail.Get());") && Has(settings, "mcla_gpu_car_rt_hit_detail, 1.0,") && Has(manifest, "\"mcla_gpu_car_rt_hit_detail\""),
+            "the scene reads the detail setting into the frame's rows and the setting is defined");
       Check(!cmake.empty() && Has(cmake, "larecomp_car_rt_material_rules_test"), "the CMake file builds this test");
     }
   }

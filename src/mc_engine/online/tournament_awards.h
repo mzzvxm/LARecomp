@@ -6,12 +6,17 @@
 //
 //   tournament_weeks.txt   one line per tournament served:
 //                          week slot starts ends prize_first prize_podium podium settled
+//                          (settled: 0 open, 2 settled; 1 is an older server's, see below)
 //   tournament_awards.txt  one line per player: owner key (hex) and reward mask
 //
-// A week is settled the first time anyone asks for rewards after it ended: the
-// best `podium` players of its leaderboard slot, among rows written during that
-// week, get the prizes; first place the first-place prize. Rewards only ever
-// add up, so a player keeps what they won.
+// A week is settled the first time anyone asks for rewards after it ended (or the
+// next week's definition is served): the best `podium` players of its slot's
+// stats view (StatsViewForSlot: the slot itself below 351, slot + 31 from there,
+// as the game writes them), among rows written during that week, get the prizes;
+// first place the first-place prize. Rewards only ever add up, so a player keeps
+// what they won. A week an older server settled (value 1) on the slot as the
+// view, which is the wrong board from slot 351, is settled once more on the
+// right one.
 //
 // Not thread-safe: the Rate My Ride store calls it under its own lock.
 //

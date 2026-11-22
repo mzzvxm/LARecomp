@@ -529,6 +529,8 @@ int main(int argc, char** argv) {
                 Near(Constant(hlsli, "static const float kCoatMax"), hr::kCoatMax) && Near(Constant(hlsli, "static const float kCoatMinPower"), hr::kCoatMinPower) &&
                 Near(Constant(hlsli, "static const float kAuxSharpScale"), hr::kAuxSharpScale) && Near(Constant(denoise, "static const float kAuxSharpScale"), hr::kAuxSharpScale),
             "the shaders' clear-coat numbers and the aux's scale are the header's");
+      Check(Has(hlsli, "RtHitSunVisible(hit + normal * (0.004 + 0.002 * abs(hit.z)), toSun, f.shadowReach, CAR_RT_MASK_ALL)") && !Has(hlsli, "0.002 * hit.z"),
+            "the sun ray's lift follows the magnitude of the view z (a hit behind the camera has a negative z: a negative lift puts the origin under the surface and the hit in its own shadow)");
       Check(Has(hlsli, "const float curve = pow(saturate(1.0 - nv), max(power, kCoatMinPower));") && Has(hlsli, "return clamp(gain * (kCoatNormal + (kCoatGrazing - kCoatNormal) * curve), 0.0, kCoatMax);") &&
                 Has(hlsli, "return float((gCarRtMaterials[kRtHitFrameRows + instance * kMatRows].x >> 24) & 0xFFu) / 16.0;"),
             "the shader's coat share is CoatShare's, read from the paint's fresnel exponent in the instance's row (bits 24..31, x 16)");
@@ -591,11 +593,11 @@ int main(int argc, char** argv) {
         Check(Has(refl, "RWByteAddressBuffer g_stats : register(u2, space1);") && Has(refl, "return (g_push.slots.w & kStatsFlag) != 0u;") && Has(refl, "g_stats.InterlockedAdd(word * 4u, value, original);") &&
                   Has(refl, "return uint(clamp((log2(max(luminance, kLogFloor)) + kLogBias) * kLogScale, 0.0, kLogMax));") && Has(refl, "return dot(colour, float3(0.2126, 0.7152, 0.0722));"),
               "the shader counts in a stats frame only, into the buffer at u2, with the header's luminance and fixed-point log");
-        Check(Has(refl, "if (hitsOther && usable)") && Has(refl, "CensusCalibrate(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, seen);") &&
+        Check(Has(refl, "if (hitsOther && usable)") && Has(refl, "CensusCalibrate(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, CarHitHeight(hitInstance, hitsOther, hit), seen);") &&
                   Has(refl, "if (gCarHitClass == CAR_MAT_CLASS_PAINT)") && Has(refl, "CensusShaded(seenShare, shaded);") && Has(refl, "StatAdd(kStatDropped, 1u);") && Has(refl, "StatAdd(kStatStandIn, 1u);"),
               "the exposure's samples are hits on another car's parts the history shows in full (the player's own car in the opponents' pass is no sample), the paint's drive the gain; every outcome is counted");
-        Check(Near(Constant(hlsli, "static const float kRtHitFillShare"), crm::kFillShare) && Has(hlsli, "const float3 fill = max(f.ambient, f.sun * kRtHitFillShare);") &&
-                  Has(hlsli, "return fill * (f.ambientGain * hemisphere);") && Has(hlsli, "const float3 light = RtHitAmbientLight(f, hemisphere) + f.sun * (ndl * visible);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;"),
+        Check(Near(Constant(hlsli, "static const float kRtHitFillShare"), crm::kFillShare) && Has(hlsli, "const float3 fill = max(f.ambient, f.sun * lerp(kRtHitFillShare, kNightFillShare, night));") &&
+                  Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;"),
               "the shader's sky fill is ShadeReference's");
         Check(Has(host, "output_builder_.addReadWriteByteAddressBuffer(2);") && Has(host, "bool CarRtRefl::MakeStatsBuffers(Device& device) {") &&
                   Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, cone_rays), stats_frame);") &&

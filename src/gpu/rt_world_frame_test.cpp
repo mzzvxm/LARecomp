@@ -815,7 +815,7 @@ void TestWorldRows() {
     CHECK(f.toSun.x == g.toSun.x && f.sun.y == g.sun.y && f.ambient.z == g.ambient.z && f.envSharp == g.envSharp && f.envBlur == g.envBlur && f.night == g.night && f.sky.x == g.sky.x &&
           f.axisY.y == g.axisY.y && f.gain == g.gain && f.specGain == g.specGain && f.shadowReach == g.shadowReach && f.ambientGain == g.ambientGain);
     CHECK(f.sun.x == in.hit.light.sun[0] && f.envSharp == in.hit.light.env_sharp && f.ambientGain == in.hit.tuning.ambient && f.specGain == in.hit.tuning.spec && f.gain == in.hit.tuning.gain);
-    CHECK(f.sky.y == in.hit.light.sky[1] && f.axisZ.x == in.hit.world_axes_view[2][0] && f.night == rh::NightFactor(in.hit.light.sun));
+    CHECK(f.sky.y == in.hit.light.sky[1] && f.axisZ.x == in.hit.world_axes_view[2][0] && f.night == (in.hit.sun_known ? rh::NightFromSunHeight(rh::Dot3(in.hit.to_sun_view, in.hit.world_axes_view[1])) : rh::NightFactor(in.hit.light.sun)));
     // the point in the world: the camera plus the point along the world's axes (the twin's ViewToWorld and the header's WorldPoint)
     const float view[3] = {rng.Range(-300.0f, 300.0f), rng.Range(-30.0f, 30.0f), rng.Range(0.0f, 500.0f)};
     const hlsl_shim::float3 p = hlsl_shim::RtWorldPoint(w, hlsl_shim::float3(view[0], view[1], view[2]));

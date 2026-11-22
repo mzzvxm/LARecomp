@@ -580,6 +580,8 @@ float3 CarReflCoat(float3 paint, CarReflResult hit)
 // vertex AO, 4 the state of the trace (red: the point is not in the history, blue: the ray left the picture, green: no hit, yellow: a hit, orange where the march's hit is the hidden face; brighter the heavier),
 // 5 the ray traced image's state at the pixel, 6 (version 8) the clear coat's layer's amount (the fresnel times the share of the hit on another car; white is 1), 7 (version 8) what the layer adds: the
 // car's colour times that amount. The write of the colour is scaled by the exponent bias of the target, so they are in its units.
+static const float kCarReflAmountViewGain = 64.0;  // debug view 6: the amount, times the target's unit, times this
+
 float3 CarReflDebug(CarReflResult hit, float bakedAo)
 {
     const uint view = uint(g_CarReflB.y + 0.5);
@@ -598,8 +600,9 @@ float3 CarReflDebug(CarReflResult hit, float bakedAo)
     }
     if (view == 6u)
     {
+        // RT-HIT-SHADING-6: a script reads the edge's ramp off this picture, and 0.04 to 0.3 at the unit were 8-bit codes 2 to 4 (rthit4)
         const float amount = CarReflCoatAmount(hit);
-        return float3(amount, amount, amount) * unit;
+        return float3(amount, amount, amount) * (unit * kCarReflAmountViewGain);
     }
     if (view == 7u)
     {

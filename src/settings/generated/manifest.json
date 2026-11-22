@@ -10337,6 +10337,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_rt_hit_detail": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the detail of the shaded hit on another car (the car the reflection shows): the sky's openness (one ray from the hit towards the sky: a flank between two cars is darker), the contact with the ground \"\n    \"(the lowest half metre of the car is darker), the clear coat's image of the sun by day and of a street lamp at night (a bright streak along a shoulder or a roof edge), and what each kind of part \"\n    \"keeps of the ambient light. 1, the default; 0 is the shading as it was, above 1 makes the glints stronger. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_hit_reach": {
   "type": "f64",
   "default": "0.0",

@@ -158,6 +158,8 @@ void RunOnFixture() {
         "version 8: the layer's share is the hit's weight times the share of it with the sign (the lookup's car), the fresnel's N.V is the paint's own");
   Check(Contains(text, "if (view == 6u)") && Contains(text, "if (view == 7u)") && Contains(text, "return hit.colour * CarReflCoatAmount(hit);"),
         "version 8: the debug views 6 (the layer's amount) and 7 (what it adds)");
+  Check(Contains(text, "static const float kCarReflAmountViewGain = 64.0;") && Contains(text, "return float3(amount, amount, amount) * (unit * kCarReflAmountViewGain);"),
+        "RT-HIT-SHADING-6: the debug view 6 writes the amount 64 times the target's unit (rthit4's pictures showed it at the unit as codes 2 to 4: no ramp could be read off them)");
   Check(Contains(text, "if (rt.use > 0.5)") && text.find("if (rt.use > 0.5)") < text.find("CarReflSum sum = (CarReflSum)0;"),
         "an answer from the image returns before the march's loop");
   Check(Contains(text, "if (view == 5u)") && Contains(text, "float rt;"), "the debug view 5 and the result's field for it");

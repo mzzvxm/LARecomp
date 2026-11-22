@@ -163,7 +163,10 @@ void FrameChecks() {
     if (!Near(f.toSun.x, in.to_sun_view[0], 1e-6) || !Near(f.toSun.y, in.to_sun_view[1], 1e-6) || !Near(f.toSun.z, in.to_sun_view[2], 1e-6)) ++wrong;
     if (!Near(f.sun.x, in.light.sun[0], 1e-6) || !Near(f.sun.y, in.light.sun[1], 1e-6) || !Near(f.sun.z, in.light.sun[2], 1e-6) || !Near(f.shadowReach, in.shadow_reach, 1e-6)) ++wrong;
     if (!Near(f.ambient.x, in.light.ambient[0], 1e-6) || !Near(f.ambient.z, in.light.ambient[2], 1e-6) || !Near(f.ambientGain, in.tuning.ambient, 1e-6)) ++wrong;
-    if (f.envSharp != in.light.env_sharp || f.envBlur != in.light.env_blur || !Near(f.night, rh::NightFactor(in.light.sun), 1e-6) || !Near(f.specGain, in.tuning.spec, 1e-6)) ++wrong;
+    if (f.envSharp != in.light.env_sharp || f.envBlur != in.light.env_blur || !Near(f.specGain, in.tuning.spec, 1e-6)) ++wrong;
+    // the hour: from the sun's height where the frame knows the sun's direction, from the sun's colour where not (RT-HIT-SHADING-5); the car's detail rides in row 5's w
+    const float want_night = in.sun_known ? rh::NightFromSunHeight(rh::Dot3(in.to_sun_view, in.world_axes_view[1])) : rh::NightFactor(in.light.sun);
+    if (!Near(f.night, want_night, 1e-6) || !Near(f.detail, std::clamp(in.tuning.detail, 0.0f, 8.0f), 1e-6)) ++wrong;
     if (!Near(f.sky.y, in.light.sky[1], 1e-6) || !Near(f.gain, in.tuning.gain, 1e-6)) ++wrong;
     if (!Near(f.axisX.x, in.world_axes_view[0][0], 1e-6) || !Near(f.axisY.y, in.world_axes_view[1][1], 1e-6) || !Near(f.axisZ.z, in.world_axes_view[2][2], 1e-6) ||
         !Near(f.axisZ.x, in.world_axes_view[2][0], 1e-6))

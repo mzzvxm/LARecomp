@@ -414,6 +414,10 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_car_rt_hit_spec, 1.0, "Debug: the share of the environment map's reflection (the game's own 512x256 map, read at the reflected direction and scaled by the fresnel) in a shaded hit on another car (1, the "
     "default). Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
 
+  REX_SETTING(f64, mcla_gpu_car_rt_hit_detail, 1.0, "Debug: the detail of the shaded hit on another car (the car the reflection shows): the sky's openness (one ray from the hit towards the sky: a flank between two cars is darker), the contact with the ground "
+    "(the lowest half metre of the car is darker), the clear coat's image of the sun by day and of a street lamp at night (a bright streak along a shoulder or a roof edge), and what each kind of part "
+    "keeps of the ambient light. 1, the default; 0 is the shading as it was, above 1 makes the glints stronger. Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
+
   REX_SETTING(f64, mcla_gpu_car_rt_hit_reach, 0.0, "Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). "
     "The weight of a hit falls over this from three quarters of it. Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours "
     "(mcla_gpu_car_rt_cars_radius moves that). Live.", rex::kDebugOnly, rex::Range{0.0, 20.0});
@@ -1861,6 +1865,7 @@ inline auto& mcla_gpu_car_rt_hit_shadow = g_gpu.mcla_gpu_car_rt_hit_shadow;
 inline auto& mcla_gpu_car_rt_hit_gain = g_gpu.mcla_gpu_car_rt_hit_gain;
 inline auto& mcla_gpu_car_rt_hit_ambient = g_gpu.mcla_gpu_car_rt_hit_ambient;
 inline auto& mcla_gpu_car_rt_hit_spec = g_gpu.mcla_gpu_car_rt_hit_spec;
+inline auto& mcla_gpu_car_rt_hit_detail = g_gpu.mcla_gpu_car_rt_hit_detail;
 inline auto& mcla_gpu_car_rt_hit_reach = g_gpu.mcla_gpu_car_rt_hit_reach;
 inline auto& mcla_gpu_car_rt_clearcoat = g_gpu.mcla_gpu_car_rt_clearcoat;
 inline auto& mcla_gpu_car_rt_coat_layer = g_gpu.mcla_gpu_car_rt_coat_layer;

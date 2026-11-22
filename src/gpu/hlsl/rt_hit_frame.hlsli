@@ -53,6 +53,7 @@ struct RtHitFrame
     float3 axisX;      // the world's axes in view space
     float3 axisY;
     float3 axisZ;
+    float detail;      // RT-HIT-SHADING-5: the car's hit detail (row 5's w; 0: the shading as it was); the city's shading ignores it
 };
 
 RtHitFrame RtHitLoadFrame()
@@ -78,6 +79,7 @@ RtHitFrame RtHitLoadFrame()
     f.axisX = asfloat(RT_HIT_FRAME_ROW(5).xyz);
     f.axisY = asfloat(RT_HIT_FRAME_ROW(6).xyz);
     f.axisZ = asfloat(RT_HIT_FRAME_ROW(7).xyz);
+    f.detail = asfloat(RT_HIT_FRAME_ROW(5).w);
     return f;
 }
 

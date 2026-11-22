@@ -322,7 +322,7 @@ constexpr bool SidecarAffordable(uint32_t planes, uint32_t width, uint32_t heigh
 // shader with no variant) cannot bind it at all. With #15 each plane has its own mask (BlendFor(mode, plane): RT1 and RT3 R and G, RT2 R, G, B and A), the narrow mask rule goes away
 // and the clears and masks work as on Vulkan: the kMaskedNarrowMask count falls to 0 and `attach=auto` carries the non writers.
 // CHECK: Vulkan's per target blend states with the clear (ZERO / ZERO) and the mask (write mask 0) on a pixel shader that writes no output at that slot, and D3D12's with the fix: not run.
-inline constexpr bool kD3d12PerTargetBlend = false;
+inline constexpr bool kD3d12PerTargetBlend = true;   // the pin has Plume #15 (5d60b70, merged as 2998422): per-target blend + mask on D3D12
 struct Caps {
   bool per_target_blend = false;
 };

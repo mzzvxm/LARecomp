@@ -223,10 +223,10 @@ void CensusShaded(float seenShare, float3 colour)
 
 // The exposure's sample: a hit on another car's part that the history shows in full (`seen`, the game's own colour of it), shaded by the model for the comparison (the model's gain
 // is the one in force, so the difference is what is left to correct). The paint's samples drive the gain, those of every class are the census's.
-void CensusCalibrate(uint instance, uint primitive, float2 barycentrics, float3 normal, float3 direction, float3 hit, float footprint, float coneTan, float3 seen)
+void CensusCalibrate(uint instance, uint primitive, float2 barycentrics, float3 normal, float3 direction, float3 hit, float footprint, float coneTan, float height, float3 seen)
 {
     float3 model;
-    if (!CarHitShade(instance, primitive, barycentrics, normal, direction, hit, footprint, coneTan, g_push.up.w, model))
+    if (!CarHitShade(instance, primitive, barycentrics, normal, direction, hit, footprint, coneTan, g_push.up.w, height, model))
     {
         return;
     }
@@ -468,6 +468,39 @@ uint LevelRays(uint word)
     return rays == 0u ? 4u : min(rays, 4u);
 }
 
+// RT-HIT-SHADING-5: the height in metres of a hit over the ground of its car (the contact darkening, car_rt_material_rules.h ContactMultiplier). The car's record (hlsl/car_rt_common.hlsli CarRtCar:
+// the body centre in view space, which is the mean of the car's draws' origins raised kCarCentreRise; the origins are on the road) is the one the instance names (another car's), or, in the
+// opponents' variant, the player's own (the push's opp.z). -1: the car has no record or no centre is known.
+float CarHitHeight(CarRtInstance hitInstance, bool hitsOther, float3 hit)
+{
+    uint row = 0u;
+    if (hitsOther)
+    {
+        row = hitInstance.draw;
+    }
+#ifdef CAR_RT_REFL_OPPONENTS
+    else
+    {
+        row = g_push.opp.z;
+    }
+#endif
+    if (row == 0u)
+    {
+        return -1.0;
+    }
+    CarRtInstance named;
+    named.first_index = 0u;
+    named.first_vertex = 0u;
+    named.flags = 0u;
+    named.draw = row;
+    const CarRtCar car = CarRtLoadCar(named);
+    if (car.radius == 0.0)
+    {
+        return -1.0;
+    }
+    return max(dot(hit - car.centre, g_push.up.xyz) + kCarCentreRise, 0.0);
+}
+
 // One ray of the cone, or the clear coat's (`coneTan` 0). `reach` is the distance cast (the push's lens.w); the weight of a hit falls over the reach of the part it is on (the player's own
 // parts' coat.x, another car's coat.y). False: a miss (nothing of the car in reach, a hit beyond the weight's fade, or the panel the ray left). True: `fade`
 // the fade of its distance, `visible` how much of its hit the history shows (0..1), `seen` the colour the history shows there, `hitDistance`
@@ -628,14 +661,14 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     [branch]
     if (seenShare < 1.0 && usable && (hitsOther || kShadePlayerHits))
     {
-        isShaded = CarHitShade(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, g_push.up.w, shaded);
+        isShaded = CarHitShade(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, g_push.up.w, CarHitHeight(hitInstance, hitsOther, hit), shaded);
     }
     if (stats && farHit && seenShare >= 1.0)
     {
         StatAdd(kStatSeen, 1u);
         if (hitsOther && usable)
         {
-            CensusCalibrate(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, seen);
+            CensusCalibrate(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, CarHitHeight(hitInstance, hitsOther, hit), seen);
         }
     }
     if (isShaded)

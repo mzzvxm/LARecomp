@@ -1017,6 +1017,7 @@ void CarRtScene::BuildMaterialRows(const car_frame::Frame& frame, bool flip_z, c
   in.tuning.ambient = float(larecomp::settings::mcla_gpu_car_rt_hit_ambient.Get());
   in.tuning.spec = float(larecomp::settings::mcla_gpu_car_rt_hit_spec.Get());
   in.tuning.cascade = larecomp::settings::mcla_gpu_car_rt_hit_cascade.Get();
+  in.tuning.detail = float(larecomp::settings::mcla_gpu_car_rt_hit_detail.Get());  // RT-HIT-SHADING-5: the hit's own detail (the sky's openness, the contact, the coat's glints)
   in.cascades = sun_cascades_;
   {
     double camera[3];
@@ -1091,10 +1092,10 @@ void CarRtScene::NoteMaterials(const car_rt_instances::List& list, const std::ve
   }
   if (!material_frame_logged_ && frame.light.valid) {
     material_frame_logged_ = true;
-    REXLOG_INFO("{} frame {}: the cars' light as their draws saw it: sun ({:.3f} {:.3f} {:.3f}), ambient ({:.3f} {:.3f} {:.3f}), sky ({:.3f} {:.3f} {:.3f}), night factor {:.2f}, "
+    REXLOG_INFO("{} frame {}: the cars' light as their draws saw it: sun ({:.3f} {:.3f} {:.3f}), ambient ({:.3f} {:.3f} {:.3f}), sky ({:.3f} {:.3f} {:.3f}), night factor {:.2f} (by the sun's height; by the colour {:.2f}), "
                 "the environment map's slots {:#x} and {:#x}, the sun's direction in the view space ({:.2f} {:.2f} {:.2f}), shading {}", kPrefix, frame_, frame.light.sun[0], frame.light.sun[1],
                 frame.light.sun[2], frame.light.ambient[0], frame.light.ambient[1], frame.light.ambient[2], frame.light.sky[0], frame.light.sky[1], frame.light.sky[2],
-                crm::NightFactor(frame.light.sun), frame.light.env_sharp, frame.light.env_blur, crm::FromBits(words[0]), crm::FromBits(words[1]), crm::FromBits(words[2]),
+                crm::FromBits(words[3 * 4 + 2]), crm::NightFactor(frame.light.sun), frame.light.env_sharp, frame.light.env_blur, crm::FromBits(words[0]), crm::FromBits(words[1]), crm::FromBits(words[2]),
                 larecomp::settings::mcla_gpu_car_rt_hit_shading.Get() ? "on" : "off (today's stand-in)");
   }
   if (frame_ >= m.first_frame + kMaterialLogFrames && m.frames != 0) {
