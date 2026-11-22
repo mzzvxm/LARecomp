@@ -384,6 +384,78 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_lights": {
+  "type": "std::string",
+  "default": "\"off\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (RT-LIGHTS-D1, perf/RT-DIRECT-SURVEY.md): ray traced visibility of the lights the deferred light pass draws, for the top K (a car's headlights, neon, the \"\\n    \"nearest street lamps): one ray from every pixel to a point of the light's disc, against the city's structures and the cars, filtered by the renderer's own temporal \"\\n    \"and a-trous filter, read by the light pass as a second shadow beside the shadow atlas (the two multiply: neither knows every caster). A street lamp the game lights \"\\n    \"is only ever taken away from, never added. off (the default), on (the pass runs, where the graphics card traces rays), auto (follows the RT SHADOWS row's level). \"\\n    \"Needs the deferred light pass to run (mcla_gpu_local_lights or the lamp shadows). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"off\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_k": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how many lights get a ray (the top K), 1 to 9; 0 (the default) is the level's (3, and 6 at the largest LIGHT SHADOWS level). A group of three lights is one \"\\n    \"set of images: 1 to 3 lights cost one group, 4 to 6 two, 7 to 9 three. Headlights come first, then neon, then the nearest street lamps. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 9}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_radius": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the radius of a light's disc in metres for mcla_gpu_rt_lights (the rays go to points of the disc, so a larger radius softens the edge of the shadow); 0 (the \"\\n    \"default) is by kind of light: a headlight's lens 7 cm, a street lamp's head 25 cm, neon 45 cm. 0 to 2. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 2.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_rays": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: rays to each light for every pixel the light reaches, for mcla_gpu_rt_lights, 1 to 4 (the strata of the light's disc: more rays, less noise, more cost). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{1, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_lights, draw the visibility instead of the light: 1 the filtered visibility of each light that has a ray (red where the light is blocked, \"\\n    \"green where it arrives), 2 the raw one (before the filter). 0 is the picture. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_check": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the identity test of mcla_gpu_rt_lights. 1: the pass traces its rays (and costs its time) but writes every visibility as 1, so the picture must be the same, \"\\n    \"bit for bit, as with the pass off; 2: every visibility the light reaches is 0 (the lights with a ray vanish, a street lamp the game lights is taken away in full). 0 \"\\n    \"is the pass. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ao_fast_math": {
   "type": "bool",
   "default": "true",

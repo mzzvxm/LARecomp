@@ -1114,6 +1114,27 @@ class GPUSettings final : public rex::SettingOwner {
     "along the R2 sequence every frame, so what the filters and the average over frames leave of it is a fine grain no pattern can be read from. False: the "
     "first versions' interleaved gradient noise, a lattice whose leftovers show as thin diagonal lines, for comparing. Live.", rex::kDebugOnly);
 
+  REX_SETTING(std::string, mcla_gpu_rt_lights, "off", "Debug (RT-LIGHTS-D1, perf/RT-DIRECT-SURVEY.md): ray traced visibility of the lights the deferred light pass draws, for the top K (a car's headlights, neon, the "
+    "nearest street lamps): one ray from every pixel to a point of the light's disc, against the city's structures and the cars, filtered by the renderer's own temporal "
+    "and a-trous filter, read by the light pass as a second shadow beside the shadow atlas (the two multiply: neither knows every caster). A street lamp the game lights "
+    "is only ever taken away from, never added. off (the default), on (the pass runs, where the graphics card traces rays), auto (follows the RT SHADOWS row's level). "
+    "Needs the deferred light pass to run (mcla_gpu_local_lights or the lamp shadows). Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "on"));
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_k, 0, "Debug: how many lights get a ray (the top K), 1 to 9; 0 (the default) is the level's (3, and 6 at the largest LIGHT SHADOWS level). A group of three lights is one "
+    "set of images: 1 to 3 lights cost one group, 4 to 6 two, 7 to 9 three. Headlights come first, then neon, then the nearest street lamps. Live.", rex::kDebugOnly, rex::Range{0, 9});
+
+  REX_SETTING(f64, mcla_gpu_rt_lights_radius, 0.0, "Debug: the radius of a light's disc in metres for mcla_gpu_rt_lights (the rays go to points of the disc, so a larger radius softens the edge of the shadow); 0 (the "
+    "default) is by kind of light: a headlight's lens 7 cm, a street lamp's head 25 cm, neon 45 cm. 0 to 2. Live.", rex::kDebugOnly, rex::Range{0.0, 2.0});
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_rays, 1, "Debug: rays to each light for every pixel the light reaches, for mcla_gpu_rt_lights, 1 to 4 (the strata of the light's disc: more rays, less noise, more cost). Live.", rex::kDebugOnly, rex::Range{1, 4});
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_view, 0, "Debug: with mcla_gpu_rt_lights, draw the visibility instead of the light: 1 the filtered visibility of each light that has a ray (red where the light is blocked, "
+    "green where it arrives), 2 the raw one (before the filter). 0 is the picture. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_check, 0, "Debug: the identity test of mcla_gpu_rt_lights. 1: the pass traces its rays (and costs its time) but writes every visibility as 1, so the picture must be the same, "
+    "bit for bit, as with the pass off; 2: every visibility the light reaches is 0 (the lights with a ray vanish, a street lamp the game lights is taken away in full). 0 "
+    "is the pass. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
   REX_SETTING(bool, mcla_gpu_object_names, false, "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
     "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
     "microseconds, and a world loads hundreds of textures in one frame, so they are set only "
@@ -2048,6 +2069,12 @@ inline auto& mcla_gpu_memory_census = g_gpu.mcla_gpu_memory_census;
 inline auto& mcla_gpu_msaa = g_gpu.mcla_gpu_msaa;
 inline auto& mcla_gpu_msaa_with_upscaler = g_gpu.mcla_gpu_msaa_with_upscaler;
 inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;
+inline auto& mcla_gpu_rt_lights = g_gpu.mcla_gpu_rt_lights;
+inline auto& mcla_gpu_rt_lights_k = g_gpu.mcla_gpu_rt_lights_k;
+inline auto& mcla_gpu_rt_lights_radius = g_gpu.mcla_gpu_rt_lights_radius;
+inline auto& mcla_gpu_rt_lights_rays = g_gpu.mcla_gpu_rt_lights_rays;
+inline auto& mcla_gpu_rt_lights_view = g_gpu.mcla_gpu_rt_lights_view;
+inline auto& mcla_gpu_rt_lights_check = g_gpu.mcla_gpu_rt_lights_check;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;

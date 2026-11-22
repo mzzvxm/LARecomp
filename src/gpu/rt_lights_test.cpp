@@ -1299,8 +1299,125 @@ void TestShaderText(const std::string& src) {
   CHECK(Has(cs, "(flags & kFlagCheckVisible) != 0u") && Has(cs, "(flags & kFlagCheckBlocked) != 0u") && Has(cs, "g_hit[p] = float2(0.0, signal ? 1.0 : 0.0);") && Has(cs, "g_depth[p] = world ? t : 0.0;"));
   // a light the shader cannot place is skipped, a vehicle and the sky are not judged
   CHECK(Has(cs, "if (channel >= 9u)") && Has(cs, "!sky && !vehicle && t < h2.z && worldOk"));
+  // the light pass reads the masks: the table, the seams, the flag; the ray's visibility is known after the term and before the lamp branch; a game's lamp is only taken away from
+  const std::string ps = ReadFile(src + "/gpu/hlsl/local_light_ps.hlsl");
+  CHECK(!ps.empty() && Has(ps, "#include \"rt_mask_read.hlsli\"") && Has(ps, "float4 RtmLoadMask(uint slot, int2 p) {") && Has(ps, "float RtmLoadDepth(uint slot, int2 p) {") &&
+        Has(ps, "RtmTable LpLoadRtTable() {") && Has(ps, "g_lights.Load4(LP_RT_OFFSET)") && Has(ps, "g_lights.Load(LP_RT_OFFSET + 48u)"));
+  CHECK(Has(ps, "const bool rt_ref = (flags & uint(LP_FLAG_RT_MASK)) != 0u && (l.flags & uint(LL_FLAG_RT_VISIBILITY)) != 0u;") &&
+        Has(ps, "RtmVisibility(rt_table, l.mask_channel, p, g.size.x, g.size.y, t, (rt_table.flags & uint(RTM_RAW_VIEW)) != 0u)") && Has(ps, "lamp_vis = RtmCombine(lamp_vis, rt_vis);"));
+  {
+    const size_t term_at = ps.find("float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, rt2.w));");
+    const size_t rt_at = ps.find("const bool rt_ref =");
+    const size_t lamp_at = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && ((l.shadow_kind");
+    const size_t head_at = ps.find("add *= LslLightLit(");
+    const size_t last_at = ps.find("if (rt_ref) {", head_at);
+    CHECK(term_at != std::string::npos && rt_at != std::string::npos && lamp_at != std::string::npos && head_at != std::string::npos && last_at != std::string::npos && term_at < rt_at && rt_at < lamp_at &&
+          lamp_at < head_at && head_at < last_at);
+  }
+  // a game's lamp and the lights the pass owns: the two forms, and no path that adds a game's light on top of the grid's with a channel
+  CHECK(Has(ps, "add = game_lit ? -add * (1.0f - lamp_vis) : add * lamp_vis;") && Has(ps, "((l.flags & uint(LL_FLAG_GAME_LIT)) != 0u) ? -add * (1.0f - RtmCombine(1.0f, rt_vis)) : add * RtmCombine(1.0f, rt_vis)"));
+  CHECK(Has(ps, "float3(1.0f - rt_vis, rt_vis, 0.0f) * (g.exposure * 0.15f)"));
   // the light pass's reader: the seams
   CHECK(Has(read, "float4 RtmLoadMask(uint slot, int2 p);") && Has(read, "float RtmLoadDepth(uint slot, int2 p);") && Has(read, "float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float renderH, float t, bool raw)"));
+}
+
+// ---------------------------------------------------------------------------
+// the sources: the host class, the settings, the wiring (text checks: nothing here ran on a device)
+// ---------------------------------------------------------------------------
+size_t Count(const std::string& text, const std::string& needle) {
+  size_t n = 0;
+  for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + needle.size())) {
+    ++n;
+  }
+  return n;
+}
+size_t At(const std::string& text, const std::string& needle, size_t from = 0) { return text.find(needle, from); }
+
+void TestSources(const std::string& src) {
+  const std::string gpu = src + "/gpu/";
+  const std::string host_h = ReadFile(gpu + "rt_lights.h"), host = ReadFile(gpu + "rt_lights.cpp");
+  const std::string ll_h = ReadFile(gpu + "local_lights.h"), ll_cpp = ReadFile(gpu + "local_lights.cpp");
+  const std::string renderer = ReadFile(gpu + "renderer.cpp"), renderer_h = ReadFile(gpu + "renderer.h");
+  const std::string host_shaders = ReadFile(gpu + "host_shaders.h"), cmake = ReadFile(gpu + "CMakeLists.txt"), precache = ReadFile(gpu + "host_precache.h");
+  const std::string scene_rules = ReadFile(gpu + "rt_scene_rules.h"), lamp_list = ReadFile(gpu + "vol_lamp_list.h");
+  const std::string settings = ReadFile(src + "/settings/generated/settings_gpu.h"), meta = ReadFile(src + "/settings/generated/settings_meta.inc"), manifest = ReadFile(src + "/settings/generated/manifest.json");
+  CHECK(!host_h.empty() && !host.empty() && !ll_h.empty() && !ll_cpp.empty() && !renderer.empty() && !settings.empty() && !manifest.empty());
+
+  // THE SETTINGS: six, debug only, in the three generated files and the aliases, with the ranges the rules clamp to
+  const char* names[] = {"mcla_gpu_rt_lights", "mcla_gpu_rt_lights_k", "mcla_gpu_rt_lights_radius", "mcla_gpu_rt_lights_rays", "mcla_gpu_rt_lights_view", "mcla_gpu_rt_lights_check"};
+  for (const char* name : names) {
+    const std::string n = name;
+    CHECK(Has(settings, ", " + n + ", ") && Has(settings, "inline auto& " + n + " = g_gpu." + n + ";") && Has(meta, "{\"" + n + "\", \"MCLA/GPU\"},") && Has(manifest, "\"" + n + "\": {"));
+    CHECK(Count(settings, "REX_SETTING(") > 0 && Count(settings, ", " + n + ", ") == 1);
+  }
+  CHECK(Has(settings, "REX_SETTING(std::string, mcla_gpu_rt_lights, \"off\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"on\")"));
+  CHECK(Has(settings, "REX_SETTING(i32, mcla_gpu_rt_lights_k, 0,") && Has(settings, "rex::Range{0, 9}") && Has(settings, "REX_SETTING(f64, mcla_gpu_rt_lights_radius, 0.0,") && Has(settings, "rex::Range{0.0, 2.0}") &&
+        Has(settings, "REX_SETTING(i32, mcla_gpu_rt_lights_rays, 1,") && Has(settings, "REX_SETTING(i32, mcla_gpu_rt_lights_view, 0,") && Has(settings, "REX_SETTING(i32, mcla_gpu_rt_lights_check, 0,"));
+  CHECK(rl::kMaxLights == 9 && rl::kMaxRays == 4);   // the ranges above
+  // the host reads each of them
+  for (const char* name : names) {
+    CHECK(Has(host, std::string(name)));
+  }
+  CHECK(Has(host, "LiveText text(\"mcla_gpu_rt_lights\");") && Has(host, "rt::ParseMode(ModeSetting().Get())") && Has(host, "mcla_gpu_noise_blue.Get()"));
+
+  // THE HOST CLASS: the layout the shader declares, the set's views, the denoisers, the pipeline's owner
+  CHECK(Has(host, "builder.addDescriptorSet(heap_->texture_set_builder())") && Has(host, "builder.addDescriptorSet(pass_set_builder_)") && Has(host, "builder.addDescriptorSet(scene.SetDesc())") &&
+        Has(host, "builder.addPushConstant(0, rt::kPushSpace, sizeof(rt::Push), plume::RenderShaderStageFlag::COMPUTE);"));
+  CHECK(Has(host, "pass_set_builder_.addByteAddressBuffer(rt::kBindRows)") && Has(host, "addReadWriteTexture(rt::kBindSignal0)") && Has(host, "addReadWriteTexture(rt::kBindSignal2)") &&
+        Has(host, "addReadWriteTexture(rt::kBindDepth)") && Has(host, "addReadWriteTexture(rt::kBindNormal)") && Has(host, "addReadWriteTexture(rt::kBindHit)") && Has(host, "addReadWriteByteAddressBuffer(rt::kBindStats)"));
+  // the pass set has eight descriptors (the rows, three signals, three guides, the counters): D3D12 sizes the set by the count the call says
+  CHECK(Count(host, "pass_set_builder_.add") == 8 && rl::kSetViews == 8 && Has(host, "CreateDescriptorSet(pass_set_builder_, rt::kSetViews, 0,"));
+  CHECK(rl::kBindRows == 0 && rl::kBindSignal0 == 1 && rl::kBindSignal1 == 2 && rl::kBindSignal2 == 3 && rl::kBindDepth == 4 && rl::kBindNormal == 5 && rl::kBindHit == 6 && rl::kBindStats == 7 && rl::kTextureSet == 0 &&
+        rl::kPassSet == 1 && rl::kSceneSet == 2 && rl::kPushSpace == 3 && rl::kGroup == 8);
+  CHECK(Has(host, "RtDenoiseDiffuseShader(false)") && Has(host, "RtDenoiseDiffuseShader(true)") && Has(host, "rt::kFirstDenoiseInstance + g") && Has(host, "denoise_[g].RecordTemporal(stage)") &&
+        Has(host, "denoise_[g].RecordSpatial(stage)") && Has(host, "d.OnPresent();") && Has(host, "d.Shutdown();") && Has(host_h, "std::array<RtDenoise, larecomp::gpu::rt_lights::kMaxImages> denoise_;"));
+  {
+    // the three denoisers take instances 2 to 4; the others in the tree keep their own (0: the reflections', 1: the per-pixel bounce light's)
+    CHECK(rl::kFirstDenoiseInstance == 2 && rl::kFirstDenoiseInstance + rl::kMaxImages <= 16);
+    CHECK(Has(ReadFile(gpu + "ssr.cpp"), "/*instance=*/0") && Has(ReadFile(gpu + "gi_pixel.cpp"), "/*instance=*/1"));
+    for (const char* other : {"ssr.cpp", "gi_pixel.cpp", "car_rt_refl.cpp", "gi_apply.cpp", "rr_guides.cpp"}) {
+      const std::string text = ReadFile(gpu + other);
+      CHECK(!Has(text, "/*instance=*/2") && !Has(text, "/*instance=*/3") && !Has(text, "/*instance=*/4"));
+    }
+  }
+  CHECK(Has(precache, "kRtLights = 35,") && Count(precache, "= 35,") == 1 && Has(host, "HostPrecache::Key(HostPrecache::kRtLights, 0)"));
+  CHECK(Has(host_shaders, "#include \"rt_lights_trace_cs.hlsl.dxil.h\"") && Has(host_shaders, "#include \"rt_lights_trace_cs.hlsl.spirv.h\"") && Has(host_shaders, "MCLA_GPU_HOST_SHADER_BLOB(rt_lights_trace_cs)") &&
+        Has(host, "RtLightsTraceShader()") && Has(cmake, "larecomp_gpu_host_shader_rt(rt_lights_trace_cs cs_6_5)") && Has(cmake, "rt_lights.cpp"));
+  CHECK(Has(cmake, "add_executable(larecomp_rt_lights_test EXCLUDE_FROM_ALL rt_lights_test.cpp)"));
+  CHECK(Has(scene_rules, "kRtLights,") && Has(scene_rules, "case Consumer::kRtLights: return \"rt lights\";") && Has(host, "rt_scene::Consumer::kRtLights"));
+  // the lamp list hook's reader bits are four distinct bits
+  CHECK(Has(lamp_list, "kWantedByVolume = 1u << 0;") && Has(lamp_list, "kWantedByWorldFrame = 1u << 1;") && Has(lamp_list, "kWantedByLampShadows = 1u << 2;") && Has(lamp_list, "kWantedByRtLights = 1u << 3;") &&
+        Has(host, "vol_lamps::SetWantedBy(vol_lamps::kWantedByRtLights, want);"));
+  // the frame: the structures are asked for while it is wanted; a settings read; the lamps by the game's list
+  CHECK(Has(host, "service_->Want(rt_scene::Consumer::kRtLights, needs);") && Has(host, "needs.cars = true;") && Has(host, "vol_lamps::Global().Latest(&list_, &list_seq_, &stale, kListMaxAge)") &&
+        Has(host, "la::MakePassLight(lamp, none, la::LampMode::kSubtract)") && Has(host, "if (present) {"));
+
+  // THE LIGHT PASS'S USE: the order of the calls is the contract (the lamps are handed over before the selection, the pick after it, the trace before the buffer, the table in the buffer), and nothing runs unless wanted
+  const size_t begin = At(ll_cpp, "rt_lights_->BeginFrame(planes_wanted_, tier_ == ll::Tier::kUltra);");
+  const size_t append = At(ll_cpp, "rt_lights_->AppendLampLights(rows.position, &extras_);");
+  const size_t select = At(ll_cpp, "ll::Selection selection = ll::SelectPassLights(");
+  const size_t plan = At(ll_cpp, "rt_ran = rt_lights_->Plan(rin, &selection);");
+  const size_t trace = At(ll_cpp, "rt_lights_->RecordTrace(list);");
+  const size_t denoise = At(ll_cpp, "rt_lights_->RecordDenoise(list);");
+  const size_t build = At(ll_cpp, "ll::BuildBuffer(in, selection, scratch_.data());");
+  const size_t mask = At(ll_cpp, "in.rt_mask = (rt_ran && rt_lights_ != nullptr && rt_lights_->Masks().valid) ? &rt_lights_->Masks() : nullptr;");
+  const size_t draws = At(ll_cpp, "list->drawInstanced(3, 1, 0, 0);");
+  CHECK(begin != std::string::npos && append != std::string::npos && select != std::string::npos && plan != std::string::npos && trace != std::string::npos && denoise != std::string::npos &&
+        build != std::string::npos && mask != std::string::npos && draws != std::string::npos);
+  CHECK(append < select && select < plan && plan < trace && trace < denoise && denoise < mask && mask < build && build < draws);
+  CHECK(Has(ll_cpp, "if (rt_lights_ != nullptr && rt_lights_->wanted()) {") && Count(ll_cpp, "rt_lights_->wanted()") == 2);   // the lamps and the pick only while it is wanted: with it off the pass is what it was
+  CHECK(Has(ll_cpp, "pass_timing_->Mark(list, \"rt lights\");") && Has(ll_cpp, "pass_timing_->Mark(list, \"rt lights denoise\");") && Has(ll_cpp, "pass_timing_->Mark(list, \"after rt lights\");"));
+  CHECK(Has(ll_cpp, "void LocalLights::OnPresent() {\n  if (rt_lights_ != nullptr) {\n    rt_lights_->OnPresent();"));   // the denoisers' boundary also while the pass is off
+  CHECK(Has(ll_h, "void SetRtLights(RtLights* rt_lights) { rt_lights_ = rt_lights; }") && Has(ll_h, "RtLights* rt_lights_ = nullptr;") && Has(ll_cpp, "#include \"rt_lights.h\""));
+  CHECK(Has(renderer_h, "RtLights rt_lights_;") && Has(renderer, "rt_lights_.Initialize(device_, frames_, heap_, passes_, pass_timing_, car_rt_, rt_world_, rt_scene_);") &&
+        Has(renderer, "local_lights_.SetRtLights(&rt_lights_);") && Count(renderer, "rt_lights_.Shutdown();") == 2 && Has(renderer, "vram_.AddHolder(\"ray traced light visibility\"") &&
+        Has(renderer, "rt_lights_.CensusText()"));
+  // the host never touches the light pass's own state and never records outside a frame that planned it
+  CHECK(Has(host, "if (why_ != rt::Why::kRuns || !list || light_count_ == 0 || frame_ != in_.frame) {") && Has(host, "if (why_ != rt::Why::kRuns || !list || ran_frame_ != frame_) {"));
+  // a frame that does not run the pass trims the lamps it was handed for a ray (a game's lamp with no source would be ADDED on top of the grid's)
+  CHECK(Has(host, "ll::TrimSelection(selection);   // a lamp handed over for a ray that will not come"));
+  // the shared noise, at the light's own sample, in the rows' flags
+  CHECK(Has(host, "(blue_ ? rt::kFlagBlue : 0u)") && Has(host, "header.rays = rays_;") && Has(host, "header.max_range = rt::kMaxRangeMetres;"));
 }
 
 }  // namespace
@@ -1324,6 +1441,7 @@ int main(int argc, char** argv) {
   section("selection and buffer", TestSelectionAndBuffer);
   if (argc > 1) {
     TestShaderText(argv[1]);
+    TestSources(argv[1]);
   }
   std::printf("rt_lights_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

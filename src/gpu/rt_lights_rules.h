@@ -488,6 +488,48 @@ inline void Apply(bool game_lit, const float term[3], float visibility, float ou
 }
 
 // ---------------------------------------------------------------------------
+// the pass's layout, push block and counters (rt_lights.cpp builds it; hlsl/rt_lights_trace_cs.hlsl declares it)
+// ---------------------------------------------------------------------------
+
+// The compute layout: the bindless texture set (space 0: the occlusion's linear depth image), this pass's own set (space 1), the ray tracing set of the car scene (space 2: the top level and the world frame's
+// rows) and the push block at (b0, space 3).
+inline constexpr uint32_t kTextureSet = 0, kPassSet = 1, kSceneSet = 2, kPushSpace = 3;
+// The pass's set: t0 the rows, u1 u2 u3 the signal images (a group of three lights each), u4 the depth guide, u5 the normal guide, u6 the hit and share guide, u7 the counters.
+inline constexpr uint32_t kBindRows = 0, kBindSignal0 = 1, kBindSignal1 = 2, kBindSignal2 = 3, kBindDepth = 4, kBindNormal = 5, kBindHit = 6, kBindStats = 7;
+inline constexpr uint32_t kSetViews = 8;   // one view for each descriptor: the rows, three signals, three guides, the counters (D3D12 sizes a set by this count)
+inline constexpr uint32_t kGroup = 8;      // numthreads(8, 8, 1)
+constexpr uint32_t Groups(uint32_t extent) { return (extent + kGroup - 1) / kGroup; }
+struct Push {
+  uint32_t slots[4];   // x the occlusion's linear depth image's bindless slot, y the number of signal images this frame writes
+};
+static_assert(sizeof(Push) == 16);
+
+// The counters (hlsl kStat*): pixels, surfaces judged, pixels some light reaches, (pixel, light) pairs, rays, rays the city blocked, rays a car blocked, pairs whose visibility is under one half.
+inline constexpr uint32_t kStatPixels = 0, kStatWorld = 1, kStatCovered = 2, kStatPairs = 3, kStatRays = 4, kStatBlockedCity = 5, kStatBlockedCar = 6, kStatBlockedPairs = 7;
+inline constexpr uint32_t kStatWords = 8;
+inline constexpr uint32_t kStatBytes = kStatWords * 4;
+
+// The filter: RtDenoise's diffuse profile over the plain guides, two a-trous iterations (steps 1 and 2: the penumbra of a lamp's disc is a few pixels wide; part 2 tunes it and measures it).
+inline constexpr uint32_t kDenoiseIterations = 2;
+inline constexpr uint32_t kStatsEvery = 10;           // a census frame: the counters are added to
+inline constexpr uint32_t kReadbackEveryFrames = 600;
+inline constexpr uint32_t kReleaseAfterFrames = 120;  // the images go back after this many frames without a run (2 s at 60)
+inline constexpr uint32_t kFirstDenoiseInstance = 2;  // RtDenoise instances 0 (the reflections') and 1 (the per-pixel bounce light's) are taken; the three groups take 2, 3 and 4
+
+// The camera cut: the last run's pose is no history when the camera moved farther than this in a frame, or turned by more than about 45 degrees.
+inline constexpr double kCutMetres = 25.0;
+inline constexpr double kCutCosine = 0.7;
+inline bool CameraCut(const double prev_position[3], const double position[3], const double prev_forward[3], const double forward[3]) {
+  double d2 = 0.0;
+  double dot = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    d2 += (position[i] - prev_position[i]) * (position[i] - prev_position[i]);
+    dot += prev_forward[i] * forward[i];
+  }
+  return d2 > kCutMetres * kCutMetres || dot < kCutCosine;
+}
+
+// ---------------------------------------------------------------------------
 // whether the pass runs (the reasons, for the census: gi_pixel_rules.h Why's shape)
 // ---------------------------------------------------------------------------
 

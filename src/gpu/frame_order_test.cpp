@@ -101,7 +101,7 @@ bool Before(Step a, Step b) { return PosOf(a) < PosOf(b); }
 void CheckTableItself() {
   const auto problems = Problems(Copy(), true);
   Check(problems.empty(), "the shipped table is consistent: " + Join(problems));
-  Check(Rows().size() == 46 && Rows().back().step == Step::kPresentRig, "46 steps, the present's rig last");
+  Check(Rows().size() == 47 && Rows().back().step == Step::kPresentRig, "47 steps, the present's rig last");
   size_t phase_count[size_t(Phase::kCount)] = {};
   size_t noted = 0;
   size_t inner = 0;
@@ -118,15 +118,17 @@ void CheckTableItself() {
     Check(names.insert(r.name).second, std::string("the name '") + r.name + "' is only used once");
     Check(calls.insert(std::string(r.file) + "|" + r.call).second, std::string("the call '") + r.call + "' is only listed once");
     Check((r.kind == Kind::kNoted || r.kind == Kind::kInner) == (r.phase == Phase::kTrigger || r.phase == Phase::kEndOfScene) || r.kind == Kind::kScanned, std::string(r.name) + ": only trigger and end-of-scene steps are noted");
-    if (r.kind == Kind::kInner) Check(std::strcmp(r.file, "ao.cpp") == 0, std::string(r.name) + ": the inner steps are the AO's, in ao.cpp");
+    // the inner steps are the AO's, in ao.cpp, and (RT-LIGHTS-D1) the ray traced visibility's inside the light pass, in local_lights.cpp
+    if (r.kind == Kind::kInner) Check((r.umbrella == Step::kAo && std::strcmp(r.file, "ao.cpp") == 0) || (r.step == Step::kRtLights && r.umbrella == Step::kLocalLights && std::strcmp(r.file, "local_lights.cpp") == 0),
+                                      std::string(r.name) + ": the inner steps are the AO's, in ao.cpp (and the light pass's ray traced visibility, in local_lights.cpp)");
     if (r.kind == Kind::kNoted) Check(std::strcmp(r.file, "scene.cpp") == 0, std::string(r.name) + ": a noted call stands in scene.cpp");
     // RR-2: the anchor's steps are the temporal system's, in temporal.cpp, and held by the source checks alone
     if (r.phase == Phase::kAnchor) Check(std::strcmp(r.file, "temporal.cpp") == 0 && r.kind == Kind::kScanned, std::string(r.name) + ": an anchor step stands in temporal.cpp and is a scanned one");
   }
-  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 2 && phase_count[size_t(Phase::kTrigger)] == 25 && phase_count[size_t(Phase::kEndOfScene)] == 2 &&
+  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 2 && phase_count[size_t(Phase::kTrigger)] == 26 && phase_count[size_t(Phase::kEndOfScene)] == 2 &&
             phase_count[size_t(Phase::kAnchor)] == 3 && phase_count[size_t(Phase::kPresent)] == 4,
-        "10 at the frame's start, 2 in the draws, 25 at the trigger, 2 at the end of the scene, 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
-  Check(noted == 17 && inner == 8 && scanned == 21, "17 noted calls, 8 steps inside the AO's frame, 21 held by the source checks alone");
+        "10 at the frame's start, 2 in the draws, 26 at the trigger (RT-LIGHTS-D1 added the ray traced visibility inside the light pass), 2 at the end of the scene, 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
+  Check(noted == 17 && inner == 9 && scanned == 21, "17 noted calls, 8 steps inside the AO's frame and 1 inside the light pass, 21 held by the source checks alone");
   // every data bit is made, and made once (nothing is made by two steps: the frame's lights are the frame start's, the rig's present makes nothing)
   for (uint32_t bit = 1; bit <= fo::data::kAll; bit <<= 1) {
     int makers = 0;
@@ -606,7 +608,7 @@ std::string StepEnumName(Step step) {
   // the enumerator as scene.cpp writes it: frame_order::Step::kX, found by the table's own name list
   static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGiField", "kBeginGiApply", "kBeginGBuffer", "kBeginTemporal", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kGiField", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
-                                       "kAoVisibility", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kLocalLights", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory",
+                                       "kAoVisibility", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kLocalLights", "kRtLights", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory",
                                        "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
   static_assert(std::size(kNames) == N, "one name for each step");
   return kNames[size_t(step)];

@@ -26,6 +26,7 @@ add_library(larecomp_gpu OBJECT
     city_hit_scene.cpp
     city_rt_scene.cpp
     city_rt_shadow.cpp
+    rt_lights.cpp
     rt_scene_service.cpp
     rt_world_frame.cpp
     city_texture_set.cpp

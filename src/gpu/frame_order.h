@@ -202,6 +202,7 @@ enum class Step : uint8_t {
   kScreenPublish,
   kGiApply,
   kLocalLights,
+  kRtLights,    // inside the light pass: the ray traced visibility of the top K lights, traced and filtered before the pass's draws (RT-LIGHTS-D1)
   kShafts,
   kVolume,
   kCarRtCheck,
@@ -375,6 +376,12 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .deps = {{{Step::kAoApply, "added AFTER the occlusion's apply: nothing darkens the light (HP11), the bounce light does not see it (C10)"},
                {Step::kGiApply, "added AFTER the probe field's apply: the lamps' direct light is not multiplied by the occlusion nor bounced by the field"}}},
      .note = "the headlights read this frame's maps from the atlas through the one lookup; before the sun shafts, the volume and the game's own light volumes and glows"},
+    {.step = Step::kRtLights, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kLocalLights, .name = "ray traced visibility of the top K lights (debug)", .file = "local_lights.cpp",
+     .call = "rt_lights_->RecordTrace(list);", .label_file = "local_lights.cpp", .label = "rt lights", .more_labels = {{"rt lights denoise"}}, .closing_label = "after rt lights", .reads = data::kLinDepth,
+     .soft_reads = data::kCarStructures | data::kLights,
+     .note = "(RT-LIGHTS-D1, rt_lights.h) only while mcla_gpu_rt_lights wants it and the light pass runs: a compute pass over the occlusion's linear depth (published with the screen frame) with a ray from every pixel to "
+             "each light of the top K in the car scene's top level, then RtDenoise's temporal and spatial stages for each group of three lights; the light pass's pixel shader reads the images in its draws, right after. "
+             "It runs INSIDE the light pass's call, before its draws, so it is a step of its own for the table's order and its labels ('rt lights', 'rt lights denoise', closed by 'after rt lights') but is not noted at run time"},
     {.step = Step::kShafts, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "sun shafts' pass", .call = "shafts_->OnResolve(record, summary, list, UpscalerRunning())",
      .label_file = "shafts.cpp", .label = "shafts sky", .makes = data::kShafts,
      .note = "sky pass into an image of its own, no data dependency on the steps around it: in the play view its composite is at the end-of-scene copy (after SSR). The design (LIGHT-UNIFY 5.3) lists it after "

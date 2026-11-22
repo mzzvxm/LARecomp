@@ -312,6 +312,12 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
         if (gi_pixel_.available()) {
           gi_apply_.SetGiPixel(&gi_pixel_);
         }
+        // RT-LIGHTS-D1 (rt_lights.h, debug only): the ray traced visibility of the top K lights, run by the deferred light pass; makes nothing until mcla_gpu_rt_lights asks (its pipelines are listed with the
+        // precache the first time it is wanted).
+        rt_lights_.Initialize(device_, frames_, heap_, passes_, pass_timing_, car_rt_, rt_world_, rt_scene_);
+        if (rt_lights_.available()) {
+          local_lights_.SetRtLights(&rt_lights_);
+        }
       }
     }
     // The ray tracing benchmark (rt_bench.h, rt_tier.h): once with a card that can trace (kept next to larecomp.toml), while the GPU is idle and before the
@@ -396,6 +402,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); });
     vram_.AddHolder("probe update", [this] { return gi_update_.HeldBytes(); });
     vram_.AddHolder("per-pixel bounce light", [this] { return gi_pixel_.HeldBytes(); });
+    vram_.AddHolder("ray traced light visibility", [this] { return rt_lights_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
@@ -423,6 +430,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     fg_.Shutdown();
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
+    rt_lights_.Shutdown();  // RT-LIGHTS-D1: holds pointers to the car scene, the world frame and the scene service: before them
     gi_pixel_.Shutdown();  // CITY-RT M3 G5: holds pointers to the field, the scenes, the world frame and the lights, and the apply holds it: before them
     rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
@@ -616,6 +624,7 @@ void Renderer::Shutdown() {
   // Streamline itself is shut down (temporal_.Shutdown below).
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
+  rt_lights_.Shutdown();  // the same, RT-LIGHTS-D1 (rt_lights.h)
   gi_pixel_.Shutdown();  // the same, CITY-RT M3 G5 (gi_pixel.h)
   rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
@@ -1810,7 +1819,7 @@ void Renderer::ReportCityCensus() {
   if (presented_ % kCityCensusPresents != 0) {
     return;
   }
-  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + ssr_.RtCensusText() + gi_update_.CensusText() + gi_pixel_.CensusText();
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + ssr_.RtCensusText() + gi_update_.CensusText() + gi_pixel_.CensusText() + rt_lights_.CensusText();
   if (!text.empty()) {
     REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
   }

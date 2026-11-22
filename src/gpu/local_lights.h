@@ -110,6 +110,7 @@ class GBuffer;
 class LampShadows;
 class LightManager;
 class PassTiming;
+class RtLights;
 class ScreenShared;
 
 class LocalLights {
@@ -133,6 +134,10 @@ class LocalLights {
   // lamps' lights from it as handed over lights, with the lamps' table of shadow views in its buffer: a lamp the game lights has its shadowed share taken away (a negative colour: the blend is ADD),
   // a lamp the pass owns is multiplied by the visibility. Null (the default): no lamp is looked at.
   void SetLampShadows(LampShadows* lamps) { lamp_shadows_ = lamps; }
+  // RT-LIGHTS-D1 (rt_lights.h, perf/RT-LIGHTS-D1.md): the ray traced visibility of the top K lights. While mcla_gpu_rt_lights wants it the pass hands it the nearest street lamps for their rays before it selects its
+  // lights, lets it pick the top K of the selection and annotate it (a light with a channel reads its visibility ON TOP OF the atlas's), traces and filters the visibility just before the buffer is built, and reads
+  // the images in the pixel shader. Null (the default) or not wanted: nothing of it exists and the pass is what it was.
+  void SetRtLights(RtLights* rt_lights) { rt_lights_ = rt_lights; }
 
   // The Scene opened a frame's first list, BEFORE the G-buffer's and the shared products' own BeginFrame (they read the wants it makes): reads the settings, makes the wants and forgets
   // the last frame's votes.
@@ -173,6 +178,7 @@ class LocalLights {
   AmbientOcclusion* ao_ = nullptr;
   LightManager* manager_ = nullptr;
   LampShadows* lamp_shadows_ = nullptr;
+  RtLights* rt_lights_ = nullptr;
 
   // the settings of this frame
   bool enabled_ = false;
