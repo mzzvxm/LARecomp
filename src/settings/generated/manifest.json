@@ -5915,6 +5915,19 @@
   "comments": [],
   "pp_depth": 0
  },
+ "host_helpers_mask": {
+  "type": "i32",
+  "default": "63",
+  "category": "MCLA/Performance",
+  "help": "\"Which of the game's small helper functions run as native host code instead of the recompiled \"\n    \"version, as bits: 1 memcpy, 2 memset, 4 the row writer, 8 the shader-constant copy, 16 the \"\n    \"constant-bank flush, 32 the C runtime's memcpy. 0 runs all of them recompiled (the A/B switch); 63 is the default. A call \"\n    \"the native version cannot reproduce exactly (overlapping ranges, register or physical-window \"\n    \"addresses, a command-ring wrap) always goes to the recompiled code. Read at start.\"",
+  "traits": [
+   "rex::Range{0, 63}",
+   "rex::kDebugOnly",
+   "rex::kRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "lzx_native_check_all": {
   "type": "bool",
   "default": "false",

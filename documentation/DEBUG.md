@@ -163,8 +163,8 @@ Which renderer runs is the SDK's `gpu.driver` (`larecomp`, `d3d12` or `vulkan`; 
 **Legacy native D3D12 runtime (Windows, experimental)** (11)
 `mcla_native_gfx_present`, `mcla_native_gfx_aniso`, `mcla_native_gfx_gen_mips`, `mcla_native_gfx_mrt`, `mcla_native_gfx_msaa`, `mcla_native_gfx_own_device`, `mcla_native_gfx_own_heap_kb`, `mcla_native_gfx_own_swapchain`, `mcla_native_gfx_surface_key`, `mcla_native_gfx_upload_mb`, `mcla_gfx_probe`
 
-**Speed experiments read at start** (8)
-`perf_no_race_shadows`, `perf_no_impostors`, `perf_no_fullscreen_blur`, `fma_float_fast`, `vsync_fast_poll`, `submit_on_primary_buffer_end`, `lzx_native`, `lzx_native_check_all`
+**Speed experiments read at start** (9)
+`perf_no_race_shadows`, `perf_no_impostors`, `perf_no_fullscreen_blur`, `fma_float_fast`, `vsync_fast_poll`, `submit_on_primary_buffer_end`, `lzx_native`, `lzx_native_check_all`, `host_helpers_mask`
 
 **Game patches read at start** (3)
 `disable_rubberbanding`, `showroom_unlimited`, `vehicle_records_relocate`

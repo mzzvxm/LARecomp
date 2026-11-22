@@ -93,6 +93,7 @@
 {"fxc_probe", "MCLA/Diag"},
 {"garage_tire_offset", "MCLA/Patches"},
 {"global_max_draw_distance", "MCLA/Performance"},
+{"host_helpers_mask", "MCLA/Performance"},
 {"guest_profile", "MCLA/Diag"},
 {"hide_mouse_pointer", "MCLA/Input"},
 {"hud_width", "MCLA/Patches"},
