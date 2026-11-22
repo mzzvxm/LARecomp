@@ -4,11 +4,16 @@
 // the pixel adds  albedo x lit weight x LightTerm(light, surface)  (hlsl/local_light.hlsli LpPixelLight) for every pixel the G-buffer holds a normal and an albedo for. The pass runs at the
 // mid-scene depth copy after the ambient occlusion's apply (scene.cpp OnResolve), so the occlusion does not darken the light and the bounce light does not see it.
 //
+// GB-NEON-COST: a draw may carry up to LP_MAX_DRAW_LIGHTS consecutive lights (push.info.y: a car's neon tube, whose lights share one car, the scissor and the pixels: local_lights_rules.h
+// PlanDraws): the pixel reads the planes and the depth once and adds the lights' terms (a light that adds nothing is left out of the sum, as its own draw would have been discarded), and the
+// depth and the reach come FIRST: a pixel whose world position no light of the draw reaches (the sky, the far houses: most of a picture a close light's scissor covers) is discarded before the
+// three planes are read (push.info.w bit LP_PUSH_LATE_REACH puts the old order back, the A/B). The laws are 0 at and beyond the range, so the picture does not change: local_lights_test.cpp.
+//
 //   the surface    RT1 the world normal (octahedral: GbRt1Decode), RT2 sqrt(albedo) and the lit weight, RT3 the smoothness and the class where this frame has it; a pixel with no normal, no
 //                  albedo (RT2 all zero: a family that writes none yet), a lit weight of 0 (an emissive surface) or, with RT3, the class none or emissive takes nothing.
 //   the position   the main depth plane (the stored depth, 1 near, 0 far) and the camera in the buffer's header: view distance by the projection's rows (as the AO's apply), then the world
 //                  position by the camera's axes. The camera is the frame's own where the vertex constants hold it, else the last frame's (local_lights.cpp).
-//   the light      the GpuLight row of the draw's light (push.info.x) in the buffer (g_lights): hlsl/light_laws.hlsli decodes it and holds the three laws.
+//   the light      the GpuLight rows of the draw's lights (push.info.x the first, info.y how many) in the buffer (g_lights): hlsl/light_laws.hlsli decodes them and holds the three laws.
 //   the shadow     (GB-H2) a light with views of the shadow atlas (its ShadowRef: GpuLight packed1) is multiplied by the ONE lookup's visibility (hlsl/light_shadow_lookup.hlsli, the lit shaders' box
 //                  kernel: LSL_MODE_SURFACE): the frame's view table follows the lights in the buffer (LP_SHADOW_OFFSET), the atlas is a bindless depth plane read as one float (set 0), the
 //                  views of a light are averaged, the layers of a view multiplied, the share blended by the light's weight. Read only for a pixel the light reaches, after the term is known to be over 0.
@@ -29,7 +34,7 @@
 
 struct LocalLightPush {
   uint4 slots;  // x the main depth plane's bindless slot, y RT1's, z RT2's, w RT3's (0xFFFFFFFF: not there)
-  uint4 info;   // x the light's index in the buffer, y reserved, z the host sample that is the guest's sample 0, w reserved
+  uint4 info;   // x the first light's index in the buffer, y the number of lights of the draw (0 is 1; at most LP_MAX_DRAW_LIGHTS), z the host sample that is the guest's sample 0, w flags (LP_PUSH_*)
 };
 
 #ifdef __spirv__
@@ -119,8 +124,79 @@ uint LslLayerOf(uint entry) {
   return LslLayerBits(LpAtlasLayers, entry);
 }
 
+// The stored depth of the main view's depth plane at the guest's sample 0, and from it the pixel's world position. False for the sky (stored depth 0, or a distance the linearisation cannot
+// place): such a pixel takes nothing.
+bool LpWorldOf(int2 p, LpGlobals g, out float3 world) {
+  world = float3(0.0f, 0.0f, 0.0f);
+#if LL_PASS_MS
+  const float stored = g_textures_ms[g_push.slots.x].Load(p, g_push.info.z).r;
+#else
+  const float stored = g_textures[g_push.slots.x].Load(int3(p, 0)).r;
+#endif
+  if (!(stored > 0.0f)) {
+    return false;  // the sky
+  }
+  const float t = LpLinearDepth(stored, g.lin);
+  if (!(t < LP_SKY)) {
+    return false;
+  }
+  world = LpWorldPosition(g, float(p.x) + 0.5f, float(p.y) + 0.5f, t);
+  return true;
+}
+
+// Whether any of the `count` lights from row `first` reaches `world` (hlsl/local_light.hlsli LpReaches): the rows' first float4, the place and the range.
+bool LpAnyReaches(uint first, uint count, float3 world) {
+  for (uint i = 0u; i < count; ++i) {
+    const float4 row0 = asfloat(g_lights.Load4(LP_LIGHTS_OFFSET + (first + i) * LL_LIGHT_BYTES));
+    if (LpReaches(float3(row0.x, row0.y, row0.z), row0.w, world)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// What one light adds at a pixel: the term, then, for a light with views of the atlas and a pixel it lights, the shadow's visibility. The w is 1 when the light adds anything (a light that does not
+// is not in the sum: its own draw would have discarded the pixel). The table's header says which bindless depth plane the views are in.
+float4 LpOneLight(uint index, LpGlobals g, uint flags, float3 world, float3 normal, float3 albedo, float lit) {
+  const LlLight l = LlUnpack(LpLoadLight(index));
+  float3 add = LpPixelLight(l, g, world, normal, albedo, lit);
+  if (!any(add > 0.0f)) {
+    return float4(0.0f, 0.0f, 0.0f, 0.0f);
+  }
+  if ((flags & uint(LP_FLAG_SHADOW)) != 0u && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) {
+    const uint4 head = g_lights.Load4(LP_SHADOW_OFF_COUNT);  // count, slot, width, height
+    const uint atlas_slot = head.y;
+    if (atlas_slot != 0xFFFFFFFFu && head.z != 0u && head.w != 0u) {
+      LpAtlasW = head.z;
+      LpAtlasH = head.w;
+      LpAtlasLayers = g_lights.Load(LP_SHADOW_OFF_LAYERS);
+      add *= LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, atlas_slot, uint(LSL_MODE_SURFACE));
+    }
+  }
+  if (!any(add > 0.0f)) {
+    return float4(0.0f, 0.0f, 0.0f, 0.0f);
+  }
+  return float4(add, 1.0f);
+}
+
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 p = int2(position.xy);
+  const uint first = g_push.info.x;
+  const uint count = clamp(g_push.info.y, 1u, uint(LP_MAX_DRAW_LIGHTS));
+  const LpGlobals g = LpLoadGlobals();
+
+  // The position and the reach first (GB-NEON-COST): the depth is one read, and a pixel no light of the draw reaches takes nothing whatever the planes hold (the laws are 0 at and beyond the
+  // range), so the three planes are left unread for it. LP_PUSH_LATE_REACH is the old order: planes, then the position, the reach only inside the laws.
+  const bool reach_first = (g_push.info.w & uint(LP_PUSH_LATE_REACH)) == 0u;
+  float3 world = float3(0.0f, 0.0f, 0.0f);
+  if (reach_first) {
+    if (!LpWorldOf(p, g, world)) {
+      discard;
+    }
+    if (!LpAnyReaches(first, count, world)) {
+      discard;
+    }
+  }
 
   // The surface: no normal, no albedo or no light to take, nothing to add.
   const float2 rt1 = LoadPlane(g_push.slots.y, p).xy;
@@ -139,44 +215,27 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
 
-  // The position: the stored depth of the main view's depth plane at the guest's sample 0.
-#if LL_PASS_MS
-  const float stored = g_textures_ms[g_push.slots.x].Load(p, g_push.info.z).r;
-#else
-  const float stored = g_textures[g_push.slots.x].Load(int3(p, 0)).r;
-#endif
-  if (!(stored > 0.0f)) {
-    discard;  // the sky
-  }
-  const LpGlobals g = LpLoadGlobals();
-  const float t = LpLinearDepth(stored, g.lin);
-  if (!(t < LP_SKY)) {
-    discard;
-  }
-  const float3 world = LpWorldPosition(g, float(p.x) + 0.5f, float(p.y) + 0.5f, t);
-
-  // The light.
-  const LlLight l = LlUnpack(LpLoadLight(g_push.info.x));
-  const float3 normal = GbRt1Decode(rt1);
-  const float3 albedo = GbAlbedoDecode(rt2.xyz);
-  float3 add = LpPixelLight(l, g, world, normal, albedo, rt2.w);
-  if (!any(add > 0.0f)) {
-    discard;
-  }
-
-  // The shadow: only for a light that has views of the atlas and a pixel it lights. The table's header says which bindless depth plane the views are in.
-  if ((flags & uint(LP_FLAG_SHADOW)) != 0u && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) {
-    const uint4 head = g_lights.Load4(LP_SHADOW_OFF_COUNT);  // count, slot, width, height
-    const uint atlas_slot = head.y;
-    if (atlas_slot != 0xFFFFFFFFu && head.z != 0u && head.w != 0u) {
-      LpAtlasW = head.z;
-      LpAtlasH = head.w;
-      LpAtlasLayers = g_lights.Load(LP_SHADOW_OFF_LAYERS);
-      add *= LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, atlas_slot, uint(LSL_MODE_SURFACE));
+  // The position, in the old order: after the planes.
+  if (!reach_first) {
+    if (!LpWorldOf(p, g, world)) {
+      discard;
     }
   }
-  if (!any(add > 0.0f)) {
+
+  // The lights: each adds its term (and its shadow), the sum goes to the colour. No light adds anything: the pixel is discarded.
+  const float3 normal = GbRt1Decode(rt1);
+  const float3 albedo = GbAlbedoDecode(rt2.xyz);
+  float3 total = float3(0.0f, 0.0f, 0.0f);
+  bool any_light = false;
+  for (uint i = 0u; i < count; ++i) {
+    const float4 one = LpOneLight(first + i, g, flags, world, normal, albedo, rt2.w);
+    if (one.w > 0.0f) {
+      total += one.xyz;
+      any_light = true;
+    }
+  }
+  if (!any_light) {
     discard;
   }
-  return float4(add, 0.0f);
+  return float4(total, 0.0f);
 }

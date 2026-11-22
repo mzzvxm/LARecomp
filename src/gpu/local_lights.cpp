@@ -260,6 +260,13 @@ void LocalLights::BeginFrame() {
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));
   gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_gain.Get()), 0.0, 16.0));
   car_gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_car_gain.Get()), 0.0, 16.0));
+  // GB-NEON-COST: the A/B of the cost savings (0: the reach test before the planes and one draw for a car's tube are on): the picture is the same either way.
+  const uint32_t cost_off = uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_cost_off.Get()), 0, int(ll::kCostOffMask))) & ll::kCostOffMask;
+  if (cost_off != cost_off_) {
+    cost_off_ = cost_off;
+    REXLOG_INFO("{} cost savings (mcla_gpu_local_lights_cost_off {}; live): the reach test before the planes are read {}, one draw for a car's neon tube {}", kPrefix, cost_off_,
+                (cost_off_ & ll::kCostOffReachFirst) != 0 ? "OFF" : "on", (cost_off_ & ll::kCostOffMerge) != 0 ? "OFF" : "on");
+  }
   tier_ = on ? TierNow() : ll::Tier::kMedium;  // (`on` is the pass running at all: its own setting, the headlight route's, or NEON LIGHT's)
   ++frame_;
   if (on != enabled_) {
@@ -508,18 +515,25 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   push.slots[2] = gb.slot[gbuffer::kPlaneAlbedo];
   push.slots[3] = gb.Has(gbuffer::kPlaneMaterial) ? gb.slot[gbuffer::kPlaneMaterial] : larecomp::gpu::kNoLightSlot;
   push.info[2] = gb.sample0;
+  // GB-NEON-COST: the draws (local_lights_rules.h PlanDraws): one for each light, but a car's neon tube (its lights share the car, the surface and nearly the rectangle) is one draw the pixel
+  // shader sums; the flags tell the shader whether to test the reach before it reads the planes.
+  push.info[3] = (cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u;
+  std::array<ll::PassDraw, ll::kMaxPassLights> plan;
+  const uint32_t draws = ll::PlanDraws(selection, rects.data(), cost_off_, plan.data());
   uint32_t drawn = 0;
-  for (uint32_t i = 0; i < selection.count; ++i) {
-    if (rects[i].Empty()) {
-      continue;
-    }
-    const plume::RenderRect scissor(rects[i].x0, rects[i].y0, rects[i].x1, rects[i].y1);
+  for (uint32_t d = 0; d < draws; ++d) {
+    const ll::PassDraw& draw = plan[d];
+    const plume::RenderRect scissor(draw.rect.x0, draw.rect.y0, draw.rect.x1, draw.rect.y1);
     list->setScissors(&scissor, 1);
-    push.info[0] = i;
+    push.info[0] = draw.first;
+    push.info[1] = draw.count;
     list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
     list->drawInstanced(3, 1, 0, 0);
-    ++drawn;
-    pixels_scissored_ += rects[i].Area();
+    for (uint32_t k = draw.first; k < draw.first + draw.count; ++k) {
+      drawn += rects[k].Empty() ? 0u : 1u;
+    }
+    ++draws_;
+    pixels_scissored_ += draw.rect.Area();
   }
   list->setFramebuffer(nullptr);
   pass_timing_->Mark(list, "after local lights");
@@ -593,12 +607,13 @@ void LocalLights::LogInterval(bool say) {
   if (say) {
     REXLOG_INFO("{} {} frames with the pass on: {} lights drawn ({}), {:.1f} MPixels scissored; the trigger frames: {}; the frame's own camera pose in {} frames; the manager held {:.1f} cars a frame; "
               "neon: {} cars lit in {} frames (the last tube read as {} space), {} not placed, {} too far, {} cut by the budget; "
-              "budget tier {}; headlight route {}, {} lights drawn with the shadow lookup ({} views) in {} frames with the table; buffers {} B",
+              "budget tier {}; headlight route {}, {} lights drawn with the shadow lookup ({} views) in {} frames with the table; buffers {} B; {} draw calls (cost savings off: {})",
               kPrefix, kIntervalFrames, lights_drawn_, classes.empty() ? std::string("none by class") : classes, double(pixels_scissored_) * 1.0e-6, why.empty() ? std::string("none") : why,
-              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), neon_lit_, neon_frames_, nl::SpaceName(neon_space_), neon_unplaced_, neon_far_, neon_cut_, ll::TierName(tier_), hp::RouteName(route_), shadowed_lights_, shadow_views_, shadow_frames_, HeldBytes());
+              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), neon_lit_, neon_frames_, nl::SpaceName(neon_space_), neon_unplaced_, neon_far_, neon_cut_, ll::TierName(tier_), hp::RouteName(route_), shadowed_lights_, shadow_views_, shadow_frames_, HeldBytes(), draws_, cost_off_);
   }
   counts_.fill(0);
   lights_drawn_ = 0;
+  draws_ = 0;
   pixels_scissored_ = 0;
   frames_own_pose_ = 0;
   class_drawn_.fill(0);

@@ -143,13 +143,22 @@ static_assert(offsetof(PassHeader, right) == 0 && offsetof(PassHeader, up) == 16
                   offsetof(PassHeader, lin) == 64 && offsetof(PassHeader, size) == 80 && offsetof(PassHeader, occ) == 96 && offsetof(PassHeader, count) == 112 && offsetof(PassHeader, exposure) == 120,
               "the header's rows (hlsl/local_light.hlsli LP_OFF_*)");
 
-// The push block of one draw (hlsl LocalLightPush): the bindless slots of the main depth plane and of RT1 to RT3 (kNoLightSlot: not there), then the light's index, the flags, the host
-// sample that is the guest's sample 0.
+// The push block of one draw (hlsl LocalLightPush): the bindless slots of the main depth plane and of RT1 to RT3 (kNoLightSlot: not there), then info: x the first light's row in the buffer,
+// y how many consecutive lights the draw has (GB-NEON-COST: 0 counts as 1; at most kMaxDrawLights), z the host sample that is the guest's sample 0, w the flags (kPushLateReach).
 struct PassPush {
   uint32_t slots[4];
   uint32_t info[4];
 };
 static_assert(sizeof(PassPush) == 32, "the push block is two rows");
+
+// GB-NEON-COST (hlsl LP_MAX_DRAW_LIGHTS, LP_PUSH_LATE_REACH): the lights one draw may carry, and the push flag that puts the shader's old order back (the planes read before the reach test).
+inline constexpr uint32_t kMaxDrawLights = 4;
+inline constexpr uint32_t kPushLateReach = 1u << 0;
+// mcla_gpu_local_lights_cost_off, a sum of the savings to switch OFF (0, the default: every one on; the picture is the same either way, so the setting is the A/B of the cost): the reach test before
+// the planes are read (the pixel shader's order), one draw for a car's neon tube (its lights are summed in the shader).
+inline constexpr uint32_t kCostOffReachFirst = 1u << 0;
+inline constexpr uint32_t kCostOffMerge = 1u << 1;
+inline constexpr uint32_t kCostOffMask = kCostOffReachFirst | kCostOffMerge;
 
 // ---------------------------------------------------------------------------
 // the camera: the rows of a view inverse
@@ -531,6 +540,68 @@ inline PixelRect ScissorOfLight(const Light& l, const Rows& rows, float tan_x, f
   rect.x1 = clamp_i(std::ceil(max_x) + float(kScissorMargin), int32_t(width));
   rect.y1 = clamp_i(std::ceil(max_y) + float(kScissorMargin), int32_t(height));
   return rect;
+}
+
+// ---------------------------------------------------------------------------
+// the draws (GB-NEON-COST)
+// ---------------------------------------------------------------------------
+// WHY: the lights of a car's neon tube (2 to 4 omni lights, 6 to 8 m reach, along a tube that is 4.5 m long) all contain the camera in a chase view (it is 5 to 6 m behind the car), so each is a
+// scissor of the WHOLE picture (ScissorOfLight: a box corner behind the camera): four full picture draws, each reading the depth and three planes for every pixel, to light the few square metres of
+// road and wall round the car. The tube's lights share the car, the surface the planes describe and nearly the rectangle, so one draw takes them all: the pixel reads the planes once and sums the
+// lights (hlsl/local_light_ps.hlsl). The rectangle of the draw is the UNION of the lights' rectangles; the pixels it adds over a light's own are outside that light's box, which holds its whole sphere
+// (ScissorOfLight is conservative by construction), where the light's term is 0 (the laws are 0 at and beyond the range): the picture is the one the single draws made, but for the rounding of
+// the half float colour target, which now takes one sum instead of one add for each light.
+
+struct PassDraw {
+  uint32_t first = 0;  // the first light's index in the selection (and its row in the buffer)
+  uint32_t count = 0;  // the consecutive lights the draw sums (1 .. kMaxDrawLights)
+  PixelRect rect;      // the union of the rectangles of those of its lights that have one
+};
+
+// Whether the light `next` goes into the draw that `head` opens: the cars' underglow only (the lights of one car's tube: the same source, the same non-zero car key), neither with views of the
+// shadow atlas (the shader looks a shadow up for each light of a draw, but nothing of the neon has one: kept apart so that a shadowed light stays a draw of its own).
+inline bool MergesWithin(const Light& head, const Light& next) {
+  const auto shadowed = [](const Light& l) { return l.shadow.kind == ShadowKind::kAtlas && l.shadow.view_count != 0; };
+  return head.source == LightSource::kNeon && next.source == LightSource::kNeon && head.car_key != 0 && next.car_key == head.car_key && !shadowed(head) && !shadowed(next);
+}
+
+// The draws of a selection, in order: runs of consecutive lights that MergesWithin (at most kMaxDrawLights) when the merge is on, else one draw a light (the pass's way before GB-NEON-COST).
+// `rects` are the lights' rectangles (ScissorOfLight); a draw whose lights are all off the picture is left out. Returns how many draws were written to `out` (kMaxPassLights at most).
+inline uint32_t PlanDraws(const Selection& selection, const PixelRect* rects, uint32_t cost_off, PassDraw* out) {
+  const bool merge = (cost_off & kCostOffMerge) == 0;
+  const uint32_t count = std::min(selection.count, kMaxPassLights);
+  uint32_t drawn = 0;
+  uint32_t i = 0;
+  while (i < count) {
+    uint32_t end = i + 1;
+    while (merge && end < count && end - i < kMaxDrawLights && MergesWithin(selection.lights[i], selection.lights[end])) {
+      ++end;
+    }
+    PassDraw draw;
+    draw.first = i;
+    draw.count = end - i;
+    bool any = false;
+    for (uint32_t k = i; k < end; ++k) {
+      const PixelRect& r = rects[k];
+      if (r.Empty()) {
+        continue;
+      }
+      if (!any) {
+        draw.rect = r;
+        any = true;
+      } else {
+        draw.rect.x0 = std::min(draw.rect.x0, r.x0);
+        draw.rect.y0 = std::min(draw.rect.y0, r.y0);
+        draw.rect.x1 = std::max(draw.rect.x1, r.x1);
+        draw.rect.y1 = std::max(draw.rect.y1, r.y1);
+      }
+    }
+    if (any) {
+      out[drawn++] = draw;
+    }
+    i = end;
+  }
+  return drawn;
 }
 
 // ---------------------------------------------------------------------------

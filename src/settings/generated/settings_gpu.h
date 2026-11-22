@@ -1401,6 +1401,11 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_neon_light_gain, 1.0, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON): a multiplier on the neon's light (1: the game's own colour, pulse and fade as read from the car's light object, shared along "
     "the tube). The neon's strength and its reach are looks set by eye against the game's own underglow light, not the game's units: this turns them up or down without a build. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
 
+  REX_SETTING(i32, mcla_gpu_local_lights_cost_off, 0, "Diagnostic (the cost of the deferred local light pass, GB-NEON-COST, the A/B): a sum of the savings to switch OFF so that the pass runs as it did before them. "
+    "1 the reach test before the planes are read (the pixel shader asks the depth whether any light of the draw reaches the pixel, and leaves the pixels none reaches without reading the G-buffer's three planes), "
+    "2 one draw for a car's neon tube (its two to four lights are summed in the shader: one pass over the picture where there were one for each light). 0, the default: both on. The picture is the same "
+    "either way up to the rounding of the half float colour target (the savings leave out only what adds nothing), and only the graphics card time differs. Live.", rex::kDebugOnly, rex::Range{0, 3});
+
   REX_SETTING(std::string, mcla_gpu_headlight_pass, "forward", "Diagnostic (the forward headlight stage against the deferred local light pass, GB-H2, the A/B): which of the two lights the cars' headlights. forward (the default): the lit shaders' headlight variant lights, as the game has always had it. "
     "pass: the variant is not used and the deferred local light pass lights the headlights of the same cars with their shadows from the atlas (it also reaches the lit shaders the variant leaves out, the cars' paint and the pedestrians; needs the G-buffer's planes, which it asks for while HEADLIGHTS is on, and runs whatever mcla_gpu_local_lights says). "
     "both: the variant lights and the pass adds the same lights again (the sum of the two: for the difference pictures). HEADLIGHTS (mcla_gpu_headlights) stays the master of both. Live.", rex::kDebugOnly, rex::Allowed("forward", "pass", "both"));
@@ -1899,6 +1904,7 @@ inline auto& mcla_gpu_local_lights_ab = g_gpu.mcla_gpu_local_lights_ab;
 inline auto& mcla_gpu_local_lights_gain = g_gpu.mcla_gpu_local_lights_gain;
 inline auto& mcla_gpu_local_lights_car_gain = g_gpu.mcla_gpu_local_lights_car_gain;
 inline auto& mcla_gpu_neon_light_gain = g_gpu.mcla_gpu_neon_light_gain;
+inline auto& mcla_gpu_local_lights_cost_off = g_gpu.mcla_gpu_local_lights_cost_off;
 inline auto& mcla_gpu_headlight_pass = g_gpu.mcla_gpu_headlight_pass;
 inline auto& mcla_gpu_light_pick = g_gpu.mcla_gpu_light_pick;
 inline auto& mcla_gpu_light_pick_record = g_gpu.mcla_gpu_light_pick_record;

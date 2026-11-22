@@ -46,6 +46,11 @@
 #define LP_SHADOW_OFF_SIZE 2184     // the atlas's width and height in texels (two uints)
 #define LP_SHADOW_OFF_LAYERS 2192   // two bits for each entry: 0 single, 1 static, 2 live
 
+// GB-NEON-COST (the draw's push block, local_lights_rules.h kMaxDrawLights / kPushLateReach): one draw lights a pixel with up to LP_MAX_DRAW_LIGHTS consecutive rows of the buffer (a car's neon tube:
+// its points are the lights of one car), summed in the shader; push.info.w bit 0 puts the reach test back after the planes are read (the A/B of the early test).
+#define LP_MAX_DRAW_LIGHTS 4
+#define LP_PUSH_LATE_REACH 1
+
 // what the depth chain stores for the sky (hlsl/ao_common.hlsli kAoSky)
 #define LP_SKY 60000.0f
 
@@ -97,6 +102,14 @@ float LpOcclusion(float4 occ, float world_y) {
   }
   float ramp = saturate((world_y - occ.x) * occ.y);
   return 1.0f + ramp * (occ.z - 1.0f);
+}
+
+// Whether a light of centre `pos` and `range` can add anything at `world` (local_lights_rules.h Reaches): the three laws of hlsl/light_laws.hlsli all return 0 at or past the range
+// (dist2 >= range2), so a pixel that fails this test takes nothing from the light whatever its surface is, and the pixel shader asks it BEFORE it reads the G-buffer's planes. Written as the
+// negation of the laws' own test so that a range that is not a number (the laws go on with it) is not left out here either: the pixel then goes the whole way, as it always did.
+bool LpReaches(float3 pos, float range, float3 world) {
+  float3 d = pos - world;
+  return !(dot(d, d) >= range * range);
 }
 
 // The light one light adds to one pixel (local_lights_rules.h PixelLight): albedo x lit weight x the law's term x the night light intensity (the game lamps' laws only: a headlight's colour has

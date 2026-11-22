@@ -2836,6 +2836,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_local_lights_cost_off": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the cost of the deferred local light pass, GB-NEON-COST, the A/B): a sum of the savings to switch OFF so that the pass runs as it did before them. \"\n    \"1 the reach test before the planes are read (the pixel shader asks the depth whether any light of the draw reaches the pixel, and leaves the pixels none reaches without reading the G-buffer's three planes), \"\n    \"2 one draw for a car's neon tube (its two to four lights are summed in the shader: one pass over the picture where there were one for each light). 0, the default: both on. The picture is the same \"\n    \"either way up to the rounding of the half float colour target (the savings leave out only what adds nothing), and only the graphics card time differs. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_headlight_pass": {
   "type": "std::string",
   "default": "\"forward\"",
