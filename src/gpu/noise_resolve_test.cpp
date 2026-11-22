@@ -1050,6 +1050,9 @@ void TestSources(const std::string& dir) {
               nc::Has(shafts, "const noise_resolve::HistoryImages hist_keep = hist_life_.Frame(plan.history, plan.history_gap, hist_held, hist_size_ok);") && nc::Has(shafts, "} else if (hist_held && hist_keep != noise_resolve::HistoryImages::kKeep) {") &&
               nc::Has(shafts, "hist_valid_ && hist_frame_ + 1 == frame_"),
           "shafts.cpp: the history's images are kept over an upscaler's frames (hist_frame_ + 1 == frame_ says they are stale) and given back by the lifetime rule");
+  g_check(nc::Has(cone, "const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get();") &&
+              nc::Has(cone, "int denoise_passes = car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);"),
+          "car_rt_refl.cpp (city line): the cone history's images stay over frames DLSS Ray Reconstruction takes too (the denoise passes are 0 there because it is the denoiser; the gap asks the setting's own count)");
   g_check(nc::Has(cone, "const noise_resolve::HistoryImages stable_keep = stable_life_.Frame(resolve_history, stable_gap, stable_held, stable_size_ok);") &&
               nc::Has(cone, "if (!resolve_history && stable_held && stable_keep != noise_resolve::HistoryImages::kKeep) {") && nc::Has(cone, "stable_valid_ && stable_frame_ + 1 == info.frame"),
           "car_rt_refl.cpp: the cone history's images are kept over an upscaler's frames (stable_frame_ + 1 == info.frame says they are stale) and given back by the lifetime rule");
