@@ -41,6 +41,10 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out);
 void PauseMenuLeaveSubmenu();
 // RESTART GAME (the QUIT form): save, start the game again, close this one.
 void PauseMenuRestartGame();
+// The game is ending (the window's close, a signal, the game's own exit): a setting changed in a pause-menu page and not written yet is written to
+// larecomp.toml now. The menu writes when a page is left and when QUIT is pressed, so closing the window inside a page lost the change. Nothing is
+// written when nothing moved. UI thread (the same call the menu makes from there).
+void PauseMenuSavePendingSettings();
 
 // Once per UI update (swf_dom.cpp), guest thread: closes our menus if the
 // pause screen they were opened over goes away under them.
