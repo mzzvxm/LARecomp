@@ -80,6 +80,11 @@
 // that failed here. A finished build nobody asks for again is taken at the end
 // of the frame (EndFrame), so it is recorded and persists like any other.
 //
+// A draw whose key adds a variant of the light stack to the game's own shader (the headlight's word, the G-buffer's planes: variant_wait.h) is not left to that rule:
+// it has the game's own pipeline to draw with, so the Scene asks with a Deferral that always says yes and walks a ladder of keys (the full key, the key without the
+// planes, the key without the headlight) while the build runs. The lit world draws all write the stencil, which the rule refuses, so before this every variant of
+// them was made on the render thread: 41 to 52 pipelines in one frame at the first night, 211 to 276 at the G-buffer's first frames (3 to 17 s, the freeze watchdog).
+//
 // While a capture runs (sync_builds.h: the debug cvar mcla_gpu_sync_builds, or capture mode's
 // SetCaptureActive) no draw may be left out: MaySkip says no whatever the Deferral answers, so every
 // lookup above takes the old way for a draw that may not be skipped -- waits for a build under way,

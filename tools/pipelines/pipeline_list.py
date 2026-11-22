@@ -5,6 +5,7 @@
   python pipeline_list.py add --base assets/mcla_pipelines.bin [-o OUT] [--skip-level-copies] FILE...
   python pipeline_list.py check --pack mcla_shaders.v8.pack [--variant-pack mcla_shaders_variants.v3.pack] FILE...
   python pipeline_list.py reorder -o assets/mcla_pipelines.bin --base assets/mcla_pipelines.bin FILE...
+  python pipeline_list.py lacks --base assets/mcla_pipelines.bin FILE...
   python pipeline_list.py selftest
 
 A list holds no game data: each record is a pipeline key (the pack's shader hashes, spec variants,
@@ -39,6 +40,12 @@ check --pack: records whose vertex or pixel shader the pack does not have (the g
 scene's tone map, the bloom's Gaussians, the shadow collector's soft lookup, the glow sprites' soft visibility, a composed shader ...) whose shader has no entry for that word in it. The
 exit status is 1 when a record has no shader or a variant has no entry.
 
+lacks --base LIST FILE...: what the runs' pipeline files hold that LIST does not, grouped by the variant words, the colour targets, the sample count and whether the
+pipeline writes the stencil (the pipelines a play made on the render thread, or in the background, because the list had no record of them: a run that started with an empty cache folder
+writes its own file, which is the list plus the pipelines it had to make). The stencil column is the one that matters for the first night and the G-buffer's first frames: the game's rule for
+leaving a draw out while a pipeline is built (Scene::MaySkipForPipeline) refuses a draw that writes the stencil, so such a pipeline is made on the render thread unless the draw has a fallback
+(src/gpu/variant_wait.h: the headlight's word and the G-buffer's planes have). The records come in the order the run first needed them.
+
 reorder keeps the records of --base and moves to the front those that also stand in the FILEs (the
 depth bias is not compared), in the FILEs' order, the rest after them in their old order. Use it
 with the list of a cold run that started with no starter: a list is written in the order the render
@@ -66,11 +73,14 @@ VS_VARIANT_AT, PS_VARIANT_AT = 16, 20
 SAMPLES_AT = 32
 DEPTH_FORMAT_AT = 56
 DEPTH_BIAS_AT = 92  # PipelineKey::depth_bias, then slope_scaled_depth_bias (float)
+COLOR_COUNT_AT = 36
+STENCIL_AT, STENCIL_MASKS_AT = 80, 84  # key.stencil (bit 0 enable; front compare, fail, pass, depth fail at bits 1, 5, 9, 13; back compare, fail, pass at 17, 21, 25), key.stencil_masks (read, write, reference; the back depth fail at 24)
+STENCIL_KEEP = 1  # plume RenderStencilOp: UNKNOWN 0, KEEP 1, ZERO 2, REPLACE 3 ...
 FIRST_PACKED_VARIANT = 2  # ShaderStore::kFirstPackedVariant: 0 and 1 are the main pack's spec variants
 # The variant word (ps_variant, vs_variant): bit 0 the main pack's spec variant, bits 1..31 the set of features (shaderpack/variant_chain.h):
 # the names of the features by index (shaderpack/pack_format.h kFeature*, the rows of variant_chain.h kFeatures).
 FEATURE_NAMES = ["HDR scene", "bloom Gaussians", "environment map", "shadow filter", "glow visibility", "car self-reflection",
-                 "luminance scale", "car chrome", "UI sharpening", "headlights"]
+                 "luminance scale", "car chrome", "UI sharpening", "headlights", "G-buffer", "lamp shadow", "G-buffer vertex"]
 
 
 def word_name(word):
@@ -369,6 +379,41 @@ def _quiet(fn, *a):
     return r, s.getvalue()
 
 
+def stencil_writes(key):
+    """The pipeline writes the stencil: it is on, the write mask is not 0 and an operation is not KEEP (the test of Scene's StencilWrites on the key's packing)."""
+    stencil, masks = u32(key, STENCIL_AT), u32(key, STENCIL_MASKS_AT)
+    if not stencil & 1 or not (masks >> 8) & 0xFF:
+        return False
+    ops = [(stencil >> shift) & 0xF for shift in (5, 9, 13, 21, 25)] + [(masks >> 24) & 0xF]
+    return any(op not in (0, STENCIL_KEEP) for op in ops)
+
+
+def lacks(base, files):
+    """The records of FILEs that BASE lacks (the depth bias is not compared), grouped by the vertex word, the pixel word, the colour targets, the sample count and
+    the stencil: one table a file, biggest groups first, then the totals; returns the number of new records."""
+    _, _, base_records = read_list(base)
+    seen = {without_bias(k) for k, _ in base_records}
+    total = 0
+    for p in files:
+        _, _, records = read_list(p)
+        new = []
+        for key, _ in records:
+            if without_bias(key) not in seen:
+                new.append(key)
+        groups = {}
+        for key in new:
+            group = (word_name(u32(key, VS_VARIANT_AT)) if u32(key, VS_VARIANT_AT) >= FIRST_PACKED_VARIANT else "the game's",
+                     word_name(u32(key, PS_VARIANT_AT)) if u32(key, PS_VARIANT_AT) >= FIRST_PACKED_VARIANT else "the game's",
+                     u32(key, COLOR_COUNT_AT), samples_of(key), stencil_writes(key))
+            groups[group] = groups.get(group, 0) + 1
+        writers = sum(1 for k in new if stencil_writes(k))
+        print(f"{p}: {len(records)} records, {len(new)} that {base} lacks; {writers} of them write the stencil (the game's rule keeps those out of the background builds)")
+        for (vs, ps, colours, samples, stencil), n in sorted(groups.items(), key=lambda kv: (-kv[1], str(kv[0]))):
+            print(f"  {n:4d}  vertex: {vs}; pixel: {ps}; {colours} colour target(s), {samples} sample(s); {'writes the stencil' if stencil else 'no stencil write'}")
+        total += len(new)
+    return total
+
+
 def selftest():
     failures = []
 
@@ -441,6 +486,26 @@ def selftest():
         write("ok.bin", [(_key(1, 2), 0), (_key(3, 4), 0)], [_layout(10)])
         expect(_quiet(check, path("pack"), "", [path("ok.bin")])[0] == 0, "check passes a list whose shaders are all there")
 
+        # lacks: the runs' records the base lacks, by word and stencil (a headlight key (word 1024) that writes the stencil, a G-buffer one (2048) with three more colour targets that does not)
+        def with_stencil(key, front_pass, write_mask):
+            b = bytearray(key)
+            struct.pack_into("<I", b, STENCIL_AT, 1 | (8 << 1) | (STENCIL_KEEP << 5) | (front_pass << 9) | (STENCIL_KEEP << 13) | (8 << 17) | (STENCIL_KEEP << 21) | (front_pass << 25))
+            struct.pack_into("<I", b, STENCIL_MASKS_AT, 0xFF | (write_mask << 8) | (STENCIL_KEEP << 24))
+            return bytes(b)
+        hl = with_stencil(_key(21, 22, 2, ps_variant=1024), 3, 0xFF)
+        gb = with_stencil(_key(23, 24, 2, ps_variant=2048), STENCIL_KEEP, 0xFF)
+        keep = with_stencil(_key(25, 26, 2), STENCIL_KEEP, 0x00)
+        expect(stencil_writes(hl) and not stencil_writes(gb) and not stencil_writes(keep) and not stencil_writes(_key(27, 28, 2)),
+               "stencil_writes: a REPLACE with a write mask is one, all KEEP or a zero write mask or no stencil is not")
+        write("lacks.bin", [(a0, 0), (b, 0), (hl, 0), (gb, 0), (keep, 0)], [_layout(10)])
+        got = io.StringIO()
+        with contextlib.redirect_stdout(got):
+            count = lacks(path("base.bin"), [path("lacks.bin")])
+        text = got.getvalue()
+        expect(count == 3 and "1 of them write the stencil" in text and "pixel: headlights;" in text and "pixel: G-buffer;" in text and "writes the stencil" in text,
+               f"lacks counts the 3 new records, the stencil writer and names the words ({text.strip()})")
+        expect(word_name(3072) == "headlights + G-buffer" and word_name(8192) == "G-buffer vertex" and word_name(2048) == "G-buffer", "word names cover the G-buffer features")
+
         # junk is refused
         with open(path("junk.bin"), "wb") as f:
             f.write(b"nope")
@@ -465,6 +530,9 @@ def main():
     ad.add_argument("-o", "--out", default="")
     ad.add_argument("--skip-level-copies", action="store_true")
     ad.add_argument("files", nargs="+")
+    lk = sub.add_parser("lacks")
+    lk.add_argument("--base", required=True)
+    lk.add_argument("files", nargs="+")
     ck = sub.add_parser("check")
     ck.add_argument("--pack", required=True)
     ck.add_argument("--variant-pack", "--hdr-pack", dest="variant_pack", default="")
@@ -482,6 +550,8 @@ def main():
             merge(a.files, a.out)
         elif a.cmd == "add":
             add(a.base, a.files, a.out, a.skip_level_copies)
+        elif a.cmd == "lacks":
+            lacks(a.base, a.files)
         elif a.cmd == "check":
             sys.exit(check(a.pack, a.variant_pack, a.files))
         elif a.cmd == "selftest":

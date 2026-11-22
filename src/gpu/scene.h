@@ -338,7 +338,9 @@ class Scene {
   static constexpr uint32_t kPipelineSkipFrames = 30;
   // What Pipelines::Get asks on a miss (Deferral): may the draw be left out?
   // Only when every target the draw renders into was drawn into in each of the
-  // last kPipelineSkipFrames frames.
+  // last kPipelineSkipFrames frames. (A draw whose key carries the headlight's
+  // word or the G-buffer's planes is not asked this: its fallback, the game's
+  // own pipeline, draws instead, so it waits whatever this says: variant_wait.h.)
   struct SkipAsk {
     const Scene* scene;
     const PreparedDraw* draw;
