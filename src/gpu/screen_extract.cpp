@@ -163,6 +163,32 @@ plume::RenderPipeline* ScreenShared::ChainPipeline(Kind kind) {
   return chain_pipelines_[k].get();
 }
 
+uint32_t ScreenShared::ListChainAtStart(uint32_t kinds) {
+  if (!passes_ || !wide_layout_) {
+    return 0;
+  }
+  HostPrecache& precache = passes_->precache();
+  uint32_t added = 0;
+  std::string names;
+  for (uint32_t i = 0; i < uint32_t(Kind::kCount); ++i) {
+    const Kind kind = Kind(i);
+    const uint32_t bit = screen::extract::Bit(kind);
+    if ((kinds & bit) == 0 || (chain_listed_ & bit) != 0 || (chain_failed_ & bit) != 0 || chain_pipelines_[i] || !chain_shaders_[i]) {
+      continue;
+    }
+    chain_listed_ |= bit;  // ChainReady / ChainPipeline take it from the precache like one it listed itself
+    if (precache.Add(KeyOf(kind), kKindNames[i], [this, kind] { return MakeChainPipeline(kind); })) {
+      ++added;
+      names += std::format("{}{}", names.empty() ? "" : ", ", kKindNames[i]);
+    }
+  }
+  if (added != 0) {
+    precache.Note("the shared screen products' depth and colour chain", added);
+    REXLOG_INFO("{} the depth chain's and colour chain's pipelines the start's choices use are in the boot precache: {} ({})", kPrefix, added, names);
+  }
+  return added;
+}
+
 bool ScreenShared::ChainReady(uint32_t kinds) {
   if (!passes_ || !wide_layout_) {
     return false;

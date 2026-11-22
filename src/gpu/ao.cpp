@@ -546,6 +546,8 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
   const bool contact_at_start = contact_at_start_choice.level != host_plan::Level::kOff;
   contact_shader_failed_ = false;
   listed_.fill(false);
+  start_chain_kinds_ = 0;
+  chain_side_ = larecomp::settings::mcla_gpu_screen_extract.Get();  // the side whose chain pipelines the start lists (ListPrecache, Renderer)
   occlusion_built_ = false;
   contact_built_ = false;
   bounce_built_ = false;
@@ -769,6 +771,11 @@ std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeed
   return variants;
 }
 
+uint32_t AmbientOcclusion::ChainKindsFor(const host_plan::AmbientNeeds& needs) const {
+  // The conditions of VariantsFor's chain entries: the depth pass and the coarser level of the depth groups, the colour chain with the bounce light where its shaders were made (gi_ready_).
+  return screen::extract::StartKinds(needs.depth, needs.mip, needs.bounce && gi_ready_);
+}
+
 void AmbientOcclusion::ListPrecache(const host_plan::Choice& occlusion,
                                     const host_plan::Choice& contact,
                                     const host_plan::Choice& bounce) {
@@ -781,8 +788,15 @@ void AmbientOcclusion::ListPrecache(const host_plan::Choice& occlusion,
   // off lists nothing: it is not compiled for nothing, and a switch to on makes its pipelines in the
   // background (HoldUntilBuilt).
   const bool census = larecomp::settings::mcla_gpu_ao_census.Get() != 0;
+  // SS-PRECACHE: with the owner recording the chain (mcla_gpu_screen_extract, the default) VariantsFor leaves the chain's variants out; the owner's pipelines for the same groups are listed by Renderer
+  // (ScreenShared::ListChainAtStart) from the kinds collected here, so they are in the boot precache as the AO's own were before SS-2.
+  const bool owner_records_chain = larecomp::settings::mcla_gpu_screen_extract.Get();
+  start_chain_kinds_ = 0;
   const auto list = [&](const host_plan::AmbientNeeds& needs) {
     uint32_t added = 0;
+    if (owner_records_chain) {
+      start_chain_kinds_ |= ChainKindsFor(needs);
+    }
     for (const uint32_t variant : VariantsFor(needs)) {
       listed_[variant] = true;
       added += precache.Add(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
@@ -1062,6 +1076,19 @@ void AmbientOcclusion::BeginFrame() {
     const std::string setting = Lower(SsgiSetting().Get());
     REXLOG_INFO("[gpu] ssgi: bounce light {}{} (mcla_gpu_ssgi {}, live; it needs mcla_gpu_ao on)",
                 ModeName(gi_mode), setting == "auto" ? " (auto on this GPU)" : "", setting);
+  }
+  // SS-PRECACHE: mcla_gpu_screen_extract flipped since the start (a debug A/B, live). The start listed the chain pipelines of the side it ran (the owner's, or the AO's own); VariantsFor now names the other
+  // side's, which nobody listed, and Pipeline() would make them on the render thread at the first frame of the flip. Asking HoldUntilBuilt again lists them on a worker and holds the effects that need them
+  // off until they are made, as for any switch on (the owner's side is the owner's: ChainReady, below).
+  const bool chain_side = larecomp::settings::mcla_gpu_screen_extract.Get();
+  if (chain_side != chain_side_) {
+    chain_side_ = chain_side;
+    occlusion_built_ = false;
+    contact_built_ = false;
+    bounce_built_ = false;
+    REXLOG_INFO("[gpu] ao: mcla_gpu_screen_extract is now {}: the depth chain's pipelines of the {} recording that the start did not list are made in the background first (the effects that need them wait, "
+                "none is made on the render thread)",
+                chain_side ? "true" : "false", chain_side ? "owner's" : "old path's own");
   }
   // The pipelines of what is on are made (listed at the start, or in the background since the switch);
   // until then that effect is drawn as off.

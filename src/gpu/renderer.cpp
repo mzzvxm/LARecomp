@@ -201,6 +201,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
 #endif
     gbuffer_.Initialize(passes_, edram_, pass_timing_);  // and the G-buffer's sidecar (gbuffer.h): made on the first draw that carries it
     screen_.Initialize(device_, heap_, passes_, edram_, pass_timing_);  // and the shared screen products (screen_shared.h): the AO's depth chain published, the Hi-Z, made only while wanted
+    screen_.ListChainAtStart(ao_.ChainKindsAtStart());  // the depth chain's and colour chain's pipelines the AO's start choices use: in the boot precache, as the AO's own table had them before SS-2 (SS-PRECACHE)
     ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_);  // and the screen-space reflections (ssr.h): the layout and the shaders, the pipelines only when the setting is on
     rr_guides_.Initialize(device_, frames_, heap_, passes_, pass_timing_);  // and DLSS Ray Reconstruction's guide pass (rr_guides.h): the layouts and shaders; the pipelines only when it is first wanted
     rr_guides_.SetGBuffer(&gbuffer_);
