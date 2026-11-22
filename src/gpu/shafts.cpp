@@ -1216,7 +1216,8 @@ const HostImage* SunShafts::RecordTemporal(plume::RenderCommandList* list, const
   hist_pause_ = pause;
   hist_sun_[0] = plan.sun_uv[0];
   hist_sun_[1] = plan.sun_uv[1];
-  hist_frames_ = keep ? std::min(hist_frames_ + 1u, 64u) : 0u;
+  // A frame that does not keep the history still writes one frame into it: the next frame has 1 frame of history (weight 1/2), not 0.
+  hist_frames_ = keep ? std::min(hist_frames_ + 1u, 64u) : 1u;
   if (keep) {
     ++hist_used_;
     if (!hist_logged_) {
