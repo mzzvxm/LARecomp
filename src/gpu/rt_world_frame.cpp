@@ -143,7 +143,7 @@ uint64_t RtWorldFrame::HeldBytes() const {
 
 void RtWorldFrame::BeginFrame(uint64_t frame) {
   // The frame that ended: nobody built a top level in it although something wanted the scene (the car scene could not, or the camera was lost): the census counts it.
-  if (device_ != nullptr && frame_ != 0 && view_frame_ != frame_ && src_.service != nullptr && src_.service->Needs().any()) {
+  if (device_ != nullptr && frame_ != 0 && view_frame_ != frame_ && src_.service != nullptr && src_.service->Needs().city != rt_scene::Level::kOff) {
     ++census_.frames_no_view;
   }
   frame_ = frame;
@@ -156,6 +156,12 @@ void RtWorldFrame::BeginFrame(uint64_t frame) {
 }
 
 void RtWorldFrame::NoteView(const temporal::Mat4& view, bool flip_z, bool car) {
+  // Only the city's consumers read the world's rows and lamps (the reflections' and the bounce light's hits, the sun shadows' hit shading). A top level that only the cars' own effects asked for (every city
+  // option off: the car reflections of main) has none of them: the occlusion's draw hook, the volumetric lamp list, the lamp frame and the fill are not made for it, and Bind leaves the rows saying
+  // "not valid" (flags 0). The hooks go back after kIdleReleaseFrames (BeginFrame), as when the last city option goes off.
+  if (src_.service == nullptr || src_.service->Needs().city == rt_scene::Level::kOff) {
+    return;
+  }
   view_ = view;
   flip_z_ = flip_z;
   car_ = car;
