@@ -1106,6 +1106,7 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   // The radial blur of the sky image toward the sun.
   Push push = {};
   push.slots[1] = sky_.slot;
+  push.slots[2] = larecomp::settings::mcla_gpu_noise_blue.Get() ? 1u : 0u;  // the ray starts take the blue noise tile (hlsl/shafts_noise.hlsli), else the first version's gradient noise
   push.slots[3] = plan.steps;
   push.sizes[0] = float(plan.image[0]);
   push.sizes[1] = float(plan.image[1]);
