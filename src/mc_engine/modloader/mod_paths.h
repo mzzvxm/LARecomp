@@ -45,19 +45,26 @@ inline int PickNoCase(const std::vector<std::string>& names, std::string_view wa
     return found;
 }
 
+// The names of the entries of `dir` (only the directories when `directories_only`), in the order the file system lists them; empty when the folder is not there.
+inline std::vector<std::string> EntryNames(const std::filesystem::path& dir, bool directories_only) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec) break;
+        std::error_code kind_ec;
+        if (directories_only && !entry.is_directory(kind_ec)) continue;
+        names.push_back(entry.path().filename().string());
+    }
+    return names;
+}
+
 // dir / `name` as the folder spells it. `want_directory`: only a directory counts as a match (a FILE called "Rims" is not the rims folder).
 inline std::filesystem::path FindChildNoCase(const std::filesystem::path& dir, std::string_view name,
                                              bool want_directory) {
     const std::filesystem::path exact = dir / std::filesystem::path(std::string(name));
     std::error_code ec;
     if (want_directory ? std::filesystem::is_directory(exact, ec) : std::filesystem::exists(exact, ec)) return exact;
-    std::vector<std::string> names;
-    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-        if (ec) break;
-        std::error_code kind_ec;
-        if (want_directory && !entry.is_directory(kind_ec)) continue;
-        names.push_back(entry.path().filename().string());
-    }
+    const std::vector<std::string> names = EntryNames(dir, want_directory);
     const int pick = PickNoCase(names, name);
     return pick < 0 ? exact : dir / std::filesystem::path(names[size_t(pick)]);
 }

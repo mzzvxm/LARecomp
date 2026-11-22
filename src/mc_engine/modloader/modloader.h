@@ -37,9 +37,17 @@ namespace mc::modloader {
 // the name does not matter (mod_paths.h): "Mods" is found on Linux too.
 inline std::filesystem::path ModRootDir(const std::filesystem::path& exe_dir) {
     std::error_code ec;
-    for (const char* name : {"modloader", "mods", "models"}) {
-        std::filesystem::path dir = FindDirNoCase(exe_dir, name);
+    constexpr const char* kNames[] = {"modloader", "mods", "models"};
+    // The names as written: the only case there is on Windows, and a stat each (this is asked while a menu draws).
+    for (const char* name : kNames) {
+        const std::filesystem::path dir = exe_dir / name;
         if (std::filesystem::is_directory(dir, ec)) return dir;
+    }
+    // None is there as written: one look at the folder for the three names in any case.
+    const std::vector<std::string> names = EntryNames(exe_dir, /*directories_only=*/true);
+    for (const char* name : kNames) {
+        const int pick = PickNoCase(names, name);
+        if (pick >= 0) return exe_dir / std::filesystem::path(names[size_t(pick)]);
     }
     return exe_dir / "modloader";
 }
