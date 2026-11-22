@@ -233,11 +233,14 @@ inline GBufferAlbedo AnalyseGBufferAlbedo(std::string_view hlsl, const GBufferAl
 }
 
 // What the stage writes to RT2 after the game's colour statement (`oC0 = applyBlendPremult(oC0);`): the "no data" code, and, when the shader has an albedo and the host's mode bit is set, the
-// albedo and the lit weight of the draw's material word.
-inline std::string GBufferAlbedoWriteText(const GBufferAlbedo& albedo) {
+// albedo and the lit weight of the draw's material word. `occlusion` (GB-H2-COVER, gbuffer_night_albedo.h: "" for none) is an HLSL expression of the shader's own baked occlusion, the factor the game
+// multiplies the sum of ITS lights by (the vertex colour's alpha: iColor1.w): the lit weight is then the draw's weight times saturate(occlusion), "how much of the forward lights reach this pixel",
+// so a deferred light (the headlights in the light pass) is darkened where the game's own lamps are.
+inline std::string GBufferAlbedoWriteText(const GBufferAlbedo& albedo, std::string_view occlusion = {}) {
   std::string text(kGBufferAlbedoNoData);
   if (albedo.found) {
-    text += "\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u) {\n\t\toC2 = float4(GbAlbedoEncode(" + albedo.expression + "), GbMaterialLit(g_GBufferMode.y));\n\t}";
+    const std::string lit = occlusion.empty() ? std::string("GbMaterialLit(g_GBufferMode.y)") : "GbMaterialLit(g_GBufferMode.y) * saturate(" + std::string(occlusion) + ")";
+    text += "\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u) {\n\t\toC2 = float4(GbAlbedoEncode(" + albedo.expression + "), " + lit + ");\n\t}";
   }
   return text;
 }

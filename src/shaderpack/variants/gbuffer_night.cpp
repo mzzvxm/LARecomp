@@ -183,7 +183,7 @@ std::string LaneList(const Found& f, bool as_interpolant) {
 // The analysis
 // ---------------------------------------------------------------------------
 
-NightAnalysis AnalyseGBufferNight(std::string_view hlsl) {
+NightAnalysis AnalyseGBufferNight(std::string_view hlsl, std::string_view name) {
   NightAnalysis out;
   const std::string text = NormalizeNewlines(hlsl);
   const size_t main_at = text.rfind("\nvoid main(");
@@ -419,6 +419,12 @@ NightAnalysis AnalyseGBufferNight(std::string_view hlsl) {
   out.how = found.how;
   out.line = int(found.line);
   out.albedo = AnalyseGBufferAlbedo(text);  // RT2: the diffuse texel (a shader without one writes the "no data" code there)
+  if (const NightOcclusionRow* occlusion = name.empty() ? nullptr : FindGBufferNightOcclusionRow(name)) out.occlusion = NightOcclusionExpression(*occlusion);  // RT2.a: the baked occlusion the game multiplies its lights by
+  if (const NightAlbedoRow* row = name.empty() ? nullptr : FindGBufferNightAlbedoRow(name)) {
+    // the shader has no texel of that shape: its recipe says where its colour is (gbuffer_night_albedo.h); it takes the place of what the texel analysis found, which is nothing on the retail text
+    out.recipe = true;
+    out.albedo = AnalyseGBufferNightAlbedoRow(text, *row);
+  }
   if (all_pristine) {
     out.interpolant = true;
     out.expression = LaneList(found, true);
@@ -446,14 +452,14 @@ namespace {
 
 // The write of the planes after the game's last colour statement: RT1, the normal (under GB_MODE_WRITE_NORMAL), then RT2, the albedo and the lit weight (gbuffer_albedo.h, under
 // GB_MODE_WRITE_ALBEDO), then RT3, the smoothness, the class and the flags of the draw's material word in g_GBufferMode.y (gbuffer_material_plane.h, under GB_MODE_WRITE_MATERIAL).
-std::string NightWriteBlock(std::string_view normal_expression, const GBufferAlbedo& albedo) {
+std::string NightWriteBlock(std::string_view normal_expression, const GBufferAlbedo& albedo, std::string_view occlusion) {
   return "\n\toC1 = float2(0.0f, 0.0f);\n"
          "\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n"
          "\t\toC1 = GbRt1Encode(" +
          std::string(normal_expression) +
          ");\n"
          "\t}" +
-         GBufferAlbedoWriteText(albedo) + GBufferMaterialWriteText();
+         GBufferAlbedoWriteText(albedo, occlusion) + GBufferMaterialWriteText();
 }
 
 }  // namespace
@@ -477,12 +483,18 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
   while (!helper.empty() && IsSpace(helper.back())) helper.pop_back();
   if (helper.empty()) return fail("the helper text (gbuffer_common.hlsli) is empty");
 
-  const NightAnalysis found = AnalyseGBufferNight(text);
+  const NightAnalysis found = AnalyseGBufferNight(text, shader.name);
   if (!found.found) {
     result.skip = true;
     result.error = found.why_not;
     return result;
   }
+  // The baked occlusion is an input of the shader: its declaration must be there once (the translator declares every input a shader reads), or this is not the text the row was measured on.
+  if (!found.occlusion.empty() && CountOccurrences(text, std::string(kNightOcclusionDeclaration)) != 1) {
+    return fail("the pixel shader does not declare `" + std::string(kNightOcclusionDeclaration) + "` once: not the translator's HLSL the occlusion row was measured on");
+  }
+  // A shader with a recipe is promised an albedo: when its anchor is not there the HLSL is not the one the recipe was written for, and the variant is not built (never a quiet "no data").
+  if (found.recipe && !found.albedo.found) return fail("the albedo recipe does not fit this text: " + found.albedo.why_not);
   std::string error;
 
   // The interpolants the expression reads must be declared once, as the translator makes them.
@@ -537,13 +549,14 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
   // 4. The write, after the game's last statement of the colour (so after the alpha test's discard).
   static constexpr Piece kWrite[] = {Lit("oC0 = applyBlendPremult(oC0);")};
   if (!ReplaceOnce(text, kWrite, 0, 0, "the game's colour write",
-                   [&](std::string_view group) { return std::string(group) + NightWriteBlock(found.expression, found.albedo); }, &error)) {
+                   [&](std::string_view group) { return std::string(group) + NightWriteBlock(found.expression, found.albedo, found.occlusion); }, &error)) {
     return fail(std::move(error));
   }
 
   // What the text must hold now: the second, third and fourth outputs, one call each, the helpers once, the captures as many times as they were made.
   const std::string call = "oC1 = GbRt1Encode(" + found.expression + ");";
-  const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + found.albedo.expression + "), GbMaterialLit(g_GBufferMode.y));";
+  const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + found.albedo.expression + "), GbMaterialLit(g_GBufferMode.y)" +
+                                  (found.occlusion.empty() ? std::string() : " * saturate(" + found.occlusion + ")") + ");";
   const struct {
     std::string_view needle;
     size_t want;

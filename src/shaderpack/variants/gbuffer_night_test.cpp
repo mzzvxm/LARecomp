@@ -14,6 +14,9 @@
 //   - the composed text has both blocks (608 and 1680) once and the same normal
 //   - RT2 (GB-W1, gbuffer_albedo.h): every edited shader declares the third output once; the albedo write is there exactly where the shader has a DiffuseSampler texel at its centre (read at the end
 //     of main, or captured right after the fetch where a later statement writes the register), the "no data" write everywhere
+//   - THE ALBEDO RECIPES (gbuffer_night_albedo.h, GB-H2-COVER): the 11 shaders with no DiffuseSampler texel that the forward headlight stage lights have their anchor found once and write RT2; and
+//     THE COVER RULE: every shader the headlight variant edits has the night stage's normal AND an albedo, except the six named in kGBufferNightHeadlightExempt (the emissive tints, which the light
+//     pass never lights, and the tangent space decal): a shader that drops out of the G-buffer while the forward stage still lights it fails here, so the deferred headlights cannot lose a surface unseen
 //   - xCityDefault::PSMultiLight is the stage's like every other shader of the family (gbuffer.cpp's dispatch; the spike's own edits of it are gone)
 // and pins the census' numbers. A third argument is a folder that receives the edited texts (`<name>.gb.hlsl`, and `<name>.hlgb.hlsl` composed with the headlight) for the compile with dxc
 // (perf/scripts/gbuffer_night_compile.py: DXIL and SPIR-V, the spec constants 0 and 2).
@@ -36,6 +39,7 @@
 #include "shaderpack/variant_compose.h"
 #include "shaderpack/variants/gbuffer.h"
 #include "shaderpack/variants/gbuffer_night.h"
+#include "shaderpack/variants/gbuffer_night_albedo.h"
 #include "shaderpack/variants/headlight.h"
 #include "shaderpack/variants/shadow_filter.h"
 #include "shaderpack/variants/ui_sharp.h"
@@ -144,6 +148,7 @@ std::string Shader(const std::string& body) {
          "\tin centroid float4 iTexCoord0 : TEXCOORD0,\n"
          "\tin centroid float4 iTexCoord1 : TEXCOORD1,\n"
          "\tin centroid float4 iTexCoord2 : TEXCOORD2,\n"
+         "\tin centroid float4 iColor1 : COLOR1,\n"
          ",\n"
          "\tout float4 oC0 : SV_Target0\n"
          "#if XENOS_ALPHA_COVERAGE\n"
@@ -428,6 +433,146 @@ void CheckAlbedoTransform() {
 }
 
 // The identity check itself must see what it is for: a changed line of the game's, an added assignment to one of its registers, an added mention of the colour.
+// ---- the albedo recipes (gbuffer_night_albedo.h) -----------------------------------------------------------------------------------------------------------------------------
+
+std::string CrlfOf(const std::string& text) {
+  std::string out;
+  for (const char ch : text) {
+    if (ch == '\n') out += '\r';
+    out += ch;
+  }
+  return out;
+}
+
+void CheckAlbedoRecipes() {
+  // the table: sorted, unique, all in the night family, the rows' own shape
+  {
+    Check(sp::kGBufferNightAlbedoRowCount == 11, "the table has 11 recipes (the road, the tunnel road, the terrain x2, the grass x2, the tinted grime x3, the tinted prop, the traffic body)");
+    bool sorted = true, shape = true, family = true;
+    for (size_t i = 0; i < sp::kGBufferNightAlbedoRowCount; ++i) {
+      const sp::NightAlbedoRow& row = sp::kGBufferNightAlbedoRows[i];
+      if (i > 0 && !(sp::kGBufferNightAlbedoRows[i - 1].name < row.name)) sorted = false;
+      family = family && sp::IsGBufferNightShader(row.name);
+      const std::string expression(row.expression);
+      bool has_register = false;  // `r12.xyz`: a register of the game's at a word boundary
+      for (size_t at = expression.find('r'); at != std::string::npos; at = expression.find('r', at + 1)) {
+        const bool word_start = at == 0 || !(std::isalnum(static_cast<unsigned char>(expression[at - 1])) || expression[at - 1] == '_');
+        if (word_start && at + 1 < expression.size() && std::isdigit(static_cast<unsigned char>(expression[at + 1]))) has_register = true;
+      }
+      if (row.site == sp::NightAlbedoSite::kGlobal) {
+        shape = shape && row.anchor.empty() && !expression.empty() && !has_register;  // constants only: nothing a later statement can overwrite
+      } else {
+        shape = shape && !row.anchor.empty() && row.anchor.ends_with(";") && !expression.empty() && has_register && row.anchor.find('\n') == std::string_view::npos;
+      }
+      shape = shape && !row.source.empty();
+    }
+    Check(sorted, "the recipes are sorted by name and the names are unique");
+    Check(family, "every recipe is a shader of the night family");
+    Check(shape, "every recipe: a statement and registers, or constants alone, and its words");
+    bool exempt_ok = true;
+    for (size_t i = 0; i < std::size(sp::kGBufferNightHeadlightExempt); ++i) {
+      const sp::NightHeadlightExempt& row = sp::kGBufferNightHeadlightExempt[i];
+      if (i > 0 && !(sp::kGBufferNightHeadlightExempt[i - 1].name < row.name)) exempt_ok = false;
+      exempt_ok = exempt_ok && sp::IsGBufferNightShader(row.name) && sp::FindGBufferNightAlbedoRow(row.name) == nullptr && !row.reason.empty();
+    }
+    Check(exempt_ok && std::size(sp::kGBufferNightHeadlightExempt) == 6, "the six shaders the light pass does not light are sorted, in the family and have no recipe (the two lists do not overlap)");
+    Check(sp::FindGBufferNightAlbedoRow("xCityRoad__PSMultiLight") != nullptr && sp::FindGBufferNightAlbedoRow("xCityDefault__PSMultiLight") == nullptr && sp::FindGBufferNightAlbedoRow("") == nullptr,
+          "a recipe is found by name; a shader with a diffuse texel has none");
+  }
+  // the baked occlusion rows (RT2.a)
+  {
+    bool sorted = true, family = true, power = true, not_emissive = true;
+    for (size_t i = 0; i < sp::kGBufferNightOcclusionRowCount; ++i) {
+      const sp::NightOcclusionRow& row = sp::kGBufferNightOcclusionRows[i];
+      if (i > 0 && !(sp::kGBufferNightOcclusionRows[i - 1].name < row.name)) sorted = false;
+      family = family && sp::IsGBufferNightShader(row.name);
+      power = power && (row.power == 1 || row.power == 2);
+      not_emissive = not_emissive && !(sp::FindGBufferNightHeadlightExempt(row.name) != nullptr);
+    }
+    Check(sp::kGBufferNightOcclusionRowCount == 52, "the table has 52 occlusion rows (48 by iColor1.w, 4 windows by its square)");
+    Check(sorted && family && power, "the occlusion rows are sorted by name, in the night family, power 1 or 2");
+    Check(not_emissive, "no emissive or exempt shader carries an occlusion (the pass never lights them)");
+    Check(sp::NightOcclusionExpression({"x", 1}) == "iColor1.w" && sp::NightOcclusionExpression({"x", 2}) == "iColor1.w * iColor1.w", "the expressions: the vertex alpha, its square");
+    Check(sp::FindGBufferNightOcclusionRow("xCityDefault__PSMultiLight") != nullptr && sp::FindGBufferNightOcclusionRow("xCityLOD__PSMultiLight") == nullptr &&
+              sp::FindGBufferNightOcclusionRow("xCityWindowLower__PSMultiLight") != nullptr && sp::FindGBufferNightOcclusionRow("xCityWindowLower__PSMultiLight")->power == 2,
+          "the walls have a row, the LOD does not, the windows have the square");
+    sp::GBufferAlbedo albedo;
+    albedo.found = true;
+    albedo.expression = "r6.xzw";
+    Check(sp::GBufferAlbedoWriteText(albedo).find("GbMaterialLit(g_GBufferMode.y));") != std::string::npos && sp::GBufferAlbedoWriteText(albedo).find("saturate") == std::string::npos,
+          "the albedo write with no occlusion is the old text, byte for byte");
+    Check(sp::GBufferAlbedoWriteText(albedo, "iColor1.w").find("oC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y) * saturate(iColor1.w));") != std::string::npos,
+          "the albedo write with an occlusion multiplies the lit weight by its saturate");
+    // the transform: a window (the square), a shader with a row and no iColor1 declaration (the variant is not built), and a shader with no row (the old text)
+    const std::string fetch = "\tr6.xyzw = tfetch2D(DiffuseSampler_Texture2DDescriptorIndex, DiffuseSampler_SamplerDescriptorIndex, r2.xy, float2(0, 0)).xwyz;\n";
+    const std::string window_text = Shader(std::string(kSunDot) + fetch);
+    const sp::VariantTransformResult w = sp::TransformGBufferNightHlsl({"xCityWindowLower__PSMultiLight", 0}, window_text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(w.ok && Count(w.hlsl, "oC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y) * saturate(iColor1.w * iColor1.w));") == 1 && AdditiveError(window_text, w.hlsl).empty(),
+          "a window's lit weight carries the square of the vertex alpha: " + w.error);
+    std::string no_decl = window_text;
+    const size_t decl = no_decl.find("\tin centroid float4 iColor1 : COLOR1,\n");
+    if (decl != std::string::npos) no_decl.erase(decl, std::string("\tin centroid float4 iColor1 : COLOR1,\n").size());
+    const sp::VariantTransformResult nd = sp::TransformGBufferNightHlsl({"xCityWindowLower__PSMultiLight", 0}, no_decl, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(decl != std::string::npos && !nd.ok && !nd.skip && nd.error.find("iColor1") != std::string::npos, "a row whose input the text does not declare makes the transform fail: " + nd.error);
+    const sp::VariantTransformResult none = sp::TransformGBufferNightHlsl({"xCityLOD__PSMultiLight", 0}, window_text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(none.ok && Count(none.hlsl, "oC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y));") == 1 && Count(none.hlsl, "saturate(iColor1") == 0, "a shader with no row keeps the draw's lit weight alone");
+  }
+  // the machinery on a made-up row: before, after, constants, and the ways an anchor can fail
+  {
+    const std::string body = "\tr12.xyz = r1.xyz;\n\tr7.z = r1.x + r2.y;\n\tr5.w = r7.z * r12.x;\n";
+    const std::string text = Shader(body);
+    const std::string lf = LfOnly(text);
+    const sp::NightAlbedoRow before{"xTest__PSMultiLight", sp::NightAlbedoSite::kBefore, "r7.z = r1.x + r2.y;", "r12.xyz", "a test"};
+    const sp::GBufferAlbedo a = sp::AnalyseGBufferNightAlbedoRow(text, before);
+    Check(a.found && a.captured && a.expression == "gbAlbedo" && a.lanes == "r12.xyz" && a.capture == "\tfloat3 gbAlbedo = r12.xyz;\n" && lf.substr(a.capture_at, 8) == "\tr7.z = ",
+          "a recipe before its anchor: the capture goes in front of the statement: '" + a.detail + "'");
+    const sp::NightAlbedoRow after{"xTest__PSMultiLight", sp::NightAlbedoSite::kAfter, "r7.z = r1.x + r2.y;", "r12.xyz", "a test"};
+    const sp::GBufferAlbedo b = sp::AnalyseGBufferNightAlbedoRow(text, after);
+    Check(b.found && b.captured && lf.substr(b.capture_at, 7) == "\tr5.w =" && b.capture_at > a.capture_at, "a recipe after its anchor: the capture goes on the next line");
+    const sp::NightAlbedoRow global{"xTest__PSMultiLight", sp::NightAlbedoSite::kGlobal, "", "DiffuseColor.xyz", "a test"};
+    const sp::GBufferAlbedo c = sp::AnalyseGBufferNightAlbedoRow(text, global);
+    Check(c.found && !c.captured && c.expression == "DiffuseColor.xyz" && c.capture.empty() && c.capture_at == std::string::npos, "a recipe of constants: no capture, the expression is written as it is");
+    const sp::NightAlbedoRow missing{"xTest__PSMultiLight", sp::NightAlbedoSite::kBefore, "r7.z = r1.x + r2.z;", "r12.xyz", "a test"};
+    const sp::GBufferAlbedo d = sp::AnalyseGBufferNightAlbedoRow(text, missing);
+    Check(!d.found && d.why_not.find("found 0 times") != std::string::npos, "an anchor that is not there: not found, for that reason (" + d.why_not + ")");
+    const sp::GBufferAlbedo e = sp::AnalyseGBufferNightAlbedoRow(Shader(body + body), before);
+    Check(!e.found && e.why_not.find("found 2 times") != std::string::npos, "an anchor found twice: not found, for that reason (" + e.why_not + ")");
+    const sp::GBufferAlbedo f = sp::AnalyseGBufferNightAlbedoRow(Shader("\tif (p0)\n\t{\n\t\tr7.z = r1.x + r2.y;\n\t}\n"), before);
+    Check(!f.found && f.why_not.find("top level") != std::string::npos, "an anchor inside a branch is not the top level's (" + f.why_not + ")");
+    Check(!sp::AnalyseGBufferNightAlbedoRow("float4 x;\n", before).found && !sp::AnalyseGBufferNightAlbedoRow("float4 x;\n", global).found, "no main: no recipe");
+    const sp::GBufferAlbedo h = sp::AnalyseGBufferNightAlbedoRow(CrlfOf(text), before);
+    Check(h.found && h.capture_at == a.capture_at && h.capture == a.capture, "CRLF line ends give the same recipe");
+  }
+  // the transform with a real recipe's name: the terrain's (before the statement), the traffic body's (constants); and an anchor that is not there
+  {
+    const sp::NightAlbedoRow* terrain = sp::FindGBufferNightAlbedoRow("xCityTerrain__PSMultiLight");
+    const std::string terrain_text = Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n\t" + std::string(terrain->anchor) + "\n\tr5.w = r7.z * r12.x;\n");
+    const sp::VariantShader shader{"xCityTerrain__PSMultiLight", 0};
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, terrain_text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(r.ok && Count(r.hlsl, "\tfloat3 gbAlbedo = r12.xyz;\n\t" + std::string(terrain->anchor)) == 1 && Count(r.hlsl, "oC2 = float4(GbAlbedoEncode(gbAlbedo), GbMaterialLit(g_GBufferMode.y) * saturate(iColor1.w));") == 1 &&
+              AdditiveError(terrain_text, r.hlsl).empty(),
+          "a shader with a recipe writes its albedo from the capture before the anchor, and only adds lines: " + r.error);
+    const sp::NightAnalysis a = sp::AnalyseGBufferNight(terrain_text, "xCityTerrain__PSMultiLight");
+    Check(a.found && a.recipe && a.albedo.found && a.albedo.captured, "the analysis with the shader's name finds the recipe");
+    const sp::NightAnalysis b = sp::AnalyseGBufferNight(terrain_text);
+    Check(b.found && !b.recipe && !b.albedo.found, "the analysis without a name looks for the diffuse texel only");
+    // the HLSL is not the one the recipe was written for: the variant is not built, never a quiet "no data"
+    const std::string other = Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n");
+    const sp::VariantTransformResult bad = sp::TransformGBufferNightHlsl(shader, other, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(!bad.ok && !bad.skip && bad.error.find("recipe") != std::string::npos, "an anchor that is not found makes the transform fail (not skip): " + bad.error);
+    // the same text under a name with no recipe is the old behaviour: a normal and the "no data" albedo
+    const sp::VariantShader plain{"xCityNothing__PSMultiLight", 0};
+    const sp::VariantTransformResult old = sp::TransformGBufferNightHlsl(plain, other, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(old.ok && Count(old.hlsl, "float3 gbAlbedo") == 0 && Count(old.hlsl, "oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1, "a shader with no recipe and no texel still writes the no data code");
+    // constants: no capture
+    const sp::VariantShader vehicle{"xAmbientVehicle__PSMultiLight", 0};
+    const std::string vehicle_text = Shader(std::string(kSunDot) + "\tr5.xyz = r1.xyz;\n");
+    const sp::VariantTransformResult v = sp::TransformGBufferNightHlsl(vehicle, vehicle_text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(v.ok && Count(v.hlsl, "float3 gbAlbedo") == 0 && Count(v.hlsl, "oC2 = float4(GbAlbedoEncode(float3(1.0f, 1.0f, 1.0f)), GbMaterialLit(g_GBufferMode.y));") == 1,
+          "a recipe of constants writes the expression itself: " + v.error);
+  }
+}
+
 void CheckIdentityCheck() {
   const std::string text = Shader("\tr0.xyz = r0.xyz * r1.www;\n" + std::string(kSunDot));
   const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(Night(), text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
@@ -523,7 +668,7 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
   std::printf("\n=== CENSUS of the night family on %s ===\n", folder.string().c_str());
   std::map<std::string, std::pair<int, int>> by_kind;  // kind -> (edited, left out)
   std::map<std::string, int> by_how, by_reason;
-  int edited = 0, left_out = 0, interpolants = 0, captured = 0, composed = 0, with_diffuse = 0, albedo_captured = 0, cross_checked = 0, identical = 0;
+  int edited = 0, left_out = 0, interpolants = 0, captured = 0, composed = 0, with_diffuse = 0, albedo_captured = 0, with_recipe = 0, recipe_captured = 0, with_occlusion = 0, cross_checked = 0, identical = 0;
   std::map<std::string, int> no_albedo_why;
   std::vector<std::string> no_albedo_names;
   std::map<std::string, std::string> albedo_lanes;
@@ -534,7 +679,7 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     const std::string text = ReadFile(file->path);
     const std::string kind = file->stem.ends_with("Interior") ? "PSMultiLightInterior" : file->stem.ends_with("Env") ? "PSMultiLightEnv" : "PSMultiLight";
     const sp::VariantShader shader{file->stem, 0};
-    const sp::NightAnalysis a = sp::AnalyseGBufferNight(text);
+    const sp::NightAnalysis a = sp::AnalyseGBufferNight(text, file->stem);
     const sp::VariantTransformResult alone = sp::ComposeStages(defs, chain::FeatureBit(sp::kFeatureGBuffer), shader, text);
     if (!a.found) {
       ++left_out;
@@ -557,7 +702,11 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     ++by_kind[kind].first;
     ++by_how[HowText(a.how)];
     (a.interpolant ? interpolants : captured)++;
-    if (a.albedo.found) {
+    with_occlusion += !a.occlusion.empty() && a.albedo.found;
+    if (a.albedo.found && a.recipe) {
+      ++with_recipe;  // GB-H2-COVER: the shader has no texel of the shape; its recipe gives the colour
+      recipe_captured += a.albedo.captured;
+    } else if (a.albedo.found) {
       ++with_diffuse;
       albedo_captured += a.albedo.captured;
       albedo_lanes[file->stem] = a.albedo.lanes;
@@ -575,7 +724,7 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     Check(Count(alone.hlsl, "oC1 : SV_Target1") == 1 && Count(alone.hlsl, "oC1 = GbRt1Encode(" + a.expression + ");") == 1 && Count(alone.hlsl, "float3 gbNormal = ") == (a.interpolant ? 0u : 1u),
           file->stem + ": one output, one write, " + (a.interpolant ? "no capture" : "one capture"));
     {
-      const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + a.albedo.expression + "), GbMaterialLit(g_GBufferMode.y));";
+      const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + a.albedo.expression + "), GbMaterialLit(g_GBufferMode.y)" + (a.occlusion.empty() ? std::string() : " * saturate(" + a.occlusion + ")") + ");";
       Check(Count(alone.hlsl, "oC2 : SV_Target2") == 1 && Count(alone.hlsl, "oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(alone.hlsl, albedo_call) == (a.albedo.found ? 1u : 0u) &&
                 Count(alone.hlsl, "float3 gbAlbedo = ") == (a.albedo.found && a.albedo.captured ? 1u : 0u),
             file->stem + ": RT2: one output, the no data write, " + (a.albedo.found ? (a.albedo.captured ? "the albedo from one capture" : "the albedo from the fetch's lanes") : "no albedo"));
@@ -605,13 +754,13 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
         ++composed;
         const std::string pair_identity = AdditiveError(hl_alone.hlsl, pair.hlsl);
         Check(pair_identity.empty(), file->stem + ": composed, the headlight's text is the game's with lines added: " + pair_identity);
-        const sp::NightAnalysis on_hl = sp::AnalyseGBufferNight(hl_alone.hlsl);
+        const sp::NightAnalysis on_hl = sp::AnalyseGBufferNight(hl_alone.hlsl, file->stem);
         Check(on_hl.found && on_hl.expression == a.expression && on_hl.interpolant == a.interpolant && on_hl.how == a.how, file->stem + ": the headlight's edits leave the normal where it was");
         Check(Count(pair.hlsl, "float4 g_HlHeader : packoffset(c38);") == 1 && Count(pair.hlsl, "uint4 g_GBufferMode : packoffset(c105);") == 1 && Count(pair.hlsl, "SharedConstants + 1680, 0x10)") == 1 &&
                   Count(pair.hlsl, "hlLight.") == Count(hl_alone.hlsl, "hlLight.") && Count(pair.hlsl, "oC1 = GbRt1Encode(" + a.expression + ");") == 1,
               file->stem + ": composed: the blocks are at 608 and 1680, the headlight's term and the G-buffer's write are in");
         // RT2 composed: the analysis runs on the text the headlight left, so the same anchor must be found there (the headlight does not touch the fetch or write its register)
-        const sp::GBufferAlbedo on_hl_albedo = sp::AnalyseGBufferAlbedo(hl_alone.hlsl);
+        const sp::GBufferAlbedo on_hl_albedo = on_hl.albedo;  // the texel's anchor or the recipe's statement, on the text the headlight left
         Check(on_hl_albedo.found == a.albedo.found && on_hl_albedo.lanes == a.albedo.lanes && on_hl_albedo.captured == a.albedo.captured,
               file->stem + ": composed: the headlight's edits leave the albedo's anchor where it was");
         Check(Count(pair.hlsl, "oC2 : SV_Target2") == 1 && Count(pair.hlsl, "GbAlbedoEncode(" + a.albedo.expression + ")") == (a.albedo.found ? 1u : 0u),
@@ -631,8 +780,9 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
   for (const auto& [kind, counts] : by_kind) std::printf("  %-22s edited %3d, left out %3d\n", kind.c_str(), counts.first, counts.second);
   for (const auto& [how, n] : by_how) std::printf("  normal found by the %-14s %3d\n", how.c_str(), n);
   std::printf("  read from the interpolants (no capture) %d, captured %d\n", interpolants, captured);
-  std::printf("  RT2: %d of the %d edited shaders have a DiffuseSampler texel for the albedo (%d read at the end of main, %d captured after the fetch); %d have none\n", with_diffuse, edited, with_diffuse - albedo_captured,
-              albedo_captured, edited - with_diffuse);
+  std::printf("  RT2: %d of the %d edited shaders have a DiffuseSampler texel for the albedo (%d read at the end of main, %d captured after the fetch); %d have a recipe (%d captured, %d constants); %d have none\n",
+              with_diffuse, edited, with_diffuse - albedo_captured, albedo_captured, with_recipe, recipe_captured, with_recipe - recipe_captured, edited - with_diffuse - with_recipe);
+  std::printf("  RT2.a: %d of the edited shaders multiply the lit weight by the baked occlusion the game multiplies its lights by (kGBufferNightOcclusionRows: %zu rows)\n", with_occlusion, sp::kGBufferNightOcclusionRowCount);
   for (const auto& [why, n] : no_albedo_why) std::printf("  no albedo: %3d  %s\n", n, why.c_str());
   for (const std::string& name : no_albedo_names) std::printf("      no albedo: %s\n", name.c_str());
   for (const auto& [why, n] : by_reason) std::printf("  left out: %3d  %s\n", n, why.c_str());
@@ -641,6 +791,50 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     std::printf("  RT3 class of the edited shaders (the table of GB-F1 by name; %d with no class):", unclassed);
     for (const auto& [cls, n] : by_class) std::printf(" %d:%d", cls, n);
     std::printf("\n");
+  }
+  // THE COVER RULE (GB-H2-COVER). Every shader the forward headlight variant edits is a writer of the G-buffer -- the night stage's normal AND an albedo -- except the shaders of
+  // kGBufferNightHeadlightExempt, which are held to their reasons. The deferred light pass lights only what the planes hold (RT2 = 0 is skipped), so a shader that drops out while the forward stage
+  // still lights it leaves the headlights of the pass darker than the forward ones there (the road, the terrain, the grass, the tints and the traffic body did, until the recipes): it fails here.
+  {
+    int headlight_edited = 0, covered_texel = 0, covered_recipe = 0, exempt_seen = 0;
+    std::vector<std::string> uncovered;
+    std::set<std::string> exempt_edited;
+    for (const Shader_* file : family) {
+      const std::string text = ReadFile(file->path);
+      const sp::VariantShader shader{file->stem, 0};
+      const sp::VariantTransformResult hl = sp::ComposeStages(defs, chain::FeatureBit(sp::kFeatureHeadlight), shader, text);
+      if (!hl.ok) continue;  // the forward stage does not edit it: nothing is lost where the pass has no light to match
+      ++headlight_edited;
+      const sp::NightAnalysis a = sp::AnalyseGBufferNight(text, file->stem);
+      if (const sp::NightHeadlightExempt* exempt = sp::FindGBufferNightHeadlightExempt(file->stem)) {
+        ++exempt_seen;
+        exempt_edited.insert(file->stem);
+        std::printf("EXEMPT    %-46s %s\n", file->stem.c_str(), std::string(exempt->reason).c_str());
+        if (exempt->reason == sp::kExemptEmissive) {
+          // lit weight 0 by the class: the light pass adds nothing to an emissive surface whatever its albedo is
+          const mcla::gpu::gbuffer::ShaderMaterial material = mcla::gpu::gbuffer::MaterialOfShaderName(file->stem);
+          Check(material.known && material.cls == mcla::gpu::gbuffer::SurfaceClass::kEmissive && material.lit == 0.0f, file->stem + ": the emissive exemption holds: the class table says emissive, lit weight 0");
+        } else {
+          Check(!a.found && a.why_not == sp::kGBufferNightSkipTangent, file->stem + ": the tangent space exemption holds: the night stage leaves it out for that reason (" + a.why_not + ")");
+        }
+      } else if (a.found && a.albedo.found) {
+        (a.recipe ? covered_recipe : covered_texel)++;
+      } else {
+        uncovered.push_back(file->stem + (a.found ? " (no albedo: " + a.albedo.why_not + ")" : " (no normal: " + a.why_not + ")"));
+      }
+    }
+    std::printf("\nHEADLIGHT COVER: the forward headlight stage edits %d shaders: %d have the G-buffer's normal and a diffuse texel, %d a recipe, %d are exempt, %zu are not covered\n", headlight_edited, covered_texel,
+                covered_recipe, exempt_seen, uncovered.size());
+    for (const std::string& name : uncovered) std::printf("      NOT COVERED: %s\n", name.c_str());
+    Check(uncovered.empty(), "every shader the forward headlight stage edits writes the G-buffer's normal and albedo (or is exempt for its reason): " + std::to_string(uncovered.size()) + " are not");
+    bool all_seen = true;
+    for (const sp::NightHeadlightExempt& row : sp::kGBufferNightHeadlightExempt) all_seen = all_seen && exempt_edited.contains(std::string(row.name));
+    Check(all_seen, "every exempt shader is one the forward headlight stage edits (a stale exemption is a hole nobody looks at)");
+    if (family.size() == 115) {
+      Check(headlight_edited == 58 && covered_texel == 41 && covered_recipe == 11 && exempt_seen == 6,
+            "the retail cover: 58 edited by the headlight = 41 with a texel + 11 recipes + 6 exempt (got " + std::to_string(headlight_edited) + " = " + std::to_string(covered_texel) + " + " +
+                std::to_string(covered_recipe) + " + " + std::to_string(exempt_seen) + ")");
+    }
   }
   Check(identical == edited, "every edited shader's colour is the game's");
   // The census pinned: the retail game's numbers (shaderpack/baseline/hlsl-rpf of 2026-11-20). A game or translator that is not the retail one says so here.
@@ -655,30 +849,58 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     // RT2 (GB-W1): 71 of the 100 edited shaders have a DiffuseSampler texel at its centre that yields x, y and z at the top level of main (51 of them capture it, the shader writes the register again);
     // the 29 that have none are the ones with no diffuse (the traffic car body, the glass, the neon and lamp lens tints), another diffuse (the road and the tunnel road fetch it as two lanes: a
     // luminance and something, the grass and the terrain splat three layers A, B, C by a channel map), or a tint of their own (the grime and the bump spec tints) -- GB-W1 follow ups
-    Check(with_diffuse == 71 && albedo_captured == 51, "the retail RT2 census: 71 shaders have the albedo (51 captured) (got " + std::to_string(with_diffuse) + " and " + std::to_string(albedo_captured) + ")");
+    Check(with_diffuse == 71 && albedo_captured == 51, "the retail RT2 census: 71 shaders have the albedo from a texel (51 captured) (got " + std::to_string(with_diffuse) + " and " + std::to_string(albedo_captured) + ")");
+    // GB-H2-COVER: the occlusion rows: every row is a shader of the retail family, edited, with an albedo (a row on a shader that writes no albedo would be dead), and the text has its write once
+    {
+      Check(with_occlusion == int(sp::kGBufferNightOcclusionRowCount), "the retail census: all " + std::to_string(sp::kGBufferNightOcclusionRowCount) + " occlusion rows are edited shaders with an albedo (got " + std::to_string(with_occlusion) + ")");
+      for (const sp::NightOcclusionRow& row : sp::kGBufferNightOcclusionRows) {
+        const Shader_* hit = nullptr;
+        for (const Shader_* file : family) {
+          if (file->stem == row.name) hit = file;
+        }
+        Check(hit != nullptr, std::string(row.name) + ": the occlusion row's shader is in the retail game");
+        if (hit == nullptr) continue;
+        const std::string text = ReadFile(hit->path);
+        Check(Count(text, std::string(sp::kNightOcclusionDeclaration)) == 1, std::string(row.name) + ": the shader declares iColor1 once");
+      }
+    }
+    // GB-H2-COVER: the recipes (gbuffer_night_albedo.h) are exactly the shaders of the table, each found with its anchor; the ones with a statement capture, the ones of constants do not (counted from the table itself)
+    {
+      int want_captured = 0;
+      for (const sp::NightAlbedoRow& row : sp::kGBufferNightAlbedoRows) want_captured += row.site != sp::NightAlbedoSite::kGlobal;
+      Check(with_recipe == int(sp::kGBufferNightAlbedoRowCount) && recipe_captured == want_captured,
+            "the retail RT2 census: the 11 recipes all fit the text (got " + std::to_string(with_recipe) + ", " + std::to_string(recipe_captured) + " captured)");
+      for (const sp::NightAlbedoRow& row : sp::kGBufferNightAlbedoRows) {
+        const Shader_* hit = nullptr;
+        for (const Shader_* file : family) {
+          if (file->stem == row.name) hit = file;
+        }
+        Check(hit != nullptr, std::string(row.name) + ": the recipe's shader is in the retail game");
+        if (hit == nullptr) continue;
+        const std::string text = ReadFile(hit->path);
+        const sp::NightAnalysis a = sp::AnalyseGBufferNight(text, row.name);
+        Check(a.found && a.recipe && a.albedo.found && a.albedo.lanes == row.expression, std::string(row.name) + ": the recipe fits and gives its expression (" + a.albedo.why_not + ")");
+        Check(!sp::AnalyseGBufferAlbedo(text).found, std::string(row.name) + ": the shader has no DiffuseSampler texel of the shape: the recipe shadows nothing");
+        if (row.site != sp::NightAlbedoSite::kGlobal) {
+          // the capture lands in main at the top level, and the statement it is read from is not written between a `before` capture and the anchor (the anchor line itself is the next statement)
+          const std::string lf = LfOnly(text);
+          Check(a.albedo.capture_at != std::string::npos && a.albedo.capture_at > lf.rfind("\nvoid main(") && Count(lf, std::string("\t") + std::string(row.anchor) + "\n") == 1,
+                std::string(row.name) + ": the anchor is one line at the top level of main");
+        }
+      }
+    }
     const std::set<std::string> want_no_albedo = {
-        "xAmbientVehicle__PSMultiLight",
-        "xCityGrass__PSMultiLight",
-        "xCityGrass__PSMultiLightInterior",
-        "xCityGrimeMetalTint__PSMultiLight",
         "xCityGrimeMetalTint__PSMultiLightInterior",
-        "xCityGrimeTintDecal__PSMultiLight",
         "xCityGrimeTintDecal__PSMultiLightInterior",
-        "xCityGrimeTint__PSMultiLight",
         "xCityGrimeTint__PSMultiLightInterior",
         "xCityLampGlassTint__PSMultiLight",
         "xCityLampGlassTint__PSMultiLightInterior",
         "xCityNeonTint__PSMultiLight",
         "xCityNeonTint__PSMultiLightInterior",
-        "xCityRoad__PSMultiLight",
         "xCityRoad__PSMultiLightEnv",
         "xCityRoad__PSMultiLightInterior",
-        "xCityTerrain__PSMultiLight",
-        "xCityTerrain__PSMultiLightInterior",
-        "xCityTunnelRoad__PSMultiLight",
         "xCityTunnelRoad__PSMultiLightEnv",
         "xCityTunnelRoad__PSMultiLightInterior",
-        "xPropBumpSpecTint__PSMultiLight",
         "xPropBumpSpecTint__PSMultiLightInterior",
         "xPropGlass__PSMultiLight",
         "xPropGlass__PSMultiLightInterior",
@@ -713,6 +935,7 @@ int main(int argc, char** argv) {
   CheckAnchors();
   CheckTransform();
   CheckAlbedoTransform();
+  CheckAlbedoRecipes();
   CheckIdentityCheck();
   CheckVariantDef();
   std::string helper;

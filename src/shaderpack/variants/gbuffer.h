@@ -81,7 +81,11 @@ namespace larecomp::shaderpack {
 // 7: both together (the merge of GB-G1 and GB-W2 in feat/gb-phase2): the car stage takes its plane count from kStagePlanes, so it writes oC3 too.
 // 8: the traffic and the pedestrians on top (GB-G2, gbuffer_cars.h: the traffic paint's albedo from the vertex stage, the traffic black matte's black albedo, the day pedestrian's normal from the vertex stage;
 //    kGBufferCarsVersion 3). GB-G2 alone stamped this 6 (on GB-G1's 5): the merge takes the next free number. A pack of 5, 6 or 7 is stale.
-inline constexpr uint32_t kGBufferVariantVersion = 8;
+// 9: the night stage's albedo recipes (gbuffer_night_albedo.h, GB-H2-COVER, kGBufferNightAlbedoVersion 1): the road, the tunnel road, the terrain, the grass, the tinted grime, grime decal and grime
+//    metal, the tinted prop and the traffic body write an albedo to RT2 where they wrote "no data" (the deferred headlights light them); no other shader's text changes. A pack of 8 is stale.
+// 10: the night stage's baked occlusion in RT2.a (kGBufferNightOcclusionRows, kGBufferNightAlbedoVersion 2): 52 shaders write the lit weight times the vertex alpha the game multiplies its lights by.
+//    A pack of 9 is stale.
+inline constexpr uint32_t kGBufferVariantVersion = 10;
 
 // The pixel shaders, by name (the group and the entry point, as the translator names its HLSL files). Found by name alone: the identities are whatever
 // the game's containers hold.

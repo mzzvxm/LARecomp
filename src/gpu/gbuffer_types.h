@@ -19,7 +19,9 @@
 //   RT1  normal    R16G16_UNORM   the WORLD normal, octahedral (hlsl/gbuffer_common.hlsli GbOctEncode). Cleared to 0 = "no data": a valid
 //                                 code is never (0, 0) (GbRt1Encode keeps that value free), so a consumer tests `any(rt1 > 0)`.
 //   RT2  albedo    R8G8B8A8_UNORM rgb = sqrt(albedo) (gamma 2: dark albedo keeps its steps), a = the lit weight (255: lit by the forward
-//                                 lights, 0: emissive or unlit; the deferred lights add nothing where it is 0). Cleared to 0.
+//                                 lights, 0: emissive or unlit; the deferred lights add nothing where it is 0). Cleared to 0. The night stage multiplies the draw's weight
+//                                 by the shader's own baked occlusion where the game multiplies its lights by it (the vertex alpha iColor1.w: shaderpack/variants/
+//                                 gbuffer_night_albedo.h, GB-H2-COVER), so the weight is "the share of the forward lights that reach the pixel": 0 still means no light.
 //   RT3  material  R8G8_UNORM     r = smoothness, g = the class (5 bits) and three flags (kMaterialFlag*), see MaterialWord. Cleared to 0.
 //
 // Phase 1 has RT1 only; RT2 and RT3 are in the interface so the encodings are settled once.
