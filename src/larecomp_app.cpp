@@ -1178,6 +1178,7 @@ void LarecompApp::FinishWindowCloseWork() {
   if (close_work_started_.exchange(true, std::memory_order_acq_rel)) return;
   larecomp::RequestBootBuildCancel();
   const auto started = std::chrono::steady_clock::now();
+  PauseMenuSavePendingSettings();  // a pause-menu change that the close interrupted (the QUIT and RESTART routes wrote it already: nothing happens)
   MclaWaitForSaves();  // a career save in flight finishes (10 s limit inside)
   LogAudioDropoutSummary();
   mc::cinematic::capture_audio::Abort();  // a take's sound holds the audio worker's callback at a gate: let it go before the SDK stops the worker

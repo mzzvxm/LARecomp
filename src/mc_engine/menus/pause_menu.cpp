@@ -4090,6 +4090,12 @@ extern const RowDynamics kDebugRendererDynamics = {.str_label = RendererLabel,
 
 // ── Public API ──────────────────────────────────────────────────────────
 
+// The game is ending by a way that did not go through a menu (the window's close, Alt+F4, a signal): a change made in a page that was
+// still open has not been written (MenuFormClosed writes when a page is left, QUIT and RESTART write before they close).
+void PauseMenuSavePendingSettings() {
+    if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
+}
+
 // RESTART GAME: as the QUIT form's YES, but the game is started again before this one closes
 // (restart.h); the new one waits for this one to be gone before it reads the settings or the saves.
 // If it can't be started, the game keeps running rather than quit without it.
@@ -5858,6 +5864,7 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
 }
 void PauseMenuLeaveSubmenu() {}
 void PauseMenuRestartGame() {}
+void PauseMenuSavePendingSettings() {}
 void PauseMenuFormsTick() {}
 void Hook_CapturePMContinue(PPCRegister& r3) {}
 bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4) { return false; }
