@@ -411,6 +411,10 @@ add_executable(larecomp_car_shadow_map_rules_test EXCLUDE_FROM_ALL car_shadow_ma
 # the camera out of a draw's bank, which draws are casters, the face culling and the pipeline key) likewise:
 #   cmake --build <dir> --target larecomp_local_shadow_rules_test, then run src/gpu/larecomp_local_shadow_rules_test (exit 0 = passed).
 add_executable(larecomp_local_shadow_rules_test EXCLUDE_FROM_ALL local_shadow_rules_test.cpp)
+# The headlight shadows' lookup (light_shadow_filter.h, the CPU twin of the lit shaders' HeadlightShadow: four gathers at the receiver's plane, contact hardening, the
+# fade at the tile's border) on ray cast maps of a road, a post, a kerb and a wall, against the first version's box, and the levels' sizes (HL-SHADOW-QUALITY):
+#   cmake --build <dir> --target larecomp_light_shadow_filter_test, then run src/gpu/larecomp_light_shadow_filter_test (exit 0 = passed).
+add_executable(larecomp_light_shadow_filter_test EXCLUDE_FROM_ALL light_shadow_filter_test.cpp)
 # The player's car as ray tracing structures (car_rt_scene_rules.h: the instance transform and the camera's z, the masks, the mesh clean-up, the
 # range allocator, the eviction policy, the check pass's statistics; given the src/gpu folder it also checks that hlsl/car_rt_check_cs.hlsl and
 # hlsl/car_rt_common.hlsli use the header's numbers) likewise:

@@ -1,7 +1,8 @@
 // Check of the forward headlight stage against the deferred local light pass (headlight_pass_rules.h; perf/LIGHT-UNIFY.md 6.3 and 11.2, package GB-H2): the switch's words and what each route does, the
 // retail census of the forward stage, the picture-identity rule on made-up pictures (equal, a little off, far off, noisy, too few pixels, coverage), the retirement gate, and the PIXEL IDENTITY: on
 // random lights, surfaces and shadow maps the pass's light (local_lights_rules.h PixelLightShadowed: the one law and the one lookup) equals the forward stage's (headlight_rig_rules.h LampScale,
-// ProjectToShadow, SoftShadow, the mean of a light's views: the CPU twins of the variant's text) to the last bits of a float, for the lights the frame holds at all three levels of LIGHT SHADOWS.
+// and light_shadow_filter.h ViewLit, the mean of a light's views: the CPU twins of the variant's text; the shadow's receiver is the surface's unit normal in both) to the last bits of a float, for the
+// lights the frame holds at all three levels of LIGHT SHADOWS.
 // With the `src` folder it also reads the sources: the wiring of the route in the rig, the pass and the pipelines, the setting, the debug row, the CMake line. A program of its own: no renderer,
 // no ReXGlue, no GPU, no game; it exits 0 when every check holds.
 //
@@ -309,10 +310,13 @@ Scene MakeScene(uint32_t cars, uint32_t lamp_cars, Lcg& rng) {
         LocalShadowView& v = s.frame.views[views];
         std::memset(&v, 0, sizeof(v));
         const float u0 = (views % 4) * 0.25f, v0 = (views / 4) * 0.5f;
-        v.world_to_shadow[0] = 0.025f; v.world_to_shadow[3] = u0 + 0.125f;
-        v.world_to_shadow[5] = 0.025f; v.world_to_shadow[7] = v0 + 0.25f;
-        v.world_to_shadow[10] = 0.01f; v.world_to_shadow[11] = 0.5f;
-        v.world_to_shadow[15] = 1.0f;
+        // a perspective view looking along +z from the origin (w = z, the unit axis in row 3, A times it in row 2: near plane 5, far plane 50, so a point's depth is A (1 - 5 / z)): the plane lookup
+        // reads the view the way the replay makes it (HL-SHADOW-QUALITY)
+        constexpr float kA = 50.0f / 45.0f;
+        v.world_to_shadow[0] = 0.125f / 0.7f; v.world_to_shadow[2] = u0 + 0.125f;
+        v.world_to_shadow[5] = 0.25f / 0.7f; v.world_to_shadow[6] = v0 + 0.25f;
+        v.world_to_shadow[10] = kA; v.world_to_shadow[11] = -kA * 5.0f;
+        v.world_to_shadow[14] = 1.0f;
         v.atlas_rect[0] = u0; v.atlas_rect[1] = v0; v.atlas_rect[2] = u0 + 0.25f; v.atlas_rect[3] = v0 + 0.5f;
         v.depth_bias = rng.Range(0.0004f, 0.003f);
         v.texel_size = 1.0f / 32.0f;
@@ -337,21 +341,24 @@ Scene MakeScene(uint32_t cars, uint32_t lamp_cars, Lcg& rng) {
   return s;
 }
 
-// The forward stage's visibility of light `c` at a point: the mean of its views' soft box shares (headlight.cpp HeadlightLight: viewA / viewB, `seen / views`), 1 with none.
-float ForwardVisibility(const Scene& s, uint32_t c, const float world[3]) {
+// The forward stage's visibility of light `c` at a point of the surface with the unit normal `n`: the mean of its views' lookups (headlight.cpp HeadlightLight: viewA / viewB, `seen / views`; each view
+// is HeadlightShadow, light_shadow_filter.h ViewLit its CPU twin: four gathers at the receiver's plane), 1 with none.
+float ForwardVisibility(const Scene& s, uint32_t c, const float world[3], const float n[3]) {
   if (s.count[c] == 0) {
     return 1.0f;
   }
   float seen = 0.0f, views = 0.0f;
   for (uint32_t e = 0; e < s.count[c]; ++e) {
     const LocalShadowView& v = s.local.views[s.first[c] + e];
-    float uv[2], depth = 0.0f;
-    float vis = 1.0f;
-    if (hr::ProjectToShadow(v, world, uv, &depth)) {
-      const float tx = uv[0] / ((v.atlas_rect[2] - v.atlas_rect[0]) * v.texel_size);
-      const float ty = uv[1] / ((v.atlas_rect[3] - v.atlas_rect[1]) * v.texel_size);
-      vis = hr::SoftShadow(tx, ty, [&](int ix, int iy) { return hr::ShadowTap(s.DepthAt(ix, iy), depth, v.depth_bias); });
-    }
+    const auto gather = [&](int ix, int iy) {
+      larecomp::gpu::shadow_filter::Quad q;
+      q.x = s.DepthAt(ix, iy + 1);
+      q.y = s.DepthAt(ix + 1, iy + 1);
+      q.z = s.DepthAt(ix + 1, iy);
+      q.w = s.DepthAt(ix, iy);
+      return q;
+    };
+    const float vis = larecomp::gpu::shadow_filter::ViewLit(v, world, n, gather);
     seen += vis;
     views += 1.0f;
   }
@@ -398,7 +405,7 @@ void PixelIdentityChecks() {
             surface.normal[i] = n[i];
           }
           const hr::Lamp lamp = LampOf(s.lights[c]);
-          const float vis = ForwardVisibility(s, c, world);
+          const float vis = ForwardVisibility(s, c, world, n);
           const float scale = hr::LampScale(lamp, surface, vis);
           float p[3];
           const float albedo[3] = {1.0f, 1.0f, 1.0f};

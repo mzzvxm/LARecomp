@@ -9,9 +9,12 @@
 //   the position   the main depth plane (the stored depth, 1 near, 0 far) and the camera in the buffer's header: view distance by the projection's rows (as the AO's apply), then the world
 //                  position by the camera's axes. The camera is the frame's own where the vertex constants hold it, else the last frame's (local_lights.cpp).
 //   the light      the GpuLight row of the draw's light (push.info.x) in the buffer (g_lights): hlsl/light_laws.hlsli decodes it and holds the three laws.
-//   the shadow     (GB-H2) a light with views of the shadow atlas (its ShadowRef: GpuLight packed1) is multiplied by the ONE lookup's visibility (hlsl/light_shadow_lookup.hlsli, the lit shaders' box
-//                  kernel: LSL_MODE_SURFACE): the frame's view table follows the lights in the buffer (LP_SHADOW_OFFSET), the atlas is a bindless depth plane read as one float (set 0), the
-//                  views of a light are averaged, the layers of a view multiplied, the share blended by the light's weight. Read only for a pixel the light reaches, after the term is known to be over 0.
+//   the shadow     (GB-H2) a light with views of the shadow atlas (its ShadowRef: GpuLight packed1) is multiplied by the ONE lookup's visibility (hlsl/light_shadow_lookup.hlsli, the lit shaders'
+//                  lookup: LSL_MODE_SURFACE, the 4 x 4 footprint read at the receiver's own plane with a contact hardening kernel: HL-SHADOW-QUALITY): the frame's view table follows the lights in
+//                  the buffer (LP_SHADOW_OFFSET), the atlas is a bindless depth plane read as one float (set 0), the views of a light are averaged, the layers of a view multiplied, the share
+//                  blended by the light's weight. Read only for a pixel the light reaches, after the term is known to be over 0. The plane's slope needs the surface's GEOMETRIC normal, which the
+//                  lookup takes from the depth plane's pixel quad (LpShadowNormal, the way the lit shaders take it from the derivatives of the world position): the G-buffer's normal is the
+//                  shading one (normal-mapped) and would tilt the plane the wrong way at a grazing angle.
 //
 // The pixel shader runs once per pixel whatever the host's MSAA level: the planes and the depth are read at the host sample that is the guest's sample 0 and the result is added to every
 // sample of the pixel (a one pixel fringe at silhouettes, as the AO's apply). LL_PASS_MS 1 reads Texture2DMS planes (host_pass_common.hlsli space 1), 0 plain textures (space 0).
@@ -40,8 +43,8 @@ ConstantBuffer<LocalLightPush> g_push : register(b0, space5);
 
 ByteAddressBuffer g_lights : register(t0, space4);
 
-// The atlas's size and the table's layers, read once from the table's header (main) and held for the seams below: a pixel that is lit by a shadowed light takes 4 to 16 taps of the atlas, and
-// asking the texture for its size each time would cost as much again.
+// The atlas's size and the table's layers, read once from the table's header (main) and held for the seams below: a pixel that is lit by a shadowed light takes 16 taps of the atlas for each
+// view (the 4 x 4 footprint), and asking the texture for its size each time would cost as much again.
 static uint LpAtlasW = 0u;
 static uint LpAtlasH = 0u;
 static uint LpAtlasLayers = 0u;
@@ -119,6 +122,53 @@ uint LslLayerOf(uint entry) {
   return LslLayerBits(LpAtlasLayers, entry);
 }
 
+// The stored depth at a pixel of the main view's depth plane, at the guest's sample 0 (0 outside the plane: Load returns zeros there, like the sky).
+float LpStoredAt(int2 p) {
+#if LL_PASS_MS
+  return g_textures_ms[g_push.slots.x].Load(p, g_push.info.z).r;
+#else
+  return g_textures[g_push.slots.x].Load(int3(p, 0)).r;
+#endif
+}
+
+// The world position of a pixel of the depth plane; false for the sky and for a pixel outside the plane.
+bool LpWorldAt(LpGlobals g, int2 p, out float3 world) {
+  world = float3(0.0f, 0.0f, 0.0f);
+  const float stored = LpStoredAt(p);
+  if (!(stored > 0.0f)) {
+    return false;
+  }
+  const float t = LpLinearDepth(stored, g.lin);
+  if (!(t < LP_SKY)) {
+    return false;
+  }
+  world = LpWorldPosition(g, float(p.x) + 0.5f, float(p.y) + 0.5f, t);
+  return true;
+}
+
+// The surface's GEOMETRIC unit normal at pixel p, turned to the camera: the lit shaders' rule (headlight.cpp HeadlightLight: cross(ddy(world), ddx(world)) of the pixel's 2 x 2 quad) taken
+// from the depth plane: the quad's top left pixel, its right and its lower neighbour. `fallback` (the G-buffer's normal) where a quad pixel is the sky or the plane's edge, or the quad is
+// degenerate. (local_lights_rules.h QuadNormal is the CPU twin.)
+float3 LpShadowNormal(LpGlobals g, int2 p, float3 world, float3 fallback) {
+  const int2 q = int2(p.x & ~1, p.y & ~1);
+  float3 w00;
+  float3 w10;
+  float3 w01;
+  if (!LpWorldAt(g, q, w00) || !LpWorldAt(g, q + int2(1, 0), w10) || !LpWorldAt(g, q + int2(0, 1), w01)) {
+    return fallback;
+  }
+  float3 n = cross(w01 - w00, w10 - w00);
+  const float len2 = dot(n, n);
+  if (!(len2 > 1.0e-14f)) {
+    return fallback;
+  }
+  n = n * rsqrt(len2);
+  if (dot(n, g.position - world) < 0.0f) {
+    n = -n;
+  }
+  return n;
+}
+
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 p = int2(position.xy);
 
@@ -172,7 +222,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
       LpAtlasW = head.z;
       LpAtlasH = head.w;
       LpAtlasLayers = g_lights.Load(LP_SHADOW_OFF_LAYERS);
-      add *= LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, atlas_slot, uint(LSL_MODE_SURFACE));
+      const float3 shadow_normal = LpShadowNormal(g, p, world, normal);
+      add *= LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, shadow_normal.x, shadow_normal.y, shadow_normal.z, atlas_slot, uint(LSL_MODE_SURFACE));
     }
   }
   if (!any(add > 0.0f)) {

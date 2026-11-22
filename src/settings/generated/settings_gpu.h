@@ -434,11 +434,11 @@ class GPUSettings final : public rex::SettingOwner {
     "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
   REX_SETTING(std::string, mcla_gpu_light_shadows, "auto", "Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; "
-    "this draws the scene's opaque objects again from the lights, depth only, into small maps (512 by 512 texels on medium and high, 1024 by 1024 on ultra), and the lights' light reads them. medium shadows your car's headlights and the nearest other car's, with one map for each car; high gives your car a map for each headlamp, "
+    "this draws the scene's opaque objects again from the lights, depth only, into small maps (768 by 768 texels on medium, 1024 by 1024 on high, 1280 by 1280 on ultra: a texel is 1 to 2 cm wide 10 m from the car), and the lights' light reads them. medium shadows your car's headlights and the nearest other car's, with one map for each car; high gives your car a map for each headlamp, "
     "so a pole in front of it casts a shadow from each of its two lamps, and the nearest other car still has one; ultra also shadows the next nearest car, gives all three cars a map for each lamp, "
     "and is sharper. off, medium, high, ultra or auto (the default): ultra on a fast graphics card, medium on a medium one, off on an integrated one. "
-    "It only runs while a headlight is lit, in the game view. Costs graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 MiB (medium), "
-    "6 MiB (high) or 48 MiB (ultra) of video memory. Live.", rex::Allowed("auto", "off", "medium", "high", "ultra"));
+    "It only runs while a headlight is lit, in the game view. Costs graphics card time and render thread time (the frame's opaque draws once more for each map) and 9 MiB (medium), "
+    "24 MiB (high) or 75 MiB (ultra) of video memory. Live.", rex::Allowed("auto", "off", "medium", "high", "ultra"));
 
   REX_SETTING(i32, mcla_gpu_headlight_shadow_test, 0, "Diagnostic: 1 makes a headlight shadow map from a light of its own at the camera (shining where the camera looks, 35 degrees wide, 40 m), "
     "whenever no car's headlight is lit, so that the maps can be looked at by day with mcla_gpu_headlight_shadow_view 1: the map from the camera's own "

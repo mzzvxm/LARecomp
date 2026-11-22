@@ -513,7 +513,7 @@ int main(int argc, char** argv) {
 
   // ---- 2b. the real pair: the headlight and the G-buffer on the shaders both edit (xCityDefault's night shader) ---------------------------------------
   // The chain applies the headlight's edits (feature 9) first and the G-buffer's (feature 10) on the text they leave: the headlight's block is at 608 and the G-buffer's follows it
-  // at 1280, each member once in each backend, both helpers before main, the term in the ambient sum and the second output; the text compiles to DXIL and SPIR-V, with and without
+  // at 1680, each member once in each backend, both helpers before main, the term in the ambient sum and the second output; the text compiles to DXIL and SPIR-V, with and without
   // the alpha test's spec constants (the twin: both stages have it). Only when the tree has both variants (each branch alone has one).
   {
     const sp::VariantDef* headlight = nullptr;
