@@ -137,6 +137,7 @@ constexpr OptInfo kOptions[] = {
     {"--view", false},     {"--file", false},        {"--record", false},      {"--rating", false},
     {"--photos", false},   {"--out", false},         {"--tables", false},      {"--token-stdin", true},
     {"--confirm", true},   {"--now", false},         {"--pretty", true},
+    {"--profile", false},  {"--saves", false},       {"--gamertag", false},    {"--identity-dir", false},
 };
 
 const OptInfo* FindOption(const std::string& name) {
@@ -152,6 +153,10 @@ std::set<std::string> AllowedOptions(RemoteSub sub) {
     };
     const bool network = sub != RemoteSub::kLbViews && sub != RemoteSub::kTournamentNext;
     if (network) add({"--server", "--relay", "--port", "--connect-timeout-ms", "--io-timeout-ms", "--deadline-ms"});
+    // The commands that know the player (their owner key, or their token) can read the token from a profile's key file.
+    if (sub == RemoteSub::kRmrMine || sub == RemoteSub::kRmrRate || sub == RemoteSub::kLbAround ||
+        sub == RemoteSub::kTournamentStandings || sub == RemoteSub::kTournamentRewards)
+        add({"--profile", "--saves", "--gamertag", "--identity-dir"});
     switch (sub) {
         case RemoteSub::kRmrTable: add({"--min-ratings"}); break;
         case RemoteSub::kRmrTop: add({"--min-ratings", "--start", "--count", "--owner", "--photos", "--photo-slots"}); break;
@@ -854,15 +859,31 @@ struct Identity {
     uint64_t owner = 0;  // the first --owner, else the token's
 };
 
-// The token is never printed, logged or put in a document. It arrives on stdin (or from the check as `token_text`).
-bool ReadIdentity(const RemoteArgs& a, const std::string* token_text, Identity& id, std::string& error) {
-    if (a.token_stdin) {
+struct IdentityFailure {
+    std::string code;     // the document's error.code
+    std::string message;  // one plain sentence, never the token
+    int exit_code = 2;
+};
+
+// The token is never printed, logged or put in a document. It is read from the profile's key file (--profile: the same file
+// the game and the identity commands use, read-only, so the game may be running), or arrives on stdin (or from the check as
+// `token_text`).
+bool ReadIdentity(const RemoteArgs& a, const std::string* token_text, Identity& id, IdentityFailure& failure) {
+    if (a.profile.Names()) {
+        ProfileFiles files;
+        ProfileProblem problem;
+        if (!ResolveProfileFiles(a.profile, files, problem) || !LoadRmrToken(files, id.token, problem)) {
+            failure = {problem.code, problem.message, problem.CommandLine() ? 2 : 1};
+            return false;
+        }
+        id.have_token = true;
+    } else if (a.token_stdin) {
         std::string text;
         if (token_text) {
             text = *token_text;
         } else {
             if (LARECOMP_ISATTY(LARECOMP_FILENO(stdin))) {
-                error = "--token-stdin reads the token from a pipe, not from a console";
+                failure = {"token", "--token-stdin reads the token from a pipe, not from a console", 2};
                 return false;
             }
             char buf[128] = {};
@@ -870,7 +891,7 @@ bool ReadIdentity(const RemoteArgs& a, const std::string* token_text, Identity& 
         }
         if (!ParseToken(text, id.token)) {
             std::fill(text.begin(), text.end(), '\0');
-            error = "the token on stdin is not 32 hexadecimal digits";
+            failure = {"token", "the token on stdin is not 32 hexadecimal digits", 2};
             return false;
         }
         std::fill(text.begin(), text.end(), '\0');
@@ -1516,21 +1537,25 @@ const char* RemoteUsageText() {
         "\n"
         "  rmr table [--min-ratings N]                     how many rides are ranked\n"
         "  rmr top [--start N] [--count N] [--min-ratings N] [--owner HEX] [--photos DIR [--photo-slots 1|2]]\n"
-        "  rmr mine --owner HEX | --token-stdin [--photos DIR [--photo-slots 1|2]]\n"
+        "  rmr mine --owner HEX | <player> [--photos DIR [--photo-slots 1|2]]\n"
         "  rmr photo --file ID[,ID] --out DIR              fetch photos (JPEG, kept as <id>-<size>.jpg)\n"
-        "  rmr rate --record ID --rating 1..10 --confirm --token-stdin   CHANGES the player's rating of a ride\n"
+        "  rmr rate --record ID --rating 1..10 --confirm <player>   CHANGES the player's rating of a ride\n"
         "  lb views [--tables FILE|DIR]                        the stats views the game's online_tables.json lists\n"
         "  lb size --view N[,N] [--tables FILE|DIR]            rows in each view\n"
         "  lb top --view N [--start N] [--count N] [--owner HEX] [--tables FILE|DIR]\n"
-        "  lb around --view N --owner HEX | --token-stdin [--span N] [--tables FILE|DIR]\n"
+        "  lb around --view N --owner HEX | <player> [--span N] [--tables FILE|DIR]\n"
         "  lb owners --view N --owner HEX[,HEX] [--tables FILE|DIR]\n"
         "  tournament current                              this week's race, car rule, prizes, start and end\n"
-        "  tournament standings [--start N] [--count N] [--owner HEX | --token-stdin] [--view N] [--tables FILE|DIR]\n"
+        "  tournament standings [--start N] [--count N] [--owner HEX | <player>] [--view N] [--tables FILE|DIR]\n"
         "  tournament next [--weeks N]                     the default rotation of the next weeks (no server)\n"
-        "  tournament rewards --token-stdin                the player's prizes\n"
+        "  tournament rewards <player>                     the player's prizes\n"
         "\n"
-        "--token-stdin reads the player's 32-digit token from stdin (never from the command line). --owner is the\n"
-        "public owner key (16 hex digits).\n";
+        "<player> is where the player's Rate My Ride token comes from, one of:\n"
+        "  --profile ID [--gamertag NAME]          the profile's key file (the game's and the identity commands')\n"
+        "  --saves FOLDER --gamertag NAME          the same, the profile found through its saves folder\n"
+        "      [--identity-dir D]                  another folder of key files than the game's\n"
+        "  --token-stdin                           the 32-digit token on stdin (never on the command line)\n"
+        "--owner is the public owner key (16 hex digits); it needs no token.\n";
 }
 
 // ---- command line ----------------------------------------------------------------------------------------------------
@@ -1577,6 +1602,13 @@ RemoteParse ParseRemoteArgs(const std::vector<std::string>& v) {
         long long n = 0;
         if (name == "--pretty") a.pretty = true;
         else if (name == "--token-stdin") a.token_stdin = true;
+        else if (name == "--profile" || name == "--saves" || name == "--gamertag" || name == "--identity-dir") {
+            if (value.empty()) return fail(name + " needs a value");
+            (name == "--profile" ? a.profile.profile
+             : name == "--saves" ? a.profile.saves
+             : name == "--gamertag" ? a.profile.gamertag
+                                    : a.profile.identity_dir) = value;
+        }
         else if (name == "--confirm") a.confirm = true;
         else if (name == "--server" || name == "--relay") {
             std::string host;
@@ -1657,11 +1689,16 @@ RemoteParse ParseRemoteArgs(const std::vector<std::string>& v) {
         }
     }
 
+    // The player's token: one source. A profile is an id, or a saves folder with a gamertag; --identity-dir alone is none.
+    if (a.profile.Any() && !a.profile.Names())
+        return fail("name the profile: --profile <id>, or --saves <folder> with --gamertag <name>");
+    if (a.profile.Names() && a.token_stdin) return fail("give the token from a profile or from stdin, not both");
+
     // What each command needs.
     auto need = [&](bool have, const char* what) { return have ? std::string() : cmd + " needs " + what; };
     std::string missing;
     switch (a.sub) {
-        case RemoteSub::kRmrMine: missing = need(!a.owners.empty() || a.token_stdin, "--owner or --token-stdin"); break;
+        case RemoteSub::kRmrMine: missing = need(!a.owners.empty() || a.HasToken(), "--owner or --profile (or --token-stdin)"); break;
         case RemoteSub::kRmrPhoto:
             missing = need(!a.files.empty(), "--file");
             if (missing.empty()) missing = need(!a.out_dir.empty(), "--out");
@@ -1669,7 +1706,7 @@ RemoteParse ParseRemoteArgs(const std::vector<std::string>& v) {
         case RemoteSub::kRmrRate:
             missing = need(a.record != 0, "--record");
             if (missing.empty()) missing = need(a.rating != 0, "--rating");
-            if (missing.empty()) missing = need(a.token_stdin, "--token-stdin (the player's token)");
+            if (missing.empty()) missing = need(a.HasToken(), "--profile (or --token-stdin): the player's token");
             if (missing.empty())
                 missing = need(a.confirm, "--confirm (it changes the player's rating of that ride on the server)");
             break;
@@ -1678,9 +1715,9 @@ RemoteParse ParseRemoteArgs(const std::vector<std::string>& v) {
         case RemoteSub::kLbOwners: missing = need(!a.views.empty(), "--view"); break;
         case RemoteSub::kLbAround:
             missing = need(!a.views.empty(), "--view");
-            if (missing.empty()) missing = need(!a.owners.empty() || a.token_stdin, "--owner or --token-stdin");
+            if (missing.empty()) missing = need(!a.owners.empty() || a.HasToken(), "--owner or --profile (or --token-stdin)");
             break;
-        case RemoteSub::kTournamentRewards: missing = need(a.token_stdin, "--token-stdin (the player's token)"); break;
+        case RemoteSub::kTournamentRewards: missing = need(a.HasToken(), "--profile (or --token-stdin): the player's token"); break;
         default: break;
     }
     if (!missing.empty()) return fail(missing);
@@ -1702,10 +1739,10 @@ std::string RunRemote(const RemoteArgs& a, int* exit_code, const std::string* to
     if (exit_code) *exit_code = 0;
 
     Identity id;
-    std::string error;
-    if (!ReadIdentity(a, token_text, id, error)) {
-        if (exit_code) *exit_code = 2;
-        return RenderError(RemoteGroupName(a.group), "token", error, a.pretty);
+    IdentityFailure failure;
+    if (!ReadIdentity(a, token_text, id, failure)) {
+        if (exit_code) *exit_code = failure.exit_code;
+        return RenderError(RemoteGroupName(a.group), failure.code, failure.message, a.pretty);
     }
 
     Session s(a);

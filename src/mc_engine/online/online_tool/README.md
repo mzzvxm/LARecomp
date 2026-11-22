@@ -8,6 +8,8 @@ The rmr, lb and tournament commands use the game's own Rate My Ride and leaderbo
 
 The checks are `--target larecomp_online_tool_test` (the server list and relays: `online_tool_test.cpp`) and `--target larecomp_online_tool_remote_test` (rmr, lb, tournament: `online_tool_remote_test.cpp`). Neither needs a game or a real server; they talk only to 127.0.0.1. Never point a check or a test of the launcher at a real server, a real player's token or a real nick.
 
+The player's online identity (gamertag, key, backup, recovery code, rename) has its own commands, `larecomp_online_tool identity ...`: see [README-identity.md](README-identity.md).
+
 ## For the launcher
 
 ### The server list address is a setting, never built in
@@ -21,9 +23,10 @@ Start it with `ProcessStartInfo.ArgumentList` (no shell, no quoting: the argumen
 | Exit code | Meaning |
 |---|---|
 | 0 | The document on stdout is the answer. A list or a relay that does not answer is still an answer (the document says so). |
-| 2 | The command line was wrong. stdout has a document with `"ok": false` and `error.code` `"usage"`. |
+| 1 | The command line was right but the command could not be done: the `identity` commands (README-identity.md) and the commands that read a token from a profile's key file (`--profile`, below) when that profile has no key, an unreadable key or no token. stdout has a document with `"ok": false` and an `error.code` that says which. |
+| 2 | The command line was wrong. stdout has a document with `"ok": false` and `error.code` `"usage"` (for rmr, lb and tournament also `"token"`, `"bad_profile"` and `"bad_gamertag"`). |
 
-Do not run it more often than the game does: every 8 seconds at most, never while the Online page is hidden and never while the game is running (the relay answers each address 120 queries a second; one call asks a relay about 20). The `servers` command writes nothing except the icon files below, and reads or sends no key or token. The rmr, lb and tournament commands are described in their own section below: they write only the photo files they are told to, and only `rmr rate` changes anything on a server.
+Do not run it more often than the game does: every 8 seconds at most, never while the Online page is hidden and never while the game is running (the relay answers each address 120 queries a second; one call asks a relay about 20). The `servers` command writes nothing except the icon files below, and reads or sends no key or token. The rmr, lb and tournament commands are described in their own section below: they write only the photo files they are told to, and only `rmr rate` changes anything on a server. The `identity` commands do read and write the identity files, under the rules in README-identity.md.
 
 ### Commands
 
@@ -35,6 +38,7 @@ larecomp_online_tool servers [--master H[:P]] [--servers a,b] [--current H[:P]] 
 larecomp_online_tool rmr table|top|mine|photo|rate ...        (section "Rate My Ride, leaderboards, tournament")
 larecomp_online_tool lb views|size|top|around|owners ...
 larecomp_online_tool tournament current|standings|next|rewards ...
+larecomp_online_tool identity <command> ...                    (README-identity.md)
 larecomp_online_tool --help
 ```
 
@@ -63,12 +67,12 @@ Every document starts with `ok` (boolean), `command` (string) and `schema` (inte
 `--version`:
 
 ```json
-{"ok":true,"command":"version","schema":1,"tool":"larecomp_online_tool","version":"0.1.0","game_label":"PATCH 10 - PREVIEW 2"}
+{"ok":true,"command":"version","schema":1,"tool":"larecomp_online_tool","version":"0.3.0","game_label":"PATCH 10 - PREVIEW 2"}
 ```
 
-`--protocol`: `tool`, `version`, `commands` (array of command names the tool has: `["servers","rmr","lb","tournament"]`), `subcommands` ({group: [words]}), `writes` (the commands that change a player's data on a server and need `--confirm`: `["rmr rate"]`), `relay` (`magic` `"MC02"`, `version` 5, `messages` {name: type number}, `bytes` {name: size}: the sizes of the messages on the wire), `limits` (the game's timeouts and caps for the server list, the icon limits, the default ports), `remote` (the Rate My Ride + leaderboards server: `default_port` 31002, the game's `connect_timeout_ms` 3000 and `io_timeout_ms` 15000, `max_requests_per_call`, and per group `rmr`, `lb`, `tournament` its magic, path, page sizes, photo cap, week constants, slot ranges and the prize names).
+`--protocol`: `tool`, `version`, `commands` (array of command names the tool has: `["servers","rmr","lb","tournament","identity"]`), `subcommands` ({group: [words]}), `identity_actions` (the identity commands: `["show","check","backup",...]`), `writes` (the commands that change a player's data on a server and need `--confirm`: `["rmr rate"]`), `relay` (`magic` `"MC02"`, `version` 5, `messages` {name: type number}, `bytes` {name: size}: the sizes of the messages on the wire), `limits` (the game's timeouts and caps for the server list, the icon limits, the default ports), `remote` (the Rate My Ride + leaderboards server: `default_port` 31002, the game's `connect_timeout_ms` 3000 and `io_timeout_ms` 15000, `max_requests_per_call`, `token_sources` (`["profile","stdin"]`: where a `<player>` token can come from; a tool without `"profile"` takes it on stdin only), and per group `rmr`, `lb`, `tournament` its magic, path, page sizes, photo cap, week constants, slot ranges and the prize names).
 
-The two timeouts differ on purpose, and both are the game's own: the browser reads the server list (`POST /servers`) with 1.5 s to connect and 3 s for the answer (`browser_query.h`, and `browser_client.cpp` before that), and the identity cycle's calls to the master's nick registry (`POST /identity/v1`) use 4 s and 8 s (`identity_client.cpp`). `servers` follows the browser; the `identity` commands (a later package) follow the identity cycle.
+The two timeouts differ on purpose, and both are the game's own: the browser reads the server list (`POST /servers`) with 1.5 s to connect and 3 s for the answer (`browser_query.h`, and `browser_client.cpp` before that), and the identity cycle's calls to the master's nick registry (`POST /identity/v1`) use 4 s and 8 s (`identity_client.cpp`). `servers` follows the browser; the `identity` commands follow the identity cycle.
 
 `servers`:
 
@@ -142,20 +146,20 @@ These commands ask the Rate My Ride + leaderboards server (`larecomp_rmr_server`
 ```
 larecomp_online_tool rmr table  [--min-ratings N]
 larecomp_online_tool rmr top    [--start N] [--count N] [--min-ratings N] [--owner HEX] [--photos DIR [--photo-slots 1|2]]
-larecomp_online_tool rmr mine   (--owner HEX | --token-stdin) [--photos DIR [--photo-slots 1|2]]
+larecomp_online_tool rmr mine   (--owner HEX | <player>) [--photos DIR [--photo-slots 1|2]]
 larecomp_online_tool rmr photo  --file ID[,ID] --out DIR
-larecomp_online_tool rmr rate   --record ID --rating 1..10 --confirm --token-stdin        (changes the player's rating)
+larecomp_online_tool rmr rate   --record ID --rating 1..10 --confirm <player>             (changes the player's rating)
 
 larecomp_online_tool lb views   [--tables FILE|DIR]                                           (no server)
 larecomp_online_tool lb size    --view N[,N] [--tables FILE|DIR]
 larecomp_online_tool lb top     --view N [--start N] [--count N] [--owner HEX] [--tables FILE|DIR]
-larecomp_online_tool lb around  --view N (--owner HEX | --token-stdin) [--span N] [--tables FILE|DIR]
+larecomp_online_tool lb around  --view N (--owner HEX | <player>) [--span N] [--tables FILE|DIR]
 larecomp_online_tool lb owners  --view N --owner HEX[,HEX...] [--tables FILE|DIR]
 
 larecomp_online_tool tournament current
-larecomp_online_tool tournament standings [--start N] [--count N] [--owner HEX | --token-stdin] [--view N] [--tables FILE|DIR]
+larecomp_online_tool tournament standings [--start N] [--count N] [--owner HEX | <player>] [--view N] [--tables FILE|DIR]
 larecomp_online_tool tournament next      [--weeks N]                                     (no server)
-larecomp_online_tool tournament rewards   --token-stdin
+larecomp_online_tool tournament rewards   <player>
 ```
 
 Where the server is (the game's rule, `rmr_client.cpp`'s `ResolveTarget`): `--server H[:P]` is the game's `rmr_server` setting; `--relay H[:P]` is `mcla_online_server`, of which only the host counts (the relay's own UDP port is not the server's); `--port N` is `rmr_server_port` (31002). `--server` wins when both are given. With neither the document says `server.state` `"not_set"` and nothing is asked. The game's local store (no server, online off) is not something the tool reads.
@@ -168,7 +172,8 @@ Where the server is (the game's rule, `rmr_client.cpp`'s `ResolveTarget`): `--se
 | `--start N`, `--count N` | The first rank (1-based) and how many: rides 1 to 50 (default 10: the game's page), board rows 1 to 100 (default 10, 100 for `tournament standings`). |
 | `--min-ratings N` | A ride is ranked from this many ratings; default 3, the number the game sends. |
 | `--owner HEX` | An owner key: 16 hexadecimal digits, as the documents print them. It is public (a hash of the player's token, in every record), so it is safe to keep and to pass. `lb owners` takes up to 100 separated by commas. |
-| `--token-stdin` | The player's 32-digit Rate My Ride token is on stdin, one line. It is never on a command line. See the secret below. |
+| `--profile ID`, `--saves DIR --gamertag NAME`, `--identity-dir DIR` | `<player>`, where the player's Rate My Ride token comes from: the profile's key file, the one the game and the `identity` commands use. `--profile` is the profile's id (16 hex digits, or `name_<gamertag>`); `--saves` with `--gamertag` finds the id in `<saves>\<gamertag>\profile.xuid` (the launcher knows both); `--identity-dir` is another folder of key files than the game's. Read-only, so the game may be running. See the secret below. |
+| `--token-stdin` | `<player>`, the other way: the 32-digit token is on stdin, one line. It is never on a command line. Not together with a profile. |
 | `--confirm` | `rmr rate` only: the player means it. Without it the command is a usage error and nothing is sent. |
 | `--photos DIR` | `rmr top`, `rmr mine`: keep the rides' photos in `DIR` (created). `--photo-slots 1` (default) fetches the first photo of each ride, `2` both. |
 | `--file ID[,ID]`, `--out DIR` | `rmr photo`: Rate My Ride file ids (8 digits: the `file_id` of a ride's photos) and the folder; up to 16 files. |
@@ -197,7 +202,7 @@ What each command asks, so the launcher knows the cost:
 
 A call makes at most 40 requests, one after another (no retry), and stops starting any after `--deadline-ms`; `server.state` is then `"limit"` and what was gathered is in the document (photos not reached are `"unavailable"`). A call takes about one round trip per request on a normal link: give the process a timeout of about 90 seconds and the tool `--io-timeout-ms 5000` for a page that should feel quick. The server has no rate limit; do not call more often than the game does (the Online page's own refresh, 8 seconds at most, never while the page is hidden or the game is running).
 
-**The secret.** The game sends the player's Rate My Ride token in every request, in clear, over plain HTTP: whoever is on the path can lift it and rate and post as the player. So the tool sends it only where a request needs it: `rmr rate` and `tournament rewards`. The other commands that take `--token-stdin` (`rmr mine`, `lb around`, `tournament standings`) use it only to know the player's public owner key (`--owner` does the same without the secret) and send an all-zero token. The token is never printed, never in a document, an error message or an exit status; a bad token on stdin is `error.code` `"token"`, exit 2, and the text is not echoed. Send it only to the server the player chose, never to the default list. Reading the token from the identity key store (`--profile`) comes with the identity commands, which are a separate change; until then the launcher hands it over on stdin.
+**The secret.** The game sends the player's Rate My Ride token in every request, in clear, over plain HTTP: whoever is on the path can lift it and rate and post as the player. So the tool sends it only where a request needs it: `rmr rate` and `tournament rewards`. The other commands that take a `<player>` (`rmr mine`, `lb around`, `tournament standings`) use it only to know the player's public owner key (`--owner` does the same without the secret) and send an all-zero token. The token is never printed, never in a document, an error message or an exit status. With `--profile` (or `--saves` and `--gamertag`) the tool reads it from the profile's key file with the game's own code (`../identity/identity_core.cpp`: the DPAPI seal, the file format), so the launcher never holds it and never passes it on; a profile that cannot give one is `error.code` `"no_key"` (no key file: start the game once with that profile), `"key_unreadable"` (another Windows user's file, or damaged), `"no_token"` (the key has none yet: the game makes it the first time it uses Rate My Ride or the leaderboards) or `"profile_not_found"` (no `profile.xuid` in that saves folder), all exit 1, and `"bad_profile"` or `"bad_gamertag"` (an id or a name that could name another file), exit 2; none of them asks the server anything. The same profile options, and the same ways to name a profile, are the `identity` commands' (README-identity.md, "Naming the profile"). With `--token-stdin` a bad token on stdin is `error.code` `"token"`, exit 2, and the text is not echoed. Send the token only to the server the player chose, never to the default list.
 
 All documents start with `ok`, `command`, `schema` and `sub` (the word after the command), then `server`:
 
@@ -214,7 +219,7 @@ All documents start with `ok`, `command`, `schema` and `sub` (the word after the
 }
 ```
 
-`server.state`: `"not_set"` (no `--server`/`--relay`), `"ok"`, `"unreachable"` (connect refused, bad HTTP, body over the game's 1 MB cap), `"timed_out"`, `"http_error"` (any HTTP status but 200; `http_status` says which), `"no_service"` (the server answered 404 on `/lb/v1`: an older `larecomp_rmr_server` without leaderboards; the game then uses its local store), `"bad_answer"` (200 but not an answer: wrong magic, truncated, too many records, a tournament file that is not the game's), `"refused"` (the server answered with an error code: `err` is the game's Sake code, 1 invalid or not allowed, 7 not allowed, 10 no such ride or file, 12 unknown, 13 time-out), `"limit"` (the request budget or `--deadline-ms`). Like `servers`, a server that does not answer is still an answer: exit 0 and every other field empty or `null`. Exit code 2 is a wrong command line or a bad token, with `"ok": false` and `error.code` `"usage"` or `"token"`.
+`server.state`: `"not_set"` (no `--server`/`--relay`), `"ok"`, `"unreachable"` (connect refused, bad HTTP, body over the game's 1 MB cap), `"timed_out"`, `"http_error"` (any HTTP status but 200; `http_status` says which), `"no_service"` (the server answered 404 on `/lb/v1`: an older `larecomp_rmr_server` without leaderboards; the game then uses its local store), `"bad_answer"` (200 but not an answer: wrong magic, truncated, too many records, a tournament file that is not the game's), `"refused"` (the server answered with an error code: `err` is the game's Sake code, 1 invalid or not allowed, 7 not allowed, 10 no such ride or file, 12 unknown, 13 time-out), `"limit"` (the request budget or `--deadline-ms`). Like `servers`, a server that does not answer is still an answer: exit 0 and every other field empty or `null`. Exit code 2 is a wrong command line or a bad token, with `"ok": false` and `error.code` `"usage"`, `"token"`, `"bad_profile"` or `"bad_gamertag"`; exit code 1 is a profile whose files give no token (above).
 
 `rmr table`: `min_ratings`, `ranked` (the count, `null` when the server did not answer).
 
@@ -250,7 +255,7 @@ All documents start with `ok`, `command`, `schema` and `sub` (the word after the
 
 `kind` (of the view; from `--tables`, so `"unknown"` without it) is `"time"` for a race-time board, `"score"` for a board whose rating is a sum or the last value, else `"unknown"`. A time board is the game's own shape (its XVC2, views 13 to 500; `../tournament_schedule.h`, `kTimeBoardTimeAttr`): the rating is the NEGATED time aggregated by max (so highest first is fastest first, the rows need no re-sorting) and the time itself is an int64 column aggregated by min (`time_attr`, 2 in the game). On a time board every row has `"time"`: the best time (the value of that column; for a row written without it the negated rating; `null` when neither is there) in `time_unit` (`"ms"`, see the CHECK). A launcher shows `time`, not the negative rating. Views 1 to 12 are score boards (the rating is a sum). `lb around` and the tournament standings use the same fields.
 
-`--tables FILE|DIR`: the game writes `online_tables.json` into its log folder (`../online_tables_core.h`); a folder stands for the file in it, so the launcher can pass `<game>\logs`: the title's stats views and their columns (property id, attribute, aggregation rule) read from the player's own install at run time. With it a board's `view` says whether the game knows the view (`known`) and lists the columns `{attr, prop (8 hex digits), type, agg}`, where `agg` is `last`, `sum`, `min` or `max`. The dump has no view names today (its own CHECK), so `name` is `null` and the launcher shows the numbers; a later dump with a `"name"` on a view is shown as it is. A missing or damaged file is a `tables.state`, never a failure of the command. Nothing of the game is in the repository: the file only exists on a PC that has the game.
+`--tables FILE|DIR`: the game writes `online_tables.json` into its log folder (`../online_tables_core.h`); a folder stands for the file in it, so the launcher can pass `<game>\logs`: the title's stats views and their columns (property id, attribute, aggregation rule) read from the player's own install at run time. With it a board's `view` says whether the game knows the view (`known`) and lists the columns `{attr, prop (8 hex digits), type, agg}`, where `agg` is `last`, `sum`, `min` or `max`. The check reads the file with the game's own writer (`online_tables::ToJson`), so the two cannot drift apart. The dump has no view names today (its own CHECK), so `name` is `null` and the launcher shows the numbers; a later dump with a `"name"` on a view is shown as it is. A missing or damaged file is a `tables.state`, never a failure of the command. Nothing of the game is in the repository: the file only exists on a PC that has the game.
 
 `tournament current`: `tournament` (or `null` when the server did not answer):
 
@@ -294,14 +299,14 @@ larecomp_relay_server  --bind 127.0.0.1 --port 31000
 
 ### What the tool does not do (yet)
 
-It does not read or write the identity key or `larecomp.toml`, does not touch the master's nick registry, does not upload or buy rides, does not write leaderboard rows, and does not fetch mods (the relay's mods manifest and files are plain HTTP on `mods.http_port`: `GET /mods/manifest`, `GET /mods/file/<mod>/<path>`; the launcher's Mods page does that). The identity commands come in a later change.
+`servers` does not read or write the identity key, the Rate My Ride token or `larecomp.toml`, does not touch the master's nick registry, and does not fetch mods (the relay's mods manifest and files are plain HTTP on `mods.http_port`: `GET /mods/manifest`, `GET /mods/file/<mod>/<path>`; the launcher's Mods page does that). The `identity` commands are the ones that touch the key and the nick registry (README-identity.md). The rmr, lb and tournament commands do not upload or buy rides and do not write leaderboard rows; of the key file they read only the Rate My Ride token, and only when told which profile (`--profile`, see above). They do not read or write `larecomp.toml`.
 
 ## Building it by hand
 
-With a build directory, `cmake --build <dir> --target larecomp_online_tool` (and `larecomp_online_tool_test`, `larecomp_online_tool_remote_test`). With no build directory, on Windows (clang or llvm-mingw, from this folder):
+With a build directory, `cmake --build <dir> --target larecomp_online_tool` (and `larecomp_online_tool_test`, `larecomp_online_tool_remote_test`, `larecomp_online_tool_identity_test`). With no build directory, on Windows (clang or llvm-mingw, from this folder):
 
 ```
-clang++ -O2 -std=c++20 online_tool_main.cpp online_tool.cpp online_tool_remote.cpp ../server_browser/browser_query.cpp ../relay_info.cpp ../rate_my_ride/rmr_net.cpp ../rate_my_ride/rmr_protocol.cpp ../leaderboards/lb_protocol.cpp ../tournament_schedule.cpp -lws2_32 -lshell32 -o larecomp_online_tool.exe
+clang++ -O2 -std=c++23 -D_CRT_SECURE_NO_WARNINGS online_tool_main.cpp online_tool.cpp online_tool_remote.cpp identity_commands.cpp game_guard.cpp profile_ref.cpp ../server_browser/browser_query.cpp ../relay_info.cpp ../rate_my_ride/rmr_net.cpp ../rate_my_ride/rmr_protocol.cpp ../leaderboards/lb_protocol.cpp ../tournament_schedule.cpp ../identity/identity_core.cpp ../identity/identity_net.cpp ../identity/identity_rename.cpp ../../../profile/larecomp_profile_store.cpp -x c++ ../../../../thirdparty/monocypher/monocypher.c -lws2_32 -lshell32 -lcrypt32 -o larecomp_online_tool.exe
 ```
 
-(On Linux: the same without `-lws2_32 -lshell32`, with `-pthread`. The sockets are plain POSIX there, but the game's online play itself is Windows only.) The remote check adds `online_tool_remote_test.cpp`, `../rate_my_ride/rmr_store.cpp`, `../leaderboards/lb_store.cpp` and `../tournament_awards.cpp` and drops `online_tool_main.cpp` (its header comment has the line); it prints every document it makes when `LARECOMP_ONLINE_TOOL_TEST_DUMP` is set.
+(On Linux: the same without `-lws2_32 -lshell32 -lcrypt32` and `-D_CRT_SECURE_NO_WARNINGS`, with `-pthread`. The sockets are plain POSIX there, but the game's online play itself is Windows only.) The remote check adds `online_tool_remote_test.cpp`, `../rate_my_ride/rmr_store.cpp`, `../leaderboards/lb_store.cpp` and `../tournament_awards.cpp` and drops `online_tool_main.cpp` (its header comment has the line); it prints every document it makes when `LARECOMP_ONLINE_TOOL_TEST_DUMP` is set.

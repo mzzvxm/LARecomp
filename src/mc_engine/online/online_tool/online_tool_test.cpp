@@ -6,9 +6,14 @@
 //   cmake --build <build dir> --target larecomp_online_tool_test     (CMakeLists.txt)
 //   <build dir>/larecomp_online_tool_test
 //
-// or, with no build directory at all (Windows):
-//   clang++ -std=c++23 online_tool_test.cpp online_tool.cpp ../server_browser/browser_query.cpp ../relay_info.cpp
-//           ../rate_my_ride/rmr_net.cpp -lws2_32 -o online_tool_test.exe
+// or, with no build directory at all (Windows): the files of the tool (the clang++ line of README.md, "Building it
+// by hand", without online_tool_main.cpp) plus this file:
+//   clang++ -std=c++23 -D_CRT_SECURE_NO_WARNINGS online_tool_test.cpp online_tool.cpp online_tool_remote.cpp
+//           identity_commands.cpp game_guard.cpp profile_ref.cpp ../server_browser/browser_query.cpp ../relay_info.cpp
+//           ../rate_my_ride/rmr_net.cpp ../rate_my_ride/rmr_protocol.cpp ../leaderboards/lb_protocol.cpp
+//           ../tournament_schedule.cpp ../identity/identity_core.cpp ../identity/identity_net.cpp
+//           ../identity/identity_rename.cpp ../../../profile/larecomp_profile_store.cpp
+//           -x c++ ../../../../thirdparty/monocypher/monocypher.c -lws2_32 -lcrypt32 -o online_tool_test.exe
 //
 // What it pins:
 //   - the golden sizes and field offsets of every message (a byte of difference and an old relay is misread);
