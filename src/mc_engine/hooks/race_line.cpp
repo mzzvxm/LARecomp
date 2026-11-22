@@ -51,6 +51,7 @@
 #include <vector>
 
 #include "../cinematic/capture_mode.h"
+#include "gpu/live_text.h"
 #include "larecomp_log.h"
 #include "race_line_native.h"
 #include "settings/larecomp_settings.h"
@@ -345,16 +346,22 @@ void Verdict(Pass p, const uint8_t* base, uint32_t r5, const CheckBuffers& buf, 
 //     the four blocks in order r3, r4, r5, r6
 constexpr uint32_t kLen3 = 25424, kLen4 = 8780, kLen5 = 5376, kLen6 = 21600;
 
+// race_line_record is a string cvar that the menu's thread may write while the pool's threads run jobs, and a plain read of a string cvar can tear against
+// that write (gpu/live_text.h says why): the jobs read it through a LiveText, which keeps the text in one atomic word set by the cvar's change callback.
+mcla::gpu::LiveText& RecordPath() {
+    static mcla::gpu::LiveText text("race_line_record");
+    return text;
+}
+
 std::mutex g_record_mutex;
 FILE* g_record_file = nullptr;
 bool g_record_failed = false;
 uint32_t g_recorded = 0;
 std::atomic<uint64_t> g_job_number{0};
 
-void Record(const uint8_t* base, uint32_t r3, uint32_t r4, uint32_t r5, uint32_t r6, uint64_t job_number) {
+void Record(const uint8_t* base, const std::string& path, uint32_t r3, uint32_t r4, uint32_t r5, uint32_t r6, uint64_t job_number) {
     const int every = larecomp::settings::race_line_record_every.Get();
     const int limit = larecomp::settings::race_line_record_count.Get();
-    const std::string path = larecomp::settings::race_line_record.Get();
     if (path.empty() || limit <= 0) return;
     if (every > 1 && (job_number % static_cast<uint64_t>(every)) != 0) return;
     if (!race_line::PlainBlock(r3, kLen3) || !race_line::PlainBlock(r4, kLen4) || !race_line::PlainBlock(r5, kLen5) || !race_line::PlainBlock(r6, kLen6)) return;
@@ -422,13 +429,14 @@ extern "C" REX_FUNC(rex_sub_8254DEA0) {
 extern "C" REX_FUNC(rex_sub_82171078) {
     // The job body (runs on the pool's threads): only the debug paths do anything here.
     const bool stats = larecomp::settings::race_line_stats.Get();
-    const bool record = !larecomp::settings::race_line_record.Get().empty();
+    const std::string record_path = RecordPath().Get();  // once for this job (a live change takes effect at the next job)
+    const bool record = !record_path.empty();
     if (!stats && !record) {
         __imp__rex_sub_82171078(ctx, base);
         return;
     }
     const uint64_t number = g_job_number.fetch_add(1, std::memory_order_relaxed);
-    if (record) Record(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, number);
+    if (record) Record(base, record_path, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, number);
     const int64_t t0 = NowNs();
     __imp__rex_sub_82171078(ctx, base);
     if (stats) {
