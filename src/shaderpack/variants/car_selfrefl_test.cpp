@@ -98,7 +98,7 @@ void RunOnFixture() {
         "the local result follows the cube map data");
   // The ray of version 4 (src/gpu/car_selfrefl_rules.h has the same arithmetic, which car_selfrefl_rules_test.cpp checks): the
   // numbers in the helper are the ones of that header. Version 5 adds the host's ray traced image in front of the march, version 6 reads it with a 3x3 B-spline.
-  Check(sp::kCarSelfReflVariantVersion == 6, "the variant's version is 6 (the stamp rebuilds the pack's paint)");
+  Check(sp::kCarSelfReflVariantVersion == 8, "the variant's version is 8 (the stamp rebuilds the pack's paint)");
   Check(Count(text, "CarReflNoise") == 0 && Count(text, "g_CarReflB.w") == 0 && Count(text, "more.w") == 2,
         "no per-pixel noise: the trace reads no noise frame, the constant's w is the share of the points that take the whole hit");
   Check(Count(text, "[unroll]") == 2 && Count(text, "[loop]") == 1,
@@ -144,8 +144,22 @@ void RunOnFixture() {
         "agreement; without the flag version 4's march is the whole answer");
   Check(Contains(text, "known >= 0.5 * geometry") && Contains(text, "const float code = abs(t.a);") && Contains(text, "(t.a < 0.0) ? wg * wt : 0.0") &&
             Contains(text, "1.0 - smoothstep(0.5 * tolerance, tolerance, abs(h.a - depth))"),
-        "the lookup's rules are the ones of car_rt_refl_rules.h: the sign is a hidden hit, the texels of another surface are left out, half "
+        "the lookup's rules are the ones of car_rt_refl_rules.h: the sign is a hit on another car (version 8), the texels of another surface are left out, half "
         "the matching texels must have data");
+  // Version 8 (RT-HIT-SHADING-4): the clear coat's layer (car_rt_hit_rules.h CoatLayerFresnel, CoatLayerAmount, CoatLayerMix, the same arithmetic) and the debug views 6 and 7.
+  Check(Contains(text, "static const float kCarReflCoatF0 = 0.04;") && Contains(text, "static const float kCarReflCoatPower = 5.0;") && Contains(text, "static const float kCarReflCoatMax = 0.6;") &&
+            Contains(text, "const float fresnel = min(kCarReflCoatF0 + (1.0 - kCarReflCoatF0) * pow(saturate(1.0 - hit.nv), kCarReflCoatPower), kCarReflCoatMax);") &&
+            Contains(text, "return saturate(hit.coat) * fresnel;") && Contains(text, "return lerp(paint, hit.colour, CarReflCoatAmount(hit));"),
+        "version 8: the layer is lerp(paint, the car's colour, fresnel x the share of the hit on another car), Schlick with F0 0.04, power 5, at most 0.6");
+  Check(Contains(text, "if ((g_CarReflC.w & 2u) == 0u || g_CarReflA.x < 1.5 || hit.coat <= 0.0)") && Contains(text, "oC0.xyz = CarReflCoat(oC0.xyz, carRefl);") &&
+            text.find("oC0.xyz = CarReflCoat(oC0.xyz, carRefl);") < text.find("CarReflDebug(carRefl, iTexCoord4.w)"),
+        "version 8: the layer is switched by the constants' flag bit 1, only in mode 2 and only where there is a hit on another car; it follows the paint's last write and comes before the debug view");
+  Check(Contains(text, "result.coat = result.hit * rt.car;") && Contains(text, "result.nv = nv;") && Contains(text, "r.car = (weight > 1e-5) ? saturate(car / weight) : 0.0;"),
+        "version 8: the layer's share is the hit's weight times the share of it with the sign (the lookup's car), the fresnel's N.V is the paint's own");
+  Check(Contains(text, "if (view == 6u)") && Contains(text, "if (view == 7u)") && Contains(text, "return hit.colour * CarReflCoatAmount(hit);"),
+        "version 8: the debug views 6 (the layer's amount) and 7 (what it adds)");
+  Check(Contains(text, "static const float kCarReflAmountViewGain = 64.0;") && Contains(text, "return float3(amount, amount, amount) * (unit * kCarReflAmountViewGain);"),
+        "RT-HIT-SHADING-6: the debug view 6 writes the amount 64 times the target's unit (rthit4's pictures showed it at the unit as codes 2 to 4: no ramp could be read off them)");
   Check(Contains(text, "if (rt.use > 0.5)") && text.find("if (rt.use > 0.5)") < text.find("CarReflSum sum = (CarReflSum)0;"),
         "an answer from the image returns before the march's loop");
   Check(Contains(text, "if (view == 5u)") && Contains(text, "float rt;"), "the debug view 5 and the result's field for it");
