@@ -625,13 +625,29 @@ struct FrameFacts {
 };
 inline constexpr uint32_t kNeededPlanes = 7;  // normal, albedo and material
 
+// The G-buffer's planes are made at the size of the guest's main colour target, and the guest pads that target: the picture's 1280x720 is drawn into a 1280x736 target (the height is a whole number of
+// the EDRAM's tile rows), so at a render scale of 0.65 the planes are 832x478 while the render size (the picture's share of the target) is 832x468, and at 1 they are 1280x736 against 1280x720. The draws'
+// viewport starts at the target's top-left corner, so pixel (x, y) of the planes is pixel (x, y) of the render size's images and the padding is the extra rows below and columns to the right: the guide pass
+// reads the render size's part of them. The first RR run (chain-rr, 2026-11-21) took the padding for a size mismatch in every RR arm, D3D12 and Vulkan, and RR never ran. The planes cover the render size when they are at least as
+// large in both directions and the surplus is the padding, never more than kGBufferPadMax pixels or an eighth of the render size (a plane that is much larger is another view's: a reflection or a map).
+inline constexpr uint32_t kGBufferPadMax = 128;
+constexpr bool GBufferCoversRenderSize(const uint32_t gbuffer[2], const uint32_t render[2]) {
+  for (int axis = 0; axis < 2; ++axis) {
+    if (render[axis] == 0 || gbuffer[axis] < render[axis]) return false;
+    const uint32_t pad = gbuffer[axis] - render[axis];
+    const uint32_t eighth = render[axis] / 8;
+    if (pad > kGBufferPadMax || pad > eighth) return false;
+  }
+  return true;
+}
+
 enum class Gate : uint8_t { kOpen, kNoGBuffer, kPlanesMissing, kSizeMismatch, kCutscene, kPauseView };
 constexpr const char* GateText(Gate g) {
   switch (g) {
     case Gate::kOpen: return "RR can take this frame";
     case Gate::kNoGBuffer: return "the frame has no G-buffer";
     case Gate::kPlanesMissing: return "the G-buffer lacks one of the normal, albedo and material planes";
-    case Gate::kSizeMismatch: return "the G-buffer is not the render size";
+    case Gate::kSizeMismatch: return "the G-buffer does not cover the render size (smaller, or larger by more than the guest's padding)";
     case Gate::kCutscene: return "a cutscene frame";
     case Gate::kPauseView: return "the pause, garage or map view";
   }
@@ -642,7 +658,7 @@ inline Gate FrameGate(const FrameFacts& f) {
   if (f.pause_view) return Gate::kPauseView;
   if (!f.gbuffer_published) return Gate::kNoGBuffer;
   if ((f.planes_valid & kNeededPlanes) != kNeededPlanes) return Gate::kPlanesMissing;
-  if (f.gbuffer_size[0] != f.render_size[0] || f.gbuffer_size[1] != f.render_size[1]) return Gate::kSizeMismatch;
+  if (!GBufferCoversRenderSize(f.gbuffer_size, f.render_size)) return Gate::kSizeMismatch;
   return Gate::kOpen;
 }
 

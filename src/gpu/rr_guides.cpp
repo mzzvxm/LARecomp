@@ -221,7 +221,8 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   }
   const uint32_t width = in.render_size[0];
   const uint32_t height = in.render_size[1];
-  // The frame gate (dlss_rr_rules.h): the planes of this frame's G-buffer must be there, whole, at the render size.
+  // The frame gate (dlss_rr_rules.h): the planes of this frame's G-buffer must be there, whole, and cover the render size. They are a few rows larger than it (the guest pads its main colour target:
+  // 832x478 planes for an 832x468 render size, 1280x736 for 1280x720), from the same top-left corner, and the shader reads the render size's part of them (it loads by pixel, never by a 0..1 coordinate).
   const gbuffer::GBufferFrame& frame = gbuffer_->frame();
   rr::FrameFacts facts;
   facts.gbuffer_published = frame.valid != 0;
