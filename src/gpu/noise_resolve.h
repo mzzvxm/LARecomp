@@ -82,6 +82,40 @@ inline float StaleKeep(float stale, float from, float to) {
 inline float ConeHistoryWeight(uint32_t frames) { return std::min(kConeHistoryWeight, 1.0f - 1.0f / float(frames + 2u)); }
 
 // ---------------------------------------------------------------------------
+// how long the histories' images live (NOISE-FOLLOW, perf/NOISE-REVIEW.md S2 / CHECK 2)
+// ---------------------------------------------------------------------------
+// The histories exist only on the frames where no temporal upscaler runs, but an upscaler session has plain frames too: the first frame after a switch between the play and the pause / map view, the frames
+// before the upscaler's context is ready. Making and giving back the images on each of them (the contact image's two, the shafts' two, the cone's two: 97 MiB at 4K) is a texture creation hitch and a VRAM spike
+// at every pause toggle. So an image whose history is not wanted ONLY because an upscaler runs stays for kHistoryKeepFrames frames of its effect's own passes in a row without one (the next plain frame finds it
+// and starts from the frame as it is: the gap rule of each history says the content is stale), then goes back. A setting that turned the resolve off, a picture size that changed, and an effect that cannot run
+// give the images back at once, as before. Each effect holds one HistoryLifetime and asks it once a frame, in the place that makes the images.
+inline constexpr uint32_t kHistoryKeepFrames = 1200;   // 20 s at 60 fps, 5 s at 240 fps: the pause menu's toggles and the map are seconds apart, a long drive with an upscaler on is minutes
+enum class HistoryImages : uint8_t {
+  kMake,     // the resolve runs this frame: make the images (or keep them if they are the size the plan wants)
+  kKeep,     // it does not, only because a temporal upscaler runs: leave the images as they are
+  kRelease,  // it does not: give them back (nothing held makes this a no-op)
+};
+struct HistoryLifetime {
+  uint32_t idle = 0;   // frames in a row the images were held and not wanted, only because an upscaler ran
+  // `wanted`: the history's pass runs this frame. `upscaler_gap`: it does not, and the only reason is that a temporal upscaler runs (the setting is on, the effect can run). `held`: the images exist.
+  // `size_ok`: the images are the size this frame's plan wants.
+  HistoryImages Frame(bool wanted, bool upscaler_gap, bool held, bool size_ok) {
+    if (wanted) {
+      idle = 0;
+      return HistoryImages::kMake;
+    }
+    if (!held || !upscaler_gap || !size_ok) {
+      idle = 0;
+      return HistoryImages::kRelease;
+    }
+    if (idle < kHistoryKeepFrames) {
+      ++idle;
+    }
+    return idle >= kHistoryKeepFrames ? HistoryImages::kRelease : HistoryImages::kKeep;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // what the histories hold (memory) at a picture size, for the logs and the owner's optimisation pass
 // ---------------------------------------------------------------------------
 // The contact shadows' history: two R16G16_FLOAT images (visibility, linear depth) at the contact image's size (the picture's, or half of it where the old rule says so), and, where the filter was inside the
