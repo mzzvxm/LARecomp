@@ -6,7 +6,8 @@
 // The default is every interface (0.0.0.0), the same as before this option: a server somebody hosts for other
 // players must be reachable from outside. --bind is for the opposite wish: a server that stays on one adapter. The
 // test trio runs on --bind 127.0.0.1 (nothing reaches it from the network, and Windows Firewall has nothing to ask
-// about); a host with several adapters can pin a server to its LAN or VPN address.
+// about); a host with several adapters can pin a server to its LAN or VPN address. (The relay's HTTP side, UDP port + 1, follows
+// the address only when it is a 127.x one: with any other address it listens on every interface, as it always did.)
 //
 // Order: --bind, then LARECOMP_BIND, then every interface. A value that is given but wrong stops the server with
 // a message; it never falls back to every interface (a typo must not open the port wider than asked).

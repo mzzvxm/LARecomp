@@ -1591,8 +1591,10 @@ int main(int argc, char** argv) {
   //                       or: larecomp_relay_server [bind_ip] [port]      (the older form)
   //   bind_ip : which local network to listen on. "0.0.0.0" (default) = ALL
   //             interfaces -- normal, and what works for a public IP, playit.gg
-  //             or Hamachi. Give a specific LAN/Hamachi IP only to restrict it
-  //             to that one adapter; --bind 127.0.0.1 keeps the relay (and its
+  //             or Hamachi. Give a specific LAN/Hamachi IP only to restrict the
+  //             relay's UDP port to that one adapter (its HTTP port, port + 1,
+  //             stays on every interface unless the address is 127.x, as it
+  //             always did); --bind 127.0.0.1 keeps the relay (and its
   //             dashboard) on this machine, which is what a local test wants:
   //             nothing reaches it from the network and Windows Firewall has
   //             nothing to ask. LARECOMP_BIND in the environment does the same
@@ -1742,6 +1744,9 @@ int main(int argc, char** argv) {
   LogInfo("bind: %s%s, from %s\n", bind_ip.c_str(),
           bind_net == htonl(INADDR_ANY) ? " (every interface)" : (ntohl(bind_net) >> 24) == 127 ? " (this machine only)" : "",
           bind_source.c_str());
+  if (bind_net != htonl(INADDR_ANY) && (ntohl(bind_net) >> 24) != 127)
+    LogInfo("note: the relay's HTTP side (mods, the token-gated dashboard; TCP %u) still listens on every interface, as before: "
+            "only a 127.x address pins it\n", unsigned(port) + 1u);
 
   // Allocator state lives next to the exe, so it is the same file however the
   // relay is started (double click, a .bat, a shortcut with another cwd).
