@@ -41,7 +41,9 @@
 // RT2 (package GB-W1, shaderpack/variants/gbuffer_albedo.h: the albedo and the lit weight): the stage declares a third output, `out float4 oC2 : SV_Target2` (gbuffer_rules.h kStagePlanes
 // is RT1, RT2 and RT3), and writes after the normal `oC2 = float4(GbAlbedoEncode(<the shader's DiffuseSampler texel>), GbMaterialLit(<the draw's material word>))`. The texel is found by its own
 // anchor (AnalyseGBufferAlbedo, the first fetch of the texture at the texel's centre that yields x, y and z) and read at the end of main, or captured right after the fetch when the shader
-// writes its register again (`float3 gbAlbedo = r6.xzw;`), the same rule as the normal's. A shader with no such fetch writes the "no data" code (all zero) to RT2. The edits only add lines.
+// writes its register again (`float3 gbAlbedo = r6.xzw;`), the same rule as the normal's. A shader with no such fetch writes the "no data" code (all zero) to RT2, EXCEPT the 11 shaders that have a
+// RECIPE (gbuffer_night_albedo.h, GB-H2-COVER: the road, the terrain, the grass, the tints and the traffic body, which the forward headlight stage lights): their surface colour is a register after
+// a statement the table names, or a constant, and is captured / written the same way. The edits only add lines.
 // RT3 (package GB-W2, shaderpack/variants/gbuffer_material_plane.h: the smoothness, the class and the flags): a fourth output, `out float2 oC3 : SV_Target3`, and after the albedo
 // `oC3 = GbMaterialRt3(<the draw's material word>)` under GB_MODE_WRITE_MATERIAL (else the "no data" code). The word needs nothing from the shader's text, so every shader of the stage
 // writes it, the ones with no albedo too. The write block comes from one function (NightWriteBlock in gbuffer_night.cpp).
@@ -53,6 +55,7 @@
 
 #include "shaderpack/variant_pack.h"
 #include "shaderpack/variants/gbuffer_albedo.h"
+#include "shaderpack/variants/gbuffer_night_albedo.h"
 #include "shaderpack/variants/gbuffer_material_plane.h"
 
 namespace larecomp::shaderpack {
@@ -86,11 +89,13 @@ struct NightAnalysis {
   std::string capture;           // the line to insert there, indentation and line end included
   int line = -1;                 // the term's line, counted from `void main(` (0): for the census
   std::string detail;            // the census' words: where the normal comes from
-  GBufferAlbedo albedo;          // RT2: the shader's diffuse texel (gbuffer_albedo.h); !albedo.found when it has none (RT2 then gets the "no data" code)
+  GBufferAlbedo albedo;          // RT2: the shader's diffuse texel (gbuffer_albedo.h), or its recipe's colour (gbuffer_night_albedo.h); !albedo.found when it has none (RT2 then gets the "no data" code)
+  bool recipe = false;           // the shader has a recipe in kGBufferNightAlbedoRows (the albedo is the recipe's; when its anchor is not found the transform fails instead of writing "no data")
 };
 
-// The text's normal (pure; public for tests and the census). `hlsl` may have any line ends; offsets are into the text with LF line ends.
-NightAnalysis AnalyseGBufferNight(std::string_view hlsl);
+// The text's normal (pure; public for tests and the census). `hlsl` may have any line ends; offsets are into the text with LF line ends. `name` (the group and the entry point) says which
+// albedo recipe applies, if the shader has one (kGBufferNightAlbedoRows: GB-H2-COVER); without it only the diffuse texel is looked for.
+NightAnalysis AnalyseGBufferNight(std::string_view hlsl, std::string_view name = {});
 
 // The stage's text transform for one shader of the family (pure). `hlsli_text` is gbuffer_common.hlsli. Skips a shader that is not in the family or has no normal.
 VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, std::string_view hlsl, std::string_view hlsli_text, const StageContext& ctx);

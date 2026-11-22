@@ -183,7 +183,7 @@ std::string LaneList(const Found& f, bool as_interpolant) {
 // The analysis
 // ---------------------------------------------------------------------------
 
-NightAnalysis AnalyseGBufferNight(std::string_view hlsl) {
+NightAnalysis AnalyseGBufferNight(std::string_view hlsl, std::string_view name) {
   NightAnalysis out;
   const std::string text = NormalizeNewlines(hlsl);
   const size_t main_at = text.rfind("\nvoid main(");
@@ -419,6 +419,11 @@ NightAnalysis AnalyseGBufferNight(std::string_view hlsl) {
   out.how = found.how;
   out.line = int(found.line);
   out.albedo = AnalyseGBufferAlbedo(text);  // RT2: the diffuse texel (a shader without one writes the "no data" code there)
+  if (const NightAlbedoRow* row = name.empty() ? nullptr : FindGBufferNightAlbedoRow(name)) {
+    // the shader has no texel of that shape: its recipe says where its colour is (gbuffer_night_albedo.h); it takes the place of what the texel analysis found, which is nothing on the retail text
+    out.recipe = true;
+    out.albedo = AnalyseGBufferNightAlbedoRow(text, *row);
+  }
   if (all_pristine) {
     out.interpolant = true;
     out.expression = LaneList(found, true);
@@ -477,12 +482,14 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
   while (!helper.empty() && IsSpace(helper.back())) helper.pop_back();
   if (helper.empty()) return fail("the helper text (gbuffer_common.hlsli) is empty");
 
-  const NightAnalysis found = AnalyseGBufferNight(text);
+  const NightAnalysis found = AnalyseGBufferNight(text, shader.name);
   if (!found.found) {
     result.skip = true;
     result.error = found.why_not;
     return result;
   }
+  // A shader with a recipe is promised an albedo: when its anchor is not there the HLSL is not the one the recipe was written for, and the variant is not built (never a quiet "no data").
+  if (found.recipe && !found.albedo.found) return fail("the albedo recipe does not fit this text: " + found.albedo.why_not);
   std::string error;
 
   // The interpolants the expression reads must be declared once, as the translator makes them.
