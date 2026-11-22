@@ -543,7 +543,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   flags.max_iterations = numbers.max_iterations;
   flags.view = uint32_t(view_);
   push.Set(pk::kFlags, ssr::PackFlags(flags));
-  push.Set(pk::kFrame, uint32_t(frames_));
+  // The noise's frame number, and bit 31 for the first version's noise (the A/B: mcla_gpu_ssr_blue_noise false; hlsl/ssr_common.hlsli THE NOISE).
+  push.Set(pk::kFrame, (uint32_t(frames_) & ~pk::kFrameLegacyNoise) | (larecomp::settings::mcla_gpu_ssr_blue_noise.Get() ? 0u : pk::kFrameLegacyNoise));
   push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));   // the low half the depth chain's level 0, the high half (pk::kStencil) the depth target's stencil plane, for the vehicle a hit is on (GB-I2)
   push.SetFloat(pk::kTanX, sf.camera.tan_half_fov[0]);
   push.SetFloat(pk::kTanY, sf.camera.tan_half_fov[1]);

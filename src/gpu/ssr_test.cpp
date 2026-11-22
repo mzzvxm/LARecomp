@@ -27,6 +27,8 @@
 #include <vector>
 
 #include "ao_gbuffer.h"
+#include "blue_noise.h"
+#include "blue_noise_spectrum.h"
 #include "gbuffer_rules.h"
 #include "gbuffer_types.h"
 #include "screen_frame.h"
@@ -108,6 +110,7 @@ float SsrHizAt(uint level, int cx, int cy) {
 }
 #include "hlsl/gbuffer_common.hlsli"
 #include "hlsl/ao_gbuffer_normal.hlsli"
+#include "hlsl/blue_noise.hlsli"
 #include "hlsl/ssr_common.hlsli"
 #include "hlsl/ssr_trace.hlsli"
 }  // namespace hlsl_shim
@@ -579,14 +582,15 @@ void TestBrdf() {
 }
 
 void TestNoise() {
+  constexpr uint32_t kLegacy = 0x80000000u;
   double sum = 0.0, sum2 = 0.0;
   int n = 0;
   float lo = 1.0f, hi = 0.0f;
   for (uint32_t frame = 0; frame < 16; ++frame) {
     for (int y = 0; y < 64; ++y) {
       for (int x = 0; x < 64; ++x) {
-        const float a = hs::SsrNoise1(x, y, frame, 0);
-        const float b = hs::SsrNoise2(x, y, frame, 0);
+        const float a = hs::SsrNoise1(x, y, frame, 0, 1);
+        const float b = hs::SsrNoise2(x, y, frame, 0, 1);
         sum += a + b;
         sum2 += double(a) * a + double(b) * b;
         n += 2;
@@ -597,25 +601,178 @@ void TestNoise() {
   }
   const double mean = sum / n;
   const double var = sum2 / n - mean * mean;
-  Check(Near(mean, 0.5, 0.02) && Near(var, 1.0 / 12.0, 0.01) && lo >= 0.0f && hi < 1.0f, Num("the noise is uniform on 0..1 (mean %.3f, variance %.4f)", mean, var));
-  // the temporal sequence of one pixel: 8 frames fall in different eighths most of the time
-  int covered = 0;
+  Check(Near(mean, 0.5, 0.01) && Near(var, 1.0 / 12.0, 0.005) && lo >= 0.0f && hi < 1.0f, Num("the noise is uniform on 0..1 (mean %.3f, variance %.4f)", mean, var));
+  // the temporal sequence of one pixel: the R2 sequence is low discrepancy in the SQUARE (the lobe's two numbers together; each number alone is not the golden ratio's: 4 steps of its first
+  // increment come back to 0.02): 8 frames fall in 4 x 4 cells nearly all apart (random pairs give about 6.4 of 8), 16 frames in at least 11 of 16
+  int cells8 = 0, cells16 = 0;
   for (int y = 0; y < 16; ++y) {
-    bool seen[8] = {};
-    for (uint32_t frame = 0; frame < 8; ++frame) {
-      seen[std::min(7, int(hs::SsrNoise1(5, y, frame, 0) * 8.0f))] = true;
+    bool seen8[16] = {}, seen16[16] = {};
+    for (uint32_t frame = 0; frame < 16; ++frame) {
+      const int a = std::min(3, int(hs::SsrNoise1(9, y, frame, 0, 1) * 4.0f)), b = std::min(3, int(hs::SsrNoise2(9, y, frame, 0, 1) * 4.0f));
+      seen16[a * 4 + b] = true;
+      if (frame < 8) seen8[a * 4 + b] = true;
     }
-    int bins = 0;
-    for (bool b : seen) bins += b ? 1 : 0;
-    covered += bins;
+    for (bool c : seen8) cells8 += c ? 1 : 0;
+    for (bool c : seen16) cells16 += c ? 1 : 0;
   }
-  Check(covered / 16.0 > 4.5, Num("one pixel's eight frames cover %.1f of 8 bins on average", covered / 16.0));
-  // the two rays of a pixel are not the same
-  Check(hs::SsrNoise1(10, 10, 3, 0) != hs::SsrNoise1(10, 10, 3, 1) && hs::SsrNoise2(10, 10, 3, 0) != hs::SsrNoise2(10, 10, 3, 1), "the second ray of a pixel has its own numbers");
-  // neighbours differ (the noise is not a smooth ramp)
+  if (g_print) std::printf("a pixel's frames in 4 x 4 cells of the square: %.2f of 8, %.2f of 16\n", cells8 / 16.0, cells16 / 16.0);
+  Check(cells8 / 16.0 > 6.8, Num("one pixel's eight frames fall in %.2f different cells of the 4 x 4 grid on average (random pairs: 6.4)", cells8 / 16.0));
+  Check(cells16 / 16.0 >= 11.0, Num("one pixel's sixteen frames cover %.1f of 16 cells of the square on average", cells16 / 16.0));
+  // the rays of a pixel are consecutive numbers of one sequence: the second ray of frame f with two rays is the sample 2 f + 1 of the one-ray sequence
+  bool same_sequence = true;
+  for (uint32_t frame = 0; frame < 20; ++frame) {
+    same_sequence = same_sequence && hs::SsrNoise1(10, 10, frame, 1, 2) == hs::SsrNoise1(10, 10, 2 * frame + 1, 0, 1) && hs::SsrNoise2(10, 10, frame, 0, 2) == hs::SsrNoise2(10, 10, 2 * frame, 0, 1);
+  }
+  Check(same_sequence, "the rays of a pixel are consecutive samples of one sequence (the second ray of frame f with two rays is sample 2 f + 1)");
+  Check(hs::SsrNoise1(10, 10, 3, 0, 2) != hs::SsrNoise1(10, 10, 3, 1, 2) && hs::SsrNoise2(10, 10, 3, 0, 2) != hs::SsrNoise2(10, 10, 3, 1, 2), "the second ray of a pixel has its own numbers");
+  // neighbours differ (the noise is not a smooth ramp: a blue noise's mean step is 1/3)
   double diff = 0.0;
-  for (int x = 0; x < 63; ++x) diff += std::fabs(hs::SsrNoise1(x, 7, 2, 0) - hs::SsrNoise1(x + 1, 7, 2, 0));
-  Check(diff / 63.0 > 0.1, "neighbouring pixels differ");
+  for (int x = 0; x < 63; ++x) diff += std::fabs(hs::SsrNoise1(x, 7, 2, 0, 1) - hs::SsrNoise1(x + 1, 7, 2, 0, 1));
+  Check(diff / 63.0 > 0.2, Num("neighbouring pixels differ (mean step %.2f)", diff / 63.0));
+  // THE PATTERN STAYS WHERE IT IS: the step a pixel's number takes from one frame to the next is the same for every pixel (the frame's step is added to the tile), so the picture of the noise is the
+  // tile moved round the circle and nothing slides; with the first version's noise the step differs from pixel to pixel
+  const auto spread = [&](uint32_t flag) {
+    double worst = 0.0;
+    for (uint32_t frame = 0; frame < 4; ++frame) {
+      double lo_d = 2.0, hi_d = -1.0;
+      for (int y = 0; y < 48; ++y) {
+        for (int x = 0; x < 48; ++x) {
+          double d = double(hs::SsrNoise1(x, y, (frame + 1) | flag, 0, 1)) - double(hs::SsrNoise1(x, y, frame | flag, 0, 1));
+          d -= std::floor(d);
+          lo_d = std::min(lo_d, d);
+          hi_d = std::max(hi_d, d);
+        }
+      }
+      // the differences sit on the circle: take the shortest arc that holds them all (the spread of a value just under 1 and one just over 0 is small)
+      double spread_arc = hi_d - lo_d;
+      if (spread_arc > 0.5) {
+        double lo2 = 2.0, hi2 = -1.0;
+        for (int y = 0; y < 48; ++y) {
+          for (int x = 0; x < 48; ++x) {
+            double d = double(hs::SsrNoise1(x, y, (frame + 1) | flag, 0, 1)) - double(hs::SsrNoise1(x, y, frame | flag, 0, 1));
+            d -= std::floor(d);
+            if (d < 0.5) d += 1.0;
+            lo2 = std::min(lo2, d);
+            hi2 = std::max(hi2, d);
+          }
+        }
+        spread_arc = std::min(spread_arc, hi2 - lo2);
+      }
+      worst = std::max(worst, spread_arc);
+    }
+    return worst;
+  };
+  const double now = spread(0u), then = spread(kLegacy);
+  Check(now < 1e-5, Num("the step from frame to frame is the same at every pixel (spread %.2g): the pattern stays where it is", now));
+  Check(then > 0.01, Num("... which the first version's noise (bit 31) did not do (spread %.3f)", then));
+  // the first version's switch: bit 31 of the frame word gives exactly the old numbers
+  bool legacy_same = true;
+  for (uint32_t frame = 0; frame < 6; ++frame) {
+    for (uint32_t ray = 0; ray < 2; ++ray) {
+      const float f = float(frame & 255u) + float(ray) * 97.0f;
+      legacy_same = legacy_same && hs::SsrNoise1(13, 29, frame | kLegacy, ray, 2) == hs::SsrIgn(13.0f + 5.588238f * f, 29.0f + 5.588238f * f) &&
+                    hs::SsrNoise2(13, 29, frame | kLegacy, ray, 2) == hs::SsrIgn(29.0f + 4.4f * f + 31.0f, 13.0f + 6.2f * f + 17.0f);
+    }
+  }
+  Check(legacy_same, "the frame word's bit 31 gives the first version's interleaved gradient noise, number for number");
+  Check(SSR_FRAME_LEGACY_NOISE == kLegacy && sr::push::kFrameLegacyNoise == kLegacy, "the bit is the same in the shader and in ssr_rules.h");
+  // The frame number's bit 31 is not part of the sequence: a frame number with it clear and the same number without are the same, and a frame number of 2^30 and more still steps along the sequence
+  Check(hs::SsrNoise1(3, 4, 7u, 0, 1) == hs::SsrNoise1(3, 4, 7u, 0, 1) && hs::SsrNoise1(3, 4, 7u + (1u << 30), 0, 1) != hs::SsrNoise1(3, 4, 7u, 0, 1) + 100.0f, "the numbers of a high frame count are finite and in range");
+}
+
+// What the accumulation leaves of the noise, and whether it moves. The response of a pixel to its two numbers is a smooth periodic function (a reflection's brightness against the lobe's sample), the
+// temporal pass keeps 0.9 of the history (an exponential mean of about ten frames: the high level's), and the picture of what is left is read the way the eye reads a pattern: its spectrum (how much of it is in
+// ONE frequency, how unevenly it is spread over the directions) and its MOTION (the shift of the picture between two frames that gives the best match: a pattern that crawls shows as a shift).
+void TestNoiseResolve() {
+  constexpr uint32_t kLegacy = 0x80000000u;
+  const int N = 128;
+  const int frames_of_history = 60;
+  const double weight = 0.9;
+  const auto response = [](float u1, float u2) { return double(std::cos(6.2831853f * u1 + 0.7f)) + 0.6 * double(std::cos(6.2831853f * u2)); };
+  // The error image of frame `t`: the exponential mean of the response over the frames before it, the picture's mean taken out.
+  const auto image = [&](uint32_t t, uint32_t flag) {
+    std::vector<double> img(size_t(N) * size_t(N), 0.0);
+    for (int y = 0; y < N; ++y) {
+      for (int x = 0; x < N; ++x) {
+        double acc = 0.0, w = 1.0 - weight, norm = 0.0;
+        for (int k = 0; k < frames_of_history; ++k) {
+          const uint32_t f = (t - uint32_t(k)) | flag;
+          acc += w * response(hs::SsrNoise1(x, y, f, 0, 1), hs::SsrNoise2(x, y, f, 0, 1));
+          norm += w;
+          w *= weight;
+        }
+        img[size_t(y) * size_t(N) + size_t(x)] = acc / norm;
+      }
+    }
+    return img;
+  };
+  struct Result {
+    blue_noise_spectrum::Shape shape;
+    double zero_corr = 0.0;
+    double best_corr = 0.0;
+    int best_dx = 0, best_dy = 0;
+    double rms = 0.0;
+  };
+  const auto measure = [&](uint32_t flag) {
+    const uint32_t t = 100;
+    const std::vector<double> a = image(t, flag), b = image(t + 1, flag);
+    Result r;
+    r.shape = blue_noise_spectrum::Analyse(blue_noise_spectrum::Power(a, N, true), N);
+    double mean = 0.0;
+    for (double v : a) mean += v;
+    mean /= double(a.size());
+    for (double v : a) r.rms += (v - mean) * (v - mean);
+    r.rms = std::sqrt(r.rms / double(a.size()));
+    // the best match of frame t + 1 with frame t shifted by (dx, dy), over the middle of the picture (|corr|: a pattern that comes back inverted is the same pattern)
+    const int m = 12;
+    for (int dy = -8; dy <= 8; ++dy) {
+      for (int dx = -8; dx <= 8; ++dx) {
+        double sab = 0.0, saa = 0.0, sbb = 0.0, ma = 0.0, mb = 0.0;
+        int cnt = 0;
+        for (int y = m; y < N - m; ++y) {
+          for (int x = m; x < N - m; ++x) {
+            ma += a[size_t(y) * size_t(N) + size_t(x)];
+            mb += b[size_t(y + dy) * size_t(N) + size_t(x + dx)];
+            ++cnt;
+          }
+        }
+        ma /= cnt;
+        mb /= cnt;
+        for (int y = m; y < N - m; ++y) {
+          for (int x = m; x < N - m; ++x) {
+            const double va = a[size_t(y) * size_t(N) + size_t(x)] - ma, vb = b[size_t(y + dy) * size_t(N) + size_t(x + dx)] - mb;
+            sab += va * vb;
+            saa += va * va;
+            sbb += vb * vb;
+          }
+        }
+        const double c = std::fabs(sab / std::sqrt(std::max(saa * sbb, 1e-30)));
+        if (dx == 0 && dy == 0) r.zero_corr = c;
+        if (c > r.best_corr) {
+          r.best_corr = c;
+          r.best_dx = dx;
+          r.best_dy = dy;
+        }
+      }
+    }
+    return r;
+  };
+  const Result legacy = measure(kLegacy), blue = measure(0u);
+  if (g_print) {
+    std::printf("the resolved error: first version rms %.4f, one frequency %.4f of it, strongest direction %.2f x the mean, best match with the next frame at shift (%d, %d): %.2f (at 0: %.2f)\n", legacy.rms,
+                legacy.shape.peak_share, legacy.shape.wedge_ratio, legacy.best_dx, legacy.best_dy, legacy.best_corr, legacy.zero_corr);
+    std::printf("                    blue noise    rms %.4f, one frequency %.4f of it, strongest direction %.2f x the mean, best match with the next frame at shift (%d, %d): %.2f (at 0: %.2f)\n", blue.rms,
+                blue.shape.peak_share, blue.shape.wedge_ratio, blue.best_dx, blue.best_dy, blue.best_corr, blue.zero_corr);
+  }
+  Check(legacy.shape.peak_share > 0.02 && legacy.shape.wedge_ratio > 2.5, Num("the first version's error is a lattice: %.3f of it in one frequency (over 0.02) and a direction %.1f times the mean (over 2.5)", legacy.shape.peak_share, legacy.shape.wedge_ratio));
+  Check(blue.shape.peak_share < 0.012 && blue.shape.wedge_ratio < 2.4, Num("the blue noise's has no frequency that stands out (%.4f, under 0.012) and no direction (%.2f, under 2.4)", blue.shape.peak_share, blue.shape.wedge_ratio));
+  // it crawls: the next frame's picture is the same picture moved, at a shift of a few pixels, and better than in place
+  Check((legacy.best_dx != 0 || legacy.best_dy != 0) && legacy.best_corr > 0.9 && legacy.zero_corr < 0.85 * legacy.best_corr,
+        Num("the first version's error crawls: frame t + 1 matches frame t moved by (%.0f, %.0f) at %.2f, and in place at only %.2f", double(legacy.best_dx), double(legacy.best_dy), legacy.best_corr, legacy.zero_corr));
+  // it does not: no shift of the picture matches the next frame (the response moves along the circle from frame to frame, so the picture flickers; it never drifts)
+  Check(blue.best_corr < 0.35, Num("the blue noise's error does not crawl: no shift up to 8 pixels makes the next frame's picture match the last (the best is %.2f, under 0.35)", blue.best_corr));
+  // and it is not bigger
+  Check(blue.rms < 1.3 * legacy.rms, Num("the blue noise's error rms %.4f is within 1.3 times the first version's (%.4f)", blue.rms, legacy.rms));
 }
 
 void TestGgx() {
@@ -1700,6 +1857,24 @@ void TestSources(const std::string& dir) {
   Check(Has(settings, rex_setting + "f64, mcla_gpu_ssr_fallback, 1.0,") && Has(settings, rex_setting + "i32, mcla_gpu_ssr_vehicle_rows, 1,") && view_end != std::string::npos && settings.substr(view_decl, view_end - view_decl).find("rex::Range{0, 6}") != std::string::npos,
         "GB-I2: the fallback is on by default (1) and the vehicle rows too, the view setting goes to 6");
 
+  // the blue noise: the setting, the frame word's flag, the trace's call, the debug row
+  {
+    const std::string debug_pages_blue = Read(dir, "../mc_engine/menus/debug_menu_pages.cpp");
+    const std::string decl = std::string("REX_") + "SETTING(bool, mcla_gpu_ssr_blue_noise, true,";
+    const size_t at = settings.find(decl);
+    const size_t end = at == std::string::npos ? std::string::npos : settings.find(");\n", at);
+    Check(at != std::string::npos && end != std::string::npos && settings.substr(at, end - at).find("rex::kDebugOnly") != std::string::npos && Has(settings, "inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;") &&
+              Has(manifest, "\"mcla_gpu_ssr_blue_noise\": {") && Has(meta, "{\"mcla_gpu_ssr_blue_noise\", \"MCLA/GPU\"},"),
+          "mcla_gpu_ssr_blue_noise: a live debug setting, on by default, in the settings header, its alias, the manifest and the meta list");
+    Check(Has(cpp, "push.Set(pk::kFrame, (uint32_t(frames_) & ~pk::kFrameLegacyNoise) | (larecomp::settings::mcla_gpu_ssr_blue_noise.Get() ? 0u : pk::kFrameLegacyNoise));"),
+          "ssr.cpp: the frame word carries the first version's flag when mcla_gpu_ssr_blue_noise is off");
+    Check(Has(trace_ps, "SsrNoise1(pix.x, pix.y, frame, ray, rays), SsrNoise2(pix.x, pix.y, frame, ray, rays)"), "the trace pass gives the noise the ray's number and the rays a pixel");
+    Check(Has(common, "#include \"blue_noise.hlsli\"") && Has(common, "static const uint kSsrR2StepA = 3242174889u;") && Has(common, "static const uint kSsrR2StepB = 2447445413u;") &&
+              uint32_t(0.7548776662466927 * 4294967296.0) == 3242174889u && uint32_t(0.5698402909980532 * 4294967296.0) == 2447445413u,
+          "ssr_common.hlsli: the frame's steps are the R2 sequence's, as 32 bit fractions");
+    Check(Has(debug_pages_blue, "\"mcla_gpu_ssr_blue_noise\""), "the debug menu's FIXES page has the A/B row");
+  }
+
   // GB-J: the row, the class cell, the debug row of the light pass, the hidden G-buffer setting
   {
     const std::string gpu_class_h = Read(dir, "gpu_class.h"), gpu_class_test = Read(dir, "gpu_class_test.cpp"), pause = Read(dir, "../mc_engine/menus/pause_menu.cpp"),
@@ -1909,6 +2084,7 @@ int main(int argc, char** argv) {
   TestGate();
   TestBrdf();
   TestNoise();
+  TestNoiseResolve();
   TestGgx();
   TestFades();
   TestVirtualImage();

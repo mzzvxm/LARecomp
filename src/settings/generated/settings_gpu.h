@@ -752,6 +752,8 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_ssr_vehicle_rows, 1, "Diagnostic (screen-space reflections): 1 moves the reflection of a moving vehicle with the vehicle's own motion (the ambient occlusion's vehicle table), 0 treats it as the world's, which smears it (the comparison). Live.", rex::kDebugOnly, rex::Range{0, 1});
 
+  REX_SETTING(bool, mcla_gpu_ssr_blue_noise, true, "Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.", rex::kDebugOnly);
+
   REX_SETTING(u32, mcla_gpu_ghost_log_interval, 0, "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
     "frame. Hot reload for reproducing the frame ghost.", rex::kDebugOnly);
@@ -1721,6 +1723,7 @@ inline auto& mcla_gpu_ssr_wet = g_gpu.mcla_gpu_ssr_wet;
 inline auto& mcla_gpu_ssr_history = g_gpu.mcla_gpu_ssr_history;
 inline auto& mcla_gpu_ssr_fallback = g_gpu.mcla_gpu_ssr_fallback;
 inline auto& mcla_gpu_ssr_vehicle_rows = g_gpu.mcla_gpu_ssr_vehicle_rows;
+inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;
 inline auto& mcla_gpu_ghost_log_interval = g_gpu.mcla_gpu_ghost_log_interval;
 inline auto& mcla_gpu_glow_visibility = g_gpu.mcla_gpu_glow_visibility;
 inline auto& mcla_gpu_gpu_based_validation = g_gpu.mcla_gpu_gpu_based_validation;
