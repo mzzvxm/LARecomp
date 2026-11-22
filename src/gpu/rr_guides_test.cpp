@@ -160,6 +160,7 @@ void ImagesChecks() {
     Check(spec.buffer != rr::Buffer::kCount && rr::FormatOk(spec.buffer, spec.format), std::string(spec.name) + ": its format is one the rules take for its buffer type");
     Check(rr::Channels(spec.format) != 0 && spec.bytes_per_pixel == (spec.format == rr::Format::kRgba16Float ? 8u : 2u), std::string(spec.name) + ": its bytes a pixel are its format's");
     Check(std::string(spec.name) == rr::InfoOf(spec.buffer).name, std::string(spec.name) + ": it is named as the rules name its buffer");
+    Check(rr::StreamlineVulkanKnows(spec.format), std::string(spec.name) + ": Streamline's Vulkan back end has a format of its own for it (an image it has none for makes it log \"Cannot have undefined format\" every frame)");
   }
   Check(rg::BytesPerPixel() == 28, "five images, 28 bytes a pixel (three RGBA16F and two R16F)");
   Check(rg::BytesOf(1920, 1080) == 58060800ull && rg::BytesOf(3840, 2160) == 232243200ull && rg::BytesOf(1280, 720) == 25804800ull, "58 MB at 1080p, 232 MB at 4K (DLAA), 26 MB at 720p");

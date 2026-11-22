@@ -185,6 +185,29 @@ constexpr bool FormatOk(Buffer b, Format f) {
   return false;
 }
 
+// Whether Streamline's Vulkan back end has a format of its own for the image (sl.chi vulkan.cpp getFormat, 2.14.16; the others are VK_FORMAT_R8_UNORM, R8_SNORM and every format not listed there). For a tagged
+// image it has none for, the DLSS plugins log "isFormatSupported: Cannot have undefined format" (four lines) each time they describe it, which is every frame for each tagged image they read (cacheState ->
+// getResourceDescription), and treat the image as one that is neither storage nor sampled capable. Every image the renderer tags on Vulkan must be one it knows (the checks: dlss_rr_rules_test.cpp, rr_guides_test.cpp).
+constexpr bool StreamlineVulkanKnows(Format f) {
+  switch (f) {
+    case Format::kR16Float:
+    case Format::kR32Float:
+    case Format::kD32Float:
+    case Format::kRg16Float:
+    case Format::kRg32Float:
+    case Format::kRgba8Unorm:
+    case Format::kRgba8Snorm:
+    case Format::kRgba8Srgb:
+    case Format::kRgb10A2Unorm:
+    case Format::kRgba16Float:
+    case Format::kRgba32Float: return true;
+    case Format::kR8Unorm:
+    case Format::kR8Snorm:
+    case Format::kUnknown: break;
+  }
+  return false;
+}
+
 // --- the tag plan ----------------------------------------------------------------------------------------------------------------------------------------
 
 // What a frame has to give RR. Sizes: every image but the output is at the render size, the output at the output size.
