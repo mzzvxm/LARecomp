@@ -39,8 +39,6 @@ namespace {
 
 constexpr const char* kPrefix = "[car rt]";
 
-// D3D_SHADER_MODEL_6_5 as RenderDeviceCapabilities::shaderModel gives it.
-constexpr uint32_t kShaderModel65 = 0x65;
 // The frames without a request after which everything is given back.
 constexpr uint32_t kIdleReleaseFrames = 600;
 // Frames between two check readbacks.
@@ -80,31 +78,10 @@ double Mib(uint64_t bytes) {
 // ---------------------------------------------------------------------------
 
 std::string CarRtUnsupportedReason(const plume::RenderDeviceCapabilities& caps, bool vulkan) {
-  if (vulkan) {
-    // Plume's rayQuery is VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2 together (plume_vulkan.cpp),
-    // the whole of what the structures' builds and the SPIR-V 1.5 shaders (hlsl/car_rt_*.hlsl) need. The ray tracing pipelines are not needed.
-    // Plume's rayQuery exists only in a Plume with the ray query work (car_rt_rules::CapsRayQuery: main's published pin has not): else
-    // Vulkan has no ray traced car effects in this build, and Direct3D 12 below is as it was.
-    if (!rr::CapsRayQuery(caps)) {
-      if constexpr (!rr::kCapsHaveRayQuery<plume::RenderDeviceCapabilities>) {
-        return "on Vulkan it waits for Plume's ray query support (VK_KHR_ray_query), which this build's Plume does not have yet: the ray traced car effects run on Direct3D 12";
-      } else {
-        return "the Vulkan driver does not offer ray queries (VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2)";
-      }
-    }
-    if (!caps.bufferDeviceAddress || !caps.descriptorIndexing) {
-      return "the Vulkan driver lacks buffer device addresses or descriptor indexing, which the car's ray tracing structures need";
-    }
-    return std::string();
-  }
-  if (!caps.raytracing || !caps.raytracingStateUpdate) {
-    return "the graphics card does not offer DirectX Raytracing tier 1.1 (inline ray queries)";
-  }
-  if (caps.shaderModel < kShaderModel65) {
-    return std::format("the Direct3D 12 runtime offers shader model {}.{} and the ray queries need 6.5", caps.shaderModel >> 4,
-                       caps.shaderModel & 0xF);
-  }
-  return std::string();
+  // Plume's rayQuery is VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2 together (plume_vulkan.cpp),
+  // the whole of what the structures' builds and the SPIR-V 1.5 shaders (hlsl/car_rt_*.hlsl) need. The ray tracing pipelines are not needed.
+  // The rules themselves (car_rt_rules::UnsupportedReason) need no device and have a test of their own.
+  return rr::UnsupportedReason(caps, vulkan);
 }
 
 bool CarRtSupported(const plume::RenderDeviceCapabilities& caps, bool vulkan) {
@@ -1928,8 +1905,8 @@ bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_byte
   const auto room = [](uint64_t bytes) { return AlignUp(bytes + bytes / 4, 4096); };
   if (tlas_bytes != 0 && s.tlas_bytes < tlas_bytes) {
     // The top level sits at offset 0 of a buffer of its own: Plume's D3D12 descriptor for an acceleration structure used the buffer's base
-    // address and ignored the structure's offset until its feat/ray-query 3c81454 (pinned with the Vulkan work). Kept at offset 0: on Vulkan
-    // the descriptor names the structure itself, so the offset never mattered there.
+    // address and ignored the structure's offset until mzzvxm/plume#13 (3c81454, in the pin since 502978a9). Kept at offset 0 all the same, so
+    // nothing here depends on it: on Vulkan the descriptor names the structure itself, so the offset never mattered there.
 
     const uint64_t bytes = room(tlas_bytes);
     const std::string name = std::format("car rt top level {}", index);

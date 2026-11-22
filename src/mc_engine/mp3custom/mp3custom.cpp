@@ -22,6 +22,7 @@
 #include <rex/ppc/context.h>
 #include <rex/ppc/call.h>
 #include <rex/kernel/title_runtime.h>
+#include <rex/platform/file.h>
 #include <rex/kernel/function_dispatcher.h>
 
 #if defined(_WIN32)
@@ -423,7 +424,9 @@ void CollectNativeTitles() {
     if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return;
     models = mc::modloader::ModRootDir(std::filesystem::path(exe).parent_path());
 #else
-    models = mc::modloader::ModRootDir(std::filesystem::current_path(ec));
+    // The folder of the executable (the mods sit beside the program), not the current directory.
+    const std::filesystem::path exe_folder = rex::platform::GetExecutableFolder();
+    models = mc::modloader::ModRootDir(exe_folder.empty() ? std::filesystem::current_path(ec) : exe_folder);
 #endif
     if (!std::filesystem::is_directory(models, ec)) return;
 
@@ -476,7 +479,9 @@ void CollectTracks() {
                    L"User Music");
     }
 #else
-    ScanFolder(std::filesystem::current_path(ec) / "music");
+    // The music folder beside the program (whatever the case of its name), not the current directory's.
+    const std::filesystem::path exe_folder = rex::platform::GetExecutableFolder();
+    ScanFolder(mc::modloader::FindDirNoCase(exe_folder.empty() ? std::filesystem::current_path(ec) : exe_folder, "music"));
 #endif
 
     std::sort(g_tracks.begin(), g_tracks.end(),

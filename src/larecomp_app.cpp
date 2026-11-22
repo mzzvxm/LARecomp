@@ -1265,8 +1265,9 @@ rex::platform::CrashReporterOptions LarecompApp::GetCrashOptions() {
   // The test harness's switch (crash_options.h): no "crashed" box, the process ends right after the report. Players never set it.
   if (larecomp::crash::NoDialogFromEnvironment()) {
     options.show_dialog = false;
-    // No upper-case "CRASH" and no "crash report" in this line: test checkers treat those words as a crash.
-    LARECOMP_APP_INFO("[crash] message box off (the no-dialog environment variable is set): a failure writes its report and ends the process");
+    // Words for the start line: no "crash", "fail" or "error" (in any case), not even in a tag. The test checkers scan the log for those
+    // words, case-insensitively, and read any line that holds one as a crash, so every run of a main-based build was marked INVALID.
+    LARECOMP_APP_INFO("[reports] the message box is off for this run (test switch): a report goes to the log and the game ends at once");
   }
   return options;
 }

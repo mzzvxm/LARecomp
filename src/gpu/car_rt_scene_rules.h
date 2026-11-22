@@ -15,6 +15,7 @@
 //   - a range allocator with coalescing (the shared position, normal, index and acceleration structure buffers)
 //   - the eviction policy of the meshes (not seen for a few hundred frames, or the memory cap) and the per-frame build budget
 //   - the check pass's statistics (the words the shader counts into, as numbers)
+//   - whether a device can trace the car at all (UnsupportedReason: Direct3D 12 with DXR 1.1, Vulkan with ray queries)
 //
 // This header includes nothing of the renderer.
 // ===========================================================================
@@ -25,9 +26,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "car_dump_rules.h"
@@ -659,25 +662,37 @@ inline bool ProbeMatches(const ProbeCar& read, const float centre[3], float radi
 }
 
 // ---------------------------------------------------------------------------
-// the Plume this build is made against
+// can this device trace the car
 // ---------------------------------------------------------------------------
 
-// Vulkan needs Plume's ray query support: RenderDeviceCapabilities::rayQuery, and the Vulkan back end that fills it in and builds the
-// structures (mzzvxm/plume pull requests 13 and 14). The Plume a build is made against may not have them yet (main's published pin has not,
-// until those are merged): then the member does not exist, the answer is "no", and the Vulkan ray traced car effects report themselves
-// unavailable while Direct3D 12 is not touched. It is the member itself that is tested, so a Plume pin that carries the ray query work turns
-// the Vulkan path on with no change here. `Caps` is plume::RenderDeviceCapabilities in the renderer (a stand-in in the test).
-template <typename Caps>
-inline constexpr bool kCapsHaveRayQuery = requires(const Caps& caps) { caps.rayQuery; };
+// D3D_SHADER_MODEL_6_5 as RenderDeviceCapabilities::shaderModel gives it: where the inline ray queries (RayQuery in a compute shader) start.
+inline constexpr uint32_t kShaderModel65 = 0x65;
 
+// Why a device cannot run the ray traced car effects, or an empty text where it can: the ONE decision (CarRtUnsupportedReason in car_rt_scene.cpp
+// hands it Plume's capabilities; `Caps` is plume::RenderDeviceCapabilities there and a stand-in in the test).
+//   Direct3D 12: DXR tier 1.1 (raytracing and raytracingStateUpdate) and shader model 6.5.
+//   Vulkan:      Plume's rayQuery (mzzvxm/plume pull request 13): VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses,
+//                deferred host operations and a Vulkan 1.2 device, all of it checked by Plume before it says yes. The ray tracing PIPELINES
+//                (caps.raytracing on Vulkan) are not needed: the shaders trace inline. The structures' buffer addresses and the bindless
+//                sets the shaders read through need the two features the renderer refuses a device without anyway (device.cpp), asked again here.
 template <typename Caps>
-constexpr bool CapsRayQuery(const Caps& caps) {
-  if constexpr (kCapsHaveRayQuery<Caps>) {
-    return static_cast<bool>(caps.rayQuery);
-  } else {
-    (void)caps;
-    return false;
+std::string UnsupportedReason(const Caps& caps, bool vulkan) {
+  if (vulkan) {
+    if (!caps.rayQuery) {
+      return "the Vulkan driver does not offer ray queries (VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2)";
+    }
+    if (!caps.bufferDeviceAddress || !caps.descriptorIndexing) {
+      return "the Vulkan driver lacks buffer device addresses or descriptor indexing, which the car's ray tracing structures need";
+    }
+    return std::string();
   }
+  if (!caps.raytracing || !caps.raytracingStateUpdate) {
+    return "the graphics card does not offer DirectX Raytracing tier 1.1 (inline ray queries)";
+  }
+  if (caps.shaderModel < kShaderModel65) {
+    return std::format("the Direct3D 12 runtime offers shader model {}.{} and the ray queries need 6.5", caps.shaderModel >> 4, caps.shaderModel & 0xF);
+  }
+  return std::string();
 }
 
 }  // namespace mcla::gpu::car_rt_rules

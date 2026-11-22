@@ -9,8 +9,7 @@
 // COLOUR of what the ray hits.
 //
 //   mcla_gpu_car_selfrefl_rt          auto | off. auto (the default) is on where the device can ray trace the car (CarRtSupported: D3D12
-//                                     with DXR 1.1; Vulkan with VK_KHR_ray_query once the Plume pin has it: Direct3D 12 only for now, car_rt_scene.h) and the
-//                                     car self-reflections (mcla_gpu_car_selfrefl) are on; off keeps the
+//                                     with DXR 1.1, Vulkan with VK_KHR_ray_query) and the car self-reflections (mcla_gpu_car_selfrefl) are on; off keeps the
 //                                     screen-space march everywhere. Live: it applies from the next frame. Where the device cannot,
 //                                     auto is the march, so nothing changes for it.
 //   mcla_gpu_car_selfrefl_rt_length   a debug override of the reflection ray's reach in metres for the player's OWN parts (4 by default; the weight of a hit falls to

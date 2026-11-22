@@ -833,7 +833,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1), your car's reflection of \"\n    \"its own body comes from its real shape, not from the picture of the car on the screen: a part the camera cannot see (the back of the \"\n    \"wing, a mirror's far side) shows in the paint as it does in a mirror, and thin parts are exact. auto (the default) is on there while the \"\n    \"car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the \"\n    \"screen-space version whatever this says. Live.\"",
+  "help": "\"Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), your car's reflection of \"\n    \"its own body comes from its real shape, not from the picture of the car on the screen: a part the camera cannot see (the back of the \"\n    \"wing, a mirror's far side) shows in the paint as it does in a mirror, and thin parts are exact. auto (the default) is on there while the \"\n    \"car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the \"\n    \"screen-space version whatever this says. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\")"
   ],
@@ -892,7 +892,7 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/GPU",
-  "help": "\"Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with \"\n    \"DirectX Raytracing 1.1). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its \"\n    \"linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many \"\n    \"vehicle pixels the structures cover and how far the distances are apart. Only the pixels the scene is meant to hold are traced: \"\n    \"the player's car and the other cars the frame kept (mcla_gpu_car_rt_cars); the pixels of other cars are counted apart as not in \"\n    \"the scene by design (the driver is in the player's count and shows as a miss). It \"\n    \"needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.\"",
+  "help": "\"Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with \"\n    \"DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its \"\n    \"linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many \"\n    \"vehicle pixels the structures cover and how far the distances are apart. Only the pixels the scene is meant to hold are traced: \"\n    \"the player's car and the other cars the frame kept (mcla_gpu_car_rt_cars); the pixels of other cars are counted apart as not in \"\n    \"the scene by design (the driver is in the player's count and shows as a miss). It \"\n    \"needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -10094,7 +10094,7 @@
   "type": "i32",
   "default": "-1",
   "category": "MCLA/GPU",
-  "help": "\"Debug: how many OTHER cars (opponents, traffic, parked cars) the ray traced car effects see besides your own: your car's paint and chrome \"\n    \"reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 14 m of your car on the High class, 2 within 10 m on \"\n    \"the Mid class, none on the Low class); 0 turns the other cars off (your car alone, as it was); 1 to 8 asks for that many. Each car is built \"\n    \"once into ray tracing structures (8 to 10 MiB at full detail) and a new car appears in parts over a few frames. Live.\"",
+  "help": "\"Debug: how many OTHER cars (opponents, traffic, parked cars) the ray traced car effects see besides your own: your car's paint and chrome \"\n    \"reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 20 m of your car on the High class, 2 within 14 m on \"\n    \"the Mid class, none on the Low class); 0 turns the other cars off (your car alone, as it was); 1 to 8 asks for that many. Each car is built \"\n    \"once into ray tracing structures (8 to 10 MiB at full detail) and a new car appears in parts over a few frames. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{-1, 8}"
@@ -10106,7 +10106,7 @@
   "type": "f64",
   "default": "0.0",
   "category": "MCLA/GPU",
-  "help": "\"Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's \"\n    \"class decides, 10 to 14 m). The reflection reaches 4 m from your car's paint, so a car more than about 10 m away cannot show in it. Live.\"",
+  "help": "\"Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's \"\n    \"class decides, 20 m on the High class, 14 m on the Mid class). The reflection reaches another car 18 m (High) or 12 m (Mid) away (mcla_gpu_car_rt_hit_reach) and a car's half length is 2 m, so a car whose centre is farther than the radius cannot show in it. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 60.0}"
@@ -10118,7 +10118,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: the ray traced part of the ambient occlusion and the contact shadows, where the graphics card can ray trace (Direct3D 12 with ray \"\n    \"tracing 1.1): a few short rays from the pixels near your car and the cars beside it, against their real shape, \"\n    \"darken what the camera does not see (the far side of a wheel well, the body over a tyre, the road at the foot of a car and between two cars) \"\n    \"and shadow the cars' own parts and the road from the sun exactly. \"\n    \"auto (the default): both, where the ambient occlusion or the contact shadows are on; off: the screen-space passes alone, to compare with; \"\n    \"ao: the occlusion's rays only; contact: the sun's ray only. A graphics card that cannot ray trace uses the screen-space passes whatever this \"\n    \"says. Live.\"",
+  "help": "\"Diagnostic: the ray traced part of the ambient occlusion and the contact shadows, where the graphics card can ray trace (Direct3D 12 with ray \"\n    \"tracing 1.1, or Vulkan with ray queries): a few short rays from the pixels near your car and the cars beside it, against their real shape, \"\n    \"darken what the camera does not see (the far side of a wheel well, the body over a tyre, the road at the foot of a car and between two cars) \"\n    \"and shadow the cars' own parts and the road from the sun exactly. \"\n    \"auto (the default): both, where the ambient occlusion or the contact shadows are on; off: the screen-space passes alone, to compare with; \"\n    \"ao: the occlusion's rays only; contact: the sun's ray only. A graphics card that cannot ray trace uses the screen-space passes whatever this \"\n    \"says. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Allowed(\"auto\", \"off\", \"ao\", \"contact\")"
@@ -10364,7 +10364,7 @@
   "type": "f64",
   "default": "0.0",
   "category": "MCLA/GPU",
-  "help": "\"Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). \"\n    \"The weight of a hit falls over this from three quarters of it. Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours \"\n    \"(mcla_gpu_car_rt_cars_radius moves that). Live.\"",
+  "help": "\"Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). \"\n    \"The weight of a hit falls over this from three quarters of it (0.7 on the Mid class). Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours \"\n    \"(mcla_gpu_car_rt_cars_radius moves that). Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 20.0}"

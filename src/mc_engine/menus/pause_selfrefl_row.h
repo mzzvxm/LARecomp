@@ -7,7 +7,7 @@
 // The settings:
 //   mcla_gpu_car_selfrefl      auto | off | on     the player car's paint reflects its own body (car_selfrefl.h)
 //   mcla_gpu_car_selfrefl_rt   auto | off          where the graphics card can ray trace the car (Direct3D 12
-//                                                  with DXR 1.1 and shader model 6.5: CarRtSupported in
+//                                                  with DXR 1.1 and shader model 6.5, or Vulkan with ray queries: CarRtSupported in
 //                                                  car_rt_scene.h), that reflection is traced from the car's own
 //                                                  triangles instead of marched through the picture
 //                                                  (car_rt_refl.h); it only runs while the first one is on

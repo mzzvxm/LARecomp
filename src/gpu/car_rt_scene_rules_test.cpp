@@ -397,28 +397,6 @@ void TestScope() {
 
 
 // The probe (RT-MODEL-CARS-4): the first cars' two rows as the shader read them, against what the host wrote.
-// The Plume this build is made against: a capabilities struct with no rayQuery member (main's published Plume pin) answers "no ray queries", one
-// with the member answers what it says; the answer is decided by the member, so a Plume with the ray query work turns Vulkan on with no change.
-struct CapsWithoutRayQuery {
-  bool raytracing = true;
-};
-struct CapsWithRayQuery {
-  bool raytracing = true;
-  bool rayQuery = false;
-};
-
-void TestPlumeRayQuery() {
-  static_assert(!rr::kCapsHaveRayQuery<CapsWithoutRayQuery>, "a Plume without the member has no ray queries");
-  static_assert(rr::kCapsHaveRayQuery<CapsWithRayQuery>, "a Plume with the member has them");
-  static_assert(!rr::CapsRayQuery(CapsWithoutRayQuery{}), "no member: no ray queries, decided at compile time");
-  CapsWithRayQuery off;
-  CapsWithRayQuery on;
-  on.rayQuery = true;
-  Check(!rr::CapsRayQuery(CapsWithoutRayQuery{}), "a Plume without the ray query member reports no ray queries (Vulkan: the effects are unavailable in this build)");
-  Check(!rr::CapsRayQuery(off), "a Plume with the member, the device without ray queries: none");
-  Check(rr::CapsRayQuery(on), "a Plume with the member, the device with them: yes");
-}
-
 void TestProbe() {
   Check(rr::kStatProbe == 20 && rr::kProbeCars == 4 && rr::kProbeWordsPerCar == 8 && rr::kStatsWords == rr::kStatProbe + rr::kProbeCars * rr::kProbeWordsPerCar,
         "the probe's words follow the counters'");
@@ -445,6 +423,71 @@ void TestProbe() {
   const float none[3] = {0.0f, 0.0f, 0.0f};
   Check(rr::ProbeMatches(b, centre1, 1.6f, false, none), "a car with no paint: zeros and a clear flag are the same");
   Check(!rr::ProbeMatches(rr::ProbeCar{}, centre1, 1.6f, false, none), "a slot that was not read is never the same");
+}
+
+// Whether a device can trace the car (UnsupportedReason): the decision, with a stand-in for plume::RenderDeviceCapabilities that has the members it reads.
+struct FakeCaps {
+  bool raytracing = false;
+  bool raytracingStateUpdate = false;
+  bool rayQuery = false;
+  bool bufferDeviceAddress = false;
+  bool descriptorIndexing = false;
+  uint32_t shaderModel = 0;
+};
+
+void TestSupportDecision() {
+  // Direct3D 12: DXR 1.1 and shader model 6.5.
+  FakeCaps d3d;
+  d3d.raytracing = true;
+  d3d.raytracingStateUpdate = true;
+  d3d.shaderModel = 0x65;
+  Check(rr::UnsupportedReason(d3d, false).empty(), "D3D12 with DXR 1.1 and shader model 6.5 can trace");
+  d3d.shaderModel = 0x66;
+  Check(rr::UnsupportedReason(d3d, false).empty(), "D3D12 with a newer shader model can trace");
+  d3d.shaderModel = 0x64;
+  const std::string old_model = rr::UnsupportedReason(d3d, false);
+  Check(old_model.find("shader model 6.4") != std::string::npos && old_model.find("6.5") != std::string::npos, "D3D12 with shader model 6.4 says so: " + old_model);
+  d3d.shaderModel = 0x65;
+  d3d.raytracingStateUpdate = false;
+  Check(rr::UnsupportedReason(d3d, false).find("tier 1.1") != std::string::npos, "D3D12 with DXR 1.0 only cannot trace inline");
+  d3d.raytracingStateUpdate = true;
+  d3d.raytracing = false;
+  Check(!rr::UnsupportedReason(d3d, false).empty(), "D3D12 with no ray tracing cannot trace");
+  // D3D12 does not read the Vulkan members: a Plume that fills rayQuery in (it does since 502978a9: DXR 1.1 and shader model 6.5) changes nothing here.
+  FakeCaps d3d_with_member;
+  d3d_with_member.raytracing = true;
+  d3d_with_member.raytracingStateUpdate = true;
+  d3d_with_member.shaderModel = 0x65;
+  d3d_with_member.rayQuery = true;
+  Check(rr::UnsupportedReason(d3d_with_member, false).empty(), "D3D12 answers the same with the rayQuery member set");
+  d3d_with_member.rayQuery = false;
+  Check(rr::UnsupportedReason(d3d_with_member, false).empty(), "D3D12 answers the same with the rayQuery member clear");
+
+  // Vulkan: Plume's rayQuery (the ray tracing pipelines are not needed), the buffer addresses and the descriptor indexing.
+  FakeCaps vk;
+  vk.bufferDeviceAddress = true;
+  vk.descriptorIndexing = true;
+  vk.rayQuery = true;
+  Check(rr::UnsupportedReason(vk, true).empty(), "Vulkan with ray queries (no ray tracing pipelines) can trace");
+  vk.raytracing = true;
+  Check(rr::UnsupportedReason(vk, true).empty(), "Vulkan with ray queries and the pipelines can trace");
+  vk.rayQuery = false;
+  const std::string no_query = rr::UnsupportedReason(vk, true);
+  Check(no_query.find("VK_KHR_ray_query") != std::string::npos, "Vulkan without ray queries says which extension it lacks: " + no_query);
+  Check(no_query.find("Plume") == std::string::npos, "the Vulkan answer no longer says it waits for a Plume");
+  vk.rayQuery = true;
+  vk.bufferDeviceAddress = false;
+  Check(!rr::UnsupportedReason(vk, true).empty(), "Vulkan with ray queries but no buffer device addresses cannot trace");
+  vk.bufferDeviceAddress = true;
+  vk.descriptorIndexing = false;
+  Check(!rr::UnsupportedReason(vk, true).empty(), "Vulkan with ray queries but no descriptor indexing cannot trace");
+  // Vulkan does not read the D3D12 members.
+  FakeCaps vk_only;
+  vk_only.rayQuery = true;
+  vk_only.bufferDeviceAddress = true;
+  vk_only.descriptorIndexing = true;
+  vk_only.shaderModel = 0;
+  Check(rr::UnsupportedReason(vk_only, true).empty(), "Vulkan does not look at the shader model or the DXR tier");
 }
 
 // The shader counts into the header's words with the header's edges and unit.
@@ -586,6 +629,123 @@ void TestShaderParity(const std::string& folder) {
   Check(ctext.find(mask) != std::string::npos, "the include's after-world flag is the header's");
 }
 
+// What the build says about the ray query shaders (src/gpu/CMakeLists.txt): every HLSL source that traces with RayQuery is built through
+// larecomp_gpu_host_shader_rt (its SPIR-V for Vulkan 1.2, SPIR-V 1.5: the ray query extension needs it) and no other function, the function passes
+// -fspv-target-env=vulkan1.2 to the SPIR-V compile only, and the guards that held Vulkan back are gone from the sources.
+std::string ReadAll(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// The stem (first argument) and source (SOURCE argument, else the stem) of every `function(` call in the CMake text: one entry per call.
+std::vector<std::pair<std::string, std::string>> HostShaderCalls(const std::string& cmake, const std::string& function) {
+  std::vector<std::pair<std::string, std::string>> calls;
+  const std::string head = "\n" + function + "(";
+  size_t at = cmake.find(head);
+  while (at != std::string::npos) {
+    const size_t open = at + head.size();
+    const size_t close = cmake.find(')', open);
+    if (close == std::string::npos) {
+      break;
+    }
+    std::string args = cmake.substr(open, close - open);
+    for (char& c : args) {
+      if (c == '\n' || c == '\r' || c == '\t') {
+        c = ' ';
+      }
+    }
+    std::vector<std::string> words;
+    size_t from = 0;
+    while (from < args.size()) {
+      const size_t sp = args.find(' ', from);
+      const size_t end = sp == std::string::npos ? args.size() : sp;
+      if (end > from) {
+        words.push_back(args.substr(from, end - from));
+      }
+      from = end + 1;
+    }
+    if (!words.empty()) {
+      std::string source = words[0];
+      for (size_t i = 0; i + 1 < words.size(); ++i) {
+        if (words[i] == "SOURCE") {
+          source = words[i + 1];
+        }
+      }
+      calls.emplace_back(words[0], source);
+    }
+    at = cmake.find(head, close);
+  }
+  return calls;
+}
+
+void TestSpirvBuild(const std::string& folder) {
+  const std::string cmake = ReadAll(folder + "/CMakeLists.txt");
+  if (cmake.empty()) {
+    std::printf("note: %s/CMakeLists.txt not found; the SPIR-V build check is skipped\n", folder.c_str());
+    return;
+  }
+  const auto has = [&](const std::string& text, const std::string& s) { return text.find(s) != std::string::npos; };
+  const size_t rt_fn = cmake.find("function(larecomp_gpu_host_shader_rt STEM PROFILE)");
+  Check(rt_fn != std::string::npos, "CMake has larecomp_gpu_host_shader_rt");
+  if (rt_fn != std::string::npos) {
+    const std::string body = cmake.substr(rt_fn, cmake.find("endfunction()", rt_fn) - rt_fn);
+    Check(has(body, "SPIRV_ARGS -fspv-target-env=vulkan1.2"), "the ray query function compiles the SPIR-V for Vulkan 1.2 (SPIR-V 1.5)");
+    Check(has(body, "larecomp_gpu_host_shader(${STEM} ${PROFILE}"), "the ray query function is the plain host shader with the extra SPIR-V argument");
+  }
+  const size_t plain_fn = cmake.find("function(larecomp_gpu_host_shader STEM PROFILE)");
+  Check(plain_fn != std::string::npos, "CMake has larecomp_gpu_host_shader");
+  if (plain_fn != std::string::npos) {
+    const std::string body = cmake.substr(plain_fn, cmake.find("endfunction()", plain_fn) - plain_fn);
+    const size_t spirv_branch = body.find("set(ext spirv)");
+    Check(spirv_branch != std::string::npos && body.find("-spirv -fvk-use-dx-layout ${ARG_SPIRV_ARGS}") > spirv_branch,
+          "the extra arguments are for the SPIR-V blob only, not the DXIL one");
+    Check(has(body, "\"DEFINES;SPIRV_ARGS\""), "the host shader function takes SPIRV_ARGS");
+  }
+  const auto rt_calls = HostShaderCalls(cmake, "larecomp_gpu_host_shader_rt");
+  const auto plain_calls = HostShaderCalls(cmake, "larecomp_gpu_host_shader");
+  Check(rt_calls.size() >= 4, "the ray query shaders are built through the ray query function (the check, the reflection, its opponents' variant, the occlusion)");
+  for (const auto& call : rt_calls) {
+    Check(has(cmake, "larecomp_gpu_host_shader_rt(" + call.first + " cs_6_5"), "the ray query shader " + call.first + " is a Shader Model 6.5 compute shader");
+  }
+  // every .hlsl that traces is built only through the ray query function
+  const char* const kRaySources[] = {"car_rt_check_cs", "car_rt_refl_cs", "car_rt_ao_cs"};
+  for (const char* source : kRaySources) {
+    const std::string text = ReadAll(folder + "/hlsl/" + source + ".hlsl");
+    if (text.empty()) {
+      std::printf("note: %s/hlsl/%s.hlsl not found\n", folder.c_str(), source);
+      continue;
+    }
+    bool through_rt = false;
+    for (const auto& call : rt_calls) {
+      through_rt = through_rt || call.second == source;
+    }
+    bool through_plain = false;
+    for (const auto& call : plain_calls) {
+      through_plain = through_plain || call.second == source;
+    }
+    Check(through_rt && !through_plain, std::string("hlsl/") + source + ".hlsl is built for Vulkan 1.2 and for no other target");
+  }
+  // the source of every shader that has a RayQuery (the includes count for the files that include them) is one of the three
+  for (const char* file : {"car_rt_common.hlsli", "car_rt_refl_opp.hlsli"}) {
+    Check(has(ReadAll(folder + "/hlsl/" + file), "RayQuery<"), std::string("hlsl/") + file + " is one of the files that traces");
+  }
+  // the guards that held Vulkan back
+  const std::string scene = ReadAll(folder + "/car_rt_scene.cpp") + ReadAll(folder + "/car_rt_scene_rules.h") + ReadAll(folder + "/car_rt_scene.h");
+  Check(!scene.empty() && !has(scene, "waits for Plume") && !has(scene, "kCapsHaveRayQuery") && !has(scene, "CapsRayQuery"),
+        "no guard of the car ray tracing waits for a Plume with ray queries any more");
+  Check(has(ReadAll(folder + "/car_rt_scene.cpp"), "rr::UnsupportedReason(caps, vulkan)") && has(ReadAll(folder + "/car_rt_scene_rules.h"), "!caps.rayQuery"),
+        "the Vulkan decision reads Plume's rayQuery capability");
+  const std::string effects = ReadAll(folder + "/car_rt_refl.h") + ReadAll(folder + "/car_rt_ao.h");
+  Check(!effects.empty() && !has(effects, "Direct3D 12 only for now"), "the effects' headers do not say Direct3D 12 only");
+  // and none of the rules' headers (the hit shading's plan and material rules were written while Vulkan waited) says Vulkan waits for a Plume
+  std::string rules_text;
+  for (const char* file : {"car_rt_hit_rules.h", "car_rt_material_rules.h", "car_rt_refl.cpp", "car_rt_ao.cpp"}) {
+    rules_text += ReadAll(folder + "/" + file);
+  }
+  Check(!rules_text.empty() && !has(rules_text, "until Plume") && !has(rules_text, "waits for Plume") && !has(rules_text, "D3D12 only until"),
+        "the hit shading's headers do not say Vulkan waits for a Plume");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -599,10 +759,11 @@ int main(int argc, char** argv) {
   TestStats();
   TestScope();
   TestProbe();
-  TestPlumeRayQuery();
+  TestSupportDecision();
   TestBuildableMesh();
   if (argc > 1) {
     TestShaderParity(argv[1]);
+    TestSpirvBuild(argv[1]);
   }
   std::printf("car_rt_scene_rules_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

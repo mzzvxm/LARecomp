@@ -173,7 +173,7 @@ class GPUSettings final : public rex::SettingOwner {
     "Live.", rex::kDebugOnly, rex::Range{0.0625, 1.0});
 
   REX_SETTING(std::string, mcla_gpu_ao_rt, "auto", "Diagnostic: the ray traced part of the ambient occlusion and the contact shadows, where the graphics card can ray trace (Direct3D 12 with ray "
-    "tracing 1.1): a few short rays from the pixels near your car and the cars beside it, against their real shape, "
+    "tracing 1.1, or Vulkan with ray queries): a few short rays from the pixels near your car and the cars beside it, against their real shape, "
     "darken what the camera does not see (the far side of a wheel well, the body over a tyre, the road at the foot of a car and between two cars) "
     "and shadow the cars' own parts and the road from the sun exactly. "
     "auto (the default): both, where the ambient occlusion or the contact shadows are on; off: the screen-space passes alone, to compare with; "
@@ -260,7 +260,7 @@ class GPUSettings final : public rex::SettingOwner {
     "whether a car effect asks for them or not. Never saved. Live.", rex::kDebugOnly, rex::Range{0, 3600});
 
   REX_SETTING(i32, mcla_gpu_car_rt_cars, -1, "Debug: how many OTHER cars (opponents, traffic, parked cars) the ray traced car effects see besides your own: your car's paint and chrome "
-    "reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 14 m of your car on the High class, 2 within 10 m on "
+    "reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 20 m of your car on the High class, 2 within 14 m on "
     "the Mid class, none on the Low class); 0 turns the other cars off (your car alone, as it was); 1 to 8 asks for that many. Each car is built "
     "once into ray tracing structures (8 to 10 MiB at full detail) and a new car appears in parts over a few frames. Live.", rex::kDebugOnly, rex::Range{-1, 8});
 
@@ -278,7 +278,7 @@ class GPUSettings final : public rex::SettingOwner {
     "data first: a car built from it wherever it is, a car placed from memory beside it is dropped. The same class limits apply (nearest cars, by distance to your car). Live.", rex::kDebugOnly, rex::Range{0, 2});
 
   REX_SETTING(f64, mcla_gpu_car_rt_cars_radius, 0.0, "Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's "
-    "class decides, 10 to 14 m). The reflection reaches 4 m from your car's paint, so a car more than about 10 m away cannot show in it. Live.", rex::kDebugOnly, rex::Range{0.0, 60.0});
+    "class decides, 20 m on the High class, 14 m on the Mid class). The reflection reaches another car 18 m (High) or 12 m (Mid) away (mcla_gpu_car_rt_hit_reach) and a car's half length is 2 m, so a car whose centre is farther than the radius cannot show in it. Live.", rex::kDebugOnly, rex::Range{0.0, 60.0});
 
   REX_SETTING(i32, mcla_gpu_car_rt_cars_traffic, -1, "Debug (the fix's own switch): how many TRAFFIC and PARKED cars the ray traced car effects see built from their own model data (mcla_gpu_car_rt_cars_model), besides the racers: the cars "
     "of the game's ambient list (the renderer's traffic client) that the camera does not draw this frame, ranked by their distance to your car within the class's radius. -1 (the "
@@ -380,7 +380,7 @@ class GPUSettings final : public rex::SettingOwner {
     "whose sun is a rig of its own. false: the car's draws' light, as before. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_car_rt_check, false, "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
-    "DirectX Raytracing 1.1). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
+    "DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
     "vehicle pixels the structures cover and how far the distances are apart. Only the pixels the scene is meant to hold are traced: "
     "the player's car and the other cars the frame kept (mcla_gpu_car_rt_cars); the pixels of other cars are counted apart as not in "
@@ -422,7 +422,7 @@ class GPUSettings final : public rex::SettingOwner {
     "keeps of the ambient light. 1, the default; 0 is the shading as it was, above 1 makes the glints stronger. Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
 
   REX_SETTING(f64, mcla_gpu_car_rt_hit_reach, 0.0, "Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). "
-    "The weight of a hit falls over this from three quarters of it. Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours "
+    "The weight of a hit falls over this from three quarters of it (0.7 on the Mid class). Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours "
     "(mcla_gpu_car_rt_cars_radius moves that). Live.", rex::kDebugOnly, rex::Range{0.0, 20.0});
 
   REX_SETTING(f64, mcla_gpu_car_rt_clearcoat, -1.0, "Debug: the clear-coat ray of the ray traced car reflection: one more ray along the exact mirror direction (no cone, no filter) beside the glossy cone, added to it by a share that follows the paint's "
@@ -474,7 +474,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_car_selfrefl_length, 2.0, "Diagnostic: how far the car self-reflection's ray goes, in the game's world units (about metres). Live.", rex::kDebugOnly, rex::Range{0.2, 6.0});
 
-  REX_SETTING(std::string, mcla_gpu_car_selfrefl_rt, "auto", "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1), your car's reflection of "
+  REX_SETTING(std::string, mcla_gpu_car_selfrefl_rt, "auto", "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), your car's reflection of "
     "its own body comes from its real shape, not from the picture of the car on the screen: a part the camera cannot see (the back of the "
     "wing, a mirror's far side) shows in the paint as it does in a mirror, and thin parts are exact. auto (the default) is on there while the "
     "car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the "

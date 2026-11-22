@@ -630,7 +630,8 @@ Song SongFromFile(const fs::path& path, const Override& defaults, const Override
 }
 
 std::vector<fs::path> MusicFolders(const fs::path& exe_dir) {
-    std::vector<fs::path> folders{exe_dir / "music"};
+    // The folder's name is found whatever its case (a Linux file system tells "Music" from "music").
+    std::vector<fs::path> folders{mc::modloader::FindDirNoCase(exe_dir, "music")};
 #if defined(_WIN32)
     if (const char* home = std::getenv("USERPROFILE")) {
         folders.push_back(fs::path(home) / "Documents" / "Rockstar Games" / "LARecomp" /
