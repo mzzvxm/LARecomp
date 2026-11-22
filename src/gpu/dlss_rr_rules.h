@@ -406,6 +406,21 @@ inline Matrix4 WorldToCameraView(const Camera& c) {
   return out;
 }
 
+// The camera of the two matrices above. They are one view space's two ways, and that view space has to be the one the projection in the common constants (cameraViewToClip) is of: Ray Reconstruction reads
+// worldToCameraView next to cameraViewToClip (NGX: WORLD_TO_VIEW_MATRIX beside VIEW_TO_CLIP_MATRIX; the integration guide 3.4.9: "its World To View Matrix and View To Clip Space Matrix") to turn the world
+// space normals and the hit distance into the reflection's motion. Camera::forward, as the two functions above use it, is the view space's +z axis in the world. Streamline's own helper (sl_matrix_helpers.h
+// recalculateCameraMatrices) takes +z as forward (a left-handed view), but the game's view space is right-handed and looks along -z (temporal_camera.h: the view inverse's rows are right, up, BACKWARD and the
+// position; the projection puts the near plane at view z = -5): fed the world forward, the matrices mirror every point's view-space z, a point in front of the camera is behind it for the projection, and every
+// pixel whose hit distance is not 0 moves its reflection's history the wrong way. `view_looks_along_negative_z` says the engine's view space is the game's (the axis is flipped to point backward); with it
+// false the camera is returned as it is. dlss_rr_rules_test.cpp CheckGameViewSpace.
+inline Camera MatrixCamera(const Camera& world_camera, bool view_looks_along_negative_z) {
+  Camera out = world_camera;
+  if (view_looks_along_negative_z) {
+    for (float& f : out.forward) f = -f;
+  }
+  return out;
+}
+
 // The modes RR takes are DLSS's five, at DLSS's ratios (the integration guide 3.2).
 enum class Mode : uint8_t { kDlaa, kQuality, kBalanced, kPerformance, kUltraPerformance, kCount };
 constexpr double RatioOf(Mode m) {
@@ -883,6 +898,8 @@ struct RawFrame {
   bool context_ready = false;  // the RR context exists, its feature made
   bool armed = false;          // this frame is upscaled (the upscaler's context is ready and the frame jitters)
   bool play_view = false;      // the frame's main view is the play view (no pause, garage or map world)
+  bool row_auto = false;       // the DENOISER row is AUTO (and the debug switch leaves the row to decide): RR takes the frame for the effects AUTO trusts it with, so an effect it does not trust keeps its own
+                               // filter in that frame (kAutoKeepsOurs). The row's DLSS RR value and the debug switch's "on" are not AUTO: every effect with a raw mode goes raw there.
 };
 enum class RawWhy : uint8_t {
   kRaw,           // raw: RR takes this frame and the effect hands it its noise
@@ -891,6 +908,7 @@ enum class RawWhy : uint8_t {
   kNoContext,     // the RR context is being made (or was not asked for): Super Resolution takes the frames meanwhile
   kNoRrFrame,     // this frame is not one RR takes: not upscaled, or not the play view
   kSwitchOff,     // the effect's debug switch is 0: its own filter stays (the A/B)
+  kAutoKeepsOurs, // the row is AUTO and the A/B has not said RR beats ours for this effect (kConsumers' auto_uses_rr): it keeps its own filter although RR takes the frame for another effect
   kCount,
 };
 constexpr const char* RawWhyText(RawWhy w) {
@@ -901,18 +919,33 @@ constexpr const char* RawWhyText(RawWhy w) {
     case RawWhy::kNoContext: return "the Ray Reconstruction context is not made yet";
     case RawWhy::kNoRrFrame: return "this frame is not one Ray Reconstruction takes (not upscaled, or not the play view)";
     case RawWhy::kSwitchOff: return "the effect's debug switch is 0 (it keeps its own filter)";
+    case RawWhy::kAutoKeepsOurs: return "the row is AUTO and AUTO does not trust Ray Reconstruction with this effect yet (it keeps its own filter)";
     case RawWhy::kCount: break;
   }
   return "?";
 }
-// The first reason that applies is the answer; the switch is the last word, so a switch at 0 reads "the switch" only where raw would have been chosen.
-constexpr RawWhy RawWhyOf(const RawFrame& f, bool switch_on) {
+// The first reason that applies is the answer; the switch is the last word, so a switch at 0 reads "the switch" only where raw would have been chosen. `auto_trusted` is kConsumers' auto_uses_rr of the
+// effect: the plan is per EFFECT under AUTO ("RR where the A/B said it is better"), but the frame is one, so with one trusted effect on, RR takes the frame and every other effect with a raw mode
+// would go raw with it (RR denoising what ours cleans better) unless its own cell says no. Only the row AUTO asks it (RawFrame::row_auto); the DLSS RR value takes every effect with a raw mode.
+constexpr RawWhy RawWhyOf(const RawFrame& f, bool switch_on, bool auto_trusted = true) {
   if (!f.plan_rr) return RawWhy::kPlanOurs;
   if (f.failed) return RawWhy::kFailed;
   if (!f.context_ready) return RawWhy::kNoContext;
   if (!f.armed || !f.play_view) return RawWhy::kNoRrFrame;
+  if (f.row_auto && !auto_trusted) return RawWhy::kAutoKeepsOurs;
   if (!switch_on) return RawWhy::kSwitchOff;
   return RawWhy::kRaw;
+}
+// The consumer of the board an effect with a raw mode is (kConsumers' cells are per consumer, the raw modes per effect).
+constexpr Consumer ConsumerOfEffect(RawEffect e) {
+  switch (e) {
+    case RawEffect::kSsr: return Consumer::kSsr;
+    case RawEffect::kCarRefl: return Consumer::kCarRtReflections;
+    case RawEffect::kRtGi: return Consumer::kRtGi;
+    case RawEffect::kRtLights: return Consumer::kRtLights;
+    case RawEffect::kCount: break;
+  }
+  return Consumer::kSsr;
 }
 struct RawModes {
   RawWhy ssr = RawWhy::kPlanOurs;
@@ -925,8 +958,9 @@ struct RawModes {
   constexpr bool RtLights() const { return rt_lights == RawWhy::kRaw; }
   constexpr bool operator==(const RawModes&) const = default;
 };
-constexpr RawModes RawModesOf(const RawFrame& f, bool switch_ssr, bool switch_car_refl, bool switch_rt_gi = true, bool switch_rt_lights = true) {
-  return {RawWhyOf(f, switch_ssr), RawWhyOf(f, switch_car_refl), RawWhyOf(f, switch_rt_gi), RawWhyOf(f, switch_rt_lights)};
+constexpr RawModes RawModesOf(const RawFrame& f, bool switch_ssr, bool switch_car_refl, bool switch_rt_gi = true, bool switch_rt_lights = true, const ConsumerTable& table = kConsumers) {
+  return {RawWhyOf(f, switch_ssr, table[size_t(ConsumerOfEffect(RawEffect::kSsr))].auto_uses_rr), RawWhyOf(f, switch_car_refl, table[size_t(ConsumerOfEffect(RawEffect::kCarRefl))].auto_uses_rr),
+          RawWhyOf(f, switch_rt_gi, table[size_t(ConsumerOfEffect(RawEffect::kRtGi))].auto_uses_rr), RawWhyOf(f, switch_rt_lights, table[size_t(ConsumerOfEffect(RawEffect::kRtLights))].auto_uses_rr)};
 }
 // The debug switches' value: 0 keeps the effect's filter, anything else (the default 1) is raw while RR takes the frame.
 constexpr bool RawSwitchOn(int value) { return value != 0; }

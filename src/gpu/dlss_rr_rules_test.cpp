@@ -290,6 +290,76 @@ void CheckMatrices() {
   Check(Near(o.view_to_world.m[12], 10) && Near(o.world_to_view.m[12], -(10 * 0 + 2 * 0 + -5 * -1)), "options: the camera matrices");
 }
 
+// The game's view space (temporal_camera.h): right-handed, the camera looks along view -z, the view inverse's rows are right, up, BACKWARD and the position, and the projection (view to clip, row
+// vectors) has clip.w = -z. The matrices RR gets in its options must be that view space's, or its reflection motion (world normals + hit distance through worldToCameraView and cameraViewToClip) is mirrored.
+void CheckGameViewSpace() {
+  const float c30 = 0.8660254f, s30 = 0.5f;
+  Camera cam;  // the world's forward, as TemporalInputs carries it
+  cam.position[0] = 2903; cam.position[1] = 10; cam.position[2] = -40;
+  cam.right[0] = c30; cam.right[1] = 0; cam.right[2] = s30;
+  cam.up[0] = 0; cam.up[1] = 1; cam.up[2] = 0;
+  const float back[3] = {-s30, 0, c30};  // right x up
+  cam.forward[0] = -back[0]; cam.forward[1] = -back[1]; cam.forward[2] = -back[2];
+  // The game's own view inverse: rows right, up, backward, position. Its inverse is the game's view matrix.
+  float game_v2w[16] = {c30, 0, s30, 0, 0, 1, 0, 0, back[0], back[1], back[2], 0, 2903, 10, -40, 1};
+
+  const Camera converted = MatrixCamera(cam, true);
+  Check(converted.forward[0] == back[0] && converted.forward[1] == back[1] && converted.forward[2] == back[2], "the view space's third axis is the camera's backward");
+  Check(converted.position[0] == cam.position[0] && converted.right[2] == cam.right[2] && converted.up[1] == cam.up[1], "position, right and up are untouched");
+  const Camera kept = MatrixCamera(cam, false);
+  Check(kept.forward[0] == cam.forward[0] && kept.forward[2] == cam.forward[2], "a left-handed engine's camera is returned as it is");
+
+  const Matrix4 v2w = CameraViewToWorld(converted);
+  const Matrix4 w2v = WorldToCameraView(converted);
+  bool same = true;
+  for (int i = 0; i < 16; ++i) same = same && Near(v2w.m[i], game_v2w[i], 1e-4f);
+  Check(same, "view-to-world is the game's own view inverse, element for element");
+  const Matrix4 id = Mul(v2w, w2v);
+  bool identity = true;
+  for (int i = 0; i < 16; ++i) identity = identity && Near(id.m[i], (i % 5 == 0) ? 1.0f : 0.0f, 1e-3f);
+  Check(identity, "and its inverse is the world-to-view the options carry");
+
+  // The projection of the common constants: view to clip with clip.w = -z (near plane at z = -5, x scale 0.9, y scale 1.6), row vectors.
+  const float proj[16] = {0.9f, 0, 0, 0, 0, 1.6f, 0, 0, 0, 0, 0.0001f, -1, 0, 0, 0.5f, 0};
+  const auto clip_of = [&](const Matrix4& world_to_view, const float world[3], float out[4]) {
+    float view[4] = {};
+    for (int c = 0; c < 4; ++c) {
+      view[c] = world[0] * world_to_view.m[c] + world[1] * world_to_view.m[4 + c] + world[2] * world_to_view.m[8 + c] + world_to_view.m[12 + c];
+    }
+    for (int c = 0; c < 4; ++c) {
+      out[c] = view[0] * proj[c] + view[1] * proj[4 + c] + view[2] * proj[8 + c] + view[3] * proj[12 + c];
+    }
+    return view[2];
+  };
+  // A point 10 ahead and 3 to the right of the camera.
+  float point[3];
+  for (int k = 0; k < 3; ++k) point[k] = cam.position[k] + 10.0f * cam.forward[k] + 3.0f * cam.right[k];
+  float clip[4] = {};
+  const float view_z = clip_of(w2v, point, clip);
+  Check(Near(view_z, -10.0f, 1e-2f), "a point 10 ahead is at view z = -10 (the game's view looks along -z)");
+  Check(clip[3] > 9.9f && clip[3] < 10.1f, "its clip w is positive (in front of the camera)");
+  Check(clip[0] / clip[3] > 0.26f && clip[0] / clip[3] < 0.28f, "3 to the right of 10 ahead is x = 0.27 of the half width (the right is the right)");
+  // What the world forward would have given: the mirror, which the projection reads as behind the camera.
+  const Matrix4 w2v_wrong = WorldToCameraView(cam);
+  float clip_wrong[4] = {};
+  const float z_wrong = clip_of(w2v_wrong, point, clip_wrong);
+  Check(Near(z_wrong, 10.0f, 1e-2f) && clip_wrong[3] < 0.0f, "the unconverted camera puts that point at view z = +10, behind the camera for the game's projection");
+
+  // A proper rotation (determinant +1) in the game's view space; the mirror would be -1.
+  const auto det = [](const Matrix4& m) {
+    const float* a = m.m;  // rows 0..2, columns 0..2
+    return a[0] * (a[5] * a[10] - a[6] * a[9]) - a[1] * (a[4] * a[10] - a[6] * a[8]) + a[2] * (a[4] * a[9] - a[5] * a[8]);
+  };
+  Check(Near(det(v2w), 1.0f, 1e-4f) && Near(det(CameraViewToWorld(cam)), -1.0f, 1e-4f), "the converted view's rotation is proper (+1); the world-forward one is a reflection (-1)");
+
+  // MakeOptions carries whatever camera it is given: the converted one's matrices end up in the options.
+  const Inputs in = FullInputs();
+  const Options o = MakeOptions(Mode::kQuality, 1280, 720, PlanTags(in), converted);
+  bool carried = true;
+  for (int i = 0; i < 16; ++i) carried = carried && Near(o.view_to_world.m[i], game_v2w[i], 1e-4f) && Near(o.world_to_view.m[i], w2v.m[i]);
+  Check(carried, "the options carry the converted camera's matrices");
+}
+
 void CheckJitter() {
   Check(JitterPhases(1.0) == 32, "DLAA: 32 positions (SR's 8 is not enough)");
   Check(JitterPhases(1.5) == 32, "1.5x: 32 (SR's 18)");
@@ -1210,13 +1280,77 @@ void CheckRawModes() {
 
 }  // namespace
 
+// The row AUTO takes RR for the effects kConsumers' auto_uses_rr trusts it with; the frame is one, so an effect it does not trust must keep its own filter in a frame RR takes for another effect.
+// The DLSS RR value (row_auto false) takes every effect with a raw mode.
+void CheckAutoRawModes() {
+  ConsumerTable shipped = kConsumers;
+  ConsumerTable ssr_only = kConsumers;
+  ssr_only[size_t(Consumer::kSsr)].auto_uses_rr = true;
+  ConsumerTable car_only = kConsumers;
+  car_only[size_t(Consumer::kCarRtReflections)].auto_uses_rr = true;
+  ConsumerTable both = ssr_only;
+  both[size_t(Consumer::kCarRtReflections)].auto_uses_rr = true;
+  Check(ConsumerOfEffect(RawEffect::kSsr) == Consumer::kSsr && ConsumerOfEffect(RawEffect::kCarRefl) == Consumer::kCarRtReflections && ConsumerOfEffect(RawEffect::kRtGi) == Consumer::kRtGi &&
+        ConsumerOfEffect(RawEffect::kRtLights) == Consumer::kRtLights,
+        "each raw effect maps to its consumer of the board");
+
+  RawFrame ok;
+  ok.plan_rr = ok.context_ready = ok.armed = ok.play_view = true;
+  // row_auto false: the table is not asked, every effect with a raw mode and its switch on is raw (the DLSS RR value, the debug switch's on, and every frame before this rule existed)
+  for (const ConsumerTable* t : {&shipped, &ssr_only, &car_only, &both}) {
+    const RawModes m = RawModesOf(ok, true, true, true, true, *t);
+    Check(m.Ssr() && m.CarRefl(), "the DLSS RR value takes every effect with a raw mode whatever AUTO trusts");
+  }
+  RawFrame autoframe = ok;
+  autoframe.row_auto = true;
+  {
+    const RawModes m = RawModesOf(autoframe, true, true, true, true, shipped);
+    Check(!m.Ssr() && !m.CarRefl() && m.ssr == RawWhy::kAutoKeepsOurs && m.car_refl == RawWhy::kAutoKeepsOurs, "AUTO with nothing trusted: no effect is raw (the shipped table: the frame is RR's only through another effect, never through these)");
+    // INTEGRATION: the bounce light's pass and the light visibility (rt-lights-d1, city-rt-all) are effects of the same table: AUTO trusts RR with neither yet
+    Check(!m.RtGi() && !m.RtLights() && m.rt_gi == RawWhy::kAutoKeepsOurs && m.rt_lights == RawWhy::kAutoKeepsOurs, "AUTO with nothing trusted: the bounce light's pass and the light visibility keep their own filter too");
+  }
+  {
+    const RawModes m = RawModesOf(autoframe, true, true, true, true, ssr_only);
+    Check(m.Ssr() && !m.CarRefl() && m.car_refl == RawWhy::kAutoKeepsOurs, "AUTO trusting only the screen-space reflections: the cars' reflections keep their own filter in the frame RR takes for the SSR");
+    const RawModes c = RawModesOf(autoframe, true, true, true, true, car_only);
+    Check(!c.Ssr() && c.CarRefl() && c.ssr == RawWhy::kAutoKeepsOurs, "and the other way round");
+    const RawModes b = RawModesOf(autoframe, true, true, true, true, both);
+    Check(b.Ssr() && b.CarRefl(), "AUTO trusting both: both are raw");
+  }
+  // the order: the plan, a failure, the context, the frame come first; the AUTO rule comes before the effect's own switch
+  bool order = true;
+  for (int bits = 0; bits < 32; ++bits) {
+    for (int sw = 0; sw < 2; ++sw) {
+      for (int trust = 0; trust < 2; ++trust) {
+        for (int row = 0; row < 2; ++row) {
+          RawFrame f;
+          f.plan_rr = (bits & 1) != 0;
+          f.failed = (bits & 2) != 0;
+          f.context_ready = (bits & 4) != 0;
+          f.armed = (bits & 8) != 0;
+          f.play_view = (bits & 16) != 0;
+          f.row_auto = row != 0;
+          const RawWhy got = RawWhyOf(f, sw != 0, trust != 0);
+          const RawWhy want = !f.plan_rr ? RawWhy::kPlanOurs : f.failed ? RawWhy::kFailed : !f.context_ready ? RawWhy::kNoContext : (!f.armed || !f.play_view) ? RawWhy::kNoRrFrame
+                              : (f.row_auto && !trust) ? RawWhy::kAutoKeepsOurs : !sw ? RawWhy::kSwitchOff : RawWhy::kRaw;
+          order = order && got == want;
+        }
+      }
+    }
+  }
+  Check(order, "the reasons: plan, failed, context, frame, AUTO's trust, the effect's switch (32 frames x switch x trust x row)");
+  Check(RawWhyOf(ok, true) == RawWhy::kRaw && RawWhyOf(autoframe, true) == RawWhy::kRaw, "the trust defaults to true: a caller that does not ask the table gets the rule it had");
+}
+
 int main() {
   CheckRawModes();
+  CheckAutoRawModes();
   CheckIds();
   CheckFormats();
   CheckPlanHappyPaths();
   CheckPlanRefusals();
   CheckMatrices();
+  CheckGameViewSpace();
   CheckJitter();
   CheckSelection();
   CheckGate();

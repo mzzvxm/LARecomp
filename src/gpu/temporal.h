@@ -831,6 +831,7 @@ class TemporalSystem {
   rr::Facts rr_facts_;
   bool rr_facts_valid_ = false;
   rr::DebugSwitch rr_debug_ = rr::DebugSwitch::kRow;
+  rr::Denoiser rr_setting_ = rr::Denoiser::kAuto;  // the row as the last plan read it (RawFrame::row_auto)
   // RR-3: the companion context. `rr_keeper_` holds it after the want stops; `rr_request_` is what it was asked for (the Super Resolution request with ray_reconstruction set);
   // `rr_context_asked_` it is asked for now; `rr_asked_at_` for the "made after" line; `rr_ready_reported_` that line was written. The room check's answer, when it is asked again
   // (`rr_room_until_`), the wait of the current refusal series (`rr_room_wait_ms_`) and whether a refusal was logged (`rr_room_refused_logged_`).
