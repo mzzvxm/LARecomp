@@ -235,6 +235,28 @@ void TestStanding() {
         "filter: soft on an unknown class");
   Check(!StandingOf(Effect::kBounceLight, Make(GpuClass::kHigh, false, "ultra", "off", "off", "auto", "game", true)).on,
         "bounce: auto on an unknown class is off");
+  // A handheld (the Steam Deck: Low with the soft shadow filter for `auto`): the filter is on for auto, so the compare key flips it OFF; the flag
+  // is read only once the class is known, and means nothing on another class.
+  {
+    Saved deck = Make(GpuClass::kLow, true, "off", "off", "off", "off", "auto", true);
+    Check(!StandingOf(Effect::kShadowFilter, deck).on, "filter: auto on a plain Low class is the game's");
+    deck.handheld = true;
+    Check(StandingOf(Effect::kShadowFilter, deck).on, "filter: auto on a handheld is soft (on)");
+    deck.filter = "game";
+    Check(!StandingOf(Effect::kShadowFilter, deck).on, "filter: game on a handheld");
+    deck.filter = "auto";
+    deck.class_known = false;
+    Check(!StandingOf(Effect::kShadowFilter, deck).on, "filter: the handheld's cell waits for the class to be known");
+    Saved mid = Make(GpuClass::kMid, true, "off", "off", "off", "off", "auto", true);
+    mid.handheld = true;
+    Check(StandingOf(Effect::kShadowFilter, mid).on, "filter: the flag changes nothing on Mid (auto is pcss, on)");
+    const Press flip = PressOf(Effect::kShadowFilter, Force::kNone, [&] {
+      Saved s = Make(GpuClass::kLow, true, "off", "off", "off", "off", "auto", true);
+      s.handheld = true;
+      return s;
+    }());
+    Check(flip.force == Force::kOff && !flip.shown_on, "filter: a press on a handheld turns the soft filter off");
+  }
   Check(!StandingOf(Effect::kNone, Make(GpuClass::kHigh, true, "ultra", "ultra", "default", "ultra", "soft", true)).on,
         "no effect is never on");
 }
