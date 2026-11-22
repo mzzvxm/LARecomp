@@ -301,6 +301,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ao_blue_noise": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the ambient occlusion's, the bounce light's and the contact shadows' sampling noise (which direction and how far along it each pixel \"\n    \"looks) comes from a blue noise tile that has no lattice in it, so what the blur and the average over frames leave of the noise is a fine grain no \"\n    \"pattern can be read from. False: the first version's interleaved gradient noise, a diagonal lattice whose leftovers show as thin diagonal lines on \"\n    \"roads and kerbs, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ao_fast_math": {
   "type": "bool",
   "default": "true",

@@ -222,6 +222,7 @@
 {"mcla_gpu_adapter", "MCLA/GPU"},
 {"mcla_gpu_anisotropy", "MCLA/GPU"},
 {"mcla_gpu_ao", "MCLA/GPU"},
+{"mcla_gpu_ao_blue_noise", "MCLA/GPU"},
 {"mcla_gpu_ao_car_reach", "MCLA/GPU"},
 {"mcla_gpu_ao_census", "MCLA/GPU"},
 {"mcla_gpu_ao_fade_end", "MCLA/GPU"},
