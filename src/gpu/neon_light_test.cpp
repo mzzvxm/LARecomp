@@ -1153,7 +1153,7 @@ void SourceChecks(const std::string& src) {
           "both are in the manifest and the meta table");
   }
   // the class table: off on the integrated class, on elsewhere
-  Check(Has(class_h, "kNeonLight,") && Has(class_h, "{\"mcla_gpu_neon_light\", \"off\", \"on\", \"on\"},") && Has(class_h, "inline constexpr int kEffectCount = 15;"), "AUTO is off on Low and on on Mid and High");
+  Check(Has(class_h, "kNeonLight,") && Has(class_h, "{\"mcla_gpu_neon_light\", \"off\", \"on\", \"on\"},") && Has(class_h, "inline constexpr int kEffectCount = 16;"), "AUTO is off on Low and on on Mid and High");
   // the row: on the lighting page after LIGHT SHADOWS, no dependency
   {
     const size_t shadows = At(menu, "Str(\"PM_RxGpuLightShadows\"");

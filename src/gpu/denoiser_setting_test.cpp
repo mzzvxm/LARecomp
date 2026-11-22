@@ -481,10 +481,10 @@ void SettingsChecks(const std::string& dir) {
   Check(Has(manifest, "DENOISER: who cleans the grain out of the noisy effects") && Has(den, "DENOISER: who cleans the grain out of the noisy effects"), "the help reads the same in the manifest and the header");
   // the debug switch: auto by default, four words, still debug-only and restart-only
   const std::string rrdef = DefinitionOf(header, "mcla_gpu_dlss_rr");
-  Check(!rrdef.empty() && Has(rrdef, "mcla_gpu_dlss_rr, \"auto\", \"") && Has(rrdef, "rex::kDebugOnly, rex::kRestart, rex::Allowed(\"auto\", \"off\", \"probe\", \"on\")"), "mcla_gpu_dlss_rr is auto by default with four words, still debug-only and restart-only");
+  Check(!rrdef.empty() && Has(rrdef, "mcla_gpu_dlss_rr, \"auto\", \"") && Has(rrdef, "rex::kDebugOnly, rex::kRequiresRestart, rex::Allowed(\"auto\", \"off\", \"probe\", \"on\")"), "mcla_gpu_dlss_rr is auto by default with four words, still debug-only and restart-only");
   const size_t rm = At(manifest, "\"mcla_gpu_dlss_rr\": {");
   const std::string rentry = rm == std::string::npos ? std::string() : manifest.substr(rm, At(manifest, "\"comments\"", rm) - rm);
-  Check(Has(rentry, "\"default\": \"\\\"auto\\\"\"") && Has(rentry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"probe\\\", \\\"on\\\")") && Has(rentry, "rex::kDebugOnly") && Has(rentry, "rex::kRestart"), "the manifest entry is the same");
+  Check(Has(rentry, "\"default\": \"\\\"auto\\\"\"") && Has(rentry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"probe\\\", \\\"on\\\")") && Has(rentry, "rex::kDebugOnly") && Has(rentry, "rex::kRequiresRestart"), "the manifest entry is the same");
   Check(Before(header, std::string("REX_SET") + "TING(std::string, mcla_gpu_denoiser, ", std::string("REX_SET") + "TING(std::string, mcla_gpu_dlss_rr, "), "the row's setting is defined before the debug switch that overrides it");
   // the help of the two agree with the rules' words
   Check(Has(rrdef, "overrides the DENOISER row") && Has(rrdef, "auto (the default): the row decides") && Has(rrdef, "off: nothing of it exists whatever the row says"), "the debug switch's help says it overrides the row");

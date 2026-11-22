@@ -550,7 +550,7 @@ void SourceChecks(const std::string& src) {
     const size_t at = settings.find(", mcla_gpu_headlight_pass, ");
     const size_t end = settings.find(");", at);
     const std::string text = at == std::string::npos ? std::string() : settings.substr(at, end - at);
-    Check(Has(text, "rex::kDebugOnly") && Has(text, "rex::Allowed(\"forward\", \"pass\", \"both\")") && !Has(text, "rex::kRestart"), "the route is debug only, live, and one of the three words");
+    Check(Has(text, "rex::kDebugOnly") && Has(text, "rex::Allowed(\"forward\", \"pass\", \"both\")") && !Has(text, "rex::kRequiresRestart"), "the route is debug only, live, and one of the three words");
   }
   // the hidden debug menu's row (the only place a player-invisible off switch of a fix goes: SETTINGS-REVIEW 7.1) and no row in a player page
   Check(Has(menu, "Str(\"PM_RxDbgHeadlightVia\", \"mcla_gpu_headlight_pass\", \"HEADLIGHTS VIA: \",") && Has(menu, "kHeadlightRouteVals[]  = {\"forward\", \"pass\", \"both\"};"), "the debug rendering page has the HEADLIGHTS VIA row with the three words");

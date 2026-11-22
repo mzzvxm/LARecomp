@@ -98,7 +98,7 @@ enum class Effect : uint8_t {
   kSsr,                   // mcla_gpu_ssr                auto, off, high, ultra (ssr_rules.h; the row REFLECTIONS ON SURFACES)
   kNeonLight,             // mcla_gpu_neon_light         auto, off, on (neon_light.h, local_lights_sources.h; the row NEON LIGHT)
 };
-inline constexpr int kEffectCount = 15;
+inline constexpr int kEffectCount = 16;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {

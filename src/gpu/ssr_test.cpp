@@ -2244,7 +2244,7 @@ void TestSources(const std::string& dir) {
   {
     const std::string gpu_class_h = Read(dir, "gpu_class.h"), gpu_class_test = Read(dir, "gpu_class_test.cpp"), pause = Read(dir, "../mc_engine/menus/pause_menu.cpp"),
                       debug_pages = Read(dir, "../mc_engine/menus/debug_menu_pages.cpp");
-    Check(Has(gpu_class_h, "kSsr,                   // mcla_gpu_ssr") && Has(gpu_class_h, "inline constexpr int kEffectCount = 15;") && Has(gpu_class_h, "{\"mcla_gpu_ssr\", \"off\", \"off\", \"off\"},"),
+    Check(Has(gpu_class_h, "kSsr,                   // mcla_gpu_ssr") && Has(gpu_class_h, "inline constexpr int kEffectCount = 16;") && Has(gpu_class_h, "{\"mcla_gpu_ssr\", \"off\", \"off\", \"off\"},"),
           "GB-J: the class table has the effect, with a cell of off on every class until the owner has seen the pictures");
     Check(Has(gpu_class_test, "{Effect::kSsr, \"mcla_gpu_ssr\", \"off\", \"off\", \"off\", \"AUTO (OFF)\", \"AUTO (OFF)\", \"AUTO (OFF)\"},"), "GB-J: the class test pins the cells");
     Check(Has(cpp, "static LiveText text(\"mcla_gpu_ssr\");") && Has(cpp, "ssr::LevelFromText(gpu_class::Resolve(gpu_class::Effect::kSsr, Setting().Get()))") && !Has(cpp, "mcla_gpu_ssr.Get()"),

@@ -1873,7 +1873,7 @@ void SourceChecks(const std::string& src) {
     }
     const size_t ab_at = settings.find(", mcla_gpu_local_lights_ab, ");
     const size_t ab_end = settings.find(");", ab_at);
-    Check(ab_at != std::string::npos && settings.substr(ab_at, ab_end - ab_at).find("rex::kRestart") != std::string::npos, "the lamp A/B is a restart setting (the grid is built when the city's lights load)");
+    Check(ab_at != std::string::npos && settings.substr(ab_at, ab_end - ab_at).find("rex::kRequiresRestart") != std::string::npos, "the lamp A/B is a restart setting (the grid is built when the city's lights load)");
     Check(Has(settings, "bool, mcla_gpu_local_lights, false,"), "the pass is off by default");
     Check(Has(settings, "i32, mcla_gpu_local_lights_sources, 0,") && Has(settings, "i32, mcla_gpu_local_lights_ab, 0,") && Has(settings, "f64, mcla_gpu_local_lights_gain, 1.0,"), "the defaults: no source, the grid, gain 1");
     Check(Has(settings, "i32, mcla_gpu_local_lights_cost_off, 0,") && Has(settings, "rex::kDebugOnly, rex::Range{0, 7});"), "GB-NEON-COST: the cost A/B defaults to 0 (all three savings on), range 0 to 7");
@@ -1881,12 +1881,12 @@ void SourceChecks(const std::string& src) {
     {
       const size_t at = settings.find(", mcla_gpu_neon_contact, ");
       const size_t end = settings.find(");", at);
-      Check(at != std::string::npos && settings.substr(at, end - at).find("rex::kRestart") == std::string::npos, "the contact term's A/B is live (no restart trait)");
+      Check(at != std::string::npos && settings.substr(at, end - at).find("rex::kRequiresRestart") == std::string::npos, "the contact term's A/B is live (no restart trait)");
     }
     Check(Has(settings, "std::string, mcla_gpu_headlight_pass, \"forward\",") && Has(settings, "rex::Allowed(\"forward\", \"pass\", \"both\")"), "the headlight route's default is the forward stage, its words are forward, pass and both");
     const size_t route_at = settings.find(", mcla_gpu_headlight_pass, ");
     const size_t route_end = settings.find(");", route_at);
-    Check(route_at != std::string::npos && settings.substr(route_at, route_end - route_at).find("rex::kRestart") == std::string::npos, "the headlight route is live (no restart trait)");
+    Check(route_at != std::string::npos && settings.substr(route_at, route_end - route_at).find("rex::kRequiresRestart") == std::string::npos, "the headlight route is live (no restart trait)");
   }
   Check(Has(cpp, "st::mcla_gpu_local_lights.Get()") && Has(cpp, "mcla_gpu_local_lights_sources.Get()") && Has(cpp, "mcla_gpu_local_lights_ab.Get()") && Has(cpp, "mcla_gpu_local_lights_gain.Get()") &&
             Has(cpp, "const hp::Route route = headlight_rig::CurrentRoute();"),

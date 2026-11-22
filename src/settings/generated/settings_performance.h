@@ -65,7 +65,7 @@ class PerformanceSettings final : public rex::SettingOwner {
     "version, as bits: 1 memcpy, 2 memset, 4 the row writer, 8 the shader-constant copy, 16 the "
     "constant-bank flush, 32 the C runtime's memcpy. 0 runs all of them recompiled (the A/B switch); 63 is the default. A call "
     "the native version cannot reproduce exactly (overlapping ranges, register or physical-window "
-    "addresses, a command-ring wrap) always goes to the recompiled code. Read at start.", rex::Range{0, 63}, rex::kDebugOnly, rex::kRestart);
+    "addresses, a command-ring wrap) always goes to the recompiled code. Read at start.", rex::Range{0, 63}, rex::kDebugOnly, rex::kRequiresRestart);
 
   // Where the frame limiter waits. The game updates on its main loop
   // (sub_82131508) and presents from "[MC] Render Thread" (sub_82306238), one
@@ -83,7 +83,7 @@ class PerformanceSettings final : public rex::SettingOwner {
     "readable asks the address alias that answered last first, 4 the lookups by device address in the constant banks "
     "and the constant upload keep their last answer, 8 the side-view rule check of a depth target keeps its last answer. "
     "0 runs all of them as they were (the A/B switch); 15 is the default. None of them changes a picture or a frame. "
-    "Read at start.", rex::Range{0, 15}, rex::kDebugOnly, rex::kRestart);
+    "Read at start.", rex::Range{0, 15}, rex::kDebugOnly, rex::kRequiresRestart);
 
   // Below 0 is auto (gpu/gpu_class.h kScales): 1.0 (the game's own) on a high-end graphics card, 0.75 on a mid-range one, 0.5 on
   // integrated graphics and until the card is known. 0 is none, so it cannot be the sentinel as it is for the LOD scales.
@@ -157,11 +157,11 @@ class PerformanceSettings final : public rex::SettingOwner {
   REX_SETTING(i32, race_line_native_mask, 3, "Which of the Race Line's two hottest functions run as native host code instead of the recompiled version, as "
     "bits: 1 the backward speed pass (sub_8216CBC0), 2 the forward pass (sub_8216CDD0). 0 runs both recompiled (the A/B "
     "switch); 3 is the default. Their results are bit for bit the recompiled functions'. Needs FMA3; a call whose memory "
-    "is not plain guest RAM always goes to the recompiled code. Read at start.", rex::Range{0, 3}, rex::kDebugOnly, rex::kRestart);
+    "is not plain guest RAM always goes to the recompiled code. Read at start.", rex::Range{0, 3}, rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(i32, race_line_check_calls, 3000, "With the native Race Line passes on: the first this many calls of each pass are also run by the recompiled function on the same "
     "input and the results compared; any difference switches that native pass off for the rest of the session (a "
-    "warning in the log says where). 0 = no check. Read at start.", rex::Range{0, 1000000000}, rex::kDebugOnly, rex::kRestart);
+    "warning in the log says where). 0 = no check. Read at start.", rex::Range{0, 1000000000}, rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, race_line_stats, false, "Log one line every 10 s about the Race Line: the jobs queued, skipped by the cap and run, and the time they took. Live.", rex::kDebugOnly);
 

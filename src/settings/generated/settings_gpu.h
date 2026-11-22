@@ -25,24 +25,24 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, build_city_pack, false, "Builds the city pack (the city's geometry, for ray traced shadows) from your game files and closes, without starting the game: no "
     "window, no graphics. The launcher runs this in its setup on a PC whose graphics card can ray trace, so that ray traced shadows are ready at the first start; "
     "the game builds it itself in the background when it is missing and ray traced shadows are on. Progress is printed to the console; the log is "
-    "logs/city_pack_build.txt. Exit code 0 when the pack is in place.", rex::kRestart, rex::kDebugOnly);
+    "logs/city_pack_build.txt. Exit code 0 when the pack is in place.", rex::kRequiresRestart, rex::kDebugOnly);
 
-  REX_SETTING(bool, build_city_pack_force, false, "With build_city_pack: build even when the pack in place is current.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(bool, build_city_pack_force, false, "With build_city_pack: build even when the pack in place is current.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, build_city_hit, false, "Builds the city hit data (the hit file and the texture file beside the city pack: the city's surfaces and pictures, for the ray traced effects "
     "that read them) from your game files and closes, without starting the game: no window, no graphics. It needs the city pack (build_city_pack first, or both on one command "
     "line). The launcher runs this in its setup on a PC whose graphics card can ray trace, so that those effects are ready at the first start; the game builds it itself in the "
     "background when it is missing and an effect that reads it is on. Progress is printed to the console like build_city_pack's; the log is logs/city_hit_build.txt. "
-    "Exit code 0 when the hit data is in place.", rex::kRestart, rex::kDebugOnly);
+    "Exit code 0 when the hit data is in place.", rex::kRequiresRestart, rex::kDebugOnly);
 
-  REX_SETTING(bool, build_city_hit_force, false, "With build_city_hit: build even when the hit data in place is current.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(bool, build_city_hit_force, false, "With build_city_hit: build even when the hit data in place is current.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, check_city_hit, false, "Checks the city hit data and closes, without starting the game: is it in place and current for your game files and the city pack beside it? "
     "Stat only (a moment): exit code 0 and the result 'up to date', or 1 and 'not current' with the reason. With build_city_hit, the check runs after the build. Progress "
-    "is printed to the console like build_city_pack's; the log is logs/city_hit_check.txt.", rex::kRestart, rex::kDebugOnly);
+    "is printed to the console like build_city_pack's; the log is logs/city_hit_check.txt.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, check_city_hit_deep, false, "With check_city_hit: read the files back whole instead of checking the stamp (seconds, not a moment): the city pack, the hit file against "
-    "it, and every picture of the texture file. Exit code 0 when all are whole, 1 with the counts of the problems when not.", rex::kRestart, rex::kDebugOnly);
+    "it, and every picture of the texture file. Exit code 0 when all are whole, 1 with the counts of the problems when not.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_compare_effect, "bounce", "Developer tool (builds with LARECOMP_DEV_TOOLS only): which graphics effect the compare key flips off and on, to see "
     "what it does: bounce (the bounce light, the default), contact (contact shadows), shafts (sun shafts), occlusion "
@@ -734,7 +734,7 @@ class GPUSettings final : public rex::SettingOwner {
     "card, sl.dlss_d.dll and nvngx_dlssd.dll next to the exe) and the log says whether this card and driver support it and which sizes it takes, but no frame uses it. on: RR is chosen as the row's DLSS RR value would choose it, "
     "and without the row's rule that an effect it can clean is on (RR over a frame with nothing to denoise, for the A/B and cost runs), which the log says each time the choice changes and why not. While it is chosen, Ray Reconstruction's context is made in the background beside Super Resolution's, which keeps upscaling the frames meanwhile and every frame "
     "Ray Reconstruction cannot take (the pause, garage and map worlds, cutscenes, frames without guides); the switch between them is live and never restarts. Read at the start (Streamline's plugins are chosen when "
-    "it starts; on Vulkan only when DLSS is the saved upscaler).", rex::kDebugOnly, rex::kRestart, rex::Allowed("auto", "off", "probe", "on"));
+    "it starts; on Vulkan only when DLSS is the saved upscaler).", rex::kDebugOnly, rex::kRequiresRestart, rex::Allowed("auto", "off", "probe", "on"));
 
   REX_SETTING(i32, mcla_gpu_dlss_rr_view, 0, "Debug (Ray Reconstruction guides): draws one of the images the DLSS Ray Reconstruction guide pass makes from the G-buffer over the upscaler's output "
     "(perf/DLSS-RR.md, RR-2): 1 the diffuse albedo, 2 the normal (0.5 + 0.5 n), 3 the roughness, 4 the specular albedo, 5 the hit distance (black on a "
@@ -1642,7 +1642,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_local_lights_ab, 0, "Diagnostic (the lamp A/B of the deferred local light pass, GB-H1): what happens to the lamps of a mod's lights.bin (mod_lights.cpp; while the camera is over the mod's rectangle the game lights the scene "
     "with that lamp set alone). 0: the game's own light grid lights them (A). 2: the grid is built with them off and the local light pass adds the same lamps (B; needs mcla_gpu_local_lights). "
-    "1: neither (the control: A and B each minus the control are the lamp's own light in each path). Read when the city's lights are loaded: it applies at the next start.", rex::kDebugOnly, rex::kRestart, rex::Range{0, 2});
+    "1: neither (the control: A and B each minus the control are the lamp's own light in each path). Read when the city's lights are loaded: it applies at the next start.", rex::kDebugOnly, rex::kRequiresRestart, rex::Range{0, 2});
 
   REX_SETTING(f64, mcla_gpu_local_lights_gain, 1.0, "Diagnostic (the deferred local light pass, GB-H1): a multiplier on the light the pass adds (1: the game's units as read: the lamp's colour times the night light intensity and the height factor of the lit "
     "shaders). The lamp A/B says whether 1 is right. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
