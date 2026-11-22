@@ -132,6 +132,32 @@ class PerformanceSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, perf_no_race_shadows, false, "Drop the shadow pass during races only (dev switch 'noraceshadows').", rex::kDebugOnly, rex::kRestart);
 
+  // The AI racers' driving line (hooks/race_line.cpp, perf\RACE-LINE.md): each AI racer's "UpdateRaceLine" job improves the line a
+  // little every frame (about 2.5 ms of two threads' CPU per racer at 143 FPS, a fifth of all the CPU of a race). The console ran at
+  // 30 FPS, so a racer's line was improved up to 30 times a second.
+  REX_SETTING(i32, race_line_max_hz, 30, "The most often the game improves an AI racer's driving line (its Race Line job), per second and per racer. "
+    "30 is the console's rate (it ran at 30 FPS); 0 runs the job every frame, as before. A job always runs in the frame "
+    "where the racer's control points changed, so only the speed numbers along the line are older, by at most one "
+    "interval. Live.", rex::Range{0, 240}, rex::kDebugOnly);
+
+  REX_SETTING(i32, race_line_native_mask, 3, "Which of the Race Line's two hottest functions run as native host code instead of the recompiled version, as "
+    "bits: 1 the backward speed pass (sub_8216CBC0), 2 the forward pass (sub_8216CDD0). 0 runs both recompiled (the A/B "
+    "switch); 3 is the default. Their results are bit for bit the recompiled functions'. Needs FMA3; a call whose memory "
+    "is not plain guest RAM always goes to the recompiled code. Read at start.", rex::Range{0, 3}, rex::kDebugOnly, rex::kRestart);
+
+  REX_SETTING(i32, race_line_check_calls, 3000, "With the native Race Line passes on: the first this many calls of each pass are also run by the recompiled function on the same "
+    "input and the results compared; any difference switches that native pass off for the rest of the session (a "
+    "warning in the log says where). 0 = no check. Read at start.", rex::Range{0, 1000000000}, rex::kDebugOnly, rex::kRestart);
+
+  REX_SETTING(bool, race_line_stats, false, "Log one line every 10 s about the Race Line: the jobs queued, skipped by the cap and run, and the time they took. Live.", rex::kDebugOnly);
+
+  REX_SETTING(std::string, race_line_record, "", "Write the inputs of Race Line jobs to this file (a debug recording for the Race Line test: the planner's "
+    "blocks, 61 KB a job; the format is at the top of hooks/race_line.cpp). Empty = off. Live; the file is opened by the first job.", rex::kDebugOnly);
+
+  REX_SETTING(i32, race_line_record_every, 50, "With race_line_record: record every this many jobs (1 = all).", rex::Range{1, 100000}, rex::kDebugOnly);
+
+  REX_SETTING(i32, race_line_record_count, 300, "With race_line_record: stop after this many records.", rex::Range{1, 100000}, rex::kDebugOnly);
+
   // ── Render phase culling ────────────────────────────────────────────────────
   // These reactivate the game's own dev command-line switches (see
   // dev_options.cpp). They are not new code paths: the retail renderer still
@@ -227,6 +253,13 @@ inline auto& perf_no_shadows = g_performance.perf_no_shadows;
 inline auto& perf_no_trees = g_performance.perf_no_trees;
 inline auto& perf_shadow_phase_bits = g_performance.perf_shadow_phase_bits;
 inline auto& pump_wake_on_demand = g_performance.pump_wake_on_demand;
+inline auto& race_line_check_calls = g_performance.race_line_check_calls;
+inline auto& race_line_max_hz = g_performance.race_line_max_hz;
+inline auto& race_line_native_mask = g_performance.race_line_native_mask;
+inline auto& race_line_record = g_performance.race_line_record;
+inline auto& race_line_record_count = g_performance.race_line_record_count;
+inline auto& race_line_record_every = g_performance.race_line_record_every;
+inline auto& race_line_stats = g_performance.race_line_stats;
 inline auto& single_tile = g_performance.single_tile;
 inline auto& submit_on_primary_buffer_end = g_performance.submit_on_primary_buffer_end;
 inline auto& traffic_density_scale = g_performance.traffic_density_scale;

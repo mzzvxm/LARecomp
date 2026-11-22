@@ -5808,6 +5808,90 @@
   "comments": [],
   "pp_depth": 0
  },
+ "race_line_check_calls": {
+  "type": "i32",
+  "default": "3000",
+  "category": "MCLA/Performance",
+  "help": "\"With the native Race Line passes on: the first this many calls of each pass are also run by the recompiled function on the same \"\n    \"input and the results compared; any difference switches that native pass off for the rest of the session (a \"\n    \"warning in the log says where). 0 = no check. Read at start.\"",
+  "traits": [
+   "rex::Range{0, 1000000000}",
+   "rex::kDebugOnly",
+   "rex::kRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "race_line_max_hz": {
+  "type": "i32",
+  "default": "30",
+  "category": "MCLA/Performance",
+  "help": "\"The most often the game improves an AI racer's driving line (its Race Line job), per second and per racer. \"\n    \"30 is the console's rate (it ran at 30 FPS); 0 runs the job every frame, as before. A job always runs in the frame \"\n    \"where the racer's control points changed, so only the speed numbers along the line are older, by at most one \"\n    \"interval. Live.\"",
+  "traits": [
+   "rex::Range{0, 240}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "race_line_native_mask": {
+  "type": "i32",
+  "default": "3",
+  "category": "MCLA/Performance",
+  "help": "\"Which of the Race Line's two hottest functions run as native host code instead of the recompiled version, as \"\n    \"bits: 1 the backward speed pass (sub_8216CBC0), 2 the forward pass (sub_8216CDD0). 0 runs both recompiled (the A/B \"\n    \"switch); 3 is the default. Their results are bit for bit the recompiled functions'. Needs FMA3; a call whose memory \"\n    \"is not plain guest RAM always goes to the recompiled code. Read at start.\"",
+  "traits": [
+   "rex::Range{0, 3}",
+   "rex::kDebugOnly",
+   "rex::kRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "race_line_stats": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Performance",
+  "help": "\"Log one line every 10 s about the Race Line: the jobs queued, skipped by the cap and run, and the time they took. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "race_line_record": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "MCLA/Performance",
+  "help": "\"Write the inputs of Race Line jobs to this file (a debug recording for the Race Line test: the planner's \"\n    \"blocks, 61 KB a job; the format is at the top of hooks/race_line.cpp). Empty = off. Live; the file is opened by the first job.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "race_line_record_every": {
+  "type": "i32",
+  "default": "50",
+  "category": "MCLA/Performance",
+  "help": "\"With race_line_record: record every this many jobs (1 = all).\"",
+  "traits": [
+   "rex::Range{1, 100000}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "race_line_record_count": {
+  "type": "i32",
+  "default": "300",
+  "category": "MCLA/Performance",
+  "help": "\"With race_line_record: stop after this many records.\"",
+  "traits": [
+   "rex::Range{1, 100000}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "perf_fast_vehicle_shadows": {
   "type": "bool",
   "default": "false",
