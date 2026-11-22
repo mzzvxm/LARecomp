@@ -197,6 +197,8 @@ class CityRtScene {
   void WorkerMain();
   void ReleaseAll(const char* why);
   void Release(uint32_t sector, city_rt::Detail detail);
+  // A mesh read without the hit blob before the hit data's pool existed (city_rt::ReadBeforePool): the sector detail goes back to kNone and the plan asks again, with the blob.
+  void GiveBackForReread(uint32_t sector, city_rt::Detail detail);
   void PollLoads();
   void Plan(const double camera[3]);
   // What a staged mesh takes of the staging: the pool block's bytes when the hit data rides with it, else positions and indices.

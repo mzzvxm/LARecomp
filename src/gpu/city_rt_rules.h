@@ -90,6 +90,11 @@ constexpr Level LevelForRung(gpu_class::GpuClass cls, gpu_class::RtTier tier, Ch
 }
 constexpr Level AutoLevelForRung(gpu_class::GpuClass cls, gpu_class::RtTier tier, bool available) { return available ? LevelForRung(cls, tier, Choice::kAuto) : Level::kOff; }
 
+// A mesh the worker read WITHOUT the hit blob (the plan asked before the hit data's pool existed) must not be built once the pool is there: its structure would be geometry only, the sector would have
+// no hit data, and the read that does bring the blob (the plan asks again after the pool's epoch) is dropped because the sector is resident. It is given back to be read again, with the blob. Where the
+// pool is not ready a mesh without the blob is the right one (M1's), and a read that asked for the blob and found none keeps its mesh (the file's, not the order of events).
+constexpr bool ReadBeforePool(bool pool_ready, bool read_with_hit) { return pool_ready && !read_with_hit; }
+
 struct Budget {
   float hi_radius = 0.0f;           // metres from the camera to a sector's box: built at its full detail within it
   float far_radius = 0.0f;          // ... at the far level of detail within it (the long shadows of a low sun: casters up to a kilometre away)

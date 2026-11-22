@@ -229,6 +229,10 @@ void CityRtScene::PollLoads() {
       REXLOG_WARN("{} sector {} ({}) {}: {}", kPrefix, r.request.sector, pack_.name(r.request.sector), r.request.detail == city_rt::Detail::kHi ? "hi detail" : "lod", r.error);
       continue;
     }
+    if (city_rt::ReadBeforePool(hit_ != nullptr && hit_->ready(), r.request.with_hit)) {
+      GiveBackForReread(r.request.sector, r.request.detail);  // read before the pool existed: not built as geometry only, read again with the blob
+      continue;
+    }
     Staged staged;
     staged.sector = r.request.sector;
     staged.detail = r.request.detail;
@@ -296,6 +300,13 @@ void CityRtScene::Release(uint32_t sector, city_rt::Detail detail) {
     ++counts_.evictions;
   }
   s = Structure{};
+  (detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kNone;
+  (detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = 0;
+  (detail == city_rt::Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = 0;
+}
+
+void CityRtScene::GiveBackForReread(uint32_t sector, city_rt::Detail detail) {
+  city_rt::SectorState& st = states_[sector];
   (detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kNone;
   (detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = 0;
   (detail == city_rt::Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = 0;
@@ -392,6 +403,20 @@ bool CityRtScene::EnsureScratch(SlotResources& slot, uint32_t index, uint64_t by
 bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_index) {
   if (staged_.empty()) {
     return false;
+  }
+  // A mesh read before the hit data's pool existed (no blob with it) is not built as geometry only now that the pool is there: it goes back to be read again with its blob (PollLoads does the same for
+  // a read that arrives after the pool was made).
+  if (hit_ != nullptr && hit_->ready()) {
+    for (const Staged& s : staged_) {
+      if (city_rt::ReadBeforePool(true, s.hit_wanted)) {
+        GiveBackForReread(s.sector, s.detail);
+        staged_bytes_ -= std::min(staged_bytes_, s.bytes);
+      }
+    }
+    std::erase_if(staged_, [](const Staged& s) { return city_rt::ReadBeforePool(true, s.hit_wanted); });
+    if (staged_.empty()) {
+      return false;
+    }
   }
   // The frame's schedule: nearest first within the class's triangles and staged bytes.
   std::vector<city_rt::BuildItem> items;

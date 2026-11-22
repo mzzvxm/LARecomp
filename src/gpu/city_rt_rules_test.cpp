@@ -221,6 +221,32 @@ void TestPlanBasics() {
   CHECK(sim.Resident() <= b.memory_cap);
 }
 
+// A mesh read without the hit blob before the hit data's pool existed is not built as geometry only once the pool is there (CityRtScene::PollLoads and BuildStaged give it back, GiveBackForReread)
+void TestReadBeforePool() {
+  CHECK(ReadBeforePool(true, false));                                    // the pool is ready and the read did not bring the blob: read again
+  CHECK(!ReadBeforePool(true, true));                                    // a read that asked for the blob (and may have found none in the file) keeps its mesh
+  CHECK(!ReadBeforePool(false, false) && !ReadBeforePool(false, true));  // no pool (yet): a mesh without the blob is the right one
+  // the given back sector detail is asked for again, nearest first, with nothing else changed (the state kNone, the bytes and the pool's share 0)
+  Budget b = BudgetFor(GpuClass::kHigh, Level::kHigh);
+  Sim sim(Grid(6, 200.0f, 50000, 1000), b);
+  const Plan first = sim.Step(0, 0);
+  CHECK(!first.loads.empty());
+  const Request stale = first.loads[0];
+  SectorState& st = sim.states[stale.sector];
+  CHECK((stale.detail == Detail::kHi ? st.hi : st.lod) == Residency::kLoading);
+  // the read arrives (its request was made without the blob) and the pool is ready: given back, as GiveBackForReread does
+  std::erase_if(sim.pending, [&](const Sim::Pending& p) { return p.request.sector == stale.sector && p.request.detail == stale.detail; });
+  --sim.loading;
+  (stale.detail == Detail::kHi ? st.hi : st.lod) = Residency::kNone;
+  (stale.detail == Detail::kHi ? st.hi_bytes : st.lod_bytes) = 0;
+  (stale.detail == Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = 0;
+  const Plan again = sim.Step(0, 0);
+  bool asked = false;
+  for (const Request& r : again.loads) asked = asked || (r.sector == stale.sector && r.detail == stale.detail);
+  CHECK(asked);
+  CHECK(again.evictions.empty());
+}
+
 void TestHysteresis() {
   Budget b = BudgetFor(GpuClass::kHigh, Level::kHigh);
   Sim sim(Grid(20, 200.0f, 50000, 1000), b);
@@ -581,6 +607,7 @@ int main() {
   TestMaskAndId();
   TestDistance();
   TestPlanBasics();
+  TestReadBeforePool();
   TestHysteresis();
   TestPlanRules();
   TestMemoryCap();
