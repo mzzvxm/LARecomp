@@ -1451,11 +1451,11 @@ void TestSources(const std::string& src) {
   for (const char* name : names) {
     const std::string n = name;
     CHECK(Has(settings, ", " + n + ", ") && Has(settings, "inline auto& " + n + " = g_gpu." + n + ";") && Has(meta, "{\"" + n + "\", \"MCLA/GPU\"},") && Has(manifest, "\"" + n + "\": {"));
-    CHECK(Count(settings, "REX_SETTING(") > 0 && Count(settings, ", " + n + ", ") == 1);
+    CHECK(Count(settings, "REX_" "SETTING(") > 0 && Count(settings, ", " + n + ", ") == 1);
   }
-  CHECK(Has(settings, "REX_SETTING(std::string, mcla_gpu_rt_lights, \"off\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"on\")"));
-  CHECK(Has(settings, "REX_SETTING(i32, mcla_gpu_rt_lights_k, 0,") && Has(settings, "rex::Range{0, 9}") && Has(settings, "REX_SETTING(f64, mcla_gpu_rt_lights_radius, 0.0,") && Has(settings, "rex::Range{0.0, 2.0}") &&
-        Has(settings, "REX_SETTING(i32, mcla_gpu_rt_lights_rays, 1,") && Has(settings, "REX_SETTING(i32, mcla_gpu_rt_lights_view, 0,") && Has(settings, "REX_SETTING(i32, mcla_gpu_rt_lights_check, 0,"));
+  CHECK(Has(settings, "REX_" "SETTING(std::string, mcla_gpu_rt_lights, \"off\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"on\")"));
+  CHECK(Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_k, 0,") && Has(settings, "rex::Range{0, 9}") && Has(settings, "REX_" "SETTING(f64, mcla_gpu_rt_lights_radius, 0.0,") && Has(settings, "rex::Range{0.0, 2.0}") &&
+        Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_rays, 1,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_view, 0,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_check, 0,"));
   CHECK(rl::kMaxLights == 9 && rl::kMaxRays == 4);   // the ranges above
   // the host reads each of them
   for (const char* name : names) {
