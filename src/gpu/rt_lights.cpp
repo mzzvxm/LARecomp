@@ -349,6 +349,7 @@ void RtLights::BeginFrame(bool pass_runs, bool ultra) {
   view_ = rt::ClampView(int(st::mcla_gpu_rt_lights_view.Get()));
   check_ = rt::ClampCheck(int(st::mcla_gpu_rt_lights_check.Get()));
   scale_setting_ = int(st::mcla_gpu_rt_lights_scale.Get());
+  lamp_slot_ = st::mcla_gpu_rt_lights_lamp_slot.Get() != 0;
   blue_ = st::mcla_gpu_noise_blue.Get();
   wanted_ = false;
   bool want = false;
@@ -486,7 +487,7 @@ bool RtLights::Plan(const Inputs& in, ll::Selection* selection) {
       held[held_count++] = id;
     }
   }
-  const rt::Pick pick = rt::SelectTopK(selection->lights.data(), selection->count, eye, held.data(), held_count, k_);
+  const rt::Pick pick = rt::SelectTopK(selection->lights.data(), selection->count, eye, held.data(), held_count, k_, lamp_slot_);
   facts.lights = pick.count;
   why = rt::Decide(facts);
   if (why != rt::Why::kRuns) {
@@ -757,16 +758,16 @@ void RtLights::RecordDenoise(plume::RenderCommandList* list) {
   for (uint32_t i = 0; i < light_count_; ++i) {
     ++class_lights_[size_t(classes_[i])];
   }
-  const uint32_t state = (light_count_ << 0) | (rays_ << 4) | (uint32_t(check_) << 8) | (uint32_t(view_) << 10) | (blue_ ? 1u << 12 : 0u) | (groups_ << 13) | (step_ << 16);
+  const uint32_t state = (light_count_ << 0) | (rays_ << 4) | (uint32_t(check_) << 8) | (uint32_t(view_) << 10) | (blue_ ? 1u << 12 : 0u) | (groups_ << 13) | (lamp_slot_ ? 1u << 15 : 0u) | (step_ << 16);
   if (!first_logged_ || state != last_state_) {
     first_logged_ = true;
     last_state_ = state;
     REXLOG_INFO("{} frame {}: the pass runs: {}x{} pixels (the occlusion's traced size), K {} ({} group(s) of three), {} light(s) have a ray ({} headlight, {} neon, {} street lamp, {} other), {} ray(s) a light, "
-                "disc radius {}, {} noise, RtDenoise diffuse profile, {} iterations over 8 bit images, step {}; check {}, view {} (logged when it changes)",
+                "disc radius {}, {} noise, RtDenoise diffuse profile, {} iterations over 8 bit images, step {}; check {}, view {}, lamp slot {} (logged when it changes)",
                 kPrefix, in_.frame, image_width_, image_height_, k_, groups_, light_count_, std::count(classes_.begin(), classes_.begin() + light_count_, rt::Class::kHeadlight),
                 std::count(classes_.begin(), classes_.begin() + light_count_, rt::Class::kNeon), std::count(classes_.begin(), classes_.begin() + light_count_, rt::Class::kLamp),
                 std::count(classes_.begin(), classes_.begin() + light_count_, rt::Class::kOther), rays_, radius_setting_ > 0.0 ? std::format("{:.2f} m", radius_setting_) : std::string("by class"),
-                blue_ ? "blue" : "first versions'", rt::DenoiseIterations(step_), step_, check_, view_);
+                blue_ ? "blue" : "first versions'", rt::DenoiseIterations(step_), step_, check_, view_, lamp_slot_ ? "on" : "off");
   }
   // The counters, every interval: copied to the readback buffer (the next frame's first barrier takes the counters back to the storage state).
   if (in_.frame >= next_readback_ && !readback_busy_) {

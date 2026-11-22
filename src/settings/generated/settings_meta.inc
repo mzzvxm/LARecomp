@@ -439,6 +439,7 @@
 {"mcla_gpu_rt_lights_view", "MCLA/GPU"},
 {"mcla_gpu_rt_lights_check", "MCLA/GPU"},
 {"mcla_gpu_rt_lights_scale", "MCLA/GPU"},
+{"mcla_gpu_rt_lights_lamp_slot", "MCLA/GPU"},
 {"mcla_gpu_object_names", "MCLA/GPU"},
 {"mcla_gpu_pass_timing", "MCLA/GPU"},
 {"mcla_gpu_pause_vehicle_vectors", "MCLA/GPU"},
