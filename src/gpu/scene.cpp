@@ -1702,16 +1702,24 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     // The pipelines the stack adds to a draw (the headlight's word, the G-buffer's planes) are the game's own plus an extra, and the game's own pipeline is the fallback: such a draw
     // waits for its pipeline whatever the game's rule says (the lit world draws all write the stencil, which the rule refuses), and goes on without the extra meanwhile, so the render
     // thread never makes them (variant_wait.h: the ladder of keys below). Only the game's own key at the end of the ladder keeps the game's rule. A take still waits (sync_builds.h).
-    const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw};
+    // A variant whose build FAILS takes the same way down, for good (the failed key is remembered: pipelines.h, Deferral::has_fallback); only the game's own key failing drops the draw.
+    const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw, true};
+    const auto extras_of = [&](const PipelineKey& key) { return variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant)}; };
     const auto ask_for = [&](const PipelineKey& key) -> const Deferral* {
-      return variant_wait::AskFor(variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant)}) == variant_wait::Ask::kAlways ? &waits : &deferral;
+      return variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways ? &waits : &deferral;
     };
+    // What the lookup just made says to do (variant_wait::NextStep): no pipeline, being made or failed, and a key with a fallback.
     bool pending = false;
+    const auto falls_back = [&]() { return variant_wait::NextStep(extras_of(pipeline_key), d.pipeline != nullptr, pending) == variant_wait::Next::kFallBack; };
     d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
-    if (!d.pipeline && pending && d.gbuffer_attached) {
+    if (falls_back() && d.gbuffer_attached) {
       // The pipeline with the G-buffer's planes is being made in the background (the first frames with the sidecar on: every pipeline of the main view's window is a new
-      // key when the non writers carry it): this draw is the game's own, with no planes, instead of being left out of the frame; the key stays asked for and the next frame
-      // that has it takes it. The planes keep what the frame wrote there (a hole the consumers read as no data or an earlier surface) for these few frames.
+      // key when the non writers carry it), or its build failed (not pending: it never will be there): this draw is the game's own, with no planes, instead of being left out
+      // of the frame; while it is being made the key stays asked for and the next frame that has it takes it. The planes keep what the frame wrote there (a hole the
+      // consumers read as no data or an earlier surface) for these few frames, or for good when the build failed.
+      if (!pending) {
+        pipelines_->NoteVariantFailedDraw();
+      }
       pipeline_key = d.key;
       d.gbuffer_attached = false;
       d.gbuffer_variant = 0;
@@ -1721,13 +1729,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       gbuffer_->NoteFallbackDraw();
       d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
     }
-    if (!d.pipeline && pending && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {
-      // The headlight variant's pipeline is being made in the background (the first night, or the first time the setting is on): this draw is the same shader without
-      // the headlight meanwhile (the other features of a composed word stay when the pack has that word, else the game's own shader), with no headlight, instead of
-      // being left out of the frame; the key stays asked for and the next frame that has it takes it. It is the pipeline's key that changes. The sidecar's planes are
-      // already gone here: the planes' rung above comes first and takes the draw to the guest's own key (d.key) whenever the draw carries them.
+    if (falls_back() && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {
+      // The headlight variant's pipeline is being made in the background (the first night, or the first time the setting is on), or its build failed (not pending): this
+      // draw is the same shader without the headlight (the other features of a composed word stay when the pack has that word, else the game's own shader), instead of
+      // being left out of the frame; while it is being made the key stays asked for and the next frame that has it takes it, when the build failed the key stays out for
+      // good. It is the pipeline's key that changes. The sidecar's planes are already gone here: the planes' rung above comes first and takes the draw to the guest's own
+      // key (d.key) whenever the draw carries them.
       const uint32_t word = variant_wait::WordWithoutHeadlight(pipeline_key.ps_variant, [&](uint32_t rest) { return d.ps && d.ps->HasWord(rest); });
       pipeline_key.ps_variant = word;
+      if (!pending) {
+        pipelines_->NoteVariantFailedDraw();
+      }
       pending = false;
       if (headlights_) {
         headlights_->NoteFallbackDraw();
@@ -1739,12 +1751,13 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       pipeline_memo_ = d.pipeline;
     } else if (pending) {
       // Not memoized: the next draw with the key asks again, and takes the
-      // pipeline once it is ready.
+      // pipeline once it is ready. (Only the game's own key is left here: variant_wait::Next::kWait.)
       NoteTargetsDrawn(d);
       return Skip::kPipelinePending;
     }
   }
   if (!d.pipeline) {
+    // The game's own key failed (variant_wait::Next::kDrop: a key with an extra never gets here, it took the rung below): nothing is left to draw this draw with.
     *detail = std::format("VS {:016X} PS {:016X}", d.key.vs, d.key.ps);
     return Skip::kPipeline;
   }
@@ -4080,7 +4093,7 @@ void Scene::Report(const char* why) {
       "{} frames; made here {} new, {} after a failure, {} waited for a running build {:.1f} ms) "
       "| input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
       "MiB/frame ({} bank, {} shared uploads) | fetch memo {:.0f}% | clears {}, resolves {}, "
-      "tiling {}/{} | prepare "
+      "tiling {}/{} | variant pipelines failed {} (draws that fell back {}) | prepare "
       "{:.2f} ms/frame | {}",
       why, w.frames, double(w.draws) / frames, w.prepared, w.recorded,
       skips.empty() ? "none" : skips, geometry.empty() ? "ok" : geometry,
@@ -4103,7 +4116,7 @@ void Scene::Report(const char* why) {
       (w.fetches + w.fetch_not_texture)
           ? 100.0 * double(w.fetch_memo_hits) / double(w.fetches + w.fetch_not_texture)
           : 0.0,
-      w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
+      w.clears, w.resolves, w.tiling_begins, w.tiling_ends, ps.variant_failed, ps.variant_fallback_draws,
       cycles::ToNs(w.prepare_cycles) / frames / 1e6, thread_text);
   // The waits for pipelines a capture kept from being left out (a line only once the flag was on).
   sync_builds::LogInterval(why);
