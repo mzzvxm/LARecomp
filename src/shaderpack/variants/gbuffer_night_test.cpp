@@ -37,6 +37,7 @@
 #include "gpu/gbuffer_material.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_compose.h"
+#include "shaderpack/variant_shader_fate.h"
 #include "shaderpack/variants/gbuffer.h"
 #include "shaderpack/variants/gbuffer_night.h"
 #include "shaderpack/variants/gbuffer_night_albedo.h"
@@ -648,6 +649,71 @@ void CheckIdentityCheck() {
   Check(!AdditiveError(text, removed).empty(), "the identity check sees a line of the game's that is gone");
 }
 
+// ---- one shader whose text does not fit costs that shader its variant and nothing else (GB-H2-FOLLOW, the review's S5; variant_shader_fate.h) -------------------------------------------------
+
+void CheckPerShaderFailure() {
+  const sp::VariantDef def = sp::MakeGBufferVariantFromText(kHelper);
+  const sp::NightAlbedoRow* terrain = sp::FindGBufferNightAlbedoRow("xCityTerrain__PSMultiLight");
+  const sp::NightAlbedoRow* grass = sp::FindGBufferNightAlbedoRow("xCityGrass__PSMultiLight");
+  Check(terrain != nullptr && grass != nullptr, "the two recipes the case uses are in the table");
+  if (terrain == nullptr || grass == nullptr) return;
+  // five shaders of the family, as the builder meets them in key order: one that fits (a recipe, its anchor in the text), one whose recipe anchor is NOT in this game's text (the edits do not fit: a failure),
+  // one with no recipe that fits, one the stage leaves out (no per pixel light: a skip), and one more that fits after the failed one
+  struct Case {
+    std::string name;
+    uint64_t key;
+    std::string text;
+    sp::ShaderFate want;
+  };
+  const std::string fits = Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n\t" + std::string(terrain->anchor) + "\n\tr5.w = r7.z * r12.x;\n");
+  const std::string other = Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n");
+  const std::vector<Case> cases = {
+      {"xCityTerrain__PSMultiLight", 0x1001, fits, sp::ShaderFate::kBuilt},
+      {"xCityGrass__PSMultiLight", 0x1002, other, sp::ShaderFate::kFailed},
+      {"xCityNothing__PSMultiLight", 0x1003, other, sp::ShaderFate::kBuilt},
+      {"xCityUnlit__PSMultiLight", 0x1004, Shader("\tr3.xyz = r0.xyz * r1.www;\n"), sp::ShaderFate::kLeftOut},
+      {"xCityNothingElse__PSMultiLight", 0x1005, other, sp::ShaderFate::kBuilt},
+  };
+  sp::ShaderFateTally tally;
+  std::vector<std::string> built;
+  std::vector<std::string> log_lines;
+  for (const Case& c : cases) {
+    const sp::VariantTransformResult r = def.transform({c.name, c.key}, c.text, sp::SoloContext(sp::kFeatureGBuffer));
+    const sp::ShaderFate fate = tally.Note(c.name, "key" + std::to_string(c.key), r);
+    Check(fate == c.want, c.name + ": the shader's fate is " + std::to_string(int(c.want)) + " (got " + std::to_string(int(fate)) + "; " + r.error + ")");
+    if (fate == sp::ShaderFate::kBuilt) built.push_back(c.name);
+    if (fate == sp::ShaderFate::kFailed) log_lines.push_back(sp::FailedShaderLine(def.name, c.name, "key" + std::to_string(c.key), r.error));
+  }
+  // the failed shader does not stop the others: the three that fit are built, the one left out is counted by its reason, the failed one is named
+  Check(built.size() == 3 && built[0] == "xCityTerrain__PSMultiLight" && built[2] == "xCityNothingElse__PSMultiLight" && tally.built == 3, "the shaders after a failed one are still built");
+  Check(tally.failed.size() == 1 && tally.failed[0].find("xCityGrass__PSMultiLight [key4098]: ") == 0 && tally.failed[0].find("recipe") != std::string::npos, "one shader failed, named with its key and the reason: " + (tally.failed.empty() ? std::string() : tally.failed[0]));
+  Check(tally.left_out.size() == 1 && tally.left_out.begin()->first == sp::kGBufferNightSkipUnlit && tally.left_out.begin()->second == 1, "the shader the stage leaves out is counted by its reason, apart from the failure");
+  Check(log_lines.size() == 1 && log_lines[0].find("the gbuffer variant was not built for xCityGrass__PSMultiLight [key4098]") != std::string::npos && log_lines[0].find("keeps the game's own shader") != std::string::npos,
+        "one log line per failed shader, which says what happens to it: " + (log_lines.empty() ? std::string() : log_lines[0]));
+  const std::string note = tally.NoteText();
+  Check(note.find("1 left out: ") != std::string::npos && note.find("1 failed (no variant for them); xCityGrass__PSMultiLight [key4098]: ") != std::string::npos, "the summary line names both: " + note);
+  Check(tally.any_failed() && tally.StampText().find("xCityGrass__PSMultiLight [key4098]") == 0 && tally.StampText().find('\n') == std::string::npos, "the stamp line is one line and names the failed shader");
+  // two failures: one line each, in the order met, and the stamp joins them
+  sp::ShaderFateTally two;
+  two.Note("a", "k1", def.transform({"xCityGrass__PSMultiLight", 1}, other, sp::SoloContext(sp::kFeatureGBuffer)));
+  two.Note("b", "k2", def.transform({"xCityGrass__PSMultiLight", 2}, other, sp::SoloContext(sp::kFeatureGBuffer)));
+  Check(two.failed.size() == 2 && two.failed[0].find("a [k1]") == 0 && two.failed[1].find("b [k2]") == 0 && two.StampText().find(" | b [k2]") != std::string::npos, "two failed shaders: two entries, in order, joined in the stamp");
+  // a stage with nothing but failures is not a tally of built shaders: the builder fails the stage (it checks made.empty()) and quotes the first failure
+  Check(two.built == 0 && two.any_failed(), "a stage whose shaders all failed has built none (the builder then fails the stage, with the first reason)");
+  // the fate is the transform's own flags: ok, skip, neither
+  sp::VariantTransformResult ok;
+  ok.ok = true;
+  sp::VariantTransformResult skip;
+  skip.skip = true;
+  sp::VariantTransformResult bad;
+  Check(sp::FateOf(ok) == sp::ShaderFate::kBuilt && sp::FateOf(skip) == sp::ShaderFate::kLeftOut && sp::FateOf(bad) == sp::ShaderFate::kFailed, "the fate follows the transform's ok / skip flags");
+  // the builder uses it for every shader of a stage (variant_pack.cpp): not an `*error = ...; return false;` of the whole stage
+  const std::string builder = ReadFile(std::string(__FILE__).substr(0, std::string(__FILE__).rfind("variants")) + "variant_pack.cpp");
+  Check(!builder.empty() && builder.find("const ShaderFate fate = fates.Note(source->name, Hex64(source->key), variant);") != std::string::npos &&
+            builder.find("if (fate == ShaderFate::kFailed) {") != std::string::npos && builder.find("*error = source->name + \": \" + variant.error;") == std::string::npos,
+        "the builder asks the tally for each shader's fate, and a failed shader no longer fails the stage");
+}
+
 void CheckVariantDef() {
   const sp::VariantDef def = sp::MakeGBufferVariantFromText(kHelper);
   bool all = true;
@@ -1038,6 +1104,7 @@ int main(int argc, char** argv) {
   CheckAlbedoRecipes();
   CheckIdentityCheck();
   CheckVariantDef();
+  CheckPerShaderFailure();
   std::string helper;
   if (argc > 1) {
     helper = ReadFile(argv[1]);

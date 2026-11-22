@@ -39,6 +39,7 @@
 #include "shaderpack/variant_compose.h"
 #include "shaderpack/variant_overlap.h"
 #include "shaderpack/variant_pack_format.h"
+#include "shaderpack/variant_shader_fate.h"
 #include "shaderpack/variants/bloom_gauss.h"
 #include "shaderpack/variants/car_chrome.h"
 #include "shaderpack/variants/car_selfrefl.h"
@@ -274,10 +275,12 @@ class VariantStepImpl final : public VariantStep {
 
   // One stage on its own: its vertex shaders, then each of its shaders translated, edited, compiled for the
   // formats asked and checked. False with *error (the first thing that went wrong) and nothing of it in
-  // *entries; *note is a few words for the summary line (the compiles, the shaders left out); `solo` gets one
-  // record per shader that was made, for the composition pass.
+  // *entries; *note is a few words for the summary line (the compiles, the shaders left out or failed); `solo` gets one
+  // record per shader that was made, for the composition pass. A shader whose text the edits do not fit (the transform says
+  // !ok, not skip) has no variant and costs the stage nothing else (variant_shader_fate.h): one warning each, and *failed
+  // gets its stamp text. The stage fails only when none of its shaders could be made.
   bool BuildVariant(const VariantStepInput& input, DxcWorker& worker, const VariantDef& def, uint32_t formats,
-                    std::vector<PackEntry>* entries, std::vector<SoloShader>* solo, std::string* note, std::string* error) const {
+                    std::vector<PackEntry>* entries, std::vector<SoloShader>* solo, std::string* note, std::string* failed_stamp, std::string* error) const {
     ProgressSink& sink = *input.sink;
     const std::function<bool()> cancelled = [&sink] { return sink.Cancelled(); };
     if (!def.transform) {
@@ -322,7 +325,7 @@ class VariantStepImpl final : public VariantStep {
     if (!ListTargets(*input.containers, def, &targets, error)) return false;
     std::unordered_map<std::string, Compiled> compiled;        // by the variant's HLSL
     std::unordered_map<std::string, Compiled> compiled_twin;   // the spec variant 1 twins: by the HLSL and the spec mask
-    std::map<std::string, size_t> skipped;               // why a shader was left out -> how many
+    ShaderFateTally fates;                               // what became of each shader: built, left out (by reason), failed (no variant for it)
     std::vector<PackEntry> made;
     std::vector<SoloShader> solo_made;
     const StageContext context = SoloContext(def.feature);
@@ -338,14 +341,16 @@ class VariantStepImpl final : public VariantStep {
         return false;
       }
       const VariantTransformResult variant = def.transform(target.shader, translated.hlsl, context);
-      if (variant.skip) {
-        ++skipped[variant.error];
+      const ShaderFate fate = fates.Note(source->name, Hex64(source->key), variant);
+      if (fate == ShaderFate::kLeftOut) {
         sink.Step(source->name);
         continue;
       }
-      if (!variant.ok) {
-        *error = source->name + ": " + variant.error;
-        return false;
+      if (fate == ShaderFate::kFailed) {
+        // The edits do not fit THIS text: the shader keeps the game's own shader for this stage and the others still get theirs (variant_shader_fate.h; GB-H2-FOLLOW, the review's S5).
+        SHADERPACK_LOG_WARN("{}", FailedShaderLine(def.name, source->name, Hex64(source->key), variant.error));
+        sink.Step(source->name);
+        continue;
       }
       if (sink.Cancelled()) {
         *error = "The shader build was cancelled.";
@@ -400,16 +405,18 @@ class VariantStepImpl final : public VariantStep {
     }
     if (made.empty()) {
       *error = std::format("none of its {} {} shaders is one its edits are for", targets.size(), stage_text);
+      if (fates.any_failed()) *error += std::format(" ({} failed, the first: {})", fates.failed.size(), fates.failed.front());
       return false;
     }
     const uint32_t solo_word = chain::Word(chain::FeatureBit(def.feature), 0);
     const size_t shader_entries = size_t(std::count_if(made.begin(), made.end(), [&](const PackEntry& e) { return e.variant == solo_word; }));
-    if (!skipped.empty() || compiled.size() != shader_entries || !compiled_twin.empty()) {
+    if (!fates.left_out.empty() || fates.any_failed() || compiled.size() != shader_entries || !compiled_twin.empty()) {
       const size_t compiles = compiled.size() + compiled_twin.size();
       *note = std::format("{} compile{}", compiles, compiles == 1 ? "" : "s");
       if (!compiled_twin.empty()) *note += std::format(", {} of them for spec variant 1", compiled_twin.size());
-      for (const auto& [why, count] : skipped) *note += std::format("; {} left out: {}", count, why);
+      *note += fates.NoteText();
     }
+    *failed_stamp = fates.StampText();
     for (PackEntry& entry : made) entries->push_back(std::move(entry));
     for (SoloShader& s : solo_made) solo->push_back(std::move(s));
     return true;
@@ -631,9 +638,11 @@ class VariantStepImpl final : public VariantStep {
     for (const VariantDef& def : variants_) {
       std::string error;
       std::string note;
+      std::string failed_stamp;
       std::vector<PackEntry> made;
-      if (BuildVariant(input, *worker, def, formats, &made, &solo, &note, &error)) {
+      if (BuildVariant(input, *worker, def, formats, &made, &solo, &note, &failed_stamp, &error)) {
         AddVariantLines(def, &variant_lines);
+        if (!failed_stamp.empty()) variant_lines.push_back({StampKey(def, "failed_shaders"), failed_stamp});  // informational: shaders whose text the edits did not fit, which keep the game's own
         std::string keys;
         size_t shader_count_made = 0;  // the shaders, not the entries (an alpha test twin is the same shader)
         for (const PackEntry& entry : made) {
