@@ -11,6 +11,8 @@
 //     (ui.fullscreen, ui.resolution, ...) and belong to systems the SDK destroys at its shutdown, BEFORE the exe's static
 //     destruction. Up to rexglue 0.11.0 the release locked the setting's own mutex, so this table had to be released by hand
 //     while the settings were alive and never destroyed (the exit crash in Mtx_lock of 2026-11-21); that is not needed any more.
+//     (The table is still never destroyed, but for another reason: no static of the exe is, since a thread the SDK leaves running can
+//     reach it while the process ends; see Guards() in larecomp_settings.cpp and settings/immortal.h.)
 //     The table is released in UnregisterAll all the same (LarecompApp::OnShutdown), so that no callback runs into LARecomp code
 //     that is being torn down; larecomp_watch_table_test checks both rules against the SDK itself.
 //

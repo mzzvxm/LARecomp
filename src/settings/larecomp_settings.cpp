@@ -503,12 +503,16 @@ FlagEntry BuildCommand(rex::ConsoleCommand& command) {
 }
 
 std::mutex g_cb_mutex;
-// The guards of the change callbacks, under g_cb_mutex. An ordinary static: a guard released after its setting is gone (the SDK's settings
-// are destroyed with their systems before the exe's static destruction) only drops its reference, because the SDK detaches the watches
-// of a setting when the setting is destroyed (settings/watch_table.h). A guard is never released under g_cb_mutex: its release waits for
-// a call in progress on another thread, and that call may ask for this mutex.
+// The guards of the change callbacks, under g_cb_mutex. A guard released after its setting is gone (the SDK's settings are destroyed with their
+// systems before the exe's static destruction) only drops its reference, because the SDK detaches the watches of a setting when the setting
+// is destroyed (settings/watch_table.h): that is what the SDK's settings thread model gave back, and larecomp_watch_table_test checks it. The
+// table itself is never destroyed (immortal.h, like every static of the exe that a thread the SDK left running can still reach: EXIT-HARD): a
+// straggler calling RegisterChangeCallback or UnregisterChangeCallbacks while the exe's static destruction runs (mcla_fast_exit off) must not
+// meet a destroyed map. Nothing is lost by it: UnregisterAll takes every guard out and releases it in OnShutdown, and RegisterChangeCallback
+// adds none after that (the settings are not found any more). A guard is never released under g_cb_mutex: its release waits for a call in
+// progress on another thread, and that call may ask for this mutex.
 larecomp::settings::WatchTable<rex::ScopeGuard>& Guards() {
-  static larecomp::settings::WatchTable<rex::ScopeGuard> g;
+  static larecomp::settings::WatchTable<rex::ScopeGuard>& g = larecomp::Leak<larecomp::settings::WatchTable<rex::ScopeGuard>>();
   return g;
 }
 
