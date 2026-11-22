@@ -571,6 +571,15 @@ target_include_directories(larecomp_watch_table_test PRIVATE src)
 target_link_libraries(larecomp_watch_table_test PRIVATE rex::base)
 rexglue_link_host_allocator(larecomp_watch_table_test)
 
+# ValidatedString (src/settings/validated_setting.h: frame_step_cap, the one SettingBase LARecomp implements itself) has a check against the SDK's
+# own settings, built like the one above (rex::base, rexbase.dll on the PATH, the SDK's operator new and delete forwarders):
+#   cmake --build <build dir> --target larecomp_validated_setting_test, then run <build dir>/larecomp_validated_setting_test (exit 0 = passed).
+add_executable(larecomp_validated_setting_test EXCLUDE_FROM_ALL
+    src/settings/validated_setting_test.cpp)
+target_include_directories(larecomp_validated_setting_test PRIVATE src)
+target_link_libraries(larecomp_validated_setting_test PRIVATE rex::base)
+rexglue_link_host_allocator(larecomp_validated_setting_test)
+
 # Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
 # own default for cache_root) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pack_folder_test, then run <build dir>/larecomp_pack_folder_test (exit 0 = passed).
