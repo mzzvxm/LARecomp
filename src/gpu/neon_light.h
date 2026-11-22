@@ -144,7 +144,14 @@ inline bool ColourFollowsTwin(const float colour[3], const float cfg_rgb[3], flo
 
 inline float Brightest(const float colour[3]) { return std::max({colour[0], colour[1], colour[2], 0.0f}); }
 
-// The frames the pass keeps asking for the G-buffer's planes after the last frame with a lit neon car in the table (1 s at 60 FPS): the pulse's dark half (the colour passes under kMinColour twice a
+// Whether the neon has a reason to ask for the G-buffer's planes this frame (NEONALL-REVIEW M2): a car with its neon lit is in the table (`lit_car`) AND one of its lights can reach a pixel of the
+// picture (`light_seen`: local_lights_sources.h AnyNeonLightSeen, against the last frame's camera). Without that camera (`camera_known` false: the first frame, a pause or garage view, a cut) the
+// second condition cannot be tested and a lit car alone asks, as it always did. The planes are shared (every consumer has its own want: the reflections' and the others' stay whatever this says).
+inline constexpr bool LitNow(bool lit_car, bool camera_known, bool light_seen) {
+  return lit_car && (!camera_known || light_seen);
+}
+
+// The frames the pass keeps asking for the G-buffer's planes after the last frame with a lit neon car in reach (1 s at 60 FPS): the pulse's dark half (the colour passes under kMinColour twice a
 // cycle at a high flash rate) and a car passing in and out of view must not make and unmake the sidecar.
 inline constexpr uint32_t kHoldFrames = 60;
 // The hold's next value: full while NEON LIGHT is on and a lit car is in the table, else counting down to 0 (0 at once when NEON LIGHT is off).

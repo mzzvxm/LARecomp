@@ -556,6 +556,30 @@ inline void GatherNeonLights(const NeonSourceInputs& in, std::vector<Light>* out
   }
 }
 
+// Whether the gather would light at least one car with these inputs: some car with its neon on and bright, placed, within kNeonSeenMetres, one of whose lights can be seen (`in.can_be_seen`,
+// or any light when it is empty). It IS the gather's rule (the tier's car budget is at least one car), so the planes the light pass asks for are made exactly when it will have a neon light to
+// draw: the G-buffer's planes cost about 0.22 ms at 1080p on D3D12 and a lit car 100 m away, or behind the camera, has nothing in the picture to use them for (NEONALL-REVIEW M2).
+inline bool AnyNeonLightSeen(const NeonSourceInputs& in) {
+  std::vector<Light> lights;
+  NeonReport report;
+  GatherNeonLights(in, &lights, &report);
+  return report.lit != 0;
+}
+
+// The same question against a camera's picture (the pass's own visibility test: the scissor of the light's reach is not empty), for the frame's start: `view` is the last frame's camera, widened
+// (ProbeViewOf).
+inline bool NeonReachesView(const std::vector<nl::NeonCar>& cars, Tier tier, float gain, const ProbeView& view) {
+  NeonSourceInputs in;
+  in.cars = &cars;
+  in.tier = tier;
+  in.gain = gain;
+  for (int i = 0; i < 3; ++i) {
+    in.camera[i] = view.rows.position[i];
+  }
+  in.can_be_seen = [&view](const Light& l) { return !ScissorOfLight(l, view.rows, view.tan_x, view.tan_y, view.width, view.height).Empty(); };
+  return AnyNeonLightSeen(in);
+}
+
 // ---------------------------------------------------------------------------
 // the mods' lamps
 // ---------------------------------------------------------------------------
