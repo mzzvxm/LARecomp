@@ -32,6 +32,14 @@
 // (guest_capture.cpp GuestCapture::Present), and that the hand-over runs on the game thread that SetUpdate runs on. The first tagged frame of a scene should carry
 // update 0, 1 or 2 (the log line of scene.cpp), and the scene's end line (cinematic/scene_seed.cpp, GetSummary) should say that almost every frame found its tag.
 //
+// A HELD SCENE KEEPS THE NOISE VARYING (NOISE-AUDIT, 2026-11-22; BL-KERB-POLE, 291a3a71). A pinned still (the harness's scene_at / scene_shot, the trailer toolkit's stills) tags every frame with the SAME update
+// number, so a noise index that is the update number never changes: the occlusion's lattice stands on one phase and its history averages 12 copies of one sample, and the temporal upscaler's average of
+// the other effects' noise (the shafts', the shadow filter's, the reflection cone's, the sun rays') finds the same numbers in every frame. NoiseIndex(fallback) is the number a stochastic effect takes
+// its noise from: the update number PLUS the number of tagged frames in a row that carried the same update (Held), so a held scene keeps counting while a running scene (the number changes every
+// frame: nothing is added) and a frame outside a scene (the renderer's own count, which changes every frame) are as they were. It stays a function of the scene's own numbers: the k-th frame of a still
+// has the same noise in every run, so a picture taken after the same number of frames is repeatable. Index() is the scene's number alone (the temporal upscalers' jitter took it until NOISE-RESOLVE; it takes NoiseIndex now, so a still walks the whole jitter sequence).
+// The count can be turned off (SetCountHeld, mcla_gpu_noise_held false): NoiseIndex is then Index.
+//
 // Threading: SetUpdate, OnGuestSwap and OnHandOver on the game thread; OnPresent, BeginFrame and Index on the render thread. All atomics; header only, so
 // cars_test.cpp can check it.
 // ===========================================================================
@@ -59,6 +67,10 @@ struct State {
   std::atomic<uint64_t> stamped{0};      // hand-overs that wrote a tag since Rearm
   std::atomic<uint64_t> found{0};        // renderer frames that read a tag since Rearm
   std::atomic<uint64_t> missed{0};       // renderer frames that found no tag while a scene held the noise
+  std::atomic<uint64_t> last_present{kNone};  // the present count of the frame that last updated `held` (a second list of the same guest frame does not count)
+  std::atomic<uint64_t> last_value{kNone};    // the update the last tagged frame showed
+  std::atomic<uint64_t> held{0};              // tagged frames in a row, before the one in progress, that showed the same update
+  std::atomic<bool> count_held{true};         // NoiseIndex adds `held`
 };
 
 inline State& Get() {
@@ -108,11 +120,23 @@ inline bool BeginFrame() {
   const uint64_t tag = e.tag.load(std::memory_order_acquire);
   if (tag != k) {
     s.current.store(kNone, std::memory_order_relaxed);
+    s.last_value.store(kNone, std::memory_order_relaxed);
+    s.held.store(0, std::memory_order_relaxed);
     if (s.update.load(std::memory_order_relaxed) >= 0) s.missed.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
-  s.current.store(e.value.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  const uint64_t value = e.value.load(std::memory_order_relaxed);
+  s.current.store(value, std::memory_order_relaxed);
   s.found.fetch_add(1, std::memory_order_relaxed);
+  if (s.last_present.load(std::memory_order_relaxed) != k) {  // the first list of this guest frame
+    s.last_present.store(k, std::memory_order_relaxed);
+    if (s.last_value.load(std::memory_order_relaxed) == value) {
+      s.held.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      s.last_value.store(value, std::memory_order_relaxed);
+      s.held.store(0, std::memory_order_relaxed);
+    }
+  }
   uint64_t none = kNone;
   return s.first_logged.compare_exchange_strong(none, k, std::memory_order_relaxed);
 }
@@ -124,12 +148,37 @@ inline void Rearm() {
   s.stamped.store(0, std::memory_order_relaxed);
   s.found.store(0, std::memory_order_relaxed);
   s.missed.store(0, std::memory_order_relaxed);
+  s.last_present.store(kNone, std::memory_order_relaxed);
+  s.last_value.store(kNone, std::memory_order_relaxed);
+  s.held.store(0, std::memory_order_relaxed);
 }
 
-// Render thread: the noise's frame number: the scene update the frame in progress shows, else `fallback` (the renderer's own count).
+// Render thread: the scene's own number: the scene update the frame in progress shows, else `fallback` (the renderer's own count). (The temporal upscalers' jitter took this one until NOISE-RESOLVE: a pinned still
+// then stood on one sub-pixel offset for ever; it takes NoiseIndex now, like every other effect, so a still converges like a supersampled picture.)
 inline uint64_t Index(uint64_t fallback) {
   const uint64_t c = Get().current.load(std::memory_order_relaxed);
   return c == kNone ? fallback : c;
+}
+
+// Render thread, at the start of a frame (Scene::BeginFrame, before BeginFrame): whether NoiseIndex adds the frames a scene update has been held (mcla_gpu_noise_held).
+inline void SetCountHeld(bool on) {
+  Get().count_held.store(on, std::memory_order_relaxed);
+}
+
+// Render thread: the frames in a row, before the one in progress, that showed the same scene update (0 outside a scene and in a scene that changes its update every frame).
+inline uint64_t Held() {
+  const State& s = Get();
+  return s.current.load(std::memory_order_relaxed) == kNone ? 0 : s.held.load(std::memory_order_relaxed);
+}
+
+// Render thread: THE NOISE INDEX every stochastic effect takes its frame number from (see A HELD SCENE KEEPS THE NOISE VARYING): Index(fallback) plus Held() while the count is on.
+inline uint64_t NoiseIndex(uint64_t fallback) {
+  const State& s = Get();
+  const uint64_t c = s.current.load(std::memory_order_relaxed);
+  if (c == kNone) {
+    return fallback;
+  }
+  return s.count_held.load(std::memory_order_relaxed) ? c + s.held.load(std::memory_order_relaxed) : c;
 }
 
 // The update the frame in progress shows, or -1.

@@ -172,6 +172,11 @@ class GPUSettings final : public rex::SettingOwner {
     "wide blur at every size, its additive recurrence, its 2 a-trous iterations and its clip of 1.25 "
     "deviations, for comparing. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_ao_blue_noise, true, "Diagnostic: the ambient occlusion's, the bounce light's and the contact shadows' sampling noise (which direction and how far along it each pixel "
+    "looks) comes from a blue noise tile that has no lattice in it, so what the blur and the average over frames leave of the noise is a fine grain no "
+    "pattern can be read from. False: the first version's interleaved gradient noise, a diagonal lattice whose leftovers show as thin diagonal lines on "
+    "roads and kerbs, for comparing. Live.", rex::kDebugOnly);
+
   REX_SETTING(i32, mcla_gpu_ao_view, 0, "Diagnostic: shows a stage of the ambient occlusion as a grey picture instead of applying it "
     "(only while it is on): 1 the factor the picture is multiplied by (white: none), 2 the "
     "visibility, 3 the share of the light that is ambient, 4 the surface normals, 5 the distance "
@@ -922,6 +927,22 @@ class GPUSettings final : public rex::SettingOwner {
     "are not affected: they are drawn into coverage images with the same samples and averaged, so "
     "the two switches are independent. For A/B. Live (read at start too).", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_noise_blue, true, "Diagnostic: the other stochastic passes' sampling noise (the ray traced car occlusion's and reflection cones' directions, the sun shafts' ray starts, "
+    "the fog's sample offsets, the sun shadow filter's disk turn and the city reflections' sun and lamp samples) comes from the blue noise tile stepped "
+    "along the R2 sequence every frame, so what the filters and the average over frames leave of it is a fine grain no pattern can be read from. False: the "
+    "first versions' interleaved gradient noise, a lattice whose leftovers show as thin diagonal lines, for comparing. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_noise_held, true, "Diagnostic: a scene the harness holds still (the trailer toolkit's stills, scene_at) shows the same game frame number in every frame, so the noise of "
+    "every stochastic effect (the occlusion, the sun rays, the reflection cone, the shafts, the shadow filter) stood on one sample for ever and its history "
+    "averaged copies of it. True: the noise index also counts the frames the scene's number has been held, so a held scene keeps varying (a picture taken "
+    "after the same number of frames is still repeatable). False: the scene's own number alone, for pictures that must match whatever number of frames was "
+    "waited. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_noise_resolve_no_upscaler, true, "Diagnostic: with no temporal upscaler running (plain MSAA, the default) the contact shadows' march, the ray traced sun rays of the car and the city, "
+    "the sun shafts' ray starts and the car reflection cone's turn changed their noise every frame only while an upscaler averaged it; without one they held one pattern. "
+    "True: the noise changes every frame here too, and each effect resolves it itself: the contact shadows and the sun rays through the occlusion's own history (reprojected by depth and the "
+    "camera, 12 frames), the shafts and the reflection cone through a short history of their own. False: the first fixes' fixed blue pattern without an upscaler. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_object_names, false, "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
     "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
     "microseconds, and a world loads hundreds of textures in one frame, so they are set only "
@@ -1640,6 +1661,7 @@ inline auto& mcla_gpu_ab_interleave = g_gpu.mcla_gpu_ab_interleave;
 inline auto& mcla_gpu_adapter = g_gpu.mcla_gpu_adapter;
 inline auto& mcla_gpu_anisotropy = g_gpu.mcla_gpu_anisotropy;
 inline auto& mcla_gpu_ao = g_gpu.mcla_gpu_ao;
+inline auto& mcla_gpu_ao_blue_noise = g_gpu.mcla_gpu_ao_blue_noise;
 inline auto& mcla_gpu_ao_car_reach = g_gpu.mcla_gpu_ao_car_reach;
 inline auto& mcla_gpu_ao_census = g_gpu.mcla_gpu_ao_census;
 inline auto& mcla_gpu_ao_fade_end = g_gpu.mcla_gpu_ao_fade_end;
@@ -1796,6 +1818,9 @@ inline auto& mcla_gpu_luminance_scale_fix = g_gpu.mcla_gpu_luminance_scale_fix;
 inline auto& mcla_gpu_memory_census = g_gpu.mcla_gpu_memory_census;
 inline auto& mcla_gpu_msaa = g_gpu.mcla_gpu_msaa;
 inline auto& mcla_gpu_msaa_with_upscaler = g_gpu.mcla_gpu_msaa_with_upscaler;
+inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;
+inline auto& mcla_gpu_noise_held = g_gpu.mcla_gpu_noise_held;
+inline auto& mcla_gpu_noise_resolve_no_upscaler = g_gpu.mcla_gpu_noise_resolve_no_upscaler;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;

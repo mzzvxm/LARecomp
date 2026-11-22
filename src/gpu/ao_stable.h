@@ -47,6 +47,18 @@
 //      1.4 times), IGN moved by 5.588 pixels a frame (0.7 to 1.3 times). 13 shares no factor with the jitter's phase counts of the
 //      upscalers (8 at 1x, 18 at 1.5x, 32 at 2x, 72 at 3x) except at 26 and 39 (a ratio of 1.8 or 2.2), and even then the noise and
 //      the jitter do not move together (the shift is the occlusion's own, not the pixel's position).
+//   4. THE PIXEL'S OWN NOISE WAS A LATTICE (2026-11-21, the owner's "thin diagonal lines" on the night road and the kerbs, static). Interleaved gradient noise is
+//      a linear phase of the pixel's position: its spectrum is a handful of sharp frequencies, the strongest of them at a period of about 5 to 10 pixels along
+//      the diagonal. A 3x3 blur takes a period of 2 or 3 pixels; this one it leaves. The shift of the lattice of 13 frames is the same for every pixel, so the
+//      history of 12 frames averages every pixel to the right answer only to within the weights' unevenness (the newest frame weighs 2.6 times the oldest of
+//      12), and that residue is a function of the pixel's noise: a diagonal lattice again. Measured on the C++ twin over a wall (ao_blue_noise_test.cpp):
+//      the error after 4, 12 and 24 frames has 2 to 10% of its energy in ONE spatial frequency and 3 to 5 times the mean energy in its strongest direction.
+//      The pixel's own part is now a BLUE noise tile (blue_noise.h: 32 x 32, void-and-cluster; mcla_gpu_ao_blue_noise): after the same blur it leaves 1/250 of
+//      the gradient noise's low-frequency energy, and the error after the history has 0.2 to 0.3% of its energy in its strongest frequency and no direction
+//      (1.2 to 1.5 times the mean), at the same rms (a little more: the gradient noise's 3x3 neighbourhoods are very even, which is what it was made for, but
+//      only at those scales). The shift per frame is unchanged: any pixel's own sequence is still the 13 evenly spaced rotations, so 13 frames are exact for
+//      either. The contact shadows' march takes the tile too: without a temporal upscaler its noise is a fixed pattern (frame 0) that only the 3x3 filter removes,
+//      which is where a lattice shows most.
 //   Not changed on purpose: the sample count (cost), the history length (a longer one lags a car's shadow; the numbers
 //   above say the image is steady with 12), the order of the power and the blur (a blur before the power would change
 //   the look).
@@ -120,6 +132,10 @@ inline constexpr uint32_t kLatticeStepY = 8;
 // shadows', get the frame number as before.)
 inline constexpr uint32_t kLatticeFlag = 1u << 30;
 inline constexpr uint32_t kLatticePhaseMask = 0xFFFu;
+// With this bit also set (slots2.y of the main pass, the contact march's too: its frame number is the low 10 bits) the pixel's own part of the noise is the
+// blue noise tile's (blue_noise.h, hlsl/blue_noise.hlsli) in place of interleaved gradient noise: mcla_gpu_ao_blue_noise. The bit overlaps neither the phase
+// (bits 0 to 11), the first version's frame number (bits 0 to 9) nor the lattice's flag.
+inline constexpr uint32_t kBlueNoiseFlag = 1u << 29;
 
 struct Shift {
   float x = 0.0f;  // added to the slice rotation's noise
@@ -129,8 +145,9 @@ struct Shift {
 inline float Frac1(float x) { return x - std::floor(x); }
 
 // What ao.cpp puts in the main pass's slots2.y for frame `frame`.
-inline uint32_t NoiseCode(uint64_t frame, bool lattice) {
-  return lattice ? (kLatticeFlag | uint32_t(frame % kLatticePeriod)) : uint32_t(frame & kFrameWrap);
+inline uint32_t NoiseCode(uint64_t frame, bool lattice, bool blue = false) {
+  const uint32_t shift = lattice ? (kLatticeFlag | uint32_t(frame % kLatticePeriod)) : uint32_t(frame & kFrameWrap);
+  return blue ? (shift | kBlueNoiseFlag) : shift;
 }
 
 // The shift the shader makes of the code (the shader adds it to the pixel's own noise and takes the fraction).

@@ -184,6 +184,7 @@ class SunShafts {
     kPassSkyMs,
     kPassBlur,
     kPassAdd,
+    kPassTemporal,  // NOISE-RESOLVE: the blurred image averaged over frames while no temporal upscaler runs
     kPassCount,
   };
   // The pipelines: the sky pass per kind of planes (plain or multisampled), the blur, and the add
@@ -192,7 +193,8 @@ class SunShafts {
     kVSky = 0,
     kVSkyMs = 1,
     kVBlur = 2,
-    kVAddBase = 3,  // + 4 * debug + log2(samples)
+    kVTemporal = 3,
+    kVAddBase = 4,  // + 4 * debug + log2(samples)
     kVariantCount = kVAddBase + 8,
   };
   static uint32_t AddVariant(bool debug, uint32_t host_samples);
@@ -223,6 +225,7 @@ class SunShafts {
     float density = 0.9f;
     float decay = 0.96f;
     float noise_shift = 0.0f;
+    bool history = false;          // NOISE-RESOLVE: no temporal upscaler averages the frames, so the noise moves every frame and the blurred image is averaged over frames (RecordTemporal)
     uint32_t view = 0;
   };
 
@@ -292,8 +295,11 @@ class SunShafts {
   bool RecordSky(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                  const Pending& plan);
   bool RecordShafts(plume::RenderCommandList* list, const Pending& plan);
+  // `shine` is the image the add pass reads: the blurred one, or its average over frames (RecordTemporal).
   bool RecordAdd(plume::RenderCommandList* list, EdramTargets::Target& colour,
-                 const Pending& plan);
+                 const Pending& plan, const HostImage& shine);
+  // NOISE-RESOLVE: the blurred image averaged with the last frame's result (hlsl/shafts_temporal_ps.hlsl); the image holding the result, or null (no pipeline or images yet: the add pass takes the blurred one).
+  const HostImage* RecordTemporal(plume::RenderCommandList* list, const Pending& plan);
   bool EnsureImages(const Pending& plan);
   void ReleaseImages();
   plume::RenderPipeline* Pipeline(uint32_t variant);
@@ -402,6 +408,17 @@ class SunShafts {
   bool built_ = false;   // and all of them are made (HoldUntilBuilt asks no more)
   HostImage sky_;    // R16_FLOAT, half the picture (capped, shafts_image.h): the sky's brightness
   HostImage shaft_;  // R16_FLOAT, the same size: the blurred image
+  // NOISE-RESOLVE (noise_resolve.h): the blurred image's history while no temporal upscaler runs, two R16_FLOAT images of the same size that take turns (the add pass reads the one written last), and what
+  // the next frame needs to know of it: that it exists, which frame wrote it, where the sun was, how long a history it holds.
+  HostImage hist_[2];
+  uint32_t hist_index_ = 0;
+  bool hist_valid_ = false;
+  uint64_t hist_frame_ = 0;
+  bool hist_pause_ = false;
+  float hist_sun_[2] = {};
+  uint32_t hist_frames_ = 0;
+  uint64_t hist_used_ = 0;       // frames that averaged over it
+  bool hist_logged_ = false;
   uint32_t unused_frames_ = 0;       // frames since a pass was recorded, for giving the images back
   uint32_t images_made_for_[2] = {};
   bool images_failed_logged_ = false;

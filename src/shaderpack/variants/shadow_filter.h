@@ -88,7 +88,7 @@ namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line
 // variants_shadow_filter_version).
-inline constexpr uint32_t kShadowFilterVariantVersion = 3;  // 2: contact hardening (mode bit 2), a0 passed to the helper; 3: noise only with mode bit 4, the Gather taps and the blocker search at the receiver's plane
+inline constexpr uint32_t kShadowFilterVariantVersion = 4;  // 4: the disk's turn is the blue noise tile stepped along R2 with mode bit 5 (NOISE-AUDIT), the first version's gradient noise without; 2: contact hardening (mode bit 2), a0 passed to the helper; 3: noise only with mode bit 4, the Gather taps and the blocker search at the receiver's plane
 
 // The collector's pixel shaders, found by name (the entry points of the .updb path; the identities differ
 // per material and the pack records each one's own).

@@ -432,7 +432,7 @@ float CarMapShadow(float3 pc, float3 normal, float footprint, float noise, out b
     const float soft = kCarMapSoftRadiusMetres / texel_m;
     const float reach = filter_mode == kCarMapFilterPcss ? kCarMapFilterMaxRadii * soft : soft;
     float2 direction;
-    sincos((g_push.slots2.y != 0u) ? noise * 6.28318530718f : kCarMapFixedAngle, direction.y, direction.x);
+    sincos(((g_push.slots2.y & ~kAoNoiseBlueFlag) != 0u) ? noise * 6.28318530718f : kCarMapFixedAngle, direction.y, direction.x);
     [unroll] for (int j = 0; j < kCarMapSearchTaps; ++j) {
       const float at = (float(j) + 0.5f) * (1.0f / float(kCarMapSearchTaps));
       CarMapGather(slot, centre + direction * (sqrt(at) * reach), centre, receiver_m, gradient, depth_m, inv_size, bias, occupied, blocked, over, weight);
@@ -618,7 +618,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // Interleaved gradient noise plus the frame's R2 shift (ao_main_ps): the start of the ray inside
   // its first step.
   const float frame = float(g_push.slots2.y & 1023u);
-  const float noise = frac(AoNoise(float2(pixel)) + frame * 0.75487766624669f);
+  const float noise = frac(AoSpatialNoise1(pixel) + frame * 0.75487766624669f);
 
   // The ray traced term (THE RAY TRACED TERM above): 1 where the sun's ray from this pixel meets nothing of the car, 0 where it meets a part.
   const bool traced = (flags & kRtContactFlag) != 0u;

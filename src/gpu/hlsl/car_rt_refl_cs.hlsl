@@ -71,6 +71,7 @@
 #define CAR_RT_SPACE 2
 #include "car_rt_common.hlsli"
 #include "car_rt_refl_common.hlsli"
+#include "blue_noise.hlsli"
 
 Texture2D<float4> g_textures[] : register(t0, space0);
 #ifdef __spirv__
@@ -127,6 +128,7 @@ ConstantBuffer<CarRtReflPush> g_push : register(b0, space3);
 // ---------------------------------------------------------------------------------------------------------------------
 
 static const uint kStatsFlag = 65536u;  // slots.w bit 16: this is a stats frame
+static const uint kConeBlueFlag = 131072u;  // slots.w bit 17: the cone's turn is the blue noise tile's (mcla_gpu_noise_blue; car_rt_refl_rules.h kConeBlueFlag), else the first version's gradient noise
 static const uint kStatTexels = 0u;
 static const uint kStatRays = 1u;
 static const uint kStatOwn = 2u;
@@ -284,10 +286,13 @@ float EncodeInstance(uint instance)
 static const float kConeRadius[4] = {0.5, 0.8660254037844386, 0.5, 0.8660254037844386};
 static const int kConeOrder[4] = {1, 3, 0, 2};
 
-// The angle the texel's pattern is turned by, in turns.
-float ConeRotation(uint2 texel, uint phase)
+// The angle the texel's pattern is turned by, in turns: the blue noise tile at the texel (no lattice: the first version's interleaved gradient noise was one, which the 3x3 passes of the denoise left
+// as thin diagonal lines on a body panel) plus a golden step per phase, the same for every texel (0 .. 7 by the frame where a temporal upscaler averages the pattern, 0 where none runs: the pattern
+// then stands still), modulo 1. `blue` is slots.w's kConeBlueFlag (mcla_gpu_noise_blue); without it the first version's noise.
+float ConeRotation(uint2 texel, uint phase, bool blue)
 {
-    const float noise = frac(52.9829189 * frac(0.06711056 * float(texel.x) + 0.00583715 * float(texel.y)));
+    const float noise = blue ? BlueNoiseTileAt(int(texel.x), int(texel.y), 0u)
+                             : frac(52.9829189 * frac(0.06711056 * float(texel.x) + 0.00583715 * float(texel.y)));
     return frac(noise + 0.6180339887 * float(phase));
 }
 
@@ -772,7 +777,7 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     const uint levelRays = LevelRays(g_push.slots.w);
     const float rays = tanHalf > 0.0 ? float(levelRays) : 1.0;
     const float3 origin = direction * hitT + normal * (0.004 + 0.002 * hitT);
-    const float turns = ConeRotation(texel, g_push.slots.w & 7u);
+    const float turns = ConeRotation(texel, g_push.slots.w & 7u, (g_push.slots.w & kConeBlueFlag) != 0u);
     float coatShare = 0.0;
     float coatFade = 0.0;
     float coatVisible = 0.0;

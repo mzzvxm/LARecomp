@@ -151,6 +151,42 @@ add_executable(larecomp_ao_fast_test EXCLUDE_FROM_ALL ao_fast_test.cpp)
 # (ao_stable_twin.h: a still camera over a road, a wall and a car at 3840x2160 and 1280x720; about half a minute) likewise:
 #   cmake --build <dir> --target larecomp_ao_stable_noise_test, then run src/gpu/larecomp_ao_stable_noise_test [--print].
 add_executable(larecomp_ao_stable_noise_test EXCLUDE_FROM_ALL ao_stable_noise_test.cpp)
+# The blue noise tile the screen-space effects sample with (blue_noise.h; hlsl/blue_noise.hlsli is its table: the check compares them, and `--emit` writes the
+# file): a permutation, uniform, deterministic, blue (no low frequencies, no peak) against interleaved gradient noise, which is a lattice; no renderer needed:
+#   cmake --build <dir> --target larecomp_blue_noise_test, then run src/gpu/larecomp_blue_noise_test [--print | --emit > src/gpu/hlsl/blue_noise.hlsli].
+add_executable(larecomp_blue_noise_test EXCLUDE_FROM_ALL blue_noise_test.cpp)
+# What the blue noise does to the occlusion, the bounce light and the contact shadows (ao_halo.h's twin of the main pass over a wall, through the real blur and history:
+# the error's lattice against interleaved gradient noise; given the src/gpu folder it also reads the shaders', ao.cpp's, the setting's and the debug row's use of it):
+#   cmake --build <dir> --target larecomp_ao_blue_noise_test, then run src/gpu/larecomp_ao_blue_noise_test <src/gpu dir> [--print] (about ten seconds).
+add_executable(larecomp_ao_blue_noise_test EXCLUDE_FROM_ALL ao_blue_noise_test.cpp)
+# The shared per-frame blue noise (hlsl/blue_noise_frame.hlsli: the tile stepped along the R2 sequence, which the stochastic passes other than the occlusion and the reflections of the screen use;
+# NOISE-AUDIT) and the debug setting mcla_gpu_noise_blue that switches them to the first versions' gradient noise: uniform, changes every frame, nothing slides, no lattice after the average:
+#   cmake --build <dir> --target larecomp_noise_frame_test, then run src/gpu/larecomp_noise_frame_test [<src/gpu dir>] [--print] (a second or two).
+add_executable(larecomp_noise_frame_test EXCLUDE_FROM_ALL noise_frame_test.cpp)
+# The ray traced car occlusion's and sun ray's noise (hlsl/car_rt_ao_noise.hlsli: the blue noise tile in place of gradient noise; NOISE-AUDIT): numbers, history, sources:
+#   cmake --build <dir> --target larecomp_car_rt_ao_noise_test, then run src/gpu/larecomp_car_rt_ao_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_car_rt_ao_noise_test EXCLUDE_FROM_ALL car_rt_ao_noise_test.cpp)
+# The ray traced car reflection's cone turn (hlsl/car_rt_refl_cs.hlsl ConeRotation and its twin: the blue noise tile in place of gradient noise; NOISE-AUDIT): turns, error after the average, flag, sources:
+#   cmake --build <dir> --target larecomp_car_refl_noise_test, then run src/gpu/larecomp_car_refl_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_car_refl_noise_test EXCLUDE_FROM_ALL car_refl_noise_test.cpp)
+# The sun shafts' ray-start noise (hlsl/shafts_noise.hlsli: the blue noise tile in place of gradient noise; NOISE-AUDIT): numbers, error after the average, still pattern, sources:
+#   cmake --build <dir> --target larecomp_shafts_noise_test, then run src/gpu/larecomp_shafts_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_shafts_noise_test EXCLUDE_FROM_ALL shafts_noise_test.cpp)
+# The fog volume per-voxel sample offset (hlsl/volumetrics_noise.hlsli: the blue noise tile, no sliding gradient noise; NOISE-AUDIT): offsets, history error, sources:
+#   cmake --build <dir> --target larecomp_volumetrics_noise_test, then run src/gpu/larecomp_volumetrics_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_volumetrics_noise_test EXCLUDE_FROM_ALL volumetrics_noise_test.cpp)
+# The sun shadow filter disk turn (shaderpack/variants/shadow_filter.cpp ShadowFilterNoise and its blue noise table, shadow_filter.h mode bit 5; NOISE-AUDIT): table, turn, penumbra error, host:
+#   cmake --build <dir> --target larecomp_shadow_filter_noise_test, then run src/gpu/larecomp_shadow_filter_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_shadow_filter_noise_test EXCLUDE_FROM_ALL shadow_filter_noise_test.cpp)
+# What the sun shadow filter's disk does while no temporal upscaler runs (NOISE-RESOLVE, noise_resolve.h): the model of the variant's disk (a straight edge, the weights, the golden angle taps) against the options
+# (fixed turn, a per pixel turn, more taps, an average over frames) with the numbers the decision rests on:
+#   cmake --build <dir> --target larecomp_shadow_filter_resolve_test, then run src/gpu/larecomp_shadow_filter_resolve_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_shadow_filter_resolve_test EXCLUDE_FROM_ALL shadow_filter_resolve_test.cpp)
+# NOISE-RESOLVE (noise_resolve.h, NOISE-AUDIT.md CHECK 1 and 2): the effects that held one pattern without a temporal upscaler (the contact march, the traced sun rays, the shafts, the car reflection cone) change their noise
+# every frame and resolve it with a history; the twins of the passes measure the per-frame variation, the error after the history under a still and a moving camera, the flicker and the ghost; the upscaler's jitter in
+# a pinned still; the memory; the sources:
+#   cmake --build <dir> --target larecomp_noise_resolve_test, then run src/gpu/larecomp_noise_resolve_test [<src/gpu dir>] [--print] (about ten seconds).
+add_executable(larecomp_noise_resolve_test EXCLUDE_FROM_ALL noise_resolve_test.cpp)
 # The size of the occlusion's and the bounce light's images (ao_size.h: half the picture's size above 1080 lines of render height, the
 # contact shadows keeping their own size, the memory each frame holds and the cost model; given the src/gpu folder it also checks that the
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:
@@ -851,6 +887,8 @@ larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)
 larecomp_gpu_host_shader(shafts_sky_ms_ps ps_6_0 SOURCE shafts_sky_ps DEFINES SHAFTS_MS=1)
 larecomp_gpu_host_shader(shafts_blur_ps ps_6_0)
 larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
+# The blurred image averaged over frames while no temporal upscaler runs (NOISE-RESOLVE, noise_resolve.h):
+larecomp_gpu_host_shader(shafts_temporal_ps ps_6_0)
 # The volumetric light's passes (volumetrics.h): the inject and the integrate (compute, Shader Model 6.0, a typed RGBA16F storage image store on both
 # APIs) and the composite (plain or multisampled depth plane).
 larecomp_gpu_host_shader(volumetrics_inject_cs cs_6_0)

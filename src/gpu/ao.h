@@ -830,6 +830,10 @@ class AmbientOcclusion {
     bool by_height = false;        // ... only because of the height rule (above 1080 lines: ao_size.h), not the old one
     bool contact_full = false;     // the contact shadows keep the picture's size (their own depth and images) while `low`
     bool upscaler = false;
+    // NOISE-RESOLVE (mcla_gpu_noise_resolve_no_upscaler): no temporal upscaler averages the frames, so the contact shadows' march and the ray traced sun rays (the car's, and the city's)
+    // change their noise every frame and the contact image has a history of its own (the occlusion's temporal pass over the filtered image: ContactHistory below). Then the filter is a pass
+    // of its own (not inside the apply) and the apply reads the history's result.
+    bool contact_history = false;
     uint32_t render[2] = {};       // the main view, host pixels
     uint32_t ao[2] = {};           // the traced passes' size (the depth chain's level 0)
     uint32_t level[2][2] = {};     // the coarser levels' sizes
@@ -840,7 +844,7 @@ class AmbientOcclusion {
     // The contact filter is done by the apply pass (mcla_gpu_contact_shadows_fast): the march's image goes to it as
     // it is and the denoise pass does not run for the contact shadows. Only at the picture's size: at half size the
     // apply upsamples a filtered image (hlsl/ao_apply_ps.hlsl VisibilityAt), and that pass is a quarter of the pixels.
-    bool ContactFilterInApply() const { return ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }
+    bool ContactFilterInApply() const { return !contact_history && ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }
     // The contact shadows have images and a depth of their own (the full size ones) beside a half size trace.
     bool SplitContact() const { return contact.mode != Mode::kOff && contact_full; }
     // The bounce light's colour chain takes one sample of the colour target's MSAA samples (per pixel of a 2x2 block), not all.
@@ -886,6 +890,10 @@ class AmbientOcclusion {
   // pass filters it (its flag bit 25). `mask_slot` is the game's sun shadow mask (FindMaskSlot, kNoSlot without it): the
   // march skips the pixels under it that the apply cannot use (the apply is given the same slot).
   uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base, uint32_t mask_slot);
+  // NOISE-RESOLVE: the contact image's own history (Plan::contact_history): the occlusion's temporal pass (hlsl/ao_temporal_ps.hlsl, flag kContactHistoryFlag: no wide blur where the history does
+  // not hold) over `filtered` (the contact filter's result, plain visibilities), reprojected by the depth and the camera's motion into the last frame's result. Returns the slot of the result,
+  // which the apply reads in place of the filter's image. The decision, which images and why a frame has no history are ChooseContactHistory's.
+  uint32_t RecordContactHistory(plume::RenderCommandList* list, const Plan& plan, const Push& base, const HostImage& filtered, const HostImage& depth);
   // The statistics of the skip (mcla_gpu_contact_skip_stat): one more march into contact_stat_ with the statistics flag, copied to a
   // readback buffer, and counted when the GPU has run it (ProcessContactStat). `march_push` is the march's push (its skip fields);
   // `limit` the skip's limit, -1 where the skip is not on.
@@ -1037,6 +1045,8 @@ class AmbientOcclusion {
   // Decides the frame's history: its use, and the matrix that moves this frame's view space into
   // the history's.
   HistoryUse ChooseHistory(const Plan& plan) const;
+  // The same for the contact image's own history (NOISE-RESOLVE): the contact_hist_ state in place of the occlusion's, the same camera motion and cap.
+  HistoryUse ChooseContactHistory(const Plan& plan) const;
   // The motion of the trigger's frame's camera into the previous frame's (true unless the
   // matrix is not finite); *cut says that the frame's own camera jumped (vertex bank only).
   bool FrameMotion(temporal::Mat4* motion, Pose* source, bool* cut) const;
@@ -1204,7 +1214,7 @@ class AmbientOcclusion {
   uint64_t vehicle_motion_frame_ = 0;
   std::unique_ptr<plume::RenderShader> vehicle_table_shader_;
   HostImage vehicle_table_;  // R32G32B32A32_FLOAT, 4 x 24: a row an ID (hlsl/ao_temporal_ps.hlsl)
-  // The last table RecordVehicleTable drew, for VehicleTableNow: its frame (frame_), the IDs that got a row and the slot.
+  // The last table RecordVehicleTable drew, for VehicleTableNow and the contact image's history: its frame (frame_), the IDs that got a row and the slot.
   uint64_t vehicle_table_frame_ = ~0ull;
   uint32_t vehicle_table_ids_ = 0;
   uint32_t vehicle_table_slot_ = 0xFFFFFFFFu;
@@ -1284,6 +1294,24 @@ class AmbientOcclusion {
   HostImage depth_full_;
   HostImage contact_raw_;
   HostImage contact_dn_;
+  // NOISE-RESOLVE: the contact image's history (visibility, linear depth; R16G16_FLOAT at the contact image's size), two images that take turns, and what the next frame needs to know of it.
+  struct ContactHistory {
+    HostImage image[2];
+    uint32_t index = 0;           // image[index] is the one written last
+    bool valid = false;           // it holds a picture the next frame may lean on
+    bool cut = false;             // ... and was dropped by a cut (for the census)
+    uint64_t frame = 0;           // the frame that wrote it
+    bool pause = false;           // ... which kind of view it was
+    uint32_t size[2] = {};        // ... at which image size
+    float tan[2] = {};            // ... with which lens
+    uint32_t age = 0;             // pictures averaged into it, less the first
+    uint64_t used = 0;            // frames that averaged over it
+    uint64_t resets = 0;          // frames that could not
+    bool logged = false;
+  };
+  ContactHistory contact_hist_;
+  bool stencil_ms_ = false;       // ... and whether that depth target is multisampled (which temporal pipeline reads it)
+  uint32_t stencil_slot_ = ~0u;  // the depth target's stencil plane view of this frame's Run (the contact history's temporal pass reads the vehicles' IDs from it)
   // The history: (visibility, linear depth) of the last frame that ran the passes, R16G16_FLOAT,
   // two images that take turns (a pass does not read the image it writes); history_[history_index_]
   // is the one written last.
