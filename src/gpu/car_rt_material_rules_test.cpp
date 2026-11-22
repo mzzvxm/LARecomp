@@ -998,7 +998,7 @@ int main(int argc, char** argv) {
                 Has(hlsli, "result += albedo * (m.emissive * kRtHitEmissiveGain * f.night);") && Has(hlsli, "albedo = lerp(m.tintB, m.tintA, pow(max(nv, 1e-4), m.flop));"),
             "the shader's lighting is ShadeReference's (the hemisphere term, the fresnel, the emissive, the paint's gradient)");
       Check(Has(hlsli, "#define RT_HIT_FRAME_ROW(i) gCarRtMaterials[i]") && Has(hlsli, "#define RT_HIT_TLAS gCarRtTlas") && Has(hlsli, "#include \"rt_hit_frame.hlsli\"") && Has(hlsli, "#include \"rt_hit_sample.hlsli\"") &&
-                Has(hlsli, "RtHitSunVisible(hit + normal * (0.004 + 0.002 * hit.z), toSun, f.shadowReach, CAR_RT_MASK_ALL)") && Has(hlsli, "visible = RtHitCascadeVisible(f, hit, normal);") &&
+                Has(hlsli, "RtHitSunVisible(hit + normal * (0.004 + 0.002 * abs(hit.z)), toSun, f.shadowReach, CAR_RT_MASK_ALL)") && Has(hlsli, "visible = RtHitCascadeVisible(f, hit, normal);") &&
                 Has(hlsli, "const float3 light = RtHitAmbientLight(f, hemisphere) + f.sun * (ndl * visible);") && Has(hlsli, "env = RtHitEnvRead(f, world, lod);"),
             "the car's shading reads the frame's rows from the car's own buffer, and the cascades, the sun's ray, the ambient and the environment map through the shared code");
       Check(Has(refl, "#include \"car_rt_hit_shade.hlsli\"") && Has(refl, "static const bool kShadePlayerHits = true;") && Has(refl, "isShaded = CarHitShade(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, g_push.up.w, shaded);") &&

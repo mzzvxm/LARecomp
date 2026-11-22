@@ -173,7 +173,9 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
         }
         if (visible > 0.0 && (f.flags & RT_HIT_FRAME_SHADOW) != 0u)
         {
-            visible = min(visible, RtHitSunVisible(hit + normal * (0.004 + 0.002 * hit.z), toSun, f.shadowReach, CAR_RT_MASK_ALL));
+            // the lift follows the magnitude of the view z: a hit behind the camera (a car behind a chase camera, in the paint's reflection) has a negative z, and past 2 m a negative lift puts the ray's
+            // origin under the surface, the ray meets the surface it left and the hit is in shadow
+            visible = min(visible, RtHitSunVisible(hit + normal * (0.004 + 0.002 * abs(hit.z)), toSun, f.shadowReach, CAR_RT_MASK_ALL));
         }
     }
     const float3 light = RtHitAmbientLight(f, hemisphere) + f.sun * (ndl * visible);
