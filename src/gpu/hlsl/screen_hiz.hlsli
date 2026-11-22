@@ -21,4 +21,13 @@ float ScreenHizMin4(float4 d) {
   return min(min(d.x, d.y), min(d.z, d.w));
 }
 
+// The FUSED passes (SS-3, screen_shared.h): the depth chain's passes also write the Hi-Z's first levels, so that the Hi-Z's own passes for them are not recorded.
+//   level 0   ao_depth_ps.hlsl compiled with AO_HIZ0 writes ScreenHizStrip(its own texel) into a second target: what the Hi-Z's level 0 pass made of the depth chain's level 0.
+//   level 1   ao_mip_ps.hlsl compiled with AO_HIZ writes the nearest of the four level 0 texels it reads for the depth chain's level 1, each with its marks off: ScreenHizMin4 of what the Hi-Z's
+//             level 0 holds at those four texels (the strip is applied to each texel before the min, not to the min, so that this is the old pass's statement and not an argument about order).
+//   level 2   the same pass reads the Hi-Z's level 1 for it: those texels have their marks off already, which the strip leaves as it is.
+float ScreenHizMin4Stripped(float4 d) {
+  return ScreenHizMin4(float4(ScreenHizStrip(d.x), ScreenHizStrip(d.y), ScreenHizStrip(d.z), ScreenHizStrip(d.w)));
+}
+
 #endif  // MCLA_GPU_SCREEN_HIZ_HLSLI

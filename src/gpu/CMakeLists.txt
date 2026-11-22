@@ -344,6 +344,10 @@ add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.c
 # statements ao.cpp's old path records them with and to ao.cpp's own text, over a grid of frames; the pass list and the cost model, printed for 1080p and 4K) likewise:
 #   cmake --build <dir> --target larecomp_screen_extract_test, then run src/gpu/larecomp_screen_extract_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_screen_extract_test EXCLUDE_FROM_ALL screen_extract_test.cpp)
+# The fused Hi-Z (screen_extract.h, SS-3: the depth chain's passes write the Hi-Z's first levels beside their images; hlsl/screen_hiz.hlsli and hlsl/ao_mip.hlsli compiled as C++, a whole frame's depth chain and
+# Hi-Z made the separate way and the fused way on random depth buffers and compared bit for bit; the rules, the push blocks, the pass list and the bandwidth model printed for 1080p and 4K, the sources) likewise:
+#   cmake --build <dir> --target larecomp_screen_hiz_fuse_test, then run src/gpu/larecomp_screen_hiz_fuse_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_screen_hiz_fuse_test EXCLUDE_FROM_ALL screen_hiz_fuse_test.cpp)
 # The screen-space reflections' rules (ssr_rules.h: levels, sizes, the decision, the push block, the wetness) and the pure HLSL (hlsl/ssr_common.hlsli and ssr_trace.hlsli compiled as C++: the class
 # gate, the BRDF, the GGX sampling, the virtual image's reprojection, the Hi-Z march against analytic scenes and a brute force march) likewise; it reads the sources it is given:
 #   cmake --build <dir> --target larecomp_ssr_test, then run src/gpu/larecomp_ssr_test <src/gpu dir> [--print] (exit 0 = passed).
@@ -836,6 +840,11 @@ larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_
 larecomp_gpu_host_shader(ao_depth_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_depth_ms_ps ps_6_0 SOURCE ao_depth_ps DEFINES AO_DEPTH_MS=1)
 larecomp_gpu_host_shader(ao_mip_ps ps_6_0)
+# The same two passes writing the Hi-Z's level of the same size into a second target (SS-3, screen_shared.h mcla_gpu_screen_hiz_fused): one draw makes the depth chain's image and the Hi-Z's
+# beside it (the depth pass: Hi-Z level 0; the coarser level 1 and 2: Hi-Z levels 1 and 2). The first target is the old pass's, the same code.
+larecomp_gpu_host_shader(ao_depth_hiz_ps ps_6_0 SOURCE ao_depth_ps DEFINES AO_DEPTH_MS=0 AO_HIZ0=1)
+larecomp_gpu_host_shader(ao_depth_hiz_ms_ps ps_6_0 SOURCE ao_depth_ps DEFINES AO_DEPTH_MS=1 AO_HIZ0=1)
+larecomp_gpu_host_shader(ao_mip_hiz_ps ps_6_0 SOURCE ao_mip_ps DEFINES AO_HIZ=1)
 # The normal image the passes read (ao.h, GB-E): the unit view-space normal of every pixel, from the G-buffer's normal plane where it has one and from the depth where it has not;
 # once for a plane with one sample, once for the host's MSAA level.
 larecomp_gpu_host_shader(ao_normal_ps ps_6_0 DEFINES AO_NORMAL_MS=0)

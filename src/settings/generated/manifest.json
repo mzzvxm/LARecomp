@@ -1327,6 +1327,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_screen_hiz_fused": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (shared screen products): how the Hi-Z's first levels are made while the reflections want it. true (the default): the depth chain's own passes write them beside their \"\n    \"images in the same draw (the depth pass the Hi-Z's level 0, the two coarser depth levels its levels 1 and 2), so that the Hi-Z's own passes for them are not recorded. false: \"\n    \"the Hi-Z's own pass for every level (the old path, kept for one release to compare pictures). Both give the same bits. Needs mcla_gpu_screen_extract. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_screen_view": {
   "type": "i32",
   "default": "0",

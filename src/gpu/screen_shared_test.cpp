@@ -889,8 +889,8 @@ bool Before(const std::string& text, const std::string& earlier, const std::stri
 }
 
 void SourceChecks(const std::string& gpu) {
-  std::string shared_h, shared_cpp, hiz_ps, hiz_h, view_ps, ao_cpp, ao_h, scene_cpp, scene_h, renderer, cmake, shaders_h, precache, ao_common, manifest, meta, frame_h;
-  if (!Slurp(gpu + "/screen_shared.h", &shared_h) || !Slurp(gpu + "/screen_shared.cpp", &shared_cpp) || !Slurp(gpu + "/hlsl/screen_hiz_ps.hlsl", &hiz_ps) ||
+  std::string shared_h, shared_cpp, extract_cpp, hiz_ps, hiz_h, view_ps, ao_cpp, ao_h, scene_cpp, scene_h, renderer, cmake, shaders_h, precache, ao_common, manifest, meta, frame_h;
+  if (!Slurp(gpu + "/screen_shared.h", &shared_h) || !Slurp(gpu + "/screen_shared.cpp", &shared_cpp) || !Slurp(gpu + "/screen_extract.cpp", &extract_cpp) || !Slurp(gpu + "/hlsl/screen_hiz_ps.hlsl", &hiz_ps) ||
       !Slurp(gpu + "/hlsl/screen_hiz.hlsli", &hiz_h) || !Slurp(gpu + "/hlsl/screen_view_ps.hlsl", &view_ps) || !Slurp(gpu + "/ao.cpp", &ao_cpp) || !Slurp(gpu + "/ao.h", &ao_h) ||
       !Slurp(gpu + "/scene.cpp", &scene_cpp) || !Slurp(gpu + "/scene.h", &scene_h) || !Slurp(gpu + "/renderer.cpp", &renderer) || !Slurp(gpu + "/CMakeLists.txt", &cmake) ||
       !Slurp(gpu + "/host_shaders.h", &shaders_h) || !Slurp(gpu + "/host_precache.h", &precache) || !Slurp(gpu + "/hlsl/ao_common.hlsli", &ao_common) ||
@@ -959,7 +959,9 @@ void SourceChecks(const std::string& gpu) {
   Check(Count(renderer, "ao_.Shutdown();\n    screen_.Shutdown();") + Count(renderer, "ao_.Shutdown();\n  screen_.Shutdown();") == 2, "both of the Renderer's shutdowns stop the owner right after the AO");
   Check(Has(renderer, "screen_.HeldBytes()"), "the frame stats line has the owner's memory");
   // nothing is recorded without a want: the Hi-Z only under the plan's make, the view only under its setting
-  Check(Has(shared_cpp, "if ((plan_.make & screen::ProductBit(screen::kHizMin)) != 0) {\n    in.hiz_levels = RecordHiz"), "the Hi-Z's passes are recorded only while it is wanted");
+  Check(Has(shared_cpp, "if ((plan_.make & screen::ProductBit(screen::kHizMin)) != 0) {\n    if (hiz_made_ != 0 && ") && Has(shared_cpp, "in.hiz_levels = RecordHiz(list, *depth0, in.hiz);") &&
+            Has(extract_cpp, "if (!hiz_fused_ || (plan_.make & screen::ProductBit(screen::kHizMin)) == 0) {\n    return 0;"),
+        "the Hi-Z's passes are recorded only while it is wanted (Publish's own, and SS-3's fused ones in the depth step)");
   Check(Has(shared_cpp, "if (plan_.view == screen::View::kOff || !list || !summary.source) {"), "the view draws nothing while it is off");
 
   // BEHAVIOUR IDENTICAL WITHOUT A WANT, by construction: the only code of the owner that records a command is RecordHiz (under the plan's make) and DrawView (under the view); the

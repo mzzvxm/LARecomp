@@ -136,6 +136,43 @@ std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
   return device_->CreateGraphicsPipeline(desc, name);
 }
 
+std::unique_ptr<plume::RenderPipeline> HostPasses::CreateMrtPipeline(
+    const plume::RenderPipelineLayout& layout, const plume::RenderShader& pixel_shader,
+    const plume::RenderFormat* formats, uint32_t count, const char* name) {
+  if (!formats || count == 0 || count > plume::RenderGraphicsPipelineDesc::MaxRenderTargets) {
+    return nullptr;
+  }
+  plume::RenderGraphicsPipelineDesc desc;
+  desc.pipelineLayout = &layout;
+  desc.vertexShader = vertex_shader_.get();
+  desc.pixelShader = &pixel_shader;
+  desc.depthClipEnabled = false;
+  desc.depthEnabled = false;
+  desc.depthWriteEnabled = false;
+  desc.cullMode = plume::RenderCullMode::NONE;
+  desc.fillMode = plume::RenderFillMode::SOLID;
+  desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
+  desc.multisampling.sampleCount = plume::RenderSampleCount::COUNT_1;
+  for (uint32_t i = 0; i < count; ++i) {
+    desc.renderTargetFormat[i] = formats[i];
+    desc.renderTargetBlend[i] = plume::RenderBlendDesc::Copy();
+  }
+  desc.renderTargetCount = count;
+  return device_->CreateGraphicsPipeline(desc, name);
+}
+
+std::unique_ptr<plume::RenderFramebuffer> HostPasses::CreateMrtFramebuffer(
+    const plume::RenderTexture* const* colors, uint32_t count, const char* name) {
+  const plume::RenderTexture* attachments[plume::RenderGraphicsPipelineDesc::MaxRenderTargets] = {};
+  if (!colors || count == 0 || count > plume::RenderGraphicsPipelineDesc::MaxRenderTargets) {
+    return nullptr;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    attachments[i] = colors[i];
+  }
+  return device_->CreateFramebuffer(plume::RenderFramebufferDesc(attachments, count), name);
+}
+
 void HostPasses::Bind(plume::RenderCommandList* list) const {
   list->setGraphicsPipelineLayout(layout_.get());
   for (uint32_t set = 0; set < 4; ++set) {
@@ -187,6 +224,7 @@ bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
   image.format = format;
   image.flags = flags;
   image.samples = samples;
+  image.serial = ++image_serial_;
   image.layout = plume::RenderTextureLayout::UNKNOWN;
   return true;
 }

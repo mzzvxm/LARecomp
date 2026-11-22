@@ -44,6 +44,13 @@
 // The AO still decides the frame's SIZES (ao_size.h, its plan) and which frame runs; it hands them over as a screen::extract::Frame. The images are kept and given back by size as the AO did
 // (the owner's lifetime now: HeldBytes, Shutdown), and the owner's pipelines are made in the background the first frame a pass is wanted (ChainReady): a frame never waits for a compile.
 //
+// SS-3 is the FUSED Hi-Z (screen_extract.h "the fused Hi-Z"): while the Hi-Z is wanted (the reflections), the depth chain's own passes write its first levels beside their images in the same draw (a
+// second render target): the depth pass writes level 0 (the depth with its marks off), the two coarser levels write the Hi-Z's levels 1 and 2, and RecordDepth then records the levels above
+// (the Hi-Z's own pass, mode 1) right behind them, so that the frame's Hi-Z is whole when Publish runs and Publish records nothing for it. The images are the separate passes' to the bit
+// (hlsl/screen_hiz.hlsli, screen_hiz_fuse_test.cpp); mcla_gpu_screen_hiz_fused false (read at BeginFrame, live), the fused pipelines not made yet, an image that cannot be made or an extraction
+// that is the AO's own (mcla_gpu_screen_extract false) give the separate passes at Publish, as SS-0 made them. A frame never waits for a compile: the fused pipelines are listed with the host
+// precache the first frame they are wanted and the frames go without them until they are made.
+//
 // RUN PLAN (the main session; this agent ran nothing): see the commit message of SS-1 and the CHECK lines in screen_shared.cpp.
 //
 // Threading: render thread only, except Initialize / Shutdown (lifecycle thread, GPU idle).
@@ -155,6 +162,10 @@ class ScreenShared {
   // --- the depth chain and the normal image (SS-2): the images the owner keeps and the passes it records ------------------------------------------------------------
   // Whether the extraction's passes are recorded here this frame (mcla_gpu_screen_extract, read at BeginFrame) or by the AO's old recording into the same images.
   bool extract_on() const { return extract_ && wide_layout_ != nullptr; }
+  // Whether the Hi-Z's first levels are written by the depth chain's passes when the frame makes both (mcla_gpu_screen_hiz_fused, read at BeginFrame; SS-3). The Hi-Z levels this frame's RecordDepth wrote
+  // (all of them: the levels above the fused ones too), 0 when it wrote none (Publish makes the chain the separate way).
+  bool hiz_fused() const { return hiz_fused_; }
+  uint32_t hiz_made_in_depth() const { return hiz_made_; }
   // The pipelines of `kinds` (screen::extract::Bit): listed with the host precache the first time they are asked for (the pass of a first frame is made in the background and the AO goes
   // without until it is: a frame never waits for a compile), and true when every one of them is made. False for good when one could not be made (logged once).
   bool ChainReady(uint32_t kinds);
@@ -247,6 +258,22 @@ class ScreenShared {
   // Records the chain for `depth0` (the frame's linear depth, level 0); returns the number of levels and their slots in `slots`, 0 when there is none this frame.
   uint32_t RecordHiz(plume::RenderCommandList* list, const HostImage& depth0, uint32_t slots[screen::kHizMaxLevels]);
   void ReleaseHiz();
+  // The Hi-Z's images for a level 0 of width x height (one a level, kept while the size is; a different size remakes them and bumps the generation); the number of levels in `levels`. False when one could
+  // not be made (logged once). RecordHiz's and the fused recording's (SS-3).
+  bool EnsureHizImages(uint32_t width, uint32_t height, uint32_t* levels);
+  // The Hi-Z's own pass for the levels from `from` to `levels - 1` (mode 1: the min of 2x2 of the level below, in order; from 0 also makes level 0, mode 0, from `depth0`). The caller has the images.
+  void RecordHizPasses(plume::RenderCommandList* list, const HostImage* depth0, uint32_t from, uint32_t levels, plume::RenderPipeline* pipeline);
+  void LogHiz(uint32_t levels, uint32_t width, uint32_t height);
+  // --- the fused Hi-Z (SS-3, screen_extract.cpp) -----------------------------------------------------------------------------------------------
+  // A pass of two render targets (the depth chain's image and the Hi-Z's level of its size) with the 128 byte layout, as DrawWide; false when its framebuffer could not be made (nothing is recorded then).
+  bool DrawWideMrt(plume::RenderCommandList* list, HostImage& first, HostImage& second, const plume::RenderPipeline* pipeline, const AoPush& push);
+  plume::RenderFramebuffer* MrtFramebufferFor(const HostImage& first, const HostImage& second);
+  // Gives the cached two-target framebuffers back (after the lists that name them): the images they name go, or their owner shuts down.
+  void PurgeMrt();
+  // The fused recording of RecordDepth: returns the Hi-Z levels in all (the depth passes' and the levels above them) when it recorded the depth chain's levels 0 to 2 and the Hi-Z; 0 when it recorded nothing
+  // (the caller records the plain passes and Publish makes the Hi-Z the separate way). `mip` is the plain coarser level's pipeline, for a fused draw that cannot be made.
+  uint32_t RecordDepthFused(plume::RenderCommandList* list, const screen::extract::Frame& frame, const AoPush& level0, plume::RenderPipeline* mip, uint32_t stencil_slot, bool source_bits,
+                            bool multisampled);
   // The colour capture's pipelines, the same way: null while one is being made or when it could not be made (no capture then).
   plume::RenderPipeline* ColourPipeline(uint32_t pass);
   std::unique_ptr<plume::RenderPipeline> MakeColourPipeline(uint32_t pass);
@@ -296,6 +323,15 @@ class ScreenShared {
   uint64_t hiz_generation_ = 0;      // bumped when the Hi-Z's images are made again
   uint32_t hiz_logged_size_[2] = {};
   bool hiz_images_failed_logged_ = false;
+  // SS-3: the fused Hi-Z. The setting (read at BeginFrame), the levels this frame's depth passes wrote (0: none), and the two-target framebuffers kept by the serials of the images they name.
+  bool hiz_fused_ = true;
+  uint32_t hiz_made_ = 0;
+  struct MrtFramebuffer {
+    uint64_t serial[2] = {0, 0};
+    std::unique_ptr<plume::RenderFramebuffer> framebuffer;
+  };
+  std::vector<MrtFramebuffer> mrt_;
+  bool mrt_failed_logged_ = false;
 
   // colour_pre: the bounce light's colour chain (the AO records it into these)
   std::array<HostImage, screen::kColourPreLevels> colour_pre_;
