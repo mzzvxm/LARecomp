@@ -528,6 +528,8 @@ int main(int argc, char** argv) {
                 Near(Constant(hlsli, "static const float kCoatMax"), hr::kCoatMax) && Near(Constant(hlsli, "static const float kCoatMinPower"), hr::kCoatMinPower) &&
                 Near(Constant(hlsli, "static const float kAuxSharpScale"), hr::kAuxSharpScale) && Near(Constant(denoise, "static const float kAuxSharpScale"), hr::kAuxSharpScale),
             "the shaders' clear-coat numbers and the aux's scale are the header's");
+      Check(Has(hlsli, "CarMatSunVisible(hit + normal * (0.004 + 0.002 * abs(hit.z)), toSun, f.shadowReach)") && !Has(hlsli, "0.002 * hit.z"),
+            "the sun ray's lift follows the magnitude of the view z (a hit behind the camera has a negative z: a negative lift puts the origin under the surface and the hit in its own shadow)");
       Check(Has(hlsli, "const float curve = pow(saturate(1.0 - nv), max(power, kCoatMinPower));") && Has(hlsli, "return clamp(gain * (kCoatNormal + (kCoatGrazing - kCoatNormal) * curve), 0.0, kCoatMax);") &&
                 Has(hlsli, "return float((gCarRtMaterials[kMatFrameRows + instance * kMatRows].x >> 24) & 0xFFu) / 16.0;"),
             "the shader's coat share is CoatShare's, read from the paint's fresnel exponent in the instance's row (bits 24..31, x 16)");
