@@ -59,6 +59,11 @@ JoinStatus GetJoinStatus();
 // Updated by the guest tick; any thread.
 bool WorldReady();
 
+// A modal message box is on screen: FlashNavigator's FIFO of them is not empty (the same read as the keyboard prompts' "layer"). The game's
+// first one after Start stays up for about 9 s while the state machine is already in free roam; a join that goes into the net menu under
+// it does not get its search going (join_server_core.h, QuietGate). Guest thread.
+bool ModalMessageUp();
+
 // Guest thread, once per frame (Patch_DeltaTimePre).
 void TickServerBrowserJoin();
 

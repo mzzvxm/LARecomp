@@ -227,6 +227,46 @@ inline FindResult FindRoom(const std::vector<RoomInfo>& rooms, std::string_view 
     return out;
 }
 
+// ------------------------------------------------------------------------------------------------------ the quiet screen ---
+//
+// WHY (measured on a loopback test, 2026-11-22: the relay had nothing on it, so the game has to host). A fresh game, Start pressed at
+// the title: the game's own state machine is in "Cruising" about 8 s later, but a modal message box (FlashNavigator's FIFO of them, the
+// "layer" of the log's `[prompts] screen ->` lines) stays on screen until about 9.1 to 9.7 s after Start. Three --join_server runs began
+// their join in that window (8.1 s, 8.6 s and 8.2 s after Start). In each: `goto(LAN)` was taken, `goto(QuickMatchSearching)` returned
+// 0 (the page showed "SEARCHING" and nothing else), no search socket was opened, the relay never saw the game search or host, and the
+// join ran out of time. Every join that started with no message box up searched and hosted within 20 ms of the goto (four runs: the
+// goto returned 1, the game registered with the relay and hosted). A player cannot start a search under that box either: the box
+// takes the input first. So --join_server waits until none has been up for a short while.
+// CHECK: this is the one difference the logs show at the moment of the goto, not a traced cause. Two other things differ in those runs:
+// the game's own profile sync ends 30 s after Start, and the pause screen was never opened before. If a join still does not search
+// after this wait, look at those two.
+//
+// The clock is handed in, so the test needs no game.
+class QuietGate {
+public:
+    static constexpr int64_t kQuietMs = 1500;  // no message box for this long: a box that closes and another that opens right behind it is one wait
+
+    // One call per tick, with whether a message box is up and the time in ms. True once none has been up for kQuietMs.
+    bool Update(bool message_up, int64_t now_ms) {
+        if (message_up) {
+            if (!saw_) first_up_ms_ = now_ms;
+            saw_ = true;
+            clear_since_ms_ = -1;
+            return false;
+        }
+        if (clear_since_ms_ < 0) clear_since_ms_ = now_ms;
+        return now_ms - clear_since_ms_ >= kQuietMs;
+    }
+    bool SawMessage() const { return saw_; }
+    // How long the join has been held back by a message box, as of `now_ms` (0 when none was seen): for the log line.
+    int64_t HeldMs(int64_t now_ms) const { return saw_ ? now_ms - first_up_ms_ : 0; }
+
+private:
+    bool saw_ = false;
+    int64_t first_up_ms_ = 0;
+    int64_t clear_since_ms_ = -1;
+};
+
 // ----------------------------------------------------------------------------------------------------------- status ---
 
 enum class State {
@@ -262,6 +302,7 @@ inline constexpr const char* kRoomNotFound = "room_not_found";
 inline constexpr const char* kRoomFull = "room_full";
 inline constexpr const char* kRoomAmbiguous = "room_ambiguous";
 inline constexpr const char* kWorldTimeout = "world_timeout";
+inline constexpr const char* kMessageBox = "message_box";  // the city is up but a message box never closed
 inline constexpr const char* kOnlineFailed = "online_failed";
 inline constexpr const char* kPauseOpen = "pause_open";
 inline constexpr const char* kMenuUnavailable = "menu_unavailable";
@@ -280,6 +321,7 @@ inline std::string FailureMessage(const std::string& why, const Target& t, const
     if (why == reason::kRoomFull) return t.room + "'s room on " + server + " is full.";
     if (why == reason::kRoomAmbiguous) return "More than one room on " + server + " is called " + t.room + ": join it by its host's gamertag.";
     if (why == reason::kWorldTimeout) return "The game did not reach the city in " + detail + " minutes, so the join was cancelled.";
+    if (why == reason::kMessageBox) return "A message box in the game stayed open, so the join was cancelled.";
     if (why == reason::kOnlineFailed) return "Online play could not be switched on: the server " + server + " did not answer.";
     if (why == reason::kPauseOpen) return "The pause menu stayed open, so the join was cancelled.";
     if (why == reason::kMenuUnavailable) return "The game's online menu could not be opened.";
