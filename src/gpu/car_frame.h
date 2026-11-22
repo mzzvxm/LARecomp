@@ -94,6 +94,9 @@ struct Draw {
   // makes next to it, or over it with the same bytes, is not. 0: not known (inline vertices; and always for kSkinned, whose
   // vertices are blended afresh in every frame).
   uint64_t mesh_key = 0;
+  // What the surface is made of (car_rt_material_rules.h): the shader's class, its colours, its diffuse texture's fetch. Made only while the ray traced scene asks for the
+  // other cars (RT-HIT-SHADING); class kNone otherwise and for a shader the table does not know.
+  car_rt_material::Material material;
   // kBody: the model-space box of the draw's mesh (the vertices its triangles name; read once per mesh_key, kept while it is
   // seen). has_box false: not known; box_deferred: it will be known in a frame or two (a frame reads a few boxes at most).
   bool has_box = false;
@@ -141,6 +144,9 @@ struct Frame {
   // vehicle, each draw with a mesh key. Empty where nobody asks for them. Valid together with the player's: the distances are from the vehicle.
   std::vector<OtherCar> other_cars;
   std::vector<OtherDraw> other_draws;
+  // The frame's lighting as the cars' own draws saw it, and the environment map's slots (car_rt_material_rules.h FrameLight): read from the first vehicle draw's pixel constants
+  // (c26 ambient, c39 sun colour, c57 sky) and from a draw of a shader that reads the map (fetch slots 0 and 1). Only while the other cars are asked for.
+  car_rt_material::FrameLight light;
   // For the cars the camera does not see (car_rt_memory_rules.h): read in the frame when the other cars are asked for, from the first vehicle draw on.
   //   - `vehicles`: the game's own vehicles (the opponent manager's racers, the ambient manager's live cars) within the scan radius of the player's vehicle,
   //     the player's own left out, each with its world matrix; `vehicles_valid`: the lists were read (an empty list then says nobody is near).
@@ -164,6 +170,14 @@ class MeshReader {
   // the triangles). False: unreadable (logged once per mesh), the vectors are then empty.
   virtual bool ReadTriangles(std::vector<float>* positions, std::vector<uint32_t>* indices,
                              std::vector<float>* normals) const = 0;
+  // After a successful ReadTriangles of the same draw: the TEXCOORD0 of the draw's declaration for the vertices ReadTriangles returned (u v a vertex, in the same order). False
+  // (and `uvs` empty): the draw has none, or in a format that is not read (a half2 or a float2 is).
+  virtual bool ReadTexcoords(std::vector<float>* uvs) const {
+    if (uvs) {
+      uvs->clear();
+    }
+    return false;
+  }
 };
 
 class Listener {
@@ -201,6 +215,9 @@ class CarFrame {
     // For the mesh key: its stamp of the guest ranges (GeometryCache::RangeStamp), which says when a range MAY have changed and so
     // when its bytes are fingerprinted again; may be null (the key then has no fingerprints).
     const GeometryCache* cache = nullptr;
+    // The draw's SharedConstants as the scene uploaded them (the bindless slot of every fetch constant's texture: texture_2d[i]): the environment map's slots are read from a draw
+    // that binds it. Null: none (a caller that has none).
+    const SharedConstants* shared = nullptr;
   };
 
   CarFrame() = default;
@@ -341,6 +358,7 @@ class CarFrame {
   class Reader final : public car_frame::MeshReader {
    public:
     bool ReadTriangles(std::vector<float>* positions, std::vector<uint32_t>* indices, std::vector<float>* normals) const override;
+    bool ReadTexcoords(std::vector<float>* uvs) const override;
     CarFrame* owner = nullptr;
   };
 
@@ -372,6 +390,10 @@ class CarFrame {
   void CallListeners();
   bool LoadMesh();
   bool ReadForListener(std::vector<float>* positions, std::vector<uint32_t>* indices, std::vector<float>* normals);
+  bool ReadTexcoordsForListener(std::vector<float>* uvs);
+  // RT-HIT-SHADING: the material of a vehicle draw (its shader's class, constants and diffuse fetch) and the frame's light and environment map slots from it.
+  car_rt_material::Material MaterialOf(const MainDraw& d) const;
+  void NoteLight(const MainDraw& d, const car_rt_material::Material& material);
   void LogUnreadable(const char* what);
   void ReleaseDraws(std::vector<car_frame::Draw>& draws);
   std::vector<float> TakePalette();

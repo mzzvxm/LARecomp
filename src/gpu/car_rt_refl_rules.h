@@ -18,8 +18,9 @@
 //   alpha 1                 the player's car, traced, and none of the cone's rays hits a part of it: the environment stays.
 //   alpha 1 + w, w in (0,1] the cone hits parts of the car the camera sees; w is the share of the cone (the rays' weights over their number),
 //                           rgb the mean of the parts' colours in the history.
-//   alpha -(1 + w)          the hits are mostly on parts the camera does not see (the back of a part, or one that another part hides), or
-//                           off the picture; rgb is the stand-in colour (the fallback rule below).
+//   alpha -(1 + w)          the hits are mostly on ANOTHER CAR (RT-HIT-SHADING-4: the sign was "the parts the camera does not see" before; the paint never used that for a
+//                           colour, only for a debug view, so the sign now carries what the paint needs to know: whether to add the clear coat's layer, below);
+//                           rgb is the colour (the history's where the camera sees the part, the pass's shading where it does not: the fallback rule below).
 // A value rounds to half precision (steps of 1/1024 up to 2), which the weight does not mind.
 //
 // THE CONE: the paint's own reflection of the world is soft (the environment map is 512x256 for a hemisphere and the paint adds its gloss),
@@ -105,7 +106,8 @@ static_assert((kPrimaryTraceParts & kPartOthers) == 0 && (kPartOtherChrome & kPa
 // ---------------------------------------------------------------------------------------------------------------------
 // The image's codes
 // ---------------------------------------------------------------------------------------------------------------------
-enum class Kind : uint8_t { kNoData, kMiss, kHit, kHidden };
+// kOtherCar: the hits are mostly on another car (the alpha's sign, see the header: the paint adds the clear coat's layer for them). Before RT-HIT-SHADING-4 this kind (kHidden) said "mostly on parts the camera does not see".
+enum class Kind : uint8_t { kNoData, kMiss, kHit, kOtherCar };
 
 struct Texel {
   Kind kind = Kind::kNoData;
@@ -118,7 +120,7 @@ inline float EncodeAlpha(Kind kind, float weight) {
     case Kind::kNoData: return 0.0f;
     case Kind::kMiss: return 1.0f;
     case Kind::kHit: return 1.0f + w;
-    case Kind::kHidden: return -(1.0f + w);
+    case Kind::kOtherCar: return -(1.0f + w);
   }
   return 0.0f;
 }
@@ -132,7 +134,7 @@ inline Texel DecodeAlpha(float alpha) {
   if (w <= 0.0f) {
     return {Kind::kMiss, 0.0f};
   }
-  return {alpha < 0.0f ? Kind::kHidden : Kind::kHit, w};
+  return {alpha < 0.0f ? Kind::kOtherCar : Kind::kHit, w};
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -490,12 +492,14 @@ inline VisibleColour FindVisible(const Taps& taps, const float distance[4], cons
 struct RayShare {
   float weight = 0.0f;   // fade with the distance x (kHiddenWeight .. 1 by the visible share); 0: nothing (past the reach)
   float visible = 0.0f;  // 0..1: how much of the hit the history shows
+  bool car = false;      // the hit is on another car (the shader's `car`: TraceRay's out parameter); it decides the code's sign
   float rgb[3] = {};     // the colour: the visible colour where the history shows it, the shade (kShade x the surface's mean colour) where not
 };
 // `ray_distance` along the ray of length `ray_length`, `visible` FindVisible's result at the hit, `surface` the mean colour of the
 // pixel's own surface (SurfaceMean).
-inline RayShare MakeShare(float ray_distance, float ray_length, const VisibleColour& visible, const float surface[3]) {
+inline RayShare MakeShare(float ray_distance, float ray_length, const VisibleColour& visible, const float surface[3], bool car = false) {
   RayShare out;
+  out.car = car;
   const float fade = 1.0f - car_selfrefl::SmoothStep(kFadeFrom * ray_length, ray_length, ray_distance);
   out.visible = std::clamp(visible.coverage / kVisibleFullShare, 0.0f, 1.0f);
   out.weight = fade * (kHiddenWeight + (1.0f - kHiddenWeight) * out.visible);
@@ -516,15 +520,15 @@ struct Reflection {
 };
 // The image's value of a texel: the rays' shares added up. `rays` is how many rays the texel counts (kConeRays; 1 for a gloss of 0): a ray that was not
 // cast (the early out) or that found nothing counts as a miss. The weight is the sum of the shares over `rays`, the colour their
-// weighted mean, the kind the majority of the weight's visibility.
+// weighted mean, the kind the majority of the weight's being on another car (RT-HIT-SHADING-4: it was the visibility; the shader's `car` sums).
 inline Reflection CombineRays(const RayShare shares[], int count, float rays) {
   Reflection out;
   float weight = 0.0f;
-  float visible = 0.0f;
+  float car = 0.0f;
   float colour[3] = {};
   for (int k = 0; k < count; ++k) {
     weight += shares[k].weight;
-    visible += shares[k].weight * shares[k].visible;
+    car += shares[k].car ? shares[k].weight : 0.0f;
     for (int c = 0; c < 3; ++c) {
       colour[c] += shares[k].weight * shares[k].rgb[c];
     }
@@ -536,7 +540,7 @@ inline Reflection CombineRays(const RayShare shares[], int count, float rays) {
   for (int c = 0; c < 3; ++c) {
     out.rgb[c] = colour[c] / weight;
   }
-  out.kind = visible >= 0.5f * weight ? Kind::kHit : Kind::kHidden;
+  out.kind = car >= 0.5f * weight ? Kind::kOtherCar : Kind::kHit;
   return out;
 }
 
@@ -664,7 +668,7 @@ inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, 
   const float texel_m = PixelMeters(centre_distance, setup.tan_y, setup.image_height);
   float n = 0.0f;
   float weight = 0.0f;
-  float hidden = 0.0f;
+  float car = 0.0f;  // the weight that is on another car (the sign)
   float colour[3] = {};
   float footprint = 0.0f;
   for (int k = 0; k < 9; ++k) {
@@ -683,7 +687,7 @@ inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, 
     }
     n += k_weight;
     weight += k_weight * code.weight;
-    hidden += code.kind == Kind::kHidden ? k_weight * code.weight : 0.0f;
+    car += code.kind == Kind::kOtherCar ? k_weight * code.weight : 0.0f;
     for (int c = 0; c < 3; ++c) {
       colour[c] += k_weight * code.weight * tap.rgb[c];
     }
@@ -703,10 +707,10 @@ inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, 
     return out;
   }
   const Texel mine = DecodeAlpha(own.alpha);
-  const float own_hidden = own.alpha < 0.0f ? mine.weight : 0.0f;
+  const float own_car = own.alpha < 0.0f ? mine.weight : 0.0f;
   const float inverse = n > 0.0f ? 1.0f / n : 0.0f;
   const float mixed_weight = mine.weight + (weight * inverse - mine.weight) * strength;
-  const float mixed_hidden = own_hidden + (hidden * inverse - own_hidden) * strength;
+  const float mixed_car = own_car + (car * inverse - own_car) * strength;
   if (mixed_weight < 1.0f / 512.0f) {
     out.alpha = EncodeAlpha(Kind::kMiss, 0.0f);
     return out;
@@ -715,7 +719,7 @@ inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, 
     const float own_colour = mine.weight * own.rgb[c];
     out.rgb[c] = (own_colour + (colour[c] * inverse - own_colour) * strength) / mixed_weight;
   }
-  out.alpha = EncodeAlpha(mixed_hidden > 0.5f * mixed_weight ? Kind::kHidden : Kind::kHit, mixed_weight);
+  out.alpha = EncodeAlpha(mixed_car > 0.5f * mixed_weight ? Kind::kOtherCar : Kind::kHit, mixed_weight);
   return out;
 }
 
@@ -747,6 +751,7 @@ struct PaintRead {
   bool use = false;       // the image answers: weight and colour are valid; false: the march
   Kind kind = Kind::kNoData;
   float weight = 0.0f;
+  float car = 0.0f;       // 0..1: the share of the weight that is on another car (the code's sign over the footprint): the clear coat's layer follows it (CoatLayerAmount)
   float rgb[3] = {};
 };
 // `wx` and `wy` are BSplineWeights of the place. A texel counts where it is the surface the paint's pixel is on (its history distance within
@@ -758,7 +763,7 @@ inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintT
   float geometry = 0.0f;
   float known = 0.0f;
   float weight = 0.0f;
-  float hidden = 0.0f;
+  float car = 0.0f;
   float colour[3] = {};
   for (int k = 0; k < 9; ++k) {
     const float agree = MatchWeight(tap[k].history_distance, depth, tolerance);
@@ -770,8 +775,8 @@ inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintT
     }
     known += wg;
     weight += wg * texel.weight;
-    if (texel.kind == Kind::kHidden) {
-      hidden += wg * texel.weight;
+    if (texel.kind == Kind::kOtherCar) {
+      car += wg * texel.weight;
     }
     for (int c = 0; c < 3; ++c) {
       colour[c] += wg * texel.weight * tap[k].rgb[c];
@@ -786,8 +791,9 @@ inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintT
     for (int c = 0; c < 3; ++c) {
       out.rgb[c] = colour[c] / weight;
     }
+    out.car = std::clamp(car / weight, 0.0f, 1.0f);
   }
-  out.kind = out.weight <= 0.02f ? Kind::kMiss : (hidden > 0.5f * weight ? Kind::kHidden : Kind::kHit);
+  out.kind = out.weight <= 0.02f ? Kind::kMiss : (car > 0.5f * weight ? Kind::kOtherCar : Kind::kHit);
   return out;
 }
 

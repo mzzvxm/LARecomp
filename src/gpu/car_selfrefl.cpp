@@ -15,6 +15,7 @@
 #include <rex/logging/log_category.h>
 
 #include "car_dump.h"
+#include "car_rt_hit_rules.h"
 #include "car_rt_refl.h"
 #include "denoiser_setting.h"
 #include "descriptors.h"
@@ -606,11 +607,17 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
   }
   // The ray traced image of the same history, if the pass made one (car_rt_refl.h): the variant reads it where it has data.
   const uint32_t rt_slot = rt_ ? rt_->SlotFor(history_frame_) : car_selfrefl::kNoRtImage;
+  const bool coat_layer = larecomp::settings::mcla_gpu_car_rt_coat_layer.Get();
   *out = car_selfrefl::MakeConstants(mode_, tuning_, matrix, history_.slot, kSamplerLinearClamp,
-                                     car_selfrefl::ExpBiasGain(exp_bias), rt_slot);
+                                     car_selfrefl::ExpBiasGain(exp_bias), rt_slot, coat_layer);
   ++paint_with_history_;
   if (rt_slot != car_selfrefl::kNoRtImage) {
     ++paint_with_rt_;
+    if (!coat_layer_logged_) {
+      coat_layer_logged_ = true;
+      REXLOG_INFO("{} the first paint draw with a ray traced image: the clear coat's layer over the reflection of another car is {} (mcla_gpu_car_rt_coat_layer; fresnel {:.2f} at N.V 0.5, {:.2f} at 0.3, {:.2f} at 0.2)",
+                  kPrefix, coat_layer ? "on" : "off", car_rt_hit::CoatLayerFresnel(0.5f), car_rt_hit::CoatLayerFresnel(0.3f), car_rt_hit::CoatLayerFresnel(0.2f));
+    }
   }
 }
 

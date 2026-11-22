@@ -2075,6 +2075,7 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     frame.primitive = d.primitive;
     frame.stencil_ids = draw.stencil_ids;
     frame.cache = geometry_;
+    frame.shared = &last_shared_;  // the draw's texture slots (the environment map's, for the ray traced cars' light): Prepare uploaded them for this draw
     car_frame_->OnMainDraw(frame);
   }
   if (headlights_ && headlights_->wants_draws()) {
@@ -3069,11 +3070,17 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     scales_agree &= colors[i]->scale == target_scale;
   }
   if (!scales_agree) {
-    const EdramTargets::Target* first = d.key.color_count ? colors[0] : depth;
-    *detail = std::format("targets of different resolution scales (pitch {}): {} at {}x, {} at {}x",
-                          pitch, DescribeEdramKey(first->key), first->scale,
-                          depth ? DescribeEdramKey(depth->key) : std::string("no depth"),
-                          depth ? depth->scale : Scale::None());
+    // Every target of the draw, each with its scale: the disagreeing one is not always the first (the
+    // rthit4 night log named colour 0 and the depth, both at 3x, and the second colour, at 1x, was not
+    // in the line: side_view_ui_map.cpp, "one pass, one class").
+    std::string all;
+    for (uint32_t i = 0; i < d.key.color_count; ++i) {
+      all += std::format("{}{} at {}x", all.empty() ? "" : ", ", DescribeEdramKey(colors[i]->key),
+                         colors[i]->scale);
+    }
+    *detail = std::format("targets of different resolution scales (pitch {}): {}, {}", pitch, all,
+                          depth ? std::format("{} at {}x", DescribeEdramKey(depth->key), depth->scale)
+                                : std::string("no depth"));
     return Skip::kTarget;
   }
   // And one sample count on the host, the one the pipeline was made for: a
@@ -3625,6 +3632,34 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     order_.Note(frame_order::Step::kCarSunMap, car_sun_map);
   }
   if (car_rt_) {
+    // The game's sun cascades of this frame (the shadow collector's draws, which the volumetric light reads too): the car reflections' shaded hits read the sun's visibility from them, so
+    // that a car beside the player's stands in the shade of the buildings and the trees as the road does (car_rt_hit_rules.h). None where the volumetric light is off or the frame has none
+    // (night, rain): the cars' own ray alone.
+    car_rt_material::SunCascades cascades;
+    volumetrics::VolSun sun;
+    float fade = 0.0f;
+    if (vol_ && vol_->wants_draws() && vol_->CurrentSun(&sun, &fade)) {
+      cascades.valid = true;
+      cascades.atlas_slot = sun.atlas_slot;
+      cascades.count = std::min<uint32_t>(sun.cascade_count, car_rt_material::kMaxCascades);
+      cascades.fade = fade;
+      cascades.depth_bias = sun.depth_bias;
+      for (int c = 0; c < 3; ++c) {
+        cascades.right[c] = sun.right[c];
+        cascades.top[c] = sun.top[c];
+      }
+      for (uint32_t i = 0; i < car_rt_material::kMaxCascades; ++i) {
+        for (uint32_t j = 0; j < 4; ++j) {
+          for (uint32_t k = 0; k < 4; ++k) {
+            cascades.rows[i][j][k] = sun.cascades[i].rows[j][k];
+          }
+        }
+        for (uint32_t k = 0; k < 4; ++k) {
+          cascades.box[i][k] = sun.cascades[i].box[k];
+        }
+      }
+    }
+    car_rt_->SetSunCascades(cascades);
     // The car ray tracing structures (car_rt_scene.h): the new meshes' bottom level structures and this frame's top level, with the other cars. FIRST, before everything that traces: the
     // occlusion's ray traced term and sun ray (car_rt_ao.h) run inside the occlusion's own passes, and the self-reflection's trace (car_selfrefl.h) after them, both in this top level.
     const bool car_structures = car_rt_->OnResolve(record, summary, list, slot_);

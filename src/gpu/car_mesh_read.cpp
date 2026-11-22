@@ -12,6 +12,7 @@
 #include <rex/memory/mapped_ptr.h>
 
 #include "car_frame_rules.h"
+#include "car_rt_material_rules.h"
 #include "guest_memory.h"
 #include "native_gfx/guest/guest_resources.h"
 #include "native_gfx/shader_identity.h"
@@ -537,6 +538,37 @@ bool SkinPositions(const GuestMemory& memory, const DrawView& view, const uint8_
     car_dump::SkinBlend(palette, influence, &local[size_t(v) * 3], &(*blended)[size_t(v) * 3], stats);
     if (directions) {
       car_frame_rules::SkinBlendDirection(palette, influence, &(*directions_in)[size_t(v) * 3], &(*directions_out)[size_t(v) * 3]);
+    }
+  }
+  return true;
+}
+
+bool ReadTexcoords(const GuestMemory& memory, const DrawView& view, uint32_t first, uint32_t span, std::vector<float>* out) {
+  out->clear();
+  const DrawRecord& r = view.record();
+  nfx::DeclarationElement element;
+  if (!FindElement(view, r, kUsageTexcoord, &element)) {
+    return false;
+  }
+  car_dump::PositionFormat format;
+  if (!car_rt_material::UvFormat(element.type, &format)) {
+    return false;
+  }
+  const uint32_t bytes = car_rt_material::UvBytes(format);
+  const StreamRef stream = ResolveStream(view, r, element.stream);
+  if (bytes == 0 || !stream.ok || stream.stride == 0 || element.offset + bytes > stream.stride || uint64_t(first + span) * stream.stride > stream.size) {
+    return false;
+  }
+  const uint8_t* base = stream.inline_data ? stream.inline_base + size_t(first) * stream.stride
+                                           : memory.Read(stream.address + first * stream.stride, span * stream.stride);
+  if (!base) {
+    return false;
+  }
+  out->resize(size_t(span) * 2);
+  for (uint32_t v = 0; v < span; ++v) {
+    if (!car_rt_material::DecodeUv(base + size_t(v) * stream.stride + element.offset, format, &(*out)[size_t(v) * 2], &(*out)[size_t(v) * 2 + 1])) {
+      out->clear();
+      return false;
     }
   }
   return true;

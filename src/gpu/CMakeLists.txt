@@ -169,6 +169,11 @@ add_executable(larecomp_setting_source_test EXCLUDE_FROM_ALL setting_source_test
 # The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
 add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
+# Every descriptor set the renderer makes agrees with its builder (descriptor_count_test.cpp; tools/check_descriptor_counts.py is its Python twin): D3D12 refuses a set
+# whose CreateDescriptorSet counts are not the builder's ranges (Vulkan does not count: the city shadow pass never ran on D3D12 for that), and the binding code's indices,
+# range types and structured views are read against the ranges. Reads the .cpp / .h files of the folder it is given, no renderer needed:
+#   cmake --build <dir> --target larecomp_descriptor_count_test, then run src/gpu/larecomp_descriptor_count_test <src dir> [--print] [--strict] (exit 0 = passed).
+add_executable(larecomp_descriptor_count_test EXCLUDE_FROM_ALL descriptor_count_test.cpp)
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
@@ -260,6 +265,16 @@ add_executable(larecomp_car_rt_refl_rules_test EXCLUDE_FROM_ALL car_rt_refl_rule
 # the decision for a hit on the player's car; and that hlsl/car_rt_refl_opp.hlsli, car_rt_refl_cs.hlsl and the host hold the header's numbers) likewise; run it with the src folder or from there:
 #   cmake --build <dir> --target larecomp_car_rt_opp_refl_rules_test, then run src/gpu/larecomp_car_rt_opp_refl_rules_test [<src dir>] (exit 0 = passed).
 add_executable(larecomp_car_rt_opp_refl_rules_test EXCLUDE_FROM_ALL car_rt_opp_refl_rules_test.cpp)
+# The ray traced car scene's materials (car_rt_material_rules.h: the table of the cars' shaders, a draw's material from its pixel constants, a walked part's class, the packed
+# texture coordinates, the records the shaders read, a mesh's texel density, the environment map's mapping, the reference of the shading; and that
+# hlsl/car_rt_hit_shade.hlsli, hlsl/car_rt_refl_cs.hlsl, the host and the settings hold the header's numbers) likewise:
+#   cmake --build <dir> --target larecomp_car_rt_material_rules_test, then run src/gpu/larecomp_car_rt_material_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_rt_material_rules_test EXCLUDE_FROM_ALL car_rt_material_rules_test.cpp)
+# RT-HIT-SHADING part two (car_rt_hit_rules.h: the level table by class and its overrides, the reach to another car and the weight of a hit by it, the scene's radius against the reach, the clear
+# coat's share by the paint's fresnel, the two lobes added (exact for the paint's blend), the aux image's word and the denoise's scale, the push block's packed word; and that
+# hlsl/car_rt_hit_shade.hlsli, the trace, the opponents' variant, the denoise, the host and the settings hold the header's numbers) likewise:
+#   cmake --build <dir> --target larecomp_car_rt_hit_rules_test, then run src/gpu/larecomp_car_rt_hit_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_rt_hit_rules_test EXCLUDE_FROM_ALL car_rt_hit_rules_test.cpp)
 # The car chrome's rules (car_chrome_rules.h: the numbers of the two short probes of the chrome variant and a reference march of them over
 # boxes: a tailpipe under a lip of the bumper, in the open, a plane of every slope) likewise:
 #   cmake --build <dir> --target larecomp_car_chrome_rules_test, then run src/gpu/larecomp_car_chrome_rules_test (exit 0 = passed).

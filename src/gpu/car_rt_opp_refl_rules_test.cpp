@@ -403,7 +403,7 @@ int main(int argc, char** argv) {
       Check(Has(common, "#define CAR_RT_MASK_OTHER_PAINT 0x40") && Has(common, "#define CAR_RT_MASK_OTHERS 0x10") && Has(common, "#define CAR_RT_MASK_OTHER_CHROME 0x20"),
             "the shader's masks are the scene's (0x10, 0x20 and 0x40)");
       Check(Has(hlsli, "first.TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, g_push.slots.z, primary)") && Has(hlsli, "const uint2 texel = id.xy + g_push.opp.xy;") &&
-                Has(hlsli, "const uint row = g_push.opp.z;") && Has(hlsli, "const uint maxRays = g_push.opp.w;") && Has(hlsli, "named.draw = row;"),
+                Has(hlsli, "const uint row = g_push.opp.z;") && Has(hlsli, "const uint maxRays = min(g_push.opp.w, LevelRays(g_push.slots.w));") && Has(hlsli, "named.draw = row;"),
             "the primary ray takes the push's mask, the dispatch starts at opp.xy, the player's record is opp.z, the rays are opp.w");
       Check(Has(hlsli, "if (playerKnown >= kOtherCarMinShare)") && Has(hlsli, "standIn = seen[j] * g_push.tune.x;") && Has(hlsli, "fade[j] = 0.0;  // hidden, and the player's colour is not known") &&
                 Has(hlsli, "needPlayer = needPlayer || (fade[k] > 0.0 && visible[k] < 1.0 && !other[k]);"),
@@ -412,15 +412,16 @@ int main(int argc, char** argv) {
             "a texel with no data is not written (the player's dispatch's stands), the others are, with their aux");
       Check(Has(hlsli, "aux = float4(0.0, EncodeOppInstance(primaryInstance), saturate(nv), 1.0);") && Has(hlsli, "aux.x = EncodeHitDistance(distanceSum / max(hitCount, 1.0), reach);"),
             "the aux image's texel is the player's kind (hit distance, instance code, N.V, 1) with the opponents' instance code");
-      Check(Has(hlsli, "const float tanHalf = maxRays >= 2u ? g_push.tune.w : 0.0;") && Has(hlsli, "if (slot >= int(maxRays))"), "1 ray is the mirror (no cone), 2 the outer pair");
+      Check(Has(hlsli, "const uint maxRays = min(g_push.opp.w, LevelRays(g_push.slots.w));") && Has(hlsli, "const float tanHalf = maxRays >= 2u ? g_push.tune.w : 0.0;") && Has(hlsli, "if (slot >= int(maxRays))"),
+            "1 ray is the mirror (no cone), 2 the outer pair, at most the level's rays");
       Check(Has(refl, "#ifdef CAR_RT_REFL_OPPONENTS") && Has(refl, "#define main CarRtReflPlayerMain") && Has(refl, "#undef main") && Has(refl, "#include \"car_rt_refl_opp.hlsli\"") &&
                 Has(refl, "uint4 opp;"),
             "car_rt_refl_cs.hlsl: the opponents' variant renames the player's main, takes its own, and has the push's opp (the shared lines)");
       Check(Has(refl, "TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, g_push.slots.z, primary)") && Has(refl, "TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, g_push.slots.y, ray)"),
             "the trace functions the opponents' entry reuses are as it expects (the push's masks)");
-      Check(Has(host_h, "static_assert(sizeof(Push) == 96);") && Has(host_h, "uint32_t opp[4];") && Has(host, "push.slots[2] = opp::kPrimaryParts;") && Has(host, "push.opp[2] = view.player_row;") &&
+      Check(Has(host_h, "static_assert(sizeof(Push) == 112);") && Has(host_h, "float coat[4];") && Has(host_h, "uint32_t opp[4];") && Has(host, "push.slots[2] = opp::kPrimaryParts;") && Has(host, "push.opp[2] = view.player_row;") &&
                 Has(host, "push.opp[3] = plan.rays;") && Has(host, "push.opp[0] = uint32_t(r.x0);") && Has(host, "std::memcpy(&push, f.base_push, kBasePushBytes);"),
-            "the host's push block is the shader's (the player's 80 bytes and opp), the primary mask is the header's");
+            "the host's push block is the shader's (the player's 96 bytes and opp), the primary mask is the header's");
       Check(Has(host, "HostPrecache::Key(HostPrecache::kCarRtRefl, 2)") && Has(player, "HostPrecache::Key(HostPrecache::kCarRtRefl, 0)") && Has(player, "HostPrecache::Key(HostPrecache::kCarRtRefl, 1)"),
             "the pipeline keys of the three passes differ (0 trace, 1 denoise, 2 opponents)");
       Check(Has(player, "opp_.Initialize(") && Has(player, "opp_.Record(opponents)") && Has(player, "opp_.Shutdown()") && Has(player, "opp_.CensusText()") &&
