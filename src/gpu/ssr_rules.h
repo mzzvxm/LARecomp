@@ -379,6 +379,8 @@ inline constexpr uint32_t kRoadView = kSrc;
 inline constexpr uint32_t kFallback = kStrength;
 inline constexpr uint32_t kStencil = kLin0;
 inline constexpr uint32_t kVehTable = kRt2Rt3;
+// The high half of the vehicle table's word (temporal pass; hlsl/ssr_common.hlsli SSR_TEMPORAL_FIRST_RESOLVE): bit 0 set = the first version's resolve (mcla_gpu_ssr_resolve false).
+inline constexpr uint32_t kTemporalFirstResolve = 1;
 inline constexpr uint32_t kRoadViewApply = kHiz01;
 
 // The flag bits of the flags word, above the 12 low bits (sample0, the Hi-Z's and the colour's levels).
@@ -415,6 +417,8 @@ static_assert(sizeof(Push) == 128, "the passes' push range is 128 bytes");
 // A bindless slot in 16 bits: kNoSlot (screen_frame.h, 0xFFFFFFFF) and anything that does not fit are 0xFFFF (none).
 constexpr uint32_t Slot16(uint32_t slot) { return slot < push::kNoSlot16 ? slot : push::kNoSlot16; }
 constexpr uint32_t PackSlots(uint32_t lo, uint32_t hi) { return Slot16(lo) | (Slot16(hi) << 16); }
+// The temporal pass's vehicle table word: the table's slot, and in the high half the options (push::kTemporalFirstResolve when the spatial resolve is off).
+constexpr uint32_t PackTemporalWord(uint32_t vehicle_table_slot, bool resolve) { return Slot16(vehicle_table_slot) | ((resolve ? 0u : push::kTemporalFirstResolve) << 16); }
 // A size (a picture's width and height, below 65536) in a word, the same two halves.
 constexpr uint32_t PackSize(uint32_t width, uint32_t height) { return (width & 0xFFFFu) | (height << 16); }
 constexpr uint32_t UnpackLo(uint32_t word) { return word & 0xFFFFu; }

@@ -580,7 +580,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   flags.history = use_history;
   temporal.Set(pk::kFlags, ssr::PackFlags(flags));
   temporal.SetFloat(pk::kHistoryWeight, use_history ? history_weight : 0.0f);
-  temporal.Set(pk::kVehTable, ssr::PackSlots(vehicle_table_slot, screen::kNoSlot));
+  // The table's slot, and in the high half the resolve's switch (mcla_gpu_ssr_resolve false: the first version's resolve, the centre pixel alone and the clip whole; hlsl/ssr_common.hlsli THE SPATIAL RESOLVE).
+  temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get()));
   temporal.SetFloat(pk::kPrevTanX, last_tan_[0]);
   temporal.SetFloat(pk::kPrevTanY, last_tan_[1]);
   for (uint32_t i = 0; i < 12; ++i) {

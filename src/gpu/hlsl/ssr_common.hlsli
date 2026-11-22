@@ -67,7 +67,8 @@
 // GB-I2: the words the new parts use, each in a pass that does not read the word's first meaning (ssr_rules.h push::)
 #define SSR_W_ROAD_VIEW 2         // trace: the game's road reflection view (256x256 at the guest's size): its slot (bits 0-15, 0xFFFF none) | its host samples - 1 << 16 (3 bits) | its side in host pixels << 19 (10 bits)
 #define SSR_W_FALLBACK 26         // trace: float, the share of that view the effect takes out of the road where a ray finds a reflection (0 adds the reflection on top, as GB-I1)
-#define SSR_W_VEH_TABLE 1         // temporal: the AO's vehicle table (4 x 24 texels, a row an ID: three rows of the 3x4 motion, then a flag) in the low 16 bits, 0xFFFF none
+#define SSR_W_VEH_TABLE 1         // temporal: the AO's vehicle table (4 x 24 texels, a row an ID: three rows of the 3x4 motion, then a flag) in the low 16 bits, 0xFFFF none; the high 16 bits: SSR_TEMPORAL_* options
+#define SSR_TEMPORAL_FIRST_RESOLVE 1u   // bit 0 of the high half of SSR_W_VEH_TABLE: the first version's resolve (the trace's centre pixel alone, the clip takes the history to the box whole), for mcla_gpu_ssr_resolve false
 #define SSR_W_STENCIL 11          // trace: the high 16 bits of SSR_W_LIN0: the depth target's stencil plane (0xFFFF none)
 #define SSR_W_ROAD_VIEW_APPLY 3   // apply: the same word as SSR_W_ROAD_VIEW, for the debug view that draws the road view (the apply reads no Hi-Z)
 
@@ -102,6 +103,7 @@ static const float kSsrVehicleNoRowWeight = 0.35f;  // ... and for one that has 
 static const float kSsrClipGamma = 1.25f;       // the history is clipped to the neighbourhood's mean +- this many standard deviations (and to its min / max widened by kSsrClipMargin)
 static const float kSsrClipMargin = 0.1f;
 static const float kSsrGuard = 0.8f;            // the road view taken out may never leave less than this share's complement of the colour that was there (a bad estimate must not black the road)
+static const float kSsrClipKeep = 0.75f;       // the clip may take away at most 1 - this of a positive history in one frame (the box of ONE noisy frame is no proof that a bright reflection is gone)
 static const float kSsrHistoryBorder = 1.0f;    // a history position nearer than this many texels to the picture's edge is not read (the clamped sample would smear the edge's texel)
 static const uint kSsrVehicleIdMask = 0x1Fu;    // a vehicle's ID (1 to 23) rides in the low five bits of the half float's mantissa in the trace's alpha (SsrPackHit)
 
@@ -363,6 +365,41 @@ float3 SsrClipToBox(float3 value, float3 box_lo, float3 box_hi) {
 // Whether a history position (u, v in 0..1 of an image of width x height texels) is far enough from the picture's edge to be read.
 bool SsrHistoryInside(float u, float v, float width, float height) {
   return u * width >= kSsrHistoryBorder && (1.0f - u) * width >= kSsrHistoryBorder && v * height >= kSsrHistoryBorder && (1.0f - v) * height >= kSsrHistoryBorder;
+}
+
+// ---- the spatial resolve and the clip's floor (2026-11-22, SSR-STRIPES-2) --------------------------------------------------------------------------------------------------------
+// WHAT WAS LEFT. One ray a pixel through a lobe with a few pixels' reach finds a small bright thing (a lamp, a tail light, a splash) in a few of the frames, in a few of the pixels round its image:
+// a hit or nothing. The history's exponential mean (0.9: about ten frames) cannot average that out, and the clip made it worse. Its box is the mean +- 1.25 deviations of the 3x3 of ONE
+// frame's trace, and where those nine pixels hold no hit at all (the commonest case round a small thing's image) the box is a point: the history, a mean of earlier hits, is thrown to the road's
+// colour, so the next hit starts from nothing (the flicker stays near the raw noise) and the reflection comes out dimmer than it is. In a Monte Carlo of the shader's own numbers (the noise, the
+// clip, the weights: ssr_test.cpp TestResolve) a lamp's reflection flickered by 37 to 44 per cent of its brightness and came out 7 to 52 per cent too dim. The measured take of 2026-11-22
+// (BLACK-LINES-NOISE.txt) shows the same: the flicker the reflections add (d2 0.52 to 0.58 levels over 0.28 without them) sits in 5% of the blocks, on the images of lamps and tail lights.
+// THE FIX, two parts. (1) The trace's 3x3 is averaged with a tent (1 2 1 / 2 4 2 / 1 2 1, SsrTapKernel) before the history takes it: the nine rays of a neighbourhood are nine samples of the same
+// lobe, so the average is nearer the lobe's mean, and a blue noise's energy sits at the highest frequencies, so a 3 x 3 kernel covers it; only pixels of the SAME surface join
+// (SsrTapSameSurface: a road's average must not take a kerb's or a car's rays). (2) The clip may not take more than 1 - kSsrClipKeep of a positive history away in a frame (SsrKeepClip): a
+// reflection that really went away (a light out, a car gone) fades to half in 2 frames and to a tenth in 6, a frame whose nine rays all missed does not wipe it. Together: the flicker is
+// 51 to 54 per cent of the first version's and the brightness is 1 to 17 points nearer the truth.
+// Both are the first version's behaviour when SSR_TEMPORAL_FIRST_RESOLVE is set.
+float SsrTapKernel(int dx, int dy) {
+  return (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
+}
+// A neighbour of the trace joins the centre's average only on the same surface: the history's own rule (SsrSameSurface, 8% and 5 centimetres of receiver depth). Not tighter: the depth of a road at a
+// grazing angle runs away by metres from one SSR row to the next at 50 metres, and a tighter rule would take the vertical neighbours away there.
+bool SsrTapSameSurface(float z_tap, float z_centre) {
+  return SsrSameSurface(z_tap, z_centre);
+}
+// One channel of the history after the clip: the clip's own result, except that a positive history is not taken below kSsrClipKeep of itself (a history that is raised, or is not positive, is the clip's).
+float SsrKeepChannel(float history, float clipped) {
+  return (history > 0.0f && clipped < history) ? max(clipped, history * kSsrClipKeep) : clipped;
+}
+float3 SsrKeepClip(float3 history, float3 clipped) {
+  return float3(SsrKeepChannel(history.x, clipped.x), SsrKeepChannel(history.y, clipped.y), SsrKeepChannel(history.z, clipped.z));
+}
+// The distance the reprojection of the virtual image uses (SsrVirtualPoint): the pixel's own when its ray found something; where its ray found nothing (a pixel of the lobe's tail that went
+// by the lamp) the NEAREST hit of the same-surface pixels of its 3x3 (`nearest_tap`, kSsrMissLength when none hit): the history of the pixels round a reflection is then looked up with the
+// reflection's parallax, not by the sky's, and does not jump between two places with the noise from frame to frame.
+float SsrReprojectDistance(float own, float nearest_tap) {
+  return own < kSsrMissLength - 1.0f ? own : min(own, nearest_tap);
 }
 
 // ---- GB-I2: what the trace says of a hit, in its alpha -----------------------------------------------------------------------------------------------------------------------------------

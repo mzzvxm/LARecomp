@@ -344,6 +344,7 @@
 {"mcla_gpu_ssr_fallback", "MCLA/GPU"},
 {"mcla_gpu_ssr_vehicle_rows", "MCLA/GPU"},
 {"mcla_gpu_ssr_blue_noise", "MCLA/GPU"},
+{"mcla_gpu_ssr_resolve", "MCLA/GPU"},
 {"mcla_gpu_ghost_log_interval", "MCLA/GPU"},
 {"mcla_gpu_glow_visibility", "MCLA/GPU"},
 {"mcla_gpu_gpu_based_validation", "MCLA/GPU"},

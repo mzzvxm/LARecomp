@@ -1282,6 +1282,219 @@ void TestClip() {
 }
 
 // ---------------------------------------------------------------------------
+// the spatial resolve and the clip's floor (SSR-STRIPES-2, 2026-11-22): what is left of the noise on a SPARSE bright reflection
+// ---------------------------------------------------------------------------
+// The scene: a small bright thing (a lamp, a tail light) of radius `lamp` pixels whose image the lobe's jitter (the shader's own numbers: the blue noise tile stepped along the R2 sequence, a GGX tail
+// radius R * sqrt(u / (1 - u)), the angle 2 pi u) reaches from the pixels round it: a pixel's ray finds it, or finds the road, a frame at a time. The pipeline is the temporal pass's own
+// arithmetic on a scalar image (hlsl/ssr_temporal_ps.hlsl: the tent over the 3x3, the variance clip's box of the same 3x3, the history's keep, 0.9 of the history): `resolve` false is the first version's
+// (the centre pixel alone, the clip whole). A still camera, the world still: everything that is left is the noise. The truth is the lobe's mean (a dense Monte Carlo of the same distribution).
+namespace {
+constexpr int kResolveN = 48;
+constexpr float kResolveHit = 100.0f, kResolveBg = 1.0f;
+struct ResolveScene {
+  float lobe = 2.0f;    // R: the jitter's scale in pixels (alpha times the distance)
+  float lamp = 4.0f;    // the thing's radius in pixels
+};
+float ResolveSample(const ResolveScene& sc, int x, int y, uint32_t frame, bool lamp_on) {
+  const float u1 = hs::SsrNoise1(x, y, frame, 0, 1), u2 = hs::SsrNoise2(x, y, frame, 0, 1);
+  const float m = sc.lobe * std::sqrt(u1 / std::max(1.0f - u1, 1e-6f));
+  const float phi = 6.2831853f * u2;
+  const float px = float(x) + m * std::cos(phi) - float(kResolveN / 2), py = float(y) + m * std::sin(phi) - float(kResolveN / 2);
+  return (lamp_on && px * px + py * py < sc.lamp * sc.lamp) ? kResolveHit : kResolveBg;
+}
+std::vector<float> ResolveTruth(const ResolveScene& sc) {
+  std::vector<float> t(size_t(kResolveN) * kResolveN, kResolveBg);
+  Lcg rng;
+  const int samples = 1200;
+  for (int y = 0; y < kResolveN; ++y) {
+    for (int x = 0; x < kResolveN; ++x) {
+      double acc = 0.0;
+      for (int k = 0; k < samples; ++k) {
+        const float u1 = rng.Next() * 0.9999f, u2 = rng.Next();
+        const float m = sc.lobe * std::sqrt(u1 / (1.0f - u1));
+        const float phi = 6.2831853f * u2;
+        const float px = float(x) + m * std::cos(phi) - float(kResolveN / 2), py = float(y) + m * std::sin(phi) - float(kResolveN / 2);
+        acc += (px * px + py * py < sc.lamp * sc.lamp) ? kResolveHit : kResolveBg;
+      }
+      t[size_t(y) * kResolveN + size_t(x)] = float(acc / samples);
+    }
+  }
+  return t;
+}
+// The images of `frames` frames of the pass; the lamp is on until frame `off_at` (a number past `frames`: never off).
+std::vector<std::vector<float>> ResolveRun(const ResolveScene& sc, bool resolve, int frames, int off_at) {
+  const int N = kResolveN;
+  std::vector<float> trace(size_t(N) * N), history(size_t(N) * N, 0.0f), out(size_t(N) * N, 0.0f);
+  std::vector<std::vector<float>> all;
+  for (int f = 0; f < frames; ++f) {
+    for (int y = 0; y < N; ++y) {
+      for (int x = 0; x < N; ++x) trace[size_t(y) * N + size_t(x)] = ResolveSample(sc, x, y, uint32_t(f), f < off_at);
+    }
+    for (int y = 0; y < N; ++y) {
+      for (int x = 0; x < N; ++x) {
+        const float centre = trace[size_t(y) * N + size_t(x)];
+        float lo = centre, hi = centre, sum = 0.0f, sum2 = 0.0f, count = 0.0f, tent = 0.0f, tent_weight = 0.0f;
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            const float t = trace[size_t(std::clamp(y + dy, 0, N - 1)) * N + size_t(std::clamp(x + dx, 0, N - 1))];
+            lo = std::min(lo, t);
+            hi = std::max(hi, t);
+            sum += t;
+            sum2 += t * t;
+            count += 1.0f;
+            if ((dx == 0 && dy == 0) || (resolve && hs::SsrTapSameSurface(10.0f, 10.0f))) {
+              const float k = hs::SsrTapKernel(dx, dy);
+              tent += t * k;
+              tent_weight += k;
+            }
+          }
+        }
+        const float value = tent / tent_weight;
+        float o = value;
+        if (f > 0) {
+          const float h = history[size_t(y) * N + size_t(x)];
+          const float mean = sum / count, sigma = std::sqrt(std::max(sum2 / count - mean * mean, 0.0f));
+          const float bl = hs::SsrBoxLoChannel(mean, sigma, lo, hi), bh = hs::SsrBoxHiChannel(mean, sigma, lo, hi);
+          const hs::float3 clipped = hs::SsrClipToBox(hs::float3(h, h, h), hs::float3(bl, bl, bl), hs::float3(bh, bh, bh));
+          const float kept = resolve ? hs::SsrKeepClip(hs::float3(h, h, h), clipped).x : clipped.x;
+          o = value * (1.0f - 0.9f) + kept * 0.9f;
+        }
+        out[size_t(y) * N + size_t(x)] = o;
+      }
+    }
+    history = out;
+    all.push_back(out);
+  }
+  return all;
+}
+struct ResolveNumbers {
+  double flicker = 0.0;   // the temporal std over the lamp's pixels, as a share of the truth there
+  double energy = 0.0;    // the time mean of the output over the truth, over the lamp's pixels (1 = the right brightness)
+  int fade_half = 0;      // frames after the lamp goes out until what is left is below half / a tenth of what the lamp added
+  int fade_tenth = 0;
+};
+ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve) {
+  const std::vector<float> truth = ResolveTruth(sc);
+  const std::vector<std::vector<float>> run = ResolveRun(sc, resolve, 240, 1000);
+  ResolveNumbers r;
+  double flicker = 0.0, out_sum = 0.0, truth_sum = 0.0;
+  int n = 0;
+  for (size_t i = 0; i < truth.size(); ++i) {
+    if (truth[i] < kResolveBg * 1.5f) continue;
+    double m = 0.0, m2 = 0.0;
+    for (int f = 120; f < 240; ++f) {
+      m += run[size_t(f)][i];
+      m2 += double(run[size_t(f)][i]) * run[size_t(f)][i];
+    }
+    m /= 120.0;
+    m2 /= 120.0;
+    flicker += std::sqrt(std::max(m2 - m * m, 0.0)) / truth[i];
+    out_sum += m;
+    truth_sum += truth[i];
+    ++n;
+  }
+  r.flicker = flicker / std::max(n, 1);
+  r.energy = out_sum / std::max(truth_sum, 1e-9);
+  const std::vector<std::vector<float>> gone = ResolveRun(sc, resolve, 200, 100);
+  const auto added = [&](int f) {
+    double a = 0.0;
+    for (size_t i = 0; i < truth.size(); ++i) {
+      if (truth[i] >= kResolveBg * 1.5f) a += double(gone[size_t(f)][i]) - kResolveBg;
+    }
+    return a;
+  };
+  const double start = added(99);
+  r.fade_half = r.fade_tenth = 999;
+  for (int f = 100; f < 200; ++f) {
+    if (r.fade_half == 999 && added(f) < 0.5 * start) r.fade_half = f - 99;
+    if (r.fade_tenth == 999 && added(f) < 0.1 * start) r.fade_tenth = f - 99;
+  }
+  return r;
+}
+}  // namespace
+
+void TestResolve() {
+  // the kernel: a tent of 16, the centre 4 times a corner
+  float total = 0.0f;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) total += hs::SsrTapKernel(dx, dy);
+  }
+  Check(total == 16.0f && hs::SsrTapKernel(0, 0) == 4.0f && hs::SsrTapKernel(1, 0) == 2.0f && hs::SsrTapKernel(0, -1) == 2.0f && hs::SsrTapKernel(1, 1) == 1.0f && hs::SsrTapKernel(-1, 1) == 1.0f,
+        "the resolve's kernel is a tent: 4 in the centre, 2 on the edges, 1 in the corners (sum 16)");
+  // the same surface: a few per cent and a few centimetres of receiver depth (a road is flat; a kerb, a car, a pole are not)
+  Check(hs::SsrTapSameSurface(20.0f, 20.0f) && hs::SsrTapSameSurface(20.0f, 20.8f) && !hs::SsrTapSameSurface(20.0f, 22.0f) && hs::SsrTapSameSurface(0.5f, 0.54f) && !hs::SsrTapSameSurface(0.5f, 0.6f) &&
+            !hs::SsrTapSameSurface(5.0f, 5.5f),
+        "a neighbour joins the average only within 8% and 5 centimetres of the centre's receiver depth (the history's own rule)");
+  {
+    bool same_rule = true;
+    for (float z : {0.5f, 5.0f, 20.0f, 60.0f}) {
+      for (float k : {0.8f, 0.9f, 0.95f, 1.0f, 1.05f, 1.1f, 1.2f}) same_rule = same_rule && hs::SsrTapSameSurface(z * k, z) == hs::SsrSameSurface(z * k, z);
+    }
+    Check(same_rule, "and it is the history's rule, not a tighter one (a road at a grazing angle runs away by metres a row at 50 metres)");
+  }
+  // the clip's floor: a positive history is not taken below the keep; a raise, a negative history and a history inside the box are the clip's
+  const hs::float3 down = hs::SsrKeepClip(hs::float3(10.0f, 10.0f, 10.0f), hs::float3(1.0f, 9.0f, 5.0f));
+  Check(Near(down.x, 10.0 * hs::kSsrClipKeep, 1e-5) && down.y == 9.0f && Near(down.z, 10.0 * hs::kSsrClipKeep, 1e-5), "the clip takes at most 1 - keep of a positive history away in a frame, and its small steps whole");
+  const hs::float3 raised = hs::SsrKeepClip(hs::float3(1.0f, 0.0f, 3.0f), hs::float3(4.0f, 2.0f, 3.0f));
+  Check(raised.x == 4.0f && raised.y == 2.0f && raised.z == 3.0f, "a history the clip raises or leaves is the clip's");
+  const hs::float3 negative = hs::SsrKeepClip(hs::float3(-5.0f, -5.0f, -5.0f), hs::float3(-9.0f, -1.0f, -5.0f));
+  Check(negative.x == -9.0f && negative.y == -1.0f && negative.z == -5.0f, "a negative history (the road's term can be) is the clip's, whole");
+  Check(hs::kSsrClipKeep > 0.5f && hs::kSsrClipKeep < 0.95f, "the keep is a real floor, not a switch");
+  // the reprojection's distance: the pixel's own when its ray found something, else the nearest hit round it
+  Check(hs::SsrReprojectDistance(30.0f, 12.0f) == 30.0f && hs::SsrReprojectDistance(hs::kSsrMissLength, 40.0f) == 40.0f && hs::SsrReprojectDistance(hs::kSsrMissLength, hs::kSsrMissLength) == hs::kSsrMissLength &&
+            hs::SsrReprojectDistance(hs::kSsrMissLength, 5.0f) == 5.0f,
+        "where the ray found nothing the nearest hit of the same-surface neighbours gives the reprojection's distance; a pixel that hit keeps its own");
+  // and why it matters: with the first version's hit or miss a pixel round a lamp's image looked its history up in two places (the lamp's parallax, the sky's), a few pixels apart on a moving camera
+  {
+    const Vec H{{3.0, 6.0, 40.0}};
+    const Vec Hmirror{{H.v[0], -H.v[1], H.v[2]}};
+    const Pose before{{0.0, 1.5, 0.0}, 0.0, 0.02};
+    const Pose now{{0.0, 1.5, 0.55}, 0.0, 0.02};   // 0.55 m a frame at 60 Hz is 120 km/h
+    const double tan_x = 0.9, tan_y = 0.5;
+    const Vec cam{{now.pos[0], now.pos[1], now.pos[2]}};
+    const Vec dir = Sub(Hmirror, cam);
+    const double t = (0.0 - cam.v[1]) / dir.v[1];
+    const Vec P_view = ToView(now, {{cam.v[0] + dir.v[0] * t, 0.0, cam.v[2] + dir.v[2] * t}});
+    const Vec H_view = ToView(now, H);
+    const double length_to_hit = std::sqrt(DotV(Sub(H_view, P_view), Sub(H_view, P_view)));
+    hs::float4 rows[3];
+    {
+      Vec r, u, f, r0, u0, f0;
+      Axes(now, &r, &u, &f);
+      Axes(before, &r0, &u0, &f0);
+      const Vec dp = Sub({{now.pos[0], now.pos[1], now.pos[2]}}, {{before.pos[0], before.pos[1], before.pos[2]}});
+      const Vec axes_old[3] = {r0, u0, f0};
+      for (int k = 0; k < 3; ++k) rows[k] = hs::float4(float(DotV(r, axes_old[k])), float(DotV(u, axes_old[k])), float(DotV(f, axes_old[k])), float(DotV(dp, axes_old[k])));
+    }
+    const hs::float3 P(float(P_view.v[0]), float(P_view.v[1]), float(P_view.v[2]));
+    const auto where = [&](float distance) {
+      const hs::SsrPrevious p = hs::SsrToPrevious(rows[0], rows[1], rows[2], hs::SsrVirtualPoint(P, distance), float(tan_x), float(tan_y));
+      return std::array<double, 2>{p.u * 960.0, p.v * 540.0};   // the SSR images of a 1920 x 1080 picture
+    };
+    const auto hit = where(float(length_to_hit)), miss = where(hs::kSsrMissLength), stable = where(hs::SsrReprojectDistance(hs::kSsrMissLength, float(length_to_hit)));
+    const double apart = std::hypot(hit[0] - miss[0], hit[1] - miss[1]), after = std::hypot(hit[0] - stable[0], hit[1] - stable[1]);
+    if (g_print) std::printf("a pixel round a lamp's image on a camera at 120 km/h: hit and miss look the history up %.2f SSR pixels apart; with the nearest hit %.2f\n", apart, after);
+    Check(apart > 0.4 && after < 1e-6, Num("a miss next to a hit looked its history up %.2f pixels from the hit's place; with the nearest hit it is the same place (%.4f)", apart, after));
+  }
+  // THE NOISE THAT IS LEFT (the pipeline above on three small bright things)
+  struct Case {
+    const char* name;
+    ResolveScene scene;
+  };
+  const Case cases[] = {{"a lamp 4 pixels wide, a lobe of 2", {2.0f, 4.0f}}, {"a tail light 2 pixels wide, a lobe of 3", {3.0f, 2.0f}}, {"a lamp 3 pixels wide, a lobe of 1", {1.0f, 3.0f}}};
+  for (const Case& c : cases) {
+    const ResolveNumbers then = ResolveMeasure(c.scene, false), now = ResolveMeasure(c.scene, true);
+    if (g_print) {
+      std::printf("%s: first resolve flicker %.3f energy %.3f fade %d / %d frames; resolve flicker %.3f energy %.3f fade %d / %d frames\n", c.name, then.flicker, then.energy, then.fade_half, then.fade_tenth, now.flicker, now.energy,
+                  now.fade_half, now.fade_tenth);
+    }
+    Check(now.flicker < 0.70 * then.flicker, std::string(c.name) + Num(": the flicker on the lamp's pixels is %.0f%% of what the first version left", 100.0 * now.flicker / then.flicker) + Num(" (%.2f of the truth against %.2f)", now.flicker, then.flicker));
+    Check(now.energy > then.energy - 1e-3 && now.energy > 0.45, Num("... and it keeps the reflection's brightness at least as well: %.2f of the lobe's mean against %.2f", now.energy, then.energy));
+    Check(now.fade_half <= 6 && now.fade_tenth <= 14 && then.fade_half <= 2, Num("... and a lamp that goes out leaves half of its reflection after %.0f frames (at most 6; the first version took 1 or 2)", double(now.fade_half)) + Num(", a tenth after %.0f (at most 14)", double(now.fade_tenth)));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GB-I2: the road view's rules and its push word
 // ---------------------------------------------------------------------------
 
@@ -2023,7 +2236,7 @@ void TestSources(const std::string& dir) {
   const std::string table_accessor = FunctionText(ao_cpp, "bool AmbientOcclusion::VehicleTableNow(VehicleTableOut* out) const {");
   Check(!table_accessor.empty() && Has(ao_h, "bool VehicleTableNow(VehicleTableOut* out) const;") && Has(table_accessor, "vehicle_table_frame_ != frame_") && !Has(table_accessor, "list->") && Has(ao_cpp, "  vehicle_table_frame_ = frame_;\n  vehicle_table_ids_ = mask;"),
         "ao.h / ao.cpp: the vehicle table accessor is const, answers only for a table drawn in this frame and records nothing");
-  Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") && Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackSlots(vehicle_table_slot, screen::kNoSlot));") &&
+  Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") && Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get()));") &&
             Has(trigger, "push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));"),
         "ssr.cpp: the vehicle table goes to the temporal pass, the stencil plane to the trace");
   // GB-I2: the road view: found by its identity, classified, drawn this frame, moved to a shader read before the trace, asked for only while the share is above 0; its numbers are the side view's own
@@ -2053,7 +2266,7 @@ void TestSources(const std::string& dir) {
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
   Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(SsrRoadViewAt(road_view, screen_uv), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
-  Check(Has(temporal_ps, "history = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
+  Check(Has(temporal_ps, "const float3 clipped = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "history = resolve ? SsrKeepClip(history, clipped) : clipped;") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
 
   // the pause world and the effect's own gate are in the rules
   Check(Has(rules, "d.why = Why::kPause;") && Has(trigger, "facts.pause_view = (sf.flags & screen::kFramePause) != 0;"), "the pause menu's, the garage's and the map's world are not reflected");
@@ -2092,6 +2305,7 @@ int main(int argc, char** argv) {
   TestHitPacking();
   TestVehicleImage();
   TestClip();
+  TestResolve();
   TestRoadViewRules();
   TestMarchAnalytic();
   TestMarchBrute();
