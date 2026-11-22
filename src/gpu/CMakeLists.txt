@@ -162,6 +162,9 @@ add_executable(larecomp_car_rt_ao_noise_test EXCLUDE_FROM_ALL car_rt_ao_noise_te
 # The ray traced car reflection's cone turn (hlsl/car_rt_refl_cs.hlsl ConeRotation and its twin: the blue noise tile in place of gradient noise; NOISE-AUDIT): turns, error after the average, flag, sources:
 #   cmake --build <dir> --target larecomp_car_refl_noise_test, then run src/gpu/larecomp_car_refl_noise_test [<src/gpu dir>] [--print] (a few seconds).
 add_executable(larecomp_car_refl_noise_test EXCLUDE_FROM_ALL car_refl_noise_test.cpp)
+# The sun shafts' ray-start noise (hlsl/shafts_noise.hlsli: the blue noise tile in place of gradient noise; NOISE-AUDIT): numbers, error after the average, still pattern, sources:
+#   cmake --build <dir> --target larecomp_shafts_noise_test, then run src/gpu/larecomp_shafts_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_shafts_noise_test EXCLUDE_FROM_ALL shafts_noise_test.cpp)
 # The size of the occlusion's and the bounce light's images (ao_size.h: half the picture's size above 1080 lines of render height, the
 # contact shadows keeping their own size, the memory each frame holds and the cost model; given the src/gpu folder it also checks that the
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:

@@ -20,19 +20,20 @@
 // the rays have the same length and look at any image size: the image is half the picture's or capped at
 // a 960x540 box (shafts_image.h), and only the noise below is as coarse as the texels.
 //
-// The start of the ray is shifted by interleaved gradient noise (Jimenez 2014) so that the steps do
-// not show as bands; the noise is a fixed pattern, plus a shift by the golden ratio each frame while
-// a temporal upscaler runs (the host sends 0 otherwise), which the upscaler averages.
+// The start of the ray is shifted by blue noise (shafts_noise.hlsli: the tile at the texel, no lattice) so that the steps do
+// not show as bands; the noise is a fixed pattern, plus a step along the R2 sequence each frame while
+// a temporal upscaler runs (the host sends 0 otherwise), which the upscaler averages. (The first
+// version's interleaved gradient noise, Jimenez 2014, is a lattice: mcla_gpu_noise_blue false.)
 
 #include "shafts_common.hlsli"
+#include "shafts_noise.hlsli"
 #include "host_pass_samplers.hlsli"
 
 // R, the distance in image heights at which a sample counts for half.
 static const float kRadialRange = 1.5f;
 
-float IgNoise(float2 p) {
-  return frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f))));
-}
+// slots.z bit 0: the start noise is the blue noise tile's (the host: mcla_gpu_noise_blue)
+static const uint kBlueNoiseFlag = 1u;
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const float2 size = g_push.sizes.xy;
@@ -50,7 +51,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float length_of_way = min(g_push.sun.z, min(reach.x, reach.y));
   const float2 step_uv = to_sun * (length_of_way / float(steps));
 
-  const float noise = frac(IgNoise(position.xy) + g_push.tint.w * 0.6180339887f);
+  const float noise = ShaftsStartNoise(int(position.x), int(position.y), position.xy, (g_push.slots.z & kBlueNoiseFlag) != 0u, uint(g_push.tint.w));
   const float aspect = size.x / size.y;
   const float inv_range2 = 1.0f / (kRadialRange * kRadialRange);
 
