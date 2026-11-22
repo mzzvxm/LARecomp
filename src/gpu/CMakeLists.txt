@@ -600,6 +600,13 @@ target_compile_features(larecomp_rt_world_frame_test PRIVATE cxx_std_23)
 # checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:
 #   cmake --build <dir> --target larecomp_city_rt_shadow_rules_test, then run src/gpu/larecomp_city_rt_shadow_rules_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_city_rt_shadow_rules_test EXCLUDE_FROM_ALL city_rt_shadow_rules_test.cpp)
+# What the city's ray tracing needs to be right on Vulkan (CITY-VK), read from the sources: every shader that traces is built through larecomp_gpu_host_shader_rt (SPIR-V 1.5 for
+# Vulkan 1.2), the format of every typed storage image in the shader (Vulkan takes it from there) is the one the C++ makes the image in, the alignments of the structures' inputs.
+# Takes the src/gpu folder (default: the folder of the test's own source):
+#   cmake --build <dir> --target larecomp_city_rt_vulkan_test, then run src/gpu/larecomp_city_rt_vulkan_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_city_rt_vulkan_test EXCLUDE_FROM_ALL city_rt_vulkan_test.cpp)
+target_include_directories(larecomp_city_rt_vulkan_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_rt_vulkan_test PRIVATE cxx_std_23)
 # The other cars in the car ray tracing scene (car_rt_instances_rules.h: the limits by class, which cars are kept, a car's body centre, the budgets of a
 # car that is new, the instance list) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_instances_rules_test, then run src/gpu/larecomp_car_rt_instances_rules_test (exit 0 = passed).
