@@ -1422,6 +1422,159 @@ void CostChecks() {
     Check(!hlsl_shim::LpReaches(off_row.pos, off_row.range, inside), "a light of no range reaches nothing");
   }
 
+  // ---- 4: the draws ------------------------------------------------------------------------------------------------------------------------------
+  // a chase view: the camera 6 m behind a car and 1.8 m up, looking along it; the car's tube under it, four points; the picture 1920 x 1104 as the cost run's
+  {
+    const uint32_t w = 1920, h = 1104;
+    float vi[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1.8f, 6.0f, 1};  // the camera at (0, 1.8, 6) looking along -z, the car at the origin
+    lp::Rows rows;
+    Check(lp::RowsFromViewInverse(vi, &rows), "the chase camera is a camera");
+    const float tan_x = 0.829f, tan_y = 0.466f;  // the cost run's lens
+    const float centre[3] = {0.0f, 0.25f, 0.0f};
+    const float heading[3] = {0.0f, 0.0f, 1.0f};
+    const float colour[3] = {1.0f, 0.1f, 0.3f};
+    for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+      const uint32_t points = tier == lp::Tier::kUltra ? 4u : (tier == lp::Tier::kHigh ? 3u : 2u);
+      const std::vector<Light> tube = TubeLights(centre, heading, colour, points, 1, tier);
+      lp::Selection s;
+      for (const Light& l : tube) s.lights[s.count++] = l;
+      Check(s.count == points && tube[0].car_key != 0 && tube[0].car_key == tube[points - 1].car_key && tube[0].source == LightSource::kNeon, "a tube's lights are the neon's, one car's");
+      std::array<lp::PixelRect, lp::kMaxPassLights> rects;
+      uint64_t single_pixels = 0;
+      for (uint32_t i = 0; i < s.count; ++i) {
+        rects[i] = lp::ScissorOfLight(s.lights[i], rows, tan_x, tan_y, w, h);
+        single_pixels += rects[i].Area();
+      }
+      std::array<lp::PassDraw, lp::kMaxPassLights> plan;
+      const uint32_t merged = lp::PlanDraws(s, rects.data(), 0, plan.data());
+      Check(merged == 1 && plan[0].first == 0 && plan[0].count == points, "a car's tube is one draw");
+      Check(plan[0].rect.Area() <= single_pixels, "its rectangle is the union of the lights' own: no more pixels than the single draws made together");
+      if (tier == lp::Tier::kUltra) {
+        Check(plan[0].rect.Area() * points == single_pixels, "at ultra every light of the chase view is a full picture draw, so the pixels drawn fall to one over the number of lights (a quarter)");
+      }
+      for (uint32_t i = 0; i < s.count; ++i) {
+        Check(plan[0].rect.x0 <= rects[i].x0 && plan[0].rect.y0 <= rects[i].y0 && plan[0].rect.x1 >= rects[i].x1 && plan[0].rect.y1 >= rects[i].y1, "the draw's rectangle holds each light's own");
+      }
+      std::array<lp::PassDraw, lp::kMaxPassLights> plan_off;
+      const uint32_t single = lp::PlanDraws(s, rects.data(), lp::kCostOffMerge, plan_off.data());
+      Check(single == points, "with the merge switched off every light is a draw of its own");
+      for (uint32_t d = 0; d < single; ++d) {
+        Check(plan_off[d].first == d && plan_off[d].count == 1 && plan_off[d].rect.x0 == rects[d].x0 && plan_off[d].rect.y1 == rects[d].y1, "the old way: one light, its own rectangle");
+      }
+      std::printf("cost model: chase view, tier %s: %u lights = %u full-size draws of %llu pixels (%.2f MPixels) -> %u draw of %llu pixels (%.2f MPixels)\n", tier == lp::Tier::kUltra ? "ultra" : (tier == lp::Tier::kHigh ? "high" : "medium"),
+                  s.count, single, (unsigned long long)rects[0].Area(), double(single_pixels) * 1.0e-6, merged, (unsigned long long)plan[0].rect.Area(), double(plan[0].rect.Area()) * 1.0e-6);
+    }
+  }
+  // the budget's four cars of the worst scene: four tubes of four lights are four draws (the cars' keys differ), the nearest car's first
+  {
+    lp::Selection s;
+    const float heading[3] = {0.0f, 0.0f, 1.0f};
+    const float colour[3] = {0.2f, 0.8f, 1.0f};
+    for (uint32_t car = 0; car < 4; ++car) {
+      const float centre[3] = {float(car) * 3.0f - 4.5f, 0.25f, -float(car) * 7.0f};
+      for (const Light& l : TubeLights(centre, heading, colour, 4, car + 1, lp::Tier::kUltra)) s.lights[s.count++] = l;
+    }
+    std::array<lp::PixelRect, lp::kMaxPassLights> rects;
+    float vi[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1.8f, 8.0f, 1};
+    lp::Rows rows;
+    lp::RowsFromViewInverse(vi, &rows);
+    for (uint32_t i = 0; i < s.count; ++i) rects[i] = lp::ScissorOfLight(s.lights[i], rows, 0.829f, 0.466f, 1920, 1104);
+    std::array<lp::PassDraw, lp::kMaxPassLights> plan;
+    const uint32_t n = lp::PlanDraws(s, rects.data(), 0, plan.data());
+    Check(n == 4, "four cars of four lights are four draws");
+    for (uint32_t d = 0; d < n; ++d) {
+      Check(plan[d].first == d * 4 && plan[d].count == 4, "each draw is one car's four lights, in the selection's order");
+    }
+    Check(lp::PlanDraws(s, rects.data(), lp::kCostOffMerge, plan.data()) == 16, "sixteen lights, sixteen draws with the merge off");
+    Check(lp::PlanDraws(s, rects.data(), lp::kCostOffReachFirst, plan.data()) == 4, "the other bit (the reach test) does not change the draws");
+  }
+  // what does not merge: another source in the run, no car key, another car's key, a shadowed light, a run longer than a tube, a light off the picture
+  {
+    lp::Selection s;
+    const float heading[3] = {1.0f, 0.0f, 0.0f};
+    const float colour[3] = {1.0f, 1.0f, 1.0f};
+    const float c0[3] = {0.0f, 0.25f, -10.0f};
+    std::vector<Light> tube = TubeLights(c0, heading, colour, 4, 1, lp::Tier::kUltra);
+    std::array<lp::PixelRect, lp::kMaxPassLights> rects;
+    for (auto& r : rects) {
+      r.x0 = 100; r.y0 = 100; r.x1 = 300; r.y1 = 200;
+    }
+    std::array<lp::PassDraw, lp::kMaxPassLights> plan;
+    const auto plan_of = [&](const std::vector<Light>& lights) {
+      lp::Selection sel;
+      for (const Light& l : lights) sel.lights[sel.count++] = l;
+      return lp::PlanDraws(sel, rects.data(), 0, plan.data());
+    };
+    Check(plan_of(tube) == 1, "(control) the tube merges");
+    std::vector<Light> mixed = tube;
+    mixed[2].source = LightSource::kPolice;
+    Check(plan_of(mixed) == 3 && plan[0].count == 2 && plan[1].count == 1 && plan[2].count == 1, "another source in the run splits it");
+    std::vector<Light> no_key = tube;
+    for (Light& l : no_key) l.car_key = 0;
+    Check(plan_of(no_key) == 4, "lights with no car key are draws of their own");
+    std::vector<Light> two_cars = tube;
+    two_cars[2].car_key ^= 0x10u;
+    two_cars[3].car_key ^= 0x10u;
+    Check(plan_of(two_cars) == 2 && plan[0].count == 2 && plan[1].count == 2, "another car's lights are another draw");
+    std::vector<Light> shadowed = tube;
+    shadowed[1].shadow.kind = ShadowKind::kAtlas;
+    shadowed[1].shadow.view_count = 1;
+    Check(plan_of(shadowed) == 3 && plan[0].count == 1 && plan[1].count == 1 && plan[2].count == 2, "a light with views of the atlas is a draw of its own");
+    std::vector<Light> long_run = tube;
+    for (int i = 0; i < 3; ++i) long_run.push_back(tube[i]);
+    Check(plan_of(long_run) == 2 && plan[0].count == 4 && plan[1].count == 3, "a run of seven lights is a draw of four and a draw of three");
+    // a light off the picture is not in the union and a draw with every light off the picture is left out
+    rects[1] = lp::PixelRect{};
+    rects[1].x1 = 0;
+    Check(plan_of(tube) == 1 && plan[0].count == 4 && plan[0].rect.x0 == 100 && plan[0].rect.x1 == 300, "a light off the picture takes no part in the union, but stays a light of the draw");
+    for (int i = 0; i < 4; ++i) rects[i] = lp::PixelRect{};
+    Check(plan_of(tube) == 0, "a draw whose lights are all off the picture is left out");
+  }
+  // the union holds every point any light of the draw can light (the scissor's own property, per light, carried to the union), on random poses
+  {
+    Lcg r2;
+    r2.state = 7771u;
+    for (int round = 0; round < 80; ++round) {
+      float vi[16];
+      lp::Rows rows;
+      RandomPose(r2, vi, &rows);
+      const float tan_x = r2.Range(0.4f, 1.0f), tan_y = tan_x * 0.5625f;
+      const uint32_t w = 1920, h = 1080;
+      float centre[3], dir[3];
+      r2.Direction(dir);
+      const float dist = r2.Range(2.0f, 40.0f);
+      for (int i = 0; i < 3; ++i) centre[i] = rows.position[i] + dir[i] * dist;
+      float heading[3];
+      r2.Direction(heading);
+      heading[1] = 0.0f;
+      const float hn = std::sqrt(heading[0] * heading[0] + heading[2] * heading[2]);
+      if (!(hn > 0.1f)) continue;
+      heading[0] /= hn; heading[2] /= hn;
+      const float colour[3] = {1.0f, 0.5f, 0.2f};
+      lp::Selection s;
+      for (const Light& l : TubeLights(centre, heading, colour, 1 + r2.Below(4), 3, lp::Tier::kUltra)) s.lights[s.count++] = l;
+      std::array<lp::PixelRect, lp::kMaxPassLights> rects;
+      for (uint32_t i = 0; i < s.count; ++i) rects[i] = lp::ScissorOfLight(s.lights[i], rows, tan_x, tan_y, w, h);
+      std::array<lp::PassDraw, lp::kMaxPassLights> plan;
+      const uint32_t n = lp::PlanDraws(s, rects.data(), 0, plan.data());
+      if (n == 0) continue;
+      Check(n == 1, "one tube, one draw");
+      int tested = 0;
+      for (int k = 0; k < 3000 && tested < 300; ++k) {
+        const uint32_t li = r2.Below(s.count);
+        const Light& l = s.lights[li];
+        float d3[3];
+        r2.Direction(d3);
+        const float rr = l.range * std::cbrt(r2.Next());
+        const float q[3] = {l.pos[0] + d3[0] * rr, l.pos[1] + d3[1] * rr, l.pos[2] + d3[2] * rr};
+        float qx, qy, qt;
+        if (!lp::ProjectToPixel(rows, tan_x, tan_y, float(w), float(h), q, lp::kScissorNear, &qx, &qy, &qt)) continue;
+        if (qx < 0.0f || qy < 0.0f || qx >= float(w) || qy >= float(h)) continue;
+        ++tested;
+        Check(qx >= float(plan[0].rect.x0) && qx <= float(plan[0].rect.x1) && qy >= float(plan[0].rect.y0) && qy <= float(plan[0].rect.y1), "a point a light of the draw reaches is in the draw's rectangle");
+      }
+    }
+  }
   // what the reach test spares: a model of the cost run's chase view, a flat road under a sky and a house front 25 m to one side, 1104 lines: the share of pixels no light of the tube reaches
   {
     const uint32_t w = 1920, h = 1104;
@@ -1507,11 +1660,12 @@ void SourceChecks(const std::string& src) {
             Has(cpp, "for (uint32_t set = 0; set < 4; ++set) {\n    builder.addDescriptorSet(heap_->texture_set_builder());"),
         "the layout is four texture sets, the buffer's set (space 4) and the pixel push block (space 5)");
   Check(Has(ps, "uint4 slots;") && Has(ps, "uint4 info;") && Has(ps, "#include \"local_light.hlsli\""), "the shader's push block is two uint4 and it includes the twin");
-  Check(Has(cpp, "push.slots[0] = summary.sample_slot;") && Has(cpp, "push.info[2] = gb.sample0;") && Has(cpp, "push.info[0] = i;") &&
+  Check(Has(cpp, "push.slots[0] = summary.sample_slot;") && Has(cpp, "push.info[2] = gb.sample0;") && Has(cpp, "push.info[0] = draw.first;") && Has(cpp, "push.info[1] = draw.count;") &&
             Has(cpp, "push.info[3] = (cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u;"),
-        "the push fields the shader reads are filled: the light's row, the host sample, the flags");
-  // GB-NEON-COST: the A/B's setting is read live
-  Check(Has(cpp, "st::mcla_gpu_local_lights_cost_off.Get()"), "the pass reads the cost A/B's setting");
+        "the push fields the shader reads are filled: the draw's first light and its count, the host sample, the flags");
+  // GB-NEON-COST: the pass makes its draws from the plan (a car's tube is one) and reads the A/B's setting live
+  Check(Has(cpp, "ll::PlanDraws(selection, rects.data(), cost_off_, plan.data())") && Has(cpp, "st::mcla_gpu_local_lights_cost_off.Get()") && Has(cpp, "for (uint32_t d = 0; d < draws; ++d) {"),
+        "the pass draws what PlanDraws plans, with the setting's bits");
   Check(Has(ps, "const uint count = clamp(g_push.info.y, 1u, uint(LP_MAX_DRAW_LIGHTS));") && Has(ps, "(g_push.info.w & uint(LP_PUSH_LATE_REACH)) == 0u") && Has(ps, "LpAnyReaches(first, count, world)") &&
             Has(ps, "bool LpAnyReaches(uint first, uint count, float3 world)") && Has(ps, "LpReaches(float3(row0.x, row0.y, row0.z), row0.w, world)"),
         "the shader takes the draw's lights from the push block (at most four), tests the reach with the twin's function, and the flag picks the order");

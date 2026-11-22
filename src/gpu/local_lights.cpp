@@ -515,21 +515,25 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   push.slots[2] = gb.slot[gbuffer::kPlaneAlbedo];
   push.slots[3] = gb.Has(gbuffer::kPlaneMaterial) ? gb.slot[gbuffer::kPlaneMaterial] : larecomp::gpu::kNoLightSlot;
   push.info[2] = gb.sample0;
-  // GB-NEON-COST: the flag tells the shader whether to test the reach before it reads the planes (the shader takes up to four lights a draw: push.info[1]; the pass draws one for each light for now).
+  // GB-NEON-COST: the draws (local_lights_rules.h PlanDraws): one for each light, but a car's neon tube (its lights share the car, the surface and nearly the rectangle) is one draw the pixel
+  // shader sums; the flags tell the shader whether to test the reach before it reads the planes.
   push.info[3] = (cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u;
+  std::array<ll::PassDraw, ll::kMaxPassLights> plan;
+  const uint32_t draws = ll::PlanDraws(selection, rects.data(), cost_off_, plan.data());
   uint32_t drawn = 0;
-  for (uint32_t i = 0; i < selection.count; ++i) {
-    if (rects[i].Empty()) {
-      continue;
-    }
-    const plume::RenderRect scissor(rects[i].x0, rects[i].y0, rects[i].x1, rects[i].y1);
+  for (uint32_t d = 0; d < draws; ++d) {
+    const ll::PassDraw& draw = plan[d];
+    const plume::RenderRect scissor(draw.rect.x0, draw.rect.y0, draw.rect.x1, draw.rect.y1);
     list->setScissors(&scissor, 1);
-    push.info[0] = i;
+    push.info[0] = draw.first;
+    push.info[1] = draw.count;
     list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
     list->drawInstanced(3, 1, 0, 0);
-    ++drawn;
+    for (uint32_t k = draw.first; k < draw.first + draw.count; ++k) {
+      drawn += rects[k].Empty() ? 0u : 1u;
+    }
     ++draws_;
-    pixels_scissored_ += rects[i].Area();
+    pixels_scissored_ += draw.rect.Area();
   }
   list->setFramebuffer(nullptr);
   pass_timing_->Mark(list, "after local lights");
