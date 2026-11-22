@@ -2913,9 +2913,6 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // "vehicles" line and the summary line count the pause frames that had vehicle IDs.
     uint32_t vehicle_slot = kNoSlot;
     const uint32_t vehicle_rows = RecordVehicleTable(list, use, &vehicle_slot);
-    vehicle_table_frame_ = frame_;  // the contact image's history reads the same table (one camera, one table)
-    vehicle_table_slot_ = vehicle_slot;
-    vehicle_table_rows_ = vehicle_rows;
     push.slots[0] = vehicle_slot;
     push.slots2[2] |= trigger_pause_ ? kVehiclesAsWorldFlag : 0u;
     if (use.on) {
@@ -4005,7 +4002,7 @@ uint32_t AmbientOcclusion::RecordContactHistory(plume::RenderCommandList* list, 
   // The vehicles' rows: the table the occlusion's own pass drew this frame, else one for this history's motion.
   uint32_t vehicle_slot = kNoSlot;
   if (use.on) {
-    if (vehicle_table_frame_ == frame_) {
+    if (vehicle_table_frame_ == frame_ && vehicle_table_slot_ != kNoSlot) {
       vehicle_slot = vehicle_table_slot_;
     } else {
       RecordVehicleTable(list, use, &vehicle_slot);

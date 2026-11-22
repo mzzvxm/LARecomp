@@ -1250,7 +1250,7 @@ class AmbientOcclusion {
   uint64_t vehicle_motion_frame_ = 0;
   std::unique_ptr<plume::RenderShader> vehicle_table_shader_;
   HostImage vehicle_table_;  // R32G32B32A32_FLOAT, 4 x 24: a row an ID (hlsl/ao_temporal_ps.hlsl)
-  // The last table RecordVehicleTable drew, for VehicleTableNow: its frame (frame_), the IDs that got a row and the slot.
+  // The last table RecordVehicleTable drew, for VehicleTableNow and the contact image's history: its frame (frame_), the IDs that got a row and the slot.
   uint64_t vehicle_table_frame_ = ~0ull;
   uint32_t vehicle_table_ids_ = 0;
   uint32_t vehicle_table_slot_ = 0xFFFFFFFFu;
@@ -1347,10 +1347,6 @@ class AmbientOcclusion {
     bool logged = false;
   };
   ContactHistory contact_hist_;
-  // The vehicle table this frame drew for the occlusion's temporal pass (the contact history shares it: one camera, one table), and the frame it is of.
-  uint64_t vehicle_table_frame_ = ~uint64_t(0);
-  uint32_t vehicle_table_slot_ = ~0u;
-  uint32_t vehicle_table_rows_ = 0;
   bool stencil_ms_ = false;       // ... and whether that depth target is multisampled (which temporal pipeline reads it)
   uint32_t stencil_slot_ = ~0u;  // the depth target's stencil plane view of this frame's Run (the contact history's temporal pass reads the vehicles' IDs from it)
   // The history: (visibility, linear depth) of the last frame that ran the passes, R16G16_FLOAT,
