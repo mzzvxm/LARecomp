@@ -90,7 +90,7 @@ class CityRtShadow {
     float tan_y = 0.0f;
     bool ultra = false;                // the occlusion's level (unused: the setting's decides)
     float to_sun[3] = {0.0f, 0.0f, 0.0f};  // the direction to the sun in view space (unit; zero: none)
-    uint32_t sun_frame = 0;            // the frame the rays' noise is shifted by (0: a fixed pattern)
+    uint32_t sun_frame = 0;            // the frame the rays' noise is shifted by (0: a fixed pattern) in the low 10 bits, bit 29 the blue noise tile (ao_stable.h kBlueNoiseFlag)
     uint32_t car_slot = kNoSlot;       // the car ray traced image (car_rt_ao.h) of this frame: the result is the darker of the two where it exists
     uint64_t frame = 0;
   };
