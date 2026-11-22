@@ -1,4 +1,4 @@
-// Host versions of the game's two memcpys, memset, row writer and two D3D constant writers.
+// Host versions of the game's two memcpys, memset, row writer and four D3D constant / register writers.
 //
 // See host_helpers.h for what each function is and what it declines. This file is only the glue: each
 // override reads its arguments from the guest registers, asks the native function to do the work, and
@@ -13,8 +13,9 @@
 // values, and the stack below r1 is not written: all dead after a call by the ABI.
 //
 // The A/B switch is host_helpers_mask (debug only, read at start): bit 0 memcpy, 1 memset, 2 the
-// row writer, 3 the shader-constant copy, 4 the constant-bank flush, 5 the C runtime's memcpy.
-// 0 = all recompiled, 63 = all native (the default).
+// row writer, 3 the shader-constant copy, 4 the constant-bank flush, 5 the C runtime's memcpy, 6 the fetch-constant
+// bank flush (rex_sub_82423788), 7 D3DDevice_WriteRegisterBlock. 0 = all recompiled, 255 = all native (the default);
+// 63 = the first six only (the A side of a test of bits 6 and 7).
 
 #if !defined(REXGLUE_HAS_XEO3_TARGET)
 #include <rex/ppc/context.h>
@@ -33,12 +34,14 @@ REX_EXTERN(__imp__rex_sub_8218A6E0);              // row writer
 REX_EXTERN(__imp__rex_sub_82417678);              // shader constant copy
 REX_EXTERN(__imp__D3DDevice_FlushConstantBank);   // constant bank flush
 REX_EXTERN(__imp__rex_sub_823DA950);              // the C runtime's memcpy
+REX_EXTERN(__imp__rex_sub_82423788);              // fetch-constant bank flush
+REX_EXTERN(__imp__D3DDevice_WriteRegisterBlock);  // register block write
 
 namespace {
 
-enum Helper : uint32_t { kMemcpy = 0, kMemset, kRowWrite, kShaderConstF, kFlushBank, kCrtMemcpy, kHelperCount };
+enum Helper : uint32_t { kMemcpy = 0, kMemset, kRowWrite, kShaderConstF, kFlushBank, kCrtMemcpy, kFlushFetch, kWriteRegBlock, kHelperCount };
 
-const char* const kNames[kHelperCount] = {"memcpy", "memset", "row writer", "shader constant copy", "constant bank flush", "C runtime memcpy"};
+const char* const kNames[kHelperCount] = {"memcpy", "memset", "row writer", "shader constant copy", "constant bank flush", "C runtime memcpy", "fetch-constant bank flush", "register block write"};
 
 std::atomic<uint32_t> g_declined[kHelperCount];
 
@@ -47,7 +50,7 @@ uint32_t Mask() {
     static const uint32_t mask = [] {
         const uint32_t m = static_cast<uint32_t>(larecomp::settings::host_helpers_mask.Get()) & ((1u << kHelperCount) - 1u);
         LARECOMP_APP_INFO("[HostHelpers] native versions of the game's helpers: mask {:#x} ({})", m,
-                          m == 0 ? "all recompiled" : "bits set = native: 1 memcpy, 2 memset, 4 row writer, 8 shader constant copy, 16 constant bank flush, 32 C runtime memcpy");
+                          m == 0 ? "all recompiled" : "bits set = native: 1 memcpy, 2 memset, 4 row writer, 8 shader constant copy, 16 constant bank flush, 32 C runtime memcpy, 64 fetch-constant bank flush, 128 register block write");
         return m;
     }();
     return mask;
@@ -117,5 +120,23 @@ extern "C" REX_FUNC(D3DDevice_FlushConstantBank) {
         Declined(kFlushBank);
     }
     __imp__D3DDevice_FlushConstantBank(ctx, base);
+}
+
+extern "C" REX_FUNC(rex_sub_82423788) {
+    // r3 device, r4 the 64-bit dirty mask of the fetch-constant banks.
+    if (On(kFlushFetch)) {
+        if (host_helpers::FlushFetchBank(base, ctx.r3.u32, ctx.r4.u64)) return;
+        Declined(kFlushFetch);
+    }
+    __imp__rex_sub_82423788(ctx, base);
+}
+
+extern "C" REX_FUNC(D3DDevice_WriteRegisterBlock) {
+    // r3 device, r4 the 64-bit mask, r5 the first register, r6 the source words.
+    if (On(kWriteRegBlock)) {
+        if (host_helpers::WriteRegBlock(base, ctx.r3.u32, ctx.r4.u64, ctx.r5.u32, ctx.r6.u32)) return;
+        Declined(kWriteRegBlock);
+    }
+    __imp__D3DDevice_WriteRegisterBlock(ctx, base);
 }
 #endif  // !REXGLUE_HAS_XEO3_TARGET

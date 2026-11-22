@@ -43,6 +43,13 @@
 //               at device+48 and stores the new pointer. When any run would not fit before the limit
 //               at device+52 the original calls the ring-wrap routine: this declines the whole call
 //               before it writes a byte.
+//   FlushFetchBank  rex_sub_82423788 (device, 64-bit dirty mask): the same for the fetch-constant banks
+//               (bank at device+1152, 24 bytes per set bit, NOP padding to an 8-byte boundary, a 16-byte
+//               trailer after the last run). A run that would not fit before the limit (the original calls
+//               the ring-wrap routine and may kick) declines the whole call before it writes a byte.
+//   WriteRegBlock   D3DDevice_WriteRegisterBlock (device, 64-bit mask, first register, source): one word
+//               per set bit from `source`, a header word per run, into the ring at device+48. Declines like
+//               the two above.
 //
 #include <bit>
 #include <cstddef>
@@ -225,6 +232,116 @@ inline bool FlushBank(uint8_t* base, uint32_t dev, uint64_t mask, uint32_t first
         p += 4;
         std::memcpy(base + p + 4u, base + runs[i].src, 64u * runs[i].blocks);
         p += 64u * runs[i].blocks;
+    }
+    St32(base, dev + 48u, p);
+    return true;
+}
+
+// ---- fetch-constant bank flush (rex_sub_82423788) -------------------------------------------------
+// r3 device, r4 the 64-bit dirty mask (bit 63 = the first block). For each run of set bits: when the ring has no room
+// (ptr + (6 * run + 5) * 4 >= limit, unsigned 32 bit) the original calls the ring-wrap routine, which this declines; else it
+// stores a NOP word at ptr + 4, aligns ptr to 8 (ptr += ptr & 7), stores the header ((6 * run - 1) << 16 | first register), and
+// copies 24 bytes per block from device + 1152 + 24 * bit. The first register of the first run is 0x4800 + 6 * bit and the next
+// run continues from the end of this one. After the last run: the pointer is stored (last written word + 16) and a 16-byte
+// trailer (two doublewords of 37 << 44) is written after it. The ring pointer is read once, the limit before every run.
+inline bool FlushFetchBank(uint8_t* base, uint32_t dev, uint64_t mask) {
+    if (mask == 0 || dev > kPhysicalWindow - 4096 || !PlainRange(dev, 1152u + 24u * 64u)) return false;
+    const uint32_t ptr0 = Ld32(base, dev + 48u);
+    const uint32_t limit = Ld32(base, dev + 52u);
+    if ((ptr0 & 3) != 0) return false;
+    struct Run {
+        uint32_t src;    // guest address of the first 24-byte block
+        uint32_t first;  // first register of the run
+        uint32_t blocks;
+        uint32_t at;     // the ring pointer after the alignment step
+    };
+    Run runs[64];
+    uint32_t n = 0;
+    uint32_t p = ptr0;
+    uint32_t reg = 18432u;
+    uint32_t bit = 0;
+    uint64_t m = mask;
+    while (m != 0) {
+        const uint32_t lz = static_cast<uint32_t>(std::countl_zero(m));  // 0..63
+        m <<= lz;
+        const uint32_t run = static_cast<uint32_t>(std::countl_zero(~m));  // 1..64
+        const uint32_t first = reg + 6u * lz;
+        bit += lz;
+        if (!(static_cast<uint32_t>(p + ((6u * run + 5u) << 2)) < limit)) return false;  // the original calls the ring-wrap routine
+        const uint32_t at = p + (p & 7u);
+        runs[n++] = {dev + 1152u + 24u * bit, first, run, at};
+        p = at + 4u + 24u * run;
+        reg = first + 6u * run;
+        bit += run;
+        m = run >= 64 ? 0 : (m << run);
+    }
+    // The packets and the trailer lie in [ptr0 + 4, p + 20); the bank blocks and the pointer words must stay clear of them.
+    if (p < ptr0 || p > 0xFFFFFF00u || !PlainRange(ptr0 + 4u, static_cast<uint64_t>(p + 20u - (ptr0 + 4u)))) return false;
+    const uint64_t ring_len = static_cast<uint64_t>(p + 20u - (ptr0 + 4u));
+    if (!Disjoint(ptr0 + 4u, ring_len, dev + 48u, 8)) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint64_t bytes = 24ull * runs[i].blocks;
+        if (!Disjoint(runs[i].src, bytes, ptr0 + 4u, ring_len)) return false;
+    }
+    p = ptr0;
+    for (uint32_t i = 0; i < n; ++i) {
+        St32(base, p + 4u, kNopWord);
+        St32(base, runs[i].at + 4u, ((6u * runs[i].blocks - 1u) << 16) | runs[i].first);
+        std::memcpy(base + runs[i].at + 8u, base + runs[i].src, 24u * runs[i].blocks);
+        p = runs[i].at + 4u + 24u * runs[i].blocks;
+    }
+    St32(base, dev + 48u, p + 16u);
+    St64(base, p + 4u, 37ull << 44);
+    St64(base, p + 12u, 37ull << 44);
+    return true;
+}
+
+// ---- register block write (D3DDevice_WriteRegisterBlock) -------------------------------------------
+// r3 device, r4 the 64-bit mask (bit 63 = register `first`), r5 the first register, r6 the source (one word per register,
+// indexed by the bit). Per run of set bits: when ptr + 4 * run >= limit the original calls the ring-wrap routine (declined);
+// else the header ((run - 1) << 16 | first register of the run) at ptr + 4 and then the run's words; the pointer is stored
+// once at the end. No padding, no trailer.
+inline bool WriteRegBlock(uint8_t* base, uint32_t dev, uint64_t mask, uint32_t first_reg, uint32_t src) {
+    if (mask == 0 || dev > kPhysicalWindow - 64 || !PlainRange(dev + 48u, 8)) return false;
+    const uint32_t ptr0 = Ld32(base, dev + 48u);
+    const uint32_t limit = Ld32(base, dev + 52u);
+    if ((ptr0 & 3) != 0) return false;
+    struct Run {
+        uint32_t src;
+        uint32_t first;
+        uint32_t words;
+    };
+    Run runs[64];
+    uint32_t n = 0;
+    uint32_t p = ptr0;
+    uint32_t reg = first_reg;
+    uint32_t bit = 0;
+    uint64_t m = mask;
+    while (m != 0) {
+        const uint32_t lz = static_cast<uint32_t>(std::countl_zero(m));
+        m <<= lz;
+        const uint32_t run = static_cast<uint32_t>(std::countl_zero(~m));
+        const uint32_t first = reg + lz;
+        bit += lz;
+        if (!(static_cast<uint32_t>(p + (run << 2)) < limit)) return false;  // the original calls the ring-wrap routine
+        runs[n++] = {src + 4u * bit, first, run};
+        p += 4u + 4u * run;
+        reg = first + run;
+        bit += run;
+        m = run >= 64 ? 0 : (m << run);
+    }
+    if (p < ptr0 || p > 0xFFFFFF00u || !PlainRange(ptr0 + 4u, static_cast<uint64_t>(p - ptr0))) return false;
+    const uint64_t ring_len = static_cast<uint64_t>(p - ptr0);
+    if (!Disjoint(ptr0 + 4u, ring_len, dev + 48u, 8)) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint64_t bytes = 4ull * runs[i].words;
+        if (!PlainRange(runs[i].src, bytes) || !Disjoint(runs[i].src, bytes, ptr0 + 4u, ring_len)) return false;
+    }
+    p = ptr0;
+    for (uint32_t i = 0; i < n; ++i) {
+        St32(base, p + 4u, ((runs[i].words - 1u) << 16) | runs[i].first);
+        std::memcpy(base + p + 8u, base + runs[i].src, 4u * runs[i].words);
+        p += 4u + 4u * runs[i].words;
     }
     St32(base, dev + 48u, p);
     return true;

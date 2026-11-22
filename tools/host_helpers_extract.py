@@ -10,7 +10,7 @@ C:\mcv\larecomp\mingw011\src\generated, a rexglue 0.11 codegen run of the projec
 The include file holds, for each function of FUNCS, its definition under the name `orig_<name>` (the generated `DEFINE_REX_FUNC(name)` is rewritten to a plain function
 with the same body, so nothing is weak or aliased) and the callees it needs: other recompiled functions listed in FUNCS are copied the same way and calls to them
 are renamed; a callee that is NOT copied becomes a stub that counts the call (hh_stub_calls) so the test can tell that the original took a path the native version
-declines (the ring-wrap routine 82422EF8 for the constant bank flush). The prologue / epilogue helpers __savegprlr_N / __restgprlr_N are the template
+declines (the ring-wrap routine 82422EF8 for the constant bank flushes, the kick for the fetch-constant one). The prologue / epilogue helpers __savegprlr_N / __restgprlr_N are the template
 rex_savegprlr<N> of the generated header with an aborting fallback.
 """
 import re
@@ -27,9 +27,14 @@ FUNCS = {
     "rex_sub_8218A6E0": "row_write",
     "rex_sub_82417678": "shader_const_f",
     "D3DDevice_FlushConstantBank": "flush_bank",
+    "rex_sub_82423788": "flush_fetch",
+    "D3DDevice_WriteRegisterBlock": "write_reg_block",
 }
-# callees that are stubs in the test
-STUBS = ("rex_sub_82422EF8",)
+# callees that are stubs in the test: generated name -> test-side name (the test defines `extern "C" void <stub>(PPCContext&, u8*)`)
+STUBS = {
+    "rex_sub_82422EF8": "hh_stub_82422EF8",               # the ring-wrap routine
+    "D3DDevice_KickCommandBuffer": "hh_stub_KickCommandBuffer",  # called by the fetch-constant flush after a wrap
+}
 
 
 def find_function(gen: Path, name: str) -> str:
@@ -58,8 +63,8 @@ def main() -> int:
         body = body.replace("DEFINE_REX_FUNC(" + name + ") {", "extern \"C\" void orig_" + FUNCS[name] + "(PPCContext& __restrict ctx, u8* base) {", 1)
         for other, short in FUNCS.items():
             body = re.sub(r"\b" + re.escape(other) + r"\(ctx, base\)", "orig_" + short + "(ctx, base)", body)
-        for stub in STUBS:
-            body = re.sub(r"\b" + re.escape(stub) + r"\(ctx, base\)", "hh_stub_" + stub[-8:] + "(ctx, base)", body)
+        for stub, test_name in STUBS.items():
+            body = re.sub(r"\b" + re.escape(stub) + r"\(ctx, base\)", test_name + "(ctx, base)", body)
         # the weak tail calls: REX_MUSTTAIL return f(ctx, base); is the same call
         parts.append(body)
     out.write_text("\n".join(parts), encoding="utf-8")

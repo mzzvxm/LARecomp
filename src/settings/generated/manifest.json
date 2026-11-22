@@ -5532,11 +5532,11 @@
  },
  "host_helpers_mask": {
   "type": "i32",
-  "default": "63",
+  "default": "255",
   "category": "MCLA/Performance",
-  "help": "\"Which of the game's small helper functions run as native host code instead of the recompiled \"\n    \"version, as bits: 1 memcpy, 2 memset, 4 the row writer, 8 the shader-constant copy, 16 the \"\n    \"constant-bank flush, 32 the C runtime's memcpy. 0 runs all of them recompiled (the A/B switch); 63 is the default. A call \"\n    \"the native version cannot reproduce exactly (overlapping ranges, register or physical-window \"\n    \"addresses, a command-ring wrap) always goes to the recompiled code. Read at start.\"",
+  "help": "\"Which of the game's small helper functions run as native host code instead of the recompiled \"\n    \"version, as bits: 1 memcpy, 2 memset, 4 the row writer, 8 the shader-constant copy, 16 the \"\n    \"constant-bank flush, 32 the C runtime's memcpy, 64 the fetch-constant bank flush, 128 the register block \"\n    \"write. 0 runs all of them recompiled (the A/B switch); 255 is the default (63 = the first six only). A call \"\n    \"the native version cannot reproduce exactly (overlapping ranges, register or physical-window \"\n    \"addresses, a command-ring wrap) always goes to the recompiled code. Read at start.\"",
   "traits": [
-   "rex::Range{0, 63}",
+   "rex::Range{0, 255}",
    "rex::kDebugOnly",
    "rex::kRestart"
   ],
