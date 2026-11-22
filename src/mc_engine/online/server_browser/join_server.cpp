@@ -85,7 +85,6 @@ struct Job {
 };
 std::shared_ptr<Job> g_job;
 Clock::time_point g_resolve_started;
-std::shared_ptr<Job> g_ready_job;  // the worker's answer, held while the pause menu is opened (Phase::kOpenPause)
 
 int64_t UnixSeconds() {
     return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -313,8 +312,8 @@ void OpenPauseTick() {
         else
             LARECOMP_APP_WARN("[join_server] the pause menu did not open ({} press(es), {} ms; free roam {}): the join goes on without it",
                               g_pause_opener.Presses(), g_pause_opener.WaitedMs(now_ms), can_press ? "and no message box" : "not reached or a message box up");
-        const std::shared_ptr<Job> job = std::move(g_ready_job);
-        g_ready_job.reset();
+        const std::shared_ptr<Job> job = std::move(g_job);
+        g_job.reset();
         if (job) StartJoin(*job);
         break;
     }
@@ -422,14 +421,14 @@ void JoinServerTick() {
 
     case Phase::kResolving:
         if (g_job && g_job->done.load(std::memory_order_acquire)) {
-            const std::shared_ptr<Job> job = std::move(g_job);
-            g_job.reset();
-            if (job->ok) {
-                // The relay answered. Before the join is filed the pause menu is opened, as every join that worked had it open.
-                g_ready_job = job;
+            if (g_job->ok) {
+                // The relay answered. Before the join is filed the pause menu is opened, as every join that worked had it open; the
+                // answer stays in g_job until then.
                 g_pause_opener = js::PauseOpener{};
                 g_phase = Phase::kOpenPause;
             } else {
+                const std::shared_ptr<Job> job = std::move(g_job);
+                g_job.reset();
                 FailWith(job->why, job->detail);
             }
         } else if (g_job && Clock::now() - g_resolve_started > kResolveLimit) {
