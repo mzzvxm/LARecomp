@@ -219,7 +219,7 @@ void LocalLights::BeginFrame() {
   namespace st = larecomp::settings;
   const bool setting_on = st::mcla_gpu_local_lights.Get();
   // GB-H2: the headlight route (headlight_pass_rules.h): `pass` and `both` give this pass the frame's headlights and run it whatever mcla_gpu_local_lights says.
-  const hp::Route route = hp::ParseRoute(st::mcla_gpu_headlight_pass.Get());
+  const hp::Route route = headlight_rig::CurrentRoute();  // read once for the frame by the Scene (headlight_rig::SampleRoute, through LiveText: the debug menu's thread writes the cvar)
   const bool on = hp::PassOn(route, setting_on);
   sources_ = hp::SourcesFor(route, uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask);
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));

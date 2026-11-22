@@ -13,6 +13,7 @@
 
 #include "descriptors.h"
 #include "headlight_rig.h"
+#include "light_text.h"
 #include "local_shadow.h"
 #include "mc_engine/cinematic/capture_mode.h"
 #include "shadow_atlas.h"
@@ -508,7 +509,7 @@ void LightManager::Census() {
   const light_budget::LightBudget& b = pickers_.budget;
   REXLOG_INFO("{} picker (LU-3, mcla_gpu_light_pick = {}): budget: {} headlights, {} cars with shadow views ({} with a view for each lamp, at most {} views of {}x{}), the volume's grid reads {} lamps and "
               "{} headlights, street lamp shadow views {} (+{} spare: reserved); the headlight picker holds {} lights ({} with a place), the shadow picker {} cars",
-              kPrefix, light_pick::ModeName(light_pick::ParseMode(larecomp::settings::mcla_gpu_light_pick.Get())), b.headlights, b.shadow_cars,
+              kPrefix, light_pick::ModeName(light_pick::ParseMode(light_text::LightPick().Get())), b.headlights, b.shadow_cars,
               b.shadow_lamp_cars, b.shadow_views, b.shadow_tile, b.shadow_tile, b.volume_lamps, b.volume_headlights, b.lamp_views, b.lamp_views_spare, pickers_.headlights.state_count(),
               pickers_.headlights.held_count(), pickers_.shadow_cars.held_count());
   // The flips (LU-4): which consumers read the frame, how much they took from it, and how the byte compares of the projections came out (the checks' own counts are in the self-check

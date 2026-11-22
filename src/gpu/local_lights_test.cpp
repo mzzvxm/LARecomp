@@ -1185,7 +1185,7 @@ void SourceChecks(const std::string& src) {
     Check(route_at != std::string::npos && settings.substr(route_at, route_end - route_at).find("rex::kRestart") == std::string::npos, "the headlight route is live (no restart trait)");
   }
   Check(Has(cpp, "st::mcla_gpu_local_lights.Get()") && Has(cpp, "mcla_gpu_local_lights_sources.Get()") && Has(cpp, "mcla_gpu_local_lights_ab.Get()") && Has(cpp, "mcla_gpu_local_lights_gain.Get()") &&
-            Has(cpp, "hp::ParseRoute(st::mcla_gpu_headlight_pass.Get())"),
+            Has(cpp, "const hp::Route route = headlight_rig::CurrentRoute();"),
         "the class reads the four settings and the headlight route");
   // the lamp A/B's hook in the mod loader
   Check(Has(mod, "AbWithholdsFromGrid(ab)") && Has(mod, "withhold ? 0.0f : l.intensity * mult") && Has(mod, "(!withhold && (l.flags & kOn)) ? 1 : 0") && Has(mod, "mcla_gpu_local_lights_ab.Get()"),

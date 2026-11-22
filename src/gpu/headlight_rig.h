@@ -106,15 +106,19 @@ inline constexpr uint64_t kTrafficLensPs = 0x25E3BB37714FA645ull;  // xAmbientCa
 enum class Mode : uint8_t { kOff, kOn };
 
 // Whether the lit shaders' headlight variant is to be chosen for a draw now: the rig published a light AND the headlight route keeps the forward stage (GB-H2: mcla_gpu_headlight_pass is
-// not `pass`, headlight_pass_rules.h; the route is read once a frame, in the rig's BeginFrame) (pipelines.cpp WantedFeatures). Any thread.
+// not `pass`, headlight_pass_rules.h; the route is read once a frame, at the Scene's frame start: SampleRoute) (pipelines.cpp WantedFeatures). Any thread.
 bool VariantSelected();
 
 // Whether HEADLIGHTS (mcla_gpu_headlights, `auto` resolved for this graphics card) is on: the master of both the forward stage and the deferred pass's headlights. Read from the live setting; the
 // deferred pass (local_lights.cpp) asks it for its wants of the G-buffer. Render thread.
 bool SettingOn();
 
-// The route the rig read at its last BeginFrame (what VariantSelected decided by). Any thread.
+// The route this frame was started with (what VariantSelected decides by): SampleRoute's last value. Any thread.
 larecomp::gpu::headlight_pass::Route CurrentRoute();
+
+// Reads the route's setting (mcla_gpu_headlight_pass, through LiveText: the debug menu's thread writes it) ONCE for the frame and publishes it to CurrentRoute(). Scene::BeginFrame calls it before
+// the light pass's and the rig's BeginFrame, which both take the route from CurrentRoute(). Render thread.
+larecomp::gpu::headlight_pass::Route SampleRoute();
 
 // The shadow producer's side: this frame's views and the atlas they are in (the bindless slots of the texture and of a sampler). `frame` null, or no
 // view, or no atlas slot: none (every light is lit and no atlas is read). The views are copied, and moved to the lights of the set that reads them by

@@ -29,6 +29,7 @@
 #include "light_id.h"
 #include "light_manager.h"
 #include "light_project.h"
+#include "light_text.h"
 #include "live_text.h"
 #include "menu_world.h"
 #include "pass_timing.h"
@@ -514,11 +515,11 @@ void LocalShadow::PickViews() {
   }
   // The cars that get views (the level's count, the player's first), then the views of each: one for each headlamp of the first cars the level gives lamps to, one for the car
   // for the others (local_shadow_rules.h PlanViews). A car's views come and go together: the picking is of cars, and the plan keeps both of a car's or neither.
-  picker_.SetMode(light_pick::ParseMode(larecomp::settings::mcla_gpu_light_pick.Get()));  // the A/B of the one picker (light_pick.h): unified, or the ViewPicker's own first code
+  picker_.SetMode(light_pick::ParseMode(light_text::LightPick().Get()));  // the A/B of the one picker (light_pick.h): unified, or the ViewPicker's own first code
   // The budget (light_budget.h): the manager's, noted from this level at the frame's start; the same numbers from the table when no manager's picker is attached.
   const light_budget::LightBudget budget = light_picker_ != nullptr ? light_picker_->budget
                                                                       : light_budget::BudgetFor(true, choice_.level, views_override_, light_budget::Level::kOff, rules::kLevelTable);
-  const std::string record_path = larecomp::settings::mcla_gpu_light_pick_record.Get();
+  const std::string record_path = light_text::LightPickRecord().Get();
   if (record_path != record_path_) {
     record_path_ = record_path;
     record_file_.close();

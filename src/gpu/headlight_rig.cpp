@@ -18,6 +18,7 @@
 #include "car_frame_rules.h"
 #include "gpu_class.h"
 #include "guest_memory.h"
+#include "light_text.h"
 #include "live_text.h"
 #include "mc_engine/cinematic/capture_mode.h"
 
@@ -87,6 +88,14 @@ bool VariantSelected() {
 }
 
 larecomp::gpu::headlight_pass::Route CurrentRoute() { return larecomp::gpu::headlight_pass::Route(g_route.load(std::memory_order_relaxed)); }
+
+// The route's setting, read through LiveText (another thread writes the cvar's string: the debug menu's row) ONCE for the frame; the light pass (LocalLights::BeginFrame, before the rig in the Scene's
+// frame start) and the rig both take the route from CurrentRoute() after it, so that a toggle in between cannot give one frame both lights or none (review F3).
+larecomp::gpu::headlight_pass::Route SampleRoute() {
+  const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(light_text::HeadlightPass().Get());
+  g_route.store(uint8_t(route), std::memory_order_relaxed);  // GB-H2: `pass` takes the forward stage away from the draws (VariantSelected); the rig still tracks, ranks and publishes the lights the pass and the volume read
+  return route;
+}
 
 bool SettingOn() {
   std::string mode = gpu_class::Resolve(gpu_class::Effect::kHeadlights, Setting().Get());
@@ -159,19 +168,18 @@ void HeadlightRig::ReadSettings() {
   namespace s = larecomp::settings;
   const bool was_enabled = enabled_;
   enabled_ = memory_ != nullptr && headlight_rig::SettingOn();  // mcla_gpu_headlights with `auto` resolved for this graphics card (gpu_class.h: off on Low, on on Mid and High); a word that is no value counts as `auto`
-  const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(s::mcla_gpu_headlight_pass.Get());
-  g_route.store(uint8_t(route), std::memory_order_relaxed);  // GB-H2: `pass` takes the forward stage away from the draws (VariantSelected); the rig still tracks, ranks and publishes the lights the pass and the volume read
+  // The route was read for this frame by the Scene (headlight_rig::SampleRoute, through LiveText) and is in g_route (CurrentRoute()): the rig only tracks, ranks and publishes in every route.
   headlight_points::SetWanted(enabled_);
   strength_ = float(std::clamp(double(s::mcla_gpu_headlight_strength.Get()), 0.0, 8.0));
   range_ = float(std::clamp(double(s::mcla_gpu_headlight_range.Get()), 10.0, 200.0));
   outer_degrees_ = float(std::clamp(double(s::mcla_gpu_headlight_cone.Get()), 10.0, 70.0));
   night_override_ = int(s::mcla_gpu_headlight_night.Get());
   edge_ = s::mcla_gpu_headlight_edge.Get();
-  tracker_.SetMode(light_pick::ParseMode(s::mcla_gpu_light_pick.Get()));  // the A/B of the one picker (light_pick.h): unified, or the tracker's own first code
+  tracker_.SetMode(light_pick::ParseMode(light_text::LightPick().Get()));  // the A/B of the one picker (light_pick.h): unified, or the tracker's own first code
   if (light_picker_ != nullptr) {
     light_picker_->NoteHeadlights(enabled_);  // the one budget (light_budget.h)
   }
-  const std::string record_path = s::mcla_gpu_light_pick_record.Get();
+  const std::string record_path = light_text::LightPickRecord().Get();
   if (record_path != record_path_) {
     record_path_ = record_path;
     record_file_.close();
