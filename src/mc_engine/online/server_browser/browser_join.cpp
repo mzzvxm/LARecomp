@@ -409,8 +409,11 @@ void TickServerBrowserJoin() {
                     LARECOMP_APP_INFO("[browser] the join waits for the player's car (none at the title screen, in a load or the garage)");
                 }
                 SetStatus(JoinPhase::kStarting, "Waiting for the city to load to join " + req.label + "...");
-                if (now > g_phase_deadline) Finish(JoinPhase::kFailed, reason::kWorldTimeout, "Join cancelled: the city never loaded");
             }
+            // The deadline holds in the second step too (the page was entered, then the world went away: a load, the title screen,
+            // a quit from the pause menu). It was checked in the first step only, so a join that lost its world there waited for ever,
+            // with no failure for --join_server's status file and no end for the player.
+            if (now > g_phase_deadline) Finish(JoinPhase::kFailed, reason::kWorldTimeout, "Join cancelled: the city never loaded");
             break;
         }
         if (g_start_step == 0) {
