@@ -50,9 +50,13 @@
 #include "car_history_ms_shared_ps.hlsl.dxil.h"
 #include "car_history_ps.hlsl.dxil.h"
 #include "car_rt_ao_cs.hlsl.dxil.h"
+#include "city_rt_shadow_cs.hlsl.dxil.h"
+#include "city_hit_probe_cs.hlsl.dxil.h"
 #include "car_rt_check_cs.hlsl.dxil.h"
 #include "car_rt_refl_cs.hlsl.dxil.h"
 #include "car_rt_refl_denoise_cs.hlsl.dxil.h"
+#include "car_rt_refl_glass_cs.hlsl.dxil.h"
+#include "car_glass_apply_ps.hlsl.dxil.h"
 #include "car_rt_refl_hit_cs.hlsl.dxil.h"
 #include "car_rt_refl_opp_cs.hlsl.dxil.h"
 #include "car_rt_view_ps.hlsl.dxil.h"
@@ -69,6 +73,19 @@
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "gbuffer_view_ms_ps.hlsl.dxil.h"
 #include "gbuffer_view_ps.hlsl.dxil.h"
+#include "gi_apply_lookup_ms_ps.hlsl.dxil.h"
+#include "gi_apply_lookup_ps.hlsl.dxil.h"
+#include "gi_apply_ms_ps.hlsl.dxil.h"
+#include "gi_apply_ps.hlsl.dxil.h"
+#include "gi_apply_up_ms_ps.hlsl.dxil.h"
+#include "gi_apply_up_ps.hlsl.dxil.h"
+#include "gi_field_reset_cs.hlsl.dxil.h"
+#include "gi_field_view_ps.hlsl.dxil.h"
+#include "gi_field_weights_cs.hlsl.dxil.h"
+#include "gi_pixel_trace_cs.hlsl.dxil.h"
+#include "gi_pixel_trace_ms_cs.hlsl.dxil.h"
+#include "gi_update_blend_cs.hlsl.dxil.h"
+#include "gi_update_trace_cs.hlsl.dxil.h"
 #include "hdr_compose_ps.hlsl.dxil.h"
 #include "layers_resolve_ps.hlsl.dxil.h"
 #include "layers_restore_ps.hlsl.dxil.h"
@@ -105,9 +122,19 @@
 #include "ssr_apply_ps.hlsl.dxil.h"
 #include "ssr_apply_raw_ps.hlsl.dxil.h"
 #include "ssr_hit_ps.hlsl.dxil.h"
+#include "ssr_denoise_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_plain_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_plain_temporal_cs.hlsl.dxil.h"
+#include "rt_denoise_diffuse_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_diffuse_temporal_cs.hlsl.dxil.h"
 #include "ssr_temporal_ps.hlsl.dxil.h"
+#include "ssr_rt_select_cs.hlsl.dxil.h"
+#include "ssr_rt_trace_cs.hlsl.dxil.h"
+#include "ssr_rt_trace_ms_cs.hlsl.dxil.h"
 #include "ssr_trace_ms_ps.hlsl.dxil.h"
 #include "ssr_trace_ps.hlsl.dxil.h"
+#include "ssr_trace_rt_ms_ps.hlsl.dxil.h"
+#include "ssr_trace_rt_ps.hlsl.dxil.h"
 #include "rr_guides_cs.hlsl.dxil.h"
 #include "rr_guides_ms_cs.hlsl.dxil.h"
 #include "rr_guides_view_cs.hlsl.dxil.h"
@@ -163,9 +190,13 @@
 #include "car_history_ms_shared_ps.hlsl.spirv.h"
 #include "car_history_ps.hlsl.spirv.h"
 #include "car_rt_ao_cs.hlsl.spirv.h"
+#include "city_rt_shadow_cs.hlsl.spirv.h"
+#include "city_hit_probe_cs.hlsl.spirv.h"
 #include "car_rt_check_cs.hlsl.spirv.h"
 #include "car_rt_refl_cs.hlsl.spirv.h"
 #include "car_rt_refl_denoise_cs.hlsl.spirv.h"
+#include "car_rt_refl_glass_cs.hlsl.spirv.h"
+#include "car_glass_apply_ps.hlsl.spirv.h"
 #include "car_rt_refl_hit_cs.hlsl.spirv.h"
 #include "car_rt_refl_opp_cs.hlsl.spirv.h"
 #include "car_rt_view_ps.hlsl.spirv.h"
@@ -182,6 +213,19 @@
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "gbuffer_view_ms_ps.hlsl.spirv.h"
 #include "gbuffer_view_ps.hlsl.spirv.h"
+#include "gi_apply_lookup_ms_ps.hlsl.spirv.h"
+#include "gi_apply_lookup_ps.hlsl.spirv.h"
+#include "gi_apply_ms_ps.hlsl.spirv.h"
+#include "gi_apply_ps.hlsl.spirv.h"
+#include "gi_apply_up_ms_ps.hlsl.spirv.h"
+#include "gi_apply_up_ps.hlsl.spirv.h"
+#include "gi_field_reset_cs.hlsl.spirv.h"
+#include "gi_field_view_ps.hlsl.spirv.h"
+#include "gi_field_weights_cs.hlsl.spirv.h"
+#include "gi_pixel_trace_cs.hlsl.spirv.h"
+#include "gi_pixel_trace_ms_cs.hlsl.spirv.h"
+#include "gi_update_blend_cs.hlsl.spirv.h"
+#include "gi_update_trace_cs.hlsl.spirv.h"
 #include "hdr_compose_ps.hlsl.spirv.h"
 #include "layers_resolve_ps.hlsl.spirv.h"
 #include "layers_restore_ps.hlsl.spirv.h"
@@ -218,9 +262,19 @@
 #include "ssr_apply_ps.hlsl.spirv.h"
 #include "ssr_apply_raw_ps.hlsl.spirv.h"
 #include "ssr_hit_ps.hlsl.spirv.h"
+#include "ssr_denoise_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_plain_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_plain_temporal_cs.hlsl.spirv.h"
+#include "rt_denoise_diffuse_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_diffuse_temporal_cs.hlsl.spirv.h"
 #include "ssr_temporal_ps.hlsl.spirv.h"
+#include "ssr_rt_select_cs.hlsl.spirv.h"
+#include "ssr_rt_trace_cs.hlsl.spirv.h"
+#include "ssr_rt_trace_ms_cs.hlsl.spirv.h"
 #include "ssr_trace_ms_ps.hlsl.spirv.h"
 #include "ssr_trace_ps.hlsl.spirv.h"
+#include "ssr_trace_rt_ms_ps.hlsl.spirv.h"
+#include "ssr_trace_rt_ps.hlsl.spirv.h"
 #include "rr_guides_cs.hlsl.spirv.h"
 #include "rr_guides_ms_cs.hlsl.spirv.h"
 #include "rr_guides_view_cs.hlsl.spirv.h"
@@ -316,6 +370,49 @@ inline HostShaderBlob GBufferViewPixelShader(bool multisampled) {
   return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ps);
 }
 
+// The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed RGBA16F /
+// RG16F / R8 storage image stores on both APIs), and the debug view's pixel shader.
+inline HostShaderBlob GiFieldResetShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_field_reset_cs);
+}
+
+inline HostShaderBlob GiFieldWeightsShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_field_weights_cs);
+}
+
+inline HostShaderBlob GiFieldViewShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_field_view_ps);
+}
+
+// The probe update's passes (gi_update.h, CITY-RT M3 package G2): the trace (inline ray queries against the top level, Shader Model 6.5, the city hit library in GI mode) and the blend (Shader Model 6.0,
+// typed RGBA16F / RG16F storage image loads and stores).
+inline HostShaderBlob GiUpdateTraceShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_update_trace_cs);
+}
+
+inline HostShaderBlob GiUpdateBlendShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(gi_update_blend_cs);
+}
+
+// The probe field's per-pixel detail pass (gi_pixel.h, CITY-RT M3 package G5): the trace (inline ray queries, Shader Model 6.5, the city hit library in GI mode) over plain planes, or over the host's MSAA
+// level (hlsl/gi_pixel_trace_cs.hlsl, GIP_MS).
+inline HostShaderBlob GiPixelTraceShader(bool multisampled) {
+  return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gi_pixel_trace_ms_cs) : MCLA_GPU_HOST_SHADER_BLOB(gi_pixel_trace_cs);
+}
+
+// The probe field's apply (gi_apply.h, CITY-RT M3 package G3): 0 the lookup at the traced size, 1 the same over multisampled planes, 2 the apply, 3 the apply over multisampled planes, 4 the apply that takes
+// the net irradiance from the lookup's image, 5 the same over multisampled planes. All pixel shaders of one source (hlsl/gi_apply_ps.hlsl).
+inline HostShaderBlob GiApplyShader(uint32_t which) {
+  switch (which) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_lookup_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_lookup_ms_ps);
+    case 2: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_ps);
+    case 3: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_ms_ps);
+    case 4: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_up_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_up_ms_ps);
+  }
+}
+
 // The deferred local light pass (local_lights.h, hlsl/local_light_ps.hlsl): planes and depth with one sample, or the host's MSAA level.
 inline HostShaderBlob LocalLightPixelShader(bool multisampled) {
   return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(local_light_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(local_light_ps);
@@ -340,7 +437,8 @@ inline HostShaderBlob ScreenColourPixelShader(uint32_t pass) {
 }
 
 // The screen-space reflections (ssr.h, hlsl/ssr_*_ps.hlsl): 0 the trace, 1 the trace over multisampled planes, 2 the accumulation, 3 the resolve into the main colour, 4 the same over a multisampled colour
-// target and planes, 5 (RR-4a) the resolve that reads the trace itself (the frames DLSS Ray Reconstruction takes: no accumulation), 6 (RR-4a) the pass that writes their hit distance guide.
+// target and planes; 5 and 6 (CITY-RT R4) the trace and the multisampled trace with the confidence as a second target, for a frame the ray traced fallback follows (ssr_rt.h); 7 (RR-4a) the resolve that
+// reads the trace itself (the frames DLSS Ray Reconstruction takes: no accumulation), 8 (RR-4a) the pass that writes their hit distance guide.
 inline HostShaderBlob ScreenReflectionsPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ps);
@@ -348,9 +446,34 @@ inline HostShaderBlob ScreenReflectionsPixelShader(uint32_t pass) {
     case 2: return MCLA_GPU_HOST_SHADER_BLOB(ssr_temporal_ps);
     case 3: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ps);
     case 4: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);
-    case 5: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_raw_ps);
+    case 5: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ps);
+    case 6: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ms_ps);
+    case 7: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_raw_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_hit_ps);
   }
+}
+
+// The ray traced fallback's compute passes (ssr_rt.h, CITY-RT R4): 0 the candidates' tile list, 1 the rays into the city's top level, 2 the same over multisampled planes (inline ray queries: Shader Model 6.5,
+// SPIR-V 1.5 on Vulkan).
+inline HostShaderBlob ScreenReflectionsRtShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_select_cs);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_cs);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_ms_cs);
+  }
+}
+
+// RtDenoise (rt_denoise.h, CITY-RT R6): the screen-space reflections' spatial pass (hlsl/ssr_denoise_spatial_cs.hlsl over plain planes), and the plain-guide compiles of the two stages the other
+// consumers start from (hlsl/rt_denoise_plain_consumer.hlsli). Plain Shader Model 6.0 compute.
+inline HostShaderBlob SsrDenoiseSpatialShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(ssr_denoise_spatial_cs);
+}
+inline HostShaderBlob RtDenoisePlainShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_plain_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_plain_spatial_cs);
+}
+// The same two stages compiled with the DIFFUSE profile (RT_DN_PROFILE_DIFFUSE: a fixed radius, no hit distance, looser weights): the probe field's per-pixel detail pass's denoiser (gi_pixel.h).
+inline HostShaderBlob RtDenoiseDiffuseShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_diffuse_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_diffuse_spatial_cs);
 }
 
 // DLSS Ray Reconstruction's guide pass (rr_guides.h, hlsl/rr_guides_cs.hlsl): over planes with one sample, or the host's MSAA level; and its debug view over the upscaler's output
@@ -578,6 +701,16 @@ inline HostShaderBlob CarRtAoShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_ao_cs);
 }
 
+// The city's ray traced sun shadows (city_rt_shadow.h): inline ray queries against the car scene's top level, which holds the city's sectors beside the cars.
+inline HostShaderBlob CityRtShadowShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(city_rt_shadow_cs);
+}
+
+// The city hit data's probe (city_hit_probe.h, CITY-RT M2 H3): reads the pool and the tables through the ray tracing descriptor set's t6..t9.
+inline HostShaderBlob CityHitProbeShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(city_hit_probe_cs);
+}
+
 // The ray tracing benchmark's trace (rt_bench.h, hlsl/rt_bench_cs.hlsl): inline ray queries over a synthetic city, the same kind as the car passes. Created only
 // where CarRtSupported said yes, once, on the first start with a card.
 inline HostShaderBlob RtBenchShader() {
@@ -600,6 +733,16 @@ inline HostShaderBlob CarRtReflHitShader() {
 // The opponents' variant of the trace (car_rt_opp_refl.h): hlsl/car_rt_refl_cs.hlsl built with CAR_RT_REFL_OPPONENTS (its own entry point, hlsl/car_rt_refl_opp.hlsli), the same kind as the trace.
 inline HostShaderBlob CarRtReflOppShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_opp_cs);
+}
+
+// The glass variant of the trace (car_rt_glass_refl.h, CITY-RT M2 R3b): hlsl/car_rt_refl_cs.hlsl built with CAR_RT_REFL_GLASS (its own entry point, hlsl/car_rt_refl_glass.hlsli), the same kind as the trace; and the
+// additive pass that puts its image into the main colour (hlsl/car_glass_apply_ps.hlsl, a host pass pixel shader).
+inline HostShaderBlob CarRtReflGlassShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_glass_cs);
+}
+
+inline HostShaderBlob CarGlassApplyShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_glass_apply_ps);
 }
 
 inline HostShaderBlob CarRtViewPixelShader() {

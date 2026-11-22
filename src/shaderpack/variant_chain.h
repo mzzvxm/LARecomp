@@ -102,7 +102,7 @@ inline constexpr FeatureInfo kFeatures[] = {
     {kFeatureGlowSoft, "glow_soft", Stage::kPixel, 0, 0, false, 0},
     {kFeatureCarSelfRefl, "car_selfrefl", Stage::kPixel, 112, FeatureBit(kFeatureGBuffer), false, 0},
     {kFeatureLuminanceScale, "luminance_scale", Stage::kPixel, 0, 0, false, 0},
-    {kFeatureCarChrome, "car_chrome", Stage::kPixel, 112, FeatureBit(kFeatureGBuffer), false, 0},
+    {kFeatureCarChrome, "car_chrome", Stage::kPixel, 112, FeatureBit(kFeatureGBuffer) | FeatureBit(kFeatureCarChromeCity), false, 0},
     {kFeatureUiSharp, "ui_sharp", Stage::kPixel, 16, 0, true, 0},
     // The headlights and the G-buffer's normal plane compose: both edit the city's PSMultiLight shaders (xCityDefault's night shader among them), so the builder makes the
     // pair in one text for those (the chain's order: the headlight's edits first, the G-buffer's on the text they leave: shaderpack/variants/gbuffer.h anchors on lines the
@@ -110,7 +110,8 @@ inline constexpr FeatureInfo kFeatures[] = {
     // tree is harmless (nothing builds it, nothing picks it). 1072 bytes: src/gpu/headlight_rig_rules.h HeadlightConstants (672 until version 4 of the variant, HL-PER-LAMP: eight shadow
     // views and a second view of each light); 48 bytes: src/gpu/gbuffer_types.h GBufferConstants.
     {kFeatureHeadlight, "headlight", Stage::kPixel, 1072, FeatureBit(kFeatureGBuffer), true, 0},
-    {kFeatureGBuffer, "gbuffer", Stage::kPixel, 48, FeatureBit(kFeatureHeadlight) | FeatureBit(kFeatureCarSelfRefl) | FeatureBit(kFeatureCarChrome), true, 0},
+    {kFeatureGBuffer, "gbuffer", Stage::kPixel, 48,
+     FeatureBit(kFeatureHeadlight) | FeatureBit(kFeatureCarSelfRefl) | FeatureBit(kFeatureCarChrome) | FeatureBit(kFeatureCarChromeCity), true, 0},
     // The G-buffer's car family (variants/gbuffer_cars.h, GB-G1) also composes with the two car variants, which edit two shaders it edits: car_selfrefl the player's paint
     // (xCarPaintCustomizable::PS_CarPaint) and car_chrome the chrome (xChrome::PS_Chrome). The car variant's edits come first (the lower index) and its 112 bytes come first in the block, the
     // G-buffer's 48 after them (byte 720); neither car variant has the alpha test twin, so the composed pair has none either: an alpha tested draw of one of those two shaders takes the G-buffer's twin alone (and has no car variant).
@@ -119,6 +120,11 @@ inline constexpr FeatureInfo kFeatures[] = {
     // vertex shader's spec variant 1 twin. No pixel stage lists it in needs_vs: the G-buffer's pixel words read the export where it is and fall back to a derivative normal where it is
     // not, so they are valid with any vertex shader and the renderer pairs the vertex word by itself (Scene::GBufferKey).
     {kFeatureGBufferVs, "gbuffer_vs", Stage::kVertex, 0, 0, true, 0},
+    // The chrome's reflection of the city (variants/car_chrome_city.h, CITY-RT M2 R3a): a stage ON TOP OF the chrome's (feature 7: its edits come first, this one rewrites the line the chrome's stage
+    // wrote for `env`), so it composes with the chrome and, as the chrome does, with the G-buffer. It has no block of constants: it reads the chrome's (the same 112 bytes). Built alone it leaves the
+    // text as the game wrote it (there is no chrome stage in the text for it to rewrite; the pack keeps that entry so that the compositions are built, and nothing draws it: pipelines.cpp
+    // wants this feature only together with the chrome's).
+    {kFeatureCarChromeCity, "car_chrome_city", Stage::kPixel, 0, FeatureBit(kFeatureCarChrome) | FeatureBit(kFeatureGBuffer), false, 0},
 };
 
 constexpr size_t kFeatureCount = sizeof(kFeatures) / sizeof(kFeatures[0]);

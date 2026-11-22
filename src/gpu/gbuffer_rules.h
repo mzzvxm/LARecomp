@@ -394,6 +394,7 @@ enum class Consumer : uint8_t {
   kLocalLights,       // the deferred lights: RT1, RT2, RT3
   kReflections,       // SSR: RT1, RT3 (+ RT2)
   kDecals,
+  kRtBounce,          // the probe field's apply (gi_apply.h, CITY-RT M3 G3): RT1 (the world normal) and RT2 (the true albedo and the lit weight)
   kRayReconstruction, // DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): RT1, RT2, RT3, while the plan wants the guides or a guide view is on
   kCount,
 };
@@ -404,6 +405,7 @@ constexpr const char* ConsumerName(Consumer consumer) {
     case Consumer::kLocalLights: return "local lights";
     case Consumer::kReflections: return "reflections";
     case Consumer::kDecals: return "decals";
+    case Consumer::kRtBounce: return "ray traced bounce light";
     case Consumer::kRayReconstruction: return "ray reconstruction";
     case Consumer::kCount: break;
   }
@@ -425,6 +427,7 @@ constexpr uint32_t ConsumerPlanes(Consumer consumer) {
     case Consumer::kBounceLight: return PlaneBit(kPlaneNormal);
     case Consumer::kLocalLights: return kAllPlanes;
     case Consumer::kReflections: return kAllPlanes;
+    case Consumer::kRtBounce: return PlaneBit(kPlaneNormal) | PlaneBit(kPlaneAlbedo);
     case Consumer::kRayReconstruction: return kAllPlanes;
     case Consumer::kDecals:
     case Consumer::kCount: break;
@@ -438,12 +441,14 @@ struct ConsumerStates {
   bool light_pass = false;
   bool reflections = false;
   bool decals = false;
+  bool rt_bounce = false;  // the probe field's apply
   bool ray_reconstruction = false;
 };
 constexpr uint32_t AutoPlanes(const ConsumerStates& on) {
   return (on.occlusion_normals ? ConsumerPlanes(Consumer::kAmbientOcclusion) : 0u) | (on.bounce_normals ? ConsumerPlanes(Consumer::kBounceLight) : 0u) |
          (on.light_pass ? ConsumerPlanes(Consumer::kLocalLights) : 0u) | (on.reflections ? ConsumerPlanes(Consumer::kReflections) : 0u) |
-         (on.decals ? ConsumerPlanes(Consumer::kDecals) : 0u) | (on.ray_reconstruction ? ConsumerPlanes(Consumer::kRayReconstruction) : 0u);
+         (on.decals ? ConsumerPlanes(Consumer::kDecals) : 0u) | (on.rt_bounce ? ConsumerPlanes(Consumer::kRtBounce) : 0u) |
+         (on.ray_reconstruction ? ConsumerPlanes(Consumer::kRayReconstruction) : 0u);
 }
 class Wants {
  public:

@@ -552,8 +552,8 @@ const CellRow kCells[] = {
     {RtEffect::kCarRtAo, "mcla_gpu_ao_rt", "off", "contact", "both"},
     // The city's sun shadows: high where the card traces (a weak card with the Mid budget).
     {RtEffect::kRtShadows, "mcla_gpu_rt_shadows", "off", "high", "high"},
-    // The city in the reflections.
-    {RtEffect::kRtReflections, "mcla_gpu_rt_reflections", "off", "high", "high"},
+    // The city in the reflections: strong cards only (CITY-RT M2 R1: the look is a strong card's; a weak card runs it by hand).
+    {RtEffect::kRtReflections, "mcla_gpu_rt_reflections", "off", "off", "high"},
     // The probe field's bounce light: strong cards only.
     {RtEffect::kRtGi, "mcla_gpu_rt_gi", "off", "off", "high"},
 };

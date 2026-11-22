@@ -16,6 +16,8 @@
 #include "ao.h"
 #include "car_rt_hit_rules.h"
 #include "car_rt_refl_rules.h"
+#include "city_rt_scene.h"
+#include "rt_scene_service.h"
 #include "descriptors.h"
 #include "device.h"
 #include "edram.h"
@@ -122,13 +124,26 @@ bool CarRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& uploa
   normals_index_ = set_builder_.addByteAddressBuffer(3);
   uvs_index_ = set_builder_.addByteAddressBuffer(4);              // RT-HIT-SHADING: the texture coordinates ...
   materials_index_ = set_builder_.addStructuredBuffer(5);         // ... and the frame's lighting and the instances' materials
+  hit_bindings_ = CityHitScene::AddBindings(set_builder_);  // CITY-RT M2 H3: t6 the pool, t7 the sector table, t8 the materials, t9 the textures (after rt-hit-shading's t4 and t5)
+  world_bindings_ = RtWorldFrame::AddBindings(set_builder_);  // CITY-RT FRAME: t10 the world's rows, t11 the lamps (rt_world_frame.h)
   set_builder_.end();
   for (SlotResources& slot : slots_) {
-    slot.set = device.CreateDescriptorSet(set_builder_, 6, 0, "car rt set");
+    // The views the ranges add up to: t0 the top level and t1..t5 (6), the hit data's four, the world frame's two. D3D12 sizes a set by this count, not by the ranges.
+    slot.set = device.CreateDescriptorSet(set_builder_, 6 + CityHitScene::kBindingCount + RtWorldFrame::kBindingCount, 0, "car rt set");
     if (!slot.set) {
       REXLOG_ERROR("{} the descriptor set could not be made: no car ray tracing this session", kPrefix);
       Shutdown();
       return false;
+    }
+  }
+  // A zeroed buffer for the bindings the car meshes fill, in a top level that has no car (OnResolveCityOnly): a set that names nothing is not valid on every backend.
+  standin_ = device.CreateBuffer(plume::RenderBufferDesc::UploadBuffer(256, plume::RenderBufferFlag::STORAGE), "car rt stand-in");
+  if (standin_) {
+    const plume::RenderRange no_read(0, 0);
+    if (uint8_t* mapped = static_cast<uint8_t*>(standin_->map(0, &no_read))) {
+      std::memset(mapped, 0, 256);
+    } else {
+      standin_.reset();
     }
   }
   // The check pass is optional: without it the structures are still built.
@@ -229,6 +244,7 @@ void CarRtScene::Shutdown() {
   check_pipeline_.reset();
   check_shader_.reset();
   check_layout_.reset();
+  standin_.reset();
   if (passes_ && view_image_.texture) {
     passes_->ReleaseImage(view_image_);
   }
@@ -249,6 +265,13 @@ void CarRtScene::Shutdown() {
 }
 
 void CarRtScene::Request() {
+  if (service_) {
+    service_->NoteCarWant();  // the board knows the car effects too (rt_scene_service.h)
+  }
+  RequestCollect();
+}
+
+void CarRtScene::RequestCollect() {
   requested_ = true;
   if (car_frame_) {
     // The draws of the player's car and, within the class's limits, of the cars beside it (car_rt_instances_rules.h); the debug cvars are read here.
@@ -534,12 +557,12 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   view_ = CarRtView{};
   check_due_ = false;
   if (!Wants()) {
-    return false;
+    return OnResolveCityOnly(list, slot);  // nobody asked for the cars: the city may still be wanted (rt_scene_service.h)
   }
   const car_frame::Frame& frame = car_frame_->Current();
   if (!frame.valid || frame.draws.empty()) {
     ++stats_counts_.frames_no_car;
-    return false;
+    return OnResolveCityOnly(list, slot);  // the car is not in the frame: the city alone, in the predicted camera
   }
 
   // The camera's z. The frame says its camera is the AO's view space (z forward); the game's own view matrix looks down -z. The
@@ -721,8 +744,21 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     std::memcpy(instance.transform.m, item.transform, sizeof(item.transform));
     instances.push_back(instance);
   }
-  const std::vector<rr::InstanceRow>& rows = cars.rows;  // the instances' rows, then the other cars' records: one table
+  // The instances' rows, then the other cars' records: one table. A top level that holds only the city (no car has a built mesh yet) still has a table of one row (the buffer is made
+  // for the set; no instance names it).
+  static const std::vector<rr::InstanceRow> kOneRow(1);
+  const std::vector<rr::InstanceRow>& rows = cars.rows.empty() ? kOneRow : cars.rows;
   // === END OF THE RT-CARS BLOCK ===
+
+  // === CITY-RT BLOCK (city_rt_scene.h, CITY-RT M1): the city's structures join the top level. They are read, planned and built here (recorded on this list), and their instances are
+  // described in the frame's view space with the cars' own transform and the mask kMaskCity, which none of the cars' passes traces and the city's shadow pass does. Nothing when the
+  // city scene is off or has no pack.
+  bool city_recorded = false;
+  if (city_ != nullptr && city_->wanted()) {
+    city_->Prepare(frame.view, flip_z, list, slot, &instances);
+    city_recorded = city_->recorded();
+  }
+  // === END OF THE CITY-RT BLOCK ===
 
   // The top level's own description and the slot's buffers for it (the slot's GPU work is done: the FrameRing waited for it).
   SlotResources& res = slots_[slot];
@@ -737,7 +773,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
                                                 tlas_info.instancesBufferData.size(), uint64_t(rows.size()) * sizeof(rr::InstanceRow),
                                                 uint64_t(material_words.size()) * sizeof(uint32_t))
                                   : (scratch_needed == 0 || EnsureSlot(res, slot, 0, scratch_needed, 0, 0, 0));
-  bool recorded = !placed.empty();
+  bool recorded = !placed.empty() || city_recorded;
   if (!slot_ok) {
     // The builds cannot be recorded (no scratch): a mesh whose structure was never built must not reach a top level, so the meshes
     // placed in this frame go back (their copies are recorded already; the ranges are reused after the GPU is done with them).
@@ -804,7 +840,20 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     res.set->setBuffer(uvs_index_, uvs_.buffer.get(), 0);
     res.set->setBuffer(materials_index_, res.materials.get(), uint64_t(material_words.size()) * sizeof(uint32_t), &materials_view);
     NoteMaterials(cars, material_words);
+    if (hit_) {
+      // The set has rt-hit-shading's t4 and t5 and the hit data's t6..t9 after them (6 + CityHitScene::kBindingCount views, Initialize).
+      hit_->Bind(res.set.get(), hit_bindings_, slot);  // t6..t9: the hit data's pool and tables (city_hit_scene.h)
+      hit_->RecordProbe(list, res.set.get(), set_builder_.descriptorSetDesc, *passes_, *heap_);  // debug: reads them back through the set
+    }
+    if (world_) {
+      world_->NoteView(frame.view, flip_z, /*car=*/true);  // CITY-RT FRAME: the top level's view space, and t10, t11 (the scene's trigger block fills them next: rt_world_frame.h)
+      world_->Bind(res.set.get(), world_bindings_, slot);
+    }
     view_.valid = true;
+    view_.scene_valid = true;
+    if (service_) {
+      service_->NoteCarTop();
+    }
     view_.set = res.set.get();
     view_.instance_count = count;
     view_.boxes = cars.boxes.empty() ? nullptr : cars.boxes.data();
@@ -830,6 +879,78 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // The check reads the occlusion's linear depth, which its passes make after this call: it is recorded by OnAfterOcclusion.
   check_due_ = larecomp::settings::mcla_gpu_car_rt_check.Get() && view_.valid;
   return recorded;
+}
+
+// ---------------------------------------------------------------------------
+// the top level without the car (CITY-RT M2 H3, rt_scene_service.h)
+// ---------------------------------------------------------------------------
+// The player's car is what finds the frame's camera (CarFrame reads it out of the car's draws) and what the top level was built for. A consumer of the WORLD (the city's sun shadows where the
+// car is out of the picture, M2's reflections of the street, M3's probes) needs the city in a top level in every frame, car or no car. So when OnResolve finds no car in the frame, or
+// nobody asked for the cars, the scene service decides (PlanTlas): with the city wanted and a camera known, the city's instances alone are placed by the PREDICTED camera (the last frames'
+// anchor poses carried one step on, rt_scene_rules.h CameraPredictor; a frame that is a cut holds the last pose), built into this slot's top level and bound in this slot's set exactly as
+// the car's is. `view_.valid` stays false (it is the CAR's top level: no car effect runs on it), `view_.scene_valid` is true.
+// This stays apart from OnResolve's own tail on purpose (the car path and its descriptor writes are rt-hit-shading's too): merge the two once both have landed.
+// CHECK: the predicted camera against the depth image: mcla_gpu_city_rt_check (the primary rays against the depth, within 1 and 5 percent) in a frame with no car is the proof; its numbers
+// are in perf/CITY-RT-H3-RUNPLAN.md.
+bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot) {
+  if (service_ == nullptr || city_ == nullptr || hit_ == nullptr || !standin_ || !city_->wanted()) {
+    return false;
+  }
+  const rt_scene::TlasPlan plan = service_->PlanTlas(/*car_frame_valid=*/false);
+  if (!plan.build || plan.view != rt_scene::ViewSource::kCamera) {
+    return false;
+  }
+  temporal::Mat4 view;
+  bool flip_z = true;
+  // CHECK: flip_z comes from rt_scene_rules.h CameraPredictor::LooksDownMinusZ (the anchor's view looks down -z: true); a mirrored or inside-out city in the check's picture says it is wrong.
+  if (!service_->PredictedView(&view, &flip_z)) {
+    return false;
+  }
+  std::vector<plume::RenderTopLevelASInstance> instances;
+  city_->Prepare(view, flip_z, list, slot, &instances);
+  bool recorded = city_->recorded();
+  const uint32_t count = uint32_t(instances.size());
+  if (count == 0) {
+    return recorded;
+  }
+  SlotResources& res = slots_[slot];
+  plume::RenderTopLevelASBuildInfo tlas_info;
+  device_->device()->setTopLevelASBuildInfo(tlas_info, instances.data(), count, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
+  static const rr::InstanceRow kOneRow{};  // the table the set names: one row, no instance of this top level looks at it
+  if (!EnsureSlot(res, slot, tlas_info.accelerationStructureSize, tlas_info.scratchSize, tlas_info.instancesBufferData.size(), sizeof(rr::InstanceRow), sizeof(uint32_t) * 4)) {
+    REXLOG_ERROR("{} the frame slot's buffers could not be made: no top level of the city this frame", kPrefix);
+    return recorded;
+  }
+  std::memcpy(res.instances_cpu, tlas_info.instancesBufferData.data(), tlas_info.instancesBufferData.size());
+  std::memcpy(res.table_cpu, &kOneRow, sizeof(rr::InstanceRow));
+  std::memset(res.materials_cpu, 0, sizeof(uint32_t) * 4);  // RT-HIT-SHADING's materials binding (t5): one empty row, no instance of this top level is a car
+  list->barriers(plume::RenderBarrierStage::COMPUTE, plume::RenderBufferBarrier(res.scratch.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE));
+  list->buildTopLevelAS(res.tlas.get(), plume::RenderBufferReference(res.scratch.get(), 0), plume::RenderBufferReference(res.instances.get(), 0), tlas_info);
+  list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE),
+                 plume::RenderBufferBarrier(res.tlas_buffer.get(), plume::RenderBufferAccess::READ));
+  // The set, as the car path writes it, with the stand-in where a car mesh buffer does not exist yet.
+  const plume::RenderBufferStructuredView rows_view(sizeof(rr::InstanceRow), 0);
+  res.set->setAccelerationStructure(tlas_index_, res.tlas.get());
+  res.set->setBuffer(table_index_, res.table.get(), sizeof(rr::InstanceRow), &rows_view);
+  res.set->setBuffer(indices_index_, indices_.buffer ? indices_.buffer.get() : standin_.get(), 0);
+  res.set->setBuffer(normals_index_, normals_.buffer ? normals_.buffer.get() : standin_.get(), 0);
+  const plume::RenderBufferStructuredView materials_view(sizeof(uint32_t) * 4, 0);
+  res.set->setBuffer(uvs_index_, uvs_.buffer ? uvs_.buffer.get() : standin_.get(), 0);
+  res.set->setBuffer(materials_index_, res.materials.get(), sizeof(uint32_t) * 4, &materials_view);
+  hit_->Bind(res.set.get(), hit_bindings_, slot);
+  hit_->RecordProbe(list, res.set.get(), set_builder_.descriptorSetDesc, *passes_, *heap_);
+  if (world_) {
+    world_->NoteView(view, flip_z, /*car=*/false);  // CITY-RT FRAME: the predicted camera's view space, and t10, t11
+    world_->Bind(res.set.get(), world_bindings_, slot);
+  }
+  view_.scene_valid = true;
+  view_.set = res.set.get();
+  view_.instance_count = count;
+  {
+    const double world_up[3] = {0.0, 1.0, 0.0};
+    car_rt_instances::ViewVector(view, flip_z, world_up, view_.up);  // false: the default (0, 1, 0) stays
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1881,6 +2002,13 @@ void CarRtScene::LogTotals(const char* why) {
 // the frame boundary
 // ---------------------------------------------------------------------------
 
+void CarRtScene::OnAnchor(const ConstantBanks::Banks& banks, bool cut) {
+  anchor_seen_ = true;
+  if (service_) {
+    service_->NoteAnchor(banks, cut);
+  }
+}
+
 void CarRtScene::OnPresent() {
   if (ready_) {
     if (larecomp::settings::mcla_gpu_car_rt_check.Get()) {
@@ -1902,6 +2030,9 @@ void CarRtScene::OnPresent() {
   staged_triangles_ = 0;
   staged_triangles_other_ = 0;
   ++frame_;
+  if (service_) {
+    service_->EndFrame();  // the wants of the frame become the last frame's; the city and the pool are told the level for the next one
+  }
 }
 
 // ---------------------------------------------------------------------------

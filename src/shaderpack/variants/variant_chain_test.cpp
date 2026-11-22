@@ -72,7 +72,30 @@ void TestWord() {
 void TestTable_() {
   const char* why = nullptr;
   Check(chain::TableIsValid(chain::kFeatures, &why), std::string("the built-in table is valid ") + (why ? why : ""));
-  Check(chain::kFeatureCount == 12, "twelve rows: nine built in this tree, the headlights' and the G-buffer's (their variants are in two other branches) and the G-buffer's vertex stage (feature 12, variants/gbuffer_day.h)");
+  Check(chain::kFeatureCount == 13, "thirteen rows: nine built in this tree, the headlights' and the G-buffer's (their variants are in two other branches), the G-buffer's vertex stage (feature 12, variants/gbuffer_day.h) and the chrome's reflection of the city (feature 13, variants/car_chrome_city.h)");
+  {
+    const chain::FeatureInfo* city_row = chain::Find(sp::kFeatureCarChromeCity);
+    Check(sp::kFeatureCarChromeCity == 13 && city_row && city_row->name == "car_chrome_city" && city_row->stage == chain::Stage::kPixel && city_row->constants_bytes == 0 && !city_row->spec_twin &&
+              city_row->needs_vs == 0 && city_row->composes_with == (chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureGBuffer)),
+          "the chrome's city stage is feature 13: a pixel stage with no block of its own (it reads the chrome's), no twin, composing with the chrome's stage and the G-buffer's");
+    Check(chain::LayoutConstants(chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureCarChromeCity)).total_bytes == 608 + 112 &&
+              chain::OffsetOf(chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureCarChromeCity), sp::kFeatureCarChrome) == 608 &&
+              chain::OffsetOf(chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureCarChromeCity), sp::kFeatureCarChromeCity) == 0,
+          "with the city stage the chrome's block is where it was (608, 112 bytes) and the stage adds none");
+    Check(chain::CanCompose(chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureCarChromeCity)) &&
+              chain::CanCompose(chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureGBuffer) | chain::FeatureBit(sp::kFeatureCarChromeCity)) &&
+              !chain::CanCompose(chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureCarChromeCity)) &&
+              !chain::CanCompose(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureCarChromeCity)),
+          "the city stage composes with the chrome's and the G-buffer's (all three together), not with the paint's or the headlight's");
+    // The renderer's choice (Pick): with the chrome, the G-buffer and the city stage wanted, the word that has all three wins over the pairs; with the city stage not wanted the old words are what a draw takes.
+    const uint32_t chrome = chain::FeatureBit(sp::kFeatureCarChrome), gbuf = chain::FeatureBit(sp::kFeatureGBuffer), city = chain::FeatureBit(sp::kFeatureCarChromeCity);
+    const std::vector<uint32_t> words = {chain::Word(chrome), chain::Word(gbuf), chain::Word(city), chain::Word(chrome | gbuf), chain::Word(chrome | city), chain::Word(gbuf | city), chain::Word(chrome | gbuf | city)};
+    Check(chain::Pick(words, chrome | gbuf | city, 0) == chain::Word(chrome | gbuf | city) && chain::Pick(words, chrome | city, 0) == chain::Word(chrome | city) &&
+              chain::Pick(words, chrome | gbuf, 0) == chain::Word(chrome | gbuf) && chain::Pick(words, chrome, 0) == chain::Word(chrome),
+          "wanting the city stage takes the composed word; not wanting it takes the chrome's own words, as before");
+    const chain::PermutationList plan = chain::Permutations(chrome | gbuf | city, true);
+    Check(plan.sets.size() == 7 && plan.dropped == 0, "the chrome shader has seven permutations of the three stages, none dropped");
+  }
   {
     const chain::FeatureInfo* vertex_row = chain::Find(sp::kFeatureGBufferVs);
     Check(sp::kFeatureGBufferVs == 12 && vertex_row && vertex_row->stage == chain::Stage::kVertex && vertex_row->constants_bytes == 0 && vertex_row->composes_with == 0 && vertex_row->needs_vs == 0 && vertex_row->spec_twin,
@@ -89,7 +112,8 @@ void TestTable_() {
     bool twin;
   } expect[] = {{sp::kFeatureHdrScene, 16, false},  {sp::kFeatureBloomGauss, 0, false}, {sp::kFeatureEnvMap, 0, false},  {sp::kFeatureShadowFilter, 16, false},
                 {sp::kFeatureGlowSoft, 0, false},   {sp::kFeatureCarSelfRefl, 112, false}, {sp::kFeatureLuminanceScale, 0, false},
-                {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 1072, true}, {sp::kFeatureGBuffer, 48, true}};
+                {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 1072, true}, {sp::kFeatureGBuffer, 48, true},
+                {sp::kFeatureCarChromeCity, 0, false}};
   for (const auto& e : expect) {
     const chain::FeatureInfo* row = chain::Find(e.feature);
     Check(row && row->constants_bytes == e.bytes && row->spec_twin == e.twin && row->stage == chain::Stage::kPixel, "row of feature " + std::to_string(e.feature));
@@ -98,9 +122,11 @@ void TestTable_() {
   // pixel stage of the table needs a vertex stage (needs_vs): the G-buffer's pixel words read the vertex stage's export where it is and take a derivative normal where it is not.
   for (const chain::FeatureInfo& row : chain::kFeatures) {
     uint32_t partner = 0;
-    if (row.feature == sp::kFeatureHeadlight || row.feature == sp::kFeatureCarSelfRefl || row.feature == sp::kFeatureCarChrome) partner = chain::FeatureBit(sp::kFeatureGBuffer);
+    if (row.feature == sp::kFeatureHeadlight || row.feature == sp::kFeatureCarSelfRefl) partner = chain::FeatureBit(sp::kFeatureGBuffer);
+    if (row.feature == sp::kFeatureCarChrome) partner = chain::FeatureBit(sp::kFeatureGBuffer) | chain::FeatureBit(sp::kFeatureCarChromeCity);
+    if (row.feature == sp::kFeatureCarChromeCity) partner = chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureGBuffer);
     if (row.feature == sp::kFeatureGBuffer) {
-      partner = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureCarChrome);
+      partner = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureCarChromeCity);
     }
     Check(row.composes_with == partner && row.needs_vs == 0, std::string(row.name) + (partner ? " composes with its partner(s) only" : " composes with nothing yet"));
   }
@@ -168,7 +194,7 @@ void TestLayout() {
   // Every subset of the built-in features: dense, in order, 16 byte aligned, never overlapping, total as the sum.
   bool all_disjoint = true;
   bool all_dense = true;
-  const uint32_t all = (1u << (sp::kFeatureGBufferVs + 1)) - 1;  // every subset of the bits 0..12 (bit 11 is reserved and has no row)
+  const uint32_t all = (1u << (sp::kFeatureCarChromeCity + 1)) - 1;  // every subset of the bits 0..13 (bit 11 is reserved and has no row)
   for (uint32_t set = 0; set <= all; ++set) {
     const chain::ConstantsLayout layout = chain::LayoutConstants(set);
     all_disjoint &= Disjoint(layout);
@@ -178,7 +204,7 @@ void TestLayout() {
     }
     all_dense &= layout.total_bytes == sum && layout.total_bytes <= chain::MaxConstantsBytes();
   }
-  Check(all_disjoint, "no two blocks overlap in any of the 8192 subsets of the table's feature bits");
+  Check(all_disjoint, "no two blocks overlap in any of the 16384 subsets of the table's feature bits");
   Check(all_dense, "the layouts are dense: shared constants plus the blocks of the active features, never more than MaxConstantsBytes");
   Check(chain::MaxConstantsBytes() == 608 + 16 + 16 + 112 + 112 + 16 + 1072 + 48, "the most a draw uploads is every block of the table");
 

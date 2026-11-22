@@ -738,24 +738,24 @@ void CheckPluginAndParsers() {
   Check(int(DebugSwitch::kOff) == 0 && int(DebugSwitch::kProbe) == 1 && int(DebugSwitch::kOn) == 2 && int(DebugSwitch::kRow) == 3, "the switch's numbers");
 }
 
-// RR-5 + RR-INT: the consumers. The shipped table: the screen-space reflections (RR-4a) and the cars' ray traced reflections (RR-4b) have a raw mode; the city's reflections and the bounce light do not exist yet;
-// NO effect is trusted to AUTO yet (auto_uses_rr waits for the RR-6 A/B), so AUTO is OURS wherever, and the row's RR value takes a frame while SSR or the cars' reflections are on. These checks hold the rules for
+// RR-5 + RR-INT: the consumers. The shipped table: the screen-space reflections (RR-4a) and the cars' ray traced reflections (RR-4b) have a raw mode, and so has the city's ray traced reflections (the screen-space reflections' fallback, CITY-RT R6) and the bounce light's per-pixel pass (CITY-RT G6);
+// NO effect is trusted to AUTO yet (auto_uses_rr waits for the RR-6 A/B), so AUTO is OURS wherever, and the row's RR value takes a frame while any of the four is on. These checks hold the rules for
 // whichever cells are flipped (written against a made-up table below) and say what the shipped table is.
 void CheckConsumers() {
   Check(kConsumerCount == 4 && kAllConsumers == 0xFu, "four consumers");
-  Check(AnyRawModeBuilt(), "today two effects have a raw mode (RR-INT)");
-  const bool built[kConsumerCount] = {true, true, false, false};
+  Check(AnyRawModeBuilt(), "today all four effects have a raw mode (RR-INT, CITY-RT R6, CITY-RT G6)");
+  const bool built[kConsumerCount] = {true, true, true, true};
   for (size_t i = 0; i < kConsumerCount; ++i) {
     Check(kConsumers[i].raw_mode_built == built[i], std::string("today ") + kConsumers[i].name + (built[i] ? " has a raw mode" : " has none (the effect does not exist yet)"));
     Check(!kConsumers[i].auto_uses_rr, std::string("today ") + kConsumers[i].name + ": AUTO does not trust RR with it before the RR-6 A/B");
     Check(!kConsumers[i].auto_uses_rr || kConsumers[i].raw_mode_built, std::string(kConsumers[i].name) + ": AUTO trusts RR only with an effect that has a raw mode");
     Check(kConsumers[i].name != nullptr && kConsumers[i].name[0] != '\0', "every consumer has a name");
   }
-  Check(kConsumers[size_t(Consumer::kSsr)].raw_mode_built && kConsumers[size_t(Consumer::kCarRtReflections)].raw_mode_built, "SSR and the cars' ray traced reflections are the two with a raw mode");
-  Check(!kConsumers[size_t(Consumer::kCityRtReflections)].raw_mode_built && !kConsumers[size_t(Consumer::kRtGi)].raw_mode_built, "the city's reflections and the bounce light have none yet");
-  Check(AnyConsumerOn(ConsumerBit(Consumer::kSsr)) && AnyConsumerOn(ConsumerBit(Consumer::kCarRtReflections)) && AnyConsumerOn(kAllConsumers), "SSR on, the cars' reflections on: a consumer is on");
-  Check(!AnyConsumerOn(0u) && !AnyConsumerOn(ConsumerBit(Consumer::kCityRtReflections)) && !AnyConsumerOn(ConsumerBit(Consumer::kRtGi)) && !AnyConsumerOn(ConsumerBit(Consumer::kCityRtReflections) | ConsumerBit(Consumer::kRtGi)),
-        "nothing on, or only an effect with no raw mode: no consumer");
+  Check(kConsumers[size_t(Consumer::kSsr)].raw_mode_built && kConsumers[size_t(Consumer::kCarRtReflections)].raw_mode_built && kConsumers[size_t(Consumer::kCityRtReflections)].raw_mode_built, "SSR, the cars' ray traced reflections and the city's are the three with a raw mode");
+  Check(kConsumers[size_t(Consumer::kRtGi)].raw_mode_built && !kConsumers[size_t(Consumer::kRtGi)].auto_uses_rr && std::string(InfoOf(Consumer::kRtGi).name) == "ray traced bounce light",
+        "the bounce light's per-pixel pass has a raw mode (CITY-RT G6) and AUTO does not trust RR with it before the RR-6 A/B");
+  Check(AnyConsumerOn(ConsumerBit(Consumer::kSsr)) && AnyConsumerOn(ConsumerBit(Consumer::kCarRtReflections)) && AnyConsumerOn(ConsumerBit(Consumer::kCityRtReflections)) && AnyConsumerOn(kAllConsumers), "SSR on, the cars' reflections on, the city's on: a consumer is on");
+  Check(!AnyConsumerOn(0u) && AnyConsumerOn(ConsumerBit(Consumer::kRtGi)), "nothing on: no consumer; the bounce light's pass on (CITY-RT G6): a consumer");
   Check(!AnyAutoConsumerOn(kAllConsumers) && !AnyAutoConsumerOn(ConsumerBit(Consumer::kSsr)), "all four on: AUTO still has no consumer it trusts (RR-6's A/B flips auto_uses_rr)");
   Check(ConsumerBit(Consumer::kSsr) == 1u && ConsumerBit(Consumer::kCarRtReflections) == 2u && ConsumerBit(Consumer::kCityRtReflections) == 4u && ConsumerBit(Consumer::kRtGi) == 8u, "the bits");
   Check(std::string(InfoOf(Consumer::kSsr).name) == "screen-space reflections", "InfoOf");
@@ -763,7 +763,7 @@ void CheckConsumers() {
   // mode: AUTO must still not count it), the bounce light neither.
   const ConsumerTable made = {{{"a", true, true}, {"b", true, false}, {"c", false, true}, {"d", false, false}}};
   const ConsumerTable none_cells = {{{"a", false, false}, {"b", false, false}, {"c", false, false}, {"d", false, false}}};
-  Check(AnyRawModeBuilt(made) && AnyRawModeBuilt(kConsumers) && !AnyRawModeBuilt(none_cells), "a made-up table has raw modes, the shipped one has two, a table of false cells none");
+  Check(AnyRawModeBuilt(made) && AnyRawModeBuilt(kConsumers) && !AnyRawModeBuilt(none_cells), "a made-up table has raw modes, the shipped one has four, a table of false cells none");
   Check(AnyConsumerOn(1u, made) && AnyConsumerOn(2u, made) && !AnyConsumerOn(4u, made) && !AnyConsumerOn(8u, made) && !AnyConsumerOn(0u, made) && AnyConsumerOn(0xFu, made),
         "a made-up table: the built effects that are on are consumers, the others (and an empty set) are not");
   Check(AnyAutoConsumerOn(1u, made) && !AnyAutoConsumerOn(2u, made) && AnyAutoConsumerOn(3u, made) && !AnyAutoConsumerOn(4u, made) && !AnyAutoConsumerOn(12u, made) && !AnyAutoConsumerOn(0u, made),
@@ -801,14 +801,14 @@ void CheckConsumers() {
     const Plan p = plan_from_board(Denoiser::kAuto, on, kConsumers);
     Check(!p.use_rr && p.why == Why::kNoConsumer, "AUTO, the shipped table, effects on " + std::to_string(on) + ": ours (no effect AUTO trusts RR with yet)");
   }
-  // The row's RR value with and without consumers: RR while SSR or the cars' reflections are on, ours (kNoConsumer) with nothing on or only effects that do not exist yet.
-  for (const uint32_t on : {ssr, cars, ssr | cars, ssr | city, cars | gi, kAllConsumers}) {
+  // The row's RR value with and without consumers: RR while any of the four is on, ours (kNoConsumer) with nothing on.
+  for (const uint32_t on : {ssr, cars, city, gi, ssr | cars, ssr | city, cars | gi, city | gi, kAllConsumers}) {
     const Plan p = plan_from_board(Denoiser::kRr, on, kConsumers);
     Check(p.use_rr && p.why == Why::kRrOn, "DLSS RR, the shipped table, effects on " + std::to_string(on) + ": RR");
   }
-  for (const uint32_t on : {0u, city, gi, city | gi}) {
+  for (const uint32_t on : {0u}) {
     const Plan p = plan_from_board(Denoiser::kRr, on, kConsumers);
-    Check(!p.use_rr && p.why == Why::kNoConsumer, "DLSS RR, the shipped table, effects on " + std::to_string(on) + ": no effect with a raw mode is on, ours");
+    Check(!p.use_rr && p.why == Why::kNoConsumer, "DLSS RR, the shipped table, effects on " + std::to_string(on) + ": no effect is on, ours");
   }
   for (const uint32_t on : {0u, ssr, kAllConsumers}) {
     const Plan p = plan_from_board(Denoiser::kOurs, on, kConsumers);
@@ -819,10 +819,10 @@ void CheckConsumers() {
   for (int setting = 0; setting < 3; ++setting) {
     for (uint32_t on = 0; on <= kAllConsumers; ++on) {
       const Plan p = plan_from_board(Denoiser(setting), on, kConsumers);
-      whole = whole && (p.use_rr == (Denoiser(setting) == Denoiser::kRr && (on & (ssr | cars)) != 0));
+      whole = whole && (p.use_rr == (Denoiser(setting) == Denoiser::kRr && (on & (ssr | cars | city | gi)) != 0));
     }
   }
-  Check(whole, "the shipped table: RR exactly where the row says DLSS RR and SSR or the cars' reflections are on (3 settings x 16 sets of effects)");
+  Check(whole, "the shipped table: RR exactly where the row says DLSS RR and any of the four effects is on (3 settings x 16 sets of effects)");
   // With AUTO's cell flipped for SSR (what RR-6's A/B may do) AUTO is RR exactly while SSR is on; the cars' reflections, built and not trusted, never bring it.
   ConsumerTable flipped = kConsumers;
   flipped[size_t(Consumer::kSsr)].auto_uses_rr = true;
@@ -1129,26 +1129,29 @@ void CheckRawModes() {
     f.context_ready = (bits & 4) != 0;
     f.armed = (bits & 8) != 0;
     f.play_view = (bits & 16) != 0;
-    for (int sw = 0; sw < 4; ++sw) {
+    for (int sw = 0; sw < 8; ++sw) {
       const bool s_ssr = (sw & 1) != 0;
       const bool s_car = (sw & 2) != 0;
-      const RawModes m = RawModesOf(f, s_ssr, s_car);
+      const bool s_gi = (sw & 4) != 0;
+      const RawModes m = RawModesOf(f, s_ssr, s_car, s_gi);
       const bool want_ssr = f.plan_rr && !f.failed && f.context_ready && f.armed && f.play_view && s_ssr;
       const bool want_car = f.plan_rr && !f.failed && f.context_ready && f.armed && f.play_view && s_car;
-      agrees = agrees && m.Ssr() == want_ssr && m.CarRefl() == want_car;
-      raw_count += int(m.Ssr()) + int(m.CarRefl());
+      const bool want_gi = f.plan_rr && !f.failed && f.context_ready && f.armed && f.play_view && s_gi;
+      agrees = agrees && m.Ssr() == want_ssr && m.CarRefl() == want_car && m.RtGi() == want_gi;
+      raw_count += int(m.Ssr()) + int(m.CarRefl()) + int(m.RtGi());
       if (!f.plan_rr) {
         // the plan is not RR (Super Resolution, FSR, no upscaler, OURS): the effects run as they always did
-        identity_when_plan_not_rr = identity_when_plan_not_rr && !m.Ssr() && !m.CarRefl() && m.ssr == RawWhy::kPlanOurs && m.car_refl == RawWhy::kPlanOurs;
+        identity_when_plan_not_rr = identity_when_plan_not_rr && !m.Ssr() && !m.CarRefl() && !m.RtGi() && m.ssr == RawWhy::kPlanOurs && m.car_refl == RawWhy::kPlanOurs && m.rt_gi == RawWhy::kPlanOurs;
       }
       // the reasons come in a fixed order, and the switch is the last word
       const RawWhy expect_ssr = !f.plan_rr ? RawWhy::kPlanOurs : f.failed ? RawWhy::kFailed : !f.context_ready ? RawWhy::kNoContext : (!f.armed || !f.play_view) ? RawWhy::kNoRrFrame : !s_ssr ? RawWhy::kSwitchOff : RawWhy::kRaw;
       const RawWhy expect_car = !f.plan_rr ? RawWhy::kPlanOurs : f.failed ? RawWhy::kFailed : !f.context_ready ? RawWhy::kNoContext : (!f.armed || !f.play_view) ? RawWhy::kNoRrFrame : !s_car ? RawWhy::kSwitchOff : RawWhy::kRaw;
-      all_reasons_in_order = all_reasons_in_order && m.ssr == expect_ssr && m.car_refl == expect_car;
+      const RawWhy expect_gi = !f.plan_rr ? RawWhy::kPlanOurs : f.failed ? RawWhy::kFailed : !f.context_ready ? RawWhy::kNoContext : (!f.armed || !f.play_view) ? RawWhy::kNoRrFrame : !s_gi ? RawWhy::kSwitchOff : RawWhy::kRaw;
+      all_reasons_in_order = all_reasons_in_order && m.ssr == expect_ssr && m.car_refl == expect_car && m.rt_gi == expect_gi;
     }
   }
-  Check(agrees, "raw is exactly: the plan says RR, nothing failed, the context is made, the frame is upscaled and a play frame, and the effect's own switch is on (32 frames x 4 switch cells)");
-  Check(raw_count == 4, "one frame of the table is raw: in the four switch cells that is 2 + 2 raw effects (each effect is raw in the two cells where its own switch is on)");
+  Check(agrees, "raw is exactly: the plan says RR, nothing failed, the context is made, the frame is upscaled and a play frame, and the effect's own switch is on (32 frames x 8 switch cells, three effects)");
+  Check(raw_count == 12, "one frame of the table is raw: in the eight switch cells that is 4 + 4 + 4 raw effects (each effect is raw in the four cells where its own switch is on)");
   Check(identity_when_plan_not_rr, "with the plan not RR no effect is raw, whatever else is true (Super Resolution, FSR, no upscaler, OURS: the effects run as they did)");
   Check(all_reasons_in_order, "the reasons come in order: plan, failed, context, frame, switch");
   {
@@ -1159,6 +1162,12 @@ void CheckRawModes() {
     const RawModes none = RawModesOf(ok, false, false);
     Check(both.Ssr() && both.CarRefl() && one.Ssr() && !one.CarRefl() && one.car_refl == RawWhy::kSwitchOff && !none.Ssr() && !none.CarRefl(), "one switch at a time: each effect has its own, and 0 keeps its own filter while RR takes the frame");
     Check(both == RawModesOf(ok, true, true) && !(both == one), "the modes compare");
+    // CITY-RT G6: the bounce light's per-pixel pass has its own switch (the fourth argument, on by default): the other two are unchanged by it, and a default call is raw for it
+    const RawModes gi_only = RawModesOf(ok, false, false, true);
+    const RawModes gi_off = RawModesOf(ok, true, true, false);
+    Check(both.RtGi() && gi_only.RtGi() && !gi_only.Ssr() && !gi_only.CarRefl() && !gi_off.RtGi() && gi_off.rt_gi == RawWhy::kSwitchOff && gi_off.Ssr() && gi_off.CarRefl() && none.RtGi(),
+          "CITY-RT G6: the bounce light's pass has its own switch: on it is raw beside the others (and by default), off it keeps its own filter while the other two stay raw");
+    Check(!(gi_only == gi_off) && RawModesOf(ok, true, true, true) == both, "the bounce light's switch is part of the modes' comparison");
     RawFrame pause = ok;
     pause.play_view = false;
     RawFrame plain = ok;
@@ -1166,6 +1175,9 @@ void CheckRawModes() {
     Check(RawModesOf(pause, true, true).ssr == RawWhy::kNoRrFrame && RawModesOf(plain, true, true).car_refl == RawWhy::kNoRrFrame, "the pause, garage and map worlds and an unarmed frame are not raw (a Super Resolution frame has nobody to clean the noise)");
   }
   Check(RawSwitchOn(1) && RawSwitchOn(2) && !RawSwitchOn(0), "the debug switches: 0 off, anything else on (the default is 1)");
+  // CITY-RT G6: the bounce light's switch has a third value: 2 is raw without the hit distance
+  Check(BounceHitWanted(1) && !BounceHitWanted(2) && BounceHitWanted(0) && RawSwitchOn(2), "CITY-RT G6: the bounce light's switch: 1 raw with the hit distance (the default), 2 raw without it (and still raw), 0 ours");
+  Check(int(RawEffect::kCount) == 3 && std::string(RawEffectName(RawEffect::kRtGi)) == "the bounce light's per-pixel pass", "three raw effects, the bounce light's pass the third");
   for (int w = 0; w < int(RawWhy::kCount); ++w) {
     const std::string text = RawWhyText(RawWhy(w));
     Check(!text.empty() && text != "?", "raw reason " + std::to_string(w) + " has a text");

@@ -59,6 +59,10 @@
 #include "headlight_rig.h"
 #include "car_rt_scene.h"
 #include "car_rt_refl.h"
+#include "city_hit_scene.h"
+#include "city_rt_scene.h"
+#include "city_rt_shadow.h"
+#include "rt_scene_service.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
 #include "local_shadow.h"
@@ -77,6 +81,11 @@
 #include "hdr_scene.h"
 #include "hdr_tonemap.h"
 #include "host_passes.h"
+#include "gi_apply.h"
+#include "gi_field.h"
+#include "gi_integration.h"
+#include "gi_pixel.h"
+#include "gi_update.h"
 #include "layout.h"
 #include "light_manager.h"
 #include "local_lights.h"
@@ -279,6 +288,9 @@ class Renderer final : public RenderThread::Executor {
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();
+  // CITY-RT M2 H3: the city ray tracing's census, one line every kCityCensusPresents presents (the interval of the car self-reflection's census) when any of its parts has text:
+  // the structures and the hit data's pool (CityRtScene), the traced shadows (CityRtShadow) and the ray tracing scene's wants (RtSceneService). Called by ReportFrameStats.
+  void ReportCityCensus();
   // Once, on the render thread, after the device was found lost (Device::CheckLost logged the reason
   // and the call that met it, from whichever thread): the renderer's own state at the loss and the
   // passes recorded for the frames that were in flight (only with mcla_gpu_pass_timing).
@@ -300,6 +312,11 @@ class Renderer final : public RenderThread::Executor {
   VolumetricsInputs vol_inputs_;  // render thread; the volumetric light's street lamps and headlights (volumetrics_inputs.h); before it: it outlives it
   Volumetrics volumetrics_;   // render thread; volumetric light: lamp and headlight beams, haze, sun through the cascades (volumetrics.h)
   GBuffer gbuffer_;           // render thread; the G-buffer's sidecar and debug view (gbuffer.h; debug-only settings in this branch)
+  GiApply gi_apply_;          // render thread; the probe field's apply (gi_apply.h, CITY-RT M3 G3): the field's bounce light, and the screen-space bounce light's share; it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
+  GiField gi_field_;          // render thread; the probe field's owner (gi_field.h, CITY-RT M3 G1): textures, windows, weights; the apply reads it (SetGiField); Shutdown stops the apply first
+  GiUpdate gi_update_;        // render thread; the probe field's update (gi_update.h, CITY-RT M3 G2): the rays of the probes and their blend; it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: Shutdown stops it with the integration
+  GiPixel gi_pixel_;          // render thread; the probe field's per-pixel detail pass (gi_pixel.h, CITY-RT M3 G5): ULTRA on a strong ray tracing card; the apply runs it (SetGiPixel); it holds pointers to the field, the car scene, the city scene, the hit data, the world frame and the light manager: Shutdown stops it before them
+  GiIntegration gi_integration_;  // render thread; the setting, the field's frame and its trigger work, the watchdog (gi_integration.h, CITY-RT M3 G4); holds pointers to the field, the apply, the AO and the city scene
   RrGuides rr_guides_;        // render thread; DLSS Ray Reconstruction's guide pass, run by the temporal system's upscale (rr_guides.h); it holds a pointer to the G-buffer: Shutdown stops it first
   ScreenReflections ssr_;     // render thread; screen-space reflections (ssr.h; off by default); it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
   ScreenShared screen_;       // render thread; the shared screen products: the AO's depth chain published, the Hi-Z, the debug view (screen_shared.h); the AO holds a pointer to it: Shutdown stops the AO first
@@ -314,6 +331,11 @@ class Renderer final : public RenderThread::Executor {
   CarShadowMap car_shadow_;   // render thread; the player car's sun shadow map, recorded at the history trigger before the AO's passes (car_shadow_map.h)
   CarRtScene car_rt_;         // render thread; the player's car as ray tracing structures (car_rt_scene.h), where the device has them
   CarRtRefl car_rt_refl_;     // render thread; the player car's ray traced self-reflection pass (car_rt_refl.h), reads car_rt_ (car_rt_scene.h)
+  CityRtScene city_rt_;       // render thread; the city's geometry as ray tracing structures (city_rt_scene.h; CITY-RT M1), joins car_rt_'s top level
+  CityHitScene city_hit_;     // render thread; the city's hit data (texture coordinates, materials) in the GPU: the pool the structures are built over (city_hit_scene.h; CITY-RT M2 H3)
+  RtSceneService rt_scene_;   // render thread; who wants the ray tracing scene and what its top level holds, car or no car (rt_scene_service.h; CITY-RT M2 H3)
+  RtWorldFrame rt_world_;     // render thread; the world's rows and the lamps of every frame that has a top level, car or no car: t10 and t11 of car_rt_'s set (rt_world_frame.h; CITY-RT FRAME); it holds pointers to the AO, the car frame, the shared products and the city scene: Shutdown stops it first
+  CityRtShadow city_shadow_;  // render thread; the city's ray traced sun shadows (city_rt_shadow.h), recorded by the occlusion's passes (ao.h)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_

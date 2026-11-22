@@ -14,13 +14,17 @@
 //             AFTER the capture (a reflection is not a reflection of a reflection) ...;
 //   WANTS     what the effect asks for while it is on: the G-buffer's planes, the shared screen products, the light manager; and the frame's start, where they are declared and read.
 //
-// THE FRAME, as scene.cpp runs it (LU-9 recorded the order the code had; GB-I3 moved one call: the reflections' wants are declared at the frame's start, lag 0, see kBeginSsr):
-//   start      local lights declare | SSR declares | G-buffer reads its wants | screen products read theirs | AO declares | car reflection declares | light manager opens the frame's lights
+// THE FRAME, as scene.cpp runs it (LU-9 recorded the order the code had; GB-I3 moved one call: the reflections' wants are declared at the frame's start, lag 0, see kBeginSsr; the city ray tracing
+// integration (CITY-RT-INT) added the probe field's four steps, which CITY-RT M3 G4 wired into the frame before this table stood):
+//   start      local lights declare | SSR declares | probe field starts its frame | probe field's apply declares | G-buffer reads its wants | screen products read theirs | AO declares |
+//              car reflection declares | light manager opens the frame's lights
 //   draws      the main view's draws write the sidecar (the G-buffer's window) | the lit draws' forward headlight (lights of this frame, the maps of the LAST frame)
-//   trigger    G-buffer publish | car sun map | car ray tracing structures | headlight shadow replay | light manager takes this frame's maps |
+//   trigger    G-buffer publish | car sun map | car ray tracing structures | headlight shadow replay | light manager takes this frame's maps | PROBE FIELD'S FRAME (maintenance, update, weights:
+//              published BEFORE the AO plans, which asks whether the screen-space bounce light may be skipped) |
 //              THE AO'S FRAME: depth chain, normals, colour_pre capture, ray traced occlusion, visibility, contact march, APPLY, screen publish (lin_depth, normal, colour_pre, Hi-Z) |
-//              deferred local lights (additive, after the apply) | sun shafts | volumetric light (inject, integrate) | car ray tracing check |
-//              colour_post capture (after the apply and the lights) | SSR (additive, after the capture: the LAST pass that adds to the colour here) | car history + ray traced reflections | debug views
+//              probe field's apply (additive, after the AO's apply) | deferred local lights (additive, after both) | sun shafts | volumetric light (inject, integrate) | car ray tracing check |
+//              colour_post capture (after the apply and the lights) | SSR (additive, after the capture: the last pass that adds to the colour here but one) | car history + ray traced reflections (+ the
+//              player's windows' additive reflection of the city, CITY-RT M2 R3b: the very last add) | debug views
 //   end of scene   the volumetric composite, the sun shafts' composite
 //   anchor     (RR-2) the game's post chain starts at its motion blur draw, where the temporal system runs the upscaler: the Ray Reconstruction guide pass makes the five guide images from the planes
 //              (only while it is wanted), then the upscaler, then the guide debug view over its output
@@ -94,10 +98,12 @@ inline constexpr uint32_t kContactTerm = 1u << 19;   // the contact shadows' vis
 inline constexpr uint32_t kVolume = 1u << 20;        // the volumetric light's integrated froxels (volumetrics.h)
 inline constexpr uint32_t kShafts = 1u << 21;        // the sun shafts' light image (shafts.h)
 inline constexpr uint32_t kCarHistory = 1u << 22;    // the car self-reflection's history image and the ray traced reflection of its texels: read by the NEXT frame's car paint draws
-inline constexpr uint32_t kRrGuides = 1u << 23;      // DLSS Ray Reconstruction's five guide images at the render size, made at the anchor by the guide pass (rr_guides.h), only while it is wanted
-inline constexpr uint32_t kRrHitSsr = 1u << 24;      // RR-4a: the screen-space reflections' hit distance image (R16_FLOAT, the picture's size), written at the trigger in a frame DLSS Ray Reconstruction takes (raw mode), read by the guide pass
-inline constexpr uint32_t kRrHitCar = 1u << 25;      // RR-4b: the cars' ray traced reflections' hit distance image (R16_FLOAT, the picture's size), written with the ray traced pass in a frame DLSS Ray Reconstruction takes, read by the guide pass
-inline constexpr uint32_t kAll = (1u << 26) - 1;
+inline constexpr uint32_t kProbeField = 1u << 23;    // the probe field's published frame (gi_field.h RecordFinish): the apply reads it, and the AO asks it whether the screen-space bounce light may be skipped
+inline constexpr uint32_t kRrGuides = 1u << 24;      // DLSS Ray Reconstruction's five guide images at the render size, made at the anchor by the guide pass (rr_guides.h), only while it is wanted
+inline constexpr uint32_t kRrHitSsr = 1u << 25;      // RR-4a: the screen-space reflections' hit distance image (R16_FLOAT, the picture's size), written at the trigger in a frame DLSS Ray Reconstruction takes (raw mode), read by the guide pass
+inline constexpr uint32_t kRrHitCar = 1u << 26;      // RR-4b: the cars' ray traced reflections' hit distance image (R16_FLOAT, the picture's size), written with the ray traced pass in a frame DLSS Ray Reconstruction takes, read by the guide pass
+inline constexpr uint32_t kRrHitGi = 1u << 27;       // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (RG16F at the pass's own size), written at the trigger in a frame DLSS Ray Reconstruction takes (raw mode), read by the guide pass as the last choice
+inline constexpr uint32_t kAll = (1u << 28) - 1;
 constexpr const char* NameOf(uint32_t bit) {
   switch (bit) {
     case kLinDepth: return "lin_depth";
@@ -123,9 +129,11 @@ constexpr const char* NameOf(uint32_t bit) {
     case kVolume: return "volume";
     case kShafts: return "shafts";
     case kCarHistory: return "car history";
+    case kProbeField: return "probe field";
     case kRrGuides: return "RR guides";
     case kRrHitSsr: return "RR hit distance (SSR)";
     case kRrHitCar: return "RR hit distance (car reflections)";
+    case kRrHitGi: return "RR hit distance (bounce light)";
     default: break;
   }
   return "?";
@@ -165,6 +173,8 @@ enum class Step : uint8_t {
   // frame start (Scene::BeginFrame)
   kBeginLocalLights,
   kBeginSsr,
+  kBeginGiField,
+  kBeginGiApply,
   kBeginGBuffer,
   kBeginTemporal,
   kBeginScreen,
@@ -180,6 +190,7 @@ enum class Step : uint8_t {
   kCarStructures,
   kShadowReplay,
   kLightMaps,
+  kGiField,
   kAo,          // the AO's frame: the call, and the steps inside it
   kAoDepth,
   kAoNormals,
@@ -189,6 +200,7 @@ enum class Step : uint8_t {
   kContact,
   kAoApply,
   kScreenPublish,
+  kGiApply,
   kLocalLights,
   kShafts,
   kVolume,
@@ -236,7 +248,7 @@ struct Row {
   const char* call = "";             // the text of the call as it stands in that file, without the closing semicolon
   const char* label_file = "";       // the file holding the PassTiming label
   const char* label = "";            // the PassTiming label of the pass (its GPU time runs to the next mark)
-  std::array<const char*, 3> more_labels{};  // the pass's other marks, in the order it writes them (a pass of several draws: the SSR's trace, temporal and apply); the pass's own time is the sum
+  std::array<const char*, 4> more_labels{};  // the pass's other marks, in the order it writes them (a pass of several draws: the SSR's trace, temporal and apply); the pass's own time is the sum
   const char* closing_label = "";    // the mark written after the pass so that the time of what is recorded next is not the pass's ("after local lights"): not part of its own time
   uint32_t reads = 0;                // data:: bits that must exist when it runs (made by an earlier step that ran, or by the frame's start)
   uint32_t soft_reads = 0;           // data:: bits it reads where they are there: they must come from an earlier step
@@ -254,6 +266,7 @@ struct Row {
 namespace detail {
 inline constexpr uint32_t kAllPlaneBits = gbuffer::kAllPlanes;
 inline constexpr uint32_t kNormalPlane = gbuffer::PlaneBit(gbuffer::kPlaneNormal);
+inline constexpr uint32_t kAlbedoPlane = gbuffer::PlaneBit(gbuffer::kPlaneAlbedo);
 }  // namespace detail
 
 // THE TABLE. Row i is Step(i); the phases do not go back; a kInner row follows its umbrella with only its own steps between.
@@ -266,6 +279,12 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .note = "SECOND, before the G-buffer and the screen owner read (GB-I3 moved it above them): its wants of the planes, of the Hi-Z and of colour_post (ssr_rules.h WantedPlanes / WantedProducts: "
              "ONLY while REFLECTIONS ON SURFACES is on; nothing at off) are read in this very frame (lag 0), so the effect can run in the frame the setting changes, and the owners stop making them "
              "in the frame it is switched off. The call reads settings and sets wants only: nothing in the frame start between the old place and the new one depends on it"},
+    {.step = Step::kBeginGiField, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "probe field starts its frame", .call = "gi_integration_->BeginFrame(frame_serial_)",
+     .note = "(CITY-RT M3 G4, gi_integration.h) reads the setting and starts the field's frame, BEFORE the apply's BeginFrame, which reads whether the field runs to make its wants; it declares no wants itself"},
+    {.step = Step::kBeginGiApply, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "probe field's apply declares its wants", .call = "gi_apply_->BeginFrame()", .declares_for = Step::kGiApply,
+     .deps = {{{Step::kBeginGiField, "its wants follow whether the field runs this frame (GiField::running(), set by the integration's BeginFrame)"}}},
+     .note = "before the G-buffer and the screen owner read, like the reflections (lag 0): RT1 and RT2 (gbuffer_rules.h Consumer::kRtBounce) and lin_depth, ONLY while the field runs; nothing at off, so the "
+             "sidecar and the occlusion's depth chain are not made for it"},
     {.step = Step::kBeginGBuffer, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "G-buffer reads the planes' wants, opens its window", .call = "gbuffer_->BeginFrame(frame_serial_)",
      .reads_wants = want::kPlanes},
     {.step = Step::kBeginTemporal, .phase = Phase::kBegin, .kind = Kind::kScanned,
@@ -305,10 +324,16 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     {.step = Step::kLightMaps, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "light manager takes this frame's maps", .call = "light_manager_->OnResolve(shadow_recorded)",
      .reads = data::kShadowAtlas, .makes = data::kLightMaps, .deps = {{{Step::kShadowReplay, "its maps are what it takes"}}},
      .note = "passive (light_manager.h): the block is checked against them; noted when the replay recorded"},
+    {.step = Step::kGiField, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's frame (maintenance, update, weights)", .call = "gi_integration_->OnResolve(summary, list, slot_)",
+     .label_file = "gi_field.cpp", .label = "gi reset", .more_labels = {{"gi weights"}}, .soft_reads = data::kCarStructures, .makes = data::kProbeField,
+     .note = "(CITY-RT M3 G4, gi_integration.h) outside any render pass, BEFORE the AO plans: the occlusion asks GiApply::TakeSsgiShare while it plans, so the field must be published by then (a frame whose field is "
+             "not published yet leaves the screen-space bounce light whole). Reads the city's structures for its safe range (M1) and, with the probe update (G2), its rays; records nothing while no field runs. "
+             "CHECK (run, RT BOUNCE LIGHT on with the dry run cvar or G2's update): the census line of the first frame lists this step before the AO's frame and the field's apply after it, and no finding is logged"},
     {.step = Step::kAo, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "the AO's frame (occlusion, bounce light, contact shadows, screen products)",
-     .call = "ao_->OnResolve(record, summary, list, UpscalerRunning())", .label_file = "ao.cpp", .label = "ao depth",
+     .call = "ao_->OnResolve(record, summary, list, UpscalerRunning())", .label_file = "ao.cpp", .label = "ao depth", .soft_reads = data::kProbeField,
      .wants_planes = detail::kNormalPlane, .wants_screen = data::kLinDepth | data::kNormal | data::kColourPre,
-     .note = "runs a depth-only frame for a consumer outside its family when the occlusion and the contact shadows are off (screen_wants_); the steps below run inside it, in this order"},
+     .note = "runs a depth-only frame for a consumer outside its family when the occlusion and the contact shadows are off (screen_wants_); the steps below run inside it, in this order. "
+             "It plans its bounce light with the probe field's share (GiApply::TakeSsgiShare), which is why the field's frame is before it"},
     {.step = Step::kAoDepth, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "depth chain (lin_depth's owner)", .file = "ao.cpp",
      .call = "DrawPass(list, depth_[0], depth_pipeline, push);", .label_file = "ao.cpp", .label = "ao depth", .makes = data::kAoDepth},
     {.step = Step::kAoNormals, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "normals (G-buffer RT1 where valid, else the depth's)", .file = "ao.cpp",
@@ -332,11 +357,23 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .call = "PublishScreen(list, summary, plan, base);", .label_file = "screen_shared.cpp", .label = "screen hiz", .reads = data::kAoDepth, .soft_reads = data::kAoNormal | data::kColourChain,
      .makes = data::kLinDepth | data::kLinDepthFull | data::kNormal | data::kColourPre | data::kHizMin,
      .note = "ScreenShared::Publish at the END of the AO's frame (after the apply): every reader of the ScreenFrame comes after the whole AO"},
+    {.step = Step::kGiApply, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's apply (additive, multiplied by the occlusion)", .call = "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi)",
+     .label_file = "gi_apply.cpp", .label = "rt gi pixel", .more_labels = {{"rt gi denoise", "gi lookup"}}, .closing_label = "after gi apply", .reads = data::kPlanes | data::kLinDepth,
+     .soft_reads = data::kProbeField | data::kAoTerm | data::kCarStructures | data::kLights, .makes = data::kRrHitGi,
+     .wants_planes = detail::kNormalPlane | detail::kAlbedoPlane, .wants_screen = data::kLinDepth,
+     .deps = {{{Step::kAoApply, "right after the occlusion's apply, which has multiplied the colour: the field's bounce is added on top and multiplied by the occlusion's visibility itself"},
+               {Step::kGiField, "applies the frame the field's step published"}}},
+     .note = "(CITY-RT M3 G3, gi_apply.h) only while a field runs and has a published frame: one full screen additive draw into the main colour, with a lookup draw at the occlusion's traced size before it above 1080 "
+             "lines; its own labels are 'gi lookup', 'gi apply' (or 'gi apply view' in a debug view) and the closing mark 'after gi apply'. At ULTRA on a strong ray tracing card (CITY-RT M3 G5, gi_pixel.h) the per-pixel detail "
+             "pass runs first, inside this step: 'rt gi pixel' (the trace) and 'rt gi denoise' (RtDenoise's temporal and spatial stages) are marked only in a frame that runs it, before the lookup. "
+             "CITY-RT G6: in a frame DLSS Ray Reconstruction takes (TemporalSystem::RawModes().RtGi()) the denoiser does not run, the lookup mixes the 1 spp signal itself, and the pass's hit distance image "
+             "(kRrHitGi) goes to the guide pass through TemporalSystem::NoteRrBounceHit. The lamps' direct light comes after it"},
     {.step = Step::kLocalLights, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "deferred local lights (additive)", .call = "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_)",
      .label_file = "local_lights.cpp", .label = "local lights", .closing_label = "after local lights", .reads = data::kPlanes | data::kLinDepth | data::kLights,
      .soft_reads = data::kLightMaps | data::kShadowAtlas,
      .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kLinDepth, .wants_lights = true,
-     .deps = {{{Step::kAoApply, "added AFTER the occlusion's apply: nothing darkens the light (HP11), the bounce light does not see it (C10)"}}},
+     .deps = {{{Step::kAoApply, "added AFTER the occlusion's apply: nothing darkens the light (HP11), the bounce light does not see it (C10)"},
+               {Step::kGiApply, "added AFTER the probe field's apply: the lamps' direct light is not multiplied by the occlusion nor bounced by the field"}}},
      .note = "the headlights read this frame's maps from the atlas through the one lookup; before the sun shafts, the volume and the game's own light volumes and glows"},
     {.step = Step::kShafts, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "sun shafts' pass", .call = "shafts_->OnResolve(record, summary, list, UpscalerRunning())",
      .label_file = "shafts.cpp", .label = "shafts sky", .makes = data::kShafts,
@@ -355,17 +392,24 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .deps = {{{Step::kAoApply, "the colour as the occlusion left it"}, {Step::kLocalLights, "UNCAPPED and after the deferred lights: the reflections must see the lights"}}},
      .note = "made only while a consumer wants colour_post; before SSR adds to the colour (a reflection is not a reflection of a reflection)"},
     {.step = Step::kSsr, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "screen-space reflections (additive)", .call = "ssr_->OnTrigger(summary, list, raw_ssr)",
-     .label_file = "ssr.cpp", .label = "ssr trace", .more_labels = {{"ssr temporal", "ssr apply"}}, .closing_label = "after ssr",
-     .reads = data::kHizMin | data::kColourPost | data::kPlanes, .makes = data::kRrHitSsr, .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kHizMin | data::kColourPost,
+     .label_file = "ssr.cpp", .label = "ssr trace", .more_labels = {{"ssr rt", "ssr temporal", "ssr denoise", "ssr apply"}}, .closing_label = "after ssr",
+     .reads = data::kHizMin | data::kColourPost | data::kPlanes, .soft_reads = data::kCarStructures, .makes = data::kRrHitSsr, .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kHizMin | data::kColourPost,
      .deps = {{{Step::kColourPost, "reads the capture, which must be made before the effect adds to the colour"}, {Step::kLocalLights, "the reflection shows the lights"}}},
      .note = "the last pass that adds to the colour at the trigger: after the capture it reads and the light pass it shows, before the car history, whose vehicle-only image it does not touch (a vehicle's "
              "pixel takes none of the effect). GPU time: the labels 'ssr trace', 'ssr temporal', 'ssr apply' are its own (the chains sum the labels that start with 'ssr '), 'after ssr' closes the span and is "
-             "not; the products it wants are timed under the owner's 'screen hiz' and 'screen colour post'. Its Hi-Z comes from the screen frame published inside the AO's frame"},
+             "not; the products it wants are timed under the owner's 'screen hiz' and 'screen colour post'. Its Hi-Z comes from the screen frame published inside the AO's frame. CITY-RT R4: on a card that "
+             "traces rays, with the effect on, the label 'ssr rt' (written between the trace and the accumulation, only in a frame the ray traced fallback follows: ssr_rt.h) covers its two compute passes "
+             "(the candidates' tile list and the rays into this frame's top level, which the car structures' step built: a soft read); with no ray tracing the label is not there and nothing else changes. CITY-RT R6: "
+             "the label 'ssr denoise' (between the accumulation and the resolve, only in a frame the fallback followed and Ray Reconstruction did not take: RtDenoise's spatial iterations, rt_denoise.h) covers "
+             "its compute passes; it reads the trace, the confidence and the accumulated image, so it follows the accumulation"},
     {.step = Step::kCarHistory, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "car self-reflection history and ray traced reflection", .call = "car_refl_->OnResolve(record, summary, list)",
      .label_file = "car_selfrefl.cpp", .label = "car history", .soft_reads = data::kColourPost | data::kCarStructures, .makes = data::kCarHistory | data::kRrHitCar, .wants_screen = data::kColourPost,
      .deps = {{{Step::kAoApply, "the history is the colour the occlusion left"}, {Step::kSsr, "kept after SSR as the design has it; above 1080 lines (colour_post is half size) the history reads the main colour, which holds "
                                                                                                 "SSR's reflections by then, but the history keeps a vehicle's pixels only and SSR adds nothing to a vehicle's pixel (GB_FLAG_VEHICLE, the stub's stencil mark)"}}},
      .note = "the history image and the ray traced reflection of its texels (car_rt_refl.h, with this frame's top level) are read by the NEXT frame's car paint draws. "
+             "CITY-RT M2 R3b: inside this step, right after the history pass, the player's windows' reflection of the city is traced (the glass variant of the ray traced pass, car_rt_glass_refl.h) and ADDED to the "
+             "main colour by one full-screen draw (labels 'car glass refl', 'car glass apply', closed by 'after car glass'); the history was made before it, so it holds no glass reflection, and nothing at the trigger "
+             "adds to the colour after it. "
              "RR-4b: in a frame DLSS Ray Reconstruction takes (TemporalSystem::RawModes) the ray traced pass skips its filter and writes the hit distance image the guide pass reads (kRrHitCar). "
              "CHECK (run): the cars' pixels with the reflections on and off at 4K are the same (a car's glass over a road pixel could keep the road's class: the sidecar's mask rule)"},
     {.step = Step::kGBufferView, .phase = Phase::kTrigger, .kind = Kind::kScanned, .name = "G-buffer debug view", .call = "gbuffer_->DrawView(summary, list)",
@@ -382,14 +426,15 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     // ======================================================== the anchor (TemporalSystem::RecordUpscale) ===========================================
     {.step = Step::kRrGuides, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "Ray Reconstruction's guide pass (diffuse and specular albedo, normals + roughness, hit distance, responsivity)",
      .file = "temporal.cpp", .call = "RecordRrGuides(list, kept, width, height)", .label_file = "rr_guides.cpp", .label = "rr guides", .closing_label = "after rr guides",
-     .reads = data::kPlanes, .soft_reads = data::kRrHitSsr | data::kRrHitCar, .makes = data::kRrGuides, .wants_planes = detail::kAllPlaneBits,
+     .reads = data::kPlanes, .soft_reads = data::kRrHitSsr | data::kRrHitCar | data::kRrHitGi, .makes = data::kRrGuides, .wants_planes = detail::kAllPlaneBits,
      .deps = {{{Step::kGBufferPublish, "the planes it reads are published at the trigger"}, {Step::kShaftsComposite, "the anchor is the game's post chain: after the end-of-scene copy"}}},
      .note = "RR-2: ONE compute pass, only while the plan wants the guides (the debug switch mcla_gpu_dlss_rr = on with DLSS, or a guide view): the planes (RT1 world normal, RT2 albedo, RT3 material, at the host "
              "sample that is the guest's sample 0), the kept depth and the upscaler's masks to the five guides (hlsl/rr_guides_common.hlsli). It runs right before the backend gets the frame, the guides in the "
              "upscaler's read state when it ends. Its wants are the G-buffer's planes (declared by kBeginTemporal); the noisy colour it does not read: the upscaler takes it itself. RR-3: "
              "RecordRrGuides hands the images (or their absence) to NoteRrGuides right after the pass; the hit distance is written by the pass (0 on a surface, 65504 in the sky) and takes the "
              "reflection effects' images (RR-4: soft reads of kRrHitSsr and kRrHitCar, made at the trigger by the effects when they ran raw in this frame and handed over by Scene through "
-             "TemporalSystem::NoteRrHit; the larger distance wins where both hold one)"},
+             "TemporalSystem::NoteRrHit; the larger distance wins where both hold one; CITY-RT G6: the bounce light's per-pixel pass's image, kRrHitGi, made at the trigger by the apply's step and handed over through "
+             "NoteRrBounceHit, is the last choice, where neither reflection wrote one)"},
     {.step = Step::kUpscale, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "the upscaler's dispatch (Ray Reconstruction where its guides and context are there, else Super Resolution)",
      .file = "temporal.cpp", .call = "backend->Upscale(list, in)", .label_file = "temporal.cpp", .label = "temporal upscale", .soft_reads = data::kRrGuides,
      .deps = {{{Step::kRrGuides, "Ray Reconstruction takes the guides the pass made, in the state it left them"}}},
@@ -421,7 +466,7 @@ constexpr const Row& RowOf(Step step) { return kRows[size_t(step)]; }
 // default) is the GPU class's cell, off everywhere until the owner has seen the pictures, so it is no arm: a run names the level. What each arm must show, in the pass timing and in the order census:
 //   off     none of the SSR labels, no capture (no 'screen colour post', no 'screen hiz': nothing else asks for them at the defaults), no G-buffer planes (the sidecar needs a consumer), no held images:
 //           the effect costs nothing, which is what the defaults' cost runs (P9) check
-//   high    the SSR row's labels (its own time: 'ssr trace' + 'ssr temporal' + 'ssr apply'), plus the products that exist only for it: 'screen hiz' and 'screen colour post', plus the sidecar's cost in the
+//   high    the SSR row's labels (its own time: 'ssr trace' + 'ssr rt' (only where the ray traced fallback follows) + 'ssr temporal' + 'ssr denoise' (only where RtDenoise follows it) + 'ssr apply'), plus the products that exist only for it: 'screen hiz' and 'screen colour post', plus the sidecar's cost in the
 //           draws and the planes' memory; the census names the capture and the reflections after the light pass
 //   ultra   the same labels, the trace with two rays and 64 steps (ssr_rules.h NumbersOf): the trace label costs more, the others about the same
 // A chain that wants the effect's whole cost reads: the own labels + the product labels + the frame's difference to the off arm (the planes). frame_order_test.cpp holds the words to ssr_rules.h, the

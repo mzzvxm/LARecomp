@@ -6,9 +6,9 @@
 // CAR_RT_SPACE (car_rt_common.hlsli says so).
 //
 // binding 4  gCarRtUvs        every mesh's texture coordinates: one uint a vertex, a half2 (u in the low half), the ranges the normals have
-// binding 5  gCarRtMaterials  the frame's rows (kMatFrameRows), then kMatRows rows an instance in the instances' order
+// binding 5  gCarRtMaterials  the frame's rows (kRtHitFrameRows), then kMatRows rows an instance in the instances' order
 //
-// RT-HIT-SHADING part two (car_rt_hit_rules.h has the design): the sun's visibility at a hit also reads the game's own cascades (CarMatCascadeLit, frame rows 8 to 31: the
+// RT-HIT-SHADING part two (car_rt_hit_rules.h has the design): the sun's visibility at a hit also reads the game's own cascades (RtHitCascadeLit, frame rows 8 to 31: the
 // volumetric light's lookup, copied), the clear coat's helpers (CarCoatShare, CarCoatMix) are here so that the player's pass and the opponents' variant share them.
 //
 // RT-HIT-SHADING-5 (car_rt_material_rules.h "the hit's own detail" has the design, the numbers and the reference): the hit's own detail, so that a reflected car is not a flat colour. The sky's
@@ -30,6 +30,16 @@
 ByteAddressBuffer gCarRtUvs : register(t4, CAR_RT_SPACE_NAME);
 StructuredBuffer<uint4> gCarRtMaterials : register(t5, CAR_RT_SPACE_NAME);
 
+// The pieces every hit shading shares are in rt_hit_common.hlsli (CITY-RT M2 H4): the frame's rows and the hit's light (rt_hit_frame.hlsli, included here), the bindless texture reads, the game's
+// cascades, the environment map and the sun's ray (rt_hit_sample.hlsli, included below after the car's own records). The frame's rows are the first rows of binding 5 here, and the sun's ray
+// looks in the car scene's top level.
+#define RT_HIT_FRAME_ROW(i) gCarRtMaterials[i]
+#define RT_HIT_TLAS gCarRtTlas
+#include "rt_hit_frame.hlsli"
+#include "nan_guard.hlsli"
+
+static const float kCarHitMaxColour = 60000.0;   // a hit's colour in the history's units: what a half float keeps with room
+
 #define CAR_MAT_CLASS_NONE 0
 #define CAR_MAT_CLASS_PAINT 1
 #define CAR_MAT_CLASS_GLASS 2
@@ -44,27 +54,7 @@ StructuredBuffer<uint4> gCarRtMaterials : register(t5, CAR_RT_SPACE_NAME);
 #define CAR_MAT_FLAG_UV 4
 #define CAR_MAT_FLAG_EMISSIVE 8
 
-#define CAR_MAT_FRAME_SHADE 1
-#define CAR_MAT_FRAME_SHADOW 2
-#define CAR_MAT_FRAME_ENV 4
-#define CAR_MAT_FRAME_SUN 8
-#define CAR_MAT_FRAME_CASCADE 16
-
-static const uint kMatFrameRows = 32;
-static const uint kMatCascadeHeaderRow = 8;
-static const uint kMatCameraRow = 9;
-static const uint kMatCascadeRightRow = 10;
-static const uint kMatCascadeTopRow = 11;
-static const uint kMatCascadeFirstRow = 12;
-static const uint kMatCascadeRowsEach = 5;
-static const uint kMatMaxCascades = 4;
-static const float kCascadeNormalOffset = 0.03;
 static const uint kMatRows = 2;
-static const uint kMatNoSlot = 0xFFFFFFFFu;
-static const float kMatTintMax = 2.0;
-static const float kConeLodScale = 20.0;
-static const float kEmissiveGain = 3.0;
-static const float kFillShare = 0.2;  // the ambient is at least this share of the sun's colour (car_rt_material_rules.h kFillShare)
 // RT-HIT-SHADING-5 (car_rt_material_rules.h has each number and says what it is)
 static const float kNightFillShare = 0.4;
 static const float kLampDiffuse = 0.6;  // RT-HIT-SHADING-6 (car_rt_material_rules.h kLampDiffuse): the street lamp's light on a surface that faces up, at night
@@ -100,53 +90,6 @@ static const float kClassDiffuseGain[8] = {1.0, 1.0, 1.0, 1.0, 0.1, 0.3, 1.0, 1.
 static const float kClassAmbient[8] = {1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 0.45, 0.85};
 static const float kClassGlint[8] = {0.5, 1.0, 1.0, 0.0, 1.0, 0.8, 0.0, 0.3};
 
-struct CarMatFrame
-{
-    float3 toSun;      // unit, view space
-    uint flags;
-    float3 sun;        // the sun's colour, the paint's units
-    float shadowReach; // metres
-    float3 ambient;
-    float ambientGain;
-    uint envSharp;     // bindless slot, bit 31 the gamma bit
-    uint envBlur;
-    float night;       // 0 day, 1 night
-    float specGain;
-    float3 sky;
-    float gain;
-    float3 axisX;      // the world's axes in view space
-    float3 axisY;
-    float3 axisZ;
-    float detail;      // RT-HIT-SHADING-5: the hit's own detail (0: the shading as it was)
-};
-
-CarMatFrame CarMatLoadFrame()
-{
-    const uint4 r0 = gCarRtMaterials[0];
-    const uint4 r1 = gCarRtMaterials[1];
-    const uint4 r2 = gCarRtMaterials[2];
-    const uint4 r3 = gCarRtMaterials[3];
-    const uint4 r4 = gCarRtMaterials[4];
-    CarMatFrame f;
-    f.toSun = asfloat(r0.xyz);
-    f.flags = r0.w;
-    f.sun = asfloat(r1.xyz);
-    f.shadowReach = asfloat(r1.w);
-    f.ambient = asfloat(r2.xyz);
-    f.ambientGain = asfloat(r2.w);
-    f.envSharp = r3.x;
-    f.envBlur = r3.y;
-    f.night = asfloat(r3.z);
-    f.specGain = asfloat(r3.w);
-    f.sky = asfloat(r4.xyz);
-    f.gain = asfloat(r4.w);
-    f.axisX = asfloat(gCarRtMaterials[5].xyz);
-    f.axisY = asfloat(gCarRtMaterials[6].xyz);
-    f.axisZ = asfloat(gCarRtMaterials[7].xyz);
-    f.detail = asfloat(gCarRtMaterials[5].w);
-    return f;
-}
-
 struct CarMat
 {
     uint cls;
@@ -162,14 +105,9 @@ struct CarMat
     float emissive;
 };
 
-float3 CarMatRgb10(uint v)
-{
-    return float3(float(v & 1023u), float((v >> 10) & 1023u), float((v >> 20) & 1023u)) * (kMatTintMax / 1023.0);
-}
-
 CarMat CarMatLoad(uint instance)
 {
-    const uint base = kMatFrameRows + instance * kMatRows;
+    const uint base = kRtHitFrameRows + instance * kMatRows;
     const uint4 r0 = gCarRtMaterials[base];
     const uint4 r1 = gCarRtMaterials[base + 1u];
     CarMat m;
@@ -179,8 +117,8 @@ CarMat CarMatLoad(uint instance)
     m.fresnelMax = float((r0.x >> 16) & 0xFFu) / 255.0;
     m.fresnelPower = float((r0.x >> 24) & 0xFFu) / 16.0;
     m.diffuse = r0.y;
-    m.tintA = CarMatRgb10(r0.z);
-    m.tintB = CarMatRgb10(r0.w);
+    m.tintA = RtHitRgb10(r0.z);
+    m.tintB = RtHitRgb10(r0.w);
     m.flop = asfloat(r1.x);
     m.lodBase = asfloat(r1.y);
     m.emissive = asfloat(r1.z);
@@ -202,190 +140,7 @@ float2 CarRtHitUv(uint instance, uint primitive, float2 barycentrics)
     return t0 * (1.0 - barycentrics.x - barycentrics.y) + t1 * barycentrics.x + t2 * barycentrics.y;
 }
 
-// The game's piecewise-linear gamma to linear (the translated shaders' pwlGammaToLinearScalar; the fetch's bit 31 asks for it).
-float CarMatPwl(float gamma)
-{
-    gamma = saturate(gamma);
-    float scale;
-    float offset;
-    if (gamma >= 96.0 / 255.0)
-    {
-        if (gamma >= 192.0 / 255.0)
-        {
-            scale = 8.0 / 1024.0;
-            offset = -1024.0;
-        }
-        else
-        {
-            scale = 4.0 / 1024.0;
-            offset = -256.0;
-        }
-    }
-    else
-    {
-        if (gamma >= 64.0 / 255.0)
-        {
-            scale = 2.0 / 1024.0;
-            offset = -64.0;
-        }
-        else
-        {
-            scale = 1.0 / 1024.0;
-            offset = 0.0;
-        }
-    }
-    float lin = gamma * ((255.0 * 1024.0) * scale) + offset;
-    lin += trunc(lin * scale);
-    return lin * (1.0 / 1023.0);
-}
-
-// One texel of level `mip`, wrapped (the diffuse) or clamped (the environment), the gamma applied where the fetch asks.
-float4 CarMatTexel(Texture2D<float4> tex, int2 p, uint mip, int2 size, bool wrap, bool gamma)
-{
-    int2 q;
-    if (wrap)
-    {
-        q = ((p % size) + size) % size;
-    }
-    else
-    {
-        q = clamp(p, int2(0, 0), size - 1);
-    }
-    float4 t = tex.Load(int3(q, int(mip)));
-    if (gamma)
-    {
-        t.rgb = float3(CarMatPwl(t.r), CarMatPwl(t.g), CarMatPwl(t.b));
-    }
-    return t;
-}
-
-float4 CarMatBilinear(Texture2D<float4> tex, float2 uv, uint mip, int2 size0, bool wrap, bool gamma)
-{
-    const int2 size = max(size0 >> int(mip), int2(1, 1));
-    const float2 p = uv * float2(size) - 0.5;
-    const int2 i0 = int2(floor(p));
-    const float2 f = p - float2(i0);
-    const float4 a = CarMatTexel(tex, i0, mip, size, wrap, gamma);
-    const float4 b = CarMatTexel(tex, i0 + int2(1, 0), mip, size, wrap, gamma);
-    const float4 c = CarMatTexel(tex, i0 + int2(0, 1), mip, size, wrap, gamma);
-    const float4 d = CarMatTexel(tex, i0 + int2(1, 1), mip, size, wrap, gamma);
-    return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
-}
-
-// A texture read at mip level `lod` (a float: two levels blended), by the bindless slot (bit 31 the gamma bit).
-float4 CarMatSample(uint slot, float2 uv, float lod, bool wrap)
-{
-    Texture2D<float4> tex = g_textures[NonUniformResourceIndex(slot & 0x7FFFFFFFu)];
-    uint w;
-    uint h;
-    uint levels;
-    tex.GetDimensions(0, w, h, levels);
-    const bool gamma = (slot & 0x80000000u) != 0u;
-    const float l = clamp(lod, 0.0, float(max(levels, 1u) - 1u));
-    const uint l0 = uint(floor(l));
-    const uint l1 = min(l0 + 1u, max(levels, 1u) - 1u);
-    const float f = l - float(l0);
-    const int2 size0 = int2(int(w), int(h));
-    float4 value = CarMatBilinear(tex, uv, l0, size0, wrap, gamma);
-    if (l1 != l0 && f > 0.001)
-    {
-        value = lerp(value, CarMatBilinear(tex, uv, l1, size0, wrap, gamma), f);
-    }
-    return value;
-}
-
-// The game's environment map (a 512x256 dual paraboloid, four levels) at a unit WORLD direction (car_rt_material_rules.h EnvUv: decoded from xChrome::PS_Chrome).
-float2 CarMatEnvUv(float3 r)
-{
-    const float a = -r.y;
-    const float b = -r.z;
-    const float c = -r.x;
-    float2 uv;
-    if (b > 0.0)
-    {
-        uv = float2(0.25 - c / (4.0 + 4.0 * b), 0.5 + a / (2.0 + 2.0 * b));
-    }
-    else
-    {
-        uv = float2(0.75 + c / (4.0 - 4.0 * b), 0.5 + a / (2.0 - 2.0 * b));
-    }
-    return uv;
-}
-
-// A depth texel of the cascade atlas, clamped to its size.
-float CarMatLoadDepth(Texture2D<float4> atlas, int2 texel, int2 size)
-{
-    return atlas.Load(int3(clamp(texel, int2(0, 0), size - 1), 0)).x;
-}
-
-// The fraction of the sun's light that reaches the WORLD point `p` through the game's cascades: the collector's own lookup, as volumetrics_inject_cs.hlsl CascadeLit has it and
-// car_rt_material_rules.h CascadeLit does (the finest box that holds the point, the atlas uv and depth from that cascade's matrix, a bilinear weighted compare: lit where the stored
-// depth is at least the receiver's). 1 where the point is in none of the boxes.
-float CarMatCascadeLit(float3 p)
-{
-    const uint4 header = gCarRtMaterials[kMatCascadeHeaderRow];
-    const uint cascades = min(header.y, kMatMaxCascades);
-    if (cascades == 0u || header.x == 0xFFFFFFFFu)
-    {
-        return 1.0;
-    }
-    const float3 right = asfloat(gCarRtMaterials[kMatCascadeRightRow].xyz);
-    const float3 top = asfloat(gCarRtMaterials[kMatCascadeTopRow].xyz);
-    const float r = dot(p, right);
-    const float t = dot(p, top);
-    uint inside = 0u;
-    [unroll]
-    for (uint i = 0u; i < kMatMaxCascades; ++i)
-    {
-        if (i < cascades)
-        {
-            const float4 box = asfloat(gCarRtMaterials[kMatCascadeFirstRow + i * kMatCascadeRowsEach + 4u]);
-            inside += (abs(r + box.x) < box.y && abs(t + box.z) < box.w) ? 1u : 0u;
-        }
-    }
-    if (inside == 0u)
-    {
-        return 1.0;  // outside every cascade: no shadow data
-    }
-    const uint base = kMatCascadeFirstRow + (cascades - inside) * kMatCascadeRowsEach;
-    const float4 r0 = asfloat(gCarRtMaterials[base]);
-    const float4 r1 = asfloat(gCarRtMaterials[base + 1u]);
-    const float4 r2 = asfloat(gCarRtMaterials[base + 2u]);
-    const float4 r3 = asfloat(gCarRtMaterials[base + 3u]);
-    const float u = dot(p, float3(r0.x, r1.x, r2.x)) + r3.x;
-    const float v = dot(p, float3(r0.y, r1.y, r2.y)) + r3.y;
-    const float depth = (dot(p, float3(r0.z, r1.z, r2.z)) + r3.z) * (dot(p, float3(r0.w, r1.w, r2.w)) + r3.w) + asfloat(header.z);
-    Texture2D<float4> atlas = g_textures[header.x];
-    uint w;
-    uint h;
-    uint levels;
-    atlas.GetDimensions(0, w, h, levels);
-    const int2 size = int2(int(w), int(h));
-    const float2 tc = float2(u, v) * float2(size) - 0.5;
-    const int2 i0 = int2(floor(tc));
-    const float2 fr = tc - float2(i0);
-    const float s00 = CarMatLoadDepth(atlas, i0, size) >= depth ? 1.0 : 0.0;
-    const float s10 = CarMatLoadDepth(atlas, i0 + int2(1, 0), size) >= depth ? 1.0 : 0.0;
-    const float s01 = CarMatLoadDepth(atlas, i0 + int2(0, 1), size) >= depth ? 1.0 : 0.0;
-    const float s11 = CarMatLoadDepth(atlas, i0 + int2(1, 1), size) >= depth ? 1.0 : 0.0;
-    return lerp(lerp(s00, s10, fr.x), lerp(s01, s11, fr.x), fr.y);
-}
-
-// Is the point lit by the sun: one ray towards it against the whole scene, a few metres (a car's own shadow on itself and on its neighbour).
-float CarMatSunVisible(float3 origin, float3 toSun, float reach)
-{
-    RayDesc ray;
-    ray.Origin = origin;
-    ray.Direction = toSun;
-    ray.TMin = 0.0;
-    ray.TMax = reach;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-    query.TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, CAR_RT_MASK_ALL, ray);
-    while (query.Proceed())
-    {
-    }
-    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;
-}
+#include "rt_hit_sample.hlsli"
 
 // RT-HIT-SHADING-5: a small integer hash (PCG; car_rt_material_rules.h Pcg) and the two numbers in [0, 1) the sky ray's jitter takes from the hit's place (OpenHash).
 uint CarMatPcg(uint v)
@@ -442,8 +197,8 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
                  out float3 colour)
 {
     colour = float3(0.0, 0.0, 0.0);
-    const CarMatFrame f = CarMatLoadFrame();
-    if ((f.flags & CAR_MAT_FRAME_SHADE) == 0u)
+    const RtHitFrame f = RtHitLoadFrame();
+    if ((f.flags & RT_HIT_FRAME_SHADE) == 0u)
     {
         return false;
     }
@@ -461,11 +216,11 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     {
         albedo = lerp(m.tintB, m.tintA, pow(max(nv, 1e-4), m.flop));
     }
-    if (m.diffuse != kMatNoSlot && (m.flags & CAR_MAT_FLAG_UV) != 0u)
+    if (m.diffuse != kRtHitNoSlot && (m.flags & CAR_MAT_FLAG_UV) != 0u)
     {
         const float2 uv = CarRtHitUv(instance, primitive, barycentrics);
         const float lod = log2(max(footprint, 1e-4)) + m.lodBase;
-        const float4 texel = CarMatSample(m.diffuse, uv, lod, true);
+        const float4 texel = RtHitSample(m.diffuse, uv, lod, true);
         if ((m.flags & CAR_MAT_FLAG_DECAL) != 0u)
         {
             albedo = lerp(albedo, texel.rgb, saturate(texel.a));
@@ -478,8 +233,8 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
 
     // the light: the ambient with a hemisphere term, the sun by N.L and its visibility
     const float3 up = f.axisY;
-    const float hemisphere = clamp(0.6 + 0.4 * dot(normal, up), 0.2, 1.0);
-    const bool sunKnown = (f.flags & CAR_MAT_FRAME_SUN) != 0u;
+    const float hemisphere = RtHitHemisphere(f, normal);
+    const bool sunKnown = (f.flags & RT_HIT_FRAME_SUN) != 0u;
     const float3 toSun = sunKnown ? f.toSun : up;
     // the hour from the sun's height (the host's row, NightFromSunHeight) where the frame knows the sun: the sun's light ends at night, the sky's fill and the lamps' images take over
     const float night = sunKnown ? f.night : 0.0;
@@ -492,19 +247,15 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     [branch]
     if (ndl > 0.0 && daySun > 0.0)
     {
-        if ((f.flags & CAR_MAT_FRAME_CASCADE) != 0u)
+        if ((f.flags & RT_HIT_FRAME_CASCADE) != 0u)
         {
-            const float3 camera = asfloat(gCarRtMaterials[kMatCameraRow].xyz);
-            const float3 lifted = hit + normal * kCascadeNormalOffset;
-            const float3 world = camera + float3(dot(lifted, f.axisX), dot(lifted, f.axisY), dot(lifted, f.axisZ));
-            const float lit = CarMatCascadeLit(world);
-            visible = lit + (1.0 - lit) * saturate(asfloat(gCarRtMaterials[kMatCascadeHeaderRow].w));
+            visible = RtHitCascadeVisible(f, hit, normal);
         }
-        if (visible > 0.0 && (f.flags & CAR_MAT_FRAME_SHADOW) != 0u)
+        if (visible > 0.0 && (f.flags & RT_HIT_FRAME_SHADOW) != 0u)
         {
             // the lift follows the magnitude of the view z: a hit behind the camera (a car behind a chase camera, in the paint's reflection) has a negative z, and past 2 m a negative lift puts the ray's
             // origin under the surface, the ray meets the surface it left and the hit is in shadow
-            visible = min(visible, CarMatSunVisible(hit + normal * (0.004 + 0.002 * abs(hit.z)), toSun, f.shadowReach));
+            visible = min(visible, RtHitSunVisible(hit + normal * (0.004 + 0.002 * abs(hit.z)), toSun, f.shadowReach, CAR_RT_MASK_ALL));
         }
     }
     // RT-HIT-SHADING-5: what the hit keeps of its ambient and its reflection (the class, the sky's openness, the contact with the ground), each scaled by the frame's detail
@@ -519,7 +270,7 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     const float contact = height >= 0.0 ? kContactMin + (1.0 - kContactMin) * smoothstep(0.0, kContactHeight, height) : 1.0;
     const float ground = lerp(1.0, kOpenMin + (1.0 - kOpenMin) * openness, strength) * lerp(1.0, contact, strength);
     const float classAmbient = lerp(1.0, kClassAmbient[m.cls], strength);
-    const float3 fill = max(f.ambient, f.sun * lerp(kFillShare, kNightFillShare, night));
+    const float3 fill = max(f.ambient, f.sun * lerp(kRtHitFillShare, kNightFillShare, night));
     // RT-HIT-SHADING-6: the lamp over the street lights what faces up (a roof, a bonnet, a shoulder), at night, by the sky's openness: the flank under the neighbour's roof line stays in its shade
     const float lampLight = kLampDiffuse * night * saturate(dot(normal, up)) * openness * strength;
     const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);
@@ -532,11 +283,11 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     const float3 reflected = reflect(direction, normal);
     float3 env;
     [branch]
-    if ((f.flags & CAR_MAT_FRAME_ENV) != 0u)
+    if ((f.flags & RT_HIT_FRAME_ENV) != 0u)
     {
-        const float3 world = float3(dot(f.axisX, reflected), dot(f.axisY, reflected), dot(f.axisZ, reflected));
-        const float lod = kClassEnvLod[m.cls] + log2(1.0 + kConeLodScale * tanHalf);
-        env = CarMatSample(f.envSharp, CarMatEnvUv(world), lod, false).rgb;
+        const float3 world = RtHitEnvDirection(f, reflected);
+        const float lod = kClassEnvLod[m.cls] + log2(1.0 + kRtHitConeLodScale * tanHalf);
+        env = RtHitEnvRead(f, world, lod);
     }
     else
     {
@@ -557,9 +308,10 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     }
     if ((m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u)
     {
-        result += albedo * (m.emissive * kEmissiveGain * f.night);
+        result += albedo * (m.emissive * kRtHitEmissiveGain * f.night);
     }
-    colour = max(result, 0.0) * (f.gain * units);
+    // not negative, at most what a half float keeps (the reflection pass's kMaxColour), a NaN black: decided by the bits (nan_guard.hlsli), for max(NaN, 0) is 0 on D3D12 only
+    colour = NgHeld3(result * (f.gain * units), kCarHitMaxColour);
     return true;
 }
 
@@ -576,7 +328,7 @@ static const float kAuxSharpScale = 0.49;
 // The fresnel exponent of an instance's paint (its record's row 0, bits 24..31: the power times 16; the class's where the draw's constants say none).
 float CarMatFresnelPower(uint instance)
 {
-    return float((gCarRtMaterials[kMatFrameRows + instance * kMatRows].x >> 24) & 0xFFu) / 16.0;
+    return float((gCarRtMaterials[kRtHitFrameRows + instance * kMatRows].x >> 24) & 0xFFu) / 16.0;
 }
 
 // The share of a texel's reflection that is the clear coat's mirror (CoatShare).

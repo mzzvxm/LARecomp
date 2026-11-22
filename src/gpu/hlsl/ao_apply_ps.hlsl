@@ -129,6 +129,7 @@
 
 #include "ao_common.hlsli"
 #include "host_pass_samplers.hlsli"
+#include "nan_guard.hlsli"
 #if AO_GI
 #include "ssgi_common.hlsli"
 #endif
@@ -441,7 +442,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float3 share_rgb = SunShareRgb(ambient, g_push.extra.x, n_dot_l * sun_vis_used);
     contact_factor3 = 1.0f - saturate((g_push.extra.w * contact_fade * (1.0f - cs)) * share_rgb);
   }
-  const float3 factor3 = ao_factor * contact_factor3;
+  const float3 factor3 = NgNumberOr3(ao_factor * contact_factor3, 1.0f);   // the picture is multiplied by this: a NaN or an infinity is no change (decided by the bits, nan_guard.hlsli)
   const float factor = dot(factor3, kLuma);  // its luma: the ceiling's room and the debug views
 
 #if AO_GI
@@ -479,7 +480,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (added > 1e-6f) {
     bounce *= SsgiSoftClip(added, room) / added;
   }
-  const float3 gi_factor = factor3 + bounce;
+  const float3 gi_factor = NgNumberOr3(factor3 + bounce, 1.0f);   // (nan_guard.hlsli: a NaN or an infinity is no change)
   if (view >= 16u) {
     float3 shown = gi_factor * kViewScale;
     if (view == 17u) {

@@ -111,6 +111,8 @@ Everything else is in the pause menu. It defaults to 60 FPS with real frame delt
 
 **The first start builds the shaders** from your game files, behind a progress popup: about 15 seconds on an 8-core CPU, up to a minute or two on slower ones. They go in `cache\shaders` next to the executable and are built again only when the game files, the shader compiler or LARecomp's builder change. The Xenia backend does not need them. `larecomp.exe --build_shader_packs` builds them without starting the game (no window; progress on the console, exit code 0 when they are in place): an installer can run it so the first start has nothing to build. After it, `larecomp.exe --precache_pipelines` does the pipelines the game would otherwise compile while the title starts, for your saved MSAA and upscaler choice: it fills your graphics driver's own cache for the game's API (add `--precache_pipelines_backend=vulkan` or `d3d12` for the other one) and, when nothing changed since (same driver, graphics card, settings and files), finishes in about a second.
 
+**Ray traced shadows** (RT SHADOWS, LIGHTING AND SHADOWS; a graphics card with ray queries, on by itself on a fast one) trace the sun's shadows from the city's own triangles, which are built from your game files as well: about 250 MB in `cache\shaders\city`, a few seconds of work once, started by the game in the background the first time they are wanted. `larecomp.exe --build_city_pack` builds it ahead (no window, progress on the console, exit code 0 when it is in place); an installer can run it after `--build_shader_packs`.
+
 ### Linux and the Steam Deck
 
 LARecomp runs on Linux and the Steam Deck through Vulkan. Besides a Vulkan driver, a game installed with the LARecomp launcher needs nothing else: the launcher builds it with its own build kit, which brings its own C++ library (libc++). A build made with the system's compiler (by hand, or by the launcher where its kit cannot start) links the system's libstdc++ instead, and that must be **version 13 or newer**. These have it:
@@ -254,6 +256,8 @@ Fixes made directly in LARecomp:
 **AMD FidelityFX** and **AMD Anti-Lag 2**. LARecomp uses FidelityFX Super Resolution (FSR 1, FSR 3.1, FSR 4) and CAS for upscaling and sharpening, and AMD Anti-Lag 2. The FidelityFX SDK is under the MIT licence, copied next to the exe with its files (`amd_fidelityfx_license.md`). AMD FidelityFX, FSR and Radeon are trademarks of Advanced Micro Devices, Inc.
 
 **libmspack**, by Stuart Caie (v1.11, [kyz/libmspack](https://github.com/kyz/libmspack)). LARecomp reads the game's compressed files with libmspack's LZX decoder. libmspack is under the GNU LGPL 2.1 and is a separate DLL, `larecomp_mspack.dll` (`liblarecomp_mspack.so` on Linux), next to the exe, so you can replace it with a build of your own. Its licence and a short notice are copied next to it (`larecomp_mspack_license.txt`, `larecomp_mspack_notice.txt`; the repository keeps them in `LICENSES/`), and the library's source is the submodule `thirdparty/libmspack`.
+
+**Zstandard (zstd)**, by Meta Platforms, Inc. and affiliates ([facebook/zstd](https://github.com/facebook/zstd), v1.5.7). LARecomp compresses the ray tracing data it builds on your PC from your game files with zstd, under its BSD 3-Clause licence (Copyright (c) Meta Platforms, Inc. and affiliates; the licence text is `thirdparty/LAR-XenosRecomp/thirdparty/zstd/LICENSE`, and the library is built into the exe).
 
 **ARC DTrade**, who made the LARecomp logo font for the project: the word mark and the LAR app icon.
 

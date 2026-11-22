@@ -94,6 +94,7 @@ enum class Effect : uint8_t {
   kHeadlights,            // mcla_gpu_headlights         auto, off, on (headlight_rig.h)
   kLightShadows,          // mcla_gpu_light_shadows      auto, off, medium, high, ultra (local_shadow.h; was mcla_gpu_headlight_shadows)
   kVolumetrics,           // mcla_gpu_volumetrics        auto, off, medium, high, ultra (volumetrics_level.h)
+  kRtShadows,             // mcla_gpu_rt_shadows         auto, off, high, ultra (city_rt_rules.h; the city's real geometry traced for the sun's shadows)
   kSsr,                   // mcla_gpu_ssr                auto, off, high, ultra (ssr_rules.h; the row REFLECTIONS ON SURFACES)
   kNeonLight,             // mcla_gpu_neon_light         auto, off, on (neon_light.h, local_lights_sources.h; the row NEON LIGHT)
 };
@@ -149,6 +150,10 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // for medium and 1.0 ms for high at 1080p on a GTX 1050-class card): medium on Mid, high on High, nothing on shared memory. Ultra is
     // a deliberate pick: its cost is not "no visible loss" for the weakest cards of the High class (6 GB GTX 1060-class).
     {"mcla_gpu_volumetrics", "off", "medium", "high"},
+    // Ray traced sun shadows from the city's own triangles (CITY-RT M1, city_rt_rules.h): high on the High class only (the sectors within 300 m, 120 to 180 MB of
+    // structures, ray queries from the depth), off on Mid and Low. A Mid card (a ray tracing card under 5.5 GiB) may be given high or ultra by hand; the budget
+    // for it is in city_rt_rules.h. The cell is a first guess for the owner's runs (perf/CITY-RT-M1-RUNPLAN.md): the cost is measured before it changes.
+    {"mcla_gpu_rt_shadows", "off", "off", "high"},
     // Reflections on surfaces (screen-space reflections: wet roads, sidewalks, glass, metal; ssr.h, ssr_rules.h; GB-I1 + GB-I2): OFF ON EVERY CLASS UNTIL THE OWNER HAS SEEN THE PICTURES (owner,
     // 2026-11-21: the pictures of the SSR and of the light pass come first), so `auto` is off and the effect is off by default exactly as before the row existed. The cells are PREPARED (the cost limits are
     // a proposal for the owner to confirm; the numbers come from chain-gb-phase2b.ps1's cost arms):

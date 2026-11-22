@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -710,9 +711,68 @@ void RestChecks() {
         "RR-4: two hit distance writers for a pixel: the larger wins, a NaN is the other's, neither is 0");
   Check(rg::HitDistance(false, rg::CombineHitSources(4096.0f, 0.0f)) == 4096.0f && rg::HitDistance(true, rg::CombineHitSources(4096.0f, 1.5f)) == 65504.0f && rg::HitDistance(false, rg::CombineHitSources(nan, nan)) == 0.0f,
         "a writer's miss distance (4096) is a distance on a surface, the sky is the sky's whatever the writers say, two bad values are the surface's 0");
+  // CITY-RT G6: the bounce light's ray length is the LAST choice of the hit distance: a reflection's positive distance keeps the pixel, else the bounce light's stands (0 keeps the surface's, a NaN is not a distance)
+  {
+    const float sources[] = {0.0f, 1.5f, 4096.0f, -2.0f, nan};
+    const float bounces[] = {0.0f, 0.7f, 11.9f, 4096.0f, nan, -1.0f};
+    bool same = true;
+    for (float s : sources) {
+      for (float b : bounces) {
+        const float a = hs::RrWithBounce(s, b), t = rg::WithBounce(s, b);
+        same = same && (std::isnan(a) ? std::isnan(t) : a == t);
+      }
+    }
+    Check(same, "CITY-RT G6: the shader's RrWithBounce is the twin's WithBounce on every pair of sources and bounce values (NaN included)");
+    Check(rg::WithBounce(3.0f, 9.0f) == 3.0f && rg::WithBounce(0.0f, 9.0f) == 9.0f && rg::WithBounce(0.0f, 0.0f) == 0.0f && rg::WithBounce(nan, 9.0f) == 9.0f,
+          "CITY-RT G6: a reflection's distance keeps the pixel, else the bounce light's stands (0 where it traced nothing: the surface's)");
+    Check(rg::HitDistance(false, rg::WithBounce(0.0f, 4096.0f)) == 4096.0f && rg::HitDistance(false, rg::WithBounce(0.0f, nan)) == 0.0f && rg::HitDistance(true, rg::WithBounce(0.0f, 7.0f)) == 65504.0f,
+          "CITY-RT G6: the bounce light's miss distance (4096) is a distance on a surface, a bad value is the surface's 0, the sky stays the sky's");
+    // the texel under a render pixel: the pixel scaled by the two sizes, clamped into the image; the identity at the same size
+    bool texel_same = true, identity = true, monotone = true, in_range = true;
+    for (uint32_t size : {1u, 7u, 960u, 1080u, 1920u, 2160u, 3840u}) {
+      for (uint32_t hit : {1u, 3u, 480u, 540u, 960u, 1080u, 1920u}) {
+        uint32_t last = 0;
+        for (uint32_t p = 0; p < size; p += (size > 64 ? 13u : 1u)) {
+          const uint32_t a = hs::RrBounceTexel(p, size, hit), t = rg::BounceTexel(p, size, hit);
+          texel_same = texel_same && a == t;
+          in_range = in_range && t < hit;
+          monotone = monotone && t >= last;
+          last = t;
+          if (hit == size) identity = identity && t == p;
+        }
+        if (hit <= size) in_range = in_range && rg::BounceTexel(size - 1, size, hit) == hit - 1u;   // the last pixel reads the last texel (the pass's image is never bigger than the picture)
+      }
+    }
+    Check(texel_same, "CITY-RT G6: the shader's RrBounceTexel is the twin's BounceTexel");
+    // a pixel past the edge (the dispatch's partial groups are cut by the shader's own bounds test, but the function alone stays inside the image) reads the last texel
+    bool clamped = true;
+    for (uint32_t size : {1u, 960u, 1920u, 3840u}) {
+      for (uint32_t hit : {1u, 480u, 960u, 1920u}) {
+        for (uint32_t past : {0u, 1u, 7u, 4000u}) {
+          const uint32_t p = size + past;
+          clamped = clamped && rg::BounceTexel(p, size, hit) == hit - 1u && hs::RrBounceTexel(p, size, hit) == hit - 1u;
+        }
+      }
+    }
+    Check(clamped, "CITY-RT G6: a pixel at or past the edge of the picture reads the image's last texel (the clamp)");
+    Check(identity && in_range && monotone, "CITY-RT G6: the texel under a pixel is the pixel itself at the same size, stays inside the image, never goes backwards, and the last pixel reads the last texel");
+    Check(rg::BounceTexel(0, 1920, 960) == 0 && rg::BounceTexel(1, 1920, 960) == 0 && rg::BounceTexel(2, 1920, 960) == 1 && rg::BounceTexel(3839, 3840, 1920) == 1919 && rg::BounceTexel(5, 0, 7) == 6 &&
+              rg::BounceTexel(5, 10, 0) == 0,
+          "CITY-RT G6: two pixels a texel at half the size (the governor's reduced image), the traced size under a 4K picture, and no division by zero for an empty size");
+  }
   Check(hs::RrResponsivity(0.0f, 0.0f) == 0.0f && hs::RrResponsivity(0.3f, 0.6f) == 0.6f && hs::RrResponsivity(0.9f, 0.1f) == 0.9f && hs::RrResponsivity(2.0f, 0.0f) == 1.0f &&
             rg::Responsivity(0.3f, 0.6f) == 0.6f && rg::Responsivity(-1.0f, -1.0f) == 0.0f,
         "the responsivity is the larger of the two masks, between 0 and 1");
+  {
+    // a NaN in one mask is dropped and a NaN in both is 0, decided by the bits (nan_guard.hlsli): max and saturate of a NaN are the API's to say, and D3D12 and Vulkan differ
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float nans[] = {nan, -nan, std::bit_cast<float>(0x7F800001u), std::bit_cast<float>(0xFFC12345u)};
+    bool nan_ok = true;
+    for (const float n : nans) {
+      if (hs::RrResponsivity(n, 0.4f) != 0.4f || hs::RrResponsivity(0.7f, n) != 0.7f || hs::RrResponsivity(n, n) != 0.0f || hs::RrResponsivity(n, 3.0f) != 1.0f || hs::RrResponsivity(-2.0f, n) != 0.0f) nan_ok = false;
+    }
+    Check(nan_ok, "the responsivity of a NaN mask is the other mask's (0 when both are NaN), whatever the NaN's sign or payload");
+  }
   // the views
   const hs::float3 diffuse(0.1f, 0.2f, 0.3f), specular(0.04f, 0.05f, 0.06f);
   const hs::float4 nr(0.0f, 0.6f, 0.8f, 0.7f);
@@ -901,11 +961,20 @@ void RulesChecks(const std::string& gpu) {
       Check(Has(cs, "g_responsivity[p] = sky ? 0.0f") && Has(cs, "g_hit[p] = RrHitDistance(sky, source)") && Has(cs, "const bool sky = !(stored > 0.0f);") && Has(cs, "g_normal[p] = float4(px.normal, px.roughness)") &&
                 Has(cs, "g_diffuse[p] = float4(px.diffuse, 1.0f)") && Has(cs, "g_specular[p] = float4(px.specular, 1.0f)"),
             "the pass writes every guide in every pixel: the sky is stored depth 0, the normal's alpha is the roughness, the albedos' alpha is 1");
-      Check(Has(cs, "if (g_push.slots2.z != kNone)") && Has(cs, "source = g_textures[g_push.slots2.z].Load(int3(p, 0)).x;") && Has(cs, "if (g_push.slots2.w != kNone)") && Has(cs, "source = max(source, g_textures[g_push.slots2.w].Load(int3(p, 0)).x);") &&
+      Check(Has(cs, "if (g_push.slots2.z != kNone)") && Has(cs, "source = g_textures[g_push.slots2.z].Load(int3(p, 0)).x;") && Has(cs, "if (g_push.slots2.w != kNone)") && Has(cs, "source = NgMax(source, g_textures[g_push.slots2.w].Load(int3(p, 0)).x);") &&
                 Has(source, "push.slots2[2] = hit_used[0] ? hit_used[0]->slot : rr_guides::kNoSlot;") && Has(source, "push.slots2[3] = hit_used[1] ? hit_used[1]->slot : rr_guides::kNoSlot;") &&
-                Has(source, "plume::RenderTextureBarrier reads[8];") && Has(source, "hit->format == plume::RenderFormat::R16_FLOAT") && Has(source, "hit->width == width && hit->height == height") &&
+                Has(source, "plume::RenderTextureBarrier reads[9];") && Has(source, "hit->format == plume::RenderFormat::R16_FLOAT") && Has(source, "hit->width == width && hit->height == height") &&
                 Has(header, "const HostImage* hit[2] = {nullptr, nullptr};") && !Has(header, "hit_slot") && !Has(source, "hit_slot"),
             "RR-4: the pass reads up to two hit distance writers' images (R16_FLOAT at the render size, each in the read state, the larger distance wins), and the old single slot is gone");
+      Check(Has(cs, "if (g_push.info.w != kNone && !(source > 0.0f))") && Has(cs, "g_textures[g_push.info.w].GetDimensions(hitWidth, hitHeight);") && Has(cs, "RrBounceTexel(uint(p.x), uint(size.x), hitWidth)") &&
+                Has(cs, "RrBounceTexel(uint(p.y), uint(size.y), hitHeight)") && Has(cs, "source = RrWithBounce(source, g_textures[g_push.info.w].Load(int3(q, 0)).x);") &&
+                Has(source, "push.info[3] = bounce_used ? bounce_used->slot : rr_guides::kNoSlot;") && Has(source, "in.bounce_hit->format == plume::RenderFormat::R16G16_FLOAT") && Has(source, "in.bounce_hit->width != 0 && in.bounce_hit->height != 0") &&
+                Has(source, "reads[reads_count++] = plume::RenderTextureBarrier(bounce_used->texture.get(), Layout::SHADER_READ);") && Has(source, "bounce_hits_used_ += bounce_used ? 1u : 0u;") &&
+                Has(header, "const HostImage* bounce_hit = nullptr;"),
+            "CITY-RT G6: the bounce light's hit image (RG16F, any size above 0) is the LAST choice of the hit distance, read at the texel under the pixel, only where no reflection wrote one; the slot goes in info.w (none: kNone), it is put in the read state and counted");
+      Check(Has(cs, "g_hit[p] = RrHitDistance(sky, source)") && At(cs, "source = RrWithBounce(") > At(cs, "source = NgMax(source, g_textures[g_push.slots2.w]") && At(cs, "source = RrWithBounce(") < At(cs, "g_hit[p] = RrHitDistance(sky, source)"),
+            "CITY-RT G6: the bounce light's distance comes after both reflection writers' and before the guide's value is made of the source");
+      Check(Has(source, "push.info[3] = ") && !Has(source, "push.info[3] = 0;"), "CITY-RT G6: info.w is no longer unused (the old 0 would read as slot 0)");
       Check(Has(cs, "g_textures_ms[slot].Load(p, g_push.info.z)") && Has(cs, "#if RR_MS"), "the multisampled variant reads the host sample that is the guest's sample 0 (info.z)");
       Check(Has(source, "push.info[2] = frame.sample0;") && Has(source, "frame.host_samples > 1"), "the host picks the variant by the planes' sample count and passes the guest's sample 0");
       // the pass is Want-driven and gated

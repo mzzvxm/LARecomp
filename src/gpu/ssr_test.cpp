@@ -2113,11 +2113,11 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
   // the shaders: the raw compilation of the apply and the hit pass
   Check(Has(cmake, "larecomp_gpu_host_shader(ssr_apply_raw_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=0 SSR_RAW=1)") && Has(cmake, "larecomp_gpu_host_shader(ssr_hit_ps ps_6_0 DEFINES SSR_MS=0)"),
         "RR-4a: CMake builds the raw resolve (the apply with SSR_RAW) and the hit pass, over plain planes");
-  Check(Has(shaders_h, "case 5: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_raw_ps);") && Has(shaders_h, "default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_hit_ps);") && Has(shaders_h, "case 4: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);") &&
+  Check(Has(shaders_h, "case 7: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_raw_ps);") && Has(shaders_h, "default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_hit_ps);") && Has(shaders_h, "case 4: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);") &&
             Has(shaders_h, "case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ps);") && Has(shaders_h, "case 3: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ps);"),
-        "RR-4a: ScreenReflectionsPixelShader numbers them 5 and 6 and the old five keep their numbers");
-  Check(Has(header, "enum Shader : uint32_t { kShaderTrace, kShaderTraceMs, kShaderTemporal, kShaderApply, kShaderApplyMs, kShaderApplyRaw, kShaderHit, kShaderCount };") &&
-            Has(header, "enum Variant : uint32_t { kVTrace, kVTraceMs, kVTemporal, kVApplyBase, kVApplyRaw = kVApplyBase + 8, kVHit, kVariantCount };"),
+        "RR-4a: ScreenReflectionsPixelShader numbers them 7 and 8 (after the old five and R4's two) and the old ones keep their numbers");
+  Check(Has(header, "enum Shader : uint32_t { kShaderTrace, kShaderTraceMs, kShaderTemporal, kShaderApply, kShaderApplyMs, kShaderTraceRt, kShaderTraceRtMs, kShaderApplyRaw, kShaderHit, kShaderCount };") &&
+            Has(header, "enum Variant : uint32_t { kVTrace, kVTraceMs, kVTemporal, kVApplyBase, kVTraceRt = kVApplyBase + 8, kVTraceRtMs, kVApplyRaw, kVHit, kVariantCount };"),
         "RR-4a: the shader and variant enums add the two after the old ones (the old numbering is untouched)");
   // the apply: the raw block only in the raw compilation, the plain branch exactly what it was
   Check(Has(apply_ps, "#ifndef SSR_RAW\n#define SSR_RAW 0\n#endif") && Has(apply_ps, "#if SSR_RAW\n    if (t.w != 0.0f) {\n      const float dz = (SsrHizAt(SsrHz(), q.x, q.y) - z) / sigma;") &&
@@ -2151,7 +2151,7 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
   Check(Has(trigger, "  if (!raw) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPass(list, accum_[write_], temporal_pipeline, temporal);\n  }"),
         "RR-4a: the accumulation runs only in a plain frame");
   Check(Has(trigger, "if (raw) {\n    // RR-4a: the resolve reads the trace itself") && Has(trigger, "apply.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));") &&
-            Has(trigger, "  } else {\n    apply.Set(pk::kSrc, ssr::PackSlots(accum_[write_].slot, trace_.slot));\n    apply.Set(pk::kRoadViewApply, road_word);\n  }") &&
+            Has(trigger, "  } else {\n    apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)\n    apply.Set(pk::kRoadViewApply, road_word);\n  }") &&
             Has(trigger, "list->setPipeline(raw ? raw_apply_pipeline : apply_pipeline);") && Has(trigger, "pass_timing_->Mark(list, \"ssr apply raw\");"),
         "RR-4a: the raw resolve reads the trace in both halves of the source word and keeps the Hi-Z words (the road view's borrowing is the plain apply's)");
   const size_t apply_mark = trigger.find("Mark(list, \"ssr apply\")"), hit_mark = trigger.find("Mark(list, \"ssr hit\")"), after_mark = trigger.find("Mark(list, \"after ssr\")"), hit_draw = trigger.find("DrawPass(list, hit_, hit_pipeline, hit_push);");
@@ -2233,7 +2233,7 @@ void TestSources(const std::string& dir) {
           "mcla_gpu_ssr_blue_noise: a live debug setting, on by default, in the settings header, its alias, the manifest and the meta list");
     Check(Has(cpp, "push.Set(pk::kFrame, (uint32_t(frames_) & ~pk::kFrameLegacyNoise) | (larecomp::settings::mcla_gpu_ssr_blue_noise.Get() ? 0u : pk::kFrameLegacyNoise));"),
           "ssr.cpp: the frame word carries the first version's flag when mcla_gpu_ssr_blue_noise is off");
-    Check(Has(trace_ps, "SsrNoise1(pix.x, pix.y, frame, ray, rays), SsrNoise2(pix.x, pix.y, frame, ray, rays)"), "the trace pass gives the noise the ray's number and the rays a pixel");
+    Check(Has(common, "SsrNoise1(px, py, frame, ray, rays), SsrNoise2(px, py, frame, ray, rays)") && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays)"), "the trace pass gives the noise the ray's number and the rays a pixel (through SsrSampleRay)");
     Check(Has(common, "#include \"blue_noise.hlsli\"") && Has(common, "static const uint kSsrR2StepA = 3242174889u;") && Has(common, "static const uint kSsrR2StepB = 2447445413u;") &&
               uint32_t(0.7548776662466927 * 4294967296.0) == 3242174889u && uint32_t(0.5698402909980532 * 4294967296.0) == 2447445413u,
           "ssr_common.hlsli: the frame's steps are the R2 sequence's, as 32 bit fractions");
@@ -2307,7 +2307,7 @@ void TestSources(const std::string& dir) {
   for (size_t at = renderer.find("ssr_.Shutdown();"); at != std::string::npos; at = renderer.find("ssr_.Shutdown();", at + 1)) {
     ++shutdowns;
     const size_t ao_at = renderer.find("ao_.Shutdown();", at);
-    before_ao = before_ao && ao_at != std::string::npos && ao_at - at < 400;  // the light pass's Shutdown (GB-H1) sits between them in the merged phase 2 branch
+    before_ao = before_ao && ao_at != std::string::npos && ao_at - at < 1000;  // the light pass's Shutdown (GB-H1) and the probe field's three (CITY-RT M3 G4, each with its comment) sit between them in the merged branches
   }
   Check(shutdowns == 2 && before_ao, "renderer.cpp: shut down before the AO it holds a pointer to, in both Shutdown paths");
   Check(Has(renderer, "ssr_.HeldBytes()") && Has(renderer_h, "ScreenReflections ssr_;") && Has(renderer_h, "#include \"ssr.h\""), "renderer.h / renderer.cpp: the memory line and the member");
@@ -2416,7 +2416,7 @@ void TestSources(const std::string& dir) {
   Check(!Has(PlainOf(apply_ps), "SsrHizAt(") && !Has(apply_ps, "SSR_W_HIZ") && Has(apply_ps, "SsrW(SSR_W_ROAD_VIEW_APPLY)"), "the apply reads no Hi-Z (outside the RR-4a raw compilation, which a debug view never is), so its first word carries the road view for the debug view");
   Check(Has(pass, "SsrHi(SsrW(SSR_W_STENCIL))") && Has(pass, "SsrLo(SsrW(SSR_W_LIN0))") && Has(trace_ps, "SsrVehicleIdAt(hx, hy)") && Has(trace_ps, "SsrPackHit(distance_out, vehicle_hit, vehicle_id)") && Has(temporal_ps, "SsrVehicleImage(m0, m1, m2, v0, v1, v2,"),
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
-  Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(SsrRoadViewAt(road_view, screen_uv), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
+  Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
   Check(Has(temporal_ps, "const float3 clipped = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "history = resolve ? SsrKeepClip(history, clipped) : clipped;") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
 

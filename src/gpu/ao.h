@@ -428,9 +428,11 @@ class CarFrame;      // car_frame.h: the player's car's draws and box of a frame
 class CarRtAo;       // car_rt_ao.h: the ray traced occlusion and sun term around the player's car
 class CarRtScene;    // car_rt_scene.h: the player's car as ray tracing structures
 class CarShadowMap;  // car_shadow_map.h: the player's car's own sun shadow map; the contact march reads it
+class CityRtShadow;  // city_rt_shadow.h: the city's ray traced sun shadows (CITY-RT M1); the contact march reads its image
 class Device;
 class FrameRing;
 class GBuffer;       // gbuffer.h: the normal plane the passes read (GB-E)
+class GiApply;       // gi_apply.h: the probe field's apply (CITY-RT M3 G3): where the field stands it replaces the colour chain's gather, and it reads the occlusion's visibility
 class ScreenShared;  // screen_shared.h: the shared screen products, which this class's depth chain is the source of (SS-0)
 class PassTiming;
 
@@ -499,8 +501,11 @@ class AmbientOcclusion {
   // True while the draw hooks have anything to do (the occlusion or the contact shadows are on, or
   // the census).
   bool wants_draws() const {
-    return mode_ != Mode::kOff || contact_mode_ != Mode::kOff || census_every_ != 0 || screen_wants_;
+    return mode_ != Mode::kOff || contact_mode_ != Mode::kOff || census_every_ != 0 || screen_wants_ || world_light_wanted_;
   }
+  // The ray tracing world frame (rt_world_frame.h) needs the frame's light and the road's wetness from the main view's draws whether or not any effect of this family is on: while it says so
+  // the draw hooks collect them (and nothing else: the passes stay as the settings say). Render thread; read at the next draw.
+  void SetWorldLightWanted(bool wanted) { world_light_wanted_ = wanted; }
 
   // A prepared draw into the main view's identities (the play view's or the pause/map view's), with
   // the draw's own banks, before the draw is recorded.
@@ -540,6 +545,9 @@ class AmbientOcclusion {
   // frame that published one, make a normal image from it (see THE G-BUFFER'S NORMALS above). Not owned; null: the passes take the depth's normal, as they always did. Render thread,
   // before the first frame; the renderer's Shutdown stops the occlusion before the G-buffer.
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
+  // The city's ray traced sun shadows (city_rt_shadow.h; CITY-RT M1): BeginFrame tells it whether the contact march runs, Run records its pass after the car's ray traced one and
+  // hands the contact march its image (rt_contact_slot_), and the contact term's distance fade follows the range it holds. Not owned; null: none. Render thread, before the first frame.
+  void SetCityRtShadow(CityRtShadow* shadow) { city_shadow_ = shadow; }
 
   // The shared screen products (screen_shared.h; SS-0): this class's depth chain, normal image and bounce light colour chain are what the owner publishes, and the owner makes the Hi-Z
   // from the depth. The occlusion, the contact shadows and the bounce light declare what they read (ScreenShared::Want, in BeginFrame); the depth chain is handed over at its end
@@ -548,6 +556,31 @@ class AmbientOcclusion {
   // (ScreenShared::CapturePre), so there is no bounce light without the owner. Not owned; null: nothing is published and the bounce light is off. Render thread, before the first frame;
   // the renderer's Shutdown stops this class before the owner.
   void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
+  // The probe field's apply (gi_apply.h; CITY-RT M3 G3). When the field stands (GiApply::TakeSsgiShare below 1) the screen-space bounce light runs at that share of its strength, and not at all
+  // at 0: no colour chain, no ring, the plain occlusion (PlanGi). Not owned; null: the bounce light is as it was. Render thread, before the first frame; the renderer's Shutdown stops the apply first.
+  void SetGiApply(GiApply* apply) { gi_apply_ = apply; }
+
+  // What the probe field's apply reads of this frame's occlusion (gi_apply.h): the image that holds the denoised visibility in its x channel (the plain occlusion's, or the bounce light's when it runs),
+  // at the traced size, whether the traced size is half the picture's, and the look's numbers the apply's own term is multiplied by (strength = AO INTENSITY, the distance fade's end, the paint's
+  // power: ao_paint.h PowerOf). Valid at the trigger after OnResolve, in a frame whose apply pass drew; `has_visibility` is false where the occlusion's term is off (the contact shadows alone).
+  struct OcclusionView {
+    bool valid = false;
+    bool has_visibility = false;
+    uint32_t visibility_slot = 0xFFFFFFFFu;
+    uint32_t traced[2] = {0, 0};
+    uint32_t render[2] = {0, 0};
+    bool low = false;
+    float strength = 0.0f;
+    float fade_end = 100.0f;
+    float paint_power = 1.0f;
+  };
+  bool FrameOcclusionNow(OcclusionView* out) const;
+  // The frame's light constants as the apply's maths take them: the ambient's and the sun's colour (PS c26 and c39, the commonest of the main view's draws, the units the colour is in) and the
+  // world-space direction to the sun (SunDirection). False when no draw had a light.
+  bool FrameLight(float ambient[3], float sun[3], double to_sun[3]) const;
+  // The road's wetness the frame's main view draws carried (VS c43.x, the commonest value to 0.1: 0.095 dry, 1.17 in rain). False when none was counted (counted while the contact shadows are on
+  // or SetWorldLightWanted is).
+  bool FrameWetness(float* value) const { return PickWet(value); }
 
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
@@ -1112,6 +1145,8 @@ class AmbientOcclusion {
   bool frame_had_main_view_ = false;
   bool ran_this_frame_ = false;
   bool applied_this_frame_ = false;   // ... and the apply pass drew into the colour target
+  OcclusionView occlusion_view_;      // what the probe field's apply reads (FrameOcclusionNow), set with the apply
+  GiApply* gi_apply_ = nullptr;       // the probe field's apply: the bounce light's share (SetGiApply)
   const HostImage* linear_depth_image_ = nullptr;  // the frame's level 0 depth, set when the passes ran (FrameLinearDepth)
   float linear_depth_tan_[2] = {};
 
@@ -1203,6 +1238,7 @@ class AmbientOcclusion {
   // The ray traced occlusion and sun term (car_rt_ao.h), made by InitializeCarRt where the device can trace the car. rt_contact_slot_ is the bindless slot of this
   // frame's traced image for the contact march (the sun ray was traced), 0xFFFFFFFF where none was.
   std::unique_ptr<CarRtAo> rt_ao_;
+  CityRtShadow* city_shadow_ = nullptr;  // the city's ray traced sun shadows (SetCityRtShadow), not owned
   uint32_t rt_contact_slot_ = 0xFFFFFFFFu;
   bool rt_contact_logged_ = false;
 
@@ -1261,6 +1297,7 @@ class AmbientOcclusion {
   GBuffer* gbuffer_ = nullptr;       // the normal plane (SetGBuffer); not owned
   ScreenShared* screen_ = nullptr;   // the shared screen products (SetScreenShared); not owned
   bool screen_wants_ = false;        // this frame: a consumer outside this family wants the depth chain (ScreenShared::NeedsDepthChain), read in BeginFrame
+  bool world_light_wanted_ = false;   // the ray tracing world frame wants the light and the wetness (SetWorldLightWanted)
   ResolveCache* resolve_ = nullptr;  // finds the game's shadow mask (contact shadows)
   bool ready_ = false;  // the layout and the shaders exist (the contact march's only when it is on: Initialize)
   bool contact_shader_failed_ = false;

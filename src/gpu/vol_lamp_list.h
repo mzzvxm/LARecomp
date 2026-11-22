@@ -101,10 +101,21 @@ inline bool Plausible(const GameLamp& l) {
 // the table the hook fills (game thread) and the producer reads (render thread)
 // ---------------------------------------------------------------------------
 
-// Whether the hook is to do anything: the volumetric light sets it while it is on (one relaxed load in the hook otherwise).
-inline std::atomic<bool> g_wanted{false};
-inline bool Wanted() { return g_wanted.load(std::memory_order_relaxed); }
-inline void SetWanted(bool wanted) { g_wanted.store(wanted, std::memory_order_relaxed); }
+// Whether the hook is to do anything: the volumetric light sets it while it is on (one relaxed load in the hook otherwise). It is a mask of who wants the list, so that two readers can ask
+// without one switching the other off: the volumetric light's SetWanted (the original call, unchanged) and the ray tracing world frame's (rt_world_frame.h), which reads the lamps for the
+// hit shading's lamp term.
+inline constexpr uint32_t kWantedByVolume = 1;
+inline constexpr uint32_t kWantedByWorldFrame = 2;
+inline std::atomic<uint32_t> g_wanted_by{0};
+inline bool Wanted() { return g_wanted_by.load(std::memory_order_relaxed) != 0; }
+inline void SetWantedBy(uint32_t who, bool wanted) {
+  if (wanted) {
+    g_wanted_by.fetch_or(who, std::memory_order_relaxed);
+  } else {
+    g_wanted_by.fetch_and(~who, std::memory_order_relaxed);
+  }
+}
+inline void SetWanted(bool wanted) { SetWantedBy(kWantedByVolume, wanted); }
 
 class Table {
  public:

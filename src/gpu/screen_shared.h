@@ -149,6 +149,9 @@ class ScreenShared {
 
   // What a consumer reads: valid from the trigger to the frame's end (BeginFrame empties it).
   const screen::ScreenFrame& Frame() const { return frame_; }
+  // The exposure factor of the main colour target as the last tracked draw saw it (2^exp_bias: the shaders' output times this is what colour_post holds; the game's bias is 4: 16), 1 where no draw has
+  // told it (only drawn while a consumer wants the screen products). The ray tracing world frame's `units` (rt_world_frame.h): read before this frame's products are published.
+  float ExposureFactor() const;
   // The image behind a product of the published frame (a compute consumer needs the texture for its barrier; a pixel consumer reads the slot). Null where the frame has none. The history's
   // image is `Image(kHistory)`.
   const HostImage* Image(screen::Product product, uint32_t level = 0) const;

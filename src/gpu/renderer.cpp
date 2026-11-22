@@ -22,6 +22,8 @@
 #include "backend.h"
 #include "device_fault_format.h"
 #include "gpu.h"
+#include "gi_setting.h"
+#include "citypack/pack_format.h"
 #include "guest_capture.h"
 #include "hdr.h"
 #include "native_gfx/guest/guest_fence.h"
@@ -71,6 +73,8 @@ void PublishWindowSize(uint32_t width, uint32_t height) {
 std::filesystem::path& g_shader_pack_folder = larecomp::Leak<std::filesystem::path>();
 // The app's say on attaching the packs that are in place at Startup (gpu.h SetShaderPackGate).
 std::function<bool()>& g_shader_pack_gate = larecomp::Leak<std::function<bool()>>();
+// The app's say on the city pack (gpu.h SetCityPackHooks): set before Startup, read on the render thread. Never destroyed (EXIT-HARD), like the gate above.
+mcla::gpu::CityPackHooks& g_city_pack_hooks = larecomp::Leak<mcla::gpu::CityPackHooks>();
 
 // Names the renderer teardown's slow stages. About one test run in 90 took 2.7 to 4.7 s to get from "pipelines: ... written" to
 // "renderer shut down" (the 2026-11-21 stack runs: all of them with another game on the same GPU, none of 103 alone), and the 5 s close
@@ -227,6 +231,17 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     local_lights_.SetScreenShared(&screen_);
     local_lights_.SetAmbientOcclusion(&ao_);
     local_lights_.SetLightManager(&light_manager_);
+    // The probe field's apply (gi_apply.h, CITY-RT M3 G3): makes nothing until a probe field runs (SetGiField: the integration, G4, gives it); reads the G-buffer's RT1 and RT2, the shared products' depth
+    // and camera, and the AO's visibility, light and pose. The AO asks it for the screen-space bounce light's share (SetGiApply).
+    gi_apply_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
+    gi_apply_.SetGBuffer(&gbuffer_);
+    gi_apply_.SetScreenShared(&screen_);
+    gi_apply_.SetAmbientOcclusion(&ao_);
+    ao_.SetGiApply(&gi_apply_);
+    // The probe field (gi_field.h, CITY-RT M3 G1): its layouts and shaders now, its pipelines listed with the precache below when the setting is not off at the start, its textures made when a frame
+    // first wants them. The integration (gi_integration.h, G4) gives it the setting and the frame (its city scene is set below, with the city block); the apply reads it.
+    gi_field_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_setting::Current().level != gi::Level::kOff);
+    gi_apply_.SetGiField(&gi_field_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
@@ -259,6 +274,62 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_refl_.SetCarRtRefl(&car_rt_refl_);
     // And the ray traced occlusion and sun term around the car (ao.h, car_rt_ao.h): the occlusion's own pass, with the same structures.
     ao_.InitializeCarRt(&car_rt_, &car_frame_);
+    // === CITY-RT BLOCK (city_rt_scene.h, city_rt_shadow.h; CITY-RT M1): the city's geometry (the city pack the launcher builds, in the shader pack folder's `city` folder) as ray tracing
+    // structures that join the car scene's top level, and the sun's shadows traced against them, read by the contact march. Both make nothing until the setting asks (mcla_gpu_rt_shadows;
+    // auto is the High class), and nothing at all without ray queries.
+    {
+      city_rt_.Initialize(device_, frames_, upload_, pass_timing_, CityPackFolder() / larecomp::citypack::kPackFileName, gpu_class::Current());
+      if (g_city_pack_hooks.state) {
+        // The app decides whether the pack in place is the player's (stat only) and builds it in the background when it is not; without hooks (a build with no app) the pack is opened as it is.
+        city_rt_.SetPackProbe(g_city_pack_hooks.state, g_city_pack_hooks.request_build);
+      }
+      // CITY-RT M2 H3: the city's hit data (the file the hit data's builder writes beside the pack; nothing is made until a consumer wants it) and the scene service that every consumer asks for
+      // the top level, the structures and the hit data (rt_scene_service.h).
+      city_hit_.Initialize(device_, frames_, upload_, pass_timing_, heap_, CityPackFolder() / larecomp::citypack::kHitFileName, CityPackFolder() / larecomp::citypack::kTexFileName, gpu_class::Current());
+      if (g_city_pack_hooks.hit_state) {
+        // The app decides whether the hit data in place is the player's (stat only) and builds it in the background when it is not, once a consumer wants it and the pack is open.
+        city_hit_.SetFileProbe(g_city_pack_hooks.hit_state, g_city_pack_hooks.request_hit_build);
+      }
+      city_rt_.SetHitScene(&city_hit_);
+      rt_scene_.Initialize(&car_rt_, &city_rt_, &city_hit_);
+      car_rt_refl_.SetSceneService(&rt_scene_);  // CITY-RT M2 R1/R2: the city in the car paint's reflections asks the service for the structures, the hit data and the textures (city_refl.h)
+      // CITY-RT FRAME (rt_world_frame.h): the world's rows and the lamps of every frame that has a top level, car or no car, in t10 and t11 of the car scene's set (the scene's builder tells it the view and
+      // binds the buffers; the scene writes them at the trigger). The AO's draw hook gives it the light, the car frame the sky and the environment map, the shared products the exposure, the pack the lamps.
+      {
+        RtWorldFrame::Sources world_sources;
+        world_sources.ao = &ao_;
+        world_sources.cars = &car_frame_;
+        world_sources.screen = &screen_;
+        world_sources.city = &city_rt_;
+        world_sources.service = &rt_scene_;
+        rt_world_.Initialize(device_, frames_, world_sources);
+        car_rt_.SetWorldFrame(&rt_world_);
+      }
+      car_rt_.SetCityScene(&city_rt_);
+      car_rt_.SetService(&rt_scene_, &city_hit_);
+      city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);
+      ao_.SetCityRtShadow(&city_shadow_);
+      // CITY-RT R4: the screen-space reflections' ray traced fallback (ssr_rt.h): the SSR host pass layout with the output set and this scene's ray tracing set; nothing is made where the device cannot trace.
+      ssr_.InitializeRt(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &rt_scene_, &rt_world_);
+      // The probe field's integration (gi_integration.h): the field needs M1's structures for its safe range and (G2) its rays.
+      gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);
+      // The probe field's update (gi_update.h, CITY-RT M3 G2): the rays of the probes and their blend, in the top level the car scene builds. Its pipelines are listed with the precache when the setting is not off at
+      // the start as it will be once the update is built in; given to the integration only where the device can trace and its layouts and shaders exist (else the row says NOT READY and no field is made).
+      {
+        const bool update_listed = gi_setting::Decide(gpu_class::Known() ? gpu_class::Current() : gpu_class::GpuClass::kLow, gpu_class::CurrentRtTier(), larecomp::settings::mcla_gpu_rt_gi.Get(), true).level !=
+                                   gi::Level::kOff;
+        gi_update_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_scene_, rt_world_, update_listed);
+        if (gi_update_.available()) {
+          gi_integration_.SetUpdate([this](plume::RenderCommandList* list, uint32_t frame_slot, const gi::GiFrame& update_frame) { gi_update_.Record(list, frame_slot, update_frame); },
+                                    [this](gi::Level level) { gi_update_.OnWant(level); });
+        }
+        // The per-pixel detail pass (gi_pixel.h, CITY-RT M3 G5): the apply runs it, at ULTRA on a strong card only. Its pipelines are made in the background the first time it is wanted; nothing is made now.
+        gi_pixel_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_world_, &light_manager_);
+        if (gi_pixel_.available()) {
+          gi_apply_.SetGiPixel(&gi_pixel_);
+        }
+      }
+    }
     // The ray tracing benchmark (rt_bench.h, rt_tier.h): once with a card that can trace (kept next to larecomp.toml), while the GPU is idle and before the
     // precache below starts its builder; it can move the card between the weak and the strong tier, which the ray traced upgrades' `auto` reads.
     rt_bench::RunIfWanted(device_);
@@ -297,6 +368,9 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetLocalShadow(&local_shadow_);
     scene_.SetLightManager(&light_manager_);
     scene_.SetLocalLights(&local_lights_);
+    scene_.SetGiApply(&gi_apply_);
+    scene_.SetGiIntegration(&gi_integration_);
+    scene_.SetRtWorldFrame(&rt_world_);
     scene_.SetCarRtScene(&car_rt_);
     car_rt_.SetTextureCache(&textures_);  // the car ray tracing's materials ask it for the textures of the cars beside the player (TextureCache::Peek2D)
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
@@ -330,8 +404,14 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // Its images and AMD's context are not something the budget's response can release; its lines
     // name them (vram_budget.h), and frame generation asks the budget's rule before it takes any.
     vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
+    // The city's hit data pool (64 to 256 MiB) is not something the response can release (the structures built over it would be rebuilt): its line names it.
+    vram_.AddHolder("city hit data", [this] { return city_hit_.HeldBytes(); });
     // The headlight shadow maps' atlas (the replay's own or the shared one: local_shadow.h HeldBytes counts both) is memory the response cannot release either: the lines name it.
     vram_.AddHolder("headlight shadow atlas", [this] { return local_shadow_.HeldBytes(); });
+    // The probe field's textures (gi_field.h): the OS counts them in the use it reports and the caches' trim cannot give them back; the field asks the room test before it makes any.
+    vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); });
+    vram_.AddHolder("probe update", [this] { return gi_update_.HeldBytes(); });
+    vram_.AddHolder("per-pixel bounce light", [this] { return gi_pixel_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
@@ -359,8 +439,14 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     fg_.Shutdown();
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
+    gi_pixel_.Shutdown();  // CITY-RT M3 G5: holds pointers to the field, the scenes, the world frame and the lights, and the apply holds it: before them
     rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+    rt_world_.Shutdown();  // it holds pointers to the AO, the car frame, the shared products and the city scene (and asked the AO's draw hook for the light): before them (CITY-RT FRAME)
+    gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
+    gi_update_.Shutdown();  // it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: before the field (and before HostPasses)
+    gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
+    gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
     local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
     ao_.Shutdown();
     screen_.Shutdown();  // the AO holds a pointer to it: after the AO
@@ -373,6 +459,10 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
     car_dump_.Shutdown();
+    city_shadow_.Shutdown();  // before the car scene it traces against and the pipelines' owner
+    rt_scene_.Shutdown();
+    city_rt_.Shutdown();
+    city_hit_.Shutdown();  // after the structures that evicted their blocks from it
     car_rt_refl_.Shutdown();
     car_rt_.Shutdown();
     car_frame_.Shutdown();
@@ -547,8 +637,14 @@ void Renderer::Shutdown() {
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   clock.Mark("DLSS frame generation and the upscaler (Streamline)");
+  gi_pixel_.Shutdown();  // the same, CITY-RT M3 G5 (gi_pixel.h)
   rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+  rt_world_.Shutdown();  // the same, CITY-RT FRAME (rt_world_frame.h)
+  gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
+  gi_update_.Shutdown();  // it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: before the field (and before HostPasses)
+  gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
+  gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
   local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
   ao_.Shutdown();
   screen_.Shutdown();  // the AO holds a pointer to it: after the AO
@@ -561,6 +657,10 @@ void Renderer::Shutdown() {
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
   car_dump_.Shutdown();
+  city_shadow_.Shutdown();
+  rt_scene_.Shutdown();
+  city_rt_.Shutdown();
+  city_hit_.Shutdown();
   car_rt_refl_.Shutdown();
   car_rt_.Shutdown();
   car_frame_.Shutdown();
@@ -883,6 +983,8 @@ void Renderer::SubmitFrameWithoutPresent() {
     timing_.OnSubmitted(slot);
     pass_timing_.OnSubmitted(slot);
     occlusion_.OnSubmitted(slot);
+    gi_update_.OnSubmitted(slot);
+    gi_pixel_.OnSubmitted(slot);
     latency::OnRenderSubmitted();
   }
   frames_.Advance();
@@ -1343,6 +1445,8 @@ void Renderer::ExecutePresent(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
+  gi_update_.OnSubmitted(slot);
+  gi_pixel_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
 
   // A scheduled guest frame (gpu.h SetNextPresentTarget) goes to the screen at
@@ -1630,6 +1734,8 @@ void Renderer::ExecutePresentGenerated(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
+  gi_update_.OnSubmitted(slot);
+  gi_pixel_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
   // The present markers are the pacer's: it names the frame around the real image's present.
   const uint64_t latency_frame = latency::DetachRenderFrame();
@@ -1724,7 +1830,22 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   pass_timing_.CompleteFrame(list, slot);
 }
 
+void Renderer::ReportCityCensus() {
+  // The texts CityRtScene (with the hit data's pool inside it), CityRtShadow and RtSceneService define for a census line were never printed by anything: perf/scripts/city_rt_h3_report.py
+  // reads their fragments by name ("city hit data: pool ...", "ray tracing scene: wanted by ...") from a line like this one. Each text starts with "; " and is empty where it has nothing
+  // to say (no pack open, the shadows not ready, nobody wanting the scene).
+  constexpr uint64_t kCityCensusPresents = 600;  // as car_selfrefl.cpp's kCensusFrames
+  if (presented_ % kCityCensusPresents != 0) {
+    return;
+  }
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + ssr_.RtCensusText() + gi_update_.CensusText() + gi_pixel_.CensusText();
+  if (!text.empty()) {
+    REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
+  }
+}
+
 void Renderer::ReportFrameStats() {
+  ReportCityCensus();
   // Once a minute at 60 fps: enough to see VRAM creep or a frame ring that
   // stops reclaiming, without a line per frame.
   if (presented_ % 3600 != 0) {
@@ -1748,6 +1869,8 @@ void Renderer::ReportFrameStats() {
                            (gbuffer_.HeldBytes() != 0 ? ", G-buffer " + mib(gbuffer_.HeldBytes()) : std::string()) +
                            (screen_.HeldBytes() != 0 ? ", screen products " + mib(screen_.HeldBytes()) : std::string()) +
                            (ssr_.HeldBytes() != 0 ? ", screen-space reflections " + mib(ssr_.HeldBytes()) : std::string()) +
+                           (gi_apply_.HeldBytes() != 0 ? ", ray traced bounce light's apply " + mib(gi_apply_.HeldBytes()) : std::string()) +
+                           (gi_field_.HeldBytes() != 0 ? ", probe field " + mib(gi_field_.HeldBytes()) : std::string()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())
@@ -1756,6 +1879,15 @@ void Renderer::ReportFrameStats() {
                                                            : std::string()) +
                            (car_rt_.HeldBytes() != 0 ? ", car ray tracing " + mib(car_rt_.HeldBytes())
                                                      : std::string()) +
+                           // CITY-RT BLOCK: the city's structures, their scratch and the traced shadow image (perf/CITY-RT-M1-RUNPLAN.md R4 reads this)
+                           (city_rt_.HeldBytes() + city_shadow_.HeldBytes() != 0
+                                ? ", city ray tracing " + mib(city_rt_.HeldBytes() + city_shadow_.HeldBytes())
+                                : std::string()) +
+                           // CITY-RT M2 H3: the hit data's pool, the tables and the material table
+                           (city_hit_.HeldBytes() - city_hit_.texture_set().HeldBytes() != 0 ? ", city hit data " + mib(city_hit_.HeldBytes() - city_hit_.texture_set().HeldBytes())
+                                                                                               : std::string()) +
+                           // CITY-RT M2 H2: the resident city textures, as the allocator counts them (city_texture_rules.h AllocationBytes; the census line "[city tex]" has the rest)
+                           (city_hit_.texture_set().HeldBytes() != 0 ? ", city textures " + mib(city_hit_.texture_set().HeldBytes()) : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())
@@ -2374,6 +2506,14 @@ void SetShaderPackGate(std::function<bool()> gate) {
 
 std::filesystem::path ShaderPackFolder() {
   return ShaderStore::BuildFolder(g_shader_pack_folder);
+}
+
+void SetCityPackHooks(CityPackHooks hooks) {
+  g_city_pack_hooks = std::move(hooks);
+}
+
+std::filesystem::path CityPackFolder() {
+  return ShaderPackFolder() / "city";
 }
 
 bool ShaderPacksAttached() {

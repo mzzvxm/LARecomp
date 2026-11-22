@@ -174,7 +174,11 @@ inline constexpr uint32_t kFeatureLampShadow = 11;
 // there and take the derivative normal where it is not, so the pixel words never need this one: the renderer only has to pair the two (Scene::GBufferKey). No constants of its
 // own; it has the spec variant 1 twin (the vertex shader's R11G11B10_NORMAL).
 inline constexpr uint32_t kFeatureGBufferVs = 12;
-// The next free index is 13: a new feature takes the next one, with its row in variant_chain.h's table.
+// The chrome's reflection of the CITY (CITY-RT M2 R3a, shaderpack/variants/car_chrome_city.h): a second stage on xChrome::PS_Chrome that applies after the chrome's own (feature 7) and
+// reads the colour of the ray traced image (the city, the cars beside the player) where the chrome variant reads its weight alone. It has no constants of its own (it reads the chrome's
+// block) and composes with the chrome's stage and the G-buffer's; the chrome's own words are not touched, so a frame that does not want it draws the chrome of every version before it.
+inline constexpr uint32_t kFeatureCarChromeCity = 13;
+// The next free index is 14: a new feature takes the next one, with its row in variant_chain.h's table.
 
 // Entry flags of the variant pack (the entry's `flags`).
 inline constexpr uint32_t kVariantEntryVertex = 1u << 0;  // the key is a vertex shader's

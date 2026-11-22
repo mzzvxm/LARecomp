@@ -1451,7 +1451,8 @@ int main(int argc, char** argv) {
 
   // ---- the shaders, the host and the settings hold the numbers ------------------------------------------------------------------------------------
   {
-    const std::string hlsli = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli");
+    // the car's file and the two halves of what every hit shading shares (hlsl/rt_hit_frame.hlsli, rt_hit_sample.hlsli: CITY-RT M2 H4 moved the frame, the cascades and the environment map there)
+    const std::string hlsli = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli") + ReadFile(src + "/gpu/hlsl/rt_hit_frame.hlsli") + ReadFile(src + "/gpu/hlsl/rt_hit_sample.hlsli");
     const std::string refl = ReadFile(src + "/gpu/hlsl/car_rt_refl_cs.hlsl");
     const std::string scene = ReadFile(src + "/gpu/car_rt_scene.cpp");
     const std::string scene_h = ReadFile(src + "/gpu/car_rt_scene.h");
@@ -1468,28 +1469,28 @@ int main(int argc, char** argv) {
       Check(Has(hlsli, "#define CAR_MAT_FLAG_PAINT 1") && Has(hlsli, "#define CAR_MAT_FLAG_DECAL 2") && Has(hlsli, "#define CAR_MAT_FLAG_UV 4") && Has(hlsli, "#define CAR_MAT_FLAG_EMISSIVE 8") &&
                 crm::kFlagPaint == 1 && crm::kFlagDecal == 2 && crm::kFlagUv == 4 && crm::kFlagEmissive == 8,
             "the shader's material flags are the header's");
-      Check(Has(hlsli, "#define CAR_MAT_FRAME_SHADE 1") && Has(hlsli, "#define CAR_MAT_FRAME_SHADOW 2") && Has(hlsli, "#define CAR_MAT_FRAME_ENV 4") && Has(hlsli, "#define CAR_MAT_FRAME_SUN 8") &&
-                Has(hlsli, "#define CAR_MAT_FRAME_CASCADE 16") && crm::kFrameShade == 1 && crm::kFrameShadow == 2 && crm::kFrameEnv == 4 && crm::kFrameSun == 8 && crm::kFrameCascade == 16,
+      Check(Has(hlsli, "#define RT_HIT_FRAME_SHADE 1") && Has(hlsli, "#define RT_HIT_FRAME_SHADOW 2") && Has(hlsli, "#define RT_HIT_FRAME_ENV 4") && Has(hlsli, "#define RT_HIT_FRAME_SUN 8") &&
+                Has(hlsli, "#define RT_HIT_FRAME_CASCADE 16") && crm::kFrameShade == 1 && crm::kFrameShadow == 2 && crm::kFrameEnv == 4 && crm::kFrameSun == 8 && crm::kFrameCascade == 16,
             "the shader's frame flags are the header's");
-      Check(Near(Constant(hlsli, "static const uint kMatCascadeHeaderRow"), crm::kCascadeHeaderRow) && Near(Constant(hlsli, "static const uint kMatCameraRow"), crm::kCameraRow) &&
-                Near(Constant(hlsli, "static const uint kMatCascadeRightRow"), crm::kCascadeRightRow) && Near(Constant(hlsli, "static const uint kMatCascadeTopRow"), crm::kCascadeTopRow) &&
-                Near(Constant(hlsli, "static const uint kMatCascadeFirstRow"), crm::kCascadeFirstRow) && Near(Constant(hlsli, "static const uint kMatCascadeRowsEach"), crm::kCascadeRowsEach) &&
-                Near(Constant(hlsli, "static const uint kMatMaxCascades"), crm::kMaxCascades) && Near(Constant(hlsli, "static const float kCascadeNormalOffset"), crm::kCascadeNormalOffset),
+      Check(Near(Constant(hlsli, "static const uint kRtHitCascadeHeaderRow"), crm::kCascadeHeaderRow) && Near(Constant(hlsli, "static const uint kRtHitCameraRow"), crm::kCameraRow) &&
+                Near(Constant(hlsli, "static const uint kRtHitCascadeRightRow"), crm::kCascadeRightRow) && Near(Constant(hlsli, "static const uint kRtHitCascadeTopRow"), crm::kCascadeTopRow) &&
+                Near(Constant(hlsli, "static const uint kRtHitCascadeFirstRow"), crm::kCascadeFirstRow) && Near(Constant(hlsli, "static const uint kRtHitCascadeRowsEach"), crm::kCascadeRowsEach) &&
+                Near(Constant(hlsli, "static const uint kRtHitMaxCascades"), crm::kMaxCascades) && Near(Constant(hlsli, "static const float kRtHitCascadeNormalOffset"), crm::kCascadeNormalOffset),
             "the shader's cascade rows and the normal offset of the lookup are the header's");
       Check(Has(hlsli, "const float r = dot(p, right);") && Has(hlsli, "const float t = dot(p, top);") && Has(hlsli, "inside += (abs(r + box.x) < box.y && abs(t + box.z) < box.w) ? 1u : 0u;") &&
-                Has(hlsli, "const uint base = kMatCascadeFirstRow + (cascades - inside) * kMatCascadeRowsEach;") && Has(hlsli, "const float u = dot(p, float3(r0.x, r1.x, r2.x)) + r3.x;") &&
+                Has(hlsli, "const uint base = kRtHitCascadeFirstRow + (cascades - inside) * kRtHitCascadeRowsEach;") && Has(hlsli, "const float u = dot(p, float3(r0.x, r1.x, r2.x)) + r3.x;") &&
                 Has(hlsli, "const float v = dot(p, float3(r0.y, r1.y, r2.y)) + r3.y;") &&
                 Has(hlsli, "const float depth = (dot(p, float3(r0.z, r1.z, r2.z)) + r3.z) * (dot(p, float3(r0.w, r1.w, r2.w)) + r3.w) + asfloat(header.z);") &&
                 Has(hlsli, "const float2 tc = float2(u, v) * float2(size) - 0.5;") && Has(hlsli, ">= depth ? 1.0 : 0.0;") &&
                 Has(hlsli, "return lerp(lerp(s00, s10, fr.x), lerp(s01, s11, fr.x), fr.y);"),
             "the shader's cascade lookup is CascadeLit's (the volumetric light's, copied): the boxes, the finest that holds the point, the matrix, the bilinear compare");
-      Check(Has(hlsli, "const float3 world = camera + float3(dot(lifted, f.axisX), dot(lifted, f.axisY), dot(lifted, f.axisZ));") && Has(hlsli, "const float3 lifted = hit + normal * kCascadeNormalOffset;") &&
-                Has(hlsli, "visible = lit + (1.0 - lit) * saturate(asfloat(gCarRtMaterials[kMatCascadeHeaderRow].w));") && Has(hlsli, "visible = min(visible, CarMatSunVisible(") &&
-                Has(hlsli, "asfloat(gCarRtMaterials[kMatCameraRow].xyz)"),
+      Check(Has(hlsli, "const float3 world = camera + float3(dot(lifted, f.axisX), dot(lifted, f.axisY), dot(lifted, f.axisZ));") && Has(hlsli, "const float3 lifted = hit + normal * kRtHitCascadeNormalOffset;") &&
+                Has(hlsli, "return lit + (1.0 - lit) * saturate(asfloat(RT_HIT_FRAME_ROW(kRtHitCascadeHeaderRow).w));") && Has(hlsli, "visible = min(visible, RtHitSunVisible(") &&
+                Has(hlsli, "asfloat(RT_HIT_FRAME_ROW(kRtHitCameraRow).xyz)"),
             "the shader's sun visibility is SunVisibility's: the cascades at the hit's world point (WorldPoint), the collector's fade, the darker with the cars' ray");
-      Check(Near(Constant(hlsli, "static const uint kMatFrameRows"), double(crm::kFrameRows)) && Near(Constant(hlsli, "static const uint kMatRows"), double(crm::kMaterialRows)) &&
-                Near(Constant(hlsli, "static const float kMatTintMax"), crm::kTintMax) && Near(Constant(hlsli, "static const float kConeLodScale"), crm::kConeLodScale) &&
-                Near(Constant(hlsli, "static const float kEmissiveGain"), crm::kEmissiveGain),
+      Check(Near(Constant(hlsli, "static const uint kRtHitFrameRows"), double(crm::kFrameRows)) && Near(Constant(hlsli, "static const uint kMatRows"), double(crm::kMaterialRows)) &&
+                Near(Constant(hlsli, "static const float kRtHitTintMax"), crm::kTintMax) && Near(Constant(hlsli, "static const float kRtHitConeLodScale"), crm::kConeLodScale) &&
+                Near(Constant(hlsli, "static const float kRtHitEmissiveGain"), crm::kEmissiveGain),
             "the shader's row counts, packing range, cone scale and emissive gain are the header's");
       const std::vector<double> fmin = Array(hlsli, "static const float kClassFresnelMin"), fmax = Array(hlsli, "static const float kClassFresnelMax");
       const std::vector<double> lod = Array(hlsli, "static const float kClassEnvLod"), spec = Array(hlsli, "static const float kClassSpecGain");
@@ -1500,26 +1501,30 @@ int main(int argc, char** argv) {
         classes = Near(fmin[c], d.fresnel_min) && Near(fmax[c], d.fresnel_max) && Near(lod[c], d.env_lod) && Near(spec[c], d.spec_gain) && Near(diffuse[c], d.diffuse_gain);
       }
       Check(classes, "the shader's class tables (fresnel min and max, environment level, gains) are the header's defaults");
-      Check(Has(hlsli, "float(v & 1023u), float((v >> 10) & 1023u), float((v >> 20) & 1023u)") && Has(hlsli, "(kMatTintMax / 1023.0)"), "the shader unpacks a colour as PackRgb10 packs it");
+      Check(Has(hlsli, "float(v & 1023u), float((v >> 10) & 1023u), float((v >> 20) & 1023u)") && Has(hlsli, "(kRtHitTintMax / 1023.0)"), "the shader unpacks a colour as PackRgb10 packs it");
       Check(Has(hlsli, "m.cls = r0.x & 0xFu;") && Has(hlsli, "m.flags = (r0.x >> 4) & 0xFu;") && Has(hlsli, "float((r0.x >> 8) & 0xFFu) / 255.0") && Has(hlsli, "float((r0.x >> 16) & 0xFFu) / 255.0") &&
-                Has(hlsli, "float((r0.x >> 24) & 0xFFu) / 16.0") && Has(hlsli, "m.diffuse = r0.y;") && Has(hlsli, "m.tintA = CarMatRgb10(r0.z);") && Has(hlsli, "m.tintB = CarMatRgb10(r0.w);") &&
+                Has(hlsli, "float((r0.x >> 24) & 0xFFu) / 16.0") && Has(hlsli, "m.diffuse = r0.y;") && Has(hlsli, "m.tintA = RtHitRgb10(r0.z);") && Has(hlsli, "m.tintB = RtHitRgb10(r0.w);") &&
                 Has(hlsli, "m.flop = asfloat(r1.x);") && Has(hlsli, "m.lodBase = asfloat(r1.y);") && Has(hlsli, "m.emissive = asfloat(r1.z);"),
             "the shader reads the instance's two rows where MakeRows writes them");
       Check(Has(hlsli, "f.toSun = asfloat(r0.xyz);") && Has(hlsli, "f.flags = r0.w;") && Has(hlsli, "f.sun = asfloat(r1.xyz);") && Has(hlsli, "f.shadowReach = asfloat(r1.w);") && Has(hlsli, "f.ambient = asfloat(r2.xyz);") &&
                 Has(hlsli, "f.ambientGain = asfloat(r2.w);") && Has(hlsli, "f.envSharp = r3.x;") && Has(hlsli, "f.envBlur = r3.y;") && Has(hlsli, "f.night = asfloat(r3.z);") && Has(hlsli, "f.specGain = asfloat(r3.w);") &&
-                Has(hlsli, "f.sky = asfloat(r4.xyz);") && Has(hlsli, "f.gain = asfloat(r4.w);") && Has(hlsli, "gCarRtMaterials[5].xyz") && Has(hlsli, "gCarRtMaterials[6].xyz") && Has(hlsli, "gCarRtMaterials[7].xyz"),
+                Has(hlsli, "f.sky = asfloat(r4.xyz);") && Has(hlsli, "f.gain = asfloat(r4.w);") && Has(hlsli, "RT_HIT_FRAME_ROW(5).xyz") && Has(hlsli, "RT_HIT_FRAME_ROW(6).xyz") && Has(hlsli, "RT_HIT_FRAME_ROW(7).xyz"),
             "the shader reads the frame's rows where MakeFrameRows writes them");
       Check(Has(hlsli, "const float a = -r.y;") && Has(hlsli, "const float b = -r.z;") && Has(hlsli, "const float c = -r.x;") && Has(hlsli, "uv = float2(0.25 - c / (4.0 + 4.0 * b), 0.5 + a / (2.0 + 2.0 * b));") &&
                 Has(hlsli, "uv = float2(0.75 + c / (4.0 - 4.0 * b), 0.5 + a / (2.0 - 2.0 * b));"),
             "the shader's paraboloid mapping is EnvUv's");
       Check(Has(hlsli, "ByteAddressBuffer gCarRtUvs : register(t4, CAR_RT_SPACE_NAME);") && Has(hlsli, "StructuredBuffer<uint4> gCarRtMaterials : register(t5, CAR_RT_SPACE_NAME);") &&
-                Has(scene, "addByteAddressBuffer(4)") && Has(scene, "addStructuredBuffer(5)") && Has(scene, "CreateDescriptorSet(set_builder_, 6, 0"),
-            "the shader's bindings 4 and 5 are the host's (a byte address buffer and a structured buffer, six views in the set)");
+                Has(scene, "addByteAddressBuffer(4)") && Has(scene, "addStructuredBuffer(5)") && Has(scene, "CreateDescriptorSet(set_builder_, 6 + CityHitScene::kBindingCount + RtWorldFrame::kBindingCount, 0"),
+            "the shader's bindings 4 and 5 are the host's (a byte address buffer and a structured buffer; six views, the hit data's four and the world frame's two in the set)");
       Check(Has(hlsli, "f16tof32(p0 & 0xFFFFu), f16tof32(p0 >> 16)"), "the shader reads a texture coordinate pair as PackUv packs it (u low)");
-      Check(Has(hlsli, "const float hemisphere = clamp(0.6 + 0.4 * dot(normal, up), 0.2, 1.0);") && Has(hlsli, "pow(max(1.0 - nv, 1e-4), max(m.fresnelPower, 0.01))") &&
-                Has(hlsli, "result += albedo * (m.emissive * kEmissiveGain * f.night);") && Has(hlsli, "albedo = lerp(m.tintB, m.tintA, pow(max(nv, 1e-4), m.flop));"),
+      Check(Has(hlsli, "return clamp(0.6 + 0.4 * dot(normal, f.axisY), 0.2, 1.0);") && Has(hlsli, "pow(max(1.0 - nv, 1e-4), max(m.fresnelPower, 0.01))") &&
+                Has(hlsli, "result += albedo * (m.emissive * kRtHitEmissiveGain * f.night);") && Has(hlsli, "albedo = lerp(m.tintB, m.tintA, pow(max(nv, 1e-4), m.flop));"),
             "the shader's lighting is ShadeReference's (the hemisphere term, the fresnel, the emissive, the paint's gradient)");
-      Check(Has(refl, "#include \"car_rt_hit_shade.hlsli\"") && Has(refl, "static const bool kShadePlayerHits = true;") && Has(refl, "isShaded = CarHitShade(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, g_push.up.w, CarHitHeight(hitInstance, hitsOther, hit),") &&
+      Check(Has(hlsli, "#define RT_HIT_FRAME_ROW(i) gCarRtMaterials[i]") && Has(hlsli, "#define RT_HIT_TLAS gCarRtTlas") && Has(hlsli, "#include \"rt_hit_frame.hlsli\"") && Has(hlsli, "#include \"rt_hit_sample.hlsli\"") &&
+                Has(hlsli, "RtHitSunVisible(hit + normal * (0.004 + 0.002 * abs(hit.z)), toSun, f.shadowReach, CAR_RT_MASK_ALL)") && Has(hlsli, "visible = RtHitCascadeVisible(f, hit, normal);") &&
+                Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);") && Has(hlsli, "env = RtHitEnvRead(f, world, lod);"),
+            "the car's shading reads the frame's rows from the car's own buffer, and the cascades, the sun's ray, the ambient and the environment map through the shared code");
+      Check(Has(refl, "#include \"car_rt_hit_shade.hlsli\"") && Has(refl, "static const bool kShadePlayerHits = true;") && Has(refl, "isShaded = CarHitShade(instance, primitive, barycentrics, hitNormal, direction, hit, footprint, coneTan, g_push.up.w, CarHitHeight(hitInstance, hitsOther, hit), shaded);") &&
                 Has(refl, "if (seenShare < 1.0 && usable && (hitsOther || kShadePlayerHits))"),
             "the trace shades a hit on another car (and, in the opponents' variant, on the player's) only where the history does not show it in full");
       Check(Has(refl, "hidden = shaded;") && Has(refl, "else if (hitsOther)") && Has(refl, "hidden *= g_push.tune.x;") && Has(refl, "const float known = OtherCarColour(history, CarRtLoadCar(hitInstance), hidden);"),
@@ -1572,7 +1577,7 @@ int main(int argc, char** argv) {
                 Has(hlsli, "const float coat = m.cls == CAR_MAT_CLASS_CHROME ? fresnel : kCoatF0 + (1.0 - kCoatF0) * pow(saturate(1.0 - nv), kCoatPower);") &&
                 Has(hlsli, "pow(saturate(dot(reflected, toSun)), kSunGlintPower)") && Has(hlsli, "pow(saturate(dot(reflected, up)), kLampGlintPower)") &&
                 Has(hlsli, "result += f.sun * (kSunRadiance * sunLobe * visible * daySun + kLampRadiance * lampLobe * night * openness) * (coat * kClassGlint[m.cls] * detail) * tint;") &&
-                Has(hlsli, "f.detail = asfloat(gCarRtMaterials[5].w);"),
+                Has(hlsli, "f.detail = asfloat(RT_HIT_FRAME_ROW(5).w);"),
             "the shader's detail is ShadeReference's: the hour, the contact, the openness, the class, the coat's glints");
       Check(Has(refl, "return max(dot(hit - car.centre, g_push.up.xyz) + kCarCentreRise, 0.0);") && Has(refl, "row = hitInstance.draw;") && Has(refl, "row = g_push.opp.z;") && Has(refl, "if (car.radius == 0.0)"),
             "the pass takes a hit's height over its car's ground from the car's record (the instance's, or the player's in the opponents' variant)");

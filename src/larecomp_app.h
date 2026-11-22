@@ -39,8 +39,8 @@
 
 class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventListener {
  public:
-  // What a command line action asks for instead of a game: the launcher's setup runs both.
-  enum class BatchMode : uint8_t { kNone, kBuildShaderPacks, kPrecachePipelines };
+  // What a command line action asks for instead of a game: the launcher's setup runs them, one process each (or --build_shader_packs and --build_city_pack on one command line).
+  enum class BatchMode : uint8_t { kNone, kBuildShaderPacks, kPrecachePipelines, kBuildCityPack, kBuildCityHit, kCheckCityHit };
 
   LarecompApp();
   ~LarecompApp() override;
@@ -49,6 +49,13 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   // depend on them and GetRequirements() runs after the layers are applied).
   void SetBatchMode(BatchMode mode) { batch_ = mode; }
   BatchMode GetBatchMode() const { return batch_; }
+  // The city actions (--build_city_pack, --build_city_hit, --check_city_hit) given WITH another action run after it, in that order, each when everything before it succeeded (the first action's
+  // mode is the one set above; a city action given first is its own mode and is not in this list). The order and the rules are bootprogress/city_pack_rules.h PlanActions.
+  void SetAlsoCityActions(bool city_pack, bool city_hit, bool check_city_hit) {
+    also_build_city_pack_ = city_pack;
+    also_build_city_hit_ = city_hit;
+    also_check_city_hit_ = check_city_hit;
+  }
 
   // A --config_file= the command line carries: OnConfigure reads larecomp.toml before the SDK applies the command line, so it
   // cannot see the option itself (main scans for it, as it does for the actions).
@@ -116,6 +123,9 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   bool OfferCompatibilityRendererAfterCrashes();   // OnInit: arms the start watch; true when the player took the offer made after two unfinished starts
 
   BatchMode batch_ = BatchMode::kNone;
+  bool also_build_city_pack_ = false;
+  bool also_build_city_hit_ = false;
+  bool also_check_city_hit_ = false;
   std::vector<std::string> path_notes_;
   std::vector<larecomp::cli::Option> cli_options_;  // the setting options of the command line, in the order typed
   std::vector<std::string> cli_notes_;              // what was not used and why; logged in OnInit (the log file is open by then)

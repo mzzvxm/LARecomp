@@ -41,6 +41,7 @@
 #include "shaderpack/variant_pack_format.h"
 #include "shaderpack/variants/bloom_gauss.h"
 #include "shaderpack/variants/car_chrome.h"
+#include "shaderpack/variants/car_chrome_city.h"
 #include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/gbuffer.h"
@@ -786,6 +787,7 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
   variants.push_back(MakeGlowSoftVariant());
   variants.push_back(MakeCarSelfReflVariant());
   variants.push_back(MakeCarChromeVariant());
+  variants.push_back(MakeCarChromeCityVariant());  // CITY-RT M2 R3a: a stage on the chrome's (feature 13), drawn only while the city is in the reflections
   variants.push_back(MakeLuminanceScaleVariant());
   variants.push_back(MakeUiSharpVariant());
   variants.push_back(MakeHeadlightVariant());

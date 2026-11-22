@@ -105,6 +105,7 @@ add_library(larecomp_shaderpack STATIC
     variants/glow_soft.cpp
     variants/car_selfrefl.cpp
     variants/car_chrome.cpp
+    variants/car_chrome_city.cpp
     variants/luminance_scale.cpp
     variants/ui_sharp.cpp
     variants/headlight.cpp
@@ -211,6 +212,17 @@ add_executable(larecomp_car_chrome_test EXCLUDE_FROM_ALL
     variants/car_selfrefl.cpp)
 target_compile_features(larecomp_car_chrome_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_car_chrome_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# The chrome's city stage (variants/car_chrome_city.h, CITY-RT M2 R3a: the chrome reads the colour of the ray traced image) on top of the chrome's, composed through the chain:
+#   cmake --build <dir> --target larecomp_car_chrome_city_test, then run src/shaderpack/larecomp_car_chrome_city_test
+#   [<folder of translated HLSL> [<folder for the result>]] (exit 0 = passed; variants/car_chrome_city_test.cpp).
+add_executable(larecomp_car_chrome_city_test EXCLUDE_FROM_ALL
+    variants/car_chrome_city_test.cpp
+    variants/car_chrome_city.cpp
+    variants/car_chrome.cpp
+    variants/car_selfrefl.cpp)
+target_compile_features(larecomp_car_chrome_city_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_car_chrome_city_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 # The glow variant's text transform has a check that needs no compiler, renderer or game files:
 #   cmake --build <dir> --target larecomp_glow_soft_test, then run src/shaderpack/larecomp_glow_soft_test
@@ -330,6 +342,7 @@ add_executable(larecomp_gbuffer_cars_test EXCLUDE_FROM_ALL
     variants/gbuffer_day.cpp
     variants/car_selfrefl.cpp
     variants/car_chrome.cpp
+    variants/car_chrome_city.cpp
     hash.cpp)
 target_compile_features(larecomp_gbuffer_cars_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_gbuffer_cars_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")

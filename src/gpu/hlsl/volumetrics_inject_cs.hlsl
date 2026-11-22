@@ -38,6 +38,7 @@
 // Shader Model 6.0, 8 x 8 x 1 threads: x, y the voxel in a tile, the dispatch's z the slice.
 
 #include "volumetrics_common.hlsli"
+#include "nan_guard.hlsli"
 #include "volumetrics_noise.hlsli"
 
 // --- noise ------------------------------------------------------------------------------------------------------------------------
@@ -454,7 +455,9 @@ void main(uint3 id : SV_DispatchThreadID) {
     }
   }
   scatter += lights * (sigma * kLightGain);
-  float4 now = float4(scatter, sigma);
+  // This voxel's light, a number held to what the volume keeps (nan_guard.hlsli): the volume is its own history (the next frame blends with it, and NaN times a weight of 0 is NaN), so a NaN or an infinity
+  // out of a lamp's law must not get in (min(now, 60000) below leaves a NaN to the API on Vulkan).
+  float4 now = NgHeld4(float4(scatter, sigma), 60000.0);
 
   // --- the history, trilinear in the previous camera's grid ---
   if ((g_push.slots.z & 1u) != 0u && history.z > 0.0) {
@@ -493,6 +496,8 @@ void main(uint3 id : SV_DispatchThreadID) {
         const float4 a = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s0, grid), 0);
         const float4 b = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s1, grid), 0);
         float4 old = lerp(a, b, ft);
+        // a history texel that is not a number (a NaN in the trilinear footprint) is no history: this frame's light stays (select, not a branch: nan_guard.hlsli)
+        old = select(NgIsNumber4(old), old, now);
         if (compensate) {
           // the history's headlight part to where the lights are now; this frame's light of everything but the headlights is what the history's beam is told from
           const float3 base = scatter_haze + (lights - head_lights) * (sigma * kLightGain);

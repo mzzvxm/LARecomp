@@ -129,9 +129,10 @@ constexpr uint64_t ColourPostBytes(uint32_t width, uint32_t height, uint32_t lev
   }
   return total;
 }
-// Whether the colour_post chain is made with its mips: while the reflections consumer wants colour_post (nothing else reads a level above 0), or the debug view shows a level above 0.
+// Whether the colour_post chain is made with its mips: while the reflections consumer wants colour_post, or the ray traced reflections of the car paint (CITY-RT M2: a hit on the city is read at the mip of
+// its footprint) do (nothing else reads a level above 0), or the debug view shows a level above 0.
 constexpr bool ColourPostWithMips(const Wants& wants, View view, uint32_t view_level) {
-  return (wants.Of(Consumer::kReflections) & (1u << kColourPost)) != 0 || (view == View::kColourPost && view_level > 0);
+  return (wants.Of(Consumer::kReflections) & (1u << kColourPost)) != 0 || (wants.Of(Consumer::kCarRtRefl) & (1u << kColourPost)) != 0 || (view == View::kColourPost && view_level > 0);
 }
 
 // A trigger frame whose depth has no main colour target at its sample count. The capture finds the colour by the depth's guest samples; the game's first frames draw a 1-sample depth (a loading scene) before the

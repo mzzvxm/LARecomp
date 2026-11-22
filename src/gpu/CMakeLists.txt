@@ -22,11 +22,21 @@ add_library(larecomp_gpu OBJECT
     car_rt_instances.cpp
     car_rt_scene.cpp
     car_rt_ao.cpp
+    city_hit_probe.cpp
+    city_hit_scene.cpp
+    city_rt_scene.cpp
+    city_rt_shadow.cpp
+    rt_scene_service.cpp
+    rt_world_frame.cpp
+    city_texture_set.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
     local_shadow.cpp
     car_rt_refl.cpp
+    car_rt_glass_refl.cpp
     car_rt_opp_refl.cpp
+    city_refl.cpp
+    city_refl_setting.cpp
     capture_readback.cpp
     choice_box.cpp
     constants.cpp
@@ -46,6 +56,12 @@ add_library(larecomp_gpu OBJECT
     frame_trace.cpp
     frame.cpp
     gbuffer.cpp
+    gi_apply.cpp
+    gi_pixel.cpp
+    gi_field.cpp
+    gi_integration.cpp
+    gi_update.cpp
+    gi_setting.cpp
     gbuffer_material.cpp
     gbuffer_materials.cpp
     geometry.cpp
@@ -86,10 +102,12 @@ add_library(larecomp_gpu OBJECT
     rt_bench.cpp
     rt_tier.cpp
     rr_guides.cpp
+    rt_denoise.cpp
     samplers.cpp
     scene.cpp
     screen_shared.cpp
     ssr.cpp
+    ssr_rt.cpp
     shaders.cpp
     shadow_atlas.cpp
     shadow_filter.cpp
@@ -165,6 +183,12 @@ add_executable(larecomp_ao_blue_noise_test EXCLUDE_FROM_ALL ao_blue_noise_test.c
 # NOISE-AUDIT) and the debug setting mcla_gpu_noise_blue that switches them to the first versions' gradient noise: uniform, changes every frame, nothing slides, no lattice after the average:
 #   cmake --build <dir> --target larecomp_noise_frame_test, then run src/gpu/larecomp_noise_frame_test [<src/gpu dir>] [--print] (a second or two).
 add_executable(larecomp_noise_frame_test EXCLUDE_FROM_ALL noise_frame_test.cpp)
+# The ray traced city sun shadows disc noise (hlsl/city_rt_shadow_noise.hlsli: the blue noise tile in place of gradient noise; NOISE-AUDIT): numbers, error after the average, still pattern, sources:
+#   cmake --build <dir> --target larecomp_city_rt_shadow_noise_test, then run src/gpu/larecomp_city_rt_shadow_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_city_rt_shadow_noise_test EXCLUDE_FROM_ALL city_rt_shadow_noise_test.cpp)
+# The noise of a city hit sun ray and lamp choice in the car reflections (hlsl/city_refl_noise.hlsli: the blue noise tile stepped along R2, no gradient noise and no direction salt; NOISE-AUDIT):
+#   cmake --build <dir> --target larecomp_city_refl_noise_test, then run src/gpu/larecomp_city_refl_noise_test [<src/gpu dir>] [--print] (a few seconds).
+add_executable(larecomp_city_refl_noise_test EXCLUDE_FROM_ALL city_refl_noise_test.cpp)
 # The ray traced car occlusion's and sun ray's noise (hlsl/car_rt_ao_noise.hlsli: the blue noise tile in place of gradient noise; NOISE-AUDIT): numbers, history, sources:
 #   cmake --build <dir> --target larecomp_car_rt_ao_noise_test, then run src/gpu/larecomp_car_rt_ao_noise_test [<src/gpu dir>] [--print] (a few seconds).
 add_executable(larecomp_car_rt_ao_noise_test EXCLUDE_FROM_ALL car_rt_ao_noise_test.cpp)
@@ -348,6 +372,36 @@ add_executable(larecomp_headlight_rig_test EXCLUDE_FROM_ALL headlight_rig_test.c
 # and the host's pure rules (which draws get the sidecar, the frame window, the trigger) likewise:
 #   cmake --build <dir> --target larecomp_gbuffer_rules_test, then run src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>] (exit 0 = passed).
 add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.cpp)
+# The probe field's frame interface (gi_frame.h, CITY-RT M3 package G0: the budgets and the (ray tracing tier, level) cells, the cascades' toroidal addressing, the octahedral
+# probe maps, the frame rows, the lookup with its weights, the ambient and the ground baseline; it compiles hlsl/gi_common.hlsli as C++ and compares it with the twin, and reads
+# gbuffer_rules.h's octahedral map to check that they are the same) likewise:
+#   cmake --build <build dir> --target larecomp_gi_frame_test, then run src/gpu/larecomp_gi_frame_test [-v] [<hlsl/gi_common.hlsli>] (exit 0 = passed).
+add_executable(larecomp_gi_frame_test EXCLUDE_FROM_ALL gi_frame_test.cpp)
+# The probe field owner's rules (gi_field_rules.h, CITY-RT M3 package G1: the memory of each cell and the order of loss, the windows' toroidal moves and their dirty sets, cuts, the fade,
+# the state word and the weight rule, the reset list; it compiles hlsl/gi_field_common.hlsli as C++ and compares it with the twin, checks the traversal that finds the nearest probe sphere
+# against a brute force, and reads the three gi_field_*.hlsl files for their registers) likewise:
+#   cmake --build <build dir> --target larecomp_gi_field_rules_test, then run src/gpu/larecomp_gi_field_rules_test [-v] [<hlsl dir>] (exit 0 = passed).
+add_executable(larecomp_gi_field_rules_test EXCLUDE_FROM_ALL gi_field_rules_test.cpp)
+# The probe update's rules (gi_update_rules.h, CITY-RT M3 package G2: the ray set and its rotation, the ray record, the inside / back face classification, the blend with adaptive hysteresis, the scheduler
+# (dirty and stale probes, the round robin, the safe range, the warm-up and the governor's scales), the governor, the budgets of the cells, the census lines; it compiles hlsl/gi_update_common.hlsli as C++
+# and compares it with the twin and with gi_frame.h's IntegrateTexel, and reads the two shaders' registers, the CMake lines, host_shaders.h and the wiring) likewise:
+#   cmake --build <dir> --target larecomp_gi_update_rules_test, then run src/gpu/larecomp_gi_update_rules_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_gi_update_rules_test EXCLUDE_FROM_ALL gi_update_rules_test.cpp)
+# The probe field's apply (gi_apply_rules.h, CITY-RT M3 package G3: the identity of an empty or open field, the ceiling and the cap, the parity with the screen-space bounce light's rules, the vehicle share,
+# the SSGI switch, the upsample's weights, the buffer's rows, the leak test; it compiles hlsl/gi_apply_common.hlsli together with gi_common.hlsli as C++ and compares them with the twin, and reads the
+# shader's registers, the CMake lines, host_shaders.h and the settings) likewise:
+#   cmake --build <dir> --target larecomp_gi_apply_test, then run src/gpu/larecomp_gi_apply_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_gi_apply_test EXCLUDE_FROM_ALL gi_apply_test.cpp)
+# The per-pixel detail pass (gi_pixel_rules.h, CITY-RT M3 package G5: the cell and the identity of the other cells, the governor, the plan, the ray's direction and noise, the estimator's pieces, the mix with the
+# field, the surface lights picked from the light manager's frame, the denoiser's push block and the camera's motion; it compiles hlsl/gi_pixel_common.hlsli as C++ and compares it with the twin, and reads the
+# shader, the host and the CMake lines) likewise:
+#   cmake --build <dir> --target larecomp_gi_pixel_test, then run src/gpu/larecomp_gi_pixel_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_gi_pixel_test EXCLUDE_FROM_ALL gi_pixel_test.cpp)
+# The ray traced bounce light's setting and its pause row (gi_setting.h, CITY-RT M3 package G4: what a word comes to on each class and ray tracing tier, the gate that greys the row and what it says, AUTO's
+# label, the launcher's line, the BOUNCE LIGHT rows' "(REPLACED)" and the strength row's rule, the debug feedback; it also reads gi_integration.h / .cpp, scene.cpp, renderer.cpp, pause_menu.cpp, the settings and
+# the CMake lines for the order and the wiring) likewise:
+#   cmake --build <dir> --target larecomp_gi_setting_test, then run src/gpu/larecomp_gi_setting_test [-v] [<src dir>] (exit 0 = passed).
+add_executable(larecomp_gi_setting_test EXCLUDE_FROM_ALL gi_setting_test.cpp)
 # The one light description (light_frame.h: Light, LightFrame, the 64 byte GpuLight and its bits; light_id.h: the ids, a street lamp's being the old LampKey / KeyOf; light_laws.h: the
 # headlight's, the game's lamp's and the volume's laws held to the rig's LampScale and the game's numbers; light_convert.h: the conversions from the headlight rig, the game's lamp
 # list, the shadow replay and into the volume's lamp; and it compiles hlsl/light_laws.hlsli as C++ and compares it with the twin) likewise:
@@ -361,6 +415,18 @@ add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.c
 # gate, the BRDF, the GGX sampling, the virtual image's reprojection, the Hi-Z march against analytic scenes and a brute force march) likewise; it reads the sources it is given:
 #   cmake --build <dir> --target larecomp_ssr_test, then run src/gpu/larecomp_ssr_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)
+# The ray traced fallback of those reflections (ssr_rt_rules.h: the class groups, the confidence target, the candidates and the cap, the levels' decision and cells, the governor, the census; it compiles
+# hlsl/ssr_rt_common.hlsli as C++ and compares it with the twins, and reads the fallback's sources) likewise:
+#   cmake --build <dir> --target larecomp_ssr_rt_rules_test, then run src/gpu/larecomp_ssr_rt_rules_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_ssr_rt_rules_test EXCLUDE_FROM_ALL ssr_rt_rules_test.cpp)
+# RtDenoise (rt_denoise_rules.h: the radius law, the weights, the temporal rules; ssr_denoise_rules.h: the reflections' use, the decision, the setting, the census; it compiles
+# hlsl/rt_denoise_common.hlsli as C++ and compares it with the twins, runs a CPU model of the two stages on synthetic frames, and reads the sources it is given) likewise:
+#   cmake --build <dir> --target larecomp_rt_denoise_test, then run src/gpu/larecomp_rt_denoise_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_rt_denoise_test EXCLUDE_FROM_ALL rt_denoise_test.cpp)
+# The NaN guard (hlsl/nan_guard.hlsli: a NaN decided by its bits, the same on D3D12 and on Vulkan, whose max / min / clamp / saturate disagree about a NaN; it compiles the .hlsli as C++ and compares it with the
+# standard library on every kind of NaN, the infinities and random bit patterns) and the places that use it (the reflections', the occlusion's, the volume's and the lights' shaders: the text of each place) likewise:
+#   cmake --build <dir> --target larecomp_nan_guard_test, then run src/gpu/larecomp_nan_guard_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_nan_guard_test EXCLUDE_FROM_ALL nan_guard_test.cpp)
 # The frame's order (frame_order.h, LIGHT-UNIFY U9: the one table of every pass that makes or reads the shared screen and light data, what each makes, reads, must follow and Wants, and the recorder the
 # Scene notes its trigger passes in) held to itself (every read has an earlier maker, every step moved before what it needs is found), to the consumers' own wants (gbuffer_rules.h, screen_rules.h), to a model of
 # frames with passes missing and every kind of mistake, and, given the src/gpu folder (it defaults to the one the test is in), to scene.cpp, ao.cpp and the consumers' sources (the calls stand in the table's
@@ -444,6 +510,96 @@ add_executable(larecomp_light_shadow_filter_test EXCLUDE_FROM_ALL light_shadow_f
 # hlsl/car_rt_common.hlsli use the header's numbers) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_scene_rules_test, then run src/gpu/larecomp_car_rt_scene_rules_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_car_rt_scene_rules_test EXCLUDE_FROM_ALL car_rt_scene_rules_test.cpp)
+# The city as ray tracing structures (city_rt_rules.h, CITY-RT M1: the setting and the class budgets, the instance mask against the car scene's, the streaming plan
+# with its hysteresis and memory cap on a synthetic city, the frame's build schedule) likewise:
+#   cmake --build <dir> --target larecomp_city_rt_rules_test, then run src/gpu/larecomp_city_rt_rules_test (exit 0 = passed).
+add_executable(larecomp_city_rt_rules_test EXCLUDE_FROM_ALL city_rt_rules_test.cpp)
+# The ray tracing scene service's rules (rt_scene_rules.h, CITY-RT M2 H3: the Want lifecycle, the merge of the consumers, the top level's plan with and without the player's car, the
+# camera predictor on made-up drives) likewise:
+#   cmake --build <dir> --target larecomp_rt_scene_rules_test, then run src/gpu/larecomp_rt_scene_rules_test (exit 0 = passed).
+add_executable(larecomp_rt_scene_rules_test EXCLUDE_FROM_ALL rt_scene_rules_test.cpp)
+# The city hit data's pool (city_hit_pool_rules.h, CITY-RT M2 H3: the budgets, the pool's cap in the streaming plan, the allocator, the sector table, the book with its deferred frees,
+# 30,000 random operations, the probe's checksum, and the chain from a block through the table to the decode); given the src/gpu folder it also checks hlsl/city_hit_probe_cs.hlsl:
+#   cmake --build <dir> --target larecomp_city_hit_pool_rules_test, then run src/gpu/larecomp_city_hit_pool_rules_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_city_hit_pool_rules_test EXCLUDE_FROM_ALL city_hit_pool_rules_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
+target_include_directories(larecomp_city_hit_pool_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_hit_pool_rules_test PRIVATE cxx_std_23)
+# The city texture set's rules (city_texture_rules.h, CITY-RT M2 H2 finished for M1c: the bindless slot maths, the footprints of every level against Plume's D3D12 arithmetic, the memory a
+# texture takes, the budgets by class, level and scope, the pressure rule, a sector's two texture lists, and the loader's conversation with a fake device over a retail-sized table with
+# the residency's invariants held at every frame) likewise:
+#   cmake --build <dir> --target larecomp_city_texture_rules_test, then run src/gpu/larecomp_city_texture_rules_test (exit 0 = passed).
+add_executable(larecomp_city_texture_rules_test EXCLUDE_FROM_ALL city_texture_rules_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/texture_residency.cpp")
+target_include_directories(larecomp_city_texture_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_texture_rules_test PRIVATE cxx_std_23)
+# The exact alpha of the city's cut-outs (hlsl/city_hit_alpha.hlsli compiled as C++ against its twin city_hit_alpha_rules.h on a synthetic city of fences, every way a candidate's alpha is not
+# known, the shadow shader's wiring read from its text); given the src/gpu folder it reads the shader sources:
+#   cmake --build <dir> --target larecomp_city_hit_alpha_rules_test, then run src/gpu/larecomp_city_hit_alpha_rules_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_city_hit_alpha_rules_test EXCLUDE_FROM_ALL city_hit_alpha_rules_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
+target_include_directories(larecomp_city_hit_alpha_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_hit_alpha_rules_test PRIVATE cxx_std_23)
+# What every hit shading shares (CITY-RT M2 H4: rt_hit_frame.h and hlsl/rt_hit_frame.hlsli + hlsl/rt_hit_sample.hlsli compiled as C++ through hlsl_cpp_shim.h and checked against it: the frame's rows,
+# the cascades' lookup, the environment map's mapping, a texture read by slot with the game's gamma; the exposure calibration of rt_hit_calibration.h, the car's numbers unchanged and the city's
+# per class gains); given the src folder it also reads the shader files' text:
+#   cmake --build <dir> --target larecomp_rt_hit_frame_test, then run src/gpu/larecomp_rt_hit_frame_test <src dir> (exit 0 = passed).
+add_executable(larecomp_rt_hit_frame_test EXCLUDE_FROM_ALL rt_hit_frame_test.cpp)
+target_include_directories(larecomp_rt_hit_frame_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_rt_hit_frame_test PRIVATE cxx_std_23)
+# The city hit library (hlsl/city_hit_shade.hlsli compiled as C++ against its twin city_hit_shade_rules.h on a synthetic city of a wall, a road, glass, a lamp lens, metal, a wet road, water, a neon
+# sign and a lit window, thousands of random rays, frames and parameters: CityHitShade, CityHitResolve, the rays they cast, the calibration's counters; the twin's laws: the texture's level, the lamps'
+# laws and the estimator of the lamp choice, the sun ray, the fresnel, the screen's weight, the mix, the lamp's GPU record; and (CITY-RT R7, city_hit_lamp_term_lib.inc and
+# city_hit_lamp_term_checks.inc) the library once more with the world frame's lamp grid and glow schedule: the lamp term at hits against the twin, its caps, the glow kinds, the emissive calibration);
+# given the src folder it also reads the library's text:
+#   cmake --build <dir> --target larecomp_city_hit_shade_rules_test, then run src/gpu/larecomp_city_hit_shade_rules_test <src dir> (exit 0 = passed).
+add_executable(larecomp_city_hit_shade_rules_test EXCLUDE_FROM_ALL city_hit_shade_rules_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/lamp_merge.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/lamp_table.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
+target_include_directories(larecomp_city_hit_shade_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_hit_shade_rules_test PRIVATE cxx_std_23)
+# The city in the car paint's reflections (CITY-RT M2 R1, R2: city_refl_rules.h: the mask, the levels and cells by class and tier, the opponents' budget, the lamp schedule, the constants rows the shader reads,
+# the counters and the census lines; given the src folder it also checks that hlsl/city_refl.hlsli, car_rt_refl_cs.hlsl, the host and the settings hold the header's numbers):
+#   cmake --build <dir> --target larecomp_city_refl_rules_test, then run src/gpu/larecomp_city_refl_rules_test <src dir> (exit 0 = passed).
+add_executable(larecomp_city_refl_rules_test EXCLUDE_FROM_ALL city_refl_rules_test.cpp)
+target_include_directories(larecomp_city_refl_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_refl_rules_test PRIVATE cxx_std_23)
+# The player's car windows reflecting the city (CITY-RT M2 R3b: car_glass_rules.h: the Fresnel, the primary ray's reach, the colour a pane adds, the dispatch's rectangle, the decision, the apply pass's
+# arithmetic; given the src folder it checks that the shaders, the host, the CMake files and the settings hold the header's numbers and are wired as the design says) likewise:
+#   cmake --build <dir> --target larecomp_car_glass_rules_test, then run src/gpu/larecomp_car_glass_rules_test <src dir> (exit 0 = passed).
+add_executable(larecomp_car_glass_rules_test EXCLUDE_FROM_ALL car_glass_rules_test.cpp)
+target_include_directories(larecomp_car_glass_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_car_glass_rules_test PRIVATE cxx_std_23)
+
+# The city reflections' setting and its pause row (city_refl_setting.h, CITY-RT M2 package R8: what a word comes to on each class and ray tracing tier, the gate that greys the row and what it says, how the
+# state of the city's files becomes a word, the interplay with the ray traced CAR SELF-REFLECTIONS row, AUTO's label, the page width; it also reads the scenes, the host, pause_menu.cpp, the settings and the CMake
+# lines for the wiring) likewise:
+#   cmake --build <dir> --target larecomp_city_refl_setting_test, then run src/gpu/larecomp_city_refl_setting_test [-v] [<src dir>] (exit 0 = passed).
+add_executable(larecomp_city_refl_setting_test EXCLUDE_FROM_ALL city_refl_setting_test.cpp city_refl_setting.cpp)
+target_include_directories(larecomp_city_refl_setting_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_refl_setting_test PRIVATE cxx_std_23)
+# The ray tracing world frame (CITY-RT package FRAME: rt_world_frame_rules.h, hlsl/rt_world_frame.hlsli compiled as C++ through hlsl_cpp_shim.h and checked against it: the two buffers' layout and
+# packing, the lamp schedule (the on hours and the night curve), the merge of the static lamp table with the game's live list, the budget, the 64 m grid, the lookup against brute force, the
+# lamp light through the grid against the library's twin; given the src folder it also reads the shader files' text, the descriptor counts of the car scene's set and the wiring):
+#   cmake --build <dir> --target larecomp_rt_world_frame_test, then run src/gpu/larecomp_rt_world_frame_test <src dir> (exit 0 = passed).
+add_executable(larecomp_rt_world_frame_test EXCLUDE_FROM_ALL rt_world_frame_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/lamp_merge.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/lamp_table.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
+target_include_directories(larecomp_rt_world_frame_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_rt_world_frame_test PRIVATE cxx_std_23)
+# The city's ray traced sun shadows' maths (city_rt_shadow_rules.h: the sun, the disc samples, the lift, the alpha rule, the noise hash; a brute force tracer over made-up
+# triangles checks the penumbra of a roof's edge against the exact disc integral, contact hardening, no acne on a plane at every sun height; given the src/gpu folder it also
+# checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:
+#   cmake --build <dir> --target larecomp_city_rt_shadow_rules_test, then run src/gpu/larecomp_city_rt_shadow_rules_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_city_rt_shadow_rules_test EXCLUDE_FROM_ALL city_rt_shadow_rules_test.cpp)
 # The other cars in the car ray tracing scene (car_rt_instances_rules.h: the limits by class, which cars are kept, a car's body centre, the budgets of a
 # car that is new, the instance list) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_instances_rules_test, then run src/gpu/larecomp_car_rt_instances_rules_test (exit 0 = passed).
@@ -893,6 +1049,13 @@ larecomp_gpu_host_shader(screen_view_ps ps_6_0)
 # The screen-space reflections (ssr.h): the trace (over plain and multisampled planes), the accumulation, the resolve into the main colour (plain and multisampled).
 larecomp_gpu_host_shader(ssr_trace_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1)
+# ... the same two with the confidence as a second target (SSR_RT=1), for a frame the ray traced fallback follows (ssr_rt.h, CITY-RT R4), and the fallback's compute passes: the candidates' tile list (no rays,
+# Shader Model 6.0) and the rays into the city's top level (inline ray queries: Shader Model 6.5, SPIR-V 1.5 on Vulkan), the latter over plain and multisampled planes.
+larecomp_gpu_host_shader(ssr_trace_rt_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_RT=1)
+larecomp_gpu_host_shader(ssr_trace_rt_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_RT=1)
+larecomp_gpu_host_shader(ssr_rt_select_cs cs_6_0)
+larecomp_gpu_host_shader_rt(ssr_rt_trace_cs cs_6_5 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader_rt(ssr_rt_trace_ms_cs cs_6_5 SOURCE ssr_rt_trace_cs DEFINES SSR_MS=1)
 larecomp_gpu_host_shader(ssr_temporal_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=1)
@@ -900,6 +1063,14 @@ larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_
 # of the picture's size). Plain planes only: a raw frame has one host sample.
 larecomp_gpu_host_shader(ssr_apply_raw_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=0 SSR_RAW=1)
 larecomp_gpu_host_shader(ssr_hit_ps ps_6_0 DEFINES SSR_MS=0)
+# RtDenoise (rt_denoise.h, CITY-RT R6): the bilateral a-trous over the reflections' accumulated image (the screen-space reflections' use; plain planes only), and the two plain-guide compiles the other
+# consumers start from (the probe field's detail pass, CITY-RT M3 G5): the spatial pass and the temporal pass over guides that are plain images. Shader Model 6.0 compute for both backends.
+larecomp_gpu_host_shader(ssr_denoise_spatial_cs cs_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(rt_denoise_plain_spatial_cs cs_6_0)
+larecomp_gpu_host_shader(rt_denoise_plain_temporal_cs cs_6_0)
+# The same two stages with the DIFFUSE profile (the probe field's per-pixel detail pass's denoiser, gi_pixel.h): a fixed radius of six pixels that shortens as the history grows, no hit distance, looser weights.
+larecomp_gpu_host_shader(rt_denoise_diffuse_spatial_cs cs_6_0 SOURCE rt_denoise_plain_spatial_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE)
+larecomp_gpu_host_shader(rt_denoise_diffuse_temporal_cs cs_6_0 SOURCE rt_denoise_plain_temporal_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE)
 # DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): the five guide images from the G-buffer's planes in one compute pass at the anchor (over planes with one sample and over the host's MSAA
 # level), and the debug view that draws one of them over the upscaler's output. Plain Shader Model 6.0 compute for both backends.
 larecomp_gpu_host_shader(rr_guides_cs cs_6_0 DEFINES RR_MS=0)
@@ -995,6 +1166,10 @@ larecomp_gpu_host_shader(car_rt_view_ps ps_6_0)
 larecomp_gpu_host_shader_rt(car_rt_refl_cs cs_6_5)
 # Its opponents' variant (car_rt_opp_refl.h): the same file with CAR_RT_REFL_OPPONENTS, whose entry point (hlsl/car_rt_refl_opp.hlsli) traces the pixels of the paint of the cars beside the player.
 larecomp_gpu_host_shader_rt(car_rt_refl_opp_cs cs_6_5 SOURCE car_rt_refl_cs DEFINES CAR_RT_REFL_OPPONENTS=1)
+# Its glass variant (car_rt_glass_refl.h, CITY-RT M2 R3b): the same file with CAR_RT_REFL_GLASS, whose entry point (hlsl/car_rt_refl_glass.hlsli) finds the player's windows with a primary ray and traces their
+# mirror reflection; and the additive pass that puts the result into the main colour (a host pass pixel shader, one per sample count of the target, the same blob).
+larecomp_gpu_host_shader_rt(car_rt_refl_glass_cs cs_6_5 SOURCE car_rt_refl_cs DEFINES CAR_RT_REFL_GLASS=1)
+larecomp_gpu_host_shader(car_glass_apply_ps ps_6_0)
 # Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays), built for
 # both backends like any host shader (the pass runs only where the trace does).
 larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)
@@ -1004,6 +1179,32 @@ larecomp_gpu_host_shader(car_rt_refl_hit_cs cs_6_0)
 # The ray traced occlusion and sun term around the player's car (car_rt_ao.h): one compute pass inside the occlusion's own passes with inline ray queries
 # against the car's structures (car_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan, through the same function as the others (larecomp_gpu_host_shader_rt).
 larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)
+# The city's ray traced sun shadows (city_rt_shadow.h, CITY-RT M1): the same shape, one compute pass with inline ray queries against the same top level, which holds the
+# city's sectors beside the cars (city_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan.
+larecomp_gpu_host_shader_rt(city_rt_shadow_cs cs_6_5)
+# The city hit data's probe (city_hit_probe.h, CITY-RT M2 H3): the pool and the tables read through the ray tracing set's t6..t9.
+larecomp_gpu_host_shader_rt(city_hit_probe_cs cs_6_5)
+# The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed storage image
+# stores of RGBA16F, RG16F and R8_UNORM with the format given to SPIR-V), and the debug view's pixel shader (the probes as spheres over the picture).
+larecomp_gpu_host_shader(gi_field_reset_cs cs_6_0)
+larecomp_gpu_host_shader(gi_field_weights_cs cs_6_0)
+larecomp_gpu_host_shader(gi_field_view_ps ps_6_0)
+# The probe update's passes (gi_update.h, CITY-RT M3 package G2): the trace (inline ray queries against the top level, the city hit library in GI mode: Shader Model 6.5, SPIR-V 1.5 on Vulkan) and the blend (typed
+# RGBA16F and RG16F storage image loads and stores with the format given to SPIR-V).
+larecomp_gpu_host_shader_rt(gi_update_trace_cs cs_6_5)
+larecomp_gpu_host_shader(gi_update_blend_cs cs_6_0)
+# The probe field's per-pixel detail pass (gi_pixel.h, CITY-RT M3 package G5): one cosine ray a pixel into the city and the cars, shaded by the city hit library in GI mode; once over plain planes, once over the
+# host's MSAA level. Shader Model 6.5 with inline ray queries, as the probe update's trace.
+larecomp_gpu_host_shader_rt(gi_pixel_trace_cs cs_6_5 DEFINES GIP_MS=0)
+larecomp_gpu_host_shader_rt(gi_pixel_trace_ms_cs cs_6_5 SOURCE gi_pixel_trace_cs DEFINES GIP_MS=1)
+# The probe field's apply (gi_apply.h, CITY-RT M3 package G3): the lookup at the occlusion's traced size and the additive apply at the picture's size, each for plain and multisampled planes (the apply also
+# without and with the upsample from the lookup's image); one source, hlsl/gi_apply_ps.hlsl.
+larecomp_gpu_host_shader(gi_apply_lookup_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=0 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_lookup_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=1 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_ps ps_6_0 DEFINES GIA_PASS=1 GIA_MS=0 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=1 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_up_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=0 GIA_UP=1)
+larecomp_gpu_host_shader(gi_apply_up_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=1 GIA_UP=1)
 # The ray tracing benchmark's trace (rt_bench.h, rt_bench_rules.h): random rays through a synthetic city, run once on the first start with a card to move it between
 # the weak and the strong ray tracing tier (rt_tier.h). Shader Model 6.5 and SPIR-V 1.5 like the car passes.
 larecomp_gpu_host_shader_rt(rt_bench_cs cs_6_5)

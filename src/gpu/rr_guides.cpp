@@ -114,8 +114,8 @@ void RrGuides::Shutdown() {
     passes_->precache().Stop();
   }
   if (passes_run_ != 0 || views_run_ != 0 || not_ready_ != 0 || refused_ != 0) {
-    REXLOG_INFO("{} {} guide pass(es) ({} reflection hit distance image(s) read), {} debug view(s); {} frame(s) waited for the pipeline, {} frame(s) had no guides (the gate: no G-buffer, a plane missing, the pause or map view)",
-                kPrefix, passes_run_, hits_used_, views_run_, not_ready_, refused_);
+    REXLOG_INFO("{} {} guide pass(es) ({} reflection hit distance image(s) and {} bounce light one(s) read), {} debug view(s); {} frame(s) waited for the pipeline, {} frame(s) had no guides (the gate: no G-buffer, a plane missing, the pause or map view)",
+                kPrefix, passes_run_, hits_used_, bounce_hits_used_, views_run_, not_ready_, refused_);
   }
   // The GPU is idle and the heap goes later: the slots are not handed back (CarRtRefl::Shutdown).
   for (HostImage& image : images_) {
@@ -274,6 +274,13 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
     }
   }
 
+  // CITY-RT G6: the bounce light's hit distance image, at the pass's own size (any size above 0; the shader maps the pixel into it), RG16F, readable.
+  const HostImage* bounce_used = nullptr;
+  if (in.bounce_hit && in.bounce_hit->texture && in.bounce_hit->slot != kInvalidBindlessSlot && in.bounce_hit->width != 0 && in.bounce_hit->height != 0 &&
+      in.bounce_hit->format == plume::RenderFormat::R16G16_FLOAT) {
+    bounce_used = in.bounce_hit;
+  }
+
   rr_guides::GuidesPush push = {};
   push.slots[0] = frame.slot[gbuffer::kPlaneNormal];
   push.slots[1] = frame.slot[gbuffer::kPlaneAlbedo];
@@ -286,7 +293,7 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   push.info[0] = width;
   push.info[1] = height;
   push.info[2] = frame.sample0;
-  push.info[3] = 0;
+  push.info[3] = bounce_used ? bounce_used->slot : rr_guides::kNoSlot;
   for (int i = 0; i < 3; ++i) {
     push.right[i] = in.right[i];
     push.up[i] = in.up[i];
@@ -299,7 +306,7 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   }
 
   // The planes, the kept depth and the masks are read by a compute shader here: the compute stage's read state (as RecordUpscale does for the depth and the vectors).
-  plume::RenderTextureBarrier reads[8];
+  plume::RenderTextureBarrier reads[9];
   uint32_t reads_count = 0;
   for (uint32_t plane = 0; plane < gbuffer::kPlaneCount; ++plane) {
     reads[reads_count++] = plume::RenderTextureBarrier(gbuffer_->PlaneTexture(gbuffer::Plane(plane)), Layout::SHADER_READ);
@@ -315,6 +322,9 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
     if (hit) {
       reads[reads_count++] = plume::RenderTextureBarrier(hit->texture.get(), Layout::SHADER_READ);
     }
+  }
+  if (bounce_used) {
+    reads[reads_count++] = plume::RenderTextureBarrier(bounce_used->texture.get(), Layout::SHADER_READ);
   }
   plume::RenderTextureBarrier writes[rr_guides::kGuideCount];
   for (size_t i = 0; i < rr_guides::kGuideCount; ++i) {
@@ -362,6 +372,7 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   for (const HostImage* hit : hit_used) {
     hits_used_ += hit ? 1u : 0u;
   }
+  bounce_hits_used_ += bounce_used ? 1u : 0u;
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first guide pass: frame {}, {}x{} render size, planes read at host sample {} of {}, the kept depth, {} and {} (reactive and transparency masks); five images {:.1f} MiB "

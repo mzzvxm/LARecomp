@@ -26,6 +26,8 @@
 #include "car_frame.h"
 #include "headlight_rig.h"
 #include "light_manager.h"
+#include "gi_apply.h"
+#include "gi_integration.h"
 #include "local_lights.h"
 #include "local_shadow.h"
 #include "car_rt_scene.h"
@@ -846,6 +848,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  if (rt_world_) {
+    rt_world_->BeginFrame(frame_serial_);  // CITY-RT FRAME: the world frame's inputs of the last frame are forgotten (rt_world_frame.h)
+  }
   headlight_rig::SampleRoute();  // the headlight route's setting, read once for this frame (LiveText): the light pass just below and the rig further down both take it from headlight_rig::CurrentRoute() (review F3)
   if (local_lights_) {
     local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
@@ -854,6 +859,12 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     // The screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h, ssr_rules.h WantedPlanes / WantedProducts: only while the row is on), BEFORE the G-buffer and the
     // screen owner read their wants just below: the effect's planes, Hi-Z and capture are there in this very frame (frame_order.h kBeginSsr, lag 0; GB-I3: it stood after the owners and lagged a frame).
     ssr_->BeginFrame();
+  }
+  if (gi_integration_) {
+    gi_integration_->BeginFrame(frame_serial_);  // the probe field's frame starts (its setting, its Inputs): BEFORE the apply below, which reads whether the field runs to make its wants (gi_integration.h)
+  }
+  if (gi_apply_) {
+    gi_apply_->BeginFrame();  // the probe field's apply: its wants (RT1 and RT2, the depth chain) only while the field runs, and the frame's latch of the screen-space bounce light's share
   }
   if (gbuffer_) {
     gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
@@ -1358,7 +1369,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       local_shadow_->OnAnchor();  // ... nor the headlight shadow maps'
     }
     if (car_rt_) {
-      car_rt_->OnAnchor();  // ... and the car ray tracing's trigger is behind us
+      car_rt_->OnAnchor(banks, anchor_cut_);  // ... and the car ray tracing's trigger is behind us; the camera goes to the scene service (a frame without the car is placed by it)
     }
     if (gbuffer_ && gbuffer_->tracking()) {
       gbuffer_->OnAnchor(banks.ps.data());  // ... and the next frame's G-buffer writers have the camera for the derivative normal (with or without an upscaler)
@@ -3686,10 +3697,18 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
       }
     }
     car_rt_->SetSunCascades(cascades);
+    if (rt_world_) {
+      rt_world_->SetSunCascades(cascades);  // the world frame's hit rows hold the same cascades (CITY-RT FRAME)
+    }
     // The car ray tracing structures (car_rt_scene.h): the new meshes' bottom level structures and this frame's top level, with the other cars. FIRST, before everything that traces: the
     // occlusion's ray traced term and sun ray (car_rt_ao.h) run inside the occlusion's own passes, and the self-reflection's trace (car_selfrefl.h) after them, both in this top level.
     const bool car_structures = car_rt_->OnResolve(record, summary, list, slot_);
     order_.Note(frame_order::Step::kCarStructures, car_structures);
+    if (rt_world_) {
+      // CITY-RT FRAME: the top level's view space is known now (the builder said it, with or without the player's car): the world's light, the clock, the lamps, written into the slot's buffers. No GPU
+      // command and no pass of the frame order: host visible memory the passes below read through the car scene's set (rt_world_frame.h).
+      rt_world_->OnTrigger(slot_);
+    }
   }
   bool shadow_recorded = false;
   if (local_shadow_) {
@@ -3702,6 +3721,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     light_manager_->OnResolve(shadow_recorded);  // passive: this frame's maps, and the headlight block is checked against them
     order_.Note(frame_order::Step::kLightMaps, shadow_recorded);
   }
+  if (gi_integration_) {
+    // The probe field's maintenance, update and weights (gi_integration.h, CITY-RT M3 G4): outside any render pass, before the occlusion plans (it asks the field's share while it plans); records nothing
+    // while no field runs. Its own layouts and pipelines: the reset below forgets them too.
+    const bool gi_field_ran = gi_integration_->OnResolve(summary, list, slot_);
+    order_.Note(frame_order::Step::kGiField, gi_field_ran);
+  }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
@@ -3709,6 +3734,16 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // at its end the screen products' publish with the Hi-Z): the order inside it is held by frame_order_test.cpp against ao.cpp.
     const bool ao_ran = ao_->OnResolve(record, summary, list, UpscalerRunning());
     order_.Note(frame_order::Step::kAo, ao_ran);
+  }
+  if (gi_apply_ && gi_apply_->wants_draws()) {
+    // The probe field's apply (gi_apply.h, CITY-RT M3 G3): the bounce light the field carries, added to the main colour from the G-buffer's normal and albedo and the main depth, multiplied by the
+    // occlusion's visibility, right after the occlusion's apply (which has multiplied the colour) and before the lamps' direct light (which neither of them multiplies). Binds its own layout, pipeline and
+    // framebuffer: the reset below forgets them too. With no field in the frame it records nothing.
+    // CITY-RT G6: while DLSS Ray Reconstruction takes the frame the per-pixel pass (ULTRA on a strong card) runs RAW (no filter of its own; its hit distance goes to the guide pass): TemporalSystem::RawModes,
+    // false with the plan not RR, and asked only while the pass is wanted (the census counts the frames asked).
+    const bool raw_gi = gi_apply_->pixel_pass_wanted() && temporal_ && temporal_->RawModes().RtGi();
+    const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);
+    order_.Note(frame_order::Step::kGiApply, gi_apply_ran);
   }
   if (local_lights_ && local_lights_->wants_draws()) {
     // The deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
@@ -3761,6 +3796,8 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   if (temporal_) {
     // RR-4: the reflection effects' hit distance images of this frame (null where an effect did not run raw), for the guide pass at the anchor.
     temporal_->NoteRrHit(ssr_ ? ssr_->RawHitImage() : nullptr, car_refl_ ? car_refl_->RawHitImage() : nullptr);
+    // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (only in a frame it ran raw; mcla_gpu_dlss_rr_rt_gi 2 leaves the hit distance out).
+    temporal_->NoteRrBounceHit(gi_apply_ && rr::BounceHitWanted(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())) ? gi_apply_->RawHitImage() : nullptr);
   }
   if (gbuffer_ && gbuffer_->active()) {
     // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).
@@ -3987,6 +4024,9 @@ void Scene::OnPresent() {
   }
   if (ssr_) {
     ssr_->OnPresent();  // the reflections' history and idle count
+  }
+  if (gi_apply_) {
+    gi_apply_->OnPresent();  // the interval line and the lookup image's idle count
   }
   if (screen_) {
     screen_->OnPresent();  // the frame boundary of the shared screen products: the frame is counted, the capture and its history trade places (after NoteMenuWorld above: it asks the camera history)

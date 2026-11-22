@@ -46,6 +46,7 @@
 #include <string>
 
 #include "gpu/menu_world.h"
+#include "gpu/world_clock.h"
 #include "larecomp_log.h"
 #include "mc_engine/core/config_save.h"
 #include "real_weather.h"
@@ -202,6 +203,10 @@ void Hook_TimeOfDay(PPCRegister& r3) {
     uint32_t mgr = static_cast<uint32_t>(r3.u64);
     if (mgr < 0x10000u) return;
     g_mgr.store(mgr, std::memory_order_relaxed);
+
+    // The renderer's ray tracing world frame reads the world's hour (the lamps' on hours) and the sky from here (gpu/world_clock.h): the manager's values at the
+    // start of this frame's update, two relaxed stores. An hour or a sky this hook pins below reaches the renderer one frame later.
+    mcla::gpu::world_clock::Publish(ReadF32(base, mgr + kTodCurrent), static_cast<int32_t>(ReadU32(base, kWeatherIndex)));
 
     // ── Weather ───────────────────────────────────────────────────────
     {

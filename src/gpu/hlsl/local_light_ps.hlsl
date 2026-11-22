@@ -39,6 +39,7 @@
 #include "gbuffer_common.hlsli"
 #include "local_light.hlsli"
 #include "light_shadow_lookup.hlsli"
+#include "nan_guard.hlsli"
 
 #ifndef LL_PASS_MS
 #define LL_PASS_MS 0
@@ -217,7 +218,7 @@ float3 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, floa
 // visibility (LpShadowed). The w is 1 when the light adds anything (a light that does not is not in the sum: its own draw would have discarded the pixel).
 float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, float3 world, float3 normal, float3 albedo, float lit) {
   const LlLight l = LlUnpack(LpLoadLight(index));
-  float3 add = LpPixelLight(l, g, world, normal, albedo, lit);
+  float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));   // added to the scene: a NaN or an infinity is none (nan_guard.hlsli)
   if (!any(add > 0.0f)) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
   }
@@ -249,7 +250,7 @@ float4 LpCappedLights(uint first, uint count, LpGlobals g, uint flags, int2 p, f
     strength[i] = 0.0f;
     l[i] = LlUnpack(LpLoadLight(first + min(i, count - 1u)));
     if (i < count) {
-      add[i] = LpPixelLight(l[i], g, world, normal, albedo, lit);
+      add[i] = NgFinite3(LpPixelLight(l[i], g, world, normal, albedo, lit));   // (nan_guard.hlsli, as LpOneLight)
       if (any(add[i] > 0.0f) && LpTakesContact(l[i], true)) {
         strength[i] = add[i].x + add[i].y + add[i].z;
       }

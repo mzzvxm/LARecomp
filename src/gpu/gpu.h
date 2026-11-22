@@ -49,6 +49,7 @@
 #include <string>
 #include <vector>
 
+#include "city_pack_state.h"
 #include "render_scale.h"
 
 namespace rex {
@@ -436,6 +437,37 @@ bool MsaaKeptUnderUpscaler();
 // before the renderer has started and on a card or driver that cannot ray trace. The pause menu's
 // CAR SELF-REFLECTIONS row lists RAY TRACED only where this is true. Any thread.
 bool CarRtReflAvailable();
+
+// --- the city pack and the ray traced city shadows (CITY-RT M1) -------------------------------------
+// The ray traced sun shadows read the city pack (the city's geometry, built from the player's own game files: city_pack_state.h says how it comes to be there). The app tells the
+// renderer how the pack stands; the renderer never reads the game files or the stamp. UI thread, before Startup (LarecompApp::SetupPresentation, with the shader pack gate); the
+// hooks are called on the render thread.
+struct CityPackHooks {
+  // Which state the pack in CityPackFolder() is in for the player's game files (a few file stats, nothing hashed or decoded). `why` (may be null) gets the reason it is not current.
+  std::function<city_rt::PackState(std::string* why)> state;
+  // The renderer wants the pack and it is missing or stale: called once per session; the app builds it on a thread of its own and `state` answers "being built" from then on.
+  std::function<void()> request_build;
+  // The same two for the HIT DATA (CITY-HIT-ACTION: the hit file and the texture file beside the pack, built over it): `hit_state` says which state they are in for the player's game files
+  // (stat only), `request_hit_build` is called once per session when they are missing or stale and the renderer wants them (a consumer of the hit data is on, the pack is open). The app builds
+  // them on a thread of its own, in the background, and `hit_state` answers "being built" until it ends. Null: the files are opened as they are.
+  std::function<city_rt::PackState(std::string* why)> hit_state;
+  std::function<void()> request_hit_build;
+};
+void SetCityPackHooks(CityPackHooks hooks);
+// Where the city pack and its stamp are: <ShaderPackFolder()>/city. Any thread; needs no renderer (the launcher's setup, --build_city_pack, builds there).
+std::filesystem::path CityPackFolder();
+// True when this device can ray trace the city's sun shadows: the same device test as the car's ray traced effects (CarRtSupported: Direct3D 12 with DXR 1.1 and shader model 6.5, or
+// Vulkan with VK_KHR_ray_query) and the pass's layout and shader made. False before the renderer has started and on a card or driver that cannot. The pause menu's RT SHADOWS
+// row is grey with "(NO RT)" where this is false, and its AUTO says OFF there. Any thread.
+bool CityRtShadowsAvailable();
+
+// --- the ray traced bounce light (gi_setting.h, CITY-RT M3 G4) ---------------------------------------
+// True once the probe field's update (package G2) is built into this renderer: until then the RT BOUNCE LIGHT row is grey with "(NOT READY)", its AUTO says OFF and the field is never made.
+// Any thread.
+bool RtGiUpdateBuilt();
+// True while the probe field stands in the picture and the screen-space bounce light is not built (the field's fade is 1): the pause menu's BOUNCE LIGHT row says "(REPLACED)". Set once a frame
+// by the render thread, false before the renderer has started and while no field runs. Any thread.
+bool RtGiReplacesBounceLight();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
 // The scene is drawn smaller than the output only while an upscaler can make it whole again. The

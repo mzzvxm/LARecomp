@@ -79,6 +79,15 @@ inline Choice ChoiceOf(std::string_view selfrefl, std::string_view rt, bool auto
     return auto_is_on ? Choice::kOn : Choice::kOff;
 }
 
+// Whether the ray traced reflection is what runs for the two settings as they are (the row's value is RAY TRACED, or AUTO where AUTO comes to ray traced): the RT CITY REFLECTIONS row
+// (city_refl_setting.h) rides on the car's ray traced pass and is grey with " (NEEDS CAR RT)" while this is false. Both rows read the pair through ChoiceOf, so what this says is what the row
+// above shows: OFF, ON, and AUTO where `auto` comes to off or no ray tracing can run, are not it.
+inline bool RayTracedRuns(std::string_view selfrefl, std::string_view rt, bool auto_is_on, bool ray_traced_available) {
+    if (!ray_traced_available) return false;
+    const Choice choice = ChoiceOf(selfrefl, rt, auto_is_on, ray_traced_available);
+    return choice == Choice::kRayTraced || (choice == Choice::kAuto && auto_is_on);
+}
+
 // What AUTO runs: "AUTO (RAY TRACED)", "AUTO (ON)" or "AUTO (OFF)".
 inline std::string AutoLabel(bool auto_is_on, bool ray_traced_available) {
     if (!auto_is_on) return "AUTO (OFF)";

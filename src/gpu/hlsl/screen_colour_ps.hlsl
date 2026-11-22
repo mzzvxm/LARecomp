@@ -37,6 +37,15 @@ ConstantBuffer<ScreenColourPush> g_push : register(b0, space4);
 // The largest colour a half float keeps with room (the car history's kMaxColour).
 static const float kMaxColour = 60000.0f;
 
+// A colour a half float image keeps, held the same way on both APIs: not negative, at most kMaxColour, and a NaN (any sign or payload) black. The NaN is decided by the bits and the clamp only sees
+// numbers: min(max(NaN, 0), x) is 0 on D3D12 (the DXIL max returns the other operand) but SPIR-V's FMax / FMin leave which operand a NaN gives open, so Vulkan must not lean on it.
+float HeldChannel(float v) {
+  return ((asuint(v) & 0x7FFFFFFFu) <= 0x7F800000u) ? min(max(v, 0.0f), kMaxColour) : 0.0f;
+}
+float3 HeldColour(float3 colour) {
+  return float3(HeldChannel(colour.x), HeldChannel(colour.y), HeldChannel(colour.z));
+}
+
 #if SCREEN_COLOUR_PASS == 0
 
 float4 main(float4 position : SV_Position) : SV_Target {
@@ -62,7 +71,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
   const float3 colour = total / float(ratio * ratio);
-  return float4(min(max(colour, 0.0f), kMaxColour), 1.0f);
+  return float4(HeldColour(colour), 1.0f);
 }
 
 #else  // SCREEN_COLOUR_PASS == 1

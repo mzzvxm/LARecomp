@@ -115,6 +115,15 @@ class HostPasses {
                                                         const plume::RenderBlendDesc& blend,
                                                         uint32_t sample_count, const char* name);
 
+  // The same for a pass drawing the full-screen triangle into SEVERAL single-sampled colour targets at
+  // once (a multiple render target draw: `count` formats, 2 to 8, target i of the framebuffer has
+  // formats[i]), each written whole, no blending, no depth: ssr.h's trace with its confidence target
+  // (CITY-RT R4). The framebuffer is the caller's (Device::CreateFramebuffer with the same targets).
+  std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderPipelineLayout& layout,
+                                                        const plume::RenderShader& pixel_shader,
+                                                        const plume::RenderFormat* formats,
+                                                        uint32_t count, const char* name);
+
   // The pass layout (bindless texture sets, samplers, push constants), for a pipeline made with the
   // overload that takes a layout and a sample count. After Initialize.
   const plume::RenderPipelineLayout& layout() const { return *layout_; }

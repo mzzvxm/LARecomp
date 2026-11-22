@@ -461,6 +461,9 @@ class TemporalSystem {
     rr_hit_[0] = ssr;
     rr_hit_[1] = car_refl;
   }
+  // CITY-RT G6: the bounce light's per-pixel pass's hit distance image of this frame (RG16F at the pass's own size, the distance in x; null where the pass did not run raw, or its switch leaves the hit distance
+  // out), handed over by Scene after the trigger's passes: the guide pass reads it as the LAST choice of its hit distance (rr_guides.h Inputs::bounce_hit). Forgotten at the next frame boundary.
+  void NoteRrBounceHit(const HostImage* bounce) { rr_bounce_hit_ = bounce; }
   // The guide pass (rr_guides.h, RR-2): made and owned by the Renderer, run by RecordUpscale right before the backend is given the frame, and asked at each frame boundary (UpdateDenoiserPlan) whether
   // it is wanted. RecordRrGuides passes its guides() and ready() to NoteRrGuides. Null: no guide pass (a build or a Renderer without one).
   void SetRrGuidePass(RrGuides* pass) { rr_pass_ = pass; }
@@ -818,6 +821,7 @@ class TemporalSystem {
   rr::RawModes rr_raw_last_;               // RR-4: the raw answer last logged
   bool rr_raw_logged_ = false;
   const HostImage* rr_hit_[2] = {nullptr, nullptr};   // RR-4: this frame's hit distance images (NoteRrHit)
+  const HostImage* rr_bounce_hit_ = nullptr;          // CITY-RT G6: the bounce light's hit distance image of this frame (NoteRrBounceHit)
   RrGuides* rr_pass_ = nullptr;  // the guide pass (SetRrGuidePass)
   TemporalGuides rr_guides_;
   bool rr_guides_ready_ = false;

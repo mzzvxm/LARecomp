@@ -107,6 +107,8 @@
 #include "car_rt_instances.h"
 #include "car_rt_memory_rules.h"
 #include "car_rt_scene_rules.h"
+#include "city_hit_scene.h"
+#include "rt_world_frame.h"
 #include "frame.h"
 #include "host_passes.h"
 #include "records.h"
@@ -116,8 +118,10 @@ namespace mcla::gpu {
 
 class AmbientOcclusion;
 class BindlessHeap;
+class CityRtScene;
 class TextureCache;
 class Device;
+class RtSceneService;
 class EdramTargets;
 class PassTiming;
 class UploadRing;
@@ -135,7 +139,10 @@ class UploadRing;
 //   4  ByteAddressBuffer                every mesh's texture coordinates (one uint a vertex: a half2, u in the low half; the ranges of the normals)   [RT-HIT-SHADING]
 //   5  StructuredBuffer<uint4>          the frame's lighting rows, then two rows of material an instance in the instances' order (car_rt_material_rules.h; hlsl/car_rt_hit_shade.hlsli)
 struct CarRtView {
-  bool valid = false;                         // this frame's top level was built and recorded on the list before the caller's pass
+  bool valid = false;                         // this frame's top level was built and recorded on the list before the caller's pass, WITH the player's car (every car effect keeps this gate)
+  // CITY-RT M2 H3 (rt_scene_service.h): a top level exists this frame, with or without the player's car. True whenever `valid` is, and also in a frame whose top level holds the city alone (the
+  // car is not in the frame: the predicted camera places the city). The city's consumers (the sun shadows, M2, M3) read this one; `set` is the same set.
+  bool scene_valid = false;
   plume::RenderDescriptorSet* set = nullptr;  // bound by the caller at its own set index
   uint32_t instance_count = 0;
   // The OTHER cars' boxes in the frame's view space (the union of each kept car's instances' transformed mesh boxes), one an other car with any
@@ -195,9 +202,13 @@ class CarRtScene final : public car_frame::Listener {
   // A user wants the structures: call it in every frame it needs them (any time in the frame). A request counts for the frame and the
   // next, and asks CarFrame to collect the car's draws.
   void Request();
+  // The car frame's collection only (the scene service's: it keeps the wants by consumer itself).
+  void RequestCollect();
 
   // The Scene's hooks, as car_selfrefl.h's: the game's motion blur draw and the composite come after the trigger, the present ends the frame.
   void OnAnchor() { anchor_seen_ = true; }
+  // The same, with the anchor draw's constants: the game's camera of this frame goes to the scene service (the predicted camera of a frame without the car). `cut`: the scene asked for a cut.
+  void OnAnchor(const ConstantBanks::Banks& banks, bool cut);
   void OnComposite() { composite_seen_ = true; }
   // A resolve, after ResolveCache::Execute and BEFORE the ambient occlusion's passes (they trace rays in the top level): at the frame's trigger
   // it uploads and builds what is new and builds the top level. `list` is the frame's open list outside any render pass, `slot` its frame
@@ -214,6 +225,18 @@ class CarRtScene final : public car_frame::Listener {
   const CarRtView& View() const { return view_; }
   // The set's layout, for the caller's pipeline layout.
   const plume::RenderDescriptorSetDesc& SetDesc() const { return set_builder_.descriptorSetDesc; }
+
+  // CITY-RT M1 (city_rt_scene.h): the city's structures join this scene's top level. OnResolve asks the city scene to read, plan and build (on this list) and to describe its
+  // instances in the same view space, with the cars' own transform and the mask kMaskCity (0x80: none of the cars' passes traces that bit). Null: no city.
+  void SetCityScene(CityRtScene* city) { city_ = city; }
+  // CITY-RT M2 H3: the scene service (who wants the top level, and the camera of a frame the car does not carry) and the hit data's pool (its descriptors t6..t9 are in the set below). Null: as M1.
+  void SetService(RtSceneService* service, CityHitScene* hit) {
+    service_ = service;
+    hit_ = hit;
+  }
+  // CITY-RT FRAME (rt_world_frame.h): the world's rows and the lamps of every frame that has a top level, car or no car: descriptors t10 and t11 of the set. OnResolve tells it the view space the
+  // top level was built in (NoteView) and writes the two buffers into the slot's set (Bind), both paths. Null: none of it.
+  void SetWorldFrame(RtWorldFrame* world) { world_ = world; }
 
   // The video memory the structures, the shared buffers and the per-slot buffers hold now.
   uint64_t HeldBytes() const;
@@ -321,6 +344,9 @@ class CarRtScene final : public car_frame::Listener {
   static_assert(sizeof(ViewPush) == 32);
 
   bool IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
+  // CITY-RT M2 H3: OnResolve's other half. The top level of a frame in which the player's car is not found (or nobody asked for the cars) and the city is wanted: the city alone, placed by
+  // the scene service's predicted camera, recorded on the same slot's buffers and set. True when anything was recorded.
+  bool OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot);
   bool Wants() const { return requested_ || requested_prev_; }
   // Reads an unseen mesh from the draw's guest memory and stages it for the trigger (the tail OnPlayerDraw and OnOtherCarDraw share). The triangles
   // it staged: 0 when it left the mesh out.
@@ -408,6 +434,13 @@ class CarRtScene final : public car_frame::Listener {
   uint32_t staged_triangles_ = 0;        // read this frame
   uint32_t staged_triangles_other_ = 0;  // ... of them for other cars (their own budget inside it)
   CarRtInstances instances_;  // the frame's instance list: the player's draws and the other cars' (car_rt_instances.h)
+  CityRtScene* city_ = nullptr;  // the city's structures (SetCityScene), not owned
+  RtSceneService* service_ = nullptr;  // who wants the top level (SetService), not owned
+  CityHitScene* hit_ = nullptr;        // the hit data's pool: descriptors t6..t9 of the set (SetService), not owned
+  CityHitScene::Bindings hit_bindings_;
+  RtWorldFrame* world_ = nullptr;  // t10 and t11 of the set (SetWorldFrame), not owned
+  RtWorldFrame::Bindings world_bindings_;
+  std::unique_ptr<plume::RenderBuffer> standin_;  // zeroed, 256 bytes: what a binding of the set names where the car meshes that fill it do not exist (a city-only top level)
   // The cars the camera does not see (car_rt_memory_rules.h): the kits of the cars that were drawn, and this frame's placements.
   car_rt_memory::CarMemory memory_;
   car_rt_memory::CarMemory::Output remembered_;

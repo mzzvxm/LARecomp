@@ -44,7 +44,7 @@ CarRtOppRefl::~CarRtOppRefl() = default;
 // ---------------------------------------------------------------------------
 
 void CarRtOppRefl::Initialize(Device& device, HostPasses& passes, BindlessHeap& heap, PassTiming& pass_timing, CarRtScene& scene,
-                              const plume::RenderDescriptorSetBuilder& output_builder, bool list_at_start) {
+                              const plume::RenderDescriptorSetBuilder& output_builder, const plume::RenderDescriptorSetBuilder& city_builder, bool list_at_start) {
   device_ = &device;
   passes_ = &passes;
   heap_ = &heap;
@@ -58,9 +58,10 @@ void CarRtOppRefl::Initialize(Device& device, HostPasses& passes, BindlessHeap& 
   const uint32_t texture_set = builder.addDescriptorSet(heap.texture_set_builder());  // space 0: Texture2D<float4>[] (the history)
   const uint32_t output_set = builder.addDescriptorSet(output_builder);                // space 1: u0 the image, u1 the aux image
   const uint32_t scene_set = builder.addDescriptorSet(scene.SetDesc());                // space 2: the car's structures (CAR_RT_SPACE)
+  const uint32_t city_set = builder.addDescriptorSet(city_builder);                    // space 3: the city's rows and counters (city_refl.h)
   builder.addPushConstant(0, kPushSpace, sizeof(Push), plume::RenderShaderStageFlag::COMPUTE);
   builder.end();
-  if (texture_set != kTextureSet || output_set != kOutputSet || scene_set != kSceneSet) {
+  if (texture_set != kTextureSet || output_set != kOutputSet || scene_set != kSceneSet || city_set != kCitySet) {
     REXLOG_ERROR("{} opponents: the layout's sets are not in the order the shader declares them", kPrefix);
     return;
   }
@@ -147,14 +148,17 @@ bool CarRtOppRefl::Record(const Frame& f) {
     return false;
   }
   const CarRtView& view = *f.view;
-  if (!view.valid || !view.set) {
+  if (!view.valid || !view.set || !f.city || !f.city->set) {
     return false;
   }
   if (view.other_paint_instances == 0) {
     ++window_.no_paint;  // no other car's paint in the list: nothing to find (traffic, cars not drawn this frame, no other car)
     return false;
   }
-  const uint64_t budget = opp::TexelBudget(gpu_class::CurrentRtClass(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), int(larecomp::settings::mcla_gpu_car_rt_opp_refl_texels.Get()));
+  // CITY-RT M2 R2: with the city in the reflections the budget is the smaller of the class's and the level's cell's (city_refl_rules.h OppBudget), and a texel casts at most the cell's rays (OppRays).
+  const city_refl::Cell& cell = f.city->cell;
+  const uint64_t budget = city_refl::OppBudget(
+      opp::TexelBudget(gpu_class::CurrentRtClass(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), int(larecomp::settings::mcla_gpu_car_rt_opp_refl_texels.Get())), f.city->on ? cell : city_refl::Cell{});
   if (budget == 0) {
     ++window_.off;
     return false;
@@ -185,7 +189,7 @@ bool CarRtOppRefl::Record(const Frame& f) {
   std::memcpy(&push, f.base_push, kBasePushBytes);
   push.slots[2] = opp::kPrimaryParts;
   push.opp[2] = view.player_row;
-  push.opp[3] = plan.rays;
+  push.opp[3] = city_refl::OppRays(plan.rays, f.city->on ? cell : city_refl::Cell{});
 
   plume::RenderCommandList* list = f.list;
   plume::RenderTextureBarrier barriers[2] = {plume::RenderTextureBarrier(f.image->texture.get(), plume::RenderTextureLayout::GENERAL),
@@ -195,6 +199,7 @@ bool CarRtOppRefl::Record(const Frame& f) {
   list->setComputeDescriptorSet(heap_->texture_set(), kTextureSet);
   list->setComputeDescriptorSet(f.output_set, kOutputSet);
   list->setComputeDescriptorSet(view.set, kSceneSet);
+  list->setComputeDescriptorSet(f.city->set, kCitySet);
   list->setPipeline(pipeline);
   for (size_t i = 0; i < plan.dispatches.size(); ++i) {
     const opp::TexelRect& r = plan.dispatches[i];

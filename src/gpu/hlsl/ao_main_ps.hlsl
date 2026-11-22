@@ -122,6 +122,7 @@
 #define AO_GI 0
 #endif
 
+#include "nan_guard.hlsli"
 #if AO_GI
 #include "ssgi_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
@@ -446,14 +447,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // The weighted mean over the slices (the plain pass's ratio): an open surface is 1 exactly, and a
   // surface that is all radiance gets that radiance, whatever the slices' angles are.
   const float inv_open = 1.0f / max(open_sum, 1e-3f);
-  visibility = saturate(visibility * inv_open);
+  visibility = saturate(NgNumberOr(visibility * inv_open, 1.0f));   // a NaN is no occlusion, decided by the bits (nan_guard.hlsli): saturate(NaN) is 0 on D3D12 and open on Vulkan
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
   if ((g_push.slots2.z & kRtOcclusionFlag) != 0u) {
     // THE TRACED TERM (above): the plain pass's rule on the visibility channel, the darker of the two.
     visibility = min(visibility, AoTracedVisibility(pixel));
   }
-  // A half float keeps 65504; the chain's colours are capped well under that, and a NaN counts as none.
-  bounce = min(max(bounce * inv_open, 0.0f), 60000.0f);
+  // A half float keeps 65504; the chain's colours are capped well under that, and a NaN is none (decided by the bits, nan_guard.hlsli: max(NaN, 0) is 0 on D3D12 only).
+  bounce = NgHeld3(bounce * inv_open, 60000.0f);
   return float4(visibility, bounce);
 }
 
@@ -576,7 +577,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     // cos(n) + n sin(n).
     open_sum += projected_len * (cos_n + n * sin_n);
   }
-  visibility = saturate(visibility / max(open_sum, 1e-3f));
+  visibility = saturate(NgNumberOr(visibility / max(open_sum, 1e-3f), 1.0f));   // a NaN is no occlusion, decided by the bits (nan_guard.hlsli)
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
   if ((g_push.slots2.z & kRtOcclusionFlag) != 0u) {
     // THE TRACED TERM (above): the open share the rays found, shaped as the visibility is, the darker of the two.

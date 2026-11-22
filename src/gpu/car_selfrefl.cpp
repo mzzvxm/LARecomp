@@ -279,6 +279,11 @@ void CarSelfRefl::BeginFrame() {
   }
   if (rt_) {
     rt_->BeginFrame(mode != Mode::kOff);  // the ray traced image of this frame's trigger, where it is wanted and can be made
+    if (screen_) {
+      // CITY-RT M2: the city in the reflections reads the picture where a hit is on the screen (ResolveHit): colour_post with its mip chain and lin_depth, wanted while it is on (0 withdraws). Declared after
+      // the owner has read its wants for the frame (frame_order.h kBeginCarRefl), so the first frame after a switch has none: its hits are shaded by the model alone.
+      screen_->Want(screen::Consumer::kCarRtRefl, rt_->ScreenProducts());
+    }
   }
   // RR-INT: the DENOISER row's board (denoiser_setting.h): the ray traced reflections run this frame (the pass is wanted and can run: car_rt_refl.h active()). A consumer of Ray Reconstruction
   // (rr::kConsumers: its raw mode exists, RR-4b); the temporal system's frame boundary reads the board BEFORE this call (frame_order.h kBeginTemporal, kBeginCarRefl), so the plan lags one frame. Only a
@@ -533,9 +538,50 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     // (an upscaler averages it, or the pass's own history does: NOISE-RESOLVE) is CarRtRefl::OnHistory's to say, which sets the pattern still where nothing averages it.
     info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 7u);
     info.exp_bias = exp_bias_;
+    info.colour_samples = depth.host_samples;
+    FillCityScreen(&info.screen);
     rt_->OnHistory(list, info);
+    // CITY-RT M2 R3b: the player's windows, traced inside OnHistory, are added to the main colour now (after the history pass above: the history holds no glass reflection; after the screen-space reflections: the
+    // last pass that adds to the colour at the trigger). Nothing is drawn where the trace did not run this frame.
+    rt_->ApplyGlass(list, *edram_, *colour, render_w, render_h);
   }
   return true;
+}
+
+// The picture's products for the city's hits (CITY-RT M2, car_rt_refl.h): lin_depth level 0 and colour_post's mip chain, as the screen owner published them this frame; invalid while the pass wants none,
+// the frame has not got both, or it is the pause menu's or the map's world.
+void CarSelfRefl::FillCityScreen(CityRefl::ScreenIn* out) const {
+  *out = CityRefl::ScreenIn{};
+  if (!screen_ || !rt_ || rt_->ScreenProducts() == 0) {
+    return;
+  }
+  const screen::ScreenFrame& sf = screen_->Frame();
+  if (!sf.Has(screen::kLinDepth) || !sf.Has(screen::kColourPost) || (sf.flags & screen::kFramePause) != 0) {
+    return;
+  }
+  const HostImage* depth = screen_->Image(screen::kLinDepth, 0);
+  const HostImage* colour = screen_->Image(screen::kColourPost, 0);
+  if (!depth || !depth->texture || depth->slot == kNoSlot || !colour || !colour->texture || colour->slot == kNoSlot) {
+    return;
+  }
+  out->depth_slot = depth->slot;
+  out->depth_width = depth->width;
+  out->depth_height = depth->height;
+  out->depth = depth->texture.get();
+  out->colour_width = colour->width;
+  out->colour_height = colour->height;
+  uint32_t levels = 0;
+  for (uint32_t level = 0; level < std::min(sf.colour_post_levels, city_refl::kMaxColourLevels); ++level) {
+    const HostImage* image = screen_->Image(screen::kColourPost, level);
+    if (!image || !image->texture || image->slot == kNoSlot) {
+      break;  // a chain with a gap: the levels before it are what the pass reads
+    }
+    out->colour_slots[level] = image->slot;
+    out->colour[level] = image->texture.get();
+    ++levels;
+  }
+  out->colour_levels = levels;
+  out->valid = levels != 0;
 }
 
 // CHECK (not run): the history pass from the shared colour_post is the same image as from the main colour's planes (mcla_gpu_car_selfrefl_source 1 against 2 at 1080 lines and below, MSAA 1, 2, 4 and 8,

@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -127,7 +128,7 @@ void FrozenChecks() {
   // The consumers' numbers (an index into the registry).
   Check(int(sc::Consumer::kAmbientOcclusion) == 0 && int(sc::Consumer::kContactShadows) == 1 && int(sc::Consumer::kBounceLight) == 2 && int(sc::Consumer::kCarRtAo) == 3 &&
             int(sc::Consumer::kCarRtCheck) == 4 && int(sc::Consumer::kReflections) == 5 && int(sc::Consumer::kCarHistory) == 6 && int(sc::Consumer::kCarRtRefl) == 7 &&
-            int(sc::Consumer::kVolumetrics) == 8 && int(sc::Consumer::kLocalLights) == 9 && int(sc::Consumer::kDebugView) == 10 && int(sc::Consumer::kCount) == 11,
+            int(sc::Consumer::kVolumetrics) == 8 && int(sc::Consumer::kLocalLights) == 9 && int(sc::Consumer::kDebugView) == 10 && int(sc::Consumer::kRtBounce) == 11 && int(sc::Consumer::kCount) == 12,
         "the consumers keep their numbers");
   Check(int(sc::View::kOff) == 0 && int(sc::View::kLinDepth) == 1 && int(sc::View::kHizMin) == 2 && int(sc::View::kHizCheck) == 3 && int(sc::View::kNormal) == 4 &&
             int(sc::View::kVehicle) == 5 && int(sc::View::kColourPost) == 6 && int(sc::View::kHistory) == 7 && int(sc::View::kCount) == 8,
@@ -393,6 +394,14 @@ void ColourChecks() {
   Check(!sc::ColourPostWithMips(wants, sc::View::kOff, 0), "the car history's want makes no mips");
   wants.Set(Consumer::kReflections, ProductBit(sc::kColourPost));
   Check(sc::ColourPostWithMips(wants, sc::View::kOff, 0), "the reflections' want makes the mips");
+  {
+    // CITY-RT M2: the ray traced reflections of the car paint read the city hits' colour at the mip of the hit's footprint: their want makes the mips too
+    sc::Wants rt;
+    rt.Set(Consumer::kCarRtRefl, ProductBit(sc::kColourPost) | ProductBit(sc::kLinDepth));
+    Check(sc::ColourPostWithMips(rt, sc::View::kOff, 0), "the car ray traced reflections' want of colour_post makes the mips");
+    rt.Set(Consumer::kCarRtRefl, ProductBit(sc::kLinDepth));
+    Check(!sc::ColourPostWithMips(rt, sc::View::kOff, 0), "... a want of lin_depth alone makes none");
+  }
   sc::Wants none;
   Check(sc::ColourPostWithMips(none, sc::View::kColourPost, 2) && !sc::ColourPostWithMips(none, sc::View::kColourPost, 0) && !sc::ColourPostWithMips(none, sc::View::kHistory, 3),
         "a view of colour_post above level 0 makes the mips, level 0 and the history view do not");
@@ -622,7 +631,8 @@ struct Rgb {
   float r, g, b;
 };
 float ClampColour(float v) {
-  // HLSL min(max(v, 0), 60000): max(NaN, 0) is 0 (the AO's note, ao_color_ps.hlsl)
+  // HeldChannel in both shaders: a NaN (decided by the bits, not by fmax, which Vulkan leaves open for a NaN) is 0, else min(max(v, 0), 60000)
+  if ((std::bit_cast<uint32_t>(v) & 0x7FFFFFFFu) > 0x7F800000u) return 0.0f;
   const float m = (v > 0.0f) ? v : 0.0f;
   return m < 60000.0f ? m : 60000.0f;
 }
@@ -955,7 +965,7 @@ void SourceChecks(const std::string& gpu) {
   Check(Before(ao_cpp, "ran_this_frame_ = true;\n  PublishScreen(", "return true;\n}\n\nvoid AmbientOcclusion::PublishScreen"), "... right after it says the frame ran, as the last step of Run");
   Check(Has(ao_cpp, "screen_->Want(screen::Consumer::kAmbientOcclusion") && Has(ao_cpp, "screen_->Want(screen::Consumer::kContactShadows") && Has(ao_cpp, "screen_->Want(screen::Consumer::kBounceLight"),
         "the AO declares the three consumers' wants");
-  Check(Has(ao_cpp, "screen_wants_ = ready_ && screen_->NeedsDepthChain() && EnsureScreenDepthPipelines();") && Has(ao_h, "|| screen_wants_;"), "the AO runs for the screen products only with its depth pipelines made");
+  Check(Has(ao_cpp, "screen_wants_ = ready_ && screen_->NeedsDepthChain() && EnsureScreenDepthPipelines();") && Has(ao_h, "|| screen_wants_ || world_light_wanted_;"), "the AO runs for the screen products only with its depth pipelines made");
   Check(Has(ao_cpp, "plan.screen = screen_wants_ && !plan.occlusion && !contact;") && Has(ao_cpp, "if (!plan.probe && !plan.screen) {"), "a frame for the screen products is the census's probe frame without the readback");
   Check(Has(ao_cpp, "if (mode_ == Mode::kOff && !contact_working && !screen_wants_) {"), "the AO does not give its images back while the screen products use them");
   Check(Has(scene_cpp, "screen_->BeginFrame(frame_serial_)") && Before(scene_cpp, "screen_->BeginFrame(frame_serial_)", "ao_->BeginFrame();"), "the Scene starts the screen frame before the AO's, which declares its wants after it");
@@ -1029,9 +1039,11 @@ void SourceChecksSs1(const std::string& gpu) {
             Has(car_ps, "[loop] for (uint s = 0u; s < samples; ++s) {\n    sum += g_textures_ms[g_push.slots.y].Load(p, s).rgb;\n  }"),
         "both add the host samples one by one in order");
   Check(Has(colour_ps, "total += sum / float(samples);") && Has(car_ps, "const float3 colour = sum / float(samples);"), "both divide the sum by the sample count as a float");
-  Check(Has(colour_ps, "const float3 colour = total / float(ratio * ratio);") && Has(colour_ps, "return float4(min(max(colour, 0.0f), kMaxColour), 1.0f);") &&
-            Has(car_ps, "return float4(min(max(colour, 0.0f), kMaxColour), LinearDistance(stored));"),
-        "both clamp with min(max(colour, 0), kMaxColour), the capture after dividing by 1 at the picture's size");
+  const std::string held = "float HeldChannel(float v) {\n  return ((asuint(v) & 0x7FFFFFFFu) <= 0x7F800000u) ? min(max(v, 0.0f), kMaxColour) : 0.0f;\n}\n"
+                           "float3 HeldColour(float3 colour) {\n  return float3(HeldChannel(colour.x), HeldChannel(colour.y), HeldChannel(colour.z));\n}\n";
+  Check(Has(colour_ps, "const float3 colour = total / float(ratio * ratio);") && Has(colour_ps, "return float4(HeldColour(colour), 1.0f);") &&
+            Has(car_ps, "return float4(HeldColour(colour), LinearDistance(stored));") && Has(colour_ps, held) && Has(car_ps, held),
+        "both clamp with the same HeldColour (a NaN black by the bits, else min(max(c, 0), kMaxColour)), the capture after dividing by 1 at the picture's size");
   Check(Has(colour_ps, "const uint samples = max(g_push.slots.y, 1u);") && Has(car_ps, "const uint samples = max(g_push.slots.w, 1u);"), "both take at least one sample");
   // the car history's variants: 0 and 1 keep their text, 2 reads one load
   Check(Has(car_ps, "#if CAR_HISTORY_MS == 2") && Has(car_ps, "const float3 colour = g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;\n#elif CAR_HISTORY_MS") && Count(car_ps, "#if CAR_HISTORY_MS\n") == 1,

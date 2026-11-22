@@ -44,6 +44,7 @@
 
 #include "ao_common.hlsli"
 #include "ssgi_common.hlsli"
+#include "nan_guard.hlsli"
 
 #ifndef AO_COLOR_PASS
 #define AO_COLOR_PASS 0
@@ -71,7 +72,7 @@ float4 TakeColour(int2 p, uint s) {
 #else
   float3 colour = g_textures[g_push.slots.x].Load(int3(p, 0)).rgb;
 #endif
-  colour = min(max(colour, 0.0f), kColourMax);  // max(NaN, 0) is 0
+  colour = NgHeld3(colour, kColourMax);  // a NaN is black, decided by the bits (nan_guard.hlsli): max(NaN, 0) is 0 on D3D12 only
   const float luma = dot(colour, kLuma);
   const float cap = max(g_push.shape.x, 1e-3f);
   const float3 carried = luma > 1e-6f ? colour * (SsgiSoftClip(luma, cap) / luma) : colour;

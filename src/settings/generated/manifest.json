@@ -97,6 +97,78 @@
   "comments": [],
   "pp_depth": 0
  },
+ "build_city_pack": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Builds the city pack (the city's geometry, for ray traced shadows) from your game files and closes, without starting the game: no \"\n    \"window, no graphics. The launcher runs this in its setup on a PC whose graphics card can ray trace, so that ray traced shadows are ready at the first start; \"\n    \"the game builds it itself in the background when it is missing and ray traced shadows are on. Progress is printed to the console; the log is \"\n    \"logs/city_pack_build.txt. Exit code 0 when the pack is in place.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "build_city_pack_force": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"With build_city_pack: build even when the pack in place is current.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "build_city_hit": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Builds the city hit data (the hit file and the texture file beside the city pack: the city's surfaces and pictures, for the ray traced effects \"\n    \"that read them) from your game files and closes, without starting the game: no window, no graphics. It needs the city pack (build_city_pack first, or both on one command \"\n    \"line). The launcher runs this in its setup on a PC whose graphics card can ray trace, so that those effects are ready at the first start; the game builds it itself in the \"\n    \"background when it is missing and an effect that reads it is on. Progress is printed to the console like build_city_pack's; the log is logs/city_hit_build.txt. \"\n    \"Exit code 0 when the hit data is in place.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "build_city_hit_force": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"With build_city_hit: build even when the hit data in place is current.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "check_city_hit": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Checks the city hit data and closes, without starting the game: is it in place and current for your game files and the city pack beside it? \"\n    \"Stat only (a moment): exit code 0 and the result 'up to date', or 1 and 'not current' with the reason. With build_city_hit, the check runs after the build. Progress \"\n    \"is printed to the console like build_city_pack's; the log is logs/city_hit_check.txt.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "check_city_hit_deep": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"With check_city_hit: read the files back whole instead of checking the stamp (seconds, not a moment): the city pack, the hit file against \"\n    \"it, and every picture of the texture file. Exit code 0 when all are whole, 1 with the counts of the problems when not.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_native_gfx": {
   "type": "bool",
   "default": "false",
@@ -883,6 +955,247 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_shadows": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Ray traced sun shadows from the city's own triangles (the city pack, built from your game files by the launcher's setup or, \"\n    \"if it is missing, by the game in the background). Rays go from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp \"\n    \"where it touches what casts it and softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows \"\n    \"(mcla_gpu_contact_shadows must be on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a \"\n    \"discrete graphics card with 5.5 GiB of video memory or more that can ray trace, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand \"\n    \"with less memory) in ray tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, \"\n    \"or Vulkan with ray queries) and the city pack; without them the game's shadows stand. The pause menu's RT SHADOWS row (GRAPHICS > LIGHTING AND SHADOWS). Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_sun": {
+  "type": "f64",
+  "default": "3.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the size of the sun's disc for the ray traced city shadows, as a multiple of the real sun (0.53 degrees across), 0.25 to \"\n    \"16. The real sun makes a penumbra 6 cm wide for a caster 10 m away; the few rays of a pixel and the filter turn that into noise farther off, so the default is 3. \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.25, 16.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_rays": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: rays a pixel for the ray traced city shadows, 1 to 8; 0 (the default) is the level's (high 2, ultra 4). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 8}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_alpha": {
+  "type": "std::string",
+  "default": "\"exact\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: what the ray traced city shadows do with the city's cut-out triangles (fences, grates, neon cut-outs: \"\n    \"4% of the city, kept apart in the city pack). exact (the default) reads the cut-out texture's alpha where the ray meets the triangle, from the city hit data and the \"\n    \"city textures, and blocks the ray where it reaches mcla_gpu_city_rt_alpha_ref; where those are not built or the texture is not loaded yet it does what stochastic does. \"\n    \"exclude leaves the cut-outs out, opaque makes them solid, stochastic makes half of the rays that meet one a blocker, chosen by a hash, which the filter and the \"\n    \"upscaler average into a half tone. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"exact\", \"exclude\", \"opaque\", \"stochastic\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_alpha_ref": {
+  "type": "f64",
+  "default": "0.5",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the alpha at or above which a cut-out texel blocks a ray in the exact mode of mcla_gpu_city_rt_alpha, 0.02 to 0.98 \"\n    \"(the game's alpha test keeps a texel above its reference, mostly 0.5 for the city's cut-outs; the city pack does not know a draw's own). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.02, 0.98}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_alpha_view": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with the exact mode of mcla_gpu_city_rt_alpha, shows through the contact shadows' view 7 \"\n    \"(mcla_gpu_contact_shadows_view) which way each pixel's sun rays went through the cut-outs: white no cut-out met, 0.7 decided by the texture's alpha, 0.35 decided by the \"\n    \"stochastic rule (no hit data, or the texture not loaded yet); the log says every 120 frames how many candidates were decided each way, how many blocked, and the \"\n    \"levels read. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_radius": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how far from the camera the city's sectors are kept at full detail in ray tracing structures, in metres, 25 to 1500; 0 \"\n    \"(the default) is the level's and the class's (150 m on a smaller card, 300 m, 600 m at ultra). The far level of detail reaches at least four times as far. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 1500.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_range": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the farthest from the camera that ray traced city shadows are applied to, in metres, up to 1000; 0 (the default) is as far \"\n    \"as the structures are the full detail the game drew there (never more than 700 m). A smaller number shows where the game's own shadows stand. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 1000.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_check": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: proves the city's ray tracing structures on a graphics card that has them. Instead of the sun's rays, one ray is \"\n    \"traced from the camera through every city pixel of the occlusion's linear depth image and the hit's distance is compared with the pixel's; the log says every 120 \"\n    \"frames, under [city rt shadow], how many pixels hit, how many are within 1% and 5% of the depth, and the error's median and 95th percentile. Needs \"\n    \"mcla_gpu_rt_shadows on and the contact shadows on. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_view": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_city_rt_check on, shows the check's picture through the contact shadows' view 7 \"\n    \"(mcla_gpu_contact_shadows_view): white within 1% of the depth image's distance, grey within 5%, black otherwise (a miss or a wrong distance). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_hit_data": {
+  "type": "std::string",
+  "default": "\"off\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: asks for the city's hit data (the texture coordinates, vertex colours and materials of the city, in the GPU pool the structures are built over: mcla_city_hit.v1.pack beside the city pack) without any effect reading it, to test the pool: off (the default), high or ultra, which also brings the city's structures at that level (and, with no car in the picture, the city alone in the top level). The log says under [city hit] and [rt scene]. A hit file that is missing or stale leaves it off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_hit_textures": {
+  "type": "std::string",
+  "default": "\"off\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_city_hit_data on, asks for the city's textures to be resident as well, to test the loader without an effect reading them: off (the default), alpha (the cut-outs' textures of the sectors in the ring, what the ray traced shadows' exact alpha reads) or all (every texture of the sectors in the ring, what the reflections will read). The file is mcla_city_tex.v1.pack beside the hit file. The log says under [city tex] (the first texture, the video memory's pressure) and the city ray tracing census line has the textures' slots and accounted memory. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"off\", \"alpha\", \"all\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_hit_probe": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_city_hit_data on, a compute pass reads the city hit data's pool and tables through the ray tracing descriptor set every frame, the way the hit shading will, and every 240 frames the log says under [city hit] whether what it read is what was copied (a checksum of every block, the sector table's rows, the first material and texture rows). The proof of the pool's offsets and bindings on this backend. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_reflections": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Ray traced reflections of the real city in the car paint: the player's car, and the cars beside it, reflect the buildings, signs, lamp posts and lamp heads around them as the ray tracing finds them (where a reflected point is in the picture it takes the picture's own colour, elsewhere it is shaded from the building's own materials), instead of the game's blurred environment map; the sky stays the map. off, high, ultra or auto (the default): high on a strong ray tracing graphics card, off on the rest; a weak card may be set to high or ultra by hand and then runs lighter numbers. high reaches 150 m, ultra 1,000 m. Rides on the ray traced car self-reflections (mcla_gpu_car_selfrefl with mcla_gpu_car_selfrefl_rt: the row is grey until that one is on RAY TRACED), needs ray queries and needs the city pack and the city hit data, which the launcher's setup builds from your game files (the game builds them in the background if they are not there, and the row says BUILDING DATA until they are done); without them the paint keeps the game's reflection. The pause menu's RT CITY REFLECTIONS row (GRAPHICS > REFLECTIONS). Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_screen": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, a reflected point that is in the picture takes the picture's own colour (the game's lighting, foliage and lamps as drawn). false: every reflected point is shaded from the city's own materials, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_coat": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, a reflection of the city is a mirror's, as a reflection of another car is: sharp, with the paint's clear coat layer over it, so that what is in it can be told at a glance. false: the paint's soft cone alone. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_reach": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how far a reflection ray looks for the city, in metres, 5 to 3000; 0 (the default) is the level's (high 150 m, ultra 1,000 m, a weak card 60 and 150). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 3000.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, replaces the colour a city hit shows in the car paint's ray traced image (look at it through mcla_gpu_car_selfrefl_view 2): 1 where the colour comes from (green the picture's own, red shaded, yellow both), 2 the kind of surface it hit (a ramp over the G-buffer's classes); 0 (the default) the colour. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_chrome": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, the player's chrome (the tailpipes, the badges, the trim) reflects the city and the cars beside it from the ray traced image, as the paint does, instead of only being darkened where the car's own parts cover it. false: the chrome as before. Live (the chrome's shader changes at the next draw).\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_glass": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, the player's car windows reflect the city and the cars beside it: a ray traced pass adds the mirror reflection over the glass by its Fresnel (more at a grazing view), on top of the game's own. false: the glass as before. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_lamps": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, a point of the city that a reflection ray hit (in the car paint, the chrome, the other cars' paint and the glass) is lit by the street lamps and the fill lights around it, and lamp lenses, signs and lit windows glow by the world's lamp schedule (the ray tracing world frame's lamp grid, 96 lamps and a cap on their light), so a night street reflects lit lamps, signs and windows. false: the reflections as before (no lamp light on a hit, the glow by the sun's height). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_masks": {
   "type": "i32",
   "default": "0",
@@ -1363,6 +1676,52 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_gi": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Ray traced bounce light: light bounces around the city the way it does in the real world. The sunlit street and walls light the shaded sides of buildings, the ground under bridges \"\n    \"and the insides of alleys with a soft glow in place of a flat ambient, large coloured walls tint what stands near them, and at night each street lamp and neon sign lights the facades, \"\n    \"the sidewalk and the cars around it a little more. What is behind or beside the camera counts too (the screen-space bounce light, mcla_gpu_ssgi, can only use what is in the picture). \"\n    \"It is worked out in a field of probes laid round the camera from the city's own triangles (the city pack) and added to the picture where the G-buffer knows the surface; it never darkens. \"\n    \"Where it stands it takes the place of the screen-space bounce light, which stays for graphics cards that cannot ray trace and for the places the field does not cover, and it is as strong as \"\n    \"BOUNCE LIGHT STRENGTH says (mcla_gpu_ssgi_intensity). off, high, ultra or auto (the default): high on a graphics card that traces rays quickly (the ray tracing tier strong: about an RTX 3070 \"\n    \"and up, an RX 7800 XT and up), off on the rest; a weaker ray tracing card can switch it on by hand, with fewer probes. high is three cascades of probes, 2, 4 and 8 m apart, \"\n    \"or two, 3 and 6 m apart on a weaker card. ultra adds a fourth cascade, 16 m apart, and refreshes the probes twice as often. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, or Vulkan with ray queries) \"\n    \"and the city pack; without them the screen-space bounce light stands. The pause menu's RT BOUNCE LIGHT row (GRAPHICS > LIGHTING AND SHADOWS). Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_gi_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (ray traced bounce light, the probe field's apply): draws one picture over the main view in place of the bounce light's add, at the trigger where the field runs: 1 the irradiance the field holds at the pixel, 2 the confidence (red the field has nothing there, green it stands), 3 the sky visibility (dark blue closed, white open), 5 the ground baseline the field's irradiance is reduced by, 6 the leak test (green no probe is hidden from the point by geometry, red all of them are), 9 the light the pass adds (alone on black, four times as bright), 10 the net irradiance after the baseline, the dead band and the cap, 11 the occlusion's term the bounce is multiplied by. 4, 7 and 8 are the field's own pictures (the probes as spheres). 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 11}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_gi_bounces": {
+  "type": "f64",
+  "default": "0.5",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (ray traced bounce light): how much of the field's own light the probes take back in when they are updated, which is the second bounce and the ones after it for free: \"\n    \"0 is strictly one bounce, 0.5 (the default) is about two, with brighter canyons; 0.95 at most, so that the loop cannot grow. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 0.95}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_gi_dry_run": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (ray traced bounce light): lets the probe field run while the probe update (package G2 of the design) is not built into this renderer, to prove the field's owner and the order of the frame. \"\n    \"With RT BOUNCE LIGHT on, the field's textures are made, its reset and weights passes run and the apply is told of it, but nothing traces into the probes, so the field never becomes ready, shows nothing, \"\n    \"and the screen-space bounce light stays the source. The RT BOUNCE LIGHT row is grey with (NOT READY) while the update is missing; this makes it live for a test. Has no effect once the update is built. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ssr_strength": {
   "type": "f64",
   "default": "1.0",
@@ -1443,6 +1802,30 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_rt": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the ray traced fallback, for the pixels the picture could not speak for (a reflected thing that is off the picture, behind something in front of it, or a ray that points back at \"\n    \"the camera): the same ray is traced into the city's buildings and what it hits is shaded with the city's own materials and lights, so a wet street shows the street instead of the game's blurred reflection. \"\n    \"auto (the default): follows REFLECTIONS ON SURFACES on a graphics card that traces rays quickly (high: glass, metal and water, up to 0.25 million rays a frame; ultra: also roads and sidewalks, up to 1 million, \"\n    \"two rays a pixel), off on a weak one and on a card that does not trace rays at all. off: the screen-space reflections alone (the comparison); high or ultra: that level on any card that traces rays (a weak card \"\n    \"takes a lighter version). Needs ray queries, the city pack and the city hit data, and REFLECTIONS ON SURFACES on; a governor lowers the cap by half, up to three times, while the passes take more than \"\n    \"their share of the frame. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_denoise": {
+  "type": "i32",
+  "default": "-1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections, the ray traced fallback): RtDenoise, the filter that cleans the fallback's noise where DLSS Ray Reconstruction does not (a bilateral a-trous on the pixels the fallback made: the kernel follows the reflection, wide for a rough surface and a far hit, narrow for a near mirror, and stops at edges of depth, normal, roughness, brightness and hit distance). -1 (the default): the level of REFLECTIONS ON SURFACES gives the number of iterations (high 2, ultra 3); 0: off (the comparison); 1 to 3: that many iterations (steps of 1, 2 and 4 pixels of the half size image). Skipped by itself in a frame Ray Reconstruction takes. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 3}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3137,6 +3520,18 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_dlss_rr_rt_gi": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, CITY-RT G6): what the ray traced bounce light's per-pixel pass (ULTRA on a strong ray tracing card) does while Ray Reconstruction takes the frame. \"\n    \"1 (the default): it hands Ray Reconstruction its raw one-ray-a-pixel diffuse light (no filter of its own: Ray Reconstruction is the denoiser) and the length of each ray as the hit distance guide where no reflection gave one. \"\n    \"2: the same, but without the hit distance (NVIDIA's guide asks for it of the specular only). 0: it keeps its own filter even then (the picture to compare with). With Ray Reconstruction not the plan \"\n    \"(Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
   ],
   "comments": [],
   "pp_depth": 0

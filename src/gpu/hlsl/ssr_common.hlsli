@@ -21,6 +21,7 @@
 
 #include "gbuffer_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
+#include "nan_guard.hlsli"
 #include "blue_noise.hlsli"
 
 #ifndef SSR_LOOP
@@ -244,6 +245,16 @@ float3 SsrSampleReflection(float3 n, float3 v, float alpha, float u1, float u2) 
   const float3 ne = normalize(float3(alpha * nh.x, alpha * nh.y, max(nh.z, 0.0f)));
   const float3 h = t * ne.x + bt * ne.y + n * ne.z;
   return SsrReflect(h, v);
+}
+
+// CITY-RT R4: the reflection ray of an SSR pixel (px, py the SSR image's pixel, `frame` the frame's word (the number, bit 31 for the first version's noise), `ray` the pixel's ray index of `rays`, which the noise's sample number needs: frame * rays + ray), the ONE place both the trace (hlsl/ssr_trace_ps.hlsl) and the ray
+// traced fallback (hlsl/ssr_rt_trace_cs.hlsl) take it from: the fallback regenerates the very ray the trace walked, so nothing is stored. A sample that points below the surface is the mirror direction.
+float3 SsrSampleRay(float3 n, float3 v, float alpha, int px, int py, uint frame, uint ray, uint rays) {
+  float3 dir = SsrSampleReflection(n, v, alpha, SsrNoise1(px, py, frame, ray, rays), SsrNoise2(px, py, frame, ray, rays));
+  if (dot(dir, n) < 0.02f) {
+    dir = SsrReflect(n, v);
+  }
+  return dir;
 }
 
 // ---- the fades -----------------------------------------------------------------------------------------------------------------------------------------------------------------------

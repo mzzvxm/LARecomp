@@ -1910,7 +1910,7 @@ void SourceChecks(const std::string& src) {
             Has(ps, "return g_textures[g_push.slots.x].Load(int3(px, py, 0)).r;"),
         "the quad's pixels are read at the guest's sample, as the pixel's own depth is (one reader: LpStoredDepth, which the contact term uses too)");
   const size_t one_light_at = At(ps, "float4 LpOneLight(");
-  const size_t lit_at = At(ps, "float3 add = LpPixelLight(l, g, world, normal, albedo, lit);");
+  const size_t lit_at = At(ps, "float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));");
   const size_t shadow_at = At(ps, "add = LpShadowed(l, g, flags, p, world, normal, add);");
   Check(one_light_at != std::string::npos && lit_at != std::string::npos && shadow_at != std::string::npos && one_light_at < lit_at && lit_at < shadow_at && Has(ps, "float3 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 add) {") &&
             Has(ps, "add *= LslLightLit("),

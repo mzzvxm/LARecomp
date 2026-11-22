@@ -140,6 +140,10 @@ void ScreenShared::Shutdown() {
   passes_ = nullptr;
 }
 
+float ScreenShared::ExposureFactor() const {
+  return screen::ExposureOf(exp_bias_, exposure_known_);
+}
+
 void ScreenShared::BeginFrame(uint64_t frame_serial) {
   // Once for every command buffer the Scene opens: a second one of a guest frame that was already published (its capture, its chain and the history trade wait for the present) keeps the frame
   // as it is, and the number of such repeats is logged (guest_frame.h, review F2). A buffer that opens before the frame was published (the empty one of an idle present) starts it afresh.
