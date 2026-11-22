@@ -93,7 +93,9 @@ class Feed {
 };
 
 inline Feed& Global() {
-  static Feed feed;
+  // Never destroyed (EXIT-HARD): the render thread and a mod's loader both reach it until the process is gone. The same as larecomp::Leak<Feed>(), spelled out because this header is
+  // compiled by test targets whose include path has no src/ (settings/immortal.h would not be found).
+  static Feed& feed = *new Feed();
   return feed;
 }
 

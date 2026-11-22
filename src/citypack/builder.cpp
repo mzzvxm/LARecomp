@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "citypack/material_class.h"
+#include "settings/immortal.h"
 #include "mc_engine/modloader/rpf3.h"
 
 namespace larecomp::citypack {
@@ -88,7 +89,7 @@ struct GeometrySink {
   bool lod = false;
 
   void Take(const SourceGeometry& g, MeshBuilder* builder, const SectorInfo* box_of) {
-    static const ShaderNames kNoNames;
+    static const ShaderNames& kNoNames = larecomp::Leak<const ShaderNames>();   // never destroyed (EXIT-HARD)
     const ShaderNames& names = g.shader ? *g.shader : kNoNames;
     const MaterialClass cls = ClassifyShader(names.group, names.preset);
     const uint64_t triangles = g.index_count / 3;

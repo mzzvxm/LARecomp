@@ -27,6 +27,7 @@
 #include <unistd.h>
 #endif
 
+#include "settings/immortal.h"
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
@@ -353,13 +354,15 @@ class Background {
   std::filesystem::path folder_;
 };
 
+// Never destroyed (EXIT-HARD): the exit's static destruction must not run a Background (its thread member would end the process in std::terminate while joinable, and the
+// hooks above can still call into it); Stop() above is what ends its thread at shutdown.
 Background& Instance() {
-  static Background instance(Background::Kind::kPack);
+  static Background& instance = larecomp::Leak<Background>(Background::Kind::kPack);
   return instance;
 }
 
 Background& HitInstance() {
-  static Background instance(Background::Kind::kHit);
+  static Background& instance = larecomp::Leak<Background>(Background::Kind::kHit);
   return instance;
 }
 
