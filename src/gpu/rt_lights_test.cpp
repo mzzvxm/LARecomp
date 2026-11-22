@@ -1292,6 +1292,29 @@ void TestSelectionAndBuffer() {
     ll::BuildBuffer(in3, sel, b3.data());
     CHECK(std::memcmp(bytes.data() + ll::kShadowOffset, b3.data() + ll::kShadowOffset, ll::kRtOffset - ll::kShadowOffset) == 0);
   }
+  // THE SECOND LINE: a lamp the game lights with no source of visibility at all (no views, no channel; or the flag set but the table is not in this frame's buffer: rt_ref false) is never drawn, whatever
+  // its term: the grid added it, the pass never does. An owned lamp in the same state is added as it always was.
+  {
+    const float world[3] = {2.0f, 0.0f, 1.0f}, normal[3] = {0.0f, 1.0f, 0.0f}, albedo[3] = {0.5f, 0.4f, 0.3f};
+    ll::Units units;
+    units.exposure = 16.0f;
+    const auto nodepth = [](int, int) { return 1.0f; };
+    for (int flagged = 0; flagged < 2; ++flagged) {
+      lg::Light game = Lamp(1, 6, 1, 8);
+      lg::Light own = OwnedLamp(1, 9);
+      if (flagged != 0) {
+        game.flags |= lg::kLightFlagRtVisibility;
+        own.flags |= lg::kLightFlagRtVisibility;
+      }
+      float out[3] = {-1, -1, -1};
+      float term[3];
+      ll::PixelLight(game, units, world, normal, albedo, 1.0f, term);
+      CHECK(term[0] > 0.0f);   // a lamp that does reach the pixel
+      CHECK(!ll::PixelLampShadowed(game, units, nullptr, false, 0, world, normal, albedo, 1.0f, nodepth, out, nullptr, false, 1.0f));
+      CHECK(!ll::PixelLampShadowed(game, units, nullptr, false, 0, world, normal, albedo, 1.0f, nodepth, out, nullptr, false, 0.0f));
+      CHECK(ll::PixelLampShadowed(own, units, nullptr, false, 0, world, normal, albedo, 1.0f, nodepth, out, nullptr, false, 0.0f) && out[0] > 0.0f);
+    }
+  }
   // THE TWINS with no atlas in the way (the full lamp and headlight twin checks with the atlas are in lamp_shadows_test.cpp): the composition of the pass is rt_lights::Apply
   {
     const float world[3] = {2.0f, 0.0f, 1.0f}, normal[3] = {0.0f, 1.0f, 0.0f}, albedo[3] = {0.5f, 0.4f, 0.3f};
@@ -1391,6 +1414,12 @@ void TestShaderText(const std::string& src) {
   // a game's lamp and the lights the pass owns: the two forms, and no path that adds a game's light on top of the grid's with a channel
   CHECK(Has(ps, "add = game_lit ? -add * (1.0f - lamp_vis) : add * lamp_vis;") && Has(ps, "((l.flags & uint(LL_FLAG_GAME_LIT)) != 0u) ? -add * (1.0f - RtmCombine(1.0f, rt_vis)) : add * RtmCombine(1.0f, rt_vis)"));
   CHECK(Has(ps, "float3(1.0f - rt_vis, rt_vis, 0.0f) * (g.exposure * 0.15f)"));
+  // the second line: a lamp the game lights with no source of visibility is discarded, before the lamp branch
+  {
+    const size_t never = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && (l.flags & uint(LL_FLAG_GAME_LIT)) != 0u && !rt_ref && !(l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u)) {\n    discard;");
+    const size_t lamp = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && ((l.shadow_kind");
+    CHECK(never != std::string::npos && lamp != std::string::npos && never < lamp);
+  }
   // the light pass's reader: the seams
   CHECK(Has(read, "float4 RtmLoadMask(uint slot, int2 p);") && Has(read, "float RtmLoadDepth(uint slot, int2 p);") && Has(read, "float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float renderH, float t, bool raw)"));
 }

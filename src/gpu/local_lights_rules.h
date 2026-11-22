@@ -358,8 +358,11 @@ inline bool PixelLampShadowed(const Light& l, const Units& u, const LampShadowFr
   const bool game_lit = (l.flags & kLightFlagGameLit) != 0;
   const bool atlas_ref = l.source == LightSource::kLamp && l.shadow.kind == ShadowKind::kAtlas && l.shadow.view_count != 0;
   const bool rt_here = rt_ref && l.source == LightSource::kLamp && (l.flags & kLightFlagRtVisibility) != 0;
-  if (l.source != LightSource::kLamp || (!atlas_ref && !rt_here)) {
+  if (l.source != LightSource::kLamp) {
     return true;
+  }
+  if (!atlas_ref && !rt_here) {
+    return !game_lit;   // RT-LIGHTS-D1: a lamp the game lights with no source of visibility is never added on top of the grid's (the shader discards it); an owned lamp is added as it was
   }
   if (debug == kDebugRemove) {
     for (int i = 0; i < 3; ++i) {

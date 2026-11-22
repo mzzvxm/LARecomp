@@ -276,6 +276,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
 
+  // A lamp the GAME lights with no source of visibility at all (no views of the atlas, no ray traced channel, or the channel's table is not in this frame's buffer): the grid has added its term, the pass
+  // never does. TrimSelection keeps such a lamp out of the selection; this is the second line (a lamp that relied on a channel when the images did not come).
+  if (l.source == uint(LL_SOURCE_LAMP) && (l.flags & uint(LL_FLAG_GAME_LIT)) != 0u && !rt_ref && !(l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u)) {
+    discard;
+  }
+
   // A STREET LAMP's light with views of the lamps' table (LAMP-SHADOWS-4): the one lookup plus the edge fade over the lamps' table, then, for a lamp the game lights (its grid already added the term)
   // the shadowed share is TAKEN AWAY (the blend is ADD: the pixel's colour is negative), for a lamp the pass owns the light is multiplied by the visibility. The pixel is read only after the term
   // is known to be over 0, as the headlights'. A game lamp with no table has nothing to take away.
