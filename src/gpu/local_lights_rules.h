@@ -143,13 +143,22 @@ static_assert(offsetof(PassHeader, right) == 0 && offsetof(PassHeader, up) == 16
                   offsetof(PassHeader, lin) == 64 && offsetof(PassHeader, size) == 80 && offsetof(PassHeader, occ) == 96 && offsetof(PassHeader, count) == 112 && offsetof(PassHeader, exposure) == 120,
               "the header's rows (hlsl/local_light.hlsli LP_OFF_*)");
 
-// The push block of one draw (hlsl LocalLightPush): the bindless slots of the main depth plane and of RT1 to RT3 (kNoLightSlot: not there), then the light's index, the flags, the host
-// sample that is the guest's sample 0.
+// The push block of one draw (hlsl LocalLightPush): the bindless slots of the main depth plane and of RT1 to RT3 (kNoLightSlot: not there), then info: x the first light's row in the buffer,
+// y how many consecutive lights the draw has (GB-NEON-COST: 0 counts as 1; at most kMaxDrawLights), z the host sample that is the guest's sample 0, w the flags (kPushLateReach).
 struct PassPush {
   uint32_t slots[4];
   uint32_t info[4];
 };
 static_assert(sizeof(PassPush) == 32, "the push block is two rows");
+
+// GB-NEON-COST (hlsl LP_MAX_DRAW_LIGHTS, LP_PUSH_LATE_REACH): the lights one draw may carry, and the push flag that puts the shader's old order back (the planes read before the reach test).
+inline constexpr uint32_t kMaxDrawLights = 4;
+inline constexpr uint32_t kPushLateReach = 1u << 0;
+// mcla_gpu_local_lights_cost_off, a sum of the savings to switch OFF (0, the default: every one on; the picture is the same either way, so the setting is the A/B of the cost): the reach test before
+// the planes are read (the pixel shader's order), one draw for a car's neon tube (its lights are summed in the shader).
+inline constexpr uint32_t kCostOffReachFirst = 1u << 0;
+inline constexpr uint32_t kCostOffMerge = 1u << 1;
+inline constexpr uint32_t kCostOffMask = kCostOffReachFirst | kCostOffMerge;
 
 // ---------------------------------------------------------------------------
 // the camera: the rows of a view inverse

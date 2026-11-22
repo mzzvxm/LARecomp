@@ -39,7 +39,7 @@
 // mcla_gpu_local_lights (the pass, default off, live), mcla_gpu_local_lights_sources (a sum: 1 the frame's surface lights, 2 a test lamp, 4 police,
 // 8 the cars' head lamps the forward stage does not light, 16 the cars' rear lamps, 32 the mods' lamps outside their grid; default 0), mcla_gpu_local_lights_ab (0 grid, 1 nowhere, 2 pass;
 // restart), mcla_gpu_local_lights_gain (a multiplier, 1), mcla_gpu_local_lights_car_gain (the cars' lights' look, a multiplier, 1), mcla_gpu_headlight_pass (GB-H2: forward | pass | both, live;
-// `pass` and `both` run this pass for the frame's headlights whatever mcla_gpu_local_lights says).
+// `pass` and `both` run this pass for the frame's headlights whatever mcla_gpu_local_lights says), mcla_gpu_local_lights_cost_off (GB-NEON-COST: the savings to switch off, 0, live).
 //
 // BINDING: its own pipeline layout (the host passes' four bindless texture sets at spaces 0-3, the buffer of the header and the lights at (t0, space4), the push block at (b0, space5)), a buffer and
 // a descriptor set per frame in flight, written at the trigger. The pipelines (one per host sample count, RGBA16F colour, blend ADD) are made on first use: the first frame with the pass on stutters.
@@ -188,6 +188,7 @@ class LocalLights {
   larecomp::gpu::local_lights::Ab ab_ = larecomp::gpu::local_lights::Ab::kGrid;
   float gain_ = 1.0f;
   float car_gain_ = 1.0f;
+  uint32_t cost_off_ = 0;  // GB-NEON-COST: mcla_gpu_local_lights_cost_off (local_lights_rules.h kCostOff*): the savings switched OFF for the A/B (0: all on)
   larecomp::gpu::local_lights::Tier tier_ = larecomp::gpu::local_lights::Tier::kMedium;  // the budgets' tier: the light shadows' level
   larecomp::gpu::headlight_pass::Route route_ = larecomp::gpu::headlight_pass::Route::kForward;  // GB-H2: which of the two ways lights the frame's headlights (mcla_gpu_headlight_pass)
   bool planes_wanted_ = false;  // the G-buffer's planes and the shared depth are wanted this frame (the setting is on, or the route's headlights are, or a neon car is lit)
@@ -224,8 +225,9 @@ class LocalLights {
   // the log
   std::array<uint64_t, size_t(Skip::kCount)> counts_{};
   uint64_t frames_run_ = 0;
-  uint64_t lights_drawn_ = 0;
-  uint64_t pixels_scissored_ = 0;
+  uint64_t lights_drawn_ = 0;     // the lights that were in a draw with a rectangle (a draw may sum a car's tube: draws_)
+  uint64_t draws_ = 0;            // GB-NEON-COST: the draw calls made
+  uint64_t pixels_scissored_ = 0;  // the draws' rectangles' areas summed
   uint64_t frames_own_pose_ = 0;
   std::array<uint64_t, larecomp::gpu::local_lights::kSourceClassCount> class_drawn_{};  // lights taken, by SourceClass
   std::array<uint64_t, larecomp::gpu::local_lights::kSourceClassCount> class_cut_{};    // wanted and cut by the class's budget or the pass's 32
