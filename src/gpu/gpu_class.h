@@ -157,6 +157,10 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     //         than that PC (not measured here): otherwise OFF until a Mid card has measured it;
     //   Low   OFF (shared memory: the scene alone is 100+ ms there).
     // To switch them on: change the cells below and the matching row of gpu_class_test.cpp's kTable (and its CheckSsr); nothing else follows (the row and the effect read the cell through Resolve).
+    // A HAND PICK (HIGH or ULTRA in the row) is open on EVERY class, Low and the Steam Deck included, on purpose (LIGHT-STACK-REVIEW F7; the owner's rule: a graphics row can be picked by hand unless the
+    // class cannot run it, and AUTO is what keeps weak cards off). Nothing here stops the effect from running: it asks for the G-buffer's three planes, the Hi-Z and colour_post with its mips and
+    // three RGBA16F images, which on shared memory is the cost the player chose. The only hard limit is the sidecar's memory cap (gbuffer_rules.h kMaxSidecarBytes, 512 MiB: past it the frame
+    // makes no sidecar, the effect does not run and the log says why once). The release notes say so.
     {"mcla_gpu_ssr", "off", "off", "off"},
 };
 

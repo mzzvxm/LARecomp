@@ -832,6 +832,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  headlight_rig::SampleRoute();  // the headlight route's setting, read once for this frame (LiveText): the light pass just below and the rig further down both take it from headlight_rig::CurrentRoute() (review F3)
   if (local_lights_) {
     local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
   }

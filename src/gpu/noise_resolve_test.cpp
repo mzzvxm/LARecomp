@@ -514,6 +514,109 @@ void TestShafts() {
           "the shafts' history is dropped when the sun jumps by more than 15% of the image's height, and its weight ramps from the plain mean to its cap");
 }
 
+// REVIEW F1 (perf\LIGHT-STACK-REVIEW.md): the two history images are made again when the shafts' image changes size, and a new image holds nothing. This is the host's side (shafts.cpp EnsureImages +
+// RecordTemporal) as a twin, written from the source (the statements are pinned in TestSources below): a frame at a new size must have weight 0, and the frame after it the plain mean of one frame
+// (not a leftover of the old counters).
+struct ShaftsHost {
+  bool valid = false;        // hist_valid_
+  uint64_t frame_of = 0;     // hist_frame_
+  bool pause_of = false;     // hist_pause_
+  float sun_of[2] = {};      // hist_sun_
+  uint32_t frames = 0;       // hist_frames_
+  uint32_t image[2] = {0, 0};  // the size of the history images
+  uint64_t frame = 0;
+  float weight_last = -1.0f;
+  bool keep_last = false;
+  // One frame at `w` x `h` with the sun at (sun_u, sun_v). `ensure_invalidates` is the fix: EnsureImages tells the history that it made the images again.
+  void Frame(uint32_t w, uint32_t h, float sun_u, float sun_v, bool ensure_invalidates, bool pause = false, uint64_t skip = 0) {
+    frame += 1 + skip;
+    if (image[0] != w || image[1] != h) {
+      image[0] = w;
+      image[1] = h;  // HostPasses::EnsureImage made new textures: undefined contents, layout unknown (RecordTemporal's own size test compares the images with the plan: it can never differ here)
+      if (ensure_invalidates) {
+        valid = false;
+        frames = 0;
+      }
+    }
+    const float shift_u = sun_of[0] - sun_u;
+    const float shift_v = sun_of[1] - sun_v;
+    const float aspect = float(w) / float(h);
+    const bool keep = valid && frame_of + 1 == frame && pause_of == pause && std::isfinite(shift_u) && std::isfinite(shift_v) && nr::ShaftsKeepsHistory(shift_u, shift_v, aspect);
+    keep_last = keep;
+    weight_last = keep ? nr::ShaftsHistoryWeight(frames) : 0.0f;  // push.sun[2]
+    valid = true;
+    frame_of = frame;
+    pause_of = pause;
+    sun_of[0] = sun_u;
+    sun_of[1] = sun_v;
+    frames = keep ? std::min(frames + 1u, 64u) : 1u;
+  }
+};
+
+void TestShaftsHistoryGate() {
+  // a steady run: no history on the first frame, then the plain mean of 1 frame (1/2), then of 2 (the cap)
+  ShaftsHost host;
+  host.Frame(960, 540, 0.5f, 0.2f, true);
+  const bool first_none = !host.keep_last && host.weight_last == 0.0f;
+  host.Frame(960, 540, 0.5f, 0.2f, true);
+  const float second = host.weight_last;
+  host.Frame(960, 540, 0.5f, 0.2f, true);
+  const float third = host.weight_last;
+  g_check(first_none && host.keep_last && std::fabs(second - 0.5f) < 1e-6f && std::fabs(third - nr::kShaftsHistoryWeight) < 1e-6f && host.frames == 3u,
+          nc::Num("the shafts' history gate: no history on the first frame, weight %.2f on the second (the mean of two), %.2f on the third (the cap)", double(second), double(third)));
+  // the images change size (render scale, window): the next frame has NO history (weight 0) and the one after it the mean of two frames again
+  ShaftsHost sized;
+  sized.Frame(960, 540, 0.5f, 0.2f, true);
+  sized.Frame(960, 540, 0.5f, 0.2f, true);
+  sized.Frame(960, 540, 0.5f, 0.2f, true);
+  const bool had = sized.keep_last && sized.weight_last == nr::kShaftsHistoryWeight;
+  sized.Frame(1280, 720, 0.5f, 0.2f, true);  // the images are made again at the new size
+  const bool zero_after_size = !sized.keep_last && sized.weight_last == 0.0f;
+  sized.Frame(1280, 720, 0.5f, 0.2f, true);
+  const float after = sized.weight_last;
+  g_check(had && zero_after_size && sized.keep_last && std::fabs(after - 0.5f) < 1e-6f,
+          nc::Num("a size change of the shafts' image forces weight 0 on the next frame (the history had %.2f before), and the frame after it starts again at the mean of two (%.2f)", double(nr::kShaftsHistoryWeight), double(after)));
+  // what the gate alone would do: the same sequence WITHOUT the invalidation reads the new, never-written image at the cap's weight (the bug the review found)
+  ShaftsHost bug;
+  bug.Frame(960, 540, 0.5f, 0.2f, false);
+  bug.Frame(960, 540, 0.5f, 0.2f, false);
+  bug.Frame(960, 540, 0.5f, 0.2f, false);
+  bug.Frame(1280, 720, 0.5f, 0.2f, false);
+  g_check(bug.keep_last && bug.weight_last == nr::kShaftsHistoryWeight,
+          "without the invalidation the gate keeps the history across a size change at its full weight: this is why EnsureImages must clear it (the sources are pinned below)");
+  // a second change right after the first, and a change back to the first size, still start from nothing each time
+  ShaftsHost churn;
+  churn.Frame(960, 540, 0.5f, 0.2f, true);
+  churn.Frame(960, 540, 0.5f, 0.2f, true);
+  churn.Frame(1280, 720, 0.5f, 0.2f, true);
+  const bool a = !churn.keep_last && churn.weight_last == 0.0f;
+  churn.Frame(960, 540, 0.5f, 0.2f, true);
+  const bool b = !churn.keep_last && churn.weight_last == 0.0f;
+  churn.Frame(960, 540, 0.5f, 0.2f, true);
+  g_check(a && b && churn.keep_last && std::fabs(churn.weight_last - 0.5f) < 1e-6f, "a size change back and forth forces weight 0 at each change");
+  // the other reasons to start again: a gap of a frame, another kind of view, a sun that jumped or is not a number
+  ShaftsHost reasons;
+  reasons.Frame(960, 540, 0.5f, 0.2f, true);
+  reasons.Frame(960, 540, 0.5f, 0.2f, true, false, 1);  // a frame without the pass in between
+  const bool gap = !reasons.keep_last;
+  reasons.Frame(960, 540, 0.5f, 0.2f, true);
+  reasons.Frame(960, 540, 0.5f, 0.2f, true, true);  // the pause view
+  const bool pause = !reasons.keep_last;
+  reasons.Frame(960, 540, 0.5f, 0.2f, true, true);
+  reasons.Frame(960, 540, 0.9f, 0.2f, true, true);  // the sun jumped across the picture
+  const bool jump = !reasons.keep_last;
+  reasons.Frame(960, 540, 0.9f, 0.2f, true, true);
+  const bool steady_again = reasons.keep_last;
+  reasons.Frame(960, 540, std::nanf(""), 0.2f, true, true);
+  const bool not_a_number = !reasons.keep_last && reasons.weight_last == 0.0f;
+  g_check(gap && pause && jump && steady_again && not_a_number, "the history is not kept over a gap of a frame, a change of the kind of view, a jump of the sun or a sun that is no number");
+  ShaftsHost capped;
+  for (int f = 0; f < 100; ++f) {
+    capped.Frame(960, 540, 0.5f, 0.2f, true);
+  }
+  g_check(capped.frames == 64u, "the frame count stops at 64");
+}
+
 // ---------------------------------------------------------------------------
 // the cone: the finished image (two a-trous passes) averaged with the last frame's result, texel for texel, clamped to the 3 x 3 range
 // ---------------------------------------------------------------------------
@@ -785,6 +888,18 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(settings, decl.c_str()) && nc::Has(settings, "inline auto& mcla_gpu_noise_resolve_no_upscaler = g_gpu.mcla_gpu_noise_resolve_no_upscaler;") && nc::Has(manifest, "\"mcla_gpu_noise_resolve_no_upscaler\": {") &&
               nc::Has(meta, "{\"mcla_gpu_noise_resolve_no_upscaler\", \"MCLA/GPU\"},") && nc::Has(pages, "NativeOnly(Bool(\"PM_RxDbgNoiseResolve\", \"mcla_gpu_noise_resolve_no_upscaler\""),
           "mcla_gpu_noise_resolve_no_upscaler: a live debug setting, on by default, in the settings header, its alias, the manifest, the meta list and the debug menu's FIXES page");
+  // REVIEW F6: the contact history that cannot run this frame (its pipeline is not made, or the depth target has no stencil plane view for the vehicles' IDs) is not planned, so the march's and the
+  // traced sun ray's noise holds (Varies is false without an upscaler and without the history), and the history's images go back (EnsureImages)
+  {
+    const size_t run_at = ao.find("bool AmbientOcclusion::Run(const ResolveCache::Summary& summary");
+    const size_t pipeline_at = ao.find("if (plan.contact_history && !Pipeline(ms ? kVTemporalMs : kVTemporal)) {", run_at);
+    const size_t stencil_at = ao.find("if (plan.contact_history && summary.stencil_slot == kNoSlot) {\n", run_at);
+    const size_t ensure_at = ao.find("if (!EnsureImages(plan)) {", run_at);
+    g_check(!nr::Varies(false, false) && nr::FrameTerm(false, false, 77, 1023) == 0u && nr::FrameTerm(false, true, 77, 1023) == 77u && nr::FrameTerm(true, false, 77, 1023) == 77u && run_at != std::string::npos &&
+                pipeline_at != std::string::npos && stencil_at != std::string::npos && ensure_at != std::string::npos && pipeline_at < stencil_at && stencil_at < ensure_at &&
+                nc::Has(ao, "if (!accumulate || !h.image[0].texture || !h.image[1].texture || stencil_slot_ == kNoSlot) {"),
+            "ao.cpp (review F6): Run clears plan.contact_history when the depth target has no stencil plane view, before EnsureImages, next to the missing pipeline's clear; without the history the noise holds");
+  }
   // the contact march and the car's sun ray
   g_check(nc::Has(ao, "noise_resolve::Varies(plan.upscaler, plan.contact_history) ? base.slots2[1] : (base.slots2[1] & ao_stable::kBlueNoiseFlag)") &&
               nc::Has(ao, "in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;") && !nc::Has(ao, "plan.upscaler ? base.slots2[1]"),
@@ -806,6 +921,17 @@ void TestSources(const std::string& dir) {
               nc::Has(shafts_ps, "return float4(lerp(current, held, kept), 0.0f, 0.0f, 0.0f);") && nc::Has(cmake, "larecomp_gpu_host_shader(shafts_temporal_ps ps_6_0)") &&
               nc::Has(host_shaders, "default: return MCLA_GPU_HOST_SHADER_BLOB(shafts_temporal_ps);") && nc::Has(host_shaders, "#include \"shafts_temporal_ps.hlsl.dxil.h\"") && nc::Has(host_shaders, "#include \"shafts_temporal_ps.hlsl.spirv.h\""),
           "shafts_temporal_ps reads the history at the sun's shift, clamps it to the 3x3 range and blends at the weight; registered in CMake and host_shaders.h");
+  // REVIEW F1: EnsureImages clears the history's counters when it makes an image again (or gives it back), before RecordTemporal decides, and the gate is the one TestShaftsHistoryGate's twin transcribes;
+  // the pass never reads an image that has not been drawn into
+  const size_t ensure_at = shafts.find("bool SunShafts::EnsureImages(");
+  const size_t invalidate_at = shafts.find("if (hist_[0].texture.get() != hist_before[0] || hist_[1].texture.get() != hist_before[1]) {\n    hist_valid_ = false;\n    hist_frames_ = 0;\n  }");
+  const size_t record_at = shafts.find("const HostImage* SunShafts::RecordTemporal(");
+  g_check(nc::Has(shafts, "const plume::RenderTexture* hist_before[2] = {hist_[0].texture.get(), hist_[1].texture.get()};") && ensure_at != std::string::npos && invalidate_at != std::string::npos &&
+              record_at != std::string::npos && ensure_at < invalidate_at && invalidate_at < record_at &&
+              nc::Has(shafts, "const bool keep = hist_valid_ && hist_frame_ + 1 == frame_ && hist_pause_ == pause && std::isfinite(shift_u) && std::isfinite(shift_v) &&\n"
+                              "                    noise_resolve::ShaftsKeepsHistory(shift_u, shift_v, aspect) && history_in.layout != plume::RenderTextureLayout::UNKNOWN;") &&
+              nc::Has(shafts, "push.sun[2] = keep ? noise_resolve::ShaftsHistoryWeight(hist_frames_) : 0.0f;") && nc::Has(shafts, "hist_frames_ = keep ? std::min(hist_frames_ + 1u, 64u) : 1u;"),
+          "shafts.cpp (review F1): EnsureImages compares the history images' textures before and after making them and clears the history's counters; RecordTemporal's gate is the twin's and never reads an image that has no layout yet");
   // the cone
   g_check(nc::Has(cone, "const bool resolve_history = denoise_passes > 0 && !info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && EnsureStableImages(history.width, history.height);") &&
               nc::Has(cone, "const uint32_t pattern_phase = noise_resolve::Varies(info.upscaler, resolve_history) ? info.pattern_phase : 0u;") && nc::Has(selfrefl, "info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 7u);"),
@@ -845,6 +971,7 @@ int main(int argc, char** argv) {
   TestContact("traced sun ray", SunVisibility, SunTruth);
   TestContactGhost();
   TestShafts();
+  TestShaftsHistoryGate();
   TestCone();
   TestJitter();
   TestMemory();

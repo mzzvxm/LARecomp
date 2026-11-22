@@ -508,14 +508,34 @@ void SourceChecks(const std::string& src) {
   // the forward stage is chosen only while the route keeps it (pipelines.cpp asks VariantSelected)
   Check(Has(pipelines, "if (has(sp::kFeatureHeadlight) && headlight_rig::VariantSelected()) {"), "pipelines.cpp still asks the rig whether the variant is chosen");
   Check(Has(rig, "return g_selected.load(std::memory_order_relaxed) && larecomp::gpu::headlight_pass::ForwardStageOn(CurrentRoute());"), "the variant is chosen when the rig has a light AND the route keeps the forward stage");
-  Check(Has(rig, "const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(s::mcla_gpu_headlight_pass.Get());") &&
-            Has(rig, "g_route.store(uint8_t(route), std::memory_order_relaxed);"),
-        "the rig reads the route once a frame in its BeginFrame (ReadSettings)");
-  // ... and keeps tracking, ranking and publishing in every route: the pass, the replay and the volume read its lights
-  const size_t read_at = At(rig, "g_route.store(");
+  // LIGHT-STACK-REVIEW F3: the route's string setting is read ONCE a frame through LiveText (the debug menu's thread writes the cvar), at the Scene's frame start (headlight_rig::SampleRoute, before the light pass's
+  // BeginFrame and the rig's), and both take it from CurrentRoute()
+  const std::string scene = ReadFile(gpu + "scene.cpp");
+  Check(Has(rig, "larecomp::gpu::headlight_pass::Route SampleRoute() {") &&
+            Has(rig, "const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(light_text::HeadlightPass().Get());") &&
+            Has(rig, "g_route.store(uint8_t(route), std::memory_order_relaxed);") && !Has(rig, "mcla_gpu_headlight_pass.Get()") && !Has(pass_cpp, "mcla_gpu_headlight_pass.Get()") &&
+            Has(pass_cpp, "const hp::Route route = headlight_rig::CurrentRoute();"),
+        "the route is read once a frame through LiveText (SampleRoute); the rig and the pass take it from CurrentRoute()");
+  const size_t sample_at = At(scene, "headlight_rig::SampleRoute();");
+  const size_t lights_at = At(scene, "local_lights_->BeginFrame();");
+  const size_t rig_at = At(scene, "headlights_->BeginFrame();");
+  Check(sample_at != std::string::npos && lights_at != std::string::npos && rig_at != std::string::npos && sample_at < lights_at && lights_at < rig_at,
+        "the Scene samples the route before the light pass's BeginFrame and the rig's");
+  // the picker's mode and the record path (also strings another thread may write) are read through LiveText by every reader: the rig, the view replay and the manager's census line
+  const std::string shadow = ReadFile(gpu + "local_shadow.cpp");
+  const std::string manager = ReadFile(gpu + "light_manager.cpp");
+  const std::string text_h = ReadFile(gpu + "light_text.h");
+  Check(Has(rig, "tracker_.SetMode(light_pick::ParseMode(light_text::LightPick().Get()));") && Has(shadow, "picker_.SetMode(light_pick::ParseMode(light_text::LightPick().Get()));") &&
+            Has(manager, "light_pick::ParseMode(light_text::LightPick().Get())") && Has(rig, "const std::string record_path = light_text::LightPickRecord().Get();") &&
+            Has(shadow, "const std::string record_path = light_text::LightPickRecord().Get();") && !Has(rig, "mcla_gpu_light_pick.Get()") && !Has(shadow, "mcla_gpu_light_pick.Get()") &&
+            !Has(manager, "mcla_gpu_light_pick.Get()") && !Has(rig, "mcla_gpu_light_pick_record.Get()") && !Has(shadow, "mcla_gpu_light_pick_record.Get()"),
+        "mcla_gpu_light_pick and mcla_gpu_light_pick_record are read through LiveText by the rig, the view replay and the manager (review F3)");
+  Check(Has(text_h, "#include \"live_text.h\"") && Has(text_h, "static LiveText text(\"mcla_gpu_headlight_pass\");") && Has(text_h, "static LiveText text(\"mcla_gpu_light_pick\");") && Has(text_h, "static LiveText text(\"mcla_gpu_light_pick_record\");"),
+        "light_text.h holds one LiveText for each of the three settings");
+  // ... and keeps tracking, ranking and publishing in every route: the pass, the replay and the volume read its lights; HEADLIGHTS stays the master (the route is no part of the rig's enable)
   const size_t enabled_at = At(rig, "enabled_ = memory_ != nullptr && headlight_rig::SettingOn();");
-  Check(read_at != std::string::npos && enabled_at != std::string::npos && enabled_at < read_at, "HEADLIGHTS stays the master: the route is read after the rig's own enable");
-  Check(Has(rig_h, "bool SettingOn();") && Has(rig_h, "CurrentRoute();") && Has(rig_h, "#include \"headlight_pass_rules.h\""), "the rig's header offers the setting's state and the route");
+  Check(enabled_at != std::string::npos && rig.substr(enabled_at, rig.find('\n', enabled_at) - enabled_at).find("route") == std::string::npos, "HEADLIGHTS stays the master: the route is no part of the rig's own enable");
+  Check(Has(rig_h, "bool SettingOn();") && Has(rig_h, "CurrentRoute();") && Has(rig_h, "SampleRoute();") && Has(rig_h, "#include \"headlight_pass_rules.h\""), "the rig's header offers the setting's state and the route");
 
   // the pass: the route makes it run and lights the frame's headlights
   Check(Has(pass_cpp, "const bool on = hp::PassOn(route, setting_on);") && Has(pass_cpp, "hp::SourcesFor(route,"), "the pass runs for the route and adds the frame's source");

@@ -271,10 +271,16 @@ uint64_t ScreenReflections::HeldBytes() const {
 // ---------------------------------------------------------------------------
 
 void ScreenReflections::BeginFrame() {
-  trigger_done_ = false;
-  ran_ = false;
-  wet_votes_.Reset();
-  ++frames_;
+  // Once for every list the Scene opens: a second list of a guest frame whose trigger already ran must not forget that it did (`ran_` is what OnPresent keeps the history for), nor count the frame twice
+  // (guest_frame.h, review F2). A list that opens before the trigger (the empty list of an idle present) starts the frame afresh as it always did.
+  if (guest_.Begin()) {
+    trigger_done_ = false;
+    ran_ = false;
+    wet_votes_.Reset();
+    ++frames_;
+  } else if (guest_frame::LogDue(guest_.repeats())) {
+    REXLOG_INFO("{} BeginFrame ran twice in one guest frame ({} times so far: a second list was opened after the trigger had run; the frame's state is kept)", kPrefix, guest_.repeats());
+  }
   // `auto` is the GPU class's cell (gpu_class.h kSsr: off on every class until the owner has seen the effect); a word that is no level (a hand-edited file) is off.
   ssr::Level level = ssr::LevelFromText(gpu_class::Resolve(gpu_class::Effect::kSsr, Setting().Get()));
   if (!ready_ || !screen_ || !gbuffer_) {
@@ -324,6 +330,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     return false;
   }
   trigger_done_ = true;  // once a frame, whatever comes of it
+  guest_.Worked();       // a later list of this guest frame keeps this (BeginFrame)
   const screen::ScreenFrame& sf = screen_->Frame();
   const gbuffer::GBufferFrame& gf = gbuffer_->frame();
   EdramTargets::Target& depth = *summary.source;
@@ -659,6 +666,7 @@ void ScreenReflections::OnPresent() {
     }
   }
   ran_ = false;
+  guest_.Present();  // the guest frame is over: the next list starts a frame afresh (BeginFrame)
 }
 
 }  // namespace mcla::gpu

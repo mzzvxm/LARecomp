@@ -52,6 +52,7 @@
 
 #include "constants.h"
 #include "edram.h"
+#include "guest_frame.h"
 #include "host_passes.h"
 #include "resolve.h"
 #include "screen_frame.h"
@@ -266,6 +267,7 @@ class ScreenShared {
   Adopted adopted_;
   bool published_ = false;
   bool sealed_ = false;
+  guest_frame::Gate guest_;          // BeginFrame runs for every list: a second one after the frame was published keeps the frame (guest_frame.h, review F2)
   uint64_t frame_serial_ = 0;
   uint64_t published_frames_ = 0;
   bool first_publish_logged_ = false;
