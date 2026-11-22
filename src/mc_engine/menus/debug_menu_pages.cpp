@@ -272,6 +272,8 @@ const ItemDef kDebugRenderingItems[] = {
     // on GRAPHICS > LIGHTING AND SHADOWS; this one is a debug lever like the cars' gain of the light pass.
     NativeOnly(Dbl("PM_RxDbgNeonGain",   "mcla_gpu_neon_light_gain", "NEON LIGHT GAIN: ",
                    kNeonGainVals, Len(kNeonGainVals), "%g")),
+    // The neon's contact term (GB-NEON-BLEED, live): ON shuts a neon light out of the car's own panels (the other car's vents, lip and cabin), OFF is the law's N.L alone: the A/B of the pictures.
+    NativeOnly(Bool("PM_RxDbgNeonContact", "mcla_gpu_neon_contact", "NEON CONTACT: ")),
     // The glow of street lamps (halo and star): the game's one depth test at the glow's centre (GAME), or the
     // share of 24 tests on a small disc (SOFT: it fades at an edge instead of popping). The renderer reads the
     // cvar at each draw, so the row is live; the first time SOFT shows, the shaders are built.

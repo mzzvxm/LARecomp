@@ -1428,8 +1428,12 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_local_lights_cost_off, 0, "Diagnostic (the cost of the deferred local light pass, GB-NEON-COST, the A/B): a sum of the savings to switch OFF so that the pass runs as it did before them. "
     "1 the reach test before the planes are read (the pixel shader asks the depth whether any light of the draw reaches the pixel, and leaves the pixels none reaches without reading the G-buffer's three planes), "
-    "2 one draw for a car's neon tube (its two to four lights are summed in the shader: one pass over the picture where there were one for each light). 0, the default: both on. The picture is the same "
-    "either way up to the rounding of the half float colour target (the savings leave out only what adds nothing), and only the graphics card time differs. Live.", rex::kDebugOnly, rex::Range{0, 3});
+    "2 one draw for a car's neon tube (its two to four lights are summed in the shader: one pass over the picture where there were one for each light), "
+    "4 the cap of the neon contact term's reads (a pixel of a tube of three or four lights marches the depth for the two strongest lights only, the others take the nearest one's answer: up to 10 depth reads a vehicle pixel where each light marching for itself made up to 20). "
+    "0, the default: all on. The picture is the same either way up to the rounding of the half float colour target for the first two (they leave out only what adds nothing). The third moves a few percent of the light of a vehicle pixel the contact term shuts partly. Only the graphics card time differs otherwise. Live.", rex::kDebugOnly, rex::Range{0, 7});
+
+  REX_SETTING(bool, mcla_gpu_neon_contact, true, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-BLEED, the A/B): on (the default) a neon light is shut out of the car's own panels on a vehicle pixel: the light's way to the pixel is looked up in the picture's own depth for 0.8 m and a point behind a visible surface by a shell's thickness is inside something, so the vents, the lip, the cabin and the wheels' dish that face the light through a body get none of it. "
+    "Off: the law's N.L alone (the neon shows through the other car's panels). Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_headlight_pass, "forward", "Diagnostic (the forward headlight stage against the deferred local light pass, GB-H2, the A/B): which of the two lights the cars' headlights. forward (the default): the lit shaders' headlight variant lights, as the game has always had it. "
     "pass: the variant is not used and the deferred local light pass lights the headlights of the same cars with their shadows from the atlas (it also reaches the lit shaders the variant leaves out, the cars' paint and the pedestrians; needs the G-buffer's planes, which it asks for while HEADLIGHTS is on, and runs whatever mcla_gpu_local_lights says). "
@@ -1936,6 +1940,7 @@ inline auto& mcla_gpu_local_lights_gain = g_gpu.mcla_gpu_local_lights_gain;
 inline auto& mcla_gpu_local_lights_car_gain = g_gpu.mcla_gpu_local_lights_car_gain;
 inline auto& mcla_gpu_neon_light_gain = g_gpu.mcla_gpu_neon_light_gain;
 inline auto& mcla_gpu_local_lights_cost_off = g_gpu.mcla_gpu_local_lights_cost_off;
+inline auto& mcla_gpu_neon_contact = g_gpu.mcla_gpu_neon_contact;
 inline auto& mcla_gpu_headlight_pass = g_gpu.mcla_gpu_headlight_pass;
 inline auto& mcla_gpu_light_pick = g_gpu.mcla_gpu_light_pick;
 inline auto& mcla_gpu_light_pick_record = g_gpu.mcla_gpu_light_pick_record;

@@ -2906,10 +2906,21 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (the cost of the deferred local light pass, GB-NEON-COST, the A/B): a sum of the savings to switch OFF so that the pass runs as it did before them. \"\n    \"1 the reach test before the planes are read (the pixel shader asks the depth whether any light of the draw reaches the pixel, and leaves the pixels none reaches without reading the G-buffer's three planes), \"\n    \"2 one draw for a car's neon tube (its two to four lights are summed in the shader: one pass over the picture where there were one for each light). 0, the default: both on. The picture is the same \"\n    \"either way up to the rounding of the half float colour target (the savings leave out only what adds nothing), and only the graphics card time differs. Live.\"",
+  "help": "\"Diagnostic (the cost of the deferred local light pass, GB-NEON-COST, the A/B): a sum of the savings to switch OFF so that the pass runs as it did before them. \"\n    \"1 the reach test before the planes are read (the pixel shader asks the depth whether any light of the draw reaches the pixel, and leaves the pixels none reaches without reading the G-buffer's three planes), \"\n    \"2 one draw for a car's neon tube (its two to four lights are summed in the shader: one pass over the picture where there were one for each light), \"\n    \"4 the cap of the neon contact term's reads (a pixel of a tube of three or four lights marches the depth for the two strongest lights only, the others take the nearest one's answer: up to 10 depth reads a vehicle pixel where each light marching for itself made up to 20). \"\n    \"0, the default: all on. The picture is the same either way up to the rounding of the half float colour target for the first two (they leave out only what adds nothing). The third moves a few percent of the light of a vehicle pixel the contact term shuts partly. Only the graphics card time differs otherwise. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 3}"
+   "rex::Range{0, 7}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_neon_contact": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-BLEED, the A/B): on (the default) a neon light is shut out of the car's own panels on a vehicle pixel: the light's way to the pixel is looked up in the picture's own depth for 0.8 m and a point behind a visible surface by a shell's thickness is inside something, so the vents, the lip, the cabin and the wheels' dish that face the light through a body get none of it. \"\n    \"Off: the law's N.L alone (the neon shows through the other car's panels). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

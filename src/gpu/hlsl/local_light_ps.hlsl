@@ -29,6 +29,10 @@
 // It runs inside LpOneLight, for each light of a draw, AFTER the law's term is known to be over 0 and BEFORE the shadow's lookup: a pixel no light of the draw reaches was discarded by the reach test
 // before the planes (GB-NEON-COST above), and a light that adds nothing at a pixel is never asked, so the 5 reads are spent only on a vehicle pixel a neon light really lights.
 //
+// GB-NEON-CONTACT: the contact term has an A/B (push.info.w bit LP_PUSH_NO_CONTACT: mcla_gpu_neon_contact off) and a cap on its cost: a tube of three or four lights is one draw, and marching for each
+// light was up to 20 depth reads a vehicle pixel. A pixel now marches for the two strongest lights of the draw only and each other light takes the visibility of the marched one nearest to it along
+// the tube (LpCappedLights, hlsl/local_light.hlsli LpContactDonors): up to 10 reads. Draws of one or two lights are as before; LP_PUSH_FULL_CONTACT (the cost A/B) takes the cap off.
+//
 // Binding (local_lights.cpp): the bindless texture set at spaces 0 to 3 as every host pass, the lights' ByteAddressBuffer at (t0, space4), the push block at (b0, space5).
 
 #include "host_pass_common.hlsli"
@@ -192,22 +196,9 @@ bool LpAnyReaches(uint first, uint count, float3 world) {
   return false;
 }
 
-// What one light adds at a pixel p: the term, then (GB-NEON-BLEED) for a neon light on a vehicle pixel the contact term, then, for a light with views of the atlas and a pixel it lights, the shadow's
-// visibility (HL-SHADOW-QUALITY: at the surface's geometric normal, taken from the depth plane's pixel quad at p). The w is 1 when the light adds anything (a light that does not is not in the sum:
-// its own draw would have discarded the pixel). The table's header says which bindless depth plane the views are in.
-float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool vehicle, float3 world, float3 normal, float3 albedo, float lit) {
-  const LlLight l = LlUnpack(LpLoadLight(index));
-  float3 add = LpPixelLight(l, g, world, normal, albedo, lit);
-  if (!any(add > 0.0f)) {
-    return float4(0.0f, 0.0f, 0.0f, 0.0f);
-  }
-  // GB-NEON-BLEED: a neon light on a vehicle pixel is shut out by the car's own panels (local_light.hlsli LpContactVisibility): the vent, the lip and the cabin it faces through the body get nothing.
-  if (LpTakesContact(l, vehicle)) {
-    add *= LpContactVisibility(g, world, normal, l.pos);
-    if (!any(add > 0.0f)) {
-      return float4(0.0f, 0.0f, 0.0f, 0.0f);
-    }
-  }
+// A light's shadow at a pixel: for a light with views of the atlas, `add` times the one lookup's visibility (HL-SHADOW-QUALITY: at the surface's geometric normal, taken from the depth plane's pixel
+// quad at p); any other light is returned as it is. The table's header says which bindless depth plane the views are in.
+float3 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 add) {
   if ((flags & uint(LP_FLAG_SHADOW)) != 0u && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) {
     const uint4 head = g_lights.Load4(LP_SHADOW_OFF_COUNT);  // count, slot, width, height
     const uint atlas_slot = head.y;
@@ -219,10 +210,78 @@ float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool vehicle, flo
       add *= LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, shadow_normal.x, shadow_normal.y, shadow_normal.z, atlas_slot, uint(LSL_MODE_SURFACE));
     }
   }
+  return add;
+}
+
+// What one light adds at a pixel p: the term, then (GB-NEON-BLEED) for a neon light on a pixel that takes the contact term (`contact`: a vehicle pixel, the term on) the contact term, then the shadow's
+// visibility (LpShadowed). The w is 1 when the light adds anything (a light that does not is not in the sum: its own draw would have discarded the pixel).
+float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, float3 world, float3 normal, float3 albedo, float lit) {
+  const LlLight l = LlUnpack(LpLoadLight(index));
+  float3 add = LpPixelLight(l, g, world, normal, albedo, lit);
+  if (!any(add > 0.0f)) {
+    return float4(0.0f, 0.0f, 0.0f, 0.0f);
+  }
+  // GB-NEON-BLEED: a neon light on a vehicle pixel is shut out by the car's own panels (local_light.hlsli LpContactVisibility): the vent, the lip and the cabin it faces through the body get nothing.
+  if (LpTakesContact(l, contact)) {
+    add *= LpContactVisibility(g, world, normal, l.pos);
+    if (!any(add > 0.0f)) {
+      return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+  }
+  add = LpShadowed(l, g, flags, p, world, normal, add);
   if (!any(add > 0.0f)) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
   }
   return float4(add, 1.0f);
+}
+
+// GB-NEON-CONTACT: the lights of a draw of three or four (a car's neon tube) at a pixel that takes the contact term, with the term's reads capped: every light's term first, then the depth is marched
+// for the two strongest lights only and each other light takes the visibility of the marched one nearest to it along the tube (local_light.hlsli LpContactDonors: up to 10 depth reads a pixel where
+// the lights marching for themselves made up to 20). Then, light by light as LpOneLight does: the term times the visibility (a light that is shut out is not in the sum), the shadow. The tube's lights
+// are neon lights, which have no views of the atlas; the shadow step is kept so that the function is right for any light of a draw. Never called with a draw of one or two lights (those march for
+// themselves, as before the cap) or with LP_PUSH_FULL_CONTACT.
+float4 LpCappedLights(uint first, uint count, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 albedo, float lit) {
+  LlLight l[4];
+  float3 add[4];
+  float strength[4];
+  for (uint i = 0u; i < 4u; ++i) {
+    add[i] = float3(0.0f, 0.0f, 0.0f);
+    strength[i] = 0.0f;
+    l[i] = LlUnpack(LpLoadLight(first + min(i, count - 1u)));
+    if (i < count) {
+      add[i] = LpPixelLight(l[i], g, world, normal, albedo, lit);
+      if (any(add[i] > 0.0f) && LpTakesContact(l[i], true)) {
+        strength[i] = add[i].x + add[i].y + add[i].z;
+      }
+    }
+  }
+  const uint donors = LpContactDonors(strength[0], strength[1], strength[2], strength[3], count);
+  float visibility[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  for (uint m = 0u; m < 4u; ++m) {
+    if (((donors >> (4u * m)) & 7u) == (m | 4u)) {  // a marched light: its own donor
+      visibility[m] = LpContactVisibility(g, world, normal, l[m].pos);
+    }
+  }
+  for (uint k = 0u; k < 4u; ++k) {
+    if (((donors >> (4u * k)) & 4u) != 0u) {
+      visibility[k] = visibility[(donors >> (4u * k)) & 3u];
+    }
+  }
+  float3 total = float3(0.0f, 0.0f, 0.0f);
+  bool any_light = false;
+  for (uint j = 0u; j < 4u; ++j) {
+    if (j < count && any(add[j] > 0.0f)) {
+      float3 one = add[j] * visibility[j];
+      if (any(one > 0.0f)) {
+        one = LpShadowed(l[j], g, flags, p, world, normal, one);
+        if (any(one > 0.0f)) {
+          total += one;
+          any_light = true;
+        }
+      }
+    }
+  }
+  return float4(total, any_light ? 1.0f : 0.0f);
 }
 
 float4 main(float4 position : SV_Position) : SV_Target {
@@ -271,16 +330,25 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
 
-  // The lights: each adds its term (and its shadow), the sum goes to the colour. No light adds anything: the pixel is discarded.
+  // The lights: each adds its term (and its shadow), the sum goes to the colour. No light adds anything: the pixel is discarded. GB-NEON-CONTACT: a vehicle pixel takes the contact term unless
+  // LP_PUSH_NO_CONTACT (mcla_gpu_neon_contact off) says no, and with three or four lights in the draw (a tube) it marches for the strongest two only unless LP_PUSH_FULL_CONTACT says every light does.
   const float3 normal = GbRt1Decode(rt1);
   const float3 albedo = GbAlbedoDecode(rt2.xyz);
+  const bool contact = vehicle && (g_push.info.w & uint(LP_PUSH_NO_CONTACT)) == 0u;
+  const bool capped = contact && count > uint(LP_CONTACT_MARCHES) && (g_push.info.w & uint(LP_PUSH_FULL_CONTACT)) == 0u;
   float3 total = float3(0.0f, 0.0f, 0.0f);
   bool any_light = false;
-  for (uint i = 0u; i < count; ++i) {
-    const float4 one = LpOneLight(first + i, g, flags, p, vehicle, world, normal, albedo, rt2.w);
-    if (one.w > 0.0f) {
-      total += one.xyz;
-      any_light = true;
+  if (capped) {
+    const float4 tube = LpCappedLights(first, count, g, flags, p, world, normal, albedo, rt2.w);
+    total = tube.xyz;
+    any_light = tube.w > 0.0f;
+  } else {
+    for (uint i = 0u; i < count; ++i) {
+      const float4 one = LpOneLight(first + i, g, flags, p, contact, world, normal, albedo, rt2.w);
+      if (one.w > 0.0f) {
+        total += one.xyz;
+        any_light = true;
+      }
     }
   }
   if (!any_light) {

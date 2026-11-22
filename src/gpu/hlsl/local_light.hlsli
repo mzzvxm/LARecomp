@@ -48,8 +48,12 @@
 
 // GB-NEON-COST (the draw's push block, local_lights_rules.h kMaxDrawLights / kPushLateReach): one draw lights a pixel with up to LP_MAX_DRAW_LIGHTS consecutive rows of the buffer (a car's neon tube:
 // its points are the lights of one car), summed in the shader; push.info.w bit 0 puts the reach test back after the planes are read (the A/B of the early test).
+// GB-NEON-CONTACT (local_lights_rules.h kPushFullContact / kPushNoContact): bit 1 is the contact term's cost cap taken off (every light of a tube marches for itself), bit 2 the contact term itself
+// (mcla_gpu_neon_contact off: a neon light is not shut out of the car it lights).
 #define LP_MAX_DRAW_LIGHTS 4
 #define LP_PUSH_LATE_REACH 1
+#define LP_PUSH_FULL_CONTACT 2
+#define LP_PUSH_NO_CONTACT 4
 
 // what the depth chain stores for the sky (hlsl/ao_common.hlsli kAoSky)
 #define LP_SKY 60000.0f
@@ -67,6 +71,7 @@
 #define LP_CONTACT_RAMP 0.06f    // ... and is fully in the way this much past it
 #define LP_CONTACT_THICK 0.7f    // a surface further in front than this is another object, not the shell the way runs behind
 #define LP_CONTACT_FADE 0.25f    // and the shell's thickness fades out over this
+#define LP_CONTACT_MARCHES 2     // a pixel of a draw of several lights marches for the two strongest only (LpContactDonors)
 
 struct LpGlobals {
   float3 right;
@@ -177,6 +182,48 @@ float LpContactVisibility(LpGlobals g, float3 world, float3 normal, float3 light
     shut = w > shut ? w : shut;
   }
   return 1.0f - shut;
+}
+
+// GB-NEON-CONTACT: the cost cap of the contact term. A tube of up to four lights a car is one draw and each light of it marched for itself (LP_CONTACT_STEPS reads each: up to 20 depth reads a pixel).
+// The lights of a tube lie in a row, a metre or so apart, so the ways from a pixel to two neighbours go the same way and ask the same depth: a pixel marches for its LP_CONTACT_MARCHES strongest
+// lights only (strength: the size of the light's term at the pixel; the lowest index on a tie), and each other light that adds something takes the visibility of the marched light that is nearest to it
+// along the tube (the lowest index distance; the stronger on a tie). The word packs 4 bits for each light i: bits 0..1 the index of the light whose visibility light i takes (itself when it marches),
+// bit 2 set when it takes one at all (clear: the light adds nothing here, or takes no contact). `s0..s3` are the strengths, 0 for a light that adds nothing or takes no contact; `count` the lights of
+// the draw (the rows after the first are zero). With one or two lights over 0 every one marches for itself: the cap changes the pictures of tubes of three and four lights only.
+// (local_lights_rules.h ContactDonors is the C++ twin; the measurements that chose this rule are in local_lights_test.cpp ContactCapChecks.)
+uint LpContactDonors(float s0, float s1, float s2, float s3, uint count) {
+  float s[4] = {s0, s1, s2, s3};
+  int m1 = 0;  // the strongest and the second strongest (valid indices even before any is found: no index of -1 is ever read)
+  int m2 = 0;
+  int n = 0;
+  int n2 = 0;
+  for (int i = 0; i < 4; ++i) {
+    if (uint(i) < count && s[i] > 0.0f) {
+      ++n;
+      if (n == 1 || s[i] > s[m1]) {
+        m1 = i;
+      }
+    }
+  }
+  for (int j = 0; j < 4; ++j) {
+    if (uint(j) < count && s[j] > 0.0f && j != m1) {
+      ++n2;
+      if (n2 == 1 || s[j] > s[m2]) {
+        m2 = j;
+      }
+    }
+  }
+  uint word = 0u;
+  for (int k = 0; k < 4; ++k) {
+    if (uint(k) < count && s[k] > 0.0f) {
+      int donor = k;
+      if (k != m1 && k != m2) {
+        donor = abs(k - m1) <= abs(k - m2) ? m1 : m2;
+      }
+      word |= (uint(donor) | 4u) << (4u * uint(k));
+    }
+  }
+  return word;
 }
 
 #endif  // LARECOMP_LOCAL_LIGHT_HLSLI

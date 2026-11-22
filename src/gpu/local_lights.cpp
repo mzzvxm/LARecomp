@@ -260,12 +260,19 @@ void LocalLights::BeginFrame() {
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));
   gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_gain.Get()), 0.0, 16.0));
   car_gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_car_gain.Get()), 0.0, 16.0));
-  // GB-NEON-COST: the A/B of the cost savings (0: the reach test before the planes and one draw for a car's tube are on): the picture is the same either way.
+  // GB-NEON-COST: the A/B of the cost savings (0: the reach test before the planes, one draw for a car's tube and the contact term's cap are on): the picture is the same either way (the cap
+  // moves a little of the contact term's accuracy for its reads: local_lights_rules.h ContactDonors).
   const uint32_t cost_off = uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_cost_off.Get()), 0, int(ll::kCostOffMask))) & ll::kCostOffMask;
   if (cost_off != cost_off_) {
     cost_off_ = cost_off;
-    REXLOG_INFO("{} cost savings (mcla_gpu_local_lights_cost_off {}; live): the reach test before the planes are read {}, one draw for a car's neon tube {}", kPrefix, cost_off_,
-                (cost_off_ & ll::kCostOffReachFirst) != 0 ? "OFF" : "on", (cost_off_ & ll::kCostOffMerge) != 0 ? "OFF" : "on");
+    REXLOG_INFO("{} cost savings (mcla_gpu_local_lights_cost_off {}; live): the reach test before the planes are read {}, one draw for a car's neon tube {}, the contact term's cap (two marches a pixel) {}", kPrefix,
+                cost_off_, (cost_off_ & ll::kCostOffReachFirst) != 0 ? "OFF" : "on", (cost_off_ & ll::kCostOffMerge) != 0 ? "OFF" : "on", (cost_off_ & ll::kCostOffContactCap) != 0 ? "OFF" : "on");
+  }
+  // GB-NEON-CONTACT: the contact term (a neon light does not shine through the car it lights, GB-NEON-BLEED), on by default; its A/B is live.
+  const bool contact_on = st::mcla_gpu_neon_contact.Get();
+  if (contact_on != contact_on_) {
+    contact_on_ = contact_on;
+    REXLOG_INFO("{} neon contact term {} (mcla_gpu_neon_contact; live): a neon light {} shut out of the car's own panels on a vehicle pixel", kPrefix, contact_on_ ? "on" : "off", contact_on_ ? "is" : "is not");
   }
   tier_ = on ? TierNow() : ll::Tier::kMedium;  // (`on` is the pass running at all: its own setting, the headlight route's, or NEON LIGHT's)
   ++frame_;
@@ -517,7 +524,8 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   push.info[2] = gb.sample0;
   // GB-NEON-COST: the draws (local_lights_rules.h PlanDraws): one for each light, but a car's neon tube (its lights share the car, the surface and nearly the rectangle) is one draw the pixel
   // shader sums; the flags tell the shader whether to test the reach before it reads the planes.
-  push.info[3] = (cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u;
+  // GB-NEON-CONTACT: and whether the contact term runs at all (mcla_gpu_neon_contact), and whether it marches for every light of a tube (its cap off).
+  push.info[3] = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) | ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact);
   std::array<ll::PassDraw, ll::kMaxPassLights> plan;
   const uint32_t draws = ll::PlanDraws(selection, rects.data(), cost_off_, plan.data());
   uint32_t drawn = 0;

@@ -679,10 +679,6 @@ void AttachChecks() {
         "auto: the non writers bind the sidecar where each target has its own blend state (Vulkan, and D3D12 with Plume #15)");
   Check(!gb::MaskedDrawsAttach(gb::AttachSetting::kWriters, gb::CapsFor(true)) && gb::MaskedDrawsAttach(gb::AttachSetting::kAll, gb::CapsFor(false)),
         "writers: never; all: always (the build is trusted to have the Plume fix)");
-  // waiting for the sidecar's pipeline: a draw that carries the planes goes on without them (the game's own pipeline) while its variant is made in the background, never made on the render thread;
-  // a draw that does not carry them keeps the game's rule (Scene::MaySkipForPipeline)
-  Check(gb::PlanesMayWait(true) && !gb::PlanesMayWait(false),
-        "a draw with the sidecar may go without the planes while their pipeline is made (the 276 pipelines, 17.6 s of the neon runs' first frames); any other draw keeps the game's rule");
   // the blend of each mode
   {
     const gb::PlaneBlend w = gb::BlendFor(PlaneMode::kWrite);

@@ -37,7 +37,7 @@
 // was FOUR FULL PICTURE DRAWS: a chase camera is inside the 6 to 8 m reach of every light of the tube (ScissorOfLight: a box corner behind the camera = the whole picture), the interval line said
 // 5062 MPixels scissored in 600 frames = 8.4 MPixels a frame = 4 x 1920 x 1104, each draw reading the depth and the three planes of every pixel and blending into the lit ones. Two changes, both with
 // the same picture (local_lights_rules.h PlanDraws, hlsl/local_light_ps.hlsl; local_lights_test.cpp CostChecks holds each to numbers), the A/B being mcla_gpu_local_lights_cost_off (a sum of the
-// savings to switch OFF: 1 the reach test first, 2 one draw a tube; 0 = both on, 3 = the pass as it was):
+// savings to switch OFF: 1 the reach test first, 2 one draw a tube; 0 = both on, 3 = the pass as it was; 4 is GB-NEON-CONTACT's, below):
 //   1. the pixel shader reads the depth and tests whether any light of the draw reaches the pixel BEFORE it reads RT1, RT2 and RT3 (the laws are 0 at and beyond the range, so the pixels it spares
 //      are the ones the planes-first order read three planes of and then discarded; in the chase view about two thirds of the picture, the sky and the far houses among them);
 //   2. a car's neon tube (2 to 4 omni lights of one car) is ONE draw: the pixel reads the planes once and sums the lights, the scissor is the union of their rectangles (each rectangle holds its
@@ -47,6 +47,12 @@
 // the two arms agree inside the noise of two identical runs (a half float rounding of a sum: at most about 0.1 % of a pixel's value); CC3 the dynamic loop and the early discard on the debug layer /
 // validation, both APIs (dxc DXIL and SPIR-V compile and validate); CC4 a Mid class card (the pass costs more there): the share of the picture a tube reaches (the unit's model: 35 % of a chase view).
 //
+// GB-NEON-CONTACT (2026-11-22, the neon contact term of GB-NEON-BLEED made switchable and cheaper; local_lights_rules.h ContactDonors, hlsl/local_light.hlsli LpContactDonors, local_light_ps.hlsl
+// LpCappedLights): mcla_gpu_neon_contact (debug, on, live) is the A/B of the term that shuts a neon light out of the car it lights (off: the law's N.L alone). On a vehicle pixel a tube of three or four
+// lights (one draw) used to march the picture's depth for each light, up to 20 reads a pixel; a pixel now marches for the two strongest lights only and each other light takes the answer of the
+// marched one nearest to it along the tube (up to 10 reads: 61 % of them with four lights, 73 % with three, nothing changes with one or two; on the pixels the term shuts partly the light is 3.1 % /
+// 1.4 % wrong on average, measured against the full term on random cars with vents). mcla_gpu_local_lights_cost_off bit 4 takes the cap off (the A/B of its cost).
+//
 // THE LAMP A/B (local_lights_rules.h has the story): one mod lamp (lights.bin) through the game's grid (A), through this pass with the grid's copy OFF (B, mcla_gpu_local_lights_ab = 2), and through
 // neither (the control, 1). The A/B's lamps are read from the mod loader's published set (mod_light_source.h) whatever the sources mask says; mod_lights.cpp builds the grid with them off.
 //
@@ -54,7 +60,8 @@
 // mcla_gpu_local_lights (the pass, default off, live), mcla_gpu_local_lights_sources (a sum: 1 the frame's surface lights, 2 a test lamp, 4 police,
 // 8 the cars' head lamps the forward stage does not light, 16 the cars' rear lamps, 32 the mods' lamps outside their grid; default 0), mcla_gpu_local_lights_ab (0 grid, 1 nowhere, 2 pass;
 // restart), mcla_gpu_local_lights_gain (a multiplier, 1), mcla_gpu_local_lights_car_gain (the cars' lights' look, a multiplier, 1), mcla_gpu_headlight_pass (GB-H2: forward | pass | both, live;
-// `pass` and `both` run this pass for the frame's headlights whatever mcla_gpu_local_lights says), mcla_gpu_local_lights_cost_off (GB-NEON-COST: the savings to switch off, 0, live).
+// `pass` and `both` run this pass for the frame's headlights whatever mcla_gpu_local_lights says), mcla_gpu_local_lights_cost_off (GB-NEON-COST: the savings to switch off, 0, live; GB-NEON-CONTACT adds 4: the
+// contact cap), mcla_gpu_neon_contact (GB-NEON-CONTACT: the contact term, on, live).
 //
 // BINDING: its own pipeline layout (the host passes' four bindless texture sets at spaces 0-3, the buffer of the header and the lights at (t0, space4), the push block at (b0, space5)), a buffer and
 // a descriptor set per frame in flight, written at the trigger. The pipelines (one per host sample count, RGBA16F colour, blend ADD) are made on first use: the first frame with the pass on stutters.
@@ -204,6 +211,7 @@ class LocalLights {
   float gain_ = 1.0f;
   float car_gain_ = 1.0f;
   uint32_t cost_off_ = 0;  // GB-NEON-COST: mcla_gpu_local_lights_cost_off (local_lights_rules.h kCostOff*): the savings switched OFF for the A/B (0: all on)
+  bool contact_on_ = true;  // GB-NEON-CONTACT: mcla_gpu_neon_contact: a neon light is shut out of the car's own panels (the contact term of GB-NEON-BLEED), live
   larecomp::gpu::local_lights::Tier tier_ = larecomp::gpu::local_lights::Tier::kMedium;  // the budgets' tier: the light shadows' level
   larecomp::gpu::headlight_pass::Route route_ = larecomp::gpu::headlight_pass::Route::kForward;  // GB-H2: which of the two ways lights the frame's headlights (mcla_gpu_headlight_pass)
   bool planes_wanted_ = false;  // the G-buffer's planes and the shared depth are wanted this frame (the setting is on, or the route's headlights are, or a neon car is lit)

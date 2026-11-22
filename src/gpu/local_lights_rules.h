@@ -154,11 +154,17 @@ static_assert(sizeof(PassPush) == 32, "the push block is two rows");
 // GB-NEON-COST (hlsl LP_MAX_DRAW_LIGHTS, LP_PUSH_LATE_REACH): the lights one draw may carry, and the push flag that puts the shader's old order back (the planes read before the reach test).
 inline constexpr uint32_t kMaxDrawLights = 4;
 inline constexpr uint32_t kPushLateReach = 1u << 0;
-// mcla_gpu_local_lights_cost_off, a sum of the savings to switch OFF (0, the default: every one on; the picture is the same either way, so the setting is the A/B of the cost): the reach test before
-// the planes are read (the pixel shader's order), one draw for a car's neon tube (its lights are summed in the shader).
+// GB-NEON-CONTACT (hlsl LP_PUSH_FULL_CONTACT, LP_PUSH_NO_CONTACT): the push flags of the neon light's contact term: bit 1 takes the term's cost cap off (every light of a tube marches for itself: the
+// term as it was before the cap), bit 2 the term itself (mcla_gpu_neon_contact off: no neon light is shut out of the car it lights).
+inline constexpr uint32_t kPushFullContact = 1u << 1;
+inline constexpr uint32_t kPushNoContact = 1u << 2;
+// mcla_gpu_local_lights_cost_off, a sum of the savings to switch OFF (0, the default: every one on; the picture is the same either way, so the setting is the A/B of the cost, except the third,
+// which trades a little of the contact term's accuracy for its reads: ContactDonors): the reach test before the planes are read (the pixel shader's order), one draw for a car's neon tube (its
+// lights are summed in the shader), the cap of the contact term's marches (two a pixel, not one for each light of the tube).
 inline constexpr uint32_t kCostOffReachFirst = 1u << 0;
 inline constexpr uint32_t kCostOffMerge = 1u << 1;
-inline constexpr uint32_t kCostOffMask = kCostOffReachFirst | kCostOffMerge;
+inline constexpr uint32_t kCostOffContactCap = 1u << 2;
+inline constexpr uint32_t kCostOffMask = kCostOffReachFirst | kCostOffMerge | kCostOffContactCap;
 
 // ---------------------------------------------------------------------------
 // the camera: the rows of a view inverse
@@ -384,6 +390,85 @@ inline float ContactVisibility(const Rows& rows, float tan_x, float tan_y, float
     shut = w > shut ? w : shut;
   }
   return 1.0f - shut;
+}
+
+// GB-NEON-CONTACT: the cost cap of the contact term (the twin of hlsl/local_light.hlsli LpContactDonors; the numbers that chose it are measured in local_lights_test.cpp ContactCapChecks).
+// A tube of up to four lights a car is ONE draw and, before the cap, each light of it marched for itself: kContactSteps depth reads a light, up to 20 a vehicle pixel. The lights of a tube lie in
+// a row a metre or so apart, so the ways from a pixel to two neighbours go the same way and meet the same depth. A pixel now marches for its kContactMarches strongest lights only (the strength is
+// the size of the light's term at the pixel, 0 for a light that adds nothing or takes no contact; the lowest index on a tie) and every other light that adds something takes the visibility of
+// the marched light that is nearest to it ALONG THE TUBE (the lowest index distance; the stronger one on a tie). What it costs in accuracy, measured on random cars with vents and their tubes
+// (local_lights_test.cpp ContactCapChecks prints the table): with four lights 3.1 % of a pixel's light wrong on the pixels the term shuts partly (the mean; the worst one percent 27 %), at 61 % of
+// the reads; with three 1.4 %, at 73 % of them; with one or two lights nothing. Chosen over: the rest left open (8 % wrong), one march for the strongest light alone (17 %), one march toward the
+// lights' centre weighted by their terms (17 %) or toward the tube's middle (24 %), which are 5 reads but 6 to 8 times as wrong.
+inline constexpr int kContactMarches = 2;  // LP_CONTACT_MARCHES
+
+// The packed word: for each light i of the draw, bits 4i..4i+1 the index of the light whose visibility it takes (itself when it marches), bit 4i+2 set when it takes one at all.
+inline uint32_t ContactDonors(const float strength[4], uint32_t count) {
+  int candidates[4];
+  int n = 0;
+  for (int i = 0; i < 4; ++i) {
+    if (uint32_t(i) < count && strength[i] > 0.0f) {
+      candidates[n++] = i;
+    }
+  }
+  int order[4];  // the candidates, the strongest first (a stable insertion sort: the lower index first on a tie)
+  for (int i = 0; i < n; ++i) {
+    int at = i;
+    while (at > 0 && strength[candidates[i]] > strength[order[at - 1]]) {
+      order[at] = order[at - 1];
+      --at;
+    }
+    order[at] = candidates[i];
+  }
+  uint32_t word = 0;
+  for (int rank = 0; rank < n; ++rank) {
+    const int light = order[rank];
+    int donor = light;
+    if (rank >= kContactMarches) {
+      int best_distance = 1000;
+      for (int m = 0; m < kContactMarches; ++m) {  // the marched lights, the strongest first: the first of two at the same distance wins
+        const int distance = light > order[m] ? light - order[m] : order[m] - light;
+        if (distance < best_distance) {
+          best_distance = distance;
+          donor = order[m];
+        }
+      }
+    }
+    word |= (uint32_t(donor) | 4u) << (4 * light);
+  }
+  return word;
+}
+
+// The contact term's visibility of each light of one draw at one pixel: `strength` and `light_pos` as ContactDonors takes them. `capped` false is the term before the cap (every light with a
+// strength marches for itself). A light with no strength gets 1. Returns the marches made (kContactSteps reads each at most).
+template <class StoredDepth>
+inline int ContactVisibilities(const Rows& rows, float tan_x, float tan_y, float width, float height, const float lin[4], const float world[3], const float normal[3], const float light_pos[4][3],
+                               const float strength[4], uint32_t count, bool capped, float visibility[4], StoredDepth&& stored_at) {
+  uint32_t donors = 0;
+  if (capped) {
+    donors = ContactDonors(strength, count);
+  } else {
+    for (uint32_t i = 0; i < 4 && i < count; ++i) {
+      if (strength[i] > 0.0f) {
+        donors |= (i | 4u) << (4 * i);
+      }
+    }
+  }
+  int marches = 0;
+  float marched[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  for (uint32_t i = 0; i < 4; ++i) {
+    visibility[i] = 1.0f;
+    if (((donors >> (4 * i)) & 4u) != 0 && ((donors >> (4 * i)) & 3u) == i) {
+      marched[i] = ContactVisibility(rows, tan_x, tan_y, width, height, lin, world, normal, light_pos[i], stored_at);
+      ++marches;
+    }
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (((donors >> (4 * i)) & 4u) != 0) {
+      visibility[i] = marched[(donors >> (4 * i)) & 3u];
+    }
+  }
+  return marches;
 }
 
 // ---------------------------------------------------------------------------

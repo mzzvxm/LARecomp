@@ -232,8 +232,13 @@ void LayoutChecks(const std::string& hlsli) {
   // GB-NEON-COST: the lights a draw may carry and the push flag of the A/B (the push block is the same two rows)
   want("LP_MAX_DRAW_LIGHTS", lp::kMaxDrawLights);
   want("LP_PUSH_LATE_REACH", lp::kPushLateReach);
-  Check(lp::kMaxDrawLights == neon_light::kTubePoints && lp::kPushLateReach == 1u && lp::kCostOffMask == 3u && lp::kCostOffReachFirst == 1u && lp::kCostOffMerge == 2u,
-        "a draw takes a whole neon tube (four points), the A/B's bits are the reach test (1) and the merge (2)");
+  // GB-NEON-CONTACT: the push flags of the contact term (the cap taken off, the term off) and the cap's number of marches
+  want("LP_PUSH_FULL_CONTACT", lp::kPushFullContact);
+  want("LP_PUSH_NO_CONTACT", lp::kPushNoContact);
+  want("LP_CONTACT_MARCHES", lp::kContactMarches);
+  Check(lp::kMaxDrawLights == neon_light::kTubePoints && lp::kPushLateReach == 1u && lp::kPushFullContact == 2u && lp::kPushNoContact == 4u && lp::kCostOffMask == 7u && lp::kCostOffReachFirst == 1u &&
+            lp::kCostOffMerge == 2u && lp::kCostOffContactCap == 4u && lp::kContactMarches == 2 && lp::kCostOffContactCap == (lp::kPushFullContact << 1),
+        "a draw takes a whole neon tube (four points), the A/B's bits are the reach test (1), the merge (2) and the contact cap (4), the push flags 1, 2 and 4, two contact marches a pixel");
   Check(Has(hlsli, "#define LP_SKY 60000.0f") && lp::kSky == 60000.0f, "the sky's distance is the AO's");
   // the rows after the header are the GpuLight's 64 bytes
   Check(lp::kLightsOffset + sizeof(GpuLight) * lp::kMaxPassLights == lp::kShadowOffset && lp::kShadowOffset % 16 == 0, "the lights' rows follow the header and the shadow view table follows them, 16 byte aligned");
@@ -1182,8 +1187,10 @@ struct FlowResult {
 
 // hlsl/local_light_ps.hlsl main, line by line, on the twin's functions: `lights` are the draw's rows (count 1 to 4), `material` is LP_FLAG_MATERIAL with RT3 bound, `reach_first` the shader's order.
 // The shadow lookup is left out (nothing of the neon has views of the atlas, and the order does not touch it). GB-NEON-BLEED: RT3's vehicle flag is read with its class, and a neon light on a vehicle
-// pixel takes the contact term inside its own turn of the sum (LpOneLight: after the law's term, before the shadow), its reads counted.
-FlowResult ShaderFlow(const PixelData& px, const hlsl_shim::LpGlobals& g, const hlsl_shim::LlLight* lights, uint32_t count, bool material, bool reach_first, float px_x, float px_y) {
+// pixel takes the contact term inside its own turn of the sum (LpOneLight: after the law's term, before the shadow), its reads counted. GB-NEON-CONTACT: `contact_on` is the term's switch (push flag
+// LP_PUSH_NO_CONTACT when false) and `capped` the cap on its reads (LP_PUSH_FULL_CONTACT when false): a draw of more than two lights at a pixel that takes the term then makes LpCappedLights' marches.
+FlowResult ShaderFlow(const PixelData& px, const hlsl_shim::LpGlobals& g, const hlsl_shim::LlLight* lights, uint32_t count, bool material, bool reach_first, float px_x, float px_y, bool capped = true,
+                      bool contact_on = true) {
   FlowResult none;
   hlsl_shim::float3 world;
   const auto place = [&]() {
@@ -1228,16 +1235,52 @@ FlowResult ShaderFlow(const PixelData& px, const hlsl_shim::LpGlobals& g, const 
   FlowResult r;
   const hlsl_shim::float3 n(px.normal[0], px.normal[1], px.normal[2]);
   const hlsl_shim::float3 a(px.albedo[0], px.albedo[1], px.albedo[2]);
+  g_stored_depth = [&](int ix, int iy) {
+    ++r.depth_reads;
+    return px.field ? px.field(ix, iy) : 0.0f;
+  };
+  const bool contact = vehicle && contact_on;
+  if (contact && capped && count > uint32_t(LP_CONTACT_MARCHES)) {
+    // LpCappedLights: every term first, the marches for the donors, the others copy, then the sum light by light
+    hlsl_shim::float3 add[4];
+    float strength[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    for (uint32_t i = 0; i < 4; ++i) {
+      if (i < count) {
+        add[i] = hlsl_shim::LpPixelLight(lights[i], g, world, n, a, px.lit);
+        if (AnyPositive(add[i]) && hlsl_shim::LpTakesContact(lights[i], true)) {
+          strength[i] = add[i].x + add[i].y + add[i].z;
+        }
+      }
+    }
+    const uint32_t donors = hlsl_shim::LpContactDonors(strength[0], strength[1], strength[2], strength[3], count);
+    float visibility[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    for (uint32_t m = 0; m < 4; ++m) {
+      if (((donors >> (4 * m)) & 7u) == (m | 4u)) {
+        visibility[m] = hlsl_shim::LpContactVisibility(g, world, n, lights[m].pos);
+      }
+    }
+    for (uint32_t k = 0; k < 4; ++k) {
+      if (((donors >> (4 * k)) & 4u) != 0) {
+        visibility[k] = visibility[(donors >> (4 * k)) & 3u];
+      }
+    }
+    for (uint32_t j = 0; j < count; ++j) {
+      if (AnyPositive(add[j])) {
+        const hlsl_shim::float3 one = add[j] * visibility[j];
+        if (AnyPositive(one)) {
+          r.sum = r.sum + one;
+          r.written = true;
+        }
+      }
+    }
+    return r;
+  }
   for (uint32_t i = 0; i < count; ++i) {
     hlsl_shim::float3 add = hlsl_shim::LpPixelLight(lights[i], g, world, n, a, px.lit);
     if (!AnyPositive(add)) {
       continue;
     }
-    if (hlsl_shim::LpTakesContact(lights[i], vehicle)) {
-      g_stored_depth = [&](int ix, int iy) {
-        ++r.depth_reads;
-        return px.field ? px.field(ix, iy) : 0.0f;
-      };
+    if (hlsl_shim::LpTakesContact(lights[i], contact)) {
       add = add * hlsl_shim::LpContactVisibility(g, world, n, lights[i].pos);
       if (!AnyPositive(add)) {
         continue;
@@ -1274,6 +1317,7 @@ void CostChecks() {
   Lcg rng;
   uint64_t pixels = 0, rejected = 0, lit_pixels = 0, written_both = 0;
   uint64_t contact_pixels = 0, contact_reads = 0, contact_spared = 0;
+  uint64_t cap_saved_pixels = 0, cap_saved_reads = 0;  // GB-NEON-CONTACT: the pixels where the cap read less than the term before it, and by how much
   double worst_steps = 0.0, worst_rel = 0.0;
   for (int round = 0; round < 6000; ++round) {
     float vi[16];
@@ -1390,6 +1434,12 @@ void CostChecks() {
     // 2: the two orders of the shader are the same pixel
     const FlowResult fast = ShaderFlow(pd, g, rows_of.data(), count, material, true, px, py);
     const FlowResult slow = ShaderFlow(pd, g, rows_of.data(), count, material, false, px, py);
+    // GB-NEON-CONTACT: the same pixel with the cap taken off (the term as it was: every light of the tube marches for itself) and with the term off
+    const FlowResult full = ShaderFlow(pd, g, rows_of.data(), count, material, true, px, py, false);
+    const FlowResult nocontact = ShaderFlow(pd, g, rows_of.data(), count, material, true, px, py, true, false);
+    PixelData plain = pd;
+    plain.vehicle = false;
+    const FlowResult not_vehicle = ShaderFlow(plain, g, rows_of.data(), count, material, true, px, py);
     Check(fast.written == slow.written, Num("the early reach test keeps the pixels the planes-first order writes (round %.0f)", round));
     Check(fast.sum.x == slow.sum.x && fast.sum.y == slow.sum.y && fast.sum.z == slow.sum.z, "the early reach test gives bit for bit the same sum");
     // GB-NEON-BLEED with GB-NEON-COST: the contact term reads the depth only for a vehicle pixel a neon light of the draw really lights, in either order; a pixel the reach test rejects reads none
@@ -1408,6 +1458,20 @@ void CostChecks() {
       ++contact_pixels;
       contact_reads += fast.depth_reads;
       Check(pd.vehicle && material, "only a vehicle pixel with RT3 takes contact reads");
+    }
+    // GB-NEON-CONTACT: the cap: never more than two marches (2 x LP_CONTACT_STEPS reads) at a pixel, the term before it up to a march for each light; with one or two lights nothing changes; the term off is
+    // a pixel that is not a vehicle's (no read, the law's light as it is)
+    Check(fast.depth_reads <= uint32_t(2 * LP_CONTACT_STEPS) || count <= uint32_t(LP_CONTACT_MARCHES), "the capped term reads at most two marches' worth of the depth at a pixel");
+    Check(full.depth_reads <= count * uint32_t(LP_CONTACT_STEPS) && fast.depth_reads <= full.depth_reads, "the cap never reads more than the term before it, which is a march a light at most");
+    if (count <= uint32_t(LP_CONTACT_MARCHES)) {
+      Check(fast.written == full.written && fast.sum.x == full.sum.x && fast.sum.y == full.sum.y && fast.sum.z == full.sum.z && fast.depth_reads == full.depth_reads,
+            "with one or two lights the cap changes nothing, bit for bit");
+    }
+    Check(nocontact.depth_reads == 0 && nocontact.written == not_vehicle.written && nocontact.sum.x == not_vehicle.sum.x && nocontact.sum.y == not_vehicle.sum.y && nocontact.sum.z == not_vehicle.sum.z,
+          "mcla_gpu_neon_contact off: a vehicle pixel is lit as any other pixel (no read, the law's term)");
+    if (full.depth_reads > fast.depth_reads) {
+      ++cap_saved_pixels;
+      cap_saved_reads += full.depth_reads - fast.depth_reads;
     }
 
     // 3: the single draws (one add into the half float target each, a light that adds nothing is a discarded pixel) against the one draw's sum
@@ -1435,10 +1499,10 @@ void CostChecks() {
         old_fb[2] = RoundHalf(old_fb[2] + add.z);
         old_written = true;
       }
-      Check(old_written == fast.written, Num("the one draw writes the pixels the single draws wrote (round %.0f)", round));
-      if (fast.written) {
+      Check(old_written == full.written, Num("the one draw writes the pixels the single draws wrote (round %.0f)", round));
+      if (full.written) {
         ++written_both;
-        const float new_fb[3] = {RoundHalf(base[0] + fast.sum.x), RoundHalf(base[1] + fast.sum.y), RoundHalf(base[2] + fast.sum.z)};
+        const float new_fb[3] = {RoundHalf(base[0] + full.sum.x), RoundHalf(base[1] + full.sum.y), RoundHalf(base[2] + full.sum.z)};
         for (int c = 0; c < 3; ++c) {
           const double top = std::max(std::fabs(double(old_fb[c])), std::fabs(double(new_fb[c])));
           const double steps = std::fabs(double(old_fb[c]) - double(new_fb[c])) / HalfStep(top);
@@ -1457,6 +1521,9 @@ void CostChecks() {
   std::printf("cost twin with the contact term: %llu pixels took %llu contact reads (a vehicle pixel a neon light lights); %llu pixels no light of the draw reaches made none\n", (unsigned long long)contact_pixels,
               (unsigned long long)contact_reads, (unsigned long long)contact_spared);
   Check(contact_pixels > 300 && contact_reads >= contact_pixels && contact_spared > 300, "the random draws exercise the contact term inside the sum, and the pixels the reach test spares");
+  std::printf("cost twin with the contact cap: %llu pixels read less than the term before the cap, %llu reads saved (the term before the cap read %llu in all, the cap %llu)\n", (unsigned long long)cap_saved_pixels,
+              (unsigned long long)cap_saved_reads, (unsigned long long)(contact_reads + cap_saved_reads), (unsigned long long)contact_reads);
+  Check(cap_saved_pixels > 50 && cap_saved_reads > 0, "the random draws reach tubes of three and four lights on vehicle pixels the cap saves reads on");
   Check(worst_rel < 0.0035, "the sum is within 0.35 % of the single draws' (a few steps of the half float target: 8-bit pictures cannot show it)");
 
   // The boundary of the reach, to the bit: a pixel at exactly the range is not reached and takes 0 under every law; one a step inside is reached
@@ -1743,8 +1810,10 @@ void SourceChecks(const std::string& src) {
         "the layout is four texture sets, the buffer's set (space 4) and the pixel push block (space 5)");
   Check(Has(ps, "uint4 slots;") && Has(ps, "uint4 info;") && Has(ps, "#include \"local_light.hlsli\""), "the shader's push block is two uint4 and it includes the twin");
   Check(Has(cpp, "push.slots[0] = summary.sample_slot;") && Has(cpp, "push.info[2] = gb.sample0;") && Has(cpp, "push.info[0] = draw.first;") && Has(cpp, "push.info[1] = draw.count;") &&
-            Has(cpp, "push.info[3] = (cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u;"),
-        "the push fields the shader reads are filled: the draw's first light and its count, the host sample, the flags");
+            Has(cpp, "push.info[3] = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) | ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact);"),
+        "the push fields the shader reads are filled: the draw's first light and its count, the host sample, the flags (the reach order, the contact cap, the contact term)");
+  // GB-NEON-CONTACT: the setting is read live, with its A/B
+  Check(Has(cpp, "const bool contact_on = st::mcla_gpu_neon_contact.Get();") && Has(cpp, "contact_on_ = contact_on;"), "the pass reads mcla_gpu_neon_contact live (the A/B of the contact term)");
   // GB-NEON-COST: the pass makes its draws from the plan (a car's tube is one) and reads the A/B's setting live
   Check(Has(cpp, "ll::PlanDraws(selection, rects.data(), cost_off_, plan.data())") && Has(cpp, "st::mcla_gpu_local_lights_cost_off.Get()") && Has(cpp, "for (uint32_t d = 0; d < draws; ++d) {"),
         "the pass draws what PlanDraws plans, with the setting's bits");
@@ -1757,16 +1826,16 @@ void SourceChecks(const std::string& src) {
     const size_t early = At(ps, "if (!LpAnyReaches(first, count, world)) {");
     const size_t planes = At(ps, "const float2 rt1 = LoadPlane(g_push.slots.y, p).xy;");
     const size_t late = At(ps, "if (!reach_first) {");
-    const size_t sum_at = At(ps, "const float4 one = LpOneLight(first + i, g, flags, p, vehicle, world, normal, albedo, rt2.w);");
+    const size_t sum_at = At(ps, "const float4 one = LpOneLight(first + i, g, flags, p, contact, world, normal, albedo, rt2.w);");
     Check(main_at != std::string::npos && early != std::string::npos && planes != std::string::npos && late != std::string::npos && sum_at != std::string::npos && main_at < early && early < planes && planes < late &&
               late < sum_at,
           "main: the reach test (when first) comes before the planes' reads, the position after them in the old order, and the lights' sum after both");
-    Check(Has(ps, "if (one.w > 0.0f) {\n      total += one.xyz;\n      any_light = true;") && Has(ps, "if (!any_light) {\n    discard;\n  }\n  return float4(total, 0.0f);"),
+    Check(Has(ps, "if (one.w > 0.0f) {\n        total += one.xyz;\n        any_light = true;") && Has(ps, "if (!any_light) {\n    discard;\n  }\n  return float4(total, 0.0f);"),
           "a light that adds nothing is left out of the sum, and a pixel none of them lights is discarded (as its own draw was)");
   }
 
   // the settings: in all three generated files, debug only
-  const char* names[] = {"mcla_gpu_local_lights", "mcla_gpu_local_lights_sources", "mcla_gpu_local_lights_ab", "mcla_gpu_local_lights_gain", "mcla_gpu_headlight_pass", "mcla_gpu_local_lights_cost_off"};
+  const char* names[] = {"mcla_gpu_local_lights", "mcla_gpu_local_lights_sources", "mcla_gpu_local_lights_ab", "mcla_gpu_local_lights_gain", "mcla_gpu_headlight_pass", "mcla_gpu_local_lights_cost_off", "mcla_gpu_neon_contact"};
   for (const char* name : names) {
     Check(Has(settings, std::string("REX_SETTING(") ) && Has(settings, std::string(", ") + name + ", "), std::string("settings_gpu.h defines ") + name);
     Check(Has(manifest, std::string("\"") + name + "\": {"), std::string("manifest.json has ") + name);
@@ -1785,7 +1854,13 @@ void SourceChecks(const std::string& src) {
     Check(ab_at != std::string::npos && settings.substr(ab_at, ab_end - ab_at).find("rex::kRestart") != std::string::npos, "the lamp A/B is a restart setting (the grid is built when the city's lights load)");
     Check(Has(settings, "bool, mcla_gpu_local_lights, false,"), "the pass is off by default");
     Check(Has(settings, "i32, mcla_gpu_local_lights_sources, 0,") && Has(settings, "i32, mcla_gpu_local_lights_ab, 0,") && Has(settings, "f64, mcla_gpu_local_lights_gain, 1.0,"), "the defaults: no source, the grid, gain 1");
-    Check(Has(settings, "i32, mcla_gpu_local_lights_cost_off, 0,") && Has(settings, "rex::kDebugOnly, rex::Range{0, 3});"), "GB-NEON-COST: the cost A/B defaults to 0 (both savings on), range 0 to 3");
+    Check(Has(settings, "i32, mcla_gpu_local_lights_cost_off, 0,") && Has(settings, "rex::kDebugOnly, rex::Range{0, 7});"), "GB-NEON-COST: the cost A/B defaults to 0 (all three savings on), range 0 to 7");
+    Check(Has(settings, "bool, mcla_gpu_neon_contact, true,"), "GB-NEON-CONTACT: the contact term is on by default");
+    {
+      const size_t at = settings.find(", mcla_gpu_neon_contact, ");
+      const size_t end = settings.find(");", at);
+      Check(at != std::string::npos && settings.substr(at, end - at).find("rex::kRestart") == std::string::npos, "the contact term's A/B is live (no restart trait)");
+    }
     Check(Has(settings, "std::string, mcla_gpu_headlight_pass, \"forward\",") && Has(settings, "rex::Allowed(\"forward\", \"pass\", \"both\")"), "the headlight route's default is the forward stage, its words are forward, pass and both");
     const size_t route_at = settings.find(", mcla_gpu_headlight_pass, ");
     const size_t route_end = settings.find(");", route_at);
@@ -1834,9 +1909,12 @@ void SourceChecks(const std::string& src) {
   Check(Has(ps, "bool LpWorldAt(LpGlobals g, int2 p, out float3 world)") && Has(ps, "const float stored = LpStoredDepth(p.x, p.y);") && Has(ps, "return g_textures_ms[g_push.slots.x].Load(int2(px, py), g_push.info.z).r;") &&
             Has(ps, "return g_textures[g_push.slots.x].Load(int3(px, py, 0)).r;"),
         "the quad's pixels are read at the guest's sample, as the pixel's own depth is (one reader: LpStoredDepth, which the contact term uses too)");
+  const size_t one_light_at = At(ps, "float4 LpOneLight(");
   const size_t lit_at = At(ps, "float3 add = LpPixelLight(l, g, world, normal, albedo, lit);");
-  const size_t shadow_at = At(ps, "add *= LslLightLit(");
-  Check(lit_at != std::string::npos && shadow_at != std::string::npos && lit_at < shadow_at, "the lookup runs after the term is known (a pixel the light does not reach takes no tap)");
+  const size_t shadow_at = At(ps, "add = LpShadowed(l, g, flags, p, world, normal, add);");
+  Check(one_light_at != std::string::npos && lit_at != std::string::npos && shadow_at != std::string::npos && one_light_at < lit_at && lit_at < shadow_at && Has(ps, "float3 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 add) {") &&
+            Has(ps, "add *= LslLightLit("),
+        "the lookup (LpShadowed) runs after the term is known (a pixel the light does not reach takes no tap)");
   Check(Has(cpp, "in.shadow = &frame.shadow;") && Has(cpp, "ll::ShadowTableNeeded(selection, in.shadow)"), "the pass hands the frame's shadow to the buffer");
 }
 
@@ -2132,14 +2210,507 @@ void ContactChecks(const std::string& src) {
         "the shader defines the contact term's seam: the main depth plane at the guest's sample 0");
   Check(Has(ps, "vehicle = (GbRt3Flags(rt3) & uint(GB_FLAG_VEHICLE)) != 0u;") && Has(ps, "bool vehicle = false;"), "the vehicle flag is RT3's, false where the frame has no RT3");
   // (GB-NEON-COST: the lights' sum is LpOneLight; the contact term is its own step of one light, so a pixel the reach test discarded, and a light that adds nothing, take no read)
-  const size_t one_at = At(ps, "float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool vehicle, float3 world, float3 normal, float3 albedo, float lit) {");
+  const size_t one_at = At(ps, "float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, float3 world, float3 normal, float3 albedo, float lit) {");
   const size_t lit_at = At(ps, "float3 add = LpPixelLight(l, g, world, normal, albedo, lit);");
-  const size_t contact_at = At(ps, "if (LpTakesContact(l, vehicle)) {");
-  const size_t shadow_at = At(ps, "add *= LslLightLit(");
-  const size_t main_of_ps = At(ps, "float4 main(float4 position : SV_Position) : SV_Target {");
-  Check(Has(ps, "add *= LpContactVisibility(g, world, normal, l.pos);") && one_at < lit_at && lit_at < contact_at && contact_at < shadow_at && shadow_at < main_of_ps,
+  const size_t contact_at = At(ps, "if (LpTakesContact(l, contact)) {");
+  const size_t shadow_at = At(ps, "add = LpShadowed(l, g, flags, p, world, normal, add);");
+  const size_t capped_at = At(ps, "float4 LpCappedLights(");
+  Check(Has(ps, "add *= LpContactVisibility(g, world, normal, l.pos);") && one_at < lit_at && lit_at < contact_at && contact_at < shadow_at && shadow_at < capped_at,
         "the contact term runs inside the light's turn, after the law's term is known (a pixel the light does not light takes no read) and before the shadow's lookup");
+  // GB-NEON-CONTACT: the term's switch and its cap in the shader: the push flags, the draw of three or four lights takes the capped path, every term is known before the first march, the marches are the
+  // donors' (a light that is its own donor), the others copy, and the shadow runs after the visibility as in the single light's turn
+  Check(Has(ps, "const bool contact = vehicle && (g_push.info.w & uint(LP_PUSH_NO_CONTACT)) == 0u;") &&
+            Has(ps, "const bool capped = contact && count > uint(LP_CONTACT_MARCHES) && (g_push.info.w & uint(LP_PUSH_FULL_CONTACT)) == 0u;") && Has(ps, "if (capped) {\n    const float4 tube = LpCappedLights(first, count, g, flags, p, world, normal, albedo, rt2.w);"),
+        "the shader: the contact term is the vehicle pixel's unless LP_PUSH_NO_CONTACT, and a draw of more than two lights takes the capped path unless LP_PUSH_FULL_CONTACT");
+  {
+    const size_t terms = At(ps, "add[i] = LpPixelLight(l[i], g, world, normal, albedo, lit);");
+    const size_t donors = At(ps, "const uint donors = LpContactDonors(strength[0], strength[1], strength[2], strength[3], count);");
+    const size_t march = At(ps, "visibility[m] = LpContactVisibility(g, world, normal, l[m].pos);");
+    const size_t copy = At(ps, "visibility[k] = visibility[(donors >> (4u * k)) & 3u];");
+    const size_t shadow_in_tube = At(ps, "one = LpShadowed(l[j], g, flags, p, world, normal, one);");
+    Check(capped_at != std::string::npos && terms != std::string::npos && donors != std::string::npos && march != std::string::npos && copy != std::string::npos && shadow_in_tube != std::string::npos &&
+              capped_at < terms && terms < donors && donors < march && march < copy && copy < shadow_in_tube && Has(ps, "if (((donors >> (4u * m)) & 7u) == (m | 4u)) {") && Has(ps, "LpTakesContact(l[i], true)"),
+          "LpCappedLights: every term first, then the donors, the marches of the lights that are their own donor, the copies, and the shadow after the visibility");
+  }
+  Check(Has(hlsli, "uint LpContactDonors(float s0, float s1, float s2, float s3, uint count) {") && Has(hlsli, "#define LP_CONTACT_MARCHES 2"), "the twin has the donors' rule and the number of marches");
   Check(Has(hlsli, "float LpStoredDepth(int px, int py);") && Has(hlsli, "return vehicle && l.source == LL_SOURCE_NEON;"), "the twin declares the seam and asks neon on vehicles only");
+}
+
+// ---------------------------------------------------------------------------
+// GB-NEON-CONTACT: the cost cap of the contact term (local_lights_rules.h ContactDonors, hlsl/local_light.hlsli LpContactDonors, hlsl/local_light_ps.hlsl LpCappedLights)
+// ---------------------------------------------------------------------------
+// Before the cap each light of a car's tube marched the picture's depth for itself: 5 reads a light, up to 20 a vehicle pixel. The cap is "march for the two strongest, the others take the nearest
+// marched light's answer along the tube". It was CHOSEN by measuring, on random cars with vents and their tubes, what each way of spending fewer reads gets wrong (CapScenes below; the table is
+// printed at each run): the error is the share of the pixel's light that comes out wrong, on the pixels the full contact term shuts partly.
+
+struct CapBox {
+  float lo[3];
+  float hi[3];
+  bool vehicle;
+};
+struct CapHit {
+  float t = 1.0e30f;
+  float n[3] = {0.0f, 0.0f, 0.0f};
+  bool vehicle = false;
+};
+CapHit RayCapBoxes(const std::vector<CapBox>& boxes, const float o[3], const float d[3]) {
+  CapHit best;
+  for (const CapBox& b : boxes) {
+    float t0 = 0.0f, t1 = 1.0e30f;
+    int axis = -1;
+    float sign = 0.0f;
+    bool ok = true;
+    for (int k = 0; k < 3 && ok; ++k) {
+      if (std::fabs(d[k]) < 1.0e-9f) {
+        ok = o[k] >= b.lo[k] && o[k] <= b.hi[k];
+        continue;
+      }
+      float a = (b.lo[k] - o[k]) / d[k];
+      float c = (b.hi[k] - o[k]) / d[k];
+      float s = -1.0f;  // entered through the low face: the normal points to -axis
+      if (a > c) {
+        std::swap(a, c);
+        s = 1.0f;
+      }
+      if (a > t0) {
+        t0 = a;
+        axis = k;
+        sign = s;
+      }
+      t1 = std::min(t1, c);
+      ok = t0 <= t1;
+    }
+    if (ok && axis >= 0 && t0 < best.t) {
+      best.t = t0;
+      best.n[0] = best.n[1] = best.n[2] = 0.0f;
+      best.n[axis] = sign;
+      best.vehicle = b.vehicle;
+    }
+  }
+  return best;
+}
+
+// A hollow car at (cx, cz), 1.8 m x 1.05 m x 4.4 m: six panels 10 cm thick, each side and each end cut by a vent with a probability of 0.7, a roof, a floor and a seat inside.
+void AddShellCar(std::vector<CapBox>& out, Lcg& rng, float cx, float cz) {
+  const float hx = 0.9f, hz = 2.2f, y0 = 0.25f, y1 = 1.3f, th = 0.1f;
+  const auto box = [&](float x0, float x1, float ya, float yb, float z0, float z1) {
+    if (x1 - x0 < 1.0e-3f || yb - ya < 1.0e-3f || z1 - z0 < 1.0e-3f) {
+      return;
+    }
+    CapBox b;
+    b.lo[0] = cx + x0; b.hi[0] = cx + x1;
+    b.lo[1] = ya; b.hi[1] = yb;
+    b.lo[2] = cz + z0; b.hi[2] = cz + z1;
+    b.vehicle = true;
+    out.push_back(b);
+  };
+  const auto side = [&](float x0, float x1) {
+    if (rng.Next() < 0.7f) {
+      const float vz = rng.Range(-hz + 0.4f, hz - 0.8f), vw = rng.Range(0.2f, 0.6f);
+      const float vy0 = rng.Range(y0 + 0.1f, y1 - 0.5f), vy1 = vy0 + rng.Range(0.15f, 0.4f);
+      box(x0, x1, y0, y1, -hz, vz);
+      box(x0, x1, y0, y1, vz + vw, hz);
+      box(x0, x1, y0, vy0, vz, vz + vw);
+      box(x0, x1, vy1, y1, vz, vz + vw);
+    } else {
+      box(x0, x1, y0, y1, -hz, hz);
+    }
+  };
+  side(-hx, -hx + th);
+  side(hx - th, hx);
+  for (int e = 0; e < 2; ++e) {
+    const float z0 = e == 0 ? -hz : hz - th, z1 = e == 0 ? -hz + th : hz;
+    if (rng.Next() < 0.7f) {
+      const float vx = rng.Range(-hx + 0.2f, hx - 0.6f), vw = rng.Range(0.2f, 0.5f);
+      box(-hx, vx, y0, y1, z0, z1);
+      box(vx + vw, hx, y0, y1, z0, z1);
+      box(vx, vx + vw, y0, y0 + 0.15f, z0, z1);
+      box(vx, vx + vw, y0 + 0.4f, y1, z0, z1);
+    } else {
+      box(-hx, hx, y0, y1, z0, z1);
+    }
+  }
+  box(-hx, hx, y1 - th, y1, -hz, hz);
+  box(-hx, hx, y0, y0 + th, -hz, hz);
+  box(-0.5f, 0.5f, y0 + th, y0 + 0.5f, -0.6f, 0.2f);
+}
+
+// What the ways of spending fewer reads got wrong, summed over the scenes' pixels.
+struct CapWay {
+  const char* name = "";
+  double reads = 0.0;           // depth reads over all the lit pixels
+  double err_sum = 0.0;         // sum of |way - full| / (the pixel's light with no contact term), over the pixels the full term shuts partly
+  double leak_sum = 0.0;        // the part of it that is too much light
+  std::vector<float> errs;      // each such pixel's error (for the percentiles)
+};
+enum CapWayId { kWayFull, kWayChosen, kWayTop2Open, kWayStrongestAll, kWayWeightedCentre, kWayTubeCentre, kWayCount };
+struct CapStats {
+  CapWay way[kWayCount];
+  long lit_pixels = 0;   // vehicle pixels a light of the tube lights
+  long shut_pixels = 0;  // ... of which the full term shuts partly
+  long cross_checked = 0;
+  double cross_worst = 0.0;  // the chosen way's visibilities through the shader's twin against the C++ one: the worst difference
+  long donor_marches_over_two = 0;
+};
+
+CapStats CapScenes(uint32_t points, int scenes, Lcg& rng) {
+  CapStats st;
+  st.way[kWayFull].name = "every light marches (before the cap)";
+  st.way[kWayChosen].name = "the two strongest march, the rest take the nearest one's (the cap)";
+  st.way[kWayTop2Open].name = "the two strongest march, the rest are not shut out";
+  st.way[kWayStrongestAll].name = "the strongest marches, every light takes its answer";
+  st.way[kWayWeightedCentre].name = "one march toward the lights' centre, weighted by their terms";
+  st.way[kWayTubeCentre].name = "one march toward the tube's middle";
+  const float width = 1920.0f, height = 1080.0f, tan_x = 0.8f, tan_y = 0.45f, near_z = 0.1f, far_z = 1000.0f;
+  float lin[4];
+  LinOf(near_z, far_z, lin);
+  const lp::Units units;
+  const float colour[3] = {30.0f, 0.02f, 0.01f};
+  const lp::Tier tier = points >= 4 ? lp::Tier::kUltra : (points == 3 ? lp::Tier::kHigh : lp::Tier::kMedium);
+  for (int sc = 0; sc < scenes; ++sc) {
+    std::vector<CapBox> boxes;
+    boxes.push_back({{-100.0f, -1.0f, -100.0f}, {100.0f, 0.0f, 100.0f}, false});  // the road
+    AddShellCar(boxes, rng, 0.0f, 0.0f);                                          // the car whose underglow it is
+    const float side = rng.Next() < 0.5f ? -1.0f : 1.0f;
+    AddShellCar(boxes, rng, side * rng.Range(2.0f, 4.0f), rng.Range(-2.5f, 2.5f));  // the car beside it (the blue Lamborghini)
+    if (rng.Next() < 0.4f) {
+      AddShellCar(boxes, rng, -side * rng.Range(2.5f, 5.0f), rng.Range(-3.0f, 3.0f));
+    }
+    const float centre[3] = {0.0f, 0.45f, 0.0f}, heading[3] = {0.0f, 0.0f, 1.0f};
+    const std::vector<Light> lights = TubeLights(centre, heading, colour, points, 1, tier);
+    const uint32_t count = uint32_t(lights.size());
+    // the camera, 4.5 to 8 m from the pair, looking at the middle of them
+    const float dist = rng.Range(4.5f, 8.0f), ang = rng.Range(0.0f, 6.2831853f);
+    const float aim[3] = {side * 1.5f, 0.7f, 0.0f};
+    const float eye[3] = {aim[0] + dist * std::cos(ang), rng.Range(0.8f, 2.6f), aim[2] + dist * std::sin(ang)};
+    lp::Rows rows;
+    {
+      float f[3] = {aim[0] - eye[0], aim[1] - eye[1], aim[2] - eye[2]};
+      const float fn = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+      for (float& v : f) v /= fn;
+      float r[3] = {-f[2], 0.0f, f[0]};
+      const float rn = std::sqrt(r[0] * r[0] + r[2] * r[2]);
+      for (float& v : r) v /= rn;
+      const float u[3] = {r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
+      for (int i = 0; i < 3; ++i) {
+        rows.right[i] = r[i];
+        rows.up[i] = u[i];
+        rows.forward[i] = f[i];
+        rows.position[i] = eye[i];
+      }
+    }
+    long reads = 0;
+    const auto ray_of = [&](int ix, int iy, float d[3]) {
+      const float sx = ((float(ix) + 0.5f) / width * 2.0f - 1.0f) * tan_x;
+      const float sy = (1.0f - (float(iy) + 0.5f) / height * 2.0f) * tan_y;
+      for (int i = 0; i < 3; ++i) d[i] = rows.forward[i] + rows.right[i] * sx + rows.up[i] * sy;
+    };
+    const std::function<float(int, int)> stored_at = [&](int ix, int iy) -> float {
+      ++reads;
+      float d[3];
+      ray_of(ix, iy, d);
+      const CapHit h = RayCapBoxes(boxes, rows.position, d);
+      return h.t > 1.0e29f ? 0.0f : StoredOf(h.t, near_z, far_z);
+    };
+    for (int k = 0; k < 160; ++k) {
+      const int ix = 360 + int(rng.Below(1200)), iy = 180 + int(rng.Below(720));  // the middle of the picture, where the cars are
+      float d[3];
+      ray_of(ix, iy, d);
+      const CapHit h = RayCapBoxes(boxes, rows.position, d);
+      if (h.t > 1.0e29f || !h.vehicle) {
+        continue;
+      }
+      float world[3];
+      for (int i = 0; i < 3; ++i) world[i] = rows.position[i] + d[i] * h.t;
+      const float albedo[3] = {0.5f, 0.5f, 0.5f};
+      float strength[4] = {0.0f, 0.0f, 0.0f, 0.0f}, lpos[4][3] = {};
+      float total = 0.0f;
+      uint32_t lit = 0;
+      for (uint32_t i = 0; i < count && i < 4; ++i) {
+        float out[3];
+        lp::PixelLight(lights[i], units, world, h.n, albedo, 1.0f, out);
+        strength[i] = out[0] + out[1] + out[2];
+        total += strength[i];
+        lit += strength[i] > 0.0f ? 1u : 0u;
+        for (int c = 0; c < 3; ++c) lpos[i][c] = lights[i].pos[c];
+      }
+      if (!(total > 0.0f)) {
+        continue;
+      }
+      ++st.lit_pixels;
+      // the full term: every light marches for itself (the reads of each march are kept: the alternatives below march for some of them)
+      float full[4], own[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+      long own_reads[4] = {0, 0, 0, 0}, full_reads = 0;
+      for (uint32_t i = 0; i < count; ++i) {
+        if (strength[i] > 0.0f) {
+          reads = 0;
+          own[i] = lp::ContactVisibility(rows, tan_x, tan_y, width, height, lin, world, h.n, lpos[i], stored_at);
+          own_reads[i] = reads;
+          full_reads += reads;
+        }
+      }
+      const int full_marches = lp::ContactVisibilities(rows, tan_x, tan_y, width, height, lin, world, h.n, lpos, strength, count, false, full, stored_at);
+      Check(full_marches == int(lit), "the term before the cap marches once for each light that adds something");
+      for (uint32_t i = 0; i < count; ++i) {
+        Check(full[i] == own[i], "ContactVisibilities without the cap is each light's own march");
+      }
+      double full_sum = 0.0;
+      bool partly_shut = false;
+      for (uint32_t i = 0; i < count; ++i) {
+        full_sum += double(strength[i]) * double(full[i]);
+        partly_shut = partly_shut || (strength[i] > 0.0f && full[i] < 0.999f);
+      }
+      st.shut_pixels += partly_shut ? 1 : 0;
+      const auto score = [&](CapWayId id, double value, long way_reads) {
+        CapWay& w = st.way[id];
+        w.reads += double(way_reads);
+        if (partly_shut) {
+          const double err = (value - full_sum) / double(total);
+          w.err_sum += std::fabs(err);
+          w.leak_sum += err > 0.0 ? err : 0.0;
+          w.errs.push_back(float(std::fabs(err)));
+        }
+      };
+      score(kWayFull, full_sum, full_reads);
+      // THE CAP
+      float capped[4];
+      reads = 0;
+      const int capped_marches = lp::ContactVisibilities(rows, tan_x, tan_y, width, height, lin, world, h.n, lpos, strength, count, true, capped, stored_at);
+      const long capped_reads = reads;
+      st.donor_marches_over_two += capped_marches > lp::kContactMarches ? 1 : 0;
+      double capped_sum = 0.0;
+      for (uint32_t i = 0; i < count; ++i) capped_sum += double(strength[i]) * double(capped[i]);
+      score(kWayChosen, capped_sum, capped_reads);
+      // the same marches through the shader's twin (hlsl/local_light.hlsli LpContactDonors + LpContactVisibility), as LpCappedLights makes them
+      {
+        g_stored_depth = stored_at;
+        const hlsl_shim::LpGlobals g = ShimGlobalsOf(rows, tan_x, tan_y, width, height, lin);
+        const uint32_t donors = hlsl_shim::LpContactDonors(strength[0], strength[1], strength[2], strength[3], count);
+        float vis[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        for (uint32_t m = 0; m < 4; ++m) {
+          if (((donors >> (4 * m)) & 7u) == (m | 4u)) {
+            vis[m] = hlsl_shim::LpContactVisibility(g, hlsl_shim::float3(world[0], world[1], world[2]), hlsl_shim::float3(h.n[0], h.n[1], h.n[2]), hlsl_shim::float3(lpos[m][0], lpos[m][1], lpos[m][2]));
+          }
+        }
+        for (uint32_t m = 0; m < 4; ++m) {
+          if (((donors >> (4 * m)) & 4u) != 0) vis[m] = vis[(donors >> (4 * m)) & 3u];
+        }
+        for (uint32_t i = 0; i < 4; ++i) {
+          const double diff = std::fabs(double(vis[i]) - double(capped[i]));
+          st.cross_worst = std::max(st.cross_worst, diff);
+        }
+        ++st.cross_checked;
+      }
+      // the alternatives that were measured and not taken
+      int order[4] = {0, 1, 2, 3};
+      std::stable_sort(order, order + count, [&](int a, int b) { return strength[a] > strength[b]; });
+      {
+        const int top = std::min<int>(lp::kContactMarches, int(lit));
+        double open = 0.0;
+        long open_reads = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+          if (!(strength[i] > 0.0f)) continue;
+          const int rank = int(std::find(order, order + count, int(i)) - order);
+          open += double(strength[i]) * (rank < top ? double(full[i]) : 1.0);
+          open_reads += rank < top ? own_reads[i] : 0;
+        }
+        score(kWayTop2Open, open, open_reads);
+        score(kWayStrongestAll, double(total) * double(full[order[0]]), own_reads[order[0]]);
+      }
+      {
+        float weighted[3] = {0.0f, 0.0f, 0.0f}, middle[3] = {0.0f, 0.0f, 0.0f};
+        for (uint32_t i = 0; i < count; ++i) {
+          for (int c = 0; c < 3; ++c) {
+            weighted[c] += lpos[i][c] * strength[i];
+            middle[c] += lpos[i][c] / float(count);
+          }
+        }
+        for (float& c : weighted) c /= total;
+        reads = 0;
+        const float vw = lp::ContactVisibility(rows, tan_x, tan_y, width, height, lin, world, h.n, weighted, stored_at);
+        score(kWayWeightedCentre, double(total) * double(vw), reads);
+        reads = 0;
+        const float vm = lp::ContactVisibility(rows, tan_x, tan_y, width, height, lin, world, h.n, middle, stored_at);
+        score(kWayTubeCentre, double(total) * double(vm), reads);
+      }
+    }
+  }
+  return st;
+}
+
+double Percentile(std::vector<float> v, double q) {
+  if (v.empty()) return 0.0;
+  std::sort(v.begin(), v.end());
+  return double(v[size_t(q * double(v.size() - 1))]);
+}
+
+void ContactCapChecks() {
+  // the rule's own cases, by hand (strength, count -> the packed word)
+  {
+    const float a[4] = {1.0f, 3.0f, 2.0f, 0.5f};
+    Check(lp::ContactDonors(a, 4) == 0x6655u && hlsl_shim::LpContactDonors(1.0f, 3.0f, 2.0f, 0.5f, 4) == 0x6655u,
+          "four lights: the strongest (1) and the second (2) march, light 0 takes light 1's answer, light 3 light 2's");
+    const float ties[4] = {2.0f, 2.0f, 2.0f, 2.0f};
+    Check(lp::ContactDonors(ties, 4) == 0x5554u && hlsl_shim::LpContactDonors(2.0f, 2.0f, 2.0f, 2.0f, 4) == 0x5554u, "equal strengths: the lowest indices march (0 and 1), the others take the nearer of the two");
+    const float two[4] = {0.0f, 1.0f, 0.0f, 2.0f};
+    Check(lp::ContactDonors(two, 4) == 0x7050u && hlsl_shim::LpContactDonors(0.0f, 1.0f, 0.0f, 2.0f, 4) == 0x7050u, "two lights that add something: each marches for itself, the others take nothing");
+    const float limited[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    Check(lp::ContactDonors(limited, 2) == 0x54u && hlsl_shim::LpContactDonors(1.0f, 1.0f, 1.0f, 1.0f, 2) == 0x54u, "a draw of two lights: the rows after the count are not looked at");
+    const float one[4] = {0.0f, 0.0f, 5.0f, 0.0f};
+    Check(lp::ContactDonors(one, 4) == 0x600u && hlsl_shim::LpContactDonors(0.0f, 0.0f, 5.0f, 0.0f, 4) == 0x600u, "one light: it marches");
+    const float none[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Check(lp::ContactDonors(none, 4) == 0u && hlsl_shim::LpContactDonors(0.0f, 0.0f, 0.0f, 0.0f, 4) == 0u, "no light: no word");
+    const float edge[4] = {1.0f, 0.0f, 0.0f, 1.0f};  // the ends of a four light tube, the middle ones dark: both march
+    Check(lp::ContactDonors(edge, 4) == 0x7004u && hlsl_shim::LpContactDonors(1.0f, 0.0f, 0.0f, 1.0f, 4) == 0x7004u, "the ends of a tube march for themselves");
+  }
+  // the two twins agree on random strengths, with ties and dark lights, and the word has the rule's shape
+  {
+    Lcg rng;
+    int words = 0, three_or_more = 0, only_marched_donate = 0, bad = 0;
+    for (int round = 0; round < 40000; ++round) {
+      float s[4];
+      const uint32_t count = 1 + rng.Below(4);
+      const bool coarse = (round & 1) != 0;  // quantised strengths make ties
+      for (float& v : s) {
+        const float r = rng.Next();
+        v = r < 0.25f ? 0.0f : (coarse ? float(1 + rng.Below(3)) : rng.Range(0.01f, 5.0f));
+      }
+      const uint32_t cpp = lp::ContactDonors(s, count);
+      const uint32_t hl = hlsl_shim::LpContactDonors(s[0], s[1], s[2], s[3], count);
+      if (cpp != hl) {
+        ++bad;
+      }
+      ++words;
+      int candidates = 0, marched = 0;
+      for (uint32_t i = 0; i < 4; ++i) {
+        const bool cand = i < count && s[i] > 0.0f;
+        candidates += cand ? 1 : 0;
+        const uint32_t nib = (cpp >> (4 * i)) & 15u;
+        if (!cand) {
+          bad += nib != 0 ? 1 : 0;
+          continue;
+        }
+        bad += (nib & 4u) == 0 ? 1 : 0;
+        const uint32_t donor = nib & 3u;
+        const uint32_t donor_nib = (cpp >> (4 * donor)) & 15u;
+        marched += donor == i ? 1 : 0;
+        // a light that is not marched takes the answer of one that is (its own donor)
+        only_marched_donate += (donor_nib & 3u) == donor && (donor_nib & 4u) != 0 ? 1 : 0;
+      }
+      bad += marched > lp::kContactMarches ? 1 : 0;
+      bad += (candidates <= lp::kContactMarches && marched != candidates) ? 1 : 0;
+      bad += (candidates > lp::kContactMarches && marched != lp::kContactMarches) ? 1 : 0;
+      three_or_more += candidates > lp::kContactMarches ? 1 : 0;
+      // no light that did not march is stronger than one that did
+      for (uint32_t i = 0; i < 4; ++i) {
+        for (uint32_t j = 0; j < 4; ++j) {
+          const uint32_t ni = (cpp >> (4 * i)) & 15u, nj = (cpp >> (4 * j)) & 15u;
+          if ((ni & 4u) != 0 && (nj & 4u) != 0 && (ni & 3u) == i && (nj & 3u) != j && s[j] > s[i]) {
+            ++bad;
+          }
+        }
+      }
+    }
+    Check(bad == 0, Num("the C++ and the HLSL rule give the same word on %.0f random draws, a light that does not march takes a marched light's answer, at most two march and they are the strongest (%.0f violations)", words, bad));
+    Check(three_or_more > 8000 && only_marched_donate > 20000, "the random draws reach the cases with three and four lights that add something");
+  }
+  // the marches through the twin: capped false is the term before the cap, a light that adds nothing takes 1, the reads follow the marches
+  {
+    Lcg rng;
+    const float width = 1920.0f, height = 1080.0f, tan_x = 0.8f, tan_y = 0.45f;
+    float lin[4];
+    LinOf(0.1f, 1000.0f, lin);
+    lp::Rows rows;
+    rows.position[2] = -6.0f;
+    int checked = 0, fewer = 0;
+    for (int round = 0; round < 400; ++round) {
+      float s[4], pos[4][3];
+      const uint32_t count = 1 + rng.Below(4);
+      for (uint32_t i = 0; i < 4; ++i) {
+        s[i] = rng.Next() < 0.2f ? 0.0f : rng.Range(0.1f, 3.0f);
+        pos[i][0] = -1.5f + 1.0f * float(i) + rng.Range(-0.2f, 0.2f);
+        pos[i][1] = rng.Range(-0.5f, 0.5f);
+        pos[i][2] = rng.Range(-1.0f, 1.0f);
+      }
+      const float world[3] = {rng.Range(-0.5f, 0.5f), rng.Range(-0.3f, 0.3f), 0.0f}, normal[3] = {0.0f, 1.0f, 0.0f};
+      const float shell = rng.Range(-0.4f, 0.0f);
+      long reads = 0;
+      const auto field = [&](int ix, int iy) {
+        ++reads;
+        return StoredOf(6.0f + shell + 0.1f * std::sin(float(ix) * 0.01f + float(iy) * 0.013f), 0.1f, 1000.0f);
+      };
+      float full[4], capped[4];
+      reads = 0;
+      const int mf = lp::ContactVisibilities(rows, tan_x, tan_y, width, height, lin, world, normal, pos, s, count, false, full, field);
+      const long rf = reads;
+      reads = 0;
+      const int mc = lp::ContactVisibilities(rows, tan_x, tan_y, width, height, lin, world, normal, pos, s, count, true, capped, field);
+      const long rc = reads;
+      int cands = 0;
+      for (uint32_t i = 0; i < 4; ++i) {
+        const bool cand = i < count && s[i] > 0.0f;
+        cands += cand ? 1 : 0;
+        if (!cand) {
+          Check(full[i] == 1.0f && capped[i] == 1.0f, "a light that adds nothing takes visibility 1");
+        } else {
+          const float own = lp::ContactVisibility(rows, tan_x, tan_y, width, height, lin, world, normal, pos[i], field);
+          Check(full[i] == own, "without the cap a light's visibility is its own march's");
+        }
+        Check(capped[i] >= 0.0f && capped[i] <= 1.0f, "the capped visibility is a share");
+      }
+      Check(mf == cands && mc == std::min(cands, lp::kContactMarches) && rc <= rf && rf <= 5 * cands && rc <= 5 * lp::kContactMarches, "the marches are one a light before the cap and at most two with it; the reads follow");
+      if (cands <= lp::kContactMarches) {
+        for (uint32_t i = 0; i < 4; ++i) Check(full[i] == capped[i], "with one or two lights the cap changes nothing");
+      } else {
+        ++fewer;
+        Check(rc < rf, "with three or four lights the cap reads less");
+      }
+      ++checked;
+    }
+    Check(checked == 400 && fewer > 50, "the random tubes reach the cases with three and four lights that add something");
+  }
+  // THE MEASUREMENT: random cars with vents, their tubes (2, 3 and 4 lights as the three tiers make them), the pixels a light of the tube lights on the cars, the full term as the reference
+  {
+    struct Run { uint32_t points; int scenes; };
+    const Run runs[] = {{2, 300}, {3, 300}, {4, 300}};
+    double chosen_mean[3] = {0, 0, 0};
+    for (int r = 0; r < 3; ++r) {
+      Lcg rng;
+      rng.state = 20261122u + uint32_t(r) * 7919u;
+      const CapStats st = CapScenes(runs[r].points, runs[r].scenes, rng);
+      std::printf("contact cap, a tube of %u lights, %d scenes: %ld vehicle pixels lit by the tube, %ld shut partly by the full term\n", runs[r].points, runs[r].scenes, st.lit_pixels, st.shut_pixels);
+      const double full_reads = st.way[kWayFull].reads;
+      for (int w = 0; w < kWayCount; ++w) {
+        const CapWay& way = st.way[w];
+        const double shut = double(std::max<long>(st.shut_pixels, 1));
+        std::printf("  %-66s reads %5.2f a pixel (%3.0f %% of the full term), error on the shut pixels: mean %5.2f %% (too much light %5.2f %%), p99 %5.1f %%\n", way.name, way.reads / double(std::max<long>(st.lit_pixels, 1)),
+                    100.0 * way.reads / std::max(full_reads, 1.0), 100.0 * way.err_sum / shut, 100.0 * way.leak_sum / shut, 100.0 * Percentile(way.errs, 0.99));
+      }
+      Check(st.lit_pixels > 1500 && st.shut_pixels > 150, Num("the scenes light enough vehicle pixels (%.0f) and the full term shuts enough of them partly (%.0f)", double(st.lit_pixels), double(st.shut_pixels)));
+      Check(st.cross_checked == st.lit_pixels && st.cross_worst < 2.0e-4, Num("the shader's twin makes the same marches and visibilities as the C++ one on every pixel (worst difference %.2g)", st.cross_worst));
+      Check(st.donor_marches_over_two == 0, "no pixel marches more than twice");
+      const double shut = double(std::max<long>(st.shut_pixels, 1));
+      const double chosen = st.way[kWayChosen].err_sum / shut;
+      chosen_mean[r] = chosen;
+      const double reads_share = st.way[kWayChosen].reads / std::max(full_reads, 1.0);
+      if (runs[r].points == 2) {
+        Check(chosen == 0.0 && reads_share == 1.0, "a tube of two lights: the cap changes nothing (both march)");
+      } else if (runs[r].points == 3) {
+        Check(chosen < 0.03 && reads_share < 0.85, Num("a tube of three: the cap's mean error on the partly shut pixels is under 3 %% of their light (%.2f %%) and it reads under 85 %% of the full term (%.0f %%)", 100.0 * chosen, 100.0 * reads_share));
+      } else {
+        Check(chosen < 0.05 && reads_share < 0.70, Num("a tube of four: the cap's mean error is under 5 %% (%.2f %%) and it reads under 70 %% of the full term (%.0f %%)", 100.0 * chosen, 100.0 * reads_share));
+      }
+      if (runs[r].points >= 3) {
+        // why not something cheaper or simpler: every alternative is worse by at least a factor of two on the same pixels (one march, whatever it is aimed at, is at least 3 times worse)
+        for (int w : {int(kWayTop2Open), int(kWayStrongestAll), int(kWayWeightedCentre), int(kWayTubeCentre)}) {
+          Check(st.way[w].err_sum / shut > 2.0 * chosen, std::string("the cap's way is at least twice as accurate as: ") + st.way[w].name);
+        }
+        Check(st.way[kWayWeightedCentre].err_sum / shut > 3.0 * chosen && st.way[kWayTubeCentre].err_sum / shut > 3.0 * chosen, "... and a single march, aimed at the lights' centre or the tube's middle, is at least three times worse");
+        Check(Percentile(st.way[kWayChosen].errs, 0.99) < 0.35, "the cap's worst one percent of the partly shut pixels is under 35 % of their light off (a pixel at the end of a tube whose neighbour's way is open)");
+      }
+    }
+    Check(chosen_mean[1] < chosen_mean[2], "three lights are closer to the full term than four (the cap drops fewer)");
+  }
 }
 
 }  // namespace
@@ -2170,6 +2741,7 @@ int main(int argc, char** argv) {
   CostChecks();
   SourceChecks(src);
   ContactChecks(src);
+  ContactCapChecks();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }
