@@ -90,6 +90,8 @@ inline float ConeHistoryWeight(uint32_t frames) { return std::min(kConeHistoryWe
 // and starts from the frame as it is: the gap rule of each history says the content is stale), then goes back. A setting that turned the resolve off, a picture size that changed, and an effect that cannot run
 // give the images back at once, as before. Each effect holds one HistoryLifetime and asks it once a frame, in the place that makes the images.
 inline constexpr uint32_t kHistoryKeepFrames = 1200;   // 20 s at 60 fps, 5 s at 240 fps: the pause menu's toggles and the map are seconds apart, a long drive with an upscaler on is minutes
+// CHECK: not run on a device: a VRAM / frame time trace around a pause toggle with an upscaler at 4K should show the three histories' images made once at the first plain frame and gone 1200 frames after the last one; the
+// chain's memory arm that expects them released with an upscaler on reads them held for that long after a plain frame.
 enum class HistoryImages : uint8_t {
   kMake,     // the resolve runs this frame: make the images (or keep them if they are the size the plan wants)
   kKeep,     // it does not, only because a temporal upscaler runs: leave the images as they are

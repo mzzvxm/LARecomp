@@ -280,6 +280,8 @@ inline float CoatLayerMix(float paint, float car_colour, float amount) { return 
 
 // slots.w of the push: the cone's rays (1 to 4) from bit 8 (bits 16 and 17 are the stats flag and the blue flag) and the cone pattern's phase, 0..1023, in bits 18 to 27 (NOISE-FOLLOW: the scene's noise index
 // masked like the other effects' frame terms; it was 0..7 in the low byte, which repeated the cone's pattern every 8 frames and left a third of its noise as a 7.5 Hz shimmer under the history's weight of 0.75).
+// CHECK: not run on a device: the new layout (the phase in bits 18 to 27) is held by the text pins and the dxc / spirv-val sweep only; a first run must show the paint's reflection and the opponents' reflections unchanged in a still
+// and no shimmer at 7.5 Hz on the paint's reflection edges in a take (the model's resolved flicker is 0.0041 against 0.0067 with the phase of 8).
 inline constexpr uint32_t kPhaseShift = 18;
 inline constexpr uint32_t kPhaseMask = 1023u;
 inline uint32_t PackPhaseRays(uint32_t phase, uint32_t rays) { return ((phase & kPhaseMask) << kPhaseShift) | (std::clamp<uint32_t>(rays, 1u, 4u) << 8); }
