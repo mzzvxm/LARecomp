@@ -48,6 +48,9 @@ struct HostImage {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t samples = 1;  // 2, 4 or 8 for a multisampled colour target (EnsureImage), else 1
+  // One number for each texture EnsureImage makes (never 0, never repeated in a session), kept when images trade places by a swap: whoever keeps an object that names TWO of them (a framebuffer of two
+  // targets, ScreenShared's fused passes) tells it still stands by the serials, not by the texture's address, which a later texture can have.
+  uint64_t serial = 0;
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
   plume::RenderTextureFlags flags = plume::RenderTextureFlag::RENDER_TARGET;
   plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
@@ -123,6 +126,16 @@ class HostPasses {
                                                         const plume::RenderShader& pixel_shader,
                                                         const plume::RenderFormat* formats,
                                                         uint32_t count, const char* name);
+  // The same for a pass whose pixel shader writes `count` targets (SV_Target0 ... count - 1, at most 8) of the formats given: each written whole, no blending, one sample (SS-3: the depth chain's
+  // pass and the Hi-Z's level beside it). The layout is the caller's, as above.
+  std::unique_ptr<plume::RenderPipeline> CreateMrtPipeline(const plume::RenderPipelineLayout& layout,
+                                                           const plume::RenderShader& pixel_shader,
+                                                           const plume::RenderFormat* formats,
+                                                           uint32_t count, const char* name);
+  // A framebuffer of `count` colour targets (no depth) for a pass made with CreateMrtPipeline, the textures of HostImages made with the default flags and one size. Null on failure (logged by Device).
+  // Retired with RetireFramebuffer, after the lists that name it.
+  std::unique_ptr<plume::RenderFramebuffer> CreateMrtFramebuffer(const plume::RenderTexture* const* colors,
+                                                                 uint32_t count, const char* name);
 
   // The pass layout (bindless texture sets, samplers, push constants), for a pipeline made with the
   // overload that takes a layout and a sample count. After Initialize.
@@ -175,6 +188,7 @@ class HostPasses {
   std::unique_ptr<plume::RenderShader> vertex_shader_;
   HostPrecache precache_;
   uint32_t image_failures_logged_ = 0;
+  uint64_t image_serial_ = 0;
 };
 
 }  // namespace mcla::gpu

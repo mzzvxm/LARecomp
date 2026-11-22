@@ -28,6 +28,7 @@ constexpr const char* kPrefix = "[screen]";
 
 constexpr const char* kKindNames[size_t(Kind::kCount)] = {
     "screen depth", "screen depth ms", "screen depth mip", "screen normal", "screen normal ms", "screen colour chain", "screen colour chain ms", "screen colour chain mip",
+    "screen depth + hiz", "screen depth ms + hiz", "screen depth mip + hiz",
 };
 
 // The format each pass writes (the AO's: ao.cpp MakePipeline).
@@ -41,6 +42,9 @@ plume::RenderFormat FormatOf(Kind kind) {
     case Kind::kColour:
     case Kind::kColourMs:
     case Kind::kColourMip: return plume::RenderFormat::R16G16B16A16_FLOAT;
+    case Kind::kDepthHiz:
+    case Kind::kDepthMsHiz: return plume::RenderFormat::R32_FLOAT;
+    case Kind::kMipHiz: return plume::RenderFormat::R16_FLOAT;
     case Kind::kCount: break;
   }
   return plume::RenderFormat::UNKNOWN;
@@ -74,7 +78,7 @@ void ScreenShared::InitializeChain(Device& device, BindlessHeap& heap) {
   builder.end();
   wide_layout_ = device.CreatePipelineLayout(builder, "screen extract layout");
   bool ok = wide_layout_ != nullptr;
-  for (uint32_t i = 0; i < uint32_t(Kind::kCount) && ok; ++i) {
+  for (uint32_t i = 0; i < screen::extract::kFirstFusedKind && ok; ++i) {
     const HostShaderBlob blob = AmbientOcclusionPixelShader(screen::extract::PassOf(Kind(i)));
     chain_shaders_[i] = passes_->CreateShader(blob.data, blob.size, blob.name);
     ok = chain_shaders_[i] != nullptr;
@@ -86,10 +90,21 @@ void ScreenShared::InitializeChain(Device& device, BindlessHeap& heap) {
     wide_layout_.reset();
     chain_failed_ = screen::extract::kAllKinds;
     REXLOG_ERROR("{} the extraction's layout or a shader could not be made: the ambient occlusion's depth chain, normals and colour chain are recorded by its own passes this session", kPrefix);
+    return;
+  }
+  // The fused passes (SS-3) are an addition: one that cannot be made leaves the Hi-Z to its own passes (the owner never fuses) and costs the extraction nothing.
+  for (uint32_t i = screen::extract::kFirstFusedKind; i < uint32_t(Kind::kCount); ++i) {
+    const HostShaderBlob blob = ScreenFusedDepthPixelShader(screen::extract::FusedPassOf(Kind(i)));
+    chain_shaders_[i] = passes_->CreateShader(blob.data, blob.size, blob.name);
+    if (!chain_shaders_[i]) {
+      chain_failed_ |= screen::extract::Bit(Kind(i));
+      REXLOG_ERROR("{} the fused depth pass '{}' could not be made: the Hi-Z's first levels are made by its own passes this session", kPrefix, kKindNames[i]);
+    }
   }
 }
 
 void ScreenShared::ShutdownChain() {
+  mrt_.clear();  // the GPU is idle (Shutdown): the framebuffers go with nothing to wait for
   for (auto& pipeline : chain_pipelines_) {
     pipeline.reset();
   }
@@ -115,6 +130,11 @@ std::unique_ptr<plume::RenderPipeline> ScreenShared::MakeChainPipeline(Kind kind
   const size_t k = size_t(kind);
   if (!chain_shaders_[k] || !wide_layout_) {
     return nullptr;
+  }
+  if (screen::extract::IsFused(kind)) {
+    // Two render targets: the depth chain's image and the Hi-Z's level of its size (R32_FLOAT).
+    const plume::RenderFormat formats[2] = {FormatOf(kind), plume::RenderFormat::R32_FLOAT};
+    return passes_->CreateMrtPipeline(*wide_layout_, *chain_shaders_[k], formats, 2, kKindNames[k]);
   }
   return passes_->CreatePipeline(*wide_layout_, *chain_shaders_[k], FormatOf(kind), plume::RenderBlendDesc::Copy(), 1, kKindNames[k]);
 }
@@ -204,6 +224,114 @@ void ScreenShared::DrawWide(plume::RenderCommandList* list, HostImage& image, co
   image.layout = plume::RenderTextureLayout::SHADER_READ;
 }
 
+plume::RenderFramebuffer* ScreenShared::MrtFramebufferFor(const HostImage& first, const HostImage& second) {
+  // An entry stands while both images it names do: the serials (HostImage::serial) of the images that can be a target now are the live ones (a texture's address can be another texture's later).
+  const auto live = [this](uint64_t serial) {
+    if (serial == 0) {
+      return false;
+    }
+    for (const HostImage& image : depth_) {
+      if (image.serial == serial) return true;
+    }
+    if (depth_prev_.serial == serial) return true;
+    for (const HostImage& image : hiz_) {
+      if (image.serial == serial) return true;
+    }
+    return false;
+  };
+  for (size_t i = 0; i < mrt_.size();) {
+    if (!live(mrt_[i].serial[0]) || !live(mrt_[i].serial[1])) {
+      passes_->RetireFramebuffer(std::move(mrt_[i].framebuffer));
+      mrt_.erase(mrt_.begin() + std::ptrdiff_t(i));
+    } else {
+      ++i;
+    }
+  }
+  if (first.serial == 0 || second.serial == 0 || !first.texture || !second.texture) {
+    return nullptr;
+  }
+  for (const MrtFramebuffer& entry : mrt_) {
+    if (entry.serial[0] == first.serial && entry.serial[1] == second.serial) {
+      return entry.framebuffer.get();
+    }
+  }
+  const plume::RenderTexture* targets[2] = {first.texture.get(), second.texture.get()};
+  MrtFramebuffer made;
+  made.serial[0] = first.serial;
+  made.serial[1] = second.serial;
+  made.framebuffer = passes_->CreateMrtFramebuffer(targets, 2, "screen depth + hiz");
+  if (!made.framebuffer) {
+    if (!mrt_failed_logged_) {
+      mrt_failed_logged_ = true;
+      REXLOG_ERROR("{} the framebuffer of the fused depth pass could not be made: the Hi-Z's first levels are made by its own passes while that lasts (asked again every frame)", kPrefix);
+    }
+    return nullptr;
+  }
+  mrt_.push_back(std::move(made));
+  return mrt_.back().framebuffer.get();
+}
+
+void ScreenShared::PurgeMrt() {
+  if (!passes_) {
+    mrt_.clear();
+    return;
+  }
+  for (MrtFramebuffer& entry : mrt_) {
+    passes_->RetireFramebuffer(std::move(entry.framebuffer));
+  }
+  mrt_.clear();
+}
+
+bool ScreenShared::DrawWideMrt(plume::RenderCommandList* list, HostImage& first, HostImage& second, const plume::RenderPipeline* pipeline, const AoPush& push) {
+  if (!first.texture || !second.texture || first.width != second.width || first.height != second.height) {
+    return false;
+  }
+  plume::RenderFramebuffer* framebuffer = MrtFramebufferFor(first, second);
+  if (!framebuffer) {
+    return false;
+  }
+  // DrawWide's sequence with two targets: both in the colour write layout, a new one cleared before it is drawn into (D3D12 debug layer id 1422), the push block for both stages, both left readable.
+  const bool first_use[2] = {first.layout == plume::RenderTextureLayout::UNKNOWN, second.layout == plume::RenderTextureLayout::UNKNOWN};
+  plume::RenderTextureBarrier before[2];
+  uint32_t moves = 0;
+  if (first.layout != plume::RenderTextureLayout::COLOR_WRITE) {
+    before[moves++] = plume::RenderTextureBarrier(first.texture.get(), plume::RenderTextureLayout::COLOR_WRITE);
+    first.layout = plume::RenderTextureLayout::COLOR_WRITE;
+  }
+  if (second.layout != plume::RenderTextureLayout::COLOR_WRITE) {
+    before[moves++] = plume::RenderTextureBarrier(second.texture.get(), plume::RenderTextureLayout::COLOR_WRITE);
+    second.layout = plume::RenderTextureLayout::COLOR_WRITE;
+  }
+  if (moves != 0) {
+    list->barriers(plume::RenderBarrierStage::GRAPHICS, before, moves);
+  }
+  list->setFramebuffer(framebuffer);
+  for (uint32_t target = 0; target < 2; ++target) {
+    if (first_use[target]) {
+      list->clearColor(target, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+    }
+  }
+  const plume::RenderViewport viewport{0.0f, 0.0f, float(first.width), float(first.height)};
+  list->setViewports(&viewport, 1);
+  const plume::RenderRect scissor(0, 0, int32_t(first.width), int32_t(first.height));
+  list->setScissors(&scissor, 1);
+  list->setGraphicsPipelineLayout(wide_layout_.get());
+  for (uint32_t set = 0; set < 4; ++set) {
+    list->setGraphicsDescriptorSet(heap_->texture_set(), set);
+  }
+  list->setGraphicsDescriptorSet(heap_->sampler_set(), 4);
+  list->setPipeline(pipeline);
+  list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+  list->drawInstanced(3, 1, 0, 0);
+  list->setFramebuffer(nullptr);
+  const plume::RenderTextureBarrier after[2] = {plume::RenderTextureBarrier(first.texture.get(), plume::RenderTextureLayout::SHADER_READ),
+                                                plume::RenderTextureBarrier(second.texture.get(), plume::RenderTextureLayout::SHADER_READ)};
+  list->barriers(plume::RenderBarrierStage::GRAPHICS, after, 2);
+  first.layout = plume::RenderTextureLayout::SHADER_READ;
+  second.layout = plume::RenderTextureLayout::SHADER_READ;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // the images
 // ---------------------------------------------------------------------------
@@ -242,6 +370,7 @@ void ScreenShared::ReleaseDepth() {
   if (!passes_) {
     return;
   }
+  PurgeMrt();
   for (HostImage& image : depth_) {
     passes_->ReleaseImage(image);
   }
@@ -289,6 +418,64 @@ void ScreenShared::EndDepthChain(bool trade) {
 // the passes
 // ---------------------------------------------------------------------------
 
+uint32_t ScreenShared::RecordDepthFused(plume::RenderCommandList* list, const screen::extract::Frame& frame, const AoPush& level0, plume::RenderPipeline* mip, uint32_t stencil_slot, bool source_bits,
+                                        bool multisampled) {
+  // SS-3: the Hi-Z's first levels are written by the depth chain's own passes (screen_extract.h "the fused Hi-Z"). The depth chain's levels 0 to 2 are recorded HERE when this returns more than 0, and the
+  // caller records them when it returns 0. What the frame needs: the Hi-Z wanted, the setting, the fused pipelines made and the Hi-Z's own pass (it records the levels above the fused ones), and the
+  // images; anything missing and the plain passes are recorded (and Publish makes the whole chain the separate way).
+  using screen::extract::Kind;
+  if (!hiz_fused_ || (plan_.make & screen::ProductBit(screen::kHizMin)) == 0) {
+    return 0;
+  }
+  const uint32_t hiz_levels = screen::HizLevelCount(frame.traced[0], frame.traced[1]);
+  const uint32_t fused = screen::extract::FusedHizLevels(frame, hiz_levels);
+  if (fused == 0) {
+    return 0;
+  }
+  const Kind depth_kind = multisampled ? Kind::kDepthMsHiz : Kind::kDepthHiz;
+  if (!ChainReady(screen::extract::Bit(depth_kind) | (fused >= 2 ? screen::extract::Bit(Kind::kMipHiz) : 0u))) {
+    return 0;  // listed with the host precache, made in the background: the frames go without
+  }
+  plume::RenderPipeline* tail = HizPipeline();
+  uint32_t levels = 0;
+  if (!tail || !EnsureHizImages(frame.traced[0], frame.traced[1], &levels) || levels != hiz_levels) {
+    return 0;
+  }
+  plume::RenderPipeline* depth_hiz = ChainPipeline(depth_kind);
+  plume::RenderPipeline* mip_hiz = fused >= 2 ? ChainPipeline(Kind::kMipHiz) : nullptr;
+  if (!depth_hiz || (fused >= 2 && !mip_hiz)) {
+    return 0;
+  }
+  // Level 0: the depth pass with the Hi-Z's level 0 beside it. When the draw cannot be made the caller records the plain passes and the Hi-Z is not started.
+  if (!DrawWideMrt(list, depth_[0], hiz_[0], depth_hiz, screen::extract::DepthHizPush(level0, frame, stencil_slot, source_bits))) {
+    return 0;
+  }
+  uint32_t made = 1;
+  if (frame.levels) {
+    // Level 1: the mean of the four level 0 texels and the Hi-Z's level 1 of the same four (slots.w = slots.z: one set of loads); level 2: the mean of the four level 1 texels and the Hi-Z's level 2 of
+    // the Hi-Z's level 1. A draw that cannot be made is the plain pass (and the Hi-Z goes on from the level below it with its own pass).
+    const AoPush mip1 = screen::extract::DepthMipHizPush(level0, frame, 1, depth_[0].slot, depth_[0].slot);
+    if (fused >= 2 && DrawWideMrt(list, depth_[1], hiz_[1], mip_hiz, mip1)) {
+      made = 2;
+    } else {
+      DrawWide(list, depth_[1], mip, screen::extract::DepthMipPush(level0, frame, 1, depth_[0].slot));
+    }
+    const AoPush mip2 = screen::extract::DepthMipHizPush(level0, frame, 2, depth_[1].slot, hiz_[1].slot);
+    if (made == 2 && fused >= 3 && DrawWideMrt(list, depth_[2], hiz_[2], mip_hiz, mip2)) {
+      made = 3;
+    } else {
+      DrawWide(list, depth_[2], mip, screen::extract::DepthMipPush(level0, frame, 2, depth_[1].slot));
+    }
+  }
+  // The levels above, behind the passes that made the ones below them (the label 'screen hiz' stands for them, as it did for the whole chain).
+  if (made < hiz_levels) {
+    pass_timing_->Mark(list, "screen hiz");
+    RecordHizPasses(list, nullptr, made, hiz_levels, tail);
+  }
+  LogHiz(hiz_levels, frame.traced[0], frame.traced[1]);
+  return hiz_levels;
+}
+
 void ScreenShared::RecordDepth(plume::RenderCommandList* list, const screen::extract::Frame& frame, const AoPush& base, uint32_t stencil_slot, bool source_bits, bool multisampled) {
   plume::RenderPipeline* depth = ChainPipeline(multisampled ? Kind::kDepthMs : Kind::kDepth);  // made: the AO asked ChainReady before it took the frame
   plume::RenderPipeline* mip = frame.levels ? ChainPipeline(Kind::kMip) : nullptr;
@@ -299,11 +486,15 @@ void ScreenShared::RecordDepth(plume::RenderCommandList* list, const screen::ext
   // The depth target's stencil plane (the vehicles' IDs): the pass marks the vehicles' pixels. At half size with the G-buffer's normals the pass also records which sample of each 2x2 block it
   // took (slots2.w; hlsl/ao_depth_ps.hlsl, ao_gbuffer_normal.hlsli).
   const AoPush level0 = screen::extract::DepthPush(base, frame, stencil_slot, source_bits);
-  DrawWide(list, depth_[0], depth, level0);
-  if (frame.levels) {
-    // The coarser levels.
-    DrawWide(list, depth_[1], mip, screen::extract::DepthMipPush(level0, frame, 1, depth_[0].slot));
-    DrawWide(list, depth_[2], mip, screen::extract::DepthMipPush(level0, frame, 2, depth_[1].slot));
+  // SS-3: with the Hi-Z wanted the same passes also write its first levels, and the levels above them follow (RecordDepthFused records the depth chain's levels 0 to 2 itself then).
+  hiz_made_ = RecordDepthFused(list, frame, level0, mip, stencil_slot, source_bits, multisampled);
+  if (hiz_made_ == 0) {
+    DrawWide(list, depth_[0], depth, level0);
+    if (frame.levels) {
+      // The coarser levels.
+      DrawWide(list, depth_[1], mip, screen::extract::DepthMipPush(level0, frame, 1, depth_[0].slot));
+      DrawWide(list, depth_[2], mip, screen::extract::DepthMipPush(level0, frame, 2, depth_[1].slot));
+    }
   }
   if (frame.full) {
     // The occlusion is traced at half size and the contact shadows keep the picture's: their march and filter read this full size linear depth (the depth pass again, without the half size

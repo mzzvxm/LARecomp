@@ -29,6 +29,8 @@
 #include "ao_contact_ps.hlsl.dxil.h"
 #include "ao_denoise_gi_ps.hlsl.dxil.h"
 #include "ao_denoise_ps.hlsl.dxil.h"
+#include "ao_depth_hiz_ms_ps.hlsl.dxil.h"
+#include "ao_depth_hiz_ps.hlsl.dxil.h"
 #include "ao_depth_ms_ps.hlsl.dxil.h"
 #include "ao_depth_ps.hlsl.dxil.h"
 #include "ao_main_2x2_ps.hlsl.dxil.h"
@@ -39,6 +41,7 @@
 #include "ao_main_gi_3x3_far2_ps.hlsl.dxil.h"
 #include "ao_main_gi_ps.hlsl.dxil.h"
 #include "ao_main_ps.hlsl.dxil.h"
+#include "ao_mip_hiz_ps.hlsl.dxil.h"
 #include "ao_mip_ps.hlsl.dxil.h"
 #include "ao_normal_ms_ps.hlsl.dxil.h"
 #include "ao_normal_ps.hlsl.dxil.h"
@@ -169,6 +172,8 @@
 #include "ao_contact_ps.hlsl.spirv.h"
 #include "ao_denoise_gi_ps.hlsl.spirv.h"
 #include "ao_denoise_ps.hlsl.spirv.h"
+#include "ao_depth_hiz_ms_ps.hlsl.spirv.h"
+#include "ao_depth_hiz_ps.hlsl.spirv.h"
 #include "ao_depth_ms_ps.hlsl.spirv.h"
 #include "ao_depth_ps.hlsl.spirv.h"
 #include "ao_main_2x2_ps.hlsl.spirv.h"
@@ -179,6 +184,7 @@
 #include "ao_main_gi_3x3_far2_ps.hlsl.spirv.h"
 #include "ao_main_gi_ps.hlsl.spirv.h"
 #include "ao_main_ps.hlsl.spirv.h"
+#include "ao_mip_hiz_ps.hlsl.spirv.h"
 #include "ao_mip_ps.hlsl.spirv.h"
 #include "ao_normal_ms_ps.hlsl.spirv.h"
 #include "ao_normal_ps.hlsl.spirv.h"
@@ -421,6 +427,16 @@ inline HostShaderBlob LocalLightPixelShader(bool multisampled) {
 // The shared screen products (screen_shared.h): one level of the Hi-Z chain, and the debug view of the products.
 inline HostShaderBlob ScreenHizPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(screen_hiz_ps);
+}
+
+// The shared screen products' FUSED depth chain (screen_shared.h, screen_extract.h Kind::kDepthHiz...): the AO's depth pass and its coarser level, each writing the Hi-Z's level of the same size beside its own
+// image (a second render target). 0 the depth pass from a plain depth plane (ao_depth_ps.hlsl with AO_HIZ0), 1 from a multisampled one, 2 the coarser level (ao_mip_ps.hlsl with AO_HIZ).
+inline HostShaderBlob ScreenFusedDepthPixelShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_hiz_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_hiz_ms_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ao_mip_hiz_ps);
+  }
 }
 
 inline HostShaderBlob ScreenViewPixelShader() {

@@ -13,6 +13,10 @@
 // them to a verbatim copy of the old statements and holds that copy to ao.cpp's text, over a grid of frames (sizes, half and full, MSAA samples, the normal plane on and off, the contact shadows
 // at full size).
 //
+// SS-3 (FUSED Hi-Z, see "the fused Hi-Z" below): while the shared screen frame makes the Hi-Z (the reflections want it), the depth passes write its first levels beside their own images in the same draw (a
+// second render target), so that the Hi-Z's own passes for them are not recorded: level 0 with the depth pass, levels 1 and 2 with the two coarser depth levels. The images are the ones the separate passes
+// make, to the bit (hlsl/screen_hiz.hlsli, screen_hiz_fuse_test.cpp); mcla_gpu_screen_hiz_fused false records the separate passes (the A/B).
+//
 // WHAT IS SAVED. See Cost below: the model of the passes a frame records and the bytes they move, for the products of one frame (depth chain, normals, colour chain, Hi-Z) built once by the
 // owner against the same products built by each effect for itself (the arrangement before the owner), at 1080p and at 4K; screen_extract_test.cpp prints the table and holds its invariants.
 //
@@ -84,6 +88,41 @@ inline AoPush DepthFullPush(const AoPush& base, const Frame& f, uint32_t stencil
   push.slots[2] = stencil_slot;
   push.sizes[0] = push.sizes[2] = float(f.render[0]);
   push.sizes[1] = push.sizes[3] = float(f.render[1]);
+  return push;
+}
+
+// --- the fused Hi-Z (SS-3) --------------------------------------------------------------------------------------------------------------------
+
+// The Hi-Z's levels 0, 1 and 2 are written by the depth chain's own passes (kDepthHiz / kDepthMsHiz for level 0, kMipHiz for levels 1 and 2) when the frame makes the Hi-Z and the pipelines are
+// there; the levels above them by the Hi-Z's own pass (screen_shared.cpp RecordHiz's mode 1), one a level, as before. Three because those are the levels whose size is a depth level's: one draw has
+// one target size.
+inline constexpr uint32_t kHizFusedMaxLevels = 3;
+
+// How many of the Hi-Z's levels (`hiz_levels` = screen::HizLevelCount(traced size), at most) the depth chain's passes write this frame: level 0 always (the depth pass runs in every frame that has a
+// Hi-Z), levels 1 and 2 beside the coarser depth levels while the frame makes them (`f.levels`) and while the Hi-Z level's size is that depth level's (it is, by the same halving rule: ao_size.h Half and
+// screen_frame.h HizLevelSize; the test holds the two over every size, and a size that broke it would simply fuse less).
+constexpr uint32_t FusedHizLevels(const Frame& f, uint32_t hiz_levels) {
+  if (hiz_levels == 0 || f.traced[0] == 0 || f.traced[1] == 0) {
+    return 0;
+  }
+  uint32_t fused = 1;
+  if (f.levels && hiz_levels > 1 && screen::HizLevelSize(f.traced[0], 1) == f.level[0][0] && screen::HizLevelSize(f.traced[1], 1) == f.level[0][1]) {
+    fused = 2;
+    if (hiz_levels > 2 && screen::HizLevelSize(f.traced[0], 2) == f.level[1][0] && screen::HizLevelSize(f.traced[1], 2) == f.level[1][1]) {
+      fused = 3;
+    }
+  }
+  return fused;
+}
+
+// The fused depth pass's block: the plain depth pass's (DepthPush) unchanged; the Hi-Z's level 0 is the second target of the draw and the shader reads nothing more for it.
+inline AoPush DepthHizPush(const AoPush& base, const Frame& f, uint32_t stencil_slot, bool source_bits) { return DepthPush(base, f, stencil_slot, source_bits); }
+
+// The fused coarser level's block: the plain pass's (DepthMipPush) with slots.w the slot of the image the Hi-Z's level takes its four texels from: for level 1 the depth chain's level 0 itself (the same
+// slot as the mean's source: the shader shares its four loads and takes the marks off each), for level 2 the Hi-Z's level 1 (the depth chain's level 1 is a mean and cannot stand for them).
+inline AoPush DepthMipHizPush(const AoPush& level0_push, const Frame& f, uint32_t level, uint32_t source_slot, uint32_t hiz_source_slot) {
+  AoPush push = DepthMipPush(level0_push, f, level, source_slot);
+  push.slots[3] = hiz_source_slot;
   return push;
 }
 
@@ -192,8 +231,17 @@ enum class Kind : uint32_t {
   kColour,       // pass 11: the colour chain's level 0 from a plain colour target, RGBA16F
   kColourMs,     // pass 12: from a multisampled one
   kColourMip,    // pass 13: a coarser level of the colour chain
+  // The FUSED passes (SS-3): the depth chain's passes with the Hi-Z's level of the same size written beside their image (two render targets, a pipeline of two formats). Not passes of the AO's table:
+  // their shaders are host_shaders.h ScreenFusedDepthPixelShader's (FusedPassOf).
+  kDepthHiz,     // kDepth + the Hi-Z's level 0 (R32_FLOAT, the depth's marks off)
+  kDepthMsHiz,   // kDepthMs + the same
+  kMipHiz,       // kMip (R16_FLOAT) + the Hi-Z's level 1 or 2 (R32_FLOAT)
   kCount,
 };
+inline constexpr uint32_t kFirstFusedKind = uint32_t(Kind::kDepthHiz);
+constexpr bool IsFused(Kind kind) { return uint32_t(kind) >= kFirstFusedKind && kind != Kind::kCount; }
+// The AO table's pass number of a kind that has one; the fused kinds have none (they are not the AO's passes: FusedPassOf).
+inline constexpr uint32_t kNoAoPass = ~0u;
 constexpr uint32_t PassOf(Kind kind) {
   switch (kind) {
     case Kind::kDepth: return 0;
@@ -204,12 +252,28 @@ constexpr uint32_t PassOf(Kind kind) {
     case Kind::kColour: return 11;
     case Kind::kColourMs: return 12;
     case Kind::kColourMip: return 13;
+    case Kind::kDepthHiz:
+    case Kind::kDepthMsHiz:
+    case Kind::kMipHiz: return kNoAoPass;
     case Kind::kCount: break;
+  }
+  return 0;
+}
+// host_shaders.h ScreenFusedDepthPixelShader's number of a fused kind.
+constexpr uint32_t FusedPassOf(Kind kind) {
+  switch (kind) {
+    case Kind::kDepthHiz: return 0;
+    case Kind::kDepthMsHiz: return 1;
+    case Kind::kMipHiz: return 2;
+    default: break;
   }
   return 0;
 }
 constexpr uint32_t Bit(Kind kind) { return 1u << uint32_t(kind); }
 inline constexpr uint32_t kAllKinds = (1u << uint32_t(Kind::kCount)) - 1;
+// The kinds that are the AO's own passes (what the AO's frame holds itself off for until they are made) and the fused ones.
+inline constexpr uint32_t kBaseKinds = (1u << kFirstFusedKind) - 1;
+inline constexpr uint32_t kFusedKinds = kAllKinds & ~kBaseKinds;
 
 // The pipelines a frame's extraction records with: the depth pass for the depth target's samples (and the coarser levels when `levels`), the normal pass for the plane's, the colour chain
 // for the colour target's (and its mip pass). `depth_samples` and `plane_samples` of 1 are the plain passes, above 1 the multisampled ones.
@@ -257,6 +321,51 @@ constexpr Pass ColourLevel0(uint32_t w, uint32_t h, uint32_t taps) { return {"co
 constexpr Pass ColourMip(uint32_t w, uint32_t h, const char* what) { return {what, Texels(w, h) * kBytesRgba16, Texels(w, h) * 4ull * kBytesRgba16}; }
 // The Hi-Z chain (screen_shared.cpp RecordHiz): level 0 is the depth with its marks cleared (one read a texel), each level above the min of four of the one below.
 constexpr Pass HizLevel(uint32_t w, uint32_t h, bool level0, const char* what) { return {what, Texels(w, h) * kBytesR32, Texels(w, h) * (level0 ? 1ull : 4ull) * kBytesR32}; }
+
+// THE FUSED passes (SS-3): the depth pass and the coarser levels with the Hi-Z's level written beside their image. What a fused pass moves is the sum of the two passes it replaces less what they shared:
+// the depth chain's reads are the same, the Hi-Z's own reads of its level below are gone where that level is the depth chain's level 0 (level 1: the four texels the mean reads) or the pass's own output
+// (level 0: the texel written), and what it writes is both images.
+constexpr Pass DepthLevel0Hiz(uint32_t traced_w, uint32_t traced_h, bool half) {
+  Pass p = DepthLevel0(traced_w, traced_h, half);
+  p.what = "depth level 0 + Hi-Z level 0";
+  p.write_bytes += Texels(traced_w, traced_h) * kBytesR32;
+  return p;
+}
+// level 1: the mean reads the four R32 texels of level 0 and the Hi-Z takes the same four; level 2: the mean reads four R16 texels of level 1 and the Hi-Z four R32 texels of its own level 1.
+constexpr Pass DepthMipHiz(uint32_t w, uint32_t h, uint32_t below_bytes, bool hiz_reads_its_own, const char* what) {
+  Pass p = DepthMip(w, h, below_bytes, what);
+  p.write_bytes += Texels(w, h) * kBytesR32;
+  if (hiz_reads_its_own) {
+    p.read_bytes += Texels(w, h) * 4ull * kBytesR32;
+  }
+  return p;
+}
+
+// The passes the owner records for the Hi-Z of one frame whose depth chain has the traced size w x h (`levels`: the coarser depth levels are made), into `out` (room for kHizMaxLevels + 2); the count.
+// `fused` false: the separate passes (one a level, the first copying the depth chain's level 0 with its marks off, as SS-0 made them) and the depth chain's own passes as they were; true: the fused ones.
+// The depth chain's own passes are listed too, so that both arrangements are the whole of what the depth and the Hi-Z cost together.
+inline uint32_t DepthAndHizPasses(uint32_t w, uint32_t h, bool half, bool levels, bool hiz, bool fused, Pass* out) {
+  uint32_t n = 0;
+  const uint32_t hiz_levels = hiz ? screen::HizLevelCount(w, h) : 0u;
+  Frame f;
+  f.traced[0] = w;
+  f.traced[1] = h;
+  f.level[0][0] = (w + 1) / 2;
+  f.level[0][1] = (h + 1) / 2;
+  f.level[1][0] = (w + 3) / 4;
+  f.level[1][1] = (h + 3) / 4;
+  f.levels = levels;
+  const uint32_t made = fused ? FusedHizLevels(f, hiz_levels) : 0u;
+  out[n++] = made >= 1 ? DepthLevel0Hiz(w, h, half) : DepthLevel0(w, h, half);
+  if (levels) {
+    out[n++] = made >= 2 ? DepthMipHiz(f.level[0][0], f.level[0][1], kBytesR32, false, "depth level 1 + Hi-Z level 1") : DepthMip(f.level[0][0], f.level[0][1], kBytesR32, "depth level 1");
+    out[n++] = made >= 3 ? DepthMipHiz(f.level[1][0], f.level[1][1], kBytesR16, true, "depth level 2 + Hi-Z level 2") : DepthMip(f.level[1][0], f.level[1][1], kBytesR16, "depth level 2");
+  }
+  for (uint32_t level = made; level < hiz_levels; ++level) {
+    out[n++] = HizLevel(screen::HizLevelSize(w, level), screen::HizLevelSize(h, level), level == 0, "Hi-Z level");
+  }
+  return n;
+}
 
 }  // namespace cost
 

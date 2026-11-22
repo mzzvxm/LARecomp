@@ -110,6 +110,7 @@ void ScreenShared::Shutdown() {
     passes_->precache().Stop();
   }
   // The GPU is idle and the heap goes later: the slots are not handed back (AmbientOcclusion::Shutdown).
+  mrt_.clear();  // the fused passes' framebuffers first: they name the images below
   view_pipelines_.clear();
   hiz_pipeline_.reset();
   hiz_shader_.reset();
@@ -158,6 +159,8 @@ void ScreenShared::BeginFrame(uint64_t frame_serial) {
   }
   frame_serial_ = frame_serial;
   extract_ = larecomp::settings::mcla_gpu_screen_extract.Get();  // live: the A/B between the owner's recording and the AO's own (screen_shared.h)
+  hiz_fused_ = larecomp::settings::mcla_gpu_screen_hiz_fused.Get();  // live: the A/B between the fused Hi-Z and the separate passes (SS-3)
+  hiz_made_ = 0;
   // The frame is empty until the AO's depth chain publishes it.
   frame_ = screen::ScreenFrame{};
   frame_.frame_serial = uint32_t(frame_serial);
@@ -244,17 +247,16 @@ plume::RenderPipeline* ScreenShared::HizPipeline() {
   return hiz_pipeline_.get();
 }
 
-uint32_t ScreenShared::RecordHiz(plume::RenderCommandList* list, const HostImage& depth0, uint32_t slots[screen::kHizMaxLevels]) {
-  plume::RenderPipeline* pipeline = HizPipeline();
-  if (!pipeline || !list || !depth0.texture || depth0.width == 0 || depth0.height == 0) {
-    return 0;
+bool ScreenShared::EnsureHizImages(uint32_t width, uint32_t height, uint32_t* levels_out) {
+  if (!passes_ || width == 0 || height == 0) {
+    return false;
   }
-  const uint32_t levels = screen::HizLevelCount(depth0.width, depth0.height);
+  const uint32_t levels = screen::HizLevelCount(width, height);
   // The images: one a level, kept while the size is; a different size remakes them (and the generation says so).
   bool ok = true;
   for (uint32_t level = 0; level < levels && ok; ++level) {
     const plume::RenderTexture* before = hiz_[level].texture.get();
-    ok = passes_->EnsureImage(hiz_[level], screen::HizLevelSize(depth0.width, level), screen::HizLevelSize(depth0.height, level), kHizFormat, kHizNames[level]);
+    ok = passes_->EnsureImage(hiz_[level], screen::HizLevelSize(width, level), screen::HizLevelSize(height, level), kHizFormat, kHizNames[level]);
     if (ok && hiz_[level].texture.get() != before) {
       ++hiz_generation_;
     }
@@ -275,13 +277,24 @@ uint32_t ScreenShared::RecordHiz(plume::RenderCommandList* list, const HostImage
       hiz_images_failed_logged_ = true;
       REXLOG_ERROR("{} the Hi-Z's images could not be made: no hiz_min while that lasts (asked again every frame)", kPrefix);
     }
-    return 0;
+    return false;
   }
-  // CHECK (not run): the pass reads the AO's level 0 depth in the shader-read layout it was left in (DrawInto leaves its own images there too; the ray traced occlusion's compute read keeps
-  // that layout, car_rt_ao.cpp), on both APIs, with the Vulkan synchronisation validation on; and the seven passes' cost (expected below 0.05 ms at 1080p traced: 7 tiny R32_FLOAT passes).
-  pass_timing_->Mark(list, "screen hiz");
-  for (uint32_t level = 0; level < levels; ++level) {
-    const HostImage& source = level == 0 ? depth0 : hiz_[level - 1];
+  *levels_out = levels;
+  return true;
+}
+
+void ScreenShared::LogHiz(uint32_t levels, uint32_t width, uint32_t height) {
+  if (hiz_logged_size_[0] != width || hiz_logged_size_[1] != height) {
+    hiz_logged_size_[0] = width;
+    hiz_logged_size_[1] = height;
+    REXLOG_INFO("{} hiz_min: {} levels from {}x{} down to {}x{} (R32_FLOAT, the min of 2x2 each, level 0 the linear depth with its marks off), {:.1f} MiB", kPrefix, levels, width, height,
+                screen::HizLevelSize(width, levels - 1), screen::HizLevelSize(height, levels - 1), Mib(screen::HizBytes(width, height)));
+  }
+}
+
+void ScreenShared::RecordHizPasses(plume::RenderCommandList* list, const HostImage* depth0, uint32_t from, uint32_t levels, plume::RenderPipeline* pipeline) {
+  for (uint32_t level = from; level < levels; ++level) {
+    const HostImage& source = level == 0 ? *depth0 : hiz_[level - 1];
     HizPush push;
     push.slots[0] = source.slot;
     push.slots[1] = level == 0 ? 0u : 1u;
@@ -290,19 +303,31 @@ uint32_t ScreenShared::RecordHiz(plume::RenderCommandList* list, const HostImage
     push.sizes[2] = hiz_[level].width;
     push.sizes[3] = hiz_[level].height;
     passes_->DrawInto(list, hiz_[level], pipeline, &push, sizeof(push));
+  }
+}
+
+uint32_t ScreenShared::RecordHiz(plume::RenderCommandList* list, const HostImage& depth0, uint32_t slots[screen::kHizMaxLevels]) {
+  plume::RenderPipeline* pipeline = HizPipeline();
+  if (!pipeline || !list || !depth0.texture || depth0.width == 0 || depth0.height == 0) {
+    return 0;
+  }
+  uint32_t levels = 0;
+  if (!EnsureHizImages(depth0.width, depth0.height, &levels)) {
+    return 0;
+  }
+  // CHECK (not run): the pass reads the AO's level 0 depth in the shader-read layout it was left in (DrawInto leaves its own images there too; the ray traced occlusion's compute read keeps
+  // that layout, car_rt_ao.cpp), on both APIs, with the Vulkan synchronisation validation on; and the seven passes' cost (expected below 0.05 ms at 1080p traced: 7 tiny R32_FLOAT passes).
+  pass_timing_->Mark(list, "screen hiz");
+  RecordHizPasses(list, &depth0, 0, levels, pipeline);
+  for (uint32_t level = 0; level < levels; ++level) {
     slots[level] = hiz_[level].slot;
   }
-  if (hiz_logged_size_[0] != depth0.width || hiz_logged_size_[1] != depth0.height) {
-    hiz_logged_size_[0] = depth0.width;
-    hiz_logged_size_[1] = depth0.height;
-    REXLOG_INFO("{} hiz_min: {} levels from {}x{} down to {}x{} (R32_FLOAT, the min of 2x2 each, level 0 the linear depth with its marks off), {:.1f} MiB", kPrefix, levels,
-                depth0.width, depth0.height, screen::HizLevelSize(depth0.width, levels - 1), screen::HizLevelSize(depth0.height, levels - 1),
-                Mib(screen::HizBytes(depth0.width, depth0.height)));
-  }
+  LogHiz(levels, depth0.width, depth0.height);
   return levels;
 }
 
 void ScreenShared::ReleaseHiz() {
+  PurgeMrt();
   for (HostImage& image : hiz_) {
     if (image.texture) {
       passes_->ReleaseImage(image);
@@ -355,7 +380,15 @@ void ScreenShared::Publish(plume::RenderCommandList* list, const Adopted& adopte
   in.camera.exposure_bias = screen::ExposureOf(exp_bias_, exposure_known_);
   screen::FillPreviousViewProjection(cameras_.Previous(frame_count_, adopted.pause_view), cameras_.Before(frame_count_, adopted.pause_view), &in.camera);
   if ((plan_.make & screen::ProductBit(screen::kHizMin)) != 0) {
-    in.hiz_levels = RecordHiz(list, *depth0, in.hiz);
+    if (hiz_made_ != 0 && hiz_made_ <= screen::kHizMaxLevels && hiz_images_ == hiz_made_) {
+      // SS-3: the depth chain's passes wrote the chain's first levels and RecordDepth the rest, this frame: nothing to record, only to publish.
+      in.hiz_levels = hiz_made_;
+      for (uint32_t level = 0; level < hiz_made_; ++level) {
+        in.hiz[level] = hiz_[level].slot;
+      }
+    } else {
+      in.hiz_levels = RecordHiz(list, *depth0, in.hiz);
+    }
   }
   in.hiz_generation = hiz_generation_;
   BuildFrame();

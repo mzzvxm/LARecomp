@@ -25,6 +25,9 @@
 
 #include "ao_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
+#if AO_HIZ0
+#include "screen_hiz.hlsli"
+#endif
 
 // A vehicle's stencil ID is the stencil byte >> 2: 1 to 23 (the UI's draws use 24 and up), as in
 // ao_temporal_ps.hlsl.
@@ -53,8 +56,9 @@ bool IsVehiclePixel(int2 p) {
   return id >= kFirstVehicleId && id <= kLastVehicleId;
 }
 
-float4 main(float4 position : SV_Position) : SV_Target {
-  const int2 pixel = int2(position.xy);
+// The texel the pass writes (the depth with the vehicle mark and, with the G-buffer's normals, the source of the half size block's sample): one function for the plain pass and for the fused one (AO_HIZ0).
+float AoDepthTexel(float2 position_xy) {
+  const int2 pixel = int2(position_xy);
   const int2 last = int2(g_push.sizes.zw) - 1;
   float t;
   int2 source;
@@ -100,5 +104,25 @@ float4 main(float4 position : SV_Position) : SV_Target {
     t = AoLinearDepth(AoLoadStored(source));
   }
   const float marked = AoSetVehicleBit(t, IsVehiclePixel(source));
-  return float4(g_push.slots2.w != 0u ? AoGbSetSource(marked, source_index) : marked, 0.0f, 0.0f, 0.0f);
+  return g_push.slots2.w != 0u ? AoGbSetSource(marked, source_index) : marked;
 }
+
+// AO_HIZ0 (SS-3, screen_shared.h): the same pass also writes the Hi-Z's level 0 into a second target (SV_Target1, R32_FLOAT, the same size): the texel it writes with the marks off
+// (screen_hiz.hlsli ScreenHizStrip), which is what the Hi-Z's own level 0 pass made of this image. The first target is exactly what it was: the same function.
+#if AO_HIZ0
+struct DepthHizOut {
+  float4 depth : SV_Target0;
+  float4 hiz : SV_Target1;
+};
+DepthHizOut main(float4 position : SV_Position) {
+  const float stored = AoDepthTexel(position.xy);
+  DepthHizOut o;
+  o.depth = float4(stored, 0.0f, 0.0f, 0.0f);
+  o.hiz = float4(ScreenHizStrip(stored), 0.0f, 0.0f, 0.0f);
+  return o;
+}
+#else
+float4 main(float4 position : SV_Position) : SV_Target {
+  return float4(AoDepthTexel(position.xy), 0.0f, 0.0f, 0.0f);
+}
+#endif

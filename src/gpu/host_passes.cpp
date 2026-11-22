@@ -139,7 +139,17 @@ std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
 std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
     const plume::RenderPipelineLayout& layout, const plume::RenderShader& pixel_shader,
     const plume::RenderFormat* formats, uint32_t count, const char* name) {
-  if (!formats || count < 2 || count > plume::RenderGraphicsPipelineDesc::MaxRenderTargets) {
+  // CITY-RT R4's overload (2 to 8 targets): the one implementation is CreateMrtPipeline below (SS-3), which also takes one.
+  if (!formats || count < 2) {
+    return nullptr;
+  }
+  return CreateMrtPipeline(layout, pixel_shader, formats, count, name);
+}
+
+std::unique_ptr<plume::RenderPipeline> HostPasses::CreateMrtPipeline(
+    const plume::RenderPipelineLayout& layout, const plume::RenderShader& pixel_shader,
+    const plume::RenderFormat* formats, uint32_t count, const char* name) {
+  if (!formats || count == 0 || count > plume::RenderGraphicsPipelineDesc::MaxRenderTargets) {
     return nullptr;
   }
   plume::RenderGraphicsPipelineDesc desc;
@@ -159,6 +169,18 @@ std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
   }
   desc.renderTargetCount = count;
   return device_->CreateGraphicsPipeline(desc, name);
+}
+
+std::unique_ptr<plume::RenderFramebuffer> HostPasses::CreateMrtFramebuffer(
+    const plume::RenderTexture* const* colors, uint32_t count, const char* name) {
+  const plume::RenderTexture* attachments[plume::RenderGraphicsPipelineDesc::MaxRenderTargets] = {};
+  if (!colors || count == 0 || count > plume::RenderGraphicsPipelineDesc::MaxRenderTargets) {
+    return nullptr;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    attachments[i] = colors[i];
+  }
+  return device_->CreateFramebuffer(plume::RenderFramebufferDesc(attachments, count), name);
 }
 
 void HostPasses::Bind(plume::RenderCommandList* list) const {
@@ -212,6 +234,7 @@ bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
   image.format = format;
   image.flags = flags;
   image.samples = samples;
+  image.serial = ++image_serial_;
   image.layout = plume::RenderTextureLayout::UNKNOWN;
   return true;
 }

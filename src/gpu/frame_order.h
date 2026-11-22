@@ -36,7 +36,8 @@
 // Where it differs from LIGHT-UNIFY 5.3's picture: the AO's frame still CALLS the screen owner for the depth chain, the normals and the colour chain (SS-2 moved the passes and their images into the owner,
 // ScreenShared::RecordDepth / RecordNormals / RecordColourPre, screen_extract.cpp; the AO decides the frame's sizes and which frame runs, so the owner records them from inside its frame, at the
 // places the AO recorded them from; mcla_gpu_screen_extract false is the old recording by the AO into the same images); the screen frame, the Hi-Z
-// included, is published at the END of the AO's frame, after its apply, from ScreenShared::Publish; the sun shafts and the volume's inject / integrate record BEFORE the capture and SSR (the
+// included, is published at the END of the AO's frame, after its apply, from ScreenShared::Publish (SS-3: while the Hi-Z is wanted, the depth step's draws also write its first levels and the owner records
+// the rest right behind them, so the Hi-Z images are made at the depth step and only published here; mcla_gpu_screen_hiz_fused false records the Hi-Z's own passes here); the sun shafts and the volume's inject / integrate record BEFORE the capture and SSR (the
 // design listed them after SSR; they add nothing to the colour at the trigger, their composites are at the end-of-scene copy, so the order between them is free of data and the table keeps the code's).
 //
 // THE CHECKS
@@ -338,7 +339,9 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
              "It plans its bounce light with the probe field's share (GiApply::TakeSsgiShare), which is why the field's frame is before it"},
     {.step = Step::kAoDepth, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "depth chain (recorded by the screen owner)", .file = "ao.cpp",
      .call = "screen_->RecordDepth(list, chain, base, summary.stencil_slot, normals_.depth_source_bits, ms);", .label_file = "screen_extract.cpp", .label = "ao depth", .makes = data::kAoDepth,
-     .note = "SS-2: the AO's frame calls the owner, which records level 0, the coarser levels and the contact shadows' full size depth into its own images, with the labels 'ao depth' and 'ao contact depth'"},
+     .note = "SS-2: the AO's frame calls the owner, which records level 0, the coarser levels and the contact shadows' full size depth into its own images, with the labels 'ao depth' and 'ao contact depth'. "
+             "SS-3: while the Hi-Z is wanted these passes also write its levels 0, 1 and 2 beside their images (two render targets) and the owner records the levels above them right behind, under 'screen hiz'; "
+             "the frame's Hi-Z is whole when the screen frame is published below (mcla_gpu_screen_hiz_fused false: the separate passes are recorded there, as before)"},
     {.step = Step::kAoNormals, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "normals (G-buffer RT1 where valid, else the depth's)", .file = "ao.cpp",
      .call = "screen_->RecordNormals(list, chain, base, NormalRecipeFor(normals_));", .label_file = "screen_extract.cpp", .label = "ao normals", .reads = data::kAoDepth, .soft_reads = data::kPlanes,
      .makes = data::kAoNormal},
@@ -361,7 +364,8 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     {.step = Step::kScreenPublish, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "screen frame published, Hi-Z made", .file = "ao.cpp",
      .call = "PublishScreen(list, summary, plan, base);", .label_file = "screen_shared.cpp", .label = "screen hiz", .reads = data::kAoDepth, .soft_reads = data::kAoNormal | data::kColourChain,
      .makes = data::kLinDepth | data::kLinDepthFull | data::kNormal | data::kColourPre | data::kHizMin,
-     .note = "ScreenShared::Publish at the END of the AO's frame (after the apply): every reader of the ScreenFrame comes after the whole AO"},
+     .note = "ScreenShared::Publish at the END of the AO's frame (after the apply): every reader of the ScreenFrame comes after the whole AO. The Hi-Z is MADE by the depth step above when the passes are fused "
+             "(SS-3: its first levels written by the depth chain's own draws) and here, by the Hi-Z's own passes, when they are not; the screen frame publishes it either way"},
     {.step = Step::kGiApply, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's apply (additive, multiplied by the occlusion)", .call = "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi)",
      .label_file = "gi_apply.cpp", .label = "rt gi pixel", .more_labels = {{"rt gi denoise", "gi lookup"}}, .closing_label = "after gi apply", .reads = data::kPlanes | data::kLinDepth,
      .soft_reads = data::kProbeField | data::kAoTerm | data::kCarStructures | data::kLights, .makes = data::kRrHitGi,

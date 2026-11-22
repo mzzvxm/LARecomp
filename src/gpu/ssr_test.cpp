@@ -2298,7 +2298,7 @@ void TestSources(const std::string& dir) {
         "scene.cpp: the reflections run only in a frame that made the capture, hear the draws only while on, begin and end the frame");
   Check(Has(scene_h, "void SetScreenReflections(ScreenReflections* ssr)") && Has(scene_h, "ScreenReflections* ssr_ = nullptr;"), "scene.h holds the pointer");
   const size_t init_at = renderer.find("ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_);");
-  const size_t screen_init = renderer.find("screen_.Initialize(passes_, edram_, pass_timing_);");
+  const size_t screen_init = renderer.find("screen_.Initialize(device_, heap_, passes_, edram_, pass_timing_);");  // SS-2 gave the owner the device and the heap (its extraction's layout)
   Check(init_at != std::string::npos && screen_init != std::string::npos && screen_init < init_at && Has(renderer, "ssr_.SetScreenShared(&screen_);") && Has(renderer, "ssr_.SetGBuffer(&gbuffer_);") &&
             Has(renderer, "ssr_.SetAmbientOcclusion(&ao_);") && Has(renderer, "scene_.SetScreenReflections(&ssr_);"),
         "renderer.cpp: made after the shared products, wired to the owners and the scene");

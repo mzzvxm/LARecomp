@@ -923,6 +923,10 @@ class GPUSettings final : public rex::SettingOwner {
     "products, once a frame, into images they own (the ambient occlusion, the bounce light, the contact shadows and the reflections read them). false: by the ambient "
     "occlusion's own passes into the same images (the old path, kept for one release to compare pictures). Both give the same bits. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_screen_hiz_fused, true, "Diagnostic (shared screen products): how the Hi-Z's first levels are made while the reflections want it. true (the default): the depth chain's own passes write them beside their "
+    "images in the same draw (the depth pass the Hi-Z's level 0, the two coarser depth levels its levels 1 and 2), so that the Hi-Z's own passes for them are not recorded. false: "
+    "the Hi-Z's own pass for every level (the old path, kept for one release to compare pictures). Both give the same bits. Needs mcla_gpu_screen_extract. Live.", rex::kDebugOnly);
+
   REX_SETTING(i32, mcla_gpu_screen_view, 0, "Diagnostic (shared screen products): draws one product of the shared screen frame over the main view at the mid-scene depth copy, where the ambient "
     "occlusion runs (it runs a frame of its own for this when it and the contact shadows are off): 1 the linear depth, 2 the Hi-Z level mcla_gpu_screen_view_level (the min of "
     "the linear depth, each texel stretched over the pixels it covers), 3 the Hi-Z level against the pixels it covers (red where it is deeper than one of them, which cannot "
@@ -2032,6 +2036,7 @@ inline auto& mcla_gpu_gbuffer = g_gpu.mcla_gpu_gbuffer;
 inline auto& mcla_gpu_gbuffer_attach = g_gpu.mcla_gpu_gbuffer_attach;
 inline auto& mcla_gpu_gbuffer_view = g_gpu.mcla_gpu_gbuffer_view;
 inline auto& mcla_gpu_screen_extract = g_gpu.mcla_gpu_screen_extract;
+inline auto& mcla_gpu_screen_hiz_fused = g_gpu.mcla_gpu_screen_hiz_fused;
 inline auto& mcla_gpu_screen_view = g_gpu.mcla_gpu_screen_view;
 inline auto& mcla_gpu_screen_view_level = g_gpu.mcla_gpu_screen_view_level;
 inline auto& mcla_gpu_ssr = g_gpu.mcla_gpu_ssr;
