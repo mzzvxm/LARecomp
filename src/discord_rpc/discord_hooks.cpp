@@ -1,5 +1,6 @@
 #include <rex/ppc/context.h>
 #include "larecomp_guest.h"
+#include "settings/immortal.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "discord_rpc/discord_rpc.h"
@@ -317,7 +318,7 @@ struct RaceInfo {
   int tour_points = 0;
 };
 
-RaceInfo g_race;
+RaceInfo& g_race = larecomp::Leak<RaceInfo>();
 
 // Read the live race object. Everything is best-effort: a field we cannot reach
 // simply stays empty and the presence falls back to the old generic wording.

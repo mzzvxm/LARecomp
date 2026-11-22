@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -79,7 +80,7 @@ class InputKeyboardDrivingSettings final : public rex::SettingOwner {
 
 };
 
-inline InputKeyboardDrivingSettings g_input_keyboard_driving;
+inline InputKeyboardDrivingSettings& g_input_keyboard_driving = larecomp::Leak<InputKeyboardDrivingSettings>();
 
 inline auto& kb_drive_brake = g_input_keyboard_driving.kb_drive_brake;
 inline auto& kb_drive_camera = g_input_keyboard_driving.kb_drive_camera;

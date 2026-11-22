@@ -1,4 +1,5 @@
 #include "mc_engine/music/custom_music.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -61,9 +62,9 @@ constexpr int kGroupCapacity = 255;
 constexpr uint64_t kVerifiedSlotPoolBytes = 21540864;
 constexpr int kMusicSlotCount = 4;
 
-std::vector<std::pair<std::string, std::string>> g_titles;
-std::vector<std::string> g_claimed;
-std::vector<uint32_t> g_cues;
+std::vector<std::pair<std::string, std::string>>& g_titles = larecomp::Leak<std::vector<std::pair<std::string, std::string>>>();
+std::vector<std::string>& g_claimed = larecomp::Leak<std::vector<std::string>>();
+std::vector<uint32_t>& g_cues = larecomp::Leak<std::vector<uint32_t>>();
 
 // ------------------------------------------------------------------- helpers
 
@@ -630,7 +631,8 @@ Song SongFromFile(const fs::path& path, const Override& defaults, const Override
 }
 
 std::vector<fs::path> MusicFolders(const fs::path& exe_dir) {
-    std::vector<fs::path> folders{exe_dir / "music"};
+    // The folder's name is found whatever its case (a Linux file system tells "Music" from "music").
+    std::vector<fs::path> folders{mc::modloader::FindDirNoCase(exe_dir, "music")};
 #if defined(_WIN32)
     if (const char* home = std::getenv("USERPROFILE")) {
         folders.push_back(fs::path(home) / "Documents" / "Rockstar Games" / "LARecomp" /

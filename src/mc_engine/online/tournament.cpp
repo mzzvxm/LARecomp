@@ -38,6 +38,7 @@
 //
 
 #include "tournament.h"
+#include "settings/immortal.h"
 
 #include "online_common.h"
 #include "tournament_schedule.h"
@@ -105,7 +106,7 @@ struct Completed {
 };
 
 std::mutex g_mutex;
-std::deque<Completed> g_done;  // replies waiting for the game thread
+std::deque<Completed>& g_done = larecomp::Leak<std::deque<Completed>>();  // replies waiting for the game thread
 
 // Game thread only: per table, the file of the last reply, its id, and the
 // status object its state machine polls (the read's, reused for the download).
@@ -114,7 +115,7 @@ struct Served {
   uint32_t file_id = 0;
   uint32_t status = 0;
 };
-Served g_served[kKinds];
+Served (&g_served)[kKinds] = *new Served[1][kKinds]();
 
 Memory* Mem() {
   auto* rt = REX_RUNTIME();

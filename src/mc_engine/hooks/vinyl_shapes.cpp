@@ -3,6 +3,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/xenos/texture.h>
 #include <rex/xenos/fetch.h>
 #include <rex/xenos/format.h>
@@ -239,8 +240,8 @@ void DumpVinylShapes() {
 // ---------------------------------------------------------------------------
 static std::atomic_bool g_scap_request{false};  // set by cvar callback (any thread)
 static bool g_scap_active = false;               // tick-thread only below
-static std::vector<std::pair<uint32_t, uint32_t>> g_scap_list;
-static std::map<uint32_t, ShapeRec> g_scap_recs;
+static std::vector<std::pair<uint32_t, uint32_t>>& g_scap_list = larecomp::Leak<std::vector<std::pair<uint32_t, uint32_t>>>();
+static std::map<uint32_t, ShapeRec>& g_scap_recs = larecomp::Leak<std::map<uint32_t, ShapeRec>>();
 static size_t g_scap_cursor = 0;
 static size_t g_scap_requested = 0;
 static int g_scap_wait = 0;
@@ -313,7 +314,7 @@ void TickVinylShapeCapture() {
             // misses them. Write the DDS ourselves — same
             // dump/<hash>_<w>x<h>_<fmt>.dds naming, and it skips any file that
             // already exists (already dumped while browsing).
-            static const std::filesystem::path s_dump_dir = mcla::TextureDumpDir();
+            static const std::filesystem::path& s_dump_dir = larecomp::Leak<const std::filesystem::path>(mcla::TextureDumpDir());
             const uint8_t* bytes = mem->TranslatePhysical<const uint8_t*>(p.base);
             if (bytes && p.size)
                 mcla::DumpGuestTexture(s_dump_dir, p.hash, p.w, p.h, p.pitch, p.tiled, p.format,

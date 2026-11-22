@@ -15,6 +15,7 @@
 #include <string>
 
 #include "../capture_mode.h"
+#include "settings/immortal.h"
 #include "../scene_runtime.h"
 #include "director_internal.h"
 #include "director_math.h"
@@ -52,7 +53,7 @@ struct Schedule {
     bool pending = false;
     std::string pending_path;
 };
-Schedule g_sched;
+Schedule& g_sched = larecomp::Leak<Schedule>();
 
 // ---- a take over a stretch of the scene
 
@@ -66,7 +67,7 @@ struct TakeJob {
     uint64_t last_progress = 0;
     std::string name;
 };
-TakeJob g_take;
+TakeJob& g_take = larecomp::Leak<TakeJob>();
 
 void PublishShotDone(const std::string& path, double t, bool ok, const std::string& error, int index, int total) {
     Json f = Json::Object();

@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -886,7 +887,7 @@ class NativeGfxSettings final : public rex::SettingOwner {
 
 };
 
-inline NativeGfxSettings g_nativegfx;
+inline NativeGfxSettings& g_nativegfx = larecomp::Leak<NativeGfxSettings>();
 
 inline auto& mcla_exposure_log = g_nativegfx.mcla_exposure_log;
 inline auto& mcla_exposure_log_addr = g_nativegfx.mcla_exposure_log_addr;

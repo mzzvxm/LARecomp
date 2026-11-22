@@ -1,4 +1,5 @@
 #include "identity_client.h"
+#include "settings/immortal.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -48,13 +49,13 @@ constexpr int kMasterIoMs = 8000;
 
 std::mutex g_mtx;
 std::condition_variable g_cv;
-Status g_status;
+Status& g_status = larecomp::Leak<Status>();
 bool g_started = false;
 bool g_kick = false;
-std::string g_recover_code;
+std::string& g_recover_code = larecomp::Leak<std::string>();
 bool g_cancel = false;
 // What the last cycle talked to, for recover/cancel outside a cycle.
-std::string g_master_host;
+std::string& g_master_host = larecomp::Leak<std::string>();
 uint16_t g_master_port = 0;
 uint8_t g_master_key[32] = {};
 

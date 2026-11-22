@@ -1,6 +1,7 @@
 // Both branches below define the same symbols, so the declarations they are
 // checked against have to be visible to both.
 #include "camera_look.h"
+#include "settings/immortal.h"
 #include "mc_engine/menus/menu_items.h"
 #include "mc_engine/input/map_mouse.h"
 #include "mc_engine/input/mouse_look.h"
@@ -58,7 +59,7 @@ struct LookTune {
 };
 
 std::mutex g_tunes_mutex;
-std::vector<LookTune> g_tunes;
+std::vector<LookTune>& g_tunes = larecomp::Leak<std::vector<LookTune>>();
 
 // Set once a complete tune is known, so the per-frame tick can skip the lock
 // entirely until there is something to do.
@@ -307,8 +308,8 @@ struct ProbeRegion {
     bool is_root = false;
 };
 
-std::vector<ProbeRegion> g_regions;
-std::vector<float> g_baseline;
+std::vector<ProbeRegion>& g_regions = larecomp::Leak<std::vector<ProbeRegion>>();
+std::vector<float>& g_baseline = larecomp::Leak<std::vector<float>>();
 uint32_t g_probe_sys = 0;
 int32_t g_probe_rig = -1;
 

@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -27,7 +28,7 @@ class UIWindowSettings final : public rex::SettingOwner {
 
 };
 
-inline UIWindowSettings g_ui_window;
+inline UIWindowSettings& g_ui_window = larecomp::Leak<UIWindowSettings>();
 
 inline auto& fullscreen_exclusive = g_ui_window.fullscreen_exclusive;
 inline auto& fullscreen_resolution = g_ui_window.fullscreen_resolution;

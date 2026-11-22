@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mp3custom.h"
+#include "settings/immortal.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/music/custom_music.h"
 #include "mp3_player.h"
@@ -22,6 +23,7 @@
 #include <rex/ppc/context.h>
 #include <rex/ppc/call.h>
 #include <rex/kernel/title_runtime.h>
+#include <rex/platform/file.h>
 #include <rex/kernel/function_dispatcher.h>
 
 #if defined(_WIN32)
@@ -330,7 +332,7 @@ struct Track {
     uint32_t     object_ea = 0; // synthetic music game object (song entry [0])
 };
 
-std::vector<Track> g_tracks;
+std::vector<Track>& g_tracks = larecomp::Leak<std::vector<Track>>();
 bool               g_installed = false;
 bool               g_strings_registered = false;
 int                g_current   = -1;  // index into g_tracks, -1 = not ours
@@ -388,7 +390,7 @@ void ScanFolder(const std::filesystem::path& dir) {
 //
 //   <exe>/models/<mod>/music_titles.txt
 //   Music_Rock_MyBand_MySong = My Band - My Song
-std::vector<std::pair<std::string, std::string>> g_native_titles;
+std::vector<std::pair<std::string, std::string>>& g_native_titles = larecomp::Leak<std::vector<std::pair<std::string, std::string>>>();
 bool g_native_titles_registered = false;
 
 void ScanTitlesFile(const std::filesystem::path& file) {
@@ -423,7 +425,9 @@ void CollectNativeTitles() {
     if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return;
     models = mc::modloader::ModRootDir(std::filesystem::path(exe).parent_path());
 #else
-    models = mc::modloader::ModRootDir(std::filesystem::current_path(ec));
+    // The folder of the executable (the mods sit beside the program), not the current directory.
+    const std::filesystem::path exe_folder = rex::platform::GetExecutableFolder();
+    models = mc::modloader::ModRootDir(exe_folder.empty() ? std::filesystem::current_path(ec) : exe_folder);
 #endif
     if (!std::filesystem::is_directory(models, ec)) return;
 
@@ -476,7 +480,9 @@ void CollectTracks() {
                    L"User Music");
     }
 #else
-    ScanFolder(std::filesystem::current_path(ec) / "music");
+    // The music folder beside the program (whatever the case of its name), not the current directory's.
+    const std::filesystem::path exe_folder = rex::platform::GetExecutableFolder();
+    ScanFolder(mc::modloader::FindDirNoCase(exe_folder.empty() ? std::filesystem::current_path(ec) : exe_folder, "music"));
 #endif
 
     std::sort(g_tracks.begin(), g_tracks.end(),
@@ -854,7 +860,7 @@ void MCLA_Audio_BankOpened(PPCRegister& r3, PPCRegister& r31) {
 
     // A streaming bank is re-requested for every chunk, so the same id comes
     // through thousands of times a minute. Each outcome is worth seeing once.
-    static std::vector<uint32_t> seen;
+    static std::vector<uint32_t>& seen = larecomp::Leak<std::vector<uint32_t>>();
     const uint32_t key = (id << 1) | (handle == -1 ? 1u : 0u);
     if (std::find(seen.begin(), seen.end(), key) != seen.end()) return;
     seen.push_back(key);
@@ -871,7 +877,7 @@ void MCLA_Audio_BankError(PPCRegister& r4, PPCRegister& r31) {
 
     // Retried for as long as whatever wanted the bank keeps wanting it, which
     // for a missing ambience stream is every few frames forever.
-    static std::vector<uint32_t> seen;
+    static std::vector<uint32_t>& seen = larecomp::Leak<std::vector<uint32_t>>();
     if (std::find(seen.begin(), seen.end(), id) != seen.end()) return;
     seen.push_back(id);
 

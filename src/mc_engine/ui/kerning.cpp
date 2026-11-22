@@ -1,4 +1,5 @@
 #include "imgui_theme.h"
+#include "settings/immortal.h"
 
 #include <cfloat>
 #include <cmath>
@@ -22,7 +23,7 @@ struct Kerning {
 };
 
 std::unordered_map<const ImFont*, Kerning>& Registry() {
-  static std::unordered_map<const ImFont*, Kerning> registry;
+  static std::unordered_map<const ImFont*, Kerning>& registry = larecomp::Leak<std::unordered_map<const ImFont*, Kerning>>();
   return registry;
 }
 

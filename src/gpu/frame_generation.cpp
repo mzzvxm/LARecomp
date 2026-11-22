@@ -8,6 +8,7 @@
 // Vulkan frame generation, written by the same author (patches/rexglue-frame-generation.patch).
 
 #include "frame_generation.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -68,7 +69,7 @@ constexpr uint32_t kBitNoRoom = 1u << 4;
 std::atomic<uint32_t> g_bits{0};
 std::atomic<uint32_t> g_refresh_hz{0};
 std::mutex g_why_mutex;
-std::string g_why;
+std::string& g_why = larecomp::Leak<std::string>();
 
 // HALF DISPLAY: the floor of 97% of half the refresh rate, on a display of 100 Hz or more.
 uint32_t HalfDisplayCap(uint32_t hz) {

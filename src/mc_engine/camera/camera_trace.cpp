@@ -28,6 +28,7 @@
 // Off (cam_trace = false, the default) every hook is one relaxed load.
 
 #include "camera_trace.h"
+#include "settings/immortal.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
@@ -155,7 +156,7 @@ class Writer {
     FILE* file_ = nullptr;
 };
 
-Writer g_writer;
+Writer& g_writer = larecomp::Leak<Writer>();
 
 template <typename... Args>
 void Line(const char* format, Args... args) {

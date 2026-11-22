@@ -36,6 +36,7 @@
 //
 
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/platform/file.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/ppc/context.h>
@@ -109,7 +110,7 @@ struct Request {
 };
 
 std::mutex g_mu;
-Request g_request;
+Request& g_request = larecomp::Leak<Request>();
 
 // Where the car was before its last warp out, so "back" returns there.
 bool g_have_back = false;
@@ -117,7 +118,7 @@ bool g_warped_out = false;
 float g_back[16] = {};
 
 bool g_spots_loaded = false;
-std::vector<NamedSpot> g_spots;
+std::vector<NamedSpot>& g_spots = larecomp::Leak<std::vector<NamedSpot>>();
 
 uint32_t g_scratch = 0;          // guest: matrix (64) + velocity (16) + angvel (16)
 int g_watch_frames = -1;         // frames since the last warp, for the fall check
@@ -587,7 +588,7 @@ class LarecompCommand_warp final : public rex::SettingOwner {
                 return rex::Ok();
               });
 };
-inline LarecompCommand_warp g_larecomp_command_warp;
+inline LarecompCommand_warp& g_larecomp_command_warp = larecomp::Leak<LarecompCommand_warp>();
 
 // The key (ui.bind.map_warp, F9): LarecompApp::StartOverlays binds it to this, through a hotkey overlay.
 void MapWarpKeyPressed() { File({Kind::kToggle, {}, {}}); }

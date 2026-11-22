@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -29,7 +30,7 @@ class InputExtraButtonsSettings final : public rex::SettingOwner {
 
 };
 
-inline InputExtraButtonsSettings g_input_extra_buttons;
+inline InputExtraButtonsSettings& g_input_extra_buttons = larecomp::Leak<InputExtraButtonsSettings>();
 
 inline auto& extra_button_l4 = g_input_extra_buttons.extra_button_l4;
 inline auto& extra_button_l5 = g_input_extra_buttons.extra_button_l5;

@@ -37,6 +37,7 @@
 //
 
 #include "../online_common.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <array>
@@ -402,7 +403,7 @@ struct Completed {
 };
 
 std::mutex g_done_mutex;
-std::deque<Completed> g_done;
+std::deque<Completed>& g_done = larecomp::Leak<std::deque<Completed>>();
 
 void Begin(Memory* mem, rmr::Request&& req, Pending&& p) {
   RestoreFailureText();

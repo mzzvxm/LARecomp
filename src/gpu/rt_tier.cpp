@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the ray tracing tier of this process. See rt_tier.h.
 
 #include "rt_tier.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <mutex>
@@ -25,10 +26,10 @@ std::atomic<bool> g_api_rt{false};
 std::atomic<int> g_override{kNoOverride};
 
 std::mutex g_text_mutex;  // guards the strings and the key below
-std::string g_table_why;
-std::string g_bench_why;
-std::string g_adapter;
-rt_bench::KeyFacts g_key;
+std::string& g_table_why = larecomp::Leak<std::string>();
+std::string& g_bench_why = larecomp::Leak<std::string>();
+std::string& g_adapter = larecomp::Leak<std::string>();
+rt_bench::KeyFacts& g_key = larecomp::Leak<rt_bench::KeyFacts>();
 bool g_bench_wanted = false;
 
 // Sets the override from the cvar's text: none, weak or strong force a tier; auto (or any other text) leaves it to the card and the class.

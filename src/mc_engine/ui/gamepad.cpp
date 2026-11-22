@@ -1,4 +1,5 @@
 #include "gamepad.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
@@ -240,7 +241,7 @@ class OverlayPadReader {
 };
 
 OverlayPadReader& Reader() {
-  static OverlayPadReader reader;
+  static OverlayPadReader& reader = larecomp::Leak<OverlayPadReader>();
   return reader;
 }
 

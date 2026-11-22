@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -66,7 +67,7 @@ class HUDSettings final : public rex::SettingOwner {
 
 };
 
-inline HUDSettings g_hud;
+inline HUDSettings& g_hud = larecomp::Leak<HUDSettings>();
 
 inline auto& rearview = g_hud.rearview;
 inline auto& rearview_cars = g_hud.rearview_cars;

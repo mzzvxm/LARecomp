@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -19,7 +20,7 @@ class GraphicsSettings final : public rex::SettingOwner {
 
 };
 
-inline GraphicsSettings g_graphics;
+inline GraphicsSettings& g_graphics = larecomp::Leak<GraphicsSettings>();
 
 inline auto& larecomp_texture_folder = g_graphics.larecomp_texture_folder;
 

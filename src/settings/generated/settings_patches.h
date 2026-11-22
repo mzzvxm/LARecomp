@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -79,6 +80,12 @@ class PatchesSettings final : public rex::SettingOwner {
     "them and they played as fast as the host could present. The screens play before the "
     "pause menu can be opened, so a change made there is seen at the next start.");
 
+  REX_SETTING(bool, mcla_fast_exit, true, "Fix: the game ends its process right after its orderly shutdown (saves, settings and logs written, the renderer "
+    "and audio stopped), without running the destructors of its global objects. The SDK leaves a game thread that is "
+    "slow to leave running while the game ends; a thread like that could still use an object the exit had just "
+    "destroyed, and the game crashed a few milliseconds after it said it was exiting (about once in 1400 exits). On: "
+    "the process ends at once, with the same exit code. Off: the old end through the C runtime's exit.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_fix_checkpoint_fade, true, "Fix: the smoke of a closed race checkpoint dissipates over about half a second at every frame "
     "rate. The game fades it by dt x 25 at every update, which is 0.83 per update on the console's 30 updates a "
     "second but 0.42 at 60 FPS and 0.17 at 144 FPS, so above 30 FPS the smoke vanished with the checkpoint. On: the "
@@ -124,7 +131,7 @@ class PatchesSettings final : public rex::SettingOwner {
 
 };
 
-inline PatchesSettings g_patches;
+inline PatchesSettings& g_patches = larecomp::Leak<PatchesSettings>();
 
 inline auto& aspect_ratio = g_patches.aspect_ratio;
 inline auto& break_pairwise_collision = g_patches.break_pairwise_collision;
@@ -138,6 +145,7 @@ inline auto& disable_rubberbanding = g_patches.disable_rubberbanding;
 inline auto& garage_tire_offset = g_patches.garage_tire_offset;
 inline auto& hud_width = g_patches.hud_width;
 inline auto& intro_original_speed = g_patches.intro_original_speed;
+inline auto& mcla_fast_exit = g_patches.mcla_fast_exit;
 inline auto& mcla_fix_checkpoint_fade = g_patches.mcla_fix_checkpoint_fade;
 inline auto& mcla_fix_neon_30hz = g_patches.mcla_fix_neon_30hz;
 inline auto& real_frame_delta = g_patches.real_frame_delta;

@@ -4,6 +4,7 @@
 // coexists with a fork SDK that still exports its own copy.
 
 #include "rpc_client.h"
+#include "settings/immortal.h"
 #include "rpc_toggle_rules.h"
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
@@ -54,10 +55,10 @@ enum : uint32_t {
 };
 
 std::atomic<bool> g_running{false};
-std::thread g_thread;
+std::thread& g_thread = larecomp::Leak<std::thread>();
 std::mutex g_mutex;
-Presence g_presence;
-std::string g_client_id;
+Presence& g_presence = larecomp::Leak<Presence>();
+std::string& g_client_id = larecomp::Leak<std::string>();
 std::atomic<bool> g_dirty{false};
 
 #if REX_PLATFORM_WIN32

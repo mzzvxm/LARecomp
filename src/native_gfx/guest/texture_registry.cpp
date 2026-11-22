@@ -3,6 +3,7 @@
 // See texture_registry.h for the reverse-engineering provenance.
 
 #include "texture_registry.h"
+#include "settings/immortal.h"
 
 #include <cstdio>
 #include <cstring>
@@ -46,7 +47,7 @@ struct Registry {
 constexpr uint64_t kDumpEveryFrames = 600;
 
 Registry& registry() {
-  static Registry r;
+  static Registry& r = larecomp::Leak<Registry>();
   return r;
 }
 

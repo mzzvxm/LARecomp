@@ -29,6 +29,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/recompiled_code.h>
 #include <rex/ppc/context.h>
 #include <rex/kernel/title_runtime.h>
@@ -260,7 +261,7 @@ struct Seen {
 constexpr size_t kMaxSeen = 2000;
 uint32_t g_note_calls = 0;
 std::mutex g_log_mutex;
-std::unordered_map<std::string, Seen> g_seen;
+std::unordered_map<std::string, Seen>& g_seen = larecomp::Leak<std::unordered_map<std::string, Seen>>();
 int64_t g_next_dump_ns = 0;
 
 std::string GuestText(const uint8_t* base, uint32_t ea, size_t max) {

@@ -62,6 +62,7 @@
 #endif
 
 #include "mcla_gfx_probe.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <cstdint>
@@ -272,12 +273,12 @@ struct RawDraw {
   uint64_t vs_hash, ps_hash;
 };
 constexpr size_t kRawDrawMax = 128;
-std::vector<RawDraw> g_raw;
+std::vector<RawDraw>& g_raw = larecomp::Leak<std::vector<RawDraw>>();
 
-std::unordered_map<DrawKey, DrawAgg, DrawKeyHash> g_draws;
-std::unordered_map<uint64_t, ShaderAgg> g_shaders;
-std::unordered_map<uint32_t, uint64_t> g_prim_hist;
-std::vector<TileBracket> g_brackets;
+std::unordered_map<DrawKey, DrawAgg, DrawKeyHash>& g_draws = larecomp::Leak<std::unordered_map<DrawKey, DrawAgg, DrawKeyHash>>();
+std::unordered_map<uint64_t, ShaderAgg>& g_shaders = larecomp::Leak<std::unordered_map<uint64_t, ShaderAgg>>();
+std::unordered_map<uint32_t, uint64_t>& g_prim_hist = larecomp::Leak<std::unordered_map<uint32_t, uint64_t>>();
+std::vector<TileBracket>& g_brackets = larecomp::Leak<std::vector<TileBracket>>();
 TileBracket g_open_bracket;
 bool g_bracket_open = false;
 uint64_t g_msaa_seen = 0;

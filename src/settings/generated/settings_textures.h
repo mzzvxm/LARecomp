@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -22,7 +23,7 @@ class TexturesSettings final : public rex::SettingOwner {
 
 };
 
-inline TexturesSettings g_textures;
+inline TexturesSettings& g_textures = larecomp::Leak<TexturesSettings>();
 
 inline auto& texture_mods = g_textures.texture_mods;
 inline auto& texture_reload = g_textures.texture_reload;

@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -51,7 +52,7 @@ class InputKeyboardMenusSettings final : public rex::SettingOwner {
 
 };
 
-inline InputKeyboardMenusSettings g_input_keyboard_menus;
+inline InputKeyboardMenusSettings& g_input_keyboard_menus = larecomp::Leak<InputKeyboardMenusSettings>();
 
 inline auto& kb_ui_accept = g_input_keyboard_menus.kb_ui_accept;
 inline auto& kb_ui_back = g_input_keyboard_menus.kb_ui_back;

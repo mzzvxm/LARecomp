@@ -72,6 +72,7 @@
 //
 
 #include "capture_audio.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/apu/audio_system.h>
@@ -252,8 +253,8 @@ RealMixer& Mixer() {
 
 // ---------------------------------------------------------------------------------------------------------------- the take
 
-Session g_session;
-Summary g_last;
+Session& g_session = larecomp::Leak<Session>();
+Summary& g_last = larecomp::Leak<Summary>();
 std::atomic<bool> g_active{false};
 std::FILE* g_csv = nullptr;
 uint64_t g_first_update = 0;

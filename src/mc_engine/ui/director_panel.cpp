@@ -2,6 +2,7 @@
 // the ImGui around it.
 
 #include "director_panel.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <array>
@@ -81,7 +82,7 @@ ImVec4 ToVec4(ImU32 c) {
 // The pad's chords (freecam.h Events) arrive on the GAME thread, from the flight's own step: they become commands from there (Post is safe from any thread). The take's form is the
 // panel's, copied here every frame it is open, so Back + D-pad up renders what the TAKE tab says.
 std::mutex g_hook_mutex;
-dp::TakeForm g_hook_take;
+dp::TakeForm& g_hook_take = larecomp::Leak<dp::TakeForm>();
 
 void OnFlyEvents(const fc::Events& events) {
     if (!events.Any()) return;

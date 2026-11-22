@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -35,7 +36,7 @@ class LODSettings final : public rex::SettingOwner {
 
 };
 
-inline LODSettings g_lod;
+inline LODSettings& g_lod = larecomp::Leak<LODSettings>();
 
 inline auto& lod_city_scale = g_lod.lod_city_scale;
 inline auto& lod_traffic_scale = g_lod.lod_traffic_scale;

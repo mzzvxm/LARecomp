@@ -4,6 +4,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/guest_memory.h>
 #include <cstdint>
@@ -193,7 +194,7 @@ struct PendingDebugOption {
     std::string value;
 };
 
-static std::vector<PendingDebugOption> g_pending_options;
+static std::vector<PendingDebugOption>& g_pending_options = larecomp::Leak<std::vector<PendingDebugOption>>();
 
 static void QueueDebugOption(const std::string& name, const std::string& value) {
     const DebugOption* opt = FindDebugOption(name);

@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "settings/immortal.h"
 #include "imgui_theme.h"
 #include "overlay_support.h"
 #include "mc_engine/core/config_save.h"
@@ -176,7 +177,7 @@ rex::VirtualKey ImGuiKeyToVirtualKey(ImGuiKey key) {
 // When the panel last drew, in steady-clock milliseconds, 0 before the first draw. A hotkey hides an overlay without telling it
 // (IUISystem removes the dialog, OnClose is only for a dialog that ends itself), so "open" is "drew in the last 300 ms".
 std::atomic<int64_t> g_last_draw_ms{0};
-std::filesystem::path g_config_path;
+std::filesystem::path& g_config_path = larecomp::Leak<std::filesystem::path>();
 
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();

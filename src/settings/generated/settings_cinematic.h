@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -144,7 +145,7 @@ class CinematicSettings final : public rex::SettingOwner {
 
 };
 
-inline CinematicSettings g_cinematic;
+inline CinematicSettings& g_cinematic = larecomp::Leak<CinematicSettings>();
 
 inline auto& mcla_cam_cut_blur_fix = g_cinematic.mcla_cam_cut_blur_fix;
 inline auto& mcla_cam_log = g_cinematic.mcla_cam_log;

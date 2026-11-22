@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -164,7 +165,7 @@ class InputSettings final : public rex::SettingOwner {
 
 };
 
-inline InputSettings g_input;
+inline InputSettings& g_input = larecomp::Leak<InputSettings>();
 
 inline auto& adaptive_triggers = g_input.adaptive_triggers;
 inline auto& controller_vibration = g_input.controller_vibration;

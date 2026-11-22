@@ -35,6 +35,7 @@
 #include <utility>
 
 #include "renderer_choice.h"
+#include "settings/immortal.h"
 
 namespace mcla::gpu::fallback {
 
@@ -211,7 +212,7 @@ class StartWatch {
 
 // The one in the program: the app arms it and finishes it, the renderer counts the frames.
 inline StartWatch& Watch() {
-  static StartWatch watch;
+  static StartWatch& watch = larecomp::Leak<StartWatch>();
   return watch;
 }
 

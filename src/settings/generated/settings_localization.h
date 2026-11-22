@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -41,7 +42,7 @@ class LocalizationSettings final : public rex::SettingOwner {
 
 };
 
-inline LocalizationSettings g_localization;
+inline LocalizationSettings& g_localization = larecomp::Leak<LocalizationSettings>();
 
 inline auto& language = g_localization.language;
 
