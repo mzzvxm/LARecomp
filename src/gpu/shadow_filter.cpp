@@ -107,7 +107,7 @@ ShadowFilterConstants CurrentConstants(bool temporal_upscaler, uint64_t frame) {
   const bool pcss = ModeFor(cls, static_cast<Choice>(g_choice.load(std::memory_order_relaxed))) == Mode::kPcss;
   return MakeConstants(cls, larecomp::settings::mcla_gpu_shadow_filter_taps.Get(), larecomp::settings::mcla_gpu_shadow_filter_radius.Get(),
                        g_atlas_scale_inverse.load(std::memory_order_relaxed), larecomp::settings::mcla_gpu_shadow_filter_pcf.Get(),
-                       temporal_upscaler, frame, pcss, larecomp::settings::mcla_gpu_shadow_filter_sun.Get());
+                       temporal_upscaler, frame, pcss, larecomp::settings::mcla_gpu_shadow_filter_sun.Get(), larecomp::settings::mcla_gpu_noise_blue.Get());
 }
 
 void SetAtlasRadiusScale(float scale_inverse) {
