@@ -834,10 +834,13 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     const plume::RenderBufferStructuredView rows_view(sizeof(rr::InstanceRow), 0);
     res.set->setAccelerationStructure(tlas_index_, res.tlas.get());
     res.set->setBuffer(table_index_, res.table.get(), uint64_t(rows.size()) * sizeof(rr::InstanceRow), &rows_view);
-    res.set->setBuffer(indices_index_, indices_.buffer.get(), 0);
-    res.set->setBuffer(normals_index_, normals_.buffer.get(), 0);
+    // The shared mesh buffers exist only once a car mesh was placed; a top level that holds the city and no placed car mesh (the car's draws are in the frame, their meshes were not built or were
+    // given up) names the stand-in instead, as OnResolveCityOnly does: Plume's Vulkan setBuffer ignores a null buffer, which would leave this slot's binding as it was (unwritten, or a buffer
+    // retired since), and a set that names nothing is not valid on every backend.
+    res.set->setBuffer(indices_index_, indices_.buffer ? indices_.buffer.get() : standin_.get(), 0);
+    res.set->setBuffer(normals_index_, normals_.buffer ? normals_.buffer.get() : standin_.get(), 0);
     const plume::RenderBufferStructuredView materials_view(sizeof(uint32_t) * 4, 0);
-    res.set->setBuffer(uvs_index_, uvs_.buffer.get(), 0);
+    res.set->setBuffer(uvs_index_, uvs_.buffer ? uvs_.buffer.get() : standin_.get(), 0);
     res.set->setBuffer(materials_index_, res.materials.get(), uint64_t(material_words.size()) * sizeof(uint32_t), &materials_view);
     NoteMaterials(cars, material_words);
     if (hit_) {
