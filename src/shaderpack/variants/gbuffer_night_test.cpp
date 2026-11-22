@@ -38,6 +38,7 @@
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_compose.h"
 #include "shaderpack/variant_shader_fate.h"
+#include "shaderpack/variant_stage_shaders.h"
 #include "shaderpack/variants/gbuffer.h"
 #include "shaderpack/variants/gbuffer_night.h"
 #include "shaderpack/variants/gbuffer_night_albedo.h"
@@ -649,7 +650,83 @@ void CheckIdentityCheck() {
   Check(!AdditiveError(text, removed).empty(), "the identity check sees a line of the game's that is gone");
 }
 
-// ---- one shader whose text does not fit costs that shader its variant and nothing else (GB-H2-FOLLOW, the review's S5; variant_shader_fate.h) -------------------------------------------------
+// ---- one shader whose text does not fit, or does not compile, costs that shader its variant and nothing else (GB-H2-FOLLOW, the review's S5, and GB-H2-DXC; variant_shader_fate.h, variant_stage_shaders.h) --------
+
+// A progress sink that only records.
+class RecordingSink final : public sp::ProgressSink {
+ public:
+  void BeginPhase(const std::string&, int) override {}
+  void Step(const std::string& item) override { steps.push_back(item); }
+  void Log(sp::LogLevel, const std::string&) override {}
+  bool Cancelled() const override { return cancelled; }
+  std::vector<std::string> steps;
+  bool cancelled = false;
+};
+
+// What the fake compiler does with an edited text: a text with a marker comment in it is rejected the way dxc rejects one (a header line, then the diagnostics), or ends the stage the way a compiler that cannot run does.
+constexpr std::string_view kRejectMarker = "\t// REJECT-ME\n";
+constexpr std::string_view kRejectTwinMarker = "\t// REJECT-ONLY-THE-TWIN\n";
+constexpr std::string_view kStopMarker = "\t// STOP-THE-STAGE\n";
+constexpr std::string_view kDxcDiagnostics = "hlsl.hlsl:12:7: error: use of undeclared identifier 'q'\n  r3.xyz = q;\n  ^\nhlsl.hlsl:12:7: note: another line";
+
+struct FakeCompiler {
+  std::map<std::string, int> calls;  // "<hash of the text>/<spec>" -> how many times the compiler was asked
+  int total = 0;
+  sp::CompileVerdict Compile(const std::string& hlsl, uint32_t spec, const std::string& label, sp::StageBlobs* blobs, std::string* error) {
+    ++total;
+    ++calls[std::to_string(std::hash<std::string>{}(hlsl)) + "/" + std::to_string(spec)];
+    if (Contains(hlsl, kStopMarker)) {
+      *error = "DXIL is not signed for " + label + ": dxcompiler did not find dxil.dll";
+      return sp::CompileVerdict::kStop;
+    }
+    if (Contains(hlsl, kRejectMarker) || (spec != 0 && Contains(hlsl, kRejectTwinMarker))) {
+      *error = "dxc failed for " + label + " (ps_6_0, spec=" + std::to_string(spec) + ", DXIL):\n" + std::string(kDxcDiagnostics);
+      return sp::CompileVerdict::kFailed;
+    }
+    blobs->dxil = {0x44, 0x58, 0x42, 0x43, uint8_t(spec)};
+    blobs->spirv = {0x03, 0x02, 0x23, 0x07, uint8_t(spec)};
+    return sp::CompileVerdict::kOk;
+  }
+};
+
+struct StageCase {
+  std::string name;
+  uint64_t key;
+  std::string text;
+  uint32_t spec_mask;
+  sp::ShaderFate want;  // after the transform; a case that fits and does not compile is checked apart
+};
+
+// Runs the real stage loop (BuildStageShaders) with the real G-buffer transform, a fake translator (the case's text) and the fake compiler; the log lines and the sink's steps come back in the arguments.
+bool RunStage(const sp::VariantDef& def, const std::vector<StageCase>& cases, FakeCompiler* compiler, RecordingSink* sink, std::vector<std::string>* warnings, sp::StageShaders* out, std::string* error) {
+  std::vector<sp::ShaderSource> sources(cases.size());
+  std::vector<sp::Target> targets;
+  for (size_t i = 0; i < cases.size(); ++i) {
+    sources[i].key = cases[i].key;
+    sources[i].name = cases[i].name;
+    sources[i].stage = sp::ShaderStage::kPixel;
+  }
+  for (size_t i = 0; i < cases.size(); ++i) targets.push_back({sp::VariantShader{sources[i].name, sources[i].key}, &sources[i]});
+  sp::StageHooks hooks;
+  hooks.translate = [&](const sp::ShaderSource& source, sp::TranslatedShader* translated, std::string*) {
+    for (const StageCase& c : cases) {
+      if (c.name != source.name) continue;
+      translated->hlsl = c.text;
+      translated->spec_mask = c.spec_mask;
+      translated->stage = sp::ShaderStage::kPixel;
+      return true;
+    }
+    return false;
+  };
+  hooks.compile = [&](const std::string& hlsl, uint32_t spec, const std::string& label, sp::StageBlobs* blobs, std::string* why) { return compiler->Compile(hlsl, spec, label, blobs, why); };
+  hooks.warn = [&](const std::string& line) { warnings->push_back(line); };
+  const chain::FeatureInfo* row = chain::Find(def.feature);
+  if (row == nullptr) {
+    *error = "the stage has no row";
+    return false;
+  }
+  return sp::BuildStageShaders(def, *row, {}, targets, *sink, hooks, out, error);
+}
 
 void CheckPerShaderFailure() {
   const sp::VariantDef def = sp::MakeGBufferVariantFromText(kHelper);
@@ -657,61 +734,125 @@ void CheckPerShaderFailure() {
   const sp::NightAlbedoRow* grass = sp::FindGBufferNightAlbedoRow("xCityGrass__PSMultiLight");
   Check(terrain != nullptr && grass != nullptr, "the two recipes the case uses are in the table");
   if (terrain == nullptr || grass == nullptr) return;
-  // five shaders of the family, as the builder meets them in key order: one that fits (a recipe, its anchor in the text), one whose recipe anchor is NOT in this game's text (the edits do not fit: a failure),
-  // one with no recipe that fits, one the stage leaves out (no per pixel light: a skip), and one more that fits after the failed one
-  struct Case {
-    std::string name;
-    uint64_t key;
-    std::string text;
-    sp::ShaderFate want;
-  };
+  Check(chain::Find(def.feature) != nullptr && chain::Find(def.feature)->spec_twin, "the G-buffer stage has an alpha test twin (the case below needs one)");
+  // Nine shaders of the family, as the builder meets them in key order. Two ways to lose the variant: the edits do not fit the text (a recipe anchor that is not in it: the transform fails), and the
+  // edited text does not compile (the fake compiler rejects a text with a marker in it). Shaders that fit and compile are around them.
   const std::string fits = Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n\t" + std::string(terrain->anchor) + "\n\tr5.w = r7.z * r12.x;\n");
   const std::string other = Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n");
-  const std::vector<Case> cases = {
-      {"xCityTerrain__PSMultiLight", 0x1001, fits, sp::ShaderFate::kBuilt},
-      {"xCityGrass__PSMultiLight", 0x1002, other, sp::ShaderFate::kFailed},
-      {"xCityNothing__PSMultiLight", 0x1003, other, sp::ShaderFate::kBuilt},
-      {"xCityUnlit__PSMultiLight", 0x1004, Shader("\tr3.xyz = r0.xyz * r1.www;\n"), sp::ShaderFate::kLeftOut},
-      {"xCityNothingElse__PSMultiLight", 0x1005, other, sp::ShaderFate::kBuilt},
+  const auto with_marker = [&](std::string_view marker) { return Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n" + std::string(marker)); };
+  const std::vector<StageCase> cases = {
+      {"xCityTerrain__PSMultiLight", 0x1001, fits, 0, sp::ShaderFate::kBuilt},                                     // fits, compiles
+      {"xCityGrass__PSMultiLight", 0x1002, other, 0, sp::ShaderFate::kFailed},                                     // the recipe's anchor is not in the text: the edits do not fit
+      {"xCityNothing__PSMultiLight", 0x1003, other, 0, sp::ShaderFate::kBuilt},                                    // fits, compiles
+      {"xCityUnlit__PSMultiLight", 0x1004, Shader("\tr3.xyz = r0.xyz * r1.www;\n"), 0, sp::ShaderFate::kLeftOut},  // the stage leaves it out (no per pixel light)
+      {"xCityRejected__PSMultiLight", 0x1005, with_marker(kRejectMarker), 0, sp::ShaderFate::kBuilt},              // fits, does NOT compile
+      {"xCityTwin__PSMultiLight", 0x1006, other, 0x5, sp::ShaderFate::kBuilt},                                     // fits, compiles, and has a spec variant 1 (the alpha test twin)
+      {"xCityTwinRejected__PSMultiLight", 0x1007, with_marker(kRejectTwinMarker), 0x5, sp::ShaderFate::kBuilt},   // variant 0 compiles, the twin does NOT: no variant at all
+      {"xCityRejectedToo__PSMultiLight", 0x1008, with_marker(kRejectMarker), 0, sp::ShaderFate::kBuilt},           // the same text as the 5th: fails without asking the compiler again
+      {"xCityLast__PSMultiLight", 0x1009, other, 0, sp::ShaderFate::kBuilt},                                       // after the failures: still built
   };
-  sp::ShaderFateTally tally;
-  std::vector<std::string> built;
-  std::vector<std::string> log_lines;
-  for (const Case& c : cases) {
+  // the fates of the transform alone are the ones the cases say (the compile is the next step's)
+  for (const StageCase& c : cases) {
+    sp::ShaderFateTally one;
     const sp::VariantTransformResult r = def.transform({c.name, c.key}, c.text, sp::SoloContext(sp::kFeatureGBuffer));
-    const sp::ShaderFate fate = tally.Note(c.name, "key" + std::to_string(c.key), r);
-    Check(fate == c.want, c.name + ": the shader's fate is " + std::to_string(int(c.want)) + " (got " + std::to_string(int(fate)) + "; " + r.error + ")");
-    if (fate == sp::ShaderFate::kBuilt) built.push_back(c.name);
-    if (fate == sp::ShaderFate::kFailed) log_lines.push_back(sp::FailedShaderLine(def.name, c.name, "key" + std::to_string(c.key), r.error));
+    Check(one.Note(c.name, "k", r) == c.want, c.name + ": the transform's answer is " + std::to_string(int(c.want)) + " (" + r.error + ")");
   }
-  // the failed shader does not stop the others: the three that fit are built, the one left out is counted by its reason, the failed one is named
-  Check(built.size() == 3 && built[0] == "xCityTerrain__PSMultiLight" && built[2] == "xCityNothingElse__PSMultiLight" && tally.built == 3, "the shaders after a failed one are still built");
-  Check(tally.failed.size() == 1 && tally.failed[0].find("xCityGrass__PSMultiLight [key4098]: ") == 0 && tally.failed[0].find("recipe") != std::string::npos, "one shader failed, named with its key and the reason: " + (tally.failed.empty() ? std::string() : tally.failed[0]));
-  Check(tally.left_out.size() == 1 && tally.left_out.begin()->first == sp::kGBufferNightSkipUnlit && tally.left_out.begin()->second == 1, "the shader the stage leaves out is counted by its reason, apart from the failure");
-  Check(log_lines.size() == 1 && log_lines[0].find("the gbuffer variant was not built for xCityGrass__PSMultiLight [key4098]") != std::string::npos && log_lines[0].find("keeps the game's own shader") != std::string::npos,
-        "one log line per failed shader, which says what happens to it: " + (log_lines.empty() ? std::string() : log_lines[0]));
-  const std::string note = tally.NoteText();
-  Check(note.find("1 left out: ") != std::string::npos && note.find("1 failed (no variant for them); xCityGrass__PSMultiLight [key4098]: ") != std::string::npos, "the summary line names both: " + note);
-  Check(tally.any_failed() && tally.StampText().find("xCityGrass__PSMultiLight [key4098]") == 0 && tally.StampText().find('\n') == std::string::npos, "the stamp line is one line and names the failed shader");
-  // two failures: one line each, in the order met, and the stamp joins them
-  sp::ShaderFateTally two;
-  two.Note("a", "k1", def.transform({"xCityGrass__PSMultiLight", 1}, other, sp::SoloContext(sp::kFeatureGBuffer)));
-  two.Note("b", "k2", def.transform({"xCityGrass__PSMultiLight", 2}, other, sp::SoloContext(sp::kFeatureGBuffer)));
-  Check(two.failed.size() == 2 && two.failed[0].find("a [k1]") == 0 && two.failed[1].find("b [k2]") == 0 && two.StampText().find(" | b [k2]") != std::string::npos, "two failed shaders: two entries, in order, joined in the stamp");
-  // a stage with nothing but failures is not a tally of built shaders: the builder fails the stage (it checks made.empty()) and quotes the first failure
-  Check(two.built == 0 && two.any_failed(), "a stage whose shaders all failed has built none (the builder then fails the stage, with the first reason)");
+
+  FakeCompiler compiler;
+  RecordingSink sink;
+  std::vector<std::string> warnings;
+  sp::StageShaders made;
+  std::string error;
+  const bool ok = RunStage(def, cases, &compiler, &sink, &warnings, &made, &error);
+  // a failed shader does not stop the stage: it is a success with warnings, with the shaders that could be made
+  Check(ok && error.empty(), "the stage succeeds although four of its shaders have no variant: " + error);
+  std::vector<std::string> built_keys;
+  for (const sp::VariantPackNewEntry& e : made.made) built_keys.push_back(std::to_string(e.key) + "/" + std::to_string(e.variant & 1u) + (e.dxil.empty() ? "!" : "") + (e.spirv.empty() ? "!" : ""));
+  const std::vector<std::string> want_keys = {"4097/0", "4099/0", "4102/0", "4102/1", "4105/0"};  // terrain, nothing, twin (variant 0 and 1), last
+  Check(built_keys == want_keys, "the entries are the shaders that fit and compile, a twin with both its words, none for a failed shader (not even the variant 0 of the one whose twin did not compile)");
+  size_t solo_ok = 0;
+  for (const sp::SoloShader& s : made.solo) solo_ok += (s.key == 0x1001 || s.key == 0x1003 || s.key == 0x1006 || s.key == 0x1009) ? 1 : 0;
+  Check(made.solo.size() == 4 && solo_ok == 4, "a composition record for each shader that was made, none for a failed one");
+  Check(made.fates.built == 4 && made.fates.failed.size() == 4 && made.fates.left_out.size() == 1 && made.fates.left_out.begin()->first == sp::kGBufferNightSkipUnlit && made.fates.left_out.begin()->second == 1,
+        "four built, four failed (the edits did not fit once, the text did not compile three times), one left out by its reason");
+  Check(sink.steps.size() == cases.size(), "every shader takes one progress step, made or not (the boot popup's bar ends at its total): " + std::to_string(sink.steps.size()));
+  Check(compiler.total == 6 && compiler.calls.size() == 6, "the compiler is asked once per distinct text and spec, and a second shader with a rejected text does not ask it again: " + std::to_string(compiler.total) + " asked, " + std::to_string(compiler.calls.size()) + " distinct");
+  Check(made.compiles == 3 && made.twin_compiles == 1, "the stage counts its distinct compiles: " + std::to_string(made.compiles) + " + " + std::to_string(made.twin_compiles));
+
+  // one warning per failed shader, in order, each on one line, with the shader, its key and (for a compile) dxc's FIRST error line
+  Check(warnings.size() == 4, "one warning per failed shader: " + std::to_string(warnings.size()));
+  bool lines_ok = warnings.size() == 4;
+  for (const std::string& w : warnings) {
+    lines_ok = lines_ok && w.find('\n') == std::string::npos && w.find('\r') == std::string::npos && Contains(w, "the gbuffer variant was not built for ") && Contains(w, "keeps the game's own shader");
+  }
+  Check(lines_ok, "every warning is one line that says what happens to the shader");
+  if (warnings.size() == 4) {
+    Check(Contains(warnings[0], "xCityGrass__PSMultiLight [0000000000001002]") && Contains(warnings[0], "recipe"), "the edits-do-not-fit warning names the shader and the reason: " + warnings[0]);
+    Check(Contains(warnings[1], "xCityRejected__PSMultiLight [0000000000001005]") && Contains(warnings[1], "its edited text did not compile: hlsl.hlsl:12:7: error: use of undeclared identifier 'q'") && !Contains(warnings[1], "note:") &&
+              !Contains(warnings[1], "r3.xyz"),
+          "the compile warning has dxc's first error line and not the rest: " + warnings[1]);
+    Check(Contains(warnings[2], "xCityTwinRejected__PSMultiLight [0000000000001007]") && Contains(warnings[2], "did not compile"), "the twin that does not compile costs the whole shader, one warning: " + warnings[2]);
+    Check(Contains(warnings[3], "xCityRejectedToo__PSMultiLight [0000000000001008]") && Contains(warnings[3], "error: use of undeclared identifier 'q'"), "a shader that shares the rejected text gets its own warning: " + warnings[3]);
+  }
+  // the summary line and the stamp name them, and say how many there were
+  const std::string note = made.fates.NoteText();
+  Check(Contains(note, "1 left out: ") && Contains(note, "4 failed (no variant for them); xCityGrass__PSMultiLight [0000000000001002]: ") && Contains(note, "; and 1 more") && !Contains(note, "xCityRejectedToo"),
+        "the summary counts the failed shaders and names the first three: " + note);
+  const std::string stamp = made.fates.StampText();
+  Check(stamp.find('\n') == std::string::npos && Contains(stamp, "xCityRejected__PSMultiLight [0000000000001005]: its edited text did not compile: ") && Contains(stamp, " | xCityRejectedToo__PSMultiLight"),
+        "the stamp's line is one line and names every failed shader: " + stamp);
+
+  // a stage whose shaders all failed has made none: the caller (variant_pack.cpp) then fails the stage, quoting the first failure
+  {
+    FakeCompiler c2;
+    RecordingSink s2;
+    std::vector<std::string> w2;
+    sp::StageShaders all_bad;
+    std::string e2;
+    const std::vector<StageCase> bad = {{"xCityRejected__PSMultiLight", 0x2001, with_marker(kRejectMarker), 0, sp::ShaderFate::kBuilt}, {"xCityGrass__PSMultiLight", 0x2002, other, 0, sp::ShaderFate::kFailed}};
+    const bool bad_ok = RunStage(def, bad, &c2, &s2, &w2, &all_bad, &e2);
+    Check(bad_ok && all_bad.made.empty() && all_bad.fates.built == 0 && all_bad.fates.failed.size() == 2 && w2.size() == 2, "all shaders failed: the loop returns with nothing made and both named (the stage then fails, with the first reason)");
+  }
+  // a compiler that cannot be used at all, or a cancel, is not a shader's failure: the stage stops (kStop)
+  {
+    FakeCompiler c3;
+    RecordingSink s3;
+    std::vector<std::string> w3;
+    sp::StageShaders stopped;
+    std::string e3;
+    const std::vector<StageCase> stop = {{"xCityNothing__PSMultiLight", 0x3001, other, 0, sp::ShaderFate::kBuilt},
+                                         {"xCityStopper__PSMultiLight", 0x3002, with_marker(kStopMarker), 0, sp::ShaderFate::kBuilt},
+                                         {"xCityNever__PSMultiLight", 0x3003, other, 0, sp::ShaderFate::kBuilt}};
+    const bool stop_ok = RunStage(def, stop, &c3, &s3, &w3, &stopped, &e3);
+    Check(!stop_ok && Contains(e3, "dxil.dll") && w3.empty() && stopped.fates.failed.empty(), "a compiler that cannot be used stops the stage (no warning per shader): " + e3);
+    FakeCompiler c4;
+    RecordingSink s4;
+    s4.cancelled = true;
+    std::vector<std::string> w4;
+    sp::StageShaders cancelled;
+    std::string e4;
+    const bool cancel_ok = RunStage(def, stop, &c4, &s4, &w4, &cancelled, &e4);
+    Check(!cancel_ok && Contains(e4, "cancelled") && c4.total == 0, "a cancel stops the stage before the compiler is asked: " + e4);
+  }
+  // dxc's first error line
+  Check(sp::FirstErrorLine(std::string("dxc failed for a (ps_6_0, spec=0, DXIL):\n") + std::string(kDxcDiagnostics)) == "hlsl.hlsl:12:7: error: use of undeclared identifier 'q'", "the first error line skips dxc's header line");
+  Check(sp::FirstErrorLine("dxc failed for a (ps_6_0, spec=0, DXIL):\nDXC failed without emitting diagnostics.\n") == "dxc failed for a (ps_6_0, spec=0, DXIL):", "no line says error: the first line that is not empty (the header names the shader)");
+  Check(sp::FirstErrorLine("\r\n  \n\t warning: w\r\nerror: e\r\n") == "error: e" && sp::FirstErrorLine("\n\n").empty() && sp::FirstErrorLine("").empty(), "blank lines and carriage returns are skipped, and nothing gives nothing");
+  const std::string cut = sp::FirstErrorLine("x.hlsl:1:1: error: " + std::string(500, 'y'), 40);
+  Check(cut.size() == 40 && cut.substr(37) == "...", "an overlong line is cut and says so: " + cut);
   // the fate is the transform's own flags: ok, skip, neither
-  sp::VariantTransformResult ok;
-  ok.ok = true;
+  sp::VariantTransformResult ok_result;
+  ok_result.ok = true;
   sp::VariantTransformResult skip;
   skip.skip = true;
   sp::VariantTransformResult bad;
-  Check(sp::FateOf(ok) == sp::ShaderFate::kBuilt && sp::FateOf(skip) == sp::ShaderFate::kLeftOut && sp::FateOf(bad) == sp::ShaderFate::kFailed, "the fate follows the transform's ok / skip flags");
-  // the builder uses it for every shader of a stage (variant_pack.cpp): not an `*error = ...; return false;` of the whole stage
+  Check(sp::FateOf(ok_result) == sp::ShaderFate::kBuilt && sp::FateOf(skip) == sp::ShaderFate::kLeftOut && sp::FateOf(bad) == sp::ShaderFate::kFailed, "the fate follows the transform's ok / skip flags");
+  // the builder goes through the loop for every shader of a stage (variant_pack.cpp), and only dxc's own rejection of a text is a shader's failure there (the rest of the compile's failures stop the stage)
   const std::string builder = ReadFile(std::string(__FILE__).substr(0, std::string(__FILE__).rfind("variants")) + "variant_pack.cpp");
-  Check(!builder.empty() && builder.find("const ShaderFate fate = fates.Note(source->name, Hex64(source->key), variant);") != std::string::npos &&
-            builder.find("if (fate == ShaderFate::kFailed) {") != std::string::npos && builder.find("*error = source->name + \": \" + variant.error;") == std::string::npos,
-        "the builder asks the tally for each shader's fate, and a failed shader no longer fails the stage");
+  Check(!builder.empty() && builder.find("BuildStageShaders(def, *row, vs_keys, targets, sink, hooks, &stage_shaders, error)") != std::string::npos &&
+            builder.find("return CompileChecked(worker, cancelled, formats, stage, hlsl, spec, label, &blobs->dxil, &blobs->spirv, why);") != std::string::npos &&
+            builder.find("case DxcError::kCompileFailed: return CompileVerdict::kFailed;") != std::string::npos,
+        "the builder runs the stage loop with the real compiler, and only dxc's own rejection is a shader's failure");
 }
 
 void CheckVariantDef() {

@@ -13,8 +13,11 @@
 //             other than the retail one (a title update, another translator) one text lost the planes of every shader. The reason this is acceptable is the same as for a left out shader: the draw of
 //             a shader with no variant keeps working with the game's own text; what the stage must never do is write a QUIET wrong value, and a failed shader writes nothing.
 //
+// A shader whose edited text does not COMPILE is the same: `failed`, from CompileFailed (GB-H2-DXC, the review's GB-H2-FOLLOW part: before, one dxc failure of one shader failed the whole
+// stage on the player's PC). It is told apart from the edits not fitting only by the reason text; both lose that shader's variant and nothing else.
+//
 // A stage with no shader that could be built (every one left out or failed) is still a failure of the stage, with the first reason: that is a stage written for another game, not a shader that
-// does not fit. A compile that fails, and a cancel, are not decided here: they stop the stage as before.
+// does not fit. A cancel, and a compiler that cannot be used at all (variant_stage_shaders.h CompileVerdict::kStop), are not decided here: they stop the stage.
 //
 // Pure: no compiler, no I/O (variant_chain_test and gbuffer_night_test call it).
 // ===========================================================================
@@ -48,24 +51,32 @@ struct ShaderFateTally {
   std::map<std::string, size_t> left_out;  // reason -> how many shaders were left out for it
   std::vector<std::string> failed;         // "<shader> [<key>]: <why>", one per failed shader, in the order met
 
-  // Records one shader's answer and says which of the three it was. The caller logs a failed shader with FailedShaderLine.
+  // Records the transform's answer for one shader and says which of the three it was. A shader that was `built` here is not counted yet: the compile can still fail, so the caller says Built()
+  // when its entries are made, or CompileFailed() when they cannot be. The caller logs a failed shader with FailedShaderLine.
   ShaderFate Note(std::string_view shader, std::string_view key_hex, const VariantTransformResult& result) {
     const ShaderFate fate = FateOf(result);
     switch (fate) {
-      case ShaderFate::kBuilt: ++built; break;
+      case ShaderFate::kBuilt: break;
       case ShaderFate::kLeftOut: ++left_out[result.error]; break;
       case ShaderFate::kFailed: failed.push_back(std::format("{} [{}]: {}", shader, key_hex, result.error)); break;
     }
     return fate;
   }
+  // The shader's edits fit and its text compiled: its entries are made.
+  void Built() { ++built; }
+  // The shader's edits fit and its edited text did not compile (or broke the blob contract): no variant for it. `why` is one line.
+  void CompileFailed(std::string_view shader, std::string_view key_hex, std::string_view why) { failed.push_back(std::format("{} [{}]: {}", shader, key_hex, why)); }
   bool any_failed() const { return !failed.empty(); }
-  // For the summary line: "; 3 left out: why; ..." and "; 1 failed: a [key]: why" (empty when there is nothing to say).
+  // For the summary line: "; 3 left out: why; ..." and "; 1 failed (no variant for them); a [key]: why" (empty when there is nothing to say). The first kSummaryFailedNames failed shaders are named
+  // ("; and N more" for the rest): the log has one warning line for each and the stamp names them all, so the one line a pack's summary makes cannot grow with the game's shader count.
+  static constexpr size_t kSummaryFailedNames = 3;
   std::string NoteText() const {
     std::string text;
     for (const auto& [why, count] : left_out) text += std::format("; {} left out: {}", count, why);
     if (!failed.empty()) {
       text += std::format("; {} failed (no variant for them)", failed.size());
-      for (const std::string& line : failed) text += "; " + line;
+      for (size_t i = 0; i < failed.size() && i < kSummaryFailedNames; ++i) text += "; " + failed[i];
+      if (failed.size() > kSummaryFailedNames) text += std::format("; and {} more", failed.size() - kSummaryFailedNames);
     }
     return text;
   }

@@ -40,6 +40,7 @@
 #include "shaderpack/variant_overlap.h"
 #include "shaderpack/variant_pack_format.h"
 #include "shaderpack/variant_shader_fate.h"
+#include "shaderpack/variant_stage_shaders.h"
 #include "shaderpack/variants/bloom_gauss.h"
 #include "shaderpack/variants/car_chrome.h"
 #include "shaderpack/variants/car_selfrefl.h"
@@ -129,36 +130,44 @@ void AddLeftOutLine(const VariantDef& def, std::string_view why, std::vector<Sta
 // One compile of a variant's text for the formats asked (spec: the XENOS_SPEC_CONSTANTS value, 0 for spec variant 0), and what the runtime relies
 // on, read back from the blobs: for a pixel shader the colour output is there, and the coverage output (SV_Coverage / the sample mask) exactly when
 // the draw is the alpha test one (spec != 0), no specialization constant; for a vertex shader the position is invariant and no fast operation reaches
-// it (the checks of the main pack's vertex shaders). Once per text: the same text gives the same blobs. False with *error.
-bool CompileChecked(DxcWorker& worker, const std::function<bool()>& cancelled, uint32_t formats, ShaderStage stage, const std::string& hlsl,
-                    uint32_t spec, const std::string& label, std::vector<uint8_t>* dxil, std::vector<uint8_t>* spirv, std::string* error) {
+// it (the checks of the main pack's vertex shaders). Once per text: the same text gives the same blobs. kFailed with *error: this text does not compile or its
+// blobs break the contract (the shader loses its variant, variant_stage_shaders.h); kStop with *error: a cancel, or a compiler that cannot be used at all (dxil.dll or
+// dxcompiler not usable, DXIL not signed, a blob that is not DXIL / SPIR-V: every shader would fail the same way, so the stage stops, as it always did).
+CompileVerdict CompileChecked(DxcWorker& worker, const std::function<bool()>& cancelled, uint32_t formats, ShaderStage stage, const std::string& hlsl,
+                              uint32_t spec, const std::string& label, std::vector<uint8_t>* dxil, std::vector<uint8_t>* spirv, std::string* error) {
   CompileRequest request;
   request.hlsl = hlsl;
   request.stage = stage;
   request.spec_constants = spec;
   request.name = label;
+  const auto judged = [](const DxcStatus& status) {
+    switch (status.error) {
+      case DxcError::kCompileFailed: return CompileVerdict::kFailed;  // dxc rejected this HLSL (its text is the message)
+      default: return CompileVerdict::kStop;                          // not found / not signed / not a blob / not possible here: not this shader's fault
+    }
+  };
   DxcStatus status;
   if ((formats & kDxil) != 0) {
     status = worker.CompileDxil(request, dxil);
     if (!status.ok()) {
       *error = status.message;
-      return false;
+      return judged(status);
     }
   }
   if (cancelled()) {
     *error = "The shader build was cancelled.";
-    return false;
+    return CompileVerdict::kStop;
   }
   if ((formats & kSpirv) != 0) {
     status = worker.CompileSpirv(request, spirv);
     if (!status.ok()) {
       *error = status.message;
-      return false;
+      return judged(status);
     }
   }
   if (stage == ShaderStage::kPixel && !dxil->empty() && !BytesContain(*dxil, "SV_Target")) {
     *error = label + ": the DXIL has no SV_Target";
-    return false;
+    return CompileVerdict::kFailed;
   }
   Problems problems;
   BlobContractInput blob;
@@ -170,33 +179,20 @@ bool CompileChecked(DxcWorker& worker, const std::function<bool()>& cancelled, u
   blob.spirv = *spirv;
   if (!CheckBlobContract(blob, &problems)) {
     *error = JoinProblems(problems);
-    return false;
+    return CompileVerdict::kFailed;
   }
   if (stage == ShaderStage::kVertex) {
     if (!spirv->empty()) CheckSpirvPosition(label, blob.variant, *spirv, &problems);
     if (!dxil->empty()) CheckDxilPosition(worker, label, blob.variant, *dxil, &problems);
     if (!problems.empty()) {
       *error = JoinProblems(problems);
-      return false;
+      return CompileVerdict::kFailed;
     }
   }
-  return true;
+  return CompileVerdict::kOk;
 }
 
-struct Compiled {
-  std::vector<uint8_t> dxil;
-  std::vector<uint8_t> spirv;
-};
-
-// What one stage made for one shader on its own: the composition pass builds from these.
-struct SoloShader {
-  uint32_t feature = 0;
-  uint64_t key = 0;
-  bool vertex = false;
-  uint32_t spec_mask = 0;  // the shader's spec mask
-  VariantShader shader;
-  const ShaderSource* source = nullptr;
-};
+using Compiled = StageBlobs;  // the blobs of one compile (variant_stage_shaders.h)
 
 class VariantStepImpl final : public VariantStep {
  public:
@@ -245,10 +241,6 @@ class VariantStepImpl final : public VariantStep {
   // The pixel shaders of a variant: the ones it names by identity (found by name when the game is not the
   // retail one), then every one whose name ends with one of its suffixes, in key order (the container set
   // is sorted by key), each once. False with *error when a named shader is not there.
-  struct Target {
-    VariantShader shader;
-    const ShaderSource* source = nullptr;
-  };
   static bool ListTargets(const ContainerSet& set, const VariantDef& def, std::vector<Target>* targets,
                           std::string* error) {
     targets->clear();
@@ -278,7 +270,8 @@ class VariantStepImpl final : public VariantStep {
   // *entries; *note is a few words for the summary line (the compiles, the shaders left out or failed); `solo` gets one
   // record per shader that was made, for the composition pass. A shader whose text the edits do not fit (the transform says
   // !ok, not skip) has no variant and costs the stage nothing else (variant_shader_fate.h): one warning each, and *failed
-  // gets its stamp text. The stage fails only when none of its shaders could be made.
+  // gets its stamp text. The same for a shader whose edited text does not compile (GB-H2-DXC: variant_stage_shaders.h). The stage fails only when none of its shaders could be made, or for a cancel or a
+  // compiler that cannot be used at all.
   bool BuildVariant(const VariantStepInput& input, DxcWorker& worker, const VariantDef& def, uint32_t formats,
                     std::vector<PackEntry>* entries, std::vector<SoloShader>* solo, std::string* note, std::string* failed_stamp, std::string* error) const {
     ProgressSink& sink = *input.sink;
@@ -318,91 +311,21 @@ class VariantStepImpl final : public VariantStep {
       vs_keys[i] = vertex->key;
     }
 
-    // 2. Each shader: the translator's own text, the edits, the blobs (spec variant 0: no alpha test,
-    // the formats of the main pack, the same dxc arguments as every other shader of the pack, dxc.h).
-    // Shaders whose edited text is the same are compiled once (the blobs depend on the text alone).
+    // 2. Each shader: the translator's own text, the edits, the blobs (variant_stage_shaders.h BuildStageShaders: spec variant 0, no alpha test, the formats of the main pack, the same dxc
+    // arguments as every other shader of the pack, dxc.h). Shaders whose edited text is the same are compiled once (the blobs depend on the text alone). A shader whose edits do not fit
+    // or whose text does not compile loses its own variant only; a cancel or an unusable compiler stops the stage.
     std::vector<Target> targets;
     if (!ListTargets(*input.containers, def, &targets, error)) return false;
-    std::unordered_map<std::string, Compiled> compiled;        // by the variant's HLSL
-    std::unordered_map<std::string, Compiled> compiled_twin;   // the spec variant 1 twins: by the HLSL and the spec mask
-    ShaderFateTally fates;                               // what became of each shader: built, left out (by reason), failed (no variant for it)
-    std::vector<PackEntry> made;
-    std::vector<SoloShader> solo_made;
-    const StageContext context = SoloContext(def.feature);
-    for (const Target& target : targets) {
-      const ShaderSource* source = target.source;
-      TranslatedShader translated;
-      if (!TranslateContainer(source->container, &translated, error)) {
-        *error = source->name + ": " + *error;
-        return false;
-      }
-      if (translated.stage != stage) {
-        *error = std::format("{} is not a {} shader", source->name, stage_text);
-        return false;
-      }
-      const VariantTransformResult variant = def.transform(target.shader, translated.hlsl, context);
-      const ShaderFate fate = fates.Note(source->name, Hex64(source->key), variant);
-      if (fate == ShaderFate::kLeftOut) {
-        sink.Step(source->name);
-        continue;
-      }
-      if (fate == ShaderFate::kFailed) {
-        // The edits do not fit THIS text: the shader keeps the game's own shader for this stage and the others still get theirs (variant_shader_fate.h; GB-H2-FOLLOW, the review's S5).
-        SHADERPACK_LOG_WARN("{}", FailedShaderLine(def.name, source->name, Hex64(source->key), variant.error));
-        sink.Step(source->name);
-        continue;
-      }
-      if (sink.Cancelled()) {
-        *error = "The shader build was cancelled.";
-        return false;
-      }
-
-      PackEntry entry;
-      entry.variant = chain::Word(chain::FeatureBit(def.feature), 0);
-      entry.flags = def.vertex ? kVariantEntryVertex : 0;
-      entry.key = source->key;
-      entry.vs_keys = vs_keys;
-      entry.vs_features = chain::VertexNeedsOf(chain::FeatureBit(def.feature));
-      auto found = compiled.find(variant.hlsl);
-      if (found == compiled.end()) {
-        Compiled blobs;
-        if (!CompileChecked(worker, cancelled, formats, stage, variant.hlsl, 0, std::format("{} [{}] ({} variant)", source->name, Hex64(source->key), def.name),
-                            &blobs.dxil, &blobs.spirv, error)) {
-          return false;
-        }
-        found = compiled.emplace(variant.hlsl, std::move(blobs)).first;
-      }
-      entry.dxil = found->second.dxil;
-      entry.spirv = found->second.spirv;
-      made.push_back(std::move(entry));
-      // The spec variant 1 twin (the row's spec_twin): the same text compiled with the shader's own spec mask, for the draws that have the
-      // alpha test or alpha to coverage on (a pixel shader), or the packed normal (a vertex shader). A shader with no spec mask has no
-      // spec variant 1 in the main pack either, so it has no twin.
-      if (row->spec_twin && translated.spec_mask != 0) {
-        const std::string twin_key = variant.hlsl + std::format("\n//spec {}", translated.spec_mask);
-        auto twin = compiled_twin.find(twin_key);
-        if (twin == compiled_twin.end()) {
-          Compiled blobs;
-          if (!CompileChecked(worker, cancelled, formats, stage, variant.hlsl, translated.spec_mask,
-                              std::format("{} [{}] ({} variant, spec variant 1)", source->name, Hex64(source->key), def.name), &blobs.dxil, &blobs.spirv,
-                              error)) {
-            return false;
-          }
-          twin = compiled_twin.emplace(twin_key, std::move(blobs)).first;
-        }
-        PackEntry at;
-        at.variant = chain::Word(chain::FeatureBit(def.feature), 1);
-        at.flags = def.vertex ? kVariantEntryVertex : 0;
-        at.key = source->key;
-        at.vs_keys = vs_keys;
-        at.vs_features = chain::VertexNeedsOf(chain::FeatureBit(def.feature));
-        at.dxil = twin->second.dxil;
-        at.spirv = twin->second.spirv;
-        made.push_back(std::move(at));
-      }
-      solo_made.push_back({def.feature, source->key, def.vertex, translated.spec_mask, target.shader, source});
-      sink.Step(source->name);
-    }
+    StageHooks hooks;
+    hooks.translate = [](const ShaderSource& source, TranslatedShader* out, std::string* why) { return TranslateContainer(source.container, out, why); };
+    hooks.compile = [&](const std::string& hlsl, uint32_t spec, const std::string& label, StageBlobs* blobs, std::string* why) {
+      return CompileChecked(worker, cancelled, formats, stage, hlsl, spec, label, &blobs->dxil, &blobs->spirv, why);
+    };
+    hooks.warn = [](const std::string& line) { SHADERPACK_LOG_WARN("{}", line); };
+    StageShaders stage_shaders;
+    if (!BuildStageShaders(def, *row, vs_keys, targets, sink, hooks, &stage_shaders, error)) return false;
+    ShaderFateTally& fates = stage_shaders.fates;  // what became of each shader: built, left out (by reason), failed (no variant for it)
+    std::vector<PackEntry>& made = stage_shaders.made;
     if (made.empty()) {
       *error = std::format("none of its {} {} shaders is one its edits are for", targets.size(), stage_text);
       if (fates.any_failed()) *error += std::format(" ({} failed, the first: {})", fates.failed.size(), fates.failed.front());
@@ -410,15 +333,15 @@ class VariantStepImpl final : public VariantStep {
     }
     const uint32_t solo_word = chain::Word(chain::FeatureBit(def.feature), 0);
     const size_t shader_entries = size_t(std::count_if(made.begin(), made.end(), [&](const PackEntry& e) { return e.variant == solo_word; }));
-    if (!fates.left_out.empty() || fates.any_failed() || compiled.size() != shader_entries || !compiled_twin.empty()) {
-      const size_t compiles = compiled.size() + compiled_twin.size();
+    if (!fates.left_out.empty() || fates.any_failed() || stage_shaders.compiles != shader_entries || stage_shaders.twin_compiles != 0) {
+      const size_t compiles = stage_shaders.compiles + stage_shaders.twin_compiles;
       *note = std::format("{} compile{}", compiles, compiles == 1 ? "" : "s");
-      if (!compiled_twin.empty()) *note += std::format(", {} of them for spec variant 1", compiled_twin.size());
+      if (stage_shaders.twin_compiles != 0) *note += std::format(", {} of them for spec variant 1", stage_shaders.twin_compiles);
       *note += fates.NoteText();
     }
     *failed_stamp = fates.StampText();
     for (PackEntry& entry : made) entries->push_back(std::move(entry));
-    for (SoloShader& s : solo_made) solo->push_back(std::move(s));
+    for (SoloShader& s : stage_shaders.solo) solo->push_back(std::move(s));
     return true;
   }
 
@@ -534,7 +457,7 @@ class VariantStepImpl final : public VariantStep {
         if (index >= jobs.size() || stop.load(std::memory_order_relaxed)) break;
         Job& job = jobs[index];
         try {
-          job.ok = CompileChecked(*worker, stopped, formats, job.stage, job.hlsl, job.spec, job.label, &job.blobs.dxil, &job.blobs.spirv, &job.error);
+          job.ok = CompileChecked(*worker, stopped, formats, job.stage, job.hlsl, job.spec, job.label, &job.blobs.dxil, &job.blobs.spirv, &job.error) == CompileVerdict::kOk;
         } catch (const std::exception& exception) {
           job.ok = false;
           job.error = std::string("exception: ") + exception.what();
