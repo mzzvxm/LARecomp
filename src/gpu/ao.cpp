@@ -2794,7 +2794,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   // pass was recorded its g channel is combined (the darker). The contact march reads this image in place of the car's alone.
   if (city_shadow_ && city_shadow_->wanted() && contact) {
     CityRtShadow::Inputs city_in;
-    city_in.depth = &depth_[0];
+    city_in.depth = &Depth(0);  // (SS-2: the depth chain belongs to the screen owner now; Depth(level) is its image)
     city_in.tan_x = base.lens[0];
     city_in.tan_y = base.lens[1];
     for (int i = 0; i < 3; ++i) {
