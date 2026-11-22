@@ -61,6 +61,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include "blue_noise.h"
 #include "car_selfrefl_rules.h"
 
 namespace mcla::gpu::car_rt_refl {
@@ -296,13 +297,22 @@ inline Disc ConeDisc(int ray, float turns) {
   const float angle = 6.283185307179586f * (turns + 0.25f * float(ray));
   return {ConeRadius(ray) * std::cos(angle), ConeRadius(ray) * std::sin(angle)};
 }
-// The angle the texel's pattern is turned by, in turns: an interleaved gradient noise of the texel's coordinates (Jimenez 2014), which has
-// no structure the eye picks out, plus a golden step per phase (0 where no temporal upscaler runs: the pattern then stands still on the screen, which
-// the eye takes for the paint's grain; 0 .. 7 by the frame where one does, which averages the pattern out).
-inline float ConeRotation(uint32_t texel_x, uint32_t texel_y, uint32_t phase) {
+// slots.w bit 17 of the pass's push: the cone's turn is the blue noise tile's (mcla_gpu_noise_blue), else the first version's gradient noise (hlsl/car_rt_refl_cs.hlsl kConeBlueFlag).
+inline constexpr uint32_t kConeBlueFlag = 1u << 17;
+// The first version's turn: an interleaved gradient noise of the texel's coordinates (Jimenez 2014) plus the golden step per phase. It is a lattice (a linear phase of the position: a few sharp spatial
+// frequencies), which the denoise's 3x3 passes leave as thin diagonal lines on a panel; kept for mcla_gpu_noise_blue false.
+inline float ConeRotationLegacy(uint32_t texel_x, uint32_t texel_y, uint32_t phase) {
   const float inner = 0.06711056f * float(texel_x) + 0.00583715f * float(texel_y);
   const float noise = 52.9829189f * (inner - std::floor(inner));
   const float sum = (noise - std::floor(noise)) + 0.6180339887f * float(phase);
+  return sum - std::floor(sum);
+}
+// The angle the texel's pattern is turned by, in turns: the blue noise tile at the texel's coordinates (blue_noise.h: no spatial frequency stands out) plus a golden step per phase, the same for every
+// texel (0 where no temporal upscaler runs: the pattern then stands still on the screen, a fixed blue grain the denoise takes the rest out of; 0 .. 7 by the frame where one does, which averages the
+// pattern out; eight golden steps leave no gap over 0.15 of the circle).
+inline float ConeRotation(uint32_t texel_x, uint32_t texel_y, uint32_t phase) {
+  static const blue_noise::Tile tile = blue_noise::MakeTile();
+  const float sum = blue_noise::Sample(tile, 0, int(texel_x), int(texel_y)) + 0.6180339887f * float(phase);
   return sum - std::floor(sum);
 }
 // The direction of ray `ray` of the cone around the mirror direction `mirror` (a unit vector), for the point's normal `normal` (a unit vector)
