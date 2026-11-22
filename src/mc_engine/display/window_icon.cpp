@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -41,9 +42,30 @@ struct IconImage {
   }
 };
 
+// SDL_APP_ID in the environment before the SDK's SDL is first called (see window_icon.h, "The app id"): SDL then names the Wayland window's app_id and the X11 window's
+// class "larecomp", which is the launcher's menu entry, whose icon the desktop shows. A value that is already there stays (the launcher gives the same one; a player may
+// have another). An environment variable and not SDL_SetHint: the hint cannot reach an SDL that is not this executable's own, and the variable is read by both.
+constexpr const char* kAppIdVariable = "SDL_APP_ID";
+
+struct AppIdAtProcessStart {
+  AppIdAtProcessStart() {
+    const char* now = std::getenv(kAppIdVariable);
+    if (!now || !*now) {
+      setenv(kAppIdVariable, kAppId, 1);
+    }
+  }
+};
+const AppIdAtProcessStart g_app_id_at_process_start;
+
 }  // namespace
 
 void SetWindowIcon(rex::ui::IUISystem& ui) {
+  // One line saying what SDL was given (the window is open: the app id went into its app_id / class when it was made).
+  // The id SDL was given, which a player's own SDL_APP_ID may have made another than kAppId: the entry named in the line is the one of that id.
+  const char* app_id = std::getenv(kAppIdVariable);
+  const char* shown = app_id && *app_id ? app_id : "(none)";
+  MC_INFO("[display] window app id: {} (the desktop shows the icon of {}.desktop for it)", shown, shown);
+
   auto native = ui.GetNativeWindow();
   SDL_Window* sdl = native ? static_cast<SDL_Window*>(native->sdl) : nullptr;
   if (!sdl) {
