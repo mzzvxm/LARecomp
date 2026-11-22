@@ -83,6 +83,8 @@ namespace mcla::gpu::volumetrics {
 // shadow taps and the history's weight under a light's motion).
 inline constexpr uint32_t kInjectFlagSliceLamps = 1u;
 inline constexpr uint32_t kInjectFlagSteadyHeads = 2u;
+// bit 2: the voxel's own sample offset is the blue noise tile's (hlsl/volumetrics_noise.hlsli, mcla_gpu_noise_blue), else the first version's interleaved gradient noise slid by the frame (NOISE-AUDIT).
+inline constexpr uint32_t kInjectFlagBlueNoise = 4u;
 // The composite's push (VolApplyPush::slots.w): bits 0 to 7 the host sample that is the guest's sample 0, bit 8: every sample's depth is used (0: sample 0 only),
 // bits 9 and 10 the debug view (0 the picture, 1 the volume's light alone, 2 the same times 8, 3 the same times 32).
 inline constexpr uint32_t kApplyFlagAllSamples = 0x100u;
