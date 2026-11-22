@@ -247,6 +247,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetCarShadowMap(&car_shadow_);
     scene_.SetLocalShadow(&local_shadow_);
     scene_.SetCarRtScene(&car_rt_);
+    car_rt_.SetTextureCache(&textures_);  // the car ray tracing's materials ask it for the textures of the cars beside the player (TextureCache::Peek2D)
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format(), swap_chain_.hdr()) &&
