@@ -56,8 +56,9 @@ constexpr std::string_view LevelName(Level level) {
 
 constexpr Level LevelOfCell(std::string_view cell) { return cell == "high" ? Level::kHigh : cell == "ultra" ? Level::kUltra : Level::kOff; }
 
-// The level a choice comes to on a class. `auto` is gpu_class.h's cell for the class; a hand set level runs on any class that has ray queries (the class
-// rule says what auto picks, not what the player may choose), except Low: a shared memory GPU does not run it at all.
+// The level a choice comes to on a class ALONE (no ray tracing tier: LevelForRung below is the one the renderer and the menu use). `auto` is gpu_class.h's cell for the class, which is older than the
+// tier's table and says off for Mid; a hand set level runs on any class that has ray queries (the class rule says what auto picks, not what the player may choose), except Low: a shared memory GPU does
+// not run it at all.
 constexpr Level LevelFor(gpu_class::GpuClass cls, Choice choice) {
   if (cls == gpu_class::GpuClass::kLow) return Level::kOff;
   switch (choice) {
@@ -77,10 +78,14 @@ constexpr Level LevelFor(gpu_class::GpuClass cls, Choice choice) {
 constexpr Level AutoLevelFor(gpu_class::GpuClass cls, bool available) { return available ? LevelFor(cls, Choice::kAuto) : Level::kOff; }
 
 // The ray tracing tier's say (rt_tier.h): a card that does not trace in hardware (the tier none: a GTX 10 or 16 series card runs DXR in its shaders, far too slowly; the Low class is none too) runs
-// nothing, whatever the class and the choice; every other rung is the class's rule as it was. The budgets follow the tier too: the caller reads BudgetFor with gpu_class::RtClass (a weak card of the
-// High class gets the Mid budget).
+// nothing, whatever the class and the choice. `auto` is rt_tier.h's cell for the rung (kRtShadows: off, high, high for none, weak, strong), NOT gpu_class.h's per-class cell (off, off, high), which said
+// off for a Mid class card that traces in hardware: the two tables disagreed, and the rung's table is the one the launcher's text and the other ray traced effects read, so it decides (a weak card runs
+// it, with the Mid budget below). A hand set level is the player's, on any rung that traces. The budgets follow the tier too: the caller reads BudgetFor with gpu_class::RtClass (a weak card of the High
+// class gets the Mid budget).
 constexpr Level LevelForRung(gpu_class::GpuClass cls, gpu_class::RtTier tier, Choice choice) {
-  if (gpu_class::RtRung(cls, tier) == gpu_class::RtTier::kNone) return Level::kOff;
+  const gpu_class::RtTier rung = gpu_class::RtRung(cls, tier);
+  if (rung == gpu_class::RtTier::kNone) return Level::kOff;
+  if (choice == Choice::kAuto) return LevelOfCell(gpu_class::RtCell(gpu_class::RtEffect::kRtShadows, rung));
   return LevelFor(cls, choice);
 }
 constexpr Level AutoLevelForRung(gpu_class::GpuClass cls, gpu_class::RtTier tier, bool available) { return available ? LevelForRung(cls, tier, Choice::kAuto) : Level::kOff; }

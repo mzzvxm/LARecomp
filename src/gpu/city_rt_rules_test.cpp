@@ -501,7 +501,22 @@ void TestAutoAndPackState() {
           LevelForRung(GpuClass::kHigh, RtTier::kNone, Choice::kUltra) == Level::kOff);
     CHECK(LevelForRung(GpuClass::kHigh, RtTier::kWeak, Choice::kAuto) == Level::kHigh && LevelForRung(GpuClass::kHigh, RtTier::kStrong, Choice::kAuto) == Level::kHigh);
     CHECK(LevelForRung(GpuClass::kHigh, RtTier::kStrong, Choice::kOff) == Level::kOff && LevelForRung(GpuClass::kHigh, RtTier::kWeak, Choice::kUltra) == Level::kUltra);
-    CHECK(LevelForRung(GpuClass::kMid, RtTier::kStrong, Choice::kAuto) == Level::kOff && LevelForRung(GpuClass::kMid, RtTier::kWeak, Choice::kHigh) == Level::kHigh);
+    // `auto` is the rung's cell (rt_tier.h kRtShadows: off, high, high), not the class table's (off for Mid): a Mid class card that traces runs it, with the Mid budget
+    CHECK(LevelForRung(GpuClass::kMid, RtTier::kStrong, Choice::kAuto) == Level::kHigh && LevelForRung(GpuClass::kMid, RtTier::kWeak, Choice::kAuto) == Level::kHigh &&
+          LevelForRung(GpuClass::kMid, RtTier::kNone, Choice::kAuto) == Level::kOff && LevelForRung(GpuClass::kMid, RtTier::kWeak, Choice::kHigh) == Level::kHigh);
+    CHECK(BudgetFor(gpu_class::RtClass(GpuClass::kMid, RtTier::kStrong), Level::kHigh).hi_radius == 150.0f && BudgetFor(gpu_class::RtClass(GpuClass::kMid, RtTier::kWeak), Level::kHigh).on());
+    // every class and tier: the choice `auto` is exactly what rt_tier.h's table says at the class's rung, the menu's AUTO label is the same word, and a hand set level never lies about the tier none
+    for (const GpuClass cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+      for (const RtTier tier : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
+        const std::string_view cell = gpu_class::RtCell(gpu_class::RtEffect::kRtShadows, gpu_class::RtRung(cls, tier));
+        CHECK(LevelForRung(cls, tier, Choice::kAuto) == LevelOfCell(cell));
+        CHECK(AutoLevelForRung(cls, tier, true) == LevelForRung(cls, tier, Choice::kAuto) && AutoLevelForRung(cls, tier, false) == Level::kOff);
+        CHECK(LevelName(AutoLevelForRung(cls, tier, true)) == (gpu_class::RtRung(cls, tier) == RtTier::kNone ? "off" : cell));
+        CHECK(gpu_class::RtRung(cls, tier) != RtTier::kNone || (LevelForRung(cls, tier, Choice::kHigh) == Level::kOff && LevelForRung(cls, tier, Choice::kUltra) == Level::kOff));
+        // a rung that traces runs at least the Mid budget (the class the budget is read with is never Low there)
+        CHECK(gpu_class::RtRung(cls, tier) == RtTier::kNone || BudgetFor(gpu_class::RtClass(cls, tier), LevelForRung(cls, tier, Choice::kAuto)).on());
+      }
+    }
     CHECK(LevelForRung(GpuClass::kLow, RtTier::kStrong, Choice::kHigh) == Level::kOff);
     CHECK(AutoLevelForRung(GpuClass::kHigh, RtTier::kNone, true) == Level::kOff && AutoLevelForRung(GpuClass::kHigh, RtTier::kWeak, true) == Level::kHigh &&
           AutoLevelForRung(GpuClass::kHigh, RtTier::kStrong, false) == Level::kOff);
