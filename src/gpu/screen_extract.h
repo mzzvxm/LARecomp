@@ -286,6 +286,18 @@ constexpr uint32_t KindsFor(bool depth, bool levels, bool normals, bool colour, 
   return kinds;
 }
 
+// The pipelines the START's choices use (SS-PRECACHE), listed with the boot precache: what the AO's own table listed for them before SS-2 moved the passes here (ao.cpp VariantsFor, the old path's
+// list). The depth pass for both sample counts (the host's MSAA level changes while the game runs, msaa_level.h: a switch finds the other made), the coarser level pass, and, where the bounce light
+// is on at the start, the colour chain's three. The fused ones (SS-3) and the normal passes are not here: they were never in that list (a frame goes without a pipeline that is not made yet, and
+// ChainReady lists them the first frame that wants them).
+constexpr uint32_t StartKinds(bool depth, bool mip, bool colour) {
+  uint32_t kinds = 0;
+  if (depth) kinds |= Bit(Kind::kDepth) | Bit(Kind::kDepthMs);
+  if (mip) kinds |= Bit(Kind::kMip);
+  if (colour) kinds |= Bit(Kind::kColour) | Bit(Kind::kColourMs) | Bit(Kind::kColourMip);
+  return kinds;
+}
+
 // --- the cost model --------------------------------------------------------------------------------------------------------------------------
 
 namespace cost {

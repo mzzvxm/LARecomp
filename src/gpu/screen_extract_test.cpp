@@ -601,6 +601,38 @@ void FieldChecks() {
 }
 
 // ---------------------------------------------------------------------------
+// the start's list (SS-PRECACHE): what the owner's pipelines are listed for with the boot precache
+// ---------------------------------------------------------------------------
+
+void StartKindsChecks() {
+  using ex::Bit;
+  using ex::Kind;
+  Check(ex::StartKinds(false, false, false) == 0, "nothing on at the start: no chain pipeline is listed");
+  Check(ex::StartKinds(true, false, false) == (Bit(Kind::kDepth) | Bit(Kind::kDepthMs)), "the depth pass is listed for both sample counts (the MSAA level changes while the game runs)");
+  Check(ex::StartKinds(true, true, false) == (Bit(Kind::kDepth) | Bit(Kind::kDepthMs) | Bit(Kind::kMip)), "the occlusion's start adds the coarser level pass");
+  Check(ex::StartKinds(true, true, true) == (Bit(Kind::kDepth) | Bit(Kind::kDepthMs) | Bit(Kind::kMip) | Bit(Kind::kColour) | Bit(Kind::kColourMs) | Bit(Kind::kColourMip)),
+        "the bounce light's start adds the colour chain's three");
+  Check(ex::StartKinds(false, false, true) == (Bit(Kind::kColour) | Bit(Kind::kColourMs) | Bit(Kind::kColourMip)), "the colour chain is listed on its own flag");
+  // what the AO's own table listed before SS-2 is what the owner lists now: six passes, every one a base kind with an AO pass number, none of the normal passes (never in that list) or the fused ones
+  // (an addition of SS-3, listed by ChainReady the first frame the Hi-Z is wanted)
+  const uint32_t all = ex::StartKinds(true, true, true);
+  int count = 0;
+  bool base_only = (all & ex::kFusedKinds) == 0 && (all & (Bit(Kind::kNormal) | Bit(Kind::kNormalMs))) == 0;
+  for (uint32_t i = 0; i < uint32_t(Kind::kCount); ++i) {
+    if ((all & (1u << i)) == 0) continue;
+    ++count;
+    base_only = base_only && ex::PassOf(Kind(i)) != ex::kNoAoPass && !ex::IsFused(Kind(i));
+  }
+  Check(count == 6 && base_only, "the start lists the six passes the AO's table listed (depth, depth ms, level, colour three), no normal pass and no fused one");
+  // a start list is a superset of what a frame asks for: the kinds of the depth chain (with its levels) and of the colour chain are inside it for the plain and the multisampled sample counts
+  bool covered = true;
+  for (const bool ms : {false, true}) {
+    covered = covered && (ex::KindsFor(true, true, false, false, ms, false) & ~all) == 0 && (ex::KindsFor(false, false, false, true, ms, false) & ~all) == 0;
+  }
+  Check(covered, "every depth or colour chain a frame can ask for, plain or multisampled, is in the start's list (the first frame finds them made)");
+}
+
+// ---------------------------------------------------------------------------
 // the sources
 // ---------------------------------------------------------------------------
 
@@ -716,6 +748,31 @@ void SourceChecks(const std::string& gpu) {
   // the AO no longer holds the images
   Check(!Has(ao_h, "HostImage depth_[3]") && !Has(ao_h, "HostImage depth_full_;") && !Has(ao_h, "HostImage depth_prev_;") && !Has(ao_h, "HostImage normal_;") && !Has(ao_h, "HostImage normal_full_;"),
         "the AO holds none of the depth chain's, the history's or the normal images");
+  // ---- SS-PRECACHE: the owner's chain pipelines are in the boot precache, and a flip of the A/B makes the other side's in the background ----
+  std::string renderer_cpp;
+  Check(Slurp(gpu + "/renderer.cpp", &renderer_cpp), "renderer.cpp can be read");
+  const std::string list_at_start = Between(ext_cpp, "uint32_t ScreenShared::ListChainAtStart(uint32_t kinds) {", "bool ScreenShared::ChainReady(uint32_t kinds) {");
+  Check(!list_at_start.empty() && Has(list_at_start, "precache.Add(KeyOf(kind), kKindNames[i], [this, kind] { return MakeChainPipeline(kind); })") && Has(list_at_start, "chain_listed_ |= bit;") &&
+            !Has(list_at_start, "AddLive") && Has(list_at_start, "if (!passes_ || !wide_layout_) {\n    return 0;"),
+        "ListChainAtStart lists the pipelines with the boot precache (Add, not the late AddLive) under the keys ChainReady and ChainPipeline look for, and only for an owner with its layout");
+  Check(Has(shared_h, "uint32_t ListChainAtStart(uint32_t kinds);") && Has(ext_h, "constexpr uint32_t StartKinds(bool depth, bool mip, bool colour) {"), "the owner's method and the rule it lists by are declared");
+  Check(order(renderer_cpp, {"screen_.Initialize(device_, heap_, passes_, edram_, pass_timing_);", "screen_.ListChainAtStart(ao_.ChainKindsAtStart());", "passes_.precache().Start();"}),
+        "the renderer lists the owner's chain pipelines after the owner's Initialize (its layout and shaders) and before the precache starts");
+  Check(order(renderer_cpp, {"ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, resolve_);", "screen_.ListChainAtStart(ao_.ChainKindsAtStart());"}),
+        "... and after the AO's Initialize, which collected the start's choices");
+  const std::string list_precache = Between(ao_cpp, "void AmbientOcclusion::ListPrecache(", "precache.Note(host_plan::Describe(host_plan::Pass::kOcclusion, occlusion, cls), for_occlusion);");
+  Check(!list_precache.empty() && Has(list_precache, "const bool owner_records_chain = larecomp::settings::mcla_gpu_screen_extract.Get();") && Has(list_precache, "start_chain_kinds_ = 0;") &&
+            Has(list_precache, "if (owner_records_chain) {\n      start_chain_kinds_ |= ChainKindsFor(needs);\n    }") && Has(list_precache, "for (const uint32_t variant : VariantsFor(needs)) {"),
+        "ListPrecache collects the owner's kinds for every group it lists (occlusion, contact shadows, bounce light) while the owner records the chain");
+  Check(Has(ao_cpp, "return screen::extract::StartKinds(needs.depth, needs.mip, needs.bounce && gi_ready_);") && Has(ao_cpp, "if (needs.depth && own_chain) {\n    variants.push_back(kVDepth);\n    variants.push_back(kVDepthMs);\n  }") &&
+            Has(ao_cpp, "if (needs.mip && own_chain) {\n    variants.push_back(kVMip);\n  }") && Has(ao_cpp, "if (!own_chain && (variant == kVColor || variant == kVColorMs || variant == kVColorMip)) {"),
+        "the owner's kinds follow the same conditions as the old path's own variants (depth, level, and the colour chain with the bounce light's shaders): one side lists, the other does not");
+  Check(Has(ao_cpp, "chain_side_ = larecomp::settings::mcla_gpu_screen_extract.Get();  // the side whose chain pipelines the start lists") && Has(ao_h, "uint32_t ChainKindsAtStart() const { return start_chain_kinds_; }"),
+        "the AO remembers the side the start listed and hands its kinds to the renderer");
+  const std::string begin_frame = Between(ao_cpp, "void AmbientOcclusion::BeginFrame() {", "mode_ = mode;");
+  Check(order(begin_frame, {"const bool chain_side = larecomp::settings::mcla_gpu_screen_extract.Get();", "if (chain_side != chain_side_) {", "chain_side_ = chain_side;", "occlusion_built_ = false;",
+                            "contact_built_ = false;", "bounce_built_ = false;", "HoldUntilBuilt(&mode, &contact, &gi_mode);"}),
+        "a flip of mcla_gpu_screen_extract asks HoldUntilBuilt again (before it runs), which lists the other side's pipelines on a worker and holds the effects off until they are made, instead of Pipeline() making them on the render thread");
 }
 
 // ---------------------------------------------------------------------------
@@ -888,6 +945,7 @@ int main(int argc, char** argv) {
   }
   IdentityChecks();
   FieldChecks();
+  StartKindsChecks();
   CostChecks();
   if (!gpu.empty()) {
     SourceChecks(gpu);

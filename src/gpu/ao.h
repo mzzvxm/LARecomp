@@ -553,6 +553,9 @@ class AmbientOcclusion {
 
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
+  // The owner's chain pipelines (screen_extract.h Kind bits) the start's choices use: Renderer lists them with the boot precache through ScreenShared::ListChainAtStart, after ScreenShared::Initialize and
+  // before the precache starts (SS-PRECACHE). 0 when the AO's own table listed its own (mcla_gpu_screen_extract false at the start) or nothing is on.
+  uint32_t ChainKindsAtStart() const { return start_chain_kinds_; }
 
   // The world-space unit vector toward the sun of this frame so far: -c16 of the light most main-view draws carried (the
   // world's light; a car's own draws carry a light of their own, which is not the sun). False when no draw had one.
@@ -962,6 +965,9 @@ class AmbientOcclusion {
   // The start: lists what the settings in force use with the host precache and says so for its log line.
   void ListPrecache(const host_plan::Choice& occlusion, const host_plan::Choice& contact,
                     const host_plan::Choice& bounce);
+  // The shared screen products' chain pipelines (screen_extract.h Kind) that the groups of `needs` use while the owner records the depth chain and the colour chain (mcla_gpu_screen_extract):
+  // the same groups VariantsFor lists the old path's own variants for (kVDepth, kVDepthMs, kVMip, and the bounce light's colour three where its shaders were made).
+  uint32_t ChainKindsFor(const host_plan::AmbientNeeds& needs) const;
   // Every frame, after the settings are read: lists, on a worker, the pipelines of what is on that the
   // start did not list (a setting switched on since), and turns an effect off for this frame until its
   // pipelines are made. Render thread.
@@ -1285,6 +1291,10 @@ class AmbientOcclusion {
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<bool, kVariantCount> pipeline_failed_{};
   std::array<bool, kVariantCount> listed_{};  // with the host precache, at the start or later
+  // SS-PRECACHE: the owner's chain pipelines the start's choices use (screen::extract::Kind bits), for Renderer to hand to ScreenShared::ListChainAtStart before the precache starts; 0 when the
+  // start ran the old path (VariantsFor listed the AO's own then). chain_side_ is the setting's value the pipelines listed so far belong to: a flip makes HoldUntilBuilt list the other side's.
+  uint32_t start_chain_kinds_ = 0;
+  bool chain_side_ = true;
   bool occlusion_built_ = false;  // every pipeline of the occlusion is made (HoldUntilBuilt asks no more)
   bool contact_built_ = false;    // ... of the contact shadows
   bool bounce_built_ = false;     // ... of the bounce light

@@ -169,6 +169,10 @@ class ScreenShared {
   // The pipelines of `kinds` (screen::extract::Bit): listed with the host precache the first time they are asked for (the pass of a first frame is made in the background and the AO goes
   // without until it is: a frame never waits for a compile), and true when every one of them is made. False for good when one could not be made (logged once).
   bool ChainReady(uint32_t kinds);
+  // At the start, after Initialize and BEFORE HostPrecache::Start (SS-PRECACHE): lists the pipelines of `kinds` with the boot precache, so that a cold start makes them with the rest of the boot list and
+  // the first frame that wants them does not have the effects held off until they are made (the AO's own table had them there before SS-2; ChainReady is the late list, for what the start did not
+  // choose). The same pipelines, the same keys: ChainReady and ChainPipeline find them listed. Returns how many were added; a kind with no shader, already listed or failed is skipped.
+  uint32_t ListChainAtStart(uint32_t kinds);
   // The depth chain's images for the frame: level 0, the coarser levels while `frame.levels` (else they go back), the full size depth while `frame.full` (else it goes back). False when one could
   // not be made (logged by the pass layer). The sizes are the AO's (ao_size.h).
   bool EnsureDepth(const screen::extract::Frame& frame);
