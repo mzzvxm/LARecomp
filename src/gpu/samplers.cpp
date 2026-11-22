@@ -21,6 +21,7 @@
 
 #include "descriptors.h"
 #include "device.h"
+#include "sampler_modes.h"
 
 namespace mcla::gpu {
 
@@ -56,17 +57,33 @@ const char* OverrideName(int32_t o) {
   return "?";
 }
 
-plume::RenderTextureAddressMode AddressMode(uint32_t clamp) {
+namespace sm = sampler_modes;
+
+// The guest's clamp mode as the host mode it stands for (before the device is asked what it can make).
+sm::Mode WantedMode(uint32_t clamp) {
   switch (xe::ClampMode(clamp)) {
-    case xe::ClampMode::kRepeat: return plume::RenderTextureAddressMode::WRAP;
-    case xe::ClampMode::kMirroredRepeat: return plume::RenderTextureAddressMode::MIRROR;
-    case xe::ClampMode::kClampToEdge: return plume::RenderTextureAddressMode::CLAMP;
-    case xe::ClampMode::kMirrorClampToEdge: return plume::RenderTextureAddressMode::MIRROR_ONCE;
+    case xe::ClampMode::kRepeat: return sm::Mode::kWrap;
+    case xe::ClampMode::kMirroredRepeat: return sm::Mode::kMirror;
+    case xe::ClampMode::kClampToEdge: return sm::Mode::kClamp;
+    case xe::ClampMode::kMirrorClampToEdge: return sm::Mode::kMirrorOnce;
     // No clamp-to-half-edge on the host; no Direct3D 9 equivalent either (Xenia).
-    case xe::ClampMode::kClampToHalfway: return plume::RenderTextureAddressMode::CLAMP;
-    case xe::ClampMode::kMirrorClampToHalfway: return plume::RenderTextureAddressMode::MIRROR_ONCE;
-    case xe::ClampMode::kClampToBorder: return plume::RenderTextureAddressMode::BORDER;
-    case xe::ClampMode::kMirrorClampToBorder: return plume::RenderTextureAddressMode::MIRROR_ONCE;
+    case xe::ClampMode::kClampToHalfway: return sm::Mode::kClamp;
+    case xe::ClampMode::kMirrorClampToHalfway: return sm::Mode::kMirrorOnce;
+    case xe::ClampMode::kClampToBorder: return sm::Mode::kBorder;
+    case xe::ClampMode::kMirrorClampToBorder: return sm::Mode::kMirrorOnce;
+  }
+  return sm::Mode::kWrap;
+}
+
+// `mirror_once_supported`: the device can make mirror once (Direct3D 12 always; Vulkan with VK_KHR_sampler_mirror_clamp_to_edge). Without it
+// mirror once is mirrored wrap (sampler_modes.h).
+plume::RenderTextureAddressMode AddressMode(uint32_t clamp, bool mirror_once_supported) {
+  switch (sm::ForDevice(WantedMode(clamp), mirror_once_supported)) {
+    case sm::Mode::kWrap: return plume::RenderTextureAddressMode::WRAP;
+    case sm::Mode::kMirror: return plume::RenderTextureAddressMode::MIRROR;
+    case sm::Mode::kClamp: return plume::RenderTextureAddressMode::CLAMP;
+    case sm::Mode::kMirrorOnce: return plume::RenderTextureAddressMode::MIRROR_ONCE;
+    case sm::Mode::kBorder: return plume::RenderTextureAddressMode::BORDER;
   }
   return plume::RenderTextureAddressMode::WRAP;
 }
@@ -101,6 +118,13 @@ void Samplers::Initialize(Device& device, BindlessHeap& heap) {
   override_ = ReadOverride();
   REXLOG_INFO("[gpu] sampler: anisotropic filtering {} (mcla_gpu_anisotropy, live)",
               OverrideName(override_));
+  // Plume's Vulkan device says whether VK_KHR_sampler_mirror_clamp_to_edge is there (Direct3D 12: always).
+  mirror_once_ = device.capabilities().samplerMirrorClampToEdge;
+  if (!mirror_once_) {
+    REXLOG_WARN("[gpu] sampler: this device cannot make mirror-once addressing (no "
+                "VK_KHR_sampler_mirror_clamp_to_edge); the guest's mirror-clamp modes are made as "
+                "mirrored repeat");
+  }
 }
 
 bool Samplers::FrameSettingChanged() {
@@ -170,9 +194,9 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   desc.magFilter = d.mag_linear ? plume::RenderFilter::LINEAR : plume::RenderFilter::NEAREST;
   desc.minFilter = d.min_linear ? plume::RenderFilter::LINEAR : plume::RenderFilter::NEAREST;
   desc.mipmapMode = d.mip_linear ? plume::RenderMipmapMode::LINEAR : plume::RenderMipmapMode::NEAREST;
-  desc.addressU = AddressMode(d.clamp[0]);
-  desc.addressV = AddressMode(d.clamp[1]);
-  desc.addressW = AddressMode(d.clamp[2]);
+  desc.addressU = AddressMode(d.clamp[0], mirror_once_);
+  desc.addressV = AddressMode(d.clamp[1], mirror_once_);
+  desc.addressW = AddressMode(d.clamp[2], mirror_once_);
   desc.anisotropyEnabled = aniso != xe::AnisoFilter::kDisabled;
   desc.maxAnisotropy = desc.anisotropyEnabled ? (1u << (uint32_t(aniso) - 1)) : 1u;
   // CHECK: Vulkan's maxSamplerLodBias is at least 2 and 16 or so on desktop drivers; Plume does not

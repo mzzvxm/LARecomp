@@ -553,6 +553,12 @@ if(WIN32)
     target_compile_definitions(larecomp_crash_options_test PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# The modloader's folder lookups that ignore the case of a name (src/mc_engine/modloader/mod_paths.h; ModRootDir and IsReservedModFolder use them) have a
+# check that needs no game. On a Linux file system it also checks the spellings a Windows-made mod has ("Rims", "Mods"):
+#   cmake --build <build dir> --target larecomp_mod_paths_test, then run <build dir>/larecomp_mod_paths_test (exit 0 = passed).
+add_executable(larecomp_mod_paths_test EXCLUDE_FROM_ALL
+    src/mc_engine/modloader/mod_paths_test.cpp)
+
 # What LARecomp does with each option of the command line (src/settings/cli_rules.h: which options the SDK keeps, which setting
 # belongs to a driver that is not loaded this run, what a name nothing knows costs) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_cli_rules_test, then run <build dir>/larecomp_cli_rules_test (exit 0 = passed).
