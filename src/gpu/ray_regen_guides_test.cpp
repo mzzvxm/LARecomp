@@ -565,7 +565,7 @@ void CheckSources(const std::string& dir) {
   Check(Has(cs, "SsrEnvBrdf(roughness, nov)") && Has(cs, "GB_CLASS_METAL"), "the specular albedo is the resolve's Fresnel: the environment BRDF at the roughness and N.V, a metal's F0 its albedo");
   Check(Has(cs, "pos = float2(texel) + 0.5f - jitter"), "the motion starts from the texel's unjittered place (the jitter taken out)");
   // the registration of the shader
-  Check(Has(cmake, "larecomp_gpu_host_shader(ray_regen_ssr_cs cs_6_0)"), "the CMake line makes the shader (plain Shader Model 6.0: the model AMD needs is for its own runtime)");
+  Check(Has(cmake, "\nlarecomp_gpu_host_shader(ray_regen_ssr_cs cs_6_0)\n"), "the CMake line makes the shader (plain Shader Model 6.0: the model AMD needs is for its own runtime)");
   Check(Has(shaders, "#include \"ray_regen_ssr_cs.hlsl.dxil.h\"") && Has(shaders, "#include \"ray_regen_ssr_cs.hlsl.spirv.h\"") && Has(shaders, "MCLA_GPU_HOST_SHADER_BLOB(ray_regen_ssr_cs)"),
         "host_shaders.h includes both blobs and hands the shader out");
   Check(Has(cmake, "ray_regen_guides.cpp"), "the pass's source is in the library");
@@ -623,7 +623,7 @@ void CheckWiring(const std::string& dir) {
             Has(plan, "SignalModesOf(f, switch_ssr, switch_car_refl)") && Has(plan, "f.armed = true;"),
         "the planner: the plan is the rules', the context is made while it is on and freed after the hold, the runtime is opened only on a Radeon, the modes are the rules'");
   // the row
-  Check(Has(menu, "bool AmdRow()") && Has(menu, "rg::MenuNameOfRr(rg::Vendor::kAmd)") && Has(menu, "rg::AutoLabel(rg::RowEnabled(gate) && rg::AnyAutoConsumerOn(dn::ConsumersOn()))") && Has(menu, "mcla::gpu::rayregen::RowSuffix(AmdGate())") &&
+  Check(Has(menu, "bool AmdRow()") && Has(menu, "rg::MenuNameOfRr(rg::Vendor::kAmd)") && Has(menu, "rg::AutoLabel(rg::RowEnabled(gate) && rg::AnyAutoConsumerOn(dn::ConsumersOn()))") && Has(menu, "mcla::gpu::rayregen::RowSuffix(AmdGate())") && Has(menu, "bool DenoiserEnabled() { return AmdRow() ? mcla::gpu::rayregen::RowEnabled(AmdGate()) :") &&
             Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())") && Has(menu, "const char* const kDenoiserVals[] = {\"auto\", \"rr\", \"ours\"};"),
         "the DENOISER row on a Radeon: the same stored words, the vendor's middle value, AUTO's label, the AMD gate and its suffix; every other card keeps DLSS RR's");
   // the settings (the three generated files)
