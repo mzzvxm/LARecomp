@@ -605,6 +605,10 @@ class Pipelines {
     std::atomic<uint8_t> state{kQueued};
     uint32_t index = 0;               // its place in precached_
     PipelineKey taken_as;             // the session key it went to (claimed or taken)
+    // The worker that began the build (its index in workers_; -1 until it says): the render thread hands it
+    // normal priority when a draw is waiting for it (WaitForBuild, pipeline_wait.h). Written by the worker
+    // right after the state moved to building.
+    std::atomic<int32_t> builder{-1};
     // Why a failed build failed (written with the state, under precache_mutex_): a draw with a fallback key does not make it again, it reports this.
     ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
     ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
@@ -624,6 +628,25 @@ class Pipelines {
   std::unordered_map<PipelineKey, plume::RenderPipeline*, PipelineKeyHash> aliases_;
   std::unordered_map<PipelineKey, Precached*, PipelineKeyHash> precached_by_key_;
   std::vector<std::thread> workers_;
+  // The render thread's wait for a build a worker has begun (pipeline_wait.h). workers_ is reserved before
+  // the first worker starts, so the ones counted by workers_started_ (released after each start) can be
+  // read from the render thread while the others are still being added. worker_raised_[i]: the render
+  // thread gave worker i normal priority for a draw that waited; the worker goes back to its own level
+  // when it takes its next entry.
+  std::atomic<uint32_t> workers_started_{0};
+  std::unique_ptr<std::atomic<bool>[]> worker_raised_;
+  uint32_t handovers_ = 0;      // waits that raised a worker (render thread)
+  uint32_t made_here_too_ = 0;  // waits that ended with the render thread making the pipeline itself
+  // Waits for `state` to leave "building" (precache_mutex_ is taken inside). True: it did. False: the wait
+  // gave up for the render thread to make the pipeline itself (pipeline_wait.h; never when
+  // `may_make_here` is false). `*raised`: a worker was handed normal priority in this wait. Render thread.
+  bool WaitForBuild(const std::atomic<uint8_t>& state, const std::atomic<int32_t>& builder,
+                    bool may_make_here, bool* raised);
+  void RaiseWorker(int32_t index);
+  // Counts a wait that raised a worker or ended with the render thread making the pipeline too, and
+  // writes the first few as a line ("[pipeline] sync wait handover ...").
+  void NoteHandover(const PipelineKey& key, const char* source, bool raised, bool made_here,
+                    uint64_t waited_ns);
   // Where the workers are in the queue (work_mutex_, precache_queue.h): the cursor, and the windows
   // the render thread's claims in boot mode put in front of it (FollowRenderThread). No claim moves the
   // cursor, so no entry is left behind.
@@ -696,6 +719,7 @@ class Pipelines {
     bool low = false;
     bool promoted = false;
     std::atomic<uint8_t> state{kQueued};
+    std::atomic<int32_t> builder{-1};       // the worker that began it (Precached::builder)
     std::unique_ptr<plume::RenderPipeline> pipeline;
     ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
     ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;

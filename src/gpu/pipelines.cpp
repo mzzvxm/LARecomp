@@ -38,6 +38,7 @@
 #include "layout.h"
 #include "mc_engine/core/threading.h"
 #include "os/thread_priority.h"
+#include "pipeline_wait.h"
 #include "shadow_filter.h"
 #include "side_views.h"
 #include "temporal_backend.h"
@@ -329,6 +330,9 @@ constexpr uint32_t kBootBoostBelow = 2 * kMaxPrecacheWorkers;
 // when mcla_gpu_msaa is not set); a start at any other count has its precache queue ordered by it.
 constexpr uint32_t kDefaultStartSamples = 2;
 constexpr std::chrono::seconds kBootSeconds{40};
+// The calling thread's index in workers_ while it is a precache worker (-1 on any other thread): the build it
+// begins is stamped with it, so that a render thread that waits for the build can raise this worker.
+thread_local int32_t t_worker_index = -1;
 
 }  // namespace
 
@@ -553,6 +557,11 @@ void Pipelines::Shutdown() {
   if (sync_log_.builds != 0 || sync_log_.waits != 0) {
     REXLOG_INFO("{}", sync_build_log::FormatSession(sync_log_));
   }
+  if (handovers_ != 0) {
+    REXLOG_INFO("{}", sync_build_log::FormatHandoverSession(handovers_, made_here_too_));
+  }
+  handovers_ = 0;
+  made_here_too_ = 0;
   sync_log_ = sync_build_log::Counters{};
   if (persist_ && shaders_) {
     SaveRecords();
@@ -761,8 +770,14 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
   precache_last_claim_us_ = -1;
   boot_deadline_ = precache_start_ + kBootSeconds;
   boot_mode_ = boot;
+  // workers_ never reallocates while workers are added (the render thread reads the first workers_started_ of
+  // them to raise one that a draw waits for), and a worker's flag exists before it can be raised.
+  workers_started_.store(0, std::memory_order_release);
+  worker_raised_ = std::make_unique<std::atomic<bool>[]>(count);
+  workers_.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     workers_.emplace_back([this, i] { PrecacheWorker(i); });
+    workers_started_.store(i + 1, std::memory_order_release);
   }
   if (setup_threads != 0) {
     REXLOG_INFO("[gpu] pipelines: command line prebuild: precaching {} pipelines ({} of them copies "
@@ -789,6 +804,7 @@ void Pipelines::StopPrecache() {
     stop_precache_ = true;
   }
   work_cv_.notify_all();
+  workers_started_.store(0, std::memory_order_release);
   for (std::thread& worker : workers_) {
     if (worker.joinable()) {
       worker.join();
@@ -821,6 +837,7 @@ void Pipelines::StopPrecache() {
 }
 
 void Pipelines::PrecacheWorker(uint32_t index) {
+  t_worker_index = int32_t(index);
   bool priority_set = false;
   bool priority_boosted = false;
   for (;;) {
@@ -870,6 +887,11 @@ void Pipelines::PrecacheWorker(uint32_t index) {
     // the render thread no longer waits for the list. The command line prebuild has no guest.
     // Below normal, not the background level: a draw that may not be skipped waits for the
     // build under way (Get), and on Linux the lower level could not be given back.
+    // The render thread may have given this worker normal priority for a draw that waited for the
+    // build it was making (WaitForBuild): that build is over, the worker takes its own level again.
+    if (worker_raised_ && worker_raised_[index].exchange(false, std::memory_order_acq_rel)) {
+      priority_set = false;
+    }
     const bool boosted = boot_mode_.load() || setup_mode_;
     if (!priority_set || boosted != priority_boosted) {
       larecomp::os::SetCurrentThreadIntent(boosted ? larecomp::os::ThreadIntent::kNormal
@@ -970,6 +992,7 @@ void Pipelines::BuildPrecached(Precached& p) {
   if (!p.state.compare_exchange_strong(expected, kBuilding)) {
     return;  // the render thread claimed it, or another worker has it
   }
+  p.builder.store(t_worker_index, std::memory_order_release);
   plume::RenderGraphicsPipelineDesc desc;
   ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
   ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
@@ -1010,6 +1033,7 @@ void Pipelines::BuildRequest(Request& r) {
   if (!r.state.compare_exchange_strong(expected, kBuilding)) {
     return;  // the render thread made it itself
   }
+  r.builder.store(t_worker_index, std::memory_order_release);
   plume::RenderGraphicsPipelineDesc desc;
   ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
   ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
@@ -1138,8 +1162,9 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   }
   if (state == kBuilding) {
     const auto t0 = std::chrono::steady_clock::now();
-    std::unique_lock<std::mutex> lock(precache_mutex_);
-    precache_done_.wait(lock, [&] { return p.state.load() != kBuilding; });
+    // A level seed's worker is not stolen from (its books count the seed made once); the rest may be.
+    bool raised = false;
+    const bool finished = WaitForBuild(p.state, p.builder, !p.seed, &raised);
     if (boot_mode_.load()) {
       ++boot_waits_;
     }
@@ -1149,6 +1174,15 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
                                             .count());
     stats_.precache_wait_ns += waited_ns;
     LogSyncWait(key, "list", waited_ns);
+    NoteHandover(key, "list", raised, !finished, waited_ns);
+    if (!finished) {
+      // The worker is still at it (starved, or a slow driver): this thread makes the pipeline too, as if
+      // no worker had begun it. The worker's result stays in the entry, unused, until the list is dropped.
+      miss.take = Take::kMakeHere;
+      p.taken = true;
+      p.taken_as = key;
+      return nullptr;
+    }
   }
   std::lock_guard<std::mutex> lock(precache_mutex_);
   if (p.state.load() != kReady) {
@@ -1249,14 +1283,23 @@ plume::RenderPipeline* Pipelines::TakeRequested(const PipelineKey& key, Miss& mi
     }
     if (state == kBuilding) {
       const auto t0 = std::chrono::steady_clock::now();
-      std::unique_lock<std::mutex> lock(precache_mutex_);
-      precache_done_.wait(lock, [&] { return r.state.load() != kBuilding; });
+      bool raised = false;
+      const bool finished = WaitForBuild(r.state, r.builder, true, &raised);
       ++stats_.request_waits;
       const uint64_t waited_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                               std::chrono::steady_clock::now() - t0)
                                               .count());
       stats_.request_wait_ns += waited_ns;
       LogSyncWait(key, "request", waited_ns);
+      NoteHandover(key, "request", raised, !finished, waited_ns);
+      if (!finished) {
+        // Still being made by a starved worker or a slow driver: made here too (TakePrecached's way). The
+        // worker's request is let go with its own reference.
+        ++stats_.made_here_new;
+        requests_.erase(found);
+        miss.take = Take::kMakeHere;
+        return nullptr;
+      }
     }
   }
   plume::RenderPipeline* raw = AdoptRequest(key, r);
@@ -2226,6 +2269,60 @@ void Pipelines::LogSyncWait(const PipelineKey& key, const char* source, uint64_t
   const uint64_t n = sync_log_.NoteWait(ns);
   if (sync_build_log::LogThis(n)) {
     REXLOG_INFO("{}", sync_build_log::FormatWait(n, frame_, ns, source, WordsOf(key)));
+  }
+}
+
+void Pipelines::NoteHandover(const PipelineKey& key, const char* source, bool raised, bool made_here,
+                             uint64_t waited_ns) {
+  if (!raised && !made_here) {
+    return;
+  }
+  const uint64_t n = ++handovers_;
+  made_here_too_ += made_here ? 1u : 0u;
+  if (sync_build_log::LogThis(n)) {
+    REXLOG_INFO("{}", sync_build_log::FormatHandover(n, frame_, waited_ns, source, raised, made_here,
+                                                     WordsOf(key)));
+  }
+}
+
+void Pipelines::RaiseWorker(int32_t index) {
+  const uint32_t started = workers_started_.load(std::memory_order_acquire);
+  if (index < 0 || uint32_t(index) >= started || !worker_raised_) {
+    return;
+  }
+  larecomp::os::SetThreadIntent(workers_[size_t(index)], larecomp::os::ThreadIntent::kNormal);
+  // After the raise, so that the worker's own re-lowering (at its next entry) cannot come before it.
+  worker_raised_[size_t(index)].store(true, std::memory_order_release);
+}
+
+bool Pipelines::WaitForBuild(const std::atomic<uint8_t>& state, const std::atomic<int32_t>& builder,
+                             bool may_make_here, bool* raised) {
+  const auto began = std::chrono::steady_clock::now();
+  pipeline_wait::Facts facts;
+  facts.may_make_here = may_make_here;
+  std::unique_lock<std::mutex> lock(precache_mutex_);
+  for (;;) {
+    if (state.load() != kBuilding) {
+      return true;
+    }
+    facts.waited_ms = uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - began)
+                                   .count());
+    const int32_t who = builder.load(std::memory_order_acquire);
+    facts.builder_known = who >= 0;
+    switch (pipeline_wait::Next(facts)) {
+      case pipeline_wait::Step::kMakeHere:
+        return false;
+      case pipeline_wait::Step::kRaise:
+        facts.raised = true;
+        *raised = true;
+        RaiseWorker(who);
+        break;
+      case pipeline_wait::Step::kKeepWaiting:
+        break;
+    }
+    precache_done_.wait_for(lock, std::chrono::milliseconds(pipeline_wait::kSliceMs),
+                            [&] { return state.load() != kBuilding; });
   }
 }
 

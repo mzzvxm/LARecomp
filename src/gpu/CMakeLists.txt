@@ -245,6 +245,10 @@ target_include_directories(larecomp_guest_frame_test PRIVATE ${CMAKE_SOURCE_DIR}
 # that needs no renderer:
 #   cmake --build <dir> --target larecomp_sync_build_log_test, then run src/gpu/larecomp_sync_build_log_test (exit 0 = passed).
 add_executable(larecomp_sync_build_log_test EXCLUDE_FROM_ALL sync_build_log_test.cpp)
+# The render thread's wait for a guest pipeline that a worker is making (pipeline_wait.h: after 30 ms the worker gets normal priority, after 400 ms the render thread makes the
+# pipeline too; VK-FIRST-FRAME, the 5.4 s wait of the Vulkan race smoke) has a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_pipeline_wait_test, then run src/gpu/larecomp_pipeline_wait_test (exit 0 = passed).
+add_executable(larecomp_pipeline_wait_test EXCLUDE_FROM_ALL pipeline_wait_test.cpp)
 # The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
 add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)

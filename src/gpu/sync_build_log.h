@@ -132,6 +132,20 @@ inline std::string FormatWait(uint64_t n, uint64_t frame, uint64_t ns, const cha
                      double(ns) / 1.0e6, source, KeyText(k));
 }
 
+// A wait that the render thread did not simply sit out (pipeline_wait.h, VK-FIRST-FRAME): after kRaiseAfterMs the worker that was making the pipeline got normal priority,
+// and/or after kMakeHereAfterMs the render thread made the pipeline itself as well. Its own line (not a "sync wait", whose pattern stall_check.py reads for the waits
+// themselves), numbered and rate limited by its own count:
+//   [pipeline] sync wait handover #2: guest frame 3460, 412.0 ms, list build, worker raised to normal priority, made here too, vs ... ps ..., ...
+inline std::string FormatHandover(uint64_t n, uint64_t frame, uint64_t ns, const char* source, bool raised, bool made_here, const KeyWords& k) {
+  return std::format("[pipeline] sync wait handover #{}: guest frame {}, {:.1f} ms, {} build, {}{}, {}", n, frame, double(ns) / 1.0e6, source,
+                     raised ? "worker raised to normal priority" : "worker not raised", made_here ? ", made here too" : "", KeyText(k));
+}
+
+// The handovers' totals, once, with the session's line.
+inline std::string FormatHandoverSession(uint64_t handovers, uint64_t made_here) {
+  return std::format("[pipeline] sync wait handovers this session: {} wait(s) raised a worker or made the pipeline here too, {} of them made it here", handovers, made_here);
+}
+
 // The session's line, once, when the pipelines are shut down: the exact totals the rate limit hides.
 inline std::string FormatSession(const Counters& c) {
   return std::format(

@@ -102,6 +102,23 @@ void TestWaitLine() {
         "the wait line has the documented shape: " + line);
 }
 
+// VK-FIRST-FRAME: a wait that handed a worker the render thread's priority and/or made the pipeline here too has a line of its own, which stall_check.py's "sync wait #N" pattern
+// must NOT read as one of the waits (it counts those), and a totals line with the session's.
+void TestHandoverLines() {
+  const std::string both = FormatHandover(2, 3460, 412'000'000, "list", true, true, NightKey());
+  Check(both == "[pipeline] sync wait handover #2: guest frame 3460, 412.0 ms, list build, worker raised to normal priority, made here too, vs 0123456789ABCDEF/0 ps "
+                "FEDCBA9876543210/2A, 4 colour target(s), 2x, stencil",
+        "the handover line has the documented shape: " + both);
+  const std::string raised_only = FormatHandover(1, 5, 31'000'000, "request", true, false, NightKey());
+  Check(Has(raised_only, "worker raised to normal priority") && !Has(raised_only, "made here too"), "raised only: " + raised_only);
+  const std::string here_only = FormatHandover(1, 5, 400'000'000, "list", false, true, NightKey());
+  Check(Has(here_only, "worker not raised, made here too"), "made here only: " + here_only);
+  const std::regex wait(R"(\[pipeline\] sync wait #(\d+): guest frame (\d+), ([0-9.]+) ms, (\w+) build, vs)");
+  Check(!std::regex_search(both, wait), "stall_check's wait pattern does not read a handover line as a wait");
+  Check(FormatHandoverSession(3, 1) == "[pipeline] sync wait handovers this session: 3 wait(s) raised a worker or made the pipeline here too, 1 of them made it here",
+        "the handovers' totals line");
+}
+
 void TestSessionLine() {
   Counters c;
   c.NoteBuild(30'000'000);
@@ -168,7 +185,8 @@ void TestStallCheckPatterns() {
 void TestNoErrorWords() {
   const std::string all = FormatBuild(1, 1, 1, Why::kNew, NightKey(), true) + FormatBuild(1, 1, 1, Why::kClaimed, NightKey(), false) +
                           FormatBuild(1, 1, 1, Why::kAgain, NightKey(), false) + FormatWait(1, 1, 1, "list", NightKey()) +
-                          FormatWait(1, 1, 1, "request", NightKey()) + FormatSession(Counters{});
+                          FormatWait(1, 1, 1, "request", NightKey()) + FormatSession(Counters{}) + FormatHandover(1, 1, 1, "list", true, true, NightKey()) +
+                          FormatHandover(1, 1, 1, "request", false, true, NightKey()) + FormatHandoverSession(1, 1);
   for (const char* word : {"fail", "error", "crash", "stalled", "validation", "Watchdog"}) {
     Check(!Has(all, word), std::string("no \"") + word + "\" in any line");
   }
@@ -181,6 +199,7 @@ int main() {
   TestCounters();
   TestBuildLine();
   TestWaitLine();
+  TestHandoverLines();
   TestSessionLine();
   TestStencilWrites();
   TestStallCheckPatterns();
