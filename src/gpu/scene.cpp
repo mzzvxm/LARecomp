@@ -2645,28 +2645,75 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   // The word the draw's shader takes with the G-buffer's stage on top of the features the draw has (the headlight's, on the lit shaders that have both): the best word
   // of the pack for those features, kept only when it has the G-buffer's and every feature the draw already had; the pack decides what composes.
   namespace chain = larecomp::shaderpack::chain;
-  uint32_t vs_word = d.key.vs_variant;
-  if (d.ps && (d.ps->features & ShaderStore::FeatureBit(larecomp::shaderpack::kFeatureGBuffer)) != 0) {
-    const uint32_t before = d.key.ps_variant;
-    const uint32_t word = shaders_.ChooseVariant(*d.ps, chain::FeaturesOf(before) | chain::FeatureBit(larecomp::shaderpack::kFeatureGBuffer), chain::SpecOf(before), d.vs,
-                                                 d.key.vs_variant, &vs_word);
-    if (chain::HasFeature(word, larecomp::shaderpack::kFeatureGBuffer) && (chain::FeaturesOf(word) & chain::FeaturesOf(before)) == chain::FeaturesOf(before)) {
-      facts.variant_word = word;
+  namespace hp = larecomp::gpu::headlight_pass;
+  struct GBufferWord {
+    uint32_t word = 0;     // the pixel word with the G-buffer's stage, 0: the pack has none that keeps the asked features
+    uint32_t vs_word = 0;  // the vertex word to pair with it
+  };
+  const auto pick_word = [&](uint32_t asked) {
+    GBufferWord out;
+    out.vs_word = d.key.vs_variant;
+    if (!d.ps || (d.ps->features & ShaderStore::FeatureBit(larecomp::shaderpack::kFeatureGBuffer)) == 0) {
+      return out;
+    }
+    const uint32_t word = shaders_.ChooseVariant(*d.ps, chain::FeaturesOf(asked) | chain::FeatureBit(larecomp::shaderpack::kFeatureGBuffer), chain::SpecOf(asked), d.vs,
+                                                 d.key.vs_variant, &out.vs_word);
+    if (chain::HasFeature(word, larecomp::shaderpack::kFeatureGBuffer) && (chain::FeaturesOf(word) & chain::FeaturesOf(asked)) == chain::FeaturesOf(asked)) {
+      out.word = word;
       // The day stage's vertex word (gbuffer_day.h, feature kFeatureGBufferVs): the road, the tunnel road and the foliage props' vertex shaders also export the vertex normal
       // (TEXCOORD15, which their pixel shaders' G-buffer words read where it is there and replace by a derivative normal where it is not). No pixel word needs it, so the pack's
       // `needs` never asks for it: this is the pairing, made when the draw's vertex shader has the word (for its own spec variant: the packed normal twin). A draw that gets no
       // sidecar keeps its own vertex word (the key below is only used when the draw attaches).
       // CHECK (not run): that the road / tunnel road / foliage draws take the paired pipelines and the vertex stage's pipelines are made in the background like the pixel stage's
       // (the report's A2 counts the fallback draws); that a night draw of those vertex shaders (whose pixel word never reads TEXCOORD15) is not slower with the export.
-      if (d.vs && chain::FeaturesOf(vs_word) == 0) {
-        const uint32_t gb_vs = chain::Word(chain::FeatureBit(larecomp::shaderpack::kFeatureGBufferVs), chain::SpecOf(vs_word));
+      if (d.vs && chain::FeaturesOf(out.vs_word) == 0) {
+        const uint32_t gb_vs = chain::Word(chain::FeatureBit(larecomp::shaderpack::kFeatureGBufferVs), chain::SpecOf(out.vs_word));
         if (d.vs->HasWord(gb_vs)) {
-          vs_word = gb_vs;
+          out.vs_word = gb_vs;
         }
       }
     }
+    return out;
+  };
+  GBufferWord chosen = pick_word(d.key.ps_variant);
+  facts.variant_word = chosen.word;
+  gbuffer::DrawDecision decision = gbuffer::Decide(facts);
+  // The headlight route `pass` (headlight_pass_rules.h, GB-H2-FOLLOW): the draw asked for the forward headlight (WantedFeatures keeps it in this route), and it keeps it unless the deferred pass lights its
+  // pixels: then the draw is the one the first version of the route made (the word without the headlight, with the G-buffer's stage when it writes), so that every pixel is lit once.
+  bool forward_dropped = false;
+  uint32_t dropped_word = 0;  // the draw's word without the headlight, for a draw that drops it and does not write the planes (a blend that masks them)
+  if (headlight_rig::CurrentRoute() == hp::Route::kPass && chain::HasFeature(d.key.ps_variant, larecomp::shaderpack::kFeatureHeadlight)) {
+    uint32_t without = chain::Word(chain::FeaturesOf(d.key.ps_variant) & ~chain::FeatureBit(larecomp::shaderpack::kFeatureHeadlight), chain::SpecOf(d.key.ps_variant));
+    if (chain::FeaturesOf(without) != 0 && !(d.ps && d.ps->HasWord(without))) {
+      without = chain::SpecOf(without);  // the pack has no word of the other features alone: the main pack's shader
+    }
+    const GBufferWord pass_word = pick_word(without);
+    gbuffer::DrawFacts pass_facts = facts;
+    pass_facts.ps_variant_before = without;
+    pass_facts.variant_word = pass_word.word;
+    const gbuffer::DrawDecision pass_decision = gbuffer::Decide(pass_facts);
+    hp::DrawCover cover;
+    switch (pass_decision.mode) {
+      case gbuffer::PlaneMode::kWrite: cover.carry = hp::Carry::kWrite; break;
+      case gbuffer::PlaneMode::kMask: cover.carry = hp::Carry::kMask; break;
+      case gbuffer::PlaneMode::kClear: cover.carry = hp::Carry::kClear; break;
+      case gbuffer::PlaneMode::kNone: cover.carry = hp::Carry::kNone; break;
+    }
+    constexpr uint32_t kPassPlanes = gbuffer::PlaneBit(gbuffer::kPlaneNormal) | gbuffer::PlaneBit(gbuffer::kPlaneAlbedo);
+    cover.planes_ready = (plan.attached & kPassPlanes) == kPassPlanes;
+    gbuffer_materials_.EnsureLoaded(shaders_.folder());
+    cover.shader_lit = !d.ps || gbuffer_materials_.PassLights(d.ps->key);
+    if (hp::DropsForwardStage(hp::Route::kPass, cover)) {
+      forward_dropped = true;
+      dropped_word = without;
+      facts = pass_facts;
+      chosen = pass_word;
+      decision = pass_decision;
+      if (headlights_) {
+        headlights_->NoteDroppedDraw();
+      }
+    }
   }
-  const gbuffer::DrawDecision decision = gbuffer::Decide(facts);
   gbuffer_->NoteDraw(decision.why, r.ps_identity);
   if (!decision.attach()) {
     return key;
@@ -2700,9 +2747,11 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   key.color_count = slot;
   if (decision.variant != 0) {
     key.ps_variant = decision.variant;
-    if (chain::FeaturesOf(vs_word) != 0) {
-      key.vs_variant = vs_word;  // the vertex stage the draw is paired with: the day stage's export (above), or one a pixel word needs (none today)
+    if (chain::FeaturesOf(chosen.vs_word) != 0) {
+      key.vs_variant = chosen.vs_word;  // the vertex stage the draw is paired with: the day stage's export (above), or one a pixel word needs (none today)
     }
+  } else if (forward_dropped) {
+    key.ps_variant = dropped_word;  // a blend that masks the planes: the pass lights the surface under it, so the draw is its shader without the forward headlight
   }
   d.gbuffer_attached = true;
   d.gbuffer_variant = decision.variant;

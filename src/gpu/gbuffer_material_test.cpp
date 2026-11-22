@@ -611,6 +611,46 @@ void WordForChecks() {
   Check(!empty.Load(std::vector<uint8_t>{1, 2, 3}, &why) && empty.size() == 0, "a file that is not a table leaves the table empty");
 }
 
+// GB-H2-FOLLOW: what the deferred light pass lights (MaterialTable::PassLights): the headlight route `pass` keeps the forward headlight on the draws it does not.
+void PassLightsChecks() {
+  // the eight emissive shaders the night stage holds out of the pass (xCityNeon, xCityStoreSign, the tints and the lamp glass, their interior twins among them), a lit road, a lit prop, a sky shader
+  // (class none), a vertex shader that shares a group with a lit one, a shader the table does not have
+  const uint64_t kNeon = 0x2101, kNeonTint = 0x2102, kStoreSign = 0x2103, kLampGlass = 0x2104, kLampGlassInterior = 0x2105, kPropLampGlass = 0x2106, kPropNeon = 0x2107, kRoad = 0x2108, kBump = 0x2109,
+                 kSky = 0x210A, kRoadVs = 0x210B;
+  gb::MaterialTable table = TableOf({
+      {kNeon, true, "xCityNeon__PSMultiLight"},
+      {kNeonTint, true, "xCityNeonTint__PSMultiLight"},
+      {kStoreSign, true, "xCityStoreSign__PSMultiLight"},
+      {kLampGlass, true, "xCityLampGlassTint__PSMultiLight"},
+      {kLampGlassInterior, true, "xCityLampGlassTint__PSMultiLightInterior"},
+      {kPropLampGlass, true, "xPropLampGlassTint__PSMultiLight"},
+      {kPropNeon, true, "xPropNeonTint__PSMultiLight"},
+      {kRoad, true, "xCityRoad__PSMultiLight"},
+      {kBump, true, "xCityBumpSpec__PSMultiLight"},
+      {kSky, true, "xSkyhat__PSSkyhat"},
+      {kRoadVs, false, "xCityDefault__VSCityDefaultDay"},
+  });
+  for (const uint64_t emissive : {kNeon, kNeonTint, kStoreSign, kLampGlass, kLampGlassInterior, kPropLampGlass, kPropNeon}) {
+    const gb::MaterialRecord* record = table.Find(emissive);
+    Check(record != nullptr && record->cls == gb::SurfaceClass::kEmissive && record->lit == 0 && !table.PassLights(emissive), "an emissive shader is one the pass does not light (class emissive, lit weight 0)");
+  }
+  Check(table.PassLights(kRoad) && table.PassLights(kBump), "a lit shader is lit by the pass");
+  Check(table.Find(kSky) != nullptr && table.Find(kSky)->cls == gb::SurfaceClass::kNone && !table.PassLights(kSky), "a shader of the class none is not lit by the pass");
+  Check(table.PassLights(0x9999) && table.PassLights(0), "a shader the table does not have gets the default word, which the pass lights (so the planes and the forward stage agree)");
+  Check(table.Find(kRoadVs) != nullptr && !table.Find(kRoadVs)->pixel && table.PassLights(kRoadVs), "a vertex shader's record says nothing about a pixel shader's pixels");
+  gb::MaterialTable empty;
+  Check(empty.PassLights(kNeon), "with no table every draw has the default word, and the pass lights it");
+  // the rule follows the weight alone too: a record of a lit class with a lit weight of 0 is not lit
+  const std::vector<gb::NamedShader> one = {{0x3001, true, "xCityRoad__PSMultiLight"}};
+  std::vector<gb::MaterialRecord> records = gb::BuildMaterialRecords(one);
+  Check(records.size() == 1 && records[0].lit != 0, "the road's record has a lit weight");
+  records[0].lit = 0;
+  std::vector<uint8_t> bytes;
+  std::string error, why;
+  gb::MaterialTable zero;
+  Check(gb::LayOutMaterialTable(records, &bytes, &error) && zero.Load(bytes, &why) && !zero.PassLights(0x3001), "a record with a lit weight of 0 is not lit by the pass, whatever its class");
+}
+
 // ---------------------------------------------------------------------------
 // The tables against the game's translated HLSL (given the baseline folder)
 // ---------------------------------------------------------------------------
@@ -808,6 +848,7 @@ int main(int argc, char** argv) {
   BuilderChecks();
   FileChecks();
   WordForChecks();
+  PassLightsChecks();
   if (argc > 1) BaselineChecks(argv[1]);
   std::printf("gbuffer_material_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

@@ -823,6 +823,15 @@ class MaterialTable {
     return at != records_.end() && at->key == key ? &*at : nullptr;
   }
 
+  // Whether the deferred light pass lights what a draw of pixel shader `ps_key` leaves in the planes: the pass skips the pixels whose lit weight (RT2.a) is 0 and the classes none and emissive
+  // (hlsl/local_light_ps.hlsl), so it lights nothing of a shader whose record says so (the neon, the store sign, the lamp glass). A shader the table does not have gets the default word (the world
+  // class, lit: WordFor), which the pass lights. GB-H2-FOLLOW: the headlight route `pass` keeps the forward headlight on the draws for which this is false (headlight_pass_rules.h).
+  bool PassLights(uint64_t ps_key) const {
+    const MaterialRecord* record = Find(ps_key);
+    if (record == nullptr || !record->pixel) return true;
+    return record->lit != 0 && record->cls != SurfaceClass::kEmissive && record->cls != SurfaceClass::kNone;
+  }
+
   // The fetch slot of the texture a per-texture row is keyed by, for a draw made with pixel shader `ps_key`: kNoDiffuseSlot for a shader the table does not have (the draw has the default
   // word, and no row), or one that reads no such texture.
   uint32_t DiffuseSlotOf(uint64_t ps_key) const {

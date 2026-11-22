@@ -42,7 +42,9 @@
 // draws the game's own shader for what is left out. A variant that was left out is in the stamp like a built
 // one (its version line) with a variants_<name>_left_out line that says why, so that the next start is not
 // stale and does not translate the shaders again; it is tried again when its version changes or the game
-// files do. When none could be built the pack has no entries. The step fails (no pack, no stamp lines) only
+// files do. When none could be built the pack has no entries. A SHADER of a variant is judged on its own too: one whose text the edits do not fit,
+// or whose edited text does not compile, has no variant (one warning with the reason, the others still have theirs: variant_shader_fate.h,
+// variant_stage_shaders.h), and a partial set is a success, not a failure. The step fails (no pack, no stamp lines) only
 // for a problem of the build itself (no compiler worker, a file that cannot be written, a cancel). A variant
 // is compiled for spec variant 0 (no alpha test) with the pack's usual
 // dxc arguments; a draw that needs the alpha test keeps the main pack's shader, unless the variant has an alpha test twin (its row's spec_twin: the UI sharpening). Shaders of one variant whose

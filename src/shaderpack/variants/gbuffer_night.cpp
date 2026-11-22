@@ -2,6 +2,7 @@
 
 #include "shaderpack/variants/gbuffer_night.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <format>
 #include <map>
@@ -425,6 +426,10 @@ NightAnalysis AnalyseGBufferNight(std::string_view hlsl, std::string_view name) 
     out.recipe = true;
     out.albedo = AnalyseGBufferNightAlbedoRow(text, *row);
   }
+  if (const NightMixRow* row = name.empty() ? nullptr : FindGBufferNightMixRow(name)) {
+    out.mix_row = true;  // the road's lit colour is lerped to the planar reflection: the lit weight keeps what the game keeps (gbuffer_night_albedo.h)
+    out.mix = AnalyseGBufferNightMixRow(text, *row);
+  }
   if (all_pristine) {
     out.interpolant = true;
     out.expression = LaneList(found, true);
@@ -452,14 +457,14 @@ namespace {
 
 // The write of the planes after the game's last colour statement: RT1, the normal (under GB_MODE_WRITE_NORMAL), then RT2, the albedo and the lit weight (gbuffer_albedo.h, under
 // GB_MODE_WRITE_ALBEDO), then RT3, the smoothness, the class and the flags of the draw's material word in g_GBufferMode.y (gbuffer_material_plane.h, under GB_MODE_WRITE_MATERIAL).
-std::string NightWriteBlock(std::string_view normal_expression, const GBufferAlbedo& albedo, std::string_view occlusion) {
+std::string NightWriteBlock(std::string_view normal_expression, const GBufferAlbedo& albedo, std::string_view occlusion, std::string_view mix) {
   return "\n\toC1 = float2(0.0f, 0.0f);\n"
          "\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n"
          "\t\toC1 = GbRt1Encode(" +
          std::string(normal_expression) +
          ");\n"
          "\t}" +
-         GBufferAlbedoWriteText(albedo, occlusion) + GBufferMaterialWriteText();
+         GBufferAlbedoWriteText(albedo, occlusion, mix) + GBufferMaterialWriteText();
 }
 
 }  // namespace
@@ -495,6 +500,10 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
   }
   // A shader with a recipe is promised an albedo: when its anchor is not there the HLSL is not the one the recipe was written for, and the variant is not built (never a quiet "no data").
   if (found.recipe && !found.albedo.found) return fail("the albedo recipe does not fit this text: " + found.albedo.why_not);
+  // The same for a reflection mix row: the lit weight would keep what the game does not.
+  if (found.mix_row && !found.mix.found) return fail("the reflection mix row does not fit this text: " + found.mix.why_not);
+  // A mix is a factor of the lit weight, which only exists where the shader writes an albedo.
+  const std::string mix_expression = found.mix_row && found.albedo.found ? std::string(kGBufferMixCapture) : std::string();
   std::string error;
 
   // The interpolants the expression reads must be declared once, as the translator makes them.
@@ -508,19 +517,21 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
     }
   }
 
-  // 0. The captures: of a normal the shader computes, before the statement that uses it, and of the diffuse texel the shader overwrites later, right after its fetch (offsets of the text
-  // as it is now: first, the later offset first so that the earlier one does not move).
+  // 0. The captures: of a normal the shader computes, before the statement that uses it, of the diffuse texel the shader overwrites later, right after its fetch, and (GB-H2-REVIEW) of the
+  // road's reflection weight (offsets of the text as it is now: the later offset first so that the earlier one does not move; at one offset the normal's goes in first, so the albedo's and
+  // the weight's come before it, as they did with two).
   {
     const GBufferAlbedo& albedo = found.albedo;
-    const bool capture_albedo = albedo.found && albedo.captured;
-    const bool capture_normal = found.capture_at != std::string::npos;
-    if (capture_albedo && capture_normal && albedo.capture_at <= found.capture_at) {
-      text.insert(found.capture_at, found.capture);
-      text.insert(albedo.capture_at, albedo.capture);
-    } else {
-      if (capture_albedo) text.insert(albedo.capture_at, albedo.capture);
-      if (capture_normal) text.insert(found.capture_at, found.capture);
-    }
+    struct Capture {
+      size_t at;
+      const std::string* text;
+    };
+    std::vector<Capture> captures;
+    if (found.capture_at != std::string::npos) captures.push_back({found.capture_at, &found.capture});
+    if (albedo.found && albedo.captured) captures.push_back({albedo.capture_at, &albedo.capture});
+    if (!mix_expression.empty()) captures.push_back({found.mix.capture_at, &found.mix.capture});
+    std::stable_sort(captures.begin(), captures.end(), [](const Capture& a, const Capture& b) { return a.at > b.at; });
+    for (const Capture& capture : captures) text.insert(capture.at, *capture.text);
   }
 
   // 1. The second, third and fourth outputs, after the game's colour output (before the SV_Coverage of the alpha test spec variant): RT1 the normal, RT2 the albedo and the lit weight, RT3
@@ -549,14 +560,15 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
   // 4. The write, after the game's last statement of the colour (so after the alpha test's discard).
   static constexpr Piece kWrite[] = {Lit("oC0 = applyBlendPremult(oC0);")};
   if (!ReplaceOnce(text, kWrite, 0, 0, "the game's colour write",
-                   [&](std::string_view group) { return std::string(group) + NightWriteBlock(found.expression, found.albedo, found.occlusion); }, &error)) {
+                   [&](std::string_view group) { return std::string(group) + NightWriteBlock(found.expression, found.albedo, found.occlusion, mix_expression); }, &error)) {
     return fail(std::move(error));
   }
 
   // What the text must hold now: the second, third and fourth outputs, one call each, the helpers once, the captures as many times as they were made.
   const std::string call = "oC1 = GbRt1Encode(" + found.expression + ");";
   const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + found.albedo.expression + "), GbMaterialLit(g_GBufferMode.y)" +
-                                  (found.occlusion.empty() ? std::string() : " * saturate(" + found.occlusion + ")") + ");";
+                                  (found.occlusion.empty() ? std::string() : " * saturate(" + found.occlusion + ")") +
+                                  (mix_expression.empty() ? std::string() : " * saturate(1.0f - " + mix_expression + ")") + ");";
   const struct {
     std::string_view needle;
     size_t want;
@@ -577,6 +589,7 @@ VariantTransformResult TransformGBufferNightHlsl(const VariantShader& shader, st
       {"oC0 = applyBlendPremult(oC0);", 1},
       {"float3 gbNormal = ", found.capture_at == std::string::npos ? 0u : 1u},
       {"float3 gbAlbedo = ", found.albedo.found && found.albedo.captured ? 1u : 0u},
+      {"float gbMix = ", mix_expression.empty() ? 0u : 1u},
       {"\x01", 0},
   };
   for (const auto& check : kChecks) {

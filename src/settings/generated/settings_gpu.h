@@ -1680,8 +1680,13 @@ class GPUSettings final : public rex::SettingOwner {
     "for the cars and people (drawn every frame), which costs one more tile of video memory a lamp and saves the world's draws. 0: one tile a lamp, everything drawn every frame. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
   REX_SETTING(std::string, mcla_gpu_headlight_pass, "forward", "Diagnostic (the forward headlight stage against the deferred local light pass, GB-H2, the A/B): which of the two lights the cars' headlights. forward (the default): the lit shaders' headlight variant lights, as the game has always had it. "
-    "pass: the variant is not used and the deferred local light pass lights the headlights of the same cars with their shadows from the atlas (it also reaches the lit shaders the variant leaves out, the cars' paint and the pedestrians; needs the G-buffer's planes, which it asks for while HEADLIGHTS is on, and runs whatever mcla_gpu_local_lights says). "
+    "pass: the deferred local light pass lights the headlights of the same cars with their shadows from the atlas (it also reaches the lit shaders the variant leaves out, the cars' paint and the pedestrians; needs the G-buffer's planes, which it asks for while HEADLIGHTS is on, and runs whatever mcla_gpu_local_lights says), and the variant stays only on the draws the pass does not light (mcla_gpu_headlight_pass_keep_forward). "
     "both: the variant lights and the pass adds the same lights again (the sum of the two: for the difference pictures). HEADLIGHTS (mcla_gpu_headlights) stays the master of both. Live.", rex::kDebugOnly, rex::Allowed("forward", "pass", "both"));
+
+  REX_SETTING(bool, mcla_gpu_headlight_pass_keep_forward, true, "Diagnostic (the forward headlight stage against the deferred local light pass, GB-H2, the A/B of the headlight route pass): in the route pass the lit shaders' headlight variant stays on the draws the deferred pass does not light "
+    "(the neon, the store sign and the lamp glass, which the pass skips as emissive; a draw the G-buffer does not carry, such as a pipeline still being made or a view that is not the main one; a draw that clears the planes), so what is "
+    "in the beam is not left dark; the draws the pass does light drop it, so a pixel is lit once. Off: the route pass takes the variant away from every draw, as the first version did (what the pass does not light gets no headlight). No "
+    "effect in the routes forward and both. Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_light_pick, "unified", "Diagnostic (the one picker of the lights, LIGHT-UNIFY U3): how the lights are picked. unified (the default): the headlight rig's four lights and the "
     "cars that get shadow views are picked by one rule (how much of a beam is in the view, the distance, a place kept by the one that holds it), with every "
@@ -2243,6 +2248,7 @@ inline auto& mcla_gpu_lamp_shadows_view = g_gpu.mcla_gpu_lamp_shadows_view;
 inline auto& mcla_gpu_lamp_shadows_lamps = g_gpu.mcla_gpu_lamp_shadows_lamps;
 inline auto& mcla_gpu_lamp_shadows_cache = g_gpu.mcla_gpu_lamp_shadows_cache;
 inline auto& mcla_gpu_headlight_pass = g_gpu.mcla_gpu_headlight_pass;
+inline auto& mcla_gpu_headlight_pass_keep_forward = g_gpu.mcla_gpu_headlight_pass_keep_forward;
 inline auto& mcla_gpu_light_pick = g_gpu.mcla_gpu_light_pick;
 inline auto& mcla_gpu_light_pick_record = g_gpu.mcla_gpu_light_pick_record;
 inline auto& mcla_gpu_light_frame = g_gpu.mcla_gpu_light_frame;

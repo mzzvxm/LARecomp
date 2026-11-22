@@ -234,6 +234,7 @@ class LocalLights {
   bool contact_on_ = true;  // GB-NEON-CONTACT: mcla_gpu_neon_contact: a neon light is shut out of the car's own panels (the contact term of GB-NEON-BLEED), live
   larecomp::gpu::local_lights::Tier tier_ = larecomp::gpu::local_lights::Tier::kMedium;  // the budgets' tier: the light shadows' level
   larecomp::gpu::headlight_pass::Route route_ = larecomp::gpu::headlight_pass::Route::kForward;  // GB-H2: which of the two ways lights the frame's headlights (mcla_gpu_headlight_pass)
+  bool keep_forward_ = true;  // GB-H2-FOLLOW: mcla_gpu_headlight_pass_keep_forward as last logged
   bool planes_wanted_ = false;  // the G-buffer's planes and the shared depth are wanted this frame (the setting is on, or the route's headlights are, or a neon car is lit and has a light that can reach the picture)
   // GB-NEON: NEON LIGHT (mcla_gpu_neon_light resolved for this card) is on; a car with a lit neon is in the hook's table and one of its lights can reach the picture (held neon_light.h kHoldFrames after the last one: neon_hold_); the gain; the frame's cars.
   bool on_for_lights_ = false;  // the pass runs for its own setting or the headlight route (not for NEON LIGHT alone): the interval line is always said then

@@ -564,6 +564,7 @@
 {"mcla_gpu_lamp_shadows_lamps", "MCLA/GPU"},
 {"mcla_gpu_lamp_shadows_cache", "MCLA/GPU"},
 {"mcla_gpu_headlight_pass", "MCLA/GPU"},
+{"mcla_gpu_headlight_pass_keep_forward", "MCLA/GPU"},
 {"mcla_gpu_light_pick", "MCLA/GPU"},
 {"mcla_gpu_light_pick_record", "MCLA/GPU"},
 {"mcla_gpu_light_frame", "MCLA/GPU"},

@@ -85,7 +85,9 @@ namespace larecomp::shaderpack {
 //    metal, the tinted prop and the traffic body write an albedo to RT2 where they wrote "no data" (the deferred headlights light them); no other shader's text changes. A pack of 8 is stale.
 // 10: the night stage's baked occlusion in RT2.a (kGBufferNightOcclusionRows, kGBufferNightAlbedoVersion 2): 52 shaders write the lit weight times the vertex alpha the game multiplies its lights by.
 //    A pack of 9 is stale.
-inline constexpr uint32_t kGBufferVariantVersion = 10;
+// 11: the road's and the tunnel road's lit weight also keeps `1 - w` of the planar reflection mix the game lerps its lit colour with (kGBufferNightMixRows, kGBufferNightAlbedoVersion 3,
+//    GB-H2-REVIEW). A pack of 10 is stale.
+inline constexpr uint32_t kGBufferVariantVersion = 11;
 
 // The pixel shaders, by name (the group and the entry point, as the translator names its HLSL files). Found by name alone: the identities are whatever
 // the game's containers hold.

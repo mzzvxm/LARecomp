@@ -322,11 +322,15 @@ void LocalLights::BeginFrame() {
       REXLOG_INFO("{} off", kPrefix);
     }
   }
-  if (route != route_) {
+  // GB-H2-FOLLOW: in `pass` the forward stage stays on the draws the pass does not light unless mcla_gpu_headlight_pass_keep_forward is off (headlight_pass_rules.h).
+  const bool keep_forward = st::mcla_gpu_headlight_pass_keep_forward.Get();
+  if (route != route_ || keep_forward != keep_forward_) {
     route_ = route;
-    REXLOG_INFO("{} headlight route {} (mcla_gpu_headlight_pass; live): the forward headlight stage (the lit shaders' variant) is {}, the pass {} the frame's headlights{}", kPrefix, hp::RouteName(route),
-                hp::ForwardStageOn(route) ? "on" : "OFF", hp::PassLightsHeadlights(route) ? "lights" : "does not light",
-                hp::PassLightsHeadlights(route) ? " with their shadows from the atlas (the one lookup)" : "");
+    keep_forward_ = keep_forward;
+    const char* stage = !hp::ForwardStageOn(route, keep_forward) ? "OFF" : (route == hp::Route::kPass ? "kept on the draws the pass does not light (the neon, the store sign, the lamp glass, the draws with no planes)" : "on");
+    REXLOG_INFO("{} headlight route {} (mcla_gpu_headlight_pass{}; live): the forward headlight stage (the lit shaders' variant) is {}, the pass {} the frame's headlights{}", kPrefix, hp::RouteName(route),
+                route == hp::Route::kPass ? (keep_forward ? ", mcla_gpu_headlight_pass_keep_forward on" : ", mcla_gpu_headlight_pass_keep_forward off") : "", stage,
+                hp::PassLightsHeadlights(route) ? "lights" : "does not light", hp::PassLightsHeadlights(route) ? " with their shadows from the atlas (the one lookup)" : "");
   }
   // The wants (sticky; the G-buffer and the shared products read them at their own BeginFrame, which the Scene runs after this): with the pass off nothing asks for any plane or product,
   // so no sidecar is made and the AO's depth chain runs for nobody. A route that gives the pass the headlights (GB-H2) wants them only while HEADLIGHTS is on (a rig with no light has nothing for

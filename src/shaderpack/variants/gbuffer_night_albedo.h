@@ -25,7 +25,9 @@
 //
 // WHAT STAYS WITHOUT ONE (kGBufferNightHeadlightExempt): the lit weight of an EMISSIVE class is 0 (gbuffer_material.h), the light pass never lights an emissive surface (RT2.a = 0), so an albedo
 // there would change nothing: the neon and the lamp glass tints (5 shaders) keep the "no data" code, and a headlight no longer lights a neon tube or a lamp lens, which the forward stage did by
-// accident of adding the sum of the lights to their colour. The tangent space bump decal (xCityTintBumpDecal) has no world normal in its text, so it has no stage at all (kGBufferNightSkipTangent).
+// accident of adding the sum of the lights to their colour. The plain neon and the store sign (xCityNeon, xCityStoreSign: GB-H2-REVIEW) do have a diffuse texel, but their class is emissive too, so
+// their weight is 0 and the pass skips them just the same: they are on the list with the tints (8 shaders), not among the covered ones, and carry no occlusion row. The tangent space bump decal
+// (xCityTintBumpDecal) has no world normal in its text, so it has no stage at all (kGBufferNightSkipTangent).
 // ===========================================================================
 
 #include <cstddef>
@@ -39,8 +41,9 @@
 
 namespace larecomp::shaderpack {
 
-// Hand bumped with any change of the table below (it is part of the G-buffer variant's text: also bump gbuffer.h's kGBufferVariantVersion).
-inline constexpr uint32_t kGBufferNightAlbedoVersion = 2;  // 1: the albedo recipes; 2: the baked occlusion rows (RT2.a)
+// Hand bumped with any change of the tables below, as the record of what changed (also bump gbuffer.h's kGBufferVariantVersion); the tables themselves are in the variant's fingerprint
+// (NightTablesFingerprintText), so a pack made from other rows is stale even when nobody bumped it.
+inline constexpr uint32_t kGBufferNightAlbedoVersion = 3;  // 1: the albedo recipes; 2: the baked occlusion rows (RT2.a); 3: the road's planar reflection mix (RT2.a)
 
 enum class NightAlbedoSite : uint8_t {
   kBefore,  // the capture goes right before the anchor statement
@@ -103,6 +106,8 @@ inline constexpr NightHeadlightExempt kGBufferNightHeadlightExempt[] = {
     {"xCityLampGlassTint__PSMultiLight", kExemptEmissive},
     {"xCityLampGlassTint__PSMultiLightInterior", kExemptEmissive},
     {"xCityNeonTint__PSMultiLight", kExemptEmissive},
+    {"xCityNeon__PSMultiLight", kExemptEmissive},
+    {"xCityStoreSign__PSMultiLight", kExemptEmissive},
     {"xCityTintBumpDecal__PSMultiLight", kExemptTangent},
     {"xPropLampGlassTint__PSMultiLight", kExemptEmissive},
     {"xPropNeonTint__PSMultiLight", kExemptEmissive},
@@ -124,6 +129,14 @@ inline const NightHeadlightExempt* FindGBufferNightHeadlightExempt(std::string_v
 // decal layer). The shaders that have no row do not have the factor (the LOD and foliage materials, the props' metal and default, the ocean, the emissive tints, the traffic body) or were not clean
 // in the measurement (the interior twins of the grime and decal families, whose ambient is picked with a flag), or write no albedo anyway (the interior twins of the road, the tunnel road,
 // the grime metal and the bump spec tints): they keep the draw's weight alone, exactly as before.
+// CHECK (GB-H2-FOLLOW, no row added): six interior twins have an albedo and no occlusion row: xCityBumpSpec, xCityGrime, xCityGrimeDecal, xCityGroundGrime, xCityGroundGrimeDecal and
+// xCityGroundDecalGrime, all __PSMultiLightInterior. The review's probe (perf/scripts/gb_h2_review_probes/perseed.py: scale iColor1.w by 1.25, read the ambient term) gives exactly 1.25 on 6 of 6 seeds
+// for all six, so a row of power 1 would be as exact for their ambient as the 48 above. What stops it: these shaders weigh each lamp group by its own channel of iColor1 (not one factor over the
+// whole sum), and pick the ambient by a draw level constant test (ShaderGlobals.z against a literal), and with that test one way a lamp colour term scales by iColor1.w with it (1.25) and the other
+// way it does not scale at all (1.0, 3 of 5 seeds for xCityGrime and xCityGrimeDecal). The forward headlight stage never edited an interior twin, so there is no forward picture to match. A row would
+// darken the headlight on these walls by the baked occlusion exactly when the game's own lamps are darkened by it, and wrongly (too dark) when the test runs the other way; no row leaves the light
+// undarkened (brighter than a lamp beside it where the test runs the first way). Decide by the picture: a garage or tunnel wall in the beam (these shaders are the grime and decal layers of such
+// walls), pass against the lamp-lit wall beside it, before adding `{"<name>", 1}` rows (and bump gbuffer.h's kGBufferVariantVersion: the tables' text is in the fingerprint anyway).
 struct NightOcclusionRow {
   std::string_view name;
   uint8_t power;  // 1: iColor1.w, 2: iColor1.w * iColor1.w
@@ -150,8 +163,6 @@ inline constexpr NightOcclusionRow kGBufferNightOcclusionRows[] = {
     {"xCityGroundDecalGrime__PSMultiLight", 1},
     {"xCityGroundGrimeDecal__PSMultiLight", 1},
     {"xCityGroundGrime__PSMultiLight", 1},
-    {"xCityNeon__PSMultiLight", 1},
-    {"xCityNeon__PSMultiLightInterior", 1},
     {"xCityNormalMap__PSMultiLight", 1},
     {"xCityNormalMap__PSMultiLightInterior", 1},
     {"xCityPondWater__PSMultiLight", 1},
@@ -163,8 +174,6 @@ inline constexpr NightOcclusionRow kGBufferNightOcclusionRows[] = {
     {"xCityRoad__PSMultiLight", 1},
     {"xCitySidewalk__PSMultiLight", 1},
     {"xCitySidewalk__PSMultiLightInterior", 1},
-    {"xCityStoreSign__PSMultiLight", 1},
-    {"xCityStoreSign__PSMultiLightInterior", 1},
     {"xCityTerrain__PSMultiLight", 1},
     {"xCityTerrain__PSMultiLightInterior", 1},
     {"xCityTintBumpDecal2__PSMultiLight", 1},
@@ -194,6 +203,86 @@ inline const NightOcclusionRow* FindGBufferNightOcclusionRow(std::string_view na
 // The HLSL of a row: the interpolant the translator declares as `in centroid float4 iColor1 : COLOR1` (an input: no later statement of the shader can have changed it).
 inline std::string NightOcclusionExpression(const NightOcclusionRow& row) { return row.power == 2 ? "iColor1.w * iColor1.w" : "iColor1.w"; }
 inline constexpr std::string_view kNightOcclusionDeclaration = "in centroid float4 iColor1 : COLOR1";
+
+// ---- the planar reflection's mix (RT2.a) -----------------------------------------------------------------------------------------------------------------------------------
+// The road and the tunnel road do not output their lit colour as it is: `oC0 = lerp(lit, ReflectionSampler texel, w)` with `w = (puddle mask ...) * gReflectionParams.y` (`r5.w = r5.z *
+// gReflectionParams.y;`, a register nothing writes again), so every light of the sum, the forward headlight included, keeps only `1 - w` of itself: 0.095 of the reflection on a dry road, and up
+// to the whole of it on a puddle in rain (VS c43.y 0.095 dry, 1.19 in rain: ssr_rules.h). The deferred pass has no plane for it, so it was brighter than the same light through the forward stage
+// by 1 / (1 - w) on the road in the wet (GB-H2-REVIEW: the numeric interpreter's jacobian of the ambient term, with the reflection strength 0 and 0.5, is 1 - r5.w exactly on 5 seeds, both shaders: perf/scripts/gb_h2_review_probes/wet2.py).
+// The stage captures the weight right after its statement and the lit weight (RT2.a) takes `saturate(1 - w)` like the occlusion. The other shaders that read a reflection add it
+// (`oC0 = lit + reflection * k`: the sidewalk, the river road, the garage floor, the windows, the pond and the glass) and leave the lit colour as it is, so they have no row.
+struct NightMixRow {
+  std::string_view name;
+  std::string_view anchor;  // one line at the top level of main, found once: the weight's statement
+  std::string_view weight;  // the register that holds it after the anchor
+};
+// Sorted by name.
+inline constexpr NightMixRow kGBufferNightMixRows[] = {
+    {"xCityRoad__PSMultiLight", "r5.w = r5.z * gReflectionParams.y;", "r5.w"},
+    {"xCityTunnelRoad__PSMultiLight", "r5.w = r5.z * gReflectionParams.y;", "r5.w"},
+};
+inline constexpr size_t kGBufferNightMixRowCount = sizeof(kGBufferNightMixRows) / sizeof(kGBufferNightMixRows[0]);
+
+inline const NightMixRow* FindGBufferNightMixRow(std::string_view name) {
+  for (const NightMixRow& row : kGBufferNightMixRows) {
+    if (row.name == name) return &row;
+  }
+  return nullptr;
+}
+inline constexpr std::string_view kGBufferMixCapture = "gbMix";
+
+struct NightMixCapture {
+  bool found = false;
+  std::string why_not;
+  size_t capture_at = std::string::npos;  // the offset (text with LF line ends) of the line the capture goes before: the line after the anchor
+  std::string capture;                    // `\tfloat gbMix = r5.w;\n`
+};
+
+// The capture of a mix row for the text of its shader (pure; public for the stage and the tests): the anchor must be one line at the top level of main and occur exactly once.
+inline NightMixCapture AnalyseGBufferNightMixRow(std::string_view hlsl, const NightMixRow& row) {
+  using namespace albedo_detail;
+  NightMixCapture out;
+  const std::string text = textedit::NormalizeNewlines(hlsl);
+  const size_t main_at = text.rfind("\nvoid main(");
+  if (main_at == std::string::npos) {
+    out.why_not = "no `void main(`";
+    return out;
+  }
+  const std::vector<Line> lines = LinesFrom(text, main_at + 1);
+  size_t count = 0;
+  size_t at = 0;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].code != row.anchor) continue;
+    ++count;
+    at = i;
+  }
+  if (count != 1 || lines[at].indent != 1 || at + 1 >= lines.size()) {
+    out.why_not = "the reflection mix's anchor `" + std::string(row.anchor) + "` is " + (count == 1 ? std::string("not at the top level of main") : "found " + std::to_string(count) + " times in main (need once)");
+    return out;
+  }
+  out.found = true;
+  out.capture_at = lines[at + 1].begin;
+  out.capture = "\tfloat " + std::string(kGBufferMixCapture) + " = " + std::string(row.weight) + ";\n";
+  return out;
+}
+
+// THE TABLES' TEXT, for the variant's fingerprint (gbuffer.cpp: MakeGBufferVariantFromText adds it to the helper's): the pack's stamp keeps the fingerprint (variant_pack.cpp `variants_gbuffer_input`),
+// so an edit of a row, of a number or of an expression above makes the pack stale by itself, whether or not anyone remembers to bump the versions (kGBufferNightAlbedoVersion and gbuffer.h's
+// kGBufferVariantVersion stay the record of what changed; this was the only thing that said a table had changed, by hand: GB-H2-REVIEW).
+inline std::string NightTablesFingerprintText() {
+  std::string out = "night albedo tables, version " + std::to_string(kGBufferNightAlbedoVersion) + "\n";
+  for (const NightAlbedoRow& row : kGBufferNightAlbedoRows) {
+    out += "albedo|" + std::string(row.name) + "|" + std::to_string(int(row.site)) + "|" + std::string(row.anchor) + "|" + std::string(row.expression) + "\n";
+  }
+  for (const NightOcclusionRow& row : kGBufferNightOcclusionRows) {
+    out += "occlusion|" + std::string(row.name) + "|" + NightOcclusionExpression(row) + "\n";
+  }
+  for (const NightMixRow& row : kGBufferNightMixRows) {
+    out += "mix|" + std::string(row.name) + "|" + std::string(row.anchor) + "|" + std::string(row.weight) + "\n";
+  }
+  out += "declaration|" + std::string(kNightOcclusionDeclaration) + "\n";
+  return out;
+}
 
 // A recipe's albedo for the text of its shader (pure; public for the stage, the tests and the census). `hlsl` may have any line ends; offsets are into the text with LF line ends. For a
 // kBefore / kAfter row the anchor must be one line at the top level of main (one tab of indentation) and occur exactly once in main; the result then holds the capture. For a kGlobal row the

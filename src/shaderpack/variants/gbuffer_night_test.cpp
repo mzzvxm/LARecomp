@@ -15,7 +15,7 @@
 //   - RT2 (GB-W1, gbuffer_albedo.h): every edited shader declares the third output once; the albedo write is there exactly where the shader has a DiffuseSampler texel at its centre (read at the end
 //     of main, or captured right after the fetch where a later statement writes the register), the "no data" write everywhere
 //   - THE ALBEDO RECIPES (gbuffer_night_albedo.h, GB-H2-COVER): the 11 shaders with no DiffuseSampler texel that the forward headlight stage lights have their anchor found once and write RT2; and
-//     THE COVER RULE: every shader the headlight variant edits has the night stage's normal AND an albedo, except the six named in kGBufferNightHeadlightExempt (the emissive tints, which the light
+//     THE COVER RULE: every shader the headlight variant edits has the night stage's normal AND an albedo, except the eight named in kGBufferNightHeadlightExempt (the seven emissive ones, tints, plain neon, store sign and lamp glass, which the light
 //     pass never lights, and the tangent space decal): a shader that drops out of the G-buffer while the forward stage still lights it fails here, so the deferred headlights cannot lose a surface unseen
 //   - xCityDefault::PSMultiLight is the stage's like every other shader of the family (gbuffer.cpp's dispatch; the spike's own edits of it are gone)
 // and pins the census' numbers. A third argument is a folder that receives the edited texts (`<name>.gb.hlsl`, and `<name>.hlgb.hlsl` composed with the headlight) for the compile with dxc
@@ -37,6 +37,8 @@
 #include "gpu/gbuffer_material.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_compose.h"
+#include "shaderpack/variant_shader_fate.h"
+#include "shaderpack/variant_stage_shaders.h"
 #include "shaderpack/variants/gbuffer.h"
 #include "shaderpack/variants/gbuffer_night.h"
 #include "shaderpack/variants/gbuffer_night_albedo.h"
@@ -475,7 +477,7 @@ void CheckAlbedoRecipes() {
       if (i > 0 && !(sp::kGBufferNightHeadlightExempt[i - 1].name < row.name)) exempt_ok = false;
       exempt_ok = exempt_ok && sp::IsGBufferNightShader(row.name) && sp::FindGBufferNightAlbedoRow(row.name) == nullptr && !row.reason.empty();
     }
-    Check(exempt_ok && std::size(sp::kGBufferNightHeadlightExempt) == 6, "the six shaders the light pass does not light are sorted, in the family and have no recipe (the two lists do not overlap)");
+    Check(exempt_ok && std::size(sp::kGBufferNightHeadlightExempt) == 8, "the eight shaders the light pass does not light are sorted, in the family and have no recipe (the two lists do not overlap)");
     Check(sp::FindGBufferNightAlbedoRow("xCityRoad__PSMultiLight") != nullptr && sp::FindGBufferNightAlbedoRow("xCityDefault__PSMultiLight") == nullptr && sp::FindGBufferNightAlbedoRow("") == nullptr,
           "a recipe is found by name; a shader with a diffuse texel has none");
   }
@@ -487,9 +489,9 @@ void CheckAlbedoRecipes() {
       if (i > 0 && !(sp::kGBufferNightOcclusionRows[i - 1].name < row.name)) sorted = false;
       family = family && sp::IsGBufferNightShader(row.name);
       power = power && (row.power == 1 || row.power == 2);
-      not_emissive = not_emissive && !(sp::FindGBufferNightHeadlightExempt(row.name) != nullptr);
+      not_emissive = not_emissive && !(sp::FindGBufferNightHeadlightExempt(row.name) != nullptr) && mcla::gpu::gbuffer::MaterialOfShaderName(row.name).lit > 0.0f;
     }
-    Check(sp::kGBufferNightOcclusionRowCount == 52, "the table has 52 occlusion rows (48 by iColor1.w, 4 windows by its square)");
+    Check(sp::kGBufferNightOcclusionRowCount == 48, "the table has 48 occlusion rows (44 by iColor1.w, 4 windows by its square)");
     Check(sorted && family && power, "the occlusion rows are sorted by name, in the night family, power 1 or 2");
     Check(not_emissive, "no emissive or exempt shader carries an occlusion (the pass never lights them)");
     Check(sp::NightOcclusionExpression({"x", 1}) == "iColor1.w" && sp::NightOcclusionExpression({"x", 2}) == "iColor1.w * iColor1.w", "the expressions: the vertex alpha, its square");
@@ -571,6 +573,57 @@ void CheckAlbedoRecipes() {
     Check(v.ok && Count(v.hlsl, "float3 gbAlbedo") == 0 && Count(v.hlsl, "oC2 = float4(GbAlbedoEncode(float3(1.0f, 1.0f, 1.0f)), GbMaterialLit(g_GBufferMode.y));") == 1,
           "a recipe of constants writes the expression itself: " + v.error);
   }
+  // GB-H2-REVIEW: the road's planar reflection mix (kGBufferNightMixRows): the lit weight keeps `1 - w` of itself where the game's colour is lerped to the reflection by w
+  {
+    bool sorted = true, family = true, with_occlusion = true, with_albedo = true, not_exempt = true;
+    for (size_t i = 0; i < sp::kGBufferNightMixRowCount; ++i) {
+      const sp::NightMixRow& row = sp::kGBufferNightMixRows[i];
+      if (i > 0 && !(sp::kGBufferNightMixRows[i - 1].name < row.name)) sorted = false;
+      family = family && sp::IsGBufferNightShader(row.name);
+      with_occlusion = with_occlusion && sp::FindGBufferNightOcclusionRow(row.name) != nullptr;
+      with_albedo = with_albedo && sp::FindGBufferNightAlbedoRow(row.name) != nullptr;  // the mix is a factor of the lit weight, which only a shader with an albedo has
+      not_exempt = not_exempt && sp::FindGBufferNightHeadlightExempt(row.name) == nullptr;
+    }
+    Check(sp::kGBufferNightMixRowCount == 2 && sorted && family, "the mix table: the road and the tunnel road, sorted, in the night family");
+    Check(with_occlusion && with_albedo && not_exempt, "a mix row is a lit road shader with an occlusion row and an albedo recipe");
+    Check(sp::FindGBufferNightMixRow("xCityRoad__PSMultiLight") != nullptr && sp::FindGBufferNightMixRow("xCityRiverRoad__PSMultiLight") == nullptr,
+          "the road has a row; the river road, which adds its reflection, has none");
+    // the text: the road's recipe anchor and the mix anchor, then a statement that reads the weight
+    const sp::NightMixRow* mix = sp::FindGBufferNightMixRow("xCityRoad__PSMultiLight");
+    const sp::NightAlbedoRow* recipe = sp::FindGBufferNightAlbedoRow("xCityRoad__PSMultiLight");
+    const std::string road_text =
+        Shader(std::string(kSunDot) + "\tr7.xyz = r1.xyz;\n\t" + std::string(recipe->anchor) + "\n\tr3.w = r7.x;\n\t" + std::string(mix->anchor) + "\n\tr4.w = r5.w * r7.x;\n");
+    const sp::VariantShader shader{"xCityRoad__PSMultiLight", 0};
+    const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, road_text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(r.ok && Count(r.hlsl, "\t" + std::string(mix->anchor) + "\n\tfloat gbMix = r5.w;\n\tr4.w = r5.w * r7.x;\n") == 1 &&
+              Count(r.hlsl, "oC2 = float4(GbAlbedoEncode(gbAlbedo), GbMaterialLit(g_GBufferMode.y) * saturate(iColor1.w) * saturate(1.0f - gbMix));") == 1 && Count(r.hlsl, "float gbMix = ") == 1 &&
+              Count(r.hlsl, "float3 gbAlbedo = ") == 1 && AdditiveError(road_text, r.hlsl).empty(),
+          "the road's lit weight keeps 1 - w: the weight is captured right after its statement, and only lines are added: " + r.error);
+    const sp::NightAnalysis a = sp::AnalyseGBufferNight(road_text, "xCityRoad__PSMultiLight");
+    const sp::NightAnalysis b = sp::AnalyseGBufferNight(road_text);
+    Check(a.found && a.mix_row && a.mix.found && a.mix.capture == "\tfloat gbMix = r5.w;\n" && b.found && !b.mix_row && !b.mix.found, "the analysis finds the row by the shader's name only");
+    // the HLSL is not the one the row was written for: the variant is not built, never a lit weight that keeps what the game does not
+    const std::string no_mix = Shader(std::string(kSunDot) + "\tr7.xyz = r1.xyz;\n\t" + std::string(recipe->anchor) + "\n\tr3.w = r7.x;\n");
+    const sp::VariantTransformResult bad = sp::TransformGBufferNightHlsl(shader, no_mix, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(!bad.ok && !bad.skip && bad.error.find("reflection mix") != std::string::npos, "a mix anchor that is not found makes the transform fail (not skip): " + bad.error);
+    const sp::VariantTransformResult twice = sp::TransformGBufferNightHlsl(shader, road_text + "\t" + std::string(mix->anchor) + "\n", kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(!twice.ok && !twice.skip, "a mix anchor found twice makes it fail too");
+    // a shader with no mix row keeps the lit weight it had
+    const sp::VariantTransformResult plain = sp::TransformGBufferNightHlsl({"xCityTunnelRoad__PSMultiLightEnv", 0}, road_text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(plain.ok && Count(plain.hlsl, "gbMix") == 0, "a shader with no mix row has no gbMix: " + plain.error);
+    // the albedo's capture (after its anchor) and the weight's (after its own) are both made, in the order of the text
+    const size_t at_albedo = r.hlsl.find("float3 gbAlbedo = ");
+    const size_t at_mix = r.hlsl.find("float gbMix = ");
+    Check(at_albedo != std::string::npos && at_mix != std::string::npos && at_albedo < at_mix, "the captures are in the order of the statements they follow");
+    // the write text itself
+    sp::GBufferAlbedo albedo;
+    albedo.found = true;
+    albedo.expression = "gbAlbedo";
+    Check(sp::GBufferAlbedoWriteText(albedo, "iColor1.w", "gbMix").find("GbMaterialLit(g_GBufferMode.y) * saturate(iColor1.w) * saturate(1.0f - gbMix));") != std::string::npos &&
+              sp::GBufferAlbedoWriteText(albedo, {}, "gbMix").find("GbMaterialLit(g_GBufferMode.y) * saturate(1.0f - gbMix));") != std::string::npos &&
+              sp::GBufferAlbedoWriteText(albedo, "iColor1.w") == sp::GBufferAlbedoWriteText(albedo, "iColor1.w", {}),
+          "the lit weight's factors: the occlusion, then the mix; no mix is the text without it");
+  }
 }
 
 void CheckIdentityCheck() {
@@ -595,6 +648,211 @@ void CheckIdentityCheck() {
   std::string removed = r.hlsl;
   removed.erase(removed.find("\treturn;\n"), 9);
   Check(!AdditiveError(text, removed).empty(), "the identity check sees a line of the game's that is gone");
+}
+
+// ---- one shader whose text does not fit, or does not compile, costs that shader its variant and nothing else (GB-H2-FOLLOW, the review's S5, and GB-H2-DXC; variant_shader_fate.h, variant_stage_shaders.h) --------
+
+// A progress sink that only records.
+class RecordingSink final : public sp::ProgressSink {
+ public:
+  void BeginPhase(const std::string&, int) override {}
+  void Step(const std::string& item) override { steps.push_back(item); }
+  void Log(sp::LogLevel, const std::string&) override {}
+  bool Cancelled() const override { return cancelled; }
+  std::vector<std::string> steps;
+  bool cancelled = false;
+};
+
+// What the fake compiler does with an edited text: a text with a marker comment in it is rejected the way dxc rejects one (a header line, then the diagnostics), or ends the stage the way a compiler that cannot run does.
+constexpr std::string_view kRejectMarker = "\t// REJECT-ME\n";
+constexpr std::string_view kRejectTwinMarker = "\t// REJECT-ONLY-THE-TWIN\n";
+constexpr std::string_view kStopMarker = "\t// STOP-THE-STAGE\n";
+constexpr std::string_view kDxcDiagnostics = "hlsl.hlsl:12:7: error: use of undeclared identifier 'q'\n  r3.xyz = q;\n  ^\nhlsl.hlsl:12:7: note: another line";
+
+struct FakeCompiler {
+  std::map<std::string, int> calls;  // "<hash of the text>/<spec>" -> how many times the compiler was asked
+  int total = 0;
+  sp::CompileVerdict Compile(const std::string& hlsl, uint32_t spec, const std::string& label, sp::StageBlobs* blobs, std::string* error) {
+    ++total;
+    ++calls[std::to_string(std::hash<std::string>{}(hlsl)) + "/" + std::to_string(spec)];
+    if (Contains(hlsl, kStopMarker)) {
+      *error = "DXIL is not signed for " + label + ": dxcompiler did not find dxil.dll";
+      return sp::CompileVerdict::kStop;
+    }
+    if (Contains(hlsl, kRejectMarker) || (spec != 0 && Contains(hlsl, kRejectTwinMarker))) {
+      *error = "dxc failed for " + label + " (ps_6_0, spec=" + std::to_string(spec) + ", DXIL):\n" + std::string(kDxcDiagnostics);
+      return sp::CompileVerdict::kFailed;
+    }
+    blobs->dxil = {0x44, 0x58, 0x42, 0x43, uint8_t(spec)};
+    blobs->spirv = {0x03, 0x02, 0x23, 0x07, uint8_t(spec)};
+    return sp::CompileVerdict::kOk;
+  }
+};
+
+struct StageCase {
+  std::string name;
+  uint64_t key;
+  std::string text;
+  uint32_t spec_mask;
+  sp::ShaderFate want;  // after the transform; a case that fits and does not compile is checked apart
+};
+
+// Runs the real stage loop (BuildStageShaders) with the real G-buffer transform, a fake translator (the case's text) and the fake compiler; the log lines and the sink's steps come back in the arguments.
+bool RunStage(const sp::VariantDef& def, const std::vector<StageCase>& cases, FakeCompiler* compiler, RecordingSink* sink, std::vector<std::string>* warnings, sp::StageShaders* out, std::string* error) {
+  std::vector<sp::ShaderSource> sources(cases.size());
+  std::vector<sp::Target> targets;
+  for (size_t i = 0; i < cases.size(); ++i) {
+    sources[i].key = cases[i].key;
+    sources[i].name = cases[i].name;
+    sources[i].stage = sp::ShaderStage::kPixel;
+  }
+  for (size_t i = 0; i < cases.size(); ++i) targets.push_back({sp::VariantShader{sources[i].name, sources[i].key}, &sources[i]});
+  sp::StageHooks hooks;
+  hooks.translate = [&](const sp::ShaderSource& source, sp::TranslatedShader* translated, std::string*) {
+    for (const StageCase& c : cases) {
+      if (c.name != source.name) continue;
+      translated->hlsl = c.text;
+      translated->spec_mask = c.spec_mask;
+      translated->stage = sp::ShaderStage::kPixel;
+      return true;
+    }
+    return false;
+  };
+  hooks.compile = [&](const std::string& hlsl, uint32_t spec, const std::string& label, sp::StageBlobs* blobs, std::string* why) { return compiler->Compile(hlsl, spec, label, blobs, why); };
+  hooks.warn = [&](const std::string& line) { warnings->push_back(line); };
+  const chain::FeatureInfo* row = chain::Find(def.feature);
+  if (row == nullptr) {
+    *error = "the stage has no row";
+    return false;
+  }
+  return sp::BuildStageShaders(def, *row, {}, targets, *sink, hooks, out, error);
+}
+
+void CheckPerShaderFailure() {
+  const sp::VariantDef def = sp::MakeGBufferVariantFromText(kHelper);
+  const sp::NightAlbedoRow* terrain = sp::FindGBufferNightAlbedoRow("xCityTerrain__PSMultiLight");
+  const sp::NightAlbedoRow* grass = sp::FindGBufferNightAlbedoRow("xCityGrass__PSMultiLight");
+  Check(terrain != nullptr && grass != nullptr, "the two recipes the case uses are in the table");
+  if (terrain == nullptr || grass == nullptr) return;
+  Check(chain::Find(def.feature) != nullptr && chain::Find(def.feature)->spec_twin, "the G-buffer stage has an alpha test twin (the case below needs one)");
+  // Nine shaders of the family, as the builder meets them in key order. Two ways to lose the variant: the edits do not fit the text (a recipe anchor that is not in it: the transform fails), and the
+  // edited text does not compile (the fake compiler rejects a text with a marker in it). Shaders that fit and compile are around them.
+  const std::string fits = Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n\t" + std::string(terrain->anchor) + "\n\tr5.w = r7.z * r12.x;\n");
+  const std::string other = Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n");
+  const auto with_marker = [&](std::string_view marker) { return Shader(std::string(kSunDot) + "\tr12.xyz = r1.xyz;\n" + std::string(marker)); };
+  const std::vector<StageCase> cases = {
+      {"xCityTerrain__PSMultiLight", 0x1001, fits, 0, sp::ShaderFate::kBuilt},                                     // fits, compiles
+      {"xCityGrass__PSMultiLight", 0x1002, other, 0, sp::ShaderFate::kFailed},                                     // the recipe's anchor is not in the text: the edits do not fit
+      {"xCityNothing__PSMultiLight", 0x1003, other, 0, sp::ShaderFate::kBuilt},                                    // fits, compiles
+      {"xCityUnlit__PSMultiLight", 0x1004, Shader("\tr3.xyz = r0.xyz * r1.www;\n"), 0, sp::ShaderFate::kLeftOut},  // the stage leaves it out (no per pixel light)
+      {"xCityRejected__PSMultiLight", 0x1005, with_marker(kRejectMarker), 0, sp::ShaderFate::kBuilt},              // fits, does NOT compile
+      {"xCityTwin__PSMultiLight", 0x1006, other, 0x5, sp::ShaderFate::kBuilt},                                     // fits, compiles, and has a spec variant 1 (the alpha test twin)
+      {"xCityTwinRejected__PSMultiLight", 0x1007, with_marker(kRejectTwinMarker), 0x5, sp::ShaderFate::kBuilt},   // variant 0 compiles, the twin does NOT: no variant at all
+      {"xCityRejectedToo__PSMultiLight", 0x1008, with_marker(kRejectMarker), 0, sp::ShaderFate::kBuilt},           // the same text as the 5th: fails without asking the compiler again
+      {"xCityLast__PSMultiLight", 0x1009, other, 0, sp::ShaderFate::kBuilt},                                       // after the failures: still built
+  };
+  // the fates of the transform alone are the ones the cases say (the compile is the next step's)
+  for (const StageCase& c : cases) {
+    sp::ShaderFateTally one;
+    const sp::VariantTransformResult r = def.transform({c.name, c.key}, c.text, sp::SoloContext(sp::kFeatureGBuffer));
+    Check(one.Note(c.name, "k", r) == c.want, c.name + ": the transform's answer is " + std::to_string(int(c.want)) + " (" + r.error + ")");
+  }
+
+  FakeCompiler compiler;
+  RecordingSink sink;
+  std::vector<std::string> warnings;
+  sp::StageShaders made;
+  std::string error;
+  const bool ok = RunStage(def, cases, &compiler, &sink, &warnings, &made, &error);
+  // a failed shader does not stop the stage: it is a success with warnings, with the shaders that could be made
+  Check(ok && error.empty(), "the stage succeeds although four of its shaders have no variant: " + error);
+  std::vector<std::string> built_keys;
+  for (const sp::VariantPackNewEntry& e : made.made) built_keys.push_back(std::to_string(e.key) + "/" + std::to_string(e.variant & 1u) + (e.dxil.empty() ? "!" : "") + (e.spirv.empty() ? "!" : ""));
+  const std::vector<std::string> want_keys = {"4097/0", "4099/0", "4102/0", "4102/1", "4105/0"};  // terrain, nothing, twin (variant 0 and 1), last
+  Check(built_keys == want_keys, "the entries are the shaders that fit and compile, a twin with both its words, none for a failed shader (not even the variant 0 of the one whose twin did not compile)");
+  size_t solo_ok = 0;
+  for (const sp::SoloShader& s : made.solo) solo_ok += (s.key == 0x1001 || s.key == 0x1003 || s.key == 0x1006 || s.key == 0x1009) ? 1 : 0;
+  Check(made.solo.size() == 4 && solo_ok == 4, "a composition record for each shader that was made, none for a failed one");
+  Check(made.fates.built == 4 && made.fates.failed.size() == 4 && made.fates.left_out.size() == 1 && made.fates.left_out.begin()->first == sp::kGBufferNightSkipUnlit && made.fates.left_out.begin()->second == 1,
+        "four built, four failed (the edits did not fit once, the text did not compile three times), one left out by its reason");
+  Check(sink.steps.size() == cases.size(), "every shader takes one progress step, made or not (the boot popup's bar ends at its total): " + std::to_string(sink.steps.size()));
+  Check(compiler.total == 6 && compiler.calls.size() == 6, "the compiler is asked once per distinct text and spec, and a second shader with a rejected text does not ask it again: " + std::to_string(compiler.total) + " asked, " + std::to_string(compiler.calls.size()) + " distinct");
+  Check(made.compiles == 3 && made.twin_compiles == 1, "the stage counts its distinct compiles: " + std::to_string(made.compiles) + " + " + std::to_string(made.twin_compiles));
+
+  // one warning per failed shader, in order, each on one line, with the shader, its key and (for a compile) dxc's FIRST error line
+  Check(warnings.size() == 4, "one warning per failed shader: " + std::to_string(warnings.size()));
+  bool lines_ok = warnings.size() == 4;
+  for (const std::string& w : warnings) {
+    lines_ok = lines_ok && w.find('\n') == std::string::npos && w.find('\r') == std::string::npos && Contains(w, "the gbuffer variant was not built for ") && Contains(w, "keeps the game's own shader");
+  }
+  Check(lines_ok, "every warning is one line that says what happens to the shader");
+  if (warnings.size() == 4) {
+    Check(Contains(warnings[0], "xCityGrass__PSMultiLight [0000000000001002]") && Contains(warnings[0], "recipe"), "the edits-do-not-fit warning names the shader and the reason: " + warnings[0]);
+    Check(Contains(warnings[1], "xCityRejected__PSMultiLight [0000000000001005]") && Contains(warnings[1], "its edited text did not compile: hlsl.hlsl:12:7: error: use of undeclared identifier 'q'") && !Contains(warnings[1], "note:") &&
+              !Contains(warnings[1], "r3.xyz"),
+          "the compile warning has dxc's first error line and not the rest: " + warnings[1]);
+    Check(Contains(warnings[2], "xCityTwinRejected__PSMultiLight [0000000000001007]") && Contains(warnings[2], "did not compile"), "the twin that does not compile costs the whole shader, one warning: " + warnings[2]);
+    Check(Contains(warnings[3], "xCityRejectedToo__PSMultiLight [0000000000001008]") && Contains(warnings[3], "error: use of undeclared identifier 'q'"), "a shader that shares the rejected text gets its own warning: " + warnings[3]);
+  }
+  // the summary line and the stamp name them, and say how many there were
+  const std::string note = made.fates.NoteText();
+  Check(Contains(note, "1 left out: ") && Contains(note, "4 failed (no variant for them); xCityGrass__PSMultiLight [0000000000001002]: ") && Contains(note, "; and 1 more") && !Contains(note, "xCityRejectedToo"),
+        "the summary counts the failed shaders and names the first three: " + note);
+  const std::string stamp = made.fates.StampText();
+  Check(stamp.find('\n') == std::string::npos && Contains(stamp, "xCityRejected__PSMultiLight [0000000000001005]: its edited text did not compile: ") && Contains(stamp, " | xCityRejectedToo__PSMultiLight"),
+        "the stamp's line is one line and names every failed shader: " + stamp);
+
+  // a stage whose shaders all failed has made none: the caller (variant_pack.cpp) then fails the stage, quoting the first failure
+  {
+    FakeCompiler c2;
+    RecordingSink s2;
+    std::vector<std::string> w2;
+    sp::StageShaders all_bad;
+    std::string e2;
+    const std::vector<StageCase> bad = {{"xCityRejected__PSMultiLight", 0x2001, with_marker(kRejectMarker), 0, sp::ShaderFate::kBuilt}, {"xCityGrass__PSMultiLight", 0x2002, other, 0, sp::ShaderFate::kFailed}};
+    const bool bad_ok = RunStage(def, bad, &c2, &s2, &w2, &all_bad, &e2);
+    Check(bad_ok && all_bad.made.empty() && all_bad.fates.built == 0 && all_bad.fates.failed.size() == 2 && w2.size() == 2, "all shaders failed: the loop returns with nothing made and both named (the stage then fails, with the first reason)");
+  }
+  // a compiler that cannot be used at all, or a cancel, is not a shader's failure: the stage stops (kStop)
+  {
+    FakeCompiler c3;
+    RecordingSink s3;
+    std::vector<std::string> w3;
+    sp::StageShaders stopped;
+    std::string e3;
+    const std::vector<StageCase> stop = {{"xCityNothing__PSMultiLight", 0x3001, other, 0, sp::ShaderFate::kBuilt},
+                                         {"xCityStopper__PSMultiLight", 0x3002, with_marker(kStopMarker), 0, sp::ShaderFate::kBuilt},
+                                         {"xCityNever__PSMultiLight", 0x3003, other, 0, sp::ShaderFate::kBuilt}};
+    const bool stop_ok = RunStage(def, stop, &c3, &s3, &w3, &stopped, &e3);
+    Check(!stop_ok && Contains(e3, "dxil.dll") && w3.empty() && stopped.fates.failed.empty(), "a compiler that cannot be used stops the stage (no warning per shader): " + e3);
+    FakeCompiler c4;
+    RecordingSink s4;
+    s4.cancelled = true;
+    std::vector<std::string> w4;
+    sp::StageShaders cancelled;
+    std::string e4;
+    const bool cancel_ok = RunStage(def, stop, &c4, &s4, &w4, &cancelled, &e4);
+    Check(!cancel_ok && Contains(e4, "cancelled") && c4.total == 0, "a cancel stops the stage before the compiler is asked: " + e4);
+  }
+  // dxc's first error line
+  Check(sp::FirstErrorLine(std::string("dxc failed for a (ps_6_0, spec=0, DXIL):\n") + std::string(kDxcDiagnostics)) == "hlsl.hlsl:12:7: error: use of undeclared identifier 'q'", "the first error line skips dxc's header line");
+  Check(sp::FirstErrorLine("dxc failed for a (ps_6_0, spec=0, DXIL):\nDXC failed without emitting diagnostics.\n") == "dxc failed for a (ps_6_0, spec=0, DXIL):", "no line says error: the first line that is not empty (the header names the shader)");
+  Check(sp::FirstErrorLine("\r\n  \n\t warning: w\r\nerror: e\r\n") == "error: e" && sp::FirstErrorLine("\n\n").empty() && sp::FirstErrorLine("").empty(), "blank lines and carriage returns are skipped, and nothing gives nothing");
+  const std::string cut = sp::FirstErrorLine("x.hlsl:1:1: error: " + std::string(500, 'y'), 40);
+  Check(cut.size() == 40 && cut.substr(37) == "...", "an overlong line is cut and says so: " + cut);
+  // the fate is the transform's own flags: ok, skip, neither
+  sp::VariantTransformResult ok_result;
+  ok_result.ok = true;
+  sp::VariantTransformResult skip;
+  skip.skip = true;
+  sp::VariantTransformResult bad;
+  Check(sp::FateOf(ok_result) == sp::ShaderFate::kBuilt && sp::FateOf(skip) == sp::ShaderFate::kLeftOut && sp::FateOf(bad) == sp::ShaderFate::kFailed, "the fate follows the transform's ok / skip flags");
+  // the builder goes through the loop for every shader of a stage (variant_pack.cpp), and only dxc's own rejection of a text is a shader's failure there (the rest of the compile's failures stop the stage)
+  const std::string builder = ReadFile(std::string(__FILE__).substr(0, std::string(__FILE__).rfind("variants")) + "variant_pack.cpp");
+  Check(!builder.empty() && builder.find("BuildStageShaders(def, *row, vs_keys, targets, sink, hooks, &stage_shaders, error)") != std::string::npos &&
+            builder.find("return CompileChecked(worker, cancelled, formats, stage, hlsl, spec, label, &blobs->dxil, &blobs->spirv, why);") != std::string::npos &&
+            builder.find("case DxcError::kCompileFailed: return CompileVerdict::kFailed;") != std::string::npos,
+        "the builder runs the stage loop with the real compiler, and only dxc's own rejection is a shader's failure");
 }
 
 void CheckVariantDef() {
@@ -724,7 +982,8 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     Check(Count(alone.hlsl, "oC1 : SV_Target1") == 1 && Count(alone.hlsl, "oC1 = GbRt1Encode(" + a.expression + ");") == 1 && Count(alone.hlsl, "float3 gbNormal = ") == (a.interpolant ? 0u : 1u),
           file->stem + ": one output, one write, " + (a.interpolant ? "no capture" : "one capture"));
     {
-      const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + a.albedo.expression + "), GbMaterialLit(g_GBufferMode.y)" + (a.occlusion.empty() ? std::string() : " * saturate(" + a.occlusion + ")") + ");";
+      const std::string albedo_call = "oC2 = float4(GbAlbedoEncode(" + a.albedo.expression + "), GbMaterialLit(g_GBufferMode.y)" + (a.occlusion.empty() ? std::string() : " * saturate(" + a.occlusion + ")") +
+                                      (a.mix_row && a.albedo.found ? std::string(" * saturate(1.0f - gbMix)") : std::string()) + ");";
       Check(Count(alone.hlsl, "oC2 : SV_Target2") == 1 && Count(alone.hlsl, "oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(alone.hlsl, albedo_call) == (a.albedo.found ? 1u : 0u) &&
                 Count(alone.hlsl, "float3 gbAlbedo = ") == (a.albedo.found && a.albedo.captured ? 1u : 0u),
             file->stem + ": RT2: one output, the no data write, " + (a.albedo.found ? (a.albedo.captured ? "the albedo from one capture" : "the albedo from the fetch's lanes") : "no albedo"));
@@ -798,6 +1057,7 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
   {
     int headlight_edited = 0, covered_texel = 0, covered_recipe = 0, exempt_seen = 0;
     std::vector<std::string> uncovered;
+    std::vector<std::string> dark;  // covered by an albedo, but the class's lit weight is 0: the light pass skips the pixel (RT2.a = 0), so the pass lights none of it
     std::set<std::string> exempt_edited;
     for (const Shader_* file : family) {
       const std::string text = ReadFile(file->path);
@@ -819,6 +1079,9 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
         }
       } else if (a.found && a.albedo.found) {
         (a.recipe ? covered_recipe : covered_texel)++;
+        // GB-H2-REVIEW: an albedo is not enough: the lit weight of the shader's class is RT2.a, and the pass skips a pixel whose weight is 0 (every emissive class)
+        const mcla::gpu::gbuffer::ShaderMaterial material = mcla::gpu::gbuffer::MaterialOfShaderName(file->stem);
+        if (!(material.lit > 0.0f)) dark.push_back(file->stem + " (class " + std::to_string(int(material.cls)) + ")");
       } else {
         uncovered.push_back(file->stem + (a.found ? " (no albedo: " + a.albedo.why_not + ")" : " (no normal: " + a.why_not + ")"));
       }
@@ -826,13 +1089,15 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     std::printf("\nHEADLIGHT COVER: the forward headlight stage edits %d shaders: %d have the G-buffer's normal and a diffuse texel, %d a recipe, %d are exempt, %zu are not covered\n", headlight_edited, covered_texel,
                 covered_recipe, exempt_seen, uncovered.size());
     for (const std::string& name : uncovered) std::printf("      NOT COVERED: %s\n", name.c_str());
+    for (const std::string& name : dark) std::printf("      LIT WEIGHT 0: %s\n", name.c_str());
+    Check(dark.empty(), "every shader the forward headlight stage edits that is not exempt has a lit weight above 0 (an emissive class is skipped by the light pass, whatever its albedo): " + std::to_string(dark.size()) + " have none");
     Check(uncovered.empty(), "every shader the forward headlight stage edits writes the G-buffer's normal and albedo (or is exempt for its reason): " + std::to_string(uncovered.size()) + " are not");
     bool all_seen = true;
     for (const sp::NightHeadlightExempt& row : sp::kGBufferNightHeadlightExempt) all_seen = all_seen && exempt_edited.contains(std::string(row.name));
     Check(all_seen, "every exempt shader is one the forward headlight stage edits (a stale exemption is a hole nobody looks at)");
     if (family.size() == 115) {
-      Check(headlight_edited == 58 && covered_texel == 41 && covered_recipe == 11 && exempt_seen == 6,
-            "the retail cover: 58 edited by the headlight = 41 with a texel + 11 recipes + 6 exempt (got " + std::to_string(headlight_edited) + " = " + std::to_string(covered_texel) + " + " +
+      Check(headlight_edited == 58 && covered_texel == 39 && covered_recipe == 11 && exempt_seen == 8,
+            "the retail cover: 58 edited by the headlight = 39 with a texel + 11 recipes + 8 exempt (got " + std::to_string(headlight_edited) + " = " + std::to_string(covered_texel) + " + " +
                 std::to_string(covered_recipe) + " + " + std::to_string(exempt_seen) + ")");
     }
   }
@@ -889,6 +1154,48 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
         }
       }
     }
+    // GB-H2-REVIEW: the mix rows (gbuffer_night_albedo.h kGBufferNightMixRows) fit the retail text: the anchor once at the top level of main, and no later statement writes the weight's register
+    {
+      int fitted = 0;
+      for (const sp::NightMixRow& row : sp::kGBufferNightMixRows) {
+        const Shader_* hit = nullptr;
+        for (const Shader_* file : family) {
+          if (file->stem == row.name) hit = file;
+        }
+        Check(hit != nullptr, std::string(row.name) + ": the mix row's shader is in the retail game");
+        if (hit == nullptr) continue;
+        const std::string text = ReadFile(hit->path);
+        const sp::NightAnalysis a = sp::AnalyseGBufferNight(text, row.name);
+        Check(a.found && a.mix_row && a.mix.found && a.albedo.found, std::string(row.name) + ": the mix row fits (" + a.mix.why_not + ")");
+        fitted += a.mix.found ? 1 : 0;
+        const std::string lf = LfOnly(text);
+        const size_t main_at = lf.rfind("\nvoid main(");
+        const std::string anchor_line = "\t" + std::string(row.anchor) + "\n";
+        const size_t anchor_at = lf.find(anchor_line, main_at);
+        Check(main_at != std::string::npos && anchor_at != std::string::npos && Count(lf.substr(main_at), anchor_line) == 1, std::string(row.name) + ": the mix anchor is once in main");
+        if (anchor_at == std::string::npos) continue;
+        // the register the weight is in (`r5`): a later `r5 = ...` or `r5.<lanes with the weight's> = ...` would change it before the end of main. The capture is right after the anchor, so this
+        // is only the proof that the lit weight reads the very value the game's lerp reads.
+        const std::string reg(row.weight.substr(0, row.weight.find('.')));
+        const char lane = row.weight.back();
+        int later_writes = 0;
+        size_t at = anchor_at + anchor_line.size();
+        while (at < lf.size()) {
+          size_t end = lf.find('\n', at);
+          if (end == std::string::npos) end = lf.size();
+          const std::string_view line = std::string_view(lf).substr(at, end - at);
+          const size_t eq = line.find(" = ");
+          const size_t first = line.find_first_not_of("\t ");
+          if (eq != std::string_view::npos && first != std::string_view::npos && first < eq) {
+            const std::string_view dest = line.substr(first, eq - first);
+            if (dest == reg || (dest.starts_with(reg + ".") && dest.find(lane) != std::string_view::npos)) ++later_writes;
+          }
+          at = end + 1;
+        }
+        Check(later_writes == 0, std::string(row.name) + ": nothing writes " + std::string(row.weight) + " after the anchor (" + std::to_string(later_writes) + " writes)");
+      }
+      Check(fitted == int(sp::kGBufferNightMixRowCount), "the retail census: both mix rows fit the text");
+    }
     const std::set<std::string> want_no_albedo = {
         "xCityGrimeMetalTint__PSMultiLightInterior",
         "xCityGrimeTintDecal__PSMultiLightInterior",
@@ -938,6 +1245,7 @@ int main(int argc, char** argv) {
   CheckAlbedoRecipes();
   CheckIdentityCheck();
   CheckVariantDef();
+  CheckPerShaderFailure();
   std::string helper;
   if (argc > 1) {
     helper = ReadFile(argv[1]);
