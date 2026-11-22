@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -33,6 +34,7 @@
 #include <rex/ui/ui_system.h>
 
 #include "larecomp_dialog.h"
+#include "os/file_pick.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -43,10 +45,6 @@
 #endif
 #include <windows.h>  // before commdlg.h: the SDK headers of 0.11 no longer pull windows.h in first
 #include <commdlg.h>
-
-#elif defined(__APPLE__)
-#else
-#include <gtk/gtk.h>
 #endif
 
 namespace larecomp {
@@ -518,37 +516,35 @@ fs::path PickSaveFile() {
   }
   return filename;
 }
-#elif defined(__APPLE__)
-fs::path PickSaveFile() { return {}; }
-#else
-fs::path PickSaveFile() {
-  GtkWidget* dialog = gtk_file_chooser_dialog_new(
-      "Select mc4.sav (Xenia) or RAGE.SAV (RPCS3)", nullptr, GTK_FILE_CHOOSER_ACTION_OPEN,
-      "_Cancel", GTK_RESPONSE_CANCEL, "_Open", GTK_RESPONSE_ACCEPT, nullptr);
-  if (!dialog) {
-    return {};
-  }
-  GtkFileFilter* sav = gtk_file_filter_new();
-  gtk_file_filter_set_name(sav, "Midnight Club save (mc4.sav, RAGE.SAV)");
-  gtk_file_filter_add_pattern(sav, "mc4.sav");
-  gtk_file_filter_add_pattern(sav, "RAGE.SAV");
-  gtk_file_filter_add_pattern(sav, "*.sav");
-  gtk_file_filter_add_pattern(sav, "*.SAV");
-  gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), sav);
+#endif
 
-  fs::path result;
-  if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-    char* name = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-    if (name) {
-      result = name;
-      g_free(name);
-    }
+// The importer's file chooser. Windows keeps the system's own dialog above; macOS has none. Linux asks the SDK's file dialog (SDL3's: the xdg desktop
+// portal over D-Bus, then zenity), not GTK 3, which the game linked until 2026-11 (os/file_pick.h). Where neither answers it returns an error, which comes
+// back as `unavailable`: the dialog logs one line and shows a box to type the save's path in, so a save can still be imported.
+#if defined(_WIN32)
+os::FilePick PickSaveSource(rex::ui::IUISystem&) {
+  os::FilePick pick;
+  pick.path = PickSaveFile();
+  pick.cancelled = pick.path.empty();
+  return pick;
+}
+#elif defined(__APPLE__)
+os::FilePick PickSaveSource(rex::ui::IUISystem&) {
+  os::FilePick pick;
+  pick.cancelled = true;
+  return pick;
+}
+#else
+os::FilePick PickSaveSource(rex::ui::IUISystem& ui) {
+  rex::ui::FileDialogConfig config;
+  config.mode = rex::ui::FileDialogConfig::Mode::kOpenFile;
+  config.title = "Select mc4.sav (Xenia) or RAGE.SAV (RPCS3)";
+  config.filters = {{"Midnight Club save (mc4.sav, RAGE.SAV)", "sav;SAV"}, {"All files", "*"}};
+  const auto chosen = ui.ShowFileDialog(config);
+  if (!chosen) {
+    return os::FromDialogAnswer(false, {}, chosen.error().message);
   }
-  gtk_widget_destroy(dialog);
-  while (gtk_events_pending()) {
-    gtk_main_iteration_do(FALSE);
-  }
-  return result;
+  return os::FromDialogAnswer(true, *chosen, "");
 }
 #endif
 
@@ -556,9 +552,10 @@ fs::path PickSaveFile() {
 
 class SaveImportDialog final : public ui::ImGuiDialog {
  public:
-  SaveImportDialog(fs::path user_data_root, fs::path xenia_found,
+  SaveImportDialog(rex::ui::IUISystem* ui, fs::path user_data_root, fs::path xenia_found,
                    fs::path rpcs3_found, std::function<void()> on_finished)
-      : user_data_root_(std::move(user_data_root)),
+      : ui_(ui),
+        user_data_root_(std::move(user_data_root)),
         xenia_found_(std::move(xenia_found)),
         rpcs3_found_(std::move(rpcs3_found)),
         on_finished_(std::move(on_finished)) {}
@@ -615,6 +612,18 @@ class SaveImportDialog final : public ui::ImGuiDialog {
         // path auto-detects and handles both. No standard host path, so browse-only.
         DrawChoice("Import from a real Xbox 360 (STFS or extracted)", "mc4.sav", fs::path(),
                    "larecomp_import_real360");
+        // No file chooser could be opened (Linux without the xdg desktop portal or zenity): the player types the save's path.
+        if (!picker_unavailable_.empty()) {
+          ImGui::Dummy(ImVec2(0.0f, 8.0f));
+          ImGui::TextWrapped("%s", picker_unavailable_.c_str());
+          ImGui::InputText("Save path", typed_path_, sizeof(typed_path_));
+          if (!typed_error_.empty()) {
+            ImGui::TextColored(ImVec4(0.97f, 0.72f, 0.33f, 1.0f), "%s", typed_error_.c_str());
+          }
+          if (ImGui::Button("Import this file", ImVec2(-1.0f, 0.0f))) {
+            ImportTypedPath();
+          }
+        }
         ImGui::Dummy(ImVec2(0.0f, 10.0f));
         ImGui::Separator();
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
@@ -653,12 +662,46 @@ class SaveImportDialog final : public ui::ImGuiDialog {
     const std::string label = has ? (std::string(title) + "\n  found: " + found.string())
                                   : (std::string(title) + "\n  browse for " + expected + "...");
     if (ImGui::Button(label.c_str(), ImVec2(-1.0f, 0.0f))) {
-      fs::path source = has ? found : PickSaveFile();
+      fs::path source = has ? found : PickSave();
       if (!source.empty()) {
         DoImport(source);
       }
     }
     ImGui::PopID();
+  }
+
+  // Browses for a save with the file chooser. A path comes back only when the player chose one; when no chooser can be opened (os/file_pick.h) the
+  // line says so once in the log and the dialog shows a box to type the path in.
+  fs::path PickSave() {
+    if (!ui_) {
+      return {};
+    }
+    os::FilePick pick = PickSaveSource(*ui_);
+    if (!pick.unavailable.empty()) {
+      if (picker_unavailable_.empty()) {
+        REXLOG_WARN("Save wizard: no file chooser could be opened ({}); the path box is shown instead", pick.unavailable);
+      }
+      picker_unavailable_ = os::UnavailableText(pick.unavailable, "the save file (mc4.sav or RAGE.SAV)");
+      typed_error_.clear();
+      return {};
+    }
+    return std::move(pick.path);
+  }
+
+  void ImportTypedPath() {
+    std::string home;  // what `~` stands for; the path box only appears where no file chooser opens, which is Linux
+#ifndef _WIN32
+    if (const char* env_home = std::getenv("HOME")) {
+      home = env_home;
+    }
+#endif
+    os::TypedPath typed = os::ParseTypedPath(typed_path_, home);
+    if (!typed.error.empty()) {
+      typed_error_ = typed.error;
+      return;
+    }
+    typed_error_.clear();
+    DoImport(typed.path);
   }
 
   void DoImport(const fs::path& source) {
@@ -673,10 +716,14 @@ class SaveImportDialog final : public ui::ImGuiDialog {
     }
   }
 
+  rex::ui::IUISystem* ui_ = nullptr;  // for the file chooser; the UI system owns this dialog, so it outlives it
   fs::path user_data_root_;
   fs::path xenia_found_;
   fs::path rpcs3_found_;
   std::function<void()> on_finished_;
+  std::string picker_unavailable_;  // set once no file chooser could be opened: the sentence over the path box
+  char typed_path_[4096] = {};      // the path box
+  std::string typed_error_;
   State state_ = State::kChoosing;
   std::string status_;
   bool logged_first_draw_ = false;
@@ -722,7 +769,7 @@ bool ShowSaveImportWizard(rex::ui::IUISystem& ui, const Paths& paths,
   // The UI system destroys it after Close(), and OnClose is what calls `on_finished`. No pump here: the app's
   // setup loop runs the frames that draw it (see larecomp_save_porter.h).
   REXLOG_INFO("Save import: showing the wizard");
-  ui::ShowDialog<SaveImportDialog>(ui, user_data_root, xenia, rpcs3, std::move(on_finished));
+  ui::ShowDialog<SaveImportDialog>(ui, &ui, user_data_root, xenia, rpcs3, std::move(on_finished));
   return true;
 }
 

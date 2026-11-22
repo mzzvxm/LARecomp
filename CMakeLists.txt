@@ -107,6 +107,8 @@ set(LARECOMP_SOURCES
     src/os/thread_yield.cpp
     # SIGTERM, SIGINT and SIGHUP end the game like the window's close button (Linux; os/shutdown_signals.h).
     src/os/shutdown_signals.cpp
+    # What the file chooser gave and the typed path the wizards fall back to (os/file_pick.h; the ISO installer and the save importer).
+    src/os/file_pick.cpp
 
     # Steering wheel support.
     src/mc_engine/wheel/wheel_fake.cpp
@@ -965,12 +967,8 @@ else()
         INCLUDE_DIRECTORIES "${LARECOMP_MSPACK_DIR}")
     target_link_libraries(larecomp PRIVATE larecomp_mspack)
 
-    if(NOT WIN32 AND NOT APPLE)
-        # The ISO installer and the save importer open GTK file dialogs.
-        find_package(PkgConfig REQUIRED)
-        pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0)
-        target_link_libraries(larecomp PRIVATE PkgConfig::GTK3)
-    endif()
+    # No GTK: the ISO installer and the save importer ask the SDK's file dialog (SDL3's: the xdg desktop portal, then zenity) on Linux and show a
+    # box to type the path in where neither answers (src/os/file_pick.h). The game links no GTK and needs no GTK development files to build.
 
     # The Plume renderer, src/gpu.
     # Every backend the platform has is built in -- D3D12 and Vulkan on Windows,
@@ -1303,6 +1301,14 @@ else()
     target_include_directories(larecomp_thread_yield_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_features(larecomp_thread_yield_test PRIVATE cxx_std_23)
     target_link_libraries(larecomp_thread_yield_test PRIVATE Threads::Threads)
+    # The file chooser answers and the typed path fallback (src/os/file_pick.h) have a check that needs no game, no SDK and no GTK:
+    #   cmake --build <dir> --target larecomp_file_pick_test, then run it (exit 0 = passed).
+    add_executable(larecomp_file_pick_test EXCLUDE_FROM_ALL
+        src/os/file_pick_test.cpp
+        src/os/file_pick.cpp
+    )
+    target_include_directories(larecomp_file_pick_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_features(larecomp_file_pick_test PRIVATE cxx_std_23)
     # The termination signals (src/os/shutdown_signals.h) have a check that needs no game:
     #   cmake --build <dir> --target larecomp_shutdown_signals_test, then run it (exit 0 = passed).
     add_executable(larecomp_shutdown_signals_test EXCLUDE_FROM_ALL
