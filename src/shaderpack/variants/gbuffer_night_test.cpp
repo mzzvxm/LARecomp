@@ -15,7 +15,7 @@
 //   - RT2 (GB-W1, gbuffer_albedo.h): every edited shader declares the third output once; the albedo write is there exactly where the shader has a DiffuseSampler texel at its centre (read at the end
 //     of main, or captured right after the fetch where a later statement writes the register), the "no data" write everywhere
 //   - THE ALBEDO RECIPES (gbuffer_night_albedo.h, GB-H2-COVER): the 11 shaders with no DiffuseSampler texel that the forward headlight stage lights have their anchor found once and write RT2; and
-//     THE COVER RULE: every shader the headlight variant edits has the night stage's normal AND an albedo, except the six named in kGBufferNightHeadlightExempt (the emissive tints, which the light
+//     THE COVER RULE: every shader the headlight variant edits has the night stage's normal AND an albedo, except the eight named in kGBufferNightHeadlightExempt (the seven emissive ones, tints, plain neon, store sign and lamp glass, which the light
 //     pass never lights, and the tangent space decal): a shader that drops out of the G-buffer while the forward stage still lights it fails here, so the deferred headlights cannot lose a surface unseen
 //   - xCityDefault::PSMultiLight is the stage's like every other shader of the family (gbuffer.cpp's dispatch; the spike's own edits of it are gone)
 // and pins the census' numbers. A third argument is a folder that receives the edited texts (`<name>.gb.hlsl`, and `<name>.hlgb.hlsl` composed with the headlight) for the compile with dxc
