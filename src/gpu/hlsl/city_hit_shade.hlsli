@@ -26,7 +26,7 @@
 //   CITY_HIT_STAT_ADD(word, value)              optional: the calibration's counters (a uint word index and a uint to add: rt_hit_calibration.h StatsWord); counted only in a stats frame
 //   CITY_HIT_LAMP_LOAD(i)                       optional: lamp i of the frame's list as a CityHitLamp (view space); with it the lamp light of a hit is made, over the range the params give
 //   CITY_HIT_LAMP_GRID                          optional (CITY-RT R7): the lamp light of a hit is made from the WORLD FRAME's lamps (hlsl/rt_world_frame.hlsli, included BEFORE this file: its RtWorld, RtWorldLoad,
-//                                               RtLampBegin, RtLampStep, RtLampRow): the lamps of the 64 m cells around the hit, at most kCityHitLampMax of them, the sum capped at kCityHitLampSumCap;
+//                                               RtLampBegin, RtLampStep, RtLampRow): the lamps of the 64 m cells around the hit, at most kCityHitLampMax of those that reach it, the sum capped at kCityHitLampSumCap;
 //                                               the params' lampFirst and lampCount are not used (the records hold each lamp's activity over p.lampFactor = the world rows' schedule). Wins over CITY_HIT_LAMP_LOAD.
 //   CITY_HIT_GLOW_FACTOR(kind)                  optional (R7): what a glowing material of this kind (CITY_HIT_GLOW_*) glows by, 0..1: the world frame's is RtWorldGlowFactor (a lamp lens by the street lamps'
 //                                               schedule, neon, signs and lit windows by the fill lights', a traffic signal always); without it kind ALWAYS is 1 and everything else saturate(p.lampFactor)
@@ -128,15 +128,16 @@ static const float kCityHitLogBias = 16.0;
 static const float kCityHitLogScale = 64.0;
 static const float kCityHitLogMax = 2047.0;
 static const float kCityHitMaxColour = 60000.0;     // a hit's colour in the picture's units: what a half float keeps with room (the car reflections' kMaxColour)
-static const uint kCityHitLampMax = 96u;           // R7: the lamps of the world frame's lookup that one hit examines at most (a 9 cell lookup holds 60 at night on average in the budget's densest place; the loop is bounded)
+static const uint kCityHitLampMax = 96u;           // R7: the lamps of the world frame's lookup that reach one hit and are examined at most (a 9 cell lookup holds 60 at night on average in the budget's densest place; the loop is bounded)
+static const uint kCityHitLampWalkMax = 288u;      // R7: the lamps the walk visits at most, whether they reach the hit or not (3 x kCityHitLampMax: only the lamps that reach count against kCityHitLampMax, this bounds the time)
 static const float kCityHitLampSumCap = 6.0;       // R7: the lamp light's luminance is capped at this (a lamp's term is at most 1: six lamps at full strength; a cluster of omni lights is not a sun)
 static const float kCityHitLampLookup = 64.0;      // R7: the lookup's radius where the world rows give none (m)
 
 // R7: the lamp term's and the glow's counters (CITY_HIT_CENSUS_ADD word numbers)
 #define CITY_HIT_CENSUS_LOOKUPS 0u      // hits whose lamp light was looked up
-#define CITY_HIT_CENSUS_EXAMINED 1u     // lamps examined, summed
+#define CITY_HIT_CENSUS_EXAMINED 1u     // lamps examined (the ones that reach the hit, the ones the cap counts), summed
 #define CITY_HIT_CENSUS_LIT 2u          // ... of which the lamp lit the hit
-#define CITY_HIT_CENSUS_CAP_COUNT 3u    // lookups that stopped at kCityHitLampMax with lamps left
+#define CITY_HIT_CENSUS_CAP_COUNT 3u    // lookups that stopped at kCityHitLampMax reaching lamps or at kCityHitLampWalkMax lamps walked, with lamps left
 #define CITY_HIT_CENSUS_CAP_SUM 4u      // lookups whose sum was over kCityHitLampSumCap
 #define CITY_HIT_CENSUS_GLOW_NIGHT 5u   // hits on a glowing material, by what its glow follows (this word + the kind: 5 night, 6 lens, 7 always)
 #define CITY_HIT_CENSUS_WORDS 8u
@@ -513,6 +514,7 @@ struct CityHitLampEval
     float3 toLamp;     // unit, from the point to the lamp
     float distance;    // metres
     float3 radiance;   // the unshadowed light the lamp sends to the point, N.L in it, the schedule in it
+    uint reaches;      // 1 where the lamp is in the game's reach of the point (d^2 < kCityHitLampReach x intensity): the lamps the lookup's cap counts
 };
 
 CityHitLampEval CityHitLampAt(CityHitParams p, CityHitLamp l, float3 position, float3 normal)
@@ -523,8 +525,10 @@ CityHitLampEval CityHitLampAt(CityHitParams p, CityHitLamp l, float3 position, f
     e.distance = sqrt(d2);
     e.toLamp = d * (1.0 / e.distance);
     e.radiance = float3(0.0, 0.0, 0.0);
+    e.reaches = 0u;
     if (d2 < kCityHitLampReach * l.intensity)
     {
+        e.reaches = 1u;
         e.radiance = l.colour * (CityHitLampTerm(l.intensity, d2) * CityHitLampCone(l, e.toLamp) * saturate(dot(normal, e.toLamp)) * p.lampFactor);
     }
     return e;
@@ -555,16 +559,19 @@ CityHitLampEval CityHitLampAtIndex(CityHitParams p, RtWorld w, uint index, float
     e.distance = sqrt(d2);
     e.toLamp = d * (1.0 / e.distance);
     e.radiance = float3(0.0, 0.0, 0.0);
+    e.reaches = 0u;
     if (d2 < kCityHitLampReach * intensity)
     {
+        e.reaches = 1u;
         const CityHitLamp l = CityHitLampFromRows(a, RtLampRow(w, index, 1u), RtLampRow(w, index, 2u));
         e.radiance = l.colour * (CityHitLampTerm(l.intensity, d2) * CityHitLampCone(l, e.toLamp) * saturate(dot(normal, e.toLamp)) * p.lampFactor);
     }
     return e;
 }
 
-// The light of the world frame's lamps at a hit (CITY-RT R7). The lamps are the 64 m cells' around the hit (RtLampBegin: the world rows' lookup radius), the first kCityHitLampMax of them in the cursor's order; the
-// sum of their light is capped in luminance at kCityHitLampSumCap. Without the lamp shadow flag that is the light. With it ONE lamp is chosen by its unshadowed brightness (p.noise.z over the sum), a shadow
+// The light of the world frame's lamps at a hit (CITY-RT R7). The lamps are the 64 m cells' around the hit (RtLampBegin: the world rows' lookup radius) in the cursor's order; the walk takes the first
+// kCityHitLampMax of them THAT REACH the hit (a lamp out of the game's reach adds nothing and takes no slot: in a dense street the near lamps are not dropped for the far ones the walk met first) and stops
+// after kCityHitLampWalkMax lamps walked whatever they were; the sum of their light is capped in luminance at kCityHitLampSumCap. Without the lamp shadow flag that is the light. With it ONE lamp is chosen by its unshadowed brightness (p.noise.z over the sum), a shadow
 // ray goes toward it, and its light times sum / its own is the estimate of the lit lamps' sum (as the flat range's), times the cap's factor.
 float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footprint)
 {
@@ -572,18 +579,20 @@ float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footp
     const float radius = w.lookupM > 0.0 ? w.lookupM : kCityHitLampLookup;
     float3 sum = float3(0.0, 0.0, 0.0);
     float weightSum = 0.0;
-    uint examined = 0u;
+    uint examined = 0u;   // the lamps that reach the hit (the cap's count)
+    uint walked = 0u;     // the lamps the cursor passed, those that reach and those that do not
     uint lit = 0u;
     RtLampCursor c = RtLampBegin(w, position, radius);
     CITY_HIT_LOOP
-    while (c.done == 0u && examined < kCityHitLampMax)
+    while (c.done == 0u && examined < kCityHitLampMax && walked < kCityHitLampWalkMax)
     {
         const CityHitLampEval e = CityHitLampAtIndex(p, w, c.index, position, normal);
         const float luma = CityHitLuma(e.radiance);
         sum += e.radiance;
         weightSum += luma;
         lit += luma > 0.0 ? 1u : 0u;
-        examined += 1u;
+        examined += e.reaches;
+        walked += 1u;
         c = RtLampStep(w, c);
     }
     const bool capSum = weightSum > kCityHitLampSumCap;
@@ -603,15 +612,17 @@ float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footp
     float3 toChosen = float3(0.0, 1.0, 0.0);
     float distanceChosen = 0.0;
     float weightChosen = 0.0;
-    uint seen = 0u;
+    uint seen = 0u;       // the lamps that reach, replayed
+    uint replayed = 0u;   // the lamps passed: the same walk as the first loop's
     RtLampCursor d = RtLampBegin(w, position, radius);
     CITY_HIT_LOOP
-    while (d.done == 0u && seen < examined && weightChosen <= 0.0)
+    while (d.done == 0u && replayed < walked && weightChosen <= 0.0)
     {
         const CityHitLampEval e = CityHitLampAtIndex(p, w, d.index, position, normal);
         const float lampWeight = CityHitLuma(e.radiance);
         running += lampWeight;
-        seen += 1u;
+        seen += e.reaches;
+        replayed += 1u;
         if (lampWeight > 0.0 && (running >= pick || seen == examined))
         {
             chosen = e.radiance;

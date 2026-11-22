@@ -1,5 +1,5 @@
 // MCLA GPU renderer -- the lamp term of a hit through the world frame's grid (CITY-RT package FRAME, R7): the city hit library takes the grid for its lamps with `#define CITY_HIT_LAMP_GRID` (CityHitLamps: the
-// cursor's lamps, at most kCityHitLampMax of them, the sum capped), and this pass is its reference consumer: the two files compile together for DXIL and SPIR-V and validate (spirv-val). NOT WIRED: no host
+// cursor's lamps, at most kCityHitLampMax of them that reach the hit, the sum capped), and this pass is its reference consumer: the two files compile together for DXIL and SPIR-V and validate (spirv-val). NOT WIRED: no host
 // pass records it; with the probe (rt_world_probe_cs.hlsl) it is the pass a first run can use to read the lamps back through the real descriptor set and compare them with rt_world_frame_rules.h
 // LampLightAt (the twin of the library's loop) and LampsNear (the twin of the cursor's walk).
 //
@@ -90,7 +90,7 @@ void main(uint3 id : SV_DispatchThreadID)
         answer = RtWorldLampSum(w, p, a.xyz, b.xyz, radius);
         if (g_push.control.y == 1u)
         {
-            answer.xyz = CityHitLamps(p, a.xyz, b.xyz, 0.05);  // the library's: the first kCityHitLampMax lamps, the sum capped, with the flag one lamp and its shadow ray
+            answer.xyz = CityHitLamps(p, a.xyz, b.xyz, 0.05);  // the library's: the first kCityHitLampMax lamps that reach the hit, the sum capped, with the flag one lamp and its shadow ray
         }
     }
     g_answers[id.x] = answer;

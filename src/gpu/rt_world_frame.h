@@ -21,7 +21,7 @@
 //        const RtWorld w = RtWorldLoad();   if ((w.flags & RT_WORLD_VALID) == 0u) { ...no data: keep what you had... }
 //        p.units = w.units;  p.wet = w.wet;  p.lampFactor = w.lampFactor;  (CITY_HIT_P_CALIBRATE when w.statsFrame != 0u)  #define CITY_HIT_GAIN(cls) RtWorldClassGain(cls)
 //      The lamp term and the glow (R7, done): `#define CITY_HIT_LAMP_GRID` before including city_hit_shade.hlsli makes CityHitLamps take the cursor's lamps around the hit (the world rows' lookup radius,
-//      at most kCityHitLampMax = 96 of them, their light's sum capped at kCityHitLampSumCap = 6 in luminance; the params' lampFirst / lampCount are not used, p.lampFactor = w.lampFactor);
+//      at most kCityHitLampMax = 96 of them that reach the hit, the walk bounded at kCityHitLampWalkMax = 288 lamps, their light's sum capped at kCityHitLampSumCap = 6 in luminance; the params' lampFirst / lampCount are not used, p.lampFactor = w.lampFactor);
 //      `#define CITY_HIT_GLOW_FACTOR(kind) RtWorldGlowFactor(kind)` makes a lens glow by the street lamps' schedule, neon, signs and lit windows by the fill lights', a traffic signal always (row 47);
 //      `#define CITY_HIT_CENSUS_ADD(word, value) <your counter buffer>.InterlockedAdd((word) * 4u, (value))` counts, in a stats frame, the lamp term and the glowing hits (eight words: hand them
 //      to AddLampCensus). hlsl/rt_world_lamp_light_cs.hlsl is the reference consumer: it compiles beside city_hit_shade.hlsli for DXIL and SPIR-V and validates with spirv-val

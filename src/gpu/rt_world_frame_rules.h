@@ -793,7 +793,8 @@ inline void LampRows(const uint32_t* lamp_words, uint32_t i, uint32_t rows[3][4]
 }
 
 // The lamp light at a hit through the world frame's grid (CITY-RT R7; the twin of hlsl/city_hit_shade.hlsli CityHitLamps with CITY_HIT_LAMP_GRID): the lamps of the lookup around the VIEW space point
-// `position` (the world rows' lookup radius, kLampLookup where they give none) in the cursor's order as the library's lamps, the first kLampMax of them examined, their light summed and capped in luminance;
+// `position` (the world rows' lookup radius, kLampLookup where they give none) in the cursor's order as the library's lamps, the first kLampMax of them that reach the point examined (the walk passes at most
+// kLampWalkMax lamps), their light summed and capped in luminance;
 // with `shadow` one lamp is chosen by `noise` and `blocked` is its shadow ray (city_hit_shade::LampPickCapped).
 inline city_hit_shade::LampLight LampLightAt(const WorldDecoded& w, const uint32_t* lamp_words, const float axes[3][3], float lamp_factor, city_hit_shade::V3 position, city_hit_shade::V3 normal,
                                              bool shadow, float noise, const std::function<bool(city_hit_shade::V3, city_hit_shade::V3, float)>& blocked) {

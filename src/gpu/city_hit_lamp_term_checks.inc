@@ -3,10 +3,11 @@
 // (CITY_HIT_LAMP_GRID), the world rows' glow schedule (CITY_HIT_GLOW_FACTOR) and a counter for the census (CITY_HIT_CENSUS_ADD).
 //
 // What is checked, in order:
-//   twin           LampsCapped / LampPickCapped (the examined cap, the sum's cap in luminance with the colours' ratios kept, the one lamp's estimate against the capped sum), the glow's default factor
+//   twin           LampsCapped / LampPickCapped (the cap counts only the lamps that reach the hit, the walk bound, the sum's cap in luminance with the colours' ratios kept, the one lamp's estimate against the capped sum),
+//                  the glow's default factor
 //   calibration    the glowing class' own range and sample count; the other classes' unchanged
 //   the grid       the shader's CityHitShade over the world frame's buffers against the twin's Shade with rw::LampLightAt, on thousands of random hits: the colour, the glow, the rays cast, the census
-//   the caps       a dense place (more lamps than the cap), a bright cluster (the sum over its cap), day (nothing), a lookup that finds nothing
+//   the caps       a dense place (more lamps than the cap), far lamps first in the walk (the near ones still count), the walk bound, a bright cluster (the sum over its cap), day (nothing), a lookup that finds nothing
 //   the glow kinds a lens glows by the street lamps' schedule, neon and lit windows by the fill lights', a signal always
 //   the reflections' glue (REFL-LAMPS) city_refl_rules.h's LampTermFor / LampFlags / GlowFactorFor in front of the twin's Shade: switch off or world rows not valid = the shading of old (no lamp light, the sun's
 //                  schedule for the glow), exactly; on and valid = the grid's lamp light and the world rows' glow by kind
@@ -310,6 +311,97 @@ void GridCapChecks(Lcg& rng) {
     Check(cs::Luma(twin.light) <= cs::kLampSumCap * 1.0001f, "the dense hit's light is under the sum's cap");
   }
 
+  // 1b. FAR FIRST (CITY-RT-REVIEW S4): 150 lamps that cannot reach the point are first in the cursor's order (a row of cells with lower z), eight that do reach come after: the cap counts only lamps
+  // that reach, so all eight are in and the light is their plain sum (the count before the reach test took the first 96, all of them far, and lit the hit by none)
+  {
+    GridWorld w;
+    std::vector<ch::Lamp> lamps;
+    for (uint32_t i = 0; i < 150; ++i) {  // out of reach: intensity 1 reaches 10 m, these are 40 m away
+      ch::Lamp l;
+      l.pos[0] = centre[0] + rng.Range(-5.0f, 5.0f);
+      l.pos[1] = rng.Range(2.0f, 5.0f);
+      l.pos[2] = centre[2] - 40.0f + rng.Range(-3.0f, 3.0f);
+      l.intensity = 1.0f;
+      lamps.push_back(l);
+    }
+    for (uint32_t i = 0; i < 8; ++i) {  // in reach, above the point
+      ch::Lamp l;
+      l.pos[0] = centre[0] + rng.Range(-4.0f, 4.0f);
+      l.pos[1] = rng.Range(2.0f, 5.0f);
+      l.pos[2] = centre[2] + 20.0f + rng.Range(-3.0f, 3.0f);
+      l.colour[0] = rng.Range(0.4f, 1.0f);
+      l.colour[1] = rng.Range(0.4f, 1.0f);
+      l.colour[2] = rng.Range(0.2f, 1.0f);
+      l.intensity = 900.0f;  // reaches 300 m: the lookup's window is the limit
+      lamps.push_back(l);
+    }
+    MakeGridWorld(&w, frame, lamps, 22.0f, -1.0f, -1.0f, true);
+    // the walk's order, from the buffers: how many lamps that cannot reach the point come before the first that can
+    std::vector<uint32_t> order;
+    const float view[3] = {3.0f, 0.0f, 2.0f};
+    rw::LampsNear(w.decoded, w.lamps.words.data(), frame.world_axes_view, view, w.decoded.lookup_m > 0.0f ? w.decoded.lookup_m : cs::kLampLookup, &order);
+    std::vector<cs::Lamp> in_order;
+    for (const uint32_t i : order) {
+      uint32_t rows[3][4];
+      rw::LampRows(w.lamps.words.data(), i, rows);
+      in_order.push_back(cs::UnpackGpuLamp(rows));
+    }
+    size_t first_reaching = in_order.size();
+    uint32_t reaching = 0;
+    for (size_t i = 0; i < in_order.size(); ++i) {
+      if (cs::LampAt(w.decoded.lamp_factor, in_order[i], cs::V3{3.0f, 0.0f, 2.0f}, cs::V3{0.0f, 1.0f, 0.0f}).reaches) {
+        first_reaching = std::min(first_reaching, i);
+        ++reaching;
+      }
+    }
+    Check(order.size() >= 158 && first_reaching >= cs::kLampMax && reaching == 8,
+          Num2("the setup: the far lamps come first in the cursor's order (%.0f lamps pass before the first that reaches; %.0f reach)", double(first_reaching), double(reaching)));
+    std::fill(hlsl_shim::gCensus.begin(), hlsl_shim::gCensus.end(), 0u);
+    const hlsl_shim::float3 light = hlsl_shim::grid::CityHitLamps(params(w.decoded.lamp_factor, false), position, normal, 0.1f);
+    const cs::V3 plain = cs::LampsSum(w.decoded.lamp_factor, in_order.data(), uint32_t(in_order.size()), cs::V3{3.0f, 0.0f, 2.0f}, cs::V3{0.0f, 1.0f, 0.0f});
+    const cs::V3 want = plain * cs::LampKeep(cs::Luma(plain));
+    Check(hlsl_shim::gCensus[CITY_HIT_CENSUS_EXAMINED] == 8 && hlsl_shim::gCensus[CITY_HIT_CENSUS_CAP_COUNT] == 0 && hlsl_shim::gCensus[CITY_HIT_CENSUS_LIT] == 8,
+          Num2("far lamps first: the hit examines the eight that reach and none is dropped (examined %.0f, cap count %.0f)", hlsl_shim::gCensus[CITY_HIT_CENSUS_EXAMINED], hlsl_shim::gCensus[CITY_HIT_CENSUS_CAP_COUNT]));
+    Check(cs::Luma(want) > 0.0f && Close(light, want, 5e-4), "far lamps first: the hit's light is the plain sum of every lamp that reaches it (capped in luminance), as if the far ones were not there");
+    const cs::LampLight twin = rw::LampLightAt(w.decoded, w.lamps.words.data(), frame.world_axes_view, w.decoded.lamp_factor, cs::V3{3.0f, 0.0f, 2.0f}, cs::V3{0.0f, 1.0f, 0.0f}, false, 0.5f, nullptr);
+    Check(twin.examined == 8 && !twin.cap_count && Close(light, twin.light, 5e-4), "far lamps first: the twin agrees");
+    // with the shadow ray: the replay walks the same lamps (one lamp is chosen, a ray cast, the estimate is the plain sum or nothing where blocked)
+    hlsl_shim::gLampCalls.clear();
+    const hlsl_shim::float3 est = hlsl_shim::grid::CityHitLamps(params(w.decoded.lamp_factor, true), position, normal, 0.1f);
+    const bool blocked = hlsl_shim::gLampCalls.size() == 1 && hlsl_shim::FakeBlocked(hlsl_shim::gLampCalls[0].origin[0], hlsl_shim::gLampCalls[0].origin[1], hlsl_shim::gLampCalls[0].origin[2],
+                                                                                    hlsl_shim::gLampCalls[0].direction[0], hlsl_shim::gLampCalls[0].direction[1], hlsl_shim::gLampCalls[0].direction[2]);
+    Check(hlsl_shim::gLampCalls.size() == 1 && (blocked ? float3Luma(est) == 0.0f : float3Luma(est) > 0.0f), "far lamps first: with the shadow flag one of the lamps that reach is chosen and gets the ray");
+  }
+
+  // 1c. THE WALK'S BOUND: 400 lamps that cannot reach the point first, then eight that can: the walk passes kLampWalkMax lamps and stops, so the hit has no lamp light and says it hit the cap
+  {
+    GridWorld w;
+    std::vector<ch::Lamp> lamps;
+    for (uint32_t i = 0; i < 400; ++i) {
+      ch::Lamp l;
+      l.pos[0] = centre[0] + rng.Range(-5.0f, 5.0f);
+      l.pos[1] = rng.Range(2.0f, 5.0f);
+      l.pos[2] = centre[2] - 40.0f + rng.Range(-3.0f, 3.0f);
+      l.intensity = 1.0f;
+      lamps.push_back(l);
+    }
+    for (uint32_t i = 0; i < 8; ++i) {
+      ch::Lamp l;
+      l.pos[0] = centre[0] + rng.Range(-4.0f, 4.0f);
+      l.pos[1] = rng.Range(2.0f, 5.0f);
+      l.pos[2] = centre[2] + 20.0f + rng.Range(-3.0f, 3.0f);
+      l.intensity = 900.0f;
+      lamps.push_back(l);
+    }
+    MakeGridWorld(&w, frame, lamps, 22.0f, -1.0f, -1.0f, true);
+    std::fill(hlsl_shim::gCensus.begin(), hlsl_shim::gCensus.end(), 0u);
+    const hlsl_shim::float3 light = hlsl_shim::grid::CityHitLamps(params(w.decoded.lamp_factor, false), position, normal, 0.1f);
+    const cs::LampLight twin = rw::LampLightAt(w.decoded, w.lamps.words.data(), frame.world_axes_view, w.decoded.lamp_factor, cs::V3{3.0f, 0.0f, 2.0f}, cs::V3{0.0f, 1.0f, 0.0f}, false, 0.5f, nullptr);
+    Check(w.lamps.lamp_count >= 400 && hlsl_shim::gCensus[CITY_HIT_CENSUS_EXAMINED] == 0 && hlsl_shim::gCensus[CITY_HIT_CENSUS_CAP_COUNT] == 1 && float3Luma(light) == 0.0f,
+          Num2("the walk stops after kLampWalkMax lamps (examined %.0f, cap count %.0f)", hlsl_shim::gCensus[CITY_HIT_CENSUS_EXAMINED], hlsl_shim::gCensus[CITY_HIT_CENSUS_CAP_COUNT]));
+    Check(twin.walked == cs::kLampWalkMax && twin.examined == 0 && twin.cap_count && Close(light, twin.light, 5e-4), "the walk's bound: the twin passes kLampWalkMax lamps and agrees");
+  }
+
   // 2. BRIGHT: twenty lamps of intensity 400 within 3 m of a point whose normal faces them: their sum is far over the cap; the light is the sum scaled to the cap, colours' ratios kept
   {
     GridWorld w;
@@ -564,9 +656,12 @@ void LampTermTextChecks(const std::string& src) {
   }
   const auto has = [](const std::string& text, const char* part) { return text.find(part) != std::string::npos; };
   CHECK(has(lib, "#if defined(CITY_HIT_LAMP_GRID)") && has(lib, "#elif defined(CITY_HIT_LAMP_LOAD)") && has(lib, "RtLampBegin(w, position, radius)") && has(lib, "kCityHitLampMax") && has(lib, "kCityHitLampSumCap"));
+  // the cap counts the lamps that reach (S4 of CITY-RT-REVIEW): the walk is bounded apart from it, and the pick's replay follows the same walk
+  CHECK(has(lib, "kCityHitLampWalkMax") && has(lib, "examined += e.reaches;") && has(lib, "walked < kCityHitLampWalkMax") && has(lib, "replayed < walked") && has(lib, "seen += e.reaches;"));
+  CHECK(!has(lib, "examined += 1u;"));
   CHECK(has(lib, "CITY_HIT_GLOW_FACTOR(kind)") && has(lib, "CityHitGlowFactor(p, kind)") && has(lib, "CITY_HIT_CENSUS_ADD(word, value)") && has(lib, "CityHitCensus(p, CITY_HIT_CENSUS_GLOW_NIGHT + kind, 1u)"));
   // the library's numbers are the twin's (the grid namespace's copy: the same file)
-  CHECK(hlsl_shim::grid::kCityHitLampMax == cs::kLampMax && Near(hlsl_shim::grid::kCityHitLampSumCap, cs::kLampSumCap) && Near(hlsl_shim::grid::kCityHitLampLookup, cs::kLampLookup));
+  CHECK(hlsl_shim::grid::kCityHitLampMax == cs::kLampMax && hlsl_shim::grid::kCityHitLampWalkMax == cs::kLampWalkMax && cs::kLampWalkMax == 3 * cs::kLampMax && Near(hlsl_shim::grid::kCityHitLampSumCap, cs::kLampSumCap) && Near(hlsl_shim::grid::kCityHitLampLookup, cs::kLampLookup));
   CHECK(CITY_HIT_CENSUS_LOOKUPS == cs::kCensusLookups && CITY_HIT_CENSUS_EXAMINED == cs::kCensusExamined && CITY_HIT_CENSUS_LIT == cs::kCensusLit && CITY_HIT_CENSUS_CAP_COUNT == cs::kCensusCapCount &&
         CITY_HIT_CENSUS_CAP_SUM == cs::kCensusCapSum && CITY_HIT_CENSUS_GLOW_NIGHT == cs::kCensusGlowNight && CITY_HIT_CENSUS_WORDS == cs::kCensusWords);
   CHECK(CITY_HIT_GLOW_NIGHT == cs::kGlowNight && CITY_HIT_GLOW_LENS == cs::kGlowLens && CITY_HIT_GLOW_ALWAYS == cs::kGlowAlways);
@@ -594,11 +689,56 @@ void LampTermChecks(const City& city, Lcg& rng, const std::string& src) {
     const cs::V3 plain = cs::LampsSum(0.9f, lamps.data(), 14, position, n);
     CHECK(few.examined == 14 && !few.cap_count && few.lit == 14);
     CHECK(cs::Luma(plain) > cs::kLampSumCap && few.cap_sum && Near(cs::Luma(few.light), cs::kLampSumCap, 1e-4) && Near(few.light.y / few.light.x, plain.y / plain.x, 1e-4));
+    // the cap counts the lamps that REACH the hit (CITY-RT-REVIEW S4): lamps that do not take no slot
     std::vector<cs::Lamp> many(200, lamps[0]);
-    for (cs::Lamp& l : many) l.intensity = 1.0f;  // the plateau is d^2 <= 1: nothing reaches: all examined, none lit
+    for (cs::Lamp& l : many) l.intensity = 1.0f;  // the reach is d^2 < 100: nothing at 40 m reaches: all walked, none examined, none lit
     const cs::LampLight dense = cs::LampsCapped(1.0f, many.data(), 200, {40.0f, 0.0f, 0.0f}, n);
-    CHECK(dense.examined == cs::kLampMax && dense.cap_count && dense.lit == 0 && cs::Luma(dense.light) == 0.0f);
-    CHECK(cs::LampsCapped(1.0f, many.data(), cs::kLampMax, {40.0f, 0.0f, 0.0f}, n).cap_count == false);  // exactly the cap is not over it
+    CHECK(dense.examined == 0 && dense.walked == 200 && !dense.cap_count && dense.lit == 0 && cs::Luma(dense.light) == 0.0f);
+    std::vector<cs::Lamp> endless(400, many[0]);
+    const cs::LampLight bound = cs::LampsCapped(1.0f, endless.data(), 400, {40.0f, 0.0f, 0.0f}, n);  // the walk's own bound: kLampWalkMax lamps passed, lamps left
+    CHECK(bound.examined == 0 && bound.walked == cs::kLampWalkMax && bound.cap_count);
+    std::vector<cs::Lamp> far_lamps(400, lamps[0]);  // 80 m from the point at intensity 1 (the reach is 10 m): out of reach
+    for (cs::Lamp& l : far_lamps) {
+      l.position = {80.0f, 3.0f, 2.0f};
+      l.intensity = 1.0f;
+    }
+    std::vector<cs::Lamp> reach(200, lamps[0]);  // above the point, in reach
+    for (size_t i = 0; i < reach.size(); ++i) {
+      reach[i].position = {1.0f + rng.Range(-3, 3), rng.Range(2, 4), 2.0f + rng.Range(-3, 3)};
+      reach[i].intensity = 400.0f;
+      reach[i].cos_outer = -2.0f;
+    }
+    const cs::LampLight full = cs::LampsCapped(1.0f, reach.data(), 200, position, n);
+    CHECK(full.examined == cs::kLampMax && full.walked == cs::kLampMax && full.cap_count && full.lit > 0);
+    CHECK(cs::LampsCapped(1.0f, reach.data(), cs::kLampMax, position, n).cap_count == false);  // exactly the cap is not over it
+    CHECK(cs::LampsCapped(1.0f, reach.data(), cs::kLampMax + 1, position, n).cap_count == true);
+    // 150 lamps out of reach first, then ten in reach: the old count (before the reach test) took the first 96 of them and dropped all ten; now all ten are in, and the light is their plain sum
+    {
+      std::vector<cs::Lamp> list(far_lamps.begin(), far_lamps.begin() + 150);
+      for (size_t i = 0; i < 10; ++i) list.push_back(reach[i]);
+      const cs::LampLight t = cs::LampsCapped(1.0f, list.data(), uint32_t(list.size()), position, n);
+      const cs::V3 plain = cs::LampsSum(1.0f, list.data(), uint32_t(list.size()), position, n);
+      const cs::V3 kept = plain * cs::LampKeep(cs::Luma(plain));
+      CHECK(t.examined == 10 && t.walked == 160 && !t.cap_count && t.lit == 10);
+      CHECK(Near(t.light.x, kept.x, 1e-5) && Near(t.light.y, kept.y, 1e-5) && Near(t.light.z, kept.z, 1e-5) && cs::Luma(t.light) > 0.0f);
+      // a mix: 3 in reach, 100 out, 100 in reach: 93 of the last are taken, the walk passed 196
+      std::vector<cs::Lamp> mix(reach.begin(), reach.begin() + 3);
+      mix.insert(mix.end(), far_lamps.begin(), far_lamps.begin() + 100);
+      mix.insert(mix.end(), reach.begin() + 3, reach.begin() + 103);
+      const cs::LampLight m = cs::LampsCapped(1.0f, mix.data(), uint32_t(mix.size()), position, n);
+      CHECK(m.examined == cs::kLampMax && m.walked == 3 + 100 + 93 && m.cap_count);
+      // the one lamp's estimate (the replay of the same walk, out-of-reach lamps between the others) averages to the capped sum
+      std::vector<cs::Lamp> woven;
+      for (size_t i = 0; i < 14; ++i) {
+        woven.push_back(lamps[i]);
+        woven.insert(woven.end(), far_lamps.begin(), far_lamps.begin() + 2);
+      }
+      const cs::LampLight woven_sum = cs::LampsCapped(0.9f, woven.data(), uint32_t(woven.size()), position, n);
+      cs::V3 woven_mean;
+      for (int i = 0; i < 6000; ++i) woven_mean = woven_mean + cs::LampPickCapped(0.9f, woven.data(), uint32_t(woven.size()), position, n, (float(i) + 0.5f) / 6000.0f, 0.0f, [](cs::V3, cs::V3, float) { return false; }).light;
+      woven_mean = woven_mean * (1.0f / 6000.0f);
+      CHECK(woven_sum.examined == 14 && woven_sum.walked == 42 && Near(woven_mean.x, woven_sum.light.x, 4e-3) && Near(woven_mean.y, woven_sum.light.y, 4e-3) && Near(woven_mean.z, woven_sum.light.z, 4e-3));
+    }
     // the one lamp's estimate averages to the capped sum
     cs::V3 mean;
     const int samples = 8000;
@@ -627,7 +767,7 @@ void LampTermChecks(const City& city, Lcg& rng, const std::string& src) {
   GridShadeChecks(city, words, rng, 4000, &cov);
   std::printf("lamp term at hits: %d random hits through the grid: %d lit by a lamp, %d at the lamps' cap, %d at the sum's cap, %d lamp rays, %d empty windows, glow by kind night %d lens %d always %d\n", cov.cases,
               cov.lit_cases, cov.cap_count, cov.cap_sum, cov.lamp_rays, cov.empty, cov.glow_kind[0], cov.glow_kind[1], cov.glow_kind[2]);
-  Check(cov.cases > 3500 && cov.lit_cases > 300 && cov.cap_count > 100 && cov.cap_sum > 20 && cov.lamp_rays > 100 && cov.calibrate > 500 && cov.shadow > 800 && cov.empty > 100,
+  Check(cov.cases > 3500 && cov.lit_cases > 300 && cov.cap_count > 40 && cov.cap_sum > 20 && cov.lamp_rays > 100 && cov.calibrate > 500 && cov.shadow > 800 && cov.empty > 100,
         Num2("the grid's random hits covered lit hits, both caps, lamp rays and the census (lit %.0f, count caps %.0f)", cov.lit_cases, cov.cap_count));
   Check(cov.glow_kind[0] > 100 && cov.glow_kind[1] > 20 && cov.glow_kind[2] > 20, Num2("every glow kind was hit (night %.0f, lens %.0f)", cov.glow_kind[0], cov.glow_kind[1]));
   GridCapChecks(rng);
