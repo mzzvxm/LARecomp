@@ -253,7 +253,11 @@ struct Pick {
 
 // The top `k` of `lights[0 .. n)`: eligible ones, by class, then by score (a light in `previous` scoring KeepBonus more), then by id (a stable order for equal scores). Two lights with one id (a
 // light handed over twice) count once. `previous` = the ids that held a channel last frame.
-inline Pick SelectTopK(const Light* lights, uint32_t n, const float eye[3], const uint64_t* previous, uint32_t previous_count, uint32_t k) {
+// `reserve_lamp` (mcla_gpu_rt_lights_lamp_slot, RTL-D1-REVIEW S2, the A/B arm): class first ranking lets the traffic's headlights and neon fill all K (a car's pair is ONE light, so three cars
+// take all three channels at night) and no street lamp gets a ray, which is where the lamps' subtraction is the visible part of D1. With it on and K >= 2: when the pick holds no street lamp
+// and there is one among the candidates, the last (lowest ranked) pick gives its channel to the strongest lamp (the best lamp by score with its keep bonus, then id); the headlights and neon
+// above it keep theirs. A pick that already holds a lamp, a K of 1 (the only channel stays the headlights') and a set with no lamp are what they are with it off. Default off = today's pick.
+inline Pick SelectTopK(const Light* lights, uint32_t n, const float eye[3], const uint64_t* previous, uint32_t previous_count, uint32_t k, bool reserve_lamp = false) {
   struct Cand {
     uint32_t index;
     uint64_t id;
@@ -296,6 +300,22 @@ inline Pick SelectTopK(const Light* lights, uint32_t n, const float eye[3], cons
   });
   Pick out;
   const uint32_t take = std::min({k, count, kMaxLights});
+  if (reserve_lamp && take >= 2 && count > take) {
+    // cands is sorted by class: with no lamp among the first `take`, every one of them is a headlight or neon (a class below the lamps'), so the first lamp after them is the strongest lamp, and
+    // standing last it keeps the pick in class order.
+    bool lamp_picked = false;
+    for (uint32_t i = 0; i < take; ++i) {
+      lamp_picked = lamp_picked || cands[i].cls == Class::kLamp;
+    }
+    if (!lamp_picked) {
+      for (uint32_t j = take; j < count; ++j) {
+        if (cands[j].cls == Class::kLamp) {
+          cands[take - 1] = cands[j];
+          break;
+        }
+      }
+    }
+  }
   for (uint32_t i = 0; i < take; ++i) {
     out.index[out.count] = cands[i].index;
     out.id[out.count] = cands[i].id;

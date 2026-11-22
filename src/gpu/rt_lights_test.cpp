@@ -312,6 +312,68 @@ void TestSelection() {
     CHECK(rl::SelectTopK(v.data(), uint32_t(v.size()), eye, nullptr, 0, 4).count == 4);
     CHECK(rl::SelectTopK(v.data(), 0, eye, nullptr, 0, 4).count == 0);
   }
+  // REVIEW S2 (RTL-D1-REVIEW, mcla_gpu_rt_lights_lamp_slot): class first ranking leaves the street lamps with no ray when traffic fills K; the A/B arm reserves the last channel for the strongest lamp.
+  // Default (the argument left out, or false) = today's pick.
+  {
+    std::vector<lg::Light> v;
+    v.push_back(Lamp(30, 6, 0, 300));                          // 0: a lamp at 30 m
+    v.push_back(Headlight(0, 1, 25, 202));                     // 1
+    v.push_back(Lamp(8, 6, 0, 301));                           // 2: the strongest lamp (8 m)
+    v.push_back(Headlight(0, 1, 10, 201));                     // 3: the nearest headlight pair
+    v.push_back(Headlight(0, 1, 40, 203));                     // 4
+    lg::Light neon = Lamp(5, 0.3f, 0, 204);
+    neon.source = lg::LightSource::kNeon;
+    v.push_back(neon);                                          // 5
+    v.push_back(Lamp(50, 6, 0, 302));                          // 6
+    const uint32_t n = uint32_t(v.size());
+    // OFF: three headlight pairs take all of K 3, no lamp; the argument false is the same thing
+    rl::Pick off = rl::SelectTopK(v.data(), n, eye, nullptr, 0, 3);
+    CHECK(off.count == 3 && off.id[0] == 201 && off.id[1] == 202 && off.id[2] == 203);
+    rl::Pick off2 = rl::SelectTopK(v.data(), n, eye, nullptr, 0, 3, false);
+    CHECK(off2.count == 3 && std::equal(off.id.begin(), off.id.begin() + 3, off2.id.begin()) && std::equal(off.index.begin(), off.index.begin() + 3, off2.index.begin()));
+    // ON, K 3: the last channel goes to the strongest lamp (301 at 8 m, not the first lamp of the input), the two best headlights keep theirs
+    rl::Pick on = rl::SelectTopK(v.data(), n, eye, nullptr, 0, 3, true);
+    CHECK(on.count == 3 && on.id[0] == 201 && on.id[1] == 202 && on.id[2] == 301 && on.index[2] == 2 && v[on.index[2]].id == 301);
+    CHECK(rl::ClassOf(v[on.index[0]]) == rl::Class::kHeadlight && rl::ClassOf(v[on.index[2]]) == rl::Class::kLamp);
+    // K 4: the neon is the last pick of today's list, so the lamp takes ITS place; K 5 has the lamp already: nothing changes; K 1 keeps the headlights' only channel; K 2 gives it to the lamp
+    rl::Pick k4 = rl::SelectTopK(v.data(), n, eye, nullptr, 0, 4, true);
+    CHECK(k4.count == 4 && k4.id[0] == 201 && k4.id[1] == 202 && k4.id[2] == 203 && k4.id[3] == 301);
+    CHECK(rl::SelectTopK(v.data(), n, eye, nullptr, 0, 4).id[3] == 204);
+    {
+      const rl::Pick a = rl::SelectTopK(v.data(), n, eye, nullptr, 0, 5), b = rl::SelectTopK(v.data(), n, eye, nullptr, 0, 5, true);
+      CHECK(a.count == 5 && b.count == 5 && a.id[4] == 301 && std::equal(a.id.begin(), a.id.begin() + 5, b.id.begin()) && std::equal(a.index.begin(), a.index.begin() + 5, b.index.begin()));
+    }
+    {
+      const rl::Pick a = rl::SelectTopK(v.data(), n, eye, nullptr, 0, 1), b = rl::SelectTopK(v.data(), n, eye, nullptr, 0, 1, true);
+      CHECK(a.count == 1 && b.count == 1 && a.id[0] == 201 && b.id[0] == 201);
+      const rl::Pick c = rl::SelectTopK(v.data(), n, eye, nullptr, 0, 2, true);
+      CHECK(c.count == 2 && c.id[0] == 201 && c.id[1] == 301);
+    }
+    // the keep bonus decides between two lamps that are nearly equal: the one that held a channel keeps it (no churn from the reservation)
+    std::vector<lg::Light> w = {Headlight(0, 1, 10, 1), Headlight(0, 1, 20, 2), Headlight(0, 1, 30, 3), Lamp(8.0f, 6, 0, 10), Lamp(8.5f, 6, 0, 11)};
+    const uint64_t held11[1] = {11};
+    const uint64_t held10[1] = {10};
+    CHECK(rl::SelectTopK(w.data(), 5, eye, nullptr, 0, 3, true).id[2] == 10);
+    CHECK(rl::SelectTopK(w.data(), 5, eye, held11, 1, 3, true).id[2] == 11);
+    CHECK(rl::SelectTopK(w.data(), 5, eye, held10, 1, 3, true).id[2] == 10);
+    // a set with no lamp, or only lamps, or fewer lights than K: the same pick on or off
+    for (int kind = 0; kind < 3; ++kind) {
+      std::vector<lg::Light> u;
+      for (uint32_t i = 0; i < 4; ++i) {
+        u.push_back(kind == 1 ? Lamp(5.0f + float(i), 6, 0, 700 + i) : Headlight(0, 1, 10.0f + float(i), 700 + i));
+      }
+      const uint32_t m = kind == 2 ? 2u : 4u;
+      const rl::Pick a = rl::SelectTopK(u.data(), m, eye, nullptr, 0, 3), b = rl::SelectTopK(u.data(), m, eye, nullptr, 0, 3, true);
+      CHECK(a.count == b.count && std::equal(a.id.begin(), a.id.begin() + a.count, b.id.begin()));
+    }
+    // a lamp that is not eligible is not reserved for (the strongest eligible one is), and "other" lights never take the slot
+    std::vector<lg::Light> x = {Headlight(0, 1, 10, 1), Headlight(0, 1, 20, 2), Headlight(0, 1, 30, 3), Lamp(5, 6, 0, 20), Lamp(9, 6, 0, 21)};
+    x[3].range = 0.0f;
+    CHECK(rl::SelectTopK(x.data(), 5, eye, nullptr, 0, 3, true).id[2] == 21);
+    x[4].source = lg::LightSource::kPolice;
+    x[4].flags = 0;
+    CHECK(rl::SelectTopK(x.data(), 5, eye, nullptr, 0, 3, true).id[2] == 3);
+  }
   // properties on random sets: sorted by class then score, a subset of the eligible, any input order gives the same pick
   Lcg rng;
   for (int round = 0; round < 300; ++round) {
@@ -352,6 +414,40 @@ void TestSelection() {
     }
     const rl::Pick b = rl::SelectTopK(shuffled.data(), n, eye, held.data(), uint32_t(held.size()), k);
     CHECK(a.count == b.count && std::equal(a.id.begin(), a.id.begin() + a.count, b.id.begin()));
+    // the lamp slot arm (S2): the same count and class order; any input order gives the same pick; all but the last pick are today's; with a lamp among the lights and K >= 2 the pick holds the
+    // strongest one (score with its keep bonus, then id), and with no change to make it IS today's pick
+    const rl::Pick ar = rl::SelectTopK(v.data(), n, eye, held.data(), uint32_t(held.size()), k, true);
+    const rl::Pick br = rl::SelectTopK(shuffled.data(), n, eye, held.data(), uint32_t(held.size()), k, true);
+    CHECK(ar.count == a.count && br.count == ar.count && std::equal(ar.id.begin(), ar.id.begin() + ar.count, br.id.begin()));
+    bool a_has_lamp = false;
+    for (uint32_t i = 0; i < a.count; ++i) {
+      a_has_lamp = a_has_lamp || rl::ClassOf(v[a.index[i]]) == rl::Class::kLamp;
+    }
+    uint64_t best_lamp = 0;
+    float best_score = -1.0f;
+    for (const lg::Light& l : v) {
+      if (!rl::Eligible(l) || rl::ClassOf(l) != rl::Class::kLamp) {
+        continue;
+      }
+      const bool was_held = std::find(held.begin(), held.end(), l.id) != held.end();
+      const float score = rl::Score(l, eye) * (was_held ? rl::kKeepBonus : 1.0f);
+      if (score > best_score || (score == best_score && l.id < best_lamp)) {
+        best_score = score;
+        best_lamp = l.id;
+      }
+    }
+    const bool changes = !a_has_lamp && best_lamp != 0 && k >= 2 && a.count >= 2;
+    if (changes) {
+      CHECK(ar.id[ar.count - 1] == best_lamp && std::equal(a.id.begin(), a.id.begin() + a.count - 1, ar.id.begin()));
+    } else {
+      CHECK(std::equal(a.id.begin(), a.id.begin() + a.count, ar.id.begin()) && std::equal(a.index.begin(), a.index.begin() + a.count, ar.index.begin()));
+    }
+    for (uint32_t i = 0; i < ar.count; ++i) {
+      CHECK(v[ar.index[i]].id == ar.id[i] && rl::Eligible(v[ar.index[i]]) && (i == 0 || uint32_t(rl::ClassOf(v[ar.index[i - 1]])) <= uint32_t(rl::ClassOf(v[ar.index[i]]))));
+      for (uint32_t j = 0; j < i; ++j) {
+        CHECK(ar.id[j] != ar.id[i]);
+      }
+    }
   }
 }
 
@@ -1858,6 +1954,9 @@ void TestShaderText(const std::string& src) {
   // the formats Vulkan takes from the shader: 8 bit signals, R16F depth, the normal and share in an RGBA8 snorm image (rt_lights.cpp EnsureImages makes them these)
   CHECK(Has(cs, "[[vk::image_format(\"rgba8\")]] RWTexture2D<float4> g_signal0") && Has(cs, "[[vk::image_format(\"rgba8\")]] RWTexture2D<float4> g_signal2") && Has(cs, "[[vk::image_format(\"r16f\")]] RWTexture2D<float> g_depth") &&
         Has(cs, "[[vk::image_format(\"rgba8snorm\")]] RWTexture2D<float4> g_normal") && !Has(cs, "rgba16f") && !Has(cs, "r32f") && !Has(cs, "rg16f"));
+  // REVIEW RC-3: D3D12's table makes a typed UAV STORE to R8G8B8A8_SNORM required hardware support and a typed UAV LOAD from it optional (Vulkan: STORAGE_IMAGE is mandatory for the format, no extended
+  // format feature needed): the trace only ever stores to the normal and share image (the filter reads it as a texture, where the format's load is required), so no load of the UAV is there
+  CHECK(cs.find("g_normal[") != std::string::npos && cs.find("g_normal[") == cs.rfind("g_normal[") && Has(cs, "g_normal[id.xy] = float4(normal, signal ? 1.0 : 0.0);") && !Has(cs, "= g_normal[") && !Has(cs, "g_normal.Load"));
   // the rows' header and a light's row as the host writes them (rt_lights_rules.h): the mask's size, the step and the occlusion's traced size
   CHECK(Has(cs, "g_rows.Load4(0)") && Has(cs, "g_rows.Load4(16)") && Has(cs, "g_rows.Load4(32)") && Has(cs, "g_rows.Load4(48)") && Has(cs, "const uint step = clamp(h1.w, 1u, 2u);") &&
         Has(cs, "const int2 p = int2(min(id.x * step, size.x - 1u), min(id.y * step, size.y - 1u));") && Has(cs, "ViewPos(float2(p) + 0.5, float2(size), t, tanHalf)") && Has(cs, "NormalFromDepth(p, int2(size), t, P, tanHalf)"));
@@ -1926,8 +2025,8 @@ void TestSources(const std::string& src) {
   const std::string settings = ReadFile(src + "/settings/generated/settings_gpu.h"), meta = ReadFile(src + "/settings/generated/settings_meta.inc"), manifest = ReadFile(src + "/settings/generated/manifest.json");
   CHECK(!host_h.empty() && !host.empty() && !ll_h.empty() && !ll_cpp.empty() && !renderer.empty() && !settings.empty() && !manifest.empty());
 
-  // THE SETTINGS: six, debug only, in the three generated files and the aliases, with the ranges the rules clamp to
-  const char* names[] = {"mcla_gpu_rt_lights", "mcla_gpu_rt_lights_k", "mcla_gpu_rt_lights_radius", "mcla_gpu_rt_lights_rays", "mcla_gpu_rt_lights_view", "mcla_gpu_rt_lights_check", "mcla_gpu_rt_lights_scale"};
+  // THE SETTINGS (eight with the review's lamp slot arm), debug only, in the three generated files and the aliases, with the ranges the rules clamp to
+  const char* names[] = {"mcla_gpu_rt_lights", "mcla_gpu_rt_lights_k", "mcla_gpu_rt_lights_radius", "mcla_gpu_rt_lights_rays", "mcla_gpu_rt_lights_view", "mcla_gpu_rt_lights_check", "mcla_gpu_rt_lights_scale", "mcla_gpu_rt_lights_lamp_slot"};
   for (const char* name : names) {
     const std::string n = name;
     CHECK(Has(settings, ", " + n + ", ") && Has(settings, "inline auto& " + n + " = g_gpu." + n + ";") && Has(meta, "{\"" + n + "\", \"MCLA/GPU\"},") && Has(manifest, "\"" + n + "\": {"));
@@ -1944,6 +2043,14 @@ void TestSources(const std::string& src) {
     CHECK(rr != std::string::npos && At(settings, "rex::kDebugOnly, rex::Range{0, 1});", rr) < At(settings, "REX_" "SETTING(", rr + 20) && !Has(settings.substr(rr, 1400), "kRestart"));
     CHECK(Has(settings, "inline auto& mcla_gpu_dlss_rr_rt_lights = g_gpu.mcla_gpu_dlss_rr_rt_lights;") && Has(meta, "{\"mcla_gpu_dlss_rr_rt_lights\", \"MCLA/GPU\"},") && Has(manifest, "\"mcla_gpu_dlss_rr_rt_lights\": {") &&
           Count(settings, ", mcla_gpu_dlss_rr_rt_lights, ") == 1);
+  }
+  {
+    // REVIEW S2: the lamp slot arm is a debug only, live, 0 or 1 setting whose default is today's pick (0), in the three files and the alias; the host reads it every frame and hands it to the pick
+    const size_t ls = At(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_lamp_slot, 0,");
+    CHECK(ls != std::string::npos && At(settings, "rex::kDebugOnly, rex::Range{0, 1});", ls) < At(settings, "REX_" "SETTING(", ls + 20) && !Has(settings.substr(ls, At(settings, "REX_" "SETTING(", ls + 20) - ls), "kRestart"));
+    CHECK(Has(host, "lamp_slot_ = st::mcla_gpu_rt_lights_lamp_slot.Get() != 0;") && Has(host, "held.data(), held_count, k_, lamp_slot_);") && Has(host_h, "bool lamp_slot_ = false;"));
+    // and the pass's log line says which arm it is (the chain's census)
+    CHECK(Has(host, "lamp slot {} (logged when it changes)") && Has(host, "(lamp_slot_ ? 1u << 15 : 0u)"));
   }
   CHECK(rl::kMaxLights == 9 && rl::kMaxRays == 4);   // the ranges above
   // the host reads each of them

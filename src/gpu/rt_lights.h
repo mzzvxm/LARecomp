@@ -20,7 +20,8 @@
 //
 // SETTINGS (debug only; settings_gpu.h): mcla_gpu_rt_lights (auto | off | on; live; off until part 2's gate), mcla_gpu_rt_lights_k (0: the level's: 3, 6 at the largest LIGHT SHADOWS level; 1 to 9),
 // mcla_gpu_rt_lights_radius (metres, 0: by class), mcla_gpu_rt_lights_rays (1 to 4 a light and pixel), mcla_gpu_rt_lights_view (0 off, 1 the filtered visibility drawn instead of the lights, 2 the raw one),
-// mcla_gpu_rt_lights_check (0, 1 every visibility 1, 2 every visibility 0). The noise follows mcla_gpu_noise_blue.
+// mcla_gpu_rt_lights_check (0, 1 every visibility 1, 2 every visibility 0), mcla_gpu_rt_lights_lamp_slot (0: class first pick as it is; 1: one of K >= 2 channels is reserved for the strongest street
+// lamp when the headlights and neon fill all of them: the A/B of RTL-D1-REVIEW S2). The noise follows mcla_gpu_noise_blue.
 //
 // MEMORY (part 2, C15: rt_lights_rules.h "the memory"). The pass is traced at the MASK's size (the occlusion's traced size over a step of 1, or 2 where that size is taller than 720 lines:
 // mcla_gpu_rt_lights_scale), every image is 8 bit (the signal and RtDenoise's four a group RGBA8, the depth guides R16F, the normal and the share one RGBA8 snorm, no hit image): 28 bytes a mask texel
@@ -194,6 +195,7 @@ class RtLights {
   int view_ = 0;
   int check_ = 0;
   int scale_setting_ = 0;
+  bool lamp_slot_ = false;   // mcla_gpu_rt_lights_lamp_slot
   bool raw_requested_ = false;
   bool blue_ = true;
   bool lamp_hook_on_ = false;

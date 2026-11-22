@@ -1143,6 +1143,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_rt_lights_scale, 0, "Debug: the size the ray traced light visibility is traced at, for mcla_gpu_rt_lights. 0 (the default): half of the occlusion's traced size on each axis where that is taller than 720 lines, else the "
     "whole of it (the memory: 28 bytes a texel, 14 MiB at 1080p and at 4K, 25 MiB at 1440p); 1: always the whole traced size (about 4 times the rays and the memory at 1080p and 4K: the picture to compare with); 2: half wherever the size allows. Live.", rex::kDebugOnly, rex::Range{0, 2});
 
+  REX_SETTING(i32, mcla_gpu_rt_lights_lamp_slot, 0, "Debug (A/B, RT-LIGHTS-D1 review S2): which lights get a ray for mcla_gpu_rt_lights. 0 (the default): headlights first, then neon, then the nearest street lamps, so three cars with their headlights on "
+    "(a car's pair is one light) leave no ray for any street lamp. 1: with K of 2 or more and no street lamp among the picked lights, the last channel goes to the strongest street lamp in the light pass's list instead (the headlights and neon above it keep theirs). Live.", rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(bool, mcla_gpu_object_names, false, "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
     "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
     "microseconds, and a world loads hundreds of textures in one frame, so they are set only "
@@ -2085,6 +2088,7 @@ inline auto& mcla_gpu_rt_lights_rays = g_gpu.mcla_gpu_rt_lights_rays;
 inline auto& mcla_gpu_rt_lights_view = g_gpu.mcla_gpu_rt_lights_view;
 inline auto& mcla_gpu_rt_lights_check = g_gpu.mcla_gpu_rt_lights_check;
 inline auto& mcla_gpu_rt_lights_scale = g_gpu.mcla_gpu_rt_lights_scale;
+inline auto& mcla_gpu_rt_lights_lamp_slot = g_gpu.mcla_gpu_rt_lights_lamp_slot;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;

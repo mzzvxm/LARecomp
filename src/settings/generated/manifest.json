@@ -468,6 +468,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_lights_lamp_slot": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B, RT-LIGHTS-D1 review S2): which lights get a ray for mcla_gpu_rt_lights. 0 (the default): headlights first, then neon, then the nearest street lamps, so three cars with their headlights on \"\\n    \"(a car's pair is one light) leave no ray for any street lamp. 1: with K of 2 or more and no street lamp among the picked lights, the last channel goes to the strongest street lamp in the light pass's list instead (the headlights and neon above it keep theirs). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ao_fast_math": {
   "type": "bool",
   "default": "true",
