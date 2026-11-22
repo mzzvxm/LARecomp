@@ -37,6 +37,13 @@ void PostReset();  // DeviceControl: drop every effect
 void DeviceOpened(bool virtual_device, uint16_t vid, uint16_t pid);
 void DeviceClosing();  // stops, destroys and closes the force-feedback device
 
+// Any thread, when the process ends (larecomp_app.cpp, the close work): asks the wheel thread to stop every force and release the device
+// (DeviceClosing), and waits for it at most `max_ms`. The device is the wheel thread's alone, so the stop is done there: no call from here can race a
+// force that thread starts. It never blocks longer than `max_ms` and takes no lock: a wheel thread that is stuck in a device call is left alone
+// (false), and the process ends without the stop, as it did before. True at once when no real device is open (none, log only, already closed).
+// From the call on, no device is opened any more and nothing the game queued plays.
+bool StopForExit(int max_ms);
+
 struct TickIn {
     Clock::time_point now;
     float pos;          // wheel position, -1..1 over the game's lock-to-lock range

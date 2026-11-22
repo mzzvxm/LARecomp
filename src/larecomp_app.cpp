@@ -84,6 +84,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/settings.h"
 #include "mc_engine/display/ultrawide.h"
+#include "mc_engine/wheel/wheel_ffb.h"
 #include "mc_engine/wheel/wheel_input.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "native_gfx/nocp/nocp_driver.h"
@@ -1196,6 +1197,8 @@ void LarecompApp::FinishWindowCloseWork() {
   larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
   larecomp::devwatch::Stop();
   larecomp::impulse::Shutdown();   // the Xbox triggers back to still
+  // The wheel's force effects stopped and its device released, by the wheel thread that owns them; bounded, a thread stuck in a device call is left alone.
+  if (!larecomp::wheel::ffb::StopForExit(250)) LARECOMP_APP_WARN("[quit] the wheel's force feedback did not answer within 250 ms: left as it is");
   mcla::display::Shutdown();       // the display's own mode back after FULLSCREEN
   LARECOMP_APP_INFO("[quit] LARecomp's shutdown took {} ms",
                     std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());

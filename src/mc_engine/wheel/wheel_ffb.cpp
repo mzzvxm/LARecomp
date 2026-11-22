@@ -64,6 +64,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -103,6 +104,14 @@ void Push(const Cmd& c) {
     // A guest that keeps posting while nothing drains (no wheel thread tick) must not grow without bound.
     if (q.items.size() < 4096) q.items.push_back(c);
 }
+
+// ---------------------------------------------------------------------------
+// The end of the process (any thread -> wheel thread; StopForExit, EXIT-SMALL M6)
+// ---------------------------------------------------------------------------
+
+std::atomic<bool> g_exit_asked{false};     // the process is ending: no force may start again, and the device is released
+std::atomic<bool> g_exit_stopped{false};   // the wheel thread did it
+std::atomic<bool> g_device_open{false};    // a real force-feedback device is open (not log only), set by the wheel thread
 
 // ---------------------------------------------------------------------------
 // The mirror of the game's effects (wheel thread only)
@@ -632,6 +641,7 @@ void CloseDevice(Engine& e) {
     DiRelease(g_di);
     g_di = Di{};
 #endif
+    g_device_open.store(false, std::memory_order_release);
     e.fx_running = false;
     e.nat_running = false;
     e.native = false;
@@ -650,6 +660,7 @@ void OpenDevice(Engine& e, bool virtual_device, uint16_t vid, uint16_t pid) {
     g_di = Di{};
     if (DiOpen(e, g_di, vid, pid)) {
         e.log_only = false;
+        g_device_open.store(true, std::memory_order_release);
     } else {
         DiRelease(g_di);
         g_di = Di{};
@@ -916,6 +927,7 @@ void PostReset() {
 
 void DeviceOpened(bool virtual_device, uint16_t vid, uint16_t pid) {
     Engine& e = E();
+    if (g_exit_asked.load(std::memory_order_acquire)) return;  // the process is ending: no device is opened for the last moments of it
     e.mirror.clear();
     BumpGeneration(e);
     e.last_tick = {};
@@ -949,8 +961,25 @@ void DeviceClosing() {
     e.level = 0.0f;
 }
 
+bool StopForExit(int max_ms) {
+    g_exit_asked.store(true, std::memory_order_release);  // first, so that a device that opens from now on is refused (DeviceOpened)
+    if (!g_device_open.load(std::memory_order_acquire)) return true;  // no real device: there is no force to stop
+    const auto until = Clock::now() + std::chrono::milliseconds(max_ms > 0 ? max_ms : 0);
+    while (!g_exit_stopped.load(std::memory_order_acquire)) {
+        if (Clock::now() >= until) return false;  // the wheel thread does not answer (stuck in a device call): the exit does not wait for it
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return true;
+}
+
 void Tick(const TickIn& in) {
     Engine& e = E();
+    if (g_exit_asked.load(std::memory_order_acquire)) {
+        // StopForExit: every force off and the device released, here on the thread that owns it; nothing the game queued can start one again.
+        if (e.state != State::kNoDevice || g_device_open.load(std::memory_order_acquire)) DeviceClosing();
+        g_exit_stopped.store(true, std::memory_order_release);
+        return;
+    }
     if (e.state == State::kNoDevice) return;
 
     // Panic first, before anything in the queue.
