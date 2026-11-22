@@ -129,6 +129,14 @@ inline const NightHeadlightExempt* FindGBufferNightHeadlightExempt(std::string_v
 // decal layer). The shaders that have no row do not have the factor (the LOD and foliage materials, the props' metal and default, the ocean, the emissive tints, the traffic body) or were not clean
 // in the measurement (the interior twins of the grime and decal families, whose ambient is picked with a flag), or write no albedo anyway (the interior twins of the road, the tunnel road,
 // the grime metal and the bump spec tints): they keep the draw's weight alone, exactly as before.
+// CHECK (GB-H2-FOLLOW, no row added): six interior twins have an albedo and no occlusion row: xCityBumpSpec, xCityGrime, xCityGrimeDecal, xCityGroundGrime, xCityGroundGrimeDecal and
+// xCityGroundDecalGrime, all __PSMultiLightInterior. The review's probe (perf/scripts/gb_h2_review_probes/perseed.py: scale iColor1.w by 1.25, read the ambient term) gives exactly 1.25 on 6 of 6 seeds
+// for all six, so a row of power 1 would be as exact for their ambient as the 48 above. What stops it: these shaders weigh each lamp group by its own channel of iColor1 (not one factor over the
+// whole sum), and pick the ambient by a draw level constant test (ShaderGlobals.z against a literal), and with that test one way a lamp colour term scales by iColor1.w with it (1.25) and the other
+// way it does not scale at all (1.0, 3 of 5 seeds for xCityGrime and xCityGrimeDecal). The forward headlight stage never edited an interior twin, so there is no forward picture to match. A row would
+// darken the headlight on these walls by the baked occlusion exactly when the game's own lamps are darkened by it, and wrongly (too dark) when the test runs the other way; no row leaves the light
+// undarkened (brighter than a lamp beside it where the test runs the first way). Decide by the picture: a garage or tunnel wall in the beam (these shaders are the grime and decal layers of such
+// walls), pass against the lamp-lit wall beside it, before adding `{"<name>", 1}` rows (and bump gbuffer.h's kGBufferVariantVersion: the tables' text is in the fingerprint anyway).
 struct NightOcclusionRow {
   std::string_view name;
   uint8_t power;  // 1: iColor1.w, 2: iColor1.w * iColor1.w
