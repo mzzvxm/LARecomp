@@ -5860,6 +5860,19 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_fix_neon_pulse_pin": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/Patches",
+  "help": "\"Diagnostic (the neon underglow's pulse, for tests): a number from 0 to 1 that every flashing neon shows at every update, whatever the game's clock, so that two runs of a scene \"
+    \"show the same underglow (the pulse is a function of the clock, and a picture A/B of the neon's light cannot be judged when it differs by run). Below 0 (the default): the game's own pulse. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1.0, 1.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "photo_album_keep_new_preview": {
   "type": "bool",
   "default": "true",

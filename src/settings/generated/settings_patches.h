@@ -89,6 +89,9 @@ class PatchesSettings final : public rex::SettingOwner {
     "and at 60 FPS or more the same wave blinks about 11 times a second (a strobe). On: every frame "
     "rate shows the console's throb. Off: the pulse is worked out at every frame.", rex::kDebugOnly);
 
+  REX_SETTING(f64, mcla_fix_neon_pulse_pin, -1.0, "Diagnostic (the neon underglow's pulse, for tests): a number from 0 to 1 that every flashing neon shows at every update, whatever the game's clock, so that two runs of a scene "
+    "show the same underglow (the pulse is a function of the clock, and a picture A/B of the neon's light cannot be judged when it differs by run). Below 0 (the default): the game's own pulse. Live.", rex::kDebugOnly, rex::Range{-1.0, 1.0});
+
   // BadassBaboon's Recomp Adjustments: Enable 60 FPS by default
   REX_SETTING(bool, real_frame_delta, true, "Feeds the simulation the measured frame time instead of the engine's fixed "
     "30 Hz timestep, and unlocks presentation from every-other-vblank. Required "
@@ -140,6 +143,7 @@ inline auto& hud_width = g_patches.hud_width;
 inline auto& intro_original_speed = g_patches.intro_original_speed;
 inline auto& mcla_fix_checkpoint_fade = g_patches.mcla_fix_checkpoint_fade;
 inline auto& mcla_fix_neon_30hz = g_patches.mcla_fix_neon_30hz;
+inline auto& mcla_fix_neon_pulse_pin = g_patches.mcla_fix_neon_pulse_pin;
 inline auto& real_frame_delta = g_patches.real_frame_delta;
 inline auto& showroom_unlimited = g_patches.showroom_unlimited;
 inline auto& skip_intro = g_patches.skip_intro;

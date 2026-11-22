@@ -206,6 +206,7 @@
 {"mcla_exposure_log_addr", "MCLA/NativeGfx"},
 {"mcla_fix_checkpoint_fade", "MCLA/Patches"},
 {"mcla_fix_neon_30hz", "MCLA/Patches"},
+{"mcla_fix_neon_pulse_pin", "MCLA/Patches"},
 {"mcla_fixed_step_fps", "MCLA/Cinematic"},
 {"mcla_freecam", "MCLA/Cinematic"},
 {"mcla_freecam_inertia", "MCLA/Cinematic"},
