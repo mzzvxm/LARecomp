@@ -341,7 +341,7 @@ void TestSearchGate() {
     // The words, one by one.
     CHECK(js::SearchReady(Facts(true)));
     CHECK(!js::SearchReady(Facts(false)));
-    CHECK(!js::SearchReady(Facts(true, false)));                    // no handle
+    CHECK(js::SearchReady(Facts(true, false)));                     // no handle: logged, not required (the page's entry may set it)
     CHECK(!js::SearchReady(Facts(true, true, 1)));                  // a search is marked as running
     CHECK(!js::SearchReady(Facts(true, true, 0, 0x2F004000u, 1)));  // the search object is busy
     CHECK(js::SearchReady(Facts(true, true, 0, 0x2F004000u, 2)));   // its last search is over
@@ -357,7 +357,7 @@ void TestSearchGate() {
     }
     CHECK(js::SearchMissing(Facts(true)).empty());
     CHECK(js::SearchMissing(Facts(false)) == "the player is not signed in to the network layer yet");
-    CHECK(js::SearchMissing(Facts(true, false)) == "the search object has no handle yet");
+    CHECK(js::SearchMissing(Facts(true, false)).empty());
     CHECK(js::SearchMissing(Facts(true, true, 1)) == "a search is already marked as running");
     CHECK(js::SearchMissing(Facts(true, true, 0, 1, 1)) == "the search object is busy");
 
