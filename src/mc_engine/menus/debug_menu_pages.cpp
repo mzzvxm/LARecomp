@@ -178,10 +178,6 @@ const ItemDef kDebugFixesItems[] = {
     // before (the ray traced one where the card can trace) darken it under the bumper. Off = the game's own chrome, which glows there. The variant is chosen at each
     // draw (pipelines.cpp WantedFeatures), so the row is live; the first draw after turning it on builds the shader (a short stutter).
     NativeOnly(Bool("PM_RxDbgCarChrome", "mcla_gpu_car_chrome_occlusion", "CAR CHROME FIX: ")),
-    // The headlight route PASS (HEADLIGHTS VIA on the rendering page) keeps the lit shaders' forward headlight on the draws the deferred pass does not light: the neon, the store sign and the lamp
-    // glass (the pass skips them as emissive), a draw with no planes, a draw that clears them. Off = the route's first version: those draws get no headlight. Read at each draw, so live; no
-    // effect in the routes FORWARD and BOTH. The A/B of GB-H2-FOLLOW (headlight_pass_rules.h).
-    NativeOnly(Bool("PM_RxDbgHeadlightKeep", "mcla_gpu_headlight_pass_keep_forward", "PASS FORWARD HEADLIGHT: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
@@ -252,6 +248,10 @@ const ItemDef kDebugRenderingItems[] = {
     // whatever LOCAL LIGHT PASS says and needs HEADLIGHTS on), BOTH lights twice. The words are the cvar's, written as the other word rows do.
     NativeOnly(Str("PM_RxDbgHeadlightVia", "mcla_gpu_headlight_pass", "HEADLIGHTS VIA: ",
                    kHeadlightRouteVals, kHeadlightRouteNames, Len(kHeadlightRouteVals))),
+    // The headlight route PASS keeps the lit shaders' forward headlight on the draws the deferred pass does not light: the neon, the store sign and the lamp glass (the pass skips them as emissive),
+    // a draw with no planes, a draw that clears them; the draws the pass does light drop it, so a pixel is lit once. Off = the route's first version: those draws get no headlight. Read at each
+    // draw, so live; no effect in the routes FORWARD and BOTH. The A/B of GB-H2-FOLLOW (headlight_pass_rules.h). (Not on the FIXES page: that one is at the 24 row cap of a native page.)
+    NativeOnly(Bool("PM_RxDbgHeadlightKeep", "mcla_gpu_headlight_pass_keep_forward", "PASS FORWARD HEADLIGHT: ")),
     // The glow of street lamps (halo and star): the game's one depth test at the glow's centre (GAME), or the
     // share of 24 tests on a small disc (SOFT: it fades at an edge instead of popping). The renderer reads the
     // cvar at each draw, so the row is live; the first time SOFT shows, the shaders are built.

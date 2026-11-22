@@ -592,7 +592,7 @@ void SourceChecks(const std::string& src) {
   // the setting, in the three generated files, live and debug only, default forward
   Check(Has(settings, "std::string, mcla_gpu_headlight_pass, \"forward\",") && Has(settings, "inline auto& mcla_gpu_headlight_pass = g_gpu.mcla_gpu_headlight_pass;"), "settings_gpu.h defines the route and its alias");
   Check(Has(manifest, "\"mcla_gpu_headlight_pass\": {") && Has(meta, "{\"mcla_gpu_headlight_pass\", \"MCLA/GPU\"},"), "manifest.json and settings_meta.inc list it");
-  // the A/B switch of GB-H2-FOLLOW: a bool, on by default, debug only, live, listed in the three files, and a row on the debug menu's FIXES page
+  // the A/B switch of GB-H2-FOLLOW: a bool, on by default, debug only, live, listed in the three files, and a row on the debug menu's rendering page
   Check(Has(settings, "bool, mcla_gpu_headlight_pass_keep_forward, true,") && Has(settings, "inline auto& mcla_gpu_headlight_pass_keep_forward = g_gpu.mcla_gpu_headlight_pass_keep_forward;"), "settings_gpu.h defines the keep-forward switch (default on) and its alias");
   Check(Has(manifest, "\"mcla_gpu_headlight_pass_keep_forward\": {") && Has(meta, "{\"mcla_gpu_headlight_pass_keep_forward\", \"MCLA/GPU\"},"), "manifest.json and settings_meta.inc list the keep-forward switch");
   {
@@ -601,7 +601,16 @@ void SourceChecks(const std::string& src) {
     const std::string text = at == std::string::npos ? std::string() : settings.substr(at, end - at);
     Check(Has(text, "rex::kDebugOnly") && !Has(text, "rex::kRestart"), "the keep-forward switch is debug only and live");
   }
-  Check(Has(menu, "Bool(\"PM_RxDbgHeadlightKeep\", \"mcla_gpu_headlight_pass_keep_forward\", \"PASS FORWARD HEADLIGHT: \")"), "the debug menu's FIXES page has its row");
+  {
+    // the row sits on the rendering page, right after HEADLIGHTS VIA (the FIXES page is at the native page's cap of 24 rows: pause_menu.cpp kMaxRowsPerMenu refuses a page over it whole)
+    const size_t via = At(menu, "Str(\"PM_RxDbgHeadlightVia\"");
+    const size_t keep = At(menu, "Bool(\"PM_RxDbgHeadlightKeep\", \"mcla_gpu_headlight_pass_keep_forward\", \"PASS FORWARD HEADLIGHT: \")");
+    const size_t fixes = At(menu, "const ItemDef kDebugFixesItems[]");
+    const size_t rendering = At(menu, "const ItemDef kDebugRenderingItems[]");
+    Check(via != std::string::npos && keep != std::string::npos && via < keep && keep - via < 1200 && rendering != std::string::npos && rendering < keep, "the debug rendering page has the keep-forward row right after HEADLIGHTS VIA");
+    Check(fixes != std::string::npos && rendering != std::string::npos && fixes < rendering && !(fixes < At(menu, "PM_RxDbgHeadlightKeep") && At(menu, "PM_RxDbgHeadlightKeep") < At(menu, "const ItemDef kDebugPerformanceItems[]")),
+          "... and not on the FIXES page, which is already at the 24 row cap");
+  }
   {
     const size_t at = settings.find(", mcla_gpu_headlight_pass, ");
     const size_t end = settings.find(");", at);
