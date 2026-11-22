@@ -345,6 +345,10 @@ add_executable(larecomp_camera_cut_test EXCLUDE_FROM_ALL camera_cut_test.cpp tem
 # The upscalers' pure arithmetic (upscaler_math.h: the jitter sequence, its length at a ratio, the scene's mip bias) has a check that needs
 # no renderer: cmake --build <dir> --target larecomp_upscaler_math_test, then run src/gpu/larecomp_upscaler_math_test (exit 0 = passed).
 add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.cpp)
+# The render scale's choice (render_scale.h: the asked scale, the screen's, an FSR1 preset, the upscaler's output, the scene's scale under an upscaler),
+# which the renderer asks again at every frame boundary and moves the images of the screen to, has a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_render_scale_test, then run src/gpu/larecomp_render_scale_test (exit 0 = passed).
+add_executable(larecomp_render_scale_test EXCLUDE_FROM_ALL render_scale_test.cpp)
 # The rules for when the upscalers' libraries are loaded (upscaler_load_policy.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_upscaler_load_policy_test, then run src/gpu/larecomp_upscaler_load_policy_test (exit 0 = passed).
 add_executable(larecomp_upscaler_load_policy_test EXCLUDE_FROM_ALL upscaler_load_policy_test.cpp)
