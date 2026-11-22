@@ -454,8 +454,8 @@ void CheckSources(const std::string& gpu) {
   Check(Has(cpp, "plan.SplitContact()") && Has(cpp, "depth_full_") && Has(cpp, "contact_raw_"), "ao.cpp: the split has its own depth and contact images");
   Check(Has(cpp, "push.slots2[2] &= ~(1u << 16);"), "ao.cpp: the contact depth pass is drawn without the half size flag");
   Check(Has(header, "bool SplitContact() const") && Has(header, "bool OneSampleColour() const"), "ao.h: the plan has the split and the one sample rules");
-  Check(Has(header, "ContactFilterInApply() const { return ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }"),
-        "ao.h: the contact filter in the apply follows ao_size.h (the picture's size, split or not)");
+  Check(Has(header, "ContactFilterInApply() const { return !contact_history && ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }"),
+        "ao.h: the contact filter in the apply follows ao_size.h (the picture's size, split or not) and is not used while the contact image has a history of its own (noise-all)");
   Check(Has(cpp, "FillPush") && Has(cpp, "ao_stable::DenoiseRadius(plan.ao[1])"), "ao.cpp: the blur's radius is taken from the traced image's height (plan.ao)");
   Check(Has(cpp, "AtrousIterations(int(plan.gi.atrous), plan.ao[1])"), "ao.cpp: the a-trous passes follow the traced image's height");
   Check(Has(cpp, "history_size_[0] != plan.ao[0] || history_size_[1] != plan.ao[1]"), "ao.cpp: a change of the traced size throws the history away (kSize)");
