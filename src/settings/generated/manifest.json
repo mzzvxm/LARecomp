@@ -2813,6 +2813,66 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_lamp_shadows": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): 1 gives the nearest street lamps a shadow from the shadow atlas, drawn by the deferred local light pass at the mid-scene depth copy. \"\n    \"How many lamps follows the LIGHT SHADOWS level (medium 2, high 4, ultra 8; off: none) and the shadow replay records into the shared atlas while it is on. 0 (the default): none. Live. \"\n    \"A debug switch until the owner has seen the pictures; see mcla_gpu_lamp_shadows_mode for how the pass uses the shadow.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_mode": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): how the deferred local light pass uses a lamp's shadow. 0 (the default): subtract - the game's own light grid still lights the lamp and the pass takes the \"\n    \"shadowed share of that light away (the lamp's light as the grid has it, times one minus the visibility), for every surface the G-buffer holds, cars and people included. 1: own - the lamp is not in \"\n    \"the grid (the lamp A/B's mod lamps) and the pass adds its light times the visibility. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): what the deferred local light pass draws for a shadowed street lamp instead of its light. 0 (the default): the light. 1: the shadow itself as a picture, red \"\n    \"where the lamp's shadow takes light and green where it is lit. 2: a colour for each lamp's row of the shadow table (brighter in the shadow), which shows the pick and its hysteresis. 3: the lamp's whole light is taken away whatever the shadow (the units check: the pool must go to the ambient and no pixel may go negative). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_lamps": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): how many lamps have a shadow at once. 0 (the default): the LIGHT SHADOWS level's number. A number from 1 to 10: that many (with a spare tile for a lamp whose \"\n    \"shadow fades out). -1: no lamp (the headlights keep their views). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 10}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_cache": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): 1 (the default) gives each lamp two tiles, a static one for the world that does not move (drawn when the lamp takes its tile and added to, kept) and a live one \"\n    \"for the cars and people (drawn every frame), which costs one more tile of video memory a lamp and saves the world's draws. 0: one tile a lamp, everything drawn every frame. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_headlight_pass": {
   "type": "std::string",
   "default": "\"forward\"",

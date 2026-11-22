@@ -190,6 +190,10 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // The one shadow atlas (shadow_atlas.h): the replay is its first provider and the light manager reads its published form; both use it only with mcla_gpu_light_frame bit 8 (LU-5).
     shadow_atlas_.Initialize(device_, frames_, heap_);
     local_shadow_.SetShadowAtlas(&shadow_atlas_);
+    // The street lamps' shadows (lamp_shadows.h, perf/LAMP-SHADOWS-2.md): a second provider of the atlas, joined only while mcla_gpu_lamp_shadows is on and the game's lamp list has lamps (by night); the
+    // replay draws their passes and the deferred light pass reads their views. Nothing runs with the setting off (the default).
+    lamp_shadows_.SetShadowAtlas(&shadow_atlas_);
+    local_shadow_.SetLampShadows(&lamp_shadows_);
     light_manager_.SetShadowAtlas(&shadow_atlas_);
     // The passive light manager (light_manager.h): off unless mcla_gpu_lights_census is set; it reads the rig's lights, the replay's maps and the volume's inputs and changes none of them.
     light_manager_.Initialize(upload_, headlights_, local_shadow_);
@@ -204,6 +208,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     local_lights_.SetScreenShared(&screen_);
     local_lights_.SetAmbientOcclusion(&ao_);
     local_lights_.SetLightManager(&light_manager_);
+    local_lights_.SetLampShadows(&lamp_shadows_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
@@ -342,6 +347,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     shafts_.Shutdown();
     volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
     light_manager_.Shutdown();  // after the volume, whose inputs it looks at
+    lamp_shadows_.Reset();  // leaves the shadow atlas and the game's lamp list's hook before the replay (its owner) and the atlas go
     local_shadow_.Shutdown();
     shadow_atlas_.Shutdown();  // after the replay, its provider
     gbuffer_.Shutdown();
@@ -523,6 +529,7 @@ void Renderer::Shutdown() {
   shafts_.Shutdown();
   volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
   light_manager_.Shutdown();  // after the volume, whose inputs it looks at
+  lamp_shadows_.Reset();  // leaves the shadow atlas and the game's lamp list's hook before the replay (its owner) and the atlas go
   local_shadow_.Shutdown();
   shadow_atlas_.Shutdown();  // after the replay, its provider
   gbuffer_.Shutdown();

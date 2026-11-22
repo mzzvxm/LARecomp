@@ -94,7 +94,8 @@ lb::Level ShadowAtlas::FitLevel(lb::Level wanted, int views_per_car, uint64_t fr
     return fit_level_;
   }
   const bool lamps = HasProvider(sa::ProviderId::kLamps);
-  const sa::Fit fit = sa::FitLevel(wanted, views_per_car, lamps, HeldBytes(), [this](uint64_t extra) {
+  const bool lamp_static = lamps && providers_[uint32_t(sa::ProviderId::kLamps)]->wants_static_pool();
+  const sa::Fit fit = sa::FitLevel(wanted, views_per_car, lamps, lamp_static, HeldBytes(), [this](uint64_t extra) {
     // The adapter's use now against the OS budget: what is new must keep it under the line the caches start releasing at (true when the adapter reports no budget).
     return VideoMemoryBudget::HasRoomFor(device_->QueryVideoMemory(), extra);
   });
@@ -137,6 +138,7 @@ bool ShadowAtlas::Ensure() {
     if (!(layout_ == planned_)) {
       static_invalid_ = ~0u;  // the pools moved inside the same texture: whatever a static pool cached is not where it was
       layout_ = planned_;
+      ++generation_;
     }
     return true;
   }
@@ -178,10 +180,12 @@ bool ShadowAtlas::Ensure() {
   layout_ = planned_;
   static_invalid_ = ~0u;
   use_.Reset();
+  ++generation_;
   return true;
 }
 
 void ShadowAtlas::Release() {
+  ++generation_;
   if (!device_ || !texture_) {
     framebuffer_.reset();
     view_.reset();
@@ -250,6 +254,14 @@ void ShadowAtlas::SetTile(plume::RenderCommandList* list, const sa::Rect& tile) 
   list->setViewports(&viewport, 1);
   const plume::RenderRect scissor(int32_t(tile.x), int32_t(tile.y), int32_t(tile.x + tile.size), int32_t(tile.y + tile.size));
   list->setScissors(&scissor, 1);
+}
+
+void ShadowAtlas::ClearTile(plume::RenderCommandList* list, const sa::Rect& tile) {
+  if (list == nullptr || !texture_ || !tile.valid()) {
+    return;
+  }
+  const plume::RenderRect rect(int32_t(tile.x), int32_t(tile.y), int32_t(tile.x + tile.size), int32_t(tile.y + tile.size));
+  list->clearDepthStencil(true, true, sa::kClearDepth, sa::kClearStencil, &rect, 1);
 }
 
 void ShadowAtlas::EndRecord(plume::RenderCommandList* list) {

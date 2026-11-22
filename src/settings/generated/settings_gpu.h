@@ -1393,6 +1393,23 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_local_lights_car_gain, 1.0, "Diagnostic (the deferred local light pass, GB-H3): a multiplier on the look of the cars' lights it adds (the police light bars, the head lamps of the cars the forward headlight stage does not light, "
     "the brake, tail, turn and reverse lamps). Their colours and strengths are looks set by eye, not the game's units: this turns them up or down without a build. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
 
+  REX_SETTING(i32, mcla_gpu_lamp_shadows, 0, "Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): 1 gives the nearest street lamps a shadow from the shadow atlas, drawn by the deferred local light pass at the mid-scene depth copy. "
+    "How many lamps follows the LIGHT SHADOWS level (medium 2, high 4, ultra 8; off: none) and the shadow replay records into the shared atlas while it is on. 0 (the default): none. Live. "
+    "A debug switch until the owner has seen the pictures; see mcla_gpu_lamp_shadows_mode for how the pass uses the shadow.", rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(i32, mcla_gpu_lamp_shadows_mode, 0, "Diagnostic (the street lamps' shadows): how the deferred local light pass uses a lamp's shadow. 0 (the default): subtract - the game's own light grid still lights the lamp and the pass takes the "
+    "shadowed share of that light away (the lamp's light as the grid has it, times one minus the visibility), for every surface the G-buffer holds, cars and people included. 1: own - the lamp is not in "
+    "the grid (the lamp A/B's mod lamps) and the pass adds its light times the visibility. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(i32, mcla_gpu_lamp_shadows_view, 0, "Diagnostic (the street lamps' shadows): what the deferred local light pass draws for a shadowed street lamp instead of its light. 0 (the default): the light. 1: the shadow itself as a picture, red "
+    "where the lamp's shadow takes light and green where it is lit. 2: a colour for each lamp's row of the shadow table (brighter in the shadow), which shows the pick and its hysteresis. 3: the lamp's whole light is taken away whatever the shadow (the units check: the pool must go to the ambient and no pixel may go negative). Live.", rex::kDebugOnly, rex::Range{0, 3});
+
+  REX_SETTING(i32, mcla_gpu_lamp_shadows_lamps, 0, "Diagnostic (the street lamps' shadows): how many lamps have a shadow at once. 0 (the default): the LIGHT SHADOWS level's number. A number from 1 to 10: that many (with a spare tile for a lamp whose "
+    "shadow fades out). -1: no lamp (the headlights keep their views). Live.", rex::kDebugOnly, rex::Range{-1, 10});
+
+  REX_SETTING(i32, mcla_gpu_lamp_shadows_cache, 1, "Diagnostic (the street lamps' shadows): 1 (the default) gives each lamp two tiles, a static one for the world that does not move (drawn when the lamp takes its tile and added to, kept) and a live one "
+    "for the cars and people (drawn every frame), which costs one more tile of video memory a lamp and saves the world's draws. 0: one tile a lamp, everything drawn every frame. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(std::string, mcla_gpu_headlight_pass, "forward", "Diagnostic (the forward headlight stage against the deferred local light pass, GB-H2, the A/B): which of the two lights the cars' headlights. forward (the default): the lit shaders' headlight variant lights, as the game has always had it. "
     "pass: the variant is not used and the deferred local light pass lights the headlights of the same cars with their shadows from the atlas (it also reaches the lit shaders the variant leaves out, the cars' paint and the pedestrians; needs the G-buffer's planes, which it asks for while HEADLIGHTS is on, and runs whatever mcla_gpu_local_lights says). "
     "both: the variant lights and the pass adds the same lights again (the sum of the two: for the difference pictures). HEADLIGHTS (mcla_gpu_headlights) stays the master of both. Live.", rex::kDebugOnly, rex::Allowed("forward", "pass", "both"));
@@ -1889,6 +1906,11 @@ inline auto& mcla_gpu_local_lights_sources = g_gpu.mcla_gpu_local_lights_sources
 inline auto& mcla_gpu_local_lights_ab = g_gpu.mcla_gpu_local_lights_ab;
 inline auto& mcla_gpu_local_lights_gain = g_gpu.mcla_gpu_local_lights_gain;
 inline auto& mcla_gpu_local_lights_car_gain = g_gpu.mcla_gpu_local_lights_car_gain;
+inline auto& mcla_gpu_lamp_shadows = g_gpu.mcla_gpu_lamp_shadows;
+inline auto& mcla_gpu_lamp_shadows_mode = g_gpu.mcla_gpu_lamp_shadows_mode;
+inline auto& mcla_gpu_lamp_shadows_view = g_gpu.mcla_gpu_lamp_shadows_view;
+inline auto& mcla_gpu_lamp_shadows_lamps = g_gpu.mcla_gpu_lamp_shadows_lamps;
+inline auto& mcla_gpu_lamp_shadows_cache = g_gpu.mcla_gpu_lamp_shadows_cache;
 inline auto& mcla_gpu_headlight_pass = g_gpu.mcla_gpu_headlight_pass;
 inline auto& mcla_gpu_light_pick = g_gpu.mcla_gpu_light_pick;
 inline auto& mcla_gpu_light_pick_record = g_gpu.mcla_gpu_light_pick_record;

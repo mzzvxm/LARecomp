@@ -141,6 +141,7 @@ class BindlessHeap;
 class Device;
 class FrameRing;
 class GuestLayout;
+class LampShadows;   // lamp_shadows.h
 class LightManager;  // light_manager.h
 class PassTiming;
 class ShadowAtlas;   // shadow_atlas.h
@@ -194,6 +195,11 @@ class LocalShadow final : public ShadowProvider {
   // The light manager (light_manager.h): with mcla_gpu_light_frame bit 4 the replay picks its cars and makes its views from the manager's frame of lights instead of the rig's set (LIGHT-UNIFY
   // U4c), the same lights bit for bit. Null (the default): the rig's set. Render thread.
   void SetLightManager(LightManager* light_manager) { light_manager_ = light_manager; }
+
+  // LAMP-SHADOWS-4 (lamp_shadows.h, perf/LAMP-SHADOWS-2.md): the street lamps' shadows are a second provider of the shared atlas, drawn by THIS replay: the same collected main-view draws, replayed from
+  // each picked lamp's frustum into the lamp's tiles at the same trigger, in the same record pass. While mcla_gpu_lamp_shadows is on the replay records into the shared atlas (the lamps' pools are
+  // there) and, by night, collects the draws for the lamps as well as for the cars (the cone cull keeps the draws a lamp's or a car's view can see). Null (the default): nothing of it runs.
+  void SetLampShadows(LampShadows* lamps) { lamps_ = lamps; }
 
   // The one shadow atlas (shadow_atlas.h): this replay is its first provider. With mcla_gpu_light_frame bit 8 (LIGHT-UNIFY U5, light_project.h kFlipAtlas) it records into the atlas object and
   // publishes its views through it; without, its own atlas code runs as before. Null: its own. Render thread, before the first frame.
@@ -346,6 +352,8 @@ class LocalShadow final : public ShadowProvider {
   int replay_pool_ = -1;
   std::array<uint64_t, 4> published_ids_{};          // the id of the rig's light i, for the lights the last map was made for (CollectViews)
   LightManager* light_manager_ = nullptr;            // the manager's frame of lights (SetLightManager, LU-4c)
+  LampShadows* lamps_ = nullptr;                     // the street lamps' provider (SetLampShadows, LAMP-SHADOWS-4)
+  bool pass_partial_ = false;                        // the last record pass ran out of upload room (the lamps' static layers are then built again)
   std::string record_path_;  // mcla_gpu_light_pick_record: the pick's inputs of every frame, for light_pick_test (light_pick_record.h)
   std::ofstream record_file_;
   local_shadow::Camera last_camera_;

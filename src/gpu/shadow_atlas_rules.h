@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 
 #include "light_budget.h"
 #include "light_convert.h"
@@ -351,7 +352,7 @@ struct Fit {
   bool stepped = false;
 };
 template <class HasRoom>
-inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, uint64_t held_bytes, HasRoom&& has_room, ls::LevelTable table = ls::kLevelTable) {
+inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, bool lamp_static, uint64_t held_bytes, HasRoom&& has_room, ls::LevelTable table = ls::kLevelTable) {
   Fit fit;
   fit.level = lb::Level::kOff;
   if (wanted == lb::Level::kOff) {
@@ -362,7 +363,7 @@ inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, uint64_t he
     if (ls::Row(level, table) == nullptr) {
       continue;
     }
-    const uint64_t bytes = Bytes(LayoutForLevel(level, views_per_car, lamps, false, table));
+    const uint64_t bytes = Bytes(LayoutForLevel(level, views_per_car, lamps, lamps && lamp_static, table));
     const uint64_t extra = bytes > held_bytes ? bytes - held_bytes : 0;
     if (extra == 0 || has_room(extra)) {
       fit.level = ls::Effective(level, table);
@@ -373,6 +374,12 @@ inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, uint64_t he
   }
   fit.stepped = true;
   return fit;
+}
+
+// The same with the lamps' live pool only (the first form: LU-5, kept for its callers and tests).
+template <class HasRoom>
+inline Fit FitLevel(lb::Level wanted, int views_per_car, bool lamps, uint64_t held_bytes, HasRoom&& has_room, ls::LevelTable table = ls::kLevelTable) {
+  return FitLevel(wanted, views_per_car, lamps, false, held_bytes, std::forward<HasRoom>(has_room), table);
 }
 
 // ---------------------------------------------------------------------------

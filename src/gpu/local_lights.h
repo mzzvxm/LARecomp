@@ -107,6 +107,7 @@ class BindlessHeap;
 class Device;
 class FrameRing;
 class GBuffer;
+class LampShadows;
 class LightManager;
 class PassTiming;
 class ScreenShared;
@@ -128,6 +129,10 @@ class LocalLights {
   void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
   void SetAmbientOcclusion(AmbientOcclusion* ao) { ao_ = ao; }
   void SetLightManager(LightManager* manager) { manager_ = manager; }
+  // LAMP-SHADOWS-4 (lamp_shadows.h, perf/LAMP-SHADOWS-2.md): the street lamps' provider. While mcla_gpu_lamp_shadows is on the pass runs (it needs the G-buffer's planes for them) and takes the picked
+  // lamps' lights from it as handed over lights, with the lamps' table of shadow views in its buffer: a lamp the game lights has its shadowed share taken away (a negative colour: the blend is ADD),
+  // a lamp the pass owns is multiplied by the visibility. Null (the default): no lamp is looked at.
+  void SetLampShadows(LampShadows* lamps) { lamp_shadows_ = lamps; }
 
   // The Scene opened a frame's first list, BEFORE the G-buffer's and the shared products' own BeginFrame (they read the wants it makes): reads the settings, makes the wants and forgets
   // the last frame's votes.
@@ -167,6 +172,7 @@ class LocalLights {
   ScreenShared* screen_ = nullptr;
   AmbientOcclusion* ao_ = nullptr;
   LightManager* manager_ = nullptr;
+  LampShadows* lamp_shadows_ = nullptr;
 
   // the settings of this frame
   bool enabled_ = false;
@@ -212,6 +218,8 @@ class LocalLights {
   uint64_t shadowed_lights_ = 0;  // GB-H2: lights drawn that had views of the atlas (the lookup ran for them), summed over the interval
   uint64_t shadow_views_ = 0;     // ... and the views of those lights
   uint64_t shadow_frames_ = 0;    // frames the table was written
+  uint64_t lamp_lights_ = 0;      // LAMP-SHADOWS-4: street lamp lights drawn with the lamps' table (summed over the interval)
+  uint64_t lamp_frames_ = 0;      // ... and the frames the lamps' table was written
   bool first_logged_ = false;
   std::array<uint32_t, 4> last_units_bits_{};
   bool units_logged_ = false;

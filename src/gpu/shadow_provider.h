@@ -40,6 +40,9 @@ class ShadowProvider {
   // 2. The frame's layout (it can be invalid: the atlas could not be made; the provider then makes nothing this frame).
   virtual void OnLayout(const shadow_atlas::Layout& layout) { (void)layout; }
 
+  // Whether its pools have a STATIC twin (the lamps' static layers): the atlas fits the level's memory with them (shadow_atlas_rules.h FitLevel).
+  virtual bool wants_static_pool() const { return false; }
+
   // 4. The views (and masks) it made at its last record, for the atlas to publish: AddView(view, light id, layer), AddMask(light id, channel, weight). Nothing when it has none.
   virtual void CollectViews(shadow_atlas::ShadowFrameBuilder* builder) const = 0;
 };
