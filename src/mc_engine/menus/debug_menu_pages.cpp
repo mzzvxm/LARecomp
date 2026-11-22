@@ -175,6 +175,9 @@ const ItemDef kDebugFixesItems[] = {
     // The other stochastic passes (the ray traced car occlusion and reflection cones, the sun shafts, the fog, the sun shadow filter, the city reflections) draw their per-pixel noise from the blue noise tile
     // stepped along the R2 sequence every frame (gpu/hlsl/blue_noise_frame.hlsli); the first versions' interleaved gradient noise is a lattice. Off = the first versions' noise. Read at each draw, so live.
     NativeOnly(Bool("PM_RxDbgNoiseBlue", "mcla_gpu_noise_blue", "BLUE NOISE EFFECTS: ")),
+    // A scene the harness holds still carries one game frame number in every frame: with this on the noise index of every stochastic effect also counts the frames it has been held (gpu/scene_noise.h
+    // NoiseIndex), so the noise keeps varying and the history averages it. Off = the scene's own number alone. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgNoiseHeld", "mcla_gpu_noise_held", "NOISE IN HELD SCENES: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
