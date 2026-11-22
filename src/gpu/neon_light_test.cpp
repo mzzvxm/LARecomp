@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -402,6 +403,61 @@ void LightChecks() {
     for (size_t i = 0; i < again.size() && i < lights.size(); ++i) {
       Check(again[i].id == lights[i].id && std::memcmp(again[i].pos, lights[i].pos, sizeof(again[i].pos)) == 0, "a light keeps its id and place" + at);
     }
+  }
+  // NEONALL-REVIEW M4: the guest's colour is bounded before it becomes a light (a wrong read or a stale object must not put an Inf or a NaN into the half-float target)
+  {
+    const nl::NeonCar base = CarAt(kSelf, camera, 1.5f, 0.8f, true);
+    nl::Tube tube;
+    Check(nl::ResolveTube(base, &tube), "the car for the colour checks is placed");
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::nanf("");
+    for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+      const std::string at = std::string(" at ") + lp::TierName(tier);
+      const float reach = lp::NeonReach(tier);
+      const float plateau = lp::kNeonCutShare * reach * reach;
+      for (const float gain : {0.0f, 1.0f, 16.0f}) {
+        for (const uint32_t n : {1u, 2u, 4u}) {
+          const float level = plateau * gain * lp::kNeonTubeGain / float(n);
+          // the game's own colour (about 0.2 here, up to a few in the game): the light is the colour times the level, bit for bit as before
+          Light normal = lp::MakeNeonLight(base, 0, n, tube.a, tier, gain);
+          for (int k = 0; k < 3; ++k) {
+            Check(normal.color[k] == std::max(base.colour[k], 0.0f) * level, "an ordinary colour is not changed" + at);
+          }
+          // a colour at the bound is not changed either; one past it, or Inf, is the bound; NaN and negative are 0
+          const float colours[6] = {lp::kNeonMaxColour, 1.0e30f, inf, nan, -3.0f, 0.5f * lp::kNeonMaxColour};
+          const float want[6] = {lp::kNeonMaxColour, lp::kNeonMaxColour, lp::kNeonMaxColour, 0.0f, 0.0f, 0.5f * lp::kNeonMaxColour};
+          for (int c = 0; c < 6; ++c) {
+            nl::NeonCar wild = base;
+            wild.colour[0] = wild.colour[1] = wild.colour[2] = colours[c];
+            const Light l = lp::MakeNeonLight(wild, 0, n, tube.a, tier, gain);
+            for (int k = 0; k < 3; ++k) {
+              Check(std::isfinite(l.color[k]) && l.color[k] >= 0.0f && l.color[k] == want[c] * level, "a colour of " + std::to_string(colours[c]) + " becomes " + std::to_string(want[c]) + " x the level" + at);
+            }
+          }
+        }
+      }
+    }
+    // through the gather: a car whose colour is 1e30 is lit (it is bright), with finite lights of the bounded colour
+    nl::NeonCar wild = base;
+    wild.colour[0] = 1.0e30f;
+    wild.colour[1] = inf;
+    wild.colour[2] = 0.2f;
+    const std::vector<nl::NeonCar> wild_cars = {wild};
+    lp::NeonSourceInputs in;
+    in.cars = &wild_cars;
+    in.tier = lp::Tier::kUltra;
+    std::memcpy(in.camera, camera, sizeof(camera));
+    std::vector<Light> lights;
+    lp::GatherNeonLights(in, &lights);
+    Check(lights.size() == lp::BudgetOf(lp::Tier::kUltra).neon_points, "a car with a wild colour is still lit");
+    bool finite = true, bounded = true;
+    for (const Light& l : lights) {
+      for (int k = 0; k < 3; ++k) {
+        finite = finite && std::isfinite(l.color[k]);
+        bounded = bounded && l.color[k] <= lp::kNeonMaxColour * lp::NeonReach(lp::Tier::kUltra) * lp::NeonReach(lp::Tier::kUltra) * lp::kNeonCutShare * 1.0001f;
+      }
+    }
+    Check(finite && bounded, "and its lights are finite and bounded");
   }
   // the points of a tube sit along it, under the car, in equal parts
   {
