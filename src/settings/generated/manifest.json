@@ -4536,7 +4536,7 @@
  },
  "tire_offset_targets": {
   "type": "u32",
-  "default": "31",
+  "default": "63",
   "category": "MCLA/Patches",
   "help": "\"Bitmask (decimal) of the per-wheel matrix blocks TIRE OFFSET moves: 1 = \"\n    \"model+1088 (the tyre), 2 = +1344, 4 = +1600, 8 = +1856, 16 = +1920. \"\n    \"31 moves all five; drop bits to find which block owns which part.\"",
   "traits": [
@@ -5532,11 +5532,11 @@
  },
  "host_helpers_mask": {
   "type": "i32",
-  "default": "31",
+  "default": "63",
   "category": "MCLA/Performance",
-  "help": "\"Which of the game's small helper functions run as native host code instead of the recompiled \"\n    \"version, as bits: 1 memcpy, 2 memset, 4 the row writer, 8 the shader-constant copy, 16 the \"\n    \"constant-bank flush. 0 runs all of them recompiled (the A/B switch); 31 is the default. A call \"\n    \"the native version cannot reproduce exactly (overlapping ranges, register or physical-window \"\n    \"addresses, a command-ring wrap) always goes to the recompiled code. Read at start.\"",
+  "help": "\"Which of the game's small helper functions run as native host code instead of the recompiled \"\n    \"version, as bits: 1 memcpy, 2 memset, 4 the row writer, 8 the shader-constant copy, 16 the \"\n    \"constant-bank flush, 32 the C runtime's memcpy. 0 runs all of them recompiled (the A/B switch); 63 is the default. A call \"\n    \"the native version cannot reproduce exactly (overlapping ranges, register or physical-window \"\n    \"addresses, a command-ring wrap) always goes to the recompiled code. Read at start.\"",
   "traits": [
-   "rex::Range{0, 31}",
+   "rex::Range{0, 63}",
    "rex::kDebugOnly",
    "rex::kRestart"
   ],

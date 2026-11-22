@@ -60,11 +60,11 @@ class PerformanceSettings final : public rex::SettingOwner {
     "The first streams are decoded by both and compared; any difference switches the native decoder "
     "off for the rest of the session. Read at start.", rex::kDebugOnly, rex::kRestart);
 
-  REX_SETTING(i32, host_helpers_mask, 31, "Which of the game's small helper functions run as native host code instead of the recompiled "
+  REX_SETTING(i32, host_helpers_mask, 63, "Which of the game's small helper functions run as native host code instead of the recompiled "
     "version, as bits: 1 memcpy, 2 memset, 4 the row writer, 8 the shader-constant copy, 16 the "
-    "constant-bank flush. 0 runs all of them recompiled (the A/B switch); 31 is the default. A call "
+    "constant-bank flush, 32 the C runtime's memcpy. 0 runs all of them recompiled (the A/B switch); 63 is the default. A call "
     "the native version cannot reproduce exactly (overlapping ranges, register or physical-window "
-    "addresses, a command-ring wrap) always goes to the recompiled code. Read at start.", rex::Range{0, 31}, rex::kDebugOnly, rex::kRestart);
+    "addresses, a command-ring wrap) always goes to the recompiled code. Read at start.", rex::Range{0, 63}, rex::kDebugOnly, rex::kRestart);
 
   // Where the frame limiter waits. The game updates on its main loop
   // (sub_82131508) and presents from "[MC] Render Thread" (sub_82306238), one

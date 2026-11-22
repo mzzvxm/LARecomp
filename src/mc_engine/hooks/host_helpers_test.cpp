@@ -186,6 +186,7 @@ void TestMemcpyModel(Arena& a, Rng& rng) {
     St32(a.base, kMemcpyStepAddr, 2);
     EXPECT(!Memcpy(a.base, 0x10000, 0x20000, 8), "a changed step word declines a small copy");
     EXPECT(Memcpy(a.base, 0x10000, 0x20000, 16), "but not a large one");
+    EXPECT(CrtMemcpy(a.base, 0x10000, 0x20000, 8) && !CrtMemcpy(a.base, 0x10000, 0x10004, 8), "the C runtime memcpy has no step word and declines overlap too");
     (void)declined_overlap;
 }
 
@@ -270,6 +271,7 @@ extern "C" void hh_stub_82422EF8(PPCContext& ctx, u8*) {
 }
 
 extern "C" void orig_memcpy(PPCContext&, u8*);
+extern "C" void orig_crt_memcpy(PPCContext&, u8*);
 extern "C" void orig_memcpy_words(PPCContext&, u8*);
 extern "C" void orig_memcpy_blocks(PPCContext&, u8*);
 extern "C" void orig_memset(PPCContext&, u8*);
@@ -319,7 +321,7 @@ bool Case(const Arena& init, Arena& ao, Arena& an, const PPCContext& in, void (*
     return did;
 }
 
-void DiffMemcpy(Arena& a, Arena& b, Arena& c, Rng& rng) {
+void DiffMemcpyFn(Arena& a, Arena& b, Arena& c, Rng& rng, void (*original)(PPCContext&, u8*), bool (*native_fn)(uint8_t*, uint32_t, uint32_t, uint32_t), const char* name) {
     long declined = 0, total = 0;
     for (int it = 0; it < 30000; ++it) {
         a.Randomise(rng);
@@ -339,17 +341,20 @@ void DiffMemcpy(Arena& a, Arena& b, Arena& c, Rng& rng) {
         in.r4.u64 = src;
         in.r5.u64 = n;
         ++total;
-        const bool did = Case(a, b, c, in, orig_memcpy, [&](u8* base) { return Memcpy(base, dst, src, n); }, "memcpy", it);
+        const bool did = Case(a, b, c, in, original, [&](u8* base) { return native_fn(base, dst, src, n); }, name, it);
         declined += !did;
     }
-    EXPECT(declined == 0, "memcpy: %ld of %ld non-overlapping cases declined", declined, total);
+    EXPECT(declined == 0, "%s: %ld of %ld non-overlapping cases declined", name, declined, total);
     // overlapping cases are only ever declined: the native side never touches them
     for (int it = 0; it < 2000; ++it) {
         a.Randomise(rng);
         const uint32_t n = rng.R(1, 300), dst = 0x10000 + rng.U(64), src = dst + rng.U(n + 1) - (rng.U(2) ? 0 : rng.U(n + 1));
-        EXPECT(!Memcpy(a.base, dst, src, n) || !(static_cast<uint64_t>(src) < dst + n && static_cast<uint64_t>(dst) < src + n), "overlap accepted");
+        EXPECT(!native_fn(a.base, dst, src, n) || !(static_cast<uint64_t>(src) < dst + n && static_cast<uint64_t>(dst) < src + n), "%s: overlap accepted", name);
     }
 }
+
+void DiffMemcpy(Arena& a, Arena& b, Arena& c, Rng& rng) { DiffMemcpyFn(a, b, c, rng, orig_memcpy, Memcpy, "memcpy"); }
+void DiffCrtMemcpy(Arena& a, Arena& b, Arena& c, Rng& rng) { DiffMemcpyFn(a, b, c, rng, orig_crt_memcpy, CrtMemcpy, "crt memcpy"); }
 
 void DiffMemset(Arena& a, Arena& b, Arena& c, Rng& rng) {
     long declined = 0;
@@ -508,6 +513,13 @@ void Bench(Arena& a, Rng& rng) {
             report(what, o, v);
         }
     }
+    for (uint32_t n : {8u, 36u, 256u, 1024u}) {
+        char what[64];
+        std::snprintf(what, sizeof what, "crt memcpy n=%u src+4", n);
+        const double o = TimeNs([&](int) { ctx.r3.u64 = 0x10000; ctx.r4.u64 = 0x30004; ctx.r5.u64 = n; orig_crt_memcpy(ctx, a.base); }, calls);
+        const double v = TimeNs([&](int) { CrtMemcpy(a.base, 0x10000, 0x30004, n); }, calls);
+        report(what, o, v);
+    }
     for (uint32_t n : {16u, 64u, 256u, 1024u}) {
         char what[64];
         std::snprintf(what, sizeof what, "memset n=%u", n);
@@ -653,6 +665,7 @@ int main(int argc, char** argv) {
     {
         Arena b, c;
         DiffMemcpy(a, b, c, rng);
+        DiffCrtMemcpy(a, b, c, rng);
         DiffMemset(a, b, c, rng);
         DiffRowWrite(a, b, c, rng);
         DiffShaderConstF(a, b, c, rng);

@@ -1,4 +1,4 @@
-// Host versions of the game's memcpy, memset, row writer and two D3D constant writers.
+// Host versions of the game's two memcpys, memset, row writer and two D3D constant writers.
 //
 // See host_helpers.h for what each function is and what it declines. This file is only the glue: each
 // override reads its arguments from the guest registers, asks the native function to do the work, and
@@ -13,8 +13,8 @@
 // values, and the stack below r1 is not written: all dead after a call by the ABI.
 //
 // The A/B switch is host_helpers_mask (debug only, read at start): bit 0 memcpy, 1 memset, 2 the
-// row writer, 3 the shader-constant copy, 4 the constant-bank flush. 0 = all recompiled, 31 = all
-// native (the default).
+// row writer, 3 the shader-constant copy, 4 the constant-bank flush, 5 the C runtime's memcpy.
+// 0 = all recompiled, 63 = all native (the default).
 
 #if !defined(REXGLUE_HAS_XEO3_TARGET)
 #include <rex/ppc/context.h>
@@ -32,12 +32,13 @@ REX_EXTERN(__imp__rex_sub_823D9890);              // memset
 REX_EXTERN(__imp__rex_sub_8218A6E0);              // row writer
 REX_EXTERN(__imp__rex_sub_82417678);              // shader constant copy
 REX_EXTERN(__imp__D3DDevice_FlushConstantBank);   // constant bank flush
+REX_EXTERN(__imp__rex_sub_823DA950);              // the C runtime's memcpy
 
 namespace {
 
-enum Helper : uint32_t { kMemcpy = 0, kMemset, kRowWrite, kShaderConstF, kFlushBank, kHelperCount };
+enum Helper : uint32_t { kMemcpy = 0, kMemset, kRowWrite, kShaderConstF, kFlushBank, kCrtMemcpy, kHelperCount };
 
-const char* const kNames[kHelperCount] = {"memcpy", "memset", "row writer", "shader constant copy", "constant bank flush"};
+const char* const kNames[kHelperCount] = {"memcpy", "memset", "row writer", "shader constant copy", "constant bank flush", "C runtime memcpy"};
 
 std::atomic<uint32_t> g_declined[kHelperCount];
 
@@ -46,7 +47,7 @@ uint32_t Mask() {
     static const uint32_t mask = [] {
         const uint32_t m = static_cast<uint32_t>(larecomp::settings::host_helpers_mask.Get()) & ((1u << kHelperCount) - 1u);
         LARECOMP_APP_INFO("[HostHelpers] native versions of the game's helpers: mask {:#x} ({})", m,
-                          m == 0 ? "all recompiled" : "memcpy, memset, row writer, shader constant copy, constant bank flush; bits set = native");
+                          m == 0 ? "all recompiled" : "bits set = native: 1 memcpy, 2 memset, 4 row writer, 8 shader constant copy, 16 constant bank flush, 32 C runtime memcpy");
         return m;
     }();
     return mask;
@@ -71,6 +72,15 @@ extern "C" REX_FUNC(rex_sub_8244D5C0) {
         Declined(kMemcpy);
     }
     __imp__rex_sub_8244D5C0(ctx, base);
+}
+
+extern "C" REX_FUNC(rex_sub_823DA950) {
+    // The C runtime's memcpy: r3 = dst, r4 = src, r5 = n; returns dst in r3 (left as it is).
+    if (On(kCrtMemcpy) && (ctx.r5.u64 >> 32) == 0) {
+        if (host_helpers::CrtMemcpy(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32)) return;
+        Declined(kCrtMemcpy);
+    }
+    __imp__rex_sub_823DA950(ctx, base);
 }
 
 extern "C" REX_FUNC(rex_sub_823D9890) {

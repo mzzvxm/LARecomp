@@ -20,6 +20,7 @@ from pathlib import Path
 # name in the generated code -> test-side name; the order does not matter
 FUNCS = {
     "rex_sub_8244D5C0": "memcpy",
+    "rex_sub_823DA950": "crt_memcpy",
     "rex_sub_823DADD8": "memcpy_words",
     "rex_sub_824593D0": "memcpy_blocks",
     "rex_sub_823D9890": "memset",

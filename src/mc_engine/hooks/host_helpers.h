@@ -29,6 +29,8 @@
 //   Memcpy      rex_sub_8244D5C0 memcpy(dst, src, n) -> dst. Head and tail with stvlx / stvrx, 128-byte
 //               blocks with dcbzl on the destination lines; n < 16 copies words and then bytes in steps
 //               of the word at 0x827F3890 (1 in the image; a different value declines).
+//   CrtMemcpy   rex_sub_823DA950 memcpy(dst, src, n) -> dst, the C runtime's: forward copy in 8-byte steps with 4- and 1-byte
+//               ends, no overlap handling (so an overlapping call is declined, not moved).
 //   Memset      rex_sub_823D9890 memset(dst, (u8)value, n).
 //   RowWrite    rex_sub_8218A6E0 (object, table, index + 1, source, bytes per row, rows): copies
 //               `rows` rows of `bytes` bytes from a linear source into the row pointers of an object
@@ -88,15 +90,22 @@ inline void St64(uint8_t* base, uint32_t a, uint64_t v) {
 }
 
 // ---- memcpy -------------------------------------------------------------------------------------
-inline bool Memcpy(uint8_t* base, uint32_t dst, uint32_t src, uint32_t n) {
+// CrtMemcpy (rex_sub_823DA950, the C runtime's forward-only memcpy with 8- and 4-byte steps): a plain copy.
+inline bool CrtMemcpy(uint8_t* base, uint32_t dst, uint32_t src, uint32_t n) {
     if (n == 0) return true;
     if (!PlainRange(dst, n) || !PlainRange(src, n) || !Disjoint(dst, n, src, n)) return false;
+    std::memcpy(base + dst, base + src, n);
+    return true;
+}
+
+// Memcpy (rex_sub_8244D5C0, the console's fast memcpy): the same, and for n < 16 only while the word at 0x827F3890 is 1.
+inline bool Memcpy(uint8_t* base, uint32_t dst, uint32_t src, uint32_t n) {
+    if (n == 0) return true;
     if (n < 16) {
         // The tail loop of the original subtracts this word from the count per byte: only the image's 1 is a plain copy.
         if (!PlainRange(kMemcpyStepAddr, 4) || Ld32(base, kMemcpyStepAddr) != 1) return false;
     }
-    std::memcpy(base + dst, base + src, n);
-    return true;
+    return CrtMemcpy(base, dst, src, n);
 }
 
 // ---- memset -------------------------------------------------------------------------------------
