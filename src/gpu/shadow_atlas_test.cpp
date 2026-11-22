@@ -12,7 +12,7 @@
 //   CLEARS      one clear of the whole texture when every pool is drawn every record, rectangles when a static pool exists.
 //   SLOTS       StickySlots: a light keeps its slot, the spare slots of a fading light, a newcomer, the worst fading holder, the refusal; a fuzz of 4000 frames.
 //   PUBLISHED   ShadowFrameBuilder = light_convert.h ShadowFrameFromLocal on random frames; RebindByIds = headlight_rules::RemapShadowViews + ShadowFrameFromLocal on random sets.
-//   LOOKUP      ViewLit kSurface = headlight_rules::SoftShadow (the variant's CPU twin), kAir = volumetrics_rules.h ShadowShare (the volume's), LightLit = light_laws.h CombineShadow; the
+//   LOOKUP      ViewLit kSurface = light_shadow_filter.h ViewLit (the variant's CPU twin: HL-SHADOW-QUALITY), kAir = volumetrics_rules.h ShadowShare (the volume's), LightLit = light_laws.h CombineShadow; the
 //               HLSL twin compiled as C++ gives the same numbers; the view table's builder; the edge rules of both modes.
 
 #include <algorithm>
@@ -53,15 +53,31 @@ struct float4 {
   float4() = default;
   float4(float a, float b, float c, float d) : x(a), y(b), z(c), w(d) {}
 };
+struct float3 {
+  float x = 0, y = 0, z = 0;
+  float3() = default;
+  float3(float a, float b, float c) : x(a), y(b), z(c) {}
+};
+inline float3 operator-(const float3& a, const float3& b) { return float3(a.x - b.x, a.y - b.y, a.z - b.z); }
+inline float3 operator*(const float3& a, float k) { return float3(a.x * k, a.y * k, a.z * k); }
+inline float dot(const float3& a, const float3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline float3 cross(const float3& a, const float3& b) { return float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
+inline float length(const float3& a) { return std::sqrt(dot(a, a)); }
 inline float floor(float v) { return std::floor(v); }
+inline float abs(float v) { return std::fabs(v); }
+inline float saturate(float v) { return std::min(std::max(v, 0.0f), 1.0f); }
 inline uint min(uint a, uint b) { return a < b ? a : b; }
 inline int max(int a, int b) { return a > b ? a : b; }
+// HLSL's min and max of two floats: the reference's std::min / std::max read the same two operands (a NaN is not a case the tests make)
+inline float min(float a, float b) { return b < a ? b : a; }
+inline float max(float a, float b) { return a < b ? b : a; }
 inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
 #include "hlsl/light_shadow_lookup.hlsli"
 }  // namespace hlsl_shim
 
 namespace lg = larecomp::gpu;
 namespace sl = larecomp::gpu::shadow_lookup;
+namespace sf = larecomp::gpu::shadow_filter;
 namespace sa = mcla::gpu::shadow_atlas;
 namespace ls = mcla::gpu::local_shadow;
 namespace lb = mcla::gpu::light_budget;
@@ -801,16 +817,26 @@ struct TestAtlas {
   }
 };
 
-// The identity transform: out = (p.x, p.y, p.z, 1), so the world point IS (u, v, depth). Tile k of three in an atlas of 1536 x 512.
+// A real perspective view of a test tile: it looks along +z from the origin, w = z, and
+//   su = ox + fx x / z    sv = oy + fy y / z    sz = A (1 - n / z)   (A = f / (f - n): the replay's depth, 0 at the near plane n, 1 at the far plane f)
+// with the tile's centre (ox, 0.5) and a field of 70 degrees (tan 35 degrees = 0.7). Row 3 is the unit axis and row 2 is A times it, as light_shadow_filter.h reads a view. Tile k of three in an
+// atlas of 1536 x 512.
+constexpr float kTestNear = 0.1f, kTestFar = 100.0f;
+constexpr float kTestA = kTestFar / (kTestFar - kTestNear);
 lg::LocalShadowView TileView(uint32_t tile_index, float bias, bool valid = true) {
   lg::LocalShadowView v{};
-  v.world_to_shadow[0] = 1.0f;
-  v.world_to_shadow[5] = 1.0f;
-  v.world_to_shadow[10] = 1.0f;
-  v.world_to_shadow[15] = 1.0f;
-  v.atlas_rect[0] = float(tile_index) / 3.0f;
+  const float u0 = float(tile_index) / 3.0f, u1 = float(tile_index + 1) / 3.0f;
+  const float fx = 0.5f * (u1 - u0) / 0.7f, fy = 0.5f / 0.7f;
+  v.world_to_shadow[0] = fx;
+  v.world_to_shadow[2] = 0.5f * (u0 + u1);
+  v.world_to_shadow[5] = fy;
+  v.world_to_shadow[6] = 0.5f;
+  v.world_to_shadow[10] = kTestA;
+  v.world_to_shadow[11] = -kTestA * kTestNear;
+  v.world_to_shadow[14] = 1.0f;
+  v.atlas_rect[0] = u0;
   v.atlas_rect[1] = 0.0f;
-  v.atlas_rect[2] = float(tile_index + 1) / 3.0f;
+  v.atlas_rect[2] = u1;
   v.atlas_rect[3] = 1.0f;
   v.depth_bias = bias;
   v.texel_size = 1.0f / 512.0f;
@@ -819,47 +845,84 @@ lg::LocalShadowView TileView(uint32_t tile_index, float bias, bool valid = true)
   return v;
 }
 
+// A view whose depth is the constant `depth` for every point at z = 1 (row 2 = (0, 0, 0, depth), w = z): the edges of the depth range exactly (sz = depth / 1), which a perspective's own arithmetic
+// does not hold to the last bit. The world point (x, y, 1) is at su = ox + fx x, sv = oy + fy y.
+lg::LocalShadowView FlatDepthView(uint32_t tile_index, float bias, float depth) {
+  lg::LocalShadowView v = TileView(tile_index, bias);
+  v.world_to_shadow[10] = 0.0f;
+  v.world_to_shadow[11] = depth;
+  return v;
+}
+
+// The world point of the view `v` (TileView) that is at the tile's atlas place (su, sv) with the depth sz: the perspective inverted.
+void PointAt(const lg::LocalShadowView& v, float su, float sv, float sz, float p[3]) {
+  const float z = kTestA * kTestNear / (kTestA - sz);
+  p[0] = (su - v.world_to_shadow[2]) * z / v.world_to_shadow[0];
+  p[1] = (sv - v.world_to_shadow[6]) * z / v.world_to_shadow[5];
+  p[2] = z;
+}
+
 // A random point in or around the tile: mostly inside (so the kernels run), some outside the rectangle, some outside the depth range.
 void RandomPoint(Lcg* rng, const lg::LocalShadowView& v, float p[3]) {
   const float u0 = v.atlas_rect[0], u1 = v.atlas_rect[2];
-  p[0] = u0 + (u1 - u0) * rng->Range(-0.08f, 1.08f);
-  p[1] = rng->Range(-0.05f, 1.05f);
-  p[2] = rng->Next() < 0.05f ? rng->Range(-0.2f, 1.2f) : rng->Range(0.02f, 0.98f);
+  const float su = u0 + (u1 - u0) * rng->Range(-0.08f, 1.08f);
+  const float sv = rng->Range(-0.05f, 1.05f);
+  const float sz = rng->Next() < 0.05f ? rng->Range(-0.2f, 1.2f) : rng->Range(0.02f, 0.98f);
+  PointAt(v, su, sv, sz, p);
 }
 
-// headlight_rules::SoftShadow with the projection and edge rules around it, as the variant's CPU twin is used: the surface mode
-float ReferenceSurface(const lg::LocalShadowView& v, const float p[3], const TestAtlas& atlas) {
+// A random unit normal of a surface: any direction (the lookup does not care which side faces the light; the plane is the same).
+void RandomNormal(Lcg* rng, float n[3]) {
+  const float z = rng->Range(-1.0f, 1.0f);
+  const float a = rng->Range(0.0f, 6.2831853f);
+  const float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
+  n[0] = r * std::cos(a);
+  n[1] = z;
+  n[2] = r * std::sin(a);
+}
+
+// light_shadow_filter.h ViewLit (the variant's CPU twin, held to the variant's HLSL text by headlight_test.cpp) behind the one lookup's own rule for an invalid view: the surface mode.
+float ReferenceSurface(const lg::LocalShadowView& v, const float p[3], const float normal[3], const TestAtlas& atlas) {
   if (v.valid == 0) {
     return 1.0f;
   }
-  float uv[2], z;
-  if (!hr::ProjectToShadow(v, p, uv, &z)) {
-    return 1.0f;
-  }
-  const float tux = (v.atlas_rect[2] - v.atlas_rect[0]) * v.texel_size;
-  const float tuy = (v.atlas_rect[3] - v.atlas_rect[1]) * v.texel_size;
-  return hr::SoftShadow(uv[0] / tux, uv[1] / tuy, [&](int ix, int iy) { return hr::ShadowTap(atlas.At(ix, iy), z, v.depth_bias); });
+  const auto gather = [&](int ix, int iy) {
+    sf::Quad q;
+    q.x = atlas.At(ix, iy + 1);
+    q.y = atlas.At(ix + 1, iy + 1);
+    q.z = atlas.At(ix + 1, iy);
+    q.w = atlas.At(ix, iy);
+    return q;
+  };
+  return sf::ViewLit(v, p, normal, gather);
 }
 
 void TestSurfaceModeIsTheVariantsTwin() {
   Lcg rng;
-  uint64_t inside = 0, soft = 0, lit_all = 0, dark_all = 0;
+  uint64_t inside = 0, soft = 0, lit_all = 0, dark_all = 0, faced = 0;
   for (int n = 0; n < 30000; ++n) {
     TestAtlas atlas;
     atlas.seed = 1 + rng.Int(50);
     const lg::LocalShadowView v = TileView(rng.Int(3), rng.Next() < 0.5f ? 0.002f : rng.Range(0.0f, 0.02f), rng.Next() < 0.97f);
     float p[3];
     RandomPoint(&rng, v, p);
-    const float want = ReferenceSurface(v, p, atlas);
-    const float got = sl::ViewLit(v, p, atlas.width, atlas.height, sl::Mode::kSurface, [&](int x, int y) { return atlas.At(x, y); });
-    Check(std::memcmp(&want, &got, sizeof(float)) == 0, "the surface mode is SoftShadow behind the same edge rules, bit for bit");
-    float uv[2], z;
-    inside += hr::ProjectToShadow(v, p, uv, &z) ? 1u : 0u;
+    float normal[3];
+    RandomNormal(&rng, normal);
+    const float want = ReferenceSurface(v, p, normal, atlas);
+    const float got = sl::ViewLit(v, p, normal, atlas.width, atlas.height, sl::Mode::kSurface, [&](int x, int y) { return atlas.At(x, y); });
+    Check(std::memcmp(&want, &got, sizeof(float)) == 0, "the surface mode is light_shadow_filter.h ViewLit behind the same rule for an invalid view, bit for bit");
+    // the overload without a normal looks at a receiver that faces the light: the view's axis, reversed
+    const float facing[3] = {-v.world_to_shadow[12], -v.world_to_shadow[13], -v.world_to_shadow[14]};
+    const float want_facing = ReferenceSurface(v, p, facing, atlas);
+    const float got_facing = sl::ViewLit(v, p, atlas.width, atlas.height, sl::Mode::kSurface, [&](int x, int y) { return atlas.At(x, y); });
+    faced += std::memcmp(&want_facing, &got_facing, sizeof(float)) == 0 ? 1u : 0u;
+    inside += v.valid != 0 && want != 1.0f ? 1u : 0u;
     soft += got > 0.0f && got < 1.0f ? 1u : 0u;
     lit_all += got == 1.0f ? 1u : 0u;
-    dark_all += got == 0.0f ? 1u : 0u;
+    dark_all += got < 0.25f ? 1u : 0u;  // mostly in shadow (the contact hardening kernel leaves an exact 0 rare on random maps)
   }
-  Check(inside > 20000 && soft > 500 && lit_all > 3000 && dark_all > 500, "the random points reach the kernel, its soft part, lit areas and shadows (" + std::to_string(inside) + ", " + std::to_string(soft) + ", " +
+  Check(faced == 30000, "no normal: a receiver that faces the light (the view's axis reversed), bit for bit");
+  Check(inside > 5000 && soft > 500 && lit_all > 3000 && dark_all > 500, "the random points reach the kernel, its soft part, lit areas and (mostly) shadows (" + std::to_string(inside) + ", " + std::to_string(soft) + ", " +
                                                                                   std::to_string(lit_all) + ", " + std::to_string(dark_all) + ")");
 }
 
@@ -884,34 +947,44 @@ void TestAirModeIsTheVolumesTwin() {
 
 void TestModeEdges() {
   // the two live copies disagree on exactly these: a receiver at depth exactly 0 or 1. The surface mode looks it up, the air mode calls it lit. (A stored 1 is lit in both.)
-  TestAtlas atlas;
-  atlas.seed = 7;
-  // find a texel pattern that is a shadow at depth 1: all stored < 1 - bias around the place
-  struct Dark {
-    float At(int, int) const { return 0.1f; }
-  } dark;
-  const lg::LocalShadowView v = TileView(1, 0.002f);
-  const float at_far[3] = {0.5f, 0.5f, 1.0f};
-  const float at_near[3] = {0.5f, 0.5f, 0.0f};
-  const float inside[3] = {0.5f, 0.5f, 0.5f};
-  const auto depth = [&](int x, int y) { return dark.At(x, y); };
-  Check(sl::ViewLit(v, at_far, 1536, 512, sl::Mode::kSurface, depth) == 0.0f, "surface: a receiver at depth 1 is looked up (the variant's `s.z > 1.0`)");
-  Check(sl::ViewLit(v, at_far, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "air: a receiver at depth 1 is lit (the volume's `depth < 1.0`)");
-  Check(sl::ViewLit(v, at_near, 1536, 512, sl::Mode::kSurface, depth) == 1.0f, "surface: depth 0, stored 0.1 >= 0 - bias: lit by the compare");
-  Check(sl::ViewLit(v, at_near, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "air: depth 0 is lit");
-  Check(sl::ViewLit(v, inside, 1536, 512, sl::Mode::kSurface, depth) == 0.0f && sl::ViewLit(v, inside, 1536, 512, sl::Mode::kAir, depth) == 0.0f, "stored 0.1 in front of 0.5: shadow in both");
+  // The views here have a constant depth (FlatDepthView: sz = depth for every point at z = 1), so that the edges of the range are exact: the world point (0, 0, 1) is the tile's centre.
+  const float centre[3] = {0.0f, 0.0f, 1.0f};
+  const lg::LocalShadowView at_far_view = FlatDepthView(1, 0.002f, 1.0f);
+  const lg::LocalShadowView at_near_view = FlatDepthView(1, 0.002f, 0.0f);
+  const lg::LocalShadowView inside_view = FlatDepthView(1, 0.002f, 0.5f);
+  // a texel pattern that is a shadow at any depth that matters: stored 0.1 everywhere around the place
+  const auto depth = [&](int, int) { return 0.1f; };
+  Check(sl::ViewLit(at_far_view, centre, 1536, 512, sl::Mode::kSurface, depth) == 0.0f, "surface: a receiver at depth 1 is looked up (the variant's `s.z > 1.0`)");
+  Check(sl::ViewLit(at_far_view, centre, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "air: a receiver at depth 1 is lit (the volume's `depth < 1.0`)");
+  Check(sl::ViewLit(at_near_view, centre, 1536, 512, sl::Mode::kSurface, depth) == 1.0f, "surface: depth 0, stored 0.1 >= 0 - bias: lit by the compare");
+  Check(sl::ViewLit(at_near_view, centre, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "air: depth 0 is lit");
+  Check(sl::ViewLit(inside_view, centre, 1536, 512, sl::Mode::kSurface, depth) == 0.0f && sl::ViewLit(inside_view, centre, 1536, 512, sl::Mode::kAir, depth) == 0.0f, "stored 0.1 in front of 0.5: shadow in both");
+  // beyond the range in depth (the surface mode's [0, 1] is inclusive): lit in both
+  const lg::LocalShadowView beyond_view = FlatDepthView(1, 0.002f, 1.5f);
+  const lg::LocalShadowView before_view = FlatDepthView(1, 0.002f, -0.5f);
+  Check(sl::ViewLit(beyond_view, centre, 1536, 512, sl::Mode::kSurface, depth) == 1.0f && sl::ViewLit(beyond_view, centre, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "a depth past the far plane is lit");
+  Check(sl::ViewLit(before_view, centre, 1536, 512, sl::Mode::kSurface, depth) == 1.0f && sl::ViewLit(before_view, centre, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "a depth before the near plane is lit");
   // behind the view, outside the rectangle, invalid: lit
-  lg::LocalShadowView behind = v;
-  behind.world_to_shadow[15] = -1.0f;
-  Check(sl::ViewLit(behind, inside, 1536, 512, sl::Mode::kSurface, depth) == 1.0f && sl::ViewLit(behind, inside, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "a point behind the view is lit");
-  const float outside[3] = {0.1f, 0.5f, 0.5f};
-  Check(sl::ViewLit(v, outside, 1536, 512, sl::Mode::kSurface, depth) == 1.0f && sl::ViewLit(v, outside, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "a point outside the tile's rectangle is lit");
-  lg::LocalShadowView invalid = v;
+  lg::LocalShadowView behind = inside_view;
+  behind.world_to_shadow[15] = -1000.0f;
+  Check(sl::ViewLit(behind, centre, 1536, 512, sl::Mode::kSurface, depth) == 1.0f && sl::ViewLit(behind, centre, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "a point behind the view is lit");
+  const float outside[3] = {(0.1f - inside_view.world_to_shadow[2]) / inside_view.world_to_shadow[0], 0.0f, 1.0f};
+  Check(sl::ViewLit(inside_view, outside, 1536, 512, sl::Mode::kSurface, depth) == 1.0f && sl::ViewLit(inside_view, outside, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "a point outside the tile's rectangle is lit");
+  lg::LocalShadowView invalid = inside_view;
   invalid.valid = 0;
-  Check(sl::ViewLit(invalid, inside, 1536, 512, sl::Mode::kSurface, depth) == 1.0f && sl::ViewLit(invalid, inside, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "an invalid view is lit");
+  Check(sl::ViewLit(invalid, centre, 1536, 512, sl::Mode::kSurface, depth) == 1.0f && sl::ViewLit(invalid, centre, 1536, 512, sl::Mode::kAir, depth) == 1.0f, "an invalid view is lit");
   // a stored 1 is nothing drawn: lit in both whatever the bias
   const auto nothing = [](int, int) { return 1.0f; };
-  Check(sl::ViewLit(v, inside, 1536, 512, sl::Mode::kSurface, nothing) == 1.0f && sl::ViewLit(v, inside, 1536, 512, sl::Mode::kAir, nothing) == 1.0f, "nothing drawn there: lit");
+  Check(sl::ViewLit(inside_view, centre, 1536, 512, sl::Mode::kSurface, nothing) == 1.0f && sl::ViewLit(inside_view, centre, 1536, 512, sl::Mode::kAir, nothing) == 1.0f, "nothing drawn there: lit");
+  // the surface mode fades the shadow out over the last 5 percent of the tile (light_shadow_filter.h kBorderFade): at the tile's edge a full shadow is gone, a share inside it is not
+  {
+    const float edge[3] = {(inside_view.atlas_rect[0] + 0.001f - inside_view.world_to_shadow[2]) / inside_view.world_to_shadow[0], 0.0f, 1.0f};
+    const float near_edge[3] = {(inside_view.atlas_rect[0] + 0.5f * sf::kBorderFade * (inside_view.atlas_rect[2] - inside_view.atlas_rect[0]) - inside_view.world_to_shadow[2]) / inside_view.world_to_shadow[0], 0.0f, 1.0f};
+    const float at_edge = sl::ViewLit(inside_view, edge, 1536, 512, sl::Mode::kSurface, depth);
+    const float half_way = sl::ViewLit(inside_view, near_edge, 1536, 512, sl::Mode::kSurface, depth);
+    Check(at_edge > 0.9f && half_way > 0.3f && half_way < 0.7f && sl::ViewLit(inside_view, centre, 1536, 512, sl::Mode::kSurface, depth) == 0.0f,
+          "the surface mode's shadow fades out over the last 5 percent of the tile (edge " + std::to_string(at_edge) + ", half way " + std::to_string(half_way) + ")");
+  }
   // the air mode never reads a texel of another tile: the neighbours are poison
   std::vector<uint8_t> read_outside(1, 0);
   const auto poison = [&](int x, int y) {
@@ -920,9 +993,10 @@ void TestModeEdges() {
     return in_tile ? 0.5f : -1.0f;
   };
   Lcg rng;
+  const lg::LocalShadowView poison_view = FlatDepthView(1, 0.002f, 0.9f);
   for (int n = 0; n < 2000; ++n) {
-    float p[3] = {rng.Range(1.0f / 3.0f, 2.0f / 3.0f), rng.Range(0.0f, 1.0f), 0.9f};
-    sl::ViewLit(v, p, 1536, 512, sl::Mode::kAir, poison);
+    float p[3] = {rng.Range(-1.4f, 1.4f), rng.Range(-1.4f, 1.4f), 1.0f};
+    sl::ViewLit(poison_view, p, 1536, 512, sl::Mode::kAir, poison);
   }
   Check(read_outside[0] == 0, "the air mode's taps stay inside the view's tile, at its edges too");
 }
@@ -954,14 +1028,16 @@ void TestLightLitIsTheCombineRule() {
     }
     float p[3];
     RandomPoint(&rng, frame.views[ref.first_view % 8], p);
+    float normal[3];
+    RandomNormal(&rng, normal);
     for (const sl::Mode mode : {sl::Mode::kSurface, sl::Mode::kAir}) {
       const auto depth = [&](int x, int y) { return atlas.At(x, y); };
       float visibility[lg::kMaxLightShadowViews] = {};
       for (uint32_t e = 0; e < 8; ++e) {
-        visibility[e] = sl::ViewLit(frame.views[e], p, atlas.width, atlas.height, mode, depth);
+        visibility[e] = sl::ViewLit(frame.views[e], p, normal, atlas.width, atlas.height, mode, depth);
       }
       const float want = ll::CombineShadow(frame, ref, visibility);
-      const float got = sl::LightLit(frame, ref, p, mode, depth);
+      const float got = sl::LightLit(frame, ref, p, normal, mode, depth);
       CheckNear(got, want, 1e-6, "LightLit is light_laws.h CombineShadow over the lookups");
       if (ref.weight >= 1.0f && ref.kind == lg::ShadowKind::kAtlas && ref.view_count == 2 && !pair) {
         ++two_views;
@@ -1029,7 +1105,10 @@ std::string ReadFile(const std::string& path) {
 void TestHlslTwin(const std::string& hlsli_path) {
   // the numbers
   Check(LSL_MAX_VIEWS == int(lg::kMaxLightShadowViews) && LSL_VIEW_BYTES == int(sl::kGpuShadowViewBytes) && LSL_HEADER_BYTES == int(sl::kGpuShadowHeaderBytes), "the twin's sizes are the table's");
-  Check(LSL_KERNEL == sl::kKernel && LSL_MODE_SURFACE == int(sl::Mode::kSurface) && LSL_MODE_AIR == int(sl::Mode::kAir), "the twin's kernel and modes");
+  Check(LSL_MODE_SURFACE == int(sl::Mode::kSurface) && LSL_MODE_AIR == int(sl::Mode::kAir), "the twin's modes");
+  Check(LSL_PCF_MIN_RADIUS == sf::kPcfMinRadius && LSL_PCF_MAX_RADIUS == sf::kPcfMaxRadius && LSL_LAMP_RADIUS == sf::kLampRadius && LSL_MAX_SLOPE == sf::kMaxSlope && LSL_SLOPE_BIAS == sf::kSlopeBias &&
+            LSL_BORDER_FADE == sf::kBorderFade && LSL_DEGENERATE == sf::kDegenerate,
+        "the twin's plane lookup has light_shadow_filter.h's numbers");
   Check(LSL_LAYER_SINGLE == int(lg::ShadowLayer::kSingle) && LSL_LAYER_STATIC == int(lg::ShadowLayer::kStatic) && LSL_LAYER_LIVE == int(lg::ShadowLayer::kLive), "the twin's layers are ShadowLayer's");
   Check(LSL_SHADOW_NONE == int(lg::ShadowKind::kNone) && LSL_SHADOW_ATLAS == int(lg::ShadowKind::kAtlas) && LSL_SHADOW_RT_MASK == int(lg::ShadowKind::kRtMask), "the twin's shadow kinds are ShadowKind's");
   Check(sizeof(hlsl_shim::LslView) >= 96, "the twin's view row has the 96 bytes' fields");
@@ -1068,13 +1147,15 @@ void TestHlslTwin(const std::string& hlsli_path) {
     shim_state::layers = table.header.layers;
     float p[3];
     RandomPoint(&rng, frame.views[rng.Int(3)], p);
+    float nrm[3];
+    RandomNormal(&rng, nrm);
     for (const sl::Mode mode : {sl::Mode::kSurface, sl::Mode::kAir}) {
       const auto depth = [&](int x, int y) { return atlas.At(x, y); };
-      const float view_want = sl::ViewLit(frame.views[ref.first_view % 3], p, atlas.width, atlas.height, mode, depth);
-      const float view_got = hlsl_shim::LslViewLit(shim_state::views[ref.first_view % 3], p[0], p[1], p[2], 0u, uint32_t(mode));
+      const float view_want = sl::ViewLit(frame.views[ref.first_view % 3], p, nrm, atlas.width, atlas.height, mode, depth);
+      const float view_got = hlsl_shim::LslViewLit(shim_state::views[ref.first_view % 3], p[0], p[1], p[2], nrm[0], nrm[1], nrm[2], 0u, uint32_t(mode));
       Check(std::memcmp(&view_want, &view_got, sizeof(float)) == 0, "the twin's view lookup is the reference's, bit for bit");
-      const float want = sl::LightLit(frame, ref, p, mode, depth);
-      const float got = hlsl_shim::LslLightLit(uint32_t(ref.kind), ref.first_view, ref.view_count, ref.weight, p[0], p[1], p[2], 0u, uint32_t(mode));
+      const float want = sl::LightLit(frame, ref, p, nrm, mode, depth);
+      const float got = hlsl_shim::LslLightLit(uint32_t(ref.kind), ref.first_view, ref.view_count, ref.weight, p[0], p[1], p[2], nrm[0], nrm[1], nrm[2], 0u, uint32_t(mode));
       Check(std::memcmp(&want, &got, sizeof(float)) == 0, "the twin's light lookup is the reference's, bit for bit");
       ++checked;
     }
@@ -1083,7 +1164,8 @@ void TestHlslTwin(const std::string& hlsli_path) {
   // a light with no atlas views, or none counted, is lit
   TestAtlas atlas;
   shim_state::atlas = &atlas;
-  Check(hlsl_shim::LslLightLit(uint32_t(lg::ShadowKind::kRtMask), 0, 2, 1.0f, 0.5f, 0.5f, 0.5f, 0u, 0u) == 1.0f && hlsl_shim::LslLightLit(uint32_t(lg::ShadowKind::kAtlas), 0, 0, 1.0f, 0.5f, 0.5f, 0.5f, 0u, 0u) == 1.0f,
+  Check(hlsl_shim::LslLightLit(uint32_t(lg::ShadowKind::kRtMask), 0, 2, 1.0f, 0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 0u, 0u) == 1.0f &&
+            hlsl_shim::LslLightLit(uint32_t(lg::ShadowKind::kAtlas), 0, 0, 1.0f, 0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 0u, 0u) == 1.0f,
         "a light with no atlas views is lit");
   // the header's two bits an entry
   Check(hlsl_shim::LslLayerBits(0b100100u, 1) == 1u && hlsl_shim::LslLayerBits(0b100100u, 2) == 2u && hlsl_shim::LslLayerBits(0b100100u, 0) == 0u, "two bits an entry");
