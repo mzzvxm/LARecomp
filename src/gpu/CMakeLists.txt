@@ -387,6 +387,9 @@ add_executable(larecomp_precache_queue_test EXCLUDE_FROM_ALL precache_queue_test
 # The Windows builds the game's Direct3D 12 runtime needs (windows_floor.h, which only explains a refused start) likewise:
 #   cmake --build <dir> --target larecomp_windows_floor_test, then run src/gpu/larecomp_windows_floor_test (exit 0 = passed).
 add_executable(larecomp_windows_floor_test EXCLUDE_FROM_ALL windows_floor_test.cpp)
+# The sampler address modes a device can make (sampler_modes.h: mirror once needs an extension on Vulkan) have a check of their own too:
+#   cmake --build <dir> --target larecomp_sampler_modes_test, then run src/gpu/larecomp_sampler_modes_test (exit 0 = passed).
+add_executable(larecomp_sampler_modes_test EXCLUDE_FROM_ALL sampler_modes_test.cpp)
 # So does the text of the device-loss report (device_fault_format.h):
 #   cmake --build <dir> --target larecomp_device_fault_test, then run src/gpu/larecomp_device_fault_test.
 add_executable(larecomp_device_fault_test EXCLUDE_FROM_ALL device_fault_format_test.cpp)
