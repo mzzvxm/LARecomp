@@ -87,6 +87,12 @@ bool LampShadows::Poll(bool wanted, uint64_t frame) {
   namespace st = larecomp::settings;
   serial_ = frame;
   on_ = Enabled();
+  if (on_ != enabled_logged_) {
+    enabled_logged_ = on_;
+    const int setting = int(st::mcla_gpu_lamp_shadows.Get());
+    REXLOG_INFO("{} {} (mcla_gpu_lamp_shadows {}{}; the deferred light pass runs without the lamps: {}; live)", kPrefix, on_ ? "the street lamps are shadowed" : "the street lamps are not shadowed", setting,
+                setting < 0 ? ", auto: follows LIGHT SHADOWS while the light pass runs" : (setting == 0 ? ", off" : ", on"), pass_runs_ ? "yes" : "no");
+  }
   mode_ = la::ModeOf(int(st::mcla_gpu_lamp_shadows_mode.Get()));
   debug_view_ = uint32_t(std::clamp<int>(int(st::mcla_gpu_lamp_shadows_view.Get()), 0, 3));  // 0..3 (local_lights_rules.h kDebug*): 3 is the units check "remove"
   lamps_override_ = int(st::mcla_gpu_lamp_shadows_lamps.Get());

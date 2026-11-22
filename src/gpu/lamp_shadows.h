@@ -136,6 +136,7 @@ class LampShadows final : public ShadowProvider {
   bool registered_ = false;
   bool on_ = false;
   bool pass_runs_ = false;  // the deferred light pass runs without the lamps (SetPassRuns)
+  bool enabled_logged_ = false;  // the state the log last said (Poll logs a change once)
   bool active_ = false;
   lamp_shadows::LampMode mode_ = lamp_shadows::LampMode::kSubtract;
   uint32_t debug_view_ = 0;

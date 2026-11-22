@@ -1498,6 +1498,7 @@ void TestPortToThePass(const std::string& gpu_dir) {
   Check(Has(cpp, "bool LampShadows::Enabled() const") && Has(cpp, "la::LampsEnabled(int(larecomp::settings::mcla_gpu_lamp_shadows.Get()), pass_runs_)") && Has(cpp, "on_ = Enabled();"),
         "the provider's switch is LampsEnabled(setting, whether the pass runs)");
   Check(Has(lights_cpp, "lamp_shadows_->SetPassRuns(hp::PassOn(route, st::mcla_gpu_local_lights.Get()));"), "the pass tells the provider whether it runs without the lamps");
+  Check(Has(cpp, "\"the street lamps are shadowed\"") && Has(cpp, "if (on_ != enabled_logged_) {"), "the log says once when the lamps are switched on or off (the gate's auto runs read it)");
   Check(Has(shadow_cpp, "const bool lamps_on = lamps_ != nullptr && lamps_->Enabled();"), "the replay records into the shared atlas while the lamps are enabled (the one atlas)");
   Check(Has(cpp, "std::clamp<int>(int(st::mcla_gpu_lamp_shadows_view.Get()), 0, 3)"), "the debug view 3 (the units check) reaches the pass: its clamp is 0..3");
   // (the needles are built in two pieces: tools/check_settings_exposure.py reads a whole REX_SETTING(...) line of any source as a definition of the setting)
