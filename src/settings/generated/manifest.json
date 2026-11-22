@@ -878,10 +878,10 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: shows a stage of the car self-reflection instead of the paint (only while the car self-reflections are on): \"\n    \"1 the weight of the hit, 2 the colour the ray found, 3 the paint's baked vertex occlusion, 4 the state of the trace \"\n    \"(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit, \"\n    \"orange where the hit is probably the hidden face of a part, the brighter the more of the reflection it takes), 5 the \"\n    \"ray traced image at the paint's pixel (purple: no image this frame, cyan: no data there, so the march ran, green: no hit, \"\n    \"yellow: a hit on a part the camera sees, orange: on a part it does not). 0: off. Live.\"",
+  "help": "\"Diagnostic: shows a stage of the car self-reflection instead of the paint (only while the car self-reflections are on): \"\n    \"1 the weight of the hit, 2 the colour the ray found, 3 the paint's baked vertex occlusion, 4 the state of the trace \"\n    \"(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit, \"\n    \"orange where the march's hit is probably the hidden face of a part, the brighter the more of the reflection it takes), 5 the \"\n    \"ray traced image at the paint's pixel (purple: no image this frame, cyan: no data there, so the march ran, green: no hit, \"\n    \"yellow: a hit on the player's own part, orange: on another car), 6 the clear coat's layer's amount (its fresnel by the share of the hit on another car, white is 1), \"\n    \"7 what that layer adds (the other car's colour by the amount). 2 is the ray traced reflection alone at full intensity. 0: off. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 5}"
+   "rex::Range{0, 7}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -9535,6 +9535,133 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_shading": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): where the graphics card can ray trace and the car self-reflection runs, a reflection ray that hits ANOTHER car shows the part in its own material: its paint \"\n    \"colour (the gradient of the paint's constants, the livery over it), its diffuse texture, the sun and the sky's light on it, the environment map's reflection, and the lamps lit at night. Where \"\n    \"the camera sees the part its own colour in the picture is used as before. Off: a part the camera does not see takes the stand-in colour (the colour the camera sees of that car, in shade, or \"\n    \"its paint), as before. Needs the other cars in the scene (mcla_gpu_car_rt_cars). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_shadow": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the shaded hit on another car casts one ray towards the sun against the cars of the scene, so that a car's own shadow falls on itself and on its neighbour (the world's shadows \"\n    \"come from the game's cascades: mcla_gpu_car_rt_hit_cascade). Off: the sun lights every part that faces it, but for the world's shadows. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_gain": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the brightness of the shaded hits on other cars against the colours the camera sees (1, the default). A flank that is too bright or too dark against the part of the same car \"\n    \"the camera sees: move it. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_ambient": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the share of the frame's ambient light (the cars' own pixel constants) in a shaded hit on another car (1, the default). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_spec": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the share of the environment map's reflection (the game's own 512x256 map, read at the reflected direction and scaled by the fresnel) in a shaded hit on another car (1, the \"\n    \"default). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_detail": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the detail of the shaded hit on another car (the car the reflection shows): the sky's openness (one ray from the hit towards the sky: a flank between two cars is darker), the contact with the ground \"\n    \"(the lowest half metre of the car is darker), the clear coat's image of the sun by day and of a street lamp at night (a bright streak along a shoulder or a roof edge), and what each kind of part \"\n    \"keeps of the ambient light. 1, the default; 0 is the shading as it was, above 1 makes the glints stronger. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_reach": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). \"\n    \"The weight of a hit falls over this from three quarters of it. Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours \"\n    \"(mcla_gpu_car_rt_cars_radius moves that). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 20.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_clearcoat": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the clear-coat ray of the ray traced car reflection: one more ray along the exact mirror direction (no cone, no filter) beside the glossy cone, added to it by a share that follows the paint's \"\n    \"fresnel, so that a car beside yours reads sharp in its paint (the way a clear coat does) on top of the glossy base. -1 (the default): by the graphics card's class (on the High class, off on the Mid class); \"\n    \"0 off; above 0 on at that strength (1 is the High class's). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_coat_layer": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): the paint adds the clear coat's layer over the reflection of ANOTHER CAR in the ray traced image: the car's colour by the coat's own fresnel \"\n    \"(0.07 at N.V 0.5, 0.20 at 0.3, 0.36 at 0.2), so that a car beside yours reads in your door at the strength a real clear coat gives it (the game's own paint reflects a few percent of what it \"\n    \"reflects at a grazing view). Off: the car replaces the environment's reflection as before, which is as weak as the environment's. Your own car's parts are untouched either way. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_calibrate": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): the shaded colour of another car's hidden parts is brought to the game's own exposure: where the reflection ray hits a part of another car's paint that the \"\n    \"camera sees, the pass also shades it by its model and compares the brightness with the game's colour there, and the shading's gain follows (about a window of twenty frames: it follows the hour). Off: the model's own \"\n    \"light, which does not follow the hour. The census line in the log ([car rt refl] hits) says the difference either way. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_cascade": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the shaded hit on another car also reads the game's own sun shadow map (its cascades) at the point, so that the reflected car stands in the light of the scene: the shade of buildings, trees \"\n    \"and bridges falls on it as it falls on the road. Off: only the cars' own shadows (mcla_gpu_car_rt_hit_shadow). Needs the volumetric light on (it reads the cascades the game draws). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

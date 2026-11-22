@@ -88,6 +88,10 @@ class Volumetrics {
   void BeginFrame();
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return level_ != Level::kOff; }
+  // The game's sun cascades of this frame as the shadow collector's draws told them (the data FillCascades gives the volume: the light matrices, the boxes, the atlas), for another pass that
+  // wants the sun's shadow of the world: the car ray tracing's shaded hits (car_rt_hit_rules.h). False where the frame has none (no collector draw yet, a stale one, or night and rain,
+  // when the game draws no cascades). `fade` is the collector's own: the visibility is lerp(lit, 1, fade). Render thread; valid from the frame's first collector draw.
+  bool CurrentSun(volumetrics::VolSun* sun, float* fade) const;
 
   // Every prepared draw of the frame, before it is recorded: a draw of the sun shadow collector (its pixel shader has the shadow filter feature in the
   // variant pack: `ps_features` is ShaderStore::Entry::features) tells the cascades (PS c63 / c64-c87) and the atlas (its fetch constant 15's bindless
@@ -204,6 +208,8 @@ class Volumetrics {
   bool ComputeLight(Light* out) const;
   void FillDefaults(const Light& light, const volumetrics::VolFrameContext& frame, volumetrics::VolInputs* in);
   void FillCascades(volumetrics::VolInputs* in) const;
+  // The sun of FillCascades alone: false (and an empty `sun`) where the collector has nothing usable.
+  bool FillSun(volumetrics::VolSun* sun) const;
 
   // The passes (volumetrics.cpp).
   bool RecordVolume(plume::RenderCommandList* list, uint32_t frame_slot, const Pending& plan, const volumetrics::VolGpuConstants& constants,

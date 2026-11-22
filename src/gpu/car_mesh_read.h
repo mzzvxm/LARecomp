@@ -38,6 +38,7 @@ inline constexpr uint32_t kUsagePosition = 0;
 inline constexpr uint32_t kUsageBlendWeight = 1;
 inline constexpr uint32_t kUsageBlendIndices = 2;
 inline constexpr uint32_t kUsageNormal = 3;
+inline constexpr uint32_t kUsageTexcoord = 5;
 // A draw with more indices than this is not a car's.
 inline constexpr uint32_t kMaxIndices = 8u * 1024u * 1024u;
 
@@ -242,6 +243,10 @@ bool SkinPositions(const GuestMemory& memory, const DrawView& view, const uint8_
 // The NORMAL element of the draw's declaration for the vertices `first`.. `first + span`, as x y z a vertex (the guest's numbers, not
 // normalised). False (and `out` empty) when the draw has no NORMAL, a format that is not decoded, or a stream that is not readable.
 bool ReadNormals(const GuestMemory& memory, const DrawView& view, uint32_t first, uint32_t span, std::vector<float>* out);
+
+// The TEXCOORD0 element of the draw's declaration for the vertices `first`.. `first + span`, as u v a vertex (a half2 or float2, car_rt_material_rules.h UvFormat). False (and `out`
+// empty) when the draw has no TEXCOORD0, another format, a stream that is not readable, or a value that is not a number.
+bool ReadTexcoords(const GuestMemory& memory, const DrawView& view, uint32_t first, uint32_t span, std::vector<float>* out);
 
 }  // namespace car_mesh
 }  // namespace mcla::gpu

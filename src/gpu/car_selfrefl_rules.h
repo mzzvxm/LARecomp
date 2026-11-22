@@ -56,7 +56,7 @@ inline constexpr float kMinThickness = 0.02f;
 inline constexpr float kMaxThickness = 1.0f;
 inline constexpr int kMinSteps = 4;
 inline constexpr int kMaxSteps = 24;
-inline constexpr int kMaxView = 5;  // 5: the ray traced image (car_rt_refl.h), version 5 of the variant
+inline constexpr int kMaxView = 7;  // 5: the ray traced image (car_rt_refl.h), version 5 of the variant; 6 and 7: the clear coat's layer's amount and what it adds (version 8)
 inline constexpr float kMaxGain = 16.0f;
 inline constexpr float kMinFull = 0.05f;
 inline constexpr float kMaxFull = 1.0f;
@@ -126,6 +126,8 @@ constexpr uint32_t HistoryEdge(uint32_t render_edge, uint32_t divisor) {
 // made at the same trigger: the paint variant (version 5) reads it in place of the march where it has data. Without the bit the
 // variant does version 4's march and nothing else.
 inline constexpr uint32_t kRtImageFlag = 1u;
+// c[3] bit 1 (version 8, RT-HIT-SHADING-4): the paint adds the clear coat's layer over the reflection of another car (car_rt_hit_rules.h CoatLayerAmount; mcla_gpu_car_rt_coat_layer).
+inline constexpr uint32_t kCoatLayerFlag = 2u;
 inline constexpr uint32_t kNoRtImage = 0xFFFFFFFFu;
 
 // The constants of a draw that has no history: the game's paint (mode 0) and a slot that is never read.
@@ -136,7 +138,7 @@ inline CarSelfReflConstants OffConstants() {
 
 inline CarSelfReflConstants MakeConstants(Mode mode, const Tuning& tuning, const float matrix[16],
                                           uint32_t history_slot, uint32_t sampler_slot, float exp_gain,
-                                          uint32_t rt_slot = kNoRtImage) {
+                                          uint32_t rt_slot = kNoRtImage, bool coat_layer = false) {
   CarSelfReflConstants c = {};
   for (int i = 0; i < 16; ++i) {
     c.m[i] = matrix[i];
@@ -154,7 +156,7 @@ inline CarSelfReflConstants MakeConstants(Mode mode, const Tuning& tuning, const
   c.c[1] = sampler_slot;
   if (rt_slot != kNoRtImage) {
     c.c[2] = rt_slot;
-    c.c[3] = kRtImageFlag;
+    c.c[3] = kRtImageFlag | (coat_layer ? kCoatLayerFlag : 0u);
   }
   return c;
 }
