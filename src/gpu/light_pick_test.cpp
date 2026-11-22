@@ -89,7 +89,7 @@ void CheckBudget() {
     lb::Level level;
     uint32_t cars, lamp_cars, views, tile;
   };
-  const Row expect[] = {{lb::Level::kMedium, 2, 0, 2, 512}, {lb::Level::kHigh, 2, 1, 3, 512}, {lb::Level::kUltra, 3, 3, 6, 1024}};
+  const Row expect[] = {{lb::Level::kMedium, 2, 0, 2, 768}, {lb::Level::kHigh, 2, 1, 3, 1024}, {lb::Level::kUltra, 3, 3, 6, 1280}};  // the tiles of HL-SHADOW-QUALITY (768 / 1024 / 1280)
   for (const Row& e : expect) {
     const lb::LightBudget b = lb::BudgetFor(true, e.level, 0, lb::Level::kHigh, three);
     Check(b.shadow_cars == e.cars && b.shadow_lamp_cars == e.lamp_cars && b.shadow_views == e.views && b.shadow_tile == e.tile,

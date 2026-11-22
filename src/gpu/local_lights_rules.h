@@ -262,18 +262,47 @@ inline void PixelLight(const Light& l, const Units& u, const float world[3], con
   }
 }
 
+// The surface's GEOMETRIC unit normal at a pixel for the shadow lookup, turned to the camera: the lit shaders' rule (headlight.cpp HeadlightLight: cross(ddy(world), ddx(world)) over the pixel's
+// 2 x 2 quad) taken from the depth plane: w00 the world position of the quad's top left pixel, w10 its right neighbour's, w01 its lower neighbour's (hlsl/local_light_ps.hlsl LpShadowNormal is
+// the twin). `valid` is false where one of the three is the sky or outside the plane: then, as for a degenerate quad, `fallback` is the answer.
+inline void QuadNormal(const float w00[3], const float w10[3], const float w01[3], bool valid, const float world[3], const float camera[3], const float fallback[3], float out[3]) {
+  if (!valid) {
+    for (int i = 0; i < 3; ++i) {
+      out[i] = fallback[i];
+    }
+    return;
+  }
+  const float dx[3] = {w10[0] - w00[0], w10[1] - w00[1], w10[2] - w00[2]};
+  const float dy[3] = {w01[0] - w00[0], w01[1] - w00[1], w01[2] - w00[2]};
+  float n[3] = {dy[1] * dx[2] - dy[2] * dx[1], dy[2] * dx[0] - dy[0] * dx[2], dy[0] * dx[1] - dy[1] * dx[0]};  // cross(dy, dx)
+  const float len2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+  if (!(len2 > 1.0e-14f)) {
+    for (int i = 0; i < 3; ++i) {
+      out[i] = fallback[i];
+    }
+    return;
+  }
+  const float inv = 1.0f / std::sqrt(len2);
+  const float to_camera = n[0] * (camera[0] - world[0]) + n[1] * (camera[1] - world[1]) + n[2] * (camera[2] - world[2]);
+  const float sign = to_camera < 0.0f ? -inv : inv;
+  for (int i = 0; i < 3; ++i) {
+    out[i] = n[i] * sign;
+  }
+}
+
 // GB-H2: the pass's whole per-pixel path, the twin of hlsl/local_light_ps.hlsl main after the surface and the depth are read: the light's term (PixelLight), then, for a light that has views of the
-// atlas and a frame whose table is in the buffer (kFlagShadow), the ONE lookup's visibility (shadow_lookup::LightLit, the lit shaders' box kernel: Mode::kSurface) multiplied in. `depth_at(ix, iy)` is
-// the atlas's stored depth of a texel, the index clamped into the atlas. Returns whether the pixel adds anything (the shader discards otherwise).
+// atlas and a frame whose table is in the buffer (kFlagShadow), the ONE lookup's visibility (shadow_lookup::LightLit, the lit shaders' lookup: Mode::kSurface, the receiver's plane from the unit
+// normal `shadow_normal`, which is the surface's geometric one: QuadNormal; null: `normal`) multiplied in. `depth_at(ix, iy)` is the atlas's stored depth of a texel, the index clamped into the
+// atlas. Returns whether the pixel adds anything (the shader discards otherwise).
 template <class Depth>
 inline bool PixelLightShadowed(const Light& l, const Units& u, const ShadowFrame* shadow, bool table, const float world[3], const float normal[3], const float albedo[3], float lit, Depth&& depth_at,
-                               float out[3]) {
+                               float out[3], const float* shadow_normal = nullptr) {
   PixelLight(l, u, world, normal, albedo, lit, out);
   if (!(out[0] > 0.0f || out[1] > 0.0f || out[2] > 0.0f)) {
     return false;
   }
   if (table && shadow != nullptr && l.shadow.kind == ShadowKind::kAtlas && l.shadow.view_count != 0) {
-    const float visibility = shadow_lookup::LightLit(*shadow, l.shadow, world, shadow_lookup::Mode::kSurface, depth_at);
+    const float visibility = shadow_lookup::LightLit(*shadow, l.shadow, world, shadow_normal != nullptr ? shadow_normal : normal, shadow_lookup::Mode::kSurface, depth_at);
     for (int i = 0; i < 3; ++i) {
       out[i] *= visibility;
     }

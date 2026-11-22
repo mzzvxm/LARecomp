@@ -1909,7 +1909,7 @@ void CheckSoftShadow() {
   constexpr int E = 40;
   const auto edge = [](int ix, int) { return ix >= E ? 1.0f : 0.0f; };
   const float half = 0.5f * hr::kShadowKernel;
-  Check(hr::kShadowKernel == 3.0f, "the box is 3 texels wide (the shader's kHlShadowKernel)");
+  Check(hr::kShadowKernel == 3.0f, "the first version's box is 3 texels wide (the shader's lookup is light_shadow_filter.h now; this twin is kept for the tests that compare)");
   float last = -1.0f;
   int levels = 0;
   bool monotone = true, ramp = true;

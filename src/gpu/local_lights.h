@@ -18,7 +18,7 @@
 //
 // GB-H2 (headlight_pass_rules.h has the story, the A/B, the identity rule and the retirement gate): the frame's headlights, the lights of the cars the rig lights, are lit by this pass WITH THEIR SHADOWS:
 // a light's ShadowRef (its views of the shadow atlas, one for each headlamp of a car the three level table gives views to) is read through the ONE lookup (hlsl/light_shadow_lookup.hlsli, the lit
-// shaders' box kernel) from the frame's view table, which is written after the lights' rows of the buffer; the atlas is the bindless depth plane the replay recorded THIS frame, just before.
+// shaders' plane lookup: four texel rows read at the receiver's own plane, with the surface's geometric normal taken from the depth plane's pixel quad) from the frame's view table, which is written after the lights' rows of the buffer; the atlas is the bindless depth plane the replay recorded THIS frame, just before.
 // mcla_gpu_headlight_pass (forward | pass | both) switches the forward headlight stage off and this pass on for them (the A/B), and the pass then lights what the forward stage leaves out: the
 // 62 lit shaders it does not edit, the cars' paint, the pedestrians. The forward stage is deleted only after the owner has seen the pictures (the retirement steps are in headlight_pass_rules.h).
 //

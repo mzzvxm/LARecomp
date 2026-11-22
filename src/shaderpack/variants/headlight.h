@@ -29,10 +29,13 @@
 // outer and the inner cosine), the inverse square fall-off 1 / (1 + (d/D)^2), a wrapped surface term (saturate(w + (1 - w) N.L): a road seen at a grazing
 // angle keeps a share), a low beam's cut-off (nothing a little above the lamp), and a fade near the lamp. The numbers are
 // src/gpu/headlight_rig_rules.h's (LampScale is the CPU twin; the variant's test checks that the `kHl...` constants here are those).
-// The shadow hook: a light with a valid local shadow view (src/gpu/local_shadow_types.h) multiplies its term by the share of a box of 3 x 3 texels of the
-// atlas that is lit, each texel compared with the game's `>=` and counted by the part of it the box covers (4 x 4 texels, 16 fetches, 4 when the box's outer
-// texels agree; the views are in the block; the views of a light are in g_HlShadowOf and g_HlShadowOfB; no atlas bound: lit). It was four point compares (five levels: a
-// staircase of texels on every edge). A LIGHT IS A CAR'S (one term for the pair of headlamps) AND HAS UP TO TWO VIEWS, one from each lamp: its share is the mean of the views'
+// The shadow hook: a light with a valid local shadow view (src/gpu/local_shadow_types.h) multiplies its term by the share of a small box of the atlas that is lit: the 4 x 4
+// texels around the point are read by FOUR GATHERS (every texel, so no thin shadow falls between taps), each compared with the game's `>=` against the receiver's depth at that
+// texel on the RECEIVER'S OWN PLANE (the surface's slope from its normal and the view's matrix, so a road at a grazing angle needs no bias margin), and counted by the part of it
+// the kernel covers; the kernel's half width is 0.5 texel at a contact and up to 1.5 far from the blocker (the lamp's disc through the average blocker: contact hardening), and
+// the shadow fades out over the last 5 percent of the view's tile (src/gpu/light_shadow_filter.h is the CPU twin and says why; the views are in the block; the views of a light
+// are in g_HlShadowOf and g_HlShadowOfB; no atlas bound: lit). It was a box of 3 x 3 texels with a four tap shortcut, and before it four point compares (a staircase of texels on
+// every edge). A LIGHT IS A CAR'S (one term for the pair of headlamps) AND HAS UP TO TWO VIEWS, one from each lamp: its share is the mean of the views'
 // it has (version 4: a pole that both lamps light casts two shadows, and a car's shadow has the half-lit band of one lamp); no lookup is made for a term that is zero already.
 //
 // What the transform leaves out (it says `skip`, with the reason, and the renderer draws the game's own shader for it): a shader that reads no light grid
@@ -65,7 +68,10 @@ namespace larecomp::shaderpack {
 // 3: the shadow lookup is a soft box of 3 x 3 texels instead of four point compares (LIGHT-SHADOW-SHAPE, 2026-11-20): a new helper text.
 // 4: a light has up to two shadow views, one for each headlamp of its car, and its share is their mean; eight views and a second view table in the block, 1072 bytes
 // instead of 672 (HL-PER-LAMP, 2026-11-20): a new helper text and a new block, and the G-buffer's block after it (the composed shaders) moves from byte 1280 to 1680.
-inline constexpr uint32_t kHeadlightVariantVersion = 4;
+// 5: the shadow lookup is four Gathers of the 4 x 4 footprint compared at the receiver's plane, a contact hardening box and a fade at the view's border, instead of the 3 x 3 box
+// with its four-tap shortcut that lost every shadow thinner than a box (HL-SHADOW-QUALITY, 2026-11-21): a new helper text (HeadlightShadow takes the surface's normal); the
+// block of constants is the same 1072 bytes.
+inline constexpr uint32_t kHeadlightVariantVersion = 5;
 
 // The pixel shaders, found by name: every one of the lit family.
 inline constexpr std::string_view kHeadlightSuffixes[] = {"__PSMultiLight", "__PSMultiLightEnv", "__PSMultiLightInterior", "__PSMultiLightDebug",

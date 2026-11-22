@@ -83,7 +83,13 @@ using Level = light_budget::Level;
 using LevelRow = light_budget::ShadowRow;
 
 // THE TWO LEVEL SHAPE (the first plan of 2026-11-20, kept for the tests and as a way back) and THE THREE LEVEL SHAPE (IN USE since 2026-11-20): light_budget.h holds both tables and the
-// reasons for the three level shape (medium 2 views of 512, high 3 views of 512, ultra 6 views of 1024; auto: Mid medium, High ultra, Low off: gpu_class.h).
+// reasons for the three level shape (medium 2 views, high 3 views, ultra 6 views; auto: Mid medium, High ultra, Low off: gpu_class.h).
+// THE SIZE OF A VIEW (HL-SHADOW-QUALITY, 2026-11-21: the owner saw the poles', signs' and kerbs' shadows "extremely dither-y and nowhere near as sharp as they should be" on 4K):
+// the tile is chosen so that one texel stays small in the WORLD where the shadows are looked at, whatever the level: TexelMeters below says how many centimetres a texel is at 10 m
+// from the lamps (the view's field is about 72 degrees for a car's view and 80 for a lamp's: kShadowConeCapDegrees). The first version's 512 gave 3.5 cm at 10 m, 7 cm at 20 m
+// and a bollard (10 cm) or a sign post 1.4 to 3 texels wide: thinner than the old lookup's 3 texel box, so its shadow came and went as the car moved. Now medium 768 (1.9 cm at
+// 10 m, 9 MiB), high 1024 (1.4 to 1.6 cm, 24 MiB), ultra 1280 (1.3 cm for a lamp's view, 75 MiB): the numbers are in light_budget.h kThreeLevels. The graphics card time of a view
+// hardly depends on its size (the replay is vertex bound: perf/out/HL-PER-LAMP.txt), what grows is the video memory and the clear of the atlas.
 inline constexpr auto& kTwoLevels = light_budget::kTwoLevels;
 inline constexpr auto& kThreeLevels = light_budget::kThreeLevels;
 // THE ONE DATA CHANGE between the shapes. The rest follows: the pause menu's words (MenuWords), the class table's cells (gpu_class.h kEffects: Mid's `auto` is `medium` in the
@@ -254,14 +260,14 @@ inline AtlasLayout MakeAtlas(uint32_t tile, uint32_t views) {
   return atlas;
 }
 
-// The atlas a level makes (`views_per_car` as MaxViews): medium 2 tiles of 512 (1024 x 512), high 3 of 512 (1536 x 512), ultra 6 of 1024 (3072 x 2048); in the two level shape
+// The atlas a level makes (`views_per_car` as MaxViews): medium 2 tiles of 768 (1536 x 768), high 3 of 1024 (3072 x 1024), ultra 6 of 1280 (3840 x 2560); in the two level shape
 // high is 4 tiles of 512 (1024 x 1024).
 inline AtlasLayout AtlasFor(Level level, int views_per_car, LevelTable table = kLevelTable) {
   return MakeAtlas(TileSize(level, table), MaxViews(level, views_per_car, table));
 }
 
 // What the atlas holds in video memory: D32 float + S8 is 8 bytes a texel (plume's RenderFormatSize: 24 bits unused), a lower bound (the driver pads). In the three level shape
-// medium is 4 MiB, high 6 MiB and ultra 48 MiB (the two level shape's high is 8 MiB; the first version's ultra was 24 with one view for each car). CHECK: D32 float alone (4 bytes a texel: half of this) needs the depth plane read as it is on both backends.
+// medium is 9 MiB, high 24 MiB and ultra 75 MiB (the first sizes, 512 / 512 / 1024, were 4 / 6 / 48; the two level shape's high is 8 MiB; the first version's ultra was 24 with one view for each car). CHECK: D32 float alone (4 bytes a texel: half of this) needs the depth plane read as it is on both backends.
 inline constexpr uint64_t kAtlasTexelBytes = 8;
 inline uint64_t AtlasBytes(const AtlasLayout& atlas) { return uint64_t(atlas.width()) * atlas.height() * kAtlasTexelBytes; }
 
@@ -305,6 +311,7 @@ struct Light {
   double pos[3] = {};
   double dir[3] = {0.0, 0.0, 1.0};  // unit, the way the light shines
   double cos_outer = 0.8;
+  double shadow_half = 0.0;         // the half angle the shadow view must hold (radians): the cone's, held to kShadowConeCapDegrees by MakeLight; 0: the cone's own (a Light made by hand)
   double range = 40.0;
   uint32_t car_key = 0;
   bool is_player = false;
@@ -318,7 +325,11 @@ inline constexpr double kMaxRange = 80.0;
 inline constexpr double kDefaultRange = 40.0;
 inline constexpr double kMinFovDegrees = 20.0;
 inline constexpr double kMaxFovDegrees = 150.0;
-inline constexpr double kFovMarginDegrees = 4.0;
+inline constexpr double kFovMarginDegrees = 2.0;
+// A view holds the beam's cone up to this half angle only (the beam's own is 38 degrees, the weight of the light there is 12 percent at 34 and falling: light_influence / the rig's
+// smoothstep from the outer to the inner cosine): the field is about 72 degrees instead of 84, so every texel is a fifth smaller in the world for the same tile. A receiver outside
+// the view's rectangle is lit, and the lookup fades the shadow out over the last kHlBorderFade of the tile so that the edge of the view is no line in the picture.
+inline constexpr double kShadowConeCapDegrees = 34.0;
 inline constexpr double kOwnCarRadius = 3.5;   // a vehicle's draw whose root is nearer to the view's eye than this is the lamps' own car
 inline constexpr uint32_t kMaxDrawsPerView = 1024;
 
@@ -362,6 +373,7 @@ inline bool MakeLight(const float pos[3], const float dir[3], float cos_outer, f
     return false;
   }
   l.cos_outer = double(cos_outer);
+  l.shadow_half = std::min(std::acos(l.cos_outer), Rad(kShadowConeCapDegrees));
   l.range = (std::isfinite(range) && range > 0.0f) ? std::clamp(double(range), kMinRange, kMaxRange) : kDefaultRange;
   l.car_key = car_key;
   l.is_player = is_player;
@@ -656,6 +668,9 @@ struct ViewSpec {
   double lamps_m = 0.0; // how far behind the lamps the eye sits (the lamps are inside the frustum)
 };
 
+// The half angle (radians) of the cone a light's shadow view must hold: shadow_half when MakeLight made it, else the cone's own.
+inline double ShadowHalf(const Light& l) { return l.shadow_half > 0.0 ? l.shadow_half : std::acos(std::clamp(l.cos_outer, -1.0, 1.0)); }
+
 // One cone from the mean of the lamps, pushed back along the axis until it holds every lamp's own cone: a lamp offset a from the axis
 // needs an apex a / tan(half angle) behind it (the cone from there has radius a at the lamp's plane, and from then on contains the lamp's).
 inline bool FitView(const Light* lights, const Group& group, ViewSpec* out) {
@@ -682,7 +697,7 @@ inline bool FitView(const Light* lights, const Group& group, ViewSpec* out) {
   for (uint32_t m = 0; m < group.count; ++m) {
     const Light& l = lights[group.members[m]];
     const double tilt = std::acos(std::clamp(detail::Dot(l.dir, dir), -1.0, 1.0));
-    half = std::max(half, tilt + std::acos(std::clamp(l.cos_outer, -1.0, 1.0)));
+    half = std::max(half, tilt + ShadowHalf(l));
     const double offset[3] = {l.pos[0] - group.eye[0], l.pos[1] - group.eye[1], l.pos[2] - group.eye[2]};
     const double along = detail::Dot(offset, dir);
     const double lateral[3] = {offset[0] - along * dir[0], offset[1] - along * dir[1], offset[2] - along * dir[2]};
@@ -758,7 +773,7 @@ inline void PlanViews(const Light* lights, const Group* cars, uint32_t car_count
     if (lamps) {
       const Light& light = lights[car.members[0]];
       const double offset = LampOffsetLength(light);
-      const double widened = LampOuterHalfAngle(std::acos(std::clamp(light.cos_outer, -1.0, 1.0)), offset);
+      const double widened = LampOuterHalfAngle(ShadowHalf(light), offset);
       for (uint32_t k = 0; k < 2; ++k) {
         ViewSlot& v = out->views[out->count++];
         v.car = c;
@@ -770,6 +785,7 @@ inline void PlanViews(const Light* lights, const Group* cars, uint32_t car_count
           lamp.lamp_offset[m] = 0.0;
         }
         lamp.cos_outer = std::cos(widened);
+        lamp.shadow_half = widened;
         v.lights[0] = lamp;
         v.group = Group{};
         v.group.members[0] = 0;
@@ -957,10 +973,25 @@ inline bool MapPoint(const float world_to_shadow[16], const double p[3], double*
   return true;
 }
 
-// The constant bias the reader subtracts from a receiver's depth (z/w units). The slope scaled part is the pipeline's. For the nearest
-// receivers (3 m) it is a fraction of a millimetre, 20 m out about 5 cm and 40 m out 20 cm: shadows far from the car are soft and dim.
+// The constant bias the reader subtracts from a receiver's depth (z/w units). It only has to cover the float error of the two depths that are compared (the replay's vertices
+// and the lit pixel's own: about 1e-5 at world coordinates near 1000, both transformed by a matrix that carries the translation), because the lookup compares at the RECEIVER'S
+// PLANE (light_shadow_filter.h: the depth the receiver's own surface has at each texel it reads, so a road seen at 4 degrees needs no bias for its own slope). For the nearest
+// receivers (3 m) it is a fraction of a millimetre, 20 m out about 4 cm and 40 m out 15 cm.
 inline constexpr float kDepthBias = 2e-4f;
-inline constexpr float kSlopeScaledDepthBias = 2.0f;
+// The map's own slope scaled bias (the pipeline's: SlopeScaledDepthBias times the largest depth change over one pixel of the tile, in z/w). The first versions made it 2 because
+// the lookup read a 3 x 3 texel box at one depth, so a surface at a grazing angle needed a margin for two texels of its own slope (a road at 4 degrees from a lamp 0.7 m up: about
+// 1 m of depth at 10 m); that margin pushed every grazing blocker (a kerb's top, a sill, a car's roof) away from the lamps and left a bollard's or a pole's thin shadow with nothing
+// to start from. The plane compare replaces it: 1 keeps a small margin for the surfaces that are not planes (a car's curved panels) and for the rasteriser's own rounding.
+inline constexpr float kSlopeScaledDepthBias = 1.0f;
+
+// ---------------------------------------------------------------------------
+// how big a texel is in the world
+// ---------------------------------------------------------------------------
+
+// The size, in metres, of one texel of a view's tile at `distance` metres along its axis (the view is square): 2 d tan(fov / 2) / tile. The levels' tile sizes are chosen by it.
+inline double TexelMeters(const ViewSpec& spec, uint32_t tile, double distance) {
+  return tile == 0 ? 0.0 : 2.0 * distance * std::tan(spec.fov * 0.5) / double(tile);
+}
 
 // ---------------------------------------------------------------------------
 // the replay's matrices
@@ -1267,6 +1298,20 @@ inline Cull ResolveCasterCull(int policy, Cull game, bool vehicle) {
   }
   return ResolveCull(policy, game);
 }
+
+// ---------------------------------------------------------------------------
+// alpha to mask in the atlas
+// ---------------------------------------------------------------------------
+
+// The game's alpha tested colour draws (foliage, fences, the LOD cross-fades of the city's props: alpha written by the shader, not 1) end with the Xbox 360's alpha to mask: the
+// alpha is turned into a coverage by a 2 x 2 ordered dither on the PIXEL's parity (shared constants word 540, shader_recompiler.cpp computeAlphaToMask: offsets 3, 1, 0, 2 of the
+// game's colour passes with MSAA, one of four thresholds 0.625 / 0.875 / 1.0 / 0.75 at 2 samples). In the main view that pattern is one pixel of a 720p picture resolved by the MSAA;
+// replayed into the atlas it is one TEXEL: a prop that is fading by distance, and any cut-out with a soft edge, casts a shadow with one texel in two missing, a stipple the lookup
+// cannot tell from a real dither (HL-SHADOW-QUALITY, 2026-11-21: the "dither-y" shadows of the world's objects). The atlas has ONE sample, so the replay hands those draws the solid
+// offsets (2, 2, 2, 2: coverage when alpha >= 0.5, a plain cut-out that the lookup filters like any edge): the same pixel shader, only the constant differs.
+inline constexpr uint32_t kAlphaToMaskEnable = 0x100u;                                 // bit 8 of the word: alpha to mask is on for the draw
+inline constexpr uint32_t kAtlasAlphaToMask = 0xAAu | kAlphaToMaskEnable;               // offsets 2 2 2 2, samples log2 0 (bits 9 and up)
+constexpr uint32_t AtlasAlphaToMask(uint32_t game_word) { return (game_word & kAlphaToMaskEnable) != 0 ? kAtlasAlphaToMask : 0u; }
 
 // ---------------------------------------------------------------------------
 // the ground skirt
