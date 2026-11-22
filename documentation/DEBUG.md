@@ -660,3 +660,10 @@ Run it before you push. A short `pending` list in `tools/settings_exposure.toml`
 python tools\check_row_tags.py
 python tools\check_row_tags.py --catalog <launcher>\src\LARecomp.Launcher.Core\Settings\SettingsSchema.cs
 ```
+
+`tools/check_live_readers.py` keeps the other half honest: a setting that is not restart-only promises that a change is seen now, and the tag is only a label. The check looks, for every such setting that a player or a debug row can reach, for a reader that follows it (a `LiveText`, a change callback or watch, a read per frame or per call, a table of names read by a variable) and exits 1 for a setting whose every read is at start (a constructor, a `static` initializer, `std::call_once`): make it follow the setting, or tag it `kRequiresRestart`. A setting that is read when a feature starts by nature (a calibration, a recording) goes in `tools/live_readers.toml` with the reason. `--selftest` checks the rules on a made-up tree; `-v` prints the evidence for each setting.
+
+```powershell
+python -I tools\check_live_readers.py
+python -I tools\check_live_readers.py --selftest
+```
