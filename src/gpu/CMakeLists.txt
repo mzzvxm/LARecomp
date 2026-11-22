@@ -317,7 +317,7 @@ target_link_libraries(larecomp_resolve_variants_test PRIVATE plume)
 add_executable(larecomp_key_guard_test EXCLUDE_FROM_ALL key_guard_test.cpp)
 # The contact shadows' trace rules and the C++ twin of their march (contact_trace.h: the depth tolerance in pixel footprints, the
 # ray's fade and steps, the filter weights, the cost model) likewise:
-#   cmake --build <dir> --target larecomp_contact_trace_test, then run src/gpu/larecomp_contact_trace_test.
+#   cmake --build <dir> --target larecomp_contact_trace_test, then run src/gpu/larecomp_contact_trace_test [<src/gpu/hlsl dir>] (exit 0 = passed; given the shaders' folder it also compares their constants and texts with the header's, else it says it did not).
 add_executable(larecomp_contact_trace_test EXCLUDE_FROM_ALL contact_trace_test.cpp)
 # Which traffic cars cast into the sun's shadow cascades (traffic_shadow.h: the setting's words and its auto per class, the limits, the
 # candidates, the cutoff that picks the nearest cars, the census over a frame's phases, the cutoff the renderer is told) likewise:
