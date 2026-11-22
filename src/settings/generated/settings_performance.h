@@ -229,6 +229,17 @@ class PerformanceSettings final : public rex::SettingOwner {
     "With graphics_backend = vulkan the SDK's own vulkan_submit_on_primary_buffer_end (on by "
     "default) applies instead; not measured here, so it is left alone.", rex::kDebugOnly, rex::kRequiresRestart);
 
+  REX_SETTING(i32, thread_qos, -1, "Windows only. Tells Windows that the game is the foreground work, so that a hybrid CPU "
+    "(performance and efficiency cores, as in most laptops since Intel 12th gen) and battery "
+    "power saving do not treat it as background work. 0 = off, as before. 1 = while the window "
+    "has focus the game is marked high performance (HighQoS: execution speed throttling off); "
+    "Windows decides again when the focus is lost. 2 = also the render thread, the audio "
+    "threads and the frame generation pacer stay HighQoS when the window is out of focus, and "
+    "on a hybrid CPU the audio threads use the multimedia scheduler (\"Pro Audio\") whatever "
+    "the number of logical processors. -1 = automatic: 1. Nothing here sets an affinity or "
+    "lowers any thread. The log's [qos] lines say what was applied. Takes effect at the next "
+    "start. See perf/HYBRID-QOS.md.", rex::Range{-1, 2}, rex::kDebugOnly, rex::kRestart);
+
   REX_SETTING(f64, traffic_density_scale, 1.0, "Moving traffic density scale (0.0 = no new traffic cars, 1.0 = the game's own, 2.0 = double). It scales the "
     "zones' density at low and at high speed, so it holds at every speed. Live, for the cars that spawn from the "
     "next frame on; cars already on the road stay until they leave by the unspawn radius (traffic_unspawn_dist). "
@@ -279,6 +290,7 @@ inline auto& race_line_stats = g_performance.race_line_stats;
 inline auto& render_cpu_mask = g_performance.render_cpu_mask;
 inline auto& single_tile = g_performance.single_tile;
 inline auto& submit_on_primary_buffer_end = g_performance.submit_on_primary_buffer_end;
+inline auto& thread_qos = g_performance.thread_qos;
 inline auto& traffic_density_scale = g_performance.traffic_density_scale;
 inline auto& traffic_unspawn_dist = g_performance.traffic_unspawn_dist;
 inline auto& vsync_fast_poll = g_performance.vsync_fast_poll;

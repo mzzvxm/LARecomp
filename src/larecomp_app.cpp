@@ -73,6 +73,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/sdk_access.h"
 #include "mc_engine/ui/overlay_support.h"
 #include "mc_engine/ui_events.h"
+#include "os/thread_qos.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
@@ -135,6 +136,13 @@ constexpr rex::CLIAction kActions[] = {
     REX_CLI_ACTION(build_city_hit, "Builds the city hit data (the hit file and the texture file beside the city pack, for the ray traced effects that read the city's surfaces) and exits (the launcher's setup)."),
     REX_CLI_ACTION(check_city_hit, "Checks the city hit data (stat only; with check_city_hit_deep every file is read back) and exits: exit code 0 when it is in place and current."),
 };
+
+// The window's focus tells thread_qos whether the process is the foreground game (os/thread_qos.h): the process is HighQoS while it has focus and goes back to Windows' own
+// rules without it. Runs on the UI thread (uievents::DispatchFocus); the line is empty when thread_qos asked nothing of the OS.
+void OnFocusForThreadQos(bool focused) {
+  const std::string line = larecomp::os::ApplyQosFocus(focused);
+  if (!line.empty()) LARECOMP_APP_INFO("{}", line);
+}
 
 // Dedicated VRAM of the adapter the game will run on, in MiB, or 0. Used to size the texture cache (the limits are what
 // the cache may hold before it evicts: above the card's VRAM it never evicts and WDDM demotes to system memory).
@@ -683,6 +691,9 @@ rex::Result<void> LarecompApp::OnInit() {
 
   mc::EnableHighResTimer();
   larecomp::os::SetLogCallback([](const std::string& line) { LARECOMP_APP_INFO("{}", line); });
+  // Thread QoS (debug cvar thread_qos, perf/HYBRID-QOS.md): after the timer call, which it leaves alone. A level of 0 and every OS without the call log one line and do nothing.
+  for (const std::string& line : larecomp::os::StartQos(ls::thread_qos.Get())) LARECOMP_APP_INFO("{}", line);
+  larecomp::uievents::AddFocusHandler(&OnFocusForThreadQos);
   MCLA_StartInputProbe();
   larecomp::devwatch::Start();  // which controllers are plugged in (the OS tells us; the first list on a thread of its own)
 

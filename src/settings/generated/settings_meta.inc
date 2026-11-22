@@ -900,6 +900,7 @@
 {"time_of_day_speed", "MCLA/World"},
 {"tire_offset_step", "MCLA/Patches"},
 {"tire_offset_targets", "MCLA/Patches"},
+{"thread_qos", "MCLA/Performance"},
 {"traffic_density_scale", "MCLA/Performance"},
 {"traffic_unspawn_dist", "MCLA/Performance"},
 {"trigger_brake", "MCLA/Input"},
