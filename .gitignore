@@ -20,6 +20,7 @@ tools/*
 !tools/check_settings_exposure.py
 !tools/check_row_tags.py
 !tools/check_descriptor_counts.py
+!tools/race_line_extract.py
 !tools/settings_exposure.toml
 !tools/check_live_readers.py
 !tools/live_readers.toml

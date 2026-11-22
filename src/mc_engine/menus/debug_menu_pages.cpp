@@ -47,6 +47,9 @@ constexpr int Len(const T (&)[N]) {
 // An INT32 cvar of 0 and 1 (frame_pacing): a Bool row would write "true" and "false".
 constexpr const char* kOffOnVals[]  = {"0", "1"};
 constexpr const char* kOffOnNames[] = {"OFF", "ON"};
+// How often an AI racer's driving line is improved (race_line_max_hz): the cvar is the number of jobs a second, 0 = every frame.
+constexpr const char* kRaceLineVals[]  = {"0", "30", "60"};
+constexpr const char* kRaceLineNames[] = {"EVERY FRAME", "30 A SECOND", "60 A SECOND"};
 
 constexpr const char* kFreecamVals[]  = {"off", "free"};
 constexpr const char* kFreecamNames[] = {"OFF", "ON"};
@@ -138,6 +141,9 @@ const ItemDef kDebugHubItems[] = {
 // no new switch.
 const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgRealDelta",  "real_frame_delta",          "REAL FRAME DELTA: "),
+    // The AI racers' driving line is improved at most this often per racer (hooks/race_line.cpp): 30 is the console's rate; EVERY FRAME is the old behaviour.
+    Str("PM_RxDbgRaceLine",    "race_line_max_hz",          "RACE LINE RATE: ",
+        kRaceLineVals, kRaceLineNames, Len(kRaceLineVals)),
     // The Plume renderer's frame pacing (frame_pacing.cpp); the cvar is 0 or 1.
     NativeOnly(Str("PM_RxDbgFramePacing", "frame_pacing",   "FRAME PACING: ",
                    kOffOnVals, kOffOnNames, Len(kOffOnVals))),
