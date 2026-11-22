@@ -189,15 +189,24 @@ std::string DescribeCapabilities(plume::RenderDevice* device) {
   const VkPhysicalDeviceFeatures& core = features.features;
   const VkPhysicalDeviceLimits& limits = dev->physicalDeviceProperties.limits;
   const auto yes = [](VkBool32 value) { return value ? "yes" : "no"; };
+  // What Plume made of the ray query extensions (plume_vulkan.cpp: VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and a Vulkan 1.2 device,
+  // all or none) and, where it is on, the alignment a build's scratch buffer must keep: the car ray tracing's "[gpu] car ray tracing:" line says only that a driver
+  // has no ray queries, this says what Plume decided and the number the structures' builds depend on.
+  const std::string ray_query =
+      dev->capabilities.rayQuery
+          ? std::format("yes (scratch alignment {} bytes)",
+                        dev->accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment)
+          : std::string("no");
   return std::format(
       "Vulkan 64-bit integers in shaders {}, buffer device address {}, descriptor indexing: partially "
       "bound {}, variable count {}, runtime arrays {}, sampled image update after bind {}; BC textures "
-      "{}, bound descriptor sets {}, push constants {} bytes",
+      "{}, bound descriptor sets {}, push constants {} bytes; ray queries {}, ray tracing pipelines {}",
       yes(core.shaderInt64), yes(address.bufferDeviceAddress),
       yes(indexing.descriptorBindingPartiallyBound),
       yes(indexing.descriptorBindingVariableDescriptorCount), yes(indexing.runtimeDescriptorArray),
       yes(indexing.descriptorBindingSampledImageUpdateAfterBind), yes(core.textureCompressionBC),
-      limits.maxBoundDescriptorSets, limits.maxPushConstantsSize);
+      limits.maxBoundDescriptorSets, limits.maxPushConstantsSize, ray_query,
+      yes(dev->capabilities.raytracing));
 }
 
 AdapterIds QueryAdapterIds(plume::RenderDevice* device) {
