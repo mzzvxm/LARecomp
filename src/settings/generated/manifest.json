@@ -4536,7 +4536,7 @@
  },
  "tire_offset_targets": {
   "type": "u32",
-  "default": "63",
+  "default": "31",
   "category": "MCLA/Patches",
   "help": "\"Bitmask (decimal) of the per-wheel matrix blocks TIRE OFFSET moves: 1 = \"\n    \"model+1088 (the tyre), 2 = +1344, 4 = +1600, 8 = +1856, 16 = +1920. \"\n    \"31 moves all five; drop bits to find which block owns which part.\"",
   "traits": [
