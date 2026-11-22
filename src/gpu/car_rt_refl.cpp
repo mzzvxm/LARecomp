@@ -376,7 +376,13 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   // NOISE-RESOLVE: with no temporal upscaler the cone's pattern changes every frame and the finished image is averaged with the last frame's result (the denoise's third pass); that needs the denoise
   // (it makes the image to average), its two images and the switch. Else the pattern stands still on the screen as the first fixes left it, and what the a-trous passes leave is all there is.
   const bool resolve_history = denoise_passes > 0 && !info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && EnsureStableImages(history.width, history.height);
-  if (!resolve_history && (stable_[0].texture || stable_[1].texture)) {
+  // NOISE-FOLLOW: the images stay over the frames a temporal upscaler takes (the plain frames of an upscaler session, a pause toggle, would make them again); `stable_valid_` / `stable_frame_` say what they hold is stale
+  // (have_last below), and they go back after kHistoryKeepFrames frames of the cone's passes in a row without the resolve, with the setting off, or at another size.
+  const bool stable_held = stable_[0].texture || stable_[1].texture;
+  const bool stable_size_ok = stable_[0].width == history.width && stable_[0].height == history.height && stable_[1].width == history.width && stable_[1].height == history.height;
+  const bool stable_gap = denoise_passes > 0 && info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get();
+  const noise_resolve::HistoryImages stable_keep = stable_life_.Frame(resolve_history, stable_gap, stable_held, stable_size_ok);
+  if (!resolve_history && stable_held && stable_keep != noise_resolve::HistoryImages::kKeep) {
     ReleaseStable();
   }
   const uint32_t pattern_phase = noise_resolve::Varies(info.upscaler, resolve_history) ? info.pattern_phase : 0u;

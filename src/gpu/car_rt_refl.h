@@ -165,6 +165,7 @@
 #include "car_rt_refl_rules.h"
 #include "car_selfrefl_rules.h"
 #include "host_passes.h"
+#include "noise_resolve.h"
 
 namespace mcla::gpu {
 
@@ -342,6 +343,7 @@ class CarRtRefl {
   // that take turns (the paint reads the one written last), their sets, and what the next frame needs to know of it.
   HostImage stable_[2];
   OutputSet stable_set_[2];       // u0 stable_[i]
+  noise_resolve::HistoryLifetime stable_life_;   // NOISE-FOLLOW: how long the two images stay while an upscaler runs (noise_resolve::kHistoryKeepFrames)
   uint32_t stable_index_ = 0;
   bool stable_valid_ = false;     // stable_[stable_index_] holds the result of `stable_frame_`
   uint64_t stable_frame_ = 0;

@@ -738,6 +738,102 @@ void TestJitter() {
 // the numbers the effects' memory rests on, and the sources
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// NOISE-FOLLOW, CHECK 2: how long the histories' images live (noise_resolve.h HistoryLifetime)
+// ---------------------------------------------------------------------------
+
+// The effect's side of the rule, as the three hosts do it: Frame() once a frame, kMake makes the images, kRelease gives back what is held. Counts the texture creations (a hitch and a VRAM spike each).
+struct LifeSim {
+  nr::HistoryLifetime life;
+  bool held = false;
+  uint32_t size = 0;
+  int made = 0, freed = 0;
+  void Frame(bool wanted, bool upscaler_gap, uint32_t want_size) {
+    const nr::HistoryImages what = life.Frame(wanted, upscaler_gap, held, !held || size == want_size);
+    if (what == nr::HistoryImages::kMake) {
+      if (!held || size != want_size) {
+        ++made;
+        if (held) ++freed;
+        held = true;
+        size = want_size;
+      }
+    } else if (what == nr::HistoryImages::kRelease && held) {
+      ++freed;
+      held = false;
+    }
+  }
+  void Plain(uint32_t s = 3840) { Frame(true, false, s); }
+  void Upscaled(uint32_t s = 3840) { Frame(false, true, s); }
+  void Off(uint32_t s = 3840) { Frame(false, false, s); }
+};
+
+void TestLifetime() {
+  // an upscaler session with the pause menu opened and closed every 5 seconds (60 fps): the first plain frame makes the images, the 24 pause toggles after it find them, and they stay
+  {
+    LifeSim sim;
+    for (int toggle = 0; toggle < 24; ++toggle) {
+      for (int f = 0; f < 300; ++f) sim.Upscaled();
+      for (int f = 0; f < 90; ++f) sim.Plain();
+    }
+    g_check(sim.made == 1 && sim.freed == 0 && sim.held, nc::Num("an upscaler session with a pause toggle every 5 s: the images are made %d time(s) and given back %d time(s) over 24 toggles (it was twice a toggle)", sim.made, sim.freed));
+  }
+  // a pause that is followed by a long drive: they stay for kHistoryKeepFrames frames of the effect's own passes, then go back, and are not made again by that
+  {
+    LifeSim sim;
+    sim.Plain();
+    int gone_at = -1;
+    for (int f = 1; f <= int(nr::kHistoryKeepFrames) + 10; ++f) {
+      sim.Upscaled();
+      if (!sim.held && gone_at < 0) gone_at = f;
+    }
+    g_check(gone_at == int(nr::kHistoryKeepFrames) && sim.made == 1 && sim.freed == 1,
+            nc::Num("after the last plain frame the images stay for kHistoryKeepFrames = %u frames of upscaled passes and go back on the %dth (made %d, freed %d)", nr::kHistoryKeepFrames, gone_at, sim.made, sim.freed));
+    const int before = sim.made;
+    for (int f = 0; f < 1000; ++f) sim.Upscaled();
+    g_check(!sim.held && sim.made == before && sim.freed == 1, "and a long drive with the upscaler on after that holds nothing and makes nothing");
+    sim.Plain();
+    g_check(sim.held && sim.made == before + 1, "the next plain frame makes them again");
+  }
+  // a plain frame starts the count again
+  {
+    LifeSim sim;
+    sim.Plain();
+    for (int f = 0; f < int(nr::kHistoryKeepFrames) - 5; ++f) sim.Upscaled();
+    sim.Plain();
+    for (int f = 0; f < int(nr::kHistoryKeepFrames) - 5; ++f) sim.Upscaled();
+    g_check(sim.held && sim.made == 1 && sim.freed == 0, "a plain frame in between starts the count over: two stretches of kHistoryKeepFrames - 5 upscaled frames keep the images");
+  }
+  // the setting turned off, or another picture size: back at once; the effect that cannot run (nothing wants it and no upscaler is the reason) too
+  {
+    LifeSim sim;
+    sim.Plain();
+    sim.Upscaled();
+    sim.Off();
+    g_check(!sim.held && sim.freed == 1, "the setting turned off (no upscaler to blame) gives the images back on that frame");
+    LifeSim sized;
+    sized.Plain(3840);
+    for (int f = 0; f < 10; ++f) sized.Upscaled(3840);
+    sized.Upscaled(2560);
+    g_check(!sized.held && sized.freed == 1, "a picture size that changed while an upscaler runs gives the held images back on that frame");
+    sized.Plain(2560);
+    g_check(sized.held && sized.size == 2560 && sized.made == 2, "and the next plain frame makes them at the new size");
+    LifeSim never;
+    for (int f = 0; f < 100; ++f) never.Upscaled();
+    g_check(!never.held && never.made == 0 && never.freed == 0, "an upscaler session that never had a plain frame makes nothing");
+    LifeSim resized;
+    resized.Plain(3840);
+    resized.Plain(2560);
+    g_check(resized.held && resized.size == 2560 && resized.made == 2 && resized.freed == 1, "a plain frame at another size remakes them (EnsureImage's own rule)");
+  }
+  // the rule's decisions
+  {
+    nr::HistoryLifetime life;
+    g_check(life.Frame(true, false, false, true) == nr::HistoryImages::kMake && life.Frame(true, true, true, true) == nr::HistoryImages::kMake, "wanted: make (or keep what is the right size)");
+    g_check(life.Frame(false, true, true, true) == nr::HistoryImages::kKeep && life.Frame(false, true, false, true) == nr::HistoryImages::kRelease, "an upscaler gap keeps what is held and releases nothing that is not");
+    g_check(life.Frame(false, false, true, true) == nr::HistoryImages::kRelease && life.Frame(false, true, true, false) == nr::HistoryImages::kRelease, "no gap, or the wrong size: release");
+  }
+}
+
 double Mib(uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0); }
 
 void TestMemory() {
@@ -810,6 +906,19 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(cone, "const bool resolve_history = denoise_passes > 0 && !info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && EnsureStableImages(history.width, history.height);") &&
               nc::Has(cone, "const uint32_t pattern_phase = noise_resolve::Varies(info.upscaler, resolve_history) ? info.pattern_phase : 0u;") && nc::Has(selfrefl, "info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 7u);"),
           "the cone: the pattern's phase advances while an upscaler runs or the denoise's own history does; car_selfrefl.cpp hands the phase over every frame and car_rt_refl.cpp says where it is used");
+  // NOISE-FOLLOW, CHECK 2: the three histories' images stay over the frames a temporal upscaler takes (HistoryLifetime, asked once a frame in the place that makes the images), and what they hold is stale across the gap
+  g_check(nc::Has(ao, "plan.contact_history_gap = contact && upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&") &&
+              nc::Has(ao, "plan.contact_history_keep = ContactHistoryKeep(plan);") && nc::Has(ao, "} else if (!plan.contact_history_keep) {") &&
+              nc::Has(ao, "return contact_life_.Frame(plan.contact_history && plan.apply, plan.contact_history_gap && plan.apply, held, size_ok) == noise_resolve::HistoryImages::kKeep;") &&
+              nc::Has(ao, "} else if (h.frame + 1 != frame_) {") && nc::Has(ao_h, "noise_resolve::HistoryLifetime contact_life_;"),
+          "ao.cpp: the contact history's images are kept over an upscaler's frames (the gap rule `h.frame + 1 != frame_` says they are stale) and given back by the lifetime rule");
+  g_check(nc::Has(shafts, "plan.history_gap = upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && plan.view == 0;") &&
+              nc::Has(shafts, "const noise_resolve::HistoryImages hist_keep = hist_life_.Frame(plan.history, plan.history_gap, hist_held, hist_size_ok);") && nc::Has(shafts, "} else if (hist_held && hist_keep != noise_resolve::HistoryImages::kKeep) {") &&
+              nc::Has(shafts, "hist_valid_ && hist_frame_ + 1 == frame_"),
+          "shafts.cpp: the history's images are kept over an upscaler's frames (hist_frame_ + 1 == frame_ says they are stale) and given back by the lifetime rule");
+  g_check(nc::Has(cone, "const noise_resolve::HistoryImages stable_keep = stable_life_.Frame(resolve_history, stable_gap, stable_held, stable_size_ok);") &&
+              nc::Has(cone, "if (!resolve_history && stable_held && stable_keep != noise_resolve::HistoryImages::kKeep) {") && nc::Has(cone, "stable_valid_ && stable_frame_ + 1 == info.frame"),
+          "car_rt_refl.cpp: the cone history's images are kept over an upscaler's frames (stable_frame_ + 1 == info.frame says they are stale) and given back by the lifetime rule");
   g_check(nc::Has(cone, "DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half, keep, stable_[stable_index_].slot);") &&
               nc::Has(denoise, "if (g_push.slots.w == 2u)") && nc::Has(denoise, "static const float kTemporalMargin = 0.05;") && nc::Has(denoise, "const float4 last = g_textures[uint(g_push.image.w + 0.5)].Load(int3(centre, 0));") &&
               nc::Has(cone, "const HostImage& result = result_in_stable_ ? stable_[stable_index_] : (result_in_scratch_ ? scratch_ : image_);"),
@@ -847,6 +956,7 @@ int main(int argc, char** argv) {
   TestShafts();
   TestCone();
   TestJitter();
+  TestLifetime();
   TestMemory();
   TestSources(dir);
   std::printf("\n%d checks, %d failed\n", g_check.total, g_check.fails);
