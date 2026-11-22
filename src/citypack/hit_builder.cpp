@@ -14,6 +14,7 @@
 #include "citypack/hit_params.h"
 #include "citypack/material_class.h"
 #include "citypack/stamp.h"
+#include "settings/immortal.h"
 #include "mc_engine/modloader/rpf3.h"
 
 namespace larecomp::citypack {
@@ -73,7 +74,7 @@ struct HitMesh {
 
   // Adds a source geometry the way the pack's builder does (the same class, the same drop, the same weld), and its corners to the collector.
   void Take(const SourceGeometry& g, uint32_t drop_mask) {
-    static const ShaderNames kNoNames;
+    static const ShaderNames& kNoNames = larecomp::Leak<const ShaderNames>();   // never destroyed (EXIT-HARD)
     const ShaderNames& names = g.shader ? *g.shader : kNoNames;
     const MaterialClass cls = ClassifyShader(names.group, names.preset);
     if ((drop_mask & ClassBit(cls)) != 0) return;

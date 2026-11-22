@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 
+#include "settings/immortal.h"
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
@@ -746,7 +747,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   }
   // The instances' rows, then the other cars' records: one table. A top level that holds only the city (no car has a built mesh yet) still has a table of one row (the buffer is made
   // for the set; no instance names it).
-  static const std::vector<rr::InstanceRow> kOneRow(1);
+  static const std::vector<rr::InstanceRow>& kOneRow = larecomp::Leak<const std::vector<rr::InstanceRow>>(1);   // never destroyed (EXIT-HARD)
   const std::vector<rr::InstanceRow>& rows = cars.rows.empty() ? kOneRow : cars.rows;
   // === END OF THE RT-CARS BLOCK ===
 
