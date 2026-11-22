@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <unordered_set>
 
 #include "aes256.h"
 #include "texture.h"  // InflateRaw: the raw-deflate decoder that stb_image carries
@@ -286,6 +287,34 @@ bool Rpf3Writer::Replace(std::string_view path, std::vector<uint8_t> data, uint3
         return true;
     }
     return false;
+}
+
+std::vector<std::string> Rpf3Writer::DropRepeats() {
+    // Marked first and only then removed: an entry is moved only when the list
+    // really changes, so a writer with no repeat is left exactly as it was.
+    std::vector<std::string> dropped;
+    std::vector<bool> repeat(files_.size(), false);
+    std::unordered_set<std::string> seen;
+    seen.reserve(files_.size());
+    for (size_t i = 0; i < files_.size(); ++i) {
+        std::string key = files_[i].path;
+        for (char& c : key) {
+            c = c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (!seen.insert(std::move(key)).second) {
+            repeat[i] = true;
+            dropped.push_back(files_[i].path);
+        }
+    }
+    if (dropped.empty()) return dropped;
+
+    std::vector<PendingFile> kept;
+    kept.reserve(files_.size() - dropped.size());
+    for (size_t i = 0; i < files_.size(); ++i) {
+        if (!repeat[i]) kept.push_back(std::move(files_[i]));
+    }
+    files_ = std::move(kept);
+    return dropped;
 }
 
 void Rpf3Writer::AddHashed(std::string path, uint32_t name_hash, std::vector<uint8_t> data,

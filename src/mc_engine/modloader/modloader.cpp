@@ -2986,6 +2986,22 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         return 0;
     }
 
+    // A file the mod ships under files/ at a path this car would build is the
+    // mod's own answer for that file, and it wins. Raw files go into the writer
+    // before any car is built, so it already holds them; building the same path
+    // again would put it in the archive twice, and Rpf3Writer::Write refuses
+    // the whole archive over one repeated path -- every mod gone, not just this
+    // car. A built LOD is skipped outright; a donor file the car rewrites (its
+    // tune, packs and manifest) is rewritten from the mod's copy instead of the
+    // donor's, further down.
+    auto shipped_by_files = [&](const std::string& name) {
+        std::vector<uint8_t> shipped;
+        if (!writer.Read(car_dir + "/" + name, shipped)) return false;
+        LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} comes from the mod's files/, not built",
+                          vehicle.mod_name, car, name);
+        return true;
+    };
+
     // What the donor draws with, one effect per shader index. Its material pack
     // is the only place a vehicle says this: the drawable's own shader group is
     // a class with no names in it at all.
@@ -3220,6 +3236,10 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
     // An extended car keeps its own body: its LODs are copied below as shipped.
     for (int lod = 0; lod < 3 && !plan.verbatim && !plan.extend; ++lod) {
         const std::string name = "body_lod_" + std::to_string(lod) + ".xrsc";
+        if (shipped_by_files(name)) {
+            built.push_back(name);
+            continue;
+        }
         Rsc5Resource resource;
         if (!ExtractTemplate(archive, donor_dir + "/" + name, resource, error)) {
             LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: donor {}/{}: {}", vehicle.mod_name, car,
@@ -3762,6 +3782,11 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         uint32_t lod0_flag = 0, lod0_type = 0;
         for (int lod = 0; lod < 3; ++lod) {
             const std::string name = mapping.slot + "_lod_" + std::to_string(lod) + ".xrsc";
+            if (shipped_by_files(name)) {
+                built.push_back(name);
+                ++lods;
+                continue;
+            }
             Rsc5Resource resource;
             // A part need not have every LOD -- the donor's own hood has no LOD
             // two -- so a missing template is the file simply not existing
@@ -4318,6 +4343,50 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             continue;
         }
 
+        // The mod's files/ copy of this file, if it ships one, is what the car
+        // gets (see shipped_by_files). A file this pass would rewrite is
+        // rewritten from that copy rather than from the donor's, so an edited
+        // tune still takes its rename and its tune.<field> lines -- and a tune
+        // that was already renamed renames nothing, since no string in it
+        // carries the donor's name any more. Anything else simply stays as the
+        // mod shipped it. Either way the entry is replaced, never added twice.
+        const std::string entry_path = target.empty() ? std::string() : car_dir + "/" + target;
+        bool from_files = false;
+        if (!entry_path.empty()) {
+            std::vector<uint8_t> shipped;
+            if (writer.Read(entry_path, shipped)) {
+                from_files = true;
+                Rsc5Resource probe;
+                size_t probe_offset = 0, probe_size = 0;
+                std::string probe_error;
+                const bool rewrite = is_tune || is_pack || is_manifest;
+                if (rewrite &&
+                    !ParseRsc5Header(shipped, probe, probe_offset, probe_size, probe_error)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} from files/ kept as shipped, "
+                                       "not rewritten ({}): it has to be an archive resource "
+                                       "with its RSC5 header",
+                                       vehicle.mod_name, car, target, probe_error);
+                    continue;
+                }
+                if (!rewrite) {
+                    LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} comes from the mod's files/, "
+                                      "not the donor", vehicle.mod_name, car, target);
+                    continue;
+                }
+                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} is rewritten from the mod's "
+                                  "files/ copy, not the donor's", vehicle.mod_name, car, target);
+                raw = std::move(shipped);
+            }
+        }
+        // Adds the finished file, or puts it in place of the files/ copy.
+        auto ship = [&](std::vector<uint8_t> bytes, uint32_t flag, uint32_t resource_type) {
+            if (from_files) {
+                writer.Replace(entry_path, std::move(bytes), flag);
+            } else {
+                writer.Add(car_dir + "/" + target, std::move(bytes), flag, resource_type);
+            }
+        };
+
         if (is_tune || is_pack || is_manifest) {
             Rsc5Resource resource;
             size_t payload_offset = 0, payload_size = 0;
@@ -4349,7 +4418,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 }
                 LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} lists {} new part file(s)",
                                   vehicle.mod_name, car, target, new_parts.size());
-                writer.Add(car_dir + "/" + target, std::move(file), flag, resource.type);
+                ship(std::move(file), flag, resource.type);
                 ++written;
                 continue;
             }
@@ -4411,9 +4480,12 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
 
                 if (replaced == 0) {
                     // Nothing was written, so the donor's file travels as it
-                    // came rather than being repacked for no reason.
-                    writer.Add(car_dir + "/" + target, std::move(raw), child.flag,
-                               child.resource_type());
+                    // came rather than being repacked for no reason -- or the
+                    // mod's files/ copy, already in the writer, stays put.
+                    if (!from_files) {
+                        writer.Add(car_dir + "/" + target, std::move(raw), child.flag,
+                                   child.resource_type());
+                    }
                     ++written;
                     continue;
                 }
@@ -4437,7 +4509,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                        target, error);
                     continue;
                 }
-                writer.Add(car_dir + "/" + target, std::move(file), flag, resource.type);
+                ship(std::move(file), flag, resource.type);
                 ++written;
                 continue;
             }
@@ -4457,9 +4529,10 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 // The shape (stored LZX or uncompressed) is BuildRsc5File's call,
                 // made on the payload size; see the comment there.
                 LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} renamed {} string(s) from {}, "
-                                  "{} bytes packed", vehicle.mod_name, car, target, renamed,
-                                  donor, resource.virtual_size);
-                writer.Add(car_dir + "/" + target, std::move(file), flag, resource.type);
+                                  "{} bytes packed{}", vehicle.mod_name, car, target, renamed,
+                                  donor, resource.virtual_size,
+                                  from_files ? " (the mod's files/ copy)" : "");
+                ship(std::move(file), flag, resource.type);
             }
             ++written;
             continue;
@@ -5464,9 +5537,10 @@ void Init() {
     // the repeat here instead. Paths are compared lowercased because RageHash
     // folds case and the archive would collide even when the strings differ.
     //
-    // The same trap is still open between a raw file and a mesh mod: name a
-    // file after a resource some mesh also builds and nothing gets built at
-    // all. Nothing checks for that, because a mod has no reason to do it.
+    // A mod does have reason to ship a file some mesh also builds -- an edited
+    // tune for the car it adds, under files/ at the car's own path. A new car
+    // takes the files/ copy over its own (see BuildDonorCar), and whatever
+    // other repeat is left is dropped just before the archive is written.
     std::vector<std::string> taken_paths;
     // The file on disk behind each entry of taken_paths, for ModRawFile.
     std::vector<std::filesystem::path> taken_sources;
@@ -5818,6 +5892,13 @@ void Init() {
         BuildRimMods(rim_mods, archive, cache_dir, passthrough, writer);
     if (!car_mods.empty())
         BuildVehicleMods(car_mods, archive, cache_dir, passthrough, writer);
+
+    // One path twice and Write refuses the whole archive, which is every mod
+    // lost over a single file. The first entry is the one kept: raw files go in
+    // before anything is built, so a file the mod ships itself wins.
+    for (const std::string& path : writer.DropRepeats()) {
+        LARECOMP_APP_ERROR("[mods] {} is in the archive twice; the first one is kept", path);
+    }
 
     const std::filesystem::path mod_archive = game_root / kModArchiveName;
     size_t music_archives = 0;
