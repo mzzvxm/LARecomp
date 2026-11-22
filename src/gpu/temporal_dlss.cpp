@@ -612,7 +612,11 @@ std::mutex g_rr_mutex;
 dlss::RayReconstructionFacts g_rr_facts;
 // The last refusal of a frame's guides that was logged (verdict and culprit packed), so that the log says each kind once. Render thread.
 std::atomic<uint32_t> g_rr_refusal_seen{0};
-std::atomic<bool> g_rr_tags_logged{false};  // the first Ray Reconstruction evaluation's tags were logged (EvaluateRr)
+std::atomic<bool> g_rr_tags_logged{false};        // the first Ray Reconstruction warm-up evaluation's tags were logged (EvaluateRr)
+#if defined(LARECOMP_HAS_DLSS_RR)
+std::atomic<bool> g_rr_frame_tags_logged{false};  // ... and the first FRAME's (the warm-up runs first and used to take the only line: a frame's own guides were never described)
+std::atomic<bool> g_rr_view_logged{false};        // the first frame's camera matrices were described (EvaluateRr)
+#endif
 // Ray Reconstruction was dropped for the session (its feature could not be made, or its evaluation failed): the plan reads it through dlss::GetRayReconstructionFacts and says so; Super
 // Resolution goes on. Callable from the render thread and the worker (its own lock; never Runtime::mu).
 void PublishRrFailure(const std::string& why) {
@@ -3160,16 +3164,17 @@ std::string DlssBackend::Impl::EvaluateRr(void* native_list, Context& context, c
     const rr::Tag& tag = plan.tags[i];
     tags.emplace_back(&resources[i], rr::InfoOf(tag.buffer).sl_type, lifecycle, tag.output_extent ? &output_extent : &render_extent);
   }
-  if (!g_rr_tags_logged.exchange(true)) {
-    // What was handed to Streamline, once: the next run's log says what each tag was (a defined native format for each, the render size's extent for all but the output, the states the images were
-    // declared in: the integration checklist's items in one line).
+  if (!(wait ? g_rr_tags_logged : g_rr_frame_tags_logged).exchange(true)) {
+    // What was handed to Streamline, once for the warm-up (`wait`: the worker's evaluation that makes the feature) and once for the first frame (the real images: the warm-up's are made to look like
+    // them, and only a frame's line says they do): the next run's log says what each tag was (a defined native format for each, the render size's extent for all but the output, the states the images
+    // were declared in: the integration checklist's items in one line).
     std::string line;
     for (uint32_t i = 0; i < plan.count; ++i) {
       const rr::Tag& tag = plan.tags[i];
       line += std::format("{}{} (type {}, {}x{}, native format {}, state {})", i ? "; " : "", rr::InfoOf(tag.buffer).name, rr::InfoOf(tag.buffer).sl_type, resources[i].width, resources[i].height,
                           resources[i].nativeFormat, resources[i].state);
     }
-    REXLOG_INFO("{} Ray Reconstruction: the first evaluation's {} tags: {}", kPrefix, plan.count, line);
+    REXLOG_INFO("{} Ray Reconstruction: the first {} evaluation's {} tags: {}", kPrefix, wait ? "warm-up" : "frame", plan.count, line);
   }
 
   // The constants: the same as Super Resolution's (Evaluate above has the block inline; to be one function once Ray Reconstruction is proven).
@@ -3207,6 +3212,19 @@ std::string DlssBackend::Impl::EvaluateRr(void* native_list, Context& context, c
   const rr::Options rr_options =
       rr::MakeOptions(RrModeOf(context.request.mode), context.request.output_size[0], context.request.output_size[1], plan, camera);
   const sl::DLSSDOptions options = RrOptionsFor(context.request.mode, rr_options);
+  if (!wait && !g_rr_view_logged.exchange(true)) {
+    // The first frame's constants in one line (the integration checklist asks for them once a run), with the check that the two matrices agree with the projection: a point 10 units ahead of the camera
+    // must be IN FRONT through the options' world-to-view and the projection's w (view z < 0, clip w > 0 for the game's right-handed view).
+    float ahead_view_z = rr_options.world_to_view.m[14];
+    for (int k = 0; k < 3; ++k) {
+      ahead_view_z += (in.camera_position[k] + 10.0f * in.camera_forward[k]) * rr_options.world_to_view.m[k * 4 + 2];  // row vectors: the z column
+    }
+    const float ahead_clip_w = ahead_view_z * in.view_to_clip[11] + in.view_to_clip[15];
+    REXLOG_INFO("{} Ray Reconstruction: the first frame's constants: jitter {:+.3f}, {:+.3f} px, vector scale {:g} x {:g} (render pixels, previous minus current), reset {}, depth inverted, vectors unjittered, "
+                "render {}x{} output {}x{}; a point 10 units ahead of the camera is at view z {:.2f}, clip w {:.2f} (in front: w > 0)",
+                kPrefix, in.jitter[0], in.jitter[1], in.motion_scale[0], in.motion_scale[1], reset ? "yes" : "no", in.render_size[0], in.render_size[1], in.output_size[0], in.output_size[1],
+                ahead_view_z, ahead_clip_w);
+  }
 
   Runtime& rt = Rt();
   std::unique_lock sl_lock(rt.mu, std::defer_lock);
