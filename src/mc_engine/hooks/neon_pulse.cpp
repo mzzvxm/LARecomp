@@ -26,7 +26,8 @@
 // what it would have seen at 30.
 //
 // mcla_fix_neon_30hz turns it off (the FIXES page of the debug menu), for a tester who wants the pulse
-// at the display's rate.
+// at the display's rate. mcla_fix_neon_pulse_pin (a debug setting, not on a page: a launch argument) gives
+// both pulses one value from 0 to 1 at every update, so that two runs of a test scene show the same underglow.
 //
 // CHECK: the addresses are read from the generated code (native\tree-k1\generated, sub_82353E38 and
 // sub_823DBBC8), not seen in a running game; the feature-parity probe measured the game's pulse at up to
@@ -102,6 +103,13 @@ extern "C" REX_FUNC(rex_sub_82353E38) {
                           "{:.1f} Hz and {:.1f} Hz); the pulse is held on the console's 30 Hz clock: {}",
                           static_cast<int>(rate_ext), static_cast<int>(rate_int), mcla::neon::HzOf(rate_ext),
                           mcla::neon::HzOf(rate_int), fix_on ? "yes" : "no (mcla_fix_neon_30hz is off)");
+    }
+    // The test pin: the same pulse in every run (neon_pulse.h PinnedPulse), not the game's and not held.
+    if (const double pin = larecomp::settings::mcla_fix_neon_pulse_pin.Get(); mcla::neon::PulsePinned(pin)) {
+        const float pinned = mcla::neon::PinnedPulse(pin);
+        if (rate_ext != 0) WriteGuestF32(base, self + kThis_ExtPulse, pinned);
+        if (rate_int != 0) WriteGuestF32(base, self + kThis_IntPulse, pinned);
+        return;
     }
     if (!fix_on) return;
 

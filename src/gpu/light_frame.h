@@ -48,7 +48,7 @@ enum class LightKind : uint8_t { kSpot = 0, kPoint = 1 };
 enum class LightSource : uint8_t {
   kHeadlight = 0,  // a car's headlight (headlight_rig.h)
   kLamp = 1,       // a street lamp or a window the game does not draw as a light volume (the game's lamp list)
-  kNeon = 2,       // reserved: there is no neon data in the game
+  kNeon = 2,       // a car's underglow (GB-NEON: neon_light.h; the game has no light data for its neon SIGNS, only for the cars' own)
   kPolice = 3,
   kMod = 4,        // lights.bin of a mod (mod_lights.cpp)
   kOther = 5,

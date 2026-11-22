@@ -518,8 +518,9 @@ void SourceChecks(const std::string& src) {
   Check(Has(rig_h, "bool SettingOn();") && Has(rig_h, "CurrentRoute();") && Has(rig_h, "#include \"headlight_pass_rules.h\""), "the rig's header offers the setting's state and the route");
 
   // the pass: the route makes it run and lights the frame's headlights
-  Check(Has(pass_cpp, "const bool on = hp::PassOn(route, setting_on);") && Has(pass_cpp, "hp::SourcesFor(route,"), "the pass runs for the route and adds the frame's source");
-  Check(Has(pass_cpp, "planes_wanted_ = enabled_ && (setting_on || headlight_rig::SettingOn());"), "the planes are wanted for the route only while HEADLIGHTS is on");
+  Check(Has(pass_cpp, "const bool on_for_lights = hp::PassOn(route, setting_on);") && Has(pass_cpp, "hp::SourcesFor(route,"), "the pass runs for the route and adds the frame's source");
+  Check(Has(pass_cpp, "planes_wanted_ = enabled_ && (setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);"),
+        "the planes are wanted for the route only while HEADLIGHTS is on (GB-NEON: and for a lit neon car; the same as before without one)");
   Check(Has(pass_h, "bool wants_draws() const { return enabled_ && planes_wanted_; }"), "the Scene feeds the pass's votes only while its planes are wanted");
 
   // the setting, in the three generated files, live and debug only, default forward

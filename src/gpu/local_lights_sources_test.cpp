@@ -299,7 +299,7 @@ void TierChecks() {
   Check(lp::RearReach(lp::Tier::kMedium) < lp::RearReach(lp::Tier::kHigh) && lp::RearReach(lp::Tier::kHigh) < lp::RearReach(lp::Tier::kUltra), "the rear reach grows with the tier");
   // the source mask: six bits, cars are three of them
   Check(lp::kSourceMask == 63 && lp::kSourceCars == (4 | 8 | 16) && (lp::kSourceMask & lp::kSourceMod) != 0 && lp::kSourceFrameAndTest == 3, "the sources mask is six bits, 4 + 8 + 16 are the cars'");
-  Check(lp::kSourceClassCount == 6 && std::string(lp::SourceClassName(lp::SourceClass::kPolice)) == "police" && std::string(lp::SourceClassName(lp::SourceClass::kMod)) == "mod lamps", "the class names");
+  Check(lp::kSourceClassCount == 7 && std::string(lp::SourceClassName(lp::SourceClass::kPolice)) == "police" && std::string(lp::SourceClassName(lp::SourceClass::kMod)) == "mod lamps", "the class names");
 }
 
 // ---------------------------------------------------------------------------

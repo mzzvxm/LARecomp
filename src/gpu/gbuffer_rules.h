@@ -332,6 +332,19 @@ constexpr Caps CapsFor(bool vulkan) {
   return caps;
 }
 
+// ---------------------------------------------------------------------------
+// Waiting for the sidecar's pipeline
+// ---------------------------------------------------------------------------
+
+// A draw of the main view whose pipeline with the sidecar is not made yet (the first frames with the planes on: every pipeline of the window is a new key, a hundred and more at
+// once, 60 ms each) may go on WITHOUT the planes: the game's own pipeline, the same shaders without the sidecar, is already in use, so the planes are what is left out for a few
+// frames, never the draw (Scene::Prepare falls back to it while the build is pending and asks again the next frame). That is true whatever the game's own rule for leaving a draw out says
+// (Scene::MaySkipForPipeline: the targets were drawn into in each of the last 30 frames, multisampled, no stencil writes): that rule protects a draw that would be missing from the
+// picture, and here nothing is missing. Without this the draws the rule refuses were made on the render thread, one after the other: 276 pipelines, 17.6 s, a 5 to 6 s freeze at the first
+// frame with the G-buffer on and again at the first frame of a car that is new to the session (the neon light's runs of 2026-11-21: neon1-ab-vk-on, `made here 276 new`, `[Watchdog] frame stalled 5s`).
+// While a take runs (sync_builds.h) nothing waits either way: the lookup makes the pipeline and the wait is counted.
+constexpr bool PlanesMayWait(bool carries_sidecar) { return carries_sidecar; }
+
 // The debug-only setting mcla_gpu_gbuffer_attach: `auto` is the backend's capability (above), `writers` binds the sidecar only for the draws that write it (the
 // spike's way, any backend), `all` binds it for every draw of the main view's window (the survey's design: no render pass switch, no stale pixels) and trusts the build
 // to have per target blend states (D3D12: with the Plume fix). A word that is none of them counts as auto.
@@ -410,7 +423,8 @@ constexpr const char* ConsumerName(Consumer consumer) {
 // THE AUTO POLICY (GB-J): mcla_gpu_gbuffer = auto, the default, and HIDDEN (the setting is debug-only: no pause menu row, no launcher row). The G-buffer exists only while a consumer
 // that is ON wants a plane; with every consumer off no image is made, no draw of the game changes and the cost is nothing. What each consumer asks for while it is on:
 //   the occlusion's normals     RT1 (the occlusion, the contact shadows or the bounce light on, AND mcla_gpu_ao_gbuffer_normals on: off by default since 2026-11-20)
-//   the light pass              RT1 + RT2 + RT3 (mcla_gpu_local_lights: a debug row on the hidden DEBUG menu; there is no LOCAL LIGHTS row for players)
+//   the light pass              RT1 + RT2 + RT3 (mcla_gpu_local_lights: a debug row on the hidden DEBUG menu; there is no LOCAL LIGHTS row for players; and, GB-NEON, the player's NEON LIGHT row
+//                               while a car with a lit neon is in view: local_lights.cpp BeginFrame, held a second after the last)
 //   reflections on surfaces     RT1 + RT2 + RT3 (the resolved mcla_gpu_ssr level is high or ultra: the row REFLECTIONS ON SURFACES)
 //   decals                      none yet
 // The consumers' own GBuffer::Want calls use ConsumerPlanes (the ones that cannot: the occlusion's, whose helper in ao_gbuffer.h is checked against this table by ao_gbuffer_test);

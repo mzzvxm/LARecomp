@@ -74,7 +74,8 @@ inline constexpr uint32_t kFlagOcclusion = 1u << 1;   // OcclusionInfo was read:
 inline constexpr uint32_t kFlagShadow = 1u << 2;      // GB-H2: the shadow view table is in the buffer and its atlas is there: a light with views of the atlas is shadowed
 
 // The sources mask of mcla_gpu_local_lights_sources. Bits 0 and 1 are GB-H1's; bits 2 to 5 are GB-H3's (local_lights_sources.h makes their lights and holds their budgets): the police light bars,
-// the headlights of the cars the forward headlight stage does not light, the cars' brake / tail / turn / reverse lamps, and the mods' lamps the game's grid is not lighting.
+// the headlights of the cars the forward headlight stage does not light, the cars' brake / tail / turn / reverse lamps, and the mods' lamps the game's grid is not lighting. Bit 6 is GB-NEON's:
+// the cars' underglow (neon_light.h); the debug setting's range stays 0..63, NEON LIGHT (mcla_gpu_neon_light) puts the bit in, as the headlight route does for bit 0.
 inline constexpr uint32_t kSourceFrame = 1u << 0;
 inline constexpr uint32_t kSourceTest = 1u << 1;
 inline constexpr uint32_t kSourcePolice = 1u << 2;
@@ -82,15 +83,18 @@ inline constexpr uint32_t kSourceHeadLamps = 1u << 3;
 inline constexpr uint32_t kSourceRearLamps = 1u << 4;
 inline constexpr uint32_t kSourceMod = 1u << 5;
 inline constexpr uint32_t kSourceMask = kSourceFrame | kSourceTest | kSourcePolice | kSourceHeadLamps | kSourceRearLamps | kSourceMod;
+// GB-NEON: the cars' underglow. NOT a bit of the debug setting (its range is 0..kSourceMask): the player's NEON LIGHT row (mcla_gpu_neon_light) puts it in, as the headlight route puts bit 0 in.
+inline constexpr uint32_t kSourceNeon = 1u << 6;
+inline constexpr uint32_t kSourceAll = kSourceMask | kSourceNeon;
 // The sources that need the cars' light points (the manager's car lights source).
 inline constexpr uint32_t kSourceCars = kSourcePolice | kSourceHeadLamps | kSourceRearLamps;
 // What SelectLights (below) reads: the frame's own lights and the test lamp.
 inline constexpr uint32_t kSourceFrameAndTest = kSourceFrame | kSourceTest;
 
 // Where a light of the pass came from, for the budgets and the log lines (GB-H3). kFrame: the frame's surface lights (the rig's headlights today); kHandedOver: the lamp A/B's mod lamps and the
-// test lamp; the others are local_lights_sources.h's classes.
-enum class SourceClass : uint8_t { kFrame = 0, kHandedOver, kPolice, kHeadLamps, kRearLamps, kMod };
-inline constexpr uint32_t kSourceClassCount = 6;
+// test lamp; the others are local_lights_sources.h's classes (kNeon, GB-NEON: the cars' underglow, last so that the numbers of the others stay).
+enum class SourceClass : uint8_t { kFrame = 0, kHandedOver, kPolice, kHeadLamps, kRearLamps, kMod, kNeon };
+inline constexpr uint32_t kSourceClassCount = 7;
 inline constexpr const char* SourceClassName(SourceClass c) {
   switch (c) {
     case SourceClass::kFrame: return "frame";
@@ -99,6 +103,7 @@ inline constexpr const char* SourceClassName(SourceClass c) {
     case SourceClass::kHeadLamps: return "head lamps";
     case SourceClass::kRearLamps: return "rear lamps";
     case SourceClass::kMod: return "mod lamps";
+    case SourceClass::kNeon: return "neon";
   }
   return "?";
 }
@@ -138,13 +143,22 @@ static_assert(offsetof(PassHeader, right) == 0 && offsetof(PassHeader, up) == 16
                   offsetof(PassHeader, lin) == 64 && offsetof(PassHeader, size) == 80 && offsetof(PassHeader, occ) == 96 && offsetof(PassHeader, count) == 112 && offsetof(PassHeader, exposure) == 120,
               "the header's rows (hlsl/local_light.hlsli LP_OFF_*)");
 
-// The push block of one draw (hlsl LocalLightPush): the bindless slots of the main depth plane and of RT1 to RT3 (kNoLightSlot: not there), then the light's index, the flags, the host
-// sample that is the guest's sample 0.
+// The push block of one draw (hlsl LocalLightPush): the bindless slots of the main depth plane and of RT1 to RT3 (kNoLightSlot: not there), then info: x the first light's row in the buffer,
+// y how many consecutive lights the draw has (GB-NEON-COST: 0 counts as 1; at most kMaxDrawLights), z the host sample that is the guest's sample 0, w the flags (kPushLateReach).
 struct PassPush {
   uint32_t slots[4];
   uint32_t info[4];
 };
 static_assert(sizeof(PassPush) == 32, "the push block is two rows");
+
+// GB-NEON-COST (hlsl LP_MAX_DRAW_LIGHTS, LP_PUSH_LATE_REACH): the lights one draw may carry, and the push flag that puts the shader's old order back (the planes read before the reach test).
+inline constexpr uint32_t kMaxDrawLights = 4;
+inline constexpr uint32_t kPushLateReach = 1u << 0;
+// mcla_gpu_local_lights_cost_off, a sum of the savings to switch OFF (0, the default: every one on; the picture is the same either way, so the setting is the A/B of the cost): the reach test before
+// the planes are read (the pixel shader's order), one draw for a car's neon tube (its lights are summed in the shader).
+inline constexpr uint32_t kCostOffReachFirst = 1u << 0;
+inline constexpr uint32_t kCostOffMerge = 1u << 1;
+inline constexpr uint32_t kCostOffMask = kCostOffReachFirst | kCostOffMerge;
 
 // ---------------------------------------------------------------------------
 // the camera: the rows of a view inverse
@@ -304,6 +318,72 @@ inline bool PixelLightShadowed(const Light& l, const Units& u, const ShadowFrame
     }
   }
   return out[0] > 0.0f || out[1] > 0.0f || out[2] > 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// GB-NEON-BLEED: a neon light does not shine through the car that is lit (the twins of hlsl/local_light.hlsli LpTakesContact, LpContactVisibility)
+// ---------------------------------------------------------------------------
+// The owner's report (2026-11-22, the blue Lamborghini beside the neon car, rows kerb and chase, every time of day): parts of the other car that the light cannot reach turn red, some on the side
+// that faces away from the light. N.L is right (the far side of a body, a box's far face, gets 0; the car's paint shows the terminator where the panel turns away). What N.L cannot tell is a
+// surface that faces the light through a body: the inside wall of a side vent, the bumper's lip, the seats and the dash through the door, the wheel's dish. The underglow has no shadow (a glow
+// under a car, not a lamp that casts), and its tube sits inside one car (0.45 m over the body matrix's origin) and a few metres from the next, so nothing stood between the light and those
+// faces. The picture's own depth does: a point on the way from the pixel to the light that lies BEHIND a visible surface by a shell's thickness is inside something.
+
+inline constexpr int kContactSteps = 5;         // LP_CONTACT_STEPS
+inline constexpr float kContactLength = 0.8f;   // m, LP_CONTACT_LENGTH: the part of the way that is looked at
+inline constexpr float kContactNormal = 0.03f;  // m, LP_CONTACT_NORMAL: the way starts this far off the surface
+inline constexpr float kContactBias = 0.04f;    // m, LP_CONTACT_BIAS
+inline constexpr float kContactRamp = 0.06f;    // m, LP_CONTACT_RAMP
+inline constexpr float kContactThick = 0.7f;    // m, LP_CONTACT_THICK
+inline constexpr float kContactFade = 0.25f;    // m, LP_CONTACT_FADE
+
+// Whether a light takes the contact term at a pixel: a neon light on a vehicle pixel (RT3's vehicle flag).
+inline bool TakesContact(const Light& l, bool vehicle) { return vehicle && l.source == LightSource::kNeon; }
+
+// How much of the light's way to the pixel is open, 1 open to 0 shut. `stored_at(ix, iy)` is the main depth plane's stored depth of a pixel (the index is inside the image: the way ends at its edge).
+// A step behind the camera or off the picture ends the look with what the earlier steps found.
+template <class StoredDepth>
+inline float ContactVisibility(const Rows& rows, float tan_x, float tan_y, float width, float height, const float lin[4], const float world[3], const float normal[3], const float light_pos[3],
+                               StoredDepth&& stored_at) {
+  float to_light[3];
+  float len2 = 0.0f;
+  for (int i = 0; i < 3; ++i) {
+    to_light[i] = light_pos[i] - world[i];
+    len2 += to_light[i] * to_light[i];
+  }
+  if (!(len2 > 1.0e-6f)) {
+    return 1.0f;
+  }
+  const float len = std::sqrt(len2);
+  const float inv = 1.0f / len;
+  float dir[3], origin[3];
+  for (int i = 0; i < 3; ++i) {
+    dir[i] = to_light[i] * inv;
+    origin[i] = world[i] + normal[i] * kContactNormal;
+  }
+  const float reach = len < kContactLength ? len : kContactLength;
+  float shut = 0.0f;
+  for (int i = 0; i < kContactSteps; ++i) {
+    const float s = reach * (float(i) + 1.0f) / float(kContactSteps);
+    float q[3];
+    for (int k = 0; k < 3; ++k) {
+      q[k] = origin[k] + dir[k] * s;
+    }
+    float px = 0.0f, py = 0.0f, f = 0.0f;
+    if (!ProjectToPixel(rows, tan_x, tan_y, width, height, q, 0.05f, &px, &py, &f)) {
+      break;
+    }
+    if (!(px >= 0.0f && py >= 0.0f && px < width && py < height)) {
+      break;
+    }
+    const float t = LinearDepth(stored_at(int(px), int(py)), lin);
+    const float gap = f - t;
+    const float ramp = std::clamp((gap - kContactBias) / kContactRamp, 0.0f, 1.0f);
+    const float fade = 1.0f - std::clamp((gap - kContactThick) / kContactFade, 0.0f, 1.0f);
+    const float w = ramp * fade;
+    shut = w > shut ? w : shut;
+  }
+  return 1.0f - shut;
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +635,68 @@ inline PixelRect ScissorOfLight(const Light& l, const Rows& rows, float tan_x, f
   rect.x1 = clamp_i(std::ceil(max_x) + float(kScissorMargin), int32_t(width));
   rect.y1 = clamp_i(std::ceil(max_y) + float(kScissorMargin), int32_t(height));
   return rect;
+}
+
+// ---------------------------------------------------------------------------
+// the draws (GB-NEON-COST)
+// ---------------------------------------------------------------------------
+// WHY: the lights of a car's neon tube (2 to 4 omni lights, 6 to 8 m reach, along a tube that is 4.5 m long) all contain the camera in a chase view (it is 5 to 6 m behind the car), so each is a
+// scissor of the WHOLE picture (ScissorOfLight: a box corner behind the camera): four full picture draws, each reading the depth and three planes for every pixel, to light the few square metres of
+// road and wall round the car. The tube's lights share the car, the surface the planes describe and nearly the rectangle, so one draw takes them all: the pixel reads the planes once and sums the
+// lights (hlsl/local_light_ps.hlsl). The rectangle of the draw is the UNION of the lights' rectangles; the pixels it adds over a light's own are outside that light's box, which holds its whole sphere
+// (ScissorOfLight is conservative by construction), where the light's term is 0 (the laws are 0 at and beyond the range): the picture is the one the single draws made, but for the rounding of
+// the half float colour target, which now takes one sum instead of one add for each light.
+
+struct PassDraw {
+  uint32_t first = 0;  // the first light's index in the selection (and its row in the buffer)
+  uint32_t count = 0;  // the consecutive lights the draw sums (1 .. kMaxDrawLights)
+  PixelRect rect;      // the union of the rectangles of those of its lights that have one
+};
+
+// Whether the light `next` goes into the draw that `head` opens: the cars' underglow only (the lights of one car's tube: the same source, the same non-zero car key), neither with views of the
+// shadow atlas (the shader looks a shadow up for each light of a draw, but nothing of the neon has one: kept apart so that a shadowed light stays a draw of its own).
+inline bool MergesWithin(const Light& head, const Light& next) {
+  const auto shadowed = [](const Light& l) { return l.shadow.kind == ShadowKind::kAtlas && l.shadow.view_count != 0; };
+  return head.source == LightSource::kNeon && next.source == LightSource::kNeon && head.car_key != 0 && next.car_key == head.car_key && !shadowed(head) && !shadowed(next);
+}
+
+// The draws of a selection, in order: runs of consecutive lights that MergesWithin (at most kMaxDrawLights) when the merge is on, else one draw a light (the pass's way before GB-NEON-COST).
+// `rects` are the lights' rectangles (ScissorOfLight); a draw whose lights are all off the picture is left out. Returns how many draws were written to `out` (kMaxPassLights at most).
+inline uint32_t PlanDraws(const Selection& selection, const PixelRect* rects, uint32_t cost_off, PassDraw* out) {
+  const bool merge = (cost_off & kCostOffMerge) == 0;
+  const uint32_t count = std::min(selection.count, kMaxPassLights);
+  uint32_t drawn = 0;
+  uint32_t i = 0;
+  while (i < count) {
+    uint32_t end = i + 1;
+    while (merge && end < count && end - i < kMaxDrawLights && MergesWithin(selection.lights[i], selection.lights[end])) {
+      ++end;
+    }
+    PassDraw draw;
+    draw.first = i;
+    draw.count = end - i;
+    bool any = false;
+    for (uint32_t k = i; k < end; ++k) {
+      const PixelRect& r = rects[k];
+      if (r.Empty()) {
+        continue;
+      }
+      if (!any) {
+        draw.rect = r;
+        any = true;
+      } else {
+        draw.rect.x0 = std::min(draw.rect.x0, r.x0);
+        draw.rect.y0 = std::min(draw.rect.y0, r.y0);
+        draw.rect.x1 = std::max(draw.rect.x1, r.x1);
+        draw.rect.y1 = std::max(draw.rect.y1, r.y1);
+      }
+    }
+    if (any) {
+      out[drawn++] = draw;
+    }
+    i = end;
+  }
+  return drawn;
 }
 
 // ---------------------------------------------------------------------------
