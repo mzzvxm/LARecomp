@@ -406,6 +406,21 @@ inline Matrix4 WorldToCameraView(const Camera& c) {
   return out;
 }
 
+// The camera of the two matrices above. They are one view space's two ways, and that view space has to be the one the projection in the common constants (cameraViewToClip) is of: Ray Reconstruction reads
+// worldToCameraView next to cameraViewToClip (NGX: WORLD_TO_VIEW_MATRIX beside VIEW_TO_CLIP_MATRIX; the integration guide 3.4.9: "its World To View Matrix and View To Clip Space Matrix") to turn the world
+// space normals and the hit distance into the reflection's motion. Camera::forward, as the two functions above use it, is the view space's +z axis in the world. Streamline's own helper (sl_matrix_helpers.h
+// recalculateCameraMatrices) takes +z as forward (a left-handed view), but the game's view space is right-handed and looks along -z (temporal_camera.h: the view inverse's rows are right, up, BACKWARD and the
+// position; the projection puts the near plane at view z = -5): fed the world forward, the matrices mirror every point's view-space z, a point in front of the camera is behind it for the projection, and every
+// pixel whose hit distance is not 0 moves its reflection's history the wrong way. `view_looks_along_negative_z` says the engine's view space is the game's (the axis is flipped to point backward); with it
+// false the camera is returned as it is. dlss_rr_rules_test.cpp CheckGameViewSpace.
+inline Camera MatrixCamera(const Camera& world_camera, bool view_looks_along_negative_z) {
+  Camera out = world_camera;
+  if (view_looks_along_negative_z) {
+    for (float& f : out.forward) f = -f;
+  }
+  return out;
+}
+
 // The modes RR takes are DLSS's five, at DLSS's ratios (the integration guide 3.2).
 enum class Mode : uint8_t { kDlaa, kQuality, kBalanced, kPerformance, kUltraPerformance, kCount };
 constexpr double RatioOf(Mode m) {

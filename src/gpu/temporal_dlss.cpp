@@ -3200,6 +3200,10 @@ std::string DlssBackend::Impl::EvaluateRr(void* native_list, Context& context, c
     camera.up[k] = in.camera_up[k];
     camera.forward[k] = in.camera_forward[k];
   }
+  // worldToCameraView / cameraViewToWorld must be the view space cameraViewToClip (the game's own projection, above) is of: right-handed, looking along -z (temporal_camera.h), so the view's third axis is the
+  // camera's BACKWARD (rr::MatrixCamera). With the world forward there the two matrices disagree by a mirror in z and RR's reflection motion (hit distance + world normals) goes the wrong way.
+  // CHECK: NVIDIA's pair of conventions beyond "row-major, left multiplication" is not stated in the guide or the headers; the pair used here is the game's own view and projection, which agree by construction.
+  camera = rr::MatrixCamera(camera, /*view_looks_along_negative_z=*/true);
   const rr::Options rr_options =
       rr::MakeOptions(RrModeOf(context.request.mode), context.request.output_size[0], context.request.output_size[1], plan, camera);
   const sl::DLSSDOptions options = RrOptionsFor(context.request.mode, rr_options);
