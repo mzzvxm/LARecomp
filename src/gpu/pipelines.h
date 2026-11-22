@@ -266,10 +266,16 @@ enum class KeyResult : uint8_t {
 // a lookup that hits has nothing to prepare for it. While a capture runs
 // (sync_builds.h) the answer is never used: the lookup waits for the build, and
 // `kind` says which path waited, for the count of waits.
+//
+// `has_fallback`: the draw has another pipeline to draw with when this one cannot be made (a key that adds the headlight's word or the G-buffer's planes to the
+// game's own shader: variant_wait.h). Then a build that FAILED is final for the key: it is not made again on the render thread (a precache entry that failed on a
+// worker would otherwise be tried once more here, for a pipeline that fails the same), and it is logged once, with its error, whatever the cap on the other
+// failures' lines. Get then answers null and not pending, and the caller takes the fallback.
 struct Deferral {
   bool (*may_skip)(const void* context) = nullptr;
   const void* context = nullptr;
   sync_builds::Kind kind = sync_builds::Kind::kGuestDraw;
+  bool has_fallback = false;
 };
 
 class Pipelines {
@@ -384,8 +390,14 @@ class Pipelines {
     uint64_t request_wait_ns = 0;
     uint64_t made_here_new = 0;       // made here: nobody had begun it, no waiting
     uint64_t made_here_retry = 0;     // made here again after a background build failed
+    // A key with a fallback (Deferral::has_fallback) whose build failed: the key (logged once, also in `failed`), and the draws that took the game's own
+    // pipeline because of it (NoteVariantFailedDraw; counted when the draw falls back, whether or not the game's own key then draws; a draw that waits for a build under way is not counted).
+    uint64_t variant_failed = 0;
+    uint64_t variant_fallback_draws = 0;
   };
   Stats TakeStats();
+  // A draw took the game's own pipeline because the build of its variant FAILED (Get: null, not pending). Render thread.
+  void NoteVariantFailedDraw() { ++stats_.variant_fallback_draws; }
   size_t size() const { return pipelines_.size(); }
 
   // --- the command line prebuild (pipeline_prebuild.h) --------------------------------------------
@@ -487,9 +499,11 @@ class Pipelines {
                  ShaderStore::ShaderResult* ps_result);
   // The persistent key of a session key with the layout `stored`.
   PipelineKey PersistentKey(const PipelineKey& key, uint32_t stored) const;
-  // Counts a pipeline that could not be made and reports it (the first few).
+  // Counts a pipeline that could not be made and reports it: the first few, but every key with a fallback (`fallback`: Deferral::has_fallback), once, since the
+  // key is remembered as failed and never built again. Every path that ends a build with no pipeline goes through here (the render thread's, a background
+  // request's, a precache entry's), so the books and the log agree.
   void LogFailure(const PipelineKey& key, ShaderStore::ShaderResult vs_result,
-                  ShaderStore::ShaderResult ps_result);
+                  ShaderStore::ShaderResult ps_result, bool fallback);
   // `setup_threads` != 0: the command line prebuild (PrecacheForSetup): that many workers, none
   // leaves, normal priority, no boot mode.
   void StartPrecache(uint32_t setup_threads = 0);
@@ -591,6 +605,9 @@ class Pipelines {
     std::atomic<uint8_t> state{kQueued};
     uint32_t index = 0;               // its place in precached_
     PipelineKey taken_as;             // the session key it went to (claimed or taken)
+    // Why a failed build failed (written with the state, under precache_mutex_): a draw with a fallback key does not make it again, it reports this.
+    ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
+    ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
     bool taken = false;
     // Render thread only: a draw that may be skipped asked for it, in this frame
     // (EndFrame's count); the worker is told to make it first.
@@ -673,6 +690,7 @@ class Pipelines {
     const StoredLayout* layout = nullptr;    // owned by stored_layouts_
     uint32_t stored = 0;                     // its index there
     uint64_t asked_frame = 0;
+    bool fallback = false;                  // the asking draw has a fallback key (Deferral::has_fallback)
     // A copy for a coming MSAA level (PrebuildForLevel), in low_ until a draw asks for it (then
     // `promoted`: it was moved up to urgent_). Render thread only.
     bool low = false;
@@ -738,7 +756,8 @@ class Pipelines {
   void PushUrgent(Urgent urgent);
   // Hands `key` to the builders. False when it cannot be built in the
   // background (no shaders, a layout that cannot be stored, no workers).
-  bool StartRequest(const PipelineKey& key, const PipelineInputs& inputs);
+  // `fallback`: the draw has a fallback key (Deferral::has_fallback): a failure is logged for the key.
+  bool StartRequest(const PipelineKey& key, const PipelineInputs& inputs, bool fallback);
   // The background build of `key`, if one was asked for: taken when ready,
   // waited for when the draw may not be skipped (made here when no worker had
   // begun it), pending when it may.

@@ -26,6 +26,12 @@
 // own that nobody made is a gap of the starter list, not of the stack). While a take runs (sync_builds.h) nothing waits, as before: the
 // lookup makes the pipeline or waits for the builder, and the wait is counted.
 //
+// A variant whose build FAILS (the driver refuses the extra colour targets' blend state, the pack's word does not compile) takes the same way down, for good: the
+// lookup answers "no pipeline, not pending", the draw takes the key below, and only a failure of the game's own key at the end drops the draw (NextStep). Before,
+// only "pending" took the rung down, so a failed variant left its draw out of every frame (a car body, a road piece) for the rest of the session. A key that carries
+// an extra says so in its Deferral (has_fallback): its failure is final in every path (a precache entry that failed on a worker is not made again on the render
+// thread) and is logged once per key.
+//
 // Pure: no renderer, no ReXGlue. variant_wait_test.cpp checks it alone.
 // ===========================================================================
 
@@ -55,6 +61,25 @@ enum class Ask : uint8_t {
   kAlways,    // the draw is not left out, its fallback draws: pending is always the answer (a take still waits: sync_builds.h)
 };
 constexpr Ask AskFor(const Extras& e) { return HasFallback(e) ? Ask::kAlways : Ask::kGameRule; }
+
+// How the lookup of one rung ended, and what the draw does next. `extras` are those of the key just asked for; `have_pipeline`: Pipelines::Get gave one;
+// `pending`: it gave none because a builder thread is still making it. Neither means the build FAILED: Get remembers that for the key (a failed key is never tried
+// again, the failure is logged once, pipelines.cpp LogFailure), so a key that failed stays out for the session and every draw with it takes the rung below.
+enum class Next : uint8_t {
+  kDraw,      // the rung's pipeline is there
+  kFallBack,  // there is none (being made, or its build failed) and the key has a fallback key: the draw takes the key one rung down
+  kWait,      // being made, and there is no rung below: the draw is left out for now, as the game's rule allowed it (Skip::kPipelinePending)
+  kDrop,      // its build failed, and there is no rung below: the game's own pipeline failed too, so the draw is skipped (Skip::kPipeline)
+};
+constexpr Next NextStep(const Extras& extras, bool have_pipeline, bool pending) {
+  if (have_pipeline) {
+    return Next::kDraw;
+  }
+  if (HasFallback(extras)) {
+    return Next::kFallBack;
+  }
+  return pending ? Next::kWait : Next::kDrop;
+}
 
 // The pixel word of the fallback that drops the headlight (the pack's word for the other features the draw has when it has one, else the game's own
 // shader in the draw's spec variant: the alpha test twin stays). `pack_has(word)` says whether the pixel shader has that word in the variant pack.

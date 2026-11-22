@@ -6,8 +6,9 @@
 //
 // Standalone: clang++ -std=c++20 -I <repo>/src -I <repo>/src/gpu variant_wait_test.cpp
 //
-// The checks of the ladder are on the header's model (LadderOf); SourceChecks reads Scene::Prepare in scene.cpp (the folder of this file, or the one given) and checks it walks
-// the same ladder: every lookup of a key asks through the header, in the order the model has.
+// The checks of the ladder are on the header's model (LadderOf, NextStep); SourceChecks reads Scene::Prepare in scene.cpp and the failure paths in pipelines.cpp (the folder of
+// this file, or the one given) and checks they walk the same ladder: every lookup of a key asks through the header, in the order the model has, and a lookup that ended with
+// no pipeline (being made, or its build FAILED) takes the next rung through NextStep.
 
 #include <cstdint>
 #include <cstdio>
@@ -128,6 +129,88 @@ void TestWordWithoutHeadlight() {
   Check(vw::WordWithoutHeadlight(gbuffer, all) == gbuffer && vw::WordWithoutHeadlight(0, none) == 0, "no headlight: the word is the same");
 }
 
+// How one lookup ended, as Scene::Prepare sees it: the pipeline, "being made", or a failed build (null and not pending).
+enum class Result : uint8_t { kReady, kPending, kFailed };
+
+// The walk Scene::Prepare does down the ladder of a draw whose full key has `full` extras; `results[i]` is how the lookup of rung i ends. What comes out: the rung the draw is
+// drawn with (-1: none) and how it ends when no rung gave a pipeline (kWait: left out for now, kDrop: skipped for good).
+struct Walked {
+  int drawn_with = -1;
+  vw::Next end = vw::Next::kDraw;
+};
+Walked Walk(const vw::Extras& full, const Result (&results)[3]) {
+  const vw::Ladder ladder = vw::LadderOf(full);
+  Walked out;
+  for (size_t i = 0; i < ladder.count; ++i) {
+    const vw::Next step = vw::NextStep(ladder.rungs[i].extras, results[i] == Result::kReady, results[i] == Result::kPending);
+    out.end = step;
+    if (step == vw::Next::kDraw) {
+      out.drawn_with = int(i);
+      return out;
+    }
+    if (step != vw::Next::kFallBack) {
+      return out;
+    }
+  }
+  return out;
+}
+
+void TestNextStep() {
+  // The decision for one lookup.
+  for (bool planes : {false, true}) {
+    for (bool headlight : {false, true}) {
+      const vw::Extras e{planes, headlight};
+      const bool fb = vw::HasFallback(e);
+      const std::string name = std::string("planes ") + (planes ? "yes" : "no") + ", headlight " + (headlight ? "yes" : "no");
+      Check(vw::NextStep(e, true, false) == vw::Next::kDraw && vw::NextStep(e, true, true) == vw::Next::kDraw, name + ": a pipeline that is there is drawn with");
+      Check(vw::NextStep(e, false, true) == (fb ? vw::Next::kFallBack : vw::Next::kWait), name + ": being made: the rung below, or left out for now when there is none");
+      Check(vw::NextStep(e, false, false) == (fb ? vw::Next::kFallBack : vw::Next::kDrop),
+            name + ": its build FAILED: the rung below, and the draw is dropped only when there is none (the game's own key)");
+    }
+  }
+  // Every ladder and every outcome of its lookups. The first rung that has a pipeline draws; with none, the game's own key (the last rung) decides: being made leaves the draw
+  // out for now, a failure drops it. A variant that failed or is being made never decides.
+  size_t cases = 0;
+  size_t bad = 0;
+  const Result all[] = {Result::kReady, Result::kPending, Result::kFailed};
+  for (bool planes : {false, true}) {
+    for (bool headlight : {false, true}) {
+      const vw::Extras full{planes, headlight};
+      const size_t last = vw::LadderOf(full).count - 1;
+      for (Result a : all) {
+        for (Result b : all) {
+          for (Result c : all) {
+            const Result results[3] = {a, b, c};
+            const Walked w = Walk(full, results);
+            ++cases;
+            int first_ready = -1;
+            for (size_t i = 0; i <= last && first_ready < 0; ++i) {
+              if (results[i] == Result::kReady) first_ready = int(i);
+            }
+            if (first_ready >= 0) {
+              bad += !(w.drawn_with == first_ready && w.end == vw::Next::kDraw);
+            } else if (results[last] == Result::kFailed) {
+              bad += !(w.drawn_with < 0 && w.end == vw::Next::kDrop);
+            } else {
+              bad += !(w.drawn_with < 0 && w.end == vw::Next::kWait);
+            }
+          }
+        }
+      }
+    }
+  }
+  Check(bad == 0 && cases == 4 * 27, "every ladder and every outcome of its lookups: the first rung with a pipeline draws, a variant that failed or is being made falls to the next, "
+                                     "the draw is dropped only when the game's own key failed (" + std::to_string(cases) + " cases, " + std::to_string(bad) + " wrong)");
+  // The case the stall review found: both variants failed, the game's own pipeline is there: it draws (before, the draw was left out for the whole session).
+  const Result failed_variants[3] = {Result::kFailed, Result::kFailed, Result::kReady};
+  const Walked a = Walk({true, true}, failed_variants);
+  Check(a.drawn_with == 2 && a.end == vw::Next::kDraw, "planes + headlight both failed: the game's own pipeline draws");
+  const Result mixed[3] = {Result::kFailed, Result::kReady, Result::kReady};
+  Check(Walk({true, true}, mixed).drawn_with == 1, "the planes' variant failed, the key with the headlight is there: the draw takes it");
+  const Result game_failed[3] = {Result::kFailed, Result::kFailed, Result::kFailed};
+  Check(Walk({true, true}, game_failed).end == vw::Next::kDrop && Walk({false, false}, game_failed).end == vw::Next::kDrop, "the game's own key failing too: the draw is skipped");
+}
+
 std::string ReadFile(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   std::stringstream ss;
@@ -158,16 +241,36 @@ void SourceChecks(const std::string& gpu) {
   Check(scene.find("#include \"variant_wait.h\"") != std::string::npos, "scene.cpp includes variant_wait.h");
   Check(Count(lookup, "pipelines_->Get(") == 3, "the ladder has three lookups: the full key, the key without the planes, the key without the headlight");
   Check(Count(lookup, "pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending)") == 3, "every lookup asks through ask_for, none asks the game's rule alone");
+  // A lookup that ended with no pipeline takes the rung below when it was being made OR when its build failed: the rungs' conditions go through NextStep, none looks at `pending` alone.
+  Check(lookup.find("const auto falls_back = [&]() { return variant_wait::NextStep(extras_of(pipeline_key), d.pipeline != nullptr, pending) == variant_wait::Next::kFallBack; };") != std::string::npos,
+        "the rungs ask variant_wait::NextStep whether the lookup that just ended falls back (being made, or a failed build)");
+  Check(Count(lookup, "falls_back()") == 2 && Count(lookup, "!d.pipeline && pending") == 0, "both rungs fire on falls_back(), none on `no pipeline and pending` (that left a failed variant's draw out for good)");
+  Check(Count(lookup, "pipelines_->NoteVariantFailedDraw();") == 2, "a draw that fell back because the build failed is counted at both rungs");
+  Check(scene.find("pipeline_memo_ = d.pipeline;\n    } else if (pending) {", begin) != std::string::npos,
+        "after the last rung only a build under way leaves the draw out for now (a failure of the game's own key is Skip::kPipeline)");
   Check(Count(lookup, "&deferral") == 1 && lookup.find("? &waits : &deferral;") != std::string::npos, "the game's rule is used in one place: ask_for's answer for a key with no extra");
-  Check(lookup.find("const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw};") != std::string::npos, "the deferral of a key with a fallback always says pending and counts as a guest draw");
-  Check(lookup.find("variant_wait::AskFor(variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant)}) == variant_wait::Ask::kAlways") != std::string::npos,
+  Check(lookup.find("const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw, true};") != std::string::npos,
+        "the deferral of a key with a fallback always says pending, counts as a guest draw and says it has a fallback (a failed build is final for it)");
+  Check(lookup.find("variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant)}") != std::string::npos && lookup.find("variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways") != std::string::npos,
         "ask_for reads the extras of the key being asked: the planes the draw carries, the headlight in the pixel word");
   const size_t first = lookup.find("pipelines_->Get(");
-  const size_t planes = lookup.find("if (!d.pipeline && pending && d.gbuffer_attached) {");
-  const size_t headlight = lookup.find("if (!d.pipeline && pending && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {");
+  const size_t planes = lookup.find("if (falls_back() && d.gbuffer_attached) {");
+  const size_t headlight = lookup.find("if (falls_back() && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {");
   Check(first != std::string::npos && planes != std::string::npos && headlight != std::string::npos && first < planes && planes < headlight,
         "the ladder is the model's: the full key, then the key without the planes, then the key without the headlight");
   Check(lookup.find("variant_wait::WordWithoutHeadlight(pipeline_key.ps_variant,") != std::string::npos, "the headlight's fallback takes the word the header names");
+  Check(scene.find("variant pipelines failed {} (draws that fell back {})") != std::string::npos && scene.find("ps.variant_failed, ps.variant_fallback_draws") != std::string::npos,
+        "the scene interval line counts the variant builds that failed and the draws that took the game's own pipeline");
+
+  // Pipelines: every path that ends a build with no pipeline books it through LogFailure with whether the asker has a fallback, so the books, the log and the answer agree.
+  const std::string pipelines = ReadFile(gpu + "/pipelines.cpp");
+  Check(!pipelines.empty(), "pipelines.cpp is readable in " + gpu);
+  Check(Count(pipelines, "LogFailure(") == 4, "LogFailure books every failed build: its definition and three calls (the render thread's build, an adopted request, a precache entry)");
+  Check(pipelines.find("LogFailure(key, vs_result, ps_result, has_fallback);") != std::string::npos, "the render thread's build reports a failure with whether the draw has a fallback");
+  Check(pipelines.find("LogFailure(key, vs_result, ps_result, r.fallback);") != std::string::npos, "an adopted background request reports it with what its asker said");
+  Check(pipelines.find("LogFailure(key, p.vs_result, p.ps_result, true);") != std::string::npos && pipelines.find("p.vs_result = vs_result;") != std::string::npos,
+        "a precache entry that failed on a worker keeps its error and is reported, not made again, for a draw that has a fallback");
+  Check(pipelines.find("if (fallback) {") != std::string::npos && pipelines.find("++stats_.variant_failed;") != std::string::npos, "a failed key with a fallback is logged once and counted");
 }
 
 }  // namespace
@@ -186,6 +289,7 @@ int main(int argc, char** argv) {
   TestTheStencilWritingLitDraw();
   TestLadders();
   TestWordWithoutHeadlight();
+  TestNextStep();
   SourceChecks(gpu);
   std::printf("variant_wait_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

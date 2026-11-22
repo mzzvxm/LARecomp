@@ -990,6 +990,8 @@ void Pipelines::BuildPrecached(Precached& p) {
     // The render thread may take it the moment the state says so.
     std::lock_guard<std::mutex> lock(precache_mutex_);
     p.pipeline = std::move(pipeline);
+    p.vs_result = vs_result;
+    p.ps_result = ps_result;
     p.state = made ? kReady : kFailed;
   }
   if (p.seed) {
@@ -1150,6 +1152,14 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   }
   std::lock_guard<std::mutex> lock(precache_mutex_);
   if (p.state.load() != kReady) {
+    if (miss.deferral && miss.deferral->has_fallback) {
+      // Failed on a worker, and the draw has another pipeline to draw with: final for the key. Not made again here (the render thread would stall for a pipeline that
+      // fails the same), reported once like any failed build, and remembered as failed, as a build that failed on this thread would be.
+      LogFailure(key, p.vs_result, p.ps_result, true);
+      pipelines_.emplace(key, nullptr);
+      miss.take = Take::kReported;
+      return nullptr;
+    }
     miss.take = Take::kFailed;
     return nullptr;  // failed: made (and reported) on the caller's path
   }
@@ -1174,7 +1184,7 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   return raw;
 }
 
-bool Pipelines::StartRequest(const PipelineKey& key, const PipelineInputs& inputs) {
+bool Pipelines::StartRequest(const PipelineKey& key, const PipelineInputs& inputs, bool fallback) {
   if (workers_.empty() || stop_precache_.load() || !inputs.vs || !inputs.input_layout ||
       (key.ps != 0 && !inputs.ps)) {
     return false;
@@ -1192,6 +1202,7 @@ bool Pipelines::StartRequest(const PipelineKey& key, const PipelineInputs& input
   request->layout = stored_layouts_[stored].get();
   request->stored = stored;
   request->asked_frame = frame_;
+  request->fallback = fallback;
   requests_.emplace(key, request);
   Urgent urgent;
   urgent.request = std::move(request);
@@ -1207,6 +1218,9 @@ plume::RenderPipeline* Pipelines::TakeRequested(const PipelineKey& key, Miss& mi
     return nullptr;
   }
   Request& r = *found->second;
+  if (miss.deferral && miss.deferral->has_fallback) {
+    r.fallback = true;  // a copy made for an MSAA level or another asker: the draw that takes it has a fallback key, so a failure is final and logged for the key
+  }
   uint8_t state = r.state.load();
   if (state == kQueued || state == kBuilding) {
     if (MaySkip(miss)) {
@@ -1272,7 +1286,7 @@ plume::RenderPipeline* Pipelines::AdoptRequest(const PipelineKey& key, Request& 
       RecordStored(key, r.stored);
     }
   } else {
-    LogFailure(key, vs_result, ps_result);
+    LogFailure(key, vs_result, ps_result, r.fallback);
   }
   plume::RenderPipeline* raw = pipeline.get();
   pipelines_.emplace(key, std::move(pipeline));
@@ -1837,9 +1851,19 @@ bool Pipelines::BuildDesc(const PipelineKey& key, const ShaderStore::Entry* vs,
 }
 
 void Pipelines::LogFailure(const PipelineKey& key, ShaderStore::ShaderResult vs_result,
-                           ShaderStore::ShaderResult ps_result) {
+                           ShaderStore::ShaderResult ps_result, bool fallback) {
   ++stats_.failed;
-  if (stats_.failed <= 16) {
+  if (fallback) {
+    // A key with a fallback: one line for each (the key is remembered as failed and never built again), not counted against the cap below. Its draws take the game's
+    // own pipeline (Scene::Prepare, variant_wait::NextStep). "ok" for both shaders means the shaders were fine and the driver refused the pipeline.
+    ++stats_.variant_failed;
+    REXLOG_WARN("[gpu] pipeline variant for vs {:016X}/{} ps {:016X}/{} not created (vs shader {}, ps shader {}, {} colour targets, {} samples, depth format {}): "
+                "its draws use the game's own pipeline from now on",
+                key.vs, key.vs_variant, key.ps, key.ps_variant, ShaderStore::ResultName(vs_result), ShaderStore::ResultName(ps_result), key.color_count, key.sample_count,
+                key.depth_format);
+    return;
+  }
+  if (stats_.failed - stats_.variant_failed <= 16) {
     REXLOG_ERROR("[gpu] pipeline for vs {:016X}/{} ps {:016X}/{} not created (vs shader {}, ps "
                  "shader {}, {} colour targets, depth format {})",
                  key.vs, key.vs_variant, key.ps, key.ps_variant,
@@ -2207,6 +2231,7 @@ void Pipelines::LogSyncWait(const PipelineKey& key, const char* source, uint64_t
 
 plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const PipelineInputs& inputs,
                                               Miss& miss, bool* pending) {
+  const bool has_fallback = miss.deferral && miss.deferral->has_fallback;
   // A background build asked for earlier, then the precache list's entry.
   if (!requests_.empty()) {
     if (plume::RenderPipeline* requested = TakeRequested(key, miss)) {
@@ -2226,7 +2251,7 @@ plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const Pipe
       return nullptr;
     case Take::kNone:
       // Nobody has it: a worker makes it when the draw may wait for it.
-      if (MaySkip(miss) && StartRequest(key, inputs)) {
+      if (MaySkip(miss) && StartRequest(key, inputs, has_fallback)) {
         *pending = true;
         return nullptr;
       }
@@ -2263,7 +2288,7 @@ plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const Pipe
       RecordPipeline(key, *inputs.input_layout);
     }
   } else {
-    LogFailure(key, vs_result, ps_result);
+    LogFailure(key, vs_result, ps_result, has_fallback);
   }
   plume::RenderPipeline* raw = pipeline.get();
   pipelines_.emplace(key, std::move(pipeline));
