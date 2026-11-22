@@ -1323,7 +1323,7 @@ std::vector<float> ResolveTruth(const ResolveScene& sc) {
   return t;
 }
 // The images of `frames` frames of the pass; the lamp is on until frame `off_at` (a number past `frames`: never off).
-std::vector<std::vector<float>> ResolveRun(const ResolveScene& sc, bool resolve, int frames, int off_at) {
+std::vector<std::vector<float>> ResolveRun(const ResolveScene& sc, bool resolve, int frames, int off_at, bool upscaler = false) {
   const int N = kResolveN;
   std::vector<float> trace(size_t(N) * N), history(size_t(N) * N, 0.0f), out(size_t(N) * N, 0.0f);
   std::vector<std::vector<float>> all;
@@ -1357,7 +1357,7 @@ std::vector<std::vector<float>> ResolveRun(const ResolveScene& sc, bool resolve,
           const float mean = sum / count, sigma = std::sqrt(std::max(sum2 / count - mean * mean, 0.0f));
           const float bl = hs::SsrBoxLoChannel(mean, sigma, lo, hi), bh = hs::SsrBoxHiChannel(mean, sigma, lo, hi);
           const hs::float3 clipped = hs::SsrClipToBox(hs::float3(h, h, h), hs::float3(bl, bl, bl), hs::float3(bh, bh, bh));
-          const float kept = resolve ? hs::SsrKeepClip(hs::float3(h, h, h), clipped).x : clipped.x;
+          const float kept = hs::SsrKeepClip(hs::float3(h, h, h), clipped, hs::SsrClipKeepFor(resolve, upscaler)).x;
           o = value * (1.0f - 0.9f) + kept * 0.9f;
         }
         out[size_t(y) * N + size_t(x)] = o;
@@ -1374,9 +1374,9 @@ struct ResolveNumbers {
   int fade_half = 0;      // frames after the lamp goes out until what is left is below half / a tenth of what the lamp added
   int fade_tenth = 0;
 };
-ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve) {
+ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve, bool upscaler = false) {
   const std::vector<float> truth = ResolveTruth(sc);
-  const std::vector<std::vector<float>> run = ResolveRun(sc, resolve, 240, 1000);
+  const std::vector<std::vector<float>> run = ResolveRun(sc, resolve, 240, 1000, upscaler);
   ResolveNumbers r;
   double flicker = 0.0, out_sum = 0.0, truth_sum = 0.0;
   int n = 0;
@@ -1396,7 +1396,7 @@ ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve) {
   }
   r.flicker = flicker / std::max(n, 1);
   r.energy = out_sum / std::max(truth_sum, 1e-9);
-  const std::vector<std::vector<float>> gone = ResolveRun(sc, resolve, 200, 100);
+  const std::vector<std::vector<float>> gone = ResolveRun(sc, resolve, 200, 100, upscaler);
   const auto added = [&](int f) {
     double a = 0.0;
     for (size_t i = 0; i < truth.size(); ++i) {
@@ -1434,13 +1434,24 @@ void TestResolve() {
     Check(same_rule, "and it is the history's rule, not a tighter one (a road at a grazing angle runs away by metres a row at 50 metres)");
   }
   // the clip's floor: a positive history is not taken below the keep; a raise, a negative history and a history inside the box are the clip's
-  const hs::float3 down = hs::SsrKeepClip(hs::float3(10.0f, 10.0f, 10.0f), hs::float3(1.0f, 9.0f, 5.0f));
+  const hs::float3 down = hs::SsrKeepClip(hs::float3(10.0f, 10.0f, 10.0f), hs::float3(1.0f, 9.0f, 5.0f), hs::kSsrClipKeep);
   Check(Near(down.x, 10.0 * hs::kSsrClipKeep, 1e-5) && down.y == 9.0f && Near(down.z, 10.0 * hs::kSsrClipKeep, 1e-5), "the clip takes at most 1 - keep of a positive history away in a frame, and its small steps whole");
-  const hs::float3 raised = hs::SsrKeepClip(hs::float3(1.0f, 0.0f, 3.0f), hs::float3(4.0f, 2.0f, 3.0f));
+  const hs::float3 raised = hs::SsrKeepClip(hs::float3(1.0f, 0.0f, 3.0f), hs::float3(4.0f, 2.0f, 3.0f), hs::kSsrClipKeep);
   Check(raised.x == 4.0f && raised.y == 2.0f && raised.z == 3.0f, "a history the clip raises or leaves is the clip's");
-  const hs::float3 negative = hs::SsrKeepClip(hs::float3(-5.0f, -5.0f, -5.0f), hs::float3(-9.0f, -1.0f, -5.0f));
+  const hs::float3 negative = hs::SsrKeepClip(hs::float3(-5.0f, -5.0f, -5.0f), hs::float3(-9.0f, -1.0f, -5.0f), hs::kSsrClipKeep);
   Check(negative.x == -9.0f && negative.y == -1.0f && negative.z == -5.0f, "a negative history (the road's term can be) is the clip's, whole");
   Check(hs::kSsrClipKeep > 0.5f && hs::kSsrClipKeep < 0.95f, "the keep is a real floor, not a switch");
+  // NOISE-FOLLOW: the floor only where our resolve is the only temporal filter: with a temporal upscaler, or the first version's resolve, there is none (the clip is whole)
+  {
+    const hs::float3 history(10.0f, 10.0f, 10.0f), clipped(1.0f, 9.0f, -4.0f);
+    const hs::float3 floored = hs::SsrKeepClip(history, clipped, hs::SsrClipKeepFor(true, false));
+    const hs::float3 upscaled = hs::SsrKeepClip(history, clipped, hs::SsrClipKeepFor(true, true));
+    const hs::float3 first = hs::SsrKeepClip(history, clipped, hs::SsrClipKeepFor(false, false));
+    Check(hs::SsrClipKeepFor(true, false) == hs::kSsrClipKeep && hs::SsrClipKeepFor(true, true) == hs::kSsrClipKeepUpscaler && hs::kSsrClipKeepUpscaler == 0.0f && hs::SsrClipKeepFor(false, false) == 0.0f && hs::SsrClipKeepFor(false, true) == 0.0f,
+          "the floor is kSsrClipKeep with the spatial resolve and no temporal upscaler, kSsrClipKeepUpscaler (0) with an upscaler, and none with the first version's resolve");
+    Check(Near(floored.x, 10.0 * hs::kSsrClipKeep, 1e-5) && floored.y == 9.0f && Near(floored.z, 10.0 * hs::kSsrClipKeep, 1e-5) && upscaled.x == 1.0f && upscaled.y == 9.0f && upscaled.z == -4.0f && first.x == 1.0f && first.z == -4.0f,
+          "with an upscaler the clip is whole (also where it goes negative: no floor to lift it), without one it is floored");
+  }
   // the reprojection's distance: the pixel's own when its ray found something, else the nearest hit round it
   Check(hs::SsrReprojectDistance(30.0f, 12.0f) == 30.0f && hs::SsrReprojectDistance(hs::kSsrMissLength, 40.0f) == 40.0f && hs::SsrReprojectDistance(hs::kSsrMissLength, hs::kSsrMissLength) == hs::kSsrMissLength &&
             hs::SsrReprojectDistance(hs::kSsrMissLength, 5.0f) == 5.0f,
@@ -1491,7 +1502,13 @@ void TestResolve() {
     }
     Check(now.flicker < 0.70 * then.flicker, std::string(c.name) + Num(": the flicker on the lamp's pixels is %.0f%% of what the first version left", 100.0 * now.flicker / then.flicker) + Num(" (%.2f of the truth against %.2f)", now.flicker, then.flicker));
     Check(now.energy > then.energy - 1e-3 && now.energy > 0.45, Num("... and it keeps the reflection's brightness at least as well: %.2f of the lobe's mean against %.2f", now.energy, then.energy));
-    Check(now.fade_half <= 6 && now.fade_tenth <= 14 && then.fade_half <= 2, Num("... and a lamp that goes out leaves half of its reflection after %.0f frames (at most 6; the first version took 1 or 2)", double(now.fade_half)) + Num(", a tenth after %.0f (at most 14)", double(now.fade_tenth)));
+    Check(now.fade_half <= 2 && now.fade_tenth <= 6 && then.fade_half <= 2, Num("... and a lamp that goes out leaves half of its reflection after %.0f frames (at most 2, the comment's own: the first version took 1 or 2)", double(now.fade_half)) + Num(", a tenth after %.0f (at most 6)", double(now.fade_tenth)));
+    // NOISE-FOLLOW: with a temporal upscaler the floor is off: no trail of our own on top of the upscaler's (the first version's fade, a frame or two), and the tent average alone still takes the flicker down
+    const ResolveNumbers up = ResolveMeasure(c.scene, true, true);
+    if (g_print) std::printf("%s: with an upscaler (no floor): flicker %.3f energy %.3f fade %d / %d frames\n", c.name, up.flicker, up.energy, up.fade_half, up.fade_tenth);
+    Check(up.fade_half <= 2 && up.fade_tenth <= 3 && up.fade_tenth < now.fade_tenth, std::string(c.name) + Num(": with a temporal upscaler a lamp that goes out leaves half after %.0f frames and a tenth after %.0f (at most 2 and 3: no trail of ours; %.0f with the floor)", double(up.fade_half), double(up.fade_tenth), double(now.fade_tenth)));
+    Check(up.flicker < 0.70 * then.flicker && up.energy >= then.energy - 0.04 && up.energy <= now.energy + 1e-3,
+          std::string(c.name) + Num(": ... and its flicker is still %.0f%% of the first version's (the tent average alone; the upscaler averages the rest) at the first version's brightness within 0.04 (%.2f against %.2f; the floor adds %.2f on top, which is the price of the trail)", 100.0 * up.flicker / then.flicker, up.energy, then.energy, now.energy - up.energy));
   }
 }
 
@@ -2145,7 +2162,7 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
             Count(cpp, "Pipeline(kVHit)") == 1,
         "RR-4a: the raw pipelines are asked for in one place, inside the rules' RawPossible: a frame that is not asked never lists them with the host precache");
   Check(Has(trigger, "raw_facts.asked = raw_requested;") && Has(trigger, "raw_facts.debug_view = debug_view;") && Has(trigger, "raw_facts.stub = decision.stub;") && Has(trigger, "raw_facts.host_samples = depth.host_samples;") &&
-            Has(trigger, "bool raw = raw_why == ssr::RawWhy::kRaw;") && Has(trigger, "raw_why = ssr::RawWhy::kImages;") && Has(header, "bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false);"),
+            Has(trigger, "bool raw = raw_why == ssr::RawWhy::kRaw;") && Has(trigger, "raw_why = ssr::RawWhy::kImages;") && Has(header, "bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false);"),
         "RR-4a: the frame is raw by the rules' decision on what the caller asked (the default is plain), a hit image that cannot be made keeps the frame plain");
   Check(Has(trigger, "if (raw_ever_asked_ && uint32_t(raw_why) != raw_why_logged_) {") && Has(trigger, "if (raw_requested) {\n    raw_ever_asked_ = true;\n  }"), "RR-4a: nothing is logged until the mode was asked for once: the log of a run with the plan not RR is what it was");
   Check(Has(trigger, "  if (!raw) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPass(list, accum_[write_], temporal_pipeline, temporal);\n  }"),
@@ -2291,7 +2308,7 @@ void TestSources(const std::string& dir) {
 
   // the order at the trigger: the capture, then the reflections, then the car's history
   const size_t capture_at = scene.find("colour_captured = screen_->CapturePost(record, summary, list);");
-  const size_t ssr_at = scene.find("ssr_->OnTrigger(summary, list, raw_ssr);");
+  const size_t ssr_at = scene.find("ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning());");
   const size_t car_at = scene.find("car_refl_->OnResolve(record, summary, list);");
   Check(capture_at != std::string::npos && ssr_at != std::string::npos && car_at != std::string::npos && capture_at < ssr_at && ssr_at < car_at, "scene.cpp: the colour capture, then the reflections, then the car self-reflection's history");
   Check(Has(scene, "if (colour_captured && ssr_) {") && Has(scene, "if (ssr_ && ssr_->wants_draws()) {\n    ssr_->OnMainDraw(draw.match, banks);") && Has(scene, "ssr_->BeginFrame();") && Has(scene, "ssr_->OnPresent();"),
@@ -2388,7 +2405,7 @@ void TestSources(const std::string& dir) {
   const std::string table_accessor = FunctionText(ao_cpp, "bool AmbientOcclusion::VehicleTableNow(VehicleTableOut* out) const {");
   Check(!table_accessor.empty() && Has(ao_h, "bool VehicleTableNow(VehicleTableOut* out) const;") && Has(table_accessor, "vehicle_table_frame_ != frame_") && !Has(table_accessor, "list->") && Has(ao_cpp, "  vehicle_table_frame_ = frame_;\n  vehicle_table_ids_ = mask;"),
         "ao.h / ao.cpp: the vehicle table accessor is const, answers only for a table drawn in this frame and records nothing");
-  Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") && Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get()));") &&
+  Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") && Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get(), upscaler_running));") &&
             Has(trigger, "push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));"),
         "ssr.cpp: the vehicle table goes to the temporal pass, the stencil plane to the trace");
   // GB-I2: the road view: found by its identity, classified, drawn this frame, moved to a shader read before the trace, asked for only while the share is above 0; its numbers are the side view's own
@@ -2418,7 +2435,7 @@ void TestSources(const std::string& dir) {
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
   Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
-  Check(Has(temporal_ps, "const float3 clipped = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "history = resolve ? SsrKeepClip(history, clipped) : clipped;") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
+  Check(Has(temporal_ps, "const float3 clipped = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "history = SsrKeepClip(history, clipped, SsrClipKeepFor(resolve, upscaler));") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
 
   TestRawSources(dir, rules, header, cpp, scene, cmake, shaders_h, pass, apply_ps, settings, manifest, meta);
 

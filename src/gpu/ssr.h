@@ -145,7 +145,8 @@ class ScreenReflections {
   void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks);
   // The trigger's colour capture was just recorded (ScreenShared::CapturePost returned true): runs the passes. True when passes were recorded (the caller's list state is gone). Once a frame.
   // `raw_requested` (RR-4a): DLSS Ray Reconstruction takes this frame and this effect's switch is on (TemporalSystem::RawModes().Ssr()); the frame is raw only if the rules allow it (DecideRaw).
-  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false);
+  // `upscaler_running` (SSR-NOISE review): a temporal upscaler works on this frame (the accumulation then takes no floor for its clip: hlsl/ssr_common.hlsli SsrClipKeepFor); a raw frame has no accumulation.
+  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false);
   // RR-4a: this frame's hit distance image (R16_FLOAT, the picture's size, readable) when the frame ran RAW and wrote it, else null. Valid until the next frame's trigger.
   const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
   // A guest present: the frame boundary (the history's ping-pong, the idle count).

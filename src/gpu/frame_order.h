@@ -407,7 +407,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .label_file = "screen_shared.cpp", .label = "screen colour post", .makes = data::kColourPost | data::kHistory,
      .deps = {{{Step::kAoApply, "the colour as the occlusion left it"}, {Step::kLocalLights, "UNCAPPED and after the deferred lights: the reflections must see the lights"}}},
      .note = "made only while a consumer wants colour_post; before SSR adds to the colour (a reflection is not a reflection of a reflection)"},
-    {.step = Step::kSsr, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "screen-space reflections (additive)", .call = "ssr_->OnTrigger(summary, list, raw_ssr)",
+    {.step = Step::kSsr, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "screen-space reflections (additive)", .call = "ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning())",
      .label_file = "ssr.cpp", .label = "ssr trace", .more_labels = {{"ssr rt", "ssr temporal", "ssr denoise", "ssr apply"}}, .closing_label = "after ssr",
      .reads = data::kHizMin | data::kColourPost | data::kPlanes, .soft_reads = data::kCarStructures, .makes = data::kRrHitSsr, .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kHizMin | data::kColourPost,
      .deps = {{{Step::kColourPost, "reads the capture, which must be made before the effect adds to the colour"}, {Step::kLocalLights, "the reflection shows the lights"}}},
