@@ -72,6 +72,7 @@
 
 #include "constants.h"
 #include "edram.h"
+#include "guest_frame.h"
 #include "host_passes.h"
 #include "resolve.h"
 #include "screen_frame.h"
@@ -178,7 +179,8 @@ class ScreenReflections {
   uint32_t idle_frames_ = 0;          // frames since the effect last ran (the images go back after a while)
   uint64_t images_generation_ = 0;    // bumped when the images are made again (the history is gone)
 
-  // the frame
+  // the frame (the guest frame: BeginFrame runs for every list, so the resets are gated by `guest_`, guest_frame.h: a second list of a frame that already ran keeps the state, review F2)
+  guest_frame::Gate guest_;
   bool trigger_done_ = false;
   bool ran_ = false;                  // this frame recorded the passes
   ssr::WetVotes wet_votes_;

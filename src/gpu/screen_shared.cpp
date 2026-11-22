@@ -141,6 +141,15 @@ void ScreenShared::Shutdown() {
 }
 
 void ScreenShared::BeginFrame(uint64_t frame_serial) {
+  // Once for every command buffer the Scene opens: a second one of a guest frame that was already published (its capture, its chain and the history trade wait for the present) keeps the frame
+  // as it is, and the number of such repeats is logged (guest_frame.h, review F2). A buffer that opens before the frame was published (the empty one of an idle present) starts it afresh.
+  if (!guest_.Begin()) {
+    if (guest_frame::LogDue(guest_.repeats())) {
+      REXLOG_INFO("{} BeginFrame ran twice in one guest frame ({} times so far: opened again after the frame was published; the published frame, the capture and the history trade are kept)", kPrefix,
+                  guest_.repeats());
+    }
+    return;
+  }
   frame_serial_ = frame_serial;
   // The frame is empty until the AO's depth chain publishes it.
   frame_ = screen::ScreenFrame{};
@@ -346,6 +355,7 @@ void ScreenShared::Publish(plume::RenderCommandList* list, const Adopted& adopte
     Seal();  // no capture is planned behind this: the frame is whole (else CapturePost seals it, or the frame's end)
   }
   published_ = true;
+  guest_.Worked();  // a later BeginFrame of this guest frame keeps the frame (the capture and the history trade follow at the present)
   ++published_frames_;
   if (!first_publish_logged_) {
     first_publish_logged_ = true;
@@ -468,6 +478,7 @@ void ScreenShared::OnPresent() {
   anchor_seen_ = false;
   composite_seen_ = false;
   trigger_seen_ = false;
+  guest_.Present();  // the guest frame is over: the next BeginFrame starts a frame afresh
 }
 
 bool ScreenShared::IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary, bool anchor_seen, bool composite_seen, bool trigger_seen) {

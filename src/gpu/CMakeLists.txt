@@ -208,6 +208,11 @@ add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
 #   cmake --build <dir> --target larecomp_variant_wait_test, then run src/gpu/larecomp_variant_wait_test (exit 0 = passed).
 add_executable(larecomp_variant_wait_test EXCLUDE_FROM_ALL variant_wait_test.cpp)
 target_include_directories(larecomp_variant_wait_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+# The guest frame's once-only state (guest_frame.h; LIGHT-STACK-REVIEW F2: Scene::BeginFrame runs for every list, the reflections' trigger mark and the shared screen products' published frame must
+# survive a second list of one guest frame), the two owners' frames as twins and their sources:
+#   cmake --build <dir> --target larecomp_guest_frame_test, then run src/gpu/larecomp_guest_frame_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_guest_frame_test EXCLUDE_FROM_ALL guest_frame_test.cpp)
+target_include_directories(larecomp_guest_frame_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # Every descriptor set the renderer makes agrees with its builder (descriptor_count_test.cpp; tools/check_descriptor_counts.py is its Python twin): D3D12 refuses a set
 # whose CreateDescriptorSet counts are not the builder's ranges (Vulkan does not count: the city shadow pass never ran on D3D12 for that), and the binding code's indices,
 # range types and structured views are read against the ranges. Reads the .cpp / .h files of the folder it is given, no renderer needed:
