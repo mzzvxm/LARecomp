@@ -105,8 +105,9 @@ inline constexpr uint64_t kTrafficLensPs = 0x25E3BB37714FA645ull;  // xAmbientCa
 // The settings' words, as the render thread reads them. `auto` is the class's cell; a word that is no value counts as `auto`.
 enum class Mode : uint8_t { kOff, kOn };
 
-// Whether the lit shaders' headlight variant is to be chosen for a draw now: the rig published a light AND the headlight route keeps the forward stage (GB-H2: mcla_gpu_headlight_pass is
-// not `pass`, headlight_pass_rules.h; the route is read once a frame, in the rig's BeginFrame) (pipelines.cpp WantedFeatures). Any thread.
+// Whether the lit shaders' headlight variant is to be asked for by a draw now: the rig published a light AND the headlight route keeps the forward stage (GB-H2: mcla_gpu_headlight_pass is
+// not `pass`, or it is and mcla_gpu_headlight_pass_keep_forward is on: the Scene then drops the stage again for the draws the deferred pass lights, headlight_pass_rules.h; the route and the
+// switch are read once a frame, in the rig's BeginFrame) (pipelines.cpp WantedFeatures). Any thread.
 bool VariantSelected();
 
 // Whether HEADLIGHTS (mcla_gpu_headlights, `auto` resolved for this graphics card) is on: the master of both the forward stage and the deferred pass's headlights. Read from the live setting; the
@@ -178,6 +179,8 @@ class HeadlightRig {
   }
   // A draw that should have taken the variant drew the game's own shader because the variant's pipeline was still being made (Scene::Prepare), for the census.
   void NoteFallbackDraw() { ++fallback_draws_; }
+  // A draw that asked for the variant dropped it because the deferred pass lights its pixels (the route `pass`, Scene::GBufferKey, headlight_pass_rules.h), for the census.
+  void NoteDroppedDraw() { ++dropped_draws_; }
 
  private:
   // What one car's lens draws showed in this frame: the car is told by its own frame (gWorld: the lens draws of a car share it), not by a stencil ID,
@@ -257,7 +260,7 @@ class HeadlightRig {
   uint32_t boxes_readable_ = 0;
   std::array<uint32_t, 9> boxes_unreadable_{};
   uint32_t lens_inline_ = 0, lens_no_element_ = 0, lens_no_stream_ = 0;
-  uint32_t variant_draws_ = 0, variant_alpha_draws_ = 0, fallback_draws_ = 0;
+  uint32_t variant_draws_ = 0, variant_alpha_draws_ = 0, fallback_draws_ = 0, dropped_draws_ = 0;
   uint64_t last_log_ = 0;
   uint64_t night_frames_ = 0, frames_ = 0;
   uint32_t last_cars_ = 0, last_cars_lit_ = 0;

@@ -176,6 +176,7 @@ class LocalLights {
   float car_gain_ = 1.0f;
   larecomp::gpu::local_lights::Tier tier_ = larecomp::gpu::local_lights::Tier::kMedium;  // the budgets' tier: the light shadows' level
   larecomp::gpu::headlight_pass::Route route_ = larecomp::gpu::headlight_pass::Route::kForward;  // GB-H2: which of the two ways lights the frame's headlights (mcla_gpu_headlight_pass)
+  bool keep_forward_ = true;  // GB-H2-FOLLOW: mcla_gpu_headlight_pass_keep_forward as last logged
   bool planes_wanted_ = false;  // the G-buffer's planes and the shared depth are wanted this frame (the setting is on, or the route's headlights are)
 
   // resources

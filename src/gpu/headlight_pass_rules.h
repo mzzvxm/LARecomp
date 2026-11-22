@@ -17,8 +17,18 @@
 //
 // THE SWITCH (mcla_gpu_headlight_pass, a hidden debug setting, live): which of the two light the frame's headlights.
 //   forward   the default, the game as it is: the variant lights, the pass takes no headlight of the frame (unless mcla_gpu_local_lights_sources says so, which is the old double lighting test).
-//   pass      the variant is NOT chosen (the draws take the plain or the G-buffer-only words) and the pass lights the frame's headlights: the pass alone.
+//   pass      the pass lights the frame's headlights, and the variant is kept ONLY for the draws the pass does not light (see "THE DRAWS IN `pass`" below): a pixel is lit once.
 //   both      the variant lights and the pass adds the same lights again (the covered surfaces are lit twice: a diagnostic, the sum of the two).
+// THE DRAWS IN `pass` (GB-H2-FOLLOW, from the review's S4). The first version of `pass` took the variant away from EVERY draw, so what the pass does not light had no headlight at all: the neon, the
+// store sign and the lamp glass (the 7 emissive shaders of the 8 the night stage holds out: their lit weight is 0 and the pass skips them), and every draw that does not write the planes (a pipeline still
+// being made, a view the G-buffer does not carry, a draw whose shader has no G-buffer word). Now the variant stays in `pass` and the Scene drops it per draw (Scene::GBufferKey) exactly for the draws
+// whose pixels the pass lights, so every pixel is lit once, by one of the two:
+//   the pass lights a draw   its planes are carried by the draw (the draw WRITES them, or is a blend that MASKS them: the pass then lights the surface under it, and a forward term on top would light that
+//                            share twice), the frame has the normal and the albedo planes, and the shader's class and lit weight are lit (the material table: not emissive, not none, weight over 0).
+//   the variant stays        everything else: a draw the G-buffer does not carry (not the main view, a pipeline pending, no planes this frame, the planes' channels not writable), a draw that CLEARS the
+//                            planes under it (they say "no data": the pass skips those pixels), and a shader the pass skips by its class (the 7 emissive ones).
+// mcla_gpu_headlight_pass_keep_forward (debug only, default on) is the A/B of this: off, `pass` is the first version again (no headlight on what the pass does not light).
+//
 // The pass runs for `pass` and `both` whatever mcla_gpu_local_lights says (the G-buffer's normal and albedo planes are wanted for it while HEADLIGHTS is on). HEADLIGHTS (mcla_gpu_headlights) stays the
 // master of both: with it off the rig has no light and neither way lights anything.
 //
@@ -74,14 +84,32 @@ inline constexpr Route ParseRoute(std::string_view word) {
 }
 inline constexpr const char* RouteName(Route r) { return r == Route::kPass ? "pass" : (r == Route::kBoth ? "both" : "forward"); }
 
-// The lit shaders' headlight variant is chosen for the draws.
-inline constexpr bool ForwardStageOn(Route r) { return r != Route::kPass; }
+// The lit shaders' headlight variant is asked for by the draws (pipelines.cpp WantedFeatures): in `forward` and `both` always; in `pass` only with the A/B switch mcla_gpu_headlight_pass_keep_forward on
+// (the default), and then the Scene drops it again for the draws the pass lights (DropsForwardStage below). With the switch off `pass` is the pass alone.
+inline constexpr bool ForwardStageOn(Route r, bool keep_in_pass = false) { return r != Route::kPass || keep_in_pass; }
 // The deferred pass lights the frame's headlights (and runs for them whatever mcla_gpu_local_lights says).
 inline constexpr bool PassLightsHeadlights(Route r) { return r != Route::kForward; }
 // The sources mask the pass runs with: the setting's, and the frame's surface lights when the route says the pass lights the headlights.
 inline constexpr uint32_t SourcesFor(Route r, uint32_t sources) { return PassLightsHeadlights(r) ? (sources | local_lights::kSourceFrame) : sources; }
 // Whether the pass is on: its own setting, or a route that gives it the headlights.
 inline constexpr bool PassOn(Route r, bool setting) { return setting || PassLightsHeadlights(r); }
+
+// How the G-buffer carries a draw (gbuffer_rules.h PlaneMode, kept apart so that this header does not need the planes' rules): not at all (no sidecar on the draw), clearing the planes under it, masked
+// (the draw binds the planes with a write mask of 0: they keep what the surface under it wrote: the blends), or writing them.
+enum class Carry : uint8_t { kNone = 0, kClear = 1, kMask = 2, kWrite = 3 };
+
+// What the Scene knows of one draw when it decides whether the draw keeps the forward headlight in route `pass`.
+struct DrawCover {
+  Carry carry = Carry::kNone;
+  bool planes_ready = false;  // the frame attaches the normal AND the albedo plane (the pass needs both: local_lights.cpp OnResolve)
+  bool shader_lit = true;     // the pass lights what the shader leaves in the planes: its class is not emissive or none and its lit weight is over 0 (gbuffer MaterialTable::PassLights)
+};
+
+// The deferred pass lights the pixels of the draw: the draw puts its own surface in the planes, or is a blend over a surface that did (the planes under it are lit), the planes exist, and the pass does
+// not skip the shader's class. (The pass's own skips of a whole frame, no camera or no target, are not known at the draw: that frame has no headlights in `pass`, as before.)
+inline constexpr bool PassLightsDraw(const DrawCover& c) { return c.planes_ready && c.shader_lit && (c.carry == Carry::kWrite || c.carry == Carry::kMask); }
+// The draw's forward headlight is dropped: the route is `pass` and the pass lights its pixels. In every other case the draw keeps the variant it asked for (always in `forward` and `both`).
+inline constexpr bool DropsForwardStage(Route r, const DrawCover& c) { return r == Route::kPass && PassLightsDraw(c); }
 
 // The retail census of the forward stage (headlight_test.cpp, the game's 120 lit pixel shaders): what it edits and what it leaves out and the pass does not.
 inline constexpr uint32_t kLitShaders = 120;

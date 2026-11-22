@@ -89,7 +89,11 @@ void RouteChecks() {
   for (const R r : {R::kForward, R::kPass, R::kBoth}) {
     Check(hp::ParseRoute(hp::RouteName(r)) == r, std::string("the name of ") + hp::RouteName(r) + " parses back to it");
   }
-  Check(hp::ForwardStageOn(R::kForward) && !hp::ForwardStageOn(R::kPass) && hp::ForwardStageOn(R::kBoth), "the forward stage is off only in the route `pass`");
+  Check(hp::ForwardStageOn(R::kForward) && !hp::ForwardStageOn(R::kPass) && hp::ForwardStageOn(R::kBoth), "the forward stage is off only in the route `pass`, and there only with the A/B switch off");
+  // GB-H2-FOLLOW: with mcla_gpu_headlight_pass_keep_forward on, `pass` still asks for the variant (the Scene drops it per draw); the other routes do not care
+  Check(hp::ForwardStageOn(R::kPass, true) && !hp::ForwardStageOn(R::kPass, false) && hp::ForwardStageOn(R::kForward, true) && hp::ForwardStageOn(R::kForward, false) &&
+            hp::ForwardStageOn(R::kBoth, true) && hp::ForwardStageOn(R::kBoth, false),
+        "the A/B switch (keep the forward stage in `pass`) changes the route pass only");
   Check(!hp::PassLightsHeadlights(R::kForward) && hp::PassLightsHeadlights(R::kPass) && hp::PassLightsHeadlights(R::kBoth), "the pass lights the frame's headlights in `pass` and `both`");
   // every route lights each headlight at least once, and `both` lights it twice: the three routes are the cases of the A/B
   for (const R r : {R::kForward, R::kPass, R::kBoth}) {
@@ -121,6 +125,56 @@ std::vector<float> Field(Lcg& rng, size_t n, float base) {
     f[i] = base * (0.5f + 1.5f * float(i % 97) / 96.0f) * (0.8f + 0.4f * rng.Next());
   }
   return f;
+}
+
+// ---------------------------------------------------------------------------
+// the draws in route `pass`: every pixel is lit once (GB-H2-FOLLOW)
+// ---------------------------------------------------------------------------
+
+void DrawChecks() {
+  using R = hp::Route;
+  using C = hp::Carry;
+  const C carries[] = {C::kNone, C::kClear, C::kMask, C::kWrite};
+  const char* carry_names[] = {"not carried", "clearing the planes", "masking the planes", "writing the planes"};
+  int pass_lit = 0, forward_kept = 0;
+  for (int ci = 0; ci < 4; ++ci) {
+    for (const bool ready : {false, true}) {
+      for (const bool lit : {false, true}) {
+        hp::DrawCover cover;
+        cover.carry = carries[ci];
+        cover.planes_ready = ready;
+        cover.shader_lit = lit;
+        const std::string what = std::string(carry_names[ci]) + (ready ? ", planes ready" : ", no planes") + (lit ? ", lit shader" : ", emissive shader");
+        // the pass lights a draw exactly when it has planes to read, a lit shader, and the draw's pixels carry a surface (it wrote it, or it is a blend over one)
+        const bool want = ready && lit && (carries[ci] == C::kWrite || carries[ci] == C::kMask);
+        Check(hp::PassLightsDraw(cover) == want, "the pass lights: " + what);
+        // forward and both never drop the stage; pass drops it exactly where the pass lights: a pixel is lit by one of the two, never zero and never both
+        Check(!hp::DropsForwardStage(R::kForward, cover) && !hp::DropsForwardStage(R::kBoth, cover), "forward and both keep the stage on every draw: " + what);
+        Check(hp::DropsForwardStage(R::kPass, cover) == hp::PassLightsDraw(cover), "pass drops the stage exactly where the pass lights: " + what);
+        const bool forward_lights = !hp::DropsForwardStage(R::kPass, cover);
+        const bool pass_lights = hp::PassLightsDraw(cover);
+        Check(forward_lights != pass_lights, "in pass exactly one of the two lights the draw (not zero, not twice): " + what);
+        pass_lit += pass_lights ? 1 : 0;
+        forward_kept += forward_lights ? 1 : 0;
+      }
+    }
+  }
+  Check(pass_lit == 2 && forward_kept == 14, "of the 16 kinds of draw the pass lights 2 (written or masked, with planes ready and a lit shader) and the forward stage the other 14");
+  // the named cases
+  hp::DrawCover neon{C::kWrite, true, false};       // an emissive shader that writes its planes (the 7 emissive exempt shaders): the pass skips its class
+  hp::DrawCover wall{C::kWrite, true, true};        // a lit writer: the pass
+  hp::DrawCover decal{C::kMask, true, true};        // a blend over a lit surface (a decal, the tangent decal): the pass lights the surface under it, a forward term would light that share twice
+  hp::DrawCover glass{C::kMask, true, false};       // a blended emissive shader (lamp glass, an additive tint): it adds its own light, the surface under it is lit by the pass
+  hp::DrawCover cleared{C::kClear, true, true};     // a draw whose shader has no G-buffer word: it clears the planes, the pass skips those pixels
+  hp::DrawCover side_view{C::kNone, true, true};    // a draw of another view or a pending pipeline: no planes on it
+  hp::DrawCover no_planes{C::kWrite, false, true};  // the frame has no albedo plane: the pass cannot run
+  Check(hp::DropsForwardStage(R::kPass, wall), "a lit writer drops the forward headlight in pass");
+  Check(!hp::DropsForwardStage(R::kPass, neon), "an emissive shader keeps the forward headlight in pass");
+  Check(hp::DropsForwardStage(R::kPass, decal), "a blend over a lit surface drops the forward headlight in pass (the pass lights the surface under it)");
+  Check(!hp::DropsForwardStage(R::kPass, glass), "a blended emissive shader keeps the forward headlight in pass (it adds its own light)");
+  Check(!hp::DropsForwardStage(R::kPass, cleared) && !hp::DropsForwardStage(R::kPass, side_view) && !hp::DropsForwardStage(R::kPass, no_planes), "a draw with no planes of its own, or a frame with no albedo plane, keeps it");
+  // the default is a draw that is lit and not carried: the forward stage (nothing is dark by default)
+  Check(!hp::DropsForwardStage(R::kPass, hp::DrawCover{}), "a draw the Scene knows nothing about keeps the forward stage");
 }
 
 void IdentityChecks() {
@@ -500,7 +554,27 @@ void SourceChecks(const std::string& src) {
 
   // the forward stage is chosen only while the route keeps it (pipelines.cpp asks VariantSelected)
   Check(Has(pipelines, "if (has(sp::kFeatureHeadlight) && headlight_rig::VariantSelected()) {"), "pipelines.cpp still asks the rig whether the variant is chosen");
-  Check(Has(rig, "return g_selected.load(std::memory_order_relaxed) && larecomp::gpu::headlight_pass::ForwardStageOn(CurrentRoute());"), "the variant is chosen when the rig has a light AND the route keeps the forward stage");
+  Check(Has(rig, "return g_selected.load(std::memory_order_relaxed) && larecomp::gpu::headlight_pass::ForwardStageOn(CurrentRoute(), g_keep_in_pass.load(std::memory_order_relaxed));"),
+        "the variant is asked for when the rig has a light AND the route keeps the forward stage (in `pass`: with the A/B switch on)");
+  Check(Has(rig, "g_keep_in_pass.store(s::mcla_gpu_headlight_pass_keep_forward.Get(), std::memory_order_relaxed);") && Has(rig, "std::atomic<bool> g_keep_in_pass{true};"),
+        "the rig reads the A/B switch once a frame, in its BeginFrame, and keeps the stage by default");
+  // GB-H2-FOLLOW: the Scene drops the stage per draw, in the G-buffer's key, through the rule
+  {
+    const std::string scene_cpp = ReadFile(gpu + "scene.cpp");
+    Check(Has(scene_cpp, "headlight_rig::CurrentRoute() == hp::Route::kPass && chain::HasFeature(d.key.ps_variant, larecomp::shaderpack::kFeatureHeadlight)") && Has(scene_cpp, "hp::DropsForwardStage(hp::Route::kPass, cover)"),
+          "Scene::GBufferKey drops the forward stage in route pass, through headlight_pass::DropsForwardStage, for a draw that asked for it");
+    Check(Has(scene_cpp, "cover.shader_lit = !d.ps || gbuffer_materials_.PassLights(d.ps->key);") && Has(scene_cpp, "cover.planes_ready = (plan.attached & kPassPlanes) == kPassPlanes;"),
+          "... with the shader's class from the material table and the frame's planes");
+    Check(Has(scene_cpp, "case gbuffer::PlaneMode::kWrite: cover.carry = hp::Carry::kWrite; break;") && Has(scene_cpp, "case gbuffer::PlaneMode::kMask: cover.carry = hp::Carry::kMask; break;") &&
+              Has(scene_cpp, "case gbuffer::PlaneMode::kClear: cover.carry = hp::Carry::kClear; break;") && Has(scene_cpp, "case gbuffer::PlaneMode::kNone: cover.carry = hp::Carry::kNone; break;"),
+          "... the planes' mode is the rule's carry, one for one");
+    Check(Has(scene_cpp, "key.ps_variant = dropped_word;"), "... a masking blend that drops the stage takes its word without it");
+    // the order: the dropped draw's decision replaces the first one, and the key is built from the decision that stands
+    const size_t drop_at = At(scene_cpp, "forward_dropped = true;");
+    const size_t note_at = At(scene_cpp, "gbuffer_->NoteDraw(decision.why, r.ps_identity);");
+    Check(drop_at != std::string::npos && note_at != std::string::npos && drop_at < note_at, "the drop is decided before the draw is noted and its key built");
+    Check(Has(rig_h, "void NoteDroppedDraw() { ++dropped_draws_; }") && Has(scene_cpp, "headlights_->NoteDroppedDraw();"), "the rig counts the draws that dropped the stage (its census line)");
+  }
   Check(Has(rig, "const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(s::mcla_gpu_headlight_pass.Get());") &&
             Has(rig, "g_route.store(uint8_t(route), std::memory_order_relaxed);"),
         "the rig reads the route once a frame in its BeginFrame (ReadSettings)");
@@ -518,6 +592,16 @@ void SourceChecks(const std::string& src) {
   // the setting, in the three generated files, live and debug only, default forward
   Check(Has(settings, "std::string, mcla_gpu_headlight_pass, \"forward\",") && Has(settings, "inline auto& mcla_gpu_headlight_pass = g_gpu.mcla_gpu_headlight_pass;"), "settings_gpu.h defines the route and its alias");
   Check(Has(manifest, "\"mcla_gpu_headlight_pass\": {") && Has(meta, "{\"mcla_gpu_headlight_pass\", \"MCLA/GPU\"},"), "manifest.json and settings_meta.inc list it");
+  // the A/B switch of GB-H2-FOLLOW: a bool, on by default, debug only, live, listed in the three files, and a row on the debug menu's FIXES page
+  Check(Has(settings, "bool, mcla_gpu_headlight_pass_keep_forward, true,") && Has(settings, "inline auto& mcla_gpu_headlight_pass_keep_forward = g_gpu.mcla_gpu_headlight_pass_keep_forward;"), "settings_gpu.h defines the keep-forward switch (default on) and its alias");
+  Check(Has(manifest, "\"mcla_gpu_headlight_pass_keep_forward\": {") && Has(meta, "{\"mcla_gpu_headlight_pass_keep_forward\", \"MCLA/GPU\"},"), "manifest.json and settings_meta.inc list the keep-forward switch");
+  {
+    const size_t at = settings.find(", mcla_gpu_headlight_pass_keep_forward, ");
+    const size_t end = settings.find(");", at);
+    const std::string text = at == std::string::npos ? std::string() : settings.substr(at, end - at);
+    Check(Has(text, "rex::kDebugOnly") && !Has(text, "rex::kRestart"), "the keep-forward switch is debug only and live");
+  }
+  Check(Has(menu, "Bool(\"PM_RxDbgHeadlightKeep\", \"mcla_gpu_headlight_pass_keep_forward\", \"PASS FORWARD HEADLIGHT: \")"), "the debug menu's FIXES page has its row");
   {
     const size_t at = settings.find(", mcla_gpu_headlight_pass, ");
     const size_t end = settings.find(");", at);
@@ -550,6 +634,7 @@ int main(int argc, char** argv) {
     src = slash == std::string::npos ? std::string(".") : here.substr(0, slash) + "/..";
   }
   RouteChecks();
+  DrawChecks();
   IdentityChecks();
   GateChecks();
   PixelIdentityChecks();

@@ -494,6 +494,7 @@
 {"mcla_gpu_local_lights_gain", "MCLA/GPU"},
 {"mcla_gpu_local_lights_car_gain", "MCLA/GPU"},
 {"mcla_gpu_headlight_pass", "MCLA/GPU"},
+{"mcla_gpu_headlight_pass_keep_forward", "MCLA/GPU"},
 {"mcla_gpu_light_pick", "MCLA/GPU"},
 {"mcla_gpu_light_pick_record", "MCLA/GPU"},
 {"mcla_gpu_light_frame", "MCLA/GPU"},

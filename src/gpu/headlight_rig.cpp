@@ -57,6 +57,8 @@ HeadlightSet g_set;
 std::atomic<bool> g_selected{false};
 // GB-H2: the headlight route (headlight_pass_rules.h) as the rig last read the setting; the forward stage is `selected` only while the route keeps it.
 std::atomic<uint8_t> g_route{uint8_t(larecomp::gpu::headlight_pass::Route::kForward)};
+// GB-H2-FOLLOW: mcla_gpu_headlight_pass_keep_forward as the rig last read it: in the route `pass` the draws still ask for the forward stage (the Scene drops it for the draws the pass lights).
+std::atomic<bool> g_keep_in_pass{true};
 // The shadow views of the producer (SetLocalShadows), as a copy (the producer's frame changes in place), with the car key of each light of the set they were
 // made for: the set that reads them is the next frame's and can be another (headlight_rig_rules.h RemapShadowViews).
 larecomp::gpu::LocalShadowFrame g_shadow_frame;
@@ -83,7 +85,7 @@ const HeadlightSet& CurrentHeadlights() { return g_set; }
 namespace headlight_rig {
 
 bool VariantSelected() {
-  return g_selected.load(std::memory_order_relaxed) && larecomp::gpu::headlight_pass::ForwardStageOn(CurrentRoute());
+  return g_selected.load(std::memory_order_relaxed) && larecomp::gpu::headlight_pass::ForwardStageOn(CurrentRoute(), g_keep_in_pass.load(std::memory_order_relaxed));
 }
 
 larecomp::gpu::headlight_pass::Route CurrentRoute() { return larecomp::gpu::headlight_pass::Route(g_route.load(std::memory_order_relaxed)); }
@@ -160,7 +162,8 @@ void HeadlightRig::ReadSettings() {
   const bool was_enabled = enabled_;
   enabled_ = memory_ != nullptr && headlight_rig::SettingOn();  // mcla_gpu_headlights with `auto` resolved for this graphics card (gpu_class.h: off on Low, on on Mid and High); a word that is no value counts as `auto`
   const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(s::mcla_gpu_headlight_pass.Get());
-  g_route.store(uint8_t(route), std::memory_order_relaxed);  // GB-H2: `pass` takes the forward stage away from the draws (VariantSelected); the rig still tracks, ranks and publishes the lights the pass and the volume read
+  g_route.store(uint8_t(route), std::memory_order_relaxed);  // GB-H2: in `pass` the Scene drops the forward stage from the draws the pass lights (Scene::GBufferKey); the rig still tracks, ranks and publishes the lights the pass and the volume read
+  g_keep_in_pass.store(s::mcla_gpu_headlight_pass_keep_forward.Get(), std::memory_order_relaxed);  // GB-H2-FOLLOW: off = `pass` asks for no forward stage at all
   headlight_points::SetWanted(enabled_);
   strength_ = float(std::clamp(double(s::mcla_gpu_headlight_strength.Get()), 0.0, 8.0));
   range_ = float(std::clamp(double(s::mcla_gpu_headlight_range.Get()), 10.0, 200.0));
@@ -648,17 +651,17 @@ void HeadlightRig::Log(size_t picked) {
   }
   REXLOG_INFO("{} frame {}: night {:.2f} (the {} sun {} at {:+.1f} degrees{}), {} lens draws in {} frames' windows (player's lens {}, traffic's {}, no vehicle ID {}, "
               "no pose {}, left out: no bone palette {}, at the car's root {}), game's light points {} recent ({} lit, {} notes since the start), lens lamps with points {}, lamps from points alone {}, forward turned by the points {}, {} cars seen, {} with a front lens, {} lights ({}; {} coasting after the game stopped drawing the car; the view {}), {} variant draws ({} with the alpha test, {} more drew the game's own shader while the variant's "
-              "pipeline was being made), {} lens boxes kept ({} meshes read since the start: {} readable, unreadable by reason [{}]; draws with no mesh to read since the last line: inline {}, no position {}, no stream {})",
+              "pipeline was being made, {} more dropped it because the deferred pass lights them: the route pass), {} lens boxes kept ({} meshes read since the start: {} readable, unreadable by reason [{}]; draws with no mesh to read since the last line: inline {}, no position {}, no stream {})",
               kPrefix, frame_, night_, world_sun_ && frame_ - world_sun_frame_ <= kWorldSunKeepFrames ? "world's" : "lens draw's", sun_seen_ ? "seen" : "NOT seen",
               sun_degrees_, night_override_ >= 0 ? ", overridden" : "", lens_draws_, kLogFrames,
               lens_player_ps_, lens_traffic_ps_, lens_no_id_, lens_no_pose_, lens_no_bone_, lens_at_root_, pts_recent_, pts_on_, headlight_points::Global().notes(), pts_matched_lamps_,
               pts_only_lamps_, pts_disagree_, last_cars_, last_cars_lit_, picked,
               lights.empty() ? std::string("none") : lights, tracker_.coasting_count(), last_view_ ? "known (the beams count)" : "not known",
-              variant_draws_, variant_alpha_draws_, fallback_draws_, boxes_.size(), boxes_readable_ + BoxesUnreadable(), boxes_readable_, UnreadableReasons(), lens_inline_,
+              variant_draws_, variant_alpha_draws_, fallback_draws_, dropped_draws_, boxes_.size(), boxes_readable_ + BoxesUnreadable(), boxes_readable_, UnreadableReasons(), lens_inline_,
               lens_no_element_, lens_no_stream_);
   lens_draws_ = lens_player_ps_ = lens_traffic_ps_ = lens_no_pose_ = lens_no_id_ = lens_no_bone_ = lens_at_root_ = 0;
   lens_inline_ = lens_no_element_ = lens_no_stream_ = 0;
-  variant_draws_ = variant_alpha_draws_ = fallback_draws_ = 0;
+  variant_draws_ = variant_alpha_draws_ = fallback_draws_ = dropped_draws_ = 0;
 }
 
 }  // namespace mcla::gpu

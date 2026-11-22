@@ -178,6 +178,10 @@ const ItemDef kDebugFixesItems[] = {
     // before (the ray traced one where the card can trace) darken it under the bumper. Off = the game's own chrome, which glows there. The variant is chosen at each
     // draw (pipelines.cpp WantedFeatures), so the row is live; the first draw after turning it on builds the shader (a short stutter).
     NativeOnly(Bool("PM_RxDbgCarChrome", "mcla_gpu_car_chrome_occlusion", "CAR CHROME FIX: ")),
+    // The headlight route PASS (HEADLIGHTS VIA on the rendering page) keeps the lit shaders' forward headlight on the draws the deferred pass does not light: the neon, the store sign and the lamp
+    // glass (the pass skips them as emissive), a draw with no planes, a draw that clears them. Off = the route's first version: those draws get no headlight. Read at each draw, so live; no
+    // effect in the routes FORWARD and BOTH. The A/B of GB-H2-FOLLOW (headlight_pass_rules.h).
+    NativeOnly(Bool("PM_RxDbgHeadlightKeep", "mcla_gpu_headlight_pass_keep_forward", "PASS FORWARD HEADLIGHT: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
