@@ -318,7 +318,11 @@ private:
     void TakeIcons() {
         for (auto& up : client_.TakeIcons()) {
 #if defined(LARECOMP_BROWSER_HAS_ICON)
-            auto tex = mcla::ui::IconTexture::FromEncoded(up.png.data(), up.png.size(), 512);
+            // The header is read before the decoder allocates what it says (a 64 KB file can claim a huge picture).
+            // CHECK: not run in a game: a real relay's icon (the recorded one is 2135 bytes) must still show in the F6 list.
+            auto tex = br::PngHeaderFits(up.png.data(), up.png.size(), br::kIconMaxSide)
+                           ? mcla::ui::IconTexture::FromEncoded(up.png.data(), up.png.size(), br::kIconMaxSide)
+                           : nullptr;
             if (!tex) {
                 LARECOMP_APP_WARN("[browser] icon of {} could not be decoded", up.address);
                 continue;
