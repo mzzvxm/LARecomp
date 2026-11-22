@@ -1251,11 +1251,14 @@ void LarecompApp::OnShutdown() {
 // a developer setting) and the log session: a notice that came after the last Init is not logged on this path, the profiler's trace is not finished
 // (use mcla_fast_exit=false for a profile); the log itself is flushed (rex::log::Flush in OnShutdown and again in the note hook).
 int LarecompApp::FinishProcess(int code) {
+  const larecomp::exitfast::Report report = larecomp::exitfast::RunFlushes();
   if (!larecomp::exitfast::Armed()) {
-    LARECOMP_APP_INFO("[quit] mcla_fast_exit is off: the process ends through the C runtime's exit, with every static destructor");
+    // The exe's global objects are immortal (settings/immortal.h) whatever the switch says, so the C runtime's exit no longer destroys the
+    // writers that finished a file in their destructor (the state log, the free camera's recording): their hooks run in this mode too.
+    LARECOMP_APP_INFO("[quit] mcla_fast_exit is off: the process ends through the C runtime's exit ({} flush hook(s) ran in {} ms{}); the exe's global objects are not destroyed in either mode",
+                      report.ran, report.ms, report.threw > 0 ? ", some threw" : "");
     return code;
   }
-  const larecomp::exitfast::Report report = larecomp::exitfast::RunFlushes();
   LARECOMP_APP_INFO("[quit] fast exit: the orderly shutdown is done ({} flush hook(s) in {} ms{}); the process ends now with code {}, without the static destructors (mcla_fast_exit)",
                     report.ran, report.ms, report.threw > 0 ? ", some threw" : "", code);
   larecomp::exitfast::EndNow(code);

@@ -23,7 +23,8 @@
 // career save (MclaWaitForSaves before the title ends, then the SDK closes the packages in rex::Stop), the log (the SDK's logger is
 // synchronous: rex::log::Flush() has written every sink when it returns), every file a function opens, writes and closes in one go.
 //
-// The switch is mcla_fast_exit (debug only, default on). Arm(false) makes Finish return the code, and the process ends the old way.
+// The switch is mcla_fast_exit (debug only, default on). Arm(false) makes Finish return the code, and the process ends the old way (the flush
+// hooks still run first: the statics that used to finish those files in their destructors are never destroyed any more, in either mode).
 //
 // No SDK in this header (larecomp_exit_fast_test builds it alone, and runs a child process through a real exit).
 
@@ -152,8 +153,12 @@ inline Report RunFlushes() {
 }
 
 // What main does with the SDK's exit code: the process ends here when the switch is on, and the code comes back when it is off.
+// The flush hooks run in both cases (EXIT-REVIEW): the exe's global objects are made immortal (immortal.h) whatever the switch says, so their
+// destructors never run, not even through the C runtime's exit of the "off" path, and a writer that finished its file there (the state log's
+// trailer, the free camera's recording) depends on its hook in both.
 inline int Finish(int code) {
   if (Armed()) EndNow(code);
+  (void)RunFlushes();
   return code;
 }
 

@@ -10,6 +10,8 @@
 //   * THE CODE: the exit status is the code given (42), with the process ended by Finish.
 //   * THE ORDER: the flush hooks run in the order they were added, a hook that throws does not stop the next one, then the note hook (the
 //     "Process exiting normally" line) runs, then the process ends.
+//   * THE OFF SWITCH STILL FLUSHES (EXIT-REVIEW): with mcla_fast_exit off Finish returns the code and main returns, but the flush hooks have run:
+//     the exe's statics are immortal in both modes, so a writer that finished its file in its destructor needs its hook there too.
 //   * A WRITE QUEUED JUST BEFORE THE EXIT LANDS: a writer thread that writes what it is given every 3 s (a log's flush interval) is given five
 //     lines and the process exits at once. With its flush hook registered all five are in the file; without the hook none is (the control: the
 //     queue is lost when the process ends without running the destructors, which is what the hooks are for).
@@ -165,6 +167,15 @@ int RunOrder(const char* path) {
   return larecomp::exitfast::Finish(0);
 }
 
+int RunLegacyFlush(const char* path) {
+  g_order_path = path;
+  StartWatchdog();
+  larecomp::exitfast::AddFlush("one", &OrderFlush1);
+  larecomp::exitfast::SetNote(&OrderNote);  // the note is the app's atexit handler on this path: Finish does not run it
+  larecomp::exitfast::Arm(false);
+  return larecomp::exitfast::Finish(5);  // off: the code comes back, after the hook
+}
+
 int RunQueued(bool with_hook, const char* path) {
   StartWatchdog();
   g_writer = new QueuedWriter();
@@ -268,6 +279,7 @@ int main(int argc, char** argv) {
   if (argc >= 3 && std::strcmp(argv[1], "fast") == 0) return RunRace(true, argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "code") == 0) return RunCode();
   if (argc >= 3 && std::strcmp(argv[1], "order") == 0) return RunOrder(argv[2]);
+  if (argc >= 3 && std::strcmp(argv[1], "legacy-flush") == 0) return RunLegacyFlush(argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "queued-hook") == 0) return RunQueued(true, argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "queued-nohook") == 0) return RunQueued(false, argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "stdio-finish") == 0) return RunStdio(true, argv[2]);
@@ -301,6 +313,13 @@ int main(int argc, char** argv) {
   const int order_status = Spawn(argv[0], "order", order_path);
   CHECK(order_status == 0);
   CHECK(Strip(ReadAll(order_path)) == "flush1\nthrows\nflush3\nnote\n");
+
+  // the off switch: the hook runs, the note does not (the atexit handler of the app is the note there), the code comes back
+  const std::string legacy_flush_path = file("legacy-flush.txt");
+  const int legacy_flush_status = Spawn(argv[0], "legacy-flush", legacy_flush_path);
+  std::printf("off switch: status %d, text '%s'\n", legacy_flush_status, Strip(ReadAll(legacy_flush_path)).c_str());
+  CHECK(legacy_flush_status == 5);
+  CHECK(Strip(ReadAll(legacy_flush_path)) == "flush1\n");
 
   // a write queued just before the exit
   const std::string hook_path = file("queued-hook.txt");
