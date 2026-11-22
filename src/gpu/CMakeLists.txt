@@ -402,7 +402,8 @@ target_include_directories(larecomp_background_build_test PRIVATE ${CMAKE_SOURCE
 # std::thread: glibc before 2.34 needs libpthread named at the link.
 find_package(Threads REQUIRED)
 target_link_libraries(larecomp_background_build_test PRIVATE Threads::Threads)
-# The render thread's small CPU savings (render_cpu.h: the mask and the sampled per-draw timers) have one too: no renderer, no GPU.
+# The render thread's small CPU savings (render_cpu.h: the mask and the sampled per-draw timers; native_gfx/guest/physical_alias.h: the order of the
+# physical range check) have one too: no renderer, no GPU.
 #   cmake --build <dir> --target larecomp_render_cpu_test, then run src/gpu/larecomp_render_cpu_test [--bench] (exit 0 = passed).
 add_executable(larecomp_render_cpu_test EXCLUDE_FROM_ALL render_cpu_test.cpp)
 target_include_directories(larecomp_render_cpu_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
