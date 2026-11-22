@@ -216,6 +216,38 @@ inline void Print(const char* what, const PerFrame& p) {
   std::printf("  %-34s changed %.3f, widest gap in 16 frames %.3f, mean %.3f, variance %.4f, step spread %.5f\n", what, p.changed, p.max_gap, p.mean, p.var, p.step_spread);
 }
 
+// The shortest period P (2 .. max_period) with which the noise repeats over `frames` frames (every probed pixel's two numbers at frame f + P equal those at f for every f), or 0 for none (NOISE-FOLLOW). A frame term
+// that wraps after 8 or 16 frames is not a fault of the per-frame checks (it changes every frame, 16 values are spread) but its line in the spectrum survives an exponential average: at a weight of 0.75 a third
+// of a period-8 term, at 0.9 a quarter of a period-16 term, as a shimmer of 7.5 / 3.75 Hz at 60 fps. The effects' frame terms count to 1024 (`& 1023`) and no period under max_period shows.
+inline uint32_t ShortestPeriod(const Noise2& noise, uint32_t first_frame = 100, uint32_t frames = 512, uint32_t max_period = 128) {
+  static const int kProbe[5][2] = {{3, 5}, {41, 77}, {100, 20}, {7, 63}, {18, 18}};
+  std::vector<float> a[5][2];
+  for (int p = 0; p < 5; ++p) {
+    for (uint32_t f = 0; f < frames + max_period; ++f) {
+      const std::pair<float, float> u = noise(kProbe[p][0], kProbe[p][1], first_frame + f);
+      a[p][0].push_back(u.first);
+      a[p][1].push_back(u.second);
+    }
+  }
+  for (uint32_t period = 2; period <= max_period; ++period) {
+    bool repeats = true;
+    for (int p = 0; p < 5 && repeats; ++p) {
+      for (int c = 0; c < 2 && repeats; ++c) {
+        for (uint32_t f = 0; f < frames; ++f) {
+          if (std::fabs(a[p][c][f + period] - a[p][c][f]) > 1e-6f) {
+            repeats = false;
+            break;
+          }
+        }
+      }
+    }
+    if (repeats) {
+      return period;
+    }
+  }
+  return 0;
+}
+
 // The reading of a source file of the tree a test is built from: `dir` is the src/gpu folder (the program's first argument, else the folder of the test's own source).
 inline std::string ReadFile(const std::string& path) {
   std::FILE* f = std::fopen(path.c_str(), "rb");

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "blue_noise_spectrum.h"
+#include "car_rt_hit_rules.h"
 #include "car_rt_refl_rules.h"
 #include "hlsl_shim.h"
 #include "noise_resolve.h"
@@ -37,6 +39,7 @@ namespace nc = noise_check;
 namespace hs = hlsl_shim;
 namespace nr = mcla::gpu::noise_resolve;
 namespace rt = mcla::gpu::car_rt_refl;
+namespace hit = mcla::gpu::car_rt_hit;
 namespace sn = mcla::gpu::scene_noise;
 
 namespace {
@@ -576,7 +579,7 @@ Run RunCone(bool vary, bool history, bool noise_free, int frames, double speed) 
     trace.periodic = false;
     for (int y = 0; y < kN; ++y) {
       for (int x = 0; x < kN; ++x) {
-        trace.At(x, y) = noise_free ? float(ConeTruth(double(x), x0)) : ConeWeight(x, y, vary ? uint32_t(f) & 7u : 0u, x0);
+        trace.At(x, y) = noise_free ? float(ConeTruth(double(x), x0)) : ConeWeight(x, y, vary ? uint32_t(f) & hit::kPhaseMask : 0u, x0);
       }
     }
     Image finished = Atrous(Atrous(trace, 1), 2);
@@ -623,10 +626,14 @@ double Crossing(const Run& r) {
 }
 
 void TestCone() {
-  const auto turn = [](int x, int y, uint32_t f) { return std::pair<float, float>(rt::ConeRotation(uint32_t(x + 100), uint32_t(y), f & 7u), 0.0f); };
+  const auto turn = [](int x, int y, uint32_t f) { return std::pair<float, float>(rt::ConeRotation(uint32_t(x + 100), uint32_t(y), f & hit::kPhaseMask), 0.0f); };
   const nc::PerFrame p = nc::PerFrameOf(turn, 0, 104);
   g_check(p.changed > 0.99 && p.step_spread < 1e-4 && std::fabs(p.mean - 0.5) < 0.01,
           nc::Num("the cone's turn changes at every texel every frame (%.3f: the golden step of the phase) and takes the same step at every texel (%.6f)", p.changed, p.step_spread));
+  // NOISE-FOLLOW: no short period. A phase that wraps at 8 keeps a third of the noise as a 7.5 Hz shimmer under the history's weight of 0.75 (0.25 / |1 - 0.75 e^(-j pi / 4)| = 0.35); the phase counts to 1024 now.
+  const uint32_t period = nc::ShortestPeriod(turn, 104);
+  const double gain_8 = 0.25 / std::abs(std::complex<double>(1.0, 0.0) - 0.75 * std::polar(1.0, -kPi / 4.0));
+  g_check(period == 0 && std::fabs(gain_8 - 0.35) < 0.01, nc::Num("the cone's turn repeats with no period under 128 frames (found %u; the old phase of 8 frames would keep %.2f of its fundamental under the history)", period, gain_8));
   // a still view
   const Run clean_fixed = RunCone(false, false, true, 14, 0.0);
   const Run clean_resolved = RunCone(true, true, true, 14, 0.0);
@@ -904,7 +911,7 @@ void TestSources(const std::string& dir) {
           "shafts_temporal_ps reads the history at the sun's shift, clamps it to the 3x3 range and blends at the weight; registered in CMake and host_shaders.h");
   // the cone
   g_check(nc::Has(cone, "const bool resolve_history = denoise_passes > 0 && !info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && EnsureStableImages(history.width, history.height);") &&
-              nc::Has(cone, "const uint32_t pattern_phase = noise_resolve::Varies(info.upscaler, resolve_history) ? info.pattern_phase : 0u;") && nc::Has(selfrefl, "info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 7u);"),
+              nc::Has(cone, "const uint32_t pattern_phase = noise_resolve::Varies(info.upscaler, resolve_history) ? info.pattern_phase : 0u;") && nc::Has(selfrefl, "info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 1023u);"),
           "the cone: the pattern's phase advances while an upscaler runs or the denoise's own history does; car_selfrefl.cpp hands the phase over every frame and car_rt_refl.cpp says where it is used");
   // NOISE-FOLLOW, CHECK 2: the three histories' images stay over the frames a temporal upscaler takes (HistoryLifetime, asked once a frame in the place that makes the images), and what they hold is stale across the gap
   g_check(nc::Has(ao, "plan.contact_history_gap = contact && upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&") &&

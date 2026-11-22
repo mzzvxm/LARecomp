@@ -61,7 +61,7 @@ inline bool ShaftsKeepsHistory(float shift_u, float shift_v, float aspect) {
 // ---------------------------------------------------------------------------
 // the car reflection cone's history (hlsl/car_rt_refl_denoise_cs.hlsl pass 2)
 // ---------------------------------------------------------------------------
-// The cone's turn changes every frame (the blue tile + the golden step by the frame's phase 0..7), the two a-trous passes take most of its grain out (the residual is under 1% of the weight) and the third
+// The cone's turn changes every frame (the blue tile + the golden step by the frame's phase 0..1023), the two a-trous passes take most of its grain out (the residual is under 1% of the weight) and the third
 // pass averages the finished image with the last frame's, TEXEL FOR TEXEL (no reprojection). car_rt_refl_rules.h "NOT TEMPORAL" weighed a temporal accumulation and left it out because the cone's penumbra
 // moves with the VIEW: a reprojected texel still holds the last frame's direction, the whole penumbra moves by the angle the view turned (0.5 degrees a frame in an orbit: a fifth of a 2.5 degree cone), and
 // its rejection rule (the history's depth and instance) cannot see that. A rule that can is the clamp: the history's weight, hidden share and premultiplied colour are each clamped to the range of the finished

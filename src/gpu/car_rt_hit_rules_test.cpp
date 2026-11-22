@@ -365,15 +365,16 @@ int main(int argc, char** argv) {
   // ---- the push block's packed word -----------------------------------------------------------------------------------------------------
   {
     bool ok = true;
-    for (uint32_t phase = 0; phase < 8; ++phase) {
+    for (uint32_t phase = 0; phase < 1024; ++phase) {
       for (uint32_t rays = 1; rays <= 4; ++rays) {
         const uint32_t w = hr::PackPhaseRays(phase, rays);
-        ok = ok && hr::PhaseOf(w) == phase && hr::RaysOf(w) == rays && (w & 0xFFu) == phase;
+        ok = ok && hr::PhaseOf(w) == phase && hr::RaysOf(w) == rays && ((w >> 18) & 1023u) == phase && (w & 0x3FFFFu) == (rays << 8);
       }
     }
-    Check(ok, "the phase is the low byte (as before) and the cone's rays are in bits 8 to 10");
+    Check(ok, "the phase (0 .. 1023, NOISE-FOLLOW) is in bits 18 to 27 and the cone's rays are in bits 8 to 10: no other bit is set, so the stats flag (16) and the blue flag (17) stay free");
     Check(hr::RaysOf(5u) == 4 && hr::RaysOf(0u) == 4, "a word with no rays (a host that does not say) is the whole cone");
-    Check(hr::PackPhaseRays(9, 4) == hr::PackPhaseRays(1, 4) && hr::RaysOf(hr::PackPhaseRays(0, 9)) == 4 && hr::RaysOf(hr::PackPhaseRays(0, 0)) == 1, "the phase is taken mod 8 and the rays clamped to 1 .. 4");
+    Check(hr::PackPhaseRays(1025, 4) == hr::PackPhaseRays(1, 4) && hr::PackPhaseRays(9, 4) != hr::PackPhaseRays(1, 4) && hr::RaysOf(hr::PackPhaseRays(0, 9)) == 4 && hr::RaysOf(hr::PackPhaseRays(0, 0)) == 1,
+          "the phase is taken mod 1024 (it was mod 8: a period of 8 frames) and the rays clamped to 1 .. 4");
   }
 
   // ---- RT-HIT-SHADING-3: the census, the exposure and the sky fill ---------------------------------------------------------------------------
@@ -422,14 +423,14 @@ int main(int argc, char** argv) {
     Check(!ce::StatsDue(ce::kStatsFirst - 1, 0, false) && ce::StatsDue(ce::kStatsFirst, 0, false), "the first stats frame is at kStatsFirst");
     Check(!ce::StatsDue(100 + ce::kStatsEvery - 1, 100, true) && ce::StatsDue(100 + ce::kStatsEvery, 100, true), "then every kStatsEvery frames");
     bool word = true;
-    for (uint32_t phase = 0; phase < 8; ++phase) {
+    for (uint32_t phase = 0; phase < 1024; ++phase) {
       for (uint32_t rays = 1; rays <= 4; ++rays) {
         const uint32_t w = hr::PackPhaseRays(phase, rays);
         const uint32_t on = ce::PackWithStats(w, true);
         word = word && ce::PackWithStats(w, false) == w && hr::PhaseOf(on) == phase && hr::RaysOf(on) == rays && (on & ce::kStatsFlag) != 0 && (w & ce::kStatsFlag) == 0;
       }
     }
-    Check(word && ce::kStatsFlag == (1u << 16), "the stats flag is bit 16: the phase (bits 0 to 2) and the cone's rays (8 to 10) are as they were");
+    Check(word && ce::kStatsFlag == (1u << 16), "the stats flag is bit 16: the phase (bits 18 to 27) and the cone's rays (8 to 10) are clear of it");
 
     // the log line
     {
@@ -542,7 +543,9 @@ int main(int argc, char** argv) {
                 Has(refl, "const bool farHit = hitsOther || kShadePlayerHits;") && Has(refl, "const float hitReach = farHit ? g_push.coat.y : g_push.coat.x;") && Has(refl, "const float hitFadeFrom = farHit ? g_push.coat.z : g_push.tune.z;") &&
                 Has(refl, "const float faded = 1.0 - smoothstep(hitFadeFrom * hitReach, hitReach, distance);"),
             "the trace's reach is the push's: the player's own parts' coat.x from tune.z of it, another car's coat.y from coat.z of it (HitFade), the cone's rays from slots.w bit 8 (RaysOf)");
-      Check(Has(refl, "ConeRotation(texel, g_push.slots.w & 7u, (g_push.slots.w & kConeBlueFlag) != 0u)") && Has(opp, "ConeRotation(texel, g_push.slots.w & 7u, (g_push.slots.w & kConeBlueFlag) != 0u)"), "the pattern's phase is the low three bits of slots.w in both variants (PhaseOf)");
+      Check(Has(refl, "ConeRotation(texel, ConePhase(g_push.slots.w), (g_push.slots.w & kConeBlueFlag) != 0u)") && Has(opp, "ConeRotation(texel, ConePhase(g_push.slots.w), (g_push.slots.w & kConeBlueFlag) != 0u)") &&
+                Has(refl, "uint ConePhase(uint word)") && Has(refl, "return (word >> 18u) & 1023u;") && hr::kPhaseShift == 18 && hr::kPhaseMask == 1023u,
+            "the pattern's phase is slots.w bits 18 to 27 in both variants (ConePhase, PhaseOf)");
       Check(Has(refl, "const bool haveMirror = g_push.coat.w > 0.0 && tanHalf > 0.0 && levelRays >= 4u;") && Has(refl, "if (haveMirror)") && Has(refl, "coatShare = CarCoatShare(nv, CarMatFresnelPower(primaryInstance), g_push.coat.w);") &&
                 Has(refl, "ConeDirection(mirror, normal, 0.0, 0, 0.0), reach, 0.0, primaryInstance") && Has(refl, "bool found = coatHit;") && Has(refl, "if (slot >= int(levelRays))") &&
                 Has(refl, "aux.w = 1.0 - kAuxSharpScale * sharp;") && Has(refl, "const float weight = CarCoatMix(weightSum, colourSum, carSum, rays, MirrorShare(coatShare, mirrorOnCar), coatWeight, coatColour, coatCar ? coatWeight : 0.0, mixed, mixedCar, sharp);"),
