@@ -31,6 +31,7 @@
 #include <ffx_api_types.h>
 #include <ffx_denoiser.h>
 
+#include "settings/immortal.h"
 #include "settings/larecomp_settings.h"
 #include "backend.h"
 #include "denoiser_setting.h"
@@ -78,7 +79,7 @@ using ffx_common::Utf8;
 using ffx_common::Version;
 
 std::mutex g_published_mu;
-Published g_published;
+Published& g_published = larecomp::Leak<Published>();   // never destroyed (EXIT-HARD: a thread can still read it at the exit)
 
 void Publish(const std::function<void(Published&)>& edit) {
   std::lock_guard lock(g_published_mu);
@@ -741,8 +742,8 @@ void RayRegen::Shutdown() {
 }
 
 RayRegen& Instance() {
-  static RayRegen runtime;
-  return runtime;
+  static larecomp::Immortal<RayRegen> runtime;   // never destroyed (EXIT-HARD); the renderer's shutdown calls StopAll() (RayRegen::Shutdown) itself
+  return *runtime;
 }
 
 void StartIfWanted(Device& device, FrameRing& frames) {
