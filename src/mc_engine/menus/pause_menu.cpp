@@ -5727,6 +5727,20 @@ void PauseMenuLeaveSubmenu() {
     if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
 }
 
+// PM_Continue's whole body (sub_82668660 calls it on accept for that row): form 71's close, goto the in-game state, menu flag
+// cleared. The cutscene gallery closes the menu with the same call (gameplay/cutscene_gallery.cpp), where it is measured: it
+// is the only supported way out, popping the navigation stack by hand unwinds the screens the HUD lives on.
+constexpr uint32_t kPauseMenuContinueFn = 0x8265F428;
+
+bool PauseMenuClose() {
+    PauseMenuLeaveSubmenu();
+    auto* rt = REX_RUNTIME();
+    PPCFunc* fn = rt ? rt->FindFunction(kPauseMenuContinueFn).value_or(nullptr) : nullptr;
+    if (!fn) return false;
+    larecomp::guest::Call<void>(fn);
+    return true;
+}
+
 // Once per UI update, guest thread (swf_dom.cpp's mcUIManager::Update wrapper).
 // Our menus only ever open over the pause screen; if the game takes the pause
 // screen away under them on its own, they go with it instead of being left on
@@ -5856,6 +5870,7 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
     return false;
 }
 void PauseMenuLeaveSubmenu() {}
+bool PauseMenuClose() { return false; }
 void PauseMenuRestartGame() {}
 void PauseMenuFormsTick() {}
 void Hook_CapturePMContinue(PPCRegister& r3) {}

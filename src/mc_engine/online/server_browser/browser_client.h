@@ -86,6 +86,10 @@ private:
     std::shared_ptr<State> state_;
 };
 
+// One relay asked once, here and now: what it says about itself and its rooms (no icon). `answered` is false when it did not
+// answer. Blocking (about a second; more with many rooms), worker threads only.
+ServerView QueryServerNow(const std::string& host, uint16_t port);
+
 // The relay's answer to a target hint; false when it did not answer (an
 // older relay) or the query failed. Blocking, worker threads only.
 bool SendTargetHint(const std::string& host, uint16_t port, uint32_t host_vip, int timeout_ms);

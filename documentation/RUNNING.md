@@ -101,6 +101,9 @@ Only these are read. Everything else is a cvar.
 | `logs/larecomp_NNN.log` | Main log, rolling, up to 10 files of 20 MB. A flag the game cannot use is logged as `[cli] --name=value ignored: ` and why, and the debug settings that are not at their default are listed as `[settings] name = value (command line)`. **Check it first when a setting appears to do nothing.** |
 | `logs/timing_<date>_<time>_cap<N>.log` | Frame timing, when `MCLA_TIMING_LOG=1`. |
 | `larecomp.toml` | Saved settings, written when you leave a pause submenu with a changed value. |
+| `logs/join_server.txt` | Only in a run started with `--join_server`: `state=` (waiting, connecting, searching, joining, done, failed), `reason=` and `message=` for a failure, `updated=`. Rewritten on every change; `done` and `failed` are final. |
+
+**Joining a server from the command line.** `larecomp.exe --join_server=host:port` puts the game online on that relay for this run (the same as `--mcla_online_enable=true --mcla_online_server=host:port`, nothing is written to `larecomp.toml`) and, once the city is up and the pause menu is closed, joins by itself: Cruise on that server (a session on it, or one it hosts for the next player). `,race` does the same for a Race session, `,room:<gamertag>` joins the room that player hosts. There is no offer to accept and no time limit but the city loading (20 minutes). The log has `[join_server]` lines for every step, and `logs/join_server.txt` holds the state for the launcher; a failure (server down, room not found or full, a required mod missing) opens the server browser with the sentence in it.
 
 Crash diagnostics go into the main log, not a separate file. The SEH and SIGABRT handler in `crash_handler.cpp` resolves and writes the call stack there.
 

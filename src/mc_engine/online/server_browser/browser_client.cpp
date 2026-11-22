@@ -183,7 +183,7 @@ void AddTarget(std::vector<Target>& list, std::set<std::string>& seen, const std
 }
 
 // What one relay says about itself, its rooms and (when it changed) its icon.
-ServerView QueryServer(const Target& t, uint32_t known_icon_crc, std::vector<uint8_t>& icon_out) {
+ServerView QueryServer(const Target& t, uint32_t known_icon_crc, std::vector<uint8_t>& icon_out, bool fetch_icon = true) {
     ServerView v;
     v.address = t.address;
     v.host = t.host;
@@ -242,7 +242,7 @@ ServerView QueryServer(const Target& t, uint32_t known_icon_crc, std::vector<uin
             }
             if ((page + 1) * kRoomsPerPage >= ra.total || count == 0) break;
         }
-        if (v.icon_crc && v.icon_crc != known_icon_crc)
+        if (fetch_icon && v.icon_crc && v.icon_crc != known_icon_crc)
             icon_out = relay_info::FetchIcon(t.host, t.port, a.icon_crc, a.icon_size, kQueryTimeoutMs);
     }
     CloseSocket(s);
@@ -258,7 +258,7 @@ ServerView QueryServer(const Target& t, uint32_t known_icon_crc, std::vector<uin
             v.players = info.players;
             v.rooms = info.sessions;
             v.icon_crc = info.icon_size ? info.icon_crc : 0;
-            if (v.icon_crc && v.icon_crc != known_icon_crc)
+            if (fetch_icon && v.icon_crc && v.icon_crc != known_icon_crc)
                 icon_out = relay_info::FetchIcon(t.host, t.port, info.icon_crc, info.icon_size, kQueryTimeoutMs);
         }
     }
@@ -314,6 +314,15 @@ void SplitHostPort(const std::string& in, std::string& host, uint16_t& port) {
     const int p = std::atoi(in.c_str() + colon + 1);
     host.resize(colon);
     if (p > 0 && p < 65536) port = uint16_t(p);
+}
+
+ServerView QueryServerNow(const std::string& host, uint16_t port) {
+    Target t;
+    t.host = host;
+    t.port = port;
+    t.address = host + ":" + std::to_string(port);
+    std::vector<uint8_t> no_icon;
+    return QueryServer(t, 0, no_icon, false);
 }
 
 bool SendTargetHint(const std::string& host, uint16_t port, uint32_t host_vip, int timeout_ms) {

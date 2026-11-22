@@ -47,10 +47,15 @@ struct JoinStatus {
 // Any thread. Replaces a join still under way.
 void RequestJoin(const JoinRequest& request);
 void CancelJoin();
+// Shows `text` on the join strip as a failure (the strip clears itself a few seconds later), for a join that failed before
+// it could be requested (--join_server: the server or the room is not there).
+void ShowJoinFailure(const std::string& text);
 JoinStatus GetJoinStatus();
 
-// The local player is in the city: the online menus can open. Their fill
-// reads the player's car (sub_822A5680) and crashes on the boot screens.
+// The local player is in the city with a car: the online menus can open. Their fill
+// reads the player's car (sub_822A5680) and crashes on the boot screens, and the net
+// menu's own camera probe (setMenuCam) reads the car entity, which the city behind the
+// title screen does not have yet: a join from there crashed the game (browser_join_core.h).
 // Updated by the guest tick; any thread.
 bool WorldReady();
 
