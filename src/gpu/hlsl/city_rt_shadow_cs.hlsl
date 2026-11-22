@@ -47,6 +47,7 @@ Texture2D<float4> g_textures[] : register(t0, space0);
 #define CITY_HIT_SPACE 2
 #define CITY_HIT_ALPHA_TEXEL(slot, texel, level) g_textures[NonUniformResourceIndex((slot) & 0x7FFFFFFFu)].Load(int3(texel, int(level))).w
 #include "city_hit_alpha.hlsli"
+#include "city_rt_shadow_noise.hlsli"
 #ifdef __spirv__
 // Vulkan takes the format of a storage image from the shader: the image is R8G8B8A8_UNORM (city_rt_shadow.cpp EnsureOutput).
 [[vk::image_format("rgba8")]]
@@ -59,7 +60,7 @@ struct CityRtShadowPush
     // x the linear depth image's bindless slot, y and z the image's width and height, w the flags (city_rt_shadow_rules.h kFlag*): bits 0-3 the rays a pixel, bits 4-5 the
     // AlphaMode, bit 8 the car image is given, bits 12-19 the exact alpha's reference (unorm8), bit 28 the exact alpha's statistics and picture, bit 29 the check's picture, bit 30 the check
     uint4 slots;
-    // x the frame's shift of the noise (0: a fixed pattern), y the ray mask (CITY_RT_MASK_CITY | the cars' parts), z the frame serial (the alpha hash), w the car image's slot
+    // x the frame's shift of the noise (low 10 bits; 0: a fixed pattern) and bit 29, the blue noise tile (ao_stable.h kBlueNoiseFlag: city_rt_shadow_noise.hlsli), y the ray mask (CITY_RT_MASK_CITY | the cars' parts), z the frame serial (the alpha hash), w the car image's slot
     uint4 noise;
     // x, y tan of the half field of view (the depth image's lens), z the rays' length in metres, w the range: a pixel beyond it is 1
     float4 lens;
@@ -113,12 +114,6 @@ static const float kViewFallback = 0.35;
 static const uint kInstanceCity = 0x800000;  // city_rt_rules.h kInstanceIdFlag: the InstanceID of a city structure has it
 static const uint kHistogramBins = 16;
 static const float kHistogramStep = 0.005;
-
-// Interleaved gradient noise (ao_common.hlsli AoNoise).
-float Ign(float2 p)
-{
-    return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715))));
-}
 
 // city_rt_shadow_rules.h Pcg and Hash01.
 uint Pcg(uint v)
@@ -283,9 +278,7 @@ float4 TraceSun(uint2 pixel, uint2 size, float t, float3 p)
     const float lift = min(kLiftFloor + kLiftPixels * footprint_unit * t, kLiftCap);
     const float3 origin = p + n * lift;
     const uint rays = clamp(g_push.slots.w & 0xFu, 1u, 8u);
-    const float shift = float(g_push.noise.x & 1023u);
-    const float2 spatial = float2(Ign(float2(pixel)), Ign(float2(pixel).yx + float2(31.0, 11.0)));
-    const float2 noise = frac(spatial + shift * float2(0.75487766624669, 0.56984029099806));
+    const float2 noise = CityRtShadowNoise(int(pixel.x), int(pixel.y), g_push.noise.x);
     float3 sx;
     float3 sy;
     Frame(to_sun, sx, sy);
