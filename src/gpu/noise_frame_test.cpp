@@ -11,9 +11,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
+#include "ao_stable.h"
 #include "hlsl_shim.h"
 #include "noise_resolve_check.h"
+#include "scene_noise.h"
 
 namespace hlsl_shim {
 #include "hlsl/blue_noise.hlsli"
@@ -22,6 +25,8 @@ namespace hlsl_shim {
 
 namespace nc = noise_check;
 namespace hs = hlsl_shim;
+namespace sn = mcla::gpu::scene_noise;
+namespace as = mcla::gpu::ao_stable;
 
 namespace {
 
@@ -117,6 +122,96 @@ void TestLongSession() {
           "the steps are 1/g and 1/g^2 of the plastic number as 32 bit fractions (ssr_common.hlsli's kSsrR2StepA and B)");
 }
 
+// One frame of the scene runner's protocol: the game hands the update over and swaps, the renderer opens its list (`lists` of them in a guest frame) and presents.
+void Frame(int64_t update, int lists = 1) {
+  sn::SetUpdate(update);
+  sn::OnHandOver();
+  sn::OnGuestSwap();
+  for (int i = 0; i < lists; ++i) {
+    sn::BeginFrame();
+  }
+}
+void Present() { sn::OnPresent(); }
+
+// A HELD SCENE KEEPS THE NOISE VARYING (scene_noise.h NoiseIndex, mcla_gpu_noise_held): the pinned still's update number is the same in every frame, so the index that is the number alone stood on one sample;
+// the index that also counts the frames the number has been held changes every frame; a running scene and a frame outside a scene are as they were.
+void TestHeldScene() {
+  sn::Rearm();
+  sn::SetCountHeld(true);
+  // outside a scene: the renderer's own count, whatever it is
+  Frame(-1);
+  g_check(sn::NoiseIndex(900) == 900 && sn::Index(900) == 900 && sn::Held() == 0, "outside a scene the noise index is the renderer's own count");
+  Present();
+  // a pinned still: update 7 in every frame
+  bool counts = true, scene_number = true;
+  uint32_t phases_pinned[13] = {};
+  uint32_t phases_off[13] = {};
+  for (int k = 0; k < 13; ++k) {
+    Frame(7);
+    counts = counts && sn::NoiseIndex(5000 + uint64_t(k)) == 7u + uint64_t(k) && sn::Held() == uint64_t(k);
+    scene_number = scene_number && sn::Index(5000 + uint64_t(k)) == 7u;
+    // the main pass's lattice phase (ao_stable.h NoiseCode: the index mod 13) over the held frames
+    ++phases_pinned[as::NoiseCode(sn::NoiseIndex(0), true) & 0xFFFu];
+    sn::SetCountHeld(false);
+    ++phases_off[as::NoiseCode(sn::NoiseIndex(0), true) & 0xFFFu];
+    sn::SetCountHeld(true);
+    Present();
+  }
+  g_check(counts && scene_number, "a pinned still: the scene's number stays 7, the noise index goes 7, 8, 9, ... and Held counts the frames");
+  int visited = 0, visited_off = 0;
+  for (int m = 0; m < 13; ++m) {
+    visited += phases_pinned[m] != 0u ? 1 : 0;
+    visited_off += phases_off[m] != 0u ? 1 : 0;
+  }
+  g_check(visited == 13 && visited_off == 1, nc::Num("the occlusion's lattice visits %d of its 13 phases in 13 held frames (%d with the count off: one sample for ever)", visited, visited_off));
+  // a second list of the same guest frame (a flush in the middle of the frame) does not count twice
+  Frame(7, 2);
+  g_check(sn::Held() == 13, nc::Num("two lists in one guest frame count once (held %llu)", (unsigned long long)sn::Held()));
+  Present();
+  // the scene moves on: a running scene adds nothing, a new number restarts the count
+  bool running = true;
+  for (int64_t u = 20; u < 26; ++u) {
+    Frame(u);
+    running = running && sn::NoiseIndex(1) == uint64_t(u) && sn::Held() == 0;
+    Present();
+  }
+  g_check(running, "a running scene (a new update every frame): the noise index is the update number and nothing is added");
+  Frame(25);
+  g_check(sn::NoiseIndex(1) == 26 && sn::Held() == 1, "a held update counts from its first frame: 25 shown twice is 25, 26");
+  Present();
+  // a frame in the scene with no tag (an idle present) is a frame outside it: the count restarts
+  sn::OnGuestSwap();
+  sn::BeginFrame();
+  g_check(sn::NoiseIndex(321) == 321 && sn::Held() == 0, "a frame with no tag keeps the renderer's count and resets the held count");
+  Present();
+  // the switch
+  Frame(30);
+  Present();
+  Frame(30);
+  const bool on = sn::NoiseIndex(1) == 31;
+  sn::SetCountHeld(false);
+  const bool off = sn::NoiseIndex(1) == 30 && sn::Index(1) == 30;
+  sn::SetCountHeld(true);
+  g_check(on && off, "mcla_gpu_noise_held false: the noise index is the scene's number alone, as before");
+  Present();
+  sn::SetUpdate(-1);
+  // the k-th frame of a still has the same index in every run: a rerun gives the same sequence
+  sn::Rearm();
+  std::vector<uint64_t> first, second;
+  for (int run = 0; run < 2; ++run) {
+    sn::Rearm();
+    for (int k = 0; k < 5; ++k) {
+      Frame(9);
+      (run == 0 ? first : second).push_back(sn::NoiseIndex(0));
+      Present();
+    }
+    sn::SetUpdate(-1);
+    Frame(-1);
+    Present();
+  }
+  g_check(first == second && first.size() == 5 && first[4] == 13, "the same still run twice gives the same noise indices frame for frame (repeatable)");
+}
+
 void TestSetting(const std::string& dir) {
   const std::string settings = nc::ReadFile(dir + "/../settings/generated/settings_gpu.h");
   const std::string manifest = nc::ReadFile(dir + "/../settings/generated/manifest.json");
@@ -133,6 +228,18 @@ void TestSetting(const std::string& dir) {
               nc::Has(settings, "inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;") && nc::Has(manifest, "\"mcla_gpu_noise_blue\": {") && nc::Has(meta, "{\"mcla_gpu_noise_blue\", \"MCLA/GPU\"},"),
           "mcla_gpu_noise_blue: a debug setting, on by default, in the settings header, its alias, the manifest and the meta list");
   g_check(nc::Has(pages, "NativeOnly(Bool(\"PM_RxDbgNoiseBlue\", \"mcla_gpu_noise_blue\""), "the debug menu's FIXES page has its row (live: the passes read it at each draw)");
+  const std::string held_decl = std::string("REX_") + "SETTING(bool, mcla_gpu_noise_held, true,";
+  const size_t hat = settings.find(held_decl);
+  const size_t hend = hat == std::string::npos ? hat : settings.find(");", hat);
+  g_check(hat != std::string::npos && hend != std::string::npos && settings.substr(hat, hend - hat).find("rex::kDebugOnly") != std::string::npos &&
+              nc::Has(settings, "inline auto& mcla_gpu_noise_held = g_gpu.mcla_gpu_noise_held;") && nc::Has(manifest, "\"mcla_gpu_noise_held\": {") && nc::Has(meta, "{\"mcla_gpu_noise_held\", \"MCLA/GPU\"},") &&
+              nc::Has(pages, "NativeOnly(Bool(\"PM_RxDbgNoiseHeld\", \"mcla_gpu_noise_held\""),
+          "mcla_gpu_noise_held: a live debug setting, on by default, in the settings header, its alias, the manifest, the meta list and the debug menu's FIXES page");
+  const std::string scene = nc::ReadFile(dir + "/scene.cpp");
+  g_check(nc::Has(scene, "scene_noise::SetCountHeld(larecomp::settings::mcla_gpu_noise_held.Get());") && nc::Has(scene, "shadow_filter::CurrentConstants(UpscalerRunning(), scene_noise::NoiseIndex(frame_serial_));") &&
+              nc::Has(nc::ReadFile(dir + "/ao.cpp"), "ao_stable::NoiseCode(scene_noise::NoiseIndex(frame_), larecomp::settings::mcla_gpu_ao_stable.Get(), use_blue_noise)") &&
+              nc::Has(nc::ReadFile(dir + "/shafts.cpp"), "float(scene_noise::NoiseIndex(frame_) & 1023u)") && nc::Has(nc::ReadFile(dir + "/car_selfrefl.cpp"), "uint32_t(scene_noise::NoiseIndex(frame_) & 7u)"),
+          "the occlusion, the shafts, the reflection cone and the shadow filter take their noise from NoiseIndex; scene.cpp passes the setting to it each frame");
   const std::string frame = nc::ReadFile(dir + "/hlsl/blue_noise_frame.hlsli");
   g_check(nc::Has(frame, "#include \"blue_noise.hlsli\"") && nc::Has(frame, "float2 BlueNoiseFrame2(int px, int py, uint sample_index)"), "the shared helper is in hlsl/blue_noise_frame.hlsli");
 }
@@ -152,6 +259,7 @@ int main(int argc, char** argv) {
   TestPerFrame();
   TestLattice();
   TestLongSession();
+  TestHeldScene();
   TestSetting(dir);
   std::printf("\n%d checks, %d failed\n", g_check.total, g_check.fails);
   return g_check.fails == 0 ? 0 : 1;

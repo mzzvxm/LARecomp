@@ -187,6 +187,9 @@ const ItemDef kDebugFixesItems[] = {
     // The reflections' ray noise is a blue noise tile stepped along the R2 sequence every frame (gpu/blue_noise.h, hlsl/ssr_common.hlsli): the first version's interleaved gradient noise slid
     // across the picture and read as stripes crawling over a puddle. Off = the first version's noise. Read at each frame, so live.
     NativeOnly(Bool("PM_RxDbgSsrBlue", "mcla_gpu_ssr_blue_noise", "BLUE NOISE REFLECTIONS: ")),
+    // A scene the harness holds still carries one game frame number in every frame: with this on the noise index of every stochastic effect also counts the frames it has been held (gpu/scene_noise.h
+    // NoiseIndex), so the noise keeps varying and the history averages it. Off = the scene's own number alone. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgNoiseHeld", "mcla_gpu_noise_held", "NOISE IN HELD SCENES: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };

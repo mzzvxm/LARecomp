@@ -1118,6 +1118,12 @@ class GPUSettings final : public rex::SettingOwner {
     "along the R2 sequence every frame, so what the filters and the average over frames leave of it is a fine grain no pattern can be read from. False: the "
     "first versions' interleaved gradient noise, a lattice whose leftovers show as thin diagonal lines, for comparing. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_noise_held, true, "Diagnostic: a scene the harness holds still (the trailer toolkit's stills, scene_at) shows the same game frame number in every frame, so the noise of "
+    "every stochastic effect (the occlusion, the sun rays, the reflection cone, the shafts, the shadow filter) stood on one sample for ever and its history "
+    "averaged copies of it. True: the noise index also counts the frames the scene's number has been held, so a held scene keeps varying (a picture taken "
+    "after the same number of frames is still repeatable). False: the scene's own number alone, for pictures that must match whatever number of frames was "
+    "waited. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_object_names, false, "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
     "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
     "microseconds, and a world loads hundreds of textures in one frame, so they are set only "
@@ -2035,6 +2041,7 @@ inline auto& mcla_gpu_memory_census = g_gpu.mcla_gpu_memory_census;
 inline auto& mcla_gpu_msaa = g_gpu.mcla_gpu_msaa;
 inline auto& mcla_gpu_msaa_with_upscaler = g_gpu.mcla_gpu_msaa_with_upscaler;
 inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;
+inline auto& mcla_gpu_noise_held = g_gpu.mcla_gpu_noise_held;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;

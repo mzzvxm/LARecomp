@@ -270,8 +270,8 @@ void CheckSources(const std::string& dir) {
   Check(has(contact, "frac(AoSpatialNoise1(pixel) + frame * 0.75487766624669f)") && !has(contact, "AoNoise("), "ao_contact_ps.hlsl: the march's start offset takes the tile as well");
   Check(has(contact, "(g_push.slots2.y & ~kAoNoiseBlueFlag) != 0u"), "ao_contact_ps.hlsl: the flag in slots2.y does not count as 'a temporal upscaler runs'");
   Check(has(cpp, "larecomp::settings::mcla_gpu_ao_blue_noise.Get()"), "ao.cpp reads mcla_gpu_ao_blue_noise");
-  Check(has(cpp, "ao_stable::NoiseCode(scene_noise::Index(frame_), larecomp::settings::mcla_gpu_ao_stable.Get(), use_blue_noise)"), "ao.cpp: the main pass's noise code carries the flag");
-  Check(has(cpp, "push->slots2[1] = uint32_t(scene_noise::Index(frame_) & 1023) | (use_blue_noise ? ao_stable::kBlueNoiseFlag : 0u);"), "ao.cpp: the contact march's frame number carries it");
+  Check(has(cpp, "ao_stable::NoiseCode(scene_noise::NoiseIndex(frame_), larecomp::settings::mcla_gpu_ao_stable.Get(), use_blue_noise)"), "ao.cpp: the main pass's noise code carries the flag");
+  Check(has(cpp, "push->slots2[1] = uint32_t(scene_noise::NoiseIndex(frame_) & 1023) | (use_blue_noise ? ao_stable::kBlueNoiseFlag : 0u);"), "ao.cpp: the contact march's frame number carries it");
   Check(has(cpp, "push.slots2[1] = plan.upscaler ? base.slots2[1] : (base.slots2[1] & ao_stable::kBlueNoiseFlag);"), "ao.cpp: the contact march without an upscaler keeps the flag and has no frame number");
   const std::string settings_h = Slurp(dir + "/../settings/generated/settings_gpu.h"), manifest = Slurp(dir + "/../settings/generated/manifest.json"), meta = Slurp(dir + "/../settings/generated/settings_meta.inc");
   Check(has(settings_h, "inline auto& mcla_gpu_ao_blue_noise = g_gpu.mcla_gpu_ao_blue_noise;") && has(manifest, "\"mcla_gpu_ao_blue_noise\": {") && has(meta, "{\"mcla_gpu_ao_blue_noise\", \"MCLA/GPU\"},"),

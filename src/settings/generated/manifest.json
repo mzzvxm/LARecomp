@@ -395,6 +395,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_noise_held": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a scene the harness holds still (the trailer toolkit's stills, scene_at) shows the same game frame number in every frame, so the noise of \"\n    \"every stochastic effect (the occlusion, the sun rays, the reflection cone, the shafts, the shadow filter) stood on one sample for ever and its history \"\n    \"averaged copies of it. True: the noise index also counts the frames the scene's number has been held, so a held scene keeps varying (a picture taken \"\n    \"after the same number of frames is still repeatable). False: the scene's own number alone, for pictures that must match whatever number of frames was \"\n    \"waited. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ao_fast_math": {
   "type": "bool",
   "default": "true",

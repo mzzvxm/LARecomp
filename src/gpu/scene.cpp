@@ -854,6 +854,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
   }
   watch::BeginFrame(frame_serial_);
+  scene_noise::SetCountHeld(larecomp::settings::mcla_gpu_noise_held.Get());  // a held scene's noise keeps counting (scene_noise.h NoiseIndex)
   if (scene_noise::BeginFrame()) {
     REXLOG_INFO("[gpu] scene noise: the first guest frame of a scene carries update {} (renderer frame {}): the noise follows the scene's updates from here", scene_noise::CurrentUpdate(), frame_serial_);
   }
@@ -2451,7 +2452,7 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
       // The noise moves from frame to frame only while a temporal upscaler works on the frame (its history
       // averages it out); without one the pattern stays where it is.
       const shadow_filter::ShadowFilterConstants block =
-          shadow_filter::CurrentConstants(UpscalerRunning(), scene_noise::Index(frame_serial_));
+          shadow_filter::CurrentConstants(UpscalerRunning(), scene_noise::NoiseIndex(frame_serial_));
       std::memcpy(out, &block, sizeof(block));
       return;
     }
