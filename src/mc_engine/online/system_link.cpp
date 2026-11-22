@@ -406,6 +406,15 @@ void Hook_PromptRaised() {
 
 // The last answer of the game's "session up at all" (sub_8226BE68), as the net tick that asks it every frame saw it. Read by the server
 // browser's join (SystemLinkSessionUp): a join does not start from inside a session. Any thread.
+//
+// It cannot stay true after a session ends (checked in the generated code, 2026-11-22, for the online review). The hook below sits at
+// the first call of sub_8226D120, which runs unconditionally (no branch before it) in sub_8226FD30, the net manager's tick; that is
+// called from exactly one place, the game's main loop sub_82131508 (a straight line from the loop label: no condition skips it), and
+// the join's own tick (TickServerBrowserJoin, from sub_822C1FA8, called only from the same loop right after) runs on that same thread
+// in that same iteration. So every read the join makes sees the answer of the net tick of the same frame, and a session that ended
+// is seen as ended at the next frame. Before the first tick the value is false (no session), and nothing else reads it (the
+// status file and --join_server's end state go through the join's phase). Under REXGLUE_HAS_XEO3_TARGET the hook is not compiled
+// and the value stays false, which only means the join never refuses from "in a session" there.
 static std::atomic<bool> g_session_up{false};
 
 // 0x8226D134
