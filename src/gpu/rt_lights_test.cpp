@@ -1982,22 +1982,31 @@ void TestShaderText(const std::string& src) {
   CHECK(Has(ps, "const bool rt_ref = (flags & uint(LP_FLAG_RT_MASK)) != 0u && (l.flags & uint(LL_FLAG_RT_VISIBILITY)) != 0u;") &&
         Has(ps, "RtmVisibility(rt_table, l.mask_channel, p, g.size.x, g.size.y, t, (rt_table.flags & uint(RTM_RAW_VIEW)) != 0u)") && Has(ps, "lamp_vis = RtmCombine(lamp_vis, rt_vis);"));
   {
-    const size_t term_at = ps.find("float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, rt2.w));");
-    const size_t rt_at = ps.find("const bool rt_ref =");
-    const size_t lamp_at = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && ((l.shadow_kind");
-    const size_t head_at = ps.find("add *= LslLightLit(");
+    // The shader is split in LpOneLight (the term, the neon contact term) and LpShadowed (the shadows and the ray's visibility; GB-NEON-CONTACT made the split so that the capped tube path calls it too). The order is
+    // the same: the term, then the ray's visibility, then the lamp branch, then the atlas, then the product. The term is now the argument `add` that LpOneLight and LpCappedLights pass in.
+    const size_t one_at = ps.find("float4 LpOneLight(");
+    const size_t term_at = ps.find("float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));", one_at);
+    const size_t call_at = ps.find("return LpShadowed(l, g, flags, p, world, normal, add);", term_at);
+    const size_t capped_at = ps.find("LpShadowed(l[j], g, flags, p, world, normal, one);");
+    const size_t shadowed_at = ps.find("float4 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 add) {");
+    const size_t rt_at = ps.find("const bool rt_ref =", shadowed_at);
+    const size_t lamp_at = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && ((l.shadow_kind", shadowed_at);
+    const size_t head_at = ps.find("add *= LslLightLit(", shadowed_at);
     const size_t last_at = ps.find("if (rt_ref) {", head_at);
-    CHECK(term_at != std::string::npos && rt_at != std::string::npos && lamp_at != std::string::npos && head_at != std::string::npos && last_at != std::string::npos && term_at < rt_at && rt_at < lamp_at &&
-          lamp_at < head_at && head_at < last_at);
+    CHECK(one_at != std::string::npos && term_at != std::string::npos && call_at != std::string::npos && capped_at != std::string::npos && shadowed_at != std::string::npos && rt_at != std::string::npos &&
+          lamp_at != std::string::npos && head_at != std::string::npos && last_at != std::string::npos && shadowed_at < rt_at && rt_at < lamp_at && lamp_at < head_at && head_at < last_at && one_at < term_at &&
+          term_at < call_at);
   }
   // a game's lamp and the lights the pass owns: the two forms, and no path that adds a game's light on top of the grid's with a channel
   CHECK(Has(ps, "add = game_lit ? -add * (1.0f - lamp_vis) : add * lamp_vis;") && Has(ps, "((l.flags & uint(LL_FLAG_GAME_LIT)) != 0u) ? -add * (1.0f - RtmCombine(1.0f, rt_vis)) : add * RtmCombine(1.0f, rt_vis)"));
   CHECK(Has(ps, "float3(1.0f - rt_vis, rt_vis, 0.0f) * (g.exposure * 0.15f)"));
-  // the second line: a lamp the game lights with no source of visibility is discarded, before the lamp branch
+  // the second line: a lamp the game lights with no source of visibility adds nothing, before the lamp branch (the light returns w = 0, which is what its own draw's `discard;` was before the lights of a draw
+  // were summed in one shader; the draw discards the pixel when no light of it adds anything)
   {
-    const size_t never = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && (l.flags & uint(LL_FLAG_GAME_LIT)) != 0u && !rt_ref && !(l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u)) {\n    discard;");
+    const size_t never = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && (l.flags & uint(LL_FLAG_GAME_LIT)) != 0u && !rt_ref && !(l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u)) {\n    return float4(0.0f, 0.0f, 0.0f, 0.0f);");
     const size_t lamp = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && ((l.shadow_kind");
     CHECK(never != std::string::npos && lamp != std::string::npos && never < lamp);
+    CHECK(Has(ps, "if (!any_light) {\n    discard;\n  }\n  return float4(total, 0.0f);"));
   }
   // the light pass's reader: the seams
   CHECK(Has(read, "float4 RtmLoadMask(uint slot, int2 p);") && Has(read, "float RtmLoadDepth(uint slot, int2 p);") && Has(read, "float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float renderH, float t, bool raw)"));
