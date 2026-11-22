@@ -90,7 +90,7 @@ Two methodology notes worth keeping:
 ### Build and packaging
 
 - `enable_language(RC)` selected Microsoft `rc.exe`, which cannot parse clang's `# <line> "file"` markers and failed any clean build with `RC2019`. `CMakeLists.txt` now prefers `llvm-rc` from the configured clang's directory.
-- `SetFlag` records `ok` or `FAIL` per attempt into `logs/effective_config.txt`. Discarding that return value is how a GPU configuration can run entirely unapplied while looking fine.
+- `SetFlag` records `ok` or `FAIL` per attempt into `logs/effective_config.txt` (the 0.11 build no longer writes that file; a refused setting is a warning in the log). Discarding that return value is how a GPU configuration can run entirely unapplied while looking fine.
 - The env dump listed 22 variables that were never passed to `getenv()`. It now lists only what the build reads, with cvar-only settings in a separate section.
 - `MCLA_MAX_FRAME_MS` was advertised in the dump but hardcoded at 125 ms. Now read, clamped to 16-1000 ms.
 - `MCLA_GAME_DATA` added, ordered behind `--game_data_root` and ahead of auto-detection. An invalid value warns to stderr rather than being ignored.
