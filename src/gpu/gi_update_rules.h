@@ -213,6 +213,22 @@ inline Ray UnpackRay(const RayWords& w) {
   return r;
 }
 
+// The record of the trace's closest hit (hlsl gi_update_trace_cs.hlsl): a hit whose data decoded is a hit (the flags, its distance, its class in `extra`); a ray that hit nothing is a miss (no flag, the ray's
+// `reach` as the distance, no light); and a hit with NO DATA (a geometry-only sector: its hit data blob is bad or missing, CityHitDecode says not valid) is a miss too, as the reflections and the pixel
+// pass take it. It is not a black occluder: a black hit adds no light AND no sky to its direction (it reads as full shadow, where an unbuilt sector is open sky), and the blend would darken the probes
+// beside every such sector (CITY-RT-REVIEW M5).
+inline Ray HitRecord(bool geometry_hit, bool data_decoded, float t, float reach, gi::Vec3 radiance, bool back, bool lod, uint32_t cls) {
+  Ray r;
+  r.distance = reach;
+  if (geometry_hit && data_decoded) {
+    r.radiance = radiance;
+    r.distance = t;
+    r.flags = kRayHit | (back ? kRayBack : 0u) | (lod ? kRayLod : 0u);
+    r.extra = cls;
+  }
+  return r;
+}
+
 // ---------------------------------------------------------------------------
 // the classification and the blend
 // ---------------------------------------------------------------------------

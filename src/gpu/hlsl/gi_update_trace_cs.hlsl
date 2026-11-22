@@ -179,13 +179,15 @@ void main(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
             uint cls = 0u;
             if (hit.hit != 0u)
             {
-                flags = GIU_RAY_HIT;
-                distance = hit.t;
-                lods = (hit.inst.instanceId & 1u) != 0u ? 1u : 0u;
-                flags |= lods != 0u ? GIU_RAY_LOD : 0u;
                 const CityHit decoded = CityHitDecode(hit.inst.instanceId, hit.inst.geometryIndex, hit.inst.primitiveIndex, hit.inst.barycentrics);
+                // A hit with no data (a geometry-only sector: its hit data blob is bad or missing) is a MISS, as the reflections and the pixel pass take it: no hit flag, the ray's reach as the distance, no light
+                // (gi_update_rules.h HitRecord). It is not a black occluder: that adds no light AND no sky to its direction (full shadow) and darkens the probes beside every such sector.
                 if (decoded.valid != 0u)
                 {
+                    flags = GIU_RAY_HIT;
+                    distance = hit.t;
+                    lods = (hit.inst.instanceId & 1u) != 0u ? 1u : 0u;
+                    flags |= lods != 0u ? GIU_RAY_LOD : 0u;
                     // the geometric normal in view space, NOT turned toward the ray: a ray that meets the back of the triangle is the classification's signal (CHECK C1: the pack's winding)
                     float3 n = float3(dot(hit.inst.row0, decoded.normal), dot(hit.inst.row1, decoded.normal), dot(hit.inst.row2, decoded.normal));
                     const float l2 = dot(n, n);
