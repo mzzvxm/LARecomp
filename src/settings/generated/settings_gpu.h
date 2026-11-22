@@ -1109,6 +1109,11 @@ class GPUSettings final : public rex::SettingOwner {
     "are not affected: they are drawn into coverage images with the same samples and averaged, so "
     "the two switches are independent. For A/B. Live (read at start too).", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_noise_blue, true, "Diagnostic: the other stochastic passes' sampling noise (the ray traced car occlusion's and reflection cones' directions, the sun shafts' ray starts, "
+    "the fog's sample offsets, the sun shadow filter's disk turn and the city reflections' sun and lamp samples) comes from the blue noise tile stepped "
+    "along the R2 sequence every frame, so what the filters and the average over frames leave of it is a fine grain no pattern can be read from. False: the "
+    "first versions' interleaved gradient noise, a lattice whose leftovers show as thin diagonal lines, for comparing. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_object_names, false, "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
     "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
     "microseconds, and a world loads hundreds of textures in one frame, so they are set only "
@@ -2042,6 +2047,7 @@ inline auto& mcla_gpu_luminance_scale_fix = g_gpu.mcla_gpu_luminance_scale_fix;
 inline auto& mcla_gpu_memory_census = g_gpu.mcla_gpu_memory_census;
 inline auto& mcla_gpu_msaa = g_gpu.mcla_gpu_msaa;
 inline auto& mcla_gpu_msaa_with_upscaler = g_gpu.mcla_gpu_msaa_with_upscaler;
+inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;
