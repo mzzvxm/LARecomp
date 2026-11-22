@@ -274,6 +274,10 @@ void JoinServerTick() {
         // The city AND the player's car (WorldReady), and the game's own state machine in "Cruising": not the title screen, not the
         // loading screen after Start. The measured crash of a join that began at the title (browser_join_core.h) was the first
         // of these missing; the second keeps the join from a state the machine leaves for the net menu half-built.
+        // RpcInFreeRoam is guest code (the "Cruising" activation hook), so it is the same on every renderer, the hidden XENIA one
+        // (gpu.driver d3d12/vulkan) included. It is false only in the link stubs of the XEO3 DLL (the Microsoft emulator's target,
+        // REXGLUE_HAS_XEO3_TARGET, not buildable since rexglue 0.11): its Patch_DeltaTimePre is empty, so this tick never runs there
+        // and --join_server is never read, rather than waiting out kCityWait.
         if (WorldReady() && RpcInFreeRoam()) {
             LARECOMP_APP_INFO("[join_server] the city is up after {} s: asking {}",
                               std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - g_started).count(),
