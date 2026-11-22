@@ -19,6 +19,7 @@
 #include "larecomp_log.h"
 #include "online_platform.h"
 #include "relay_info.h"
+#include "server_browser/browser_query.h"
 #include "system_link.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/overlay_support.h"
@@ -217,7 +218,9 @@ class OnlineToastDialog final : public mcla::ui::PanelDialog {
         if (shared_->icon_png.empty()) return;
         std::vector<uint8_t> png = std::move(shared_->icon_png);
         shared_->icon_png.clear();
-        icon_ = mcla::ui::IconTexture::FromEncoded(png.data(), png.size(), 512);
+        // The header is read before the decoder allocates what it says (a 64 KB file can claim a huge picture).
+        if (browser::PngHeaderFits(png.data(), png.size(), browser::kIconMaxSide))
+            icon_ = mcla::ui::IconTexture::FromEncoded(png.data(), png.size(), browser::kIconMaxSide);
         if (!icon_) LARECOMP_APP_WARN("[online] server icon could not be decoded");
 #endif
     }

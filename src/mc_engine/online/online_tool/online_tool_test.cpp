@@ -724,6 +724,44 @@ void CheckCleaning() {
     CheckEq(br::CleanWire(full, sizeof(full)), std::string(16, 'A'), "clean: a field with no NUL at all is read to its end");
     CheckInt(br::Utf8SequenceLength(reinterpret_cast<const unsigned char*>("\xED\x9F\xBF"), 3), 3, "U+D7FF is valid");
     CheckInt(br::Utf8SequenceLength(reinterpret_cast<const unsigned char*>("\xF4\x8F\xBF\xBF"), 4), 4, "U+10FFFF is valid");
+
+    // A legacy relay's name is a fixed field off the wire: it is cleaned like the others (it was copied raw before).
+    {
+        larecomp::relay_info::Info legacy;
+        legacy.ok = true;
+        legacy.name = "Evil\x01\xC0\xAFName\n\x7f";
+        legacy.players = 3;
+        legacy.sessions = 1;
+        legacy.ping_ms = 12;
+        legacy.icon_size = 0;
+        legacy.icon_crc = 0xDEADBEEFu;
+        br::ServerView lv;
+        br::DecodeLegacy(legacy, lv);
+        CheckEq(lv.name, "EvilName", "legacy relay: the name is cleaned");
+        Check(lv.answered && lv.legacy && lv.players == 3 && lv.rooms == 1 && lv.ping_ms == 12, "legacy relay: the counts are taken");
+        CheckInt(lv.icon_crc, 0, "legacy relay: no icon size, no icon crc");
+    }
+
+    // The icon header is read before a decoder allocates what it says.
+    {
+        auto png = [](uint32_t w, uint32_t h) {
+            std::vector<uint8_t> b = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, 'I', 'H', 'D', 'R'};
+            for (uint32_t v : {w, h})
+                for (int sh = 24; sh >= 0; sh -= 8) b.push_back(uint8_t(v >> sh));
+            b.resize(33, 0);
+            return b;
+        };
+        auto fits = [&](const std::vector<uint8_t>& b) { return br::PngHeaderFits(b.data(), b.size(), br::kIconMaxSide); };
+        Check(fits(png(512, 512)) && fits(png(1, 1)), "icon header: 512x512 and 1x1 fit");
+        Check(!fits(png(513, 512)) && !fits(png(512, 513)) && !fits(png(20000, 20000)) && !fits(png(0, 64)) && !fits(png(64, 0)),
+              "icon header: larger than 512 a side or empty does not");
+        std::vector<uint8_t> not_png = png(64, 64);
+        not_png[1] = 'X';
+        std::vector<uint8_t> no_ihdr = png(64, 64);
+        no_ihdr[12] = 'X';
+        Check(!fits(not_png) && !fits(no_ihdr) && !br::PngHeaderFits(nullptr, 0, 512) && !br::PngHeaderFits(png(8, 8).data(), 23, 512),
+              "icon header: a wrong signature, no IHDR, nothing or a cut header does not");
+    }
 }
 
 void CheckTargets() {

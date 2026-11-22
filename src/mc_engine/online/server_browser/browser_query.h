@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "../protocol/browser_protocol.h"
+#include "../relay_info.h"
 
 namespace larecomp::browser {
 
@@ -101,6 +102,14 @@ void AddTarget(std::vector<Target>& list, std::set<std::string>& seen, const std
 
 // What the browser takes from a details answer (name, description, region, tags, counts, mods, icon).
 void DecodeDetails(const DetailsMsg& a, ServerView& v);
+
+// What the browser takes from a legacy relay's info answer (name, players, rooms, icon). The name is a fixed field off the wire
+// and is cleaned like every other text of an answer.
+void DecodeLegacy(const relay_info::Info& info, ServerView& v);
+
+// Whether `data` starts with a PNG signature and an IHDR that claims at most `max_side` pixels each way. A file of 64 KB can claim
+// a picture of hundreds of megabytes, and the decoder allocates what the header says: an icon is decoded only after this.
+bool PngHeaderFits(const uint8_t* data, size_t size, uint32_t max_side);
 
 // Appends the rooms of one answer page, skipping hosts already in `seen`; returns how many entries the page held
 // (clamped to a page), whether or not they were new.

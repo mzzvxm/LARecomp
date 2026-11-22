@@ -246,6 +246,27 @@ void DecodeDetails(const DetailsMsg& a, ServerView& v) {
     v.mods_crc = a.mods_crc;
 }
 
+void DecodeLegacy(const relay_info::Info& info, ServerView& v) {
+    v.answered = true;
+    v.legacy = true;
+    v.ping_ms = info.ping_ms;
+    v.name = CleanWire(info.name.data(), info.name.size());
+    v.players = info.players;
+    v.rooms = info.sessions;
+    v.icon_size = info.icon_size;
+    v.icon_crc = info.icon_size ? info.icon_crc : 0;
+}
+
+bool PngHeaderFits(const uint8_t* data, size_t size, uint32_t max_side) {
+    static const uint8_t kSig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    if (!data || size < 24 || std::memcmp(data, kSig, 8) != 0 || std::memcmp(data + 12, "IHDR", 4) != 0) return false;
+    auto be32 = [&](size_t o) {
+        return (uint32_t(data[o]) << 24) | (uint32_t(data[o + 1]) << 16) | (uint32_t(data[o + 2]) << 8) | uint32_t(data[o + 3]);
+    };
+    const uint32_t w = be32(16), h = be32(20);
+    return w != 0 && h != 0 && w <= max_side && h <= max_side;
+}
+
 int AppendRooms(const RoomsMsg& page, std::set<uint32_t>& seen, std::vector<RoomView>& out) {
     const int count = std::min<int>(page.count, kRoomsPerPage);
     for (int i = 0; i < count; ++i) {
@@ -313,14 +334,7 @@ ServerView QueryServer(const Target& t, uint32_t known_icon_crc, const Options& 
         // online pop-up's info query: name, players, ping, icon. No rooms.
         const relay_info::Info info = relay_info::Query(t.host, t.port, opts.udp_timeout_ms);
         if (info.ok) {
-            v.answered = true;
-            v.legacy = true;
-            v.ping_ms = info.ping_ms;
-            v.name = info.name;
-            v.players = info.players;
-            v.rooms = info.sessions;
-            v.icon_size = info.icon_size;
-            v.icon_crc = info.icon_size ? info.icon_crc : 0;
+            DecodeLegacy(info, v);
             if (want_icon(v.icon_crc))
                 icon_out = relay_info::FetchIcon(t.host, t.port, info.icon_crc, info.icon_size, opts.udp_timeout_ms);
         }
