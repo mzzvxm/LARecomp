@@ -319,6 +319,7 @@ private:
         for (auto& up : client_.TakeIcons()) {
 #if defined(LARECOMP_BROWSER_HAS_ICON)
             // The header is read before the decoder allocates what it says (a 64 KB file can claim a huge picture).
+            // CHECK: not run in a game: a real relay's icon (the recorded one is 2135 bytes) must still show in the F6 list.
             auto tex = br::PngHeaderFits(up.png.data(), up.png.size(), br::kIconMaxSide)
                            ? mcla::ui::IconTexture::FromEncoded(up.png.data(), up.png.size(), br::kIconMaxSide)
                            : nullptr;
