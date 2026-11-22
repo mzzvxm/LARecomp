@@ -37,6 +37,7 @@
 #include "device.h"
 #include "ffx_common.h"
 #include "frame.h"
+#include "ray_regen_plan.h"
 #include "temporal_ffx_glue.h"
 
 // The numbers ray_regen_rules.h keeps (so that it needs no SDK) are the SDK's own (FSR SDK 2.4.0: Ray Regeneration 1.2.1).
@@ -744,23 +745,14 @@ RayRegen& Instance() {
   return runtime;
 }
 
-namespace {
-
-rr::DebugSwitch ReadDebugSwitch() {
-  rr::DebugSwitch debug = rr::DebugSwitch::kRow;
-  if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_ray_regen.Get(), &debug)) {
-    debug = rr::DebugSwitch::kRow;
-  }
-  return debug;
-}
-
-}  // namespace
-
 void StartIfWanted(Device& device, FrameRing& frames) {
   const rr::DebugSwitch debug = ReadDebugSwitch();
   const bool row_is_ours = denoiser::Setting() == rr::Denoiser::kOurs;
   if (!ProbeWanted(debug, AnySignalBuilt(), row_is_ours)) {
     return;
+  }
+  if (debug == rr::DebugSwitch::kRow && uint32_t(device.description().vendor) != kVendorAmd) {
+    return;   // the row decides and the card is not a Radeon: nothing of AMD's is asked on this PC (the debug switch's probe and on still ask, for a test)
   }
   REXLOG_INFO("{} mcla_gpu_ray_regen = {}, DENOISER row = {}: asking this device", kPrefix, rr::DebugSwitchName(debug), denoiser::WordOf(denoiser::Setting()));
   Instance().Probe(device, frames);

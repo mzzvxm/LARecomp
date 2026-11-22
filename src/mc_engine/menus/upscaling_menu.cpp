@@ -17,6 +17,7 @@
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/denoiser_setting.h"
 #include "gpu/gpu.h"
+#include "gpu/ray_regen_plan.h"
 #endif
 
 namespace {
@@ -551,13 +552,28 @@ mcla::gpu::denoiser::MenuInputs DenoiserInputs() {
 }
 mcla::gpu::denoiser::Gate DenoiserGate() { return mcla::gpu::denoiser::GateOf(DenoiserInputs()); }
 
+// A Radeon: the same row, its middle value is AMD FSR Ray Regeneration (shown FSR RAY REGEN: gpu/ray_regen_rules.h has the words and AMD's naming rules, the launcher, the wiki and the log say "AMD FSR Ray
+// Regeneration"), the gate is the one of that runtime (a Radeon RX 9000 series card on Direct3D 12; no restart: the runtime is opened when the row asks for it). The stored word is the same ("rr"), so a saved
+// setting survives a change of graphics card. Every other card keeps DLSS RR's gate and name.
+bool AmdRow() { return mcla::gpu::rayregen::RowVendor() == mcla::gpu::rayregen::Vendor::kAmd; }
+mcla::gpu::rayregen::Gate AmdGate() {
+    namespace rg = mcla::gpu::rayregen;
+    return rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking());
+}
+
 std::string DenoiserValueLabel(int i) {
     namespace dn = mcla::gpu::denoiser;
+    if (AmdRow()) {
+        namespace rg = mcla::gpu::rayregen;
+        const rg::Gate gate = AmdGate();
+        if (i == 0) return rg::AutoLabel(rg::RowEnabled(gate) && rg::AnyAutoConsumerOn(dn::ConsumersOn()));
+        return i == 1 ? rg::MenuNameOfRr(rg::Vendor::kAmd) : dn::kMenuNames[2];
+    }
     if (i == 0) return dn::AutoLabel(DenoiserGate(), dn::ConsumersOn());
     return i == 1 ? dn::kMenuNames[1] : dn::kMenuNames[2];
 }
-bool DenoiserEnabled() { return mcla::gpu::denoiser::RowEnabled(DenoiserGate()); }
-const char* DenoiserSuffix() { return mcla::gpu::denoiser::RowSuffix(DenoiserGate()); }
+bool DenoiserEnabled() { return AmdRow() ? mcla::gpu::rayregen::RowEnabled(AmdGate()) : mcla::gpu::denoiser::RowEnabled(DenoiserGate()); }
+const char* DenoiserSuffix() { return AmdRow() ? mcla::gpu::rayregen::RowSuffix(AmdGate()) : mcla::gpu::denoiser::RowSuffix(DenoiserGate()); }
 
 // ── The rows ───────────────────────────────────────────────────────────────────────────────────
 //

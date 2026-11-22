@@ -627,7 +627,7 @@ void CheckWiring(const std::string& dir) {
             Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())") && Has(menu, "const char* const kDenoiserVals[] = {\"auto\", \"rr\", \"ours\"};"),
         "the DENOISER row on a Radeon: the same stored words, the vendor's middle value, AUTO's label, the AMD gate and its suffix; every other card keeps DLSS RR's");
   // the settings (the three generated files)
-  Check(Has(manifest, "\"mcla_gpu_ray_regen_ssr\": {") && Has(header, "REX_SETTING(i32, mcla_gpu_ray_regen_ssr, 1,") && Has(header, "inline auto& mcla_gpu_ray_regen_ssr = g_gpu.mcla_gpu_ray_regen_ssr;") && Has(meta, "{\"mcla_gpu_ray_regen_ssr\", \"MCLA/GPU\"},"),
+  Check(Has(manifest, "\"mcla_gpu_ray_regen_ssr\": {") && Has(header, "i32, mcla_gpu_ray_regen_ssr, 1, \"Debug (A/B, AMD FSR Ray Regeneration") && Has(header, "inline auto& mcla_gpu_ray_regen_ssr = g_gpu.mcla_gpu_ray_regen_ssr;") && Has(meta, "{\"mcla_gpu_ray_regen_ssr\", \"MCLA/GPU\"},"),
         "the A/B setting mcla_gpu_ray_regen_ssr is in the settings header, its alias, the manifest and the meta list");
   Check(Has(header, "AMD FSR Ray Regeneration (Radeon RX 9000 series cards, Direct3D 12)") && Has(header, "FSR RAY REGEN in the menu"), "the DENOISER setting's own description names AMD FSR Ray Regeneration and the menu word");
   Check(Has(Read(dir, "CMakeLists.txt"), "ray_regen_plan.cpp"), "the planner is in the library");
