@@ -1702,8 +1702,11 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     const bool rr_may_run = ready && rr_plan_.use_rr && effective_ == Upscaler::kDlss && rr_context_asked_ && dlss_ && dlss_->CompanionReady(rr_request_);
     from_runtime = rr::RuntimePhaseCount(from_runtime, frame_.ratio, rr_may_run);
     frame_.phase_count = JitterPhases(frame_.ratio, from_runtime);
-    // While a scene runs the sequence follows the scene's update number (scene_noise.h): the same scene frame has the same jitter in every run.
-    frame_.jitter_index = static_cast<uint32_t>(scene_noise::Active() ? scene_noise::Index(jitter_index_) % frame_.phase_count : jitter_index_ % frame_.phase_count);
+    // While a scene runs the sequence follows the scene's update number (scene_noise.h): the same scene frame has the same jitter in every run. NoiseIndex, not Index: a pinned still (scene_at, the trailer
+    // toolkit's stills) shows the same update number in every frame, so the scene's number alone gave ONE sub-pixel offset for ever and the upscaler had nothing to resolve detail from; NoiseIndex adds the
+    // frames the update has been held (NOISE-RESOLVE, NOISE-AUDIT CHECK 2), so a still walks the whole jitter sequence and converges like a supersampled picture. A running scene (a new number every frame)
+    // and a frame outside a scene are as they were; mcla_gpu_noise_held false gives the scene's number alone again.
+    frame_.jitter_index = static_cast<uint32_t>(scene_noise::Active() ? scene_noise::NoiseIndex(jitter_index_) % frame_.phase_count : jitter_index_ % frame_.phase_count);
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
     upscaler_math::JitterOffset(frame_.jitter_index, frame_.phase_count, frame_.jitter);
     // While the history restarts in every frame the upscaler cannot take the jitter out: held at zero (temporal_menu.h).

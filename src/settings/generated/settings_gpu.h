@@ -1124,6 +1124,11 @@ class GPUSettings final : public rex::SettingOwner {
     "after the same number of frames is still repeatable). False: the scene's own number alone, for pictures that must match whatever number of frames was "
     "waited. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_noise_resolve_no_upscaler, true, "Diagnostic: with no temporal upscaler running (plain MSAA, the default) the contact shadows' march, the ray traced sun rays of the car and the city, "
+    "the sun shafts' ray starts and the car reflection cone's turn changed their noise every frame only while an upscaler averaged it; without one they held one pattern. "
+    "True: the noise changes every frame here too, and each effect resolves it itself: the contact shadows and the sun rays through the occlusion's own history (reprojected by depth and the "
+    "camera, 12 frames), the shafts and the reflection cone through a short history of their own. False: the first fixes' fixed blue pattern without an upscaler. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_object_names, false, "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
     "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
     "microseconds, and a world loads hundreds of textures in one frame, so they are set only "
@@ -2042,6 +2047,7 @@ inline auto& mcla_gpu_msaa = g_gpu.mcla_gpu_msaa;
 inline auto& mcla_gpu_msaa_with_upscaler = g_gpu.mcla_gpu_msaa_with_upscaler;
 inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;
 inline auto& mcla_gpu_noise_held = g_gpu.mcla_gpu_noise_held;
+inline auto& mcla_gpu_noise_resolve_no_upscaler = g_gpu.mcla_gpu_noise_resolve_no_upscaler;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;

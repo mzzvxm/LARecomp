@@ -238,7 +238,7 @@ void TestSetting(const std::string& dir) {
   const std::string scene = nc::ReadFile(dir + "/scene.cpp");
   g_check(nc::Has(scene, "scene_noise::SetCountHeld(larecomp::settings::mcla_gpu_noise_held.Get());") && nc::Has(scene, "shadow_filter::CurrentConstants(UpscalerRunning(), scene_noise::NoiseIndex(frame_serial_));") &&
               nc::Has(nc::ReadFile(dir + "/ao.cpp"), "ao_stable::NoiseCode(scene_noise::NoiseIndex(frame_), larecomp::settings::mcla_gpu_ao_stable.Get(), use_blue_noise)") &&
-              nc::Has(nc::ReadFile(dir + "/shafts.cpp"), "float(scene_noise::NoiseIndex(frame_) & 1023u)") && nc::Has(nc::ReadFile(dir + "/car_selfrefl.cpp"), "uint32_t(scene_noise::NoiseIndex(frame_) & 7u)"),
+              nc::Has(nc::ReadFile(dir + "/shafts.cpp"), "noise_resolve::FrameTerm(upscaler_running, plan.history, scene_noise::NoiseIndex(frame_), 1023u)") && nc::Has(nc::ReadFile(dir + "/car_selfrefl.cpp"), "uint32_t(scene_noise::NoiseIndex(frame_) & 7u)"),
           "the occlusion, the shafts, the reflection cone and the shadow filter take their noise from NoiseIndex; scene.cpp passes the setting to it each frame");
   const std::string frame = nc::ReadFile(dir + "/hlsl/blue_noise_frame.hlsli");
   g_check(nc::Has(frame, "#include \"blue_noise.hlsli\"") && nc::Has(frame, "float2 BlueNoiseFrame2(int px, int py, uint sample_index)"), "the shared helper is in hlsl/blue_noise_frame.hlsli");

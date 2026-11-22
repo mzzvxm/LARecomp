@@ -25,6 +25,7 @@
 #include "host_precache.h"
 #include "host_shaders.h"
 #include "live_text.h"
+#include "noise_resolve.h"
 #include "pass_timing.h"
 #include "rt_tier.h"
 #include "texture_bytes.h"
@@ -216,6 +217,12 @@ void CarRtRefl::Shutdown() {
   trace_set_ = OutputSet{};
   first_set_ = OutputSet{};
   final_set_ = OutputSet{};
+  for (int i = 0; i < 2; ++i) {
+    stable_[i] = HostImage{};
+    stable_set_[i] = OutputSet{};
+  }
+  stable_valid_ = false;
+  result_in_stable_ = false;
   stats_.reset();
   stats_zero_.reset();
   stats_readback_.reset();
@@ -448,6 +455,13 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
       ReleaseScratch();  // not needed while the denoise is off or cannot run
     }
   }
+  // NOISE-RESOLVE: with no temporal upscaler the cone's pattern changes every frame and the finished image is averaged with the last frame's result (the denoise's third pass); that needs the denoise
+  // (it makes the image to average), its two images and the switch. Else the pattern stands still on the screen as the first fixes left it, and what the a-trous passes leave is all there is.
+  const bool resolve_history = denoise_passes > 0 && !info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && EnsureStableImages(history.width, history.height);
+  if (!resolve_history && (stable_[0].texture || stable_[1].texture)) {
+    ReleaseStable();
+  }
+  const uint32_t pattern_phase = noise_resolve::Varies(info.upscaler, resolve_history) ? info.pattern_phase : 0u;
 
   // Another car's chrome (car_chrome_rt_rules.h): found by the primary ray too, and its probes traced, where the chrome variant is drawn at all and the switch for
   // this is on; else the primary ray is the player's body alone, as it was (no instance of the scene has the chrome's bit then that a ray here would take).
@@ -457,7 +471,10 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.slots[1] = reflection_parts;
   push.slots[2] = chrome_others ? car_rt_refl::kPrimaryTraceParts : car_rt_refl::kPrimaryParts;
   // A stats frame (car_rt_hit_rules.h census::): the shader counts what became of every hit, and the host reads the counters back (ProcessStats).
-  push.slots[3] = car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, cone_rays), stats_frame);
+  // The cone's turn is the blue noise tile's (the first version's gradient noise is a lattice the denoise leaves as thin diagonal lines: car_rt_refl_rules.h ConeRotation) unless
+  // mcla_gpu_noise_blue is off, for the A/B.
+  push.slots[3] = car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(pattern_phase, cone_rays), stats_frame) |
+                  (larecomp::settings::mcla_gpu_noise_blue.Get() ? car_rt_refl::kConeBlueFlag : 0u);
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
   push.image[2] = float(info.render_width);
@@ -579,6 +596,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   }
 
   result_in_scratch_ = false;
+  result_in_stable_ = false;
   if (denoise_passes == 0) {
     transition(Stage::GRAPHICS, {{&image_, Layout::SHADER_READ}});
   } else {
@@ -594,6 +612,31 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     } else {
       result_in_scratch_ = true;
       transition(Stage::GRAPHICS, {{&scratch_, Layout::SHADER_READ}});
+    }
+    if (resolve_history) {
+      // The third pass: the finished image (the trace's after two passes, the scratch after one) averaged with the last frame's result into the other stable image, which the paint reads. The history is the
+      // frame before's (consecutive guest frames, the same size); without one the pass copies the finished image (weight 0) and the next frame has a history.
+      const bool have_last = stable_valid_ && stable_frame_ + 1 == info.frame && stable_[0].width == history.width && stable_[0].height == history.height;
+      const float keep = have_last ? noise_resolve::ConeHistoryWeight(stable_frames_) : 0.0f;
+      const uint32_t out = 1 - stable_index_;
+      HostImage& finished = result_in_scratch_ ? scratch_ : image_;
+      pass_timing_->Mark(list, "car rt temporal");
+      transition(Stage::COMPUTE, {{&finished, Layout::SHADER_READ}, {&stable_[stable_index_], Layout::SHADER_READ}, {&stable_[out], Layout::GENERAL}});
+      DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half, keep, stable_[stable_index_].slot);
+      transition(Stage::GRAPHICS, {{&stable_[out], Layout::SHADER_READ}});
+      stable_index_ = out;
+      stable_valid_ = true;
+      stable_frame_ = info.frame;
+      stable_frames_ = have_last ? std::min(stable_frames_ + 1u, 64u) : 0u;
+      result_in_stable_ = true;
+      ++stable_runs_;
+      if (!stable_logged_ && have_last) {
+        stable_logged_ = true;
+        REXLOG_INFO("{} the first frame that averages the finished image over a history (no temporal upscaler: the cone's turn changes every frame, mcla_gpu_noise_resolve_no_upscaler): weight {:.2f} at most, texel for "
+                    "texel, clamped to the 3x3 neighbourhood of the finished image, two images {}x{} R16G16B16A16_FLOAT ({:.1f} MiB) (reported once)",
+                    kPrefix, noise_resolve::kConeHistoryWeight, history.width, history.height,
+                    double(TextureBytes(stable_[0].width, stable_[0].height, 1, stable_[0].format) * 2) / (1024.0 * 1024.0));
+      }
     }
     ++denoise_runs_;
     if (!denoise_logged_) {
@@ -654,7 +697,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
                 kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height, info.divisor,
                 view.instance_count, length, self_reach, others_reach, 100.0 * double(level.others_fade_from), parts,
                 gloss > 0.0f ? std::min<uint32_t>(level.cone_rays, car_rt_refl::kConeRays) : 1, gloss,
-                info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "",
+                info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : (resolve_history ? " (the pattern turns with the frame: the pass's own history averages it)" : ""),
                 level.coat > 0.0f && gloss > 0.0f && level.cone_rays >= 4 ? std::format("on, strength {:.2f} (mcla_gpu_car_rt_clearcoat)", level.coat) : std::string("off"),
                 level.coat > 0.0f && gloss > 0.0f && level.cone_rays >= 4
                     ? std::format(" (another car in the reflection: the mirror is at least {:.0f}% of the texel, the cone's hits on it are dropped where the mirror missed it; the paint's clear coat layer: {})",
@@ -668,7 +711,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
 
 void CarRtRefl::DispatchDenoise(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, uint32_t history_slot, const HostImage& input,
                                 const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length,
-                                float tan_half) {
+                                float tan_half, float keep, uint32_t previous_slot) {
   DenoisePush push = {};
   push.slots[0] = history_slot;
   push.slots[1] = input.slot;
@@ -676,6 +719,8 @@ void CarRtRefl::DispatchDenoise(plume::RenderCommandList* list, plume::RenderPip
   push.slots[3] = pass;
   push.image[0] = float(width);
   push.image[1] = float(height);
+  push.image[2] = keep;                  // pass 2: the weight the history keeps
+  push.image[3] = float(previous_slot);  // pass 2: the last result's bindless slot (a slot is far below 2^24: exact in a float)
   push.lens[0] = tan_y;
   push.lens[1] = length;
   push.lens[2] = tan_half;
@@ -755,6 +800,38 @@ bool CarRtRefl::EnsureDenoiseImages(uint32_t width, uint32_t height) {
   return true;
 }
 
+bool CarRtRefl::EnsureStableImages(uint32_t width, uint32_t height) {
+  constexpr plume::RenderTextureFlags kFlags = plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+  for (int i = 0; i < 2; ++i) {
+    const plume::RenderTexture* before = stable_[i].texture.get();
+    if (!passes_->EnsureImage(stable_[i], width, height, plume::RenderFormat::R16G16B16A16_FLOAT, i == 0 ? "car rt refl stable 0" : "car rt refl stable 1", kFlags)) {
+      ReleaseStable();
+      return false;
+    }
+    if (stable_[i].texture.get() != before) {
+      RetireSet(stable_set_[i]);
+      stable_valid_ = false;  // a new image holds nothing
+    }
+    if (!EnsureSet(stable_set_[i], denoise_builder_, stable_[i], nullptr, i == 0 ? "car rt refl stable set 0" : "car rt refl stable set 1")) {
+      ReleaseStable();
+      return false;
+    }
+  }
+  return true;
+}
+
+void CarRtRefl::ReleaseStable() {
+  stable_valid_ = false;
+  result_in_stable_ = false;
+  if (!passes_) {
+    return;
+  }
+  for (int i = 0; i < 2; ++i) {
+    passes_->ReleaseImage(stable_[i]);
+    RetireSet(stable_set_[i]);
+  }
+}
+
 bool CarRtRefl::EnsureSet(OutputSet& out, plume::RenderDescriptorSetBuilder& builder, const HostImage& first, const HostImage* second,
                           const char* name, const plume::RenderBuffer* stats) {
   const plume::RenderTexture* first_texture = first.texture.get();
@@ -795,7 +872,7 @@ void CarRtRefl::ReleaseScratch() {
 }
 
 uint32_t CarRtRefl::SlotFor(uint64_t history_frame) const {
-  const HostImage& result = result_in_scratch_ ? scratch_ : image_;
+  const HostImage& result = result_in_stable_ ? stable_[stable_index_] : (result_in_scratch_ ? scratch_ : image_);
   if (!recorded_ || recorded_frame_ != history_frame || !result.texture || result.slot == kNoSlot) {
     return car_selfrefl::kNoRtImage;
   }
@@ -805,10 +882,16 @@ uint32_t CarRtRefl::SlotFor(uint64_t history_frame) const {
 void CarRtRefl::ReleaseImage() {
   recorded_ = false;
   result_in_scratch_ = false;
+  result_in_stable_ = false;
+  stable_valid_ = false;
   if (!passes_) {
     return;
   }
   glass_.ReleaseImage();
+  passes_->ReleaseImage(stable_[0]);
+  passes_->ReleaseImage(stable_[1]);
+  RetireSet(stable_set_[0]);
+  RetireSet(stable_set_[1]);
   passes_->ReleaseImage(image_);
   passes_->ReleaseImage(aux_);
   passes_->ReleaseImage(scratch_);
@@ -823,7 +906,7 @@ void CarRtRefl::ReleaseImage() {
 
 uint64_t CarRtRefl::HeldBytes() const {
   uint64_t bytes = 0;
-  for (const HostImage* held : {&image_, &aux_, &scratch_, &hit_}) {
+  for (const HostImage* held : {&image_, &aux_, &scratch_, &hit_, &stable_[0], &stable_[1]}) {
     bytes += held->texture ? TextureBytes(held->width, held->height, 1, held->format) : 0;
   }
   return bytes + glass_.HeldBytes();

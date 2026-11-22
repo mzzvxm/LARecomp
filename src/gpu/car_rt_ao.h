@@ -101,7 +101,7 @@ class CarRtAo {
     bool contact = false;              // the contact shadows run in this frame (not gated off by a low sun or rain)
     bool ultra = false;                // the occlusion's level: 4 rays against 2
     float to_sun[3] = {0.0f, 0.0f, 0.0f};  // the direction to the sun in view space (unit; zero: none)
-    uint32_t noise_code = 0;           // what the main pass is given in slots2.y (ao_stable.h NoiseCode)
+    uint32_t noise_code = 0;           // what the main pass is given in slots2.y (ao_stable.h NoiseCode; its bit 29 says the blue noise tile, for the sun ray's too)
     uint32_t sun_frame = 0;            // the frame the sun ray's spread is shifted by (0: a fixed pattern)
     uint64_t frame = 0;                // for the log
   };

@@ -422,6 +422,7 @@
 {"mcla_gpu_msaa_with_upscaler", "MCLA/GPU"},
 {"mcla_gpu_noise_blue", "MCLA/GPU"},
 {"mcla_gpu_noise_held", "MCLA/GPU"},
+{"mcla_gpu_noise_resolve_no_upscaler", "MCLA/GPU"},
 {"mcla_gpu_object_names", "MCLA/GPU"},
 {"mcla_gpu_pass_timing", "MCLA/GPU"},
 {"mcla_gpu_pause_vehicle_vectors", "MCLA/GPU"},

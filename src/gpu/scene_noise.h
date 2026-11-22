@@ -37,7 +37,7 @@
 // the other effects' noise (the shafts', the shadow filter's, the reflection cone's, the sun rays') finds the same numbers in every frame. NoiseIndex(fallback) is the number a stochastic effect takes
 // its noise from: the update number PLUS the number of tagged frames in a row that carried the same update (Held), so a held scene keeps counting while a running scene (the number changes every
 // frame: nothing is added) and a frame outside a scene (the renderer's own count, which changes every frame) are as they were. It stays a function of the scene's own numbers: the k-th frame of a still
-// has the same noise in every run, so a picture taken after the same number of frames is repeatable. Index() is the scene's number alone (the temporal upscalers' jitter keeps it).
+// has the same noise in every run, so a picture taken after the same number of frames is repeatable. Index() is the scene's number alone (the temporal upscalers' jitter took it until NOISE-RESOLVE; it takes NoiseIndex now, so a still walks the whole jitter sequence).
 // The count can be turned off (SetCountHeld, mcla_gpu_noise_held false): NoiseIndex is then Index.
 //
 // Threading: SetUpdate, OnGuestSwap and OnHandOver on the game thread; OnPresent, BeginFrame and Index on the render thread. All atomics; header only, so
@@ -153,7 +153,8 @@ inline void Rearm() {
   s.held.store(0, std::memory_order_relaxed);
 }
 
-// Render thread: the scene's own number: the scene update the frame in progress shows, else `fallback` (the renderer's own count). The temporal upscalers' jitter takes this one.
+// Render thread: the scene's own number: the scene update the frame in progress shows, else `fallback` (the renderer's own count). (The temporal upscalers' jitter took this one until NOISE-RESOLVE: a pinned still
+// then stood on one sub-pixel offset for ever; it takes NoiseIndex now, like every other effect, so a still converges like a supersampled picture.)
 inline uint64_t Index(uint64_t fallback) {
   const uint64_t c = Get().current.load(std::memory_order_relaxed);
   return c == kNone ? fallback : c;

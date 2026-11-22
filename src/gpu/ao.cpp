@@ -22,6 +22,7 @@
 #include "ao_paint.h"
 #include "ao_stable.h"
 #include "car_rt_ao.h"
+#include "noise_resolve.h"
 #include "scene_noise.h"
 #include "screen_shared.h"
 #include "car_shadow_map.h"
@@ -79,6 +80,8 @@ constexpr uint32_t kMinRenderSize = 64;
 // (AoVehiclesAsWorld).
 constexpr uint32_t kHistoryFlag = 1u << 20;
 constexpr uint32_t kVehiclesAsWorldFlag = 1u << 21;
+// NOISE-RESOLVE: the temporal pass over the contact shadows' image (hlsl/ao_temporal_ps.hlsl AoContactHistory): no wide blur where the history does not hold.
+constexpr uint32_t kContactHistoryFlag = 1u << 22;
 constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
 // The vehicle table (hlsl/ao_temporal_ps.hlsl): a row an ID, four texels a row (the three columns of
 // the matrix and the usable flag, hlsl/temporal_vehicle_table_ps.hlsl).
@@ -647,6 +650,10 @@ void AmbientOcclusion::Shutdown() {
   depth_full_ = HostImage{};
   contact_raw_ = HostImage{};
   contact_dn_ = HostImage{};
+  for (HostImage& image : contact_hist_.image) {
+    image = HostImage{};
+  }
+  contact_hist_.valid = false;
   for (HostImage& image : history_) {
     image = HostImage{};
   }
@@ -710,7 +717,8 @@ std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeed
   if (needs.denoise) {
     variants.push_back(kVDenoise);
   }
-  if (needs.occlusion) {
+  if (needs.occlusion || needs.contact) {
+    // (the contact shadows' history runs the same pass when no temporal upscaler averages their noise: NOISE-RESOLVE)
     variants.push_back(kVTemporal);
     variants.push_back(kVTemporalMs);
   }
@@ -735,7 +743,7 @@ std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeed
   if (needs.apply && edram_ && edram_->SupportedMsaaLevel(8) == 8) {
     variants.push_back(ApplyVariant(false, 8));
   }
-  if (needs.occlusion && vehicle_table_shader_) {
+  if ((needs.occlusion || needs.contact) && vehicle_table_shader_) {
     variants.push_back(kVVehicleTable);
   }
   // The bounce light's own passes (the colour chain, the visibility bitmask, its denoise, history and
@@ -1138,6 +1146,9 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   add(depth_full_);
   add(contact_raw_);
   add(contact_dn_);
+  for (const HostImage& image : contact_hist_.image) {
+    add(image);
+  }
   add(contact_skip_);
   add(contact_stat_);
   for (const HostImage& image : history_) {
@@ -1175,6 +1186,11 @@ void AmbientOcclusion::ReleaseImages() {
   passes_->ReleaseImage(depth_full_);
   passes_->ReleaseImage(contact_raw_);
   passes_->ReleaseImage(contact_dn_);
+  for (HostImage& image : contact_hist_.image) {
+    passes_->ReleaseImage(image);
+  }
+  contact_hist_.valid = false;
+  contact_hist_.cut = false;
   passes_->ReleaseImage(contact_skip_);
   passes_->ReleaseImage(contact_stat_);
   for (HostImage& image : history_) {
@@ -1630,6 +1646,10 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     plan.apply = false;
   }
   plan.upscaler = upscaler_running;
+  // NOISE-RESOLVE: with no temporal upscaler the contact shadows' noise changes every frame and the contact image has a history of its own (ChooseContactHistory), as long as the occlusion's own
+  // history length allows one (mcla_gpu_ao_history 2 and up) and no debug picture of the contact shadows is shown.
+  plan.contact_history = contact && !upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&
+                         larecomp::settings::mcla_gpu_contact_shadows_view.Get() == 0;
   plan.view = plan.occlusion ? uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_view.Get(), 0, 8)) : 0u;
   if (plan.view == 8u) {
     plan.view = kVehicleView;  // the contact shadows' views are 8 to 11
@@ -1806,6 +1826,24 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   }
   if ((!split || !plan.apply || in_apply) && contact_dn_.texture) {
     passes_->ReleaseImage(contact_dn_);
+  }
+  // NOISE-RESOLVE: the contact image's history, two R16G16_FLOAT images at the contact image's size (visibility, linear depth) while no temporal upscaler averages the contact shadows' noise; given
+  // back with the setting off or an upscaler on (the first frame after has none: ChooseContactHistory says kFirst).
+  if (ok && plan.contact_history && plan.apply) {
+    ok = passes_->EnsureImage(contact_hist_.image[0], plan.contact_size[0], plan.contact_size[1], plume::RenderFormat::R16G16_FLOAT, "ao contact history 0") &&
+         passes_->EnsureImage(contact_hist_.image[1], plan.contact_size[0], plan.contact_size[1], plume::RenderFormat::R16G16_FLOAT, "ao contact history 1");
+  } else {
+    bool released = false;
+    for (HostImage& image : contact_hist_.image) {
+      if (image.texture) {
+        passes_->ReleaseImage(image);
+        released = true;
+      }
+    }
+    if (released) {
+      contact_hist_.valid = false;
+      contact_hist_.cut = false;
+    }
   }
   // The bounce light test keeps its own history (RGBA16F, EnsureGiImages) and the occlusion's is not made
   // while it runs: a frame that turns out not to have the test asks again with the test off (Run).
@@ -2556,6 +2594,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   if (contact) {
     contact_pipeline = Pipeline(kVContact);
   }
+  if (plan.contact_history && !Pipeline(ms ? kVTemporalMs : kVTemporal)) {
+    plan.contact_history = false;  // NOISE-RESOLVE: the temporal pass is not made yet: this frame has no history for the contact image, and its noise holds (Varies)
+  }
   if (!depth_pipeline || (levels && !mip_pipeline) ||
       (plan.occlusion && (!main_pipeline || !temporal_pipeline)) ||
       (plan.apply && !denoise_pipeline) || (contact && !contact_pipeline)) {
@@ -2648,6 +2689,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   // already there: the call records a barrier only when it is elsewhere).
   edram_->Transition(list, depth_target, plume::RenderTextureLayout::SHADER_READ);
 
+  stencil_slot_ = summary.stencil_slot;  // the contact image's history reads the vehicles' IDs from it
+  stencil_ms_ = ms;
   Push push = base;
   pass_timing_->Mark(list, "ao depth");
   push.sizes[0] = float(plan.ao[0]);
@@ -2711,8 +2754,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     for (int i = 0; i < 3; ++i) {
       in.to_sun[i] = base.light[i];
     }
-    in.noise_code = ao_stable::NoiseCode(frame_, larecomp::settings::mcla_gpu_ao_stable.Get());
-    in.sun_frame = plan.upscaler ? uint32_t(frame_ & 1023) : 0u;  // a fixed pattern unless a temporal upscaler averages the frames, as the march's
+    // The traced occlusion's noise is the main pass's (the same frame shift, and the blue noise tile unless mcla_gpu_ao_blue_noise is off: hlsl/car_rt_ao_noise.hlsli), the frame number the scene's
+    // while a scene runs, counting the frames a held scene stays on one number (scene_noise.h NoiseIndex).
+    in.noise_code = ao_stable::NoiseCode(scene_noise::NoiseIndex(frame_), larecomp::settings::mcla_gpu_ao_stable.Get(), larecomp::settings::mcla_gpu_ao_blue_noise.Get());
+    // The sun ray's sample moves every frame when something averages it: a temporal upscaler, or (NOISE-RESOLVE) the contact image's own history, which the traced term goes through with the march. Else a fixed (blue) pattern, as the march's.
+    in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;
     in.frame = frame_;
     rt = rt_ao_->Record(list, in);
     if (rt.recorded && rt.contact) {
@@ -2867,6 +2913,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // "vehicles" line and the summary line count the pause frames that had vehicle IDs.
     uint32_t vehicle_slot = kNoSlot;
     const uint32_t vehicle_rows = RecordVehicleTable(list, use, &vehicle_slot);
+    vehicle_table_frame_ = frame_;  // the contact image's history reads the same table (one camera, one table)
+    vehicle_table_slot_ = vehicle_slot;
+    vehicle_table_rows_ = vehicle_rows;
     push.slots[0] = vehicle_slot;
     push.slots2[2] |= trigger_pause_ ? kVehiclesAsWorldFlag : 0u;
     if (use.on) {
@@ -3739,13 +3788,12 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   // Only the march reads extra.w; the filter below does not, and the value is put back for it all the same.
   const float base_extra_w = push.extra[3];
   push.extra[3] = under ? contact_trace::UnderCastDistance(traffic_shadow::CastDistance()) : 0.0f;
-  // The ray start's noise has no history here, only the filter below. Moved every frame it would make
-  // the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal upscaler
-  // runs and averages the frames, as the shadow filter's and the sun shafts' are. A vehicle's pixel that marches stores a marked value so that the filter
+  // The ray start's noise moves every frame when something averages it: a temporal upscaler, or (NOISE-RESOLVE, Plan::contact_history) the contact image's own history below, the occlusion's temporal
+  // pass over the filter's result. With neither it has only the filter below and moved every frame it would make the edge of every contact shadow crawl: it is a fixed pattern (frame 0). A vehicle's pixel that marches stores a marked value so that the filter
   // averages its noise whatever the pixels beside it hold (contact_trace.h "the vehicle march's stipple"): a view with no upscaler history (the pause view
   // in the owner's pictures) or a player who runs without an upscaler has nothing else to average it.
   // (The blue noise's flag, bit 29, is not a frame: it stays whatever the frame number does.)
-  push.slots2[1] = plan.upscaler ? base.slots2[1] : (base.slots2[1] & ao_stable::kBlueNoiseFlag);
+  push.slots2[1] = noise_resolve::Varies(plan.upscaler, plan.contact_history) ? base.slots2[1] : (base.slots2[1] & ao_stable::kBlueNoiseFlag);
   // The adaptive step count (contact_trace.h AdaptiveSteps): the end gap in pixels in shape.z, which the march
   // does not otherwise read; 0 is every step, as the setting says, and above 1080 lines of picture (kAdaptMaxHeight) the
   // count costs more than it saves, so it is left off there.
@@ -3881,7 +3929,124 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.slots2[2] |= kContactFilterFlag;
   push.slots2[3] = normals_.contact_slot;  // the denoise pass reads the normal image's slot here
   DrawPass(list, contact_dn, denoise, push);
+  if (plan.contact_history) {
+    // NOISE-RESOLVE: the history over the filtered image (the apply then does no filter of its own: Plan::ContactFilterInApply).
+    const uint32_t slot = RecordContactHistory(list, plan, base, contact_dn, contact_depth);
+    if (slot != kNoSlot) {
+      return slot;
+    }
+  }
   return contact_dn.slot;
+}
+
+// ---------------------------------------------------------------------------
+// the contact shadows' own history (NOISE-RESOLVE)
+// ---------------------------------------------------------------------------
+
+AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseContactHistory(const Plan& plan) const {
+  HistoryUse use;
+  use.cap = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_history.Get(), 1, 64));
+  use.motion = temporal::Identity();
+  const ContactHistory& h = contact_hist_;
+  if (use.cap < 2) {
+    use.why = HistoryWhy::kCap;
+  } else if (!h.valid) {
+    use.why = h.cut ? HistoryWhy::kCut : HistoryWhy::kFirst;
+  } else if (h.frame + 1 != frame_) {
+    use.why = HistoryWhy::kGap;
+  } else if (h.pause != trigger_pause_) {
+    use.why = HistoryWhy::kView;
+  } else if (h.size[0] != plan.contact_size[0] || h.size[1] != plan.contact_size[1]) {
+    use.why = HistoryWhy::kSize;
+  } else {
+    bool cut = false;
+    if (!FrameMotion(&use.motion, &use.pose, &cut)) {
+      use.why = HistoryWhy::kFirst;
+      use.pose = Pose::kStill;
+      use.motion = temporal::Identity();
+    } else if (cut) {
+      use.why = HistoryWhy::kCut;
+    } else {
+      use.on = true;
+      use.why = HistoryWhy::kUsed;
+      use.age = h.age;
+    }
+  }
+  return use;
+}
+
+uint32_t AmbientOcclusion::RecordContactHistory(plume::RenderCommandList* list, const Plan& plan, const Push& base, const HostImage& filtered, const HostImage& depth) {
+  plume::RenderPipeline* accumulate = Pipeline(stencil_ms_ ? kVTemporalMs : kVTemporal);
+  ContactHistory& h = contact_hist_;
+  if (!accumulate || !h.image[0].texture || !h.image[1].texture || stencil_slot_ == kNoSlot) {
+    return kNoSlot;  // the frame goes on with the filter's own image (Run asked for the pipeline before the plan was used; the images are EnsureImages')
+  }
+  const HistoryUse use = ChooseContactHistory(plan);
+  if (use.on) {
+    ++h.used;
+    if (!h.logged) {
+      h.logged = true;
+      REXLOG_INFO("[gpu] ao: the contact shadows' first frame that averages over a history of its own (no temporal upscaler: the march's and the traced sun rays' noise changes every frame, "
+                  "mcla_gpu_noise_resolve_no_upscaler): {} frames at most (mcla_gpu_ao_history), the camera's motion into the last frame from {}, images {}x{} R16G16_FLOAT x2 (reported once)",
+                  use.cap, PoseName(use.pose), plan.contact_size[0], plan.contact_size[1]);
+    }
+  } else {
+    ++h.resets;
+  }
+  const uint32_t out_index = 1 - h.index;
+  HostImage& history_in = h.image[h.index];
+  HostImage& history_out = h.image[out_index];
+  pass_timing_->Mark(list, "ao contact temporal");
+  Push push = base;
+  push.slots[1] = ao_gbuffer::PackHigh(base.slots[1], normals_.contact_slot);  // the host sample, and the contact image's normal slot in the high half
+  push.slots[2] = filtered.slot;
+  push.slots[3] = depth.slot;
+  push.slots2[0] = use.on ? history_in.slot : depth.slot;  // without a history any readable image: the shader does not read it
+  // The vehicles' rows: the table the occlusion's own pass drew this frame, else one for this history's motion.
+  uint32_t vehicle_slot = kNoSlot;
+  if (use.on) {
+    if (vehicle_table_frame_ == frame_) {
+      vehicle_slot = vehicle_table_slot_;
+    } else {
+      RecordVehicleTable(list, use, &vehicle_slot);
+    }
+  }
+  push.slots[0] = vehicle_slot;
+  // The pass's flags: no debug view, the contact image's own size (the full size beside a half size occlusion reads the stencil plane directly, not as 2x2 blocks), the history on or off.
+  push.slots2[2] &= ~0xFFu;
+  if (plan.SplitContact()) {
+    push.slots2[2] &= ~(1u << 16);
+  }
+  push.slots2[2] |= (use.on ? kHistoryFlag : 0u) | (trigger_pause_ ? kVehiclesAsWorldFlag : 0u) | kContactHistoryFlag;
+  push.slots2[3] = stencil_slot_;
+  push.sizes[0] = push.sizes[2] = float(plan.contact_size[0]);
+  push.sizes[1] = push.sizes[3] = float(plan.contact_size[1]);
+  // The camera's motion into the last frame, in this renderer's view space (the occlusion's own conversion: x right, y up, z forward).
+  const auto motion = [&use](int i, int j) {
+    const double sign = ((i == 2) != (j == 2)) ? -1.0 : 1.0;
+    return float(sign * use.motion.m[i][j]);
+  };
+  for (int k = 0; k < 4; ++k) {
+    push.lin[k] = motion(k, 0);
+    push.shape[k] = motion(k, 1);
+    push.light[k] = motion(k, 2);
+  }
+  push.extra[0] = h.tan[0];
+  push.extra[1] = plan.contact.fade_end;
+  push.extra[2] = h.tan[1];
+  push.extra[3] = use.on ? float(1.0 - 1.0 / double(std::min(use.age + 2, use.cap))) : 0.0f;
+  DrawPass(list, history_out, accumulate, push);
+  h.index = out_index;
+  h.valid = true;
+  h.cut = false;
+  h.frame = frame_;
+  h.pause = trigger_pause_;
+  h.size[0] = plan.contact_size[0];
+  h.size[1] = plan.contact_size[1];
+  h.tan[0] = base.lens[0];
+  h.tan[1] = base.lens[1];
+  h.age = use.on ? std::min(use.age + 1, use.cap) : 0u;
+  return history_out.slot;
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@
 #include <rex/logging/log_category.h>
 
 #include "device.h"
+#include "noise_resolve.h"
 #include "scene_noise.h"
 #include "draw_decode.h"
 #include "draw_state.h"
@@ -156,6 +157,7 @@ std::string SunShafts::VariantName(uint32_t variant) {
     case kVSky: return "shafts sky";
     case kVSkyMs: return "shafts sky (multisampled)";
     case kVBlur: return "shafts blur";
+    case kVTemporal: return "shafts temporal";
     default: break;
   }
   const uint32_t index = variant - kVAddBase;
@@ -214,6 +216,9 @@ void SunShafts::Shutdown() {
   // The GPU is idle and the heap goes later: the slots are not handed back (PostAa::Shutdown).
   sky_ = HostImage{};
   shaft_ = HostImage{};
+  hist_[0] = HostImage{};
+  hist_[1] = HostImage{};
+  hist_valid_ = false;
   for (auto& pipeline : pipelines_) {
     pipeline.reset();
   }
@@ -229,7 +234,7 @@ void SunShafts::Shutdown() {
 std::vector<uint32_t> SunShafts::Variants() const {
   // The add pass for the play view's colour target at 1x, 2x and 4x (the host's MSAA level), 8x
   // when the device has it, so that a switch of the level or the first dusk waits for no pipeline.
-  std::vector<uint32_t> variants = {kVSky, kVSkyMs, kVBlur, AddVariant(false, 1), AddVariant(false, 2),
+  std::vector<uint32_t> variants = {kVSky, kVSkyMs, kVBlur, kVTemporal, AddVariant(false, 1), AddVariant(false, 2),
                                     AddVariant(false, 4)};
   if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
     variants.push_back(AddVariant(false, 8));
@@ -290,6 +295,8 @@ std::unique_ptr<plume::RenderPipeline> SunShafts::MakePipeline(uint32_t variant)
       return passes_->CreatePipeline(*shaders_[kPassSkyMs], kImageFormat, name.c_str());
     case kVBlur:
       return passes_->CreatePipeline(*shaders_[kPassBlur], kImageFormat, name.c_str());
+    case kVTemporal:
+      return passes_->CreatePipeline(*shaders_[kPassTemporal], kImageFormat, name.c_str());
     default: break;
   }
   // The add pass: into the scene colour (float16 RGBA) with the target's sample count. The light is
@@ -359,7 +366,7 @@ void SunShafts::BeginFrame() {
 
 uint64_t SunShafts::HeldBytes() const {
   uint64_t bytes = 0;
-  for (const HostImage* image : {&sky_, &shaft_}) {
+  for (const HostImage* image : {&sky_, &shaft_, &hist_[0], &hist_[1]}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
@@ -373,13 +380,25 @@ void SunShafts::ReleaseImages() {
   }
   passes_->ReleaseImage(sky_);
   passes_->ReleaseImage(shaft_);
+  passes_->ReleaseImage(hist_[0]);
+  passes_->ReleaseImage(hist_[1]);
+  hist_valid_ = false;
   images_made_for_[0] = images_made_for_[1] = 0;
 }
 
 bool SunShafts::EnsureImages(const Pending& plan) {
-  const bool ok =
+  bool ok =
       passes_->EnsureImage(sky_, plan.image[0], plan.image[1], kImageFormat, "shafts sky") &&
       passes_->EnsureImage(shaft_, plan.image[0], plan.image[1], kImageFormat, "shafts blurred");
+  // NOISE-RESOLVE: the history's two images while the frames are averaged here (no temporal upscaler); given back when an upscaler takes over or the setting goes off.
+  if (ok && plan.history) {
+    ok = passes_->EnsureImage(hist_[0], plan.image[0], plan.image[1], kImageFormat, "shafts history 0") &&
+         passes_->EnsureImage(hist_[1], plan.image[0], plan.image[1], kImageFormat, "shafts history 1");
+  } else if (hist_[0].texture || hist_[1].texture) {
+    passes_->ReleaseImage(hist_[0]);
+    passes_->ReleaseImage(hist_[1]);
+    hist_valid_ = false;
+  }
   if (ok && (images_made_for_[0] != plan.image[0] || images_made_for_[1] != plan.image[1])) {
     images_made_for_[0] = plan.image[0];
     images_made_for_[1] = plan.image[1];
@@ -892,9 +911,10 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   plan.steps = ReadSteps();
   plan.density = float(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_density.Get(), 0.3, 1.0));
   plan.decay = std::pow(kDecayAt64, 64.0f / float(plan.steps));
-  // The noise is a fixed pattern, shifted every frame only while a temporal upscaler averages it.
-  plan.noise_shift = upscaler_running ? float(scene_noise::NoiseIndex(frame_) & 1023u) : 0.0f;
   plan.view = uint32_t(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_view.Get(), 0, 3));
+  // The noise moves every frame while something averages it: a temporal upscaler, or (NOISE-RESOLVE) the history of the blurred image (RecordTemporal) while none runs; else a fixed pattern.
+  plan.history = !upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && plan.view == 0;
+  plan.noise_shift = float(noise_resolve::FrameTerm(upscaler_running, plan.history, scene_noise::NoiseIndex(frame_), 1023u));
 
   if (!RecordSky(summary, list, plan)) {
     outcome_ = Outcome::kNotRecorded;
@@ -1106,6 +1126,7 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   // The radial blur of the sky image toward the sun.
   Push push = {};
   push.slots[1] = sky_.slot;
+  push.slots[2] = larecomp::settings::mcla_gpu_noise_blue.Get() ? 1u : 0u;  // the ray starts take the blue noise tile (hlsl/shafts_noise.hlsli), else the first version's gradient noise
   push.slots[3] = plan.steps;
   push.sizes[0] = float(plan.image[0]);
   push.sizes[1] = float(plan.image[1]);
@@ -1118,8 +1139,10 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   push.tint[3] = plan.noise_shift;
   pass_timing_->Mark(list, "shafts blur");
   passes_->DrawInto(list, shaft_, blur, &push, sizeof(push));
+  // NOISE-RESOLVE: the blurred image averaged over frames (the add pass reads the result); without the pass or the images the blurred image itself.
+  const HostImage* resolved = plan.history ? RecordTemporal(list, plan) : nullptr;
   pass_timing_->Mark(list, "shafts add");
-  if (!RecordAdd(list, *colour, plan)) {
+  if (!RecordAdd(list, *colour, plan, resolved ? *resolved : shaft_)) {
     return false;
   }
   if (!first_run_logged_) {
@@ -1157,8 +1180,57 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   return true;
 }
 
+const HostImage* SunShafts::RecordTemporal(plume::RenderCommandList* list, const Pending& plan) {
+  plume::RenderPipeline* temporal = Pipeline(kVTemporal);
+  if (!temporal || !hist_[0].texture || !hist_[1].texture || hist_[0].width != plan.image[0] || hist_[0].height != plan.image[1]) {
+    hist_valid_ = false;
+    return nullptr;
+  }
+  // The history is the frame before's (the same kind of view, the same size) and the sun has not moved too far for the picture to be the same one.
+  const bool pause = pause_view_;
+  const float shift_u = hist_sun_[0] - plan.sun_uv[0];
+  const float shift_v = hist_sun_[1] - plan.sun_uv[1];
+  const float aspect = float(plan.image[0]) / float(std::max(plan.image[1], 1u));
+  const bool keep = hist_valid_ && hist_frame_ + 1 == frame_ && hist_pause_ == pause && std::isfinite(shift_u) && std::isfinite(shift_v) &&
+                    noise_resolve::ShaftsKeepsHistory(shift_u, shift_v, aspect);
+  const uint32_t out_index = 1 - hist_index_;
+  HostImage& history_in = hist_[hist_index_];
+  HostImage& history_out = hist_[out_index];
+  Push push = {};
+  push.slots[0] = keep ? history_in.slot : shaft_.slot;  // without a history any readable image: the shader does not read it
+  push.slots[1] = shaft_.slot;
+  push.slots[2] = keep ? 1u : 0u;
+  push.sizes[0] = float(plan.image[0]);
+  push.sizes[1] = float(plan.image[1]);
+  push.sun[2] = keep ? noise_resolve::ShaftsHistoryWeight(hist_frames_) : 0.0f;
+  push.sun[3] = noise_resolve::kShaftsClampMargin;
+  push.tint[0] = shift_u;
+  push.tint[1] = shift_v;
+  push.tint[2] = noise_resolve::kShaftsStaleFrom;
+  push.tint[3] = noise_resolve::kShaftsStaleTo;
+  pass_timing_->Mark(list, "shafts temporal");
+  passes_->DrawInto(list, history_out, temporal, &push, sizeof(push));
+  hist_index_ = out_index;
+  hist_valid_ = true;
+  hist_frame_ = frame_;
+  hist_pause_ = pause;
+  hist_sun_[0] = plan.sun_uv[0];
+  hist_sun_[1] = plan.sun_uv[1];
+  hist_frames_ = keep ? std::min(hist_frames_ + 1u, 64u) : 0u;
+  if (keep) {
+    ++hist_used_;
+    if (!hist_logged_) {
+      hist_logged_ = true;
+      REXLOG_INFO("[gpu] shafts: the first frame that averages the blurred image over a history (no temporal upscaler: the ray starts' noise changes every frame, mcla_gpu_noise_resolve_no_upscaler): "
+                  "weight {:.2f} at most, the history read shifted by the sun's own move, clamped to the 3x3 neighbourhood +- {:.2f} and dropped where it differs from the frame by more than the noise does, images {}x{} R16_FLOAT x2 (reported once)",
+                  noise_resolve::kShaftsHistoryWeight, noise_resolve::kShaftsClampMargin, plan.image[0], plan.image[1]);
+    }
+  }
+  return &history_out;
+}
+
 bool SunShafts::RecordAdd(plume::RenderCommandList* list, EdramTargets::Target& colour,
-                          const Pending& plan) {
+                          const Pending& plan, const HostImage& shine) {
   plume::RenderPipeline* pipeline = Pipeline(AddVariant(plan.view != 0, colour.host_samples));
   if (!pipeline) {
     return false;
@@ -1173,7 +1245,7 @@ bool SunShafts::RecordAdd(plume::RenderCommandList* list, EdramTargets::Target& 
     return false;
   }
   Push push = {};
-  push.slots[1] = plan.view == 1 ? sky_.slot : shaft_.slot;
+  push.slots[1] = plan.view == 1 ? sky_.slot : shine.slot;
   push.slots[3] = plan.view;
   push.sizes[0] = float(plan.render[0]);
   push.sizes[1] = float(plan.render[1]);
