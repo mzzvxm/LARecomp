@@ -37,6 +37,8 @@
 #include "../cinematic/capture_mode.h"
 #include "mc_engine/core/guest_profiler.h"
 #include "larecomp_guest.h"
+#include "fence_spin.h"
+#include "os/thread_yield.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #include "gpu/latency.h"
@@ -60,6 +62,9 @@ using larecomp::settings::ParseStepCapMs;
 // - Low spin counts: YieldProcessor() (x86 PAUSE) to keep wake latency minimal.
 // - Extended spin: SwitchToThread() yields the CPU quantum directly to GPU Commands.
 // Returning true jumps to 0x82412FD8, bypassing the 32 NOP instructions.
+// Linux has the same two steps (the x86 PAUSE, and sched_yield on every 16th poll, fence_spin.h): without them the hook would
+// only skip the NOPs and leave the guest's poll loop hammering the fence flag with no pause at all, which on the Steam Deck's
+// four cores (and one power budget shared with the GPU) is worse than the loop it replaces.
 // Instrumentation for the claim above. The hook sits INSIDE the 4-iteration NOP
 // loop, so "how often does the guest reach this fence poll" and "how much wall
 // time does the yield itself cost" are the only two numbers that decide whether
@@ -89,7 +94,7 @@ bool Patch_FenceSpinThrottle() {
     static thread_local uint32_t s_spin_count = 0;
     if (kCount) g_fence_hook_calls.fetch_add(1, std::memory_order_relaxed);
     YieldProcessor();
-    if (++s_spin_count >= 16) {
+    if (mcla::hooks::FencePollYieldDue(s_spin_count)) {
         LARGE_INTEGER a, b;
         if (kCount) QueryPerformanceCounter(&a);
         SwitchToThread();
@@ -103,7 +108,24 @@ bool Patch_FenceSpinThrottle() {
             g_fence_switch_us.fetch_add(
                 uint64_t((b.QuadPart - a.QuadPart) * kUsPerTick), std::memory_order_relaxed);
         }
-        s_spin_count = 0;
+    }
+#elif defined(__linux__)
+    // CHECK: written on Windows and run only as a unit test of the rule (fence_spin_test) and a compile; not measured on a Linux GPU run. On the Steam Deck compare the
+    // render thread's CPU use and the package power at 45 and 60 FPS with fence_spin_throttle on and off (MCLA_SPIN_COUNTERS=1 counts the polls and the yields).
+    static thread_local uint32_t s_spin_count = 0;
+    if (kCount) g_fence_hook_calls.fetch_add(1, std::memory_order_relaxed);
+#if defined(__x86_64__)
+    _mm_pause();
+#endif
+    if (mcla::hooks::FencePollYieldDue(s_spin_count)) {
+        const auto began = kCount ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        larecomp::os::YieldThread();
+        if (kCount) {
+            g_fence_switches.fetch_add(1, std::memory_order_relaxed);
+            g_fence_switch_us.fetch_add(
+                uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count()),
+                std::memory_order_relaxed);
+        }
     }
 #endif
     return true;

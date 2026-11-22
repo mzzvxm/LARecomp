@@ -34,6 +34,7 @@
 #include "format.h"
 #include "headlight_rig.h"
 #include "layout.h"
+#include "mc_engine/core/threading.h"
 #include "os/thread_priority.h"
 #include "shadow_filter.h"
 #include "side_views.h"
@@ -669,6 +670,12 @@ uint32_t Pipelines::UsableProcessors() {
   DWORD_PTR process = 0, system = 0;
   if (GetProcessAffinityMask(GetCurrentProcess(), &process, &system) && process) {
     return uint32_t(__builtin_popcountll(process));
+  }
+#else
+  // Linux: the calling thread's affinity mask (a game started with taskset, or inside a cgroup with a cpuset, has only those), as the
+  // decode pool and the audio and job workers count it (mc::UsableLogicalProcessors); std::thread::hardware_concurrency counts every online one.
+  if (const unsigned usable = ::mc::UsableLogicalProcessors(); usable != 0) {
+    return usable;
   }
 #endif
   return std::max(1u, std::thread::hardware_concurrency());

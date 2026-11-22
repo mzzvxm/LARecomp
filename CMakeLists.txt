@@ -105,6 +105,8 @@ set(LARECOMP_SOURCES
     src/os/appimage_env.cpp
     # The guest's Sleep on Linux: a yield and a sleep that signals do not cut short (os/thread_yield.h).
     src/os/thread_yield.cpp
+    # An HTTPS GET on Linux through the system's libcurl, loaded at run time (os/curl_get.h): the real-world weather's request.
+    src/os/curl_get.cpp
     # SIGTERM, SIGINT and SIGHUP end the game like the window's close button (Linux; os/shutdown_signals.h).
     src/os/shutdown_signals.cpp
 
@@ -441,6 +443,16 @@ target_include_directories(larecomp_hud_track_test PRIVATE src src/mc_engine/cin
 add_executable(larecomp_bound_node_guard_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/bound_node_guard_test.cpp)
 target_include_directories(larecomp_bound_node_guard_test PRIVATE src/mc_engine/hooks)
+# How often the guest's fence poll gives up its time slice (src/mc_engine/hooks/fence_spin.h, the rule both OSes share) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_fence_spin_test, then run <build dir>/larecomp_fence_spin_test (exit 0 = passed).
+add_executable(larecomp_fence_spin_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/fence_spin_test.cpp)
+target_include_directories(larecomp_fence_spin_test PRIVATE src/mc_engine/hooks)
+# The names of our threads on Linux, which keeps 15 bytes of one (src/os/thread_name.h) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_thread_name_test, then run <build dir>/larecomp_thread_name_test (exit 0 = passed).
+add_executable(larecomp_thread_name_test EXCLUDE_FROM_ALL
+    src/os/thread_name_test.cpp)
+target_include_directories(larecomp_thread_name_test PRIVATE src)
 # The fade of a released particle effect (src/mc_engine/hooks/effect_fade.h: the closed checkpoint's smoke held to the console's decay per second) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_effect_fade_test, then run <build dir>/larecomp_effect_fade_test (exit 0 = passed).
 add_executable(larecomp_effect_fade_test EXCLUDE_FROM_ALL
@@ -1303,6 +1315,15 @@ else()
     target_include_directories(larecomp_thread_yield_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_features(larecomp_thread_yield_test PRIVATE cxx_std_23)
     target_link_libraries(larecomp_thread_yield_test PRIVATE Threads::Threads)
+    # The libcurl GET (src/os/curl_get.h) has a check that needs no game and no network (a server on 127.0.0.1 in the test):
+    #   cmake --build <dir> --target larecomp_curl_get_test, then run it (exit 0 = passed; it skips itself where there is no libcurl).
+    add_executable(larecomp_curl_get_test EXCLUDE_FROM_ALL
+        src/os/curl_get_test.cpp
+        src/os/curl_get.cpp
+    )
+    target_include_directories(larecomp_curl_get_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_features(larecomp_curl_get_test PRIVATE cxx_std_23)
+    target_link_libraries(larecomp_curl_get_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
     # The termination signals (src/os/shutdown_signals.h) have a check that needs no game:
     #   cmake --build <dir> --target larecomp_shutdown_signals_test, then run it (exit 0 = passed).
     add_executable(larecomp_shutdown_signals_test EXCLUDE_FROM_ALL
