@@ -368,6 +368,12 @@ void ColourChecks() {
   for (uint32_t extent : {1u, 2u, 3u, 5u, 719u, 1081u, 2160u, 3841u}) {
     Check(sc::ColourPostEdge(extent, true) == mcla::gpu::ao_size::Half(extent), Num("half of %.0f is the AO's Half", double(extent)));
   }
+  // A trigger frame whose depth has no colour partner: quiet while it is short (the game's first frames), an error when it lasts, never an error for a frame that has its colour.
+  Check(sc::JudgeColourPartner(true, 0) == sc::ColourPartner::kFound && sc::JudgeColourPartner(true, 100000) == sc::ColourPartner::kFound, "a colour target that exists is found, however long the run");
+  Check(sc::JudgeColourPartner(false, 1) == sc::ColourPartner::kEarly && sc::JudgeColourPartner(false, sc::kColourMissingGraceFrames) == sc::ColourPartner::kEarly, "a missing colour target is early for the grace's frames");
+  Check(sc::JudgeColourPartner(false, sc::kColourMissingGraceFrames + 1) == sc::ColourPartner::kMissingTooLong && sc::JudgeColourPartner(false, 1u << 30) == sc::ColourPartner::kMissingTooLong,
+        "a missing colour target that lasts past the grace is an error");
+  Check(sc::kColourMissingGraceFrames == 300, "the grace is 300 trigger frames (a few seconds: the game's first frames take about a second)");
   // The levels: one without the mips, up to four halvings with them, never past the smaller side.
   Check(sc::ColourPostLevelCount(1920, 1080, false) == 1 && sc::ColourPostLevelCount(1920, 1080, true) == 1 + sc::kColourPostMipHalvings && sc::ColourPostLevelCount(960, 540, true) == 5,
         "the chain is a single image without the mips and five levels with them at 1080p and its half");
@@ -1095,6 +1101,9 @@ void SourceChecksSs1(const std::string& gpu) {
             Count(capture, "DrawInto(") == 2 && At(capture, "DrawInto(") > At(capture, "if (!ColourPipelinesReady()) {"),
         "CapturePost leaves at once unless a capture is planned at the trigger, and draws only after its pipelines are made");
   Check(Has(shared_h, "bool capture_wanted() const { return !post_done_ && (plan_.make & screen::ProductBit(screen::kColourPost)) != 0; }"), "a capture is planned only by the plan's make");
+  Check(Has(capture, "++colour_missing_run_;") && Has(capture, "screen::JudgeColourPartner(false, colour_missing_run_) == screen::ColourPartner::kEarly") && Has(capture, "colour_missing_run_ = 0;") &&
+            At(capture, "screen::JudgeColourPartner(") < At(capture, "REXLOG_ERROR(\"{} the main view's colour target"),
+        "CapturePost counts the trigger frames whose depth has no colour partner and keeps the error for a colour that is missing too long (or differs)");
   const std::string on_present = body(shared_cpp, "void ScreenShared::OnPresent() {", "bool ScreenShared::IsTrigger(");
   Check(!on_present.empty() && !Has(on_present, "list") && !Has(on_present, "DrawInto(") && Has(on_present, "std::swap(post_[0], history_);") && Has(on_present, "++frame_count_;"),
         "the present records nothing: it trades the capture with its history and counts the frame");

@@ -134,6 +134,17 @@ constexpr bool ColourPostWithMips(const Wants& wants, View view, uint32_t view_l
   return (wants.Of(Consumer::kReflections) & (1u << kColourPost)) != 0 || (view == View::kColourPost && view_level > 0);
 }
 
+// A trigger frame whose depth has no main colour target at its sample count. The capture finds the colour by the depth's guest samples; the game's first frames draw a 1-sample depth (a loading scene) before the
+// game view's 2-sample colour and depth exist, so the first trigger of a run that wants colour_post from the start (the reflections on at launch) has a depth and no colour partner. That is a frame with no
+// colour_post, not a failure: it was logged as an ERROR once in every such run (24 run logs of 2026-11-21 and 22: the RR chain's live, row, frame generation, validation and race runs and its SSR cost runs, the Super Resolution and the native arms too) and made the run count as failed. Quiet (one note) while it
+// lasts no more than kColourMissingGraceFrames trigger frames in a row, an error when it lasts longer (a colour target that never comes is a real problem). The run counts the frames in a row.
+inline constexpr uint32_t kColourMissingGraceFrames = 300;
+enum class ColourPartner : uint8_t { kFound, kEarly, kMissingTooLong };
+constexpr ColourPartner JudgeColourPartner(bool found, uint32_t missing_in_a_row) {
+  if (found) return ColourPartner::kFound;
+  return missing_in_a_row > kColourMissingGraceFrames ? ColourPartner::kMissingTooLong : ColourPartner::kEarly;
+}
+
 // The exposure bias as the camera carries it: the factor between the shaders' output and what the main colour target (and so colour_post) holds, 2^exp_bias (the main target's bias is 4: 16).
 // 1 where no draw has told it yet.
 inline float ExposureOf(int32_t exp_bias, bool known) {

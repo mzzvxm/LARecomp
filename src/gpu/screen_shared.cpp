@@ -640,6 +640,20 @@ bool ScreenShared::CapturePost(const ResolveRecord& record, const ResolveCache::
   const EdramTargets::Target* found = edram_->Find(colour_key);
   bool unset = false;
   EdramTargets::Target* colour = found && found->texture ? edram_->Get(colour_key, found->height, found->scale, 0, list, &unset) : nullptr;
+  if (!colour) {
+    // A depth with no colour at its samples: the game's first frames (a loading scene's 1-sample depth before the game view's targets exist), not a failure while it is short (screen_rules.h JudgeColourPartner).
+    ++colour_missing_run_;
+    if (screen::JudgeColourPartner(false, colour_missing_run_) == screen::ColourPartner::kEarly) {
+      if (!colour_missing_noted_) {
+        colour_missing_noted_ = true;
+        REXLOG_INFO("{} a trigger frame whose depth ({} host samples at {}x) has no main colour target {} yet: no colour_post in it (the first frames, before the game view's targets; an error if it lasts over {} trigger frames)",
+                    kPrefix, depth.host_samples, depth.scale, DescribeEdramKey(colour_key), screen::kColourMissingGraceFrames);
+      }
+      return false;
+    }
+  } else {
+    colour_missing_run_ = 0;
+  }
   if (!colour || colour->host_samples != depth.host_samples || colour->scale != depth.scale) {
     if (!post_images_failed_logged_) {
       post_images_failed_logged_ = true;
