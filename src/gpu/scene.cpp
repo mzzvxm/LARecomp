@@ -817,6 +817,8 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   list_ = list;
   slot_ = slot;
   scale_depth_bias_ = larecomp::settings::mcla_gpu_scale_depth_bias.Get() && larecomp::settings::mcla_gpu_work_17oct.Get();
+  mirror_rect_ = mirror_draws::Current();
+  mirror_class_ = larecomp::settings::mcla_gpu_mirror_class.Get();
   geometry_->BeginFrame(slot);
   edram_->BeginFrame(list, slot);
   textures_->BeginFrame(slot);
@@ -1321,6 +1323,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     }
   }
 
+  bool mirror_draw = false;  // a prepared draw into the rear view mirror's rectangle (mirror_draws.h)
   if (!list) {
     CountSkip(Skip::kDeviceLost, r, "");
   } else {
@@ -1340,12 +1343,25 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       ++window_.no_effect[size_t(NoEffect::kCulled)];
     } else {
       ++window_.prepared;
-      if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) || (vol_ && vol_->wants_draws()) ||
-          (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
-          (car_frame_ && car_frame_->wants_draws()) || (headlights_ && headlights_->wants_draws())) {
+      // The rear view mirror's draws (mirror_draws.h) are told by their viewport. They are counted always; with mcla_gpu_mirror_class they also stay out of
+      // the per-draw consumers of the main view, which would take a second camera's draw for the main view's.
+      mirror_draw = mirror_rect_.valid() &&
+                    mirror_draws::MatchesViewport(mirror_rect_, d.viewport.viewport.x, d.viewport.viewport.y, d.viewport.viewport.width,
+                                                  d.viewport.viewport.height, d.scale.n);
+      if (mirror_draw) {
+        ++window_.mirror_prepared;
+        mirror_frame_seen_ = true;
+      }
+      const bool consumers = !(mirror_draw && mirror_class_);
+      if (!consumers) {
+        ++window_.mirror_class_skips;
+      }
+      if (consumers && ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) || (vol_ && vol_->wants_draws()) ||
+                        (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
+                        (car_frame_ && car_frame_->wants_draws()) || (headlights_ && headlights_->wants_draws()))) {
         NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity, view);
       }
-      if (local_shadow_ && local_shadow_->wants_draws()) {
+      if (consumers && local_shadow_ && local_shadow_->wants_draws()) {
         NoteLocalShadow(banks, last_shared_, d);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
@@ -1359,6 +1375,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
         CountSkip(recorded, r, detail);
       } else {
         ++window_.recorded;
+        if (mirror_draw) {
+          ++window_.mirror_recorded;
+        }
         ++draws_since_flush_;
         if (d.hdr_action != HdrToneMap::Action::kNone) {
           RecordHdrDuplicate(d, list);
@@ -1369,7 +1388,11 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       }
     }
   }
-  window_.prepare_cycles += cycles::Now() - c0;
+  const uint64_t spent = cycles::Now() - c0;
+  window_.prepare_cycles += spent;
+  if (mirror_draw) {
+    window_.mirror_cycles += spent;
+  }
 }
 
 Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -3774,6 +3797,11 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.tiling_begins += from.tiling_begins;
   into.tiling_ends += from.tiling_ends;
   into.prepare_cycles += from.prepare_cycles;
+  into.mirror_prepared += from.mirror_prepared;
+  into.mirror_recorded += from.mirror_recorded;
+  into.mirror_frames += from.mirror_frames;
+  into.mirror_cycles += from.mirror_cycles;
+  into.mirror_class_skips += from.mirror_class_skips;
   into.pipelines_created += from.pipelines_created;
   into.pipelines_failed += from.pipelines_failed;
   into.pipeline_create_ns += from.pipeline_create_ns;
@@ -3787,6 +3815,10 @@ void Scene::OnPresent() {
   }
   last_present_ = now;
   ++window_.frames;
+  if (mirror_frame_seen_) {
+    ++window_.mirror_frames;
+    mirror_frame_seen_ = false;
+  }
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
@@ -3965,6 +3997,15 @@ void Scene::Report(const char* why) {
           : 0.0,
       w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
       cycles::ToNs(w.prepare_cycles) / frames / 1e6, thread_text);
+  if (w.mirror_prepared != 0 || mirror_rect_.valid()) {
+    // The rear view mirror's draws (mirror_draws.h), per frame of the window (every frame, not only the ones that drew it: a mirror that skips frames shows its
+    // average), with the frames that drew it, what they cost to prepare and record, and whether they stay out of the main view's consumers. The cost chain
+    // (perf/scripts/chain-mirror-cost.ps1) reads this line.
+    REXLOG_INFO("[gpu] scene ({}): mirror: {:.1f} draws/frame ({:.1f} recorded) in {} of {} frames, prepare {:.3f} ms/frame, consumers {} ({} draws kept out of them), rectangle {},{} {}x{}", why,
+                double(w.mirror_prepared) / frames, double(w.mirror_recorded) / frames, w.mirror_frames, w.frames,
+                cycles::ToNs(w.mirror_cycles) / frames / 1e6, mirror_class_ ? "skipped" : "kept", w.mirror_class_skips, mirror_rect_.x, mirror_rect_.y, mirror_rect_.w,
+                mirror_rect_.h);
+  }
   // The waits for pipelines a capture kept from being left out (a line only once the flag was on).
   sync_builds::LogInterval(why);
   if (ab::Enabled() && std::string_view(why) == "interval") {

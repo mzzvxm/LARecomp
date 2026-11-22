@@ -72,6 +72,7 @@
 #include "hdr_tonemap.h"
 #include "input_layout.h"
 #include "menu_world.h"
+#include "mirror_draws.h"
 #include "msaa_level.h"
 #include "pipelines.h"
 #include "thread_load.h"
@@ -635,6 +636,13 @@ class Scene {
     uint64_t tiling_begins = 0;
     uint64_t tiling_ends = 0;
     uint64_t prepare_cycles = 0;  // TSC cycles (cycles.h)
+    // The rear view mirror's draws (mirror_draws.h): prepared draws whose viewport is the mirror's rectangle, the ones of them recorded, the frames that had any,
+    // the TSC cycles they took to prepare and record, and the ones kept from the main view's per-draw consumers (mcla_gpu_mirror_class).
+    uint64_t mirror_prepared = 0;
+    uint64_t mirror_recorded = 0;
+    uint64_t mirror_frames = 0;
+    uint64_t mirror_cycles = 0;
+    uint64_t mirror_class_skips = 0;
     uint64_t pipelines_created = 0;
     uint64_t pipelines_failed = 0;
     uint64_t pipeline_create_ns = 0;
@@ -789,6 +797,11 @@ class Scene {
   void ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load);
   bool profile_ = false;
   bool scale_depth_bias_ = true;  // mcla_gpu_scale_depth_bias, read each frame
+  // The rear view mirror's rectangle in guest pixels (mirror_draws.h, published by the guest every frame the mirror is up) and mcla_gpu_mirror_class, read each frame;
+  // mirror_frame_seen_: the frame in progress has had a mirror draw.
+  mirror_draws::Rect mirror_rect_;
+  bool mirror_class_ = false;
+  bool mirror_frame_seen_ = false;
   bool census_scale_ = false;     // mcla_gpu_census_scale, read at start
   std::unordered_set<uint64_t> census_scale_logged_;  // NoteScaleRead's cases (the first 64)
   uint64_t lap_ = 0;

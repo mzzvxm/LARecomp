@@ -9538,5 +9538,88 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "rearview_cars_lod": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/HUD",
+  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md D): the least detailed level of the racers' models in the mirror: 0 (the default) the level the game chose for the main view, 1 at least the middle one, 2 only the coarsest. Only makes a car coarser, never finer; the main view's choice is put back after the mirror. Needs rearview_cars. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "rearview_cars_max": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/HUD",
+  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md D): the most racers drawn in the mirror a frame: the first this many, in the game's own list order, that the mirror's camera sees. 0 (the default) draws every one it sees. Needs rearview_cars. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 16}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "rearview_every": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/HUD",
+  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md E): the mirror's view is drawn every this many frames (1, the default, every frame). A frame that skips it asks for no mirror phase at all, so it costs nothing. The held picture is not made yet (it needs the host to keep the stamp's pixels): until it is, a skipped frame shows the main view in the mirror's rectangle, so this is a measuring switch. A camera cut (the eye jumps more than 20 m between frames) draws the mirror at once. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{1, 8}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "rearview_far": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/HUD",
+  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md B): the far plane of the mirror's camera in metres; the game uses the main camera's. 0 (the default) leaves it. Only ever pulls the plane in (never beyond the main camera's), and never under 20 m. Takes effect when the game next builds the mirror's camera (every frame the mirror is up). Live.\"",
+  "traits": [
+   "rex::Range{0.0, 5000.0}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "rearview_fov_scale": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/HUD",
+  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md B): a multiple of the mirror camera's field of view (the stamp is 5.2:1, so the game's own is very wide). 1.0 (the default) leaves it; 0.5 shows roughly half the angle, so the game's own culling keeps fewer draws. Only narrows (0.1 to 1.0); the picture changes. Live.\"",
+  "traits": [
+   "rex::Range{0.1, 1.0}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "rearview_lod_distance": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/HUD",
+  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md C): while the mirror's phase runs, a city sector is drawn in detail only within this many metres (the game's own radius is 300 m times lod_city_scale); the rest is the coarse one-model-a-sector city. 0 (the default) leaves it. Only ever shrinks the radius. CHECK: it works only if the game walks the city's sectors inside the mirror's phase (rearview_diag and the log's mirror draw count say). Live.\"",
+  "traits": [
+   "rex::Range{0.0, 2000.0}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_mirror_class": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md A): the rear view mirror's draws (the ones whose viewport is the mirror's rectangle, rearview_window_*) are their own class: they skip the per-draw work of the main view's effects (ambient occlusion, contact shadows, sun shafts, volumetric light, car reflections, the car dump and frame, the headlights, the light shadows), which would otherwise see a second camera's draws. The scene line of the log always counts them (mirror: N draws/frame), on or off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

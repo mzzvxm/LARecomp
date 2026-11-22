@@ -347,6 +347,9 @@ add_executable(larecomp_side_view_use_test EXCLUDE_FROM_ALL side_view_use_test.c
 # The camera cut requests and the motion blur constants of a cut (cut_request.h) have one too:
 #   cmake --build <dir> --target larecomp_cut_request_test, then run src/gpu/larecomp_cut_request_test (exit 0 = passed).
 add_executable(larecomp_cut_request_test EXCLUDE_FROM_ALL cut_request_test.cpp cut_request.cpp)
+# The rear view mirror's draw class (mirror_draws.h: the rectangle the guest publishes and the viewport rule) likewise:
+#   cmake --build <dir> --target larecomp_mirror_draws_test, then run src/gpu/larecomp_mirror_draws_test (exit 0 = passed).
+add_executable(larecomp_mirror_draws_test EXCLUDE_FROM_ALL mirror_draws_test.cpp)
 # The HUD fade's alpha clamp and ramp (ui_fade.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_ui_fade_test, then run src/gpu/larecomp_ui_fade_test (exit 0 = passed).
 add_executable(larecomp_ui_fade_test EXCLUDE_FROM_ALL ui_fade_test.cpp)
