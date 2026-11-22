@@ -359,8 +359,11 @@ void RawChecks(const std::string& dir) {
   const size_t call_at = cpp.find("HitPipeline() != nullptr");
   Check(asked_at != std::string::npos && call_at != std::string::npos && asked_at < call_at && Count(cpp, "raw = HitPipeline() != nullptr") == 1 && Count(cpp, "= HitPipeline()") == 1 && Count(cpp, "HitKey()") >= 3,
         "RR-4b: the hit pass's pipeline is asked for in one place, inside `if (info.raw)`: a frame that is not asked never makes its shader or lists its pipeline with the host precache");
-  Check(Has(cpp, "car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half)") && !Has(cpp, "car_rt_refl::DenoisePassCount("),
-        "RR-4b: the filter's passes go through the rules' DenoisePassesFor (the setting's, none when raw)");
+  // The filter's own count is DenoisePassesFor's. The setting-only DenoisePassCount is called in ONE place, on purpose: `stable_gap` (NOISE-FOLLOW), which asks whether the setting wants the history
+  // although the passes are 0 in a Ray Reconstruction frame; any other call would run the filter in a raw frame (or drift the two counts apart).
+  Check(Has(cpp, "int denoise_passes = car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);") && Count(cpp, "car_rt_refl::DenoisePassCount(") == 1 &&
+            Has(cpp, "const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler"),
+        "RR-4b: the filter's passes go through the rules' DenoisePassesFor (the setting's, none when raw); the setting-only DenoisePassCount is read once, by the history's stable_gap");
   Check(Has(cpp, "raw = HitPipeline() != nullptr && info.render_width != 0 && info.render_height != 0 && EnsureHitImage(info.render_width, info.render_height);"),
         "RR-4b: a frame is raw only with the pipeline made and the image made (else it is a plain frame with its filter)");
   const size_t trace_at = cpp.find("list->dispatch((history.width + kGroup - 1) / kGroup, (history.height + kGroup - 1) / kGroup, 1);");
