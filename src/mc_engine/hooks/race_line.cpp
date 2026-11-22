@@ -18,9 +18,10 @@
 //    frames keep the previous result: the numbers of the samples (speed profile) are up to 1 / hz old, the
 //    samples themselves are never out of step with the ring, because a layout change always runs the job.
 //    The cap is a change in what the game computes, not an exact replacement: an A/B check is in RACE-LINE.md.
-//    The cap counts time on the trailer toolkit's scene clock (cinematic/capture_mode.h SceneClockNowNs): the steady clock, but in a
-//    take the take's updates times its step, so a take at any rate (fixed step, lock-step with the readback) gets 30 jobs per second of
-//    game time, not of wall time. perf\scripts\chain-raceline-ai.ps1 (the AI gate) runs the races as takes for that reason.
+//    The cap counts the game's own time (race_line_cap.h CapClockNs): the steady clock, but under a fixed step (a take, or the dev setting
+//    mcla_fixed_step_fps alone) the updates run times the step, so a take at any rate (fixed step, lock-step with the readback) or a fixed-step
+//    run at any wall FPS gets 30 jobs per second of game time, not of wall time. perf\scripts\chain-raceline-ai.ps1 (the AI gate) runs the
+//    races as takes for that reason.
 // 2. Native versions (race_line_native_mask, default 3, read at start): bit 0 the backward speed pass
 //    (sub_8216CBC0), bit 1 the forward pass (sub_8216CDD0). Bit for bit the recompiled functions' results
 //    (race_line_test.cpp); they need FMA3 and plain guest RAM, and otherwise the recompiled function runs.
@@ -53,6 +54,7 @@
 #include "../cinematic/capture_mode.h"
 #include "gpu/live_text.h"
 #include "larecomp_log.h"
+#include "race_line_cap.h"
 #include "race_line_native.h"
 #include "settings/larecomp_settings.h"
 
@@ -68,11 +70,12 @@ using Clock = std::chrono::steady_clock;
 
 int64_t NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count(); }
 
-// The clock of the rate cap: the trailer toolkit's scene clock (cinematic/capture_mode.h), which is the steady clock except during a take, where it is
-// the take's updates times its step. So "30 jobs a second" is 30 a second of GAME time in a take (a take at 144 FPS that takes 9 ms of wall time a frame
-// or one at 30 FPS that takes 60 ms still gives 30 per game second), and the same as before everywhere else (two atomic loads and the steady clock).
+// The clock of the rate cap: the game's own time (race_line_cap.h CapClockNs). The steady clock, except under a fixed step (a take, or mcla_fixed_step_fps
+// alone), where every update is exactly the step long and the clock is the updates run times it. So "30 jobs a second" is 30 a second of GAME time in a take
+// or a fixed-step run (a take at 144 FPS that takes 9 ms of wall time a frame, one at 30 FPS that takes 60 ms, or a fixed step of 1/30 s run at 240 wall FPS
+// still gives 30 per game second), and the same as before everywhere else (the steady clock, and a cvar read for the step).
 // The stats and the recorder keep the plain steady clock (they measure wall time).
-int64_t CapNowNs() { return mc::cinematic::SceneClockNowNs(); }
+int64_t CapNowNs() { return race_line::CapClockNs(mc::cinematic::FixedStepTicks(), mc::cinematic::UpdateCount(), NowNs()); }
 
 // ---------------------------------------------------------------------------------------------- stats
 
@@ -121,8 +124,7 @@ struct Planner {
     uint32_t key = 0;
     bool valid = false;
     uint32_t layout[kLayoutWords] = {};
-    int64_t next_due_ns = 0;
-    int64_t last_now_ns = 0;   // the cap clock at the last call: a clock that stepped back (a take ended, the scene clock went back to the steady one) restarts the schedule
+    race_line::RateSchedule due;  // the planner's schedule on the cap's clock
     uint64_t queued = 0;       // this stats window's queue calls let through / skipped (race_line_stats; the report line names them per planner)
     uint64_t skipped = 0;
     uint64_t used = 0;         // g_planner_use at the planner's last queue call: the slot with the smallest one is the one a new planner takes when the table is full
@@ -195,22 +197,17 @@ bool JobDue(const uint8_t* base, uint32_t planner, int cap_hz, bool count) {
         slot->key = planner;
         slot->valid = true;
         std::memcpy(slot->layout, layout, sizeof(layout));
-        slot->next_due_ns = now + interval;
-        slot->last_now_ns = now;
+        slot->due.Start(now, interval);
         slot->used = ++g_planner_use;
         if (count) slot->queued += 1;
         return true;
     }
     slot->used = ++g_planner_use;
-    const bool clock_back = now < slot->last_now_ns;  // the scene clock stepped back (a take ended with the game ahead of the wall clock): start the schedule again
-    slot->last_now_ns = now;
     const bool same_layout = std::memcmp(slot->layout, layout, sizeof(layout)) == 0;
-    if (same_layout && !clock_back && now < slot->next_due_ns) {
+    if (!slot->due.Due(same_layout, now, interval)) {  // (a clock that stepped back starts the planner's schedule again)
         if (count) slot->skipped += 1;
         return false;
     }
-    // keep the long-run rate at cap_hz: the next slot follows the last one, unless the planner fell far behind (or the layout forced this run)
-    slot->next_due_ns = (!same_layout || clock_back || now - slot->next_due_ns > interval) ? now + interval : slot->next_due_ns + interval;
     std::memcpy(slot->layout, layout, sizeof(layout));
     if (count) slot->queued += 1;
     return true;
@@ -225,7 +222,7 @@ bool Skip(const uint8_t* base, uint32_t planner) {
     }
     static std::atomic<int> said_cap{-1};
     if (said_cap.exchange(cap, std::memory_order_relaxed) != cap) {
-        LARECOMP_APP_INFO("[RaceLine] the rate cap: {} jobs a second per racer, counted on the scene clock (the steady clock, or a take's updates x its step)", cap);
+        LARECOMP_APP_INFO("[RaceLine] the rate cap: {} jobs a second per racer, counted on the scene clock (game time: the steady clock, or under a fixed step the updates run x the step)", cap);
     }
     if (JobDue(base, planner, cap, stats)) return false;
     g_skipped_time.fetch_add(1, std::memory_order_relaxed);

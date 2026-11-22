@@ -1501,6 +1501,10 @@ bool FixedStepActive() {
     return g_take_active.load(std::memory_order_acquire) || larecomp::settings::mcla_fixed_step_fps.Get() > 0.0;
 }
 
+uint64_t UpdateCount() {
+    return g_updates.load(std::memory_order_relaxed);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // the scene clock
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1785,6 +1789,7 @@ CaptureStatus CaptureGetStatus() { return CaptureStatus{}; }
 MemoryGrant CaptureMemoryPlan(uint32_t, uint32_t, uint32_t, uint32_t) { return MemoryGrant{}; }
 uint64_t FixedStepTicks() { return 0; }
 bool FixedStepActive() { return false; }
+uint64_t UpdateCount() { return 0; }
 double SceneClockNowMs(uint64_t) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
