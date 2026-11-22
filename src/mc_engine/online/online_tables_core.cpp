@@ -3,6 +3,7 @@
 //
 #include "online_tables_core.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace larecomp::online_tables {
@@ -51,6 +52,10 @@ const char* StatsStatusText(StatsStatus status) {
 // shared view: u16 columns, u16 rows, 8 bytes, 32 bytes per column (+4 property id, +12 u16 attribute id, +16 aggregation
 // word), 32 bytes per row (skipped), an "XPBM" block (20 bytes + 4 per u32 at +16); then u16 view count and 16 bytes per
 // view (+0 view id, +8 u16 shared view index).
+//
+// Every count in the resource is the title's own data, but a damaged install could make one huge: the entry scan stops at
+// kMaxXdbfEntries, and every read after the XVC2 entry is held inside that entry's own [start, start + length) (one place, `rd`),
+// so no loop can walk on past the section. Anything the section does not hold is kUnreadable, as a cut memory is.
 StatsStatus ReadStatsSchema(const GuestReader& mem, uint32_t xdbf, StatsSchema* out) {
   if (out) *out = {};
   uint8_t head[0x18];
@@ -63,9 +68,11 @@ StatsStatus ReadStatsSchema(const GuestReader& mem, uint32_t xdbf, StatsSchema* 
 
   uint64_t xvc2 = 0;
   uint32_t xvc2_len = 0;
-  for (uint32_t i = 0; i < entry_count && i < table_len; ++i) {
+  const uint32_t scan = std::min({entry_count, table_len, kMaxXdbfEntries});
+  for (uint32_t i = 0; i < scan; ++i) {
     uint8_t e[18];
-    if (!mem.Read(xdbf + 0x18 + i * 18, e, sizeof(e))) return StatsStatus::kUnreadable;
+    const uint64_t at = uint64_t(xdbf) + 0x18 + uint64_t(i) * 18;  // 64 bits: a 32-bit product wraps around the address space
+    if (at + sizeof(e) > 0xFFFFFFFFull || !mem.Read(static_cast<uint32_t>(at), e, sizeof(e))) return StatsStatus::kUnreadable;
     if (Be16(e) == 1 && Be64(e + 2) == 0x58564332ull) {  // section 1, "XVC2"
       xvc2 = data + Be32(e + 10);
       xvc2_len = Be32(e + 14);
@@ -80,8 +87,9 @@ StatsStatus ReadStatsSchema(const GuestReader& mem, uint32_t xdbf, StatsSchema* 
 
   const uint64_t end = xvc2 + xvc2_len;
   uint64_t p = xvc2 + 12;
+  // The only way the rest of the parser reads: inside the section the XDBF entry gave, and inside the 32-bit address space.
   auto rd = [&](uint64_t at, void* buf, uint32_t n) {
-    return at + n <= 0xFFFFFFFFull && mem.Read(static_cast<uint32_t>(at), buf, n);
+    return at >= xvc2 && at + n <= end && at + n <= 0xFFFFFFFFull && mem.Read(static_cast<uint32_t>(at), buf, n);
   };
 
   uint8_t two[2];
@@ -94,6 +102,8 @@ StatsStatus ReadStatsSchema(const GuestReader& mem, uint32_t xdbf, StatsSchema* 
     if (!rd(p, h, 4)) return StatsStatus::kUnreadable;
     const uint16_t columns = Be16(h), rows = Be16(h + 2);
     p += 12;
+    // The columns and the rows must fit in the section: refused before any is read, so a count of 65535 costs nothing.
+    if (p + 32ull * columns + 32ull * rows > end) return StatsStatus::kUnreadable;
     std::vector<StatsColumn> set;
     set.reserve(columns);
     for (uint16_t c = 0; c < columns; ++c, p += 32) {
@@ -109,6 +119,7 @@ StatsStatus ReadStatsSchema(const GuestReader& mem, uint32_t xdbf, StatsSchema* 
     if (!rd(p, xpbm, 20)) return StatsStatus::kUnreadable;
     if (std::memcmp(xpbm, "XPBM", 4) != 0) return StatsStatus::kBadSharedView;
     p += 20 + 4ull * Be32(xpbm + 16);
+    if (p > end) return StatsStatus::kUnreadable;  // the block's words do not fit in the section
     schema.column_sets.push_back(std::move(set));
   }
 

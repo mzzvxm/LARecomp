@@ -56,6 +56,7 @@ inline constexpr char kFileName[] = "online_tables.json";
 
 // Where the tables sit in guest memory.
 inline constexpr uint32_t kSpaAddress = 0x82950000;    // the XEX's XDBF resource (the title's SPA)
+inline constexpr uint32_t kMaxXdbfEntries = 0x10000; // the most entries of the XDBF's table looked at for the XVC2 one (a damaged count cannot make the scan walk on)
 inline constexpr uint32_t kPropertyTable = 0x827DEE20;
 inline constexpr int kPropertyRecords = 32;
 inline constexpr uint32_t kPropertyRecordSize = 76;    // id, name pointer, 16 value-word pointers

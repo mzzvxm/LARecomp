@@ -373,6 +373,124 @@ void TestStatsFailures() {
   CHECK(ReadStatsSchema(ok, kSpaAddress, nullptr) == StatsStatus::kOk);
 }
 
+// Reads of an image counted, and every read after `limit` of them refused: a parser that does not stop at the section's end walks
+// on (and here fails at the limit, so the test ends instead of waiting for it).
+class CountingGuest final : public GuestReader {
+ public:
+  CountingGuest(const FakeGuest& inner, uint64_t limit) : inner_(inner), limit_(limit) {}
+  bool Read(uint32_t addr, void* out, uint32_t len) const override {
+    if (++reads_ > limit_) return false;
+    return inner_.Read(addr, out, len);
+  }
+  uint64_t reads() const { return reads_; }
+
+ private:
+  const FakeGuest& inner_;
+  uint64_t limit_;
+  mutable uint64_t reads_ = 0;
+};
+
+// A hostile or damaged XVC2: the counts claim far more than the section (or the resource's table) holds. The image around it is
+// plain zeros, readable, so only the section's own end (or the entry cap) can stop the parser.
+void TestStatsBounded() {
+  constexpr uint64_t kLimit = 1000000;  // reads before the counting reader gives up
+  auto xvc2_with = [](uint32_t columns, uint32_t rows, uint32_t xpbm_words, size_t real_columns, size_t real_rows) {
+    std::vector<uint8_t> v;
+    PStr(v, "XVC2");
+    Pad(v, 8);
+    P16(v, 1);
+    P16(v, columns);
+    P16(v, rows);
+    Pad(v, 8);
+    Pad(v, 32 * real_columns);
+    Pad(v, 32 * real_rows);
+    PStr(v, "XPBM");
+    Pad(v, 12);
+    P32(v, xpbm_words);
+    Pad(v, 8);  // two words of the block that is claimed to hold more
+    P16(v, 0);  // no views
+    return v;
+  };
+  auto run = [&](std::vector<uint8_t> xdbf, StatsStatus want, const char* what, uint64_t max_reads) {
+    FakeGuest g;
+    xdbf.resize(xdbf.size() + 0x100000, 0);  // readable zeros after the resource: nothing but the bounds stops a walk
+    g.Put(kSpaAddress, std::move(xdbf));
+    CountingGuest c(g, kLimit);
+    StatsSchema s;
+    const StatsStatus got = ReadStatsSchema(c, kSpaAddress, &s);
+    if (got != want || c.reads() > max_reads) std::printf("  bounded case '%s': status %d (want %d), %llu reads (max %llu)\n",
+                                                          what, int(got), int(want), (unsigned long long)c.reads(),
+                                                          (unsigned long long)max_reads);
+    CHECK(got == want);
+    CHECK(c.reads() <= max_reads);
+    CHECK(s.views.empty() && s.column_sets.empty());  // nothing half-read comes out
+  };
+
+  // a column count of 65535 in a section that holds two columns
+  run(MakeXdbf(xvc2_with(65535, 0, 2, 2, 0)), StatsStatus::kUnreadable, "columns", 20);
+  // a row count of 65535 in a section that holds two rows
+  run(MakeXdbf(xvc2_with(0, 65535, 2, 0, 2)), StatsStatus::kUnreadable, "rows", 20);
+  // an XPBM block that claims 0xFFFFFFFF words
+  run(MakeXdbf(xvc2_with(1, 0, 0xFFFFFFFFu, 1, 0)), StatsStatus::kUnreadable, "xpbm words", 20);
+  // the same shapes, honest: the section that fits is read in full
+  {
+    FakeGuest g;
+    g.Put(kSpaAddress, MakeXdbf(xvc2_with(2, 1, 2, 2, 1)));
+    StatsSchema s;
+    CHECK(ReadStatsSchema(g, kSpaAddress, &s) == StatsStatus::kOk);
+    CHECK(s.column_sets.size() == 1 && s.column_sets[0].size() == 2 && s.views.empty());
+  }
+  // a section whose length stops before its own view table: the view count is outside it
+  {
+    auto v = xvc2_with(1, 0, 2, 1, 0);
+    FakeGuest g;
+    auto x = MakeXdbf(v);
+    // the XVC2 entry is the second 18-byte entry: its length field is at +14 of the entry, big endian
+    const size_t len_at = 0x18 + 18 + 14;
+    const uint32_t cut = uint32_t(v.size() - 2);  // without the view count
+    x[len_at] = uint8_t(cut >> 24); x[len_at + 1] = uint8_t(cut >> 16); x[len_at + 2] = uint8_t(cut >> 8); x[len_at + 3] = uint8_t(cut);
+    x.resize(x.size() + 16, 0);  // readable zeros right after the section: a view count of 0 is there to be read, outside it
+    g.Put(kSpaAddress, x);
+    StatsSchema s;
+    CHECK(ReadStatsSchema(g, kSpaAddress, &s) == StatsStatus::kUnreadable);
+  }
+  // an entry count and a table length of 0xFFFFFFFF, and no XVC2 entry in the zeros: the scan stops at the cap
+  {
+    std::vector<uint8_t> v;
+    PStr(v, "XDBF");
+    P32(v, 0x10000);
+    P32(v, 0xFFFFFFFFu);  // entry table length
+    P32(v, 0xFFFFFFFFu);  // entries in use
+    P32(v, 0);
+    P32(v, 0);
+    v.resize(0x18 + 18 * uint64_t(kMaxXdbfEntries) + 0x1000, 0);
+    FakeGuest g;
+    g.Put(kSpaAddress, std::move(v));
+    CountingGuest c(g, kLimit);
+    StatsSchema s;
+    CHECK(ReadStatsSchema(c, kSpaAddress, &s) == StatsStatus::kNoXvc2);
+    CHECK(c.reads() <= uint64_t(kMaxXdbfEntries) + 4);
+  }
+  // an XDBF at the very top of the address space: its first entry would end past 4 GB, so it is unreadable (the entry address is
+  // worked out in 64 bits and checked; a 32-bit sum would wrap to the bottom of the address space)
+  {
+    FakeGuest g;
+    std::vector<uint8_t> v;
+    PStr(v, "XDBF");
+    P32(v, 0x10000);
+    P32(v, 100);
+    P32(v, 100);
+    P32(v, 0);
+    P32(v, 0);
+    g.Put(0xFFFFFFF0u - 0x18, v);  // the header fits, the first entry does not
+    g.Put(0, std::vector<uint8_t>(4096, 0));
+    CountingGuest c(g, kLimit);
+    StatsSchema s;
+    CHECK(ReadStatsSchema(c, 0xFFFFFFF0u - 0x18, &s) == StatsStatus::kUnreadable);
+    CHECK(c.reads() <= 3);
+  }
+}
+
 // A property record: id, name pointer, up to 16 value pointers.
 void PutRecord(std::vector<uint8_t>& table, int index, uint32_t id, uint32_t name_ptr, const std::vector<uint32_t>& values) {
   uint8_t* r = table.data() + size_t(index) * kPropertyRecordSize;
@@ -579,6 +697,7 @@ int main(int argc, char** argv) {
   TestParserSelfCheck();
   TestStatsParse();
   TestStatsFailures();
+  TestStatsBounded();
   TestProperties();
   TestJson();
   TestJsonHostileText();
