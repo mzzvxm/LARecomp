@@ -670,13 +670,13 @@ void AttachChecks() {
   using gb::PlaneMode;
   using gb::Why;
   Check(gb::CapsFor(true).per_target_blend, "Vulkan has a blend state and write mask per colour target");
-  Check(gb::CapsFor(false).per_target_blend == gb::kD3d12PerTargetBlend && !gb::kD3d12PerTargetBlend,
-        "Plume's D3D12 back end has one until its pin has 5d60b70: flip kD3d12PerTargetBlend then (and this check)");
+  Check(gb::CapsFor(false).per_target_blend == gb::kD3d12PerTargetBlend && gb::kD3d12PerTargetBlend,
+        "the pin has Plume #15 (5d60b70): D3D12 has a blend state and mask per target");
   Check(gb::AttachOfWord("writers") == gb::AttachSetting::kWriters && gb::AttachOfWord("ALL") == gb::AttachSetting::kAll && gb::AttachOfWord("auto") == gb::AttachSetting::kAuto &&
             gb::AttachOfWord("") == gb::AttachSetting::kAuto && gb::AttachOfWord("x") == gb::AttachSetting::kAuto,
         "the attach setting's words (a word that is none is auto)");
-  Check(gb::MaskedDrawsAttach(gb::AttachSetting::kAuto, gb::CapsFor(true)) && !gb::MaskedDrawsAttach(gb::AttachSetting::kAuto, gb::CapsFor(false)),
-        "auto: the non writers bind the sidecar where each target has its own blend state (Vulkan), not on D3D12 without the Plume fix");
+  Check(gb::MaskedDrawsAttach(gb::AttachSetting::kAuto, gb::CapsFor(true)) && gb::MaskedDrawsAttach(gb::AttachSetting::kAuto, gb::CapsFor(false)),
+        "auto: the non writers bind the sidecar where each target has its own blend state (Vulkan, and D3D12 with Plume #15)");
   Check(!gb::MaskedDrawsAttach(gb::AttachSetting::kWriters, gb::CapsFor(true)) && gb::MaskedDrawsAttach(gb::AttachSetting::kAll, gb::CapsFor(false)),
         "writers: never; all: always (the build is trusted to have the Plume fix)");
   // the blend of each mode
