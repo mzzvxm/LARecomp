@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -118,6 +119,9 @@ std::vector<uint8_t> WavHeader(uint32_t channels, uint32_t rate, uint64_t sample
 inline constexpr uint64_t kWavMaxDataBytes = 0xFFFFFFFFull - 128;
 
 // A WAV file written as the take goes: the header first with zero sizes, the samples after it, the real sizes at Close.
+// Every call takes the file's own lock, so Close may come from another thread while the game thread appends (the game ends during a take:
+// capture_audio.cpp CloseForExit): the sizes are those of what was appended before it, and an append that comes after returns false (and marks the
+// file failed: samples were lost).
 class WavFile {
   public:
     WavFile() = default;
@@ -127,17 +131,29 @@ class WavFile {
 
     // False: the file could not be made (the parent folder is not made here).
     bool Open(const std::string& path, uint32_t channels, uint32_t rate);
-    bool IsOpen() const { return file_ != nullptr; }
+    bool IsOpen() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return file_ != nullptr;
+    }
     // Appends `sample_frames` frames of interleaved floats. False: the write failed or the file is at the size a WAV can hold
     // (the rest of the take's samples are dropped and failed() says so).
     bool Append(const float* interleaved, uint64_t sample_frames);
     // The sizes, the file closed. False when any write failed.
     bool Close();
-    uint64_t Frames() const { return frames_; }
+    uint64_t Frames() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return frames_;
+    }
     uint32_t Channels() const { return channels_; }
-    bool Failed() const { return failed_; }
+    bool Failed() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return failed_;
+    }
 
   private:
+    bool CloseLocked();
+
+    mutable std::mutex mutex_;  // file_, frames_ and failed_
     std::FILE* file_ = nullptr;
     uint32_t channels_ = 2;
     uint32_t rate_ = kRate;
@@ -233,6 +249,9 @@ class Session {
     void StepEnd();
     // The take ends: closes the WAV and gives the mixer back. The summary (ran = false when no take had audio).
     Summary Finish(uint64_t video_frames);
+    // The process ends during a take (any thread; the flush hook of capture_audio.cpp): the WAV gets the real sizes of what it holds and is closed.
+    // Touches nothing else, so it cannot race the game thread's step beyond the WAV's own lock. False: no file was open. `sample_frames`: what it held.
+    bool CloseWavForExit(uint64_t* sample_frames = nullptr);
     // The frames the preroll threw away at Begin.
     uint32_t Preroll() const { return preroll_; }
 

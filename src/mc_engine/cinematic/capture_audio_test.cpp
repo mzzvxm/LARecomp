@@ -17,10 +17,13 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <atomic>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include <chrono>
 #include "capture_audio_core.h"
 
 using namespace mc::cinematic::capture_audio;
@@ -409,6 +412,54 @@ void TestFile() {
     std::filesystem::remove(path, ec);
 }
 
+// The game ends during a take (EXIT-SMALL M2): the file is closed from another thread while the game thread is still appending to it. The sizes in
+// the header are those of the samples that really are in the file (a Close that raced an append would leave them short), and an append after the
+// close returns false and writes nothing (no write to a closed FILE*).
+void TestCloseDuringAppends() {
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "larecomp_capture_audio_close_race.wav";
+    for (int round = 0; round < 20; ++round) {
+        WavFile w;
+        Check(w.Open(path.string(), 2, 48000), "race: the file opens");
+        std::atomic<bool> go{false};
+        std::atomic<uint64_t> refused_after_close{0};
+        std::thread game([&] {
+            std::vector<float> a(256 * 2, 0.5f);
+            while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+            for (int i = 0; i < 4000; ++i) {
+                if (!w.Append(a.data(), 256)) {
+                    refused_after_close.fetch_add(1);
+                    // once closed, every later append is refused too
+                    if (w.Append(a.data(), 256)) refused_after_close.store(1u << 30);
+                    break;
+                }
+            }
+        });
+        go.store(true, std::memory_order_release);
+        std::this_thread::sleep_for(std::chrono::microseconds(200 + 150 * round));
+        const bool closed = w.Close();  // the exit hook's call, from the exiting thread
+        game.join();
+        Check(closed, "race: it closes");
+        Check(!w.IsOpen(), "race: closed");
+        std::vector<uint8_t> bytes;
+        if (std::FILE* f = std::fopen(path.string().c_str(), "rb")) {
+            uint8_t buf[8192];
+            size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+            std::fclose(f);
+        }
+        Check(bytes.size() >= 56, "race: the header is there");
+        if (bytes.size() >= 56) {
+            CheckU(bytes.size() - 56, w.Frames() * 8, "race: the file holds exactly the frames the writer counted");
+            CheckU(Get32(bytes, 52), w.Frames() * 8, "race: the data size is that");
+            CheckU(Get32(bytes, 4), bytes.size() - 8, "race: the RIFF size is the file's size minus 8");
+            CheckU(Get32(bytes, 44), w.Frames(), "race: fact holds the count");
+        }
+        Check(refused_after_close.load() < (1u << 30), "race: an append after the close is refused, not written");
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -417,6 +468,7 @@ int main() {
     TestLate();
     TestHeader();
     TestFile();
+    TestCloseDuringAppends();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

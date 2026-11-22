@@ -595,6 +595,7 @@ rex::Result<void> LarecompApp::OnInit() {
   // writes (the settings file, the career save, the log) is finished by the orderly shutdown before this point; EXIT-HARD.md lists each.
   larecomp::exitfast::AddFlush("state log", &mc::cinematic::statelog::CloseForExit);
   larecomp::exitfast::AddFlush("free camera recording", &mc::cinematic::FreecamStopForExit);
+  larecomp::exitfast::AddFlush("trailer take's WAV", &mc::cinematic::capture_audio::CloseForExit);  // a take cut by the close: the real sizes into its header
   for (const auto& note : path_notes_) LARECOMP_APP_WARN("Game data: {}", note);
   path_notes_.clear();
   // The command line options that could not be used (one line each; the start goes on): ApplyCommandLineSettings, PrepareCommandLine.
