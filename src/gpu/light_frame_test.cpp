@@ -941,6 +941,7 @@ void HlslDefinesChecks(const std::string& text) {
       {"LL_FLAG_PLAYER", double(kLightFlagPlayer)},
       {"LL_FLAG_LIGHTS_GEOMETRY", double(kLightFlagLightsGeometry)},
       {"LL_FLAG_GAME_LIT", double(kLightFlagGameLit)},
+      {"LL_FLAG_RT_VISIBILITY", double(kLightFlagRtVisibility)},
       {"LL_KIND_SHIFT", double(kGpuKindShift)},
       {"LL_KIND_MASK", double(kGpuKindMask)},
       {"LL_SOURCE_SHIFT", double(kGpuSourceShift)},

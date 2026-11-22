@@ -26,6 +26,7 @@ add_library(larecomp_gpu OBJECT
     city_hit_scene.cpp
     city_rt_scene.cpp
     city_rt_shadow.cpp
+    rt_lights.cpp
     rt_scene_service.cpp
     rt_world_frame.cpp
     city_texture_set.cpp
@@ -76,6 +77,7 @@ add_library(larecomp_gpu OBJECT
     headlight_rig.cpp
     input_layout.cpp
     latency.cpp
+    lamp_shadows.cpp
     latency_streamline.cpp
     layout.cpp
     light_manager.cpp
@@ -484,6 +486,11 @@ add_executable(larecomp_light_project_test EXCLUDE_FROM_ALL light_project_test.c
 # CPU twin (headlight_rules::SoftShadow), the volume's (volumetrics_rules.h ShadowShare) and light_laws.h CombineShadow; light_project_test.cpp holds the published form to a recorded drive:
 #   cmake --build <dir> --target larecomp_shadow_atlas_test, then run src/gpu/larecomp_shadow_atlas_test [<hlsl/light_shadow_lookup.hlsli>] (exit 0 = passed).
 add_executable(larecomp_shadow_atlas_test EXCLUDE_FROM_ALL shadow_atlas_test.cpp)
+# The street lamps' shadows, second try (lamp_shadows_rules.h, lamp_shadow_frame.h, lamp_shadow_lookup.h, hlsl/lamp_shadow_lookup.hlsli, LAMP-SHADOWS-4: the lamps' sources and ids, the game's
+# half float, the level budgets and pools, the pick and its fades in scene seconds, the movers and the static layers' rules, the passes' plan, the published table, the pass's light and its pixel path
+# in both modes, the buffer, the shader's text; the HLSL twin is compiled as C++ and compared bit for bit):
+#   cmake --build <dir> --target larecomp_lamp_shadows_test, then run src/gpu/larecomp_lamp_shadows_test [<src/gpu folder>] (exit 0 = passed).
+add_executable(larecomp_lamp_shadows_test EXCLUDE_FROM_ALL lamp_shadows_test.cpp)
 # The one picker of the lights and the budget table (light_pick.h: the importance, the keep bonus, the fading and the held pick, the coast, all in seconds of the scene clock; light_budget.h: the
 # headlight, shadow view and volume numbers of each level; light_pick_record.h: the text format of a recording of the pickers' inputs) held to the two pickers it replaced: the old suites' checks
 # ported, a recorded drive through the rig's Tracker and the shadow replay's ViewPicker in both modes (the same picks), the same scenes at 30, 60 and 144 FPS, a switch of the mode in a run;
@@ -616,6 +623,12 @@ add_executable(larecomp_city_rt_shadow_rules_test EXCLUDE_FROM_ALL city_rt_shado
 add_executable(larecomp_city_rt_vulkan_test EXCLUDE_FROM_ALL city_rt_vulkan_test.cpp)
 target_include_directories(larecomp_city_rt_vulkan_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(larecomp_city_rt_vulkan_test PRIVATE cxx_std_23)
+# The ray traced visibility of the top K lights (RT-LIGHTS-D1: rt_lights_rules.h, hlsl/rt_lights_common.hlsli and hlsl/rt_mask_read.hlsli compiled as C++ through hlsl_cpp_shim.h: the top K, the channels, the
+# rows, the composition with the identity, the ray's geometry, the noise rule, the mask read against brute force; given the src folder it also reads the shader, the host class, the settings and the wiring) likewise:
+#   cmake --build <dir> --target larecomp_rt_lights_test, then run src/gpu/larecomp_rt_lights_test <src dir> (exit 0 = passed).
+add_executable(larecomp_rt_lights_test EXCLUDE_FROM_ALL rt_lights_test.cpp)
+target_include_directories(larecomp_rt_lights_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_rt_lights_test PRIVATE cxx_std_23)
 # The other cars in the car ray tracing scene (car_rt_instances_rules.h: the limits by class, which cars are kept, a car's body centre, the budgets of a
 # car that is new, the instance list) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_instances_rules_test, then run src/gpu/larecomp_car_rt_instances_rules_test (exit 0 = passed).
@@ -1087,6 +1100,10 @@ larecomp_gpu_host_shader(rt_denoise_plain_temporal_cs cs_6_0)
 # The same two stages with the DIFFUSE profile (the probe field's per-pixel detail pass's denoiser, gi_pixel.h): a fixed radius of six pixels that shortens as the history grows, no hit distance, looser weights.
 larecomp_gpu_host_shader(rt_denoise_diffuse_spatial_cs cs_6_0 SOURCE rt_denoise_plain_spatial_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE)
 larecomp_gpu_host_shader(rt_denoise_diffuse_temporal_cs cs_6_0 SOURCE rt_denoise_plain_temporal_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE)
+# The same two stages over 8 bit images and lighter guides (the ray traced light visibility, rt_lights.h, RT-LIGHTS-D1 part 2): RGBA8 signal and results (the history's length in the alpha as n / 32, the
+# temporal pass keeps the 8 bit average from stalling: hlsl/rt_denoise_unorm8.hlsli), R16F depth, the normal and the share in one RGBA8 snorm image (RT_DN_VIS in hlsl/rt_denoise_plain_consumer.hlsli).
+larecomp_gpu_host_shader(rt_denoise_vis_spatial_cs cs_6_0 SOURCE rt_denoise_plain_spatial_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1)
+larecomp_gpu_host_shader(rt_denoise_vis_temporal_cs cs_6_0 SOURCE rt_denoise_plain_temporal_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1)
 # DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): the five guide images from the G-buffer's planes in one compute pass at the anchor (over planes with one sample and over the host's MSAA
 # level), and the debug view that draws one of them over the upscaler's output. Plain Shader Model 6.0 compute for both backends.
 larecomp_gpu_host_shader(rr_guides_cs cs_6_0 DEFINES RR_MS=0)
@@ -1203,6 +1220,9 @@ larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)
 # The city's ray traced sun shadows (city_rt_shadow.h, CITY-RT M1): the same shape, one compute pass with inline ray queries against the same top level, which holds the
 # city's sectors beside the cars (city_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan.
 larecomp_gpu_host_shader_rt(city_rt_shadow_cs cs_6_5)
+# The ray traced visibility of the top K lights (rt_lights.h, RT-LIGHTS-D1): one compute pass over the occlusion's linear depth, a ray a pixel to each light that reaches it, into the visibility images the
+# light pass reads. Shader Model 6.5 (wave intrinsics for the counters), SPIR-V 1.5 on Vulkan like the city shadows'.
+larecomp_gpu_host_shader_rt(rt_lights_trace_cs cs_6_5)
 # The city hit data's probe (city_hit_probe.h, CITY-RT M2 H3): the pool and the tables read through the ray tracing set's t6..t9.
 larecomp_gpu_host_shader_rt(city_hit_probe_cs cs_6_5)
 # The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed storage image

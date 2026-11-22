@@ -758,6 +758,9 @@ void TestInfoAndMasks() {
   sa::BindMaskRefs(&frame, p);
   Check(frame.lights[0].shadow.kind == lg::ShadowKind::kRtMask && frame.lights[0].shadow.mask_channel == 5 && frame.lights[0].shadow.weight == 0.75f, "a light with no atlas view reads its mask channel");
   Check(frame.lights[1].shadow.kind == lg::ShadowKind::kAtlas, "a light that has atlas views keeps them");
+  // RT-LIGHTS-D1: the product rule: the mask's channel and the flag are on both lights (the light pass multiplies the atlas's visibility and the ray's); the atlas light keeps its kind and its weight
+  Check((frame.lights[0].flags & lg::kLightFlagRtVisibility) != 0 && (frame.lights[1].flags & lg::kLightFlagRtVisibility) != 0 && frame.lights[1].shadow.mask_channel == 6 && frame.lights[1].shadow.weight == 1.0f,
+        "a light with atlas views reads its mask channel too (the product), and keeps its kind and weight");
 }
 
 // a provider that asks for nothing, one that asks for tiles: the interface is usable by both

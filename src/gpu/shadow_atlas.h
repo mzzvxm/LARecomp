@@ -71,6 +71,10 @@ class ShadowAtlas {
   bool BeginRecord(plume::RenderCommandList* list);
   void SetTile(plume::RenderCommandList* list, const shadow_atlas::Rect& tile);
   void EndRecord(plume::RenderCommandList* list);
+  // Clears one tile to "nothing drawn" inside a record pass (after BeginRecord, before the tile's draws): a street lamp's static layer built again (lamp_shadows_rules.h DecideStatic).
+  void ClearTile(plume::RenderCommandList* list, const shadow_atlas::Rect& tile);
+  // Changes whenever the texture is made, made again or given back, or the pools moved inside it: what a static layer cached is not in it any more (a provider with a static pool compares).
+  uint32_t generation() const { return generation_; }
   // A static pool whose cached maps are no good (a new layout, a slot given to another light): cleared at the next record. Bit = the pool's index in the layout.
   void InvalidateStatic(uint32_t pool_bits) { static_invalid_ |= pool_bits; }
 
@@ -109,6 +113,7 @@ class ShadowAtlas {
   shadow_atlas::Layout layout_;   // what the texture has
   shadow_atlas::UseTracker use_;
   uint32_t static_invalid_ = 0;
+  uint32_t generation_ = 1;
 
   std::unique_ptr<plume::RenderTexture> texture_;
   std::unique_ptr<plume::RenderTextureView> view_;

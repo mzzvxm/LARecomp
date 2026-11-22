@@ -54,7 +54,10 @@
 #include "light_frame.h"
 #include "light_id.h"
 #include "light_laws.h"
+#include "lamp_shadow_frame.h"
+#include "lamp_shadow_lookup.h"
 #include "light_shadow_lookup.h"
+#include "rt_lights_rules.h"
 
 namespace larecomp::gpu::local_lights {
 
@@ -69,13 +72,28 @@ inline constexpr uint32_t kLightsOffset = kHeaderBytes;
 // 96 byte views), so that a light with a ShadowRef of the atlas is looked up through the one lookup (hlsl/light_shadow_lookup.hlsli): the pass reads it from the same buffer, no set of its own.
 inline constexpr uint32_t kShadowOffset = kLightsOffset + uint32_t(sizeof(GpuLight)) * kMaxPassLights;
 inline constexpr uint32_t kShadowBytes = uint32_t(sizeof(shadow_lookup::GpuShadowBuffer));
-inline constexpr uint32_t kBufferBytes = kShadowOffset + kShadowBytes;
+// LAMP-SHADOWS-4: after the headlights' table the street lamps' (lamp_shadow_frame.h GpuLampTable: a 32 byte header with the atlas's slot and size and the layers of up to 32 entries, then twenty
+// of the 96 byte views): a lamp's light names its entries in the combined entry space (kLampEntryBase + the row) and is looked up through the same one lookup (hlsl/lamp_shadow_lookup.hlsli).
+inline constexpr uint32_t kLampOffset = kShadowOffset + kShadowBytes;
+inline constexpr uint32_t kLampBytes = uint32_t(sizeof(GpuLampTable));
+// RT-LIGHTS-D1: after the lamps' table the ray traced visibility's table (rt_lights_rules.h GpuRtMaskTable: the filtered and the raw images' bindless slots, their size and the occlusion's linear depth
+// image that guides the upsample): a light with the flag kLightFlagRtVisibility reads its ShadowRef::mask_channel from them (hlsl/rt_mask_read.hlsli).
+inline constexpr uint32_t kRtOffset = kLampOffset + kLampBytes;
+inline constexpr uint32_t kRtBytes = uint32_t(sizeof(rt_lights::GpuRtMaskTable));
+inline constexpr uint32_t kBufferBytes = kRtOffset + kRtBytes;
 inline constexpr uint32_t kBufferAlloc = (kBufferBytes + 255u) & ~255u;  // an upload buffer's size
 
 // PassHeader::flags (LP_FLAG_*).
 inline constexpr uint32_t kFlagMaterial = 1u << 0;    // RT3 holds this frame's class: the pass skips the classes that take no light
 inline constexpr uint32_t kFlagOcclusion = 1u << 1;   // OcclusionInfo was read: the height factor is applied
 inline constexpr uint32_t kFlagShadow = 1u << 2;      // GB-H2: the shadow view table is in the buffer and its atlas is there: a light with views of the atlas is shadowed
+inline constexpr uint32_t kFlagLampShadow = 1u << 3;  // LAMP-SHADOWS-4: the street lamps' table is in the buffer and its atlas is there: a lamp's light with views is shadowed (or, for a lamp the game lights, its shadowed share taken away)
+inline constexpr uint32_t kFlagRtMask = 1u << 4;      // RT-LIGHTS-D1: the ray traced visibility's table is in the buffer and its images are this frame's: a light with a channel reads it
+
+// PassHeader::debug: what the pass draws for a street lamp's light instead of the light (mcla_gpu_lamp_shadows_view): 0 the light, 1 the shadow's own picture (red where the lamp's shadow takes
+// light, green where it is lit), 2 the lamp's table row (a colour for each lamp, brighter in the shadow), 3 REMOVE: the lamp's whole term taken away whatever the shadow (a game lamp: -term; an owned
+// lamp: nothing added): the UNITS CHECK, the pool must go to the ambient and no pixel may go negative.
+inline constexpr uint32_t kDebugNone = 0, kDebugVisibility = 1, kDebugLamps = 2, kDebugRemove = 3;
 
 // The sources mask of mcla_gpu_local_lights_sources. Bits 0 and 1 are GB-H1's; bits 2 to 5 are GB-H3's (local_lights_sources.h makes their lights and holds their budgets): the police light bars,
 // the headlights of the cars the forward headlight stage does not light, the cars' brake / tail / turn / reverse lamps, and the mods' lamps the game's grid is not lighting. Bit 6 is GB-NEON's:
@@ -140,11 +158,11 @@ struct PassHeader {
   uint32_t count;
   uint32_t flags;
   float exposure;  // the main colour target's exponent bias as a factor, 2^bias (screen_frame.h ScreenCamera::exposure_bias)
-  uint32_t reserved;
+  uint32_t debug;  // kDebug*
 };
 static_assert(sizeof(PassHeader) == kHeaderBytes, "the header is eight rows of 16 bytes");
 static_assert(offsetof(PassHeader, right) == 0 && offsetof(PassHeader, up) == 16 && offsetof(PassHeader, forward) == 32 && offsetof(PassHeader, position) == 48 &&
-                  offsetof(PassHeader, lin) == 64 && offsetof(PassHeader, size) == 80 && offsetof(PassHeader, occ) == 96 && offsetof(PassHeader, count) == 112 && offsetof(PassHeader, exposure) == 120,
+                  offsetof(PassHeader, lin) == 64 && offsetof(PassHeader, size) == 80 && offsetof(PassHeader, occ) == 96 && offsetof(PassHeader, count) == 112 && offsetof(PassHeader, exposure) == 120 && offsetof(PassHeader, debug) == 124,
               "the header's rows (hlsl/local_light.hlsli LP_OFF_*)");
 
 // The push block of one draw (hlsl LocalLightPush): the bindless slots of the main depth plane and of RT1 to RT3 (kNoLightSlot: not there), then info: x the first light's row in the buffer,
@@ -316,18 +334,93 @@ inline void QuadNormal(const float w00[3], const float w10[3], const float w01[3
 // atlas. Returns whether the pixel adds anything (the shader discards otherwise).
 template <class Depth>
 inline bool PixelLightShadowed(const Light& l, const Units& u, const ShadowFrame* shadow, bool table, const float world[3], const float normal[3], const float albedo[3], float lit, Depth&& depth_at,
-                               float out[3], const float* shadow_normal = nullptr) {
+                               float out[3], const float* shadow_normal = nullptr, bool rt_ref = false, float rt_visibility = 1.0f) {
   PixelLight(l, u, world, normal, albedo, lit, out);
   if (!(out[0] > 0.0f || out[1] > 0.0f || out[2] > 0.0f)) {
     return false;
   }
-  if (table && shadow != nullptr && l.shadow.kind == ShadowKind::kAtlas && l.shadow.view_count != 0) {
-    const float visibility = shadow_lookup::LightLit(*shadow, l.shadow, world, shadow_normal != nullptr ? shadow_normal : normal, shadow_lookup::Mode::kSurface, depth_at);
+  float visibility = 1.0f;
+  const bool atlas = table && shadow != nullptr && l.shadow.kind == ShadowKind::kAtlas && l.shadow.view_count != 0;
+  if (atlas) {
+    visibility = shadow_lookup::LightLit(*shadow, l.shadow, world, shadow_normal != nullptr ? shadow_normal : normal, shadow_lookup::Mode::kSurface, depth_at);
+  }
+  if (rt_ref && (l.flags & kLightFlagRtVisibility) != 0) {
+    // RT-LIGHTS-D1: the ray's visibility is multiplied in (the product with the atlas's: rt_lights::Combine), a light the game lights is only taken away from
+    const float term[3] = {out[0], out[1], out[2]};
+    rt_lights::Apply((l.flags & kLightFlagGameLit) != 0, term, rt_lights::Combine(visibility, rt_visibility), out);
+    return out[0] != 0.0f || out[1] != 0.0f || out[2] != 0.0f;
+  }
+  if (atlas) {
     for (int i = 0; i < 3; ++i) {
       out[i] *= visibility;
     }
   }
   return out[0] > 0.0f || out[1] > 0.0f || out[2] > 0.0f;
+}
+
+// LAMP-SHADOWS-4: the pass's per-pixel path for a STREET LAMP's light, the twin of the lamp branch of hlsl/local_light_ps.hlsl main. The light's term is PixelLight's. A lamp whose ShadowRef names
+// entries of the lamps' table and a frame whose table is in the buffer (kFlagLampShadow) is looked up (shadow_lookup::LampLit: the ONE lookup plus the edge fade, Mode::kSurface), and then
+//   a lamp the GAME LIGHTS (kLightFlagGameLit: its grid already added the term)  ->  the shadowed share is taken away:  out = -term x (1 - visibility)   (the blend is ADD: a negative colour)
+//   a lamp the pass OWNS (the flag clear: the grid has it off)                   ->  out = term x visibility
+// A game lamp with no table (the frame has none, the table's atlas is gone) has nothing to take away. `debug` (kDebug*) draws the shadow's picture instead. Returns whether the pixel adds (or
+// takes) anything (the shader discards otherwise). `depth_at(ix, iy)` is the atlas's stored depth of a texel, the index clamped into the atlas. `shadow_normal` is the surface's GEOMETRIC unit
+// normal for the lookup's plane test (QuadNormal, as the headlights'; null: `normal`).
+// RT-LIGHTS-D1: a lamp with the flag kLightFlagRtVisibility and a ray traced table in the buffer (`rt_ref`: kFlagRtMask) has the ray's visibility `rt_visibility` (1 where its ray was free) multiplied into
+// the atlas's (rt_lights::Combine: the product of two partial caster sets); a lamp with ONLY the ray (no atlas views) is looked at too, and a lamp the game lights is still only ever taken away from:
+// with every visibility 1 nothing is drawn, as if the pass did not know the lamp.
+template <class Depth>
+inline bool PixelLampShadowed(const Light& l, const Units& u, const LampShadowFrame* lamps, bool table, uint32_t debug, const float world[3], const float normal[3], const float albedo[3],
+                              float lit, Depth&& depth_at, float out[3], const float* shadow_normal = nullptr, bool rt_ref = false, float rt_visibility = 1.0f) {
+  PixelLight(l, u, world, normal, albedo, lit, out);
+  if (!(out[0] > 0.0f || out[1] > 0.0f || out[2] > 0.0f)) {
+    return false;
+  }
+  const bool game_lit = (l.flags & kLightFlagGameLit) != 0;
+  const bool atlas_ref = l.source == LightSource::kLamp && l.shadow.kind == ShadowKind::kAtlas && l.shadow.view_count != 0;
+  const bool rt_here = rt_ref && l.source == LightSource::kLamp && (l.flags & kLightFlagRtVisibility) != 0;
+  if (l.source != LightSource::kLamp) {
+    return true;
+  }
+  if (!atlas_ref && !rt_here) {
+    return !game_lit;   // RT-LIGHTS-D1: a lamp the game lights with no source of visibility is never added on top of the grid's (the shader discards it); an owned lamp is added as it was
+  }
+  if (debug == kDebugRemove) {
+    for (int i = 0; i < 3; ++i) {
+      out[i] = game_lit ? -out[i] : 0.0f;
+    }
+    return game_lit;
+  }
+  float atlas_visibility = 1.0f;
+  if (atlas_ref) {
+    if (!table || lamps == nullptr) {
+      if (!rt_here) {
+        return !game_lit;
+      }
+    } else {
+      atlas_visibility = shadow_lookup::LampLit(*lamps, l.shadow, l.pos, world, shadow_normal != nullptr ? shadow_normal : normal, shadow_lookup::Mode::kSurface, depth_at);
+      if (debug == kDebugVisibility) {
+        const float k = u.exposure * 0.15f;
+        out[0] = (1.0f - atlas_visibility) * k;
+        out[1] = atlas_visibility * k;
+        out[2] = 0.0f;
+        return true;
+      }
+      if (debug == kDebugLamps) {
+        const float f = float(l.shadow.first_view);
+        const float k = u.exposure * (0.05f + 0.25f * (1.0f - atlas_visibility));
+        const auto fract = [](float v) { return v - std::floor(v); };
+        out[0] = fract(f * 0.37f) * k;
+        out[1] = fract(f * 0.61f + 0.3f) * k;
+        out[2] = fract(f * 0.83f + 0.6f) * k;
+        return true;
+      }
+    }
+  }
+  const float visibility = rt_here ? rt_lights::Combine(atlas_visibility, rt_visibility) : atlas_visibility;
+  for (int i = 0; i < 3; ++i) {
+    out[i] = game_lit ? -out[i] * (1.0f - visibility) : out[i] * visibility;
+  }
+  return out[0] != 0.0f || out[1] != 0.0f || out[2] != 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +752,59 @@ inline Selection SelectLights(const LightFrame& frame, uint32_t sources, const L
   return s;
 }
 
+// RT-LIGHTS-D1: what the pass does with a selection of lights and the ray traced channels of the frame, in the pass's own terms.
+//   AnnotateSelection  every selected light whose id holds a channel gets the flag kLightFlagRtVisibility and ShadowRef::mask_channel (its atlas kind and views are NOT touched: the product reads both);
+//                      a light that holds none loses the flag. Returns how many lights hold a channel.
+//   TrimSelection      a light the GAME lights that has no source of visibility at all (no atlas views, no channel) is taken out: the pass would ADD its term on top of the grid's. A lamp that was handed to
+//                      the pass only to get a ray, and was not picked for a channel, goes this way; so does any game's lamp whose provider is gone. Nothing else is touched. Returns how many were taken out.
+// Both keep the selection's order (the draws' order) and its counters.
+inline uint32_t AnnotateSelection(const rt_lights::Assignment& channels, Selection* selection) {
+  uint32_t held = 0;
+  for (uint32_t i = 0; i < selection->count && i < kMaxPassLights; ++i) {
+    Light& l = selection->lights[i];
+    const uint32_t channel = rt_lights::ChannelFor(channels, l.id);
+    if (channel != rt_lights::kNoChannel) {
+      l.flags |= kLightFlagRtVisibility;
+      l.shadow.mask_channel = uint8_t(channel);
+      ++held;
+    } else {
+      l.flags &= ~kLightFlagRtVisibility;
+    }
+  }
+  return held;
+}
+
+inline bool HasVisibilitySource(const Light& l) {
+  return (l.shadow.kind == ShadowKind::kAtlas && l.shadow.view_count != 0) || (l.flags & kLightFlagRtVisibility) != 0;
+}
+
+inline uint32_t TrimSelection(Selection* selection) {
+  uint32_t kept = 0;
+  uint32_t removed = 0;
+  Selection out = *selection;
+  for (uint32_t i = 0; i < selection->count && i < kMaxPassLights; ++i) {
+    const Light& l = selection->lights[i];
+    if ((l.flags & kLightFlagGameLit) != 0 && !HasVisibilitySource(l)) {
+      ++removed;
+      // the counters: a game's lamp comes to the pass as a handed over light (the lamp shadows' lamps, a lamp given for its ray)
+      if (out.from_extra > 0) {
+        --out.from_extra;
+      }
+      if (out.from_class[size_t(SourceClass::kHandedOver)] > 0) {
+        --out.from_class[size_t(SourceClass::kHandedOver)];
+      }
+      continue;
+    }
+    out.lights[kept++] = l;
+  }
+  for (uint32_t i = kept; i < kMaxPassLights; ++i) {
+    out.lights[i] = Light{};
+  }
+  out.count = kept;
+  *selection = out;
+  return removed;
+}
+
 // ---------------------------------------------------------------------------
 // the scissor of a light
 // ---------------------------------------------------------------------------
@@ -801,6 +947,11 @@ struct PassInputs {
   uint32_t flags = 0;  // kFlag*
   // GB-H2: the frame's shadow views and atlas as of this trigger (the replay's maps of THIS frame, recorded just before the pass), null: none. kFlagShadow is set by BuildBuffer, not by the caller.
   const ShadowFrame* shadow = nullptr;
+  // LAMP-SHADOWS-4: the street lamps' views of this trigger (lamp_shadows.h: recorded just before the pass), null: none. kFlagLampShadow is set by BuildBuffer, not by the caller.
+  const LampShadowFrame* lamp_shadow = nullptr;
+  uint32_t debug = 0;  // kDebug*
+  // RT-LIGHTS-D1: the ray traced visibility's images of this trigger (rt_lights.h: traced just before the pass), null: none. kFlagRtMask is set by BuildBuffer, not by the caller.
+  const rt_lights::MaskFrame* rt_mask = nullptr;
 };
 
 inline void FillHeader(PassHeader* h, const PassInputs& in, uint32_t count) {
@@ -826,6 +977,7 @@ inline void FillHeader(PassHeader* h, const PassInputs& in, uint32_t count) {
   h->size[3] = in.height != 0 ? 1.0f / float(in.height) : 0.0f;
   h->count = count;
   h->flags = in.flags | ((in.units.occ[3] > 0.0f) ? kFlagOcclusion : 0u);
+  h->debug = in.debug;
 }
 
 // Whether the shadow table is worth writing and reading: the frame has an atlas the pass can name (a valid atlas with a bindless slot) and at least one selected light has views in it.
@@ -843,12 +995,45 @@ inline bool ShadowTableNeeded(const Selection& selection, const ShadowFrame* sha
   return false;
 }
 
-// Writes the whole buffer (kBufferAlloc bytes: the header, the lights' rows, zero past the count, then the shadow view table when a selected light reads it: kFlagShadow).
+// LAMP-SHADOWS-4: whether the lamps' table is worth writing and reading: the frame has a valid lamp atlas the pass can name and at least one selected street lamp names entries of it (a ref past the
+// table's count is lit by the shader, so a stale ref never reads past it).
+inline bool LampTableNeeded(const Selection& selection, const LampShadowFrame* lamps) {
+  if (lamps == nullptr || !lamps->atlas.valid || lamps->atlas.slot == kNoLightSlot || lamps->count == 0) {
+    return false;
+  }
+  for (uint32_t i = 0; i < selection.count && i < kMaxPassLights; ++i) {
+    const Light& l = selection.lights[i];
+    const ShadowRef& ref = l.shadow;
+    if (l.source == LightSource::kLamp && ref.kind == ShadowKind::kAtlas && ref.view_count != 0 && uint32_t(ref.first_view) >= kLampEntryBase &&
+        uint32_t(ref.first_view) - kLampEntryBase < lamps->count) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// RT-LIGHTS-D1: whether the ray traced table is worth writing and reading: the frame has valid mask images and at least one selected light reads a channel of them.
+inline bool RtTableNeeded(const Selection& selection, const rt_lights::MaskFrame* rt_mask) {
+  if (rt_mask == nullptr || !rt_lights::MaskTableValid(rt_lights::BuildMaskTable(*rt_mask))) {
+    return false;
+  }
+  for (uint32_t i = 0; i < selection.count && i < kMaxPassLights; ++i) {
+    const Light& l = selection.lights[i];
+    if ((l.flags & kLightFlagRtVisibility) != 0 && uint32_t(l.shadow.mask_channel) < rt_mask->images * rt_lights::kChannelsPerImage) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Writes the whole buffer (kBufferAlloc bytes: the header, the lights' rows, zero past the count, then the shadow view table when a selected light reads it: kFlagShadow, then the street lamps' table when a selected lamp does: kFlagLampShadow, then the ray traced visibility's table when a selected light reads a channel: kFlagRtMask).
 inline void BuildBuffer(const PassInputs& in, const Selection& selection, uint8_t* out) {
   std::memset(out, 0, kBufferAlloc);
   PassInputs with = in;
   const bool shadowed = ShadowTableNeeded(selection, in.shadow);
-  with.flags = in.flags | (shadowed ? kFlagShadow : 0u);
+  const bool lamps = LampTableNeeded(selection, in.lamp_shadow);
+  const bool rt = RtTableNeeded(selection, in.rt_mask);
+  with.flags = in.flags | (shadowed ? kFlagShadow : 0u) | (lamps ? kFlagLampShadow : 0u) | (rt ? kFlagRtMask : 0u);
   PassHeader header;
   FillHeader(&header, with, selection.count);
   std::memcpy(out, &header, sizeof(header));
@@ -860,6 +1045,15 @@ inline void BuildBuffer(const PassInputs& in, const Selection& selection, uint8_
     shadow_lookup::GpuShadowBuffer table;
     shadow_lookup::BuildGpuShadowBuffer(*in.shadow, &table);
     std::memcpy(out + kShadowOffset, &table, sizeof(table));
+  }
+  if (lamps) {
+    GpuLampTable table;
+    BuildGpuLampTable(*in.lamp_shadow, &table);
+    std::memcpy(out + kLampOffset, &table, sizeof(table));
+  }
+  if (rt) {
+    const rt_lights::GpuRtMaskTable table = rt_lights::BuildMaskTable(*in.rt_mask);
+    std::memcpy(out + kRtOffset, &table, sizeof(table));
   }
 }
 

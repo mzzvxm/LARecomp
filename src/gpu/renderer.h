@@ -62,9 +62,11 @@
 #include "city_hit_scene.h"
 #include "city_rt_scene.h"
 #include "city_rt_shadow.h"
+#include "rt_lights.h"
 #include "rt_scene_service.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
+#include "lamp_shadows.h"
 #include "local_shadow.h"
 #include "shadow_atlas.h"
 #include "descriptors.h"
@@ -315,6 +317,7 @@ class Renderer final : public RenderThread::Executor {
   GiApply gi_apply_;          // render thread; the probe field's apply (gi_apply.h, CITY-RT M3 G3): the field's bounce light, and the screen-space bounce light's share; it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
   GiField gi_field_;          // render thread; the probe field's owner (gi_field.h, CITY-RT M3 G1): textures, windows, weights; the apply reads it (SetGiField); Shutdown stops the apply first
   GiUpdate gi_update_;        // render thread; the probe field's update (gi_update.h, CITY-RT M3 G2): the rays of the probes and their blend; it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: Shutdown stops it with the integration
+  RtLights rt_lights_;        // render thread; the ray traced visibility of the top K lights (rt_lights.h, RT-LIGHTS-D1, debug only): the light pass runs it (SetRtLights); it holds pointers to the car scene, the world frame and the scene service: Shutdown stops it before them
   GiPixel gi_pixel_;          // render thread; the probe field's per-pixel detail pass (gi_pixel.h, CITY-RT M3 G5): ULTRA on a strong ray tracing card; the apply runs it (SetGiPixel); it holds pointers to the field, the car scene, the city scene, the hit data, the world frame and the light manager: Shutdown stops it before them
   GiIntegration gi_integration_;  // render thread; the setting, the field's frame and its trigger work, the watchdog (gi_integration.h, CITY-RT M3 G4); holds pointers to the field, the apply, the AO and the city scene
   RrGuides rr_guides_;        // render thread; DLSS Ray Reconstruction's guide pass, run by the temporal system's upscale (rr_guides.h); it holds a pointer to the G-buffer: Shutdown stops it first
@@ -325,6 +328,7 @@ class Renderer final : public RenderThread::Executor {
   CarFrame car_frame_;        // render thread; the player car's draws of every frame a car effect asks for them (car_frame.h)
   HeadlightRig headlights_;   // render thread; the cars' headlights as lights for the lit shaders at night (headlight_rig.h)
   ShadowAtlas shadow_atlas_;  // render thread; the one shadow atlas (shadow_atlas.h, LIGHT-UNIFY U5): the headlight replay is its first provider (mcla_gpu_light_frame bit 8); before it: it outlives it
+  LampShadows lamp_shadows_;  // render thread; the street lamps' shadows (lamp_shadows.h, mcla_gpu_lamp_shadows): a provider of the shared atlas, drawn by the replay, read by the deferred light pass
   LocalShadow local_shadow_;  // render thread; the headlight shadow maps (local_shadow.h), recorded at the history trigger before the car shadow map's and the AO's passes
   LocalLights local_lights_;  // render thread; the deferred local light pass (local_lights.h, mcla_gpu_local_lights): reads the G-buffer, the shared screen products, the AO's camera and the light manager
   LightManager light_manager_;  // render thread; the passive light manager (light_manager.h, mcla_gpu_lights_census): one frame of the lights, checked against the consumers'

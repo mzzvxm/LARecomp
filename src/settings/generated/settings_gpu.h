@@ -769,6 +769,11 @@ class GPUSettings final : public rex::SettingOwner {
     "(Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.",
     rex::kDebugOnly, rex::Range{0, 2});
 
+  REX_SETTING(i32, mcla_gpu_dlss_rr_rt_lights, 1, "Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RT-LIGHTS-D1 part 2): what the ray traced light visibility (mcla_gpu_rt_lights) does while Ray Reconstruction takes the frame. 1 (the default): the filter "
+    "does not run (Ray Reconstruction is the denoiser: it cleans the picture the light pass draws with the one-ray-a-pixel visibility in it), and the light pass reads the unfiltered visibility. 0: the effect keeps its own filter even then (the picture to compare with). "
+    "With Ray Reconstruction not the plan (Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.",
+    rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(std::string, mcla_gpu_dlss_mode, "dlaa", "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
     "per direction, of the output (the window's 16:9 area, whatever mcla_gpu_resolution_scale "
@@ -1147,6 +1152,29 @@ class GPUSettings final : public rex::SettingOwner {
     "the sun shafts' ray starts and the car reflection cone's turn changed their noise every frame only while an upscaler averaged it; without one they held one pattern. "
     "True: the noise changes every frame here too, and each effect resolves it itself: the contact shadows and the sun rays through the occlusion's own history (reprojected by depth and the "
     "camera, 12 frames), the shafts and the reflection cone through a short history of their own. False: the first fixes' fixed blue pattern without an upscaler. Live.", rex::kDebugOnly);
+  REX_SETTING(std::string, mcla_gpu_rt_lights, "off", "Debug (RT-LIGHTS-D1, perf/RT-DIRECT-SURVEY.md): ray traced visibility of the lights the deferred light pass draws, for the top K (a car's headlights, neon, the "
+    "nearest street lamps): one ray from every pixel to a point of the light's disc, against the city's structures and the cars, filtered by the renderer's own temporal "
+    "and a-trous filter, read by the light pass as a second shadow beside the shadow atlas (the two multiply: neither knows every caster). A street lamp the game lights "
+    "is only ever taken away from, never added. off (the default), on (the pass runs, where the graphics card traces rays), auto (follows the RT SHADOWS row's level). "
+    "Needs the deferred light pass to run (mcla_gpu_local_lights or the lamp shadows). Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "on"));
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_k, 0, "Debug: how many lights get a ray (the top K), 1 to 9; 0 (the default) is the level's (3, and 6 at the largest LIGHT SHADOWS level). A group of three lights is one "
+    "set of images: 1 to 3 lights cost one group, 4 to 6 two, 7 to 9 three. Headlights come first, then neon, then the nearest street lamps. Live.", rex::kDebugOnly, rex::Range{0, 9});
+
+  REX_SETTING(f64, mcla_gpu_rt_lights_radius, 0.0, "Debug: the radius of a light's disc in metres for mcla_gpu_rt_lights (the rays go to points of the disc, so a larger radius softens the edge of the shadow); 0 (the "
+    "default) is by kind of light: a headlight's lens 7 cm, a street lamp's head 25 cm, neon 45 cm. 0 to 2. Live.", rex::kDebugOnly, rex::Range{0.0, 2.0});
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_rays, 1, "Debug: rays to each light for every pixel the light reaches, for mcla_gpu_rt_lights, 1 to 4 (the strata of the light's disc: more rays, less noise, more cost). Live.", rex::kDebugOnly, rex::Range{1, 4});
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_view, 0, "Debug: with mcla_gpu_rt_lights, draw the visibility instead of the light: 1 the filtered visibility of each light that has a ray (red where the light is blocked, "
+    "green where it arrives), 2 the raw one (before the filter). 0 is the picture. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_check, 0, "Debug: the identity test of mcla_gpu_rt_lights. 1: the pass traces its rays (and costs its time) but writes every visibility as 1, so the picture must be the same, "
+    "bit for bit, as with the pass off; 2: every visibility the light reaches is 0 (the lights with a ray vanish, a street lamp the game lights is taken away in full). 0 "
+    "is the pass. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_scale, 0, "Debug: the size the ray traced light visibility is traced at, for mcla_gpu_rt_lights. 0 (the default): half of the occlusion's traced size on each axis where that is taller than 720 lines, else the "
+    "whole of it (the memory: 28 bytes a texel, 14 MiB at 1080p and at 4K, 25 MiB at 1440p); 1: always the whole traced size (about 4 times the rays and the memory at 1080p and 4K: the picture to compare with); 2: half wherever the size allows. Live.", rex::kDebugOnly, rex::Range{0, 2});
 
   REX_SETTING(bool, mcla_gpu_object_names, false, "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
     "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
@@ -1630,6 +1658,23 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_neon_contact, true, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-BLEED, the A/B): on (the default) a neon light is shut out of the car's own panels on a vehicle pixel: the light's way to the pixel is looked up in the picture's own depth for 0.8 m and a point behind a visible surface by a shell's thickness is inside something, so the vents, the lip, the cabin and the wheels' dish that face the light through a body get none of it. "
     "Off: the law's N.L alone (the neon shows through the other car's panels). Live.", rex::kDebugOnly);
+  REX_SETTING(i32, mcla_gpu_lamp_shadows, -1, "Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): the nearest street lamps get a shadow from the shadow atlas (cars, poles and people on the road under them), drawn by the deferred local light pass "
+    "at the mid-scene depth copy with the same lookup as the headlights'. -1 (the default): they follow the LIGHT SHADOWS row - while the deferred local light pass runs for anything else (mcla_gpu_local_lights on, or "
+    "mcla_gpu_headlight_pass pass or both) and LIGHT SHADOWS is not off, the lamps have a shadow, how many by its level (medium 2, high 4, ultra 8; Auto: Low off, Mid medium, High ultra). 0: none. 1: on whatever "
+    "the pass's own settings say (the pass runs for the lamps). The shadow replay records into the shared atlas while it is on. Live. See mcla_gpu_lamp_shadows_mode for how the pass uses the shadow.", rex::kDebugOnly, rex::Range{-1, 1});
+
+  REX_SETTING(i32, mcla_gpu_lamp_shadows_mode, 0, "Diagnostic (the street lamps' shadows): how the deferred local light pass uses a lamp's shadow. 0 (the default): subtract - the game's own light grid still lights the lamp and the pass takes the "
+    "shadowed share of that light away (the lamp's light as the grid has it, times one minus the visibility), for every surface the G-buffer holds, cars and people included. 1: own - the lamp is not in "
+    "the grid (the lamp A/B's mod lamps) and the pass adds its light times the visibility. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(i32, mcla_gpu_lamp_shadows_view, 0, "Diagnostic (the street lamps' shadows): what the deferred local light pass draws for a shadowed street lamp instead of its light. 0 (the default): the light. 1: the shadow itself as a picture, red "
+    "where the lamp's shadow takes light and green where it is lit. 2: a colour for each lamp's row of the shadow table (brighter in the shadow), which shows the pick and its hysteresis. 3: the lamp's whole light is taken away whatever the shadow (the units check: the pool must go to the ambient and no pixel may go negative). Live.", rex::kDebugOnly, rex::Range{0, 3});
+
+  REX_SETTING(i32, mcla_gpu_lamp_shadows_lamps, 0, "Diagnostic (the street lamps' shadows): how many lamps have a shadow at once. 0 (the default): the LIGHT SHADOWS level's number. A number from 1 to 10: that many (with a spare tile for a lamp whose "
+    "shadow fades out). -1: no lamp (the headlights keep their views). Live.", rex::kDebugOnly, rex::Range{-1, 10});
+
+  REX_SETTING(i32, mcla_gpu_lamp_shadows_cache, 1, "Diagnostic (the street lamps' shadows): 1 (the default) gives each lamp two tiles, a static one for the world that does not move (drawn when the lamp takes its tile and added to, kept) and a live one "
+    "for the cars and people (drawn every frame), which costs one more tile of video memory a lamp and saves the world's draws. 0: one tile a lamp, everything drawn every frame. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
   REX_SETTING(std::string, mcla_gpu_headlight_pass, "forward", "Diagnostic (the forward headlight stage against the deferred local light pass, GB-H2, the A/B): which of the two lights the cars' headlights. forward (the default): the lit shaders' headlight variant lights, as the game has always had it. "
     "pass: the variant is not used and the deferred local light pass lights the headlights of the same cars with their shadows from the atlas (it also reaches the lit shaders the variant leaves out, the cars' paint and the pedestrians; needs the G-buffer's planes, which it asks for while HEADLIGHTS is on, and runs whatever mcla_gpu_local_lights says). "
@@ -2012,6 +2057,7 @@ inline auto& mcla_gpu_dlss_rr_test = g_gpu.mcla_gpu_dlss_rr_test;
 inline auto& mcla_gpu_dlss_rr_ssr = g_gpu.mcla_gpu_dlss_rr_ssr;
 inline auto& mcla_gpu_dlss_rr_car_refl = g_gpu.mcla_gpu_dlss_rr_car_refl;
 inline auto& mcla_gpu_dlss_rr_rt_gi = g_gpu.mcla_gpu_dlss_rr_rt_gi;
+inline auto& mcla_gpu_dlss_rr_rt_lights = g_gpu.mcla_gpu_dlss_rr_rt_lights;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;
@@ -2084,6 +2130,13 @@ inline auto& mcla_gpu_msaa_with_upscaler = g_gpu.mcla_gpu_msaa_with_upscaler;
 inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;
 inline auto& mcla_gpu_noise_held = g_gpu.mcla_gpu_noise_held;
 inline auto& mcla_gpu_noise_resolve_no_upscaler = g_gpu.mcla_gpu_noise_resolve_no_upscaler;
+inline auto& mcla_gpu_rt_lights = g_gpu.mcla_gpu_rt_lights;
+inline auto& mcla_gpu_rt_lights_k = g_gpu.mcla_gpu_rt_lights_k;
+inline auto& mcla_gpu_rt_lights_radius = g_gpu.mcla_gpu_rt_lights_radius;
+inline auto& mcla_gpu_rt_lights_rays = g_gpu.mcla_gpu_rt_lights_rays;
+inline auto& mcla_gpu_rt_lights_view = g_gpu.mcla_gpu_rt_lights_view;
+inline auto& mcla_gpu_rt_lights_check = g_gpu.mcla_gpu_rt_lights_check;
+inline auto& mcla_gpu_rt_lights_scale = g_gpu.mcla_gpu_rt_lights_scale;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;
@@ -2180,6 +2233,11 @@ inline auto& mcla_gpu_local_lights_car_gain = g_gpu.mcla_gpu_local_lights_car_ga
 inline auto& mcla_gpu_neon_light_gain = g_gpu.mcla_gpu_neon_light_gain;
 inline auto& mcla_gpu_local_lights_cost_off = g_gpu.mcla_gpu_local_lights_cost_off;
 inline auto& mcla_gpu_neon_contact = g_gpu.mcla_gpu_neon_contact;
+inline auto& mcla_gpu_lamp_shadows = g_gpu.mcla_gpu_lamp_shadows;
+inline auto& mcla_gpu_lamp_shadows_mode = g_gpu.mcla_gpu_lamp_shadows_mode;
+inline auto& mcla_gpu_lamp_shadows_view = g_gpu.mcla_gpu_lamp_shadows_view;
+inline auto& mcla_gpu_lamp_shadows_lamps = g_gpu.mcla_gpu_lamp_shadows_lamps;
+inline auto& mcla_gpu_lamp_shadows_cache = g_gpu.mcla_gpu_lamp_shadows_cache;
 inline auto& mcla_gpu_headlight_pass = g_gpu.mcla_gpu_headlight_pass;
 inline auto& mcla_gpu_light_pick = g_gpu.mcla_gpu_light_pick;
 inline auto& mcla_gpu_light_pick_record = g_gpu.mcla_gpu_light_pick_record;

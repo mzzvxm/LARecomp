@@ -54,6 +54,7 @@ enum class Consumer : uint8_t {
   kSsrFallback,      // M2: the screen space reflections' ray traced fallback
   kCityGi,           // M3: the global illumination's probes and rays
   kCheck,            // the debug checks (mcla_gpu_car_rt_check, mcla_gpu_city_rt_check, mcla_gpu_city_hit_data)
+  kRtLights,         // the ray traced visibility of the top K lights (rt_lights.h, mcla_gpu_rt_lights)
   kCount,
 };
 inline constexpr size_t kConsumerCount = size_t(Consumer::kCount);
@@ -66,6 +67,7 @@ constexpr std::string_view ConsumerName(Consumer who) {
     case Consumer::kSsrFallback: return "ssr fallback";
     case Consumer::kCityGi: return "city gi";
     case Consumer::kCheck: return "debug checks";
+    case Consumer::kRtLights: return "rt lights";
     default: return "?";
   }
 }

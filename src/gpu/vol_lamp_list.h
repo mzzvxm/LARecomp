@@ -101,11 +101,13 @@ inline bool Plausible(const GameLamp& l) {
 // the table the hook fills (game thread) and the producer reads (render thread)
 // ---------------------------------------------------------------------------
 
-// Whether the hook is to do anything: the volumetric light sets it while it is on (one relaxed load in the hook otherwise). It is a mask of who wants the list, so that two readers can ask
-// without one switching the other off: the volumetric light's SetWanted (the original call, unchanged) and the ray tracing world frame's (rt_world_frame.h), which reads the lamps for the
-// hit shading's lamp term.
-inline constexpr uint32_t kWantedByVolume = 1;
-inline constexpr uint32_t kWantedByWorldFrame = 2;
+// Whether the hook is to do anything: the readers' mask (one relaxed load in the hook otherwise). A reader sets its bit while it is on and one reader's switch never takes another's away: the
+// volumetric light's SetWanted (the original call, unchanged), the ray tracing world frame's (rt_world_frame.h; it reads the lamps for the hit shading's lamp term) and the street lamps' shadows'
+// (lamp_shadows.h) and the ray traced lights' (rt_lights.h: the nearest lamps get a visibility ray). The hook runs while any bit is set.
+inline constexpr uint32_t kWantedByVolume = 1u << 0;
+inline constexpr uint32_t kWantedByWorldFrame = 1u << 1;
+inline constexpr uint32_t kWantedByLampShadows = 1u << 2;
+inline constexpr uint32_t kWantedByRtLights = 1u << 3;
 inline std::atomic<uint32_t> g_wanted_by{0};
 inline bool Wanted() { return g_wanted_by.load(std::memory_order_relaxed) != 0; }
 inline void SetWantedBy(uint32_t who, bool wanted) {

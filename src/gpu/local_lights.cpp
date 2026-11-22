@@ -18,6 +18,7 @@
 #include "gbuffer.h"
 #include "gpu_class.h"
 #include "headlight_rig.h"
+#include "lamp_shadows.h"
 #include "host_shaders.h"
 #include "light_manager.h"
 #include "live_text.h"
@@ -25,6 +26,7 @@
 #include "mod_light_source.h"
 #include "pass_timing.h"
 #include "records.h"
+#include "rt_lights.h"
 #include "screen_shared.h"
 #include "temporal_identities.h"
 
@@ -233,9 +235,15 @@ plume::RenderPipeline* LocalLights::PipelineFor(plume::RenderFormat format, uint
 
 void LocalLights::BeginFrame() {
   namespace st = larecomp::settings;
-  const bool setting_on = st::mcla_gpu_local_lights.Get();
   // GB-H2: the headlight route (headlight_pass_rules.h): `pass` and `both` give this pass the frame's headlights and run it whatever mcla_gpu_local_lights says.
   const hp::Route route = headlight_rig::CurrentRoute();  // read once for the frame by the Scene (headlight_rig::SampleRoute, through LiveText: the debug menu's thread writes the cvar)
+  // LAMP-SHADOWS-4: the street lamps' shadows are drawn by this pass. mcla_gpu_lamp_shadows -1 (auto, the default) follows the LIGHT SHADOWS row while the pass runs for anything else (the provider is told
+  // whether it does), 1 runs the pass for the lamps (and wants the planes) whatever mcla_gpu_local_lights says, 0 is off.
+  if (lamp_shadows_ != nullptr) {
+    lamp_shadows_->SetPassRuns(hp::PassOn(route, st::mcla_gpu_local_lights.Get()));
+  }
+  const bool lamps_on = lamp_shadows_ != nullptr && lamp_shadows_->active();  // lamps are live now (enabled, by night): by day the pass and the G-buffer's planes cost nothing for them
+  const bool setting_on = st::mcla_gpu_local_lights.Get() || lamps_on;
   const bool on_for_lights = hp::PassOn(route, setting_on);
   // GB-NEON: NEON LIGHT runs the pass for the cars' underglow whatever the setting and the route say, and tells the hook whether anyone reads the game's neon (it reads nothing while off).
   const bool neon_now = NeonSettingOn();
@@ -321,8 +329,21 @@ void LocalLights::BeginFrame() {
   if (manager_ != nullptr) {
     manager_->Want(planes_wanted_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);
   }
+  if (rt_lights_ != nullptr) {
+    rt_lights_->BeginFrame(planes_wanted_, tier_ == ll::Tier::kUltra);   // RT-LIGHTS-D1: reads its settings and asks for the structures while it is wanted
+  }
   votes_.Reset();
   trigger_seen_ = false;
+}
+
+bool LocalLights::rt_lights_wanted() const {
+  return rt_lights_ != nullptr && rt_lights_->wanted();
+}
+
+void LocalLights::SetRtRawMode(bool raw) {
+  if (rt_lights_ != nullptr) {
+    rt_lights_->SetRawMode(raw);
+  }
 }
 
 void LocalLights::OnMainDraw(const ConstantBanks::Banks& banks, bool colour) {
@@ -393,6 +414,15 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   if ((sources_ & ll::kSourceTest) != 0) {
     extras_.push_back(ll::MakeTestLamp(rows));
   }
+  const uint32_t extras_before_lamps = uint32_t(extras_.size());
+  if (lamp_shadows_ != nullptr) {
+    lamp_shadows_->AppendPassLights(&extras_);  // the picked street lamps with views (this trigger's: the replay recorded them just before)
+  }
+  const uint32_t lamp_extras = uint32_t(extras_.size()) - extras_before_lamps;
+  if (rt_lights_ != nullptr && rt_lights_->wanted()) {
+    // RT-LIGHTS-D1: the nearest street lamps the atlas did not pick, as lights the game lights with no views: they are in the pass only to get a ray (a lamp not picked for a channel is trimmed below)
+    rt_lights_->AppendLampLights(rows.position, &extras_);
+  }
   const bool manager_on = manager_ != nullptr && manager_->active();
   const larecomp::gpu::LightFrame& frame = manager_on ? manager_->Frame() : EmptyFrame();
   candidates_.Clear();
@@ -441,7 +471,29 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   std::erase_if(candidates_.rear, unseen);
   std::erase_if(candidates_.mod, unseen);
   std::erase_if(candidates_.neon, unseen);
-  const ll::Selection selection = ll::SelectPassLights(frame, sources_, extras_.data(), uint32_t(extras_.size()), candidates_, tier_);
+  ll::Selection selection = ll::SelectPassLights(frame, sources_, extras_.data(), uint32_t(extras_.size()), candidates_, tier_);
+  bool rt_ran = false;
+  if (rt_lights_ != nullptr && rt_lights_->wanted()) {
+    // RT-LIGHTS-D1: the top K of the lights the pass is going to draw get a channel of the ray traced visibility; the selection is annotated (the flag and the channel) and trimmed (a game's lamp with no source
+    // of visibility is taken out: the pass would ADD it on top of the grid's). With the pass not running this frame the selection is only trimmed.
+    RtLights::Inputs rin;
+    rin.frame = frame_;
+    rin.frame_slot = frame_slot;
+    for (int i = 0; i < 3; ++i) {
+      rin.position[i] = rows.position[i];
+      rin.right[i] = rows.right[i];
+      rin.up[i] = rows.up[i];
+      rin.forward[i] = rows.forward[i];
+    }
+    rin.tan_x = sf.camera.tan_half_fov[0];
+    rin.tan_y = sf.camera.tan_half_fov[1];
+    rin.traced[0] = sf.traced[0];
+    rin.traced[1] = sf.traced[1];
+    rin.render[0] = gb.width;
+    rin.render[1] = gb.height;
+    rin.lin_slot = sf.lin_depth_slot[0];
+    rt_ran = rt_lights_->Plan(rin, &selection);
+  }
   if (selection.count == 0) {
     Count(Skip::kNoLights);
     return false;
@@ -471,6 +523,15 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     return false;
   }
 
+  // RT-LIGHTS-D1: the ray traced visibility is traced and filtered now, outside any render pass (the colour is drawn into after it), so that the buffer below can name the images the pixel shader reads.
+  if (rt_ran) {
+    pass_timing_->Mark(list, "rt lights");
+    rt_lights_->RecordTrace(list);
+    pass_timing_->Mark(list, "rt lights denoise");
+    rt_lights_->RecordDenoise(list);
+    pass_timing_->Mark(list, "after rt lights");
+  }
+
   // The units from the frame's vote and the buffer.
   std::array<uint32_t, 4> bits{};
   const bool voted = votes_.Best(&bits);
@@ -488,6 +549,12 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   in.units.exposure = (std::isfinite(sf.camera.exposure_bias) && sf.camera.exposure_bias > 0.0f) ? sf.camera.exposure_bias : 1.0f;
   in.flags = gb.Has(gbuffer::kPlaneMaterial) ? ll::kFlagMaterial : 0u;
   in.shadow = &frame.shadow;  // GB-H2: the replay's maps of this frame (recorded just before: scene.cpp OnResolve) and their views, which the frame's lights name
+  if (lamp_shadows_ != nullptr) {
+    in.lamp_shadow = &lamp_shadows_->Frame();  // LAMP-SHADOWS-4: the street lamps' views of this trigger, which the lamps' lights name (the combined entry space)
+    in.debug = lamp_shadows_->debug_view();
+  }
+  in.rt_mask = (rt_ran && rt_lights_ != nullptr && rt_lights_->Masks().valid) ? &rt_lights_->Masks() : nullptr;
+  const bool lamp_table = ll::LampTableNeeded(selection, in.lamp_shadow);
   const bool shadow_table = ll::ShadowTableNeeded(selection, in.shadow);
   ll::BuildBuffer(in, selection, scratch_.data());
   Slot& slot = slots_[frame_slot];
@@ -556,6 +623,10 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
 
   Count(Skip::kRecorded);
   lights_drawn_ += drawn;
+  if (lamp_table) {
+    ++lamp_frames_;
+    lamp_lights_ += lamp_extras;
+  }
   if (shadow_table) {
     ++shadow_frames_;
     for (uint32_t i = 0; i < selection.count; ++i) {
@@ -596,6 +667,9 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
 }
 
 void LocalLights::OnPresent() {
+  if (rt_lights_ != nullptr) {
+    rt_lights_->OnPresent();   // RT-LIGHTS-D1: the denoisers' frame boundary and the images' idle count (also while the pass is off: they go back)
+  }
   if (!enabled_) {
     return;
   }
@@ -623,9 +697,9 @@ void LocalLights::LogInterval(bool say) {
   if (say) {
     REXLOG_INFO("{} {} frames with the pass on: {} lights drawn ({}), {:.1f} MPixels scissored; the trigger frames: {}; the frame's own camera pose in {} frames; the manager held {:.1f} cars a frame; "
               "neon: {} cars lit in {} frames (the last tube read as {} space), {} not placed, {} too far, {} cut by the budget; "
-              "budget tier {}; headlight route {}, {} lights drawn with the shadow lookup ({} views) in {} frames with the table; buffers {} B; {} draw calls (cost savings off: {})",
+              "budget tier {}; headlight route {}, {} lights drawn with the shadow lookup ({} views) in {} frames with the table; street lamps: {} lights drawn with the lamps' table in {} frames; buffers {} B; {} draw calls (cost savings off: {})",
               kPrefix, kIntervalFrames, lights_drawn_, classes.empty() ? std::string("none by class") : classes, double(pixels_scissored_) * 1.0e-6, why.empty() ? std::string("none") : why,
-              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), neon_lit_, neon_frames_, nl::SpaceName(neon_space_), neon_unplaced_, neon_far_, neon_cut_, ll::TierName(tier_), hp::RouteName(route_), shadowed_lights_, shadow_views_, shadow_frames_, HeldBytes(), draws_, cost_off_);
+              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), neon_lit_, neon_frames_, nl::SpaceName(neon_space_), neon_unplaced_, neon_far_, neon_cut_, ll::TierName(tier_), hp::RouteName(route_), shadowed_lights_, shadow_views_, shadow_frames_, lamp_lights_, lamp_frames_, HeldBytes(), draws_, cost_off_);
   }
   counts_.fill(0);
   lights_drawn_ = 0;
@@ -643,6 +717,8 @@ void LocalLights::LogInterval(bool say) {
   shadowed_lights_ = 0;
   shadow_views_ = 0;
   shadow_frames_ = 0;
+  lamp_lights_ = 0;
+  lamp_frames_ = 0;
 }
 
 }  // namespace mcla::gpu

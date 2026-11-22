@@ -354,6 +354,10 @@ void TestRadius() {
   // the group count of the host
   Check(rd::Groups(1) == 1 && rd::Groups(8) == 1 && rd::Groups(9) == 2 && rd::Groups(960) == 120 && rd::Groups(540) == 68, "the dispatch's groups of 8 round up");
   Check(rd::ImageBytes(960, 540) == 960ull * 540 * 8, "an RGBA16F image's bytes");
+  // RT-LIGHTS-D1 part 2: the format a consumer may ask for (RGBA8 for the ray traced light visibility): the default is RGBA16F, so nothing of the other consumers changes
+  Check(rd::ImageBytes(960, 540, rd::Format::kRgba16f) == rd::ImageBytes(960, 540) && rd::ImageBytes(960, 540, rd::Format::kRgba8) == 960ull * 540 * 4 && rd::BytesPerPixel(rd::Format::kRgba8) == 4 && rd::BytesPerPixel(rd::Format::kRgba16f) == 8 &&
+            int(rd::Format::kRgba16f) == 0,
+        "the result images' formats: RGBA16F (the default, 8 bytes) and RGBA8 (4 bytes)");
 }
 
 void TestWeights() {
@@ -995,11 +999,12 @@ void TestWords(const std::string& dir) {
   };
   const Pair words[] = {{"RTDNP_W_SIGNAL", rd::plain::kSignal}, {"RTDNP_W_GUIDES", rd::plain::kGuides}, {"RTDNP_W_HISTORY", rd::plain::kHistory}, {"RTDNP_W_SIZE", rd::plain::kSize}, {"RTDNP_W_PARAMS", rd::plain::kParams},
                         {"RTDNP_W_TAN_X", rd::plain::kTanX}, {"RTDNP_W_TAN_Y", rd::plain::kTanY}, {"RTDNP_W_PREV_TAN_X", rd::plain::kPrevTanX}, {"RTDNP_W_PREV_TAN_Y", rd::plain::kPrevTanY},
-                        {"RTDNP_W_MOTION", rd::plain::kMotion}, {"RTDNP_W_LENGTH", rd::plain::kLength}};
+                        {"RTDNP_W_MOTION", rd::plain::kMotion}, {"RTDNP_W_LENGTH", rd::plain::kLength}, {"RTDNP_W_FRAME", rd::plain::kFrame}};
   bool plain_ok = true;
   for (const Pair& w : words) plain_ok = plain_ok && DefineOf(plain, w.name) == long(w.value);
   Check(plain_ok, "the plain consumer's words are the twin's (signal, guides, history, size, params, lens, the last frame's lens, motion, length)");
-  Check(rd::plain::kMotion + 12 <= rd::plain::kLength && rd::plain::kLength < rd::kPushWords, "the motion's 12 floats fit before the length and everything fits in 32 words");
+  Check(rd::plain::kMotion + 12 <= rd::plain::kLength && rd::plain::kLength < rd::kPushWords && rd::plain::kFrame == rd::plain::kLength + 1 && rd::plain::kFrame < rd::kPushWords,
+        "the motion's 12 floats fit before the length and everything fits in 32 words (the frame's number, RT_DN_VIS only, is the word after the length)");
   const rd::Patch pp = rd::plain::PatchFor();
   Check(pp.src_word == rd::plain::kSignal && pp.iteration_word == rd::plain::kParams && pp.history_word == rd::plain::kHistory && pp.flags_word == rd::plain::kParams && pp.has_history_bit == rd::plain::kHasHistoryBit &&
             Has(plain, "((RtDnW(RTDNP_W_PARAMS) >> 8u) & 1u)") && rd::plain::kHasHistoryBit == 8,

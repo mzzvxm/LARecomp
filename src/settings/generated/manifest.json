@@ -395,6 +395,90 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_lights": {
+  "type": "std::string",
+  "default": "\"off\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (RT-LIGHTS-D1, perf/RT-DIRECT-SURVEY.md): ray traced visibility of the lights the deferred light pass draws, for the top K (a car's headlights, neon, the \"\\n    \"nearest street lamps): one ray from every pixel to a point of the light's disc, against the city's structures and the cars, filtered by the renderer's own temporal \"\\n    \"and a-trous filter, read by the light pass as a second shadow beside the shadow atlas (the two multiply: neither knows every caster). A street lamp the game lights \"\\n    \"is only ever taken away from, never added. off (the default), on (the pass runs, where the graphics card traces rays), auto (follows the RT SHADOWS row's level). \"\\n    \"Needs the deferred light pass to run (mcla_gpu_local_lights or the lamp shadows). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"off\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_k": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how many lights get a ray (the top K), 1 to 9; 0 (the default) is the level's (3, and 6 at the largest LIGHT SHADOWS level). A group of three lights is one \"\\n    \"set of images: 1 to 3 lights cost one group, 4 to 6 two, 7 to 9 three. Headlights come first, then neon, then the nearest street lamps. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 9}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_radius": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the radius of a light's disc in metres for mcla_gpu_rt_lights (the rays go to points of the disc, so a larger radius softens the edge of the shadow); 0 (the \"\\n    \"default) is by kind of light: a headlight's lens 7 cm, a street lamp's head 25 cm, neon 45 cm. 0 to 2. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 2.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_rays": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: rays to each light for every pixel the light reaches, for mcla_gpu_rt_lights, 1 to 4 (the strata of the light's disc: more rays, less noise, more cost). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{1, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_lights, draw the visibility instead of the light: 1 the filtered visibility of each light that has a ray (red where the light is blocked, \"\\n    \"green where it arrives), 2 the raw one (before the filter). 0 is the picture. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_check": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the identity test of mcla_gpu_rt_lights. 1: the pass traces its rays (and costs its time) but writes every visibility as 1, so the picture must be the same, \"\\n    \"bit for bit, as with the pass off; 2: every visibility the light reaches is 0 (the lights with a ray vanish, a street lamp the game lights is taken away in full). 0 \"\\n    \"is the pass. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_lights_scale": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the size the ray traced light visibility is traced at, for mcla_gpu_rt_lights. 0 (the default): half of the occlusion's traced size on each axis where that is taller than 720 lines, else the \"\\n    \"whole of it (the memory: 28 bytes a texel, 14 MiB at 1080p and at 4K, 25 MiB at 1440p); 1: always the whole traced size (about 4 times the rays and the memory at 1080p and 4K: the picture to compare with); 2: half wherever the size allows. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_noise_held": {
   "type": "bool",
   "default": "true",
@@ -3306,6 +3390,66 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_lamp_shadows": {
+  "type": "i32",
+  "default": "-1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): the nearest street lamps get a shadow from the shadow atlas (cars, poles and people on the road under them), drawn by the deferred local light pass \"\n    \"at the mid-scene depth copy with the same lookup as the headlights'. -1 (the default): they follow the LIGHT SHADOWS row - while the deferred local light pass runs for anything else (mcla_gpu_local_lights on, or \"\n    \"mcla_gpu_headlight_pass pass or both) and LIGHT SHADOWS is not off, the lamps have a shadow, how many by its level (medium 2, high 4, ultra 8; Auto: Low off, Mid medium, High ultra). 0: none. 1: on whatever \"\n    \"the pass's own settings say (the pass runs for the lamps). The shadow replay records into the shared atlas while it is on. Live. See mcla_gpu_lamp_shadows_mode for how the pass uses the shadow.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_mode": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): how the deferred local light pass uses a lamp's shadow. 0 (the default): subtract - the game's own light grid still lights the lamp and the pass takes the \"\n    \"shadowed share of that light away (the lamp's light as the grid has it, times one minus the visibility), for every surface the G-buffer holds, cars and people included. 1: own - the lamp is not in \"\n    \"the grid (the lamp A/B's mod lamps) and the pass adds its light times the visibility. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): what the deferred local light pass draws for a shadowed street lamp instead of its light. 0 (the default): the light. 1: the shadow itself as a picture, red \"\n    \"where the lamp's shadow takes light and green where it is lit. 2: a colour for each lamp's row of the shadow table (brighter in the shadow), which shows the pick and its hysteresis. 3: the lamp's whole light is taken away whatever the shadow (the units check: the pool must go to the ambient and no pixel may go negative). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_lamps": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): how many lamps have a shadow at once. 0 (the default): the LIGHT SHADOWS level's number. A number from 1 to 10: that many (with a spare tile for a lamp whose \"\n    \"shadow fades out). -1: no lamp (the headlights keep their views). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 10}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_lamp_shadows_cache": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the street lamps' shadows): 1 (the default) gives each lamp two tiles, a static one for the world that does not move (drawn when the lamp takes its tile and added to, kept) and a live one \"\n    \"for the cars and people (drawn every frame), which costs one more tile of video memory a lamp and saves the world's draws. 0: one tile a lamp, everything drawn every frame. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_neon_light_gain": {
   "type": "f64",
   "default": "1.0",
@@ -3565,6 +3709,18 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_dlss_rr_rt_lights": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RT-LIGHTS-D1 part 2): what the ray traced light visibility (mcla_gpu_rt_lights) does while Ray Reconstruction takes the frame. 1 (the default): the filter \"\\n    \"does not run (Ray Reconstruction is the denoiser: it cleans the picture the light pass draws with the one-ray-a-pixel visibility in it), and the light pass reads the unfiltered visibility. 0: the effect keeps its own filter even then (the picture to compare with). \"\\n    \"With Ray Reconstruction not the plan (Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
   ],
   "comments": [],
   "pp_depth": 0

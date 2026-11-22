@@ -134,14 +134,17 @@ inline float Blend(float mean, float weight) { return weight >= 1.0f ? mean : 1.
 // A light's visibility at `p` (whose surface has the unit normal `normal`, null: facing the light) from its ShadowRef: the views [first_view, first_view + view_count) of the frame, the valid ones
 // averaged (a kStatic entry followed by its kLive twin is ONE view whose visibility is their product), blended by the weight. A light with no atlas views (kNone, or kRtMask: the mask's own
 // channel is read by its consumer) or none valid is lit. This is light_laws.h CombineShadow with each entry's lookup made here.
-template <class Depth>
-inline float LightLitImpl(const ShadowFrame& frame, const ShadowRef& ref, const float p[3], const float* normal, Mode mode, Depth&& depth_at) {
+//
+// `Frame` is anything with `atlas`, `views` and `view_layer` (a std::array each): the frame's ShadowFrame (8 entries) or the street lamps' LampShadowFrame (lamp_shadow_frame.h, whose entries a
+// lamp's light names from 0 here: lamp_shadow_lookup.h LampLit).
+template <class Frame, class Depth>
+inline float LightLitImpl(const Frame& frame, const ShadowRef& ref, const float p[3], const float* normal, Mode mode, Depth&& depth_at) {
   if (ref.kind != ShadowKind::kAtlas || ref.view_count == 0) {
     return 1.0f;
   }
   float sum = 0.0f;
   uint32_t n = 0;
-  const uint32_t end = std::min<uint32_t>(uint32_t(ref.first_view) + ref.view_count, kMaxLightShadowViews);
+  const uint32_t end = std::min<uint32_t>(uint32_t(ref.first_view) + ref.view_count, uint32_t(frame.views.size()));
   for (uint32_t e = ref.first_view; e < end; ++e) {
     const bool valid = frame.views[e].valid != 0;
     float vis = ViewLitImpl(frame.views[e], p, normal, frame.atlas.width, frame.atlas.height, mode, depth_at);
@@ -160,13 +163,14 @@ inline float LightLitImpl(const ShadowFrame& frame, const ShadowRef& ref, const 
   return Blend(sum / float(n), ref.weight);
 }
 
-template <class Depth>
-inline float LightLit(const ShadowFrame& frame, const ShadowRef& ref, const float p[3], Mode mode, Depth&& depth_at) {
+// The overloads: a receiver that faces the light (no normal), and a receiver of the unit normal `normal`.
+template <class Frame, class Depth>
+inline float LightLit(const Frame& frame, const ShadowRef& ref, const float p[3], Mode mode, Depth&& depth_at) {
   return LightLitImpl(frame, ref, p, nullptr, mode, depth_at);
 }
 
-template <class Depth>
-inline float LightLit(const ShadowFrame& frame, const ShadowRef& ref, const float p[3], const float normal[3], Mode mode, Depth&& depth_at) {
+template <class Frame, class Depth>
+inline float LightLit(const Frame& frame, const ShadowRef& ref, const float p[3], const float normal[3], Mode mode, Depth&& depth_at) {
   return LightLitImpl(frame, ref, p, normal, mode, depth_at);
 }
 

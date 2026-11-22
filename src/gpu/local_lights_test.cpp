@@ -195,8 +195,9 @@ std::map<std::string, long long> Defines(const std::string& text) {
 void LayoutChecks(const std::string& hlsli) {
   Check(sizeof(lp::PassHeader) == 128 && sizeof(lp::PassPush) == 32, "the header is 128 bytes, the push block 32");
   Check(lp::kHeaderBytes == 128 && lp::kLightsOffset == 128 && lp::kMaxPassLights == 32 && lp::kMaxPassLights == kMaxSurfaceLights, "the buffer: a 128 byte header, up to 32 lights");
-  Check(lp::kShadowOffset == 128 + 64 * 32 && lp::kShadowBytes == 32 + 96 * 8 && lp::kBufferBytes == lp::kShadowOffset + lp::kShadowBytes && lp::kBufferAlloc == 3072 && lp::kBufferAlloc % 256 == 0,
-        "the buffer is the header, 32 lights and the shadow view table (2976 bytes), an upload buffer of 3072");
+  Check(lp::kShadowOffset == 128 + 64 * 32 && lp::kShadowBytes == 32 + 96 * 8 && lp::kLampOffset == lp::kShadowOffset + lp::kShadowBytes && lp::kLampBytes == 32 + 96 * 20 &&
+            lp::kRtOffset == lp::kLampOffset + lp::kLampBytes && lp::kRtBytes == 64 && lp::kBufferBytes == lp::kRtOffset + lp::kRtBytes && lp::kBufferAlloc == 5120 && lp::kBufferAlloc % 256 == 0,
+        "the buffer is the header, 32 lights, the shadow view table (2976 bytes), the street lamps' table (4928 bytes) and the ray traced visibility's table (4992 bytes), an upload buffer of 5120");
   const std::map<std::string, long long> d = Defines(hlsli);
   const auto want = [&](const char* name, long long value) {
     const auto it = d.find(name);
@@ -227,6 +228,27 @@ void LayoutChecks(const std::string& hlsli) {
   want("LP_SHADOW_OFF_SIZE", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, atlas_width));
   want("LP_SHADOW_OFF_LAYERS", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, layers));
   Check(offsetof(shadow_lookup::GpuShadowHeader, atlas_height) == offsetof(shadow_lookup::GpuShadowHeader, atlas_width) + 4, "the atlas's height follows its width (one Load of two uints)");
+  // LAMP-SHADOWS-4: the street lamps' table after the headlights' (the shader's seams read these offsets), the flag and the debug word
+  want("LP_OFF_DEBUG", offsetof(lp::PassHeader, debug));
+  want("LP_FLAG_LAMP_SHADOW", lp::kFlagLampShadow);
+  want("LP_DEBUG_NONE", lp::kDebugNone);
+  want("LP_DEBUG_VISIBILITY", lp::kDebugVisibility);
+  want("LP_DEBUG_LAMPS", lp::kDebugLamps);
+  want("LP_DEBUG_REMOVE", lp::kDebugRemove);
+  want("LP_LAMP_OFFSET", lp::kLampOffset);
+  want("LP_LAMP_HEADER_BYTES", sizeof(GpuLampHeader));
+  want("LP_LAMP_VIEWS_OFFSET", lp::kLampOffset + sizeof(GpuLampHeader));
+  want("LP_LAMP_MAX_ENTRIES", kMaxLampEntries);
+  want("LP_LAMP_OFF_COUNT", lp::kLampOffset + offsetof(GpuLampHeader, count));
+  want("LP_LAMP_OFF_LAYERS", lp::kLampOffset + offsetof(GpuLampHeader, layers_lo));
+  Check(offsetof(GpuLampHeader, layers_hi) == offsetof(GpuLampHeader, layers_lo) + 4 && offsetof(GpuLampHeader, atlas_height) == offsetof(GpuLampHeader, atlas_width) + 4,
+        "the lamps' layers are two words in a row (one Load2) and the atlas's size two uints (one Load4 with the count and the slot)");
+  Check(lp::kLampOffset % 16 == 0 && lp::kLampOffset == lp::kShadowOffset + lp::kShadowBytes, "the lamps' table follows the headlights' table, 16 byte aligned");
+  // RT-LIGHTS-D1: the ray traced visibility's table after the lamps' (hlsl/rt_mask_read.hlsli reads it through the pass's own loads)
+  want("LP_FLAG_RT_MASK", lp::kFlagRtMask);
+  want("LP_RT_OFFSET", lp::kRtOffset);
+  want("LP_RT_BYTES", lp::kRtBytes);
+  Check(lp::kRtOffset % 16 == 0 && lp::kRtOffset == lp::kLampOffset + lp::kLampBytes, "the ray traced table follows the lamps' table, 16 byte aligned");
   want("LP_CLASS_NONE", 0);
   want("LP_CLASS_EMISSIVE", 13);
   // GB-NEON-COST: the lights a draw may carry and the push flag of the A/B (the push block is the same two rows)
@@ -1911,8 +1933,8 @@ void SourceChecks(const std::string& src) {
         "the quad's pixels are read at the guest's sample, as the pixel's own depth is (one reader: LpStoredDepth, which the contact term uses too)");
   const size_t one_light_at = At(ps, "float4 LpOneLight(");
   const size_t lit_at = At(ps, "float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));");
-  const size_t shadow_at = At(ps, "add = LpShadowed(l, g, flags, p, world, normal, add);");
-  Check(one_light_at != std::string::npos && lit_at != std::string::npos && shadow_at != std::string::npos && one_light_at < lit_at && lit_at < shadow_at && Has(ps, "float3 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 add) {") &&
+  const size_t shadow_at = At(ps, "return LpShadowed(l, g, flags, p, world, normal, add);");
+  Check(one_light_at != std::string::npos && lit_at != std::string::npos && shadow_at != std::string::npos && one_light_at < lit_at && lit_at < shadow_at && Has(ps, "float4 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 add) {") &&
             Has(ps, "add *= LslLightLit("),
         "the lookup (LpShadowed) runs after the term is known (a pixel the light does not reach takes no tap)");
   Check(Has(cpp, "in.shadow = &frame.shadow;") && Has(cpp, "ll::ShadowTableNeeded(selection, in.shadow)"), "the pass hands the frame's shadow to the buffer");

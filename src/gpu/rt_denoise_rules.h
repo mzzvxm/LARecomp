@@ -211,6 +211,7 @@ inline constexpr uint32_t kPrevTanX = 7;
 inline constexpr uint32_t kPrevTanY = 8;
 inline constexpr uint32_t kMotion = 9;     // 12 floats
 inline constexpr uint32_t kLength = 21;    // float: the history length the spatial pass assumes
+inline constexpr uint32_t kFrame = 22;     // RT_DN_VIS only (RT-LIGHTS-D1 part 2): the frame's number, the sample of the 8 bit average's random rounding
 inline constexpr uint32_t kHasHistoryBit = 8;
 constexpr Patch PatchFor() { return Patch{kSignal, kParams, kHistory, kParams, kHasHistoryBit}; }
 }  // namespace plain
@@ -227,5 +228,10 @@ constexpr uint32_t Groups(uint32_t extent) { return (extent + kThreads - 1) / kT
 // The result images' format: RGBA16F (the radiance in rgb, the signal's alpha or the history's length in a).
 inline constexpr uint32_t kBytesPerPixel = 8;
 constexpr uint64_t ImageBytes(uint32_t width, uint32_t height) { return uint64_t(width) * height * kBytesPerPixel; }
+// RT-LIGHTS-D1 part 2: a consumer whose signal is in 0..1 (a visibility) may make the images RGBA8_UNORM (the history's length in the alpha as n / 32: hlsl/rt_denoise_unorm8.hlsli); the consumer's shaders are
+// then compiled with RT_DN_OUT_UNORM8 (host_shaders.h RtDenoiseVisShader) and the class is told the format at Initialize. The default is RGBA16F: nothing of the other consumers changes.
+enum class Format : uint8_t { kRgba16f = 0, kRgba8 = 1 };
+constexpr uint32_t BytesPerPixel(Format format) { return format == Format::kRgba8 ? 4u : kBytesPerPixel; }
+constexpr uint64_t ImageBytes(uint32_t width, uint32_t height, Format format) { return uint64_t(width) * height * BytesPerPixel(format); }
 
 }  // namespace mcla::gpu::rt_denoise
