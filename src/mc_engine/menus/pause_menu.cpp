@@ -3002,7 +3002,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabUi", "UI", "Colors of the menus, speed units and HUD width.",
      "RxUiMenu",
      kUiItems, int(sizeof(kUiItems) / sizeof(kUiItems[0]))},
-    // The hidden DEBUG menu (debug_menu_pages.cpp): a hub button before QUIT and the seven pages it opens.
+    // The hidden DEBUG menu (debug_menu_pages.cpp): a hub button before QUIT and the eight pages it opens (seven while the XENIA renderer runs).
     // All of it is MenuDef::debug_only: with the menu locked these have no rows, no button and no log
     // line, and the SETTINGS tab is what it was. The rows are the cvars of the DEBUG verdict of
     // SETTINGS-REVIEW.md, session only (a debug cvar's change is never saved, config_save.cpp).
@@ -3014,6 +3014,12 @@ const MenuDef kMenus[] = {
     {"PM_RxDbgTabFixes", "FIXES", "Turn a fix off to look for a bug.",
      "RxDbgFixesMenu",
      nullptr, 0, mcla_menu::DebugFixesRows, false, nullptr, true},
+#if defined(LARECOMP_HAS_GPU)
+    // The second half of the fixes: the Plume renderer's picture (the first page was over the row cap). Its hub row is NativeOnly like the page's rows.
+    {"PM_RxDbgTabFixes2", "PICTURE FIXES", "Picture fixes to turn off, one by one.",
+     "RxDbgFixes2Menu",
+     nullptr, 0, mcla_menu::DebugPictureFixesRows, false, nullptr, true},
+#endif
     {"PM_RxDbgTabPerf", "PERFORMANCE", "Pacing and speed switches for testing.",
      "RxDbgPerfMenu",
      nullptr, 0, mcla_menu::DebugPerformanceRows, false, nullptr, true},
@@ -3483,7 +3489,10 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 
 // Sizes the tables below, nothing else: the form's own row list is made with the page's row count
 // (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 18 rows
-// (kLightItems); a page over the cap is refused whole (BuildNativeRows), so there is room.
+// (kLightItems); a page over the cap is refused whole (BuildNativeRows), so there is room. The cap is the size of these tables, not
+// the screen's: nothing past about 14 rows has been looked at in the game ("CHECK: every page up to 14 rows scrolls" above), and a page that long is no
+// way to find a row, so a page that outgrows it is split into two pages, never given a higher cap. tools/check_menu_rows.py counts every page of kMenus
+// against this number and fails on one over it (a debug page has no other check: it would just not open).
 constexpr int kMaxRowsPerMenu = 24;
 
 struct NativeRows {

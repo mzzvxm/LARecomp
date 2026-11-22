@@ -13,6 +13,8 @@ says RESTART must be true, and a restart that no word admits is a silent dead ro
   T3  (with --catalog) a launcher catalog row tagged Restart names a restart-only setting, one this tree does not define (the SDK's:
       resolution_scale, present_effect ...), or one of PARTLY_LIVE.
   T4  (with --catalog) a launcher catalog row of a restart-only setting is tagged Restart.
+  T5  every page of the pause menu fits the row cap (pause_menu.cpp kMaxRowsPerMenu): a page over it is refused whole and does not open. The counting is
+      tools\check_menu_rows.py's (it also runs alone); a page it cannot read is a warning here, not a failure.
 
 The launcher catalog (SettingsSchema.cs) is in the launcher's repository: pass the file of the branch you mean. NextHost and OnReload tags are the
 catalog's own kinds for a live setting that is read when something is made (a session, a district), so nothing is asked of them.
@@ -38,6 +40,13 @@ CATALOG_TAGS = ("Restart", "OnReload", "NextHost")
 
 def load_exposure_tool():
     spec = importlib.util.spec_from_file_location("check_settings_exposure", os.path.join(HERE, "check_settings_exposure.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_menu_rows_tool():
+    spec = importlib.util.spec_from_file_location("check_menu_rows", os.path.join(HERE, "check_menu_rows.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -190,7 +199,8 @@ def selftest():
     for what in failures:
         print("SELFTEST FAIL: " + what)
     print(f"check_row_tags selftest: {'FAILED, ' + str(len(failures)) + ' check(s)' if failures else 'ok'}")
-    return 1 if failures else 0
+    rows_failed = load_menu_rows_tool().selftest()   # T5's own checks
+    return 1 if failures or rows_failed else 0
 
 
 def main():
@@ -213,9 +223,18 @@ def main():
     restart_only = {n for n, ds in defs.items() if any(d["restart"] for d in ds)}
     rows = pause_rows(cse, src, cfg)
     problems = judge_pause(rows, restart_only)
+    menu_rows = load_menu_rows_tool()
+    cap, pages, over, worst, unreadable = menu_rows.check_tree(src)
+    problems += ["T5 " + o for o in over]
+    if cap is None:
+        problems.append("T5 kMaxRowsPerMenu is not found in the sources (pause_menu.cpp): the pages cannot be held to the cap")
     print(f"check_row_tags: {src}")
     print(f"  {len(rows)} pause-menu rows read, {sum(1 for r in rows if r[2] in restart_only)} of them restart-only settings, "
           f"{sum(1 for r in rows if any('RESTART' in w for w in r[3]))} with a static RESTART suffix")
+    if cap is not None:
+        print("  " + menu_rows.summary_line(cap, pages, worst))
+        for w in unreadable:
+            print("  warning (T5): cannot count " + w)
     if args.verbose:
         for f, line, cvar, words, dynamic in rows:
             if words or cvar in restart_only:
@@ -232,7 +251,7 @@ def main():
     if problems:
         print(f"{len(problems)} problem(s)")
         return 1
-    print("the words on the rows agree with the settings' lifecycles")
+    print("the words on the rows agree with the settings' lifecycles, and every page fits the row cap")
     return 0
 
 

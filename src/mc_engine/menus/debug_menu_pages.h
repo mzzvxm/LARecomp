@@ -3,7 +3,8 @@
 // The pages of the hidden DEBUG menu (SETTINGS-REVIEW.md 5.2 and 5.3).
 //
 // pause_menu.cpp lists them in kMenus as MenuDef::debug_only menus: a DEBUG hub on the SETTINGS tab
-// (a button only while DebugMenuUnlocked(), debug_menu.h) whose rows open seven pages. Their rows are
+// (a button only while DebugMenuUnlocked(), debug_menu.h) whose rows open eight pages (seven while the XENIA renderer runs: PICTURE FIXES is
+// the Plume renderer's). A page holds at most 24 rows (pause_menu.cpp kMaxRowsPerMenu, checked by tools/check_menu_rows.py). Their rows are
 // built here, next to the actions they run, and handed over through MenuDef::extra, the way
 // CameraLookMenuItems hands over the free-look rows.
 //
@@ -38,6 +39,9 @@ extern const RowDynamics kDebugRendererDynamics;
 // that only one renderer has (the Plume renderer's views and logs) are tagged NativeOnly.
 const ItemDef* DebugHubRows(int& count);
 const ItemDef* DebugFixesRows(int& count);
+#if defined(LARECOMP_HAS_GPU)
+const ItemDef* DebugPictureFixesRows(int& count);
+#endif
 const ItemDef* DebugPerformanceRows(int& count);
 const ItemDef* DebugRenderingRows(int& count);
 const ItemDef* DebugCameraRows(int& count);

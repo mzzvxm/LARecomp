@@ -28,7 +28,7 @@ or `[debug] debug menu locked`. The source is `command line`, `environment` or `
 
 ## What changes when it is unlocked
 
-- The pause menu's SETTINGS tab gets a **DEBUG** button, the last one before QUIT. It opens the seven pages below.
+- The pause menu's SETTINGS tab gets a **DEBUG** button, the last one before QUIT. It opens the eight pages below (seven while the XENIA renderer runs: PICTURE FIXES is the Plume renderer's).
 - Nothing else. The function keys do not depend on it: **F2** (texture dump), **F3** (telemetry card), **F4** (the settings panel, every setting), **F9** (warp the car to a mod's warp point and back), **F10** (raw frame trace) and **F11** (RenderDoc capture) work for everyone, locked or not. Only the pause menu is cleaned up.
 
 ## Debug changes are never saved
@@ -58,11 +58,12 @@ One thing is still written: a restart-only choice that a menu holds for the next
 
 ## The pages
 
-Every row is live except RENDERER (below): it takes effect at once and is never saved. A page has at most 24 rows. Rows that only the Plume renderer has show only when it runs.
+Every row is live except RENDERER (below): it takes effect at once and is never saved. A page has at most 24 rows (a page over that is refused whole and does not open; `tools/check_menu_rows.py` counts every page and fails on one over). Rows that only the Plume renderer has show only when it runs.
 
 | Page | What it is for |
 |---|---|
-| FIXES | Each fix of the recomp with the switch that turns it off (real frame delta, suspension fix, smooth chase cam, the UI fixes and smooth UI, the dither fix, the neon pulse held on the console's 30 Hz clock, the closed checkpoint's smoke fading at the console's rate), to see whether a fix caused a bug. |
+| FIXES | Each fix of the recomp's game code with the switch that turns it off (real frame delta, suspension fix, smooth chase cam, the UI fixes and smooth UI, the neon pulse held on the console's 30 Hz clock, the closed checkpoint's smoke fading at the console's rate, the keyboard's own fixes), to see whether a fix caused a bug. RESET DEBUG SETTINGS ends the page. |
+| PICTURE FIXES | The Plume renderer's picture fixes with their switches (present dither, alpha to mask, bloom size and exposure sample at a render scale, car chrome, the blue noise of every stochastic effect and the noise resolve). A new fix switch goes to FIXES or PICTURE FIXES by what it fixes. |
 | PERFORMANCE | Pacing and speed switches: pace at presentation, fence spin yield, FPS limit spin, single tile, shadow phases, cheap car shadow, foliage, break FPS floor. |
 | RENDERING | RENDERER (below), the Plume renderer's debug views (AO, HDR layers), the glow visibility choice (GLOW VISIBILITY: SOFT, the default, fades a street lamp's glow at an edge instead of letting it pop; GAME is the game's one depth test), performance markers, the ghost and memory logs, and on the Xenia renderer XENIA VSYNC (it only slows the game's pacing to the vblank; it does not stop tearing). |
 | CAMERA | The developer free camera, the free-look collision tests, the camera trace, the menu camera lock. |
@@ -684,6 +685,8 @@ python tools\check_settings_exposure.py --dirs gpu mc_engine/hooks   # only thes
 ```
 
 Run it before you push. A short `pending` list in `tools/settings_exposure.toml` names debug-only cvars whose old row is still in a normal table; it shrinks as those rows move.
+
+`tools/check_menu_rows.py` holds every pause-menu page, the DEBUG pages included, to the row cap (`kMaxRowsPerMenu` in `pause_menu.cpp`, 24): it counts the rows of each page from the sources (the `#if` blocks and the NativeOnly / XeniaOnly tags resolved for every build) and exits 1 on a page over the cap, because such a page is refused whole and simply does not open. `tools/check_row_tags.py` runs it too (rule T5). Move rows to a page with room, never raise the cap: nothing past about 14 rows has been looked at in the game.
 
 `tools/check_row_tags.py` keeps the words on the rows honest (the owner wants settings to apply at once, so a word that says RESTART must be true). It exits 1 when a pause-menu row says RESTART for a setting that is not restart-only, or when a row of a restart-only setting says nothing (RESTART or NEXT START, or a dynamic suffix); `--catalog <SettingsSchema.cs>` holds the launcher's Restart tags to the same rule, and `--selftest` checks the rules themselves. A setting that is live but has a part that is read at start (LANGUAGE) is on `PARTLY_LIVE` in the script, with the reason.
 

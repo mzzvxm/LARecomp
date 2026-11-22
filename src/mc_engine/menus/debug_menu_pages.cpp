@@ -128,6 +128,9 @@ constexpr double kHudAlphaVals[]          = {1.0, 0.75, 0.5, 0.25, 0.0};
 // The hub, in the order of SETTINGS-REVIEW.md 5.3. The rows are Submenu rows: each opens its page.
 const ItemDef kDebugHubItems[] = {
     Submenu("PM_RxDbgSubFixes", "FIXES",       "RxDbgFixesMenu"),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Submenu("PM_RxDbgSubFixes2", "PICTURE FIXES", "RxDbgFixes2Menu")),
+#endif
     Submenu("PM_RxDbgSubPerf",  "PERFORMANCE", "RxDbgPerfMenu"),
     Submenu("PM_RxDbgSubRend",  "RENDERING",   "RxDbgRendMenu"),
     Submenu("PM_RxDbgSubCam",   "CAMERA",      "RxDbgCamMenu"),
@@ -136,9 +139,11 @@ const ItemDef kDebugHubItems[] = {
     Submenu("PM_RxDbgSubInfo",  "INFO",        "RxDbgInfoMenu"),
 };
 
-// FIXES: each fix of the recomp with the switch that turns it off, to see whether it caused a bug
-// (owner's answer 2026-11-13: kept as triage switches). The rows are the cvars as they are: the page makes
-// no new switch.
+// FIXES: each fix of the recomp's game code (timing, camera, menus, input) with the switch that turns it off, to see
+// whether it caused a bug (owner's answer 2026-11-13: kept as triage switches). The rows are the cvars as they are: the
+// page makes no new switch. A page holds at most 24 rows (pause_menu.cpp kMaxRowsPerMenu: a page over it is refused whole
+// and does not open; tools/check_menu_rows.py fails on it), so the fixes of the Plume renderer's picture are the next
+// page's (PICTURE FIXES, kDebugPictureFixesItems) and a new fix switch goes to the one it belongs to. The reset row ends this page.
 const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgRealDelta",  "real_frame_delta",          "REAL FRAME DELTA: "),
     // The AI racers' driving line is improved at most this often per racer (hooks/race_line.cpp): 30 is the console's rate; EVERY FRAME is the old behaviour.
@@ -172,7 +177,14 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgPromptsLive", "prompts_live",             "LIVE BUTTON PROMPTS: "),
     // Keyboard steering builds up to full lock and comes back over a short time (keyboard_native.cpp KeySteerScope); off = the old on / off key pair, full lock at once.
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
+    Action("PM_RxDbgFixReset", kActionDebugReset),
+};
+
 #if defined(LARECOMP_HAS_GPU)
+// PICTURE FIXES: the fixes of the Plume renderer's picture (dither, bloom and exposure at a render scale, the car chrome, the noise of the
+// stochastic effects), each with the switch that turns it off. The rows were the second half of FIXES, which had 30 rows against the 24 a page can
+// hold. Every row is NativeOnly, so the hub lists the page only while the Plume renderer runs.
+const ItemDef kDebugPictureFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgDither", "mcla_gpu_present_dither", "PRESENT DITHER: ")),
     NativeOnly(Bool("PM_RxDbgA2c",    "mcla_gpu_a2c_dither_all", "ALPHA TO MASK FIX: ")),
     // The glow of lights keeps its size above a render scale of 1x: the bloom's Gaussian taps follow the
@@ -207,9 +219,8 @@ const ItemDef kDebugFixesItems[] = {
     // The reflections' accumulation averages the trace's 3x3 of one surface and keeps a bright reflection through a frame whose rays all missed (hlsl/ssr_temporal_ps.hlsl): a lamp's or a tail light's
     // reflection flickered with the sparse hits. Off = the first version's resolve (the centre pixel alone, the clip whole). Read at each frame, so live.
     NativeOnly(Bool("PM_RxDbgSsrResolve", "mcla_gpu_ssr_resolve", "SPATIAL RESOLVE REFLECTIONS: ")),
-#endif
-    Action("PM_RxDbgFixReset", kActionDebugReset),
 };
+#endif
 
 // PERFORMANCE: the switches that trade frame pacing, CPU time and picture for speed, and that have no row
 // in the normal menus (SX-G5; owner's answer 3: debug for now; a switch comes back after it is
@@ -619,6 +630,9 @@ void ToggleOverlay(const char* overlay) {
 
 const ItemDef* DebugHubRows(int& count)         { return Rows(kDebugHubItems, count); }
 const ItemDef* DebugFixesRows(int& count)       { return Rows(kDebugFixesItems, count); }
+#if defined(LARECOMP_HAS_GPU)
+const ItemDef* DebugPictureFixesRows(int& count) { return Rows(kDebugPictureFixesItems, count); }
+#endif
 const ItemDef* DebugPerformanceRows(int& count) { return Rows(kDebugPerformanceItems, count); }
 const ItemDef* DebugRenderingRows(int& count)   { return Rows(kDebugRenderingItems, count); }
 const ItemDef* DebugCameraRows(int& count)      { return Rows(kDebugCameraItems, count); }
