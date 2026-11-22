@@ -36,9 +36,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kConnectTimeoutMs = 3000;
-constexpr int kIoTimeoutMs = 15000;
-
 struct Target {
   bool remote = false;
   std::string host;
@@ -117,8 +114,8 @@ Response Execute(const Target& target, const Request& req) {
   const std::vector<uint8_t> body = EncodeRequest(req);
   std::vector<uint8_t> reply;
   if (target.remote) {
-    net::PostResult r = net::Post(target.host, target.port, kHttpPath, body, kConnectTimeoutMs,
-                                  kIoTimeoutMs);
+    net::PostResult r = net::Post(target.host, target.port, kHttpPath, body, net::kConnectTimeoutMs,
+                                  net::kIoTimeoutMs);
     if (!r.transport_ok) {
       LARECOMP_APP_WARN("[rmr] {} {}:{}: {}", OpName(req.op), target.host, target.port, r.error);
       resp.err = r.timed_out ? kTimedOut : kConnection;

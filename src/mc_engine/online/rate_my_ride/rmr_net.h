@@ -15,6 +15,11 @@
 
 namespace rmr::net {
 
+// The game's own timeouts for one request to the Rate My Ride / leaderboards server (rmr_client.cpp and lb_client.cpp use
+// them; larecomp_online_tool asks with the same).
+inline constexpr int kConnectTimeoutMs = 3000;
+inline constexpr int kIoTimeoutMs = 15000;
+
 struct PostResult {
   bool transport_ok = false;  // connected, sent, and got a complete response
   bool timed_out = false;

@@ -1,6 +1,7 @@
 // larecomp_online_tool: see online_tool.h and README.md next to this file.
 //
 //   larecomp_online_tool --version | --protocol | servers [--master H:P] [--servers a,b] [--current H:P] [--icons DIR]
+//   larecomp_online_tool rmr|lb|tournament <command> [options]   (online_tool_remote.cpp, README.md)
 //
 // One JSON document on stdout per call, nothing else there; exit code 0 = the document is the answer, 2 = wrong
 // command line. Standalone: no ReXGlue, no game, no settings file.
@@ -70,6 +71,7 @@ int main(int argc, char** argv) {
     switch (a.command) {
         case Command::kHelp:
             std::fputs(UsageText(), stdout);
+            std::fputs(RemoteUsageText(), stdout);
             return 0;
         case Command::kVersion:
             Print(RenderVersion(a.pretty));
@@ -80,6 +82,13 @@ int main(int argc, char** argv) {
         case Command::kServers:
             Print(RenderServers(GatherServers(a), a.pretty));
             return 0;
+        case Command::kRmr:
+        case Command::kLb:
+        case Command::kTournament: {
+            int exit_code = 0;
+            Print(RunRemote(a.remote, &exit_code));
+            return exit_code;
+        }
         case Command::kNone:
             break;
     }
