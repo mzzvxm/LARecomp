@@ -165,6 +165,29 @@ inline Why Decide(const Facts& f) {
   return Why::kUsed;
 }
 
+// What the host (CarRtGlassRefl::Trace) knows of the frame when it asks, and the Facts it makes of it. Kept here so that a test says the pass RUNS on an ordinary frame: Trace once filled `wanted`, `city_on`, `screen` and
+// `ready` and left `box` at its default (false), so Decide() answered kNoBox on every frame and the windows never reflected the city (CITY-M2-PICS, 2026-11-22: no "[car glass]" line in any run of the 11-21 chain).
+struct HostInputs {
+  bool wanted = false;      // CityRefl::glass_wanted()
+  bool city_set = false;    // the city's descriptor set exists
+  bool city_on = false;     // the city's rows are on
+  bool screen = false;      // the rows carry lin_depth
+  bool rect_empty = true;   // the player's box's rectangle in the history's grid has no texel
+  bool view_valid = false;  // the car scene's view is valid (a top level this frame)
+  bool view_set = false;    // and has its descriptor set
+};
+
+inline Facts HostFacts(const HostInputs& in) {
+  Facts f;
+  f.wanted = in.wanted;
+  f.city_on = in.city_set && in.city_on;
+  f.screen = in.screen;
+  f.box = !in.rect_empty && in.view_valid && in.view_set;
+  f.glass_instance = true;  // the host cannot tell (car_rt_masks): the shader finds the panes
+  f.ready = true;           // the pipelines are asked for right after, and a frame without them is counted as kNotReady
+  return f;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // the apply pass's push block (hlsl/car_glass_apply_ps.hlsl GlassApplyPush) and its arithmetic
 // ---------------------------------------------------------------------------------------------------------------------
