@@ -59,8 +59,9 @@ VariantDef MakeGBufferVariantFromText(std::string_view hlsli_text) {
   def.name = "gbuffer";
   def.version = kGBufferVariantVersion;
   def.needs_rpf = true;  // the xCityDefault group lives in the RPF
-  // The helper is part of the variant's text: the fingerprint is of the file as the transform reads it (LF line ends), as the HDR curve's is.
-  def.input_xxh3 = Xxh3(NormalizeNewlines(hlsli_text));
+  // The helper is part of the variant's text: the fingerprint is of the file as the transform reads it (LF line ends), as the HDR curve's is. So are the night stage's tables (the albedo recipes,
+  // the baked occlusion and the reflection mix: gbuffer_night_albedo.h), which are text the transform writes into the shaders: a pack made from other rows is stale (GB-H2-REVIEW).
+  def.input_xxh3 = Xxh3(NormalizeNewlines(hlsli_text) + "\n" + NightTablesFingerprintText());
   def.pixel_name_suffixes = {kGBufferDayShader, kGBufferNightShader};
   for (const std::string_view suffix : kGBufferNightSuffixes) def.pixel_name_suffixes.push_back(suffix);  // GB-C: the night family
   for (const std::string_view name : GBufferDayShaderNames()) {                                             // GB-D: the day families (kGBufferDayShader is their first row)

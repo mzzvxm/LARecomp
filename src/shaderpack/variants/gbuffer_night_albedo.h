@@ -39,7 +39,8 @@
 
 namespace larecomp::shaderpack {
 
-// Hand bumped with any change of the table below (it is part of the G-buffer variant's text: also bump gbuffer.h's kGBufferVariantVersion).
+// Hand bumped with any change of the tables below, as the record of what changed (also bump gbuffer.h's kGBufferVariantVersion); the tables themselves are in the variant's fingerprint
+// (NightTablesFingerprintText), so a pack made from other rows is stale even when nobody bumped it.
 inline constexpr uint32_t kGBufferNightAlbedoVersion = 3;  // 1: the albedo recipes; 2: the baked occlusion rows (RT2.a); 3: the road's planar reflection mix (RT2.a)
 
 enum class NightAlbedoSite : uint8_t {
@@ -254,6 +255,24 @@ inline NightMixCapture AnalyseGBufferNightMixRow(std::string_view hlsl, const Ni
   out.found = true;
   out.capture_at = lines[at + 1].begin;
   out.capture = "\tfloat " + std::string(kGBufferMixCapture) + " = " + std::string(row.weight) + ";\n";
+  return out;
+}
+
+// THE TABLES' TEXT, for the variant's fingerprint (gbuffer.cpp: MakeGBufferVariantFromText adds it to the helper's): the pack's stamp keeps the fingerprint (variant_pack.cpp `variants_gbuffer_input`),
+// so an edit of a row, of a number or of an expression above makes the pack stale by itself, whether or not anyone remembers to bump the versions (kGBufferNightAlbedoVersion and gbuffer.h's
+// kGBufferVariantVersion stay the record of what changed; this was the only thing that said a table had changed, by hand: GB-H2-REVIEW).
+inline std::string NightTablesFingerprintText() {
+  std::string out = "night albedo tables, version " + std::to_string(kGBufferNightAlbedoVersion) + "\n";
+  for (const NightAlbedoRow& row : kGBufferNightAlbedoRows) {
+    out += "albedo|" + std::string(row.name) + "|" + std::to_string(int(row.site)) + "|" + std::string(row.anchor) + "|" + std::string(row.expression) + "\n";
+  }
+  for (const NightOcclusionRow& row : kGBufferNightOcclusionRows) {
+    out += "occlusion|" + std::string(row.name) + "|" + NightOcclusionExpression(row) + "\n";
+  }
+  for (const NightMixRow& row : kGBufferNightMixRows) {
+    out += "mix|" + std::string(row.name) + "|" + std::string(row.anchor) + "|" + std::string(row.weight) + "\n";
+  }
+  out += "declaration|" + std::string(kNightOcclusionDeclaration) + "\n";
   return out;
 }
 

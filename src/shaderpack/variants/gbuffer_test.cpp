@@ -22,6 +22,7 @@
 #include <string_view>
 #include <vector>
 
+#include "shaderpack/hash.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_overlap.h"
 #include "shaderpack/variants/bloom_gauss.h"
@@ -276,6 +277,18 @@ void CheckVariantDef() {
   Check(sp::kGBufferVariantVersion == 11, "the variant's version is 11: the night family (2), the day families (3), RT2, the albedo and the lit weight (4), the car family (5), RT3 (6), both (7), the traffic and the pedestrians on top (8), the night albedo recipes (9), the night baked occlusion (10), the road's reflection mix (11)");
   Check(sp::kGBufferDayVersion == 3 && sp::kGBufferVsVersion == 1 && sp::kGBufferCarsVersion == 3, "the day stage's own version is 3 (RT3), the day vertex stage's is untouched, the car stage's is 3");
   Check(def.input_xxh3 != 0, "the helper is in the fingerprint");
+  {
+    // the night stage's tables are in it too: the fingerprint is not the helper's alone, and the text it adds names every table's rows (an edit of a row changes it)
+    const std::string tables = sp::NightTablesFingerprintText();
+    Check(def.input_xxh3 != sp::Xxh3(LfOnly(kHelper)) && def.input_xxh3 == sp::Xxh3(LfOnly(kHelper) + "\n" + tables),
+          "the night stage's tables are in the fingerprint");
+    Check(tables.find("albedo|xCityRoad__PSMultiLight|") != std::string::npos && tables.find("occlusion|xCityWindowLower__PSMultiLight|iColor1.w * iColor1.w") != std::string::npos &&
+              tables.find("mix|xCityTunnelRoad__PSMultiLight|r5.w = r5.z * gReflectionParams.y;|r5.w") != std::string::npos && tables.find("version " + std::to_string(sp::kGBufferNightAlbedoVersion)) != std::string::npos,
+          "the tables' text has a line for each kind of row and the version");
+    size_t lines = 0;
+    for (const char c : tables) lines += c == '\n';
+    Check(lines == 1 + sp::kGBufferNightAlbedoRowCount + sp::kGBufferNightOcclusionRowCount + sp::kGBufferNightMixRowCount + 1, "one line a row, the version's and the declaration's");
+  }
   const sp::VariantDef other = sp::MakeGBufferVariantFromText(std::string(kHelper) + "// changed\n");
   Check(other.input_xxh3 != def.input_xxh3, "a changed helper changes the fingerprint");
   std::string helper_crlf;
