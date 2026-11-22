@@ -155,6 +155,17 @@ std::string ClockText(const Fields& f) {
     return "this PC's clock is " + std::to_string(off < 0 ? -off : off) + " min " + (off < 0 ? "behind" : "ahead");
 }
 
+std::string MasterHostFromField(const char* field, size_t size, const std::string& fallback) {
+    const std::string named = NickFromField(field, size);
+    if (named.empty() || named.size() > 253) return fallback;
+    for (char ch : named) {
+        const bool plain = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '.' ||
+                           ch == '-' || ch == '_';
+        if (!plain) return fallback;
+    }
+    return named;
+}
+
 Challenge AskChallenge(const std::string& host, uint16_t port, const Options& opt) {
     Challenge c;
     Relay relay(host, port);
@@ -169,8 +180,7 @@ Challenge AskChallenge(const std::string& host, uint16_t port, const Options& op
     }
     c.state = Challenge::State::kOk;
     c.enforced = ch.enforced != 0;
-    c.master_host = NickFromField(ch.master_host, sizeof(ch.master_host));
-    if (c.master_host.empty()) c.master_host = host;
+    c.master_host = MasterHostFromField(ch.master_host, sizeof(ch.master_host), host);
     c.master_port = ch.master_port ? ch.master_port : browser::kMasterPort;
     std::memcpy(c.master_key, ch.master_pubkey, 32);
     return c;
@@ -206,8 +216,7 @@ std::chrono::seconds Cycle(Status& s, const CycleInput& in, TicketHooks& hooks, 
         return std::chrono::seconds(300);
     }
 
-    std::string mhost = NickFromField(ch.master_host, sizeof(ch.master_host));
-    if (mhost.empty()) mhost = host;
+    const std::string mhost = MasterHostFromField(ch.master_host, sizeof(ch.master_host), host);
     const uint16_t mport = ch.master_port ? ch.master_port : browser::kMasterPort;
     s.master = mhost + ":" + std::to_string(mport);
     if (out) {

@@ -495,6 +495,26 @@ void TestCore(const fs::path& tmp) {
               !idn::PlausibleRecoveryCode("caf\xC3\xA9") && !idn::PlausibleRecoveryCode("AB\x7F"),
           "an empty, long or non-printable text is not a recovery code");
 
+    // The master host a relay names is plain host text, or the relay's own host is used.
+    {
+        auto named = [](const std::string& field) {
+            char buf[64] = {};
+            std::memcpy(buf, field.data(), std::min(field.size(), sizeof(buf)));
+            return idn::net::MasterHostFromField(buf, sizeof(buf), "relay.example");
+        };
+        CheckEq(named("master.example.org"), "master.example.org", "a master host name is kept");
+        CheckEq(named("10.0.0.5"), "10.0.0.5", "a master address is kept");
+        CheckEq(named("my_host-2"), "my_host-2", "underscore and dash are kept");
+        CheckEq(named(""), "relay.example", "no master host: the relay's own");
+        CheckEq(named("evil\r\nHost: x"), "relay.example", "a master host with a line break is not used");
+        CheckEq(named("a b"), "relay.example", "a master host with a space is not used");
+        CheckEq(named("a/b"), "relay.example", "a master host with a slash is not used");
+        CheckEq(named(std::string(63, 'a')), std::string(63, 'a'), "a 63-letter master host is kept");
+        char full[64];
+        std::memset(full, 'a', sizeof(full));
+        CheckEq(idn::net::MasterHostFromField(full, sizeof(full), "relay.example"), std::string(64, 'a'), "a field with no NUL is read to its end");
+    }
+
     // Profile ids.
     CheckEq(core::ProfileId(0xB13E00000000ABCDull, "Neo"), "B13E00000000ABCD", "profile id is the XUID in 16 upper-case digits");
     CheckEq(core::ProfileId(core::kLegacyXuid, "Neo"), "name_Neo", "the legacy XUID files the key by name");

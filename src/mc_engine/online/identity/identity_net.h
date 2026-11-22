@@ -98,6 +98,11 @@ struct CycleOutput {
     uint8_t master_key[32] = {};
 };
 
+// The master host a relay's challenge names, off the wire: kept only when it is a plain host name or address (letters, digits,
+// '.', '-', '_'; at most 253 bytes), else `fallback` (the relay's own host) is used. The text goes into an HTTP Host line, a
+// name lookup, the log and the window, so a relay that sends line breaks or other control bytes there gets none of them through.
+std::string MasterHostFromField(const char* field, size_t size, const std::string& fallback);
+
 // One pass: challenge, ticket, proof. Fills `s` (check, detail, relay, master, ...) and returns how long until the
 // next pass. `out` may be null.
 std::chrono::seconds Cycle(Status& s, const CycleInput& in, TicketHooks& hooks, CycleOutput* out);
