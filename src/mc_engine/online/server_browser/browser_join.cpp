@@ -14,9 +14,11 @@
 #include "../online_common.h"
 #include "../system_link.h"
 #include "browser_join_core.h"
+#include "discord_rpc/discord_rpc.h"  // RpcActivity: where the game's state machine is
 #include "join_server.h"
 #include "join_server_core.h"
 #include "larecomp_guest.h"
+#include "mc_engine/keyboard_native.h"  // CurrentMovieName: the UI's current movie
 #include "mc_engine/menus/pause_menu.h"
 
 #if defined(_WIN32)
@@ -74,7 +76,10 @@ JoinPhase g_phase = JoinPhase::kIdle;
 Clock::time_point g_phase_deadline{};
 int g_start_step = 0;
 bool g_world_wait_logged = false;  // the "waiting for the player's car" line was written for this join
+bool g_roam_wait_logged = false;   // the "waiting for free roam" line was written for this join
 PauseGate g_pause_gate;  // what the join does about an open pause menu (browser_join_core.h)
+PageWait g_page_wait;    // what the join waits for between the goto into the net menu and the search (browser_join_core.h)
+SearchVerify g_search_verify;  // whether the goto into the search was taken (browser_join_core.h)
 
 rex::kernel::GuestAddressSpace* Mem() {
     auto* rt = REX_RUNTIME();
@@ -85,13 +90,51 @@ int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
 }
 
-// The pause menu is up (the game's own flag, as adaptive_triggers.cpp and the cutscene gallery read it).
+// The game is paused (the game's own flag, as adaptive_triggers.cpp and the cutscene gallery read it): the world stands still, whoever
+// paused it. NOT "the pause menu is up": in an online session the pause menu is a local pause and this stays false with it open, and
+// the full map or a toolkit pause set it with no pause menu (PauseMenuOpen is the pause screen).
 bool GamePaused() {
     auto* mem = Mem();
     if (!mem) return false;
     const uint32_t p = GuestRead32(mem, kPauseStatePtr);
     if (!IsGuestPtr(p)) return false;
     return *mem->TranslateVirtual<const uint8_t*>(p + 4) != 0 && *mem->TranslateVirtual<const uint8_t*>(p + 10) == 0;
+}
+
+// The UI's current movie is the pause movie (keyboard_native's tracker, as of the last input poll): the pause pages draw in it, and so
+// does the net menu the join goes to. Any thread.
+bool PauseMovieUp() {
+    char name[32] = {};
+    larecomp::keyboard::CurrentMovieName(name, sizeof(name));
+    return std::strcmp(name, "PAUSEMOVIE") == 0;
+}
+
+// One look at the pause menu for the gate: the pause screen's open byte (the fact), the paused flag and the movie (what lingers).
+Look LookAtPause() {
+    Look look;
+    look.pause_screen = PauseMenuOpen();
+    look.paused = GamePaused();
+    look.pause_movie = PauseMovieUp();
+    return look;
+}
+
+// Where the game's state machine is (discord_rpc's activations: "Cruising", "Racing...", "Garage"; a pause menu in free roam is free roam).
+Activity CurrentActivity() {
+    switch (RpcActivity()) {
+    case LarecompDiscordState::FreeRoam: return Activity::kFreeRoam;
+    case LarecompDiscordState::Race: return Activity::kRace;
+    case LarecompDiscordState::Garage: return Activity::kGarage;
+    default: return Activity::kOther;
+    }
+}
+
+const char* ActivityName(Activity a) {
+    switch (a) {
+    case Activity::kFreeRoam: return "free roam";
+    case Activity::kRace: return "race";
+    case Activity::kGarage: return "garage";
+    default: return "other (title, load, ...)";
+    }
 }
 
 // Whether `len` bytes at the host address `p` can be read (committed, not a guard page). A guest word that was never filled in
@@ -233,6 +276,8 @@ void Finish(JoinPhase phase, const char* why, std::string text) {
     g_phase = phase;
     g_start_step = 0;
     g_pause_gate.Reset();
+    g_page_wait = PageWait{};
+    g_search_verify = SearchVerify{};
     SetStatus(phase, text);
     JoinServerNoteFinish(phase == JoinPhase::kFailed, why, text);
 }
@@ -316,7 +361,10 @@ void TickServerBrowserJoin() {
         g_target_vip.store(0);
         g_start_step = 0;
         g_world_wait_logged = false;
+        g_roam_wait_logged = false;
         g_pause_gate.Reset();
+        g_page_wait = PageWait{};
+        g_search_verify = SearchVerify{};
         if (!req.host_vip && !req.any_room) {
             g_phase = JoinPhase::kIdle;
             SetStatus(JoinPhase::kIdle, {});
@@ -325,6 +373,14 @@ void TickServerBrowserJoin() {
         LARECOMP_APP_INFO("[browser] join {} ({}, {}, {})", req.label,
                           req.any_room ? std::string("any session") : "host " + VipText(req.host_vip),
                           req.lan ? "System Link" : "Live", req.cruise ? "cruise" : "match");
+        {
+            // Where the game is when the join is asked for: a crash report of a join names it (the pause screen, the flag, the movie,
+            // the state machine's activity, whether a session is up).
+            const Look look = LookAtPause();
+            LARECOMP_APP_INFO("[browser] join asked for: pause screen {}, paused flag {}, pause movie {}, activity {}, session up {}",
+                              look.pause_screen ? 1 : 0, look.paused ? 1 : 0, look.pause_movie ? 1 : 0, ActivityName(CurrentActivity()),
+                              SystemLinkSessionUp() ? 1 : 0);
+        }
         g_phase = JoinPhase::kGoingOnline;
         g_phase_deadline = now + kOnlineWait;
         if (!SystemLinkOnlineConnected() && SystemLinkOnlinePending() <= 0) SystemLinkOnlineRequest(true);
@@ -358,14 +414,47 @@ void TickServerBrowserJoin() {
             break;
         }
         if (g_start_step == 0) {
-            // Not with the pause menu up. The machine is inside the pause screen's own states then, and a goto from there
-            // (or the searching states after it) takes down UI objects the pause screen still holds: the crash of "join
-            // while in the pause menu". Close it the way CONTINUE does, wait until the game runs, and start from free roam,
-            // the path that works (browser_join_core.h).
+            // Where the game is. A join starts from free roam only: from a race or the garage the goto into the net menu leaves the
+            // machine half-built, and from inside a session the game never starts a search (browser_join_core.h, item 5). The title
+            // and the loads on the way are other states: those are waited for.
+            const Activity where = CurrentActivity();
+            const bool in_session = SystemLinkSessionUp();
+            const Refusal no = RefuseStart(where, in_session);
+            if (no != Refusal::kNone) {
+                const char* why = no == Refusal::kRace ? reason::kRaceOn : no == Refusal::kGarage ? reason::kGarageOpen : reason::kInSession;
+                LARECOMP_APP_INFO("[browser] the join is refused: {} (activity {}, session up {})", why, ActivityName(where), in_session ? 1 : 0);
+                Finish(JoinPhase::kFailed, why, joinserver::FailureMessage(why, joinserver::Target{}));
+                break;
+            }
+            if (!AtFreeRoam(where)) {
+                if (!g_roam_wait_logged) {
+                    g_roam_wait_logged = true;
+                    LARECOMP_APP_INFO("[browser] the join waits for free roam (activity {})", ActivityName(where));
+                }
+                SetStatus(JoinPhase::kStarting, "Waiting for free roam to join " + req.label + "...");
+                if (now > g_phase_deadline) Finish(JoinPhase::kFailed, reason::kWorldTimeout, "Join cancelled: the game never got to free roam");
+                break;
+            }
             const int64_t now_ms = NowMs();
-            const bool paused = GamePaused();
+            const char* net_state = req.lan ? "LAN" : "Online";
+            const Look look = LookAtPause();
+            // The pause screen is open on the very page the join needs (SYSTEM LINK for a System Link join, XBOX LIVE for a Live one:
+            // the browser was opened from its row): that is where the game itself starts its online searches, the page has been up for
+            // seconds, and the search is entered from it with no transition of ours (browser_join_core.h, ChoosePath).
+            if (look.pause_screen && ChoosePath(true, InState(hsm, net_state)) == Path::kInPage) {
+                LARECOMP_APP_INFO("[browser] the pause menu is open on the '{}' page: searching from it, the way the game does (no close, no goto)", net_state);
+                LARECOMP_APP_INFO("[browser] starting from: paused {}, in LAN {}, in Online {}", look.paused ? 1 : 0, req.lan ? 1 : 0, req.lan ? 0 : 1);
+                g_page_wait.Start(now_ms);
+                g_page_wait.Skip();  // the page is up: nothing to wait for
+                g_start_step = 1;
+                break;
+            }
+            // Any other start. Not with the pause menu up: the machine is inside the pause screen's own states, on another page, and
+            // a goto from there takes down UI objects the pause screen still holds (the crash of "join while in the pause menu").
+            // Close it the way CONTINUE does, wait until the game runs, and start from free roam (browser_join_core.h). "Up" is the
+            // pause screen's open byte, not the paused flag: a pause menu in an online session leaves the flag at 0.
             const bool waited = g_pause_gate.SawPause();
-            const PauseGate::Step gate = g_pause_gate.Update(paused, now_ms);
+            const PauseGate::Step gate = g_pause_gate.Update(look, now_ms);
             if (gate != PauseGate::Step::kProceed) {
                 if (gate == PauseGate::Step::kClose) {
                     const bool closed = PauseMenuClose();
@@ -384,15 +473,16 @@ void TickServerBrowserJoin() {
             // LIVE menu's own row): no goto. Re-entering it reloads the pause
             // movie, and the goto's tail (sub_82221BE0) then walks the parents
             // of the UIObject that reload freed (read of guest 0x50).
-            const char* net_state = req.lan ? "LAN" : "Online";
             const bool in_lan = InState(hsm, "LAN");
             const bool in_online = InState(hsm, "Online");
             const bool in_target = req.lan ? in_lan : in_online;
             // Where the machine is when the goto is made: the next crash report of a join names it.
-            LARECOMP_APP_INFO("[browser] starting from: paused {}, in LAN {}, in Online {}", paused ? 1 : 0, in_lan ? 1 : 0,
+            LARECOMP_APP_INFO("[browser] starting from: paused {}, in LAN {}, in Online {}", look.paused ? 1 : 0, in_lan ? 1 : 0,
                               in_online ? 1 : 0);
+            g_page_wait.Start(now_ms);
             if (in_target) {
                 LARECOMP_APP_INFO("[browser] already in '{}'; searching from it", net_state);
+                g_page_wait.Skip();  // the page is up: nothing to wait for
             } else if (!GotoState(hsm, net_state)) {
                 Finish(JoinPhase::kFailed, reason::kMenuUnavailable, "The game's online menu could not be opened");
                 break;
@@ -400,8 +490,19 @@ void TickServerBrowserJoin() {
             g_start_step = 1;
             break;
         }
-        // Next frame: the options the confirm screen would set, then the
-        // search. The script's GameMode state names are swapped:
+        // The net menu's page is a pause page the goto just loaded: the search is entered from it when it is up, as a player does
+        // (a few frames and a quarter of a second after it showed), not on the very next frame (browser_join_core.h, item 4).
+        const char* net_state = req.lan ? "LAN" : "Online";
+        const bool in_page = InState(hsm, net_state);
+        const bool page_shown = PauseMovieUp();
+        if (!g_page_wait.Ready(in_page, page_shown, NowMs())) {
+            SetStatus(JoinPhase::kStarting, "Opening " + std::string(req.lan ? "SYSTEM LINK" : "XBOX LIVE") + " to join " + req.label + "...");
+            break;
+        }
+        if (g_page_wait.GaveUp())
+            LARECOMP_APP_WARN("[browser] the '{}' page did not report being up within {} ms (in it {}, pause movie {}): the search goes on",
+                              net_state, PageWait::kGiveUpMs, in_page ? 1 : 0, page_shown ? 1 : 0);
+        // The options the confirm screen would set, then the search. The script's GameMode state names are swapped:
         // OLGameMode_Cruise sets 'Single' and OLGameMode_Single sets 'Cruise'.
         ActivateState(hsm, "OLGameType_Standard");
         ActivateState(hsm, req.cruise ? "OLGameMode_Single" : "OLGameMode_Cruise");
@@ -409,6 +510,7 @@ void TickServerBrowserJoin() {
         // not host instead. Any room: the game's own rules, hosting included.
         g_target_vip.store(req.any_room ? 0 : req.host_vip);
         GotoState(hsm, "QuickMatchSearching");
+        g_search_verify.Start(NowMs());
         g_phase = JoinPhase::kSearching;
         g_phase_deadline = now + kSearchWait;
         SetStatus(JoinPhase::kSearching,
@@ -417,17 +519,44 @@ void TickServerBrowserJoin() {
         break;
     }
 
-    case JoinPhase::kSearching:
+    case JoinPhase::kSearching: {
+        // The goto into the search is looked at: a moment later the machine must be in it, or past the page it started from. Still in
+        // the page and not in the search = the goto was dropped (the free-roam run, ojnew-cli, where the relay never saw the game): ask
+        // again, twice at most.
+        if (g_search_verify.Active()) {
+            const uint32_t hsm = Hsm();
+            if (hsm) {
+                const char* net_state = req.lan ? "LAN" : "Online";
+                const auto verdict = g_search_verify.Update(InState(hsm, "QuickMatchSearching"), InState(hsm, net_state), NowMs());
+                if (verdict == SearchVerify::Verdict::kRetry) {
+                    LARECOMP_APP_WARN("[browser] the game is still on the '{}' page and not in the search after the goto: asking for the search again (try {})",
+                                      net_state, g_search_verify.retries());
+                    ActivateState(hsm, "OLGameType_Standard");
+                    ActivateState(hsm, req.cruise ? "OLGameMode_Single" : "OLGameMode_Cruise");
+                    GotoState(hsm, "QuickMatchSearching");
+                } else if (verdict == SearchVerify::Verdict::kGiveUp) {
+                    LARECOMP_APP_WARN("[browser] the game never entered the search ({} goto tries): the join waits out its time", g_search_verify.retries() + 1);
+                }
+            }
+        }
         if (now > g_phase_deadline) {
-            if (req.any_room)
-                Finish(JoinPhase::kIdle, "", {});  // joined or hosting by now
-            else
+            if (!req.any_room)
                 Finish(JoinPhase::kFailed, reason::kHostNoAnswer, req.label + " did not answer the search");
+            else if (SystemLinkSessionUp())
+                Finish(JoinPhase::kIdle, "", {});  // joined, or hosting for the next player
+            else
+                Finish(JoinPhase::kFailed, reason::kNoSession, joinserver::FailureMessage(reason::kNoSession, joinserver::Target{}));
         }
         break;
+    }
 
     case JoinPhase::kJoining:
-        if (now > g_phase_deadline) Finish(JoinPhase::kIdle, "", {});
+        if (now > g_phase_deadline) {
+            if (SystemLinkSessionUp())
+                Finish(JoinPhase::kIdle, "", {});
+            else
+                Finish(JoinPhase::kFailed, reason::kNoSession, joinserver::FailureMessage(reason::kNoSession, joinserver::Target{}));
+        }
         break;
 
     default:

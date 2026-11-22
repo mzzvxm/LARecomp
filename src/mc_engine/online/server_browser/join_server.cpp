@@ -326,7 +326,8 @@ void JoinServerNoteFinish(bool failed, const std::string& reason, const std::str
         // The sentences of the join's own steps; the ones that name the server come from the core.
         const bool known = reason == js::reason::kOnlineFailed || reason == js::reason::kHostNoAnswer ||
                            reason == js::reason::kPauseOpen || reason == js::reason::kMenuUnavailable ||
-                           reason == js::reason::kRoomGone;
+                           reason == js::reason::kRoomGone || reason == js::reason::kRaceOn || reason == js::reason::kGarageOpen ||
+                           reason == js::reason::kInSession || reason == js::reason::kNoSession;
         Fail(reason, known ? js::FailureMessage(reason, g_target) : text);
         return;
     }

@@ -267,6 +267,12 @@ inline constexpr const char* kPauseOpen = "pause_open";
 inline constexpr const char* kMenuUnavailable = "menu_unavailable";
 inline constexpr const char* kHostNoAnswer = "host_no_answer";
 inline constexpr const char* kRoomGone = "room_gone";
+// A join is started from free roam only (browser_join_core.h RefuseStart): the game is somewhere the net menu cannot be entered from.
+inline constexpr const char* kRaceOn = "race_on";
+inline constexpr const char* kGarageOpen = "garage_open";
+inline constexpr const char* kInSession = "in_session";
+// The search ended and the game is in no session: it neither started one nor joined one (ojnew-cli reported "done" for a search the game never entered).
+inline constexpr const char* kNoSession = "no_session";
 }  // namespace reason
 
 inline std::string FailureMessage(const std::string& why, const Target& t, const std::string& detail = {}) {
@@ -285,6 +291,10 @@ inline std::string FailureMessage(const std::string& why, const Target& t, const
     if (why == reason::kMenuUnavailable) return "The game's online menu could not be opened.";
     if (why == reason::kHostNoAnswer) return "The room did not answer the search on " + server + ".";
     if (why == reason::kRoomGone) return "The room is gone: it closed, is full, or is in another mode.";
+    if (why == reason::kRaceOn) return "A race is on: finish or quit it, then join.";
+    if (why == reason::kGarageOpen) return "The garage is open: leave it, then join.";
+    if (why == reason::kInSession) return "You are already in an online session: leave it from the pause menu first, then join.";
+    if (why == reason::kNoSession) return "The game's search did not start or join a session.";
     return detail.empty() ? "The join failed." : detail;
 }
 

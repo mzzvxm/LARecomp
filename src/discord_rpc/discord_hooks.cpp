@@ -564,3 +564,11 @@ bool RpcInFreeRoam() {
   return false;
 #endif
 }
+
+LarecompDiscordState RpcActivity() {
+#ifndef REXGLUE_HAS_XEO3_TARGET
+  return g_activity;
+#else
+  return LarecompDiscordState::Unknown;
+#endif
+}

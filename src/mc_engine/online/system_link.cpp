@@ -404,10 +404,15 @@ void Hook_PromptRaised() {
 // (sub_82282EB8) bails at its very first gate.
 // ---------------------------------------------------------------------------
 
+// The last answer of the game's "session up at all" (sub_8226BE68), as the net tick that asks it every frame saw it. Read by the server
+// browser's join (SystemLinkSessionUp): a join does not start from inside a session. Any thread.
+static std::atomic<bool> g_session_up{false};
+
 // 0x8226D134
 void Hook_ClockSessionReady(PPCRegister& r3) {
     static int last = -1;
     int v = static_cast<int>(r3.u64 & 0xFF);
+    g_session_up.store(v != 0, std::memory_order_relaxed);
     if (v == last) return;
     last = v;
     LARECOMP_APP_INFO("[clock-probe] session ready (sub_8226BE68) = {}", v);
@@ -610,6 +615,8 @@ int SystemLinkOnlinePending() {
 bool SystemLinkOnlineConnected() { return OnlineLive() && Applied() == 1; }
 
 bool SystemLinkOnlineSettingCvar() { return t_setting_cvar; }
+
+bool SystemLinkSessionUp() { return g_session_up.load(std::memory_order_relaxed); }
 
 // 0x82500FC8 in sub_82500F98, reached while the net hardware is up (state !=
 // 0), right after `bl sub_8244A680`: r3 is XNetGetEthernetLinkStatus. A zero

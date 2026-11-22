@@ -5732,7 +5732,16 @@ void PauseMenuLeaveSubmenu() {
 // is the only supported way out, popping the navigation stack by hand unwinds the screens the HUD lives on.
 constexpr uint32_t kPauseMenuContinueFn = 0x8265F428;
 
+bool PauseMenuOpen() {
+    const uint32_t pause = larecomp::ui::PauseForm();
+    return pause && larecomp::ui::FormIsOpen(pause);
+}
+
 bool PauseMenuClose() {
+    // PM_Continue closes form 71 and then goes to the in-game state from wherever the machine is, with no check that the pause
+    // screen is what is up. Asked while it is not (the game paused by the full map or a toolkit pause, or a screen that is already
+    // going away), it moves the machine out of a state it knows nothing about. Only ever for the open pause screen.
+    if (!PauseMenuOpen()) return false;
     PauseMenuLeaveSubmenu();
     auto* rt = REX_RUNTIME();
     PPCFunc* fn = rt ? rt->FindFunction(kPauseMenuContinueFn).value_or(nullptr) : nullptr;
@@ -5870,6 +5879,7 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
     return false;
 }
 void PauseMenuLeaveSubmenu() {}
+bool PauseMenuOpen() { return false; }
 bool PauseMenuClose() { return false; }
 void PauseMenuRestartGame() {}
 void PauseMenuFormsTick() {}

@@ -213,7 +213,7 @@ void TestMessages() {
                             js::reason::kServerTooOld, js::reason::kModsMissing, js::reason::kRoomNotFound, js::reason::kRoomFull,
                             js::reason::kRoomAmbiguous, js::reason::kWorldTimeout, js::reason::kOnlineFailed,
                             js::reason::kPauseOpen, js::reason::kMenuUnavailable, js::reason::kHostNoAnswer,
-                            js::reason::kRoomGone}) {
+                            js::reason::kRoomGone, js::reason::kRaceOn, js::reason::kGarageOpen, js::reason::kInSession, js::reason::kNoSession}) {
         const std::string m = js::FailureMessage(why, t, "x");
         CHECK(!m.empty() && m.back() == '.');
         CHECK(m.find('\n') == std::string::npos);
@@ -221,6 +221,13 @@ void TestMessages() {
     CHECK(js::FailureMessage(js::reason::kModsMissing, t, "A, B") == "The server h:5 needs mods this game does not have: A, B.");
     CHECK(js::FailureMessage(js::reason::kWorldTimeout, t, "20") == "The game did not reach the city in 20 minutes, so the join was cancelled.");
     CHECK(js::FailureMessage("something_new", t, "text") == "text");
+    // The refusals of a join that cannot start from where the game is (browser_join_core.h RefuseStart): each its own stable word and sentence.
+    CHECK(std::string(js::reason::kRaceOn) == "race_on" && std::string(js::reason::kGarageOpen) == "garage_open" &&
+          std::string(js::reason::kInSession) == "in_session");
+    CHECK(std::string(js::reason::kNoSession) == "no_session");
+    CHECK(js::FailureMessage(js::reason::kNoSession, t) == "The game's search did not start or join a session.");
+    CHECK(js::FailureMessage(js::reason::kRaceOn, t) == "A race is on: finish or quit it, then join.");
+    CHECK(js::FailureMessage(js::reason::kInSession, t).find("already in an online session") != std::string::npos);
 }
 
 }  // namespace
