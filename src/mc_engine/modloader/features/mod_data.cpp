@@ -4,6 +4,8 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <rex/platform/file.h>
 #endif
 
 #include <algorithm>
@@ -17,6 +19,10 @@ std::filesystem::path ModelsDir() {
     wchar_t exe[MAX_PATH]{};
     if (GetModuleFileNameW(nullptr, exe, MAX_PATH))
         return mc::modloader::ModRootDir(std::filesystem::path(exe).parent_path());
+#else
+    // The folder of the executable (the mods sit beside the program), not the current directory.
+    if (const std::filesystem::path folder = rex::platform::GetExecutableFolder(); !folder.empty())
+        return mc::modloader::ModRootDir(folder);
 #endif
     return mc::modloader::ModRootDir(std::filesystem::current_path(ec));
 }
