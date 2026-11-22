@@ -16,6 +16,7 @@
 #include "gpu_class.h"
 #include "mc_engine/cinematic/capture_mode.h"
 #include "temporal_identities.h"
+#include "world_clock.h"
 
 namespace mcla::gpu {
 
@@ -38,6 +39,8 @@ void GiIntegration::Initialize(GiField* field, GiApply* apply, AmbientOcclusion*
   world_play_ = false;
   idle_until_ = 0;
   cut_pending_ = false;
+  relight_.Reset();
+  relight_pending_ = false;
   have_camera_ = false;
   have_light_ = false;
   logged_any_ = false;
@@ -88,6 +91,7 @@ void GiIntegration::LatchPoseAndLight() {
   }
   float ambient[3] = {}, sun[3] = {};
   double to_sun[3] = {};
+  bool light_ok = false;
   if (ao_->FrameLight(ambient, sun, to_sun)) {
     for (int i = 0; i < 3; ++i) {
       sun_rgb_[i] = sun[i];
@@ -95,6 +99,13 @@ void GiIntegration::LatchPoseAndLight() {
     }
     sun_sin_elevation_ = float(to_sun[1]);  // the world's y is up
     have_light_ = true;
+    light_ok = true;
+  }
+  // The hour's jump (CITY-RT-REVIEW M4): the play view's frames only (the pause menu's, the garage's and the map's lights are other sets; a jump made there is seen at the first play frame
+  // after it, the clock's count and the sun's step both against what the play view last had).
+  if (world_play_ && relight_.Observe(frame_, mcla::gpu::world_clock::HourJumps(), light_ok, to_sun)) {
+    relight_pending_ = true;
+    REXLOG_INFO("{} frame {}: the world's hour jumped (the clock and the sun's direction both moved): the probes are relit", kPrefix, frame_);
   }
 }
 
@@ -142,8 +153,11 @@ void GiIntegration::BeginFrame(uint64_t frame) {
   in.safe_range_m = city_ != nullptr && city_->initialized() ? city_->SafeRange(GameHiRadius()) : 0.0f;
   in.strength = GiApply::LevelStrength();
   in.bounce_weight = gi_setting::BounceWeightNow();
-  in.cut = gi_field::CutFor(cut_pending_);  // G4f: a cut the game asked for; the camera's own step is GiField::Move's
+  in.cut = gi_field::CutFor(cut_pending_, relight_pending_);  // G4f: a cut the game asked for, else an hour jump (G4g); the camera's own step is GiField::Move's
   cut_pending_ = false;
+  if (in.world_ok) {
+    relight_pending_ = false;  // spent where the field could take it; a jump seen while the world is not the play view's waits for one
+  }
   in.frame = frame;
   field_->BeginFrame(in);
 }

@@ -31,9 +31,11 @@
 #include "gi_field_rules.h"
 #include "gi_frame.h"
 #include "vram_room.h"
+#include "world_clock.h"
 
 namespace gi = mcla::gpu::gi;
 namespace gf = mcla::gpu::gi_field;
+namespace wc = mcla::gpu::world_clock;
 
 // ---------------------------------------------------------------------------
 // the .hlsli as C++: a shim of what the file uses, in a namespace of its own so that the standard library's abs, sqrt ... are not in the way
@@ -547,13 +549,24 @@ void TestCutsAndWarmup() {
   r = state.Move(camera);
   Check(r.cut && r.exposed == gi::BudgetProbes(b) && state.TotalDirty() == gi::BudgetProbes(b) && state.BudgetScale() == gi::kCutWarmupBudgetScale,
         "a camera cut the game asked for clears every probe and starts the warm-up though the step (50 m) is under kCutMetres");
-  // a relight keeps the data: nothing exposed, everything dirty
+  // a relight (the hour jumped) clears every probe like a cut: the old hour's light is wrong everywhere, and a kept probe would blend the new light in at the jump hysteresis (85% old after the first trace) or the slow one
   for (uint32_t c = 0; c < b.cascade_count; ++c) state.TakeDirty(c, 16384, {0, 0, 0}, out.data());
   for (int i = 0; i < 20; ++i) state.Move(camera);
   state.RequestCut(gf::CutKind::kRelight);
   r = state.Move(camera);
-  Check(!r.cut && r.relight && r.exposed == 0 && r.exposure_count == 0 && state.TotalDirty() == gi::BudgetProbes(b) && state.BudgetScale() == gi::kCutWarmupBudgetScale,
-        "a relight (the hour changed) marks every probe dirty and clears none");
+  Check(!r.cut && r.relight && r.moved == 0 && r.exposed == gi::BudgetProbes(b) && r.exposure_count == b.cascade_count && state.TotalDirty() == gi::BudgetProbes(b) &&
+            state.BudgetScale() == gi::kCutWarmupBudgetScale,
+        "a relight (the hour jumped) clears and marks dirty every probe, moves no window, starts the warm-up");
+  Check(r.Reset().total == gi::BudgetProbes(b), "the reset list of a relight names every probe (the GPU clears them: their state is new again)");
+  // the cut kinds the integration hands over (CutFor): the game's cut is a teleport and wins, an hour jump is a relight, nothing is nothing
+  static_assert(gf::CutFor(false, true) == gf::CutKind::kRelight && gf::CutFor(true, true) == gf::CutKind::kTeleport && gf::CutFor(false, false) == gf::CutKind::kNone &&
+                gf::CutFor(false) == gf::CutKind::kNone);
+  // a relight on a field that has just started is the fresh start, not a second one
+  gf::FieldState young;
+  young.Start(b, camera);
+  young.RequestCut(gf::CutKind::kRelight);
+  r = young.Move(camera);
+  Check(r.fresh && !r.relight && !r.cut, "a relight asked at a fresh start is the fresh start");
   // a teleport asked after a relight wins
   for (uint32_t c = 0; c < b.cascade_count; ++c) state.TakeDirty(c, 16384, {0, 0, 0}, out.data());
   state.RequestCut(gf::CutKind::kRelight);
@@ -573,6 +586,211 @@ void TestCutsAndWarmup() {
   state.Start(other, camera);
   r = state.Move(camera);
   Check(r.fresh && r.exposed == gi::BudgetProbes(other) && state.starts() == 2, "a new layout starts fresh with every probe new");
+}
+
+// ---------------------------------------------------------------------------
+// the hour jump (CITY-RT-REVIEW M4): the clock's step test (world_clock.h) and the detector that pairs it with the sun's step (gi_field_rules.h RelightDetector)
+// ---------------------------------------------------------------------------
+namespace {
+
+// The sun's world direction at an hour: 15 degrees an hour round a tilted axis (a stand-in for the game's own path: the tests need only that it moves with the hour).
+void SunAt(double hour, double out[3]) {
+  const double a = (hour - 12.0) * 15.0 * 3.14159265358979323846 / 180.0;
+  const double x = std::sin(a), y = std::cos(a) * 0.9 + 0.1, z = 0.436;
+  const double n = std::sqrt(x * x + y * y + z * z);
+  out[0] = x / n;
+  out[1] = y / n;
+  out[2] = z / n;
+}
+
+// One simulated play: the hour advances `per_frame` hours a frame; at frame `set_at` it is set to `set_to` (when set_at >= 0). The clock names the jump `clock_lag` frames after the hour
+// changed (the game thread is ahead of, or behind, the render thread), the sun's direction of the draws follows the hour `sun_lag` frames late. Returns the frames the detector fired at.
+std::vector<uint64_t> SimulateHour(double start, double per_frame, int frames, int set_at, double set_to, int clock_lag, int sun_lag, bool sun_moves = true) {
+  std::vector<double> hour(size_t(frames) + 1);
+  double h = start;
+  for (int f = 0; f <= frames; ++f) {
+    if (f == set_at) h = set_to;
+    hour[size_t(f)] = h;
+    h += per_frame;
+    while (h >= 24.0) h -= 24.0;
+  }
+  wc::HourJumpTracker tracker;
+  gf::RelightDetector detector;
+  std::vector<uint64_t> fired;
+  for (int f = 0; f <= frames; ++f) {
+    // the clock's frame of the hour: the lighting update of frame f - clock_lag saw hour[f - clock_lag]
+    tracker.Observe(float(hour[size_t(std::max(f - clock_lag, 0))]));
+    double sun[3];
+    SunAt(sun_moves ? hour[size_t(std::max(f - sun_lag, 0))] : 12.0, sun);
+    if (detector.Observe(uint64_t(f) + 1000u, tracker.jumps(), true, sun)) fired.push_back(uint64_t(f));
+  }
+  return fired;
+}
+
+}  // namespace
+
+void TestHourJump() {
+  // THE CLOCK: the step test
+  Check(wc::HourStep(23.9f, 0.1f) > 0.19f && wc::HourStep(23.9f, 0.1f) < 0.21f && wc::HourStep(0.1f, 23.9f) < -0.19f && wc::HourStep(12.0f, 18.0f) == 6.0f, "the hour's step is the short way round the day");
+  {
+    wc::HourJumpTracker t;
+    // normal play: the largest a frame carries (0.104 h = 100 x the day speed at the 125 ms step cap; 0.42 h = a time scale of 4 on it), over a day and a half, through midnight
+    bool fired = false;
+    float hour = 23.0f;
+    for (int i = 0; i < 1000; ++i) {
+      fired |= t.Observe(hour);
+      hour += 0.104f;
+      if (hour >= 24.0f) hour -= 24.0f;
+    }
+    wc::HourJumpTracker fast;  // (the same day cycle at a scene's time scale of 4: a fresh tracker, the start hour is no step)
+    hour = 5.0f;
+    for (int i = 0; i < 400; ++i) {
+      fired |= fast.Observe(hour);
+      hour += 0.42f;
+      if (hour >= 24.0f) hour -= 24.0f;
+    }
+    Check(!fired && t.jumps() == 0 && fast.jumps() == 0, "normal advance (the stock rate up to 100 x the speed at the step cap, and a time scale of 4) is never a jump, midnight included");
+    wc::HourJumpTracker edge;
+    edge.Observe(10.0f);
+    Check(!edge.Observe(10.5f) && edge.jumps() == 0 && edge.Observe(11.1f) && edge.jumps() == 1, "a step of exactly kHourJumpHours is not a jump (over it is)");
+  }
+  {
+    wc::HourJumpTracker t;
+    Check(!t.Observe(12.0f), "the first hour is not a jump");
+    int fires = 0;
+    for (int i = 0; i < 5; ++i) fires += t.Observe(12.0f) ? 1 : 0;
+    fires += t.Observe(18.0f) ? 1 : 0;
+    for (int i = 0; i < 50; ++i) fires += t.Observe(18.0f) ? 1 : 0;
+    Check(fires == 1 && t.jumps() == 1, "a set (12 to 18) is one jump, and the hold after it is none");
+    wc::HourJumpTracker w;
+    w.Observe(23.0f);
+    Check(w.Observe(1.0f) && w.jumps() == 1, "23 to 1 (2 h across midnight) is a jump");
+    wc::HourJumpTracker m;
+    m.Observe(23.9f);
+    Check(!m.Observe(0.1f) && !m.Observe(23.9f) && m.jumps() == 0, "23.9 to 0.1 is a step of 0.2 h, not 23.8");
+  }
+  {
+    // a run of large steps (a slider dragged, a day ramp too fast for the frame) is one jump at its start; a quiet frame re-arms it
+    wc::HourJumpTracker t;
+    t.Observe(0.0f);
+    for (int i = 1; i <= 10; ++i) t.Observe(float(i));
+    Check(t.jumps() == 1, "ten large steps in a row are one jump");
+    t.Observe(10.1f);  // a quiet frame
+    t.Observe(16.0f);
+    Check(t.jumps() == 2, "a large step after a quiet frame is another");
+    // unknown hours change nothing: the next known one is compared with the last known
+    wc::HourJumpTracker u;
+    u.Observe(12.0f);
+    u.Observe(-1.0f);
+    u.Observe(24.0f);
+    u.Observe(std::nanf(""));
+    Check(!u.Observe(12.1f) && u.jumps() == 0, "unknown hours are skipped (no jump from 12.0 to 12.1 across them)");
+    Check(u.Observe(20.0f) && u.jumps() == 1, "... and a known one that is far from the last known is a jump");
+  }
+  {
+    // the published path: two relaxed stores and the counter
+    wc::Publish(12.0f, 0);
+    const uint32_t before = wc::HourJumps();
+    wc::Publish(12.05f, 0);
+    wc::Publish(-1.0f, -1);
+    Check(wc::HourJumps() == before && wc::Hour() == -1.0f, "Publish: a normal step and an unknown hour do not count");
+    wc::Publish(19.0f, 0);
+    wc::Publish(19.0f, 0);
+    Check(wc::HourJumps() == before + 1 && wc::Hour() == 19.0f, "Publish: a set counts once");
+  }
+
+  // THE DETECTOR: normal play never fires
+  const double kNoSun[3] = {0, 0, 0};
+  {
+    const std::vector<uint64_t> fired = SimulateHour(23.0, 0.104, 3000, -1, 0.0, 1, 1);
+    Check(fired.empty(), "normal advance at the largest step (0.104 h a frame, 100 x the day speed), 3000 frames through midnight: never fires");
+    const std::vector<uint64_t> stock = SimulateHour(6.0, 0.00833 * 0.0167, 3000, -1, 0.0, 1, 1);
+    Check(stock.empty(), "the stock day cycle never fires");
+  }
+  // a set fires once, whatever the order and the lag of the two witnesses (the clock before the draws, after them, together)
+  {
+    bool all_once = true;
+    for (int clock_lag = 0; clock_lag <= 4; ++clock_lag) {
+      for (int sun_lag = 0; sun_lag <= 4; ++sun_lag) {
+        const std::vector<uint64_t> fired = SimulateHour(10.0, 0.0, 200, 100, 18.0, clock_lag, sun_lag);
+        const uint64_t expect = uint64_t(100 + std::max(clock_lag, sun_lag));
+        if (fired.size() != 1 || fired[0] != expect) {
+          all_once = false;
+          std::printf("  clock lag %d, sun lag %d: %zu fires, first at %llu (want one at %llu)\n", clock_lag, sun_lag, fired.size(), fired.empty() ? 0ull : (unsigned long long)fired[0],
+                      (unsigned long long)expect);
+        }
+      }
+    }
+    Check(all_once, "an hour set (10 to 18) fires exactly once, on the frame the second witness comes, for every lag of the clock and the draws from 0 to 4 frames");
+  }
+  // a large step fires once: the other direction, across midnight, and a step whose sun arrives in two halves
+  {
+    const std::vector<uint64_t> back = SimulateHour(18.0, 0.0, 200, 100, 6.0, 1, 0);
+    const std::vector<uint64_t> wrap = SimulateHour(22.0, 0.0, 200, 100, 3.0, 0, 2);
+    Check(back.size() == 1 && wrap.size() == 1, "a set backwards (18 to 6) and one across midnight (22 to 3) fire once each");
+    gf::RelightDetector d;
+    int fires = 0;
+    double sun[3];
+    SunAt(10.0, sun);
+    fires += d.Observe(1, 0, true, sun) ? 1 : 0;
+    SunAt(14.0, sun);  // a 60 degree step in two halves: 30 degrees each, both over the threshold
+    fires += d.Observe(2, 1, true, sun) ? 1 : 0;
+    SunAt(18.0, sun);
+    fires += d.Observe(3, 1, true, sun) ? 1 : 0;
+    for (uint64_t f = 4; f < 100; ++f) fires += d.Observe(f, 1, true, sun) ? 1 : 0;
+    Check(fires == 1, "a step of the sun in two halves, one jump of the clock: one relight");
+  }
+  // the clock alone or the sun alone does not fire; the window is the window
+  {
+    const std::vector<uint64_t> still_sun = SimulateHour(10.0, 0.0, 200, 100, 18.0, 1, 1, false);
+    Check(still_sun.empty(), "an hour jump that the draws' sun does not follow (a still sky) does not fire: the light did not change");
+    gf::RelightDetector d;
+    int fires = 0;
+    double sun[3];
+    for (uint64_t f = 0; f < 300; ++f) {
+      SunAt(f < 100 ? 8.0 : 20.0, sun);  // the draws' light set changes at 100 (a tunnel), no hour behind it
+      fires += d.Observe(f, 0, true, sun) ? 1 : 0;
+    }
+    Check(fires == 0, "a step of the sun with no jump of the clock (a tunnel, the garage's light) does not fire, then or later");
+    fires = 0;
+    gf::RelightDetector e;
+    SunAt(8.0, sun);
+    e.Observe(0, 0, true, sun);
+    SunAt(20.0, sun);
+    fires += e.Observe(100, 0, true, sun) ? 1 : 0;                                // the sun steps at 100
+    fires += e.Observe(101 + gf::kRelightWindowFrames, 1, true, sun) ? 1 : 0;  // the clock one frame past the window after it
+    Check(fires == 0, "the two witnesses a frame farther apart than kRelightWindowFrames do not pair");
+    fires = 0;
+    gf::RelightDetector g;
+    SunAt(8.0, sun);
+    g.Observe(0, 0, true, sun);
+    SunAt(20.0, sun);
+    fires += g.Observe(100, 0, true, sun) ? 1 : 0;
+    fires += g.Observe(100 + gf::kRelightWindowFrames, 1, true, sun) ? 1 : 0;  // exactly at the window
+    Check(fires == 1, "... and exactly kRelightWindowFrames apart do");
+  }
+  // the first look is the baseline, bad suns are skipped, a reset forgets
+  {
+    gf::RelightDetector d;
+    double sun[3];
+    SunAt(8.0, sun);
+    Check(!d.Observe(10, 7, true, sun), "the jumps counted before the first look are not a jump");
+    SunAt(20.0, sun);
+    Check(!d.Observe(11, 7, true, kNoSun) && !d.Observe(12, 7, false, sun), "no sun (not given, or of no length) adds no step");
+    Check(!d.Observe(13, 7, true, sun), "the sun's first step after those frames (against the last good direction) is a step, no clock jump yet: no fire");
+    Check(d.Observe(14, 8, true, sun), "... and the clock's count changing a frame later pairs with it");
+    gf::RelightDetector r;
+    SunAt(8.0, sun);
+    r.Observe(1, 0, true, sun);
+    SunAt(20.0, sun);
+    r.Observe(2, 1, false, sun);
+    r.Reset();
+    Check(!r.Observe(3, 1, true, sun) && !r.Observe(4, 2, true, sun), "a reset forgets the baselines");
+  }
+  // the cos is cos(3 degrees)
+  Check(std::fabs(gf::kRelightSunStepCos - std::cos(3.0 * 3.14159265358979323846 / 180.0)) < 1.0e-12, "kRelightSunStepCos is cos(3 degrees)");
+  // the largest step of the sun a frame of normal play makes is under it: 0.104 h * 15 degrees
+  Check(0.104 * 15.0 < 3.0, "a frame of the largest normal advance moves the sun by 1.6 degrees, under the 3 degree step");
 }
 
 void TestWorldBox() {
@@ -945,6 +1163,7 @@ int main(int argc, char** argv) {
   TestToroidalMoves();
   TestDirtyAsTheCameraMoves();
   TestCutsAndWarmup();
+  TestHourJump();
   TestWorldBox();
   TestFade();
   TestResetList();

@@ -94,7 +94,7 @@ class GiField {
     float sun_sin_elevation = 0.0f;
     float ambient_up_rgb[3] = {0, 0, 0};
     float ambient_down_rgb[3] = {0, 0, 0};
-    gi_field::CutKind cut = gi_field::CutKind::kNone;  // a cut the integration knows of: kTeleport (the garage exit, a race start, the Director's warp), kRelight (the Director's hour)
+    gi_field::CutKind cut = gi_field::CutKind::kNone;  // a cut the integration knows of: kTeleport (the garage exit, a race start, the Director's warp), kRelight (an hour jump: the clock and the sun's direction both moved, gi_field_rules.h RelightDetector)
     uint64_t frame = 0;                  // the scene's frame serial
   };
   void BeginFrame(const Inputs& inputs);

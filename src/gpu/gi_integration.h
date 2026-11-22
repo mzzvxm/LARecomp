@@ -37,7 +37,12 @@
 //   G4e  the game's cutscenes: the G-buffer has no planes there, so the watchdog is what brings SSGI back after 8 frames; if the cutscene's first frames show no bounce light, world_ok can read the G-buffer
 //   G4f  a camera cut the game asked for (the trailer toolkit's shots: Scene::NoteAnchorCut, cut_request.h) is a teleport for the field (NoteRequestedCut, Inputs::cut = kTeleport on the next frame's start: every
 //        probe and the pixel pass's history start again, whatever the camera's step); any other jump is a cut by the camera's step only (GiField::Move, 200 m, by design: the probes are fixed to the world, a jump under
-//        200 m moves the windows and keeps the data that is still in them). A time of day jump (kRelight) has no signal in the renderer yet: the old light fades by the update's hysteresis (about 33 updates)
+//        200 m moves the windows and keeps the data that is still in them). A time of day jump (the Director's hour, a mission start's, a skip) is a relight: world_clock.h counts the hour's jumps
+//        (a step over 0.5 h between two frames of the lighting hook) and the sun's direction of the draws is tested for a step (gi_field_rules.h RelightDetector, in LatchPoseAndLight); when both
+//        happened within 30 frames of each other, the next frame's Inputs carry kRelight, once: every probe is cleared like a cut's (the field starts again from the new hour's light, the
+//        screen-space bounce light meanwhile) and the pixel pass's history is reset. A teleport asked in the same frame wins.
+//   G4g  the relight's two witnesses: the clock's step threshold (kHourJumpHours, derived from the game's rates, not measured), the sun's step (3 degrees) and the 30 frame window are values; a real
+//        hour jump trace (a Director scene with `at T hour`) tells whether the clock names the jump before or after the draws carry the new light (the pairing is in either order)
 // ===========================================================================
 
 #include <cstdint>
@@ -104,6 +109,8 @@ class GiIntegration {
   uint64_t idle_until_ = 0;          // the watchdog's hold: no field before this frame
   uint64_t watchdog_trips_ = 0;
   bool cut_pending_ = false;         // the game asked for a camera cut at the last anchor: the next frame's Inputs say so (once)
+  gi_field::RelightDetector relight_;  // the clock's hour jumps and the sun's steps, per play view trigger (LatchPoseAndLight)
+  bool relight_pending_ = false;     // the clock and the light both saw an hour jump: the next frame's Inputs say so (kept until a frame with a world, then spent)
 
   // The last trigger's camera and light (the next frame's Inputs).
   bool have_camera_ = false;

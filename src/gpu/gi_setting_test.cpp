@@ -317,10 +317,26 @@ void IntegrationChecks(const std::string& dir) {
                             "in.safe_range_m =", "in.strength = GiApply::LevelStrength();", "in.bounce_weight = gi_setting::BounceWeightNow();", "in.frame = frame;"}) {
     Check(Has(cpp, field), std::string("the field's Inputs are filled: ") + field);
   }
-  Check(Has(cpp, "in.cut = gi_field::CutFor(cut_pending_);") && Has(cpp, "cut_pending_ = false;") && Before(cpp, "in.cut = gi_field::CutFor(cut_pending_);", "field_->BeginFrame(in);") && !Has(cpp, "CHECK G4f"),
+  Check(Has(cpp, "in.cut = gi_field::CutFor(cut_pending_, relight_pending_);") && Has(cpp, "cut_pending_ = false;") && Before(cpp, "in.cut = gi_field::CutFor(cut_pending_, relight_pending_);", "field_->BeginFrame(in);") &&
+            !Has(cpp, "CHECK G4f"),
         "the field's Inputs carry the game's camera cut once (CutFor) and the request is spent");
-  Check(Has(ReadFile(dir + "/gi_integration.h"), "void NoteRequestedCut() { cut_pending_ = true; }") && Has(ReadFile(dir + "/gi_field_rules.h"), "constexpr CutKind CutFor(bool game_cut) { return game_cut ? CutKind::kTeleport : CutKind::kNone; }"),
-        "the integration takes the request and the rule maps it to a teleport");
+  Check(Has(ReadFile(dir + "/gi_integration.h"), "void NoteRequestedCut() { cut_pending_ = true; }") &&
+            Has(ReadFile(dir + "/gi_field_rules.h"), "constexpr CutKind CutFor(bool game_cut, bool hour_jump = false) { return game_cut ? CutKind::kTeleport : hour_jump ? CutKind::kRelight : CutKind::kNone; }"),
+        "the integration takes the request and the rule maps it to a teleport (a game's cut wins over an hour jump's relight)");
+  // THE HOUR JUMP (CITY-RT-REVIEW M4, G4g): the clock's count and the sun's step are tested at the play view's trigger, the relight is handed over with the next frame's Inputs and kept until a frame with a world
+  Check(Has(cpp, "if (world_play_ && relight_.Observe(frame_, mcla::gpu::world_clock::HourJumps(), light_ok, to_sun)) {") && Has(cpp, "relight_pending_ = true;") && Has(cpp, "#include \"world_clock.h\"") &&
+            Has(cpp, "if (in.world_ok) {\n    relight_pending_ = false;") && Has(cpp, "relight_.Reset();") && Has(cpp, "light_ok = true;"),
+        "the integration pairs the clock's hour jumps with the sun's step at the play view's trigger, hands the relight to the next frame's Inputs and spends it where the field has a world");
+  Check(Before(cpp, "LatchPoseAndLight();", "return field_->RecordFinish(list, frame_slot);") && Has(ReadFile(dir + "/gi_integration.h"), "gi_field::RelightDetector relight_;") && Has(ReadFile(dir + "/gi_integration.h"), "bool relight_pending_ = false;"),
+        "the detector and the pending flag are the integration's");
+  {
+    const std::string field = ReadFile(dir + "/gi_field.cpp");
+    Check(Has(field, "if (move_.fresh || move_.cut || move_.relight) {\n        fade_.Reset();") && Has(field, "Log(move_.cut ? \"cut\" : move_.relight ? \"relight\" : move_.fresh ? \"fresh\" : \"reduced\");"),
+          "a relight restarts the fade like a cut (the field shows nothing until it is traced again) and is logged as one");
+    const std::string tod = ReadFile(dir + "/../mc_engine/gameplay/time_of_day.cpp");
+    Check(Has(tod, "mcla::gpu::world_clock::Publish(ReadF32(base, mgr + kTodCurrent), static_cast<int32_t>(ReadU32(base, kWeatherIndex)));"),
+          "the clock's hour jumps are counted in the one call the lighting hook already makes (world_clock.h Publish): the Director's hour, the settings', a mission start's and a skip all pass it");
+  }
   Check(Has(cpp, "SceneClockNowMs(frame)") && Has(cpp, "city_->SafeRange(GameHiRadius())") && Has(cpp, "300.0 * gpu_class::CityLodScale"), "the clock is the scene clock's and the safe range is M1's, asked with the game's hi radius");
   Check(Has(cpp, "update_ = nullptr;") && Has(cpp, "gi_setting::NoteUpdateBuilt(static_cast<bool>(update_))"), "the update's seam says the update exists (the setting's gate) and Shutdown takes it away");
   Check(Before(cpp, "gi_setting::NoteUpdateBuilt(static_cast<bool>(update_) || larecomp::settings::mcla_gpu_rt_gi_dry_run.Get());", "const gi_setting::Decision decision = gi_setting::Current();"),

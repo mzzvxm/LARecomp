@@ -464,8 +464,8 @@ void GiField::BeginFrame(const Inputs& in) {
         state_.RequestCut(in.cut);
       }
       move_ = state_.Move(in.camera);
-      if (move_.fresh || move_.cut) {
-        fade_.Reset();
+      if (move_.fresh || move_.cut || move_.relight) {
+        fade_.Reset();  // an hour jump cleared the probes like a cut: the field shows nothing until it is traced again (the screen-space bounce light meanwhile)
       }
       ++moves_;
       cuts_ += move_.cut ? 1u : 0u;
@@ -505,13 +505,13 @@ void GiField::BeginFrame(const Inputs& in) {
     f.ambient_down_rgb[c] = in.ambient_down_rgb[c];
   }
   f.sun_sin_elevation = in.sun_sin_elevation;
-  if (fit_.Reduced() || move_.cut || move_.fresh) {
-    Log(move_.cut ? "cut" : move_.fresh ? "fresh" : "reduced");
+  if (fit_.Reduced() || move_.cut || move_.relight || move_.fresh) {
+    Log(move_.cut ? "cut" : move_.relight ? "relight" : move_.fresh ? "fresh" : "reduced");
   }
 }
 
 void GiField::Log(const char* what) {
-  const uint32_t key = (uint32_t(fit_.wanted) << 8) | uint32_t(fit_.step) | (move_.cut ? 0x10000u : 0u);
+  const uint32_t key = (uint32_t(fit_.wanted) << 8) | uint32_t(fit_.step) | (move_.cut ? 0x10000u : 0u) | (move_.relight ? 0x20000u : 0u);
   if (key == last_logged_fit_) {
     return;
   }

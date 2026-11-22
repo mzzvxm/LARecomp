@@ -436,20 +436,90 @@ inline ResetProbe ResetProbeOf(const ResetList& list, uint32_t g) {
 // the field's CPU state: windows, dirty sets, cuts
 // ---------------------------------------------------------------------------
 
-// A cut the callers ask for: a teleport (the garage exit, a race start, the Director's camera) clears everything, a relight (the Director's hour, a lightning flash) keeps the data and
-// marks every probe dirty (traced first, without history: the update is G2's).
+// A cut the callers ask for: a teleport (the garage exit, a race start, the Director's camera) clears everything because the camera is somewhere else; a relight (the hour jumped: the Director's
+// hour, a mission start's, a skip) clears everything because the light is, the camera staying where it is. Both are cuts for the data (every probe cleared and dirty, the fade from 0, the
+// warm-up budget, the pixel pass's history reset); the difference is the report's flag (cut or relight: the log says "hour jump" for the second). The relight does NOT keep the old data: a
+// probe that kept it would blend the first new trace in with the jump hysteresis (gi::kHysteresisJump, 0.85: 85% of the old hour's light left after it), and the traces after it
+// only at 0.85 while the probe's mean luminance has moved by more than the update's jump test (25% and four standard errors: a day to night jump does, 17:00 to 17:40 does not), else at 0.97 (about 33
+// traces). At High the warm-up traces the finest cascade every frame (12 traces: 14% of the old light left) but the coarser two only 6 and 3 times (38% and 61%), then once in 8 and 16 frames:
+// seconds of the old hour's light in the far field. A cleared probe has no history: its first trace is the new light.
 enum class CutKind : uint8_t { kNone, kTeleport, kRelight };
 
 // What the integration hands the field for a frame (gi_integration.cpp BeginFrame): a cut the GAME asked for (cut_request.h: the trailer toolkit's camera cuts on purpose, the first frame of a shot) is a
-// teleport, so every probe and the pixel pass's history start again even where the camera's step is under gi::kCutMetres (a shot that starts 50 m away, or a turn only); no request is no cut. An hour
-// jump (kRelight) has no signal in the renderer yet (CITY-RT-REVIEW M4).
-constexpr CutKind CutFor(bool game_cut) { return game_cut ? CutKind::kTeleport : CutKind::kNone; }
+// teleport, so every probe and the pixel pass's history start again even where the camera's step is under gi::kCutMetres (a shot that starts 50 m away, or a turn only); no request is no cut.
+// An hour jump the clock and the light both saw (RelightDetector) is a relight, and a teleport asked in the same frame wins (it clears the same and moves the windows).
+constexpr CutKind CutFor(bool game_cut, bool hour_jump = false) { return game_cut ? CutKind::kTeleport : hour_jump ? CutKind::kRelight : CutKind::kNone; }
+
+// ---------------------------------------------------------------------------
+// the hour jump (CITY-RT-REVIEW M4)
+// ---------------------------------------------------------------------------
+// When the time of day jumps (the Director's hour, a mission start that sets it, a skip, the settings' hour slider) every probe holds the light of the old hour. The signal needs two
+// witnesses, because each alone fails in a way that cannot be told from here:
+//   THE CLOCK  world_clock.h HourJumps(): the hook that runs the lighting update sees the hour of every frame's start, and a step over world_clock::kHourJumpHours (0.5 h, above the largest step
+//              normal play makes in a frame) is a jump, whoever set the hour (the game thread: it may run a few frames ahead of the render thread, so the clock can name the jump before the draws
+//              carry the new light, or after).
+//   THE LIGHT  the sun's world direction of the draws (GiIntegration::LatchPoseAndLight, PS c16): the light the probes are traced with is the draws', and a relight that came before it
+//              would spend the warm-up's 12 frames of 4 x the budget on the old hour. A step of the direction over kRelightSunStepCos between two triggers is a step of the light. Alone it
+//              would also fire on a light set that changes with no hour behind it (a tunnel, the garage).
+// The two must come within kRelightWindowFrames frames of each other, in either order; a jump is spent when the relight fires, so one jump fires once (a second step of the sun in the
+// window has no clock jump to pair with). The largest step of the sun in a frame of normal play is 0.104 h * 15 degrees = 1.6 degrees (world_clock.h); kRelightSunStepCos is cos(3 degrees),
+// a step that the clock's own test has already called a jump needs only to be seen in the light, not to be large. A lightning flash changes the sun's colour, not its direction: it does
+// not count. An hour jump that does not move the sun by 3 degrees (a few minutes of the day, or a night that the sky keeps still) leaves the light where it was: nothing to relight.
+inline constexpr uint32_t kRelightWindowFrames = 30;
+inline constexpr double kRelightSunStepCos = 0.9986295347545738;  // cos(3 degrees)
+
+class RelightDetector {
+ public:
+  // Once a frame, from the play view's trigger: `frame` (the scene's serial, rising), `clock_jumps` (world_clock::HourJumps()), the sun's direction toward the sun (any length; `have_sun`
+  // false when the draws gave none). True once for each jump that both witnesses saw.
+  bool Observe(uint64_t frame, uint32_t clock_jumps, bool have_sun, const double to_sun[3]) {
+    if (!have_clock_) {
+      have_clock_ = true;
+      seen_jumps_ = clock_jumps;  // the jumps before the first look are not this field's
+    } else if (clock_jumps != seen_jumps_) {
+      seen_jumps_ = clock_jumps;
+      jump_frame_ = frame;
+      have_jump_ = true;
+    }
+    if (have_sun) {
+      const double length = std::sqrt(to_sun[0] * to_sun[0] + to_sun[1] * to_sun[1] + to_sun[2] * to_sun[2]);
+      if (std::isfinite(length) && length > 1.0e-6) {
+        const double n[3] = {to_sun[0] / length, to_sun[1] / length, to_sun[2] / length};
+        if (have_sun_ && n[0] * sun_[0] + n[1] * sun_[1] + n[2] * sun_[2] < kRelightSunStepCos) {
+          step_frame_ = frame;
+          have_step_ = true;
+        }
+        for (int a = 0; a < 3; ++a) sun_[a] = n[a];
+        have_sun_ = true;
+      }
+    }
+    if (have_jump_ && have_step_ && (jump_frame_ > step_frame_ ? jump_frame_ - step_frame_ : step_frame_ - jump_frame_) <= kRelightWindowFrames) {
+      have_jump_ = have_step_ = false;
+      return true;
+    }
+    // What can no longer meet its other witness is dropped.
+    if (have_jump_ && frame > jump_frame_ && frame - jump_frame_ > kRelightWindowFrames) have_jump_ = false;
+    if (have_step_ && frame > step_frame_ && frame - step_frame_ > kRelightWindowFrames) have_step_ = false;
+    return false;
+  }
+  void Reset() { *this = RelightDetector{}; }
+
+ private:
+  bool have_clock_ = false;
+  uint32_t seen_jumps_ = 0;
+  bool have_jump_ = false;
+  uint64_t jump_frame_ = 0;
+  bool have_sun_ = false;
+  double sun_[3] = {0.0, 0.0, 0.0};
+  bool have_step_ = false;
+  uint64_t step_frame_ = 0;
+};
 
 struct MoveReport {
   bool running = false;
   bool fresh = false;       // the first Move after Start (every probe is new)
   bool cut = false;         // the data of every probe was dropped (the camera jumped or a teleport was asked for)
-  bool relight = false;     // every probe was marked dirty with its data kept
+  bool relight = false;     // the data of every probe was dropped because the light changed (an hour jump), the camera did not jump
   uint32_t moved = 0;       // cascades whose window moved
   uint64_t exposed = 0;     // probes cleared and marked dirty by this move
   std::array<Exposure, kResetListMaxEntries> exposures = {};
@@ -513,7 +583,7 @@ class FieldState {
       const gi::CascadeSpec& spec = budget_.cascade[c];
       const gi::Coord origin = gi::OriginFor(camera, spec, budget_.y_centre_offset_m);
       const bool moved = !(origin == k.origin);
-      if (fresh_ || cut) {
+      if (fresh_ || cut || relight) {
         k.origin = origin;
         const gi::Box whole = k.Window(spec.dims);
         Expose(r, c, whole);
@@ -531,7 +601,6 @@ class FieldState {
         }
         ++r.moved;
       }
-      if (relight) k.dirty.MarkAll();
     }
     r.cut = cut;
     r.relight = relight;
