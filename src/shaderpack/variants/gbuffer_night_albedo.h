@@ -25,7 +25,9 @@
 //
 // WHAT STAYS WITHOUT ONE (kGBufferNightHeadlightExempt): the lit weight of an EMISSIVE class is 0 (gbuffer_material.h), the light pass never lights an emissive surface (RT2.a = 0), so an albedo
 // there would change nothing: the neon and the lamp glass tints (5 shaders) keep the "no data" code, and a headlight no longer lights a neon tube or a lamp lens, which the forward stage did by
-// accident of adding the sum of the lights to their colour. The tangent space bump decal (xCityTintBumpDecal) has no world normal in its text, so it has no stage at all (kGBufferNightSkipTangent).
+// accident of adding the sum of the lights to their colour. The plain neon and the store sign (xCityNeon, xCityStoreSign: GB-H2-REVIEW) do have a diffuse texel, but their class is emissive too, so
+// their weight is 0 and the pass skips them just the same: they are on the list with the tints (8 shaders), not among the covered ones, and carry no occlusion row. The tangent space bump decal
+// (xCityTintBumpDecal) has no world normal in its text, so it has no stage at all (kGBufferNightSkipTangent).
 // ===========================================================================
 
 #include <cstddef>
@@ -104,6 +106,8 @@ inline constexpr NightHeadlightExempt kGBufferNightHeadlightExempt[] = {
     {"xCityLampGlassTint__PSMultiLight", kExemptEmissive},
     {"xCityLampGlassTint__PSMultiLightInterior", kExemptEmissive},
     {"xCityNeonTint__PSMultiLight", kExemptEmissive},
+    {"xCityNeon__PSMultiLight", kExemptEmissive},
+    {"xCityStoreSign__PSMultiLight", kExemptEmissive},
     {"xCityTintBumpDecal__PSMultiLight", kExemptTangent},
     {"xPropLampGlassTint__PSMultiLight", kExemptEmissive},
     {"xPropNeonTint__PSMultiLight", kExemptEmissive},
@@ -151,8 +155,6 @@ inline constexpr NightOcclusionRow kGBufferNightOcclusionRows[] = {
     {"xCityGroundDecalGrime__PSMultiLight", 1},
     {"xCityGroundGrimeDecal__PSMultiLight", 1},
     {"xCityGroundGrime__PSMultiLight", 1},
-    {"xCityNeon__PSMultiLight", 1},
-    {"xCityNeon__PSMultiLightInterior", 1},
     {"xCityNormalMap__PSMultiLight", 1},
     {"xCityNormalMap__PSMultiLightInterior", 1},
     {"xCityPondWater__PSMultiLight", 1},
@@ -164,8 +166,6 @@ inline constexpr NightOcclusionRow kGBufferNightOcclusionRows[] = {
     {"xCityRoad__PSMultiLight", 1},
     {"xCitySidewalk__PSMultiLight", 1},
     {"xCitySidewalk__PSMultiLightInterior", 1},
-    {"xCityStoreSign__PSMultiLight", 1},
-    {"xCityStoreSign__PSMultiLightInterior", 1},
     {"xCityTerrain__PSMultiLight", 1},
     {"xCityTerrain__PSMultiLightInterior", 1},
     {"xCityTintBumpDecal2__PSMultiLight", 1},

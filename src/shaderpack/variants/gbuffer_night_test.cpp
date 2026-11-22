@@ -475,7 +475,7 @@ void CheckAlbedoRecipes() {
       if (i > 0 && !(sp::kGBufferNightHeadlightExempt[i - 1].name < row.name)) exempt_ok = false;
       exempt_ok = exempt_ok && sp::IsGBufferNightShader(row.name) && sp::FindGBufferNightAlbedoRow(row.name) == nullptr && !row.reason.empty();
     }
-    Check(exempt_ok && std::size(sp::kGBufferNightHeadlightExempt) == 6, "the six shaders the light pass does not light are sorted, in the family and have no recipe (the two lists do not overlap)");
+    Check(exempt_ok && std::size(sp::kGBufferNightHeadlightExempt) == 8, "the eight shaders the light pass does not light are sorted, in the family and have no recipe (the two lists do not overlap)");
     Check(sp::FindGBufferNightAlbedoRow("xCityRoad__PSMultiLight") != nullptr && sp::FindGBufferNightAlbedoRow("xCityDefault__PSMultiLight") == nullptr && sp::FindGBufferNightAlbedoRow("") == nullptr,
           "a recipe is found by name; a shader with a diffuse texel has none");
   }
@@ -487,9 +487,9 @@ void CheckAlbedoRecipes() {
       if (i > 0 && !(sp::kGBufferNightOcclusionRows[i - 1].name < row.name)) sorted = false;
       family = family && sp::IsGBufferNightShader(row.name);
       power = power && (row.power == 1 || row.power == 2);
-      not_emissive = not_emissive && !(sp::FindGBufferNightHeadlightExempt(row.name) != nullptr);
+      not_emissive = not_emissive && !(sp::FindGBufferNightHeadlightExempt(row.name) != nullptr) && mcla::gpu::gbuffer::MaterialOfShaderName(row.name).lit > 0.0f;
     }
-    Check(sp::kGBufferNightOcclusionRowCount == 52, "the table has 52 occlusion rows (48 by iColor1.w, 4 windows by its square)");
+    Check(sp::kGBufferNightOcclusionRowCount == 48, "the table has 48 occlusion rows (44 by iColor1.w, 4 windows by its square)");
     Check(sorted && family && power, "the occlusion rows are sorted by name, in the night family, power 1 or 2");
     Check(not_emissive, "no emissive or exempt shader carries an occlusion (the pass never lights them)");
     Check(sp::NightOcclusionExpression({"x", 1}) == "iColor1.w" && sp::NightOcclusionExpression({"x", 2}) == "iColor1.w * iColor1.w", "the expressions: the vertex alpha, its square");
@@ -850,6 +850,7 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
   {
     int headlight_edited = 0, covered_texel = 0, covered_recipe = 0, exempt_seen = 0;
     std::vector<std::string> uncovered;
+    std::vector<std::string> dark;  // covered by an albedo, but the class's lit weight is 0: the light pass skips the pixel (RT2.a = 0), so the pass lights none of it
     std::set<std::string> exempt_edited;
     for (const Shader_* file : family) {
       const std::string text = ReadFile(file->path);
@@ -871,6 +872,9 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
         }
       } else if (a.found && a.albedo.found) {
         (a.recipe ? covered_recipe : covered_texel)++;
+        // GB-H2-REVIEW: an albedo is not enough: the lit weight of the shader's class is RT2.a, and the pass skips a pixel whose weight is 0 (every emissive class)
+        const mcla::gpu::gbuffer::ShaderMaterial material = mcla::gpu::gbuffer::MaterialOfShaderName(file->stem);
+        if (!(material.lit > 0.0f)) dark.push_back(file->stem + " (class " + std::to_string(int(material.cls)) + ")");
       } else {
         uncovered.push_back(file->stem + (a.found ? " (no albedo: " + a.albedo.why_not + ")" : " (no normal: " + a.why_not + ")"));
       }
@@ -878,13 +882,15 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
     std::printf("\nHEADLIGHT COVER: the forward headlight stage edits %d shaders: %d have the G-buffer's normal and a diffuse texel, %d a recipe, %d are exempt, %zu are not covered\n", headlight_edited, covered_texel,
                 covered_recipe, exempt_seen, uncovered.size());
     for (const std::string& name : uncovered) std::printf("      NOT COVERED: %s\n", name.c_str());
+    for (const std::string& name : dark) std::printf("      LIT WEIGHT 0: %s\n", name.c_str());
+    Check(dark.empty(), "every shader the forward headlight stage edits that is not exempt has a lit weight above 0 (an emissive class is skipped by the light pass, whatever its albedo): " + std::to_string(dark.size()) + " have none");
     Check(uncovered.empty(), "every shader the forward headlight stage edits writes the G-buffer's normal and albedo (or is exempt for its reason): " + std::to_string(uncovered.size()) + " are not");
     bool all_seen = true;
     for (const sp::NightHeadlightExempt& row : sp::kGBufferNightHeadlightExempt) all_seen = all_seen && exempt_edited.contains(std::string(row.name));
     Check(all_seen, "every exempt shader is one the forward headlight stage edits (a stale exemption is a hole nobody looks at)");
     if (family.size() == 115) {
-      Check(headlight_edited == 58 && covered_texel == 41 && covered_recipe == 11 && exempt_seen == 6,
-            "the retail cover: 58 edited by the headlight = 41 with a texel + 11 recipes + 6 exempt (got " + std::to_string(headlight_edited) + " = " + std::to_string(covered_texel) + " + " +
+      Check(headlight_edited == 58 && covered_texel == 39 && covered_recipe == 11 && exempt_seen == 8,
+            "the retail cover: 58 edited by the headlight = 39 with a texel + 11 recipes + 8 exempt (got " + std::to_string(headlight_edited) + " = " + std::to_string(covered_texel) + " + " +
                 std::to_string(covered_recipe) + " + " + std::to_string(exempt_seen) + ")");
     }
   }
