@@ -300,6 +300,12 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   if (!enabled_ || !list || trigger_seen_ || field_ == nullptr || gbuffer_ == nullptr || screen_ == nullptr || edram_ == nullptr || !summary.source) {
     return false;
   }
+  // The trigger is the copy of the MAIN view's depth (the field's own rule, gi_integration.cpp OnResolve: temporal::MainDepthSamples of the source's key). The scene calls this at every resolve, and any depth
+  // copy has a source: with the sun up the game copies its shadow cascades' depth first, and the first such copy took the frame's one run ("trigger_seen_") while the field was not published yet
+  // (its own trigger skips it): the apply saw no field in every frame of the day (the chain's noon runs: 'the apply pass never ran'), while at night, with no cascades, the main copy came first.
+  if (!summary.depth_copy || temporal::MainDepthSamples(summary.source_key) == 0) {
+    return false;
+  }
   trigger_seen_ = true;  // once a frame
   const gi::GiFrame& gf = field_->frame();
   if (!gf.FieldPresent()) {
