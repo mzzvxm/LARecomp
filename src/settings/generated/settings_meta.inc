@@ -560,6 +560,8 @@
 {"mcla_gpu_local_lights_ab", "MCLA/GPU"},
 {"mcla_gpu_local_lights_gain", "MCLA/GPU"},
 {"mcla_gpu_neon_light_gain", "MCLA/GPU"},
+{"mcla_gpu_neon_light_reach", "MCLA/GPU"},
+{"mcla_gpu_neon_light_tuned", "MCLA/GPU"},
 {"mcla_gpu_local_lights_cost_off", "MCLA/GPU"},
 {"mcla_gpu_neon_contact", "MCLA/GPU"},
 {"mcla_gpu_local_lights_car_gain", "MCLA/GPU"},

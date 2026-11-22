@@ -114,8 +114,10 @@ constexpr const char* kLocalLightSourceNames[] = {"NONE", "FRAME LIGHTS", "POLIC
 // atlas shadows (PASS), or both added together (BOTH: the difference pictures).
 constexpr const char* kHeadlightRouteVals[]  = {"forward", "pass", "both"};
 constexpr const char* kHeadlightRouteNames[] = {"FORWARD", "PASS", "BOTH"};
-// The neon light's multiplier (mcla_gpu_neon_light_gain, gpu/local_lights_sources.h): 1 is the game's own colour as read, 0 puts the neon's light out, 4 is a strong glow for the A/B pictures.
+// The neon light's multiplier (mcla_gpu_neon_light_gain, gpu/local_lights_sources.h): 1 is the tuned underglow (GB-NEON-TUNE), 0 puts the neon's light out, 0.5 / 2 / 4 are the softer and stronger
+// arms of the tuning pictures. Its reach's scale (mcla_gpu_neon_light_reach): 1 is the tier's reach (5 / 5.5 / 6 m), 0.8 and 1.3 are the pictures' softer and stronger arms.
 constexpr double kNeonGainVals[]          = {0.0, 0.5, 1.0, 2.0, 4.0};
+constexpr double kNeonReachVals[]         = {0.5, 0.8, 1.0, 1.3, 1.6, 2.0};
 constexpr const char* kMarkerLevelVals[]  = {"0", "1", "2"};
 constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
@@ -307,6 +309,10 @@ const ItemDef kDebugRenderingItems[] = {
     // on GRAPHICS > LIGHTING AND SHADOWS; this one is a debug lever like the cars' gain of the light pass.
     NativeOnly(Dbl("PM_RxDbgNeonGain",   "mcla_gpu_neon_light_gain", "NEON LIGHT GAIN: ",
                    kNeonGainVals, Len(kNeonGainVals), "%g")),
+    // GB-NEON-TUNE (live): the neon light's reach scale, and the A/B of the retune itself (OFF is the look before it: the game's HDR colour as the light, the plateau law, a hard cut at 6 / 7 / 8 m).
+    NativeOnly(Dbl("PM_RxDbgNeonReach",  "mcla_gpu_neon_light_reach", "NEON LIGHT REACH: ",
+                   kNeonReachVals, Len(kNeonReachVals), "%g")),
+    NativeOnly(Bool("PM_RxDbgNeonTuned", "mcla_gpu_neon_light_tuned", "NEON LIGHT TUNED: ")),
     // The neon's contact term (GB-NEON-BLEED, live): ON shuts a neon light out of the car's own panels (the other car's vents, lip and cabin), OFF is the law's N.L alone: the A/B of the pictures.
     NativeOnly(Bool("PM_RxDbgNeonContact", "mcla_gpu_neon_contact", "NEON CONTACT: ")),
     // The glow of street lamps (halo and star): the game's one depth test at the glow's centre (GAME), or the

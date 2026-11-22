@@ -9,7 +9,9 @@
 //   kHeadlight  the rig's term (headlight_rig_rules.h LampScale: kPeak 2.0 x 1/(1+(d/D)^2) x window^2 x cone x surface wrap x low beam cut x near fade; calibrated by eye, HEADLIGHT-FIX-2).
 //   kGameLamp   the game's PSMultiLight term (volumetrics_lamps.h): colour x saturate(I/d^2) x cone x N.L, a plateau out to d = sqrt(I), reach (1 per cent) sqrt(100 I).
 //               Here `color` already holds rgb x I x the prop pass's fade, so the term is  color x min(1/I, 1/d^2) x cone x N.L  (law_a = I).
-//   kOmni       the same without the cone (police, neon, an omni lamp).
+//   kOmni       the same without the cone (police, an omni lamp).
+//   kNeon       the cars' underglow (GB-NEON-TUNE): colour x w(d)^2 / (d^2 + near^2) x wrap(N.L), w = saturate(1 - (d / range)^4); law_a = near^2. The colour is a radiant intensity in the
+//               street lamps' units (a lamp's colour x its 1 / I plateau is its rgb: 1 at the plateau), so 'the neon is half a street lamp at 3 m' is a number you can read here.
 //   the volume's form of a lamp (hlsl/volumetrics_inject_cs.hlsl): colour x w(d)^2 / (d^2 + near^2), w = saturate(1 - (d/range)^4): VolumeUnits / VolumeNearSq / VolumeFalloff
 //   are the units and the near radius the volume gets from a Light (light_convert.h ToVolLamp), so the volume's lamp is a PROJECTION of the light, not a second description.
 //
@@ -162,9 +164,35 @@ inline float GameLampScale(const Light& l, const LightSurface& s, float visibili
   return distance_term * cone * n_dot_l * visibility;
 }
 
+// kNeon (GB-NEON-TUNE): the underglow's term. The distance law is the volume's lamp (colour x w^2 / (d^2 + near^2), law_a = near^2: no singularity under the tube, a pool that is nearly flat
+// inside the near radius) with the window w = saturate(1 - (d / range)^4) squared, which is 0 at `range` with a zero slope: the light fades out smoothly and the reach test, the scissor and the
+// law all use the one `range`. The surface term is a WRAP of N.L (a tube a hand above the road lights the road at a grazing angle; an extended glow does not fall to nothing there as a
+// point's N.L would): saturate((N.L + kNeonWrap) / (1 + kNeonWrap)), 0 for a surface facing away from the light by more than the wrap. (hlsl/light_laws.hlsli LlNeonScale is the twin.)
+inline constexpr float kNeonWrap = 0.3f;
+inline float NeonWindow(float dist2, float range2) {
+  const float r2 = dist2 / range2;
+  const float w = std::clamp(1.0f - r2 * r2, 0.0f, 1.0f);
+  return w * w;
+}
+inline float NeonScale(const Light& l, const LightSurface& s, float visibility = 1.0f) {
+  const float to_light[3] = {l.pos[0] - s.position[0], l.pos[1] - s.position[1], l.pos[2] - s.position[2]};
+  const float dist2 = Dot3(to_light, to_light);
+  const float range2 = l.range * l.range;
+  if (!(l.law_a > 0.0f) || dist2 >= range2 || dist2 < 1.0e-6f) {
+    return 0.0f;
+  }
+  const float inverse = 1.0f / std::sqrt(dist2);
+  const float lv[3] = {to_light[0] * inverse, to_light[1] * inverse, to_light[2] * inverse};
+  const float surface_term = Saturate((Dot3(s.normal, lv) + kNeonWrap) * (1.0f / (1.0f + kNeonWrap)));
+  return NeonWindow(dist2, range2) / (dist2 + l.law_a) * surface_term * visibility;
+}
+
 // The scalar part of one light's term at a surface (colour excluded), by the light's law.
 inline float LightScale(const Light& l, const LightSurface& s, float visibility = 1.0f) {
-  return l.law == LightLaw::kHeadlight ? HeadlightScale(l, s, visibility) : GameLampScale(l, s, visibility);
+  if (l.law == LightLaw::kHeadlight) {
+    return HeadlightScale(l, s, visibility);
+  }
+  return l.law == LightLaw::kNeon ? NeonScale(l, s, visibility) : GameLampScale(l, s, visibility);
 }
 
 // The light a surface gets: colour x LightScale.

@@ -137,7 +137,7 @@ void LayoutChecks() {
   Check(uint32_t(LightSource::kHeadlight) == 0 && uint32_t(LightSource::kLamp) == 1 && uint32_t(LightSource::kNeon) == 2 && uint32_t(LightSource::kPolice) == 3 &&
             uint32_t(LightSource::kMod) == 4 && uint32_t(LightSource::kOther) == 5,
         "LightSource numbers (light_set.h's)");
-  Check(uint32_t(LightLaw::kHeadlight) == 0 && uint32_t(LightLaw::kGameLamp) == 1 && uint32_t(LightLaw::kOmni) == 2, "LightLaw numbers");
+  Check(uint32_t(LightLaw::kHeadlight) == 0 && uint32_t(LightLaw::kGameLamp) == 1 && uint32_t(LightLaw::kOmni) == 2 && uint32_t(LightLaw::kNeon) == 3, "LightLaw numbers (kNeon is the last of the two bits: GB-NEON-TUNE)");
   Check(uint32_t(ShadowKind::kNone) == 0 && uint32_t(ShadowKind::kAtlas) == 1 && uint32_t(ShadowKind::kRtMask) == 2, "ShadowKind numbers");
   Check(uint32_t(ShadowLayer::kSingle) == 0 && uint32_t(ShadowLayer::kStatic) == 1 && uint32_t(ShadowLayer::kLive) == 2, "ShadowLayer numbers");
   Check(RoleBit(LightRole::kSurface) == kRoleMaskSurface && RoleBit(LightRole::kVolume) == kRoleMaskVolume && RoleBit(LightRole::kShadow) == kRoleMaskShadow,
@@ -172,7 +172,7 @@ Light RandomLight(Lcg& rng, uint32_t law_pick) {
   l.law_a = rng.Range(1.0f, 100.0f);
   l.kind = l.cos_outer <= -0.999f ? LightKind::kPoint : LightKind::kSpot;
   l.source = LightSource(rng.Below(6));
-  l.law = LightLaw(law_pick % 3);
+  l.law = LightLaw(law_pick % 4);
   l.state = FadeState(rng.Below(4));
   l.roles = uint8_t(rng.Below(16));
   l.flags = rng.Below(1u << 20) | (rng.Next() < 0.5f ? 0x80000000u : 0u);
@@ -497,6 +497,80 @@ void GameLampLightChecks() {
     no_law.law_a = 0.0f;
     Check(ll::LightScale(no_law, far_side) == 0.0f, "a lamp with no plateau radius lights nothing");
   }
+}
+
+// GB-NEON-TUNE: the underglow's law (light_laws.h NeonScale, hlsl LlNeonScale): colour x w^2 / (d^2 + near^2) x wrap(N.L), w = saturate(1 - (d / range)^4), law_a = near^2.
+void NeonLawChecks() {
+  Light l;
+  l.pos[1] = 0.5f;
+  l.color[0] = 4.0f;
+  l.law = LightLaw::kNeon;
+  l.law_a = 0.64f;
+  l.range = 5.0f;
+  l.kind = LightKind::kPoint;
+  l.cos_outer = l.cos_inner = -1.0f;
+  const auto facing = [&](float d, float n_dot_l_tilt) {  // a surface d metres from the light along +x, its normal tilted by an angle whose cosine to the light is n_dot_l_tilt
+    ll::LightSurface s;
+    s.position[0] = d;
+    s.position[1] = 0.5f;
+    s.normal[0] = -n_dot_l_tilt;
+    s.normal[1] = std::sqrt(std::max(0.0f, 1.0f - n_dot_l_tilt * n_dot_l_tilt));
+    return s;
+  };
+  // golden values by hand: at 2 m facing the light: (1 - (2/5)^4)^2 / (4 + 0.64) = 0.97440^2 / 4.64
+  CheckNear(ll::LightScale(l, facing(2.0f, 1.0f)), 0.974400 * 0.974400 / 4.64, 1e-6, "kNeon at 2 m facing the light: window^2 / (d^2 + near^2)");
+  CheckNear(ll::LightScale(l, facing(1.0f, 1.0f)), (1.0 - std::pow(0.2, 4.0)) * (1.0 - std::pow(0.2, 4.0)) / 1.64, 1e-6, "and at 1 m");
+  CheckNear(ll::LightScale(l, facing(1.0f, 0.0f)) / ll::LightScale(l, facing(1.0f, 1.0f)), ll::kNeonWrap / (1.0 + ll::kNeonWrap), 1e-6, "a surface edge-on to the light gets the wrap's share (0.3 / 1.3)");
+  CheckNear(ll::LightScale(l, facing(1.0f, -ll::kNeonWrap)), 0.0, 1e-9, "a surface facing away by more than the wrap gets nothing");
+  CheckNear(ll::LightScale(l, facing(1.0f, -1.0f)), 0.0, 1e-9, "and the far side of a body none");
+  CheckNear(ll::LightScale(l, facing(1.0f, 0.5f), 0.25f), 0.25 * ll::LightScale(l, facing(1.0f, 0.5f)), 1e-7, "visibility is the last factor");
+  // the window: 0 at the range and beyond, and flat there (no edge: the step at the reach is nothing, the slope is nothing)
+  CheckNear(ll::LightScale(l, facing(5.0f, 1.0f)), 0.0, 0.0, "exactly 0 at the range");
+  CheckNear(ll::LightScale(l, facing(7.0f, 1.0f)), 0.0, 0.0, "and beyond it");
+  const double at_1m = ll::LightScale(l, facing(1.0f, 1.0f));
+  const double just_in = ll::LightScale(l, facing(5.0f * (1.0f - 1.0e-3f), 1.0f));
+  Check(just_in < 1.0e-4 * at_1m, Num("the value just inside the range is %.2e of the value at 1 m: no step at the reach", just_in / at_1m));
+  double worst_step = 0.0, prev = ll::LightScale(l, facing(0.05f, 1.0f));
+  bool monotone = true;
+  for (int i = 1; i <= 1000; ++i) {
+    const double v = ll::LightScale(l, facing(0.05f + 4.95f * float(i) / 1000.0f, 1.0f));
+    monotone = monotone && v <= prev + 1e-12;
+    worst_step = std::max(worst_step, std::fabs(v - prev));
+    prev = v;
+  }
+  Check(monotone, "the term falls with the distance, everywhere out to the range");
+  Check(worst_step < 0.02 * at_1m, Num("no step anywhere on the way: the largest step of 1000 along the axis is %.4f of the value at 1 m", worst_step / at_1m));
+  // the slope at the range is 0 (a window of w^2 with w = 1 - (d/R)^4: both go to 0)
+  const double slope = (ll::LightScale(l, facing(4.99f, 1.0f)) - ll::LightScale(l, facing(4.98f, 1.0f))) / 0.01;
+  Check(std::fabs(slope) < 5.0e-3 * at_1m, Num("the slope at the range is nothing (%.2e of the value at 1 m a metre)", std::fabs(slope) / at_1m));
+  // a light with no near radius, at the light itself, or past 0: nothing
+  Light none = l;
+  none.law_a = 0.0f;
+  CheckNear(ll::LightScale(none, facing(1.0f, 1.0f)), 0.0, 0.0, "a near radius of 0 is no light (the law's parameter is missing)");
+  ll::LightSurface at_light;
+  at_light.position[1] = 0.5f;
+  at_light.normal[1] = 1.0f;
+  CheckNear(ll::LightScale(l, at_light), 0.0, 0.0, "a surface at the light's own place gets nothing (no direction)");
+  // the dispatch: the law decides (the same numbers as a plain omni light are not the neon's)
+  Light omni = l;
+  omni.law = LightLaw::kOmni;
+  omni.law_a = 3.0f;
+  Check(std::fabs(ll::LightScale(omni, facing(2.0f, 1.0f)) - ll::LightScale(l, facing(2.0f, 1.0f))) > 1.0e-3, "LightScale follows the law: kNeon is not the game's plateau law");
+  // the pack: law 3 survives the GpuLight's two bits and the unpack
+  const GpuLight g = PackGpuLight(l);
+  Check(UnpackGpuLight(g).law == LightLaw::kNeon, "a kNeon light keeps its law through the GpuLight row");
+  // the street lamps' units: a street lamp (rgb x I = colour, term 1/I inside its plateau) gives its rgb inside 7.4 m of it; the neon's term for colour c is c x scale, in the same units
+  Light lamp;
+  lamp.pos[1] = 3.0f;
+  lamp.color[0] = lamp.color[1] = lamp.color[2] = 55.0f;  // rgb (1, 1, 1) x I
+  lamp.law = LightLaw::kOmni;
+  lamp.law_a = 55.0f;
+  lamp.range = 40.0f;
+  lamp.kind = LightKind::kPoint;
+  lamp.cos_outer = lamp.cos_inner = -1.0f;
+  ll::LightSurface under;
+  under.normal[1] = 1.0f;
+  CheckNear(double(lamp.color[0]) * double(ll::LightScale(lamp, under)), 1.0, 1e-6, "a street lamp's colour x term is its rgb inside the plateau, 1.0 under it (the unit the neon's intensity is in)");
 }
 
 void HeadlightLawChecks() {
@@ -931,6 +1005,7 @@ void HlslDefinesChecks(const std::string& text) {
       {"LL_LAW_HEADLIGHT", double(LightLaw::kHeadlight)},
       {"LL_LAW_GAME_LAMP", double(LightLaw::kGameLamp)},
       {"LL_LAW_OMNI", double(LightLaw::kOmni)},
+      {"LL_LAW_NEON", double(LightLaw::kNeon)},
       {"LL_SHADOW_NONE", double(ShadowKind::kNone)},
       {"LL_SHADOW_ATLAS", double(ShadowKind::kAtlas)},
       {"LL_SHADOW_RT_MASK", double(ShadowKind::kRtMask)},
@@ -963,6 +1038,7 @@ void HlslDefinesChecks(const std::string& text) {
       {"LL_CUT_HIGH", double(ll::kCutHigh)},
       {"LL_NEAR_START", double(ll::kNearStart)},
       {"LL_NEAR_SPAN", double(ll::kNearSpan)},
+      {"LL_NEON_WRAP", double(ll::kNeonWrap)},
   };
   Check(defines.size() == ints.size(), Num("the .hlsli has %.0f LL_ defines (the test knows %.0f)", double(defines.size()), double(ints.size())));
   for (const auto& [name, want] : ints) {
@@ -1037,6 +1113,7 @@ int main(int argc, char** argv) {
   ConstantChecks();
   GameLampLawChecks();
   GameLampLightChecks();
+  NeonLawChecks();
   HeadlightLawChecks();
   VolumeFormChecks();
   HeadlightConversionChecks();

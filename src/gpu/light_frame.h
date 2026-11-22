@@ -57,8 +57,10 @@ enum class LightSource : uint8_t {
 // Which falloff the numbers mean (light_laws.h; the three the game and the renderer have today, perf/LIGHT-UNIFY.md 1.3):
 //   kHeadlight  the lit shaders' headlight term, calibrated by eye: kPeak 2.0 x 1/(1+(d/D)^2) x (1-(d/range)^2)^2 x cone x surface wrap x low beam cut x near fade; law_a = D.
 //   kGameLamp   the game's own lamp (PSMultiLight): colour x min(1/I, 1/d^2) x cone x N.L; law_a = I (the plateau's radius squared).
-//   kOmni       the game's lamp without a cone (police, neon, a point lamp): the same distance law and N.L; law_a = the plateau's radius squared.
-enum class LightLaw : uint8_t { kHeadlight = 0, kGameLamp = 1, kOmni = 2 };
+//   kOmni       the game's lamp without a cone (police, a point lamp): the same distance law and N.L; law_a = the plateau's radius squared.
+//   kNeon       the cars' underglow (GB-NEON-TUNE): colour x w(d)^2 / (d^2 + near^2) x a wrap of N.L, w = saturate(1 - (d / range)^4): a smooth window that is 0 AND flat at `range`, so
+//               the reach test, the light's bounds and the culling are one radius and there is no edge there; law_a = the near radius squared (the volume's lamp law, with a wrap).
+enum class LightLaw : uint8_t { kHeadlight = 0, kGameLamp = 1, kOmni = 2, kNeon = 3 };
 
 enum class ShadowKind : uint8_t { kNone = 0, kAtlas = 1, kRtMask = 2 };
 

@@ -245,7 +245,7 @@ bool LocalLights::NeonLightReachesPicture() {
     return nl::LitNow(true, false, false);
   }
   nl::Global().Recent(&neon_cars_);
-  return nl::LitNow(true, true, ll::NeonReachesView(neon_cars_, tier_, neon_gain_, view));
+  return nl::LitNow(true, true, ll::NeonReachesView(neon_cars_, tier_, neon_gain_, view, neon_reach_scale_, neon_tuned_));
 }
 
 void LocalLights::BeginFrame() {
@@ -279,7 +279,10 @@ void LocalLights::BeginFrame() {
   if (neon_on_) {
     sources_ |= ll::kSourceNeon;
   }
-  neon_gain_ = float(std::clamp(double(st::mcla_gpu_neon_light_gain.Get()), 0.0, 16.0));
+  neon_gain_ = float(std::clamp(double(st::mcla_gpu_neon_light_gain.Get()), 0.0, 4.0));
+  // GB-NEON-TUNE: the reach's scale and the A/B of the retune (debug, live): the one reach (ll::NeonReachOf) is the light's range, the pass's reach test, the scissor and the want of the planes alike.
+  neon_reach_scale_ = float(std::clamp(double(st::mcla_gpu_neon_light_reach.Get()), double(ll::kNeonReachScaleMin), double(ll::kNeonReachScaleMax)));
+  neon_tuned_ = st::mcla_gpu_neon_light_tuned.Get();
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));
   if (!on_for_lights) {
     // The pass runs for NEON LIGHT alone (its own setting is off and the headlight route is `forward`): the debug setting's other sources, its test lamp and the mod lamp A/B belong to
@@ -461,6 +464,8 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     neon_in.cars = &neon_cars_;
     neon_in.tier = tier_;
     neon_in.gain = neon_gain_;
+    neon_in.reach_scale = neon_reach_scale_;
+    neon_in.tuned = neon_tuned_;
     neon_in.can_be_seen = [&](const larecomp::gpu::Light& l) { return !unseen(l); };
     for (int i = 0; i < 3; ++i) {
       neon_in.camera[i] = rows.position[i];

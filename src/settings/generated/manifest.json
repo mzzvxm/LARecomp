@@ -3490,10 +3490,33 @@
   "type": "f64",
   "default": "1.0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON): a multiplier on the neon's light (1: the game's own colour, pulse and fade as read from the car's light object, shared along \"\n    \"the tube). The neon's strength and its reach are looks set by eye against the game's own underglow light, not the game's units: this turns them up or down without a build. Live.\"",
+  "help": "\"Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-TUNE): a multiplier on the neon's light. 1 is the tuned underglow: the game's neon colour as a hue, its pulse and \"\n    \"fade as a strength, a radiant intensity of about 2.3 street lamps at 1 m facing the tube, fading to nothing at the reach; 0 puts the light out, 2 is twice as strong. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0.0, 16.0}"
+   "rex::Range{0.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_neon_light_reach": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-TUNE): a scale on how far the neon's light reaches (1: 5 / 5.5 / 6 m by the LIGHT SHADOWS level; the light fades \"\n    \"smoothly to nothing there, and the pass's reach test, its draw rectangle and its culling use the same distance). The pictures' softer and stronger arms use 0.8 and 1.3. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.25, 2.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_neon_light_tuned": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-TUNE, the A/B): on (the default) the light is the retuned one (the game's colour as a hue and a strength, a \"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

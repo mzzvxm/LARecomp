@@ -56,7 +56,7 @@
 // THE LAMP A/B (local_lights_rules.h has the story): one mod lamp (lights.bin) through the game's grid (A), through this pass with the grid's copy OFF (B, mcla_gpu_local_lights_ab = 2), and through
 // neither (the control, 1). The A/B's lamps are read from the mod loader's published set (mod_light_source.h) whatever the sources mask says; mod_lights.cpp builds the grid with them off.
 //
-// SETTINGS (settings_gpu.h, all debug only but NEON LIGHT): mcla_gpu_neon_light (the player's row, auto | off | on, live), mcla_gpu_neon_light_gain (the neon's multiplier, 1),
+// SETTINGS (settings_gpu.h, all debug only but NEON LIGHT): mcla_gpu_neon_light (the player's row, auto | off | on, live), mcla_gpu_neon_light_gain (the neon's multiplier, 1, up to 4), mcla_gpu_neon_light_reach (the neon's reach scale, 1) and mcla_gpu_neon_light_tuned (the A/B of GB-NEON-TUNE: off is the old look),
 // mcla_gpu_local_lights (the pass, default off, live), mcla_gpu_local_lights_sources (a sum: 1 the frame's surface lights, 2 a test lamp, 4 police,
 // 8 the cars' head lamps the forward stage does not light, 16 the cars' rear lamps, 32 the mods' lamps outside their grid; default 0), mcla_gpu_local_lights_ab (0 grid, 1 nowhere, 2 pass;
 // restart), mcla_gpu_local_lights_gain (a multiplier, 1), mcla_gpu_local_lights_car_gain (the cars' lights' look, a multiplier, 1), mcla_gpu_headlight_pass (GB-H2: forward | pass | both, live;
@@ -88,7 +88,7 @@
 //   N2   the game's own underglow light may already light the road under the car (a second pool with the pass's: mcla_gpu_neon_light_gain and the A/B decide), and the cars' paint the pass lights;
 //   N3   the units (the exposure, the night factor, the height factor) for a colour that is the game's lamp "rgb": the pool's brightness against the game's own;
 //   N4   the player's vehicle record is the effect object's record; the hook is called for every car with an effect object (traffic's neon is off: the enable byte 0);
-//   N5   the G-buffer planes' hold (neon_light.h kHoldFrames) and the cost with a lit neon at 4K / 1080p / 720p on the RTX 5080 and the iGPU's class (off there), and the cut at the reach (6 % of the colour).
+//   N5   the G-buffer planes' hold (neon_light.h kHoldFrames) and the cost with a lit neon at 4K / 1080p / 720p on the RTX 5080 and the iGPU's class (off there), and (GB-NEON-TUNE) no edge at the reach: the kNeon law's window is 0 and flat there.
 //   N6   (NEONALL-REVIEW M2) the planes are asked for only while a lit neon car has a light that can reach the picture, by the LAST frame's camera widened by a quarter: with a lit AI racer 100 m away
 //        or behind the camera and no neon car of the player's own, the sidecar must not exist (the "G-buffer" lines, the pass's label); a car that comes into view lights at most a frame late.
 // GB-H3, nothing run (the run plan: h11-work\gb-h3-notes\RUNPLAN-gb-h3.txt):
@@ -242,6 +242,8 @@ class LocalLights {
   bool neon_active_ = false;
   uint32_t neon_hold_ = 0;
   float neon_gain_ = 1.0f;
+  float neon_reach_scale_ = 1.0f;  // GB-NEON-TUNE: mcla_gpu_neon_light_reach (debug)
+  bool neon_tuned_ = true;         // mcla_gpu_neon_light_tuned (debug: false is the look before the retune)
   std::vector<larecomp::gpu::neon_light::NeonCar> neon_cars_;
 
   // resources

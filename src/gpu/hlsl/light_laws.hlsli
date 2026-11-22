@@ -1,7 +1,7 @@
 // MCLA GPU renderer -- the laws of a light in HLSL: THE TWIN of src/gpu/light_laws.h and light_frame.h's GpuLight (perf/LIGHT-UNIFY.md 2.2, 2.3, package U1).
 //
 // For every pass that reads the frame's lights from the GpuLight buffer (the deferred light pass GB-H1, a shadow or volume consumer that wants the same numbers): the decoding of a
-// GpuLight row into a light, and the three laws (kHeadlight, kGameLamp, kOmni) as one function, LlLightScale. src/gpu/light_frame_test.cpp compiles THIS FILE as C++ (through a
+// GpuLight row into a light, and the four laws (kHeadlight, kGameLamp, kOmni, kNeon) as one function, LlLightScale. src/gpu/light_frame_test.cpp compiles THIS FILE as C++ (through a
 // small shim of the HLSL vector types, the way gbuffer_rules_test.cpp does gbuffer_common.hlsli), checks every LL_ define against light_frame.h / light_laws.h and every function against
 // its C++ twin on random lights and surfaces, so the two cannot drift. That is why the text keeps to a subset both languages read: scalar and vector arithmetic, .x .y .z .w, no
 // swizzles of more than one component, no intrinsics but abs, sqrt, saturate, dot, min, max, no `static const`.
@@ -36,6 +36,7 @@
 #define LL_LAW_HEADLIGHT 0
 #define LL_LAW_GAME_LAMP 1
 #define LL_LAW_OMNI 2
+#define LL_LAW_NEON 3
 
 #define LL_SHADOW_NONE 0
 #define LL_SHADOW_ATLAS 1
@@ -75,6 +76,9 @@
 #define LL_CUT_HIGH 0.38f
 #define LL_NEAR_START 0.8f
 #define LL_NEAR_SPAN 1.5f
+
+// the neon's law (light_laws.h kNeon*): the wrap of N.L
+#define LL_NEON_WRAP 0.3f
 
 // ---- the light ----------------------------------------------------------------------------------------------------------------------------
 
@@ -197,10 +201,29 @@ float LlGameLampScale(LlLight l, float3 sp, float3 sn, float visibility) {
   return distance_term * cone * n_dot_l * visibility;
 }
 
+// kNeon (GB-NEON-TUNE): colour x w^2 / (d^2 + near^2) x wrap(N.L), w = saturate(1 - (d / range)^4), law_a = near^2: light_laws.h NeonScale. 0 at and beyond the range, with a zero slope there.
+float LlNeonScale(LlLight l, float3 sp, float3 sn, float visibility) {
+  float3 to_light = l.pos - sp;
+  float dist2 = dot(to_light, to_light);
+  float range2 = l.range * l.range;
+  if (!(l.law_a > 0.0f) || dist2 >= range2 || dist2 < 1.0e-6f) {
+    return 0.0f;
+  }
+  float inverse = 1.0f / sqrt(dist2);
+  float3 lv = to_light * inverse;
+  float surface_term = saturate((dot(sn, lv) + LL_NEON_WRAP) * (1.0f / (1.0f + LL_NEON_WRAP)));
+  float r2 = dist2 / range2;
+  float w = saturate(1.0f - r2 * r2);
+  return w * w / (dist2 + l.law_a) * surface_term * visibility;
+}
+
 // The scalar part of one light's term by its law (colour excluded), and the light a surface gets: colour x that.
 float LlLightScale(LlLight l, float3 sp, float3 sn, float visibility) {
   if (l.law == LL_LAW_HEADLIGHT) {
     return LlHeadlightScale(l, sp, sn, visibility);
+  }
+  if (l.law == LL_LAW_NEON) {
+    return LlNeonScale(l, sp, sn, visibility);
   }
   return LlGameLampScale(l, sp, sn, visibility);
 }

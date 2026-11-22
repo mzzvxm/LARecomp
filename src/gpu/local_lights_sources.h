@@ -24,11 +24,13 @@
 // its plateau, the lamp picker's own: Score), after the lights that cannot be seen (no pixel of the picture is inside their reach) were left out, so that a car behind the camera takes none of
 // the budget. Priority when the 32 are short: the frame's lights, the handed over ones, police, mods, neon, head lamps, rear lamps.
 //
-//   neon         (GB-NEON) a car's underglow: the game's own colour and pulse (neon_light.h reads them from the car's light object after the game's update: the 30 Hz hold, the day and night
-//                constants and the fade are in it), as a few omni lights along the tube under the car, short range (6 / 7 / 8 m by tier), lighting the ground, the kerbs, the walls and the other cars
-//                near it. The game's own underglow light is NOT taken away (CHECK N2 in neon_light.h: it may already light the road under the car, and the pass then adds a second pool).
-//                The budget is cars x points of light_budget.h's NeonRow (the nearest neon cars, each a whole tube).
-//
+//   neon         (GB-NEON, retuned by GB-NEON-TUNE) a car's underglow: the game's own colour as a HUE and a strength and its pulse (neon_light.h reads them from the car's light object after the
+//                game's update: the 30 Hz hold, the day and night constants and the fade are in it), as a few omni lights along the tube under the car, a short reach (5 / 5.5 / 6 m by tier, a smooth window
+//                to exactly 0 there: the kNeon law), lighting the ground, the kerbs, the walls and the other cars near it. The game's own underglow light is NOT taken away (CHECK N2 in neon_light.h:
+//                it lights the road under the car, and the pass adds the spill beyond it). The budget is cars x points of light_budget.h's NeonRow (the nearest neon cars, each a whole tube).
+//                THE NEON'S DATA (colour, strength, reach, law) is in the section "Neon" below and in the Light that MakeNeonLight returns: anything else that wants the underglow as a light (the bounce
+//                light, GI-BOUNCE.md) reads it there: GatherNeonLights is the one list, NeonReachOf the one radius.
+
 // THE LOOK is all [I]: the intensities, colours and reaches below are values to set by eye with the first run (CHECK LS1..LS5 in local_lights.h); the cars' own part is multiplied by
 // mcla_gpu_local_lights_car_gain (debug) so that a run can tune it without a build. Every number is one line here.
 //
@@ -155,22 +157,59 @@ inline constexpr float HeadReach(Tier t) { return t == Tier::kUltra ? 42.0f : (t
 // A car whose headlights the frame already has (a frame light of the headlight law this near to the middle of its lit head lamps) is covered by the forward stage.
 inline constexpr float kCoverMetres = 3.0f;
 
-// Neon (GB-NEON). The colour is the game's (neon_light.h): ExtNeonColor x intensity x pulse x fade, which is the "rgb" of the game's lamp law, so a light here is rgb x saturate(I / d^2) like a
-// street lamp with its rgb. The plateau I is a share of the reach squared (kNeonCutShare: where the reach cuts the light it is that share of the colour, as the other classes' lights do: police
-// 6 %, rear lamps 2.5 %); a tube of n points shares one game point's strength between them (kNeonTubeGain: the whole tube is as bright as one point of the game's own light at its middle). CHECK
-// N2 / N3 (neon_light.h) and the run plan's N runs: the gain (mcla_gpu_neon_light_gain, debug) is the live lever, these are the starting looks.
-inline constexpr float NeonReach(Tier t) { return t == Tier::kUltra ? 8.0f : (t == Tier::kHigh ? 7.0f : 6.0f); }
-inline constexpr float kNeonCutShare = 0.06f;
-inline constexpr float kNeonTubeGain = 1.0f;
-// A neon whose brightest channel is below this adds nothing a picture could show (the dark half of a pulse at night): it takes no budget and no G-buffer.
-inline constexpr float kNeonMinColour = 0.003f;
-// The brightest channel a neon light's colour may have when it goes to the pass (NEONALL-REVIEW M4). The game's colour is the config colour (0 to 1) x intensity (1.5 in the checks) x pulse (0 to 1) x fade
-// (0.2 at night, 0.125 by day): about 2 at most, and the console's own colour target (7e3) holds 31.875 a channel at most, so a light of 32 is no light the game could show. The pass adds colour x
-// the law's term x the exposure (16) into a half-float target (max 65504): 32 keeps a tube's light under 2000 at the default gain, where a colour from a wrong offset or a stale object (1e30)
-// would be Inf in the target and NaN in the bloom after it.
-inline constexpr float kNeonMaxColour = 32.0f;
+// Neon (GB-NEON, retuned by GB-NEON-TUNE; the numbers and what they mean are in perf/GB-NEON-TUNE.md). THE NEON'S DATA, in one place:
+//
+//   colour   the game's colour (neon_light.h: ExtNeonColor x ExtNeonIntensity x pulse x fade) is the GLOW SHADER's HDR multiplier, not a light intensity: (30.17, 0.0176, 0.0100) for a red neon at a
+//            pulse of 0.8 at night, up to the console's colour target's ceiling (31.875). It is read as a HUE (the colour over its brightest channel: the tube's own colour, 1 at its largest) and a
+//            STRENGTH (the brightest channel over kNeonFullColour, at most 1: so the game's pulse, the day / night fade and a car's own neon strength still move the light, and nothing can pass 1).
+//   light    the tube is `kNeonIntensity` x strength x the gain, shared by its points: a radiant intensity in the STREET LAMPS' units of this pass (a street lamp's colour is rgb x I and its term
+//            1 / I inside its plateau, so a lamp's surface gets rgb, 1.0 at most; a surface facing the neon tube at d metres gets about kNeonIntensity x strength / (d^2 + kNeonNearSq)).
+//   reach    NeonReachOf (the tier's, times mcla_gpu_neon_light_reach): the Light's `range`, used by the law's window (exactly 0 and flat there), the pass's reach test, the scissor and the
+//            culling alike, so a light that adds nothing is never drawn and there is no edge at the limit.
+//   law      LightLaw::kNeon (light_laws.h NeonScale): colour x window(d / reach)^2 / (d^2 + near^2) x wrap(N.L); `law_a` is near^2.
+// mcla_gpu_neon_light_tuned (debug, on) turns the whole retune off for the A/B (the old look: the colour as the game made it, a plateau and a hard cut at 6 / 7 / 8 m: the legacy constants below).
+inline constexpr float NeonReach(Tier t) { return t == Tier::kUltra ? 6.0f : (t == Tier::kHigh ? 5.5f : 5.0f); }
+inline constexpr float kNeonFullColour = 32.0f;   // the game's colour magnitude that is a full strength neon: the console's colour target holds 31.875 a channel at most
+inline constexpr float kNeonIntensity = 5.0f;     // the whole tube's radiant intensity at full strength and gain 1, in the street lamps' units (perf/GB-NEON-TUNE.md: 2.3 at 1 m, 0.4 at 3 m on a wall)
+inline constexpr float kNeonNearSq = 0.64f;       // the near radius squared (0.8 m: the volume's least lamp near radius): the pool is nearly flat inside it and the law has no spike under the tube
+// A neon whose game colour (its brightest channel) is below this adds nothing a picture could show (the dark half of a pulse at night: 0.1 / 32 x 5 = 0.016 of a street lamp's plateau at 1 m): it takes
+// no budget and no G-buffer. (The game's units: the brightest channel of the colour as read, before the hue and the strength.)
+inline constexpr float kNeonMinColour = 0.1f;
+// The scale of the reach (mcla_gpu_neon_light_reach) is kept between these: the pictures' softer and stronger arms (0.8, 1.3) are inside.
+inline constexpr float kNeonReachScaleMin = 0.25f;
+inline constexpr float kNeonReachScaleMax = 2.0f;
 // A neon car farther from the camera than this is not lit (its light's reach is a few metres: the picture around it is far away and small, and the pass's draw is a scissored one a light).
 inline constexpr float kNeonSeenMetres = 40.0f;
+
+// The look before GB-NEON-TUNE (mcla_gpu_neon_light_tuned off, the A/B of the pictures): the game's colour as it is (each channel bounded by 32), the plateau law (the plateau a share of the reach
+// squared, the tube's strength shared by its points) and a hard cut at 6 / 7 / 8 m.
+inline constexpr float kLegacyNeonCutShare = 0.06f;
+inline constexpr float kLegacyNeonTubeGain = 1.0f;
+inline constexpr float kLegacyNeonMaxColour = 32.0f;
+inline constexpr float LegacyNeonReach(Tier t) { return t == Tier::kUltra ? 8.0f : (t == Tier::kHigh ? 7.0f : 6.0f); }
+
+// THE reach of a neon light: the tier's, times the scale (mcla_gpu_neon_light_reach, 1), kept inside the lamp laws' own bounds. A Light's `range`, the pass's reach test, its scissor, the
+// visibility test of the budget and of the G-buffer's want all read that one number.
+inline float NeonReachOf(Tier tier, float scale = 1.0f, bool tuned = true) {
+  const float s = std::isfinite(scale) ? std::clamp(scale, kNeonReachScaleMin, kNeonReachScaleMax) : 1.0f;
+  return std::min((tuned ? NeonReach(tier) : LegacyNeonReach(tier)) * s, light_laws::kMaxReach);
+}
+
+// The game's colour as the light's hue (the colour over its brightest channel, so the largest is 1) and strength (the brightest over kNeonFullColour, at most 1). A channel that is not a number or
+// not above 0 counts as 0 and an infinite one as a huge number (the decode keeps the colour finite and not negative; this does not rely on it: a wrong read or a stale object must not put an Inf or a
+// NaN into the half-float target). No brightest channel: hue 0, strength 0.
+inline void NeonHueStrength(const float game_colour[3], float hue[3], float* strength) {
+  float v[3];
+  float brightest = 0.0f;
+  for (int k = 0; k < 3; ++k) {
+    v[k] = game_colour[k] > 0.0f ? std::min(game_colour[k], 1.0e30f) : 0.0f;
+    brightest = std::max(brightest, v[k]);
+  }
+  for (int k = 0; k < 3; ++k) {
+    hue[k] = brightest > 0.0f ? v[k] / brightest : 0.0f;
+  }
+  *strength = brightest > 0.0f ? std::min(brightest / kNeonFullColour, 1.0f) : 0.0f;
+}
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -450,19 +489,27 @@ inline void GatherCarLights(const CarSourceInputs& in, Candidates* out) {
 // the cars' underglow (GB-NEON)
 // ---------------------------------------------------------------------------
 
-// The omni light i of n along a car's tube, at `pos`: the game's colour, the plateau from the reach, the tube's strength shared by its n points, the car's key and flag, surface light only (no
-// shadow views: the underglow is a glow under the car, not a lamp that casts).
-inline Light MakeNeonLight(const nl::NeonCar& car, uint32_t i, uint32_t n, const float pos[3], Tier tier, float gain) {
-  const float reach = NeonReach(tier);
-  const float plateau = kNeonCutShare * reach * reach;
-  // The colour is the game's, kept finite and not negative by the decode (neon_light.h ReadNeonCar); here it is bounded too (kNeonMaxColour: nothing the game makes comes near it), and a value that is
-  // not a number counts as 0, so that a wrong read cannot put an Inf or a NaN into the half-float target.
-  float colour[3];
-  for (int k = 0; k < 3; ++k) {
-    colour[k] = car.colour[k] > 0.0f ? std::min(car.colour[k], kNeonMaxColour) : 0.0f;
+// The neon light i of n along a car's tube, at `pos`: the game's colour as hue x strength x kNeonIntensity x the gain, shared by the tube's n points, the kNeon law with the near radius, out to the
+// reach (the one radius: NeonReachOf), the car's key and flag, surface light only (no shadow views: the underglow is a glow under the car, not a lamp that casts). `reach_scale` is
+// mcla_gpu_neon_light_reach; `tuned` false is the old look (the colour as the game made it, bounded; the plateau law, a share of the reach squared; 6 / 7 / 8 m; the tube's strength shared by its points).
+inline Light MakeNeonLight(const nl::NeonCar& car, uint32_t i, uint32_t n, const float pos[3], Tier tier, float gain, float reach_scale = 1.0f, bool tuned = true) {
+  const float reach = NeonReachOf(tier, reach_scale, tuned);
+  const float shared = std::max(gain, 0.0f) / float(std::max<uint32_t>(n, 1u));
+  Light l;
+  if (!tuned) {
+    const float plateau = kLegacyNeonCutShare * reach * reach;
+    float colour[3];
+    for (int k = 0; k < 3; ++k) {
+      colour[k] = car.colour[k] > 0.0f ? std::min(car.colour[k], kLegacyNeonMaxColour) : 0.0f;
+    }
+    l = MakeOmniLight(LightSource::kNeon, pos, colour, plateau * std::max(gain, 0.0f) * kLegacyNeonTubeGain / float(std::max<uint32_t>(n, 1u)), plateau, reach, light_id::NeonCarId(car.object, i));
+  } else {
+    float hue[3];
+    float strength = 0.0f;
+    NeonHueStrength(car.colour, hue, &strength);
+    l = MakeOmniLight(LightSource::kNeon, pos, hue, strength * kNeonIntensity * shared, kNeonNearSq, reach, light_id::NeonCarId(car.object, i));
+    l.law = LightLaw::kNeon;
   }
-  Light l = MakeOmniLight(LightSource::kNeon, pos, colour, plateau * std::max(gain, 0.0f) * kNeonTubeGain / float(std::max<uint32_t>(n, 1u)), plateau, reach,
-                          light_id::NeonCarId(car.object, i));
   l.roles = kRoleMaskSurface;
   l.car_key = cars::PointCarKey(car.object);
   l.flags = car.player ? kLightFlagPlayer : 0u;
@@ -470,7 +517,7 @@ inline Light MakeNeonLight(const nl::NeonCar& car, uint32_t i, uint32_t n, const
 }
 
 // The lights of one placed tube: `points` of them at the middles of equal parts of the tube from A to B (one at the middle when the tube is a point: kPointTube).
-inline void MakeNeonTubeLights(const nl::NeonCar& car, const nl::Tube& tube, uint32_t points, Tier tier, float gain, std::vector<Light>* out) {
+inline void MakeNeonTubeLights(const nl::NeonCar& car, const nl::Tube& tube, uint32_t points, Tier tier, float gain, std::vector<Light>* out, float reach_scale = 1.0f, bool tuned = true) {
   const uint32_t n = tube.length < nl::kPointTube ? 1u : std::clamp<uint32_t>(points, 1u, nl::kTubePoints);
   for (uint32_t i = 0; i < n; ++i) {
     const float t = (float(i) + 0.5f) / float(n);
@@ -478,7 +525,7 @@ inline void MakeNeonTubeLights(const nl::NeonCar& car, const nl::Tube& tube, uin
     for (int k = 0; k < 3; ++k) {
       pos[k] = tube.a[k] + (tube.b[k] - tube.a[k]) * t;
     }
-    out->push_back(MakeNeonLight(car, i, n, pos, tier, gain));
+    out->push_back(MakeNeonLight(car, i, n, pos, tier, gain, reach_scale, tuned));
   }
 }
 
@@ -486,6 +533,8 @@ struct NeonSourceInputs {
   const std::vector<nl::NeonCar>* cars = nullptr;  // the table's recent cars (null: none)
   Tier tier = Tier::kMedium;
   float gain = 1.0f;                               // mcla_gpu_neon_light_gain
+  float reach_scale = 1.0f;                        // mcla_gpu_neon_light_reach (debug: the reach's scale; 1 is the tier's)
+  bool tuned = true;                               // mcla_gpu_neon_light_tuned (debug: false is the look before GB-NEON-TUNE)
   float camera[3] = {0.0f, 0.0f, 0.0f};
   // Whether a light can be seen: some pixel of the picture is inside its reach (the pass's ScissorOfLight is not empty). Empty: every light can. The budget takes the nearest cars whose tube has
   // a light that can be seen, so a car behind the camera takes none of it (the header's rule for every class: a car behind the camera takes none of the budget).
@@ -556,7 +605,7 @@ inline void GatherNeonLights(const NeonSourceInputs& in, std::vector<Light>* out
       continue;
     }
     tube_lights.clear();
-    MakeNeonTubeLights(*p.car, p.tube, budget.neon_points, in.tier, in.gain, &tube_lights);
+    MakeNeonTubeLights(*p.car, p.tube, budget.neon_points, in.tier, in.gain, &tube_lights, in.reach_scale, in.tuned);
     if (in.can_be_seen && std::none_of(tube_lights.begin(), tube_lights.end(), [&](const Light& l) { return in.can_be_seen(l); })) {
       ++r.unseen;  // behind the camera or out of the picture: no budget for it, the next car may have it
       continue;
@@ -579,11 +628,13 @@ inline bool AnyNeonLightSeen(const NeonSourceInputs& in) {
 
 // The same question against a camera's picture (the pass's own visibility test: the scissor of the light's reach is not empty), for the frame's start: `view` is the last frame's camera, widened
 // (ProbeViewOf).
-inline bool NeonReachesView(const std::vector<nl::NeonCar>& cars, Tier tier, float gain, const ProbeView& view) {
+inline bool NeonReachesView(const std::vector<nl::NeonCar>& cars, Tier tier, float gain, const ProbeView& view, float reach_scale = 1.0f, bool tuned = true) {
   NeonSourceInputs in;
   in.cars = &cars;
   in.tier = tier;
   in.gain = gain;
+  in.reach_scale = reach_scale;
+  in.tuned = tuned;
   for (int i = 0; i < 3; ++i) {
     in.camera[i] = view.rows.position[i];
   }

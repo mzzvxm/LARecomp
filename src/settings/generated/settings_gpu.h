@@ -1668,8 +1668,12 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_local_lights_car_gain, 1.0, "Diagnostic (the deferred local light pass, GB-H3): a multiplier on the look of the cars' lights it adds (the police light bars, the head lamps of the cars the forward headlight stage does not light, "
     "the brake, tail, turn and reverse lamps). Their colours and strengths are looks set by eye, not the game's units: this turns them up or down without a build. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
 
-  REX_SETTING(f64, mcla_gpu_neon_light_gain, 1.0, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON): a multiplier on the neon's light (1: the game's own colour, pulse and fade as read from the car's light object, shared along "
-    "the tube). The neon's strength and its reach are looks set by eye against the game's own underglow light, not the game's units: this turns them up or down without a build. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
+  REX_SETTING(f64, mcla_gpu_neon_light_gain, 1.0, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-TUNE): a multiplier on the neon's light. 1 is the tuned underglow: the game's neon colour as a hue, its pulse and "
+    "fade as a strength, a radiant intensity of about 2.3 street lamps at 1 m facing the tube, fading to nothing at the reach; 0 puts the light out, 2 is twice as strong. Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
+  REX_SETTING(f64, mcla_gpu_neon_light_reach, 1.0, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-TUNE): a scale on how far the neon's light reaches (1: 5 / 5.5 / 6 m by the LIGHT SHADOWS level; the light fades "
+    "smoothly to nothing there, and the pass's reach test, its draw rectangle and its culling use the same distance). The pictures' softer and stronger arms use 0.8 and 1.3. Live.", rex::kDebugOnly, rex::Range{0.25, 2.0});
+  REX_SETTING(bool, mcla_gpu_neon_light_tuned, true, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-TUNE, the A/B): on (the default) the light is the retuned one (the game's colour as a hue and a strength, a "
+    "smooth falloff, a few metres of reach); off is the look before the retune (the game's HDR colour as the light, a plateau law and a hard cut at 6 / 7 / 8 m). Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_local_lights_cost_off, 0, "Diagnostic (the cost of the deferred local light pass, GB-NEON-COST, the A/B): a sum of the savings to switch OFF so that the pass runs as it did before them. "
     "1 the reach test before the planes are read (the pixel shader asks the depth whether any light of the draw reaches the pixel, and leaves the pixels none reaches without reading the G-buffer's three planes), "
@@ -2263,6 +2267,8 @@ inline auto& mcla_gpu_local_lights_ab = g_gpu.mcla_gpu_local_lights_ab;
 inline auto& mcla_gpu_local_lights_gain = g_gpu.mcla_gpu_local_lights_gain;
 inline auto& mcla_gpu_local_lights_car_gain = g_gpu.mcla_gpu_local_lights_car_gain;
 inline auto& mcla_gpu_neon_light_gain = g_gpu.mcla_gpu_neon_light_gain;
+inline auto& mcla_gpu_neon_light_reach = g_gpu.mcla_gpu_neon_light_reach;
+inline auto& mcla_gpu_neon_light_tuned = g_gpu.mcla_gpu_neon_light_tuned;
 inline auto& mcla_gpu_local_lights_cost_off = g_gpu.mcla_gpu_local_lights_cost_off;
 inline auto& mcla_gpu_neon_contact = g_gpu.mcla_gpu_neon_contact;
 inline auto& mcla_gpu_lamp_shadows = g_gpu.mcla_gpu_lamp_shadows;

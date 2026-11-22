@@ -78,7 +78,7 @@ struct FakeMem {
 constexpr uint32_t kSelf = 0x40000000u, kRecord = 0x40001000u, kCfg = 0x40002000u, kLight = 0x40003000u;
 
 struct Layout {
-  float cfg_rgb[3] = {1.0f, 0.05f, 0.04f};  // a red underglow
+  float cfg_rgb[3] = {125.8f, 0.0734f, 0.0417f};  // a red underglow as the game has it: x 1.5 x 0.8 x 0.18 = (27.2, 0.0159, 0.009), the integration run read (30.17, 0.0176, 0.0100) at a fade of 0.1998
   float intensity = 1.5f;
   float pulse = 0.8f;
   float fade = 0.2f * 0.9f;                  // the night constant and a height factor
@@ -374,9 +374,9 @@ void LightChecks() {
     // nearest first: the cars are 5 m apart in x, the first is the nearest; the lights come car by car
     std::set<uint64_t> ids;
     for (const Light& l : lights) {
-      Check(l.source == LightSource::kNeon && l.kind == LightKind::kPoint && l.law == LightLaw::kOmni && l.roles == kRoleMaskSurface && l.id != kNoLightId, "a neon light is an omni surface light of the neon source" + at);
-      Check(l.range == lp::NeonReach(tier) && l.law_a > 0.0f && l.range > 0.0f, "its range is the tier's reach" + at);
-      CheckNear(l.law_a, lp::kNeonCutShare * l.range * l.range, 1.0e-4, "its plateau is the cut share of the reach squared" + at);
+      Check(l.source == LightSource::kNeon && l.kind == LightKind::kPoint && l.law == LightLaw::kNeon && l.roles == kRoleMaskSurface && l.id != kNoLightId, "a neon light is a kNeon law surface light of the neon source" + at);
+      Check(l.range == lp::NeonReachOf(tier) && l.range == lp::NeonReach(tier) && l.range > 0.0f, "its range is the tier's reach: the one radius" + at);
+      Check(l.law_a == lp::kNeonNearSq, "its law parameter is the near radius squared" + at);
       ids.insert(l.id);
     }
     Check(ids.size() == lights.size(), "every neon light has its own id" + at);
@@ -404,7 +404,7 @@ void LightChecks() {
       Check(again[i].id == lights[i].id && std::memcmp(again[i].pos, lights[i].pos, sizeof(again[i].pos)) == 0, "a light keeps its id and place" + at);
     }
   }
-  // NEONALL-REVIEW M4: the guest's colour is bounded before it becomes a light (a wrong read or a stale object must not put an Inf or a NaN into the half-float target)
+  // NEONALL-REVIEW M4 (GB-NEON-TUNE): the guest's colour is a hue and a strength before it becomes a light, so a wrong read or a stale object cannot put an Inf or a NaN into the half-float target
   {
     const nl::NeonCar base = CarAt(kSelf, camera, 1.5f, 0.8f, true);
     nl::Tube tube;
@@ -413,25 +413,25 @@ void LightChecks() {
     const float nan = std::nanf("");
     for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
       const std::string at = std::string(" at ") + lp::TierName(tier);
-      const float reach = lp::NeonReach(tier);
-      const float plateau = lp::kNeonCutShare * reach * reach;
-      for (const float gain : {0.0f, 1.0f, 16.0f}) {
+      for (const float gain : {0.0f, 1.0f, 4.0f}) {
         for (const uint32_t n : {1u, 2u, 4u}) {
-          const float level = plateau * gain * lp::kNeonTubeGain / float(n);
-          // the game's own colour (about 0.2 here, up to a few in the game): the light is the colour times the level, bit for bit as before
-          Light normal = lp::MakeNeonLight(base, 0, n, tube.a, tier, gain);
+          const float share = std::max(gain, 0.0f) / float(n);
+          // the game's own colour: hue x strength x the intensity x the share of the tube, bit for bit
+          float hue[3], strength = 0.0f;
+          lp::NeonHueStrength(base.colour, hue, &strength);
+          const Light normal = lp::MakeNeonLight(base, 0, n, tube.a, tier, gain);
           for (int k = 0; k < 3; ++k) {
-            Check(normal.color[k] == std::max(base.colour[k], 0.0f) * level, "an ordinary colour is not changed" + at);
+            Check(normal.color[k] == hue[k] * (strength * lp::kNeonIntensity * share), "an ordinary colour is hue x strength x intensity x the share" + at);
           }
-          // a colour at the bound is not changed either; one past it, or Inf, is the bound; NaN and negative are 0
-          const float colours[6] = {lp::kNeonMaxColour, 1.0e30f, inf, nan, -3.0f, 0.5f * lp::kNeonMaxColour};
-          const float want[6] = {lp::kNeonMaxColour, lp::kNeonMaxColour, lp::kNeonMaxColour, 0.0f, 0.0f, 0.5f * lp::kNeonMaxColour};
+          // a colour at the full strength is strength 1; one past it, 1e30 or Inf, is the same; NaN and negative are 0; half the full colour is half
+          const float colours[6] = {lp::kNeonFullColour, 1.0e30f, inf, nan, -3.0f, 0.5f * lp::kNeonFullColour};
+          const float want[6] = {1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.5f};
           for (int c = 0; c < 6; ++c) {
             nl::NeonCar wild = base;
             wild.colour[0] = wild.colour[1] = wild.colour[2] = colours[c];
             const Light l = lp::MakeNeonLight(wild, 0, n, tube.a, tier, gain);
             for (int k = 0; k < 3; ++k) {
-              Check(std::isfinite(l.color[k]) && l.color[k] >= 0.0f && l.color[k] == want[c] * level, "a colour of " + std::to_string(colours[c]) + " becomes " + std::to_string(want[c]) + " x the level" + at);
+              Check(std::isfinite(l.color[k]) && l.color[k] >= 0.0f && l.color[k] == want[c] * (lp::kNeonIntensity * share), "a colour of " + std::to_string(colours[c]) + " is a strength of " + std::to_string(want[c]) + at);
             }
           }
         }
@@ -454,10 +454,10 @@ void LightChecks() {
     for (const Light& l : lights) {
       for (int k = 0; k < 3; ++k) {
         finite = finite && std::isfinite(l.color[k]);
-        bounded = bounded && l.color[k] <= lp::kNeonMaxColour * lp::NeonReach(lp::Tier::kUltra) * lp::NeonReach(lp::Tier::kUltra) * lp::kNeonCutShare * 1.0001f;
+        bounded = bounded && l.color[k] <= lp::kNeonIntensity * 1.0001f;
       }
     }
-    Check(finite && bounded, "and its lights are finite and bounded");
+    Check(finite && bounded, "and its lights are finite and within the tube's intensity");
   }
   // the points of a tube sit along it, under the car, in equal parts
   {
@@ -489,23 +489,25 @@ void LightChecks() {
     lp::MakeNeonTubeLights(tiny, point_tube, 4, lp::Tier::kUltra, 1.0f, &one);
     Check(one.size() == 1, "a point tube makes one light");
   }
-  // the colour: the tube's lights share one game point's strength; at the plateau their sum is the game's colour
+  // the colour: the tube's lights share the tube's intensity: their colours add up to hue x strength x kNeonIntensity, whatever the number of points
   {
     const nl::NeonCar car = CarAt(kSelf, camera, 1.5f, 0.8f, true);
     nl::Tube tube;
     nl::ResolveTube(car, &tube);
+    float hue[3], strength = 0.0f;
+    lp::NeonHueStrength(car.colour, hue, &strength);
+    Check(strength > 0.5f && strength < 1.0f && hue[0] == 1.0f && hue[1] < 0.01f && hue[2] < 0.01f, "the test car is a red neon of a strength between a half and 1 (the game's own is 30.17 / 32 = 0.94)");
     for (const uint32_t points : {1u, 2u, 3u, 4u}) {
       std::vector<Light> out;
       lp::MakeNeonTubeLights(car, tube, points, lp::Tier::kHigh, 1.0f, &out);
       double sum[3] = {0, 0, 0};
       for (const Light& l : out) {
-        const float scale = 1.0f / l.law_a;  // the law's term inside the plateau
         for (int i = 0; i < 3; ++i) {
-          sum[i] += double(l.color[i]) * scale;
+          sum[i] += double(l.color[i]);
         }
       }
       for (int i = 0; i < 3; ++i) {
-        CheckNear(sum[i], double(car.colour[i]) * lp::kNeonTubeGain, 1.0e-5, "at the plateau the tube's lights add up to the game's colour (" + std::to_string(points) + " points)");
+        CheckNear(sum[i], double(hue[i]) * double(strength) * double(lp::kNeonIntensity), 1.0e-5, "the tube's lights add up to hue x strength x the intensity (" + std::to_string(points) + " points)");
       }
     }
     // the gain is a plain multiplier, 0 puts the light out
@@ -530,9 +532,13 @@ void LightChecks() {
     const nl::NeonCar half = CarAt(kSelf, camera, 1.5f, 0.5f, true);
     CheckNear(half.colour[0] * 2.0, bright.colour[0], 1.0e-6, "half the pulse is half the colour");
   }
-  // the look's starting numbers are pinned (a change of one is a decision, made with the pictures: RUNPLAN-gb-neon.txt)
-  Check(lp::kNeonTubeGain == 1.0f && lp::kNeonCutShare == 0.06f && lp::kNeonMinColour == 0.003f && lp::kNeonSeenMetres == 40.0f, "the neon look's numbers are the planned ones (tube gain 1, cut share 6 %, floor 0.003, 40 m)");
-  Check(lp::NeonReach(lp::Tier::kMedium) == 6.0f && lp::NeonReach(lp::Tier::kHigh) == 7.0f && lp::NeonReach(lp::Tier::kUltra) == 8.0f, "the neon's reach is 6 / 7 / 8 m by tier");
+  // the look's numbers are pinned (a change of one is a decision, made with the pictures and the table of perf/GB-NEON-TUNE.md)
+  Check(lp::kNeonIntensity == 5.0f && lp::kNeonNearSq == 0.64f && lp::kNeonFullColour == 32.0f && lp::kNeonMinColour == 0.1f && lp::kNeonSeenMetres == 40.0f && light_laws::kNeonWrap == 0.3f,
+        "the neon look's numbers are the tuned ones (intensity 5, near radius 0.8 m, full colour 32, floor 0.1, 40 m, wrap 0.3)");
+  Check(lp::NeonReach(lp::Tier::kMedium) == 5.0f && lp::NeonReach(lp::Tier::kHigh) == 5.5f && lp::NeonReach(lp::Tier::kUltra) == 6.0f, "the neon's reach is 5 / 5.5 / 6 m by tier");
+  Check(lp::LegacyNeonReach(lp::Tier::kMedium) == 6.0f && lp::LegacyNeonReach(lp::Tier::kHigh) == 7.0f && lp::LegacyNeonReach(lp::Tier::kUltra) == 8.0f && lp::kLegacyNeonCutShare == 0.06f && lp::kLegacyNeonTubeGain == 1.0f &&
+            lp::kLegacyNeonMaxColour == 32.0f,
+        "the old look's numbers are kept for the A/B (6 / 7 / 8 m, cut share 6 %, tube gain 1, colour bound 32)");
   // the reasons a car is not lit
   {
     std::vector<nl::NeonCar> cars2;
@@ -765,23 +771,23 @@ void PixelChecks() {
   const float beyond[3] = {mid[0] + 12.0f, mid[1] - 0.3f, mid[2]};
   float gone[3];
   lit(beyond, up, gone);
-  Check(gone[0] == 0.0f && gone[1] == 0.0f && gone[2] == 0.0f, "12 m away (past the 7 m reach and the tube's own length) takes no light");
-  // the edge of the reach: the step is a small share of the plateau's value (the cut share, 6 %)
+  Check(gone[0] == 0.0f && gone[1] == 0.0f && gone[2] == 0.0f, "12 m away (past the 5.5 m reach and the tube's own length) takes no light");
+  // the edge of the reach: there is none. The law's window is 0 at the reach and flat there, so the step across it is nothing (before GB-NEON-TUNE it was 6 % of the plateau's value)
   {
     Light l = lights[0];
     l.pos[0] = 0.0f;
     l.pos[1] = 1.0f;
     l.pos[2] = 0.0f;
-    float inside[3], outside[3], plateau[3];
-    const float at_plateau[3] = {0.0f, 1.0f - std::sqrt(l.law_a) * 0.5f, 0.0f};
-    lp::PixelLight(l, units, at_plateau, up, albedo, 1.0f, plateau);
+    float inside[3], outside[3], near_by[3];
+    const float side_n[3] = {-1.0f, 0.0f, 0.0f};
+    const float near_pt[3] = {1.0f, 1.0f, 0.0f};
+    lp::PixelLight(l, units, near_pt, side_n, albedo, 1.0f, near_by);
     const float just_in[3] = {l.range * 0.999f, 1.0f, 0.0f};
     const float just_out[3] = {l.range * 1.001f, 1.0f, 0.0f};
-    const float side_n[3] = {-1.0f, 0.0f, 0.0f};
     lp::PixelLight(l, units, just_in, side_n, albedo, 1.0f, inside);
     lp::PixelLight(l, units, just_out, side_n, albedo, 1.0f, outside);
-    Check(outside[0] == 0.0f && inside[0] > 0.0f, "the light ends at its reach");
-    Check(inside[0] <= 0.07f * plateau[0], "and the step at the reach is under 7 % of the value inside the plateau (no visible edge)");
+    Check(outside[0] == 0.0f && inside[0] >= 0.0f, "the light ends at its reach");
+    Check(inside[0] <= 1.0e-4f * near_by[0], "and the step at the reach is under 0.01 % of the value 1 m from the light (no visible edge)");
   }
   // the units: a neon light is multiplied by the night light intensity like a game lamp (0 by day where the game says so)
   {
@@ -796,6 +802,161 @@ void PixelChecks() {
     lp::PixelLight(lights[0], dusk, ground_pt, up, albedo, 1.0f, h);
     lp::PixelLight(lights[0], units, ground_pt, up, albedo, 1.0f, f);
     CheckNear(h[0] * 2.0, f[0], 1.0e-6, "half the night factor is half the light");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GB-NEON-TUNE: the colour as a hue and a strength, the one reach, the law's numbers against the street lamps' (perf/GB-NEON-TUNE.md)
+// ---------------------------------------------------------------------------
+
+// The tube's light at a surface (the sum of the lights' colour x the law's scale, the first channel): `normal` facing the tube.
+double TubeAt(const std::vector<Light>& lights, const float p[3], const float n[3]) {
+  double sum = 0.0;
+  for (const Light& l : lights) {
+    light_laws::LightSurface s;
+    for (int k = 0; k < 3; ++k) {
+      s.position[k] = p[k];
+      s.normal[k] = n[k];
+    }
+    sum += double(l.color[0]) * double(light_laws::LightScale(l, s));
+  }
+  return sum;
+}
+
+void TuneChecks() {
+  // the hue and the strength
+  {
+    float hue[3], strength = -1.0f;
+    const float game[3] = {30.174f, 0.0176f, 0.0100f};  // the integration run's red neon
+    lp::NeonHueStrength(game, hue, &strength);
+    CheckNear(hue[0], 1.0, 0.0, "the hue's brightest channel is 1");
+    CheckNear(hue[1], 0.0176 / 30.174, 1.0e-7, "and the others are over the brightest");
+    CheckNear(strength, 30.174 / 32.0, 1.0e-6, "the strength is the brightest channel over the full colour (0.943 for the game's own red neon)");
+    // the pulse moves the strength, never the hue
+    float hue_half[3], strength_half = 0.0f;
+    const float half[3] = {game[0] * 0.5f, game[1] * 0.5f, game[2] * 0.5f};
+    lp::NeonHueStrength(half, hue_half, &strength_half);
+    CheckNear(strength_half, 0.5 * strength, 1.0e-6, "half the game's colour is half the strength");
+    Check(hue_half[0] == hue[0] && std::fabs(hue_half[1] - hue[1]) < 1.0e-7f && std::fabs(hue_half[2] - hue[2]) < 1.0e-7f, "and the same hue");
+    const float over[3] = {300.0f, 3.0f, 0.0f};
+    lp::NeonHueStrength(over, hue, &strength);
+    Check(strength == 1.0f && std::fabs(hue[1] - 0.01f) < 1.0e-6f, "a colour over the full colour is strength 1, its hue kept");
+    const float black[3] = {0.0f, 0.0f, 0.0f};
+    lp::NeonHueStrength(black, hue, &strength);
+    Check(strength == 0.0f && hue[0] == 0.0f && hue[1] == 0.0f && hue[2] == 0.0f, "no colour is no hue and no strength");
+    const float odd[3] = {std::nanf(""), -2.0f, std::numeric_limits<float>::infinity()};
+    lp::NeonHueStrength(odd, hue, &strength);
+    Check(std::isfinite(strength) && strength == 1.0f && hue[0] == 0.0f && hue[1] == 0.0f && hue[2] == 1.0f, "a NaN or negative channel is 0, an infinite one the brightest (finite everywhere)");
+  }
+  // the one reach
+  {
+    for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+      CheckNear(lp::NeonReachOf(tier), lp::NeonReach(tier), 0.0, "NeonReachOf is the tier's reach at scale 1");
+      CheckNear(lp::NeonReachOf(tier, 0.8f), 0.8 * lp::NeonReach(tier), 1.0e-5, "the scale scales it");
+      CheckNear(lp::NeonReachOf(tier, 0.01f), lp::kNeonReachScaleMin * lp::NeonReach(tier), 1.0e-5, "a scale under the least is the least");
+      CheckNear(lp::NeonReachOf(tier, 99.0f), lp::kNeonReachScaleMax * lp::NeonReach(tier), 1.0e-5, "and over the most the most");
+      CheckNear(lp::NeonReachOf(tier, std::numeric_limits<float>::quiet_NaN()), lp::NeonReach(tier), 0.0, "a scale that is no number is 1");
+      CheckNear(lp::NeonReachOf(tier, 1.0f, false), lp::LegacyNeonReach(tier), 0.0, "the old look has its own reach");
+    }
+    // every light of a tube carries exactly that reach: what the pass's reach test, its scissor and the culling read
+    const float origin[3] = {820.0f, 17.4f, -795.0f};
+    const nl::NeonCar car = CarAt(kSelf, origin, 1.5f, 0.8f, true);
+    nl::Tube tube;
+    nl::ResolveTube(car, &tube);
+    for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+      for (const float scale : {0.8f, 1.0f, 1.3f}) {
+        std::vector<Light> out;
+        lp::MakeNeonTubeLights(car, tube, 3, tier, 1.0f, &out, scale);
+        bool same = !out.empty();
+        for (const Light& l : out) {
+          same = same && l.range == lp::NeonReachOf(tier, scale) && l.shadow.reach == l.range;
+        }
+        Check(same, std::string("every light of the tube has the one reach (x ") + std::to_string(scale) + ") as its range and its bounds at " + lp::TierName(tier));
+      }
+    }
+    // the reach scale reaches the gather and the picture's probe
+    lp::NeonSourceInputs in;
+    const std::vector<nl::NeonCar> one = {car};
+    in.cars = &one;
+    in.tier = lp::Tier::kHigh;
+    in.reach_scale = 1.3f;
+    std::memcpy(in.camera, origin, sizeof(origin));
+    std::vector<Light> out;
+    lp::GatherNeonLights(in, &out);
+    Check(!out.empty() && out[0].range == lp::NeonReachOf(lp::Tier::kHigh, 1.3f), "the gather gives the scaled reach");
+    in.tuned = false;
+    out.clear();
+    lp::GatherNeonLights(in, &out);
+    Check(!out.empty() && out[0].range == lp::NeonReachOf(lp::Tier::kHigh, 1.3f, false) && out[0].law == LightLaw::kOmni, "and, with the A/B off, the old look's reach and law");
+  }
+  // the old look is still the old look, to the bit (the A/B)
+  {
+    const float origin[3] = {820.0f, 17.4f, -795.0f};
+    const nl::NeonCar car = CarAt(kSelf, origin, 1.5f, 0.8f, true);
+    nl::Tube tube;
+    nl::ResolveTube(car, &tube);
+    for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+      const float reach = lp::LegacyNeonReach(tier);
+      const float plateau = lp::kLegacyNeonCutShare * reach * reach;
+      for (const uint32_t n : {1u, 2u, 4u}) {
+        const Light l = lp::MakeNeonLight(car, 0, n, tube.a, tier, 1.0f, 1.0f, false);
+        Check(l.law == LightLaw::kOmni && l.range == reach && l.law_a == plateau, "the old look: an omni law, the plateau a share of the reach squared, 6 / 7 / 8 m");
+        for (int k = 0; k < 3; ++k) {
+          Check(l.color[k] == std::min(car.colour[k], lp::kLegacyNeonMaxColour) * (plateau * 1.0f * lp::kLegacyNeonTubeGain / float(n)), "the old look: the game's colour x the plateau x the gain / the points, bit for bit");
+        }
+      }
+    }
+  }
+  // the law's numbers against the street lamps' (the table of perf/GB-NEON-TUNE.md): the light a surface FACING the tube gets, in street lamp units (a lamp's rgb inside its plateau is 1)
+  {
+    const float origin[3] = {0.0f, 0.0f, 0.0f};
+    nl::NeonCar car = CarAt(kSelf, origin, 1.5f, 1.0f, true);
+    // a tube 2.23 m long along x, centred on the origin, 0.5 m above the road (the integration run's tube); full strength
+    for (int k = 0; k < 3; ++k) {
+      car.colour[k] = k == 0 ? lp::kNeonFullColour : 0.0f;
+    }
+    nl::Tube tube;
+    tube.space = nl::Space::kWorld;
+    tube.a[0] = -1.115f;
+    tube.b[0] = 1.115f;
+    tube.length = 2.23f;
+    std::vector<Light> high, soft, strong, old;
+    lp::MakeNeonTubeLights(car, tube, 3, lp::Tier::kHigh, 1.0f, &high);
+    lp::MakeNeonTubeLights(car, tube, 3, lp::Tier::kHigh, 0.5f, &soft, 0.8f);
+    lp::MakeNeonTubeLights(car, tube, 3, lp::Tier::kHigh, 2.0f, &strong, 1.3f);
+    lp::MakeNeonTubeLights(car, tube, 3, lp::Tier::kHigh, 1.0f, &old, 1.0f, false);
+    const auto wall = [&](const std::vector<Light>& lights, float d) {
+      const float p[3] = {0.0f, 0.0f, d};
+      const float n[3] = {0.0f, 0.0f, -1.0f};
+      return TubeAt(lights, p, n);
+    };
+    const auto ground = [&](const std::vector<Light>& lights, float d) {
+      const float p[3] = {0.0f, -0.5f, d};
+      const float n[3] = {0.0f, 1.0f, 0.0f};
+      return TubeAt(lights, p, n);
+    };
+    std::printf("neon at a wall facing the tube (street lamp units): d 1 / 2 / 3 / 4 / 6 m: new %.3f %.3f %.3f %.3f %.3f | soft %.3f %.3f %.3f %.3f %.3f | strong %.3f %.3f %.3f %.3f %.3f | old %.2f %.2f %.2f %.2f %.2f\n",
+                wall(high, 1), wall(high, 2), wall(high, 3), wall(high, 4), wall(high, 6), wall(soft, 1), wall(soft, 2), wall(soft, 3), wall(soft, 4), wall(soft, 6), wall(strong, 1), wall(strong, 2), wall(strong, 3),
+                wall(strong, 4), wall(strong, 6), wall(old, 1), wall(old, 2), wall(old, 3), wall(old, 4), wall(old, 6));
+    std::printf("neon on the road, the tube 0.5 m above it: d 1 / 2 / 3 / 4 / 6 m: new %.3f %.3f %.3f %.3f %.3f | old %.2f %.2f %.2f %.2f %.2f\n", ground(high, 1), ground(high, 2), ground(high, 3), ground(high, 4), ground(high, 6), ground(old, 1),
+                ground(old, 2), ground(old, 3), ground(old, 4), ground(old, 6));
+    // the goal: a strong pool near, a wall at 1 to 3 m tinted (the light of a street lamp's plateau at most), nothing by 6 m
+    Check(wall(high, 1) > 1.8 && wall(high, 1) < 3.0, "a wall 1 m from the tube gets 2 to 3 street lamps' worth of red (a strong pool, not 30)");
+    Check(wall(high, 3) > 0.3 && wall(high, 3) < 0.6, "at 3 m a third to a half of a lamp's plateau: a clear tint");
+    Check(wall(high, 5.5f) == 0.0 && wall(high, 6) == 0.0 && ground(high, 6) == 0.0, "nothing at 5.5 m and beyond (the reach)");
+    Check(wall(high, 5.0f) < 0.02, "and almost nothing at 5 m (the window)");
+    Check(ground(high, 1) > 0.9 && ground(high, 1) < 1.6 && ground(high, 3) > 0.08 && ground(high, 3) < 0.2, "the road beside the car (1 m) is lit about as much as under a street lamp (red only), 3 m out a tenth of it");
+    // against the old look: far weaker beyond the car's own pool, and it ends where the old one only began to
+    Check(wall(old, 3) > 10.0 * wall(high, 3) && wall(old, 6) > 2.0 && ground(old, 3) > 8.0 * ground(high, 3), "the old look gave 10 and more times the light at 3 m and 2.4 lamps' worth at 6 m on a wall");
+    // soft and strong are what they say
+    Check(wall(soft, 1) < 0.6 * wall(high, 1) && wall(soft, 4.5f) == 0.0 && wall(strong, 1) > 1.8 * wall(high, 1) && wall(strong, 6) > 0.05 && wall(strong, 7.2f) == 0.0, "the softer arm is about half as strong and reaches 4.4 m, the stronger one twice as strong and reaches 7.15 m");
+    // the gain is linear (the lever): doubling it doubles the light at every distance
+    std::vector<Light> twice;
+    lp::MakeNeonTubeLights(car, tube, 3, lp::Tier::kHigh, 2.0f, &twice);
+    CheckNear(wall(twice, 2.0f), 2.0 * wall(high, 2.0f), 1.0e-5, "the gain is a plain multiplier: twice the gain, twice the light");
+    // the pass's units: the neon at 3 m on a wall is a lamp's rgb x 0.4 (street lamp: colour x 1/I = rgb)
+    const double lamp_at_plateau = 55.0 * (1.0 / 55.0);
+    Check(std::fabs(lamp_at_plateau - 1.0) < 1.0e-12, "a street lamp (I 55) lights a surface inside its 7.4 m with its rgb x 1: the unit of the table");
   }
 }
 
@@ -936,6 +1097,22 @@ void ReachChecks() {
   // the decision: a lit car in the table asks for the planes only when a light of it can reach the picture; with no camera of the last frame it asks as it always did
   Check(nl::LitNow(true, true, true) && !nl::LitNow(true, true, false) && nl::LitNow(true, false, false) && nl::LitNow(true, false, true), "a lit car asks when its light can reach the picture, or when there is no camera to tell by");
   Check(!nl::LitNow(false, true, true) && !nl::LitNow(false, false, false) && !nl::LitNow(false, true, false) && !nl::LitNow(false, false, true), "no lit car, no ask");
+  // GB-NEON-TUNE: the reach scale is part of the probe: the planes are wanted by the same radius the light has (a larger scale keeps a car just off the picture's edge, a smaller one loses it)
+  {
+    const lp::Tier tier = lp::Tier::kHigh;
+    float edge = -1.0f;
+    for (float dz = 0.0f; dz <= 60.0f; dz += 0.25f) {
+      const std::vector<nl::NeonCar> side = {car_at(1, 12.0f, dz)};
+      if (!lp::NeonReachesView(side, tier, 1.0f, view)) {
+        edge = dz;
+        break;
+      }
+    }
+    Check(edge > 0.0f, "a car far enough to the side is out of the probe at the default reach");
+    const std::vector<nl::NeonCar> at_edge = {car_at(1, 12.0f, edge)};
+    Check(lp::NeonReachesView(at_edge, tier, 1.0f, view, 2.0f) && !lp::NeonReachesView(at_edge, tier, 1.0f, view, 0.25f) && !lp::NeonReachesView(at_edge, tier, 1.0f, view, 1.0f),
+          "a reach of twice the scale has the car in the probe, a quarter and the default do not");
+  }
 
   for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
     const std::string at = std::string(" at ") + lp::TierName(tier);
@@ -1149,6 +1326,17 @@ void SourceChecks(const std::string& src) {
     const size_t gend = settings.find(");", g);
     Check(g != std::string::npos && settings.substr(g, gend - g).find("rex::kDebugOnly") != std::string::npos, "the gain is a debug setting, 1 by default");
     Check(Has(settings, "inline auto& mcla_gpu_neon_light = g_gpu.mcla_gpu_neon_light;") && Has(settings, "inline auto& mcla_gpu_neon_light_gain = g_gpu.mcla_gpu_neon_light_gain;"), "both have their alias");
+    // GB-NEON-TUNE: the gain is 0 to 4 (1 is the tuned look), the reach scale 0.25 to 2 (1 the tier's), the A/B of the retune is on by default; all three are debug only
+    Check(Has(settings.substr(g, gend - g), "rex::Range{0.0, 4.0}"), "the gain is 0 to 4");
+    const size_t r = settings.find(rex_setting + "f64, mcla_gpu_neon_light_reach, 1.0,");
+    const size_t rend = settings.find(");\n", r);
+    Check(r != std::string::npos && Has(settings.substr(r, rend - r), "rex::kDebugOnly") && Has(settings.substr(r, rend - r), "rex::Range{0.25, 2.0}"), "the reach scale is a debug setting, 1 by default, 0.25 to 2");
+    const size_t t = settings.find(rex_setting + "bool, mcla_gpu_neon_light_tuned, true,");
+    const size_t tend = settings.find(");\n", t);
+    Check(t != std::string::npos && Has(settings.substr(t, tend - t), "rex::kDebugOnly"), "the A/B of the retune is a debug setting, on by default");
+    Check(Has(settings, "inline auto& mcla_gpu_neon_light_reach = g_gpu.mcla_gpu_neon_light_reach;") && Has(settings, "inline auto& mcla_gpu_neon_light_tuned = g_gpu.mcla_gpu_neon_light_tuned;") &&
+              Has(manifest, "\"mcla_gpu_neon_light_reach\": {") && Has(manifest, "\"mcla_gpu_neon_light_tuned\": {") && Has(meta, "{\"mcla_gpu_neon_light_reach\", \"MCLA/GPU\"},") && Has(meta, "{\"mcla_gpu_neon_light_tuned\", \"MCLA/GPU\"},"),
+          "the two new settings have their alias, manifest entry and meta row");
     Check(Has(manifest, "\"mcla_gpu_neon_light\": {") && Has(manifest, "\"mcla_gpu_neon_light_gain\": {") && Has(meta, "{\"mcla_gpu_neon_light\", \"MCLA/GPU\"},") && Has(meta, "{\"mcla_gpu_neon_light_gain\", \"MCLA/GPU\"},"),
           "both are in the manifest and the meta table");
   }
@@ -1163,7 +1351,7 @@ void SourceChecks(const std::string& src) {
     Check(Has(menu, "kNativeNeonLightVals[]  = {\"auto\", \"off\", \"on\"};") && Has(menu, "gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kNeonLight)"), "its words are AUTO, OFF, ON and AUTO says what it comes to");
     Check(Has(menu, "constexpr RowDynamics kNeonLightDynamics = {.str_label = NeonLightLabel};"), "no dependency: no .enabled");
   }
-  Check(Has(debug_menu, "\"mcla_gpu_neon_light_gain\""), "the gain has a row on the hidden debug menu");
+  Check(Has(debug_menu, "\"mcla_gpu_neon_light_gain\"") && Has(debug_menu, "\"mcla_gpu_neon_light_reach\"") && Has(debug_menu, "\"mcla_gpu_neon_light_tuned\""), "the gain, the reach scale and the A/B of the retune have rows on the hidden debug menu");
   // the hook: the game's own update first, then the read; only while wanted
   {
     const size_t call = At(hook, "__imp__rex_sub_823553F8(ctx, base);");
@@ -1193,6 +1381,9 @@ void SourceChecks(const std::string& src) {
     }
     Check(Has(cpp, "ll::GatherNeonLights(neon_in, &candidates_.neon, &neon_report);") && Has(cpp, "std::erase_if(candidates_.neon, unseen);"), "the pass gathers the neon lights and drops the ones no pixel is inside the reach of");
     Check(Has(cpp, "mcla_gpu_neon_light_gain.Get()") && Has(cpp, "static LiveText neon_text(\"mcla_gpu_neon_light\");"), "the gain and the setting are read live");
+    // GB-NEON-TUNE: the reach scale and the A/B are read each frame and reach BOTH the gather and the planes' probe: one reach for the light, the reach test, the scissor and the want of the planes
+    Check(Has(cpp, "mcla_gpu_neon_light_reach.Get()") && Has(cpp, "mcla_gpu_neon_light_tuned.Get()") && Has(cpp, "neon_in.reach_scale = neon_reach_scale_;") && Has(cpp, "neon_in.tuned = neon_tuned_;"),
+          "the reach scale and the A/B are read live and given to the gather");
     const size_t gather = At(cpp, "ll::GatherNeonLights(neon_in, &candidates_.neon, &neon_report);");
     const size_t unseen = At(cpp, "std::erase_if(candidates_.neon, unseen);");
     const size_t select = At(cpp, "ll::SelectPassLights(frame,");
@@ -1206,7 +1397,7 @@ void SourceChecks(const std::string& src) {
       const size_t lit = At(cpp, "if (!nl::Global().AnyLit(ll::kNeonMinColour)) {");
       const size_t previous = At(cpp, "screen_->Cameras().Previous(screen_->frame_count(), false)");
       const size_t probe = At(cpp, "ll::ProbeViewOf(camera->right, camera->up, camera->forward, camera->position, camera->fov_y, camera->aspect, camera->width, camera->height, &view)");
-      const size_t reach = At(cpp, "return nl::LitNow(true, true, ll::NeonReachesView(neon_cars_, tier_, neon_gain_, view));");
+      const size_t reach = At(cpp, "return nl::LitNow(true, true, ll::NeonReachesView(neon_cars_, tier_, neon_gain_, view, neon_reach_scale_, neon_tuned_));");
       const size_t fallback = At(cpp, "return nl::LitNow(true, false, false);");
       Check(fn != std::string::npos && lit != std::string::npos && previous != std::string::npos && probe != std::string::npos && fallback != std::string::npos && reach != std::string::npos && fn < lit && lit < previous &&
                 previous < probe && probe < fallback && fallback < reach,
@@ -1231,6 +1422,7 @@ int main(int argc, char** argv) {
   SelectionChecks();
   BudgetChecks();
   PixelChecks();
+  TuneChecks();
   TableChecks();
   HoldChecks();
   ReachChecks();
