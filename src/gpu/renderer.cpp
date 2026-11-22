@@ -252,7 +252,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
       const bool vulkan = ActiveBackend() == Backend::kVulkan;
-      const std::string why = CarRtUnsupportedReason(device_.capabilities(), vulkan);
+      const std::string why = CarRtUnsupportedReason(device_.capabilities(), vulkan, device_.wave_ops());
       if (!why.empty()) {
         REXLOG_INFO("[gpu] car ray tracing: not available: {}", why);
       } else if (car_rt_.Initialize(device_, frames_, upload_, heap_, passes_, edram_, pass_timing_, car_frame_)) {

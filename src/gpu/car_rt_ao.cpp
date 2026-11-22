@@ -85,7 +85,7 @@ void CarRtAo::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
   listed_ = false;
   pipeline_failed_ = false;
   supported_ = scene != nullptr && scene->ready() && car_frame != nullptr &&
-               CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
+               CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan, device.wave_ops());
   if (!supported_) {
     passes.precache().Note("ray traced ambient occlusion and contact shadows: not on this graphics card or backend (the screen-space passes run)", 0);
     return;

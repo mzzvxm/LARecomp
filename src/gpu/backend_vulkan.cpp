@@ -197,16 +197,43 @@ std::string DescribeCapabilities(plume::RenderDevice* device) {
           ? std::format("yes (scratch alignment {} bytes)",
                         dev->accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment)
           : std::string("no");
+  // The subgroup operations the ray traced car effects' compute shaders use (backend.h WaveOps): without all three the ray tracing stays off.
+  const WaveOps waves = QueryWaveOps(device);
+  const auto wave = [&waves](bool value) { return waves.known ? (waves.in_compute && value ? "yes" : "no") : "?"; };
   return std::format(
       "Vulkan 64-bit integers in shaders {}, buffer device address {}, descriptor indexing: partially "
       "bound {}, variable count {}, runtime arrays {}, sampled image update after bind {}; BC textures "
-      "{}, bound descriptor sets {}, push constants {} bytes; ray queries {}, ray tracing pipelines {}",
+      "{}, bound descriptor sets {}, push constants {} bytes; ray queries {}, ray tracing pipelines {}; "
+      "compute subgroup operations: basic {}, ballot {}, arithmetic {}",
       yes(core.shaderInt64), yes(address.bufferDeviceAddress),
       yes(indexing.descriptorBindingPartiallyBound),
       yes(indexing.descriptorBindingVariableDescriptorCount), yes(indexing.runtimeDescriptorArray),
       yes(indexing.descriptorBindingSampledImageUpdateAfterBind), yes(core.textureCompressionBC),
       limits.maxBoundDescriptorSets, limits.maxPushConstantsSize, ray_query,
-      yes(dev->capabilities.raytracing));
+      yes(dev->capabilities.raytracing), wave(waves.basic), wave(waves.ballot),
+      wave(waves.arithmetic));
+}
+
+WaveOps QueryWaveOps(plume::RenderDevice* device) {
+  WaveOps out;
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->physicalDevice == VK_NULL_HANDLE || !vkGetPhysicalDeviceProperties2) {
+    return out;
+  }
+  // The core 1.1 structure (the instance asks for 1.2): what the physical device supports in each stage, which the device creation does not change.
+  // CHECK: not run (no build here): the three answers on this RTX and the Radeon iGPU are expected yes; Intel Arc and RADV were never run.
+  VkPhysicalDeviceSubgroupProperties subgroup = {};
+  subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+  VkPhysicalDeviceProperties2 properties = {};
+  properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+  properties.pNext = &subgroup;
+  vkGetPhysicalDeviceProperties2(dev->physicalDevice, &properties);
+  out.known = true;
+  out.in_compute = (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+  out.basic = (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_BASIC_BIT) != 0;
+  out.ballot = (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_BALLOT_BIT) != 0;
+  out.arithmetic = (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
+  return out;
 }
 
 AdapterIds QueryAdapterIds(plume::RenderDevice* device) {

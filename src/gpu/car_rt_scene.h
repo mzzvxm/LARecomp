@@ -96,6 +96,7 @@
 #include <plume_render_interface.h>
 
 // car_frame.h names these without including them.
+#include "backend.h"
 #include "constants.h"
 #include "draw_decode.h"
 #include "draw_state.h"
@@ -168,10 +169,11 @@ struct CarRtView {
 };
 
 // The decision whether this device can run the ray traced car effects (D3D12: DXR 1.1 and Shader Model 6.5; Vulkan: Plume's rayQuery, that is
-// VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2). The ONE place for the decision.
-bool CarRtSupported(const plume::RenderDeviceCapabilities& caps, bool vulkan);
+// VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2; both: the wave operations the ray tracing shaders use,
+// `waves` = Device::wave_ops()). The ONE place for the decision.
+bool CarRtSupported(const plume::RenderDeviceCapabilities& caps, bool vulkan, const backend::WaveOps& waves);
 // Why not, in plain words for the log; empty when it is supported.
-std::string CarRtUnsupportedReason(const plume::RenderDeviceCapabilities& caps, bool vulkan);
+std::string CarRtUnsupportedReason(const plume::RenderDeviceCapabilities& caps, bool vulkan, const backend::WaveOps& waves);
 
 class CarRtScene final : public car_frame::Listener {
  public:

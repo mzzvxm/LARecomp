@@ -668,15 +668,47 @@ inline bool ProbeMatches(const ProbeCar& read, const float centre[3], float radi
 // D3D_SHADER_MODEL_6_5 as RenderDeviceCapabilities::shaderModel gives it: where the inline ray queries (RayQuery in a compute shader) start.
 inline constexpr uint32_t kShaderModel65 = 0x65;
 
+// What the ray tracing shaders use of the wave (subgroup) operations, which Plume's capabilities do not carry (backend.h WaveOps, asked of the device by
+// backend::QueryWaveOps). hlsl/car_rt_check_cs.hlsl: WaveIsFirstLane (SPIR-V OpGroupNonUniformElect, Vulkan's BASIC), WaveActiveCountBits (Ballot and
+// BallotBitCount: BALLOT) and WaveActiveSum (IAdd: ARITHMETIC); hlsl/rt_bench_cs.hlsl: WaveIsFirstLane and WaveActiveSum. All in compute shaders: no other
+// ray tracing shader (the reflection, its opponents' variant and the occlusion pass, the ray traced car's pixel shader) uses a wave operation, so no
+// other stage is asked for. Why the whole ray tracing and not only the passes with the operations: the check pass and the benchmark fail soft without
+// them, which would leave the effects running unchecked and unmeasured, and every ray query driver has the operations, so nothing real is given up.
+// `Waves` is backend::WaveOps (and a stand-in in the test). Empty when the operations are there or the
+// backend could not ask (a driver that cannot answer is not turned away).
+template <typename Waves>
+std::string WaveProblem(const Waves& waves) {
+  if (!waves.known) {
+    return std::string();
+  }
+  if (!waves.in_compute) {
+    return "the graphics card's driver offers no wave (subgroup) operations in compute shaders, which the ray tracing checks use";
+  }
+  std::string lacks;
+  const auto add = [&lacks](bool present, const char* what) {
+    if (!present) {
+      lacks += std::format("{}{}", lacks.empty() ? "" : ", ", what);
+    }
+  };
+  add(waves.basic, "basic (WaveIsFirstLane)");
+  add(waves.ballot, "ballot (WaveActiveCountBits)");
+  add(waves.arithmetic, "arithmetic (WaveActiveSum)");
+  if (lacks.empty()) {
+    return std::string();
+  }
+  return std::format("the graphics card's driver lacks wave (subgroup) operations the ray tracing checks use: {}", lacks);
+}
+
 // Why a device cannot run the ray traced car effects, or an empty text where it can: the ONE decision (CarRtUnsupportedReason in car_rt_scene.cpp
-// hands it Plume's capabilities; `Caps` is plume::RenderDeviceCapabilities there and a stand-in in the test).
-//   Direct3D 12: DXR tier 1.1 (raytracing and raytracingStateUpdate) and shader model 6.5.
+// hands it Plume's capabilities and the wave operations; `Caps` is plume::RenderDeviceCapabilities there and a stand-in in the test, `Waves` WaveProblem's).
+//   Direct3D 12: DXR tier 1.1 (raytracing and raytracingStateUpdate) and shader model 6.5, and the wave operations (WaveProblem).
 //   Vulkan:      Plume's rayQuery (mzzvxm/plume pull request 13): VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses,
 //                deferred host operations and a Vulkan 1.2 device, all of it checked by Plume before it says yes. The ray tracing PIPELINES
 //                (caps.raytracing on Vulkan) are not needed: the shaders trace inline. The structures' buffer addresses and the bindless
 //                sets the shaders read through need the two features the renderer refuses a device without anyway (device.cpp), asked again here.
-template <typename Caps>
-std::string UnsupportedReason(const Caps& caps, bool vulkan) {
+//                And the wave operations (WaveProblem), which no extension or Plume capability covers.
+template <typename Caps, typename Waves>
+std::string UnsupportedReason(const Caps& caps, bool vulkan, const Waves& waves) {
   if (vulkan) {
     if (!caps.rayQuery) {
       return "the Vulkan driver does not offer ray queries (VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2)";
@@ -684,7 +716,7 @@ std::string UnsupportedReason(const Caps& caps, bool vulkan) {
     if (!caps.bufferDeviceAddress || !caps.descriptorIndexing) {
       return "the Vulkan driver lacks buffer device addresses or descriptor indexing, which the car's ray tracing structures need";
     }
-    return std::string();
+    return WaveProblem(waves);
   }
   if (!caps.raytracing || !caps.raytracingStateUpdate) {
     return "the graphics card does not offer DirectX Raytracing tier 1.1 (inline ray queries)";
@@ -692,7 +724,7 @@ std::string UnsupportedReason(const Caps& caps, bool vulkan) {
   if (caps.shaderModel < kShaderModel65) {
     return std::format("the Direct3D 12 runtime offers shader model {}.{} and the ray queries need 6.5", caps.shaderModel >> 4, caps.shaderModel & 0xF);
   }
-  return std::string();
+  return WaveProblem(waves);
 }
 
 }  // namespace mcla::gpu::car_rt_rules

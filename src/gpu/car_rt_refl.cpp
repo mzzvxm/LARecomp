@@ -88,7 +88,7 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   g_available.store(false, std::memory_order_relaxed);
   listed_ = false;
   pipeline_failed_ = false;
-  supported_ = scene != nullptr && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
+  supported_ = scene != nullptr && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan, device.wave_ops());
   if (!supported_) {
     passes.precache().Note("ray traced car self-reflections: not on this graphics card or driver (the screen-space version runs)", 0);
     return;

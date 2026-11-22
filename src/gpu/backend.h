@@ -369,6 +369,20 @@ struct UpscalerSupport {
 };
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
 
+// The wave (subgroup) operations a compute shader can use on this device, which Plume's capabilities do not carry. The ray traced car effects' shaders
+// use three kinds (car_rt_scene_rules.h WaveProblem): WaveIsFirstLane (`basic`), WaveActiveCountBits (`ballot`) and WaveActiveSum (`arithmetic`), all in compute.
+// Vulkan: VkPhysicalDeviceSubgroupProperties (core in 1.1; the instance asks for 1.2), supportedOperations BASIC / BALLOT / ARITHMETIC and supportedStages COMPUTE.
+// D3D12: D3D12_FEATURE_DATA_D3D12_OPTIONS1::WaveOps, which covers the three and every shader stage. `known` is false when the backend could not ask
+// (no device, a failed query): the decision then does not turn the device away, as RequirementProblem does not.
+struct WaveOps {
+  bool known = false;
+  bool basic = false;
+  bool ballot = false;
+  bool arithmetic = false;
+  bool in_compute = false;
+};
+WaveOps QueryWaveOps(plume::RenderDevice* device);
+
 }  // namespace backend
 
 }  // namespace mcla::gpu

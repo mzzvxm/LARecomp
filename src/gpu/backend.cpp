@@ -310,6 +310,10 @@ UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(QueryUpscalerSupport(device));
 }
 
+WaveOps QueryWaveOps(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(QueryWaveOps(device));
+}
+
 SwapChainFactoryScope::SwapChainFactoryScope(plume::RenderDevice* device,
                                              bool (*wrap)(void** factory))
     : device_(device) {

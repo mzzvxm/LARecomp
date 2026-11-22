@@ -78,15 +78,16 @@ double Mib(uint64_t bytes) {
 // support
 // ---------------------------------------------------------------------------
 
-std::string CarRtUnsupportedReason(const plume::RenderDeviceCapabilities& caps, bool vulkan) {
+std::string CarRtUnsupportedReason(const plume::RenderDeviceCapabilities& caps, bool vulkan, const backend::WaveOps& waves) {
   // Plume's rayQuery is VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2 together (plume_vulkan.cpp),
   // the whole of what the structures' builds and the SPIR-V 1.5 shaders (hlsl/car_rt_*.hlsl) need. The ray tracing pipelines are not needed.
+  // The wave operations are not in Plume's capabilities: backend::QueryWaveOps asks the device (hlsl/car_rt_check_cs.hlsl and rt_bench_cs.hlsl use them).
   // The rules themselves (car_rt_rules::UnsupportedReason) need no device and have a test of their own.
-  return rr::UnsupportedReason(caps, vulkan);
+  return rr::UnsupportedReason(caps, vulkan, waves);
 }
 
-bool CarRtSupported(const plume::RenderDeviceCapabilities& caps, bool vulkan) {
-  return CarRtUnsupportedReason(caps, vulkan).empty();
+bool CarRtSupported(const plume::RenderDeviceCapabilities& caps, bool vulkan, const backend::WaveOps& waves) {
+  return CarRtUnsupportedReason(caps, vulkan, waves).empty();
 }
 
 // A mesh with its structure being placed this frame (the bottom level's build waits for the arenas to be final).

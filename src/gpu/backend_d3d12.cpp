@@ -766,4 +766,21 @@ UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
   return out;
 }
 
+WaveOps QueryWaveOps(plume::RenderDevice* device) {
+  WaveOps out;
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->d3d) {
+    return out;
+  }
+  // WaveOps is the one answer for the wave intrinsics of shader model 6.0 (basic, vote, ballot, reductions) in every stage; a query that fails says nothing.
+  // CHECK: not run (no build here); the "[gpu] capabilities:" line's "wave operations" already prints this same bit.
+  D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1 = {};
+  if (FAILED(dev->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1)))) {
+    return out;
+  }
+  out.known = true;
+  out.basic = out.ballot = out.arithmetic = out.in_compute = options1.WaveOps != FALSE;
+  return out;
+}
+
 }  // namespace mcla::gpu::backend::d3d12
