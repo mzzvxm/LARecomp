@@ -382,6 +382,76 @@ private:
     int64_t ready_since_ms_ = -1;
 };
 
+// ------------------------------------------------------------------------------------------- the pause menu comes first ---
+//
+// WHY (opjrev-pcli against opjrev-ps-lan and opjrev-ps-live, 2026-11-22, one exe: fix/online-review 043ea9e3). The search gate opened at once
+// (search_flag 0, busy 0, signed in 1, ready 1), goto(LAN) returned 1 and set net_mode 1, and goto(QuickMatchSearching) still returned 0; the
+// retry returned 1 and posted the search panel (flash command E51), and the game never started the search (no socket, no REGISTER at the
+// relay, no_session after 45 s). The joins that worked, from the same exe, began with the pause screen, the paused flag and the pause movie
+// up (the log line "join asked for: pause screen 1, paused flag 1, pause movie 1, activity free roam"): the browser's join found the pause
+// menu open, closed it the way CONTINUE does ("closed first, then the goto", the live scene) or searched from the page it stood on (the lan
+// scene), and the game searched 17 ms after the goto. The failing join began with no pause menu ("... pause screen 0, paused flag 0, pause
+// movie 0"), in a game that had never opened it; the game also booted online. Nothing else the logs show differs once the message box and
+// the start-up work are out of the way.
+//
+// So --join_server does what the working runs had done before their join: it opens the pause menu the way a player does (Start, in free
+// roam), waits until it is up, and only then files its join, which finds the pause menu open and does what the working live scene's did: the
+// pause gate (browser_join_core.h) gives a menu found open its settle time, closes it, waits for the game to run again, and goes to the net
+// menu and the search from free roam. The press is the pad's Start (input/synthetic_start.h), put into the state of the game's own poll: the
+// same reading the game makes of a player's Start, and the one the test harness's pad uses in the runs that worked.
+// CHECK: not run in a game. That the pause menu opened this way is the one the working runs had, and that it is what lets the search start,
+// is the reading of the logs above (hypothesis (b) of JOIN-SERVER-ROOT.md); the run says.
+//
+// This is the order of those steps, with the clock handed in, so that the test needs no game. Per tick, with what the caller sees:
+//   up         the pause menu is on screen (the pause movie is the UI's current one and a menu screen is up);
+//   can_press  nothing stands in the way of a Start press: the game is in free roam and no message box is on screen (the box takes the
+//              input first, and a join under it was never started).
+// The step is kPress when a Start press should be made now, kReady once the menu has stayed up for kShownMs (its page is loaded and has
+// been drawn: closing a menu in its first frames meets the movie's load), kGaveUp when it never came (the join then goes on as it did
+// before this step, from free roam: the caller logs it), kWait otherwise. A press that did not open the menu within kAttemptMs is made
+// again, kMaxPresses in all.
+class PauseOpener {
+public:
+    enum class Step {
+        kWait,    // not yet
+        kPress,   // press Start now
+        kReady,   // the menu is up and has settled: file the join
+        kGaveUp,  // it did not open: file the join anyway
+    };
+    static constexpr int64_t kShownMs = 1500;         // the menu must stay up this long before the join is filed
+    static constexpr int64_t kAttemptMs = 3000;       // a press that opened nothing is repeated after this long
+    static constexpr int kMaxPresses = 3;
+    static constexpr int64_t kMaxWaitMs = 30 * 1000;  // from the first call: the whole step is given up after this
+
+    // One call per tick while the step runs.
+    Step Update(bool up, bool can_press, int64_t now_ms) {
+        if (first_ms_ < 0) first_ms_ = now_ms;
+        if (up) {
+            if (up_since_ms_ < 0) up_since_ms_ = now_ms;
+            return now_ms - up_since_ms_ >= kShownMs ? Step::kReady : Step::kWait;
+        }
+        up_since_ms_ = -1;  // closed again (the player's own close, a flicker): the time it must stay up starts over
+        if (now_ms - first_ms_ >= kMaxWaitMs) return Step::kGaveUp;
+        if (presses_ >= kMaxPresses) return now_ms >= next_press_ms_ ? Step::kGaveUp : Step::kWait;
+        if (!can_press) return Step::kWait;
+        if (presses_ == 0 || now_ms >= next_press_ms_) {
+            ++presses_;
+            next_press_ms_ = now_ms + kAttemptMs;
+            return Step::kPress;
+        }
+        return Step::kWait;
+    }
+    int Presses() const { return presses_; }
+    // How long the step has been going, as of `now_ms` (0 before the first call): for the log line.
+    int64_t WaitedMs(int64_t now_ms) const { return first_ms_ < 0 ? 0 : now_ms - first_ms_; }
+
+private:
+    int64_t first_ms_ = -1;
+    int64_t up_since_ms_ = -1;
+    int64_t next_press_ms_ = 0;
+    int presses_ = 0;
+};
+
 // ----------------------------------------------------------------------------------------------------------- status ---
 
 enum class State {
