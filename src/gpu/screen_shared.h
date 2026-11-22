@@ -1,6 +1,6 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the shared screen-space products: the owner (SS-0: adopt what the AO makes, add the Hi-Z; SS-1: the colour captures, the history)
+// MCLA GPU renderer -- the shared screen-space products: the owner (SS-0: adopt what the AO makes, add the Hi-Z; SS-1: the colour captures, the history; SS-2: the AO's depth chain, normals and colour chain)
 // ===========================================================================
 // perf/LIGHT-UNIFY.md section 5. The frozen interface is screen_frame.h (ScreenFrame, Product, Consumer, Wants); the pure rules are screen_rules.h and screen_history.h; this class is the owner.
 //
@@ -18,7 +18,7 @@
 // SS-1 is the MOVE step for the colour captures and the history:
 //   - colour_pre (the bounce light's colour chain, capped): the IMAGES are the owner's (EnsureColourPre / ColourPre / ReleaseColourPre: their lifetime, their memory, their publication) and
 //     the call that records the chain is the owner's (CapturePre, the colour_pre step of frame_order.h's table). The pass itself, its pipelines and its constants (AoPush: the cap and the source share are
-//     the AO's frame constants) stay in ao.cpp, which records it inside CapturePre: the same commands in the same place, so the picture and the pass timings are the ones of SS-0. SS-2 moves the
+//     the AO's frame constants) stay in ao.cpp, which records it inside CapturePre: the same commands in the same place, so the picture and the pass timings are the ones of SS-0. SS-2 moved the
 //     pass.
 //   - colour_post: a new capture, CapturePost (the colour_post step of frame_order.h's table): the main colour averaged over its host samples into RGBA16F, uncapped, after the AO's apply, with a mip chain while the reflections
 //     want it. Made ONLY while a consumer wants it (a Want of colour_post by anything but the car history in its automatic mode, or the debug view): the car self-reflection's history reads it
@@ -35,7 +35,14 @@
 //
 // THE ORDER (scene.cpp OnResolve): BeginFrame at the frame's start, before the AO's; OnMainDraw for each draw of the main view, OnAnchor at the game's motion blur draw (before the effects'
 // own), OnComposite, OnPresent at the frame's end; at the trigger (frame_order.h is the order, and the test holds it to scene.cpp and ao.cpp): CapturePre inside the AO's frame after its depth chain and normals, Publish at the END of the AO's frame (after its
-// apply), CapturePost after the AO, the light pass, the sun shafts and the volumetric light and before the reflections and the car history, DrawView after the effects of the trigger, with the G-buffer's view. SS-2 moves the AO's depth, normal and colour passes here: the frame then has one more caller and ao.cpp one less.
+// apply), CapturePost after the AO, the light pass, the sun shafts and the volumetric light and before the reflections and the car history, DrawView after the effects of the trigger, with the G-buffer's view. SS-2 moved the AO's depth, normal and colour passes here (RecordDepth, RecordNormals, RecordColourPre: ao.cpp calls them at the places it recorded them from).
+//
+// SS-2 is the EXTRACT step (screen_extract.h): the AO's depth chain (level 0 from the guest's depth, the two coarser levels, the full size depth of the contact shadows), the normal image (GB-E)
+// and the bounce light's colour chain are recorded HERE, once a frame, into images this class owns; the AO (visibility, denoise, history, contact march, apply), the bounce light, the contact
+// shadows, SSR and the car passes read them. The passes are the same shaders into images of the same sizes, formats and names, recorded in the same order at the same place of the AO's frame
+// with the same push block, so the pictures are the same bits; the AO's old recording stays behind mcla_gpu_screen_extract (false: the AO records the passes itself into the same images) for an A/B.
+// The AO still decides the frame's SIZES (ao_size.h, its plan) and which frame runs; it hands them over as a screen::extract::Frame. The images are kept and given back by size as the AO did
+// (the owner's lifetime now: HeldBytes, Shutdown), and the owner's pipelines are made in the background the first frame a pass is wanted (ChainReady): a frame never waits for a compile.
 //
 // RUN PLAN (the main session; this agent ran nothing): see the commit message of SS-1 and the CHECK lines in screen_shared.cpp.
 //
@@ -50,10 +57,12 @@
 
 #include <plume_render_interface.h>
 
+#include "ao_push.h"
 #include "constants.h"
 #include "edram.h"
 #include "host_passes.h"
 #include "resolve.h"
+#include "screen_extract.h"
 #include "screen_frame.h"
 #include "screen_history.h"
 #include "screen_rules.h"
@@ -61,17 +70,17 @@
 
 namespace mcla::gpu {
 
+class BindlessHeap;
+class Device;
 class PassTiming;
 
 class ScreenShared {
  public:
-  // What the owner of the products that exist today (the AO) hands over at the end of its depth chain: the images it made THIS frame (not owned; null: not made). `depth[0]` is the
-  // frame's level 0 linear depth (the AO's ping-pong swap already done) and is required: without it nothing is published. (colour_pre is not handed over any more: its images are the
-  // owner's, CapturePre says whether the chain was recorded this frame.)
+  // What the AO's frame tells the owner when it publishes the frame (the images are the owner's since SS-2: which of them this frame made, and the facts of the frame).
   struct Adopted {
-    const HostImage* depth[screen::kDepthLevels] = {};
-    const HostImage* depth_full = nullptr;
-    const HostImage* normal = nullptr;
+    bool levels = false;           // the coarser depth levels were made this frame (the occlusion, the census's probe)
+    bool depth_full = false;       // the full size depth was (the contact shadows keep the picture's size beside a half size trace)
+    bool normal = false;           // the normal image was (the frame used the G-buffer's plane)
     uint32_t render[2] = {0, 0};   // the main view's size in host pixels
     uint32_t host_samples = 1;
     uint32_t sample0 = 0;
@@ -85,8 +94,8 @@ class ScreenShared {
   ScreenShared(const ScreenShared&) = delete;
   ScreenShared& operator=(const ScreenShared&) = delete;
 
-  // Makes the shaders (the pipelines are made in the background when first wanted). Never fails the renderer: without them nothing is made and nothing is drawn (logged).
-  void Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing);
+  // Makes the shaders and the extraction's pass layout (the pipelines are made in the background when first wanted). Never fails the renderer: without them nothing is made and nothing is drawn (logged).
+  void Initialize(Device& device, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing);
   // GPU idle and the FrameRing drained, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
@@ -127,7 +136,7 @@ class ScreenShared {
   static bool IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary, bool anchor_seen, bool composite_seen, bool trigger_seen);
 
   // --- the products ---------------------------------------------------------------------------------------------------------------------
-  // The AO's depth chain of this frame is done: publishes the frame and, when hiz_min is wanted, records its passes on `list` (outside any render pass; the caller's list state is
+  // The AO's depth chain of this frame is done (EndDepthChain): publishes the frame and, when hiz_min is wanted, records its passes on `list` (outside any render pass; the caller's list state is
   // unchanged: DrawInto leaves no framebuffer bound). Called once a frame at most, from AmbientOcclusion::Run.
   void Publish(plume::RenderCommandList* list, const Adopted& adopted);
 
@@ -136,9 +145,47 @@ class ScreenShared {
   bool EnsureColourPre(const uint32_t sizes[screen::kColourPreLevels][2], plume::RenderFormat format);
   HostImage& ColourPre(uint32_t level) { return colour_pre_[level < screen::kColourPreLevels ? level : 0]; }
   void ReleaseColourPre();
-  // Step 5 of the order: the chain is recorded now, by `record` (the AO's pass body, which writes the images ColourPre hands out); the owner counts it made this frame, so that Publish lists
-  // colour_pre. Called only while the bounce light runs (its want of colour_pre).
+  // Step 5 of the order, the OLD path (mcla_gpu_screen_extract false): the chain is recorded now, by `record` (the AO's own pass body, which writes the images ColourPre hands out); the owner
+  // counts it made this frame, so that Publish lists colour_pre. Called only while the bounce light runs (its want of colour_pre).
   void CapturePre(const std::function<void()>& record);
+  // The same step recorded HERE (SS-2): the colour target's mean over its samples (cleaned and capped), then two coarser levels, from the AO's frame block `base` (screen_extract.h
+  // ColourLevel0Push / ColourMipPush). The colour target is left in the shader-read layout (the apply pass moves it back). Needs the colour pipelines (ChainReady) and the images (EnsureColourPre).
+  void RecordColourPre(plume::RenderCommandList* list, const screen::extract::Frame& frame, const AoPush& base, EdramTargets::Target& colour, const screen::extract::ColourRecipe& recipe);
+
+  // --- the depth chain and the normal image (SS-2): the images the owner keeps and the passes it records ------------------------------------------------------------
+  // Whether the extraction's passes are recorded here this frame (mcla_gpu_screen_extract, read at BeginFrame) or by the AO's old recording into the same images.
+  bool extract_on() const { return extract_ && wide_layout_ != nullptr; }
+  // The pipelines of `kinds` (screen::extract::Bit): listed with the host precache the first time they are asked for (the pass of a first frame is made in the background and the AO goes
+  // without until it is: a frame never waits for a compile), and true when every one of them is made. False for good when one could not be made (logged once).
+  bool ChainReady(uint32_t kinds);
+  // The depth chain's images for the frame: level 0, the coarser levels while `frame.levels` (else they go back), the full size depth while `frame.full` (else it goes back). False when one could
+  // not be made (logged by the pass layer). The sizes are the AO's (ao_size.h).
+  bool EnsureDepth(const screen::extract::Frame& frame);
+  // The SSGI's depth history: the image that trades places with level 0 at the end of a frame that ran the bounce light (EndDepthChain).
+  bool EnsureDepthHistory(uint32_t width, uint32_t height);
+  // Gives the depth chain's images (and the history, and the normals) back.
+  void ReleaseDepth();
+  void ReleaseDepthHistory();
+  HostImage& Depth(uint32_t level) { return depth_[level < screen::kDepthLevels ? level : 0]; }
+  HostImage& DepthFull() { return depth_full_; }
+  HostImage& DepthHistory() { return depth_prev_; }
+  // The normal image: traced size and, while the contact shadows keep the picture's size beside a half size trace, one at the picture's. Given back by ReleaseNormals.
+  bool EnsureNormal(uint32_t width, uint32_t height);
+  bool EnsureNormalFull(uint32_t width, uint32_t height);
+  void ReleaseNormalFull();
+  void ReleaseNormals();
+  HostImage& Normal() { return normal_; }
+  HostImage& NormalFull() { return normal_full_; }
+  // The end of the frame's depth chain: with the bounce light on, level 0 and the history trade places now that nothing of this frame reads level 0 for the next frame's sake (the next frame's
+  // depth pass writes the other); this frame's level 0 is then the history image. FrameDepth0 is this frame's level 0 either way (null before the first chain).
+  void EndDepthChain(bool trade);
+  const HostImage* FrameDepth0() const { return frame_depth0_; }
+  // Step 2 of the order, recorded HERE: level 0 from the depth target (`stencil_slot` its stencil plane), the coarser levels while `frame.levels`, and the full size depth while `frame.full`, with
+  // the labels the pass timing has always had ("ao depth", "ao contact depth"). `base` is the AO's frame block, `source_bits` its normal plane decision (slots2.w), `multisampled` the depth
+  // target's samples. The depth target is in the shader-read layout (the caller transitions it).
+  void RecordDepth(plume::RenderCommandList* list, const screen::extract::Frame& frame, const AoPush& base, uint32_t stencil_slot, bool source_bits, bool multisampled);
+  // The normal pass(es) recorded HERE: the traced image from level 0, and the picture's size one (while `frame.full` and its image exists) from the full size depth.
+  void RecordNormals(plume::RenderCommandList* list, const screen::extract::Frame& frame, const AoPush& base, const screen::extract::NormalRecipe& recipe);
 
   // colour_post (and the history): the colour_post step of frame_order.h's table. At the frame's trigger, after the AO's apply, records the capture when the plan makes it (a consumer wants it, or the history, or the view
   // shows it). True when passes were recorded (the caller's list state is gone). Once a frame.
@@ -155,8 +202,10 @@ class ScreenShared {
   // The debug view, right after the other effects of the trigger so that the picture replaces what they drew. True when passes were recorded (the caller's list state is gone).
   bool DrawView(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
 
-  // The video memory the images this class holds now (the Hi-Z's, the colour captures', the history's; the AO's own are the AO's until SS-2).
+  // The video memory the images this class holds now (the depth chain, the normals, the colour chain, the Hi-Z, the colour captures, the history).
   uint64_t HeldBytes() const;
+  // The part of it that is the AO's frame's inputs (the depth chain, its full size depth and history, the normal images): what the AO's own count held before SS-2 (its log line adds it back).
+  uint64_t ChainBytes() const;
 
  private:
   struct HizPush {
@@ -180,6 +229,14 @@ class ScreenShared {
     uint32_t samples = 1;
     std::unique_ptr<plume::RenderPipeline> pipeline;
   };
+  // The extraction's layout, shaders and images (screen_extract.cpp).
+  void InitializeChain(Device& device, BindlessHeap& heap);
+  void ShutdownChain();
+  // The extraction's pass: the AO's pass layout (the host's with a push block of 128 bytes), a full-screen triangle into `image` with `pipeline` and `push` (the AO's DrawPass, ao.cpp).
+  void DrawWide(plume::RenderCommandList* list, HostImage& image, const plume::RenderPipeline* pipeline, const AoPush& push);
+  // One pipeline of the extraction (screen::extract::Kind): null until it is made; ChainReady lists and takes them.
+  plume::RenderPipeline* ChainPipeline(screen::extract::Kind kind);
+  std::unique_ptr<plume::RenderPipeline> MakeChainPipeline(screen::extract::Kind kind);
   // The colour capture's three compilations (host_shaders.h ScreenColourPixelShader).
   enum ColourPass : uint32_t { kColourPlain, kColourMs, kColourMip, kColourPassCount };
 
@@ -216,6 +273,22 @@ class ScreenShared {
   bool colour_listed_ = false;
   bool colour_failed_ = false;
   std::vector<ViewPipeline> view_pipelines_;
+
+  // The extraction (SS-2): the pass layout (128 bytes of push constants, both stages), the shaders and pipelines of screen::extract::Kind, and the images it keeps
+  Device* device_ = nullptr;
+  BindlessHeap* heap_ = nullptr;
+  bool extract_ = true;              // mcla_gpu_screen_extract, read at BeginFrame
+  std::unique_ptr<plume::RenderPipelineLayout> wide_layout_;
+  std::array<std::unique_ptr<plume::RenderShader>, size_t(screen::extract::Kind::kCount)> chain_shaders_;
+  std::array<std::unique_ptr<plume::RenderPipeline>, size_t(screen::extract::Kind::kCount)> chain_pipelines_;
+  uint32_t chain_listed_ = 0;        // kinds listed with the host precache (screen::extract::Bit)
+  uint32_t chain_failed_ = 0;        // ... that could not be made
+  std::array<HostImage, screen::kDepthLevels> depth_;  // the linear depth chain: the traced size (half the picture's above 1080 lines), then 1/2 and 1/4 of it
+  HostImage depth_full_;             // the full size depth of the contact shadows beside a half size trace
+  HostImage depth_prev_;             // the bounce light's depth history, the partner of depth_[0] in the ping-pong
+  HostImage normal_;                 // R16G16_UNORM at the traced size
+  HostImage normal_full_;            // ... and at the picture's size while the contact shadows keep it
+  const HostImage* frame_depth0_ = nullptr;  // this frame's level 0 (depth_[0], or the history image after the trade)
 
   std::array<HostImage, screen::kHizMaxLevels> hiz_;
   uint32_t hiz_images_ = 0;          // the levels that have an image now

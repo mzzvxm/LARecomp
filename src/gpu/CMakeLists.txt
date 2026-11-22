@@ -86,6 +86,7 @@ add_library(larecomp_gpu OBJECT
     rt_tier.cpp
     samplers.cpp
     scene.cpp
+    screen_extract.cpp
     screen_shared.cpp
     ssr.cpp
     shaders.cpp

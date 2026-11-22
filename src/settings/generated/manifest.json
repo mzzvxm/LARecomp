@@ -1316,6 +1316,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_screen_extract": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (shared screen products): where the depth chain, the normal image and the bounce light's colour chain are recorded. true (the default): by the shared screen \"\n    \"products, once a frame, into images they own (the ambient occlusion, the bounce light, the contact shadows and the reflections read them). false: by the ambient \"\n    \"occlusion's own passes into the same images (the old path, kept for one release to compare pictures). Both give the same bits. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_screen_view": {
   "type": "i32",
   "default": "0",
