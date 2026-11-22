@@ -541,7 +541,7 @@ int main(int argc, char** argv) {
                 Has(refl, "const bool farHit = hitsOther || kShadePlayerHits;") && Has(refl, "const float hitReach = farHit ? g_push.coat.y : g_push.coat.x;") && Has(refl, "const float hitFadeFrom = farHit ? g_push.coat.z : g_push.tune.z;") &&
                 Has(refl, "const float faded = 1.0 - smoothstep(hitFadeFrom * hitReach, hitReach, distance);"),
             "the trace's reach is the push's: the player's own parts' coat.x from tune.z of it, another car's coat.y from coat.z of it (HitFade), the cone's rays from slots.w bit 8 (RaysOf)");
-      Check(Has(refl, "ConeRotation(texel, g_push.slots.w & 7u)") && Has(opp, "ConeRotation(texel, g_push.slots.w & 7u)"), "the pattern's phase is the low three bits of slots.w in both variants (PhaseOf)");
+      Check(Has(refl, "ConeRotation(texel, g_push.slots.w & 7u, (g_push.slots.w & kConeBlueFlag) != 0u)") && Has(opp, "ConeRotation(texel, g_push.slots.w & 7u, (g_push.slots.w & kConeBlueFlag) != 0u)"), "the pattern's phase is the low three bits of slots.w in both variants (PhaseOf)");
       Check(Has(refl, "const bool haveMirror = g_push.coat.w > 0.0 && tanHalf > 0.0 && levelRays >= 4u;") && Has(refl, "if (haveMirror)") && Has(refl, "coatShare = CarCoatShare(nv, CarMatFresnelPower(primaryInstance), g_push.coat.w);") &&
                 Has(refl, "ConeDirection(mirror, normal, 0.0, 0, 0.0), reach, 0.0, primaryInstance") && Has(refl, "bool found = coatHit;") && Has(refl, "if (slot >= int(levelRays))") &&
                 Has(refl, "aux.w = 1.0 - kAuxSharpScale * sharp;") && Has(refl, "const float weight = CarCoatMix(weightSum, colourSum, carSum, rays, MirrorShare(coatShare, mirrorOnCar), coatWeight, coatColour, coatCar ? coatWeight : 0.0, mixed, mixedCar, sharp);"),
@@ -598,7 +598,7 @@ int main(int argc, char** argv) {
                   Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;"),
               "the shader's sky fill is ShadeReference's");
         Check(Has(host, "output_builder_.addReadWriteByteAddressBuffer(2);") && Has(host, "bool CarRtRefl::MakeStatsBuffers(Device& device) {") &&
-                  Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame);") &&
+                  Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame) |") &&
                   Has(host, "out.set->setBuffer(2, stats, car_rt_hit::census::kBytes);") && Has(host, "stats ? 3u : (second ? 2u : 1u)") &&
                   Has(host, "EnsureSet(trace_set_, output_builder_, image_, &aux_, \"car rt refl output set\", stats_.get())") &&
                   Has(host, "frames_->RetireAction([this, frame = info.frame, generation = stats_generation_] { ProcessStats(frame, generation); });") &&

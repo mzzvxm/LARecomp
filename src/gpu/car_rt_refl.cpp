@@ -376,7 +376,10 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.slots[2] = chrome_others ? car_rt_refl::kPrimaryTraceParts : car_rt_refl::kPrimaryParts;
   // A stats frame (car_rt_hit_rules.h census::): the shader counts what became of every hit, and the host reads the counters back (ProcessStats).
   const bool stats_frame = stats_ && stats_readback_ && !stats_busy_ && car_rt_hit::census::StatsDue(info.frame, stats_last_frame_, stats_ever_);
-  push.slots[3] = car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame);
+  // The cone's turn is the blue noise tile's (the first version's gradient noise is a lattice the denoise leaves as thin diagonal lines: car_rt_refl_rules.h ConeRotation) unless
+  // mcla_gpu_noise_blue is off, for the A/B.
+  push.slots[3] = car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame) |
+                  (larecomp::settings::mcla_gpu_noise_blue.Get() ? car_rt_refl::kConeBlueFlag : 0u);
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
   push.image[2] = float(info.render_width);
