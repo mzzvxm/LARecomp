@@ -753,6 +753,80 @@ void TestGeometry() {
 }
 
 // ---------------------------------------------------------------------------
+// the soft shadow of a disc light: the shader's own ray against an analytic occluder
+// ---------------------------------------------------------------------------
+// A half plane at height 3 m (everything with x < 0 is blocked), a disc light of radius R above the origin at 8 m, a ground point at (px, 0, 0). A ray from the point to a point q of the disc crosses the
+// plane at x = px (1 - 3/8) + qx 3/8; it is blocked when that is under 0, i.e. qx < -5 px / 3. The share of a disc left of the line qx = t is (asin(u) + u sqrt(1 - u^2)) / pi + 1/2 with u = t / R
+// (the circular segment), so the visibility is 1 minus it. The rays are the shader's (RtvMakeRay to a point of the disc, the disc facing the ray) with the disc points of RtvDiscSample, the noise
+// numbers uniform here (the noise's own tests are above): this checks the geometry of the soft shadow, the orientation and the area of the disc and that a stop short does not change where it is.
+double DiscShare(double u) {
+  if (u <= -1.0) return 0.0;
+  if (u >= 1.0) return 1.0;
+  return (std::asin(u) + u * std::sqrt(1.0 - u * u)) / 3.14159265358979 + 0.5;
+}
+
+void TestSoftShadow() {
+  Lcg rng;
+  const float radius = 0.5f;
+  const hs::float3 lamp(0.0f, 8.0f, 0.0f), normal(0.0f, 1.0f, 0.0f);
+  for (uint32_t rays : {1u, 2u, 4u}) {
+    double worst = 0.0;
+    for (int step = 0; step <= 40; ++step) {
+      const float px = -1.2f + 0.06f * float(step);   // the geometric edge is at px = 0 (the disc's centre is over the origin)
+      const hs::float3 point(px, 0.0f, 0.0f);
+      int blocked = 0, total = 0;
+      for (int i = 0; i < 6000; ++i) {
+        for (uint32_t k = 0; k < rays; ++k) {
+          const hs::float2 disc = hs::RtvDiscSample(k, rays, rng.F(), rng.F());
+          const hs::RtvRay ray = hs::RtvMakeRay(point, normal, 0.0f, lamp, radius, disc, 0.35f);
+          if (ray.tMax <= 0.0f) {
+            continue;
+          }
+          // the first crossing of the plane y = 3 within the ray's length: blocked where x < 0 there
+          const float t_plane = (3.0f - ray.origin.y) / ray.direction.y;
+          bool hit = false;
+          if (ray.direction.y > 1e-4f && t_plane > 0.0f && t_plane < ray.tMax) {
+            hit = ray.origin.x + ray.direction.x * t_plane < 0.0f;
+          }
+          blocked += hit ? 1 : 0;
+          ++total;
+        }
+      }
+      const double v = 1.0 - double(blocked) / double(total);
+      const double expect = 1.0 - DiscShare(-5.0 * double(px) / 3.0 / double(radius));
+      worst = std::max(worst, std::fabs(v - expect));
+    }
+    CHECK(worst < 0.04);   // Monte Carlo of 6000 samples and a disc a little off its axis for the farthest points
+  }
+  // the visibility rises from the blocked side to the lit side, 0 well inside the shadow, 1 well outside, one half at the geometric edge, and the penumbra is as wide as the disc says: the edge of the
+  // shadow of a half plane 3 m above the ground under an 0.5 m disc 8 m up is 2 x R x 3 / 5 x ... : the visibility goes 0 to 1 over px in +-R x 3 / 5 = +-0.3 m
+  {
+    const auto visibility = [&](float px) {
+      const hs::float3 point(px, 0.0f, 0.0f);
+      int blocked = 0;
+      const int n = 20000;
+      for (int i = 0; i < n; ++i) {
+        const hs::float2 disc = hs::RtvDiscSample(0, 1, rng.F(), rng.F());
+        const hs::RtvRay ray = hs::RtvMakeRay(point, normal, 0.0f, lamp, radius, disc, 0.0f);
+        const float t_plane = (3.0f - ray.origin.y) / ray.direction.y;
+        blocked += (t_plane > 0.0f && t_plane < ray.tMax && ray.origin.x + ray.direction.x * t_plane < 0.0f) ? 1 : 0;
+      }
+      return 1.0 - double(blocked) / double(n);
+    };
+    CHECK(visibility(-0.5f) < 0.01 && visibility(0.5f) > 0.99 && std::fabs(visibility(0.0f) - 0.5) < 0.02);
+    CHECK(visibility(-0.28f) < 0.1 && visibility(0.28f) > 0.9);
+  }
+  // a stop short that is shorter than the plane's distance from the lamp changes nothing of where the shadow is; one longer than the whole ray ends the ray at the surface (no ray, nothing blocks)
+  {
+    const hs::float3 point(-0.5f, 0.0f, 0.0f);
+    const hs::RtvRay with = hs::RtvMakeRay(point, normal, 0.0f, lamp, radius, hs::float2(0.0f, 0.0f), 0.5f);
+    const hs::RtvRay without = hs::RtvMakeRay(point, normal, 0.0f, lamp, radius, hs::float2(0.0f, 0.0f), 0.0f);
+    CHECK(Near(with.direction.x, without.direction.x) && Near(with.direction.y, without.direction.y) && Near(with.tMax, without.tMax - 0.5, 1e-4));
+    CHECK(hs::RtvMakeRay(point, normal, 0.0f, lamp, radius, hs::float2(0.0f, 0.0f), 50.0f).tMax == 0.0f);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the noise
 // ---------------------------------------------------------------------------
 void TestNoise() {
@@ -1436,6 +1510,7 @@ int main(int argc, char** argv) {
   section("rows", TestRows);
   section("composition", TestComposition);
   section("geometry", TestGeometry);
+  section("soft shadow", TestSoftShadow);
   section("noise", TestNoise);
   section("mask read", TestMaskRead);
   section("selection and buffer", TestSelectionAndBuffer);

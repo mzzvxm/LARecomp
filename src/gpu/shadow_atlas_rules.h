@@ -716,7 +716,9 @@ inline lg::ShadowAtlasInfo InfoOf(const Layout& layout, uint32_t slot, uint32_t 
   return info;
 }
 
-// Every light the masks name reads its channel: kind kRtMask, the channel, the weight (a light that also has atlas views keeps them: the mask wins only where there are none).
+// Every light the masks name reads its channel: its mask_channel and the flag kLightFlagRtVisibility (RT-LIGHTS-D1: the ray traced visibility's way into the deferred light pass). THE PRODUCT RULE (the survey's
+// O2: neither caster set is complete): a light that also has atlas views KEEPS them, its kind and its weight stay, and the light pass multiplies the two visibilities; a light with no atlas views takes kind
+// kRtMask and the mask's weight. (Before D1 the mask won only where there were no views.)
 inline void BindMaskRefs(lg::LightFrame* frame, const Published& published) {
   for (uint32_t m = 0; m < published.mask_count && m < kMaxMasks; ++m) {
     const int32_t slot = frame->Find(published.masks[m].light);
@@ -724,9 +726,10 @@ inline void BindMaskRefs(lg::LightFrame* frame, const Published& published) {
       continue;
     }
     lg::Light& l = frame->lights[uint32_t(slot)];
+    l.shadow.mask_channel = published.masks[m].channel;
+    l.flags |= lg::kLightFlagRtVisibility;
     if (l.shadow.kind == lg::ShadowKind::kNone) {
       l.shadow.kind = lg::ShadowKind::kRtMask;
-      l.shadow.mask_channel = published.masks[m].channel;
       l.shadow.weight = published.masks[m].weight;
     }
   }
