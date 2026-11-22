@@ -104,7 +104,7 @@ void TestSources(const std::string& dir) {
     g_check(false, "the sources could not be read (run the test with the src/gpu folder as its argument)");
     return;
   }
-  const uint32_t others = cr::kFlagOn | cr::kFlagScreen | cr::kFlagStats | cr::kFlagCoat | cr::kFlagLamps;
+  const uint32_t others = cr::kFlagOn | cr::kFlagScreen | cr::kFlagStats | cr::kFlagCoat | cr::kFlagLamps | cr::kFlagWorldLight;
   g_check(cr::kFlagBlueNoise == 32u && (cr::kFlagBlueNoise & others) == 0u && nc::Has(hlsli, "static const uint kCityFlagBlueNoise = 32u;"), "the rows' blue noise flag is bit 5, the shader's constant is the header's and no other flag overlaps it");
   g_check(nc::Has(hlsli, "#include \"city_refl_noise.hlsli\"") && nc::Has(hlsli, "CityReflNoise(int(gCityTexel.x), int(gCityTexel.y), c.serial, min(gCityHits++, kCityReflRaysPerFrame - 1u), direction, (c.flags & kCityFlagBlueNoise) != 0u)") &&
               !nc::Has(hlsli, "float CityReflIgn(") && !nc::Has(hlsli, "43758"),

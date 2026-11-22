@@ -189,6 +189,37 @@ int main(int argc, char** argv) {
     Check(named, "every reason has a name");
   }
 
+  // ---- the facts the host makes of an ordinary frame (CITY-M2-PICS: Trace left `box` out, so the pass never ran) -------------------------------------
+  {
+    cg::HostInputs in;
+    in.wanted = in.city_set = in.city_on = in.screen = in.view_valid = in.view_set = true;
+    in.rect_empty = false;
+    Check(cg::Decide(cg::HostFacts(in)) == cg::Why::kUsed, "an ordinary frame (the setting on, the city's rows, lin_depth, the player's box on the picture, a valid view): the pass runs");
+    cg::HostInputs g = in;
+    g.rect_empty = true;
+    Check(cg::Decide(cg::HostFacts(g)) == cg::Why::kNoBox, "an empty rectangle: no box");
+    g = in;
+    g.view_valid = false;
+    Check(cg::Decide(cg::HostFacts(g)) == cg::Why::kNoBox, "no valid view: no box");
+    g = in;
+    g.view_set = false;
+    Check(cg::Decide(cg::HostFacts(g)) == cg::Why::kNoBox, "a view without its descriptor set: no box");
+    g = in;
+    g.city_set = false;
+    Check(cg::Decide(cg::HostFacts(g)) == cg::Why::kNoCity, "no city set: the city is not in the frame");
+    g = in;
+    g.city_on = false;
+    Check(cg::Decide(cg::HostFacts(g)) == cg::Why::kNoCity, "the city's rows off: the city is not in the frame");
+    g = in;
+    g.screen = false;
+    Check(cg::Decide(cg::HostFacts(g)) == cg::Why::kNoScreen, "no lin_depth");
+    g = in;
+    g.wanted = false;
+    Check(cg::Decide(cg::HostFacts(g)) == cg::Why::kSettingOff, "not wanted");
+    // the default inputs (nothing known) must NOT run: a field left out of the host's list shows here as a pass that cannot run, not one that always does
+    Check(cg::Decide(cg::HostFacts(cg::HostInputs{})) != cg::Why::kUsed, "nothing known: the pass does not run");
+  }
+
   // ---- the apply pass's arithmetic -----------------------------------------------------------------------------------------------------------------
   Check(sizeof(cg::ApplyPush) == 48, "the apply's push block is 48 bytes (the host passes' range is 64)");
   {
@@ -340,6 +371,8 @@ int main(int argc, char** argv) {
       Check(Has(host, "blend.srcBlend = plume::RenderBlend::ONE;") && Has(host, "blend.dstBlend = plume::RenderBlend::ONE;") && Has(host, "blend.renderTargetWriteMask = kWriteRgb;") &&
                 Has(host, "passes_->CreatePipeline(passes_->layout(), *apply_shader_, kApplyFormat, blend, 1u << index, ApplyName(index))"),
             "car_rt_glass_refl.cpp: the apply adds (ONE, ONE) on the colour channels, one pipeline for each sample count");
+      Check(Has(host, "glass::Decide(glass::HostFacts(inputs))") && Has(host, "inputs.rect_empty = rect.Empty();") && Has(host, "inputs.view_valid = view.valid;") && !Has(host, "glass::Facts facts;"),
+            "car_rt_glass_refl.cpp: Trace asks Decide() with HostFacts (every fact of the frame, the box included), not a Facts it fills by hand (CITY-M2-PICS: the pass never ran)");
       Check(Has(host, "glass::RectFor(view.player_box,") && Has(host, "car_rt_opp_refl::GroupsX(rect, kGroup)") && Has(host, "pass_timing_->Mark(list, \"car glass refl\")") && Has(host, "pass_timing_->Mark(list, \"car glass apply\")"),
             "car_rt_glass_refl.cpp: the dispatch covers the player's box, the passes are timed");
       Check(Has(player, "glass_.Trace(windows);") && Has(player, "windows.wanted = city_.glass_wanted();") && Has(player, "glass_.Initialize(device, passes, heap, frames, pass_timing, *scene, output_builder_, city_.Builder(),") &&

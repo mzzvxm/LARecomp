@@ -20,6 +20,10 @@
 // words kCityStatLampCensus.. of the city's counter buffer. `#define CITY_REFL_NO_LAMPS` before including leaves all of this out: the file is then what it was before REFL-LAMPS, line for line (the identity
 // check, tools/check_rt_hit_identity.py, compiles it that way against the parent's).
 //
+// CITY-M2-OPEN: THE LIGHT. A wall the paint reflects is lit by the WORLD frame's light (t10's rows 0 to 31: the sun and its direction, the ambient, the sky and the environment map of the main view's draws), when
+// the host's row says so (kCityFlagWorldLight, mcla_gpu_city_refl_world_light) and the world rows are valid and hold a light; else by the constants of the cars' draws, as before (the pass's own frame rows, whose sun
+// direction is a rig of the cars' own: car_shadow_map.h). The census line `[city refl] light` says how the shaded hits fared (sun reached, blocked, facing away, behind the camera, world light taken).
+//
 // CHECK (nothing was run): the units (the frame's colours are the paint's; p.units 2^exp_bias makes the shaded colour the picture's: the same factor as the history's), the world rows' lamp factor in
 // this pass (rt_world_frame.h: the lamps are in the VIEW space of the top level, which is the space the hits are in), no haze (CITY_HIT_HAZE is not wired), the wetness 0, the registers of set 3 on both APIs
 // (t0 and u1: distinct numbers in one set, as gi_field's), t10 and t11 in space 2 on both APIs.
@@ -48,6 +52,7 @@ static const uint kCityFlagStats = 4u;
 static const uint kCityFlagCoat = 8u;
 static const uint kCityFlagLamps = 16u;
 static const uint kCityFlagBlueNoise = 32u;   // the hits' sun and lamp numbers are the blue noise tile's (city_refl_noise.hlsli; city_refl_rules.h kFlagBlueNoise)
+static const uint kCityFlagWorldLight = 64u;   // (bit 5, 32, is kCityFlagBlueNoise's)
 // the counters (city_refl_rules.h kStat*: the calibration's 48 words come first)
 static const uint kCityStatTexels = 48u;
 static const uint kCityStatRays = 49u;
@@ -58,7 +63,14 @@ static const uint kCityStatScreen = 53u;
 static const uint kCityStatShaded = 54u;
 static const uint kCityStatLamps = 55u;
 static const uint kCityStatNoData = 56u;
-static const uint kCityStatLampCensus = 60u;   // eight words: the library's CITY_HIT_CENSUS_* (the lamp term's and the glow's counters)
+static const uint kCityStatSunLit = 57u;       // CITY-M2-OPEN: the shaded hits' light (city_refl_rules.h kStatSunLit ...)
+static const uint kCityStatSunBlocked = 58u;
+static const uint kCityStatSunAway = 59u;
+static const uint kCityStatBehind = 60u;
+static const uint kCityStatWorldFrame = 61u;
+static const uint kCityStatLodHit = 62u;
+static const uint kCityStatFlat = 63u;
+static const uint kCityStatLampCensus = 64u;   // eight words: the library's CITY_HIT_CENSUS_* (the lamp term's and the glow's counters)
 static const uint kCityClassEmissive = 13u;
 static const float kCityNightFull = 3.0;
 static const float kCityNightNone = 12.0;
@@ -309,7 +321,24 @@ bool CityReflHit(float3 origin, float3 direction, CityHitTraceResult h, float co
         return false;  // beyond the reach
     }
     const bool stats = (c.flags & kCityFlagStats) != 0u;
+#ifdef CITY_REFL_NO_LAMPS
     const RtHitFrame f = RtHitLoadFrame();
+#else
+    RtHitFrame f = RtHitLoadFrame();
+    bool worldFrame = false;
+    // CITY-M2-OPEN (city_refl_rules.h WorldLightFor): a wall of the city is lit by the WORLD's light, not by the constants of the cars' draws (the pass's own frame rows). The world frame's rows 0 to 31 are the
+    // hit frame of the main view's draws (the sun and its direction, the ambient, the sky, the environment map), filled in every frame with a top level; used when the host's switch says so, the world rows are
+    // valid and the world's frame holds a light and its sun's direction. Else the cars' frame, as before.
+    if ((c.flags & kCityFlagWorldLight) != 0u && (gRtWorld[RT_WORLD_ROW_STATUS].y & RT_WORLD_VALID) != 0u)
+    {
+        const RtHitFrame w = RtWorldHitFrame();
+        if ((w.flags & (RT_HIT_FRAME_SHADE | RT_HIT_FRAME_SUN)) == (RT_HIT_FRAME_SHADE | RT_HIT_FRAME_SUN))
+        {
+            f = w;
+            worldFrame = true;
+        }
+    }
+#endif
     CityHitParams p;
     p.mode = CITY_HIT_MODE_REFLECT;
     p.flags = c.params;
@@ -373,6 +402,24 @@ bool CityReflHit(float3 origin, float3 direction, CityHitTraceResult h, float co
     {
         CityStat(r.screen >= 0.5 ? kCityStatScreen : kCityStatShaded, 1u);
         CityStat(kCityStatLamps, r.cls == kCityClassEmissive ? 1u : 0u);
+#ifndef CITY_REFL_NO_LAMPS
+        // CITY-M2-OPEN: the hit's detail (the far LOD's geometry has no texture coordinates: its albedo is the material's average colour) ...
+        const bool lodHit = (h.inst.instanceId & 1u) != 0u;
+        CityStat(kCityStatLodHit, lodHit ? 1u : 0u);
+        if (r.source != CITY_HIT_SOURCE_SCREEN)
+        {
+            // ... the model shaded this hit (alone or in a blend): was its sun there? facing the sun and reached, facing the sun and blocked, or facing away; and the frame it was lit by; and was its albedo a
+            // texture's or a flat average (the test of CityHitAlbedo: a resident texture, texture coordinates and corners in the sector)
+            CityStat(r.ndl > 0.0 ? (r.visible > 0.0 ? kCityStatSunLit : kCityStatSunBlocked) : kCityStatSunAway, 1u);
+            CityStat(kCityStatBehind, (origin.z + direction.z * h.t) < 0.0 ? 1u : 0u);
+            CityStat(kCityStatWorldFrame, worldFrame ? 1u : 0u);
+            const CityHit decoded = CityHitDecode(h.inst.instanceId, h.inst.geometryIndex, h.inst.primitiveIndex, h.inst.barycentrics);
+            const CityHitTexture hitTexture = CityHitLoadTexture(CityHitLoadMaterial(decoded.material).textureIndex);
+            const bool textured = hitTexture.slot != CITY_HIT_NO_SLOT && hitTexture.mipCount != 0u && (decoded.runFlags & CITY_HIT_RUN_HAS_UV) != 0u &&
+                                  (decoded.sectorFlags & (CITY_HIT_SECTOR_RUNS | CITY_HIT_SECTOR_CORNERS)) == (CITY_HIT_SECTOR_RUNS | CITY_HIT_SECTOR_CORNERS);
+            CityStat(kCityStatFlat, textured ? 0u : 1u);
+        }
+#endif
     }
     colour = r.colour;
     if (c.view == 1)

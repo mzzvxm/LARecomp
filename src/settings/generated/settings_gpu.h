@@ -381,6 +381,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_city_refl_lamps, true, "Debug: with mcla_gpu_rt_reflections on, a point of the city that a reflection ray hit (in the car paint, the chrome, the other cars' paint and the glass) is lit by "
     "the street lamps and the fill lights around it, and lamp lenses, signs and lit windows glow by the world's lamp schedule (the ray tracing world frame's lamp grid, 96 lamps and a cap on their light), "
     "so a night street reflects lit lamps, signs and windows. false: the reflections as before (no lamp light on a hit, the glow by the sun's height). Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_city_refl_world_light, true, "Debug: with mcla_gpu_rt_reflections on, a point of the city that a reflection ray hit (in the car paint, the chrome, the other cars' paint and the glass) is lit by "
+    "the world's light: the sun's direction and colour, the ambient, the sky and the environment map of the street the picture shows (the ray tracing world frame's), not by the constants of the car's own draws, "
+    "whose sun is a rig of its own. false: the car's draws' light, as before. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_car_rt_check, false, "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
     "DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
@@ -1937,6 +1940,7 @@ inline auto& mcla_gpu_city_refl_view = g_gpu.mcla_gpu_city_refl_view;
 inline auto& mcla_gpu_city_refl_chrome = g_gpu.mcla_gpu_city_refl_chrome;
 inline auto& mcla_gpu_city_refl_glass = g_gpu.mcla_gpu_city_refl_glass;
 inline auto& mcla_gpu_city_refl_lamps = g_gpu.mcla_gpu_city_refl_lamps;
+inline auto& mcla_gpu_city_refl_world_light = g_gpu.mcla_gpu_city_refl_world_light;
 inline auto& mcla_gpu_car_rt_opp_refl = g_gpu.mcla_gpu_car_rt_opp_refl;
 inline auto& mcla_gpu_car_rt_opp_refl_rays = g_gpu.mcla_gpu_car_rt_opp_refl_rays;
 inline auto& mcla_gpu_car_rt_opp_refl_texels = g_gpu.mcla_gpu_car_rt_opp_refl_texels;

@@ -308,22 +308,21 @@ bool CarRtGlassRefl::Trace(const Frame& f) {
     return false;
   }
   const CarRtView& view = *f.view;
-  const glass::Why basic = [&] {
-    glass::Facts facts;
-    facts.wanted = f.wanted;
-    facts.city_on = f.city->set != nullptr && f.city->on;
-    facts.screen = f.city->screen;
-    facts.ready = true;
-    return glass::Decide(facts);
-  }();
-  if (basic != glass::Why::kUsed) {
-    NoteNotRun(basic, f.frame);
-    return false;
-  }
   const car_rt_opp_refl::TexelRect rect = glass::RectFor(view.player_box, f.tan_x, f.tan_y, double(f.render_width), double(f.render_height), double(std::max<uint32_t>(f.divisor, 1)),
                                                          int32_t(f.image_width), int32_t(f.image_height));
-  if (rect.Empty() || !view.valid || !view.set) {
-    NoteNotRun(glass::Why::kNoBox, f.frame);
+  // The frame's facts, every one of them (the decision's `box` was left out of this list until CITY-M2-PICS: Decide() then said kNoBox for every frame and the pass never ran; the 11-21 run's
+  // pictures had no window reflection at all, glass_rules_test HostFacts).
+  glass::HostInputs inputs;
+  inputs.wanted = f.wanted;
+  inputs.city_set = f.city->set != nullptr;
+  inputs.city_on = f.city->on;
+  inputs.screen = f.city->screen;
+  inputs.rect_empty = rect.Empty();
+  inputs.view_valid = view.valid;
+  inputs.view_set = view.set != nullptr;
+  const glass::Why basic = glass::Decide(glass::HostFacts(inputs));
+  if (basic != glass::Why::kUsed) {
+    NoteNotRun(basic, f.frame);
     return false;
   }
   uint32_t apply_index = 0;
