@@ -590,7 +590,9 @@ void RtLights::RecordTrace(plume::RenderCommandList* list) {
   }
   std::array<plume::RenderTextureBarrier, 5> writes;
   uint32_t write_count = 0;
-  for (uint32_t g = 0; g < groups_; ++g) {
+  // EVERY signal image the pass set binds goes to GENERAL, not only this frame's groups: after K went down (6 to 3) the images of the groups no longer traced stay bound at u2/u3 (EnsureSlot binds
+  // image_groups_ of them) and would sit in the read state the denoiser left them in; the shader names them (the guarded stores), so Vulkan validation checks their layout.
+  for (uint32_t g = 0; g < std::max(groups_, std::min(image_groups_, rt::kMaxImages)); ++g) {
     writes[write_count++] = plume::RenderTextureBarrier(signal_[g].texture.get(), Layout::GENERAL);
     signal_[g].layout = Layout::GENERAL;
   }

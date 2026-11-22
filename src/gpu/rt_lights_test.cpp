@@ -1999,6 +1999,9 @@ void TestSources(const std::string& src) {
   CHECK(append < select && select < plan && plan < trace && trace < denoise && denoise < mask && mask < build && build < draws);
   CHECK(Has(ll_cpp, "if (rt_lights_ != nullptr && rt_lights_->wanted()) {") && Count(ll_cpp, "rt_lights_->wanted()") == 3);   // BeginFrame's two uses and rt_lights_wanted()   // the lamps and the pick only while it is wanted: with it off the pass is what it was
   CHECK(Has(ll_cpp, "pass_timing_->Mark(list, \"rt lights\");") && Has(ll_cpp, "pass_timing_->Mark(list, \"rt lights denoise\");") && Has(ll_cpp, "pass_timing_->Mark(list, \"after rt lights\");"));
+  // REVIEW (RTL-D1-REVIEW M1): the trace moves every signal image the pass set binds (EnsureSlot binds image_groups_ of them) to GENERAL, not only this frame's groups: K 6 -> 3 leaves a bound image in the read state
+  CHECK(Has(host, "for (uint32_t g = 0; g < std::max(groups_, std::min(image_groups_, rt::kMaxImages)); ++g) {\n    writes[write_count++] = plume::RenderTextureBarrier(signal_[g].texture.get(), Layout::GENERAL);") &&
+        Has(host, "const HostImage& image = g < image_groups_ ? signal_[g] : signal_[0];"));
   CHECK(Has(ll_cpp, "void LocalLights::OnPresent() {\n  if (rt_lights_ != nullptr) {\n    rt_lights_->OnPresent();"));   // the denoisers' boundary also while the pass is off
   CHECK(Has(ll_h, "void SetRtLights(RtLights* rt_lights) { rt_lights_ = rt_lights; }") && Has(ll_h, "RtLights* rt_lights_ = nullptr;") && Has(ll_cpp, "#include \"rt_lights.h\""));
   CHECK(Has(renderer_h, "RtLights rt_lights_;") && Has(renderer, "rt_lights_.Initialize(device_, frames_, heap_, passes_, pass_timing_, car_rt_, rt_world_, rt_scene_);") &&
