@@ -409,6 +409,7 @@
 #include <plume_render_interface.h>
 
 #include "ao_gbuffer.h"
+#include "ao_push.h"
 #include "ao_size.h"
 #include "constants.h"
 #include "edram.h"
@@ -417,6 +418,7 @@
 #include "menu_world.h"
 #include "records.h"
 #include "resolve.h"
+#include "screen_extract.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
 #include "vehicle_motion.h"
@@ -632,17 +634,8 @@ class AmbientOcclusion {
   bool VehicleTableNow(VehicleTableOut* out) const;
 
  private:
-  // The push block of every pass (hlsl/ao_common.hlsli AoPush), 128 bytes.
-  struct Push {
-    uint32_t slots[4];
-    uint32_t slots2[4];
-    float sizes[4];
-    float lens[4];
-    float lin[4];
-    float shape[4];
-    float light[4];
-    float extra[4];
-  };
+  // The push block of every pass (hlsl/ao_common.hlsli AoPush), 128 bytes; its definition is ao_push.h's, since the shared screen products record the depth chain, the normals and the colour chain too (SS-2).
+  using Push = AoPush;
   static_assert(sizeof(Push) == 128);
 
   // The pixel shaders, in the order host_shaders.h AmbientOcclusionPixelShader numbers them.
@@ -955,6 +948,21 @@ class AmbientOcclusion {
   void ReleaseGiImages();
   // The colour chain's image of `level` (0 the AO's size, 1 and 2 half and a quarter of it): the owner's (screen_shared.h). Only while the bounce light runs (the owner is set then).
   HostImage& Colour(uint32_t level) const;
+  // The shared screen products' images this class's passes read and the owner records into (SS-2; the owner is set whenever a frame runs: Run returns without it): the depth chain's level
+  // `level`, the contact shadows' full size depth, the bounce light's depth history (the partner of level 0, which they trade places with at the end of a frame that ran the bounce light) and
+  // the normal images.
+  HostImage& Depth(uint32_t level) const;
+  HostImage& DepthFull() const;
+  HostImage& DepthPrev() const;
+  HostImage& NormalImage() const;
+  HostImage& NormalFullImage() const;
+  // True while the passes are recorded by the shared screen products (mcla_gpu_screen_extract, and the owner's layout and shaders exist): ScreenShared::RecordDepth, RecordNormals and RecordColourPre.
+  // False: this class records them itself, into the same images, with the pipelines of its own table (the old path, kept for one release).
+  bool Extracting() const;
+  // The frame's sizes as the extraction takes them (screen_extract.h Frame).
+  screen::extract::Frame ExtractFrame(const Plan& plan) const;
+  // What the owner's colour chain takes of the frame (screen_extract.h): the cap and the source of the frame's light (ssgi_light.h).
+  screen::extract::ColourRecipe ColourRecipeFor(const Plan& plan, const Push& base, const EdramTargets::Target& colour, uint32_t colour_slot) const;
   // A resolve of the frame into the game's shadow mask page: remembers its texture key.
   void NoteMaskResolve(const ResolveRecord& record);
   // The bindless slot of the game's shadow mask product, if this frame's resolve made it and it is
@@ -1024,6 +1032,8 @@ class AmbientOcclusion {
   // Decides the frame's use of the plane from the G-buffer's frame, the setting and the camera, and makes the shader and the pipeline's background build ready (a frame never waits for
   // a compile): the reason when not (ao_gbuffer.h Why; kUsed with `out->on` set otherwise). Logs a change of reason.
   ao_gbuffer::Why PlanNormals(const ResolveCache::Summary& summary, const Plan& plan, NormalPlan* out);
+  // What the owner's normal pass takes of the decision (screen_extract.h NormalRecipe): the plane's slot, samples and size and the camera's rows.
+  screen::extract::NormalRecipe NormalRecipeFor(const NormalPlan& normals) const;
   // The camera's world to view rotation for the frame (ao_gbuffer.h ChooseCamera): the vertex constants' view inverse where they are trusted, else the last frame's camera.
   ao_gbuffer::Camera FrameCameraRows(ao_gbuffer::Rows* rows) const;
   // The normal pass's shader (made on first use, on the render thread: a short call) and whether its pipeline is made; the first call lists it with the host precache and the frame
@@ -1319,16 +1329,14 @@ class AmbientOcclusion {
   uint32_t look_logged_index_ = ~0u;
   float car_reach_logged_ = -1.0f;
   uint32_t paint_code_logged_ = ~0u;
-  HostImage depth_[3];  // the linear depth chain: the traced size (half the picture's above 1080 lines), then 1/2 and 1/4 of it
-  // The normal image (GB-E, hlsl/ao_normal_ps.hlsl): R16G16_UNORM, the octahedral code of the unit view-space normal of every pixel, at the traced size, and one at the picture's
-  // size while the contact shadows keep that beside a half size occlusion (Plan::SplitContact). Made while frames use the G-buffer's plane, given back after a while without.
-  HostImage normal_;
-  HostImage normal_full_;
+  // The linear depth chain (the traced size: half the picture's above 1080 lines, then 1/2 and 1/4 of it), the full size depth of the contact shadows, the bounce light's depth history and the
+  // normal image (GB-E, hlsl/ao_normal_ps.hlsl: R16G16_UNORM, the octahedral code of the unit view-space normal of every pixel at the traced size, and one at the picture's size while the contact
+  // shadows keep that beside a half size occlusion) are the shared screen products' images since SS-2 (screen_shared.h): this class sizes them (EnsureImages, EnsureNormalImages) and reads
+  // them through Depth(), DepthFull(), DepthPrev(), NormalImage() and NormalFullImage(). The normals are made while frames use the G-buffer's plane, given back after a while without.
   HostImage raw_;       // the main pass's visibility (also the contact shadows' march while their size is the traced one)
   HostImage denoised_;  // the denoise's (also the contact shadows' filter pass's then)
   // The contact shadows' own images while the occlusion is traced at half size and they are not (Plan::SplitContact): the picture's size,
   // the linear depth (R32_FLOAT, the vehicle bit too) that their march and filter read, the march's image and the filter pass's.
-  HostImage depth_full_;
   HostImage contact_raw_;
   HostImage contact_dn_;
   // NOISE-RESOLVE: the contact image's history (visibility, linear depth; R16G16_FLOAT at the contact image's size), two images that take turns, and what the next frame needs to know of it.
@@ -1367,7 +1375,6 @@ class AmbientOcclusion {
   // runs: history_gi_ says which kind the history written last is.
   HostImage gi_dn_;
   HostImage gi_hist_[2];
-  HostImage depth_prev_;
   HostImage gi_weight_;
   bool history_gi_ = false;
   uint32_t history_index_ = 0;

@@ -69,7 +69,7 @@ std::string ProductNames(uint32_t products) {
 
 ScreenShared::~ScreenShared() = default;
 
-void ScreenShared::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing) {
+void ScreenShared::Initialize(Device& device, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing) {
   passes_ = &passes;
   edram_ = &edram;
   pass_timing_ = &pass_timing;
@@ -101,6 +101,7 @@ void ScreenShared::Initialize(HostPasses& passes, EdramTargets& edram, PassTimin
   if (colour_failed_) {
     REXLOG_ERROR("{} the colour capture's shaders could not be made: no colour_post this session", kPrefix);
   }
+  InitializeChain(device, heap);  // the depth chain's, the normal image's and the colour chain's layout and shaders (screen_extract.cpp)
 }
 
 void ScreenShared::Shutdown() {
@@ -129,6 +130,7 @@ void ScreenShared::Shutdown() {
   for (HostImage& image : post_) {
     image = HostImage{};
   }
+  ShutdownChain();
   history_ = HostImage{};
   post_images_ = 0;
   last_capture_ = screen::CaptureKey{};
@@ -155,6 +157,7 @@ void ScreenShared::BeginFrame(uint64_t frame_serial) {
     return;
   }
   frame_serial_ = frame_serial;
+  extract_ = larecomp::settings::mcla_gpu_screen_extract.Get();  // live: the A/B between the owner's recording and the AO's own (screen_shared.h)
   // The frame is empty until the AO's depth chain publishes it.
   frame_ = screen::ScreenFrame{};
   frame_.frame_serial = uint32_t(frame_serial);
@@ -319,7 +322,7 @@ void ScreenShared::Publish(plume::RenderCommandList* list, const Adopted& adopte
   published_ = false;
   frame_ = screen::ScreenFrame{};
   frame_.frame_serial = uint32_t(frame_serial_);
-  const HostImage* depth0 = adopted.depth[0];
+  const HostImage* depth0 = frame_depth0_;
   if (!depth0 || !depth0->texture) {
     return;  // no depth chain this frame: nothing to publish
   }
@@ -336,11 +339,12 @@ void ScreenShared::Publish(plume::RenderCommandList* list, const Adopted& adopte
   if (in.traced[0] < in.render[0] || in.traced[1] < in.render[1]) {
     in.flags |= screen::kFrameHalfTraced;
   }
-  for (uint32_t i = 0; i < screen::kDepthLevels; ++i) {
-    in.depth[i] = SlotOf(adopted.depth[i]);
+  in.depth[0] = SlotOf(depth0);
+  for (uint32_t i = 1; i < screen::kDepthLevels; ++i) {
+    in.depth[i] = adopted.levels ? SlotOf(&depth_[i]) : screen::kNoSlot;
   }
-  in.depth_full = SlotOf(adopted.depth_full);
-  in.normal = SlotOf(adopted.normal);
+  in.depth_full = adopted.depth_full ? SlotOf(&depth_full_) : screen::kNoSlot;
+  in.normal = adopted.normal ? SlotOf(&normal_) : screen::kNoSlot;
   for (uint32_t i = 0; i < screen::kColourPreLevels; ++i) {
     in.colour_pre[i] = pre_made_ ? SlotOf(&colour_pre_[i]) : screen::kNoSlot;
   }
@@ -373,10 +377,10 @@ const HostImage* ScreenShared::Image(screen::Product product, uint32_t level) co
     return nullptr;
   }
   switch (product) {
-    case screen::kLinDepth: return level < screen::kDepthLevels ? adopted_.depth[level] : nullptr;
-    case screen::kLinDepthFull: return adopted_.depth_full;
+    case screen::kLinDepth: return level == 0 ? frame_depth0_ : (level < screen::kDepthLevels && adopted_.levels ? &depth_[level] : nullptr);
+    case screen::kLinDepthFull: return adopted_.depth_full ? &depth_full_ : nullptr;
     case screen::kHizMin: return level < frame_.hiz_levels && hiz_[level].texture ? &hiz_[level] : nullptr;
-    case screen::kNormal: return adopted_.normal;
+    case screen::kNormal: return adopted_.normal ? &normal_ : nullptr;
     case screen::kColourPre: return pre_made_ && level < screen::kColourPreLevels ? &colour_pre_[level] : nullptr;
     case screen::kColourPost: return level < frame_.colour_post_levels && post_[level].texture ? &post_[level] : nullptr;
     case screen::kHistory: return history_.texture ? &history_ : nullptr;
@@ -385,8 +389,25 @@ const HostImage* ScreenShared::Image(screen::Product product, uint32_t level) co
   return nullptr;
 }
 
-uint64_t ScreenShared::HeldBytes() const {
+uint64_t ScreenShared::ChainBytes() const {
   uint64_t bytes = 0;
+  const auto add = [&bytes](const HostImage& image) {
+    if (image.texture) {
+      bytes += TextureBytes(image.width, image.height, 1, image.format);
+    }
+  };
+  for (const HostImage& image : depth_) {
+    add(image);
+  }
+  add(depth_full_);
+  add(depth_prev_);
+  add(normal_);
+  add(normal_full_);
+  return bytes;
+}
+
+uint64_t ScreenShared::HeldBytes() const {
+  uint64_t bytes = ChainBytes();
   const auto add = [&bytes](const HostImage& image) {
     if (image.texture) {
       bytes += TextureBytes(image.width, image.height, 1, image.format);
@@ -524,7 +545,7 @@ void ScreenShared::Seal() {
 }
 
 // ---------------------------------------------------------------------------
-// colour_pre: the bounce light's colour chain (the images and the call are the owner's, the pass is the AO's until SS-2)
+// colour_pre: the bounce light's colour chain (the images and the pass are the owner's since SS-2: RecordColourPre in screen_extract.cpp; CapturePre is the old path's call)
 // ---------------------------------------------------------------------------
 
 bool ScreenShared::EnsureColourPre(const uint32_t sizes[screen::kColourPreLevels][2], plume::RenderFormat format) {
@@ -556,8 +577,7 @@ void ScreenShared::ReleaseColourPre() {
 }
 
 void ScreenShared::CapturePre(const std::function<void()>& record) {
-  // CHECK (not run): colour_pre is the bounce light's chain exactly as before (the AO's own pass body, called from here at the place it was recorded from): the picture, the pass timings ("ssgi
-  // colour chain") and the image names are unchanged; the memory moves from the AO's line of the frame stats to the screen products'.
+  // The old path (mcla_gpu_screen_extract false): colour_pre is the bounce light's chain exactly as before (the AO's own pass body, called from here at the place it was recorded from).
   record();
   pre_made_ = true;
 }

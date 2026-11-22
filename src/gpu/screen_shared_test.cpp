@@ -971,7 +971,7 @@ void SourceChecks(const std::string& gpu) {
   Check(Has(scene_cpp, "screen_->BeginFrame(frame_serial_)") && Before(scene_cpp, "screen_->BeginFrame(frame_serial_)", "ao_->BeginFrame();"), "the Scene starts the screen frame before the AO's, which declares its wants after it");
   Check(Before(scene_cpp, "gbuffer_->DrawView(summary, list);", "screen_->DrawView(summary, list);"), "the Scene draws the screen view after the G-buffer's");
   Check(Has(scene_h, "SetScreenShared(ScreenShared* screen)"), "the Scene takes the owner");
-  Check(Has(renderer, "screen_.Initialize(passes_, edram_, pass_timing_)") && Has(renderer, "ao_.SetScreenShared(&screen_)") && Has(renderer, "scene_.SetScreenShared(&screen_)"), "the Renderer makes the owner and gives it to the AO and the Scene");
+  Check(Has(renderer, "screen_.Initialize(device_, heap_, passes_, edram_, pass_timing_)") && Has(renderer, "ao_.SetScreenShared(&screen_)") && Has(renderer, "scene_.SetScreenShared(&screen_)"), "the Renderer makes the owner and gives it to the AO and the Scene");
   Check(Count(renderer, "ao_.Shutdown();\n    screen_.Shutdown();") + Count(renderer, "ao_.Shutdown();\n  screen_.Shutdown();") == 2, "both of the Renderer's shutdowns stop the owner right after the AO");
   Check(Has(renderer, "screen_.HeldBytes()"), "the frame stats line has the owner's memory");
   // nothing is recorded without a want: the Hi-Z only under the plan's make, the view only under its setting

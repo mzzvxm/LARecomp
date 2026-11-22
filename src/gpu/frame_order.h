@@ -33,8 +33,10 @@
 // a vehicle's pixels only; SSR adds nothing to a vehicle's pixel) and the debug views. Their wants of the planes and the screen products are declared first thing in the frame (lag 0). Their GPU time is
 // the labels of the SSR row ('ssr trace', 'ssr temporal', 'ssr apply', closed by 'after ssr') and, while they are the products' only consumer, the owner's 'screen hiz' and 'screen colour post'
 // (namespace cost below: the arms a cost run sets, and which labels are the effect's own).
-// Where it differs from LIGHT-UNIFY 5.3's picture: the AO still builds the depth chain, the normals and the colour chain itself (SS-2 moves them into the screen owner; the screen frame, the Hi-Z
-// included, is published at the END of the AO's frame, after its apply, from ScreenShared::Publish); the sun shafts and the volume's inject / integrate record BEFORE the capture and SSR (the
+// Where it differs from LIGHT-UNIFY 5.3's picture: the AO's frame still CALLS the screen owner for the depth chain, the normals and the colour chain (SS-2 moved the passes and their images into the owner,
+// ScreenShared::RecordDepth / RecordNormals / RecordColourPre, screen_extract.cpp; the AO decides the frame's sizes and which frame runs, so the owner records them from inside its frame, at the
+// places the AO recorded them from; mcla_gpu_screen_extract false is the old recording by the AO into the same images); the screen frame, the Hi-Z
+// included, is published at the END of the AO's frame, after its apply, from ScreenShared::Publish; the sun shafts and the volume's inject / integrate record BEFORE the capture and SSR (the
 // design listed them after SSR; they add nothing to the colour at the trigger, their composites are at the end-of-scene copy, so the order between them is free of data and the table keeps the code's).
 //
 // THE CHECKS
@@ -89,9 +91,9 @@ inline constexpr uint32_t kCarStructures = 1u << 10; // the car ray tracing stru
 inline constexpr uint32_t kLights = 1u << 11;        // the frame's lights: the light manager's LightFrame and the rig's set (light_manager.h, headlight_rig.h)
 inline constexpr uint32_t kShadowAtlas = 1u << 12;   // the shadow replay's maps recorded THIS frame in the atlas (local_shadow.h, shadow_atlas.h)
 inline constexpr uint32_t kLightMaps = 1u << 13;     // the light manager's frame holds this frame's maps (its shadow views)
-inline constexpr uint32_t kAoDepth = 1u << 14;       // the AO's own depth chain images (the owner of lin_depth until SS-2)
-inline constexpr uint32_t kAoNormal = 1u << 15;      // the AO's normal image
-inline constexpr uint32_t kColourChain = 1u << 16;   // the bounce light's colour chain (what colour_pre publishes)
+inline constexpr uint32_t kAoDepth = 1u << 14;       // the depth chain's images of the AO's frame (made by the screen owner for it since SS-2: what lin_depth publishes)
+inline constexpr uint32_t kAoNormal = 1u << 15;      // the normal image of the AO's frame (the owner's since SS-2)
+inline constexpr uint32_t kColourChain = 1u << 16;   // the bounce light's colour chain (what colour_pre publishes; the owner's since SS-2)
 inline constexpr uint32_t kRtOcclusion = 1u << 17;   // the car ray traced occlusion / sun term image (car_rt_ao.h)
 inline constexpr uint32_t kAoTerm = 1u << 18;        // the occlusion's / the bounce light's accumulated result, read by the apply
 inline constexpr uint32_t kContactTerm = 1u << 19;   // the contact shadows' visibility, read by the apply
@@ -334,12 +336,15 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .wants_planes = detail::kNormalPlane, .wants_screen = data::kLinDepth | data::kNormal | data::kColourPre,
      .note = "runs a depth-only frame for a consumer outside its family when the occlusion and the contact shadows are off (screen_wants_); the steps below run inside it, in this order. "
              "It plans its bounce light with the probe field's share (GiApply::TakeSsgiShare), which is why the field's frame is before it"},
-    {.step = Step::kAoDepth, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "depth chain (lin_depth's owner)", .file = "ao.cpp",
-     .call = "DrawPass(list, depth_[0], depth_pipeline, push);", .label_file = "ao.cpp", .label = "ao depth", .makes = data::kAoDepth},
+    {.step = Step::kAoDepth, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "depth chain (recorded by the screen owner)", .file = "ao.cpp",
+     .call = "screen_->RecordDepth(list, chain, base, summary.stencil_slot, normals_.depth_source_bits, ms);", .label_file = "screen_extract.cpp", .label = "ao depth", .makes = data::kAoDepth,
+     .note = "SS-2: the AO's frame calls the owner, which records level 0, the coarser levels and the contact shadows' full size depth into its own images, with the labels 'ao depth' and 'ao contact depth'"},
     {.step = Step::kAoNormals, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "normals (G-buffer RT1 where valid, else the depth's)", .file = "ao.cpp",
-     .call = "RecordNormals(list, plan, base, normals_);", .label_file = "ao.cpp", .label = "ao normals", .reads = data::kAoDepth, .soft_reads = data::kPlanes, .makes = data::kAoNormal},
+     .call = "screen_->RecordNormals(list, chain, base, NormalRecipeFor(normals_));", .label_file = "screen_extract.cpp", .label = "ao normals", .reads = data::kAoDepth, .soft_reads = data::kPlanes,
+     .makes = data::kAoNormal},
     {.step = Step::kColourPre, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "colour_pre capture (capped, only while the bounce light is on)", .file = "ao.cpp",
-     .call = "screen_->CapturePre([&] { RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot); });", .label_file = "ao.cpp", .label = "ssgi colour chain", .makes = data::kColourChain,
+     .call = "screen_->RecordColourPre(list, chain, base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot));", .label_file = "screen_extract.cpp", .label = "ssgi colour chain",
+     .makes = data::kColourChain,
      .note = "the main colour BEFORE the apply: the bounce light must see the colour the occlusion has not multiplied yet"},
     {.step = Step::kCarRtAo, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "ray traced occlusion and sun term of the cars", .file = "ao.cpp",
      .call = "rt = rt_ao_->Record(list, in);", .label_file = "car_rt_ao.cpp", .label = "ao rt", .reads = data::kAoDepth, .soft_reads = data::kCarStructures, .makes = data::kRtOcclusion},

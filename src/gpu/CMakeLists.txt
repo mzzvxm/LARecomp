@@ -105,6 +105,7 @@ add_library(larecomp_gpu OBJECT
     rt_denoise.cpp
     samplers.cpp
     scene.cpp
+    screen_extract.cpp
     screen_shared.cpp
     ssr.cpp
     ssr_rt.cpp
@@ -411,6 +412,10 @@ add_executable(larecomp_light_frame_test EXCLUDE_FROM_ALL light_frame_test.cpp)
 # generation; it compiles hlsl/screen_hiz.hlsli as C++ and compares it with the twin, and reads the sources it is given) likewise:
 #   cmake --build <dir> --target larecomp_screen_shared_test, then run src/gpu/larecomp_screen_shared_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.cpp)
+# The shared screen products' extraction (screen_extract.h, SS-2: the push blocks of the depth chain, the normal image and the colour chain built from the AO's frame block, held to a verbatim copy of the
+# statements ao.cpp's old path records them with and to ao.cpp's own text, over a grid of frames; the pass list and the cost model, printed for 1080p and 4K) likewise:
+#   cmake --build <dir> --target larecomp_screen_extract_test, then run src/gpu/larecomp_screen_extract_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_screen_extract_test EXCLUDE_FROM_ALL screen_extract_test.cpp)
 # The screen-space reflections' rules (ssr_rules.h: levels, sizes, the decision, the push block, the wetness) and the pure HLSL (hlsl/ssr_common.hlsli and ssr_trace.hlsli compiled as C++: the class
 # gate, the BRDF, the GGX sampling, the virtual image's reprojection, the Hi-Z march against analytic scenes and a brute force march) likewise; it reads the sources it is given:
 #   cmake --build <dir> --target larecomp_ssr_test, then run src/gpu/larecomp_ssr_test <src/gpu dir> [--print] (exit 0 = passed).
