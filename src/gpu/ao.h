@@ -416,6 +416,7 @@
 #include "host_passes.h"
 #include "host_plan.h"
 #include "menu_world.h"
+#include "noise_resolve.h"
 #include "records.h"
 #include "resolve.h"
 #include "screen_extract.h"
@@ -863,6 +864,10 @@ class AmbientOcclusion {
     // change their noise every frame and the contact image has a history of its own (the occlusion's temporal pass over the filtered image: ContactHistory below). Then the filter is a pass
     // of its own (not inside the apply) and the apply reads the history's result.
     bool contact_history = false;
+    // NOISE-FOLLOW (noise_resolve.h HistoryLifetime): the history would run but for the temporal upscaler on this frame (a plain frame of an upscaler session, the pause toggle, will want its images again), and what
+    // Run decided for the images: keep the ones that are held instead of giving them back.
+    bool contact_history_gap = false;
+    bool contact_history_keep = false;
     uint32_t render[2] = {};       // the main view, host pixels
     uint32_t ao[2] = {};           // the traced passes' size (the depth chain's level 0)
     uint32_t level[2][2] = {};     // the coarser levels' sizes
@@ -986,6 +991,8 @@ class AmbientOcclusion {
   // The wetness the frame's main view draws carried (VS c43.x): the commonest value, to 0.1.
   bool PickWet(float* value) const;
   bool EnsureImages(const Plan& plan);
+  // NOISE-FOLLOW: whether the contact history's images that are held stay this frame, though the history does not run (Plan::contact_history_gap); asked once a frame, before the images are ensured.
+  bool ContactHistoryKeep(const Plan& plan);
   void ReleaseImages();
   plume::RenderPipeline* Pipeline(uint32_t variant);
   // The bitmask pass's pipeline for the counts and the acos this frame has (MainGiVariant), else the one that reads the counts.
@@ -1365,6 +1372,7 @@ class AmbientOcclusion {
     bool logged = false;
   };
   ContactHistory contact_hist_;
+  noise_resolve::HistoryLifetime contact_life_;   // how long its images stay while an upscaler runs (noise_resolve::kHistoryKeepFrames)
   bool stencil_ms_ = false;       // ... and whether that depth target is multisampled (which temporal pipeline reads it)
   uint32_t stencil_slot_ = ~0u;  // the depth target's stencil plane view of this frame's Run (the contact history's temporal pass reads the vehicles' IDs from it)
   // The history: (visibility, linear depth) of the last frame that ran the passes, R16G16_FLOAT,

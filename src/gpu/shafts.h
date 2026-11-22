@@ -101,6 +101,7 @@
 #include "host_passes.h"
 #include "host_plan.h"
 #include "menu_world.h"
+#include "noise_resolve.h"
 #include "records.h"
 #include "resolve.h"
 #include "shafts_anchor.h"
@@ -226,6 +227,7 @@ class SunShafts {
     float decay = 0.96f;
     float noise_shift = 0.0f;
     bool history = false;          // NOISE-RESOLVE: no temporal upscaler averages the frames, so the noise moves every frame and the blurred image is averaged over frames (RecordTemporal)
+    bool history_gap = false;      // NOISE-FOLLOW: it would be, but a temporal upscaler runs this frame: the history's images that are held stay (noise_resolve.h HistoryLifetime)
     uint32_t view = 0;
   };
 
@@ -417,6 +419,7 @@ class SunShafts {
   bool hist_pause_ = false;
   float hist_sun_[2] = {};
   uint32_t hist_frames_ = 0;
+  noise_resolve::HistoryLifetime hist_life_;   // how long the two images stay while an upscaler runs (noise_resolve::kHistoryKeepFrames)
   uint64_t hist_used_ = 0;       // frames that averaged over it
   bool hist_logged_ = false;
   uint32_t unused_frames_ = 0;       // frames since a pass was recorded, for giving the images back

@@ -1689,6 +1689,9 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   // history length allows one (mcla_gpu_ao_history 2 and up) and no debug picture of the contact shadows is shown.
   plan.contact_history = contact && !upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&
                          larecomp::settings::mcla_gpu_contact_shadows_view.Get() == 0;
+  // NOISE-FOLLOW: the same conditions with the upscaler running: the frames the history's images are kept over (HistoryLifetime), not made again at every plain frame of an upscaler session.
+  plan.contact_history_gap = contact && upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&
+                             larecomp::settings::mcla_gpu_contact_shadows_view.Get() == 0;
   plan.view = plan.occlusion ? uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_view.Get(), 0, 8)) : 0u;
   if (plan.view == 8u) {
     plan.view = kVehicleView;  // the contact shadows' views are 8 to 11
@@ -1801,6 +1804,14 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
 // the passes
 // ---------------------------------------------------------------------------
 
+bool AmbientOcclusion::ContactHistoryKeep(const Plan& plan) {
+  const HostImage& first = contact_hist_.image[0];
+  const HostImage& second = contact_hist_.image[1];
+  const bool held = first.texture || second.texture;
+  const bool size_ok = first.width == plan.contact_size[0] && first.height == plan.contact_size[1] && second.width == plan.contact_size[0] && second.height == plan.contact_size[1];
+  return contact_life_.Frame(plan.contact_history && plan.apply, plan.contact_history_gap && plan.apply, held, size_ok) == noise_resolve::HistoryImages::kKeep;
+}
+
 bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   // The coarser depth levels are the occlusion's (and the census probe's); the contact shadows read
   // level 0 only. The two scratch images hold the occlusion's visibility passes and, after those,
@@ -1848,11 +1859,12 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
     passes_->ReleaseImage(contact_dn_);
   }
   // NOISE-RESOLVE: the contact image's history, two R16G16_FLOAT images at the contact image's size (visibility, linear depth) while no temporal upscaler averages the contact shadows' noise; given
-  // back with the setting off or an upscaler on (the first frame after has none: ChooseContactHistory says kFirst).
+  // back with the setting off, or after an upscaler has run for kHistoryKeepFrames frames in a row (NOISE-FOLLOW: until then the images stay, so the plain frames of an upscaler session, a pause toggle, do not
+  // make them again; the content is stale across the gap, ChooseContactHistory says kGap, and the first frame after has none: kFirst).
   if (ok && plan.contact_history && plan.apply) {
     ok = passes_->EnsureImage(contact_hist_.image[0], plan.contact_size[0], plan.contact_size[1], plume::RenderFormat::R16G16_FLOAT, "ao contact history 0") &&
          passes_->EnsureImage(contact_hist_.image[1], plan.contact_size[0], plan.contact_size[1], plume::RenderFormat::R16G16_FLOAT, "ao contact history 1");
-  } else {
+  } else if (!plan.contact_history_keep) {
     bool released = false;
     for (HostImage& image : contact_hist_.image) {
       if (image.texture) {
@@ -2637,6 +2649,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       (plan.apply && !denoise_pipeline) || (contact && !contact_pipeline)) {
     return false;
   }
+  plan.contact_history_keep = ContactHistoryKeep(plan);
   if (!EnsureImages(plan)) {
     if (!images_failed_logged_) {
       images_failed_logged_ = true;

@@ -390,12 +390,17 @@ bool SunShafts::EnsureImages(const Pending& plan) {
   bool ok =
       passes_->EnsureImage(sky_, plan.image[0], plan.image[1], kImageFormat, "shafts sky") &&
       passes_->EnsureImage(shaft_, plan.image[0], plan.image[1], kImageFormat, "shafts blurred");
-  // NOISE-RESOLVE: the history's two images while the frames are averaged here (no temporal upscaler); given back when an upscaler takes over or the setting goes off.
+  // NOISE-RESOLVE: the history's two images while the frames are averaged here (no temporal upscaler); given back when the setting goes off, or after an upscaler has run for kHistoryKeepFrames frames in a row
+  // (NOISE-FOLLOW: until then they stay, so the plain frames of an upscaler session do not make them again; RecordTemporal's gap rule treats what they hold as stale).
+  const bool hist_held = hist_[0].texture || hist_[1].texture;
+  const bool hist_size_ok = hist_[0].width == plan.image[0] && hist_[0].height == plan.image[1] && hist_[1].width == plan.image[0] && hist_[1].height == plan.image[1];
+  const noise_resolve::HistoryImages hist_keep = hist_life_.Frame(plan.history, plan.history_gap, hist_held, hist_size_ok);
+  // (review F1: the texture pointers before the images are made, to see a remake below)
   const plume::RenderTexture* hist_before[2] = {hist_[0].texture.get(), hist_[1].texture.get()};
   if (ok && plan.history) {
     ok = passes_->EnsureImage(hist_[0], plan.image[0], plan.image[1], kImageFormat, "shafts history 0") &&
          passes_->EnsureImage(hist_[1], plan.image[0], plan.image[1], kImageFormat, "shafts history 1");
-  } else if (hist_[0].texture || hist_[1].texture) {
+  } else if (hist_held && hist_keep != noise_resolve::HistoryImages::kKeep) {
     passes_->ReleaseImage(hist_[0]);
     passes_->ReleaseImage(hist_[1]);
     hist_valid_ = false;
@@ -923,6 +928,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   // The noise moves every frame while something averages it: a temporal upscaler, or (NOISE-RESOLVE) the history of the blurred image (RecordTemporal) while none runs; else a fixed pattern.
   plan.history = !upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && plan.view == 0;
   plan.noise_shift = float(noise_resolve::FrameTerm(upscaler_running, plan.history, scene_noise::NoiseIndex(frame_), 1023u));
+  plan.history_gap = upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && plan.view == 0;   // NOISE-FOLLOW: the images the history would use stay over an upscaler's frames
 
   if (!RecordSky(summary, list, plan)) {
     outcome_ = Outcome::kNotRecorded;

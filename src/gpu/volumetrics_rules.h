@@ -515,10 +515,11 @@ inline void MakeGpuConstants(const GridDesc& g, const VolInputs& in, const VolCa
   out->history[0] = use_history ? history.far_m : far_m;
   out->history[1] = use_history ? LogRatio(g.near_m, history.far_m) : ratio;
   out->history[2] = use_history ? std::clamp(history.weight, 0.0f, 0.98f) : 0.0f;
-  // The frame's offset inside the voxel: a gradient noise of the frame (xy), a Halton term (z). The shader adds the voxel's own hash.
-  out->jitter[0] = Halton(frame % 16u + 1u, 2);
-  out->jitter[1] = Halton(frame % 16u + 1u, 3);
-  out->jitter[2] = Halton(frame % 16u + 1u, 5);
+  // The frame's offset inside the voxel: the Halton terms of the frame's number (the shader adds the voxel's own blue noise). NOISE-FOLLOW: the number counts to 1024 like the other effects' frame terms (`& 1023`);
+  // it was `frame % 16`, which repeated the offsets every 16 frames and left a quarter of their amplitude as a 3.75 Hz shimmer under a history of 0.9 (any 16 frames in a row still leave no gap over 0.16 of the voxel in any of the three terms: 0.15 before).
+  out->jitter[0] = Halton((frame & 1023u) + 1u, 2);
+  out->jitter[1] = Halton((frame & 1023u) + 1u, 3);
+  out->jitter[2] = Halton((frame & 1023u) + 1u, 5);
   out->jitter[3] = float(frame & 0xFFFFu);
   CopyCamera(cam, out->cam_pos, out->cam_right, out->cam_up, out->cam_fwd);
   CopyCamera(use_history ? history.camera : cam, out->prev_pos, out->prev_right, out->prev_up, out->prev_fwd);

@@ -61,7 +61,7 @@ inline bool ShaftsKeepsHistory(float shift_u, float shift_v, float aspect) {
 // ---------------------------------------------------------------------------
 // the car reflection cone's history (hlsl/car_rt_refl_denoise_cs.hlsl pass 2)
 // ---------------------------------------------------------------------------
-// The cone's turn changes every frame (the blue tile + the golden step by the frame's phase 0..7), the two a-trous passes take most of its grain out (the residual is under 1% of the weight) and the third
+// The cone's turn changes every frame (the blue tile + the golden step by the frame's phase 0..1023), the two a-trous passes take most of its grain out (the residual is under 1% of the weight) and the third
 // pass averages the finished image with the last frame's, TEXEL FOR TEXEL (no reprojection). car_rt_refl_rules.h "NOT TEMPORAL" weighed a temporal accumulation and left it out because the cone's penumbra
 // moves with the VIEW: a reprojected texel still holds the last frame's direction, the whole penumbra moves by the angle the view turned (0.5 degrees a frame in an orbit: a fifth of a 2.5 degree cone), and
 // its rejection rule (the history's depth and instance) cannot see that. A rule that can is the clamp: the history's weight, hidden share and premultiplied colour are each clamped to the range of the finished
@@ -80,6 +80,40 @@ inline float StaleKeep(float stale, float from, float to) {
 }
 // The weight the history keeps when it already holds `frames` frames (the plain mean for the first ones, then the exponential average at kConeHistoryWeight).
 inline float ConeHistoryWeight(uint32_t frames) { return std::min(kConeHistoryWeight, 1.0f - 1.0f / float(frames + 2u)); }
+
+// ---------------------------------------------------------------------------
+// how long the histories' images live (NOISE-FOLLOW, perf/NOISE-REVIEW.md S2 / CHECK 2)
+// ---------------------------------------------------------------------------
+// The histories exist only on the frames where no temporal upscaler runs, but an upscaler session has plain frames too: the first frame after a switch between the play and the pause / map view, the frames
+// before the upscaler's context is ready. Making and giving back the images on each of them (the contact image's two, the shafts' two, the cone's two: 97 MiB at 4K) is a texture creation hitch and a VRAM spike
+// at every pause toggle. So an image whose history is not wanted ONLY because an upscaler runs stays for kHistoryKeepFrames frames of its effect's own passes in a row without one (the next plain frame finds it
+// and starts from the frame as it is: the gap rule of each history says the content is stale), then goes back. A setting that turned the resolve off, a picture size that changed, and an effect that cannot run
+// give the images back at once, as before. Each effect holds one HistoryLifetime and asks it once a frame, in the place that makes the images.
+inline constexpr uint32_t kHistoryKeepFrames = 1200;   // 20 s at 60 fps, 5 s at 240 fps: the pause menu's toggles and the map are seconds apart, a long drive with an upscaler on is minutes
+enum class HistoryImages : uint8_t {
+  kMake,     // the resolve runs this frame: make the images (or keep them if they are the size the plan wants)
+  kKeep,     // it does not, only because a temporal upscaler runs: leave the images as they are
+  kRelease,  // it does not: give them back (nothing held makes this a no-op)
+};
+struct HistoryLifetime {
+  uint32_t idle = 0;   // frames in a row the images were held and not wanted, only because an upscaler ran
+  // `wanted`: the history's pass runs this frame. `upscaler_gap`: it does not, and the only reason is that a temporal upscaler runs (the setting is on, the effect can run). `held`: the images exist.
+  // `size_ok`: the images are the size this frame's plan wants.
+  HistoryImages Frame(bool wanted, bool upscaler_gap, bool held, bool size_ok) {
+    if (wanted) {
+      idle = 0;
+      return HistoryImages::kMake;
+    }
+    if (!held || !upscaler_gap || !size_ok) {
+      idle = 0;
+      return HistoryImages::kRelease;
+    }
+    if (idle < kHistoryKeepFrames) {
+      ++idle;
+    }
+    return idle >= kHistoryKeepFrames ? HistoryImages::kRelease : HistoryImages::kKeep;
+  }
+};
 
 // ---------------------------------------------------------------------------
 // what the histories hold (memory) at a picture size, for the logs and the owner's optimisation pass

@@ -4,9 +4,9 @@
 //   cmake --build <dir> --target larecomp_car_refl_noise_test, then run src/gpu/larecomp_car_refl_noise_test [<src/gpu dir>] [--print] (a few seconds).
 //
 // The cone's four rays are turned about the mirror direction by an angle that differs from texel to texel: the first version took it from interleaved gradient noise, a lattice, plus a golden step per phase
-// (0 where no temporal upscaler runs, 0 .. 7 by the frame where one does). The denoise (two 3x3 a-trous passes) and the upscaler's history leave a lattice as thin diagonal lines on a panel. Now the
-// texel's part is the blue noise tile (the golden step is unchanged: eight steps of 0.618 leave no gap over 0.15 of the circle, which is what a cycle of eight phases wants, and the same for every
-// texel). It checks, with the shared measures of noise_resolve_check.h:
+// (0 where nothing averages the frames, 0 .. 1023 by the frame where an upscaler or the pass's own history does: it was 0 .. 7, NOISE-FOLLOW). The denoise (two 3x3 a-trous passes) and the upscaler's history leave a lattice as thin diagonal lines on a panel. Now the
+// texel's part is the blue noise tile (the golden step is unchanged: eight steps of 0.618 leave no gap over 0.15 of the circle, which is what the history's few frames want, and the same for every
+// texel; the phase counts to 1024 so the pattern repeats no sooner than that). It checks, with the shared measures of noise_resolve_check.h:
 //   the turn: uniform, a new value at every texel, changes at every texel every frame with a step that is the same for every texel (nothing slides), no gap over 0.25 in 16 frames
 //   the error of the cone's coverage (a glossy edge across the disc) after an upscaler's average over frames: the first version's has a lattice, the blue noise's has none and stays where it is
 //   a still frame (phase 0, no upscaler) after the denoise's 3x3 blur: no lattice
@@ -28,8 +28,8 @@ namespace {
 
 nc::Checks g_check;
 
-std::pair<float, float> Blue(int x, int y, uint32_t frame) { return {rt::ConeRotation(uint32_t(x + 100), uint32_t(y), frame & 7u), 0.0f}; }
-std::pair<float, float> Legacy(int x, int y, uint32_t frame) { return {rt::ConeRotationLegacy(uint32_t(x + 100), uint32_t(y), frame & 7u), 0.0f}; }
+std::pair<float, float> Blue(int x, int y, uint32_t frame) { return {rt::ConeRotation(uint32_t(x + 100), uint32_t(y), frame & hit::kPhaseMask), 0.0f}; }
+std::pair<float, float> Legacy(int x, int y, uint32_t frame) { return {rt::ConeRotationLegacy(uint32_t(x + 100), uint32_t(y), frame & hit::kPhaseMask), 0.0f}; }
 std::pair<float, float> BlueStill(int x, int y, uint32_t) { return {rt::ConeRotation(uint32_t(x + 100), uint32_t(y), 0u), 0.0f}; }
 std::pair<float, float> LegacyStill(int x, int y, uint32_t) { return {rt::ConeRotationLegacy(uint32_t(x + 100), uint32_t(y), 0u), 0.0f}; }
 
@@ -52,6 +52,12 @@ void TestTurn() {
   g_check(p.changed > 0.99 && p.max_gap < 0.25 && p.step_spread < 1e-4 && std::fabs(p.mean - 0.5) < 0.01 && std::fabs(p.var - 1.0 / 12.0) < 0.004,
           nc::Num("with an upscaler the turn is uniform (mean %.3f, variance %.4f), changes at every texel every frame (%.3f), leaves no gap over %.3f in 16 frames and takes the same step at every texel (%.6f)", p.mean,
                   p.var, p.changed, p.max_gap, p.step_spread));
+  // NOISE-FOLLOW: no short period (with the host's phase mask, car_rt_hit_rules.h kPhaseMask): a pattern that repeats every 8 frames keeps a third of its noise as a 7.5 Hz shimmer under the history's weight of 0.75
+  const uint32_t period = nc::ShortestPeriod(Blue);
+  if (g_check.print) {
+    std::printf("  cone turn, shortest period under 128 frames: %u (the phase counts to %u)\n", period, hit::kPhaseMask + 1u);
+  }
+  g_check(period == 0, nc::Num("the turn repeats with no period under 128 frames (found %u: the phase counts to %u)", period, hit::kPhaseMask + 1u));
   // a new value at (almost) every texel of a still picture, in [0, 1)
   int distinct = 0;
   float previous = -1.0f;
@@ -70,7 +76,7 @@ void TestTurn() {
 }
 
 void TestResolve() {
-  // an upscaler's history averages the eight phases: the pattern left is static, lattice-free for the blue tile, a lattice for the gradient noise
+  // an upscaler's history averages the phases: the pattern left is static, lattice-free for the blue tile, a lattice for the gradient noise
   const nc::Resolved rl = nc::Resolve(Legacy, Coverage, 104, 128, 40, 0.875, false);
   const nc::Resolved rb = nc::Resolve(Blue, Coverage, 104, 128, 40, 0.875, false);
   if (g_check.print) {
@@ -99,12 +105,14 @@ void TestSources(const std::string& dir) {
     return;
   }
   const uint32_t flag = rt::kConeBlueFlag;
-  g_check(flag == (1u << 17) && nc::Has(cs, "static const uint kConeBlueFlag = 131072u;") && (flag & (7u | (7u << 8) | hit::census::kStatsFlag)) == 0u &&
-              (hit::PackPhaseRays(7u, 4u) & flag) == 0u,
-          "the cone's blue flag is slots.w bit 17: the shader's constant is the header's and no phase, rays or stats bit overlaps it");
+  g_check(flag == (1u << 17) && nc::Has(cs, "static const uint kConeBlueFlag = 131072u;") && (flag & ((hit::kPhaseMask << hit::kPhaseShift) | (7u << 8) | hit::census::kStatsFlag)) == 0u &&
+              (hit::PackPhaseRays(1023u, 4u) & flag) == 0u,
+          "the cone's blue flag is slots.w bit 17: the shader's constant is the header's and no phase (bits 18 to 27), rays or stats bit overlaps it");
   g_check(nc::Has(cs, "#include \"blue_noise.hlsli\"") && nc::Has(cs, "BlueNoiseTileAt(int(texel.x), int(texel.y), 0u)") && nc::Has(cs, "return frac(noise + 0.6180339887 * float(phase));") &&
-              nc::Has(cs, "ConeRotation(texel, g_push.slots.w & 7u, (g_push.slots.w & kConeBlueFlag) != 0u)"),
-          "the shader's turn is the tile at the texel plus the golden step per phase, as the twin's, with the flag from slots.w");
+              nc::Has(cs, "ConeRotation(texel, ConePhase(g_push.slots.w), (g_push.slots.w & kConeBlueFlag) != 0u)"),
+          "the shader's turn is the tile at the texel plus the golden step per phase (slots.w bits 18 to 27, up to 1023), as the twin's, with the flag from slots.w");
+  // NOISE-FOLLOW: the phase the host hands over repeats only every 1024 frames (it was `NoiseIndex & 7`: a period of 8)
+  g_check(nc::Has(nc::ReadFile(dir + "/car_selfrefl.cpp"), "info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 1023u);"), "car_selfrefl.cpp hands the cone's pattern the scene's noise index masked to 1023, not 7");
   g_check(nc::Has(host, "(larecomp::settings::mcla_gpu_noise_blue.Get() ? car_rt_refl::kConeBlueFlag : 0u)"), "car_rt_refl.cpp sets the flag from mcla_gpu_noise_blue (live: read at each frame's trace)");
 }
 

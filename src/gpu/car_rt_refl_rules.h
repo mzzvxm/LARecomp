@@ -308,8 +308,8 @@ inline float ConeRotationLegacy(uint32_t texel_x, uint32_t texel_y, uint32_t pha
   return sum - std::floor(sum);
 }
 // The angle the texel's pattern is turned by, in turns: the blue noise tile at the texel's coordinates (blue_noise.h: no spatial frequency stands out) plus a golden step per phase, the same for every
-// texel (0 where nothing averages it: the pattern then stands still on the screen, a fixed blue grain the denoise takes the rest out of; 0 .. 7 by the frame where a temporal upscaler runs, or the denoise's own history does (NOISE-RESOLVE), which averages the
-// pattern out; eight golden steps leave no gap over 0.15 of the circle).
+// texel (0 where nothing averages it: the pattern then stands still on the screen, a fixed blue grain the denoise takes the rest out of; 0 .. 1023 by the frame where a temporal upscaler runs, or the denoise's own history does (NOISE-RESOLVE), which averages the
+// pattern out; the golden step per frame leaves no gap over 0.15 of the circle in any 8 frames, and the phase counts to 1023 so the pattern repeats only every 1024 frames: a period of 8 left a third of the noise as a 7.5 Hz shimmer under the history).
 inline float ConeRotation(uint32_t texel_x, uint32_t texel_y, uint32_t phase) {
   static const blue_noise::Tile tile = blue_noise::MakeTile();
   const float sum = blue_noise::Sample(tile, 0, int(texel_x), int(texel_y)) + 0.6180339887f * float(phase);
