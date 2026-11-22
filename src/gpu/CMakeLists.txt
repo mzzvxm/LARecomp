@@ -86,6 +86,7 @@ add_library(larecomp_gpu OBJECT
     rt_bench.cpp
     rt_tier.cpp
     rr_guides.cpp
+    ray_regen_guides.cpp
     samplers.cpp
     scene.cpp
     screen_shared.cpp
@@ -442,6 +443,9 @@ add_executable(larecomp_denoiser_setting_test EXCLUDE_FROM_ALL denoiser_setting_
 # AMD FSR Ray Regeneration's pure rules (ray_regen_rules.h): the AMD ids, the signals and consumers, the plan beside DLSS RR's, the input map, the dispatch plan, the conventions, the memory estimate and
 # the row's words. No renderer, no Windows, no AMD runtime: cmake --build <dir> --target larecomp_ray_regen_rules_test, then run src/gpu/larecomp_ray_regen_rules_test (exit 0 = passed).
 add_executable(larecomp_ray_regen_rules_test EXCLUDE_FROM_ALL ray_regen_rules_test.cpp)
+# The guide conversion's pure rules and the C++ twin of hlsl/ray_regen_common.hlsli (ray_regen_guides_rules.h): the images, the frame decision, the camera of the dispatch, the push block, and the texels' arithmetic
+# against the shader's own text: cmake --build <dir> --target larecomp_ray_regen_guides_test, then run src/gpu/larecomp_ray_regen_guides_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_ray_regen_guides_test EXCLUDE_FROM_ALL ray_regen_guides_test.cpp)
 # The rule that gives another pass's use of a side view's EDRAM identity (the night shadow's, which binds the car
 # reflections' depth through a surface of another size) a target of its own (side_views.h):
 #   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.
@@ -825,6 +829,9 @@ larecomp_gpu_host_shader(ssr_hit_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(rr_guides_cs cs_6_0 DEFINES RR_MS=0)
 larecomp_gpu_host_shader(rr_guides_ms_cs cs_6_0 SOURCE rr_guides_cs DEFINES RR_MS=1)
 larecomp_gpu_host_shader(rr_guides_view_cs cs_6_0)
+# AMD FSR Ray Regeneration's guide and signal pass for the screen-space reflections (ray_regen_guides.h, RG-2 / RG-3): the trace's radiance as a signal and the five guides in AMD's formats at the trace's size, one compute
+# pass. Plain Shader Model 6.0 (the 6.6 AMD asks for is its own runtime's); run on Direct3D 12 only, built for both backends like every host shader.
+larecomp_gpu_host_shader(ray_regen_ssr_cs cs_6_0)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

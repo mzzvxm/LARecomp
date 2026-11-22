@@ -20,8 +20,17 @@
 
 #include "ssr_common.hlsli"
 
+// SSR_REGEN_EXTRA 1 (ray_regen_ssr_cs.hlsl, AMD FSR Ray Regeneration's guide and signal pass: a compute pass, Direct3D 12 only): 16 words more after the 32
+// (ray_regen_guides_rules.h push::). No other compilation has them.
+#ifndef SSR_REGEN_EXTRA
+#define SSR_REGEN_EXTRA 0
+#endif
+
 struct SsrPush {
   uint4 r[8];   // 32 words (ssr_rules.h push::)
+#if SSR_REGEN_EXTRA
+  uint4 x[4];   // 16 more (ray_regen_guides_rules.h push::)
+#endif
 };
 
 #ifdef __spirv__
@@ -36,6 +45,14 @@ uint SsrW(uint i) {
 float SsrF(uint i) {
   return asfloat(SsrW(i));
 }
+#if SSR_REGEN_EXTRA
+uint SsrXW(uint i) {
+  return g_push.x[i >> 2u][i & 3u];
+}
+float SsrXF(uint i) {
+  return asfloat(SsrXW(i));
+}
+#endif
 
 // ---- the frame's numbers ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 uint SsrSample0() { return SsrW(SSR_W_FLAGS) & 15u; }
