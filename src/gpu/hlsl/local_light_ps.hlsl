@@ -21,6 +21,11 @@
 // The pixel shader runs once per pixel whatever the host's MSAA level: the planes and the depth are read at the host sample that is the guest's sample 0 and the result is added to every
 // sample of the pixel (a one pixel fringe at silhouettes, as the AO's apply). LL_PASS_MS 1 reads Texture2DMS planes (host_pass_common.hlsli space 1), 0 plain textures (space 0).
 //
+// GB-NEON-BLEED: a neon light (LL_SOURCE_NEON: the underglow, no shadow views) on a VEHICLE pixel (RT3's vehicle flag) is multiplied by hlsl/local_light.hlsli LpContactVisibility: 5 reads of the
+// main depth along the first 0.8 m of the pixel's way to the light (a vent's inner wall, a bumper lip, the cabin and the wheel's dish face the light through the car's own panel: N.L cannot tell).
+// It runs inside LpOneLight, for each light of a draw, AFTER the law's term is known to be over 0 and BEFORE the shadow's lookup: a pixel no light of the draw reaches was discarded by the reach test
+// before the planes (GB-NEON-COST above), and a light that adds nothing at a pixel is never asked, so the 5 reads are spent only on a vehicle pixel a neon light really lights.
+//
 // Binding (local_lights.cpp): the bindless texture set at spaces 0 to 3 as every host pass, the lights' ByteAddressBuffer at (t0, space4), the push block at (b0, space5).
 
 #include "host_pass_common.hlsli"
@@ -56,6 +61,16 @@ float4 LoadPlane(uint slot, int2 p) {
   return g_textures_ms[slot].Load(p, g_push.info.z);
 #else
   return g_textures[slot].Load(int3(p, 0));
+#endif
+}
+
+// The seam of hlsl/local_light.hlsli LpContactVisibility (GB-NEON-BLEED): the stored depth of the main depth plane at a pixel, at the guest's sample 0 like the pixel's own. The caller has kept the
+// pixel inside the target.
+float LpStoredDepth(int px, int py) {
+#if LL_PASS_MS
+  return g_textures_ms[g_push.slots.x].Load(int2(px, py), g_push.info.z).r;
+#else
+  return g_textures[g_push.slots.x].Load(int3(px, py, 0)).r;
 #endif
 }
 
@@ -155,13 +170,21 @@ bool LpAnyReaches(uint first, uint count, float3 world) {
   return false;
 }
 
-// What one light adds at a pixel: the term, then, for a light with views of the atlas and a pixel it lights, the shadow's visibility. The w is 1 when the light adds anything (a light that does not
-// is not in the sum: its own draw would have discarded the pixel). The table's header says which bindless depth plane the views are in.
-float4 LpOneLight(uint index, LpGlobals g, uint flags, float3 world, float3 normal, float3 albedo, float lit) {
+// What one light adds at a pixel: the term, then (GB-NEON-BLEED) for a neon light on a vehicle pixel the contact term, then, for a light with views of the atlas and a pixel it lights, the shadow's
+// visibility. The w is 1 when the light adds anything (a light that does not is not in the sum: its own draw would have discarded the pixel). The table's header says which bindless depth plane the
+// views are in.
+float4 LpOneLight(uint index, LpGlobals g, uint flags, bool vehicle, float3 world, float3 normal, float3 albedo, float lit) {
   const LlLight l = LlUnpack(LpLoadLight(index));
   float3 add = LpPixelLight(l, g, world, normal, albedo, lit);
   if (!any(add > 0.0f)) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
+  }
+  // GB-NEON-BLEED: a neon light on a vehicle pixel is shut out by the car's own panels (local_light.hlsli LpContactVisibility): the vent, the lip and the cabin it faces through the body get nothing.
+  if (LpTakesContact(l, vehicle)) {
+    add *= LpContactVisibility(g, world, normal, l.pos);
+    if (!any(add > 0.0f)) {
+      return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
   }
   if ((flags & uint(LP_FLAG_SHADOW)) != 0u && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) {
     const uint4 head = g_lights.Load4(LP_SHADOW_OFF_COUNT);  // count, slot, width, height
@@ -208,11 +231,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
     discard;
   }
   const uint flags = g_lights.Load(LP_OFF_COUNT + 4);
+  bool vehicle = false;  // GB-NEON-BLEED: RT3's vehicle flag (a frame without RT3 says no)
   if ((flags & LP_FLAG_MATERIAL) != 0u && g_push.slots.w != 0xFFFFFFFFu) {
-    const uint surface_class = GbRt3Class(LoadPlane(g_push.slots.w, p).xy);
+    const float2 rt3 = LoadPlane(g_push.slots.w, p).xy;
+    const uint surface_class = GbRt3Class(rt3);
     if (surface_class == uint(LP_CLASS_NONE) || surface_class == uint(LP_CLASS_EMISSIVE)) {
       discard;
     }
+    vehicle = (GbRt3Flags(rt3) & uint(GB_FLAG_VEHICLE)) != 0u;
   }
 
   // The position, in the old order: after the planes.
@@ -228,7 +254,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float3 total = float3(0.0f, 0.0f, 0.0f);
   bool any_light = false;
   for (uint i = 0u; i < count; ++i) {
-    const float4 one = LpOneLight(first + i, g, flags, world, normal, albedo, rt2.w);
+    const float4 one = LpOneLight(first + i, g, flags, vehicle, world, normal, albedo, rt2.w);
     if (one.w > 0.0f) {
       total += one.xyz;
       any_light = true;

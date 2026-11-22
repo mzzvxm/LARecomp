@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -55,6 +56,12 @@ namespace ll = larecomp::gpu::light_laws;
 namespace lp = larecomp::gpu::local_lights;
 namespace mls = larecomp::gpu::mod_light_source;
 using namespace larecomp::gpu;
+
+// GB-NEON-BLEED: the seam of hlsl/local_light.hlsli LpContactVisibility reads the check's own depth field.
+std::function<float(int, int)> g_stored_depth;
+namespace hlsl_shim {
+float LpStoredDepth(int px, int py) { return g_stored_depth(px, py); }
+}  // namespace hlsl_shim
 
 namespace {
 
@@ -1152,14 +1159,18 @@ struct PixelData {
   bool rt2_any = true;        // RT2 has any channel over 0
   float lit = 1.0f;           // RT2.w
   uint32_t surface_class = 1;  // RT3's class (GB_CLASS_*)
+  bool vehicle = false;        // RT3's vehicle flag (GB-NEON-BLEED)
+  std::function<float(int, int)> field;  // the main depth plane round the pixel, for the contact term's reads (empty: the sky everywhere)
 };
 struct FlowResult {
   bool written = false;
   hlsl_shim::float3 sum;
+  uint32_t depth_reads = 0;  // the contact term's reads of the depth plane (GB-NEON-BLEED; the pixel's own read is not counted)
 };
 
 // hlsl/local_light_ps.hlsl main, line by line, on the twin's functions: `lights` are the draw's rows (count 1 to 4), `material` is LP_FLAG_MATERIAL with RT3 bound, `reach_first` the shader's order.
-// The shadow lookup is left out (nothing of the neon has views of the atlas, and the order does not touch it).
+// The shadow lookup is left out (nothing of the neon has views of the atlas, and the order does not touch it). GB-NEON-BLEED: RT3's vehicle flag is read with its class, and a neon light on a vehicle
+// pixel takes the contact term inside its own turn of the sum (LpOneLight: after the law's term, before the shadow), its reads counted.
 FlowResult ShaderFlow(const PixelData& px, const hlsl_shim::LpGlobals& g, const hlsl_shim::LlLight* lights, uint32_t count, bool material, bool reach_first, float px_x, float px_y) {
   FlowResult none;
   hlsl_shim::float3 world;
@@ -1192,8 +1203,12 @@ FlowResult ShaderFlow(const PixelData& px, const hlsl_shim::LpGlobals& g, const 
   if (!px.rt2_any || !(px.lit > 0.0f)) {
     return none;
   }
-  if (material && (px.surface_class == uint32_t(LP_CLASS_NONE) || px.surface_class == uint32_t(LP_CLASS_EMISSIVE))) {
-    return none;
+  bool vehicle = false;
+  if (material) {
+    if (px.surface_class == uint32_t(LP_CLASS_NONE) || px.surface_class == uint32_t(LP_CLASS_EMISSIVE)) {
+      return none;
+    }
+    vehicle = px.vehicle;
   }
   if (!reach_first && !place()) {
     return none;
@@ -1202,9 +1217,19 @@ FlowResult ShaderFlow(const PixelData& px, const hlsl_shim::LpGlobals& g, const 
   const hlsl_shim::float3 n(px.normal[0], px.normal[1], px.normal[2]);
   const hlsl_shim::float3 a(px.albedo[0], px.albedo[1], px.albedo[2]);
   for (uint32_t i = 0; i < count; ++i) {
-    const hlsl_shim::float3 add = hlsl_shim::LpPixelLight(lights[i], g, world, n, a, px.lit);
+    hlsl_shim::float3 add = hlsl_shim::LpPixelLight(lights[i], g, world, n, a, px.lit);
     if (!AnyPositive(add)) {
       continue;
+    }
+    if (hlsl_shim::LpTakesContact(lights[i], vehicle)) {
+      g_stored_depth = [&](int ix, int iy) {
+        ++r.depth_reads;
+        return px.field ? px.field(ix, iy) : 0.0f;
+      };
+      add = add * hlsl_shim::LpContactVisibility(g, world, n, lights[i].pos);
+      if (!AnyPositive(add)) {
+        continue;
+      }
     }
     r.sum = r.sum + add;
     r.written = true;
@@ -1236,6 +1261,7 @@ void CostChecks() {
   // ---- 1 and 2 and 3: random pixels, surfaces and draws -------------------------------------------------------------------------------------------
   Lcg rng;
   uint64_t pixels = 0, rejected = 0, lit_pixels = 0, written_both = 0;
+  uint64_t contact_pixels = 0, contact_reads = 0, contact_spared = 0;
   double worst_steps = 0.0, worst_rel = 0.0;
   for (int round = 0; round < 6000; ++round) {
     float vi[16];
@@ -1270,6 +1296,23 @@ void CostChecks() {
     pd.surface_class = rng.Next() < 0.15f ? (rng.Next() < 0.5f ? 0u : 13u) : 1u + rng.Below(12);
     float wc[3];
     lp::WorldPosition(rows, in.tan_x, in.tan_y, px, py, float(in.width), float(in.height), lp::LinearDepth(pd.stored, in.lin), wc);
+    // GB-NEON-BLEED: some pixels are a car's (RT3's vehicle flag), with a ragged depth plane round them (a shell in front of the contact term's points, open air, the sky). A random stream of its own, so
+    // that the draws above are the ones this check made before the contact term joined the shader.
+    {
+      Lcg vr;
+      vr.state = 424242u + uint32_t(round) * 7919u;
+      pd.vehicle = vr.Next() < 0.45f;
+      const float base_t = t + vr.Range(-0.8f, 0.8f);
+      const float amp = vr.Range(0.0f, 0.5f);
+      const float k1 = vr.Range(0.005f, 0.06f), k2 = vr.Range(0.005f, 0.06f);
+      pd.field = [=](int ix, int iy) -> float {
+        if (((ix / 31) + (iy / 29)) % 7 == 0) {
+          return 0.0f;  // the sky
+        }
+        const float d = base_t + amp * std::sin(float(ix) * k1 + float(iy) * k2) + (((ix / 11) + (iy / 13)) % 2 == 0 ? 0.0f : 0.3f);
+        return StoredOf(std::max(d, 0.2f), 0.1f, 10000.0f);
+      };
+    }
 
     // the draw: one to four omni lights of one tube (the neon's laws and numbers) round that point, or a lamp / headlight of any law for the first claim
     const uint32_t n = 1 + rng.Below(4);
@@ -1337,6 +1380,23 @@ void CostChecks() {
     const FlowResult slow = ShaderFlow(pd, g, rows_of.data(), count, material, false, px, py);
     Check(fast.written == slow.written, Num("the early reach test keeps the pixels the planes-first order writes (round %.0f)", round));
     Check(fast.sum.x == slow.sum.x && fast.sum.y == slow.sum.y && fast.sum.z == slow.sum.z, "the early reach test gives bit for bit the same sum");
+    // GB-NEON-BLEED with GB-NEON-COST: the contact term reads the depth only for a vehicle pixel a neon light of the draw really lights, in either order; a pixel the reach test rejects reads none
+    Check(fast.depth_reads == slow.depth_reads, Num("the two orders make the same contact reads (round %.0f)", round));
+    if (pd.stored > 0.0f) {
+      bool any_reach = false;
+      for (uint32_t k = 0; k < count; ++k) {
+        any_reach = any_reach || hlsl_shim::LpReaches(rows_of[k].pos, rows_of[k].range, hlsl_shim::float3(wc[0], wc[1], wc[2]));
+      }
+      if (!any_reach) {
+        Check(!fast.written && !slow.written && fast.depth_reads == 0 && slow.depth_reads == 0, "a pixel no light of the draw reaches is discarded with no contact read");
+        ++contact_spared;
+      }
+    }
+    if (fast.depth_reads != 0) {
+      ++contact_pixels;
+      contact_reads += fast.depth_reads;
+      Check(pd.vehicle && material, "only a vehicle pixel with RT3 takes contact reads");
+    }
 
     // 3: the single draws (one add into the half float target each, a light that adds nothing is a discarded pixel) against the one draw's sum
     if (pd.stored > 0.0f && pd.rt1_valid && pd.rt2_any && pd.lit > 0.0f && !(material && (pd.surface_class == 0u || pd.surface_class == 13u))) {
@@ -1347,9 +1407,16 @@ void CostChecks() {
       const hlsl_shim::float3 alb(pd.albedo[0], pd.albedo[1], pd.albedo[2]);
       const hlsl_shim::float3 w(wc[0], wc[1], wc[2]);
       for (uint32_t k = 0; k < count; ++k) {
-        const hlsl_shim::float3 add = hlsl_shim::LpPixelLight(rows_of[k], g, w, nrm, alb, pd.lit);
+        hlsl_shim::float3 add = hlsl_shim::LpPixelLight(rows_of[k], g, w, nrm, alb, pd.lit);
         if (!AnyPositive(add)) {
           continue;
+        }
+        if (hlsl_shim::LpTakesContact(rows_of[k], material && pd.vehicle)) {  // the single draw of the neon-bleed shader: its own contact term
+          g_stored_depth = pd.field;
+          add = add * hlsl_shim::LpContactVisibility(g, w, nrm, rows_of[k].pos);
+          if (!AnyPositive(add)) {
+            continue;
+          }
         }
         old_fb[0] = RoundHalf(old_fb[0] + add.x);
         old_fb[1] = RoundHalf(old_fb[1] + add.y);
@@ -1375,6 +1442,9 @@ void CostChecks() {
   std::printf("cost twin: %llu light-pixels, %llu rejected by the reach test (%.1f %%); %llu written pixels, the one draw's sum is at most %.2f half float steps (%.4f %%) from the single draws'\n",
               (unsigned long long)pixels, (unsigned long long)rejected, pixels ? 100.0 * double(rejected) / double(pixels) : 0.0, (unsigned long long)written_both, worst_steps, 100.0 * worst_rel);
   Check(rejected > 1000 && lit_pixels > 500, "the random draws exercise both sides of the reach test");
+  std::printf("cost twin with the contact term: %llu pixels took %llu contact reads (a vehicle pixel a neon light lights); %llu pixels no light of the draw reaches made none\n", (unsigned long long)contact_pixels,
+              (unsigned long long)contact_reads, (unsigned long long)contact_spared);
+  Check(contact_pixels > 300 && contact_reads >= contact_pixels && contact_spared > 300, "the random draws exercise the contact term inside the sum, and the pixels the reach test spares");
   Check(worst_rel < 0.0035, "the sum is within 0.35 % of the single draws' (a few steps of the half float target: 8-bit pictures cannot show it)");
 
   // The boundary of the reach, to the bit: a pixel at exactly the range is not reached and takes 0 under every law; one a step inside is reached
@@ -1675,7 +1745,7 @@ void SourceChecks(const std::string& src) {
     const size_t early = At(ps, "if (!LpAnyReaches(first, count, world)) {");
     const size_t planes = At(ps, "const float2 rt1 = LoadPlane(g_push.slots.y, p).xy;");
     const size_t late = At(ps, "if (!reach_first) {");
-    const size_t sum_at = At(ps, "const float4 one = LpOneLight(first + i, g, flags, world, normal, albedo, rt2.w);");
+    const size_t sum_at = At(ps, "const float4 one = LpOneLight(first + i, g, flags, vehicle, world, normal, albedo, rt2.w);");
     Check(main_at != std::string::npos && early != std::string::npos && planes != std::string::npos && late != std::string::npos && sum_at != std::string::npos && main_at < early && early < planes && planes < late &&
               late < sum_at,
           "main: the reach test (when first) comes before the planes' reads, the position after them in the old order, and the lights' sum after both");
@@ -1750,6 +1820,251 @@ void SourceChecks(const std::string& src) {
   Check(Has(cpp, "in.shadow = &frame.shadow;") && Has(cpp, "ll::ShadowTableNeeded(selection, in.shadow)"), "the pass hands the frame's shadow to the buffer");
 }
 
+// ---------------------------------------------------------------------------
+// GB-NEON-BLEED: a neon light does not shine through the car that is lit (local_lights_rules.h ContactVisibility, hlsl/local_light.hlsli LpContactVisibility)
+// ---------------------------------------------------------------------------
+
+// A solid made of boxes, and the picture's depth of it for a camera: the stored depth of a pixel is that of the nearest box its ray enters (the ray's parameter along the camera's forward is the
+// view distance, as WorldPosition has it), 0 (the sky) where it enters none.
+struct Aabb {
+  float lo[3];
+  float hi[3];
+};
+float RayEntersBoxes(const std::vector<Aabb>& boxes, const float o[3], const float d[3]) {
+  float best = 1.0e30f;
+  for (const Aabb& b : boxes) {
+    float t0 = 0.0f, t1 = 1.0e30f;
+    bool ok = true;
+    for (int k = 0; k < 3 && ok; ++k) {
+      if (std::fabs(d[k]) < 1.0e-9f) {
+        ok = o[k] >= b.lo[k] && o[k] <= b.hi[k];
+        continue;
+      }
+      float a = (b.lo[k] - o[k]) / d[k];
+      float c = (b.hi[k] - o[k]) / d[k];
+      if (a > c) std::swap(a, c);
+      t0 = std::max(t0, a);
+      t1 = std::min(t1, c);
+      ok = t0 <= t1;
+    }
+    if (ok && t0 < best) best = t0;
+  }
+  return best;
+}
+
+hlsl_shim::LpGlobals ShimGlobalsOf(const lp::Rows& rows, float tan_x, float tan_y, float width, float height, const float lin[4]) {
+  hlsl_shim::LpGlobals g;
+  g.right = hlsl_shim::float3(rows.right[0], rows.right[1], rows.right[2]);
+  g.up = hlsl_shim::float3(rows.up[0], rows.up[1], rows.up[2]);
+  g.forward = hlsl_shim::float3(rows.forward[0], rows.forward[1], rows.forward[2]);
+  g.position = hlsl_shim::float3(rows.position[0], rows.position[1], rows.position[2]);
+  g.tan_x = tan_x;
+  g.tan_y = tan_y;
+  g.gain = 1.0f;
+  g.night = 1.0f;
+  g.exposure = 1.0f;
+  g.lin = hlsl_shim::float4(lin[0], lin[1], lin[2], lin[3]);
+  g.size = hlsl_shim::float4(width, height, 1.0f / width, 1.0f / height);
+  return g;
+}
+
+// The contact term through both twins: the C++ one with `stored_at`, the HLSL one (compiled as C++) with the seam set to the same field. Returns the C++ value and checks the two agree.
+float ContactBoth(const lp::Rows& rows, float tan_x, float tan_y, float width, float height, const float lin[4], const float world[3], const float normal[3], const float light[3],
+                  const std::function<float(int, int)>& stored_at, const std::string& what) {
+  const float cpp = lp::ContactVisibility(rows, tan_x, tan_y, width, height, lin, world, normal, light, stored_at);
+  g_stored_depth = stored_at;
+  const hlsl_shim::LpGlobals g = ShimGlobalsOf(rows, tan_x, tan_y, width, height, lin);
+  const float hl = hlsl_shim::LpContactVisibility(g, hlsl_shim::float3(world[0], world[1], world[2]), hlsl_shim::float3(normal[0], normal[1], normal[2]),
+                                                  hlsl_shim::float3(light[0], light[1], light[2]));
+  CheckNear(hl, cpp, 2.0e-4, "the HLSL twin's contact term is the C++ one: " + what);
+  return cpp;
+}
+
+void ContactChecks(const std::string& src) {
+  // the numbers of the shader are the C++ ones
+  const std::string hlsli = ReadFile(src + "/gpu/hlsl/local_light.hlsli");
+  Check(Has(hlsli, "#define LP_CONTACT_STEPS 5") && lp::kContactSteps == 5 && Has(hlsli, "#define LP_CONTACT_LENGTH 0.8f") && lp::kContactLength == 0.8f &&
+            Has(hlsli, "#define LP_CONTACT_NORMAL 0.03f") && lp::kContactNormal == 0.03f && Has(hlsli, "#define LP_CONTACT_BIAS 0.04f") && lp::kContactBias == 0.04f &&
+            Has(hlsli, "#define LP_CONTACT_RAMP 0.06f") && lp::kContactRamp == 0.06f && Has(hlsli, "#define LP_CONTACT_THICK 0.7f") && lp::kContactThick == 0.7f &&
+            Has(hlsli, "#define LP_CONTACT_FADE 0.25f") && lp::kContactFade == 0.25f,
+        "the contact term's numbers are the shader's");
+
+  // who is asked: a neon light on a vehicle pixel, nothing else
+  {
+    const float at[3] = {0.0f, 0.0f, 0.0f};
+    const float colour[3] = {30.0f, 0.02f, 0.01f};
+    const Light neon = MakeOmniLight(LightSource::kNeon, at, colour, 3.0f, 3.0f, 7.0f, 1);
+    const Light police = MakeOmniLight(LightSource::kPolice, at, colour, 3.0f, 3.0f, 7.0f, 2);
+    const Light head = HeadlightOf(3, 0.0f);
+    Check(lp::TakesContact(neon, true) && !lp::TakesContact(neon, false) && !lp::TakesContact(police, true) && !lp::TakesContact(head, true), "only a neon light on a vehicle pixel takes the contact term");
+    hlsl_shim::LlLight hl;
+    hl.source = LL_SOURCE_NEON;
+    Check(hlsl_shim::LpTakesContact(hl, true) && !hlsl_shim::LpTakesContact(hl, false), "... in the shader too");
+    hl.source = LL_SOURCE_POLICE;
+    Check(!hlsl_shim::LpTakesContact(hl, true), "... and not a police light");
+  }
+
+  // THE OWNER'S CASE as a box. The body is a solid box (x -1..1, y 0..1, z -2..1) with a vent: a slot cut into its front (z = 1) face, 0.4 m wide (x 0.2..0.6) and 0.5 m deep. The light is on the
+  // left (x -3) at the height of the slot's middle. The camera is up front and to the left.
+  //   - the front face (normal +z) faces away from the light: N.L gives it 0 (the far side of a box needs nothing more);
+  //   - the left face (normal -x) faces the light and is open to it: lit, the contact term leaves it alone;
+  //   - the slot's right wall (x 0.6, normal -x) faces the light, N.L > 0, and the light reaches it only THROUGH the body (the slot's left wall is the body): the contact term shuts it.
+  const std::vector<Aabb> body = {{{-1.0f, 0.0f, -2.0f}, {0.2f, 1.0f, 1.0f}}, {{0.6f, 0.0f, -2.0f}, {1.0f, 1.0f, 1.0f}}, {{0.2f, 0.0f, -2.0f}, {0.6f, 1.0f, 0.5f}}};
+  const float width = 1920.0f, height = 1080.0f, tan_x = 0.8f, tan_y = 0.45f;
+  const float near_z = 0.1f, far_z = 1000.0f;
+  float lin[4];
+  LinOf(near_z, far_z, lin);
+  lp::Rows rows;
+  {
+    const float eye[3] = {-4.0f, 0.6f, 6.0f};
+    const float aim[3] = {0.0f, 0.5f, 0.5f};
+    float f[3] = {aim[0] - eye[0], aim[1] - eye[1], aim[2] - eye[2]};
+    const float fn = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    for (float& v : f) v /= fn;
+    float r[3] = {-f[2], 0.0f, f[0]};  // forward x world up
+    const float rn = std::sqrt(r[0] * r[0] + r[2] * r[2]);
+    for (float& v : r) v /= rn;
+    const float u[3] = {r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
+    for (int i = 0; i < 3; ++i) {
+      rows.right[i] = r[i];
+      rows.up[i] = u[i];
+      rows.forward[i] = f[i];
+      rows.position[i] = eye[i];
+    }
+  }
+  const auto stored_of_box = [&](int ix, int iy) -> float {
+    const float u = (float(ix) + 0.5f) / width;
+    const float v = (float(iy) + 0.5f) / height;
+    const float sx = (u * 2.0f - 1.0f) * tan_x;
+    const float sy = (1.0f - v * 2.0f) * tan_y;
+    float d[3];
+    for (int i = 0; i < 3; ++i) d[i] = rows.forward[i] + rows.right[i] * sx + rows.up[i] * sy;
+    const float t = RayEntersBoxes(body, rows.position, d);
+    return t > 1.0e29f ? 0.0f : StoredOf(t, near_z, far_z);
+  };
+  // a receiver: its pixel and whether the camera sees it there (the field's depth at the pixel is the point's own)
+  const auto seen = [&](const float p[3], const std::string& what) {
+    float px = 0.0f, py = 0.0f, t = 0.0f;
+    const bool on = lp::ProjectToPixel(rows, tan_x, tan_y, width, height, p, 0.05f, &px, &py, &t);
+    Check(on, what + ": in front of the camera");
+    if (!on) return;
+    const float at = lp::LinearDepth(stored_of_box(int(px), int(py)), lin);
+    CheckNear(at, t, 0.03, what + ": the camera sees the point (the field's depth is the point's)");
+  };
+
+  const float light_at[3] = {-3.0f, 0.5f, 0.75f};
+  const float neon_colour[3] = {30.0f, 0.02f, 0.01f};
+  const float plateau = 0.06f * 7.0f * 7.0f;
+  const Light neon = MakeOmniLight(LightSource::kNeon, light_at, neon_colour, plateau, plateau, 7.0f, 4);
+  const lp::Units units;
+  const float albedo[3] = {0.4f, 0.5f, 0.6f};
+  const float p_front[3] = {-0.4f, 0.5f, 1.0f}, n_front[3] = {0.0f, 0.0f, 1.0f};
+  const float p_left[3] = {-1.0f, 0.5f, 0.0f}, n_left[3] = {-1.0f, 0.0f, 0.0f};
+  const float p_wall[3] = {0.6f, 0.5f, 0.75f}, n_wall[3] = {-1.0f, 0.0f, 0.0f};
+  seen(p_front, "the front face");
+  seen(p_left, "the left face");
+  seen(p_wall, "the slot's right wall");
+
+  float out[3];
+  lp::PixelLight(neon, units, p_front, n_front, albedo, 1.0f, out);
+  Check(out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f, "the face that faces away from the light gets 0 from the law (N.L)");
+  lp::PixelLight(neon, units, p_left, n_left, albedo, 1.0f, out);
+  const float left_lit = out[0];
+  Check(left_lit > 0.0f, "the face that faces the light is lit");
+  lp::PixelLight(neon, units, p_wall, n_wall, albedo, 1.0f, out);
+  const float wall_lit = out[0];
+  Check(wall_lit > 0.0f, "the slot's wall faces the light too: the law alone lights it (this is the leak: N.L cannot see the body in between)");
+
+  const float v_left = ContactBoth(rows, tan_x, tan_y, width, height, lin, p_left, n_left, light_at, stored_of_box, "the open left face");
+  const float v_wall = ContactBoth(rows, tan_x, tan_y, width, height, lin, p_wall, n_wall, light_at, stored_of_box, "the slot's wall");
+  CheckNear(v_left, 1.0, 1.0e-6, "the face that is open to the light keeps all of it");
+  CheckNear(v_wall, 0.0, 1.0e-6, "the wall the light can reach only through the body gets none");
+  Check(left_lit * v_left > 0.0f && wall_lit * v_wall == 0.0f, "the lit side stays lit, the vent behind the body goes dark");
+
+  // the same wall with the light on its own side of the body (in the slot's mouth, in front of the front face): open
+  const float light_in_front[3] = {0.4f, 0.5f, 2.5f};
+  const float v_open = ContactBoth(rows, tan_x, tan_y, width, height, lin, p_wall, n_wall, light_in_front, stored_of_box, "a light out in front of the slot");
+  CheckNear(v_open, 1.0, 1.0e-6, "a light that can see the wall keeps all of it");
+
+  // the shell's thickness: a surface well in front of the point (another car, a wall) is not the shell the light runs behind; the sky and a surface behind the way are open
+  {
+    const float from_ground[3] = {0.0f, 0.0f, 0.0f};
+    const float up[3] = {0.0f, 1.0f, 0.0f};
+    const float lamp[3] = {0.5f, 0.0f, 0.0f};
+    lp::Rows r;
+    r.position[2] = -5.0f;  // looking along +z
+    const float at_p[3] = {0.0f, 0.0f, 0.0f};
+    (void)from_ground;
+    // the way's steps end up at view distances 5 (the point is on the axis, 5 m ahead, the light to its right on the same plane): a field at any other distance is the point's neighbour
+    const auto field_at = [&](float distance) { return std::function<float(int, int)>([=](int, int) { return StoredOf(distance, near_z, far_z); }); };
+    const float open_sky = ContactBoth(r, tan_x, tan_y, width, height, lin, at_p, up, lamp, [](int, int) { return 0.0f; }, "sky everywhere");
+    CheckNear(open_sky, 1.0, 1.0e-6, "the sky is open");
+    const float behind = ContactBoth(r, tan_x, tan_y, width, height, lin, at_p, up, lamp, field_at(8.0f), "surface behind the way");
+    CheckNear(behind, 1.0, 1.0e-6, "a surface behind the way's points is open");
+    const float shell = ContactBoth(r, tan_x, tan_y, width, height, lin, at_p, up, lamp, field_at(4.75f), "a shell 25 cm in front");
+    CheckNear(shell, 0.0, 1.0e-6, "a surface a few decimetres in front of the way is a shell: shut");
+    const float far_wall = ContactBoth(r, tan_x, tan_y, width, height, lin, at_p, up, lamp, field_at(3.0f), "a wall 2 m in front");
+    CheckNear(far_wall, 1.0, 1.0e-6, "a surface 2 m in front is another object: open");
+    const float skin = ContactBoth(r, tan_x, tan_y, width, height, lin, at_p, up, lamp, field_at(4.99f), "a surface 1 cm in front");
+    CheckNear(skin, 1.0, 1.0e-6, "a surface within the bias (the point's own surface) is open");
+    const float light_here[3] = {0.0f, 0.0f, 0.0f};
+    const float same = ContactBoth(r, tan_x, tan_y, width, height, lin, at_p, up, light_here, field_at(4.75f), "light at the pixel");
+    CheckNear(same, 1.0, 1.0e-6, "a light at the pixel itself has no way to look along");
+  }
+
+  // the twins against each other on random cameras, points, lights and a ragged depth field
+  Lcg rng;
+  int shut = 0, open = 0, partial = 0;
+  for (int round = 0; round < 600; ++round) {
+    float vi[16];
+    lp::Rows rr;
+    RandomPose(rng, vi, &rr);
+    const float tx = rng.Range(0.4f, 1.1f);
+    const float ty = tx * rng.Range(0.45f, 0.75f);
+    const float w = float(rng.Below(2000) + 640);
+    const float h = float(rng.Below(1200) + 360);
+    float lin2[4];
+    LinOf(0.1f, 10000.0f, lin2);
+    float world[3], n[3], lightp[3];
+    rng.Direction(n);
+    const float depth = rng.Range(2.0f, 30.0f);
+    float jitter[3];
+    rng.Direction(jitter);
+    const float spread = rng.Range(0.0f, 0.5f * depth * tx);
+    for (int i = 0; i < 3; ++i) world[i] = rr.position[i] + rr.forward[i] * depth + jitter[i] * spread;
+    float toward[3];
+    rng.Direction(toward);
+    const float dist = rng.Range(0.1f, 6.0f);
+    for (int i = 0; i < 3; ++i) lightp[i] = world[i] + toward[i] * dist;
+    const float base = depth + rng.Range(-1.0f, 1.0f);
+    const float amp = rng.Range(0.0f, 0.6f);
+    const float k1 = rng.Range(0.005f, 0.05f), k2 = rng.Range(0.005f, 0.05f);
+    const auto field = [=](int ix, int iy) -> float {
+      const float t = base + amp * std::sin(float(ix) * k1 + float(iy) * k2) + (((ix / 23) + (iy / 17)) % 2 == 0 ? 0.0f : 0.35f);
+      return round % 11 == 0 ? 0.0f : StoredOf(std::max(t, 0.2f), 0.1f, 10000.0f);
+    };
+    const float v = ContactBoth(rr, tx, ty, w, h, lin2, world, n, lightp, field, "random round " + std::to_string(round));
+    Check(v >= 0.0f && v <= 1.0f, "the contact term is a share");
+    (v < 0.001f ? shut : (v > 0.999f ? open : partial))++;
+  }
+  Check(shut > 20 && open > 20 && partial > 5, Num("the random rounds reach every case (%.0f shut, %.0f open, %.0f partial)", shut, open, partial));
+
+  // the shader's wiring
+  const std::string ps = ReadFile(src + "/gpu/hlsl/local_light_ps.hlsl");
+  Check(Has(ps, "float LpStoredDepth(int px, int py)") && Has(ps, "g_textures[g_push.slots.x].Load(int3(px, py, 0)).r") && Has(ps, "g_textures_ms[g_push.slots.x].Load(int2(px, py), g_push.info.z).r"),
+        "the shader defines the contact term's seam: the main depth plane at the guest's sample 0");
+  Check(Has(ps, "vehicle = (GbRt3Flags(rt3) & uint(GB_FLAG_VEHICLE)) != 0u;") && Has(ps, "bool vehicle = false;"), "the vehicle flag is RT3's, false where the frame has no RT3");
+  // (GB-NEON-COST: the lights' sum is LpOneLight; the contact term is its own step of one light, so a pixel the reach test discarded, and a light that adds nothing, take no read)
+  const size_t one_at = At(ps, "float4 LpOneLight(uint index, LpGlobals g, uint flags, bool vehicle, float3 world, float3 normal, float3 albedo, float lit) {");
+  const size_t lit_at = At(ps, "float3 add = LpPixelLight(l, g, world, normal, albedo, lit);");
+  const size_t contact_at = At(ps, "if (LpTakesContact(l, vehicle)) {");
+  const size_t shadow_at = At(ps, "add *= LslLightLit(");
+  const size_t main_of_ps = At(ps, "float4 main(float4 position : SV_Position) : SV_Target {");
+  Check(Has(ps, "add *= LpContactVisibility(g, world, normal, l.pos);") && one_at < lit_at && lit_at < contact_at && contact_at < shadow_at && shadow_at < main_of_ps,
+        "the contact term runs inside the light's turn, after the law's term is known (a pixel the light does not light takes no read) and before the shadow's lookup");
+  Check(Has(hlsli, "float LpStoredDepth(int px, int py);") && Has(hlsli, "return vehicle && l.source == LL_SOURCE_NEON;"), "the twin declares the seam and asks neon on vehicles only");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1776,6 +2091,7 @@ int main(int argc, char** argv) {
   TwinChecks();
   CostChecks();
   SourceChecks(src);
+  ContactChecks(src);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

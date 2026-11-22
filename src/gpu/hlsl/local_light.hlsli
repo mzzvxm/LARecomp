@@ -58,6 +58,16 @@
 #define LP_CLASS_NONE 0
 #define LP_CLASS_EMISSIVE 13
 
+// GB-NEON-BLEED (LpContactVisibility at the end of this file; local_lights_rules.h kContact*): the first LP_CONTACT_LENGTH metres of a vehicle pixel's way to a neon light are looked up in the
+// picture's own depth. The numbers are metres of the view distance.
+#define LP_CONTACT_STEPS 5
+#define LP_CONTACT_LENGTH 0.8f   // the part of the way to the light that is looked at
+#define LP_CONTACT_NORMAL 0.03f  // the way starts this far off the surface, along its normal
+#define LP_CONTACT_BIAS 0.04f    // a surface in front of the way's point counts from this gap on ...
+#define LP_CONTACT_RAMP 0.06f    // ... and is fully in the way this much past it
+#define LP_CONTACT_THICK 0.7f    // a surface further in front than this is another object, not the shell the way runs behind
+#define LP_CONTACT_FADE 0.25f    // and the shell's thickness fades out over this
+
 struct LpGlobals {
   float3 right;
   float tan_x;
@@ -119,6 +129,54 @@ float3 LpPixelLight(LlLight l, LpGlobals g, float3 world, float3 normal, float3 
   float night = (l.law == LL_LAW_HEADLIGHT) ? 1.0f : g.night;
   float factor = scale * lit * night * g.gain * g.exposure * LpOcclusion(g.occ, world.y);
   return albedo * l.color * factor;
+}
+
+// ---- GB-NEON-BLEED: a neon light does not shine through the car that is lit -----------------------------------------------------------------
+
+// The stored depth of the pixel (px, py) of the main depth plane at the guest's sample 0 (the including shader defines it; LpContactVisibility keeps the index inside the target).
+float LpStoredDepth(int px, int py);
+
+// Whether the light takes the contact term at a pixel: a NEON light (the cars' underglow: it has no shadow views, and it sits under a car, so it is inside one body and next to another) on a VEHICLE
+// pixel (RT3's flags). The ground, the walls and the kerbs, and every other kind of light, are not asked (local_lights_rules.h TakesContact).
+bool LpTakesContact(LlLight l, bool vehicle) {
+  return vehicle && l.source == LL_SOURCE_NEON;
+}
+
+// How much of a neon light's way to a vehicle pixel is open: 1 open, 0 shut (local_lights_rules.h ContactVisibility). N.L cannot tell a surface that faces the light from one that the light
+// can reach: a vent, a bumper lip, the inside of a cabin, the wheel's dish face the light through the car's own panel (the light is not shadowed: the underglow is a glow, not a lamp that casts),
+// and the far side of a body is no problem for N.L, its notches are. The picture's depth does tell: a point on the way to the light that lies BEHIND a visible surface (by 4 cm to 70 cm: a
+// shell, not a distant wall) is inside something. The way starts 3 cm off the surface along its normal and runs LP_CONTACT_LENGTH metres (or to the light) in LP_CONTACT_STEPS steps; the
+// strongest step is the answer, soft in the gap (no pops: a car's panel is a few centimetres to a few decimetres thick). A step off the picture or behind the camera ends the look (the light
+// counts as reaching). The cost is LP_CONTACT_STEPS depth reads for a vehicle pixel the light already lights; nothing for any other pixel.
+float LpContactVisibility(LpGlobals g, float3 world, float3 normal, float3 light_pos) {
+  float3 to_light = light_pos - world;
+  float len2 = dot(to_light, to_light);
+  if (!(len2 > 1.0e-6f)) {
+    return 1.0f;
+  }
+  float len = sqrt(len2);
+  float3 dir = to_light * (1.0f / len);
+  float3 origin = world + normal * LP_CONTACT_NORMAL;
+  float reach = len < LP_CONTACT_LENGTH ? len : LP_CONTACT_LENGTH;
+  float shut = 0.0f;
+  for (int i = 0; i < LP_CONTACT_STEPS; ++i) {
+    float s = reach * (float(i) + 1.0f) / float(LP_CONTACT_STEPS);
+    float3 d = origin + dir * s - g.position;
+    float f = dot(d, g.forward);
+    if (!(f > 0.05f)) {
+      break;
+    }
+    float px = 0.5f * (dot(d, g.right) / (f * g.tan_x) + 1.0f) * g.size.x;
+    float py = 0.5f * (1.0f - dot(d, g.up) / (f * g.tan_y)) * g.size.y;
+    if (!(px >= 0.0f && py >= 0.0f && px < g.size.x && py < g.size.y)) {
+      break;
+    }
+    float t = LpLinearDepth(LpStoredDepth(int(px), int(py)), g.lin);
+    float gap = f - t;
+    float w = saturate((gap - LP_CONTACT_BIAS) / LP_CONTACT_RAMP) * (1.0f - saturate((gap - LP_CONTACT_THICK) / LP_CONTACT_FADE));
+    shut = w > shut ? w : shut;
+  }
+  return 1.0f - shut;
 }
 
 #endif  // LARECOMP_LOCAL_LIGHT_HLSLI
