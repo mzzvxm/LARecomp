@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 
+#include "discord_rpc/discord_rpc.h"  // RpcInFreeRoam: the game's state machine is in Cruising
 #include "settings/larecomp_settings.h"
 #include "spdlog_console.h"  // LarecompLogFolder()
 
@@ -264,7 +265,10 @@ void JoinServerTick() {
     }
     switch (g_phase) {
     case Phase::kWaitCity:
-        if (WorldReady()) {
+        // The city AND the player's car (WorldReady), and the game's own state machine in "Cruising": not the title screen, not the
+        // loading screen after Start. The measured crash of a join that began at the title (browser_join_core.h) was the first
+        // of these missing; the second keeps the join from a state the machine leaves for the net menu half-built.
+        if (WorldReady() && RpcInFreeRoam()) {
             LARECOMP_APP_INFO("[join_server] the city is up after {} s: asking {}",
                               std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - g_started).count(),
                               g_target.Address());
