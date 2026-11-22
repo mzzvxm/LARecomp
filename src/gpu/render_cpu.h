@@ -21,7 +21,8 @@ enum Bits : int32_t {
   kSampledDrawTimers = 1,  // the per-draw TSC timers of the statistics read the clock on one draw in kPeriod
   kAliasHint = 2,          // the physical range check asks the alias that answered last first (native_gfx/guest/physical_alias.h)
   kDeviceCache = 4,        // the per-draw lookups by device address keep their last answer (constants.cpp, scene.cpp)
-  kAll = 7,
+  kForeignUseMemo = 8,     // side_views::IsForeignUse keeps its last answer (a pure function of its two arguments)
+  kAll = 15,
 };
 
 constexpr bool Has(int32_t mask, Bits bit) {
@@ -91,6 +92,30 @@ class LastEntry {
  private:
   Key key_{};
   Value* value_ = nullptr;
+};
+
+// The last answer of a pure function of one key (side_views::IsForeignUse of an EDRAM identity and a declared size: four rule
+// functions compared against constants, asked about the same key by draw after draw). Only for functions of nothing but the key.
+template <class Key, class Result>
+class LastAnswer {
+ public:
+  bool Find(const Key& key, Result* result) const {
+    if (valid_ && key == key_) {
+      *result = result_;
+      return true;
+    }
+    return false;
+  }
+  void Put(const Key& key, const Result& result) {
+    key_ = key;
+    result_ = result;
+    valid_ = true;
+  }
+
+ private:
+  Key key_{};
+  Result result_{};
+  bool valid_ = false;
 };
 
 }  // namespace mcla::gpu::render_cpu

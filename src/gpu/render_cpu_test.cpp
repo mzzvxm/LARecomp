@@ -46,14 +46,23 @@ void Check(bool ok, const std::string& what) {
 // ---------------------------------------------------------------------------
 
 void TestBits() {
-  Check(kAll == (kSampledDrawTimers | kAliasHint | kDeviceCache), "kAll is every bit");
-  Check((kSampledDrawTimers & kAliasHint) == 0 && (kSampledDrawTimers & kDeviceCache) == 0 && (kAliasHint & kDeviceCache) == 0,
-        "the bits are distinct");
-  Check(Has(kAll, kSampledDrawTimers) && Has(kAll, kAliasHint) && Has(kAll, kDeviceCache), "the default mask has every saving");
-  Check(!Has(0, kSampledDrawTimers) && !Has(0, kAliasHint) && !Has(0, kDeviceCache), "mask 0 has none");
+  const int bits[] = {kSampledDrawTimers, kAliasHint, kDeviceCache, kForeignUseMemo};
+  int all = 0;
+  bool distinct = true;
+  bool single = true;
+  for (const int b : bits) {
+    distinct &= (all & b) == 0;
+    all |= b;
+    single &= b != 0 && (b & (b - 1)) == 0;
+  }
+  Check(single, "every bit is a single bit");
+  Check(distinct, "the bits are distinct");
+  Check(kAll == all, "kAll is every bit");
+  Check(Has(kAll, kSampledDrawTimers) && Has(kAll, kAliasHint) && Has(kAll, kDeviceCache) && Has(kAll, kForeignUseMemo), "the default mask has every saving");
+  Check(!Has(0, kSampledDrawTimers) && !Has(0, kAliasHint) && !Has(0, kDeviceCache) && !Has(0, kForeignUseMemo), "mask 0 has none");
   Check(Has(kAliasHint, kAliasHint) && !Has(kAliasHint, kDeviceCache), "a single bit");
-  // The setting's range is 0..7: every bit pattern in it is a mask of the three.
-  Check(kAll == 7, "the setting's range {0, 7} is the whole mask");
+  // The setting's range is 0..15 (settings_performance.h, manifest.json): every bit pattern in it is a mask of the four.
+  Check(kAll == 15, "the setting's range {0, 15} is the whole mask");
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +504,57 @@ void BenchLastEntry() {
               std::chrono::duration<double, std::nano>(t2 - t1).count() / kN, (unsigned long long)sum);
 }
 
+
+// ---------------------------------------------------------------------------
+// LastAnswer: the last answer of a pure function
+// ---------------------------------------------------------------------------
+
+struct FuncKey {
+  uint64_t identity = 0;
+  uint32_t size = 0;
+  bool operator==(const FuncKey& o) const { return identity == o.identity && size == o.size; }
+};
+
+uint64_t g_pure_calls = 0;
+bool PureRule(const FuncKey& k) {  // stands for the four rule functions: constants compared with the key's fields
+  ++g_pure_calls;
+  const bool a = (k.identity & 0xFF) == 0x40 && k.size == 640;
+  const bool b = ((k.identity >> 8) & 0xFF) == 0x20 && k.size != 0;
+  return a || (b && (k.identity & 1) == 0);
+}
+
+void TestLastAnswer() {
+  std::mt19937_64 rng(404);
+  LastAnswer<FuncKey, bool> last;
+  uint64_t wrong = 0;
+  uint64_t hits = 0;
+  FuncKey key{0x2040, 640};
+  g_pure_calls = 0;
+  for (int i = 0; i < 300000; ++i) {
+    if (rng() % 20 == 0) {  // another pass: another identity and size
+      key.identity = (rng() % 4) * 0x2000 + (rng() % 3) * 0x40 + (rng() % 2) + 0x20;
+      key.size = rng() % 3 == 0 ? 640u : uint32_t(rng() % 800);
+    }
+    bool answer = false;
+    if (last.Find(key, &answer)) {
+      ++hits;
+    } else {
+      answer = PureRule(key);
+      last.Put(key, answer);
+    }
+    const bool want = (key.identity & 0xFF) == 0x40 && key.size == 640 ? true : (((key.identity >> 8) & 0xFF) == 0x20 && key.size != 0 && (key.identity & 1) == 0);
+    wrong += answer != want;
+  }
+  Check(wrong == 0, "the kept answer is the function's on 300000 asks with the key changing now and then");
+  Check(hits > 250000 && g_pure_calls + hits == 300000, "most asks hit (" + std::to_string(hits) + "), the rest called the function");
+  LastAnswer<FuncKey, bool> fresh;
+  bool answer = true;
+  Check(!fresh.Find(FuncKey{}, &answer), "a new cache holds nothing (not even for the zero key)");
+  fresh.Put(FuncKey{1, 2}, false);
+  Check(fresh.Find(FuncKey{1, 2}, &answer) && !answer, "a false answer is kept too");
+  Check(!fresh.Find(FuncKey{1, 3}, &answer) && !fresh.Find(FuncKey{2, 2}, &answer), "another size or identity misses");
+}
+
 // The timers' cost is the saving: a clock read per timed draw. A bench of Take on its own (it must be far under a clock read).
 void BenchSampler() {
   using Clock = std::chrono::steady_clock;
@@ -527,6 +587,7 @@ int main(int argc, char** argv) {
   TestLastEntryEqualsMap();
   TestLastEntryAvoidsLookups();
   TestLastEntryForgetAndCopy();
+  TestLastAnswer();
   if (g_bench) {
     BenchSampler();
     BenchAlias();

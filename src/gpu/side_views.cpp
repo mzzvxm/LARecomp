@@ -12,6 +12,8 @@
 
 #include "device.h"
 #include "edram.h"
+#include "render_cpu.h"
+#include "settings/larecomp_settings.h"
 
 namespace mcla::gpu {
 
@@ -51,9 +53,26 @@ bool IsForeignUse(const EdramKey& key, uint32_t size_bits) {
   if (size_bits == 0) {
     return false;  // no size to tell the uses apart by: the class's
   }
+  // A pure function of its two arguments (every rule's matches compares them against constants), asked about the same identity and size by
+  // draw after draw and by each draw several times (DepthLayer): the last answer is kept, per thread (render_cpu_mask bit 8; off: asked in
+  // full every time, as before).
+  struct Asked {
+    EdramKey key;
+    uint32_t size_bits = 0;
+    bool operator==(const Asked& o) const { return key == o.key && size_bits == o.size_bits; }
+  };
+  static const bool memo = render_cpu::Has(larecomp::settings::render_cpu_mask.Get(), render_cpu::kForeignUseMemo);
+  static thread_local render_cpu::LastAnswer<Asked, bool> last;
+  const Asked asked{key, size_bits};
+  bool answer = false;
+  if (memo && last.Find(asked, &answer)) {
+    return answer;
+  }
   EdramKey identity = key;
   identity.reserved = 0;  // the rules match the layer 0 identity only
-  return ForeignUse(Classify(identity, 0), Classify(identity, size_bits), size_bits);
+  answer = ForeignUse(Classify(identity, 0), Classify(identity, size_bits), size_bits);
+  last.Put(asked, answer);
+  return answer;
 }
 
 const SideViewRule& RuleOf(SideView view) {
