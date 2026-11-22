@@ -35,6 +35,9 @@ constexpr auto kServerRetry = std::chrono::seconds(2);
 // A room that is not listed yet (the friend is still starting) is waited for this long, asking again this often.
 constexpr auto kRoomWait = std::chrono::seconds(45);
 constexpr auto kRoomPoll = std::chrono::seconds(3);
+// The worker's whole run is 3 asks of the relay, the mods and up to 45 s for a room. One that is still going after this (a relay
+// that answers a byte at a time, a name that never resolves) is given up on: the join fails and the thread ends on its own.
+constexpr auto kResolveLimit = std::chrono::minutes(3);
 
 const char* kStatusFile = "join_server.txt";
 
@@ -69,6 +72,7 @@ struct Job {
     std::string label;    // "Hoster @ Server name" / the server's name
 };
 std::shared_ptr<Job> g_job;
+Clock::time_point g_resolve_started;
 
 int64_t UnixSeconds() {
     return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -83,7 +87,8 @@ void WriteStatusFile() {
         std::error_code ec;
         const std::filesystem::path path = StatusPath();
         std::filesystem::create_directories(path.parent_path(), ec);
-        const std::filesystem::path temp = path.string() + ".tmp";
+        std::filesystem::path temp = path;  // not path.string() + ".tmp": on Windows string() is the ANSI code page, which loses a
+        temp += ".tmp";                      // user name outside it (Cyrillic, Chinese) and the file could never be written
         {
             std::ofstream out(temp, std::ios::binary | std::ios::trunc);
             if (!out) return;
@@ -273,6 +278,7 @@ void JoinServerTick() {
                               std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - g_started).count(),
                               g_target.Address());
             g_job = std::make_shared<Job>();
+            g_resolve_started = Clock::now();
             std::thread(Resolve, g_job, g_target).detach();
             g_phase = Phase::kResolving;
             SetState(js::State::kConnecting, "", "Asking " + g_target.Address() + ".");
@@ -290,6 +296,11 @@ void JoinServerTick() {
                 StartJoin(*job);
             else
                 FailWith(job->why, job->detail);
+        } else if (g_job && Clock::now() - g_resolve_started > kResolveLimit) {
+            g_job.reset();  // the worker holds its own reference and its answer is dropped
+            LARECOMP_APP_WARN("[join_server] asking {} took more than {} minutes: the join is cancelled", g_target.Address(),
+                              std::chrono::duration_cast<std::chrono::minutes>(kResolveLimit).count());
+            FailWith(js::reason::kServerUnreachable);
         }
         break;
 
