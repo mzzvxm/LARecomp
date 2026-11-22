@@ -31,10 +31,20 @@
 
 namespace tournament {
 
+// Weeks start on Monday 00:00 UTC; 1970-01-05 (the first Monday) is the start of week 0. Definition::week counts from there.
+inline constexpr int64_t kWeekSeconds = 7 * 24 * 3600;
+inline constexpr int64_t kFirstMondayUnix = 4 * 24 * 3600;
+
 // The stats view that holds a slot's times. The game's own code does this twice, with the same rule: the write (sub_8229D2E0, the
 // view id it hands the Stats Worker) and the read of the player's best time (sub_822CF070) both do `slot >= 351 ? slot + 31 : slot`,
 // so slots 13..39 are views 13..39 and slots 351..381 are views 382..412 (the game's slot check is sub_822D0438's: 13..39 or 351..381).
 inline constexpr uint32_t StatsViewForSlot(uint32_t slot) { return slot >= 351 ? slot + 31 : slot; }
+
+// A race-time board in the game's stats views (the XVC2 section of its XDBF; every view from 13 to 500 is one): the rating column
+// (attribute 0xFFFE, int64) is the NEGATED time, aggregated by max, so the store's "highest rating first" is the fastest time first;
+// the time itself is attribute 2 (int64, aggregated by min); attribute 1 (int32, last) is the board's context. The game writes both
+// columns in sub_8229D2E0 (+124 the time, +136 its negation). Views 1..12 are score boards (the rating is a sum, highest first).
+inline constexpr uint16_t kTimeBoardTimeAttr = 2;
 
 inline constexpr uint32_t kDefinitionSize = 1556;
 inline constexpr uint32_t kDescriptionSize = 1536;
@@ -93,6 +103,9 @@ Definition Current(int64_t now, const std::filesystem::path& dir);
 
 // The 1556-byte file as the game reads it.
 std::vector<uint8_t> EncodeGuest(const Definition& d);
+
+// The name the rotation gives a race key ("Hollywood Circuit 1"), "" for a key that is not in it.
+std::string RaceName(uint32_t race_key);
 
 // "Audi R8 + TIS rims + hydraulics" for a reward mask ("" for none).
 std::string RewardNames(uint32_t mask);

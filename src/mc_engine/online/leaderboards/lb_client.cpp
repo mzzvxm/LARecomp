@@ -22,8 +22,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kConnectTimeoutMs = 3000;
-constexpr int kIoTimeoutMs = 15000;
 constexpr int kWriteAttempts = 3;
 
 struct Target {
@@ -88,7 +86,7 @@ Response Execute(const Target& target, const Request& req) {
   Response resp;
   for (int attempt = 1; attempt <= attempts; ++attempt) {
     rmr::net::PostResult r = rmr::net::Post(target.host, target.port, kHttpPath, body,
-                                            kConnectTimeoutMs, kIoTimeoutMs);
+                                            rmr::net::kConnectTimeoutMs, rmr::net::kIoTimeoutMs);
     if (r.transport_ok && r.status == 404) {
       g_no_service = Key(target);
       LARECOMP_APP_WARN(

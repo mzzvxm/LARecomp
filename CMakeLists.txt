@@ -308,12 +308,17 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/tournament_awards.cpp
     src/mc_engine/online/system_link.cpp
     src/mc_engine/online/relay_info.cpp
+    src/mc_engine/online/relay_info_config.cpp
     src/mc_engine/online/online_toast.cpp
     src/mc_engine/online/xbox_live.cpp
     src/mc_engine/online/race_props.cpp
     src/mc_engine/online/session_limits.cpp
+    # online_tables.json: the stats views + session property names the game holds in memory, for the launcher.
+    src/mc_engine/online/online_tables.cpp
+    src/mc_engine/online/online_tables_core.cpp
     # Server browser (F6): relay list, rooms, joining a picked room.
     src/mc_engine/online/server_browser/browser_client.cpp
+    src/mc_engine/online/server_browser/browser_query.cpp
     src/mc_engine/online/server_browser/browser_join.cpp
     src/mc_engine/online/server_browser/browser_ui.cpp
     # Online identity (F7): the key that owns the gamertag, its XUID, the
@@ -557,6 +562,17 @@ endif()
 add_executable(larecomp_game_marker_test EXCLUDE_FROM_ALL
     src/game_marker_test.cpp)
 target_include_directories(larecomp_game_marker_test PRIVATE src)
+
+# The tables the game dumps for the launcher (src/mc_engine/online/online_tables_core.h: the stats views of the XVC2 resource, the session property
+# names, the JSON file) have a check that needs no game; an argument names a file to write the sample JSON to:
+#   cmake --build <build dir> --target larecomp_online_tables_test, then run <build dir>/larecomp_online_tables_test [sample.json] (exit 0 = passed).
+add_executable(larecomp_online_tables_test EXCLUDE_FROM_ALL
+    src/mc_engine/online/online_tables_test.cpp
+    src/mc_engine/online/online_tables_core.cpp)
+target_include_directories(larecomp_online_tables_test PRIVATE src/mc_engine/online)
+if(WIN32)
+    target_compile_definitions(larecomp_online_tables_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 
 # The switch that skips the crash box for a test run (src/crash_options.h: LARECOMP_NO_CRASH_DIALOG, the exit status) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_crash_options_test, then run <build dir>/larecomp_crash_options_test (exit 0 = passed).
@@ -1265,6 +1281,82 @@ else()
         target_link_libraries(larecomp_relay_server PRIVATE ws2_32)
         target_compile_definitions(larecomp_master_server PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_link_libraries(larecomp_master_server PRIVATE ws2_32)
+    endif()
+    # The --bind <ip> option of the three servers above (src/mc_engine/online/bind_address.h; also LARECOMP_BIND) has a check
+    # that needs no game, no SDK and no real server, on loopback only (127.0.0.1 and 127.0.0.2; it never opens a socket on
+    # every interface): cmake --build <dir> --target larecomp_bind_address_test, then run it (exit 0 = passed).
+    # src/mc_engine/online/server_bind_check.ps1 checks the real servers (what they listen on, the trio on loopback).
+    add_executable(larecomp_bind_address_test EXCLUDE_FROM_ALL
+        src/mc_engine/online/bind_address_test.cpp
+        src/mc_engine/online/rate_my_ride/rmr_net.cpp
+        src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
+    )
+    if(WIN32)
+        target_compile_definitions(larecomp_bind_address_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_libraries(larecomp_bind_address_test PRIVATE ws2_32)
+    endif()
+    if(Threads_FOUND)
+        target_link_libraries(larecomp_bind_address_test PRIVATE Threads::Threads)
+    endif()
+
+    # larecomp_online_tool: the launcher's command-line view of the online side (the server list with each relay's
+    # details and rooms and its icon; one JSON document on stdout, see src/mc_engine/online/online_tool/README.md).
+    # Built from the game's own protocol and browser code (server_browser/browser_query.cpp, relay_info.cpp), so the
+    # game and the launcher read an answer the same way. Standalone like the servers above: no SDK.
+    # The rmr, lb and tournament commands (online_tool_remote.cpp) read the Rate My Ride + leaderboards server with the game's
+    # own codecs (rmr_protocol, lb_protocol, tournament_schedule) and HTTP client (rmr_net).
+    set(LARECOMP_ONLINE_TOOL_COMMON
+        src/mc_engine/online/online_tool/online_tool.cpp
+        src/mc_engine/online/online_tool/online_tool_remote.cpp
+        src/mc_engine/online/server_browser/browser_query.cpp
+        src/mc_engine/online/relay_info.cpp
+        src/mc_engine/online/rate_my_ride/rmr_net.cpp
+        src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
+        src/mc_engine/online/leaderboards/lb_protocol.cpp
+        src/mc_engine/online/tournament_schedule.cpp
+    )
+    add_executable(larecomp_online_tool
+        src/mc_engine/online/online_tool/online_tool_main.cpp
+        ${LARECOMP_ONLINE_TOOL_COMMON}
+    )
+    if(WIN32)
+        # shell32: CommandLineToArgvW, so a folder with an accent in its name reaches the tool as UTF-8.
+        target_link_libraries(larecomp_online_tool PRIVATE ws2_32 shell32)
+    endif()
+    if(Threads_FOUND)
+        target_link_libraries(larecomp_online_tool PRIVATE Threads::Threads)
+    endif()
+    # The tool's check needs no game and talks only to fake relays and a fake master on 127.0.0.1 (plus answers recorded
+    # once from a real relay): golden sizes of every message, the recorded answers, hostile text, the list's states,
+    # icons and the JSON documents. cmake --build <build dir> --target larecomp_online_tool_test, then run it
+    # (exit 0 = passed).
+    add_executable(larecomp_online_tool_test EXCLUDE_FROM_ALL
+        src/mc_engine/online/online_tool/online_tool_test.cpp
+        ${LARECOMP_ONLINE_TOOL_COMMON}
+    )
+    if(WIN32)
+        target_link_libraries(larecomp_online_tool_test PRIVATE ws2_32)
+    endif()
+    if(Threads_FOUND)
+        target_link_libraries(larecomp_online_tool_test PRIVATE Threads::Threads)
+    endif()
+    # The check of the rmr, lb and tournament commands: answers recorded from the real stores, hostile answers, and a
+    # loopback server made of the real larecomp_rmr_server's own store code (rmr_store, lb_store, tournament_awards;
+    # no SDK) on 127.0.0.1 only, and the file the game writes for the stats views (online_tables_core.cpp, the very code
+    # the game calls). Needs no game and no real server.
+    add_executable(larecomp_online_tool_remote_test EXCLUDE_FROM_ALL
+        src/mc_engine/online/online_tool/online_tool_remote_test.cpp
+        ${LARECOMP_ONLINE_TOOL_COMMON}
+        src/mc_engine/online/rate_my_ride/rmr_store.cpp
+        src/mc_engine/online/leaderboards/lb_store.cpp
+        src/mc_engine/online/tournament_awards.cpp
+        src/mc_engine/online/online_tables_core.cpp
+    )
+    if(WIN32)
+        target_link_libraries(larecomp_online_tool_remote_test PRIVATE ws2_32)
+    endif()
+    if(Threads_FOUND)
+        target_link_libraries(larecomp_online_tool_remote_test PRIVATE Threads::Threads)
     endif()
 
     # The value steps and texts of the pause-menu rows the launcher also has (pause_parity_rows.h) have a

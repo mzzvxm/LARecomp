@@ -100,6 +100,7 @@ Only these are read. Everything else is a cvar.
 |---|---|
 | `logs/larecomp_NNN.log` | Main log, rolling, up to 10 files of 20 MB. A flag the game cannot use is logged as `[cli] --name=value ignored: ` and why, and the debug settings that are not at their default are listed as `[settings] name = value (command line)`. **Check it first when a setting appears to do nothing.** |
 | `logs/timing_<date>_<time>_cap<N>.log` | Frame timing, when `MCLA_TIMING_LOG=1`. |
+| `logs/online_tables.json` | The game's own online tables, written once per run a few seconds in (and again after 90 s only if more of the table filled in; a file with the same text is not touched): the stats view ids with their columns (from the title's XDBF resource) and the session property names and values (what a room's GameMode and the like mean). A launcher (or a bug report) reads it to show names without the game running; it holds no player data and nothing is shipped with LARecomp (the game writes it from its own memory). `src/mc_engine/online/online_tables_core.h` documents the format. |
 | `larecomp.toml` | Saved settings, written when you leave a pause submenu with a changed value. |
 
 Crash diagnostics go into the main log, not a separate file. The SEH and SIGABRT handler in `crash_handler.cpp` resolves and writes the call stack there.

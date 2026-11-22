@@ -269,7 +269,7 @@ PostResult Post(const std::string& host, uint16_t port, const std::string& path,
 }
 
 bool Serve(uint16_t port, const Handler& handler, const std::atomic<bool>& stop,
-           std::string* error) {
+           std::string* error, uint32_t bind_ipv4) {
   if (!EnsureStartup()) {
     if (error) *error = "socket startup failed";
     return false;
@@ -286,9 +286,11 @@ bool Serve(uint16_t port, const Handler& handler, const std::atomic<bool>& stop,
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_addr.s_addr = htonl(bind_ipv4);
   if (bind(ls, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(ls, 16) != 0) {
-    if (error) *error = "cannot listen on TCP port " + std::to_string(port) + " (" +
+    char ip[64] = {};
+    inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip));
+    if (error) *error = "cannot listen on TCP " + std::string(ip) + ":" + std::to_string(port) + " (" +
                         std::to_string(LastError()) + ")";
     CloseSocket(ls);
     return false;
