@@ -11,7 +11,7 @@
 //   clang++ -std=c++20 -I. -I.. online_tool_remote_test.cpp online_tool.cpp online_tool_remote.cpp
 //           ../server_browser/browser_query.cpp ../relay_info.cpp ../rate_my_ride/rmr_net.cpp ../rate_my_ride/rmr_protocol.cpp
 //           ../rate_my_ride/rmr_store.cpp ../leaderboards/lb_protocol.cpp ../leaderboards/lb_store.cpp
-//           ../tournament_schedule.cpp ../tournament_awards.cpp -lws2_32 -o online_tool_remote_test.exe
+//           ../tournament_schedule.cpp ../tournament_awards.cpp ../online_tables_core.cpp -lws2_32 -o online_tool_remote_test.exe
 //
 // What it pins:
 //   - the command line: every command, every option, every way to get it wrong;
@@ -56,6 +56,7 @@
 #include "online_tool_remote_recorded.h"
 #include "../leaderboards/lb_protocol.h"
 #include "../leaderboards/lb_store.h"
+#include "../online_tables_core.h"
 #include "../rate_my_ride/rmr_protocol.h"
 #include "../rate_my_ride/rmr_store.h"
 #include "../tournament_schedule.h"

@@ -1332,13 +1332,15 @@ else()
     endif()
     # The check of the rmr, lb and tournament commands: answers recorded from the real stores, hostile answers, and a
     # loopback server made of the real larecomp_rmr_server's own store code (rmr_store, lb_store, tournament_awards;
-    # no SDK) on 127.0.0.1 only. Needs no game and no real server.
+    # no SDK) on 127.0.0.1 only, and the file the game writes for the stats views (online_tables_core.cpp, the very code
+    # the game calls). Needs no game and no real server.
     add_executable(larecomp_online_tool_remote_test EXCLUDE_FROM_ALL
         src/mc_engine/online/online_tool/online_tool_remote_test.cpp
         ${LARECOMP_ONLINE_TOOL_COMMON}
         src/mc_engine/online/rate_my_ride/rmr_store.cpp
         src/mc_engine/online/leaderboards/lb_store.cpp
         src/mc_engine/online/tournament_awards.cpp
+        src/mc_engine/online/online_tables_core.cpp
     )
     if(WIN32)
         target_link_libraries(larecomp_online_tool_remote_test PRIVATE ws2_32)
