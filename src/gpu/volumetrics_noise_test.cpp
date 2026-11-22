@@ -3,16 +3,19 @@
 //
 //   cmake --build <dir> --target larecomp_volumetrics_noise_test, then run src/gpu/larecomp_volumetrics_noise_test [<src/gpu dir>] [--print] (a few seconds).
 //
-// A voxel's sample is moved inside it by the frame's Halton offsets (the host's, 16 frames, the same for every voxel) plus an offset of the voxel's own. The first version's own offset was interleaved
+// A voxel's sample is moved inside it by the frame's Halton offsets (the host's, 1024 frames: NOISE-FOLLOW, it was 16; the same for every voxel) plus an offset of the voxel's own. The first version's own offset was interleaved
 // gradient noise of the cell moved 5.588 cells along the diagonal every frame: it slid across the volume. It compiles the .hlsli as C++ (hlsl_shim.h) and checks, with the shared measures of
 // noise_resolve_check.h, that the offset the pass adds up (frac(Halton + the voxel's noise)):
 //   is uniform, changes at every voxel every frame, leaves no gap over 0.25 in 16 frames and takes the same step at every voxel
 //   leaves, after the history's average of a shadow edge's visibility, no lattice and no pattern that moves; the first version's error is measured beside it
 //   is the tile at the voxel moved by (37, 17) a slice: slices differ, and x and y offsets of a voxel are the tile's two channels (uncorrelated)
+//   repeats with no period under 128 frames (a period of 16 left a quarter of the offsets' amplitude as a 3.75 Hz shimmer under the history)
 //   the sources: the shader includes the noise file, carries no gradient noise of its own, its flag is the header's bit 2 and the host sets it from mcla_gpu_noise_blue
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <string>
 
 #include "hlsl_shim.h"
@@ -33,11 +36,29 @@ namespace {
 
 nc::Checks g_check;
 
+// The frame's offsets exactly as the host hands them to the inject (the real MakeGpuConstants' jitter.xyz), made once a frame.
+std::array<float, 3> HostJitter(uint32_t frame) {
+  static std::map<uint32_t, std::array<float, 3>> made;
+  const auto at = made.find(frame);
+  if (at != made.end()) {
+    return at->second;
+  }
+  const vol::GridDesc grid = vol::GridFor(vol::Level::kMedium);
+  const vol::VolInputs inputs;
+  const vol::VolCamera camera;
+  const vol::HistoryUse history;
+  vol::VolGpuConstants constants;
+  vol::MakeGpuConstants(grid, inputs, camera, history, frame, &constants);
+  const std::array<float, 3> j = {constants.jitter[0], constants.jitter[1], constants.jitter[2]};
+  made[frame] = j;
+  return j;
+}
+
 // The sample offset of voxel (x, y) of slice z at `frame`, in 0..1 (the shader's frac(jitter.xyz + noise) before 0.5 is taken out): x and y offsets.
 std::pair<float, float> Offset(int x, int y, int z, uint32_t frame, bool blue) {
   const hs::float3 n = hs::VolVoxelNoise(x, y, z, float(frame & 0xFFFFu), blue);
-  const float jx = vol::Halton(frame % 16u + 1u, 2), jy = vol::Halton(frame % 16u + 1u, 3);
-  return {hs::frac(jx + n.x), hs::frac(jy + n.y)};
+  const std::array<float, 3> j = HostJitter(frame);
+  return {hs::frac(j[0] + n.x), hs::frac(j[1] + n.y)};
 }
 
 // A shadow edge across the voxel (a lamp's or the sun's): lit where the x offset is past a threshold, and the y offset moves the edge a little.
@@ -45,6 +66,23 @@ double Edge(float u1, float u2) { return (u1 + 0.25f * (u2 - 0.5f)) > 0.5f ? 1.0
 
 void TestOffset() {
   const auto blue = [](int x, int y, uint32_t f) { return Offset(x, y, 3, f, true); };
+  {
+    // NOISE-FOLLOW: the frame term's period (the host's: HostJitter drives the real function)
+    const uint32_t period = nc::ShortestPeriod(blue);
+    if (g_check.print) std::printf("  fog offsets: shortest period under 128 frames: %u\n", period);
+    g_check(period == 0, nc::Num("the offsets repeat with no period under 128 frames (%u: a frame term that wraps every 16 frames leaves a quarter of its amplitude as a 3.75 Hz shimmer under the history of 0.9)", period));
+    bool long_term = true;
+    for (uint32_t f = 0; f < 1024; ++f) {
+      const std::array<float, 3> a = HostJitter(f), b = HostJitter(f + 1024u);
+      long_term = long_term && a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+    }
+    bool distinct = true;
+    for (uint32_t f = 1; f < 64; ++f) {
+      const std::array<float, 3> a = HostJitter(f), b = HostJitter(f - 1u);
+      distinct = distinct && (a[0] != b[0] || a[1] != b[1] || a[2] != b[2]);
+    }
+    g_check(long_term && distinct, "the host's frame term counts to 1024 (frame and frame + 1024 give the same offsets, frame and frame + 1 never)");
+  }
   const auto legacy = [](int x, int y, uint32_t f) { return Offset(x, y, 3, f, false); };
   for (int channel = 0; channel < 2; ++channel) {
     const nc::PerFrame p = nc::PerFrameOf(blue, channel);
@@ -113,6 +151,10 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(inject, "static const uint kInjectFlagBlueNoise = 4u;") && vol::kInjectFlagBlueNoise == 4u && (vol::kInjectFlagBlueNoise & (vol::kInjectFlagSliceLamps | vol::kInjectFlagSteadyHeads)) == 0u,
           "the flag is slots.w bit 2, the header's, and overlaps neither the slice lamps' nor the steady headlights' bit");
   g_check(nc::Has(host, "(larecomp::settings::mcla_gpu_noise_blue.Get() ? vol::kInjectFlagBlueNoise : 0u)"), "volumetrics.cpp sets the flag from mcla_gpu_noise_blue (live: read at each frame's inject)");
+  const std::string rules = nc::ReadFile(dir + "/volumetrics_rules.h");
+  g_check(nc::Has(rules, "out->jitter[0] = Halton((frame & 1023u) + 1u, 2);") && nc::Has(rules, "out->jitter[1] = Halton((frame & 1023u) + 1u, 3);") && nc::Has(rules, "out->jitter[2] = Halton((frame & 1023u) + 1u, 5);") &&
+              !nc::Has(rules, "frame % 16u"),
+          "volumetrics_rules.h takes the Halton terms of the frame's number masked to 1023, not % 16 (the host's statements the guard's twin pins)");
 }
 
 }  // namespace
