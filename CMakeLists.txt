@@ -573,6 +573,14 @@ add_executable(larecomp_watch_table_test EXCLUDE_FROM_ALL
     src/settings/watch_table_test.cpp)
 target_include_directories(larecomp_watch_table_test PRIVATE src)
 
+# The settings table that a guest thread still reads while the process ends (src/settings/immortal.h: never destroyed; the exit crash of
+# 2026-11-21, 2 ms after "Process exiting normally", in larecomp::settings::Find) has a check that needs no game: it runs a child process through
+# the exit with a straggler thread looking names up, once with a plain static (the control: the crash's order happens) and once with Immortal:
+#   cmake --build <build dir> --target larecomp_immortal_test, then run <build dir>/larecomp_immortal_test (exit 0 = passed).
+add_executable(larecomp_immortal_test EXCLUDE_FROM_ALL
+    src/settings/immortal_test.cpp)
+target_include_directories(larecomp_immortal_test PRIVATE src)
+
 # Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
 # own default for cache_root) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pack_folder_test, then run <build dir>/larecomp_pack_folder_test (exit 0 = passed).

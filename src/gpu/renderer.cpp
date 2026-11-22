@@ -71,6 +71,26 @@ std::filesystem::path g_shader_pack_folder;
 // The app's say on attaching the packs that are in place at Startup (gpu.h SetShaderPackGate).
 std::function<bool()> g_shader_pack_gate;
 
+// Names the renderer teardown's slow stages. About one test run in 90 took 2.7 to 4.7 s to get from "pipelines: ... written" to
+// "renderer shut down" (the 2026-11-21 stack runs: all of them with another game on the same GPU, none of 103 alone), and the 5 s close
+// watchdog (larecomp_app.cpp) ended two of them; no line said which stage waited. Mark(stage) is called when a stage ends and logs it when
+// it took kSlowMs or more since the last mark. One thread uses it (Shutdown's).
+class ShutdownClock {
+ public:
+  void Mark(const char* stage) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_).count();
+    if (ms >= kSlowMs) {
+      REXLOG_INFO("[gpu] shutdown: {} took {} ms", stage, ms);
+    }
+    last_ = now;
+  }
+
+ private:
+  static constexpr int64_t kSlowMs = 250;
+  std::chrono::steady_clock::time_point last_ = std::chrono::steady_clock::now();
+};
+
 }  // namespace
 
 namespace mcla::gpu {
@@ -459,6 +479,7 @@ void Renderer::Shutdown() {
     return;
   }
   initialized_ = false;
+  ShutdownClock clock;
   // 1. No more recording: the render thread finishes the command it is on and
   //    exits; producers and waiters are released. A thread that does not exit
   //    in time may still be inside any component, so nothing is destroyed.
@@ -467,8 +488,10 @@ void Renderer::Shutdown() {
                  presented_);
     return;
   }
+  clock.Mark("the render thread's stop");
   // The pacer drains what it holds and ends before anything waits the GPU idle or goes.
   fg_.StopPacer();
+  clock.Mark("the frame generation pacer's stop");
   if (release_early_) {
     REXLOG_INFO("[gpu] present release: {} of {} guest presents released the guest early{}",
                 early_releases_, guest_presents_,
@@ -503,6 +526,7 @@ void Renderer::Shutdown() {
   //    while all the components they name are still alive. Skipped by
   //    FrameRing when the device is lost.
   frames_.WaitIdle();
+  clock.Mark("the final reports and the first idle wait");
   // 3. Reverse creation order; the GPU is idle, so components destroy their
   //    objects directly. Ordered teardown rather than reblue's deliberate leak:
   //    every Plume object here has a single owner destroyed before the device.
@@ -512,10 +536,12 @@ void Renderer::Shutdown() {
   pass_timing_.Shutdown();
   timing_.Shutdown();
   fg_.Shutdown();
+  clock.Mark("the vendor calls, the captures, the timers and the frame generation");
   // DLSS frame generation: the proxy swap chain is destroyed and the plugin unloaded before
   // Streamline itself is shut down (temporal_.Shutdown below).
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
+  clock.Mark("DLSS frame generation and the upscaler (Streamline)");
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
   local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
   ao_.Shutdown();
@@ -545,24 +571,32 @@ void Renderer::Shutdown() {
   textures_.Shutdown();
   resolve_.Shutdown();
   resolve_memory_.Shutdown();
-  passes_.Shutdown();
+  clock.Mark("the effects, the targets and the memory");
+  passes_.Shutdown();  // the host pipeline builders are joined here: one in the middle of a driver compile is waited for
+  clock.Mark("the host passes (the builders' join)");
   edram_.Shutdown();
   swap_chain_.Shutdown();
+  clock.Mark("the swap chain");
   fg_.ReleaseQueue();  // the swap chain made on it is gone
   hdr::Stop();
   geometry_.Shutdown();
   upload_.Shutdown();
   pipelines_.Shutdown();
+  clock.Mark("the pipelines (the precache's join, the cache file, the pipelines' release)");
   samplers_.Shutdown();
   shaders_.Shutdown();
   guest_layout_.Shutdown();
+  clock.Mark("the samplers, the shaders and the guest layout");
   // 4. A component shut down above can still retire a release, such as a bindless slot its
   //    images held (DLSS frame generation's, while it was generating). The release writes the
   //    heap, so it runs here, before the heap goes; the GPU is idle, so nothing is waited for.
   frames_.WaitIdle();
+  clock.Mark("the second idle wait");
   heap_.Shutdown();
   frames_.Shutdown();
+  clock.Mark("the bindless heap and the frames");
   device_.Shutdown();
+  clock.Mark("the device (the driver's own teardown)");
   overlay_host_.reset();
   REXLOG_INFO("[gpu] renderer shut down after {} presents ({} guest, {} idle, {} skipped)",
               presented_, guest_presents_, idle_presents_, skipped_);
