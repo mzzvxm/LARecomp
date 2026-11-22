@@ -2815,12 +2815,12 @@
  },
  "mcla_gpu_lamp_shadows": {
   "type": "i32",
-  "default": "0",
+  "default": "-1",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): 1 gives the nearest street lamps a shadow from the shadow atlas, drawn by the deferred local light pass at the mid-scene depth copy. \"\n    \"How many lamps follows the LIGHT SHADOWS level (medium 2, high 4, ultra 8; off: none) and the shadow replay records into the shared atlas while it is on. 0 (the default): none. Live. \"\n    \"A debug switch until the owner has seen the pictures; see mcla_gpu_lamp_shadows_mode for how the pass uses the shadow.\"",
+  "help": "\"Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): the nearest street lamps get a shadow from the shadow atlas (cars, poles and people on the road under them), drawn by the deferred local light pass \"\n    \"at the mid-scene depth copy with the same lookup as the headlights'. -1 (the default): they follow the LIGHT SHADOWS row - while the deferred local light pass runs for anything else (mcla_gpu_local_lights on, or \"\n    \"mcla_gpu_headlight_pass pass or both) and LIGHT SHADOWS is not off, the lamps have a shadow, how many by its level (medium 2, high 4, ultra 8; Auto: Low off, Mid medium, High ultra). 0: none. 1: on whatever \"\n    \"the pass's own settings say (the pass runs for the lamps). The shadow replay records into the shared atlas while it is on. Live. See mcla_gpu_lamp_shadows_mode for how the pass uses the shadow.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 1}"
+   "rex::Range{-1, 1}"
   ],
   "comments": [],
   "pp_depth": 0

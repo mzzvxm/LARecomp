@@ -77,6 +77,11 @@ class LampShadows final : public ShadowProvider {
   // 1. Reads the settings and the lamp list. `wanted` = LIGHT SHADOWS is not off (the replay is on). True when lamps are to be shadowed this frame.
   bool Poll(bool wanted, uint64_t frame);
   bool active() const { return active_; }
+  // Whether the lamps are to be shadowed at all: mcla_gpu_lamp_shadows (-1 follows LIGHT SHADOWS while the deferred light pass runs for anything else, 0 off, 1 on: lamp_shadows_rules.h LampsEnabled)
+  // and SetPassRuns. Read from the settings each time (live).
+  bool Enabled() const;
+  // The light pass tells this provider whether it runs for any other reason (mcla_gpu_local_lights, the headlight route): the "auto" setting follows it. Render thread, once a frame.
+  void SetPassRuns(bool runs) { pass_runs_ = runs; }
   bool setting_on() const { return on_; }
   // 2. The pick for this frame, from the last frame's camera (valid: it was derived from the banks), at the level the atlas could fit.
   void Pick(light_budget::Level level, const local_shadow::Camera& last_camera, bool camera_valid, uint64_t frame);
@@ -130,6 +135,7 @@ class LampShadows final : public ShadowProvider {
   ShadowAtlas* atlas_ = nullptr;
   bool registered_ = false;
   bool on_ = false;
+  bool pass_runs_ = false;  // the deferred light pass runs without the lamps (SetPassRuns)
   bool active_ = false;
   lamp_shadows::LampMode mode_ = lamp_shadows::LampMode::kSubtract;
   uint32_t debug_view_ = 0;

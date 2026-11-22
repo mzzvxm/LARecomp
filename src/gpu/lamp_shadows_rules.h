@@ -93,6 +93,12 @@ enum class Origin : uint8_t { kLiveList = 0, kTable = 1 };
 enum class LampMode : uint8_t { kSubtract = 0, kOwn = 1 };
 inline LampMode ModeOf(int setting) { return setting == 1 ? LampMode::kOwn : LampMode::kSubtract; }
 
+// Whether the lamps are shadowed (mcla_gpu_lamp_shadows): -1 (the default, "auto") FOLLOWS the LIGHT SHADOWS row: the lamps get their views when the deferred light pass runs for anything else
+// (mcla_gpu_local_lights, or a headlight route that gives it the headlights: headlight_pass_rules.h PassOn) and LIGHT SHADOWS is not off (the caller's `wanted`), at the level's number of lamps
+// (the one row, Q3: no LAMP SHADOWS row); 0 is off; 1 is on whatever the pass's own settings say (the pass then runs for the lamps: the debug / gate switch).
+inline constexpr int kSettingAuto = -1;
+inline constexpr bool LampsEnabled(int setting, bool pass_runs) { return setting > 0 || (setting < 0 && pass_runs); }
+
 struct Lamp {
   float pos[3] = {0.0f, 0.0f, 0.0f};
   float colour[3] = {1.0f, 1.0f, 1.0f};   // rgb 0..1 (the intensity is separate)

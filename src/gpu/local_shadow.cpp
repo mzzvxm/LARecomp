@@ -607,8 +607,9 @@ void LocalShadow::BeginFrame() {
   // LU-5: whether this frame records into the one shadow atlas (mcla_gpu_light_frame bit 8; the manager answers false when it is off or its frame is not open: the replay's own atlas then).
   // A change (live) gives the images of the other code up: one frame without maps, the same as a level change.
   {
-    // LAMP-SHADOWS-4: the street lamps' pools are in the shared atlas: with mcla_gpu_lamp_shadows on the replay records into it whatever the flip says.
-    const bool lamps_on = lamps_ != nullptr && larecomp::settings::mcla_gpu_lamp_shadows.Get() != 0;
+    // LAMP-SHADOWS-4: the street lamps' pools are in the shared atlas: while the lamps are shadowed (mcla_gpu_lamp_shadows: on, or auto with the light pass running) the replay records into it
+    // whatever the flip says.
+    const bool lamps_on = lamps_ != nullptr && lamps_->Enabled();
     const bool from_atlas = shadow_atlas_ != nullptr && ((light_manager_ != nullptr && light_manager_->Serving(light_project::kFlipAtlas)) || lamps_on);
     if (from_atlas != use_atlas_) {
       ReleaseImages();

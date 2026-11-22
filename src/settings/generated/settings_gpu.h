@@ -1393,9 +1393,10 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_local_lights_car_gain, 1.0, "Diagnostic (the deferred local light pass, GB-H3): a multiplier on the look of the cars' lights it adds (the police light bars, the head lamps of the cars the forward headlight stage does not light, "
     "the brake, tail, turn and reverse lamps). Their colours and strengths are looks set by eye, not the game's units: this turns them up or down without a build. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
 
-  REX_SETTING(i32, mcla_gpu_lamp_shadows, 0, "Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): 1 gives the nearest street lamps a shadow from the shadow atlas, drawn by the deferred local light pass at the mid-scene depth copy. "
-    "How many lamps follows the LIGHT SHADOWS level (medium 2, high 4, ultra 8; off: none) and the shadow replay records into the shared atlas while it is on. 0 (the default): none. Live. "
-    "A debug switch until the owner has seen the pictures; see mcla_gpu_lamp_shadows_mode for how the pass uses the shadow.", rex::kDebugOnly, rex::Range{0, 1});
+  REX_SETTING(i32, mcla_gpu_lamp_shadows, -1, "Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): the nearest street lamps get a shadow from the shadow atlas (cars, poles and people on the road under them), drawn by the deferred local light pass "
+    "at the mid-scene depth copy with the same lookup as the headlights'. -1 (the default): they follow the LIGHT SHADOWS row - while the deferred local light pass runs for anything else (mcla_gpu_local_lights on, or "
+    "mcla_gpu_headlight_pass pass or both) and LIGHT SHADOWS is not off, the lamps have a shadow, how many by its level (medium 2, high 4, ultra 8; Auto: Low off, Mid medium, High ultra). 0: none. 1: on whatever "
+    "the pass's own settings say (the pass runs for the lamps). The shadow replay records into the shared atlas while it is on. Live. See mcla_gpu_lamp_shadows_mode for how the pass uses the shadow.", rex::kDebugOnly, rex::Range{-1, 1});
 
   REX_SETTING(i32, mcla_gpu_lamp_shadows_mode, 0, "Diagnostic (the street lamps' shadows): how the deferred local light pass uses a lamp's shadow. 0 (the default): subtract - the game's own light grid still lights the lamp and the pass takes the "
     "shadowed share of that light away (the lamp's light as the grid has it, times one minus the visibility), for every surface the G-buffer holds, cars and people included. 1: own - the lamp is not in "

@@ -218,11 +218,15 @@ plume::RenderPipeline* LocalLights::PipelineFor(plume::RenderFormat format, uint
 
 void LocalLights::BeginFrame() {
   namespace st = larecomp::settings;
-  // LAMP-SHADOWS-4: the street lamps' shadows are drawn by this pass: with mcla_gpu_lamp_shadows on it runs for them (and wants the planes) whatever mcla_gpu_local_lights says.
-  const bool lamps_on = lamp_shadows_ != nullptr && lamp_shadows_->active();  // lamps are live now (the setting on, by night): by day the pass and the G-buffer's planes cost nothing for them
-  const bool setting_on = st::mcla_gpu_local_lights.Get() || lamps_on;
   // GB-H2: the headlight route (headlight_pass_rules.h): `pass` and `both` give this pass the frame's headlights and run it whatever mcla_gpu_local_lights says.
   const hp::Route route = hp::ParseRoute(st::mcla_gpu_headlight_pass.Get());
+  // LAMP-SHADOWS-4: the street lamps' shadows are drawn by this pass. mcla_gpu_lamp_shadows -1 (auto, the default) follows the LIGHT SHADOWS row while the pass runs for anything else (the provider is told
+  // whether it does), 1 runs the pass for the lamps (and wants the planes) whatever mcla_gpu_local_lights says, 0 is off.
+  if (lamp_shadows_ != nullptr) {
+    lamp_shadows_->SetPassRuns(hp::PassOn(route, st::mcla_gpu_local_lights.Get()));
+  }
+  const bool lamps_on = lamp_shadows_ != nullptr && lamp_shadows_->active();  // lamps are live now (enabled, by night): by day the pass and the G-buffer's planes cost nothing for them
+  const bool setting_on = st::mcla_gpu_local_lights.Get() || lamps_on;
   const bool on = hp::PassOn(route, setting_on);
   sources_ = hp::SourcesFor(route, uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask);
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));

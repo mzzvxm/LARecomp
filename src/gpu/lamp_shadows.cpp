@@ -79,12 +79,16 @@ uint32_t LampShadows::AtlasGeneration() const { return atlas_ != nullptr ? atlas
 // the frame's start
 // ---------------------------------------------------------------------------
 
+bool LampShadows::Enabled() const {
+  return la::LampsEnabled(int(larecomp::settings::mcla_gpu_lamp_shadows.Get()), pass_runs_);
+}
+
 bool LampShadows::Poll(bool wanted, uint64_t frame) {
   namespace st = larecomp::settings;
   serial_ = frame;
-  on_ = st::mcla_gpu_lamp_shadows.Get() != 0;
+  on_ = Enabled();
   mode_ = la::ModeOf(int(st::mcla_gpu_lamp_shadows_mode.Get()));
-  debug_view_ = uint32_t(std::clamp<int>(int(st::mcla_gpu_lamp_shadows_view.Get()), 0, 2));
+  debug_view_ = uint32_t(std::clamp<int>(int(st::mcla_gpu_lamp_shadows_view.Get()), 0, 3));  // 0..3 (local_lights_rules.h kDebug*): 3 is the units check "remove"
   lamps_override_ = int(st::mcla_gpu_lamp_shadows_lamps.Get());
   cache_ = st::mcla_gpu_lamp_shadows_cache.Get() != 0;
   const bool want = on_ && wanted && atlas_ != nullptr;

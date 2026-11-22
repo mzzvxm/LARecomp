@@ -86,6 +86,7 @@ namespace la = mcla::gpu::lamp_shadows;
 namespace vl = mcla::gpu::vol_lamps;
 namespace ll = larecomp::gpu::light_laws;
 namespace lp = larecomp::gpu::local_lights;
+namespace gc = mcla::gpu::gpu_class;
 
 namespace {
 
@@ -1317,6 +1318,220 @@ void TestPass(const std::string& gpu_dir) {
   Check(Has(ps, "if ((flags & uint(LP_FLAG_LAMP_SHADOW)) == 0u") && Has(ps, "if (game_lit) {\n        discard;"), "a game lamp with no table takes nothing");
 }
 
+// ---------------------------------------------------------------------------
+// the port to the pass of the headlights (feat/lamp-shadows-pass: gb-h2 + the sharper headlight shadows)
+// ---------------------------------------------------------------------------
+
+// 4 x 4 inverse by Gauss-Jordan with partial pivoting (the test's own: the view's world -> atlas matrix is not the game's).
+bool Invert4(const double a[4][4], double out[4][4]) {
+  double m[4][8];
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      m[i][j] = a[i][j];
+      m[i][4 + j] = i == j ? 1.0 : 0.0;
+    }
+  }
+  for (int c = 0; c < 4; ++c) {
+    int best = c;
+    for (int r = c + 1; r < 4; ++r) {
+      best = std::fabs(m[r][c]) > std::fabs(m[best][c]) ? r : best;
+    }
+    if (std::fabs(m[best][c]) < 1e-14) {
+      return false;
+    }
+    for (int j = 0; j < 8; ++j) {
+      std::swap(m[c][j], m[best][j]);
+    }
+    const double inv = 1.0 / m[c][c];
+    for (int j = 0; j < 8; ++j) {
+      m[c][j] *= inv;
+    }
+    for (int r = 0; r < 4; ++r) {
+      if (r != c) {
+        const double f = m[r][c];
+        for (int j = 0; j < 8; ++j) {
+          m[r][j] -= f * m[c][j];
+        }
+      }
+    }
+  }
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      out[i][j] = m[i][4 + j];
+    }
+  }
+  return true;
+}
+
+// What the replay would store in a lamp's tile for ONE flat receiver (the plane n . p = d): the depth of the plane at the CENTRE of every texel of the view's rectangle, as a rasteriser interpolates
+// it (not a splat of points: those are off the centre by up to half a texel, which the plane lookup's margin is not made for).
+void RasterisePlane(const lg::LocalShadowView& v, uint32_t atlas_w, uint32_t atlas_h, const double n[3], double d, FakeAtlas* atlas) {
+  double m[4][4];
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      m[i][j] = double(v.world_to_shadow[4 * i + j]);
+    }
+  }
+  double inv[4][4];
+  if (!Invert4(m, inv)) {
+    return;
+  }
+  const auto unproject = [&](double u, double w, double z, double out[3]) {
+    double h[4];
+    const double in[4] = {u, w, z, 1.0};
+    for (int i = 0; i < 4; ++i) {
+      h[i] = inv[i][0] * in[0] + inv[i][1] * in[1] + inv[i][2] * in[2] + inv[i][3] * in[3];
+    }
+    for (int i = 0; i < 3; ++i) {
+      out[i] = h[i] / h[3];
+    }
+  };
+  const uint32_t x0 = uint32_t(std::ceil(double(v.atlas_rect[0]) * atlas_w)), x1 = uint32_t(std::floor(double(v.atlas_rect[2]) * atlas_w));
+  const uint32_t y0 = uint32_t(std::ceil(double(v.atlas_rect[1]) * atlas_h)), y1 = uint32_t(std::floor(double(v.atlas_rect[3]) * atlas_h));
+  for (uint32_t y = y0; y < y1; ++y) {
+    for (uint32_t x = x0; x < x1; ++x) {
+      const double u = (double(x) + 0.5) / atlas_w, w = (double(y) + 0.5) / atlas_h;
+      double p0[3], p1[3];
+      unproject(u, w, 0.0, p0);
+      unproject(u, w, 0.5, p1);
+      const double dir[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+      const double den = n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2];
+      if (std::fabs(den) < 1e-12) {
+        continue;
+      }
+      const double t = (d - (n[0] * p0[0] + n[1] * p0[1] + n[2] * p0[2])) / den;
+      const double hit[3] = {p0[0] + t * dir[0], p0[1] + t * dir[1], p0[2] + t * dir[2]};
+      double ru = 0, rv = 0, rz = 0;
+      if (t > 0.0 && ls::MapPoint(v.world_to_shadow, hit, &ru, &rv, &rz) && rz > 0.0 && rz < 1.0) {
+        atlas->d[size_t(y) * atlas_w + x] = std::min(atlas->d[size_t(y) * atlas_w + x], float(rz));
+      }
+    }
+  }
+}
+
+void TestPortToThePass(const std::string& gpu_dir) {
+  // 1. THE SETTING: -1 follows the LIGHT SHADOWS row while the pass runs, 0 is off, 1 is on (the pass then runs for the lamps)
+  Check(!la::LampsEnabled(la::kSettingAuto, false) && la::LampsEnabled(la::kSettingAuto, true), "auto: on exactly while the deferred light pass runs for anything else");
+  Check(!la::LampsEnabled(0, false) && !la::LampsEnabled(0, true), "0: off whatever the pass does");
+  Check(la::LampsEnabled(1, false) && la::LampsEnabled(1, true), "1: on whatever the pass's own settings say");
+  Check(la::kSettingAuto == -1, "auto is -1");
+
+  // 2. THE ROW AND THE CLASSES: ONE LIGHT SHADOWS row (Q3), Auto by class (Low off, Mid medium, High ultra), the lamps' count by the level
+  struct ClassCase {
+    gc::GpuClass cls;
+    const char* name;
+    uint32_t wanted;
+    uint32_t spare;
+    double atlas_mib_max;  // the whole atlas (headlights' replay + the lamps' live and static pools) in MiB
+  };
+  const ClassCase cases[] = {{gc::GpuClass::kLow, "Low", 0, 0, 0.0}, {gc::GpuClass::kMid, "Mid", 2, 1, 22.0}, {gc::GpuClass::kHigh, "High", 8, 2, 136.0}};
+  for (const ClassCase& c : cases) {
+    const ls::Choice choice = ls::Resolve(c.cls, "auto");
+    const la::Budget b = la::BudgetFor(choice.level, 0, true);
+    Check(b.on() == (c.wanted != 0) && b.wanted == c.wanted && b.spare == c.spare,
+          std::string("Auto on the ") + c.name + " class: " + std::to_string(c.wanted) + " lamps (+" + std::to_string(c.spare) + ")");
+    if (c.wanted != 0) {
+      const sa::Layout layout = sa::MakeLayout(sa::SpecForLevel(choice.level, 0, true, true));
+      Check(layout.valid() && sa::Mib(sa::Bytes(layout)) <= c.atlas_mib_max,
+            std::string("the ") + c.name + " class's whole atlas (headlight maps + lamp pools) is within " + std::to_string(int(c.atlas_mib_max)) + " MiB");
+    }
+  }
+  Check(!la::BudgetFor(lb::Level::kOff, 0, true).on(), "LIGHT SHADOWS off: no lamp has a tile");
+  Check(la::BudgetFor(lb::Level::kMedium, -1, true).wanted == 0 && la::BudgetFor(lb::Level::kMedium, 10, true).wanted <= la::kMaxSlots,
+        "the lamps override: -1 none, 1..10 at most the largest level's slots");
+
+  // 3. THE QUALITY OF THE HEADLIGHTS' SHADOWS (HL-SHADOW-QUALITY) FOR A LAMP: its views carry the texel size and the lookup takes the receiver's plane, so a wall seen from the side (a plane the lamp's map
+  // sees at a grazing angle) is not shadowed by its own texels, and a blocker still shadows. A lamp 9 m up, the wall x = 5 m (normal -x), looked at from the lamp.
+  {
+    const World w = MakeWorld(false);
+    Check(w.frame.count == 1 && std::fabs(w.frame.views[0].texel_size - 1.0f / 512.0f) < 1e-9f, "a lamp's view row carries its texel size (the plane lookup's tile width): 1 / 512");
+    const lg::ShadowRef ref = RefOf(w.refs[0]);
+    const float lamp_pos[3] = {0.0f, 9.0f, 0.0f};
+    FakeAtlas atlas(w.layout.width, w.layout.height);
+    const double wall_n[3] = {-1.0, 0.0, 0.0};
+    RasterisePlane(w.frame.views[0], w.layout.width, w.layout.height, wall_n, -5.0, &atlas);  // -x = -5
+    const auto depth = [&](int x, int y) { return atlas.At(x, y); };
+    Lcg rng;
+    int with_normal_lit = 0, without_normal_lit = 0, tried = 0;
+    for (int i = 0; i < 400; ++i) {
+      // a point of the wall between 1 and 6 m up and 4 m to each side (the view holds it: within 55 degrees of the lamp's axis)
+      const float p[3] = {5.0f, rng.Range(1.0f, 6.0f), rng.Range(-4.0f, 4.0f)};
+      double u = 0, v = 0, z = 0;
+      if (!ls::MapPoint(w.frame.views[0].world_to_shadow, std::array<double, 3>{double(p[0]), double(p[1]), double(p[2])}.data(), &u, &v, &z) || !(z > 0.0 && z < 1.0)) {
+        continue;
+      }
+      ++tried;
+      const float normal[3] = {-1.0f, 0.0f, 0.0f};
+      with_normal_lit += sl::LampLit(w.frame, ref, lamp_pos, p, normal, sl::Mode::kSurface, depth) > 0.999f ? 1 : 0;
+      without_normal_lit += sl::LampLit(w.frame, ref, lamp_pos, p, sl::Mode::kSurface, depth) > 0.999f ? 1 : 0;
+    }
+    Check(tried > 300, "most wall points are in the lamp's view");
+    Check(with_normal_lit * 100 >= tried * 99,
+          "with the receiver's plane a wall seen at a grazing angle is not shadowed by its own texels (" + std::to_string(with_normal_lit) + " of " + std::to_string(tried) + " lit)");
+    std::printf("INFO port: the wall's own texels leave %d of %d points lit with the plane, %d without it (facing the lamp)\n", with_normal_lit, tried, without_normal_lit);
+    // a blocker in front of the wall (a car's side at x = 3 m, nearer to the lamp in its map than the wall) shadows the wall point behind it
+    const double car_n[3] = {-1.0, 0.0, 0.0};
+    FakeAtlas blocked = atlas;
+    RasterisePlane(w.frame.views[0], w.layout.width, w.layout.height, car_n, -3.0, &blocked);
+    const float p[3] = {5.0f, 3.0f, 0.5f};
+    const float normal[3] = {-1.0f, 0.0f, 0.0f};
+    const auto depth_blocked = [&](int x, int y) { return blocked.At(x, y); };
+    CheckNear(sl::LampLit(w.frame, ref, lamp_pos, p, normal, sl::Mode::kSurface, depth_blocked), 0.0, 1e-6, "a blocker nearer to the lamp than the wall shadows the wall point (with the plane lookup too)");
+  }
+
+  // 4. THE PASS'S SHADER TEXT FOLLOWS THE HEADLIGHTS' (the lamp branch takes the depth plane's geometric normal and the one lookup; no lookup of its own)
+  const std::string ps = ReadAll(gpu_dir + "/hlsl/local_light_ps.hlsl");
+  const std::string lamp_hlsli = ReadAll(gpu_dir + "/hlsl/lamp_shadow_lookup.hlsli");
+  const std::string lookup_hlsli = ReadAll(gpu_dir + "/hlsl/light_shadow_lookup.hlsli");
+  Check(!ps.empty() && !lamp_hlsli.empty() && !lookup_hlsli.empty(), "the shaders are readable");
+  Check(Has(lamp_hlsli, "LslLightMean(shadow_kind, first_view, view_count, px, py, pz, nx, ny, nz, slot, mode)") && Has(lookup_hlsli, "LslPlaneLit(v, px, py, pz, nx, ny, nz, slot)") &&
+            Has(lookup_hlsli, "LslBilinear"),
+        "the lamps' lookup is the ONE lookup (the headlights' plane lookup with the receiver's normal); the air mode stays the volume's");
+  Check(Has(ps, "const float3 lamp_normal = LpShadowNormal(g, p, world, normal);") && Has(ps, "const float3 shadow_normal = LpShadowNormal(g, p, world, normal);"),
+        "lamps and headlights take the SAME geometric normal");
+
+  // 5. THE WIRING: auto follows the pass, the replay and the pass ask the provider
+  const std::string cpp = ReadAll(gpu_dir + "/lamp_shadows.cpp");
+  const std::string lights_cpp = ReadAll(gpu_dir + "/local_lights.cpp");
+  const std::string shadow_cpp = ReadAll(gpu_dir + "/local_shadow.cpp");
+  const std::string settings = ReadAll(gpu_dir + "/../settings/generated/settings_gpu.h");
+  Check(Has(cpp, "bool LampShadows::Enabled() const") && Has(cpp, "la::LampsEnabled(int(larecomp::settings::mcla_gpu_lamp_shadows.Get()), pass_runs_)") && Has(cpp, "on_ = Enabled();"),
+        "the provider's switch is LampsEnabled(setting, whether the pass runs)");
+  Check(Has(lights_cpp, "lamp_shadows_->SetPassRuns(hp::PassOn(route, st::mcla_gpu_local_lights.Get()));"), "the pass tells the provider whether it runs without the lamps");
+  Check(Has(shadow_cpp, "const bool lamps_on = lamps_ != nullptr && lamps_->Enabled();"), "the replay records into the shared atlas while the lamps are enabled (the one atlas)");
+  Check(Has(cpp, "std::clamp<int>(int(st::mcla_gpu_lamp_shadows_view.Get()), 0, 3)"), "the debug view 3 (the units check) reaches the pass: its clamp is 0..3");
+  // (the needles are built in two pieces: tools/check_settings_exposure.py reads a whole REX_SETTING(...) line of any source as a definition of the setting)
+  const std::string define = std::string("REX_SET") + "TING(i32, ";
+  Check(Has(settings, define + "mcla_gpu_lamp_shadows, -1,") && Has(settings, "rex::kDebugOnly, rex::Range{-1, 1});"),
+        "the setting's default is -1 (auto: it follows LIGHT SHADOWS), a debug-only setting with no row of its own");
+  Check(Has(settings, define + "mcla_gpu_lamp_shadows_mode, 0,") && Has(settings, define + "mcla_gpu_lamp_shadows_cache, 1,"), "subtract mode and the static layers stay the defaults");
+
+  // 6. THE NOISE RULE (AGENT-RULE-NOISE): the lamps' shadow has no stochastic term, so there is no pattern to vary: the lookup is deterministic, the fade is in scene seconds. A noise source added later
+  // must come with its per-frame variation and its twin in noise_vary_test.cpp (perf/scripts/noise_guard_units.py), so this fails until it does.
+  const size_t lamp_from = ps.find("// A STREET LAMP's light with views of the lamps' table");
+  const size_t lamp_to = ps.find("// The shadow: only for a light that has views of the atlas");
+  Check(lamp_from != std::string::npos && lamp_to != std::string::npos && lamp_from < lamp_to, "the lamp branch of the pass is found");
+  const std::string lamp_branch = lamp_from != std::string::npos && lamp_to != std::string::npos && lamp_from < lamp_to ? ps.substr(lamp_from, lamp_to - lamp_from) : std::string();
+  const std::string files[] = {lamp_hlsli, lookup_hlsli, lamp_branch};
+  const char* const noise_words[] = {"noise", "Noise", "dither", "Dither", "hash", "Hash", "rand", "Rand", "sin(", "interleaved", "BlueNoise", "frame_index", "frame_serial", "NoiseIndex"};
+  bool no_noise = true;
+  for (const std::string& f : files) {
+    std::istringstream lines(f);
+    std::string line;
+    while (std::getline(lines, line)) {
+      const size_t cut = line.find("//");  // the headers say "no noise in it" in comments: code only
+      const std::string code = cut == std::string::npos ? line : line.substr(0, cut);
+      for (const char* word : noise_words) {
+        if (code.find(word) != std::string::npos) {
+          no_noise = false;
+          std::printf("FAILED: a noise word '%s' in code of the lamps' shadow path: %s\n", word, line.c_str());
+        }
+      }
+    }
+  }
+  Check(no_noise, "AGENT-RULE-NOISE: the lamps' shadow path (the lookup, the edge fade, the pass's lamp branch) has no noise, dither or hash: nothing to vary, nothing to slide");
+}
+
 // A whole night: a street of lamps, a camera driving along it, the pick, the passes' plans and the published frames hold together frame after frame.
 void TestDrive() {
   const la::Budget budget = la::BudgetFor(lb::Level::kUltra, 0, true);
@@ -1408,6 +1623,7 @@ int main(int argc, char** argv) {
   TestLookup();
   TestHlslTwin(gpu_dir);
   TestPass(gpu_dir);
+  TestPortToThePass(gpu_dir);
   TestDrive();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
