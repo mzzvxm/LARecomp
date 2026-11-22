@@ -40,11 +40,14 @@ void RtDnSpatialMain(uint3 id) {
   if (p.x >= size.x || p.y >= size.y) {
     return;
   }
-  const float4 own = RtDnSignal(p);
-  const RtDnPixel c = RtDnLoad(p);
+  // a colour that is not a number (see RtDnIsNumber) is black, in the pass-through as well; the alpha is the consumer's
+  const float4 raw_signal = RtDnSignal(p);
+  const float4 own = float4(RtDnSane(raw_signal.xyz), raw_signal.w);
+  RtDnPixel c = RtDnLoad(p);
+  c.colour = RtDnSane(c.colour);
   const float amount = RtDnMix(c.share);
   const uint step = 1u << RtDnIteration();
-  if (!c.ok || amount <= 0.0f) {
+  if (!RtDnGuidesOk(c) || amount <= 0.0f) {
     g_dn_out[p] = own;
     return;
   }
@@ -62,7 +65,7 @@ void RtDnSpatialMain(uint3 id) {
     [unroll] for (int vx = -1; vx <= 1; ++vx) {
       const int2 q = clamp(p + int2(vx, vy) * int(step), int2(0, 0), size - 1);
       const float4 t = RtDnColourAt(q);
-      if (t.w > 0.0f) {
+      if (t.w > 0.0f && RtDnIsNumber3(t.xyz)) {
         const float l = RtDnLuma(t.x, t.y, t.z);
         sum += l;
         sum2 += l * l;
@@ -93,6 +96,9 @@ void RtDnSpatialMain(uint3 id) {
         if (!t.ok) {
           continue;
         }
+        if (!RtDnGuidesOk(t) || !RtDnIsNumber3(t.colour)) {
+          continue;   // guides or a colour that are not numbers would make the weights and the sum NaN: the tap is left out
+        }
         const float plane = abs(dot(c.n, t.pos - c.pos));
         w *= RtDnDepthWeight(plane, c.z, depth_sigma) * RtDnNormalWeight(dot(c.n, t.n), normal_power) * RtDnRoughWeight(c.rough, t.rough, rough_sigma) *
              RtDnLumaWeight(luma_centre, RtDnLuma(t.colour.x, t.colour.y, t.colour.z), variance, luma_sigma) * RtDnHitWeight(c.hit, t.hit, hit_sigma);
@@ -113,9 +119,10 @@ void RtDnTemporalMain(uint3 id) {
   if (p.x >= size.x || p.y >= size.y) {
     return;
   }
-  const float4 current = RtDnSignal(p);
+  const float4 raw_signal = RtDnSignal(p);
+  const float4 current = float4(RtDnSane(raw_signal.xyz), raw_signal.w);   // a colour that is not a number is black
   const RtDnPixel c = RtDnLoad(p);
-  if (!c.ok) {
+  if (!RtDnGuidesOk(c)) {
     g_dn_out[p] = float4(0.0f, 0.0f, 0.0f, 0.0f);
     return;
   }
@@ -131,9 +138,12 @@ void RtDnTemporalMain(uint3 id) {
       const float stored = RtDnHistoryDepthAt(q);
       if (stored > 0.0f && RtDnSameSurface(stored, plain.z)) {
         const float4 h = RtDnHistoryAt(float2(image.u, image.v));
-        history = h.xyz;
-        length = h.w;
-        used = length > 0.0f;
+        // a history that is not a number (a NaN texel in the bilinear footprint, an infinity a half float made of a colour too large) is no history: the pixel starts again from this frame, or it would stay for ever
+        if (RtDnIsNumber3(h.xyz) && RtDnIsNumber(h.w)) {
+          history = h.xyz;
+          length = h.w;
+          used = length > 0.0f;
+        }
       }
     }
   }
@@ -148,7 +158,7 @@ void RtDnTemporalMain(uint3 id) {
     [unroll] for (int dy = -1; dy <= 1; ++dy) {
       [unroll] for (int dx = -1; dx <= 1; ++dx) {
         const float4 t = RtDnColourAt(clamp(p + int2(dx, dy), int2(0, 0), size - 1));
-        if (t.w > 0.0f) {
+        if (t.w > 0.0f && RtDnIsNumber3(t.xyz)) {
           lo = min(lo, t.xyz);
           hi = max(hi, t.xyz);
           sum += t.xyz;

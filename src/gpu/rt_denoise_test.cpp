@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -254,6 +255,45 @@ void TestFunctionsAgainstHlsl() {
   Check(bad_radius == 0, "Radius (both profiles) and StepTaken: the twins are the .hlsli's on 20,000 inputs (" + std::to_string(bad_radius) + " differ)");
   Check(bad_weights == 0, "the weights, the kernel, the variance, the luminance: the twins are the .hlsli's on 20,000 inputs (" + std::to_string(bad_weights) + " differ)");
   Check(bad_temporal == 0, "the temporal rules (the reprojection point, the share, the surface test, the history's weight and length, the box and the clip): the twins are the .hlsli's (" + std::to_string(bad_temporal) + " differ)");
+  // numbers only: every NaN (either sign, any payload), infinity and ordinary float
+  int bad_number = 0;
+  const auto from_bits = [](uint32_t bits) {
+    float f;
+    std::memcpy(&f, &bits, sizeof(f));
+    return f;
+  };
+  std::vector<float> specials = {from_bits(0x7FC00000u), from_bits(0xFFC00000u), from_bits(0x7F800001u), from_bits(0xFF800001u), from_bits(0x7FFFFFFFu), from_bits(0xFFFFFFFFu), from_bits(0x7F800000u),
+                                 from_bits(0xFF800000u), from_bits(0x7F7FFFFFu), from_bits(0xFF7FFFFFu), from_bits(0x00000001u), from_bits(0x80000000u), 0.0f, -1.0f, 1.0e30f};
+  for (int i = 0; i < 20000; ++i) specials.push_back(from_bits(rng.Next() ^ (rng.Next() << 16)));
+  for (const float v : specials) {
+    if (rd::IsNumber(v) != hs::RtDnIsNumber(v) || rd::IsNumber(v) != !(std::isnan(v) || std::isinf(v))) ++bad_number;
+    const hs::float3 c = hs::RtDnSane(hs::float3(v, 1.0f, 2.0f));
+    if (rd::IsNumber(v) ? (c.x != v || c.y != 1.0f || c.z != 2.0f) : (c.x != 0.0f || c.y != 0.0f || c.z != 0.0f)) ++bad_number;  // one channel that is not a number makes the colour black
+  }
+  Check(bad_number == 0, "RtDnIsNumber and RtDnSane: NaN (either sign, any payload) and infinity are not numbers, a colour with one is black, every other value is kept (" + std::to_string(bad_number) + " differ)");
+  // the guides: a pixel is usable when ok and every guide is a number
+  int bad_guides = 0;
+  for (int i = 0; i < 4000; ++i) {
+    hs::RtDnPixel px;
+    px.ok = (rng.Next() & 7u) != 0;
+    float g[13];
+    for (float& f : g) f = rng.Unit() < 0.1f ? specials[rng.Next() % 15] : rng.Range(-2.0f, 2.0f);
+    px.colour = hs::float3(g[0], g[1], g[2]);
+    px.z = g[3];
+    px.pos = hs::float3(g[4], g[5], g[6]);
+    px.n = hs::float3(g[7], g[8], g[9]);
+    px.rough = g[10];
+    px.hit = g[11];
+    px.share = g[12];
+    px.length = rng.Range(0.0f, 32.0f);
+    bool expect = px.ok;
+    for (int k = 3; k < 13; ++k) expect = expect && rd::IsNumber(g[k]);  // the colour (g[0..2]) is looked at apart
+    if (hs::RtDnGuidesOk(px) != expect) ++bad_guides;
+    hs::RtDnPixel bad_length = px;
+    bad_length.length = from_bits(0x7FC00000u);
+    if (hs::RtDnGuidesOk(bad_length)) ++bad_guides;
+  }
+  Check(bad_guides == 0, "RtDnGuidesOk: ok and every guide a number (the colour is looked at apart): a NaN or infinite depth, position, normal, roughness, hit distance, share or length is no signal (" + std::to_string(bad_guides) + " differ)");
 }
 
 // ---------------------------------------------------------------------------
@@ -479,15 +519,27 @@ Frame Flat(int w, int h, float mean, float noise, Rng& rng) {
   }
   return f;
 }
+bool ColourIsNumber(const Px& q) { return rd::IsNumber(q.c[0]) && rd::IsNumber(q.c[1]) && rd::IsNumber(q.c[2]); }
+// hlsl RtDnGuidesOk: ok, and every guide a number
+bool GuidesOk(const Px& q) {
+  return q.ok && rd::IsNumber(q.z) && rd::IsNumber(q.pos.x) && rd::IsNumber(q.pos.y) && rd::IsNumber(q.pos.z) && rd::IsNumber(q.n.x) && rd::IsNumber(q.n.y) && rd::IsNumber(q.n.z) && rd::IsNumber(q.rough) &&
+         rd::IsNumber(q.hit) && rd::IsNumber(q.share) && rd::IsNumber(q.length);
+}
 // One iteration of the spatial pass: hlsl/rt_denoise_engine.hlsli RtDnSpatialMain, pixel by pixel, from the twins.
 Frame Iterate(const Frame& in, uint32_t iteration, rd::Profile profile) {
   Frame out = in;
   const uint32_t step = 1u << iteration;
   for (int y = 0; y < in.h; ++y) {
     for (int x = 0; x < in.w; ++x) {
-      const Px& c = in.at(x, y);
+      Px c = in.at(x, y);
+      Px& out_px = out.at(x, y);
+      // a colour that is not a number is black (RtDnSane), in the pass-through as well
+      if (!rd::IsNumber(c.c[0]) || !rd::IsNumber(c.c[1]) || !rd::IsNumber(c.c[2])) c.c[0] = c.c[1] = c.c[2] = 0.0f;
+      out_px.c[0] = c.c[0];
+      out_px.c[1] = c.c[1];
+      out_px.c[2] = c.c[2];
       const float amount = rd::Mix(c.share);
-      if (!c.ok || amount <= 0.0f) continue;
+      if (!GuidesOk(c) || amount <= 0.0f) continue;
       const float alpha = c.rough * c.rough;
       const float radius = rd::Radius(profile, alpha, c.hit, c.z, PixelAngle(in.h), c.length);
       if (!rd::StepTaken(radius, step)) continue;
@@ -496,7 +548,7 @@ Frame Iterate(const Frame& in, uint32_t iteration, rd::Profile profile) {
         for (int vx = -1; vx <= 1; ++vx) {
           const int qx = std::clamp(x + vx * int(step), 0, in.w - 1), qy = std::clamp(y + vy * int(step), 0, in.h - 1);
           const Px& t = in.at(qx, qy);
-          if (t.ok) {
+          if (t.ok && ColourIsNumber(t)) {
             const float l = rd::Luma(t.c[0], t.c[1], t.c[2]);
             sum += l;
             sum2 += l * l;
@@ -517,6 +569,7 @@ Frame Iterate(const Frame& in, uint32_t iteration, rd::Profile profile) {
           if (dx != 0 || dy != 0) {
             t = &in.at(qx, qy);
             if (!t->ok) continue;
+            if (!GuidesOk(*t) || !ColourIsNumber(*t)) continue;  // the tap is left out
             const rd::Vec3 d{t->pos.x - c.pos.x, t->pos.y - c.pos.y, t->pos.z - c.pos.z};
             const float plane = std::fabs(c.n.x * d.x + c.n.y * d.y + c.n.z * d.z);
             const float ndot = c.n.x * t->n.x + c.n.y * t->n.y + c.n.z * t->n.z;
@@ -527,7 +580,7 @@ Frame Iterate(const Frame& in, uint32_t iteration, rd::Profile profile) {
           weights += w;
         }
       }
-      Px& o = out.at(x, y);
+      Px& o = out_px;
       for (int k = 0; k < 3; ++k) {
         const float filtered = weights > 1.0e-6f ? total[k] / weights : c.c[k];
         o.c[k] = rd::Lerp(c.c[k], filtered, amount);
@@ -688,6 +741,56 @@ void TestSpatialModel() {
     }
     Check(same && oa.at(16, 16).c[0] == 1000.0f && ob.at(16, 16).c[0] == -5.0f, "a pixel that is no signal is passed through and its value is never read by its neighbours");
   }
+  // a pixel whose colour is not a number (NaN, either sign, or infinity) is not spread: its neighbours come out as if it were no signal, and the result is a number everywhere
+  {
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    bool neighbours_same = true, all_numbers = true, centre_black = true;
+    for (const float bad : {nan, -nan, inf, -inf}) {
+      Frame a = Flat(33, 33, 1.0f, 0.3f, rng);
+      Frame b = a;
+      for (int k = 0; k < 3; ++k) a.at(16, 16).c[k] = bad;
+      b.at(16, 16).ok = false;
+      a.at(10, 12).c[1] = bad;  // one channel only
+      b.at(10, 12).ok = false;
+      const Frame oa = Run(a, 3), ob = Run(b, 3);
+      for (size_t i = 0; i < a.p.size(); ++i) {
+        for (int k = 0; k < 3; ++k) all_numbers = all_numbers && rd::IsNumber(oa.p[i].c[k]);
+      }
+      // the first iteration only: the second reads the first's result, where the bad pixel (a signal) has been filtered into a number and the other frame's (not a signal) has not
+      const Frame first_a = Run(a, 1), first_b = Run(b, 1);
+      for (size_t i = 0; i < a.p.size(); ++i) {
+        if (i == size_t(16) * 33 + 16 || i == size_t(12) * 33 + 10) continue;
+        neighbours_same = neighbours_same && first_a.p[i].c[0] == first_b.p[i].c[0] && first_a.p[i].c[1] == first_b.p[i].c[1] && first_a.p[i].c[2] == first_b.p[i].c[2];
+      }
+      // the pixel itself is filtered from its neighbours when it is signal: black in, a mean of the others out (not NaN, and not left black by a bad weight)
+      centre_black = centre_black && rd::IsNumber(oa.at(16, 16).c[0]) && oa.at(16, 16).c[0] >= 0.0f;
+    }
+    Check(neighbours_same, "a pixel whose colour is NaN or infinite leaks nothing: every other pixel is the same as with that pixel not a signal (the tap is left out, the variance does not count it)");
+    Check(all_numbers && centre_black, "every pixel of the result is a number, the bad pixel's own value included (black where it is not filtered, a mean of its neighbours where it is)");
+    // a guide that is not a number: the pixel is no signal (passed through) and never a tap
+    bool guides_same = true;
+    for (int which = 0; which < 6; ++which) {
+      Frame a = Flat(33, 33, 1.0f, 0.3f, rng);
+      Px& q = a.at(16, 16);
+      q.c[0] = q.c[1] = q.c[2] = 1000.0f;  // a colour that would show in a neighbour's value if the tap were used
+      switch (which) {
+        case 0: q.z = nan; break;
+        case 1: q.pos.x = inf; break;
+        case 2: q.n.y = nan; break;
+        case 3: q.rough = nan; break;
+        case 4: q.hit = inf; break;
+        default: q.share = nan; break;
+      }
+      const Frame oa = Run(a, 3);
+      for (size_t i = 0; i < a.p.size(); ++i) {
+        for (int k = 0; k < 3; ++k) guides_same = guides_same && rd::IsNumber(oa.p[i].c[k]);
+        if (i == size_t(16) * 33 + 16) continue;
+        guides_same = guides_same && oa.p[i].c[0] < 3.0f;  // the 1000 never reaches a neighbour (the frame's own values are 1 +- 0.9)
+      }
+      guides_same = guides_same && oa.at(16, 16).c[0] == 1000.0f;  // passed through as it was (a number)
+    }
+    Check(guides_same, "a pixel whose guide (depth, position, normal, roughness, hit distance or share) is not a number is no signal: passed through, never a tap, every pixel of the result a number");
+  }
 }
 
 // One pixel of the temporal pass over a static scene: hlsl RtDnTemporalMain with the identity reprojection. `samples` are the 3 x 3 of the current frame (index 4 the pixel's own).
@@ -697,19 +800,23 @@ struct Temporal {
   bool has = false;
 };
 float TemporalStep(Temporal& t, const float samples[9]) {
-  const float current = samples[4];
+  // a colour that is not a number is black (RtDnSane), a history that is not one is no history (RtDnTemporalMain)
+  const float current = rd::IsNumber(samples[4]) ? samples[4] : 0.0f;
   float colour = current;
-  const bool used = t.has && t.length > 0.0f;
+  const bool used = t.has && rd::IsNumber(t.history) && rd::IsNumber(t.length) && t.length > 0.0f;
   if (used) {
-    float lo = current, hi = current, sum = 0.0f, sum2 = 0.0f;
+    float lo = current, hi = current, sum = 0.0f, sum2 = 0.0f, count = 0.0f;
     for (int i = 0; i < 9; ++i) {
+      if (!rd::IsNumber(samples[i])) continue;  // a neighbour that is not a number is left out of the box
       lo = std::min(lo, samples[i]);
       hi = std::max(hi, samples[i]);
       sum += samples[i];
       sum2 += samples[i] * samples[i];
+      count += 1.0f;
     }
-    const float mean = sum / 9.0f;
-    const float sigma = std::sqrt(std::max(sum2 / 9.0f - mean * mean, 0.0f));
+    const float n = std::max(count, 1.0f);
+    const float mean = sum / n;
+    const float sigma = std::sqrt(std::max(sum2 / n - mean * mean, 0.0f));
     const float box_lo = rd::BoxLo(mean, sigma, lo, hi), box_hi = rd::BoxHi(mean, sigma, lo, hi);
     const rd::Vec3 clipped = rd::ClipToBox({t.history, t.history, t.history}, {box_lo, box_lo, box_lo}, {box_hi, box_hi, box_hi});
     colour = rd::Lerp(current, clipped.x, rd::HistoryWeight(t.length));
@@ -765,6 +872,36 @@ void TestTemporalModel() {
   Temporal fresh;
   const float s9[9] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
   Check(TemporalStep(fresh, s9) == 5.0f && fresh.length == 1.0f, "no history: the pixel takes the current frame whole and its length is 1");
+  // A NaN or an infinity in the signal or in the history never stays: the result is a number every frame, and a poisoned history starts again from the next frame's signal
+  const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+  bool finite_always = true, restarts = true;
+  for (const float bad : {nan, -nan, inf, -inf}) {
+    Temporal run;
+    for (int frame = 0; frame < 40; ++frame) {
+      float samples[9];
+      for (float& v : samples) v = 2.0f + 0.1f * rng.Gauss();
+      if (frame == 10) samples[4] = bad;               // the pixel itself, once
+      if (frame == 20) samples[(rng.Next() % 8 + 5) % 9] = bad;  // a neighbour (never the centre: index 4 is the pixel)
+      if (frame >= 30 && frame < 32) samples[4] = bad;  // two frames running
+      const float out_value = TemporalStep(run, samples);
+      finite_always = finite_always && rd::IsNumber(out_value) && rd::IsNumber(run.history) && rd::IsNumber(run.length);
+    }
+    // the history itself poisoned (a NaN texel the bilinear read touched): the next result is the current frame, the length restarts at 1
+    Temporal poisoned;
+    poisoned.has = true;
+    poisoned.history = bad;
+    poisoned.length = 12.0f;
+    const float s_now[9] = {2, 2, 2, 2, 2.5f, 2, 2, 2, 2};
+    const float after = TemporalStep(poisoned, s_now);
+    restarts = restarts && after == 2.5f && poisoned.length == 1.0f && rd::IsNumber(poisoned.history);
+    Temporal poisoned_length;
+    poisoned_length.has = true;
+    poisoned_length.history = 2.0f;
+    poisoned_length.length = bad;
+    restarts = restarts && TemporalStep(poisoned_length, s_now) == 2.5f && poisoned_length.length == 1.0f;
+  }
+  Check(finite_always, "temporal: a NaN or an infinity in the pixel, in a neighbour (the variance box) or two frames running never reaches the result, the history or its length");
+  Check(restarts, "temporal: a history (colour or length) that is not a number is no history: the pixel starts again from the current frame with a length of 1; the current frame's own NaN is black");
 }
 
 // ---------------------------------------------------------------------------
@@ -901,13 +1038,23 @@ void TestSources(const std::string& dir) {
   Check(Has(engine, "#if defined(RT_DN_PASS_SPATIAL)") && Has(engine, "#elif defined(RT_DN_PASS_TEMPORAL)") && Has(engine, "[[vk::image_format(\"rgba16f\")]]") && Has(engine, "RWTexture2D<float4> g_dn_out : register(u0, space5);"),
         "the engine: both bodies behind their pass's define, one RGBA16F storage image at (u0, space5) with the SPIR-V format named");
   const std::string sp = FunctionText(engine, "void RtDnSpatialMain(uint3 id) {");
-  Check(!sp.empty() && Before(sp, "if (!c.ok || amount <= 0.0f) {", "const float radius") && Before(sp, "if (!RtDnStepTaken(radius, step)) {", "float sum = 0.0f;") && Count(sp, "g_dn_out[p] = own;") == 2 &&
+  Check(!sp.empty() && Before(sp, "if (!RtDnGuidesOk(c) || amount <= 0.0f) {", "const float radius") && Before(sp, "if (!RtDnStepTaken(radius, step)) {", "float sum = 0.0f;") && Count(sp, "g_dn_out[p] = own;") == 2 &&
             Has(sp, "if (!t.ok) {\n          continue;") && Has(sp, "g_dn_out[p] = float4(lerp(own.xyz, filtered, amount), own.w);"),
         "the spatial body: the pass-through for a pixel that is no signal or has no share comes first, then the step's test; a tap that is no signal is skipped; the alpha is kept");
   Check(Has(sp, "RtDnDepthWeight(plane") && Has(sp, "RtDnNormalWeight(dot(c.n, t.n)") && Has(sp, "RtDnRoughWeight(c.rough, t.rough") && Has(sp, "RtDnLumaWeight(luma_centre") && Has(sp, "RtDnHitWeight(c.hit, t.hit"),
         "the spatial body weighs every tap by depth, normal, roughness, luminance and hit distance");
   Check(Has(sp, "RtDnRadius(RT_DN_PROFILE, alpha, c.hit, c.z, RtDnPixelAngle(), c.length)") && Has(sp, "const float alpha = c.rough * c.rough;"), "the radius follows the reflection: the lobe's alpha (roughness squared), the hit, the depth, the pixel's size and the history");
+  // numbers only: a signal, a guide or a history that is a NaN (or infinite) is dealt with where it is read, by the bits (Vulkan leaves max / min of a NaN open)
+  Check(Has(common, "bool RtDnIsNumber(float v) { return (asuint(v) & 0x7F800000u) != 0x7F800000u; }") && Has(common, "float3 RtDnSane(float3 c) { return RtDnIsNumber3(c) ? c : float3(0.0f, 0.0f, 0.0f); }") &&
+            Has(common, "bool RtDnGuidesOk(RtDnPixel p) {") && !Has(common, "isnan(") && !Has(engine, "isnan("),
+        "the library decides a number by the bits (RtDnIsNumber), a colour that is not one is black (RtDnSane) and a pixel's guides are checked together (RtDnGuidesOk)");
+  Check(Has(sp, "const float4 own = float4(RtDnSane(raw_signal.xyz), raw_signal.w);") && Has(sp, "c.colour = RtDnSane(c.colour);") && Has(sp, "if (t.w > 0.0f && RtDnIsNumber3(t.xyz)) {") &&
+            Has(sp, "if (!RtDnGuidesOk(t) || !RtDnIsNumber3(t.colour)) {\n          continue;") && Before(sp, "if (!t.ok) {\n          continue;", "if (!RtDnGuidesOk(t) || !RtDnIsNumber3(t.colour)) {"),
+        "the spatial body: the signal's own colour and the centre's are black where not a number (in the pass-through too), the variance leaves such a pixel out, a tap with guides or a colour that are not numbers is left out");
   const std::string tp = FunctionText(engine, "void RtDnTemporalMain(uint3 id) {");
+  Check(!tp.empty() && Has(tp, "const float4 current = float4(RtDnSane(raw_signal.xyz), raw_signal.w);") && Has(tp, "if (!RtDnGuidesOk(c)) {") && Has(tp, "if (RtDnIsNumber3(h.xyz) && RtDnIsNumber(h.w)) {\n          history = h.xyz;\n          length = h.w;\n          used = length > 0.0f;") &&
+            Has(tp, "if (t.w > 0.0f && RtDnIsNumber3(t.xyz)) {\n          lo = min(lo, t.xyz);"),
+        "the temporal body: the current colour is black where not a number, a pixel with guides that are not numbers writes nothing, a history (colour or length) that is not a number is no history, the variance box leaves such a neighbour out");
   Check(!tp.empty() && Has(tp, "RtDnToPrevious(RtDnReprojectionPoint(c.pos, c.hit, c.rough))") && Has(tp, "RtDnToPrevious(c.pos)") && Has(tp, "RtDnSameSurface(stored, plain.z)") && Has(tp, "RtDnClipToBox(history, box_lo, box_hi)") &&
             Has(tp, "RtDnHistoryWeight(length)") && Has(tp, "RtDnNextLength(length, used)"),
         "the temporal body: the history at the reflection's virtual point, accepted where the plain reprojection is the same surface, clipped to the variance box, blended by its length, the new length in the alpha");

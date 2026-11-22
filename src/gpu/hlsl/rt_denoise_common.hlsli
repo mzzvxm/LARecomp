@@ -43,6 +43,15 @@ float RtDnHitSigma(uint profile) { return profile == RT_DN_PROFILE_SPECULAR ? 1.
 
 float RtDnLuma(float r, float g, float b) { return 0.2126f * r + 0.7152f * g + 0.0722f * b; }
 
+// ---- numbers only ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// A float that is a number (neither NaN nor infinite), by the bits: a compiler may fold x == x, and what min / max / lerp / clamp make of a NaN is the API's to say (D3D12 returns the other operand of a
+// max, Vulkan's FMax leaves it open), so nothing in the passes leans on it. A NaN in the signal would be spread by the spatial filter (a weight times a NaN is a NaN) and kept by the history for good (NaN
+// times a weight of 0 is NaN); infinity is no better (infinity times 0). A signal or a guide or a history that is not a number is dealt with where it is read (rt_denoise_engine.hlsli).
+bool RtDnIsNumber(float v) { return (asuint(v) & 0x7F800000u) != 0x7F800000u; }
+bool RtDnIsNumber3(float3 v) { return RtDnIsNumber(v.x) && RtDnIsNumber(v.y) && RtDnIsNumber(v.z); }
+// A colour that is not a number is none: black.
+float3 RtDnSane(float3 c) { return RtDnIsNumber3(c) ? c : float3(0.0f, 0.0f, 0.0f); }
+
 // ---- the kernel's radius -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // How much a long history shrinks the kernel: 1 for a fresh pixel (length 1), kRtDnMatureScale from kRtDnMatureLength on.
 float RtDnLengthScale(float history_length) {
@@ -169,6 +178,11 @@ struct RtDnPixel {
   float share;     // how much of the pixel's value the filter may replace, 0..1
   float length;    // the history's length in frames (1: fresh)
 };
+// Whether a pixel is a usable part of the signal: `ok`, and its guides are numbers (a pixel whose guides are not is no signal: passed through, never a tap). The colour is looked at apart (RtDnSane, RtDnIsNumber3):
+// a colour that is not a number is black at the centre and a tap that is left out.
+bool RtDnGuidesOk(RtDnPixel p) {
+  return p.ok && RtDnIsNumber(p.z) && RtDnIsNumber3(p.pos) && RtDnIsNumber3(p.n) && RtDnIsNumber(p.rough) && RtDnIsNumber(p.hit) && RtDnIsNumber(p.share) && RtDnIsNumber(p.length);
+}
 // A point of this frame's view space in the last frame's (the consumer's RtDnToPrevious): `ok` when it is in front of the camera and on the picture.
 struct RtDnPrevious {
   bool ok;

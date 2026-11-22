@@ -62,6 +62,9 @@ constexpr float LumaSigma(Profile p) { return p == Profile::kSpecular ? 3.0f : 4
 constexpr float HitSigma(Profile p) { return p == Profile::kSpecular ? 1.0f : 0.0f; }
 
 constexpr float Luma(float r, float g, float b) { return 0.2126f * r + 0.7152f * g + 0.0722f * b; }
+// A float that is a number (neither NaN nor infinite): RtDnIsNumber in the .hlsli decides it by the bits. A signal, a guide or a history that is not one is dealt with where it is read (the engine): a colour
+// that is not a number is black at the centre of the spatial pass and in the temporal pass's current frame, a tap that has one (or guides that have) is left out, and a history that has one is no history.
+inline bool IsNumber(float v) { return std::isfinite(v); }
 constexpr float Saturate(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 constexpr float Lerp(float a, float b, float t) { return a + (b - a) * t; }
 
