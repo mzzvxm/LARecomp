@@ -1,6 +1,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
 #include "guest_profiler.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/recompiled_code.h>
@@ -121,15 +122,15 @@ std::atomic<bool> g_running{false};
 std::atomic<bool> g_frame_is_slow{false};
 
 std::mutex g_frame_mtx;
-std::vector<float> g_frame_ms;  // every frame time in the current window
+std::vector<float>& g_frame_ms = larecomp::Leak<std::vector<float>>();  // every frame time in the current window
 uint64_t g_total_frames = 0;
 uint64_t g_total_slow_frames = 0;
 
-std::thread g_sampler;
+std::thread& g_sampler = larecomp::Leak<std::thread>();
 std::FILE* g_log = nullptr;
 int g_report_index = 0;
 DWORD g_pinned_tid = 0;
-std::string g_pinned_name;
+std::string& g_pinned_name = larecomp::Leak<std::string>();
 
 int64_t NowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -154,9 +155,9 @@ int64_t NowNs() {
 // that belongs to no recompiled function is rejected outright instead of being
 // charged to whichever entry happens to precede it.
 
-std::vector<std::pair<uint64_t, uint32_t>> g_guest_by_host;  // sorted by host
-std::unordered_map<uint64_t, uint32_t> g_guest_exact;        // host start -> guest
-std::unordered_set<uint64_t> g_guest_folded;                 // host claimed by 2+ guests
+std::vector<std::pair<uint64_t, uint32_t>>& g_guest_by_host = larecomp::Leak<std::vector<std::pair<uint64_t, uint32_t>>>();  // sorted by host
+std::unordered_map<uint64_t, uint32_t>& g_guest_exact = larecomp::Leak<std::unordered_map<uint64_t, uint32_t>>();  // host start -> guest
+std::unordered_set<uint64_t>& g_guest_folded = larecomp::Leak<std::unordered_set<uint64_t>>();  // host claimed by 2+ guests
 uint64_t g_exe_lo = 0, g_exe_hi = 0;                         // larecomp.exe image
 
 void BuildGuestMap() {
@@ -463,7 +464,7 @@ struct CpuRow {
     std::string name;
 };
 
-std::unordered_map<DWORD, uint64_t> g_thread_prev;  // tid -> cumulative 100ns
+std::unordered_map<DWORD, uint64_t>& g_thread_prev = larecomp::Leak<std::unordered_map<DWORD, uint64_t>>();  // tid -> cumulative 100ns
 int64_t g_cpu_epoch_ns = 0;  // when those figures were last read
 
 std::string ThreadName(HANDLE h) {
@@ -567,8 +568,8 @@ struct Target {
     bool pinned = false;
 };
 
-std::unordered_map<DWORD, ThreadData> g_data;
-std::vector<Target> g_targets;
+std::unordered_map<DWORD, ThreadData>& g_data = larecomp::Leak<std::unordered_map<DWORD, ThreadData>>();
+std::vector<Target>& g_targets = larecomp::Leak<std::vector<Target>>();
 
 void CloseUnpinnedTargets() {
     for (Target& t : g_targets) {

@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -55,7 +56,7 @@ class GarageSettings final : public rex::SettingOwner {
 
 };
 
-inline GarageSettings g_garage;
+inline GarageSettings& g_garage = larecomp::Leak<GarageSettings>();
 
 inline auto& capture_vinyl_shapes = g_garage.capture_vinyl_shapes;
 inline auto& dump_vinyl_shapes = g_garage.dump_vinyl_shapes;

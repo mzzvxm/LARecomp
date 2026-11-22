@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -67,7 +68,7 @@ class DiagnosticsSettings final : public rex::SettingOwner {
 
 };
 
-inline DiagnosticsSettings g_diagnostics;
+inline DiagnosticsSettings& g_diagnostics = larecomp::Leak<DiagnosticsSettings>();
 
 inline auto& cam_trace = g_diagnostics.cam_trace;
 inline auto& lowcpu_probe = g_diagnostics.lowcpu_probe;

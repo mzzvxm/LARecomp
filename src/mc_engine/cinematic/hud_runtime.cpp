@@ -24,6 +24,7 @@
 #include <string>
 
 #include "hud.h"
+#include "settings/immortal.h"
 #include "hud_track.h"
 #include "larecomp_log.h"
 #include "scene_runtime.h"
@@ -32,7 +33,7 @@ namespace mc::cinematic {
 
 namespace {
 
-HudTrack g_track;
+HudTrack& g_track = larecomp::Leak<HudTrack>();
 bool g_active = false;
 
 void ApplierBegin(const Scene& scene) {

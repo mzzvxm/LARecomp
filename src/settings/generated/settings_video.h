@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -19,7 +20,7 @@ class VideoSettings final : public rex::SettingOwner {
 
 };
 
-inline VideoSettings g_video;
+inline VideoSettings& g_video = larecomp::Leak<VideoSettings>();
 
 inline auto& display_gamma = g_video.display_gamma;
 

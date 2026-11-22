@@ -35,6 +35,7 @@
 //
 
 #include "camera_runtime.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
@@ -198,7 +199,7 @@ struct State {
     uint32_t skipped_pause = 0;
     std::string missing_logged;
 };
-State g;
+State& g = larecomp::Leak<State>();
 
 // The camera rows of sub_822C0320's frame as they are now: right, up and BACK.
 cam::SlotRows ReadRows(const uint8_t* base, uint32_t sp) {

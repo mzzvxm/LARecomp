@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -82,7 +83,7 @@ class DiagSettings final : public rex::SettingOwner {
 
 };
 
-inline DiagSettings g_diag;
+inline DiagSettings& g_diag = larecomp::Leak<DiagSettings>();
 
 inline auto& fxc_probe = g_diag.fxc_probe;
 inline auto& guest_profile = g_diag.guest_profile;

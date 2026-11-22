@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -34,7 +35,7 @@ class DebugSettings final : public rex::SettingOwner {
 
 };
 
-inline DebugSettings g_debug;
+inline DebugSettings& g_debug = larecomp::Leak<DebugSettings>();
 
 inline auto& lzx_stats = g_debug.lzx_stats;
 inline auto& mcla_gfx_probe = g_debug.mcla_gfx_probe;

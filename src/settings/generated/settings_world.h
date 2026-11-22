@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -72,7 +73,7 @@ class WorldSettings final : public rex::SettingOwner {
 
 };
 
-inline WorldSettings g_world;
+inline WorldSettings& g_world = larecomp::Leak<WorldSettings>();
 
 inline auto& mod_breakable_speed_scale = g_world.mod_breakable_speed_scale;
 inline auto& mod_breakables = g_world.mod_breakables;

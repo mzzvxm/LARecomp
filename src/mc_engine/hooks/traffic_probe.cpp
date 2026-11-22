@@ -66,6 +66,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/kernel/title_runtime.h>
 
 #include <algorithm>
@@ -541,7 +542,7 @@ struct State {
     bool follow_car_gone = false;   // ... and it left the live list
     Vec3 follow_first_pos;
 };
-State g_s;
+State& g_s = larecomp::Leak<State>();
 
 // ---------------------------------------------------------------- the sample
 

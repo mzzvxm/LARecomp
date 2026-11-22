@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "string_table.h"
+#include "settings/immortal.h"
 #include "mc_engine/core/logging.h"
 
 #include <chrono>
@@ -28,7 +29,7 @@ using Dumper = mc::strings::StringDumper;
 
 Dumper* ActiveDumper() {
     static std::once_flag once;
-    static std::unique_ptr<Dumper> dumper;
+    static std::unique_ptr<Dumper>& dumper = larecomp::Leak<std::unique_ptr<Dumper>>();
     std::call_once(once, [] {
         if (auto* rt = REX_RUNTIME()) {
             dumper = std::make_unique<Dumper>(mc::strings::DefaultStringsDir(rt->GetTitlePaths().game_root.Get()));

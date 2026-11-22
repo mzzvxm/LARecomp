@@ -1,4 +1,5 @@
 #include "larecomp_boot_progress.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <chrono>
@@ -28,7 +29,7 @@ constexpr auto kShowAfter = std::chrono::milliseconds(400);
 // What the shader build asks of the popup (SetBootBuildHeading), and what the popup tells the
 // build back (the player pressed CANCEL, or the app is closing).
 std::mutex g_heading_lock;
-std::string g_subtitle;
+std::string& g_subtitle = larecomp::Leak<std::string>();
 bool g_cancellable = false;
 std::atomic<bool> g_cancel{false};
 std::atomic<bool> g_closing{false};
@@ -183,7 +184,7 @@ class BootProgressDialog final : public ui::ImGuiDialog {
 
 // The build in flight, if any. Joined by the completion (on the UI thread) or by
 // WaitForBootBuild when the app shuts down first.
-std::thread g_boot_worker;
+std::thread& g_boot_worker = larecomp::Leak<std::thread>();
 
 void JoinBootWorker() {
     if (g_boot_worker.joinable() && g_boot_worker.get_id() != std::this_thread::get_id()) {

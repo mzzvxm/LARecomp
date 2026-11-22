@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- NVIDIA DLSS frame generation. See dlss_frame_generation.h.
 
 #include "dlss_frame_generation.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -54,7 +55,7 @@ std::atomic<uint32_t> g_max_multiplier{2};
 std::atomic<uint32_t> g_multiplier{2};
 std::atomic<uint32_t> g_refresh_hz{0};
 std::mutex g_why_mutex;
-std::string g_why;
+std::string& g_why = larecomp::Leak<std::string>();
 
 // HALF DISPLAY: the floor of 97% of the display's rate over the multiplier, on a display of 100 Hz or
 // more (a rendered frame rate that fills the display with the generated frames).

@@ -14,6 +14,7 @@
 #include <string>
 
 #include "../cars.h"
+#include "settings/immortal.h"
 #include "../freecam.h"
 #include "../freecam_runtime.h"
 #include "../path_follow.h"
@@ -156,7 +157,7 @@ struct Recording {
     bool have_last = false;
     uint64_t samples = 0;
 };
-Recording g_rec;
+Recording& g_rec = larecomp::Leak<Recording>();
 
 double WallSeconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();

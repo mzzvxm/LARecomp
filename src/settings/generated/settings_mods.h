@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -469,7 +470,7 @@ class ModsSettings final : public rex::SettingOwner {
 
 };
 
-inline ModsSettings g_mods;
+inline ModsSettings& g_mods = larecomp::Leak<ModsSettings>();
 
 inline auto& model_mods = g_mods.model_mods;
 inline auto& model_mods_anchor_bones = g_mods.model_mods_anchor_bones;

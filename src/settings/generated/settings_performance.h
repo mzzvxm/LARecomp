@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -205,7 +206,7 @@ class PerformanceSettings final : public rex::SettingOwner {
 
 };
 
-inline PerformanceSettings g_performance;
+inline PerformanceSettings& g_performance = larecomp::Leak<PerformanceSettings>();
 
 inline auto& breaking_frame_rate_limit = g_performance.breaking_frame_rate_limit;
 inline auto& enable_ambient_tuning = g_performance.enable_ambient_tuning;

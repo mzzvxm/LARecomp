@@ -10,6 +10,7 @@
 #include <rex/types.h>
 
 #include "settings/step_cap.h"
+#include "settings/immortal.h"
 #include "settings/validated_setting.h"
 
 namespace larecomp::settings {
@@ -75,7 +76,7 @@ class AppSettings final : public rex::SettingOwner {
               "(default 31002). A port typed into rmr_server overrides it.");
 };
 
-inline AppSettings g_app;
+inline AppSettings& g_app = larecomp::Leak<AppSettings>();
 inline auto& graphics_backend = g_app.graphics_backend;
 inline auto& debug_menu = g_app.debug_menu;
 inline auto& mcla_gpu_force_refusal = g_app.mcla_gpu_force_refusal;

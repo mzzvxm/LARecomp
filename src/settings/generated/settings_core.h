@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -27,7 +28,7 @@ class CoreSettings final : public rex::SettingOwner {
 
 };
 
-inline CoreSettings g_core;
+inline CoreSettings& g_core = larecomp::Leak<CoreSettings>();
 
 inline auto& mcla_controller_toast = g_core.mcla_controller_toast;
 inline auto& profile_auto_select = g_core.profile_auto_select;

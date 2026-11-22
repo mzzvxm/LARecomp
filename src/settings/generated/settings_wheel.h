@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -115,7 +116,7 @@ class WheelSettings final : public rex::SettingOwner {
 
 };
 
-inline WheelSettings g_wheel;
+inline WheelSettings& g_wheel = larecomp::Leak<WheelSettings>();
 
 inline auto& wheel_auto_setup = g_wheel.wheel_auto_setup;
 inline auto& wheel_cancel_game_deadzone = g_wheel.wheel_cancel_game_deadzone;

@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -233,7 +234,7 @@ class CameraSettings final : public rex::SettingOwner {
 
 };
 
-inline CameraSettings g_camera;
+inline CameraSettings& g_camera = larecomp::Leak<CameraSettings>();
 
 inline auto& cam_freelook = g_camera.cam_freelook;
 inline auto& cam_freelook_approach = g_camera.cam_freelook_approach;

@@ -1,5 +1,6 @@
 // See keyboard_native.h for the design and what every address below is.
 #include "keyboard_native.h"
+#include "settings/immortal.h"
 #include "mc_engine/display/ultrawide.h"
 #include "larecomp_guest.h"
 
@@ -251,7 +252,7 @@ bool MapperAppend(uint8_t* b, uint32_t m, uint32_t type, uint32_t value, uint32_
 }
 
 // ── action names -> ids ─────────────────────────────────────────────────
-std::unordered_map<std::string, uint32_t> g_action_ids;
+std::unordered_map<std::string, uint32_t>& g_action_ids = larecomp::Leak<std::unordered_map<std::string, uint32_t>>();
 
 void LoadActionIds(const uint8_t* b) {
     if (!g_action_ids.empty()) return;
@@ -355,7 +356,7 @@ struct DriveStruct {
     int steer_active = -2;                // which pair speaks (-1 = none, the pad does); -2 = unset
 };
 constexpr int kMaxDriveStructs = 8;
-DriveStruct g_drive[kMaxDriveStructs];
+DriveStruct (&g_drive)[kMaxDriveStructs] = *new DriveStruct[1][kMaxDriveStructs]();
 uint32_t g_drive_gen_applied = 0;  // the bindings generation the live driving mappers carry (0 = none built yet)
 // The player's control mapper has been built, i.e. the game proper has started. The title and
 // sign-in screens come before it and need keys the game itself never has.
@@ -516,9 +517,9 @@ struct NavKey {
     bool start;        // a Start key (title screen only)
     uint32_t value;    // what the entry currently holds: sc, or 0 = off
 };
-std::vector<NavKey> g_nav_keys;
+std::vector<NavKey>& g_nav_keys = larecomp::Leak<std::vector<NavKey>>();
 bool g_menu_was_open = false;
-std::vector<uint8_t> g_disarmed;  // scancodes held when a menu opened, off until released
+std::vector<uint8_t>& g_disarmed = larecomp::Leak<std::vector<uint8_t>>();  // scancodes held when a menu opened, off until released
 
 // The movie registered under `name` in mcUIManager's movie map (+60), 0 if none.
 uint32_t FindMovie(const uint8_t* b, const char* name) {
@@ -711,7 +712,7 @@ std::string ExtraCvar(int i) {
     }
 }
 
-std::vector<uint8_t> g_extra_vks[kNumExtras];  // host keys of each extra button
+std::vector<uint8_t> (&g_extra_vks)[kNumExtras] = *new std::vector<uint8_t>[1][kNumExtras]();  // host keys of each extra button
 bool g_extra_swallow[256] = {};                // host keys taken from the keyboard feed
 uint32_t g_extra_gen = 0;                      // the bindings generation the lists above were read at
 uint8_t g_extra_prev[kNumExtras] = {};
@@ -747,9 +748,9 @@ int ExtraIndexOfScancode(uint32_t sc) {
 // ── key state feed ──────────────────────────────────────────────────────
 uint8_t g_prev_state[256] = {};    // per scancode: down at the last poll
 uint8_t g_just_pressed[256] = {};  // scancodes that went down this poll
-std::vector<uint8_t> g_down_sc;    // the scancodes written as down at the last poll
-std::vector<uint8_t> g_down_next;  // ... and at this one
-std::vector<uint8_t> g_just_list;  // the scancodes g_just_pressed has set
+std::vector<uint8_t>& g_down_sc = larecomp::Leak<std::vector<uint8_t>>();  // the scancodes written as down at the last poll
+std::vector<uint8_t>& g_down_next = larecomp::Leak<std::vector<uint8_t>>();  // ... and at this one
+std::vector<uint8_t>& g_just_list = larecomp::Leak<std::vector<uint8_t>>();  // the scancodes g_just_pressed has set
 
 // The keys of this poll (the latch's held keys plus the ones tapped since the last poll; empty while an overlay has the keyboard) into the game's
 // pending-key table. Only the keys that are down are touched, and the ones that were down a poll ago are let go once.
@@ -842,8 +843,8 @@ std::vector<int> ParseIntList(const std::string& s) {
 void UpdateCameraJump(uint8_t* b, const larecomp::kbm::KeySnapshot& snap) {
     uint8_t& virt = b[kKeysPending + kVirtualCamKey];
     // The two lists are read again only when a binding changed.
-    static std::vector<KeyRef> keys;
-    static std::vector<int> views;
+    static std::vector<KeyRef>& keys = larecomp::Leak<std::vector<KeyRef>>();
+    static std::vector<int>& views = larecomp::Leak<std::vector<int>>();
     static uint32_t lists_gen = 0;
     if (const uint32_t gen = BindingsGen(); gen != lists_gen) {
         lists_gen = gen;
@@ -907,7 +908,7 @@ struct GlyphTarget {
     int pslot = -1;           // larecomp::prompts::Slot of a menu button's glyph, -1 = a spare slot
 };
 constexpr int P(larecomp::prompts::Slot s) { return static_cast<int>(s); }
-const GlyphTarget kGlyphs[] = {
+const std::vector<GlyphTarget>& kGlyphs = *new const std::vector<GlyphTarget>{
     {"A", 64, 64, {"shared_2.dds", "shared_49.dds"}, 1, -1, P(larecomp::prompts::Slot::A)},
     {"B", 64, 64, {"shared_45.dds"}, 2, -1, P(larecomp::prompts::Slot::B)},
     {"X", 64, 64, {"shared_4.dds"}, 3, -1, P(larecomp::prompts::Slot::X)},
@@ -931,7 +932,7 @@ const GlyphTarget kGlyphs[] = {
     {"Slot3", 32, 32, {"shared_36.dds"}, 53, 3},
 };
 constexpr int kNumSlots = 4;
-std::string g_slot_key[kNumSlots];  // key name painted on each spare glyph, "" = free
+std::string (&g_slot_key)[kNumSlots] = *new std::string[1][kNumSlots]();  // key name painted on each spare glyph, "" = free
 
 struct GlyphTexture {
     uint32_t base = 0;                 // guest address of the pixel data
@@ -942,10 +943,10 @@ struct GlyphTexture {
     double backdrop = larecomp::prompts::kDarkBackdrop;  // the luma of what it sits on (prompt_glyphs.h SlotInfo::backdrop)
     larecomp::prompts::Ink ink;        // the ink of the shipped art (box, colour, stroke, contrast), measured once when the texture is found (MeasureTexture): what a replacement is fitted into
 };
-std::unordered_map<std::string, GlyphTexture> g_glyph_tex;  // by "shared_N.dds"
+std::unordered_map<std::string, GlyphTexture>& g_glyph_tex = larecomp::Leak<std::unordered_map<std::string, GlyphTexture>>();  // by "shared_N.dds"
 uint32_t g_glyph_dict = 0;
 uint32_t g_dict_vals = 0, g_dict_count = 0;  // the dictionary's texture table, for the lookups by name
-std::unordered_map<std::string, std::vector<uint8_t>> g_cap_cache;  // "<art>@<texture>" (e.g. "key:Tab@sidekick:106") -> tiled bytes of the art fitted for that texture
+std::unordered_map<std::string, std::vector<uint8_t>>& g_cap_cache = larecomp::Leak<std::unordered_map<std::string, std::vector<uint8_t>>>();  // "<art>@<texture>" (e.g. "key:Tab@sidekick:106") -> tiled bytes of the art fitted for that texture
 uint32_t g_glyph_tick = 0;
 bool g_art_warm = false;  // the art of the glyph families has been built (WarmArt); a new texture (the Sidekick's glyph) makes it false again, and WarmArt builds what is missing
 
@@ -1421,14 +1422,14 @@ std::string MovieNameOf(const uint8_t* b, uint32_t entry) {
 }
 
 uint32_t g_ui_movie_entry = 0;   // the current movie of the last poll, and its name (looked up when it changes only)
-std::string g_ui_movie_name;
+std::string& g_ui_movie_name = larecomp::Leak<std::string>();
 larecomp::prompts::UiSignals g_ui_signals;  // what the last poll saw (PollPrompts)
-std::string g_ui_prev_name;                 // the movie name that went with it (for the 'was' of the log line)
+std::string& g_ui_prev_name = larecomp::Leak<std::string>();  // the movie name that went with it (for the 'was' of the log line)
 std::atomic<bool> g_screen_menu{true};      // what the last poll made of it, for larecomp::keyboard::MenuScreenUp (mouse look): a menu screen is up, or the game is not entered yet
 std::atomic<bool> g_screen_phone{false};    // ... and the Sidekick phone is the current movie (PhoneScreenUp)
 std::atomic<bool> g_entered_flag{false};    // g_game_entered for any thread (GameEntered)
 std::mutex g_movie_name_mutex;              // the current movie's name for any thread (CurrentMovieName), copied when it changes
-std::string g_movie_name_copy;
+std::string& g_movie_name_copy = larecomp::Leak<std::string>();
 
 larecomp::prompts::UiSignals UiSignalsOf(const uint8_t* b) {
     larecomp::prompts::UiSignals s;
@@ -1606,7 +1607,7 @@ struct PadKey {
     uint32_t mask;
     std::vector<uint8_t> scancodes;
 };
-std::vector<PadKey> g_padkeys;
+std::vector<PadKey>& g_padkeys = larecomp::Leak<std::vector<PadKey>>();
 uint32_t g_padkeys_gen = 0;
 
 void RebuildPadKeys(const uint8_t* b) {
@@ -1796,7 +1797,8 @@ bool g_overlay_had_keys = false;  // an overlay had the keyboard at the last pol
 // towards what the keys say; its value, as a stick axis, goes into g_key_steer for the XamInputGetState wrapper (KeySteerScope) to add to the left stick. The ramp is the
 // road's: it is zero while a menu screen is up, before the game is entered, with an overlay on the keyboard and with kb_steer_ramp off.
 std::atomic<int32_t> g_key_steer{0};
-std::vector<uint8_t> g_steer_left_ids, g_steer_right_ids;
+std::vector<uint8_t>& g_steer_left_ids = larecomp::Leak<std::vector<uint8_t>>();
+std::vector<uint8_t>& g_steer_right_ids = larecomp::Leak<std::vector<uint8_t>>();
 uint32_t g_steer_keys_gen = 0;
 float g_steer_value = 0.0f;
 int g_steer_log_lines = 0;

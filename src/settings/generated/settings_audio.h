@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -62,7 +63,7 @@ class AudioSettings final : public rex::SettingOwner {
 
 };
 
-inline AudioSettings g_audio;
+inline AudioSettings& g_audio = larecomp::Leak<AudioSettings>();
 
 inline auto& audio_mixer_priority = g_audio.audio_mixer_priority;
 inline auto& custom_music = g_audio.custom_music;

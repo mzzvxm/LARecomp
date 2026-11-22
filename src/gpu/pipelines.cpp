@@ -7,6 +7,7 @@
 // Vanik, the Xenia authors, BSD-3-Clause).
 
 #include "pipelines.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -52,7 +53,7 @@
 namespace {
 // True when the pipeline uses a shader named by mcla_gpu_skip_shaders.
 bool SkipShaders(uint64_t vs, uint64_t ps) {
-  static const std::set<uint64_t> keys = [] {
+  static const std::set<uint64_t>& keys = larecomp::Leak<const std::set<uint64_t>>([] {
     std::set<uint64_t> out;
     std::stringstream list(larecomp::settings::mcla_gpu_skip_shaders.Get());
     std::string item;
@@ -62,7 +63,7 @@ bool SkipShaders(uint64_t vs, uint64_t ps) {
       }
     }
     return out;
-  }();
+  }());
   return !keys.empty() && (keys.count(vs) != 0 || (ps != 0 && keys.count(ps) != 0));
 }
 }  // namespace

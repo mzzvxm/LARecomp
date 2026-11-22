@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -1532,7 +1533,7 @@ class GPUSettings final : public rex::SettingOwner {
 
 };
 
-inline GPUSettings g_gpu;
+inline GPUSettings& g_gpu = larecomp::Leak<GPUSettings>();
 
 inline auto& build_shader_packs = g_gpu.build_shader_packs;
 inline auto& build_shader_packs_force = g_gpu.build_shader_packs_force;

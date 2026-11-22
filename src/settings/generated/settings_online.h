@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -20,7 +21,7 @@ class OnlineSettings final : public rex::SettingOwner {
 
 };
 
-inline OnlineSettings g_online;
+inline OnlineSettings& g_online = larecomp::Leak<OnlineSettings>();
 
 inline auto& net_lift_big_session_limits = g_online.net_lift_big_session_limits;
 

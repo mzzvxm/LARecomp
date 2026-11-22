@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -96,7 +97,7 @@ class UISettings final : public rex::SettingOwner {
 
 };
 
-inline UISettings g_ui;
+inline UISettings& g_ui = larecomp::Leak<UISettings>();
 
 inline auto& button_prompts = g_ui.button_prompts;
 inline auto& prompts_live = g_ui.prompts_live;

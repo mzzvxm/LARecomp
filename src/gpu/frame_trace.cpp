@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- frame trace. See frame_trace.h.
 
 #include "frame_trace.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -46,7 +47,7 @@ class LarecompCommand_gpu_trace_next final : public rex::SettingOwner {
                 return rex::Ok();
               });
 };
-inline LarecompCommand_gpu_trace_next g_larecomp_command_gpu_trace_next;
+inline LarecompCommand_gpu_trace_next& g_larecomp_command_gpu_trace_next = larecomp::Leak<LarecompCommand_gpu_trace_next>();
 
 namespace mcla::gpu {
 

@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the masks for the temporal upscalers. See upscaler_masks.h.
 
 #include "upscaler_masks.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <format>
@@ -114,13 +115,13 @@ constexpr Entry kEntries[] = {
 };
 
 const std::unordered_map<uint64_t, Entry>& Table() {
-  static const std::unordered_map<uint64_t, Entry> table = [] {
+  static const std::unordered_map<uint64_t, Entry>& table = larecomp::Leak<const std::unordered_map<uint64_t, Entry>>([] {
     std::unordered_map<uint64_t, Entry> t;
     for (const Entry& e : kEntries) {
       t.emplace(e.ps, e);
     }
     return t;
-  }();
+  }());
   return table;
 }
 

@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -33,7 +34,7 @@ class FunSettings final : public rex::SettingOwner {
 
 };
 
-inline FunSettings g_fun;
+inline FunSettings& g_fun = larecomp::Leak<FunSettings>();
 
 inline auto& squash_amplitude = g_fun.squash_amplitude;
 inline auto& squash_hz = g_fun.squash_hz;

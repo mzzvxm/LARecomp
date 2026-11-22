@@ -1,4 +1,5 @@
 #include "shaderpack/log.h"
+#include "settings/immortal.h"
 
 #include <cstdio>
 #include <mutex>
@@ -14,7 +15,7 @@ std::mutex& CallbackMutex() {
 }
 
 LogCallback& Callback() {
-  static LogCallback callback;
+  static LogCallback& callback = larecomp::Leak<LogCallback>();
   return callback;
 }
 

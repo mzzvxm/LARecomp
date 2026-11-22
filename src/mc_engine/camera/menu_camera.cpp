@@ -55,6 +55,7 @@
 //
 
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/context.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/guest_memory.h>
@@ -102,7 +103,7 @@ class LarecompCommand_menu_cam_dump final : public rex::SettingOwner {
                 return rex::Ok();
               });
 };
-inline LarecompCommand_menu_cam_dump g_larecomp_command_menu_cam_dump;
+inline LarecompCommand_menu_cam_dump& g_larecomp_command_menu_cam_dump = larecomp::Leak<LarecompCommand_menu_cam_dump>();
 
 // ---------------------------------------------------------------- guest memory
 

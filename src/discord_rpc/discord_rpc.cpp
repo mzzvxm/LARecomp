@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "discord_rpc/discord_rpc.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <mutex>
@@ -105,7 +106,7 @@ std::atomic_bool g_toggle_pending{false};
 
 // The game's last presence text, kept whether or not the presence is on (under g_rpc_mutex): a switch turned on in the middle of a race shows
 // the race at once. rpc_toggle_rules.h has the rules.
-larecomp::discord_rpc::PresenceMemory g_memory;
+larecomp::discord_rpc::PresenceMemory& g_memory = larecomp::Leak<larecomp::discord_rpc::PresenceMemory>();
 
 constexpr const char* kDiscordApplicationId = "1503923771264729309";
 

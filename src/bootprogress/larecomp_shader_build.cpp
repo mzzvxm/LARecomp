@@ -1,4 +1,5 @@
 #include "larecomp_shader_build.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <chrono>
@@ -82,14 +83,14 @@ std::filesystem::path ShaderCompilerFolder() {
 // A variant this build cannot make (the HDR scene's, when the tone map curve is not embedded: the HDR
 // feature's file is not in the tree) is left out and logged; the others are built.
 sp::VariantStep* VariantStepForBuild() {
-  static const std::unique_ptr<sp::VariantStep> step = [] {
+  static const std::unique_ptr<sp::VariantStep>& step = larecomp::Leak<const std::unique_ptr<sp::VariantStep>>([] {
     std::vector<std::string> left_out;
     std::unique_ptr<sp::VariantStep> made = sp::CreateBuiltInVariantStep(&left_out);
     for (const std::string& line : left_out) {
       LARECOMP_APP_INFO("[shaderpack] no shader variant {}", line);
     }
     return made;
-  }();
+  }());
   return step.get();
 }
 

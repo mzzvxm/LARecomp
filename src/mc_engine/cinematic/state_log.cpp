@@ -24,6 +24,7 @@
 //
 
 #include "state_log.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
@@ -226,7 +227,7 @@ struct State {
     std::string take_dir;
     const CarSource* cars = nullptr;
 };
-State g;
+State& g = larecomp::Leak<State>();
 std::mutex g_path_mutex;  // CurrentLogPath() may be asked from another thread
 
 void CloseLog(const char* why) {
@@ -411,11 +412,11 @@ bool Active() {
     return g.writer && g.writer->IsOpen();
 }
 
-std::string CurrentLogPath() {
 void CloseForExit() {
     CloseLog("the game is ending");
 }
 
+std::string CurrentLogPath() {
     std::lock_guard<std::mutex> lock(g_path_mutex);
     return g.path;
 }
@@ -434,8 +435,8 @@ void NoteMark(const std::string&) {}
 void SetTakeFolder(const std::string&) {}
 bool RegisterCarSource(const CarSource*) { return false; }
 bool Active() { return false; }
-std::string CurrentLogPath() { return {}; }
 void CloseForExit() {}
+std::string CurrentLogPath() { return {}; }
 }  // namespace mc::cinematic::statelog
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

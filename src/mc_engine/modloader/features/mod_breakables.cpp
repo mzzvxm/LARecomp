@@ -60,6 +60,7 @@
 //
 
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/kernel/title_runtime.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/call.h>
@@ -137,11 +138,11 @@ struct Prop {
 };
 
 bool g_loaded = false;
-std::vector<Prop> g_props;
-std::unordered_map<int64_t, std::vector<uint32_t>> g_grid;
-std::vector<uint32_t> g_broken;  // indices into g_props
+std::vector<Prop>& g_props = larecomp::Leak<std::vector<Prop>>();
+std::unordered_map<int64_t, std::vector<uint32_t>>& g_grid = larecomp::Leak<std::unordered_map<int64_t, std::vector<uint32_t>>>();
+std::vector<uint32_t>& g_broken = larecomp::Leak<std::vector<uint32_t>>();  // indices into g_props
 std::shared_mutex g_down_mu;
-std::unordered_set<uint64_t> g_down;  // (mod << 32) | id, read by the glow feed
+std::unordered_set<uint64_t>& g_down = larecomp::Leak<std::unordered_set<uint64_t>>();  // (mod << 32) | id, read by the glow feed
 uint32_t g_scratch = 0;               // guest: velocity (16) + angular velocity (16)
 
 uint8_t* Membase() {

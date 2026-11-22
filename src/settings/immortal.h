@@ -18,10 +18,25 @@
 // Immortal itself has no destructor to run (value_ is a plain pointer), so the compiler registers nothing at exit for it either.
 // Do NOT use it for an object whose destructor does work the process needs (a file that must be flushed, a thread that must be
 // joined): its destructor will not run.
+//
+// Leak<T>(args...) is the same idea for a global or a function-local static that is used by name in many places and must keep its spelling
+// at every use (EXIT-HARD, 2026-11-22): the declaration becomes a reference to an object made on the heap and never freed,
+//
+//     static std::vector<Key>& g_keys = larecomp::Leak<std::vector<Key>>();     // was: static std::vector<Key> g_keys;
+//
+// For a function-local static it is made on first use, like the static it replaces. For a namespace-scope variable the initialisation is
+// dynamic (the object it replaced was often constant-initialised): such a variable must not be touched from the static initialisation of
+// another translation unit (the Director's `const bool kRegistered = (RegisterX(), true);` lines run there: their tables are function-local
+// statics, which is why those are safe). The same warning as for Immortal: no destructor that does work the process needs.
 
 #include <utility>
 
 namespace larecomp {
+
+template <typename T, typename... Args>
+T& Leak(Args&&... args) {
+  return *new T(std::forward<Args>(args)...);  // never deleted
+}
 
 template <typename T>
 class Immortal {

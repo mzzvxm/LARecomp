@@ -2,6 +2,7 @@
 // renderer.h and gpu.h.
 
 #include "renderer.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -67,9 +68,9 @@ void PublishWindowSize(uint32_t width, uint32_t height) {
 }
 
 // The folder the app wants the shader packs in (gpu.h SetShaderPackFolder); empty: the default.
-std::filesystem::path g_shader_pack_folder;
+std::filesystem::path& g_shader_pack_folder = larecomp::Leak<std::filesystem::path>();
 // The app's say on attaching the packs that are in place at Startup (gpu.h SetShaderPackGate).
-std::function<bool()> g_shader_pack_gate;
+std::function<bool()>& g_shader_pack_gate = larecomp::Leak<std::function<bool()>>();
 
 }  // namespace
 
@@ -1785,14 +1786,14 @@ std::atomic<GuestCapture*> g_capture_active{nullptr};
 std::atomic<bool> g_holds_retired_fence{false};
 
 // UI thread. Made by Startup, shared with the renderer; Shutdown switches the host off.
-std::shared_ptr<OverlayChannel> g_overlay_channel;
-std::shared_ptr<OverlayHost> g_overlay_host;
+std::shared_ptr<OverlayChannel>& g_overlay_channel = larecomp::Leak<std::shared_ptr<OverlayChannel>>();
+std::shared_ptr<OverlayHost>& g_overlay_host = larecomp::Leak<std::shared_ptr<OverlayHost>>();
 // What graphics_backend asks this renderer for (RequestedBackend), decided with
 // Enabled().
 Backend g_requested_backend = kDefaultBackend;
 // Set only when "auto" chose Vulkan: the GPU that choice was made on, which the Vulkan device is
 // created on. Empty otherwise.
-std::string g_auto_adapter;
+std::string& g_auto_adapter = larecomp::Leak<std::string>();
 
 // The SDK's graphics_backend -- the cvar that also picks the
 // emulated GPU's backend -- as a backend this build has.

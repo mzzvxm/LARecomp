@@ -83,7 +83,7 @@ constexpr std::string_view kScope = "larecomp.";
 
 namespace {
 std::vector<rex::SettingOwner*>& Extra() {
-  static std::vector<rex::SettingOwner*> extra;
+  static std::vector<rex::SettingOwner*>& extra = larecomp::Leak<std::vector<rex::SettingOwner*>>();
   return extra;
 }
 }  // namespace
@@ -561,8 +561,8 @@ std::vector<std::string> ListFlags() {
 
 std::vector<FlagEntry>& GetRegistry() {
   static std::mutex mutex;
-  static std::vector<FlagEntry> entries;
-  static std::vector<rex::SettingBase*> settings_of;  // entries[i] for i < size(), for the refresh
+  static std::vector<FlagEntry>& entries = larecomp::Leak<std::vector<FlagEntry>>();
+  static std::vector<rex::SettingBase*>& settings_of = larecomp::Leak<std::vector<rex::SettingBase*>>();  // entries[i] for i < size(), for the refresh
   static size_t built_for = static_cast<size_t>(-1);
   std::lock_guard lock(mutex);
   rex::ISettingsRegistry* registry = &rex::GetSettingsRegistry();

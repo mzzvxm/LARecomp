@@ -47,6 +47,7 @@
 //
 
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/kernel/title_runtime.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/call.h>
@@ -108,10 +109,10 @@ static_assert(sizeof(Glow) == 32);
 constexpr uint16_t kFlashing = 1;
 
 std::once_flag g_load_once;
-std::vector<Glow> g_glows;
-std::vector<int> g_glow_mod;
-std::vector<uint32_t> g_slots;
-std::vector<std::pair<float, uint32_t>> g_near;
+std::vector<Glow>& g_glows = larecomp::Leak<std::vector<Glow>>();
+std::vector<int>& g_glow_mod = larecomp::Leak<std::vector<int>>();
+std::vector<uint32_t>& g_slots = larecomp::Leak<std::vector<uint32_t>>();
+std::vector<std::pair<float, uint32_t>>& g_near = larecomp::Leak<std::vector<std::pair<float, uint32_t>>>();
 std::atomic<uint32_t> g_scratch{0};  // guest: position (16) + size (8)
 const auto g_t0 = std::chrono::steady_clock::now();
 

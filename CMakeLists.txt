@@ -604,7 +604,7 @@ target_include_directories(larecomp_pack_folder_test PRIVATE src)
 add_executable(larecomp_renderer_choice_test EXCLUDE_FROM_ALL
     src/gpu/renderer_choice_test.cpp
     src/profile/larecomp_profile_store.cpp)
-target_include_directories(larecomp_renderer_choice_test PRIVATE src/gpu src/profile)
+target_include_directories(larecomp_renderer_choice_test PRIVATE src/gpu src/profile src)  # src: renderer_fallback.h includes settings/immortal.h
 
 # The two-button box of the compatibility renderer offer (src/gpu/choice_box.h, Windows: its labels fit its buttons, the action is first and the
 # default) has a check that needs no game and shows nothing on the screen (the dialog is built hidden and looked at from its own message loop):
@@ -700,7 +700,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine/cinematic/director/json.cpp
         src/mc_engine/cinematic/director/atlas_answers.cpp
         src/mc_engine/cinematic/director/atlas_core.cpp
         src/mc_engine/cinematic/director/json.cpp)
-    target_include_directories(larecomp_atlas_answers_test PRIVATE src/mc_engine/cinematic/director)
+    target_include_directories(larecomp_atlas_answers_test PRIVATE src/mc_engine/cinematic/director src)  # src: director/json.cpp includes settings/immortal.h
 endif()
 # What a settings save does with a cvar a scene holds (src/mc_engine/core/config_save.h, DecideCvarSave, a plain function) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_config_save_test, then run <build dir>/larecomp_config_save_test (exit 0 = passed).

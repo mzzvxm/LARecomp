@@ -31,6 +31,7 @@
 #include <cstring>
 #include <mutex>
 #include <vector>
+#include "settings/immortal.h"
 
 namespace mcla::gpu::vol_lamps {
 
@@ -158,7 +159,7 @@ class Table {
 };
 
 inline Table& Global() {
-  static Table table;
+  static Table& table = larecomp::Leak<Table>();
   return table;
 }
 

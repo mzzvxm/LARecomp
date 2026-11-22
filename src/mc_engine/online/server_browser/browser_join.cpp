@@ -1,4 +1,5 @@
 #include "browser_join.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <chrono>
@@ -34,8 +35,8 @@ constexpr auto kSearchWait = std::chrono::seconds(45);
 constexpr auto kJoinWait = std::chrono::seconds(30);
 
 std::mutex g_mutex;
-JoinRequest g_request;      // guarded by g_mutex
-JoinStatus g_status;        // guarded by g_mutex
+JoinRequest& g_request = larecomp::Leak<JoinRequest>();  // guarded by g_mutex
+JoinStatus& g_status = larecomp::Leak<JoinStatus>();  // guarded by g_mutex
 bool g_request_new = false;  // guarded by g_mutex
 // What the search hooks compare against; 0 = no filter. Written by the tick,
 // read by the hooks (both on the guest thread, but the UI reads it too).
@@ -72,7 +73,7 @@ void SetStatus(JoinPhase phase, std::string text) {
 
 // A guest copy of `name`, made once: state names are looked up every join.
 uint32_t GuestName(const char* name) {
-    static std::map<std::string, uint32_t> cache;
+    static std::map<std::string, uint32_t>& cache = larecomp::Leak<std::map<std::string, uint32_t>>();
     auto it = cache.find(name);
     if (it != cache.end()) return it->second;
     auto* mem = Mem();
@@ -316,7 +317,7 @@ struct PropDef {
 // enough (GameMode, the first record, is always set).
 const std::vector<PropDef>* PropTable() {
     static std::mutex m;
-    static std::vector<PropDef> table;
+    static std::vector<PropDef>& table = larecomp::Leak<std::vector<PropDef>>();
     static bool ready = false;
     std::lock_guard<std::mutex> lk(m);
     if (ready) return &table;

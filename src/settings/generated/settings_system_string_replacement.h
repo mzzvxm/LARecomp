@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -24,7 +25,7 @@ class SystemStringReplacementSettings final : public rex::SettingOwner {
 
 };
 
-inline SystemStringReplacementSettings g_system_string_replacement;
+inline SystemStringReplacementSettings& g_system_string_replacement = larecomp::Leak<SystemStringReplacementSettings>();
 
 inline auto& string_dump_enabled = g_system_string_replacement.string_dump_enabled;
 inline auto& string_folder = g_system_string_replacement.string_folder;
