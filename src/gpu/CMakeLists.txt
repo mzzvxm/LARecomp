@@ -353,6 +353,10 @@ add_executable(larecomp_render_scale_test EXCLUDE_FROM_ALL render_scale_test.cpp
 # wait, the retries after a failure, the upscaler's own path) are checked on a made-up clock, with no renderer:
 #   cmake --build <dir> --target larecomp_msaa_plan_test, then run src/gpu/larecomp_msaa_plan_test (exit 0 = passed).
 add_executable(larecomp_msaa_plan_test EXCLUDE_FROM_ALL msaa_plan_test.cpp)
+# The anisotropic filtering rules (aniso_rules.h: what mcla_gpu_anisotropy says, which of the game's samplers take it, the level a sampler is made with;
+# the setting is live) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_aniso_rules_test, then run src/gpu/larecomp_aniso_rules_test (exit 0 = passed).
+add_executable(larecomp_aniso_rules_test EXCLUDE_FROM_ALL aniso_rules_test.cpp)
 # The rules for when the upscalers' libraries are loaded (upscaler_load_policy.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_upscaler_load_policy_test, then run src/gpu/larecomp_upscaler_load_policy_test (exit 0 = passed).
 add_executable(larecomp_upscaler_load_policy_test EXCLUDE_FROM_ALL upscaler_load_policy_test.cpp)
