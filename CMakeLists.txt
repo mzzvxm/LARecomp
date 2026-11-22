@@ -319,6 +319,10 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/server_browser/browser_ui.cpp
     # Online identity (F7): the key that owns the gamertag, its XUID, the
     # nick proof to relays that check, backup and recovery code.
+    # (identity_core, identity_net and identity_rename are the SDK-free halves larecomp_online_tool links too.)
+    src/mc_engine/online/identity/identity_core.cpp
+    src/mc_engine/online/identity/identity_net.cpp
+    src/mc_engine/online/identity/identity_rename.cpp
     src/mc_engine/online/identity/identity_store.cpp
     src/mc_engine/online/identity/identity_client.cpp
     src/mc_engine/online/identity/identity_ui.cpp
@@ -1176,7 +1180,7 @@ else()
         )
         if(MINGW)
             # What the sources ask for with #pragma comment(lib, ...) (crash_handler.cpp,
-            # guest_profiler.cpp, adaptive_triggers.cpp, device_watch.cpp, identity_store.cpp, identity_ui.cpp),
+            # guest_profiler.cpp, adaptive_triggers.cpp, device_watch.cpp, identity_core.cpp, identity_ui.cpp),
             # which Clang for MinGW does not turn into a link request, and what MSVC's
             # default libraries cover (the ones llvm-mingw's driver does not: winmm for
             # timeBeginPeriod, dxguid for the DirectInput GUID_* of the wheel code, ntdll).
@@ -1293,25 +1297,38 @@ else()
     # details and rooms and its icon; one JSON document on stdout, see src/mc_engine/online/online_tool/README.md).
     # Built from the game's own protocol and browser code (server_browser/browser_query.cpp, relay_info.cpp), so the
     # game and the launcher read an answer the same way. Standalone like the servers above: no SDK.
+    # The identity commands (online_tool/identity_commands.cpp, README-identity.md) use the game's identity files code:
+    # the key file, its seal, the ticket cache and the backup (identity/identity_core.cpp), the relay and master exchange
+    # (identity/identity_net.cpp), the gamertag rules (identity/identity_rename.cpp) and the save profile store.
     # The rmr, lb and tournament commands (online_tool_remote.cpp) read the Rate My Ride + leaderboards server with the game's
-    # own codecs (rmr_protocol, lb_protocol, tournament_schedule) and HTTP client (rmr_net).
-    set(LARECOMP_ONLINE_TOOL_COMMON
+    # own codecs (rmr_protocol, lb_protocol, tournament_schedule) and HTTP client (rmr_net); with --profile they take the
+    # player's Rate My Ride token from the same key file (identity_core).
+    set(LARECOMP_ONLINE_TOOL_SOURCES
         src/mc_engine/online/online_tool/online_tool.cpp
         src/mc_engine/online/online_tool/online_tool_remote.cpp
+        src/mc_engine/online/online_tool/identity_commands.cpp
+        src/mc_engine/online/online_tool/game_guard.cpp
         src/mc_engine/online/server_browser/browser_query.cpp
         src/mc_engine/online/relay_info.cpp
         src/mc_engine/online/rate_my_ride/rmr_net.cpp
         src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
         src/mc_engine/online/leaderboards/lb_protocol.cpp
         src/mc_engine/online/tournament_schedule.cpp
+        src/mc_engine/online/identity/identity_core.cpp
+        src/mc_engine/online/identity/identity_net.cpp
+        src/mc_engine/online/identity/identity_rename.cpp
+        src/profile/larecomp_profile_store.cpp
+        thirdparty/monocypher/monocypher.c
     )
     add_executable(larecomp_online_tool
         src/mc_engine/online/online_tool/online_tool_main.cpp
-        ${LARECOMP_ONLINE_TOOL_COMMON}
+        ${LARECOMP_ONLINE_TOOL_SOURCES}
     )
     if(WIN32)
-        # shell32: CommandLineToArgvW, so a folder with an accent in its name reaches the tool as UTF-8.
-        target_link_libraries(larecomp_online_tool PRIVATE ws2_32 shell32)
+        # shell32: CommandLineToArgvW, so a folder with an accent in its name reaches the tool as UTF-8. crypt32: the DPAPI
+        # seal of the key file (a pragma does the same for MSVC and clang-cl, not for MinGW).
+        target_link_libraries(larecomp_online_tool PRIVATE ws2_32 shell32 crypt32)
+        target_compile_definitions(larecomp_online_tool PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
     if(Threads_FOUND)
         target_link_libraries(larecomp_online_tool PRIVATE Threads::Threads)
@@ -1322,13 +1339,56 @@ else()
     # (exit 0 = passed).
     add_executable(larecomp_online_tool_test EXCLUDE_FROM_ALL
         src/mc_engine/online/online_tool/online_tool_test.cpp
-        ${LARECOMP_ONLINE_TOOL_COMMON}
+        ${LARECOMP_ONLINE_TOOL_SOURCES}
     )
     if(WIN32)
-        target_link_libraries(larecomp_online_tool_test PRIVATE ws2_32)
+        target_link_libraries(larecomp_online_tool_test PRIVATE ws2_32 crypt32)
+        target_compile_definitions(larecomp_online_tool_test PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
     if(Threads_FOUND)
         target_link_libraries(larecomp_online_tool_test PRIVATE Threads::Threads)
+    endif()
+    # The identity commands' check: the key file and backup formats (with a golden backup made before the identity code
+    # was split), the closed-game rule, that no document holds a secret, and every command against the real nick
+    # registry (identity/master_server) and a fake relay on 127.0.0.1: claim, taken, recover, cancel, rename, the limits.
+    # cmake --build <build dir> --target larecomp_online_tool_identity_test, then run it (exit 0 = passed).
+    add_executable(larecomp_online_tool_identity_test EXCLUDE_FROM_ALL
+        src/mc_engine/online/online_tool/identity_commands_test.cpp
+        src/mc_engine/online/master_server/identity_registry.cpp
+        ${LARECOMP_ONLINE_TOOL_SOURCES}
+    )
+    if(WIN32)
+        target_link_libraries(larecomp_online_tool_identity_test PRIVATE ws2_32 crypt32)
+        target_compile_definitions(larecomp_online_tool_identity_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+    if(Threads_FOUND)
+        target_link_libraries(larecomp_online_tool_identity_test PRIVATE Threads::Threads)
+    endif()
+    # The game's own identity files (identity_store.cpp, identity_client.cpp) compiled without the SDK, against stand-ins for
+    # the SDK's profile and runtime, the settings and the log (identity/test/stubs), and exercised through their public API:
+    # same results and same log lines as before the identity code was split (identity/test/identity_adapter_compare.ps1
+    # runs it against the code before and after). cmake --build <build dir> --target larecomp_identity_adapter_test, then
+    # run it with one of: fresh existing unreadable legacy legacyxuid ops client (exit 0 = passed).
+    add_executable(larecomp_identity_adapter_test EXCLUDE_FROM_ALL
+        src/mc_engine/online/identity/test/identity_adapter_test.cpp
+        src/mc_engine/online/identity/identity_store.cpp
+        src/mc_engine/online/identity/identity_client.cpp
+        src/mc_engine/online/identity/identity_core.cpp
+        src/mc_engine/online/identity/identity_net.cpp
+        src/mc_engine/online/relay_info_config.cpp
+        src/mc_engine/online/relay_info.cpp
+        src/mc_engine/online/rate_my_ride/rmr_net.cpp
+        src/mc_engine/online/master_server/identity_registry.cpp
+        thirdparty/monocypher/monocypher.c
+    )
+    target_include_directories(larecomp_identity_adapter_test BEFORE PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine/online/identity/test/stubs")
+    if(WIN32)
+        target_link_libraries(larecomp_identity_adapter_test PRIVATE ws2_32 crypt32)
+        target_compile_definitions(larecomp_identity_adapter_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+    if(Threads_FOUND)
+        target_link_libraries(larecomp_identity_adapter_test PRIVATE Threads::Threads)
     endif()
     # The check of the rmr, lb and tournament commands: answers recorded from the real stores, hostile answers, and a
     # loopback server made of the real larecomp_rmr_server's own store code (rmr_store, lb_store, tournament_awards;
@@ -1336,14 +1396,15 @@ else()
     # the game calls). Needs no game and no real server.
     add_executable(larecomp_online_tool_remote_test EXCLUDE_FROM_ALL
         src/mc_engine/online/online_tool/online_tool_remote_test.cpp
-        ${LARECOMP_ONLINE_TOOL_COMMON}
+        ${LARECOMP_ONLINE_TOOL_SOURCES}
         src/mc_engine/online/rate_my_ride/rmr_store.cpp
         src/mc_engine/online/leaderboards/lb_store.cpp
         src/mc_engine/online/tournament_awards.cpp
         src/mc_engine/online/online_tables_core.cpp
     )
     if(WIN32)
-        target_link_libraries(larecomp_online_tool_remote_test PRIVATE ws2_32)
+        target_link_libraries(larecomp_online_tool_remote_test PRIVATE ws2_32 crypt32)
+        target_compile_definitions(larecomp_online_tool_remote_test PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
     if(Threads_FOUND)
         target_link_libraries(larecomp_online_tool_remote_test PRIVATE Threads::Threads)

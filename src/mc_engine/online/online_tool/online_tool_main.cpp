@@ -2,6 +2,7 @@
 //
 //   larecomp_online_tool --version | --protocol | servers [--master H:P] [--servers a,b] [--current H:P] [--icons DIR]
 //   larecomp_online_tool rmr|lb|tournament <command> [options]   (online_tool_remote.cpp, README.md)
+//   larecomp_online_tool identity <show|check|backup|restore|recovery|recover|cancel|rename> ...   (identity_commands.h)
 //
 // One JSON document on stdout per call, nothing else there; exit code 0 = the document is the answer, 2 = wrong
 // command line. Standalone: no ReXGlue, no game, no settings file.
@@ -14,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "identity_commands.h"
 #include "online_tool.h"
 
 #ifdef _WIN32
@@ -49,6 +51,19 @@ std::vector<std::string> Arguments(int argc, char** argv) {
     return out;
 }
 
+// The first line of stdin without its line end: where a password or a recovery code comes in (never on the command line).
+// At most 4096 bytes are kept (the identity commands refuse more than 1024).
+bool ReadStdinLine(std::string& out) {
+    out.clear();
+    int c;
+    while ((c = std::fgetc(stdin)) != EOF) {
+        if (c == '\n') break;
+        if (out.size() < 4096) out.push_back(char(c));
+    }
+    if (!out.empty() && out.back() == '\r') out.pop_back();
+    return !(c == EOF && out.empty());
+}
+
 void Print(const std::string& text) {
     std::fwrite(text.data(), 1, text.size(), stdout);
     std::fputc('\n', stdout);
@@ -62,7 +77,20 @@ int main(int argc, char** argv) {
     _setmode(_fileno(stdout), _O_BINARY);  // the document is UTF-8 bytes with plain newlines
 #endif
     using namespace larecomp::online_tool;
-    const ParseResult parsed = ParseArgs(Arguments(argc, argv));
+    const std::vector<std::string> words = Arguments(argc, argv);
+    if (!words.empty() && words[0] == "identity") {
+        if (words.size() == 2 && (words[1] == "--help" || words[1] == "-h")) {
+            std::fputs(IdentityUsageText(), stdout);
+            return 0;
+        }
+#ifdef _WIN32
+        _setmode(_fileno(stdin), _O_BINARY);
+#endif
+        const IdentityResult r = RunIdentity(std::vector<std::string>(words.begin() + 1, words.end()), ReadStdinLine);
+        Print(r.json);
+        return r.exit_code;
+    }
+    const ParseResult parsed = ParseArgs(words);
     if (!parsed.ok) {
         Print(RenderError(CommandName(parsed.args.command), "usage", parsed.error, false));
         return 2;
@@ -72,6 +100,7 @@ int main(int argc, char** argv) {
         case Command::kHelp:
             std::fputs(UsageText(), stdout);
             std::fputs(RemoteUsageText(), stdout);
+            std::fputs(IdentityUsageText(), stdout);
             return 0;
         case Command::kVersion:
             Print(RenderVersion(a.pretty));
