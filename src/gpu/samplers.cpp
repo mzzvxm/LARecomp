@@ -19,6 +19,7 @@
 #include <rex/xenos/fetch.h>
 #include <rex/logging/log_category.h>
 
+#include "aniso_rules.h"
 #include "descriptors.h"
 #include "device.h"
 
@@ -28,32 +29,22 @@ namespace xe = rex::xenos;
 
 namespace {
 
-// mcla_gpu_anisotropy as an xenos::AnisoFilter, -1 = the game's.
+// The levels of aniso_rules.h are the values of the fetch constant's field.
+namespace ar = aniso;
+static_assert(int32_t(xe::AnisoFilter::kDisabled) == ar::kDisabled);
+static_assert(int32_t(xe::AnisoFilter::kMax11) == ar::kMax1);
+static_assert(int32_t(xe::AnisoFilter::kMax21) == ar::kMax2);
+static_assert(int32_t(xe::AnisoFilter::kMax41) == ar::kMax4);
+static_assert(int32_t(xe::AnisoFilter::kMax81) == ar::kMax8);
+static_assert(int32_t(xe::AnisoFilter::kMax161) == ar::kMax16);
+
+// mcla_gpu_anisotropy as an xenos::AnisoFilter, -1 = the game's (aniso_rules.h).
 int32_t ReadOverride() {
-  std::string value = larecomp::settings::mcla_gpu_anisotropy.Get();
-  std::string v;
-  for (unsigned char c : value) {
-    if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
-  }
-  if (!v.empty() && v.back() == 'x') v.pop_back();
-  if (v == "off" || v == "0" || v == "1") return int32_t(xe::AnisoFilter::kDisabled);
-  if (v == "2") return int32_t(xe::AnisoFilter::kMax21);
-  if (v == "4") return int32_t(xe::AnisoFilter::kMax41);
-  if (v == "8") return int32_t(xe::AnisoFilter::kMax81);
-  if (v == "16") return int32_t(xe::AnisoFilter::kMax161);
-  return -1;
+  return ar::ParseText(larecomp::settings::mcla_gpu_anisotropy.Get());
 }
 
 const char* OverrideName(int32_t o) {
-  switch (o) {
-    case -1: return "game";
-    case int32_t(xe::AnisoFilter::kDisabled): return "off";
-    case int32_t(xe::AnisoFilter::kMax21): return "2x";
-    case int32_t(xe::AnisoFilter::kMax41): return "4x";
-    case int32_t(xe::AnisoFilter::kMax81): return "8x";
-    case int32_t(xe::AnisoFilter::kMax161): return "16x";
-  }
-  return "?";
+  return ar::Name(o);
 }
 
 plume::RenderTextureAddressMode AddressMode(uint32_t clamp) {
@@ -135,13 +126,11 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   d.mip_base_map = mip_filter == xe::TextureFilter::kBaseMap;
   xe::AnisoFilter aniso = std::min(fetch.aniso_filter, xe::AnisoFilter::kMax161);
   const bool game_aniso = aniso != xe::AnisoFilter::kDisabled;
-  const bool eligible = mip_max > mip_min && !d.mip_base_map &&
-                        fetch.mag_filter == xe::TextureFilter::kLinear &&
-                        fetch.min_filter == xe::TextureFilter::kLinear &&
-                        mip_filter == xe::TextureFilter::kLinear;
-  if (override_ >= 0 && eligible) {
-    aniso = xe::AnisoFilter(override_);
-  }
+  const bool eligible = ar::Eligible(mip_min, mip_max, d.mip_base_map,
+                                     fetch.mag_filter == xe::TextureFilter::kLinear,
+                                     fetch.min_filter == xe::TextureFilter::kLinear,
+                                     mip_filter == xe::TextureFilter::kLinear);
+  aniso = xe::AnisoFilter(ar::Effective(override_, eligible, uint32_t(aniso)));
   d.aniso = uint8_t(aniso);
   if (aniso != xe::AnisoFilter::kDisabled) {
     d.mag_linear = d.min_linear = d.mip_linear = 1;
@@ -174,7 +163,7 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   desc.addressV = AddressMode(d.clamp[1]);
   desc.addressW = AddressMode(d.clamp[2]);
   desc.anisotropyEnabled = aniso != xe::AnisoFilter::kDisabled;
-  desc.maxAnisotropy = desc.anisotropyEnabled ? (1u << (uint32_t(aniso) - 1)) : 1u;
+  desc.maxAnisotropy = desc.anisotropyEnabled ? ar::MaxAnisotropy(uint32_t(aniso)) : 1u;
   // CHECK: Vulkan's maxSamplerLodBias is at least 2 and 16 or so on desktop drivers; Plume does not
   // clamp, so a total beyond what the device takes (the scene's bias reaches about -2.6 at 33%) is
   // for the driver to limit.

@@ -70,7 +70,7 @@ void MsaaLevel::Initialize(EdramTargets& edram, Pipelines& pipelines) {
 //     together for the frames in flight.
 //  6. Weak hardware: the two tile resolves of a 2 sample layout over 1 host sample on the iGPU.
 uint32_t MsaaLevel::Wanted(bool upscaling) {
-  if (upscaling && !MsaaKeptUnderUpscaler()) {
+  if (msaa_plan::UpscalerTakesLevel(upscaling, MsaaKeptUnderUpscaler())) {
     return 1;  // the upscaler smooths the picture; the setting is kept for when it stops
   }
   const EdramTargets::MsaaSetting setting = EdramTargets::ReadMsaaSetting();
@@ -89,103 +89,80 @@ uint32_t MsaaLevel::Wanted(bool upscaling) {
   return level;
 }
 
-void MsaaLevel::Rest() {
-  wanted_ = 0;
-  staged_ = false;
-  retry_after_ = Clock::time_point{};
-  retry_delay_ = kRetry;
-  failure_logged_ = false;
-  g_switching.store(false, std::memory_order_relaxed);
-}
-
 void MsaaLevel::BeginFrame(plume::RenderCommandList* list, bool upscaling, bool settled,
                            bool moved) {
   if (!edram_ || !pipelines_ || !list) {
     return;
   }
-  const uint32_t wanted = Wanted(upscaling);
-  const uint32_t level = edram_->msaa_level();
-  // The upscaler's own change of path stood still before it was made (TemporalSystem::UpdatePath),
-  // so the level it asks for needs no settling of its own: that is for a row stepped through values.
-  const bool path_driven = upscaling != last_upscaling_;
-  last_upscaling_ = upscaling;
-  if (wanted == level) {
-    pipelines_->NoteLevelInForce(level);  // seeds for a level that was asked for and taken back go
-    Rest();
-    return;
-  }
-  const Clock::time_point now = Clock::now();
-  if (wanted != wanted_) {
-    wanted_ = wanted;
-    wanted_since_ = path_driven ? now - kSettle : now;
-    staged_ = false;
-    retry_after_ = Clock::time_point{};
-    retry_delay_ = kRetry;
-    failure_logged_ = false;
-  }
-  if (now - wanted_since_ < kSettle || now < retry_after_) {
-    return;
-  }
-  g_switching.store(true, std::memory_order_relaxed);
+  msaa_plan::Frame frame;
+  frame.wanted = Wanted(upscaling);
+  frame.level = edram_->msaa_level();
+  frame.upscaling = upscaling;
+  frame.settled = settled;
+  frame.moved = moved;
+  frame.now = Clock::now();
+  const uint32_t wanted = frame.wanted;
+  const uint32_t level = frame.level;
   const char* why = upscaling ? "an upscaler runs" : "mcla_gpu_msaa";
-  if (!staged_) {
-    staged_ = true;
-    staged_at_ = now;
-    const Pipelines::LevelPrebuild b = pipelines_->PrebuildForLevel(wanted, level);
-    staged_total_ = b.queued;
-    REXLOG_INFO("{} live change: {}x -> {}x ({}): {} pipelines of draws into the multisampled "
-                "images are known, {} of them have the new sample count already, {} are being "
-                "made in the background ({} not finished); the switch is made at the first frame "
-                "boundary after they are ready and the upscaler path has settled (at most {} s "
-                "for the pipelines) while {}x goes on{}",
-                kPrefix, level, wanted, why, b.known, b.present, b.queued, b.waiting,
-                kMaxWait.count(), level,
-                b.seed_sources != 0
-                    ? std::format("; {} more are made from the saved lists for the views not drawn yet, "
-                                  "at low priority and not waited for ({} listed pipelines of "
-                                  "multisampled images, {} have the new count already, {} left out by "
-                                  "the limit)",
-                                  b.seeds, b.seed_sources, b.seed_present, b.seed_limited)
-                    : std::string());
-  }
-  if (moved || !settled) {
-    // The targets were remade this frame (the path or the render scale: one remake a frame), or a
-    // path change is waiting or being made and will remake them: the level follows it.
+  // Whether the change is made now, and what is asked of the pipelines on the way, is the plan's
+  // (msaa_plan.h): the upscaler's own path change needs no settling, a row stepped through values does.
+  const msaa_plan::Decision decision = planner_.Plan(
+      frame,
+      [&] {
+        const Pipelines::LevelPrebuild b = pipelines_->PrebuildForLevel(wanted, level);
+        staged_total_ = b.queued;
+        REXLOG_INFO("{} live change: {}x -> {}x ({}): {} pipelines of draws into the multisampled "
+                    "images are known, {} of them have the new sample count already, {} are being "
+                    "made in the background ({} not finished); the switch is made at the first frame "
+                    "boundary after they are ready and the upscaler path has settled (at most {} s "
+                    "for the pipelines) while {}x goes on{}",
+                    kPrefix, level, wanted, why, b.known, b.present, b.queued, b.waiting,
+                    msaa_plan::kMaxWait.count(), level,
+                    b.seed_sources != 0
+                        ? std::format("; {} more are made from the saved lists for the views not drawn yet, "
+                                      "at low priority and not waited for ({} listed pipelines of "
+                                      "multisampled images, {} have the new count already, {} left out by "
+                                      "the limit)",
+                                      b.seeds, b.seed_sources, b.seed_present, b.seed_limited)
+                        : std::string());
+      },
+      [&] { return pipelines_->PrebuildWaiting(); });
+  g_switching.store(planner_.switching(), std::memory_order_relaxed);
+  if (decision.verdict == msaa_plan::Verdict::kRest) {
+    pipelines_->NoteLevelInForce(level);  // seeds for a level that was asked for and taken back go
     return;
   }
-  const uint32_t waiting = pipelines_->PrebuildWaiting();
-  const bool timed_out = now - staged_at_ >= kMaxWait;
-  if (waiting != 0 && !timed_out) {
+  if (decision.verdict != msaa_plan::Verdict::kApply) {
+    // Waiting for the setting to stand still or for a retry, held by a path change or a remake of the
+    // targets (one remake a frame), or waiting for the pipelines: the level follows.
     return;
   }
   const Clock::time_point began = Clock::now();
-  if (!edram_->SetMsaaLevel(wanted, list)) {
+  const bool made = edram_->SetMsaaLevel(wanted, list);
+  const bool first_failure = planner_.Applied(began, made);
+  g_switching.store(planner_.switching(), std::memory_order_relaxed);
+  if (!made) {
     // Asked again after a while, less often each time: a level the card cannot hold keeps failing;
-    // another value (a smaller level) is asked at once (wanted_ changes).
-    retry_delay_ = failure_logged_ ? std::min(retry_delay_ * 2, kRetryMax) : kRetry;
-    retry_after_ = began + retry_delay_;
-    if (!failure_logged_) {
-      failure_logged_ = true;
+    // another value (a smaller level) is asked at once (the plan sees another wanted level).
+    if (first_failure) {
       REXLOG_WARN("{} the change to {}x was not made: the targets could not be made with {} samples "
                   "(video memory is most likely short): the game stays at {}x, and the change is "
                   "asked again after {} seconds, then less often",
-                  kPrefix, wanted, wanted, level, retry_delay_.count());
+                  kPrefix, wanted, wanted, level, planner_.retry_delay().count());
     }
-    g_switching.store(false, std::memory_order_relaxed);
     return;
   }
   const double switch_ms = MillisSince(began);
   REXLOG_INFO("{} live change: {}x -> {}x ({}), switched in {:.2f} ms ({:.0f} ms after the "
               "setting stood still, {:.0f} ms after the pipelines were asked for){}",
               kPrefix, level, wanted, why, switch_ms,
-              std::chrono::duration<double, std::milli>(began - wanted_since_).count(),
-              std::chrono::duration<double, std::milli>(began - staged_at_).count(),
-              waiting != 0
+              std::chrono::duration<double, std::milli>(began - planner_.wanted_since()).count(),
+              std::chrono::duration<double, std::milli>(began - planner_.staged_at()).count(),
+              decision.waiting != 0
                   ? std::format("; {} of {} pipelines for the new sample count were not made yet and "
                                 "are made as draws ask for them",
-                                waiting, staged_total_)
+                                decision.waiting, staged_total_)
                   : std::string());
-  Rest();
 }
 
 }  // namespace mcla::gpu

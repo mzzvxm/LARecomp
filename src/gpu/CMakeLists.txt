@@ -345,11 +345,31 @@ add_executable(larecomp_camera_cut_test EXCLUDE_FROM_ALL camera_cut_test.cpp tem
 # The upscalers' pure arithmetic (upscaler_math.h: the jitter sequence, its length at a ratio, the scene's mip bias) has a check that needs
 # no renderer: cmake --build <dir> --target larecomp_upscaler_math_test, then run src/gpu/larecomp_upscaler_math_test (exit 0 = passed).
 add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.cpp)
+# The render scale's choice (render_scale.h: the asked scale, the screen's, an FSR1 preset, the upscaler's output, the scene's scale under an upscaler),
+# which the renderer asks again at every frame boundary and moves the images of the screen to, has a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_render_scale_test, then run src/gpu/larecomp_render_scale_test (exit 0 = passed).
+add_executable(larecomp_render_scale_test EXCLUDE_FROM_ALL render_scale_test.cpp)
+# The host MSAA level's rules (msaa_plan.h: what mcla_gpu_msaa says, the device's limit, and when MsaaLevel makes a live change: the settle, the pipelines'
+# wait, the retries after a failure, the upscaler's own path) are checked on a made-up clock, with no renderer:
+#   cmake --build <dir> --target larecomp_msaa_plan_test, then run src/gpu/larecomp_msaa_plan_test (exit 0 = passed).
+add_executable(larecomp_msaa_plan_test EXCLUDE_FROM_ALL msaa_plan_test.cpp)
+# The anisotropic filtering rules (aniso_rules.h: what mcla_gpu_anisotropy says, which of the game's samplers take it, the level a sampler is made with;
+# the setting is live) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_aniso_rules_test, then run src/gpu/larecomp_aniso_rules_test (exit 0 = passed).
+add_executable(larecomp_aniso_rules_test EXCLUDE_FROM_ALL aniso_rules_test.cpp)
+# The upscalers' words, mode tables and ratios (upscale_modes.h: mcla_gpu_upscaler and the three mode settings, which the temporal system reads at every
+# frame boundary, and the scene's size each mode gives at an output) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_upscale_modes_test, then run src/gpu/larecomp_upscale_modes_test (exit 0 = passed).
+add_executable(larecomp_upscale_modes_test EXCLUDE_FROM_ALL upscale_modes_test.cpp)
 # The rules for when the upscalers' libraries are loaded (upscaler_load_policy.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_upscaler_load_policy_test, then run src/gpu/larecomp_upscaler_load_policy_test (exit 0 = passed).
 add_executable(larecomp_upscaler_load_policy_test EXCLUDE_FROM_ALL upscaler_load_policy_test.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(larecomp_upscaler_load_policy_test PRIVATE Threads::Threads)
+# The side views' scale rules (side_views.h: the shadow, car reflection and road reflection detail rows, which are live: a setting's word to a level on each
+# GPU class, a level to a scale, the step down when the video memory is short, the class that follows the render scale, the declared sizes) have a check that
+# needs no renderer: cmake --build <dir> --target larecomp_side_view_scales_test, then run src/gpu/larecomp_side_view_scales_test (exit 0 = passed).
+add_executable(larecomp_side_view_scales_test EXCLUDE_FROM_ALL side_view_scales_test.cpp)
 # The rule that gives another pass's use of a side view's EDRAM identity (the night shadow's, which binds the car
 # reflections' depth through a surface of another size) a target of its own (side_views.h):
 #   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.

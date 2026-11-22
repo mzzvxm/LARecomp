@@ -61,6 +61,7 @@
 // Threading: the classification is pure; everything else is the render thread's.
 // ===========================================================================
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -107,6 +108,35 @@ inline constexpr Scale ScaleOfLevel(SideLevel level) {
 }
 inline constexpr const char* LevelText(SideLevel level) {
   return level == SideLevel::kUltra ? "ultra" : level == SideLevel::kHigh ? "high" : "game";
+}
+// A level's word: game, high or ultra (exact: the settings are lower case already, SettingText); false for anything else, *level untouched.
+inline bool ParseLevel(std::string_view text, SideLevel* level) {
+  if (text == "game") {
+    *level = SideLevel::kGame;
+  } else if (text == "high") {
+    *level = SideLevel::kHigh;
+  } else if (text == "ultra") {
+    *level = SideLevel::kUltra;
+  } else {
+    return false;
+  }
+  return true;
+}
+// The level a class's setting `text` (lower case) means on a GPU of class `c` (gpu_class.h): `auto` is the class table's cell; a word that is no level (a
+// hand-edited file) is `auto`, the default. This is what a live change of the setting is resolved to at the next frame boundary (side_views::Wanted).
+inline SideLevel LevelFor(gpu_class::GpuClass c, gpu_class::Effect effect, std::string_view text) {
+  SideLevel level = SideLevel::kGame;
+  if (!ParseLevel(gpu_class::ResolveFor(c, effect, text), &level)) {
+    ParseLevel(gpu_class::ResolveFor(c, effect, "auto"), &level);
+  }
+  return level;
+}
+// The next scale below `scale` (for a class that cannot be made: video memory), 1x at the lowest: the whole scale below (3x -> 2x -> 1x; 1.5x -> 1x).
+inline Scale StepDownScale(Scale scale) {
+  if (scale.n <= Scale::kDenominator) {
+    return Scale{};
+  }
+  return Scale{std::max(Scale::kDenominator, (scale.n - 1) / Scale::kDenominator * Scale::kDenominator)};
 }
 
 // One class's rule. Each rule file defines exactly one (extern below); the registry in
@@ -188,7 +218,7 @@ std::string SettingText(SideView view);
 uint32_t HostSamples(SideView view, Scale scale, uint32_t guest_samples);
 
 // The next scale below `scale` (for a class that cannot be made: video memory), 1x at the lowest.
-Scale StepDown(Scale scale);
+inline Scale StepDown(Scale scale) { return StepDownScale(scale); }
 
 // A declared size (SizeBits) is `width` x `height`.
 inline bool DeclaredSize(uint32_t size_bits, uint32_t width, uint32_t height) {
