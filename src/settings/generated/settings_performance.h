@@ -71,6 +71,12 @@ class PerformanceSettings final : public rex::SettingOwner {
     "game's update: even present intervals (best on a variable refresh display), at the cost "
     "of up to one more frame of input latency.", rex::kDebugOnly);
 
+  REX_SETTING(i32, render_cpu_mask, 7, "Which of the small render-thread CPU savings run, as bits: 1 the per-draw timers of the statistics read the "
+    "clock on one draw in seven (instead of every draw), 2 the check whether a physical range of the guest's memory is "
+    "readable asks the address alias that answered last first, 4 the lookups by device address in the constant banks "
+    "and the constant upload keep their last answer. 0 runs all of them as they were (the A/B switch); 7 is the default. "
+    "None of them changes a picture or a frame. Read at start.", rex::Range{0, 7}, rex::kDebugOnly, rex::kRestart);
+
   // Below 0 is auto (gpu/gpu_class.h kScales): 1.0 (the game's own) on a high-end graphics card, 0.75 on a mid-range one, 0.5 on
   // integrated graphics and until the card is known. 0 is none, so it cannot be the sentinel as it is for the LOD scales.
   REX_SETTING(f64, parked_car_scale, -1.0, "How many cars are parked along the roads, as a multiple of the game's own amount (0 = none, 1 = the game's). "
@@ -227,6 +233,7 @@ inline auto& perf_no_shadows = g_performance.perf_no_shadows;
 inline auto& perf_no_trees = g_performance.perf_no_trees;
 inline auto& perf_shadow_phase_bits = g_performance.perf_shadow_phase_bits;
 inline auto& pump_wake_on_demand = g_performance.pump_wake_on_demand;
+inline auto& render_cpu_mask = g_performance.render_cpu_mask;
 inline auto& single_tile = g_performance.single_tile;
 inline auto& submit_on_primary_buffer_end = g_performance.submit_on_primary_buffer_end;
 inline auto& traffic_density_scale = g_performance.traffic_density_scale;
