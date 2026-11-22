@@ -11,7 +11,7 @@ cbuffer ProbeConstants : register(b0) {
   float4 g_normal;  // the surface's unit normal (the surface mode reads it)
   uint4 g_light;    // x shadow kind, y first view, z view count, w atlas slot
   float4 g_weight;  // x the light's shadow weight
-  uint4 g_layers;   // x GpuShadowHeader::layers
+  uint4 g_layers;   // x GpuShadowHeader::layers, y its kernel word (reserved: 0, the defaults)
 };
 RWStructuredBuffer<float> g_out : register(u0);
 
@@ -47,6 +47,9 @@ LslView LslLoadView(uint entry) {
 }
 uint LslLayerOf(uint entry) {
   return LslLayerBits(g_layers.x, entry);
+}
+uint LslKernelWord() {
+  return g_layers.y;
 }
 
 [numthreads(1, 1, 1)]

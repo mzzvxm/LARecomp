@@ -241,10 +241,10 @@ Map MakeMap(const Scene& scene, Vec eye, Vec dir, double fov_deg, int tile, doub
   return m;
 }
 
-float Lookup(const Map& m, Vec p, Vec normal, sf::Detail* detail = nullptr) {
+float Lookup(const Map& m, Vec p, Vec normal, sf::Detail* detail = nullptr, const sf::Params& params = sf::Params{}) {
   const float w[3] = {float(p.x), float(p.y), float(p.z)};
   const float n[3] = {float(normal.x), float(normal.y), float(normal.z)};
-  return sf::ViewLit(m.view, w, n, [&](int ix, int iy) { return m.Gather(ix, iy); }, detail);
+  return sf::ViewLit(m.view, w, n, [&](int ix, int iy) { return m.Gather(ix, iy); }, detail, params);
 }
 
 // The old lookup on the same map: the box of 3 x 3 texels with the four tap shortcut (headlight_rig_rules.h SoftShadow), the depth compared at one depth.
@@ -595,7 +595,7 @@ void CheckRoundingInMap() {
 // ---------------------------------------------------------------------------
 
 // The width, in metres across the beam, over which the lit share goes from 10 to 90 percent at a road point d metres from the lamp, across the lateral edge of a wall's shadow.
-double EdgeWidthMeters(const Map& m, const Street& st, double d, double lateral_edge_at_wall, double wall_d, double* texel_world) {
+double EdgeWidthMeters(const Map& m, const Street& st, double d, double lateral_edge_at_wall, double wall_d, double* texel_world, const sf::Params& params = sf::Params{}) {
   // The wall's lateral edge is at `lateral_edge_at_wall` at the wall's distance; on the road at d the edge is at that times d / wall_d.
   const double edge = lateral_edge_at_wall * d / wall_d;
   double at10 = 0.0, at90 = 0.0;
@@ -603,7 +603,7 @@ double EdgeWidthMeters(const Map& m, const Street& st, double d, double lateral_
   const double span = 0.4 + 0.04 * d;
   for (int k = 0; k <= 4000; ++k) {
     const double lat = edge - span + 2.0 * span * double(k) / 4000.0;  // from the shadowed side (negative) to the lit side
-    const float v = Lookup(m, st.Ground(d, lat), Vec{0, 1, 0});
+    const float v = Lookup(m, st.Ground(d, lat), Vec{0, 1, 0}, nullptr, params);
     if (!got10 && v >= 0.1f) {
       at10 = lat;
       got10 = true;
@@ -669,6 +669,111 @@ void CheckContactHardening() {
 // ---------------------------------------------------------------------------
 
 // A view with a known matrix over an empty atlas, and a receiver in the middle of its tile facing the lamp.
+// ---------------------------------------------------------------------------
+// the penumbra against the distance from the blocker, and the light size (HSQ-PCSS, 2026-11-22)
+// ---------------------------------------------------------------------------
+
+// What the lookup's own formula says the 10 to 90 percent edge is, in metres, for a lamp of radius R (m), a blocker w_b metres from the lamp, a receiver L metres behind it, a view of this
+// tile and field, and the kernel's cap rmax (texels): 1.6 r texels with r = clamp(R L / (w_b texel), 0.5, rmax) (a box of 2 r texels: 0.8 of its width; 0.8 texel at the bilinear 0.5).
+double ModelEdgeMeters(double lamp_radius, double wb, double l, double texel_at_receiver, double rmax) {
+  const double r = std::min(std::max(lamp_radius * l / wb / texel_at_receiver, 0.5), rmax);
+  return 1.6 * r * texel_at_receiver;
+}
+
+void CheckPackedParams() {
+  const sf::Params d{};
+  Check(sf::PackParams(d) == 0u, "the default Params pack to the word 0 (a shadow table's header is what it was before the settings)");
+  const sf::Params u = sf::UnpackParams(0u);
+  Check(u.gathers == 2 && std::fabs(u.lamp_radius - sf::kLampRadius) < 1e-9f, "the word 0 unpacks to the default Params");
+  for (int g = 2; g <= 4; ++g) {
+    for (const double r : {0.005, 0.02, 0.07, 0.12, 0.2, 0.5}) {
+      const sf::Params p = sf::MakeParams(r, g);
+      const sf::Params q = sf::UnpackParams(sf::PackParams(p));
+      Check(q.gathers == p.gathers && std::fabs(q.lamp_radius - p.lamp_radius) <= 0.0006f,
+            "Params " + Num(r, 3) + " m, " + std::to_string(g) + " gathers survive the packed word (got " + Num(q.lamp_radius, 4) + ", " + std::to_string(q.gathers) + ")");
+    }
+  }
+  const sf::Params low = sf::MakeParams(-1.0, 1), high = sf::MakeParams(9.0, 9), bad = sf::MakeParams(std::nan(""), 3);
+  Check(low.gathers == 2 && low.lamp_radius == sf::kMinLampRadius && high.gathers == 4 && high.lamp_radius == sf::kMaxLampRadius, "MakeParams holds the numbers to the settings' ranges");
+  Check(bad.gathers == 3 && bad.lamp_radius == sf::kLampRadius, "a radius that is not a number takes the default");
+  Check(sf::MaxRadius(2) == sf::kPcfMaxRadius && sf::MaxRadius(3) == 2.5f && sf::MaxRadius(4) == 3.5f, "the footprint holds a kernel of G - 0.5 texels: 1.5, 2.5, 3.5");
+}
+
+void CheckPenumbraVsDistance() {
+  const Street st(180.0);
+  Scene scene;
+  scene.ground_y = st.ground_y;
+  const double wall_d = 9.0;  // the blocker: the lamp pole, 9 m from the lamps
+  const double wall_edge = -1.0;
+  {
+    const Vec e1 = st.Ground(wall_d, wall_edge), e2 = st.Ground(wall_d, -30.0);
+    scene.boxes.push_back({{e1.x - 0.1, st.ground_y, std::min(e1.z, e2.z)}, {e1.x + 0.1, st.ground_y + 4.0, std::max(e1.z, e2.z)}});
+  }
+  const Map m = MakeMap(scene, st.lamp, st.dir, 72.0, 768, ls::kSlopeScaledDepthBias);
+  const double behind[] = {1.0, 3.0, 5.0, 7.0, 9.0};  // metres behind the blocker
+  struct Row {
+    const char* name;
+    sf::Params params;
+  };
+  const Row rows[] = {{"today (7 cm, 2 gathers)", sf::MakeParams(0.07, 2)},
+                      {"12 cm, 3 gathers", sf::MakeParams(0.12, 3)},
+                      {"12 cm, 4 gathers", sf::MakeParams(0.12, 4)},
+                      {"20 cm, 4 gathers", sf::MakeParams(0.20, 4)}};
+  double width[4][5], texel[4][5];
+  for (int r = 0; r < 4; ++r) {
+    std::string line;
+    for (int k = 0; k < 5; ++k) {
+      width[r][k] = EdgeWidthMeters(m, st, wall_d + behind[k], wall_edge, wall_d, &texel[r][k], rows[r].params);
+      line += " " + Num(100 * width[r][k], 1) + " cm (" + Num(width[r][k] / texel[r][k], 2) + " tx)";
+    }
+    Info("the 10 to 90 percent edge of a pole's shadow on the road, " + std::string(rows[r].name) + ", 1 / 3 / 5 / 7 / 9 m behind it (the blocker 9 m out, tile 768):" + line);
+  }
+  for (int r = 0; r < 4; ++r) {
+    bool grows = true, models = true;
+    std::string off;
+    for (int k = 0; k < 5; ++k) {
+      grows = grows && width[r][k] > 0 && (k == 0 || width[r][k] >= width[r][k - 1] - 0.15 * texel[r][k]);
+      const double want = ModelEdgeMeters(rows[r].params.lamp_radius, wall_d, behind[k], texel[r][k], sf::MaxRadius(rows[r].params.gathers));
+      if (std::fabs(width[r][k] - want) > 0.3 * want + 0.2 * texel[r][k]) {
+        models = false;
+        off += " " + Num(behind[k], 0) + " m: " + Num(100 * width[r][k], 1) + " against " + Num(100 * want, 1) + " cm;";
+      }
+    }
+    Check(grows, std::string(rows[r].name) + ": the edge widens with the distance behind the blocker (contact hardening)");
+    Check(models, std::string(rows[r].name) + ": the edge is the formula's, 1.6 r texels with r = R L / (w_b texel) held to [0.5, G - 0.5] (within 30 percent and a fifth of a texel)" + off);
+  }
+  // today's lamp is cut by the 4 x 4 footprint's cap (2.4 texels) at the far end only; a larger kernel lets a larger lamp show its full penumbra
+  Check(width[0][4] / texel[0][4] < 2.4 * 1.15, "today's footprint never makes an edge wider than 2.4 texels (" + Num(width[0][4] / texel[0][4], 2) + ")");
+  Check(width[2][4] > 1.2 * width[0][4], "a 12 cm lamp read with 4 x 4 gathers is clearly softer than today's 9 m behind the pole (" + Num(100 * width[2][4], 1) + " against " + Num(100 * width[0][4], 1) + " cm)");
+  Check(width[3][3] > width[2][3] && width[2][3] > width[0][3], "a larger lamp is softer at the same place (20 > 12 > 7 cm at 7 m behind the pole)");
+  Check(width[1][4] <= 1.6 * 2.5 * texel[1][4] * 1.15, "3 x 3 gathers cap the edge at 2.5 texels of kernel (" + Num(width[1][4] / texel[1][4], 2) + " texels of edge)");
+  // the fetches
+  sf::Detail dt;
+  const Vec p = st.Ground(wall_d + 3.0, wall_edge * (wall_d + 3.0) / wall_d + 0.02);
+  for (int g = 2; g <= 4; ++g) {
+    Lookup(m, p, Vec{0, 1, 0}, &dt, sf::MakeParams(0.07, g));
+    Check(dt.gathers == g * g, std::to_string(g) + " x " + std::to_string(g) + " gathers: " + std::to_string(g * g) + " fetches (" + std::to_string(dt.gathers) + ")");
+  }
+  // the default Params are the first version's lookup: the same numbers as an explicit 7 cm, 2 gathers, on a grid of places
+  int differ = 0, n = 0;
+  for (int i = 0; i < 400; ++i) {
+    const double d = wall_d + 0.5 + 0.03 * i;
+    const Vec q = st.Ground(d, wall_edge * d / wall_d + (-0.4 + 0.002 * i));
+    const float a = Lookup(m, q, Vec{0, 1, 0});
+    const float b = Lookup(m, q, Vec{0, 1, 0}, nullptr, sf::MakeParams(0.07, 2));
+    differ += a != b ? 1 : 0;
+    ++n;
+  }
+  Check(differ == 0 && n == 400, "the default Params and an explicit 7 cm, 2 gathers agree on 400 places");
+  // a thin blocker (a 10 cm post) 9 m out, read with the larger kernel: its shadow is not lost 1.5 m behind it
+  Scene post;
+  post.ground_y = st.ground_y;
+  post.boxes.push_back(Pole(st, wall_d, 0.0, 0.05, 3.0));
+  const Map pm = MakeMap(post, st.lamp, st.dir, 72.0, 768, ls::kSlopeScaledDepthBias);
+  const float umbra = Lookup(pm, st.Ground(wall_d + 1.5, 0.0), Vec{0, 1, 0}, nullptr, sf::MakeParams(0.12, 4));
+  Check(umbra < 0.6f, "a 10 cm post's shadow is still there 1.5 m behind it with a 12 cm lamp and 4 x 4 gathers (" + Num(umbra, 2) + ")");
+}
+
 struct Fixture {
   larecomp::gpu::LocalShadowView view{};
   float world[3] = {};
@@ -1147,6 +1252,8 @@ int main(int argc, char** argv) {
   CheckKerb();
   CheckRoundingInMap();
   CheckContactHardening();
+  CheckPackedParams();
+  CheckPenumbraVsDistance();
   CheckSynthetic();
   CheckLevelSizes();
   CheckAlphaToMask();

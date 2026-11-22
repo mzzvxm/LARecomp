@@ -22,7 +22,8 @@ using namespace textedit;
 namespace {
 
 // The helper block, before main. The `kHl...` numbers are src/gpu/headlight_rig_rules.h's (LampScale is the CPU twin, headlight_test.cpp compares them).
-// The constants are declared by the edits below it: g_HlHeader x = the light count, y = 0 (reserved), z = 0, w = 0; g_HlCamera xyz = the camera's world
+// The constants are declared by the edits below it: g_HlHeader x = the light count, y = the lamp's radius in metres the shadows' penumbra is worked out for (0: kHlLampRadius), z = the gathers a side the
+// shadow lookup reads (0 or 2: the 4 x 4 footprint of four gathers; 3: 6 x 6, 4: 8 x 8: HeadlightShadowWide), w = 0; g_HlCamera xyz = the camera's world
 // position; g_HlBoundsLo / g_HlBoundsHi = the box every light reaches; g_HlLight(3 i + 0) = position xyz and reach, (3 i + 1) = the axis xyz and the
 // cosine of the outer half angle, (3 i + 2) = the colour rgb (times the strength and the fade) and the cosine of the inner half angle;
 // g_HlShadowOf = the first shadow view of each of the four lights and g_HlShadowOfB the second (0xFFFFFFFF: none): a light is a car's, and a car with its two
@@ -58,6 +59,83 @@ float4 HeadlightQuadLit(float4 stored, float depth, float2 slope, float4 rx, flo
 {
     float4 need = min(depth + slope.x * rx + slope.y * ry, 1.0);
     return float4(stored >= need);
+}
+
+// THE WIDE FOOTPRINT of HeadlightShadow (HSQ-PCSS, g_HlHeader.z of 3 or 4): `gathers` x `gathers` GatherRed fetches read 2 gathers x 2 gathers texels; the arithmetic is the 4 x 4 case's for any size
+// (src/gpu/light_shadow_filter.h ViewLit is the reference, hlsl/light_shadow_lookup.hlsli LslWideShare the deferred pass's copy): each texel against the receiver's plane, the blockers averaged over
+// the whole footprint, the kernel's half width from the lamp's penumbra through them held to [kHlPcfMinRadius, gathers - 0.5], each texel by the part of it the box covers. `c` is the point's place
+// in texels, `t` one texel in atlas uv, `depth` the receiver's depth less its bias, `sz` its depth, `fade` the border's.
+float HeadlightShadowWide(float2 c, float2 t, float depth, float2 slope, float lenU, float lenV, float sz, float scaleA, int gathers, float lampRadius, float fade)
+{
+    int side = 2 * gathers;
+    float2 first = floor(c - 0.5) - float(gathers - 1);
+    float2 corner = (first + 1.0) * t;
+    uint4 atlas = g_HlAtlas;
+    Texture2D<float4> map = g_Texture2DDescriptorHeap[TFETCH_INDEX(atlas.x)];
+    SamplerState mapSampler = g_SamplerDescriptorHeap[atlas.y];
+    float2 o0 = first + 0.5 - c;  // the point's offset from the centre of the first texel
+    float stored[64];  // the footprint, row by row (rows from the lowest), `side` columns
+    float lit[64];
+    [loop]
+    for (int qb = 0; qb < gathers; ++qb)
+    {
+        [loop]
+        for (int qa = 0; qa < gathers; ++qa)
+        {
+            float4 q = map.GatherRed(mapSampler, corner + float2(2.0 * float(qa) * t.x, 2.0 * float(qb) * t.y));
+            // the quad's components x y z w are its texels (0, 1), (1, 1), (1, 0), (0, 0): column and row from the lowest
+            int colBase = 2 * qa;
+            int rowBase = 2 * qb;
+            float4 ox = o0.x + float(colBase) + float4(0.0, 1.0, 1.0, 0.0);
+            float4 oy = o0.y + float(rowBase) + float4(1.0, 1.0, 0.0, 0.0);
+            float4 need = min(depth + slope.x * ox + slope.y * oy, 1.0);
+            float4 isLit = float4(q >= need);
+            stored[(rowBase + 1) * side + colBase] = q.x;
+            lit[(rowBase + 1) * side + colBase] = isLit.x;
+            stored[(rowBase + 1) * side + colBase + 1] = q.y;
+            lit[(rowBase + 1) * side + colBase + 1] = isLit.y;
+            stored[rowBase * side + colBase + 1] = q.z;
+            lit[rowBase * side + colBase + 1] = isLit.z;
+            stored[rowBase * side + colBase] = q.w;
+            lit[rowBase * side + colBase] = isLit.w;
+        }
+    }
+    float blockers = 0.0;
+    float blockerSum = 0.0;
+    [loop]
+    for (int i = 0; i < side * side; ++i)
+    {
+        float blocks = 1.0 - lit[i];
+        blockers += blocks;
+        blockerSum += stored[i] * blocks;
+    }
+    if (blockers < 0.5)
+        return 1.0;
+    if (blockers > float(side * side) - 0.5)
+        return lerp(1.0, 0.0, fade);
+    float radius = lampRadius * 0.5 * (lenU + lenV) * (sz - blockerSum / blockers) / max(scaleA - sz, 1.0e-6);
+    radius = clamp(radius, kHlPcfMinRadius, float(gathers) - 0.5);
+    float wx[8];
+    float wy[8];
+    [loop]
+    for (int k = 0; k < side; ++k)
+    {
+        float2 edge = first + float(k);
+        wx[k] = saturate(min(edge.x + 1.0, c.x + radius) - max(edge.x, c.x - radius));
+        wy[k] = saturate(min(edge.y + 1.0, c.y + radius) - max(edge.y, c.y - radius));
+    }
+    float share = 0.0;
+    [loop]
+    for (int b = 0; b < side; ++b)
+    {
+        float along = 0.0;
+        [loop]
+        for (int a = 0; a < side; ++a)
+            along += wx[a] * lit[b * side + a];
+        share += wy[b] * along;
+    }
+    share = saturate(share / (4.0 * radius * radius));
+    return lerp(1.0, share, fade);
 }
 
 // The share of a light one view lets through at a world point with the surface's unit normal: 1 lit, 0 in shadow. (src/gpu/light_shadow_filter.h ViewLit is the CPU twin; its
@@ -103,6 +181,11 @@ float HeadlightShadow(uint view, float3 world, float3 normal)
     if (abs(det) > kHlDegenerate * lenU * lenV)
         slope = clamp(float2(dot(jz, vn), dot(jz, cross(normal, ju))) / det, -limit, limit);
     float depth = s.z - (shadowParams.x + kHlSlopeBias * (abs(slope.x) + abs(slope.y)));
+    // THE TWO SETTINGS (HSQ-PCSS): the lamp's radius (g_HlHeader.y, metres; 0: kHlLampRadius) and the gathers a side (g_HlHeader.z; 0 or 2: the footprint below, 3 or 4: HeadlightShadowWide).
+    float lampRadius = g_HlHeader.y > 0.0 ? g_HlHeader.y : kHlLampRadius;
+    int gathers = clamp(int(g_HlHeader.z + 0.5), 2, 4);
+    if (gathers > 2)
+        return HeadlightShadowWide(s.xy / t, t, depth, slope, lenU, lenV, s.z, scaleA, gathers, lampRadius, fade);
     // The footprint: texels first .. first + 3 on each axis, four gathers at the corners the quads share (their lowest texels are first and first + 2).
     float2 c = s.xy / t;
     float2 first = floor(c - 0.5) - 1.0;
@@ -132,7 +215,7 @@ float HeadlightShadow(uint view, float3 world, float3 normal)
         return lerp(1.0, 0.0, fade);
     // Contact hardening: the lamp's disc through the average blocker. R |ju| (z - z_blocker) / (A - z) texels, held to [kHlPcfMinRadius, kHlPcfMaxRadius].
     float blockerSum = dot(q00, b00) + dot(q10, b10) + dot(q01, b01) + dot(q11, b11);
-    float radius = kHlLampRadius * 0.5 * (lenU + lenV) * (s.z - blockerSum / blockers) / max(scaleA - s.z, 1.0e-6);
+    float radius = lampRadius * 0.5 * (lenU + lenV) * (s.z - blockerSum / blockers) / max(scaleA - s.z, 1.0e-6);
     radius = clamp(radius, kHlPcfMinRadius, kHlPcfMaxRadius);
     // The box [c - r, c + r] over the texel intervals [e, e + 1]: each texel by the part of it the box covers (the weights along an axis sum to 2 r).
     float4 edgeX = first.x + float4(0.0, 1.0, 2.0, 3.0);

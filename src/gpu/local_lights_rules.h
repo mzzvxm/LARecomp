@@ -570,6 +570,8 @@ struct PassInputs {
   uint32_t flags = 0;  // kFlag*
   // GB-H2: the frame's shadow views and atlas as of this trigger (the replay's maps of THIS frame, recorded just before the pass), null: none. kFlagShadow is set by BuildBuffer, not by the caller.
   const ShadowFrame* shadow = nullptr;
+  // HSQ-PCSS: the shadow lookup's kernel word (light_shadow_filter.h PackParams: the gathers a side and the lamp's radius; 0: the defaults), written to the table header's last word.
+  uint32_t kernel_word = 0;
 };
 
 inline void FillHeader(PassHeader* h, const PassInputs& in, uint32_t count) {
@@ -628,6 +630,7 @@ inline void BuildBuffer(const PassInputs& in, const Selection& selection, uint8_
   if (shadowed) {
     shadow_lookup::GpuShadowBuffer table;
     shadow_lookup::BuildGpuShadowBuffer(*in.shadow, &table);
+    table.header.reserved = in.kernel_word;
     std::memcpy(out + kShadowOffset, &table, sizeof(table));
   }
 }

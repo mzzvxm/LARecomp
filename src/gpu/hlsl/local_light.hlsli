@@ -45,6 +45,7 @@
 #define LP_SHADOW_OFF_SLOT 2180     // the atlas's bindless slot (a uint)
 #define LP_SHADOW_OFF_SIZE 2184     // the atlas's width and height in texels (two uints)
 #define LP_SHADOW_OFF_LAYERS 2192   // two bits for each entry: 0 single, 1 static, 2 live
+#define LP_SHADOW_OFF_KERNEL 2204   // the header's last word: the shadow lookup's kernel word (gathers a side, the lamp's radius in mm; 0: the defaults; light_shadow_filter.h PackParams)
 
 // what the depth chain stores for the sky (hlsl/ao_common.hlsli kAoSky)
 #define LP_SKY 60000.0f

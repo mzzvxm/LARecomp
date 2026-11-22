@@ -21,6 +21,13 @@
 //   4. THE EDGE OF THE VIEW FADES: the shadow is blended away over the last kBorderFade of the tile, where the beam is below an eighth of its strength anyway (the view holds the cone up to
 //      34 degrees: local_shadow_rules.h kShadowConeCapDegrees), instead of ending in a line.
 //
+// THE LIGHT SIZE AND THE FOOTPRINT ARE SETTINGS (HSQ-PCSS, 2026-11-22, the diagnostic mcla_gpu_headlight_shadow_lamp_cm and mcla_gpu_headlight_shadow_kernel): the owner asked why a shadow
+// does not get visibly softer with its distance from what casts it. It does, by the formula of 3.: the penumbra of a 14 cm lamp is 2 R L / w_b wide at L metres behind a blocker w_b metres
+// from the lamp (1.3 cm at 1 m, 8.8 cm at 7 m behind a pole 9 m away): small, and the 4 x 4 footprint's 1.5 texel cap (about 7 cm at 16 m) trims only the end of that. A larger lamp
+// (Params::lamp_radius) needs a larger kernel to show: Params::gathers = G reads G x G gathers, a 2G x 2G texel footprint (G = 2 is the 4 x 4 above, 4 fetches; 3 is 6 x 6, 9 fetches,
+// kernel up to 2.5 texels; 4 is 8 x 8, 16 fetches, up to 3.5), and the same arithmetic holds for any G (the weights of a box over the footprint, the blockers averaged over all of it).
+// The default Params are the lookup of 1. to 4. bit for bit (the tests hold them to the old numbers).
+//
 // The depth conventions are the map's (local_shadow_types.h, local_shadow_rules.h): z/w = A (1 - n / w) for a point w metres along the view's axis (A = f / (f - n)), 0 at the near plane,
 // 1 at the far plane and where nothing was drawn; lit when stored >= receiver - bias. A and the lateral scale come from the matrix itself (row 3 is the unit axis, row 2 is A times it),
 // so the view table needs no new field.
@@ -47,6 +54,45 @@ inline constexpr float kBorderFade = 0.05f;    // the share of the tile, from it
 inline constexpr float kDegenerate = 1.0e-3f;  // the sine of the angle between the light's ray and the receiver's plane below which the plane is not believed (no slope: the bias alone)
 inline constexpr float kNearlyOne = 1.0e-6f;
 
+inline constexpr int kMinGathers = 2;           // gathers a side: 2 x 2 gathers = the 4 x 4 texel footprint of the first version
+inline constexpr int kMaxGathers = 4;           // ... up to 4 x 4 gathers = 8 x 8 texels (16 fetches)
+inline constexpr float kMinLampRadius = 0.005f; // m: the settings' range, 1 cm across to ...
+inline constexpr float kMaxLampRadius = 0.5f;   // ... a metre across
+
+// What the lookup is told besides the view and the point: the size of the lamp the penumbra is worked out for, and how many gathers a side the footprint is. The default is the
+// lookup of the first version (kLampRadius, 2).
+struct Params {
+  float lamp_radius = kLampRadius;  // m
+  int gathers = kMinGathers;        // a side
+};
+// The largest kernel half width (texels) a footprint of G x G gathers holds wherever the receiver is in its texel: its 2G texels reach G - 0.5 from the point's texel centre.
+inline constexpr float MaxRadius(int gathers) { return float(gathers) - 0.5f; }
+// The Params a setting's numbers make: the gathers held to [kMinGathers, kMaxGathers], the radius to [kMinLampRadius, kMaxLampRadius] (a number that is not finite takes the default).
+inline Params MakeParams(double lamp_radius_m, int gathers) {
+  Params p;
+  p.gathers = std::min(std::max(gathers, kMinGathers), kMaxGathers);
+  p.lamp_radius = std::isfinite(lamp_radius_m) ? std::min(std::max(float(lamp_radius_m), kMinLampRadius), kMaxLampRadius) : kLampRadius;
+  return p;
+}
+// The deferred pass reads the Params as one word of its shadow table's header: bits 0-3 gathers, bits 8-23 the radius in millimetres; 0 stands for the default (the header is then what it
+// was before the settings). The lit shaders' block carries them as two floats (HeadlightConstants::header y = the radius in metres, z = the gathers; 0 = the default).
+inline uint32_t PackParams(const Params& p) {
+  const Params q = MakeParams(p.lamp_radius, p.gathers);
+  const uint32_t mm = uint32_t(q.lamp_radius * 1000.0f + 0.5f);
+  if (q.gathers == kMinGathers && mm == uint32_t(kLampRadius * 1000.0f + 0.5f)) {
+    return 0u;
+  }
+  return uint32_t(q.gathers) | (mm << 8);
+}
+inline Params UnpackParams(uint32_t word) {
+  Params p;
+  const uint32_t g = word & 15u;
+  p.gathers = g < uint32_t(kMinGathers) ? kMinGathers : (g > uint32_t(kMaxGathers) ? kMaxGathers : int(g));
+  const uint32_t mm = (word >> 8) & 0xFFFFu;
+  p.lamp_radius = mm == 0u ? kLampRadius : float(mm) * 0.001f;
+  return p;
+}
+
 struct Float2 {
   float x = 0.0f, y = 0.0f;
 };
@@ -71,7 +117,7 @@ struct Quad {
 struct Detail {
   bool outside = true;       // behind the view, outside its rectangle or its depth range: lit, nothing was read
   float fade = 0.0f;         // the border fade's weight of the shadow
-  int blockers = 0;          // texels of the 4 x 4 footprint nearer than the receiver's plane
+  int blockers = 0;          // texels of the footprint (4 x 4 by default) nearer than the receiver's plane
   float radius = 0.0f;       // the kernel's half width in texels (0 when the footprint was all lit or all dark)
   Float2 slope{};            // the receiver's depth change over one texel along u and v (z/w)
   float depth_over_a = 0.0f; // z of the receiver
@@ -81,7 +127,10 @@ struct Detail {
 // One view at a world point with the surface's unit normal: 1 lit .. 0 in shadow. `gather(ix, iy)` returns the four texels of the quad whose lowest texel is (ix, iy) of the ATLAS
 // (what GatherRed at the corner shared by the four returns). `view.texel_size` is one texel as a share of the tile.
 template <class Gather>
-inline float ViewLit(const larecomp::gpu::LocalShadowView& view, const float world[3], const float normal_in[3], Gather&& gather, Detail* detail = nullptr) {
+inline float ViewLit(const larecomp::gpu::LocalShadowView& view, const float world[3], const float normal_in[3], Gather&& gather, Detail* detail = nullptr, const Params& params = Params{}) {
+  const Params use = MakeParams(params.lamp_radius, params.gathers);
+  const int G = use.gathers;  // gathers a side
+  const int N = 2 * G;        // texels a side
   Detail local;
   Detail& d = detail ? *detail : local;
   d = Detail{};
@@ -134,65 +183,78 @@ inline float ViewLit(const larecomp::gpu::LocalShadowView& view, const float wor
   const float bias = view.depth_bias + kSlopeBias * (std::fabs(grad.x) + std::fabs(grad.y));
   const float zr = sz - bias;
 
-  // THE FOOTPRINT: 4 x 4 texels from `first`, read by four gathers at the corners shared by each quad of four.
+  // THE FOOTPRINT: N x N texels (4 x 4 by default) from `first`, read by G x G gathers at the corners shared by each quad of four.
   const Float2 c{sx / t.x, sy / t.y};  // the receiver's place in texels of the atlas
-  const Float2 first{std::floor(c.x - 0.5f) - 1.0f, std::floor(c.y - 0.5f) - 1.0f};
+  const Float2 first{std::floor(c.x - 0.5f) - float(G - 1), std::floor(c.y - 0.5f) - float(G - 1)};
   const int ix = int(first.x), iy = int(first.y);
-  const Quad q00 = gather(ix, iy), q10 = gather(ix + 2, iy), q01 = gather(ix, iy + 2), q11 = gather(ix + 2, iy + 2);
-  d.gathers = 4;
-  // The receiver's offset from each texel's centre, in texels: column a is at first + a + 0.5.
-  const float ox[4] = {first.x + 0.5f - c.x, first.x + 1.5f - c.x, first.x + 2.5f - c.x, first.x + 3.5f - c.x};
-  const float oy[4] = {first.y + 0.5f - c.y, first.y + 1.5f - c.y, first.y + 2.5f - c.y, first.y + 3.5f - c.y};
-  // The quad's components x y z w are the texels (col 0, row 1), (1, 1), (1, 0), (0, 0) of the quad: its columns 2 qa + {0, 1, 1, 0}, its rows 2 qb + {1, 1, 0, 0}.
-  const auto lit_of = [&](const Quad& q, int qa, int qb, float out[4]) {
-    const float stored[4] = {q.x, q.y, q.z, q.w};
-    const int col[4] = {0, 1, 1, 0}, row[4] = {1, 1, 0, 0};
-    for (int k = 0; k < 4; ++k) {
-      const float need = std::min(zr + grad.x * ox[2 * qa + col[k]] + grad.y * oy[2 * qb + row[k]], 1.0f);
-      out[k] = stored[k] >= need ? 1.0f : 0.0f;
+  Quad quads[kMaxGathers * kMaxGathers];
+  for (int qb = 0; qb < G; ++qb) {
+    for (int qa = 0; qa < G; ++qa) {
+      quads[qb * G + qa] = gather(ix + 2 * qa, iy + 2 * qb);
     }
-  };
-  float l00[4], l10[4], l01[4], l11[4];
-  lit_of(q00, 0, 0, l00);
-  lit_of(q10, 1, 0, l10);
-  lit_of(q01, 0, 1, l01);
-  lit_of(q11, 1, 1, l11);
-  const float* lits[4] = {l00, l10, l01, l11};
-  const Quad* quads[4] = {&q00, &q10, &q01, &q11};
+  }
+  d.gathers = G * G;
+  // The receiver's offset from each texel's centre, in texels: column a is at first + a + 0.5.
+  float ox[2 * kMaxGathers], oy[2 * kMaxGathers];
+  for (int k = 0; k < N; ++k) {
+    ox[k] = first.x + 0.5f + float(k) - c.x;
+    oy[k] = first.y + 0.5f + float(k) - c.y;
+  }
+  // The quad's components x y z w are the texels (col 0, row 1), (1, 1), (1, 0), (0, 0) of the quad: its columns 2 qa + {0, 1, 1, 0}, its rows 2 qb + {1, 1, 0, 0}.
+  float lit[2 * kMaxGathers][2 * kMaxGathers];     // [row from the lowest][column]
+  float stored[2 * kMaxGathers][2 * kMaxGathers];
+  const int col[4] = {0, 1, 1, 0}, row[4] = {1, 1, 0, 0};
+  for (int qb = 0; qb < G; ++qb) {
+    for (int qa = 0; qa < G; ++qa) {
+      const Quad& q = quads[qb * G + qa];
+      const float values[4] = {q.x, q.y, q.z, q.w};
+      for (int k = 0; k < 4; ++k) {
+        const int cc = 2 * qa + col[k], rr = 2 * qb + row[k];
+        const float need = std::min(zr + grad.x * ox[cc] + grad.y * oy[rr], 1.0f);
+        stored[rr][cc] = values[k];
+        lit[rr][cc] = values[k] >= need ? 1.0f : 0.0f;
+      }
+    }
+  }
+  // The blockers, summed in the order of the gathers' components (quad by quad, as the first version did for its four).
   float blockers = 0.0f, blocker_sum = 0.0f;
-  for (int q = 0; q < 4; ++q) {
-    const float stored[4] = {quads[q]->x, quads[q]->y, quads[q]->z, quads[q]->w};
-    for (int k = 0; k < 4; ++k) {
-      const float blocks = 1.0f - lits[q][k];
-      blockers += blocks;
-      blocker_sum += stored[k] * blocks;
+  for (int qb = 0; qb < G; ++qb) {
+    for (int qa = 0; qa < G; ++qa) {
+      for (int k = 0; k < 4; ++k) {
+        const int cc = 2 * qa + col[k], rr = 2 * qb + row[k];
+        const float blocks = 1.0f - lit[rr][cc];
+        blockers += blocks;
+        blocker_sum += stored[rr][cc] * blocks;
+      }
     }
   }
   d.blockers = int(blockers + 0.5f);
   if (blockers < 0.5f) {
     return 1.0f;
   }
-  if (blockers > 15.5f) {
+  if (blockers > float(N * N) - 0.5f) {
     return Lerp(1.0f, 0.0f, fade);
   }
   // CONTACT HARDENING. The lamp's disc seen from the receiver through the blockers' plane has the radius R (w_r - w_b) / w_r there; a texel is w_b / (w_r |ju|) wide there, and
   // w_b / w_r = (A - z_r) / (A - z_b), so the kernel's half width in texels is R |ju| (z_r - z_b) / (A - z_r).
   const float mean_blocker = blocker_sum / blockers;
-  float radius = kLampRadius * 0.5f * (len_u + len_v) * (sz - mean_blocker) / std::max(a_scale - sz, 1.0e-6f);
-  radius = std::min(std::max(radius, kPcfMinRadius), kPcfMaxRadius);
+  float radius = use.lamp_radius * 0.5f * (len_u + len_v) * (sz - mean_blocker) / std::max(a_scale - sz, 1.0e-6f);
+  radius = std::min(std::max(radius, kPcfMinRadius), MaxRadius(G));
   d.radius = radius;
   // The box [c - r, c + r] over the texel intervals [e, e + 1] of the footprint, each texel by the part of it the box covers (the weights along an axis sum to 2 r).
-  float wx[4], wy[4];
-  for (int k = 0; k < 4; ++k) {
+  float wx[2 * kMaxGathers], wy[2 * kMaxGathers];
+  for (int k = 0; k < N; ++k) {
     const float ex = first.x + float(k), ey = first.y + float(k);
     wx[k] = Saturate(std::min(ex + 1.0f, c.x + radius) - std::max(ex, c.x - radius));
     wy[k] = Saturate(std::min(ey + 1.0f, c.y + radius) - std::max(ey, c.y - radius));
   }
-  // Row b of the footprint, columns 0..3: row 0 is l00.w l00.z l10.w l10.z, row 1 is l00.x l00.y l10.x l10.y, rows 2 and 3 the same of l01 and l11.
-  const float rows[4][4] = {{l00[3], l00[2], l10[3], l10[2]}, {l00[0], l00[1], l10[0], l10[1]}, {l01[3], l01[2], l11[3], l11[2]}, {l01[0], l01[1], l11[0], l11[1]}};
   float share = 0.0f;
-  for (int b = 0; b < 4; ++b) {
-    share += wy[b] * (wx[0] * rows[b][0] + wx[1] * rows[b][1] + wx[2] * rows[b][2] + wx[3] * rows[b][3]);
+  for (int b = 0; b < N; ++b) {
+    float along = 0.0f;
+    for (int a = 0; a < N; ++a) {
+      along += wx[a] * lit[b][a];
+    }
+    share += wy[b] * along;
   }
   share /= 4.0f * radius * radius;
   return Lerp(1.0f, std::min(std::max(share, 0.0f), 1.0f), fade);

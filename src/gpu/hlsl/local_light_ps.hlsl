@@ -48,6 +48,7 @@ ByteAddressBuffer g_lights : register(t0, space4);
 static uint LpAtlasW = 0u;
 static uint LpAtlasH = 0u;
 static uint LpAtlasLayers = 0u;
+static uint LpKernelWord = 0u;
 
 float4 LoadPlane(uint slot, int2 p) {
 #if LL_PASS_MS
@@ -120,6 +121,9 @@ LslView LslLoadView(uint entry) {
 }
 uint LslLayerOf(uint entry) {
   return LslLayerBits(LpAtlasLayers, entry);
+}
+uint LslKernelWord() {
+  return LpKernelWord;
 }
 
 // The stored depth at a pixel of the main view's depth plane, at the guest's sample 0 (0 outside the plane: Load returns zeros there, like the sky).
@@ -222,6 +226,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
       LpAtlasW = head.z;
       LpAtlasH = head.w;
       LpAtlasLayers = g_lights.Load(LP_SHADOW_OFF_LAYERS);
+      LpKernelWord = g_lights.Load(LP_SHADOW_OFF_KERNEL);
       const float3 shadow_normal = LpShadowNormal(g, p, world, normal);
       add *= LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, shadow_normal.x, shadow_normal.y, shadow_normal.z, atlas_slot, uint(LSL_MODE_SURFACE));
     }

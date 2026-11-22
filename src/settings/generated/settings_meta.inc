@@ -298,6 +298,8 @@
 {"mcla_gpu_headlight_shadow_bias", "MCLA/GPU"},
 {"mcla_gpu_headlight_shadow_cone", "MCLA/GPU"},
 {"mcla_gpu_headlight_shadow_skirt", "MCLA/GPU"},
+{"mcla_gpu_headlight_shadow_lamp_cm", "MCLA/GPU"},
+{"mcla_gpu_headlight_shadow_kernel", "MCLA/GPU"},
 {"mcla_gpu_census_ps", "MCLA/GPU"},
 {"mcla_gpu_census_scale", "MCLA/GPU"},
 {"mcla_gpu_census_targets", "MCLA/GPU"},

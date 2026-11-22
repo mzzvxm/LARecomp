@@ -404,6 +404,8 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   in.units.exposure = (std::isfinite(sf.camera.exposure_bias) && sf.camera.exposure_bias > 0.0f) ? sf.camera.exposure_bias : 1.0f;
   in.flags = gb.Has(gbuffer::kPlaneMaterial) ? ll::kFlagMaterial : 0u;
   in.shadow = &frame.shadow;  // GB-H2: the replay's maps of this frame (recorded just before: scene.cpp OnResolve) and their views, which the frame's lights name
+  in.kernel_word = larecomp::gpu::shadow_filter::PackParams(larecomp::gpu::shadow_filter::MakeParams(0.01 * larecomp::settings::mcla_gpu_headlight_shadow_lamp_cm.Get(),
+                                                                       int(larecomp::settings::mcla_gpu_headlight_shadow_kernel.Get())));  // HSQ-PCSS: live
   const bool shadow_table = ll::ShadowTableNeeded(selection, in.shadow);
   ll::BuildBuffer(in, selection, scratch_.data());
   Slot& slot = slots_[frame_slot];

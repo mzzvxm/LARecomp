@@ -302,9 +302,9 @@ void CheckHelper() {
   // kernel is a box of 2 r texels, r from the lamp's penumbra through the average blocker held to [0.5, 1.5]; the shadow fades out at the tile's border.
   Check(sf::kPcfMaxRadius == 1.5f && sf::kPcfMinRadius == 0.5f, "the kernel's half width is 0.5 to 1.5 texels: the 4 x 4 footprint holds a box of half width 1.5 wherever the point is in its texel");
   Check(Contains(helper, "float4 HeadlightQuadLit(") && Contains(helper, "float HeadlightShadow(uint view, float3 world, float3 normal)"), "the quad compare and the lookup (it takes the surface's normal)");
-  Check(Count(helper, ".GatherRed(mapSampler, ") == 4 && Contains(helper, "map.GatherRed(mapSampler, corner);") && Contains(helper, "corner + float2(2.0 * t.x, 0.0)") &&
+  Check(Count(helper, ".GatherRed(mapSampler, ") == 5 && Contains(helper, "map.GatherRed(mapSampler, corner);") && Contains(helper, "corner + float2(2.0 * t.x, 0.0)") &&
             Contains(helper, "corner + float2(0.0, 2.0 * t.y)") && Contains(helper, "corner + 2.0 * t"),
-        "four gathers, at the corners of the four quads of the footprint");
+        "four gathers, at the corners of the four quads of the footprint (and the wide footprint's one, in its loop)");
   Check(Contains(helper, "float2 first = floor(c - 0.5) - 1.0;") && Contains(helper, "float2 corner = (first + 1.0) * t;"), "the footprint starts one texel before the bilinear footprint, the quads' corner is a texel in");
   Check(Contains(helper, "Texture2D<float4> map = g_Texture2DDescriptorHeap[TFETCH_INDEX(atlas.x)];") && Contains(helper, "SamplerState mapSampler = g_SamplerDescriptorHeap[atlas.y];"),
         "the atlas is read through the guest's heaps, as tfetch2DLod does");
@@ -319,8 +319,8 @@ void CheckHelper() {
             Contains(helper, "slope = clamp(float2(dot(jz, vn), dot(jz, cross(normal, ju))) / det, -limit, limit);") && Contains(helper, "if (abs(det) > kHlDegenerate * lenU * lenV)"),
         "the slope of the plane over one texel along u and v, held to the limit, none when the plane is edge on");
   Check(Contains(helper, "float depth = s.z - (shadowParams.x + kHlSlopeBias * (abs(slope.x) + abs(slope.y)));"), "the bias is the view's constant and a share of the plane's own change over a texel");
-  Check(Contains(helper, "float4 need = min(depth + slope.x * rx + slope.y * ry, 1.0);") && Contains(helper, "return float4(stored >= need);") && Count(helper, ">= need") == 1,
-        "the one compare is the game's `>=` against the plane's depth at the texel's centre, never above 1");
+  Check(Contains(helper, "float4 need = min(depth + slope.x * rx + slope.y * ry, 1.0);") && Contains(helper, "return float4(stored >= need);") && Count(helper, ">= need") == 2 && Contains(helper, "float4 isLit = float4(q >= need);"),
+        "the compare is the game's `>=` against the plane's depth at the texel's centre, never above 1: the quad function's and the wide footprint's, no other");
   // The quads' component order and the offsets of each texel's centre from the point.
   Check(Contains(helper, "float4 ox = o0.x + float4(0.0, 1.0, 2.0, 3.0);") && Contains(helper, "float2 o0 = first + 0.5 - c;"), "the offsets of the footprint's centres from the point");
   Check(Contains(helper, "HeadlightQuadLit(q00, depth, slope, float4(ox.x, ox.y, ox.y, ox.x), float4(oy.y, oy.y, oy.x, oy.x))") &&
@@ -330,9 +330,34 @@ void CheckHelper() {
         "each quad's components x y z w are the texels (0, 1) (1, 1) (1, 0) (0, 0) of the quad: its columns and rows are offset accordingly");
   // The shortcuts: nothing nearer in all 16 texels is lit, all 16 nearer is in shadow (the fade still applies); the penumbra and the weights.
   Check(Contains(helper, "if (blockers < 0.5)") && Contains(helper, "if (blockers > 15.5)") && Contains(helper, "return lerp(1.0, 0.0, fade);"), "the shortcuts: no blocker in the footprint is lit, all sixteen is in shadow");
-  Check(Contains(helper, "float radius = kHlLampRadius * 0.5 * (lenU + lenV) * (s.z - blockerSum / blockers) / max(scaleA - s.z, 1.0e-6);") &&
+  Check(Contains(helper, "float radius = lampRadius * 0.5 * (lenU + lenV) * (s.z - blockerSum / blockers) / max(scaleA - s.z, 1.0e-6);") &&
             Contains(helper, "radius = clamp(radius, kHlPcfMinRadius, kHlPcfMaxRadius);"),
         "the kernel's half width is the lamp's disc through the average blocker, held to its range");
+  // THE TWO SETTINGS and the wide footprint (HSQ-PCSS): the block's header y is the lamp's radius (0: the default), z the gathers a side (0: 2); 3 and 4 take HeadlightShadowWide, whose arithmetic is
+  // light_shadow_filter.h ViewLit's for any footprint (the twin and the deferred pass's copy are held to each other bit for bit in shadow_atlas_test.cpp; this text is held to them by what follows).
+  Check(Contains(helper, "float lampRadius = g_HlHeader.y > 0.0 ? g_HlHeader.y : kHlLampRadius;") && Contains(helper, "int gathers = clamp(int(g_HlHeader.z + 0.5), 2, 4);") &&
+            sf::kMinGathers == 2 && sf::kMaxGathers == 4,
+        "the lamp's radius and the gathers a side come from the block's header (0: the defaults), held to 2..4 as the twin's MakeParams does");
+  Check(Contains(helper, "if (gathers > 2)") && Contains(helper, "return HeadlightShadowWide(s.xy / t, t, depth, slope, lenU, lenV, s.z, scaleA, gathers, lampRadius, fade);"),
+        "more than two gathers a side take the wide footprint, with the plane's numbers");
+  Check(Count(helper, "float HeadlightShadowWide(") == 1 && Contains(helper, "float2 first = floor(c - 0.5) - float(gathers - 1);") && Contains(helper, "float2 corner = (first + 1.0) * t;") &&
+            Contains(helper, "map.GatherRed(mapSampler, corner + float2(2.0 * float(qa) * t.x, 2.0 * float(qb) * t.y))"),
+        "the wide footprint starts G - 1 texels before the bilinear one and reads G x G gathers two texels apart");
+  Check(Contains(helper, "float stored[64];") && Contains(helper, "float lit[64];") && Contains(helper, "float wx[8];") && Contains(helper, "float wy[8];") &&
+            (2 * sf::kMaxGathers) * (2 * sf::kMaxGathers) == 64 && 2 * sf::kMaxGathers == 8,
+        "the wide footprint's arrays hold the largest one the twin allows (8 x 8)");
+  Check(Contains(helper, "float4 ox = o0.x + float(colBase) + float4(0.0, 1.0, 1.0, 0.0);") && Contains(helper, "float4 oy = o0.y + float(rowBase) + float4(1.0, 1.0, 0.0, 0.0);") &&
+            Contains(helper, "stored[(rowBase + 1) * side + colBase] = q.x;") && Contains(helper, "stored[(rowBase + 1) * side + colBase + 1] = q.y;") &&
+            Contains(helper, "stored[rowBase * side + colBase + 1] = q.z;") && Contains(helper, "stored[rowBase * side + colBase] = q.w;"),
+        "each quad's components x y z w are the texels (0, 1) (1, 1) (1, 0) (0, 0) of the quad in the wide footprint too");
+  Check(Contains(helper, "if (blockers > float(side * side) - 0.5)") &&
+            Contains(helper, "float radius = lampRadius * 0.5 * (lenU + lenV) * (sz - blockerSum / blockers) / max(scaleA - sz, 1.0e-6);") &&
+            Contains(helper, "radius = clamp(radius, kHlPcfMinRadius, float(gathers) - 0.5);"),
+        "the wide kernel's half width is the same penumbra, held to [0.5, G - 0.5] (the footprint holds a box of that half width), all texels in shadow is in shadow");
+  Check(Contains(helper, "wx[k] = saturate(min(edge.x + 1.0, c.x + radius) - max(edge.x, c.x - radius));") && Contains(helper, "wy[k] = saturate(min(edge.y + 1.0, c.y + radius) - max(edge.y, c.y - radius));") &&
+            Contains(helper, "share = saturate(share / (4.0 * radius * radius));"),
+        "the wide footprint counts each texel by the part of it the box covers");
+  Check(!Contains(helper, " c0 ") && !Contains(helper, " r0 ") && !Contains(helper, "int c0") && !Contains(helper, "int r0"), "the wide path keeps off the game's register names");
   Check(Contains(helper, "float4 wx = saturate(min(edgeX + 1.0, c.x + radius) - max(edgeX, c.x - radius));") && Contains(helper, "float4 wy = saturate(min(edgeY + 1.0, c.y + radius) - max(edgeY, c.y - radius));") &&
             Contains(helper, "share = saturate(share / (4.0 * radius * radius));"),
         "each texel is counted by the part of it the box covers, the weights sum to 2 r on each axis");
