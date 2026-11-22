@@ -13,6 +13,9 @@
 //      A fresh game: the log has "[join_server] the city is up, but a message box is still on screen" (the box after Start) and then
 //      "the city is up after N s (a message box held the join back for M ms): asking", with the goto into the search returning 1 and
 //      the relay seeing the game host (REGISTER ... host=1) when nothing is there to join.
+//      A fresh game, the log also has "[join_server] the city is up, but the game cannot start a search yet (...)" while the game's
+//      start-up work is going on, then "the game can start a search now"; with --online_diag=true a "[join_server] probe +N ms" line every
+//      250 ms to 1 s (the words of SearchFacts) for the first 30 s of the join, and one line "the search facts when it ended" at a failure.
 //   5. larecomp.toml has no join_server / mcla_online_server / mcla_online_enable line afterwards (the argument is for one run).
 //   6. --join_server=127.0.0.1:31000 (Cruise) and ,race: with a Cruise / Race session hosted by the second game, and with none
 //      (the game hosts one itself).
@@ -263,6 +266,125 @@ void TestQuietGate() {
     }
 }
 
+// The search gate: the join goes on once the words the game's own search start asks for hold for a moment, or after a minute whatever
+// they say. The measured case: a fresh game, the words not true until the profile sync is over, about 30 s after Start.
+js::SearchFacts Facts(bool signed_in, bool handle = true, uint32_t flag = 0, uint32_t busy_record = 0, uint32_t busy_state = 0) {
+    js::SearchFacts f;
+    f.read = true;
+    f.search_flag = flag;
+    f.handle = handle ? 0x2F001230u : 0u;
+    f.busy_record = busy_record;
+    f.busy_state = busy_state;
+    f.player_slot = 0;
+    f.player_flags = signed_in ? 0xC0u : 0u;
+    return f;
+}
+
+void TestSearchGate() {
+    using V = js::SearchGate::Verdict;
+    constexpr int64_t stable = js::SearchGate::kStableMs;
+    constexpr int64_t cap = js::SearchGate::kMaxWaitMs;
+
+    // The words, one by one.
+    CHECK(js::SearchReady(Facts(true)));
+    CHECK(!js::SearchReady(Facts(false)));
+    CHECK(!js::SearchReady(Facts(true, false)));                    // no handle
+    CHECK(!js::SearchReady(Facts(true, true, 1)));                  // a search is marked as running
+    CHECK(!js::SearchReady(Facts(true, true, 0, 0x2F004000u, 1)));  // the search object is busy
+    CHECK(js::SearchReady(Facts(true, true, 0, 0x2F004000u, 2)));   // its last search is over
+    CHECK(js::SearchReady(Facts(true, true, 0, 0u, 1)));            // no record yet: a state word of 1 means nothing
+    {
+        js::SearchFacts f = Facts(true);
+        f.player_flags = 0x80;  // signed in, not on Live: a System Link search needs no more
+        CHECK(js::SearchReady(f) && js::PlayerSignedIn(f) && !js::PlayerOnLive(f));
+        f.read = false;
+        f.failed_at = "the net manager pointer";
+        CHECK(!js::SearchReady(f));
+        CHECK(js::SearchMissing(f) == "not readable: the net manager pointer");
+    }
+    CHECK(js::SearchMissing(Facts(true)).empty());
+    CHECK(js::SearchMissing(Facts(false)) == "the player is not signed in to the network layer yet");
+    CHECK(js::SearchMissing(Facts(true, false)) == "the search object has no handle yet");
+    CHECK(js::SearchMissing(Facts(true, true, 1)) == "a search is already marked as running");
+    CHECK(js::SearchMissing(Facts(true, true, 0, 1, 1)) == "the search object is busy");
+
+    {
+        // Ready from the first look: goes on after the stable time, not before.
+        js::SearchGate g;
+        CHECK(g.Update(Facts(true), 1000) == V::kWait);
+        CHECK(g.Update(Facts(true), 1000 + stable - 1) == V::kWait);
+        CHECK(g.Update(Facts(true), 1000 + stable) == V::kReady);
+        CHECK(g.WaitedMs(1000 + stable) == stable);
+    }
+    {
+        // The measured case: not ready until 30 s after Start, ready after that.
+        js::SearchGate g;
+        int64_t t = 0;
+        bool went = false;
+        for (; t < 30000; t += 16) went = went || g.Update(Facts(false), t) != V::kWait;
+        CHECK(!went);
+        CHECK(g.Update(Facts(true), t) == V::kWait);
+        CHECK(g.Update(Facts(true), t + stable) == V::kReady);
+    }
+    {
+        // A flicker restarts the stable time.
+        js::SearchGate g;
+        CHECK(g.Update(Facts(true), 0) == V::kWait);
+        CHECK(g.Update(Facts(true), stable - 10) == V::kWait);
+        CHECK(g.Update(Facts(false), stable - 5) == V::kWait);
+        CHECK(g.Update(Facts(true), stable) == V::kWait);
+        CHECK(g.Update(Facts(true), 2 * stable - 1) == V::kWait);
+        CHECK(g.Update(Facts(true), 2 * stable) == V::kReady);
+    }
+    {
+        // Never ready: gives up at the cap, not before. (A reading that is wrong in some build must not keep the join from trying.)
+        js::SearchGate g;
+        CHECK(g.Update(Facts(false), 0) == V::kWait);
+        CHECK(g.Update(Facts(false), cap - 1) == V::kWait);
+        CHECK(g.Update(Facts(false), cap) == V::kGaveUp);
+        CHECK(g.Update(Facts(false), cap + 5000) == V::kGaveUp);
+    }
+    {
+        // Memory that cannot be read counts as not ready, and also ends at the cap.
+        js::SearchGate g;
+        js::SearchFacts unread;
+        unread.failed_at = "the player's slot";
+        CHECK(g.Update(unread, 100) == V::kWait);
+        CHECK(g.Update(unread, 100 + cap) == V::kGaveUp);
+    }
+    {
+        // Ready for the stable time just as the cap passes: goes on as ready, not as "gave up".
+        js::SearchGate g;
+        CHECK(g.Update(Facts(false), 0) == V::kWait);
+        CHECK(g.Update(Facts(true), cap - stable) == V::kWait);
+        CHECK(g.Update(Facts(true), cap) == V::kReady);
+    }
+    {
+        // A fresh gate (the city was lost and came back) forgets the old wait.
+        js::SearchGate g;
+        CHECK(g.Update(Facts(false), 0) == V::kWait);
+        g = js::SearchGate{};
+        CHECK(g.WaitedMs(99999) == 0);
+        CHECK(g.Update(Facts(false), cap) == V::kWait);
+    }
+    // The log line.
+    {
+        js::SearchFacts f = Facts(true);
+        f.net_mode = 1;
+        f.session_state = 3;
+        const std::string d = js::DescribeSearchFacts(f);
+        CHECK(d.find("search_flag=0x0") != std::string::npos);
+        CHECK(d.find("handle=0x2F001230") != std::string::npos);
+        CHECK(d.find("flags 0xC0 (signed_in 1, live 1)") != std::string::npos);
+        CHECK(d.find("net_mode=1 session_state=3 ready=1") != std::string::npos);
+        CHECK(d.find('\n') == std::string::npos);
+        js::SearchFacts u;
+        u.failed_at = "the net manager pointer";
+        CHECK(js::DescribeSearchFacts(u) == "not readable: the net manager pointer");
+        CHECK(js::DescribeSearchFacts(Facts(false)).find("signed_in 0") != std::string::npos);
+    }
+}
+
 void TestMessages() {
     const js::Target t = P("h:5,room:Pat").target;
     for (const char* why : {js::reason::kBadArgument, js::reason::kOnlineUnavailable, js::reason::kServerUnreachable,
@@ -291,6 +413,7 @@ int main() {
     TestStatusFile();
     TestMessages();
     TestQuietGate();
+    TestSearchGate();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
