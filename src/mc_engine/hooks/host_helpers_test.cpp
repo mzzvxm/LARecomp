@@ -218,6 +218,7 @@ void TestMemsetModel(Arena& a, Rng& rng) {
 #include <rex/ppc/fpu.h>
 #include <rex/ppc/vmx.h>
 
+
 #include <cassert>
 #include <utility>
 
@@ -270,6 +271,10 @@ extern "C" void hh_stub_82422EF8(PPCContext& ctx, u8*) {
     ctx.r3.u64 = ctx.r4.u64;
 }
 
+extern "C" void hh_stub_KickCommandBuffer(PPCContext&, u8*) {
+    ++g_stub_calls;  // the fetch-constant flush kicks after a wrap: only reached on the path the native version declines
+}
+
 extern "C" void orig_memcpy(PPCContext&, u8*);
 extern "C" void orig_crt_memcpy(PPCContext&, u8*);
 extern "C" void orig_memcpy_words(PPCContext&, u8*);
@@ -278,6 +283,8 @@ extern "C" void orig_memset(PPCContext&, u8*);
 extern "C" void orig_row_write(PPCContext&, u8*);
 extern "C" void orig_shader_const_f(PPCContext&, u8*);
 extern "C" void orig_flush_bank(PPCContext&, u8*);
+extern "C" void orig_flush_fetch(PPCContext&, u8*);
+extern "C" void orig_write_reg_block(PPCContext&, u8*);
 
 #include "hh_originals.inc"
 
@@ -482,6 +489,87 @@ void DiffFlushBank(Arena& a, Arena& b, Arena& c, Rng& rng) {
     EXPECT(!FlushBank(a.base, 0x10000, 1ull << 63, 0, 0x20000), "a bank inside the ring declines");
 }
 
+// A random 64-bit dirty mask of the kinds the game makes: single bits, runs, alternating bits, all ones, any.
+uint64_t RandomMask(Rng& rng) {
+    uint64_t mask;
+    switch (rng.U(6)) {
+        case 0: mask = 1ull << rng.U(64); break;
+        case 1: mask = ~0ull >> rng.U(60); break;
+        case 2: mask = (~0ull << rng.U(64)) & rng.Next(); break;
+        case 3: mask = 0x5555555555555555ull << rng.U(2); break;
+        default: mask = rng.Next() & (rng.U(2) ? rng.Next() : ~0ull);
+    }
+    return mask == 0 ? 1 : mask;
+}
+
+// The two ring writers with a wrap path: the recompiled function runs on `b`, the native one on `c`; the native one must decline exactly
+// when the recompiled one calls the ring-wrap routine, and otherwise leave the same memory and the same kept registers.
+template <class OrigFn, class NativeFn>
+void DiffRingWriter(Arena& a, Arena& b, Arena& c, Rng& rng, OrigFn original, NativeFn native, const char* name, uint32_t words_per_bit, uint32_t words_per_run) {
+    long wrapped = 0, total = 0;
+    for (int it = 0; it < 40000; ++it) {
+        a.Randomise(rng);
+        const uint32_t dev = 0x10000 + rng.U(2) * 0x40;
+        const uint32_t ring = 0x20000 + rng.U(16) * 4;
+        const uint32_t src = 0x40000 + rng.U(3) * 0x100 + (rng.U(4) == 0 ? rng.U(16) * 4 : 0);
+        const uint64_t mask = RandomMask(rng);
+        const uint32_t pop = static_cast<uint32_t>(std::popcount(mask));
+        const uint32_t runs = static_cast<uint32_t>(std::popcount(mask & ~(mask >> 1)));  // bit 63 is the first block
+        const uint32_t need = 4u * (words_per_bit * pop + words_per_run * runs + 6u);
+        const uint32_t limit = rng.U(4) == 0 ? ring + rng.U(need + 64) : ring + need + rng.U(200);
+        St32(a.base, dev + 48, ring);
+        St32(a.base, dev + 52, limit);
+        PPCContext in = MakeCtx(rng);
+        in.r3.u64 = dev;
+        in.r4.u64 = mask;
+        in.r5.u64 = rng.U(20000);
+        in.r6.u64 = src;
+        ++total;
+        b.CopyFrom(a);
+        c.CopyFrom(a);
+        PPCContext co = in;
+        g_stub_calls = 0;
+        original(co, b.base);
+        const bool orig_wrapped = g_stub_calls > 0;
+        const bool did = native(c.base, dev, mask, static_cast<uint32_t>(in.r5.u64), src);
+        EXPECT(did == !orig_wrapped, "%s case %d: native %s but the recompiled one %s the ring-wrap routine (mask %llx, room %u)", name, it, did ? "did it" : "declined",
+               orig_wrapped ? "called" : "did not call", static_cast<unsigned long long>(mask), limit - ring);
+        if (did && !orig_wrapped) {
+            uint32_t where = 0;
+            EXPECT(b.SameAs(c, &where), "%s case %d: memory differs at %#x (mask %llx ring %x)", name, it, where, static_cast<unsigned long long>(mask), ring);
+            EXPECT(SameKeptRegs(co, in, true), "%s case %d: the recompiled function changed r3 or a kept register", name, it);
+        }
+        wrapped += orig_wrapped;
+    }
+    EXPECT(wrapped > 3000 && total - wrapped > 3000, "%s: %ld wrapped of %ld, both kinds needed", name, wrapped, total);
+    // an empty mask and an unaligned ring pointer go to the recompiled function
+    a.Randomise(rng);
+    St32(a.base, 0x10000 + 48, 0x20000);
+    St32(a.base, 0x10000 + 52, 0x30000);
+    EXPECT(!native(a.base, 0x10000, 0, 0, 0x40000), "%s: an empty mask declines", name);
+    St32(a.base, 0x10000 + 48, 0x20002);
+    EXPECT(!native(a.base, 0x10000, 1, 0, 0x40000), "%s: an unaligned ring pointer declines", name);
+}
+
+void DiffFlushFetch(Arena& a, Arena& b, Arena& c, Rng& rng) {
+    DiffRingWriter(a, b, c, rng, orig_flush_fetch, [](u8* base, uint32_t dev, uint64_t mask, uint32_t, uint32_t) { return FlushFetchBank(base, dev, mask); }, "fetch bank flush", 6, 4);
+    // the bank (device + 1152) inside the ring declines (the original interleaves its loads and stores)
+    a.Randomise(rng);
+    St32(a.base, 0x10000 + 48, 0x10000 + 1152 + 4);
+    St32(a.base, 0x10000 + 52, 0x30000);
+    EXPECT(!FlushFetchBank(a.base, 0x10000, 1ull << 63), "fetch bank flush: a bank that overlaps the ring declines");
+}
+
+void DiffWriteRegBlock(Arena& a, Arena& b, Arena& c, Rng& rng) {
+    DiffRingWriter(a, b, c, rng, orig_write_reg_block, [](u8* base, uint32_t dev, uint64_t mask, uint32_t reg, uint32_t src) { return WriteRegBlock(base, dev, mask, reg, src); },
+                   "register block write", 1, 1);
+    a.Randomise(rng);
+    St32(a.base, 0x10000 + 48, 0x20000);
+    St32(a.base, 0x10000 + 52, 0x30000);
+    EXPECT(!WriteRegBlock(a.base, 0x10000, 1ull << 63, 0, 0x20008), "register block write: a source that overlaps the ring declines");
+    EXPECT(WriteRegBlock(a.base, 0x10000, 1ull << 63, 0, 0x20000), "register block write: a source right before the ring is fine");
+}
+
 
 // --bench: nanoseconds per call of the recompiled function and of the native one on cache-hot data, for the sizes the game uses. The ratio is
 // an upper bound of the gain in the game (the data there is colder, which hits both). Compile the test with -O2 for numbers that mean something.
@@ -498,6 +586,7 @@ double TimeNs(F&& f, int calls) {
 }
 
 void Bench(Arena& a, Rng& rng) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     a.Randomise(rng);
     PPCContext ctx = MakeCtx(rng);
     const int calls = 200000;
@@ -552,6 +641,20 @@ void Bench(Arena& a, Rng& rng) {
         std::snprintf(what, sizeof what, "constant bank flush mask %016llx", static_cast<unsigned long long>(mask));
         const double o = TimeNs([&](int) { St32(a.base, 0x10000 + 48, 0x20000); St32(a.base, 0x10000 + 52, 0x28000); ctx.r3.u64 = 0x10000; ctx.r4.u64 = mask; ctx.r5.u64 = 0; ctx.r6.u64 = 0x40000; orig_flush_bank(ctx, a.base); }, calls / 2);
         const double v = TimeNs([&](int) { St32(a.base, 0x10000 + 48, 0x20000); St32(a.base, 0x10000 + 52, 0x28000); FlushBank(a.base, 0x10000, mask, 0, 0x40000); }, calls / 2);
+        report(what, o, v);
+    }
+    for (uint64_t mask : {0x8000000000000000ull, 0xF000000000000000ull, 0xAAAA000000000000ull, 0xFFFFFFFF00000000ull}) {
+        char what[64];
+        std::snprintf(what, sizeof what, "fetch bank flush mask %016llx", static_cast<unsigned long long>(mask));
+        const double o = TimeNs([&](int) { St32(a.base, 0x10000 + 48, 0x20000); St32(a.base, 0x10000 + 52, 0x28000); ctx.r3.u64 = 0x10000; ctx.r4.u64 = mask; orig_flush_fetch(ctx, a.base); }, calls / 2);
+        const double v = TimeNs([&](int) { St32(a.base, 0x10000 + 48, 0x20000); St32(a.base, 0x10000 + 52, 0x28000); FlushFetchBank(a.base, 0x10000, mask); }, calls / 2);
+        report(what, o, v);
+    }
+    for (uint64_t mask : {0x8000000000000000ull, 0xF000000000000000ull, 0xAAAA000000000000ull, 0xFFFFFFFF00000000ull}) {
+        char what[64];
+        std::snprintf(what, sizeof what, "register block write mask %016llx", static_cast<unsigned long long>(mask));
+        const double o = TimeNs([&](int) { St32(a.base, 0x10000 + 48, 0x20000); St32(a.base, 0x10000 + 52, 0x28000); ctx.r3.u64 = 0x10000; ctx.r4.u64 = mask; ctx.r5.u64 = 0; ctx.r6.u64 = 0x40000; orig_write_reg_block(ctx, a.base); }, calls / 2);
+        const double v = TimeNs([&](int) { St32(a.base, 0x10000 + 48, 0x20000); St32(a.base, 0x10000 + 52, 0x28000); WriteRegBlock(a.base, 0x10000, mask, 0, 0x40000); }, calls / 2);
         report(what, o, v);
     }
 }
@@ -648,6 +751,53 @@ void TestFlushBankModel(Arena& a, Rng& rng) {
     EXPECT(!FlushBank(a.base, dev, mask, 10, bank) && std::memcmp(snap.data(), a.base + kWorkLo, snap.size()) == 0, "a full ring declines and writes nothing");
 }
 
+void TestFlushFetchModel(Arena& a, Rng& rng) {
+    // Two single-block runs (mask bits 63 and 61): the ring at 0x20000 (0 mod 8), then 0x2001C (4 mod 8).
+    a.Randomise(rng);
+    const uint32_t dev = 0x10000, ring = 0x20000;
+    St32(a.base, dev + 48, ring);
+    St32(a.base, dev + 52, ring + 4096);
+    const uint64_t mask = (1ull << 63) | (1ull << 61);
+    std::vector<uint8_t> bank(a.base + dev + 1152, a.base + dev + 1152 + 24 * 3);
+    EXPECT(FlushFetchBank(a.base, dev, mask), "simple fetch flush declined");
+    EXPECT(Ld32(a.base, ring + 4) == ((5u << 16) | 0x4800u), "header 1 %08x", Ld32(a.base, ring + 4));  // the NOP at ring + 4 is overwritten (ring is 0 mod 8)
+    EXPECT(std::memcmp(a.base + ring + 8, bank.data(), 24) == 0, "payload 1");
+    const uint32_t p2 = ring + 0x1C;  // the pointer after run 1
+    EXPECT(Ld32(a.base, p2 + 4) == kNopWord, "pad before run 2 (the pointer is 4 mod 8)");
+    EXPECT(Ld32(a.base, p2 + 8) == ((5u << 16) | (0x4800u + 6 + 6)), "header 2 %08x", Ld32(a.base, p2 + 8));
+    EXPECT(std::memcmp(a.base + p2 + 12, bank.data() + 48, 24) == 0, "payload 2");
+    const uint32_t last = p2 + 8 + 24;  // the last written word
+    EXPECT(Ld32(a.base, dev + 48) == last + 16, "final ring pointer %x", Ld32(a.base, dev + 48));
+    EXPECT(Ld64(a.base, last + 4) == (37ull << 44) && Ld64(a.base, last + 12) == (37ull << 44), "trailer");
+    // A ring that is too short declines and writes nothing.
+    a.Randomise(rng);
+    St32(a.base, dev + 48, ring);
+    St32(a.base, dev + 52, ring + 20);
+    std::vector<uint8_t> snap(a.base + kWorkLo, a.base + kWorkHi);
+    EXPECT(!FlushFetchBank(a.base, dev, mask) && std::memcmp(snap.data(), a.base + kWorkLo, snap.size()) == 0, "a full ring declines and writes nothing");
+}
+
+void TestWriteRegBlockModel(Arena& a, Rng& rng) {
+    // Runs of 2 (bits 63, 62) and 1 (bit 60): headers, no padding, the source indexed by the bit.
+    a.Randomise(rng);
+    const uint32_t dev = 0x10000, ring = 0x20000, src = 0x40000;
+    St32(a.base, dev + 48, ring);
+    St32(a.base, dev + 52, ring + 4096);
+    const uint64_t mask = (3ull << 62) | (1ull << 60);
+    std::vector<uint8_t> words(a.base + src, a.base + src + 16);
+    EXPECT(WriteRegBlock(a.base, dev, mask, 100, src), "simple register write declined");
+    EXPECT(Ld32(a.base, ring + 4) == ((1u << 16) | 100u), "header 1 %08x", Ld32(a.base, ring + 4));
+    EXPECT(std::memcmp(a.base + ring + 8, words.data(), 8) == 0, "words 1");
+    EXPECT(Ld32(a.base, ring + 16) == ((0u << 16) | 103u), "header 2 %08x", Ld32(a.base, ring + 16));  // bit 3: register 100 + 3
+    EXPECT(std::memcmp(a.base + ring + 20, words.data() + 12, 4) == 0, "word 2");
+    EXPECT(Ld32(a.base, dev + 48) == ring + 20, "final ring pointer %x", Ld32(a.base, dev + 48));
+    a.Randomise(rng);
+    St32(a.base, dev + 48, ring);
+    St32(a.base, dev + 52, ring + 8);
+    std::vector<uint8_t> snap(a.base + kWorkLo, a.base + kWorkHi);
+    EXPECT(!WriteRegBlock(a.base, dev, mask, 100, src) && std::memcmp(snap.data(), a.base + kWorkLo, snap.size()) == 0, "a full ring declines and writes nothing");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -661,6 +811,8 @@ int main(int argc, char** argv) {
     TestRowWriteModel(a, rng);
     TestShaderConstModel(a, rng);
     TestFlushBankModel(a, rng);
+    TestFlushFetchModel(a, rng);
+    TestWriteRegBlockModel(a, rng);
 #ifdef HH_WITH_ORIGINALS
     {
         Arena b, c;
@@ -670,6 +822,8 @@ int main(int argc, char** argv) {
         DiffRowWrite(a, b, c, rng);
         DiffShaderConstF(a, b, c, rng);
         DiffFlushBank(a, b, c, rng);
+        DiffFlushFetch(a, b, c, rng);
+        DiffWriteRegBlock(a, b, c, rng);
         std::printf("differential against the recompiled originals: done\n");
         if (argc > 1 && std::string(argv[1]) == "--bench") Bench(a, rng);
     }
