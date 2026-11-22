@@ -98,7 +98,7 @@ std::string WithoutVariant(std::string text, std::string helper, const sp::Night
   if (night.capture_at != std::string::npos) cut("the normal's capture", night.capture);
   if (night.albedo.found && night.albedo.captured) cut("the albedo's capture", night.albedo.capture);
   cut("the sidecar write", "\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(" + night.expression + ");\n\t}" +
-                               sp::GBufferAlbedoWriteText(night.albedo) + sp::GBufferMaterialWriteText());
+                               sp::GBufferAlbedoWriteText(night.albedo, night.occlusion) + sp::GBufferMaterialWriteText());
   return missing.empty() ? text : "<missing or twice there:" + missing + ">";
 }
 
@@ -134,6 +134,7 @@ constexpr const char* kFixture =
     "\tin float4 iPos : SV_Position,\n"
     "\tin centroid float4 iTexCoord0 : TEXCOORD0,\n"
     "\tin centroid float4 iTexCoord1 : TEXCOORD1,\n"
+    "\tin centroid float4 iColor1 : COLOR1,\n"
     "#ifdef __spirv__\n"
     "\tin bool iFace : SV_IsFrontFace\n"
     "#else\n"
@@ -187,9 +188,9 @@ void CheckFixture() {
     Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3") == 1,
           "the second, third and fourth outputs follow the colour output");
     Check(Count(r.hlsl, "oC0 = applyBlendPremult(oC0);\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(iTexCoord0.xyz);\n\t}"
-                        "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u) {\n\t\toC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y));\n\t}"
+                        "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u) {\n\t\toC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y) * saturate(iColor1.w));\n\t}"
                         "\n\toC3 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}\n\treturn;") == 1,
-          "the writes follow the game's last colour statement: the normal, then the albedo (the fixture's diffuse fetch is at r6.xyzw = tex.xwyz: its lanes r6.xzw, nothing writes them later) and the draw's lit weight, then the material word's two bytes");
+          "the writes follow the game's last colour statement: the normal, then the albedo (the fixture's diffuse fetch is at r6.xyzw = tex.xwyz: its lanes r6.xzw, nothing writes them later) and the draw's lit weight times the shader's baked occlusion (xCityDefault has a row: iColor1.w), then the material word's two bytes");
     Check(Count(r.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
               Count(r.hlsl, "#define g_GBufferRay vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 624, 0x10)") == 1 &&
               Count(r.hlsl, "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)") == 1,
@@ -201,7 +202,7 @@ void CheckFixture() {
     const size_t main_at = r.hlsl.find("void main(");
     const size_t decl_at = r.hlsl.find("#define g_GBufferMode");
     Check(helper_at != std::string::npos && main_at != std::string::npos && decl_at < helper_at && helper_at < main_at, "the declarations, the helper, then main");
-    const std::string fixture_diff = FirstDifference(WithoutVariant(r.hlsl, kHelper, sp::AnalyseGBufferNight(kFixture)), LfOnly(kFixture));
+    const std::string fixture_diff = FirstDifference(WithoutVariant(r.hlsl, kHelper, sp::AnalyseGBufferNight(kFixture, sp::kGBufferNightShader)), LfOnly(kFixture));
     Check(fixture_diff.empty(), std::string(shader.name) + ": with the stage's insertions taken out the fixture is the game's text again, byte for byte" + fixture_diff);
     // a line end convention does not matter
     std::string crlf;
@@ -271,8 +272,8 @@ void CheckVariantDef() {
     std::sort(sorted.begin(), sorted.end());
     Check(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "no name is in the definition twice");
   }
-  // The version is the pixel stage's stamp line: 9 = RT3, the car family, the traffic and the pedestrians, and the night stage's albedo recipes (a pack stamped with 1 to 8 is built again); the day stage's own number is 3, the car stage's 3.
-  Check(sp::kGBufferVariantVersion == 9, "the variant's version is 9: the night family (2), the day families (3), RT2, the albedo and the lit weight (4), the car family (5), RT3 (6), both (7), the traffic and the pedestrians on top (8), the night albedo recipes (9)");
+  // The version is the pixel stage's stamp line: 10 = RT3, the car family, the traffic and the pedestrians, the night stage's albedo recipes and its baked occlusion (a pack stamped with 1 to 9 is built again); the day stage's own number is 3, the car stage's 3.
+  Check(sp::kGBufferVariantVersion == 10, "the variant's version is 10: the night family (2), the day families (3), RT2, the albedo and the lit weight (4), the car family (5), RT3 (6), both (7), the traffic and the pedestrians on top (8), the night albedo recipes (9), the night baked occlusion (10)");
   Check(sp::kGBufferDayVersion == 3 && sp::kGBufferVsVersion == 1 && sp::kGBufferCarsVersion == 3, "the day stage's own version is 3 (RT3), the day vertex stage's is untouched, the car stage's is 3");
   Check(def.input_xxh3 != 0, "the helper is in the fingerprint");
   const sp::VariantDef other = sp::MakeGBufferVariantFromText(std::string(kHelper) + "// changed\n");
@@ -489,7 +490,7 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
     const sp::GBufferAlbedo albedo = sp::AnalyseGBufferAlbedo(hlsl);
     Check(albedo.found && albedo.lanes == "r6.xzw" && Count(r.hlsl, "GbAlbedoEncode(" + albedo.expression + ")") == 1, std::string(name) + ": the albedo is the diffuse fetch's lanes (" + albedo.detail + ")");
     // the colour path: nothing the game computes oC0 with is touched (the stage's insertions are all the variant does)
-    const std::string retail_diff = FirstDifference(WithoutVariant(r.hlsl, helper, sp::AnalyseGBufferNight(hlsl)), LfOnly(hlsl));
+    const std::string retail_diff = FirstDifference(WithoutVariant(r.hlsl, helper, sp::AnalyseGBufferNight(hlsl, name)), LfOnly(hlsl));
     Check(retail_diff.empty(), std::string(name) + ": with the stage's insertions taken out the retail text is the game's again, byte for byte" + retail_diff);
     if (!out.empty()) {
       std::filesystem::create_directories(out);

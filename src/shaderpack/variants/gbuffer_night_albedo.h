@@ -40,7 +40,7 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped with any change of the table below (it is part of the G-buffer variant's text: also bump gbuffer.h's kGBufferVariantVersion).
-inline constexpr uint32_t kGBufferNightAlbedoVersion = 1;
+inline constexpr uint32_t kGBufferNightAlbedoVersion = 2;  // 1: the albedo recipes; 2: the baked occlusion rows (RT2.a)
 
 enum class NightAlbedoSite : uint8_t {
   kBefore,  // the capture goes right before the anchor statement
@@ -113,6 +113,87 @@ inline const NightHeadlightExempt* FindGBufferNightHeadlightExempt(std::string_v
   }
   return nullptr;
 }
+
+// ---- the baked occlusion (RT2.a) -------------------------------------------------------------------------------------------------------------------------------------------
+// The game's lit shaders multiply the SUM of their lights (the grid's four lamps, the dynamic slots, the ambient, and the headlights the forward stage adds) by the baked occlusion the city's meshes
+// carry in the alpha of the vertex colour COLOR1 (`iColor1.w`; the windows by its square). The deferred light pass has no plane for it, so its light was brighter than the same light through the
+// forward stage by 1 / occlusion: GB-H2's A/B measured pass over forward at 2.1 to 2.2 on the walls, larger where the picture is darker (the occlusion is smallest there). RT2.a, the lit weight,
+// is the draw's weight "how much the deferred lights add", so it carries the shader's occlusion too: lit weight x saturate(occlusion), and the pass multiplies it in as it does the weight
+// (hlsl/local_light.hlsli LpPixelLight: `lit`). Measured on the retail text, h11-work/gb-h2-notes/cover/fwd_factors.py (the numeric interpreter: d [the ambient's term] / d [the input scaled by 1.25]
+// is 1.25 for iColor1.w in the 48 shaders below with power 1 and 1.5625 in the 4 windows with power 2, and 1 for every other input of the vertex stage's colours that is not the weight of a grime or
+// decal layer). The shaders that have no row do not have the factor (the LOD and foliage materials, the props' metal and default, the ocean, the emissive tints, the traffic body) or were not clean
+// in the measurement (the interior twins of the grime and decal families, whose ambient is picked with a flag), or write no albedo anyway (the interior twins of the road, the tunnel road,
+// the grime metal and the bump spec tints): they keep the draw's weight alone, exactly as before.
+struct NightOcclusionRow {
+  std::string_view name;
+  uint8_t power;  // 1: iColor1.w, 2: iColor1.w * iColor1.w
+};
+// Sorted by name.
+inline constexpr NightOcclusionRow kGBufferNightOcclusionRows[] = {
+    {"xCityBillboard__PSMultiLight", 1},
+    {"xCityBillboard__PSMultiLightInterior", 1},
+    {"xCityBumpSpec__PSMultiLight", 1},
+    {"xCityDefaultGrime__PSMultiLight", 1},
+    {"xCityDefaultGrime__PSMultiLightInterior", 1},
+    {"xCityDefaultLOD__PSMultiLight", 1},
+    {"xCityDefaultLOD__PSMultiLightInterior", 1},
+    {"xCityDefault__PSMultiLight", 1},
+    {"xCityDefault__PSMultiLightInterior", 1},
+    {"xCityGarageFloor__PSMultiLight", 1},
+    {"xCityGrass__PSMultiLight", 1},
+    {"xCityGrass__PSMultiLightInterior", 1},
+    {"xCityGrimeDecal__PSMultiLight", 1},
+    {"xCityGrimeMetalTint__PSMultiLight", 1},
+    {"xCityGrimeTintDecal__PSMultiLight", 1},
+    {"xCityGrimeTint__PSMultiLight", 1},
+    {"xCityGrime__PSMultiLight", 1},
+    {"xCityGroundDecalGrime__PSMultiLight", 1},
+    {"xCityGroundGrimeDecal__PSMultiLight", 1},
+    {"xCityGroundGrime__PSMultiLight", 1},
+    {"xCityNeon__PSMultiLight", 1},
+    {"xCityNeon__PSMultiLightInterior", 1},
+    {"xCityNormalMap__PSMultiLight", 1},
+    {"xCityNormalMap__PSMultiLightInterior", 1},
+    {"xCityPondWater__PSMultiLight", 1},
+    {"xCityPondWater__PSMultiLightInterior", 1},
+    {"xCityPowerlines__PSMultiLight", 1},
+    {"xCityRiverRoad__PSMultiLight", 1},
+    {"xCityRiverRoad__PSMultiLightEnv", 1},
+    {"xCityRiverRoad__PSMultiLightInterior", 1},
+    {"xCityRoad__PSMultiLight", 1},
+    {"xCitySidewalk__PSMultiLight", 1},
+    {"xCitySidewalk__PSMultiLightInterior", 1},
+    {"xCityStoreSign__PSMultiLight", 1},
+    {"xCityStoreSign__PSMultiLightInterior", 1},
+    {"xCityTerrain__PSMultiLight", 1},
+    {"xCityTerrain__PSMultiLightInterior", 1},
+    {"xCityTintBumpDecal2__PSMultiLight", 1},
+    {"xCityTintBumpDecal2__PSMultiLightInterior", 1},
+    {"xCityTunnelRoad__PSMultiLight", 1},
+    {"xCityWindowDirt__PSMultiLight", 2},
+    {"xCityWindowDirt__PSMultiLightInterior", 2},
+    {"xCityWindowLOD__PSMultiLight", 1},
+    {"xCityWindowLOD__PSMultiLightEnv", 1},
+    {"xCityWindowLOD__PSMultiLightInterior", 1},
+    {"xCityWindowLower__PSMultiLight", 2},
+    {"xCityWindowLower__PSMultiLightInterior", 2},
+    {"xCityWindowUpper__PSMultiLight", 1},
+    {"xCityWindowUpper__PSMultiLightInterior", 1},
+    {"xPropBumpSpecTint__PSMultiLight", 1},
+    {"xPropBumpSpec__PSMultiLight", 1},
+    {"xPropBumpSpec__PSMultiLightInterior", 1},
+};
+inline constexpr size_t kGBufferNightOcclusionRowCount = sizeof(kGBufferNightOcclusionRows) / sizeof(kGBufferNightOcclusionRows[0]);
+
+inline const NightOcclusionRow* FindGBufferNightOcclusionRow(std::string_view name) {
+  for (const NightOcclusionRow& row : kGBufferNightOcclusionRows) {
+    if (row.name == name) return &row;
+  }
+  return nullptr;
+}
+// The HLSL of a row: the interpolant the translator declares as `in centroid float4 iColor1 : COLOR1` (an input: no later statement of the shader can have changed it).
+inline std::string NightOcclusionExpression(const NightOcclusionRow& row) { return row.power == 2 ? "iColor1.w * iColor1.w" : "iColor1.w"; }
+inline constexpr std::string_view kNightOcclusionDeclaration = "in centroid float4 iColor1 : COLOR1";
 
 // A recipe's albedo for the text of its shader (pure; public for the stage, the tests and the census). `hlsl` may have any line ends; offsets are into the text with LF line ends. For a
 // kBefore / kAfter row the anchor must be one line at the top level of main (one tab of indentation) and occur exactly once in main; the result then holds the capture. For a kGlobal row the

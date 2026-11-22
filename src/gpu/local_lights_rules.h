@@ -35,6 +35,10 @@
 // 4, so 16: screen_rules.h ExposureOf, from ScreenCamera::exposure_bias) and gain is mcla_gpu_local_lights_gain (1: as read). The two constants of the shaders are read from the main view's draws
 // (the frame's vote, as the AO picks the sun's) and are CHECK until the lamp A/B holds: a mismatch that depends on height is H, one that does not is night, the exposure or the gain (a ratio near
 // 16 or 1/16 is the exposure applied twice or not at all).
+// THE BAKED OCCLUSION (GB-H2-COVER, measured on the retail text): the lit shaders also multiply the SUM of their lights by the vertex colour's alpha (iColor1.w; the windows by its square), so the
+// same headlight through the forward stage is darker than through the pass by that factor: GB-H2's A/B read pass over forward at 2.1 to 2.2 on the walls, larger where the base picture is darker.
+// The night stage writes lit weight x saturate(occlusion) to RT2.a (gbuffer_night_albedo.h kGBufferNightOcclusionRows), and `lit` below carries it, so the pass is darkened as the game's lamps are.
+// The screen space AO apply still darkens the forward light and not the pass's (the pass runs after it, by design: HP11).
 // ===========================================================================
 
 #include <algorithm>

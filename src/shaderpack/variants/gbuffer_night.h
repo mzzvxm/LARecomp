@@ -90,6 +90,7 @@ struct NightAnalysis {
   int line = -1;                 // the term's line, counted from `void main(` (0): for the census
   std::string detail;            // the census' words: where the normal comes from
   GBufferAlbedo albedo;          // RT2: the shader's diffuse texel (gbuffer_albedo.h), or its recipe's colour (gbuffer_night_albedo.h); !albedo.found when it has none (RT2 then gets the "no data" code)
+  std::string occlusion;         // RT2.a: the shader's baked occlusion as HLSL (`iColor1.w`), "" for none (gbuffer_night_albedo.h kGBufferNightOcclusionRows)
   bool recipe = false;           // the shader has a recipe in kGBufferNightAlbedoRows (the albedo is the recipe's; when its anchor is not found the transform fails instead of writing "no data")
 };
 
