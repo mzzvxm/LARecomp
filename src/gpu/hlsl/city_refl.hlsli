@@ -330,11 +330,11 @@ bool CityReflHit(float3 origin, float3 direction, CityHitTraceResult h, float co
     bool worldFrame = false;
     // CITY-M2-OPEN (city_refl_rules.h WorldLightFor): a wall of the city is lit by the WORLD's light, not by the constants of the cars' draws (the pass's own frame rows). The world frame's rows 0 to 31 are the
     // hit frame of the main view's draws (the sun and its direction, the ambient, the sky, the environment map), filled in every frame with a top level; used when the host's switch says so, the world rows are
-    // valid and the world's frame holds a light. Else the cars' frame, as before.
+    // valid and the world's frame holds a light and its sun's direction. Else the cars' frame, as before.
     if ((c.flags & kCityFlagWorldLight) != 0u && (gRtWorld[RT_WORLD_ROW_STATUS].y & RT_WORLD_VALID) != 0u)
     {
         const RtHitFrame w = RtWorldHitFrame();
-        if ((w.flags & RT_HIT_FRAME_SHADE) != 0u)
+        if ((w.flags & (RT_HIT_FRAME_SHADE | RT_HIT_FRAME_SUN)) == (RT_HIT_FRAME_SHADE | RT_HIT_FRAME_SUN))
         {
             f = w;
             worldFrame = true;

@@ -265,16 +265,17 @@ constexpr float GlowFactorFor(const LampTerm& t, uint32_t kind, float street, fl
 // the light of a city hit (CITY-M2-OPEN: the twin of hlsl CityReflHit's frame choice)
 // ---------------------------------------------------------------------------
 
-// The hit frame's flag that says the frame holds a light to shade with (rt_hit_frame.h kFrameShade; hlsl RT_HIT_FRAME_SHADE).
+// The hit frame's flags that say the frame holds a light to shade with and the direction of its sun (rt_hit_frame.h kFrameShade, kFrameSun; hlsl RT_HIT_FRAME_SHADE, RT_HIT_FRAME_SUN).
 inline constexpr uint32_t kFrameShadeFlag = 1;
+inline constexpr uint32_t kFrameSunFlag = 8;
 
 // Whose light a city hit is shaded with. The paint pass's own frame rows (the car scene's binding 5) are the CARS' light: the constants of the player's car draws, whose sun direction is a rig of its own
 // (car_shadow_map.h: at 17.7 h it is 2 degrees BELOW the horizon while the world's sun is well above it) and whose ambient and sun are not the city's. A wall of the city is lit by the WORLD's light (the
 // world frame's rows 0 to 31: the sun, ambient, sky and environment map of the main view's draws, which is what lights the street the picture shows; rt_world_frame.h says a city hit wants it, and the
-// probe field's and the pixel GI's hits take it). The world's is used when the host's switch is on, the world rows were filled this frame (kWorldValid) and the world's frame holds a light (kFrameShade);
-// else the cars' (the pass as it was).
+// probe field's and the pixel GI's hits take it). The world's is used when the host's switch is on, the world rows were filled this frame (kWorldValid) and the world's frame holds a light AND the direction
+// of its sun (kFrameShade and kFrameSun: without a direction the library lights a wall by an up pointing sun, which is none for a facade; the cars' frame may have one); else the cars' (the pass as it was).
 constexpr bool WorldLightFor(bool world_light_flag, uint32_t world_flags, uint32_t world_frame_flags) {
-  return world_light_flag && (world_flags & kWorldValidFlag) != 0 && (world_frame_flags & kFrameShadeFlag) != 0;
+  return world_light_flag && (world_flags & kWorldValidFlag) != 0 && (world_frame_flags & (kFrameShadeFlag | kFrameSunFlag)) == (kFrameShadeFlag | kFrameSunFlag);
 }
 
 // ---------------------------------------------------------------------------

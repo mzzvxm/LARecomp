@@ -402,11 +402,12 @@ int main(int argc, char** argv) {
     }
     // CITY-M2-OPEN: whose light a city hit is shaded with (WorldLightFor, the twin of the shader's frame choice): the world's only with the switch, valid world rows and a light in the world's frame
     {
-      const uint32_t valid = cr::kWorldValidFlag, shade = cr::kFrameShadeFlag;
-      Check(cr::WorldLightFor(true, valid, shade) && cr::WorldLightFor(true, valid | 4u | 8u, shade | 2u | 8u | 16u), "the world's light is taken with the switch on, valid world rows and a light in the world's frame");
-      Check(!cr::WorldLightFor(false, valid, shade) && !cr::WorldLightFor(true, 0u, shade) && !cr::WorldLightFor(true, valid, 0u) && !cr::WorldLightFor(true, 4u, shade) && !cr::WorldLightFor(true, valid, 2u | 8u),
-            "the cars' light is kept (the pass as it was) with the switch off, world rows not valid, or no light in the world's frame");
-      Check(cr::kFrameShadeFlag == 1 && cr::kWorldValidFlag == 1, "the two flags are the world frame's and the hit frame's (RT_WORLD_VALID, RT_HIT_FRAME_SHADE)");
+      const uint32_t valid = cr::kWorldValidFlag, shade = cr::kFrameShadeFlag | cr::kFrameSunFlag;
+      Check(cr::WorldLightFor(true, valid, shade) && cr::WorldLightFor(true, valid | 4u | 8u, shade | 2u | 4u | 16u), "the world's light is taken with the switch on, valid world rows and a light and a sun direction in the world's frame");
+      Check(!cr::WorldLightFor(false, valid, shade) && !cr::WorldLightFor(true, 0u, shade) && !cr::WorldLightFor(true, valid, 0u) && !cr::WorldLightFor(true, 4u, shade) && !cr::WorldLightFor(true, valid, 2u | 4u) &&
+                !cr::WorldLightFor(true, valid, cr::kFrameShadeFlag) && !cr::WorldLightFor(true, valid, cr::kFrameSunFlag),
+            "the cars' light is kept (the pass as it was) with the switch off, world rows not valid, no light or no sun direction in the world's frame");
+      Check(cr::kFrameShadeFlag == 1 && cr::kFrameSunFlag == 8 && cr::kWorldValidFlag == 1, "the flags are the world frame's and the hit frame's (RT_WORLD_VALID, RT_HIT_FRAME_SHADE, RT_HIT_FRAME_SUN)");
     }
     in.lamps = true;
     in.level = cr::Level::kOff;
@@ -654,8 +655,8 @@ int main(int argc, char** argv) {
               "hlsl/city_refl.hlsli: the world's lamp factor and grid where the switch is on and the rows valid (one load of the status row), else the sun's schedule and no lamp flag (LampTermFor, LampFlags)");
         // CITY-M2-OPEN: the frame choice (WorldLightFor) and the light's counters; the pass's own frame rows (the cars') are the fallback
         Check(Has(hlsli, "RtHitFrame f = RtHitLoadFrame();") && Has(hlsli, "(c.flags & kCityFlagWorldLight) != 0u && (gRtWorld[RT_WORLD_ROW_STATUS].y & RT_WORLD_VALID) != 0u") && Has(hlsli, "const RtHitFrame w = RtWorldHitFrame();") &&
-                  Has(hlsli, "if ((w.flags & RT_HIT_FRAME_SHADE) != 0u)") && Has(hlsli, "f = w;") && Has(hlsli, "worldFrame = true;"),
-              "hlsl/city_refl.hlsli: the world's hit frame where the switch is on, the world rows are valid and the frame holds a light (one load of the status row), else the cars' frame");
+                  Has(hlsli, "if ((w.flags & (RT_HIT_FRAME_SHADE | RT_HIT_FRAME_SUN)) == (RT_HIT_FRAME_SHADE | RT_HIT_FRAME_SUN))") && Has(hlsli, "f = w;") && Has(hlsli, "worldFrame = true;"),
+              "hlsl/city_refl.hlsli: the world's hit frame where the switch is on, the world rows are valid and the frame holds a light and a sun direction (one load of the status row), else the cars' frame");
         Check(Has(hlsli, "CityStat(r.ndl > 0.0 ? (r.visible > 0.0 ? kCityStatSunLit : kCityStatSunBlocked) : kCityStatSunAway, 1u);") && Has(hlsli, "CityStat(kCityStatBehind, (origin.z + direction.z * h.t) < 0.0 ? 1u : 0u);") &&
                   Has(hlsli, "CityStat(kCityStatWorldFrame, worldFrame ? 1u : 0u);") && Has(hlsli, "if (r.source != CITY_HIT_SOURCE_SCREEN)"),
               "hlsl/city_refl.hlsli: a shaded hit counts in exactly one of lit, blocked, away, and in behind and world frame by its own test");
