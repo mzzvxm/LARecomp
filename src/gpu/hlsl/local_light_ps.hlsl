@@ -17,7 +17,7 @@
 //                  shading one (normal-mapped) and would tilt the plane the wrong way at a grazing angle.
 //
 //   the ray traced visibility (RT-LIGHTS-D1, hlsl/rt_mask_read.hlsli): a light with the flag LL_FLAG_RT_VISIBILITY (and the table in the buffer: LP_FLAG_RT_MASK) reads its channel of the filtered images the ray
-//                  pass wrote just before (at the occlusion's traced size: a depth guided bilinear above 1080 lines) and multiplies it with the atlas's visibility (the product: two partial caster sets);
+//                  pass wrote just before (at the mask's size: the occlusion's traced size over the table's step; a depth guided bilinear unless the mask is the picture's size) and multiplies it with the atlas's visibility (the product: two partial caster sets);
 //                  a light the game lights is only ever TAKEN AWAY from (-term x (1 - V)), so with V = 1 the pixel is the game's. A lamp with a channel and no atlas views is looked at too.
 //                  The table's view flag draws the visibility as a picture instead (mcla_gpu_rt_lights_view).
 //
@@ -65,7 +65,7 @@ static uint LpAtlasLayers = 0u;
 static uint LpLampLayersLo = 0u;  // LAMP-SHADOWS-4: the layers of the lamps' table's entries 0..15 and 16..31
 static uint LpLampLayersHi = 0u;
 
-// The seams of hlsl/rt_mask_read.hlsli: the mask images and the occlusion's linear depth image are heap textures at the traced size (set 0, whatever LL_PASS_MS says: they are no multisampled planes).
+// The seams of hlsl/rt_mask_read.hlsli: the mask images (at the mask's size) and the occlusion's linear depth image (at the traced size) are heap textures (set 0, whatever LL_PASS_MS says: they are no multisampled planes).
 float4 RtmLoadMask(uint slot, int2 p) {
   return g_textures[slot].Load(int3(p, 0));
 }
@@ -76,7 +76,8 @@ float RtmLoadDepth(uint slot, int2 p) {
 RtmTable LpLoadRtTable() {
   const uint4 a = g_lights.Load4(LP_RT_OFFSET);          // images, flags, width, height
   const uint4 b = g_lights.Load4(LP_RT_OFFSET + 16u);    // the filtered images' slots, the linear depth image's slot
-  const uint4 c = g_lights.Load4(LP_RT_OFFSET + 32u);    // the raw images' slots
+  const uint4 c = g_lights.Load4(LP_RT_OFFSET + 32u);    // the raw images' slots, the step (the traced pixels a mask texel spans)
+  const uint4 d = g_lights.Load4(LP_RT_OFFSET + 48u);    // the depth guide's sigma, the occlusion's traced size
   RtmTable t;
   t.images = a.x;
   t.flags = a.y;
@@ -89,7 +90,10 @@ RtmTable LpLoadRtTable() {
   t.raw0 = c.x;
   t.raw1 = c.y;
   t.raw2 = c.z;
-  t.depth_sigma = asfloat(g_lights.Load(LP_RT_OFFSET + 48u));
+  t.step = c.w;
+  t.depth_sigma = asfloat(d.x);
+  t.traced_w = d.y;
+  t.traced_h = d.z;
   return t;
 }
 

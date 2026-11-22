@@ -999,6 +999,10 @@ larecomp_gpu_host_shader(rt_denoise_plain_temporal_cs cs_6_0)
 # The same two stages with the DIFFUSE profile (the probe field's per-pixel detail pass's denoiser, gi_pixel.h): a fixed radius of six pixels that shortens as the history grows, no hit distance, looser weights.
 larecomp_gpu_host_shader(rt_denoise_diffuse_spatial_cs cs_6_0 SOURCE rt_denoise_plain_spatial_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE)
 larecomp_gpu_host_shader(rt_denoise_diffuse_temporal_cs cs_6_0 SOURCE rt_denoise_plain_temporal_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE)
+# The same two stages over 8 bit images and lighter guides (the ray traced light visibility, rt_lights.h, RT-LIGHTS-D1 part 2): RGBA8 signal and results (the history's length in the alpha as n / 32, the
+# temporal pass keeps the 8 bit average from stalling: hlsl/rt_denoise_unorm8.hlsli), R16F depth, the normal and the share in one RGBA8 snorm image (RT_DN_VIS in hlsl/rt_denoise_plain_consumer.hlsli).
+larecomp_gpu_host_shader(rt_denoise_vis_spatial_cs cs_6_0 SOURCE rt_denoise_plain_spatial_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1)
+larecomp_gpu_host_shader(rt_denoise_vis_temporal_cs cs_6_0 SOURCE rt_denoise_plain_temporal_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1)
 # DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): the five guide images from the G-buffer's planes in one compute pass at the anchor (over planes with one sample and over the host's MSAA
 # level), and the debug view that draws one of them over the upscaler's output. Plain Shader Model 6.0 compute for both backends.
 larecomp_gpu_host_shader(rr_guides_cs cs_6_0 DEFINES RR_MS=0)

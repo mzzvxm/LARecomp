@@ -22,8 +22,15 @@
 // mcla_gpu_rt_lights_radius (metres, 0: by class), mcla_gpu_rt_lights_rays (1 to 4 a light and pixel), mcla_gpu_rt_lights_view (0 off, 1 the filtered visibility drawn instead of the lights, 2 the raw one),
 // mcla_gpu_rt_lights_check (0, 1 every visibility 1, 2 every visibility 0). The noise follows mcla_gpu_noise_blue.
 //
-// MEMORY. 68 bytes a pixel of the traced size for a group of three lights and 28 for the guides (rt_lights_rules.h HeldBytes): 116 MiB at a traced 1080 lines for K 3, 233 MiB for K 6 (RtDenoise's four
-// RGBA16F images a group are most of it). vram_budget.h's AddHolder asks HeldBytes(). CHECK (C15): part 2 measures it and decides between half-size groups, 8 bit images and a four channel consumer.
+// MEMORY (part 2, C15: rt_lights_rules.h "the memory"). The pass is traced at the MASK's size (the occlusion's traced size over a step of 1, or 2 where that size is taller than 720 lines:
+// mcla_gpu_rt_lights_scale), every image is 8 bit (the signal and RtDenoise's four a group RGBA8, the depth guides R16F, the normal and the share one RGBA8 snorm, no hit image): 28 bytes a mask texel
+// for K 3, 13.8 MiB at 1080p and at 4K and 24.6 MiB at 1440p, against part 1's 118.7 / 118.7 / 52.7 MiB. The light pass reads the mask back by a depth guided bilinear. vram_budget.h's AddHolder
+// asks HeldBytes(); the census line says it. CHECK (C15): the numbers on a device (the `[rt lights] the pass's images` line), the 8 bit history's look (the stall rule: Nudge8), the upsample's look at 4K.
+//
+// RAW MODE (part 2, the Ray Reconstruction hook, perf/DLSS-RR.md; dlss_rr_rules.h RawModes().RtLights()). SetRawMode(true) before Plan, in a frame DLSS Ray Reconstruction takes and
+// mcla_gpu_dlss_rr_rt_lights is not 0: the trace runs as always, RtDenoise's two stages do NOT (RR is the denoiser: its input is the picture the light pass draws with the 1 spp visibility in it), the
+// light pass reads the unfiltered signal (the mask table's slots are the signal images', kMaskFlagRrRaw), no history is written (the next frame that is not raw starts it again: RtDenoise's history
+// is the last filtered result) and the guide pass gets no hit distance from it (a visibility has none: NVIDIA's advice for a diffuse term, G6-4). auto_uses_rr stays false until the D4 A/B (C11).
 //
 // CHECK (nothing here was run: no build, no game; each is a line of the first runs; perf/RT-LIGHTS-D1.md has them with the chain):
 //   D1-1  the trace layout's three sets and the push block at space 3, and the pass set's eight views (D3D12 counts them: descriptor_count_test reads it); the debug layer and Vulkan validation clean
@@ -99,6 +106,10 @@ class RtLights {
   // `ultra`: the largest LIGHT SHADOWS level (K 6 where the setting says the level's).
   void BeginFrame(bool pass_runs, bool ultra);
   bool wanted() const { return wanted_; }
+  // RT-LIGHTS-D1 part 2: Ray Reconstruction takes this frame and the effect's switch is on (TemporalSystem::RawModes().RtLights()), asked once a frame before Plan: the filter is skipped, the light pass reads the
+  // 1 spp signal. False (the default, and every frame RR does not take) is the pass as it was.
+  void SetRawMode(bool raw) { raw_requested_ = raw; }
+  bool raw_frame() const { return raw_frame_; }
 
   // 1. BEFORE the pass's selection: the nearest street lamps of the game's list that no provider handed over (`extras` holds the atlas's lamps: a lamp with the same id is not made twice), as lights the game
   // lights with no atlas views, at most K, appended. `position` is the camera's. Returns how many. Nothing while the pass is not wanted.
@@ -107,7 +118,7 @@ class RtLights {
   // not picked is taken out). True when the pass will run this frame (RecordTrace and RecordDenoise follow, then Masks()).
   bool Plan(const Inputs& in, larecomp::gpu::local_lights::Selection* selection);
   void RecordTrace(plume::RenderCommandList* list);
-  void RecordDenoise(plume::RenderCommandList* list);
+  void RecordDenoise(plume::RenderCommandList* list);   // the filter; in a raw frame (SetRawMode) no filter: the light pass reads the signal
   // What the light pass is handed: valid only after RecordDenoise of a frame that ran.
   const larecomp::gpu::rt_lights::MaskFrame& Masks() const { return masks_; }
   bool ran_this_frame() const { return ran_frame_ == frame_; }
@@ -131,6 +142,8 @@ class RtLights {
   bool EnsureImages(uint32_t width, uint32_t height, uint32_t groups);
   bool EnsureSlot(uint32_t frame_slot);
   void ReleaseImages();
+  void RecordRaw(plume::RenderCommandList* list);
+  larecomp::gpu::rt_lights::MaskInputs MakeMaskInputs() const;
   void RetireSets();
   void ProcessReadback(uint64_t frame, uint64_t generation);
   void LogInterval(uint64_t frame, const std::array<uint32_t, larecomp::gpu::rt_lights::kStatWords>& delta);
@@ -150,18 +163,17 @@ class RtLights {
   bool pipeline_failed_ = false;
   bool listed_ = false;
   plume::RenderDescriptorSetBuilder pass_set_builder_;
-  uint32_t rows_index_ = 0, signal_index_[3] = {0, 0, 0}, depth_index_ = 0, normal_index_ = 0, hit_index_ = 0, stats_index_ = 0;
+  uint32_t rows_index_ = 0, signal_index_[3] = {0, 0, 0}, depth_index_ = 0, normal_index_ = 0, stats_index_ = 0;
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::unique_ptr<plume::RenderShader> shader_;
   std::unique_ptr<plume::RenderPipeline> pipeline_;
   std::array<Slot, kFramesInFlight> slots_;
   std::array<RtDenoise, larecomp::gpu::rt_lights::kMaxImages> denoise_;   // one a group of three lights: instances 2 to 4
 
-  // The images: the signals (a group each), the depth guide (two, by parity), the view normal guide, the hit and share image.
+  // The images, all at the MASK's size: the signals (a group each, RGBA8), the depth guide (R16F, two, by parity), the view normal guide with the share in its alpha (RGBA8 snorm).
   std::array<HostImage, larecomp::gpu::rt_lights::kMaxImages> signal_;
   std::array<HostImage, 2> depth_;
   HostImage normal_;
-  HostImage hit_;
   uint64_t image_serial_ = 0;
   uint32_t image_width_ = 0, image_height_ = 0, image_groups_ = 0;
   uint32_t idle_frames_ = 0;
@@ -181,6 +193,8 @@ class RtLights {
   uint32_t rays_ = 1;
   int view_ = 0;
   int check_ = 0;
+  int scale_setting_ = 0;
+  bool raw_requested_ = false;
   bool blue_ = true;
   bool lamp_hook_on_ = false;
   bool ultra_ = false;
@@ -191,6 +205,7 @@ class RtLights {
   Inputs in_;
   larecomp::gpu::rt_lights::Why why_ = larecomp::gpu::rt_lights::Why::kOff;
   uint32_t k_ = 0;
+  uint32_t step_ = 1;                                  // the traced pixels a mask texel spans on an axis this frame
   uint32_t groups_ = 0;
   uint32_t light_count_ = 0;
   larecomp::gpu::rt_lights::Assignment channels_;      // who holds each channel, as of the last Plan that ran
@@ -200,6 +215,7 @@ class RtLights {
   uint32_t parity_ = 0;                                // the depth guide this frame's trace writes
   bool stats_frame_ = false;
   bool history_ok_ = false;                            // this frame may read the last frame's result (the previous frame, the same size, no cut)
+  bool raw_frame_ = false;                             // this frame is raw: Ray Reconstruction is the denoiser (SetRawMode, taken at Plan)
   uint64_t frame_ = 0;
   uint64_t ran_frame_ = ~uint64_t(0);
   bool ran_since_present_ = false;
@@ -210,14 +226,17 @@ class RtLights {
   gi_pixel::CameraPose prev_pose_;
   float prev_tan_[2] = {1, 1};
   uint32_t prev_size_[2] = {0, 0};
+  uint32_t prev_step_ = 1;
   uint32_t history_frames_ = 0;
   std::array<larecomp::gpu::rt_lights::GpuRtLight, larecomp::gpu::rt_lights::kMaxLights> rows_{};
   std::array<larecomp::gpu::rt_lights::Class, larecomp::gpu::rt_lights::kMaxLights> classes_{};
 
   // The log and the totals.
   bool first_logged_ = false;
+  bool raw_logged_ = false;
   uint32_t last_state_ = ~0u;
   uint64_t frames_run_ = 0;
+  uint64_t raw_frames_ = 0;
   uint64_t lamps_handed_ = 0;
   std::array<uint64_t, size_t(larecomp::gpu::rt_lights::Why::kCount)> why_counts_ = {};
   std::array<uint64_t, 4> class_lights_ = {};          // lights that held a channel, summed over the frames that ran, by Class

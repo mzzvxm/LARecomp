@@ -31,7 +31,9 @@ namespace Stage = plume::RenderBarrierStage;
 // start and end
 // ---------------------------------------------------------------------------
 
-void RtDenoise::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, uint32_t instance, const char* name, const Blob& spatial, const Blob& temporal) {
+void RtDenoise::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, uint32_t instance, const char* name, const Blob& spatial, const Blob& temporal,
+                           rt_denoise::Format format) {
+  format_ = format;
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -160,7 +162,8 @@ void RtDenoise::RetireSet(uint32_t slot) {
 
 bool RtDenoise::EnsureImage(uint32_t slot, uint32_t width, uint32_t height) {
   const plume::RenderTexture* before = images_[slot].texture.get();
-  if (!passes_->EnsureImage(images_[slot], width, height, plume::RenderFormat::R16G16B16A16_FLOAT, "rt denoise image", kImageFlags)) {
+  const plume::RenderFormat format = format_ == rt_denoise::Format::kRgba8 ? plume::RenderFormat::R8G8B8A8_UNORM : plume::RenderFormat::R16G16B16A16_FLOAT;
+  if (!passes_->EnsureImage(images_[slot], width, height, format, "rt denoise image", kImageFlags)) {
     return false;
   }
   if (images_[slot].texture.get() != before) {
@@ -202,7 +205,7 @@ uint64_t RtDenoise::HeldBytes() const {
   uint64_t bytes = 0;
   for (const HostImage& image : images_) {
     if (image.texture) {
-      bytes += rt_denoise::ImageBytes(image.width, image.height);
+      bytes += rt_denoise::ImageBytes(image.width, image.height, format_);
     }
   }
   return bytes;

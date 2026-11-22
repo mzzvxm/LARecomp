@@ -58,8 +58,9 @@ class RtDenoise {
   RtDenoise& operator=(const RtDenoise&) = delete;
 
   // Makes the layout and the shaders. `instance` numbers the consumer among the host precache's keys (0 to 15), `name` is for the logs and the labels. Never fails the renderer: without them nothing
-  // is recorded (the effect keeps its own picture).
-  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, uint32_t instance, const char* name, const Blob& spatial, const Blob& temporal);
+  // is recorded (the effect keeps its own picture). `format`: the result images' (RGBA16F; RGBA8 for a consumer whose shaders are compiled with RT_DN_OUT_UNORM8: the ray traced light visibility).
+  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, uint32_t instance, const char* name, const Blob& spatial, const Blob& temporal,
+                  rt_denoise::Format format = rt_denoise::Format::kRgba16f);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
   bool available() const { return ready_; }
@@ -113,6 +114,7 @@ class RtDenoise {
   HostPasses* passes_ = nullptr;
   std::string name_;
   uint32_t instance_ = 0;
+  rt_denoise::Format format_ = rt_denoise::Format::kRgba16f;
   bool ready_ = false;
 
   plume::RenderDescriptorSetBuilder output_builder_;   // u0: the result image

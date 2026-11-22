@@ -1,17 +1,18 @@
 // MCLA GPU renderer -- the ray traced visibility of the top K lights: the trace (rt_lights.h, rt_lights_rules.h; perf/RT-DIRECT-SURVEY.md section 4 O1; RT-LIGHTS-D1 part 1).
 //
-// One thread is one pixel of the occlusion's TRACED size (its linear depth image, R32F, the vehicle mark in its lowest mantissa bit). For every light of the frame's top K (the rows: a 64 byte header and
-// up to nine 64 byte lights) that can light the pixel (inside its range and cone, facing it: hlsl/rt_lights_common.hlsli RtvReaches) the thread sends `rays` rays to points of the light's disc against the top
-// level (the city's structures, mask 0x80, and the cars' parts: the first hit ends the search, a non opaque triangle blocks by a coin of the blue noise) and writes the share of them that arrived:
-//   the signal images   three RGBA16F images (a light's CHANNEL = image x 3 + component, rgb; the alpha is RtDenoise's): the visibility 0 .. 1, 1 where the light does not reach the pixel or the pixel
+// One thread is one texel of the MASK: the traced pixel (id x step) of the occlusion's TRACED size (its linear depth image, R32F, the vehicle mark in its lowest mantissa bit; step 1, or 2 where that
+// size is taller than 720 lines: rt_lights_rules.h "the memory"). For every light of the frame's top K (the rows: a 64 byte header and up to nine 64 byte lights) that can light the pixel (inside its
+// range and cone, facing it: hlsl/rt_lights_common.hlsli RtvReaches) the thread sends `rays` rays to points of the light's disc against the top level (the city's structures, mask 0x80, and the cars'
+// parts: the first hit ends the search, a non opaque triangle blocks by a coin of the blue noise) and writes the share of them that arrived:
+//   the signal images   three RGBA8 images (a light's CHANNEL = image x 3 + component, rgb; the alpha is RtDenoise's): the visibility 0 .. 1, 1 where the light does not reach the pixel or the pixel
 //                       is not a surface to judge (the sky, a vehicle: its light is its own pass's; or beyond the range);
-//   the guides          the denoiser's (hlsl/rt_denoise_plain_consumer.hlsli): the depth along the view axis (R32F, 0 where not signal), the view space normal facing the camera and the roughness 1 (RGBA16F),
-//                       the hit distance 0 and the share 1 where some light of the frame reaches the pixel (RG16F).
+//   the guides          the denoiser's (hlsl/rt_denoise_plain_consumer.hlsli, RT_DN_VIS): the depth along the view axis (R16F, 0 where not signal), the view space normal facing the camera with the
+//                       share in its alpha, 1 where some light of the frame reaches the pixel (RGBA8 snorm); no hit image: a visibility has no hit distance.
 // THE IDENTITY. With mcla_gpu_rt_lights_check 1 (kFlagCheckVisible) the rays are still traced and every visibility is written as 1; with 2 (kFlagCheckBlocked) as 0 where the light reaches the pixel.
 // THE NOISE (AGENT-RULE-NOISE): the shared per-frame blue noise at RtvSampleIndex(frame, light, slot): nothing is a fixed lattice. The first versions' gradient noise is the debug comparison (kFlagBlue off).
 //
 // Layout (rt_lights.cpp): set 0 (space0) the bindless Texture2D<float4>[] (the linear depth image by its slot), set 1 (space1) this pass's own: t0 the rows, u1 u2 u3 the signal images, u4 the depth guide,
-// u5 the normal guide, u6 the hit / share guide, u7 the counters; set 2 (space2) the ray tracing set (the car scene's t0..t3, the world frame's t10 and t11: CAR_RT_SPACE 2); the push block at (b0, space3).
+// u5 the normal and share guide, u6 the counters; set 2 (space2) the ray tracing set (the car scene's t0..t3, the world frame's t10 and t11: CAR_RT_SPACE 2); the push block at (b0, space3).
 // Shader Model 6.5 (DXIL), SPIR-V 1.5 for Vulkan 1.2 (VK_KHR_ray_query). Wave intrinsics (SM 6.0) add the counters a wave at a time.
 
 #define CAR_RT_SPACE 2
@@ -25,21 +26,19 @@ Texture2D<float4> g_textures[] : register(t0, space0);
 ByteAddressBuffer g_rows : register(t0, space1);
 #ifdef __spirv__
 // Vulkan takes the format of a storage image from the shader (rt_lights.cpp EnsureImages makes them these).
-[[vk::image_format("rgba16f")]] RWTexture2D<float4> g_signal0 : register(u1, space1);
-[[vk::image_format("rgba16f")]] RWTexture2D<float4> g_signal1 : register(u2, space1);
-[[vk::image_format("rgba16f")]] RWTexture2D<float4> g_signal2 : register(u3, space1);
-[[vk::image_format("r32f")]] RWTexture2D<float> g_depth : register(u4, space1);
-[[vk::image_format("rgba16f")]] RWTexture2D<float4> g_normal : register(u5, space1);
-[[vk::image_format("rg16f")]] RWTexture2D<float2> g_hit : register(u6, space1);
+[[vk::image_format("rgba8")]] RWTexture2D<float4> g_signal0 : register(u1, space1);
+[[vk::image_format("rgba8")]] RWTexture2D<float4> g_signal1 : register(u2, space1);
+[[vk::image_format("rgba8")]] RWTexture2D<float4> g_signal2 : register(u3, space1);
+[[vk::image_format("r16f")]] RWTexture2D<float> g_depth : register(u4, space1);
+[[vk::image_format("rgba8snorm")]] RWTexture2D<float4> g_normal : register(u5, space1);
 #else
 RWTexture2D<float4> g_signal0 : register(u1, space1);
 RWTexture2D<float4> g_signal1 : register(u2, space1);
 RWTexture2D<float4> g_signal2 : register(u3, space1);
 RWTexture2D<float> g_depth : register(u4, space1);
 RWTexture2D<float4> g_normal : register(u5, space1);
-RWTexture2D<float2> g_hit : register(u6, space1);
 #endif
-RWByteAddressBuffer g_stats : register(u7, space1);
+RWByteAddressBuffer g_stats : register(u6, space1);
 
 #include "rt_world_frame.hlsli"
 #include "blue_noise_frame.hlsli"
@@ -63,7 +62,7 @@ static const uint kFlagStats = 1u << 0;
 static const uint kFlagCheckVisible = 1u << 1;
 static const uint kFlagCheckBlocked = 1u << 2;
 static const uint kFlagBlue = 1u << 3;
-static const uint kStatPixels = 0;                  // pixels of the image
+static const uint kStatPixels = 0;                  // texels of the mask
 static const uint kStatWorld = 1;                   // ... that are a surface to judge (not the sky, not a vehicle, within the range, the world frame's rows valid)
 static const uint kStatCovered = 2;                 // ... that some light of the frame reaches
 static const uint kStatPairs = 3;                   // (pixel, light) pairs that reach
@@ -183,15 +182,18 @@ void AddWaveSum(uint word, uint value)
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
-    const uint4 h0 = g_rows.Load4(0);                 // width, height, frame, flags
-    const uint4 h1 = g_rows.Load4(16);                // light count, rays, (unused ray mask), unused
+    const uint4 h0 = g_rows.Load4(0);                 // the mask's width and height, frame, flags
+    const uint4 h1 = g_rows.Load4(16);                // light count, rays, (unused ray mask), step
     const float4 h2 = asfloat(g_rows.Load4(32));      // tan half fov x and y, the farthest pixel judged
+    const uint4 h3 = g_rows.Load4(48);                // the occlusion's traced size
     if (id.x >= h0.x || id.y >= h0.y)
     {
         return;
     }
-    const int2 p = int2(id.xy);
-    const uint2 size = uint2(h0.x, h0.y);
+    // the texel stands for the traced pixel at the corner of its block (step 1: the pixel itself); `size` is the TRACED image's
+    const uint step = clamp(h1.w, 1u, 2u);
+    const uint2 size = (h3.x != 0u && h3.y != 0u) ? uint2(h3.x, h3.y) : uint2(h0.x * step, h0.y * step);
+    const int2 p = int2(min(id.x * step, size.x - 1u), min(id.y * step, size.y - 1u));
     const uint frame = h0.z;
     const uint flags = h0.w;
     const uint lightCount = min(h1.x, kRtvMaxLights);
@@ -216,7 +218,7 @@ void main(uint3 id : SV_DispatchThreadID)
 
     if (world)
     {
-        const float3 P = ViewPos(float2(id.xy) + 0.5, float2(size), t, tanHalf);
+        const float3 P = ViewPos(float2(p) + 0.5, float2(size), t, tanHalf);
         float3 N = NormalFromDepth(p, int2(size), t, P, tanHalf);
         if (dot(N, P) > 0.0)
         {
@@ -286,18 +288,17 @@ void main(uint3 id : SV_DispatchThreadID)
 
     const bool signal = world && coveredLights != 0u;
     const uint groups = min(g_push.slots.y, 3u);
-    g_signal0[p] = float4(vis[0], vis[1], vis[2], 1.0);
+    g_signal0[id.xy] = float4(vis[0], vis[1], vis[2], 1.0);
     if (groups > 1u)
     {
-        g_signal1[p] = float4(vis[3], vis[4], vis[5], 1.0);
+        g_signal1[id.xy] = float4(vis[3], vis[4], vis[5], 1.0);
     }
     if (groups > 2u)
     {
-        g_signal2[p] = float4(vis[6], vis[7], vis[8], 1.0);
+        g_signal2[id.xy] = float4(vis[6], vis[7], vis[8], 1.0);
     }
-    g_depth[p] = world ? t : 0.0;
-    g_normal[p] = float4(normal, 1.0);
-    g_hit[p] = float2(0.0, signal ? 1.0 : 0.0);
+    g_depth[id.xy] = world ? t : 0.0;
+    g_normal[id.xy] = float4(normal, signal ? 1.0 : 0.0);
 
     if ((flags & kFlagStats) != 0u)
     {

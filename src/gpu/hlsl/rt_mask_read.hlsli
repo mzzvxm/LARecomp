@@ -1,11 +1,13 @@
 // MCLA GPU renderer -- reading a light's ray traced visibility in the deferred light pass (rt_lights_rules.h GpuRtMaskTable; hlsl/local_light_ps.hlsl; RT-LIGHTS-D1).
 //
-// A light's visibility is one channel (rgb of an RGBA16F image: channel = image x 3 + component) of the filtered images the ray pass wrote at the occlusion's TRACED size, which is the picture's size
-// or, above 1080 lines of render height, half of it on each axis. This reads it at a pixel of the PICTURE:
-//   the same size       the texel itself;
-//   a smaller one       a DEPTH-AWARE BILINEAR: the four traced texels round the pixel's place weighed by the bilinear weights and by how near each texel's depth is to the pixel's own (the occlusion's
-//                       linear depth image, the vehicle bit in its lowest mantissa bit cleared: a texel on the other side of a silhouette is another surface and takes no part), and the nearest texel
-//                       where no tap counts. The weight of a tap is 1 / (1 + (dz / (sigma t))^2), sigma = the table's depth_sigma (0.05: five per cent of the pixel's distance).
+// A light's visibility is one channel (rgb of an RGBA8 image: channel = image x 3 + component) of the filtered images the ray pass wrote at the MASK's size: the occlusion's TRACED size over the
+// table's `step` (1, or 2 where the traced size is taller than 720 lines: a mask texel is the traced pixel at the corner of a 2 x 2 block), and the traced size is the picture's size or less (half of
+// it above 1080 lines of render height, or at the AO's lower quality). This reads it at a pixel of the PICTURE:
+//   the same size       the texel itself (a whole mask the size of the picture);
+//   any other           a DEPTH-AWARE BILINEAR: the four mask texels round the pixel's place weighed by the bilinear weights and by how near each texel's depth is to the pixel's own (the occlusion's
+//                       linear depth image at the traced pixel the texel stands for, the vehicle bit in its lowest mantissa bit cleared: a texel on the other side of a silhouette is another surface and
+//                       takes no part), and the nearest texel where no tap counts. The weight of a tap is 1 / (1 + (dz / (sigma t))^2), sigma = the table's depth_sigma (0.05: five per cent of the pixel's distance).
+//                       The texel i stands for the traced pixel i x step, whose centre is at i x step + 0.5 traced pixels: the pixel's place is ((p + 0.5) x traced / picture - 0.5) / step texels.
 // A value that is not a number, or outside [0, 1], is cleaned (rt_lights_rules.h CleanVisibility): NaN and infinity are 1 (lit: they take nothing away), the rest is clamped.
 //
 // THE SEAMS. The file DECLARES these two and the including shader DEFINES them, anywhere after the include (the pass reads the images through the heap's bindless set 0; the test through arrays):
@@ -35,12 +37,15 @@ struct RtmTable {
   uint raw0;
   uint raw1;
   uint raw2;
+  uint step;
   float depth_sigma;
+  uint traced_w;
+  uint traced_h;
 };
 
 // The seams (the including shader defines them).
-float4 RtmLoadMask(uint slot, int2 p);
-float RtmLoadDepth(uint slot, int2 p);
+float4 RtmLoadMask(uint slot, int2 p);                 // one texel of a mask image at the mask's size (the index is in range)
+float RtmLoadDepth(uint slot, int2 p);                 // the raw value of the occlusion's linear depth image at the TRACED size
 
 bool RtmValid(RtmTable t) {
   return (t.flags & RTM_VALID) != 0u && t.images != 0u && t.width != 0u && t.height != 0u;
@@ -90,6 +95,17 @@ float RtmDepthWeight(float z, float t, float sigma) {
   return 1.0f / (1.0f + d * d);
 }
 
+// The traced size of a table (a table of part 1 had none: the mask was the traced size), and its step.
+uint RtmStep(RtmTable tb) {
+  return tb.step < 2u ? 1u : 2u;
+}
+float RtmTracedW(RtmTable tb) {
+  return tb.traced_w != 0u ? float(tb.traced_w) : float(tb.width * RtmStep(tb));
+}
+float RtmTracedH(RtmTable tb) {
+  return tb.traced_h != 0u ? float(tb.traced_h) : float(tb.height * RtmStep(tb));
+}
+
 // The visibility of `channel` at the picture's pixel p (the picture is renderW x renderH) whose view distance is t, 1 where the table, the channel or the image is not there. `raw` reads the unfiltered image.
 float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float renderH, float t, bool raw) {
   if (!RtmValid(tb) || channel >= tb.images * 3u) {
@@ -100,14 +116,18 @@ float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float rend
     return 1.0f;
   }
   uint component = channel % 3u;
+  uint step = RtmStep(tb);
   float w = float(tb.width);
   float h = float(tb.height);
-  if (w == renderW && h == renderH) {
+  if (step == 1u && w == renderW && h == renderH) {
     return RtmClean(RtmComponent(RtmLoadMask(slot, p), component));
   }
-  // the pixel's place in traced texels: the texel i's centre is at i + 0.5
-  float ux = (float(p.x) + 0.5f) * w / renderW - 0.5f;
-  float uy = (float(p.y) + 0.5f) * h / renderH - 0.5f;
+  // the pixel's place in mask texels: the texel i stands for the traced pixel i x step, whose centre is at i x step + 0.5 traced pixels
+  float tw = RtmTracedW(tb);
+  float th = RtmTracedH(tb);
+  float fstep = float(step);
+  float ux = ((float(p.x) + 0.5f) * tw / renderW - 0.5f) / fstep;
+  float uy = ((float(p.y) + 0.5f) * th / renderH - 0.5f) / fstep;
   float fx0 = floor(ux);
   float fy0 = floor(uy);
   float fx = ux - fx0;
@@ -116,6 +136,8 @@ float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float rend
   int y0 = int(fy0);
   int xmax = int(tb.width) - 1;
   int ymax = int(tb.height) - 1;
+  int txmax = int(tw) - 1;
+  int tymax = int(th) - 1;
   bool guided = tb.lin_slot != RTM_NO_SLOT && t > 0.0f;
   float sum = 0.0f;
   float weights = 0.0f;
@@ -129,7 +151,9 @@ float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float rend
     float by = dy == 0 ? 1.0f - fy : fy;
     float bilinear = bx * by;
     float v = RtmClean(RtmComponent(RtmLoadMask(slot, q), component));
-    float depth_weight = guided ? RtmDepthWeight(RtmDepthOf(tb.lin_slot, q), t, tb.depth_sigma) : 1.0f;
+    // the guide's depth is the traced pixel the texel stands for (the corner of its block, kept on the image)
+    int2 qt = int2(min(q.x * int(step), txmax), min(q.y * int(step), tymax));
+    float depth_weight = guided ? RtmDepthWeight(RtmDepthOf(tb.lin_slot, qt), t, tb.depth_sigma) : 1.0f;
     float wk = bilinear * depth_weight;
     sum += v * wk;
     weights += wk;

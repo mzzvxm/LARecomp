@@ -128,6 +128,8 @@
 #include "rt_denoise_plain_temporal_cs.hlsl.dxil.h"
 #include "rt_denoise_diffuse_spatial_cs.hlsl.dxil.h"
 #include "rt_denoise_diffuse_temporal_cs.hlsl.dxil.h"
+#include "rt_denoise_vis_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_vis_temporal_cs.hlsl.dxil.h"
 #include "ssr_temporal_ps.hlsl.dxil.h"
 #include "ssr_rt_select_cs.hlsl.dxil.h"
 #include "ssr_rt_trace_cs.hlsl.dxil.h"
@@ -268,6 +270,8 @@
 #include "rt_denoise_plain_temporal_cs.hlsl.spirv.h"
 #include "rt_denoise_diffuse_spatial_cs.hlsl.spirv.h"
 #include "rt_denoise_diffuse_temporal_cs.hlsl.spirv.h"
+#include "rt_denoise_vis_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_vis_temporal_cs.hlsl.spirv.h"
 #include "ssr_temporal_ps.hlsl.spirv.h"
 #include "ssr_rt_select_cs.hlsl.spirv.h"
 #include "ssr_rt_trace_cs.hlsl.spirv.h"
@@ -474,6 +478,10 @@ inline HostShaderBlob RtDenoisePlainShader(bool temporal) {
 // The same two stages compiled with the DIFFUSE profile (RT_DN_PROFILE_DIFFUSE: a fixed radius, no hit distance, looser weights): the probe field's per-pixel detail pass's denoiser (gi_pixel.h).
 inline HostShaderBlob RtDenoiseDiffuseShader(bool temporal) {
   return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_diffuse_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_diffuse_spatial_cs);
+}
+// The same two stages over 8 bit images and the visibility's lighter guides (rt_lights.h, RT-LIGHTS-D1 part 2: RT_DN_VIS, RT_DN_OUT_UNORM8).
+inline HostShaderBlob RtDenoiseVisShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_vis_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_vis_spatial_cs);
 }
 
 // DLSS Ray Reconstruction's guide pass (rr_guides.h, hlsl/rr_guides_cs.hlsl): over planes with one sample, or the host's MSAA level; and its debug view over the upscaler's output

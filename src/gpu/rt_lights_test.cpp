@@ -36,6 +36,7 @@
 
 #include "hlsl_cpp_shim.h"
 #include "noise_resolve_check.h"
+#include "rt_denoise_rules.h"
 #include "rt_lights_rules.h"
 #include "light_convert.h"
 #include "light_laws.h"
@@ -71,6 +72,7 @@ inline int& DepthWidth() {
 #include "hlsl/blue_noise_frame.hlsli"
 #include "hlsl/rt_lights_common.hlsli"
 #include "hlsl/rt_mask_read.hlsli"
+#include "hlsl/rt_denoise_unorm8.hlsli"
 float4 RtmLoadMask(uint slot, int2 p) {
   const FakeMask& m = Masks()[slot];
   return m.texel[size_t(p.y) * size_t(m.w) + size_t(p.x)];
@@ -477,6 +479,7 @@ void TestRows() {
   t = rl::BuildMaskTable(f);
   CHECK(rl::MaskTableValid(t) && t.images == 2 && t.width == 1920 && t.height == 1080 && t.slot[0] == 11 && t.slot[1] == 12 && t.slot[2] == lg::kNoLightSlot && t.lin_slot == 30);
   CHECK(t.raw_slot[0] == 21 && t.raw_slot[1] == 22 && t.depth_sigma == rl::kDepthSigma && t.flags == rl::kMaskFlagValid);
+  CHECK(t.step == 1 && t.traced_width == 1920 && t.traced_height == 1080);   // no step or traced size given: a whole mask
   f.view = rl::kViewFiltered;
   CHECK(rl::BuildMaskTable(f).flags == (rl::kMaskFlagValid | rl::kMaskFlagView));
   f.view = rl::kViewRaw;
@@ -497,8 +500,8 @@ void TestRows() {
   bad = f;
   bad.valid = false;
   CHECK(!rl::MaskTableValid(rl::BuildMaskTable(bad)));
-  // the memory: a group is five RGBA16F-class images, the guides 28 bytes a pixel
-  CHECK(rl::HeldBytes(1920, 1080, 1) == uint64_t(1920) * 1080 * 68 && rl::HeldBytes(1920, 1080, 3) == uint64_t(1920) * 1080 * 148);
+  // the memory: see TestMemory
+  CHECK(rl::HeldBytes(1920, 1080, 1) == uint64_t(1920) * 1080 * 28 && rl::HeldBytes(1920, 1080, 3) == uint64_t(1920) * 1080 * 68);
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +897,7 @@ struct MaskWorld {
   std::vector<float> value[9];   // filtered, by channel
   std::vector<float> raw[9];
   std::vector<float> depth;      // the traced size's linear depth (raw: the vehicle bit may be set)
+  int dw = 0, dh = 0;            // the traced size (the depth image's); 0: the mask's (step 1)
 };
 
 void Install(const MaskWorld& w) {
@@ -912,11 +916,14 @@ void Install(const MaskWorld& w) {
   }
   hs::Depths().assign(11, {});
   hs::Depths()[10] = w.depth;
-  hs::DepthWidth() = w.tw;
+  hs::DepthWidth() = w.dw != 0 ? w.dw : w.tw;
 }
 
-hs::RtmTable MakeTable(int images, int tw, int th, bool guided, uint32_t flags = RTM_VALID) {
+hs::RtmTable MakeTable(int images, int tw, int th, bool guided, uint32_t flags = RTM_VALID, uint32_t step = 1, int traced_w = 0, int traced_h = 0) {
   hs::RtmTable t;
+  t.step = step;
+  t.traced_w = uint32_t(traced_w != 0 ? traced_w : tw * int(step));
+  t.traced_h = uint32_t(traced_h != 0 ? traced_h : th * int(step));
   t.images = uint32_t(images);
   t.flags = flags;
   t.width = uint32_t(tw);
@@ -938,9 +945,11 @@ float CleanRef(double v) {
 }
 
 // The brute force of the depth guided bilinear (the shader's own arithmetic in double).
-double Reference(const MaskWorld& w, int channel, bool raw, bool guided, int px, int py, int rw, int rh, double t) {
+double Reference(const MaskWorld& w, int channel, bool raw, bool guided, int px, int py, int rw, int rh, double t, int step = 1, int traced_w = 0, int traced_h = 0) {
   const std::vector<float>& img = raw ? w.raw[channel] : w.value[channel];
-  const double ux = (px + 0.5) * w.tw / rw - 0.5, uy = (py + 0.5) * w.th / rh - 0.5;
+  const int tracedw = traced_w != 0 ? traced_w : w.tw * step, tracedh = traced_h != 0 ? traced_h : w.th * step;
+  const int dwidth = w.dw != 0 ? w.dw : w.tw;
+  const double ux = ((px + 0.5) * tracedw / rw - 0.5) / step, uy = ((py + 0.5) * tracedh / rh - 0.5) / step;
   const double fx0 = std::floor(ux), fy0 = std::floor(uy);
   const double fx = ux - fx0, fy = uy - fy0;
   double sum = 0.0, weights = 0.0, nearest = 1.0, nearest_w = -1.0;
@@ -952,7 +961,8 @@ double Reference(const MaskWorld& w, int channel, bool raw, bool guided, int px,
     double dw = 1.0;
     if (guided && t > 0.0) {
       uint32_t bits;
-      const float raw_depth = w.depth[size_t(qy) * w.tw + qx];
+      const int tx = std::min(qx * step, tracedw - 1), ty = std::min(qy * step, tracedh - 1);
+      const float raw_depth = w.depth[size_t(ty) * dwidth + tx];
       std::memcpy(&bits, &raw_depth, 4);
       bits &= ~1u;
       float z;
@@ -1072,6 +1082,86 @@ void TestMaskRead() {
         }
       }
     }
+  }
+  // THE HALF SIZE MASK (part 2): a mask of half the traced size, the texel i standing for the traced pixel 2 i. Against the brute force of the same arithmetic, at many pictures and traced sizes (odd ones too:
+  // the last texel covers one pixel), and the same size path is taken only by a whole mask the size of the picture.
+  for (int round = 0; round < 60; ++round) {
+    MaskWorld w;
+    w.dw = 8 + int(rng.Below(40));
+    w.dh = 8 + int(rng.Below(24));
+    w.tw = (w.dw + 1) / 2;
+    w.th = (w.dh + 1) / 2;
+    for (int c = 0; c < 9; ++c) {
+      w.value[c].resize(size_t(w.tw) * w.th);
+      w.raw[c].resize(size_t(w.tw) * w.th);
+      for (int i = 0; i < w.tw * w.th; ++i) {
+        float v = rng.F();
+        if (rng.Below(50) == 0) v = std::nanf("");
+        w.value[c][size_t(i)] = v;
+        w.raw[c][size_t(i)] = rng.F();
+      }
+    }
+    w.depth.resize(size_t(w.dw) * w.dh);
+    for (float& d : w.depth) {
+      d = rng.Range(2.0f, 80.0f);
+      if (rng.Below(30) == 0) d = 60000.0f;
+      if (rng.Below(30) == 0) d = 0.0f;
+      uint32_t bits;
+      std::memcpy(&bits, &d, 4);
+      bits = (bits & ~1u) | (rng.Below(5) == 0 ? 1u : 0u);
+      std::memcpy(&d, &bits, 4);
+    }
+    Install(w);
+    const int images = 1 + int(rng.Below(3));
+    const int rw = w.dw * (1 + int(rng.Below(3))) + int(rng.Below(3)), rh = w.dh * (1 + int(rng.Below(3))) + int(rng.Below(3));
+    for (int guided = 0; guided < 2; ++guided) {
+      const hs::RtmTable tb = MakeTable(images, w.tw, w.th, guided != 0, RTM_VALID, 2, w.dw, w.dh);
+      for (int i = 0; i < 80; ++i) {
+        const int px = int(rng.Below(uint32_t(rw))), py = int(rng.Below(uint32_t(rh)));
+        const int channel = int(rng.Below(uint32_t(images * 3)));
+        const bool raw = rng.Below(4) == 0;
+        const double t = rng.Below(10) == 0 ? 0.0 : rng.Range(2.0f, 80.0f);
+        const float v = hs::RtmVisibility(tb, uint32_t(channel), hs::int2(px, py), float(rw), float(rh), float(t), raw);
+        const double expect = Reference(w, channel, raw, guided != 0, px, py, rw, rh, double(float(t)), 2, w.dw, w.dh);
+        CHECK(std::fabs(double(v) - expect) < 2e-5);
+        CHECK(v >= 0.0f && v <= 1.0f);
+      }
+    }
+    // a whole mask the size of the picture reads the texel; a half mask over a picture of the traced size never does
+    const hs::RtmTable whole = MakeTable(images, w.tw, w.th, true, RTM_VALID, 1, w.tw, w.th);
+    CHECK(hs::RtmVisibility(whole, 0, hs::int2(w.tw / 2, w.th / 2), float(w.tw), float(w.th), 10.0f, false) == CleanRef(w.value[0][size_t(w.th / 2) * w.tw + w.tw / 2]));
+  }
+  // a constant half size mask is read back exactly at any picture size, guided or not; texel i is the traced pixel 2 i: the pixel 2 i of a picture of the traced size reads texel i alone
+  {
+    MaskWorld w;
+    w.dw = 32;
+    w.dh = 18;
+    w.tw = 16;
+    w.th = 9;
+    for (int c = 0; c < 9; ++c) {
+      w.value[c].assign(size_t(w.tw) * w.th, 0.2f + 0.07f * float(c));
+      w.raw[c].assign(size_t(w.tw) * w.th, 0.9f);
+    }
+    w.depth.assign(size_t(w.dw) * w.dh, 12.0f);
+    Install(w);
+    for (int guided = 0; guided < 2; ++guided) {
+      const hs::RtmTable tb = MakeTable(3, w.tw, w.th, guided != 0, RTM_VALID, 2, w.dw, w.dh);
+      for (int py = 0; py < 36; ++py)
+        for (int px = 0; px < 64; ++px)
+          for (uint32_t c = 0; c < 9; c += 4) CHECK(Near(hs::RtmVisibility(tb, c, hs::int2(px, py), 64.0f, 36.0f, 12.0f, false), 0.2f + 0.07f * float(c), 1e-5));
+    }
+    // a ramp across the texels: texel i holds i / 15; the pixel 2 i of a picture the size of the traced image is exactly texel i, the pixel 2 i + 1 the mean of texels i and i + 1
+    for (int i = 0; i < w.tw * w.th; ++i) {
+      for (int c = 0; c < 9; ++c) w.value[c][size_t(i)] = float(i % w.tw) / 15.0f;
+    }
+    Install(w);
+    const hs::RtmTable tb = MakeTable(1, w.tw, w.th, false, RTM_VALID, 2, w.dw, w.dh);
+    bool ramp = true;
+    for (int i = 0; i < 15; ++i) {
+      ramp = ramp && Near(hs::RtmVisibility(tb, 0, hs::int2(2 * i, 6), 32.0f, 18.0f, 10.0f, false), float(i) / 15.0f, 1e-5) &&
+             Near(hs::RtmVisibility(tb, 0, hs::int2(2 * i + 1, 6), 32.0f, 18.0f, 10.0f, false), (float(i) + 0.5f) / 15.0f, 1e-5);
+    }
+    CHECK(ramp);
   }
   // an EDGE in depth: the left half of the traced image is near (z 5, visibility 0.1), the right half far (z 30, visibility 0.9). A near pixel next to the edge reads the near side only, a far one the far side.
   {
@@ -1339,6 +1429,358 @@ void TestSelectionAndBuffer() {
 }
 
 // ---------------------------------------------------------------------------
+// the memory (RT-LIGHTS-D1 part 2, C15)
+// ---------------------------------------------------------------------------
+double Mib(uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0); }
+
+// The occlusion's traced sizes the picture sizes give (the AO's plan: ao_size.h; screen_rules.h: half above 1080 lines, or at the AO's lower quality at any height): the cases the memory is reported for.
+struct MemCase {
+  const char* name;
+  uint32_t render_w, render_h;
+  uint32_t traced_w, traced_h;
+};
+constexpr MemCase kMemCases[] = {
+    {"1080p, AO ultra (traced 1920x1080)", 1920, 1080, 1920, 1080}, {"1080p, AO high (traced 960x540)", 1920, 1080, 960, 540}, {"1440p (traced 1280x720)", 2560, 1440, 1280, 720},
+    {"4K (traced 1920x1080)", 3840, 2160, 1920, 1080},              {"720p (traced 640x360)", 1280, 720, 640, 360},
+};
+
+void TestMemory(bool print) {
+  CHECK(rl::kGroupBytes == 20 && rl::kGuideBytes == 8 && rl::kSignalBytes == 4 && rl::kDepthGuideBytes == 2 && rl::kNormalGuideBytes == 4 && rl::kDenoiseImages == 4 && rl::kDenoiseImageBytes == 4);
+  CHECK(rl::HeldBytes(1, 1, 1) == 28 && rl::HeldBytes(1, 1, 2) == 48 && rl::HeldBytes(1, 1, 3) == 68 && rl::HeldBytes(0, 100, 2) == 0);
+  CHECK(rl::HeldBytesPart1(1, 1, 1) == 60 && rl::HeldBytesPart1(1, 1, 2) == 100 && rl::HeldBytesPart1(1, 1, 3) == 140);
+  // the step: auto is half where the traced size is taller than 720 lines, 1 whole, 2 half where there is room, anything else is auto
+  CHECK(rl::ClampScale(-3) == 0 && rl::ClampScale(0) == 0 && rl::ClampScale(1) == 1 && rl::ClampScale(2) == 2 && rl::ClampScale(9) == 2);
+  CHECK(rl::StepFor(0, 1920, 1080) == 2 && rl::StepFor(0, 1280, 721) == 2 && rl::StepFor(0, 1280, 720) == 1 && rl::StepFor(0, 960, 540) == 1 && rl::StepFor(0, 640, 360) == 1);
+  CHECK(rl::StepFor(1, 3840, 2160) == 1 && rl::StepFor(1, 1920, 1080) == 1 && rl::StepFor(2, 960, 540) == 2 && rl::StepFor(2, 640, 360) == 2 && rl::StepFor(2, 255, 1080) == 1 && rl::StepFor(2, 1080, 255) == 1);
+  CHECK(rl::StepFor(0, 100, 900) == 1 && rl::StepFor(7, 1920, 1080) == 2 && rl::StepFor(-1, 1920, 1080) == 2);   // too narrow a mask is traced whole; a setting out of its range is auto or 2
+  // the mask's extent and the traced pixel a texel samples: every texel's corner is on the traced image, the last texel may cover fewer pixels
+  CHECK(rl::MaskExtent(1920, 1) == 1920 && rl::MaskExtent(1920, 2) == 960 && rl::MaskExtent(1921, 2) == 961 && rl::MaskExtent(1, 2) == 1 && rl::MaskExtent(0, 2) == 0 && rl::MaskExtent(7, 0) == 7);
+  for (uint32_t traced : {1u, 2u, 3u, 539u, 540u, 541u, 1080u, 1081u}) {
+    for (uint32_t step : {1u, 2u}) {
+      const uint32_t n = rl::MaskExtent(traced, step);
+      bool on_image = true, covers = true;
+      for (uint32_t i = 0; i < n; ++i) on_image = on_image && rl::TracedOf(i, step, traced) < traced && rl::TracedOf(i, step, traced) == i * step;
+      covers = (n - 1) * step < traced && n * step >= traced;   // the blocks tile the traced image
+      CHECK(on_image && covers);
+    }
+  }
+  CHECK(rl::TracedOf(5, 2, 7) == 6 && rl::TracedOf(100, 2, 7) == 6 && rl::TracedOf(3, 1, 10) == 3 && rl::TracedOf(0, 2, 0) == 0);
+  CHECK(rl::DenoiseIterations(1) == 2 && rl::DenoiseIterations(2) == 1);
+  // THE NUMBERS, K 3 (one group), K 6, K 9, against part 1's layout at the same traced size (the old doc said 116 MiB at a traced 1080 lines: its table counted the signal twice and part 1's guides 28 bytes; the
+  // formats are what they are: 8 + 4 x 8 for the group, 8 + 8 + 4 for the guides = 60 bytes a traced pixel for K 3)
+  if (print) std::printf("MEMORY (MiB, masks only: the rows and counters add 3 KiB):\n  %-38s %8s %8s | %8s %8s %8s %8s\n", "case", "mask", "step", "K3 now", "K6 now", "K9 now", "K3 part1");
+  for (const MemCase& c : kMemCases) {
+    const uint32_t step = rl::StepFor(0, c.traced_w, c.traced_h);
+    const uint32_t mw = rl::MaskExtent(c.traced_w, step), mh = rl::MaskExtent(c.traced_h, step);
+    const uint64_t k3 = rl::HeldBytes(mw, mh, 1), k6 = rl::HeldBytes(mw, mh, 2), k9 = rl::HeldBytes(mw, mh, 3);
+    const uint64_t old3 = rl::HeldBytesPart1(c.traced_w, c.traced_h, 1), old6 = rl::HeldBytesPart1(c.traced_w, c.traced_h, 2);
+    if (print) std::printf("  %-38s %4ux%-4u %8u | %8.1f %8.1f %8.1f %8.1f   (part 1: K6 %.1f)\n", c.name, mw, mh, step, Mib(k3), Mib(k6), Mib(k9), Mib(old3), Mib(old6));
+    CHECK(Mib(k3) < 25.0 && Mib(k6) < 45.0 && Mib(k9) < 65.0);                      // under a quarter of the part 1's worst case in every picture size
+    CHECK(k3 * 2 <= old3 && k6 * 2 <= old6);                                         // at least half of part 1's at the same traced size, in every case (the packing alone is 2.1 times)
+    CHECK(mh <= 720 || step == 1u);                                                  // the mask is never taller than 720 lines unless it is the whole traced size of a short picture
+  }
+  {
+    // the headline cases against the 8 GB card's budget: K 3 at 1080p (both occlusion plans), 1440p and 4K
+    const uint64_t a = rl::HeldBytes(960, 540, 1), b = rl::HeldBytes(1280, 720, 1);
+    CHECK(Near(Mib(a), 13.84, 2e-3) && Near(Mib(b), 24.61, 2e-3));
+    CHECK(Near(Mib(rl::HeldBytesPart1(1920, 1080, 1)), 118.65, 2e-3) && Near(Mib(rl::HeldBytesPart1(1280, 720, 1)), 52.73, 2e-3));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the 8 bit history (hlsl/rt_denoise_unorm8.hlsli against rt_lights_rules.h Round8 / Store8)
+// ---------------------------------------------------------------------------
+// One frame of the temporal pass's average over an 8 bit image: the history as stored, the sample, the length n; `u` the pixel's number this frame (negative: the hardware's rounding to the nearest level).
+float Average8(float history, float sample, float n, float u) {
+  const float weight = n / (n + 1.0f);
+  const float result = sample + (history - sample) * weight;
+  return u < 0.0f ? rl::Round8(result) : rl::Store8(result, u);
+}
+// The same, the way the shader does it where it also adds one level toward the sample when the result rounds to the history (measured and dropped: the bias of a noisy signal).
+float AverageNudged8(float history, float sample, float n) {
+  const float weight = n / (n + 1.0f);
+  const float result = sample + (history - sample) * weight;
+  const float r = rl::Round8(result), h = rl::Round8(history), c = rl::Round8(sample);
+  if (r == h && c != h) return c > h ? std::min(h + 1.0f / 255.0f, 1.0f) : std::max(h - 1.0f / 255.0f, 0.0f);
+  return r;
+}
+
+void TestUnorm8(bool print) {
+  Lcg rng;
+  // the file's functions are the twins
+  bool same = true;
+  for (int i = 0; i < 100000; ++i) {
+    const float v = rng.Range(-0.5f, 1.5f), u = rng.F();
+    same = same && hs::RtDnRound8(v) == rl::Round8(v) && hs::RtDnStore8(v, u) == rl::Store8(v, u);
+  }
+  CHECK(same);
+  CHECK(hs::RtDnRound8(0.0f) == 0.0f && hs::RtDnRound8(1.0f) == 1.0f && hs::RtDnRound8(-3.0f) == 0.0f && hs::RtDnRound8(9.0f) == 1.0f && Near(hs::RtDnRound8(0.5f), 128.0f / 255.0f, 1e-6));
+  CHECK(Near(hs::kRtDn8LengthScale, rl::kLengthScale) && hs::kRtDn8Levels == 255.0f);
+  // THE RANDOM ROUNDING: the stored value is one of the two levels round the value, and its expectation over u is the value (the mean of an even spread of u is exact to a
+  // thousandth of a level); the range is kept
+  {
+    bool levels = true, in_range = true;
+    double worst_mean = 0.0;
+    for (int i = 0; i < 2000; ++i) {
+      const float v = rng.Range(-0.3f, 1.3f);
+      const double clamped = std::min(std::max(double(v), 0.0), 1.0);
+      double sum = 0.0;
+      const int n = 4096;
+      for (int k = 0; k < n; ++k) {
+        const float s = rl::Store8(v, (float(k) + 0.5f) / float(n));
+        sum += s;
+        in_range = in_range && s >= 0.0f && s <= 1.0f;
+        levels = levels && std::fabs(double(s) - clamped) < 1.0 / 255.0 + 1e-6;
+      }
+      worst_mean = std::max(worst_mean, std::fabs(sum / n - clamped));
+    }
+    CHECK(levels && in_range && worst_mean < 2e-5);
+    if (print) std::printf("8 BIT RANDOM ROUNDING: the mean of the stored value over an even spread of u is within %.2e of the value (one level = %.2e)\n", worst_mean, 1.0 / 255.0);
+  }
+  // the length in the alpha: exact to a twentieth of a frame after the 8 bit rounding, saturated at the cap, monotone
+  {
+    double worst = 0.0;
+    bool monotone = true;
+    float last = -1.0f;
+    for (int n = 0; n <= 40; ++n) {
+      const float stored = hs::RtDnRound8(hs::RtDnEncodeLength(float(n)));
+      const float back = hs::RtDnDecodeLength(stored);
+      if (n <= 32) worst = std::max(worst, std::fabs(double(back) - double(n)));
+      monotone = monotone && back >= last;
+      last = back;
+    }
+    CHECK(worst < 0.07 && monotone);
+    CHECK(hs::RtDnEncodeLength(32.0f) == 1.0f && hs::RtDnEncodeLength(100.0f) == 1.0f && hs::RtDnEncodeLength(0.0f) == 0.0f && hs::RtDnDecodeLength(1.0f) == 32.0f && hs::RtDnDecodeLength(0.0f) == 0.0f);
+    if (print) std::printf("8 BIT LENGTH: n / 32 in the alpha, the round trip is within %.3f frames for n 0..32\n", worst);
+  }
+  // THE STALL: with the nearest rounding the average stops short of its target by a few per cent for ever; with the random rounding every start reaches the target to within a level or two
+  {
+    double worst_plain = 0.0, worst_dither = 0.0, worst_tail = 0.0, bias_sum = 0.0;
+    int stalled = 0, total = 0;
+    for (int start = 0; start <= 255; ++start) {
+      for (float target : {0.0f, 1.0f, 128.0f / 255.0f, 64.0f / 255.0f, 230.0f / 255.0f, 0.37f}) {
+        float plain = float(start) / 255.0f, dithered = plain;
+        double tail = 0.0;
+        for (int frame = 0; frame < 300; ++frame) {
+          const float n = float(std::min(frame + 1, 32));
+          plain = Average8(plain, target, n, -1.0f);
+          dithered = Average8(dithered, target, n, rng.F());
+          if (frame >= 200) tail += dithered;
+        }
+        ++total;
+        worst_plain = std::max(worst_plain, std::fabs(double(plain) - double(target)));
+        worst_dither = std::max(worst_dither, std::fabs(double(dithered) - double(target)));
+        worst_tail = std::max(worst_tail, std::fabs(tail / 100.0 - double(target)));
+        bias_sum += tail / 100.0 - double(target);
+        stalled += std::fabs(double(plain) - double(target)) > 0.02 ? 1 : 0;
+      }
+    }
+    if (print) std::printf("8 BIT AVERAGE: constant sample, n up to 32, 300 frames from every start level: nearest rounding ends up to %.3f from the target (%d of %d runs more than 0.02 off); random rounding ends up to %.4f from it "
+                           "(one level = %.4f), the mean of a run's last 100 frames up to %.4f from it (a run toward 0 or 1 may sit on the last level for tens of frames: the average of the runs is %.6f off)\n", worst_plain, stalled, total, worst_dither, 1.0 / 255.0, worst_tail, bias_sum / double(total));
+    CHECK(worst_plain > 0.03 && stalled > total / 10);      // the stall is real: the rule is needed
+    CHECK(worst_dither <= 2.0 / 255.0 + 1e-6);              // ... and the random rounding removes it: within two levels at any frame (the noise of the rounding is one level)
+    CHECK(worst_tail <= 1.01 / 255.0 && std::fabs(bias_sum / double(total)) < 0.05 / 255.0);   // ... and it is unbiased: the runs' mean sits on the target (one run may be on the last level for a while)
+  }
+  // a noisy sample (a binary visibility of probability p): the long run mean of the stored value. Random rounding is unbiased; the nearest rounding and the one level nudge (measured, dropped) are not.
+  {
+    double worst_bias = 0.0, worst_plain_bias = 0.0, worst_nudge_bias = 0.0;
+    for (double p : {0.02, 0.05, 0.25, 0.5, 0.8, 0.95, 0.98}) {
+      float plain = 1.0f, dithered = 1.0f, nudged = 1.0f;
+      double sum_plain = 0.0, sum_dither = 0.0, sum_nudge = 0.0;
+      bool in_range = true;
+      const int frames = 120000, burn = 4000;
+      for (int frame = 0; frame < frames; ++frame) {
+        const float n = float(std::min(frame + 1, 32));
+        const float sample = double(rng.F()) < p ? 1.0f : 0.0f;
+        plain = Average8(plain, sample, n, -1.0f);
+        dithered = Average8(dithered, sample, n, rng.F());
+        nudged = AverageNudged8(nudged, sample, n);
+        in_range = in_range && dithered >= 0.0f && dithered <= 1.0f;
+        if (frame >= burn) {
+          sum_plain += plain;
+          sum_dither += dithered;
+          sum_nudge += nudged;
+        }
+      }
+      const double mean_plain = sum_plain / double(frames - burn), mean_dither = sum_dither / double(frames - burn), mean_nudge = sum_nudge / double(frames - burn);
+      if (print) std::printf("8 BIT AVERAGE: binary visibility p = %.2f: mean of the stored value %.4f with random rounding, %.4f with nearest rounding, %.4f with the one level nudge\n", p, mean_dither, mean_plain, mean_nudge);
+      CHECK(in_range);
+      worst_bias = std::max(worst_bias, std::fabs(mean_dither - p));
+      worst_plain_bias = std::max(worst_plain_bias, std::fabs(mean_plain - p));
+      worst_nudge_bias = std::max(worst_nudge_bias, std::fabs(mean_nudge - p));
+    }
+    if (print) std::printf("8 BIT AVERAGE: the worst bias over the p: random rounding %.4f, nearest rounding %.4f, one level nudge %.4f\n", worst_bias, worst_plain_bias, worst_nudge_bias);
+    CHECK(worst_bias < 0.003);                                   // unbiased (the 120000 frames' own scatter)
+    CHECK(worst_plain_bias > 0.015 && worst_nudge_bias > 0.03);   // what the alternatives do
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the half size trace: the filter and the read-back against the whole size (a 1D model of a soft shadow edge along the pixel row)
+// ---------------------------------------------------------------------------
+// The visibility along a row across the penumbra of a disc light behind a straight edge: DiscShare (above) of the distance to the edge over the half width. x in pixels of the PICTURE.
+double EdgeVisibility(double x, double edge, double half_width) { return DiscShare((x - edge) / half_width); }
+
+struct Model1D {
+  double max_vs_part1 = 0.0, mean_vs_part1 = 0.0, max_vs_truth = 0.0, max_part1_vs_truth = 0.0;
+};
+// A mask of `ratio` picture pixels a texel (the texel j stands for the picture pixel ratio x j, as the trace's corner of the block does), filtered by the B3 a-trous `iterations` times (steps 1, 2) and read back
+// at every picture pixel by the shader's bilinear (the depth guide is all equal here: the weights are the bilinear's).
+std::vector<double> RowAtRatio(double edge, double half_width, int pixels, int ratio, int iterations) {
+  const int n = (pixels + ratio - 1) / ratio;
+  std::vector<double> cur;
+  cur.resize(size_t(n));
+  for (int j = 0; j < n; ++j) cur[size_t(j)] = EdgeVisibility(double(j * ratio) + 0.5, edge, half_width);   // the signal's expected value (the temporal average of the noisy rays)
+  for (int it = 0; it < iterations; ++it) {
+    std::vector<double> next;
+    next.resize(size_t(n));
+    const int step = 1 << it;
+    for (int j = 0; j < n; ++j) {
+      double sum = 0.0, wsum = 0.0;
+      for (int d = -2; d <= 2; ++d) {
+        const int q = j + d * step;
+        if (q < 0 || q >= n) continue;
+        const double wk = mcla::gpu::rt_denoise::Kernel1(d);
+        sum += wk * cur[size_t(q)];
+        wsum += wk;
+      }
+      next[size_t(j)] = sum / wsum;
+    }
+    cur = next;
+  }
+  std::vector<double> out;
+  out.resize(size_t(pixels));
+  for (int i = 0; i < pixels; ++i) {
+    // the pixel's place in texels: (i + 0.5 - 0.5) / ratio (the corner of the block is the texel's own pixel), clamped at the ends
+    const double u = double(i) / double(ratio);
+    const int j0 = std::min(int(std::floor(u)), n - 1), j1 = std::min(j0 + 1, n - 1);
+    const double f = u - std::floor(u);
+    out[size_t(i)] = cur[size_t(j0)] * (1.0 - f) + cur[size_t(j1)] * f;
+  }
+  return out;
+}
+
+Model1D CompareRows(double half_width, int ratio_now, int iterations_now, int ratio_old, int iterations_old) {
+  Model1D m;
+  const int pixels = 480;
+  int count = 0;
+  for (double edge = 200.0; edge < 204.0; edge += 0.25) {
+    const std::vector<double> now = RowAtRatio(edge, half_width, pixels, ratio_now, iterations_now);
+    const std::vector<double> old = RowAtRatio(edge, half_width, pixels, ratio_old, iterations_old);
+    for (int i = 100; i < 380; ++i) {
+      const double truth = EdgeVisibility(double(i) + 0.5, edge, half_width);
+      m.max_vs_part1 = std::max(m.max_vs_part1, std::fabs(now[size_t(i)] - old[size_t(i)]));
+      m.mean_vs_part1 += std::fabs(now[size_t(i)] - old[size_t(i)]);
+      m.max_vs_truth = std::max(m.max_vs_truth, std::fabs(now[size_t(i)] - truth));
+      m.max_part1_vs_truth = std::max(m.max_part1_vs_truth, std::fabs(old[size_t(i)] - truth));
+      ++count;
+    }
+  }
+  m.mean_vs_part1 /= double(count);
+  return m;
+}
+
+// The 2D kernel's number of effective samples (1 / the sum of squared weights) of `iterations` a-trous passes: how many rays the filter's footprint averages.
+double EffectiveSamples(int iterations) {
+  std::vector<double> kernel{1.0};
+  for (int it = 0; it < iterations; ++it) {
+    const int step = 1 << it;
+    std::vector<double> next(kernel.size() + size_t(4 * step), 0.0);
+    for (size_t a = 0; a < kernel.size(); ++a)
+      for (int d = -2; d <= 2; ++d) next[a + size_t(2 * step + d * step)] += kernel[a] * mcla::gpu::rt_denoise::Kernel1(d);
+    kernel = next;
+  }
+  double sum2 = 0.0;
+  for (double k : kernel) sum2 += k * k;
+  return 1.0 / (sum2 * sum2);   // the 2D kernel is the product of two 1D ones: its sum of squares is the square of the 1D one
+}
+
+void TestHalfSize(bool print) {
+  // the 1D model against the two changed cases: 1080p with the AO's plan ultra (the mask goes from the whole traced size to half: ratio 1 -> 2, the iterations 2 -> 1) and 4K (ratio 2 -> 4, 2 -> 1).
+  // The penumbra's half width is in PICTURE pixels: a pole's shadow a metre off the ground is 10 pixels, a kerb's contact shadow one.
+  if (print) std::printf("HALF SIZE, 1D soft edge (expected values: noise is separate): half width px | 1080p ultra: max |new - part1|, mean, max |new - truth| (part 1: max |part1 - truth|) | 4K: the same\n");
+  double worst_a = 0.0, worst_b = 0.0, worst_a_wide = 0.0, worst_b_wide = 0.0;
+  for (double w : {0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0}) {
+    const Model1D a = CompareRows(w, 2, 1, 1, 2);
+    const Model1D b = CompareRows(w, 4, 1, 2, 2);
+    if (print) std::printf("  %5.1f | %.3f %.4f %.3f (%.3f) | %.3f %.4f %.3f (%.3f)\n", w, a.max_vs_part1, a.mean_vs_part1, a.max_vs_truth, a.max_part1_vs_truth, b.max_vs_part1, b.mean_vs_part1, b.max_vs_truth, b.max_part1_vs_truth);
+    worst_a = std::max(worst_a, a.max_vs_part1);
+    worst_b = std::max(worst_b, b.max_vs_part1);
+    if (w >= 4.0) {
+      worst_a_wide = std::max(worst_a_wide, a.max_vs_part1);
+      worst_b_wide = std::max(worst_b_wide, b.max_vs_part1);
+    }
+  }
+  // the bounds are what the model measures with a margin: the changed cases differ from part 1's pipeline by under 0.12 at the worst edge (a hard one pixel step) and by under 0.05 where the penumbra is
+  // 8 pixels wide or more (the shadows that are soft by nature); the mean difference is under a per cent for every width
+  CHECK(worst_a < 0.12 && worst_a_wide < 0.05);
+  CHECK(worst_b < 0.16 && worst_b_wide < 0.06);
+  // a constant visibility is read back exactly at every ratio (the kernel is normalised, the bilinear is a partition of one)
+  for (int ratio : {1, 2, 4}) {
+    for (int iterations : {1, 2}) {
+      const std::vector<double> row = RowAtRatio(-1e9, 1.0, 97, ratio, iterations);   // all lit
+      bool exact = true;
+      for (double v : row) exact = exact && Near(v, 1.0, 1e-12);
+      CHECK(exact);
+    }
+  }
+  // the noise the filter leaves: the rays a filter footprint averages (the kernel's effective samples), in picture pixels: whole size with two iterations against half size with one
+  const double n2 = EffectiveSamples(2), n1 = EffectiveSamples(1);
+  const double rays_whole = n2;                    // a ray a pixel: the footprint holds n2 rays and n2 pixels
+  const double rays_half_picture = n1 * 4.0;       // a ray every four pixels: the footprint holds n1 rays and 4 n1 picture pixels
+  if (print) std::printf("HALF SIZE, NOISE: the filter averages %.1f rays at the whole size with two iterations and %.1f at half size with one (the footprints cover %.0f and %.0f picture pixels): the standard deviation of one frame's filtered visibility is %.2f times the whole size's; the temporal average (up to 32 frames) divides both alike\n",
+                         n2, n1, rays_whole * 1.0, rays_half_picture, std::sqrt(n2 / n1));
+  CHECK(n2 > n1 && std::sqrt(n2 / n1) < 3.0);
+}
+
+// ---------------------------------------------------------------------------
+// the raw frame (RT-LIGHTS-D1 part 2: the Ray Reconstruction hook) and the table's new fields
+// ---------------------------------------------------------------------------
+void TestRawFrame() {
+  CHECK(offsetof(rl::GpuRtHeader, step) == 28 && offsetof(rl::GpuRtHeader, traced_width) == 48 && offsetof(rl::GpuRtHeader, traced_height) == 52 && sizeof(rl::GpuRtHeader) == 64);
+  CHECK(rl::kMaskFlagRrRaw == 8u && (rl::kMaskFlagRrRaw & (rl::kMaskFlagValid | rl::kMaskFlagRawView | rl::kMaskFlagView)) == 0u);
+  // a filtered frame: the table's slots are RtDenoise's results, the raw slots the signal's; a raw frame: both are the signal's and the flag says so
+  rl::MaskInputs in;
+  in.images = 2;
+  in.width = 960;
+  in.height = 540;
+  in.step = 2;
+  in.traced_width = 1920;
+  in.traced_height = 1080;
+  in.lin_slot = 40;
+  in.signal_slot = {10, 11, 12};
+  in.result_slot = {20, 21, 22};
+  const rl::MaskFrame filtered = rl::MakeMaskFrame(in);
+  CHECK(filtered.valid && filtered.images == 2 && filtered.slot[0] == 20 && filtered.slot[1] == 21 && filtered.slot[2] == lg::kNoLightSlot && filtered.raw_slot[0] == 10 && filtered.raw_slot[1] == 11 && !filtered.rr_raw);
+  CHECK(filtered.step == 2 && filtered.width == 960 && filtered.traced_width == 1920 && filtered.traced_height == 1080 && filtered.lin_slot == 40);
+  in.raw = true;
+  const rl::MaskFrame raw = rl::MakeMaskFrame(in);
+  CHECK(raw.valid && raw.slot[0] == 10 && raw.slot[1] == 11 && raw.raw_slot[0] == 10 && raw.raw_slot[1] == 11 && raw.rr_raw && raw.step == 2 && raw.lin_slot == 40);
+  const rl::GpuRtMaskTable tf = rl::BuildMaskTable(filtered), tr = rl::BuildMaskTable(raw);
+  CHECK(rl::MaskTableValid(tf) && rl::MaskTableValid(tr) && (tf.flags & rl::kMaskFlagRrRaw) == 0u && (tr.flags & rl::kMaskFlagRrRaw) != 0u && tf.step == 2 && tr.step == 2 && tf.traced_width == 1920 && tf.traced_height == 1080);
+  CHECK(tf.slot[0] == 20 && tr.slot[0] == 10 && tr.slot[1] == 11 && tr.depth_sigma == rl::kDepthSigma);
+  // a table with no traced size takes the mask's size times the step (the tables of part 1); a step that is not 1 or 2 is 1
+  rl::MaskFrame legacy = filtered;
+  legacy.traced_width = legacy.traced_height = 0;
+  const rl::GpuRtMaskTable tl = rl::BuildMaskTable(legacy);
+  CHECK(tl.traced_width == 1920 && tl.traced_height == 1080);
+  legacy.step = 7;
+  CHECK(rl::BuildMaskTable(legacy).step == 1);
+  // what a raw frame does and does not
+  const rl::RawPlan off = rl::RawPlanFor(false), on = rl::RawPlanFor(true);
+  CHECK(off.trace && off.filter && off.history_written && !off.light_pass_reads_signal && !off.hit_distance_for_guides);
+  CHECK(on.trace && !on.filter && !on.history_written && on.light_pass_reads_signal && !on.hit_distance_for_guides);
+  // the composition does not know the difference: a raw visibility is a number in [0, 1] like any other and a game's lamp is still only taken away from (the identity holds with a 1 spp 0 / 1 signal)
+  for (float v : {0.0f, 1.0f, 0.25f, 0.75f}) {
+    const float term[3] = {3.0f, 2.0f, 1.0f};
+    float game[3], own[3];
+    rl::Apply(true, term, v, game);
+    rl::Apply(false, term, v, own);
+    for (int i = 0; i < 3; ++i) CHECK(game[i] <= 0.0f && game[i] >= -term[i] && own[i] >= 0.0f && own[i] <= term[i]);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the text of the shader and of the sources
 // ---------------------------------------------------------------------------
 std::string ReadFile(const std::string& path) {
@@ -1380,10 +1822,15 @@ void TestShaderText(const std::string& src) {
   CHECK(Has(read, "#define RTM_VALID 1u") && Has(read, "#define RTM_VIEW 4u") && Has(read, "#define RTM_RAW_VIEW 2u"));
   // the layout the host class builds
   CHECK(Has(cs, "ByteAddressBuffer g_rows : register(t0, space1);") && Has(cs, "RWTexture2D<float4> g_signal0 : register(u1, space1);") && Has(cs, "RWTexture2D<float4> g_signal2 : register(u3, space1);") &&
-        Has(cs, "RWTexture2D<float> g_depth : register(u4, space1);") && Has(cs, "RWTexture2D<float4> g_normal : register(u5, space1);") && Has(cs, "RWTexture2D<float2> g_hit : register(u6, space1);") &&
-        Has(cs, "RWByteAddressBuffer g_stats : register(u7, space1);") && Has(cs, "ConstantBuffer<RtvPush> g_push : register(b0, space3);") && Has(cs, "#define CAR_RT_SPACE 2") &&
+        Has(cs, "RWTexture2D<float> g_depth : register(u4, space1);") && Has(cs, "RWTexture2D<float4> g_normal : register(u5, space1);") && !Has(cs, "g_hit") &&
+        Has(cs, "RWByteAddressBuffer g_stats : register(u6, space1);") && Has(cs, "ConstantBuffer<RtvPush> g_push : register(b0, space3);") && Has(cs, "#define CAR_RT_SPACE 2") &&
         Has(cs, "#define RT_WORLD_SPACE 2") && Has(cs, "Texture2D<float4> g_textures[] : register(t0, space0);"));
-  // the rows' header and a light's row as the host writes them (rt_lights_rules.h)
+  // the formats Vulkan takes from the shader: 8 bit signals, R16F depth, the normal and share in an RGBA8 snorm image (rt_lights.cpp EnsureImages makes them these)
+  CHECK(Has(cs, "[[vk::image_format(\"rgba8\")]] RWTexture2D<float4> g_signal0") && Has(cs, "[[vk::image_format(\"rgba8\")]] RWTexture2D<float4> g_signal2") && Has(cs, "[[vk::image_format(\"r16f\")]] RWTexture2D<float> g_depth") &&
+        Has(cs, "[[vk::image_format(\"rgba8snorm\")]] RWTexture2D<float4> g_normal") && !Has(cs, "rgba16f") && !Has(cs, "r32f") && !Has(cs, "rg16f"));
+  // the rows' header and a light's row as the host writes them (rt_lights_rules.h): the mask's size, the step and the occlusion's traced size
+  CHECK(Has(cs, "g_rows.Load4(0)") && Has(cs, "g_rows.Load4(16)") && Has(cs, "g_rows.Load4(32)") && Has(cs, "g_rows.Load4(48)") && Has(cs, "const uint step = clamp(h1.w, 1u, 2u);") &&
+        Has(cs, "const int2 p = int2(min(id.x * step, size.x - 1u), min(id.y * step, size.y - 1u));") && Has(cs, "ViewPos(float2(p) + 0.5, float2(size), t, tanHalf)") && Has(cs, "NormalFromDepth(p, int2(size), t, P, tanHalf)"));
   CHECK(Has(cs, "g_rows.Load4(0)") && Has(cs, "g_rows.Load4(16)") && Has(cs, "g_rows.Load4(32)") && Has(cs, "const uint at = 64u + i * 64u;") && Has(cs, "g_rows.Load4(at + 48u)"));
   // no colour target and no write to anything of the game's: the pass writes its own images and counters
   CHECK(!Has(cs, "SV_Target") && !Has(cs, "RWTexture2DArray"));
@@ -1393,13 +1840,16 @@ void TestShaderText(const std::string& src) {
   // a ray: accept the first hit, the city's mask and the cars' parts, the stop short from the light's row
   CHECK(Has(cs, "RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH") && Has(cs, "RTV_CITY_MASK | CAR_RT_MASK_ALL") && Has(cs, "RtvMakeRay(P, N, lift, lampPoint, r2.w, disc, stopShort)"));
   // the identity checks and the guides
-  CHECK(Has(cs, "(flags & kFlagCheckVisible) != 0u") && Has(cs, "(flags & kFlagCheckBlocked) != 0u") && Has(cs, "g_hit[p] = float2(0.0, signal ? 1.0 : 0.0);") && Has(cs, "g_depth[p] = world ? t : 0.0;"));
+  CHECK(Has(cs, "(flags & kFlagCheckVisible) != 0u") && Has(cs, "(flags & kFlagCheckBlocked) != 0u") && Has(cs, "g_normal[id.xy] = float4(normal, signal ? 1.0 : 0.0);") && Has(cs, "g_depth[id.xy] = world ? t : 0.0;"));
+  // the noise is indexed by the mask texel (the blue noise tile at the texel), the signals are written at the texel
+  CHECK(Has(cs, "PixelNoise(id.xy, RtvSampleIndex(frame, i, k), flags)") && Has(cs, "g_signal0[id.xy] = float4(vis[0], vis[1], vis[2], 1.0);"));
   // a light the shader cannot place is skipped, a vehicle and the sky are not judged
   CHECK(Has(cs, "if (channel >= 9u)") && Has(cs, "!sky && !vehicle && t < h2.z && worldOk"));
   // the light pass reads the masks: the table, the seams, the flag; the ray's visibility is known after the term and before the lamp branch; a game's lamp is only taken away from
   const std::string ps = ReadFile(src + "/gpu/hlsl/local_light_ps.hlsl");
   CHECK(!ps.empty() && Has(ps, "#include \"rt_mask_read.hlsli\"") && Has(ps, "float4 RtmLoadMask(uint slot, int2 p) {") && Has(ps, "float RtmLoadDepth(uint slot, int2 p) {") &&
-        Has(ps, "RtmTable LpLoadRtTable() {") && Has(ps, "g_lights.Load4(LP_RT_OFFSET)") && Has(ps, "g_lights.Load(LP_RT_OFFSET + 48u)"));
+        Has(ps, "RtmTable LpLoadRtTable() {") && Has(ps, "g_lights.Load4(LP_RT_OFFSET)") && Has(ps, "g_lights.Load4(LP_RT_OFFSET + 48u)") && Has(ps, "t.step = c.w;") && Has(ps, "t.traced_w = d.y;") &&
+        Has(ps, "t.depth_sigma = asfloat(d.x);"));
   CHECK(Has(ps, "const bool rt_ref = (flags & uint(LP_FLAG_RT_MASK)) != 0u && (l.flags & uint(LL_FLAG_RT_VISIBILITY)) != 0u;") &&
         Has(ps, "RtmVisibility(rt_table, l.mask_channel, p, g.size.x, g.size.y, t, (rt_table.flags & uint(RTM_RAW_VIEW)) != 0u)") && Has(ps, "lamp_vis = RtmCombine(lamp_vis, rt_vis);"));
   {
@@ -1447,7 +1897,7 @@ void TestSources(const std::string& src) {
   CHECK(!host_h.empty() && !host.empty() && !ll_h.empty() && !ll_cpp.empty() && !renderer.empty() && !settings.empty() && !manifest.empty());
 
   // THE SETTINGS: six, debug only, in the three generated files and the aliases, with the ranges the rules clamp to
-  const char* names[] = {"mcla_gpu_rt_lights", "mcla_gpu_rt_lights_k", "mcla_gpu_rt_lights_radius", "mcla_gpu_rt_lights_rays", "mcla_gpu_rt_lights_view", "mcla_gpu_rt_lights_check"};
+  const char* names[] = {"mcla_gpu_rt_lights", "mcla_gpu_rt_lights_k", "mcla_gpu_rt_lights_radius", "mcla_gpu_rt_lights_rays", "mcla_gpu_rt_lights_view", "mcla_gpu_rt_lights_check", "mcla_gpu_rt_lights_scale"};
   for (const char* name : names) {
     const std::string n = name;
     CHECK(Has(settings, ", " + n + ", ") && Has(settings, "inline auto& " + n + " = g_gpu." + n + ";") && Has(meta, "{\"" + n + "\", \"MCLA/GPU\"},") && Has(manifest, "\"" + n + "\": {"));
@@ -1455,7 +1905,16 @@ void TestSources(const std::string& src) {
   }
   CHECK(Has(settings, "REX_" "SETTING(std::string, mcla_gpu_rt_lights, \"off\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"on\")"));
   CHECK(Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_k, 0,") && Has(settings, "rex::Range{0, 9}") && Has(settings, "REX_" "SETTING(f64, mcla_gpu_rt_lights_radius, 0.0,") && Has(settings, "rex::Range{0.0, 2.0}") &&
-        Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_rays, 1,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_view, 0,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_check, 0,"));
+        Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_rays, 1,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_view, 0,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_check, 0,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_scale, 0,"));
+  {
+    // the scale's range is the rules': 0 auto, 1 whole, 2 half; the A/B switch of the Ray Reconstruction hook: debug only, live, 0 or 1, on by default, in the three files and the alias
+    const size_t at = At(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_scale, 0,");
+    CHECK(at != std::string::npos && At(settings, "rex::kDebugOnly, rex::Range{0, 2});", at) < At(settings, "REX_" "SETTING(", at + 20));
+    const size_t rr = At(settings, "REX_" "SETTING(i32, mcla_gpu_dlss_rr_rt_lights, 1,");
+    CHECK(rr != std::string::npos && At(settings, "rex::kDebugOnly, rex::Range{0, 1});", rr) < At(settings, "REX_" "SETTING(", rr + 20) && !Has(settings.substr(rr, 1400), "kRestart"));
+    CHECK(Has(settings, "inline auto& mcla_gpu_dlss_rr_rt_lights = g_gpu.mcla_gpu_dlss_rr_rt_lights;") && Has(meta, "{\"mcla_gpu_dlss_rr_rt_lights\", \"MCLA/GPU\"},") && Has(manifest, "\"mcla_gpu_dlss_rr_rt_lights\": {") &&
+          Count(settings, ", mcla_gpu_dlss_rr_rt_lights, ") == 1);
+  }
   CHECK(rl::kMaxLights == 9 && rl::kMaxRays == 4);   // the ranges above
   // the host reads each of them
   for (const char* name : names) {
@@ -1467,12 +1926,12 @@ void TestSources(const std::string& src) {
   CHECK(Has(host, "builder.addDescriptorSet(heap_->texture_set_builder())") && Has(host, "builder.addDescriptorSet(pass_set_builder_)") && Has(host, "builder.addDescriptorSet(scene.SetDesc())") &&
         Has(host, "builder.addPushConstant(0, rt::kPushSpace, sizeof(rt::Push), plume::RenderShaderStageFlag::COMPUTE);"));
   CHECK(Has(host, "pass_set_builder_.addByteAddressBuffer(rt::kBindRows)") && Has(host, "addReadWriteTexture(rt::kBindSignal0)") && Has(host, "addReadWriteTexture(rt::kBindSignal2)") &&
-        Has(host, "addReadWriteTexture(rt::kBindDepth)") && Has(host, "addReadWriteTexture(rt::kBindNormal)") && Has(host, "addReadWriteTexture(rt::kBindHit)") && Has(host, "addReadWriteByteAddressBuffer(rt::kBindStats)"));
-  // the pass set has eight descriptors (the rows, three signals, three guides, the counters): D3D12 sizes the set by the count the call says
-  CHECK(Count(host, "pass_set_builder_.add") == 8 && rl::kSetViews == 8 && Has(host, "CreateDescriptorSet(pass_set_builder_, rt::kSetViews, 0,"));
-  CHECK(rl::kBindRows == 0 && rl::kBindSignal0 == 1 && rl::kBindSignal1 == 2 && rl::kBindSignal2 == 3 && rl::kBindDepth == 4 && rl::kBindNormal == 5 && rl::kBindHit == 6 && rl::kBindStats == 7 && rl::kTextureSet == 0 &&
+        Has(host, "addReadWriteTexture(rt::kBindDepth)") && Has(host, "addReadWriteTexture(rt::kBindNormal)") && !Has(host, "kBindHit") && Has(host, "addReadWriteByteAddressBuffer(rt::kBindStats)"));
+  // the pass set has seven descriptors (the rows, three signals, two guides, the counters): D3D12 sizes the set by the count the call says
+  CHECK(Count(host, "pass_set_builder_.add") == 7 && rl::kSetViews == 7 && Has(host, "CreateDescriptorSet(pass_set_builder_, rt::kSetViews, 0,"));
+  CHECK(rl::kBindRows == 0 && rl::kBindSignal0 == 1 && rl::kBindSignal1 == 2 && rl::kBindSignal2 == 3 && rl::kBindDepth == 4 && rl::kBindNormal == 5 && rl::kBindStats == 6 && rl::kTextureSet == 0 &&
         rl::kPassSet == 1 && rl::kSceneSet == 2 && rl::kPushSpace == 3 && rl::kGroup == 8);
-  CHECK(Has(host, "RtDenoiseDiffuseShader(false)") && Has(host, "RtDenoiseDiffuseShader(true)") && Has(host, "rt::kFirstDenoiseInstance + g") && Has(host, "denoise_[g].RecordTemporal(stage)") &&
+  CHECK(Has(host, "RtDenoiseVisShader(false)") && Has(host, "RtDenoiseVisShader(true)") && Has(host, "rt_denoise::Format::kRgba8") && !Has(host, "RtDenoiseDiffuseShader") && Has(host, "rt::kFirstDenoiseInstance + g") && Has(host, "denoise_[g].RecordTemporal(stage)") &&
         Has(host, "denoise_[g].RecordSpatial(stage)") && Has(host, "d.OnPresent();") && Has(host, "d.Shutdown();") && Has(host_h, "std::array<RtDenoise, larecomp::gpu::rt_lights::kMaxImages> denoise_;"));
   {
     // the three denoisers take instances 2 to 4; the others in the tree keep their own (0: the reflections', 1: the per-pixel bounce light's)
@@ -1508,7 +1967,7 @@ void TestSources(const std::string& src) {
   CHECK(begin != std::string::npos && append != std::string::npos && select != std::string::npos && plan != std::string::npos && trace != std::string::npos && denoise != std::string::npos &&
         build != std::string::npos && mask != std::string::npos && draws != std::string::npos);
   CHECK(append < select && select < plan && plan < trace && trace < denoise && denoise < mask && mask < build && build < draws);
-  CHECK(Has(ll_cpp, "if (rt_lights_ != nullptr && rt_lights_->wanted()) {") && Count(ll_cpp, "rt_lights_->wanted()") == 2);   // the lamps and the pick only while it is wanted: with it off the pass is what it was
+  CHECK(Has(ll_cpp, "if (rt_lights_ != nullptr && rt_lights_->wanted()) {") && Count(ll_cpp, "rt_lights_->wanted()") == 3);   // BeginFrame's two uses and rt_lights_wanted()   // the lamps and the pick only while it is wanted: with it off the pass is what it was
   CHECK(Has(ll_cpp, "pass_timing_->Mark(list, \"rt lights\");") && Has(ll_cpp, "pass_timing_->Mark(list, \"rt lights denoise\");") && Has(ll_cpp, "pass_timing_->Mark(list, \"after rt lights\");"));
   CHECK(Has(ll_cpp, "void LocalLights::OnPresent() {\n  if (rt_lights_ != nullptr) {\n    rt_lights_->OnPresent();"));   // the denoisers' boundary also while the pass is off
   CHECK(Has(ll_h, "void SetRtLights(RtLights* rt_lights) { rt_lights_ = rt_lights; }") && Has(ll_h, "RtLights* rt_lights_ = nullptr;") && Has(ll_cpp, "#include \"rt_lights.h\""));
@@ -1519,6 +1978,45 @@ void TestSources(const std::string& src) {
   CHECK(Has(host, "if (why_ != rt::Why::kRuns || !list || light_count_ == 0 || frame_ != in_.frame) {") && Has(host, "if (why_ != rt::Why::kRuns || !list || ran_frame_ != frame_) {"));
   // a frame that does not run the pass trims the lamps it was handed for a ray (a game's lamp with no source would be ADDED on top of the grid's)
   CHECK(Has(host, "ll::TrimSelection(selection);   // a lamp handed over for a ray that will not come"));
+  // the 8 bit average's random rounding: the host gives the frame's number, the consumer reads it for the shared blue noise (AGENT-RULE-NOISE: no hash, no lattice)
+  {
+    const std::string plain = ReadFile(gpu + "hlsl/rt_denoise_plain_consumer.hlsli"), engine = ReadFile(gpu + "hlsl/rt_denoise_engine.hlsli"), u8 = ReadFile(gpu + "hlsl/rt_denoise_unorm8.hlsli");
+    CHECK(Count(host, "stage.push[rt_denoise::plain::kFrame] = uint32_t(in_.frame);") == 2 && mcla::gpu::rt_denoise::plain::kFrame == 22 && Has(plain, "#define RTDNP_W_FRAME 22"));
+    CHECK(Has(plain, "BlueNoiseFrame2(p.x, p.y, RtDnW(RTDNP_W_FRAME))") && Has(plain, "float3 RtDnDither3(int2 p) {") && Has(plain, "#include \"blue_noise_frame.hlsli\"") && !Has(plain, "Ign("));
+    CHECK(Has(engine, "const float3 dither = RtDnDither3(p);") && Has(engine, "RtDnStore8(colour.x, dither.x)") && Has(engine, "RtDnEncodeLength(RtDnNextLength(length, used))") && Has(engine, "[[vk::image_format(\"rgba8\")]]") &&
+          !Has(engine, "Nudge") && !Has(u8, "Nudge"));
+    CHECK(Has(plain, "float4(h.x, h.y, h.z, RtDnDecodeLength(h.w))") && Has(plain, "const float2 hs = float2(0.0f, nr.w);") && Has(plain, "r.rough = 1.0f;"));
+    // the other consumers' compiles are byte-identical to the part 1 tree's (rt_lights_d1_shaders.py --identity-ref): here the text: every change is under the two macros
+    CHECK(Count(plain, "#ifdef RT_DN_VIS") == 4 && Count(engine, "#ifdef RT_DN_OUT_UNORM8") == 4);
+    CHECK(Has(host_shaders, "RtDenoiseVisShader(bool temporal)") && Has(host_shaders, "MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_vis_temporal_cs)") && Has(host_shaders, "#include \"rt_denoise_vis_spatial_cs.hlsl.spirv.h\"") &&
+          Has(cmake, "larecomp_gpu_host_shader(rt_denoise_vis_spatial_cs cs_6_0 SOURCE rt_denoise_plain_spatial_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1)") &&
+          Has(cmake, "larecomp_gpu_host_shader(rt_denoise_vis_temporal_cs cs_6_0 SOURCE rt_denoise_plain_temporal_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1)"));
+    // the images' formats the host makes and the shader declares
+    CHECK(Has(host, "plume::RenderFormat::R8G8B8A8_UNORM, \"rt lights signal\"") && Has(host, "plume::RenderFormat::R16_FLOAT, \"rt lights depth 0\"") && Has(host, "plume::RenderFormat::R16_FLOAT, \"rt lights depth 1\"") &&
+          Has(host, "plume::RenderFormat::R8G8B8A8_SNORM, \"rt lights normal and share\"") && !Has(host, "R32_FLOAT") && !Has(host, "R16G16B16A16_FLOAT") && !Has(host, "R16G16_FLOAT"));
+    CHECK(Has(host, "rt_denoise::Format::kRgba8") && Has(ReadFile(gpu + "rt_denoise.cpp"), "plume::RenderFormat::R8G8B8A8_UNORM : plume::RenderFormat::R16G16B16A16_FLOAT") && Has(ReadFile(gpu + "rt_denoise.h"), "rt_denoise::Format format = rt_denoise::Format::kRgba16f"));
+    // the mask's size and the step: the plan chooses them from the occlusion's traced size and the setting; the trace is one thread a mask texel; the header and the table carry them
+    CHECK(Has(host, "step_ = rt::StepFor(scale_setting_, in.traced[0], in.traced[1]);") && Has(host, "EnsureImages(rt::MaskExtent(in.traced[0], step_), rt::MaskExtent(in.traced[1], step_), groups_)") && Has(host, "header.step = step_;") &&
+          Has(host, "header.traced_width = in.traced[0];") && Has(host, "stage.iterations = rt::DenoiseIterations(step_);") && Has(host, "scale_setting_ = int(st::mcla_gpu_rt_lights_scale.Get());") &&
+          Has(host, "rt::MakeMaskFrame(mi)") && Count(host, "rt::MakeMaskFrame(mi)") == 2);
+    // the HeldBytes the budget reads is the formats' (no hit image, 4 byte signals)
+    CHECK(Has(host, "rt::kSignalBytes + rt::kGuideBytes") && !Has(host, "28u"));
+    // THE RAW MODE: asked once a frame before the plan, taken at the plan, never writing history, the consumer noted
+    CHECK(Has(host, "raw_frame_ = raw_requested_;") && Has(host, "if (raw_frame_) {\n    RecordRaw(list);\n    return;\n  }") && Has(host, "denoiser::NoteConsumer(rr::Consumer::kRtLights, wanted_);") && Has(host, "have_prev_ = false;\n  history_frames_ = 0;") &&
+          Has(host_h, "void SetRawMode(bool raw) { raw_requested_ = raw; }") && Has(host, "#include \"denoiser_setting.h\""));
+    CHECK(Has(ll_cpp, "void LocalLights::SetRtRawMode(bool raw) {") && Has(ll_cpp, "rt_lights_->SetRawMode(raw);") && Has(ll_h, "void SetRtRawMode(bool raw);") && Has(ll_h, "bool rt_lights_wanted() const;"));
+    {
+      const std::string scene = ReadFile(gpu + "scene.cpp"), temporal = ReadFile(gpu + "temporal.cpp");
+      const size_t ask = At(scene, "local_lights_->SetRtRawMode(local_lights_->rt_lights_wanted() && temporal_ && temporal_->RawModes().RtLights());");
+      const size_t run = At(scene, "const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);");
+      CHECK(ask != std::string::npos && run != std::string::npos && ask < run);
+      CHECK(Has(temporal, "rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_lights.Get()))") && Has(temporal, "window_.rr_raw_frames[size_t(rr::RawEffect::kRtLights)] += modes.RtLights() ? 1 : 0;") &&
+            Has(temporal, "modes.RtGi() || modes.RtLights();"));
+      // the guide pass gets nothing from it: no hit image, no new guide: the raw mode has no pointer to RR's hit inputs
+      const std::string guides = ReadFile(gpu + "rr_guides.cpp");
+      CHECK(!Has(host, "NoteRr") && !Has(host, "RawHitImage") && !Has(guides, "rt_lights") && !Has(guides, "RtLights"));
+    }
+  }
   // the shared noise, at the light's own sample, in the rows' flags
   CHECK(Has(host, "(blue_ ? rt::kFlagBlue : 0u)") && Has(host, "header.rays = rays_;") && Has(host, "header.max_range = rt::kMaxRangeMetres;"));
 }
@@ -1528,6 +2026,8 @@ void TestSources(const std::string& src) {
 int main(int argc, char** argv) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);   // a crash still shows how far it got
   const bool trace = argc > 2 && std::string(argv[2]) == "--trace";
+  bool print = false;
+  for (int i = 1; i < argc; ++i) print = print || std::string(argv[i]) == "--print";
   const auto section = [&](const char* name, void (*fn)()) {
     if (trace) std::printf("... %s\n", name);
     fn();
@@ -1543,6 +2043,10 @@ int main(int argc, char** argv) {
   section("noise", TestNoise);
   section("mask read", TestMaskRead);
   section("selection and buffer", TestSelectionAndBuffer);
+  TestMemory(print);
+  TestUnorm8(print);
+  TestHalfSize(print);
+  TestRawFrame();
   if (argc > 1) {
     TestShaderText(argv[1]);
     TestSources(argv[1]);

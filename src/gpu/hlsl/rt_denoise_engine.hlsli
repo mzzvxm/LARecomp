@@ -21,14 +21,25 @@
 //   float4   RtDnHistoryAt(float2 uv)   the history's colour (rgb) and length (a), bilinear
 // and RT_DN_PROFILE (RT_DN_PROFILE_SPECULAR or _DIFFUSE). The result is written to u0 of space 5, an RGBA16F image: the spatial pass's keeps the signal's alpha, the temporal pass's alpha is the
 // history's new length.
+// RT_DN_OUT_UNORM8 (RT-LIGHTS-D1 part 2, hlsl/rt_denoise_unorm8.hlsli): the result is an RGBA8_UNORM image holding a signal in 0..1 (a visibility) and the length in the alpha as n / 32; the temporal
+// pass rounds the blended average at random (the consumer's float3 RtDnDither3(int2 p): three numbers in [0, 1) that change every frame) so that the 8 bit average neither stalls nor drifts, and the
+// consumer decodes the history's length (RtDnHistoryAt). Without the macro nothing here changes.
 
 #ifndef MCLA_GPU_RT_DENOISE_ENGINE_HLSLI
 #define MCLA_GPU_RT_DENOISE_ENGINE_HLSLI
 
 #include "rt_denoise_common.hlsli"
 
+#ifdef RT_DN_OUT_UNORM8
+#include "rt_denoise_unorm8.hlsli"
+#endif
+
 #ifdef __spirv__
+#ifdef RT_DN_OUT_UNORM8
+[[vk::image_format("rgba8")]]
+#else
 [[vk::image_format("rgba16f")]]
+#endif
 #endif
 RWTexture2D<float4> g_dn_out : register(u0, space5);
 
@@ -173,8 +184,16 @@ void RtDnTemporalMain(uint3 id) {
     const float3 box_hi = float3(RtDnBoxHi(mean.x, sigma.x, lo.x, hi.x), RtDnBoxHi(mean.y, sigma.y, lo.y, hi.y), RtDnBoxHi(mean.z, sigma.z, lo.z, hi.z));
     history = RtDnClipToBox(history, box_lo, box_hi);
     colour = lerp(current.xyz, history, RtDnHistoryWeight(length));
+#ifdef RT_DN_OUT_UNORM8
+    const float3 dither = RtDnDither3(p);
+    colour = float3(RtDnStore8(colour.x, dither.x), RtDnStore8(colour.y, dither.y), RtDnStore8(colour.z, dither.z));
+#endif
   }
+#ifdef RT_DN_OUT_UNORM8
+  g_dn_out[p] = float4(colour, RtDnEncodeLength(RtDnNextLength(length, used)));
+#else
   g_dn_out[p] = float4(colour, RtDnNextLength(length, used));
+#endif
 }
 
 #endif

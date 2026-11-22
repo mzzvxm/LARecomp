@@ -763,6 +763,11 @@ class GPUSettings final : public rex::SettingOwner {
     "(Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.",
     rex::kDebugOnly, rex::Range{0, 2});
 
+  REX_SETTING(i32, mcla_gpu_dlss_rr_rt_lights, 1, "Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RT-LIGHTS-D1 part 2): what the ray traced light visibility (mcla_gpu_rt_lights) does while Ray Reconstruction takes the frame. 1 (the default): the filter "
+    "does not run (Ray Reconstruction is the denoiser: it cleans the picture the light pass draws with the one-ray-a-pixel visibility in it), and the light pass reads the unfiltered visibility. 0: the effect keeps its own filter even then (the picture to compare with). "
+    "With Ray Reconstruction not the plan (Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.",
+    rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(std::string, mcla_gpu_dlss_mode, "dlaa", "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
     "per direction, of the output (the window's 16:9 area, whatever mcla_gpu_resolution_scale "
@@ -1134,6 +1139,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_rt_lights_check, 0, "Debug: the identity test of mcla_gpu_rt_lights. 1: the pass traces its rays (and costs its time) but writes every visibility as 1, so the picture must be the same, "
     "bit for bit, as with the pass off; 2: every visibility the light reaches is 0 (the lights with a ray vanish, a street lamp the game lights is taken away in full). 0 "
     "is the pass. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
+  REX_SETTING(i32, mcla_gpu_rt_lights_scale, 0, "Debug: the size the ray traced light visibility is traced at, for mcla_gpu_rt_lights. 0 (the default): half of the occlusion's traced size on each axis where that is taller than 720 lines, else the "
+    "whole of it (the memory: 28 bytes a texel, 14 MiB at 1080p and at 4K, 25 MiB at 1440p); 1: always the whole traced size (about 4 times the rays and the memory at 1080p and 4K: the picture to compare with); 2: half wherever the size allows. Live.", rex::kDebugOnly, rex::Range{0, 2});
 
   REX_SETTING(bool, mcla_gpu_object_names, false, "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
     "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
@@ -2004,6 +2012,7 @@ inline auto& mcla_gpu_dlss_rr_test = g_gpu.mcla_gpu_dlss_rr_test;
 inline auto& mcla_gpu_dlss_rr_ssr = g_gpu.mcla_gpu_dlss_rr_ssr;
 inline auto& mcla_gpu_dlss_rr_car_refl = g_gpu.mcla_gpu_dlss_rr_car_refl;
 inline auto& mcla_gpu_dlss_rr_rt_gi = g_gpu.mcla_gpu_dlss_rr_rt_gi;
+inline auto& mcla_gpu_dlss_rr_rt_lights = g_gpu.mcla_gpu_dlss_rr_rt_lights;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;
@@ -2075,6 +2084,7 @@ inline auto& mcla_gpu_rt_lights_radius = g_gpu.mcla_gpu_rt_lights_radius;
 inline auto& mcla_gpu_rt_lights_rays = g_gpu.mcla_gpu_rt_lights_rays;
 inline auto& mcla_gpu_rt_lights_view = g_gpu.mcla_gpu_rt_lights_view;
 inline auto& mcla_gpu_rt_lights_check = g_gpu.mcla_gpu_rt_lights_check;
+inline auto& mcla_gpu_rt_lights_scale = g_gpu.mcla_gpu_rt_lights_scale;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;

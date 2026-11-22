@@ -542,6 +542,7 @@ enum class Consumer : uint8_t {
   kCarRtReflections,    // the car's ray traced self-reflections and the chrome of other cars (car_rt_refl.h): an A/B, expected no gain
   kCityRtReflections,   // the city's ray traced reflections (track 8; today the screen-space reflections' ray traced fallback, ssr_rt.h): designed noisy, RR's reason to exist here
   kRtGi,                // ray traced bounce light (RT BOUNCE LIGHT): the per-pixel detail pass of the probe field (ULTRA on a strong card; the field alone is smooth): designed noisy, 1 ray a pixel
+  kRtLights,            // ray traced light visibility (RT-LIGHTS-D1, rt_lights.h): one ray a light and pixel into the deferred light pass; the visibility is multiplied into a light (or taken away from a lamp the game lights)
   kCount,
 };
 inline constexpr size_t kConsumerCount = size_t(Consumer::kCount);
@@ -556,6 +557,7 @@ inline constexpr ConsumerTable kConsumers = {{
     {"ray traced car reflections", true, false},
     {"ray traced city reflections", true, false},
     {"ray traced bounce light", true, false},
+    {"ray traced light visibility", true, false},   // RT-LIGHTS-D1 part 2: the hook exists (RtLights::SetRawMode); AUTO does not trust RR with it until the D4 A/B (C11: a stochastic visibility under a lamp's subtraction)
 }};
 constexpr const ConsumerInfo& InfoOf(Consumer c) { return kConsumers[size_t(c)]; }
 constexpr uint32_t ConsumerBit(Consumer c) { return 1u << uint32_t(c); }
@@ -807,6 +809,8 @@ inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 // (rr_guides.h Inputs::hit), how far the reflection it traced went from the surface, which is what RR moves the reflection's history by. The first two effects (RR-4a, RR-4b):
 //   kSsr      screen-space reflections: the trace's one ray a pixel straight into the colour, the accumulation skipped, the distance of the ray's hit written
 //   kCarRefl  the ray traced reflection of the player's car (and the cars beside it): the trace's image is read raw by the paint (the a-trous passes skipped), the distance of the cone's hits written
+//   kRtLights the ray traced light visibility (RT-LIGHTS-D1 part 2, rt_lights.h): its 1 spp visibility is read by the deferred light pass as it is (RtDenoise's stages skipped, no history written) and goes
+//             into the picture Ray Reconstruction denoises; it has no hit distance to give the guide pass (a visibility has none: G6-4), so the guide pass changes not at all
 //   kRtGi     the bounce light's per-pixel pass (CITY-RT G6, gi_pixel.h): its 1 spp diffuse radiance is mixed into the field's irradiance at the weight 1 where it traced (RtDenoise's temporal and spatial stages
 //             skipped), and the distance of its ray goes to the guide pass as the LAST choice of the hit distance (where no reflection wrote one; mcla_gpu_dlss_rr_rt_gi 2 leaves it out)
 // Each has its own debug switch (the A/B: mcla_gpu_dlss_rr_ssr, mcla_gpu_dlss_rr_car_refl, mcla_gpu_dlss_rr_rt_gi: 1 is raw while RR takes the frame, 0 keeps the effect's own filter even then), and with the plan
@@ -822,12 +826,13 @@ inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 // NoteConsumer(rr::Consumer::kRtGi, pixel_pass_wanted_) in GiApply::BeginFrame (gi_apply.cpp: the frame's layout has the per-pixel pass, the pass is made). `on` means the
 // effect runs this frame whatever the plan is (the effects' raw modes are what the plan then turns on), so there is no circle: the consumer is on first, the plan follows, RawModes() follows the plan.
 // So: the row on OURS never takes a frame; AUTO takes one only for an effect with auto_uses_rr (none yet: ours); DLSS RR takes one while any of the four is on.
-enum class RawEffect : uint8_t { kSsr, kCarRefl, kRtGi, kCount };
+enum class RawEffect : uint8_t { kSsr, kCarRefl, kRtGi, kRtLights, kCount };
 constexpr const char* RawEffectName(RawEffect e) {
   switch (e) {
     case RawEffect::kSsr: return "screen-space reflections";
     case RawEffect::kCarRefl: return "the cars' ray traced reflections";
     case RawEffect::kRtGi: return "the bounce light's per-pixel pass";
+    case RawEffect::kRtLights: return "the ray traced light visibility";
     case RawEffect::kCount: break;
   }
   return "?";
@@ -874,13 +879,15 @@ struct RawModes {
   RawWhy ssr = RawWhy::kPlanOurs;
   RawWhy car_refl = RawWhy::kPlanOurs;
   RawWhy rt_gi = RawWhy::kPlanOurs;
+  RawWhy rt_lights = RawWhy::kPlanOurs;   // RT-LIGHTS-D1 part 2: the ray traced light visibility (mcla_gpu_dlss_rr_rt_lights is its switch)
   constexpr bool Ssr() const { return ssr == RawWhy::kRaw; }
   constexpr bool CarRefl() const { return car_refl == RawWhy::kRaw; }
   constexpr bool RtGi() const { return rt_gi == RawWhy::kRaw; }
+  constexpr bool RtLights() const { return rt_lights == RawWhy::kRaw; }
   constexpr bool operator==(const RawModes&) const = default;
 };
-constexpr RawModes RawModesOf(const RawFrame& f, bool switch_ssr, bool switch_car_refl, bool switch_rt_gi = true) {
-  return {RawWhyOf(f, switch_ssr), RawWhyOf(f, switch_car_refl), RawWhyOf(f, switch_rt_gi)};
+constexpr RawModes RawModesOf(const RawFrame& f, bool switch_ssr, bool switch_car_refl, bool switch_rt_gi = true, bool switch_rt_lights = true) {
+  return {RawWhyOf(f, switch_ssr), RawWhyOf(f, switch_car_refl), RawWhyOf(f, switch_rt_gi), RawWhyOf(f, switch_rt_lights)};
 }
 // The debug switches' value: 0 keeps the effect's filter, anything else (the default 1) is raw while RR takes the frame.
 constexpr bool RawSwitchOn(int value) { return value != 0; }

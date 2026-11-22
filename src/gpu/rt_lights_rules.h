@@ -22,10 +22,12 @@
 // distance squared plus its plateau), a light that held a channel last frame scoring KeepBonus more (the picker's hysteresis: a channel that changes owner loses its history). A light keeps its
 // channel while it is in the pick (AssignChannels); the group of three channels whose owners changed starts its history again.
 //
-// THE CHANNELS. A channel number is `image x 3 + component` (rgb of an RGBA16F image; the alpha is RtDenoise's history length), so K lights fill ceil(K / 3) images: 1, 2 or 3 (kMaxLights 9). The
+// THE CHANNELS. A channel number is `image x 3 + component` (rgb of an RGBA8 image; the alpha is RtDenoise's history length), so K lights fill ceil(K / 3) images: 1, 2 or 3 (kMaxLights 9). The
 // number rides in ShadowRef::mask_channel (GpuLight packed1 bits 24-31) and the light's flag kLightFlagRtVisibility says the light reads it: the atlas's kind and views of the same light are untouched.
-// CHECK (C15, memory): three lights per image means RtDenoise's four images (a ping-pong pair and a history pair) per group; a 4 channel visibility consumer or R8 images would halve it. Part 2's
-// first measurement is the cost and the bytes of K = 3 at 1080 and 4K; HeldBytes() is what vram_budget.h asks.
+// MEMORY (C15, part 2): three lights per image still means RtDenoise's four images (a ping-pong pair and a history pair) per group, but every image is RGBA8 now (the visibility in 8 bits, the
+// history's length in the alpha as n / 32), the guides are R16F + RGBA8 snorm, and the pass runs at HALF of the occlusion's traced size where that is taller than 720 lines (a mask texel is a 2 x 2
+// block of the traced pixels, read back by a depth guided bilinear): 28 bytes a MASK texel for K 3 (HeldBytes), 13.8 MiB at 1080p and at 4K, 24.6 MiB at 1440p, against part 1's 118.7 / 118.7 /
+// 52.7 (traced 1080 / 1080 / 720 lines). See "the memory" below.
 //
 // Pure: no renderer, no guest, no SDK. Namespace larecomp::gpu::rt_lights.
 // ===========================================================================
@@ -86,6 +88,69 @@ constexpr uint32_t ImagesFor(uint32_t lights) { return (std::min(lights, kMaxLig
 // The group (image) bit of a channel, for the mask of groups whose history starts again.
 constexpr uint32_t GroupBit(uint32_t channel) { return 1u << ImageOf(channel); }
 static_assert(kMaxLights == 9 && ImageOf(8) == 2 && ComponentOf(8) == 2 && ChannelOf(2, 2) == 8 && ImagesFor(1) == 1 && ImagesFor(3) == 1 && ImagesFor(4) == 2 && ImagesFor(9) == 3);
+
+// ---------------------------------------------------------------------------
+// the memory (RT-LIGHTS-D1 part 2, C15: part 1 held 118.7 MiB at a traced 1080 lines for K 3)
+// ---------------------------------------------------------------------------
+// WHAT PART 1 HELD (a traced texel, K 3 = one group): the signal RGBA16F 8, RtDenoise's four images RGBA16F 32, the guides: two R32F depths 8, the view normal RGBA16F 8, the hit and share RG16F 4 =
+// 60 bytes. WHAT THIS HOLDS: the signal RGBA8 4 (a light's visibility in 8 bits: 1 / 255 steps), RtDenoise's four images RGBA8 16 (rgb the accumulated visibility, a its history's length as
+// n / kLengthScale: exact for the lengths 0 to 32), the guides: two R16F depths 4 (a half float's 11 bit mantissa: 0.1 % of the depth, the filter's depth edge is 6 %), the normal RGBA8 snorm with
+// the share in its alpha 4 (the hit image is gone: a visibility has no hit distance) = 28 bytes a MASK texel, and the trace runs at HALF of the occlusion's traced size where that is taller than
+// kMaskMaxLines (kStepHalf: a mask texel is the traced pixel at the corner of a 2 x 2 block, the light pass reads it back by the depth guided bilinear of hlsl/rt_mask_read.hlsli). The mask is
+// then never taller than 720 lines whatever the picture: a lamp's shadow is soft by nature (its penumbra is some pixels at 1080p, and the filter's own blur is 2 pixels), and the mask's angular
+// resolution is the one a 1080p picture at half size has. The debug setting mcla_gpu_rt_lights_scale picks the step (0 auto, 1 whole, 2 half where there is room): at 1 the packing alone is 2.1
+// times smaller than part 1.
+// THE 8 BIT HISTORY. An exponential average that is rounded to the nearest 1 / 255 each frame stops short of its target when the step it takes (1 / (n + 1) of the distance, n up to 32) is under half a level:
+// it stays up to 4 % away from the true visibility for ever (a lamp pool that stays dim where a shadow once was; rt_lights_test.cpp measures it), and a noisy visibility is biased. hlsl/rt_denoise_engine.hlsli
+// (RT_DN_OUT_UNORM8) therefore rounds the blended average AT RANDOM (Store8, the twin below: floor(v x 255 + u) / 255, u from the shared per-frame blue noise): the stored value's expectation is the
+// average itself, so it neither stalls nor drifts, and it carries a noise of one level (0.4 %) that the average resolves with the rest. (Adding one level toward the sample where it stalls cures the stall
+// and doubles the bias of a noisy signal: measured, and dropped.)
+inline constexpr uint32_t kStepFull = 1;
+inline constexpr uint32_t kStepHalf = 2;
+inline constexpr uint32_t kMinHalfExtent = 128;                           // a traced size under this on an axis is traced whole (a texel of a 64 wide mask is no use)
+inline constexpr uint32_t kMaskMaxLines = 720;                            // auto: a traced size taller than this is traced at half
+inline constexpr uint32_t kSignalBytes = 4;                               // RGBA8_UNORM
+inline constexpr uint32_t kDenoiseImages = 4;                             // RtDenoise: spatial A and B, history A and B
+inline constexpr uint32_t kDenoiseImageBytes = 4;                         // RGBA8_UNORM
+inline constexpr uint32_t kGroupBytes = kSignalBytes + kDenoiseImages * kDenoiseImageBytes;   // 20 a texel for each group of three lights
+inline constexpr uint32_t kDepthGuideBytes = 2;                           // R16_FLOAT, two of them (the parity: this frame's and the last frame's)
+inline constexpr uint32_t kNormalGuideBytes = 4;                          // RGBA8_SNORM: xyz the view normal, w the share (1: some light reaches the pixel)
+inline constexpr uint32_t kGuideBytes = 2 * kDepthGuideBytes + kNormalGuideBytes;   // 8 a texel, shared by the groups
+inline constexpr float kLengthScale = 32.0f;                              // the history's length in the alpha: n / 32 (rt_denoise_rules.h kMaxLength)
+static_assert(kGroupBytes == 20 && kGuideBytes == 8);
+
+// The step the setting asks for on a traced size: 0 auto (half where the traced size is taller than kMaskMaxLines), 1 whole, 2 half; half only where the mask keeps kMinHalfExtent texels on each axis.
+constexpr uint32_t ClampScale(int setting) { return setting < 0 ? 0u : (setting > 2 ? 2u : uint32_t(setting)); }
+constexpr uint32_t StepFor(int setting, uint32_t traced_width, uint32_t traced_height) {
+  const uint32_t scale = ClampScale(setting);
+  const bool room = traced_width >= 2 * kMinHalfExtent && traced_height >= 2 * kMinHalfExtent;
+  const bool tall = traced_height > kMaskMaxLines;
+  return (room && (scale == 2 || (scale == 0 && tall))) ? kStepHalf : kStepFull;
+}
+// The mask's extent on an axis (a texel covers `step` traced pixels: the last one may cover fewer), and the traced pixel a mask texel samples (the corner of its block: the guide's depth and normal are read there).
+constexpr uint32_t MaskExtent(uint32_t traced, uint32_t step) { return step <= 1 ? traced : (traced + step - 1) / step; }
+constexpr uint32_t TracedOf(uint32_t texel, uint32_t step, uint32_t traced) {
+  const uint32_t at = texel * (step < 1 ? 1u : step);
+  return at < traced ? at : (traced > 0 ? traced - 1 : 0);
+}
+// The filter's iterations: the a-trous at steps 1 and 2 on a whole size (a total reach of 6 texels: sigma 2.2 pixels), ONE at half (sigma 1.0 texel = 2 pixels: the same blur in the traced pixels,
+// which the edge-stopped kernel and the 8 bit result both want kept: rt_lights_test.cpp measures it on a soft edge).
+constexpr uint32_t DenoiseIterations(uint32_t step) { return step >= kStepHalf ? 1u : 2u; }
+
+// What the masks hold for `images` groups of three lights at a MASK size (RtLights::HeldBytes adds the rows and the counters).
+constexpr uint64_t HeldBytes(uint32_t width, uint32_t height, uint32_t images) {
+  return uint64_t(width) * height * (uint64_t(images) * kGroupBytes + kGuideBytes);
+}
+// What part 1 held (for the record and the report): RGBA16F signal and denoiser images, R32F depths, RGBA16F normal, RG16F hit.
+constexpr uint64_t HeldBytesPart1(uint32_t width, uint32_t height, uint32_t images) {
+  return uint64_t(width) * height * (uint64_t(images) * (8u + 4u * 8u) + 8u + 8u + 4u);
+}
+static_assert(HeldBytesPart1(1, 1, 1) == 60 && HeldBytes(1, 1, 1) == 28 && HeldBytes(1, 1, 3) == 68);
+
+// The twins of hlsl/rt_denoise_unorm8.hlsli: the hardware's rounding of a value stored in an 8 bit image (Round8), and the random rounding the temporal pass stores its blended average with (Store8: `u` in
+// [0, 1) is the pixel's number this frame; the expectation over u is `v` clamped to [0, 1]).
+inline float Round8(float v) { return std::floor((v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v)) * 255.0f + 0.5f) / 255.0f; }
+inline float Store8(float v, float u) { return std::min(std::floor((v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v)) * 255.0f + u), 255.0f) / 255.0f; }
 
 // ---------------------------------------------------------------------------
 // the settings' words
@@ -375,12 +440,13 @@ inline constexpr uint32_t kFlagCheckVisible = 1u << 1;   // mcla_gpu_rt_lights_c
 inline constexpr uint32_t kFlagCheckBlocked = 1u << 2;   // mcla_gpu_rt_lights_check 2
 inline constexpr uint32_t kFlagBlue = 1u << 3;           // the shared blue noise (mcla_gpu_noise_blue); off: the first versions' gradient noise (a comparison only)
 
-// The header: row 0 the image's size, the frame, the flags; row 1 the lights and rays; row 2 the camera's lens and the range; row 3 reserved.
+// The header: row 0 the MASK's size (the images' and the guides'), the frame, the flags; row 1 the lights, the rays, the ray mask (unused) and the step (the traced pixels a mask texel spans on an axis);
+// row 2 the camera's lens and the range; row 3 the occlusion's traced size (the depth image the trace reads is this size) and two reserved words.
 struct alignas(16) GpuRtHeader {
   uint32_t width, height, frame, flags;
-  uint32_t light_count, rays, ray_mask, reserved0;
+  uint32_t light_count, rays, ray_mask, step;
   float tan_x, tan_y, max_range, reserved1;
-  uint32_t reserved2[4];
+  uint32_t traced_width, traced_height, reserved2[2];
 };
 static_assert(sizeof(GpuRtHeader) == 64 && std::is_trivially_copyable_v<GpuRtHeader>);
 
@@ -396,29 +462,76 @@ static_assert(kRowsAlloc >= kRowsBytes && kRowsBytes == 640);
 inline constexpr uint32_t kMaskFlagValid = 1u << 0;        // the images are this frame's: a light's channel is to be read
 inline constexpr uint32_t kMaskFlagRawView = 1u << 1;      // the debug view shows the raw images (mcla_gpu_rt_lights_view 2)
 inline constexpr uint32_t kMaskFlagView = 1u << 2;         // the light pass draws the visibility as a picture instead of the light (mcla_gpu_rt_lights_view 1 or 2)
+inline constexpr uint32_t kMaskFlagRrRaw = 1u << 3;        // RT-LIGHTS-D1 part 2: Ray Reconstruction takes the frame: the slots are the unfiltered signal's (the shader reads them as any other: the flag is for the census and the tests)
 
 struct alignas(16) GpuRtMaskTable {
-  uint32_t images, flags, width, height;     // the mask images' count, the flags, their size in texels (the traced size)
-  uint32_t slot[3];                          // the filtered images' bindless slots (kNoSlot: not there)
-  uint32_t lin_slot;                         // the occlusion's linear depth image at the same size (the upsample's guide); kNoSlot: nearest
+  uint32_t images, flags, width, height;     // the mask images' count, the flags, their size in texels (the MASK's: the traced size over `step`)
+  uint32_t slot[3];                          // the filtered images' bindless slots (kNoSlot: not there); in a frame Ray Reconstruction takes (kMaskFlagRrRaw) the raw signal's
+  uint32_t lin_slot;                         // the occlusion's linear depth image at the TRACED size (the upsample's guide); kNoSlot: nearest
   uint32_t raw_slot[3];                      // the unfiltered images' slots (the debug view)
-  uint32_t reserved0;
+  uint32_t step;                             // the traced pixels a mask texel spans on an axis: 1 or 2 (a texel is the traced pixel at the corner of its block)
   float depth_sigma;
-  uint32_t reserved1[3];
+  uint32_t traced_width, traced_height;      // the occlusion's traced size: the guide image's, and the scale between the picture and the mask
+  uint32_t reserved1;
 };
 static_assert(sizeof(GpuRtMaskTable) == 64 && std::is_trivially_copyable_v<GpuRtMaskTable>);
-static_assert(offsetof(GpuRtMaskTable, slot) == 16 && offsetof(GpuRtMaskTable, lin_slot) == 28 && offsetof(GpuRtMaskTable, raw_slot) == 32 && offsetof(GpuRtMaskTable, depth_sigma) == 48);
+static_assert(offsetof(GpuRtMaskTable, slot) == 16 && offsetof(GpuRtMaskTable, lin_slot) == 28 && offsetof(GpuRtMaskTable, raw_slot) == 32 && offsetof(GpuRtMaskTable, step) == 44 &&
+              offsetof(GpuRtMaskTable, depth_sigma) == 48 && offsetof(GpuRtMaskTable, traced_width) == 52 && offsetof(GpuRtMaskTable, traced_height) == 56);
 
 // What the light pass is handed of a frame the ray pass ran.
 struct MaskFrame {
   bool valid = false;
   uint32_t images = 0;
-  uint32_t width = 0, height = 0;
+  uint32_t width = 0, height = 0;               // the mask's
+  uint32_t step = kStepFull;                    // the traced pixels a mask texel spans on an axis
+  uint32_t traced_width = 0, traced_height = 0; // the occlusion's traced size (0: the mask's size times the step)
   std::array<uint32_t, kMaxImages> slot{kNoLightSlot, kNoLightSlot, kNoLightSlot};
   std::array<uint32_t, kMaxImages> raw_slot{kNoLightSlot, kNoLightSlot, kNoLightSlot};
   uint32_t lin_slot = kNoLightSlot;
   int view = kViewOff;
+  bool rr_raw = false;                          // Ray Reconstruction takes the frame: `slot` holds the unfiltered signal
 };
+
+// What a frame hands the light pass, from what the pass made: ONE place for the filtered frame and the raw one (the host calls it from both paths, the test holds it).
+struct MaskInputs {
+  uint32_t images = 0;
+  uint32_t width = 0, height = 0;                 // the mask's
+  uint32_t step = kStepFull;
+  uint32_t traced_width = 0, traced_height = 0;   // the occlusion's
+  uint32_t lin_slot = kNoLightSlot;
+  int view = kViewOff;
+  bool raw = false;                               // Ray Reconstruction takes the frame
+  std::array<uint32_t, kMaxImages> signal_slot{kNoLightSlot, kNoLightSlot, kNoLightSlot};   // the unfiltered images
+  std::array<uint32_t, kMaxImages> result_slot{kNoLightSlot, kNoLightSlot, kNoLightSlot};   // RtDenoise's results (unused in a raw frame)
+};
+inline MaskFrame MakeMaskFrame(const MaskInputs& in) {
+  MaskFrame f;
+  f.valid = true;
+  f.images = in.images;
+  f.width = in.width;
+  f.height = in.height;
+  f.step = in.step;
+  f.traced_width = in.traced_width;
+  f.traced_height = in.traced_height;
+  for (uint32_t g = 0; g < in.images && g < kMaxImages; ++g) {
+    f.slot[g] = in.raw ? in.signal_slot[g] : in.result_slot[g];   // a raw frame: the light pass reads the 1 spp signal as it is
+    f.raw_slot[g] = in.signal_slot[g];
+  }
+  f.lin_slot = in.lin_slot;
+  f.view = in.view;
+  f.rr_raw = in.raw;
+  return f;
+}
+// What a raw frame (Ray Reconstruction is the denoiser: RtLights::SetRawMode) does and does not: the trace runs, RtDenoise's two stages do not, no filtered result is the next frame's history (the next
+// frame that is filtered starts again), the light pass reads the signal, and no hit distance goes to the guide pass (a visibility has none).
+struct RawPlan {
+  bool trace = true;
+  bool filter = true;
+  bool history_written = true;
+  bool light_pass_reads_signal = false;
+  bool hit_distance_for_guides = false;
+};
+constexpr RawPlan RawPlanFor(bool raw) { return RawPlan{true, !raw, !raw, raw, false}; }
 
 // The table of a frame with no masks: nothing valid, every slot absent (the light pass reads no channel).
 inline GpuRtMaskTable EmptyMaskTable() {
@@ -442,22 +555,19 @@ inline GpuRtMaskTable BuildMaskTable(const MaskFrame& f) {
   t.images = f.images;
   t.width = f.width;
   t.height = f.height;
+  t.step = (f.step == kStepHalf) ? kStepHalf : kStepFull;
+  t.traced_width = f.traced_width != 0 ? f.traced_width : f.width * t.step;
+  t.traced_height = f.traced_height != 0 ? f.traced_height : f.height * t.step;
   for (uint32_t i = 0; i < f.images; ++i) {
     t.slot[i] = f.slot[i];
     t.raw_slot[i] = f.raw_slot[i];
   }
   t.lin_slot = f.lin_slot;
   t.depth_sigma = kDepthSigma;
-  t.flags = kMaskFlagValid | (f.view != kViewOff ? kMaskFlagView : 0u) | (f.view == kViewRaw ? kMaskFlagRawView : 0u);
+  t.flags = kMaskFlagValid | (f.view != kViewOff ? kMaskFlagView : 0u) | (f.view == kViewRaw ? kMaskFlagRawView : 0u) | (f.rr_raw ? kMaskFlagRrRaw : 0u);
   return t;
 }
 inline bool MaskTableValid(const GpuRtMaskTable& t) { return (t.flags & kMaskFlagValid) != 0 && t.images != 0 && t.width != 0 && t.height != 0; }
-
-// The bytes the masks hold: three RGBA16F-class images a group at the traced size, the guides (R32F depth twice, RGBA16F normal, RG16F hit) once and RtDenoise's four RGBA16F images a group
-// (rt_denoise_rules.h ImageBytes), kBytesPerPixel 8: a group = 5 x 8, the guides 8 + 8 + 8 + 4 = 28.
-constexpr uint64_t HeldBytes(uint32_t width, uint32_t height, uint32_t images) {
-  return uint64_t(width) * height * (uint64_t(images) * 5u * 8u + 28u);
-}
 
 // ---------------------------------------------------------------------------
 // the composition (THE rule: the twin of the light pass's pixel paths)
@@ -494,9 +604,9 @@ inline void Apply(bool game_lit, const float term[3], float visibility, float ou
 // The compute layout: the bindless texture set (space 0: the occlusion's linear depth image), this pass's own set (space 1), the ray tracing set of the car scene (space 2: the top level and the world frame's
 // rows) and the push block at (b0, space 3).
 inline constexpr uint32_t kTextureSet = 0, kPassSet = 1, kSceneSet = 2, kPushSpace = 3;
-// The pass's set: t0 the rows, u1 u2 u3 the signal images (a group of three lights each), u4 the depth guide, u5 the normal guide, u6 the hit and share guide, u7 the counters.
-inline constexpr uint32_t kBindRows = 0, kBindSignal0 = 1, kBindSignal1 = 2, kBindSignal2 = 3, kBindDepth = 4, kBindNormal = 5, kBindHit = 6, kBindStats = 7;
-inline constexpr uint32_t kSetViews = 8;   // one view for each descriptor: the rows, three signals, three guides, the counters (D3D12 sizes a set by this count)
+// The pass's set: t0 the rows, u1 u2 u3 the signal images (a group of three lights each), u4 the depth guide, u5 the normal and share guide, u6 the counters (part 1 had a hit image at u6: gone).
+inline constexpr uint32_t kBindRows = 0, kBindSignal0 = 1, kBindSignal1 = 2, kBindSignal2 = 3, kBindDepth = 4, kBindNormal = 5, kBindStats = 6;
+inline constexpr uint32_t kSetViews = 7;   // one view for each descriptor: the rows, three signals, two guides, the counters (D3D12 sizes a set by this count)
 inline constexpr uint32_t kGroup = 8;      // numthreads(8, 8, 1)
 constexpr uint32_t Groups(uint32_t extent) { return (extent + kGroup - 1) / kGroup; }
 struct Push {
@@ -509,8 +619,7 @@ inline constexpr uint32_t kStatPixels = 0, kStatWorld = 1, kStatCovered = 2, kSt
 inline constexpr uint32_t kStatWords = 8;
 inline constexpr uint32_t kStatBytes = kStatWords * 4;
 
-// The filter: RtDenoise's diffuse profile over the plain guides, two a-trous iterations (steps 1 and 2: the penumbra of a lamp's disc is a few pixels wide; part 2 tunes it and measures it).
-inline constexpr uint32_t kDenoiseIterations = 2;
+// The filter: RtDenoise's diffuse profile over the visibility guides (RT_DN_VIS), DenoiseIterations(step) a-trous iterations (the penumbra of a lamp's disc is a few pixels wide).
 inline constexpr uint32_t kStatsEvery = 10;           // a census frame: the counters are added to
 inline constexpr uint32_t kReadbackEveryFrames = 600;
 inline constexpr uint32_t kReleaseAfterFrames = 120;  // the images go back after this many frames without a run (2 s at 60)

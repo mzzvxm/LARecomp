@@ -17,6 +17,7 @@
 #include "backend.h"
 #include "car_rt_scene.h"
 #include "city_rt_rules.h"
+#include "denoiser_setting.h"
 #include "descriptors.h"
 #include "device.h"
 #include "frame.h"
@@ -88,12 +89,13 @@ void RtLights::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
     passes.precache().Note("ray traced light visibility: a layout or a shader could not be made (the shadow atlas alone shadows the lights)", 0);
     return;
   }
-  // THE DENOISER: one RtDenoise instance for each group of three lights (instances 2 to 4; the reflections' is 0 and the per-pixel bounce light's 1), the diffuse compile of the plain consumer's two stages.
-  const HostShaderBlob spatial = RtDenoiseDiffuseShader(false);
-  const HostShaderBlob temporal = RtDenoiseDiffuseShader(true);
+  // THE DENOISER: one RtDenoise instance for each group of three lights (instances 2 to 4; the reflections' is 0 and the per-pixel bounce light's 1), the diffuse compile of the plain consumer's two stages
+  // over 8 bit images and the visibility's lighter guides (RT_DN_VIS, RT_DN_OUT_UNORM8: rt_lights_rules.h "the memory").
+  const HostShaderBlob spatial = RtDenoiseVisShader(false);
+  const HostShaderBlob temporal = RtDenoiseVisShader(true);
   for (uint32_t g = 0; g < rt::kMaxImages; ++g) {
     denoise_[g].Initialize(device, frames, heap, passes, rt::kFirstDenoiseInstance + g, "rt lights", RtDenoise::Blob{spatial.data, spatial.size, spatial.name},
-                           RtDenoise::Blob{temporal.data, temporal.size, temporal.name});
+                           RtDenoise::Blob{temporal.data, temporal.size, temporal.name}, rt_denoise::Format::kRgba8);
     if (!denoise_[g].available()) {
       passes.precache().Note("ray traced light visibility: the denoiser could not be made (the shadow atlas alone shadows the lights)", 0);
       return;
@@ -112,7 +114,7 @@ void RtLights::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
 }
 
 bool RtLights::MakeLayoutAndShader(CarRtScene& scene) {
-  // THE PASS SET: the rows, the three signal images, the three guides, the counters (registers unique inside the set: rt_lights_rules.h).
+  // THE PASS SET: the rows, the three signal images, the two guides, the counters (registers unique inside the set: rt_lights_rules.h).
   pass_set_builder_.begin();
   rows_index_ = pass_set_builder_.addByteAddressBuffer(rt::kBindRows);
   signal_index_[0] = pass_set_builder_.addReadWriteTexture(rt::kBindSignal0);
@@ -120,7 +122,6 @@ bool RtLights::MakeLayoutAndShader(CarRtScene& scene) {
   signal_index_[2] = pass_set_builder_.addReadWriteTexture(rt::kBindSignal2);
   depth_index_ = pass_set_builder_.addReadWriteTexture(rt::kBindDepth);
   normal_index_ = pass_set_builder_.addReadWriteTexture(rt::kBindNormal);
-  hit_index_ = pass_set_builder_.addReadWriteTexture(rt::kBindHit);
   stats_index_ = pass_set_builder_.addReadWriteByteAddressBuffer(rt::kBindStats);
   pass_set_builder_.end();
 
@@ -164,7 +165,6 @@ void RtLights::Shutdown() {
     d = HostImage{};
   }
   normal_ = HostImage{};
-  hit_ = HostImage{};
   stats_.reset();
   readback_.reset();
   readback_busy_ = false;
@@ -247,11 +247,11 @@ void RtLights::ReleaseImages() {
       if (d.texture) passes_->ReleaseImage(d);
     }
     if (normal_.texture) passes_->ReleaseImage(normal_);
-    if (hit_.texture) passes_->ReleaseImage(hit_);
   }
   ++image_serial_;
   image_width_ = image_height_ = image_groups_ = 0;
   have_prev_ = false;
+  raw_frame_ = false;
   history_frames_ = 0;
   for (RtDenoise& d : denoise_) {
     d.ResetHistory();
@@ -264,15 +264,15 @@ bool RtLights::EnsureImages(uint32_t width, uint32_t height, uint32_t groups) {
   }
   ReleaseImages();
   bool ok = true;
+  // the visibility in 8 bits (rt_lights_rules.h "the memory"): the signals RGBA8, the depth guides R16F, the normal and the share one RGBA8 snorm image
   for (uint32_t g = 0; g < groups && ok; ++g) {
-    ok = passes_->EnsureImage(signal_[g], width, height, plume::RenderFormat::R16G16B16A16_FLOAT, "rt lights signal", kImageFlags) && signal_[g].slot <= 0xFFFEu;
+    ok = passes_->EnsureImage(signal_[g], width, height, plume::RenderFormat::R8G8B8A8_UNORM, "rt lights signal", kImageFlags) && signal_[g].slot <= 0xFFFEu;
   }
   // the denoiser's guides name their images by 16 bit slots (rt_denoise_rules.h plain::)
-  ok = ok && passes_->EnsureImage(depth_[0], width, height, plume::RenderFormat::R32_FLOAT, "rt lights depth 0", kImageFlags) &&
-       passes_->EnsureImage(depth_[1], width, height, plume::RenderFormat::R32_FLOAT, "rt lights depth 1", kImageFlags) &&
-       passes_->EnsureImage(normal_, width, height, plume::RenderFormat::R16G16B16A16_FLOAT, "rt lights normal", kImageFlags) &&
-       passes_->EnsureImage(hit_, width, height, plume::RenderFormat::R16G16_FLOAT, "rt lights hit", kImageFlags);
-  ok = ok && depth_[0].slot <= 0xFFFEu && depth_[1].slot <= 0xFFFEu && normal_.slot <= 0xFFFEu && hit_.slot <= 0xFFFEu;
+  ok = ok && passes_->EnsureImage(depth_[0], width, height, plume::RenderFormat::R16_FLOAT, "rt lights depth 0", kImageFlags) &&
+       passes_->EnsureImage(depth_[1], width, height, plume::RenderFormat::R16_FLOAT, "rt lights depth 1", kImageFlags) &&
+       passes_->EnsureImage(normal_, width, height, plume::RenderFormat::R8G8B8A8_SNORM, "rt lights normal and share", kImageFlags);
+  ok = ok && depth_[0].slot <= 0xFFFEu && depth_[1].slot <= 0xFFFEu && normal_.slot <= 0xFFFEu;
   if (!ok) {
     ReleaseImages();
     return false;
@@ -281,8 +281,10 @@ bool RtLights::EnsureImages(uint32_t width, uint32_t height, uint32_t groups) {
   image_height_ = height;
   image_groups_ = groups;
   ++image_serial_;
-  REXLOG_INFO("{} the pass's images: {}x{}, {} group(s) of three lights, {:.1f} MiB with the denoisers' own four a group (the signals, two depth guides, the view normal, the hit image)", kPrefix, width, height, groups,
-              double(rt::HeldBytes(width, height, groups)) / (1024.0 * 1024.0));
+  REXLOG_INFO("{} the pass's images: {}x{} (the mask: the traced size {}x{} over a step of {}), {} group(s) of three lights, {:.1f} MiB with the denoisers' own four a group (8 bit signals, R16F depth guides, one "
+              "RGBA8 snorm normal and share image); part 1 held {:.1f} MiB for the same",
+              kPrefix, width, height, in_.traced[0], in_.traced[1], step_, groups, double(rt::HeldBytes(width, height, groups)) / (1024.0 * 1024.0),
+              double(rt::HeldBytesPart1(in_.traced[0], in_.traced[1], groups)) / (1024.0 * 1024.0));
   return true;
 }
 
@@ -302,7 +304,7 @@ bool RtLights::EnsureSlot(uint32_t frame_slot) {
     if (s.set[p] && frames_) {
       frames_->Retire(std::move(s.set[p]));
     }
-    s.set[p] = device_->CreateDescriptorSet(pass_set_builder_, rt::kSetViews, 0, "rt lights set");  // eight views: D3D12 sizes a set by this count (descriptor_count_test reads it)
+    s.set[p] = device_->CreateDescriptorSet(pass_set_builder_, rt::kSetViews, 0, "rt lights set");  // seven views: D3D12 sizes a set by this count (descriptor_count_test reads it)
     if (!s.set[p]) {
       return false;
     }
@@ -313,7 +315,6 @@ bool RtLights::EnsureSlot(uint32_t frame_slot) {
     }
     s.set[p]->setTexture(depth_index_, depth_[p].texture.get(), Layout::GENERAL, depth_[p].view.get());
     s.set[p]->setTexture(normal_index_, normal_.texture.get(), Layout::GENERAL, normal_.view.get());
-    s.set[p]->setTexture(hit_index_, hit_.texture.get(), Layout::GENERAL, hit_.view.get());
     s.set[p]->setBuffer(stats_index_, stats_.get(), rt::kStatBytes);
     s.set_key[p] = key;
   }
@@ -323,7 +324,7 @@ bool RtLights::EnsureSlot(uint32_t frame_slot) {
 uint64_t RtLights::HeldBytes() const {
   uint64_t bytes = 0;
   if (signal_[0].texture) {
-    bytes += uint64_t(image_width_) * image_height_ * (uint64_t(image_groups_) * 8u + 28u);   // the signals 8 a group, two depth guides 8, the normal 8, the hit image 4
+    bytes += uint64_t(image_width_) * image_height_ * (uint64_t(image_groups_) * rt::kSignalBytes + rt::kGuideBytes);   // the signals 4 a group, the two depth guides and the normal and share image 8 (RtDenoise's own below)
   }
   for (const RtDenoise& d : denoise_) {
     bytes += d.HeldBytes();
@@ -347,6 +348,7 @@ void RtLights::BeginFrame(bool pass_runs, bool ultra) {
   rays_ = rt::ClampRays(int(st::mcla_gpu_rt_lights_rays.Get()));
   view_ = rt::ClampView(int(st::mcla_gpu_rt_lights_view.Get()));
   check_ = rt::ClampCheck(int(st::mcla_gpu_rt_lights_check.Get()));
+  scale_setting_ = int(st::mcla_gpu_rt_lights_scale.Get());
   blue_ = st::mcla_gpu_noise_blue.Get();
   wanted_ = false;
   bool want = false;
@@ -367,6 +369,7 @@ void RtLights::BeginFrame(bool pass_runs, bool ultra) {
       wanted_ = true;
     }
   }
+  denoiser::NoteConsumer(rr::Consumer::kRtLights, wanted_);   // RT-LIGHTS-D1 part 2: the effect runs this frame (the plan is made after, RawModes follows the plan)
   if (want != lamp_hook_on_) {
     lamp_hook_on_ = want;
     vol_lamps::SetWantedBy(vol_lamps::kWantedByRtLights, want);   // the game's lamp list hook runs while a reader wants the list
@@ -503,7 +506,9 @@ bool RtLights::Plan(const Inputs& in, ll::Selection* selection) {
     facts.pipelines_ready = ready;
   }
   if (rt::Decide(facts) == rt::Why::kResources) {
-    facts.resources_ok = EnsureImages(in.traced[0], in.traced[1], groups_) && EnsureSlot(in.frame_slot);
+    // the mask: the traced size over the step (half where it is taller than 720 lines, or as mcla_gpu_rt_lights_scale says)
+    step_ = rt::StepFor(scale_setting_, in.traced[0], in.traced[1]);
+    facts.resources_ok = EnsureImages(rt::MaskExtent(in.traced[0], step_), rt::MaskExtent(in.traced[1], step_), groups_) && EnsureSlot(in.frame_slot);
   }
   why = rt::Decide(facts);
   if (why != rt::Why::kRuns) {
@@ -535,7 +540,9 @@ bool RtLights::Plan(const Inputs& in, ll::Selection* selection) {
   }
   tan_[0] = in.tan_x;
   tan_[1] = in.tan_y;
-  history_ok_ = have_prev_ && prev_frame_ + 1 == in.frame && prev_size_[0] == image_width_ && prev_size_[1] == image_height_ && !rt::CameraCut(prev_pose_.position, pose_.position, prev_pose_.forward, pose_.forward);
+  raw_frame_ = raw_requested_;   // Ray Reconstruction takes this frame (the switch is on): no filter, the light pass reads the signal
+  history_ok_ = have_prev_ && prev_frame_ + 1 == in.frame && prev_size_[0] == image_width_ && prev_size_[1] == image_height_ && prev_step_ == step_ &&
+                !rt::CameraCut(prev_pose_.position, pose_.position, prev_pose_.forward, pose_.forward);
   if (!history_ok_) {
     for (RtDenoise& d : denoise_) {
       d.ResetHistory();
@@ -554,6 +561,9 @@ bool RtLights::Plan(const Inputs& in, ll::Selection* selection) {
   rt::GpuRtHeader header{};
   header.width = image_width_;
   header.height = image_height_;
+  header.step = step_;
+  header.traced_width = in.traced[0];
+  header.traced_height = in.traced[1];
   header.frame = uint32_t(in.frame);
   header.flags = (stats_frame_ ? rt::kFlagStats : 0u) | (check_ == rt::kCheckVisible ? rt::kFlagCheckVisible : 0u) | (check_ == rt::kCheckBlocked ? rt::kFlagCheckBlocked : 0u) | (blue_ ? rt::kFlagBlue : 0u);
   header.light_count = light_count_;
@@ -578,7 +588,7 @@ void RtLights::RecordTrace(plume::RenderCommandList* list) {
   if (!pipeline_ || !view.set) {
     return;
   }
-  std::array<plume::RenderTextureBarrier, 6> writes;
+  std::array<plume::RenderTextureBarrier, 5> writes;
   uint32_t write_count = 0;
   for (uint32_t g = 0; g < groups_; ++g) {
     writes[write_count++] = plume::RenderTextureBarrier(signal_[g].texture.get(), Layout::GENERAL);
@@ -586,10 +596,9 @@ void RtLights::RecordTrace(plume::RenderCommandList* list) {
   }
   writes[write_count++] = plume::RenderTextureBarrier(depth_[parity_].texture.get(), Layout::GENERAL);
   writes[write_count++] = plume::RenderTextureBarrier(normal_.texture.get(), Layout::GENERAL);
-  writes[write_count++] = plume::RenderTextureBarrier(hit_.texture.get(), Layout::GENERAL);
   const plume::RenderBufferBarrier buffers[1] = {{stats_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE}};
   list->barriers(Stage::COMPUTE, buffers, 1, writes.data(), write_count);
-  normal_.layout = hit_.layout = depth_[parity_].layout = Layout::GENERAL;
+  normal_.layout = depth_[parity_].layout = Layout::GENERAL;
   rt::Push push = {};
   push.slots[0] = in_.lin_slot;
   push.slots[1] = groups_;
@@ -599,12 +608,70 @@ void RtLights::RecordTrace(plume::RenderCommandList* list) {
   list->setComputeDescriptorSet(view.set, rt::kSceneSet);
   list->setPipeline(pipeline_.get());
   list->setComputePushConstants(0, &push, 0, sizeof(push));
-  list->dispatch(rt::Groups(image_width_), rt::Groups(image_height_), 1);
+  list->dispatch(rt::Groups(image_width_), rt::Groups(image_height_), 1);   // one thread a mask texel
   ran_frame_ = frame_;
+}
+
+// RT-LIGHTS-D1 part 2, THE RAW MODE: Ray Reconstruction takes the frame and is the denoiser, so RtDenoise's stages do not run. The light pass reads the 1 spp signal itself (the table's slots are the signal
+// images': the shader reads them like any other, depth guided and bilinear), so the signals go to the read state of both stages; the guides too (the pixel stage never reads them, the next frame's
+// temporal stage might: a frame that is not raw follows). No history is written: the next frame that is not raw starts it again (have_prev_ false: Plan resets the denoisers). A visibility has no hit
+// distance to give the guide pass.
+// What this frame hands the light pass (the filtered frame fills the results' slots in, the raw frame has none).
+rt::MaskInputs RtLights::MakeMaskInputs() const {
+  rt::MaskInputs mi;
+  mi.images = groups_;
+  mi.width = image_width_;
+  mi.height = image_height_;
+  mi.step = step_;
+  mi.traced_width = in_.traced[0];
+  mi.traced_height = in_.traced[1];
+  mi.lin_slot = in_.lin_slot;
+  mi.view = view_;
+  for (uint32_t g = 0; g < groups_; ++g) {
+    mi.signal_slot[g] = signal_[g].slot;
+  }
+  return mi;
+}
+
+void RtLights::RecordRaw(plume::RenderCommandList* list) {
+  std::array<plume::RenderTextureBarrier, 6> reads;
+  uint32_t count = 0;
+  for (uint32_t g = 0; g < groups_; ++g) {
+    reads[count++] = plume::RenderTextureBarrier(signal_[g].texture.get(), Layout::SHADER_READ);
+    signal_[g].layout = Layout::SHADER_READ;
+  }
+  reads[count++] = plume::RenderTextureBarrier(depth_[parity_].texture.get(), Layout::SHADER_READ);
+  reads[count++] = plume::RenderTextureBarrier(normal_.texture.get(), Layout::SHADER_READ);
+  list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, reads.data(), count);
+  depth_[parity_].layout = normal_.layout = Layout::SHADER_READ;
+  rt::MaskInputs mi = MakeMaskInputs();
+  mi.raw = true;
+  masks_ = rt::MakeMaskFrame(mi);
+  // the filter's history is the last FILTERED result: it is not this frame's, so the next frame that is filtered starts it again
+  have_prev_ = false;
+  history_frames_ = 0;
+  for (RtDenoise& d : denoise_) {
+    d.ResetHistory();
+  }
+  parity_ ^= 1u;
+  ran_since_present_ = true;
+  ++frames_run_;
+  ++raw_frames_;
+  for (uint32_t i = 0; i < light_count_; ++i) {
+    ++class_lights_[size_t(classes_[i])];
+  }
+  if (!raw_logged_) {
+    raw_logged_ = true;
+    REXLOG_INFO("{} frame {}: a RAW frame (Ray Reconstruction takes it: the filter does not run, the light pass reads the 1 spp visibility; logged once, the count is in the census)", kPrefix, in_.frame);
+  }
 }
 
 void RtLights::RecordDenoise(plume::RenderCommandList* list) {
   if (why_ != rt::Why::kRuns || !list || ran_frame_ != frame_) {
+    return;
+  }
+  if (raw_frame_) {
+    RecordRaw(list);
     return;
   }
   const uint32_t prev = parity_ ^ 1u;
@@ -618,7 +685,7 @@ void RtLights::RecordDenoise(plume::RenderCommandList* list) {
   gi_pixel::DenoiseView v;
   v.depth_slot = depth_[parity_].slot;
   v.normal_slot = normal_.slot;
-  v.hit_slot = hit_.slot;
+  v.hit_slot = normal_.slot;   // the visibility's consumer (RT_DN_VIS) reads the share in the normal image's alpha and no hit image: the word is not read
   v.history_depth_slot = depth_[prev].texture ? depth_[prev].slot : depth_[parity_].slot;
   v.width = image_width_;
   v.height = image_height_;
@@ -637,11 +704,12 @@ void RtLights::RecordDenoise(plume::RenderCommandList* list) {
     RtDenoise::Frame stage;
     stage.list = list;
     stage.signal = &signal_[g];
-    stage.reads = {&depth_[parity_], &normal_, &hit_, &depth_[prev], nullptr, nullptr, nullptr, nullptr};
+    stage.reads = {&depth_[parity_], &normal_, &depth_[prev], nullptr, nullptr, nullptr, nullptr, nullptr};
     stage.width = image_width_;
     stage.height = image_height_;
-    stage.iterations = rt::kDenoiseIterations;
+    stage.iterations = rt::DenoiseIterations(step_);
     stage.push = gi_pixel::MakePush(v);
+    stage.push[rt_denoise::plain::kFrame] = uint32_t(in_.frame);   // the sample of the 8 bit average's random rounding (RT_DN_VIS)
     stage.patch = rt_denoise::plain::PatchFor();
     stage.history_valid = history_ok_;
     const HostImage* accumulated = denoise_[g].RecordTemporal(stage);
@@ -653,6 +721,7 @@ void RtLights::RecordDenoise(plume::RenderCommandList* list) {
     v.length = gi_pixel::AssumedLength(history_frames_ + (denoise_[g].last_history_read() ? 1u : 0u));
     stage.signal = const_cast<HostImage*>(accumulated);   // the class only reads it (RtDenoise::Frame holds non-const pointers for the images it moves to the read state)
     stage.push = gi_pixel::MakePush(v);
+    stage.push[rt_denoise::plain::kFrame] = uint32_t(in_.frame);   // the sample of the 8 bit average's random rounding (RT_DN_VIS)
     result_[g] = denoise_[g].RecordSpatial(stage);
     all = all && result_[g] != nullptr;
   }
@@ -663,16 +732,11 @@ void RtLights::RecordDenoise(plume::RenderCommandList* list) {
   list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, reads, 2);
   depth_[parity_].layout = normal_.layout = Layout::SHADER_READ;
   if (all) {
-    masks_.valid = true;
-    masks_.images = groups_;
-    masks_.width = image_width_;
-    masks_.height = image_height_;
+    rt::MaskInputs mi = MakeMaskInputs();
     for (uint32_t g = 0; g < groups_; ++g) {
-      masks_.slot[g] = result_[g]->slot;
-      masks_.raw_slot[g] = signal_[g].slot;
+      mi.result_slot[g] = result_[g]->slot;
     }
-    masks_.lin_slot = in_.lin_slot;
-    masks_.view = view_;
+    masks_ = rt::MakeMaskFrame(mi);
   } else {
     masks_ = rt::MaskFrame{};
   }
@@ -684,22 +748,23 @@ void RtLights::RecordDenoise(plume::RenderCommandList* list) {
   prev_tan_[1] = tan_[1];
   prev_size_[0] = image_width_;
   prev_size_[1] = image_height_;
+  prev_step_ = step_;
   parity_ ^= 1u;
   ran_since_present_ = true;
   ++frames_run_;
   for (uint32_t i = 0; i < light_count_; ++i) {
     ++class_lights_[size_t(classes_[i])];
   }
-  const uint32_t state = (light_count_ << 0) | (rays_ << 4) | (uint32_t(check_) << 8) | (uint32_t(view_) << 10) | (blue_ ? 1u << 12 : 0u) | (groups_ << 13);
+  const uint32_t state = (light_count_ << 0) | (rays_ << 4) | (uint32_t(check_) << 8) | (uint32_t(view_) << 10) | (blue_ ? 1u << 12 : 0u) | (groups_ << 13) | (step_ << 16);
   if (!first_logged_ || state != last_state_) {
     first_logged_ = true;
     last_state_ = state;
     REXLOG_INFO("{} frame {}: the pass runs: {}x{} pixels (the occlusion's traced size), K {} ({} group(s) of three), {} light(s) have a ray ({} headlight, {} neon, {} street lamp, {} other), {} ray(s) a light, "
-                "disc radius {}, {} noise, RtDenoise diffuse profile, {} iterations; check {}, view {} (logged when it changes)",
+                "disc radius {}, {} noise, RtDenoise diffuse profile, {} iterations over 8 bit images, step {}; check {}, view {} (logged when it changes)",
                 kPrefix, in_.frame, image_width_, image_height_, k_, groups_, light_count_, std::count(classes_.begin(), classes_.begin() + light_count_, rt::Class::kHeadlight),
                 std::count(classes_.begin(), classes_.begin() + light_count_, rt::Class::kNeon), std::count(classes_.begin(), classes_.begin() + light_count_, rt::Class::kLamp),
                 std::count(classes_.begin(), classes_.begin() + light_count_, rt::Class::kOther), rays_, radius_setting_ > 0.0 ? std::format("{:.2f} m", radius_setting_) : std::string("by class"),
-                blue_ ? "blue" : "first versions'", rt::kDenoiseIterations, check_, view_);
+                blue_ ? "blue" : "first versions'", rt::DenoiseIterations(step_), step_, check_, view_);
   }
   // The counters, every interval: copied to the readback buffer (the next frame's first barrier takes the counters back to the storage state).
   if (in_.frame >= next_readback_ && !readback_busy_) {
@@ -781,8 +846,9 @@ std::string RtLights::CensusText() const {
       why += std::format("{}{} {}", why.empty() ? "" : ", ", rt::WhyName(rt::Why(i)), why_counts_[i]);
     }
   }
-  return std::format("; ray traced light visibility: {} frames, lights with a channel by class (headlight {}, neon {}, lamp {}, other {}), {} lamps handed over, {:.1f} MiB held; frames without it: {}", frames_run_,
-                     class_lights_[0], class_lights_[1], class_lights_[2], class_lights_[3], lamps_handed_, double(HeldBytes()) / (1024.0 * 1024.0), why.empty() ? std::string("none") : why);
+  return std::format("; ray traced light visibility: {} frames ({} raw: Ray Reconstruction), lights with a channel by class (headlight {}, neon {}, lamp {}, other {}), {} lamps handed over, {:.1f} MiB held (mask {}x{}, step {}); frames without it: {}",
+                     frames_run_, raw_frames_, class_lights_[0], class_lights_[1], class_lights_[2], class_lights_[3], lamps_handed_, double(HeldBytes()) / (1024.0 * 1024.0), image_width_, image_height_, step_,
+                     why.empty() ? std::string("none") : why);
 }
 
 }  // namespace mcla::gpu
