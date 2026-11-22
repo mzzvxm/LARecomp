@@ -1152,6 +1152,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_city_refl_world_light": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, a point of the city that a reflection ray hit (in the car paint, the chrome, the other cars' paint and the glass) is lit by the world's light: the sun's direction and colour, the ambient, the sky and the environment map of the street the picture shows (the ray tracing world frame's), not by the constants of the car's own draws, whose sun is a rig of its own. false: the car's draws' light, as before. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_masks": {
   "type": "i32",
   "default": "0",

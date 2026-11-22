@@ -241,6 +241,9 @@ CityRefl::Frame CityRefl::Prepare(uint32_t frame_slot, const ScreenIn& screen, u
   in.view = std::clamp<int32_t>(int32_t(larecomp::settings::mcla_gpu_city_refl_view.Get()), 0, 2);
   // REFL-LAMPS: the lamp term of a city hit (the world frame's lamp grid and glow schedule; the shader also needs the frame's world rows to be valid). No binding of its own: t10 and t11 are in the car scene's set.
   in.lamps = on && larecomp::settings::mcla_gpu_city_refl_lamps.Get();
+  // CITY-M2-OPEN: the world frame's light on a city hit (the sun's direction, colour, ambient, sky, environment map of the main view's draws; not the cars' draws' own): the shader also needs the world rows to be
+  // valid and to hold a light, else it takes the cars' frame as it did.
+  in.world_light = on && larecomp::settings::mcla_gpu_city_refl_world_light.Get();
   const bool calibrating = larecomp::settings::mcla_gpu_car_rt_hit_calibrate.Get();
   for (uint32_t c = 0; c < rt_hit_cal::kClasses; ++c) {
     in.gains[c] = calibrating ? gains_.Gain(c) : 1.0f;
@@ -338,6 +341,7 @@ void CityRefl::ProcessStats(uint64_t frame, uint64_t generation) {
     last_log_frame_ = frame;
     REXLOG_INFO("{}", cr::CensusText(frame, last_level_, last_reach_, window_));
     REXLOG_INFO("{}", cr::GainText(frame, gains_, window_.samples));
+    REXLOG_INFO("{}", cr::LightCensusText(frame, window_));  // the shaded hits' light (CITY-M2-OPEN): sun reached / blocked / facing away, behind the camera, the world's light taken
     if (window_.lamp_words[0] != 0) {
       REXLOG_INFO("{}", cr::LampCensusText(frame, window_));  // the lamp term's counters (REFL-LAMPS), only while a hit was lit through the world frame's grid in the window
     }

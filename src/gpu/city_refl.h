@@ -26,7 +26,12 @@
 //                the paint's image): the rows' kFlagLamps from mcla_gpu_city_refl_lamps, nothing new to bind (t10 and t11 are in the car scene's 12 view set), the lamp term's counters in the city's counter buffer and
 //                one more census line `[city refl] lamp term frame N: ...` (city_refl_rules.h LampCensusText).
 //
-// DEBUG SETTINGS (all live): mcla_gpu_city_refl_lamps (false: no lamp light and the sun's glow schedule on a hit, as before REFL-LAMPS), mcla_gpu_city_refl_chrome and mcla_gpu_city_refl_glass (false: the chrome / the glass as before, the A/B of R3), mcla_gpu_city_refl_screen (false: the picture's colour is never the answer, every hit is shaded: the A/B of the shortcut), mcla_gpu_city_refl_coat (false: a city hit is a soft
+//   THE LIGHT    (CITY-M2-OPEN) a city hit is shaded with the WORLD frame's light (the sun's direction and colour, the ambient, the sky and the environment map of the main view's draws: t10's rows 0 to 31), not
+//                with the constants of the cars' draws (the pass's own frame rows, whose sun is a rig of its own): the rows' kFlagWorldLight from mcla_gpu_city_refl_world_light, used where the world rows are valid and
+//                hold a light (city_refl_rules.h WorldLightFor), else the cars' frame as before. Five more counters and one more census line `[city refl] light frame N: ...` (LightCensusText) say how the shaded
+//                hits fared: sun reached, blocked, facing away, behind the camera, the world's light taken.
+//
+// DEBUG SETTINGS (all live): mcla_gpu_city_refl_world_light (false: the cars' draws' light on a hit, as before CITY-M2-OPEN), mcla_gpu_city_refl_lamps (false: no lamp light and the sun's glow schedule on a hit, as before REFL-LAMPS), mcla_gpu_city_refl_chrome and mcla_gpu_city_refl_glass (false: the chrome / the glass as before, the A/B of R3), mcla_gpu_city_refl_screen (false: the picture's colour is never the answer, every hit is shaded: the A/B of the shortcut), mcla_gpu_city_refl_coat (false: a city hit is a soft
 // cone's hit as before, not a mirror's and the coat layer's), mcla_gpu_city_refl_reach (the cell's reach in metres, 0: the level's), mcla_gpu_city_refl_view (1 the hit's source, 2 its class, drawn in the
 // paint through mcla_gpu_car_selfrefl_view 2, the colour the ray sees).
 //

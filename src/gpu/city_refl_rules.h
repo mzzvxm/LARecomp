@@ -262,6 +262,22 @@ constexpr float GlowFactorFor(const LampTerm& t, uint32_t kind, float street, fl
 }
 
 // ---------------------------------------------------------------------------
+// the light of a city hit (CITY-M2-OPEN: the twin of hlsl CityReflHit's frame choice)
+// ---------------------------------------------------------------------------
+
+// The hit frame's flag that says the frame holds a light to shade with (rt_hit_frame.h kFrameShade; hlsl RT_HIT_FRAME_SHADE).
+inline constexpr uint32_t kFrameShadeFlag = 1;
+
+// Whose light a city hit is shaded with. The paint pass's own frame rows (the car scene's binding 5) are the CARS' light: the constants of the player's car draws, whose sun direction is a rig of its own
+// (car_shadow_map.h: at 17.7 h it is 2 degrees BELOW the horizon while the world's sun is well above it) and whose ambient and sun are not the city's. A wall of the city is lit by the WORLD's light (the
+// world frame's rows 0 to 31: the sun, ambient, sky and environment map of the main view's draws, which is what lights the street the picture shows; rt_world_frame.h says a city hit wants it, and the
+// probe field's and the pixel GI's hits take it). The world's is used when the host's switch is on, the world rows were filled this frame (kWorldValid) and the world's frame holds a light (kFrameShade);
+// else the cars' (the pass as it was).
+constexpr bool WorldLightFor(bool world_light_flag, uint32_t world_flags, uint32_t world_frame_flags) {
+  return world_light_flag && (world_flags & kWorldValidFlag) != 0 && (world_frame_flags & kFrameShadeFlag) != 0;
+}
+
+// ---------------------------------------------------------------------------
 // the shader's numbers (the sun's disc, the picture's trust)
 // ---------------------------------------------------------------------------
 
@@ -274,8 +290,17 @@ inline constexpr float kScreenToleranceM = 0.05f;    // the picture's depth tole
 inline constexpr float kScreenToleranceRel = 0.01f;
 inline constexpr float kScreenEdgeBand = 0.04f;      // ndc: a hit this near the picture's edge fades to the model
 inline constexpr float kScreenMinFacing = 0.05f;
-inline constexpr float kMinGain = 0.5f;
+inline constexpr float kMinGain = 0.5f;   // the calibration's range for every class but the glowing one: x0.5 to x3 (rt_hit_calibration.h kCityParams, -1 to 1.585 stops)
 inline constexpr float kMaxGain = 3.0f;
+// CITY-M2-OPEN: the glowing class (lamp lenses, neon, signs, lit windows) is calibrated over a range of its own, x0.25 to x64 (rt_hit_calibration.h kEmissiveParams: a lens' picture can be far from a guessed
+// scale, the picture is the truth about it). The rows used to clamp every class to x0.5 to x3, which cut the glowing class' gain wherever the calibration had moved it further.
+inline constexpr float kEmissiveMinGain = 0.25f;
+inline constexpr float kEmissiveMaxGain = 64.0f;
+// The gain a class's row holds: the calibration's, inside its class's own range; 0 or less (unset) is 1.
+inline float RowGain(uint32_t cls, float gain) {
+  const float g = gain > 0.0f ? gain : 1.0f;
+  return cls == rt_hit_cal::kEmissiveClass ? std::clamp(g, kEmissiveMinGain, kEmissiveMaxGain) : std::clamp(g, kMinGain, kMaxGain);
+}
 inline constexpr uint32_t kMaxColourLevels = 8;
 
 // The library's flags (hlsl CITY_HIT_P_*) a REFLECT pass sets: the sun's ray (the city has real shadows: the game's cascades are not read), the glow of what glows, the picture's colour.
@@ -324,6 +349,7 @@ inline constexpr uint32_t kFlagScreen = 2;    // lin_depth and colour_post are i
 inline constexpr uint32_t kFlagStats = 4;     // a stats frame: the counters count
 inline constexpr uint32_t kFlagCoat = 8;      // a city hit takes the paint's clear-coat layer (the image's sign)
 inline constexpr uint32_t kFlagLamps = 16;    // a city hit is lit by the world frame's lamps and glows by its schedule (mcla_gpu_city_refl_lamps; the shader also needs the world rows to be valid)
+inline constexpr uint32_t kFlagWorldLight = 32;  // a city hit is lit by the WORLD's sun, ambient, sky and environment map, not the cars' own draws' (mcla_gpu_city_refl_world_light; the shader also needs the world rows to be valid and to hold a light)
 
 struct RowsIn {
   Level level = Level::kOff;
@@ -340,6 +366,7 @@ struct RowsIn {
   float wet = 0.0f;
   int32_t view = 0;
   bool lamps = false;  // the lamp term (kFlagLamps)
+  bool world_light = false;  // the world frame's light on a city hit (kFlagWorldLight)
   float gains[rt_hit_cal::kClasses] = {};
 };
 
@@ -367,6 +394,7 @@ inline void MakeRows(const RowsIn& in, uint32_t rows[kRows][kRowWords]) {
   flags |= in.stats ? kFlagStats : 0u;
   flags |= in.cell.coat_layer ? kFlagCoat : 0u;
   flags |= in.lamps ? kFlagLamps : 0u;
+  flags |= in.world_light ? kFlagWorldLight : 0u;
   rows[kRowControl][0] = flags;
   rows[kRowControl][1] = in.level == Level::kUltra ? 2u : 1u;
   rows[kRowControl][2] = in.serial;
@@ -395,7 +423,7 @@ inline void MakeRows(const RowsIn& in, uint32_t rows[kRows][kRowWords]) {
   rows[kRowAlbedo][2] = Bits(in.wet);
   rows[kRowAlbedo][3] = uint32_t(in.view);
   for (uint32_t c = 0; c < rt_hit_cal::kClasses; ++c) {
-    rows[kRowGains + c / 4][c % 4] = Bits(std::clamp(in.gains[c] > 0.0f ? in.gains[c] : 1.0f, kMinGain, kMaxGain));
+    rows[kRowGains + c / 4][c % 4] = Bits(RowGain(c, in.gains[c]));
   }
   rows[kRowMore][0] = Bits(1.0f);
 }
@@ -414,7 +442,15 @@ inline constexpr uint32_t kStatScreen = kCalWords + 5;          // city hits the
 inline constexpr uint32_t kStatShaded = kCalWords + 6;          // ... the model does
 inline constexpr uint32_t kStatLamps = kCalWords + 7;           // city hits on lamp lenses, neon signs, lit windows (class emissive)
 inline constexpr uint32_t kStatNoData = kCalWords + 8;          // city hits the library could not resolve (no data in the pool): counted as misses too
-inline constexpr uint32_t kStatLampCensus = kCalWords + 12;     // the lamp term's and the glow's counters (the library's CITY_HIT_CENSUS_*, city_hit_shade_rules.h kCensus*): eight words
+// CITY-M2-OPEN: what the shaded hits' light was (the report's `light` line): a hit the model shades (the picture's weight under 1) counts in exactly one of the first three.
+inline constexpr uint32_t kStatSunLit = kCalWords + 9;          // shaded hits facing the sun (N.L over 0) whose sun ray reached them
+inline constexpr uint32_t kStatSunBlocked = kCalWords + 10;     // ... facing the sun, whose sun ray met the city or a car first (in shadow)
+inline constexpr uint32_t kStatSunAway = kCalWords + 11;        // ... facing away from the sun (N.L 0: the ambient alone lights them)
+inline constexpr uint32_t kStatBehind = kCalWords + 12;         // shaded hits whose point is behind the camera (view z under 0; the sun ray of such a hit started under its surface before a7c03334)
+inline constexpr uint32_t kStatWorldFrame = kCalWords + 13;     // shaded hits that took the world frame's light (the rest took the cars' draws')
+inline constexpr uint32_t kStatLodHit = kCalWords + 14;         // city hits (any source) on the far LOD's geometry (InstanceID's detail bit): no corners, no texture coordinates, the material's average colour
+inline constexpr uint32_t kStatFlat = kCalWords + 15;           // shaded hits whose albedo is the material's average colour: no resident texture, no texture coordinates or no corners (a flat patch in the paint)
+inline constexpr uint32_t kStatLampCensus = kCalWords + 16;     // the lamp term's and the glow's counters (the library's CITY_HIT_CENSUS_*, city_hit_shade_rules.h kCensus*): eight words
 inline constexpr uint32_t kLampCensusWords = 8;
 inline constexpr uint32_t kStatsWords = kStatLampCensus + kLampCensusWords;
 inline constexpr uint32_t kStatsBytes = kStatsWords * 4;
@@ -424,6 +460,8 @@ inline constexpr uint32_t kClassEmissive = 13;                  // gbuffer_types
 struct Totals {
   uint64_t frames = 0;
   uint64_t texels = 0, rays = 0, city = 0, car = 0, miss = 0, screen = 0, shaded = 0, lamps = 0, no_data = 0;
+  uint64_t sun_lit = 0, sun_blocked = 0, sun_away = 0, behind = 0, world_frame = 0;  // CITY-M2-OPEN: the shaded hits' light
+  uint64_t lod_hit = 0, flat = 0;                                                      // CITY-M2-OPEN: the hits' detail (far LOD; no texture)
   uint64_t samples = 0;  // the calibration's samples (every class)
   uint64_t lamp_words[kLampCensusWords] = {};  // the lamp term's counters
   void Add(const uint32_t words[kStatsWords]) {
@@ -440,6 +478,13 @@ struct Totals {
     shaded += words[kStatShaded];
     lamps += words[kStatLamps];
     no_data += words[kStatNoData];
+    sun_lit += words[kStatSunLit];
+    sun_blocked += words[kStatSunBlocked];
+    sun_away += words[kStatSunAway];
+    behind += words[kStatBehind];
+    world_frame += words[kStatWorldFrame];
+    lod_hit += words[kStatLodHit];
+    flat += words[kStatFlat];
     for (uint32_t c = 0; c < rt_hit_cal::kClasses; ++c) {
       samples += words[rt_hit_cal::StatsWord(c, rt_hit_cal::kCountWord)];
     }
@@ -470,6 +515,23 @@ inline std::string LampCensusText(uint64_t frame, const Totals& t) {
                 "[city refl] lamp term frame %llu: lookups %.0f, lamps examined %.1f, lit %.1f a lookup, stopped at the lamp cap %.1f%%, over the light cap %.1f%%, glow: night %.0f, lens %.0f, always %.0f",
                 static_cast<unsigned long long>(frame), lookups / n, double(t.lamp_words[1]) * per, double(t.lamp_words[2]) * per, 100.0 * double(t.lamp_words[3]) * per,
                 100.0 * double(t.lamp_words[4]) * per, double(t.lamp_words[5]) / n, double(t.lamp_words[6]) / n, double(t.lamp_words[7]) / n);
+  return buf;
+}
+// The shaded hits' light and detail (CITY-M2-OPEN; a prefix of its own, so that the report's census and gain patterns do not take it): of the city hits the model shaded (a mean over the window's stats frames),
+// the share the sun reaches, the share in the sun's shadow, the share facing away from it, the share behind the camera, the share that took the world frame's light; of all the resolved city hits the share on
+// the far LOD's geometry, and of the shaded ones the share whose albedo is a flat average colour (no texture). A paint that reflects a lit facade as a dark one shows up as a high `blocked` or `away`, one that
+// reflects a facade as a smooth blob as a high `far LOD` or `flat`.
+inline std::string LightCensusText(uint64_t frame, const Totals& t) {
+  const double n = double(std::max<uint64_t>(t.frames, 1));
+  const double shaded = double(t.sun_lit + t.sun_blocked + t.sun_away);
+  const double per = shaded > 0.0 ? 100.0 / shaded : 0.0;
+  const double resolved = double(t.screen + t.shaded);
+  const double per_resolved = resolved > 0.0 ? 100.0 / resolved : 0.0;
+  char buf[384];
+  std::snprintf(buf, sizeof(buf),
+                "[city refl] light frame %llu: shaded hits %.0f, sun lit %.1f%%, sun blocked %.1f%%, facing away %.1f%%, behind the camera %.1f%%, world light %.1f%%, far LOD %.1f%% of the hits, flat colour %.1f%%",
+                static_cast<unsigned long long>(frame), shaded / n, double(t.sun_lit) * per, double(t.sun_blocked) * per, double(t.sun_away) * per, double(t.behind) * per, double(t.world_frame) * per,
+                double(t.lod_hit) * per_resolved, double(t.flat) * per);
   return buf;
 }
 // The classes of the gain line: G-buffer classes 1 (world) for the solid, 2 (road) for the ground, 11 (glass), 13 (emissive).
