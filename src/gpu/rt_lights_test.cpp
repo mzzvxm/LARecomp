@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
@@ -877,6 +878,25 @@ void TestNoise() {
     // and its peak 0.4% to 1.1%; a lattice has 14% in one frequency. So: no frequency stands out (under 1.5%) and no direction is a line (under 2.8 times the mean).
     CHECK(r.shape.peak_share < 0.015 && r.shape.wedge_ratio < 2.8);
     CHECK(!nc::IsLattice(r) || r.shape.wedge_ratio < 2.8);
+    CHECK(!nc::Crawls(r));
+  }
+  // THE 8 BIT AVERAGE'S RANDOM ROUNDING (part 2, hlsl/rt_denoise_plain_consumer.hlsli RtDnDither3): the shared blue noise at the light pass's own frame number, the three channels n.x, n.y and frac(n.x + 0.618):
+  // the same checks as the rays' streams (AGENT-RULE-NOISE: changes every frame at every pixel, no gap, uniform, nothing slides, no lattice in what the average of the stored values leaves)
+  const auto dither_xy = [](int x, int y, uint32_t frame) {
+    const hs::float2 u = hs::BlueNoiseFrame2(x, y, frame);
+    return std::pair<float, float>(u.x, u.y);
+  };
+  const auto dither_z = [](int x, int y, uint32_t frame) {
+    const hs::float2 u = hs::BlueNoiseFrame2(x, y, frame);
+    return std::pair<float, float>(hs::frac(u.x + 0.6180339887f), u.y);
+  };
+  for (const auto& stream : {std::function<std::pair<float, float>(int, int, uint32_t)>(dither_xy), std::function<std::pair<float, float>(int, int, uint32_t)>(dither_z)}) {
+    for (int channel = 0; channel < 2; ++channel) {
+      const nc::PerFrame p = nc::PerFrameOf(stream, channel);
+      CHECK(p.changed > 0.99 && p.max_gap < 0.25 && std::fabs(p.mean - 0.5) < 0.01 && std::fabs(p.var - 1.0 / 12.0) < 0.004 && p.step_spread < 1e-4);
+    }
+    const nc::Resolved r = nc::Resolve(stream, response);
+    CHECK(r.shape.peak_share < 0.015 && r.shape.wedge_ratio < 2.8);
     CHECK(!nc::Crawls(r));
   }
   // the first versions' gradient noise, as the comparison switch has it, IS a lattice (the check can tell)
