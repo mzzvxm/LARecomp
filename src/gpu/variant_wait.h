@@ -1,0 +1,104 @@
+#pragma once
+// ===========================================================================
+// MCLA GPU renderer -- a draw whose pipeline has a fallback never waits for it on the render thread
+// ===========================================================================
+// A guest draw whose pipeline is not made yet is made in the background only when the game's rule lets the draw be left out
+// (Scene::MaySkipForPipeline: targets drawn into in each of the last 30 frames, multisampled, no stencil writes; pipelines.h,
+// "Background builds"): a draw that is simply missing from a frame must not be. Every other miss is made on the render thread, one
+// after the other, 20 to 150 ms each when the driver has not compiled the shader before.
+//
+// The lit world draws of the city all WRITE THE STENCIL (REPLACE on a pass, write mask 0xFF; `pipeline_list.py lacks` on the runs' pipeline files of
+// 2026-11-21/22: 52 of the 53 keys the shipped list lacked at the first night, 291 of the 294 the neon light's first G-buffer frames made), so the
+// rule refused every one of them, and the light stack's new variants of those draws were all made on the render thread:
+//   * the HEADLIGHT variant (word bit 1024, the alpha test twin 1025) on the first night, the first time a car's lamp is lit: 41 to 52
+//     pipelines in one frame (3.1 s on D3D12, 5 to 7 s on Vulkan with the driver's cache cold: the freeze watchdog's
+//     `frame stalled 5s at phase 0x20000000` in the night runs of the stack's executables, neon off too; main's night run r5c-high-night-d3d12 made 41 here);
+//   * the G-buffer's variants (the pixel word 2048 / 3072, the vertex word 8192, and the game's own shader with the sidecar's planes as extra
+//     colour targets) the first frames the G-buffer is on: 211 to 276 pipelines (5 to 17.6 s).
+// Neither of them leaves anything out of the picture: the game's own pipeline of the same draw (the same shaders without the extra) is the
+// fallback, and the draw already writes its stencil there. The headlight is missing from the car's beam and the planes keep an old
+// value for the few frames the build takes; the next frame that finds the build ready takes it.
+//
+// So the rule is not asked for these: a draw whose key carries the sidecar's planes or the headlight feature may wait for its pipeline
+// whatever the game's rule says (HasFallback), and a draw with neither keeps the game's rule. The ladder of keys a draw tries is the one
+// Scene::Prepare walks: the full key (planes and headlight), the key without the planes (the game's key: it may still carry the headlight),
+// the key without the headlight (the game's own shader, which is the end of the ladder and keeps the game's rule: a pipeline of the game's
+// own that nobody made is a gap of the starter list, not of the stack). While a take runs (sync_builds.h) nothing waits, as before: the
+// lookup makes the pipeline or waits for the builder, and the wait is counted.
+//
+// Pure: no renderer, no ReXGlue. variant_wait_test.cpp checks it alone.
+// ===========================================================================
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+
+#include "shaderpack/variant_chain.h"
+
+namespace mcla::gpu::variant_wait {
+
+// What the draw's pipeline key carries on top of the game's own shader.
+struct Extras {
+  bool planes = false;     // the G-buffer's planes are attached: extra colour targets, usually with the G-buffer's word
+  bool headlight = false;  // the pixel word has the headlight feature
+};
+
+constexpr bool Any(const Extras& e) { return e.planes || e.headlight; }
+
+// Whether a key with these extras has a fallback key that draws the same thing without them: then the lookup may be answered "pending" whatever the game's rule says.
+constexpr bool HasFallback(const Extras& e) { return Any(e); }
+constexpr bool HasFallback(bool planes, bool headlight) { return HasFallback(Extras{planes, headlight}); }
+
+// Who answers "may this draw be left out for now" on the lookup of a rung of the ladder.
+enum class Ask : uint8_t {
+  kGameRule,  // Scene::MaySkipForPipeline
+  kAlways,    // the draw is not left out, its fallback draws: pending is always the answer (a take still waits: sync_builds.h)
+};
+constexpr Ask AskFor(const Extras& e) { return HasFallback(e) ? Ask::kAlways : Ask::kGameRule; }
+
+// The pixel word of the fallback that drops the headlight (the pack's word for the other features the draw has when it has one, else the game's own
+// shader in the draw's spec variant: the alpha test twin stays). `pack_has(word)` says whether the pixel shader has that word in the variant pack.
+template <class Has>
+constexpr uint32_t WordWithoutHeadlight(uint32_t word, Has&& pack_has) {
+  namespace chain = larecomp::shaderpack::chain;
+  const uint32_t rest = chain::Word(chain::FeaturesOf(word) & ~chain::FeatureBit(larecomp::shaderpack::kFeatureHeadlight), chain::SpecOf(word));
+  if (chain::FeaturesOf(rest) != 0 && !pack_has(rest)) {
+    return chain::SpecOf(rest);
+  }
+  return rest;
+}
+
+constexpr bool HasHeadlight(uint32_t ps_word) {
+  return larecomp::shaderpack::chain::HasFeature(ps_word, larecomp::shaderpack::kFeatureHeadlight);
+}
+
+// The ladder of one draw: the rungs in the order Scene::Prepare asks for them, each with who answers "pending". `extras` are those of the full key
+// (planes attached, the headlight in its pixel word); the draw's own key (without the planes) has the headlight when the full key has it, and the last
+// rung has neither. A rung that would repeat the one above it is not on the ladder.
+struct Rung {
+  Extras extras;
+  Ask ask = Ask::kGameRule;
+};
+struct Ladder {
+  std::array<Rung, 3> rungs{};
+  size_t count = 0;
+};
+constexpr Ladder LadderOf(const Extras& full) {
+  Ladder ladder;
+  Extras at = full;
+  while (true) {
+    ladder.rungs[ladder.count++] = Rung{at, AskFor(at)};
+    if (!HasFallback(at)) {
+      break;
+    }
+    // Planes go first (the draw is the game's own key then), then the headlight.
+    if (at.planes) {
+      at.planes = false;
+    } else {
+      at.headlight = false;
+    }
+  }
+  return ladder;
+}
+
+}  // namespace mcla::gpu::variant_wait
