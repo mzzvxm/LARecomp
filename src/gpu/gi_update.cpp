@@ -66,7 +66,7 @@ void GiUpdate::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
   ready_ = false;
   listed_ = false;
   pipeline_failed_ = {};
-  const bool supported = field.available() && car_scene.ready() && city_scene.initialized() && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
+  const bool supported = field.available() && car_scene.ready() && city_scene.initialized() && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan, device.wave_ops());
   if (!supported) {
     passes.precache().Note("ray traced bounce light's probe update: not on this graphics card or backend (the screen-space bounce light stays the source)", 0);
     return;

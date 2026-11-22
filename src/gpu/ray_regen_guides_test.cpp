@@ -610,7 +610,7 @@ void CheckWiring(const std::string& dir) {
         "the pass is made with the effect, shut down with it, counted in its held bytes, and the size the context is made for is reported");
   Check(Has(ssr_h, "const RegenAsk& regen = RegenAsk{}") && Has(ssr_h, "RayRegenSsrPass regen_pass_;") && Has(ssr_h, "FrameRing* frames = nullptr"), "the header: the ask, the pass, the frames that retire its sets");
   // the scene, the temporal system, the renderer
-  Check(Has(scene, "temporal_->RegenModes().Ssr()") && Has(scene, "temporal_->FrameJitter(regen_ask.jitter);") && Has(scene, "ssr_->OnTrigger(summary, list, raw_ssr, regen_ask)"), "the scene asks the temporal system and hands the effect the ask");
+  Check(Has(scene, "temporal_->RegenModes().Ssr()") && Has(scene, "temporal_->FrameJitter(regen_ask.jitter);") && Has(scene, "ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning(), regen_ask)"), "the scene asks the temporal system and hands the effect the ask");
   Check(Has(temporal, "denoiser::Publish(snapshot);\n  // RG-3") && Has(temporal, "regen_.Update(regen_in);") && Has(temporal, "regen_in.dlss_plan = rr_plan_;") && Has(temporal, "rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12);") &&
             Has(temporal, "rayregen::StopAll();") && Has(temporal_h, "rayregen::Planner regen_;") && Has(temporal_h, "rr::RawModes RegenModes();"),
         "the plan is made at the frame boundary beside DLSS RR's, the vendor is noted at the start, the runtime stops with the system");

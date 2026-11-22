@@ -110,13 +110,16 @@ constexpr uint32_t UndrivenSignals(uint32_t flags) { return flags & ~kDrivenSign
 //   the cars' ray traced reflections     indirect specular (the paint reads the denoised image; it is read at the car's draw, so its dispatch is earlier than the anchor)
 //   the city's ray traced reflections    indirect specular
 //   ray traced bounce light              indirect diffuse (an ambient occlusion beside it is the AO signal, a later package)
-// A light visibility multiplier (the RT lights, the city's sun shadow) is the DOMINANT LIGHT signal and not a consumer of this table: Ray Regeneration denoises a visibility, which DLSS RR cannot.
+//   ray traced light visibility          the DOMINANT LIGHT signal (RT-LIGHTS-D1 is a DLSS RR consumer since the integration; Ray Regeneration denoises a visibility, which DLSS RR cannot, but ray_regen.cpp does not drive
+//                                        that signal yet: UndrivenSignals, and the cell below has no writer)
+// A light visibility multiplier (the RT lights, the city's sun shadow) is the DOMINANT LIGHT signal.
 constexpr Signal SignalOf(rr::Consumer c) {
   switch (c) {
     case rr::Consumer::kSsr:
     case rr::Consumer::kCarRtReflections:
     case rr::Consumer::kCityRtReflections: return Signal::kIndirectSpecular;
     case rr::Consumer::kRtGi: return Signal::kIndirectDiffuse;
+    case rr::Consumer::kRtLights: return Signal::kDominantLight;
     case rr::Consumer::kCount: break;
   }
   return Signal::kIndirectSpecular;
@@ -135,13 +138,14 @@ using ConsumerTable = std::array<ConsumerCell, rr::kConsumerCount>;
 // DLL costs 0.7 ms at 960x540 (the reflections' trace of a 1080p picture: the dispatch is at the trace's size) and 2.6 ms at 1080p (a 4K picture's) for one specular signal on an RX 9070 XT, against our own denoisers' 0.03 ms), so AUTO is ours on every PC.
 //   the cars' ray traced reflections: NOT a fit, so the cell stays false (RAY-REGEN.md section 4.2): their image is read by the NEXT frame's paint at the texels of the car's history image, with a weight
 //     code in the alpha that a hit distance has no room for, and a denoiser that costs the same for the whole picture (2.6 ms) would run for a car that fills a tenth of it, to replace a filter that costs 0.03 ms.
-//   the city's ray traced reflections, the ray traced bounce light, the lights' visibility: their effects are not in this tree (feat/city-rt-r6, feat/city-rt-g6, feat/rt-lights-d1); each flips its cell when
-//     it lands with a writer of its signal (indirect specular / indirect diffuse / dominant light visibility) and a compose step.
+//   the city's ray traced reflections, the ray traced bounce light, the lights' visibility: their effects are in the integrated tree (CITY-RT R6 / G6, RT-LIGHTS-D1) as DLSS RR consumers, but none has a
+//     writer of its Ray Regeneration signal (indirect specular / indirect diffuse / dominant light visibility) or a compose step yet; each flips its cell when it gets them.
 inline constexpr ConsumerTable kConsumers = {{
     {true, false},   // screen-space reflections
     {false, false},  // ray traced car reflections
     {false, false},  // ray traced city reflections
     {false, false},  // ray traced bounce light
+    {false, false},  // ray traced light visibility (rr::Consumer::kRtLights, added by RT-LIGHTS-D1: the table follows rr::kConsumerCount)
 }};
 constexpr bool AnySignalBuilt(const ConsumerTable& table = kConsumers) {
   for (const ConsumerCell& c : table) {

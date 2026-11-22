@@ -67,8 +67,8 @@ void CheckSignals() {
             AlbedoOfSignal(Signal::kAmbientOcclusion) == AlbedoOf::kNone && AlbedoOfSignal(Signal::kDominantLight) == AlbedoOf::kNone,
         "which albedo each signal is multiplied by after the denoise");
   Check(SignalOf(rr::Consumer::kSsr) == Signal::kIndirectSpecular && SignalOf(rr::Consumer::kCarRtReflections) == Signal::kIndirectSpecular &&
-            SignalOf(rr::Consumer::kCityRtReflections) == Signal::kIndirectSpecular && SignalOf(rr::Consumer::kRtGi) == Signal::kIndirectDiffuse,
-        "the consumers' signals: three reflections are indirect specular, the bounce light indirect diffuse");
+            SignalOf(rr::Consumer::kCityRtReflections) == Signal::kIndirectSpecular && SignalOf(rr::Consumer::kRtGi) == Signal::kIndirectDiffuse && SignalOf(rr::Consumer::kRtLights) == Signal::kDominantLight,
+        "the consumers' signals: three reflections are indirect specular, the bounce light indirect diffuse, the lights' visibility the dominant light (not driven yet)");
   // AMD: the specular albedo may be left empty only when no specular signal and no dominant light visibility is set; the diffuse one likewise.
   Check(!NeedsSpecularAlbedo(FlagOf(Signal::kIndirectDiffuse)) && NeedsSpecularAlbedo(FlagOf(Signal::kIndirectSpecular)) && NeedsSpecularAlbedo(FlagOf(Signal::kDirectSpecular)) &&
             NeedsSpecularAlbedo(FlagOf(Signal::kDominantLight)) && !NeedsSpecularAlbedo(FlagOf(Signal::kAmbientOcclusion)),
@@ -78,12 +78,12 @@ void CheckSignals() {
         "the diffuse albedo is needed by direct / indirect diffuse and the dominant light");
 }
 
-ConsumerTable Cells(bool built0, bool auto0, bool built1, bool auto1, bool built2, bool auto2, bool built3, bool auto3) {
-  return {{{built0, auto0}, {built1, auto1}, {built2, auto2}, {built3, auto3}}};
+ConsumerTable Cells(bool built0, bool auto0, bool built1, bool auto1, bool built2, bool auto2, bool built3, bool auto3, bool built4 = false, bool auto4 = false) {
+  return {{{built0, auto0}, {built1, auto1}, {built2, auto2}, {built3, auto3}, {built4, auto4}}};
 }
 
 void CheckConsumers() {
-  Check(rr::kConsumerCount == 4, "the table has the four consumers it is written for");
+  Check(rr::kConsumerCount == 5 && kConsumers.size() == rr::kConsumerCount, "the table has a cell for each of the five consumers (the four it was written for and RT-LIGHTS-D1's light visibility, which the integration added to rr::Consumer)");
   // RG-3: the screen-space reflections have their signal writer; no cell is trusted by AUTO until a Radeon A/B; the cars' reflections are not a fit (RAY-REGEN.md 4.2); the city's and the bounce light's
   // effects are on other branches.
   Check(AnySignalBuilt(), "shipped: an effect writes a signal (the screen-space reflections)");

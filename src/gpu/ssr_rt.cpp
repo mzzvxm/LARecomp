@@ -78,7 +78,7 @@ void ScreenReflectionsRt::Initialize(Device& device, FrameRing& frames, Bindless
   ready_ = false;
   listed_.fill(false);
   failed_.fill(false);
-  const bool supported = car_scene != nullptr && car_scene->ready() && service != nullptr && world != nullptr && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
+  const bool supported = car_scene != nullptr && car_scene->ready() && service != nullptr && world != nullptr && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan, device.wave_ops());
   if (!supported) {
     return;   // no ray queries here (or no scene): the effect is what it was
   }

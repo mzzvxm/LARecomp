@@ -92,7 +92,7 @@ void CityRtShadow::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   listed_ = false;
   pipeline_failed_ = false;
   const bool supported = car_scene != nullptr && car_scene->ready() && city_scene != nullptr && city_scene->initialized() && service != nullptr &&
-                         CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
+                         CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan, device.wave_ops());
   if (!supported) {
     passes.precache().Note("ray traced city shadows: not on this graphics card or backend (the game's shadows stand)", 0);
     return;

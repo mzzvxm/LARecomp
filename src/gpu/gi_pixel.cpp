@@ -66,7 +66,7 @@ void GiPixel::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
   ready_ = false;
   pipeline_failed_ = {};
   listed_ = {};
-  const bool supported = field.available() && car_scene.ready() && city_scene.initialized() && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
+  const bool supported = field.available() && car_scene.ready() && city_scene.initialized() && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan, device.wave_ops());
   if (!supported) {
     passes.precache().Note("ray traced bounce light's per-pixel pass: not on this graphics card or backend (the probe field alone is the bounce light)", 0);
     return;

@@ -379,8 +379,8 @@ void ScreenReflections::BeginFrame() {
   if (guest_.Begin()) {
     trigger_done_ = false;
     ran_ = false;
-    regen_frame_ = false;
     hit_ready_ = false;  // RR-4a: the raw frame's hit distance is this guest frame's (a second list of the same frame keeps it for the guide pass)
+    regen_frame_ = false;  // RG-3: this frame's Ray Regeneration dispatch was not recorded yet
     wet_votes_.Reset();
     ++frames_;
   } else if (guest_frame::LogDue(guest_.repeats())) {

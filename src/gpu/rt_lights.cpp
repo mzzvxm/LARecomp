@@ -80,7 +80,7 @@ void RtLights::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
   ready_ = false;
   pipeline_failed_ = false;
   listed_ = false;
-  const bool supported = car_scene.ready() && world.initialized() && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
+  const bool supported = car_scene.ready() && world.initialized() && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan, device.wave_ops());
   if (!supported) {
     passes.precache().Note("ray traced light visibility: not on this graphics card or backend (the shadow atlas alone shadows the lights)", 0);
     return;
