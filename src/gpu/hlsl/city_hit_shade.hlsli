@@ -61,6 +61,7 @@
 
 #include "city_hit_common.hlsli"
 #include "rt_hit_common.hlsli"
+#include "nan_guard.hlsli"
 
 #ifndef CITY_HIT_BRANCH
 #define CITY_HIT_BRANCH [branch]
@@ -126,6 +127,7 @@ static const float kCityHitLogFloor = 0.0001;     // rt_hit_calibration.h: the f
 static const float kCityHitLogBias = 16.0;
 static const float kCityHitLogScale = 64.0;
 static const float kCityHitLogMax = 2047.0;
+static const float kCityHitMaxColour = 60000.0;     // a hit's colour in the picture's units: what a half float keeps with room (the car reflections' kMaxColour)
 static const uint kCityHitLampMax = 96u;           // R7: the lamps of the world frame's lookup that one hit examines at most (a 9 cell lookup holds 60 at night on average in the budget's densest place; the loop is bounded)
 static const float kCityHitLampSumCap = 6.0;       // R7: the lamp light's luminance is capped at this (a lamp's term is at most 1: six lamps at full strength; a cluster of omni lights is not a sun)
 static const float kCityHitLampLookup = 64.0;      // R7: the lookup's radius where the world rows give none (m)
@@ -810,7 +812,9 @@ CityHitShaded CityHitShadeHit(CityHitParams p, RtHitFrame f, CityHitRay ray, Cit
         CityHitCensus(p, CITY_HIT_CENSUS_GLOW_NIGHT + kind, 1u);
     }
 
-    float3 shaded = max(result, 0.0) * p.units;
+    // in the picture's units: not negative, at most what a half float keeps, a NaN black (decided by the bits, nan_guard.hlsli: max(NaN, 0) is 0 on D3D12 only, and an infinity would make a NaN of the blend
+    // with the picture's colour); every consumer of a hit's colour (the reflections, the bounce light, the mirror) takes it from here
+    float3 shaded = NgHeld3(result * p.units, kCityHitMaxColour);
 #ifdef CITY_HIT_HAZE
     shaded = CITY_HIT_HAZE(shaded, length(hit));
 #endif

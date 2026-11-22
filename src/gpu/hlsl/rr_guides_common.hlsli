@@ -22,6 +22,7 @@
 #define MCLA_GPU_RR_GUIDES_COMMON_HLSLI
 
 #include "gbuffer_common.hlsli"
+#include "nan_guard.hlsli"
 
 // ---- the views (mcla_gpu_dlss_rr_view; rr_guides_rules.h View) --------------------------------------------------------------------------------------------------------------------------
 #define RR_VIEW_OFF 0
@@ -229,8 +230,9 @@ uint RrBounceTexel(uint pixel, uint size, uint hitSize) {
   return min(pixel * hitSize / max(size, 1u), max(hitSize, 1u) - 1u);
 }
 
+// (a NaN in either source is dropped and a NaN in both is 0, decided by the bits: nan_guard.hlsli; max and saturate of a NaN are the API's to say)
 float RrResponsivity(float reactive, float transparency) {
-  return saturate(max(reactive, transparency));
+  return NgSaturate(NgMax(reactive, transparency));
 }
 
 // ---- the debug views (what the view pass draws, 0..1 per channel) ------------------------------------------------------------------------------------------------------------------------

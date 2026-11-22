@@ -259,7 +259,7 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
     {
         return float4(0.0, 0.0, 0.0, 1.0);
     }
-    const float3 colour = min(max(mixed, 0.0), kMaxColour);
+    const float3 colour = NgHeld3(mixed, kMaxColour);   // a NaN black, decided by the bits (nan_guard.hlsli)
     float distanceSum = 0.0;
     float hitCount = 0.0;
     [unroll]

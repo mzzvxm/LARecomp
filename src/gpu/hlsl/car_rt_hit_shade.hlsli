@@ -31,6 +31,9 @@ StructuredBuffer<uint4> gCarRtMaterials : register(t5, CAR_RT_SPACE_NAME);
 #define RT_HIT_FRAME_ROW(i) gCarRtMaterials[i]
 #define RT_HIT_TLAS gCarRtTlas
 #include "rt_hit_frame.hlsli"
+#include "nan_guard.hlsli"
+
+static const float kCarHitMaxColour = 60000.0;   // a hit's colour in the history's units: what a half float keeps with room
 
 #define CAR_MAT_CLASS_NONE 0
 #define CAR_MAT_CLASS_PAINT 1
@@ -206,7 +209,8 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     {
         result += albedo * (m.emissive * kRtHitEmissiveGain * f.night);
     }
-    colour = max(result, 0.0) * (f.gain * units);
+    // not negative, at most what a half float keeps (the reflection pass's kMaxColour), a NaN black: decided by the bits (nan_guard.hlsli), for max(NaN, 0) is 0 on D3D12 only
+    colour = NgHeld3(result * (f.gain * units), kCarHitMaxColour);
     return true;
 }
 

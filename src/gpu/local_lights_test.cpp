@@ -1207,7 +1207,7 @@ void SourceChecks(const std::string& src) {
   Check(Has(ps, "(flags & uint(LP_FLAG_SHADOW)) != 0u && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u") &&
             Has(ps, "LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, atlas_slot, uint(LSL_MODE_SURFACE))"),
         "the shader looks a light's views up in the box mode, only for a light with views and a table");
-  const size_t lit_at = At(ps, "float3 add = LpPixelLight(l, g, world, normal, albedo, rt2.w);");
+  const size_t lit_at = At(ps, "float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, rt2.w));");
   const size_t shadow_at = At(ps, "add *= LslLightLit(");
   Check(lit_at != std::string::npos && shadow_at != std::string::npos && lit_at < shadow_at, "the lookup runs after the term is known (a pixel the light does not reach takes no tap)");
   Check(Has(cpp, "in.shadow = &frame.shadow;") && Has(cpp, "ll::ShadowTableNeeded(selection, in.shadow)"), "the pass hands the frame's shadow to the buffer");

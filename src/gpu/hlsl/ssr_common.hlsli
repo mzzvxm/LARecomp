@@ -21,6 +21,7 @@
 
 #include "gbuffer_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
+#include "nan_guard.hlsli"
 
 #ifndef SSR_LOOP
 #define SSR_LOOP

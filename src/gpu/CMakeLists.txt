@@ -360,6 +360,10 @@ add_executable(larecomp_ssr_rt_rules_test EXCLUDE_FROM_ALL ssr_rt_rules_test.cpp
 # hlsl/rt_denoise_common.hlsli as C++ and compares it with the twins, runs a CPU model of the two stages on synthetic frames, and reads the sources it is given) likewise:
 #   cmake --build <dir> --target larecomp_rt_denoise_test, then run src/gpu/larecomp_rt_denoise_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_rt_denoise_test EXCLUDE_FROM_ALL rt_denoise_test.cpp)
+# The NaN guard (hlsl/nan_guard.hlsli: a NaN decided by its bits, the same on D3D12 and on Vulkan, whose max / min / clamp / saturate disagree about a NaN; it compiles the .hlsli as C++ and compares it with the
+# standard library on every kind of NaN, the infinities and random bit patterns) and the places that use it (the reflections', the occlusion's, the volume's and the lights' shaders: the text of each place) likewise:
+#   cmake --build <dir> --target larecomp_nan_guard_test, then run src/gpu/larecomp_nan_guard_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_nan_guard_test EXCLUDE_FROM_ALL nan_guard_test.cpp)
 # The frame's order (frame_order.h, LIGHT-UNIFY U9: the one table of every pass that makes or reads the shared screen and light data, what each makes, reads, must follow and Wants, and the recorder the
 # Scene notes its trigger passes in) held to itself (every read has an earlier maker, every step moved before what it needs is found), to the consumers' own wants (gbuffer_rules.h, screen_rules.h), to a model of
 # frames with passes missing and every kind of mistake, and, given the src/gpu folder (it defaults to the one the test is in), to scene.cpp, ao.cpp and the consumers' sources (the calls stand in the table's

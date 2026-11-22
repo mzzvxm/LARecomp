@@ -10,6 +10,7 @@
 // The colour is in the target's own units, as the history, so no exposure is applied.
 
 #include "host_pass_common.hlsli"
+#include "nan_guard.hlsli"
 
 struct GlassApplyPush {
   uint4 image;  // x the glass image's bindless slot (a Texture2D<float4> in space 0), y, z its size in texels, w the divisor (1 or 2)
@@ -48,7 +49,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const int2 offset = int2(k & 1, k >> 1);
     const int2 texel = clamp(base + offset, lo, hi);
     const float w = (offset.x != 0 ? fr.x : 1.0 - fr.x) * (offset.y != 0 ? fr.y : 1.0 - fr.y);
-    sum += w * g_textures[g_push.image.x].Load(int3(texel, 0));
+    sum += w * NgFinite4(g_textures[g_push.image.x].Load(int3(texel, 0)));   // (nan_guard.hlsli: a NaN or an infinity texel is none; w * NaN would spoil the whole sum)
   }
   const float coverage = sum.a;
   if (coverage < kGlassApplyCoverageFrom) {

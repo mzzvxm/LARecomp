@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -761,6 +762,16 @@ void RestChecks() {
   Check(hs::RrResponsivity(0.0f, 0.0f) == 0.0f && hs::RrResponsivity(0.3f, 0.6f) == 0.6f && hs::RrResponsivity(0.9f, 0.1f) == 0.9f && hs::RrResponsivity(2.0f, 0.0f) == 1.0f &&
             rg::Responsivity(0.3f, 0.6f) == 0.6f && rg::Responsivity(-1.0f, -1.0f) == 0.0f,
         "the responsivity is the larger of the two masks, between 0 and 1");
+  {
+    // a NaN in one mask is dropped and a NaN in both is 0, decided by the bits (nan_guard.hlsli): max and saturate of a NaN are the API's to say, and D3D12 and Vulkan differ
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float nans[] = {nan, -nan, std::bit_cast<float>(0x7F800001u), std::bit_cast<float>(0xFFC12345u)};
+    bool nan_ok = true;
+    for (const float n : nans) {
+      if (hs::RrResponsivity(n, 0.4f) != 0.4f || hs::RrResponsivity(0.7f, n) != 0.7f || hs::RrResponsivity(n, n) != 0.0f || hs::RrResponsivity(n, 3.0f) != 1.0f || hs::RrResponsivity(-2.0f, n) != 0.0f) nan_ok = false;
+    }
+    Check(nan_ok, "the responsivity of a NaN mask is the other mask's (0 when both are NaN), whatever the NaN's sign or payload");
+  }
   // the views
   const hs::float3 diffuse(0.1f, 0.2f, 0.3f), specular(0.04f, 0.05f, 0.06f);
   const hs::float4 nr(0.0f, 0.6f, 0.8f, 0.7f);
@@ -949,7 +960,7 @@ void RulesChecks(const std::string& gpu) {
       Check(Has(cs, "g_responsivity[p] = sky ? 0.0f") && Has(cs, "g_hit[p] = RrHitDistance(sky, source)") && Has(cs, "const bool sky = !(stored > 0.0f);") && Has(cs, "g_normal[p] = float4(px.normal, px.roughness)") &&
                 Has(cs, "g_diffuse[p] = float4(px.diffuse, 1.0f)") && Has(cs, "g_specular[p] = float4(px.specular, 1.0f)"),
             "the pass writes every guide in every pixel: the sky is stored depth 0, the normal's alpha is the roughness, the albedos' alpha is 1");
-      Check(Has(cs, "if (g_push.slots2.z != kNone)") && Has(cs, "source = g_textures[g_push.slots2.z].Load(int3(p, 0)).x;") && Has(cs, "if (g_push.slots2.w != kNone)") && Has(cs, "source = max(source, g_textures[g_push.slots2.w].Load(int3(p, 0)).x);") &&
+      Check(Has(cs, "if (g_push.slots2.z != kNone)") && Has(cs, "source = g_textures[g_push.slots2.z].Load(int3(p, 0)).x;") && Has(cs, "if (g_push.slots2.w != kNone)") && Has(cs, "source = NgMax(source, g_textures[g_push.slots2.w].Load(int3(p, 0)).x);") &&
                 Has(source, "push.slots2[2] = hit_used[0] ? hit_used[0]->slot : rr_guides::kNoSlot;") && Has(source, "push.slots2[3] = hit_used[1] ? hit_used[1]->slot : rr_guides::kNoSlot;") &&
                 Has(source, "plume::RenderTextureBarrier reads[9];") && Has(source, "hit->format == plume::RenderFormat::R16_FLOAT") && Has(source, "hit->width == width && hit->height == height") &&
                 Has(header, "const HostImage* hit[2] = {nullptr, nullptr};") && !Has(header, "hit_slot") && !Has(source, "hit_slot"),
@@ -960,7 +971,7 @@ void RulesChecks(const std::string& gpu) {
                 Has(source, "reads[reads_count++] = plume::RenderTextureBarrier(bounce_used->texture.get(), Layout::SHADER_READ);") && Has(source, "bounce_hits_used_ += bounce_used ? 1u : 0u;") &&
                 Has(header, "const HostImage* bounce_hit = nullptr;"),
             "CITY-RT G6: the bounce light's hit image (RG16F, any size above 0) is the LAST choice of the hit distance, read at the texel under the pixel, only where no reflection wrote one; the slot goes in info.w (none: kNone), it is put in the read state and counted");
-      Check(Has(cs, "g_hit[p] = RrHitDistance(sky, source)") && At(cs, "source = RrWithBounce(") > At(cs, "source = max(source, g_textures[g_push.slots2.w]") && At(cs, "source = RrWithBounce(") < At(cs, "g_hit[p] = RrHitDistance(sky, source)"),
+      Check(Has(cs, "g_hit[p] = RrHitDistance(sky, source)") && At(cs, "source = RrWithBounce(") > At(cs, "source = NgMax(source, g_textures[g_push.slots2.w]") && At(cs, "source = RrWithBounce(") < At(cs, "g_hit[p] = RrHitDistance(sky, source)"),
             "CITY-RT G6: the bounce light's distance comes after both reflection writers' and before the guide's value is made of the source");
       Check(Has(source, "push.info[3] = ") && !Has(source, "push.info[3] = 0;"), "CITY-RT G6: info.w is no longer unused (the old 0 would read as slot 0)");
       Check(Has(cs, "g_textures_ms[slot].Load(p, g_push.info.z)") && Has(cs, "#if RR_MS"), "the multisampled variant reads the host sample that is the guest's sample 0 (info.z)");

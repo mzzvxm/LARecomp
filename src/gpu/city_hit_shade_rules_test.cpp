@@ -12,6 +12,7 @@
 // CityHitDecode: the decode is checked against the twin as well.
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -920,6 +922,51 @@ void ShadeChecks(const City& city, Lcg& rng, int rounds, Coverage* cov) {
         "no misaligned or out of range load on the pool or the tables");
 }
 
+// The hit's colour is always a number in [0, the half float's cap], whatever the units are (hlsl NgHeld3 in CityHitShadeHit): a NaN or an infinite factor must not put a NaN or an infinity in it (an infinity times
+// the blend's weight of 0 is NaN, and a NaN is spread by every consumer's filter); D3D12's max drops a NaN and Vulkan's leaves it open, so the shader decides it by the bits.
+void NanChecks(const City& city, Lcg& rng) {
+  const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+  const float units_list[] = {nan, -nan, inf, -inf, 1.0e30f, 0.0f, 1.0f, 0.125f, std::bit_cast<float>(0x7F800001u)};
+  const int kinds = int(sizeof(units_list) / sizeof(units_list[0]));
+  int shaded = 0, not_numbers = 0, outside = 0, differ = 0, nan_not_black = 0, capped = 0;
+  std::vector<hlsl_shim::uint4> frame_rows, lamp_rows;
+  for (int round = 0; round < 1800; ++round) {
+    Case k = RandomCase(rng, uint32_t(city.sectors.size()));
+    k.p.units = units_list[round % kinds];
+    BindFrame(k.frame, &frame_rows);
+    BindLamps(k, &lamp_rows);
+    hlsl_shim::gSunCalls.clear();
+    hlsl_shim::gLampCalls.clear();
+    gTwinSun.clear();
+    gTwinLamp.clear();
+    const hlsl_shim::RtHitFrame f = hlsl_shim::RtHitLoadFrame();
+    const hlsl_shim::CityHitShaded s = hlsl_shim::CityHitShade(ShaderParams(k), f, ShaderRay(k), ShaderInstance(k));
+    const Decoded d = DecodeCase(city, k);
+    const cs::Reads reads = MakeReads(k);
+    const cs::Shaded t = cs::Shade(k.p, k.frame, k.ray, k.inst, d.hit, d.material, d.texture, reads, k.lamps.data());
+    if (!t.valid || s.valid == 0) continue;
+    ++shaded;
+    // the hit's colour goes through the air (the test's haze: it adds the fog's colour), so black and the cap are what the haze makes of them
+    const float distance = cs::Length(k.ray.origin + k.ray.direction * k.ray.t);
+    const cs::V3 black = reads.haze({0.0f, 0.0f, 0.0f}, distance), at_cap = reads.haze({cs::kHitMaxColour, cs::kHitMaxColour, cs::kHitMaxColour}, distance);
+    const float channels[3] = {s.colour.x, s.colour.y, s.colour.z};
+    const float black_of[3] = {black.x, black.y, black.z}, cap_of[3] = {at_cap.x, at_cap.y, at_cap.z};
+    for (int c = 0; c < 3; ++c) {
+      if (!std::isfinite(channels[c])) ++not_numbers;
+      else if (channels[c] < 0.0f || channels[c] > cap_of[c] * (1.0f + 1e-5f)) ++outside;
+      if (std::fabs(channels[c] - cap_of[c]) <= 1e-4f * cap_of[c]) ++capped;
+      if (std::isnan(k.p.units) && std::fabs(channels[c] - black_of[c]) > 1e-5f) ++nan_not_black;
+    }
+    if (!Close(s.colour, t.colour)) ++differ;
+  }
+  Check(shaded > 800, Num("the NaN units cases are mostly shaded (%.0f shaded)", shaded));
+  Check(not_numbers == 0, Num("the shaded colour is a number whatever the units (NaN, infinite, huge, zero): %.0f channels were not", not_numbers));
+  Check(outside == 0, Num("the shaded colour is not negative and at most what a half float keeps with room (%.0f channels outside)", outside));
+  Check(nan_not_black == 0, Num("units that are NaN make the colour black (%.0f channels were not)", nan_not_black));
+  Check(capped > 0, "units that are infinite or huge cap the colour (the cap is reached)");
+  Check(differ == 0, Num("the shaded colour is the twin's with NaN and infinite units too (%.0f cases differ)", differ));
+}
+
 // CityHitResolve against the twin's resolve.
 void ResolveChecks(const City& city, Lcg& rng, int rounds, int* sources_seen) {
   int wrong_source = 0, wrong_colour = 0, wrong_weight = 0, wrong_fields = 0, wrong_stats = 0, calibrated = 0;
@@ -1052,6 +1099,7 @@ int main(int argc, char** argv) {
   Check(city.blobs_round_tripped == 11 && city.blobs_with_corners == 10, Num2("the hit blobs of the synthetic city went through the format's encode and decode before they filled the pool (%.0f round trips, %.0f with corners)", city.blobs_round_tripped, city.blobs_with_corners));
   Coverage cov;
   ShadeChecks(city, rng, 6000, &cov);
+  NanChecks(city, rng);
   Check(cov.valid > 2500 && cov.invalid > 100, Num2("the random hits are mostly shaded and some are not (%.0f shaded, %.0f without data)", cov.valid, cov.invalid));
   int classes_hit = 0;
   for (int c = 0; c < 16; ++c) classes_hit += cov.by_class[c] > 0;

@@ -544,7 +544,7 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
             }
             fade = cityFade;
             visible = 1.0;  // the colour is the hit's own, in full: the picture's where it was seen, the model's where not
-            seen = min(max(cityColour, 0.0), kMaxColour);
+            seen = NgHeld3(cityColour, kMaxColour);
             hitDistance = h.t;
             car = (CityReflFrameNow().flags & kCityFlagCoat) != 0u;  // the mirror's rule and the paint's coat layer, as for another car (the host's clear-coat flag)
             return true;
@@ -960,7 +960,7 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     {
         return float4(0.0, 0.0, 0.0, 1.0);
     }
-    const float3 colour = min(max(mixed, 0.0), kMaxColour);
+    const float3 colour = NgHeld3(mixed, kMaxColour);   // a NaN black, decided by the bits (nan_guard.hlsli): max(NaN, 0) is 0 on D3D12 only
     // the mean distance of the rays that hit: how wide the cone is where it meets the part (the denoise's strength); the mirror's where the cone found nothing
     float distanceSum = 0.0;
     float hitCount = 0.0;

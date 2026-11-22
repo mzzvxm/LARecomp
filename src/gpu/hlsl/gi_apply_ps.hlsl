@@ -54,6 +54,7 @@ ConstantBuffer<GiaPush> g_push : register(b0, space4);
 #include "gi_common.hlsli"
 #include "gi_apply_common.hlsli"
 #include "gi_pixel_common.hlsli"
+#include "nan_guard.hlsli"
 
 // G5: the per-pixel detail pass's term at the traced texel c (the lookup's own coordinates), for the pixel at the view distance t with the world normal n: rgb its denoised irradiance, w its weight against the
 // field's (GipWeight: the history's length in the image's alpha, 0 where the pass did not trace the pixel). A frame without the image gives w = 0 and nothing else is read. A reduced image (divisor 2) is read by
@@ -317,7 +318,7 @@ float4 main(float4 position : SV_Position) : SV_Target
     float aoTerm = GiaHasVisibility() ? GiaAoTerm(ao, vehicle, t, fr.aoStrength, fr.aoFadeEnd, fr.paintPower) : 1.0f;
     float nDotL = saturate(dot(n, fr.sunDir));
     float3 albedo = GbAlbedoDecode(float3(rt2.x, rt2.y, rt2.z));
-    float3 add = GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap);
+    float3 add = NgFinite3(GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap));   // added to the scene: a NaN or an infinity is none (nan_guard.hlsli)
 
     if (view == 9u)
     {

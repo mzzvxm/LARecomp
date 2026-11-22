@@ -171,7 +171,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   const uint road_view = SsrW(SSR_W_ROAD_VIEW);
   if (share > 0.0f && SsrHasSlot(SsrRoadViewSlot(road_view)) && (r.cls == uint(GB_CLASS_ROAD) || r.cls == uint(GB_CLASS_WET_ROAD))) {
     const float2 screen_uv = (float2(r.texel) + 0.5f) / float2(SsrRender());
-    fallback = min(SsrRoadViewAt(road_view, screen_uv), float3(cap, cap, cap)) * share;
+    fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;   // (nan_guard.hlsli: a NaN or an infinity is none)
   }
 
   CityHitParams p;
@@ -229,7 +229,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   if (!any_hit) {
     return;
   }
-  float3 rgb = SsrRtBlend(current.xyz, confidence, sum / float(rays), weight);
+  float3 rgb = NgFinite3(SsrRtBlend(current.xyz, confidence, sum / float(rays), weight));   // (a NaN or an infinity is none: it must not reach the cap below nor the history)
   const float peak = max(max(abs(rgb.x), abs(rgb.y)), abs(rgb.z));
   if (peak > cap) {
     rgb *= cap / peak;

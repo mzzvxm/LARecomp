@@ -319,7 +319,7 @@ int main(int argc, char** argv) {
             "hlsl/car_rt_refl_glass.hlsli: the primary ray is cast as far as PrimaryReach says, with the push's mask (the host gives it the glass bit)");
       Check(Has(glass_hlsli, "colour = hidden + (seen - hidden) * visible;") && Has(glass_hlsli, "weight = fade * (g_push.tune.y + (1.0 - g_push.tune.y) * visible);") && Has(glass_hlsli, "float weight = fade * visible;"),
             "hlsl/car_rt_refl_glass.hlsli: a hit becomes a colour as HitColour does");
-      Check(Has(glass_hlsli, "min(max(colour, 0.0) * (GlassFresnel(nv) * weight * strength), float3(cap, cap, cap))") && Has(glass_hlsli, "const float cap = kGlassCapUnits * g_push.up.w;") &&
+      Check(Has(glass_hlsli, "min(NgHeld3(colour, kMaxColour) * (GlassFresnel(nv) * weight * strength), float3(cap, cap, cap))") && Has(glass_hlsli, "const float cap = kGlassCapUnits * g_push.up.w;") &&
                 Has(glass_hlsli, "return float4(add, 1.0);"),
             "hlsl/car_rt_refl_glass.hlsli: the term is AddedColour (cap in the history's units), the texel's alpha 1");
       Check(Has(glass_hlsli, "if (nv < kMinNv)") && Has(glass_hlsli, "(kCityFlagOn | kCityFlagScreen)") && Has(glass_hlsli, "TraceRay(history, origin, mirror, g_push.lens.w, 0.0,"),

@@ -126,8 +126,8 @@ void main(uint3 id : SV_DispatchThreadID)
     if (g_push.slots2.w != kNone)
     {
         // RR-4: a second writer (the cars' ray traced reflections beside the screen-space ones): where both hold a distance the larger stays (the two never trace the same pixel: a vehicle's pixel takes
-        // none of the screen-space effect). The max keeps the other one where a source is NaN.
-        source = max(source, g_textures[g_push.slots2.w].Load(int3(p, 0)).x);
+        // none of the screen-space effect). The max keeps the other one where a source is NaN (NgMax: decided by the bits, for Vulkan's FMax leaves which one open).
+        source = NgMax(source, g_textures[g_push.slots2.w].Load(int3(p, 0)).x);
     }
     if (g_push.info.w != kNone && !(source > 0.0f))
     {

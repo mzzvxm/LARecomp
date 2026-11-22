@@ -22,6 +22,7 @@
 #include "gbuffer_common.hlsli"
 #include "local_light.hlsli"
 #include "light_shadow_lookup.hlsli"
+#include "nan_guard.hlsli"
 
 #ifndef LL_PASS_MS
 #define LL_PASS_MS 0
@@ -159,7 +160,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const LlLight l = LlUnpack(LpLoadLight(g_push.info.x));
   const float3 normal = GbRt1Decode(rt1);
   const float3 albedo = GbAlbedoDecode(rt2.xyz);
-  float3 add = LpPixelLight(l, g, world, normal, albedo, rt2.w);
+  float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, rt2.w));   // added to the scene: a NaN or an infinity is none (nan_guard.hlsli)
   if (!any(add > 0.0f)) {
     discard;
   }

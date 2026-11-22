@@ -34,7 +34,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const uint trace_slot = SsrLo(SsrW(SSR_W_SRC));
   const uint history_slot = SsrHi(SsrW(SSR_W_SRC));
-  const float4 current = g_textures[trace_slot].Load(int3(pix, 0));
+  const float4 trace_raw = g_textures[trace_slot].Load(int3(pix, 0));
+  const float4 current = float4(NgFinite3(trace_raw.xyz), trace_raw.w);   // a colour that is not a number is none (nan_guard.hlsli): this image becomes the history
   if (current.w == 0.0f) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);   // nothing was traced here
   }
@@ -78,7 +79,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
       const float stored = g_textures[history_slot].Load(int3(q, 0)).w;
       if (stored > 0.0f && SsrSameSurface(stored, plain.z)) {
         weight = SsrF(SSR_W_HISTORY_WEIGHT) * vehicle_scale;
-        history = g_textures[history_slot].SampleLevel(g_samplers[kSamplerLinearClamp], float2(image.u, image.v), 0.0f).rgb;
+        history = NgFinite3(g_textures[history_slot].SampleLevel(g_samplers[kSamplerLinearClamp], float2(image.u, image.v), 0.0f).rgb);   // (a NaN texel in the bilinear footprint is no history)
       }
     }
   }
@@ -92,7 +93,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
     [unroll] for (int dy = -1; dy <= 1; ++dy) {
       [unroll] for (int dx = -1; dx <= 1; ++dx) {
         const int2 p = clamp(pix + int2(dx, dy), int2(0, 0), ssr - 1);
-        const float4 t = g_textures[trace_slot].Load(int3(p, 0));
+        const float4 traced = g_textures[trace_slot].Load(int3(p, 0));
+        const float4 t = float4(NgFinite3(traced.xyz), traced.w);
         if (t.w != 0.0f) {
           lo = min(lo, t.xyz);
           hi = max(hi, t.xyz);
@@ -108,5 +110,5 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float3 box_hi = float3(SsrBoxHiChannel(mean.x, sigma.x, lo.x, hi.x), SsrBoxHiChannel(mean.y, sigma.y, lo.y, hi.y), SsrBoxHiChannel(mean.z, sigma.z, lo.z, hi.z));
     history = SsrClipToBox(history, box_lo, box_hi);
   }
-  return float4(lerp(current.xyz, history, weight), z_block);
+  return float4(NgFinite3(lerp(current.xyz, history, weight)), z_block);   // (what is kept for the next frame is always a number)
 }

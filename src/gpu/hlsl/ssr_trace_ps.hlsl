@@ -122,7 +122,7 @@ float4 SsrTraceBody(float4 position) {
   const uint road_view = SsrW(SSR_W_ROAD_VIEW);
   if ((surface.cls == uint(GB_CLASS_ROAD) || surface.cls == uint(GB_CLASS_WET_ROAD)) && share > 0.0f && SsrHasSlot(SsrRoadViewSlot(road_view))) {
     const float2 screen_uv = (float2(texel) + 0.5f) / float2(render);
-    fallback = min(SsrRoadViewAt(road_view, screen_uv), float3(cap, cap, cap)) * share;
+    fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;   // (the game's own view: a NaN or an infinity in it is none, nan_guard.hlsli)
   }
 
   float3 sum = float3(0.0f, 0.0f, 0.0f);
@@ -176,7 +176,7 @@ float4 SsrTraceBody(float4 position) {
       vehicle_id = hit_vehicle;
     }
   }
-  float3 rgb = sum / float(rays);
+  float3 rgb = NgFinite3(sum / float(rays));   // a NaN or an infinity must not reach the cap below (infinity times cap / infinity is NaN) nor the history
   const float peak = max(max(abs(rgb.x), abs(rgb.y)), abs(rgb.z));
   if (peak > cap) {
     rgb *= cap / peak;

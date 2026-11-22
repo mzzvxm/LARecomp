@@ -818,7 +818,7 @@ void TestShaderSources(const std::string& dir) {
         "the layout's spaces: the textures 0 to 3, the samplers and the push block 4, the output set 5, the ray tracing set 6");
   Check(Has(trace, "CityHitResolve(p, f, s, ray, hit.inst)") && Has(trace, "CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask") && Has(trace, "RtWorldLoad()") && Has(trace, "RT_WORLD_VALID") && Has(trace, "CITY_HIT_GAIN(cls) RtWorldClassGain(cls)"),
         "the trace pass resolves its hits with the city hit library in the world frame's light, with the world frame's class gains");
-  Check(Has(trace, "SsrRtBlend(current.xyz, confidence, sum / float(rays), weight)") && Has(trace, "SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u)"), "the result is the blend, and the hit distance goes into the trace's alpha packed as the trace's own");
+  Check(Has(trace, "NgFinite3(SsrRtBlend(current.xyz, confidence, sum / float(rays), weight))") && Has(trace, "SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u)"), "the result is the blend, and the hit distance goes into the trace's alpha packed as the trace's own");
   Check(Has(trace, "if (!CityHitIsCity(hit.inst.instanceId))") && Has(trace, "SSR_RT_CENSUS_CAR"), "a hit on a car is not shaded here (it is counted)");
   Check(Has(trace, "CITY_HIT_P_SUN_RAY | CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_CALIBRATE") && Has(trace, "CITY_HIT_STAT_ADD(word, value) g_ctl.InterlockedAdd((SSR_RT_STAT_CAL + (word)) * 4u, (value))"),
         "the hit's flags are the car reflections' (the sun's ray, glow) and a stats frame calibrates through the control buffer's region");

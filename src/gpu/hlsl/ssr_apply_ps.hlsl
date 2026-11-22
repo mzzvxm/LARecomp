@@ -141,7 +141,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (!(total > 1.0e-3f)) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
   }
-  float3 term = sum / total * fresnel * (gain * ramp * SsrF(SSR_W_STRENGTH));
+  float3 term = NgFinite3(sum / total * fresnel * (gain * ramp * SsrF(SSR_W_STRENGTH)));   // added to the scene: a NaN or an infinity here would be spread by the game's own blurs (nan_guard.hlsli)
   if (view == 6u) {
     // GB-I2: the term's sign: green what is added, red what is taken out of the game's own reflection (the luminance of each)
     const float scale = 1.0f / max(SsrF(SSR_W_CAP) * 0.25f, 1.0f);

@@ -2028,7 +2028,7 @@ void TestSources(const std::string& dir) {
   Check(!Has(PlainOf(apply_ps), "SsrHizAt(") && !Has(apply_ps, "SSR_W_HIZ") && Has(apply_ps, "SsrW(SSR_W_ROAD_VIEW_APPLY)"), "the apply reads no Hi-Z (outside the RR-4a raw compilation, which a debug view never is), so its first word carries the road view for the debug view");
   Check(Has(pass, "SsrHi(SsrW(SSR_W_STENCIL))") && Has(pass, "SsrLo(SsrW(SSR_W_LIN0))") && Has(trace_ps, "SsrVehicleIdAt(hx, hy)") && Has(trace_ps, "SsrPackHit(distance_out, vehicle_hit, vehicle_id)") && Has(temporal_ps, "SsrVehicleImage(m0, m1, m2, v0, v1, v2,"),
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
-  Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(SsrRoadViewAt(road_view, screen_uv), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
+  Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
   Check(Has(temporal_ps, "history = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
 

@@ -114,7 +114,7 @@ float4 TraceGlassTexel(Texture2D<float4> history, uint2 texel)
     }
     const float strength = asfloat(g_push.glass.z);
     const float cap = kGlassCapUnits * g_push.up.w;
-    const float3 add = min(max(colour, 0.0) * (GlassFresnel(nv) * weight * strength), float3(cap, cap, cap));
+    const float3 add = min(NgHeld3(colour, kMaxColour) * (GlassFresnel(nv) * weight * strength), float3(cap, cap, cap));   // (a NaN colour is black, decided by the bits: nan_guard.hlsli)
     return float4(add, 1.0);
 }
 

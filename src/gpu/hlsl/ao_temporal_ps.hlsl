@@ -75,6 +75,7 @@
 // debug view 6 run writes the confidence in x).
 
 #include "ao_common.hlsli"
+#include "nan_guard.hlsli"
 
 // The plane test's width as a share of the distance (the denoise's), the depth agreement, the
 // margin of the neighbourhood clamp, and the confidences at which a history counts for nothing and
@@ -271,8 +272,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float4 result;
   result.x = lerp(fresh.x, history.x, confidence * g_push.extra.w);
   result.yzw = lerp(fresh.yzw, history.yzw, confidence * g_push.lens.z);
-  // A half float keeps 65504; the chain's colours are capped well under that.
-  return float4(saturate(result.x), clamp(result.yzw, 0.0f, 60000.0f));
+  // A half float keeps 65504; the chain's colours are capped well under that. This image is the next frame's history, so it is always numbers (decided by the bits, nan_guard.hlsli: a NaN is no
+  // occlusion and no bounce light; max(NaN, 0) and saturate(NaN) are 0 on D3D12 only).
+  return float4(saturate(NgNumberOr(result.x, 1.0f)), NgHeld3(result.yzw, 60000.0f));
 }
 
 #else  // !AO_GI
@@ -377,7 +379,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     fresh = lerp(wide, current, confidence);
   }
   const float result = lerp(fresh, history, confidence * g_push.extra.w);
-  return float4(saturate(result), depth_out, 0.0f, 0.0f);
+  return float4(saturate(NgNumberOr(result, 1.0f)), depth_out, 0.0f, 0.0f);   // the next frame's history: a number (nan_guard.hlsli), a NaN is no occlusion
 }
 
 #endif  // AO_GI

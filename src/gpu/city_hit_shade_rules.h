@@ -66,6 +66,11 @@ inline V3 Normalize(V3 a) { return a * (1.0f / Length(a)); }
 inline float Saturate(float v) { return std::clamp(v, 0.0f, 1.0f); }
 inline float Luma(V3 c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; }
 inline V3 Max0(V3 a) { return {std::max(a.x, 0.0f), std::max(a.y, 0.0f), std::max(a.z, 0.0f)}; }
+// A hit's colour in the picture's units (hlsl kCityHitMaxColour): at most what a half float keeps with room.
+inline constexpr float kHitMaxColour = 60000.0f;
+// hlsl NgHeld3 (nan_guard.hlsli): not negative, at most `hi`, a NaN 0, decided by the bits in the shader (max(NaN, 0) is 0 on D3D12 only).
+inline float Held(float v, float hi) { return std::isnan(v) ? 0.0f : std::min(std::max(v, 0.0f), hi); }
+inline V3 Held3(V3 a, float hi) { return {Held(a.x, hi), Held(a.y, hi), Held(a.z, hi)}; }
 inline V3 Lerp(V3 a, V3 b, float t) { return a + (b - a) * t; }
 inline float Smoothstep(float lo, float hi, float x) {
   const float t = Saturate((x - lo) / (hi - lo));
@@ -539,7 +544,7 @@ inline Shaded Shade(const Params& p, const rt_hit::FrameInput& frame, const Ray&
     result = result + albedo * (m.emissive * rt_hit::kEmissiveGain * glow);
     if (reads.census && (p.flags & kPCalibrate) != 0) reads.census(kCensusGlowNight + kind, 1u);
   }
-  V3 shaded = Max0(result) * p.units;
+  V3 shaded = Held3(result * p.units, kHitMaxColour);   // (hlsl: a NaN black, an infinity the cap: it would make a NaN of the blend with the picture's colour)
   if (reads.haze) {
     shaded = reads.haze(shaded, Length(hit));
   }
