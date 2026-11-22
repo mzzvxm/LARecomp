@@ -263,6 +263,59 @@ void TestQuietGate() {
     }
 }
 
+// The F6 browser's join (browser_join.cpp, kStarting) uses Allows: no wait when no box was ever up, the full wait once one was. The
+// failure is the same reason word and sentence, and does not need a target (the browser has none for a click).
+void TestQuietGateForThePlayer() {
+    constexpr int64_t q = js::QuietGate::kQuietMs;
+    {
+        // A click with no box on screen: the join goes at once, and keeps going.
+        js::QuietGate g;
+        CHECK(g.Allows(false, 5000));
+        CHECK(g.Allows(false, 5016));
+        CHECK(!g.SawMessage());
+    }
+    {
+        // The box is up when the city is: wait for it, then for the quiet time, as --join_server does.
+        js::QuietGate g;
+        CHECK(!g.Allows(true, 0));
+        CHECK(!g.Allows(true, 1500));
+        CHECK(g.SawMessage());
+        CHECK(!g.Allows(false, 1600));          // just gone
+        CHECK(!g.Allows(false, 1600 + q - 1));  // not long enough yet
+        CHECK(g.Allows(false, 1600 + q));       // quiet
+        CHECK(g.HeldMs(1600 + q) == 1600 + q);
+    }
+    {
+        // A second box behind the first restarts the count.
+        js::QuietGate g;
+        CHECK(!g.Allows(true, 0));
+        CHECK(!g.Allows(false, 100));
+        CHECK(!g.Allows(true, 100 + q - 50));
+        CHECK(!g.Allows(false, 100 + q));
+        CHECK(!g.Allows(false, 100 + 2 * q - 1));
+        CHECK(g.Allows(false, 100 + 2 * q));
+    }
+    {
+        // A box that never goes never lets the join on (the browser's deadline then fails it with message_box).
+        js::QuietGate g;
+        bool ever = false;
+        for (int64_t t = 0; t < 10 * 60 * 1000; t += 1000) ever = ever || g.Allows(true, t);
+        CHECK(!ever && g.SawMessage());
+    }
+    // Agrees with Update once a box was seen: the same answers for the same calls.
+    {
+        js::QuietGate a, b;
+        const bool ups[] = {true, true, false, false, true, false, false, false, false, false, false};
+        int64_t t = 0;
+        for (bool up : ups) {
+            CHECK(a.Allows(up, t) == b.Update(up, t));
+            t += 700;
+        }
+    }
+    const js::Target none;
+    CHECK(js::FailureMessage(js::reason::kMessageBox, none) == "A message box in the game stayed open, so the join was cancelled.");
+}
+
 void TestMessages() {
     const js::Target t = P("h:5,room:Pat").target;
     for (const char* why : {js::reason::kBadArgument, js::reason::kOnlineUnavailable, js::reason::kServerUnreachable,
@@ -298,6 +351,7 @@ int main() {
     TestStatusFile();
     TestMessages();
     TestQuietGate();
+    TestQuietGateForThePlayer();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

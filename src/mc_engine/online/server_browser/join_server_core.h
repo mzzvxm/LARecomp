@@ -257,6 +257,13 @@ public:
         if (clear_since_ms_ < 0) clear_since_ms_ = now_ms;
         return now_ms - clear_since_ms_ >= kQuietMs;
     }
+    // The F6 browser's join (browser_join.cpp, kStarting) uses the same gate, except that a join that has seen no message box needs no
+    // quiet time: a click is not a launch at Start. Once a box was up it waits for it and then for kQuietMs, as Update does. True = the
+    // join may go on. Call Update or Allows on one gate, not both.
+    bool Allows(bool message_up, int64_t now_ms) {
+        const bool quiet = Update(message_up, now_ms);
+        return quiet || (!saw_ && !message_up);
+    }
     bool SawMessage() const { return saw_; }
     // How long the join has been held back by a message box, as of `now_ms` (0 when none was seen): for the log line.
     int64_t HeldMs(int64_t now_ms) const { return saw_ ? now_ms - first_up_ms_ : 0; }

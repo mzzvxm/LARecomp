@@ -79,6 +79,8 @@ Clock::time_point g_phase_deadline{};
 int g_start_step = 0;
 bool g_world_wait_logged = false;  // the "waiting for the player's car" line was written for this join
 bool g_roam_wait_logged = false;   // the "waiting for free roam" line was written for this join
+joinserver::QuietGate g_message_gate;  // a message box on screen holds the join back (join_server_core.h, QuietGate::Allows)
+bool g_message_wait_logged = false;    // the "a message box is on screen" line was written for this join
 PauseGate g_pause_gate;  // what the join does about an open pause menu (browser_join_core.h)
 PageWait g_page_wait;    // what the join waits for between the goto into the net menu and the search (browser_join_core.h)
 SearchVerify g_search_verify;  // whether the goto into the search was taken (browser_join_core.h)
@@ -375,6 +377,8 @@ void TickServerBrowserJoin() {
         g_start_step = 0;
         g_world_wait_logged = false;
         g_roam_wait_logged = false;
+        g_message_gate = joinserver::QuietGate{};
+        g_message_wait_logged = false;
         g_pause_gate.Reset();
         g_page_wait = PageWait{};
         g_search_verify = SearchVerify{};
@@ -453,6 +457,26 @@ void TickServerBrowserJoin() {
                 break;
             }
             const int64_t now_ms = NowMs();
+            // And no message box on screen. The game's first one after Start is still up when the machine reaches "Cruising", and a goto
+            // into the net menu under it never got its search going (--join_server's runs, join_server_core.h, QuietGate); a player cannot
+            // press anything under it either, so a join that was clicked earlier (while the city loaded) waits here. A box that was up
+            // holds the join until it has been gone for a short while; no box seen = no wait. It cancels with message_box at the deadline.
+            // CHECK: not run in a game (the F6 join clicked at the title screen); the wait itself is --join_server's, measured there.
+            if (!g_message_gate.Allows(ModalMessageUp(), now_ms)) {
+                if (!g_message_wait_logged) {
+                    g_message_wait_logged = true;
+                    LARECOMP_APP_INFO("[browser] the join waits for the game's message box to close");
+                }
+                SetStatus(JoinPhase::kStarting, "Waiting for the message box to close to join " + req.label + "...");
+                if (now > g_phase_deadline)
+                    Finish(JoinPhase::kFailed, reason::kMessageBox, joinserver::FailureMessage(reason::kMessageBox, joinserver::Target{}));
+                break;
+            }
+            if (g_message_wait_logged) {
+                g_message_wait_logged = false;  // once per wait: the pause gate below may keep this step going for a few ticks
+                LARECOMP_APP_INFO("[browser] the message box is gone (it held the join back for {} ms); the join goes on",
+                                  g_message_gate.HeldMs(now_ms));
+            }
             const char* net_state = req.lan ? "LAN" : "Online";
             const Look look = LookAtPause();
             // The pause screen is open on the very page the join needs (SYSTEM LINK for a System Link join, XBOX LIVE for a Live one:

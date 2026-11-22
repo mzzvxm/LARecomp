@@ -41,6 +41,10 @@
 //      page was left open over the world (ojnew-pause), and from plain free roam the search was not entered at all, the relay never
 //      saw the game and --join_server still reported "done" (ojnew-cli). ChoosePath keeps the game's own start whenever it applies;
 //      SearchVerify asks again for a search that was dropped; "done" needs a session (SystemLinkSessionUp).
+//   7. A modal message box on screen. The game's first one after Start is up for about 9 s, past the moment the machine reaches
+//      "Cruising", and a goto into the net menu under it never got its search going (the --join_server runs; join_server_core.h,
+//      QuietGate). A join clicked in the F6 browser while the city loads reaches that moment too, so it waits for a box that is up
+//      (QuietGate::Allows: none seen = no wait) and cancels with the reason message_box at its deadline.
 //
 #include <cstdint>
 
