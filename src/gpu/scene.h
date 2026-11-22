@@ -76,6 +76,7 @@
 #include "pipelines.h"
 #include "thread_load.h"
 #include "records.h"
+#include "render_cpu.h"
 #include "shaders.h"
 #include "shadow_filter.h"
 #include "topology.h"
@@ -786,6 +787,11 @@ class Scene {
   };
   void LapStart();
   void Lap(Stage stage);
+  // render_cpu_mask (read at start) and ab::B(): which of the render thread's small CPU savings run in this statistics window
+  // (render_cpu.h). Called at the start and at each window's end, where ab::NextWindow() may have changed the variant.
+  void ApplyRenderCpu();
+  int32_t render_cpu_mask_ = 0;
+  render_cpu::DrawSampler draw_sampler_;  // the timers of OnDraw's prepare statistic (window_.prepare_cycles)
   void ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load);
   bool profile_ = false;
   bool scale_depth_bias_ = true;  // mcla_gpu_scale_depth_bias, read each frame

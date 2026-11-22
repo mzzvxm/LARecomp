@@ -74,6 +74,7 @@
 #include "guest_memory.h"
 #include "input_layout.h"
 #include "region_index.h"
+#include "render_cpu.h"
 #include "topology.h"
 #include "upload.h"
 
@@ -103,6 +104,8 @@ class GeometryCache {
  public:
   // mcla_gpu_scene_profile: time the stages of Prepare (the Scene sets it).
   void SetProfile(bool on) { profile_ = on; }
+  // render_cpu_mask bit 1: Prepare's own statistic (stats_.prepare_cycles) reads the clock on one draw in seven (render_cpu.h).
+  void SetSampledTiming(bool sampled) { prepare_sampler_.Configure(sampled); }
   // Frames of use in a row with a change before a watched region is hashed.
   static constexpr uint32_t kDynamicStreak = 3;
   // Frames of use in a row without a change before a hashed region is watched
@@ -327,6 +330,7 @@ class GeometryCache {
   };
   Stats stats_;
   bool profile_ = false;
+  render_cpu::DrawSampler prepare_sampler_;
   std::array<uint64_t, guest::kStreamCount> profile_last_stream_{};  // start << 32 | size
   uint64_t profile_last_index_ = 0;
   uint32_t reported_upload_failure_ = 0;
