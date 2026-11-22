@@ -132,7 +132,7 @@ struct ConsumerCell {
 using ConsumerTable = std::array<ConsumerCell, rr::kConsumerCount>;
 // TODAY (RG-3): the screen-space reflections have their signal writer (ray_regen_guides.h, hlsl/ray_regen_ssr_cs.hlsl: the trace's radiance and hit distance and the guides in AMD's formats, composed by the
 // reflections' own resolve), so signal_built is true for them and the DENOISER row's AMD value takes them; auto_uses stays false for every effect until a Radeon RX 9000 A/B (RAY-REGEN.md section 8: the
-// DLL costs 2.6 ms at 1080p for one specular signal on an RX 9070 XT, against our own denoisers' 0.03 ms), so AUTO is ours on every PC.
+// DLL costs 0.7 ms at 960x540 (the reflections' trace of a 1080p picture: the dispatch is at the trace's size) and 2.6 ms at 1080p (a 4K picture's) for one specular signal on an RX 9070 XT, against our own denoisers' 0.03 ms), so AUTO is ours on every PC.
 //   the cars' ray traced reflections: NOT a fit, so the cell stays false (RAY-REGEN.md section 4.2): their image is read by the NEXT frame's paint at the texels of the car's history image, with a weight
 //     code in the alpha that a hit distance has no room for, and a denoiser that costs the same for the whole picture (2.6 ms) would run for a car that fills a tenth of it, to replace a filter that costs 0.03 ms.
 //   the city's ray traced reflections, the ray traced bounce light, the lights' visibility: their effects are not in this tree (feat/city-rt-r6, feat/city-rt-g6, feat/rt-lights-d1); each flips its cell when
@@ -686,6 +686,8 @@ inline constexpr const char* kLauncherLabel = "Denoiser";
 inline constexpr const char* kLauncherDescription =
     "AMD FSR Ray Regeneration infers and restores full-quality ray-traced detail from sparse samples. It cleans the grain out of the ray traced and reflected light before the upscaler runs, on a Radeon RX 9000 "
     "series graphics card with Direct3D 12. Ours is the game's own cleanup.";
+// What AUTO comes to, in a sentence (the launcher's line under the row on a Radeon).
+inline constexpr const char* kLauncherAutoDescription = "Auto uses AMD FSR Ray Regeneration where an effect that is on looks better with it, and ours everywhere else.";
 inline constexpr const char* kCreditLine = "AMD FSR Ray Regeneration, Advanced Micro Devices, Inc. (MIT licence). AMD, FSR and Radeon are trademarks of Advanced Micro Devices, Inc.";
 constexpr const char* AutoLabel(bool auto_is_regen) { return auto_is_regen ? "AUTO (FSR RAY REGEN)" : "AUTO (OURS)"; }
 constexpr const char* MenuNameOfRr(Vendor v) { return v == Vendor::kAmd ? kMenuName : "DLSS RR"; }

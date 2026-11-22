@@ -682,7 +682,7 @@ void CheckMemory() {
 void CheckWords() {
   Check(std::string(kLauncherName) == "AMD FSR Ray Regeneration", "AMD's UI name");
   Check(std::strlen(kMenuName) == 13 && std::strlen(AutoLabel(true)) == 20, "the menu's value is 13 characters, AUTO's label 20: the page stays at 21 + 20 = 41");
-  const char* names[] = {kLauncherName, kMenuName, kLauncherDescription, kCreditLine};
+  const char* names[] = {kLauncherName, kMenuName, kLauncherDescription, kLauncherAutoDescription, kCreditLine};
   bool no_version = true;
   for (const char* n : names) no_version = no_version && std::string(n).find("1.2") == std::string::npos && std::string(n).find("1.1") == std::string::npos && std::string(n).find("v1") == std::string::npos;
   Check(no_version, "no version number beside the name (AMD's naming guidelines)");

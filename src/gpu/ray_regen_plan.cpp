@@ -115,6 +115,8 @@ bool Planner::RoomOk(Device* device, uint32_t signals, uint32_t w, uint32_t h) {
   return room_ok_;
 }
 
+// CHECK (not run): C26 the live probe (ProbeNow) from the render thread when the row leaves OURS: the worker opens AMD's DLLs while frames run (the effect keeps its own filter until the context is ready), and a
+// game started with the row on OURS shows no AMD line in the log until then.
 void Planner::Update(const Inputs& in) {
   debug_ = ReadDebugSwitch();
   setting_ = in.setting;

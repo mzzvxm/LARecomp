@@ -17,6 +17,10 @@
 // the near and distance words, as the accumulation's) plus 16 words (ray_regen_guides_rules.h push::): the camera's motion rows, the jitter, the depth sign and the flags. Layout (ray_regen_guides.cpp):
 // sets 0 to 3 the bindless texture set four times, set 4 the heap's samplers (not read), set 5 the five images, the push block at (b0, space4). Plain planes only (a frame with host MSAA is not taken).
 
+// CHECK (nothing here ran on a Radeon: perf/RAY-REGEN.md section 8): C3 the motion's sign and units in AMD's debug view; C16 the dispatch's view matrix has no translation; C17 the jitter's sign and units (render
+// pixels at the dispatch's half size, +y down); C18 a road's negative difference is floored at 0 (some doubling may remain); C20 a miss's hit distance is the effect's 4096, not FP16_MAX; C21 the specular albedo
+// is the resolve's Fresnel without the class gain.
+
 #define SSR_REGEN_EXTRA 1
 #include "ssr_pass.hlsli"
 #include "ray_regen_common.hlsli"

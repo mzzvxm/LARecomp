@@ -32,6 +32,9 @@
 // THE WIDTH (UPSCALING counts its widest label plus its widest value, both at most 41 together): the row's label is "DENOISER" (8) with the longest reason " (NO RTX GPU)" (13): 21; its values are
 // "AUTO (DLSS RR)" (14), "DLSS RR" and "OURS". The page's widest value is 18 ("FSR 3.1 (APPLYING)") and its widest label 20, so the page stays at 21 + 18 = 39.
 //
+// ON A RADEON the same row (the same stored words) has AMD FSR Ray Regeneration as its middle value, shown FSR RAY REGEN: its plan, gate, words and the launcher's text are in ray_regen_rules.h and
+// ray_regen_plan.h (perf/RAY-REGEN.md); the pause menu asks them when the card is an AMD one (upscaling_menu.cpp AmdRow). Every other card keeps this file's gate and words.
+//
 // Header only, includes nothing of Plume, Streamline or ReXGlue. THREADING: pure functions; the declarations at the end are in denoiser_setting.cpp.
 //
 // CHECK: nothing here was run in the game. The shown names ("DLSS RR") and the order AUTO, DLSS RR, OURS are the owner's to confirm against NVIDIA's rules; the launcher's wording is below for the main session.

@@ -832,6 +832,9 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
 // RG-3: AMD FSR Ray Regeneration's part of a regen frame, after the trace: the guide and signal pass, then the runtime's dispatch at the trace's size. The camera is the occlusion's own of THIS frame (its axes and its
 // motion into the last frame: the game's real camera exists only at the anchor, after the trigger) with the lens of the screen frame (ray_regen_guides_rules.h BuildCamera); the history of the runtime is kept
 // only while the last frame was a regen frame of the same size and the camera motion is known (else the dispatch resets it). False: no image the resolve can read exists, and the frame is the effect's own.
+// CHECK (not run on a Radeon): C8 the states of what the pass and the runtime read and write (the shared products in the layout their owners left them in, the trace moved to a state both stages read, the five
+// outputs in SHADER_READ at the compute stage, the denoised image in unordered access, with the D3D12 debug layer on); C25 the runtime's output alpha is the hit distance preserved (the resolve reads alpha != 0 as
+// "traced here": a runtime that wrote 0 would make the reflections vanish, never black: the game's own stays); C22 the reflections of moving cars carry the camera's motion only.
 bool ScreenReflections::RecordRegen(plume::RenderCommandList* list, const ssr::Push& base, const screen::ScreenFrame& sf, const RegenCameraRows* cam, bool motion_usable, const RegenAsk& ask, uint32_t width,
                                     uint32_t height, const ssr::HistoryKey& now) {
   namespace pk = ssr::push;
