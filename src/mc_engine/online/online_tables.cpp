@@ -21,6 +21,7 @@
 #include "online_common.h"
 #include "larecomp_guest.h"
 #include "larecomp_version.h"
+#include "settings/immortal.h"
 #include "spdlog_console.h"  // LarecompLogFolder()
 
 #include <rex/kernel/guest_memory.h>
@@ -57,7 +58,7 @@ enum class Phase { kNotStarted, kWaiting, kWritten, kDone };
 Phase g_phase = Phase::kNotStarted;
 Clock::time_point g_start;
 Clock::time_point g_next;
-std::string g_last_text;  // what this run wrote (or found already there)
+std::string& g_last_text = larecomp::Leak<std::string>();  // what this run wrote (or found already there); never destroyed (EXIT-HARD: a guest thread can still run at the exit)
 
 std::string Utf8(const std::filesystem::path& p) {
   const auto u = p.u8string();
