@@ -413,6 +413,7 @@ void TickServerBrowserJoin() {
             // The deadline holds in the second step too (the page was entered, then the world went away: a load, the title screen,
             // a quit from the pause menu). It was checked in the first step only, so a join that lost its world there waited for ever,
             // with no failure for --join_server's status file and no end for the player.
+            // CHECK: not run in a game (a join that loses its world after the goto into the page); the first step's deadline is measured.
             if (now > g_phase_deadline) Finish(JoinPhase::kFailed, reason::kWorldTimeout, "Join cancelled: the city never loaded");
             break;
         }
