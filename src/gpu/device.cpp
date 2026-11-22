@@ -314,7 +314,7 @@ bool Device::Open(const Options& options) {
   {
     gpu_class::RtProbe probe;
     probe.vulkan = ActiveBackend() == Backend::kVulkan;
-    probe.api_reason = CarRtUnsupportedReason(caps, probe.vulkan);
+    probe.api_reason = CarRtUnsupportedReason(caps, probe.vulkan, wave_ops());
     probe.api_rt = probe.api_reason.empty();
     probe.device_id = backend::QueryAdapterIds(device_.get()).device_id;
     probe.driver_version = device_->getDescription().driverVersion;

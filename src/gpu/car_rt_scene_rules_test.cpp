@@ -8,13 +8,17 @@
 //   cmake --build <build dir> --target larecomp_car_rt_scene_rules_test     (src/gpu/CMakeLists.txt)
 //   <build dir>/src/gpu/larecomp_car_rt_scene_rules_test [<src/gpu dir>]
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <set>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -435,59 +439,110 @@ struct FakeCaps {
   uint32_t shaderModel = 0;
 };
 
+// The wave operations the decision asks the device for (backend::WaveOps in the renderer): the ray tracing shaders' basic, ballot and arithmetic, in compute.
+struct FakeWaves {
+  bool known = true;
+  bool basic = true;
+  bool ballot = true;
+  bool arithmetic = true;
+  bool in_compute = true;
+};
+
 void TestSupportDecision() {
+  const FakeWaves all_waves;
   // Direct3D 12: DXR 1.1 and shader model 6.5.
   FakeCaps d3d;
   d3d.raytracing = true;
   d3d.raytracingStateUpdate = true;
   d3d.shaderModel = 0x65;
-  Check(rr::UnsupportedReason(d3d, false).empty(), "D3D12 with DXR 1.1 and shader model 6.5 can trace");
+  Check(rr::UnsupportedReason(d3d, false, all_waves).empty(), "D3D12 with DXR 1.1 and shader model 6.5 can trace");
   d3d.shaderModel = 0x66;
-  Check(rr::UnsupportedReason(d3d, false).empty(), "D3D12 with a newer shader model can trace");
+  Check(rr::UnsupportedReason(d3d, false, all_waves).empty(), "D3D12 with a newer shader model can trace");
   d3d.shaderModel = 0x64;
-  const std::string old_model = rr::UnsupportedReason(d3d, false);
+  const std::string old_model = rr::UnsupportedReason(d3d, false, all_waves);
   Check(old_model.find("shader model 6.4") != std::string::npos && old_model.find("6.5") != std::string::npos, "D3D12 with shader model 6.4 says so: " + old_model);
   d3d.shaderModel = 0x65;
   d3d.raytracingStateUpdate = false;
-  Check(rr::UnsupportedReason(d3d, false).find("tier 1.1") != std::string::npos, "D3D12 with DXR 1.0 only cannot trace inline");
+  Check(rr::UnsupportedReason(d3d, false, all_waves).find("tier 1.1") != std::string::npos, "D3D12 with DXR 1.0 only cannot trace inline");
   d3d.raytracingStateUpdate = true;
   d3d.raytracing = false;
-  Check(!rr::UnsupportedReason(d3d, false).empty(), "D3D12 with no ray tracing cannot trace");
+  Check(!rr::UnsupportedReason(d3d, false, all_waves).empty(), "D3D12 with no ray tracing cannot trace");
   // D3D12 does not read the Vulkan members: a Plume that fills rayQuery in (it does since 502978a9: DXR 1.1 and shader model 6.5) changes nothing here.
   FakeCaps d3d_with_member;
   d3d_with_member.raytracing = true;
   d3d_with_member.raytracingStateUpdate = true;
   d3d_with_member.shaderModel = 0x65;
   d3d_with_member.rayQuery = true;
-  Check(rr::UnsupportedReason(d3d_with_member, false).empty(), "D3D12 answers the same with the rayQuery member set");
+  Check(rr::UnsupportedReason(d3d_with_member, false, all_waves).empty(), "D3D12 answers the same with the rayQuery member set");
   d3d_with_member.rayQuery = false;
-  Check(rr::UnsupportedReason(d3d_with_member, false).empty(), "D3D12 answers the same with the rayQuery member clear");
+  Check(rr::UnsupportedReason(d3d_with_member, false, all_waves).empty(), "D3D12 answers the same with the rayQuery member clear");
 
   // Vulkan: Plume's rayQuery (the ray tracing pipelines are not needed), the buffer addresses and the descriptor indexing.
   FakeCaps vk;
   vk.bufferDeviceAddress = true;
   vk.descriptorIndexing = true;
   vk.rayQuery = true;
-  Check(rr::UnsupportedReason(vk, true).empty(), "Vulkan with ray queries (no ray tracing pipelines) can trace");
+  Check(rr::UnsupportedReason(vk, true, all_waves).empty(), "Vulkan with ray queries (no ray tracing pipelines) can trace");
   vk.raytracing = true;
-  Check(rr::UnsupportedReason(vk, true).empty(), "Vulkan with ray queries and the pipelines can trace");
+  Check(rr::UnsupportedReason(vk, true, all_waves).empty(), "Vulkan with ray queries and the pipelines can trace");
   vk.rayQuery = false;
-  const std::string no_query = rr::UnsupportedReason(vk, true);
+  const std::string no_query = rr::UnsupportedReason(vk, true, all_waves);
   Check(no_query.find("VK_KHR_ray_query") != std::string::npos, "Vulkan without ray queries says which extension it lacks: " + no_query);
   Check(no_query.find("Plume") == std::string::npos, "the Vulkan answer no longer says it waits for a Plume");
   vk.rayQuery = true;
   vk.bufferDeviceAddress = false;
-  Check(!rr::UnsupportedReason(vk, true).empty(), "Vulkan with ray queries but no buffer device addresses cannot trace");
+  Check(!rr::UnsupportedReason(vk, true, all_waves).empty(), "Vulkan with ray queries but no buffer device addresses cannot trace");
   vk.bufferDeviceAddress = true;
   vk.descriptorIndexing = false;
-  Check(!rr::UnsupportedReason(vk, true).empty(), "Vulkan with ray queries but no descriptor indexing cannot trace");
+  Check(!rr::UnsupportedReason(vk, true, all_waves).empty(), "Vulkan with ray queries but no descriptor indexing cannot trace");
   // Vulkan does not read the D3D12 members.
   FakeCaps vk_only;
   vk_only.rayQuery = true;
   vk_only.bufferDeviceAddress = true;
   vk_only.descriptorIndexing = true;
   vk_only.shaderModel = 0;
-  Check(rr::UnsupportedReason(vk_only, true).empty(), "Vulkan does not look at the shader model or the DXR tier");
+  Check(rr::UnsupportedReason(vk_only, true, all_waves).empty(), "Vulkan does not look at the shader model or the DXR tier");
+  // The wave operations the shaders use (WaveProblem): every one is needed on both APIs, in compute shaders, and the answer names what is missing.
+  for (const bool vulkan : {false, true}) {
+    const FakeCaps caps = vulkan ? vk_only : d3d_with_member;  // both are clean: every other need is met
+    const std::string api = vulkan ? "Vulkan" : "D3D12";
+    FakeWaves no_ballot;
+    no_ballot.ballot = false;
+    const std::string ballot_text = rr::UnsupportedReason(caps, vulkan, no_ballot);
+    Check(ballot_text.find("ballot") != std::string::npos && ballot_text.find("WaveActiveCountBits") != std::string::npos, api + " without ballot says so: " + ballot_text);
+    FakeWaves no_arithmetic;
+    no_arithmetic.arithmetic = false;
+    const std::string arithmetic_text = rr::UnsupportedReason(caps, vulkan, no_arithmetic);
+    Check(arithmetic_text.find("arithmetic") != std::string::npos && arithmetic_text.find("WaveActiveSum") != std::string::npos,
+          api + " without arithmetic says so: " + arithmetic_text);
+    FakeWaves no_basic;
+    no_basic.basic = false;
+    Check(rr::UnsupportedReason(caps, vulkan, no_basic).find("WaveIsFirstLane") != std::string::npos, api + " without basic wave operations cannot trace");
+    FakeWaves not_compute;
+    not_compute.in_compute = false;
+    Check(rr::UnsupportedReason(caps, vulkan, not_compute).find("compute") != std::string::npos, api + " with wave operations in no compute stage cannot trace");
+    FakeWaves neither;
+    neither.ballot = false;
+    neither.arithmetic = false;
+    const std::string both_text = rr::UnsupportedReason(caps, vulkan, neither);
+    Check(both_text.find("ballot") != std::string::npos && both_text.find("arithmetic") != std::string::npos, api + " lists everything missing: " + both_text);
+    // A device the backend could not ask is not turned away, whatever the flags say.
+    FakeWaves unknown;
+    unknown.known = false;
+    unknown.basic = unknown.ballot = unknown.arithmetic = unknown.in_compute = false;
+    Check(rr::UnsupportedReason(caps, vulkan, unknown).empty(), api + " with an unknown wave answer can trace (a failed query never turns a device away)");
+    Check(rr::UnsupportedReason(caps, vulkan, all_waves).empty(), api + " with every wave operation can trace");
+  }
+  // The API's own reasons come first: a device with neither ray queries nor waves says the ray queries.
+  FakeCaps vk_none;
+  vk_none.bufferDeviceAddress = true;
+  vk_none.descriptorIndexing = true;
+  FakeWaves no_waves;
+  no_waves.basic = no_waves.ballot = no_waves.arithmetic = no_waves.in_compute = false;
+  Check(rr::UnsupportedReason(vk_none, true, no_waves).find("ray queries") != std::string::npos, "Vulkan without ray queries and waves names the ray queries first");
+  FakeCaps d3d_none;
+  d3d_none.shaderModel = 0x65;
+  Check(rr::UnsupportedReason(d3d_none, false, no_waves).find("tier 1.1") != std::string::npos, "D3D12 without DXR and waves names DXR first");
 }
 
 // The shader counts into the header's words with the header's edges and unit.
@@ -733,8 +788,16 @@ void TestSpirvBuild(const std::string& folder) {
   const std::string scene = ReadAll(folder + "/car_rt_scene.cpp") + ReadAll(folder + "/car_rt_scene_rules.h") + ReadAll(folder + "/car_rt_scene.h");
   Check(!scene.empty() && !has(scene, "waits for Plume") && !has(scene, "kCapsHaveRayQuery") && !has(scene, "CapsRayQuery"),
         "no guard of the car ray tracing waits for a Plume with ray queries any more");
-  Check(has(ReadAll(folder + "/car_rt_scene.cpp"), "rr::UnsupportedReason(caps, vulkan)") && has(ReadAll(folder + "/car_rt_scene_rules.h"), "!caps.rayQuery"),
-        "the Vulkan decision reads Plume's rayQuery capability");
+  Check(has(ReadAll(folder + "/car_rt_scene.cpp"), "rr::UnsupportedReason(caps, vulkan, waves)") && has(ReadAll(folder + "/car_rt_scene_rules.h"), "!caps.rayQuery"),
+        "the Vulkan decision reads Plume's rayQuery capability and the wave operations");
+  // the effects, the renderer's start and the tier's probe decide with the device's own wave operations
+  for (const char* file : {"car_rt_refl.cpp", "car_rt_ao.cpp"}) {
+    Check(has(ReadAll(folder + "/" + file), "CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan, device.wave_ops())"),
+          std::string(file) + " decides with the device's wave operations");
+  }
+  Check(has(ReadAll(folder + "/renderer.cpp"), "CarRtUnsupportedReason(device_.capabilities(), vulkan, device_.wave_ops())") &&
+            has(ReadAll(folder + "/device.cpp"), "CarRtUnsupportedReason(caps, probe.vulkan, wave_ops())"),
+        "the renderer's start and the ray tracing tier's probe decide with the device's wave operations");
   const std::string effects = ReadAll(folder + "/car_rt_refl.h") + ReadAll(folder + "/car_rt_ao.h");
   Check(!effects.empty() && !has(effects, "Direct3D 12 only for now"), "the effects' headers do not say Direct3D 12 only");
   // and none of the rules' headers (the hit shading's plan and material rules were written while Vulkan waited) says Vulkan waits for a Plume
@@ -744,6 +807,51 @@ void TestSpirvBuild(const std::string& folder) {
   }
   Check(!rules_text.empty() && !has(rules_text, "until Plume") && !has(rules_text, "waits for Plume") && !has(rules_text, "D3D12 only until"),
         "the hit shading's headers do not say Vulkan waits for a Plume");
+}
+
+// The wave operations the ray tracing shaders call (hlsl/car_rt_*.hlsl and .hlsli, hlsl/rt_*.hlsl): each one is in the list WaveProblem asks the device for (basic:
+// WaveIsFirstLane, ballot: WaveActiveCountBits, arithmetic: WaveActiveSum), so a shader that starts to use another (a prefix sum, a vote, a quad operation) fails here
+// until the decision asks for it.
+void TestWaveOpsInShaders(const std::string& folder) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path dir = fs::path(folder) / "hlsl";
+  if (!fs::is_directory(dir, ec)) {
+    std::printf("note: %s not found; the wave operation scan is skipped\n", dir.string().c_str());
+    return;
+  }
+  const std::set<std::string> allowed = {"WaveIsFirstLane", "WaveActiveCountBits", "WaveActiveSum"};
+  std::set<std::string> found;
+  int files = 0;
+  const auto is_word = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+  for (const auto& entry : fs::directory_iterator(dir, ec)) {
+    const std::string name = entry.path().filename().string();
+    const std::string extension = entry.path().extension().string();
+    if (!(name.rfind("car_rt_", 0) == 0 || name.rfind("rt_", 0) == 0) || (extension != ".hlsl" && extension != ".hlsli")) {
+      continue;
+    }
+    ++files;
+    const std::string text = ReadAll(entry.path().string());
+    for (size_t at = text.find("Wave"); at != std::string::npos; at = text.find("Wave", at + 4)) {
+      size_t end = at;
+      while (end < text.size() && is_word(text[end])) {
+        ++end;
+      }
+      if ((at == 0 || !is_word(text[at - 1])) && end < text.size() && text[end] == '(') {
+        found.insert(text.substr(at, end - at));
+      }
+    }
+    for (const char* quad : {"QuadRead", "QuadAny", "QuadAll"}) {
+      Check(text.find(quad) == std::string::npos, name + " uses no quad operation (the decision does not ask for them)");
+    }
+  }
+  Check(files >= 5, "the scan found the ray tracing shaders (" + std::to_string(files) + " files)");
+  for (const std::string& op : found) {
+    Check(allowed.count(op) != 0, "the ray tracing shaders call " + op + ", which the wave operation decision does not ask the device for");
+  }
+  for (const std::string& op : allowed) {
+    Check(found.count(op) != 0, "the ray tracing shaders still call " + op + " (the decision asks for it)");
+  }
 }
 
 }  // namespace
@@ -764,6 +872,7 @@ int main(int argc, char** argv) {
   if (argc > 1) {
     TestShaderParity(argv[1]);
     TestSpirvBuild(argv[1]);
+    TestWaveOpsInShaders(argv[1]);
   }
   std::printf("car_rt_scene_rules_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

@@ -71,6 +71,8 @@ class Device {
   plume::RenderDevice* device() const { return device_.get(); }
   plume::RenderCommandQueue* queue() const { return queue_.get(); }
   const plume::RenderDeviceCapabilities& capabilities() const { return device_->getCapabilities(); }
+  // The wave (subgroup) operations of the device's compute shaders, which the capabilities do not carry (backend.h); the ray tracing decision reads them.
+  backend::WaveOps wave_ops() const { return backend::QueryWaveOps(device_.get()); }
   const plume::RenderDeviceDescription& description() const { return device_->getDescription(); }
   const std::string& backend_info() const { return backend_info_; }
   // The backend Initialize was asked for, and whether another one runs instead.
