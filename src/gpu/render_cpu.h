@@ -59,4 +59,38 @@ class DrawSampler {
   uint32_t countdown_ = 1;
 };
 
+// A one-entry cache in front of `map[key]` for a map with stable element addresses (std::unordered_map: its nodes stay where they are
+// through a rehash and an insert; only erasing the element or clearing the map ends them). Consecutive draws ask for the same device's
+// constant bank and upload, so the hash lookup (a modulo and a pointer chase, ~10 ns, 3800 draws a frame) is skipped when the key is the
+// last one's. The owner calls Forget() wherever it clears the map or erases an element. A copy of the cache starts empty, so it never
+// points into another map. `use` false is the plain `map[key]`.
+template <class Map>
+class LastEntry {
+ public:
+  using Key = typename Map::key_type;
+  using Value = typename Map::mapped_type;
+
+  LastEntry() = default;
+  LastEntry(const LastEntry&) noexcept {}
+  LastEntry& operator=(const LastEntry&) noexcept {
+    value_ = nullptr;
+    return *this;
+  }
+
+  Value& Find(Map& map, const Key& key, bool use) {
+    if (use && value_ != nullptr && key == key_) {
+      return *value_;
+    }
+    Value& found = map[key];
+    key_ = key;
+    value_ = &found;
+    return found;
+  }
+  void Forget() { value_ = nullptr; }
+
+ private:
+  Key key_{};
+  Value* value_ = nullptr;
+};
+
 }  // namespace mcla::gpu::render_cpu

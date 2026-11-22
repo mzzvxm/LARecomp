@@ -513,6 +513,14 @@ class Scene {
     UploadSpan ps;
   };
   std::unordered_map<uint32_t, DeviceUpload> device_uploads_;
+  // render_cpu_mask bit 4: the last device's entry of device_uploads_ (UploadConstants). Every clear of the map goes through
+  // ForgetDeviceUploads, which also drops this.
+  render_cpu::LastEntry<std::unordered_map<uint32_t, DeviceUpload>> last_device_upload_;
+  bool device_cache_ = false;
+  void ForgetDeviceUploads() {
+    device_uploads_.clear();
+    last_device_upload_.Forget();
+  }
   SharedConstants last_shared_{};
   UploadSpan last_shared_span_;
   // The last uploads of UploadVariantConstants, one per feature set (round robin over four): the shadow collector's draws and the UI's

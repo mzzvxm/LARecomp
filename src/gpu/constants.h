@@ -35,6 +35,7 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "guest_device.h"
+#include "render_cpu.h"
 #include "viewport.h"
 
 namespace mcla::gpu {
@@ -138,9 +139,13 @@ class ConstantBanks {
 
   // Applies the draw's blocks to its device's banks. Returns the banks.
   const Banks& Apply(const DrawView& view, Check* check = nullptr);
+  // render_cpu_mask bit 4: a draw's device is the previous draw's almost always, so the lookup keeps its last answer.
+  void SetDeviceCache(bool on) { cache_device_ = on; }
 
  private:
-  std::unordered_map<uint32_t, Banks> devices_;
+  std::unordered_map<uint32_t, Banks> devices_;  // never erased from: the cache below points into it
+  render_cpu::LastEntry<std::unordered_map<uint32_t, Banks>> last_device_;
+  bool cache_device_ = false;
 };
 
 // Swaps a big-endian bank into host floats (4096 bytes in, 4096 out), 16 bytes

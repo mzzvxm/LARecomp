@@ -74,7 +74,7 @@ uint32_t PremultFor(xe::BlendOp op, xe::BlendFactor src, xe::BlendFactor dst) {
 
 const ConstantBanks::Banks& ConstantBanks::Apply(const DrawView& view, Check* check) {
   const DrawRecord& r = view.record();
-  Banks& banks = devices_[r.device];
+  Banks& banks = last_device_.Find(devices_, r.device, cache_device_);
   for (uint32_t k = 0; k < r.vs_delta_count; ++k) {
     const uint32_t block = view.vs_block_indices()[k] % guest::kConstantBlocksPerBank;
     std::memcpy(banks.vs.data() + block * guest::kConstantBlockBytes,

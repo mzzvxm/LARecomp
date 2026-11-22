@@ -754,6 +754,8 @@ void Scene::ApplyRenderCpu() {
   const bool sampled = candidate && render_cpu::Has(render_cpu_mask_, render_cpu::kSampledDrawTimers);
   draw_sampler_.Configure(sampled);
   geometry_->SetSampledTiming(sampled);
+  device_cache_ = candidate && render_cpu::Has(render_cpu_mask_, render_cpu::kDeviceCache);
+  banks_.SetDeviceCache(device_cache_);
 }
 
 void Scene::LapStart() {
@@ -891,7 +893,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     hdr_tone_->BeginFrame();
   }
   // Uploads of the previous frame live in another slot's memory.
-  device_uploads_.clear();
+  ForgetDeviceUploads();
   last_shared_span_ = UploadSpan{};
   for (VariantUpload& upload : variant_uploads_) {
     upload.span = UploadSpan{};  // a span of the previous frame's slot must not be handed out again
@@ -916,7 +918,7 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   geometry_->EndFrame(list);
   ResetListState();
   list_ = nullptr;
-  device_uploads_.clear();
+  ForgetDeviceUploads();
   last_shared_span_ = UploadSpan{};
   for (VariantUpload& upload : variant_uploads_) {
     upload.span = UploadSpan{};  // a span of the previous frame's slot must not be handed out again
@@ -2351,7 +2353,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
 
 bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                             const SharedConstants& shared, PreparedDraw& d) {
-  DeviceUpload& u = device_uploads_[device];
+  DeviceUpload& u = last_device_upload_.Find(device_uploads_, device, device_cache_);
   if (u.vs_version != banks.vs_version) {
     UploadSpan span = upload_->Allocate(slot_, guest::kConstantBankBytes, kConstantAlignment);
     if (!span) {

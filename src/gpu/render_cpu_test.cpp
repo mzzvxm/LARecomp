@@ -1,4 +1,4 @@
-// Check of the small render-thread CPU savings (render_cpu.h; physical_alias.h). A program of its own: it needs no renderer, no ReXGlue
+// Check of the small render-thread CPU savings (render_cpu.h: the mask, DrawSampler, LastEntry; physical_alias.h). A program of its own: it needs no renderer, no ReXGlue
 // and no GPU, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_render_cpu_test          (src/gpu/CMakeLists.txt)
@@ -7,14 +7,17 @@
 // --bench times the old and the new path of each saving on this PC (cache-hot, one core), the numbers perf\RENDER-CPU-HOT.md quotes.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "native_gfx/guest/physical_alias.h"
@@ -374,6 +377,124 @@ void BenchAlias() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// LastEntry: the one-entry cache in front of a map lookup
+// ---------------------------------------------------------------------------
+
+struct CountingHash {
+  static inline uint64_t calls = 0;
+  size_t operator()(uint32_t key) const {
+    ++calls;
+    return std::hash<uint32_t>{}(key);
+  }
+};
+
+struct Bank {
+  std::array<uint8_t, 64> bytes{};
+  uint64_t version = 1;
+};
+
+void TestLastEntryEqualsMap() {
+  using Map = std::unordered_map<uint32_t, Bank, CountingHash>;
+  std::mt19937_64 rng(31);
+  Map map;
+  std::map<uint32_t, uint64_t> model;  // key -> the version the test last wrote
+  LastEntry<Map> cache;
+  uint64_t wrong_address = 0;
+  uint64_t wrong_value = 0;
+  uint32_t key = 7;
+  for (int i = 0; i < 400000; ++i) {
+    const uint64_t roll = rng() % 1000;
+    if (roll < 30) {
+      key = uint32_t(rng() % 4);  // another device
+    } else if (roll < 34) {
+      key = uint32_t(rng() % 5000);  // many keys: the map rehashes
+    } else if (roll < 36) {
+      map.clear();  // the frame's clear
+      cache.Forget();
+      model.clear();
+    }
+    const bool use = rng() % 16 != 0;  // now and then the plain lookup
+    Bank& got = cache.Find(map, key, use);
+    Bank& want = map[key];
+    wrong_address += &got != &want;
+    // The model: the element holds what the test last wrote through the cache (or its initial version after a clear).
+    const auto it = model.find(key);
+    const uint64_t expected = it == model.end() ? 1 : it->second;
+    wrong_value += got.version != expected;
+    got.version = 100 + uint64_t(i);
+    got.bytes[uint32_t(i) % 64] = uint8_t(i);
+    model[key] = got.version;
+  }
+  Check(wrong_address == 0, "the cached reference is the map's own element on 400000 lookups with clears and rehashes");
+  Check(wrong_value == 0, "what is written through the cache is what the map holds");
+}
+
+void TestLastEntryAvoidsLookups() {
+  using Map = std::unordered_map<uint32_t, Bank, CountingHash>;
+  Map map;
+  LastEntry<Map> cache;
+  CountingHash::calls = 0;
+  for (int i = 0; i < 1000; ++i) {
+    cache.Find(map, 0x70000000u, true);
+  }
+  Check(CountingHash::calls == 1, "1000 lookups of the same key hash once with the cache (" + std::to_string(CountingHash::calls) + ")");
+  CountingHash::calls = 0;
+  for (int i = 0; i < 1000; ++i) {
+    cache.Find(map, 0x70000000u, false);
+  }
+  Check(CountingHash::calls == 1000, "off: every lookup hashes, as before (" + std::to_string(CountingHash::calls) + ")");
+  CountingHash::calls = 0;
+  for (int i = 0; i < 1000; ++i) {
+    cache.Find(map, uint32_t(i & 1), true);
+  }
+  Check(CountingHash::calls == 1000, "two devices in turn: no hit, one hash each (" + std::to_string(CountingHash::calls) + ")");
+}
+
+void TestLastEntryForgetAndCopy() {
+  using Map = std::unordered_map<uint32_t, Bank>;
+  Map a;
+  Map b;
+  LastEntry<Map> cache;
+  Bank& in_a = cache.Find(a, 5, true);
+  in_a.version = 55;
+  cache.Forget();
+  a.clear();
+  Bank& fresh = cache.Find(a, 5, true);
+  Check(fresh.version == 1 && &fresh == &a[5], "after Forget and a clear the lookup makes a new element (no dangling reference)");
+  fresh.version = 66;
+  LastEntry<Map> copy = cache;  // the copy must not point into `a`
+  Bank& in_b = copy.Find(b, 5, true);
+  Check(&in_b == &b[5] && in_b.version == 1 && &in_b != &a[5], "a copy of the cache starts empty: its first lookup is in its own map");
+  LastEntry<Map> assigned;
+  assigned.Find(a, 5, true);
+  assigned = cache;
+  Check(&assigned.Find(b, 5, true) == &b[5], "an assigned cache starts empty too");
+  Check(a[5].version == 66, "the original's map was not touched by the copies");
+}
+
+// What the saving is worth: the same lookup through an unordered_map (a modulo and a pointer chase) against the cache's compare.
+void BenchLastEntry() {
+  using Clock = std::chrono::steady_clock;
+  using Map = std::unordered_map<uint32_t, Bank>;
+  Map map;
+  for (uint32_t k = 0; k < 3; ++k) map[0x40000000u + k * 0x1000u];
+  LastEntry<Map> cache;
+  constexpr int kN = 50'000'000;
+  uint64_t sum = 0;
+  const auto t0 = Clock::now();
+  for (int i = 0; i < kN; ++i) {
+    sum += map[0x40000000u].version + uint64_t(i & 1);
+  }
+  const auto t1 = Clock::now();
+  for (int i = 0; i < kN; ++i) {
+    sum += cache.Find(map, 0x40000000u, true).version + uint64_t(i & 1);
+  }
+  const auto t2 = Clock::now();
+  std::printf("  device lookup: map[] %.2f ns, with the last-entry cache %.2f ns (%llu)\n", std::chrono::duration<double, std::nano>(t1 - t0).count() / kN,
+              std::chrono::duration<double, std::nano>(t2 - t1).count() / kN, (unsigned long long)sum);
+}
+
 // The timers' cost is the saving: a clock read per timed draw. A bench of Take on its own (it must be far under a clock read).
 void BenchSampler() {
   using Clock = std::chrono::steady_clock;
@@ -403,9 +524,13 @@ int main(int argc, char** argv) {
   TestAliasEqualsReference();
   TestAliasCallCounts();
   TestAliasEdges();
+  TestLastEntryEqualsMap();
+  TestLastEntryAvoidsLookups();
+  TestLastEntryForgetAndCopy();
   if (g_bench) {
     BenchSampler();
     BenchAlias();
+    BenchLastEntry();
   }
   std::printf("render_cpu_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
