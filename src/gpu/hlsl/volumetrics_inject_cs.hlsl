@@ -38,6 +38,7 @@
 // Shader Model 6.0, 8 x 8 x 1 threads: x, y the voxel in a tile, the dispatch's z the slice.
 
 #include "volumetrics_common.hlsli"
+#include "volumetrics_noise.hlsli"
 
 // --- noise ------------------------------------------------------------------------------------------------------------------------
 
@@ -64,11 +65,6 @@ float ValueNoise(float3 x) {
   const float n011 = Hash01(i + int3(0, 1, 1));
   const float n111 = Hash01(i + int3(1, 1, 1));
   return lerp(lerp(lerp(n000, n100, t.x), lerp(n010, n110, t.x), t.y), lerp(lerp(n001, n101, t.x), lerp(n011, n111, t.x), t.y), t.z);
-}
-float InterleavedGradient(float2 p, float frame) {
-  const float shift = 5.588238 * fmod(frame, 64.0);
-  const float v = 0.06711056 * (p.x + shift) + 0.00583715 * (p.y + shift);
-  return frac(52.9829189 * frac(v));
 }
 
 // --- the lights ---------------------------------------------------------------------------------------------------------------------
@@ -256,6 +252,7 @@ float3 SpotLight(uint offset, float3 p, float3 ray, float g, float strength, boo
 // The push's slots.w flags (volumetrics_stable.h kInjectFlag*).
 static const uint kInjectFlagSliceLamps = 1u;
 static const uint kInjectFlagSteadyHeads = 2u;
+static const uint kInjectFlagBlueNoise = 4u;   // the voxel's own sample offset is the blue noise tile's (mcla_gpu_noise_blue; volumetrics_noise.hlsli), else the first version's gradient noise
 // A shadowed headlight's taps along a slice (volumetrics_stable.h kHeadlightShadowTaps) and the history's beam compensation (kHeadCompFullRatio, kHeadCompMaxRatio, kHeadCompOldBound,
 // kHeadCompSignificance): up to the full ratio of the term now to the term then the history keeps its weight, from the max ratio it is dropped; the old beam is at most the bound times the old
 // term; a beam under the significance's share of the voxel's other light does not lower the weight.
@@ -366,8 +363,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
   // The voxel's nominal centre (the history's key) and its jittered sample (the frame's).
   const float2 cell = float2(id.xy) + 0.5;
-  const float n0 = InterleavedGradient(float2(id.xy) + float2(37.0, 17.0) * float(id.z), jitter.w);
-  const float3 jit = frac(jitter.xyz + float3(n0, frac(n0 * 7.31), frac(n0 * 3.77))) - 0.5;
+  const float3 jit = frac(jitter.xyz + VolVoxelNoise(int(id.x), int(id.y), int(id.z), jitter.w, (g_push.slots.w & kInjectFlagBlueNoise) != 0u)) - 0.5;
   const float2 uv = (cell + jit.xy * 0.9) / float2(grid.xy);
   const float slice = float(id.z) + 0.5 + jit.z * 0.9;
   const float z = depth.x * exp(depth.z * slice / float(grid.z));

@@ -1120,7 +1120,7 @@ bool Volumetrics::RecordVolume(plume::RenderCommandList* list, uint32_t frame_sl
   push.slots[0] = use_history ? read.slot : 0u;
   push.slots[1] = write.slot;
   push.slots[2] = (use_history ? 1u : 0u) | (use_shadows ? 2u : 0u);
-  push.slots[3] = stable_ ? (vol::kInjectFlagSliceLamps | vol::kInjectFlagSteadyHeads) : 0u;
+  push.slots[3] = (stable_ ? (vol::kInjectFlagSliceLamps | vol::kInjectFlagSteadyHeads) : 0u) | (larecomp::settings::mcla_gpu_noise_blue.Get() ? vol::kInjectFlagBlueNoise : 0u);
   list->setComputePipelineLayout(layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), 0);
   list->setComputeDescriptorSet(heap_->sampler_set(), 1);
