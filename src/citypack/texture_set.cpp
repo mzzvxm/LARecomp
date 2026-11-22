@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "citypack/bytes.h"
+#include "citypack/file_replace.h"
 #include "citypack/guest_hash.h"
 #include "citypack/sector_parse.h"
 #include "mc_engine/modloader/rpf3.h"
@@ -422,7 +423,7 @@ bool WriteTextureFile(const std::filesystem::path& path, const TextureSet& set, 
   header.Write(head);
   std::error_code ec;
   if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec);
-  const std::filesystem::path temp = path.string() + ".tmp";
+  const std::filesystem::path temp = TempPathFor(path);  // unique per process: parallel runs build the same file in one cache (file_replace.h)
   {
     std::ofstream out(temp, std::ios::binary | std::ios::trunc);
     if (!out) return fail("the texture file could not be created: " + temp.string());
@@ -442,12 +443,9 @@ bool WriteTextureFile(const std::filesystem::path& path, const TextureSet& set, 
       return fail("the texture file could not be written completely (disk full?)");
     }
   }
-  std::filesystem::remove(path, ec);
-  std::filesystem::rename(temp, path, ec);
-  if (ec) {
-    std::filesystem::remove(temp, ec);
-    return fail("the texture file could not be moved into place");
-  }
+  // One step over the old file, tried again while another process has it open; the same bytes already there (another process built it first) count as done.
+  std::string why;
+  if (MoveIntoPlace(temp, path, &why) == MoveResult::kFailed) return fail("the texture file could not be moved into place: " + why);
   return true;
 }
 

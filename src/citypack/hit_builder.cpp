@@ -11,6 +11,7 @@
 #include <sstream>
 #include <thread>
 
+#include "citypack/file_replace.h"
 #include "citypack/hit_params.h"
 #include "citypack/material_class.h"
 #include "citypack/stamp.h"
@@ -699,8 +700,8 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
   }
 
   // The file: the head, then the body copied behind it, under a temporary name; then moved into place.
-  std::filesystem::path temp_path = result.hit_path;
-  temp_path += ".tmp";
+  // A temporary name of its own (file_replace.h): parallel processes that build the same data at the same time share the cache folder.
+  const std::filesystem::path temp_path = TempPathFor(result.hit_path);
   {
     std::ofstream out(temp_path, std::ios::binary | std::ios::trunc);
     std::ifstream in(body_path, std::ios::binary);
@@ -726,17 +727,17 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
       return fail("the hit file could not be written completely (disk full?)");
     }
   }
-  std::error_code ec;
-  std::filesystem::remove(result.hit_path, ec);
-  std::filesystem::rename(temp_path, result.hit_path, ec);
-  if (ec) return fail("the hit file could not be moved into place: " + ec.message());
+  {
+    std::string why;
+    if (MoveIntoPlace(temp_path, result.hit_path, &why) == MoveResult::kFailed) return fail("the hit file could not be moved into place: " + why);
+  }
 
   // The texture file (the set's), with the hit table's hash in its header.
   uint64_t tex_size = 0;
   if (request.textures != nullptr) {
     const std::filesystem::path tex_path = TextureFilePath(base_request);
-    std::error_code rm;
-    std::filesystem::remove(tex_path, rm);
+    // No removal of the old file first: another process may have written (or be reading) the same one, and the move replaces it in one step. A file left from
+    // another hit table is refused by the reader (its header holds the hit table's hash).
     if (!request.textures->Finish(tex_path, header.table_hash, &error)) return fail("the texture set could not write its file: " + error);
     const FileStat tex = StatFile(tex_path);
     tex_size = tex.exists ? tex.size : 0;
