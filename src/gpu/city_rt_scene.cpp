@@ -233,6 +233,11 @@ void CityRtScene::PollLoads() {
       GiveBackForReread(r.request.sector, r.request.detail);  // read before the pool existed: not built as geometry only, read again with the blob
       continue;
     }
+    if (std::any_of(staged_.begin(), staged_.end(), [&](const Staged& s) { return s.sector == r.request.sector && s.detail == r.request.detail; })) {
+      // A second read of a mesh that waits for its build: the states were reset while the first was in the worker's queue (a live HIGH <-> ULTRA switch makes the hit data's pool again and gives every
+      // structure back) and the plan asked again. Built twice, the second structure would replace the first in the sector's slot at once, while the list being recorded builds it.
+      continue;
+    }
     Staged staged;
     staged.sector = r.request.sector;
     staged.detail = r.request.detail;
