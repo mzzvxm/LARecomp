@@ -23,7 +23,8 @@
 // history's new length.
 // RT_DN_OUT_UNORM8 (RT-LIGHTS-D1 part 2, hlsl/rt_denoise_unorm8.hlsli): the result is an RGBA8_UNORM image holding a signal in 0..1 (a visibility) and the length in the alpha as n / 32; the temporal
 // pass rounds the blended average at random (the consumer's float3 RtDnDither3(int2 p): three numbers in [0, 1) that change every frame) so that the 8 bit average neither stalls nor drifts, and the
-// consumer decodes the history's length (RtDnHistoryAt). Without the macro nothing here changes.
+// consumer decodes the history's length (RtDnHistoryAt). A pixel with no usable guides (not signal) keeps the signal's own value, which the trace made 1 (lit), instead of black: black is a visibility
+// of 0, and the light pass reads every pixel it lights. Without the macro nothing here changes.
 
 #ifndef MCLA_GPU_RT_DENOISE_ENGINE_HLSLI
 #define MCLA_GPU_RT_DENOISE_ENGINE_HLSLI
@@ -134,7 +135,13 @@ void RtDnTemporalMain(uint3 id) {
   const float4 current = float4(RtDnSane(raw_signal.xyz), raw_signal.w);   // a colour that is not a number is black
   const RtDnPixel c = RtDnLoad(p);
   if (!RtDnGuidesOk(c)) {
+#ifdef RT_DN_OUT_UNORM8
+    // A VISIBILITY (the ray traced lights): a pixel the trace did not judge (the sky, a vehicle, beyond the range, or no light of the frame reaches it) holds the signal's own value, 1 = lit, with no history
+    // (length 0). Black here would be a visibility of 0, a pixel in full shadow: the light pass reads this image at every pixel it lights, cars included, and the next frame's history reads it bilinearly.
+    g_dn_out[p] = float4(current.xyz, 0.0f);
+#else
     g_dn_out[p] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+#endif
     return;
   }
   // the last frame's result where it is the same reflection: moved by the reflection's own motion, accepted only where the surface itself was the same one

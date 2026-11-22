@@ -2017,7 +2017,19 @@ void TestSources(const std::string& src) {
           !Has(engine, "Nudge") && !Has(u8, "Nudge"));
     CHECK(Has(plain, "float4(h.x, h.y, h.z, RtDnDecodeLength(h.w))") && Has(plain, "const float2 hs = float2(0.0f, nr.w);") && Has(plain, "r.rough = 1.0f;"));
     // the other consumers' compiles are byte-identical to the part 1 tree's (rt_lights_d1_shaders.py --identity-ref): here the text: every change is under the two macros
-    CHECK(Count(plain, "#ifdef RT_DN_VIS") == 4 && Count(engine, "#ifdef RT_DN_OUT_UNORM8") == 4);
+    CHECK(Count(plain, "#ifdef RT_DN_VIS") == 4 && Count(engine, "#ifdef RT_DN_OUT_UNORM8") == 5);
+    // REVIEW (RTL-D1-REVIEW B1): a pixel with no usable guides (the sky, a vehicle, beyond the range, no light reaches it) must come out of the visibility's temporal pass as the signal's own value (1: lit, no history),
+    // never black: black is a visibility of 0 and the light pass reads every pixel it lights (cars included: their lamp term would be taken away in full, a headlight would not light them). The other consumers
+    // (no RT_DN_OUT_UNORM8) keep the black write: one of each, in that order, inside the guides test, before its return.
+    {
+      const size_t guides = engine.find("if (!RtDnGuidesOk(c)) {\n#ifdef RT_DN_OUT_UNORM8");
+      const size_t own = engine.find("g_dn_out[p] = float4(current.xyz, 0.0f);", guides);
+      const size_t other = engine.find("#else\n    g_dn_out[p] = float4(0.0f, 0.0f, 0.0f, 0.0f);\n#endif\n    return;", guides);
+      CHECK(guides != std::string::npos && own != std::string::npos && other != std::string::npos && guides < own && own < other);
+      CHECK(Count(engine, "g_dn_out[p] = float4(current.xyz, 0.0f);") == 1 && Count(engine, "g_dn_out[p] = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1);
+      // and the trace's side of it: every texel it does not judge is written with the visibility 1 and the guides say "not signal" (depth 0 or share 0), which is what the pass-through above turns into "lit"
+      CHECK(Has(ReadFile(gpu + "hlsl/rt_lights_trace_cs.hlsl"), "float vis[9] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};") && Has(ReadFile(gpu + "hlsl/rt_lights_trace_cs.hlsl"), "g_normal[id.xy] = float4(normal, signal ? 1.0 : 0.0);"));
+    }
     CHECK(Has(host_shaders, "RtDenoiseVisShader(bool temporal)") && Has(host_shaders, "MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_vis_temporal_cs)") && Has(host_shaders, "#include \"rt_denoise_vis_spatial_cs.hlsl.spirv.h\"") &&
           Has(cmake, "larecomp_gpu_host_shader(rt_denoise_vis_spatial_cs cs_6_0 SOURCE rt_denoise_plain_spatial_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1)") &&
           Has(cmake, "larecomp_gpu_host_shader(rt_denoise_vis_temporal_cs cs_6_0 SOURCE rt_denoise_plain_temporal_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1)"));
