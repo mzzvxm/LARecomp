@@ -62,7 +62,7 @@ void main(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
   if (pix.x < ssr.x && pix.y < ssr.y) {
     const float2 conf = g_textures[SsrLo(conf_word)].Load(int3(pix, 0)).xy;
     candidate = SsrRtCandidate(SsrRtGroupIn(conf.x), conf.y, (conf_word >> SSR_RT_CONF_MASK_SHIFT) & 15u, SsrF(SSR_W_RT_THRESHOLD));
-    kept = candidate && SsrRtKept(SsrRtThinHash(pix.x, pix.y, rt_frame), keep);
+    kept = candidate && SsrRtKept(SsrRtThinHash(pix.x, pix.y, rt_frame, (SsrW(SSR_W_FRAME) & SSR_FRAME_LEGACY_NOISE) != 0u), keep);
   }
   uint rank = 0u;
   if (candidate) {

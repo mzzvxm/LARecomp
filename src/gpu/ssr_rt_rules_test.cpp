@@ -25,6 +25,7 @@
 #include "city_rt_shadow_rules.h"
 #include "gbuffer_rules.h"
 #include "gbuffer_types.h"
+#include "noise_resolve_check.h"
 #include "rt_hit_calibration.h"
 #include "ssr_rt_rules.h"
 
@@ -240,7 +241,7 @@ void TestCap() {
     uint32_t kept = 0;
     const int w = 512, h = 512;
     for (int y = 0; y < h; ++y) {
-      for (int x = 0; x < w; ++x) kept += hs::SsrRtKept(hs::SsrRtThinHash(x, y, 77u), keep) ? 1u : 0u;
+      for (int x = 0; x < w; ++x) kept += hs::SsrRtKept(hs::SsrRtThinHash(x, y, 77u, false), keep) ? 1u : 0u;
     }
     const double share = double(kept) / double(w * h);
     Check(Near(share, keep, 0.02), Num("thinning at %.2f keeps a share of %.4f", keep, share));
@@ -251,11 +252,13 @@ void TestCap() {
   int differs = 0;
   uint32_t frames_kept = 0;
   for (uint32_t f = 0; f < 256; ++f) {
-    frames_kept += hs::SsrRtKept(hs::SsrRtThinHash(100, 200, f), 0.5f) ? 1u : 0u;
-    differs += hs::SsrRtThinHash(100, 200, f) != hs::SsrRtThinHash(100, 200, f + 1) ? 1 : 0;
+    frames_kept += hs::SsrRtKept(hs::SsrRtThinHash(100, 200, f, false), 0.5f) ? 1u : 0u;
+    differs += hs::SsrRtThinHash(100, 200, f, false) != hs::SsrRtThinHash(100, 200, f + 1, false) ? 1 : 0;
   }
   Check(frames_kept > 90 && frames_kept < 166 && differs > 250, Num("one pixel is kept in about half the frames at 0.5 (%.0f of 256)", frames_kept));
-  Check(hs::SsrRtThinHash(10, 20, 5u) == hs::SsrRtThinHash(10, 20, 5u) && hs::SsrRtThinHash(10, 20, 5u) == hs::SsrRtThinHash(10, 20, 5u + 256u), "the hash is deterministic and has a period of 256 frames (the IGN's own)");
+  Check(hs::SsrRtThinHash(10, 20, 5u, false) == hs::SsrRtThinHash(10, 20, 5u, false) && hs::SsrRtThinHash(10, 20, 5u, false) != hs::SsrRtThinHash(10, 20, 5u + 256u, false) &&
+            hs::SsrRtThinHash(10, 20, 5u, true) == hs::SsrRtThinHash(10, 20, 5u + 256u, true),
+        "the hash is deterministic; the blue one steps along R2 and has no period of 256 frames (the first version's, with legacy true, has: the IGN's own)");
   // the tile order: turned by a stride a frame, a permutation of the tiles whatever the frame
   bool perm = true;
   bool moves = false;
@@ -376,6 +379,46 @@ struct ModelFrame {
   uint32_t listed = 0;     // the counter's value (may exceed the capacity)
   std::vector<uint32_t> list;   // the entries written (index < capacity), 0xFFFFFFFF where nothing was written
 };
+// THE THINNING'S NOISE (NOISE-AUDIT, perf\NOISE-AUDIT.md): which candidate pixels are traced in a frame. The first version read interleaved gradient noise at a position moved by (7.7, 3.1) pixels a frame, a lattice
+// that slid across the picture; now the blue noise tile stepped along the R2 sequence by the frame (hlsl/blue_noise_frame.hlsli). Over a pixel's frames the share kept is the keep; in one frame the
+// kept pixels are a stipple with no lattice; the error of what the history makes of the weighted trace has no lattice and does not move.
+void TestThinNoise() {
+  namespace nc = noise_check;
+  const auto blue = [](int x, int y, uint32_t f) { return std::pair<float, float>(hs::SsrRtThinHash(x, y, f, false), 0.0f); };
+  const auto legacy = [](int x, int y, uint32_t f) { return std::pair<float, float>(hs::SsrRtThinHash(x, y, f, true), 0.0f); };
+  const nc::PerFrame p = nc::PerFrameOf(blue, 0);
+  Check(p.changed > 0.99 && p.max_gap < 0.25 && p.step_spread < 1e-4 && std::fabs(p.mean - 0.5) < 0.01 && std::fabs(p.var - 1.0 / 12.0) < 0.004,
+        nc::Num("thinning noise: uniform (mean %.3f), changes at every pixel every frame (%.3f), no gap over %.3f in 16 frames, one step at every pixel (%.6f): the pattern moves round the circle and does not slide", p.mean,
+            p.changed, p.max_gap, p.step_spread));
+  for (const float keep : {0.5f, 0.25f}) {
+    const auto response = [keep](float u, float) { return u < keep ? 1.0 / double(keep) : 0.0; };
+    const nc::Resolved rl = nc::Resolve(legacy, response, 100, 128, 48, 0.9, false);
+    const nc::Resolved rb = nc::Resolve(blue, response, 100, 128, 48, 0.9, false);
+    std::printf("  keep %.2f: first version rms %.3f, one frequency %.4f, direction %.2f, match %.2f at (%d, %d); blue rms %.3f, one frequency %.4f, direction %.2f, match %.2f at (%d, %d)\n", keep, rl.rms,
+                rl.shape.peak_share, rl.shape.wedge_ratio, rl.best_corr, rl.best_dx, rl.best_dy, rb.rms, rb.shape.peak_share, rb.shape.wedge_ratio, rb.best_corr, rb.best_dx, rb.best_dy);
+    Check(nc::NoLattice(rb, 3.0) && !nc::Crawls(rb) && rb.rms < 0.5 * rl.rms + 0.05,
+          nc::Num("keep %.2f: what the history leaves of the weighted trace has no frequency that stands out (%.4f) or direction (%.2f) and does not move; rms %.3f against the first version's %.3f", keep, rb.shape.peak_share,
+              rb.shape.wedge_ratio, rb.rms, rl.rms));
+    Check(nc::IsLattice(rl) || nc::Crawls(rl), nc::Num("(the first version's: %.4f in one frequency, a direction %.1f, best match with the next frame %.2f at (%d, %d))", rl.shape.peak_share, rl.shape.wedge_ratio, rl.best_corr, rl.best_dx, rl.best_dy));
+  }
+  // one frame's kept pixels: a stipple of the density asked for with no frequency that stands out
+  {
+    const int n = 128;
+    const float keep = 0.25f;
+    std::vector<double> mask(size_t(n) * size_t(n)), mask_old(size_t(n) * size_t(n));
+    for (int y = 0; y < n; ++y) {
+      for (int x = 0; x < n; ++x) {
+        mask[size_t(y) * n + x] = hs::SsrRtKept(hs::SsrRtThinHash(x, y, 40u, false), keep) ? 1.0 - keep : -keep;
+        mask_old[size_t(y) * n + x] = hs::SsrRtKept(hs::SsrRtThinHash(x, y, 40u, true), keep) ? 1.0 - keep : -keep;
+      }
+    }
+    const blue_noise_spectrum::Shape sb = blue_noise_spectrum::Analyse(blue_noise_spectrum::Power(mask, n, true), n);
+    const blue_noise_spectrum::Shape so = blue_noise_spectrum::Analyse(blue_noise_spectrum::Power(mask_old, n, true), n);
+    Check(sb.peak_share < 0.02 && so.peak_share > 0.03,
+          nc::Num("one frame's kept pixels at 0.25: no frequency stands out in the blue stipple (%.4f of its energy in one), the first version's was a lattice (%.4f)", sb.peak_share, so.peak_share));
+  }
+}
+
 void TestSelectModel() {
   const int w = 203, h = 117;   // not a multiple of the tile: the edge tiles are partial
   const uint32_t tiles_x = uint32_t(w + 7) / 8u, tiles_y = uint32_t(h + 7) / 8u, tile_count = tiles_x * tiles_y;
@@ -419,7 +462,7 @@ void TestSelectModel() {
           if (px >= w || py >= h) continue;
           const std::array<float, 2>& c = conf[size_t(py) * w + px];
           const bool candidate = hs::SsrRtCandidate(hs::SsrRtGroupIn(c[0]), c[1], mask, rt::kConfidenceThreshold);
-          const bool kept = candidate && hs::SsrRtKept(hs::SsrRtThinHash(px, py, rt_frame), keep);
+          const bool kept = candidate && hs::SsrRtKept(hs::SsrRtThinHash(px, py, rt_frame, false), keep);
           group_total += candidate ? 1u : 0u;
           if (kept) {
             ++group_kept;
@@ -807,7 +850,7 @@ void TestShaderSources(const std::string& dir) {
         "the confidence target's code is all under #if SSR_RT (the plain compilations hold none of it)");
   Check(Has(trace_ps, "SV_Target0") && Has(trace_ps, "SV_Target1") && Has(trace_ps, "SsrRtGroupOut(rt_group), saturate(conf_sum / float(rays))"), "the confidence target is the trace's second target: the class group and the mean of the rays' fades");
   // the select pass
-  Check(Has(select, "SSR_RT_FLAG_RESET") && Has(select, "SsrRtTileOf(") && Has(select, "SsrRtKeep(capacity") && Has(select, "SsrRtThinHash(") && Has(select, "InterlockedAdd(gs_total") && Has(select, "InterlockedAdd(gs_kept") &&
+  Check(Has(select, "SSR_RT_FLAG_RESET") && Has(select, "SsrRtTileOf(") && Has(select, "SsrRtKeep(capacity") && Has(select, "SsrRtThinHash(pix.x, pix.y, rt_frame, (SsrW(SSR_W_FRAME) & SSR_FRAME_LEGACY_NOISE) != 0u)") && Has(select, "InterlockedAdd(gs_total") && Has(select, "InterlockedAdd(gs_kept") &&
             Has(select, "(rt_frame + 2u) % 3u") && Has(select, "(rt_frame + 1u) % 3u"),
         "the select pass: the reset frame, the tile order, the share kept from the last frame's total, the group's one reservation, the three rotating counters");
   Check(Has(select, "[numthreads(8, 8, 1)]") && Has(trace, "[numthreads(64, 1, 1)]") && int(rt::kTile) == 8 && int(rt::kThreads) == 64, "the groups' sizes are the host's");
@@ -919,6 +962,7 @@ int main(int argc, char** argv) {
   TestRay();
   TestRayIsTheTraces();
   TestSelectModel();
+  TestThinNoise();
   TestDecision();
   TestWords();
   TestGovernor();

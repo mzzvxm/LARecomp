@@ -18,6 +18,7 @@
 #define MCLA_GPU_SSR_RT_COMMON_HLSLI
 
 #include "ssr_common.hlsli"
+#include "blue_noise_frame.hlsli"
 
 // ---- the compute passes' push block (the SSR push block's 32 words, ssr_common.hlsli SSR_W_*; the words the compute passes do not read for their first meaning) ------------------------------------
 #define SSR_W_RT_CONF 4          // the confidence image's bindless slot (low 16 bits) | the class groups the level traces << 16 (4 bits) | rays - 1 << 20 (2 bits) | SSR_RT_FLAG_* << 24
@@ -86,10 +87,16 @@ float SsrRtKeep(uint capacity, uint previous_total) {
   const float share = float(capacity) / float(max(previous_total, 1u));
   return clamp(share, kSsrRtMinKeep, 1.0f);
 }
-// A number in 0..1 per pixel and frame, stable in space (a pixel that is kept is the same pixel the frame after only by chance: the pattern turns with the frame), apart from the trace's own noise.
-float SsrRtThinHash(int px, int py, uint rt_frame) {
-  const float f = float(rt_frame & 255u);
-  return SsrIgn(float(py) + 3.1f * f + 71.0f, float(px) + 7.7f * f + 13.0f);
+// A number in 0..1 per pixel and frame (a pixel is kept when it is under the share): the blue noise tile at the pixel stepped along the R2 sequence by the frame (blue_noise_frame.hlsli), so the pixels
+// kept in a frame are a blue noise stipple of the density kept, with no lattice, a pixel is kept in the share of the frames kept (low discrepancy: evenly spread in time), and the pattern is the
+// same stipple moved round the circle, so it does not slide. The first version (`legacy`, SSR_FRAME_LEGACY_NOISE of the frame word: mcla_gpu_ssr_blue_noise false) was interleaved gradient noise
+// read at a position moved by (7.7, 3.1) pixels a frame: a lattice that slid across the picture, and the pixels traced with it.
+float SsrRtThinHash(int px, int py, uint rt_frame, bool legacy) {
+  if (legacy) {
+    const float f = float(rt_frame & 255u);
+    return SsrIgn(float(py) + 3.1f * f + 71.0f, float(px) + 7.7f * f + 13.0f);
+  }
+  return BlueNoiseFrame(px, py, 0u, rt_frame, kBlueNoiseR2StepA);
 }
 bool SsrRtKept(float hash, float keep) { return hash < keep; }
 // What a survivor of the thinning weighs: the inverse of the share kept.
