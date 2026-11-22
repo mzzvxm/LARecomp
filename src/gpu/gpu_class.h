@@ -743,7 +743,8 @@ struct AdapterFacts {
   bool software = false;    // a virtual or CPU device, or a software rasteriser by name
   uint64_t dedicated_bytes = 0;  // dedicated video memory (the largest device-local heap on Vulkan)
   // Whether the backend reports ray tracing (D3D12 DXR tier 1.0 or more; Vulkan's ray tracing pipeline
-  // and acceleration structures). The class rule does not use it: it is in the "[gpu] class:" line.
+  // and acceleration structures, or its ray queries: a driver with VK_KHR_ray_query alone traces too). The class rule does
+  // not use it: it is in the "[gpu] class:" line.
   bool raytracing = false;
   // The adapter's description as the API gives it, and its PCI vendor id (Plume's RenderDeviceVendor):
   // what the speed table reads. Empty and 0 when unknown, which leaves the memory rule alone.

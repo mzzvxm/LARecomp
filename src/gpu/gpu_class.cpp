@@ -143,7 +143,7 @@ AdapterFacts FactsFor(const plume::RenderDeviceDescription& description,
                    description.type == plume::RenderDeviceType::CPU ||
                    IsSoftwareName(description.name);
   facts.dedicated_bytes = description.dedicatedVideoMemory;
-  facts.raytracing = caps.raytracing;
+  facts.raytracing = caps.raytracing || caps.rayQuery;  // a Vulkan driver with ray queries and no ray tracing pipelines traces too
   // The speed table reads the name and the PCI vendor id (Plume's RenderDeviceVendor holds the id; it
   // does not carry the device id: the ray tracing tier asks the backend for that, rt_tier.h).
   facts.name = description.name;

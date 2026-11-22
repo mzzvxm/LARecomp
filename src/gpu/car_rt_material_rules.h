@@ -61,7 +61,7 @@
 //            (colour = shaded + (seen - shaded) x share): no seam where the share moves, because the share is a smooth cover of the history's footprint
 //
 // FALLBACKS: a class 0 draw, a mesh with no texture coordinates, a texture that is not resident, a missing environment map (the ambient stands in for it), a device with no
-// frame record -- each takes the next rule down, and the last is today's stand-in. Vulkan waits for Plume's ray query exactly as the rest of the scene does (the bindings are
+// frame record -- each takes the next rule down, and the last is today's stand-in. Vulkan traces them exactly as the rest of the scene does (the bindings are
 // the API-neutral descriptor builder's; the shader compiles to SPIR-V with the others).
 //
 // WHAT IT COSTS (an estimate, not measured: CHECK on the first run, PassTiming's "car rt refl" and "car rt refl opp"): only the HIDDEN hits on cars shade (the shader skips the

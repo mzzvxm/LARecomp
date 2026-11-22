@@ -2126,8 +2126,8 @@ constexpr RowDynamics kNeonLightDynamics = {.str_label = NeonLightLabel};
 // Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live, and mcla_gpu_car_selfrefl_rt, gpu/car_rt_refl.h, live): the player's car
 // paint reflects its own body, the wing in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One
 // level, ON (the stored word is `on`; the older low and high cost the same and are gone: a larecomp.toml that still says one of them is ignored and
-// the row shows AUTO). Where the graphics card can ray trace (Direct3D 12 with DXR 1.1 and shader model 6.5: gpu.h CarRtReflAvailable, decided in
-// car_rt_scene.h CarRtSupported) the reflection can be traced from the car's own triangles instead of marched through the picture, so a part the
+// the row shows AUTO). Where the graphics card can ray trace (Direct3D 12 with DXR 1.1 and shader model 6.5, or Vulkan with VK_KHR_ray_query:
+// gpu.h CarRtReflAvailable, decided in car_rt_scene.h CarRtSupported) the reflection can be traced from the car's own triangles instead of marched through the picture, so a part the
 // camera cannot see shows in the paint too. One row for both settings, AUTO / OFF / ON / RAY TRACED, RAY TRACED only where it can run:
 //   AUTO        mcla_gpu_car_selfrefl = auto, mcla_gpu_car_selfrefl_rt = auto; "AUTO (RAY TRACED)", "AUTO (ON)" or "AUTO (OFF)" by what runs
 //               on this PC (OFF on an integrated GPU, ON on a discrete one, RAY TRACED where that one can trace: gpu/gpu_class.h)
@@ -2137,8 +2137,8 @@ constexpr RowDynamics kNeonLightDynamics = {.str_label = NeonLightLabel};
 // The row reads the two settings back as pause_selfrefl_row.h says (a larecomp.toml can hold a pair the row never writes: auto with the ray tracing
 // off shows as ON, or OFF where auto is off). It works in the game, behind the pause menu and in the garage, not on the map. The label is
 // "CAR SELF-REFLECTIONS" (20 characters) with a value of at most 17 ("AUTO (RAY TRACED)").
-// CHECK: on an RTX card (D3D12) the row steps AUTO (RAY TRACED) > OFF > ON > RAY TRACED and wraps; on Vulkan or a card without DXR 1.1 it has three
-// values and AUTO says "AUTO (ON)"; the log's "[car refl]" and "[car rt refl]" lines follow each step.
+// CHECK: on an RTX card (D3D12 or Vulkan) the row steps AUTO (RAY TRACED) > OFF > ON > RAY TRACED and wraps; on a card without DXR 1.1 or Vulkan ray
+// queries it has three values and AUTO says "AUTO (ON)"; the log's "[car refl]" and "[car rt refl]" lines follow each step.
 constexpr const char* kCarSelfReflRtCvar = "mcla_gpu_car_selfrefl_rt";
 const char* const kNativeCarSelfReflVals[]  = {"auto"};  // the row's own list (the dynamics') has the values; this one names one so the row is a valid kStrCycle
 const char* const kNativeCarSelfReflNames[] = {"AUTO"};
