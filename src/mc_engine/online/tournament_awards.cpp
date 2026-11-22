@@ -58,7 +58,10 @@ void Awards::Load() {
       int settled = 0;
       if (ss >> w.week >> w.slot >> w.starts >> w.ends >> w.prize_first >> w.prize_podium >>
           w.podium >> settled) {
-        w.settled = settled != 0;
+        // 1 is what the servers before the view fix wrote: they looked for the winners in the board named by the slot, which
+        // is the wrong one from slot 351 (the game keeps those times in slot + 31), so such a week is open again and settles
+        // once more on the right board (the prizes only ever add up). 2 is a week settled on the right board.
+        w.settled = settled >= 2 || (settled == 1 && StatsViewForSlot(w.slot) == w.slot);
         weeks_[w.week] = w;
       }
     }
@@ -80,7 +83,7 @@ bool Awards::SaveWeeks() const {
     text += std::to_string(w.week) + " " + std::to_string(w.slot) + " " +
             std::to_string(w.starts) + " " + std::to_string(w.ends) + " " +
             std::to_string(w.prize_first) + " " + std::to_string(w.prize_podium) + " " +
-            std::to_string(w.podium) + " " + (w.settled ? "1" : "0") + "\n";
+            std::to_string(w.podium) + " " + (w.settled ? "2" : "0") + "\n";
   }
   return WriteAtomic(dir_ / kWeeksFile, text);
 }
@@ -93,6 +96,8 @@ bool Awards::SaveAwards() const {
 
 void Awards::NoteServed(const Definition& d) {
   Load();
+  // The weeks that ended before this one began are settled now, before the slot's old rows are dropped below.
+  Settle(d.starts, nullptr);
   auto it = weeks_.find(d.week);
   if (it != weeks_.end() && !it->second.settled && it->second.slot == d.table_id &&
       it->second.prize_first == d.prize_first && it->second.prize_podium == d.prize_podium &&
@@ -110,7 +115,7 @@ void Awards::NoteServed(const Definition& d) {
   weeks_[d.week] = w;
   SaveWeeks();
   // Times left in this slot from an earlier week are not part of this one.
-  if (boards_) boards_->DropWrittenBefore(d.table_id, d.starts);
+  if (boards_) boards_->DropWrittenBefore(StatsViewForSlot(d.table_id), d.starts);
 }
 
 void Awards::Settle(int64_t now, std::string* log) {
@@ -118,8 +123,9 @@ void Awards::Settle(int64_t now, std::string* log) {
   bool weeks_changed = false, awards_changed = false;
   for (auto& [n, w] : weeks_) {
     if (w.settled || now < w.ends) continue;
+    // A slot's times are in its stats view: the slot itself below 351, slot + 31 from there.
     const std::vector<uint64_t> top =
-        boards_->TopWrittenBetween(w.slot, w.podium ? w.podium : 1, w.starts, w.ends);
+        boards_->TopWrittenBetween(StatsViewForSlot(w.slot), w.podium ? w.podium : 1, w.starts, w.ends);
     for (size_t i = 0; i < top.size(); ++i) {
       const uint32_t prize = i == 0 ? w.prize_first : w.prize_podium;
       if (!prize) continue;

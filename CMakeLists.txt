@@ -1214,6 +1214,20 @@ else()
         target_compile_definitions(larecomp_rmr_server PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_link_libraries(larecomp_rmr_server PRIVATE ws2_32)
     endif()
+    # The weekly tournament's prize settling (tournament_awards.cpp) and the slot-to-view rule (StatsViewForSlot) have a check that
+    # needs no game, no SDK and no network: the real Awards class on the real leaderboard store in a temporary folder.
+    # cmake --build <dir> --target larecomp_tournament_awards_test, then run it (exit 0 = passed).
+    add_executable(larecomp_tournament_awards_test EXCLUDE_FROM_ALL
+        src/mc_engine/online/tournament_awards_test.cpp
+        src/mc_engine/online/tournament_schedule.cpp
+        src/mc_engine/online/tournament_awards.cpp
+        src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
+        src/mc_engine/online/leaderboards/lb_protocol.cpp
+        src/mc_engine/online/leaderboards/lb_store.cpp
+    )
+    if(WIN32)
+        target_compile_definitions(larecomp_tournament_awards_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
 
     # The online relay (UDP 31000) anyone can host, and the master server
     # (UDP+TCP 31003) that lists those relays in the in-game server browser.
