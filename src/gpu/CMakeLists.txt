@@ -349,6 +349,10 @@ add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.c
 # which the renderer asks again at every frame boundary and moves the images of the screen to, has a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_render_scale_test, then run src/gpu/larecomp_render_scale_test (exit 0 = passed).
 add_executable(larecomp_render_scale_test EXCLUDE_FROM_ALL render_scale_test.cpp)
+# The host MSAA level's rules (msaa_plan.h: what mcla_gpu_msaa says, the device's limit, and when MsaaLevel makes a live change: the settle, the pipelines'
+# wait, the retries after a failure, the upscaler's own path) are checked on a made-up clock, with no renderer:
+#   cmake --build <dir> --target larecomp_msaa_plan_test, then run src/gpu/larecomp_msaa_plan_test (exit 0 = passed).
+add_executable(larecomp_msaa_plan_test EXCLUDE_FROM_ALL msaa_plan_test.cpp)
 # The rules for when the upscalers' libraries are loaded (upscaler_load_policy.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_upscaler_load_policy_test, then run src/gpu/larecomp_upscaler_load_policy_test (exit 0 = passed).
 add_executable(larecomp_upscaler_load_policy_test EXCLUDE_FROM_ALL upscaler_load_policy_test.cpp)
