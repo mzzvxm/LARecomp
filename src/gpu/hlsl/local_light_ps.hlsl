@@ -16,6 +16,9 @@
 // The pixel shader runs once per pixel whatever the host's MSAA level: the planes and the depth are read at the host sample that is the guest's sample 0 and the result is added to every
 // sample of the pixel (a one pixel fringe at silhouettes, as the AO's apply). LL_PASS_MS 1 reads Texture2DMS planes (host_pass_common.hlsli space 1), 0 plain textures (space 0).
 //
+// GB-NEON-BLEED: a neon light (LL_SOURCE_NEON: the underglow, no shadow views) on a VEHICLE pixel (RT3's vehicle flag) is multiplied by hlsl/local_light.hlsli LpContactVisibility: 5 reads of the
+// main depth along the first 0.8 m of the pixel's way to the light (a vent's inner wall, a bumper lip, the cabin and the wheel's dish face the light through the car's own panel: N.L cannot tell).
+//
 // Binding (local_lights.cpp): the bindless texture set at spaces 0 to 3 as every host pass, the lights' ByteAddressBuffer at (t0, space4), the push block at (b0, space5).
 
 #include "host_pass_common.hlsli"
@@ -51,6 +54,16 @@ float4 LoadPlane(uint slot, int2 p) {
   return g_textures_ms[slot].Load(p, g_push.info.z);
 #else
   return g_textures[slot].Load(int3(p, 0));
+#endif
+}
+
+// The seam of hlsl/local_light.hlsli LpContactVisibility (GB-NEON-BLEED): the stored depth of the main depth plane at a pixel, at the guest's sample 0 like the pixel's own. The caller has kept the
+// pixel inside the target.
+float LpStoredDepth(int px, int py) {
+#if LL_PASS_MS
+  return g_textures_ms[g_push.slots.x].Load(int2(px, py), g_push.info.z).r;
+#else
+  return g_textures[g_push.slots.x].Load(int3(px, py, 0)).r;
 #endif
 }
 
@@ -132,11 +145,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
     discard;
   }
   const uint flags = g_lights.Load(LP_OFF_COUNT + 4);
+  bool vehicle = false;  // GB-NEON-BLEED: RT3's vehicle flag (a frame without RT3 says no)
   if ((flags & LP_FLAG_MATERIAL) != 0u && g_push.slots.w != 0xFFFFFFFFu) {
-    const uint surface_class = GbRt3Class(LoadPlane(g_push.slots.w, p).xy);
+    const float2 rt3 = LoadPlane(g_push.slots.w, p).xy;
+    const uint surface_class = GbRt3Class(rt3);
     if (surface_class == uint(LP_CLASS_NONE) || surface_class == uint(LP_CLASS_EMISSIVE)) {
       discard;
     }
+    vehicle = (GbRt3Flags(rt3) & uint(GB_FLAG_VEHICLE)) != 0u;
   }
 
   // The position: the stored depth of the main view's depth plane at the guest's sample 0.
@@ -162,6 +178,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float3 add = LpPixelLight(l, g, world, normal, albedo, rt2.w);
   if (!any(add > 0.0f)) {
     discard;
+  }
+
+  // GB-NEON-BLEED: a neon light on a vehicle pixel is shut out by the car's own panels (local_light.hlsli LpContactVisibility): the vent, the lip and the cabin it faces through the body get nothing.
+  if (LpTakesContact(l, vehicle)) {
+    add *= LpContactVisibility(g, world, normal, l.pos);
+    if (!any(add > 0.0f)) {
+      discard;
+    }
   }
 
   // The shadow: only for a light that has views of the atlas and a pixel it lights. The table's header says which bindless depth plane the views are in.

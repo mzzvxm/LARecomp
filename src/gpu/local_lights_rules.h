@@ -283,6 +283,72 @@ inline bool PixelLightShadowed(const Light& l, const Units& u, const ShadowFrame
 }
 
 // ---------------------------------------------------------------------------
+// GB-NEON-BLEED: a neon light does not shine through the car that is lit (the twins of hlsl/local_light.hlsli LpTakesContact, LpContactVisibility)
+// ---------------------------------------------------------------------------
+// The owner's report (2026-11-22, the blue Lamborghini beside the neon car, rows kerb and chase, every time of day): parts of the other car that the light cannot reach turn red, some on the side
+// that faces away from the light. N.L is right (the far side of a body, a box's far face, gets 0; the car's paint shows the terminator where the panel turns away). What N.L cannot tell is a
+// surface that faces the light through a body: the inside wall of a side vent, the bumper's lip, the seats and the dash through the door, the wheel's dish. The underglow has no shadow (a glow
+// under a car, not a lamp that casts), and its tube sits inside one car (0.45 m over the body matrix's origin) and a few metres from the next, so nothing stood between the light and those
+// faces. The picture's own depth does: a point on the way from the pixel to the light that lies BEHIND a visible surface by a shell's thickness is inside something.
+
+inline constexpr int kContactSteps = 5;         // LP_CONTACT_STEPS
+inline constexpr float kContactLength = 0.8f;   // m, LP_CONTACT_LENGTH: the part of the way that is looked at
+inline constexpr float kContactNormal = 0.03f;  // m, LP_CONTACT_NORMAL: the way starts this far off the surface
+inline constexpr float kContactBias = 0.04f;    // m, LP_CONTACT_BIAS
+inline constexpr float kContactRamp = 0.06f;    // m, LP_CONTACT_RAMP
+inline constexpr float kContactThick = 0.7f;    // m, LP_CONTACT_THICK
+inline constexpr float kContactFade = 0.25f;    // m, LP_CONTACT_FADE
+
+// Whether a light takes the contact term at a pixel: a neon light on a vehicle pixel (RT3's vehicle flag).
+inline bool TakesContact(const Light& l, bool vehicle) { return vehicle && l.source == LightSource::kNeon; }
+
+// How much of the light's way to the pixel is open, 1 open to 0 shut. `stored_at(ix, iy)` is the main depth plane's stored depth of a pixel (the index is inside the image: the way ends at its edge).
+// A step behind the camera or off the picture ends the look with what the earlier steps found.
+template <class StoredDepth>
+inline float ContactVisibility(const Rows& rows, float tan_x, float tan_y, float width, float height, const float lin[4], const float world[3], const float normal[3], const float light_pos[3],
+                               StoredDepth&& stored_at) {
+  float to_light[3];
+  float len2 = 0.0f;
+  for (int i = 0; i < 3; ++i) {
+    to_light[i] = light_pos[i] - world[i];
+    len2 += to_light[i] * to_light[i];
+  }
+  if (!(len2 > 1.0e-6f)) {
+    return 1.0f;
+  }
+  const float len = std::sqrt(len2);
+  const float inv = 1.0f / len;
+  float dir[3], origin[3];
+  for (int i = 0; i < 3; ++i) {
+    dir[i] = to_light[i] * inv;
+    origin[i] = world[i] + normal[i] * kContactNormal;
+  }
+  const float reach = len < kContactLength ? len : kContactLength;
+  float shut = 0.0f;
+  for (int i = 0; i < kContactSteps; ++i) {
+    const float s = reach * (float(i) + 1.0f) / float(kContactSteps);
+    float q[3];
+    for (int k = 0; k < 3; ++k) {
+      q[k] = origin[k] + dir[k] * s;
+    }
+    float px = 0.0f, py = 0.0f, f = 0.0f;
+    if (!ProjectToPixel(rows, tan_x, tan_y, width, height, q, 0.05f, &px, &py, &f)) {
+      break;
+    }
+    if (!(px >= 0.0f && py >= 0.0f && px < width && py < height)) {
+      break;
+    }
+    const float t = LinearDepth(stored_at(int(px), int(py)), lin);
+    const float gap = f - t;
+    const float ramp = std::clamp((gap - kContactBias) / kContactRamp, 0.0f, 1.0f);
+    const float fade = 1.0f - std::clamp((gap - kContactThick) / kContactFade, 0.0f, 1.0f);
+    const float w = ramp * fade;
+    shut = w > shut ? w : shut;
+  }
+  return 1.0f - shut;
+}
+
+// ---------------------------------------------------------------------------
 // the frame's constants, picked by vote
 // ---------------------------------------------------------------------------
 
