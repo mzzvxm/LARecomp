@@ -60,6 +60,12 @@ class PerformanceSettings final : public rex::SettingOwner {
     "The first streams are decoded by both and compared; any difference switches the native decoder "
     "off for the rest of the session. Read at start.", rex::kDebugOnly, rex::kRestart);
 
+  REX_SETTING(i32, host_helpers_mask, 31, "Which of the game's small helper functions run as native host code instead of the recompiled "
+    "version, as bits: 1 memcpy, 2 memset, 4 the row writer, 8 the shader-constant copy, 16 the "
+    "constant-bank flush. 0 runs all of them recompiled (the A/B switch); 31 is the default. A call "
+    "the native version cannot reproduce exactly (overlapping ranges, register or physical-window "
+    "addresses, a command-ring wrap) always goes to the recompiled code. Read at start.", rex::Range{0, 31}, rex::kDebugOnly, rex::kRestart);
+
   // Where the frame limiter waits. The game updates on its main loop
   // (sub_82131508) and presents from "[MC] Render Thread" (sub_82306238), one
   // frame behind. Waiting before the update leaves the present wherever the
@@ -215,6 +221,7 @@ inline auto& fps_limit = g_performance.fps_limit;
 inline auto& frame_limit_spin = g_performance.frame_limit_spin;
 inline auto& frame_pacing = g_performance.frame_pacing;
 inline auto& global_max_draw_distance = g_performance.global_max_draw_distance;
+inline auto& host_helpers_mask = g_performance.host_helpers_mask;
 inline auto& lzx_native = g_performance.lzx_native;
 inline auto& pace_at_swap = g_performance.pace_at_swap;
 inline auto& parked_car_scale = g_performance.parked_car_scale;

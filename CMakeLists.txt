@@ -161,6 +161,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/checkpoint_effect_fade.cpp
     src/mc_engine/hooks/neon_pulse.cpp
     src/mc_engine/hooks/inflate_fast.cpp
+    src/mc_engine/hooks/host_helpers.cpp
     src/mc_engine/hooks/vol_lamps.cpp
     src/mc_engine/hooks/lzx_native.cpp
 
@@ -441,6 +442,14 @@ target_include_directories(larecomp_hud_track_test PRIVATE src src/mc_engine/cin
 add_executable(larecomp_bound_node_guard_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/bound_node_guard_test.cpp)
 target_include_directories(larecomp_bound_node_guard_test PRIVATE src/mc_engine/hooks)
+# The native versions of the game's helper functions (hooks/host_helpers.h) against reference models, on random inputs (exit 0 = passed):
+#   cmake --build <build dir> --target larecomp_host_helpers_test, then run <build dir>/larecomp_host_helpers_test.
+# With the game's recompiled functions as the oracle (tools/host_helpers_extract.py writes hh_originals.inc from a generated folder; that file is the
+# game's code and never goes into a commit), compile the same file by hand with -DHH_WITH_ORIGINALS -I <folder of hh_originals.inc> and the SDK's include
+# folder (the header of host_helpers_test.cpp has the command line).
+add_executable(larecomp_host_helpers_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/host_helpers_test.cpp)
+target_include_directories(larecomp_host_helpers_test PRIVATE src/mc_engine/hooks)
 # The fade of a released particle effect (src/mc_engine/hooks/effect_fade.h: the closed checkpoint's smoke held to the console's decay per second) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_effect_fade_test, then run <build dir>/larecomp_effect_fade_test (exit 0 = passed).
 add_executable(larecomp_effect_fade_test EXCLUDE_FROM_ALL

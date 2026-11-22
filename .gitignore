@@ -19,6 +19,8 @@ tools/*
 !tools/check_row_tags.py
 !tools/check_descriptor_counts.py
 !tools/settings_exposure.toml
+# and the script that copies the game's recompiled helper functions out of a generated folder for the host helpers' unit test (hooks/host_helpers_test.cpp)
+!tools/host_helpers_extract.py
 
 # Backup bundles belong next to the repository, never inside it.
 *.bundle
