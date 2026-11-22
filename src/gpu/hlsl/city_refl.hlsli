@@ -47,6 +47,7 @@ static const uint kCityFlagScreen = 2u;
 static const uint kCityFlagStats = 4u;
 static const uint kCityFlagCoat = 8u;
 static const uint kCityFlagLamps = 16u;
+static const uint kCityFlagBlueNoise = 32u;   // the hits' sun and lamp numbers are the blue noise tile's (city_refl_noise.hlsli; city_refl_rules.h kFlagBlueNoise)
 // the counters (city_refl_rules.h kStat*: the calibration's 48 words come first)
 static const uint kCityStatTexels = 48u;
 static const uint kCityStatRays = 49u;
@@ -92,6 +93,7 @@ struct CityReflFrame
 static CityReflFrame gCity;
 static bool gCityLoaded = false;
 static uint2 gCityTexel = uint2(0u, 0u);   // the texel being traced: the noise of the hit's sun ray and lamp choice
+static uint gCityHits = 0u;               // the city hits shaded in the texel so far: the hit's number in the cone (city_refl_noise.hlsli)
 
 CityReflFrame CityReflLoad()
 {
@@ -236,6 +238,7 @@ void CityReflCalAdd(uint word, uint value)
 // car_rt_hit_shade.hlsli before this file), the world frame's rows are read for the lamps, the schedule and the glow only.
 #define RT_WORLD_SPACE CAR_RT_SPACE
 #include "rt_world_frame.hlsli"
+#include "city_refl_noise.hlsli"
 
 // What a glowing material glows by while this hit is shaded: the world rows' schedule (gCityGlowWorld), or the sun's elevation's (gCityGlowOld, the lamp factor of old).
 static bool gCityGlowWorld = false;
@@ -283,11 +286,6 @@ float CityReflLampSchedule(RtHitFrame f)
     const float degrees = asin(clamp(dot(f.toSun, f.axisY), -1.0, 1.0)) * kCityRadToDeg;
     const float t = saturate((degrees - kCityNightFull) / (kCityNightNone - kCityNightFull));
     return 1.0 - t * t * (3.0 - 2.0 * t);
-}
-
-float CityReflIgn(float2 p)
-{
-    return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715))));
 }
 
 // The weight of a city hit by its distance: 1 up to the fade's start, a smoothstep to 0 at the reach (city_refl_rules.h CityFade).
@@ -346,8 +344,7 @@ bool CityReflHit(float3 origin, float3 direction, CityHitTraceResult h, float co
     p.bounce = 0.0;
     p.lampFirst = 0u;
     p.lampCount = 0u;
-    const float salt = frac(dot(direction, float3(12.9898, 78.233, 37.719)) * 43758.5453);
-    const float2 noise = frac(float2(CityReflIgn(float2(gCityTexel)), CityReflIgn(float2(gCityTexel.yx) + float2(31.0, 11.0))) + float(c.serial) * float2(0.75487766624669, 0.56984029099806) + salt);
+    const float2 noise = CityReflNoise(int(gCityTexel.x), int(gCityTexel.y), c.serial, min(gCityHits++, kCityReflRaysPerFrame - 1u), direction, (c.flags & kCityFlagBlueNoise) != 0u);
     p.noise = float3(noise.x, noise.y, frac(noise.x + noise.y * 1.618));
     CityHitScreen s;
     s.lens = float4(g_push.lens.x, g_push.lens.y, float(c.depthWidth), float(c.depthHeight));

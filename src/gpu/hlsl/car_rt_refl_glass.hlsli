@@ -42,6 +42,7 @@ float GlassFresnel(float nv)
 float4 TraceGlassTexel(Texture2D<float4> history, uint2 texel)
 {
     gCityTexel = texel;  // the noise of the city hits' sun rays (city_refl.hlsli)
+    gCityHits = 0u;
     const CityReflFrame c = CityReflFrameNow();
     if ((c.flags & (kCityFlagOn | kCityFlagScreen)) != (kCityFlagOn | kCityFlagScreen))
     {

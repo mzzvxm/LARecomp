@@ -323,6 +323,7 @@ inline constexpr uint32_t kFlagOn = 1;        // the pass traces the city this f
 inline constexpr uint32_t kFlagScreen = 2;    // lin_depth and colour_post are in the constants
 inline constexpr uint32_t kFlagStats = 4;     // a stats frame: the counters count
 inline constexpr uint32_t kFlagCoat = 8;      // a city hit takes the paint's clear-coat layer (the image's sign)
+inline constexpr uint32_t kFlagBlueNoise = 32;   // the hits' sun ray and lamp choice take the blue noise tile stepped along R2 (mcla_gpu_noise_blue; hlsl/city_refl_noise.hlsli), else the first version's gradient noise
 inline constexpr uint32_t kFlagLamps = 16;    // a city hit is lit by the world frame's lamps and glows by its schedule (mcla_gpu_city_refl_lamps; the shader also needs the world rows to be valid)
 
 struct RowsIn {
@@ -340,6 +341,7 @@ struct RowsIn {
   float wet = 0.0f;
   int32_t view = 0;
   bool lamps = false;  // the lamp term (kFlagLamps)
+  bool blue_noise = false;  // the hits' noise is the blue noise tile's (kFlagBlueNoise)
   float gains[rt_hit_cal::kClasses] = {};
 };
 
@@ -367,6 +369,7 @@ inline void MakeRows(const RowsIn& in, uint32_t rows[kRows][kRowWords]) {
   flags |= in.stats ? kFlagStats : 0u;
   flags |= in.cell.coat_layer ? kFlagCoat : 0u;
   flags |= in.lamps ? kFlagLamps : 0u;
+  flags |= in.blue_noise ? kFlagBlueNoise : 0u;
   rows[kRowControl][0] = flags;
   rows[kRowControl][1] = in.level == Level::kUltra ? 2u : 1u;
   rows[kRowControl][2] = in.serial;
