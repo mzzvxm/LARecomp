@@ -55,6 +55,7 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
 {
     aux = float4(0.0, 0.0, 0.0, 0.0);
     gCityTexel = texel;  // the noise of the city hits' sun rays (city_refl.hlsli)
+    gCityHits = 0u;
     const float t = own.a;
     const float divisor = g_push.lens.z;
     const float2 render = g_push.image.zw;

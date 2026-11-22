@@ -215,6 +215,7 @@ CityRefl::Frame CityRefl::Prepare(uint32_t frame_slot, const ScreenIn& screen, u
   in.cell = cell_;
   in.stats = on && stats_frame && !stats_busy_ && stats_ && stats_readback_;
   in.serial = uint32_t(frame & 0xFFFFFFFFu);
+  in.blue_noise = larecomp::settings::mcla_gpu_noise_blue.Get();  // the hits' sun and lamp noise (hlsl/city_refl_noise.hlsli); false: the first version's gradient noise
   in.screen = on && screen.valid && larecomp::settings::mcla_gpu_city_refl_screen.Get();
   if (in.screen) {
     in.depth_slot = screen.depth_slot;
