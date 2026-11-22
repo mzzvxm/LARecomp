@@ -298,12 +298,6 @@ const ItemDef kDebugRenderingItems[] = {
     NativeOnly(Bool("PM_RxDbgMarkers",   "mcla_gpu_perf_markers",  "PERF MARKERS: ")),
     NativeOnly(Str("PM_RxDbgMarkerLvl",  "mcla_gpu_perf_markers_level", "PERF MARKERS LEVEL: ",
                    kMarkerLevelVals, kMarkerLevelNames, Len(kMarkerLevelVals))),
-    NativeOnly(Dbl("PM_RxDbgGhostLog",   "mcla_gpu_ghost_log_interval", "GHOST LOG EVERY: ",
-                   kGhostLogVals, Len(kGhostLogVals), "%g", "", "OFF")),
-    NativeOnly(Dbl("PM_RxDbgMemLog",     "mcla_gpu_process_memory_log", "MEMORY LOG EVERY: ",
-                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
-    NativeOnly(Dbl("PM_RxDbgVramLog",    "mcla_gpu_vram_log",      "VRAM LOG EVERY: ",
-                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
     // Live: Renderer::ExecutePresent asks FrameGeneration::WantsVsync at every present (the same SetVsync that follows mcla_gpu_vsync), so a
     // change reaches the swap chain at the next frame: Direct3D 12 reads it in the present call, Vulkan changes its present mode with
     // the chain's next rebuild. It said "(ON NEXT USE)" before: that was the old reading of the setting, which only the log line at start-up still does.
@@ -391,6 +385,13 @@ const ItemDef kDebugLoggingItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     // Every 600 frames, the textures the HUD and menus read (what UI SHARPEN is tuned from).
     NativeOnly(Bool("PM_RxDbgUiSharpCensus", "mcla_ui_sharp_census", "UI SHARPEN CENSUS: ")),
+    // The renderer's periodic logs (ghost frames, the process's memory, video memory): one block every N frames, OFF by default.
+    NativeOnly(Dbl("PM_RxDbgGhostLog",   "mcla_gpu_ghost_log_interval", "GHOST LOG EVERY: ",
+                   kGhostLogVals, Len(kGhostLogVals), "%g", "", "OFF")),
+    NativeOnly(Dbl("PM_RxDbgMemLog",     "mcla_gpu_process_memory_log", "MEMORY LOG EVERY: ",
+                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
+    NativeOnly(Dbl("PM_RxDbgVramLog",    "mcla_gpu_vram_log",      "VRAM LOG EVERY: ",
+                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
 #endif
 };
 
