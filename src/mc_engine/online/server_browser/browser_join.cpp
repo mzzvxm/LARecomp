@@ -42,6 +42,20 @@ namespace reason = joinserver::reason;
 constexpr uint32_t kUiManagerPtr = 0x8286D804;      // *: mcUIManager; +52 -> root node
 constexpr uint32_t kNavigatorAt = 52;               // mcUIManager +52 = FlashNavigator (the root node Hsm() reads)
 constexpr uint32_t kNavLayerCountAt = 263992;       // FlashNavigator: modal message boxes in its FIFO, 0..3
+// What the game's own search start reads (join_server_core.h, SearchFacts; generated code of native\tree-t11, sub_8226C038 > sub_82298F60 >
+// sub_824FD470). The net manager is *0x8286D800 (system_link.cpp); every offset below is from that code, none was watched in a run.
+constexpr uint32_t kNetMgrPtr = 0x8286D800;         // *: the net manager
+constexpr uint32_t kNetSessionPtr = 0x8286F1D8;     // *: the net session manager; +696 = 3 once the quick match has started a search
+constexpr uint32_t kLocalUsersPtr = 0x8288E5AC;     // *: P; *P = the local users' array (sub_82388580); entry 0's +4 = the player's slot index
+constexpr uint32_t kNetMgrPlayersAt = 4284;         // net manager +4284: the player slots (10832 bytes each)
+constexpr uint32_t kNetMgrSearchAt = 4292;          // +4292: the search manager (+0 = its busy word, +528 = the search object)
+constexpr uint32_t kNetMgrOptionsAt = 4304;         // +4304: the holder of the options; its first word = the options (+2352 = the net mode)
+constexpr uint32_t kPlayerSlotSize = 10832;
+constexpr uint32_t kPlayerFlagsAt = 16 + 92;        // the slot's record starts at +16; its byte +92: 0x80 signed in, 0x40 on Live
+constexpr uint32_t kSearchObjectAt = 528;
+constexpr uint32_t kSearchBusyRecordAt = 1436;      // in the search object (sub_824FBD50)
+constexpr uint32_t kOptionsNetModeAt = 2352;
+constexpr uint32_t kSessionStateAt = 696;
 constexpr uint32_t kFindStateFn = 0x82691650;       // (hsm, name) -> state
 constexpr uint32_t kActivateStateFn = 0x8268DD70;   // (state, hsm)
 constexpr uint32_t kHsmGotoVfunc = 32;              // VirtualHSM vtable: goto(state)
@@ -303,6 +317,52 @@ bool ModalMessageUp() {
     if (!IsGuestPtr(nav)) return false;
     const uint32_t count = GuestRead32(mem, nav + kNavLayerCountAt);
     return count != 0 && count <= 3;
+}
+
+// The words the game's own search start asks about, read behind readability checks (nothing is called, nothing written). A word that
+// cannot be read stops the walk and says which one in failed_at. Guest thread.
+joinserver::SearchFacts ReadSearchFacts() {
+    joinserver::SearchFacts f;
+    auto* mem = Mem();
+    if (!mem) {
+        f.failed_at = "no guest memory";
+        return f;
+    }
+    const auto word = [&](uint32_t ea, uint32_t* out, const char* what) {
+        if (ReadGuestWord(ea, out)) return true;
+        f.failed_at = what;
+        return false;
+    };
+    uint32_t netmgr = 0, players = 0, search = 0, holder = 0, options = 0, session = 0;
+    if (!word(kNetMgrPtr, &netmgr, "the net manager pointer") || !word(netmgr + kNetMgrPlayersAt, &players, "the player slots") ||
+        !word(netmgr + kNetMgrSearchAt, &search, "the search manager") || !word(netmgr + kNetMgrOptionsAt, &holder, "the options holder") ||
+        !word(holder, &options, "the options") || !word(kNetSessionPtr, &session, "the net session manager"))
+        return f;
+    uint32_t net_mode = 0;
+    if (!word(search, &f.search_flag, "the search manager's busy word") ||
+        !word(search + kSearchObjectAt, &f.handle, "the search object's handle") ||
+        !word(search + kSearchObjectAt + kSearchBusyRecordAt, &f.busy_record, "the search object's record") ||
+        !word(options + kOptionsNetModeAt, &net_mode, "the net mode") || !word(session + kSessionStateAt, &f.session_state, "the session state"))
+        return f;
+    f.net_mode = int32_t(net_mode);
+    if (f.busy_record != 0 && !word(f.busy_record, &f.busy_state, "the busy record")) return f;
+    // The local player's slot index: the users' array, entry 0, its +4 (sub_82388580 and the lookup sub_82270170).
+    uint32_t table = 0, array = 0, user = 0;
+    if (!word(kLocalUsersPtr, &table, "the local users table") || !word(table, &array, "the local users array") ||
+        !word(array, &user, "the first local user") || !word(user + 4, &f.player_slot, "the local player's index"))
+        return f;
+    if (f.player_slot >= 4) {
+        f.failed_at = "a local player index above 3";
+        return f;
+    }
+    const uint32_t flags_at = players + f.player_slot * kPlayerSlotSize + kPlayerFlagsAt;
+    if (!PlausibleGuestPtr(flags_at) || !HostReadable(mem->TranslateVirtual<const uint8_t*>(flags_at), 1)) {
+        f.failed_at = "the player's slot";
+        return f;
+    }
+    f.player_flags = *mem->TranslateVirtual<const uint8_t*>(flags_at);
+    f.read = true;
+    return f;
 }
 
 void TickServerBrowserJoin() {
