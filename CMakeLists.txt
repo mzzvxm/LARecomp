@@ -489,6 +489,11 @@ target_include_directories(larecomp_thread_name_test PRIVATE src)
 add_executable(larecomp_effect_fade_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/effect_fade_test.cpp)
 target_include_directories(larecomp_effect_fade_test PRIVATE src/mc_engine/hooks)
+# The neon underglow's pulse held on the console's 30 Hz clock (src/mc_engine/hooks/neon_pulse.h: the formula of the game's sub_82353E38, the held clock, the same wave at every frame rate) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_neon_pulse_test, then run <build dir>/larecomp_neon_pulse_test (exit 0 = passed).
+add_executable(larecomp_neon_pulse_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/neon_pulse_test.cpp)
+target_include_directories(larecomp_neon_pulse_test PRIVATE src/mc_engine/hooks)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).
