@@ -28,7 +28,8 @@
 // the car's footprint but not a halo; the car's own body (a pixel that is a vehicle) sees everything at the
 // full radius as before.
 //
-// The pixel's own noise is interleaved gradient noise (a fixed spatial pattern) plus a shift that
+// The pixel's own noise is a BLUE noise tile (blue_noise.hlsli; a fixed spatial pattern with no lattice in it: interleaved gradient noise, the first version's, is
+// a diagonal lattice whose error the blur and the history leave as thin lines; mcla_gpu_ao_blue_noise false) plus a shift that
 // changes every frame through a lattice of 13 frames (ao_stable.h, AoNoiseShift: the Fibonacci lattice, 13 evenly
 // spaced rotations and step offsets, all visited by any 13 consecutive frames; the first version's additive
 // recurrence of the R2 sequence left gaps of 0.23 of the rotation in 12 frames), so the two noise values of one
@@ -358,8 +359,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint steps = max(AoSteps(), 1u);
 #endif
   const float2 clip_scale = 2.0f / size;
-  const float2 noise_at = float2(pixel);
-  const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
+  const float2 spatial = AoSpatialNoise(pixel);
   const float2 noise = frac(spatial + AoNoiseShift());
   const float min_offset = kMinOffsetPixels / radius_px;
 
@@ -522,8 +522,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint steps = max(AoSteps(), 1u);
 #endif
   const float2 clip_scale = 2.0f / size;
-  const float2 noise_at = float2(pixel);
-  const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
+  const float2 spatial = AoSpatialNoise(pixel);
   // The frame's shift: a lattice of 13 frames (ao_common.hlsli AoNoiseShift, ao_stable.h).
   const float2 noise = frac(spatial + AoNoiseShift());
   const float min_offset = kMinOffsetPixels / radius_px;

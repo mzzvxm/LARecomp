@@ -1985,8 +1985,10 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // 3x3 at every size is mcla_gpu_ao_stable false.
   const uint32_t denoise_radius =
       larecomp::settings::mcla_gpu_ao_stable.Get() ? uint32_t(ao_stable::DenoiseRadius(plan.ao[1])) : 1u;
-  // While a scene runs the noise follows the scene's update number, so the same scene frame has the same noise in every run (scene_noise.h).
-  push->slots2[1] = uint32_t(scene_noise::Index(frame_) & 1023);
+  // While a scene runs the noise follows the scene's update number, so the same scene frame has the same noise in every run (scene_noise.h). Bit 29 says which per-pixel
+  // noise the passes that have noise draw: the blue noise tile (blue_noise.h) or, with mcla_gpu_ao_blue_noise off, the first version's interleaved gradient noise.
+  const bool use_blue_noise = larecomp::settings::mcla_gpu_ao_blue_noise.Get();
+  push->slots2[1] = uint32_t(scene_noise::Index(frame_) & 1023) | (use_blue_noise ? ao_stable::kBlueNoiseFlag : 0u);
   push->slots2[2] = plan.view | (slices << 8) | (steps << 12) | ((low ? 1u : 0u) << 16) |
                     (denoise_radius << 17);
 
@@ -2761,7 +2763,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.extra[0] = look_.car_reach;
     // The frame's shift of the noise: the phase of a lattice of 13 frames (ao_stable.h NoiseCode: its own slot, the
     // contact shadows' pass keeps the frame number base carries), or the first version's frame number.
-    push.slots2[1] = ao_stable::NoiseCode(scene_noise::Index(frame_), larecomp::settings::mcla_gpu_ao_stable.Get());
+    const bool use_blue_noise = larecomp::settings::mcla_gpu_ao_blue_noise.Get();
+    push.slots2[1] = ao_stable::NoiseCode(scene_noise::Index(frame_), larecomp::settings::mcla_gpu_ao_stable.Get(), use_blue_noise);
     // The traced occlusion (hlsl/ao_main_ps.hlsl THE TRACED TERM), for the plain pass and the bounce light's alike: flag bit 31 says so and lin.x carries the
     // image's bindless slot as a number (the depth pass's projection rows are not read by the main pass; every uint of the bounce light's push is taken).
     if (rt.recorded && rt.occlusion) {
@@ -3739,7 +3742,8 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   // runs and averages the frames, as the shadow filter's and the sun shafts' are. A vehicle's pixel that marches stores a marked value so that the filter
   // averages its noise whatever the pixels beside it hold (contact_trace.h "the vehicle march's stipple"): a view with no upscaler history (the pause view
   // in the owner's pictures) or a player who runs without an upscaler has nothing else to average it.
-  push.slots2[1] = plan.upscaler ? base.slots2[1] : 0u;
+  // (The blue noise's flag, bit 29, is not a frame: it stays whatever the frame number does.)
+  push.slots2[1] = plan.upscaler ? base.slots2[1] : (base.slots2[1] & ao_stable::kBlueNoiseFlag);
   // The adaptive step count (contact_trace.h AdaptiveSteps): the end gap in pixels in shape.z, which the march
   // does not otherwise read; 0 is every step, as the setting says, and above 1080 lines of picture (kAdaptMaxHeight) the
   // count costs more than it saves, so it is left off there.
