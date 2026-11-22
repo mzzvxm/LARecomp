@@ -70,6 +70,12 @@ inline float HeldPulseOf(int8_t rate, float clock_seconds, SineFn&& sine) {
     return PulseOf(rate, HeldClock(clock_seconds), sine);
 }
 
+// The test pin (the debug setting mcla_fix_neon_pulse_pin): a value from 0 to 1 that both pulses take at every update, whatever the clock. The pulse is a function of the game's clock, which
+// differs by run, so two runs of a scene showed the underglow at different strengths (the pool under the car was 8 % bright in one run and 100 % in the next: neon1-ab-vk-g05 against -g2),
+// and a picture A/B of the neon's light (on against off, the gain) could not be judged. Below 0 (the default), or not a number: the game's own pulse. Above 1 counts as 1.
+inline bool PulsePinned(double pin) { return pin >= 0.0; }
+inline float PinnedPulse(double pin) { return static_cast<float>(pin > 1.0 ? 1.0 : pin); }
+
 // Flashes a second at a flash rate: the pulse repeats every 2 pi / (10 * rate) seconds.
 inline double HzOf(int8_t rate) {
     const double r = rate < 0 ? -static_cast<double>(rate) : static_cast<double>(rate);

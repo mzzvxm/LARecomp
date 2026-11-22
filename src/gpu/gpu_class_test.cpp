@@ -99,6 +99,8 @@ const Row kTable[] = {
     // Reflections on surfaces (ssr_rules.h; the row REFLECTIONS ON SURFACES, GB-J): off on every class until the owner has seen the pictures. The prepared cells (gpu_class.h) are
     // Low off, Mid high or off, High ultra or high, by the cost run's figures: switching them on is a change of this row and of CheckSsr.
     {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)", "AUTO (OFF)"},
+    // The cars' neon underglow in the light pass (GB-NEON): one level, `on`, nothing on the integrated class.
+    {Effect::kNeonLight, "mcla_gpu_neon_light", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
@@ -260,7 +262,19 @@ void CheckWords() {
     Check(cell == "off" || cell == "on", "car self-reflections on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off or on");
     const std::string headlights(Cell(Effect::kHeadlights, c));
     Check(headlights == "off" || headlights == "on", "headlights on " + std::string(ClassName(c)) + ": the cell '" + headlights + "' is off or on");
+    const std::string neon(Cell(Effect::kNeonLight, c));
+    Check(neon == "off" || neon == "on", "neon light on " + std::string(ClassName(c)) + ": the cell '" + neon + "' is off or on");
   }
+  // The neon light (GB-NEON): ON by default where the light pass runs (Mid and High), off on the integrated class, and a player's own off or on is kept.
+  CheckEq(std::string(Cell(Effect::kNeonLight, GpuClass::kLow)), "off", "neon light: off on Low");
+  CheckEq(std::string(Cell(Effect::kNeonLight, GpuClass::kMid)), "on", "neon light: on on Mid");
+  CheckEq(std::string(Cell(Effect::kNeonLight, GpuClass::kHigh)), "on", "neon light: on on High");
+  for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+    CheckEq(ResolveFor(c, Effect::kNeonLight, "on"), "on", "neon light: the saved on is kept");
+    CheckEq(ResolveFor(c, Effect::kNeonLight, "off"), "off", "neon light: the saved off is kept");
+  }
+  CheckEq(AutoLabelFor(GpuClass::kLow, Effect::kNeonLight), "AUTO (OFF)", "neon light: the integrated class's row says AUTO (OFF)");
+  CheckEq(AutoLabelFor(GpuClass::kHigh, Effect::kNeonLight), "AUTO (ON)", "neon light: the High class's row says AUTO (ON)");
   // The headlights: on for Mid and High, off for Low (the integrated GPU), and a player's own off or on is kept in every class.
   CheckEq(std::string(Cell(Effect::kHeadlights, GpuClass::kLow)), "off", "headlights: off on Low");
   CheckEq(std::string(Cell(Effect::kHeadlights, GpuClass::kMid)), "on", "headlights: on on Mid");

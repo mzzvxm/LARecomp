@@ -863,6 +863,11 @@ class GPUSettings final : public rex::SettingOwner {
     "graphics card a little at night, only on the pixels the beams reach. Live; the first time the headlights show, the "
     "graphics card builds the lit shaders' variants (a short stutter).", rex::Allowed("auto", "off", "on"));
 
+  REX_SETTING(std::string, mcla_gpu_neon_light, "auto", "Neon light: the neon underglow of a car lights the ground, the kerbs, the walls and the other cars near it, in the neon's own colour and pulse. "
+    "on is the one level; off leaves the neon as the game has it (its own glow under the car). auto (the default) is on for a discrete graphics card and off for an integrated one (a handheld, "
+    "or the iGPU of a desktop CPU). It costs the graphics card a little, only while a car with its neon lit is in view, and only on the pixels the neon reaches (a few metres round the car). "
+    "Live; the first time it shows, the graphics card builds its pipeline (a short stutter).", rex::Allowed("auto", "off", "on"));
+
   REX_SETTING(f64, mcla_gpu_headlight_strength, 1.0, "Diagnostic: how strong the headlights are, a number their light is multiplied by (1: the built-in look; 0: none). "
     "Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
 
@@ -1418,6 +1423,18 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_local_lights_car_gain, 1.0, "Diagnostic (the deferred local light pass, GB-H3): a multiplier on the look of the cars' lights it adds (the police light bars, the head lamps of the cars the forward headlight stage does not light, "
     "the brake, tail, turn and reverse lamps). Their colours and strengths are looks set by eye, not the game's units: this turns them up or down without a build. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
 
+  REX_SETTING(f64, mcla_gpu_neon_light_gain, 1.0, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON): a multiplier on the neon's light (1: the game's own colour, pulse and fade as read from the car's light object, shared along "
+    "the tube). The neon's strength and its reach are looks set by eye against the game's own underglow light, not the game's units: this turns them up or down without a build. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
+
+  REX_SETTING(i32, mcla_gpu_local_lights_cost_off, 0, "Diagnostic (the cost of the deferred local light pass, GB-NEON-COST, the A/B): a sum of the savings to switch OFF so that the pass runs as it did before them. "
+    "1 the reach test before the planes are read (the pixel shader asks the depth whether any light of the draw reaches the pixel, and leaves the pixels none reaches without reading the G-buffer's three planes), "
+    "2 one draw for a car's neon tube (its two to four lights are summed in the shader: one pass over the picture where there were one for each light), "
+    "4 the cap of the neon contact term's reads (a pixel of a tube of three or four lights marches the depth for the two strongest lights only, the others take the nearest one's answer: up to 10 depth reads a vehicle pixel where each light marching for itself made up to 20). "
+    "0, the default: all on. The picture is the same either way up to the rounding of the half float colour target for the first two (they leave out only what adds nothing). The third moves a few percent of the light of a vehicle pixel the contact term shuts partly. Only the graphics card time differs otherwise. Live.", rex::kDebugOnly, rex::Range{0, 7});
+
+  REX_SETTING(bool, mcla_gpu_neon_contact, true, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-BLEED, the A/B): on (the default) a neon light is shut out of the car's own panels on a vehicle pixel: the light's way to the pixel is looked up in the picture's own depth for 0.8 m and a point behind a visible surface by a shell's thickness is inside something, so the vents, the lip, the cabin and the wheels' dish that face the light through a body get none of it. "
+    "Off: the law's N.L alone (the neon shows through the other car's panels). Live.", rex::kDebugOnly);
+
   REX_SETTING(std::string, mcla_gpu_headlight_pass, "forward", "Diagnostic (the forward headlight stage against the deferred local light pass, GB-H2, the A/B): which of the two lights the cars' headlights. forward (the default): the lit shaders' headlight variant lights, as the game has always had it. "
     "pass: the variant is not used and the deferred local light pass lights the headlights of the same cars with their shadows from the atlas (it also reaches the lit shaders the variant leaves out, the cars' paint and the pedestrians; needs the G-buffer's planes, which it asks for while HEADLIGHTS is on, and runs whatever mcla_gpu_local_lights says). "
     "both: the variant lights and the pass adds the same lights again (the sum of the two: for the difference pictures). HEADLIGHTS (mcla_gpu_headlights) stays the master of both. Live.", rex::kDebugOnly, rex::Allowed("forward", "pass", "both"));
@@ -1817,6 +1834,7 @@ inline auto& mcla_gpu_headlight_night = g_gpu.mcla_gpu_headlight_night;
 inline auto& mcla_gpu_headlight_range = g_gpu.mcla_gpu_headlight_range;
 inline auto& mcla_gpu_headlight_strength = g_gpu.mcla_gpu_headlight_strength;
 inline auto& mcla_gpu_headlights = g_gpu.mcla_gpu_headlights;
+inline auto& mcla_gpu_neon_light = g_gpu.mcla_gpu_neon_light;
 inline auto& mcla_gpu_lock_ahead_verify = g_gpu.mcla_gpu_lock_ahead_verify;
 inline auto& mcla_gpu_lock_dump = g_gpu.mcla_gpu_lock_dump;
 inline auto& mcla_gpu_low_latency = g_gpu.mcla_gpu_low_latency;
@@ -1920,6 +1938,9 @@ inline auto& mcla_gpu_local_lights_sources = g_gpu.mcla_gpu_local_lights_sources
 inline auto& mcla_gpu_local_lights_ab = g_gpu.mcla_gpu_local_lights_ab;
 inline auto& mcla_gpu_local_lights_gain = g_gpu.mcla_gpu_local_lights_gain;
 inline auto& mcla_gpu_local_lights_car_gain = g_gpu.mcla_gpu_local_lights_car_gain;
+inline auto& mcla_gpu_neon_light_gain = g_gpu.mcla_gpu_neon_light_gain;
+inline auto& mcla_gpu_local_lights_cost_off = g_gpu.mcla_gpu_local_lights_cost_off;
+inline auto& mcla_gpu_neon_contact = g_gpu.mcla_gpu_neon_contact;
 inline auto& mcla_gpu_headlight_pass = g_gpu.mcla_gpu_headlight_pass;
 inline auto& mcla_gpu_light_pick = g_gpu.mcla_gpu_light_pick;
 inline auto& mcla_gpu_light_pick_record = g_gpu.mcla_gpu_light_pick_record;

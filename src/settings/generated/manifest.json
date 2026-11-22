@@ -1738,6 +1738,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_neon_light": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Neon light: the neon underglow of a car lights the ground, the kerbs, the walls and the other cars near it, in the neon's own colour and pulse. \"\n    \"on is the one level; off leaves the neon as the game has it (its own glow under the car). auto (the default) is on for a discrete graphics card and off for an integrated one (a handheld, \"\n    \"or the iGPU of a desktop CPU). It costs the graphics card a little, only while a car with its neon lit is in view, and only on the pixels the neon reaches (a few metres round the car). \"\n    \"Live; the first time it shows, the graphics card builds its pipeline (a short stutter).\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_headlight_strength": {
   "type": "f64",
   "default": "1.0",
@@ -2875,6 +2886,41 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 16.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_neon_light_gain": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON): a multiplier on the neon's light (1: the game's own colour, pulse and fade as read from the car's light object, shared along \"\n    \"the tube). The neon's strength and its reach are looks set by eye against the game's own underglow light, not the game's units: this turns them up or down without a build. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 16.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_local_lights_cost_off": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the cost of the deferred local light pass, GB-NEON-COST, the A/B): a sum of the savings to switch OFF so that the pass runs as it did before them. \"\n    \"1 the reach test before the planes are read (the pixel shader asks the depth whether any light of the draw reaches the pixel, and leaves the pixels none reaches without reading the G-buffer's three planes), \"\n    \"2 one draw for a car's neon tube (its two to four lights are summed in the shader: one pass over the picture where there were one for each light), \"\n    \"4 the cap of the neon contact term's reads (a pixel of a tube of three or four lights marches the depth for the two strongest lights only, the others take the nearest one's answer: up to 10 depth reads a vehicle pixel where each light marching for itself made up to 20). \"\n    \"0, the default: all on. The picture is the same either way up to the rounding of the half float colour target for the first two (they leave out only what adds nothing). The third moves a few percent of the light of a vehicle pixel the contact term shuts partly. Only the graphics card time differs otherwise. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 7}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_neon_contact": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-BLEED, the A/B): on (the default) a neon light is shut out of the car's own panels on a vehicle pixel: the light's way to the pixel is looked up in the picture's own depth for 0.8 m and a point behind a visible surface by a shell's thickness is inside something, so the vents, the lip, the cabin and the wheels' dish that face the light through a body get none of it. \"\n    \"Off: the law's N.L alone (the neon shows through the other car's panels). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -5899,6 +5945,18 @@
   "help": "\"Fix: the neon underglow's pulse follows the console's 30 Hz clock, not every frame. A fast flash \"\n    \"rate is a wave of about 30 Hz; the console sampled it 30 times a second and showed a slow throb, \"\n    \"and at 60 FPS or more the same wave blinks about 11 times a second (a strobe). On: every frame \"\n    \"rate shows the console's throb. Off: the pulse is worked out at every frame.\"",
   "traits": [
    "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_fix_neon_pulse_pin": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/Patches",
+  "help": "\"Diagnostic (the neon underglow's pulse, for tests): a number from 0 to 1 that every flashing neon shows at every update, whatever the game's clock, so that two runs of a scene \"\n    \"show the same underglow (the pulse is a function of the clock, and a picture A/B of the neon's light cannot be judged when it differs by run). Below 0 (the default): the game's own pulse. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1.0, 1.0}"
   ],
   "comments": [],
   "pp_depth": 0

@@ -276,7 +276,7 @@ void PageWidthOfLighting(const std::vector<Row>& rows) {
       {"PM_RxGpuAoLevel", "AO INTENSITY", false},      {"PM_RxGpuSsgi", "BOUNCE LIGHT", false},
       {"PM_RxGpuSsgiLevel", "BOUNCE LIGHT STRENGTH", false}, {"PM_RxGpuSunShafts", "SUN SHAFTS", false},
       {"PM_RxGpuHeadlights", "HEADLIGHTS", false},     {"PM_RxGpuLightShadows", "LIGHT SHADOWS", false},
-      {"PM_RxGpuVolumetrics", "VOLUMETRIC LIGHT", false},
+      {"PM_RxGpuNeonLight", "NEON LIGHT", false},      {"PM_RxGpuVolumetrics", "VOLUMETRIC LIGHT", false},
   };
   size_t widest_label = 0;
   for (const L& l : labels) {
@@ -307,7 +307,8 @@ void Page(const std::string& dir) {
   const std::vector<std::string> light_expected = {
       "PM_RxNoShadows",       "PM_RxFoliage",       "PM_RxGpuShadowDetail", "PM_RxGpuShadowFilter", "PM_RxGpuContact",
       "PM_RxGpuTrafficShadows", "PM_RxGpuCarShadowMap", "PM_RxGpuAo",         "PM_RxGpuAoLevel",      "PM_RxGpuSsgi",
-      "PM_RxGpuSsgiLevel",    "PM_RxGpuSunShafts",  "PM_RxGpuHeadlights",   "PM_RxGpuLightShadows", "PM_RxGpuVolumetrics"};
+      "PM_RxGpuSsgiLevel",    "PM_RxGpuSunShafts",  "PM_RxGpuHeadlights",   "PM_RxGpuLightShadows", "PM_RxGpuNeonLight",
+      "PM_RxGpuVolumetrics"};
   const std::vector<std::string> world_expected = {"PM_RxUnspawn", "PM_RxPedDensity", "PM_RxParkedCars",
                                                    "PM_RxFragDist", "PM_RxLodTraffic", "PM_RxLodCity"};
   Check(Keys(light) == light_expected, "LIGHTING AND SHADOWS has its rows in the approved order, FOLIAGE SHADOWS right after SHADOWS");
@@ -328,7 +329,7 @@ void Page(const std::string& dir) {
   const std::string needs[] = {"kFoliageDynamics", "kShadowDetailDynamics", "kShadowFilterDynamics", "kTrafficShadowsDynamics"};
   for (const std::string& name : needs)
     Check(Has(DynamicsInit(code, name), "NeedsShadows("), name + " is made by NeedsShadows");
-  const std::string independent[] = {"kContactDynamics", "kCarShadowDynamics", "kAoDynamics", "kShaftsDynamics", "kHeadlightsDynamics",
+  const std::string independent[] = {"kContactDynamics", "kCarShadowDynamics", "kAoDynamics", "kShaftsDynamics", "kHeadlightsDynamics", "kNeonLightDynamics",
                                      "kVolumetricsDynamics", "kRoadReflectionDynamics", "kCarReflectionDynamics"};
   for (const std::string& name : independent) {
     const std::string init = DynamicsInit(code, name);

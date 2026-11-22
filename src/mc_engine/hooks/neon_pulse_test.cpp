@@ -335,6 +335,20 @@ int main() {
         Check(std::fabs(fast - console) <= 0.5, "a slow flash rate shows the same pulse at 240 FPS as at 30", fast, console);
     }
 
+    // the test pin (mcla_fix_neon_pulse_pin): off below 0 and for a number that is none, a value from 0 to 1 otherwise, the same at every clock
+    {
+        Check(!PulsePinned(-1.0) && !PulsePinned(-0.001), "a negative pin is off: the game's own pulse (the default is -1)");
+        Check(!PulsePinned(std::nan("")), "a pin that is not a number is off");
+        Check(PulsePinned(0.0) && PulsePinned(0.75) && PulsePinned(1.0), "0, 0.75 and 1 pin the pulse");
+        Check(PinnedPulse(0.0) == 0.0f && PinnedPulse(0.75) == 0.75f && PinnedPulse(1.0) == 1.0f, "the pinned pulse is the value, to the float");
+        Check(PinnedPulse(7.0) == 1.0f, "a pin above 1 counts as 1");
+        // the point of it: two runs whose game clocks differ (a run's start offset) show the game's pulse at different strengths and the pinned one at the same
+        const float run_a = HeldPulseOf(19, 41.30f, StdSine);
+        const float run_b = HeldPulseOf(19, 43.10f, StdSine);
+        Check(std::fabs(run_a - run_b) > 0.2f, "without the pin two runs' clocks give different pulses (the 8 % and 100 % pools of the neon A/B)", run_a, run_b);
+        Check(PinnedPulse(0.75) == PinnedPulse(0.75), "with the pin they show the same");
+    }
+
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

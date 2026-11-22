@@ -33,6 +33,7 @@ namespace mcla::gpu {
 namespace ll = larecomp::gpu::local_lights;
 namespace hp = larecomp::gpu::headlight_pass;
 namespace mls = larecomp::gpu::mod_light_source;
+namespace nl = larecomp::gpu::neon_light;
 
 namespace {
 
@@ -61,6 +62,16 @@ larecomp::gpu::local_lights::Tier TierNow() {
   static LiveText text("mcla_gpu_light_shadows");
   const local_shadow::Choice choice = local_shadow::Resolve(gpu_class::Current(), text.Get());
   return ll::TierOfWord(local_shadow::LevelName(choice.level));
+}
+
+// GB-NEON: whether NEON LIGHT (mcla_gpu_neon_light, `auto` resolved for this graphics card: gpu_class.h Effect::kNeonLight) is on; a word that is no value counts as `auto`. Render thread.
+bool NeonSettingOn() {
+  static LiveText neon_text("mcla_gpu_neon_light");
+  std::string mode = gpu_class::Resolve(gpu_class::Effect::kNeonLight, neon_text.Get());
+  if (mode != "on" && mode != "off") {
+    mode = std::string(gpu_class::Cell(gpu_class::Effect::kNeonLight, gpu_class::Current()));
+  }
+  return mode == "on";
 }
 
 // The empty frame the pass reads when the manager is not running (a LightFrame is about 12 KB: made once).
@@ -106,6 +117,11 @@ void LocalLights::Shutdown() {
   enabled_ = false;
   planes_wanted_ = false;
   route_ = hp::Route::kForward;
+  neon_on_ = false;
+  neon_active_ = false;
+  neon_hold_ = 0;
+  nl::Want(false);  // the hook reads nothing for a pass that is gone
+  nl::Global().Clear();
 }
 
 uint64_t LocalLights::HeldBytes() const {
@@ -220,22 +236,59 @@ void LocalLights::BeginFrame() {
   const bool setting_on = st::mcla_gpu_local_lights.Get();
   // GB-H2: the headlight route (headlight_pass_rules.h): `pass` and `both` give this pass the frame's headlights and run it whatever mcla_gpu_local_lights says.
   const hp::Route route = headlight_rig::CurrentRoute();  // read once for the frame by the Scene (headlight_rig::SampleRoute, through LiveText: the debug menu's thread writes the cvar)
-  const bool on = hp::PassOn(route, setting_on);
+  const bool on_for_lights = hp::PassOn(route, setting_on);
+  // GB-NEON: NEON LIGHT runs the pass for the cars' underglow whatever the setting and the route say, and tells the hook whether anyone reads the game's neon (it reads nothing while off).
+  const bool neon_now = NeonSettingOn();
+  if (neon_now != neon_on_) {
+    neon_on_ = neon_now;
+    nl::Want(neon_on_);
+    if (!neon_on_) {
+      nl::Global().Clear();
+      neon_hold_ = 0;
+      neon_active_ = false;
+    }
+    REXLOG_INFO("{} neon light {} (mcla_gpu_neon_light; live): a car's neon underglow {} the ground, the walls and the other cars near it", kPrefix, neon_on_ ? "on" : "off",
+                neon_on_ ? "lights" : "no longer lights");
+  }
+  on_for_lights_ = on_for_lights;
+  const bool on = on_for_lights || neon_on_;
   sources_ = hp::SourcesFor(route, uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask);
+  if (neon_on_) {
+    sources_ |= ll::kSourceNeon;
+  }
+  neon_gain_ = float(std::clamp(double(st::mcla_gpu_neon_light_gain.Get()), 0.0, 16.0));
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));
   gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_gain.Get()), 0.0, 16.0));
   car_gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_car_gain.Get()), 0.0, 16.0));
-  tier_ = on ? TierNow() : ll::Tier::kMedium;
+  // GB-NEON-COST: the A/B of the cost savings (0: the reach test before the planes, one draw for a car's tube and the contact term's cap are on): the picture is the same either way (the cap
+  // moves a little of the contact term's accuracy for its reads: local_lights_rules.h ContactDonors).
+  const uint32_t cost_off = uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_cost_off.Get()), 0, int(ll::kCostOffMask))) & ll::kCostOffMask;
+  if (cost_off != cost_off_) {
+    cost_off_ = cost_off;
+    REXLOG_INFO("{} cost savings (mcla_gpu_local_lights_cost_off {}; live): the reach test before the planes are read {}, one draw for a car's neon tube {}, the contact term's cap (two marches a pixel) {}", kPrefix,
+                cost_off_, (cost_off_ & ll::kCostOffReachFirst) != 0 ? "OFF" : "on", (cost_off_ & ll::kCostOffMerge) != 0 ? "OFF" : "on", (cost_off_ & ll::kCostOffContactCap) != 0 ? "OFF" : "on");
+  }
+  // GB-NEON-CONTACT: the contact term (a neon light does not shine through the car it lights, GB-NEON-BLEED), on by default; its A/B is live.
+  const bool contact_on = st::mcla_gpu_neon_contact.Get();
+  if (contact_on != contact_on_) {
+    contact_on_ = contact_on;
+    REXLOG_INFO("{} neon contact term {} (mcla_gpu_neon_contact; live): a neon light {} shut out of the car's own panels on a vehicle pixel", kPrefix, contact_on_ ? "on" : "off", contact_on_ ? "is" : "is not");
+  }
+  tier_ = on ? TierNow() : ll::Tier::kMedium;  // (`on` is the pass running at all: its own setting, the headlight route's, or NEON LIGHT's)
   ++frame_;
   if (on != enabled_) {
     enabled_ = on;
     if (on) {
       REXLOG_INFO("{} on (mcla_gpu_local_lights {}, headlight route {}; live): at the mid-scene depth copy, after the occlusion's apply, one scissored additive draw per light from the G-buffer's normal and albedo "
-                  "and the main depth; sources {} (1 the frame's surface lights, 2 a test lamp, 4 police, 8 the cars' head lamps, 16 their rear lamps, 32 the mods' lamps outside their grid), "
-                  "lamp A/B {} (0 grid, 1 nowhere, 2 pass), gain {:.2f}, the cars' look x {:.2f}, budget tier {} (frame {}, police {}, head lamps {}, rear lamps {}, mod lamps {}; 32 in all)",
-                  kPrefix, setting_on ? "on" : "off", hp::RouteName(route), sources_, int(ab_), gain_, car_gain_, ll::TierName(tier_), ll::BudgetOf(tier_).frame, ll::BudgetOf(tier_).police,
-                  ll::BudgetOf(tier_).head, ll::BudgetOf(tier_).rear, ll::BudgetOf(tier_).mod);
-      EnsureResources();  // the pipelines are made on the first frame that records
+                  "and the main depth; sources {} (1 the frame's surface lights, 2 a test lamp, 4 police, 8 the cars' head lamps, 16 their rear lamps, 32 the mods' lamps outside their grid, 64 the cars' neon underglow), "
+                  "lamp A/B {} (0 grid, 1 nowhere, 2 pass), gain {:.2f}, the cars' look x {:.2f}, neon light {} (x {:.2f}), budget tier {} (frame {}, police {}, head lamps {}, rear lamps {}, mod lamps {}, neon {} "
+                  "= {} cars x {} lights; 32 in all)",
+                  kPrefix, setting_on ? "on" : "off", hp::RouteName(route), sources_, int(ab_), gain_, car_gain_, neon_on_ ? "on" : "off", neon_gain_, ll::TierName(tier_), ll::BudgetOf(tier_).frame,
+                  ll::BudgetOf(tier_).police, ll::BudgetOf(tier_).head, ll::BudgetOf(tier_).rear, ll::BudgetOf(tier_).mod, ll::BudgetOf(tier_).neon, ll::BudgetOf(tier_).neon_cars,
+                  ll::BudgetOf(tier_).neon_points);
+      if (on_for_lights) {
+        EnsureResources();  // the pipelines are made on the first frame that records (for NEON LIGHT alone: when a lit neon car first asks, OnResolve makes them)
+      }
     } else {
       REXLOG_INFO("{} off", kPrefix);
     }
@@ -249,7 +302,10 @@ void LocalLights::BeginFrame() {
   // The wants (sticky; the G-buffer and the shared products read them at their own BeginFrame, which the Scene runs after this): with the pass off nothing asks for any plane or product,
   // so no sidecar is made and the AO's depth chain runs for nobody. A route that gives the pass the headlights (GB-H2) wants them only while HEADLIGHTS is on (a rig with no light has nothing for
   // the pass to add, and a car passing in and out of the rig's four must not make the sidecar again): the setting's own use wants them always, as before.
-  planes_wanted_ = enabled_ && (setting_on || headlight_rig::SettingOn());
+  // GB-NEON: a lit neon car in the hook's table (held for neon_light.h kHoldFrames frames after the last) wants them too; NEON LIGHT alone does not, so a player with no neon car pays nothing.
+  neon_hold_ = nl::NextHold(neon_on_, neon_on_ && nl::Global().AnyLit(ll::kNeonMinColour), neon_hold_);
+  neon_active_ = neon_on_ && neon_hold_ > 0;
+  planes_wanted_ = enabled_ && (setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);
   if (gbuffer_ != nullptr) {
     gbuffer_->Want(gbuffer::Consumer::kLocalLights, planes_wanted_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights) : 0u);
   }
@@ -334,6 +390,25 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   const bool manager_on = manager_ != nullptr && manager_->active();
   const larecomp::gpu::LightFrame& frame = manager_on ? manager_->Frame() : EmptyFrame();
   candidates_.Clear();
+  if ((sources_ & ll::kSourceNeon) != 0) {
+    // GB-NEON: the cars the hook saw in the last 100 ms, the nearest lit ones as whole tubes (the game's colour: pulse, fade and the 30 Hz hold are in it).
+    nl::Global().Recent(&neon_cars_);
+    ll::NeonSourceInputs neon_in;
+    neon_in.cars = &neon_cars_;
+    neon_in.tier = tier_;
+    neon_in.gain = neon_gain_;
+    for (int i = 0; i < 3; ++i) {
+      neon_in.camera[i] = rows.position[i];
+    }
+    ll::NeonReport neon_report;
+    ll::GatherNeonLights(neon_in, &candidates_.neon, &neon_report);
+    neon_lit_ += neon_report.lit;
+    neon_unplaced_ += neon_report.unplaced;
+    neon_far_ += neon_report.distant;
+    neon_cut_ += neon_report.cut;
+    neon_frames_ += neon_report.lit != 0 ? 1u : 0u;
+    neon_space_ = neon_report.lit != 0 ? neon_report.space : neon_space_;
+  }
   if (manager_on && (sources_ & ll::kSourceCars) != 0) {
     ll::CarSourceInputs cars_in;
     cars_in.cars = &manager_->Cars();
@@ -357,6 +432,7 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   std::erase_if(candidates_.head, unseen);
   std::erase_if(candidates_.rear, unseen);
   std::erase_if(candidates_.mod, unseen);
+  std::erase_if(candidates_.neon, unseen);
   const ll::Selection selection = ll::SelectPassLights(frame, sources_, extras_.data(), uint32_t(extras_.size()), candidates_, tier_);
   if (selection.count == 0) {
     Count(Skip::kNoLights);
@@ -446,18 +522,26 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   push.slots[2] = gb.slot[gbuffer::kPlaneAlbedo];
   push.slots[3] = gb.Has(gbuffer::kPlaneMaterial) ? gb.slot[gbuffer::kPlaneMaterial] : larecomp::gpu::kNoLightSlot;
   push.info[2] = gb.sample0;
+  // GB-NEON-COST: the draws (local_lights_rules.h PlanDraws): one for each light, but a car's neon tube (its lights share the car, the surface and nearly the rectangle) is one draw the pixel
+  // shader sums; the flags tell the shader whether to test the reach before it reads the planes.
+  // GB-NEON-CONTACT: and whether the contact term runs at all (mcla_gpu_neon_contact), and whether it marches for every light of a tube (its cap off).
+  push.info[3] = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) | ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact);
+  std::array<ll::PassDraw, ll::kMaxPassLights> plan;
+  const uint32_t draws = ll::PlanDraws(selection, rects.data(), cost_off_, plan.data());
   uint32_t drawn = 0;
-  for (uint32_t i = 0; i < selection.count; ++i) {
-    if (rects[i].Empty()) {
-      continue;
-    }
-    const plume::RenderRect scissor(rects[i].x0, rects[i].y0, rects[i].x1, rects[i].y1);
+  for (uint32_t d = 0; d < draws; ++d) {
+    const ll::PassDraw& draw = plan[d];
+    const plume::RenderRect scissor(draw.rect.x0, draw.rect.y0, draw.rect.x1, draw.rect.y1);
     list->setScissors(&scissor, 1);
-    push.info[0] = i;
+    push.info[0] = draw.first;
+    push.info[1] = draw.count;
     list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
     list->drawInstanced(3, 1, 0, 0);
-    ++drawn;
-    pixels_scissored_ += rects[i].Area();
+    for (uint32_t k = draw.first; k < draw.first + draw.count; ++k) {
+      drawn += rects[k].Empty() ? 0u : 1u;
+    }
+    ++draws_;
+    pixels_scissored_ += draw.rect.Area();
   }
   list->setFramebuffer(nullptr);
   pass_timing_->Mark(list, "after local lights");
@@ -481,13 +565,13 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   frames_own_pose_ += own_pose ? 1u : 0u;
   if (!first_logged_) {
     first_logged_ = true;
-    REXLOG_INFO("{} frame {}: the first run: {} lights drawn of {} ({} from the frame, {} of them with views of the shadow atlas ({}); {} handed over: lamp A/B {} / test lamp {}; police {}, head lamps {}, rear lamps {}, mod lamps {}), "
+    REXLOG_INFO("{} frame {}: the first run: {} lights drawn of {} ({} from the frame, {} of them with views of the shadow atlas ({}); {} handed over: lamp A/B {} / test lamp {}; police {}, head lamps {}, rear lamps {}, mod lamps {}, neon {}), "
                 "the picture {}x{} at {} host samples, G-buffer planes {} "
                 "(RT3 {}), the camera {} (lens {:.3f} x {:.3f}), the units: night {:.3f}, height factor {}, exposure {:.1f}, gain {:.2f} ({} colour draws voted, {} distinct values)",
                 kPrefix, frame_, drawn, selection.count, selection.from_frame, shadowed_lights_, shadow_table ? "the table is in the buffer" : "no table: no atlas or no views", selection.from_extra, int(ab_),
                 (sources_ & ll::kSourceTest) != 0 ? "on" : "off",
                 selection.from_class[size_t(ll::SourceClass::kPolice)], selection.from_class[size_t(ll::SourceClass::kHeadLamps)], selection.from_class[size_t(ll::SourceClass::kRearLamps)],
-                selection.from_class[size_t(ll::SourceClass::kMod)], gb.width, gb.height,
+                selection.from_class[size_t(ll::SourceClass::kMod)], selection.from_class[size_t(ll::SourceClass::kNeon)], gb.width, gb.height,
                 gb.host_samples, gb.valid, gb.Has(gbuffer::kPlaneMaterial) ? "there" : "not written yet", own_pose ? "the frame's own" : "the last frame's", in.tan_x, in.tan_y,
                 in.units.night,
                 in.units.occ[3] > 0.0f ? std::format("on (x {:.1f} y {:.4f} z {:.3f})", in.units.occ[0], in.units.occ[1], in.units.occ[2]) : std::string("not known"), in.units.exposure, in.units.gain,
@@ -509,11 +593,12 @@ void LocalLights::OnPresent() {
   }
   ++frames_run_;
   if (frames_run_ % kIntervalFrames == 0) {
-    LogInterval();
+    // With the pass on only for NEON LIGHT (the default) and no neon car in view all interval there is nothing to say: the line would be in every player's log every ten seconds.
+    LogInterval(on_for_lights_ || lights_drawn_ != 0 || neon_lit_ != 0 || neon_unplaced_ != 0);
   }
 }
 
-void LocalLights::LogInterval() {
+void LocalLights::LogInterval(bool say) {
   std::string why;
   for (uint32_t i = 0; i < uint32_t(Skip::kCount); ++i) {
     if (counts_[i] != 0) {
@@ -527,17 +612,26 @@ void LocalLights::LogInterval() {
                              class_cut_[c] != 0 ? std::format(" ({} cut by the budget)", class_cut_[c]) : std::string());
     }
   }
-  REXLOG_INFO("{} {} frames with the pass on: {} lights drawn ({}), {:.1f} MPixels scissored; the trigger frames: {}; the frame's own camera pose in {} frames; the manager held {:.1f} cars a frame; "
-              "budget tier {}; headlight route {}, {} lights drawn with the shadow lookup ({} views) in {} frames with the table; buffers {} B",
+  if (say) {
+    REXLOG_INFO("{} {} frames with the pass on: {} lights drawn ({}), {:.1f} MPixels scissored; the trigger frames: {}; the frame's own camera pose in {} frames; the manager held {:.1f} cars a frame; "
+              "neon: {} cars lit in {} frames (the last tube read as {} space), {} not placed, {} too far, {} cut by the budget; "
+              "budget tier {}; headlight route {}, {} lights drawn with the shadow lookup ({} views) in {} frames with the table; buffers {} B; {} draw calls (cost savings off: {})",
               kPrefix, kIntervalFrames, lights_drawn_, classes.empty() ? std::string("none by class") : classes, double(pixels_scissored_) * 1.0e-6, why.empty() ? std::string("none") : why,
-              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), ll::TierName(tier_), hp::RouteName(route_), shadowed_lights_, shadow_views_, shadow_frames_, HeldBytes());
+              frames_own_pose_, double(cars_seen_) / double(kIntervalFrames), neon_lit_, neon_frames_, nl::SpaceName(neon_space_), neon_unplaced_, neon_far_, neon_cut_, ll::TierName(tier_), hp::RouteName(route_), shadowed_lights_, shadow_views_, shadow_frames_, HeldBytes(), draws_, cost_off_);
+  }
   counts_.fill(0);
   lights_drawn_ = 0;
+  draws_ = 0;
   pixels_scissored_ = 0;
   frames_own_pose_ = 0;
   class_drawn_.fill(0);
   class_cut_.fill(0);
   cars_seen_ = 0;
+  neon_lit_ = 0;
+  neon_unplaced_ = 0;
+  neon_far_ = 0;
+  neon_cut_ = 0;
+  neon_frames_ = 0;
   shadowed_lights_ = 0;
   shadow_views_ = 0;
   shadow_frames_ = 0;

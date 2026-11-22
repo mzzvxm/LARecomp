@@ -46,12 +46,32 @@
 #define LP_SHADOW_OFF_SIZE 2184     // the atlas's width and height in texels (two uints)
 #define LP_SHADOW_OFF_LAYERS 2192   // two bits for each entry: 0 single, 1 static, 2 live
 
+// GB-NEON-COST (the draw's push block, local_lights_rules.h kMaxDrawLights / kPushLateReach): one draw lights a pixel with up to LP_MAX_DRAW_LIGHTS consecutive rows of the buffer (a car's neon tube:
+// its points are the lights of one car), summed in the shader; push.info.w bit 0 puts the reach test back after the planes are read (the A/B of the early test).
+// GB-NEON-CONTACT (local_lights_rules.h kPushFullContact / kPushNoContact): bit 1 is the contact term's cost cap taken off (every light of a tube marches for itself), bit 2 the contact term itself
+// (mcla_gpu_neon_contact off: a neon light is not shut out of the car it lights).
+#define LP_MAX_DRAW_LIGHTS 4
+#define LP_PUSH_LATE_REACH 1
+#define LP_PUSH_FULL_CONTACT 2
+#define LP_PUSH_NO_CONTACT 4
+
 // what the depth chain stores for the sky (hlsl/ao_common.hlsli kAoSky)
 #define LP_SKY 60000.0f
 
 // the classes that take no light (gbuffer_common.hlsli GB_CLASS_*: 0 no data, 13 emissive)
 #define LP_CLASS_NONE 0
 #define LP_CLASS_EMISSIVE 13
+
+// GB-NEON-BLEED (LpContactVisibility at the end of this file; local_lights_rules.h kContact*): the first LP_CONTACT_LENGTH metres of a vehicle pixel's way to a neon light are looked up in the
+// picture's own depth. The numbers are metres of the view distance.
+#define LP_CONTACT_STEPS 5
+#define LP_CONTACT_LENGTH 0.8f   // the part of the way to the light that is looked at
+#define LP_CONTACT_NORMAL 0.03f  // the way starts this far off the surface, along its normal
+#define LP_CONTACT_BIAS 0.04f    // a surface in front of the way's point counts from this gap on ...
+#define LP_CONTACT_RAMP 0.06f    // ... and is fully in the way this much past it
+#define LP_CONTACT_THICK 0.7f    // a surface further in front than this is another object, not the shell the way runs behind
+#define LP_CONTACT_FADE 0.25f    // and the shell's thickness fades out over this
+#define LP_CONTACT_MARCHES 2     // a pixel of a draw of several lights marches for the two strongest only (LpContactDonors)
 
 struct LpGlobals {
   float3 right;
@@ -99,6 +119,14 @@ float LpOcclusion(float4 occ, float world_y) {
   return 1.0f + ramp * (occ.z - 1.0f);
 }
 
+// Whether a light of centre `pos` and `range` can add anything at `world` (local_lights_rules.h Reaches): the three laws of hlsl/light_laws.hlsli all return 0 at or past the range
+// (dist2 >= range2), so a pixel that fails this test takes nothing from the light whatever its surface is, and the pixel shader asks it BEFORE it reads the G-buffer's planes. Written as the
+// negation of the laws' own test so that a range that is not a number (the laws go on with it) is not left out here either: the pixel then goes the whole way, as it always did.
+bool LpReaches(float3 pos, float range, float3 world) {
+  float3 d = pos - world;
+  return !(dot(d, d) >= range * range);
+}
+
 // The light one light adds to one pixel (local_lights_rules.h PixelLight): albedo x lit weight x the law's term x the night light intensity (the game lamps' laws only: a headlight's colour has
 // its own) x the main colour target's exposure (2^bias) x the gain x the height factor.
 float3 LpPixelLight(LlLight l, LpGlobals g, float3 world, float3 normal, float3 albedo, float lit) {
@@ -106,6 +134,96 @@ float3 LpPixelLight(LlLight l, LpGlobals g, float3 world, float3 normal, float3 
   float night = (l.law == LL_LAW_HEADLIGHT) ? 1.0f : g.night;
   float factor = scale * lit * night * g.gain * g.exposure * LpOcclusion(g.occ, world.y);
   return albedo * l.color * factor;
+}
+
+// ---- GB-NEON-BLEED: a neon light does not shine through the car that is lit -----------------------------------------------------------------
+
+// The stored depth of the pixel (px, py) of the main depth plane at the guest's sample 0 (the including shader defines it; LpContactVisibility keeps the index inside the target).
+float LpStoredDepth(int px, int py);
+
+// Whether the light takes the contact term at a pixel: a NEON light (the cars' underglow: it has no shadow views, and it sits under a car, so it is inside one body and next to another) on a VEHICLE
+// pixel (RT3's flags). The ground, the walls and the kerbs, and every other kind of light, are not asked (local_lights_rules.h TakesContact).
+bool LpTakesContact(LlLight l, bool vehicle) {
+  return vehicle && l.source == LL_SOURCE_NEON;
+}
+
+// How much of a neon light's way to a vehicle pixel is open: 1 open, 0 shut (local_lights_rules.h ContactVisibility). N.L cannot tell a surface that faces the light from one that the light
+// can reach: a vent, a bumper lip, the inside of a cabin, the wheel's dish face the light through the car's own panel (the light is not shadowed: the underglow is a glow, not a lamp that casts),
+// and the far side of a body is no problem for N.L, its notches are. The picture's depth does tell: a point on the way to the light that lies BEHIND a visible surface (by 4 cm to 70 cm: a
+// shell, not a distant wall) is inside something. The way starts 3 cm off the surface along its normal and runs LP_CONTACT_LENGTH metres (or to the light) in LP_CONTACT_STEPS steps; the
+// strongest step is the answer, soft in the gap (no pops: a car's panel is a few centimetres to a few decimetres thick). A step off the picture or behind the camera ends the look (the light
+// counts as reaching). The cost is LP_CONTACT_STEPS depth reads for a vehicle pixel the light already lights; nothing for any other pixel.
+float LpContactVisibility(LpGlobals g, float3 world, float3 normal, float3 light_pos) {
+  float3 to_light = light_pos - world;
+  float len2 = dot(to_light, to_light);
+  if (!(len2 > 1.0e-6f)) {
+    return 1.0f;
+  }
+  float len = sqrt(len2);
+  float3 dir = to_light * (1.0f / len);
+  float3 origin = world + normal * LP_CONTACT_NORMAL;
+  float reach = len < LP_CONTACT_LENGTH ? len : LP_CONTACT_LENGTH;
+  float shut = 0.0f;
+  for (int i = 0; i < LP_CONTACT_STEPS; ++i) {
+    float s = reach * (float(i) + 1.0f) / float(LP_CONTACT_STEPS);
+    float3 d = origin + dir * s - g.position;
+    float f = dot(d, g.forward);
+    if (!(f > 0.05f)) {
+      break;
+    }
+    float px = 0.5f * (dot(d, g.right) / (f * g.tan_x) + 1.0f) * g.size.x;
+    float py = 0.5f * (1.0f - dot(d, g.up) / (f * g.tan_y)) * g.size.y;
+    if (!(px >= 0.0f && py >= 0.0f && px < g.size.x && py < g.size.y)) {
+      break;
+    }
+    float t = LpLinearDepth(LpStoredDepth(int(px), int(py)), g.lin);
+    float gap = f - t;
+    float w = saturate((gap - LP_CONTACT_BIAS) / LP_CONTACT_RAMP) * (1.0f - saturate((gap - LP_CONTACT_THICK) / LP_CONTACT_FADE));
+    shut = w > shut ? w : shut;
+  }
+  return 1.0f - shut;
+}
+
+// GB-NEON-CONTACT: the cost cap of the contact term. A tube of up to four lights a car is one draw and each light of it marched for itself (LP_CONTACT_STEPS reads each: up to 20 depth reads a pixel).
+// The lights of a tube lie in a row, a metre or so apart, so the ways from a pixel to two neighbours go the same way and ask the same depth: a pixel marches for its LP_CONTACT_MARCHES strongest
+// lights only (strength: the size of the light's term at the pixel; the lowest index on a tie), and each other light that adds something takes the visibility of the marched light that is nearest to it
+// along the tube (the lowest index distance; the stronger on a tie). The word packs 4 bits for each light i: bits 0..1 the index of the light whose visibility light i takes (itself when it marches),
+// bit 2 set when it takes one at all (clear: the light adds nothing here, or takes no contact). `s0..s3` are the strengths, 0 for a light that adds nothing or takes no contact; `count` the lights of
+// the draw (the rows after the first are zero). With one or two lights over 0 every one marches for itself: the cap changes the pictures of tubes of three and four lights only.
+// (local_lights_rules.h ContactDonors is the C++ twin; the measurements that chose this rule are in local_lights_test.cpp ContactCapChecks.)
+uint LpContactDonors(float s0, float s1, float s2, float s3, uint count) {
+  float s[4] = {s0, s1, s2, s3};
+  int m1 = 0;  // the strongest and the second strongest (valid indices even before any is found: no index of -1 is ever read)
+  int m2 = 0;
+  int n = 0;
+  int n2 = 0;
+  for (int i = 0; i < 4; ++i) {
+    if (uint(i) < count && s[i] > 0.0f) {
+      ++n;
+      if (n == 1 || s[i] > s[m1]) {
+        m1 = i;
+      }
+    }
+  }
+  for (int j = 0; j < 4; ++j) {
+    if (uint(j) < count && s[j] > 0.0f && j != m1) {
+      ++n2;
+      if (n2 == 1 || s[j] > s[m2]) {
+        m2 = j;
+      }
+    }
+  }
+  uint word = 0u;
+  for (int k = 0; k < 4; ++k) {
+    if (uint(k) < count && s[k] > 0.0f) {
+      int donor = k;
+      if (k != m1 && k != m2) {
+        donor = abs(k - m1) <= abs(k - m2) ? m1 : m2;
+      }
+      word |= (uint(donor) | 4u) << (4u * uint(k));
+    }
+  }
+  return word;
 }
 
 #endif  // LARECOMP_LOCAL_LIGHT_HLSLI

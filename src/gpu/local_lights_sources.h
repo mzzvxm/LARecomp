@@ -22,7 +22,12 @@
 // BUDGETS PER CLASS, per tier. The pass is one scissored draw a light and a light the camera is inside the reach of is a full picture draw, so every class has its own cap, three tiers (the
 // light shadows' level: the same words, medium / high / ultra: TierOfWord) and the pass's 32 over all of them. A class is cut by its score (the light's brightness over distance squared plus
 // its plateau, the lamp picker's own: Score), after the lights that cannot be seen (no pixel of the picture is inside their reach) were left out, so that a car behind the camera takes none of
-// the budget. Priority when the 32 are short: the frame's lights, the handed over ones, police, mods, head lamps, rear lamps.
+// the budget. Priority when the 32 are short: the frame's lights, the handed over ones, police, mods, neon, head lamps, rear lamps.
+//
+//   neon         (GB-NEON) a car's underglow: the game's own colour and pulse (neon_light.h reads them from the car's light object after the game's update: the 30 Hz hold, the day and night
+//                constants and the fade are in it), as a few omni lights along the tube under the car, short range (6 / 7 / 8 m by tier), lighting the ground, the kerbs, the walls and the other cars
+//                near it. The game's own underglow light is NOT taken away (CHECK N2 in neon_light.h: it may already light the road under the car, and the pass then adds a second pool).
+//                The budget is cars x points of light_budget.h's NeonRow (the nearest neon cars, each a whole tube).
 //
 // THE LOOK is all [I]: the intensities, colours and reaches below are values to set by eye with the first run (CHECK LS1..LS5 in local_lights.h); the cars' own part is multiplied by
 // mcla_gpu_local_lights_car_gain (debug) so that a run can tune it without a build. Every number is one line here.
@@ -39,6 +44,7 @@
 #include <vector>
 
 #include "car_lights.h"
+#include "light_budget.h"
 #include "light_convert.h"
 #include "light_frame.h"
 #include "light_id.h"
@@ -46,12 +52,15 @@
 #include "light_points.h"
 #include "local_lights_rules.h"
 #include "mod_light_source.h"
+#include "neon_light.h"
 
 namespace larecomp::gpu::local_lights {
 
 namespace cars = ::larecomp::gpu::car_lights;
 namespace pts = ::larecomp::gpu::light_points;
 namespace mls = ::larecomp::gpu::mod_light_source;
+namespace nl = ::larecomp::gpu::neon_light;
+namespace lb = ::mcla::gpu::light_budget;
 
 // ---------------------------------------------------------------------------
 // the tier and its budgets
@@ -66,19 +75,33 @@ inline constexpr const char* TierName(Tier t) { return t == Tier::kUltra ? "ultr
 // The most lights of each class a tier lets the pass draw (before the pass's 32). `frame` (GB-H2) is the frame's own surface lights: the headlights of the cars the rig lights, which are the only
 // ones that can have a shadow (the replay's views are for them) and the dearest per pixel (a 16 tap lookup where the taps disagree): the rig's four at every tier (light_budget.h
 // kMaxHeadlights; the number of cars that have views is the level's, 2 / 2 / 3, and is the replay's, not the pass's). The classes below it are cheaper per light (no lookup).
+// GB-NEON: `neon` is the lights of the cars' underglow, light_budget.h's NeonRow (the nearest `neon_cars` cars with `neon_points` lights along each tube, never half a car).
 struct ClassBudget {
   uint32_t police = 0;
   uint32_t head = 0;
   uint32_t rear = 0;
   uint32_t mod = 0;
   uint32_t frame = 4;
+  uint32_t neon = 0;
+  uint32_t neon_cars = 0;
+  uint32_t neon_points = 0;
 };
+// The tier as the one budget table's level (light_budget.h).
+inline constexpr lb::Level LevelOf(Tier tier) {
+  return tier == Tier::kUltra ? lb::Level::kUltra : (tier == Tier::kHigh ? lb::Level::kHigh : lb::Level::kMedium);
+}
 inline constexpr ClassBudget BudgetOf(Tier tier) {
+  ClassBudget b;
   switch (tier) {
-    case Tier::kUltra: return {16, 8, 12, 12, 4};
-    case Tier::kHigh: return {10, 5, 8, 8, 4};
-    default: return {6, 3, 4, 4, 4};
+    case Tier::kUltra: b = {16, 8, 12, 12, 4}; break;
+    case Tier::kHigh: b = {10, 5, 8, 8, 4}; break;
+    default: b = {6, 3, 4, 4, 4}; break;
   }
+  const lb::NeonRow& neon = lb::NeonRowOf(LevelOf(tier));
+  b.neon_cars = neon.cars;
+  b.neon_points = neon.points;
+  b.neon = neon.cars * neon.points;
+  return b;
 }
 inline constexpr uint32_t CapOf(const ClassBudget& b, SourceClass c) {
   switch (c) {
@@ -87,6 +110,7 @@ inline constexpr uint32_t CapOf(const ClassBudget& b, SourceClass c) {
     case SourceClass::kRearLamps: return b.rear;
     case SourceClass::kMod: return b.mod;
     case SourceClass::kFrame: return b.frame;
+    case SourceClass::kNeon: return b.neon;
     default: return kMaxPassLights;
   }
 }
@@ -129,6 +153,18 @@ inline constexpr float kHeadStrength = 0.5f;
 inline constexpr float HeadReach(Tier t) { return t == Tier::kUltra ? 42.0f : (t == Tier::kHigh ? 32.0f : 22.0f); }
 // A car whose headlights the frame already has (a frame light of the headlight law this near to the middle of its lit head lamps) is covered by the forward stage.
 inline constexpr float kCoverMetres = 3.0f;
+
+// Neon (GB-NEON). The colour is the game's (neon_light.h): ExtNeonColor x intensity x pulse x fade, which is the "rgb" of the game's lamp law, so a light here is rgb x saturate(I / d^2) like a
+// street lamp with its rgb. The plateau I is a share of the reach squared (kNeonCutShare: where the reach cuts the light it is that share of the colour, as the other classes' lights do: police
+// 6 %, rear lamps 2.5 %); a tube of n points shares one game point's strength between them (kNeonTubeGain: the whole tube is as bright as one point of the game's own light at its middle). CHECK
+// N2 / N3 (neon_light.h) and the run plan's N runs: the gain (mcla_gpu_neon_light_gain, debug) is the live lever, these are the starting looks.
+inline constexpr float NeonReach(Tier t) { return t == Tier::kUltra ? 8.0f : (t == Tier::kHigh ? 7.0f : 6.0f); }
+inline constexpr float kNeonCutShare = 0.06f;
+inline constexpr float kNeonTubeGain = 1.0f;
+// A neon whose brightest channel is below this adds nothing a picture could show (the dark half of a pulse at night): it takes no budget and no G-buffer.
+inline constexpr float kNeonMinColour = 0.003f;
+// A neon car farther from the camera than this is not lit (its light's reach is a few metres: the picture around it is far away and small, and the pass's draw is a scissored one a light).
+inline constexpr float kNeonSeenMetres = 40.0f;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -215,17 +251,20 @@ struct Candidates {
   std::vector<Light> head;
   std::vector<Light> rear;
   std::vector<Light> mod;
+  std::vector<Light> neon;  // GB-NEON: whole cars' tubes, the nearest car first (the budget takes whole cars)
   void Clear() {
     police.clear();
     head.clear();
     rear.clear();
     mod.clear();
+    neon.clear();
   }
   const std::vector<Light>& Of(SourceClass c) const {
     switch (c) {
       case SourceClass::kPolice: return police;
       case SourceClass::kHeadLamps: return head;
       case SourceClass::kRearLamps: return rear;
+      case SourceClass::kNeon: return neon;
       default: return mod;
     }
   }
@@ -402,6 +441,109 @@ inline void GatherCarLights(const CarSourceInputs& in, Candidates* out) {
 }
 
 // ---------------------------------------------------------------------------
+// the cars' underglow (GB-NEON)
+// ---------------------------------------------------------------------------
+
+// The omni light i of n along a car's tube, at `pos`: the game's colour, the plateau from the reach, the tube's strength shared by its n points, the car's key and flag, surface light only (no
+// shadow views: the underglow is a glow under the car, not a lamp that casts).
+inline Light MakeNeonLight(const nl::NeonCar& car, uint32_t i, uint32_t n, const float pos[3], Tier tier, float gain) {
+  const float reach = NeonReach(tier);
+  const float plateau = kNeonCutShare * reach * reach;
+  Light l = MakeOmniLight(LightSource::kNeon, pos, car.colour, plateau * std::max(gain, 0.0f) * kNeonTubeGain / float(std::max<uint32_t>(n, 1u)), plateau, reach,
+                          light_id::NeonCarId(car.object, i));
+  l.roles = kRoleMaskSurface;
+  l.car_key = cars::PointCarKey(car.object);
+  l.flags = car.player ? kLightFlagPlayer : 0u;
+  return l;
+}
+
+// The lights of one placed tube: `points` of them at the middles of equal parts of the tube from A to B (one at the middle when the tube is a point: kPointTube).
+inline void MakeNeonTubeLights(const nl::NeonCar& car, const nl::Tube& tube, uint32_t points, Tier tier, float gain, std::vector<Light>* out) {
+  const uint32_t n = tube.length < nl::kPointTube ? 1u : std::clamp<uint32_t>(points, 1u, nl::kTubePoints);
+  for (uint32_t i = 0; i < n; ++i) {
+    const float t = (float(i) + 0.5f) / float(n);
+    float pos[3];
+    for (int k = 0; k < 3; ++k) {
+      pos[k] = tube.a[k] + (tube.b[k] - tube.a[k]) * t;
+    }
+    out->push_back(MakeNeonLight(car, i, n, pos, tier, gain));
+  }
+}
+
+struct NeonSourceInputs {
+  const std::vector<nl::NeonCar>* cars = nullptr;  // the table's recent cars (null: none)
+  Tier tier = Tier::kMedium;
+  float gain = 1.0f;                               // mcla_gpu_neon_light_gain
+  float camera[3] = {0.0f, 0.0f, 0.0f};
+};
+
+// What a gather saw, for the log: the cars the table gave, the ones with their neon off, too dim, not placeable (N1), too far (`distant`), lit and cut by the budget; how the last placed tube was read.
+struct NeonReport {
+  uint32_t seen = 0;
+  uint32_t off = 0;
+  uint32_t dim = 0;
+  uint32_t unplaced = 0;
+  uint32_t distant = 0;
+  uint32_t lit = 0;
+  uint32_t cut = 0;
+  nl::Space space = nl::Space::kNone;
+};
+
+// The underglow lights of the nearest lit neon cars, whole tubes, nearest car first, appended to `out` (`report` may be null). A car with its neon off or dim, whose tube the four points do not
+// place (ResolveTube), or beyond kNeonSeenMetres, makes none.
+inline void GatherNeonLights(const NeonSourceInputs& in, std::vector<Light>* out, NeonReport* report = nullptr) {
+  NeonReport local;
+  NeonReport& r = report != nullptr ? *report : local;
+  r = NeonReport{};
+  if (in.cars == nullptr) {
+    return;
+  }
+  struct Placed {
+    float distance;
+    const nl::NeonCar* car;
+    nl::Tube tube;
+  };
+  std::vector<Placed> placed;
+  for (const nl::NeonCar& car : *in.cars) {
+    ++r.seen;
+    if (!car.on) {
+      ++r.off;
+      continue;
+    }
+    if (!(nl::Brightest(car.colour) >= kNeonMinColour)) {
+      ++r.dim;
+      continue;
+    }
+    nl::Tube tube;
+    if (!nl::ResolveTube(car, &tube)) {
+      ++r.unplaced;
+      continue;
+    }
+    const float mid[3] = {0.5f * (tube.a[0] + tube.b[0]), 0.5f * (tube.a[1] + tube.b[1]), 0.5f * (tube.a[2] + tube.b[2])};
+    const float distance = nl::detail::Dist3(mid, in.camera);
+    if (!(distance <= kNeonSeenMetres)) {
+      ++r.distant;
+      continue;
+    }
+    placed.push_back({distance, &car, tube});
+  }
+  std::sort(placed.begin(), placed.end(), [](const Placed& a, const Placed& b) {
+    if (a.distance != b.distance) return a.distance < b.distance;
+    return a.car->object < b.car->object;
+  });
+  const ClassBudget budget = BudgetOf(in.tier);
+  for (const Placed& p : placed) {
+    if (r.lit >= budget.neon_cars) {
+      ++r.cut;
+      continue;
+    }
+    ++r.lit;
+    r.space = p.tube.space;
+    MakeNeonTubeLights(*p.car, p.tube, budget.neon_points, in.tier, in.gain, out);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the mods' lamps
 // ---------------------------------------------------------------------------
 
@@ -446,7 +588,7 @@ inline void GatherModLamps(const mls::BuiltSets& built, const mls::Set* active, 
 // the selection
 // ---------------------------------------------------------------------------
 
-// SelectLights' lights (the frame's surface lights up to the frame class's cap, the handed over ones), then the classes in priority order police, mods, head lamps, rear lamps: each, when its bit is in `sources`, up to its tier
+// SelectLights' lights (the frame's surface lights up to the frame class's cap, the handed over ones), then the classes in priority order police, mods, neon, head lamps, rear lamps: each, when its bit is in `sources`, up to its tier
 // cap of what `cand` holds (already ranked and already without the lights that cannot be seen), and up to the pass's 32 over all. Without candidates this is SelectLights.
 inline Selection SelectPassLights(const LightFrame& frame, uint32_t sources, const Light* extra, uint32_t extra_count, const Candidates& cand, Tier tier) {
   const ClassBudget budget = BudgetOf(tier);
@@ -474,6 +616,7 @@ inline Selection SelectPassLights(const LightFrame& frame, uint32_t sources, con
   };
   append(kSourcePolice, SourceClass::kPolice);
   append(kSourceMod, SourceClass::kMod);
+  append(kSourceNeon, SourceClass::kNeon);
   append(kSourceHeadLamps, SourceClass::kHeadLamps);
   append(kSourceRearLamps, SourceClass::kRearLamps);
   return s;
