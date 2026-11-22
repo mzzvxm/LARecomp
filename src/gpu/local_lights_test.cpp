@@ -189,8 +189,8 @@ void LayoutChecks(const std::string& hlsli) {
   Check(sizeof(lp::PassHeader) == 128 && sizeof(lp::PassPush) == 32, "the header is 128 bytes, the push block 32");
   Check(lp::kHeaderBytes == 128 && lp::kLightsOffset == 128 && lp::kMaxPassLights == 32 && lp::kMaxPassLights == kMaxSurfaceLights, "the buffer: a 128 byte header, up to 32 lights");
   Check(lp::kShadowOffset == 128 + 64 * 32 && lp::kShadowBytes == 32 + 96 * 8 && lp::kLampOffset == lp::kShadowOffset + lp::kShadowBytes && lp::kLampBytes == 32 + 96 * 20 &&
-            lp::kBufferBytes == lp::kLampOffset + lp::kLampBytes && lp::kBufferAlloc == 5120 && lp::kBufferAlloc % 256 == 0,
-        "the buffer is the header, 32 lights, the shadow view table (2976 bytes) and the street lamps' table (4928 bytes), an upload buffer of 5120");
+            lp::kRtOffset == lp::kLampOffset + lp::kLampBytes && lp::kRtBytes == 64 && lp::kBufferBytes == lp::kRtOffset + lp::kRtBytes && lp::kBufferAlloc == 5120 && lp::kBufferAlloc % 256 == 0,
+        "the buffer is the header, 32 lights, the shadow view table (2976 bytes), the street lamps' table (4928 bytes) and the ray traced visibility's table (4992 bytes), an upload buffer of 5120");
   const std::map<std::string, long long> d = Defines(hlsli);
   const auto want = [&](const char* name, long long value) {
     const auto it = d.find(name);
@@ -237,6 +237,11 @@ void LayoutChecks(const std::string& hlsli) {
   Check(offsetof(GpuLampHeader, layers_hi) == offsetof(GpuLampHeader, layers_lo) + 4 && offsetof(GpuLampHeader, atlas_height) == offsetof(GpuLampHeader, atlas_width) + 4,
         "the lamps' layers are two words in a row (one Load2) and the atlas's size two uints (one Load4 with the count and the slot)");
   Check(lp::kLampOffset % 16 == 0 && lp::kLampOffset == lp::kShadowOffset + lp::kShadowBytes, "the lamps' table follows the headlights' table, 16 byte aligned");
+  // RT-LIGHTS-D1: the ray traced visibility's table after the lamps' (hlsl/rt_mask_read.hlsli reads it through the pass's own loads)
+  want("LP_FLAG_RT_MASK", lp::kFlagRtMask);
+  want("LP_RT_OFFSET", lp::kRtOffset);
+  want("LP_RT_BYTES", lp::kRtBytes);
+  Check(lp::kRtOffset % 16 == 0 && lp::kRtOffset == lp::kLampOffset + lp::kLampBytes, "the ray traced table follows the lamps' table, 16 byte aligned");
   want("LP_CLASS_NONE", 0);
   want("LP_CLASS_EMISSIVE", 13);
   Check(Has(hlsli, "#define LP_SKY 60000.0f") && lp::kSky == 60000.0f, "the sky's distance is the AO's");

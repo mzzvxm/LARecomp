@@ -1232,6 +1232,103 @@ void TestPass(const std::string& gpu_dir) {
   Check(!lp::PixelLampShadowed(own, units, &w.frame, true, lp::kDebugRemove, lit_p, normal, albedo, 1.0f, depth, out), "debug 3: an owned lamp adds nothing");
   Check(!lp::PixelLampShadowed(sub, units, &w.frame, true, lp::kDebugRemove, far_p, normal, albedo, 1.0f, depth, out), "debug 3: out of reach, nothing");
 
+  // RT-LIGHTS-D1: the ray traced visibility on the lamp's path. THE IDENTITY first: with the flag, the table and every visibility 1 the pixel is bit for bit what it was without the ray, in the shadow, in the
+  // light, for a lamp the game lights and for one the pass owns; a visibility that is not a number is a lit one; a lamp the game lights is only ever taken away from.
+  {
+    const auto lit_term_of = [](const lg::Light& l, const lp::Units& un, const float* pos, const float* n, const float* alb, int i) {
+      float t[3];
+      lp::PixelLight(l, un, pos, n, alb, 1.0f, t);
+      return double(t[i]);
+    };
+    lg::Light sub_rt = sub;
+    sub_rt.flags |= lg::kLightFlagRtVisibility;
+    sub_rt.shadow.mask_channel = 4;
+    lg::Light own_rt = own;
+    own_rt.flags |= lg::kLightFlagRtVisibility;
+    own_rt.shadow.mask_channel = 1;
+    const float* receivers[2] = {p, lit_p};
+    for (const float* r : receivers) {
+      for (int game = 0; game < 2; ++game) {
+        const lg::Light& base = game ? sub : own;
+        const lg::Light& with_rt = game ? sub_rt : own_rt;
+        float plain[3] = {-1, -1, -1}, same[3] = {-2, -2, -2}, nan_v[3] = {-3, -3, -3};
+        const bool a = lp::PixelLampShadowed(base, units, &w.frame, true, 0, r, normal, albedo, 1.0f, depth, plain);
+        const bool b = lp::PixelLampShadowed(with_rt, units, &w.frame, true, 0, r, normal, albedo, 1.0f, depth, same, nullptr, true, 1.0f);
+        const bool c = lp::PixelLampShadowed(with_rt, units, &w.frame, true, 0, r, normal, albedo, 1.0f, depth, nan_v, nullptr, true, std::nanf(""));
+        Check(a == b && a == c, "RT identity: the pixel is drawn (or not) as without the ray");
+        if (a) {
+          Check(std::memcmp(plain, same, sizeof(plain)) == 0 && std::memcmp(plain, nan_v, sizeof(plain)) == 0, "RT identity: every visibility 1 (or not a number) is the pixel bit for bit");
+        }
+        // the flag with no table in the buffer (kFlagRtMask clear: rt_ref false) is the lamp as it was
+        float off[3] = {-4, -4, -4};
+        const bool d = lp::PixelLampShadowed(with_rt, units, &w.frame, true, 0, r, normal, albedo, 1.0f, depth, off, nullptr, false, 0.0f);
+        Check(d == a && (!a || std::memcmp(plain, off, sizeof(plain)) == 0), "RT off: the flag with no table changes nothing");
+      }
+    }
+    // the product with the atlas: a lit receiver (the atlas says 1) at V = 0.5 loses half of a game lamp's term, an owned lamp keeps half; a shadowed one is in the shadow whatever V says
+    float half_sub[3], half_own[3];
+    Check(lp::PixelLampShadowed(sub_rt, units, &w.frame, true, 0, lit_p, normal, albedo, 1.0f, depth, half_sub, nullptr, true, 0.5f), "a game lamp at V 0.5 on a lit receiver takes half away");
+    for (int i = 0; i < 3; ++i) {
+      CheckNear(half_sub[i], -0.5 * lit_term_of(sub, units, lit_p, normal, albedo, i), 1e-5, "... exactly half of the term, negative");
+      Check(half_sub[i] <= 0.0f, "... and never positive");
+    }
+    Check(lp::PixelLampShadowed(own_rt, units, &w.frame, true, 0, lit_p, normal, albedo, 1.0f, depth, half_own, nullptr, true, 0.5f), "an owned lamp at V 0.5 keeps half");
+    for (int i = 0; i < 3; ++i) {
+      CheckNear(half_own[i], 0.5 * lit_term_of(own, units, lit_p, normal, albedo, i), 1e-5, "... half of the term");
+    }
+    float shadow_out[3];
+    Check(lp::PixelLampShadowed(sub_rt, units, &w.frame, true, 0, p, normal, albedo, 1.0f, depth, shadow_out, nullptr, true, 0.5f), "a shadowed receiver of a game lamp changes");
+    for (int i = 0; i < 3; ++i) {
+      CheckNear(shadow_out[i], -lit_term_of(sub, units, p, normal, albedo, i), 1e-5, "... in full: the atlas's shadow times the ray's is still the whole term");
+    }
+    Check(!lp::PixelLampShadowed(own_rt, units, &w.frame, true, 0, p, normal, albedo, 1.0f, depth, shadow_out, nullptr, true, 0.5f), "an owned lamp in the atlas's shadow gets no light whatever V says");
+    // a lamp that has ONLY a channel (no views of the atlas): the ray decides alone; a game lamp is only taken away from
+    lg::Light sub_only = sub_rt;
+    sub_only.shadow.kind = lg::ShadowKind::kNone;
+    sub_only.shadow.view_count = 0;
+    sub_only.shadow.first_view = 0;
+    lg::Light own_only = own_rt;
+    own_only.shadow.kind = lg::ShadowKind::kNone;
+    own_only.shadow.view_count = 0;
+    own_only.shadow.first_view = 0;
+    float only[3];
+    Check(!lp::PixelLampShadowed(sub_only, units, &w.frame, true, 0, lit_p, normal, albedo, 1.0f, depth, only, nullptr, true, 1.0f), "a game lamp with only a channel and V 1: nothing is drawn (the game's pixel)");
+    Check(!lp::PixelLampShadowed(sub_only, units, nullptr, false, 0, lit_p, normal, albedo, 1.0f, depth, only, nullptr, true, 1.0f), "... whatever the atlas tables are");
+    Check(lp::PixelLampShadowed(sub_only, units, nullptr, false, 0, lit_p, normal, albedo, 1.0f, depth, only, nullptr, true, 0.25f), "... at V 0.25 it takes three quarters away");
+    for (int i = 0; i < 3; ++i) {
+      CheckNear(only[i], -0.75 * lit_term_of(sub, units, lit_p, normal, albedo, i), 1e-5, "... exactly");
+      Check(only[i] <= 0.0f, "... and never positive");
+    }
+    Check(lp::PixelLampShadowed(own_only, units, nullptr, false, 0, lit_p, normal, albedo, 1.0f, depth, only, nullptr, true, 0.25f), "an owned lamp with only a channel keeps a quarter");
+    for (int i = 0; i < 3; ++i) {
+      CheckNear(only[i], 0.25 * lit_term_of(own, units, lit_p, normal, albedo, i), 1e-5, "... exactly");
+    }
+    // zero negative pixels: no visibility, however odd, makes a game lamp add light, or take more than its term
+    const float odd[] = {-3.0f, -0.0f, 0.0f, 0.2f, 1.0f, 7.0f, std::nanf(""), INFINITY, -INFINITY};
+    for (float v : odd) {
+      float o[3] = {0, 0, 0};
+      lp::PixelLampShadowed(sub_only, units, nullptr, false, 0, lit_p, normal, albedo, 1.0f, depth, o, nullptr, true, v);
+      for (int i = 0; i < 3; ++i) {
+        Check(o[i] <= 0.0f && o[i] >= -lit_term_of(sub, units, lit_p, normal, albedo, i) * (1.0f + 1e-6f), "a game lamp never adds light and never takes more than its term, whatever V");
+      }
+    }
+    // the headlights' path: a light we own with a channel is multiplied by it (with the atlas's visibility where it has views); with V 1 it is the light unchanged
+    lg::Light head_rt = head;
+    head_rt.flags |= lg::kLightFlagRtVisibility;
+    head_rt.shadow.mask_channel = 0;
+    head_rt.shadow.kind = lg::ShadowKind::kNone;
+    float head_plain[3], head_one[3], head_half[3];
+    lg::ShadowFrame no_frame;
+    Check(lp::PixelLightShadowed(head, units, &no_frame, false, lit_p, normal, albedo, 1.0f, depth, head_plain) &&
+              lp::PixelLightShadowed(head_rt, units, &no_frame, false, lit_p, normal, albedo, 1.0f, depth, head_one, nullptr, true, 1.0f) && std::memcmp(head_plain, head_one, sizeof(head_plain)) == 0,
+          "a headlight with a channel at V 1 is the headlight, bit for bit");
+    Check(lp::PixelLightShadowed(head_rt, units, &no_frame, false, lit_p, normal, albedo, 1.0f, depth, head_half, nullptr, true, 0.5f), "at V 0.5 it is half");
+    for (int i = 0; i < 3; ++i) {
+      CheckNear(head_half[i], 0.5 * head_plain[i], 1e-5 * std::fabs(head_plain[i]) + 1e-9, "... of its term");
+    }
+    Check(!lp::PixelLightShadowed(head_rt, units, &no_frame, false, lit_p, normal, albedo, 1.0f, depth, head_half, nullptr, true, 0.0f), "at V 0 the pass draws nothing for it");
+  }
+
   // the buffer: the lamps' table is in it only when a selected lamp names entries of it
   lp::Selection selection;
   selection.lights[0] = sub;
@@ -1303,7 +1400,8 @@ void TestPass(const std::string& gpu_dir) {
         "the pass raises the lookup's room to both tables and includes the lamps' lookup");
   Check(Has(ps, "if (entry >= uint(LSL_LAMP_ENTRY_BASE))") && Has(ps, "at = uint(LP_LAMP_VIEWS_OFFSET) + (entry - uint(LSL_LAMP_ENTRY_BASE)) * uint(LP_SHADOW_VIEW_BYTES);"),
         "the view seam reads the lamps' table from the combined entry space's base");
-  Check(Has(ps, "l.source == uint(LL_SOURCE_LAMP) && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u") &&
+  // RT-LIGHTS-D1: a lamp that has only a ray traced channel (no atlas views) is looked at too: `|| rt_ref`; the atlas's lookup runs inside it for a lamp that has views
+  Check(Has(ps, "l.source == uint(LL_SOURCE_LAMP) && ((l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) || rt_ref)") &&
             Has(ps, "LslLampLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, l.pos.x, l.pos.y, l.pos.z, world.x, world.y, world.z, lamp_normal.x, lamp_normal.y, lamp_normal.z, lamp_head.y, uint(LSL_MODE_SURFACE))") &&
             Has(ps, "const float3 lamp_normal = LpShadowNormal(g, p, world, normal);"),
         "the shader looks a street lamp up through the lamps' lookup, with the depth plane's geometric normal as the headlights");
@@ -1315,7 +1413,8 @@ void TestPass(const std::string& gpu_dir) {
   Check(lit_at != std::string::npos && lamp_at != std::string::npos && head_at != std::string::npos && lit_at < lamp_at && lamp_at < head_at,
         "the lamp's lookup runs after the term is known and before the headlights' path");
   Check(Has(ps, "LP_OFF_DEBUG") && Has(ps, "LP_DEBUG_VISIBILITY") && Has(ps, "LP_DEBUG_LAMPS") && Has(ps, "LP_DEBUG_REMOVE") && Has(ps, "return float4(-add, 0.0f);"), "the debug pictures and the units check are there");
-  Check(Has(ps, "if ((flags & uint(LP_FLAG_LAMP_SHADOW)) == 0u") && Has(ps, "if (game_lit) {\n        discard;"), "a game lamp with no table takes nothing");
+  Check(Has(ps, "if ((flags & uint(LP_FLAG_LAMP_SHADOW)) == 0u") && Has(ps, "if (!rt_ref) {\n          if (game_lit) {\n            discard;"),
+        "a game lamp with no table takes nothing (and with a ray traced channel the ray's visibility alone decides)");
 }
 
 // ---------------------------------------------------------------------------

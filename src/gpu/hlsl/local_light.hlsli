@@ -33,6 +33,7 @@
 #define LP_FLAG_OCCLUSION 2   // the height factor is applied
 #define LP_FLAG_SHADOW 4      // the shadow view table is in the buffer and its atlas is there (GB-H2)
 #define LP_FLAG_LAMP_SHADOW 8 // the street lamps' table is in the buffer and its atlas is there (LAMP-SHADOWS-4)
+#define LP_FLAG_RT_MASK 16    // the ray traced visibility's table is in the buffer and its images are this frame's (RT-LIGHTS-D1)
 
 #define LP_DEBUG_NONE 0
 #define LP_DEBUG_VISIBILITY 1 // the lamp's shadow as a picture: red where it takes light, green where it is lit
@@ -63,6 +64,13 @@
 #define LP_LAMP_MAX_ENTRIES 20
 #define LP_LAMP_OFF_COUNT 2976      // the table's header: uint count, then slot, width, height (four uints: one Load4)
 #define LP_LAMP_OFF_LAYERS 2992     // layers of entries 0..15 then 16..31 (two uints: one Load2)
+
+// ---- the ray traced visibility's table (local_lights_rules.h kRtOffset; rt_lights_rules.h GpuRtMaskTable) ----------------------------------------------------------------------------------------
+// After the street lamps' table: 64 bytes (images, flags, width, height; the three filtered images' bindless slots and the occlusion's linear depth image; the three raw images' slots; the upsample's
+// depth sigma). A light with the flag LL_FLAG_RT_VISIBILITY reads its mask_channel of them through hlsl/rt_mask_read.hlsli.
+
+#define LP_RT_OFFSET 4928           // = LP_LAMP_OFFSET + 32 + 96 * 20
+#define LP_RT_BYTES 64
 
 // what the depth chain stores for the sky (hlsl/ao_common.hlsli kAoSky)
 #define LP_SKY 60000.0f

@@ -16,6 +16,11 @@
 //                  lookup takes from the depth plane's pixel quad (LpShadowNormal, the way the lit shaders take it from the derivatives of the world position): the G-buffer's normal is the
 //                  shading one (normal-mapped) and would tilt the plane the wrong way at a grazing angle.
 //
+//   the ray traced visibility (RT-LIGHTS-D1, hlsl/rt_mask_read.hlsli): a light with the flag LL_FLAG_RT_VISIBILITY (and the table in the buffer: LP_FLAG_RT_MASK) reads its channel of the filtered images the ray
+//                  pass wrote just before (at the occlusion's traced size: a depth guided bilinear above 1080 lines) and multiplies it with the atlas's visibility (the product: two partial caster sets);
+//                  a light the game lights is only ever TAKEN AWAY from (-term x (1 - V)), so with V = 1 the pixel is the game's. A lamp with a channel and no atlas views is looked at too.
+//                  The table's view flag draws the visibility as a picture instead (mcla_gpu_rt_lights_view).
+//
 //   the street lamps (LAMP-SHADOWS-4, hlsl/lamp_shadow_lookup.hlsli): a light whose source is the street lamp names its entries in the COMBINED entry space (8 + the row of the lamps' table, which follows
 //                  the headlights' in the buffer: LP_LAMP_*); the same one lookup runs over it with the edge fade, and a lamp the game lights has its shadowed share taken away (a negative colour: the blend is
 //                  ADD), a lamp the pass owns is multiplied by the visibility. LP_OFF_DEBUG draws the shadow's own picture instead (mcla_gpu_lamp_shadows_view).
@@ -33,6 +38,7 @@
 #include "light_shadow_lookup.hlsli"
 #include "lamp_shadow_lookup.hlsli"
 #include "nan_guard.hlsli"
+#include "rt_mask_read.hlsli"
 
 #ifndef LL_PASS_MS
 #define LL_PASS_MS 0
@@ -58,6 +64,34 @@ static uint LpAtlasH = 0u;
 static uint LpAtlasLayers = 0u;
 static uint LpLampLayersLo = 0u;  // LAMP-SHADOWS-4: the layers of the lamps' table's entries 0..15 and 16..31
 static uint LpLampLayersHi = 0u;
+
+// The seams of hlsl/rt_mask_read.hlsli: the mask images and the occlusion's linear depth image are heap textures at the traced size (set 0, whatever LL_PASS_MS says: they are no multisampled planes).
+float4 RtmLoadMask(uint slot, int2 p) {
+  return g_textures[slot].Load(int3(p, 0));
+}
+float RtmLoadDepth(uint slot, int2 p) {
+  return g_textures[slot].Load(int3(p, 0)).x;
+}
+
+RtmTable LpLoadRtTable() {
+  const uint4 a = g_lights.Load4(LP_RT_OFFSET);          // images, flags, width, height
+  const uint4 b = g_lights.Load4(LP_RT_OFFSET + 16u);    // the filtered images' slots, the linear depth image's slot
+  const uint4 c = g_lights.Load4(LP_RT_OFFSET + 32u);    // the raw images' slots
+  RtmTable t;
+  t.images = a.x;
+  t.flags = a.y;
+  t.width = a.z;
+  t.height = a.w;
+  t.slot0 = b.x;
+  t.slot1 = b.y;
+  t.slot2 = b.z;
+  t.lin_slot = b.w;
+  t.raw0 = c.x;
+  t.raw1 = c.y;
+  t.raw2 = c.z;
+  t.depth_sigma = asfloat(g_lights.Load(LP_RT_OFFSET + 48u));
+  return t;
+}
 
 float4 LoadPlane(uint slot, int2 p) {
 #if LL_PASS_MS
@@ -231,10 +265,21 @@ float4 main(float4 position : SV_Position) : SV_Target {
     discard;
   }
 
+  // The ray traced visibility of this light (RT-LIGHTS-D1): its channel of the filtered images at this pixel; 1 for a light with none.
+  const bool rt_ref = (flags & uint(LP_FLAG_RT_MASK)) != 0u && (l.flags & uint(LL_FLAG_RT_VISIBILITY)) != 0u;
+  float rt_vis = 1.0f;
+  if (rt_ref) {
+    const RtmTable rt_table = LpLoadRtTable();
+    rt_vis = RtmVisibility(rt_table, l.mask_channel, p, g.size.x, g.size.y, t, (rt_table.flags & uint(RTM_RAW_VIEW)) != 0u);
+    if ((rt_table.flags & uint(RTM_VIEW)) != 0u) {
+      return float4(float3(1.0f - rt_vis, rt_vis, 0.0f) * (g.exposure * 0.15f), 0.0f);   // the picture of the visibility instead of the light
+    }
+  }
+
   // A STREET LAMP's light with views of the lamps' table (LAMP-SHADOWS-4): the one lookup plus the edge fade over the lamps' table, then, for a lamp the game lights (its grid already added the term)
   // the shadowed share is TAKEN AWAY (the blend is ADD: the pixel's colour is negative), for a lamp the pass owns the light is multiplied by the visibility. The pixel is read only after the term
   // is known to be over 0, as the headlights'. A game lamp with no table has nothing to take away.
-  if (l.source == uint(LL_SOURCE_LAMP) && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) {
+  if (l.source == uint(LL_SOURCE_LAMP) && ((l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) || rt_ref)) {
     const bool game_lit = (l.flags & uint(LL_FLAG_GAME_LIT)) != 0u;
     if (g_lights.Load(LP_OFF_DEBUG) == uint(LP_DEBUG_REMOVE)) {  // the units check: the whole term of a game lamp taken away, nothing added for an owned one
       if (!game_lit) {
@@ -242,28 +287,37 @@ float4 main(float4 position : SV_Position) : SV_Target {
       }
       return float4(-add, 0.0f);
     }
-    const uint4 lamp_head = g_lights.Load4(LP_LAMP_OFF_COUNT);  // count, slot, width, height
-    if ((flags & uint(LP_FLAG_LAMP_SHADOW)) == 0u || lamp_head.y == 0xFFFFFFFFu || lamp_head.z == 0u || lamp_head.w == 0u) {
-      if (game_lit) {
-        discard;
+    float lamp_vis = 1.0f;
+    if (l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u) {
+      const uint4 lamp_head = g_lights.Load4(LP_LAMP_OFF_COUNT);  // count, slot, width, height
+      if ((flags & uint(LP_FLAG_LAMP_SHADOW)) == 0u || lamp_head.y == 0xFFFFFFFFu || lamp_head.z == 0u || lamp_head.w == 0u) {
+        if (!rt_ref) {
+          if (game_lit) {
+            discard;
+          }
+          return float4(add, 0.0f);
+        }
+      } else {
+        LpAtlasW = lamp_head.z;
+        LpAtlasH = lamp_head.w;
+        const uint2 lamp_layers = g_lights.Load2(LP_LAMP_OFF_LAYERS);
+        LpLampLayersLo = lamp_layers.x;
+        LpLampLayersHi = lamp_layers.y;
+        const float3 lamp_normal = LpShadowNormal(g, p, world, normal);  // the geometric normal of the depth plane's quad, as the headlights' (the plane lookup needs it)
+        lamp_vis = LslLampLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, l.pos.x, l.pos.y, l.pos.z, world.x, world.y, world.z, lamp_normal.x, lamp_normal.y, lamp_normal.z, lamp_head.y, uint(LSL_MODE_SURFACE));
+        const uint debug = g_lights.Load(LP_OFF_DEBUG);
+        if (debug == uint(LP_DEBUG_VISIBILITY)) {
+          return float4(float3(1.0f - lamp_vis, lamp_vis, 0.0f) * (g.exposure * 0.15f), 0.0f);
+        }
+        if (debug == uint(LP_DEBUG_LAMPS)) {
+          float f = float(l.first_view);
+          float k = g.exposure * (0.05f + 0.25f * (1.0f - lamp_vis));
+          return float4(frac(f * 0.37f) * k, frac(f * 0.61f + 0.3f) * k, frac(f * 0.83f + 0.6f) * k, 0.0f);
+        }
       }
-      return float4(add, 0.0f);
     }
-    LpAtlasW = lamp_head.z;
-    LpAtlasH = lamp_head.w;
-    const uint2 lamp_layers = g_lights.Load2(LP_LAMP_OFF_LAYERS);
-    LpLampLayersLo = lamp_layers.x;
-    LpLampLayersHi = lamp_layers.y;
-    const float3 lamp_normal = LpShadowNormal(g, p, world, normal);  // the geometric normal of the depth plane's quad, as the headlights' (the plane lookup needs it)
-    const float lamp_vis = LslLampLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, l.pos.x, l.pos.y, l.pos.z, world.x, world.y, world.z, lamp_normal.x, lamp_normal.y, lamp_normal.z, lamp_head.y, uint(LSL_MODE_SURFACE));
-    const uint debug = g_lights.Load(LP_OFF_DEBUG);
-    if (debug == uint(LP_DEBUG_VISIBILITY)) {
-      return float4(float3(1.0f - lamp_vis, lamp_vis, 0.0f) * (g.exposure * 0.15f), 0.0f);
-    }
-    if (debug == uint(LP_DEBUG_LAMPS)) {
-      float f = float(l.first_view);
-      float k = g.exposure * (0.05f + 0.25f * (1.0f - lamp_vis));
-      return float4(frac(f * 0.37f) * k, frac(f * 0.61f + 0.3f) * k, frac(f * 0.83f + 0.6f) * k, 0.0f);
+    if (rt_ref) {
+      lamp_vis = RtmCombine(lamp_vis, rt_vis);   // the product of the atlas's visibility and the ray's (each 1 where the lamp has none)
     }
     add = game_lit ? -add * (1.0f - lamp_vis) : add * lamp_vis;
     if (!any(add != 0.0f)) {
@@ -283,6 +337,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
       const float3 shadow_normal = LpShadowNormal(g, p, world, normal);
       add *= LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, shadow_normal.x, shadow_normal.y, shadow_normal.z, atlas_slot, uint(LSL_MODE_SURFACE));
     }
+  }
+  if (rt_ref) {
+    // the ray traced visibility multiplies a light we own (a headlight, neon, a police or mod lamp); a light the game lights with no lamp source (never selected: TrimSelection) is taken away from
+    add = ((l.flags & uint(LL_FLAG_GAME_LIT)) != 0u) ? -add * (1.0f - RtmCombine(1.0f, rt_vis)) : add * RtmCombine(1.0f, rt_vis);
+    if (!any(add != 0.0f)) {
+      discard;
+    }
+    return float4(add, 0.0f);
   }
   if (!any(add > 0.0f)) {
     discard;

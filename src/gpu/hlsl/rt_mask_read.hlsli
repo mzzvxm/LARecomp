@@ -70,6 +70,11 @@ float RtmClean(float v) {
   return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
 }
 
+// The atlas's visibility times the ray's (each 1 where the light has none): the twin of rt_lights_rules.h Combine.
+float RtmCombine(float atlas, float rt) {
+  return RtmClean(atlas) * RtmClean(rt);
+}
+
 // The depth a traced texel holds, without the vehicle bit (asuint(raw) & ~1u).
 float RtmDepthOf(uint lin_slot, int2 q) {
   return asfloat(asuint(RtmLoadDepth(lin_slot, q)) & ~1u);

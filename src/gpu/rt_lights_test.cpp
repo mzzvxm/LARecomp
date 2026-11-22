@@ -39,6 +39,7 @@
 #include "rt_lights_rules.h"
 #include "light_convert.h"
 #include "light_laws.h"
+#include "local_lights_rules.h"
 
 namespace rl = larecomp::gpu::rt_lights;
 namespace lg = larecomp::gpu;
@@ -1031,6 +1032,216 @@ void TestMaskRead() {
 }
 
 // ---------------------------------------------------------------------------
+// the pass's selection and buffer (local_lights_rules.h)
+// ---------------------------------------------------------------------------
+namespace ll = larecomp::gpu::local_lights;
+
+lg::Light OwnedLamp(float x, uint64_t id) {
+  lg::Light l = Lamp(x, 6, 0, id);
+  l.flags &= ~lg::kLightFlagGameLit;   // the pass adds it
+  l.roles = uint8_t(lg::kRoleMaskGameLit | lg::kRoleMaskSurface);
+  return l;
+}
+
+void TestSelectionAndBuffer() {
+  const float eye[3] = {0.0f, 1.5f, 0.0f};
+  // ANNOTATE: a light whose id holds a channel gets the flag and the number; its atlas kind and views stay; one that holds none loses the flag
+  {
+    ll::Selection sel;
+    sel.lights[0] = Headlight(0, 1, 5, 10);
+    sel.lights[1] = Lamp(3, 6, 0, 11);
+    sel.lights[1].shadow.kind = lg::ShadowKind::kAtlas;
+    sel.lights[1].shadow.first_view = 9;
+    sel.lights[1].shadow.view_count = 2;
+    sel.lights[1].shadow.weight = 0.5f;
+    sel.lights[2] = Lamp(6, 6, 0, 12);
+    sel.lights[2].flags |= lg::kLightFlagRtVisibility;   // a stale flag from another frame
+    sel.lights[2].shadow.mask_channel = 5;
+    sel.count = 3;
+    rl::Assignment a;
+    a.id[0] = 11;
+    a.id[4] = 10;
+    CHECK(ll::AnnotateSelection(a, &sel) == 2);
+    CHECK((sel.lights[0].flags & lg::kLightFlagRtVisibility) != 0 && sel.lights[0].shadow.mask_channel == 4);
+    CHECK((sel.lights[1].flags & lg::kLightFlagRtVisibility) != 0 && sel.lights[1].shadow.mask_channel == 0);
+    CHECK(sel.lights[1].shadow.kind == lg::ShadowKind::kAtlas && sel.lights[1].shadow.first_view == 9 && sel.lights[1].shadow.view_count == 2 && sel.lights[1].shadow.weight == 0.5f);
+    CHECK((sel.lights[2].flags & lg::kLightFlagRtVisibility) == 0);
+    CHECK((sel.lights[1].flags & lg::kLightFlagGameLit) != 0 && (sel.lights[0].flags & lg::kLightFlagGameLit) == 0);   // the game's flag is untouched
+  }
+  // TRIM: a game's light with no source of visibility goes; with views, or with a channel, it stays; a light we own stays; the order and the counters follow
+  {
+    ll::Selection sel;
+    sel.lights[0] = Headlight(0, 1, 5, 1);                          // ours, no source: stays
+    sel.lights[1] = Lamp(3, 6, 0, 2);                               // the game's, no source: goes
+    sel.lights[2] = Lamp(6, 6, 0, 3);                               // the game's, atlas views: stays
+    sel.lights[2].shadow.kind = lg::ShadowKind::kAtlas;
+    sel.lights[2].shadow.view_count = 1;
+    sel.lights[3] = Lamp(9, 6, 0, 4);                               // the game's, a channel: stays
+    sel.lights[3].flags |= lg::kLightFlagRtVisibility;
+    sel.lights[4] = Lamp(12, 6, 0, 5);                              // the game's, no source: goes
+    sel.lights[5] = OwnedLamp(15, 6);                               // owned, no source: stays
+    sel.count = 6;
+    sel.from_frame = 1;
+    sel.from_extra = 5;
+    sel.from_class[size_t(ll::SourceClass::kFrame)] = 1;
+    sel.from_class[size_t(ll::SourceClass::kHandedOver)] = 5;
+    CHECK(ll::TrimSelection(&sel) == 2);
+    CHECK(sel.count == 4 && sel.lights[0].id == 1 && sel.lights[1].id == 3 && sel.lights[2].id == 4 && sel.lights[3].id == 6);
+    CHECK(sel.from_frame == 1 && sel.from_extra == 3 && sel.from_class[size_t(ll::SourceClass::kHandedOver)] == 3);
+    CHECK(sel.lights[4].id == lg::kNoLightId && sel.lights[5].id == lg::kNoLightId);   // the freed rows are empty
+    CHECK(ll::TrimSelection(&sel) == 0);   // nothing more to take out
+  }
+  // THE WHOLE PICK, as the pass runs it: the frame's headlight, a lamp the atlas picked (views), a lamp handed over for its ray, a lamp nobody picked. K = 2: the headlight and the nearest lamp get channels.
+  {
+    ll::Selection sel;
+    sel.lights[0] = Headlight(0, 1, 8, 100);
+    sel.lights[1] = Lamp(4, 6, 0, 201);                            // nearest
+    sel.lights[1].shadow.kind = lg::ShadowKind::kAtlas;
+    sel.lights[1].shadow.view_count = 2;
+    sel.lights[2] = Lamp(12, 6, 0, 202);                           // handed over for its ray only
+    sel.lights[3] = Lamp(25, 6, 0, 203);                           // handed over, farther
+    sel.count = 4;
+    const rl::Pick pick = rl::SelectTopK(sel.lights.data(), sel.count, eye, nullptr, 0, 2);
+    CHECK(pick.count == 2 && pick.id[0] == 100 && pick.id[1] == 201);
+    const rl::Assigned assigned = rl::AssignChannels(rl::Assignment{}, pick.id.data(), pick.count, rl::ImagesFor(2) * 3);
+    CHECK(ll::AnnotateSelection(assigned.now, &sel) == 2);
+    CHECK(ll::TrimSelection(&sel) == 2);   // the two lamps nobody gave a source
+    CHECK(sel.count == 2 && sel.lights[0].id == 100 && sel.lights[1].id == 201);
+    // every light of the pass that the game lights has a source of visibility: the pass never ADDS a game's lamp
+    for (uint32_t i = 0; i < sel.count; ++i) {
+      CHECK((sel.lights[i].flags & lg::kLightFlagGameLit) == 0 || ll::HasVisibilitySource(sel.lights[i]));
+    }
+  }
+  // random selections: after annotate and trim, no game's light is without a source, the survivors are in their order, and a light that holds a channel is never removed
+  Lcg rng;
+  for (int round = 0; round < 500; ++round) {
+    ll::Selection sel;
+    const uint32_t n = 1 + rng.Below(20);
+    std::vector<uint64_t> ids;
+    for (uint32_t i = 0; i < n; ++i) {
+      lg::Light l = rng.Below(3) == 0 ? Headlight(rng.Range(-20, 20), 1, rng.Range(2, 30), 1000 + i) : Lamp(rng.Range(-30, 30), 6, rng.Range(-30, 30), 1000 + i);
+      if (rng.Below(4) == 0) {
+        l.shadow.kind = lg::ShadowKind::kAtlas;
+        l.shadow.view_count = uint8_t(1 + rng.Below(2));
+      }
+      sel.lights[i] = l;
+      ids.push_back(l.id);
+    }
+    sel.count = n;
+    sel.from_extra = n;
+    sel.from_class[size_t(ll::SourceClass::kHandedOver)] = n;
+    const uint32_t k = 1 + rng.Below(9);
+    const rl::Pick pick = rl::SelectTopK(sel.lights.data(), n, eye, nullptr, 0, k);
+    const rl::Assigned assigned = rl::AssignChannels(rl::Assignment{}, pick.id.data(), pick.count, rl::ImagesFor(k) * 3);
+    ll::AnnotateSelection(assigned.now, &sel);
+    ll::Selection before = sel;
+    ll::TrimSelection(&sel);
+    uint32_t j = 0;
+    for (uint32_t i = 0; i < before.count; ++i) {
+      const bool kept = !((before.lights[i].flags & lg::kLightFlagGameLit) != 0 && !ll::HasVisibilitySource(before.lights[i]));
+      if (kept) {
+        CHECK(j < sel.count && sel.lights[j].id == before.lights[i].id);
+        ++j;
+      } else {
+        CHECK(rl::ChannelFor(assigned.now, before.lights[i].id) == rl::kNoChannel);   // never one that holds a channel
+      }
+    }
+    CHECK(j == sel.count);
+    for (uint32_t i = 0; i < sel.count; ++i) {
+      CHECK((sel.lights[i].flags & lg::kLightFlagGameLit) == 0 || ll::HasVisibilitySource(sel.lights[i]));
+    }
+  }
+  // THE BUFFER: the ray traced table is written only when a selected light reads a channel of valid images; the header's flag says so; the bytes are the table
+  {
+    ll::PassInputs in;
+    in.tan_x = in.tan_y = 1.0f;
+    in.width = 1920;
+    in.height = 1080;
+    rl::MaskFrame frame;
+    frame.valid = true;
+    frame.images = 2;
+    frame.width = 1920;
+    frame.height = 1080;
+    frame.slot = {41, 42, lg::kNoLightSlot};
+    frame.raw_slot = {51, 52, lg::kNoLightSlot};
+    frame.lin_slot = 60;
+    in.rt_mask = &frame;
+    ll::Selection sel;
+    sel.lights[0] = Headlight(0, 1, 8, 7);
+    sel.lights[0].flags |= lg::kLightFlagRtVisibility;
+    sel.lights[0].shadow.mask_channel = 4;   // image 1
+    sel.count = 1;
+    CHECK(ll::RtTableNeeded(sel, &frame));
+    std::vector<uint8_t> bytes(ll::kBufferAlloc, 0xAB);
+    ll::BuildBuffer(in, sel, bytes.data());
+    ll::PassHeader h;
+    std::memcpy(&h, bytes.data(), sizeof(h));
+    CHECK((h.flags & ll::kFlagRtMask) != 0);
+    rl::GpuRtMaskTable t;
+    std::memcpy(&t, bytes.data() + ll::kRtOffset, sizeof(t));
+    const rl::GpuRtMaskTable want = rl::BuildMaskTable(frame);
+    CHECK(std::memcmp(&t, &want, sizeof(t)) == 0 && t.slot[1] == 42 && t.lin_slot == 60);
+    // the light's row carries the flag and the channel
+    lg::GpuLight row;
+    std::memcpy(&row, bytes.data() + ll::kLightsOffset, sizeof(row));
+    const lg::Light back = lg::UnpackGpuLight(row);
+    CHECK((back.flags & lg::kLightFlagRtVisibility) != 0 && back.shadow.mask_channel == 4);
+    // a channel past the images, no flag on any light, no mask frame, an invalid one: no table and the flag clear and the region zero
+    ll::Selection past = sel;
+    past.lights[0].shadow.mask_channel = 6;
+    ll::Selection unflagged = sel;
+    unflagged.lights[0].flags &= ~lg::kLightFlagRtVisibility;
+    rl::MaskFrame invalid = frame;
+    invalid.valid = false;
+    const struct {
+      const ll::Selection* s;
+      const rl::MaskFrame* f;
+      const char* what;
+    } none[] = {{&past, &frame, "a channel past the images"}, {&unflagged, &frame, "no light reads a channel"}, {&sel, nullptr, "no mask frame"}, {&sel, &invalid, "an invalid mask frame"}};
+    for (const auto& c : none) {
+      ll::PassInputs in2 = in;
+      in2.rt_mask = c.f;
+      std::vector<uint8_t> b2(ll::kBufferAlloc, 0xCD);
+      ll::BuildBuffer(in2, *c.s, b2.data());
+      ll::PassHeader h2;
+      std::memcpy(&h2, b2.data(), sizeof(h2));
+      bool zero = true;
+      for (uint32_t i = ll::kRtOffset; i < ll::kBufferAlloc; ++i) {
+        zero = zero && b2[i] == 0;
+      }
+      Check((h2.flags & ll::kFlagRtMask) == 0 && zero, std::string("no ray traced table: ") + c.what);
+    }
+    // the other tables' regions are untouched by the new one
+    ll::PassInputs in3 = in;
+    in3.rt_mask = nullptr;
+    std::vector<uint8_t> b3(ll::kBufferAlloc, 0);
+    ll::BuildBuffer(in3, sel, b3.data());
+    CHECK(std::memcmp(bytes.data() + ll::kShadowOffset, b3.data() + ll::kShadowOffset, ll::kRtOffset - ll::kShadowOffset) == 0);
+  }
+  // THE TWINS with no atlas in the way (the full lamp and headlight twin checks with the atlas are in lamp_shadows_test.cpp): the composition of the pass is rt_lights::Apply
+  {
+    const float world[3] = {2.0f, 0.0f, 1.0f}, normal[3] = {0.0f, 1.0f, 0.0f}, albedo[3] = {0.5f, 0.4f, 0.3f};
+    ll::Units units;
+    units.exposure = 16.0f;
+    const auto nodepth = [](int, int) { return 1.0f; };
+    for (int round = 0; round < 400; ++round) {
+      lg::Light l = rng.Below(2) ? Lamp(rng.Range(-4, 4), 6, rng.Range(-4, 4), 5) : OwnedLamp(rng.Range(-4, 4), 5);
+      l.flags |= lg::kLightFlagRtVisibility;
+      const float v = rng.Range(-0.2f, 1.2f);
+      float term[3], out[3];
+      ll::PixelLight(l, units, world, normal, albedo, 1.0f, term);
+      if (!(term[0] > 0.0f)) {
+        continue;
+      }
+      ll::PixelLampShadowed(l, units, nullptr, false, 0, world, normal, albedo, 1.0f, nodepth, out, nullptr, true, v);
+      float expect[3];
+      rl::Apply((l.flags & lg::kLightFlagGameLit) != 0, term, rl::Combine(1.0f, v), expect);
+      CHECK(out[0] == expect[0] && out[1] == expect[1] && out[2] == expect[2]);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the text of the shader and of the sources
 // ---------------------------------------------------------------------------
 std::string ReadFile(const std::string& path) {
@@ -1110,6 +1321,7 @@ int main(int argc, char** argv) {
   section("geometry", TestGeometry);
   section("noise", TestNoise);
   section("mask read", TestMaskRead);
+  section("selection and buffer", TestSelectionAndBuffer);
   if (argc > 1) {
     TestShaderText(argv[1]);
   }
