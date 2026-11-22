@@ -2172,7 +2172,7 @@ sync_build_log::KeyWords WordsOf(const PipelineKey& key) {
   w.ps_variant = key.ps_variant;
   w.color_count = key.color_count;
   w.sample_count = key.sample_count;
-  w.stencil = (key.stencil & 1u) != 0;
+  w.stencil = sync_build_log::StencilWrites(key.stencil, key.stencil_masks);
   return w;
 }
 

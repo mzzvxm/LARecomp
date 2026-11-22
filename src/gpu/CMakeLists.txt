@@ -200,9 +200,6 @@ add_executable(larecomp_ao_gbuffer_test EXCLUDE_FROM_ALL ao_gbuffer_test.cpp)
 # src/settings/generated, and the REXCVAR_DEFINE call of a .cpp before the conversion) has a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_setting_source_test, then run src/gpu/larecomp_setting_source_test (exit 0 = passed).
 add_executable(larecomp_setting_source_test EXCLUDE_FROM_ALL setting_source_test.cpp)
-# The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
-#   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
-add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
 # Which draws wait in the background for a pipeline whatever the game's rule says (variant_wait.h: a draw whose key has the headlight's word or the G-buffer's
 # planes has the game's own shader as its fallback, so the lit world draws that write the stencil no longer make those pipelines on the render thread):
 #   cmake --build <dir> --target larecomp_variant_wait_test, then run src/gpu/larecomp_variant_wait_test (exit 0 = passed).
@@ -217,6 +214,9 @@ target_include_directories(larecomp_guest_frame_test PRIVATE ${CMAKE_SOURCE_DIR}
 # that needs no renderer:
 #   cmake --build <dir> --target larecomp_sync_build_log_test, then run src/gpu/larecomp_sync_build_log_test (exit 0 = passed).
 add_executable(larecomp_sync_build_log_test EXCLUDE_FROM_ALL sync_build_log_test.cpp)
+# The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
+add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
 # Every descriptor set the renderer makes agrees with its builder (descriptor_count_test.cpp; tools/check_descriptor_counts.py is its Python twin): D3D12 refuses a set
 # whose CreateDescriptorSet counts are not the builder's ranges (Vulkan does not count: the city shadow pass never ran on D3D12 for that), and the binding code's indices,
 # range types and structured views are read against the ranges. Reads the .cpp / .h files of the folder it is given, no renderer needed:

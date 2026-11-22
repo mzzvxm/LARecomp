@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <regex>
 #include <string>
 
 #include "sync_build_log.h"
@@ -113,6 +114,57 @@ void TestSessionLine() {
 }
 
 // The words the health checks read as an error must not be in any of the lines: a sync build is information.
+// What the key's stencil words must say for a line to name the stencil: the pipeline WRITES it (an operation other than KEEP, a write mask), as the game's rule
+// (Scene::MaySkipForPipeline) and pipeline_list.py's stencil_writes read it. The packing is PipelineKey's (pipelines.h): the words below are built the way BuildKey builds them.
+void TestStencilWrites() {
+  constexpr uint32_t keep = kStencilKeep, replace = 3;
+  const auto stencil_word = [&](uint32_t front_pass, uint32_t back_pass) {
+    return 1u | (8u << 1) | (keep << 5) | (front_pass << 9) | (keep << 13) | (8u << 17) | (keep << 21) | (back_pass << 25);
+  };
+  const auto masks_word = [&](uint32_t write_mask, uint32_t back_depth_fail) { return 0xFFu | (write_mask << 8) | (0x20u << 16) | (back_depth_fail << 24); };
+  Check(StencilWrites(stencil_word(replace, replace), masks_word(0xFF, keep)), "REPLACE on a pass with a write mask writes the stencil (the lit world draws)");
+  Check(!StencilWrites(stencil_word(keep, keep), masks_word(0xFF, keep)), "all KEEP only tests the stencil");
+  Check(!StencilWrites(stencil_word(replace, replace), masks_word(0, keep)), "a write mask of 0 writes nothing");
+  Check(!StencilWrites(0, 0), "stencil off writes nothing");
+  Check(!StencilWrites(stencil_word(replace, replace) & ~1u, masks_word(0xFF, keep)), "the enable bit is what turns it on");
+  Check(StencilWrites(stencil_word(keep, replace), masks_word(0xFF, keep)), "the back face's pass operation counts");
+  Check(StencilWrites(stencil_word(keep, keep), masks_word(0xFF, 3)), "the back face's depth fail operation (in the masks word) counts");
+  Check(StencilWrites(1u | (keep << 5) | (keep << 9) | (3u << 13), masks_word(0x01, keep)), "the front face's depth fail operation counts, whatever bits of the mask");
+}
+
+// The lines are read by perf/scripts/stall_check.py: the same patterns, copied (keep them in step with SYNC_BUILD, SYNC_WAIT and SYNC_SESSION there).
+void TestStallCheckPatterns() {
+  const std::regex build(R"(\[pipeline\] sync build #(\d+): guest frame (\d+), ([0-9.]+) ms, (\w+), vs ([0-9A-Fa-f]+)/([0-9A-Fa-f]+) ps ([0-9A-Fa-f]+)/([0-9A-Fa-f]+), )"
+                         R"((\d+) colour target\(s\), (\d+)x, (stencil|no stencil), background build (allowed|refused))");
+  const std::regex wait(R"(\[pipeline\] sync wait #(\d+): guest frame (\d+), ([0-9.]+) ms, (\w+) build, vs ([0-9A-Fa-f]+)/([0-9A-Fa-f]+) ps ([0-9A-Fa-f]+)/([0-9A-Fa-f]+))");
+  const std::regex session(R"(\[pipeline\] sync builds this session: (\d+) build\(s\) ([0-9.]+) ms, (\d+) wait\(s\) ([0-9.]+) ms, longest ([0-9.]+) ms)");
+  KeyWords plain = NightKey();
+  plain.stencil = false;
+  plain.vs_variant = 0x2000;
+  for (const Why why : {Why::kNew, Why::kClaimed, Why::kAgain}) {
+    for (const bool skippable : {false, true}) {
+      for (const KeyWords& k : {NightKey(), plain}) {
+        std::smatch m;
+        const std::string line = FormatBuild(12345, 987654, 41'200'000, why, k, skippable);
+        Check(std::regex_search(line, m, build) && m[1] == "12345" && m[2] == "987654" && m[3] == "41.2" && m[4] == WhyName(why) && m[11] == (k.stencil ? "stencil" : "no stencil") &&
+                  m[12] == (skippable ? "allowed" : "refused"),
+              "stall_check's build pattern reads: " + line);
+      }
+    }
+  }
+  for (const char* source : {"list", "request"}) {
+    std::smatch m;
+    const std::string line = FormatWait(7, 100, 8'700'000, source, plain);
+    Check(std::regex_search(line, m, wait) && m[1] == "7" && m[4] == source && m[6] == "2000", "stall_check's wait pattern reads: " + line);
+  }
+  Counters c;
+  c.NoteBuild(30'000'000);
+  c.NoteWait(5'000'000);
+  const std::string line = FormatSession(c);
+  std::smatch m;
+  Check(std::regex_search(line, m, session) && m[1] == "1" && m[3] == "1" && m[5] == "30.0", "stall_check's session pattern reads: " + line);
+}
+
 void TestNoErrorWords() {
   const std::string all = FormatBuild(1, 1, 1, Why::kNew, NightKey(), true) + FormatBuild(1, 1, 1, Why::kClaimed, NightKey(), false) +
                           FormatBuild(1, 1, 1, Why::kAgain, NightKey(), false) + FormatWait(1, 1, 1, "list", NightKey()) +
@@ -130,6 +182,8 @@ int main() {
   TestBuildLine();
   TestWaitLine();
   TestSessionLine();
+  TestStencilWrites();
+  TestStallCheckPatterns();
   TestNoErrorWords();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   std::printf(g_failed == 0 ? "RESULT PASS\n" : "RESULT FAIL\n");

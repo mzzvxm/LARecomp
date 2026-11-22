@@ -20,7 +20,10 @@
 //
 // #N counts the session's events of that kind (builds and waits are counted on their own), and the
 // first kLoggedFirst of each kind get a line, then every kLoggedEvery-th, so a run that stalls on hundreds
-// of builds writes a few dozen lines and the largest #N is still the count. The words are the key's
+// of builds writes a few dozen lines. The largest #N is within kLoggedEvery of the count (the lines in
+// between are silent); the exact totals are the line at shutdown, which a run that is killed does not write.
+// The line says "stencil" when the pipeline WRITES the stencil (what the game's rule looks at), not when
+// it only tests it. The words are the key's
 // own: the shader hashes and the two variant words (hex), what the pack's variant words mean is
 // shaderpack/variant_chain.h's. `why` of a build: "new" (nobody had begun it), "claimed" (queued for a
 // builder thread that had not begun it: the render thread took it over), "again" (a background build
@@ -65,8 +68,29 @@ struct KeyWords {
   uint32_t ps_variant = 0;
   uint32_t color_count = 0;
   uint32_t sample_count = 1;
-  bool stencil = false;
+  bool stencil = false;  // the pipeline writes the stencil (StencilWrites below)
 };
+
+// Plume's RenderStencilOp values in the key's stencil words (PipelineKey::stencil: bit 0 enable; front compare, fail, pass, depth fail at bits 1, 5, 9, 13; back compare, fail, pass at
+// 17, 21, 25; stencil_masks: read | write | reference, 8 bits each, the back depth fail at bit 24): UNKNOWN 0, KEEP 1, ZERO 2, REPLACE 3 ...
+inline constexpr uint32_t kStencilKeep = 1;
+
+// Whether a key writes the stencil: it is on, the write mask is not 0 and an operation is not KEEP (the test of Scene's StencilWrites on the key's packing, and of
+// tools/pipelines/pipeline_list.py's stencil_writes). The game's rule for leaving a draw out while its pipeline builds refuses exactly these.
+constexpr bool StencilWrites(uint32_t stencil, uint32_t masks) {
+  if ((stencil & 1u) == 0 || ((masks >> 8) & 0xFFu) == 0) {
+    return false;
+  }
+  const uint32_t shifts[] = {5u, 9u, 13u, 21u, 25u};
+  for (const uint32_t shift : shifts) {
+    const uint32_t op = (stencil >> shift) & 0xFu;
+    if (op != 0 && op != kStencilKeep) {
+      return true;
+    }
+  }
+  const uint32_t back_depth_fail = (masks >> 24) & 0xFu;
+  return back_depth_fail != 0 && back_depth_fail != kStencilKeep;
+}
 
 // The session's counts: what Pipelines keeps (render thread only).
 struct Counters {
