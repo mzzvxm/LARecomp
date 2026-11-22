@@ -257,6 +257,8 @@ bool ImportBackup(const fs::path& path, const std::string& password, std::string
     core::KeyRecord next = g.rec;
     std::memcpy(next.seed, restored.seed, 32);
     // The key being replaced (or a file that could not be read) is kept beside the new one, so a wrong backup can be undone.
+    // CHECK: identity/test/identity_adapter_compare.ps1 differs from the code before the split here by design (a ".replaced-<time>" copy
+    // in the identity folder after an import of another key, and the unreadable-and-not-movable case): re-record the old/new pair.
     if ((g.read_only || !next.SameKeyAs(g.rec)) && !core::KeepCopyOfKey(IdentityDir(), g.profile_id)) {
         if (error) *error = "cannot keep a copy of the current key in " + IdentityDir().string();
         return false;
