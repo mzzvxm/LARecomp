@@ -9343,7 +9343,7 @@
   "type": "i32",
   "default": "-1",
   "category": "MCLA/GPU",
-  "help": "\"Debug: how many OTHER cars (opponents, traffic, parked cars) the ray traced car effects see besides your own: your car's paint and chrome \"\n    \"reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 14 m of your car on the High class, 2 within 10 m on \"\n    \"the Mid class, none on the Low class); 0 turns the other cars off (your car alone, as it was); 1 to 8 asks for that many. Each car is built \"\n    \"once into ray tracing structures (8 to 10 MiB at full detail) and a new car appears in parts over a few frames. Live.\"",
+  "help": "\"Debug: how many OTHER cars (opponents, traffic, parked cars) the ray traced car effects see besides your own: your car's paint and chrome \"\n    \"reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 20 m of your car on the High class, 2 within 14 m on \"\n    \"the Mid class, none on the Low class); 0 turns the other cars off (your car alone, as it was); 1 to 8 asks for that many. Each car is built \"\n    \"once into ray tracing structures (8 to 10 MiB at full detail) and a new car appears in parts over a few frames. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{-1, 8}"
@@ -9355,7 +9355,7 @@
   "type": "f64",
   "default": "0.0",
   "category": "MCLA/GPU",
-  "help": "\"Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's \"\n    \"class decides, 10 to 14 m). The reflection reaches 4 m from your car's paint, so a car more than about 10 m away cannot show in it. Live.\"",
+  "help": "\"Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's \"\n    \"class decides, 20 m on the High class, 14 m on the Mid class). The reflection reaches another car 18 m (High) or 12 m (Mid) away (mcla_gpu_car_rt_hit_reach) and a car's half length is 2 m, so a car whose centre is farther than the radius cannot show in it. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 60.0}"
@@ -9613,7 +9613,7 @@
   "type": "f64",
   "default": "0.0",
   "category": "MCLA/GPU",
-  "help": "\"Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). \"\n    \"The weight of a hit falls over this from three quarters of it. Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours \"\n    \"(mcla_gpu_car_rt_cars_radius moves that). Live.\"",
+  "help": "\"Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). \"\n    \"The weight of a hit falls over this from three quarters of it (0.7 on the Mid class). Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours \"\n    \"(mcla_gpu_car_rt_cars_radius moves that). Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 20.0}"
