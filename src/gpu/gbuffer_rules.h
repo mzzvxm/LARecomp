@@ -332,6 +332,19 @@ constexpr Caps CapsFor(bool vulkan) {
   return caps;
 }
 
+// ---------------------------------------------------------------------------
+// Waiting for the sidecar's pipeline
+// ---------------------------------------------------------------------------
+
+// A draw of the main view whose pipeline with the sidecar is not made yet (the first frames with the planes on: every pipeline of the window is a new key, a hundred and more at
+// once, 60 ms each) may go on WITHOUT the planes: the game's own pipeline, the same shaders without the sidecar, is already in use, so the planes are what is left out for a few
+// frames, never the draw (Scene::Prepare falls back to it while the build is pending and asks again the next frame). That is true whatever the game's own rule for leaving a draw out says
+// (Scene::MaySkipForPipeline: the targets were drawn into in each of the last 30 frames, multisampled, no stencil writes): that rule protects a draw that would be missing from the
+// picture, and here nothing is missing. Without this the draws the rule refuses were made on the render thread, one after the other: 276 pipelines, 17.6 s, a 5 to 6 s freeze at the first
+// frame with the G-buffer on and again at the first frame of a car that is new to the session (the neon light's runs of 2026-11-21: neon1-ab-vk-on, `made here 276 new`, `[Watchdog] frame stalled 5s`).
+// While a take runs (sync_builds.h) nothing waits either way: the lookup makes the pipeline and the wait is counted.
+constexpr bool PlanesMayWait(bool carries_sidecar) { return carries_sidecar; }
+
 // The debug-only setting mcla_gpu_gbuffer_attach: `auto` is the backend's capability (above), `writers` binds the sidecar only for the draws that write it (the
 // spike's way, any backend), `all` binds it for every draw of the main view's window (the survey's design: no render pass switch, no stale pixels) and trusts the build
 // to have per target blend states (D3D12: with the Plume fix). A word that is none of them counts as auto.

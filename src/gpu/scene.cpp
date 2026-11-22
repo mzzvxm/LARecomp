@@ -1698,8 +1698,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     // runs: sync_builds.h).
     const SkipAsk ask{this, &d};
     const Deferral deferral{&Scene::MaySkipForPipeline, &ask};
+    // The pipeline with the sidecar's planes is the game's own plus planes: while it is made in the background the draw goes without them (the fallback below), whatever
+    // the game's rule says about leaving a draw out (gbuffer_rules.h PlanesMayWait). It is never made on the render thread outside a take.
+    const Deferral planes_deferral{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw};
     bool pending = false;
-    d.pipeline = pipelines_->Get(pipeline_key, inputs, &deferral, &pending);
+    d.pipeline = pipelines_->Get(pipeline_key, inputs, gbuffer::PlanesMayWait(d.gbuffer_attached) ? &planes_deferral : &deferral, &pending);
     if (!d.pipeline && pending && d.gbuffer_attached) {
       // The pipeline with the G-buffer's planes is being made in the background (the first frames with the sidecar on: every pipeline of the main view's window is a new
       // key when the non writers carry it): this draw is the game's own, with no planes, instead of being left out of the frame; the key stays asked for and the next frame
