@@ -260,14 +260,14 @@ inline AtlasLayout MakeAtlas(uint32_t tile, uint32_t views) {
   return atlas;
 }
 
-// The atlas a level makes (`views_per_car` as MaxViews): medium 2 tiles of 512 (1024 x 512), high 3 of 512 (1536 x 512), ultra 6 of 1024 (3072 x 2048); in the two level shape
+// The atlas a level makes (`views_per_car` as MaxViews): medium 2 tiles of 768 (1536 x 768), high 3 of 1024 (3072 x 1024), ultra 6 of 1280 (3840 x 2560); in the two level shape
 // high is 4 tiles of 512 (1024 x 1024).
 inline AtlasLayout AtlasFor(Level level, int views_per_car, LevelTable table = kLevelTable) {
   return MakeAtlas(TileSize(level, table), MaxViews(level, views_per_car, table));
 }
 
 // What the atlas holds in video memory: D32 float + S8 is 8 bytes a texel (plume's RenderFormatSize: 24 bits unused), a lower bound (the driver pads). In the three level shape
-// medium is 4 MiB, high 6 MiB and ultra 48 MiB (the two level shape's high is 8 MiB; the first version's ultra was 24 with one view for each car). CHECK: D32 float alone (4 bytes a texel: half of this) needs the depth plane read as it is on both backends.
+// medium is 9 MiB, high 24 MiB and ultra 75 MiB (the first sizes, 512 / 512 / 1024, were 4 / 6 / 48; the two level shape's high is 8 MiB; the first version's ultra was 24 with one view for each car). CHECK: D32 float alone (4 bytes a texel: half of this) needs the depth plane read as it is on both backends.
 inline constexpr uint64_t kAtlasTexelBytes = 8;
 inline uint64_t AtlasBytes(const AtlasLayout& atlas) { return uint64_t(atlas.width()) * atlas.height() * kAtlasTexelBytes; }
 
