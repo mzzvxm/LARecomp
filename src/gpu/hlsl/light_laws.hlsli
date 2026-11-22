@@ -49,6 +49,7 @@
 #define LL_FLAG_PLAYER 1
 #define LL_FLAG_LIGHTS_GEOMETRY 2
 #define LL_FLAG_GAME_LIT 4
+#define LL_FLAG_RT_VISIBILITY 8
 
 // packed0: kind | source | law | role mask | zero | flags;  packed1: first_view | view_count | shadow kind | mask channel
 #define LL_KIND_SHIFT 0

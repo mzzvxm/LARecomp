@@ -550,6 +550,12 @@ target_compile_features(larecomp_rt_world_frame_test PRIVATE cxx_std_23)
 # checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:
 #   cmake --build <dir> --target larecomp_city_rt_shadow_rules_test, then run src/gpu/larecomp_city_rt_shadow_rules_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_city_rt_shadow_rules_test EXCLUDE_FROM_ALL city_rt_shadow_rules_test.cpp)
+# The ray traced visibility of the top K lights (RT-LIGHTS-D1: rt_lights_rules.h, hlsl/rt_lights_common.hlsli and hlsl/rt_mask_read.hlsli compiled as C++ through hlsl_cpp_shim.h: the top K, the channels, the
+# rows, the composition with the identity, the ray's geometry, the noise rule, the mask read against brute force; given the src folder it also reads the shader, the host class, the settings and the wiring) likewise:
+#   cmake --build <dir> --target larecomp_rt_lights_test, then run src/gpu/larecomp_rt_lights_test <src dir> (exit 0 = passed).
+add_executable(larecomp_rt_lights_test EXCLUDE_FROM_ALL rt_lights_test.cpp)
+target_include_directories(larecomp_rt_lights_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_rt_lights_test PRIVATE cxx_std_23)
 # The other cars in the car ray tracing scene (car_rt_instances_rules.h: the limits by class, which cars are kept, a car's body centre, the budgets of a
 # car that is new, the instance list) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_instances_rules_test, then run src/gpu/larecomp_car_rt_instances_rules_test (exit 0 = passed).
@@ -1101,6 +1107,9 @@ larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)
 # The city's ray traced sun shadows (city_rt_shadow.h, CITY-RT M1): the same shape, one compute pass with inline ray queries against the same top level, which holds the
 # city's sectors beside the cars (city_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan.
 larecomp_gpu_host_shader_rt(city_rt_shadow_cs cs_6_5)
+# The ray traced visibility of the top K lights (rt_lights.h, RT-LIGHTS-D1): one compute pass over the occlusion's linear depth, a ray a pixel to each light that reaches it, into the visibility images the
+# light pass reads. Shader Model 6.5 (wave intrinsics for the counters), SPIR-V 1.5 on Vulkan like the city shadows'.
+larecomp_gpu_host_shader_rt(rt_lights_trace_cs cs_6_5)
 # The city hit data's probe (city_hit_probe.h, CITY-RT M2 H3): the pool and the tables read through the ray tracing set's t6..t9.
 larecomp_gpu_host_shader_rt(city_hit_probe_cs cs_6_5)
 # The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed storage image

@@ -86,6 +86,9 @@ constexpr uint8_t RoleBit(LightRole role) { return uint8_t(1u << uint32_t(role))
 inline constexpr uint32_t kLightFlagPlayer = 1u << 0;          // the player's car's lamp (the rig's is_player)
 inline constexpr uint32_t kLightFlagLightsGeometry = 1u << 1;  // the light also lights the surface that carries it (a lamp's own housing: usually off)
 inline constexpr uint32_t kLightFlagGameLit = 1u << 2;         // the game's own shaders already light with this one: no surface ADD (see kRoleMaskGameLit)
+// The light has a ray traced visibility channel (ShadowRef::mask_channel; rt_lights_rules.h): the deferred light pass reads it ON TOP OF whatever the atlas says (the product: a light whose atlas
+// view holds a pole and whose ray holds the wall is shadowed by both), and where it is the only source of visibility a light the game lights is still only ever TAKEN AWAY from, never added.
+inline constexpr uint32_t kLightFlagRtVisibility = 1u << 3;
 // Flags 16 and up are CPU side only: GpuLight carries the low 16 bits.
 inline constexpr uint32_t kLightFlagsGpuMask = 0xFFFFu;
 
