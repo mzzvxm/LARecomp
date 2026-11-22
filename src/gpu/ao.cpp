@@ -3771,7 +3771,9 @@ AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseContactHistory(const Plan& 
 uint32_t AmbientOcclusion::RecordContactHistory(plume::RenderCommandList* list, const Plan& plan, const Push& base, const HostImage& filtered, const HostImage& depth) {
   plume::RenderPipeline* accumulate = Pipeline(stencil_ms_ ? kVTemporalMs : kVTemporal);
   ContactHistory& h = contact_hist_;
-  if (!accumulate || !h.image[0].texture || !h.image[1].texture || stencil_slot_ == kNoSlot) {
+  // A depth target with no stencil plane (stencil_slot_ == kNoSlot) is not a reason to go without: the pass reads no vehicle then (hlsl/ao_temporal_ps.hlsl AoVehicleId, as the occlusion's own pass does), and the frame's noise has
+  // already moved (Plan::contact_history), so a frame with no history would show it as grain.
+  if (!accumulate || !h.image[0].texture || !h.image[1].texture) {
     return kNoSlot;  // the frame goes on with the filter's own image (Run asked for the pipeline before the plan was used; the images are EnsureImages')
   }
   const HistoryUse use = ChooseContactHistory(plan);
