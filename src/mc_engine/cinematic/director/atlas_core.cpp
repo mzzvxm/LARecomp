@@ -1033,7 +1033,7 @@ std::string ContentHash(const World& world) {
         feed(b, 2);
     };
     feed("ATLAS1", 6);
-    // The file's own lights only: the street lamps (Light::lamp) exist in the running game and not in the offline atlas (the packed list is not in lights.xlm), so one city keeps one name both ways.
+    // The file's own lights only: the street lamps (Light::lamp) are not in lights.xlm (the game builds them from the props, the offline atlas decodes them the same way), so one city keeps one name both ways.
     u32(static_cast<uint32_t>(std::count_if(world.lights.begin(), world.lights.end(), [](const Light& l) { return !l.lamp; })));
     u32(static_cast<uint32_t>(world.rails.size()));
     for (const Rail& r : world.rails) {

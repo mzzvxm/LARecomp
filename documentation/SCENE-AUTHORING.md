@@ -81,7 +81,7 @@ from). Heights are the height a car stands at on the road there.
 
 ## Roads, lights, routes: ask, don't guess
 
-The atlas (`ports\atlas\<hash>\`, built from the game's files: `st atlas build`) knows the roads (lanes with direction, speed and street name), the street lamps, the garages
+The atlas (`ports\atlas\<hash>\`, built from the game's files: `st atlas build`) knows the roads (lanes with direction, speed and street name), the street lamps (6,298, decoded from the city's props and their light templates, so the offline atlas has them too), the garages
 and the car models. Offline answers have the shape of the game's `query.*` commands:
 
 ```

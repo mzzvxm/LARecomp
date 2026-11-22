@@ -2,7 +2,7 @@
 //
 // The Director's atlas, the pure half (package C, DIR-ATLAS; DIRECTOR-DESIGN.md 4.2, feature-parity/DIRECTOR-ATLAS-NOTES.md has the layouts and the checks).
 //
-// World knowledge for scenes, tools and agents: the city's lamps (lights.#lm), the traffic rail network (roads, lanes, directions, how the lanes join),
+// World knowledge for scenes, tools and agents: the city's lights and street lamps, the traffic rail network (roads, lanes, directions, how the lanes join),
 // garages, the car table, ground height, a route along the roads. It reads game memory through a GuestView (so a unit test feeds it a byte buffer and the
 // game feeds it guest memory), decodes it into plain structs, answers questions about them and writes them as the JSON files ports\atlas\<hash>\ holds
 // (the same files ports\scripts\atlas.py builds offline from the player's own game files and reads: the shapes are one contract).
@@ -72,8 +72,9 @@ struct Light {
     float spread = 0.0f;
     bool spot = false;
     bool on = true;
-    // Which of the game's two light lists it came from: false = the file's own list (lights.xlm, the 15,174 omni and spot lights the offline atlas decodes), true = the packed street-lamp list
-    // (lights.#lm, about 6,300 spot lamps: the lamp pass's, lit at night only). `on` is the light's own switch (every street lamp has it set: the lamp pass lights them between the evening and
+    // Which of the game's two light lists it came from: false = the file's own list (lights.xlm, the 15,174 omni and spot lights the offline atlas decodes), true = the street-lamp list
+    // (about 6,300 spot lamps the game builds at the city's load, one per prop that has lamp points, from sc_props.xck and tune/lighting/<model>.xml: the offline atlas decodes them the same
+    // way, atlas_game.py; the lamp pass's, lit at night only). `on` is the light's own switch (every street lamp has it set: the lamp pass lights them between the evening and
     // morning hours), not whether it is lit at this hour.
     bool lamp = false;
 };
