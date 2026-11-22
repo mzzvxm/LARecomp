@@ -737,6 +737,13 @@ void TestSpirvBuild(const std::string& folder) {
         "the Vulkan decision reads Plume's rayQuery capability");
   const std::string effects = ReadAll(folder + "/car_rt_refl.h") + ReadAll(folder + "/car_rt_ao.h");
   Check(!effects.empty() && !has(effects, "Direct3D 12 only for now"), "the effects' headers do not say Direct3D 12 only");
+  // and none of the rules' headers (the hit shading's plan and material rules were written while Vulkan waited) says Vulkan waits for a Plume
+  std::string rules_text;
+  for (const char* file : {"car_rt_hit_rules.h", "car_rt_material_rules.h", "car_rt_refl.cpp", "car_rt_ao.cpp"}) {
+    rules_text += ReadAll(folder + "/" + file);
+  }
+  Check(!rules_text.empty() && !has(rules_text, "until Plume") && !has(rules_text, "waits for Plume") && !has(rules_text, "D3D12 only until"),
+        "the hit shading's headers do not say Vulkan waits for a Plume");
 }
 
 }  // namespace

@@ -36,7 +36,7 @@
 //    instances' share of the top level; +0.05 ms of the render thread's time on average in traffic.
 //  In all, +0.15 to 0.3 ms on the High class at 4K (the brief's 0.1 to 0.3), less at 1080p's smaller pixel count of the player's car; the Mid class +0.05 ms for the reach alone.
 //
-// RUN PLAN (D3D12 only until Plume's ray query lands; the exe is built by the main session):
+// RUN PLAN (D3D12 and Vulkan, which has Plume's ray queries since the pin 502978a9; the exe is built by the main session):
 //  AFTER pictures: the SHOWCASE-RT chain on a new exe (its BEFORE pictures are perf\out\showcase-rt, the flat orange patch over the door in showcase-rt-day-b-zoom.png):
 //    chain-showcase-rt.ps1 -Plan -Fresh -SrcRef feat/rt-hit-shading -ExeName rthit1 -TestRef test/rt-hit-shading-opt -TestWt C:\mcv\larecomp\h11-work\rt-hit-shading-opt
 //    (then the same without -Plan, through chain-runq.ps1 -Chains 'chain-showcase-rt.ps1 -Fresh -SrcRef feat/rt-hit-shading -ExeName rthit1 -TestRef test/rt-hit-shading-opt -TestWt ...' -BatchName rthit1;
@@ -54,7 +54,7 @@
 //      at the edge (the sharp ray is one ray a texel; the paint's 3x3 spline and the denoise's 0.51 floor smooth it);
 //   3. the cost against the estimate above, and the memory of more cars in the scene (radius 20 m on High);
 //   4. the mirror ray's self-hit rule on a curved panel (kSelfCos): a coat ray that skims the panel it left is a miss, so a lid or a bonnet must stay the environment's colour;
-//   5. the push blocks (96 and 112 bytes) once Vulkan has ray queries (the limit is 128);
+//   5. the push blocks (96 and 112 bytes) on Vulkan (the limit is 128);
 //   6. part one's lines (the units of the environment map, the paraboloid, the table's constants: car_rt_material_rules.h CHECK);
 //   7. RT-HIT-SHADING-3 (the census, below): the first run's "[car rt refl] hits, frame N: ..." lines (the first at the 4th trigger, then every 300 triggers) say how many hits took the history, the
 //      blend, the shading or the stand-in, by class and by the sun, and the exposure: "the model, with the gain then in force, is X stops from it": X goes to 0 and "the gain now" settles
