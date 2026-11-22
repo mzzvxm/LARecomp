@@ -334,6 +334,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_noise_resolve_no_upscaler": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: with no temporal upscaler running (plain MSAA, the default) the contact shadows' march, the ray traced sun rays of the car and the city, \"\n    \"the sun shafts' ray starts and the car reflection cone's turn changed their noise every frame only while an upscaler averaged it; without one they held one pattern. \"\n    \"True: the noise changes every frame here too, and each effect resolves it itself: the contact shadows and the sun rays through the occlusion's own history (reprojected by depth and the \"\n    \"camera, 12 frames), the shafts and the reflection cone through a short history of their own. False: the first fixes' fixed blue pattern without an upscaler. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ao_fast_math": {
   "type": "bool",
   "default": "true",
