@@ -274,6 +274,16 @@ void LocalLights::BeginFrame() {
   trigger_seen_ = false;
 }
 
+bool LocalLights::rt_lights_wanted() const {
+  return rt_lights_ != nullptr && rt_lights_->wanted();
+}
+
+void LocalLights::SetRtRawMode(bool raw) {
+  if (rt_lights_ != nullptr) {
+    rt_lights_->SetRawMode(raw);
+  }
+}
+
 void LocalLights::OnMainDraw(const ConstantBanks::Banks& banks, bool colour) {
   if (!planes_wanted_ || !colour || trigger_seen_) {
     return;

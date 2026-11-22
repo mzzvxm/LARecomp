@@ -138,6 +138,10 @@ class LocalLights {
   // lights, lets it pick the top K of the selection and annotate it (a light with a channel reads its visibility ON TOP OF the atlas's), traces and filters the visibility just before the buffer is built, and reads
   // the images in the pixel shader. Null (the default) or not wanted: nothing of it exists and the pass is what it was.
   void SetRtLights(RtLights* rt_lights) { rt_lights_ = rt_lights; }
+  // RT-LIGHTS-D1 part 2: the ray traced visibility is wanted this frame (BeginFrame ran: the setting, the device and the light pass say so), and Ray Reconstruction takes the frame and the effect's switch is on:
+  // the visibility is handed to the light pass unfiltered (rt_lights.h RAW MODE). Both before OnResolve; false is the pass as it was.
+  bool rt_lights_wanted() const;
+  void SetRtRawMode(bool raw);
 
   // The Scene opened a frame's first list, BEFORE the G-buffer's and the shared products' own BeginFrame (they read the wants it makes): reads the settings, makes the wants and forgets
   // the last frame's votes.

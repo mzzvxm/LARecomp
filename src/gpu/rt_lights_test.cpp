@@ -1127,6 +1127,16 @@ void TestMaskRead() {
         CHECK(v >= 0.0f && v <= 1.0f);
       }
     }
+    // a half mask whose size is the picture's own (a picture HALF the traced size: it cannot happen, the traced size is the picture's or less, but the arithmetic must not take the whole path for it): the bilinear
+    {
+      const hs::RtmTable tb = MakeTable(images, w.tw, w.th, true, RTM_VALID, 2, w.dw, w.dh);
+      for (int i = 0; i < 60; ++i) {
+        const int px = int(rng.Below(uint32_t(w.tw))), py = int(rng.Below(uint32_t(w.th))), channel = int(rng.Below(uint32_t(images * 3)));
+        const double t = rng.Range(2.0f, 80.0f);
+        const float v = hs::RtmVisibility(tb, uint32_t(channel), hs::int2(px, py), float(w.tw), float(w.th), float(t), false);
+        CHECK(std::fabs(double(v) - Reference(w, channel, false, true, px, py, w.tw, w.th, double(float(t)), 2, w.dw, w.dh)) < 2e-5);
+      }
+    }
     // a whole mask the size of the picture reads the texel; a half mask over a picture of the traced size never does
     const hs::RtmTable whole = MakeTable(images, w.tw, w.th, true, RTM_VALID, 1, w.tw, w.th);
     CHECK(hs::RtmVisibility(whole, 0, hs::int2(w.tw / 2, w.th / 2), float(w.tw), float(w.th), 10.0f, false) == CleanRef(w.value[0][size_t(w.th / 2) * w.tw + w.tw / 2]));

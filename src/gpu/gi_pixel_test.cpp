@@ -828,7 +828,7 @@ void SourceChecks() {
             "RAW: the Scene asks the temporal system for a raw frame only while the pass is wanted, calls the apply with it, and hands the hit image over after the trigger's passes (the switch's value 2 leaves it out)");
       Check(Has(temporal_cpp, "in.bounce_hit = rr_bounce_hit_;") && Has(temporal_cpp, "rr_bounce_hit_ = nullptr;           // ... nor the bounce light's (CITY-RT G6)") && Has(temporal_h, "void NoteRrBounceHit(const HostImage* bounce) { rr_bounce_hit_ = bounce; }") &&
                 Has(temporal_cpp, "rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get()))") && Has(temporal_cpp, "window_.rr_raw_frames[size_t(rr::RawEffect::kRtGi)] += modes.RtGi() ? 1 : 0;") &&
-                Has(temporal_cpp, "frame_.raw_any = frame_.raw_any || modes.Ssr() || modes.CarRefl() || modes.RtGi();"),
+                Has(temporal_cpp, "frame_.raw_any = frame_.raw_any || modes.Ssr() || modes.CarRefl() || modes.RtGi() || modes.RtLights();"),   // RT-LIGHTS-D1 part 2 added the fourth
             "RAW: the temporal system hands the guide pass the image and forgets it at the next boundary, reads the third switch, counts the frames asked and counts a raw GI frame among the ones Super Resolution may have upscaled after all");
       bool setting_ok = false;
       {

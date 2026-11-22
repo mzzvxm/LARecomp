@@ -3723,6 +3723,9 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // The deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
     // AFTER the occlusion's apply (so it does not darken the light) and before the sun shafts, the volumetric light and the game's own light volumes and glows. Binds its own layout, pipeline
     // and framebuffer: the reset below forgets them too. The headlights among the lights read the maps the replay has just recorded, through the one shadow lookup (GB-H2: mcla_gpu_headlight_pass).
+    // RT-LIGHTS-D1 part 2: while DLSS Ray Reconstruction takes the frame the ray traced light visibility runs RAW (no filter; the light pass reads the 1 spp signal): TemporalSystem::RawModes, false with the plan not
+    // RR, and asked only while the effect is wanted (the census counts the frames asked).
+    local_lights_->SetRtRawMode(local_lights_->rt_lights_wanted() && temporal_ && temporal_->RawModes().RtLights());
     const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);
     order_.Note(frame_order::Step::kLocalLights, local_lights_ran);
   }
