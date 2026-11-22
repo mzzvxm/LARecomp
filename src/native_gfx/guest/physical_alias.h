@@ -1,7 +1,7 @@
 #pragma once
 // ===========================================================================
 // The three virtual aliases of the guest's physical memory, and the order a
-// readability check asks them in (std only; physical_alias_test.cpp)
+// readability check asks them in (std only; gpu/render_cpu_test.cpp)
 // ===========================================================================
 // Physical memory is reachable through three virtual aliases (0xA0000000,
 // 0xC0000000, 0xE0000000), and each heap keeps its own page table, so "is this

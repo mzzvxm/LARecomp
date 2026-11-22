@@ -5,7 +5,7 @@
 // render_cpu_test.cpp)
 // ===========================================================================
 // The debug-only setting render_cpu_mask (read at start) holds one bit per fix:
-// 0 runs every path as it was, 7 (the default) runs them all. The bits are the
+// 0 runs every path as it was, 15 (kAll, the default) runs them all. The bits are the
 // A/B switch of perf\scripts\chain-rendercpu.ps1; the render thread's own parts
 // also follow ab::B() (ab.h, mcla_gpu_ab_interleave), so one run can alternate
 // the two in its statistics windows.
