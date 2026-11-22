@@ -13,8 +13,8 @@
 // A fake game stands in for the pause screen: it is up from some frame, closes when asked (at once, late, or never) or when the player
 // closes it, and the loops below are the shape of browser_join.cpp's kStarting step 0.
 //
-// LOCAL TRIO CHECK (main session, one game at a time; the tours this unit test cannot do; perf\ONLINE-PAUSE-JOIN.md has the plan):
-//   1. larecomp_relay_server on 127.0.0.1 (--bind), master and rmr as ONLINE.md 4.3 describes.
+// LOCAL CHECK WITH THE GAME (one game at a time; the part this unit test cannot do):
+//   1. larecomp_relay_server on 127.0.0.1 (--bind), a master and a Rate My Ride server on 127.0.0.1 too.
 //   2. Game A, online on that relay (--mcla_online_enable=true --mcla_online_server=127.0.0.1:<port>), save mzlate, free roam.
 //   3. Press Start (the pause menu), SYSTEM LINK, SERVER BROWSER, Cruise on this server. The log shows, in order:
 //        [browser] join asked for: pause screen 1, paused flag 1, pause movie 1, activity free roam, session up 0

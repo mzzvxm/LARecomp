@@ -15,7 +15,7 @@
 // with the clock handed in so it can be checked without a game.
 //
 // WHAT THE FIRST FIX (e5c89c65) LEFT OPEN, found by reading the join and the game's own code again (2026-11-22; none of it could
-// be run, see perf\ONLINE-PAUSE-JOIN.md):
+// be run when this was written):
 //   1. "The pause menu is up" was read from the game's paused flag alone. In an online session the pause menu does not pause the
 //      game (a local pause), so the flag is 0 with the pause screen open: the join then went straight to the goto from inside the
 //      pause screen, the crash path the fix was for. The pause SCREEN (mcPauseForm's open byte, form 71) is the fact; the flag and
