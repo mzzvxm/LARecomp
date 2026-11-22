@@ -292,7 +292,10 @@ void SceneChecks(const std::string& dir) {
   Check(Before(scene, ao, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);"), "ORDER: ... and the apply still follows the occlusion's apply");
   // after the structures' build (the car scene's top level holds the city), which the probe update traces against
   Check(Before(scene, "car_rt_->OnResolve(record, summary, list, slot_);", "gi_integration_->OnResolve(summary, list, slot_);"), "ORDER: the field's trigger work comes after the ray tracing structures' (the top level the update traces)");
-  Check(Count(scene, "gi_integration_->") == 2 && Has(scene, "void SetGiIntegration") == false, "scene.cpp calls the integration at the frame's start and at the trigger, once each");
+  Check(Count(scene, "gi_integration_->") == 3 && Has(scene, "void SetGiIntegration") == false, "scene.cpp calls the integration at the frame's start, at the trigger and (the game's camera cut) at the anchor, once each");
+  // THE ANCHOR: a camera cut the game asked for (Scene::NoteAnchorCut sets anchor_cut_ first) goes to the field as a teleport at the next frame's start (CITY-RT-REVIEW M4)
+  Check(Before(scene, "NoteAnchorCut(banks);", "gi_integration_->NoteRequestedCut();") && Has(scene, "if (gi_integration_ && anchor_cut_) {"),
+        "ORDER: the anchor's requested cut is read (NoteAnchorCut) before the integration is told, and only when there is one");
   const std::string header = ReadFile(dir + "/scene.h");
   Check(Has(header, "void SetGiIntegration(GiIntegration* gi_integration)") && Has(header, "GiIntegration* gi_integration_ = nullptr;") && Has(header, "class GiIntegration;"), "scene.h has the setter, the member and the forward declaration");
 }
@@ -313,6 +316,26 @@ void IntegrationChecks(const std::string& dir) {
   for (const char* field : {"in.rung = decision.rung;", "in.level = decision.level;", "in.world_ok =", "in.camera[i]", "in.sun_rgb[i]", "in.ambient_up_rgb[i]", "in.ambient_down_rgb[i]", "in.sun_sin_elevation", "in.time_s =",
                             "in.safe_range_m =", "in.strength = GiApply::LevelStrength();", "in.bounce_weight = gi_setting::BounceWeightNow();", "in.frame = frame;"}) {
     Check(Has(cpp, field), std::string("the field's Inputs are filled: ") + field);
+  }
+  Check(Has(cpp, "in.cut = gi_field::CutFor(cut_pending_, relight_pending_);") && Has(cpp, "cut_pending_ = false;") && Before(cpp, "in.cut = gi_field::CutFor(cut_pending_, relight_pending_);", "field_->BeginFrame(in);") &&
+            !Has(cpp, "CHECK G4f"),
+        "the field's Inputs carry the game's camera cut once (CutFor) and the request is spent");
+  Check(Has(ReadFile(dir + "/gi_integration.h"), "void NoteRequestedCut() { cut_pending_ = true; }") &&
+            Has(ReadFile(dir + "/gi_field_rules.h"), "constexpr CutKind CutFor(bool game_cut, bool hour_jump = false) { return game_cut ? CutKind::kTeleport : hour_jump ? CutKind::kRelight : CutKind::kNone; }"),
+        "the integration takes the request and the rule maps it to a teleport (a game's cut wins over an hour jump's relight)");
+  // THE HOUR JUMP (CITY-RT-REVIEW M4, G4g): the clock's count and the sun's step are tested at the play view's trigger, the relight is handed over with the next frame's Inputs and kept until a frame with a world
+  Check(Has(cpp, "if (world_play_ && relight_.Observe(frame_, mcla::gpu::world_clock::HourJumps(), light_ok, to_sun)) {") && Has(cpp, "relight_pending_ = true;") && Has(cpp, "#include \"world_clock.h\"") &&
+            Has(cpp, "if (in.world_ok) {\n    relight_pending_ = false;") && Has(cpp, "relight_.Reset();") && Has(cpp, "light_ok = true;"),
+        "the integration pairs the clock's hour jumps with the sun's step at the play view's trigger, hands the relight to the next frame's Inputs and spends it where the field has a world");
+  Check(Before(cpp, "LatchPoseAndLight();", "return field_->RecordFinish(list, frame_slot);") && Has(ReadFile(dir + "/gi_integration.h"), "gi_field::RelightDetector relight_;") && Has(ReadFile(dir + "/gi_integration.h"), "bool relight_pending_ = false;"),
+        "the detector and the pending flag are the integration's");
+  {
+    const std::string field = ReadFile(dir + "/gi_field.cpp");
+    Check(Has(field, "if (move_.fresh || move_.cut || move_.relight) {\n        fade_.Reset();") && Has(field, "Log(move_.cut ? \"cut\" : move_.relight ? \"relight\" : move_.fresh ? \"fresh\" : \"reduced\");"),
+          "a relight restarts the fade like a cut (the field shows nothing until it is traced again) and is logged as one");
+    const std::string tod = ReadFile(dir + "/../mc_engine/gameplay/time_of_day.cpp");
+    Check(Has(tod, "mcla::gpu::world_clock::Publish(ReadF32(base, mgr + kTodCurrent), static_cast<int32_t>(ReadU32(base, kWeatherIndex)));"),
+          "the clock's hour jumps are counted in the one call the lighting hook already makes (world_clock.h Publish): the Director's hour, the settings', a mission start's and a skip all pass it");
   }
   Check(Has(cpp, "SceneClockNowMs(frame)") && Has(cpp, "city_->SafeRange(GameHiRadius())") && Has(cpp, "300.0 * gpu_class::CityLodScale"), "the clock is the scene clock's and the safe range is M1's, asked with the game's hi radius");
   Check(Has(cpp, "update_ = nullptr;") && Has(cpp, "gi_setting::NoteUpdateBuilt(static_cast<bool>(update_))"), "the update's seam says the update exists (the setting's gate) and Shutdown takes it away");

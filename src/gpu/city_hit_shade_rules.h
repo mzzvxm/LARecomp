@@ -21,7 +21,8 @@
 //                 into one gain a class
 //
 // R7 (CITY-RT M2 R7): the lamps of a hit come from the WORLD FRAME's grid (rt_world_frame_rules.h: LampLightAt walks the 64 m cells around the hit, the twin of the shader's CITY_HIT_LAMP_GRID path): the
-// first kLampMax lamps of the lookup, their light summed and capped in luminance at kLampSumCap (LampsCapped), or ONE lamp chosen with a shadow ray (LampPickCapped) with the same cap; and what a
+// first kLampMax lamps of the lookup THAT REACH the hit (a lamp out of the game's reach takes no slot; the walk stops after kLampWalkMax lamps whatever they were), their light summed and capped in
+// luminance at kLampSumCap (LampsCapped), or ONE lamp chosen with a shadow ray (LampPickCapped) with the same cap; and what a
 // glowing material glows by follows its kind (a lamp lens the street lamps' schedule, neon, signs, lit windows the fill lights', a traffic signal always: Reads::glow_factor, the world rows' row 47).
 //
 // THE LAMPS (src/citypack/lamp_table.h, the game's own laws read from the lit shaders and sub_822FD2C8): term = colour x saturate(I / d^2) x cone x N.L x the schedule: a lamp lights with its
@@ -104,7 +105,8 @@ inline constexpr float kMinDepth = 0.05f;
 inline constexpr float kScreenTrust = 0.98f;
 inline constexpr float kCalFloor = 0.02f;
 inline constexpr float kFacingSpan = 0.15f;
-inline constexpr uint32_t kLampMax = 96;          // R7: the lamps of a lookup one hit examines at most (the shader's kCityHitLampMax)
+inline constexpr uint32_t kLampMax = 96;          // R7: the lamps of a lookup that reach one hit and are examined at most (the shader's kCityHitLampMax)
+inline constexpr uint32_t kLampWalkMax = 3 * kLampMax;  // R7: the lamps the walk visits at most, reaching or not (the shader's kCityHitLampWalkMax: the bound on the time)
 inline constexpr float kLampSumCap = 6.0f;        // R7: the lamp light's luminance is capped at this
 inline constexpr float kLampLookup = 64.0f;       // R7: the lookup's radius where the world rows give none
 inline constexpr uint32_t kGlowNight = ch::kGlowNight, kGlowLens = ch::kGlowLens, kGlowAlways = ch::kGlowAlways;
@@ -212,6 +214,7 @@ struct LampEval {
   V3 to_lamp;
   float distance = 0;
   V3 radiance;  // the unshadowed light the lamp sends to the point, N.L in it, the schedule in it
+  bool reaches = false;  // in the game's reach of the point (d^2 < kLampReach x intensity): the lamps the lookup's cap counts
 };
 inline LampEval LampAt(float lamp_factor, const Lamp& l, V3 position, V3 normal) {
   LampEval e;
@@ -220,6 +223,7 @@ inline LampEval LampAt(float lamp_factor, const Lamp& l, V3 position, V3 normal)
   e.distance = std::sqrt(d2);
   e.to_lamp = d * (1.0f / e.distance);
   if (d2 < kLampReach * l.intensity) {
+    e.reaches = true;
     e.radiance = l.colour * (LampTerm(l.intensity, d2) * LampCone(l, e.to_lamp) * Saturate(Dot(normal, e.to_lamp)) * lamp_factor);
   }
   return e;
@@ -267,27 +271,29 @@ inline V3 LampPick(float lamp_factor, const Lamp* lamps, uint32_t count, V3 posi
   return blocked(origin, to_chosen, std::max(distance - kLampEnd, 0.0f)) ? V3{} : chosen * (weight_sum / weight);
 }
 
-// R7: the world frame's lookup's lamps in the cursor's order, examined at most kLampMax at a time and their sum capped in luminance (hlsl CityHitLamps with CITY_HIT_LAMP_GRID). `count` is the lookup's
-// whole list: more than kLampMax is a hit that hit the cap.
+// R7: the world frame's lookup's lamps in the cursor's order (hlsl CityHitLamps with CITY_HIT_LAMP_GRID): the walk takes the first kLampMax lamps that REACH the hit (a lamp out of the game's reach
+// adds nothing and takes no slot, so a dense street's far lamps do not push the near ones out) and stops after kLampWalkMax lamps passed, reaching or not; their light is summed and capped in luminance at
+// kLampSumCap. `count` is the lookup's whole list: the walk that stopped with lamps left is a hit that hit the cap. `examined` is the lamps that reach (the census' word), `walked` the lamps passed.
 struct LampLight {
   V3 light;
-  uint32_t examined = 0, lit = 0;
+  uint32_t examined = 0, lit = 0, walked = 0;
   bool cap_count = false, cap_sum = false;
 };
 inline float LampKeep(float weight_sum) { return weight_sum > kLampSumCap ? kLampSumCap / weight_sum : 1.0f; }
 inline LampLight LampsCapped(float lamp_factor, const Lamp* lamps, uint32_t count, V3 position, V3 normal) {
   LampLight t;
-  t.examined = std::min(count, kLampMax);
-  t.cap_count = count > kLampMax;
   float weight_sum = 0.0f;
   V3 sum;
-  for (uint32_t i = 0; i < t.examined; ++i) {
-    const V3 radiance = LampAt(lamp_factor, lamps[i], position, normal).radiance;
-    const float luma = Luma(radiance);
-    sum = sum + radiance;
+  while (t.walked < count && t.examined < kLampMax && t.walked < kLampWalkMax) {
+    const LampEval e = LampAt(lamp_factor, lamps[t.walked], position, normal);
+    const float luma = Luma(e.radiance);
+    sum = sum + e.radiance;
     weight_sum += luma;
     t.lit += luma > 0.0f ? 1u : 0u;
+    t.examined += e.reaches ? 1u : 0u;
+    ++t.walked;
   }
+  t.cap_count = t.walked < count;
   t.cap_sum = weight_sum > kLampSumCap;
   t.light = sum * LampKeep(weight_sum);
   return t;
@@ -296,7 +302,7 @@ inline LampLight LampsCapped(float lamp_factor, const Lamp* lamps, uint32_t coun
 inline LampLight LampPickCapped(float lamp_factor, const Lamp* lamps, uint32_t count, V3 position, V3 normal, float noise, float view_z, const std::function<bool(V3, V3, float)>& blocked) {
   LampLight t = LampsCapped(lamp_factor, lamps, count, position, normal);
   float weight_sum = 0.0f;
-  for (uint32_t i = 0; i < t.examined; ++i) weight_sum += Luma(LampAt(lamp_factor, lamps[i], position, normal).radiance);
+  for (uint32_t i = 0; i < t.walked; ++i) weight_sum += Luma(LampAt(lamp_factor, lamps[i], position, normal).radiance);
   if (!(weight_sum > 0.0f)) {
     return t;
   }
@@ -305,11 +311,13 @@ inline LampLight LampPickCapped(float lamp_factor, const Lamp* lamps, uint32_t c
   float running = 0.0f;
   V3 chosen, to_chosen{0, 1, 0};
   float distance = 0.0f, weight = 0.0f;
-  for (uint32_t j = 0; j < t.examined && weight <= 0.0f; ++j) {
+  uint32_t seen = 0;  // the lamps that reach, replayed
+  for (uint32_t j = 0; j < t.walked && weight <= 0.0f; ++j) {
     const LampEval e = LampAt(lamp_factor, lamps[j], position, normal);
     const float w = Luma(e.radiance);
     running += w;
-    if (w > 0.0f && (running >= pick || j + 1u == t.examined)) {
+    seen += e.reaches ? 1u : 0u;
+    if (w > 0.0f && (running >= pick || seen == t.examined)) {
       chosen = e.radiance;
       to_chosen = e.to_lamp;
       distance = e.distance;

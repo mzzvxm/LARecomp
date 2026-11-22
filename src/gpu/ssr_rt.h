@@ -85,6 +85,10 @@ class ScreenReflectionsRt {
   // Records the select and trace passes. False: nothing was recorded (no top level in this frame, no set); `trace` is as it was.
   bool Record(const Frame& frame);
 
+  // The trace image the output set names was made again or given back (ScreenReflections::EnsureImages, ReleaseImages): the set goes back now. EnsureSet compares the texture's POINTER, and a texture
+  // made after the old one was freed can take its address: a stale set (a view of the destroyed image) would be taken for the new image's.
+  void NoteTraceChanged() { RetireSet(); }
+
   // The frame boundary: idle bookkeeping.
   void OnPresent();
 

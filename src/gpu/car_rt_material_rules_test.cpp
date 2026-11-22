@@ -52,6 +52,11 @@ std::string ReadFile(const std::string& path) {
   return ss.str();
 }
 bool Has(const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; }
+int CountOf(const std::string& text, const std::string& part) {
+  int n = 0;
+  for (size_t at = text.find(part); at != std::string::npos; at = text.find(part, at + part.size())) ++n;
+  return n;
+}
 
 // A pixel bank of 256 registers of four big-endian floats.
 struct Bank {
@@ -1529,9 +1534,12 @@ int main(int argc, char** argv) {
             "the trace shades a hit on another car (and, in the opponents' variant, on the player's) only where the history does not show it in full");
       Check(Has(refl, "hidden = shaded;") && Has(refl, "else if (hitsOther)") && Has(refl, "hidden *= g_push.tune.x;") && Has(refl, "const float known = OtherCarColour(history, CarRtLoadCar(hitInstance), hidden);"),
             "a shaded hit takes no shade factor, and today's stand-in is what is left for a hit with no material");
-      Check(Has(scene, "ReadTexcoords(&staged.uv_floats)") && Has(scene, "crm::MakeFrameRows(in, rows);") && Has(scene, "textures_->Peek2D(texture)") && Has(scene, "res.set->setBuffer(uvs_index_, uvs_.buffer.get(), 0);") &&
-                Has(scene, "res.set->setBuffer(materials_index_, res.materials.get()") && Has(scene_h, "Shared uvs_;"),
-            "the scene reads the texture coordinates once a mesh, writes the frame's rows every frame, asks the cache for the textures and binds both buffers");
+      Check(Has(scene, "ReadTexcoords(&staged.uv_floats)") && Has(scene, "crm::MakeFrameRows(in, rows);") && Has(scene, "textures_->Peek2D(texture)") &&
+                // both places that fill the set (the frame with the car's meshes, and the city-only frame) name the texture coordinates' buffer or, where none is made yet, the stand-in: never a null buffer
+                // (CITY-RT-REVIEW M1: the first of them used to say `uvs_.buffer.get()` alone; the pin follows the code, whether or not the light stack is merged in)
+                CountOf(scene, "res.set->setBuffer(uvs_index_, uvs_.buffer ? uvs_.buffer.get() : standin_.get(), 0);") == 2 && CountOf(scene, "res.set->setBuffer(uvs_index_, uvs_.buffer.get(), 0);") == 0 &&
+                CountOf(scene, "res.set->setBuffer(materials_index_, res.materials.get()") == 2 && Has(scene_h, "Shared uvs_;"),
+            "the scene reads the texture coordinates once a mesh, writes the frame's rows every frame, asks the cache for the textures and binds both buffers (the real ones or the stand-in, in both sets it fills)");
       Check(Has(frame_cpp, "if (others_on_ && !skinned) {") && Has(frame_cpp, "out.material = MaterialOf(d);") && Has(frame_cpp, "ReadRegister(ps, 39, sun) && car_rt_material::ReadRegister(ps, 26, ambient)") &&
                 Has(frame_cpp, "car_rt_material::ReadRegister(ps, 57, sky)"),
             "the car frame reads the materials only while the other cars are asked for, and the light from the pixel constants c39, c26 and c57");

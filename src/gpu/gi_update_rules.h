@@ -11,7 +11,7 @@
 //                           the sun by N.L with a shadow ray, one stochastic lamp of the nearest eight with a shadow ray (night), emissive glow, and the field itself, one frame old, times the bounce weight
 //                           (the second bounce and the ones after it for free). Units: the paint's (params.units = 1), the field's (gi_frame.h UNITS).
 //   THE BLEND               IntegrateTexel (gi_frame.h) over the rays into the probe's tile, then the blend with ADAPTIVE HYSTERESIS (Hysteresis): the stored value's weight is the running mean while a probe
-//                           is young, at most gi::kHysteresis (0.97: about 33 updates); gi::kHysteresisJump (0.85) for a probe traced because its light changed (a sector built, an hour jump) or whose mean
+//                           is young, at most gi::kHysteresis (0.97: about 33 updates); gi::kHysteresisJump (0.85) for a probe traced because its light changed (a sector built; an hour jump clears the probes instead: gi_field_rules.h CutKind) or whose mean
 //                           luminance JUMPED (moved by more than kJumpRelative and by more than kJumpSigmas standard errors of the rays' mean: noise from a probe that sees a small bright thing with a few rays is not a change);
 //                           none for a probe with no history (new, or back from being inside geometry).
 //   THE CLASSIFICATION      a probe is INSIDE geometry (switched off: weight 0, no light) when more than kInsideBackShare of its rays hit back faces (the geometric normal against the ray) or its nearest hit is
@@ -210,6 +210,22 @@ inline Ray UnpackRay(const RayWords& w) {
   r.flags = w.w[1] >> 16u;
   r.distance = std::bit_cast<float>(w.w[2]);
   r.extra = w.w[3];
+  return r;
+}
+
+// The record of the trace's closest hit (hlsl gi_update_trace_cs.hlsl): a hit whose data decoded is a hit (the flags, its distance, its class in `extra`); a ray that hit nothing is a miss (no flag, the ray's
+// `reach` as the distance, no light); and a hit with NO DATA (a geometry-only sector: its hit data blob is bad or missing, CityHitDecode says not valid) is a miss too, as the reflections and the pixel
+// pass take it. It is not a black occluder: a black hit adds no light AND no sky to its direction (it reads as full shadow, where an unbuilt sector is open sky), and the blend would darken the probes
+// beside every such sector (CITY-RT-REVIEW M5).
+inline Ray HitRecord(bool geometry_hit, bool data_decoded, float t, float reach, gi::Vec3 radiance, bool back, bool lod, uint32_t cls) {
+  Ray r;
+  r.distance = reach;
+  if (geometry_hit && data_decoded) {
+    r.radiance = radiance;
+    r.distance = t;
+    r.flags = kRayHit | (back ? kRayBack : 0u) | (lod ? kRayLod : 0u);
+    r.extra = cls;
+  }
   return r;
 }
 

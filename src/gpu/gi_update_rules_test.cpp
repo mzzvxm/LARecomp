@@ -398,6 +398,52 @@ void TestRaySet() {
     }
     Check(mean_err / cnt < 0.02 && worst < (n == 64 ? 0.12 : 0.25), Num("%.0f rays in a closed uniform environment: the irradiance is its radiance (mean error %.3f, worst %.3f)", n, mean_err / cnt, worst));
   }
+
+  // a hit with no data is a miss, not a black occluder (CITY-RT-REVIEW M5): the record of the twin's HitRecord, integrated as the blend does
+  {
+    const gu::Ray miss = gu::HitRecord(false, false, 0.0f, 120.0f, {}, false, false, 0);
+    const gu::Ray nodata = gu::HitRecord(true, false, 7.0f, 120.0f, {}, false, true, 3);
+    const gu::Ray good = gu::HitRecord(true, true, 7.0f, 120.0f, {0.5f, 0.4f, 0.3f}, true, true, 3);
+    Check(gu::PackRay(nodata) == gu::PackRay(miss) && (nodata.flags & gu::kRayHit) == 0 && nodata.distance == 120.0f && nodata.radiance.x == 0.0f && nodata.extra == 0,
+          "a hit with no data is recorded as a miss: no hit flag, the ray's reach, no light");
+    Check((good.flags & gu::kRayHit) != 0 && (good.flags & gu::kRayBack) != 0 && (good.flags & gu::kRayLod) != 0 && good.distance == 7.0f && good.radiance.x == 0.5f && good.extra == 3,
+          "a hit whose data decoded keeps its flags, distance, light and class");
+    const uint32_t n = 64;
+    const gu::Quat q = gu::RotationQuat(0x1234u);
+    const auto result = [&](const gu::Ray& r, uint32_t i) {
+      gi::RayResult out;
+      out.dir = gu::RayDirection(i, n, q);
+      out.radiance = r.radiance;
+      out.distance = r.distance;
+      out.escaped = (r.flags & gu::kRayHit) == 0;
+      return out;
+    };
+    // a probe by a wall with no data: a quarter of its rays hit it, the rest are open; the texels see the wall's rays as open ones, where a black hit took the sky of its direction away
+    std::vector<gi::RayResult> as_miss(n), as_nodata(n), as_black(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      const bool wall = i % 4 == 0;
+      as_miss[i] = result(miss, i);
+      as_nodata[i] = result(wall ? nodata : miss, i);
+      gu::Ray black;  // what the trace recorded before: a hit flag, the hit's distance, black
+      black.flags = gu::kRayHit;
+      black.distance = 7.0f;
+      as_black[i] = result(wall ? black : miss, i);
+    }
+    double worst_sky = 0.0, worst_irr = 0.0, black_sky_loss = 0.0;
+    for (uint32_t ty = 1; ty <= 8; ++ty) {
+      for (uint32_t tx = 1; tx <= 8; ++tx) {
+        const gi::Vec3 d = gi::TexelDirection(tx, ty);
+        const gi::TexelValue a = gi::IntegrateTexel(d, as_nodata.data(), n, 30.0f);
+        const gi::TexelValue m = gi::IntegrateTexel(d, as_miss.data(), n, 30.0f);
+        const gi::TexelValue k = gi::IntegrateTexel(d, as_black.data(), n, 30.0f);
+        worst_sky = std::max(worst_sky, double(std::fabs(a.sky_visibility - m.sky_visibility)));
+        worst_irr = std::max(worst_irr, double(std::fabs(a.irradiance.x - m.irradiance.x)));
+        black_sky_loss = std::max(black_sky_loss, double(m.sky_visibility - k.sky_visibility));
+      }
+    }
+    Check(worst_sky < 1.0e-6 && worst_irr < 1.0e-6 && black_sky_loss > 0.05,
+          Num("rays that hit a sector with no data integrate as open rays; a black hit took the sky of its direction away (%.0e from the open, a black hit lost up to %.2f)", worst_sky, black_sky_loss));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -890,6 +936,17 @@ void TestSources(const std::string& dir) {
             Has(trace, "#define CITY_HIT_FEEDBACK(P, N)") && Has(trace, "p.units = 1.0f") && Has(trace, "0x80u"),
         "the trace shades in the library's GI mode: the sun ray, the glow, one stochastic lamp, the field's feedback, the paint's units, the city's instance mask only");
   Check(!Has(trace, "CITY_HIT_AMBIENT") && Has(trace, "GiLookup(") && !Has(trace, "GiAmbientAt("), "the probes' own hits take the field's surfaces only, never AmbientAt (gi_frame.h)");
+  // a hit with no data is a miss (CITY-RT-REVIEW M5): the hit flag, the distance and the LOD flag are set only after CityHitDecode said the data is valid
+  {
+    const size_t decode = At(trace, "const CityHit decoded = CityHitDecode(");
+    const size_t valid = At(trace, "if (decoded.valid != 0u)");
+    const size_t flag = At(trace, "flags = GIU_RAY_HIT;");
+    const size_t dist = At(trace, "distance = hit.t;");
+    const size_t lod = At(trace, "lods = (hit.inst.instanceId & 1u) != 0u ? 1u : 0u;");
+    Check(decode != std::string::npos && decode < valid && valid < flag && flag < dist && dist < lod && Count(trace, "flags = GIU_RAY_HIT;") == 1 && Count(trace, "distance = hit.t;") == 1 &&
+              Count(trace, "decoded.valid") == 1,
+          "the trace sets the hit flag, the hit's distance and the LOD flag only inside the decoded.valid block: a hit with no data stays a miss");
+  }
 
   const std::string cmake = ReadFile(dir + "/CMakeLists.txt");
   Check(Has(cmake, "larecomp_gpu_host_shader_rt(gi_update_trace_cs cs_6_5)") && Has(cmake, "larecomp_gpu_host_shader(gi_update_blend_cs cs_6_0)") && Has(cmake, "    gi_update.cpp\n") &&

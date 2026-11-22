@@ -897,6 +897,19 @@ void TextChecks(const std::string& dir) {
   const std::string cpp = ReadFile(dir + "/gi_apply.cpp");
   Check(Has(cpp, "gbuffer::Consumer::kRtBounce") && Has(cpp, "screen::Consumer::kRtBounce") && Has(cpp, "field_->running()") && Has(cpp, "if (!gf.FieldPresent()) {") && Has(cpp, "ga::FieldShare(gf, ssgi_ran_share_)"),
         "IDENTITY: the pass wants planes only while the field runs, records nothing for a frame the field is not in, and takes the share the occlusion left");
+  // the picture's size and whether the traced images are half of it come from the shared frame: the G-buffer's planes are the guest's padded colour target (1280x736 for a 1280x720 picture, 612e6dee), so a trace
+  // at the picture's own size (1080 lines and below, the occlusion or the contact shadows at ultra) was taken for a half size one and the upsample read the visibility and the vehicle mark at half the coordinates
+  Check(Has(cpp, "const bool up = (sf.flags & screen::kFrameHalfTraced) != 0;") && !Has(cpp, "sf.traced[0] != gb.width") && !Has(cpp, "sf.traced[1] != gb.height") && Has(cpp, "fr.render[0] = float(sf.render[0]);") &&
+            Has(cpp, "fr.render[1] = float(sf.render[1]);") && Has(cpp, "pixel_in.render[0] = sf.render[0];") && Has(cpp, "pixel_in.render[1] = sf.render[1];") && !Has(cpp, "fr.render[0] = float(gb.width);"),
+        "PADDING: the picture's size and the half size trace are the shared frame's, not the padded planes' (a full size trace is not upsampled)");
+  // the trigger is the copy of the MAIN view's depth: the scene calls the apply at every resolve and a depth copy of the sun's shadow cascades (day only) came first and used the frame's one run while the field
+  // was not published (the chain's noon runs: 'the apply pass never ran'; night has no cascades)
+  {
+    const size_t at_gate = cpp.find("if (!summary.depth_copy || temporal::MainDepthSamples(summary.source_key) == 0) {");
+    const size_t at_seen = cpp.find("trigger_seen_ = true;  // once a frame");
+    Check(at_gate != std::string::npos && at_seen != std::string::npos && at_gate < at_seen,
+          "TRIGGER: the apply's run is taken by the main view's depth copy only (a shadow cascade's copy before it does not use the frame's one run)");
+  }
   // the settings: the debug view
   const std::string manifest = ReadFile(dir + "/../settings/generated/manifest.json");
   Check(Has(manifest, "\"mcla_gpu_rt_gi_view\"") && Has(ReadFile(dir + "/../settings/generated/settings_gpu.h"), "mcla_gpu_rt_gi_view") && Has(ReadFile(dir + "/../settings/generated/settings_meta.inc"), "mcla_gpu_rt_gi_view"),
