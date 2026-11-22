@@ -390,13 +390,18 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   const bool manager_on = manager_ != nullptr && manager_->active();
   const larecomp::gpu::LightFrame& frame = manager_on ? manager_->Frame() : EmptyFrame();
   candidates_.Clear();
+  const auto unseen = [&](const larecomp::gpu::Light& l) {
+    return ll::ScissorOfLight(l, rows, sf.camera.tan_half_fov[0], sf.camera.tan_half_fov[1], gb.width, gb.height).Empty();
+  };
   if ((sources_ & ll::kSourceNeon) != 0) {
-    // GB-NEON: the cars the hook saw in the last 100 ms, the nearest lit ones as whole tubes (the game's colour: pulse, fade and the 30 Hz hold are in it).
+    // GB-NEON: the cars the hook saw in the last 100 ms, the nearest lit ones as whole tubes (the game's colour: pulse, fade and the 30 Hz hold are in it). A car whose tube is out of the picture (behind
+    // the camera: the pack of racers behind the player) takes none of the car budget, as the other classes' lights that no pixel is inside the reach of take none of theirs.
     nl::Global().Recent(&neon_cars_);
     ll::NeonSourceInputs neon_in;
     neon_in.cars = &neon_cars_;
     neon_in.tier = tier_;
     neon_in.gain = neon_gain_;
+    neon_in.can_be_seen = [&](const larecomp::gpu::Light& l) { return !unseen(l); };
     for (int i = 0; i < 3; ++i) {
       neon_in.camera[i] = rows.position[i];
     }
@@ -425,9 +430,6 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   if ((sources_ & ll::kSourceMod) != 0 && larecomp::settings::mod_lights.Get()) {
     ll::GatherModLamps(mls::Global().Built(), active_mod.get(), ab_, rows.position, &candidates_.mod);
   }
-  const auto unseen = [&](const larecomp::gpu::Light& l) {
-    return ll::ScissorOfLight(l, rows, sf.camera.tan_half_fov[0], sf.camera.tan_half_fov[1], gb.width, gb.height).Empty();
-  };
   std::erase_if(candidates_.police, unseen);
   std::erase_if(candidates_.head, unseen);
   std::erase_if(candidates_.rear, unseen);

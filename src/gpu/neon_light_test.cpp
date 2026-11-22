@@ -504,6 +504,51 @@ void LightChecks() {
     lp::GatherNeonLights(none, &out, &report);
     Check(out.empty() && report.seen == 0, "no cars, no lights");
   }
+  // NEONALL-REVIEW: a car whose tube is out of the picture takes none of the car budget (the pack of racers behind the camera must not push the car ahead out of the nearest few)
+  {
+    // two cars behind the camera (x - 6, x - 9: the nearest), then three in front (x + 12, +20, +30): the picture looks along +x, a light is seen when its reach (the tier's) is on the +x side of the camera
+    std::vector<nl::NeonCar> pack;
+    const float xs[5] = {-6.0f, -9.0f, 12.0f, 20.0f, 30.0f};
+    for (int i = 0; i < 5; ++i) {
+      const float origin[3] = {camera[0] + xs[i], 17.4f, camera[2] + 2.0f};
+      pack.push_back(CarAt(kSelf + 0x10000u * uint32_t(i + 1), origin));
+    }
+    for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+      const lp::ClassBudget b = lp::BudgetOf(tier);
+      lp::NeonSourceInputs in;
+      in.cars = &pack;
+      in.tier = tier;
+      std::memcpy(in.camera, camera, sizeof(camera));
+      const std::string at = std::string(" at ") + lp::TierName(tier);
+      // no predicate: every light can be seen, the gather is what it was (the two behind take two of the slots)
+      std::vector<Light> plain;
+      lp::NeonReport plain_report;
+      lp::GatherNeonLights(in, &plain, &plain_report);
+      Check(plain_report.unseen == 0 && plain_report.lit == std::min<uint32_t>(b.neon_cars, 5u), "without a predicate nothing is out of the picture" + at);
+      // with it: the lights are seen from x >= camera - reach (a reach of the tier's on the +x side means the car's x - the reach is ahead of the camera or the light is within the reach of it)
+      const float reach = lp::NeonReach(tier);
+      in.can_be_seen = [&](const Light& l) { return l.pos[0] + reach > camera[0] + 6.0f; };  // the two cars behind (x - 6, x - 9) are out of the picture, the others in
+      std::vector<Light> out;
+      lp::NeonReport report;
+      lp::GatherNeonLights(in, &out, &report);
+      const uint32_t want_lit = std::min<uint32_t>(b.neon_cars, 3u);  // only the three in front can be lit
+      Check(report.lit == want_lit && out.size() == size_t(want_lit) * b.neon_points, "the cars out of the picture take no budget: the nearest cars that are seen are lit" + at);
+      Check(report.unseen >= 1 || b.neon_cars <= 3, "the cars behind are counted as out of the picture" + at);
+      bool behind = false;
+      for (const Light& l : out) {
+        behind = behind || l.pos[0] < camera[0];
+      }
+      Check(!behind, "none of the lights is behind the camera" + at);
+      // the nearest of the seen cars comes first (the one 12 m ahead)
+      Check(!out.empty() && out.front().pos[0] > camera[0] + 6.0f && out.front().pos[0] < camera[0] + 16.0f, "the nearest car in the picture comes first" + at);
+      // a predicate that sees nothing lights nothing and takes no budget
+      in.can_be_seen = [](const Light&) { return false; };
+      std::vector<Light> none;
+      lp::NeonReport none_report;
+      lp::GatherNeonLights(in, &none, &none_report);
+      Check(none.empty() && none_report.lit == 0 && none_report.cut + none_report.unseen == 5, "a picture with no tube in it lights nothing" + at);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

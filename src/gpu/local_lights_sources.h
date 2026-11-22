@@ -39,6 +39,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -475,22 +476,27 @@ struct NeonSourceInputs {
   Tier tier = Tier::kMedium;
   float gain = 1.0f;                               // mcla_gpu_neon_light_gain
   float camera[3] = {0.0f, 0.0f, 0.0f};
+  // Whether a light can be seen: some pixel of the picture is inside its reach (the pass's ScissorOfLight is not empty). Empty: every light can. The budget takes the nearest cars whose tube has
+  // a light that can be seen, so a car behind the camera takes none of it (the header's rule for every class: a car behind the camera takes none of the budget).
+  std::function<bool(const Light&)> can_be_seen;
 };
 
-// What a gather saw, for the log: the cars the table gave, the ones with their neon off, too dim, not placeable (N1), too far (`distant`), lit and cut by the budget; how the last placed tube was read.
+// What a gather saw, for the log: the cars the table gave, the ones with their neon off, too dim, not placeable (N1), too far (`distant`), out of the picture (`unseen`), lit and cut by the budget; how the
+// last placed tube was read.
 struct NeonReport {
   uint32_t seen = 0;
   uint32_t off = 0;
   uint32_t dim = 0;
   uint32_t unplaced = 0;
   uint32_t distant = 0;
+  uint32_t unseen = 0;
   uint32_t lit = 0;
   uint32_t cut = 0;
   nl::Space space = nl::Space::kNone;
 };
 
 // The underglow lights of the nearest lit neon cars, whole tubes, nearest car first, appended to `out` (`report` may be null). A car with its neon off or dim, whose tube the four points do not
-// place (ResolveTube), or beyond kNeonSeenMetres, makes none.
+// place (ResolveTube), beyond kNeonSeenMetres, or (when `in.can_be_seen` is set) with no light of its tube in the picture, makes none and takes no budget.
 inline void GatherNeonLights(const NeonSourceInputs& in, std::vector<Light>* out, NeonReport* report = nullptr) {
   NeonReport local;
   NeonReport& r = report != nullptr ? *report : local;
@@ -532,14 +538,21 @@ inline void GatherNeonLights(const NeonSourceInputs& in, std::vector<Light>* out
     return a.car->object < b.car->object;
   });
   const ClassBudget budget = BudgetOf(in.tier);
+  std::vector<Light> tube_lights;
   for (const Placed& p : placed) {
     if (r.lit >= budget.neon_cars) {
       ++r.cut;
       continue;
     }
+    tube_lights.clear();
+    MakeNeonTubeLights(*p.car, p.tube, budget.neon_points, in.tier, in.gain, &tube_lights);
+    if (in.can_be_seen && std::none_of(tube_lights.begin(), tube_lights.end(), [&](const Light& l) { return in.can_be_seen(l); })) {
+      ++r.unseen;  // behind the camera or out of the picture: no budget for it, the next car may have it
+      continue;
+    }
     ++r.lit;
     r.space = p.tube.space;
-    MakeNeonTubeLights(*p.car, p.tube, budget.neon_points, in.tier, in.gain, out);
+    out->insert(out->end(), tube_lights.begin(), tube_lights.end());
   }
 }
 
