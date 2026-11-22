@@ -40,6 +40,12 @@ inline constexpr int64_t kFirstMondayUnix = 4 * 24 * 3600;
 // so slots 13..39 are views 13..39 and slots 351..381 are views 382..412 (the game's slot check is sub_822D0438's: 13..39 or 351..381).
 inline constexpr uint32_t StatsViewForSlot(uint32_t slot) { return slot >= 351 ? slot + 31 : slot; }
 
+// A race-time board in the game's stats views (the XVC2 section of its XDBF; every view from 13 to 500 is one): the rating column
+// (attribute 0xFFFE, int64) is the NEGATED time, aggregated by max, so the store's "highest rating first" is the fastest time first;
+// the time itself is attribute 2 (int64, aggregated by min); attribute 1 (int32, last) is the board's context. The game writes both
+// columns in sub_8229D2E0 (+124 the time, +136 its negation). Views 1..12 are score boards (the rating is a sum, highest first).
+inline constexpr uint16_t kTimeBoardTimeAttr = 2;
+
 inline constexpr uint32_t kDefinitionSize = 1556;
 inline constexpr uint32_t kDescriptionSize = 1536;
 inline constexpr uint32_t kAnyCar = 0xFFFFFFFFu;

@@ -432,6 +432,33 @@ struct StoreServer {
         q.columns = {a, b};
         boards.Handle(q);
     }
+    // A race time written the way the game writes it (sub_8229D2E0 and the XVC2 of its stats views 13..500): the time in
+    // attribute 2 (int64, aggregated by min), its negation as the rating (attribute 0xFFFE, int64, aggregated by max), the
+    // context in attribute 1 (int32, last).
+    void LbWriteTime(uint8_t tok, const std::string& name, uint32_t view, int64_t time) {
+        lb::Request q;
+        q.op = lb::Op::kWrite;
+        q.token = Tok(tok);
+        q.gamertag = name;
+        q.view = view;
+        lb::Value ctx;
+        ctx.attr = 1;
+        ctx.type = lb::kTypeInt32;
+        ctx.agg = lb::kAggLast;
+        ctx.bits = 7;
+        lb::Value t;
+        t.attr = 2;
+        t.type = lb::kTypeInt64;
+        t.agg = lb::kAggMin;
+        t.bits = time;
+        lb::Value rating;
+        rating.attr = lb::kAttrRating;
+        rating.type = lb::kTypeInt64;
+        rating.agg = lb::kAggMax;
+        rating.bits = -time;
+        q.columns = {ctx, t, rating};
+        boards.Handle(q);
+    }
 };
 
 Bytes Jpeg(uint8_t seed, size_t n) {
@@ -2029,6 +2056,93 @@ void CheckLive() {
         CheckEq(none.S("server.state"), "ok", "live lb top: still an answer");
     }
 
+    // ---- boards of race times: the game's convention (tournament_schedule.h, kTimeBoardTimeAttr) and what the tool says of it
+    {
+        // the column sets the game's XVC2 has: set 3 (views 13..500: the time boards) and set 1 (a score board), as ot_tables writes them
+        namespace ot_tables = larecomp::online_tables;
+        ot_tables::Tables t;
+        t.game_version = "PATCH 10 - PREVIEW 2";
+        t.stats_available = true;
+        ot_tables::StatsColumn context{};
+        context.prop = 0x1000001B;  // int32, last
+        context.attr = 1;
+        context.agg = lb::kAggLast;
+        ot_tables::StatsColumn time{};
+        time.prop = 0x2000001E;  // int64, min: the best time
+        time.attr = 2;
+        time.agg = lb::kAggMin;
+        ot_tables::StatsColumn rating{};
+        rating.prop = 0x2000001F;  // int64, max: the negated time
+        rating.attr = lb::kAttrRating;
+        rating.agg = lb::kAggMax;
+        ot_tables::StatsColumn score_col{};
+        score_col.prop = 0x2000002C;  // int64, sum: a score
+        score_col.attr = lb::kAttrRating;
+        score_col.agg = lb::kAggSum;
+        ot_tables::StatsColumn rating_min = rating;  // a rating that keeps the lowest: not a shape the game has
+        rating_min.agg = lb::kAggMin;
+        t.stats.column_sets = {{context, time, rating}, {score_col}, {rating_min}};
+        ot_tables::StatsView time_view;
+        time_view.id = 22;
+        time_view.column_set = 0;
+        ot_tables::StatsView score_view;
+        score_view.id = 5;
+        score_view.column_set = 1;
+        ot_tables::StatsView odd_view;
+        odd_view.id = 9;
+        odd_view.column_set = 2;
+        t.stats.views = {time_view, score_view, odd_view};
+        const fs::path logs = ScratchDir() / "game-logs-kinds";
+        std::error_code mk;
+        fs::create_directories(logs, mk);
+        WriteFileBytes(logs / ot_tables::kFileName, ot_tables::ToJson(t));
+        const std::string tables = Utf8(logs);
+
+        S.LbWriteTime(0x11, "Alpha", 22, 61250);
+        S.LbWriteTime(0x22, "Bravo", 22, 58900);
+        S.LbWriteTime(0x33, "Cora", 22, 70000);
+        S.LbWriteTime(0x22, "Bravo", 22, 59500);  // slower than Bravo's best: the best stays (the time is aggregated by min)
+        S.LbWriteTime(0x11, "Alpha", 22, 60000);  // faster: Alpha's best improves
+        Doc d = Run({"lb", "top", "--server", at, "--view", "22", "--tables", tables});
+        CheckEq(d.S("view.kind"), "time", "time board: the view is a race-time board (rating max + a time column aggregated by min)");
+        CheckInt(d.N("view.time_attr"), 2, "time board: the time column");
+        CheckEq(d.S("view.time_unit"), "ms", "time board: the unit (CHECK: assumed)");
+        CheckInt(d.Len("rows"), 3, "time board: three rows");
+        CheckEq(d.S("rows.0.gamertag"), "Bravo", "time board: fastest first (58.900 s)");
+        CheckEq(d.S("rows.1.gamertag"), "Alpha", "time board: then Alpha (60.000 s, the improved best)");
+        CheckEq(d.S("rows.2.gamertag"), "Cora", "time board: the slowest last (70.000 s)");
+        CheckInt(d.N("rows.0.time"), 58900, "time board: the first row's time is its best, not its last");
+        CheckInt(d.N("rows.1.time"), 60000, "time board: an improved time replaced the older one");
+        CheckInt(d.N("rows.0.rating"), -58900, "time board: the rating is the negated time (the server ranks highest first)");
+        CheckInt(d.N("rows.0.rank"), 1, "time board: rank 1");
+        const std::string t1 = TokHex(0x11);
+        Doc around = Run({"lb", "around", "--server", at, "--view", "22", "--token-stdin", "--span", "1", "--tables", tables}, &t1);
+        CheckInt(around.N("rows.1.time"), 60000, "time board around: the player's time");
+        Check(around.B("rows.1.mine"), "time board around: the player's row is marked");
+        // no table file: the shape is not known, so no time is claimed
+        Doc bare = Run({"lb", "top", "--server", at, "--view", "22"});
+        CheckEq(bare.S("view.kind"), "unknown", "time board without tables: the kind is not known");
+        Check(bare.IsNull("view.time_attr") && !bare.Has("rows.0.time"), "time board without tables: no time is claimed");
+        CheckEq(bare.S("rows.0.gamertag"), "Bravo", "time board without tables: the server's order is the same");
+        // a score board and an odd shape
+        S.LbWrite(0x11, "Alpha", 5, 120, 3);
+        S.LbWrite(0x22, "Bravo", 5, 95, 1);
+        Doc score = Run({"lb", "top", "--server", at, "--view", "5", "--tables", tables});
+        CheckEq(score.S("view.kind"), "score", "score board: a rating that is a sum");
+        CheckEq(score.S("rows.0.gamertag"), "Alpha", "score board: highest first");
+        Check(score.IsNull("view.time_attr") && !score.Has("rows.0.time"), "score board: no time");
+        Doc odd = Run({"lb", "top", "--server", at, "--view", "9", "--tables", tables});
+        CheckEq(odd.S("view.kind"), "unknown", "a rating aggregated by min is not a shape the game has");
+        Doc views = Run({"lb", "views", "--tables", tables});
+        CheckEq(views.S("views.0.kind"), "score", "views: view 5 is a score board");  // listed in number order
+        CheckEq(views.S("views.2.kind"), "time", "views: view 22 is a race-time board");
+        // the standings of a tournament on slot 22 are time rows, read through the same table file
+        WriteFileBytes(S.dir / "rmr" / "tournament.txt", "race = Hollywood Circuit 1\nslot = 22\n");
+        Doc st = Run({"tournament", "standings", "--server", at, "--tables", tables});
+        CheckEq(st.S("board.view.kind"), "time", "tournament standings with tables: a time board");
+        CheckInt(st.N("board.rows.0.time"), 58900, "tournament standings with tables: the fastest time");
+    }
+
     // ---- the tournament
     {
         WriteFileBytes(S.dir / "rmr" / "tournament.txt",
@@ -2051,38 +2165,93 @@ void CheckLive() {
         Check(d.B("tournament.active"), "live tournament: active now");
         Check(d.N("tournament.seconds_left") > 0 && d.N("tournament.seconds_left") <= 604800, "live tournament: time left");
 
-        // standings: slot 360 is in 351..381, so the game may write the times to the slot or to slot + 31
+        // The prizes come back out of the menu text (the definition has no prize fields): the server's own wording
+        // (tournament_schedule.cpp BuildDescription) round-trips for every prize mask and podium size.
+        {
+            const char* const kNames[3] = {"Audi R8", "TIS rims", "hydraulics"};
+            auto names = [&](int mask) {
+                std::vector<std::string> v;
+                for (int b = 0; b < 3; ++b)
+                    if (mask & (1 << b)) v.push_back(kNames[b]);
+                return v;
+            };
+            int combos = 0;
+            for (int first : {0, 1, 2, 7}) {
+                for (int podium_prize : {0, 4, 6}) {
+                    for (int podium : {1, 2, 3, 5}) {
+                        WriteFileBytes(S.dir / "rmr" / "tournament.txt",
+                                       "race = Hollywood Circuit 1\nslot = 30\nprize_first = " + std::to_string(first) + "\nprize_podium = " +
+                                           std::to_string(podium_prize) + "\npodium = " + std::to_string(podium) + "\n");
+                        Doc p = Run({"tournament", "current", "--server", at});
+                        const std::string how = "live prizes (" + std::to_string(first) + "," + std::to_string(podium_prize) + "," + std::to_string(podium) + "): ";
+                        std::vector<std::pair<std::string, std::vector<std::string>>> want;
+                        if (first) want.push_back({"1st", names(first)});
+                        if (podium_prize && podium > 1)
+                            want.push_back({podium == 2 ? "2nd" : "2nd-" + std::to_string(podium) + (podium == 3 ? "rd" : "th"), names(podium_prize)});
+                        CheckInt(p.Len("tournament.prizes"), int(want.size()), how + "the places");
+                        for (size_t k = 0; k < want.size(); ++k) {
+                            const std::string at_k = "tournament.prizes." + std::to_string(k);
+                            CheckEq(p.S(at_k + ".place"), want[k].first, how + "place " + std::to_string(k));
+                            CheckInt(p.Len(at_k + ".rewards"), int(want[k].second.size()), how + "the rewards of place " + std::to_string(k));
+                            for (size_t r = 0; r < want[k].second.size(); ++r)
+                                CheckEq(p.S(at_k + ".rewards." + std::to_string(r)), want[k].second[r], how + "reward " + std::to_string(r));
+                        }
+                        ++combos;
+                    }
+                }
+            }
+            CheckInt(combos, 48, "live prizes: every mask and podium size was tried");
+            // put the file of the test back
+            WriteFileBytes(S.dir / "rmr" / "tournament.txt",
+                           "race = Hollywood Circuit 1\nslot = 360\ndescription = Test race\\n1st: TIS rims.\\n2nd-3rd: hydraulics.\nrestriction_type = 2\n"
+                           "restriction_data = 0xFFFFFFFF\nprize_first = 2\n");
+        }
+
+        // standings: slot 360 is in 351..381, so the game keeps its times in view 391 (slot + 31, tournament_schedule.h), one board
         Doc empty = Run({"tournament", "standings", "--server", at});
         CheckInt(empty.N("board.total"), 0, "live standings: nobody has a time yet");
-        CheckEq(empty.S("board.view_basis"), "slot", "live standings: the slot when both are empty");
-        CheckInt(empty.Len("board.candidates"), 2, "live standings: both views were asked");
-        CheckInt(empty.N("board.candidates.1"), 391, "live standings: slot + 31");
-        CheckInt(empty.N("server.requests"), 3, "live standings: the week and the two boards");
-        S.LbWrite(0x11, "Alpha", 391, 100, 1);
-        S.LbWrite(0x22, "Bravo", 391, 90, 1);
-        const std::string t2 = TokHex(0x22);
-        Doc plus = Run({"tournament", "standings", "--server", at, "--token-stdin"}, &t2);
+        CheckEq(empty.S("board.view_basis"), "slot_plus_31", "live standings: a slot from 351 is in slot + 31");
+        CheckInt(empty.Len("board.candidates"), 1, "live standings: one view asked");
+        CheckInt(empty.N("board.candidates.0"), 391, "live standings: slot + 31");
+        CheckInt(empty.N("board.view.id"), 391, "live standings: the board is that view");
+        CheckInt(empty.N("server.requests"), 2, "live standings: the week and the board");
+        CheckEq(empty.S("board.view.kind"), "time", "live standings: a tournament board is a race-time board (with no tables file too)");
+        CheckEq(empty.S("board.view.time_unit"), "ms", "live standings: the unit");
+        CheckInt(empty.N("board.view.time_attr"), 2, "live standings: the time column");
+        // times the way the game writes them: faster = a higher (less negative) rating, the store ranks highest first
+        S.LbWriteTime(0x11, "Alpha", 391, 100000);
+        S.LbWriteTime(0x22, "Bravo", 391, 90500);
+        S.LbWriteTime(0x44, "Dee", 391, 95250);
+        const std::string t4 = TokHex(0x44);
+        Doc plus = Run({"tournament", "standings", "--server", at, "--token-stdin"}, &t4);
         CheckEq(plus.S("board.view_basis"), "slot_plus_31", "live standings: the times are in slot + 31");
-        CheckInt(plus.N("board.view.id"), 391, "live standings: that view");
-        CheckInt(plus.N("board.total"), 2, "live standings: two times");
-        CheckEq(plus.S("board.rows.0.gamertag"), "Alpha", "live standings: the best first");
+        CheckInt(plus.N("board.total"), 3, "live standings: three times");
+        CheckEq(plus.S("board.rows.0.gamertag"), "Bravo", "live standings: the fastest first");
+        CheckEq(plus.S("board.rows.1.gamertag"), "Dee", "live standings: then the next fastest");
+        CheckEq(plus.S("board.rows.2.gamertag"), "Alpha", "live standings: the slowest last");
+        CheckInt(plus.N("board.rows.0.time"), 90500, "live standings: the time of the first row");
+        CheckInt(plus.N("board.rows.2.time"), 100000, "live standings: the time of the last row");
+        CheckInt(plus.N("board.rows.0.rating"), -90500, "live standings: the rating is the negated time");
         Check(plus.B("board.rows.0.in_week"), "live standings: written this week");
-        CheckEq(plus.S("board.mine.gamertag"), "Bravo", "live standings: the player's own row");
+        CheckEq(plus.S("board.mine.gamertag"), "Dee", "live standings: the player's own row");
         CheckInt(plus.N("board.mine.rank"), 2, "live standings: its rank");
-        S.LbWrite(0x33, "Cora", 360, 50, 1);
+        CheckInt(plus.N("board.mine.time"), 95250, "live standings: its time");
+        // a row under the slot's own number is not the board (the old servers settled on it)
+        S.LbWriteTime(0x33, "Cora", 360, 50000);
         Doc both = Run({"tournament", "standings", "--server", at});
-        CheckEq(both.S("board.view_basis"), "slot", "live standings: the slot wins when it has rows");
-        CheckInt(both.N("board.total"), 1, "live standings: its one row");
-        CheckInt(both.N("server.requests"), 2, "live standings: the second view is not asked when the first has rows");
+        CheckInt(both.N("board.view.id"), 391, "live standings: still view 391");
+        CheckInt(both.N("board.total"), 3, "live standings: the row in view 360 is not counted");
+        CheckInt(both.N("server.requests"), 2, "live standings: one board asked");
         Doc forced = Run({"tournament", "standings", "--server", at, "--view", "391", "--count", "1"});
         CheckEq(forced.S("board.view_basis"), "override", "live standings: a view given");
-        CheckInt(forced.N("board.total"), 2, "live standings: its rows");
+        CheckInt(forced.N("board.total"), 3, "live standings: its rows");
         CheckInt(forced.Len("board.rows"), 1, "live standings: the page asked");
-        // a slot below 351 has one candidate
+        // a slot below 351 is its own view
         WriteFileBytes(S.dir / "rmr" / "tournament.txt", "race = Hollywood Circuit 1\nslot = 30\n");
         Doc low = Run({"tournament", "standings", "--server", at});
         CheckInt(low.Len("board.candidates"), 1, "live standings: a slot below 351 has one view");
         CheckInt(low.N("board.view.id"), 30, "live standings: it is the slot");
+        CheckEq(low.S("board.view_basis"), "slot", "live standings: by the slot");
         // the next weeks, no server
         Doc next = Run({"tournament", "next"});
         CheckInt(next.N("weeks.0.week"), week.week + 1, "live next: the week after this one");
@@ -2116,6 +2285,42 @@ void CheckLive() {
         CheckInt(nobody.N("rewards.mask"), 0, "live rewards: nobody wins nothing");
         Doc again = rewards(0x11);
         CheckInt(again.N("rewards.mask"), 7, "live rewards: prizes stay");
+    }
+    // rewards of the weeks whose slot is 351 or more: the game keeps those times in slot + 31 (tournament_schedule.h)
+    {
+        const fs::path base3 = ScratchDir() / "live-awards-views";
+        StoreServer S3(base3);
+        const int64_t now = int64_t(std::time(nullptr));
+        // week slot starts ends prize_first prize_podium podium settled
+        //   2901: slot 360 (view 391), open
+        //   2902: slot 361 (view 392), "settled" by a server before the view fix (1), which looked at view 361 and found nobody
+        //   2903: slot 31 (view 31), "settled" by an older server (1) and right: it must stay settled
+        WriteFileBytes(base3 / "rmr" / "tournament_weeks.txt",
+                       "2901 360 " + std::to_string(now - 1000) + " " + std::to_string(now + 2) + " 7 6 2 0\n"
+                       "2902 361 " + std::to_string(now - 1000) + " " + std::to_string(now + 2) + " 1 4 2 1\n"
+                       "2903 31 " + std::to_string(now - 1000) + " " + std::to_string(now + 2) + " 7 6 3 1\n");
+        S3.LbWriteTime(0x11, "Alpha", 391, 90000);
+        S3.LbWriteTime(0x22, "Bravo", 391, 95000);
+        S3.LbWriteTime(0x33, "Cora", 391, 99000);
+        S3.LbWriteTime(0x44, "Dee", 360, 50000);   // the slot's own number: not the board of week 2901
+        S3.LbWriteTime(0x55, "Eli", 392, 80000);
+        S3.LbWriteTime(0x33, "Cora", 392, 85000);
+        S3.LbWriteTime(0x77, "Gus", 31, 70000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(3200));
+        auto rewards = [&](uint8_t tok) {
+            const std::string t = TokHex(tok);
+            return Run({"tournament", "rewards", "--server", S3.Address(), "--token-stdin"}, &t);
+        };
+        CheckInt(rewards(0x11).N("rewards.mask"), 7, "live rewards, slot 360: the fastest in view 391 wins all three");
+        CheckInt(rewards(0x22).N("rewards.mask"), 6, "live rewards, slot 360: the second fastest in view 391 wins the podium prizes");
+        CheckInt(rewards(0x44).N("rewards.mask"), 0, "live rewards, slot 360: a time in view 360 is not the week's board");
+        CheckInt(rewards(0x55).N("rewards.mask"), 1, "live rewards, a week an older server settled on the wrong board: settled again, first place");
+        CheckInt(rewards(0x33).N("rewards.mask"), 4, "live rewards, that week: second place wins the podium prize (third place in 2901 wins none)");
+        CheckInt(rewards(0x77).N("rewards.mask"), 0, "live rewards, a week an older server settled on the right board (slot 31) stays settled");
+        const Bytes weeks_bytes = ReadFileBytes(base3 / "rmr" / "tournament_weeks.txt");
+        const std::string weeks(weeks_bytes.begin(), weeks_bytes.end());
+        Check(weeks.find(" 2\n") != std::string::npos && weeks.find(" 1\n") == std::string::npos && weeks.find(" 0\n") == std::string::npos,
+              "live rewards: the weeks file now says every week is settled (2)");
     }
 }
 

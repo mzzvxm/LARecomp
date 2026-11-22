@@ -8,6 +8,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <random>
 #include <set>
@@ -510,14 +511,67 @@ void WriteTables(JsonWriter& j, const Tables& t) {
     j.EndObject();
 }
 
-void WriteViewInfo(JsonWriter& j, uint32_t id, const Tables& t) {
+// What a board's numbers are, from the view's columns in the game's table (online_tables.json), read the way the game writes
+// them (tournament_schedule.h, kTimeBoardTimeAttr): a race-time board has a rating column that is the negated time, aggregated
+// by max, next to an int64 column aggregated by min (the time itself); the server's "highest rating first" is then the
+// fastest time first. A score board has a rating that is a sum (or the last value): highest first, as it stands.
+struct BoardShape {
+    const char* kind = "unknown";  // "time" | "score" | "unknown" (no table, or a shape the game does not use)
+    uint32_t time_attr = 0;        // kind "time": the column that holds the time
+};
+
+BoardShape ShapeOfView(const TableView* v) {
+    BoardShape shape;
+    if (!v) return shape;
+    const TableColumn* rating = nullptr;
+    const TableColumn* time = nullptr;
+    for (const TableColumn& c : v->columns) {
+        if (c.attr == lb::kAttrRating) rating = &c;
+        else if (c.type == lb::kTypeInt64 && c.agg == lb::kAggMin && !time) time = &c;
+    }
+    if (!rating) return shape;
+    if (rating->agg == lb::kAggMax && time) {
+        shape.kind = "time";
+        shape.time_attr = time->attr;
+    } else if (rating->agg == lb::kAggSum || rating->agg == lb::kAggLast) {
+        shape.kind = "score";
+    }
+    return shape;
+}
+
+bool IsTimeBoard(const BoardShape& s) { return std::string(s.kind) == "time"; }
+
+// CHECK: the unit of the game's race times (the value the game puts in the time column) is taken to be milliseconds; the game's
+// leaderboard code was read for the column and the sign, not for the unit, so one real board still has to confirm it.
+constexpr const char* kTimeUnit = "ms";
+
+// The tournament's boards are race-time boards by definition (a race against the clock): the shape is the game's even when
+// the table file is missing.
+BoardShape TournamentShape(const Tables& t, uint32_t view) {
+    BoardShape shape = ShapeOfView(FindView(t, view));
+    if (!IsTimeBoard(shape)) {
+        shape.kind = "time";
+        shape.time_attr = tournament::kTimeBoardTimeAttr;
+    }
+    return shape;
+}
+
+void WriteViewInfo(JsonWriter& j, uint32_t id, const Tables& t, const BoardShape* forced = nullptr) {
     const TableView* v = FindView(t, id);
+    const BoardShape shape = forced ? *forced : ShapeOfView(v);
     j.BeginObject();
     j.Field("id", id);
     j.Key("name");
     if (v && !v->name.empty()) j.String(v->name); else j.Null();
     j.Key("known");
     if (t.state == "ok") j.Bool(v != nullptr); else j.Null();
+    // kind "time": each row has `time` (the column `time_attr`, in `time_unit`), the rating is its negation, and the rows
+    // come fastest first.
+    j.Field("kind", shape.kind);
+    j.Key("time_attr");
+    if (IsTimeBoard(shape)) j.Uint(shape.time_attr); else j.Null();
+    j.Key("time_unit");
+    if (IsTimeBoard(shape)) j.String(kTimeUnit); else j.Null();
     j.Key("columns").BeginArray();
     if (v) {
         for (const TableColumn& c : v->columns) {
@@ -557,7 +611,7 @@ void WriteValue(JsonWriter& j, uint8_t type, int64_t bits) {
     }
 }
 
-void WriteRow(JsonWriter& j, const lb::Row& r, bool mine, int64_t week_starts) {
+void WriteRow(JsonWriter& j, const lb::Row& r, bool mine, int64_t week_starts, const BoardShape* shape = nullptr) {
     j.BeginObject();
     j.Field("owner", Hex64Text(r.owner));
     j.Field("mine", mine);
@@ -569,6 +623,24 @@ void WriteRow(JsonWriter& j, const lb::Row& r, bool mine, int64_t week_starts) {
         if (v.attr == lb::kAttrRating) rating_type = v.type;
     j.Key("rating");
     WriteValue(j, rating_type, r.rating);
+    // A race-time board: the time itself (the shape's column; for a row another client wrote without it, the negated rating
+    // when that is a negative whole number), null when neither is there.
+    if (shape && IsTimeBoard(*shape)) {
+        bool have = false;
+        int64_t time = 0;
+        for (const lb::Value& v : r.columns) {
+            if (v.attr == shape->time_attr && v.type == lb::kTypeInt64) {
+                time = v.bits;
+                have = true;
+            }
+        }
+        if (!have && rating_type == lb::kTypeInt64 && r.rating < 0 && r.rating != std::numeric_limits<int64_t>::min()) {
+            time = -r.rating;
+            have = true;
+        }
+        j.Key("time");
+        if (have && time >= 0) j.Int(time); else j.Null();
+    }
     j.Field("updated", r.updated);
     if (week_starts > 0) j.Field("in_week", r.updated >= week_starts);
     j.Key("columns").BeginArray();
@@ -1039,8 +1111,10 @@ std::string LbRows(const RemoteArgs& a, Session& s, const Identity& id, const Ta
         if (ok) j.Bool(found); else j.Null();
     }
     j.Key("rows").BeginArray();
-    if (ok)
-        for (const lb::Row& r : resp.rows) WriteRow(j, r, IsMine(id, r.owner), 0);
+    if (ok) {
+        const BoardShape shape = ShapeOfView(FindView(tables, view));
+        for (const lb::Row& r : resp.rows) WriteRow(j, r, IsMine(id, r.owner), 0, &shape);
+    }
     j.EndArray();
     j.EndObject();
     return j.str();
@@ -1190,41 +1264,30 @@ std::string TournamentStandings(const RemoteArgs& a, Session& s, const Identity&
     bool ok = FetchDefinition(s, t);
     const bool have_definition = ok;
 
-    // Which stats view holds the slot's board. The server settles the prizes on the slot itself as the view
-    // (tournament_awards.cpp); the game's header comment says it maps 351.. to views 382.. (tournament_schedule.h).
-    // CHECK: unproven which one the game writes; ask both when it is not settled, the first one that has rows wins.
+    // Which stats view holds the slot's board: the game's own rule (tournament_schedule.h, StatsViewForSlot), the same the
+    // server settles the prizes on: the slot below 351, slot + 31 from 351. --view overrides it. `candidates` holds that one
+    // view (kept as a list for the documents of the tool before the rule was settled, which asked two).
     std::vector<uint32_t> candidates;
     const char* basis = "slot";
     if (a.view_given) {
         candidates.push_back(a.views[0]);
         basis = "override";
     } else if (ok) {
-        candidates.push_back(t.slot);
-        if (t.slot >= 351 && t.slot <= 381) candidates.push_back(t.slot + 31);
+        candidates.push_back(tournament::StatsViewForSlot(t.slot));
+        if (candidates[0] != t.slot) basis = "slot_plus_31";
     }
     const uint32_t want = std::min<uint32_t>(a.count ? a.count : kDefaultStandings, kLbMaxRows);
-    uint32_t view = candidates.empty() ? 0 : candidates[0];
+    const uint32_t view = candidates.empty() ? 0 : candidates[0];
     lb::Response board;
     bool board_ok = false;
-    for (size_t k = 0; ok && k < candidates.size(); ++k) {
+    if (ok && !candidates.empty()) {
         lb::Request req;
         req.op = lb::Op::kByRank;
-        req.view = candidates[k];
+        req.view = view;
         req.start = a.start;
         req.count = want;
-        lb::Response resp;
-        const bool good = s.Lb(req, resp) && s.Accept(resp.err);
-        if (!good) {
-            ok = false;
-            break;
-        }
-        if (k == 0 || resp.total > 0) {
-            view = candidates[k];
-            board = std::move(resp);
-            board_ok = true;
-            if (k > 0 && !a.view_given) basis = "slot_plus_31";
-            if (board.total > 0) break;
-        }
+        board_ok = s.Lb(req, board) && s.Accept(board.err);
+        if (!board_ok) board = {};
     }
     if (board.rows.size() > kLbMaxRows) board.rows.resize(kLbMaxRows);
 
@@ -1255,9 +1318,11 @@ std::string TournamentStandings(const RemoteArgs& a, Session& s, const Identity&
     if (have_definition) WriteTournament(j, t, NowUnix(a)); else j.Null();
     j.Key("board");
     if (board_ok) {
+        // A tournament board is a race-time board whatever the table file says (or when there is none).
+        const BoardShape shape = TournamentShape(tables, view);
         j.BeginObject();
         j.Key("view");
-        WriteViewInfo(j, view, tables);
+        WriteViewInfo(j, view, tables, &shape);
         j.Field("view_basis", basis);
         j.Key("candidates").BeginArray();
         for (uint32_t c : candidates) j.Uint(c);
@@ -1265,10 +1330,10 @@ std::string TournamentStandings(const RemoteArgs& a, Session& s, const Identity&
         j.Field("total", board.total);
         j.Field("start", a.start);
         j.Key("rows").BeginArray();
-        for (const lb::Row& r : board.rows) WriteRow(j, r, IsMine(id, r.owner), t.starts);
+        for (const lb::Row& r : board.rows) WriteRow(j, r, IsMine(id, r.owner), t.starts, &shape);
         j.EndArray();
         j.Key("mine");
-        if (have_mine) WriteRow(j, mine, true, t.starts); else j.Null();
+        if (have_mine) WriteRow(j, mine, true, t.starts, &shape); else j.Null();
         j.EndObject();
     } else {
         j.Null();
