@@ -618,6 +618,8 @@ class GPUSettings final : public rex::SettingOwner {
     "Ray Reconstruction cannot take (the pause, garage and map worlds, cutscenes, frames without guides); the switch between them is live and never restarts. Read at the start (Streamline's plugins are chosen when "
     "it starts; on Vulkan only when DLSS is the saved upscaler).", rex::kDebugOnly, rex::kRestart, rex::Allowed("auto", "off", "probe", "on"));
 
+  REX_SETTING(std::string, mcla_gpu_ray_regen, "auto", "Debug (AMD FSR Ray Regeneration, perf/RAY-REGEN.md, RG-1): whether AMD's denoiser runtime is opened and asked at the start. auto (the default): only when an effect that can hand it a signal exists (none does yet: nothing is opened). off: never. probe: on a Radeon RX 9000 series card on Direct3D 12 (never on any other PC) amd_fidelityfx_loader_dx12.dll and amd_fidelityfx_denoiser_dx12.dll are opened on a worker thread, the runtime's providers are listed and a small trial context is made: the log's '[gpu] ray regen:' lines say whether this card and driver take it and what a context costs, and no frame uses it. on: as probe for now (the effects' signal writers, the next packages, will use it). Read at the start.", rex::kDebugOnly, rex::kRestart, rex::Allowed("auto", "off", "probe", "on"));
+
   REX_SETTING(i32, mcla_gpu_dlss_rr_view, 0, "Debug (Ray Reconstruction guides): draws one of the images the DLSS Ray Reconstruction guide pass makes from the G-buffer over the upscaler's output "
     "(perf/DLSS-RR.md, RR-2): 1 the diffuse albedo, 2 the normal (0.5 + 0.5 n), 3 the roughness, 4 the specular albedo, 5 the hit distance (black on a "
     "surface, blue in the sky), 6 the responsivity. The guide pass runs while mcla_gpu_dlss_rr is on (DLSS, an RTX card that supports Ray Reconstruction) "
@@ -1781,6 +1783,7 @@ inline auto& mcla_gpu_denoiser = g_gpu.mcla_gpu_denoiser;
 inline auto& mcla_gpu_dlss_mask_tags = g_gpu.mcla_gpu_dlss_mask_tags;
 inline auto& mcla_gpu_dlss_mode = g_gpu.mcla_gpu_dlss_mode;
 inline auto& mcla_gpu_dlss_rr = g_gpu.mcla_gpu_dlss_rr;
+inline auto& mcla_gpu_ray_regen = g_gpu.mcla_gpu_ray_regen;
 inline auto& mcla_gpu_dlss_rr_view = g_gpu.mcla_gpu_dlss_rr_view;
 inline auto& mcla_gpu_dlss_rr_test = g_gpu.mcla_gpu_dlss_rr_test;
 inline auto& mcla_gpu_dlss_rr_ssr = g_gpu.mcla_gpu_dlss_rr_ssr;

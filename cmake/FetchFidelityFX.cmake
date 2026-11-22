@@ -29,7 +29,11 @@ set(_ffx_files
     "bc78a18aa95f5157b4699b0602700592b624788c5bc55d1762cb46a1b6557ca1 Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h"
     "396596af3df63310674e8036abd2ad0fcd061e61334e7a2c76653a2be3c686b4 Kits/FidelityFX/framegeneration/include/ffx_framegeneration_api_types.h"
     "e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6 Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_dx12.dll"
-    "d002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4 Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_vk.dll")
+    "d002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4 Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_vk.dll"
+    # AMD FSR Ray Regeneration 1.2.1 (src/gpu/ray_regen.h, perf/RAY-REGEN.md): the header and the Direct3D 12 denoiser DLL (9 MB, AMD-signed, MIT like the rest; no Vulkan provider exists).
+    # The DLL is only opened on a Radeon RX 9000 on Direct3D 12 when an effect asks for it (nothing does yet): shipping it costs disk, never memory elsewhere.
+    "64deddd5482a302903b06d1a319b83e66d1792f493447204a2356de2d48f3ca5 Kits/FidelityFX/denoisers/include/ffx_denoiser.h"
+    "4ca5182d5c8a855441e0c82673716e4776f9afcfadfdb4225d2fc6113b0f853c Kits/FidelityFX/signedbin/amd_fidelityfx_denoiser_dx12.dll")
 
 set(_ffx_ok TRUE)
 foreach(_ffx_entry IN LISTS _ffx_files)

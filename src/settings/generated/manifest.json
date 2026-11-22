@@ -2981,6 +2981,19 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ray_regen": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (AMD FSR Ray Regeneration, perf/RAY-REGEN.md, RG-1): whether AMD's denoiser runtime is opened and asked at the start. auto (the default): only when an effect that can hand it a signal exists (none does yet: nothing is opened). off: never. probe: on a Radeon RX 9000 series card on Direct3D 12 (never on any other PC) amd_fidelityfx_loader_dx12.dll and amd_fidelityfx_denoiser_dx12.dll are opened on a worker thread, the runtime's providers are listed and a small trial context is made: the log's '[gpu] ray regen:' lines say whether this card and driver take it and what a context costs, and no frame uses it. on: as probe for now (the effects' signal writers, the next packages, will use it). Read at the start.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRestart",
+   "rex::Allowed(\"auto\", \"off\", \"probe\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_dlss_rr_view": {
   "type": "i32",
   "default": "0",

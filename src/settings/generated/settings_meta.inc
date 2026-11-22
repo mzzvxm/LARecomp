@@ -322,6 +322,7 @@
 {"mcla_gpu_dlss_mask_tags", "MCLA/GPU"},
 {"mcla_gpu_dlss_mode", "MCLA/GPU"},
 {"mcla_gpu_dlss_rr", "MCLA/GPU"},
+{"mcla_gpu_ray_regen", "MCLA/GPU"},
 {"mcla_gpu_dlss_rr_view", "MCLA/GPU"},
 {"mcla_gpu_dlss_rr_test", "MCLA/GPU"},
 {"mcla_gpu_dlss_rr_ssr", "MCLA/GPU"},

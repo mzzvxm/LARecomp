@@ -25,6 +25,9 @@
 #include "render_scale.h"
 #include "resolve.h"
 #include "temporal_dlss.h"
+#if defined(LARECOMP_HAS_RAY_REGEN)
+#include "ray_regen.h"
+#endif
 #include "texture_bytes.h"
 #include "textures.h"
 #include "topology.h"
@@ -242,6 +245,10 @@ void TemporalSystem::Initialize(Device& device, FrameRing& frames, BindlessHeap&
   if (dlss_) {
     dlss_->Probe(device, frames);
   }
+#if defined(LARECOMP_HAS_RAY_REGEN)
+  // AMD FSR Ray Regeneration (perf/RAY-REGEN.md, RG-1): opened only where mcla_gpu_ray_regen asks for it and the device is a Radeon RX 9000 on Direct3D 12. Nothing uses it yet.
+  rayregen::StartIfWanted(device, frames);
+#endif
 }
 
 void TemporalSystem::Shutdown() {
@@ -253,6 +260,9 @@ void TemporalSystem::Shutdown() {
   stand_in_set_ = false;
   output_ = HostImage{};
   rr_pass_ = nullptr;  // the Renderer shuts it down itself
+#if defined(LARECOMP_HAS_RAY_REGEN)
+  rayregen::StopAll();
+#endif
   if (ffx_) {
     ffx_->Shutdown();
     ffx_.reset();
