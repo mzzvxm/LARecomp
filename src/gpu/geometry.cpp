@@ -260,6 +260,7 @@ void GeometryCache::BeginFrame(uint32_t slot) {
   slot_ = slot;
   ++frame_;
   zero_ring_ = UploadSpan{};
+  prepare_sampler_.NextFrame();  // the statistic's timed draws move on by one each frame (render_cpu.h)
 }
 
 UploadSpan GeometryCache::Ring(uint64_t size, uint64_t alignment) {

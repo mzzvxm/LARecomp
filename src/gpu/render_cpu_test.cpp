@@ -110,6 +110,64 @@ void TestSamplerOn() {
   Check(s.Scale(100) == 100u * DrawSampler::kPeriod, "a timed draw counts kPeriod times");
 }
 
+// NextFrame(): the timed draws of a frame move on by one each frame, so a pattern of exactly kPeriod draws that repeats shows all its sub-draws.
+void TestSamplerPhase() {
+  constexpr uint32_t P = DrawSampler::kPeriod;
+  // Frames whose draw count is a multiple of kPeriod: the one count running across the frames times the same draw index of every frame.
+  {
+    DrawSampler s;
+    s.Configure(true);
+    std::vector<uint32_t> hits(P, 0);
+    for (int frame = 0; frame < int(P) * 3; ++frame) {
+      for (uint32_t i = 0; i < P * 100; ++i) {
+        if (s.Take()) ++hits[i % P];
+      }
+    }
+    uint32_t used = 0;
+    for (const uint32_t h : hits) used += h != 0;
+    Check(used == 1, "the reason for NextFrame: without it a frame of a multiple of kPeriod draws times one sub-draw only");
+  }
+  // With NextFrame: the phase of frame f is f mod kPeriod, the first frame after Configure keeps phase 0; every index is timed once in kPeriod frames.
+  DrawSampler s;
+  s.Configure(true);
+  std::vector<uint32_t> hits(P, 0);
+  for (int frame = 0; frame < int(P) * 3; ++frame) {
+    if (frame > 0) s.NextFrame();
+    const uint32_t phase = uint32_t(frame) % P;
+    bool right = true;
+    for (uint32_t i = 0; i < P * 100; ++i) {
+      const bool taken = s.Take();
+      right &= taken == (i % P == phase);
+      if (taken) ++hits[i % P];
+    }
+    Check(right, "frame " + std::to_string(frame) + ": the timed draws are those at index = phase (mod kPeriod)");
+  }
+  bool even = true;
+  for (const uint32_t h : hits) even &= h == 100u * 3u;
+  Check(even, "three rounds of kPeriod frames: every sub-draw of a pattern of kPeriod was timed the same number of times");
+  // Frames of a draw count that is no multiple (3517): over kPeriod frames the sum of the scaled draws is exactly the number of draws.
+  {
+    DrawSampler t;
+    t.Configure(true);
+    uint64_t estimate = 0;
+    uint64_t exact = 0;
+    for (uint32_t frame = 0; frame < P; ++frame) {
+      if (frame > 0) t.NextFrame();
+      for (uint32_t i = 0; i < 3517; ++i) {
+        exact += 1;
+        if (t.Take()) estimate += t.Scale(1);
+      }
+    }
+    Check(estimate == exact, "kPeriod frames of 3517 draws: the estimate of the draw count is exact");
+  }
+  // Not sampled: NextFrame changes nothing.
+  DrawSampler u;
+  u.NextFrame();
+  bool all = true;
+  for (int i = 0; i < 100; ++i) all &= u.Take();
+  Check(all && u.Scale(5) == 5, "not sampled: NextFrame leaves every draw timed");
+}
+
 // A statistic summed per draw, exact against sampled: the sampled sum is an estimate of the exact one. The draws' costs are a mix like
 // the race's (cheap ones, some dear, a periodic pattern of 2 and 8 on top, an occasional heavy one); the sampler's counter runs on across
 // the frames, as the scene's does.
@@ -581,6 +639,7 @@ int main(int argc, char** argv) {
   TestSamplerOff();
   TestSamplerOn();
   TestSamplerEstimate();
+  TestSamplerPhase();
   TestAliasEqualsReference();
   TestAliasCallCounts();
   TestAliasEdges();

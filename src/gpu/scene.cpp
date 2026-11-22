@@ -831,6 +831,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   slot_ = slot;
   scale_depth_bias_ = larecomp::settings::mcla_gpu_scale_depth_bias.Get() && larecomp::settings::mcla_gpu_work_17oct.Get();
   geometry_->BeginFrame(slot);
+  draw_sampler_.NextFrame();  // the statistic's timed draws move on by one each frame (render_cpu.h)
   edram_->BeginFrame(list, slot);
   textures_->BeginFrame(slot);
   resolve_->BeginFrame(slot);

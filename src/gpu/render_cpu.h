@@ -33,7 +33,14 @@ constexpr bool Has(int32_t mask, Bits bit) {
 // about 7 ns on the test PC (4 reads a draw, ~3800 draws a frame: 0.1 ms a frame, about 3% of
 // what the render thread does in a race); one draw in kPeriod is timed and its time counted
 // kPeriod times, so the window's sum is an estimate of the exact one. kPeriod is odd: no pattern
-// of the draws' order with a period of 2, 4 or 8 falls on the timed ones every time.
+// of the draws' order with a period of 2, 4 or 8 falls on the timed ones every time. A pattern of exactly
+// kPeriod draws that repeats (an object of 7 sub-draws) would still fall on the same one every time, so
+// the owner calls NextFrame() at each frame's start: the timed draws of a frame are those whose index in
+// the frame has the frame's phase, and the phase moves on by one each frame (draws 0, 7, 14.. in one
+// frame, 1, 8, 15.. in the next), so every sub-draw of such a pattern is timed once in kPeriod frames.
+// Over kPeriod frames of the same draw count each draw is timed exactly once, so the estimate stays
+// unbiased. Without NextFrame() the sampler keeps one count running across the frames (the unit test
+// does that).
 // Not sampled (Configure(false)): every draw is timed and Scale is the identity, as before.
 class DrawSampler {
  public:
@@ -42,6 +49,16 @@ class DrawSampler {
   void Configure(bool sampled) {
     period_ = sampled ? kPeriod : 1u;
     countdown_ = 1;
+    phase_ = 0;
+  }
+  // At a frame's start: the next frame times the draws whose index has the next phase (the first draw of the frame
+  // counts down from 1 + phase). Not sampled: nothing to do.
+  void NextFrame() {
+    if (period_ == 1u) {
+      return;
+    }
+    phase_ = (phase_ + 1u) % period_;
+    countdown_ = 1u + phase_;
   }
   bool sampled() const { return period_ != 1u; }
   // True on the draws whose time is to be read.
@@ -58,6 +75,7 @@ class DrawSampler {
  private:
   uint32_t period_ = 1;
   uint32_t countdown_ = 1;
+  uint32_t phase_ = 0;
 };
 
 // A one-entry cache in front of `map[key]` for a map with stable element addresses (std::unordered_map: its nodes stay where they are
