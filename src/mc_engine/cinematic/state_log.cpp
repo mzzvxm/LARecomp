@@ -412,6 +412,10 @@ bool Active() {
 }
 
 std::string CurrentLogPath() {
+void CloseForExit() {
+    CloseLog("the game is ending");
+}
+
     std::lock_guard<std::mutex> lock(g_path_mutex);
     return g.path;
 }
@@ -431,6 +435,7 @@ void SetTakeFolder(const std::string&) {}
 bool RegisterCarSource(const CarSource*) { return false; }
 bool Active() { return false; }
 std::string CurrentLogPath() { return {}; }
+void CloseForExit() {}
 }  // namespace mc::cinematic::statelog
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

@@ -525,6 +525,10 @@ bool FreecamActive() {
 }
 
 }  // namespace mc::cinematic
+void FreecamStopForExit() {
+    StopRecording("the game is ending");
+}
+
 
 #else  // REXGLUE_HAS_XEO3_TARGET
 
@@ -535,6 +539,7 @@ bool FreecamApply(uint8_t*, uint32_t, uint32_t) { return false; }
 void FreecamObservePad(uint8_t*, uint32_t, uint32_t) {}
 bool FreecamActive() { return false; }
 void FreecamSetPose(const freecam::Pose&) {}
+void FreecamStopForExit() {}
 bool FreecamGetPose(freecam::Pose*) { return false; }
 void FreecamSetOverride(CameraOverride) {}
 CameraOverride FreecamOverride() { return CameraOverride::kNone; }

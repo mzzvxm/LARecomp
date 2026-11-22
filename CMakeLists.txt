@@ -581,6 +581,15 @@ add_executable(larecomp_immortal_test EXCLUDE_FROM_ALL
     src/settings/immortal_test.cpp)
 target_include_directories(larecomp_immortal_test PRIVATE src)
 
+# How the process ends once the orderly shutdown is done (src/exit_fast.h: no C runtime exit, so no static destructor and no DLL detach can meet
+# a thread the SDK left running; the flush hooks, the note and fflush(nullptr) run first) has a check that needs no game: child processes run a
+# real exit with a straggler thread (the control: the old return from main meets the destroyed table, status 77; the fast exit does not), the exit
+# code, the order of the hooks, a write queued just before the exit (it lands with its hook, it is lost without) and an unflushed stdio stream:
+#   cmake --build <build dir> --target larecomp_exit_fast_test, then run <build dir>/larecomp_exit_fast_test (exit 0 = passed).
+add_executable(larecomp_exit_fast_test EXCLUDE_FROM_ALL
+    src/exit_fast_test.cpp)
+target_include_directories(larecomp_exit_fast_test PRIVATE src)
+
 # Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
 # own default for cache_root) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pack_folder_test, then run <build dir>/larecomp_pack_folder_test (exit 0 = passed).

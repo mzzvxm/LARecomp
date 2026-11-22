@@ -5542,6 +5542,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_fast_exit": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Fix: the game ends its process right after its orderly shutdown (saves, settings and logs written, the renderer \"\n    \"and audio stopped), without running the destructors of its global objects. The SDK leaves a game thread that is \"\n    \"slow to leave running while the game ends; a thread like that could still use an object the exit had just \"\n    \"destroyed, and the game crashed a few milliseconds after it said it was exiting (about once in 1400 exits). On: \"\n    \"the process ends at once, with the same exit code. Off: the old end through the C runtime's exit.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_fix_checkpoint_fade": {
   "type": "bool",
   "default": "true",

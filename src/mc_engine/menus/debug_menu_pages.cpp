@@ -146,6 +146,8 @@ const ItemDef kDebugFixesItems[] = {
     // The smoke of a closed race checkpoint fades at the console's rate at every frame rate (hooks/checkpoint_effect_fade.cpp).
     Bool("PM_RxDbgCpFade",     "mcla_fix_checkpoint_fade",  "CHECKPOINT SMOKE: "),
     // The native keyboard (keyboard_native.cpp) is always on; this turns it off to tell whether a bug is its (off = the keyboard does nothing).
+    // The process ends right after the orderly shutdown, without the destructors of the exit (exit_fast.h); read when the game closes.
+    Bool("PM_RxDbgFastExit",   "mcla_fast_exit",           "FAST EXIT: "),
     Bool("PM_RxDbgNativeKb",   "keyboard_native",           "NATIVE KEYBOARD: "),
     // Button prompts follow the device in use on every screen (hooks/ui.cpp, keyboard_native.cpp): the glyph bitmaps are painted, the movies' platform flag stays on Xbox. Off = the
     // older way (the flag shows the PlayStation set; screens already open keep their glyphs until reopened; only the key caps are painted).
