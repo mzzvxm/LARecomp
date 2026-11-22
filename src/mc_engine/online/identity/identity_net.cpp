@@ -265,7 +265,8 @@ std::chrono::seconds Cycle(Status& s, const CycleInput& in, TicketHooks& hooks, 
             return std::chrono::seconds(120);
         }
         hooks.Put(ch.master_pubkey, ticket);
-        if (f.count("recovery")) hooks.SetRecoveryCode(f.at("recovery"));
+        // What is not a plausible code (a megabyte, control characters) is not kept: it would go into the key file and onto the screen.
+        if (f.count("recovery") && PlausibleRecoveryCode(f.at("recovery"))) hooks.SetRecoveryCode(f.at("recovery"));
         s.incoming_until = std::atoll(f.count("transfer_pending_until") ? f.at("transfer_pending_until").c_str() : "0");
         if (f.count("transferred")) hooks.Note("\"" + nick + "\" is ours now (recovery code)");
     }

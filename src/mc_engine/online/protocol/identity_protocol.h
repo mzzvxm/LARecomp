@@ -308,6 +308,18 @@ inline std::string NewRecoveryCode() {
     return code;
 }
 
+// A recovery code as the master sends it back, before it is kept: one printable line of at most 64 bytes (NewRecoveryCode
+// makes 23). It goes into the key file and onto the player's screen, so a master that answers with a megabyte, or with
+// control characters, gets nothing stored.
+inline bool PlausibleRecoveryCode(const std::string& code) {
+    if (code.empty() || code.size() > 64) return false;
+    for (char ch : code) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (c < 0x20 || c >= 0x7F) return false;
+    }
+    return true;
+}
+
 // Upper case, dashes and spaces dropped, look-alikes mapped (O->0, I/L->1),
 // so a code read back from paper still matches.
 inline std::string CanonicalCode(const std::string& code) {

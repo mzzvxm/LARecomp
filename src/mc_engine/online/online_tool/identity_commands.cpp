@@ -956,7 +956,7 @@ IdentityResult DoCancel(const IdArgs& a, const Profile& p) {
     const std::string master = ch.master_host + ":" + std::to_string(ch.master_port);
     const net::Fields f = net::MasterCall(ch.master_host, ch.master_port, "cancel", p.gamertag, keys, "", a.opt);
     const std::string status = f.count("status") ? f.at("status") : "";
-    if (status != "ok" || !f.count("recovery")) {
+    if (status != "ok" || !f.count("recovery") || !identity::PlausibleRecoveryCode(f.at("recovery"))) {
         const MasterWord w = MasterError(status, f, master);
         return Fail(a, w.code, w.message, [master, status](JsonWriter& j) {
             j.Field("master", master);

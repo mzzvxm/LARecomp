@@ -102,7 +102,8 @@ void HandleRequests(Status& s) {
         const std::string st = f.count("status") ? f.at("status") : "";
         if (st == "pending") {
             s.check = Check::kClaimPending;
-            s.claim_until = std::atoll(f.at("until").c_str());
+            // .at() would throw on a master that answers "pending" without a time, and this thread has no handler.
+            s.claim_until = std::atoll(f.count("until") ? f.at("until").c_str() : "0");
             s.detail = "recovery code accepted";
         } else if (st == "bad_code") {
             s.detail = "that recovery code is wrong";
@@ -120,7 +121,7 @@ void HandleRequests(Status& s) {
         const std::string st = f.count("status") ? f.at("status") : "";
         if (st == "ok") {
             s.incoming_until = 0;
-            if (f.count("recovery")) SetPendingRecoveryCode(f.at("recovery"));
+            if (f.count("recovery") && PlausibleRecoveryCode(f.at("recovery"))) SetPendingRecoveryCode(f.at("recovery"));
             s.detail = "transfer cancelled; you have a new recovery code";
         } else {
             s.detail = "cancel failed: " + (st.empty() ? std::string("no answer") : st);

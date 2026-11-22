@@ -486,6 +486,15 @@ void TestCore(const fs::path& tmp) {
     CheckEq(core::Protection(), "plain_file", "protection name elsewhere");
 #endif
 
+    // A recovery code the master sends back is kept only when it is one printable line of a sane length.
+    Check(idn::PlausibleRecoveryCode("ABCDE-FGHJK-MNPQR-STVWX") && idn::PlausibleRecoveryCode(idn::NewRecoveryCode()),
+          "a real recovery code is plausible");
+    Check(!idn::PlausibleRecoveryCode("") && !idn::PlausibleRecoveryCode(std::string(65, 'A')) &&
+              !idn::PlausibleRecoveryCode(std::string(1024 * 1024, 'A')) && !idn::PlausibleRecoveryCode("AB\nCD") &&
+              !idn::PlausibleRecoveryCode(std::string("AB\0CD", 5)) && !idn::PlausibleRecoveryCode("AB\rCD") &&
+              !idn::PlausibleRecoveryCode("caf\xC3\xA9") && !idn::PlausibleRecoveryCode("AB\x7F"),
+          "an empty, long or non-printable text is not a recovery code");
+
     // Profile ids.
     CheckEq(core::ProfileId(0xB13E00000000ABCDull, "Neo"), "B13E00000000ABCD", "profile id is the XUID in 16 upper-case digits");
     CheckEq(core::ProfileId(core::kLegacyXuid, "Neo"), "name_Neo", "the legacy XUID files the key by name");
