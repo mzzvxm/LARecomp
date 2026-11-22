@@ -56,6 +56,9 @@ const char* StatsStatusText(StatsStatus status) {
 // Every count in the resource is the title's own data, but a damaged install could make one huge: the entry scan stops at
 // kMaxXdbfEntries, and every read after the XVC2 entry is held inside that entry's own [start, start + length) (one place, `rd`),
 // so no loop can walk on past the section. Anything the section does not hold is kUnreadable, as a cut memory is.
+// CHECK: not run against the title's real XDBF (no game here). The bound trusts the XVC2 entry's length to cover the whole section, as the
+// view loop below already did (`p + 16 <= end`); if the real length were short, the tables file would say "unreadable" (or list fewer
+// views) where it listed them before.
 StatsStatus ReadStatsSchema(const GuestReader& mem, uint32_t xdbf, StatsSchema* out) {
   if (out) *out = {};
   uint8_t head[0x18];
