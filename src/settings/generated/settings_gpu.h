@@ -238,7 +238,7 @@ class GPUSettings final : public rex::SettingOwner {
     "whether a car effect asks for them or not. Never saved. Live.", rex::kDebugOnly, rex::Range{0, 3600});
 
   REX_SETTING(i32, mcla_gpu_car_rt_cars, -1, "Debug: how many OTHER cars (opponents, traffic, parked cars) the ray traced car effects see besides your own: your car's paint and chrome "
-    "reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 14 m of your car on the High class, 2 within 10 m on "
+    "reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 20 m of your car on the High class, 2 within 14 m on "
     "the Mid class, none on the Low class); 0 turns the other cars off (your car alone, as it was); 1 to 8 asks for that many. Each car is built "
     "once into ray tracing structures (8 to 10 MiB at full detail) and a new car appears in parts over a few frames. Live.", rex::kDebugOnly, rex::Range{-1, 8});
 
@@ -256,7 +256,7 @@ class GPUSettings final : public rex::SettingOwner {
     "data first: a car built from it wherever it is, a car placed from memory beside it is dropped. The same class limits apply (nearest cars, by distance to your car). Live.", rex::kDebugOnly, rex::Range{0, 2});
 
   REX_SETTING(f64, mcla_gpu_car_rt_cars_radius, 0.0, "Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's "
-    "class decides, 10 to 14 m). The reflection reaches 4 m from your car's paint, so a car more than about 10 m away cannot show in it. Live.", rex::kDebugOnly, rex::Range{0.0, 60.0});
+    "class decides, 20 m on the High class, 14 m on the Mid class). The reflection reaches another car 18 m (High) or 12 m (Mid) away (mcla_gpu_car_rt_hit_reach) and a car's half length is 2 m, so a car whose centre is farther than the radius cannot show in it. Live.", rex::kDebugOnly, rex::Range{0.0, 60.0});
 
   REX_SETTING(i32, mcla_gpu_car_rt_cars_traffic, -1, "Debug (the fix's own switch): how many TRAFFIC and PARKED cars the ray traced car effects see built from their own model data (mcla_gpu_car_rt_cars_model), besides the racers: the cars "
     "of the game's ambient list (the renderer's traffic client) that the camera does not draw this frame, ranked by their distance to your car within the class's radius. -1 (the "
@@ -310,7 +310,7 @@ class GPUSettings final : public rex::SettingOwner {
     "keeps of the ambient light. 1, the default; 0 is the shading as it was, above 1 makes the glints stronger. Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
 
   REX_SETTING(f64, mcla_gpu_car_rt_hit_reach, 0.0, "Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). "
-    "The weight of a hit falls over this from three quarters of it. Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours "
+    "The weight of a hit falls over this from three quarters of it (0.7 on the Mid class). Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours "
     "(mcla_gpu_car_rt_cars_radius moves that). Live.", rex::kDebugOnly, rex::Range{0.0, 20.0});
 
   REX_SETTING(f64, mcla_gpu_car_rt_clearcoat, -1.0, "Debug: the clear-coat ray of the ray traced car reflection: one more ray along the exact mirror direction (no cone, no filter) beside the glossy cone, added to it by a share that follows the paint's "
