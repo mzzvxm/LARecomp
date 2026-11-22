@@ -286,7 +286,8 @@ private:
 // None of it is visible in the logs of those runs, and the game's profile sync (14 statistics reads, the prizes fetch, "[rmr] ... identity
 // created" and "[tourney] no prizes" 30 s after Start) is still running at the moment of the early joins. SearchFacts is those words;
 // SearchGate holds the join until the ones that can be true before the goto hold for a moment, and gives up after a minute so that a
-// reading that is wrong in some game build cannot keep the join from trying.
+// reading that is wrong in some game build cannot keep the join from trying. The search object's handle is logged but not required: the
+// constructor (sub_824FC5A0) stores 0 in it and no store of it was found in the code read, so it may only be set by the page's own entry.
 // CHECK: none of this was run. The words were read from the generated code, not watched; the join logs them (join_server.cpp) at the gate,
 // every 250 ms to 1 s for the first 30 s of a join with the debug setting online_diag on, and once when the join ends in a failure. If the
 // first run after this shows the gate open at once and the search still not starting, the cause is not among these words: read the
@@ -297,7 +298,7 @@ struct SearchFacts {
     bool read = false;             // every word below was read
     const char* failed_at = "";    // when !read: the first read that failed, for the log
     uint32_t search_flag = 0;      // the search manager's busy word, *(netmgr+4292)+0
-    uint32_t handle = 0;           // the search object's handle, *(search manager+528)+0
+    uint32_t handle = 0;           // the search object's handle, *(search manager+528)+0 (logged, not required: see SearchGate)
     uint32_t busy_record = 0;      // *(search object+1436): the record sub_824FBD50 looks at (0 before the first search)
     uint32_t busy_state = 0;       // that record's first word: 1 = a search in progress
     uint32_t player_slot = 0;      // the local player's index (the slot is *(netmgr+4284) + 10832 * this)
@@ -310,10 +311,10 @@ inline bool SearchBusy(const SearchFacts& f) { return f.busy_record != 0 && f.bu
 inline bool PlayerSignedIn(const SearchFacts& f) { return (f.player_flags & 0x80u) != 0; }
 inline bool PlayerOnLive(const SearchFacts& f) { return (f.player_flags & 0x40u) != 0; }
 
-// What can be true before the goto into the net page: nothing is running, the search object has its handle, the player is signed in.
-// (net_mode is set by the page's own entry; the Live bit is not needed for a System Link search.)
+// What can be true before the goto into the net page: nothing is running and the player is signed in. (net_mode and the handle are set
+// by the page's own entry, as far as the code read says; the Live bit is not needed for a System Link search.)
 inline bool SearchReady(const SearchFacts& f) {
-    return f.read && f.search_flag == 0 && !SearchBusy(f) && f.handle != 0 && PlayerSignedIn(f);
+    return f.read && f.search_flag == 0 && !SearchBusy(f) && PlayerSignedIn(f);
 }
 
 // The first thing that stands in the way, in the words the log uses ("" when nothing does).
@@ -321,7 +322,6 @@ inline std::string SearchMissing(const SearchFacts& f) {
     if (!f.read) return std::string("not readable: ") + (f.failed_at ? f.failed_at : "?");
     if (f.search_flag != 0) return "a search is already marked as running";
     if (SearchBusy(f)) return "the search object is busy";
-    if (f.handle == 0) return "the search object has no handle yet";
     if (!PlayerSignedIn(f)) return "the player is not signed in to the network layer yet";
     return "";
 }
