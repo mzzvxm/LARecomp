@@ -945,6 +945,17 @@ void SourceChecks(const std::string& src) {
   {
     Check(Has(cpp, "sources_ = hp::SourcesFor(route, uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask);"), "the debug setting is still read as before");
     Check(Has(cpp, "sources_ |= ll::kSourceNeon;") && Has(cpp, "nl::Want("), "NEON LIGHT puts the neon source in and tells the hook");
+    // NEONALL-REVIEW: the pass that runs for NEON LIGHT alone (its own setting off, the route `forward`) lights nothing but the neon: the debug sources, the test lamp and the lamp A/B stay with the pass's own setting
+    {
+      const size_t neon_in_at = At(cpp, "sources_ |= ll::kSourceNeon;");
+      const size_t ab_read = At(cpp, "ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));");
+      const size_t gate = At(cpp, "if (!on_for_lights) {");
+      const size_t mask = At(cpp, "sources_ &= ll::kSourceNeon;");
+      const size_t grid = At(cpp, "ab_ = ll::Ab::kGrid;");
+      Check(neon_in_at != std::string::npos && ab_read != std::string::npos && gate != std::string::npos && mask != std::string::npos && grid != std::string::npos && neon_in_at < ab_read && ab_read < gate &&
+                gate < mask && mask < grid,
+            "with the pass on for NEON LIGHT alone the sources are the neon bit only and the lamp A/B is the grid's (after both are read)");
+    }
     Check(Has(cpp, "ll::GatherNeonLights(neon_in, &candidates_.neon, &neon_report);") && Has(cpp, "std::erase_if(candidates_.neon, unseen);"), "the pass gathers the neon lights and drops the ones no pixel is inside the reach of");
     Check(Has(cpp, "mcla_gpu_neon_light_gain.Get()") && Has(cpp, "static LiveText neon_text(\"mcla_gpu_neon_light\");"), "the gain and the setting are read live");
     const size_t gather = At(cpp, "ll::GatherNeonLights(neon_in, &candidates_.neon, &neon_report);");

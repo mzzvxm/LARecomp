@@ -258,6 +258,12 @@ void LocalLights::BeginFrame() {
   }
   neon_gain_ = float(std::clamp(double(st::mcla_gpu_neon_light_gain.Get()), 0.0, 16.0));
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));
+  if (!on_for_lights) {
+    // The pass runs for NEON LIGHT alone (its own setting is off and the headlight route is `forward`): the debug setting's other sources, its test lamp and the mod lamp A/B belong to
+    // mcla_gpu_local_lights and the route, so that the row of every player does not light what a tester left in the settings of a pass that is off.
+    sources_ &= ll::kSourceNeon;
+    ab_ = ll::Ab::kGrid;
+  }
   gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_gain.Get()), 0.0, 16.0));
   car_gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_car_gain.Get()), 0.0, 16.0));
   // GB-NEON-COST: the A/B of the cost savings (0: the reach test before the planes, one draw for a car's tube and the contact term's cap are on): the picture is the same either way (the cap
