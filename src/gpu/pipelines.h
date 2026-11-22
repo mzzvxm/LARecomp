@@ -166,6 +166,7 @@
 #include "level_seeds.h"
 #include "precache_queue.h"
 #include "shaders.h"
+#include "sync_build_log.h"
 #include "sync_builds.h"
 
 namespace mcla::gpu {
@@ -530,6 +531,11 @@ class Pipelines {
   // Counts a held lookup's wait (sync_builds.h) and logs the first few.
   void NoteSyncWait(const PipelineKey& key, sync_builds::Kind kind,
                     std::chrono::steady_clock::time_point began);
+  // The render thread's own builds and its waits for a builder thread, counted for the session and
+  // logged (sync_build_log.h): "[pipeline] sync build #N ..." / "sync wait #N ...", the first ones each
+  // and then every 16th, and the totals once at Shutdown. `source`: "list" or "request".
+  void LogSyncBuild(const PipelineKey& key, const Miss& miss, uint64_t ns);
+  void LogSyncWait(const PipelineKey& key, const char* source, uint64_t ns);
   // Remembers a pipeline just had for a draw whose targets take the MSAA level (PrebuildForLevel).
   void NoteLevelDependent(const PipelineKey& key, const PipelineInputs& inputs);
   // The precache entry or the level seed of a persistent key, if there is one.
@@ -545,6 +551,7 @@ class Pipelines {
   // the guest's constant offset in 2^-24 steps into the float buffer's steps; 0 otherwise.
   uint32_t depth24_bias_shift_ = 0;
   Stats stats_;
+  sync_build_log::Counters sync_log_;  // the session's, render thread only; Stats above restarts every report
   uint32_t reported_kinds_ = 0;
   bool dynamic_depth_bias_ = false;
 

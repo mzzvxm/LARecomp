@@ -3,6 +3,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/title_paths.h>
+#include <rex/platform/file.h>
 #include <format>
 
 #include <algorithm>
@@ -121,6 +122,10 @@ std::filesystem::path ExeDir() {
     if (GetModuleFileNameW(nullptr, buffer, MAX_PATH) == 0) return {};
     return std::filesystem::path(buffer).parent_path();
 #else
+    // The folder of the executable, not the current directory: a game started from another folder (a shell, a shortcut with no start
+    // folder) still finds the mods that sit beside the program. The current directory is the way back if the system cannot name the file.
+    const std::filesystem::path folder = rex::platform::GetExecutableFolder();
+    if (!folder.empty()) return folder;
     std::error_code ec;
     return std::filesystem::current_path(ec);
 #endif
@@ -517,14 +522,16 @@ void ScanMods(const std::filesystem::path& models_dir, std::vector<ModEntry>& ch
         // whole scan at the next `if (ec) break` -- every mod after the first one
         // without wheels silently stopped being seen.
         std::error_code sub_ec;
-        const std::filesystem::path rim_dir = mod_dir.path() / kRimFolder;
+        // The folders' names are found whatever their case (mod_paths.h: a mod made on Windows
+        // with a "Rims" or "Files" folder is read on Linux too).
+        const std::filesystem::path rim_dir = FindDirNoCase(mod_dir.path(), kRimFolder);
         if (std::filesystem::is_directory(rim_dir, sub_ec)) ScanFolder(rim_dir, mod_name, rims);
 
-        const std::filesystem::path files_dir = mod_dir.path() / kFilesFolder;
+        const std::filesystem::path files_dir = FindDirNoCase(mod_dir.path(), kFilesFolder);
         if (std::filesystem::is_directory(files_dir, sub_ec))
             ScanRawFiles(files_dir, mod_name, raw_files);
 
-        const std::filesystem::path vehicle_dir = mod_dir.path() / kVehicleFolder;
+        const std::filesystem::path vehicle_dir = FindDirNoCase(mod_dir.path(), kVehicleFolder);
         if (!std::filesystem::is_directory(vehicle_dir, sub_ec)) continue;
         std::error_code car_ec;
         for (const auto& car : std::filesystem::directory_iterator(vehicle_dir, car_ec)) {

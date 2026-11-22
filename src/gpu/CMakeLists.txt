@@ -192,6 +192,10 @@ add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
 #   cmake --build <dir> --target larecomp_variant_wait_test, then run src/gpu/larecomp_variant_wait_test (exit 0 = passed).
 add_executable(larecomp_variant_wait_test EXCLUDE_FROM_ALL variant_wait_test.cpp)
 target_include_directories(larecomp_variant_wait_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+# The render thread's own pipeline builds and waits as log lines (sync_build_log.h: the rate limit, the counts, the wording that perf/scripts/stall_check.py reads) have a check
+# that needs no renderer:
+#   cmake --build <dir> --target larecomp_sync_build_log_test, then run src/gpu/larecomp_sync_build_log_test (exit 0 = passed).
+add_executable(larecomp_sync_build_log_test EXCLUDE_FROM_ALL sync_build_log_test.cpp)
 # Every descriptor set the renderer makes agrees with its builder (descriptor_count_test.cpp; tools/check_descriptor_counts.py is its Python twin): D3D12 refuses a set
 # whose CreateDescriptorSet counts are not the builder's ranges (Vulkan does not count: the city shadow pass never ran on D3D12 for that), and the binding code's indices,
 # range types and structured views are read against the ranges. Reads the .cpp / .h files of the folder it is given, no renderer needed:
@@ -630,6 +634,9 @@ add_executable(larecomp_precache_queue_test EXCLUDE_FROM_ALL precache_queue_test
 # The Windows builds the game's Direct3D 12 runtime needs (windows_floor.h, which only explains a refused start) likewise:
 #   cmake --build <dir> --target larecomp_windows_floor_test, then run src/gpu/larecomp_windows_floor_test (exit 0 = passed).
 add_executable(larecomp_windows_floor_test EXCLUDE_FROM_ALL windows_floor_test.cpp)
+# The sampler address modes a device can make (sampler_modes.h: mirror once needs an extension on Vulkan) have a check of their own too:
+#   cmake --build <dir> --target larecomp_sampler_modes_test, then run src/gpu/larecomp_sampler_modes_test (exit 0 = passed).
+add_executable(larecomp_sampler_modes_test EXCLUDE_FROM_ALL sampler_modes_test.cpp)
 # So does the text of the device-loss report (device_fault_format.h):
 #   cmake --build <dir> --target larecomp_device_fault_test, then run src/gpu/larecomp_device_fault_test.
 add_executable(larecomp_device_fault_test EXCLUDE_FROM_ALL device_fault_format_test.cpp)
