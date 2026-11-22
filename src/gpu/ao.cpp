@@ -2624,8 +2624,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     for (int i = 0; i < 3; ++i) {
       in.to_sun[i] = base.light[i];
     }
-    in.noise_code = ao_stable::NoiseCode(frame_, larecomp::settings::mcla_gpu_ao_stable.Get());
-    in.sun_frame = plan.upscaler ? uint32_t(frame_ & 1023) : 0u;  // a fixed pattern unless a temporal upscaler averages the frames, as the march's
+    // The traced occlusion's noise is the main pass's (the same frame shift, and the blue noise tile unless mcla_gpu_ao_blue_noise is off: hlsl/car_rt_ao_noise.hlsli), the frame number the scene's
+    // while a scene runs, counting the frames a held scene stays on one number (scene_noise.h NoiseIndex).
+    in.noise_code = ao_stable::NoiseCode(scene_noise::NoiseIndex(frame_), larecomp::settings::mcla_gpu_ao_stable.Get(), larecomp::settings::mcla_gpu_ao_blue_noise.Get());
+    in.sun_frame = plan.upscaler ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;  // a fixed (blue) pattern unless a temporal upscaler averages the frames, as the march's
     in.frame = frame_;
     rt = rt_ao_->Record(list, in);
     if (rt.recorded && rt.contact) {
