@@ -145,7 +145,8 @@ std::vector<uint8_t> WavHeader(uint32_t channels, uint32_t rate, uint64_t sample
 }
 
 bool WavFile::Open(const std::string& path, uint32_t channels, uint32_t rate) {
-    Close();
+    std::lock_guard<std::mutex> lock(mutex_);
+    CloseLocked();
     channels_ = std::max<uint32_t>(channels, 1);
     rate_ = rate;
     frames_ = 0;
@@ -166,7 +167,12 @@ bool WavFile::Open(const std::string& path, uint32_t channels, uint32_t rate) {
 }
 
 bool WavFile::Append(const float* interleaved, uint64_t sample_frames) {
-    if (!file_ || failed_) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!file_) {
+        failed_ = true;  // closed (the game ended during the take) or never open: the samples are lost, and Failed() says so
+        return false;
+    }
+    if (failed_) return false;
     if (sample_frames == 0) return true;
     const uint64_t bytes = sample_frames * channels_ * 4ull;
     if ((frames_ * channels_ * 4ull) + bytes > kWavMaxDataBytes) {
@@ -182,6 +188,11 @@ bool WavFile::Append(const float* interleaved, uint64_t sample_frames) {
 }
 
 bool WavFile::Close() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return CloseLocked();
+}
+
+bool WavFile::CloseLocked() {
     if (!file_) return !failed_;
     bool ok = !failed_;
     const std::vector<uint8_t> h = WavHeader(channels_, rate_, frames_);
@@ -400,6 +411,13 @@ Summary Session::Finish(uint64_t video_frames) {
     armed_ = false;
     port_->Disarm();
     return s;
+}
+
+bool Session::CloseWavForExit(uint64_t* sample_frames) {
+    if (!wav_.IsOpen()) return false;
+    wav_.Close();
+    if (sample_frames) *sample_frames = wav_.Frames();
+    return true;
 }
 
 }  // namespace mc::cinematic::capture_audio

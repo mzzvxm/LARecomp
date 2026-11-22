@@ -60,6 +60,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/recompiled_code.h>
 #include <rex/ppc/context.h>
 
@@ -125,7 +126,7 @@ struct Slot {
     bool clean = true;   // every checked call of the current stream matched
 };
 
-Slot g_slots[kSlots];
+Slot (&g_slots)[kSlots] = *new Slot[1][kSlots]();
 std::mutex g_slot_mutex;  // arming a context for the first time only
 
 std::atomic<bool> g_off{false};   // a mismatch was seen: no new stream runs natively

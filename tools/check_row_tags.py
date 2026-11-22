@@ -2,7 +2,7 @@ r"""check_row_tags.py: do the words on the rows say what the settings do? (dev o
 
   python tools\check_row_tags.py [--src <src dir>] [--config <toml>] [--catalog <SettingsSchema.cs>] [--selftest] [-v]
 
-A setting is "restart-only" when its definition says kRestart, kStartupOnly or kUntilLaunch (the parsers of tools\check_settings_exposure.py,
+A setting is "restart-only" when its definition says kRequiresRestart, kInitOnly or kLockedInGame (the parsers of tools\check_settings_exposure.py,
 which this file imports). Four rules keep the words honest (LIVE-SETTINGS.md section 9; the owner wants settings to apply at once, so a word that
 says RESTART must be true, and a restart that no word admits is a silent dead row):
 

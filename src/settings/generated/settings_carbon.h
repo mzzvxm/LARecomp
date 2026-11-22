@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -23,7 +24,7 @@ class CarbonSettings final : public rex::SettingOwner {
 
 };
 
-inline CarbonSettings g_carbon;
+inline CarbonSettings& g_carbon = larecomp::Leak<CarbonSettings>();
 
 inline auto& carbon_menu_diag = g_carbon.carbon_menu_diag;
 

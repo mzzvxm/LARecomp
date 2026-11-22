@@ -55,6 +55,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/recompiled_code.h>
 #include <rex/ppc/context.h>
 #include <rex/kernel/title_runtime.h>
@@ -292,7 +293,7 @@ struct Override {
     uint32_t mine = 0;      // ours, while the entry still points at it
     std::string text;
 };
-std::array<Override, kKeyCount> g_override;
+std::array<Override, kKeyCount>& g_override = larecomp::Leak<std::array<Override, kKeyCount>>();
 
 // Points the key's entry at `text`, unless it already shows exactly that.
 void SetKeyText(PPCContext& ctx, uint8_t* base, Key key, const std::string& text_in) {

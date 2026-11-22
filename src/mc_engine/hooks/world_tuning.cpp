@@ -5,6 +5,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/kernel/title_runtime.h>
 #include <cstdint>
 #include <cstdlib>
@@ -44,7 +45,7 @@ using mcla::ambient::ZoneDensity;
 using mcla::ambient::ZoneState;
 
 static std::mutex g_density_mutex;
-static std::map<uint32_t, ZoneState> g_density_zones;  // zone address -> state
+static std::map<uint32_t, ZoneState>& g_density_zones = larecomp::Leak<std::map<uint32_t, ZoneState>>();  // zone address -> state
 static uint32_t g_density_manager = 0;
 
 // The ambient manager singleton (dword_8286D8E4), built by sub_822D3D38 and

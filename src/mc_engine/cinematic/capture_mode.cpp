@@ -70,6 +70,7 @@
 //
 
 #include "capture_mode.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 
@@ -212,21 +213,21 @@ struct Take {
     uint32_t lost_in_a_row = 0;
     bool announced_rate_change = false;
 };
-Take g_take;
+Take& g_take = larecomp::Leak<Take>();
 std::mutex g_rows_mutex;
 bool g_announced_no_renderer = false;
 
 // What a scene's `capture fps` key asked for besides the rate (CaptureSceneSpec); read when a take starts.
 std::mutex g_spec_mutex;
-CaptureSpec g_spec;
+CaptureSpec& g_spec = larecomp::Leak<CaptureSpec>();
 
 // The Director (capture_mode.h): a take it asks for (take.render), the still it asks for (shot), and what became of the takes.
 std::atomic<double> g_dir_fps{0.0};  // the Director's request for a take (0: none); a scene's request outranks it
-CaptureSpec g_dir_spec;              // g_spec_mutex
+CaptureSpec& g_dir_spec = larecomp::Leak<CaptureSpec>();  // g_spec_mutex
 std::mutex g_still_mutex;
 bool g_still_pending = false;        // g_still_mutex: asked for, the next gate starts it
-std::string g_still_path;            // g_still_mutex
-StillResult g_still_res;             // g_still_mutex: the result of the still that ran last (done when `done`)
+std::string& g_still_path = larecomp::Leak<std::string>();  // g_still_mutex
+StillResult& g_still_res = larecomp::Leak<StillResult>();  // g_still_mutex: the result of the still that ran last (done when `done`)
 std::atomic<bool> g_still_active{false};  // the running take is a still: no virtual clock
 std::mutex g_last_mutex;
 struct LastTake {
@@ -234,7 +235,7 @@ struct LastTake {
     double fps = 0.0;
     uint64_t frames = 0;
 };
-LastTake g_last_status;              // g_last_mutex: the take that ended last
+LastTake& g_last_status = larecomp::Leak<LastTake>();  // g_last_mutex: the take that ended last
 std::atomic<uint64_t> g_takes_finished{0};
 
 // A take that cannot go on (the memory plan does not fit, the writer is stuck, the free memory is gone): the first reason is kept, the game
@@ -242,7 +243,7 @@ std::atomic<uint64_t> g_takes_finished{0};
 std::atomic<bool> g_take_failed{false};
 std::atomic<bool> g_sink_stuck{false};  // the writer finished nothing for the gate's timeout: ending the take kills ffmpeg instead of waiting for it
 std::mutex g_fail_mutex;
-std::string g_fail_reason;  // g_fail_mutex
+std::string& g_fail_reason = larecomp::Leak<std::string>();  // g_fail_mutex
 bool g_refused = false;     // game thread
 // Counts every frame read back, lost or written: a wait on the writer or the readback that sees it move is not stuck.
 std::atomic<uint64_t> g_progress{0};
@@ -643,7 +644,7 @@ struct ExeInfo {
     std::string version;
 };
 const ExeInfo& GetExeInfo() {
-    static const ExeInfo info = [] {
+    static const ExeInfo& info = larecomp::Leak<const ExeInfo>([] {
         ExeInfo i;
         i.version = larecomp::kVersionLabel;
         std::filesystem::path exe;
@@ -668,7 +669,7 @@ const ExeInfo& GetExeInfo() {
             if (const char* env = std::getenv("LARECOMP_EXE_COMMIT")) i.commit = env;
         }
         return i;
-    }();
+    }());
     return info;
 }
 

@@ -22,6 +22,8 @@ tools/*
 !tools/check_row_tags.py
 !tools/check_descriptor_counts.py
 !tools/settings_exposure.toml
+!tools/check_live_readers.py
+!tools/live_readers.toml
 !tools/check_rt_hit_identity.py
 
 # Backup bundles belong next to the repository, never inside it.

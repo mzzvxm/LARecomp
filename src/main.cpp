@@ -77,7 +77,8 @@ static int LarecompMain(LarecompApp& app, const rex::CLIArgList& args) {
             }
         }
     }
-    return app.Shutdown();
+    // The process ends inside FinishProcess (exit_fast.h) unless mcla_fast_exit is off, in which case this returns the code.
+    return LarecompApp::FinishProcess(app.Shutdown());
 }
 
 // wWinMain and main (the exe is a WIN32 program: wWinMain), a default-constructed LarecompApp.

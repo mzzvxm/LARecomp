@@ -72,6 +72,7 @@
 //
 
 #include "capture_audio.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/apu/audio_system.h>
@@ -252,8 +253,8 @@ RealMixer& Mixer() {
 
 // ---------------------------------------------------------------------------------------------------------------- the take
 
-Session g_session;
-Summary g_last;
+Session& g_session = larecomp::Leak<Session>();
+Summary& g_last = larecomp::Leak<Summary>();
 std::atomic<bool> g_active{false};
 std::FILE* g_csv = nullptr;
 uint64_t g_first_update = 0;
@@ -386,6 +387,12 @@ void Abort() {
         LARECOMP_APP_WARN("[cap] audio: the game is closing during a take: the mixer is given back");
     }
     Mixer().Disarm();
+}
+
+void CloseForExit() {
+    uint64_t frames = 0;
+    if (!g_session.CloseWavForExit(&frames)) return;
+    LARECOMP_APP_WARN("[cap] audio: the game ended during a take: its WAV was closed with the {} sample frames written so far (the take is incomplete)", frames);
 }
 
 bool Active() { return g_active.load(std::memory_order_acquire); }

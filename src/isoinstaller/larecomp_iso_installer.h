@@ -17,7 +17,7 @@ std::filesystem::path RememberedGameInstall(const std::filesystem::path& user_da
 // Shows the ISO install wizard and returns at once; `complete` runs on the UI
 // thread, from the dialog's draw, after a successful install, with the folder
 // the player installed to in game_root: `complete` makes it the title's game
-// root (title.game_root, kUntilLaunch: writable until LaunchTitle). Nothing pumps the UI here: the app's setup loop (LarecompApp::RunSetupFrame)
+// root (title.game_root, kLockedInGame: writable until LaunchTitle). Nothing pumps the UI here: the app's setup loop (LarecompApp::RunSetupFrame)
 // keeps it drawn until `complete` has run.
 void ShowRexglueIsoInstallWizard(rex::ui::IUISystem& ui, const Paths& paths,
                                  std::function<void(Paths)> complete);

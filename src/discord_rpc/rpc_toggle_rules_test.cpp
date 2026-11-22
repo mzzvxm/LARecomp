@@ -111,7 +111,7 @@ void Wiring(const std::string& src) {
 
   Check(Has(client, "ActivityShown(") && !Has(client, "const bool activity_enabled = larecomp::settings::larecomp_discord_activity.Get();"),
         "the worker shows a presence only while both switches are on (ActivityShown)");
-  Check(Has(settings, "larecomp_discord_rpc, true") && !Has(Between(settings, "larecomp_discord_rpc, true", ");"), "kRestart"),
+  Check(Has(settings, "larecomp_discord_rpc, true") && !Has(Between(settings, "larecomp_discord_rpc, true", ");"), "kRequiresRestart"),
         "larecomp_discord_rpc is not tagged restart-only");
 }
 

@@ -3,7 +3,7 @@
 // written in one of two forms and Find reads both:
 //   - rexglue 0.10 (main): REXCVAR_DEFINE_<TYPE>(name, default, "category", "help").debug_only().range(lo, hi).lifecycle(...kHotReload); in a .cpp
 //   - rexglue 0.11: a row REX_SETTING(type, name, default, "help", rex::kDebugOnly, rex::Range{lo, hi}) in src/settings/generated/settings_<group>.h
-//     (live: neither rex::kRestart nor rex::kStartupOnly among its traits)
+//     (live: none of rex::kRequiresRestart, rex::kInitOnly or rex::kLockedInGame among its traits)
 // A header only, standard library only. setting_source_test.cpp checks it.
 
 #pragma once
@@ -126,7 +126,8 @@ inline Info FromRow(const std::string& text, const std::string& name) {
     for (size_t i = 3; i < args.size(); ++i) {
       if (args[i] == "rex::kDebugOnly") {
         info.debug_only = true;
-      } else if (args[i] == "rex::kRestart" || args[i] == "rex::kStartupOnly") {
+      } else if (args[i] == "rex::kRequiresRestart" || args[i] == "rex::kInitOnly" ||
+                 args[i] == "rex::kLockedInGame") {
         info.live = false;
       } else if (args[i].rfind("rex::Range{", 0) == 0) {
         detail::TakeRange(info, args[i], args[i].find('{'));

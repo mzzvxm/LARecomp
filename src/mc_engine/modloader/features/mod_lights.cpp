@@ -55,6 +55,7 @@
 //
 
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/context.h>
 #include <rex/ppc/call.h>
 
@@ -139,7 +140,7 @@ struct ModGrid {
 
 std::once_flag g_load_once;
 std::mutex g_mu;  // g_grids' state/built, g_globals, g_city_state, g_active
-std::vector<ModGrid> g_grids;
+std::vector<ModGrid>& g_grids = larecomp::Leak<std::vector<ModGrid>>();
 uint32_t g_globals = 0;
 std::array<uint8_t, kStateBytes> g_city_state{};
 int g_active = -1;  // grid the globals point at: -1 the city's

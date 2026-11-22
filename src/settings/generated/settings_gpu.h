@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -17,9 +18,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, build_shader_packs, false, "Builds the shader packs from your game files and closes, without starting the game: no "
     "window, no graphics. The launcher runs this at the end of its setup so that the first start "
     "has nothing to build. Progress is printed to the console; the log is logs/shader_build.txt. "
-    "Exit code 0 when the packs are in place.", rex::kRestart, rex::kDebugOnly);
+    "Exit code 0 when the packs are in place.", rex::kRequiresRestart, rex::kDebugOnly);
 
-  REX_SETTING(bool, build_shader_packs_force, false, "With build_shader_packs: build even when the packs in place are current.", rex::kRestart, rex::kDebugOnly);
+  REX_SETTING(bool, build_shader_packs_force, false, "With build_shader_packs: build even when the packs in place are current.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, build_city_pack, false, "Builds the city pack (the city's geometry, for ray traced shadows) from your game files and closes, without starting the game: no "
     "window, no graphics. The launcher runs this in its setup on a PC whose graphics card can ray trace, so that ray traced shadows are ready at the first start; "
@@ -87,13 +88,13 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_ab_interleave, false, "Diagnostic (M6a): alternate the render thread's code under test between its old "
     "(A) and candidate (B) path every statistics window, and log each window's prepare time "
-    "under its variant. Off: the candidate path always runs.", rex::kDebugOnly, rex::kRestart);
+    "under its variant. Off: the candidate path always runs.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_adapter, "", "Adapter name to create the device on. Empty: on D3D12 the adapter Windows' "
                       "graphics setting for this app names, else the high-performance GPU; on "
                       "Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for. The "
                       "emulated GPU (RENDERER: XENIA) runs on the same one unless d3d12_adapter or "
-                      "vulkan_device is set.", rex::kRestart);
+                      "vulkan_device is set.", rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_anisotropy, "game", "Anisotropic texture filtering: game (the game's own fetch constants), off, 2, 4, 8 or 16. "
     "Applies to mipmapped textures whose min, mag and mip filters are all linear. Live.");
@@ -206,7 +207,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(u32, mcla_gpu_batch_draws, 0, "Submit the guest frame's command list to the GPU every this many prepared draws, unfenced, "
     "and continue in a new list (0: one submission per guest frame, the default). For measuring "
-    "submission batching.", rex::kDebugOnly, rex::kRestart);
+    "submission batching.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_bloom_scale, true, "Fix: the glow of lights (the bloom) keeps the size the game gives it at render scales above 1x "
     "(a higher render resolution, or an upscaler to a 1080p or 4K output). The game blurs the bloom "
@@ -579,14 +580,14 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(std::string, mcla_gpu_census_ps, "", "Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per "
     "guest frame, the draws and vertices recorded with each; per report window, their "
-    "distribution. Empty: off.", rex::kDebugOnly, rex::kRestart);
+    "distribution. Empty: off.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_census_scale, false, "Diagnostic (M6e.0): logs once per case each resolve product a draw at another resolution "
     "scale reads (with the fetch's filters) and each copy of an image of the screen that lands "
-    "away from its source. Off: nothing is checked.", rex::kDebugOnly, rex::kRestart);
+    "away from its source. Off: nothing is checked.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_census_targets, false, "Diagnostic: per report window, every pass the frames drew into (its EDRAM "
-    "targets) with its draws per frame and the pixel shaders that drew there.", rex::kDebugOnly, rex::kRestart);
+    "targets) with its draws per frame and the pixel shaders that drew there.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_class, "auto", "Diagnostic: forces the GPU class the graphics upgrades' auto values are chosen from (low: "
     "integrated GPUs and handhelds, mid: discrete with under about 6 GiB of video memory or a "
@@ -611,7 +612,7 @@ class GPUSettings final : public rex::SettingOwner {
     "auto: on the first start with a card that can trace (and again after its driver or the graphics API changes) a short compute pass "
     "traces a few million rays through a small synthetic city and logs the speed ('[gpu] rt bench: ...'), which is kept in "
     "rt_bench.txt next to larecomp.toml; off: no benchmark, and a kept result is not read; force: run it at every start. "
-    "Takes effect at the next start.", rex::Allowed("auto", "off", "force"), rex::kDebugOnly, rex::kRestart);
+    "Takes effect at the next start.", rex::Allowed("auto", "off", "force"), rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_contact_shadows, "auto", "Contact shadows: the short sun shadows the game does not draw (under a car's sills, at the foot "
     "of a kerb or a wall, under props on the pavement), found from the picture's depth and put only "
@@ -700,13 +701,13 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_coverage_queries, false, "With mcla_gpu_edram_aliasing: an occlusion query around each opaque draw the detector "
     "takes to cover its scissor, checking that it did. Costs GPU time, for "
     "checking a report. Off: no query pool is made, read or reset, and such takes go "
-    "unchecked (listed once per pair).", rex::kDebugOnly, rex::kRestart);
+    "unchecked (listed once per pair).", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_debug_layer, false, "Enable the D3D12 debug layer before the device exists and log its warnings "
                     "and errors. Needs D3D12SDKLayers.dll from the same Agility SDK release as "
                     "D3D12\\D3D12Core.dll, placed next to it (the system's copy belongs to the OS "
                     "runtime). Vulkan validation is a property of a Debug build of Plume and "
-                    "cannot be switched on here.", rex::kDebugOnly, rex::kRestart);
+                    "cannot be switched on here.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(i32, mcla_gpu_dlss_mask_tags, 7, "Diagnostic: which of Streamline's hint inputs carry the masks DLSS is given (what is drawn "
     "again for the upscaler: shadows of cars, particles, light volumes, car glass). Add up: 1 the "
@@ -772,12 +773,12 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_edram_aliasing, false, "EDRAM inheritance detector (M5.2d): per EDRAM "
     "tile and aspect, the identity that wrote it last, reporting a draw or a resolve that would "
     "see another identity's bytes on the console -- which the host does not carry over. Off: "
-    "none of its work is done.", rex::kDebugOnly, rex::kRestart);
+    "none of its work is done.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(u32, mcla_gpu_edram_capture, 0, "With mcla_gpu_edram_aliasing: a RenderDoc capture of the frame after the first report of "
     "each kind picked by these bits, 4 at most: 1 a pair met by a write that keeps "
     "or blends another identity's bytes, 2 a pair met by a read, 4 the first reader of "
-    "inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.", rex::kDebugOnly, rex::kRestart);
+    "inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_env_resolution, "auto", "How sharp the reflections in the paint, windows and bonnet of the cars are: the game draws the "
     "world around the car as a 512x256 picture for them to reflect, which is why the reflections look "
@@ -789,15 +790,15 @@ class GPUSettings final : public rex::SettingOwner {
     "the blocks of 16x16 pixels that change for 1-5 frames and come back to exactly their "
     "old bytes (a flicker). Meant for a static scene such as the pause menu. Costs a copy of "
     "the image per frame on the GPU and about a millisecond of render-thread CPU. Off: "
-    "nothing is made.", rex::kDebugOnly, rex::kRestart);
+    "nothing is made.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(u32, mcla_gpu_flicker_probe_dumps, 12, "With mcla_gpu_flicker_probe: how many flicker events also write the frame before, the "
     "first frame of the blip and the frame after as mcla_flicker_<event>_<frame>_<what>.tga "
-    "next to the executable (3.7 MB each at 1280x720).", rex::kDebugOnly, rex::kRestart);
+    "next to the executable (3.7 MB each at 1280x720).", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_flicker_probe_shots, "", "With mcla_gpu_flicker_probe: a comma-separated list of guest frame numbers, each written "
     "as mcla_flicker_000_<frame>_shot.tga next to the executable whether or not it flickered. "
-    "For comparing what two platforms or builds put in the window at the same frame.", rex::kDebugOnly, rex::kRestart);
+    "For comparing what two platforms or builds put in the window at the same frame.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_frame_generation, "off", "Frame generation: off, fsr31 (AMD FSR 3.1 frame generation, on any graphics card, with or "
     "without an upscaler) or dlss (NVIDIA DLSS frame generation through Streamline, on an RTX 40 or "
@@ -992,7 +993,7 @@ class GPUSettings final : public rex::SettingOwner {
     "variant file. Live; the first time soft shows, the graphics card builds its shaders (a short stutter).", rex::kDebugOnly, rex::Allowed("game", "soft"));
 
   REX_SETTING(bool, mcla_gpu_gpu_based_validation, false, "With mcla_gpu_debug_layer on D3D12, enable GPU-based validation before device creation. "
-    "Diagnostic; requires the matching D3D12SDKLayers.dll and a restart.", rex::kDebugOnly, rex::kRestart);
+    "Diagnostic; requires the matching D3D12SDKLayers.dll and a restart.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_hdr, "off", "HDR output for an HDR10 display. off: the usual picture. auto: HDR while Windows has HDR "
     "turned on for the display the game is on, following Windows' HDR switch and the display the "
@@ -1064,7 +1065,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_lock_ahead_verify, false, "Diagnostic: a lock whose pages an earlier lock read ahead still reads them from the pool (it "
     "waits for the GPU as before), and the bytes are compared with the ones kept. Reported in the "
     "log with the prefix 'lock read-ahead check:' (an error line for every page that differs, the "
-    "first 8). The vinyl editor is where it counts. Off: nothing is done.", rex::kDebugOnly, rex::kRestart);
+    "first 8). The vinyl editor is where it counts. Off: nothing is done.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_lock_dump, false, "Diagnostic: after a Lock write-back, every 8888 level the locked range "
                     "covers is decoded from guest memory and written as "
@@ -1090,7 +1091,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_memory_census, false, "Watch every vertex and index range the executed draws read, the way the buffer cache will, "
     "and log every 600 frames what that cache would upload ("
-    "24.21). Diagnostic: it write-protects guest pages.", rex::kDebugOnly, rex::kRestart);
+    "24.21). Diagnostic: it write-protects guest pages.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_msaa, "2", "MSAA of the images of the screen the game multisamples (M6d.2): off (1 sample), 2 (the "
     "console's), 4 or 8 samples on the host. The game itself always draws its own 2 sample "
@@ -1115,12 +1116,12 @@ class GPUSettings final : public rex::SettingOwner {
     "when something can read them: on their own when RenderDoc, PIX or Nsight Graphics started "
     "the game, with mcla_gpu_debug_layer, and with mcla_gpu_perf_markers. This turns them on for "
     "a tool that does not load a DLL (Radeon GPU Profiler) or that attaches later. Read when the "
-    "device opens.", rex::kDebugOnly, rex::kRestart);
+    "device opens.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_pass_timing, false, "Measure GPU time per pass: a timestamp at every pass boundary (target change, resolve, "
     "clear, present, overlay), summed per pass and logged by cost with the frame statistics. "
     "A measurement for the performance work, off by "
-    "default.", rex::kDebugOnly, rex::kRestart);
+    "default.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_pause_vehicle_vectors, false, "Diagnostic: in the pause menu's world, the garage and the map, take the game's own per-vehicle motion for a "
     "vehicle's pixels in the temporal upscalers' motion vectors, as in the game view. Off (the default): a vehicle "
@@ -1141,7 +1142,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_pipeline_cache, true, "Keep the pipelines the game asked for across sessions ("
     "24.35, M5.3): their keys go to cache/mcla_gpu_pipelines_<backend>.bin beside the "
     "executable on exit, and are read back at start -- the other backend's file too, so what one "
-    "API saw is ready in the other (24.40 V2). Off: nothing is read, recorded or written.", rex::kDebugOnly, rex::kRestart);
+    "API saw is ready in the other (24.40 V2). Off: nothing is read, recorded or written.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_present_dither, true, "Adds a faint noise, at most half of one colour step of the screen, to the finished picture "
     "just before it is shown, so that smooth gradients (the sky at dusk) show fewer bands. Live.", rex::kDebugOnly);
@@ -1151,16 +1152,16 @@ class GPUSettings final : public rex::SettingOwner {
     "before it submits the frame and presents. Without it the guest waits for the whole present, "
     "about 0.2 ms a frame at 240 FPS. Not used with mcla_gpu_vsync, nor when the previous present "
     "took longer than 1 ms after that point (the GPU is behind): the guest then waits as before, "
-    "so it never runs more than that ahead.", rex::kDebugOnly, rex::kRestart);
+    "so it never runs more than that ahead.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_present_release_check, false, "Diagnostic, with mcla_gpu_present_release: checks what that rests on. It releases the guest at "
     "every guest present (also when the GPU is behind), and from the release to the end of the "
     "present it counts, and logs the first 16, each read or write of guest memory by the render "
-    "thread. The count is in the '[gpu] present release:' line at shutdown; it must be 0.", rex::kDebugOnly, rex::kRestart);
+    "thread. The count is in the '[gpu] present release:' line at shutdown; it must be 0.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_present_wait, false, "Pace presents with the swap chain's latency wait (DXGI waitable object / "
     "VK_KHR_present_wait) when the device has it. On D3D12 Plume then presents with sync "
-    "interval 0 and the wait alone paces the frame, so measure before turning it on.", rex::kDebugOnly, rex::kRestart);
+    "interval 0 and the wait alone paces the frame, so measure before turning it on.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(u32, mcla_gpu_process_memory_log, 0, "Diagnostic: every this many frames, log what the process's memory is made of (the commit "
     "charge and working set, the committed address space by kind, the private regions by size, "
@@ -1172,12 +1173,12 @@ class GPUSettings final : public rex::SettingOwner {
     "the heap's lock (about 0.2 ms a frame at 2,600 draws). The pages found readable are "
     "forgotten at every present. A page the guest unmaps within the frame and that a later draw "
     "still points at would be read as before the unmapping (the memory stays mapped, so it "
-    "cannot fault); off asks the heap at every check, as before.", rex::kDebugOnly, rex::kRestart);
+    "cannot fault); off asks the heap at every check, as before.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_readable_cache_check, false, "Diagnostic, with mcla_gpu_readable_cache: also ask the heap at every check the cache answers, "
     "and count and log (the first 16) the answers that differ. The count is in the "
     "'[gpu] readable cache:' line at shutdown; it must be 0. The heap is asked as often as without "
-    "the cache.", rex::kDebugOnly, rex::kRestart);
+    "the cache.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_reflection_resolution, "auto", "How sharp the road reflection is: the wet roads, the shop and building windows and the water "
     "show a mirror image of the city that the game draws at 256x256 and stretches over the whole "
@@ -1226,7 +1227,7 @@ class GPUSettings final : public rex::SettingOwner {
     "vertex copy, lock write-back) and for the whole pool every 600 frames the bytes are compared "
     "with it. Reported in the log with the prefix 'resolve memory check:' every 600 frames and "
     "at shutdown (RESULT PASS or FAIL). For wrong or flickering textures that the delayed encode "
-    "may cause: the answer is in the log. Off: nothing is done.", rex::kDebugOnly, rex::kRestart);
+    "may cause: the answer is in the log. Off: nothing is done.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(u32, mcla_gpu_resolve_memory_encode_delay, 2, "Frames a colour resolve's encode into the resolve memory (and that of a depth resolve into "
     "k_8_8_8_8) may wait. 0: every "
@@ -1255,13 +1256,13 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_scene_profile, false, "Diagnostic (M6a): the render thread's time per stage of a draw (constant banks, "
     "state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, "
-    "draw), one line per window of 600 frames. Off: nothing is timed.", rex::kDebugOnly, rex::kRestart);
+    "draw), one line per window of 600 frames. Off: nothing is timed.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_shader_memo_check, false, "Diagnostic: no draw takes its shaders from the frame's identity memo; every draw reads the "
     "guest's shader objects and looks the identity up in full, and the memo's answer, address, "
     "size and variant are compared with it. The differences are counted and logged (the first 16); "
     "the count is in the '[gpu] shader memo:' line at shutdown and must be 0. The lookups cost as "
-    "much as without the memo.", rex::kDebugOnly, rex::kRestart);
+    "much as without the memo.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_shadow_filter, "auto", "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from "
     "pixel to pixel, a grainy edge), soft (more taps on a disk, a "
@@ -1308,7 +1309,7 @@ class GPUSettings final : public rex::SettingOwner {
     "guest pipeline that uses any of them is not built, and its draws are treated like those "
     "of a pipeline that failed. Measured on Mesa's dzn (Vulkan over D3D12 in WSL2), which "
     "overflows its stack in vkCreateGraphicsPipelines for the pair b000e9d48f010bd8 + "
-    "68387d4a0b431769 (each alone is fine).", rex::kDebugOnly, rex::kRestart);
+    "68387d4a0b431769 (each alone is fine).", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(f64, mcla_gpu_split, -1.0, "TRAILER TOOLKIT: a before/after split in one frame. A position from 0 to 1 across the picture's width: the effects "
     "named by mcla_gpu_split_effects (ambient occlusion, the present's dither) are applied only left of it, and right of "
@@ -1615,13 +1616,13 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_texture_decode_selftest, false, "Test only: at start-up, decodes a few thousand random texture levels (every block size, "
     "endian, tiled and linear, packed-tail offsets, DXT decompression) with the fast decoder and "
-    "with the plain per-block one, and logs whether every byte matched.", rex::kDebugOnly, rex::kRestart);
+    "with the plain per-block one, and logs whether every byte matched.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(i32, mcla_gpu_texture_decode_threads, -1, "Threads that decode the textures of the draws queued behind the one the renderer is on "
     "(untile, byte swap), so a burst of new textures as the game streams in the next stretch of "
     "road does not stall the render thread. -1: one thread per 4 logical processors, up to 3, none "
     "below 4 processors. 0: the render thread decodes every texture itself, when its draw needs "
-    "it. The threads run below the game's.", rex::kDebugOnly, rex::Range{-1, 8}, rex::kRestart);
+    "it. The threads run below the game's.", rex::kDebugOnly, rex::Range{-1, 8}, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_texture_decode_verify, false, "Test only: every texture level the game uploads is decoded a second time with the plain "
     "per-block decoder and compared byte for byte with the fast one's; a difference is logged "
@@ -1688,7 +1689,7 @@ class GPUSettings final : public rex::SettingOwner {
     "an RTX card) start their background warm-up only once the pause menu's UPSCALING row has been "
     "shown or DLSS frame generation is chosen, not five seconds after every start; DLSS and FSR "
     "chosen at the start load at the start as always. Off: the old behaviour, FidelityFX opened by "
-    "every start and the DLSS warm-up five seconds after the game first draws. Read at the start.", rex::kDebugOnly, rex::kRestart);
+    "every start and the DLSS warm-up five seconds after the game first draws. Read at the start.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(i32, mcla_gpu_upscaler_mask_test, 0, "Diagnostic: tests whether the upscalers read their mask inputs. 1 gives the reactive mask (what "
     "FSR calls reactive; DLSS's bias-current-colour and reactive hints) every pixel at 1, 2 gives the "
@@ -1722,13 +1723,13 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_validate, false, "Run the milestone M3 validator on every record besides the replay: per-record counters and "
     "the mcla_gpu_validation_*.csv files next to the executable. Decodes every draw a second "
-    "time on the render thread (3.5-7 ms/frame measured in M3).", rex::kDebugOnly, rex::kRestart);
+    "time on the render thread (3.5-7 ms/frame measured in M3).", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, mcla_gpu_verify_constants, false, "Compare every 64-byte block of both constant banks on every draw, not only the blocks the "
     "guest's dirty masks name, and send (and count) any that changed without its dirty bit. "
     "Costs guest CPU per draw. Off by default since M3 measured no block outside the masks; the "
     "guest's XXH3 of both banks every 32 draws still checks the rebuilt banks "
-    ".", rex::kDebugOnly, rex::kRestart);
+    ".", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(u32, mcla_gpu_vram_budget_mb, 0, "Test (debug): pretend the video memory budget is this many MiB when the adapter's own is larger "
     "(0: the adapter's). Everything that asks the budget sees the smaller number against the real use: "
@@ -1748,13 +1749,13 @@ class GPUSettings final : public rex::SettingOwner {
     "activated or deactivated over, texture fetched from and resolve-memory decode of "
     "[base, base + mcla_gpu_watch_size) is logged in order with the guest frame and draw: the "
     "last 1500 events are kept until the first decode of the range, then written out with "
-    "every later one (at most 20000 lines). Empty: off.", rex::kDebugOnly, rex::kRestart);
+    "every later one (at most 20000 lines). Empty: off.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(u32, mcla_gpu_watch_capture, 1, "Diagnostic, with mcla_gpu_watch_base: a RenderDoc capture of the frame after 1 = the first "
     "decode of the range from the resolve memory, 2 = the first product over it deactivated by "
-    "another resolve. 0: none. Needs the game started under RenderDoc.", rex::kDebugOnly, rex::kRestart);
+    "another resolve. 0: none. Needs the game started under RenderDoc.", rex::kDebugOnly, rex::kRequiresRestart);
 
-  REX_SETTING(std::string, mcla_gpu_watch_size, "400000", "Diagnostic: the length, in hex, of mcla_gpu_watch_base's range.", rex::kDebugOnly, rex::kRestart);
+  REX_SETTING(std::string, mcla_gpu_watch_size, "400000", "Diagnostic: the length, in hex, of mcla_gpu_watch_base's range.", rex::kDebugOnly, rex::kRequiresRestart);
 
   // The switch over the renderer work of 17/10/2026, asked for by
   // the user, live: on, every part of it runs as its own cvar says; off, the
@@ -1792,30 +1793,30 @@ class GPUSettings final : public rex::SettingOwner {
     "and no pipeline pending. It fills the graphics driver's own cache for this PC; it does not "
     "have to be repeated until the driver, the game files or LARecomp change (the next run "
     "notices and does nothing when everything is current). Progress is printed to the console. "
-    "Exit code 0 when the pipelines are prepared or need nothing.", rex::kRestart, rex::kDebugOnly);
+    "Exit code 0 when the pipelines are prepared or need nothing.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(std::string, precache_pipelines_backend, "", "With precache_pipelines: which graphics API to prepare. Empty (or auto) is the one the game "
-    "runs on (graphics_backend). d3d12 or vulkan prepares that one; one API per run.", rex::kRestart, rex::kDebugOnly);
+    "runs on (graphics_backend). d3d12 or vulkan prepares that one; one API per run.", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(bool, precache_pipelines_force, false, "With precache_pipelines: prepare even when the last run says the pipelines are current. For "
-    "after the graphics driver's shader cache was cleared (Windows' Disk Cleanup does that).", rex::kRestart, rex::kDebugOnly);
+    "after the graphics driver's shader cache was cleared (Windows' Disk Cleanup does that).", rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(i32, precache_pipelines_threads, 0, "With precache_pipelines: how many threads compile the pipelines. 0 uses every processor but "
-    "one. A lower number leaves the PC more usable meanwhile, and the preparation takes longer.", rex::Range{0, 16}, rex::kRestart, rex::kDebugOnly);
+    "one. A lower number leaves the PC more usable meanwhile, and the preparation takes longer.", rex::Range{0, 16}, rex::kRequiresRestart, rex::kDebugOnly);
 
   REX_SETTING(std::string, shader_pack_dir, "", "The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_variants.v3.pack) are read from "
     "and built into. Empty: the cache/shaders folder next to the program or, where that folder "
     "cannot be written to, larecomp/cache/shaders in the local application data folder; a pack "
     "left in the program's assets folder by an older install is still used when there is none "
-    "in that folder. When this is set, only this folder is used.", rex::kDebugOnly, rex::kRestart);
+    "in that folder. When this is set, only this folder is used.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(i32, shader_pack_threads, 0, "How many threads build the shader packs from your game files on the first start. 0 chooses "
     "by itself from the processor's cores and the free memory. A lower number leaves the PC more "
-    "usable during the build, which then takes longer.", rex::Range{0, 64}, rex::kRestart, rex::kDebugOnly);
+    "usable during the build, which then takes longer.", rex::Range{0, 64}, rex::kRequiresRestart, rex::kDebugOnly);
 
 };
 
-inline GPUSettings g_gpu;
+inline GPUSettings& g_gpu = larecomp::Leak<GPUSettings>();
 
 inline auto& build_shader_packs = g_gpu.build_shader_packs;
 inline auto& build_shader_packs_force = g_gpu.build_shader_packs_force;

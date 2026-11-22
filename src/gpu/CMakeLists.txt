@@ -226,11 +226,13 @@ add_executable(larecomp_volumetrics_rules_test EXCLUDE_FROM_ALL volumetrics_rule
 # of feat/headlights when they are in the tree) likewise:
 #   cmake --build <dir> --target larecomp_volumetrics_inputs_test, then run src/gpu/larecomp_volumetrics_inputs_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_volumetrics_inputs_test EXCLUDE_FROM_ALL volumetrics_inputs_test.cpp)
+target_include_directories(larecomp_volumetrics_inputs_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # settings/immortal.h (vol_lamp_list.h, cut_request.cpp)
 # The volumetric light's stability rules (volumetrics_stable.h: a lamp's term averaged over a slice of the grid, the composite's samples, the history's weight as a time
 # constant) and a simulation of the passes for a camera driving at a street lamp, which puts a number on the flicker of the first version and of the fixes; given the
 # src/gpu folder it also checks that the shaders' flags are the header's, likewise:
 #   cmake --build <dir> --target larecomp_volumetrics_stable_test, then run src/gpu/larecomp_volumetrics_stable_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_volumetrics_stable_test EXCLUDE_FROM_ALL volumetrics_stable_test.cpp)
+target_include_directories(larecomp_volumetrics_stable_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # settings/immortal.h (vol_lamp_list.h, cut_request.cpp)
 # The sun shafts' image size rule (shafts_image.h: half the picture, capped at a 960x540 box; the sky pass's taps; given the hlsl folder it
 # also checks that the shaders say what the header says) likewise:
 #   cmake --build <dir> --target larecomp_shafts_image_test, then run src/gpu/larecomp_shafts_image_test [<src/gpu/hlsl dir>].
@@ -580,11 +582,31 @@ add_executable(larecomp_camera_cut_test EXCLUDE_FROM_ALL camera_cut_test.cpp tem
 # The upscalers' pure arithmetic (upscaler_math.h: the jitter sequence, its length at a ratio, the scene's mip bias) has a check that needs
 # no renderer: cmake --build <dir> --target larecomp_upscaler_math_test, then run src/gpu/larecomp_upscaler_math_test (exit 0 = passed).
 add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.cpp)
+# The render scale's choice (render_scale.h: the asked scale, the screen's, an FSR1 preset, the upscaler's output, the scene's scale under an upscaler),
+# which the renderer asks again at every frame boundary and moves the images of the screen to, has a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_render_scale_test, then run src/gpu/larecomp_render_scale_test (exit 0 = passed).
+add_executable(larecomp_render_scale_test EXCLUDE_FROM_ALL render_scale_test.cpp)
+# The host MSAA level's rules (msaa_plan.h: what mcla_gpu_msaa says, the device's limit, and when MsaaLevel makes a live change: the settle, the pipelines'
+# wait, the retries after a failure, the upscaler's own path) are checked on a made-up clock, with no renderer:
+#   cmake --build <dir> --target larecomp_msaa_plan_test, then run src/gpu/larecomp_msaa_plan_test (exit 0 = passed).
+add_executable(larecomp_msaa_plan_test EXCLUDE_FROM_ALL msaa_plan_test.cpp)
+# The anisotropic filtering rules (aniso_rules.h: what mcla_gpu_anisotropy says, which of the game's samplers take it, the level a sampler is made with;
+# the setting is live) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_aniso_rules_test, then run src/gpu/larecomp_aniso_rules_test (exit 0 = passed).
+add_executable(larecomp_aniso_rules_test EXCLUDE_FROM_ALL aniso_rules_test.cpp)
+# The upscalers' words, mode tables and ratios (upscale_modes.h: mcla_gpu_upscaler and the three mode settings, which the temporal system reads at every
+# frame boundary, and the scene's size each mode gives at an output) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_upscale_modes_test, then run src/gpu/larecomp_upscale_modes_test (exit 0 = passed).
+add_executable(larecomp_upscale_modes_test EXCLUDE_FROM_ALL upscale_modes_test.cpp)
 # The rules for when the upscalers' libraries are loaded (upscaler_load_policy.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_upscaler_load_policy_test, then run src/gpu/larecomp_upscaler_load_policy_test (exit 0 = passed).
 add_executable(larecomp_upscaler_load_policy_test EXCLUDE_FROM_ALL upscaler_load_policy_test.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(larecomp_upscaler_load_policy_test PRIVATE Threads::Threads)
+# The side views' scale rules (side_views.h: the shadow, car reflection and road reflection detail rows, which are live: a setting's word to a level on each
+# GPU class, a level to a scale, the step down when the video memory is short, the class that follows the render scale, the declared sizes) have a check that
+# needs no renderer: cmake --build <dir> --target larecomp_side_view_scales_test, then run src/gpu/larecomp_side_view_scales_test (exit 0 = passed).
+add_executable(larecomp_side_view_scales_test EXCLUDE_FROM_ALL side_view_scales_test.cpp)
 # DLSS Ray Reconstruction's pure rules (dlss_rr_rules.h: the tag plan, the options, the choice of denoiser, the frame gate) have a check that needs no renderer
 # and no Streamline: cmake --build <dir> --target larecomp_dlss_rr_rules_test, then run src/gpu/larecomp_dlss_rr_rules_test (exit 0 = passed).
 add_executable(larecomp_dlss_rr_rules_test EXCLUDE_FROM_ALL dlss_rr_rules_test.cpp)
@@ -602,6 +624,7 @@ add_executable(larecomp_side_view_use_test EXCLUDE_FROM_ALL side_view_use_test.c
 # The camera cut requests and the motion blur constants of a cut (cut_request.h) have one too:
 #   cmake --build <dir> --target larecomp_cut_request_test, then run src/gpu/larecomp_cut_request_test (exit 0 = passed).
 add_executable(larecomp_cut_request_test EXCLUDE_FROM_ALL cut_request_test.cpp cut_request.cpp)
+target_include_directories(larecomp_cut_request_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # settings/immortal.h (vol_lamp_list.h, cut_request.cpp)
 # The HUD fade's alpha clamp and ramp (ui_fade.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_ui_fade_test, then run src/gpu/larecomp_ui_fade_test (exit 0 = passed).
 add_executable(larecomp_ui_fade_test EXCLUDE_FROM_ALL ui_fade_test.cpp)

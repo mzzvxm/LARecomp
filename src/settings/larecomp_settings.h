@@ -136,7 +136,7 @@ T GetAs(std::string_view scoped_name) {
 namespace larecomp::cvar {
 
 enum class FlagType { Boolean, Int32, Int64, Uint32, Uint64, Double, String, Command };
-// kStartupOnly and kUntilLaunch both read as kInitOnly: the game is running when anything asks.
+// SettingMode::kInitOnly and kLockedInGame both read as kInitOnly: the game is running when anything asks.
 enum class Lifecycle { kInitOnly, kHotReload, kRequiresRestart };
 // kTitle (LARecomp's own default) reads as kDefault: it is not the player's choice. kLock reads as kRuntime.
 enum class Source { kDefault, kConfig, kEnvironment, kCommandLine, kRuntime };
@@ -180,21 +180,27 @@ std::vector<FlagEntry>& GetRegistry();
 // may be called before the setting exists.
 void MarkDebugOnly(std::string_view name);
 // Puts a value back at the layer it came from (a trailer scene let go of a setting). The registry only raises a layer, so
-// the setting goes back to its default first and the value is stored again at `source`'s layer: its change callbacks run
-// twice. False for an unknown or frozen setting.
+// the setting goes back to its default first and the value is stored again at `source`'s layer, in one rex::SettingsBatch:
+// its change callbacks run once, with the restored value. False for an unknown or frozen setting.
 bool RestoreValue(std::string_view name, std::string_view value, Source source);
 std::vector<std::string> ListModifiedFlags();
 bool HasNonDefaultValue(std::string_view name);
 void ResetToDefault(std::string_view name);
 bool InvokeCommand(std::string_view name, std::string_view args);
-// Called with (flat name, new text) after each change. One list per name; Unregister drops them.
+// Called with (flat name, new text) after each change, never at registration (that is rex::Setting::OnChange, not Bind: a caller that
+// needs the current value reads it itself, after registering). One list per name; Unregister drops them. The SDK's rules for a change
+// function apply: the calls of one setting run in the order they were added and never concurrently with themselves; a call runs on the
+// writing thread before the write returns, or after the function that is running there (a write made inside a change function stores at
+// once and its calls follow); writes inside a rex::SettingsBatch call once, at the end; the text is the setting's current text when the
+// call runs, so several quick changes may make one call. A function may write settings and post work to another thread, and must NOT wait
+// for another thread (a RunSynchronous on the UI thread is refused there). Releasing the guards waits for a call in progress.
 // The setting must be registered (RegisterAll, from OnConfigure on): call this on first use, NEVER from a namespace-scope initializer,
 // where the setting does not exist yet. False (and a log line) when there is no such setting: the callback was not added.
 using ChangeCallback = std::function<void(std::string_view name, std::string_view new_value)>;
 bool RegisterChangeCallback(std::string_view name, ChangeCallback callback);
 void UnregisterChangeCallbacks(std::string_view name);
-// Releases every callback guard now (UnregisterAll does it first). The settings must still exist: some are the SDK's, owned by systems
-// that are gone before the exe's static destruction.
+// Releases every callback guard now (UnregisterAll does it first), so that no callback runs into code that is being torn down. Safe
+// whether or not the watched settings still exist (the SDK detaches the watches of a destroyed setting); waits for a call in progress.
 void ReleaseChangeCallbacks();
 template <typename T>
 T Query(std::string_view name) {

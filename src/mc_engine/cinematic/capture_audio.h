@@ -49,6 +49,10 @@ Summary End(uint64_t video_frames);
 // The game is closing (any thread): the gate opens and the device gets its mix back, so that nothing waits for a take that will not go on.
 // The files are closed by End as usual, if it is still called.
 void Abort();
+// The process is ending (a flush hook of the exit, larecomp_app.cpp; any thread): a take that is still running has its WAV closed with the real
+// sizes of what was written (the take's own End never comes, and nothing closes the file once the exit is immediate: exit_fast.h; without this
+// the WAV keeps the zero sizes of its first header). Does nothing when no WAV is open, and never touches the mixer.
+void CloseForExit();
 
 // A take's audio is running.
 bool Active();

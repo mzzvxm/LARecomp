@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -25,7 +26,7 @@ class DiagnosticsSettings final : public rex::SettingOwner {
     "log.", rex::kDebugOnly);
 
   REX_SETTING(bool, lzx_native_check_all, false, "Run the recompiled LZX decoder next to the native one for every stream, not only the first few, "
-    "and compare every call. Slower than either alone: for validating a whole session. Read at start.", rex::kDebugOnly, rex::kRestart);
+    "and compare every call. Slower than either alone: for validating a whole session. Read at start.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(i32, mcla_traffic_probe, 0, "Debug, live, never saved: every this many updates log the ambient (traffic) cars one by one (model, position, heading, speed, the rail, "
     "the LOD), the ambient and layout pools (capacity, live count, free slots), the opponent and racer pools and the police patrols, and one "
@@ -67,7 +68,7 @@ class DiagnosticsSettings final : public rex::SettingOwner {
 
 };
 
-inline DiagnosticsSettings g_diagnostics;
+inline DiagnosticsSettings& g_diagnostics = larecomp::Leak<DiagnosticsSettings>();
 
 inline auto& cam_trace = g_diagnostics.cam_trace;
 inline auto& lowcpu_probe = g_diagnostics.lowcpu_probe;

@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -28,14 +29,14 @@ class PatchesSettings final : public rex::SettingOwner {
     "narrower than that shape and at the sides where it is wider.", rex::Allowed("auto", "16:9", "16:10", "21:9", "32:9"));
 
   // Live: Patch_PhysicsCollision (vehicle.cpp) is a return_on_true hook on the collision function's first instruction and reads this on every
-  // call, with no copy. It was tagged kRestart; nothing reads it at start.
+  // call, with no copy. It was tagged kRequiresRestart; nothing reads it at start.
   // CHECK: flipped on and off in a race with cars close together, the cars stop pushing each other and push again, nothing else changes.
   REX_SETTING(bool, break_pairwise_collision, false, "Disables pairwise collision resolution. Live: the game's collision function is skipped "
     "or run again at its next call.", rex::kDebugOnly);
 
   REX_SETTING(bool, carbon_all_parts, true, "Carbon fiber can be applied to any body part, not just the hood.", rex::kDebugOnly);
 
-  REX_SETTING(bool, dbg_print, false, "Enable DbgPrint console outputs.", rex::kDebugOnly, rex::kRestart);
+  REX_SETTING(bool, dbg_print, false, "Enable DbgPrint console outputs.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, disable_dof, true, "Disable Depth of Field (DoF) completely.");
 
@@ -56,11 +57,11 @@ class PatchesSettings final : public rex::SettingOwner {
   // it as a restart setting.
   REX_SETTING(bool, disable_motion_blur, false, "Disable Motion Blur completely.");
 
-  REX_SETTING(bool, disable_msaa, false, "Disable Anti-Aliasing (MSAA).", rex::kRestart);
+  REX_SETTING(bool, disable_msaa, false, "Disable Anti-Aliasing (MSAA).", rex::kRequiresRestart);
 
   REX_SETTING(bool, disable_rubberbanding, false, "Disable the AI RubberBand system outright. Note this also removes MinThrottle, the "
     "leash that slows the AI when it is AHEAD — so it makes races harder, not fairer. "
-    "Prefer the rubberband_* scales under MCLA/Difficulty.", rex::kDebugOnly, rex::kRestart);
+    "Prefer the rubberband_* scales under MCLA/Difficulty.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, garage_tire_offset, true, "Add a TIRE OFFSET row to the garage wheels > dimensions screen, editing "
     "the per-car TireOffset0/1 bytes retail parses but never uses.", rex::kDebugOnly);
@@ -79,6 +80,12 @@ class PatchesSettings final : public rex::SettingOwner {
     "them and they played as fast as the host could present. The screens play before the "
     "pause menu can be opened, so a change made there is seen at the next start.");
 
+  REX_SETTING(bool, mcla_fast_exit, true, "Fix: the game ends its process right after its orderly shutdown (saves, settings and logs written, the renderer "
+    "and audio stopped), without running the destructors of its global objects. The SDK leaves a game thread that is "
+    "slow to leave running while the game ends; a thread like that could still use an object the exit had just "
+    "destroyed, and the game crashed a few milliseconds after it said it was exiting (about once in 1400 exits). On: "
+    "the process ends at once, with the same exit code. Off: the old end through the C runtime's exit.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_fix_checkpoint_fade, true, "Fix: the smoke of a closed race checkpoint dissipates over about half a second at every frame "
     "rate. The game fades it by dt x 25 at every update, which is 0.83 per update on the console's 30 updates a "
     "second but 0.42 at 60 FPS and 0.17 at 144 FPS, so above 30 FPS the smoke vanished with the checkpoint. On: the "
@@ -96,9 +103,9 @@ class PatchesSettings final : public rex::SettingOwner {
     "rate cap - see fps_limit for that.", rex::kDebugOnly);
 
   REX_SETTING(bool, showroom_unlimited, true, "The garage's showroom lists every vehicle on sale. Off = the game's own showroom: 70 rows, "
-    "and a picture for at most 7 vehicles past the game's own.", rex::kDebugOnly, rex::kRestart);
+    "and a picture for at most 7 vehicles past the game's own.", rex::kDebugOnly, rex::kRequiresRestart);
 
-  REX_SETTING(bool, skip_intro, false, "Skip the intro videos to prevent graphical issues.", rex::kRestart);
+  REX_SETTING(bool, skip_intro, false, "Skip the intro videos to prevent graphical issues.", rex::kRequiresRestart);
 
   REX_SETTING(f64, tire_offset_step, 0.012, "Metres of lateral wheel movement per TIRE OFFSET notch (17 notches, "
     "-8..+8, so the default spans about +/-10 cm). 0 disables the effect while "
@@ -114,7 +121,7 @@ class PatchesSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, vehicle_records_relocate, true, "Keep the parts bought for each car model in a table sized to the roster, so the game "
     "takes more than 77 vehicles. Off = the game's own 77-slot table: past 77 vehicles it "
-    "overwrites other profile data, and a large roster crashes the boot.", rex::kDebugOnly, rex::kRestart);
+    "overwrites other profile data, and a large roster crashes the boot.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(bool, warp_transition_fix, true, "Finish a cinematic warp (pause menu -> garage from far away) whose camera "
     "flight ended between two frames. Without it the game can sit on the garage "
@@ -124,7 +131,7 @@ class PatchesSettings final : public rex::SettingOwner {
 
 };
 
-inline PatchesSettings g_patches;
+inline PatchesSettings& g_patches = larecomp::Leak<PatchesSettings>();
 
 inline auto& aspect_ratio = g_patches.aspect_ratio;
 inline auto& break_pairwise_collision = g_patches.break_pairwise_collision;
@@ -138,6 +145,7 @@ inline auto& disable_rubberbanding = g_patches.disable_rubberbanding;
 inline auto& garage_tire_offset = g_patches.garage_tire_offset;
 inline auto& hud_width = g_patches.hud_width;
 inline auto& intro_original_speed = g_patches.intro_original_speed;
+inline auto& mcla_fast_exit = g_patches.mcla_fast_exit;
 inline auto& mcla_fix_checkpoint_fade = g_patches.mcla_fix_checkpoint_fade;
 inline auto& mcla_fix_neon_30hz = g_patches.mcla_fix_neon_30hz;
 inline auto& real_frame_delta = g_patches.real_frame_delta;

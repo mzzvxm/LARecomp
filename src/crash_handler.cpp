@@ -5,9 +5,11 @@
 
 #include "crash_handler.h"
 #include "crash_options.h"
+#include "exit_fast.h"
 #include "larecomp_log.h"
 #include "process_exit.h"
 
+#include <atomic>
 #include <filesystem>
 
 #if defined(_WIN32)
@@ -251,10 +253,16 @@ void InstallCrashLogger() {
     // Separates "the process crashed" from "the process exited on purpose":
     // EndProcessNow (the shutdown watchdog and the crash paths above) skips this,
     // a normal exit does not, and an unhandled exception reaches neither.
-    std::atexit([]() {
-        LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
-        FlushLogs();
-    });
+    // The fast exit (exit_fast.h: the process ends right after the orderly shutdown, without the C runtime's exit) calls the same note itself.
+    larecomp::exitfast::SetNote(&NoteProcessExiting);
+    std::atexit([]() { NoteProcessExiting(); });
+}
+
+void NoteProcessExiting() {
+    static std::atomic<bool> noted{false};
+    if (noted.exchange(true)) return;  // once, whichever of the two ways of ending the process gets here
+    LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
+    FlushLogs();
 }
 
 std::filesystem::path ExeDir() {
@@ -508,10 +516,16 @@ void InstallCrashLogger() {
 
     // Separates "the process crashed" from "the process exited on purpose": std::_Exit (used by
     // the shutdown paths) skips this, a normal exit does not, and a crash reaches neither.
-    std::atexit([]() {
-        LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
-        FlushLogs();
-    });
+    // The fast exit (exit_fast.h: the process ends right after the orderly shutdown, without the C runtime's exit) calls the same note itself.
+    larecomp::exitfast::SetNote(&NoteProcessExiting);
+    std::atexit([]() { NoteProcessExiting(); });
+}
+
+void NoteProcessExiting() {
+    static std::atomic<bool> noted{false};
+    if (noted.exchange(true)) return;  // once, whichever of the two ways of ending the process gets here
+    LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
+    FlushLogs();
 }
 
 // OnInit: the SDK has opened this run's log file by now, so LarecompLogFile() names it (the reports append to it by name). Kept apart
@@ -551,6 +565,7 @@ void InstallCrashLoggerAfterRuntime() {
 void InstallCrashLogger() {}
 void NoteCrashLogFile() {}
 void InstallCrashLoggerAfterRuntime() {}
+void NoteProcessExiting() {}
 
 #endif  // __linux__
 

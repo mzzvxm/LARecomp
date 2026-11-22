@@ -1,6 +1,7 @@
 // The Director's engine room: see command.h.
 
 #include "command.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <charconv>
@@ -57,7 +58,7 @@ const char* EventKindName(EventKind kind) {
 }
 
 const std::vector<EventDoc>& KnownEvents() {
-    static const std::vector<EventDoc> events = {
+    static const std::vector<EventDoc>& events = *new const std::vector<EventDoc>{
         {"scene.reloaded", "the scene file changed: rev, by (agent, panel, file, undo, accept), changed (new line numbers), errors"},
         {"scene.state", "the scene runner's state changed: state, t, path"},
         {"key.reached", "the scene's clock passed a key: t, line, track, text"},
@@ -140,7 +141,7 @@ bool Responder::deferred() const {
 }
 
 const Request& Responder::request() const {
-    static const Request none;
+    static const Request& none = larecomp::Leak<const Request>();
     return slot_ ? slot_->request : none;
 }
 
@@ -740,7 +741,7 @@ std::vector<LoggedCommand> RecentCommands(size_t max_count) {
 
 namespace {
 std::vector<SnapshotContributor>& Contributors() {
-    static std::vector<SnapshotContributor> v;
+    static std::vector<SnapshotContributor>& v = larecomp::Leak<std::vector<SnapshotContributor>>();
     return v;
 }
 std::mutex& ContributorsMutex() {

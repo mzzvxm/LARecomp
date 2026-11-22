@@ -30,6 +30,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/context.h>
 #include <rex/kernel/title_runtime.h>
 #include <algorithm>
@@ -175,7 +176,7 @@ struct FrameTime {
 };
 
 std::mutex g_inst_mutex;
-std::unordered_map<uint32_t, Inst> g_inst;
+std::unordered_map<uint32_t, Inst>& g_inst = larecomp::Leak<std::unordered_map<uint32_t, Inst>>();
 uint64_t g_inst_sweep_us = 0;
 std::array<FrameTime, 32> g_frame_time;
 }  // namespace
@@ -461,7 +462,7 @@ struct Series {
     uint64_t seen_us = 0;
     float from[3]{}, to[3]{}, shown[3]{};
 };
-std::unordered_map<uint64_t, Series> g_series;  // under g_inst_mutex
+std::unordered_map<uint64_t, Series>& g_series = larecomp::Leak<std::unordered_map<uint64_t, Series>>();  // under g_inst_mutex
 uint64_t g_series_sweep_us = 0;
 // Per movie slot: the step in which a change of the camera or the panels was last taken
 // for a cut. Everything else that changes in that step is a cut too (the script switching

@@ -41,6 +41,7 @@
 //
 
 #include "online_common.h"
+#include "settings/immortal.h"
 #include "race_props.h"
 
 #include <array>
@@ -69,8 +70,8 @@ struct FreedOwner {
 };
 
 std::mutex g_mu;
-std::unordered_map<uint32_t, uint32_t> g_live;        // owner -> inst it was made for
-std::unordered_map<uint32_t, FreedOwner> g_freed;     // owner -> how it went
+std::unordered_map<uint32_t, uint32_t>& g_live = larecomp::Leak<std::unordered_map<uint32_t, uint32_t>>();  // owner -> inst it was made for
+std::unordered_map<uint32_t, FreedOwner>& g_freed = larecomp::Leak<std::unordered_map<uint32_t, FreedOwner>>();  // owner -> how it went
 std::atomic<uint32_t> g_bad{0};
 
 rex::kernel::GuestAddressSpace* Mem() {
@@ -127,7 +128,7 @@ std::string HexDump(rex::kernel::GuestAddressSpace* mem, uint32_t from, uint32_t
 }
 
 // ── online_race_prop_watch ───────────────────────────────────────────────────
-std::string g_watch_text;
+std::string& g_watch_text = larecomp::Leak<std::string>();
 uint32_t g_watch_inst = 0;
 std::atomic<uint32_t> g_watch_word{0};   // owner + 16 of the watched inst, 0 = none
 uint32_t g_watch_last = 0;

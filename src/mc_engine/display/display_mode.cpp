@@ -1,6 +1,7 @@
 // The game window's display mode. See display_mode.h.
 
 #include "display_mode.h"
+#include "settings/immortal.h"
 #include "display_sizes.h"
 
 #include <algorithm>
@@ -288,7 +289,7 @@ std::mutex g_info_mutex;
 // The books kept, by display, and the display this game has switched to another mode, from before the
 // switch is asked for to after the display's own mode is back. All under g_info_mutex: the menu reads
 // them from any thread, the UI thread changes the mode. The keys are the display's GDI name in UTF-8.
-sizes::Displays g_displays;
+sizes::Displays& g_displays = larecomp::Leak<sizes::Displays>();
 
 // The monitor's own size (its preferred timing; display configuration API, below ReadDisplay).
 Size PreferredSize(const std::wstring& device);
@@ -529,7 +530,7 @@ Size FrameOf(HWND hwnd) {
 // ── Changing the display's mode (UI thread) ────────────────────────────────────────────────────
 
 bool g_mode_changed = false;     // this game switched the display to g_changed_to
-std::wstring g_changed_device;   // the display it did that on
+std::wstring& g_changed_device = larecomp::Leak<std::wstring>();  // the display it did that on
 Size g_changed_to;
 
 // The frameless window of a fullscreen state covers the display. SDL follows a change of the display's

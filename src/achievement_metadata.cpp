@@ -1,4 +1,5 @@
 #include "achievement_metadata.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -33,7 +34,7 @@ std::string CurrentLanguageName() {
     return raw;
   }
 
-  static const std::map<uint32_t, std::string> kLanguageMap = {
+  static const std::map<uint32_t, std::string>& kLanguageMap = *new const std::map<uint32_t, std::string>{
       {1, "English"},    {2, "Japanese"},
       {3, "German"},     {4, "French"},
       {5, "Spanish"},    {6, "Italian"},

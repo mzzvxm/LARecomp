@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- flicker probe. See flicker_probe.h.
 
 #include "flicker_probe.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -196,7 +197,7 @@ void FlickerProbe::Process(uint32_t readback, uint64_t frame, uint64_t generatio
   f.number = frame;
   f.valid = true;
   ++stats_.frames;
-  static const std::vector<uint64_t> shots = [] {
+  static const std::vector<uint64_t>& shots = larecomp::Leak<const std::vector<uint64_t>>([] {
     std::vector<uint64_t> out;
     const std::string list = larecomp::settings::mcla_gpu_flicker_probe_shots.Get();
     size_t at = 0;
@@ -207,7 +208,7 @@ void FlickerProbe::Process(uint32_t readback, uint64_t frame, uint64_t generatio
       at = end + 1;
     }
     return out;
-  }();
+  }());
   if (std::find(shots.begin(), shots.end(), frame) != shots.end()) {
     Dump(0, frame, "shot", f);
   }

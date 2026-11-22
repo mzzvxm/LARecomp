@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mc_engine/core/restart.h"
+#include "settings/immortal.h"
 #include "mc_engine/core/world_detail.h"
 #include "pause_menu.h"
 #include "mc_engine/gameplay/carbon_parts.h"
@@ -848,7 +849,7 @@ uint32_t CreateUIMenuState(const char* name) {
 // _dlss_mode) were never held: the renderer makes its targets again at the new
 // size at a frame boundary (TemporalSystem::UpdatePath, EdramTargets::SetScales).
 std::mutex g_deferred_mutex;
-std::vector<std::pair<std::string, std::string>> g_deferred;
+std::vector<std::pair<std::string, std::string>>& g_deferred = larecomp::Leak<std::vector<std::pair<std::string, std::string>>>();
 
 void SetDeferred(const char* name, const char* value) {
     std::lock_guard<std::mutex> lock(g_deferred_mutex);
@@ -3477,7 +3478,7 @@ struct NativeRows {
 };
 // A disabled row whose select moved anyway was reported (PollNativeRows; once).
 bool g_disabled_step_reported = false;
-NativeRows g_rows[kNumMenus];
+NativeRows (&g_rows)[kNumMenus] = *new NativeRows[1][kNumMenus]();
 
 // The value list a row steps through: {vtable, char** keys, count, stride}.
 // vfunc4 returns +8 and vfunc12 returns keys[stride * row + col], which is
@@ -3928,7 +3929,7 @@ struct RestartWatch {
     std::string orig;   // its value before the menu first changed it
     std::string asked;  // its value when the player was last offered a restart
 };
-std::vector<RestartWatch> g_restart_watch;
+std::vector<RestartWatch>& g_restart_watch = larecomp::Leak<std::vector<RestartWatch>>();
 // Set when one of our menus closes after B (MenuFormClosed); taken by RestartPromptTick.
 std::atomic<bool> g_restart_check{false};
 
@@ -4251,6 +4252,12 @@ extern const RowDynamics kDebugRendererDynamics = {.str_label = RendererLabel,
 }  // namespace mcla_menu
 
 // ── Public API ──────────────────────────────────────────────────────────
+
+// The game is ending by a way that did not go through a menu (the window's close, Alt+F4, a signal): a change made in a page that was
+// still open has not been written (MenuFormClosed writes when a page is left, QUIT and RESTART write before they close).
+void PauseMenuSavePendingSettings() {
+    if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
+}
 
 // RESTART GAME: as the QUIT form's YES, but the game is started again before this one closes
 // (restart.h); the new one waits for this one to be gone before it reads the settings or the saves.
@@ -6020,6 +6027,7 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
 }
 void PauseMenuLeaveSubmenu() {}
 void PauseMenuRestartGame() {}
+void PauseMenuSavePendingSettings() {}
 void PauseMenuFormsTick() {}
 void Hook_CapturePMContinue(PPCRegister& r3) {}
 bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4) { return false; }

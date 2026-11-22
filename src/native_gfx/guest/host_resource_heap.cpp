@@ -3,6 +3,7 @@
 // See host_resource_heap.h for the contract.
 
 #include "host_resource_heap.h"
+#include "settings/immortal.h"
 
 #include <mutex>
 #include <unordered_map>
@@ -24,7 +25,7 @@ struct Registry {
 };
 
 Registry& registry() {
-  static Registry r;
+  static Registry& r = larecomp::Leak<Registry>();
   return r;
 }
 

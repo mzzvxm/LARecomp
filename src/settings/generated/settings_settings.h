@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -18,7 +19,7 @@ class SettingsSettings final : public rex::SettingOwner {
 
 };
 
-inline SettingsSettings g_settings;
+inline SettingsSettings& g_settings = larecomp::Leak<SettingsSettings>();
 
 inline auto& show_test_movie = g_settings.show_test_movie;
 

@@ -1,4 +1,5 @@
 #include "mod_download.h"
+#include "settings/immortal.h"
 
 #include "mc_engine/modloader/modloader.h"
 
@@ -109,7 +110,7 @@ fs::path LocalPath(const fs::path& root, const std::string& rel) {
 // ~275 MB, and the check runs on every join.
 bool LocalHash(const fs::path& p, uint64_t size, uint64_t* out) {
     static std::mutex m;
-    static std::map<std::string, std::pair<std::pair<uint64_t, int64_t>, uint64_t>> cache;
+    static std::map<std::string, std::pair<std::pair<uint64_t, int64_t>, uint64_t>>& cache = larecomp::Leak<std::map<std::string, std::pair<std::pair<uint64_t, int64_t>, uint64_t>>>();
     std::error_code ec;
     const auto mtime = fs::last_write_time(p, ec);
     if (ec) return false;

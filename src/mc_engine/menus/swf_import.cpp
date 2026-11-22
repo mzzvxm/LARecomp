@@ -2,6 +2,7 @@
 // and.
 
 #include "swf_import.h"
+#include "settings/immortal.h"
 #include "larecomp_guest.h"
 #include <rex/kernel/title_paths.h>
 
@@ -307,7 +308,7 @@ struct Import {
     std::atomic<uint32_t> hook_sprite{0};
     std::atomic<BeforeUpdateFn> hook{nullptr};
 };
-Import g_imports[kMaxImports];
+Import (&g_imports)[kMaxImports] = *new Import[1][kMaxImports]();
 std::atomic<int> g_import_count{0};
 
 uint32_t g_scratch = 0;

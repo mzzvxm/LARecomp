@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -25,7 +26,7 @@ class PhysicsSettings final : public rex::SettingOwner {
 
 };
 
-inline PhysicsSettings g_physics;
+inline PhysicsSettings& g_physics = larecomp::Leak<PhysicsSettings>();
 
 inline auto& smooth_bike_gyro = g_physics.smooth_bike_gyro;
 inline auto& smooth_chassis_depth = g_physics.smooth_chassis_depth;

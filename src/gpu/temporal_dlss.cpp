@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the DLSS (Streamline) upscaler backend. See temporal_dlss.h.
 
 #include "temporal_dlss.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <array>
@@ -606,10 +607,10 @@ struct Runtime {
 // the worker with Runtime::mu held, read under their own lock so that a reader never waits for a
 // feature's creation (seconds).
 std::mutex g_fg_mutex;
-dlss::FrameGenerationFacts g_fg_facts;
+dlss::FrameGenerationFacts& g_fg_facts = larecomp::Leak<dlss::FrameGenerationFacts>();
 // The Ray Reconstruction facts (dlss::RayReconstructionFacts), the same way: written by the worker with Runtime::mu held, read under their own lock.
 std::mutex g_rr_mutex;
-dlss::RayReconstructionFacts g_rr_facts;
+dlss::RayReconstructionFacts& g_rr_facts = larecomp::Leak<dlss::RayReconstructionFacts>();  // never destroyed, like g_fg_facts (EXIT-HARD: a straggler thread may still read it at exit)
 // The last refusal of a frame's guides that was logged (verdict and culprit packed), so that the log says each kind once. Render thread.
 std::atomic<uint32_t> g_rr_refusal_seen{0};
 std::atomic<bool> g_rr_tags_logged{false};  // the first Ray Reconstruction evaluation's tags were logged (EvaluateRr)
@@ -658,7 +659,7 @@ std::atomic<bool> g_swap_chain_offered{false};
 std::atomic<bool> g_swap_chain_again{false};
 
 Runtime& Rt() {
-  static Runtime runtime;
+  static Runtime& runtime = larecomp::Leak<Runtime>();
   return runtime;
 }
 

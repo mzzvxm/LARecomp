@@ -1,4 +1,5 @@
 #include "modloader.h"
+#include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
@@ -97,16 +98,16 @@ constexpr uint32_t kResourceTailSlack = 65536;
 constexpr uint32_t kCarPageShift = 8;
 
 bool g_mod_archive_ready = false;
-std::vector<std::string> g_archives_to_mount;
+std::vector<std::string>& g_archives_to_mount = larecomp::Leak<std::vector<std::string>>();
 
 // The raw files that went into the mod archive: lowercased archive path -> the file on disk.
 // Filled once at the end of Init, read through ModRawFile.
-std::map<std::string, std::filesystem::path, std::less<>> g_raw_file_sources;
+std::map<std::string, std::filesystem::path, std::less<>>& g_raw_file_sources = larecomp::Leak<std::map<std::string, std::filesystem::path, std::less<>>>();
 
 // Driver animation name of each new car -> the name whose animations it borrows.
 // Filled while the cars are built, read by the guest's path formatters.
 std::mutex g_driver_alias_mutex;
-std::map<std::string, std::string, std::less<>> g_driver_alias;
+std::map<std::string, std::string, std::less<>>& g_driver_alias = larecomp::Leak<std::map<std::string, std::string, std::less<>>>();
 
 // The name the driver animations are filed under: the car's name without its
 // "vp_" (sub_823D2AB0 and sub_823B7BD0 skip three characters unless the name

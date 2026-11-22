@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -57,7 +58,7 @@ class MultiplayerSettings final : public rex::SettingOwner {
 
 };
 
-inline MultiplayerSettings g_multiplayer;
+inline MultiplayerSettings& g_multiplayer = larecomp::Leak<MultiplayerSettings>();
 
 inline auto& leaderboards_diag = g_multiplayer.leaderboards_diag;
 inline auto& leaderboards_enabled = g_multiplayer.leaderboards_enabled;

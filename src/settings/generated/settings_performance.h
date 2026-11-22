@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -28,7 +29,7 @@ class PerformanceSettings final : public rex::SettingOwner {
     "whose operands are single-precision values are computed with a double multiply and add, "
     "which gives the same bits, instead of the C runtime's software fma (157 to 165 cycles a "
     "call). Nothing changes on a CPU with FMA3. Off passes every call to the runtime. Takes "
-    "effect at the next start.", rex::kDebugOnly, rex::kRestart);  // was inside a #if in the .cpp: check
+    "effect at the next start.", rex::kDebugOnly, rex::kRequiresRestart);  // was inside a #if in the .cpp: check
 
   // Default to 60 FPS: with vsync=false for low input lag and fast pacing,
   // the precision frame limiter caps to 60 FPS out-of-the-box.
@@ -58,7 +59,7 @@ class PerformanceSettings final : public rex::SettingOwner {
     "XMemDecompressStream.\n"
     "\n"
     "The first streams are decoded by both and compared; any difference switches the native decoder "
-    "off for the rest of the session. Read at start.", rex::kDebugOnly, rex::kRestart);
+    "off for the rest of the session. Read at start.", rex::kDebugOnly, rex::kRequiresRestart);
 
   // Where the frame limiter waits. The game updates on its main loop
   // (sub_82131508) and presents from "[MC] Render Thread" (sub_82306238), one
@@ -116,7 +117,7 @@ class PerformanceSettings final : public rex::SettingOwner {
   // CHECK: where the object is kept, which pass reads byte +5 and what it skips; none of that was
   // run, and the row stays a launch argument until it is.
   REX_SETTING(bool, perf_no_fullscreen_blur, false, "Skip the full-screen blur pass (dev switch 'nofsblur'). Applies at the next start of "
-    "the game.", rex::kDebugOnly, rex::kRestart);
+    "the game.", rex::kDebugOnly, rex::kRequiresRestart);
 
   // Load-time, not per-frame: sub_8230B778 skips allocating the ImpostorDepth /
   // ShadowImpostor / ImpostorColor / ImpostorNormal render targets. node+4 is kept
@@ -128,9 +129,9 @@ class PerformanceSettings final : public rex::SettingOwner {
   // CHECK: toggled in the pause menu, then a district change: the impostors do not
   // change until the game is started again.
   REX_SETTING(bool, perf_no_impostors, false, "Do not allocate the foliage impostor render targets (dev switch 'noimpostors'). "
-    "Distant trees lose their billboards. Applies at the next start of the game.", rex::kDebugOnly, rex::kRestart);
+    "Distant trees lose their billboards. Applies at the next start of the game.", rex::kDebugOnly, rex::kRequiresRestart);
 
-  REX_SETTING(bool, perf_no_race_shadows, false, "Drop the shadow pass during races only (dev switch 'noraceshadows').", rex::kDebugOnly, rex::kRestart);
+  REX_SETTING(bool, perf_no_race_shadows, false, "Drop the shadow pass during races only (dev switch 'noraceshadows').", rex::kDebugOnly, rex::kRequiresRestart);
 
   // ── Render phase culling ────────────────────────────────────────────────────
   // These reactivate the game's own dev command-line switches (see
@@ -186,7 +187,7 @@ class PerformanceSettings final : public rex::SettingOwner {
   REX_SETTING(bool, submit_on_primary_buffer_end, false, "Drive the SDK's d3d12_submit_on_primary_buffer_end. Ends a D3D12 submission at every PM4 "
     "primary buffer end instead of batching the frame. Measured ~7% slower on a GTX 1650. "
     "With graphics_backend = vulkan the SDK's own vulkan_submit_on_primary_buffer_end (on by "
-    "default) applies instead; not measured here, so it is left alone.", rex::kDebugOnly, rex::kRestart);
+    "default) applies instead; not measured here, so it is left alone.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(f64, traffic_density_scale, 1.0, "Moving traffic density scale (0.0 = no new traffic cars, 1.0 = the game's own, 2.0 = double). It scales the "
     "zones' density at low and at high speed, so it holds at every speed. Live, for the cars that spawn from the "
@@ -201,11 +202,11 @@ class PerformanceSettings final : public rex::SettingOwner {
     "integrated graphics. Less is faster (100 to 600; the menu has auto, 100, 150, 200, 250, 300, 400, 500 and 600).", rex::Range{0.0, 600.0});
 
   REX_SETTING(bool, vsync_fast_poll, true, "Drive the SDK's gpu_vsync_fast_poll. With vsync off the guest vblank interval is 1 ms, so "
-    "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.", rex::kDebugOnly, rex::kRestart);
+    "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.", rex::kDebugOnly, rex::kRequiresRestart);
 
 };
 
-inline PerformanceSettings g_performance;
+inline PerformanceSettings& g_performance = larecomp::Leak<PerformanceSettings>();
 
 inline auto& breaking_frame_rate_limit = g_performance.breaking_frame_rate_limit;
 inline auto& enable_ambient_tuning = g_performance.enable_ambient_tuning;

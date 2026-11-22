@@ -43,10 +43,13 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "crash_handler.h"
 #include "crash_options.h"
 #include "discord_rpc/discord_rpc.h"
+#include "exit_fast.h"
 #include "game_marker.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "larecomp_log.h"
 #include "mc_engine/cinematic/capture_audio.h"
+#include "mc_engine/cinematic/freecam_runtime.h"
+#include "mc_engine/cinematic/state_log.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "mc_engine/music/audio_output.h"
@@ -82,6 +85,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/settings.h"
 #include "mc_engine/display/ultrawide.h"
+#include "mc_engine/wheel/wheel_ffb.h"
 #include "mc_engine/wheel/wheel_input.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "native_gfx/nocp/nocp_driver.h"
@@ -592,6 +596,11 @@ rex::Result<void> LarecompApp::OnInit() {
   // The window is open, the systems run, app.* is frozen. The order below is the order the 0.10 start-up had.
   settings_config_path_ = rex::GetPathSettings().config_file.Get();
   NoteCrashLogFile();  // Linux: the crash reports append to the SDK's log file by name (the second half of the logger is in OnTitleLaunch)
+  // What the fast exit (exit_fast.h) runs before it ends the process: writers whose destructor used to finish their file. Everything else that
+  // writes (the settings file, the career save, the log) is finished by the orderly shutdown before this point; EXIT-HARD.md lists each.
+  larecomp::exitfast::AddFlush("state log", &mc::cinematic::statelog::CloseForExit);
+  larecomp::exitfast::AddFlush("free camera recording", &mc::cinematic::FreecamStopForExit);
+  larecomp::exitfast::AddFlush("trailer take's WAV", &mc::cinematic::capture_audio::CloseForExit);  // a take cut by the close: the real sizes into its header
   for (const auto& note : path_notes_) LARECOMP_APP_WARN("Game data: {}", note);
   path_notes_.clear();
   // The command line options that could not be used (one line each; the start goes on): ApplyCommandLineSettings, PrepareCommandLine.
@@ -616,7 +625,7 @@ rex::Result<void> LarecompApp::OnInit() {
   // CHECK: ILogger has no flush_on level: log.flush_interval (hot) covers it.
   larecomp::InitDebugMenu();  // the command line, the environment and larecomp.toml are all read by now
   // The game's language: LARecomp's `language` choice becomes the console's user language before the title launches
-  // (kernel.user_language is kUntilLaunch: writable until then). Needs the player's `language` line, so not before OnInit.
+  // (kernel.user_language is kLockedInGame: writable until then). Needs the player's `language` line, so not before OnInit.
   InitLanguageSetting();
 
   // The game files: when nothing valid is set, look around as the 0.10 start-up did; the wizard handles the rest.
@@ -850,7 +859,7 @@ bool LarecompApp::RunSetupFrame() {
             rex::app::RequestShutdown(1);
             return false;
           } else {
-            // The folder the player installed to becomes the game root (title.game_root is kUntilLaunch: writable until
+            // The folder the player installed to becomes the game root (title.game_root is kLockedInGame: writable until
             // LaunchTitle); the next step and the SDK's LaunchTitle read it from there.
             larecomp::ShowRexglueIsoInstallWizard(ui, paths, [this](larecomp::Paths installed) {
               if (auto set = GetTitleRuntime().GetTitlePaths().game_root.Set(installed.game_root); !set) {
@@ -1187,6 +1196,16 @@ void LarecompApp::OnUIEvent(const rex::ui::UIEvent& event) {
 // runs its own binds (so a handler skips a key a bind owns: ui/overlay_support.h IsBoundKey).
 void LarecompApp::OnInputEvent(rex::InputEvent& event) { larecomp::uievents::DispatchInput(event); }
 
+// The close watchdog's two lines (EndAfterHang runs them on its helper thread). The first keeps the words the checkers read ("still running 5 s").
+static void WatchdogSaysSo() {
+  LARECOMP_APP_ERROR("[quit] the process was still running 5 s after the window was asked to close; exiting");
+}
+static void WatchdogDone(const larecomp::exitfast::Report& report) {
+  LARECOMP_APP_ERROR("[quit] close watchdog: {} flush hook(s) ran in {} ms{}; the process ends with code {} (a hung shutdown, not a normal exit)", report.ran,
+                     report.ms, report.threw > 0 ? ", some threw" : "", larecomp::exitfast::kWatchdogExitCode);
+  if (auto* logger = rex::AppInterfaces::Get<rex::ILogger>()) logger->Flush();
+}
+
 // What the close needs before the title ends: shader build told to stop, saves finished, devices released. Latched: the event can come
 // twice, and StopBeforeTitleEnds does it again for a shutdown that did not come from the window. The renderer is NOT stopped here (0.10 did): this
 // runs inside the delivery of the close event, on the UI thread, and the renderer stops with the UI loop still served (StopBeforeTitleEnds).
@@ -1194,12 +1213,15 @@ void LarecompApp::FinishWindowCloseWork() {
   if (close_work_started_.exchange(true, std::memory_order_acq_rel)) return;
   larecomp::RequestBootBuildCancel();
   const auto started = std::chrono::steady_clock::now();
+  PauseMenuSavePendingSettings();  // a pause-menu change that the close interrupted (the QUIT and RESTART routes wrote it already: nothing happens)
   MclaWaitForSaves();  // a career save in flight finishes (10 s limit inside)
   LogAudioDropoutSummary();
   mc::cinematic::capture_audio::Abort();  // a take's sound holds the audio worker's callback at a gate: let it go before the SDK stops the worker
   larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
   larecomp::devwatch::Stop();
   larecomp::impulse::Shutdown();   // the Xbox triggers back to still
+  // The wheel's force effects stopped and its device released, by the wheel thread that owns them; bounded, a thread stuck in a device call is left alone.
+  if (!larecomp::wheel::ffb::StopForExit(250)) LARECOMP_APP_WARN("[quit] the wheel's force feedback did not answer within 250 ms: left as it is");
   mcla::display::Shutdown();       // the display's own mode back after FULLSCREEN
   LARECOMP_APP_INFO("[quit] LARecomp's shutdown took {} ms",
                     std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
@@ -1208,9 +1230,10 @@ void LarecompApp::FinishWindowCloseWork() {
   // normally; this watchdog only covers a hang.
   std::thread([]() {
     std::this_thread::sleep_for(std::chrono::seconds(5));
-    LARECOMP_APP_ERROR("[quit] the process was still running 5 s after the window was asked to close; exiting");
-    if (auto* logger = rex::AppInterfaces::Get<rex::ILogger>()) logger->Flush();
-    larecomp::EndProcessNow(0);  // not std::_Exit: process_exit.h says why (the 2026-11-18 Vulkan crash at exit)
+    // Something hung, possibly holding a lock that a log line or a flush hook needs: EndAfterHang runs the log line, the hooks that have not run and the
+    // log's flush on a helper thread and waits for it at most 2 s (exit_fast.h), then ends the process with a status of its own (not 0: the hang was
+    // hidden behind a normal exit code). EndProcessNow inside: not std::_Exit, process_exit.h says why (the 2026-11-18 Vulkan crash at exit).
+    larecomp::exitfast::EndAfterHang(larecomp::exitfast::kWatchdogExitCode, 2000, &WatchdogSaysSo, &WatchdogDone);
   }).detach();
 }
 
@@ -1244,6 +1267,8 @@ void LarecompApp::OnRun() {
 // After the title stopped, before the drivers shut down (logging and settings still work).
 void LarecompApp::OnShutdown() {
   g_termination_log_closed.store(true, std::memory_order_release);  // the signal helper thread (InstallTerminationSignals) stops logging
+  // The fast exit's switch is read here, while the settings still work (FinishProcess runs after the SDK has stopped, exit_fast.h).
+  larecomp::exitfast::Arm(ls::mcla_fast_exit.Get());
   // The UI system's event guard and the cached interface pointers go before rex::Stop takes the systems away.
   ui_listener_ = {};
   larecomp::sdk::Reset();
@@ -1256,6 +1281,27 @@ void LarecompApp::OnShutdown() {
   mc::DisableHighResTimer();
   ls::UnregisterAll();
   ShutdownLarecompLogging();
+}
+
+// After Shutdown() returned: the saves are finished, the settings and the log are written, the renderer, the audio and the guest are stopped.
+// What the exit used to do next (the C runtime's atexit handlers and static destructors, then the DLL detach of the SDK's libraries) is what a
+// guest thread the SDK left running could still meet half destroyed (exit_fast.h has the history: three exit crashes), and nothing in it writes
+// anything the process needs, so with mcla_fast_exit on (the default) the process ends here. The exit code is the SDK's.
+// CHECK: rex::Shutdown() (App's destructor, which this skips) also logs the settings notices still queued, ends the SDK's profiler (perf.profiler,
+// a developer setting) and the log session: a notice that came after the last Init is not logged on this path, the profiler's trace is not finished
+// (use mcla_fast_exit=false for a profile); the log itself is flushed (rex::log::Flush in OnShutdown and again in the note hook).
+int LarecompApp::FinishProcess(int code) {
+  const larecomp::exitfast::Report report = larecomp::exitfast::RunFlushes();
+  if (!larecomp::exitfast::Armed()) {
+    // The exe's global objects are immortal (settings/immortal.h) whatever the switch says, so the C runtime's exit no longer destroys the
+    // writers that finished a file in their destructor (the state log, the free camera's recording): their hooks run in this mode too.
+    LARECOMP_APP_INFO("[quit] mcla_fast_exit is off: the process ends through the C runtime's exit ({} flush hook(s) ran in {} ms{}); the exe's global objects are not destroyed in either mode",
+                      report.ran, report.ms, report.threw > 0 ? ", some threw" : "");
+    return code;
+  }
+  LARECOMP_APP_INFO("[quit] fast exit: the orderly shutdown is done ({} flush hook(s) in {} ms{}); the process ends now with code {}, without the static destructors (mcla_fast_exit)",
+                    report.ran, report.ms, report.threw > 0 ? ", some threw" : "", code);
+  larecomp::exitfast::EndNow(code);
 }
 
 rex::platform::CrashReporterOptions LarecompApp::GetCrashOptions() {

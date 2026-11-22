@@ -525,6 +525,7 @@ add_executable(larecomp_audio_tap_test EXCLUDE_FROM_ALL
 target_include_directories(larecomp_audio_tap_test PRIVATE src/mc_engine/music)
 find_package(Threads)
 if(Threads_FOUND)
+    target_link_libraries(larecomp_capture_audio_test PRIVATE Threads::Threads)
     target_link_libraries(larecomp_capture_audio_session_test PRIVATE Threads::Threads)
     target_link_libraries(larecomp_audio_tap_test PRIVATE Threads::Threads)
 endif()
@@ -567,12 +568,42 @@ add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
     src/settings/cli_rules_test.cpp)
 target_include_directories(larecomp_cli_rules_test PRIVATE src)
 
-# The table of change-callback guards (src/settings/watch_table.h: released by hand while the SDK's settings still exist, because the exe's
-# static destruction came after the SDK had destroyed them and crashed in Mtx_lock about every other run) has a check that needs no game:
+# The table of change-callback guards (src/settings/watch_table.h) and the exit crash of 2026-11-21 (the exe's static destruction released a
+# guard of a setting the SDK had already destroyed, an access violation in Mtx_lock about every other run) have a check that needs no game, but
+# it uses the SDK's own settings, so it links rex::base (rexbase.dll next to it or on the PATH) and, like every SDK executable, takes the SDK's
+# operator new and delete forwarders (a guard is allocated in rexbase.dll and freed in the test: two heaps would corrupt it):
 #   cmake --build <build dir> --target larecomp_watch_table_test, then run <build dir>/larecomp_watch_table_test (exit 0 = passed).
 add_executable(larecomp_watch_table_test EXCLUDE_FROM_ALL
     src/settings/watch_table_test.cpp)
 target_include_directories(larecomp_watch_table_test PRIVATE src)
+target_link_libraries(larecomp_watch_table_test PRIVATE rex::base)
+rexglue_link_host_allocator(larecomp_watch_table_test)
+
+# ValidatedString (src/settings/validated_setting.h: frame_step_cap, the one SettingBase LARecomp implements itself) has a check against the SDK's
+# own settings, built like the one above (rex::base, rexbase.dll on the PATH, the SDK's operator new and delete forwarders):
+#   cmake --build <build dir> --target larecomp_validated_setting_test, then run <build dir>/larecomp_validated_setting_test (exit 0 = passed).
+add_executable(larecomp_validated_setting_test EXCLUDE_FROM_ALL
+    src/settings/validated_setting_test.cpp)
+target_include_directories(larecomp_validated_setting_test PRIVATE src)
+target_link_libraries(larecomp_validated_setting_test PRIVATE rex::base)
+rexglue_link_host_allocator(larecomp_validated_setting_test)
+
+# The settings table that a guest thread still reads while the process ends (src/settings/immortal.h: never destroyed; the exit crash of
+# 2026-11-21, 2 ms after "Process exiting normally", in larecomp::settings::Find) has a check that needs no game: it runs a child process through
+# the exit with a straggler thread looking names up, once with a plain static (the control: the crash's order happens) and once with Immortal:
+#   cmake --build <build dir> --target larecomp_immortal_test, then run <build dir>/larecomp_immortal_test (exit 0 = passed).
+add_executable(larecomp_immortal_test EXCLUDE_FROM_ALL
+    src/settings/immortal_test.cpp)
+target_include_directories(larecomp_immortal_test PRIVATE src)
+
+# How the process ends once the orderly shutdown is done (src/exit_fast.h: no C runtime exit, so no static destructor and no DLL detach can meet
+# a thread the SDK left running; the flush hooks, the note and fflush(nullptr) run first) has a check that needs no game: child processes run a
+# real exit with a straggler thread (the control: the old return from main meets the destroyed table, status 77; the fast exit does not), the exit
+# code, the order of the hooks, a write queued just before the exit (it lands with its hook, it is lost without) and an unflushed stdio stream:
+#   cmake --build <build dir> --target larecomp_exit_fast_test, then run <build dir>/larecomp_exit_fast_test (exit 0 = passed).
+add_executable(larecomp_exit_fast_test EXCLUDE_FROM_ALL
+    src/exit_fast_test.cpp)
+target_include_directories(larecomp_exit_fast_test PRIVATE src)
 
 # Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
 # own default for cache_root) has a check that needs no game:
@@ -595,7 +626,7 @@ target_include_directories(larecomp_city_pack_rules_test PRIVATE src)
 add_executable(larecomp_renderer_choice_test EXCLUDE_FROM_ALL
     src/gpu/renderer_choice_test.cpp
     src/profile/larecomp_profile_store.cpp)
-target_include_directories(larecomp_renderer_choice_test PRIVATE src/gpu src/profile)
+target_include_directories(larecomp_renderer_choice_test PRIVATE src/gpu src/profile src)  # src: renderer_fallback.h includes settings/immortal.h
 
 # The two-button box of the compatibility renderer offer (src/gpu/choice_box.h, Windows: its labels fit its buttons, the action is first and the
 # default) has a check that needs no game and shows nothing on the screen (the dialog is built hidden and looked at from its own message loop):
@@ -691,7 +722,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine/cinematic/director/json.cpp
         src/mc_engine/cinematic/director/atlas_answers.cpp
         src/mc_engine/cinematic/director/atlas_core.cpp
         src/mc_engine/cinematic/director/json.cpp)
-    target_include_directories(larecomp_atlas_answers_test PRIVATE src/mc_engine/cinematic/director)
+    target_include_directories(larecomp_atlas_answers_test PRIVATE src/mc_engine/cinematic/director src)  # src: director/json.cpp includes settings/immortal.h
 endif()
 # What a settings save does with a cvar a scene holds (src/mc_engine/core/config_save.h, DecideCvarSave, a plain function) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_config_save_test, then run <build dir>/larecomp_config_save_test (exit 0 = passed).

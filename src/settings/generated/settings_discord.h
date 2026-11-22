@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -27,7 +28,7 @@ class DiscordSettings final : public rex::SettingOwner {
 
 };
 
-inline DiscordSettings g_discord;
+inline DiscordSettings& g_discord = larecomp::Leak<DiscordSettings>();
 
 inline auto& larecomp_discord_activity = g_discord.larecomp_discord_activity;
 inline auto& larecomp_discord_large_image = g_discord.larecomp_discord_large_image;

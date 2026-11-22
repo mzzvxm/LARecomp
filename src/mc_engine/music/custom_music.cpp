@@ -1,4 +1,5 @@
 #include "mc_engine/music/custom_music.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -61,9 +62,9 @@ constexpr int kGroupCapacity = 255;
 constexpr uint64_t kVerifiedSlotPoolBytes = 21540864;
 constexpr int kMusicSlotCount = 4;
 
-std::vector<std::pair<std::string, std::string>> g_titles;
-std::vector<std::string> g_claimed;
-std::vector<uint32_t> g_cues;
+std::vector<std::pair<std::string, std::string>>& g_titles = larecomp::Leak<std::vector<std::pair<std::string, std::string>>>();
+std::vector<std::string>& g_claimed = larecomp::Leak<std::vector<std::string>>();
+std::vector<uint32_t>& g_cues = larecomp::Leak<std::vector<uint32_t>>();
 
 // ------------------------------------------------------------------- helpers
 

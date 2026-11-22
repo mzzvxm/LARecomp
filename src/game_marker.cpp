@@ -1,5 +1,6 @@
 // The "a game is running" marker: see game_marker.h for what it is and how the launcher asks.
 #include "game_marker.h"
+#include "settings/immortal.h"
 
 #include <mutex>
 #include <string>
@@ -35,7 +36,7 @@ namespace {
 std::mutex g_mutex;
 bool g_done = false;
 bool g_held = false;
-std::string g_what = "not created";
+std::string& g_what = larecomp::Leak<std::string>("not created");
 
 #if defined(_WIN32)
 

@@ -20,6 +20,7 @@
 #include <rex/logging/log_category.h>
 
 #include "gpu.h"
+#include "settings/immortal.h"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -71,11 +72,11 @@ std::atomic<bool> g_decided{false};  // SetActive ran
 // The setting, read by the render thread at each frame boundary (SyncMode) and by Start; the poll
 // thread only asks whether it is off. `g_mode_text` is the cvar text it was parsed from.
 std::atomic<Mode> g_mode{Mode::kOff};
-std::string g_mode_text;
+std::string& g_mode_text = larecomp::Leak<std::string>();
 #if defined(_WIN32)
 HWND g_window = nullptr;
 #endif
-std::thread g_thread;
+std::thread& g_thread = larecomp::Leak<std::thread>();
 std::mutex g_mutex;
 std::condition_variable g_cv;
 bool g_stop = false;  // g_mutex

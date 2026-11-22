@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -41,7 +42,7 @@ class PhotoModeSettings final : public rex::SettingOwner {
 
 };
 
-inline PhotoModeSettings g_photomode;
+inline PhotoModeSettings& g_photomode = larecomp::Leak<PhotoModeSettings>();
 
 inline auto& photo_album_export = g_photomode.photo_album_export;
 inline auto& photo_album_export_dir = g_photomode.photo_album_export_dir;

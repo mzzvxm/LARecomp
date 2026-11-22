@@ -14,6 +14,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
+#include "upscale_modes.h"
 #include "upscaler_load_policy.h"
 
 namespace mcla::gpu {
@@ -24,32 +25,6 @@ bool UpscalerDebugView(Upscaler upscaler) {
 }
 
 namespace {
-
-// AMD's names and ratios (FSR 3.1 and FSR 4).
-constexpr ModeInfo kModes[size_t(UpscaleMode::kCount)] = {
-    {"native_aa", "NATIVE AA", 100, 1.0},
-    {"quality", "QUALITY", 67, 1.5},
-    {"balanced", "BALANCED", 59, 1.7},
-    {"performance", "PERFORMANCE", 50, 2.0},
-    {"ultra_performance", "ULTRA PERFORMANCE", 33, 3.0},
-};
-// NVIDIA's: DLAA, Quality 66.7%, Balanced 58%, Performance 50%, Ultra Performance 33.3% of the
-// output per direction (the sizes slDLSSGetOptimalSettings gives; the backend checks the scene's
-// size against the range it reports).
-constexpr ModeInfo kDlssModes[size_t(UpscaleMode::kCount)] = {
-    {"dlaa", "DLAA", 100, 1.0},
-    {"quality", "QUALITY", 67, 1.5},
-    {"balanced", "BALANCED", 58, 1.0 / 0.58},
-    {"performance", "PERFORMANCE", 50, 2.0},
-    {"ultra_performance", "ULTRA PERFORMANCE", 33, 3.0},
-};
-
-std::string Lower(std::string_view text) {
-  std::string out(text);
-  std::transform(out.begin(), out.end(), out.begin(),
-                 [](unsigned char c) { return char(std::tolower(c)); });
-  return out;
-}
 
 // Packed for one atomic: bit 0 probed, 1 fsr31, 2 fsr4.
 std::atomic<uint32_t> g_availability{0};
@@ -64,67 +39,29 @@ std::atomic<bool> g_no_room{false};
 
 }  // namespace
 
+// The words, the mode tables and the parses are upscale_modes.h's (pure, upscale_modes_test.cpp); these keep the names the renderer uses.
 const char* UpscalerCvarValue(Upscaler upscaler) {
-  switch (upscaler) {
-    case Upscaler::kFsr31: return "fsr31";
-    case Upscaler::kFsr4: return "fsr4";
-    case Upscaler::kDlss: return "dlss";
-    default: return "off";
-  }
+  return upscale_modes::CvarValue(upscaler);
 }
 
 const char* UpscalerName(Upscaler upscaler) {
-  switch (upscaler) {
-    case Upscaler::kFsr31: return "FSR 3.1";
-    case Upscaler::kFsr4: return "FSR 4";
-    case Upscaler::kDlss: return "DLSS";
-    default: return "OFF";
-  }
+  return upscale_modes::Name(upscaler);
 }
 
 bool ParseUpscaler(std::string_view text, Upscaler* out) {
-  const std::string value = Lower(text);
-  *out = Upscaler::kOff;
-  if (value == "fsr31" || value == "fsr3.1" || value == "fsr 3.1") {
-    *out = Upscaler::kFsr31;
-    return true;
-  }
-  if (value == "fsr4" || value == "fsr 4") {
-    *out = Upscaler::kFsr4;
-    return true;
-  }
-  if (value == "dlss") {
-    *out = Upscaler::kDlss;
-    return true;
-  }
-  return value == "off" || value.empty();
+  return upscale_modes::ParseUpscaler(text, out);
 }
 
 const ModeInfo& ModeInfoOf(Upscaler upscaler, UpscaleMode mode) {
-  const ModeInfo* table = upscaler == Upscaler::kDlss ? kDlssModes : kModes;
-  return table[size_t(mode) < size_t(UpscaleMode::kCount) ? size_t(mode) : 0];
+  return upscale_modes::InfoOf(upscaler, mode);
 }
 
 bool ParseUpscaleMode(std::string_view text, UpscaleMode* out) {
-  const std::string value = Lower(text);
-  *out = UpscaleMode::kNativeAa;
-  if (value == "dlaa") {  // DLSS's name for the first mode
-    return true;
-  }
-  for (size_t i = 0; i < size_t(UpscaleMode::kCount); ++i) {
-    if (value == kModes[i].cvar) {
-      *out = UpscaleMode(i);
-      return true;
-    }
-  }
-  return false;
+  return upscale_modes::ParseMode(text, out);
 }
 
 bool ModeRuns(Upscaler upscaler, UpscaleMode mode) {
-  // FSR 3.1, FSR 4 and DLSS all take the five modes of their vendor (the scene's size is the
-  // start's choice: GetStartUpscale). DLSS can refuse a mode at some output sizes (ModeVerdicts):
-  // that is not decided here but by the backend, for the sizes the renderer works at.
-  return upscaler != Upscaler::kOff && size_t(mode) < size_t(UpscaleMode::kCount);
+  return upscale_modes::Runs(upscaler, mode);
 }
 
 UpscaleMode SavedUpscaleMode(Upscaler upscaler) {

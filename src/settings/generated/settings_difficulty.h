@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -117,7 +118,7 @@ class DifficultySettings final : public rex::SettingOwner {
 
 };
 
-inline DifficultySettings g_difficulty;
+inline DifficultySettings& g_difficulty = larecomp::Leak<DifficultySettings>();
 
 inline auto& ai_difficulty = g_difficulty.ai_difficulty;
 inline auto& difficulty_preset = g_difficulty.difficulty_preset;

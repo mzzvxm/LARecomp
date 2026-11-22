@@ -7,6 +7,7 @@
 
 #include <rex/setting.h>
 #include <rex/types.h>
+#include "settings/immortal.h"
 
 namespace larecomp::settings {
 
@@ -33,7 +34,7 @@ class GarageSettings final : public rex::SettingOwner {
     "(64/64/64/31/31). Top and side caps stay at 64 because MCLA's vinyl "
     "composite pipeline hard-caps a single surface at 64 layers (fixed-64 "
     "work-area buffers; >64 overflows and crashes). Bumpers stay <=64 and keep "
-    "their 5-bit save field, so existing garage/online cars are 100% compatible.", rex::kRestart);
+    "their 5-bit save field, so existing garage/online cars are 100% compatible.", rex::kRequiresRestart);
 
   REX_SETTING(std::string, import_vinyl, "", "Import a .vgp vinyl package onto the current car. Type the file name (found "
     "in <exe dir>/vinyls/, with or without the .vgp extension) and press Enter "
@@ -55,7 +56,7 @@ class GarageSettings final : public rex::SettingOwner {
 
 };
 
-inline GarageSettings g_garage;
+inline GarageSettings& g_garage = larecomp::Leak<GarageSettings>();
 
 inline auto& capture_vinyl_shapes = g_garage.capture_vinyl_shapes;
 inline auto& dump_vinyl_shapes = g_garage.dump_vinyl_shapes;

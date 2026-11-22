@@ -5,6 +5,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/hid/input_system.h>
 #include <thread>
 #include <rex/kernel/title_runtime.h>
@@ -488,7 +489,7 @@ void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCR
 
     if (!larecomp::settings::tune_field_probe.Get()) return;
 
-    static std::set<std::string> seen;
+    static std::set<std::string>& seen = larecomp::Leak<std::set<std::string>>();
     if (!seen.insert(name).second) return;
 
     LARECOMP_APP_INFO("[TuneField] {:<26} type={} owner={:#010x} field={:#010x}", name,
@@ -653,7 +654,7 @@ void MCLA_StreamBufferProbe(PPCRegister& r3) {
     hash ^= uint64_t(stream) << 1;
 
     static std::mutex mutex;
-    static std::set<uint64_t> seen;
+    static std::set<uint64_t>& seen = larecomp::Leak<std::set<uint64_t>>();
     std::lock_guard<std::mutex> lock(mutex);
     if (seen.size() >= 200 || !seen.insert(hash).second) return;
 

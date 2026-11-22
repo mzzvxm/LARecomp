@@ -1,4 +1,5 @@
 #include "shaderpack/rpf_shaders.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <chrono>
@@ -24,13 +25,13 @@ constexpr int kMaxDepth = 8;                       // the real tree is two folde
 // Names the table does not keep but the reference extraction prints. Anything
 // else is shown as its hash.
 const std::vector<std::pair<uint32_t, const char*>>& KnownNames() {
-  static const std::vector<std::pair<uint32_t, const char*>> names = [] {
+  static const std::vector<std::pair<uint32_t, const char*>>& names = larecomp::Leak<const std::vector<std::pair<uint32_t, const char*>>>([] {
     std::vector<std::pair<uint32_t, const char*>> list;
     for (const char* name : {"ui", "characters", "cars", "effects", "city", "fxl_final"}) {
       list.emplace_back(RageHash(name), name);
     }
     return list;
-  }();
+  }());
   return names;
 }
 

@@ -6,6 +6,7 @@
 //
 
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/kernel/title_runtime.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/call.h>
@@ -441,8 +442,8 @@ bool     g_cam_forced = false;
 constexpr int kCharSlotStates = 20;
 struct CharSlotState { uint32_t key; bool loaded; bool seen; };
 CharSlotState g_char_state[kCharSlotStates] = {};
-std::string g_char_pending_path;
-std::string g_char_pending_name;
+std::string& g_char_pending_path = larecomp::Leak<std::string>();
+std::string& g_char_pending_name = larecomp::Leak<std::string>();
 
 void LogCineDirector(const std::string& why, bool force) {
     static uint32_t last_state = 0xFFFFFFFFu;

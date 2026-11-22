@@ -1,4 +1,5 @@
 #include "config_save.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -162,13 +163,13 @@ using Edits = std::vector<pf::ConfigEdit>;
 // cvar's own getter prints it, so it compares with a later read of the same getter.
 std::mutex g_startup_mutex;
 std::unordered_map<std::string, std::string>& StartupValues() {
-  static std::unordered_map<std::string, std::string> values;
+  static std::unordered_map<std::string, std::string>& values = larecomp::Leak<std::unordered_map<std::string, std::string>>();
   return values;
 }
 
 // The cvars a save never writes (NoteSessionOnlyCvar).
 std::unordered_set<std::string>& SessionOnly() {
-  static std::unordered_set<std::string> names;
+  static std::unordered_set<std::string>& names = larecomp::Leak<std::unordered_set<std::string>>();
   return names;
 }
 
@@ -190,7 +191,7 @@ struct SceneHold {
 };
 std::mutex g_scene_mutex;
 std::unordered_map<std::string, SceneHold>& SceneHolds() {
-  static std::unordered_map<std::string, SceneHold> holds;
+  static std::unordered_map<std::string, SceneHold>& holds = larecomp::Leak<std::unordered_map<std::string, SceneHold>>();
   return holds;
 }
 

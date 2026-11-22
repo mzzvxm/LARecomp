@@ -49,6 +49,9 @@ bool RegisterCarSource(const CarSource* source);
 
 // A log is open.
 bool Active();
+// The game is ending: writes the rows that are still queued and the `#end` line and closes the file. The fast exit (exit_fast.h) runs no
+// destructor, and the writer's destructor was what closed a log that was still open at the end.
+void CloseForExit();
 // The file of the log that is open, or empty.
 std::string CurrentLogPath();
 

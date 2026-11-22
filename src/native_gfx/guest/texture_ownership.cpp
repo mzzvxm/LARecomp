@@ -4,6 +4,7 @@
 // reason streamed textures are out of scope.
 
 #include "texture_ownership.h"
+#include "settings/immortal.h"
 
 #include <cstdio>
 #include <atomic>
@@ -54,7 +55,7 @@ struct State {
 };
 
 State& state() {
-  static State s;
+  static State& s = larecomp::Leak<State>();
   return s;
 }
 

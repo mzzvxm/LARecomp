@@ -54,6 +54,8 @@
 
 #include <plume_render_interface.h>
 
+#include "msaa_plan.h"
+
 namespace mcla::gpu {
 
 class EdramTargets;
@@ -76,29 +78,14 @@ class MsaaLevel {
   // The level the settings and the upscaler ask for now, within what the device can do: 1, 2, 4
   // or 8, never 0. A value that is none of off, 2, 4 and 8 is the console's 2.
   uint32_t Wanted(bool upscaling);
-  // Nothing is asked: forgets what was staged.
-  void Rest();
-
-  // The setting stands this long before anything is made for it.
-  static constexpr std::chrono::milliseconds kSettle{400};
-  // The copies of the pipelines are waited for this long; after it the level changes anyway.
-  static constexpr std::chrono::seconds kMaxWait{20};
-  // A level the card cannot hold is asked again after kRetry, twice as long each time.
-  static constexpr std::chrono::seconds kRetry{3};
-  static constexpr std::chrono::seconds kRetryMax{30};
 
   EdramTargets* edram_ = nullptr;
   Pipelines* pipelines_ = nullptr;
 
-  bool last_upscaling_ = false;  // the `upscaling` of the last call: a change of it is the path's
-  uint32_t wanted_ = 0;  // the level being staged (0: none)
-  Clock::time_point wanted_since_{};
-  bool staged_ = false;  // its pipelines were asked for
-  Clock::time_point staged_at_{};
+  // When a change is made (the setting standing still, the pipelines, the retries): msaa_plan.h, which
+  // msaa_plan_test.cpp checks alone. This class asks it once a frame and does the work it decides.
+  msaa_plan::Planner planner_;
   uint32_t staged_total_ = 0;  // the copies asked for (queued by the call)
-  Clock::time_point retry_after_{};
-  std::chrono::seconds retry_delay_ = kRetry;
-  bool failure_logged_ = false;
   std::string clamp_logged_;    // the setting a "asked, used" line was logged for
   std::string invalid_logged_;  // the value an "is not off, 2, 4 or 8" line was logged for
 };

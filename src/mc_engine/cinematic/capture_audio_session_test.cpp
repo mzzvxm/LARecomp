@@ -430,6 +430,44 @@ void TestFinishCovers() {
     std::filesystem::remove(cfg.wav_path, ec);
 }
 
+// The game ends during a take (EXIT-SMALL M2): the exit hook closes the WAV. Its header then holds the sizes of what was written (without the hook it
+// keeps the zero sizes of the first header), the take is not finished, and a second call finds nothing open.
+void TestCutByExit() {
+    FakeMixer mixer;
+    Session session;
+    Session::Config cfg;
+    cfg.fps = 60.0;
+    cfg.wav_path = TempWav("larecomp_cap_session_exit.wav");
+    Check(session.Begin(mixer, cfg), "exit: Begin");
+    session.StepBegin(10);
+    session.StepEnd();
+    uint64_t frames = 0;
+    Check(session.CloseWavForExit(&frames), "exit: a file was open");
+    CheckU(frames, SamplesThrough(10, 60.0), "exit: it held the ten frames' samples");
+    Check(!session.CloseWavForExit(&frames), "exit: the second call finds nothing open");
+    std::vector<uint8_t> bytes;
+    if (std::FILE* f = std::fopen(cfg.wav_path.c_str(), "rb")) {
+        uint8_t buf[8192];
+        size_t n;
+        while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+        std::fclose(f);
+    }
+    const size_t header = WavHeaderSize(2);
+    Check(bytes.size() > header, "exit: the file has samples");
+    if (bytes.size() > header) {
+        auto get32 = [&](size_t at) { return static_cast<uint64_t>(bytes[at]) | static_cast<uint64_t>(bytes[at + 1]) << 8 | static_cast<uint64_t>(bytes[at + 2]) << 16 | static_cast<uint64_t>(bytes[at + 3]) << 24; };
+        CheckU(get32(header - 4), bytes.size() - header, "exit: the data chunk's size is the real one, not zero");
+        CheckU(get32(4), bytes.size() - 8, "exit: the RIFF size is the real one, not zero");
+    }
+    session.StepBegin(11);  // the game thread that still steps after the hook: nothing is written, nothing crashes
+    session.StepEnd();
+    const Summary s = session.Finish(11);
+    Check(!s.ok, "exit: the take is reported as not clean (its WAV was closed early)");
+    Check(!session.CloseWavForExit(), "exit: nothing to close after Finish");
+    std::error_code ec;
+    std::filesystem::remove(cfg.wav_path, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -442,6 +480,7 @@ int main() {
     TestTwoTakes();
     TestRepeatedGate();
     TestFinishCovers();
+    TestCutByExit();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
