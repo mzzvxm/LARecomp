@@ -504,6 +504,51 @@ void LightChecks() {
     lp::GatherNeonLights(none, &out, &report);
     Check(out.empty() && report.seen == 0, "no cars, no lights");
   }
+  // NEONALL-REVIEW: a car whose tube is out of the picture takes none of the car budget (the pack of racers behind the camera must not push the car ahead out of the nearest few)
+  {
+    // two cars behind the camera (x - 6, x - 9: the nearest), then three in front (x + 12, +20, +30): the picture looks along +x, a light is seen when its reach (the tier's) is on the +x side of the camera
+    std::vector<nl::NeonCar> pack;
+    const float xs[5] = {-6.0f, -9.0f, 12.0f, 20.0f, 30.0f};
+    for (int i = 0; i < 5; ++i) {
+      const float origin[3] = {camera[0] + xs[i], 17.4f, camera[2] + 2.0f};
+      pack.push_back(CarAt(kSelf + 0x10000u * uint32_t(i + 1), origin));
+    }
+    for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+      const lp::ClassBudget b = lp::BudgetOf(tier);
+      lp::NeonSourceInputs in;
+      in.cars = &pack;
+      in.tier = tier;
+      std::memcpy(in.camera, camera, sizeof(camera));
+      const std::string at = std::string(" at ") + lp::TierName(tier);
+      // no predicate: every light can be seen, the gather is what it was (the two behind take two of the slots)
+      std::vector<Light> plain;
+      lp::NeonReport plain_report;
+      lp::GatherNeonLights(in, &plain, &plain_report);
+      Check(plain_report.unseen == 0 && plain_report.lit == std::min<uint32_t>(b.neon_cars, 5u), "without a predicate nothing is out of the picture" + at);
+      // with it: the lights are seen from x >= camera - reach (a reach of the tier's on the +x side means the car's x - the reach is ahead of the camera or the light is within the reach of it)
+      const float reach = lp::NeonReach(tier);
+      in.can_be_seen = [&](const Light& l) { return l.pos[0] + reach > camera[0] + 6.0f; };  // the two cars behind (x - 6, x - 9) are out of the picture, the others in
+      std::vector<Light> out;
+      lp::NeonReport report;
+      lp::GatherNeonLights(in, &out, &report);
+      const uint32_t want_lit = std::min<uint32_t>(b.neon_cars, 3u);  // only the three in front can be lit
+      Check(report.lit == want_lit && out.size() == size_t(want_lit) * b.neon_points, "the cars out of the picture take no budget: the nearest cars that are seen are lit" + at);
+      Check(report.unseen >= 1 || b.neon_cars <= 3, "the cars behind are counted as out of the picture" + at);
+      bool behind = false;
+      for (const Light& l : out) {
+        behind = behind || l.pos[0] < camera[0];
+      }
+      Check(!behind, "none of the lights is behind the camera" + at);
+      // the nearest of the seen cars comes first (the one 12 m ahead)
+      Check(!out.empty() && out.front().pos[0] > camera[0] + 6.0f && out.front().pos[0] < camera[0] + 16.0f, "the nearest car in the picture comes first" + at);
+      // a predicate that sees nothing lights nothing and takes no budget
+      in.can_be_seen = [](const Light&) { return false; };
+      std::vector<Light> none;
+      lp::NeonReport none_report;
+      lp::GatherNeonLights(in, &none, &none_report);
+      Check(none.empty() && none_report.lit == 0 && none_report.cut + none_report.unseen == 5, "a picture with no tube in it lights nothing" + at);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -827,6 +872,11 @@ void IdChecks() {
             light_id::NeonCarId(kSelf, 0) != light_id::PointId(kSelf, 0),
         "neon ids are not the place's, nor a car point's");
   Check(LightSource::kNeon != LightSource::kPolice && uint8_t(LightSource::kNeon) == 2, "the neon source keeps its number");
+  // NEONALL-REVIEW: two effect objects that differ in one address bit only (the bit the old tag 0x10000000 swallowed) are two cars
+  for (uint32_t bit = 0; bit < 32; ++bit) {
+    const uint32_t a = 0x40123000u, b = a ^ (1u << bit);
+    Check(light_id::NeonCarId(a, 0) != light_id::NeonCarId(b, 0) && light_id::NeonCarId(a, 3) != light_id::NeonCarId(b, 3), "objects that differ in address bit " + std::to_string(bit) + " have their own ids");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -900,6 +950,17 @@ void SourceChecks(const std::string& src) {
   {
     Check(Has(cpp, "sources_ = hp::SourcesFor(route, uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, int(ll::kSourceMask))) & ll::kSourceMask);"), "the debug setting is still read as before");
     Check(Has(cpp, "sources_ |= ll::kSourceNeon;") && Has(cpp, "nl::Want("), "NEON LIGHT puts the neon source in and tells the hook");
+    // NEONALL-REVIEW: the pass that runs for NEON LIGHT alone (its own setting off, the route `forward`) lights nothing but the neon: the debug sources, the test lamp and the lamp A/B stay with the pass's own setting
+    {
+      const size_t neon_in_at = At(cpp, "sources_ |= ll::kSourceNeon;");
+      const size_t ab_read = At(cpp, "ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));");
+      const size_t gate = At(cpp, "if (!on_for_lights) {");
+      const size_t mask = At(cpp, "sources_ &= ll::kSourceNeon;");
+      const size_t grid = At(cpp, "ab_ = ll::Ab::kGrid;");
+      Check(neon_in_at != std::string::npos && ab_read != std::string::npos && gate != std::string::npos && mask != std::string::npos && grid != std::string::npos && neon_in_at < ab_read && ab_read < gate &&
+                gate < mask && mask < grid,
+            "with the pass on for NEON LIGHT alone the sources are the neon bit only and the lamp A/B is the grid's (after both are read)");
+    }
     Check(Has(cpp, "ll::GatherNeonLights(neon_in, &candidates_.neon, &neon_report);") && Has(cpp, "std::erase_if(candidates_.neon, unseen);"), "the pass gathers the neon lights and drops the ones no pixel is inside the reach of");
     Check(Has(cpp, "mcla_gpu_neon_light_gain.Get()") && Has(cpp, "static LiveText neon_text(\"mcla_gpu_neon_light\");"), "the gain and the setting are read live");
     const size_t gather = At(cpp, "ll::GatherNeonLights(neon_in, &candidates_.neon, &neon_report);");

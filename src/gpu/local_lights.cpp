@@ -258,6 +258,12 @@ void LocalLights::BeginFrame() {
   }
   neon_gain_ = float(std::clamp(double(st::mcla_gpu_neon_light_gain.Get()), 0.0, 16.0));
   ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));
+  if (!on_for_lights) {
+    // The pass runs for NEON LIGHT alone (its own setting is off and the headlight route is `forward`): the debug setting's other sources, its test lamp and the mod lamp A/B belong to
+    // mcla_gpu_local_lights and the route, so that the row of every player does not light what a tester left in the settings of a pass that is off.
+    sources_ &= ll::kSourceNeon;
+    ab_ = ll::Ab::kGrid;
+  }
   gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_gain.Get()), 0.0, 16.0));
   car_gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_car_gain.Get()), 0.0, 16.0));
   // GB-NEON-COST: the A/B of the cost savings (0: the reach test before the planes, one draw for a car's tube and the contact term's cap are on): the picture is the same either way (the cap
@@ -390,13 +396,18 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   const bool manager_on = manager_ != nullptr && manager_->active();
   const larecomp::gpu::LightFrame& frame = manager_on ? manager_->Frame() : EmptyFrame();
   candidates_.Clear();
+  const auto unseen = [&](const larecomp::gpu::Light& l) {
+    return ll::ScissorOfLight(l, rows, sf.camera.tan_half_fov[0], sf.camera.tan_half_fov[1], gb.width, gb.height).Empty();
+  };
   if ((sources_ & ll::kSourceNeon) != 0) {
-    // GB-NEON: the cars the hook saw in the last 100 ms, the nearest lit ones as whole tubes (the game's colour: pulse, fade and the 30 Hz hold are in it).
+    // GB-NEON: the cars the hook saw in the last 100 ms, the nearest lit ones as whole tubes (the game's colour: pulse, fade and the 30 Hz hold are in it). A car whose tube is out of the picture (behind
+    // the camera: the pack of racers behind the player) takes none of the car budget, as the other classes' lights that no pixel is inside the reach of take none of theirs.
     nl::Global().Recent(&neon_cars_);
     ll::NeonSourceInputs neon_in;
     neon_in.cars = &neon_cars_;
     neon_in.tier = tier_;
     neon_in.gain = neon_gain_;
+    neon_in.can_be_seen = [&](const larecomp::gpu::Light& l) { return !unseen(l); };
     for (int i = 0; i < 3; ++i) {
       neon_in.camera[i] = rows.position[i];
     }
@@ -425,9 +436,6 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   if ((sources_ & ll::kSourceMod) != 0 && larecomp::settings::mod_lights.Get()) {
     ll::GatherModLamps(mls::Global().Built(), active_mod.get(), ab_, rows.position, &candidates_.mod);
   }
-  const auto unseen = [&](const larecomp::gpu::Light& l) {
-    return ll::ScissorOfLight(l, rows, sf.camera.tan_half_fov[0], sf.camera.tan_half_fov[1], gb.width, gb.height).Empty();
-  };
   std::erase_if(candidates_.police, unseen);
   std::erase_if(candidates_.head, unseen);
   std::erase_if(candidates_.rear, unseen);
