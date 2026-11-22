@@ -462,6 +462,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   // (have_last below), and they go back after kHistoryKeepFrames frames of the cone's passes in a row without the resolve, with the setting off, or at another size.
   const bool stable_held = stable_[0].texture || stable_[1].texture;
   const bool stable_size_ok = stable_[0].width == history.width && stable_[0].height == history.height && stable_[1].width == history.width && stable_[1].height == history.height;
+  // CHECK: not run on a device: with DLSS Ray Reconstruction on, a pause toggle should not make and free the two images.
   // (RR-4b: in a frame DLSS Ray Reconstruction takes the denoise passes are 0 because Ray Reconstruction is the denoiser, not because the setting turned them off: the setting's own count says the history would be wanted.)
   const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get();
   const noise_resolve::HistoryImages stable_keep = stable_life_.Frame(resolve_history, stable_gap, stable_held, stable_size_ok);
