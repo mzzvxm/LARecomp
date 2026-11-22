@@ -58,6 +58,8 @@ Clock::time_point g_started;
 js::Status g_status;
 bool g_status_known = false;
 bool g_open_browser = false;  // a failure: the browser opens with the sentence once the city is up
+js::QuietGate g_quiet;        // no message box on screen for a short while (the join waits for it, join_server_core.h)
+bool g_quiet_logged = false;  // the "message box is still up" line was written
 
 std::mutex g_failure_mutex;
 std::string g_failure_text;  // guarded
@@ -270,13 +272,25 @@ void JoinServerTick() {
         ServerBrowserOpen();
     }
     switch (g_phase) {
-    case Phase::kWaitCity:
+    case Phase::kWaitCity: {
         // The city AND the player's car (WorldReady), and the game's own state machine in "Cruising": not the title screen, not the
         // loading screen after Start. The measured crash of a join that began at the title (browser_join_core.h) was the first
         // of these missing; the second keeps the join from a state the machine leaves for the net menu half-built.
-        if (WorldReady() && RpcInFreeRoam()) {
-            LARECOMP_APP_INFO("[join_server] the city is up after {} s: asking {}",
+        // RpcInFreeRoam is guest code (the "Cruising" activation hook), so it is the same on every renderer, the hidden XENIA one
+        // (gpu.driver d3d12/vulkan) included. It is false only in the link stubs of the XEO3 DLL (the Microsoft emulator's target,
+        // REXGLUE_HAS_XEO3_TARGET, not buildable since rexglue 0.11): its Patch_DeltaTimePre is empty, so this tick never runs there
+        // and --join_server is never read, rather than waiting out kCityWait.
+        // And no message box on screen: the first one after Start is still up when the machine reaches "Cruising", and a join that
+        // went into the net menu under it never got its search going (join_server_core.h, QuietGate).
+        const bool in_city = WorldReady() && RpcInFreeRoam();
+        if (!in_city) g_quiet = js::QuietGate{};  // a load or the title again: the quiet time counts from the city's return
+        const bool message_up = in_city && ModalMessageUp();
+        const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+        if (in_city && g_quiet.Update(message_up, now_ms)) {
+            const int64_t held_ms = g_quiet.HeldMs(now_ms);
+            LARECOMP_APP_INFO("[join_server] the city is up after {} s{}: asking {}",
                               std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - g_started).count(),
+                              g_quiet.SawMessage() ? " (a message box held the join back for " + std::to_string(held_ms) + " ms)" : std::string(),
                               g_target.Address());
             g_job = std::make_shared<Job>();
             g_resolve_started = Clock::now();
@@ -284,10 +298,17 @@ void JoinServerTick() {
             g_phase = Phase::kResolving;
             SetState(js::State::kConnecting, "", "Asking " + g_target.Address() + ".");
         } else if (Clock::now() - g_started > kCityWait) {
-            FailWith(js::reason::kWorldTimeout,
-                     std::to_string(std::chrono::duration_cast<std::chrono::minutes>(kCityWait).count()));
+            if (in_city && g_quiet.SawMessage())
+                FailWith(js::reason::kMessageBox);
+            else
+                FailWith(js::reason::kWorldTimeout,
+                         std::to_string(std::chrono::duration_cast<std::chrono::minutes>(kCityWait).count()));
+        } else if (message_up && !g_quiet_logged) {
+            g_quiet_logged = true;
+            LARECOMP_APP_INFO("[join_server] the city is up, but a message box is still on screen: the join waits for it to close");
         }
         break;
+    }
 
     case Phase::kResolving:
         if (g_job && g_job->done.load(std::memory_order_acquire)) {

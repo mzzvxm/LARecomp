@@ -42,6 +42,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 namespace reason = joinserver::reason;
 constexpr uint32_t kUiManagerPtr = 0x8286D804;      // *: mcUIManager; +52 -> root node
+constexpr uint32_t kNavigatorAt = 52;               // mcUIManager +52 = FlashNavigator (the root node Hsm() reads)
+constexpr uint32_t kNavLayerCountAt = 263992;       // FlashNavigator: modal message boxes in its FIFO, 0..3
 constexpr uint32_t kFindStateFn = 0x82691650;       // (hsm, name) -> state
 constexpr uint32_t kActivateStateFn = 0x8268DD70;   // (state, hsm)
 constexpr uint32_t kHsmGotoVfunc = 32;              // VirtualHSM vtable: goto(state)
@@ -336,6 +338,17 @@ bool ProbeWorld() {
 }
 
 bool WorldReady() { return g_world_ready.load(std::memory_order_relaxed); }
+
+bool ModalMessageUp() {
+    auto* mem = Mem();
+    if (!mem) return false;
+    const uint32_t ui = GuestRead32(mem, kUiManagerPtr);
+    if (!IsGuestPtr(ui)) return false;
+    const uint32_t nav = GuestRead32(mem, ui + kNavigatorAt);
+    if (!IsGuestPtr(nav)) return false;
+    const uint32_t count = GuestRead32(mem, nav + kNavLayerCountAt);
+    return count != 0 && count <= 3;
+}
 
 void TickServerBrowserJoin() {
     // A few times a second is plenty; it is a guest call.

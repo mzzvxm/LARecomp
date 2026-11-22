@@ -10,6 +10,9 @@
 //   2. No such host: state=failed reason=room_not_found after 45 s, the browser opens with the sentence in red.
 //   3. Relay down: state=failed reason=server_unreachable. A required mod missing: reason=mods_missing, nothing is joined.
 //   4. Open the pause menu while the city loads and leave it open: the join closes it (browser_join_core.h), then joins.
+//      A fresh game: the log has "[join_server] the city is up, but a message box is still on screen" (the box after Start) and then
+//      "the city is up after N s (a message box held the join back for M ms): asking", with the goto into the search returning 1 and
+//      the relay seeing the game host (REGISTER ... host=1) when nothing is there to join.
 //   5. larecomp.toml has no join_server / mcla_online_server / mcla_online_enable line afterwards (the argument is for one run).
 //   6. --join_server=127.0.0.1:31000 (Cruise) and ,race: with a Cruise / Race session hosted by the second game, and with none
 //      (the game hosts one itself).
@@ -207,10 +210,63 @@ void TestStatusFile() {
     CHECK(!js::IsFinal(js::State::kWaiting) && !js::IsFinal(js::State::kJoining));
 }
 
+// The quiet screen: the join starts only after no message box has been up for kQuietMs (the first box after Start is still up when the
+// machine reaches "Cruising", about 8 s in, and goes at about 9 to 10 s).
+void TestQuietGate() {
+    constexpr int64_t q = js::QuietGate::kQuietMs;
+    {
+        // No box ever: the quiet time counts from the first look.
+        js::QuietGate g;
+        CHECK(!g.Update(false, 1000));
+        CHECK(!g.Update(false, 1000 + q - 1));
+        CHECK(g.Update(false, 1000 + q));
+        CHECK(g.Update(false, 1000 + q + 5000));
+        CHECK(!g.SawMessage());
+        CHECK(g.HeldMs(99999) == 0);
+    }
+    {
+        // The measured case: the box is up when the city is, goes ~1.5 s later; the join waits for it and then for the quiet time.
+        js::QuietGate g;
+        int64_t t = 0;
+        for (; t < 1500; t += 16) CHECK(!g.Update(true, t));
+        CHECK(g.SawMessage());
+        CHECK(!g.Update(false, t));            // the box just went
+        CHECK(!g.Update(false, t + q - 1));    // not long enough yet
+        CHECK(g.Update(false, t + q));         // quiet
+        CHECK(g.HeldMs(t + q) == t + q);       // held back since the first look (t = 0 there)
+    }
+    {
+        // A second box right behind the first one: still one wait, and the quiet time restarts.
+        js::QuietGate g;
+        CHECK(!g.Update(true, 0));
+        CHECK(!g.Update(false, 100));
+        CHECK(!g.Update(false, 100 + q - 100));
+        CHECK(!g.Update(true, 100 + q - 50));   // the next box opens before the quiet time is over
+        CHECK(!g.Update(false, 100 + q));       // gone again: the count restarts here
+        CHECK(!g.Update(false, 100 + 2 * q - 1));
+        CHECK(g.Update(false, 100 + 2 * q));
+    }
+    {
+        // A box that never goes: never quiet.
+        js::QuietGate g;
+        bool ever = false;
+        for (int64_t t = 0; t < 60 * 60 * 1000; t += 1000) ever = ever || g.Update(true, t);
+        CHECK(!ever && g.SawMessage());
+    }
+    {
+        // A fresh gate (the city was lost and came back) forgets the old clear time.
+        js::QuietGate g;
+        CHECK(!g.Update(false, 0));
+        g = js::QuietGate{};
+        CHECK(!g.Update(false, 10 * q));
+        CHECK(g.Update(false, 11 * q));
+    }
+}
+
 void TestMessages() {
     const js::Target t = P("h:5,room:Pat").target;
     for (const char* why : {js::reason::kBadArgument, js::reason::kOnlineUnavailable, js::reason::kServerUnreachable,
-                            js::reason::kServerTooOld, js::reason::kModsMissing, js::reason::kRoomNotFound, js::reason::kRoomFull,
+                            js::reason::kServerTooOld, js::reason::kModsMissing, js::reason::kRoomNotFound, js::reason::kRoomFull, js::reason::kMessageBox,
                             js::reason::kRoomAmbiguous, js::reason::kWorldTimeout, js::reason::kOnlineFailed,
                             js::reason::kPauseOpen, js::reason::kMenuUnavailable, js::reason::kHostNoAnswer,
                             js::reason::kRoomGone, js::reason::kRaceOn, js::reason::kGarageOpen, js::reason::kInSession, js::reason::kNoSession}) {
@@ -220,6 +276,8 @@ void TestMessages() {
     }
     CHECK(js::FailureMessage(js::reason::kModsMissing, t, "A, B") == "The server h:5 needs mods this game does not have: A, B.");
     CHECK(js::FailureMessage(js::reason::kWorldTimeout, t, "20") == "The game did not reach the city in 20 minutes, so the join was cancelled.");
+    CHECK(js::FailureMessage(js::reason::kMessageBox, t) == "A message box in the game stayed open, so the join was cancelled.");
+    CHECK(std::string(js::reason::kMessageBox) == "message_box");
     CHECK(js::FailureMessage("something_new", t, "text") == "text");
     // The refusals of a join that cannot start from where the game is (browser_join_core.h RefuseStart): each its own stable word and sentence.
     CHECK(std::string(js::reason::kRaceOn) == "race_on" && std::string(js::reason::kGarageOpen) == "garage_open" &&
@@ -239,6 +297,7 @@ int main() {
     TestFindRoom();
     TestStatusFile();
     TestMessages();
+    TestQuietGate();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
