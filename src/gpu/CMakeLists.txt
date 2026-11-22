@@ -782,6 +782,8 @@ larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)
 larecomp_gpu_host_shader(shafts_sky_ms_ps ps_6_0 SOURCE shafts_sky_ps DEFINES SHAFTS_MS=1)
 larecomp_gpu_host_shader(shafts_blur_ps ps_6_0)
 larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
+# The blurred image averaged over frames while no temporal upscaler runs (NOISE-RESOLVE, noise_resolve.h):
+larecomp_gpu_host_shader(shafts_temporal_ps ps_6_0)
 # The volumetric light's passes (volumetrics.h): the inject and the integrate (compute, Shader Model 6.0, a typed RGBA16F storage image store on both
 # APIs) and the composite (plain or multisampled depth plane).
 larecomp_gpu_host_shader(volumetrics_inject_cs cs_6_0)
