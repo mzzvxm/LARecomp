@@ -3684,7 +3684,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // The screen-space reflections (ssr.h): the trace, the accumulation and the additive resolve into the main colour, right after the capture they read (a reflection is not a
     // reflection of a reflection: colour_post is made before the effect adds to the colour) and before the car self-reflection's history pass, which holds a vehicle's pixels only and so does not see
     // them (GB-I3, frame_order.h kSsr). The last pass of the trigger that adds to the colour; its GPU time is the labels 'ssr trace', 'ssr temporal' and 'ssr apply' (closed by 'after ssr').
-    const bool ssr_ran = ssr_->OnTrigger(summary, list);
+    const bool ssr_ran = ssr_->OnTrigger(summary, list, UpscalerRunning());
     order_.Note(frame_order::Step::kSsr, ssr_ran);
   }
   if (car_refl_ && car_refl_->wants_draws()) {

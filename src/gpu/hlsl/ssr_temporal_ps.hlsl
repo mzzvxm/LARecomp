@@ -13,7 +13,8 @@
 // THE RESOLVE (2026-11-22). The trace's 3x3 is read first: its centre-weighted average over the pixels of the same surface (ssr_common.hlsli SsrTapKernel, SsrTapSameSurface) is the pixel's
 // current value (nine rays of one lobe are nearer its mean than one), and where the centre's own ray found nothing, the nearest hit of those pixels gives the distance of the virtual image
 // (SsrReprojectDistance: the history round a reflection is looked up with the reflection's parallax, not the sky's, whatever the noise did to this pixel's ray). After the clip the history keeps
-// kSsrClipKeep of itself at least (SsrKeepClip). SSR_TEMPORAL_FIRST_RESOLVE (the high half of SSR_W_VEH_TABLE, mcla_gpu_ssr_resolve false) is the first version: the centre pixel alone, the clip whole.
+// kSsrClipKeep of itself at least (SsrKeepClip), except under a temporal upscaler (SSR_TEMPORAL_UPSCALER: SsrClipKeepFor, the floor would only be a trail on top of the upscaler's own history). SSR_TEMPORAL_FIRST_RESOLVE (the high
+// half of SSR_W_VEH_TABLE, mcla_gpu_ssr_resolve false) is the first version: the centre pixel alone, the clip whole.
 //
 // WHAT IS KEPT. Only where the receiver itself was the same surface: its own reprojection (the plain position, not the image) must land on a history texel whose stored depth agrees within 8% (a car
 // that passed, a wall that came into view, an edge: no history), and the image's position must be more than a texel inside the picture (GB-I2: the clamped sample of an edge smears it). The history
@@ -51,6 +52,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float tan_y = SsrF(SSR_W_TAN_Y);
   const float3 receiver = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(ssr.x), float(ssr.y), z_block, tan_x, tan_y);
   const bool resolve = (SsrHi(SsrW(SSR_W_VEH_TABLE)) & SSR_TEMPORAL_FIRST_RESOLVE) == 0u;
+  const bool upscaler = (SsrHi(SsrW(SSR_W_VEH_TABLE)) & SSR_TEMPORAL_UPSCALER) != 0u;
 
   // the trace's 3x3, once: the clip's box (the mean, the deviation and the range of the pixels that were traced) and the resolve (the tent's average of the pixels of the same surface, and the
   // nearest hit among them); with the first version's resolve only the centre joins the average
@@ -127,7 +129,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float3 box_lo = float3(SsrBoxLoChannel(mean.x, sigma.x, lo.x, hi.x), SsrBoxLoChannel(mean.y, sigma.y, lo.y, hi.y), SsrBoxLoChannel(mean.z, sigma.z, lo.z, hi.z));
     const float3 box_hi = float3(SsrBoxHiChannel(mean.x, sigma.x, lo.x, hi.x), SsrBoxHiChannel(mean.y, sigma.y, lo.y, hi.y), SsrBoxHiChannel(mean.z, sigma.z, lo.z, hi.z));
     const float3 clipped = SsrClipToBox(history, box_lo, box_hi);
-    history = resolve ? SsrKeepClip(history, clipped) : clipped;
+    history = SsrKeepClip(history, clipped, SsrClipKeepFor(resolve, upscaler));
   }
   return float4(lerp(value, history, weight), z_block);
 }

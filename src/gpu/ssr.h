@@ -112,8 +112,9 @@ class ScreenReflections {
   bool wants_draws() const { return level_ != ssr::Level::kOff; }
   // A prepared draw of the main view, before the trigger: its vertex constants' wetness (VS c43.x, gReflectionParams.x: 0.095 dry, 1.17 in rain) is a vote for the road's.
   void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks);
-  // The trigger's colour capture was just recorded (ScreenShared::CapturePost returned true): runs the passes. True when passes were recorded (the caller's list state is gone). Once a frame.
-  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
+  // The trigger's colour capture was just recorded (ScreenShared::CapturePost returned true): runs the passes. True when passes were recorded (the caller's list state is gone). Once a frame. `upscaler_running`: a temporal
+  // upscaler works on this frame (the accumulation then takes no floor for its clip: hlsl/ssr_common.hlsli SsrClipKeepFor).
+  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool upscaler_running);
   // A guest present: the frame boundary (the history's ping-pong, the idle count).
   void OnPresent();
 
