@@ -552,7 +552,55 @@ void CheckGate() {
   Check(FrameGate(g) == Gate::kPlanesMissing, "no material plane");
   g = f;
   g.gbuffer_size[0] = 1280;
-  Check(FrameGate(g) == Gate::kSizeMismatch, "another size");
+  Check(FrameGate(g) == Gate::kSizeMismatch, "another size (smaller than the render size)");
+  // The sizes the runs really had (chain-rr's logs, 2026-11-21): the guest pads its main colour target, 1280x720 is drawn into 1280x736, so the planes are larger than the render size by the padding and
+  // the gate must be open (it refused every one of these, and RR never ran). Render size, planes: 1x 1280x720 / 1280x736; DLSS Quality at 720p output 832x468 / 832x478; 4K at the DLAA's 2x 2560x1440 / 2560x1472;
+  // 1080p output at Quality 1280x720 / 1280x736; ultra performance of a 4K output 1280x720 (3x of the 0.33 scale is 3840x2160 / 3840x2208).
+  const struct {
+    uint32_t render[2];
+    uint32_t planes[2];
+    const char* what;
+  } real[] = {{{1280, 720}, {1280, 736}, "1x"},       {{832, 468}, {832, 478}, "0.65x"},       {{2560, 1440}, {2560, 1472}, "2x"},
+              {{1920, 1080}, {1920, 1104}, "1.5x"},   {{3840, 2160}, {3840, 2208}, "3x"},      {{640, 360}, {640, 368}, "0.5x"}};
+  for (const auto& r : real) {
+    g = f;
+    g.render_size[0] = r.render[0];
+    g.render_size[1] = r.render[1];
+    g.gbuffer_size[0] = r.planes[0];
+    g.gbuffer_size[1] = r.planes[1];
+    Check(FrameGate(g) == Gate::kOpen, std::string("the guest's padding is not a mismatch: planes ") + std::to_string(r.planes[0]) + "x" + std::to_string(r.planes[1]) + " for render " +
+                                           std::to_string(r.render[0]) + "x" + std::to_string(r.render[1]) + " (" + r.what + ")");
+    Check(GBufferCoversRenderSize(r.planes, r.render), std::string("the planes cover the render size at ") + r.what);
+  }
+  // What stays a mismatch: planes smaller in one direction, a much larger one (another view), a zero render size, and the limits of the padding.
+  const struct {
+    uint32_t render[2];
+    uint32_t planes[2];
+    bool covers;
+    const char* what;
+  } limits[] = {{{832, 468}, {832, 467}, false, "one row short"},
+                {{832, 468}, {831, 478}, false, "one column short"},
+                {{1280, 720}, {1280, 1080}, false, "a view half as tall again"},
+                {{1280, 720}, {1920, 720}, false, "a view wider by half"},
+                {{1280, 720}, {1280, 720 + 91}, false, "more than an eighth taller (91 rows of 720)"},
+                {{1280, 720}, {1280, 720 + 90}, true, "exactly an eighth taller"},
+                {{2560, 1440}, {2560, 1440 + 128}, true, "the pad limit exactly"},
+                {{2560, 1440}, {2560, 1440 + 129}, false, "one over the pad limit"},
+                {{4000, 4000}, {4000, 4000 + 128}, true, "the limit on a large render size"},
+                {{4000, 4000}, {4000, 4000 + 129}, false, "one over, large render size"},
+                {{0, 720}, {1280, 736}, false, "a zero render width"},
+                {{1280, 0}, {1280, 736}, false, "a zero render height"},
+                {{1280, 720}, {0, 0}, false, "empty planes"},
+                {{0, 0}, {0, 0}, false, "nothing at all (no render size: never a covered one)"}};
+  for (const auto& l : limits) {
+    g = f;
+    g.render_size[0] = l.render[0];
+    g.render_size[1] = l.render[1];
+    g.gbuffer_size[0] = l.planes[0];
+    g.gbuffer_size[1] = l.planes[1];
+    Check(GBufferCoversRenderSize(l.planes, l.render) == l.covers, std::string("covers: ") + l.what);
+    Check(FrameGate(g) == (l.covers ? Gate::kOpen : Gate::kSizeMismatch), std::string("gate: ") + l.what);
+  }
   g = f;
   g.cutscene = true;
   Check(FrameGate(g) == Gate::kCutscene, "a cutscene");

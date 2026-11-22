@@ -612,6 +612,7 @@ std::mutex g_rr_mutex;
 dlss::RayReconstructionFacts g_rr_facts;
 // The last refusal of a frame's guides that was logged (verdict and culprit packed), so that the log says each kind once. Render thread.
 std::atomic<uint32_t> g_rr_refusal_seen{0};
+std::atomic<bool> g_rr_tags_logged{false};  // the first Ray Reconstruction evaluation's tags were logged (EvaluateRr)
 // Ray Reconstruction was dropped for the session (its feature could not be made, or its evaluation failed): the plan reads it through dlss::GetRayReconstructionFacts and says so; Super
 // Resolution goes on. Callable from the render thread and the worker (its own lock; never Runtime::mu).
 void PublishRrFailure(const std::string& why) {
@@ -3158,6 +3159,17 @@ std::string DlssBackend::Impl::EvaluateRr(void* native_list, Context& context, c
   for (uint32_t i = 0; i < plan.count; ++i) {
     const rr::Tag& tag = plan.tags[i];
     tags.emplace_back(&resources[i], rr::InfoOf(tag.buffer).sl_type, lifecycle, tag.output_extent ? &output_extent : &render_extent);
+  }
+  if (!g_rr_tags_logged.exchange(true)) {
+    // What was handed to Streamline, once: the next run's log says what each tag was (a defined native format for each, the render size's extent for all but the output, the states the images were
+    // declared in: the integration checklist's items in one line).
+    std::string line;
+    for (uint32_t i = 0; i < plan.count; ++i) {
+      const rr::Tag& tag = plan.tags[i];
+      line += std::format("{}{} (type {}, {}x{}, native format {}, state {})", i ? "; " : "", rr::InfoOf(tag.buffer).name, rr::InfoOf(tag.buffer).sl_type, resources[i].width, resources[i].height,
+                          resources[i].nativeFormat, resources[i].state);
+    }
+    REXLOG_INFO("{} Ray Reconstruction: the first evaluation's {} tags: {}", kPrefix, plan.count, line);
   }
 
   // The constants: the same as Super Resolution's (Evaluate above has the block inline; to be one function once Ray Reconstruction is proven).
