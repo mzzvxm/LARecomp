@@ -988,6 +988,8 @@ struct PassInputs {
   uint32_t debug = 0;  // kDebug*
   // RT-LIGHTS-D1: the ray traced visibility's images of this trigger (rt_lights.h: traced just before the pass), null: none. kFlagRtMask is set by BuildBuffer, not by the caller.
   const rt_lights::MaskFrame* rt_mask = nullptr;
+  // HSQ-PCSS: the shadow lookup's kernel word (light_shadow_filter.h PackParams: the gathers a side and the lamp's radius; 0: the defaults), written to the table header's last word.
+  uint32_t kernel_word = 0;
 };
 
 inline void FillHeader(PassHeader* h, const PassInputs& in, uint32_t count) {
@@ -1080,6 +1082,7 @@ inline void BuildBuffer(const PassInputs& in, const Selection& selection, uint8_
   if (shadowed) {
     shadow_lookup::GpuShadowBuffer table;
     shadow_lookup::BuildGpuShadowBuffer(*in.shadow, &table);
+    table.header.reserved = in.kernel_word;
     std::memcpy(out + kShadowOffset, &table, sizeof(table));
   }
   if (lamps) {

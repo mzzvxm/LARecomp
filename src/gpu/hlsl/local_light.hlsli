@@ -53,6 +53,7 @@
 #define LP_SHADOW_OFF_SLOT 2180     // the atlas's bindless slot (a uint)
 #define LP_SHADOW_OFF_SIZE 2184     // the atlas's width and height in texels (two uints)
 #define LP_SHADOW_OFF_LAYERS 2192   // two bits for each entry: 0 single, 1 static, 2 live
+#define LP_SHADOW_OFF_KERNEL 2204   // the header's last word: the shadow lookup's kernel word (gathers a side, the lamp's radius in mm; 0: the defaults; light_shadow_filter.h PackParams)
 
 // GB-NEON-COST (the draw's push block, local_lights_rules.h kMaxDrawLights / kPushLateReach): one draw lights a pixel with up to LP_MAX_DRAW_LIGHTS consecutive rows of the buffer (a car's neon tube:
 // its points are the lights of one car), summed in the shader; push.info.w bit 0 puts the reach test back after the planes are read (the A/B of the early test).

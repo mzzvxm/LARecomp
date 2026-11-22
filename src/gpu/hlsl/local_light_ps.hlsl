@@ -78,6 +78,7 @@ static uint LpAtlasH = 0u;
 static uint LpAtlasLayers = 0u;
 static uint LpLampLayersLo = 0u;  // LAMP-SHADOWS-4: the layers of the lamps' table's entries 0..15 and 16..31
 static uint LpLampLayersHi = 0u;
+static uint LpKernelWord = 0u;
 
 // The seams of hlsl/rt_mask_read.hlsli: the mask images (at the mask's size) and the occlusion's linear depth image (at the traced size) are heap textures (set 0, whatever LL_PASS_MS says: they are no multisampled planes).
 float4 RtmLoadMask(uint slot, int2 p) {
@@ -200,6 +201,9 @@ uint LslLayerOf(uint entry) {
   }
   return LslLayerBits(LpAtlasLayers, entry);
 }
+uint LslKernelWord() {
+  return LpKernelWord;
+}
 
 // The stored depth of the main view's depth plane at the guest's sample 0, and from it the pixel's world position. False for the sky (stored depth 0, or a distance the linearisation cannot
 // place), and for a pixel outside the plane: such a pixel takes nothing.
@@ -302,6 +306,7 @@ float4 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, floa
         const uint2 lamp_layers = g_lights.Load2(LP_LAMP_OFF_LAYERS);
         LpLampLayersLo = lamp_layers.x;
         LpLampLayersHi = lamp_layers.y;
+        LpKernelWord = 0u;  // HSQ-PCSS: the kernel settings are the headlights' (the table header's word); a street lamp keeps the default lookup, whichever light came before it in this pixel's loop
         const float3 lamp_normal = LpShadowNormal(g, p, world, normal);  // the geometric normal of the depth plane's quad, as the headlights' (the plane lookup needs it)
         lamp_vis = LslLampLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, l.pos.x, l.pos.y, l.pos.z, world.x, world.y, world.z, lamp_normal.x, lamp_normal.y, lamp_normal.z, lamp_head.y, uint(LSL_MODE_SURFACE));
         const uint debug = g_lights.Load(LP_OFF_DEBUG);
@@ -333,6 +338,7 @@ float4 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, floa
       LpAtlasW = head.z;
       LpAtlasH = head.w;
       LpAtlasLayers = g_lights.Load(LP_SHADOW_OFF_LAYERS);
+      LpKernelWord = g_lights.Load(LP_SHADOW_OFF_KERNEL);
       const float3 shadow_normal = LpShadowNormal(g, p, world, normal);
       add *= LslLightLit(l.shadow_kind, l.first_view, l.view_count, l.shadow_weight, world.x, world.y, world.z, shadow_normal.x, shadow_normal.y, shadow_normal.z, atlas_slot, uint(LSL_MODE_SURFACE));
     }

@@ -227,6 +227,7 @@ void LayoutChecks(const std::string& hlsli) {
   want("LP_SHADOW_OFF_SLOT", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, atlas_slot));
   want("LP_SHADOW_OFF_SIZE", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, atlas_width));
   want("LP_SHADOW_OFF_LAYERS", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, layers));
+  want("LP_SHADOW_OFF_KERNEL", lp::kShadowOffset + offsetof(shadow_lookup::GpuShadowHeader, reserved));
   Check(offsetof(shadow_lookup::GpuShadowHeader, atlas_height) == offsetof(shadow_lookup::GpuShadowHeader, atlas_width) + 4, "the atlas's height follows its width (one Load of two uints)");
   // LAMP-SHADOWS-4: the street lamps' table after the headlights' (the shader's seams read these offsets), the flag and the debug word
   want("LP_OFF_DEBUG", offsetof(lp::PassHeader, debug));
@@ -841,6 +842,23 @@ void ShadowBufferChecks() {
     uint32_t layers;
     std::memcpy(&layers, bytes.data() + LP_SHADOW_OFF_LAYERS, 4);
     Check(layers == 0, "every view is a single layer: the layers' bits are zero");
+    // HSQ-PCSS: the shadow lookup's kernel word is the header's last word; with none the word is 0 (the defaults), with one the rest of the table is what it was
+    uint32_t no_word;
+    std::memcpy(&no_word, bytes.data() + LP_SHADOW_OFF_KERNEL, 4);
+    Check(no_word == 0u, std::string("no kernel word: the header's last word stays 0, ") + lv.name);
+    {
+      lp::PassInputs with_word = in;
+      with_word.kernel_word = shadow_filter::PackParams(shadow_filter::MakeParams(0.12, 3));
+      std::vector<uint8_t> more(lp::kBufferAlloc, 0xAB);
+      lp::BuildBuffer(with_word, s, more.data());
+      uint32_t word;
+      std::memcpy(&word, more.data() + LP_SHADOW_OFF_KERNEL, 4);
+      const shadow_filter::Params back = shadow_filter::UnpackParams(word);
+      Check(word != 0u && back.gathers == 3 && std::fabs(back.lamp_radius - 0.12f) < 0.0006f, std::string("the kernel word reaches the header's last word, ") + lv.name);
+      shadow_lookup::GpuShadowBuffer same = want;
+      same.header.reserved = word;
+      Check(std::memcmp(more.data() + lp::kShadowOffset, &same, sizeof(same)) == 0, std::string("and nothing else of the table changes, ") + lv.name);
+    }
     bool views_same = true;
     for (uint32_t e = 0; e < views; ++e) {
       LocalShadowView got;
@@ -1918,6 +1936,8 @@ void SourceChecks(const std::string& src) {
   Check(Has(ps, "#include \"light_shadow_lookup.hlsli\"") && Has(ps, "float LslTexel(uint slot, int ix, int iy)") && Has(ps, "LslView LslLoadView(uint entry)") && Has(ps, "uint LslLayerOf(uint entry)") &&
             Has(ps, "uint LslAtlasWidth(uint slot)") && Has(ps, "uint LslAtlasHeight(uint slot)"),
         "the shader includes the one lookup and defines its five seams");
+  Check(Has(ps, "uint LslKernelWord() {\n  return LpKernelWord;\n}") && Has(ps, "LpKernelWord = g_lights.Load(LP_SHADOW_OFF_KERNEL);"),
+        "the shader defines the kernel word's seam (HSQ-PCSS) and reads it from the table's header when it takes the table");
   Check(Has(ps, "g_textures[slot].Load(int3(clamp(ix, 0, int(LpAtlasW) - 1), clamp(iy, 0, int(LpAtlasH) - 1), 0)).x") && Has(ps, "uint at = uint(LP_SHADOW_VIEWS_OFFSET) + entry * uint(LP_SHADOW_VIEW_BYTES);"),
         "the seams read the atlas through the plain bindless array (set 0) and the views at the table's offsets");
   Check(Has(ps, "(flags & uint(LP_FLAG_SHADOW)) != 0u && l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u") &&

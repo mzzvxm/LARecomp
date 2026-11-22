@@ -1069,6 +1069,7 @@ namespace shim_state {
 const TestAtlas* atlas = nullptr;
 std::array<hlsl_shim::LslView, 8> views{};
 uint32_t layers = 0;
+uint32_t kernel_word = 0;  // the table header's kernel word (light_shadow_filter.h PackParams): 0 = the defaults
 }  // namespace shim_state
 
 }  // namespace
@@ -1080,6 +1081,7 @@ uint LslAtlasWidth(uint) { return shim_state::atlas->width; }
 uint LslAtlasHeight(uint) { return shim_state::atlas->height; }
 LslView LslLoadView(uint entry) { return shim_state::views[entry]; }
 uint LslLayerOf(uint entry) { return LslLayerBits(shim_state::layers, entry); }
+uint LslKernelWord() { return shim_state::kernel_word; }
 }  // namespace hlsl_shim
 
 namespace {
@@ -1164,6 +1166,71 @@ void TestHlslTwin(const std::string& hlsli_path) {
     }
   }
   Check(checked == 40000, "every random light was looked up in both modes");
+  // THE KERNEL WORD (HSQ-PCSS): G x G gathers and the lamp's radius from the table's header; the twin against light_shadow_filter.h's ViewLit with the Params the word unpacks to, bit for bit
+  Check(LSL_MAX_GATHERS == sf::kMaxGathers && LSL_MAX_SIDE == 2 * sf::kMaxGathers, "the twin's widest footprint is light_shadow_filter.h's");
+  uint64_t wide_checked = 0;
+  uint64_t wide_dark = 0, wide_part = 0;
+  for (int n = 0; n < 12000; ++n) {
+    TestAtlas atlas;
+    atlas.seed = 1 + rng.Int(60);
+    shim_state::atlas = &atlas;
+    const float bias = rng.Next() < 0.5f ? 0.002f : rng.Range(0.0f, 0.02f);
+    const lg::LocalShadowView view = TileView(rng.Int(3), bias, true);
+    shim_state::views[0] = ToLsl(view);
+    float p[3];
+    RandomPoint(&rng, view, p);
+    float nrm[3];
+    RandomNormal(&rng, nrm);
+    const int g = 2 + rng.Int(3);
+    const double lamp = rng.Next() < 0.3f ? 0.07 : 0.005 + 0.4 * double(rng.Next());
+    const sf::Params params = sf::MakeParams(lamp, g);
+    shim_state::kernel_word = sf::PackParams(params);
+    const sf::Params used = sf::UnpackParams(shim_state::kernel_word);
+    const auto gather = [&](int ix, int iy) {
+      sf::Quad q;
+      q.x = atlas.At(ix, iy + 1);
+      q.y = atlas.At(ix + 1, iy + 1);
+      q.z = atlas.At(ix + 1, iy);
+      q.w = atlas.At(ix, iy);
+      return q;
+    };
+    const float want = sf::ViewLit(view, p, nrm, gather, nullptr, used);
+    const float got = hlsl_shim::LslViewLit(shim_state::views[0], p[0], p[1], p[2], nrm[0], nrm[1], nrm[2], 0u, uint32_t(sl::Mode::kSurface));
+    Check(std::memcmp(&want, &got, sizeof(float)) == 0, "the twin's surface lookup with " + std::to_string(g) + " gathers and a " + std::to_string(lamp) + " m lamp is the reference's, bit for bit (" + std::to_string(want) + " against " + std::to_string(got) + ")");
+    ++wide_checked;
+    wide_dark += want < 0.001f ? 1 : 0;
+    wide_part += (want > 0.001f && want < 0.999f) ? 1 : 0;
+  }
+  shim_state::kernel_word = 0;
+  Check(wide_checked == 12000 && wide_part > 300, "the wide lookups were made, and a good share of them are in a penumbra (" + std::to_string(wide_part) + " partly lit, " + std::to_string(wide_dark) + " dark)");
+  // the word's decoding in the twin is PackParams / UnpackParams' (a word with the gathers out of range or a radius of 0 takes the defaults)
+  {
+    TestAtlas edge;
+    shim_state::atlas = &edge;
+    const lg::LocalShadowView view = TileView(1, 0.002f, true);
+    shim_state::views[0] = ToLsl(view);
+    float p[3] = {0.1f, 0.05f, 6.0f};
+    float nrm[3] = {0.0f, 0.0f, -1.0f};
+    const uint32_t words[] = {0u, 1u, 2u, 3u, 4u, 5u, 15u, (70u << 8) | 2u, (250u << 8) | 3u, (30u << 8), (65535u << 8) | 4u};
+    int wrong = 0;
+    for (const uint32_t w : words) {
+      shim_state::kernel_word = w;
+      const sf::Params used = sf::UnpackParams(w);
+      const auto gather = [&](int ix, int iy) {
+        sf::Quad q;
+        q.x = edge.At(ix, iy + 1);
+        q.y = edge.At(ix + 1, iy + 1);
+        q.z = edge.At(ix + 1, iy);
+        q.w = edge.At(ix, iy);
+        return q;
+      };
+      const float want = sf::ViewLit(view, p, nrm, gather, nullptr, used);
+      const float got = hlsl_shim::LslViewLit(shim_state::views[0], p[0], p[1], p[2], nrm[0], nrm[1], nrm[2], 0u, uint32_t(sl::Mode::kSurface));
+      wrong += std::memcmp(&want, &got, sizeof(float)) != 0 ? 1 : 0;
+    }
+    shim_state::kernel_word = 0;
+    Check(wrong == 0, "the kernel word's decoding (defaults for 0, gathers held to 2..4) is the same in the twin and the reference");
+  }
   // a light with no atlas views, or none counted, is lit
   TestAtlas atlas;
   shim_state::atlas = &atlas;

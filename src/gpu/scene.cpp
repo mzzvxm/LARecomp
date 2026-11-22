@@ -2515,6 +2515,9 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
       // The block of the rig, or (mcla_gpu_light_frame bit 1, LU-4a) the same bytes projected from the light manager's frame.
       const headlight_rules::HeadlightConstants* from_frame = light_manager_ ? light_manager_->HeadlightBlock() : nullptr;
       headlight_rules::HeadlightConstants block = from_frame ? *from_frame : headlights_->Block();
+      // HSQ-PCSS: the lamp's size and the footprint of the shadow lookup (the settings, live).
+      headlight_rules::SetShadowKernel(&block, larecomp::gpu::shadow_filter::MakeParams(0.01 * larecomp::settings::mcla_gpu_headlight_shadow_lamp_cm.Get(),
+                                                                                        int(larecomp::settings::mcla_gpu_headlight_shadow_kernel.Get())));
       // The camera as this draw's own pixel constants say: c15 is row 3 of the view inverse (the position). A pass with another camera (a reflection map) is lit
       // right too; a bank that holds no number keeps the frame's.
       const uint8_t* ps_bank = banks.ps.data();

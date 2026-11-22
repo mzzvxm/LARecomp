@@ -1063,6 +1063,7 @@ uint LslLayerOf(uint entry) {
   const uint e = entry - uint(LSL_LAMP_ENTRY_BASE);
   return LslLayerBits(e < 16u ? shim_state::table.header.layers_lo : shim_state::table.header.layers_hi, e & 15u);
 }
+uint LslKernelWord() { return 0u; }  // HSQ-PCSS: a street lamp's lookup is the default one (the pass zeroes the word before it; the kernel settings are the headlights')
 }  // namespace hlsl_shim
 
 namespace {
@@ -1398,6 +1399,15 @@ void TestPass(const std::string& gpu_dir) {
   Check(!ps.empty() && !hlsli.empty(), "the shader and its twin are readable");
   Check(Has(ps, "#define LSL_MAX_VIEWS 28") && Has(ps, "#include \"lamp_shadow_lookup.hlsli\"") && Has(ps, "LpLampLayersLo") && Has(ps, "LpLampLayersHi"),
         "the pass raises the lookup's room to both tables and includes the lamps' lookup");
+  // HSQ-PCSS: the kernel word is the headlights' (read from their table's header); a lamp's lookup zeroes it first, so the order of the lights in a pixel's loop never changes a lamp's shadow
+  {
+    const size_t zero_at = ps.find("\n        LpKernelWord = 0u;");
+    const size_t lamp_at = ps.find("lamp_vis = LslLampLit(");
+    const size_t head_at = ps.find("LpKernelWord = g_lights.Load(LP_SHADOW_OFF_KERNEL);");
+    Check(zero_at != std::string::npos && lamp_at != std::string::npos && head_at != std::string::npos && zero_at < lamp_at && zero_at > ps.find("LpLampLayersHi = lamp_layers.y;") &&
+              zero_at != head_at,
+          "a street lamp's lookup runs with the kernel word zeroed (the default lookup), the headlights' with the table header's word");
+  }
   Check(Has(ps, "if (entry >= uint(LSL_LAMP_ENTRY_BASE))") && Has(ps, "at = uint(LP_LAMP_VIEWS_OFFSET) + (entry - uint(LSL_LAMP_ENTRY_BASE)) * uint(LP_SHADOW_VIEW_BYTES);"),
         "the view seam reads the lamps' table from the combined entry space's base");
   // RT-LIGHTS-D1: a lamp that has only a ray traced channel (no atlas views) is looked at too: `|| rt_ref`; the atlas's lookup runs inside it for a lamp that has views

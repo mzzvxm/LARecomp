@@ -35,6 +35,7 @@
 #include "headlight_points.h"
 #include "light_influence.h"
 #include "light_pick.h"
+#include "light_shadow_filter.h"
 #include "local_shadow_types.h"
 
 namespace mcla::gpu::headlight_rules {
@@ -329,6 +330,15 @@ static_assert(sizeof(HeadlightConstants) == 1072, "the headlight block is 1072 b
 static_assert(offsetof(HeadlightConstants, camera) == 16 && offsetof(HeadlightConstants, bounds_lo) == 32 && offsetof(HeadlightConstants, bounds_hi) == 48 &&
               offsetof(HeadlightConstants, lights) == 64 && offsetof(HeadlightConstants, shadow_of) == 256 && offsetof(HeadlightConstants, shadow_of_b) == 272 &&
               offsetof(HeadlightConstants, atlas) == 288 && offsetof(HeadlightConstants, shadow) == 304);
+
+// The two numbers of the shadow lookup that the settings set (light_shadow_filter.h Params): the block's header y is the lamp's radius in metres and z the gathers a side; 0 in both is the shader's
+// own default (a block made without the settings is what it always was).
+inline void SetShadowKernel(HeadlightConstants* block, const larecomp::gpu::shadow_filter::Params& params) {
+  const larecomp::gpu::shadow_filter::Params p = larecomp::gpu::shadow_filter::MakeParams(params.lamp_radius, params.gathers);
+  const bool defaults = larecomp::gpu::shadow_filter::PackParams(p) == 0u;
+  block->header[1] = defaults ? 0.0f : p.lamp_radius;
+  block->header[2] = defaults ? 0.0f : float(p.gathers);
+}
 
 // The block for a frame's lights (`lamps`, colours already times the strength and the fade), the camera's world position and the shadow views of the
 // frame (null: none; `atlas_texture` / `atlas_sampler` the bindless slots of the atlas they are in).

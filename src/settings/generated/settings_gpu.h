@@ -583,6 +583,14 @@ class GPUSettings final : public rex::SettingOwner {
     "along the light, which puts the underbody on the road and closes the gap under a car that a low lamp shines through (without it the road behind a car is "
     "lit through the ground clearance except where the tyres block: a few thin stripes instead of the car's shadow). 0 draws the car once. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
+  REX_SETTING(f64, mcla_gpu_headlight_shadow_lamp_cm, 7.0, "Diagnostic: the radius, in centimetres, of the headlamp the headlight shadows' penumbra is worked out for (the first version: 7, a lens about 14 cm across). "
+    "A shadow gets softer with its distance from what casts it by 2 R L / w (L metres behind a blocker that is w metres from the lamp): 1.3 cm at 1 m and 8.8 cm at 7 m behind a pole 9 m away for 7. "
+    "Larger is softer, and the kernel it asks for is cut by the footprint (mcla_gpu_headlight_shadow_kernel), so at 2 a larger lamp changes little: try 12 with 3 or 4, or 20 with 4. Live.", rex::kDebugOnly, rex::Range{0.5, 50.0});
+
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_kernel, 2, "Diagnostic: how many texel fetches a side the headlight shadows' lookup makes: 2 (the default) reads 4 x 4 texels with 4 fetches and lets a penumbra grow to 1.5 texels each side (the first version's), "
+    "3 reads 6 x 6 with 9 fetches (2.5 texels), 4 reads 8 x 8 with 16 fetches (3.5 texels). A larger footprint costs graphics card time (every pixel a headlight lights reads it) and shows a larger lamp "
+    "(mcla_gpu_headlight_shadow_lamp_cm) as softer shadows. Live.", rex::kDebugOnly, rex::Range{2, 4});
+
   REX_SETTING(std::string, mcla_gpu_census_ps, "", "Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per "
     "guest frame, the draws and vertices recorded with each; per report window, their "
     "distribution. Empty: off.", rex::kDebugOnly, rex::kRequiresRestart);
@@ -2036,6 +2044,8 @@ inline auto& mcla_gpu_headlight_shadow_views = g_gpu.mcla_gpu_headlight_shadow_v
 inline auto& mcla_gpu_headlight_shadow_bias = g_gpu.mcla_gpu_headlight_shadow_bias;
 inline auto& mcla_gpu_headlight_shadow_cone = g_gpu.mcla_gpu_headlight_shadow_cone;
 inline auto& mcla_gpu_headlight_shadow_skirt = g_gpu.mcla_gpu_headlight_shadow_skirt;
+inline auto& mcla_gpu_headlight_shadow_lamp_cm = g_gpu.mcla_gpu_headlight_shadow_lamp_cm;
+inline auto& mcla_gpu_headlight_shadow_kernel = g_gpu.mcla_gpu_headlight_shadow_kernel;
 inline auto& mcla_gpu_census_ps = g_gpu.mcla_gpu_census_ps;
 inline auto& mcla_gpu_census_scale = g_gpu.mcla_gpu_census_scale;
 inline auto& mcla_gpu_census_targets = g_gpu.mcla_gpu_census_targets;

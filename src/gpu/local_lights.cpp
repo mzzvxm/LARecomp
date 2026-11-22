@@ -578,6 +578,8 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     in.debug = lamp_shadows_->debug_view();
   }
   in.rt_mask = (rt_ran && rt_lights_ != nullptr && rt_lights_->Masks().valid) ? &rt_lights_->Masks() : nullptr;
+  in.kernel_word = larecomp::gpu::shadow_filter::PackParams(larecomp::gpu::shadow_filter::MakeParams(0.01 * larecomp::settings::mcla_gpu_headlight_shadow_lamp_cm.Get(),
+                                                                       int(larecomp::settings::mcla_gpu_headlight_shadow_kernel.Get())));  // HSQ-PCSS: live
   const bool lamp_table = ll::LampTableNeeded(selection, in.lamp_shadow);
   const bool shadow_table = ll::ShadowTableNeeded(selection, in.shadow);
   ll::BuildBuffer(in, selection, scratch_.data());

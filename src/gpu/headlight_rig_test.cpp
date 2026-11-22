@@ -1372,6 +1372,25 @@ void CheckBlock() {
   hr::Lamp many[6];
   for (auto& lamp : many) lamp = a;
   CheckNear(hr::MakeConstants(many, 6, camera, nullptr, 0, 0).header[0], 4.0, 0.0, "at most four lights");
+  // HSQ-PCSS: the shadow lookup's two settings ride in the block's header (y = the lamp's radius in metres, z = the gathers a side; 0 in both: the shader's own defaults)
+  {
+    namespace sf = larecomp::gpu::shadow_filter;
+    hr::HeadlightConstants block = hr::MakeConstants(lamps, 2, camera, nullptr, 7, 8);
+    Check(block.header[1] == 0.0f && block.header[2] == 0.0f, "a block made without the settings has the lookup's defaults (header y and z are 0)");
+    hr::SetShadowKernel(&block, sf::Params{});
+    Check(block.header[1] == 0.0f && block.header[2] == 0.0f, "the default Params leave the header at 0: the block's bytes are what they were before the settings");
+    hr::SetShadowKernel(&block, sf::MakeParams(0.12, 3));
+    CheckNear(block.header[1], 0.12, 1e-6, "header y is the lamp's radius in metres");
+    CheckNear(block.header[2], 3.0, 0.0, "header z is the gathers a side");
+    CheckNear(block.header[0], 2.0, 0.0, "and the light count is where it was");
+    hr::SetShadowKernel(&block, sf::Params{9.0f, 9});
+    CheckNear(block.header[1], double(sf::kMaxLampRadius), 1e-6, "a radius out of range is held to the settings' largest");
+    CheckNear(block.header[2], double(sf::kMaxGathers), 0.0, "and the gathers too");
+    hr::SetShadowKernel(&block, sf::Params{0.07f, 2});
+    Check(block.header[1] == 0.0f && block.header[2] == 0.0f, "the default again: zero");
+    hr::SetShadowKernel(&block, sf::Params{0.07f, 3});
+    CheckNear(block.header[1], 0.07, 1e-6, "the default radius with a larger footprint is carried (the radius is not 0)");
+  }
 }
 
 

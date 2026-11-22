@@ -43,6 +43,8 @@
 #define LSL_SLOPE_BIAS 0.15f      // the share of the receiver's depth change over one texel added to the bias
 #define LSL_BORDER_FADE 0.05f     // the share of the tile, from its border in, over which the shadow fades to light
 #define LSL_DEGENERATE 1.0e-3f    // the sine of the angle between the light's ray and the plane below which the plane is not believed
+#define LSL_MAX_GATHERS 4         // gathers a side the kernel word may ask for (8 x 8 texels, kernel up to 3.5)
+#define LSL_MAX_SIDE 8            // texels a side of the widest footprint
 
 #define LSL_LAYER_SINGLE 0
 #define LSL_LAYER_STATIC 1
@@ -76,6 +78,9 @@ uint LslAtlasWidth(uint slot);
 uint LslAtlasHeight(uint slot);
 LslView LslLoadView(uint entry);
 uint LslLayerOf(uint entry);
+// The two numbers of the surface lookup that the settings set (HSQ-PCSS), as one word of the table's header (light_shadow_filter.h PackParams): bits 0-3 the gathers a side (2: the 4 x 4
+// texel footprint, 3: 6 x 6, 4: 8 x 8), bits 8-23 the lamp's radius in millimetres; 0 is the default (2 gathers, LSL_LAMP_RADIUS).
+uint LslKernelWord();
 
 // The two bits of entry `entry` in the header's `layers`.
 uint LslLayerBits(uint layers, uint entry) {
@@ -92,6 +97,69 @@ int LslQuadCol(int k) {
 }
 int LslQuadRow(int k) {
   return k < 2 ? 1 : 0;
+}
+
+// THE WIDE FOOTPRINT of the surface lookup (HSQ-PCSS): G x G gathers' worth of texels, 2 G a side, read one by one; the same arithmetic as the 4 x 4 case for any G (light_shadow_filter.h
+// ViewLit is the reference): the receiver's plane at each texel, the blockers averaged over the whole footprint, the lamp's penumbra through them as a kernel half width held to
+// [LSL_PCF_MIN_RADIUS, G - 0.5], the box's weights by the part of each texel it covers. `zr` is the receiver's depth less its bias, `(cx, cy)` its place in texels. Its own function: the
+// arrays below are indexed by the loops' variables, which the default 4 x 4 path (unrolled, in registers) never has to pay for.
+float LslWideShare(uint slot, float cx, float cy, float zr, float grad_x, float grad_y, float len_u, float len_v, float sz, float a_scale, int gathers, float lamp_radius, float fade) {
+  int side = 2 * gathers;
+  float first_x = floor(cx - 0.5f) - float(gathers - 1);
+  float first_y = floor(cy - 0.5f) - float(gathers - 1);
+  int ix = int(first_x);
+  int iy = int(first_y);
+  float stored[64];  // the footprint, row by row (rows from the lowest), `side` columns
+  float lit[64];
+  for (int r = 0; r < side; ++r) {
+    float oy = first_y + 0.5f + float(r) - cy;
+    for (int c = 0; c < side; ++c) {
+      float ox = first_x + 0.5f + float(c) - cx;
+      float texel = LslTexel(slot, ix + c, iy + r);
+      float need = min(zr + grad_x * ox + grad_y * oy, 1.0f);
+      stored[r * side + c] = texel;
+      lit[r * side + c] = texel >= need ? 1.0f : 0.0f;
+    }
+  }
+  // The blockers, in the order of the gathers' components (quad by quad: the reference's order).
+  float blockers = 0.0f;
+  float blocker_sum = 0.0f;
+  for (int q = 0; q < gathers * gathers; ++q) {
+    for (int k = 0; k < 4; ++k) {
+      int col = 2 * (q % gathers) + LslQuadCol(k);
+      int row = 2 * (q / gathers) + LslQuadRow(k);
+      float blocks = 1.0f - lit[row * side + col];
+      blockers += blocks;
+      blocker_sum += stored[row * side + col] * blocks;
+    }
+  }
+  if (blockers < 0.5f) {
+    return 1.0f;
+  }
+  if (blockers > float(side * side) - 0.5f) {
+    return lerp(1.0f, 0.0f, fade);
+  }
+  float mean_blocker = blocker_sum / blockers;
+  float radius = lamp_radius * 0.5f * (len_u + len_v) * (sz - mean_blocker) / max(a_scale - sz, 1.0e-6f);
+  radius = min(max(radius, LSL_PCF_MIN_RADIUS), float(gathers) - 0.5f);
+  float wx[8];
+  float wy[8];
+  for (int k = 0; k < side; ++k) {
+    float ex = first_x + float(k);
+    float ey = first_y + float(k);
+    wx[k] = saturate(min(ex + 1.0f, cx + radius) - max(ex, cx - radius));
+    wy[k] = saturate(min(ey + 1.0f, cy + radius) - max(ey, cy - radius));
+  }
+  float share = 0.0f;
+  for (int b = 0; b < side; ++b) {
+    float along = 0.0f;
+    for (int a = 0; a < side; ++a) {
+      along += wx[a] * lit[b * side + a];
+    }
+    share += wy[b] * along;
+  }
+  share /= 4.0f * radius * radius;
+  return lerp(1.0f, saturate(share), fade);
 }
 
 // THE SURFACE LOOKUP, one view at the world point (px, py, pz) of the surface with the unit normal (nx, ny, nz): 1 lit .. 0 in shadow (light_shadow_filter.h ViewLit, line for line).
@@ -150,9 +218,19 @@ float LslPlaneLit(LslView v, float px, float py, float pz, float nx, float ny, f
   float bias = v.bias + LSL_SLOPE_BIAS * (abs(grad_x) + abs(grad_y));
   float zr = sz - bias;
 
-  // The footprint: texels first .. first + 3 on each axis, each read once (the lit shaders read the same sixteen with four gathers).
+  // The kernel word: the gathers a side (2 .. LSL_MAX_GATHERS) and the lamp's radius.
+  uint word = LslKernelWord();
+  uint gathers = word & 15u;
+  gathers = gathers < 2u ? 2u : (gathers > uint(LSL_MAX_GATHERS) ? uint(LSL_MAX_GATHERS) : gathers);
+  uint millimetres = (word >> 8u) & 65535u;
+  float lamp_radius = millimetres == 0u ? LSL_LAMP_RADIUS : float(millimetres) * 0.001f;
   float cx = sx / tx;  // the receiver's place in texels of the atlas
   float cy = sy / ty;
+  if (gathers > 2u) {
+    return LslWideShare(slot, cx, cy, zr, grad_x, grad_y, len_u, len_v, sz, a_scale, int(gathers), lamp_radius, fade);
+  }
+
+  // The footprint: texels first .. first + 3 on each axis, each read once (the lit shaders read the same sixteen with four gathers).
   float first_x = floor(cx - 0.5f) - 1.0f;
   float first_y = floor(cy - 0.5f) - 1.0f;
   int ix = int(first_x);
@@ -199,7 +277,7 @@ float LslPlaneLit(LslView v, float px, float py, float pz, float nx, float ny, f
   // CONTACT HARDENING. The lamp's disc seen from the receiver through the blockers' plane has the radius R (w_r - w_b) / w_r there; a texel is w_b / (w_r |ju|) wide there, and
   // w_b / w_r = (A - z_r) / (A - z_b), so the kernel's half width in texels is R |ju| (z_r - z_b) / (A - z_r).
   float mean_blocker = blocker_sum / blockers;
-  float radius = LSL_LAMP_RADIUS * 0.5f * (len_u + len_v) * (sz - mean_blocker) / max(a_scale - sz, 1.0e-6f);
+  float radius = lamp_radius * 0.5f * (len_u + len_v) * (sz - mean_blocker) / max(a_scale - sz, 1.0e-6f);
   radius = min(max(radius, LSL_PCF_MIN_RADIUS), LSL_PCF_MAX_RADIUS);
   // The box [c - r, c + r] over the texel intervals [e, e + 1] of the footprint, each texel by the part of it the box covers (the weights along an axis sum to 2 r).
   float wx[4];
