@@ -108,6 +108,7 @@ int main() {
     std::printf("curl_get_test: skipped: no libcurl.so.4 on this machine (a request answers !ok with a reason)\n");
     const auto answer = HttpGet("http://127.0.0.1:1/", milliseconds(100));
     Check(!answer.ok && !answer.why.empty(), "without libcurl a GET says why it did not run");
+    Check(answer.why.find("libcurl") != std::string::npos, "and the reason names libcurl and what the loader said: " + answer.why);
     return g_failures == 0 ? 0 : 1;
   }
 

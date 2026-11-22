@@ -48,12 +48,18 @@ const Curl& Library() {
   static std::once_flag once;
   std::call_once(once, [] {
     const char* const kNames[] = {"libcurl.so.4", "libcurl-gnutls.so.4"};
+    // What the loader said for each name: "libcurl.so.4: cannot open shared object file" when it is not installed, but also the missing library behind an
+    // installed one ("libssl.so.3: ...") or a symbol version it lacks, which "not installed" would report wrongly.
+    std::string errors;
     for (const char* name : kNames) {
       curl.handle = dlopen(name, RTLD_NOW | RTLD_LOCAL);
       if (curl.handle) break;
+      const char* error = dlerror();
+      if (!errors.empty()) errors += "; ";
+      errors += (error && *error) ? error : name;
     }
     if (!curl.handle) {
-      curl.why = "libcurl.so.4 is not installed";
+      curl.why = "libcurl could not be loaded (" + errors + ")";
       return;
     }
     int (*global_init)(long) = nullptr;
