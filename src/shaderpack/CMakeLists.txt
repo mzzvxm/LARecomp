@@ -126,6 +126,9 @@ target_include_directories(larecomp_shaderpack PRIVATE
 # PRIVATE: the translator's headers are only used inside the library (consumers get the archive,
 # not LAR-XenosRecomp's include path).
 target_link_libraries(larecomp_shaderpack PRIVATE XenosRecompLib)
+# The packs and the stamp are written with src/os/file_replace.h (parallel processes share the shader folder); the tools and tests that link this library get it with it.
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/LarecompFileReplace.cmake")
+target_link_libraries(larecomp_shaderpack PUBLIC larecomp_file_replace)
 
 # ---- the HDR scene variant's curve -------------------------------------------------------------
 # variants/hdr_scene.cpp pastes the HDR scene's curve into the game's tone map shader. The curve is a file of

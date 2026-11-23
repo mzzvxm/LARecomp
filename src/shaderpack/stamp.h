@@ -79,7 +79,7 @@ class Stamp {
   std::string ToText() const;
   static Stamp Parse(std::string_view text);
   static bool Read(const std::filesystem::path& path, Stamp* out, std::string* error);
-  // Writes <path>.tmp and moves it into place.
+  // Writes a temporary file of its own beside <path> and moves it into place in one step (os/file_replace.h).
   bool Write(const std::filesystem::path& path, std::string* error) const;
 
  private:

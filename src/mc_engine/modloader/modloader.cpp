@@ -37,6 +37,7 @@
 #endif
 
 #include "../../larecomp_log.h"
+#include "os/file_replace.h"
 #include "gltf.h"
 #include "objmesh.h"
 #include "rim_names.h"
@@ -136,12 +137,17 @@ std::filesystem::path ExeDir() {
 constexpr uint32_t kTemplateMagic = 0x4D545031u;  // 'MTP1'
 
 bool LoadTemplateCache(const std::filesystem::path& path, Rsc5Resource& out) {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
     if (!in) return false;
+    const std::streamoff file_size = in.tellg();
+    in.seekg(0, std::ios::beg);
 
     uint32_t header[5] = {};
     in.read(reinterpret_cast<char*>(header), sizeof(header));
     if (!in || header[0] != kTemplateMagic) return false;
+    // The file has to hold what the header says, before a buffer of that size is made: a cut-short or damaged cache is left out (and extracted again), it does not ask
+    // for gigabytes. (A file with more bytes than that, as older builds could write, is read as it always was.)
+    if (file_size < 0 || uint64_t(file_size) < sizeof(header) + uint64_t(header[1]) + uint64_t(header[2])) return false;
 
     out.virtual_size = header[1];
     out.physical_size = header[2];
@@ -155,17 +161,15 @@ bool LoadTemplateCache(const std::filesystem::path& path, Rsc5Resource& out) {
 }
 
 void SaveTemplateCache(const std::filesystem::path& path, const Rsc5Resource& resource) {
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-
-    std::ofstream out(path, std::ios::binary);
-    if (!out) return;
-
     const uint32_t header[5] = {kTemplateMagic, resource.virtual_size, resource.physical_size,
                                 resource.type, resource.flag};
-    out.write(reinterpret_cast<const char*>(header), sizeof(header));
-    out.write(reinterpret_cast<const char*>(resource.data.data()),
-              static_cast<std::streamsize>(resource.data.size()));
+    std::vector<uint8_t> bytes(sizeof(header) + resource.data.size());
+    std::memcpy(bytes.data(), header, sizeof(header));
+    if (!resource.data.empty()) std::memcpy(bytes.data() + sizeof(header), resource.data.data(), resource.data.size());
+    // Under a temporary name of its own and in one step over the old file (os/file_replace.h): two games that extract the same template at once (parallel runs share the
+    // cache folder) each write a whole file, and one that reads while another writes never sees half of it. A failure leaves no cache; the template is extracted again.
+    std::string why;
+    (void)larecomp::os::WriteFileReplacing(path, bytes.data(), bytes.size(), &why);
 }
 
 // Pulls a resource out of the shipped archive and decompresses it.

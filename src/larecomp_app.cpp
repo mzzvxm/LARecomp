@@ -57,6 +57,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/core/logging.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "mc_engine/music/audio_output.h"
+#include "os/file_replace.h"
 #include "process_exit.h"
 #include "mc_engine/core/config_save.h"
 #include "mc_engine/menus/debug_menu.h"
@@ -166,7 +167,9 @@ bool CanWriteTo(const std::filesystem::path& dir) {
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   if (!std::filesystem::is_directory(dir, ec)) return false;
-  const std::filesystem::path probe = dir / ".larecomp_write_test";
+  // A name of its own: two games that start together probe the same folder, and one that finds the other's file open or just removed must not conclude that the folder
+  // cannot be written (os/file_replace.h).
+  const std::filesystem::path probe = larecomp::os::UniqueTempPath(dir / ".larecomp_write_test");
   {
     std::ofstream f(probe, std::ios::binary | std::ios::trunc);
     if (!f || !(f << 'x') || !f.flush()) return false;

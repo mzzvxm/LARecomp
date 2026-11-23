@@ -1,26 +1,36 @@
-// A check that needs no game, no archive, no renderer and no SDK: how the city pack's files are written when parallel processes share the cache folder
-// (file_replace.h). Build: cmake --build <dir> --target larecomp_file_replace_test (src/citypack/CMakeLists.txt); run: larecomp_file_replace_test [<scratch folder>]
-// (exit 0 = passed).
+// A check that needs no game, no archive, no renderer and no SDK: how the caches, packs and lists that parallel processes share are written (src/os/file_replace.h), and
+// the readers' side of two of them (gpu/cache_file_check.h, native_gfx/d3d12/library_file.h). Build: cmake --build <dir> --target larecomp_file_replace_test
+// (CMakeLists.txt); run: larecomp_file_replace_test [<scratch folder>] (exit 0 = passed).
 //
 // The case of 2026-11-22 (integ-ab-vk-off2): two runs of a test batch built the city hit data at the same time into one cache. Both wrote "<name>.tmp", one
-// moved the other's file away, and the second one's rename failed: "the texture file could not be moved into place", the city effects stayed off that session.
+// moved the other's file away, and the second one's rename failed: "the texture file could not be moved into place", the city effects stayed off that session. The
+// pipeline caches, the shader packs and their stamps, the Direct3D 12 library and the mod loader's template cache had the same pattern (CACHE-WRITE-RACE-2).
 //
 // What it proves:
 //   * THE NAMES: the temporary names are unique per call and per thread (a hundred calls on eight threads give 800 names), in the target's own folder, and
-//     IsTempNameOf knows them (and the old "<name>.tmp") and nothing else; SweepStaleTemps removes the old ones of that target only;
+//     IsTempNameOf knows them (and the old "<name>.tmp") and nothing else; SweepStaleTemps removes the old ones of that target only; UniqueTempPath (the write probes'
+//     name) makes no file and sweeps nothing;
 //   * THE DECISION (hooked tries, no real file system waiting): a first try that works moves once; a busy file is tried again with growing waits until it
 //     works; a file that stays busy with the SAME bytes in place is a success (kAlreadyThere, the temporary file removed, the old file untouched); with other bytes it
 //     is a failure that leaves the old file alone and removes the temporary one; an error that is not "busy" is not tried again;
 //   * THE FILES: a move over nothing, over an old file; on Windows an old file that another handle holds open without delete sharing (what a reader's ifstream
 //     does): other bytes fail, the same bytes pass, and a handle that is let go after 120 ms is waited for;
+//   * WriteFileReplacing (what the pipeline caches, the stamps, the shader packs and the template cache use): folders made, an empty file, no temporary file left,
+//     a failure with a reason that leaves the old file alone;
 //   * THE RACE: eight threads write the same bytes to one target through their own temporary files, twenty rounds, and every one ends kMoved or kAlreadyThere with the
-//     right bytes in place and no temporary file left.
+//     right bytes in place and no temporary file left; six writers with DIFFERENT whole files (two games with different pipeline records) leave one of the whole
+//     files, never a mix;
+//   * A READER DURING THE REPLACE: a reader that opens and reads the file over and over while three writers replace it sees only whole files (each one checks itself:
+//     magic, length, hash), never a missing file, never half of one;
+//   * THE READERS' CHECKS: the record count of a pipeline cache is believed only when the file can hold that many records; the Direct3D 12 library file is SEALED
+//     (header, size and hash match), LEGACY (no header) or DAMAGED (cut short, a flipped byte in the library or in the header, a header of another file, a byte too many).
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -39,10 +49,13 @@
 #include <windows.h>
 #endif
 
-#include "citypack/file_replace.h"
+#include "gpu/cache_file_check.h"
+#include "native_gfx/d3d12/library_file.h"
+#include "os/file_replace.h"
 
-using namespace larecomp::citypack;
+using namespace larecomp::os;
 namespace fs = std::filesystem;
+namespace lf = mcla::native_gfx::library_file;
 
 namespace {
 
@@ -85,6 +98,41 @@ size_t CountTemps(const fs::path& folder) {
     if (e.path().extension() == ".tmp") ++n;
   }
   return n;
+}
+
+// A file that checks itself: magic, a version number, the length of the body, the body, and a hash of all that. A reader that gets half of one, or a mix of two, fails
+// CheckVersioned; that is what the real formats' readers do with their own magic, sizes and hashes.
+uint64_t Fnv(const std::string& bytes, size_t n) {
+  uint64_t h = 1469598103934665603ull;
+  for (size_t i = 0; i < n; ++i) {
+    h ^= uint8_t(bytes[i]);
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+std::string MakeVersioned(uint32_t id, size_t body_size) {
+  std::string out("VERS", 4);
+  out.append(reinterpret_cast<const char*>(&id), 4);
+  const uint64_t n = body_size;
+  out.append(reinterpret_cast<const char*>(&n), 8);
+  out += Bytes(body_size, id);
+  const uint64_t h = Fnv(out, out.size());
+  out.append(reinterpret_cast<const char*>(&h), 8);
+  return out;
+}
+
+// The id of a whole versioned file, 0 for anything else (ids start at 1).
+uint32_t CheckVersioned(const std::string& bytes) {
+  if (bytes.size() < 24 || bytes.compare(0, 4, "VERS") != 0) return 0;
+  uint32_t id = 0;
+  uint64_t n = 0;
+  uint64_t h = 0;
+  std::memcpy(&id, bytes.data() + 4, 4);
+  std::memcpy(&n, bytes.data() + 8, 8);
+  if (n != bytes.size() - 24) return 0;
+  std::memcpy(&h, bytes.data() + bytes.size() - 8, 8);
+  return h == Fnv(bytes, bytes.size() - 8) ? id : 0;
 }
 
 void TestNames(const fs::path& dir) {
@@ -420,6 +468,229 @@ void TestRace(const fs::path& dir) {
   CHECK(CountTemps(folder) == 0);
 }
 
+void TestUniqueTempPath(const fs::path& dir) {
+  const fs::path folder = dir / "unique";
+  fs::create_directories(folder);
+  const fs::path target = folder / ".larecomp_write_test";
+  const auto old_time = fs::file_time_type::clock::now() - std::chrono::hours(3);
+  Write(folder / ".larecomp_write_test.1.1.tmp", "old");
+  fs::last_write_time(folder / ".larecomp_write_test.1.1.tmp", old_time);
+  const fs::path a = UniqueTempPath(target);
+  const fs::path b = UniqueTempPath(target);
+  CHECK(a != b);
+  CHECK(a.parent_path() == folder);
+  CHECK(IsTempNameOf(a.filename().string(), ".larecomp_write_test"));
+  CHECK(!fs::exists(a) && !fs::exists(b));                         // no file is made
+  CHECK(fs::exists(folder / ".larecomp_write_test.1.1.tmp"));      // and nothing is swept
+  (void)TempPathFor(target);
+  CHECK(!fs::exists(folder / ".larecomp_write_test.1.1.tmp"));     // TempPathFor sweeps the old one
+}
+
+void TestWriteFileReplacing(const fs::path& dir) {
+  const fs::path folder = dir / "write";
+  fs::create_directories(folder);
+  const fs::path target = folder / "sub" / "deeper" / "list.bin";  // the folders are made
+  const std::string a = Bytes(100000, 31);
+  const std::string b = Bytes(70000, 32);
+  std::string why;
+  CHECK(WriteFileReplacing(target, a.data(), a.size(), &why) == MoveResult::kMoved);
+  CHECK(Read(target) == a);
+  CHECK(WriteFileReplacing(target, b.data(), b.size(), &why) == MoveResult::kMoved);  // over an old file
+  CHECK(Read(target) == b);
+  CHECK(Succeeded(WriteFileReplacing(target, b.data(), b.size(), &why)) && Read(target) == b);  // the same bytes again
+  CHECK(WriteFileReplacing(target, nullptr, 0, &why) == MoveResult::kMoved);                  // an empty file
+  CHECK(fs::exists(target) && fs::file_size(target) == 0);
+  CHECK(CountTemps(target.parent_path()) == 0);
+
+  // a folder that cannot be made (a file is in the way): a failure with a reason, the file in the way untouched, no temporary file
+  Write(folder / "blocker", "x");
+  why.clear();
+  CHECK(WriteFileReplacing(folder / "blocker" / "list.bin", a.data(), a.size(), &why) == MoveResult::kFailed);
+  CHECK(!why.empty());
+  CHECK(Read(folder / "blocker") == "x");
+  CHECK(CountTemps(folder) == 0);
+
+  // a file that stays busy: other bytes in place are left alone, the same bytes are a success; the temporary file is removed either way
+  MoveHooks busy;
+  busy.try_move = [](const fs::path&, const fs::path&, std::string* reason) {
+    if (reason) *reason = "access denied";
+    return MoveError::kBusy;
+  };
+  busy.wait = [](int) {};
+  Write(target, a);
+  why.clear();
+  CHECK(WriteFileReplacing(target, b.data(), b.size(), &why, {}, busy) == MoveResult::kFailed);
+  CHECK(why.find("access denied") != std::string::npos);
+  CHECK(Read(target) == a);
+  CHECK(WriteFileReplacing(target, a.data(), a.size(), &why, {}, busy) == MoveResult::kAlreadyThere);
+  CHECK(Read(target) == a);
+  CHECK(CountTemps(target.parent_path()) == 0);
+}
+
+// Six writers with different whole files (two games with different pipeline records, say) replace one target: whoever is last wins, and the file is whole.
+void TestRaceDifferentFiles(const fs::path& dir) {
+  const fs::path folder = dir / "race_different";
+  fs::create_directories(folder);
+  const fs::path target = folder / "pipelines.cache";
+  std::atomic<int> failed{0};
+  std::vector<std::thread> pool;
+  for (uint32_t t = 1; t <= 6; ++t) {
+    pool.emplace_back([&, t] {
+      for (uint32_t round = 0; round < 25; ++round) {
+        const std::string bytes = MakeVersioned(t * 1000 + round, 30000 + size_t(t) * 777);
+        std::string why;
+        if (!Succeeded(WriteFileReplacing(target, bytes.data(), bytes.size(), &why))) {
+          ++failed;
+          std::printf("  race: a write failed: %s\n", why.c_str());
+        }
+      }
+    });
+  }
+  for (std::thread& t : pool) t.join();
+  CHECK(failed == 0);
+  CHECK(CheckVersioned(Read(target)) != 0);  // one writer's whole file, not a mix
+  CHECK(CountTemps(folder) == 0);
+}
+
+// A reader that opens and reads the file over and over while writers replace it: a whole file every time (on Windows the reader's open handle makes a replace wait
+// or lose: the old file stays; nothing is half written or missing).
+void TestReaderDuringReplace(const fs::path& dir) {
+  const fs::path folder = dir / "reader";
+  fs::create_directories(folder);
+  const fs::path target = folder / "shared.pack";
+  const std::string first = MakeVersioned(1, 50000);
+  CHECK(Succeeded(WriteFileReplacing(target, first.data(), first.size(), nullptr)));
+
+  std::atomic<bool> stop{false};
+  std::atomic<int> whole{0};
+  std::atomic<int> torn{0};
+  std::atomic<int> gaps{0};
+  std::thread reader([&] {
+    while (!stop.load()) {
+      std::ifstream in(target, std::ios::binary);
+      if (!in) {
+        ++gaps;
+        continue;
+      }
+      const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      in.close();
+      if (CheckVersioned(bytes) == 0) {
+        ++torn;
+      } else {
+        ++whole;
+      }
+      std::this_thread::sleep_for(std::chrono::microseconds(300));
+    }
+  });
+  std::atomic<int> in_place{0};
+  std::atomic<int> lost{0};
+  std::vector<std::thread> writers;
+  for (uint32_t t = 0; t < 3; ++t) {
+    writers.emplace_back([&, t] {
+      for (uint32_t round = 0; round < 30; ++round) {
+        const std::string bytes = MakeVersioned(100 + t * 100 + round, 40000 + size_t(round) * 500);
+        if (Succeeded(WriteFileReplacing(target, bytes.data(), bytes.size(), nullptr))) {
+          ++in_place;
+        } else {
+          ++lost;  // the file stayed busy through every try and held other bytes: the old file is still there
+        }
+      }
+    });
+  }
+  for (std::thread& t : writers) t.join();
+  stop = true;
+  reader.join();
+  CHECK(torn == 0);
+  CHECK(gaps == 0);
+  CHECK(whole > 0);
+  CHECK(in_place >= 1);
+  CHECK(in_place + lost == 90);
+  CHECK(CheckVersioned(Read(target)) != 0);
+  CHECK(CountTemps(folder) == 0);
+  std::printf("  reader: %d whole reads, %d writes in place, %d lost to a busy file\n", whole.load(), in_place.load(), lost.load());
+}
+
+std::string Sealed(const std::string& blob) {
+  std::string out(lf::kHeaderBytes, '\0');
+  out += blob;
+  lf::FillHeader(reinterpret_cast<uint8_t*>(out.data()), reinterpret_cast<const uint8_t*>(blob.data()), blob.size());
+  return out;
+}
+
+lf::Opened OpenText(const std::string& file) { return lf::Open(reinterpret_cast<const uint8_t*>(file.data()), file.size()); }
+
+// The Direct3D 12 library file's readers' check: sealed, legacy or damaged.
+void TestLibraryFile() {
+  const std::string blob = Bytes(100003, 41);  // not a multiple of 8: the hash's tail
+  const std::string sealed = Sealed(blob);
+  CHECK(sealed.size() == blob.size() + lf::kHeaderBytes);
+  {
+    const lf::Opened o = OpenText(sealed);
+    CHECK(o.kind == lf::Kind::kSealed);
+    CHECK(o.blob_size == blob.size());
+    CHECK(o.blob == reinterpret_cast<const uint8_t*>(sealed.data()) + lf::kHeaderBytes);
+    CHECK(o.blob_size == blob.size() && std::memcmp(o.blob, blob.data(), blob.size()) == 0);
+  }
+  // an older build's file has no header: the whole file is the library, as it always was
+  {
+    const lf::Opened o = OpenText(blob);
+    CHECK(o.kind == lf::Kind::kLegacy);
+    CHECK(o.blob == reinterpret_cast<const uint8_t*>(blob.data()) && o.blob_size == blob.size());
+  }
+  CHECK(OpenText("abc").kind == lf::Kind::kLegacy);
+  CHECK(OpenText("").kind == lf::Kind::kLegacy);
+
+  // damaged: a file that was cut short (every length from the whole file down to nothing but the magic)
+  CHECK(OpenText(sealed.substr(0, sealed.size() - 1)).kind == lf::Kind::kDamaged);
+  CHECK(OpenText(sealed.substr(0, sealed.size() / 2)).kind == lf::Kind::kDamaged);
+  CHECK(OpenText(sealed.substr(0, lf::kHeaderBytes)).kind == lf::Kind::kDamaged);       // the header only
+  CHECK(OpenText(sealed.substr(0, lf::kHeaderBytes - 1)).kind == lf::Kind::kDamaged);   // a header cut short
+  CHECK(OpenText(sealed.substr(0, 10)).kind == lf::Kind::kDamaged);
+  CHECK(OpenText(sealed.substr(0, 8)).kind == lf::Kind::kDamaged);                      // the magic only
+  CHECK(OpenText(sealed + "x").kind == lf::Kind::kDamaged);                             // a byte too many
+  // damaged: one flipped byte in the library (first, middle, last), in the stored size, in the stored hash
+  for (const size_t at : {lf::kHeaderBytes, lf::kHeaderBytes + blob.size() / 2, sealed.size() - 1, size_t(8), size_t(16), size_t(23)}) {
+    std::string bad = sealed;
+    bad[at] = char(bad[at] ^ 0x10);
+    CHECK(OpenText(bad).kind == lf::Kind::kDamaged);
+  }
+  // damaged: the header of another file of the same length (the size matches, the hash does not)
+  {
+    const std::string other = Sealed(Bytes(100003, 42));
+    CHECK(OpenText(other.substr(0, lf::kHeaderBytes) + blob).kind == lf::Kind::kDamaged);
+    CHECK(OpenText(other).kind == lf::Kind::kSealed);
+  }
+  // an empty library is never written, and a header over none is not one
+  CHECK(OpenText(Sealed("")).kind == lf::Kind::kDamaged);
+  // every single flipped byte of a short library is noticed, whatever its length mod 8
+  for (size_t n = 1; n <= 40; ++n) {
+    const std::string small = Bytes(n, uint32_t(n));
+    const std::string file = Sealed(small);
+    CHECK(OpenText(file).kind == lf::Kind::kSealed);
+    for (size_t i = 0; i < file.size(); ++i) {
+      std::string bad = file;
+      bad[i] = char(bad[i] ^ 0x01);
+      // a flipped byte of the magic itself makes a file without a header: the older builds' way (the driver's own checks), the one case the header cannot catch
+      CHECK(OpenText(bad).kind == (i < 8 ? lf::Kind::kLegacy : lf::Kind::kDamaged));
+    }
+  }
+}
+
+// The pipeline cache's record count is believed only when the file can hold that many records.
+void TestRecordsFit() {
+  using mcla::gpu::cache_file::RecordsFit;
+  static_assert(RecordsFit(2, 10, 25));
+  CHECK(RecordsFit(0, 100, 0));
+  CHECK(RecordsFit(3, 100, 300));
+  CHECK(RecordsFit(3, 100, 399));
+  CHECK(!RecordsFit(4, 100, 399));
+  CHECK(!RecordsFit(1, 100, 99));
+  CHECK(!RecordsFit(0xFFFFFFFFull, 100, 5000));        // a damaged header
+  CHECK(!RecordsFit(~uint64_t(0), 100, ~uint64_t(0)));  // no overflow
+  CHECK(!RecordsFit(1, 0, 100));                        // a record of no size is no record
+  CHECK(RecordsFit(0xFFFFFFFFull, 1, 0xFFFFFFFFull));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -434,6 +705,12 @@ int main(int argc, char** argv) {
   TestDecision(dir);
   TestFiles(dir);
   TestRace(dir);
+  TestUniqueTempPath(dir);
+  TestWriteFileReplacing(dir);
+  TestRaceDifferentFiles(dir);
+  TestReaderDuringReplace(dir);
+  TestLibraryFile();
+  TestRecordsFit();
   fs::remove_all(dir, ec);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

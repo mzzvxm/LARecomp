@@ -22,6 +22,7 @@
 #include "backend.h"
 #include "device.h"
 #include "native_gfx/shader_identity.h"
+#include "os/file_replace.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_chain.h"
 #include "shaderpack/variant_pack_format.h"
@@ -40,7 +41,9 @@ bool CanWriteTo(const std::filesystem::path& dir) {
   if (!std::filesystem::is_directory(dir, ec)) {
     return false;
   }
-  const std::filesystem::path probe = dir / ".larecomp_write_test";
+  // A name of its own: two games that start together probe the same folder, and one that finds the other's file open or just removed must not conclude that the folder
+  // cannot be written (os/file_replace.h).
+  const std::filesystem::path probe = larecomp::os::UniqueTempPath(dir / ".larecomp_write_test");
   {
     std::ofstream f(probe, std::ios::binary | std::ios::trunc);
     if (!f || !(f << 'x') || !f.flush()) {

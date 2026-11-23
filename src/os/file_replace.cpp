@@ -1,4 +1,4 @@
-#include "citypack/file_replace.h"
+#include "os/file_replace.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,7 +21,7 @@
 #include <unistd.h>
 #endif
 
-namespace larecomp::citypack {
+namespace larecomp::os {
 
 namespace fs = std::filesystem;
 
@@ -53,6 +53,12 @@ MoveError RealTryMove(const fs::path& from, const fs::path& to, std::string* why
 
 void RealWait(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
+// A path as text for a message: UTF-8, which cannot fail (path::string() goes through the ANSI code page on Windows).
+std::string TextOf(const fs::path& path) {
+  const std::u8string text = path.u8string();
+  return std::string(text.begin(), text.end());
+}
+
 }  // namespace
 
 bool IsTempNameOf(const std::string& name, const std::string& base) {
@@ -82,13 +88,17 @@ int SweepStaleTemps(const fs::path& target, std::chrono::seconds older_than) {
   return removed;
 }
 
-fs::path TempPathFor(const fs::path& target) {
+fs::path UniqueTempPath(const fs::path& target) {
   static std::atomic<uint32_t> counter{0};
-  (void)SweepStaleTemps(target, std::chrono::hours(2));
   const uint32_t n = counter.fetch_add(1, std::memory_order_relaxed) + 1;
   fs::path temp = target;  // += keeps the wide characters of a Windows path (string() would go through the ANSI code page)
   temp += "." + std::to_string(ProcessId()) + "." + std::to_string(n) + ".tmp";
   return temp;
+}
+
+fs::path TempPathFor(const fs::path& target) {
+  (void)SweepStaleTemps(target, std::chrono::hours(2));
+  return UniqueTempPath(target);
 }
 
 bool ShouldRetryMove(MoveError error, int attempts_made, int max_attempts) { return error == MoveError::kBusy && attempts_made < max_attempts; }
@@ -147,4 +157,22 @@ MoveResult MoveIntoPlace(const fs::path& temp, const fs::path& target, std::stri
   return MoveResult::kFailed;
 }
 
-}  // namespace larecomp::citypack
+MoveResult WriteFileReplacing(const fs::path& target, const void* data, size_t size, std::string* why, const MoveOptions& options, const MoveHooks& hooks) {
+  std::error_code ec;
+  if (target.has_parent_path()) fs::create_directories(target.parent_path(), ec);
+  const fs::path temp = TempPathFor(target);
+  {
+    std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+    if (file && size != 0) file.write(static_cast<const char*>(data), std::streamsize(size));
+    if (file) file.flush();
+    if (!file) {
+      file.close();
+      fs::remove(temp, ec);
+      if (why) *why = "cannot write " + TextOf(temp) + " (disk full or not writable?)";
+      return MoveResult::kFailed;
+    }
+  }
+  return MoveIntoPlace(temp, target, why, options, hooks);
+}
+
+}  // namespace larecomp::os

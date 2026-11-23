@@ -1287,6 +1287,11 @@ else()
     add_subdirectory(tools/shaderpack_tool EXCLUDE_FROM_ALL)
     target_link_libraries(larecomp PRIVATE larecomp_shaderpack)
 
+    # Writing a cache, pack or list file that parallel processes share (src/os/file_replace.h): the pipeline caches and their stamp (src/gpu, src/native_gfx), the mod
+    # loader's template cache and, through larecomp_shaderpack and larecomp_citypack below, their files. cmake/LarecompFileReplace.cmake makes the target once.
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LarecompFileReplace.cmake")
+    target_link_libraries(larecomp PRIVATE larecomp_file_replace)
+
     # The city pack (src/citypack): the city's geometry for ray tracing (CITY-RT M1), built from the player's own game files and read by the
     # renderer's streamer. tools/citypack_tool is its command line, built on request:  cmake --build <dir> --target larecomp_citypack_tool
     add_subdirectory(src/citypack)
@@ -1585,6 +1590,20 @@ else()
     # std::thread: glibc before 2.34 needs libpthread named at the link.
     find_package(Threads REQUIRED)
     target_link_libraries(larecomp_thread_priority_test PRIVATE Threads::Threads)
+    # How a cache, pack or list file that parallel processes share is written (src/os/file_replace.h: a temporary name of its own, one step over the old file, tried again while another
+    # process has it open, the same bytes already there count as done; the 2026-11-22 case: two parallel runs built the hit data at once and one failed with "the texture file could
+    # not be moved into place"), and the readers' side of the pipeline caches and the Direct3D 12 library file. No game files, no archive, no SDK; the race runs eight threads:
+    #   cmake --build <dir> --target larecomp_file_replace_test, then run it [<scratch folder>] (exit 0 = passed).
+    add_executable(larecomp_file_replace_test EXCLUDE_FROM_ALL
+        src/os/file_replace_test.cpp
+        src/os/file_replace.cpp
+    )
+    target_include_directories(larecomp_file_replace_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_features(larecomp_file_replace_test PRIVATE cxx_std_23)
+    target_link_libraries(larecomp_file_replace_test PRIVATE Threads::Threads)
+    if(WIN32)
+        target_compile_definitions(larecomp_file_replace_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+    endif()
     # The AppImage variable rule (src/os/appimage_env.h) has a check that needs no game:
     #   cmake --build <dir> --target larecomp_appimage_env_test, then run it (exit 0 = passed).
     add_executable(larecomp_appimage_env_test EXCLUDE_FROM_ALL

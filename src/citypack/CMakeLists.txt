@@ -20,7 +20,6 @@ add_library(larecomp_citypack STATIC
     hit_params.cpp
     city_texture.cpp
     city_zstd.cpp
-    file_replace.cpp
     guest_hash.cpp
     lamp_merge.cpp
     lamp_parse.cpp
@@ -89,6 +88,9 @@ if(NOT TARGET larecomp_zstd)
     set_target_properties(larecomp_zstd PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 target_link_libraries(larecomp_citypack PRIVATE larecomp_zstd)
+# The pack's files are written with src/os/file_replace.h (parallel processes share the cache folder); the tools and tests that link this library get it with it.
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/LarecompFileReplace.cmake")
+target_link_libraries(larecomp_citypack PUBLIC larecomp_file_replace)
 if(WIN32)
     target_compile_definitions(larecomp_citypack PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 else()
@@ -169,17 +171,6 @@ if(LARECOMP_MSPACK_DIR AND TARGET larecomp_mspack)
 endif()
 if(WIN32)
     target_compile_definitions(larecomp_texture_set_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
-endif()
-
-# How the pack's files are written when parallel processes share the cache folder (file_replace.h: a temporary name of its own, one step over the old file, tried again while another
-# process has it open, the same bytes already there count as done; the 2026-11-22 case: two parallel runs built the hit data at once and one failed with "the texture file could not be moved
-# into place"). No game files, no archive, no SDK; the race runs eight threads:
-#   cmake --build <dir> --target larecomp_file_replace_test, then run src/citypack/larecomp_file_replace_test [<scratch folder>] (exit 0 = passed).
-add_executable(larecomp_file_replace_test EXCLUDE_FROM_ALL file_replace_test.cpp)
-target_compile_features(larecomp_file_replace_test PRIVATE cxx_std_23)
-target_link_libraries(larecomp_file_replace_test PRIVATE larecomp_citypack)
-if(WIN32)
-    target_compile_definitions(larecomp_file_replace_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()
 
 # The lamps' checks (no game files, no renderer, no archive): the section's codec and its damage, the grid's queries against brute force, the game's laws held to the volumetric

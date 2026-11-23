@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "native_gfx/shader_identity.h"
+#include "os/file_replace.h"
 #include "shaderpack/contract_checks.h"
 #include "shaderpack/gbuffer_material_pack.h"
 #include "shaderpack/hash.h"
@@ -516,14 +517,14 @@ class VariantStepImpl final : public VariantStep {
 
   void BuildChecked(const VariantStepInput& input, VariantStepResult* result) const {
     const std::filesystem::path final_path = input.out_dir / kVariantPackFileName;
-    const std::filesystem::path temporary_path = input.out_dir / (std::string(kVariantPackFileName) + ".tmp");
+    // A name of its own (os/file_replace.h): another game that starts now may build the same pack in this folder.
+    const std::filesystem::path temporary_path = larecomp::os::TempPathFor(final_path);
     {
       // Whatever variant pack is there was built beside a main pack that is being replaced (or from
       // older edits): it must not be read while this step runs or when it fails. Nor the first and second
       // versions' files, which nothing reads any more (the reader refuses a file of another version anyway).
       std::error_code ec;
       std::filesystem::remove(final_path, ec);
-      std::filesystem::remove(temporary_path, ec);
       std::filesystem::remove(input.out_dir / kLegacyHdrPackFileName, ec);
       std::filesystem::remove(input.out_dir / kLegacyVariantPackFileName, ec);
     }

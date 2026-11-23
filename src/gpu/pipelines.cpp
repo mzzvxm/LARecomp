@@ -27,6 +27,7 @@
 #include <rex/logging/log_category.h>
 
 #include "backend.h"
+#include "cache_file_check.h"
 #include "car_selfrefl.h"
 #include "city_refl.h"
 #include "constants.h"
@@ -37,6 +38,7 @@
 #include "headlight_rig.h"
 #include "layout.h"
 #include "mc_engine/core/threading.h"
+#include "os/file_replace.h"
 #include "os/thread_priority.h"
 #include "pipeline_wait.h"
 #include "shadow_filter.h"
@@ -201,6 +203,7 @@ class Reader {
     return true;
   }
   bool Get32(uint32_t* v) { return Get(v, 4); }
+  size_t Remaining() const { return size_ - at_; }
 
  private:
   const uint8_t* data_;
@@ -1470,6 +1473,10 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
     }
     layouts.push_back(std::move(s));
   }
+  // The count is checked against what is left of the file before a vector of that size is made: a damaged header must not ask for billions of records (cache_file_check.h).
+  if (!cache_file::RecordsFit(header.record_count, sizeof(PipelineKey) + sizeof(uint32_t), in.Remaining())) {
+    return discard("the record count does not fit the file");
+  }
   std::vector<Record> records(header.record_count);
   for (Record& r : records) {
     if (!in.Get(&r.key, sizeof(r.key)) || !in.Get32(&r.layout) || r.layout >= layouts.size()) {
@@ -1556,23 +1563,12 @@ std::vector<uint8_t> Pipelines::SerializeRecords() const {
 
 void Pipelines::WriteCacheFile(const std::vector<uint8_t>& bytes, size_t records,
                                size_t layouts) const {
-  std::error_code ec;
-  std::filesystem::create_directories(cache_path_.parent_path(), ec);
-  std::filesystem::path temp = cache_path_;
-  temp += ".tmp";
-  {
-    std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-    file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
-    if (!file) {
-      REXLOG_ERROR("[gpu] pipelines: the cache {} could not be written",
-                   temp.string());
-      return;
-    }
-  }
-  std::filesystem::rename(temp, cache_path_, ec);
-  if (ec) {
-    REXLOG_ERROR("[gpu] pipelines: the cache {} could not replace the old one: {}",
-                 cache_path_.string(), ec.message());
+  // A temporary name of its own and one step over the old file (os/file_replace.h): the games of a test batch share this folder, and the autosave thread and the
+  // end-of-session save of one game must not share a temporary file either. The other game's file in place is replaced by this one's (its records were loaded
+  // into this session at the start, so nothing but what the other game found since is left out; the next start has it again).
+  std::string why;
+  if (!larecomp::os::Succeeded(larecomp::os::WriteFileReplacing(cache_path_, bytes.data(), bytes.size(), &why))) {
+    REXLOG_ERROR("[gpu] pipelines: the cache {} could not be written: {}", cache_path_.string(), why);
     return;
   }
   REXLOG_INFO("[gpu] pipelines: {} records ({} new this session, {} from the other API's file) "

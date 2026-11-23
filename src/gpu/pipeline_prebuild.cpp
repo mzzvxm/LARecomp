@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "os/file_replace.h"
 #include "settings/larecomp_settings.h"
 #include <rex/platform/file.h>
 #include <rex/logging/log_category.h>
@@ -141,23 +142,12 @@ std::string WhatChanged(const std::string& have, const std::string& expected) {
   return "the stamp differs";
 }
 
+// A temporary name of its own and one step over the old stamp (os/file_replace.h): the prebuild of one start and the game of another may write the same stamp at once. A
+// stamp that is read half way or replaced meanwhile only makes the next start build again (ReadAll below compares text), it is never believed wrongly.
 void WriteStamp(const std::filesystem::path& path, const std::string& text) {
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  std::filesystem::path temp = path;
-  temp += ".tmp";
-  {
-    std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-    file.write(text.data(), std::streamsize(text.size()));
-    if (!file) {
-      REXLOG_ERROR("[gpu] pipelines: the stamp {} could not be written", Utf8(temp));
-      return;
-    }
-  }
-  std::filesystem::rename(temp, path, ec);
-  if (ec) {
-    REXLOG_ERROR("[gpu] pipelines: the stamp {} could not replace the old one: {}", Utf8(path),
-                 ec.message());
+  std::string why;
+  if (!larecomp::os::Succeeded(larecomp::os::WriteFileReplacing(path, text.data(), text.size(), &why))) {
+    REXLOG_ERROR("[gpu] pipelines: the stamp {} could not be written: {}", Utf8(path), why);
   }
 }
 

@@ -11,7 +11,7 @@
 #include <sstream>
 #include <thread>
 
-#include "citypack/file_replace.h"
+#include "os/file_replace.h"
 #include "citypack/hit_params.h"
 #include "citypack/material_class.h"
 #include "citypack/stamp.h"
@@ -701,7 +701,7 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
 
   // The file: the head, then the body copied behind it, under a temporary name; then moved into place.
   // A temporary name of its own (file_replace.h): parallel processes that build the same data at the same time share the cache folder.
-  const std::filesystem::path temp_path = TempPathFor(result.hit_path);
+  const std::filesystem::path temp_path = os::TempPathFor(result.hit_path);
   {
     std::ofstream out(temp_path, std::ios::binary | std::ios::trunc);
     std::ifstream in(body_path, std::ios::binary);
@@ -729,7 +729,7 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
   }
   {
     std::string why;
-    if (MoveIntoPlace(temp_path, result.hit_path, &why) == MoveResult::kFailed) return fail("the hit file could not be moved into place: " + why);
+    if (os::MoveIntoPlace(temp_path, result.hit_path, &why) == os::MoveResult::kFailed) return fail("the hit file could not be moved into place: " + why);
   }
 
   // The texture file (the set's), with the hit table's hash in its header.

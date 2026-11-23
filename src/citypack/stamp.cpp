@@ -5,7 +5,7 @@
 #include <fstream>
 #include <sstream>
 
-#include "citypack/file_replace.h"
+#include "os/file_replace.h"
 #include "citypack/pack_format.h"
 
 namespace larecomp::citypack {
@@ -112,7 +112,7 @@ bool Stamp::Read(const std::filesystem::path& path, Stamp* out, std::string* err
 }
 
 bool Stamp::Write(const std::filesystem::path& path, std::string* error) const {
-  const std::filesystem::path temp = TempPathFor(path);  // a name of its own: parallel processes share the cache folder (file_replace.h)
+  const std::filesystem::path temp = os::TempPathFor(path);  // a name of its own: parallel processes share the cache folder (file_replace.h)
   {
     std::ofstream out(temp, std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -127,7 +127,7 @@ bool Stamp::Write(const std::filesystem::path& path, std::string* error) const {
     }
   }
   std::string why;
-  if (MoveIntoPlace(temp, path, &why) == MoveResult::kFailed) {
+  if (os::MoveIntoPlace(temp, path, &why) == os::MoveResult::kFailed) {
     if (error) *error = "the stamp could not be moved into place: " + why;
     return false;
   }

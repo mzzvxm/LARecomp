@@ -11,7 +11,7 @@
 #include <sstream>
 #include <thread>
 
-#include "citypack/file_replace.h"
+#include "os/file_replace.h"
 #include "citypack/material_class.h"
 #include "settings/immortal.h"
 #include "mc_engine/modloader/rpf3.h"
@@ -524,7 +524,7 @@ BuildResult BuildCityPack(const BuildRequest& request, ProgressSink* sink_in) {
   header.names_offset = header.table_offset + uint64_t(count) * kSectorRecordBytes;
   header.blobs_offset = (header.names_offset + names.size() + 15) & ~uint64_t(15);
 
-  const std::filesystem::path temp_path = TempPathFor(result.pack_path);  // a name of its own: parallel processes share the cache folder (file_replace.h)
+  const std::filesystem::path temp_path = os::TempPathFor(result.pack_path);  // a name of its own: parallel processes share the cache folder (file_replace.h)
   std::ofstream out;
   if (!request.census_only) {
     std::error_code ec;
@@ -690,7 +690,7 @@ BuildResult BuildCityPack(const BuildRequest& request, ProgressSink* sink_in) {
 
   {
     std::string why;
-    if (MoveIntoPlace(temp_path, result.pack_path, &why) == MoveResult::kFailed) return fail("the pack could not be moved into place: " + why);
+    if (os::MoveIntoPlace(temp_path, result.pack_path, &why) == os::MoveResult::kFailed) return fail("the pack could not be moved into place: " + why);
   }
 
   StampInputs stamp_in = stamp_base;

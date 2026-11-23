@@ -14,6 +14,8 @@
 #include "../geometry.h"
 #include "context.h"
 #include "device_manager.h"
+#include "library_file.h"
+#include "os/file_replace.h"
 #include "shader_db.h"
 #include "settings/larecomp_settings.h"
 
@@ -370,21 +372,34 @@ void PipelineCache::InitializePipelineLibrary(D3D12Context& context) {
       bool from_file = false;
       library_blob_.resize(static_cast<size_t>(size));
       if (file.read(reinterpret_cast<char*>(library_blob_.data()), size)) {
-        HRESULT hr = dev1->CreatePipelineLibrary(library_blob_.data(), library_blob_.size(),
-                                                 IID_PPV_ARGS(&pipeline_library_));
-        if (SUCCEEDED(hr)) {
-          from_file = true;
-          REXLOG_INFO("[native_gfx] ID3D12PipelineLibrary loaded from {} ({} bytes)",
-                      library_path_, size);
-        } else if (hr == D3D12_ERROR_DRIVER_VERSION_MISMATCH) {
-          REXLOG_WARN("[native_gfx] Pipeline library driver version mismatch; re-creating empty library");
+        // What the file is (library_file.h): a header of ours that the rest of the file matches (the library follows it), a file an older build wrote (the library
+        // is all of it), or a damaged one, which never goes to the driver.
+        const library_file::Opened opened = library_file::Open(library_blob_.data(), library_blob_.size());
+        if (opened.kind == library_file::Kind::kDamaged) {
+          REXLOG_WARN("[native_gfx] Pipeline library file {} is damaged (its size or hash does not match its header); re-creating empty", library_path_);
           dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
           library_dirty_ = true;
         } else {
-          REXLOG_WARN("[native_gfx] Failed to load pipeline library (HRESULT 0x{:08X}); re-creating empty",
-                      static_cast<uint32_t>(hr));
-          dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
-          library_dirty_ = true;
+          if (opened.kind == library_file::Kind::kSealed) {
+            // The header is taken off in place: the bytes stay where the driver will keep a pointer to them.
+            library_blob_.erase(library_blob_.begin(), library_blob_.begin() + std::ptrdiff_t(library_file::kHeaderBytes));
+          }
+          HRESULT hr = dev1->CreatePipelineLibrary(library_blob_.data(), library_blob_.size(),
+                                                   IID_PPV_ARGS(&pipeline_library_));
+          if (SUCCEEDED(hr)) {
+            from_file = true;
+            REXLOG_INFO("[native_gfx] ID3D12PipelineLibrary loaded from {} ({} bytes)",
+                        library_path_, library_blob_.size());
+          } else if (hr == D3D12_ERROR_DRIVER_VERSION_MISMATCH) {
+            REXLOG_WARN("[native_gfx] Pipeline library driver version mismatch; re-creating empty library");
+            dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
+            library_dirty_ = true;
+          } else {
+            REXLOG_WARN("[native_gfx] Failed to load pipeline library (HRESULT 0x{:08X}); re-creating empty",
+                        static_cast<uint32_t>(hr));
+            dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
+            library_dirty_ = true;
+          }
         }
       }
       if (!from_file) {
@@ -409,40 +424,27 @@ void PipelineCache::SaveLibraryAtShutdown() {
   if (size == 0) {
     return;
   }
-  std::vector<uint8_t> buffer(size);
-  HRESULT hr = pipeline_library_->Serialize(buffer.data(), buffer.size());
+  // The file is a header of ours (library_file.h: size and hash) and the library after it.
+  std::vector<uint8_t> buffer(library_file::kHeaderBytes + size);
+  uint8_t* const library = buffer.data() + library_file::kHeaderBytes;
+  HRESULT hr = pipeline_library_->Serialize(library, size);
   if (FAILED(hr)) {
     REXLOG_WARN("[native_gfx] Failed to serialize pipeline library: HRESULT 0x{:08X}",
                 static_cast<uint32_t>(hr));
     return;
   }
+  library_file::FillHeader(buffer.data(), library, size);
 
-  std::filesystem::path path(library_path_);
-  std::error_code ec;
-  if (path.has_parent_path()) {
-    std::filesystem::create_directories(path.parent_path(), ec);
-  }
-
-  std::filesystem::path temp_path = path;
-  temp_path += ".tmp";
-
-  FILE* f = std::fopen(temp_path.string().c_str(), "wb");
-  if (!f) {
-    REXLOG_WARN("[native_gfx] Failed to open temp file for pipeline library: {}", temp_path.string());
-    return;
-  }
-  const size_t written = std::fwrite(buffer.data(), 1, buffer.size(), f);
-  std::fclose(f);
-
-  if (written == buffer.size()) {
-    std::filesystem::rename(temp_path, path, ec);
-    if (!ec) {
-      library_dirty_ = false;
-      REXLOG_INFO("[native_gfx] Saved ID3D12PipelineLibrary to {} ({} bytes, {} PSOs stored)",
-                  path.string(), buffer.size(), stats_.library_stores);
-    } else {
-      REXLOG_WARN("[native_gfx] Failed to replace pipeline library file: {}", ec.message());
-    }
+  // A temporary name of its own and one step over the old file (os/file_replace.h): the games of a test batch share cache/, and a file another game has open at the
+  // moment is waited for, not removed under it.
+  std::string why;
+  const std::filesystem::path path(library_path_);
+  if (larecomp::os::Succeeded(larecomp::os::WriteFileReplacing(path, buffer.data(), buffer.size(), &why))) {
+    library_dirty_ = false;
+    REXLOG_INFO("[native_gfx] Saved ID3D12PipelineLibrary to {} ({} bytes, {} PSOs stored)",
+                path.string(), buffer.size(), stats_.library_stores);
+  } else {
+    REXLOG_WARN("[native_gfx] Failed to write the pipeline library file {}: {}", path.string(), why);
   }
 }
 

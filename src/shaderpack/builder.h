@@ -108,7 +108,7 @@ class VariantStep {
   // builder reads the RPF's containers for a variant-only rebuild only when this is true: reading them
   // takes seconds, and a build whose main pack stays and whose variants are current does without.
   virtual bool NeedsRpfShaders() const { return false; }
-  // Writes the variant pack to input.out_dir under its final name (a .tmp then a move is its own
+  // Writes the variant pack to input.out_dir under its final name (a temporary file of its own then a move is its own
   // business). A failure here fails the step, not the build: the renderer then draws the game's own
   // shaders (HDR stays at stage 2, the bloom at the guest's taps), which the reader allows.
   virtual VariantStepResult Build(const VariantStepInput& input) = 0;

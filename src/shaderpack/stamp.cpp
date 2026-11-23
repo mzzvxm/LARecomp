@@ -9,6 +9,7 @@
 #include <fstream>
 #include <system_error>
 
+#include "os/file_replace.h"
 #include "shaderpack/builder.h"
 #include "shaderpack/hash.h"
 #include "shaderpack/hlsl_source.h"
@@ -146,8 +147,7 @@ bool Stamp::Read(const std::filesystem::path& path, Stamp* out, std::string* err
 }
 
 bool Stamp::Write(const std::filesystem::path& path, std::string* error) const {
-  std::filesystem::path temporary = path;
-  temporary += ".tmp";
+  const std::filesystem::path temporary = larecomp::os::TempPathFor(path);  // a name of its own: parallel processes share the shader folder (os/file_replace.h)
   {
     std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
     if (!file) {
