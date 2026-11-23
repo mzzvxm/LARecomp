@@ -21,7 +21,9 @@
 //
 // THE LIGHT PASS lights nearby surfaces with it (owner, 2026-11-21: the underglow lights the ground, the kerbs, the walls and the other cars within a short range, ON by default): the colour
 // and the pulse are the game's own, read from the object AFTER its update, so the 30 Hz hold, the day and night constants and the fade are in it exactly as the game's own underglow has them
-// (the twin below says how they are made, and the hook checks the stored colour against it). The tube's points make a few omni lights (local_lights_sources.h MakeNeonLights).
+// (the twin below says how they are made, and the hook checks the stored colour against it). The tube's points make a few neon law lights (local_lights_sources.h MakeNeonTubeLights): the colour
+// is read as a hue and a strength, not as a light intensity (it is the glow shader's HDR multiplier: 30 for a red neon), and the light is a few street lamps' worth near the tube with a smooth
+// reach of 5 to 6 m (GB-NEON-TUNE, perf/GB-NEON-TUNE.md).
 //
 // WHAT IS NOT KNOWN WITHOUT A RUN (every line is a CHECK in the run plan, h11-work\gb-neon-notes\RUNPLAN-gb-neon.txt):
 //   N1  whether the four points are in WORLD space or in the car's (the code adds the car's position row to the tube's ends, which says world): ResolveTube accepts the reading whose
@@ -29,7 +31,8 @@
 //       raw numbers.
 //   N2  whether the game's multi-light renderer already lights the road with this very object (the red pool under the car in NEON-COLOUR.md's pictures says it does): the pass then ADDS
 //       a second pool; the run plan's A/B (the pass's neon off / on) and mcla_gpu_neon_light_gain decide the strength and the plateau.
-//   N3  the units: the game's colour here is the "rgb" of its lamp law (saturate(w / d^2) x rgb), the pass multiplies it by the exposure like every game lamp.
+//   N3  the units: the game's colour here is NOT the "rgb" of its lamp law: it is the glow shader's HDR multiplier (30 for a red neon; the pass used it as a lamp's colour and lit a road 7 m round the
+//       car). GB-NEON-TUNE reads it as a hue and a strength (over kNeonFullColour = 32) and gives the tube kNeonIntensity street lamp units; the pass multiplies that by the exposure like every game lamp.
 //
 // Pure: no guest, no renderer, no SDK (the hook's decode is a template over a memory reader, so a test lays out a fake effect object). neon_light_test.cpp holds all of it.
 // ===========================================================================
