@@ -24,6 +24,18 @@ constexpr auto kAutoRefreshEvery = std::chrono::seconds(8);
 
 }  // namespace
 
+// One relay asked once, here and now, through the same query the list uses (browser_query.cpp), without its icon.
+ServerView QueryServerNow(const std::string& host, uint16_t port) {
+    Target t;
+    t.host = host;
+    t.port = port;
+    t.address = host + ":" + std::to_string(port);
+    Options opts;
+    opts.fetch_icons = false;
+    std::vector<uint8_t> no_icon;
+    return QueryServer(t, 0, opts, no_icon);
+}
+
 struct Client::State {
     mutable std::mutex mutex;
     std::condition_variable wake;

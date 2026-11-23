@@ -52,4 +52,8 @@ private:
     std::shared_ptr<State> state_;
 };
 
+// One relay asked once, here and now: what it says about itself and its rooms (no icon). `answered` is false when it did not
+// answer. Blocking (about a second; more with many rooms), worker threads only.
+ServerView QueryServerNow(const std::string& host, uint16_t port);
+
 }  // namespace larecomp::browser
