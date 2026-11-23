@@ -105,6 +105,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/vehicle.cpp
     src/mc_engine/hooks/vehicle_records.cpp
     src/mc_engine/hooks/showroom.cpp
+    src/mc_engine/hooks/player_limits.cpp
     src/mc_engine/hooks/owned_cars.cpp
     src/mc_engine/hooks/owned_cars_ui.cpp
     src/mc_engine/hooks/rubberband.cpp
@@ -251,6 +252,10 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/xbox_live.cpp
     src/mc_engine/online/race_props.cpp
     src/mc_engine/online/session_limits.cpp
+    src/mc_engine/online/max_players.cpp
+    src/mc_engine/online/net_sweep.cpp
+    src/mc_engine/online/net_pool.cpp
+    src/mc_engine/online/net_race.cpp
     # Server browser (F6): relay list, rooms, joining a picked room.
     src/mc_engine/online/server_browser/browser_client.cpp
     src/mc_engine/online/server_browser/browser_join.cpp

@@ -28127,3 +28127,129 @@ address = 0x826A72E8
 name = "OwnedCarsUi_826A72E8"
 registers = ["r21"]
 after_instruction = true
+
+# Host MaxPlayers 2..31 through the game's own host menu (src/mc_engine/online/max_players.cpp).
+# Every hook is a no-op while net_max_players = 16.
+[[midasm_hook]]
+address = 0x8227D3D4
+name = "MaxPlayers_8227D3D4"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8265A68C
+name = "MaxPlayers_8265A68C"
+registers = ["r4", "r5", "r29"]
+
+[[midasm_hook]]
+address = 0x826586F4
+name = "MaxPlayers_826586F4"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x82656AA8
+name = "MaxPlayers_82656AA8"
+registers = ["r4"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82656AC0
+name = "MaxPlayers_82656AC0"
+registers = ["r10"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8265DEA4
+name = "MaxPlayers_8265DEA4"
+registers = ["r8"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8265DFB0
+name = "MaxPlayers_8265DFB0"
+registers = ["r7", "r9"]
+
+[[midasm_hook]]
+address = 0x822859BC
+name = "MaxPlayers_822859BC"
+registers = ["r11"]
+
+[[midasm_hook]]
+address = 0x82631B1C
+name = "MaxPlayers_82631B1C"
+registers = ["r3", "r30", "r31"]
+
+# Lobby gamer list row budget and post-race standings above 16 players
+# (src/mc_engine/online/net_sweep.cpp). Every hook is a no-op while net_max_players = 16.
+[[midasm_hook]]
+address = 0x82286CCC
+name = "NetSweep_82286CCC"
+registers = ["r7"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82286D14
+name = "NetSweep_82286D14"
+registers = ["r7"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82286D40
+name = "NetSweep_82286D40"
+registers = ["r9"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826750CC
+name = "NetSweep_826750CC"
+registers = ["r25"]
+jump_address_on_true = 0x826750D0
+
+
+# Remote-gamer item pool sized for MaxPlayers (src/mc_engine/online/net_pool.cpp).
+# Every hook is a no-op while net_max_players = 16.
+[[midasm_hook]]
+address = 0x82279D50
+name = "NetPool_82279D50"
+registers = ["r4"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82279D58
+name = "NetPool_82279D58"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x8227CD50
+name = "NetPool_8227CD50"
+registers = ["r31"]
+jump_address_on_true = 0x8227CD6C
+
+
+# Online races keep at most 16 racers when the session holds more players
+# (src/mc_engine/online/net_race.cpp). Every hook is a no-op while net_max_players = 16.
+[[midasm_hook]]
+address = 0x82282904
+name = "NetRace_82282904"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x82291AB0
+name = "NetRace_82291AB0"
+registers = ["r3", "r10"]
+
+[[midasm_hook]]
+address = 0x82291B1C
+name = "NetRace_82291B1C"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x82293904
+name = "NetRace_82293904"
+registers = ["r28"]
+jump_address_on_true = 0x82293930
+
+[[midasm_hook]]
+address = 0x82291D7C
+name = "NetRace_82291D7C"
+registers = ["r28"]
