@@ -19,7 +19,7 @@
 //   3. fflush(nullptr): every open C stream (the profiler's, the timing logs', the capture files').
 //   4. EndProcessNow (process_exit.h): TerminateProcess on Windows, _Exit on Linux; neither runs an atexit handler or a static destructor,
 //      and the exit code is the one given.
-// The close watchdog (5 s after the close began, larecomp_app.cpp) is the other way out: when the orderly shutdown hung it ends the process through
+// The close watchdog (larecomp_app.cpp; close_watchdog.h: 5 s of a close with no progress, 8 s inside a driver call, 12 s at the most) is the other way out: when the orderly shutdown hung it ends the process through
 // EndAfterHang (below), which runs the hooks that have not run on a helper thread within a bound and ends with kWatchdogExitCode, not 0.
 // What does NOT need a hook: the settings file (config_save.cpp writes it to a temporary file and renames it before the menu returns), the
 // career save (MclaWaitForSaves before the title ends, then the SDK closes the packages in rex::Stop), the log (the SDK's logger is
@@ -172,7 +172,7 @@ struct HangShared {
 
 }  // namespace detail
 
-// What the close watchdog does when the shutdown has hung for its 5 s (larecomp_app.cpp): the flush hooks that have not run, within a bound, then the
+// What the close watchdog does when the shutdown has hung (close_watchdog.h, larecomp_app.cpp): the flush hooks that have not run, within a bound, then the
 // process ends with `code`. Never returns, and never waits for longer than `max_ms`.
 //
 // WHY A HELPER THREAD. The watchdog fires because some thread is stuck, and it may be stuck holding a lock that a hook, a log line or a stream flush

@@ -680,6 +680,14 @@ add_executable(larecomp_exit_fast_test EXCLUDE_FROM_ALL
     src/exit_fast_test.cpp)
 target_include_directories(larecomp_exit_fast_test PRIVATE src)
 
+# When a close that has not finished is ended as hung (src/close_watchdog.h: 5 s with no progress of the renderer's shutdown, 8 s inside the graphics
+# driver's final teardown call, 12 s at the most; the 4.4 to 4.7 s Vulkan teardowns of 2026-11-20 to 11-22 that the old fixed 5 s ended 0.3 s early) has
+# a check that needs no game: the logged timelines replayed on a clock of its own, the hangs that must still end, the cap and the words of the line:
+#   cmake --build <build dir> --target larecomp_close_watchdog_test, then run <build dir>/larecomp_close_watchdog_test (exit 0 = passed).
+add_executable(larecomp_close_watchdog_test EXCLUDE_FROM_ALL
+    src/close_watchdog_test.cpp)
+target_include_directories(larecomp_close_watchdog_test PRIVATE src)
+
 # Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
 # own default for cache_root) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pack_folder_test, then run <build dir>/larecomp_pack_folder_test (exit 0 = passed).

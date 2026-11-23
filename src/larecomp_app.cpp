@@ -10,6 +10,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include <iterator>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 
 #include <rex/app/app.h>
@@ -41,6 +43,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "bootprogress/larecomp_shader_build.h"
 #include "cpu_level.h"
 #include "crash_handler.h"
+#include "close_watchdog.h"
 #include "crash_options.h"
 #include "discord_rpc/discord_rpc.h"
 #include "exit_fast.h"
@@ -1193,9 +1196,24 @@ void LarecompApp::OnUIEvent(const rex::ui::UIEvent& event) {
 // runs its own binds (so a handler skips a key a bind owns: ui/overlay_support.h IsBoundKey).
 void LarecompApp::OnInputEvent(rex::InputEvent& event) { larecomp::uievents::DispatchInput(event); }
 
-// The close watchdog's two lines (EndAfterHang runs them on its helper thread). The first keeps the words the checkers read ("still running 5 s").
+// The close watchdog's two lines (EndAfterHang runs them on its helper thread). The first keeps the words the checkers read ("still running N s",
+// N = 5 unless the watchdog waited for the renderer's driver calls, close_watchdog.h) and says where the renderer's shutdown was. What the
+// watcher saw is left here for it: the watcher logs nothing itself (a log line may need a lock the hung thread holds).
+static std::atomic<long long> g_watchdog_elapsed_ms{0};
+static std::atomic<bool> g_watchdog_renderer_started{false};
+static std::atomic<bool> g_watchdog_renderer_finished{false};
+static std::atomic<const char*> g_watchdog_renderer_stage{nullptr};
+static std::atomic<bool> g_watchdog_renderer_driver_call{false};
+static std::atomic<long long> g_watchdog_renderer_quiet_ms{0};
 static void WatchdogSaysSo() {
-  LARECOMP_APP_ERROR("[quit] the process was still running 5 s after the window was asked to close; exiting");
+  larecomp::closewatch::RendererState renderer;
+  renderer.started = g_watchdog_renderer_started.load(std::memory_order_acquire);
+  renderer.finished = g_watchdog_renderer_finished.load(std::memory_order_relaxed);
+  renderer.stage = g_watchdog_renderer_stage.load(std::memory_order_relaxed);
+  renderer.in_driver_call = g_watchdog_renderer_driver_call.load(std::memory_order_relaxed);
+  renderer.quiet_ms = g_watchdog_renderer_quiet_ms.load(std::memory_order_relaxed);
+  const std::string text = larecomp::closewatch::EndText(g_watchdog_elapsed_ms.load(std::memory_order_relaxed), renderer);
+  LARECOMP_APP_ERROR("[quit] {}", text);
 }
 static void WatchdogDone(const larecomp::exitfast::Report& report) {
   LARECOMP_APP_ERROR("[quit] close watchdog: {} flush hook(s) ran in {} ms{}; the process ends with code {} (a hung shutdown, not a normal exit)", report.ran,
@@ -1228,8 +1246,34 @@ void LarecompApp::FinishWindowCloseWork() {
   // A bound for whatever the SDK's close still does: armed after the save wait and the renderer stop, which have their own
   // limits. CHECK: App::Shutdown has its own terminate timeout (runtime.terminate_timeout_ms) and ends the process
   // normally; this watchdog only covers a hang.
-  std::thread([]() {
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+  // It asks whether the close has made progress, not whether 5 s have passed (close_watchdog.h, VK-SLOW-CLOSE): the renderer's final teardown is
+  // calls into the graphics driver that took up to 4.7 s with another game running, so a close that is moving, or is inside such a call, is waited for
+  // (8 s for a driver call, 12 s at the most); a close that is stuck anywhere else ends after 5 s as before.
+  const auto armed = std::chrono::steady_clock::now();
+  std::thread([armed]() {
+    for (;;) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(larecomp::closewatch::kPollMs));
+      const long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - armed).count();
+      bool started = false, finished = false, driver_call = false;
+      const char* stage = nullptr;
+      long long quiet_ms = 0;
+#if defined(LARECOMP_HAS_GPU)
+      const mcla::gpu::ShutdownProgress progress = mcla::gpu::ReadShutdownProgress();  // lock-free
+      started = progress.started;
+      finished = progress.finished;
+      driver_call = progress.driver_call;
+      stage = progress.stage;
+      quiet_ms = progress.quiet_ms;
+#endif
+      if (!larecomp::closewatch::ShouldEnd(larecomp::closewatch::MakeLook(elapsed_ms, started, quiet_ms, driver_call))) continue;
+      g_watchdog_elapsed_ms.store(elapsed_ms, std::memory_order_relaxed);
+      g_watchdog_renderer_finished.store(finished, std::memory_order_relaxed);
+      g_watchdog_renderer_stage.store(stage, std::memory_order_relaxed);
+      g_watchdog_renderer_driver_call.store(driver_call, std::memory_order_relaxed);
+      g_watchdog_renderer_quiet_ms.store(quiet_ms, std::memory_order_relaxed);
+      g_watchdog_renderer_started.store(started, std::memory_order_release);
+      break;
+    }
     // Something hung, possibly holding a lock that a log line or a flush hook needs: EndAfterHang runs the log line, the hooks that have not run and the
     // log's flush on a helper thread and waits for it at most 2 s (exit_fast.h), then ends the process with a status of its own (not 0: the hang was
     // hidden behind a normal exit code). EndProcessNow inside: not std::_Exit, process_exit.h says why (the 2026-11-18 Vulkan crash at exit).
