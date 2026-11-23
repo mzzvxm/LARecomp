@@ -32,7 +32,8 @@
 // 77, and the records past that go to mc4_vehicle_records.bin next to the save's
 // content folder - not inside it, since a CREATE_ALWAYS save wipes that folder.
 // Loading copies the 77 back and appends the rest when the file matches the save.
-// The showroom's own limits are in showroom.cpp.
+// The showroom's own limits are in showroom.cpp. The owned cars' arrays are
+// moved by owned_cars.cpp, which the same wrappers below call.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/cvar.h>
@@ -55,6 +56,7 @@
 
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "owned_cars.h"
 
 REXCVAR_DEFINE_BOOL(vehicle_records_relocate, true, "MCLA/Patches",
     "Keep the parts bought for each car model in a table sized to the roster, so the game "
@@ -86,6 +88,12 @@ constexpr uint32_t kRecordSize = 84;
 constexpr uint32_t kProfileSlots = 77;
 constexpr uint32_t kRosterCount = 0x828CD0AC;           // u16, entries of dword_828CD0A8
 constexpr uint32_t kSlack = 64;                         // free records kept past the need
+constexpr uint32_t kMinRecords = 256;                   // the smallest table made
+
+// The table is also read with an owned car's slot as the index (0x8279ABDC, the
+// loop of sub_8238C5A0), so it must have a record for every slot owned_cars.cpp
+// can hand out.
+static_assert(kMinRecords > owned_cars::kMaxCap, "an owned slot past the parts table");
 
 constexpr uint32_t kSites[] = {
     0x8238ACB8, 0x8238B40C, 0x8238C2C0, 0x8238C5D4, 0x8238C5D8, 0x8238C5FC, 0x8238C7B4,
@@ -150,7 +158,7 @@ bool EnsureCapacity(uint8_t* b, uint32_t needed, const char* why) {
     const uint32_t cap = g_capacity.load();
     const uint32_t old = g_table.load();
     if (old && needed <= cap) return true;
-    uint32_t want = std::max<uint32_t>({needed + kSlack, cap * 2, 256});
+    uint32_t want = std::max<uint32_t>({needed + kSlack, cap * 2, kMinRecords});
     want = (want + 63) & ~63u;
     auto* rt = rex::Runtime::instance();
     const uint32_t block =
@@ -169,12 +177,17 @@ bool EnsureCapacity(uint8_t* b, uint32_t needed, const char* why) {
     return true;
 }
 
+// Records the table has room for right now: what owned_cars.cpp may index by slot.
+uint32_t PartsRoom() {
+    return Enabled() && g_table.load() ? g_capacity.load() : kProfileSlots;
+}
+
 void Rebase(PPCRegister& reg, size_t site) {
     const uint32_t delta = g_delta.load(std::memory_order_relaxed);
     if (!delta) return;
     reg.u64 = static_cast<uint32_t>(reg.u32 + delta);
     if (!g_site_seen[site].exchange(true, std::memory_order_relaxed))
-        LARECOMP_APP_INFO("[vehicle-records] first access moved at {:08X}", kSites[site]);
+        LARECOMP_APP_DEBUG("[vehicle-records] first access moved at {:08X}", kSites[site]);
 }
 
 // --- the file beside mc4.sav -----------------------------------------------
@@ -362,14 +375,18 @@ VEHICLE_RECORDS_SITE(24, 8279ABF0, r8)   // sub_8279AB90: +82
 #undef VEHICLE_RECORDS_SITE
 
 // Reset: the game clears the profile's slots, the moved table is cleared with them.
+// The profile's constructor runs the first reset, before main; the owned cars
+// get their block there.
 extern "C" REX_FUNC(rex_sub_8238C9B0) {
     const bool on = Enabled();
     if (on) CheckSlots(base, "reset");
     __imp__rex_sub_8238C9B0(ctx, base);
-    if (!on) return;
-    if (EnsureCapacity(base, RosterCount(base), "reset"))
-        std::memset(base + g_table.load(), 0, size_t(g_capacity.load()) * kRecordSize);
-    NoteSlots(base);
+    if (on) {
+        if (EnsureCapacity(base, RosterCount(base), "reset"))
+            std::memset(base + g_table.load(), 0, size_t(g_capacity.load()) * kRecordSize);
+        NoteSlots(base);
+    }
+    owned_cars::AfterReset(base, PartsRoom());
 }
 
 // New-game defaults write one record per roster vehicle.
@@ -380,6 +397,7 @@ extern "C" REX_FUNC(rex_sub_8238C278) {
     if (on)
         LARECOMP_APP_INFO("[vehicle-records] new-game defaults: {} records for a roster of {}",
                           RecordCount(base), RosterCount(base));
+    owned_cars::AfterNewGame(base);
 }
 
 // The reconcile keeps the records whose vehicle is still in the roster and
@@ -399,11 +417,14 @@ extern "C" REX_FUNC(rex_sub_8238C5A0) {
 // Before a save the game sets +8 of records 0..76 from +82 (its loop is fixed
 // at 77) and adds each owned car to its model's. The records past 76 get the
 // first step here; then the first 77 go into the profile's slots, which the save
-// copies right after this returns.
+// copies right after this returns. The game's second loop writes each owned
+// car's vehicle id into the car (+8088), so the owned cars go into the profile's
+// own slots only after it.
 extern "C" REX_FUNC(rex_sub_8238B3F8) {
     const uint32_t table = g_table.load();
     if (!Enabled() || !table) {
         __imp__rex_sub_8238B3F8(ctx, base);
+        owned_cars::BeforeProfileCopy(base);
         return;
     }
     const uint32_t count = std::min(RecordCount(base), g_capacity.load());
@@ -415,6 +436,7 @@ extern "C" REX_FUNC(rex_sub_8238B3F8) {
     CheckSlots(base, "save");
     std::memcpy(base + kProfileTable, base + g_table.load(), size_t(kProfileSlots) * kRecordSize);
     NoteSlots(base);
+    owned_cars::BeforeProfileCopy(base);
 }
 
 // The profile goes into the save buffer (r4, room r5). Past 77 records the count
@@ -423,18 +445,22 @@ extern "C" REX_FUNC(rex_sub_822D20D8) {
     const uint32_t buffer = ctx.r4.u32;
     const uint32_t room = ctx.r5.u32;
     __imp__rex_sub_822D20D8(ctx, base);
-    if (!Enabled() || !g_table.load()) return;
-    const uint32_t total = std::min(RecordCount(base), g_capacity.load());
-    const uint32_t in_save = std::min(total, kProfileSlots);
-    if (total > kProfileSlots && buffer && room >= kSavedSize)
-        WriteGuestU32(base, buffer + (kRecordCount - kProfile), in_save);
-    WriteSidecar(base, total, in_save);
+    if (Enabled() && g_table.load()) {
+        const uint32_t total = std::min(RecordCount(base), g_capacity.load());
+        const uint32_t in_save = std::min(total, kProfileSlots);
+        if (total > kProfileSlots && buffer && room >= kSavedSize)
+            WriteGuestU32(base, buffer + (kRecordCount - kProfile), in_save);
+        WriteSidecar(base, total, in_save);
+    }
+    owned_cars::AfterSerialize(base, buffer, room);
 }
 
 // The profile comes back from the save buffer.
 extern "C" REX_FUNC(rex_sub_822D2258) {
+    owned_cars::BeforeLoad(base);
     __imp__rex_sub_822D2258(ctx, base);
     if (Enabled()) RestoreAfterLoad(base);
+    owned_cars::AfterLoad(base, PartsRoom());
 }
 
 // Each roster list read can grow the roster; the table keeps room for it.

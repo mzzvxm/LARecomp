@@ -45,6 +45,7 @@
 
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "owned_cars.h"
 
 REXCVAR_DEFINE_BOOL(showroom_unlimited, true, "MCLA/Patches",
     "The garage's showroom lists every vehicle on sale. Off = the game's own showroom: 70 rows, "
@@ -339,12 +340,39 @@ void GrowFlashArrays(PPCContext& ctx, uint8_t* b, uint32_t roster) {
 
 }  // namespace
 
+// Grows garage.xsf's `_global.menu.elements` to `want` elements, for the owned
+// vehicles' list past 70 rows (owned_cars_ui.cpp).
+int32_t ShowroomGrowMenuElements(PPCContext& ctx, uint8_t* b, uint32_t want) {
+    if (!EnsureScratch(b)) return -1;
+    const uint32_t s = g_scratch;
+    const uint32_t entry = Call(kFindMovieFn, ctx, b, {ReadGuestU32(b, kMovieTable), s + kStrMovie});
+    if (!entry || !b[entry + 0x44]) return -1;
+    const uint32_t movie = ReadGuestU32(b, entry + 0x38);
+    if (!movie) return -1;
+    const uint32_t hash_length = Call(kHashFn, ctx, b, {s + kStrLength, 0});
+    Call(kSelectFn, ctx, b, {movie, 1});
+    int32_t elements = -1;
+    uint32_t slot = 0;
+    GlobalObject(ctx, b, movie, s + kStrVehicleId, &slot);
+    if (const uint32_t menu = GlobalObject(ctx, b, movie, s + kStrMenu))
+        if (const uint32_t a = MemberObject(ctx, b, menu, s + kStrElements))
+            elements = GrowArray(ctx, b, a, want, Fill::kNewElement, hash_length);
+    // Same refused store as GrowFlashArrays: puts the AS context back.
+    if (slot) {
+        SetValue(b, s + kValue, static_cast<uint32_t>(-1), kTypeNumber);
+        Call(kSetElementFn, ctx, b, {movie, slot, static_cast<uint32_t>(-1), s + kValue});
+    }
+    return elements;
+}
+
 // Right after the loader parsed an <include>'s count (sub_82692440, both paths
-// meet here): the showroom's template gets a row per roster vehicle.
+// meet here): the showroom's template gets a row per roster vehicle, and the
+// owned vehicles' lists a row per owned car the save can hold (owned_cars_ui.cpp).
 void ShowroomRows_8269381C(PPCRegister& r1) {
-    if (!Enabled()) return;
     auto* rt = rex::Runtime::instance();
     uint8_t* b = rt ? rt->virtual_membase() : nullptr;
+    if (b && OwnedCarsUi_RaiseIncludeCount(b, kIncludeSrc, r1.u32 + kCountLocal)) return;
+    if (!Enabled()) return;
     if (!b || !IsShowroomTemplate(b)) return;
     const uint32_t at = r1.u32 + kCountLocal;
     const int32_t count = static_cast<int32_t>(ReadGuestU32(b, at));
