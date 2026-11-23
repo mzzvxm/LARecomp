@@ -29,6 +29,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -65,8 +66,11 @@ class Device {
   // tells the user. False when no backend opens.
   bool Initialize(const Options& options);
   // Releases the queue, the device and the interface, in that order. Everything
-  // created from this device must already be gone.
-  void Shutdown();
+  // created from this device must already be gone. `part`, when given, is called
+  // with the name of each of the three before it is released (the caller times
+  // them: they are calls into the driver and the slowest thing the process does
+  // while it ends).
+  void Shutdown(const std::function<void(const char*)>& part = {});
 
   plume::RenderDevice* device() const { return device_.get(); }
   plume::RenderCommandQueue* queue() const { return queue_.get(); }

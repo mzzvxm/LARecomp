@@ -335,19 +335,25 @@ bool Device::Open(const Options& options) {
   return true;
 }
 
-void Device::Shutdown() {
+void Device::Shutdown(const std::function<void(const char*)>& part) {
   // With the debug layer on, what is still alive once every wrapper is gone is
   // a leak; the report lists it by name.
   backend::LiveObjectReport report;
   if (debug_layer_) {
     report.Capture(device_.get());
   }
+  // Each part is one call into the driver. The caller times them (renderer.cpp ShutdownClock): on Vulkan the
+  // device's release is vmaDestroyAllocator and vkDestroyDevice, the interface's is vkDestroyInstance; which of
+  // them took the seconds of the slow closes of 2026-11-20 to 11-22 is not known yet.
+  if (part) part("the queue and the loss probe");
   queue_.reset();
   if (device_) {
     backend::DestroyLossProbe(device_.get(), loss_probe_);
   }
   loss_probe_ = nullptr;
+  if (part) part("the device (the driver's own teardown)");
   device_.reset();
+  if (part) part("the graphics interface (the instance)");
   interface_.reset();
   report.ReportAndRelease();
   debug_layer_ = false;

@@ -326,6 +326,19 @@ float UiAlpha();
 // thread. Safe to call more than once.
 void Shutdown();
 
+// Where the renderer's Shutdown() is, for the close watchdog (larecomp_app.cpp, close_watchdog.h): any thread, no lock, never blocks.
+// A close whose renderer is moving, or is inside the driver's own teardown call, is slow, not hung. `quiet_ms` counts from the
+// last change of stage (or from the end of the shutdown); `stage` is static text naming the stage that is running now, null before
+// the shutdown starts and after it ends.
+struct ShutdownProgress {
+  bool started = false;      // Renderer::Shutdown has begun (also true once it has ended)
+  bool finished = false;     // ... and returned
+  const char* stage = nullptr;
+  bool driver_call = false;  // the stage is one call into the graphics driver, which returns by itself
+  int64_t quiet_ms = 0;
+};
+ShutdownProgress ReadShutdownProgress();
+
 // graphics_backend = "auto" as the Plume renderer decides it (ChooseAutoBackend in backend.h):
 // true when that is Vulkan. For the emulated GPU's backend (larecomp_app.h), which follows the same
 // setting; backend.h itself needs Plume's headers, this one doesn't.

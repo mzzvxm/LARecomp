@@ -79,21 +79,61 @@ mcla::gpu::CityPackHooks& g_city_pack_hooks = larecomp::Leak<mcla::gpu::CityPack
 
 // Names the renderer teardown's slow stages. About one test run in 90 took 2.7 to 4.7 s to get from "pipelines: ... written" to
 // "renderer shut down" (the 2026-11-21 stack runs: all of them with another game on the same GPU, none of 103 alone), and the 5 s close
-// watchdog (larecomp_app.cpp) ended two of them; no line said which stage waited. Mark(stage) is called when a stage ends and logs it when
-// it took kSlowMs or more since the last mark. One thread uses it (Shutdown's).
+// watchdog (larecomp_app.cpp) ended two of them; no line said which stage waited. Stage(what) is called where a stage BEGINS: the stage
+// before it ends there and is logged when it took kSlowMs or more. Done() ends the last one. One thread uses it (Shutdown's).
+//
+// It also publishes where the shutdown is (gpu.h ReadShutdownProgress), for the close watchdog: a close whose renderer is moving, or is inside
+// the driver's own teardown call, is not hung (close_watchdog.h, VK-SLOW-CLOSE). The published values are plain atomics read by one other
+// thread; a read that catches a stage change half done names a neighbouring stage, which the watchdog's line can afford.
+constexpr int kShutdownNotStarted = 0;
+constexpr int kShutdownRunning = 1;
+constexpr int kShutdownFinished = 2;
+std::atomic<int> g_shutdown_state{kShutdownNotStarted};
+std::atomic<const char*> g_shutdown_stage{nullptr};  // static text
+std::atomic<bool> g_shutdown_driver_call{false};
+std::atomic<int64_t> g_shutdown_moved{0};  // steady_clock ticks of the last change of stage
+
+int64_t SteadyTicks() {
+  return std::chrono::steady_clock::now().time_since_epoch().count();
+}
+
 class ShutdownClock {
  public:
-  void Mark(const char* stage) {
+  ShutdownClock() { Publish(kShutdownRunning, nullptr, false); }
+
+  // `driver_call`: the stage is one call into the graphics driver, which returns by itself (the device's own release), so the close
+  // watchdog gives it more time than a stage of ours that may be waiting for something that never comes.
+  void Stage(const char* what, bool driver_call = false) {
+    End();
+    current_ = what;
+    Publish(kShutdownRunning, what, driver_call);
+  }
+
+  void Done() {
+    End();
+    current_ = nullptr;
+    Publish(kShutdownFinished, nullptr, false);
+  }
+
+ private:
+  void End() {
     const auto now = std::chrono::steady_clock::now();
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_).count();
-    if (ms >= kSlowMs) {
-      REXLOG_INFO("[gpu] shutdown: {} took {} ms", stage, ms);
+    if (current_ && ms >= kSlowMs) {
+      REXLOG_INFO("[gpu] shutdown: {} took {} ms", current_, ms);
     }
     last_ = now;
   }
 
- private:
+  static void Publish(int state, const char* stage, bool driver_call) {
+    g_shutdown_stage.store(stage, std::memory_order_relaxed);
+    g_shutdown_driver_call.store(driver_call, std::memory_order_relaxed);
+    g_shutdown_moved.store(SteadyTicks(), std::memory_order_relaxed);
+    g_shutdown_state.store(state, std::memory_order_release);
+  }
+
   static constexpr int64_t kSlowMs = 250;
+  const char* current_ = nullptr;
   std::chrono::steady_clock::time_point last_ = std::chrono::steady_clock::now();
 };
 
@@ -594,15 +634,17 @@ void Renderer::Shutdown() {
   // 1. No more recording: the render thread finishes the command it is on and
   //    exits; producers and waiters are released. A thread that does not exit
   //    in time may still be inside any component, so nothing is destroyed.
+  clock.Stage("the render thread's stop");
   if (!thread_.Stop(kStopDeadline)) {
     REXLOG_ERROR("[gpu] renderer left alive after {} presents: its render thread is stuck",
                  presented_);
+    clock.Done();  // nothing more happens here: the close watchdog is not to wait for this shutdown
     return;
   }
-  clock.Mark("the render thread's stop");
   // The pacer drains what it holds and ends before anything waits the GPU idle or goes.
+  clock.Stage("the frame generation pacer's stop");
   fg_.StopPacer();
-  clock.Mark("the frame generation pacer's stop");
+  clock.Stage("the final reports and the first idle wait");
   if (release_early_) {
     REXLOG_INFO("[gpu] present release: {} of {} guest presents released the guest early{}",
                 early_releases_, guest_presents_,
@@ -637,22 +679,22 @@ void Renderer::Shutdown() {
   //    while all the components they name are still alive. Skipped by
   //    FrameRing when the device is lost.
   frames_.WaitIdle();
-  clock.Mark("the final reports and the first idle wait");
   // 3. Reverse creation order; the GPU is idle, so components destroy their
   //    objects directly. Ordered teardown rather than reblue's deliberate leak:
   //    every Plume object here has a single owner destroyed before the device.
+  clock.Stage("the vendor calls, the captures, the timers and the frame generation");
   latency::Shutdown();  // the vendor's calls name the swap chain
   capture_.Shutdown();
   occlusion_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();
   fg_.Shutdown();
-  clock.Mark("the vendor calls, the captures, the timers and the frame generation");
   // DLSS frame generation: the proxy swap chain is destroyed and the plugin unloaded before
   // Streamline itself is shut down (temporal_.Shutdown below).
+  clock.Stage("DLSS frame generation and the upscaler (Streamline)");
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
-  clock.Mark("DLSS frame generation and the upscaler (Streamline)");
+  clock.Stage("the effects, the targets and the memory");
   rt_lights_.Shutdown();  // the same, RT-LIGHTS-D1 (rt_lights.h)
   gi_pixel_.Shutdown();  // the same, CITY-RT M3 G5 (gi_pixel.h)
   rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
@@ -695,32 +737,35 @@ void Renderer::Shutdown() {
   textures_.Shutdown();
   resolve_.Shutdown();
   resolve_memory_.Shutdown();
-  clock.Mark("the effects, the targets and the memory");
+  clock.Stage("the host passes (the builders' join)");
   passes_.Shutdown();  // the host pipeline builders are joined here: one in the middle of a driver compile is waited for
-  clock.Mark("the host passes (the builders' join)");
+  clock.Stage("the swap chain");
   edram_.Shutdown();
   swap_chain_.Shutdown();
-  clock.Mark("the swap chain");
+  clock.Stage("the pipelines (the precache's join, the cache file, the pipelines' release)");
   fg_.ReleaseQueue();  // the swap chain made on it is gone
   hdr::Stop();
   geometry_.Shutdown();
   upload_.Shutdown();
   pipelines_.Shutdown();
-  clock.Mark("the pipelines (the precache's join, the cache file, the pipelines' release)");
+  clock.Stage("the samplers, the shaders and the guest layout");
   samplers_.Shutdown();
   shaders_.Shutdown();
   guest_layout_.Shutdown();
-  clock.Mark("the samplers, the shaders and the guest layout");
   // 4. A component shut down above can still retire a release, such as a bindless slot its
   //    images held (DLSS frame generation's, while it was generating). The release writes the
   //    heap, so it runs here, before the heap goes; the GPU is idle, so nothing is waited for.
+  clock.Stage("the second idle wait");
   frames_.WaitIdle();
-  clock.Mark("the second idle wait");
+  clock.Stage("the bindless heap and the frames");
   heap_.Shutdown();
   frames_.Shutdown();
-  clock.Mark("the bindless heap and the frames");
-  device_.Shutdown();
-  clock.Mark("the device (the driver's own teardown)");
+  // The last stage is the driver's own: Device::Shutdown names its parts (the queue, the device with its memory allocator, the
+  // instance), each one call into the driver that returns by itself. It is where 1.4 to 4.7 s went in the slow closes of 11-20 to 11-22,
+  // with another game running (close_watchdog.h), so the close watchdog gives these calls more time than a stage of ours.
+  clock.Stage("the device (the driver's own teardown)", true);
+  device_.Shutdown([&clock](const char* part) { clock.Stage(part, true); });
+  clock.Done();
   overlay_host_.reset();
   REXLOG_INFO("[gpu] renderer shut down after {} presents ({} guest, {} idle, {} skipped)",
               presented_, guest_presents_, idle_presents_, skipped_);
@@ -2547,6 +2592,23 @@ bool AttachShaderPacks(const std::filesystem::path& folder) {
     return false;
   }
   return r->AttachShaderPacks(folder.empty() ? g_shader_pack_folder : folder);
+}
+
+ShutdownProgress ReadShutdownProgress() {
+  ShutdownProgress progress;
+  const int state = g_shutdown_state.load(std::memory_order_acquire);
+  if (state == kShutdownNotStarted) {
+    return progress;
+  }
+  progress.started = true;
+  progress.finished = state == kShutdownFinished;
+  progress.stage = g_shutdown_stage.load(std::memory_order_relaxed);
+  progress.driver_call = g_shutdown_driver_call.load(std::memory_order_relaxed);
+  const int64_t moved = g_shutdown_moved.load(std::memory_order_relaxed);
+  const int64_t ticks = SteadyTicks() - moved;
+  using Tick = std::chrono::steady_clock::duration;
+  progress.quiet_ms = ticks <= 0 ? 0 : std::chrono::duration_cast<std::chrono::milliseconds>(Tick(ticks)).count();
+  return progress;
 }
 
 void Shutdown() {
