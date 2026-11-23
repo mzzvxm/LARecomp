@@ -523,7 +523,8 @@ void CheckSources(const std::string& gpu) {
   Check(before_at != std::string::npos && lights_at != std::string::npos && after_at != std::string::npos && before_at < lights_at && lights_at < after_at, "scene.cpp: the capture before stands ahead of the light pass and the one after right behind it");
   Check(Has(scene, "if (lights_before && local_lights_ran) {"), "scene.cpp: the second capture only when the first was made and the light pass recorded");
   // the table
-  Check(Has(order, "kLightHistory = 1u << 29") && Has(order, "kLightsBefore = 1u << 28") && Has(order, "kAll = (1u << 30) - 1"), "frame_order.h: the two data bits");
+  // (kAll is frame_order_test.cpp's pin: it follows every branch that adds a data bit)
+  Check(Has(order, "kLightHistory = 1u << 29") && Has(order, "kLightsBefore = 1u << 28"), "frame_order.h: the two data bits");
   Check(Has(order, ".reads_previous = data::kLightHistory, .makes = data::kColourChain"), "frame_order.h: the colour chain reads the last frame's lights history");
   // CMake
   Check(Has(cmake, "screen_lights.cpp") && Has(cmake, "ssgi_lights_test.cpp"), "CMakeLists.txt: the owner's file and this test are listed");
