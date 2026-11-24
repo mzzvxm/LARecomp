@@ -6813,7 +6813,7 @@
  },
  "thread_qos": {
   "type": "i32",
-  "default": "-1",
+  "default": "0",
   "category": "MCLA/Performance",
   "help": "\"Windows only. Tells Windows that the game is the foreground work, so that a hybrid CPU \"\n    \"(performance and efficiency cores, as in most laptops since Intel 12th gen) and battery \"\n    \"power saving do not treat it as background work. 0 = off, as before. 1 = while the window \"\n    \"has focus the game is marked high performance (HighQoS: execution speed throttling off); \"\n    \"Windows decides again when the focus is lost. 2 = also the render thread, the audio \"\n    \"threads and the frame generation pacer stay HighQoS when the window is out of focus, and \"\n    \"on a hybrid CPU the audio threads use the multimedia scheduler (\\\"Pro Audio\\\") whatever \"\n    \"the number of logical processors. -1 = automatic: 1. Nothing here sets an affinity or \"\n    \"lowers any thread. The log's [qos] lines say what was applied. Takes effect at the next \"\n    \"start. See perf/HYBRID-QOS.md.\"",
   "traits": [

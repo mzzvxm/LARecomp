@@ -229,7 +229,7 @@ class PerformanceSettings final : public rex::SettingOwner {
     "With graphics_backend = vulkan the SDK's own vulkan_submit_on_primary_buffer_end (on by "
     "default) applies instead; not measured here, so it is left alone.", rex::kDebugOnly, rex::kRequiresRestart);
 
-  REX_SETTING(i32, thread_qos, -1, "Windows only. Tells Windows that the game is the foreground work, so that a hybrid CPU "
+  REX_SETTING(i32, thread_qos, 0, "Windows only. Tells Windows that the game is the foreground work, so that a hybrid CPU "
     "(performance and efficiency cores, as in most laptops since Intel 12th gen) and battery "
     "power saving do not treat it as background work. 0 = off, as before. 1 = while the window "
     "has focus the game is marked high performance (HighQoS: execution speed throttling off); "
