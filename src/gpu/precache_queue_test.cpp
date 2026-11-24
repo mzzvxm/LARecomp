@@ -13,11 +13,13 @@
 // this one a handful. The numbers of the real run are in the commit message; the model's constants (an entry
 // takes 8.7 ms, a claim 14.6 ms of the render thread) are that run's.
 
+#include <compare>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <initializer_list>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -68,6 +70,77 @@ std::vector<uint32_t> Ids(const std::vector<const Rec*>& queue) {
 }
 
 using V = std::vector<uint32_t>;
+
+struct VariantKey {
+  uint32_t ps = 1;
+  uint32_t vs_variant = 1;
+  uint32_t ps_variant = 0;
+  uint32_t sample_count = 2;
+  auto operator<=>(const VariantKey&) const = default;
+};
+
+struct VariantRecord {
+  VariantKey key;
+  uint32_t layout = 17;
+  bool operator==(const VariantRecord&) const = default;
+};
+
+void TestStartupVariants() {
+  constexpr VariantRecord base = {};
+  constexpr VariantRecord paint = {{1, 1, 0x40, 2}, 17};
+  const auto select = [](VariantKey& key) { key.ps_variant |= 0x40; };
+  const auto off = [](VariantKey&) {};
+  std::vector<VariantRecord> copies;
+  V sources;
+  const std::set known = {base.key};
+  const std::vector records = {base};
+
+  CheckNum(MakeCopies(records, known, {2}, select, copies, sources), 1, "one missing paint variant");
+  Check(copies == std::vector{paint} && sources == V{0}, "the variant changes just the shader word");
+  const auto queue = Order(records, copies, sources, 0);
+  Check(queue.size() == 2 && queue[0] == records.data() && queue[1] == copies.data(),
+        "the worker queue contains the paint variant beside its base");
+
+  CheckNum(MakeCopies(records, known, {2}, off, copies, sources), 0, "no variant with the setting off");
+  Check(copies.empty() && sources.empty(), "the worker queue has just the base with the setting off");
+  MakeCopies(records, known, {2}, [](VariantKey& key) { key.vs_variant |= 0x2000; }, copies, sources);
+  Check(copies.empty(), "a pixel variant must be selected before queuing a paired vertex word");
+  MakeCopies(records, known, {4}, off, copies, sources);
+  Check(copies == std::vector{VariantRecord{{1, 1, 0, 4}, 17}}, "MSAA copies are queued with the variant off");
+
+  const std::set present = {base.key, paint.key};
+  const std::vector with_paint = {base, paint};
+  CheckNum(MakeCopies(with_paint, present, {4, 4, 0}, select, copies, sources), 0,
+           "an existing variant is not added twice");
+  Check(copies == std::vector{VariantRecord{{1, 1, 0, 4}, 17}, VariantRecord{{1, 1, 0x40, 4}, 17}} &&
+            sources == V{0, 0}, "the converted base and variant are each queued once");
+  MakeCopies(with_paint, present, {4}, off, copies, sources);
+  Check(copies == std::vector{VariantRecord{{1, 1, 0, 4}, 17}, VariantRecord{{1, 1, 0x40, 4}, 17}} &&
+            sources == V{0, 1}, "recorded variants retain their MSAA copies when the setting is off");
+
+  constexpr VariantRecord alpha = {{2, 1, 1, 4}, 19};
+  constexpr VariantRecord shadow = {{0, 0, 0, 1}, 20};
+  constexpr VariantRecord packed_vertex = {{3, 0x2000, 0, 1}, 21};
+  constexpr VariantRecord packed_pixel = {{4, 0, 0x100, 1}, 22};
+  constexpr VariantRecord single_sample = {{5, 0, 0, 1}, 23};
+  const std::vector mixed = {alpha, shadow, packed_vertex, packed_pixel, single_sample};
+  const std::set mixed_keys = {alpha.key, shadow.key, packed_vertex.key, packed_pixel.key, single_sample.key};
+  uint32_t selected = 0;
+  MakeCopies(mixed, mixed_keys, {2}, [&](VariantKey& key) {
+    ++selected;
+    if (key.ps == alpha.key.ps) {
+      key.ps_variant |= 0x40;
+      key.vs_variant |= 0x2000;
+    }
+  }, copies, sources);
+  CheckNum(selected, 2, "only base draws with a pixel shader go to the selector");
+  Check(copies == std::vector{VariantRecord{{2, 1, 1, 2}, 19}, VariantRecord{{2, 0x2001, 0x41, 4}, 19},
+                             VariantRecord{{2, 0x2001, 0x41, 2}, 19}} && sources == V{0, 0, 0},
+        "the paired packed words and both spec bits reach the original and startup sample counts");
+
+  MakeCopies(std::vector{single_sample}, std::set{single_sample.key}, {4}, select, copies, sources);
+  Check(copies == std::vector{VariantRecord{{5, 0, 0x40, 1}, 23}}, "a single-sample variant stays single-sample");
+}
 
 // ---- DeferTarget --------------------------------------------------------------------------------------
 
@@ -563,6 +636,7 @@ void TestReplayKeepsTheGains() {
 }  // namespace
 
 int main() {
+  TestStartupVariants();
   TestDeferTarget();
   TestOrderDefault();
   TestOrderDeferred();

@@ -167,6 +167,8 @@ class CarSelfRefl {
   // answer, latched at BeginFrame, so every draw of a frame picks the same shader. pipelines.cpp WantedFeatures asks it
   // per draw of the car paint; a change of the setting shows at the next frame. Any thread.
   static bool Selected();
+  // The mode requested by the startup settings, before BeginFrame can latch the actual mode.
+  static bool WantedAtStartup();
 
   CarSelfRefl() = default;
   ~CarSelfRefl();
