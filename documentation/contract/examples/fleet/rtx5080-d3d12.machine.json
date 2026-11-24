@@ -1,0 +1,176 @@
+{
+  "schema": "larecomp.machine",
+  "schema_version": 1,
+  "min_reader": 1,
+  "source": "game",
+  "final": true,
+  "written_by": {
+    "game_version": "PATCH 11 - PREVIEW 1",
+    "commit": "ffffffffffffffffffffffffffffffffffffffff"
+  },
+  "written_utc": "2026-11-24T12:00:00Z",
+  "hardware_id": "32bdd2418b910cc4e207d21ae91f74a88d9de76c3480fa5e2ba18182c9bf0248",
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 5080",
+    "vendor": "nvidia",
+    "vendor_id": 4318,
+    "device_id": 11266,
+    "vram_mb": 16303,
+    "software": false,
+    "driver_version": "32.0.15.6094",
+    "shared_memory": false,
+    "class": "high",
+    "class_why": "by memory: discrete GPU with 16303 MiB of dedicated memory, at least 5632 MiB",
+    "handheld": false,
+    "rtx": true,
+    "rx9000": false,
+    "class_forced": null,
+    "rt_tier": "strong",
+    "rt_rung": "strong",
+    "rt_tier_why": "by name: RTX 5080 -> strong (RTX 5070 and up (Blackwell)); by chip: device id 0x2C02 -> strong (GB203 (RTX 5080, 5070 Ti, 5070))",
+    "rt_benchmarked": false,
+    "adapters": [
+      {
+        "name": "AMD Radeon(TM) Graphics",
+        "vendor": "amd",
+        "vram_mb": 2048,
+        "software": false,
+        "selected": false,
+        "class": "low"
+      },
+      {
+        "name": "NVIDIA GeForce RTX 5080",
+        "vendor": "nvidia",
+        "vram_mb": 16303,
+        "software": false,
+        "selected": true,
+        "class": "high"
+      }
+    ]
+  },
+  "api": {
+    "name": "d3d12",
+    "version": "12_2",
+    "shader_model": "6.7",
+    "dxr_1_1": true,
+    "ray_query": true,
+    "car_rt": true,
+    "city_rt_shadows": true
+  },
+  "features": {
+    "upscalers": {
+      "fsr1": true,
+      "fsr31": true,
+      "fsr4": false,
+      "dlss": "ready",
+      "dlss_modes_refused": []
+    },
+    "frame_generation": {
+      "fsr31": true,
+      "dlss": true,
+      "dlss_multiplier_max": 4,
+      "dlss_after_restart": false
+    },
+    "latency": {
+      "kind": "reflex",
+      "auto_on": true
+    },
+    "denoiser": {
+      "vendor": "nvidia",
+      "dlss_rr": "ready",
+      "ray_regen": "no"
+    },
+    "hdr": {
+      "display_capable": true,
+      "windows_hdr_on": true,
+      "auto_paper_white_nits": 240,
+      "auto_peak_nits": 1000
+    },
+    "pcss": true
+  },
+  "display": {
+    "primary": {
+      "name": "Primary display",
+      "width": 3840,
+      "height": 2160,
+      "size": "3840X2160",
+      "refresh_hz": 240,
+      "hdr": true
+    },
+    "list": [
+      {
+        "name": "Primary display",
+        "width": 3840,
+        "height": 2160,
+        "size": "3840X2160",
+        "refresh_hz": 240,
+        "hdr": true
+      }
+    ],
+    "windowed_sizes": [
+      [
+        1280,
+        720
+      ],
+      [
+        1920,
+        1080
+      ],
+      [
+        2560,
+        1440
+      ]
+    ],
+    "exclusive_sizes": [
+      [
+        3840,
+        2160,
+        240
+      ]
+    ]
+  },
+  "os": {
+    "name": "windows",
+    "build": 26300,
+    "exclusive_fullscreen": true,
+    "live_window_resize": true,
+    "window_size_fixed": false,
+    "hdr_output": true,
+    "real_weather": true,
+    "mouse_look": true,
+    "wheel_ffb": true,
+    "frame_pacing_wake": true
+  },
+  "cpu": {
+    "threads": 16,
+    "level": "x86-64-v3"
+  },
+  "build": {
+    "rt_gi_update_built": true
+  },
+  "install": {
+    "portuguese_text": false,
+    "fidelityfx_files": true,
+    "streamline_files": true,
+    "city_pack": "current",
+    "city_hit": "current",
+    "shader_pack": "current"
+  },
+  "paths": {
+    "game_folder": "C:/Games/Fleet/rtx5080-d3d12",
+    "config_file": "C:/Games/Fleet/rtx5080-d3d12/larecomp.toml",
+    "user_root": "C:/Users/player/Documents/LARecomp",
+    "saves_root": "C:/Users/player/Documents/LARecomp\\content",
+    "cache_root": "C:/Users/player/Documents/LARecomp\\cache",
+    "logs": "C:/Games/Fleet/rtx5080-d3d12/logs",
+    "game_data_root": "C:/Games/Fleet/MCLA_Game_Files",
+    "mod_root": "C:/Games/Fleet/rtx5080-d3d12/modloader",
+    "strings_replace": "C:/Games/Fleet/rtx5080-d3d12/strings/replace",
+    "mod_roots_ignored": [],
+    "music": [
+      "C:/Games/Fleet/rtx5080-d3d12/music"
+    ],
+    "title_id": "545407F8",
+    "profile_id": "B13EBABEBABEBABE"
+  }
+}

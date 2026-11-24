@@ -1,0 +1,164 @@
+{
+  "schema": "larecomp.machine",
+  "schema_version": 1,
+  "min_reader": 1,
+  "source": "game",
+  "final": true,
+  "written_by": {
+    "game_version": "PATCH 11 - PREVIEW 1",
+    "commit": "ffffffffffffffffffffffffffffffffffffffff"
+  },
+  "written_utc": "2026-11-24T12:00:00Z",
+  "hardware_id": "0fc58f82781d30f09e2140afe20ba7ba74c489597de504c7335b66334d020c99",
+  "gpu": {
+    "name": "NVIDIA GeForce GTX 1080",
+    "vendor": "nvidia",
+    "vendor_id": 4318,
+    "device_id": 7040,
+    "vram_mb": 8192,
+    "software": false,
+    "driver_version": "31.0.15.4601",
+    "shared_memory": false,
+    "class": "mid",
+    "class_why": "by name: GTX 1080 -> mid (GTX 4xx to 1080 Ti (Maxwell, Pascal); the memory alone says high: 8192 MiB of dedicated memory)",
+    "handheld": false,
+    "rtx": false,
+    "rx9000": false,
+    "class_forced": null,
+    "rt_tier": "none",
+    "rt_rung": "none",
+    "rt_tier_why": "by API: no ray query on this device",
+    "rt_benchmarked": false,
+    "adapters": [
+      {
+        "name": "NVIDIA GeForce GTX 1080",
+        "vendor": "nvidia",
+        "vram_mb": 8192,
+        "software": false,
+        "selected": true,
+        "class": "mid"
+      }
+    ]
+  },
+  "api": {
+    "name": "vulkan",
+    "version": "1.3",
+    "shader_model": null,
+    "dxr_1_1": false,
+    "ray_query": false,
+    "car_rt": false,
+    "city_rt_shadows": false
+  },
+  "features": {
+    "upscalers": {
+      "fsr1": true,
+      "fsr31": true,
+      "fsr4": false,
+      "dlss": "no",
+      "dlss_modes_refused": []
+    },
+    "frame_generation": {
+      "fsr31": true,
+      "dlss": false,
+      "dlss_multiplier_max": 0,
+      "dlss_after_restart": false
+    },
+    "latency": {
+      "kind": "reflex",
+      "auto_on": true
+    },
+    "denoiser": {
+      "vendor": "none",
+      "dlss_rr": "no",
+      "ray_regen": "no"
+    },
+    "hdr": {
+      "display_capable": false,
+      "windows_hdr_on": false,
+      "auto_paper_white_nits": 203,
+      "auto_peak_nits": 400
+    },
+    "pcss": true
+  },
+  "display": {
+    "primary": {
+      "name": "Primary display",
+      "width": 1920,
+      "height": 1080,
+      "size": "1920X1080",
+      "refresh_hz": 60,
+      "hdr": false
+    },
+    "list": [
+      {
+        "name": "Primary display",
+        "width": 1920,
+        "height": 1080,
+        "size": "1920X1080",
+        "refresh_hz": 60,
+        "hdr": false
+      }
+    ],
+    "windowed_sizes": [
+      [
+        1280,
+        720
+      ],
+      [
+        1920,
+        1080
+      ]
+    ],
+    "exclusive_sizes": [
+      [
+        1920,
+        1080,
+        60
+      ]
+    ]
+  },
+  "os": {
+    "name": "windows",
+    "build": 26300,
+    "exclusive_fullscreen": true,
+    "live_window_resize": true,
+    "window_size_fixed": false,
+    "hdr_output": true,
+    "real_weather": true,
+    "mouse_look": true,
+    "wheel_ffb": true,
+    "frame_pacing_wake": true
+  },
+  "cpu": {
+    "threads": 16,
+    "level": "x86-64-v3"
+  },
+  "build": {
+    "rt_gi_update_built": true
+  },
+  "install": {
+    "portuguese_text": false,
+    "fidelityfx_files": true,
+    "streamline_files": true,
+    "city_pack": "current",
+    "city_hit": "current",
+    "shader_pack": "current"
+  },
+  "paths": {
+    "game_folder": "C:/Games/Fleet/gtx1080",
+    "config_file": "C:/Games/Fleet/gtx1080/larecomp.toml",
+    "user_root": "C:/Users/player/Documents/LARecomp",
+    "saves_root": "C:/Users/player/Documents/LARecomp\\content",
+    "cache_root": "C:/Users/player/Documents/LARecomp\\cache",
+    "logs": "C:/Games/Fleet/gtx1080/logs",
+    "game_data_root": "C:/Games/Fleet/MCLA_Game_Files",
+    "mod_root": "C:/Games/Fleet/gtx1080/modloader",
+    "strings_replace": "C:/Games/Fleet/gtx1080/strings/replace",
+    "mod_roots_ignored": [],
+    "music": [
+      "C:/Games/Fleet/gtx1080/music"
+    ],
+    "title_id": "545407F8",
+    "profile_id": "B13EBABEBABEBABE"
+  }
+}
