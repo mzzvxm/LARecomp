@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -40,9 +41,9 @@ struct ModInfo {
 };
 
 ModInfo ParseModInfo(const std::string& text);
-// models/<folder>/mod.toml (and its image), empty when absent.
-ModInfo ReadLocalModInfo(const std::string& folder);
-std::vector<uint8_t> ReadLocalModImage(const std::string& folder, const ModInfo& info);
+// mod.toml (and its image) in the given mod folder, empty when absent.
+ModInfo ReadLocalModInfo(const std::filesystem::path& mod_dir);
+std::vector<uint8_t> ReadLocalModImage(const std::filesystem::path& mod_dir, const ModInfo& info);
 // Dotted numbers compared piece by piece ("1.10" > "1.9"); <0 when a is older.
 // Anything that is not a number compares as text.
 int CompareVersions(const std::string& a, const std::string& b);
@@ -69,8 +70,9 @@ struct ModCheck {
 // Reads the server's manifest and compares it with models/ here. Hashes only
 // the local files whose size already matches.
 // with_info also reads each mod's mod.toml; with_images also its image.
+// An empty models_dir resolves the local mod root on demand.
 ModCheck CheckServerMods(const std::string& host, uint16_t http_port, bool with_info = false,
-                         bool with_images = false);
+                         bool with_images = false, const std::filesystem::path& models_dir = {});
 
 // A download of some of a check's mods. Each mod goes to models/.download_<mod>
 // first; only when all its files arrived and matched their hash does the old
@@ -87,7 +89,9 @@ public:
         std::string error;
     };
 
-    ModDownload(std::string host, uint16_t http_port, std::vector<ServerMod> mods);
+    // An empty models_dir resolves the local mod root on demand.
+    ModDownload(std::string host, uint16_t http_port, std::vector<ServerMod> mods,
+                std::filesystem::path models_dir = {});
     ~ModDownload();
     void Cancel();
     Progress Get() const;

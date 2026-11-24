@@ -38,7 +38,7 @@ namespace mc::modloader {
 inline std::filesystem::path ModRootDir(const std::filesystem::path& exe_dir) {
     std::error_code ec;
     constexpr const char* kNames[] = {"modloader", "mods", "models"};
-    // The names as written: the only case there is on Windows, and a stat each (this is asked while a menu draws).
+    // Probe the names as written first so common folder names need no directory scan.
     for (const char* name : kNames) {
         const std::filesystem::path dir = exe_dir / name;
         if (std::filesystem::is_directory(dir, ec)) return dir;

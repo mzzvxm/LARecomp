@@ -58,8 +58,6 @@ constexpr ImVec4 kBlue = mcla::ui::kColorCyanGlow;
 // A path from UTF-8 text (fs::u8path is deprecated in C++20).
 fs::path FromUtf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
 
-fs::path ModelsDir() { return mc::modloader::ModRootDir(rex::platform::GetExecutableFolder()); }
-
 std::string Utf8(const fs::path& p) {
     const auto u = p.u8string();
     return std::string(u.begin(), u.end());
@@ -78,10 +76,10 @@ struct LocalMod {
     std::vector<uint8_t> image;
 };
 
-std::vector<LocalMod> ScanLocal() {
+std::vector<LocalMod> ScanLocal(const fs::path& models_dir) {
     std::vector<LocalMod> out;
     std::error_code ec;
-    for (const auto& e : fs::directory_iterator(ModelsDir(), ec)) {
+    for (const auto& e : fs::directory_iterator(models_dir, ec)) {
         if (!e.is_directory()) continue;
         const std::string folder = Utf8(e.path().filename());
         LocalMod m;
@@ -105,8 +103,8 @@ std::vector<LocalMod> ScanLocal() {
             m.bytes += f.file_size(sub);
             ++m.files;
         }
-        m.info = br::ReadLocalModInfo(folder);
-        m.image = br::ReadLocalModImage(folder, m.info);
+        m.info = br::ReadLocalModInfo(e.path());
+        m.image = br::ReadLocalModImage(e.path(), m.info);
         out.push_back(std::move(m));
     }
     std::sort(out.begin(), out.end(), [](const LocalMod& a, const LocalMod& b) {
@@ -133,7 +131,7 @@ struct Available {
 
 // Every server that answered and has mods: its manifest (with each mod's
 // mod.toml and image), compared with here.
-std::vector<Available> ScanServers(const br::Snapshot& snap) {
+std::vector<Available> ScanServers(const br::Snapshot& snap, const fs::path& models_dir) {
     std::vector<const br::ServerView*> servers;
     for (const auto& s : snap.servers)
         if (s.answered && s.http_port && (s.mods_required + s.mods_optional) > 0) servers.push_back(&s);
@@ -143,7 +141,7 @@ std::vector<Available> ScanServers(const br::Snapshot& snap) {
     for (int i = 0; i < 6 && size_t(i) < servers.size(); ++i)
         pool.emplace_back([&] {
             for (size_t k; (k = next.fetch_add(1)) < servers.size();)
-                checks[k] = br::CheckServerMods(servers[k]->host, servers[k]->http_port, true, true);
+                checks[k] = br::CheckServerMods(servers[k]->host, servers[k]->http_port, true, true, models_dir);
         });
     for (auto& t : pool) t.join();
 
@@ -270,6 +268,9 @@ private:
     };
 
     void Open_() {
+        // CHECK: Trace the executable lookup in game across open, refresh and reopen.
+        models_dir_ = mc::modloader::ModRootDir(rex::platform::GetExecutableFolder());
+        models_dir_name_ = Utf8(models_dir_.filename());
         g_mod_open.store(true);
         pad_block_.Set(true);
         first_frame_ = true;
@@ -295,8 +296,8 @@ private:
         scanning_local_ = true;
         scanning_remote_ = servers_too;
         remote_started_ = false;
-        std::thread([r] {
-            r->local = ScanLocal();
+        std::thread([r, models_dir = models_dir_] {
+            r->local = ScanLocal(models_dir);
             r->local_ready.store(true);
         }).detach();
         if (servers_too) remote_wait_since_ = std::chrono::steady_clock::now();
@@ -316,8 +317,8 @@ private:
              std::chrono::steady_clock::now() - remote_wait_since_ > std::chrono::seconds(4))) {
             remote_started_ = true;
             auto r = results_;
-            std::thread([r, snap] {
-                r->remote = ScanServers(snap);
+            std::thread([r, snap, models_dir = models_dir_] {
+                r->remote = ScanServers(snap, models_dir);
                 r->remote_ready.store(true);
             }).detach();
         }
@@ -409,7 +410,7 @@ private:
         LARECOMP_APP_INFO("[mods] downloading {} {} ({}) from {}", name, o.mod.info.version,
                           br::FormatBytes(o.mod.need_bytes), o.server);
         download_name_ = name;
-        download_ = std::make_unique<br::ModDownload>(o.host, o.http_port, std::vector<br::ServerMod>{o.mod});
+        download_ = std::make_unique<br::ModDownload>(o.host, o.http_port, std::vector<br::ServerMod>{o.mod}, models_dir_);
         message_.clear();
     }
 
@@ -483,11 +484,11 @@ private:
 
     void DrawInstalled() {
         if (scanning_local_ && local_.empty()) {
-            ImGui::TextDisabled("Reading %s/...", Utf8(ModelsDir().filename()).c_str());
+            ImGui::TextDisabled("Reading %s/...", models_dir_name_.c_str());
             return;
         }
         if (local_.empty())
-            ImGui::TextDisabled("No mods in %s/.", Utf8(ModelsDir().filename()).c_str());
+            ImGui::TextDisabled("No mods in %s/.", models_dir_name_.c_str());
         if (BeginCards("##local")) {
             SetupCards();
             for (const auto& m : local_) {
@@ -603,12 +604,11 @@ private:
     }
 
     void SwitchMod(const LocalMod& m) {
-        const fs::path from = ModelsDir() / FromUtf8(m.folder);
-        const fs::path to = ModelsDir() / FromUtf8(m.enabled ? std::string(kDisabledPrefix) + m.name : m.name);
+        const fs::path from = models_dir_ / FromUtf8(m.folder);
+        const fs::path to = models_dir_ / FromUtf8(m.enabled ? std::string(kDisabledPrefix) + m.name : m.name);
         std::error_code ec;
         if (fs::exists(to, ec)) {
-            message_ = "Cannot: " + Utf8(ModelsDir().filename()) + "/" + Utf8(to.filename()) +
-                       " already exists.";
+            message_ = "Cannot: " + models_dir_name_ + "/" + Utf8(to.filename()) + " already exists.";
             return;
         }
         fs::rename(from, to, ec);
@@ -625,22 +625,23 @@ private:
 
     void Delete(const LocalMod& m) {
         std::error_code ec;
-        fs::remove_all(ModelsDir() / FromUtf8(m.folder), ec);
+        fs::remove_all(models_dir_ / FromUtf8(m.folder), ec);
         message_ = ec ? "Cannot delete " + m.folder + " (" + ec.message() + ")" : "Deleted " + m.folder + ".";
         textures_.erase("local:" + m.folder);
         Rescan(false);
     }
 
-    static void OpenFolder() {
+    void OpenFolder() {
 #ifdef _WIN32
-        const std::wstring dir = ModelsDir().wstring();
-        ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        ShellExecuteW(nullptr, L"open", models_dir_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #endif
     }
 
     rex::ui::IUISystem* ui_;
     mcla::ui::InputBlock pad_block_;
     br::Client client_;
+    fs::path models_dir_;
+    std::string models_dir_name_;
     std::shared_ptr<Results> results_;
     bool scanning_local_ = false;
     bool scanning_remote_ = false;
