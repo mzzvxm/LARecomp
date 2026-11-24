@@ -722,8 +722,8 @@ void SourceChecks() {
   Check(!Has(trace, "CityHitResolve(") && !Has(trace, "CITY_HIT_P_SCREEN") && Has(rules_h, "G5-c"), "SHADER: the picture's colour (ResolveHit's screen term) is not read: the checked limitation G5-c");
 
   // the apply
-  Check(Has(apply_ps, "#include \"gi_pixel_common.hlsli\"") && CountOf(apply_ps, "GiaPixelTerm(") == 3 && Has(apply_ps, "GiaLookupNetMixed(s, n, fr.deadBand, GiaPixelTerm(p, t, n, fr))") &&
-            Has(apply_ps, "GiaLookupNetMixed(s, n, fr.deadBand, GiaPixelTerm(pixel, t, n, fr))") && Has(apply_ps, "if (!GiPixelPresent())") && Has(apply_ps, "GipTapWeight(bilinear, d, GiaDepthWeight(t, d), GiaNormalWeight(nv, gn))"),
+  Check(Has(apply_ps, "#include \"gi_pixel_common.hlsli\"") && CountOf(apply_ps, "GiaPixelTerm(") == 3 && Has(apply_ps, "GiaLookupNetMixed(s, n, fr, GiaPixelTerm(p, t, n, fr))") &&
+            Has(apply_ps, "GiaLookupNetMixed(s, n, fr, GiaPixelTerm(pixel, t, n, fr))") && Has(apply_ps, "if (!GiPixelPresent())") && Has(apply_ps, "GipTapWeight(bilinear, d, GiaDepthWeight(t, d), GiaNormalWeight(nv, gn))"),
         "APPLY: the lookup (at the traced size and at the picture's) mixes the pass's term in through GipMix, reading nothing where the frame has no pixel image; the reduced image is read by four taps");
   Check(Has(common, "GipMix(float3 eField, float3 ePixel, float w)") && Has(apply_ps, "GipMix(s.irradiance,"), "APPLY: the mix is the twin's");
   const size_t m_pixel = At(apply_cpp, "Mark(list, \"rt gi pixel\")"), m_dn = At(apply_cpp, "Mark(list, \"rt gi denoise\")"), m_look = At(apply_cpp, "Mark(list, \"gi lookup\")"), m_after = At(apply_cpp, "Mark(list, \"after gi apply\")");
