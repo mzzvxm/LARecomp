@@ -58,6 +58,8 @@ void CheckMath() {
   Check(shader::RtAoAcceptTap(1.059f, 1, true, 0.8f), "a close, parallel tap passes");
   Check(!shader::RtAoAcceptTap(1.061f, 1, true, 1), "depth rejection at the near plane");
   Check(!shader::RtAoAcceptTap(10, 10, false, 1), "vehicle bit rejection");
+  // The host rule (the one the simulated scenes and the shader's twin are held to) rejects a tap of the other vehicle bit the same way, on a flat parallel tap that would pass otherwise.
+  Check(ao::AcceptTap(10, 10, true, 1) && !ao::AcceptTap(10, 10, false, 1) && !ao::AcceptTap(10, 10, false, 0.8f), "host tap rule: the vehicle bit rejection");
   Check(!shader::RtAoAcceptTap(10, 10, true, 0.79f), "normal rejection at the threshold");
   Check(Near(shader::RtAoMotionCap(0, 64), 32) && Near(shader::RtAoMotionCap(1, 32), 32 / 2.2f) &&
             Near(shader::RtAoMotionCap(9, 32), 4) && Near(shader::RtAoMotionCap(0, 1), 1), "motion and user cap");
@@ -80,7 +82,8 @@ void CheckMath() {
     const float b = float((i * 337) % 1024) / 1024.0f;
     const float depth = 0.01f + 80.0f * a;
     const float tap = depth * (0.94f + b * 0.12f);
-    Check(ao::AcceptTap(tap, depth, true, b) == shader::RtAoAcceptTap(tap, depth, true, b), "tap shader twin");
+    for (const bool same_vehicle : {true, false})
+      Check(ao::AcceptTap(tap, depth, same_vehicle, b) == shader::RtAoAcceptTap(tap, depth, same_vehicle, b), "tap shader twin");
     Check(Near(ao::MotionCap(a * 12, 16), shader::RtAoMotionCap(a * 12, 16)), "motion cap shader twin");
     Check(Near(ao::HistoryLength(15 * a, a, 12), shader::RtAoHistoryLength(15 * a, a, 12)), "length shader twin");
     Check(Near(ao::Clip(a, 0.6f, b, 0.2f, 0.75f), shader::RtAoClip(a, 0.6f, b, 0.2f, 0.75f)), "clip shader twin");
