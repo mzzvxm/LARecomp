@@ -527,7 +527,7 @@ City BuildCity(Lcg& rng) {
   c.materials.resize(10);
   c.materials[0] = HitMaterial{};
   c.materials[1] = material(1, 38, 0, 0, warm, avg1, 0.0f);
-  c.materials[2] = material(2, 60, 0, 1, white, avg2, 0.0f);
+  c.materials[2] = material(2, 60, 0, 1, warm, avg2, 0.0f);  // (a tint that is not white: the packed road's grey is multiplied by the tint per channel)
   c.materials[3] = material(11, 230, 0, kNoTexture, dark, dark, 0.0f);
   c.materials[4] = material(13, 100, 0, kNoTexture, lamp, lamp, 1.0f);
   c.materials[5] = material(10, 200, 220, 2, white, grey, 0.0f);
