@@ -65,6 +65,7 @@
 #endif
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -75,6 +76,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include "mc_engine/cinematic/camera_runtime.h"
 #include "mc_engine/cinematic/freecam_runtime.h"
@@ -299,6 +301,13 @@ static bool g_last_menu_valid = false;
 static uint32_t g_last_mode = 0;
 static float g_last_menu_pos[3] = {0.0f, 0.0f, 0.0f};
 static float g_last_menu_fov = 0.0f;
+
+static thread_local bool g_camera_manager_view = false;
+static std::atomic<int32_t> g_rendered_camera_rig{-1};
+
+void MenuCam_NoteManagerView() { g_camera_manager_view = true; }
+
+int32_t CurrentRenderedCameraRig() { return g_rendered_camera_rig.load(std::memory_order_relaxed); }
 
 void MenuCam_NoteFreecam(float x, float y, float z, float yaw, float pitch) {
     std::lock_guard<std::mutex> lock(g_sample_mutex);
@@ -681,11 +690,15 @@ static void LogExposureSample() {
 }
 
 void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
+    // The manager and final hooks run in the same camera tick on the same guest thread.
+    const bool manager_view = std::exchange(g_camera_manager_view, false);
     LogExposureSample();
     auto* base = larecomp::guest::Membase();
-    if (!base) return;
-    uint32_t sp = static_cast<uint32_t>(r1.u64);
-    if (!IsGuestAddr(sp)) return;
+    const uint32_t sp = static_cast<uint32_t>(r1.u64);
+    if (!base || !IsGuestAddr(sp)) {
+        g_rendered_camera_rig.store(-1, std::memory_order_relaxed);
+        return;
+    }
 
     uint32_t mode = static_cast<uint32_t>(r24.u64);
 
@@ -741,13 +754,13 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
         }
     }
 
-    // The free camera (trailer toolkit, cinematic/freecam_runtime.cpp): the pad flies the final camera while it is armed. It comes before the
-    // scene's camera, which a pilot who armed it does not want. One flag test when it is not armed.
-    if (mc::cinematic::FreecamApply(base, sp, mode)) return;
-
-    // The scene's camera (trailer toolkit, cinematic/camera_runtime.cpp), in every camera mode: it replaces whatever the game made
-    // and the menu code below must not run on top of it. One flag test and nothing else unless a scene with a camera track runs.
-    if (mc::cinematic::CinematicCameraApply(base, sp, mode)) return;
+    // The trailer toolkit's free camera takes precedence over the scene camera. Either can replace the game's final view.
+    if (mc::cinematic::FreecamApply(base, sp, mode) || mc::cinematic::CinematicCameraApply(base, sp, mode)) {
+        g_rendered_camera_rig.store(-1, std::memory_order_relaxed);
+        return;
+    }
+    // CHECK: Compare the early and final rig logs when entering and leaving stock photo mode from the cockpit.
+    g_rendered_camera_rig.store(manager_view ? -1 : r24.s32, std::memory_order_relaxed);
 
     // Only menu shots. The gameplay camera keeps its own mode id, so it is never
     // touched even with the cvars on.
@@ -846,6 +859,8 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
 #include "menu_camera.h"
 
 void MenuCam_NoteFreecam(float x, float y, float z, float yaw, float pitch) {}
+void MenuCam_NoteManagerView() {}
+int32_t CurrentRenderedCameraRig() { return -1; }
 bool Hook_MenuCameraPick(PPCRegister& r3) { return false; }
 void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {}
 

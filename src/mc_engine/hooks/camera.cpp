@@ -90,6 +90,7 @@ bool Patch_DebugCamGate() {
 // The game rebuilds orientation as a yaw about +Y (sub_82202E38), i.e. Y is up.
 // We keep yaw/pitch/position in host state and drive them from the sticks.
 void Patch_DebugCam(PPCRegister& r3) {
+    MenuCam_NoteManagerView();  // This path also runs for native photo mode with debug_cam off.
     auto* base = larecomp::guest::Membase();
     if (!base) return;
 

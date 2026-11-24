@@ -25,8 +25,8 @@ constexpr uint CabinMode(int mode) {
   return mode >= 0 && mode <= int(kCabinFill) ? uint(mode) : kCabinMap;
 }
 
-constexpr uint CabinPlayerId(int camera_rig, bool paused, bool car_valid, uint player_id) {
-  return camera_rig == 1 && !paused && car_valid && player_id >= 1u && player_id <= 23u ? player_id : 0u;
+constexpr uint CabinPlayerId(int rendered_rig, bool car_valid, uint player_id) {
+  return rendered_rig == 1 && car_valid && player_id >= 1u && player_id <= 23u ? player_id : 0u;
 }
 
 constexpr uint CabinSourceMode(uint mode) {

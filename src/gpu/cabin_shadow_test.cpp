@@ -23,13 +23,13 @@ int main() {
     }
   }
   check(cs::kCabinMarch == 1u && cs::kCabinMap == 2u && cs::kCabinRt == 3u && cs::kCabinFill == 4u, "debug menu mode values");
-  for (const int rig : {-1, 0, 1, 2, 3}) {
-    for (const bool paused : {false, true}) {
-      for (const bool valid : {false, true}) {
-        for (const unsigned id : {0u, 1u, 9u, 23u, 24u}) {
-          const unsigned expected = rig == 1 && !paused && valid && id > 0u && id < 24u ? id : 0u;
-          check(cs::CabinPlayerId(rig, paused, valid, id) == expected, "current valid player only in cockpit play view");
-        }
+  check(cs::CabinPlayerId(1, true, 9u) == 9u, "a redrawn paused cockpit keeps the current player ID");
+  check(cs::CabinPlayerId(-1, true, 9u) == 0u, "a photo camera can replace the cockpit rig");
+  for (const int rendered_rig : {-1, 0, 1, 2, 3, 6}) {
+    for (const bool valid : {false, true}) {
+      for (const unsigned id : {0u, 1u, 9u, 23u, 24u}) {
+        const unsigned expected = rendered_rig == 1 && valid && id > 0u && id < 24u ? id : 0u;
+        check(cs::CabinPlayerId(rendered_rig, valid, id) == expected, "current valid player only in the rendered cockpit view");
       }
     }
   }

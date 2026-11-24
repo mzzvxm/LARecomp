@@ -22,7 +22,7 @@
 #include "ao_paint.h"
 #include "car_frame.h"
 #include "hlsl/cabin_shadow_rules.hlsli"
-#include "mc_engine/camera/camera_look.h"
+#include "mc_engine/camera/menu_camera.h"
 #include "ao_stable.h"
 #include "car_rt_ao.h"
 #include "noise_resolve.h"
@@ -1111,7 +1111,7 @@ void AmbientOcclusion::BeginFrame() {
   mode_ = mode;
   contact_mode_ = contact;
   cabin_shadow_mode_ = cabin_shadow::CabinMode(larecomp::settings::mcla_gpu_cabin_sun_shadow.Get());
-  if (car_frame_ && contact_mode_ != Mode::kOff && cabin_shadow_mode_ != 0u && CurrentCameraRig() == 1) {
+  if (car_frame_ && contact_mode_ != Mode::kOff && cabin_shadow_mode_ != 0u && CurrentRenderedCameraRig() == 1) {
     car_frame_->Request();  // CarFrame collects next frame, including on GPUs with both car shadow producers off.
   }
   gi_mode_ = gi_mode;
@@ -2720,10 +2720,12 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   Push base;
   FillPush(&base, summary, plan, have_light ? &light : nullptr);
   if (contact && car_frame_ && summary.stencil_slot != kNoSlot) {
+    // Play and pause draws both collect a fresh CarFrame against their own stencil writes.
     const auto& car = car_frame_->Current();
     // CHECK: Verify the player stencil at guest sample 0 on hands, wheel and gauges across cars and APIs.
     // CHECK: This stencil also covers any player body panels the cockpit shows, including the hood.
-    plan.cabin_player_id = cabin_shadow::CabinPlayerId(CurrentCameraRig(), trigger_pause_, car.valid, car.player_id);
+    // CHECK: Confirm the four-sample cockpit view identifies the current player's stencil on both APIs.
+    plan.cabin_player_id = cabin_shadow::CabinPlayerId(CurrentRenderedCameraRig(), car.valid, car.player_id);
     if (plan.cabin_player_id != 0u) {
       plan.cabin_shadow_mode = cabin_shadow_mode_;
       if (cabin_shadow::CabinSourceMode(plan.cabin_shadow_mode) != 0u) {
