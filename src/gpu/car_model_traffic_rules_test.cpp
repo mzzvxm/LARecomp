@@ -961,7 +961,7 @@ void ParkedSourceTests() {
         "the log: the window line of rtnext_post.py's parked rows");
   Check(HasText(scene, "is shown by the main view and no draw is its: placed in the top level from its model data, {} of {} parts (RT-PARKED-CARS)"), "the log: the line of a car placed for the first time");
   // the switch
-  Check(HasText(settings, "REX_SETTING(bool, mcla_gpu_car_rt_cars_parked, true,") && HasText(settings, "left to the draw path, as before. Live.\", rex::kDebugOnly);") &&
+  Check(HasText(settings, std::string("REX_SETTING") + "(bool, mcla_gpu_car_rt_cars_parked, true,") && HasText(settings, "left to the draw path, as before. Live.\", rex::kDebugOnly);") &&
             HasText(settings, "inline auto& mcla_gpu_car_rt_cars_parked = g_gpu.mcla_gpu_car_rt_cars_parked;") && HasText(meta, "{\"mcla_gpu_car_rt_cars_parked\", \"MCLA/GPU\"},"),
         "the switch: mcla_gpu_car_rt_cars_parked is a debug-only bool, on by default, in the settings header, its alias and the meta table");
   const size_t at = manifest.find("\"mcla_gpu_car_rt_cars_parked\": {");
