@@ -357,3 +357,10 @@ add_executable(larecomp_bloom_gauss_test EXCLUDE_FROM_ALL
     variants/bloom_gauss.cpp)
 target_compile_features(larecomp_bloom_gauss_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_bloom_gauss_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# The DXIL feature flags reader (dxil_features.h): a variant's blob must not use double precision (an Intel iGPU on D3D12 cannot create the pipeline).
+#   cmake --build <dir> --target larecomp_dxil_features_test, then run src/shaderpack/larecomp_dxil_features_test (exit 0 = passed; dxil_features_test.cpp).
+add_executable(larecomp_dxil_features_test EXCLUDE_FROM_ALL
+    dxil_features_test.cpp)
+target_compile_features(larecomp_dxil_features_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_dxil_features_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")

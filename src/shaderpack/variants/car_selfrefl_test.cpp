@@ -98,7 +98,7 @@ void RunOnFixture() {
         "the local result follows the cube map data");
   // The ray of version 4 (src/gpu/car_selfrefl_rules.h has the same arithmetic, which car_selfrefl_rules_test.cpp checks): the
   // numbers in the helper are the ones of that header. Version 5 adds the host's ray traced image in front of the march, version 6 reads it with a 3x3 B-spline.
-  Check(sp::kCarSelfReflVariantVersion == 8, "the variant's version is 8 (the stamp rebuilds the pack's paint)");
+  Check(sp::kCarSelfReflVariantVersion == 9, "the variant's version is 9 (the stamp rebuilds the pack's paint)");
   Check(Count(text, "CarReflNoise") == 0 && Count(text, "g_CarReflB.w") == 0 && Count(text, "more.w") == 2,
         "no per-pixel noise: the trace reads no noise frame, the constant's w is the share of the points that take the whole hit");
   Check(Count(text, "[unroll]") == 2 && Count(text, "[loop]") == 1,
@@ -165,6 +165,14 @@ void RunOnFixture() {
   Check(Contains(text, "if (view == 5u)") && Contains(text, "float rt;"), "the debug view 5 and the result's field for it");
   Check(Count(text, "CarReflLoad(history, ray.size, uv)") == 1 && Count(text, "CarReflLoad(history, ray.size, startUv)") == 1,
         "one function reads the history for a point of the ray (the loop's and the halvings'), one read for the shaded point");
+  // Version 9: no double precision in the DXIL. A ternary of bare literals is a double in HLSL and dxc kept `select double` for the lookup's state (the nested one):
+  // the paint's pipelines of this variant failed on a GPU without doubles (the Intel iGPUs on D3D12: "Shader uses double precision float ops"; 27 of the
+  // starter list's pipelines on the laptop's UHD). The builder refuses a variant blob with the flag (contract_checks.h CheckDxilNoDoubles, dxil_features_test.cpp).
+  Check(Contains(text, "? 2.0f : ((car > 0.5 * weight) ? 4.0f : 3.0f)") && Contains(text, "result.state = (result.hit > 0.02) ? 4.0f : 3.0f;") &&
+            Contains(text, "p.on = (texel.a > 0.0) ? 1.0f : 0.0f;"),
+        "version 9: the ternaries of bare literals (the lookup's state, the trace's state, the point's on) have f suffixes: float, never double");
+  Check(Count(text, "? 4.0 : 3.0") == 0 && Count(text, "? 2.0 :") == 0 && Count(text, "? 1.0 : 0.0") == 0,
+        "version 9: no ternary of two bare literals is left in the paint's helper");
   // What must stay: the other fetches and the alpha test line.
   Check(Contains(text, "r0.y = tfetch2D(FastShadowCollectorSampler_"), "the shadow read is untouched");
   Check(Contains(text, "r9.xyzw = tfetch2D(VinylSampler_"), "the vinyl read is untouched");

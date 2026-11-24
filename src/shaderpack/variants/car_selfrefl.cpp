@@ -210,7 +210,7 @@ bool CarReflSample(Texture2D<float4> history, CarReflRay ray, float t, out CarRe
     }
     const float4 texel = CarReflLoad(history, ray.size, uv);
     p.t = t;
-    p.on = (texel.a > 0.0) ? 1.0 : 0.0;
+    p.on = (texel.a > 0.0) ? 1.0f : 0.0f;
     p.diff = c.w - texel.a;
     p.stored = texel.a;
     p.uv = uv;
@@ -292,7 +292,9 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
         r.weight = weight / known;
         r.colour = (weight > 1e-5) ? colour / weight : float3(0.0, 0.0, 0.0);
         r.car = (weight > 1e-5) ? saturate(car / weight) : 0.0;
-        r.state = (r.weight <= 0.02) ? 2.0 : ((car > 0.5 * weight) ? 4.0 : 3.0);
+        // The f suffixes are needed: a ternary of bare literals is double precision in HLSL, and here dxc kept it as `select double` in the DXIL, which a GPU without
+        // double precision (the Intel iGPUs) refuses to create (D3D12: "Shader uses double precision float ops"). Version 9.
+        r.state = (r.weight <= 0.02) ? 2.0f : ((car > 0.5 * weight) ? 4.0f : 3.0f);
     }
     return r;
 }
@@ -478,7 +480,7 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
             result.face = 1.0;
             result.hit = rt.weight * agreement;
             result.coat = result.hit * rt.car;
-            result.state = (result.hit > 0.02) ? 4.0 : 3.0;
+            result.state = (result.hit > 0.02) ? 4.0f : 3.0f;
             return result;
         }
     }

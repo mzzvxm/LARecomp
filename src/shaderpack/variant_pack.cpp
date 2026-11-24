@@ -183,6 +183,10 @@ CompileVerdict CompileChecked(DxcWorker& worker, const std::function<bool()>& ca
     *error = JoinProblems(problems);
     return CompileVerdict::kFailed;
   }
+  if (!CheckDxilNoDoubles(label, blob.variant, *dxil, &problems)) {
+    *error = JoinProblems(problems);
+    return CompileVerdict::kFailed;
+  }
   if (stage == ShaderStage::kVertex) {
     if (!spirv->empty()) CheckSpirvPosition(label, blob.variant, *spirv, &problems);
     if (!dxil->empty()) CheckDxilPosition(worker, label, blob.variant, *dxil, &problems);
