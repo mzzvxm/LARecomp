@@ -407,7 +407,7 @@ void ReaderChecks(const std::string& dir) {
   Check(Has(gpu_h, "int MirrorViewMode();"), "gpu.h declares what the guest's hooks and the host read");
   // every reader of the old switch goes through the answer now
   const std::string view = ReadFile(dir + "/mirror_view.cpp");
-  Check(!Has(view, "mcla_gpu_mirror_view.Get()") && Has(view, "const int32_t mode = mirror_setting::Current().mode;") && Has(view, "mirror_setting::Current()") && Has(view, "if (MirrorViewMode() == 0)") && Has(view, "request.every = setting.every;") &&
+  Check(!Has(view, "mcla_gpu_mirror_view.Get()") && Has(view, "const int32_t mode = mirror_setting::Current().mode;") && Has(view, "mirror_setting::Current()") && Has(view, "void NoteMirrorPhase(bool begin, bool hud_stamp)") && Has(view, "request.every = setting.every;") &&
             Has(view, "mirror_setting::LogIfChanged(setting);"),
         "the host's reads (NoteMirrorPhase, BeginFrame) are the answer's, with the level's cadence in the request, and the answer is logged when it changes");
   const std::string rv = ReadFile(dir + "/../mc_engine/hooks/rear_view.cpp");
