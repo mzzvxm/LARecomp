@@ -98,7 +98,9 @@ class HostPrecache {
     kVolumetrics = 7,       // Volumetrics: its compute passes and the composite per sample count (volumetrics.h Variant)
     kCarSelfRefl = 12,      // CarSelfRefl: its history pass (car_selfrefl.h Pass); the numbers between are left for other owners
     kCarShadowMap = 13,     // CarShadowMap: its matrix pass and the depth-only pipelines of the car's vertex formats (car_shadow_map.h VariantKey)
-    kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h)
+    kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h), and the passes that share its layout of sets. Variants: 0 the player's trace, 1 the denoise, 2 the opponents' trace,
+                            // 3 the player's glass trace, 4 to 7 the glass apply (1, 2, 4, 8 samples), 8 the hit distance pass of Ray Reconstruction. A key listed twice is ONE entry: whoever asks second is handed
+                            // the first one's pipeline, so each owner's number is its own (car_rt_refl_rules_test.cpp checks that these files do not share one)
     kLocalShadow = 22,      // LocalShadow: the depth-only pipelines of the headlight shadow replay, one per (vertex shader, layout, faces...) (local_shadow.h)
     kGiField = 30,          // GiField: the probe field's reset and weights compute passes (gi_field.h Variant)
     kScreenShared = 23,     // ScreenShared: its Hi-Z pass (screen_shared.h)

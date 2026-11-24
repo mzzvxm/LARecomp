@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -276,6 +277,41 @@ std::string FunctionOf(const std::string& text, const std::string& head) {
   return text.substr(at, end == std::string::npos ? std::string::npos : end - at);
 }
 
+// The variants of the host precache's kCarRtRefl owner that the sources build their keys from (host_precache.h). A key listed twice is one entry in the precache: the owner that asks second is handed the
+// first one's pipeline (car_rt_refl.cpp HitKey: the hit distance pass was handed the glass trace's, which has four sets, and dispatched it under the denoise's two: VUID-vkCmdDispatch-None-08600).
+struct KeyRun {
+  uint32_t first = 0;
+  uint32_t count = 0;  // a run `N + index` is kApplyVariants keys
+  std::string file;
+};
+
+uint32_t NumberAfter(const std::string& text, const std::string& head, size_t from = 0) {
+  const size_t at = text.find(head, from);
+  if (at == std::string::npos) {
+    return 0;
+  }
+  uint32_t value = 0;
+  for (size_t p = at + head.size(); p < text.size() && std::isdigit(static_cast<unsigned char>(text[p])); ++p) {
+    value = value * 10 + uint32_t(text[p] - '0');
+  }
+  return value;
+}
+
+void CollectKeyRuns(const std::string& text, const std::string& file, uint32_t run_width, std::vector<KeyRun>* runs) {
+  const std::string head = "HostPrecache::Key(HostPrecache::kCarRtRefl, ";
+  for (size_t at = text.find(head); at != std::string::npos; at = text.find(head, at + head.size())) {
+    size_t p = at + head.size();
+    KeyRun run;
+    run.file = file;
+    while (p < text.size() && std::isdigit(static_cast<unsigned char>(text[p]))) {
+      run.first = run.first * 10 + uint32_t(text[p] - '0');
+      ++p;
+    }
+    run.count = text.compare(p, 8, " + index") == 0 ? run_width : 1;
+    runs->push_back(run);
+  }
+}
+
 // RR-4b: the raw mode's rules, the hit pass as a C++ twin of the shader, and the sources (given the src/gpu folder).
 void RawChecks(const std::string& dir) {
   namespace rr = mcla::gpu::rr;
@@ -378,8 +414,30 @@ void RawChecks(const std::string& dir) {
   Check(Has(FunctionOf(cpp, "void CarRtRefl::BeginFrame(bool reflection_on) {"), "hit_ready_ = false;") && Has(FunctionOf(cpp, "void CarRtRefl::ReleaseImage() {"), "passes_->ReleaseImage(hit_);") &&
             Has(FunctionOf(cpp, "uint64_t CarRtRefl::HeldBytes() const {"), "&hit_"),
         "RR-4b: the hit image is announced for the frame that wrote it only, released with the others and counted in the memory line");
-  Check(Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 3)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 0)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 1)") && Has(opp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 2)"),
-        "RR-4b: the hit pass's pipeline has a precache key of its own (variant 3; 0 the trace, 1 the denoise, 2 the opponents')");
+  Check(Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 8)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 0)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 1)") && Has(opp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 2)"),
+        "RR-4b: the hit pass's pipeline has a precache key of its own (variant 8; 0 the trace, 1 the denoise, 2 the opponents', 3 to 7 the player's glass)");
+  {
+    // VERIFY-VK-VALIDATION: the hit pass and the glass trace both had variant 3, so the hit pass was handed the glass trace's pipeline (host_precache.h lists the variants). No two keys of the owner overlap.
+    const std::string glass = Read(dir, "car_rt_glass_refl.cpp"), glass_h = Read(dir, "car_rt_glass_refl.h");
+    const uint32_t apply_variants = NumberAfter(glass_h, "kApplyVariants = ");
+    Check(apply_variants == 4, "the glass apply has four pipelines (1, 2, 4 and 8 samples): the run `4 + index` is variants 4 to 7");
+    std::vector<KeyRun> runs;
+    CollectKeyRuns(cpp, "car_rt_refl.cpp", apply_variants, &runs);
+    CollectKeyRuns(opp, "car_rt_opp_refl.cpp", apply_variants, &runs);
+    CollectKeyRuns(glass, "car_rt_glass_refl.cpp", apply_variants, &runs);
+    Check(runs.size() == 6, "the owner's keys are read from the three files: the trace, the denoise and the hit pass (car_rt_refl.cpp), the opponents' trace, the glass trace and the glass apply (6 in all): " + std::to_string(runs.size()));
+    bool distinct = true;
+    for (size_t i = 0; i < runs.size(); ++i) {
+      for (size_t j = i + 1; j < runs.size(); ++j) {
+        const bool overlap = runs[i].first < runs[j].first + runs[j].count && runs[j].first < runs[i].first + runs[i].count;
+        if (overlap) {
+          distinct = false;
+          std::printf("  kCarRtRefl variant %u (%s) and %u (%s) are one key\n", runs[i].first, runs[i].file.c_str(), runs[j].first, runs[j].file.c_str());
+        }
+      }
+    }
+    Check(distinct, "kCarRtRefl: the trace, the denoise, the opponents' trace, the glass trace, the glass apply and the hit pass each have keys of their own in the host precache (one key is one pipeline: the second asker gets the first's)");
+  }
   Check(Has(cpp, "device_->CreateComputePipeline(plume::RenderComputePipelineDesc(denoise_layout_.get(), hit_shader_.get(), kGroup, kGroup, 1), kHitName)"), "RR-4b: the hit pass is a pipeline on the denoise's layout");
   // the wiring
   Check(Has(self_h, "void SetRawMode(bool raw) { raw_ = raw; }") && Has(self_h, "const HostImage* RawHitImage() const;") && Has(self_cpp, "info.raw = raw_;") &&

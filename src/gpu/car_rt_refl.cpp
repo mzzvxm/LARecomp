@@ -55,8 +55,10 @@ car_rt_refl::Setting SettingNow() {
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 0); }
 uint64_t DenoiseKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 1); }
-// (variant 2 is the opponents' trace, car_rt_opp_refl.cpp) RR-4b: the raw mode's hit distance pass.
-uint64_t HitKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 3); }
+// (variant 2 is the opponents' trace, car_rt_opp_refl.cpp; 3 is the player's glass trace and 4 to 7 its apply, car_rt_glass_refl.cpp) RR-4b: the raw mode's hit distance pass. It had 3 too, so in a Ray
+// Reconstruction frame the host precache handed it the glass trace's pipeline (the same key, listed first at the start): the hit pass dispatched the glass shader under the denoise's two-set layout (the Vulkan
+// validation layer's VUID-vkCmdDispatch-None-08600) and the glass trace had to be made again on the render thread. One number each: host_precache.h lists them.
+uint64_t HitKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 8); }
 constexpr const char* kHitName = "car rt refl hit distance (Ray Reconstruction)";
 
 // CarRtReflAvailable()'s answer: set once the layout and the shader exist and the car's structures can be built.
