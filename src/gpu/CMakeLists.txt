@@ -255,6 +255,10 @@ add_executable(larecomp_sync_build_log_test EXCLUDE_FROM_ALL sync_build_log_test
 # pipeline too; VK-FIRST-FRAME, the 5.4 s wait of the Vulkan race smoke) has a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_pipeline_wait_test, then run src/gpu/larecomp_pipeline_wait_test (exit 0 = passed).
 add_executable(larecomp_pipeline_wait_test EXCLUDE_FROM_ALL pipeline_wait_test.cpp)
+# The stencil reference of a guest draw (stencil_ref.h: not in the pipeline key, cleared from an older cache's records, put on the command list only when it changes; STENCIL-DYN)
+# has a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_stencil_ref_test, then run src/gpu/larecomp_stencil_ref_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_stencil_ref_test EXCLUDE_FROM_ALL stencil_ref_test.cpp)
 # The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
 add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)

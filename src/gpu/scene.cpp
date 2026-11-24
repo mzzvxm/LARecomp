@@ -1062,6 +1062,7 @@ void Scene::RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* 
   if (pipelines_->dynamic_depth_bias()) {
     list->setDepthBias(0.0f, 0.0f, 0.0f);  // no depth target: the guest's bias does not apply
   }
+  list->setStencilReference(d.state.stencil.stencilref);  // the pipeline's stencil test is off (HdrToneMap::VariantKey): any value does, the dynamic state must be set
   const DrawGeometry& g = d.geometry;
   if (g.slot_count) {
     list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count, d.input_layout->slots.data());
@@ -1219,6 +1220,7 @@ void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* 
   if (pipelines_->dynamic_depth_bias()) {
     list->setDepthBias(float(d.bias.constant), 0.0f, d.bias.slope);  // the game's, as Record sets it
   }
+  list->setStencilReference(d.state.stencil.stencilref);  // the game's, as Record sets it: the mask pipeline keeps the game's stencil test
   const DrawGeometry& g = d.geometry;
   if (g.slot_count) {
     list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count, d.input_layout->slots.data());
@@ -3379,6 +3381,11 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     list->setDepthBias(float(d.bias.constant), 0.0f, d.bias.slope);
     bound_.depth_bias = d.bias;
     bound_.depth_bias_bound = true;
+  }
+  // The stencil reference is the list's, not the pipeline's: the guest's when the draw uses the stencil, the list's own (or 0 on a new list) when it does not.
+  uint32_t stencil_reference = 0;
+  if (bound_.stencil_reference.Need((d.key.stencil & 1u) != 0, d.state.stencil.stencilref, &stencil_reference)) {
+    list->setStencilReference(stencil_reference);
   }
   Lap(Stage::kBindState);
   const DrawGeometry& g = d.geometry;

@@ -43,6 +43,7 @@
 #include "pipeline_wait.h"
 #include "shadow_filter.h"
 #include "side_views.h"
+#include "stencil_ref.h"
 #include "temporal_backend.h"
 
 #if defined(_WIN32)
@@ -177,6 +178,7 @@ uint32_t WantedFeatures(const ShaderStore::Entry& ps, bool startup = false) {
 // The pipeline cache file: a header, the layouts, the records.
 // Host byte order; any mismatch discards the whole file.
 constexpr char kCacheMagic[8] = {'M', 'C', 'L', 'A', 'P', 'S', 'O', '\0'};
+// Still 1 after the stencil reference left the key (stencil_ref.h): LoadFile clears it in an older file's records.
 constexpr uint32_t kCacheVersion = 1;
 constexpr uint32_t kMaxStoredElements = 64;
 constexpr uint32_t kMaxSemanticName = 64;
@@ -1504,6 +1506,7 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   size_t added = 0;
   uint32_t dropped = 0;
   uint32_t zeroed = 0;
+  uint32_t refs_cleared = 0;
   for (Record r : records) {
     r.layout = layout_of_file[r.layout];
     // A shader the pack no longer has: the pipeline cannot be made. Nor can one with a variant word of the
@@ -1526,6 +1529,12 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
       r.key.depth_bias = 0;
       r.key.slope_scaled_depth_bias = 0.0f;
     }
+    // The stencil reference is on the command list now (stencil_ref.h): a record an earlier build wrote has its draw's in the key, and
+    // the records that differed only by it are one pipeline, the first of them kept below (recorded_ drops the others).
+    if (const uint32_t masks = stencil_ref::WithoutReference(r.key.stencil_masks); masks != r.key.stencil_masks) {
+      ++refs_cleared;
+      r.key.stencil_masks = masks;
+    }
     // The bytes of a record are its identity: a -0.0 slope written by an earlier build is the +0.0 a draw asks for now.
     r.key.slope_scaled_depth_bias = key_guard::CanonicalZero(r.key.slope_scaled_depth_bias);
     // A depth format this device has no target for (the other API's file holds D24).
@@ -1537,9 +1546,10 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
     }
   }
   REXLOG_INFO("[gpu] pipelines: {} records and {} layouts in {}: {} new here ({} dropped: a "
-              "shader the pack does not have{})",
+              "shader the pack does not have{}{})",
               header.record_count, header.layout_count, path.string(), added, dropped,
-              zeroed ? std::format("; {} static depth biases zeroed", zeroed) : std::string());
+              zeroed ? std::format("; {} static depth biases zeroed", zeroed) : std::string(),
+              refs_cleared ? std::format("; {} stencil references cleared (on the list now)", refs_cleared) : std::string());
   return added;
 }
 
@@ -1770,7 +1780,7 @@ KeyResult Pipelines::BuildKeyUncached(const XenosState& state, const PipelineInp
   }
   if (constant_blend) {
     Report(kReportConstantBlend,
-           "a blend with the constant colour/alpha factor (Plume has no dynamic blend factor; the "
+           "a blend with the constant colour/alpha factor (nothing sets the host's blend factor; the "
            "host default factor is used)");
   }
 
@@ -1792,17 +1802,16 @@ KeyResult Pipelines::BuildKeyUncached(const XenosState& state, const PipelineInp
                     (uint32_t(StencilOp(dc.stencilzfail)) << 13) |
                     (uint32_t(Compare(func_bf)) << 17) | (uint32_t(StencilOp(fail_bf)) << 21) |
                     (uint32_t(StencilOp(zpass_bf)) << 25);
-      key.stencil_masks = uint32_t(state.stencil.stencilmask) |
-                          (uint32_t(state.stencil.stencilwritemask) << 8) |
-                          (uint32_t(state.stencil.stencilref) << 16) |
-                          (uint32_t(StencilOp(zfail_bf)) << 24);
+      // The reference is not in the key: the draw puts it on the list (stencil_ref.h).
+      key.stencil_masks = stencil_ref::PackMasks(state.stencil.stencilmask, state.stencil.stencilwritemask,
+                                                 uint32_t(StencilOp(zfail_bf)));
       if (dc.backface_enable && (state.stencil_bf.stencilmask != state.stencil.stencilmask ||
                                  state.stencil_bf.stencilwritemask !=
                                      state.stencil.stencilwritemask ||
                                  state.stencil_bf.stencilref != state.stencil.stencilref)) {
         Report(kReportStencilBackFace,
-               "back-face stencil masks or reference different from the front (one set in a "
-               "pipeline; the front ones are used)");
+               "back-face stencil masks or reference different from the front (one set of "
+               "masks in a pipeline and one reference on the list; the front ones are used)");
       }
     }
   }
@@ -1914,8 +1923,11 @@ bool Pipelines::BuildDesc(const PipelineKey& key, const ShaderStore::Entry* vs,
     desc.stencilBackFace.depthFailOp = RenderStencilOp((key.stencil_masks >> 24) & 0xF);
     desc.stencilReadMask = key.stencil_masks & 0xFFu;
     desc.stencilWriteMask = (key.stencil_masks >> 8) & 0xFFu;
-    desc.stencilReference = (key.stencil_masks >> 16) & 0xFFu;
   }
+  // Every guest pipeline takes its stencil reference from the command list (Scene puts the draw's on it, stencil_ref.h), so draws that
+  // differ only by the reference are one pipeline. Also one with the stencil test off: a static reference would overwrite the list's at its
+  // bind (D3D12) or make it undefined for the next draw (Vulkan), and the list's own copy (stencil_ref::Held) would then be wrong.
+  desc.dynamicStencilReferenceEnabled = true;
   desc.cullMode = plume::RenderCullMode(key.raster & 0xF);
   desc.frontFace = ((key.raster >> 4) & 1u) ? plume::RenderFrontFace::COUNTER_CLOCKWISE
                                             : plume::RenderFrontFace::CLOCKWISE;

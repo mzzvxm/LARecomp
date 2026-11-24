@@ -84,6 +84,7 @@
 #include "render_cpu.h"
 #include "shaders.h"
 #include "shadow_filter.h"
+#include "stencil_ref.h"
 #include "topology.h"
 #include "ui_sharp.h"
 #include "upload.h"
@@ -636,6 +637,8 @@ class Scene {
     bool constants_bound = false;
     bool depth_bias_bound = false;
     DepthBias depth_bias;
+    // The stencil reference the list holds (every guest pipeline takes it from the list: stencil_ref.h).
+    stencil_ref::Held stencil_reference;
     // Rasterizer and input state as last set (reblue's
     // dirtyStates): a draw sets only what differs.
     bool viewport_bound = false;
