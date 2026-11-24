@@ -26,9 +26,7 @@ def merged_dictionary(contract):
     """The contract's fact dictionary plus the pause menu's own live facts (fact-dictionary.pause-menu.json: facts only the game has)."""
     folder = ROOT / "documentation/contract"
     dictionary = contract.load_json(folder / "fact-dictionary.json")
-    extra = folder / "fact-dictionary.pause-menu.json"
-    if extra.exists():
-        dictionary["facts"].update(contract.load_json(extra))
+    dictionary["facts"].update(contract.load_json(folder / "fact-dictionary.pause-menu.json"))
     return dictionary
 
 
@@ -154,7 +152,10 @@ def width_errors(doc):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("dump", type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("dump", nargs="?", type=Path)
+    source.add_argument("--write-dictionary", type=Path, metavar="FILE",
+                        help="write the combined game fact dictionary for validate_contract.py --dictionary")
     parser.add_argument("--repeat", type=Path, help="a second dump from the same executable")
     parser.add_argument("--previous", type=Path, help="an earlier release dump to compare its commit and hash")
     parser.add_argument("--src", type=Path, help="compare the exported native markers against the game source")
@@ -162,6 +163,10 @@ def main():
 
     contract = import_file("lfg_contract", ROOT / "documentation/contract/validate_contract.py")
     try:
+        if args.write_dictionary is not None:
+            dictionary = json.dumps(merged_dictionary(contract), indent=2, ensure_ascii=False)
+            args.write_dictionary.write_text(dictionary + "\n", encoding="utf-8")
+            return 0
         doc = contract.load_json(args.dump)
         report = contract.validate(doc, kind="settings-ui", dictionary_doc=merged_dictionary(contract), strict=True)
         for severity, entries in (("ERROR", report.errors), ("WARN", report.warnings), ("INFO", report.infos)):
@@ -193,7 +198,7 @@ def main():
         print(f"{len(errors)} errors, {count} rows, {len(doc['settings'])} settings, settings_hash {digest}")
         return bool(errors)
     except (OSError, ValueError) as error:
-        print(f"ERROR {args.dump}: {error}", file=sys.stderr)
+        print(f"ERROR {args.dump or args.write_dictionary}: {error}", file=sys.stderr)
         return 1
 
 
