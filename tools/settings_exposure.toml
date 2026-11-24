@@ -41,7 +41,7 @@ names = ["photo_album_export", "photo_album_export_dir"]
 [[exception]]
 why = "online choices that have no row and need a text box (settings.cpp offers copy and paste for a server address); SETTINGS-REVIEW.md question 8: stay in F4 for now"
 names = [
-  "online_master_server", "server_browser_servers", "server_browser_show_icons",
+  "server_browser_servers", "server_browser_show_icons",
   "rmr_enabled", "rmr_server", "rmr_server_port", "leaderboards_enabled",
 ]
 
@@ -63,6 +63,7 @@ names = [
   "larecomp_discord_rpc", "larecomp_discord_rpc_language",
   "mcla_gpu_adapter", "unlock_ride_height", "unlock_wheel_fit",
   "profile_auto_select", "model_mods",
+  "online_master_server",
   "wheel_mode", "wheel_ffb", "wheel_ffb_strength", "wheel_ffb_boost", "wheel_ffb_centering", "wheel_ffb_sign",
   "wheel_device_range", "wheel_game_range", "wheel_steer_deadzone",
 ]

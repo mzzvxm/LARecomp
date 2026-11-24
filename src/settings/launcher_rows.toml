@@ -76,6 +76,22 @@ values = [
 ]
 
 [[tabs]]
+id = "launcher_online"
+label = "ONLINE"
+
+[[tabs.sections]]
+id = "launcher_server_browser"
+label = "SERVER BROWSER"
+
+[[tabs.sections.rows]]
+id = "L_online_master_server"
+label = "SERVER LIST ADDRESS"
+kind = "text"
+surfaces = ["launcher"]
+setting = "online_master_server"
+help = "Host or host:port of the list used by the server browser (F6). The default port is 31003. Leave it blank to use only your saved servers and the current server."
+
+[[tabs]]
 id = "launcher_wheel"
 label = "STEERING WHEEL"
 
