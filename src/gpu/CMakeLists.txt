@@ -470,6 +470,12 @@ add_executable(larecomp_nan_guard_test EXCLUDE_FROM_ALL nan_guard_test.cpp)
 # order, each has its Note line, the PassTiming labels and the Want calls exist) likewise:
 #   cmake --build <dir> --target larecomp_frame_order_test, then run src/gpu/larecomp_frame_order_test [<src/gpu dir>] [--print] (exit 0 = passed).
 add_executable(larecomp_frame_order_test EXCLUDE_FROM_ALL frame_order_test.cpp)
+
+# RTAO-R4 begin
+# Compile the test, then run src/gpu/larecomp_rtao_integration_test [<src/gpu dir>] against the merged renderer sources.
+add_executable(larecomp_rtao_integration_test EXCLUDE_FROM_ALL rtao_integration_test.cpp)
+target_compile_features(larecomp_rtao_integration_test PRIVATE cxx_std_23)
+# RTAO-R4 end
 # The material channel (gbuffer_material.h: the class table of the 192 shader groups, the gloss table, the specular exponent's mapping to a smoothness, the material word, the table file the
 # shader pack build writes and the draw's word) likewise; with the folder shaderpack/baseline (hlsl-rpf and hlsl-xex with their shader_report.tsv) it also checks the tables against the
 # translated HLSL of the retail game:
