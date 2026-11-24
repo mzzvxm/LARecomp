@@ -160,7 +160,8 @@ inline constexpr float kCoverMetres = 3.0f;
 // Neon (GB-NEON, retuned by GB-NEON-TUNE; the numbers and what they mean are in perf/GB-NEON-TUNE.md). THE NEON'S DATA, in one place:
 //
 //   colour   the game's colour (neon_light.h: ExtNeonColor x ExtNeonIntensity x pulse x fade) is the GLOW SHADER's HDR multiplier, not a light intensity: (30.17, 0.0176, 0.0100) for a red neon at a
-//            pulse of 0.8 at night, up to the console's colour target's ceiling (31.875). It is read as a HUE (the colour over its brightest channel: the tube's own colour, 1 at its largest) and a
+//            pulse of 0.8 at night, (37.72, 0.0219, 0.0125) at the pulse's peak (the profile's colour x intensity is 188.7 on red, the night fade 0.2; by day the peak is 23.6): a multiplier, so it passes the
+//            console's colour target's ceiling (31.875; the lit pixel is clipped there, not the multiplier). It is read as a HUE (the colour over its brightest channel: the tube's own colour, 1 at its largest) and a
 //            STRENGTH (the brightest channel over kNeonFullColour, at most 1: so the game's pulse, the day / night fade and a car's own neon strength still move the light, and nothing can pass 1).
 //   light    the tube is `kNeonIntensity` x strength x the gain, shared by its points: a radiant intensity in the STREET LAMPS' units of this pass (a street lamp's colour is rgb x I and its term
 //            1 / I inside its plateau, so a lamp's surface gets rgb, 1.0 at most; a surface facing the neon tube at d metres gets about kNeonIntensity x strength / (d^2 + kNeonNearSq)).
@@ -169,7 +170,7 @@ inline constexpr float kCoverMetres = 3.0f;
 //   law      LightLaw::kNeon (light_laws.h NeonScale): colour x window(d / reach)^2 / (d^2 + near^2) x wrap(N.L); `law_a` is near^2.
 // mcla_gpu_neon_light_tuned (debug, on) turns the whole retune off for the A/B (the old look: the colour as the game made it, a plateau and a hard cut at 6 / 7 / 8 m: the legacy constants below).
 inline constexpr float NeonReach(Tier t) { return t == Tier::kUltra ? 6.0f : (t == Tier::kHigh ? 5.5f : 5.0f); }
-inline constexpr float kNeonFullColour = 32.0f;   // the game's colour magnitude that is a full strength neon: the console's colour target holds 31.875 a channel at most
+inline constexpr float kNeonFullColour = 32.0f;   // the game's colour magnitude that is a full strength neon (the console's colour target holds 31.875 a channel at most); the red neon passes it from a pulse of 0.85 at night (37.7 at the peak), so the top of its night pulse is flat at full strength: the approved look (VERIFY-1122 V22, neon_light_test RealColourChecks)
 inline constexpr float kNeonIntensity = 5.0f;     // the whole tube's radiant intensity at full strength and gain 1, in the street lamps' units (perf/GB-NEON-TUNE.md: 2.3 at 1 m, 0.4 at 3 m on a wall)
 inline constexpr float kNeonNearSq = 0.64f;       // the near radius squared (0.8 m: the volume's least lamp near radius): the pool is nearly flat inside it and the law has no spike under the tube
 // A neon whose game colour (its brightest channel) is below this adds nothing a picture could show (the dark half of a pulse at night: 0.1 / 32 x 5 = 0.016 of a street lamp's plateau at 1 m): it takes

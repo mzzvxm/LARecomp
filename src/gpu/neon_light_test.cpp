@@ -1411,6 +1411,117 @@ void SourceChecks(const std::string& src) {
   Check(Has(header, "neon_light.h") && Has(header, "neon_active_") && Has(header, "NEON"), "local_lights.h tells the neon's story");
 }
 
+// ---------------------------------------------------------------------------
+// VERIFY-1122 V22 and V23: the game's REAL colours past the full colour, and the tour's own cameras
+// ---------------------------------------------------------------------------
+
+// V22: the red neon of the integration runs (ports\run\integ3-v-neon-night-dx / -day-dx) reads (37.7179, 0.0219, 0.0125) at the night pulse's peak (pulse 1.000, fade 0.1998) and (23.5737, 0.0137, 0.0078)
+// by day (fade 0.1249): the profile's ExtNeonColor x ExtNeonIntensity is 188.7 on red, not the 2 the M4 review assumed, so the colour passes the full colour 32 at the top of the night's pulse (from a pulse of
+// 0.85). The tuned look does not bound a colour per channel (that bound, 32, is the old look's, kLegacyNeonMaxColour): a colour past the full colour is strength 1 with the hue it was read with, so the
+// pulse's top is a flat full strength (the look the owner approved) and no hue is bent by it.
+void RealColourChecks() {
+  float hue[3], strength = -1.0f;
+  const float night[3] = {37.7179f, 0.0219f, 0.0125f};
+  lp::NeonHueStrength(night, hue, &strength);
+  Check(strength == 1.0f, "the red neon's night peak (37.7, past the full colour 32) is full strength, not more");
+  CheckNear(hue[0], 1.0, 0.0, "its hue's brightest channel is 1");
+  CheckNear(hue[1], 0.0219 / 37.7179, 1.0e-7, "and the others are over the colour as the game made it, not over a bound of 32");
+  CheckNear(hue[2], 0.0125 / 37.7179, 1.0e-7, "(blue too)");
+  const float day[3] = {23.5737f, 0.0137f, 0.0078f};
+  lp::NeonHueStrength(day, hue, &strength);
+  CheckNear(strength, 23.5737 / 32.0, 1.0e-6, "by day the same neon is 0.74 of full strength");
+  // the pulse: the strength follows it up to the full colour (a pulse of 0.8 is the 30.17 of the tuning: 0.943) and is flat above it (from 32 / 37.7179 = 0.8484)
+  const double peak = 37.7179;
+  for (const double pulse : {0.1, 0.5, 0.8, 0.84}) {
+    const float c[3] = {float(peak * pulse), 0.0f, 0.0f};
+    lp::NeonHueStrength(c, hue, &strength);
+    CheckNear(strength, peak * pulse / 32.0, 1.0e-5, "below the full colour the pulse moves the strength (pulse " + std::to_string(pulse) + ")");
+  }
+  for (const double pulse : {0.85, 0.9, 1.0}) {
+    const float c[3] = {float(peak * pulse), 0.0f, 0.0f};
+    lp::NeonHueStrength(c, hue, &strength);
+    Check(strength == 1.0f, "and from a pulse of 0.85 the strength is flat at 1 (pulse " + std::to_string(pulse) + ")");
+  }
+  // a colour with two bright channels past the full colour keeps its hue (a per channel bound of 32 before the hue would bend an orange (1, 0.5, 0) to (1, 0.59, 0) and a yellow to (1, 1, 0))
+  const float orange[3] = {37.74f, 18.87f, 0.0f};
+  lp::NeonHueStrength(orange, hue, &strength);
+  CheckNear(hue[1], 0.5, 1.0e-6, "an orange neon past the full colour keeps its hue (1, 0.5, 0)");
+  Check(strength == 1.0f && hue[2] == 0.0f, "... at full strength");
+  const float yellow[3] = {37.74f, 36.0f, 0.0f};
+  lp::NeonHueStrength(yellow, hue, &strength);
+  CheckNear(hue[1], 36.0 / 37.74, 1.0e-6, "a yellow one with both channels past 32 keeps its own hue, not (1, 1, 0)");
+  // the light a car makes of the real night peak is the tube's full intensity: kNeonIntensity x gain, shared by its points, in the red
+  const float origin[3] = {820.0f, 17.4f, -795.0f};
+  nl::NeonCar car = CarAt(kSelf, origin, 1.5f, 0.8f, true);
+  for (int k = 0; k < 3; ++k) {
+    car.colour[k] = night[k];
+  }
+  nl::Tube tube;
+  nl::ResolveTube(car, &tube);
+  for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+    for (const uint32_t n : {1u, 2u, 3u, 4u}) {
+      const Light l = lp::MakeNeonLight(car, 0, n, tube.a, tier, 1.0f);
+      CheckNear(l.color[0], double(lp::kNeonIntensity) / double(n), 1.0e-6, "the real night peak lights the tube with kNeonIntensity shared by its points (strength 1)");
+      Check(std::isfinite(l.color[1]) && std::isfinite(l.color[2]) && l.color[1] < 0.01f * l.color[0] && l.color[2] < 0.01f * l.color[0], "and it stays red");
+    }
+  }
+  // the old look still bounds each channel by 32 (the A/B): the real night peak is 32 there
+  {
+    const Light l = lp::MakeNeonLight(car, 0, 1, tube.a, lp::Tier::kHigh, 1.0f, 1.0f, false);
+    const float reach = lp::LegacyNeonReach(lp::Tier::kHigh);
+    const float plateau = lp::kLegacyNeonCutShare * reach * reach;
+    CheckNear(l.color[0], 32.0 * double(plateau), 1.0e-3, "with the retune off the red channel is bounded by 32 (the old look)");
+  }
+}
+
+// V23: the cameras of ports\scripts\scenes\v1122-neon-reach.scene against the planes' want (M2). The player has no neon; three AI cars with a red underglow stand at +8, +16 and +29 m (n1 to n3). The tour's camera
+// A is on the player's roof looking back along the street (the cars are behind it), camera B the chase camera (the cars are ahead): the log of integ3-v-neonreach-dx says `on` 22 ms after the cut to B and `off`
+// a hold after the cut to A. The probe says no for the two far cars from A and yes for every car from B at every tier. NOT pinned: n1, 8.5 m behind the roof camera. The scissor's box test is
+// conservative (a light whose box has a corner in front of the camera takes the whole picture: the 5 to 6 m sphere 8.5 m behind has such corners), so the probe alone would still ask for the planes for
+// n1; in the run the game itself stores the enable byte 0 for a car that is not in view (no `[neon-light]` line before the cut to B), so no lit car was in the table during A.
+void SceneReachChecks() {
+  const auto unit = [](double v[3]) {
+    const double n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    for (int k = 0; k < 3; ++k) {
+      v[k] /= n;
+    }
+  };
+  // a camera at `pos` looking along `forward` (the game's right = forward x up, up = right x forward), the scene's lens (fov 55 degrees), the log's picture 1280 x 720
+  const auto view_of = [&](const double pos[3], double fx, double fy, double fz) {
+    double forward[3] = {fx, fy, fz}, right[3] = {-fz, 0.0, fx}, up[3];
+    unit(forward);
+    unit(right);
+    up[0] = right[1] * forward[2] - right[2] * forward[1];
+    up[1] = right[2] * forward[0] - right[0] * forward[2];
+    up[2] = right[0] * forward[1] - right[1] * forward[0];
+    lp::ProbeView view;
+    const bool ok = lp::ProbeViewOf(right, up, forward, pos, 55.0 * 3.14159265358979 / 180.0, 16.0 / 9.0, 1280, 720, &view);
+    Check(ok, "the tour's camera is a camera");
+    return view;
+  };
+  const double roof[3] = {820.53, 20.00, -795.42};
+  const double chase[3] = {815.22, 18.25, -798.24};
+  const lp::ProbeView a = view_of(roof, -0.883, -0.074, -0.463);        // cuts 0 and 16: the cars are behind it
+  const lp::ProbeView b = view_of(chase, 0.883, -0.030, 0.469);         // cuts 8 and 24: the cars are in front
+  const lp::ProbeView a_turned = view_of(roof, 0.883, -0.074, 0.463);   // control: the roof camera turned round sees them
+  const float n1[3] = {826.23f, 17.30f, -789.11f}, n2[3] = {833.30f, 17.41f, -785.36f}, n3[3] = {846.14f, 17.57f, -781.82f};
+  const std::vector<nl::NeonCar> pack = {CarAt(kSelf + 0x10000u, n1, 1.5f, 0.8f, true, 242.0f), CarAt(kSelf + 0x20000u, n2, 1.5f, 0.8f, true, 242.0f), CarAt(kSelf + 0x30000u, n3, 1.5f, 0.8f, true, 62.0f)};
+  for (const lp::Tier tier : {lp::Tier::kMedium, lp::Tier::kHigh, lp::Tier::kUltra}) {
+    const std::string at = std::string(" at ") + lp::TierName(tier);
+    const std::vector<nl::NeonCar> far_pair = {pack[1], pack[2]};
+    Check(!lp::NeonReachesView(far_pair, tier, 1.0f, a), "camera A (the roof, looking back): the two cars 16 and 29 m behind it want no planes" + at);
+    Check(lp::NeonReachesView(pack, tier, 1.0f, b), "camera B (the chase camera): the pack in front wants them" + at);
+    Check(lp::NeonReachesView(far_pair, tier, 1.0f, a_turned), "control: the roof camera turned round sees them" + at);
+    for (size_t i = 0; i < pack.size(); ++i) {
+      const std::vector<nl::NeonCar> one = {pack[i]};
+      Check(lp::NeonReachesView(one, tier, 1.0f, b), "car n" + std::to_string(i + 1) + " on its own: in view of B, planes" + at);
+      if (i > 0) {
+        Check(!lp::NeonReachesView(one, tier, 1.0f, a), "car n" + std::to_string(i + 1) + " on its own: behind A, no planes" + at);
+      }
+    }
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1426,6 +1537,8 @@ int main(int argc, char** argv) {
   TableChecks();
   HoldChecks();
   ReachChecks();
+  RealColourChecks();
+  SceneReachChecks();
   IdChecks();
   if (!src.empty()) {
     SourceChecks(src);
