@@ -2219,6 +2219,12 @@ std::vector<std::filesystem::path> ShaderPackSearchFolders() {
   return ShaderStore::SearchFolders(g_shader_pack_folder);
 }
 
+// MF: use the live device's identity and caps without opening a second device.
+const Device* MachineFactsDevice() {
+  const Renderer* renderer = g_active.load(std::memory_order_acquire);
+  return renderer ? &renderer->device() : nullptr;
+}
+
 namespace {
 
 #if defined(_WIN32)

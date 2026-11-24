@@ -373,6 +373,10 @@ bool AutoBackendIsVulkan(const std::string& preferred_adapter, std::string* adap
 // before an integrated one. -1: no opinion, the SDK chooses (also on Linux for D3D12, which has none).
 int XeniaAdapterIndex(bool vulkan, const std::string& preferred_adapter);
 
+// MF: UI thread, between renderer Startup and Shutdown. Null without the native renderer.
+class Device;
+const Device* MachineFactsDevice();
+
 // --- the temporal upscalers (temporal_backend.h) ---------------------------------------------------
 // What the player's Upscaling rows need, in plain types (the rest of the app sees no Plume header).
 // mcla_gpu_upscaler is off | fsr31 | fsr4 | dlss; a choice this PC cannot run is treated as off (DLSS

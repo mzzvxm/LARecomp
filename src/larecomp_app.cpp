@@ -138,6 +138,8 @@ constexpr rex::CLIAction kActions[] = {
     REX_CLI_ACTION(build_city_pack, "Builds the city pack (the city's geometry for ray traced shadows) from the game files and exits (the launcher's setup)."),
     REX_CLI_ACTION(build_city_hit, "Builds the city hit data (the hit file and the texture file beside the city pack, for the ray traced effects that read the city's surfaces) and exits (the launcher's setup)."),
     REX_CLI_ACTION(check_city_hit, "Checks the city hit data (stat only; with check_city_hit_deep every file is read back) and exits: exit code 0 when it is in place and current."),
+    // MF
+    {larecomp::cli::kProbeMachineAction, "Writes machine.json (or --probe_machine=<file>) without opening a window and exits."},
 };
 
 // The window's focus tells thread_qos whether the process is the foreground game (os/thread_qos.h): the process is HighQoS while it has focus and goes back to Windows' own
@@ -299,7 +301,11 @@ std::span<const rex::CLIAction> LarecompApp::GetActions() const { return kAction
 
 rex::Result<void> LarecompApp::OnAction(const rex::CLIActionHit& hit) {
   // main scanned the arguments already (SetBatchMode) so GetRequirements() was right; nothing else to do here.
-  (void)hit;
+  // MF: the SDK preserves the optional value on the action.
+  if (hit.action.name == larecomp::cli::kProbeMachineAction && hit.option.value) {
+    const auto& path = *hit.option.value;
+    machine_output_ = std::filesystem::path(std::u8string(path.begin(), path.end()));
+  }
   return rex::Ok();
 }
 
@@ -360,6 +366,17 @@ rex::Result<void> LarecompApp::OnConfigure(rex::SettingsRegistry& settings) {
   // The setting options of the command line, at the layer the SDK would have used (it parses the rest, which has none of them).
   ApplyCommandLineSettings(settings);
   ApplyJoinServerLaunch(settings);
+  // MF: headless even when the player or launcher explicitly selected a driver. Keep the
+  // renderer's own adapter/backend settings as inputs to the probe.
+  if (batch_ == BatchMode::kProbeMachine) {
+    for (const auto* driver : {"ui.driver", "apu.driver", "hid.drivers", "gpu.driver"}) {
+      REX_TRY_VOID(settings.SetText(rex::SettingLayer::kLock, driver, "none"));
+    }
+    // A Vulkan start with either saved as DLSS would otherwise initialize Streamline inside
+    // Device::Initialize. The probe reports only the early device and file verdicts.
+    REX_TRY_VOID(settings.SetText(rex::SettingLayer::kLock, "mcla_gpu_upscaler", "off"));
+    REX_TRY_VOID(settings.SetText(rex::SettingLayer::kLock, "mcla_gpu_frame_generation", "off"));
+  }
   return rex::Ok();
 }
 
@@ -657,6 +674,11 @@ rex::Result<void> LarecompApp::OnInit() {
   // --precache_pipelines (the launcher's setup) work in the folders the game's own start will use (0.10 did it in OnConfigurePaths, ahead
   // of the batch run; here it came after it and a batch run built the packs where the game never looked: 2026-11-19).
   larecomp::shaderbuild::ConfigurePackFolder(rex::GetPathSettings().cache_root.Get());
+  // MF: no pipeline cache setup, title or window is needed for this action.
+  if (batch_ == BatchMode::kProbeMachine) {
+    rex::app::RequestShutdown(larecomp::machine::Probe(CurrentPaths(), machine_output_));
+    return rex::Ok();
+  }
   PinDriverShaderCache(rex::GetPathSettings().cache_root.Get());
 
   if (batch_ != BatchMode::kNone) {
@@ -758,6 +780,9 @@ rex::Result<void> LarecompApp::OnInit() {
   }
 #endif
 
+  // MF: publish the device facts now; asynchronous providers can finish during setup.
+  const auto machine_paths = CurrentPaths();
+  machine_facts_.Tick(&machine_paths);
   exit_listener_ = {};  // set in OnTitleLaunch
   BeginSetupStep();
   return rex::Ok();
@@ -894,6 +919,7 @@ void LarecompApp::BeginSetupStep() {
 
 bool LarecompApp::RunSetupFrame() {
   if (!RunFrame()) return false;
+  machine_facts_.Tick();  // MF
   if (step_ == SetupStep::kDone) return true;
   rex::ui::IUISystem& ui = GetUI();
   const auto advance = [this](SetupStep next) {
@@ -1374,7 +1400,12 @@ void LarecompApp::StopBeforeTitleEnds([[maybe_unused]] bool ran_title) {
 // thread that no longer runs frames; the 0.10 order stopped the renderer after BeginStop. Run a quit from the pause menu and from the
 // window's close and look for a hang at exit (the 5 s watchdog in FinishWindowCloseWork would end the process with a log line).
 void LarecompApp::OnRun() {
-  TitleApp::OnRun();
+  // MF: follow TitleApp's UI pump and check published facts on the same thread.
+  if (!rex::app::IsShutdownRequested()) {
+    const auto paths = CurrentPaths();
+    machine_facts_.Tick(&paths);
+    while (RunFrame()) machine_facts_.Tick();
+  }
   StopBeforeTitleEnds(true);
 }
 

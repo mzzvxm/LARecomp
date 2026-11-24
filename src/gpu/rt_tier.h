@@ -667,6 +667,7 @@ void NoteRtBench(const rt_bench::Result& result);
 // software, and whose class is not Low). Valid after InitializeRt.
 rt_bench::KeyFacts RtBenchKey();
 bool RtBenchWanted();
+std::string MachineRtReason(bool& benchmarked);
 
 // The tier in force: the override if there is one (mcla_gpu_rt_tier, else a forced class), else the table's with the benchmark's say. none before
 // InitializeRt. Any thread, cheap.

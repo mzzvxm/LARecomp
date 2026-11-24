@@ -92,6 +92,9 @@ inline constexpr std::string_view kInternalFlags[] = {"larecomp_restart_wait_han
 // GX: dispatched before the title app is constructed, so the SDK never parses this action.
 inline constexpr std::string_view kDumpSettingsUi = "dump_settings_ui";
 
+// MF: the launcher can request a headless machine snapshot, with an optional output path.
+inline constexpr std::string_view kProbeMachineAction = "probe_machine";
+
 enum class Route { kSdk, kInternal, kSetting };
 
 constexpr bool Contains(std::span<const std::string_view> names, std::string_view name) {

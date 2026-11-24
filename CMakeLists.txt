@@ -91,6 +91,9 @@ set(LARECOMP_SOURCES
     src/settings_ui/action.cpp
     src/settings_ui/export.cpp
     src/larecomp_app.cpp
+    # MF machine facts
+    src/machine_facts/document.cpp
+    src/machine_facts/machine_facts.cpp
     src/spdlog_console.cpp
     # LARecomp's side of the rexglue settings: the owners, the aliases of the old names, the by-name API.
     src/settings/larecomp_settings.cpp
@@ -1349,6 +1352,8 @@ else()
             unset(_larecomp_sl_rr_ok)
         endif()
         add_subdirectory(src/gpu)
+        # MF machine facts use the renderer's backend headers and provider build flags.
+        target_sources(larecomp_gpu PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/machine_facts/gpu_facts.cpp")
         # The renderer's objects, and plume's archive without plume's include
         # directories in larecomp's own translation units (CMP0131 is NEW with
         # cmake_minimum_required 3.25). The rest of larecomp sees only gpu.h.
@@ -1379,6 +1384,33 @@ else()
     add_subdirectory(src/citypack)
     add_subdirectory(tools/citypack_tool EXCLUDE_FROM_ALL)
     target_link_libraries(larecomp PRIVATE larecomp_citypack)
+
+    # MF machine facts
+    execute_process(COMMAND git rev-parse --verify HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE _machine_git_result OUTPUT_VARIABLE _machine_commit
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    string(LENGTH "${_machine_commit}" _machine_commit_length)
+    if(_machine_git_result EQUAL 0 AND _machine_commit_length EQUAL 40 AND _machine_commit MATCHES "^[0-9a-f]+$")
+        set_property(SOURCE src/machine_facts/machine_facts.cpp APPEND PROPERTY
+            COMPILE_DEFINITIONS "LARECOMP_MACHINE_COMMIT=\"${_machine_commit}\"")
+    endif()
+
+    add_executable(larecomp_machine_facts_test EXCLUDE_FROM_ALL
+        src/machine_facts/document_test.cpp src/machine_facts/document.cpp
+        src/mc_engine/online/server_browser/browser_query.cpp
+        src/mc_engine/online/relay_info.cpp
+        src/mc_engine/online/rate_my_ride/rmr_net.cpp
+        src/mc_engine/online/rate_my_ride/rmr_protocol.cpp)
+    target_include_directories(larecomp_machine_facts_test PRIVATE src)
+    target_compile_features(larecomp_machine_facts_test PRIVATE cxx_std_23)
+    target_link_libraries(larecomp_machine_facts_test PRIVATE larecomp_citypack)
+    if(Threads_FOUND)
+        target_link_libraries(larecomp_machine_facts_test PRIVATE Threads::Threads)
+    endif()
+    if(WIN32)
+        target_link_libraries(larecomp_machine_facts_test PRIVATE ws2_32)
+    endif()
 
     # rexglue 0.7.4
     if(WIN32)

@@ -35,12 +35,13 @@
 #include <rex/ui/ui_system.h>
 
 #include "app_paths.h"
+#include "machine_facts/machine_facts.h"
 #include "settings/cli_rules.h"
 
 class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventListener {
  public:
   // What a command line action asks for instead of a game: the launcher's setup runs them, one process each (or --build_shader_packs and --build_city_pack on one command line).
-  enum class BatchMode : uint8_t { kNone, kBuildShaderPacks, kPrecachePipelines, kBuildCityPack, kBuildCityHit, kCheckCityHit };
+  enum class BatchMode : uint8_t { kNone, kBuildShaderPacks, kPrecachePipelines, kBuildCityPack, kBuildCityHit, kCheckCityHit, kProbeMachine };
 
   LarecompApp();
   ~LarecompApp() override;
@@ -132,6 +133,9 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   std::vector<std::string> cli_notes_;              // what was not used and why; logged in OnInit (the log file is open by then)
   std::filesystem::path config_file_hint_;
   std::filesystem::path settings_config_path_;
+  // MF: per-start state, kept on the UI thread.
+  std::filesystem::path machine_output_;
+  larecomp::machine::GamePublisher machine_facts_;
   SetupStep step_ = SetupStep::kProfile;
   bool step_started_ = false;
   std::atomic<bool> step_done_{false};

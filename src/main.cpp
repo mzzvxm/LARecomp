@@ -3,10 +3,6 @@
 //
 // This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
-// kPPCImageConfig, the generated image of the game. The codegen output folder is `generated` (rexglue_project's
-// OUTPUT_DIR in CMakeLists.txt) and the file prefix is the manifest's project name.
-#include "generated/larecomp_init.h"
-
 #include "larecomp_app.h"
 
 #include "bootprogress/city_pack_rules.h"
@@ -59,6 +55,10 @@ static int LarecompMain(LarecompApp& app, const rex::CLIArgList& args) {
         case ActionKind::kBuildCityHit: app.SetBatchMode(LarecompApp::BatchMode::kBuildCityHit); break;
         case ActionKind::kCheckCityHit: app.SetBatchMode(LarecompApp::BatchMode::kCheckCityHit); break;
         case ActionKind::kNone: break;
+    }
+    // MF: the machine probe is a standalone action and takes precedence over the build actions.
+    if (args.Has(larecomp::cli::kProbeMachineAction)) {
+        app.SetBatchMode(LarecompApp::BatchMode::kProbeMachine);
     }
     app.SetAlsoCityActions(plan.then_city_pack, plan.then_city_hit, plan.then_check_city_hit);
     // OnConfigure reads larecomp.toml before the command line is applied: tell it where, when the player says (--config_file).

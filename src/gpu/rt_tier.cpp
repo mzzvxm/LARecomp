@@ -155,6 +155,13 @@ bool RtBenchWanted() {
   return g_bench_wanted;
 }
 
+// MF: the same verdict text recorded for the device and its benchmark.
+std::string MachineRtReason(bool& benchmarked) {
+  std::lock_guard<std::mutex> lock(g_text_mutex);
+  benchmarked = !g_bench_why.empty();
+  return benchmarked ? g_table_why + "; benchmark: " + g_bench_why : g_table_why;
+}
+
 RtTier CurrentRtTier() {
   if (!g_ready.load(std::memory_order_acquire)) {
     return RtTier::kNone;
