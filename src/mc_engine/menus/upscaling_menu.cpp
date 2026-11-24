@@ -30,6 +30,7 @@ using mcla::gpu::Scale;
 using mcla::gpu::Upscaler;
 using mcla::gpu::UpscalerAvailability;
 using mcla::gpu::UpscaleMode;
+using mcla_menu::Bool;
 using mcla_menu::CvarWriter;
 using mcla_menu::ItemDef;
 using mcla_menu::NativeOnly;
@@ -554,7 +555,7 @@ mcla::gpu::denoiser::MenuInputs DenoiserInputs() {
     m.dlss_needs_setup = a.dlss_needs_setup && !a.dlss;
     m.facts = snapshot.facts;
     m.debug = snapshot.valid ? snapshot.debug : mcla::gpu::rr::DebugSwitch::kRow;
-    m.setting = dn::Effective(Cvar("mcla_gpu_denoiser"), CvarOn("mcla_gpu_vendor_denoiser"));
+    m.setting = dn::Setting();  // the effective one: the row, or the debug chooser when it says auto, rr or ours (no cvar named here: the chooser is debug-only)
     m.consumers_on = dn::ConsumersOn();
     m.context_making = snapshot.context_making;
     return m;

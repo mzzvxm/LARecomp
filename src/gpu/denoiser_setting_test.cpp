@@ -513,7 +513,7 @@ void MenuChecks(const std::string& dir) {
         "which row a PC has: the AMD one by the card's name and Windows, the DLSS one where DLSS is listed (an RTX card), none otherwise");
   Check(Has(menu, "#include \"gpu/denoiser_setting.h\"") && Has(menu, "#include \"gpu/ray_regen_plan.h\""), "the menu includes the rules");
   Check(Has(menu, "m.dlss_chosen = Chosen() == Upscaler::kDlss;") && Has(menu, "m.dlss_waits_for_restart = DlssWaitsForRestart();") && Has(menu, "m.dlss_listed = DlssListed(a);") &&
-            Has(menu, "m.setting = dn::Effective(Cvar(\"mcla_gpu_denoiser\"), CvarOn(\"mcla_gpu_vendor_denoiser\"));") && Has(menu, "m.facts = snapshot.facts;"),
+            Has(menu, "m.setting = dn::Setting();") && !Has(menu, "\"mcla_gpu_denoiser\"") && Has(menu, "m.facts = snapshot.facts;"),
         "the menu's inputs: DLSS as listed, chosen and waiting for a restart, the effective setting (the row and the debug chooser), the renderer's facts");
   // the page: UPSCALING is not a page any more, DISPLAY has its rows
   Check(!Has(pause, "RxUpscalingMenu") && !Has(pause, "PM_RxSubUpscaling") && !Has(pause, "PM_RxTabUpscaling"), "UPSCALING is not a page or a hub row any more");
