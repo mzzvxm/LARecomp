@@ -105,18 +105,18 @@ void TestPlan() {
 
   const os::ProcessQosPlan focused = os::PlanProcessQos(true);
   const os::ProcessQosPlan unfocused = os::PlanProcessQos(false);
-  CHECK(focused.count == 2 && unfocused.count == 2);
+  // ONE call each: a SetProcessInformation call replaces the control mask, it does not add to it (a second call with 0x4 undid the first call's 0x1 on Windows 11 build 26300).
+  CHECK(focused.count == 1 && unfocused.count == 1);
 
-  // Focus: take execution speed over and leave it off (HighQoS).
-  CHECK(focused.calls[0].control == os::kQosExecutionSpeed && focused.calls[0].state == 0);
-  // No focus: everything back to Windows.
-  CHECK(unfocused.calls[0].control == 0 && unfocused.calls[0].state == 0);
+  // Focus: take execution speed over and leave it off (HighQoS), keep the timer opt-out.
+  CHECK(focused.calls[0].control == (os::kQosExecutionSpeed | os::kQosIgnoreTimerResolution) && focused.calls[0].state == 0);
+  // No focus: execution speed back to Windows (not controlled), the timer opt-out kept as the game had it from the start.
+  CHECK(unfocused.calls[0].control == os::kQosIgnoreTimerResolution && unfocused.calls[0].state == 0);
 
   for (const os::ProcessQosPlan& plan : {focused, unfocused}) {
-    // The 1 ms timer opt-out is the last call of both, so a reset can not leave a minimised game on
-    // the 15.6 ms timer.
-    CHECK(plan.calls[1].control == os::kQosIgnoreTimerResolution && plan.calls[1].state == 0);
     for (int i = 0; i < plan.count; ++i) {
+      // The 1 ms timer opt-out is in every call, so no call can leave a minimised game on the 15.6 ms timer.
+      CHECK((plan.calls[i].control & os::kQosIgnoreTimerResolution) != 0);
       // Never EcoQoS and never "ignore the timer": no call turns either mechanism ON.
       CHECK((plan.calls[i].state & os::kQosExecutionSpeed) == 0);
       CHECK((plan.calls[i].state & os::kQosIgnoreTimerResolution) == 0);

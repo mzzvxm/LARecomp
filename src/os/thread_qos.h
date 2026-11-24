@@ -89,26 +89,22 @@ struct QosCall {
   uint32_t state = 0;
 };
 
-// What to ask for when the window gains or loses focus. At most two calls, in order.
+// What to ask for when the window gains or loses focus: ONE call.
+// A SetProcessInformation(ProcessPowerThrottling) call REPLACES the whole control mask (it does not add to it): a second call with control 0x4 after one with control 0x1
+// leaves control 0x4, the execution speed control is gone again and the process is not HighQoS. The first version of this plan made that mistake (two calls, 0x1 then 0x4;
+// thread_qos_test read back "control 0x4" on a Windows 11 build 26300 laptop, 2026-11-24), so level 1 did nothing. One call carries every mechanism the game controls.
 struct ProcessQosPlan {
   QosCall calls[2];
   int count = 0;
 };
 
-// focused: opt out of execution speed throttling (HighQoS: control the bit, leave it off).
-// not focused: hand every mechanism back to Windows (control 0, the documented "system managed"),
-// and, because that reset may also release the timer resolution control, take the timer
-// resolution opt-out over again (control the bit, leave it off = always honour the requests), so
-// that the 1 ms timer still survives a minimised window (HYBRID-QOS.md 3.2).
+// focused: take over execution speed and leave it off (HighQoS), and keep the timer resolution opt-out (always honour the requests): control 0x5, state 0.
+// not focused: hand execution speed back to Windows (not in the control mask: "system managed") and keep the timer resolution opt-out, so that the 1 ms timer still
+// survives a minimised window (HYBRID-QOS.md 3.2): control 0x4, state 0 = exactly what mc::EnableHighResTimer set before this file did anything.
 constexpr ProcessQosPlan PlanProcessQos(bool focused) {
   ProcessQosPlan plan{};
-  if (focused) {
-    plan.calls[0] = {kQosExecutionSpeed, 0};
-  } else {
-    plan.calls[0] = {0, 0};
-  }
-  plan.calls[1] = {kQosIgnoreTimerResolution, 0};
-  plan.count = 2;
+  plan.calls[0] = {focused ? (kQosExecutionSpeed | kQosIgnoreTimerResolution) : kQosIgnoreTimerResolution, 0};
+  plan.count = 1;
   return plan;
 }
 
