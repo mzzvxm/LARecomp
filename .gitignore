@@ -35,6 +35,8 @@ tools/*
 # the settings UI dump lint (check_settings_ui.py) and the tool that makes the real dump from the sources (check_settings_dump.py), the drift report
 !tools/check_settings_ui.py
 !tools/check_settings_dump.py
+!tools/check_settings_ui_lints.py
+!tools/check_lfg_xcheck.py
 !tools/lfg_drift.py
 
 # Backup bundles belong next to the repository, never inside it.

@@ -1,0 +1,167 @@
+{
+  "schema": "larecomp.machine",
+  "schema_version": 1,
+  "min_reader": 1,
+  "source": "game",
+  "final": true,
+  "written_by": {
+    "game_version": "PATCH 11 - PREVIEW 1",
+    "commit": "ffffffffffffffffffffffffffffffffffffffff"
+  },
+  "written_utc": "2026-11-24T12:00:00Z",
+  "hardware_id": "21da2c8f2d2b3a71699ae2f9b7286913b82b39aaefffd108c9bd7272871c65eb",
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 4070",
+    "vendor": "nvidia",
+    "vendor_id": 4318,
+    "device_id": 10118,
+    "vram_mb": 12282,
+    "software": false,
+    "driver_version": "32.0.15.5612",
+    "shared_memory": false,
+    "class": "high",
+    "class_why": "by memory: discrete GPU with 12282 MiB of dedicated memory, at least 5632 MiB",
+    "handheld": false,
+    "rtx": true,
+    "rx9000": false,
+    "class_forced": null,
+    "rt_tier": "strong",
+    "rt_rung": "strong",
+    "rt_tier_why": "by name: RTX 4070 -> strong (RTX 4070 and up (Ada)); by chip: device id 0x2786 -> strong (AD104 (RTX 4070 Ti, 4070 Super, 4060 Ti 16 GB))",
+    "rt_benchmarked": false,
+    "adapters": [
+      {
+        "name": "NVIDIA GeForce RTX 4070",
+        "vendor": "nvidia",
+        "vram_mb": 12282,
+        "software": false,
+        "selected": true,
+        "class": "high"
+      }
+    ]
+  },
+  "api": {
+    "name": "d3d12",
+    "version": "12_2",
+    "shader_model": "6.7",
+    "dxr_1_1": true,
+    "ray_query": true,
+    "car_rt": true,
+    "city_rt_shadows": true
+  },
+  "features": {
+    "upscalers": {
+      "fsr1": true,
+      "fsr31": true,
+      "fsr4": false,
+      "dlss": "after_restart",
+      "dlss_modes_refused": [
+        "performance",
+        "ultra_performance"
+      ]
+    },
+    "frame_generation": {
+      "fsr31": true,
+      "dlss": false,
+      "dlss_multiplier_max": 0,
+      "dlss_after_restart": false
+    },
+    "latency": {
+      "kind": "reflex",
+      "auto_on": true
+    },
+    "denoiser": {
+      "vendor": "nvidia",
+      "dlss_rr": "after_restart",
+      "ray_regen": "no"
+    },
+    "hdr": {
+      "display_capable": false,
+      "windows_hdr_on": false,
+      "auto_paper_white_nits": 203,
+      "auto_peak_nits": 400
+    },
+    "pcss": true
+  },
+  "display": {
+    "primary": {
+      "name": "Primary display",
+      "width": 1920,
+      "height": 1080,
+      "size": "1920X1080",
+      "refresh_hz": 60,
+      "hdr": false
+    },
+    "list": [
+      {
+        "name": "Primary display",
+        "width": 1920,
+        "height": 1080,
+        "size": "1920X1080",
+        "refresh_hz": 60,
+        "hdr": false
+      }
+    ],
+    "windowed_sizes": [
+      [
+        1280,
+        720
+      ],
+      [
+        1920,
+        1080
+      ]
+    ],
+    "exclusive_sizes": [
+      [
+        1920,
+        1080,
+        60
+      ]
+    ]
+  },
+  "os": {
+    "name": "windows",
+    "build": 26300,
+    "exclusive_fullscreen": true,
+    "live_window_resize": true,
+    "window_size_fixed": false,
+    "hdr_output": true,
+    "real_weather": true,
+    "mouse_look": true,
+    "wheel_ffb": true,
+    "frame_pacing_wake": true
+  },
+  "cpu": {
+    "threads": 16,
+    "level": "x86-64-v3"
+  },
+  "build": {
+    "rt_gi_update_built": true
+  },
+  "install": {
+    "portuguese_text": false,
+    "fidelityfx_files": true,
+    "streamline_files": true,
+    "city_pack": "current",
+    "city_hit": "current",
+    "shader_pack": "current"
+  },
+  "paths": {
+    "game_folder": "C:/Games/Fleet/rtx4070-dlss-refused",
+    "config_file": "C:/Games/Fleet/rtx4070-dlss-refused/larecomp.toml",
+    "user_root": "C:/Users/player/Documents/LARecomp",
+    "saves_root": "C:/Users/player/Documents/LARecomp\\content",
+    "cache_root": "C:/Users/player/Documents/LARecomp\\cache",
+    "logs": "C:/Games/Fleet/rtx4070-dlss-refused/logs",
+    "game_data_root": "C:/Games/Fleet/MCLA_Game_Files",
+    "mod_root": "C:/Games/Fleet/rtx4070-dlss-refused/modloader",
+    "strings_replace": "C:/Games/Fleet/rtx4070-dlss-refused/strings/replace",
+    "mod_roots_ignored": [],
+    "music": [
+      "C:/Games/Fleet/rtx4070-dlss-refused/music"
+    ],
+    "title_id": "545407F8",
+    "profile_id": "B13EBABEBABEBABE"
+  }
+}

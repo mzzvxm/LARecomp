@@ -7,7 +7,7 @@
 // GAME's evaluator (src/settings/ui_expr.h, the one the pause menu runs). It reads a real dump of the game's settings UI (settings-ui.json, from tools\check_settings_dump.py),
 // collects every expression the dump holds (every `when`, `hidden_unless`, `decode`, `needs` and `expr`, every def, the auto cells of every setting that has them), and evaluates
 // each one over a grid: every machine of the fleet (documentation/contract/examples/fleet/*.machine.json) x both renderers x a set of settings assignments (the defaults, every
-// setting a rule reads at its first and at its last value, and seeded random picks). The launcher's test (tests\LARecomp.Launcher.Core.Tests\ContractCrossCheckTests.cs) reads
+// setting a rule reads at its first and at its last value, and seeded random picks). The launcher's own test reads
 // the vectors file and evaluates the same grid with its own evaluator; one differing result is one failing test with the expression, the machine and the settings named.
 //
 // The rules the game's evaluator and the launcher's share: live.* is null for both (the launcher never has the running game), a setting the file does not set reads the catalog's

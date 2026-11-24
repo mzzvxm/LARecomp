@@ -38,6 +38,53 @@ def rows_of(doc):
             yield from section["rows"]
 
 
+# What contract v1 can say (LAUNCHER-FOLLOWS-GAME sections 1.5 and 1.6). The game's own dump never uses a word outside it: a new row kind or a new generator is a change of the contract
+# (a launcher that has not heard of it draws a fallback), so it is an error here until the contract lists it.
+V1_KINDS = {"choice", "bool", "number", "text", "color", "action", "link", "carbon"}
+V1_GENERATORS = {"display.sizes", "render_scale.shares", "gpu.adapters"}
+TEMPLATE_WORDS = {"value", "id", "resolved", "resolved:format"}
+TEXT_FIELDS = ("suffix", "label", "reason", "tag", "help_append")
+
+
+def forms(row):
+    yield "", row
+    for index, variant in enumerate(row.get("variants", [])):
+        yield f".variants[{index}]", {**row, **variant}
+
+
+def vocabulary_errors(doc, contract):
+    """The words of the dump against the words of contract v1: kinds, generators, the defaults of bool rows, the facts a template reads."""
+    report = contract.Report()
+    checker = contract.ExprChecker(report, contract.FactTypes(merged_dictionary(contract)), doc.get("settings", {}), doc.get("defs", {}))
+    for tab in doc["tabs"]:
+        for section in tab["sections"]:
+            for row in section["rows"]:
+                for suffix, form in forms(row):
+                    where = f'row {row["id"]}{suffix}'
+                    if form.get("kind") not in V1_KINDS:
+                        yield f'{where}: the row kind {form.get("kind")!r} is not in contract v1 ({sorted(V1_KINDS)})'
+                    generator = form.get("values_from", {}).get("generator")
+                    if generator and generator not in V1_GENERATORS:
+                        yield f"{where}: the generator {generator!r} is not in contract v1 ({sorted(V1_GENERATORS)}): a launcher draws the row's fallback_values"
+                    if form.get("kind") == "bool" and form.get("default") not in (None, "true", "false"):
+                        yield f'{where}: the default of a bool row is {form.get("default")!r}, not true or false'
+                    texts = [(f"states[{i}].{key}", state[key]) for i, state in enumerate(form.get("states", [])) for key in TEXT_FIELDS if isinstance(state.get(key), str)]
+                    texts += [("label", form["label"])] if isinstance(form.get("label"), str) else []
+                    for value in form.get("values", []) or []:
+                        texts += [(f'values[{value.get("id")}].label_rules[{i}].label', rule["label"]) for i, rule in enumerate(value.get("label_rules", []))]
+                    for place, text in texts:
+                        for key in re.findall(r"\{([^{}]+)\}", text):
+                            if key in TEMPLATE_WORDS:
+                                continue
+                            expression = key[len("value*"):] if key.startswith("value*") else key
+                            before = len(report.errors)
+                            checker.check(expression, f"{where}.{place}", bool_needed=False, live_only=True, rule_name="template")   # a template with a null fact is not applied, so a live fact needs no fallback
+                            for message in report.errors[before:]:
+                                yield f"template {{{key}}} in {message}"
+                            if len(report.errors) > before:
+                                del report.errors[before:]
+
+
 def native_callbacks(src):
     exposure = import_file("settings_exposure", ROOT / "tools/check_settings_exposure.py")
     callbacks = {}
@@ -123,6 +170,7 @@ def main():
         # The other lints run even when the contract validator found something: one run lists everything that is wrong.
         errors = [f"contract: {entry}" for entry in report.errors + report.warnings]
         errors.extend(width_errors(doc))
+        errors.extend(vocabulary_errors(doc, contract))
         if args.src:
             callbacks = native_callbacks(args.src)
             for row in rows_of(doc):

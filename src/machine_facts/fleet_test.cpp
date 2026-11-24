@@ -6,9 +6,9 @@
 // Every file is made by the game's own writer (machine::Serialize) from the game's own rules for the two things a table decides: the GPU class (gpu_class.h
 // Classify: memory, the speed table, shared memory, the handheld table) and the ray tracing tier (rt_tier.h ClassifyRt, RtRung). What a card can run
 // (FSR 4, DLSS, frame generation, the latency reducer, the denoiser) is stated per machine below, in the words of the contract (what the game's probes
-// would say on that card). The files land in documentation/contract/examples/fleet/; the launcher keeps a copy for its tests (tests\xcheck\fleet).
+// would say on that card). The files land in documentation/contract/examples/fleet/; the launcher's tests read them from there.
 //
-// The fleet (LAUNCHER-FOLLOWS-GAME section 6, XT): RTX 5080 (Direct3D 12 and Vulkan), RTX 4070 (no multi frame generation), RTX 3060 (no DLSS frame
+// The fleet (LAUNCHER-FOLLOWS-GAME section 6, XT): RTX 5080 (Direct3D 12 and Vulkan), RTX 4070 (no multi frame generation; and with DLSS modes refused), RTX 3060 (no DLSS frame
 // generation), RX 9070 XT, RX 7800 XT (no FSR 4), Arc A770, the 9800X3D's 2-CU iGPU (class low), Steam Deck (handheld, Vulkan, Linux), GTX 1080 (no ray
 // tracing units), and a PC whose probe failed (what `--probe_machine` leaves when the device never opened: the first-pass facts only).
 
@@ -53,6 +53,7 @@ struct Spec {
   // What the card can run.
   bool rtx = false, rx9000 = false, fsr4 = false;
   const char* dlss = "no";      // no | ready | needs_setup | after_restart
+  std::vector<std::string> refused_modes;   // DLSS modes the driver refuses on this card (their rows say N/A)
   bool fsr_fg = true, dlss_fg = false;
   unsigned dlss_multiplier = 0;
   const char* latency = "none";   // none | reflex | antilag2
@@ -90,6 +91,13 @@ const std::vector<Spec>& Fleet() {
       Spec s{"rtx4070", "NVIDIA GeForce RTX 4070", 0x10DE, 0x2786, "32.0.15.5612", 12282};
       s.rtx = true; s.dlss = "ready"; s.dlss_fg = true; s.dlss_multiplier = 2; s.latency = "reflex"; s.denoiser = "nvidia"; s.dlss_rr = "ready";
       s.width = 2560; s.height = 1440; s.hz = 144; s.want_class = "high"; s.want_tier = "strong";
+      f.push_back(s);
+    }
+    {
+      // The same card with the driver refusing two DLSS modes (the rows say N/A) and DLSS not yet restarted into: what a first start on a new driver looks like.
+      Spec s{"rtx4070-dlss-refused", "NVIDIA GeForce RTX 4070", 0x10DE, 0x2786, "32.0.15.5612", 12282};
+      s.rtx = true; s.dlss = "after_restart"; s.dlss_fg = false; s.latency = "reflex"; s.denoiser = "nvidia"; s.dlss_rr = "after_restart";
+      s.refused_modes = {"performance", "ultra_performance"}; s.want_class = "high"; s.want_tier = "strong";
       f.push_back(s);
     }
     {
@@ -255,7 +263,7 @@ machine::Facts MakeFacts(const Spec& s, std::string* class_name, std::string* ti
   gpu.fsr31 = true;
   gpu.fsr4 = s.fsr4;
   gpu.dlss = s.dlss;
-  gpu.refused_modes = std::vector<std::string>{};
+  gpu.refused_modes = s.refused_modes;
   gpu.fsr31_fg = s.fsr_fg;
   gpu.dlss_fg = s.dlss_fg;
   gpu.dlss_multiplier = s.dlss_multiplier;
