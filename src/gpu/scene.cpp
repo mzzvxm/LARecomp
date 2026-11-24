@@ -3576,6 +3576,11 @@ Scene::Skip Scene::RecordMirrorDraw(PreparedDraw& d, const DrawRecord& r, plume:
     bound_.depth_bias = d.bias;
     bound_.depth_bias_bound = true;
   }
+  // The stencil reference is the list's, not the pipeline's (stencil_ref.h): the view's draws take the guest's as Record does (the game's pipelines are all made with the dynamic reference).
+  uint32_t stencil_reference = 0;
+  if (bound_.stencil_reference.Need((d.key.stencil & 1u) != 0, d.state.stencil.stencilref, &stencil_reference)) {
+    list->setStencilReference(stencil_reference);
+  }
   Lap(Stage::kBindState);
   const DrawGeometry& g = d.geometry;
   if (g.slot_count && !SameVertexBuffers(bound_.vertex_slot_count, bound_.vertex_views.data(), bound_.vertex_slots.data(), g, d.input_layout->slots.data())) {

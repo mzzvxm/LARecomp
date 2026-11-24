@@ -182,10 +182,10 @@ void TestSources(const std::filesystem::path& dir) {
   Check(Count(pipelines, "desc.dynamicStencilReferenceEnabled = true;") == 1, "BuildDesc makes every pipeline with the dynamic stencil reference");
   Check(Count(pipelines, "desc.stencilReference") == 0, "BuildDesc reads no reference from the key");
   Check(Count(pipelines, "stencil_ref::WithoutReference(r.key.stencil_masks)") == 1, "LoadFile clears the reference of an older record");
-  // The draws that bind a pipeline of Pipelines: the game's (Record, through the list's held value) and the two second draws.
-  Check(Count(scene, "bound_.stencil_reference.Need(") == 1, "Record tells the list the reference through the held value");
-  Check(Count(scene, "list->setStencilReference(") == 3, "the game's draw, the HDR second draw and the mask draw each set the reference");
-  Check(Count(scene, "list->setPipeline(") == 3, "Scene binds a pipeline of Pipelines in three places (a fourth needs the reference too)");
+  // The draws that bind a pipeline of Pipelines: the game's (Record, through the list's held value), the mirror view's copy of it (RecordMirrorDraw, the same held value) and the two second draws.
+  Check(Count(scene, "bound_.stencil_reference.Need(") == 2, "Record and the mirror view's draw tell the list the reference through the held value");
+  Check(Count(scene, "list->setStencilReference(") == 4, "the game's draw, the mirror view's draw, the HDR second draw and the mask draw each set the reference");
+  Check(Count(scene, "list->setPipeline(") == 4, "Scene binds a pipeline of Pipelines in four places (a fifth needs the reference too)");
 }
 
 }  // namespace
