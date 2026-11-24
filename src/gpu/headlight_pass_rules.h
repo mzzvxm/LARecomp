@@ -175,6 +175,43 @@ inline IdentityVerdict JudgeIdentity(const float* forward, const float* pass, si
 }
 
 // ---------------------------------------------------------------------------
+// the screen-space occlusion's share of the identity (GB-H2-REST, 2026-11-24)
+// ---------------------------------------------------------------------------
+// The identity rule above compares two pictures that differ in more than the light's law. The pass adds its light AFTER the screen-space occlusion's apply (scene.cpp OnResolve: so the occlusion does
+// not darken the light and the bounce light does not see it: LIGHT-UNIFY 6.2, a choice, and a headlight is direct light), while the forward stage's light is part of the lit colour the apply multiplies:
+// the apply knows the ambient and the sun, not the headlights, and at night its ambient share is 1, so it darkens the forward headlight like the ambient (ao_apply_ps.hlsl). Where the occlusion is
+// (a wall's foot, under a car, a kerb) the forward picture's headlight is therefore darker than the pass's, by the occlusion's own factor; nowhere is it brighter. On the integ3 runs of 2026-11-23
+// (night, three parked cars, tier high, both APIs): pass / forward 1.06 .. 1.15 over the walls and the road, the ratio by pixel follows 1 / (the occlusion's factor measured on the base picture:
+// the same scene with the occlusion on and off), the pixels with no occlusion are at 1.01 .. 1.04, and the 11-22 runs with the occlusion off were 8 to 12 per cent under the same runs with it on.
+// So the identity is judged like with like: with the occlusion OFF in all three pictures (the `noao` config) the rule above holds as it stands, and with it ON the pass may be brighter than the
+// forward stage by the occlusion's share and not darker. A picture with no occlusion-off twin cannot say how much of its excess is the occlusion: the excess up to kAoBrighterMax is a CHECK to be
+// confirmed with the twin, more is a FAIL (a ratio of 2.2 is the baked vertex occlusion, a ratio of 16 the exposure: headlight_ab_compare.py's hints).
+inline constexpr double kAoShareLow = 0.98;     // ratio (occlusion on) / ratio (occlusion off): the occlusion only takes light from the forward picture, so not under 1 but a hair of noise
+inline constexpr double kAoShareHigh = 1.25;    // ... and not over the most the apply takes from a lit pixel on average (measured 1.06 .. 1.15)
+inline constexpr double kAoBrighterMax = 1.25;  // no twin: pass / forward up to this is the occlusion's share to be confirmed, over it a fault of the pass
+
+enum class IdentityClass : uint8_t {
+  kNotEnough,   // fewer than kMinBothPixels lit by both: nothing to judge
+  kIdentical,   // the rule above holds as it stands
+  kAoShare,     // brighter than the occlusion-off twin by the occlusion's share (confirmed by the twin)
+  kAoExpected,  // brighter by what only the occlusion explains, no twin to confirm it with: a CHECK
+  kFail,
+};
+
+// `ao_is_off`: the picture was made with the screen-space occlusion off (the rule holds as it stands, nothing excuses a miss). `ratio_ao_off`: the pass / forward ratio of the same scene, camera and
+// tier made with the occlusion off, or a value of 0 or less when there is none.
+inline IdentityClass ClassifyIdentity(const IdentityVerdict& v, bool ao_is_off, double ratio_ao_off) {
+  if (!v.enough) return IdentityClass::kNotEnough;
+  if (v.ok) return IdentityClass::kIdentical;
+  if (ao_is_off) return IdentityClass::kFail;
+  if (ratio_ao_off > 0.0) {
+    const double share = v.ratio / ratio_ao_off;
+    return share >= kAoShareLow && share <= kAoShareHigh ? IdentityClass::kAoShare : IdentityClass::kFail;
+  }
+  return v.ratio >= double(kRatioLow) && v.ratio <= kAoBrighterMax ? IdentityClass::kAoExpected : IdentityClass::kFail;
+}
+
+// ---------------------------------------------------------------------------
 // the retirement gate
 // ---------------------------------------------------------------------------
 

@@ -266,6 +266,59 @@ void IdentityChecks() {
   }
 }
 
+// GB-H2-REST: the screen-space occlusion's share of the identity (headlight_pass_rules.h ClassifyIdentity). The forward stage's headlight is darkened by the occlusion's apply and the pass's is not, so with
+// the occlusion on the pass is brighter by its factor and never darker; with it off the rule stands as it is.
+void AoShareChecks() {
+  Lcg rng;
+  const size_t n = 20000;
+  const std::vector<float> forward = Field(rng, n, 0.2f);
+  auto scaled = [&](float k) {
+    std::vector<float> p = forward;
+    for (float& x : p) x *= k;
+    return hp::JudgeIdentity(forward.data(), p.data(), n);
+  };
+  using C = hp::IdentityClass;
+  const hp::IdentityVerdict same = scaled(1.0f);
+  const hp::IdentityVerdict ao14 = scaled(1.14f);   // the integ3 chase picture: 14 per cent brighter, every pixel 14 per cent (the same share is 0)
+  const hp::IdentityVerdict ao08 = scaled(1.08f);
+  const hp::IdentityVerdict dark = scaled(0.90f);
+  const hp::IdentityVerdict two = scaled(2.2f);
+  const hp::IdentityVerdict sixteen = scaled(16.0f);
+  // a picture the rule passes is identical whatever the occlusion says
+  Check(hp::ClassifyIdentity(same, false, 0.0) == C::kIdentical && hp::ClassifyIdentity(same, true, 0.0) == C::kIdentical && hp::ClassifyIdentity(same, false, 1.0) == C::kIdentical, "a picture the rule passes is identical with the occlusion on, off, or a twin");
+  // no judgement under the pixel minimum
+  {
+    std::vector<float> f(50, 0.3f);
+    const hp::IdentityVerdict v = hp::JudgeIdentity(f.data(), f.data(), f.size());
+    Check(hp::ClassifyIdentity(v, false, 0.0) == C::kNotEnough && hp::ClassifyIdentity(v, true, 1.0) == C::kNotEnough, "too few pixels lit by both: nothing to judge, with or without the occlusion");
+  }
+  // the occlusion is OFF: nothing excuses a miss
+  Check(hp::ClassifyIdentity(ao14, true, 0.0) == C::kFail && hp::ClassifyIdentity(ao14, true, 1.0) == C::kFail && hp::ClassifyIdentity(ao08, true, 0.0) == C::kFail, "with the occlusion off a pass 8 or 14 per cent brighter is a fail");
+  Check(hp::ClassifyIdentity(dark, true, 0.0) == C::kFail, "with the occlusion off a pass 10 per cent darker is a fail");
+  // no twin: the excess the occlusion can explain is a CHECK, not a pass; what it cannot is a fail
+  Check(hp::ClassifyIdentity(ao14, false, 0.0) == C::kAoExpected && hp::ClassifyIdentity(ao08, false, -1.0) == C::kAoExpected, "no twin: 8 and 14 per cent brighter are the occlusion's share to be confirmed (a CHECK)");
+  Check(hp::ClassifyIdentity(dark, false, 0.0) == C::kFail, "no twin: a pass 10 per cent DARKER than forward is a fail (the occlusion only takes light from forward)");
+  Check(hp::ClassifyIdentity(two, false, 0.0) == C::kFail && hp::ClassifyIdentity(sixteen, false, 0.0) == C::kFail, "no twin: 2.2 times (the baked vertex occlusion) and 16 times (the exposure) are faults of the pass");
+  {
+    const hp::IdentityVerdict edge_in = scaled(1.24f), edge_out = scaled(1.26f), edge_low = scaled(0.96f), edge_under = scaled(0.94f);
+    Check(hp::ClassifyIdentity(edge_in, false, 0.0) == C::kAoExpected && hp::ClassifyIdentity(edge_out, false, 0.0) == C::kFail, "no twin: the limit is 1.25 (kAoBrighterMax): 1.24 is the occlusion's, 1.26 is not");
+    Check(hp::ClassifyIdentity(edge_low, false, 0.0) == C::kIdentical && hp::ClassifyIdentity(edge_under, false, 0.0) == C::kFail, "no twin: the low end is the rule's 0.95: 0.96 is identical, 0.94 is a fail");
+  }
+  // a twin: the share of the occlusion is this ratio over the twin's
+  Check(hp::ClassifyIdentity(ao14, false, 1.02) == C::kAoShare, "a twin at 1.02 and 1.14 with the occlusion on: share 1.12, the occlusion's");
+  Check(hp::ClassifyIdentity(ao14, false, 1.14) == C::kAoShare, "a twin as bright as the picture: share 1.0, the occlusion did nothing here and the pass is still the twin's");
+  Check(hp::ClassifyIdentity(ao14, false, 0.90) == C::kFail, "a twin at 0.90 and 1.14: share 1.27, more than the occlusion can take");
+  Check(hp::ClassifyIdentity(ao08, false, 1.20) == C::kFail, "a picture DARKER than its occlusion-off twin (1.08 against 1.20: share 0.90) is a fail");
+  {
+    // the limits of the share are in
+    const hp::IdentityVerdict v = scaled(1.10f);
+    const double r = v.ratio;
+    Check(hp::ClassifyIdentity(v, false, r / (hp::kAoShareHigh - 0.01)) == C::kAoShare && hp::ClassifyIdentity(v, false, r / (hp::kAoShareHigh + 0.01)) == C::kFail, "the share's upper limit (1.25): 1.24 is the occlusion's, 1.26 is not");
+    Check(hp::ClassifyIdentity(v, false, r / (hp::kAoShareLow + 0.01)) == C::kAoShare && hp::ClassifyIdentity(v, false, r / (hp::kAoShareLow - 0.01)) == C::kFail, "the share's lower limit (0.98): 0.99 is in, 0.97 is a fail");
+  }
+  Check(hp::kAoShareLow < 1.0 && hp::kAoShareHigh > 1.0 && hp::kAoBrighterMax == hp::kAoShareHigh, "the limits are ordered: the share may be a hair under 1 and up to the no-twin limit");
+}
+
 void GateChecks() {
   hp::GateInputs ok;
   ok.scenes = 4;
@@ -673,6 +726,7 @@ int main(int argc, char** argv) {
   RouteChecks();
   DrawChecks();
   IdentityChecks();
+  AoShareChecks();
   GateChecks();
   PixelIdentityChecks();
   UnitsIdentityChecks();
