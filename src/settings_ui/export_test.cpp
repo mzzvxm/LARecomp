@@ -34,13 +34,12 @@ int main(int argc, char** argv) {
     constexpr double distance[] = {0, 250.5};
     constexpr const char* modes[] = {"auto", "game", "soft", "pcss"};
     constexpr const char* labels[] = {"AUTO", "GAME", "SOFT", "PCSS"};
-    constexpr RowDynamics dynamic = {.enabled = +[] { throw std::logic_error("live callback called"); return true; }};
     const Menu menus[] = {
         {"tab", "Hub", "GRAPHICS", "Picture settings", false,
             {Submenu("PM_Open", "DETAIL", "Detail")}},
         {"detail", "Detail", "DETAIL", nullptr, false,
             {Bool("PM_Enabled", "enabled", "ENABLED: ", true),
-             NativeOnly(WithDynamics(Str("PM_Filter", "mcla_gpu_shadow_filter", "FILTER: ", modes, labels, 4), &dynamic)),
+             NativeOnly(Str("PM_Filter", "mcla_gpu_shadow_filter", "FILTER: ", modes, labels, 4)),
              Dbl("PM_Range", "traffic_unspawn_dist", "RANGE: ", distance, 2, "%gM"),
              Dbl("PM_Step", "step", "STEP: ", steps, 3, "%.1fX", " (NEXT START)", "STOCK")}},
     };
@@ -100,7 +99,7 @@ states = [{when = "live.hdr_active ?? false", enabled = false, reason = "HDR con
     check(sections[0]["rows"][0]["target"].value_or("") == std::string_view("detail"), "hub link points at child");
     check(rows[0]["default"].value_or("") == std::string_view("false"), "invert bool default");
     check(rows[0]["label"].value_or("") == std::string_view("ENABLED"), "remove menu punctuation");
-    check(rows[1]["native"].value_or("") == std::string_view("kFilter"), "retain native marker");
+    check(!rows[1].as_table()->contains("native"), "no native marker survives: the rules replaced the callbacks");
     check(rows[1]["renderers"][0].value_or("") == std::string_view("native"), "carry renderer mask");
     check(rows[1]["values"][0]["auto_label"].value_or(false), "class auto flag");
     check(rows[1]["values"][1]["title"].value_or("") == std::string_view("Game's Own"), "apply text to selected value");

@@ -56,11 +56,6 @@ std::string_view Apply(std::string_view life, std::string_view suffix) {
     return "live";
 }
 
-constexpr bool HasDynamics(const mcla_menu::RowDynamics* d) {
-    return d && (d->value_label || d->str_label || d->enabled || d->suffix || d->label ||
-                 d->value_count || d->value_index || d->set_value || d->cvar);
-}
-
 void RendererMask(Table& table, uint8_t mask) {
     if (mask == mcla_menu::kRendNative) table.insert("renderers", Array{"native"});
     if (mask == mcla_menu::kRendXenia) table.insert("renderers", Array{"xenia"});
@@ -197,12 +192,8 @@ Table Row(const ItemDef& item, const Table& settings, const Table& text, const T
     if (const auto* fields = phase_a[item.key].as_table()) OverlayRow(row, *fields);
     if (text_fields) OverlayRow(row, *text_fields);
 
-    // Use the static projection during phase A. A migrated row is identified by its actual callbacks.
-    if (HasDynamics(item.dynamics)) {
-        if (!row.contains("native")) throw std::runtime_error(std::string(item.key) + " is missing its native dynamics name");
-    } else {
-        row.erase("native");
-    }
+    // Every row's dynamics are rules now (ui_rules.toml): a row never carries a native marker.
+    row.erase("native");
     if (rule_fields) {
         OverlayRow(row, *rule_fields);
         if (const auto* fields = (*rule_fields)["value"].as_table()) OverlayValues(row, *fields, sets, item.key);
