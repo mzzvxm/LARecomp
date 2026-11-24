@@ -6717,7 +6717,7 @@
  },
  "mcla_skip_gpu_teardown": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/Patches",
   "help": "\"Leave the final GPU objects for the OS to reclaim at process exit. Requires mcla_fast_exit. \"\n    \"GPU validation, debug builds and device loss use full teardown. Read at quit.\"",
   "traits": [

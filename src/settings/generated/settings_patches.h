@@ -86,7 +86,7 @@ class PatchesSettings final : public rex::SettingOwner {
     "destroyed, and the game crashed a few milliseconds after it said it was exiting (about once in 1400 exits). On: "
     "the process ends at once, with the same exit code. Off: the old end through the C runtime's exit.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_skip_gpu_teardown, false, "Leave the final GPU objects for the OS to reclaim at process exit. Requires mcla_fast_exit. "
+  REX_SETTING(bool, mcla_skip_gpu_teardown, true, "Leave the final GPU objects for the OS to reclaim at process exit. Requires mcla_fast_exit. "
     "GPU validation, debug builds and device loss use full teardown. Read at quit.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_fix_checkpoint_fade, true, "Fix: the smoke of a closed race checkpoint dissipates over about half a second at every frame "
