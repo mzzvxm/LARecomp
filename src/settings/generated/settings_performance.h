@@ -238,7 +238,7 @@ class PerformanceSettings final : public rex::SettingOwner {
     "on a hybrid CPU the audio threads use the multimedia scheduler (\"Pro Audio\") whatever "
     "the number of logical processors. -1 = automatic: 1. Nothing here sets an affinity or "
     "lowers any thread. The log's [qos] lines say what was applied. Takes effect at the next "
-    "start. See perf/HYBRID-QOS.md.", rex::Range{-1, 2}, rex::kDebugOnly, rex::kRestart);
+    "start. See perf/HYBRID-QOS.md.", rex::Range{-1, 2}, rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(f64, traffic_density_scale, 1.0, "Moving traffic density scale (0.0 = no new traffic cars, 1.0 = the game's own, 2.0 = double). It scales the "
     "zones' density at low and at high speed, so it holds at every speed. Live, for the cars that spawn from the "

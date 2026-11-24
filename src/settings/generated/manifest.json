@@ -6819,7 +6819,7 @@
   "traits": [
    "rex::Range{-1, 2}",
    "rex::kDebugOnly",
-   "rex::kRestart"
+   "rex::kRequiresRestart"
   ],
   "comments": [],
   "pp_depth": 0
