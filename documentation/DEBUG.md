@@ -71,6 +71,8 @@ Every row is live except RENDERER (below): it takes effect at once and is never 
 | LOGGING | One switch per diagnostic that adds lines to the log and can be flipped while the game runs (UI colour, map mouse, wheel, music bank, warp, online and others), and the Plume renderer's periodic logs (GHOST LOG EVERY, MEMORY LOG EVERY, VRAM LOG EVERY). |
 | INFO | SHOW CHANGED SETTINGS, COPY LAUNCH ARGUMENTS, RESET DEBUG SETTINGS. |
 
+**FIXES > SKIP GPU TEARDOWN** (`mcla_skip_gpu_teardown`, off by default) is read at quit, so a live change needs no restart. Turn it on with `mcla_fast_exit` to test slow quits in the Plume renderer. The OS reclaims the final GPU objects at process exit after SDK shutdown and the exit flushes. Debug builds, validation runs and device loss use full teardown.
+
 ### RENDERER (the way to the compatibility renderer)
 
 The program keeps the XENIA renderer (the SDK's Xenia GPU emulation, with all the fixes it had) as a hidden fallback for a PC where the native (Plume) renderer will not run. Nothing in the launcher or the normal menus offers it; to a player it is "the compatibility renderer" (RUNNING.md). RENDERING > **RENDERER** is the tester's way, in both directions, and it is on the page whichever renderer runs:
