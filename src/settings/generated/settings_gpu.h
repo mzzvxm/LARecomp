@@ -1026,6 +1026,9 @@ class GPUSettings final : public rex::SettingOwner {
     "With RT BOUNCE LIGHT on, the field's textures are made, its reset and weights passes run and the apply is told of it, but nothing traces into the probes, so the field never becomes ready, shows nothing, "
     "and the screen-space bounce light stays the source. The RT BOUNCE LIGHT row is grey with (NOT READY) while the update is missing; this makes it live for a test. Has no effect once the update is built. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_gi_cabin, true, "Diagnostic (ray traced bounce light, the player's cabin, INTERIOR-CAM-FIX, the A/B): on (the default) the probe field's bounce light on the cabin's own surfaces (the driver, the dash, the wheel, the seats: a vehicle's part that is not paint, chrome or glass, inside the car's box) "
+    "is cut to 30% while the camera is inside a roofed car, because the probes trace the city only and cannot see the car's roof (the glass's share is left); off is the field's light as it was (the street's irradiance at the cabin, as if the car had no roof). Live.", rex::kDebugOnly);
+
   REX_SETTING(f64, mcla_gpu_ssr_strength, 1.0, "Diagnostic (screen-space reflections): the effect's strength, 0 to 4: the added reflection is multiplied by it (the class's own gain, the Fresnel term and the picture's edge fades come on top). Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
 
   REX_SETTING(f64, mcla_gpu_ssr_min_smooth, -1.0, "Diagnostic (screen-space reflections): a pixel rougher than this (0 rough to 1 mirror; the G-buffer's smoothness after the road's wetness raised it) is not reflected. -1: the default, 0.40 (a dry road at 0.30 is not, "
@@ -2261,6 +2264,7 @@ inline auto& mcla_gpu_rt_gi = g_gpu.mcla_gpu_rt_gi;
 inline auto& mcla_gpu_rt_gi_view = g_gpu.mcla_gpu_rt_gi_view;
 inline auto& mcla_gpu_rt_gi_bounces = g_gpu.mcla_gpu_rt_gi_bounces;
 inline auto& mcla_gpu_rt_gi_dry_run = g_gpu.mcla_gpu_rt_gi_dry_run;
+inline auto& mcla_gpu_gi_cabin = g_gpu.mcla_gpu_gi_cabin;
 inline auto& mcla_gpu_ssr_strength = g_gpu.mcla_gpu_ssr_strength;
 inline auto& mcla_gpu_ssr_min_smooth = g_gpu.mcla_gpu_ssr_min_smooth;
 inline auto& mcla_gpu_ssr_stub = g_gpu.mcla_gpu_ssr_stub;

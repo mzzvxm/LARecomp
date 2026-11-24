@@ -2157,6 +2157,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_gi_cabin": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (ray traced bounce light, the player's cabin, INTERIOR-CAM-FIX, the A/B): on (the default) the probe field's bounce light on the cabin's own surfaces (the driver, the dash, the wheel, the seats: a vehicle's part that is not paint, chrome or glass, inside the car's box) \"\n    \"is cut to 30% while the camera is inside a roofed car, because the probes trace the city only and cannot see the car's roof (the glass's share is left); off is the field's light as it was (the street's irradiance at the cabin, as if the car had no roof). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ssr_strength": {
   "type": "f64",
   "default": "1.0",

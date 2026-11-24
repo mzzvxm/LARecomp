@@ -416,6 +416,10 @@ add_executable(larecomp_gi_update_rules_test EXCLUDE_FROM_ALL gi_update_rules_te
 # shader's registers, the CMake lines, host_shaders.h and the settings) likewise:
 #   cmake --build <dir> --target larecomp_gi_apply_test, then run src/gpu/larecomp_gi_apply_test [-v] [<src/gpu dir>] (exit 0 = passed).
 add_executable(larecomp_gi_apply_test EXCLUDE_FROM_ALL gi_apply_test.cpp)
+# The player's cabin and the probe field's bounce light (gi_cabin_rules.h, INTERIOR-CAM-FIX: the interior camera's weight, the shares and the rows, the cabin's surfaces by the G-buffer's class and flag, the
+# identity of every frame without a rule; it compiles hlsl/gi_cabin_common.hlsli as C++ and compares it with the twin, and reads the apply's shader, host, settings, debug row and the CMake lines) likewise:
+#   cmake --build <dir> --target larecomp_gi_cabin_test, then run src/gpu/larecomp_gi_cabin_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_gi_cabin_test EXCLUDE_FROM_ALL gi_cabin_test.cpp)
 # The per-pixel detail pass (gi_pixel_rules.h, CITY-RT M3 package G5: the cell and the identity of the other cells, the governor, the plan, the ray's direction and noise, the estimator's pieces, the mix with the
 # field, the surface lights picked from the light manager's frame, the denoiser's push block and the camera's motion; it compiles hlsl/gi_pixel_common.hlsli as C++ and compares it with the twin, and reads the
 # shader, the host and the CMake lines) likewise:

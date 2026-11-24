@@ -8,6 +8,9 @@
 //               share x the lit weight x the occlusion's term, softly clipped to the room under the bounce light's ceiling. GIA_UP 1 takes the net irradiance from the lookup image (the four nearest
 //               texels weighted by depth and normal agreement, the visibility and the vehicle mark by the same weights); GIA_UP 0 looks the field up itself at the pixel (the traced size is the
 //               picture's). The pixel's own colour is never read.
+//               THE CABIN (gi_cabin_rules.h, INTERIOR-CAM-FIX): on a surface of the player's car's inside (the G-buffer's RT3: a vehicle's part that is not paint, chrome or glass) that is inside the car's box,
+//               in a frame whose camera is in a roofed car, the field's share is multiplied by the cabin's (the probes cannot see the car's roof: gi_cabin_common.hlsli). Two rows after the apply's 9 and
+//               the material plane's slot in the push block's last word (bits 16-31); a frame with no rule has share 1 in the first row and reads nothing.
 // A debug view (push.info.w bits 8-15, gi_apply_rules.h): the same pass in a pipeline whose blend is SRC_ALPHA / INV_SRC_ALPHA, drawing a colour with alpha 1 where there is something to show and
 // alpha 0 where there is not (a pixel with no normal, the sky): 1 E_surf, 2 the confidence, 3 the sky visibility, 5 the baseline, 6 the leak test, 9 the bounce added (alone on black, 4x), 10 E_net, 11 the
 // occlusion's term. The views 1, 2, 3, 5 and 6 look the field up at the picture's size.
@@ -16,7 +19,7 @@
 // The occlusion's images (linear depth, visibility) and the lookup image are single sample at the traced size.
 //
 // Layout (gi_apply.cpp): set 0 (space0) the bindless Texture2D<float4>[], set 1 (space1) the same set as Texture2DMS<float4>[], set 2 (space2) the samplers (0 = linear clamp), set 3 (space3) the
-// buffer of rows (t0: the field's 20 rows then the apply's 9), push constants (b0, space4), 32 bytes.
+// buffer of rows (t0: the field's 20 rows, the apply's 9, then the cabin's 2), push constants (b0, space4), 32 bytes.
 
 #include "gbuffer_common.hlsli"
 
@@ -54,6 +57,7 @@ ConstantBuffer<GiaPush> g_push : register(b0, space4);
 #include "gi_common.hlsli"
 #include "gi_apply_common.hlsli"
 #include "gi_pixel_common.hlsli"
+#include "gi_cabin_common.hlsli"
 #include "nan_guard.hlsli"
 
 // G5: the per-pixel detail pass's term at the traced texel c (the lookup's own coordinates), for the pixel at the view distance t with the world normal n: rgb its denoised irradiance, w its weight against the
@@ -135,6 +139,18 @@ float4 GiaLoadPlane(uint slot, int2 p)
 uint GiaView()
 {
     return (g_push.info.w >> 8u) & 0xFFu;
+}
+
+// The player's cabin (gi_cabin_rules.h, INTERIOR-CAM-FIX): the host's two rows after the apply's 9 (GIA_ROW(GIA_ROWS + i): the box, the cabin's share, the edge), and the material plane's slot in the
+// push block's last word above the flags and the view. A frame with no rule has share 1 in row 0 and no slot is read.
+float4 GiaCabinRow(uint i)
+{
+    return GiaRowFloats(GIA_ROWS + i);
+}
+
+uint GiaMaterialSlot()
+{
+    return g_push.info.w >> GIC_MATERIAL_SLOT_SHIFT;
 }
 
 bool GiaHasVisibility()
@@ -318,7 +334,17 @@ float4 main(float4 position : SV_Position) : SV_Target
     float aoTerm = GiaHasVisibility() ? GiaAoTerm(ao, vehicle, t, fr.aoStrength, fr.aoFadeEnd, fr.paintPower) : 1.0f;
     float nDotL = saturate(dot(n, fr.sunDir));
     float3 albedo = GbAlbedoDecode(float3(rt2.x, rt2.y, rt2.z));
-    float3 add = NgFinite3(GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap));   // added to the scene: a NaN or an infinity is none (nan_guard.hlsli)
+
+    // The player's cabin shields its inside from the street the probes cannot see the car's roof of: the field's share on the cabin's own surfaces (a vehicle's part that is not paint, chrome or glass,
+    // inside the car's box) is the cabin's, with the glass's share left. A frame with no rule (the camera is not in a roofed car, the setting is off: share 1) reads nothing here.
+    float cabin = 1.0f;
+    float4 cabinA = GiaCabinRow(0u);
+    if (cabinA.w < 1.0f && GiaMaterialSlot() != GIC_NO_MATERIAL_SLOT)
+    {
+        float2 rt3 = GiaLoadPlane(GiaMaterialSlot(), pixel).xy;
+        cabin = GicShare(cabinA, GiaCabinRow(1u), pos, GbRt3Class(rt3), GbRt3Flags(rt3));
+    }
+    float3 add = NgFinite3(GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare * cabin, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap));   // added to the scene: a NaN or an infinity is none (nan_guard.hlsli)
 
     if (view == 9u)
     {

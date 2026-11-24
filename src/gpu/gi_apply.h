@@ -31,8 +31,13 @@
 // occlusion asks TakeSsgiShare while it plans; a frame whose field is not published yet leaves the screen-space bounce light whole: the safe direction).
 //
 // BINDING: its own pipeline layout (the heap's texture set at spaces 0 and 1 (plain and multisampled), the samplers at space 2, a buffer set at space 3 with the field's 20 rows and the apply's 9
-// (gi_apply_rules.h MakeBuffer, 464 bytes of a 512 byte upload buffer a frame in flight), the push block (b0, space4), 32 bytes). The pipelines (the lookup RGBA16F with no blend; the add, ONE / ONE,
+// (gi_apply_rules.h MakeBuffer, 464 bytes of a 512 byte upload buffer a frame in flight) and, after them, the player's cabin's 2 (gi_cabin_rules.h: 32 bytes, the buffer's last), the push block (b0, space4),
+// 32 bytes). The pipelines (the lookup RGBA16F with no blend; the add, ONE / ONE,
 // RGB only, at the main colour's format and the host's sample count; the debug view, SRC_ALPHA / INV_SRC_ALPHA) are made on first use, one compile each, the first frame the effect runs.
+//
+// THE CABIN (INTERIOR-CAM-FIX, gi_cabin_rules.h): the probes trace the city only, so the player's roof does not exist for them; on the cabin's own surfaces (the driver, the dash, the wheel, the seats)
+// the field's share is multiplied by a share while the camera is inside a roofed car, with the glass's share left. mcla_gpu_gi_cabin (debug only, live) is the A/B; without the car's box or the
+// material plane the rule is off for the frame and the apply is what it was.
 //
 // SETTINGS: mcla_gpu_rt_gi_view (debug only, live; gi_apply_rules.h lists the views). The effect itself is driven by the field's level (G4's mcla_gpu_rt_gi) through the frame the field publishes. The
 // strength and the cap are the BOUNCE LIGHT STRENGTH level's (ssgi_level.h, read here exactly as the occlusion reads them, debug overrides included): the field's published `strength` is not used, so the
@@ -75,6 +80,7 @@ namespace mcla::gpu {
 
 class AmbientOcclusion;
 class BindlessHeap;
+class CarFrame;
 class Device;
 class FrameRing;
 class GBuffer;
@@ -102,6 +108,9 @@ class GiApply {
   void SetGiField(const GiField* field) { field_ = field; }
   // G5's per-pixel detail pass (gi_pixel.h): run by this class before its lookup, at ULTRA on a strong card only; null (or not available): never. Not owned.
   void SetGiPixel(GiPixel* pixel) { pixel_ = pixel; }
+  // The player car's draws and box of the frame (car_frame.h): the player's CABIN term needs the box (gi_cabin_rules.h, INTERIOR-CAM-FIX). BeginFrame asks for the frames while the field runs and the
+  // setting (mcla_gpu_gi_cabin) is on; null: no cabin term. Not owned.
+  void SetCarFrame(CarFrame* car_frame) { car_frame_ = car_frame; }
 
   // The Scene opened a frame's first list, BEFORE the G-buffer's and the shared products' own BeginFrame (they read the wants it makes) and after GiField::BeginFrame: reads the debug view, makes
   // the wants (RT1 and RT2, the depth chain: only while the field runs) and forgets the last frame's latch.
@@ -178,6 +187,7 @@ class GiApply {
   AmbientOcclusion* ao_ = nullptr;
   const GiField* field_ = nullptr;
   GiPixel* pixel_ = nullptr;
+  CarFrame* car_frame_ = nullptr;
 
   // resources
   plume::RenderDescriptorSetBuilder set_builder_;
@@ -194,6 +204,7 @@ class GiApply {
   bool pixel_ran_frame_ = false;   // GI-BOUNCE-JOIN: the per-pixel pass published its image in this trigger (BeginFrame clears it)
   bool pixel_wanted_ = false;      // G6: the field runs, the layout has the per-pixel pass and it is made (BeginFrame: the DENOISER board's word for the bounce light)
   uint32_t view_ = 0;
+  bool cabin_on_ = true;           // mcla_gpu_gi_cabin, read at the frame's start (the A/B of the player's cabin term)
   float ssgi_ran_share_ = 0.0f;
   bool trigger_seen_ = false;
   bool ran_this_frame_ = false;

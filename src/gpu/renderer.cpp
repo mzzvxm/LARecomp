@@ -290,6 +290,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     gi_apply_.SetGBuffer(&gbuffer_);
     gi_apply_.SetScreenShared(&screen_);
     gi_apply_.SetAmbientOcclusion(&ao_);
+    gi_apply_.SetCarFrame(&car_frame_);  // the player's box, for the cabin term (gi_cabin_rules.h)
     ao_.SetGiApply(&gi_apply_);
     // The probe field (gi_field.h, CITY-RT M3 G1): its layouts and shaders now, its pipelines listed with the precache below when the setting is not off at the start, its textures made when a frame
     // first wants them. The integration (gi_integration.h, G4) gives it the setting and the frame (its city scene is set below, with the city block); the apply reads it.

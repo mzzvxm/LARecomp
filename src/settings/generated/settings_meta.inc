@@ -407,6 +407,7 @@
 {"mcla_gpu_rt_gi_view", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_bounces", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_dry_run", "MCLA/GPU"},
+{"mcla_gpu_gi_cabin", "MCLA/GPU"},
 {"mcla_gpu_ssr_strength", "MCLA/GPU"},
 {"mcla_gpu_ssr_min_smooth", "MCLA/GPU"},
 {"mcla_gpu_ssr_stub", "MCLA/GPU"},

@@ -206,6 +206,7 @@ inline Buffer MakeBuffer(const gi::GpuGiFrame& field, const Frame& fr) {
 struct Push {
   uint32_t slots[4];  // x the main depth plane's bindless slot, y RT1's, z RT2's, w the occlusion's linear depth (level 0, traced size)
   uint32_t info[4];   // x the occlusion's visibility image's slot (kNoSlot: none), y the lookup image's slot (kNoSlot: the apply looks up itself), z the host sample that is the guest's sample 0, w flags | view << 8
+                      // | the material plane's slot << 16 (gi_cabin_rules.h PackMaterialSlot; 0xFFFF none: the player's cabin term reads RT3 only with a slot)
 };
 static_assert(sizeof(Push) == 32, "the push block is 32 bytes");
 inline constexpr uint32_t kPushSpace = 4;

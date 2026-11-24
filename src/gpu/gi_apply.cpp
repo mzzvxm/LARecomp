@@ -12,10 +12,12 @@
 #include <rex/logging/log_category.h>
 
 #include "ao.h"
+#include "car_frame.h"
 #include "denoiser_setting.h"
 #include "descriptors.h"
 #include "device.h"
 #include "gbuffer.h"
+#include "gi_cabin_rules.h"
 #include "gi_field.h"
 #include "gi_pixel.h"
 #include "host_shaders.h"
@@ -30,6 +32,9 @@
 namespace mcla::gpu {
 
 namespace ga = gi_apply;
+
+// The cabin's two rows go right after the apply's 9 in the apply's own upload buffer (the per-pixel pass copies only the first kBufferBytes and puts its own rows there).
+static_assert(gi_cabin::kOffsetBytes == ga::kBufferBytes && gi_cabin::kOffsetBytes + gi_cabin::kBytes <= ga::kBufferAlloc, "the cabin's rows are the apply's buffer's last 32 bytes");
 
 namespace {
 
@@ -91,6 +96,7 @@ void GiApply::Shutdown() {
   ao_ = nullptr;
   field_ = nullptr;
   pixel_ = nullptr;
+  car_frame_ = nullptr;
   device_ = nullptr;
   frames_ = nullptr;
   heap_ = nullptr;
@@ -251,6 +257,11 @@ void GiApply::BeginFrame() {
   enabled_ = field_ != nullptr && field_->running();
   if (enabled_ != was) {
     REXLOG_INFO("{} {} (the probe field {}running)", kPrefix, enabled_ ? "on" : "off", enabled_ ? "" : "is not ");
+  }
+  // INTERIOR-CAM-FIX: the player's cabin term needs the car's box (CarFrame collects it the frame after it is asked for; the car's own shadow map asks every frame it runs, so this costs nothing more there).
+  cabin_on_ = larecomp::settings::mcla_gpu_gi_cabin.Get();
+  if (enabled_ && cabin_on_ && car_frame_ != nullptr) {
+    car_frame_->Request();
   }
   if (gbuffer_ != nullptr) {
     gbuffer_->Want(gbuffer::Consumer::kRtBounce, enabled_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kRtBounce) : 0u);
@@ -427,6 +438,17 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     fr.paint_power = ov.paint_power;
   }
   fr.view_gain = 1.0f;
+  // THE CABIN (gi_cabin_rules.h): the camera inside a roofed car shields the cabin's own surfaces from the street the probes see through the roof. Off (share 1) unless the setting is on, the car's box is
+  // known, the camera is in it under a roof and the frame has the material plane; the shader then reads nothing of it. `closed` is 1: nothing tells us a convertible from a coupe yet (CHECK C3 there).
+  gi_cabin::Rows cabin = gi_cabin::OffRows();
+  uint32_t material_slot = gi_cabin::kNoMaterialSlot;
+  if (cabin_on_ && car_frame_ != nullptr && gb.Has(gbuffer::kPlaneMaterial)) {
+    const car_frame::Frame& car = car_frame_->Current();
+    if (car.valid) {
+      cabin = gi_cabin::MakeRows(true, fr.position, car.bounds_valid, car.bounds_min, car.bounds_max, 1.0f);
+      material_slot = gb.slot[gbuffer::kPlaneMaterial];
+    }
+  }
   const ga::Buffer base_rows = ga::MakeBuffer(field_->gpu_frame(), fr);
   Slot& slot = slots_[frame_slot];
 
@@ -479,6 +501,7 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     return false;
   }
   std::memcpy(mapped, buffer.data(), sizeof(buffer));
+  std::memcpy(static_cast<uint8_t*>(mapped) + gi_cabin::kOffsetBytes, cabin.data(), gi_cabin::kBytes);
   slot.buffer->unmap();
 
   ga::Push push = {};
@@ -489,7 +512,7 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   push.info[0] = has_visibility ? ov.visibility_slot : ga::kNoSlot;
   push.info[1] = up ? lookup_.slot : ga::kNoSlot;
   push.info[2] = gb.sample0;
-  push.info[3] = ga::PackInfoW((up ? ga::kFlagLowTraced : 0u) | (has_visibility ? ga::kFlagVisibility : 0u), view_);
+  push.info[3] = gi_cabin::PackMaterialSlot(ga::PackInfoW((up ? ga::kFlagLowTraced : 0u) | (has_visibility ? ga::kFlagVisibility : 0u), view_), cabin[3] < 1.0f ? material_slot : gi_cabin::kNoMaterialSlot);
 
   if (up) {
     // The lookup, at the traced size, into the image (cleared on its first use: a new render target is initialised before it is drawn into, D3D12 debug layer id 1422).

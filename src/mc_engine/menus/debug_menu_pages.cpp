@@ -247,6 +247,10 @@ const ItemDef kDebugPictureFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgGiBounceNeon", "mcla_gpu_gi_bounce_neon", "RT BOUNCE NEON: ")),
     NativeOnly(Bool("PM_RxDbgGiBounceRear", "mcla_gpu_gi_bounce_rear", "RT BOUNCE REAR LAMPS: ")),
     NativeOnly(Bool("PM_RxDbgGiBounceOther", "mcla_gpu_gi_bounce_other", "RT BOUNCE OTHER: ")),
+    // The ray traced bounce light's probes trace the city only, so a camera inside a roofed car (the cockpit) would light the cabin's own surfaces (the driver, the dash, the wheel, the seats) with the street's
+    // irradiance as if the car had no roof; with this on (the default) their share is cut to 30%, the glass's share, while the camera is in the car (gpu/gi_cabin_rules.h, INTERIOR-CAM-FIX). Off = the field's light as
+    // it was: the A/B of the cockpit pictures. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgGiCabin", "mcla_gpu_gi_cabin", "CABIN BOUNCE SHIELD: ")),
 };
 #endif
 
