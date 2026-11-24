@@ -686,6 +686,7 @@ class Pipelines {
   std::chrono::steady_clock::time_point last_save_;
   std::thread autosave_thread_;
   std::atomic<bool> autosave_running_{false};
+  bool vulkan_cache_after_precache_ = false;  // startup snapshot scheduled by the render thread
   static constexpr uint32_t kNoLayout = 0xFFFFFFFFu;  // a layout that cannot be persisted
 
   // Precache: one entry per loaded record, its state moved by

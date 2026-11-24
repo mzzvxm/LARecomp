@@ -22,9 +22,9 @@
 // host builder thread (host_precache.h). For that call, in the pinned Plume:
 // the D3D12 graphics pipeline's constructor takes no lock and keeps no shared
 // state (ID3D12Device::CreateGraphicsPipelineState is free-threaded), and the
-// Vulkan one keeps its scratch vectors thread_local and passes no pipeline
-// cache to vkCreateGraphicsPipelines. The other Create* are not checked for a
-// second thread: do not call them from one.
+// Vulkan one keeps its scratch vectors thread_local. Plume's pipeline cache,
+// where available, uses Vulkan's internal synchronization. The other Create*
+// are not checked for a second thread: do not call them from one.
 // ===========================================================================
 
 #include <atomic>
@@ -42,6 +42,8 @@
 
 namespace mcla::gpu {
 
+class VulkanPipelineCache;
+
 class Device {
  public:
   struct Options {
@@ -55,7 +57,7 @@ class Device {
     bool force_refusal = false;
   };
 
-  Device() = default;
+  Device();
   ~Device();
   Device(const Device&) = delete;
   Device& operator=(const Device&) = delete;
@@ -67,10 +69,14 @@ class Device {
   bool Initialize(const Options& options);
   // Releases the queue, the device and the interface, in that order. Everything
   // created from this device must already be gone. `part`, when given, is called
-  // with the name of each of the three before it is released (the caller times
-  // them: they are calls into the driver and the slowest thing the process does
-  // while it ends).
+  // before the cache save and each release (the caller times these stages).
   void Shutdown(const std::function<void(const char*)>& part = {});
+
+  bool HasPersistentVulkanPipelineCache() const { return vulkan_pipeline_cache_ != nullptr; }
+  bool LoadedVulkanPipelineCache() const;
+  // From the autosave worker, or after all builders have joined. True if persistence is
+  // unavailable or the current snapshot is already on disk or was published successfully.
+  bool SaveVulkanPipelineCache();
 
   plume::RenderDevice* device() const { return device_.get(); }
   plume::RenderCommandQueue* queue() const { return queue_.get(); }
@@ -220,6 +226,7 @@ class Device {
   std::unique_ptr<plume::RenderInterface> interface_;
   std::unique_ptr<plume::RenderDevice> device_;
   std::unique_ptr<plume::RenderCommandQueue> queue_;
+  std::unique_ptr<VulkanPipelineCache> vulkan_pipeline_cache_;
   std::string backend_info_;
   std::string refusals_;
   Backend requested_backend_ = kDefaultBackend;

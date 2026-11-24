@@ -8,6 +8,7 @@
 #include "gpu_class.h"
 #include "rt_tier.h"
 #include "temporal_dlss.h"
+#include "vulkan_pipeline_cache.h"
 #include "windows_floor.h"
 
 #include <mutex>
@@ -109,6 +110,8 @@ const char* ObjectNamesReason(bool debug_layer) {
 }  // namespace
 
 uint32_t WindowsBuildNumber() { return ReadWindowsBuild().build; }
+
+Device::Device() = default;
 
 Device::~Device() {
   Shutdown();
@@ -286,6 +289,14 @@ bool Device::Open(const Options& options) {
     return false;
   }
 
+  if (ActiveBackend() == Backend::kVulkan &&
+      larecomp::settings::mcla_gpu_vulkan_pipeline_cache.Get()) {
+    auto cache = std::make_unique<VulkanPipelineCache>();
+    if (cache->Initialize(*device_)) {
+      vulkan_pipeline_cache_ = std::move(cache);
+    }
+  }
+
   loss_probe_ = backend::CreateLossProbe(device_.get());
   REXLOG_INFO("[gpu] device loss: {}", backend::DescribeLossReporting(device_.get(), loss_probe_));
 
@@ -338,6 +349,12 @@ bool Device::Open(const Options& options) {
 }
 
 void Device::Shutdown(const std::function<void(const char*)>& part) {
+  if (vulkan_pipeline_cache_) {
+    if (part) part("the Vulkan pipeline cache");
+    SaveVulkanPipelineCache();
+    vulkan_pipeline_cache_->LogSummary();
+    vulkan_pipeline_cache_.reset();
+  }
   // With the debug layer on, what is still alive once every wrapper is gone is
   // a leak; the report lists it by name.
   backend::LiveObjectReport report;
@@ -359,6 +376,14 @@ void Device::Shutdown(const std::function<void(const char*)>& part) {
   interface_.reset();
   report.ReportAndRelease();
   debug_layer_ = false;
+}
+
+bool Device::LoadedVulkanPipelineCache() const {
+  return vulkan_pipeline_cache_ && vulkan_pipeline_cache_->loaded();
+}
+
+bool Device::SaveVulkanPipelineCache() {
+  return !vulkan_pipeline_cache_ || vulkan_pipeline_cache_->Save(*device_, IsLost());
 }
 
 std::unique_ptr<plume::RenderTexture> Device::CreateTexture(const plume::RenderTextureDesc& desc,
@@ -555,6 +580,9 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateGraphicsPipeline(
     ReportCreationFailure("graphics pipeline", name);
     return nullptr;
   }
+  if (vulkan_pipeline_cache_) {
+    vulkan_pipeline_cache_->NotePipelineCreated();
+  }
   Name(*pipeline, name);
   return pipeline;
 }
@@ -571,6 +599,9 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateComputePipeline(
     }
     ReportCreationFailure("compute pipeline", name);
     return nullptr;
+  }
+  if (vulkan_pipeline_cache_) {
+    vulkan_pipeline_cache_->NotePipelineCreated();
   }
   Name(*pipeline, name);
   return pipeline;

@@ -156,6 +156,7 @@ add_library(larecomp_gpu OBJECT
     volumetrics.cpp
     volumetrics_inputs.cpp
     vram_budget.cpp
+    vulkan_pipeline_cache.cpp
     watch.cpp
 )
 # The occlusion's reach round vehicles and its slice sum, with the C++ twin of its main pass (ao_halo.h) likewise:
@@ -259,6 +260,9 @@ add_executable(larecomp_pipeline_wait_test EXCLUDE_FROM_ALL pipeline_wait_test.c
 # has a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_stencil_ref_test, then run src/gpu/larecomp_stencil_ref_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_stencil_ref_test EXCLUDE_FROM_ALL stencil_ref_test.cpp)
+
+# Vulkan pipeline cache file identity and snapshot rules, standalone like pipeline_wait_test.
+add_executable(larecomp_vulkan_pipeline_cache_test EXCLUDE_FROM_ALL vulkan_pipeline_cache_test.cpp)
 # The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
 add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)

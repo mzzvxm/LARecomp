@@ -1334,6 +1334,10 @@ class GPUSettings final : public rex::SettingOwner {
     "executable on exit, and are read back at start -- the other backend's file too, so what one "
     "API saw is ready in the other (24.40 V2). Off: nothing is read, recorded or written.", rex::kDebugOnly, rex::kRequiresRestart);
 
+  REX_SETTING(bool, mcla_gpu_vulkan_pipeline_cache, true, "Load and save Plume's compiled Vulkan pipeline cache. "
+    "Turn off for timing comparisons with a fresh Plume cache each run. Read when the device opens.",
+    rex::kDebugOnly, rex::kRequiresRestart);
+
   REX_SETTING(bool, mcla_gpu_present_dither, true, "Adds a faint noise, at most half of one colour step of the screen, to the finished picture "
     "just before it is shown, so that smooth gradients (the sky at dusk) show fewer bands. Live.", rex::kDebugOnly);
 
@@ -2347,6 +2351,7 @@ inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vecto
 inline auto& mcla_gpu_perf_markers = g_gpu.mcla_gpu_perf_markers;
 inline auto& mcla_gpu_perf_markers_level = g_gpu.mcla_gpu_perf_markers_level;
 inline auto& mcla_gpu_pipeline_cache = g_gpu.mcla_gpu_pipeline_cache;
+inline auto& mcla_gpu_vulkan_pipeline_cache = g_gpu.mcla_gpu_vulkan_pipeline_cache;
 inline auto& mcla_gpu_present_dither = g_gpu.mcla_gpu_present_dither;
 inline auto& mcla_gpu_present_release = g_gpu.mcla_gpu_present_release;
 inline auto& mcla_gpu_present_release_check = g_gpu.mcla_gpu_present_release_check;

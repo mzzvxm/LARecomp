@@ -594,6 +594,7 @@ void Pipelines::Shutdown() {
   loaded_records_ = 0;
   own_file_records_ = 0;
   frame_ = 0;
+  vulkan_cache_after_precache_ = false;
   persist_ = false;
   persistence_started_ = false;
   device_ = nullptr;
@@ -1609,23 +1610,39 @@ void Pipelines::JoinAutosave() {
 }
 
 void Pipelines::Autosave() {
-  if (!persist_ || records_.size() == saved_records_ ||
-      autosave_running_.load(std::memory_order_acquire)) {
+  if (!persist_ || autosave_running_.load(std::memory_order_acquire)) {
     return;
   }
+  // A draw can claim the last entry before creating its pipeline. Check at EndFrame
+  // and do the snapshot and file I/O off the render thread.
+  const bool save_vulkan = !vulkan_cache_after_precache_ &&
+                           device_->HasPersistentVulkanPipelineCache() && !precached_.empty() &&
+                           precache_finished_.load() == precached_.size();
   constexpr auto kInterval = std::chrono::seconds(30);
-  const auto now = std::chrono::steady_clock::now();
-  if (now - last_save_ < kInterval) {
+  std::vector<uint8_t> bytes;
+  if (records_.size() != saved_records_) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_save_ >= kInterval) {
+      bytes = SerializeRecords();
+      last_save_ = now;
+      saved_records_ = records_.size();
+    }
+  }
+  if (!save_vulkan && bytes.empty()) {
     return;
   }
-  last_save_ = now;
-  saved_records_ = records_.size();
+  vulkan_cache_after_precache_ |= save_vulkan;
   JoinAutosave();  // finished: only the handle is left
   autosave_running_.store(true, std::memory_order_release);
   autosave_thread_ = std::thread(
-      [this, bytes = SerializeRecords(), records = records_.size(),
+      [this, save_vulkan, bytes = std::move(bytes), records = records_.size(),
        layouts = stored_layouts_.size()] {
-        WriteCacheFile(bytes, records, layouts);
+        if (save_vulkan) {
+          device_->SaveVulkanPipelineCache();
+        }
+        if (!bytes.empty()) {
+          WriteCacheFile(bytes, records, layouts);
+        }
         autosave_running_.store(false, std::memory_order_release);
       });
 }
