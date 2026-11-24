@@ -120,6 +120,7 @@ constexpr Signal SignalOf(rr::Consumer c) {
     case rr::Consumer::kCityRtReflections: return Signal::kIndirectSpecular;
     case rr::Consumer::kRtGi: return Signal::kIndirectDiffuse;
     case rr::Consumer::kRtLights: return Signal::kDominantLight;
+    case rr::Consumer::kRtAo: return Signal::kAmbientOcclusion;
     case rr::Consumer::kCount: break;
   }
   return Signal::kIndirectSpecular;
@@ -146,6 +147,7 @@ inline constexpr ConsumerTable kConsumers = {{
     {false, false},  // ray traced city reflections
     {false, false},  // ray traced bounce light
     {false, false},  // ray traced light visibility (rr::Consumer::kRtLights, added by RT-LIGHTS-D1: the table follows rr::kConsumerCount)
+    {false, false},  // CHECK (RG-7): an AO dispatch needs a context separate from the later SSR site.
 }};
 constexpr bool AnySignalBuilt(const ConsumerTable& table = kConsumers) {
   for (const ConsumerCell& c : table) {

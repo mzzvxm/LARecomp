@@ -644,6 +644,42 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rtao_history": {
+  "type": "i32",
+  "default": "32",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: ray traced ambient occlusion history cap in frames. 1 disables temporal accumulation. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{1, 64}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_denoise": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: auto and ours use the built-in denoiser. Off sends the raw ray traced ambient occlusion signal to compose. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"ours\", \"off\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_raw_scale": {
+  "type": "i32",
+  "default": "2",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: ray traced ambient occlusion trace divisor for DLSS Ray Reconstruction raw frames. 2 is half size, 1 is full size. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{1, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_noise_held": {
   "type": "bool",
   "default": "true",
@@ -4136,6 +4172,18 @@
   "default": "1",
   "category": "MCLA/GPU",
   "help": "\"Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RT-LIGHTS-D1 part 2): what the ray traced light visibility (mcla_gpu_rt_lights) does while Ray Reconstruction takes the frame. 1 (the default): the filter \"\\n    \"does not run (Ray Reconstruction is the denoiser: it cleans the picture the light pass draws with the one-ray-a-pixel visibility in it), and the light pass reads the unfiltered visibility. 0: the effect keeps its own filter even then (the picture to compare with). \"\\n    \"With Ray Reconstruction not the plan (Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_dlss_rr_rt_ao": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: use raw ray traced ambient occlusion while DLSS Ray Reconstruction takes the frame. 0 keeps the built-in denoiser. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 1}"

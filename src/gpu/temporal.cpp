@@ -1916,14 +1916,16 @@ rr::RawModes TemporalSystem::RawModes() {
   // The frame's own view is known from its first main draw (OnMainView); a frame that has seen none, and the pause, garage and map worlds, are not ones Ray Reconstruction takes (no guides there).
   f.play_view = frame_.samples != 0 && frame_.view == temporal::View::kPlay;
   const rr::RawModes modes = rr::RawModesOf(f, rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_ssr.Get())), rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_car_refl.Get())),
-                                            rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())), rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_lights.Get())));
+                                            rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())), rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_lights.Get())),
+                                            rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_ao.Get())));
   if (f.plan_rr || rr_raw_logged_) {
+    const bool ao_raw = modes.RtAo() && (denoiser::ConsumersOn() & rr::ConsumerBit(rr::Consumer::kRtAo)) != 0;
     if (!rr_raw_logged_ || !(modes == rr_raw_last_)) {
       rr_raw_logged_ = true;
       rr_raw_last_ = modes;
-      REXLOG_INFO("{} raw modes for Ray Reconstruction (frame {}): {}: {}; {}: {}; {}: {}; {}: {} (logged when it changes)", kPrefix, frame_.frame, rr::RawEffectName(rr::RawEffect::kSsr), rr::RawWhyText(modes.ssr),
+      REXLOG_INFO("{} raw modes for Ray Reconstruction (frame {}): {}: {}; {}: {}; {}: {}; {}: {}; {}: {} (logged when it changes)", kPrefix, frame_.frame, rr::RawEffectName(rr::RawEffect::kSsr), rr::RawWhyText(modes.ssr),
                   rr::RawEffectName(rr::RawEffect::kCarRefl), rr::RawWhyText(modes.car_refl), rr::RawEffectName(rr::RawEffect::kRtGi), rr::RawWhyText(modes.rt_gi),
-                  rr::RawEffectName(rr::RawEffect::kRtLights), rr::RawWhyText(modes.rt_lights));
+                  rr::RawEffectName(rr::RawEffect::kRtLights), rr::RawWhyText(modes.rt_lights), rr::RawEffectName(rr::RawEffect::kRtAo), rr::RawWhyText(modes.rt_ao));
     }
     if (!frame_.raw_counted) {
       frame_.raw_counted = true;
@@ -1931,8 +1933,10 @@ rr::RawModes TemporalSystem::RawModes() {
       window_.rr_raw_frames[size_t(rr::RawEffect::kCarRefl)] += modes.CarRefl() ? 1 : 0;
       window_.rr_raw_frames[size_t(rr::RawEffect::kRtGi)] += modes.RtGi() ? 1 : 0;
       window_.rr_raw_frames[size_t(rr::RawEffect::kRtLights)] += modes.RtLights() ? 1 : 0;
+      window_.rr_raw_frames[size_t(rr::RawEffect::kRtAo)] += ao_raw ? 1 : 0;
     }
     frame_.raw_any = frame_.raw_any || modes.Ssr() || modes.CarRefl() || modes.RtGi() || modes.RtLights();
+    frame_.raw_any |= ao_raw;
   }
   return modes;
 }
@@ -2707,9 +2711,9 @@ void TemporalSystem::Report() {
                 kPrefix, rr_plan_last_.use_rr ? "Ray Reconstruction" : "ours", rr::WhyText(rr_plan_last_.why), w.rr_frames, w.rr_sr_frames[size_t(rr::DispatchWhy::kNoGuides)],
                 w.rr_sr_frames[size_t(rr::DispatchWhy::kContextNotReady)], w.rr_sr_frames[size_t(rr::DispatchWhy::kRrFailed)], w.rr_backend_fallbacks, context,
                 dlss_ ? dlss_->CompanionSummary() : std::string("no DLSS backend"),
-                rr_raw_logged_ ? std::format(" | raw modes (RR-4, CITY-RT G6): frames asked: screen-space reflections {}, the cars' reflections {}, the bounce light's per-pixel pass {}, the ray traced light visibility {}; of the asked frames Super Resolution upscaled {} after all (noise not cleaned)",
+                rr_raw_logged_ ? std::format(" | raw modes (RR-4, CITY-RT G6): frames asked: screen-space reflections {}, the cars' reflections {}, the bounce light's per-pixel pass {}, the ray traced light visibility {}, the ray traced ambient occlusion {}; of the asked frames Super Resolution upscaled {} after all (noise not cleaned)",
                                              w.rr_raw_frames[size_t(rr::RawEffect::kSsr)], w.rr_raw_frames[size_t(rr::RawEffect::kCarRefl)], w.rr_raw_frames[size_t(rr::RawEffect::kRtGi)],
-                                             w.rr_raw_frames[size_t(rr::RawEffect::kRtLights)], w.rr_raw_but_sr)
+                                             w.rr_raw_frames[size_t(rr::RawEffect::kRtLights)], w.rr_raw_frames[size_t(rr::RawEffect::kRtAo)], w.rr_raw_but_sr)
                                : std::string());
   }
 }

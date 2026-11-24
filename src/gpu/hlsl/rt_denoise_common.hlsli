@@ -20,10 +20,12 @@
 // ---- the profiles ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 #define RT_DN_PROFILE_SPECULAR 0u   // a reflection: the kernel follows the lobe at the hit, the hit distance is an edge
 #define RT_DN_PROFILE_DIFFUSE 1u    // a diffuse term (the probe field's detail pass): a fixed radius, no hit distance
+#define RT_DN_PROFILE_AMBIENT 2u    // ambient occlusion: a scalar at the receiving surface
 
 static const float kRtDnMaxRadius = 12.0f;        // the widest kernel, in pixels of the signal (steps 1, 2 and 4 reach 2 + 4 + 8 = 14)
 static const float kRtDnLobeScale = 1.0f;         // the specular kernel's radius over the lobe's half width at the receiver
 static const float kRtDnDiffuseRadius = 6.0f;     // the diffuse profile's radius before the history shortens it
+static const float kRtDnAmbientRadius = 5.0f;
 static const float kRtDnMatureLength = 12.0f;     // a history this long shrinks the kernel to kRtDnMatureScale
 static const float kRtDnMatureScale = 0.4f;
 static const float kRtDnStepReach = 0.75f;        // a pixel takes the iteration of step s when its radius is at least this many s
@@ -35,8 +37,13 @@ static const float kRtDnVirtualRough = 0.6f;      // above this perceptual rough
 static const float kRtDnVirtualFull = 0.3f;       // under this it is used whole; between the two the two motions are blended
 
 // ---- the weights' numbers by profile ---------------------------------------------------------------------------------------------------------------------------------------------------------
+#ifdef MCLA_RT_DENOISE_AO_CONSUMER_HLSLI
+float RtDnDepthSigma(uint profile) { return profile == RT_DN_PROFILE_AMBIENT ? 0.03f : (profile == RT_DN_PROFILE_SPECULAR ? 0.04f : 0.06f); }
+float RtDnNormalPower(uint profile) { return profile == RT_DN_PROFILE_AMBIENT ? 16.0f : (profile == RT_DN_PROFILE_SPECULAR ? 24.0f : 12.0f); }
+#else
 float RtDnDepthSigma(uint profile) { return profile == RT_DN_PROFILE_SPECULAR ? 0.04f : 0.06f; }   // the plane distance's width, over the receiver's depth
 float RtDnNormalPower(uint profile) { return profile == RT_DN_PROFILE_SPECULAR ? 24.0f : 12.0f; }
+#endif
 float RtDnRoughSigma(uint profile) { return profile == RT_DN_PROFILE_SPECULAR ? 0.10f : 0.25f; }
 float RtDnLumaSigma(uint profile) { return profile == RT_DN_PROFILE_SPECULAR ? 3.0f : 4.0f; }    // the luminance's width over the neighbourhood's own deviation
 float RtDnHitSigma(uint profile) { return profile == RT_DN_PROFILE_SPECULAR ? 1.0f : 0.0f; }     // in octaves of the hit distance; 0 = the hit distance is not an edge
@@ -67,13 +74,23 @@ float RtDnLobePixels(float cone_tan, float hit, float z, float pixel_angle) {
 }
 // The kernel's radius in pixels of the signal: the profile's, shortened by the history, at most kRtDnMaxRadius.
 float RtDnRadius(uint profile, float cone_tan, float hit, float z, float pixel_angle, float history_length) {
+#ifdef MCLA_RT_DENOISE_AO_CONSUMER_HLSLI
+  const float base = profile == RT_DN_PROFILE_SPECULAR ? kRtDnLobeScale * RtDnLobePixels(cone_tan, hit, z, pixel_angle)
+                     : (profile == RT_DN_PROFILE_AMBIENT ? kRtDnAmbientRadius : kRtDnDiffuseRadius);
+#else
   const float base = profile == RT_DN_PROFILE_SPECULAR ? kRtDnLobeScale * RtDnLobePixels(cone_tan, hit, z, pixel_angle) : kRtDnDiffuseRadius;
+#endif
   return min(base * RtDnLengthScale(history_length), kRtDnMaxRadius);
 }
 // Whether a pixel of this radius takes the iteration of step `step` (1, 2, 4): its radius reaches 0.75 of the step. A radius under 0.75 takes none: that pixel is left as it is.
 bool RtDnStepTaken(float radius, uint step) {
   return radius >= kRtDnStepReach * float(step);
 }
+#ifdef MCLA_RT_DENOISE_AO_CONSUMER_HLSLI
+bool RtDnAmbientStep(float radius, uint step, float length) {
+  return (step == 1u || length < kRtDnMatureLength) && RtDnStepTaken(radius, step);
+}
+#endif
 // How much of the filtered value a pixel takes: its signal share, 0 under kRtDnMinShare (a pixel the signal hardly made is not touched).
 float RtDnMix(float share) {
   return share < kRtDnMinShare ? 0.0f : saturate(share);
@@ -177,6 +194,9 @@ struct RtDnPixel {
   float hit;       // the ray's length from the surface, metres (0: none)
   float share;     // how much of the pixel's value the filter may replace, 0..1
   float length;    // the history's length in frames (1: fresh)
+#ifdef MCLA_RT_DENOISE_AO_CONSUMER_HLSLI
+  uint vehicle;    // 0 for world pixels, 1 + stencil ID for vehicles
+#endif
 };
 // Whether a pixel is a usable part of the signal: `ok`, and its guides are numbers (a pixel whose guides are not is no signal: passed through, never a tap). The colour is looked at apart (RtDnSane, RtDnIsNumber3):
 // a colour that is not a number is black at the centre and a tap that is left out.

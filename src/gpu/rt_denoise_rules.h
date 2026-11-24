@@ -42,6 +42,7 @@ namespace mcla::gpu::rt_denoise {
 inline constexpr float kMaxRadius = 12.0f;
 inline constexpr float kLobeScale = 1.0f;
 inline constexpr float kDiffuseRadius = 6.0f;
+inline constexpr float kAmbientRadius = 5.0f;
 inline constexpr float kMatureLength = 12.0f;
 inline constexpr float kMatureScale = 0.4f;
 inline constexpr float kStepReach = 0.75f;
@@ -53,10 +54,10 @@ inline constexpr float kVirtualRough = 0.6f;
 inline constexpr float kVirtualFull = 0.3f;
 inline constexpr uint32_t kMaxIterations = 3;   // steps 1, 2 and 4
 
-enum class Profile : uint32_t { kSpecular = 0, kDiffuse = 1 };
+enum class Profile : uint32_t { kSpecular = 0, kDiffuse = 1, kAmbient = 2 };
 
-constexpr float DepthSigma(Profile p) { return p == Profile::kSpecular ? 0.04f : 0.06f; }
-constexpr float NormalPower(Profile p) { return p == Profile::kSpecular ? 24.0f : 12.0f; }
+constexpr float DepthSigma(Profile p) { return p == Profile::kAmbient ? 0.03f : (p == Profile::kSpecular ? 0.04f : 0.06f); }
+constexpr float NormalPower(Profile p) { return p == Profile::kAmbient ? 16.0f : (p == Profile::kSpecular ? 24.0f : 12.0f); }
 constexpr float RoughSigma(Profile p) { return p == Profile::kSpecular ? 0.10f : 0.25f; }
 constexpr float LumaSigma(Profile p) { return p == Profile::kSpecular ? 3.0f : 4.0f; }
 constexpr float HitSigma(Profile p) { return p == Profile::kSpecular ? 1.0f : 0.0f; }
@@ -80,10 +81,14 @@ inline float LobePixels(float cone_tan, float hit, float z, float pixel_angle) {
   return cone_tan * hit / ((z + hit) * pixel_angle);
 }
 inline float Radius(Profile profile, float cone_tan, float hit, float z, float pixel_angle, float history_length) {
-  const float base = profile == Profile::kSpecular ? kLobeScale * LobePixels(cone_tan, hit, z, pixel_angle) : kDiffuseRadius;
+  const float base = profile == Profile::kSpecular ? kLobeScale * LobePixels(cone_tan, hit, z, pixel_angle)
+                     : (profile == Profile::kAmbient ? kAmbientRadius : kDiffuseRadius);
   return std::min(base * LengthScale(history_length), kMaxRadius);
 }
 constexpr bool StepTaken(float radius, uint32_t step) { return radius >= kStepReach * float(step); }
+constexpr bool AmbientStep(float radius, uint32_t step, float length) {
+  return (step == 1u || length < kMatureLength) && StepTaken(radius, step);
+}
 constexpr float Mix(float share) { return share < kMinShare ? 0.0f : Saturate(share); }
 // The iterations a radius takes (steps 1, 2, 4 in turn: the ones from the first whose step it reaches).
 constexpr uint32_t IterationsTaken(float radius) {
@@ -212,6 +217,7 @@ inline constexpr uint32_t kPrevTanY = 8;
 inline constexpr uint32_t kMotion = 9;     // 12 floats
 inline constexpr uint32_t kLength = 21;    // float: the history length the spatial pass assumes
 inline constexpr uint32_t kFrame = 22;     // RT_DN_VIS only (RT-LIGHTS-D1 part 2): the frame's number, the sample of the 8 bit average's random rounding
+inline constexpr uint32_t kVehicle = 23;   // AO: vehicle table slot low byte | usable IDs << 8
 inline constexpr uint32_t kHasHistoryBit = 8;
 constexpr Patch PatchFor() { return Patch{kSignal, kParams, kHistory, kParams, kHasHistoryBit}; }
 }  // namespace plain

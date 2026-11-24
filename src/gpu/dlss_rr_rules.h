@@ -581,6 +581,7 @@ enum class Consumer : uint8_t {
   kCityRtReflections,   // the city's ray traced reflections (track 8; today the screen-space reflections' ray traced fallback, ssr_rt.h): designed noisy, RR's reason to exist here
   kRtGi,                // ray traced bounce light (RT BOUNCE LIGHT): the per-pixel detail pass of the probe field (ULTRA on a strong card; the field alone is smooth): designed noisy, 1 ray a pixel
   kRtLights,            // ray traced light visibility (RT-LIGHTS-D1, rt_lights.h): one ray a light and pixel into the deferred light pass; the visibility is multiplied into a light (or taken away from a lamp the game lights)
+  kRtAo,
   kCount,
 };
 inline constexpr size_t kConsumerCount = size_t(Consumer::kCount);
@@ -596,6 +597,7 @@ inline constexpr ConsumerTable kConsumers = {{
     {"ray traced city reflections", true, false},
     {"ray traced bounce light", true, false},
     {"ray traced light visibility", true, false},   // RT-LIGHTS-D1 part 2: the hook exists (RtLights::SetRawMode); AUTO does not trust RR with it until the D4 A/B (C11: a stochastic visibility under a lamp's subtraction)
+    {"ray traced ambient occlusion", true, false},
 }};
 constexpr const ConsumerInfo& InfoOf(Consumer c) { return kConsumers[size_t(c)]; }
 constexpr uint32_t ConsumerBit(Consumer c) { return 1u << uint32_t(c); }
@@ -880,13 +882,14 @@ inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 // NoteConsumer(rr::Consumer::kRtGi, pixel_pass_wanted_) in GiApply::BeginFrame (gi_apply.cpp: the frame's layout has the per-pixel pass, the pass is made). `on` means the
 // effect runs this frame whatever the plan is (the effects' raw modes are what the plan then turns on), so there is no circle: the consumer is on first, the plan follows, RawModes() follows the plan.
 // So: the row on OURS never takes a frame; AUTO takes one only for an effect with auto_uses_rr (none yet: ours); DLSS RR takes one while any of the four is on.
-enum class RawEffect : uint8_t { kSsr, kCarRefl, kRtGi, kRtLights, kCount };
+enum class RawEffect : uint8_t { kSsr, kCarRefl, kRtGi, kRtLights, kRtAo, kCount };
 constexpr const char* RawEffectName(RawEffect e) {
   switch (e) {
     case RawEffect::kSsr: return "screen-space reflections";
     case RawEffect::kCarRefl: return "the cars' ray traced reflections";
     case RawEffect::kRtGi: return "the bounce light's per-pixel pass";
     case RawEffect::kRtLights: return "the ray traced light visibility";
+    case RawEffect::kRtAo: return "the ray traced ambient occlusion";
     case RawEffect::kCount: break;
   }
   return "?";
@@ -943,6 +946,7 @@ constexpr Consumer ConsumerOfEffect(RawEffect e) {
     case RawEffect::kCarRefl: return Consumer::kCarRtReflections;
     case RawEffect::kRtGi: return Consumer::kRtGi;
     case RawEffect::kRtLights: return Consumer::kRtLights;
+    case RawEffect::kRtAo: return Consumer::kRtAo;
     case RawEffect::kCount: break;
   }
   return Consumer::kSsr;
@@ -951,16 +955,19 @@ struct RawModes {
   RawWhy ssr = RawWhy::kPlanOurs;
   RawWhy car_refl = RawWhy::kPlanOurs;
   RawWhy rt_gi = RawWhy::kPlanOurs;
-  RawWhy rt_lights = RawWhy::kPlanOurs;   // RT-LIGHTS-D1 part 2: the ray traced light visibility (mcla_gpu_dlss_rr_rt_lights is its switch)
+  RawWhy rt_lights = RawWhy::kPlanOurs;
+  RawWhy rt_ao = RawWhy::kPlanOurs;   // RT-LIGHTS-D1 part 2: the ray traced light visibility (mcla_gpu_dlss_rr_rt_lights is its switch)
   constexpr bool Ssr() const { return ssr == RawWhy::kRaw; }
   constexpr bool CarRefl() const { return car_refl == RawWhy::kRaw; }
   constexpr bool RtGi() const { return rt_gi == RawWhy::kRaw; }
   constexpr bool RtLights() const { return rt_lights == RawWhy::kRaw; }
+  constexpr bool RtAo() const { return rt_ao == RawWhy::kRaw; }
   constexpr bool operator==(const RawModes&) const = default;
 };
-constexpr RawModes RawModesOf(const RawFrame& f, bool switch_ssr, bool switch_car_refl, bool switch_rt_gi = true, bool switch_rt_lights = true, const ConsumerTable& table = kConsumers) {
+constexpr RawModes RawModesOf(const RawFrame& f, bool switch_ssr, bool switch_car_refl, bool switch_rt_gi = true, bool switch_rt_lights = true, bool switch_rt_ao = true, const ConsumerTable& table = kConsumers) {
   return {RawWhyOf(f, switch_ssr, table[size_t(ConsumerOfEffect(RawEffect::kSsr))].auto_uses_rr), RawWhyOf(f, switch_car_refl, table[size_t(ConsumerOfEffect(RawEffect::kCarRefl))].auto_uses_rr),
-          RawWhyOf(f, switch_rt_gi, table[size_t(ConsumerOfEffect(RawEffect::kRtGi))].auto_uses_rr), RawWhyOf(f, switch_rt_lights, table[size_t(ConsumerOfEffect(RawEffect::kRtLights))].auto_uses_rr)};
+          RawWhyOf(f, switch_rt_gi, table[size_t(ConsumerOfEffect(RawEffect::kRtGi))].auto_uses_rr), RawWhyOf(f, switch_rt_lights, table[size_t(ConsumerOfEffect(RawEffect::kRtLights))].auto_uses_rr),
+          RawWhyOf(f, switch_rt_ao, table[size_t(ConsumerOfEffect(RawEffect::kRtAo))].auto_uses_rr)};
 }
 // The debug switches' value: 0 keeps the effect's filter, anything else (the default 1) is raw while RR takes the frame.
 constexpr bool RawSwitchOn(int value) { return value != 0; }

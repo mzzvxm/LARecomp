@@ -1223,6 +1223,18 @@ larecomp_gpu_host_shader(rr_guides_view_cs cs_6_0)
 # AMD FSR Ray Regeneration's guide and signal pass for the screen-space reflections (ray_regen_guides.h, RG-2 / RG-3): the trace's radiance as a signal and the five guides in AMD's formats at the trace's size, one compute
 # pass. Plain Shader Model 6.0 (the 6.6 AMD asks for is its own runtime's); run on Direct3D 12 only, built for both backends like every host shader.
 larecomp_gpu_host_shader(ray_regen_ssr_cs cs_6_0)
+# RTAO-R2 begin
+target_sources(larecomp_gpu PRIVATE
+    rtao_denoise.cpp
+    rtao_compose.cpp
+    ray_regen_ao.cpp)
+add_executable(larecomp_rtao_denoise_test EXCLUDE_FROM_ALL rtao_denoise_test.cpp)
+larecomp_gpu_host_shader(rtao_denoise_temporal_cs cs_6_0)
+larecomp_gpu_host_shader(rtao_denoise_spatial_cs cs_6_0)
+larecomp_gpu_host_shader(rtao_compose_cs cs_6_0)
+larecomp_gpu_host_shader(rtao_compose_gi_cs cs_6_0 SOURCE rtao_compose_cs DEFINES RTAO_GI=1)
+larecomp_gpu_host_shader(ray_regen_ao_cs cs_6_0)
+# RTAO-R2 end
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

@@ -72,6 +72,12 @@ constexpr uint32_t BytesPerTexel() {
 // The video memory the six images hold at a traced size (the context's own is the runtime's: ray_regen_rules.h EstimateBytes).
 constexpr uint64_t BytesOf(uint32_t width, uint32_t height) { return uint64_t(width) * height * BytesPerTexel(); }
 
+constexpr ImageSpec AoSpecOf(Image image) {
+  if (image == Image::kSignal) return {"ray regen AO signal", rr::Format::kR16Float, 2};
+  if (image == Image::kDenoised) return {"ray regen denoised AO", rr::Format::kR16Float, 2};
+  return SpecOf(image);
+}
+
 // The image of a guide as the dispatch plan (ray_regen_rules.h PlanDispatch) sees it.
 constexpr rr::Image PlanImage(Image image, uint32_t width, uint32_t height) { return rr::Image{true, width, height, SpecOf(image).format}; }
 

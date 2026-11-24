@@ -819,6 +819,8 @@ class GPUSettings final : public rex::SettingOwner {
     "With Ray Reconstruction not the plan (Super Resolution, FSR, no upscaler) nothing changes, whatever this says. Live.",
     rex::kDebugOnly, rex::Range{0, 1});
 
+  REX_SETTING(i32, mcla_gpu_dlss_rr_rt_ao, 1, "Debug: use raw ray traced ambient occlusion while DLSS Ray Reconstruction takes the frame. 0 keeps the built-in denoiser. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(std::string, mcla_gpu_dlss_mode, "dlaa", "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
     "per direction, of the output (the window's 16:9 area, whatever mcla_gpu_resolution_scale "
@@ -1274,6 +1276,12 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_rt_lights_lamp_slot, 0, "Debug (A/B, RT-LIGHTS-D1 review S2): which lights get a ray for mcla_gpu_rt_lights. 0 (the default): headlights first, then neon, then the nearest street lamps, so three cars with their headlights on "
     "(a car's pair is one light) leave no ray for any street lamp. 1: with K of 2 or more and no street lamp among the picked lights, the last channel goes to the strongest street lamp in the light pass's list instead (the headlights and neon above it keep theirs). Live.", rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(i32, mcla_gpu_rtao_history, 32, "Debug: ray traced ambient occlusion history cap in frames. 1 disables temporal accumulation. Live.", rex::kDebugOnly, rex::Range{1, 64});
+
+  REX_SETTING(std::string, mcla_gpu_rtao_denoise, "auto", "Debug: auto and ours use the built-in denoiser. Off sends the raw ray traced ambient occlusion signal to compose. Live.", rex::kDebugOnly, rex::Allowed("auto", "ours", "off"));
+
+  REX_SETTING(i32, mcla_gpu_rtao_raw_scale, 2, "Debug: ray traced ambient occlusion trace divisor for DLSS Ray Reconstruction raw frames. 2 is half size, 1 is full size. Live.", rex::kDebugOnly, rex::Range{1, 2});
 
   REX_SETTING(bool, mcla_gpu_object_names, false, "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
     "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
@@ -2210,6 +2218,7 @@ inline auto& mcla_gpu_dlss_rr_ssr = g_gpu.mcla_gpu_dlss_rr_ssr;
 inline auto& mcla_gpu_dlss_rr_car_refl = g_gpu.mcla_gpu_dlss_rr_car_refl;
 inline auto& mcla_gpu_dlss_rr_rt_gi = g_gpu.mcla_gpu_dlss_rr_rt_gi;
 inline auto& mcla_gpu_dlss_rr_rt_lights = g_gpu.mcla_gpu_dlss_rr_rt_lights;
+inline auto& mcla_gpu_dlss_rr_rt_ao = g_gpu.mcla_gpu_dlss_rr_rt_ao;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;
@@ -2308,6 +2317,9 @@ inline auto& mcla_gpu_rt_lights_view = g_gpu.mcla_gpu_rt_lights_view;
 inline auto& mcla_gpu_rt_lights_check = g_gpu.mcla_gpu_rt_lights_check;
 inline auto& mcla_gpu_rt_lights_scale = g_gpu.mcla_gpu_rt_lights_scale;
 inline auto& mcla_gpu_rt_lights_lamp_slot = g_gpu.mcla_gpu_rt_lights_lamp_slot;
+inline auto& mcla_gpu_rtao_history = g_gpu.mcla_gpu_rtao_history;
+inline auto& mcla_gpu_rtao_denoise = g_gpu.mcla_gpu_rtao_denoise;
+inline auto& mcla_gpu_rtao_raw_scale = g_gpu.mcla_gpu_rtao_raw_scale;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;

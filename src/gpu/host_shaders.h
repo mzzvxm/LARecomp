@@ -149,6 +149,11 @@
 #include "rr_guides_ms_cs.hlsl.dxil.h"
 #include "rr_guides_view_cs.hlsl.dxil.h"
 #include "ray_regen_ssr_cs.hlsl.dxil.h"
+#include "rtao_denoise_spatial_cs.hlsl.dxil.h"
+#include "rtao_denoise_temporal_cs.hlsl.dxil.h"
+#include "rtao_compose_cs.hlsl.dxil.h"
+#include "rtao_compose_gi_cs.hlsl.dxil.h"
+#include "ray_regen_ao_cs.hlsl.dxil.h"
 #include "shafts_add_ps.hlsl.dxil.h"
 #include "shafts_blur_ps.hlsl.dxil.h"
 #include "shafts_temporal_ps.hlsl.dxil.h"
@@ -300,6 +305,11 @@
 #include "rr_guides_ms_cs.hlsl.spirv.h"
 #include "rr_guides_view_cs.hlsl.spirv.h"
 #include "ray_regen_ssr_cs.hlsl.spirv.h"
+#include "rtao_denoise_spatial_cs.hlsl.spirv.h"
+#include "rtao_denoise_temporal_cs.hlsl.spirv.h"
+#include "rtao_compose_cs.hlsl.spirv.h"
+#include "rtao_compose_gi_cs.hlsl.spirv.h"
+#include "ray_regen_ao_cs.hlsl.spirv.h"
 #include "shafts_add_ps.hlsl.spirv.h"
 #include "shafts_blur_ps.hlsl.spirv.h"
 #include "shafts_temporal_ps.hlsl.spirv.h"
@@ -524,6 +534,16 @@ inline HostShaderBlob RrGuidesViewShader() {
 
 // AMD FSR Ray Regeneration's guide and signal pass of the screen-space reflections (ray_regen_guides.h, hlsl/ray_regen_ssr_cs.hlsl): the trace's radiance and the five guides in AMD's formats, one
 // compute pass at the trace's size. Plain Shader Model 6.0 compute; only ever run on Direct3D 12 (AMD ships no Vulkan provider), built for both backends like every host shader.
+inline HostShaderBlob RtDenoiseAoShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rtao_denoise_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rtao_denoise_spatial_cs);
+}
+inline HostShaderBlob RtAoComposeShader(bool gi) {
+  return gi ? MCLA_GPU_HOST_SHADER_BLOB(rtao_compose_gi_cs) : MCLA_GPU_HOST_SHADER_BLOB(rtao_compose_cs);
+}
+inline HostShaderBlob RayRegenAoShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(ray_regen_ao_cs);
+}
+
 inline HostShaderBlob RayRegenSsrShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(ray_regen_ssr_cs);
 }

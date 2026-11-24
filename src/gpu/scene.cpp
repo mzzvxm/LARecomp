@@ -4125,6 +4125,8 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
     // below forgets for the next draw. The AO's frame is one call and several steps of the table (depth chain, normals, colour_pre, ray traced term, visibility, contact march, apply, and
     // at its end the screen products' publish with the Hi-Z): the order inside it is held by frame_order_test.cpp against ao.cpp.
+    // CHECK: the R1 AO forwards this mode before choosing the frame plan.
+    ao_->SetRtAoRawMode(ao_->rtao_wanted() && temporal_ && temporal_->RawModes().RtAo());
     const bool ao_ran = ao_->OnResolve(record, summary, list, UpscalerRunning());
     order_.Note(frame_order::Step::kAo, ao_ran);
   }

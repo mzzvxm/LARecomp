@@ -83,7 +83,7 @@ ConsumerTable Cells(bool built0, bool auto0, bool built1, bool auto1, bool built
 }
 
 void CheckConsumers() {
-  Check(rr::kConsumerCount == 5 && kConsumers.size() == rr::kConsumerCount, "the table has a cell for each of the five consumers (the four it was written for and RT-LIGHTS-D1's light visibility, which the integration added to rr::Consumer)");
+  Check(rr::kConsumerCount == 6 && kConsumers.size() == rr::kConsumerCount, "the table has six consumers");
   // RG-3: the screen-space reflections have their signal writer; no cell is trusted by AUTO until a Radeon A/B; the cars' reflections are not a fit (RAY-REGEN.md 4.2); the city's and the bounce light's
   // effects are on other branches.
   Check(AnySignalBuilt(), "shipped: an effect writes a signal (the screen-space reflections)");
@@ -109,6 +109,18 @@ void CheckConsumers() {
   // The context's signals: the row AUTO takes the trusted effects only, the row's value and the debug switch's "on" every built one.
   const ConsumerTable mixed = Cells(true, true, true, false, true, false, true, false);  // SSR trusted; cars, city reflections, GI built only
   const uint32_t all = rr::kAllConsumers;
+  const uint32_t ao_consumer = rr::ConsumerBit(rr::Consumer::kRtAo);
+  const uint32_t ao_signal = FlagOf(Signal::kAmbientOcclusion);
+  Check(SignalOf(rr::Consumer::kRtAo) == Signal::kAmbientOcclusion, "AO maps to AMD's ambient occlusion signal");
+  Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, ao_consumer) == 0, "AO waits for a separate dispatch context");
+  ConsumerTable ao_built = kConsumers;
+  ao_built[size_t(rr::Consumer::kRtAo)] = {true, false};
+  Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, ao_consumer, ao_built) == ao_signal &&
+            ContextSignals(rr::Denoiser::kAuto, rr::DebugSwitch::kRow, ao_consumer, ao_built) == 0,
+        "an AO-only context holds exactly the AO bit and AUTO still keeps ours");
+  Check(EstimateBytes(ao_signal, 960, 540) == 32 * rr::kMiB && EstimateBytes(ao_signal, 1920, 1080) == 72 * rr::kMiB &&
+            EstimateBytes(ao_signal, 2560, 1440) == 118 * rr::kMiB, "AMD's single-channel AO memory row");
+
   Check(ContextSignals(rr::Denoiser::kAuto, rr::DebugSwitch::kRow, all, mixed) == FlagOf(Signal::kIndirectSpecular), "AUTO: the trusted SSR's indirect specular only");
   Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, all, mixed) == (FlagOf(Signal::kIndirectSpecular) | FlagOf(Signal::kIndirectDiffuse)), "the row's value: every built effect (specular and diffuse)");
   Check(ContextSignals(rr::Denoiser::kAuto, rr::DebugSwitch::kOn, all, mixed) == (FlagOf(Signal::kIndirectSpecular) | FlagOf(Signal::kIndirectDiffuse)), "the debug switch on stands for the row's value even over AUTO");

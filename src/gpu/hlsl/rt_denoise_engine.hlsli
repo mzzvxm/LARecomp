@@ -54,7 +54,17 @@ void RtDnSpatialMain(uint3 id) {
   }
   // a colour that is not a number (see RtDnIsNumber) is black, in the pass-through as well; the alpha is the consumer's
   const float4 raw_signal = RtDnSignal(p);
+#if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
+  // The last two dispatches only need the already-filtered value at mature pixels.
+  if (RtDnIteration() > 0u && raw_signal.w >= kRtDnMatureLength) {
+    g_dn_out[p] = raw_signal;
+    return;
+  }
+  const float4 raw = RtDnIteration() == 0u ? RtAoRawAt(p) : raw_signal;
+  const float4 own = float4(RtDnIsNumber(raw_signal.x) ? raw_signal.x : raw.x, raw.gb, raw_signal.w);
+#else
   const float4 own = float4(RtDnSane(raw_signal.xyz), raw_signal.w);
+#endif
   RtDnPixel c = RtDnLoad(p);
   c.colour = RtDnSane(c.colour);
   const float amount = RtDnMix(c.share);
@@ -65,7 +75,11 @@ void RtDnSpatialMain(uint3 id) {
   }
   const float alpha = c.rough * c.rough;
   const float radius = RtDnRadius(RT_DN_PROFILE, alpha, c.hit, c.z, RtDnPixelAngle(), c.length);
+#if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
+  if (!RtDnAmbientStep(radius, step, c.length)) {
+#else
   if (!RtDnStepTaken(radius, step)) {
+#endif
     g_dn_out[p] = own;
     return;
   }
@@ -105,6 +119,9 @@ void RtDnSpatialMain(uint3 id) {
       RtDnPixel t = c;
       if (dx != 0 || dy != 0) {
         t = RtDnLoad(q);
+#if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
+        if (t.vehicle != c.vehicle) continue;
+#endif
         if (!t.ok) {
           continue;
         }
@@ -112,19 +129,66 @@ void RtDnSpatialMain(uint3 id) {
           continue;   // guides or a colour that are not numbers would make the weights and the sum NaN: the tap is left out
         }
         const float plane = abs(dot(c.n, t.pos - c.pos));
+#if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
+        w *= RtDnDepthWeight(plane, c.z, depth_sigma) * RtDnNormalWeight(dot(c.n, t.n), normal_power) *
+             RtDnLumaWeight(luma_centre, t.colour.x, variance, luma_sigma) * t.share;
+#else
         w *= RtDnDepthWeight(plane, c.z, depth_sigma) * RtDnNormalWeight(dot(c.n, t.n), normal_power) * RtDnRoughWeight(c.rough, t.rough, rough_sigma) *
              RtDnLumaWeight(luma_centre, RtDnLuma(t.colour.x, t.colour.y, t.colour.z), variance, luma_sigma) * RtDnHitWeight(c.hit, t.hit, hit_sigma);
+#endif
       }
       total += t.colour * w;
       weights += w;
     }
   }
   const float3 filtered = weights > 1.0e-6f ? total / weights : c.colour;
+#if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
+  g_dn_out[p] = float4(lerp(own.x, filtered.x, amount), own.yzw);
+#else
   g_dn_out[p] = float4(lerp(own.xyz, filtered, amount), own.w);
+#endif
 }
 
 #elif defined(RT_DN_PASS_TEMPORAL)
 
+#if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
+void RtAoTemporalMain(uint3 id) {
+  const int2 p = int2(id.xy);
+  const int2 size = RtDnSize();
+  if (any(p >= size)) return;
+
+  const RtDnPixel c = RtDnLoad(p);
+  const float raw = RtDnSignal(p).x;
+  const float current = RtDnIsNumber(raw) ? saturate(raw) : 1.0f;
+  if (!RtDnGuidesOk(c)) {
+    g_dn_out[p] = float4(current, 0.0f, 0.0f, 0.0f);
+    return;
+  }
+  const RtAoHistory h = RtAoReproject(p, c);
+  float open = current;
+  if (h.length > 0.0f) {
+    float lo = current, hi = current;
+    float sum = 0.0f, sum2 = 0.0f, count = 0.0f;
+    [unroll] for (int y = -1; y <= 1; ++y) {
+      [unroll] for (int x = -1; x <= 1; ++x) {
+        const float4 t = RtDnColourAt(clamp(p + int2(x, y), int2(0, 0), size - 1));
+        if (t.w > 0.0f && RtDnIsNumber(t.x)) {
+          lo = min(lo, t.x);
+          hi = max(hi, t.x);
+          sum += t.x;
+          sum2 += t.x * t.x;
+          count += 1.0f;
+        }
+      }
+    }
+    const float mean = sum / max(count, 1.0f);
+    const float sigma = sqrt(RtDnVariance(sum, sum2, count));
+    const float history = RtAoClip(h.open, mean, sigma, lo, hi);
+    open = RtAoBlend(history, current, h.length);
+  }
+  g_dn_out[p] = float4(saturate(open), GbOctEncode(c.n), RtAoNextLength(h.length, h.cap));
+}
+#else
 void RtDnTemporalMain(uint3 id) {
   const int2 size = RtDnSize();
   const int2 p = int2(id.xy);
@@ -202,6 +266,7 @@ void RtDnTemporalMain(uint3 id) {
   g_dn_out[p] = float4(colour, RtDnNextLength(length, used));
 #endif
 }
+#endif
 
 #endif
 
