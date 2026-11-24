@@ -762,12 +762,20 @@ class GPUSettings final : public rex::SettingOwner {
     "the test on, 1 alone, then 2 alone, then 4 alone; the one that makes the picture lose its "
     "smoothness over time is read. Live.", rex::Range{0, 7}, rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_gpu_denoiser, "auto", "DENOISER: who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light): NVIDIA's DLSS Ray Reconstruction (RTX cards), AMD FSR Ray Regeneration (Radeon RX 9000 series cards, Direct3D 12), or our own denoisers. "
-    "auto (the default): DLSS Ray Reconstruction where an effect that is on looks better with it and this PC can run it (an NVIDIA RTX card, DLSS as the upscaler); our own denoisers everywhere else. "
-    "rr (DLSS RR in the menu): DLSS Ray Reconstruction wherever it can run and an effect that it can clean is on. ours: our own denoisers only; Streamline is then started without the Ray Reconstruction plugin, "
+  REX_SETTING(bool, mcla_gpu_vendor_denoiser, false, "The pause menu's DLSS RAY RECONSTRUCTION row (a GeForce RTX card) or AMD FSR RAY REGENERATION row (a Radeon RX 9000 series card on Windows 11): "
+    "the graphics card maker's denoiser, who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light). Other cards have no such row and use our own denoisers. "
+    "Off (the default): our own denoisers. On: NVIDIA's DLSS Ray Reconstruction (it does the upscaling too, in place of DLSS Super Resolution, for the frames it takes, so it needs DLSS as the upscaler) or "
+    "AMD's FSR Ray Regeneration (Direct3D 12; it cleans before the upscaler runs, whatever the upscaler is), wherever an effect that it can clean is on and this PC can run it. "
+    "A switch is live and the frames in between are the upscaler's own; only DLSS Ray Reconstruction's plugin is loaded when the game starts, so turning it on in a game that started with it off asks for a restart. "
+    "Live.");
+
+  REX_SETTING(std::string, mcla_gpu_denoiser, "row", "Debug (A/B): overrides the pause menu's DLSS RAY RECONSTRUCTION / AMD FSR RAY REGENERATION row (mcla_gpu_vendor_denoiser): who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light): NVIDIA's DLSS Ray Reconstruction (RTX cards), AMD FSR Ray Regeneration (Radeon RX 9000 series cards, Direct3D 12), or our own denoisers. "
+    "row (the default): the row decides (ON is the vendor's denoiser, OFF is ours). "
+    "auto: the vendor's denoiser where an effect that is on looks better with it and this PC can run it (nothing is trusted to auto yet, so auto is our own denoisers today). "
+    "rr (DLSS RR / FSR RAY REGEN in the old menu): the vendor's denoiser wherever it can run and an effect that it can clean is on. ours: our own denoisers only; Streamline is then started without the Ray Reconstruction plugin, "
     "so leaving ours needs a restart. DLSS Ray Reconstruction does the upscaling too, in place of DLSS Super Resolution, for the frames it takes (not the pause menu's world, the garage, the map or a cutscene); its context is made in the background "
-    "beside Super Resolution's, so a switch of this setting is live and the frames in between are Super Resolution's. The pause menu's DENOISER row (GRAPHICS > UPSCALING; grey where it cannot run: no RTX card, DLSS not the upscaler, "
-    "no effect that uses it is on). On a Radeon RX 9000 series card the middle value reads FSR RAY REGEN in the menu and means AMD FSR Ray Regeneration: it cleans the reflections on surfaces before the upscaler runs, whatever the upscaler is, and needs no restart (AMD's runtime is opened when the row asks for it); auto never picks it until a Radeon A/B says it beats ours. Live; only the plugin is chosen when Streamline starts (the debug setting mcla_gpu_dlss_rr overrides it).", rex::Allowed("auto", "rr", "ours"));
+    "beside Super Resolution's, so a switch of this setting is live and the frames in between are Super Resolution's. AMD FSR Ray Regeneration cleans the reflections on surfaces before the upscaler runs, whatever the upscaler is, "
+    "and needs no restart (AMD's runtime is opened when the setting asks for it). Live; only the plugin is chosen when Streamline starts (the debug setting mcla_gpu_dlss_rr overrides it).", rex::kDebugOnly, rex::Allowed("row", "auto", "rr", "ours"));
 
   REX_SETTING(std::string, mcla_gpu_dlss_rr, "auto", "Debug (A/B): overrides the DENOISER row (mcla_gpu_denoiser) for NVIDIA DLSS Ray Reconstruction (RR), a denoiser and upscaler in one that replaces DLSS "
     "Super Resolution where our effects leave noise it can clean (perf/DLSS-RR.md). auto (the default): the row decides. off: nothing of it exists whatever the row says: the plugin is not asked for and nothing changes. probe: Streamline is started with the RR plugin (an RTX "
@@ -2206,6 +2214,7 @@ inline auto& mcla_gpu_contact_shadows_view = g_gpu.mcla_gpu_contact_shadows_view
 inline auto& mcla_gpu_contact_skip_stat = g_gpu.mcla_gpu_contact_skip_stat;
 inline auto& mcla_gpu_coverage_queries = g_gpu.mcla_gpu_coverage_queries;
 inline auto& mcla_gpu_debug_layer = g_gpu.mcla_gpu_debug_layer;
+inline auto& mcla_gpu_vendor_denoiser = g_gpu.mcla_gpu_vendor_denoiser;
 inline auto& mcla_gpu_denoiser = g_gpu.mcla_gpu_denoiser;
 inline auto& mcla_gpu_dlss_mask_tags = g_gpu.mcla_gpu_dlss_mask_tags;
 inline auto& mcla_gpu_dlss_mode = g_gpu.mcla_gpu_dlss_mode;

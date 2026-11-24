@@ -387,7 +387,7 @@ struct RayReconstructionFacts {
   bool built = false;      // this build has it (LARECOMP_HAS_DLSS_RR: the plugin's header and its two files were fetched)
   bool asked = false;      // Streamline was started with the Ray Reconstruction plugin
   bool files_ok = true;    // no known problem with sl.dlss_d.dll (signed) and nvngx_dlssd.dll next to the exe: false only where they were looked at (the plugin was wanted) and are not right
-  bool loadable = false;   // (RR-5) not asked for only because the DENOISER row said OURS at the start (or the debug switch): an RTX card, a build with it, an effect with a raw mode; a restart with the row on AUTO loads it
+  bool loadable = false;   // (RR-5) not asked for only because the DLSS RAY RECONSTRUCTION row said OFF at the start (or the debug switch): an RTX card, a build with it, an effect with a raw mode; a restart with the row ON loads it
   bool queried = false;    // the support question was asked: the start is over, the answer is final
   bool supported = false;  // this card, this driver and Windows can run it
   // RR-3: the context's own story, published by the backend. `failed`: RR was dropped for this session (its feature could not be made in the background, or its evaluation failed three

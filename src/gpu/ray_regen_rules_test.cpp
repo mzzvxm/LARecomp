@@ -692,9 +692,13 @@ void CheckMemory() {
 // --- the words ----------------------------------------------------------------------------------------------------------------------------------------
 
 void CheckWords() {
-  Check(std::string(kLauncherName) == "AMD FSR Ray Regeneration", "AMD's UI name");
-  Check(std::strlen(kMenuName) == 13 && std::strlen(AutoLabel(true)) == 20, "the menu's value is 13 characters, AUTO's label 20: the page stays at 21 + 20 = 41");
-  const char* names[] = {kLauncherName, kMenuName, kLauncherDescription, kLauncherAutoDescription, kCreditLine};
+  Check(std::string(kLauncherName) == "AMD FSR Ray Regeneration" && std::string(kLauncherLabel) == "AMD FSR Ray Regeneration", "AMD's UI name");
+  {
+    std::string upper = kLauncherName;
+    for (char& c : upper) c = (c >= 'a' && c <= 'z') ? char(c - 'a' + 'A') : c;
+    Check(upper == kMenuLabel && std::strlen(kMenuLabel) == 24 && std::string(kMenuShortLabel) == "RAY REGEN", "the row says AMD's name in capitals (24), RAY REGEN (9) before a reason");
+  }
+  const char* names[] = {kLauncherName, kLauncherLabel, kLauncherDescription, kCreditLine};
   bool no_version = true;
   for (const char* n : names) no_version = no_version && std::string(n).find("1.2") == std::string::npos && std::string(n).find("1.1") == std::string::npos && std::string(n).find("v1") == std::string::npos;
   Check(no_version, "no version number beside the name (AMD's naming guidelines)");
@@ -702,19 +706,66 @@ void CheckWords() {
   bool widths = true;
   for (int g = 0; g < kGateCount; ++g) widths = widths && std::strlen(RowSuffix(Gate(g))) <= 13;
   Check(widths, "no row suffix is wider than 13 characters");
-  Check(std::string(RowSuffix(Gate::kNotThisGpu)) == " (NO RX 9000)" && std::string(RowSuffix(Gate::kNotNeeded)) == " (NOT NEEDED)", "the suffixes the pause menu shows");
-  Check(RowEnabled(Gate::kRuns) && RowEnabled(Gate::kStarting) && RowEnabled(Gate::kApplying) && !RowEnabled(Gate::kNotThisGpu) && !RowEnabled(Gate::kNotNeeded) && !RowEnabled(Gate::kSetup) &&
+  Check(std::string(RowSuffix(Gate::kHidden)).empty() && std::string(RowSuffix(Gate::kNotNeeded)) == " (NOT NEEDED)" && std::string(RowSuffix(Gate::kNeedsD3D12)) == " (D3D12 ONLY)" && std::string(RowSuffix(Gate::kApplying)) == " (APPLYING)" &&
+            std::string(RowSuffix(Gate::kNotAvailable)) == " (N/A)" && std::string(RowSuffix(Gate::kSetup)) == " (SETUP)" && std::string(RowSuffix(Gate::kFailed)) == " (FAILED)",
+        "the suffixes the pause menu shows: the owner's list; a PC that is not a Radeon RX 9000 has no row, so no '(NO RX 9000)'");
+  // the label by state: AMD's name in capitals while the row says nothing, RAY REGEN before a reason; with the longest reason the page stays within 24 characters of label
+  {
+    bool labels = true;
+    bool widest = true;
+    for (int g = 0; g < kGateCount; ++g) {
+      const bool quiet = std::string(RowSuffix(Gate(g))).empty();
+      labels = labels && std::string(RowLabel(Gate(g))) == (quiet ? kMenuLabel : kMenuShortLabel);
+      widest = widest && std::strlen(RowLabel(Gate(g))) + std::strlen(RowSuffix(Gate(g))) <= 24;
+    }
+    Check(labels, "the whole name while the row says nothing, RAY REGEN before a reason");
+    Check(widest, "no label with its reason is over 24 characters (the page's widest label: the page's widest value is 17)");
+    Check(std::strlen(kMenuLabel) + std::strlen(RowSuffix(Gate::kNeedsD3D12)) == 37, "the whole name with its longest reason would be 37: why the short name");
+  }
+  Check(RowEnabled(Gate::kRuns) && RowEnabled(Gate::kStarting) && RowEnabled(Gate::kApplying) && !RowEnabled(Gate::kHidden) && !RowEnabled(Gate::kNotNeeded) && !RowEnabled(Gate::kSetup) &&
             !RowEnabled(Gate::kFailed) && !RowEnabled(Gate::kNotAvailable),
         "which gates keep the row enabled");
   bool reasons = true;
   for (int g = 0; g < kGateCount; ++g) {
     const bool on = RowEnabled(Gate(g));
-    reasons = reasons && (std::strlen(LauncherReason(Gate(g))) == 0) == (g == int(Gate::kRuns) || g == int(Gate::kStarting));
+    reasons = reasons && (std::strlen(LauncherReason(Gate(g))) == 0) == (g == int(Gate::kRuns) || g == int(Gate::kStarting) || g == int(Gate::kHidden));
     (void)on;
   }
-  Check(reasons, "every gate but the two silent ones has a launcher line");
-  Check(std::string(MenuNameOfRr(Vendor::kAmd)) == "FSR RAY REGEN" && std::string(MenuNameOfRr(Vendor::kNvidia)) == "DLSS RR", "the row's middle value is named by the vendor, stored as the same word");
-  Check(std::string(AutoLabel(false)) == "AUTO (OURS)", "AUTO's label when it comes to ours");
+  Check(reasons, "every gate but the two silent ones and the hidden one has a launcher line");
+  Check(std::string(kLauncherDescription).find("Off uses the game's own cleanup.") != std::string::npos && std::string(kLauncherDescription).find("Windows 11") != std::string::npos, "the description says what OFF is and that it needs Windows 11");
+}
+
+// --- who sees the row ---------------------------------------------------------------------------------------------------------------------------------
+
+void CheckRowListed() {
+  // the card's name as the adapter reports it
+  for (const char* name : {"AMD Radeon RX 9070 XT", "AMD Radeon(TM) RX 9060 XT", "Radeon RX 9070", "AMD Radeon RX9070 GRE", "AMD Radeon RX 9070M", "amd radeon rx 9070 xt", "RX 9060"})
+    Check(NameIsRx9000(name), std::string("an RX 9000 series card: ") + name);
+  for (const char* name : {"AMD Radeon RX 7900 XTX", "AMD Radeon RX 6800 XT", "AMD Radeon RX 590 Series", "AMD Radeon RX 5700", "AMD Radeon(TM) Graphics", "AMD Radeon 780M Graphics", "NVIDIA GeForce RTX 5080",
+                           "Intel(R) Arc(TM) A770", "AMD Radeon RX 90700", "AMD Radeon RX 970", "AMD Radeon R9 390", "AMD Radeon PRX 9070", "AMD Radeon AI PRO R9700", "", "RX", "RX 9"})
+    Check(!NameIsRx9000(name), std::string("not an RX 9000 series card: '") + name + "'");
+  ListInputs l;
+  l.vendor_id = kVendorAmd;
+  l.adapter_name = "AMD Radeon RX 9070 XT";
+  l.windows_build = 26100;
+  Check(RowListed(l), "a Radeon RX 9070 XT on Windows 11 has the row");
+  l.windows_build = mcla::gpu::windows_floor::kBuildWindows11;
+  Check(RowListed(l), "... from the first Windows 11 build");
+  l.windows_build = mcla::gpu::windows_floor::kBuildWindows11 - 1;
+  Check(!RowListed(l), "... not on the last Windows 10 build (the runtime needs Windows 11)");
+  l.windows_build = 19045;
+  Check(!RowListed(l), "... not on Windows 10");
+  l.windows_build = 0;
+  Check(RowListed(l), "... a Windows build that cannot be read (Linux) leaves it to the runtime's own answer");
+  l.windows_build = 26100;
+  l.vendor_id = 0x10DEu;
+  Check(!RowListed(l), "an NVIDIA card has no AMD row, whatever its name says");
+  l.vendor_id = kVendorAmd;
+  l.adapter_name = "AMD Radeon RX 7900 XTX";
+  Check(!RowListed(l), "an RX 7000 card has none (it can never run it)");
+  l.adapter_name = "";
+  Check(!RowListed(l), "a card with no name has none");
+  Check(kVendorAmd == 0x1002u && mcla::gpu::windows_floor::kBuildWindows11 == 22000u, "AMD's PCI vendor id, and Windows 11's first build");
 }
 
 void CheckGate() {
@@ -738,17 +789,17 @@ void CheckGate() {
   Check(GateOf(f, rr::DebugSwitch::kRow, ssr, false, none) == Gate::kNotNeeded, "a table with no signal writer: not needed, nothing 'not available'");
   Facts nv = f;
   nv.device = DeviceVerdict::kNotAmd;
-  Check(GateOf(nv, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kNotThisGpu, "an NVIDIA PC's row is DLSS RR's, this one says: not this GPU");
-  Check(GateOf(nv, rr::DebugSwitch::kRow, ssr, false) == Gate::kNotThisGpu, "the PC's reason comes before 'not needed': an NVIDIA PC with the shipped table is still 'not this GPU'");
-  Check(GateOf(nv, rr::DebugSwitch::kOff, ssr, false, built) == Gate::kNotThisGpu, "and before the debug switch's 'off'");
+  Check(GateOf(nv, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kHidden, "an NVIDIA PC's row is DLSS RAY RECONSTRUCTION's, this one is hidden (the menu never lists it)");
+  Check(GateOf(nv, rr::DebugSwitch::kRow, ssr, false) == Gate::kHidden, "the PC's reason comes before 'not needed': an NVIDIA PC with the shipped table is still hidden");
+  Check(GateOf(nv, rr::DebugSwitch::kOff, ssr, false, built) == Gate::kHidden, "and before the debug switch's 'off'");
   Facts vk = f;
   vk.device = DeviceVerdict::kNotD3D12;
-  Check(GateOf(vk, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kNeedsD3D12 && std::string(RowSuffix(Gate::kNeedsD3D12)) == " (D3D12 ONLY)" && RowEnabled(Gate::kNotThisGpu) == false && !RowEnabled(Gate::kNeedsD3D12),
-        "a Radeon on Vulkan: AMD ships no Vulkan provider, the row says so (not 'NO RX 9000')");
+  Check(GateOf(vk, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kNeedsD3D12 && std::string(RowSuffix(Gate::kNeedsD3D12)) == " (D3D12 ONLY)" && RowEnabled(Gate::kHidden) == false && !RowEnabled(Gate::kNeedsD3D12),
+        "a Radeon on Vulkan: AMD ships no Vulkan provider, the row is grey and says so (it is not hidden: the card can run it on Direct3D 12)");
   Facts sm = f;
   sm.device = DeviceVerdict::kShaderModelTooLow;
   Check(GateOf(sm, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kNotAvailable, "a card or driver below shader model 6.6: not available");
-  Check(GateOf(nv, rr::DebugSwitch::kRow, 0, false, built) == Gate::kNotThisGpu && GateOf(vk, rr::DebugSwitch::kOff, ssr, false, built) == Gate::kNeedsD3D12, "the PC's reason comes first, for Vulkan too");
+  Check(GateOf(nv, rr::DebugSwitch::kRow, 0, false, built) == Gate::kHidden && GateOf(vk, rr::DebugSwitch::kOff, ssr, false, built) == Gate::kNeedsD3D12, "the PC's reason comes first, for Vulkan too");
   Facts loading = f;
   loading.probed = false;
   Check(GateOf(loading, rr::DebugSwitch::kRow, ssr, false, built) == Gate::kStarting, "the runtime is still opening: silent");
@@ -858,6 +909,7 @@ int main() {
   CheckClock();
   CheckMemory();
   CheckWords();
+  CheckRowListed();
   CheckGate();
   CheckRowEndToEnd();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

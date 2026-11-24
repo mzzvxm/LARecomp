@@ -24,6 +24,7 @@ constexpr const char* kPrefix = "[gpu] ray regen:";
 
 std::atomic<uint32_t> g_vendor{0};
 std::atomic<bool> g_d3d12{false};
+std::atomic<bool> g_row_listed{false};
 std::atomic<uint32_t> g_traced_w{0};
 std::atomic<uint32_t> g_traced_h{0};
 
@@ -41,14 +42,19 @@ rr::DebugSwitch ReadDebugSwitch() {
   return debug;
 }
 
-void NoteDevice(uint32_t vendor_id, bool d3d12) {
+void NoteDevice(uint32_t vendor_id, bool d3d12, std::string_view adapter_name, uint32_t windows_build) {
   g_vendor.store(vendor_id, std::memory_order_relaxed);
   g_d3d12.store(d3d12, std::memory_order_relaxed);
+  ListInputs list;
+  list.vendor_id = vendor_id;
+  list.adapter_name = adapter_name;
+  list.windows_build = windows_build;
+  g_row_listed.store(mcla::gpu::rayregen::RowListed(list), std::memory_order_relaxed);
 }
 
 uint32_t DeviceVendor() { return g_vendor.load(std::memory_order_relaxed); }
 
-Vendor RowVendor() { return VendorOf(DeviceVendor()); }
+bool RowListed() { return g_row_listed.load(std::memory_order_relaxed); }
 
 Facts MenuFacts() {
   const Published pub = Current();

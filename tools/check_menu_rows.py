@@ -13,8 +13,8 @@ launch does not run):
     code with the NATIVE renderer; GPU code with the XENIA renderer). NativeOnly(...) rows count on a native run, XeniaOnly(...) rows on a XENIA run;
   * the tables (`ItemDef kName[] = {...}`, in any file under <src dir>), counted by their top-level entries, `#if` blocks resolved the same way;
   * `extra` functions: DebugXRows (`return Rows(kDebugXItems, count);` in debug_menu_pages.cpp), and any other function whose body names the tables it
-    returns (CameraLookMenuItems, LowLatencyMenuRows: the largest of them). A function that builds its rows at run time (UpscalingPageRows) is counted
-    with the largest number its comment promises: RUNTIME_EXTRA below.
+    returns (CameraLookMenuItems, LowLatencyMenuRows: the largest of them). A function that builds its rows at run time (DisplayPageRows, UpscalingPageRows) is
+    counted with the largest number its comment promises: RUNTIME_EXTRA below.
 The cap is read from `kMaxRowsPerMenu` in pause_menu.cpp, so raising it there moves this check with it (--max overrides, for a trial).
 
 Fails (exit 1) when a page has more rows than the cap in any of the three builds, naming the page, its count and the rows past the cap. A page the
@@ -32,9 +32,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Pages whose `extra` function builds its rows at run time, so no table can be counted: the most rows the page can show (the number in the source's
-# own comment, which a change to the page has to update with it). UPSCALING: the upscaler's rows and frame generation's, "6 at most" (pause_menu.cpp,
-# the page-width note; upscaling_menu.cpp, frame_generation_menu.h).
-RUNTIME_EXTRA = {"UpscalingPageRows": 6}
+# own comment, which a change to the page has to update with it). UpscalingPageRows: the upscaler's rows (UPSCALING, its mode row, SHARPNESS, the denoiser row) and
+# frame generation's (three), "7 at most" (frame_generation_menu.h). DisplayPageRows: DISPLAY's rows after its own table (kVideoItems): the vendor's latency row and
+# those seven, "8 at most" (pause_menu.cpp; the owner folded the UPSCALING page into DISPLAY, 2026-11-23). (UpscalingPageRows said 6 until then, one short.)
+RUNTIME_EXTRA = {"UpscalingPageRows": 7, "DisplayPageRows": 8}
 
 # The builds a page is listed in: (name, LARECOMP_HAS_GPU defined, the renderer mask of the run). A build without GPU code runs the XENIA renderer only.
 BUILDS = (("no GPU code", False, "xenia"), ("native renderer", True, "native"), ("XENIA renderer", True, "xenia"))
@@ -330,6 +331,7 @@ def selftest():
         'const MenuDef kMenus[] = {',
         '    {"PM_L", "LOOK", "d", "RxL", nullptr, 0, LookRows},',
         '    {"PM_U", "UP", "d", "RxU", nullptr, 0, UpscalingPageRows},',
+        '    {"PM_D", "DISP", "d", "RxD", kVid, 1, DisplayPageRows, false, UpscalingMenuRelayout},',
         '    {"PM_V", "VID", "d", "RxV", kVid, 1, MysteryRows},',
         '};',
         'constexpr int kMaxRowsPerMenu = 24;',
@@ -348,6 +350,7 @@ def selftest():
     pages_x, warn_x = count_pages(extra_files)
     check(pages_x["RxL"]["builds"]["native renderer"][0] == 2, "an extra function that returns a named table is counted from the table")
     check(pages_x["RxU"]["builds"]["native renderer"][0] == RUNTIME_EXTRA["UpscalingPageRows"], "a run-time extra function is counted at its promised maximum")
+    check(pages_x["RxD"]["builds"]["native renderer"][0] == 1 + RUNTIME_EXTRA["DisplayPageRows"], "a page with its own table and a run-time extra function (DISPLAY) counts both, and its relayout hook after the extra function is not a table")
     check(pages_x["RxV"]["builds"]["native renderer"][0] == 1 and any("MysteryRows" in w for w in warn_x), "an extra function that cannot be read: the page is counted with its table and a warning is made")
     broken = {"pause_menu.cpp": files["pause_menu.cpp"], "debug_menu_pages.cpp": ""}
     check(len(count_pages(broken)[1]) > 0, "a page whose table cannot be found is reported, not counted as zero")

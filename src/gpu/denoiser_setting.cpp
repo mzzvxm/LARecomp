@@ -1,4 +1,4 @@
-// MCLA GPU renderer -- the DENOISER setting: the word as the render thread reads it, the frame's snapshot for the pause menu's thread, and the board where the effects say they are on. See denoiser_setting.h.
+// MCLA GPU renderer -- the denoiser setting: the effective word as the render thread reads it, the frame's snapshot for the pause menu's thread, and the board where the effects say they are on. See denoiser_setting.h.
 
 #include "denoiser_setting.h"
 
@@ -6,12 +6,14 @@
 #include <mutex>
 
 #include "live_text.h"
+#include "settings/larecomp_settings.h"
 
 namespace mcla::gpu::denoiser {
 
 namespace {
 
-LiveText& Text() {
+// The debug chooser (mcla_gpu_denoiser: row, auto, rr, ours), read as text by the render thread.
+LiveText& Chooser() {
   static LiveText text("mcla_gpu_denoiser");
   return text;
 }
@@ -22,7 +24,8 @@ std::atomic<uint32_t> g_consumers{0};
 
 }  // namespace
 
-rr::Denoiser Setting() { return Parse(Text().Get()); }
+// The player's row is a bool setting (mcla_gpu_vendor_denoiser); the chooser, when it says auto, rr or ours, overrides it (Effective).
+rr::Denoiser Setting() { return Effective(Chooser().Get(), larecomp::settings::mcla_gpu_vendor_denoiser.Get()); }
 
 void Publish(const Snapshot& snapshot) {
   std::lock_guard lock(g_mutex);

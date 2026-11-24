@@ -71,10 +71,9 @@ int Entries(Entry (&out)[3]) {
     return n;
 }
 
-// The FRAME GENERATION row's value i. "(APPLYING)" from the choice until the swap chain has been made
-// again for it (a frame boundary away, or until Streamline has started) and while it is being set up;
-// "(FAILED)" once it failed; DLSS says "(N/A)" where Streamline said it cannot run here and it is
-// chosen.
+// The FRAME GENERATION row's value i. "(FAILED)" once it failed; DLSS says "(N/A)" where Streamline said it
+// cannot run here and it is chosen. The pending state is not a value's word: it is the row's label,
+// "FRAME GEN (APPLYING)" (Applying), so that the page's widest value stays at 17 ("FSR 3.1 (APPLYING)" was 18).
 std::string FrameGenerationLabel(int i) {
     Entry entries[3];
     const int n = Entries(entries);
@@ -84,14 +83,26 @@ std::string FrameGenerationLabel(int i) {
         if (a.failed) return "FSR 3.1 (FAILED)";
         // No free video memory for it: off, and on by itself when there is room (the reason is in the log).
         if (FsrChosen() && a.no_room) return "FSR 3.1 (NO ROOM)";
-        if (FsrChosen() && a.available && !a.running) return "FSR 3.1 (APPLYING)";
         return "FSR 3.1";
     }
     const mcla::gpu::DlssFrameGenerationAvailability d = mcla::gpu::GetDlssFrameGenerationAvailability();
     if (d.failed) return "DLSS (FAILED)";
     if (DlssChosen() && d.probed && !d.supported && !d.after_restart) return "DLSS (N/A)";
-    if (DlssChosen() && !d.after_restart && !d.running) return "DLSS (APPLYING)";
     return "DLSS";
+}
+// The chosen frame generation is being made: from the choice until the swap chain has been made again for it (a frame boundary away, or until
+// Streamline has started) and while it is being set up. Not while it failed, has no room or cannot run here (those are the value's words above).
+bool Applying() {
+    if (FsrChosen()) {
+        const mcla::gpu::FrameGenerationAvailability a = mcla::gpu::GetFrameGenerationAvailability();
+        return !a.failed && !a.no_room && a.available && !a.running;
+    }
+    if (DlssChosen()) {
+        const mcla::gpu::DlssFrameGenerationAvailability d = mcla::gpu::GetDlssFrameGenerationAvailability();
+        if (d.failed || (d.probed && !d.supported && !d.after_restart)) return false;
+        return !d.after_restart && !d.running;
+    }
+    return false;
 }
 int FrameGenerationCount() {
     Entry entries[3];
@@ -112,15 +123,19 @@ void FrameGenerationSet(int i, mcla_menu::CvarWriter write) {
     if (i >= 0 && i < n) write("mcla_gpu_frame_generation", entries[i].text);
 }
 // DLSS on Vulkan applies from the next start (the device is made through Streamline only when it is
-// saved at the start): the row says RESTART, in a label short enough for the page (pause_menu.cpp
-// "Page width": "FRAME GEN (RESTART)" is 19 characters; the label is bare otherwise, "FRAME GENERATION" 16).
+// saved at the start): the row says RESTART, and while the chosen one is being made it says APPLYING, in a label short enough
+// for the page (pause_menu.cpp "Page width": "FRAME GEN (RESTART)" is 19 characters, "FRAME GEN (APPLYING)" 20; the label is
+// bare otherwise, "FRAME GENERATION" 16).
 bool RestartRow() {
     if (!DlssChosen()) return false;
     const mcla::gpu::DlssFrameGenerationAvailability d = mcla::gpu::GetDlssFrameGenerationAvailability();
     return d.after_restart;
 }
-const char* FrameGenerationRowLabel() { return RestartRow() ? "FRAME GEN" : "FRAME GENERATION"; }
-const char* FrameGenerationRowSuffix() { return RestartRow() ? " (RESTART)" : ""; }
+const char* FrameGenerationRowSuffix() {
+    if (RestartRow()) return " (RESTART)";
+    return Applying() ? " (APPLYING)" : "";
+}
+const char* FrameGenerationRowLabel() { return FrameGenerationRowSuffix()[0] != '\0' ? "FRAME GEN" : "FRAME GENERATION"; }
 
 // The multiplier's values: 2X, and up to 4X where the plugin says the card takes them.
 std::string MultiplierLabel(int i) {
@@ -223,7 +238,10 @@ bool Listed() {
 
 }  // namespace
 
-const mcla_menu::ItemDef* UpscalingPageRows(int& count) {
+namespace {
+
+// The rows as they are now (one table per combination, below).
+const mcla_menu::ItemDef* LiveUpscalingPageRows(int& count) {
     int upscaling_count = 0;
     const mcla_menu::ItemDef* upscaling = UpscalingMenuRows(upscaling_count);
     bool frame_generation = false;
@@ -274,6 +292,38 @@ const mcla_menu::ItemDef* UpscalingPageRows(int& count) {
     const mcla_menu::ItemDef* rows = made->rows.data();
     tables.push_back(std::move(made));
     return rows;
+}
+
+// The rows the page was built with (MenuDef::extra must keep returning them until the page is built again: the guest rows are indexed by position). Set when the page is built (UpscalingMenuRelayout
+// apply=true, before its first build and before each rebuild); until then the live rows.
+std::mutex g_built_mutex;
+const mcla_menu::ItemDef* g_built = nullptr;
+int g_built_count = 0;
+
+}  // namespace
+
+const mcla_menu::ItemDef* UpscalingPageRows(int& count) {
+    {
+        std::lock_guard lock(g_built_mutex);
+        if (g_built) {
+            count = g_built_count;
+            return g_built;
+        }
+    }
+    return LiveUpscalingPageRows(count);
+}
+
+bool UpscalingMenuRelayout(bool apply) {
+    int count = 0;
+    const mcla_menu::ItemDef* live = LiveUpscalingPageRows(count);
+    std::lock_guard lock(g_built_mutex);
+    if (apply) {
+        g_built = live;
+        g_built_count = count;
+        return false;
+    }
+    // The tables are made once per combination and never freed, so the same pointer is the same rows.
+    return g_built != nullptr && (live != g_built || count != g_built_count);
 }
 
 namespace mcla_menu {

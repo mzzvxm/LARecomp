@@ -32,6 +32,7 @@
 #include <cctype>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1554,17 +1555,18 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 #if defined(LARECOMP_HAS_GPU)
 // ── The graphics pages: one set for both renderers ─────────────────────
 //
-// GRAPHICS is a hub of six pages for both renderers: a row has the same name and place on both and maps to the
+// GRAPHICS is a hub of five pages for both renderers (UPSCALING was a sixth: its rows are DISPLAY's since the owner's decision of 2026-11-23, upscaling belongs with display): a row has the same name and place on both and maps to the
 // running renderer's own mechanism underneath (RowDynamics::cvar and the row's own list). A choice the other
 // renderer cannot run shows as its nearest there, and keeps its saved text, so it comes back when the renderer
 // is switched back. What only one renderer has is tagged XeniaOnly / NativeOnly and listed only for the renderer
 // this launch runs (MenuItemCount); a page with no row for it is not listed either (its hub row is tagged the
 // same way: REFLECTIONS is NATIVE only).
 //
-//   DISPLAY               DISPLAY MODE, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY GAMMA, VSYNC, FPS LIMIT, then NVIDIA REFLEX or AMD
-//                         ANTI-LAG 2 where the GPU has one (kVideoItems, LowLatencyMenuRows)
-//   UPSCALING             UPSCALING, its mode row, SHARPNESS, DENOISER, FRAME GENERATION, FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT
-//                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows; DENOISER is gpu/denoiser_setting.h's)
+//   DISPLAY               the output rows: DISPLAY MODE, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY GAMMA, VSYNC, FPS LIMIT, then NVIDIA REFLEX or AMD
+//                         ANTI-LAG 2 where the GPU has one; then the upscaling block: UPSCALING, its mode row, SHARPNESS, DLSS RAY RECONSTRUCTION (a GeForce RTX
+//                         card) or AMD FSR RAY REGENERATION (a Radeon RX 9000 series card on Windows 11) as an ON / OFF row where this PC has one, FRAME GENERATION,
+//                         FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT (kVideoItems, then DisplayPageRows: LowLatencyMenuRows, UpscalingPageRows in upscaling_menu.cpp and
+//                         frame_generation_menu.cpp; the denoiser row is gpu/denoiser_setting.h's and gpu/ray_regen_rules.h's). 15 rows at most.
 //   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
 //   LIGHTING AND SHADOWS  SHADOWS, FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, RT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS,
 //                         AMBIENT OCCLUSION, AO INTENSITY, BOUNCE LIGHT, RT BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS,
@@ -1572,9 +1574,9 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, RT CITY REFLECTIONS, SIDE MIRRORS, RT SIDE MIRRORS, REFLECTIONS ON SURFACES (kReflectionItems)
 //   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
-// On XENIA the hub lists DISPLAY (DISPLAY MODE, RESOLUTION, DISPLAY GAMMA, FPS LIMIT), UPSCALING (RENDER SCALE), IMAGE QUALITY (MSAA,
+// On XENIA the hub lists DISPLAY (DISPLAY MODE, RESOLUTION, DISPLAY GAMMA, FPS LIMIT, RENDER SCALE), IMAGE QUALITY (MSAA,
 // ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR), LIGHTING AND SHADOWS (SHADOWS, FOLIAGE SHADOWS) and WORLD DETAIL.
-// CHECK: on XENIA (started with the XENIA renderer: the hidden fallback, gpu/renderer_fallback.h) the hub lists those five pages in that
+// CHECK: on XENIA (started with the XENIA renderer: the hidden fallback, gpu/renderer_fallback.h) the hub lists those four pages in that
 // order and no page is empty. MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER SCALE says "(RESTART)", lists
 // 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu after changing either of those two offers "Restart now?".
 // ANISOTROPIC is live and writes anisotropic_override. On NATIVE VSYNC writes mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC,
@@ -1619,13 +1621,13 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 #endif
 
 // DISPLAY (GRAPHICS > DISPLAY): the window and how it is presented, in this order: DISPLAY MODE, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY
-// GAMMA, VSYNC, FPS LIMIT, and after them (MenuDef::extra, LowLatencyMenuRows) NVIDIA REFLEX or AMD ANTI-LAG 2, which is not listed where the
-// GPU, the driver or the graphics API has no latency reducer. Every row is one row for both renderers: DISPLAY MODE, RESOLUTION and FPS LIMIT
-// are live on both. What only one renderer has (ASPECT RATIO, HDR, VSYNC, the latency row) is tagged XeniaOnly / NativeOnly and listed only
-// when that renderer is the one this launch runs (MenuItemCount). The upscaler's and frame generation's rows are the UPSCALING page's, the
-// picture's are IMAGE QUALITY's, LIGHTING AND SHADOWS' and REFLECTIONS' (they were on this page, which had 19 rows with them).
-// At most 8 rows. Width ("Page width" above ItemRowLabel): the widest label is "AMD ANTI-LAG 2 (NOT WORKING)" (28) or "RESOLUTION
-// (7680X4320)" (22; 23 at five digits across, display_menu.h), the widest value "BORDERLESS" / "FULLSCREEN" / "ON + BOOST" (10): 38 of 41.
+// GAMMA, VSYNC, FPS LIMIT (these seven are kVideoItems); and after them (MenuDef::extra, DisplayPageRows) NVIDIA REFLEX or AMD ANTI-LAG 2, which is not listed where the
+// GPU, the driver or the graphics API has no latency reducer (LowLatencyMenuRows), and then the upscaling block (UpscalingPageRows: UPSCALING, its mode row, SHARPNESS, the
+// denoiser row where this PC has one, FRAME GENERATION and its two rows: the owner moved it here from the page of its own, 2026-11-23). Every row is one row for both renderers: DISPLAY MODE, RESOLUTION and FPS LIMIT
+// are live on both, and on XENIA the mode row (RENDER SCALE) is the one upscaling row. What only one renderer has (ASPECT RATIO, HDR, VSYNC, the latency row, the upscaler's rows) is tagged XeniaOnly / NativeOnly and listed only
+// when that renderer is the one this launch runs (MenuItemCount). The picture's rows are IMAGE QUALITY's, LIGHTING AND SHADOWS' and REFLECTIONS' (they were on this page, which had 19 rows with them).
+// At most 15 rows (7, the latency row, 7 of the upscaling block; the cap is 24: tools/check_menu_rows.py counts them), so the page needs no split. Width ("Page width" above ItemRowLabel): the widest label is
+// "AMD FSR RAY REGENERATION" (24) and the widest value 17 ("PERFORMANCE (50%)", "FSR 3.1 (NO ROOM)"): 41 of 41 (the latency row, the denoiser row and frame generation's say a short name before a reason for it, "Page width").
 const ItemDef kVideoItems[] = {
     // DISPLAY MODE and RESOLUTION: the window's mode and its size, which is the output resolution
     // (display_menu.h, display_mode.h). Both are live (Windows; Linux through SDL, where gamescope
@@ -2505,7 +2507,9 @@ std::string LowLatencyLabel(int i) {
 }
 
 // Says why a reducer that is asked for is not working right now. While frame generation runs it is
-// forced on (latency.cpp): the row is grey and says so.
+// forced on (latency.cpp): the row is grey and says so. The vendor's name is shortened while a reason shows, as the denoiser row's and
+// frame generation's are, so that DISPLAY's widest label stays at 24 (the page counts the widest label plus the widest value, 41 at most:
+// "AMD ANTI-LAG 2 (NOT WORKING)" was 28): "ANTI-LAG 2 (NOT WORKING)" 24, "REFLEX (NOT WORKING)" 20.
 const char* LowLatencySuffix() {
     if (mcla_menu::LatencyRowLocked()) return " (FRAME GEN)";
     switch (mcla::gpu::latency::CurrentHealth()) {
@@ -2517,19 +2521,27 @@ const char* LowLatencySuffix() {
 
 bool LowLatencyFree() { return !mcla_menu::LatencyRowLocked(); }
 
-constexpr RowDynamics kLowLatencyDynamics = {.str_label = LowLatencyLabel,
-                                             .enabled = LowLatencyFree,
-                                             .suffix = LowLatencySuffix};
+const char* ReflexLabel() { return LowLatencySuffix()[0] != '\0' ? "REFLEX" : "NVIDIA REFLEX"; }
+const char* AntiLagLabel() { return LowLatencySuffix()[0] != '\0' ? "ANTI-LAG 2" : "AMD ANTI-LAG 2"; }
+
+constexpr RowDynamics kReflexDynamics = {.str_label = LowLatencyLabel,
+                                         .enabled = LowLatencyFree,
+                                         .suffix = LowLatencySuffix,
+                                         .label = ReflexLabel};
+constexpr RowDynamics kAntiLagDynamics = {.str_label = LowLatencyLabel,
+                                          .enabled = LowLatencyFree,
+                                          .suffix = LowLatencySuffix,
+                                          .label = AntiLagLabel};
 
 const ItemDef kReflexRows[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuReflex", "mcla_gpu_low_latency", "NVIDIA REFLEX: ",
                                 kLowLatencyVals, kLowLatencyNames, 4),
-                            &kLowLatencyDynamics)),
+                            &kReflexDynamics)),
 };
 const ItemDef kAntiLagRows[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuAntiLag", "mcla_gpu_low_latency", "AMD ANTI-LAG 2: ",
                                 kLowLatencyVals, kLowLatencyNames, 3),
-                            &kLowLatencyDynamics)),
+                            &kAntiLagDynamics)),
 };
 #endif
 
@@ -2549,6 +2561,52 @@ const ItemDef* LowLatencyMenuRows(int& count) {
 #endif
     count = 0;
     return nullptr;
+}
+
+// DISPLAY's rows from the renderer (MenuDef::extra), after its own output rows (kVideoItems), in this order: the vendor's latency reducer (above; none where the GPU has none), then the upscaler's
+// rows and frame generation's (frame_generation_menu.h UpscalingPageRows: UPSCALING, its mode row, SHARPNESS, the denoiser row where this PC has one, FRAME GENERATION, its multiplier and its FPS
+// LIMIT), 8 at most. The owner folded the old UPSCALING page into DISPLAY (2026-11-23); the page's relayout hook is the upscaling rows' (UpscalingMenuRelayout), the one source of what a PC lists. The combined table is
+// made once per combination of the two and kept: the menu holds pointers into it.
+const ItemDef* DisplayPageRows(int& count) {
+    int latency_count = 0;
+    const ItemDef* latency = LowLatencyMenuRows(latency_count);
+    int upscaling_count = 0;
+    const ItemDef* upscaling = UpscalingPageRows(upscaling_count);
+    if (upscaling_count == 0) {
+        count = latency_count;
+        return latency;
+    }
+    if (latency_count == 0) {
+        count = upscaling_count;
+        return upscaling;
+    }
+    struct Combined {
+        const ItemDef* latency = nullptr;
+        int latency_count = 0;
+        const ItemDef* upscaling = nullptr;
+        int upscaling_count = 0;
+        std::vector<ItemDef> rows;
+    };
+    static std::mutex mutex;
+    static std::vector<std::unique_ptr<Combined>>& tables = larecomp::Leak<std::vector<std::unique_ptr<Combined>>>();
+    std::lock_guard lock(mutex);
+    for (const std::unique_ptr<Combined>& t : tables) {
+        if (t->latency == latency && t->latency_count == latency_count && t->upscaling == upscaling && t->upscaling_count == upscaling_count) {
+            count = int(t->rows.size());
+            return t->rows.data();
+        }
+    }
+    auto made = std::make_unique<Combined>();
+    made->latency = latency;
+    made->latency_count = latency_count;
+    made->upscaling = upscaling;
+    made->upscaling_count = upscaling_count;
+    for (int i = 0; i < latency_count; ++i) made->rows.push_back(latency[i]);
+    for (int i = 0; i < upscaling_count; ++i) made->rows.push_back(upscaling[i]);
+    count = int(made->rows.size());
+    const ItemDef* rows = made->rows.data();
+    tables.push_back(std::move(made));
+    return rows;
 }
 
 // Where the rear view mirror sits (rearview_position, rear_view.cpp).
@@ -2770,14 +2828,10 @@ const ItemDef kUiItems[] = {
 // The SETTINGS tab holds a few pages of rows (RECOMP SETTINGS, CONTROLLER) and a handful of hubs,
 // each a list of Submenu rows. The hubs' children are ordinary menus below; a menu some row opens gets
 // no button of its own (MenuIsNested).
-// GRAPHICS (see "The graphics pages" above): six pages, REFLECTIONS on the NATIVE renderer only. A hub row whose page has no row for the running
-// renderer is not listed (the Submenu row carries the page's renderer mask). Width: "LIGHTING AND SHADOWS" (20), no values.
+// GRAPHICS (see "The graphics pages" above): five pages, REFLECTIONS on the NATIVE renderer only. (UPSCALING was the second one: its rows are DISPLAY's now, owner 2026-11-23.)
+// A hub row whose page has no row for the running renderer is not listed (the Submenu row carries the page's renderer mask). Width: "LIGHTING AND SHADOWS" (20), no values.
 const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubVideo",  "DISPLAY",     "RxVideoMenu"),
-#if defined(LARECOMP_HAS_GPU)
-    // The upscaler's rows on NATIVE; on XENIA the page is RENDER SCALE alone.
-    Submenu("PM_RxSubUpscaling", "UPSCALING", "RxUpscalingMenu"),
-#endif
     Submenu("PM_RxSubImageQuality", "IMAGE QUALITY", "RxImageQualityMenu"),
     Submenu("PM_RxSubLighting", "LIGHTING AND SHADOWS", "RxLightingMenu"),
 #if defined(LARECOMP_HAS_GPU)
@@ -2977,18 +3031,12 @@ const MenuDef kMenus[] = {
      "RxExtrasMenu",
      kExtrasHubItems, int(sizeof(kExtrasHubItems) / sizeof(kExtrasHubItems[0]))},
     // Reached through a hub.
-    {"PM_RxTabVideo", "DISPLAY", "Window, vsync, frame rate and latency.",
+    // The output rows (kVideoItems), then (MenuDef::extra: they follow the PC and the settings) the vendor's latency reducer, the upscaler's rows with the denoiser row where this PC has one, and
+    // frame generation's; on XENIA RENDER SCALE is the only upscaling row. The page whose rows can change while the game runs (UpscalingMenuRelayout).
+    {"PM_RxTabVideo", "DISPLAY", "Window, upscaling, frame rate, latency.",
      "RxVideoMenu",
      kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0])),
-     LowLatencyMenuRows},
-#if defined(LARECOMP_HAS_GPU)
-    // The upscaler's rows and frame generation's (MenuDef::extra: they follow the PC and the settings), and on XENIA RENDER SCALE alone. The
-    // page whose rows can change while the game runs (UpscalingMenuRelayout).
-    {"PM_RxTabUpscaling", "UPSCALING", "Upscaling and frame generation.",
-     "RxUpscalingMenu",
-     nullptr, 0,
-     UpscalingPageRows, false, UpscalingMenuRelayout},
-#endif
+     DisplayPageRows, false, UpscalingMenuRelayout},
     {"PM_RxTabImageQuality", "IMAGE QUALITY", "Anti-aliasing, filtering, sharp UI.",
      "RxImageQualityMenu",
      kImageQualityItems, int(sizeof(kImageQualityItems) / sizeof(kImageQualityItems[0]))},
@@ -3366,17 +3414,15 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // "2560X1440"). A label or a value that is longer than its page's widest needs counting against that
 // before it goes in, in each state a suffix can be in; each page counts its own, here and where it is
 // built:
-// UPSCALING (UpscalingPageRows: the upscaler's rows, DENOISER and frame generation's, 7 at most): its widest label
-// is "RENDER SCALE (RESTART)" (XENIA, 22), then "UPSCALING (APPLYING)", "SHARPNESS (FSR ONLY)" and "FRAME
-// GEN MULTIPLIER" (20); its widest value 18 ("FSR 3.1 (APPLYING)", the frame generation row while it is
-// being made), then 17 ("PERFORMANCE (50%)" and the mode row's other longest: "ULTRA PERF. (33%)",
-// "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)", "FSR 3.1 (NO ROOM)"): 40 together. DENOISER (NATIVE only, so not on XENIA's page) adds
-// the label "DENOISER (NO RTX GPU)" and "DENOISER (NEEDS DLSS)" (21, the widest of NATIVE's page) and the values "AUTO (DLSS RR)" (14) and
-// shorter: 21 + 18 = 39. The upscaling rows' states are counted in upscaling_menu.cpp, frame generation's in frame_generation_menu.h.
-// DISPLAY (kVideoItems and the latency row, 8 rows): its widest label is the latency row's "AMD ANTI-LAG 2
-// (NOT WORKING)" (28; "RESOLUTION (7680X4320)" is 22, 23 at five digits across, display_menu.h) and its
-// widest value 10 (the DISPLAY MODE values "BORDERLESS" and "FULLSCREEN", the latency row's "ON + BOOST" and
-// "AUTO (OFF)"): 38 together.
+// DISPLAY (kVideoItems, DisplayPageRows: the latency row, the upscaler's rows with the denoiser row where this PC has one, and frame generation's: 15 rows at most). The page counts ONE widest label and ONE
+// widest value over ALL of them, so a long label on one row costs every other row's values: the widest value is 17 ("PERFORMANCE (50%)" and the mode row's other longest, "ULTRA PERF. (33%)",
+// "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)", and frame generation's "FSR 3.1 (NO ROOM)"; the DISPLAY MODE values "BORDERLESS" and "FULLSCREEN", the latency row's "ON + BOOST" and "AUTO (OFF)" are 10), so no
+// label may be over 24: "AMD FSR RAY REGENERATION" (24, the denoiser row on a Radeon while it says nothing; "DLSS RAY RECONSTRUCTION" is 23), "ANTI-LAG 2 (NOT WORKING)" (24), "RESOLUTION (7680X4320)" 22 (23 at
+// five digits across, display_menu.h), "RENDER SCALE (RESTART)" (XENIA, 22), "FPS LIMIT (FRAME GEN)" 21, "UPSCALING (APPLYING)", "SHARPNESS (FSR ONLY)", "FRAME GEN (APPLYING)" and "FRAME GEN
+// MULTIPLIER" (20): 24 + 17 = 41. A row whose name is long says a SHORT name before a reason (the way RT CITY REFLECTIONS does, below): DLSS RR (NEEDS DLSS) 20, RAY REGEN (D3D12 ONLY) 22,
+// REFLEX / ANTI-LAG 2 for the latency row, FRAME GEN for frame generation. The whole names with their reasons ("DLSS RAY RECONSTRUCTION (NEEDS DLSS)" 36, "AMD FSR RAY REGENERATION (D3D12 ONLY)"
+// 37) would make the page 53 and 54 wide: the page's value width, not the row's, is what counts. gpu/denoiser_setting_test.cpp counts every row of the page in every state. The upscaling rows'
+// states are counted in upscaling_menu.cpp, frame generation's in frame_generation_menu.h.
 // IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
 // FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
 // LIGHTING AND SHADOWS (kLightItems, 18 rows; RT SHADOWS has the suffixes " (NO RT GPU)" and " (GPU TOO SLOW)", at most 25 as a label, and RT BOUNCE LIGHT " (NO RT GPU)", " (TOO SLOW)" and " (NOT READY)", at most 27 as a label (BOUNCE LIGHT says " (REPLACED)", 23); the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
@@ -3906,10 +3952,10 @@ constexpr int kMaxFormRebuilds = 4;
 int g_form_rebuilds = 0;
 
 // CHECK: the page built again (needs a real DLSS failure, e.g. the fail injection of
-// diffs	emporal-test.patch while DLSS runs): the log has "[pause-menu] 'UPSCALING': its rows changed
-// ... built again (1 of 4)" and a second "[ui-forms] form 'UPSCALING' created" when UPSCALING is next
+// diffs	emporal-test.patch while DLSS runs): the log has "[pause-menu] 'DISPLAY': its rows changed
+// ... built again (1 of 4)" and a second "[ui-forms] form 'DISPLAY' created" when DISPLAY is next
 // opened (not before), the page opens with no DLSS in UPSCALING and no DLSS mode row, its rows and
-// the highlight work, B and re-entering work, and an UPSCALING left open across the failure keeps its
+// the highlight work, B and re-entering work, and a DISPLAY left open across the failure keeps its
 // rows (DLSS mode row grey "(UNAVAILABLE)") with no row showing another row's label or value.
 uint32_t EnsureMenuForm(int m) {
     const MenuDef& md = kMenus[m];
@@ -3930,8 +3976,8 @@ uint32_t EnsureMenuForm(int m) {
         g_menu_form[m].store(0, std::memory_order_relaxed);
         md.relayout(/*apply=*/true);
         ++g_form_rebuilds;
-        MC_INFO("[pause-menu] '{}': its rows changed since the page was built (an upscaler is not "
-                "available any more): the page is built again ({} of {})",
+        MC_INFO("[pause-menu] '{}': its rows changed since the page was built (what this PC lists "
+                "changed: an upscaler, frame generation or the denoiser row): the page is built again ({} of {})",
                 md.label, g_form_rebuilds, kMaxFormRebuilds);
     } else if (md.relayout) {
         md.relayout(/*apply=*/true);  // the rows as they are now

@@ -5,8 +5,8 @@
 // ray_regen_rules.h has every rule; ray_regen.h the runtime. This is the small piece of state between them that needs no AMD header, so that it is built on every PC (the row and the plan read it
 // everywhere; on a PC that is not a Radeon RX 9000 on Direct3D 12 it says "not this graphics card" and nothing of AMD's is ever opened):
 //
-//   the device   NoteDevice: the graphics card's vendor, once at the start (TemporalSystem::Initialize), so that the row names its middle value by it (AUTO / FSR RAY REGEN / OURS on a Radeon, AUTO /
-//                DLSS RR / OURS on an RTX) and says " (NO RX 9000)" only where the card is not one, before the runtime has been asked.
+//   the device   NoteDevice: the graphics card's vendor and name and the Windows build, once at the start (TemporalSystem::Initialize), so that the pause menu lists the AMD FSR RAY REGENERATION row only on a
+//                Radeon RX 9000 series card on Windows 11 (RowListed; every other PC has no such row), before the runtime has been asked.
 //   the facts    MenuFacts: what the runtime said when it has been asked, else what the device alone says (an AMD card on Direct3D 12: "starting", so the row stays usable and the choice of its value
 //                is what asks the runtime).
 //   the plan     Planner::Update, once a frame at the frame boundary: the plan (ray_regen_rules.h SelectRayRegen), the live probe when the row has left OURS, the video memory room, the context (made while
@@ -17,6 +17,7 @@
 // ===========================================================================
 
 #include <cstdint>
+#include <string_view>
 
 #include "ray_regen_guides_rules.h"
 
@@ -39,11 +40,12 @@ constexpr bool BuildHas() {
 // The mcla_gpu_ray_regen debug switch as the rules take it (a word that is none of the four is the row's decision).
 rr::DebugSwitch ReadDebugSwitch();
 
-// The graphics card, once at the start. `d3d12`: the renderer runs on Direct3D 12.
-void NoteDevice(uint32_t vendor_id, bool d3d12);
+// The graphics card, once at the start. `d3d12`: the renderer runs on Direct3D 12. `adapter_name` and `windows_build` say whether the pause menu lists the AMD FSR RAY REGENERATION row at all (ray_regen_rules.h
+// RowListed: a Radeon RX 9000 series card on Windows 11; the Windows build is 0 where it cannot be read).
+void NoteDevice(uint32_t vendor_id, bool d3d12, std::string_view adapter_name, uint32_t windows_build);
 uint32_t DeviceVendor();   // 0 until noted
-// The row's middle value is named by this (kOther: an Intel card, a PC that has not been noted).
-Vendor RowVendor();
+// Whether the pause menu lists the AMD FSR RAY REGENERATION row on this PC (false until the device is noted).
+bool RowListed();
 // What the plan and the row read: the runtime's facts once it has been asked, else what the device alone says.
 Facts MenuFacts();
 // A context is asked for and not ready yet (the row says " (APPLYING)").

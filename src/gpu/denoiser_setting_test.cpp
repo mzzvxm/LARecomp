@@ -1,14 +1,16 @@
-// Check of the DENOISER setting and its pause row (denoiser_setting.h, dlss_rr_rules.h, upscaling_menu.cpp, temporal.cpp, temporal_dlss.cpp): package RR-5 of perf/DLSS-RR.md. A program of its own: it needs no renderer, no game
+// Check of the denoiser setting and its pause row (denoiser_setting.h, ray_regen_rules.h, dlss_rr_rules.h, upscaling_menu.cpp, frame_generation_menu.cpp, pause_menu.cpp, temporal.cpp, temporal_dlss.cpp): package RR-5 of perf/DLSS-RR.md,
+// and the one on / off row of the backlog item DENOISER-TOGGLE (DLSS RAY RECONSTRUCTION on an RTX card, AMD FSR RAY REGENERATION on a Radeon RX 9000, folded into DISPLAY). A program of its own: it needs no renderer, no game
 // files and no GPU, and exits 0 when every check holds.
 //
 //   build: cmake --build <dir> --target larecomp_denoiser_setting_test (src/gpu/CMakeLists.txt), or by hand
 //     clang++ -std=c++23 -O1 -I src/gpu src/gpu/denoiser_setting_test.cpp
 //   run: larecomp_denoiser_setting_test [-v] [<src/gpu dir>]   (without the path the sources are found from this file's own place; -v prints every check)
 //
-// It checks: the row's words (stored, menu, launcher) against NVIDIA's guidelines (the feature's name, the tooltip word for word, OFF and AUTO, nothing called low); the gate that greys the row, over the WHOLE table of
-// what the menu knows (against an oracle written out here, for the shipped consumer table, where two effects have a raw mode and none is trusted to AUTO yet, and for a made-up one with cells flipped); what the row says in each state and that it fits the
-// page (41 characters of the widest label plus the widest value); AUTO's label; then the TEXT of the wiring: the row in upscaling_menu.cpp, the plan and the snapshot in temporal.cpp, the plugin request in
-// temporal_dlss.cpp, the three settings files, the exposure check's lists, the CMake lines.
+// It checks: the words (the effective setting's, the debug chooser's, the row's labels, the launcher's) against NVIDIA's guidelines (the feature's name, the tooltip word for word, nothing called low); which setting the plan
+// reads (the row ON / OFF, or the chooser when it says auto, rr or ours); which PC has which row; the gate that greys the row, over the WHOLE table of what the menu knows (against an oracle written out here, for the shipped
+// consumer table and for a made-up one with cells flipped); what the row says in each state; the page: DISPLAY counts its widest label plus its widest value over every row in every state and it stays within 41 characters (the
+// whole names with their reasons would not); then the TEXT of the wiring: the row in upscaling_menu.cpp, the page and the hub in pause_menu.cpp, the plan and the snapshot in temporal.cpp, the plugin request in
+// temporal_dlss.cpp, the settings files, the exposure check's lists, the CMake lines.
 
 #include <algorithm>
 #include <cctype>
@@ -23,8 +25,10 @@
 #include <vector>
 
 #include "denoiser_setting.h"
+#include "ray_regen_rules.h"
 
 namespace dn = mcla::gpu::denoiser;
+namespace rg = mcla::gpu::rayregen;
 namespace rr = mcla::gpu::rr;
 
 namespace {
@@ -65,6 +69,12 @@ bool HasWord(const std::string& text, const std::string& word) {
   }
   return false;
 }
+std::string Upper(std::string text) {
+  for (char& c : text) {
+    if (c >= 'a' && c <= 'z') c = char(c - 'a' + 'A');
+  }
+  return text;
+}
 std::string Lower(std::string text) {
   for (char& c : text) {
     if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
@@ -72,7 +82,7 @@ std::string Lower(std::string text) {
   return text;
 }
 
-constexpr dn::Gate kGates[] = {dn::Gate::kRuns,      dn::Gate::kStarting,   dn::Gate::kApplying, dn::Gate::kRestart,   dn::Gate::kNoRtx,
+constexpr dn::Gate kGates[] = {dn::Gate::kRuns,      dn::Gate::kStarting,   dn::Gate::kApplying, dn::Gate::kRestart,   dn::Gate::kHidden,
                                dn::Gate::kNotAvailable, dn::Gate::kNeedsDlss, dn::Gate::kSetup,    dn::Gate::kFailed, dn::Gate::kNotNeeded};
 static_assert(sizeof(kGates) / sizeof(kGates[0]) == size_t(dn::kGateCount), "every gate is listed");
 
@@ -81,25 +91,36 @@ static_assert(sizeof(kGates) / sizeof(kGates[0]) == size_t(dn::kGateCount), "eve
 // ---------------------------------------------------------------------------
 
 void WordChecks() {
-  // the three words, in the row's order: AUTO, DLSS RR, OURS (the brief's order; NVIDIA's list is OFF then AUTO: our OURS is the OFF, our DLSS RR the explicit ON)
-  Check(std::string(dn::kWords[0]) == "auto" && std::string(dn::kWords[1]) == "rr" && std::string(dn::kWords[2]) == "ours", "the stored words are auto, rr, ours");
-  Check(std::string(dn::kMenuNames[0]) == "AUTO" && std::string(dn::kMenuNames[1]) == "DLSS RR" && std::string(dn::kMenuNames[2]) == "OURS", "the menu says AUTO, DLSS RR, OURS");
-  Check(std::string(dn::kLauncherNames[0]) == "Auto" && std::string(dn::kLauncherNames[1]) == "DLSS Ray Reconstruction" && std::string(dn::kLauncherNames[2]) == "Ours",
-        "the launcher says Auto, DLSS Ray Reconstruction (NVIDIA's name in full), Ours");
+  // the effective setting's three words, in the rules' order: auto, rr, ours (the row ON is rr, OFF is ours; auto is the debug chooser's)
+  Check(std::string(dn::kWords[0]) == "auto" && std::string(dn::kWords[1]) == "rr" && std::string(dn::kWords[2]) == "ours", "the effective setting's words are auto, rr, ours");
+  Check(std::string(dn::kChooserWords[0]) == "row" && std::string(dn::kChooserWords[1]) == "auto" && std::string(dn::kChooserWords[2]) == "rr" && std::string(dn::kChooserWords[3]) == "ours" &&
+            std::string(dn::kChooserRow) == "row",
+        "the debug chooser's words are row (the default: the row decides), auto, rr, ours");
   for (int i = 0; i < 3; ++i) {
     rr::Denoiser d = rr::Denoiser::kOurs;
     Check(rr::ParseDenoiser(dn::kWords[i], &d) && dn::IndexOf(d) == size_t(i) && std::string(dn::WordOf(d)) == dn::kWords[i], std::string("word ") + dn::kWords[i] + " round trips through the rules' parser");
-    Check(dn::Parse(dn::kWords[i]) == d, std::string("Parse(") + dn::kWords[i] + ")");
+    // the chooser's auto, rr and ours override the row, whichever way the row is
+    Check(dn::IsOverride(dn::kWords[i]) && dn::Effective(dn::kWords[i], false) == d && dn::Effective(dn::kWords[i], true) == d, std::string("the chooser's ") + dn::kWords[i] + " overrides the row");
   }
-  Check(dn::Parse("") == rr::Denoiser::kAuto && dn::Parse("AUTO") == rr::Denoiser::kAuto && dn::Parse("dlss") == rr::Denoiser::kAuto && dn::Parse("nrd") == rr::Denoiser::kAuto && dn::Parse("low") == rr::Denoiser::kAuto,
-        "a word that is none of the three (an older larecomp.toml, a typo) is AUTO");
-  Check(std::string(dn::kCvarName) == "mcla_gpu_denoiser" && std::string(dn::kMenuLabel) == "DENOISER", "the cvar and the row's label");
+  // the row decides when the chooser says row, or anything that is none of the three (an older larecomp.toml, a typo)
+  for (const char* word : {"row", "", "ROW", "AUTO", "dlss", "nrd", "low", "on", "true"}) {
+    Check(!dn::IsOverride(word), std::string("'") + word + "' is no override: the row decides");
+    Check(dn::Effective(word, true) == rr::Denoiser::kRr && dn::Effective(word, false) == rr::Denoiser::kOurs, std::string("the row ON is rr and OFF is ours when the chooser says '") + word + "'");
+  }
+  Check(std::string(dn::kCvarName) == "mcla_gpu_denoiser" && std::string(dn::kVendorCvarName) == "mcla_gpu_vendor_denoiser", "the debug chooser's cvar keeps its name (the A/B chains set it) and the row has its own");
+  // which PC has which row: an RTX card the DLSS one, a Radeon RX 9000 on Windows 11 the AMD one, every other card none
+  Check(dn::RowFor(false, false) == dn::VendorRow::kNone && dn::RowFor(false, true) == dn::VendorRow::kDlssRr && dn::RowFor(true, false) == dn::VendorRow::kRayRegen && dn::RowFor(true, true) == dn::VendorRow::kRayRegen,
+        "an RTX card has DLSS RAY RECONSTRUCTION, a Radeon RX 9000 AMD FSR RAY REGENERATION, any other card no row");
+  // the row's labels: the feature's name in capitals while the row says nothing, NVIDIA's abbreviation before a reason
+  Check(std::string(dn::kMenuLabel) == "DLSS RAY RECONSTRUCTION" && std::string(dn::kMenuShortLabel) == "DLSS RR", "the row says DLSS RAY RECONSTRUCTION, DLSS RR before a reason");
+  Check(Upper(dn::kLauncherLabel) == dn::kMenuLabel, "the menu's label is the launcher's name in capitals");
+  Check(std::string(dn::kLauncherLabel) == "DLSS Ray Reconstruction", "the launcher says NVIDIA's name in full");
   // NVIDIA: "DLSS" is always attached to the feature's name, in every place that names it
-  Check(Has(dn::kMenuNames[1], "DLSS") && Has(dn::kLauncherNames[1], "DLSS Ray Reconstruction"), "the feature's name carries DLSS (menu and launcher)");
+  Check(Has(dn::kMenuLabel, "DLSS") && Has(dn::kMenuShortLabel, "DLSS") && Has(dn::kLauncherLabel, "DLSS Ray Reconstruction"), "the feature's name carries DLSS (menu and launcher)");
   // the menu abbreviates for the page's width; the launcher, the wiki text and the log write the name in full
-  const std::string launcher_texts = std::string(dn::kLauncherDescription) + dn::kLauncherAutoDescription + dn::kCreditLine + dn::kLauncherLabel;
+  const std::string launcher_texts = std::string(dn::kLauncherDescription) + dn::kCreditLine + dn::kLauncherLabel;
   Check(!Has(launcher_texts, "DLSS RR"), "the launcher's texts write DLSS Ray Reconstruction in full, never the menu's abbreviation");
-  Check(Has(dn::kLauncherDescription, "DLSS Ray Reconstruction") && Has(dn::kLauncherAutoDescription, "DLSS Ray Reconstruction") && Has(dn::kCreditLine, "DLSS Ray Reconstruction"), "each text names the feature");
+  Check(Has(dn::kLauncherDescription, "DLSS Ray Reconstruction") && Has(dn::kCreditLine, "DLSS Ray Reconstruction"), "each text names the feature");
   // NVIDIA's tooltip, word for word (RTX UI Developer Guidelines, "UI Tooltip or Setting Description")
   Check(std::string(dn::kNvidiaTooltip) ==
             "Ray Reconstruction enhances image quality by generating high-quality pixels between sampled rays for intensive ray traced content. This feature requires a GeForce RTX graphics card.",
@@ -109,11 +130,12 @@ void WordChecks() {
         "the launcher's description uses NVIDIA's words and names the two requirements (a GeForce RTX card, DLSS Super Resolution as the upscaler)");
   Check(Has(dn::kCreditLine, "NVIDIA") && Has(dn::kCreditLine, "trademarks"), "the credit line carries NVIDIA's trademark notice");
   // the owner's rule: no graphics setting has a level called low
-  for (const char* text : {dn::kMenuNames[0], dn::kMenuNames[1], dn::kMenuNames[2], dn::kLauncherNames[0], dn::kLauncherNames[1], dn::kLauncherNames[2], dn::kLauncherDescription, dn::kLauncherAutoDescription}) {
+  for (const char* text : {dn::kMenuLabel, dn::kMenuShortLabel, dn::kLauncherLabel, dn::kLauncherDescription}) {
     Check(!HasWord(text, "low"), std::string("nothing is called low: ") + text);
   }
   // no sentence that the cleanup is "better" than the game's: the launcher says what it is, the wiki's text has the measured numbers (none yet)
   Check(!Has(Lower(dn::kLauncherDescription), "better than"), "the description claims no measured advantage");
+  Check(Has(dn::kLauncherDescription, "Off uses the game's own cleanup."), "the description says what OFF is");
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +146,7 @@ void WordChecks() {
 // not failed), which the oracle spells.
 dn::Gate Oracle(const dn::MenuInputs& m, const rr::ConsumerTable& table) {
   using dn::Gate;
-  if (!m.dlss_listed) return Gate::kNoRtx;
+  if (!m.dlss_listed) return Gate::kHidden;
   if (m.debug == rr::DebugSwitch::kOff) return Gate::kNotAvailable;
   if (m.dlss_chosen && m.dlss_waits_for_restart) return m.setting == rr::Denoiser::kOurs ? Gate::kRuns : Gate::kRestart;
   if (!m.dlss_chosen) return Gate::kNeedsDlss;
@@ -207,6 +229,7 @@ void GateChecks() {
   }
   // The headline states, by hand. A made-up PC: an RTX card, DLSS chosen and running, everything loaded and supported, an effect that has a raw mode is on.
   dn::MenuInputs m;
+  m.setting = rr::Denoiser::kRr;  // the row ON (the default of a MenuInputs is OFF: ours)
   m.dlss_listed = m.dlss_chosen = true;
   m.facts = {true, true, true, true, false, true, false};  // build, files, started, supported, failed (false), asked, loadable (false)
   m.consumers_on = 1u;
@@ -223,7 +246,7 @@ void GateChecks() {
   m.debug = rr::DebugSwitch::kRow;
   m.consumers_on = 1u;
   m.dlss_listed = false;
-  Check(dn::GateOf(m, made) == dn::Gate::kNoRtx, "not an NVIDIA RTX card: (NO RTX GPU), whatever else");
+  Check(dn::GateOf(m, made) == dn::Gate::kHidden, "not an NVIDIA RTX card: no row at all (the menu never lists it: RowFor), whatever else");
   m.dlss_listed = true;
   m.dlss_chosen = false;
   Check(dn::GateOf(m, made) == dn::Gate::kNeedsDlss, "FSR or no upscaler: (NEEDS DLSS) (NVIDIA: requires Super Resolution on)");
@@ -239,13 +262,13 @@ void GateChecks() {
   m.facts.files_ok = true;
   m.facts.asked = false;
   m.facts.loadable = true;
-  Check(dn::GateOf(m, made) == dn::Gate::kRestart, "the plugin was left out of the start (the row said OURS) and the row has left OURS: (RESTART), on");
+  Check(dn::GateOf(m, made) == dn::Gate::kRestart, "the plugin was left out of the start (the row said OFF) and the row is ON now: (RESTART), on");
   m.setting = rr::Denoiser::kOurs;
-  Check(dn::GateOf(m, made) == dn::Gate::kRuns, "... and while the row IS on OURS nothing is said (no restart is pending)");
-  m.setting = rr::Denoiser::kAuto;
+  Check(dn::GateOf(m, made) == dn::Gate::kRuns, "... and while the row IS OFF nothing is said (no restart is pending)");
+  m.setting = rr::Denoiser::kAuto;  // the debug chooser's auto leaves OFF too
   m.facts.streamline_running = false;
   Check(dn::GateOf(m, made) == dn::Gate::kStarting, "Streamline still starting: on, nothing said yet");
-  // the shipped table (RR-INT, CITY-RT R6, CITY-RT G6): all four effects have a raw mode. The row is grey (NOT NEEDED) while none is on, on for a PC that could use it while one is, and AUTO says OURS either way.
+  // the shipped table (RR-INT, CITY-RT R6, CITY-RT G6): all four effects have a raw mode. The row is grey (NOT NEEDED) while none is on, and on for a PC that could use it while one is.
   dn::MenuInputs s;
   s.dlss_listed = s.dlss_chosen = true;
   s.facts = {true, true, true, true, false, true, false};
@@ -258,14 +281,8 @@ void GateChecks() {
   for (const uint32_t on : {ssr, cars, city, gi, ssr | cars, ssr | city, city | gi, rr::kAllConsumers}) {
     s.consumers_on = on;
     Check(dn::GateOf(s) == dn::Gate::kRuns, "shipped table, SSR, the cars' reflections, the city's or the bounce light's pass on (set " + std::to_string(on) + "): the row is on, nothing said");
-    Check(dn::AutoLabel(dn::GateOf(s), on) == "AUTO (OURS)" && !dn::AutoIsRr(dn::GateOf(s), on), "... and AUTO says OURS (set " + std::to_string(on) + "): no effect is trusted to AUTO yet");
+    Check(!rr::AnyAutoConsumerOn(on), "... and the debug chooser's auto would still be ours (set " + std::to_string(on) + "): no effect is trusted to AUTO yet");
   }
-  // with SSR's cell flipped for AUTO (what RR-6 may do) AUTO says DLSS RR exactly while SSR is on and the row is open
-  rr::ConsumerTable trusted = rr::kConsumers;
-  trusted[size_t(rr::Consumer::kSsr)].auto_uses_rr = true;
-  Check(dn::AutoLabel(dn::Gate::kRuns, ssr, trusted) == "AUTO (DLSS RR)" && dn::AutoLabel(dn::Gate::kRuns, cars, trusted) == "AUTO (OURS)" && dn::AutoLabel(dn::Gate::kRuns, 0u, trusted) == "AUTO (OURS)" &&
-            dn::AutoLabel(dn::Gate::kNotNeeded, ssr, trusted) == "AUTO (OURS)",
-        "AUTO's cell flipped for SSR: AUTO (DLSS RR) while SSR is on and the row open, AUTO (OURS) otherwise");
   s.consumers_on = ssr;
   s.setting = rr::Denoiser::kRr;
   Check(dn::GateOf(s) == dn::Gate::kRuns, "the row's RR value with SSR on: on");
@@ -279,9 +296,10 @@ void GateChecks() {
   Check(dn::GateOf(s) == dn::Gate::kRuns, "probe leaves the row on");
   // Vulkan: DLSS chosen but run from the next start
   dn::MenuInputs v;
+  v.setting = rr::Denoiser::kRr;
   v.dlss_listed = v.dlss_chosen = v.dlss_waits_for_restart = true;
   v.consumers_on = 1u;
-  Check(dn::GateOf(v, made) == dn::Gate::kRestart, "DLSS waits for its restart (Vulkan) and the row is on AUTO: (RESTART), which the one prompt covers");
+  Check(dn::GateOf(v, made) == dn::Gate::kRestart, "DLSS waits for its restart (Vulkan) and the row is ON: (RESTART), which the one prompt covers");
   v.setting = rr::Denoiser::kOurs;
   Check(dn::GateOf(v, made) == dn::Gate::kRuns, "... nothing on OURS");
   dn::MenuInputs setup;
@@ -295,50 +313,174 @@ void RowChecks() {
     const bool on = dn::RowEnabled(g);
     const std::string suffix = dn::RowSuffix(g);
     const std::string reason = dn::LauncherReason(g);
-    const bool says_nothing = g == dn::Gate::kRuns || g == dn::Gate::kStarting;
-    Check(suffix.empty() == says_nothing, "gate " + std::to_string(int(g)) + ": the suffix is empty exactly where the row has nothing to say");
+    const bool says_nothing = g == dn::Gate::kRuns || g == dn::Gate::kStarting || g == dn::Gate::kHidden;
+    Check(suffix.empty() == says_nothing, "gate " + std::to_string(int(g)) + ": the suffix is empty exactly where the row has nothing to say (a hidden row is not drawn)");
     Check(reason.empty() == says_nothing, "gate " + std::to_string(int(g)) + ": the launcher's reason likewise");
     Check(on == (g == dn::Gate::kRuns || g == dn::Gate::kStarting || g == dn::Gate::kApplying || g == dn::Gate::kRestart), "gate " + std::to_string(int(g)) + ": on exactly for runs, starting, applying and restart");
     Check(suffix.empty() || (suffix[0] == ' ' && suffix[1] == '(' && suffix.back() == ')'), "gate " + std::to_string(int(g)) + ": the suffix is ' (WORDS)'");
-    Check(suffix == [&] { std::string u = suffix; for (char& c : u) c = char(std::toupper(static_cast<unsigned char>(c))); return u; }(), "gate " + std::to_string(int(g)) + ": capitals, as the menu's font");
+    Check(suffix == Upper(suffix), "gate " + std::to_string(int(g)) + ": capitals, as the menu's font");
+    // the label: the whole name while the row says nothing, the short one before a reason
+    Check(std::string(dn::RowLabel(g)) == (suffix.empty() ? dn::kMenuLabel : dn::kMenuShortLabel), "gate " + std::to_string(int(g)) + ": the whole name while nothing is said, DLSS RR before a reason");
     // the words a player and the restart prompt rely on
     if (g == dn::Gate::kRestart) Check(suffix.find("RESTART") != std::string::npos, "the restart prompt finds the word RESTART in the suffix");
     if (g != dn::Gate::kRestart) Check(suffix.find("RESTART") == std::string::npos, "no other state offers a restart");
   }
-  Check(std::string(dn::RowSuffix(dn::Gate::kNoRtx)) == " (NO RTX GPU)" && std::string(dn::RowSuffix(dn::Gate::kNotAvailable)) == " (N/A)" && std::string(dn::RowSuffix(dn::Gate::kNeedsDlss)) == " (NEEDS DLSS)" &&
+  Check(std::string(dn::RowSuffix(dn::Gate::kHidden)).empty() && std::string(dn::RowSuffix(dn::Gate::kNotAvailable)) == " (N/A)" && std::string(dn::RowSuffix(dn::Gate::kNeedsDlss)) == " (NEEDS DLSS)" &&
             std::string(dn::RowSuffix(dn::Gate::kSetup)) == " (SETUP)" && std::string(dn::RowSuffix(dn::Gate::kFailed)) == " (FAILED)" && std::string(dn::RowSuffix(dn::Gate::kNotNeeded)) == " (NOT NEEDED)" &&
             std::string(dn::RowSuffix(dn::Gate::kApplying)) == " (APPLYING)" && std::string(dn::RowSuffix(dn::Gate::kRestart)) == " (RESTART)",
-        "the words of the suffixes");
-  // the page's width (pause_menu.cpp "Page width"): the widest label plus the widest value, at most 41. UPSCALING on NATIVE: its own widest label is 20 ("UPSCALING (APPLYING)", "SHARPNESS (FSR ONLY)", "FRAME
-  // GEN MULTIPLIER"), its widest value 18 ("FSR 3.1 (APPLYING)": frame generation's row; the mode row's longest is 17).
-  size_t widest_label = 20;
-  for (const dn::Gate g : kGates) widest_label = std::max(widest_label, std::string(dn::kMenuLabel).size() + std::string(dn::RowSuffix(g)).size());
-  size_t widest_value = 18;
-  for (const dn::Gate g : kGates) {
-    for (const uint32_t on : {0u, rr::kAllConsumers}) widest_value = std::max(widest_value, dn::AutoLabel(g, on).size());
-  }
-  for (const char* name : dn::kMenuNames) widest_value = std::max(widest_value, std::string(name).size());
-  Check(widest_label + widest_value <= 41, "the UPSCALING page stays within 41 characters: " + std::to_string(widest_label) + " + " + std::to_string(widest_value));
-  Check(std::string(dn::kMenuLabel).size() + std::string(dn::RowSuffix(dn::Gate::kNoRtx)).size() == 21, "the row's longest label is 21 (DENOISER (NO RTX GPU))");
-  Check(dn::AutoLabel(dn::Gate::kRuns, 0).size() <= 14 && std::string("AUTO (DLSS RR)").size() == 14, "AUTO's longest label is 14");
+        "the words of the suffixes: the owner's list, no 'NO RTX GPU' (such a PC has no row)");
+  // a label in front of the longest reason: 13 characters (" (NEEDS DLSS)", " (NOT NEEDED)")
+  size_t longest_reason = 0;
+  for (const dn::Gate g : kGates) longest_reason = std::max(longest_reason, std::string(dn::RowSuffix(g)).size());
+  Check(longest_reason == 13, "the longest reason is 13 characters");
+  Check(std::string(dn::kMenuLabel).size() == 23 && std::string(dn::kMenuShortLabel).size() == 7, "the whole name is 23 characters, the short one 7");
 }
 
-void AutoChecks() {
+// DISPLAY counts ONE widest label (suffix included) and ONE widest value over every row of the page and every value a row can step to (pause_menu.cpp "Page width"), at most 41 characters together. The table is the page's
+// rows on the NATIVE renderer, each in every state its words can be in. The labels and reasons of the denoiser rows come from the headers themselves (this is where a longer one would show), the other rows' words are
+// literals checked against their sources, so a row that grows is found here too.
+void PageWidthChecks(const std::string& dir) {
+  struct W {
+    std::string text;
+    const char* where;  // the source file (relative to src/mc_engine/menus) that holds the words, "" for a header's own
+    std::string needle; // text that must be in that source
+  };
+  const std::string pause = ReadFile(dir + "/../mc_engine/menus/pause_menu.cpp");
+  const std::string menu = ReadFile(dir + "/../mc_engine/menus/upscaling_menu.cpp");
+  const std::string fg = ReadFile(dir + "/../mc_engine/menus/frame_generation_menu.cpp");
+  const std::string display = ReadFile(dir + "/../mc_engine/menus/display_menu.h");
+  const auto source_of = [&](const char* where) -> const std::string& {
+    const std::string w = where;
+    return w == "pause_menu.cpp" ? pause : (w == "upscaling_menu.cpp" ? menu : (w == "frame_generation_menu.cpp" ? fg : display));
+  };
+  // every label the page can show (NATIVE renderer)
+  std::vector<W> labels = {
+      {"DISPLAY MODE", "pause_menu.cpp", "\"DISPLAY MODE: \""},
+      {"RESOLUTION (7680X4320)", "display_menu.h", "RESOLUTION 10, 22 with its"},
+      {"RESOLUTION (10240X4320)", "display_menu.h", "a display of 10240 pixels across: 23"},
+      {"ASPECT RATIO", "pause_menu.cpp", "\"ASPECT RATIO: \""},
+      {"HDR", "pause_menu.cpp", "\"HDR\", \"RxGpuHdrMenu\""},
+      {"DISPLAY GAMMA", "pause_menu.cpp", "\"DISPLAY GAMMA: \""},
+      {"VSYNC", "pause_menu.cpp", "\"VSYNC: \""},
+      {"FPS LIMIT (FRAME GEN)", "frame_generation_menu.cpp", "\" (FRAME GEN)\""},
+      {"NVIDIA REFLEX", "pause_menu.cpp", "\"NVIDIA REFLEX\""},
+      {"REFLEX (NOT WORKING)", "pause_menu.cpp", "\" (NOT WORKING)\""},
+      {"REFLEX (FRAME GEN)", "pause_menu.cpp", "\" (FRAME GEN)\""},
+      {"REFLEX (PAUSED)", "pause_menu.cpp", "\" (PAUSED)\""},
+      {"AMD ANTI-LAG 2", "pause_menu.cpp", "\"AMD ANTI-LAG 2\""},
+      {"ANTI-LAG 2 (NOT WORKING)", "pause_menu.cpp", "\"ANTI-LAG 2\""},
+      {"ANTI-LAG 2 (FRAME GEN)", "pause_menu.cpp", "AntiLagLabel"},
+      {"ANTI-LAG 2 (PAUSED)", "pause_menu.cpp", "kAntiLagDynamics"},
+      {"UPSCALING (APPLYING)", "upscaling_menu.cpp", "\" (APPLYING)\""},
+      {"UPSCALING (RESTART)", "upscaling_menu.cpp", "\" (RESTART)\""},
+      {"UPSCALING (NO ROOM)", "upscaling_menu.cpp", "\" (NO ROOM)\""},
+      {"RENDER SCALE", "upscaling_menu.cpp", "\"RENDER SCALE\""},
+      {"FSR 1 MODE", "upscaling_menu.cpp", "\"FSR 1 MODE\""},
+      {"FSR 3.1 MODE", "upscaling_menu.cpp", "\"FSR 3.1 MODE\""},
+      {"FSR 4 MODE", "upscaling_menu.cpp", "\"FSR 4 MODE\""},
+      {"DLSS MODE (SETUP)", "upscaling_menu.cpp", "\" (SETUP)\""},
+      {"DLSS MODE (RESTART)", "upscaling_menu.cpp", "\"DLSS MODE\""},
+      {"SHARPNESS (FSR ONLY)", "upscaling_menu.cpp", "\" (FSR ONLY)\""},
+      {"FRAME GENERATION", "frame_generation_menu.cpp", "\"FRAME GENERATION\""},
+      {"FRAME GEN (APPLYING)", "frame_generation_menu.cpp", "\" (APPLYING)\""},
+      {"FRAME GEN (RESTART)", "frame_generation_menu.cpp", "\" (RESTART)\""},
+      {"FRAME GEN MULTIPLIER", "frame_generation_menu.cpp", "\"FRAME GEN MULTIPLIER: \""},
+      {"FRAME GEN FPS LIMIT", "frame_generation_menu.cpp", "\"FRAME GEN FPS LIMIT: \""},
+  };
+  // the denoiser rows, from the headers: every state of the RTX row and of the Radeon row
+  for (const dn::Gate g : kGates) labels.push_back({std::string(dn::RowLabel(g)) + dn::RowSuffix(g), "", ""});
+  for (int g = 0; g < rg::kGateCount; ++g) labels.push_back({std::string(rg::RowLabel(rg::Gate(g))) + rg::RowSuffix(rg::Gate(g)), "", ""});
+  std::vector<W> values = {
+      {"BORDERLESS", "display_menu.h", "\"BORDERLESS\""},
+      {"FULLSCREEN", "display_menu.h", "\"FULLSCREEN\""},
+      {"10240X4320", "display_menu.h", "10 at five digits across"},
+      {"CONSOLE", "pause_menu.cpp", "kDisplayGammaVals"},
+      {"UNCAPPED", "pause_menu.cpp", "\"UNCAPPED\""},
+      {"ON + BOOST", "pause_menu.cpp", "\"ON + BOOST\""},
+      {"AUTO (OFF)", "pause_menu.cpp", "\"AUTO (OFF)\""},
+      {"DLSS (SETUP)", "upscaling_menu.cpp", "\"DLSS (SETUP)\""},
+      {"NATIVE AA (100%)", "upscaling_menu.cpp", "NATIVE AA (100%)"},
+      {"PERFORMANCE (50%)", "upscaling_menu.cpp", "PERFORMANCE (50%)"},
+      {"PERFORMANCE (N/A)", "upscaling_menu.cpp", "PERFORMANCE (N/A)"},
+      {"ULTRA PERF. (33%)", "upscaling_menu.cpp", "\"ULTRA PERF.\""},
+      {"ULTRA QUAL. (77%)", "upscaling_menu.cpp", "\"ULTRA QUAL.\""},
+      {"LIMITED (300%)", "upscaling_menu.cpp", "\"LIMITED (\""},
+      {"CUSTOM (300%)", "upscaling_menu.cpp", "\"CUSTOM (\""},
+      {"FSR 3.1 (NO ROOM)", "frame_generation_menu.cpp", "\"FSR 3.1 (NO ROOM)\""},
+      {"FSR 3.1 (FAILED)", "frame_generation_menu.cpp", "\"FSR 3.1 (FAILED)\""},
+      {"DLSS (FAILED)", "frame_generation_menu.cpp", "\"DLSS (FAILED)\""},
+      {"DLSS (N/A)", "frame_generation_menu.cpp", "\"DLSS (N/A)\""},
+      {"HALF DISPLAY 116", "frame_generation_menu.cpp", "\"HALF DISPLAY %u\""},
+      {"1/4 DISPLAY 130", "frame_generation_menu.cpp", "\"1/%u DISPLAY %u\""},
+      {"120 (480 SHOWN)", "frame_generation_menu.cpp", "(%.0f SHOWN)"},
+      {"USE FPS LIMIT", "frame_generation_menu.cpp", "\"USE FPS LIMIT\""},
+      {"ON", "", ""},
+      {"OFF", "", ""},
+  };
+  size_t widest_label = 0, widest_value = 0;
+  std::string widest_label_text, widest_value_text;
+  for (const W& l : labels) {
+    if (l.text.size() > widest_label) { widest_label = l.text.size(); widest_label_text = l.text; }
+    if (*l.where) Check(Has(source_of(l.where), l.needle), "the label '" + l.text + "' is still in " + l.where);
+  }
+  for (const W& v : values) {
+    if (v.text.size() > widest_value) { widest_value = v.text.size(); widest_value_text = v.text; }
+    if (*v.where) Check(Has(source_of(v.where), v.needle), "the value '" + v.text + "' is still in " + v.where);
+  }
+  Check(widest_label + widest_value <= 41, "DISPLAY stays within 41 characters over every row in every state: " + std::to_string(widest_label) + " ('" + widest_label_text + "') + " + std::to_string(widest_value) + " ('" + widest_value_text + "')");
+  Check(widest_label == 24 && std::string(rg::kMenuLabel).size() == 24 && widest_value == 17, "the widest label is 24 (AMD FSR RAY REGENERATION is one of them) and the widest value 17: 41 of 41, nothing to spare");
+  // what would not fit: the whole names with their reasons, and the two old words that made the page 46 and 42
+  Check(std::string(dn::kMenuLabel).size() + std::string(dn::RowSuffix(dn::Gate::kNeedsDlss)).size() + widest_value > 41, "'DLSS RAY RECONSTRUCTION (NEEDS DLSS)' (36) with the page's widest value would not fit");
+  Check(std::string(rg::kMenuLabel).size() + std::string(rg::RowSuffix(rg::Gate::kNeedsD3D12)).size() + widest_value > 41, "'AMD FSR RAY REGENERATION (D3D12 ONLY)' (37) with the page's widest value would not fit");
+  Check(std::string("AMD ANTI-LAG 2 (NOT WORKING)").size() + widest_value > 41, "the latency row's old 'AMD ANTI-LAG 2 (NOT WORKING)' (28) would not fit the page");
+  Check(std::string(rg::kMenuLabel).size() + std::string("FSR 3.1 (APPLYING)").size() > 41, "frame generation's old 'FSR 3.1 (APPLYING)' value (18) would not fit beside the AMD row's name");
+  // the denoiser rows' own words
+  Check(std::string(rg::kMenuLabel) == "AMD FSR RAY REGENERATION" && std::string(rg::kMenuShortLabel) == "RAY REGEN" && Upper(rg::kLauncherName) == rg::kMenuLabel, "the Radeon row says AMD's name in capitals, RAY REGEN before a reason");
+  // The pieces the page is made of (the words that are not in the headers) are in the sources: the rows' own tables
+  Check(Has(pause, "const char* ReflexLabel() { return LowLatencySuffix()[0] != '\\0' ? \"REFLEX\" : \"NVIDIA REFLEX\"; }") &&
+            Has(pause, "const char* AntiLagLabel() { return LowLatencySuffix()[0] != '\\0' ? \"ANTI-LAG 2\" : \"AMD ANTI-LAG 2\"; }"),
+        "the latency row says its short name before a reason");
+  Check(Has(fg, "const char* FrameGenerationRowSuffix() {") && Has(fg, "return Applying() ? \" (APPLYING)\" : \"\";") &&
+            Has(fg, "const char* FrameGenerationRowLabel() { return FrameGenerationRowSuffix()[0] != '\\0' ? \"FRAME GEN\" : \"FRAME GENERATION\"; }") && !Has(fg, "return \"FSR 3.1 (APPLYING)\"") && !Has(fg, "return \"DLSS (APPLYING)\""),
+        "frame generation says APPLYING in its label, not in a value");
+}
+
+// What the plan reads. The row ON is rr, OFF is ours, and the debug chooser overrides it; the plan and the plugin request read the same word (denoiser_setting.cpp Setting).
+void EffectiveChecks() {
   const rr::ConsumerTable made = {{{"a", true, true}, {"b", true, false}, {"c", false, true}, {"d", false, false}}};
-  for (const dn::Gate g : kGates) {
-    for (uint32_t on = 0; on <= rr::kAllConsumers; ++on) {
-      const bool open = g == dn::Gate::kRuns || g == dn::Gate::kStarting || g == dn::Gate::kApplying;
-      const bool trusted = (on & 1u) != 0;  // only effect a is built AND trusted
-      Check(dn::AutoIsRr(g, on, made) == (open && trusted), "AUTO comes to RR exactly where the row is open and an effect RR is known to clean better is on (gate " + std::to_string(int(g)) + ", on " + std::to_string(on) + ")");
-      Check(dn::AutoLabel(g, on, made) == (open && trusted ? "AUTO (DLSS RR)" : "AUTO (OURS)"), "AUTO's label (gate " + std::to_string(int(g)) + ", on " + std::to_string(on) + ")");
-    }
+  // the row OFF: nothing of RR is chosen and the plugin is not asked for; the row ON: RR wherever an effect with a raw mode is on
+  for (const rr::DebugSwitch debug : {rr::DebugSwitch::kRow}) {
+    rr::PluginInputs p;
+    p.debug = debug;
+    p.raw_mode_built = true;
+    p.build_has_rr = true;
+    p.files_ok = true;
+    p.looks_rtx = true;
+    p.d3d12 = true;
+    p.setting = dn::Effective("row", false);
+    Check(!rr::WantRrPlugin(p), "the row OFF (the default): the plugin is not asked for at the start");
+    p.setting = dn::Effective("row", true);
+    Check(rr::WantRrPlugin(p), "the row ON: the plugin is asked for at the start, on a PC that can");
+    p.setting = dn::Effective("auto", false);
+    Check(rr::WantRrPlugin(p), "the debug chooser's auto loads it too, whatever the row says");
+    p.setting = dn::Effective("ours", true);
+    Check(!rr::WantRrPlugin(p), "the debug chooser's ours leaves it out, whatever the row says");
   }
-  for (const dn::Gate g : kGates) {
-    for (uint32_t on = 0; on <= rr::kAllConsumers; ++on) {
-      Check(dn::AutoLabel(g, on) == "AUTO (OURS)", "today (the shipped table): AUTO is OURS wherever, whatever is on (gate " + std::to_string(int(g)) + ", on " + std::to_string(on) + ")");
-    }
-  }
-  Check(dn::AutoLabel(dn::Gate::kRestart, 1u, made) == "AUTO (OURS)", "(RESTART): the plugin is not loaded, so AUTO is OURS until the restart");
+  rr::PlanInputs in;
+  in.facts = {true, true, true, true, false, true, false};
+  in.upscaler_is_dlss = true;
+  in.guides_ready = true;
+  in.room_ok = true;
+  in.consumers_active = rr::AnyAutoConsumerOn(1u, made);
+  in.consumers_any = rr::AnyConsumerOn(1u, made);
+  in.setting = dn::Effective("row", false);
+  Check(!rr::SelectDenoiser(in).use_rr, "the row OFF: our own denoisers, with an effect on");
+  in.setting = dn::Effective("row", true);
+  Check(rr::SelectDenoiser(in).use_rr, "the row ON: Ray Reconstruction takes the frame while an effect with a raw mode is on");
+  in.consumers_any = in.consumers_active = false;
+  Check(!rr::SelectDenoiser(in).use_rr, "... and not while none is");
+  // nothing is trusted to the chooser's auto yet: the shipped table
+  Check(!rr::AnyAutoConsumerOn(rr::kAllConsumers), "the debug chooser's auto is ours today: no effect is trusted to it");
 }
 
 // ---------------------------------------------------------------------------
@@ -348,23 +490,45 @@ void AutoChecks() {
 void MenuChecks(const std::string& dir) {
   const std::string menu = ReadFile(dir + "/../mc_engine/menus/upscaling_menu.cpp");
   const std::string pause = ReadFile(dir + "/../mc_engine/menus/pause_menu.cpp");
+  const std::string fg = ReadFile(dir + "/../mc_engine/menus/frame_generation_menu.cpp");
+  const std::string fg_h = ReadFile(dir + "/../mc_engine/menus/frame_generation_menu.h");
   const size_t sharp = At(menu, "Str(\"PM_RxGpuUpscSharp\",");
-  const size_t den = At(menu, "Str(\"PM_RxGpuDenoiser\", \"mcla_gpu_denoiser\", \"DENOISER: \", kDenoiserVals, kDenoiserNames, 3),");
+  const size_t den = At(menu, "Bool(\"PM_RxGpuDenoiser\", \"mcla_gpu_vendor_denoiser\", \"DLSS RAY RECONSTRUCTION: \"),");
   const size_t end = At(menu, "};", den == std::string::npos ? 0 : den);
-  Check(sharp != std::string::npos && den != std::string::npos && sharp < den && den < end, "the DENOISER row is after SHARPNESS, in the upscaler's own rows (UPSCALING page, before frame generation's)");
+  Check(sharp != std::string::npos && den != std::string::npos && sharp < den && den < end, "the denoiser row is after SHARPNESS and LAST in the upscaler's own rows (DISPLAY page, before frame generation's)");
   Check(den != std::string::npos && Has(menu.substr(den > 40 ? den - 40 : 0, 40), "NativeOnly(WithDynamics("), "the row is native only (the Xenia renderer has no upscalers)");
-  Check(Has(menu, "const char* const kDenoiserVals[] = {\"auto\", \"rr\", \"ours\"};") && Has(menu, "const char* const kDenoiserNames[] = {\"AUTO\", \"DLSS RR\", \"OURS\"};"),
-        "the row's words are AUTO / DLSS RR / OURS, stored auto / rr / ours");
-  Check(Has(menu, "constexpr RowDynamics kDenoiserDynamics = {.str_label = DenoiserValueLabel,") && Has(menu, ".enabled = DenoiserEnabled,") && Has(menu, ".suffix = DenoiserSuffix};"),
-        "the row's label, grey state and reason come from the gate");
+  Check(Has(menu, "constexpr int kUpscalerRowCount = 3;") && Has(menu, "static_assert(sizeof(kRows) / sizeof(kRows[0]) == size_t(kUpscalerRowCount) + 1,") &&
+            Has(menu, "count = DenoiserListed() ? kUpscalerRowCount + 1 : kUpscalerRowCount;"),
+        "a PC without the denoiser row lists the other three rows (the same table, one row shorter)");
+  Check(Has(menu, "constexpr RowDynamics kDenoiserDynamics = {.enabled = DenoiserEnabled, .suffix = DenoiserSuffix, .label = DenoiserLabel};"), "the row's label, grey state and reason come from the gate");
+  Check(!Has(menu, "kDenoiserVals") && !Has(menu, "kDenoiserNames") && !Has(menu, "DenoiserValueLabel") && !Has(menu, "\"DENOISER: \""), "the three-way AUTO / DLSS RR / OURS row is gone");
   Check(Has(menu, "mcla::gpu::denoiser::GateOf(DenoiserInputs())") && Has(menu, "mcla::gpu::denoiser::RowEnabled(DenoiserGate())") && Has(menu, "mcla::gpu::denoiser::RowSuffix(DenoiserGate())") &&
-            Has(menu, "dn::AutoLabel(DenoiserGate(), dn::ConsumersOn())"),
-        "the menu asks denoiser_setting.h for the gate, the suffix and AUTO's label");
-  Check(Has(menu, "#include \"gpu/denoiser_setting.h\""), "the menu includes the rules");
+            Has(menu, "mcla::gpu::denoiser::RowLabel(DenoiserGate())"),
+        "the menu asks denoiser_setting.h for the gate, the suffix and the label");
+  Check(Has(menu, "mcla::gpu::rayregen::RowLabel(AmdGate())") && Has(menu, "mcla::gpu::rayregen::RowEnabled(AmdGate())") && Has(menu, "mcla::gpu::rayregen::RowSuffix(AmdGate())") &&
+            Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())"),
+        "on a Radeon the same row asks ray_regen_rules.h for the gate, the suffix and the label");
+  Check(Has(menu, "mcla::gpu::denoiser::RowFor(mcla::gpu::rayregen::RowListed(),") && Has(menu, "DlssListed(mcla::gpu::GetUpscalerAvailability()));") &&
+            Has(menu, "bool AmdRow() { return DenoiserRowKind() == mcla::gpu::denoiser::VendorRow::kRayRegen; }"),
+        "which row a PC has: the AMD one by the card's name and Windows, the DLSS one where DLSS is listed (an RTX card), none otherwise");
+  Check(Has(menu, "#include \"gpu/denoiser_setting.h\"") && Has(menu, "#include \"gpu/ray_regen_plan.h\""), "the menu includes the rules");
   Check(Has(menu, "m.dlss_chosen = Chosen() == Upscaler::kDlss;") && Has(menu, "m.dlss_waits_for_restart = DlssWaitsForRestart();") && Has(menu, "m.dlss_listed = DlssListed(a);") &&
-            Has(menu, "m.setting = dn::Parse(Cvar(\"mcla_gpu_denoiser\"));") && Has(menu, "m.facts = snapshot.facts;"),
-        "the menu's inputs: DLSS as listed, chosen and waiting for a restart, the saved word, the renderer's facts");
-  Check(Has(pause, "UpscalingPageRows: the upscaler's rows, DENOISER and frame generation's, 7 at most") && Has(pause, "DENOISER (NATIVE only"), "the page's width comment counts the row");
+            Has(menu, "m.setting = dn::Effective(Cvar(\"mcla_gpu_denoiser\"), CvarOn(\"mcla_gpu_vendor_denoiser\"));") && Has(menu, "m.facts = snapshot.facts;"),
+        "the menu's inputs: DLSS as listed, chosen and waiting for a restart, the effective setting (the row and the debug chooser), the renderer's facts");
+  // the page: UPSCALING is not a page any more, DISPLAY has its rows
+  Check(!Has(pause, "RxUpscalingMenu") && !Has(pause, "PM_RxSubUpscaling") && !Has(pause, "PM_RxTabUpscaling"), "UPSCALING is not a page or a hub row any more");
+  Check(Has(pause, "     DisplayPageRows, false, UpscalingMenuRelayout},"), "DISPLAY takes its rows from DisplayPageRows and its relayout hook is the upscaling rows'");
+  const size_t latency_at = At(pause, "const ItemDef* latency = LowLatencyMenuRows(latency_count);");
+  const size_t upscaling_at = At(pause, "const ItemDef* upscaling = UpscalingPageRows(upscaling_count);");
+  const size_t push_latency = At(pause, "for (int i = 0; i < latency_count; ++i) made->rows.push_back(latency[i]);");
+  const size_t push_upscaling = At(pause, "for (int i = 0; i < upscaling_count; ++i) made->rows.push_back(upscaling[i]);");
+  Check(latency_at != std::string::npos && upscaling_at != std::string::npos && latency_at < upscaling_at && push_latency != std::string::npos && push_upscaling != std::string::npos && push_latency < push_upscaling,
+        "DISPLAY's extra rows are the latency row, then the upscaling block");
+  Check(Has(pause, "DISPLAY (kVideoItems, DisplayPageRows: the latency row, the upscaler's rows with the denoiser row where this PC has one, and frame generation's: 15 rows at most)") && Has(pause, "24 + 17 = 41"),
+        "the page's width comment counts the page");
+  Check(Has(fg_h, "const mcla_menu::ItemDef* UpscalingPageRows(int& count);") && Has(fg_h, "bool UpscalingMenuRelayout(bool apply);") && Has(fg, "bool UpscalingMenuRelayout(bool apply) {") &&
+            Has(fg, "return g_built != nullptr && (live != g_built || count != g_built_count);"),
+        "the page keeps the rows it was built with until it is built again (the relayout hook is real: a changed row set rebuilds the page)");
   // the exposure check finds the row's cvar in a normal file
   const std::string toml = ReadFile(dir + "/../../tools/settings_exposure.toml");
   Check(Has(toml, "normal_files = [") && Has(toml.substr(At(toml, "normal_files = ["), 260), "\"menus/upscaling_menu.cpp\""), "tools/settings_exposure.toml lists upscaling_menu.cpp among the files whose rows are for every player (so the row's cvar needs no entry)");
@@ -417,7 +581,7 @@ void PlanChecks(const std::string& dir) {
   const size_t end = At(t, "// Ray Reconstruction's second context, the room for it and the dispatch (RR-3)", at == std::string::npos ? 0 : at);
   const std::string fn = (at == std::string::npos || end == std::string::npos) ? std::string() : t.substr(at, end - at);
   Check(!fn.empty(), "UpdateDenoiserPlan is where it was");
-  Check(Has(fn, "in.setting = denoiser::Setting();"), "the plan reads the row's word (a LiveText: the menu's thread writes the cvar)");
+  Check(Has(fn, "in.setting = denoiser::Setting();"), "the plan reads the effective setting (the row's bool and the chooser's LiveText: the menu's thread writes the cvars)");
   Check(Has(fn, "const uint32_t consumers_on = denoiser::ConsumersOn();") && Has(fn, "in.consumers_active = rr::AnyAutoConsumerOn(consumers_on);") && Has(fn, "in.consumers_any = rr::AnyConsumerOn(consumers_on);"),
         "the effects that are on are read from the board, AUTO's list and the row's");
   Check(Has(fn, "in.debug = rr::DebugSwitch::kRow;"), "an unreadable debug switch leaves the row to decide");
@@ -445,11 +609,11 @@ void PluginChecks(const std::string& dir) {
   const size_t end = At(d, "std::string ResultText(sl::Result result) {", at == std::string::npos ? 0 : at);
   const std::string fn = (at == std::string::npos || end == std::string::npos) ? std::string() : d.substr(at, end - at);
   Check(!fn.empty(), "WantRayReconstructionPlugin is where it was");
-  Check(Has(fn, "in.setting = denoiser::Setting();") && Has(fn, "in.raw_mode_built = rr::AnyRawModeBuilt();"), "the plugin request reads the row and whether any effect has a raw mode");
+  Check(Has(fn, "in.setting = denoiser::Setting();") && Has(fn, "in.raw_mode_built = rr::AnyRawModeBuilt();"), "the plugin request reads the effective setting and whether any effect has a raw mode");
   const size_t files = At(fn, "in.files_ok = RrFilesOk(ExeDirectory(), &why);");
   const size_t wanted = At(fn, "if (rr::PluginWantedByChoice(in)) {");
   Check(files != std::string::npos && wanted != std::string::npos && wanted < files, "the files are looked at only where the choice wants the plugin (a row on OURS costs nothing)");
-  Check(Has(fn, "what_if.setting = rr::Denoiser::kAuto;") && Has(fn, "g_rr_loadable.store(rr::WantRrPlugin(what_if)"), "loadable is what a start with the row on AUTO would do");
+  Check(Has(fn, "what_if.setting = rr::Denoiser::kRr;") && Has(fn, "g_rr_loadable.store(rr::WantRrPlugin(what_if)"), "loadable is what a start with the row ON would do");
   Check(Has(fn, "return rr::WantRrPlugin(in);"), "the rules decide");
   Check(Has(d, "std::atomic<bool> g_rr_loadable{false};") && Has(d, "std::atomic<bool> g_rr_files_bad{false};"), "the two flags are atomics set before slInit");
   Check(Has(d, "facts.files_ok = !g_rr_files_bad.load(std::memory_order_relaxed);") && Has(d, "facts.loadable = !rt.rr_asked && g_rr_loadable.load(std::memory_order_relaxed);"), "the facts carry them");
@@ -459,9 +623,9 @@ void PluginChecks(const std::string& dir) {
   Check(Has(h, "bool loadable = false;") && Has(h, "bool files_ok = true;"), "temporal_dlss.h's facts have loadable, and files_ok means no known problem");
 }
 
-std::string DefinitionOf(const std::string& header, const std::string& name) {
+std::string DefinitionOf(const std::string& header, const std::string& name, const std::string& type) {
   const std::string define = std::string("REX_SET") + "TING(";
-  const size_t at = At(header, define + "std::string, " + name + ", ");
+  const size_t at = At(header, define + type + ", " + name + ", ");
   if (at == std::string::npos) return std::string();
   const size_t end = header.find(");\n", at);  // a statement ends with the bracket, a semicolon and a new line; the help text may hold ");" inside
   return end == std::string::npos ? std::string() : header.substr(at, end - at + 1);
@@ -471,22 +635,37 @@ void SettingsChecks(const std::string& dir) {
   const std::string header = ReadFile(dir + "/../settings/generated/settings_gpu.h");
   const std::string manifest = ReadFile(dir + "/../settings/generated/manifest.json");
   const std::string meta = ReadFile(dir + "/../settings/generated/settings_meta.inc");
-  const std::string den = DefinitionOf(header, "mcla_gpu_denoiser");
-  Check(!den.empty() && Has(den, "mcla_gpu_denoiser, \"auto\", \"") && Has(den, "rex::Allowed(\"auto\", \"rr\", \"ours\")"), "mcla_gpu_denoiser is a string setting, auto by default, with the three words");
-  Check(!den.empty() && !Has(den, "kDebugOnly") && !Has(den, "kRestart") && Has(den, "Live;") && Has(den, "DENOISER row") && Has(den, "DLSS Ray Reconstruction"), "it is a player setting (not debug-only), live (no restart trait), and its help names the row and NVIDIA's feature");
+  // the player's row: a bool, off by default, live, not debug-only
+  const std::string row = DefinitionOf(header, "mcla_gpu_vendor_denoiser", "bool");
+  Check(!row.empty() && Has(row, "mcla_gpu_vendor_denoiser, false, \""), "mcla_gpu_vendor_denoiser is a bool setting, off by default (the owner's decision until the RR-DECIDE A/B)");
+  Check(!row.empty() && !Has(row, "kDebugOnly") && !Has(row, "kRequiresRestart") && Has(row, "Live.") && Has(row, "DLSS RAY RECONSTRUCTION") && Has(row, "AMD FSR RAY REGENERATION"),
+        "it is a player setting (not debug-only), live (no restart trait), and its help names both rows");
+  Check(Has(header, "inline auto& mcla_gpu_vendor_denoiser = g_gpu.mcla_gpu_vendor_denoiser;") && Has(meta, "{\"mcla_gpu_vendor_denoiser\", \"MCLA/GPU\"},") && Has(manifest, "\"mcla_gpu_vendor_denoiser\": {"),
+        "it has its alias, its meta line and its manifest entry");
+  const size_t rm0 = At(manifest, "\"mcla_gpu_vendor_denoiser\": {");
+  const std::string rentry0 = rm0 == std::string::npos ? std::string() : manifest.substr(rm0, At(manifest, "\"comments\"", rm0) - rm0);
+  Check(Has(rentry0, "\"type\": \"bool\"") && Has(rentry0, "\"default\": \"false\"") && !Has(rentry0, "kDebugOnly") && !Has(rentry0, "kRequiresRestart"), "the manifest entry is the same setting");
+  // the old chooser: still there under its name for the A/B chains, debug-only, with the row's word first
+  const std::string den = DefinitionOf(header, "mcla_gpu_denoiser", "std::string");
+  Check(!den.empty() && Has(den, "mcla_gpu_denoiser, \"row\", \"") && Has(den, "rex::kDebugOnly, rex::Allowed(\"row\", \"auto\", \"rr\", \"ours\")"), "mcla_gpu_denoiser is the debug chooser: a string setting, row by default, with row, auto, rr, ours");
+  Check(!den.empty() && !Has(den, "kRequiresRestart") && Has(den, "Live;") && Has(den, "mcla_gpu_vendor_denoiser") && Has(den, "DLSS RAY RECONSTRUCTION"), "it is live (no restart trait) and its help names the row it overrides");
   Check(Has(header, "inline auto& mcla_gpu_denoiser = g_gpu.mcla_gpu_denoiser;") && Has(meta, "{\"mcla_gpu_denoiser\", \"MCLA/GPU\"},") && Has(manifest, "\"mcla_gpu_denoiser\": {"), "it has its alias, its meta line and its manifest entry");
   const size_t m = At(manifest, "\"mcla_gpu_denoiser\": {");
   const std::string entry = m == std::string::npos ? std::string() : manifest.substr(m, At(manifest, "\"comments\"", m) - m);
-  Check(Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"auto\\\"\"") && Has(entry, "rex::Allowed(\\\"auto\\\", \\\"rr\\\", \\\"ours\\\")") && !Has(entry, "kDebugOnly") && !Has(entry, "kRestart"), "the manifest entry is the same setting");
-  Check(Has(manifest, "DENOISER: who cleans the grain out of the noisy effects") && Has(den, "DENOISER: who cleans the grain out of the noisy effects"), "the help reads the same in the manifest and the header");
+  Check(Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"row\\\"\"") && Has(entry, "rex::Allowed(\\\"row\\\", \\\"auto\\\", \\\"rr\\\", \\\"ours\\\")") && Has(entry, "rex::kDebugOnly") && !Has(entry, "kRequiresRestart"),
+        "the manifest entry is the same setting");
+  Check(Has(manifest, "Debug (A/B): overrides the pause menu's DLSS RAY RECONSTRUCTION / AMD FSR RAY REGENERATION row") && Has(den, "Debug (A/B): overrides the pause menu's DLSS RAY RECONSTRUCTION / AMD FSR RAY REGENERATION row"),
+        "the help reads the same in the manifest and the header");
   // the debug switch: auto by default, four words, still debug-only and restart-only
-  const std::string rrdef = DefinitionOf(header, "mcla_gpu_dlss_rr");
+  const std::string rrdef = DefinitionOf(header, "mcla_gpu_dlss_rr", "std::string");
   Check(!rrdef.empty() && Has(rrdef, "mcla_gpu_dlss_rr, \"auto\", \"") && Has(rrdef, "rex::kDebugOnly, rex::kRequiresRestart, rex::Allowed(\"auto\", \"off\", \"probe\", \"on\")"), "mcla_gpu_dlss_rr is auto by default with four words, still debug-only and restart-only");
   const size_t rm = At(manifest, "\"mcla_gpu_dlss_rr\": {");
   const std::string rentry = rm == std::string::npos ? std::string() : manifest.substr(rm, At(manifest, "\"comments\"", rm) - rm);
   Check(Has(rentry, "\"default\": \"\\\"auto\\\"\"") && Has(rentry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"probe\\\", \\\"on\\\")") && Has(rentry, "rex::kDebugOnly") && Has(rentry, "rex::kRequiresRestart"), "the manifest entry is the same");
-  Check(Before(header, std::string("REX_SET") + "TING(std::string, mcla_gpu_denoiser, ", std::string("REX_SET") + "TING(std::string, mcla_gpu_dlss_rr, "), "the row's setting is defined before the debug switch that overrides it");
-  // the help of the two agree with the rules' words
+  Check(Before(header, std::string("REX_SET") + "TING(bool, mcla_gpu_vendor_denoiser, ", std::string("REX_SET") + "TING(std::string, mcla_gpu_denoiser, ") &&
+            Before(header, std::string("REX_SET") + "TING(std::string, mcla_gpu_denoiser, ", std::string("REX_SET") + "TING(std::string, mcla_gpu_dlss_rr, "),
+        "the row's setting is defined before the chooser, which is before the debug switch that overrides both");
+  // the help of the switch agrees with the rules' words
   Check(Has(rrdef, "overrides the DENOISER row") && Has(rrdef, "auto (the default): the row decides") && Has(rrdef, "off: nothing of it exists whatever the row says"), "the debug switch's help says it overrides the row");
 }
 
@@ -495,11 +674,22 @@ void BuildChecks(const std::string& dir) {
   Check(Has(cmake, "    denoiser_setting.cpp\n"), "the library builds denoiser_setting.cpp");
   Check(Has(cmake, "add_executable(larecomp_denoiser_setting_test EXCLUDE_FROM_ALL denoiser_setting_test.cpp)"), "the test has its CMake target");
   const std::string cpp = ReadFile(dir + "/denoiser_setting.cpp");
-  Check(Has(cpp, "LiveText text(\"mcla_gpu_denoiser\");") && Has(cpp, "rr::Denoiser Setting() { return Parse(Text().Get()); }") && Has(cpp, "g_consumers.fetch_or(bit") && Has(cpp, "g_consumers.fetch_and(~bit"),
-        "the setting is read as a LiveText and the board is atomic");
+  Check(Has(cpp, "LiveText text(\"mcla_gpu_denoiser\");") && Has(cpp, "rr::Denoiser Setting() { return Effective(Chooser().Get(), larecomp::settings::mcla_gpu_vendor_denoiser.Get()); }") && Has(cpp, "g_consumers.fetch_or(bit") &&
+            Has(cpp, "g_consumers.fetch_and(~bit"),
+        "the effective setting is the chooser (a LiveText) and the row's bool, and the board is atomic");
   const std::string h = ReadFile(dir + "/denoiser_setting.h");
-  Check(Has(h, "void NoteConsumer(rr::Consumer consumer, bool on);") && Has(h, "void Publish(const Snapshot& snapshot);") && Has(h, "uint32_t ConsumersOn();"), "the header declares what the effects and the renderer call");
+  Check(Has(h, "void NoteConsumer(rr::Consumer consumer, bool on);") && Has(h, "void Publish(const Snapshot& snapshot);") && Has(h, "uint32_t ConsumersOn();") && Has(h, "rr::Denoiser Setting();"), "the header declares what the effects and the renderer call");
   Check(!Has(h, "#include <windows.h>") && !Has(h, "plume") && !Has(h, "sl.h"), "the header is pure (no Plume, no Streamline, no Windows)");
+  // the device the AMD row is listed by: the name and the Windows build are noted at the start
+  const std::string plan = ReadFile(dir + "/ray_regen_plan.cpp");
+  const std::string plan_h = ReadFile(dir + "/ray_regen_plan.h");
+  const std::string temporal = ReadFile(dir + "/temporal.cpp");
+  Check(Has(plan_h, "void NoteDevice(uint32_t vendor_id, bool d3d12, std::string_view adapter_name, uint32_t windows_build);") && Has(plan_h, "bool RowListed();") && Has(plan, "g_row_listed.store(mcla::gpu::rayregen::RowListed(list), std::memory_order_relaxed);") &&
+            Has(plan, "bool RowListed() { return g_row_listed.load(std::memory_order_relaxed); }"),
+        "the planner notes the card's vendor, name and Windows build once and says whether the pause menu lists the AMD row");
+  Check(Has(temporal, "rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12, device.description().name, WindowsBuildNumber());") && Has(ReadFile(dir + "/device.h"), "uint32_t WindowsBuildNumber();") &&
+            Has(ReadFile(dir + "/device.cpp"), "uint32_t WindowsBuildNumber() { return ReadWindowsBuild().build; }"),
+        "the start hands the planner the adapter's name and the Windows build");
 }
 
 std::string DirOfThisFile() {
@@ -523,7 +713,8 @@ int main(int argc, char** argv) {
   WordChecks();
   GateChecks();
   RowChecks();
-  AutoChecks();
+  PageWidthChecks(dir);
+  EffectiveChecks();
   MenuChecks(dir);
   ConsumerWiringChecks(dir);
   PlanChecks(dir);

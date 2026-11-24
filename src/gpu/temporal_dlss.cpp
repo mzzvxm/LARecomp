@@ -322,8 +322,8 @@ rr::DebugSwitch RrDebugSwitch() {
   return value;
 }
 
-// What the start decided about the Ray Reconstruction plugin, kept for the facts (QueryRayReconstructionLocked): `loadable` is whether a start with the row on AUTO would have loaded it (the row was
-// OURS now: a restart brings it), `files_bad` that the files were looked at and are not right. Set once, by WantRayReconstructionPlugin, before slInit.
+// What the start decided about the Ray Reconstruction plugin, kept for the facts (QueryRayReconstructionLocked): `loadable` is whether a start with the row ON would have loaded it (the row was
+// OFF now: a restart brings it), `files_bad` that the files were looked at and are not right. Set once, by WantRayReconstructionPlugin, before slInit.
 std::atomic<bool> g_rr_loadable{false};
 std::atomic<bool> g_rr_files_bad{false};
 
@@ -358,9 +358,9 @@ bool RrFilesOk(const std::wstring& dir, std::string* why) {
 }
 #endif
 
-// Whether Streamline is started with the Ray Reconstruction plugin (InitLocked; the rules are dlss_rr_rules.h WantRrPlugin): the DENOISER row is not OURS (or the debug switch forces it) and an effect has
+// Whether Streamline is started with the Ray Reconstruction plugin (InitLocked; the rules are dlss_rr_rules.h WantRrPlugin): the DLSS RAY RECONSTRUCTION row is not OFF (or the debug chooser or switch forces it) and an effect has
 // a raw mode, this build has it, its files are in place and signed, the card looks like an RTX one, and on Vulkan DLSS is the saved choice (the device is made through Streamline then). Plugins cannot
-// be added after slInit, so leaving OURS later says "(RESTART)" (denoiser_setting.h). The files are looked at only when the plugin is wanted (a row on OURS costs the player nothing).
+// be added after slInit, so turning the row ON later says "(RESTART)" (denoiser_setting.h). The files are looked at only when the plugin is wanted (a row OFF costs the player nothing).
 bool WantRayReconstructionPlugin(Backend backend, bool looks_rtx, bool dlss_saved_at_start) {
   rr::PluginInputs in;
   in.debug = RrDebugSwitch();
@@ -372,9 +372,9 @@ bool WantRayReconstructionPlugin(Backend backend, bool looks_rtx, bool dlss_save
   g_rr_files_bad.store(false, std::memory_order_relaxed);
 #if defined(LARECOMP_HAS_DLSS_RR)
   in.build_has_rr = true;
-  // What a start with the row on AUTO would do, files taken as fine (a restart would look at them): the row's restart answer.
+  // What a start with the row ON would do, files taken as fine (a restart would look at them): the row's restart answer.
   rr::PluginInputs what_if = in;
-  what_if.setting = rr::Denoiser::kAuto;
+  what_if.setting = rr::Denoiser::kRr;
   what_if.files_ok = true;
   g_rr_loadable.store(rr::WantRrPlugin(what_if), std::memory_order_relaxed);
   if (rr::PluginWantedByChoice(in)) {

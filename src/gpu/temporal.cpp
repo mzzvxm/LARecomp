@@ -243,9 +243,9 @@ void TemporalSystem::Initialize(Device& device, FrameRing& frames, BindlessHeap&
   if (dlss_) {
     dlss_->Probe(device, frames);
   }
-  // AMD FSR Ray Regeneration (perf/RAY-REGEN.md): the card's vendor is noted first (the DENOISER row names its value by it), and the runtime is opened here only where the debug cvar or the row asks for it and
+  // AMD FSR Ray Regeneration (perf/RAY-REGEN.md): the card's vendor, name and the Windows build are noted first (the pause menu lists the AMD FSR RAY REGENERATION row only on a Radeon RX 9000 series card on Windows 11), and the runtime is opened here only where the debug cvar or the row asks for it and
   // the device is a Radeon on Direct3D 12 (never on any other PC); a row that leaves OURS later opens it live (the plan: ray_regen_plan.h).
-  rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12);
+  rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12, device.description().name, WindowsBuildNumber());
   rayregen::StartIfWanted(device, frames);
 }
 
@@ -1733,8 +1733,9 @@ void TemporalSystem::UpdateDenoiserPlan() {
   rr_hit_[0] = rr_hit_[1] = nullptr;  // RR-4: last frame's hit distance images are not this frame's
   rr_bounce_hit_ = nullptr;           // ... nor the bounce light's (CITY-RT G6)
   rr::PlanInputs in;
-  // The row DENOISER (mcla_gpu_denoiser, live) is the master switch. The debug cvar mcla_gpu_dlss_rr (restart) only overrides it: off takes RR away whatever the row says, probe loads the plugin and
-  // logs what it can do, on stands for the row's RR value with the consumer rule lifted (the A/B and cost runs); auto, its default, leaves the row to decide.
+  // The pause menu's row (DLSS RAY RECONSTRUCTION, mcla_gpu_vendor_denoiser, live) is the master switch (denoiser::Setting: the debug chooser mcla_gpu_denoiser overrides it when it says auto, rr or ours). The debug cvar
+  // mcla_gpu_dlss_rr (restart) only overrides that: off takes RR away whatever the row says, probe loads the plugin and logs what it can do, on stands for the row ON with the consumer rule lifted (the A/B
+  // and cost runs); auto, its default, leaves the row to decide.
   if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_dlss_rr.Get(), &in.debug)) {
     in.debug = rr::DebugSwitch::kRow;
   }

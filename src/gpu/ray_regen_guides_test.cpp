@@ -611,7 +611,7 @@ void CheckWiring(const std::string& dir) {
   Check(Has(ssr_h, "const RegenAsk& regen = RegenAsk{}") && Has(ssr_h, "RayRegenSsrPass regen_pass_;") && Has(ssr_h, "FrameRing* frames = nullptr"), "the header: the ask, the pass, the frames that retire its sets");
   // the scene, the temporal system, the renderer
   Check(Has(scene, "temporal_->RegenModes().Ssr()") && Has(scene, "temporal_->FrameJitter(regen_ask.jitter);") && Has(scene, "ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning(), regen_ask)"), "the scene asks the temporal system and hands the effect the ask");
-  Check(Has(temporal, "denoiser::Publish(snapshot);\n  // RG-3") && Has(temporal, "regen_.Update(regen_in);") && Has(temporal, "regen_in.dlss_plan = rr_plan_;") && Has(temporal, "rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12);") &&
+  Check(Has(temporal, "denoiser::Publish(snapshot);\n  // RG-3") && Has(temporal, "regen_.Update(regen_in);") && Has(temporal, "regen_in.dlss_plan = rr_plan_;") && Has(temporal, "rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12, device.description().name, WindowsBuildNumber());") &&
             Has(temporal, "rayregen::StopAll();") && Has(temporal_h, "rayregen::Planner regen_;") && Has(temporal_h, "rr::RawModes RegenModes();"),
         "the plan is made at the frame boundary beside DLSS RR's, the vendor is noted at the start, the runtime stops with the system");
   Check(Has(renderer, "ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_, &frames_);") && Has(renderer, "rayregen::Current().context_bytes != 0 ? \", AMD FSR Ray Regeneration's context \""),
@@ -623,13 +623,14 @@ void CheckWiring(const std::string& dir) {
             Has(plan, "SignalModesOf(f, switch_ssr, switch_car_refl)") && Has(plan, "f.armed = true;"),
         "the planner: the plan is the rules', the context is made while it is on and freed after the hold, the runtime is opened only on a Radeon, the modes are the rules'");
   // the row
-  Check(Has(menu, "bool AmdRow()") && Has(menu, "rg::MenuNameOfRr(rg::Vendor::kAmd)") && Has(menu, "rg::AutoLabel(rg::RowEnabled(gate) && rg::AnyAutoConsumerOn(dn::ConsumersOn()))") && Has(menu, "mcla::gpu::rayregen::RowSuffix(AmdGate())") && Has(menu, "bool DenoiserEnabled() { return AmdRow() ? mcla::gpu::rayregen::RowEnabled(AmdGate()) :") &&
-            Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())") && Has(menu, "const char* const kDenoiserVals[] = {\"auto\", \"rr\", \"ours\"};"),
-        "the DENOISER row on a Radeon: the same stored words, the vendor's middle value, AUTO's label, the AMD gate and its suffix; every other card keeps DLSS RR's");
+  Check(Has(menu, "bool AmdRow() { return DenoiserRowKind() == mcla::gpu::denoiser::VendorRow::kRayRegen; }") && Has(menu, "mcla::gpu::rayregen::RowLabel(AmdGate())") && Has(menu, "mcla::gpu::rayregen::RowSuffix(AmdGate())") &&
+            Has(menu, "mcla::gpu::rayregen::RowEnabled(AmdGate())") && Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())") &&
+            Has(menu, "mcla::gpu::denoiser::RowFor(mcla::gpu::rayregen::RowListed(),") && !Has(menu, "MenuNameOfRr") && !Has(menu, "kDenoiserVals"),
+        "the denoiser row on a Radeon RX 9000 on Windows 11: AMD FSR RAY REGENERATION, ON / OFF, the AMD gate, its suffix and its label; every other listed card keeps DLSS RAY RECONSTRUCTION's");
   // the settings (the three generated files)
   Check(Has(manifest, "\"mcla_gpu_ray_regen_ssr\": {") && Has(header, "i32, mcla_gpu_ray_regen_ssr, 1, \"Debug (A/B, AMD FSR Ray Regeneration") && Has(header, "inline auto& mcla_gpu_ray_regen_ssr = g_gpu.mcla_gpu_ray_regen_ssr;") && Has(meta, "{\"mcla_gpu_ray_regen_ssr\", \"MCLA/GPU\"},"),
         "the A/B setting mcla_gpu_ray_regen_ssr is in the settings header, its alias, the manifest and the meta list");
-  Check(Has(header, "AMD FSR Ray Regeneration (Radeon RX 9000 series cards, Direct3D 12)") && Has(header, "FSR RAY REGEN in the menu"), "the DENOISER setting's own description names AMD FSR Ray Regeneration and the menu word");
+  Check(Has(header, "AMD FSR Ray Regeneration (Radeon RX 9000 series cards, Direct3D 12)") && Has(header, "AMD FSR RAY REGENERATION row (a Radeon RX 9000 series card on Windows 11)"), "the settings' own descriptions name AMD FSR Ray Regeneration and the menu row");
   Check(Has(Read(dir, "CMakeLists.txt"), "ray_regen_plan.cpp"), "the planner is in the library");
 }
 

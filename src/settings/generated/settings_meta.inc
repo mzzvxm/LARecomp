@@ -556,6 +556,7 @@
 {"mcla_gpu_upscaler_sharpness", "MCLA/GPU"},
 {"mcla_gpu_upscaler_zero_jitter", "MCLA/GPU"},
 {"mcla_gpu_validate", "MCLA/GPU"},
+{"mcla_gpu_vendor_denoiser", "MCLA/GPU"},
 {"mcla_gpu_verify_constants", "MCLA/GPU"},
 {"mcla_gpu_volumetrics", "MCLA/GPU"},
 {"mcla_gpu_vol_census", "MCLA/GPU"},

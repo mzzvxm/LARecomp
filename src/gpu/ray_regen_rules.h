@@ -17,7 +17,7 @@
 //
 //   Signals            the seven signals and which of our consumers (rr::Consumer) hands which one over.
 //   Support            the device's part of "can it run" (AMD, Direct3D 12, shader model 6.6), the runtime's part is the version query and a trial context (ray_regen.cpp).
-//   SelectRayRegen     the DENOISER row (AUTO / the vendor's value / OURS) against what the PC and the frame have; ChooseDenoiser puts it beside DLSS RR's plan: AMD Ray Regeneration where it can
+//   SelectRayRegen     the denoiser setting (the player's AMD FSR RAY REGENERATION row is ON = the vendor's value, OFF = OURS; the debug chooser also has AUTO) against what the PC and the frame have; ChooseDenoiser puts it beside DLSS RR's plan: AMD Ray Regeneration where it can
 //                      run, else DLSS RR, else ours (the owner's order, 2026-11-19, extended to AMD 2026-11-22).
 //   SignalModes        which effects write their signal instead of adding their noise to the colour (the twin of rr::RawModesOf; no upscaled frame is needed).
 //   InputMap           each Ray Regeneration input against the Ray Reconstruction guide we already make (shared, converted, new) and the guides Ray Regeneration has no use for.
@@ -40,6 +40,7 @@
 #include <string_view>
 
 #include "dlss_rr_rules.h"
+#include "windows_floor.h"
 
 namespace mcla::gpu::rayregen {
 
@@ -217,6 +218,41 @@ constexpr const char* DeviceVerdictText(DeviceVerdict v) {
   return "?";
 }
 
+// --- who sees the row ------------------------------------------------------------------------------------------------------------------------------------
+
+// The pause menu lists AMD FSR RAY REGENERATION only where this PC can run it at all (owner 2026-11-23: hidden only where the card can never run it; whatever can change, or a setting or an update brings,
+// is a grey row with its reason instead: Gate). That is an AMD card whose name says Radeon RX 9000 series (RDNA 4) on a Windows that is not Windows 10 (the runtime needs Windows 11). This is the device
+// and the system alone, known at the start, so the page's rows never change under the player; the runtime's own answer (an old driver that lists no provider) comes later as the grey " (N/A)".
+// The card's name as the adapter reports it: "AMD Radeon RX 9070 XT", "AMD Radeon(TM) RX 9060 XT". "RX" and four digits that start with 9 and are not followed by another digit; the workstation card
+// "Radeon AI PRO R9700" (also RDNA 4) is not matched: the owner's rule is the RX 9000 series.
+inline bool NameIsRx9000(std::string_view name) {
+  const auto upper = [](char c) { return (c >= 'a' && c <= 'z') ? char(c - 'a' + 'A') : c; };
+  const auto letter_or_digit = [&](char c) { return (upper(c) >= 'A' && upper(c) <= 'Z') || (c >= '0' && c <= '9'); };
+  for (size_t i = 0; i + 2 <= name.size(); ++i) {
+    if (upper(name[i]) != 'R' || upper(name[i + 1]) != 'X') continue;
+    if (i > 0 && letter_or_digit(name[i - 1])) continue;  // "RX" inside a word
+    size_t at = i + 2;
+    if (at < name.size() && name[at] == ' ') ++at;
+    if (at + 4 > name.size() || name[at] != '9') continue;
+    bool digits = true;
+    for (size_t k = 0; k < 4; ++k) digits = digits && name[at + k] >= '0' && name[at + k] <= '9';
+    if (!digits) continue;
+    if (at + 4 < name.size() && name[at + 4] >= '0' && name[at + 4] <= '9') continue;  // five digits: not a Radeon model number
+    return true;
+  }
+  return false;
+}
+struct ListInputs {
+  uint32_t vendor_id = 0;
+  std::string_view adapter_name;
+  uint32_t windows_build = 0;  // the Windows build number; 0 where it cannot be read or this is not Windows (Linux): the runtime's own answer decides there
+};
+inline bool RowListed(const ListInputs& in) {
+  if (in.vendor_id != kVendorAmd) return false;
+  if (!NameIsRx9000(in.adapter_name)) return false;
+  return in.windows_build == 0 || in.windows_build >= windows_floor::kBuildWindows11;
+}
+
 // The runtime's list of providers (ffxQueryDescGetVersions): the context is pinned to one (an override must be used consistently, AMD's FSR API guide), the newest one the application ships; a provider the
 // driver offers ("trailing *" in its name or bit 31 of its id) is taken only when the list has no shipped one. Ties and unparsed versions keep the first of the list. -1: the list is empty.
 struct ProviderVersion {
@@ -297,7 +333,7 @@ constexpr const char* WhyText(Why w) {
 }
 
 struct PlanInputs {
-  rr::Denoiser setting = rr::Denoiser::kAuto;  // the DENOISER row: AUTO, the vendor's value ("rr"), OURS
+  rr::Denoiser setting = rr::Denoiser::kAuto;  // the denoiser setting as the plan reads it (denoiser_setting.h Effective): the vendor's value ("rr": the row ON), OURS (the row OFF), or the debug chooser's AUTO
   rr::DebugSwitch debug = rr::DebugSwitch::kRow;  // the debug cvar's: off, probe, on (the row's value with the consumer rule lifted), auto (the row decides)
   Facts facts;
   uint32_t consumers_on = 0;       // rr::Consumer bits of the effects that run now
@@ -683,28 +719,27 @@ inline uint64_t EstimateBytes(uint32_t signals, uint32_t w, uint32_t h) {
 // --- the row's words ---------------------------------------------------------------------------------------------------------------------------------------
 
 // AMD's naming guidelines (gpuopen.com/amd-fsr-naming-guidelines, read 2026-11-22): the UI name is "AMD FSR Ray Regeneration"; "AMD FSR" is named where the effect is named in a game's options; the version
-// number is not shown beside the name; "FSR" is used only as part of "AMD FSR". The pause menu's lists are 41 characters wide (denoiser_setting.h THE WIDTH): the menu says "FSR RAY REGEN" (13) and
-// "AUTO (FSR RAY REGEN)" (20), the launcher, the wiki and the log the full name.
-inline constexpr const char* kMenuName = "FSR RAY REGEN";
+// number is not shown beside the name; "FSR" is used only as part of "AMD FSR". The row is ON / OFF (owner 2026-11-23) and its label is that name in capitals, "AMD FSR RAY REGENERATION" (24), while it has
+// nothing to say. The pause menu's DISPLAY page is 41 characters wide at most: its widest label plus its widest value (pause_menu.cpp "Page width"), and its widest value is 17, so no label may be over 24
+// (the same rule as city_refl_setting.h's RT CITY REFLECTIONS): while a reason shows after the label ("(D3D12 ONLY)", 13) the name is "RAY REGEN" (9), 22 in all. The launcher, the wiki and the log write the
+// full name always.
+inline constexpr const char* kMenuLabel = "AMD FSR RAY REGENERATION";
+inline constexpr const char* kMenuShortLabel = "RAY REGEN";
 inline constexpr const char* kLauncherName = "AMD FSR Ray Regeneration";
-inline constexpr const char* kLauncherLabel = "Denoiser";
+inline constexpr const char* kLauncherLabel = "AMD FSR Ray Regeneration";
 // AMD's recommended description starts: "AMD FSR Ray Regeneration infers and restores full-quality ray-traced detail from sparse samples."; the rest of ours says what the row does here.
 inline constexpr const char* kLauncherDescription =
     "AMD FSR Ray Regeneration infers and restores full-quality ray-traced detail from sparse samples. It cleans the grain out of the ray traced and reflected light before the upscaler runs, on a Radeon RX 9000 "
-    "series graphics card with Direct3D 12. Ours is the game's own cleanup.";
-// What AUTO comes to, in a sentence (the launcher's line under the row on a Radeon).
-inline constexpr const char* kLauncherAutoDescription = "Auto uses AMD FSR Ray Regeneration where an effect that is on looks better with it, and ours everywhere else.";
+    "series graphics card with Direct3D 12 on Windows 11. Off uses the game's own cleanup.";
 inline constexpr const char* kCreditLine = "AMD FSR Ray Regeneration, Advanced Micro Devices, Inc. (MIT licence). AMD, FSR and Radeon are trademarks of Advanced Micro Devices, Inc.";
-constexpr const char* AutoLabel(bool auto_is_regen) { return auto_is_regen ? "AUTO (FSR RAY REGEN)" : "AUTO (OURS)"; }
-constexpr const char* MenuNameOfRr(Vendor v) { return v == Vendor::kAmd ? kMenuName : "DLSS RR"; }
 
 enum class Gate : uint8_t {
   kRuns,
   kStarting,      // the runtime is being opened (nothing is said)
   kApplying,      // on; the context is being made
-  kNotThisGpu,    // grey: not an AMD card (the row of an RTX card is DLSS RR's: denoiser_setting.h)
+  kHidden,        // no row: not an AMD card (an RTX card has DLSS RAY RECONSTRUCTION's: denoiser_setting.h). RowListed is the menu's own test of whether the PC can ever run it
   kNeedsD3D12,    // grey: an AMD card, but the renderer runs on Vulkan (AMD ships no Vulkan provider for Ray Regeneration)
-  kNotAvailable,  // grey: the runtime offers it for no card of this PC (RDNA 3 and older, an old driver, a shader model below 6.6), or this build has none
+  kNotAvailable,  // grey: the runtime offers it for no card of this PC (an old driver, a shader model below 6.6), or this build has none
   kSetup,         // grey: the DLLs are missing
   kFailed,
   kNotNeeded,     // grey: no effect that uses it is on
@@ -715,7 +750,6 @@ constexpr bool RowEnabled(Gate g) { return g == Gate::kRuns || g == Gate::kStart
 constexpr const char* RowSuffix(Gate g) {
   switch (g) {
     case Gate::kApplying: return " (APPLYING)";
-    case Gate::kNotThisGpu: return " (NO RX 9000)";
     case Gate::kNeedsD3D12: return " (D3D12 ONLY)";
     case Gate::kNotAvailable: return " (N/A)";
     case Gate::kSetup: return " (SETUP)";
@@ -724,10 +758,11 @@ constexpr const char* RowSuffix(Gate g) {
     default: return "";
   }
 }
+// The row's label by state: the whole name while the row says nothing, "RAY REGEN" before a reason (the page's width: kMenuShortLabel above).
+constexpr const char* RowLabel(Gate g) { return RowSuffix(g)[0] == '\0' ? kMenuLabel : kMenuShortLabel; }
 constexpr const char* LauncherReason(Gate g) {
   switch (g) {
     case Gate::kApplying: return "AMD FSR Ray Regeneration is being prepared";
-    case Gate::kNotThisGpu: return "Needs a Radeon RX 9000 series graphics card";
     case Gate::kNeedsD3D12: return "Needs Direct3D 12 (AMD FSR Ray Regeneration has no Vulkan version)";
     case Gate::kNotAvailable: return "Not available on this graphics card or driver";
     case Gate::kSetup: return "Setup needed: the AMD FSR Ray Regeneration files are missing";
@@ -743,7 +778,7 @@ inline Gate GateOf(const Facts& facts, rr::DebugSwitch debug, uint32_t consumers
   if (facts.build_has) {
     if (facts.device == DeviceVerdict::kNotD3D12) return Gate::kNeedsD3D12;
     if (facts.device == DeviceVerdict::kShaderModelTooLow) return Gate::kNotAvailable;
-    if (facts.device != DeviceVerdict::kOk) return Gate::kNotThisGpu;
+    if (facts.device != DeviceVerdict::kOk) return Gate::kHidden;
   }
   if (debug == rr::DebugSwitch::kOff) return Gate::kNotAvailable;
   // Nothing has a signal mode (the shipped table before RG-3): nothing could use it, so nothing is "not available".
@@ -762,7 +797,7 @@ inline Gate GateOf(const Facts& facts, rr::DebugSwitch debug, uint32_t consumers
     case Why::kNotProbed: return Gate::kStarting;
     case Why::kFilesMissing: return Gate::kSetup;
     case Why::kFailed: return Gate::kFailed;
-    case Why::kNotThisGpu: return Gate::kNotThisGpu;
+    case Why::kNotThisGpu: return Gate::kHidden;
     default: return Gate::kNotAvailable;
   }
   if (debug == rr::DebugSwitch::kRow && !AnyConsumerOn(consumers_on, table)) return Gate::kNotNeeded;

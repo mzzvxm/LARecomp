@@ -472,7 +472,8 @@ inline uint32_t RuntimePhaseCount(uint32_t from_runtime, double ratio, bool rr_m
 
 // --- who does the denoising ------------------------------------------------------------------------------------------------------------------------------
 
-// The row DENOISER (perf/DLSS-RR.md section 5).
+// The denoiser setting the rules take (perf/DLSS-RR.md section 5): the EFFECTIVE word of denoiser_setting.h Effective. The player's row (DLSS RAY RECONSTRUCTION / AMD FSR RAY REGENERATION on the pause menu's DISPLAY page) is
+// ON = kRr, OFF = kOurs; kAuto is only the debug chooser's (mcla_gpu_denoiser = auto: RR where an effect RR is known to clean better is on).
 enum class Denoiser : uint8_t { kAuto, kRr, kOurs };
 // The debug cvar mcla_gpu_dlss_rr (restart): auto (the default; the row DENOISER decides), off = nothing of RR exists (the plugin is not asked for, whatever the row says), probe = the plugin loads and
 // its support and sizes are logged but no frame uses it, on = RR is chosen as the row's RR value would choose it AND the row's consumer rule is lifted (RR on a frame with nothing to denoise: the A/B runs).

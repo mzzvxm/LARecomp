@@ -108,6 +108,8 @@ const char* ObjectNamesReason(bool debug_layer) {
 
 }  // namespace
 
+uint32_t WindowsBuildNumber() { return ReadWindowsBuild().build; }
+
 Device::~Device() {
   Shutdown();
 }

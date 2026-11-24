@@ -238,4 +238,7 @@ class Device {
 // The pipeline prebuild (pipeline_prebuild.h) opens its device the same way.
 Device::Options PlannedDeviceOptions(const Backend* forced);
 
+// The Windows build number (22000 and later is Windows 11), 0 where it cannot be read or this is not Windows. The pause menu's AMD FSR RAY REGENERATION row is listed only on Windows 11 (ray_regen_rules.h RowListed).
+uint32_t WindowsBuildNumber();
+
 }  // namespace mcla::gpu

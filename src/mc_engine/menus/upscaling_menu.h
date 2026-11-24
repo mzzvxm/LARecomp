@@ -1,17 +1,18 @@
 #pragma once
 //
-// The pause menu's upscaling rows (UPSCALING page), next to nothing but themselves: the rows, what
-// greys them, and what the POST AA / MSAA rows (the NATIVE renderer's own anti-aliasing, on the IMAGE
+// The pause menu's upscaling rows (on the DISPLAY page, after its output rows: the owner folded the old UPSCALING page into DISPLAY, 2026-11-23), next to nothing but themselves: the rows,
+// what greys them, and what the POST AA / MSAA rows (the NATIVE renderer's own anti-aliasing, on the IMAGE
 // QUALITY page) say while an upscaler does its job.
 //
-// Four rows, always the same four on NATIVE (what changes is each one's list, live):
+// Three rows on every PC of the NATIVE renderer, and a fourth where the graphics card has a denoiser of its maker (what changes is each one's list, live):
 //
 //   UPSCALING     OFF / FSR 1 / FSR 3.1 / FSR 4 / DLSS    mcla_gpu_upscaler + mcla_gpu_fsr
 //   <mode row>    named for the choice, below
 //   SHARPNESS     OFF / 0.2 .. 1 (FSR 3.1, FSR 4) or 0.2 .. 1 (FSR 1); grey for OFF and DLSS
-//   DENOISER      AUTO / DLSS RR / OURS                   mcla_gpu_denoiser  (live; gpu/denoiser_setting.h: grey with a reason
-//                 where NVIDIA's DLSS Ray Reconstruction cannot be used; "(RESTART)" where the plugin must be loaded at the next
-//                 start; "DLSS RR" is NVIDIA's name shortened for the page's width)
+//   DLSS RAY RECONSTRUCTION (a GeForce RTX card) or AMD FSR RAY REGENERATION (a Radeon RX 9000 series card on Windows 11)
+//                 ON / OFF (a checkbox)                   mcla_gpu_vendor_denoiser  (live; gpu/denoiser_setting.h, ray_regen_rules.h: OFF is our own
+//                 denoisers, ON the maker's; grey with a reason where it cannot run now; "(RESTART)" where DLSS Ray Reconstruction's plugin must be
+//                 loaded at the next start; no row at all on any other card and on the XENIA renderer, which use ours)
 //
 // UPSCALING lists only what this PC runs: FSR 1 (the renderer's own, on the present) always,
 // FSR 3.1 and FSR 4 where their FidelityFX provider loads, DLSS on an NVIDIA RTX card. DLSS whose
@@ -90,15 +91,10 @@
 
 #include "menu_items.h"
 
-// The first rows of the UPSCALING page (MenuDef::extra, through UpscalingPageRows in frame_generation_menu.h,
-// which puts frame generation's after them). 0 and a null pointer without the Plume renderer's code in the build.
+// The first upscaling rows of the DISPLAY page (MenuDef::extra, through UpscalingPageRows in frame_generation_menu.h,
+// which puts frame generation's after them): 3 rows, or 4 where this PC has the denoiser row. 0 and a null pointer without the Plume renderer's code in the build.
+// (The relayout hook of the page, UpscalingMenuRelayout, is in frame_generation_menu.h with the combined table it watches.)
 const mcla_menu::ItemDef* UpscalingMenuRows(int& count);
-
-// Whether the rows UpscalingMenuRows returns are not the ones the page was built with (MenuDef::
-// relayout). They never are: the four rows are the same whatever the PC can run, and what changes
-// (the choices UPSCALING lists, a mode row's list) is read each time a row is drawn. Kept as the
-// UPSCALING page's hook for a row set that does change.
-bool UpscalingMenuRelayout(bool apply);
 
 namespace mcla_menu {
 
