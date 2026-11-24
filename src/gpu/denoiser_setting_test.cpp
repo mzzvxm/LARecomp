@@ -689,6 +689,7 @@ void BuildChecks(const std::string& dir) {
   const std::string plan_h = ReadFile(dir + "/ray_regen_plan.h");
   const std::string temporal = ReadFile(dir + "/temporal.cpp");
   Check(Has(plan_h, "void NoteDevice(uint32_t vendor_id, bool d3d12, std::string_view adapter_name, uint32_t windows_build);") && Has(plan_h, "bool RowListed();") && Has(plan, "g_row_listed.store(mcla::gpu::rayregen::RowListed(list), std::memory_order_relaxed);") &&
+            Has(plan, "list.vendor_id = vendor_id;") && Has(plan, "list.adapter_name = adapter_name;") && Has(plan, "list.windows_build = windows_build;") &&
             Has(plan, "bool RowListed() { return g_row_listed.load(std::memory_order_relaxed); }"),
         "the planner notes the card's vendor, name and Windows build once and says whether the pause menu lists the AMD row");
   Check(Has(temporal, "rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12, device.description().name, WindowsBuildNumber());") && Has(ReadFile(dir + "/device.h"), "uint32_t WindowsBuildNumber();") &&
