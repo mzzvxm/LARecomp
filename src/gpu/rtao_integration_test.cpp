@@ -51,6 +51,12 @@ std::string Read(const fs::path& file) {
   return code;
 }
 
+size_t count(const std::string& code, std::string_view needle) {
+  size_t found = 0;
+  for (size_t at = code.find(needle); at != std::string::npos; at = code.find(needle, at + needle.size())) ++found;
+  return found;
+}
+
 struct Checks {
   int total = 0;
   int failed = 0;
@@ -95,8 +101,6 @@ void FrameChecks(Checks& checks, const fs::path& gpu) {
   const auto order = Read(gpu / "frame_order.h");
   const auto rules = Read(gpu / "rtao_rules.h");
   const auto trace = Read(gpu / "rtao.cpp");
-  const auto filter = Read(gpu / "rtao_denoise.cpp");
-  const auto compose = Read(gpu / "rtao_compose.cpp");
   const auto has = [&](const std::string& code, const char* pattern, std::string_view what) {
     checks.Expect(std::regex_search(code, std::regex(pattern)), what);
   };
@@ -108,16 +112,37 @@ void FrameChecks(Checks& checks, const fs::path& gpu) {
   checks.Expect(trace_call < filter_call && filter_call < visibility && visibility < compose_call &&
                     compose_call < contact && contact != std::string::npos,
                 "AO calls trace, filter, visibility, compose, contact in frame order");
+  // The three spans are real PassTiming marks in rtao.cpp (a name that only a constant or a comment holds puts nothing in the summary), each once, and one closing mark ends the last.
   for (const auto* label : {"rtao trace", "rtao denoise", "rtao compose"}) {
     // CHECK: verify that all three labels survive the full pass-timing summary on the first cost run.
     const std::string literal = "\"" + std::string(label) + "\"";
+    const std::string mark = "timing_->Mark(list, " + literal + ");";
     checks.Expect(order.contains(literal), std::string("frame-order label ") + label);
-    checks.Expect(ao.contains(literal) || trace.contains(literal) || filter.contains(literal) || compose.contains(literal),
-                  std::string("renderer label ") + label);
+    checks.Expect(count(trace, mark) == 1, std::string("rtao.cpp marks the span ") + label + " once");
   }
+  checks.Expect(count(trace, "\"after rtao\"") == 1 && count(trace, "timing_->Mark(list, \"after rtao\");") == 1,
+                "one closing mark ends the RTAO span");
+  const auto denoise_mark = trace.find("timing_->Mark(list, \"rtao denoise\");");
+  const auto denoise_record = trace.find("denoise_->Record(frame)");
+  checks.Expect(denoise_mark != std::string::npos && denoise_mark < denoise_record, "the denoise span opens before the denoiser records");
+  const auto compose_mark = trace.find("timing_->Mark(list, \"rtao compose\");");
+  const auto compose_record = trace.find("compose_->Record(frame, guides)");
+  checks.Expect(compose_mark != std::string::npos && compose_mark < compose_record, "the compose span opens before the compose records");
+  // The handoffs between the four branches.
+  checks.Expect(count(trace, "rtao_setting::NotePassBuilt(available());") == 1 && count(trace, "rtao_setting::NotePassBuilt(false);") == 1,
+                "RtAo publishes its availability to the setting's gate and clears it at shutdown");
+  checks.Expect(trace.contains("facts.scale = rtao_denoise::RawScale();"), "a raw frame traces at the denoise setting's scale");
+  has(trace, R"rx(const\s+RtAoCompose::Guides\s+guides\s*=\s*\{\s*\.raw\s*=\s*&signal_\s*,\s*\.id_share\s*=\s*&id_share_\s*,\s*\.stencil_slot\s*=\s*stencil_slot_)rx",
+      "the compose gets the raw signal, the ID guide and the stencil plane");
+  has(ao, R"rx(\.car_term_slot\s*=\s*rt\.recorded\s*&&\s*rt\.occlusion\s*&&\s*rtao_->blend_car_)rx", "the car term reaches the compose only in the A/B arm");
+  has(ao, R"rx(in\.compute_read\s*=\s*rtao_runs\s*&&\s*in\.occlusion;)rx", "the car image is made compute-readable where the compose reads it");
+  has(Read(gpu / "scene.cpp"), R"rx(ao_->SetRtAoRawMode\(\s*ao_->rtao_wanted\(\)\s*&&\s*temporal_\s*&&\s*temporal_->RawModes\(\)\.RtAo\(\)\s*\))rx",
+      "the scene hands the AO the Ray Reconstruction raw mode before it plans the frame");
   has(order, R"rx(\bkRtAoSignal\s*=\s*1u\s*<<\s*31\b)rx", "trace signal uses bit 31");
-  has(ao, R"rx(car_rt_ao::OcclusionOn\s*\(\s*plan\.occlusion\s*,\s*plan\.rtao\.on\s*,)rx",
+  has(ao, R"rx(car_rt_ao::OcclusionOn\s*\(\s*plan\.occlusion\s*,\s*rtao_runs\s*,\s*blend_car\s*\))rx",
       "car occlusion folds only in an RTAO frame");
+  has(ao, R"rx(record_car\s*\(\s*plan\.rtao\.on\s*\)\s*;)rx", "the first car pass of the frame knows whether RTAO runs");
+  has(ao, R"rx(record_car\s*\(\s*false\s*\)\s*;)rx", "the Ultra retry records the car pass with its occlusion back");
   has(ao, R"rx(if\s*\(\s*rtao_slot\s*!=\s*(?:RtAo::)?kNoSlot\s*\)\s*\{?\s*ao_slot\s*=\s*rtao_slot)rx",
       "a valid RTAO slot replaces the existing AO term");
   has(rules, R"rx(if\s*\(\s*!in\.wanted\s*\)[^;{}]*Fallback::kNotWanted)rx",

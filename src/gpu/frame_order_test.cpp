@@ -796,10 +796,6 @@ void CheckSources(const std::string& gpu) {
   // the PassTiming labels exist in their files
   for (const Row& r : Rows()) {
     if (r.label[0] == '\0') continue;
-#if !__has_include("rtao_compose.h")
-    // STUB (R2 owns): the trace branch checks both label files once the consumers land.
-    if (r.step == Step::kRtAoFilter || r.step == Step::kRtAoCompose) continue;
-#endif
     Check(r.label_file[0] != '\0' && Has(text_of(r.label_file), std::string("\"") + r.label + "\""), std::string(r.name) + ": the PassTiming label \"" + r.label + "\" is in " + r.label_file);
   }
   // GB-I3: the other marks of a pass and its closing mark exist in the file, after the pass's first label, in the table's order; the closing mark is the last
