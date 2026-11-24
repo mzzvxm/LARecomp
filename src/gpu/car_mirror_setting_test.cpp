@@ -237,7 +237,7 @@ void HostChecks(const std::string& dir) {
   const std::string cpp = ReadFile(dir + "/car_mirror_rt.cpp");
   Check(Has(cpp, "cm::Wanted(setting, true, gpu_class::CurrentRtClass())") && Has(cpp, "cm::LimitsFor(gpu_class::CurrentRtClass(), int("), "the host reads the setting through the pass's rule, with the ray tracing tier's class");
   const std::string tier = ReadFile(dir + "/rt_tier.h");
-  Check(Has(tier, "kCarMirrorRt,") && Has(tier, "inline constexpr int kRtEffectCount = 6;") && Has(tier, "{\"mcla_gpu_car_mirror_rt\", \"off\", \"off\", \"on\"},"), "rt_tier.h has the effect, with its cells");
+  Check(Has(tier, "kCarMirrorRt,") && Has(tier, "inline constexpr int kRtEffectCount = 7;") && Has(tier, "{\"mcla_gpu_car_mirror_rt\", \"off\", \"off\", \"on\"},"), "rt_tier.h has the effect, with its cells");
 }
 
 void BuildChecks(const std::string& dir) {

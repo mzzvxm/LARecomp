@@ -543,6 +543,13 @@ void CheckIntegratedGpuDefaults() {
     for (int i = 0; i < kRtEffectCount; ++i) {
       const RtEffect effect = static_cast<RtEffect>(i);
       const std::string name = std::string(RtCvarName(effect)) + ": " + what;
+      if (effect == RtEffect::kRtAo) {
+        // The occlusion's cells defer to the class table (rtao_setting.h Decide): the Low class's cell is off, and a Low class never reaches the strong rung's `rt`.
+        CheckEq(ResolveRtFor(cls.cls, tier.tier, effect, "auto"), "", name + ": the cell defers to the class table");
+        CheckEq(std::string(CellFor(Effect::kAmbientOcclusion, cls.cls, false)), "off", name + ": the class table's cell is off");
+        CheckEq(ResolveRtFor(cls.cls, RtTier::kStrong, effect, "auto"), "", name + ": it defers even when a test forces the tier strong (the Low class has no strong rung)");
+        continue;
+      }
       CheckEq(ResolveRtFor(cls.cls, tier.tier, effect, "auto"), "off", name + ": auto is off");
       CheckEq(AutoLabelRtFor(cls.cls, tier.tier, effect), "AUTO (OFF)", name + ": the pause row's label is AUTO (OFF)");
       CheckEq(ResolveRtFor(cls.cls, RtTier::kStrong, effect, "auto"), "off", name + ": auto is off even when a test forces the tier strong");
