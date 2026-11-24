@@ -60,7 +60,7 @@ Schedule& g_sched = larecomp::Leak<Schedule>();
 enum class TakePhase : uint8_t { kIdle, kWaitReady, kSeeking, kRecording, kEnding };
 struct TakeJob {
     TakePhase phase = TakePhase::kIdle;
-    double fps = 0.0, from = 0.0, to = 0.0;
+    double fps = 0.0, from = 0.0;
     CaptureSpec spec;
     uint64_t since = 0;
     uint64_t finished_seen = 0;
@@ -208,16 +208,17 @@ void RegisterCapture() {
             if (!sink.empty() && sink != "none" && sink != "ffmpeg" && sink != "png" && sink != "raw") return r.Fail(ErrorCode::kBadArgs, "take.render: 'sink' must be none, ffmpeg, png or raw");
             const double from = req.args.NumberOr("from", 0.0);
             double to = req.args.NumberOr("to", scene ? scene->Duration() : -1.0);
-            if (!(from >= 0.0)) return r.Fail(ErrorCode::kBadArgs, "take.render: 'from' must be 0 or more");
-            if (!(to > from)) return r.Fail(ErrorCode::kBadArgs, to < 0.0 ? "take.render: the scene has no `end`: give 'to'" : "take.render: 'to' must be after 'from'");
+            if (!std::isfinite(from) || from < 0.0) return r.Fail(ErrorCode::kBadArgs, "take.render: 'from' must be a finite time of 0 or more");
+            if (!std::isfinite(to) || to <= from) return r.Fail(ErrorCode::kBadArgs, to < 0.0 ? "take.render: the scene has no `end`: give 'to'" : "take.render: 'to' must be a finite time after 'from'");
             if (scene && scene->Duration() >= 0.0 && to > scene->Duration() + 1e-9) return r.Fail(ErrorCode::kBadArgs, "take.render: 'to' is past the scene's end");
             g_take = TakeJob{};
             g_take.phase = TakePhase::kWaitReady;
             g_take.fps = fps;
             g_take.from = from;
-            g_take.to = to;
             g_take.spec.name = req.args.StringOr("name", "");
             g_take.spec.sink = sink;
+            g_take.spec.t0 = from;
+            g_take.spec.end_scene_t = to;
             g_take.name = g_take.spec.name;
             g_take.since = internal::TickCount();
             g_take.finished_seen = CaptureGetStatus().finished;
@@ -235,7 +236,7 @@ void RegisterCapture() {
         },
         MakeSchema("capture", "render a take over a stretch of the scene: the scene restarts, settles, runs from `from` to `to`; events take.progress and take.done",
                    {Arg("fps", ArgType::kNumber, true), Arg("sink", ArgType::kString, false, "none, ffmpeg, png or raw (default the capture setting's)"), Arg("name", ArgType::kString, false),
-                    Arg("from", ArgType::kNumber, false, "default 0"), Arg("to", ArgType::kNumber, false, "default the scene's end")},
+                    Arg("from", ArgType::kNumber, false, "first frame's exact scene time, default 0"), Arg("to", ArgType::kNumber, false, "exclusive end, default the scene's end")},
                    "{name, fps, sink, from, to}"));
 
     RegisterCommand(
@@ -362,7 +363,7 @@ void TickCaptureHandlers() {
                 f.Set("frames", st.frames);
                 PublishEvent("take.progress", std::move(f));
             }
-            if (tr.t >= j.to - 1e-9 || tr.state == SceneState::kFinished) {
+            if (st.finished != j.finished_seen) {
                 CaptureDirectorRequest(0.0, CaptureSpec{});
                 j.phase = TakePhase::kEnding;
             }

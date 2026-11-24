@@ -32,7 +32,7 @@
 
 namespace mc::cinematic {
 
-inline constexpr uint64_t kNoFrame = ~0ull;
+inline constexpr uint64_t kNoClockFrame = ~0ull;
 
 // ---------------------------------------------------------------------------------------------------------------- game thread
 
@@ -59,6 +59,11 @@ void CaptureOnSwap();
 // A take is running (the clock, the readback and the gate follow it).
 bool CaptureTakeActive();
 
+// Scene seconds for this update of a take, or -1. The optional frame index is relative to the start of the take. Game thread.
+double CapturePinnedSceneTime(uint64_t* frame = nullptr);
+// A running scene was stopped, replaced, or could not apply its pinned update. Game thread.
+void CaptureSceneInterrupted();
+
 // The scene's request (the capture applier): a take at this many frames a second, or 0 for none.
 void CaptureSceneRequest(double fps);
 
@@ -69,6 +74,9 @@ struct CaptureSpec {
     std::string name;
     std::string sink;
     bool state_log = false;
+    double t0 = -1.0;             // exact first scene time when requested by the Director
+    double end_scene_t = -1.0;    // exclusive upper bound for the Director's take range
+    double request_scene_t = -1.0;  // the authored capture key, when the request comes from a scene
 };
 void CaptureSceneSpec(const CaptureSpec& spec);
 
@@ -97,7 +105,7 @@ struct StillResult {
 // True (and `out` filled) once the still with that id has finished, written or failed.
 bool CaptureStillPoll(uint64_t id, StillResult* out);
 
-// A take the Director asks for (take.render): the same as a scene's `capture fps` key (a scene's own request outranks it); fps 0 ends it. `spec` names it.
+// An explicit take (take.render) takes precedence over a scene key. FPS 0 clears the request.
 void CaptureDirectorRequest(double fps, const CaptureSpec& spec);
 
 struct CaptureStatus {
@@ -129,9 +137,9 @@ uint64_t UpdateCount();
 
 // Milliseconds on the scene clock: the steady clock, or, during a take (with mcla_capture_virtual_clock on), the take's frames
 // times its step, started where the steady clock was when the take began, so a value kept across the start of a take stays
-// comparable. `frame`: the caller's own frame counter (the renderer's guest frame); kNoFrame: the game thread's update counter.
+// comparable. `frame`: the caller's own frame counter (the renderer's guest frame); kNoClockFrame: the game thread's update counter.
 // Any thread.
-double SceneClockNowMs(uint64_t frame = kNoFrame);
+double SceneClockNowMs(uint64_t frame = kNoClockFrame);
 int64_t SceneClockNowNs();
 // Changes whenever the clock switches between the steady and the virtual one (a take starts or ends): what a pacing schedule
 // built on SceneClockNowNs has to start again at.

@@ -47,6 +47,27 @@ double FpsForStepTicks(uint64_t ticks);
 // The step in milliseconds for `ticks`.
 double StepMsForTicks(uint64_t ticks);
 
+// Scene time uses the nominal video/audio step. The guest timer receives that step rounded to guest ticks.
+struct TakeSceneClock {
+    double t0 = 0.0;
+    double step = 0.0;
+
+    double Time(uint64_t frame) const {
+        const double offset = static_cast<double>(frame) * step;
+        return t0 + offset;
+    }
+    // The Director's range is half-open. A scene's end can itself be sampled.
+    bool PastEnd(uint64_t frame, double end, double duration) const {
+        const double t = Time(frame);
+        return (end >= 0.0 && t >= end) || (duration >= 0.0 && t > duration);
+    }
+};
+
+// A request can name its exact first scene time. Otherwise use the first grid point strictly after the request.
+TakeSceneClock PlanTakeSceneClock(double request_time, double fps, double requested_t0 = -1.0);
+// Limit an ordinary scene update so it visits the authored capture key before the take's first update.
+double StepToTakeKey(double scene_t, double dt, double key, bool ready_opened);
+
 // ---------------------------------------------------------------------------------------------------------------- the tag
 
 // A frame's tag, handed from the swap thread to the present record: the update the frame shows in the low 62 bits, and

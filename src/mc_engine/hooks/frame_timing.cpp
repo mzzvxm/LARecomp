@@ -602,11 +602,10 @@ void MCLAFrameDelta(PPCRegister& r8) {
 //                 flow. Does the same substitution out of f11, so f11 is
 //                 rewritten with the real delta instead.
 //
-// Returns true to take the jump. Baboon's build jumped unconditionally; gating
-// it on real_frame_delta is the only change, and it makes the cvar actually turn the whole
-// thing off instead of leaving half of it live.
+// Returns true to take the jump. A capture or an explicit fixed step also needs to keep the
+// delta installed by MCLAFrameDelta.
 bool MCLAUseRealDelta() {
-    return larecomp::settings::real_frame_delta.Get();
+    return larecomp::settings::real_frame_delta.Get() || mc::cinematic::FixedStepActive();
 }
 
 // 0x821BDB90, after `lfs f11, 0x20(r3)` has loaded the fixed timestep. f11 feeds
@@ -614,7 +613,7 @@ bool MCLAUseRealDelta() {
 // replacing it with [r3+0x58] (the measured unscaled delta stored at 0x821BDAF8)
 // publishes the real frame time down this path too.
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {
-    if (!larecomp::settings::real_frame_delta.Get()) return;
+    if (!MCLAUseRealDelta()) return;
     if (TimingLogEnabled())
         g_fixedstep_hits.fetch_add(1, std::memory_order_relaxed);
     auto* base = larecomp::guest::Membase();

@@ -471,7 +471,7 @@ void JsonWriter::Double(double value) {
         return;
     }
     char buf[40];
-    std::snprintf(buf, sizeof(buf), "%.10g", value);
+    std::snprintf(buf, sizeof(buf), "%.17g", value);
     out_ += buf;
 }
 
@@ -516,6 +516,7 @@ std::string BuildTakeJson(const TakeReport& r) {
         j.Field("copy", r.scene_copy);
         j.Field("fnv64", r.scene_fnv64);
         j.Field("first_frame_scene_t", r.first_scene_t);
+        j.Field("step_s", r.scene_step_s);
         j.EndObject();
     } else {
         j.Null();  // a take from the debug setting, no scene

@@ -96,6 +96,33 @@ void TestStep() {
     }
 }
 
+void TestTakeSceneClock() {
+    const auto on_key = PlanTakeSceneClock(12.0, 60.0);
+    const auto earlier = PlanTakeSceneClock(12.0001, 60.0);
+    const auto later = PlanTakeSceneClock(12.000604, 60.0);
+    CheckNum(on_key.t0, 721.0 / 60.0, "an on-grid key starts at the next grid point", 0.0);
+    Check(earlier.t0 == later.t0 && earlier.t0 == on_key.t0, "key arrivals within the same step pin the same time");
+    CheckNum(PlanTakeSceneClock(0.0, 60.0).t0, 1.0 / 60.0, "a key at zero starts one step later", 0.0);
+    CheckNum(PlanTakeSceneClock(0.3, 10.0).t0, 0.4, "a decimal grid key rounds to its grid point before choosing the next", 0.0);
+    CheckNum(PlanTakeSceneClock(0.29999, 10.0).t0, 3.0 / 10.0, "an off-grid key starts at the next grid point", 1e-16);
+
+    const auto explicit_start = PlanTakeSceneClock(12.005, 59.94, 3.123456789123456);
+    CheckNum(explicit_start.Time(0), 3.123456789123456, "an explicit start is used exactly", 0.0);
+    CheckNum(PlanTakeSceneClock(0.02, 60.0, 0.0).Time(0), 0.0, "zero is a valid explicit start", 0.0);
+    CheckNum(explicit_start.step, 1.0 / 59.94, "take time uses the video and audio rate", 0.0);
+    CheckNum(explicit_start.Time(50'000), 3.123456789123456 + 50'000 * (1.0 / 59.94), "long takes use direct frame indexing", 0.0);
+
+    const auto range = PlanTakeSceneClock(5.0, 32.0, 5.0);
+    Check(!range.PastEnd(31, 6.0, -1.0) && range.PastEnd(32, 6.0, -1.0), "the Director range contains 32 frames with an exclusive end");
+    Check(!range.PastEnd(32, -1.0, 6.0) && range.PastEnd(33, -1.0, 6.0), "the scene end is included only if it is on the take grid");
+    Check(!range.PastEnd(100'000, -1.0, -1.0), "a take without an end can continue");
+
+    CheckNum(StepToTakeKey(11.99, 0.033, 12.0, false), 0.01, "a late update reaches the authored key without going past it");
+    CheckNum(StepToTakeKey(11.0, 0.033, 12.0, false), 0.033, "ordinary updates before the key keep their step");
+    CheckNum(StepToTakeKey(0.0, 0.033, 0.0, true), 0.0, "a capture at zero waits on the key when readiness opens");
+    CheckNum(StepToTakeKey(12.0, 0.033, 12.0, false), 0.033, "regular playback can leave a key when no take started");
+}
+
 // ---------------------------------------------------------------------------------------------------------------- the tag
 
 void TestTag() {
@@ -555,6 +582,7 @@ void TestSink() {
 
 int main() {
     TestStep();
+    TestTakeSceneClock();
     TestTag();
     TestHandOver();
     TestGate();

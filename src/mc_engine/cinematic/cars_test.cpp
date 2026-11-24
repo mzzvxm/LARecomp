@@ -2031,6 +2031,9 @@ void TestStillUpdates() {
     for (int i = 0; i < 363; ++i) x.Take(true, 6.5);
     for (int i = 0; i < 371; ++i) y.Take(true, 6.5);
     Check(x.Take(false, 6.5 + 1.0 / 60.0) == y.Take(false, 6.5 + 1.0 / 60.0), "a hold of 363 updates and a hold of 371 leave the same numbers behind");
+    x.Take(false, 6.6);
+    Check(x.Pin(0) == 0 && y.Pin(0) == 0, "frame zero of a take uses the same seed after different amounts of preview");
+    Check(x.Pin(42) == 42 && x.Take(false, 0.0) == 43, "the running count resumes after the last pinned take frame");
 }
 
 // ---------------------------------------------------------------------------------------------------------------- the player's place, and cars near others (SCENE-PLAYER-POSE)

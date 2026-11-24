@@ -97,6 +97,7 @@
 #include "mc_engine/gameplay/time_of_day.h"
 #include "larecomp_log.h"
 #include "capture_mode.h"
+#include "capture_core.h"
 #include "native_call.h"
 #include "state_log.h"
 
@@ -627,6 +628,7 @@ void FlushState(const uint8_t* base);  // below, with the state line
 
 // Everything the scene changed goes back: the world, the settings, the other packages' tracks.
 void ReleaseAll(const char* why) {
+    CaptureSceneInterrupted();
     uint8_t* base = Membase();
     if (base) FlushState(base);  // the last update's state line, before the hand-back line
     LARECOMP_APP_INFO("[scene] handing the game back ({})", why);
@@ -642,6 +644,7 @@ void ReleaseAll(const char* why) {
 
 // The cvars and the other packages' tracks of the scene that is going; the world stays as it is until the next one says.
 void ReleaseEvents() {
+    CaptureSceneInterrupted();
     statelog::SceneEnd();
     RestoreCvars();
     EndAppliers();
@@ -912,6 +915,7 @@ void Step(uint8_t* base) {
     // The Director's hold: the clock does not move for a pause or a seek (except in the updates of a step). Before t = 0 the clock also waits until the scene's
     // cars are made and the streaming is done (the ready gate: a camera attached to a car that is still being made would hold the origin).
     const bool hold_clock = g.dir_held && g.dir_steps == 0;
+    const bool was_ready = g.ready_open;
     bool gate_wait = false;
     if (!g.ready_open && g.clock.state() == SceneClock::State::kRunning && g.clock.time() <= 0.0 && g.dir_pin < 0.0) {
         const bool settled = g.updates - g.begin_update >= 4 && g_ready_gate && g_ready_gate();
@@ -926,10 +930,25 @@ void Step(uint8_t* base) {
             gate_wait = true;
         }
     }
-    SceneClock::Step st = g.clock.Advance(ready, paused || hold_clock || gate_wait, (std::isfinite(dt) && dt > 0.0f) ? static_cast<double>(dt) : 0.0, duration);
-    double still = larecomp::settings::mcla_scene_t.Get();
-    if (still < 0.0) still = g.dir_pin;
-    if (still >= 0.0 && g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(still, duration);
+    SceneClock::Step st;
+    const double take_t = CapturePinnedSceneTime();
+    if (take_t >= 0.0) {
+        if (!ready || paused || hold_clock || gate_wait) CaptureSceneInterrupted();
+        // The gate ends the take before it would step past the scene. Keep the last sampled update live through its hand-over.
+        // CHECK: two takes of a frozen scene have equal scene_t rows and identical pictures, including their first frame.
+        g.clock.SetTime(take_t, -1.0);
+    } else {
+        double scene_dt = (std::isfinite(dt) && dt > 0.0f) ? static_cast<double>(dt) : 0.0;
+        // Give the capture applier the authored key before the gate starts the next update. In particular, a long
+        // preview update cannot run keys after the take begins and then rewind the clock underneath them.
+        if (g.scene.capture_fps > 0.0) {
+            scene_dt = capture::StepToTakeKey(g.clock.time(), scene_dt, g.scene.capture_from, !was_ready && g.ready_open);
+        }
+        st = g.clock.Advance(ready, paused || hold_clock || gate_wait, scene_dt, duration);
+        double still = larecomp::settings::mcla_scene_t.Get();
+        if (still < 0.0) still = g.dir_pin;
+        if (still >= 0.0 && g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(still, duration);
+    }
 
     switch (g.clock.state()) {
         case SceneClock::State::kWaiting:

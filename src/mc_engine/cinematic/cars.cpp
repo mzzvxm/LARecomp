@@ -88,6 +88,7 @@
 #endif
 
 #include "car_spawn.h"
+#include "capture_mode.h"
 #include "director/director_math.h"
 #include "discord_rpc/discord_rpc.h"  // RpcInFreeRoam: the game's state machine is in Cruising
 #include "larecomp_log.h"
@@ -1266,9 +1267,15 @@ void ApplierBegin(const Scene& scene) {
 
 void ApplierApply(const Scene& scene, double t) {
     std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    uint64_t take_frame = 0;
+    const bool take_start = CapturePinnedSceneTime(&take_frame) >= 0.0 && take_frame == 0;
     // The path clock: the scene's time, with the time scale the scene asked for at the last update applied to the step (the engine timer takes the
     // scale one update late, so a car follows the slowed-down world, not the scene's own wall time).
-    if (!g.have_scene_t) {
+    if (take_start) {
+        // A take's route position starts at the pinned scene time, independent of the preview's frame sizes.
+        // CHECK: a route started before the take has the same first captured pose in two runs.
+        g.path_clock = director::WorldTimeAt(scene, t);
+    } else if (!g.have_scene_t) {
         g.path_clock = t;
     } else if (std::fabs(t - g.last_scene_t) > 0.3) {
         // A jump (the Director's seek, a restart at a time): the clock is the world time the scene time stands for, the integral of the time scale track, so
@@ -1294,8 +1301,9 @@ void ApplierApply(const Scene& scene, double t) {
             const auto it = g.routes.find(k.cmd.route);
             if (it != g.routes.end()) route = it->second.route.get();
         }
-        // a key that came due a long way back (a seek over it, a car added to a scene that has run): the path it starts began at the key's own time
-        const double key_clock = (t - k.t > 0.3) ? director::WorldTimeAt(scene, k.t) : g.path_clock;
+        // Scripted paths start and stop at their authored world time, even if a preview update visited the key late.
+        const bool kinematic_key = (k.cmd.verb == CarVerb::kPath && k.cmd.mode == PathMode::kKinematic) || k.cmd.verb == CarVerb::kStop;
+        const double key_clock = (kinematic_key || t - k.t > 0.3) ? director::WorldTimeAt(scene, k.t) : g.path_clock;
         const Director::Applied a = g.dir.Apply(k.cmd, key_clock, route);
         if (a.ok) LARECOMP_APP_INFO("[cars] t={:.2f} (line {}) {}", t, k.line, a.message);
         else LARECOMP_APP_WARN("[cars] t={:.2f} (line {}) {}", t, k.line, a.message);

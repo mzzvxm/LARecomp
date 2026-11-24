@@ -126,13 +126,13 @@ inline uint64_t StillUpdate(double t) {
 // The number of a scene's updates, one per update of the running clock, with the still's own number while the clock is pinned. Pure, so cars_test.cpp checks it.
 struct SceneUpdateCounter {
     uint64_t next = 0;  // the number the next running update gets
+    uint64_t Pin(uint64_t update) {
+        next = update + 1;
+        return update;
+    }
     // `pinned`: the clock is held at `t` by a still. Returns this update's number.
     uint64_t Take(bool pinned, double t) {
-        if (pinned) {
-            const uint64_t n = StillUpdate(t);
-            next = n + 1;
-            return n;
-        }
+        if (pinned) return Pin(StillUpdate(t));
         return next++;
     }
 };

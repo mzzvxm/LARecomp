@@ -272,6 +272,7 @@ struct TakeReport {
     std::string scene_copy;    // its name in the take folder
     std::string scene_fnv64;   // hash of its bytes, hex
     double first_scene_t = 0.0;
+    double scene_step_s = 0.0;
 
     std::string exe_path;
     std::string exe_commit;  // from SET-SOURCE.txt next to the exe (the harness writes it), else ""

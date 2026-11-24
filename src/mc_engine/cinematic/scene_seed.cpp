@@ -21,6 +21,7 @@
 #include <cstring>
 
 #include "larecomp_log.h"
+#include "capture_mode.h"
 #include "scene_runtime.h"
 #include "scene_seed.h"
 
@@ -106,8 +107,10 @@ void ApplierApply(const Scene&, double t) {
     // A still (mcla_scene_t >= 0, the harness's scene_at / scene_shot) holds the scene clock while the game goes on updating, for as long as the picture takes (a window
     // grab comes at a wall-clock moment inside the hold: det1's updates per run were 1852 and 1860 for the same 720 of the scene). Its update number is the pinned time's,
     // not a count, so that every frame of a still gets the same generators and the same renderer noise, and a still taken again after the clock ran on gets them again.
-    const bool still = larecomp::settings::mcla_scene_t.Get() >= 0.0;
-    const uint64_t update = g.counter.Take(still, t);
+    uint64_t take_frame = 0;
+    const bool taking = CapturePinnedSceneTime(&take_frame) >= 0.0;
+    const bool still = !taking && larecomp::settings::mcla_scene_t.Get() >= 0.0;
+    const uint64_t update = taking ? g.counter.Pin(take_frame) : g.counter.Take(still, t);
     ++g.ticks;
     if (still) ++g.still_ticks;
     const int32_t seed_value = larecomp::settings::mcla_scene_seed.Get();
