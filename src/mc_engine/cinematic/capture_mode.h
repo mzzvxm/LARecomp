@@ -41,6 +41,13 @@ inline constexpr uint64_t kNoFrame = ~0ull;
 // switched off.
 void CaptureGate();
 
+// The game is closing (larecomp_app.cpp FinishWindowCloseWork, before the renderer stops; any thread, latched): a take or still that runs is not held
+// by its frame gate any more (the render thread that reads the frames back stops, and a frame handed over before that is never read back: the game
+// thread would wait out the gate's timeout in a host wait that the SDK's stop request cannot end, and the title's termination would find its main
+// thread running), no take or still begins, and the take's sound lets the mixer go (capture_audio.h Abort). The take itself is not ended: its video
+// file is finished by ffmpeg when the process's end closes the pipe, its WAV by the exit hook, and take.json keeps "running".
+void CaptureCloseNow();
+
 // The hand-over of a frame to the render thread (hooks/frame_pacing.cpp, rex_sub_82305B38; the render thread is idle): stamps the
 // frame with the update it shows and whether it belongs to the take. The swap takes the stamp.
 void CaptureOnHandOver();

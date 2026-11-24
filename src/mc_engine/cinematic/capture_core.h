@@ -20,7 +20,11 @@
 // the take's first gate, so the take began with a repeated picture and its last picture was cut off.)
 //
 
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -109,6 +113,44 @@ struct GateBook {
     // A wait that was met.
     void NoteMet() { consecutive_timeouts = 0; }
 };
+
+// How a wait at the gate ended.
+enum class GateEnd {
+    kMet,       // every frame needed has been read back or reported lost
+    kClosing,   // the game is closing (CaptureCloseNow): nothing will read back the frames still to come, the game thread must get out at once
+    kTimedOut,  // `timeout_ms` went by with nothing moving
+};
+
+// The game thread's wait at the gate (capture_mode.cpp WaitForFrames), with the lock, the condition variable and the three questions passed in so that
+// capture_core_test.cpp can run it against threads. `lock` holds the mutex that guards the gate's books and is held on entry and on return; `met()` asks
+// whether the frames needed are in; `progress()` is a counter that moves whenever a frame is read back, lost or written; `closing()` says the game is
+// closing. A wait times out only when NOTHING moved for `timeout_ms`: a slow writer that keeps finishing frames never times the game out.
+//
+// WHY `closing`. The render thread that reads the frames back is stopped by the close (mcla::gpu::Shutdown) while the game thread is still running its
+// updates until the SDK stops it, and a frame handed over just before that is never read back or reported lost. Without the third question the game
+// thread sat here for the whole timeout (20 s by default), in a host wait that the SDK's stop request cannot reach, so the title's termination found its
+// main thread still running and the close watchdog ended the process with its hang status (VERIFY-EXIT, V02: every close during a take). The question is
+// asked first after `met()`, so a gate that is met is met whatever the close says. The notifier sets the flag, takes and releases the mutex, then notifies
+// (CaptureCloseNow), so the wake-up cannot fall between this loop's question and its wait; `slice_ms` is the backstop if it ever does.
+template <class MetFn, class ProgressFn, class ClosingFn>
+GateEnd WaitAtGate(std::unique_lock<std::mutex>& lock, std::condition_variable& cv, MetFn met, ProgressFn progress, ClosingFn closing, int timeout_ms,
+                   int slice_ms = 200) {
+    using Clock = std::chrono::steady_clock;
+    auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
+    auto seen = progress();
+    for (;;) {
+        if (met()) return GateEnd::kMet;
+        if (closing()) return GateEnd::kClosing;
+        const auto now = Clock::now();
+        const auto p = progress();
+        if (p != seen) {
+            seen = p;
+            deadline = now + std::chrono::milliseconds(timeout_ms);
+        }
+        if (now >= deadline) return GateEnd::kTimedOut;
+        cv.wait_until(lock, std::min(deadline, now + std::chrono::milliseconds(slice_ms)));
+    }
+}
 
 // ---------------------------------------------------------------------------------------------------------------- the take
 

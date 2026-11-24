@@ -13,11 +13,16 @@
 // hand-over's stamp. The first fails exactly as the E7 take did (a repeated first frame, the last frame cut off); the second
 // is exact whatever the render thread's lead was when the take began.
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "capture_core.h"
@@ -163,6 +168,106 @@ void TestGate() {
     GateBook late;
     late.captured = 5;
     CheckU(static_cast<uint64_t>(late.TimedOut(4)), 0, "a timeout that finds the books ahead gives up on nothing");
+}
+
+// The game thread's wait at the gate, against threads (the VERIFY-EXIT V02 case: a close during a take left the game thread here for the gate's whole
+// timeout, in a host wait that the SDK's stop request cannot end, so the title's termination found its main thread running).
+struct GateRig {
+    std::mutex mutex;
+    std::condition_variable cv;
+    GateBook book;                       // mutex
+    std::atomic<uint64_t> progress{0};
+    std::atomic<bool> closing{false};
+
+    // What the capture's glue does: the render thread reads a frame back (CaptureFrameDone) ...
+    void FrameDone() {
+        progress.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            ++book.captured;
+        }
+        cv.notify_all();
+    }
+    // ... and the close (CaptureCloseNow).
+    void CloseNow() {
+        closing.store(true);
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+        }
+        cv.notify_all();
+    }
+    GateEnd Wait(uint64_t needed, int timeout_ms, int slice_ms, double* took_ms) {
+        const auto t0 = std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> lock(mutex);
+        const GateEnd end = WaitAtGate(lock, cv, [&] { return book.Met(needed); }, [&] { return progress.load(); }, [&] { return closing.load(); }, timeout_ms,
+                                       slice_ms);
+        if (took_ms) *took_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        return end;
+    }
+};
+
+void TestWaitAtGate() {
+    double ms = 0;
+    {  // met at once: no wait, and a gate that is met is met whatever the close says
+        GateRig r;
+        r.book.captured = 3;
+        Check(r.Wait(3, 3000, 200, &ms) == GateEnd::kMet && ms < 500, "gate: frames already read back: met at once");
+        r.CloseNow();
+        Check(r.Wait(3, 3000, 200, &ms) == GateEnd::kMet && ms < 500, "gate: met and closing: met");
+        Check(r.Wait(4, 3000, 200, &ms) == GateEnd::kClosing && ms < 500, "gate: a frame short and closing: closing, at once");
+    }
+    {  // the close comes while the game thread waits (the render thread is gone: the frame never arrives)
+        GateRig r;
+        std::thread closer([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            r.CloseNow();
+        });
+        const GateEnd end = r.Wait(1, 3000, 200, &ms);
+        closer.join();
+        Check(end == GateEnd::kClosing, "gate: closed during the wait: it ends as closing, not as a timeout");
+        Check(ms >= 60 && ms < 1500, "gate: and at once (" + std::to_string(ms) + " ms for a 3000 ms timeout)");
+    }
+    {  // a close whose notify is lost is found by the next slice
+        GateRig r;
+        std::thread closer([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            r.closing.store(true);  // no notify
+        });
+        const GateEnd end = r.Wait(1, 3000, 40, &ms);
+        closer.join();
+        Check(end == GateEnd::kClosing && ms < 1500, "gate: a close with no wake-up is seen at the next slice");
+    }
+    {  // the frame arrives
+        GateRig r;
+        std::thread renderer([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            r.FrameDone();
+        });
+        const GateEnd end = r.Wait(1, 3000, 200, &ms);
+        renderer.join();
+        Check(end == GateEnd::kMet && ms < 1500, "gate: the frame read back ends the wait");
+    }
+    {  // nothing moves: the timeout, after the timeout
+        GateRig r;
+        const GateEnd end = r.Wait(1, 150, 200, &ms);
+        Check(end == GateEnd::kTimedOut, "gate: nothing moved: timed out");
+        Check(ms >= 140 && ms < 2000, "gate: after the timeout, not before (" + std::to_string(ms) + " ms for 150)");
+    }
+    {  // something moves (a slow writer that keeps finishing frames): not a timeout while it does
+        GateRig r;
+        std::atomic<bool> stop{false};
+        std::thread writer([&] {
+            for (int i = 0; i < 8 && !stop.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+                r.progress.fetch_add(1);  // written, not a frame the gate needs
+            }
+        });
+        const GateEnd end = r.Wait(1, 150, 200, &ms);
+        stop.store(true);
+        writer.join();
+        Check(end == GateEnd::kTimedOut, "gate: a writer that moves and then stops: timed out in the end");
+        Check(ms >= 400, "gate: the timeout counts from the last thing that moved (" + std::to_string(ms) + " ms: 8 x 40 ms of progress + 150)");
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------- the take
@@ -453,6 +558,7 @@ int main() {
     TestTag();
     TestHandOver();
     TestGate();
+    TestWaitAtGate();
     TestTake();
     TestPipeline();
     TestClock();

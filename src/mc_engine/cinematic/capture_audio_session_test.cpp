@@ -127,6 +127,18 @@ class FakeMixer final : public MixerPort {
         cv_.wait_for(lock, std::chrono::milliseconds(ms));
     }
     uint64_t Cap() override { return queue_max_ - 1; }
+    bool Closed() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return closed_;
+    }
+    // The game closes (capture_audio::Abort): a step that waits for the mixer is told.
+    void SetClosed() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            closed_ = true;
+        }
+        cv_.notify_all();
+    }
 
   private:
     void Run() {
@@ -152,6 +164,7 @@ class FakeMixer final : public MixerPort {
     uint32_t queue_max_;
     uint32_t channels_ = 2;
     bool armed_ = false;
+    bool closed_ = false;
     bool stop_ = false;
     uint64_t tickets_ = 0, made_ = 0, handed_ = 0, pulled_ = 0;
     std::thread thread_;
@@ -468,6 +481,79 @@ void TestCutByExit() {
     std::filesystem::remove(cfg.wav_path, ec);
 }
 
+// The game closes during a take (VERIFY-EXIT V02): a step that waits for a mixer that has stopped answering ends at once, not at its timeout (here 5 s; the
+// real one is 2 s, three steps in a row), the steps after it do not wait at all, nothing counts as a timeout, the sound is over and the file keeps the
+// video's exact length.
+void TestClosedWhileWaiting() {
+    FakeMixer mixer;
+    mixer.delay_ms = [](uint64_t n) { return n > 20 ? 60000 : 0; };  // the mixer answers for six video frames, then never
+    Session session;
+    Session::Config cfg;
+    cfg.fps = 60.0;
+    cfg.timeout_ms = 5000;
+    cfg.wav_path = TempWav("larecomp_cap_session_closed.wav");
+    std::vector<std::string> warnings;
+    cfg.log = [&](int level, const std::string& line) {
+        if (level >= 1) warnings.push_back(line);
+    };
+    Check(session.Begin(mixer, cfg), "closed: Begin");
+    for (uint64_t n = 1; n <= 6; ++n) {
+        session.StepBegin(n);
+        session.StepEnd();
+    }
+    Check(warnings.empty(), "closed: nothing wrong before the close");
+    std::thread closer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        mixer.SetClosed();
+    });
+    const auto t0 = std::chrono::steady_clock::now();
+    session.StepBegin(7);
+    session.StepEnd();  // the mixer has stopped: this step waits until the close
+    const double stuck_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    closer.join();
+    Check(stuck_ms >= 60 && stuck_ms < 1500, "closed: the step that waited ended at the close, not at its timeout (" + std::to_string(stuck_ms) + " ms of 5000)");
+    const auto t1 = std::chrono::steady_clock::now();
+    for (uint64_t n = 8; n <= 30; ++n) {
+        session.StepBegin(n);
+        session.StepEnd();
+    }
+    const double after_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+    Check(after_ms < 500, "closed: the steps after the close do not wait (" + std::to_string(after_ms) + " ms for 23 steps)");
+    const Summary s = session.Finish(30);
+    CheckU(s.samples, SamplesThrough(30, 60.0), "closed: the file keeps the video's exact length");
+    CheckU(s.timeouts, 0, "closed: a close is not a timeout");
+    Check(s.dead && !s.ok, "closed: the take's sound is reported as over");
+    Check(warnings.size() == 1 && warnings[0].find("closing") != std::string::npos, "closed: said once, in words");
+    std::error_code ec;
+    std::filesystem::remove(cfg.wav_path, ec);
+}
+
+// Closed before a step begins: it hands no ticket and does not wait either.
+void TestClosedBeforeStep() {
+    FakeMixer mixer;
+    Session session;
+    Session::Config cfg;
+    cfg.fps = 60.0;
+    cfg.timeout_ms = 5000;
+    cfg.wav_path = TempWav("larecomp_cap_session_closed_before.wav");
+    Check(session.Begin(mixer, cfg), "closed first: Begin");
+    session.StepBegin(1);
+    session.StepEnd();
+    const uint64_t handed_before = mixer.made();
+    mixer.SetClosed();
+    const auto t0 = std::chrono::steady_clock::now();
+    session.StepBegin(2);
+    session.StepEnd();
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    Check(ms < 500, "closed first: the step does not wait (" + std::to_string(ms) + " ms)");
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    CheckU(mixer.made(), handed_before, "closed first: no ticket is handed after the close");
+    const Summary s = session.Finish(2);
+    CheckU(s.samples, SamplesThrough(2, 60.0), "closed first: the file keeps the video's exact length");
+    std::error_code ec;
+    std::filesystem::remove(cfg.wav_path, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -481,6 +567,8 @@ int main() {
     TestRepeatedGate();
     TestFinishCovers();
     TestCutByExit();
+    TestClosedWhileWaiting();
+    TestClosedBeforeStep();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

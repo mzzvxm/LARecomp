@@ -208,6 +208,9 @@ class MixerPort {
     // How many frames the mixer may have out at once (handed and not yet pulled): the queue's length less one, so that it never has to wait
     // for a credit.
     virtual uint64_t Cap() = 0;
+    // The game is closing and has taken the mixer back (capture_audio.h Abort): nothing is waited for any more. Not the end of a take (Disarm): a step that
+    // sees this ends at once, and the rest of the take's sound is silence. Any thread. Default: never.
+    virtual bool Closed() { return false; }
 };
 
 // What the CSV of a take gets for a video frame (a step whose gate saw a new frame).
@@ -258,6 +261,8 @@ class Session {
   private:
     uint64_t HandSome();
     void PullQueued(uint64_t queued);
+    // The port says the game is closing: the take's sound is over (dead_), said once. True while it is.
+    bool NoteClosed();
     void Say(int level, const std::string& line) const {
         if (cfg_.log) cfg_.log(level, line);
     }

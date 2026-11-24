@@ -48,6 +48,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "larecomp_log.h"
 #include "mc_engine/cinematic/capture_audio.h"
+#include "mc_engine/cinematic/capture_mode.h"
 #include "mc_engine/cinematic/freecam_runtime.h"
 #include "mc_engine/cinematic/state_log.h"
 #include "mc_engine/core/logging.h"
@@ -1212,7 +1213,10 @@ void LarecompApp::FinishWindowCloseWork() {
   PauseMenuSavePendingSettings();  // a pause-menu change that the close interrupted (the QUIT and RESTART routes wrote it already: nothing happens)
   MclaWaitForSaves();  // a career save in flight finishes (10 s limit inside)
   LogAudioDropoutSummary();
-  mc::cinematic::capture_audio::Abort();  // a take's sound holds the audio worker's callback at a gate: let it go before the SDK stops the worker
+  // A take that runs: its frame gate lets the game thread go (the renderer that reads the frames back stops next, and a frame still in flight would never
+  // arrive: the game thread would wait out the gate's 20 s in a host wait the SDK's stop cannot end, and the close watchdog would end the process with its hang
+  // status: VERIFY-EXIT V02), and its sound lets go of the audio worker's callback and of the device before the SDK stops the worker.
+  mc::cinematic::CaptureCloseNow();
   larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
   larecomp::devwatch::Stop();
   larecomp::impulse::Shutdown();   // the Xbox triggers back to still

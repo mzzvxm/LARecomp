@@ -156,6 +156,9 @@ std::atomic<uint64_t> g_anchors{0}, g_anchor_restarts{0}, g_anchor_gap_restarts{
 std::mutex g_gate_mutex;
 std::condition_variable g_gate_cv;
 core::GateBook g_gate;  // g_gate_mutex
+// The game is closing (CaptureCloseNow): the gate stops holding the game thread (the render thread that reads the frames back is going away, and a frame
+// handed over before it stopped is never read back), and no take or still begins.
+std::atomic<bool> g_closing{false};
 
 // the scene clock
 std::mutex g_clock_mutex;
@@ -963,23 +966,14 @@ double WantedFps() {
     return core::ClampFps(larecomp::settings::mcla_capture_fps.Get());
 }
 
-// Waits until `needed` take frames have been read back or reported lost. False: `timeout_ms` went by with nothing moving (no frame read back,
-// lost or written): a slow writer that keeps finishing frames is not a timeout, however long a frame takes.
-bool WaitForFrames(uint64_t needed, int timeout_ms) {
-    auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
-    uint64_t seen = g_progress.load(std::memory_order_relaxed);
+// Waits until `needed` take frames have been read back or reported lost, or the game is closing (capture_core.h WaitAtGate says why that ends it).
+// kTimedOut: `timeout_ms` went by with nothing moving (no frame read back, lost or written): a slow writer that keeps finishing frames is not a
+// timeout, however long a frame takes.
+core::GateEnd WaitForFrames(uint64_t needed, int timeout_ms) {
     std::unique_lock<std::mutex> lock(g_gate_mutex);
-    while (!g_gate.Met(needed)) {
-        const auto now = Clock::now();
-        const uint64_t p = g_progress.load(std::memory_order_relaxed);
-        if (p != seen) {
-            seen = p;
-            deadline = now + std::chrono::milliseconds(timeout_ms);
-        }
-        if (now >= deadline) return false;
-        g_gate_cv.wait_until(lock, std::min(deadline, now + std::chrono::milliseconds(200)));
-    }
-    return true;
+    return core::WaitAtGate(
+        lock, g_gate_cv, [&] { return g_gate.Met(needed); }, [] { return g_progress.load(std::memory_order_relaxed); },
+        [] { return g_closing.load(std::memory_order_acquire); }, timeout_ms);
 }
 
 // A take that cannot start: nothing runs, and the scene's request is not taken up again until it has gone to 0.
@@ -1288,8 +1282,9 @@ void GateInTake(uint64_t u, double want_fps) {
         std::lock_guard<std::mutex> lock(g_gate_mutex);
         off = g_gate.off;
     }
-    bool ok = true;
-    if (!off) ok = WaitForFrames(needed, timeout_ms);
+    core::GateEnd end = core::GateEnd::kMet;
+    if (!off) end = WaitForFrames(needed, timeout_ms);
+    const bool ok = end != core::GateEnd::kTimedOut;
     const double wait_ms = std::chrono::duration<double, std::milli>(Clock::now() - w0).count();
     if (!ok) {
         uint64_t captured = 0;
@@ -1308,7 +1303,7 @@ void GateInTake(uint64_t u, double want_fps) {
             LARECOMP_APP_ERROR("[cap] three gate timeouts in a row: the game is not held at the gate for the rest of the take");
             g_sink_stuck.store(true, std::memory_order_release);
         }
-    } else {
+    } else if (end == core::GateEnd::kMet) {  // a gate left because the game is closing is neither met nor timed out: the books stay as they are
         std::lock_guard<std::mutex> lock(g_gate_mutex);
         g_gate.NoteMet();
     }
@@ -1333,6 +1328,10 @@ void CaptureGate() {
     const uint64_t before = g_updates.load(std::memory_order_relaxed);  // updates that ran
     const uint64_t u = before + 1;                                      // the update about to run
     if (!g_take_active.load(std::memory_order_relaxed)) {
+        if (g_closing.load(std::memory_order_acquire)) {  // a game that is closing starts no take and no still (the sound's mixer would be held again)
+            g_updates.store(u, std::memory_order_release);
+            return;
+        }
         bool still = false;
         {
             std::lock_guard<std::mutex> lock(g_still_mutex);
@@ -1376,6 +1375,15 @@ void CaptureGate() {
     }
     GateInTake(u, WantedFps());
     g_updates.store(u, std::memory_order_release);
+}
+
+void CaptureCloseNow() {
+    g_closing.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(g_gate_mutex);  // a game thread between its question and its wait has the mutex: it asks again or is waiting when the notify comes
+    }
+    g_gate_cv.notify_all();
+    capture_audio::Abort();  // the take's sound: the mixer's gate opens, the device gets its mix back, and the audio steps stop waiting for it
 }
 
 void CaptureOnHandOver() {
@@ -1774,6 +1782,7 @@ struct Registrar {
 
 namespace mc::cinematic {
 void CaptureGate() {}
+void CaptureCloseNow() {}
 void CaptureOnHandOver() {}
 void CaptureOnSwap() {}
 bool CaptureTakeActive() { return false; }

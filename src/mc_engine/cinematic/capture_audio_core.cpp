@@ -293,11 +293,21 @@ void Session::PullQueued(uint64_t queued) {
     }
 }
 
+// The port is asked from the game thread at every step and inside the wait, so a close that comes while a step waits for a mixer that is being given back
+// ends the wait at the next look (5 ms at the most), not at the step's timeout (2 s, three steps in a row).
+bool Session::NoteClosed() {
+    if (dead_) return true;
+    if (!port_ || !port_->Closed()) return false;
+    dead_ = true;
+    Say(1, "the game is closing: the rest of the take's WAV is silence");
+    return true;
+}
+
 void Session::StepBegin(uint64_t video_frames) {
     if (!armed_) return;
     frames_ = std::max(frames_, video_frames);
     step_ = StepRow{};
-    if (dead_) return;
+    if (NoteClosed()) return;
     step_.released += HandSome();
 }
 
@@ -305,9 +315,11 @@ void Session::StepEnd() {
     if (!armed_) return;
     const auto t0 = Clock::now();
     bool timed_out = false;
+    NoteClosed();
     if (!dead_) {
         const auto deadline = t0 + std::chrono::milliseconds(std::max(cfg_.timeout_ms, 1));
         for (;;) {
+            if (NoteClosed()) break;
             const uint64_t queued = port_->Queued();
             const uint64_t before = step_.used + step_.discarded;
             if (queued > 0) PullQueued(queued);

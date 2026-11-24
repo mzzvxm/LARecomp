@@ -577,6 +577,7 @@ add_executable(larecomp_audio_tap_test EXCLUDE_FROM_ALL
 target_include_directories(larecomp_audio_tap_test PRIVATE src/mc_engine/music)
 find_package(Threads)
 if(Threads_FOUND)
+    target_link_libraries(larecomp_capture_test PRIVATE Threads::Threads)
     target_link_libraries(larecomp_capture_audio_test PRIVATE Threads::Threads)
     target_link_libraries(larecomp_capture_audio_session_test PRIVATE Threads::Threads)
     target_link_libraries(larecomp_audio_tap_test PRIVATE Threads::Threads)

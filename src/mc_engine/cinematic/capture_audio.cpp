@@ -154,6 +154,7 @@ class RealMixer final : public MixerPort {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             armed_ = true;  // from here a callback that starts waits for a ticket
+            closed_ = false;
             tickets_ = 0;
         }
         {
@@ -190,6 +191,21 @@ class RealMixer final : public MixerPort {
         }
         cv_.notify_all();
         mcla::audio::Tap().Release();
+    }
+
+    // The game is closing (capture_audio::Abort): the mixer is given back as Disarm does, and the take's steps are told (Closed) so that none of them waits
+    // for the mixer any more.
+    void Abandon() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            closed_ = true;
+        }
+        Disarm();
+    }
+
+    bool Closed() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return closed_;
     }
 
     uint64_t Queued() override { return audio_ ? audio_->GetStats().queued_frames : 0; }
@@ -240,6 +256,7 @@ class RealMixer final : public MixerPort {
     std::mutex mutex_;
     std::condition_variable cv_;
     bool armed_ = false;       // a take runs: callbacks wait for a ticket
+    bool closed_ = false;      // the game is closing (Abandon): the take's steps do not wait; Arm clears it
     uint64_t tickets_ = 0;     // handed, not yet taken by a callback
     int running_ = 0;          // callbacks between their gate and their end
     uint64_t completed_ = 0;   // callbacks finished
@@ -386,7 +403,7 @@ void Abort() {
     if (g_active.load(std::memory_order_acquire)) {
         LARECOMP_APP_WARN("[cap] audio: the game is closing during a take: the mixer is given back");
     }
-    Mixer().Disarm();
+    Mixer().Abandon();
 }
 
 void CloseForExit() {

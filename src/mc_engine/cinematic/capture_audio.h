@@ -46,8 +46,9 @@ void StepEnd();
 // The take ends (capture_mode.cpp EndTake, after the last StepEnd): finishes the WAV and the CSV and gives the mixer back to the real
 // output. `video_frames`: the frames the take has. Logs the summary line.
 Summary End(uint64_t video_frames);
-// The game is closing (any thread): the gate opens and the device gets its mix back, so that nothing waits for a take that will not go on.
-// The files are closed by End as usual, if it is still called.
+// The game is closing (any thread; capture_mode.h CaptureCloseNow calls it): the gate opens, the device gets its mix back and the take's steps stop
+// waiting for the mixer (MixerPort::Closed), so that nothing waits for a take that will not go on. The files are closed by End as usual, if it is still
+// called, else by CloseForExit.
 void Abort();
 // The process is ending (a flush hook of the exit, larecomp_app.cpp; any thread): a take that is still running has its WAV closed with the real
 // sizes of what was written (the take's own End never comes, and nothing closes the file once the exit is immediate: exit_fast.h; without this
