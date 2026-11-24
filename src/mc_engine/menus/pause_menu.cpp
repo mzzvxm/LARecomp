@@ -1720,9 +1720,9 @@ const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
 // low is ignored and the row is AUTO). RAY TRACED keeps its saved value on every GPU; the rules (ui_rules.toml) give the fallback reason when the gate is shut ("RT (NO RT GPU)", 14 characters).
 // The row is "AMBIENT OCCLUSION" (17 characters) with a value of at most 14 ("RT (NO RT GPU)"), 31 together, under the page's 41.
 // CHECK: confirm the 14-character "RT (NO RT GPU)" fits LIGHTING AND SHADOWS in the pause movie.
-namespace rtao_setting = mcla::gpu::rtao_setting;
-constexpr auto& kNativeAoVals = rtao_setting::kValues;
-constexpr auto& kNativeAoNames = rtao_setting::kNames;
+// (The two lists are written out as the other rows' are: the settings UI exporter reads this table's source. gpu/rtao_setting_test.cpp holds them equal to rtao_setting::kValues / kNames.)
+const char* const kNativeAoVals[]  = {"auto", "off", "high", "ultra", "rt"};
+const char* const kNativeAoNames[] = {"AUTO", "OFF", "HIGH", "ULTRA", "RAY TRACED"};
 // How strong it looks (mcla_gpu_ao_intensity, live), the row under it: grey while the occlusion is
 // off (what AUTO comes to counts). At most 21 characters with its longest value.
 const char* const kNativeAoLevelVals[]  = {"light", "default", "strong", "max"};
@@ -4209,12 +4209,12 @@ std::vector<larecomp::settings_ui::Menu> larecomp::settings_ui::AllSettingsMenus
         if (menu.num_items) {
             exported.rows.assign(menu.items, menu.items + menu.num_items);
         }
-        if (menu.extra == LowLatencyMenuRows) {
+        if (menu.extra == DisplayPageRows) {
+            // DISPLAY lists the vendor's latency reducer, then the upscaling block: export every row either can have.
 #if defined(LARECOMP_HAS_GPU)
             exported.rows.insert(exported.rows.end(), std::begin(kReflexRows), std::end(kReflexRows));
             exported.rows.insert(exported.rows.end(), std::begin(kAntiLagRows), std::end(kAntiLagRows));
 #endif
-        } else if (menu.extra == UpscalingPageRows) {
             AppendAllUpscalingPageRows(exported.rows);
         } else if (menu.extra) {
             // CameraLookMenuItems and the DEBUG accessors already return their full tables.

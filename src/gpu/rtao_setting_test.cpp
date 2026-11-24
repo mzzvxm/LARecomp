@@ -147,8 +147,8 @@ void CheckReaders(const fs::path& src) {
         "host plan delegates to the AO resolver");
   // The row's labels and AO INTENSITY's dependency are data now (settings/ui_rules.toml, the shared rules; settings/ui_parity_test.cpp holds them against this resolver
   // for every class, tier, choice and readiness); the menu hands the rules the readiness (the fact live.rtao_pass_built) and the setting's own words.
-  Check(contains("mc_engine/menus/pause_menu.cpp", "constexpr auto& kNativeAoVals = rtao_setting::kValues;") &&
-            contains("mc_engine/menus/pause_menu.cpp", "constexpr auto& kNativeAoNames = rtao_setting::kNames;") &&
+  Check(contains("mc_engine/menus/pause_menu.cpp", "const char* const kNativeAoVals[]  = {\"auto\", \"off\", \"high\", \"ultra\", \"rt\"};") &&
+            contains("mc_engine/menus/pause_menu.cpp", "const char* const kNativeAoNames[] = {\"AUTO\", \"OFF\", \"HIGH\", \"ULTRA\", \"RAY TRACED\"};") &&
             contains("mc_engine/menus/pause_menu.cpp", "\"live.rtao_pass_built\") return Value::Bool(gpu::rtao_setting::PassBuilt())"),
         "the menu's words and the pass's readiness come from the resolver's header");
   Check(contains("settings/ui_rules.toml", "resolved(s.mcla_gpu_ao) in ['high','ultra','rt']") && contains("settings/ui_rules.toml", "label = \"RT (NO RT GPU)\"") &&
