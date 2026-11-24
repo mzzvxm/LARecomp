@@ -370,6 +370,13 @@ float CityHitTextureLevel(float footprint, float density, uint width, uint heigh
     return log2(max(texels, 1e-4)) + bias;
 }
 
+// A texel as the material's albedo reads it: the colour, or for a road's packed diffuse (greyInRed: (grey, specular mask, nothing)) its red channel as a grey. Read as a colour that texture is green
+// or orange (RT-GREEN-BAND). city_hit_shade_rules.h TexelAlbedo is the twin.
+float3 CityHitTexelAlbedo(CityHitMaterial m, float3 texel)
+{
+    return m.greyInRed ? float3(texel.x, texel.x, texel.x) : texel;
+}
+
 // The surface's albedo. REFLECT with a resident texture: the texture at the level of the footprint, bilinear in two levels, wrap, the game's gamma where the slot says, times the tint; beyond the
 // last stored level it fades to the average colour (a cone wider than the whole texture sees the mean). GI mode, no texture or not resident yet: the average colour. The baked vertex occlusion (the
 // corner colour's alpha) is mixed in by p.aoMix.
@@ -382,7 +389,7 @@ float3 CityHitAlbedo(CityHitParams p, CityHit h, CityHitMaterial m, CityHitTextu
     {
         const float level = CityHitTextureLevel(footprint, CityHitUvDensity(h), t.width, t.height, nv, p.lodBias);
         const float last = float(t.firstMip + t.mipCount - 1u);
-        const float3 texel = RtHitSample(t.slot, h.uv, level - float(t.firstMip), true).rgb;
+        const float3 texel = CityHitTexelAlbedo(m, RtHitSample(t.slot, h.uv, level - float(t.firstMip), true).rgb);
         albedo = lerp(texel * m.tint, m.average, saturate(level - last));
     }
     if ((h.runFlags & CITY_HIT_RUN_HAS_COLOUR) != 0u)

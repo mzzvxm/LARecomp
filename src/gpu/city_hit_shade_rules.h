@@ -9,7 +9,8 @@
 // THE PIECES (each is a function of the shader, in the shader's order):
 //   decode        src/citypack/city_hit_format.h DecodeHit (hlsl/city_hit_common.hlsli CityHitDecode): the triangle, its uv and vertex colour, the run's material
 //   albedo        REFLECT: the diffuse texture at TextureLevel (log2 of the texels the ray cone covers: width x the triangle's repeats a metre x the texture's size; a grazing view covers more),
-//                 read bilinear in two levels, times the tint; past the last stored level it fades to the average colour (ResidentLevel); GI, no texture, not resident: the average colour;
+//                 read bilinear in two levels (a road's packed diffuse, (grey, specular mask), as its red channel alone: TexelAlbedo), times the tint; past the last stored level it fades to the
+//                 average colour (ResidentLevel); GI, no texture, not resident: the average colour;
 //                 the baked vertex occlusion (the corner colour's alpha) mixed in by aoMix. A wet road is darker by kWetDarken x the wetness.
 //   light         the frame's ambient with its hemisphere term (rt_hit_frame.h: the same rows as the car's hit shading), the sun's colour x N.L x its visibility (the game's cascades where the
 //                 frame has them and/or one ray toward a place on the sun's disc against the whole top level), the frame's lamps (the game's laws, below), the GI field's feedback, and, last, the air between the camera and the hit (a hook: the game's distance fog)
@@ -138,6 +139,10 @@ inline ResidentRead ResidentLevel(float level, uint32_t first_mip, uint32_t mip_
   r.average = Saturate(level - float(first_mip + mip_count - 1u));
   return r;
 }
+
+// A texel as the material's albedo reads it (hlsl CityHitTexelAlbedo): the colour, or for a road's packed diffuse (`grey_in_red`: (grey, specular mask, nothing), citypack GroupGreyInRed) its red
+// channel as a grey. Read as a colour that texture is green or orange (RT-GREEN-BAND: the lime band along the lower half of the ray traced car paint).
+inline V3 TexelAlbedo(bool grey_in_red, V3 texel) { return grey_in_red ? V3{texel.x, texel.x, texel.x} : texel; }
 
 // The albedo from what was read: `texel` the diffuse at the level (rgb, in the picture's linear units), `textured` whether the texture path applies, the tint, the average, the vertex
 // colour's alpha (the baked occlusion; `has_colour` whether the run has one) mixed in by `ao_mix`.
@@ -483,7 +488,7 @@ inline Shaded Shade(const Params& p, const rt_hit::FrameInput& frame, const Ray&
   if (textured) {
     const float density = std::sqrt(h.uv_area / std::max(h.world_area, 1e-12f));
     const ResidentRead read = ResidentLevel(TextureLevel(ray.footprint, density, t_width, t_height, nv, p.lod_bias), t_first, t_mips);
-    texel = reads.texture(texture_row->slot, h.uv[0], h.uv[1], read.level, true);
+    texel = TexelAlbedo(m.grey_in_red, reads.texture(texture_row->slot, h.uv[0], h.uv[1], read.level, true));
     beyond = read.average;
   }
   V3 albedo = Albedo(textured, texel, tint, average, beyond, (h.run_flags & ch::kRunHasColour) != 0, h.colour[3], p.ao_mix);

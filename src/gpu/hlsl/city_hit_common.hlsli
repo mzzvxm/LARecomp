@@ -67,6 +67,7 @@
 #define CITY_HIT_GLOW_LENS 1u     // a street lamp's lens: the street lamps' schedule
 #define CITY_HIT_GLOW_ALWAYS 2u   // a traffic signal: always
 #define CITY_HIT_GLOW_SHIFT 30u
+#define CITY_HIT_GREY_IN_RED_SHIFT 30u  // the average word's bit 30 (city_hit_format.h kMaterialGreyInRed): the diffuse is packed (grey, specular mask), the albedo is its red channel as a grey
 
 // ---- the resources (an includer that has its own names defines CITY_HIT_NO_RESOURCES and declares gCityPool, gCitySectors, gCityMaterials, gCityTextures itself) ----------------
 
@@ -276,7 +277,8 @@ struct CityHitMaterial
     uint textureIndex;  // the diffuse's index in the texture table (CITY_HIT_NO_TEXTURE: none)
     uint layerIndex;    // the second layer's (version 1: always none)
     float3 tint;
-    float3 average;     // tint x the diffuse's mean: what a hit shows where the texture is not uploaded
+    float3 average;     // tint x the diffuse's mean: what a hit shows where the texture is not uploaded (a grey from the red mean where greyInRed)
+    bool greyInRed;     // the diffuse is the road's packing (grey, specular mask): the albedo is its red channel as a grey (RT-GREEN-BAND; the average word's bit 30)
     float emissive;     // scale of the glow (0: none)
     uint glowKind;      // CITY_HIT_GLOW_*: what the glow follows (word 2's bits 30..31; 3 reads as the night curve)
 };
@@ -297,6 +299,7 @@ CityHitMaterial CityHitLoadMaterial(uint material)
     m.layerIndex = a.y >> 16u;
     m.tint = CityHitRgb10(a.z);
     m.average = CityHitRgb10(a.w);
+    m.greyInRed = ((a.w >> CITY_HIT_GREY_IN_RED_SHIFT) & 1u) != 0u;
     m.emissive = asfloat(b.x);
     m.glowKind = a.z >> CITY_HIT_GLOW_SHIFT;
     return m;

@@ -223,6 +223,15 @@ void TwinChecks() {
   CHECK(Near(al.x, 0.2 * 0.6) && Near(al.y, 0.4 * 0.6));
   al = cs::Albedo(false, texel, tint, average, 0.0f, true, 0.2f, 0.0f);
   CHECK(Near(al.x, 0.2));
+  // RT-GREEN-BAND: a road's diffuse is (grey, specular mask, nothing): its albedo is the red channel as a grey, not the colour (a road texel (0.08, 0.5, 0.08) is a grey road, not a green one)
+  const cs::V3 road_texel{0.08f, 0.5f, 0.02f};
+  const cs::V3 grey_texel = cs::TexelAlbedo(true, road_texel), plain_texel = cs::TexelAlbedo(false, road_texel);
+  CHECK(Near(grey_texel.x, 0.08) && Near(grey_texel.y, 0.08) && Near(grey_texel.z, 0.08));
+  CHECK(Near(plain_texel.x, 0.08) && Near(plain_texel.y, 0.5) && Near(plain_texel.z, 0.02));
+  al = cs::Albedo(true, grey_texel, {1.0f, 1.0f, 1.0f}, average, 0.0f, false, 1.0f, 0.0f);  // the packed road lit as a grey: R = G = B, whatever the green channel holds
+  CHECK(Near(al.x, 0.08) && Near(al.y, 0.08) && Near(al.z, 0.08));
+  al = cs::Albedo(true, grey_texel, tint, average, 0.0f, false, 1.0f, 0.0f);  // ... times the tint
+  CHECK(Near(al.x, 0.08 * 0.5) && Near(al.y, 0.08 * 1.0) && Near(al.z, 0.08 * 2.0));
 
   // the fresnel and the sky's share
   CHECK(Near(cs::Schlick(0.04f, 1.0f), 0.04) && Near(cs::Schlick(0.04f, 0.0f), 1.0, 1e-3) && Near(cs::Schlick(0.04f, 0.5f), 0.04 + 0.96 / 32.0, 1e-5));
@@ -526,12 +535,13 @@ City BuildCity(Lcg& rng) {
   c.materials[7] = material(15, 255, 0, kNoTexture, dark, dark, 0.0f);
   c.materials[8] = material(13, 90, 0, 0, white, avg1, 2.5f);
   c.materials[9] = material(14, 80, 0, kNoTexture, warm, warm, 1.5f);
+  c.materials[2].grey_in_red = true;  // RT-GREEN-BAND: the road's diffuse is packed (grey, specular mask): its albedo is the red channel as a grey (CityRoad, CityTunnelRoad); the other textured materials read colours
   c.material_words.resize(c.materials.size() * 8);
   for (size_t m = 0; m < c.materials.size(); ++m) c.materials[m].Pack(&c.material_words[m * 8]);
 
   const uint32_t uv_colour = kRunHasUv | kRunHasColour;
   c.sectors.push_back(MakeSector(rng, 1, true, true, true, uv_colour));        // 0 wall
-  c.sectors.push_back(MakeSector(rng, 2, true, true, true, uv_colour));        // 1 road
+  c.sectors.push_back(MakeSector(rng, 2, true, true, true, uv_colour));        // 1 road (packed: the grey is in the red channel)
   c.sectors.push_back(MakeSector(rng, 3, true, true, true, uv_colour));        // 2 glass
   c.sectors.push_back(MakeSector(rng, 4, true, true, true, uv_colour));        // 3 lamp lens
   c.sectors.push_back(MakeSector(rng, 5, true, true, true, uv_colour));        // 4 metal, texture not resident
@@ -842,6 +852,7 @@ bool Close(const hlsl_shim::float3& a, const cs::V3& b, double tol = 3e-4) { ret
 
 struct Coverage {
   int valid = 0, invalid = 0, textured_cases = 0, sun_rays = 0, lamp_rays = 0, cascades = 0, gi = 0, glow = 0, feedback = 0, reflect = 0;
+  int grey_cases = 0;  // RT-GREEN-BAND: textured reflect hits on a packed road (the texel read as its red channel)
   int by_class[16] = {};
 };
 
@@ -895,6 +906,7 @@ void ShadeChecks(const City& city, Lcg& rng, int rounds, Coverage* cov) {
     ++cov->valid;
     ++cov->by_class[t.cls];
     cov->textured_cases += d.texture && d.texture->slot != kNoSlot && k.p.mode == cs::kModeReflect;
+    cov->grey_cases += d.material.grey_in_red && d.texture && d.texture->slot != kNoSlot && k.p.mode == cs::kModeReflect;
     cov->sun_rays += int(hlsl_shim::gSunCalls.size());
     cov->lamp_rays += int(hlsl_shim::gLampCalls.size());
     cov->cascades += (k.p.flags & cs::kPSunCascade) != 0 && (k.frame.tuning.cascade && rh::CascadesUsable(k.frame.cascades) && k.frame.camera_known);
@@ -1104,6 +1116,7 @@ int main(int argc, char** argv) {
   int classes_hit = 0;
   for (int c = 0; c < 16; ++c) classes_hit += cov.by_class[c] > 0;
   Check(classes_hit >= 8, Num("the random hits cover the classes of the synthetic city (%.0f classes)", classes_hit));
+  Check(cov.grey_cases > 30, Num("the packed road's textured hits were exercised (%.0f cases: the shader and the twin read its texel as the red channel alone)", cov.grey_cases));
   Check(cov.textured_cases > 500 && cov.sun_rays > 1000 && cov.lamp_rays > 300 && cov.cascades > 300 && cov.gi > 600 && cov.reflect > 1800 && cov.glow > 200 && cov.feedback > 100,
         Num2("textured, sun-ray, lamp-ray, cascade, GI, glow and feedback cases were all exercised (textured %.0f, sun rays %.0f)", cov.textured_cases, cov.sun_rays));
   int sources[4] = {};

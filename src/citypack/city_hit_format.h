@@ -93,7 +93,10 @@
 //            material's glow follows: kGlowNight the fill lights' night curve, kGlowLens the street lamps' schedule, kGlowAlways none; 0 for a material that does not glow, and for a pack
 //            written before R7 whose bits were zero: it reads as kGlowNight, the schedule the glow had)
 //   word 3   the AVERAGE colour, R10G10B10 over 0..2: tint x the mean of the diffuse texture (linear), or the tint alone / the class grey where there is no texture; what a hit shows
-//            where the texture is not uploaded, and all that M3's probes read; bits 30..31 zero
+//            where the texture is not uploaded, and all that M3's probes read; bit 30 (kMaterialGreyInRed) says the diffuse is PACKED the road's way: its albedo is the RED channel as a grey,
+//            the green channel is the specular mask and the blue one is nothing (hlsl xCityRoad and xCityTunnelRoad read DiffuseSampler's .xy: the pixel shader's base colour is lerp(red, decal, decal alpha)),
+//            so the average is tint x the mean RED as a grey and a texel is read as (red, red, red); read as a colour the road is GREEN (RT-GREEN-BAND: the lime band along the lower half of the
+//            ray traced car paint); bit 31 zero
 //   word 4   the emissive scale (float bits; 0 for what does not glow)
 //   words 5, 6   the diffuse texture's XXH3-64 key (low, high): the number GB-F2's per-texture rows ("hash:<hex>") and the texture dumps name a texture by; the GPU never reads it
 //   word 7   the shader hash (rage hash of "<group>/<preset>", as the pack's runs): the census and the per-shader rules; the GPU never reads it
@@ -144,6 +147,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "citypack/bytes.h"
@@ -158,7 +162,8 @@ namespace larecomp::citypack {
 inline constexpr char kHitMagic[8] = {'L', 'A', 'R', 'C', 'H', 'I', 'T', '1'};
 inline constexpr char kTexMagic[8] = {'L', 'A', 'R', 'C', 'T', 'E', 'X', '1'};
 inline constexpr uint32_t kHitFormatVersion = 1;
-inline constexpr uint32_t kHitBuilderVersion = 2;  // 2: R7's glow kind in the material's tint word and the glow a GB-F2 row gives (the lit windows)
+inline constexpr uint32_t kHitBuilderVersion = 3;  // 2: R7's glow kind in the material's tint word and the glow a GB-F2 row gives (the lit windows)
+                                                   // 3: RT-GREEN-BAND: a road's diffuse is (grey, specular mask), so its albedo is the red channel alone (kMaterialGreyInRed, the average from red)
 inline constexpr const char* kHitFileName = "mcla_city_hit.v1.pack";
 inline constexpr const char* kTexFileName = "mcla_city_tex.v1.pack";
 inline constexpr const char* kHitStampFileName = "mcla_city_hit.stamp";
@@ -208,6 +213,15 @@ inline constexpr uint32_t kGlowLens = 1;    // a street lamp's lens: the street 
 inline constexpr uint32_t kGlowAlways = 2;  // a traffic signal: lit by day as well
 inline constexpr uint32_t kGlowKinds = 3;   // the value 3 is not used: it reads as kGlowNight
 inline constexpr uint32_t kGlowShift = 30;
+// Bit 30 of the average word (HitMaterial::grey_in_red; hlsl CITY_HIT_GREY_IN_RED_SHIFT): the material's diffuse texture holds its grey albedo in the red channel (the road shaders' packing).
+inline constexpr uint32_t kMaterialGreyInRedShift = 30;
+inline constexpr uint32_t kMaterialGreyInRed = 1u << kMaterialGreyInRedShift;
+inline constexpr uint32_t kMaterialAverageMask = 0x3FFFFFFFu;  // the average colour's three 10 bit fields
+
+// The shader groups whose diffuse texture is packed as (grey, specular mask): the road shaders (the pixel shaders read DiffuseSampler's .xy and use the red channel as a grey base colour,
+// lerped to the decal's colour by the decal's alpha). `group` is the shader instance's group without the game's "x" prefix ("CityRoad"). The other road-class groups (CityRiverRoad,
+// CityRoadStud, CityGarageFloor) read three or four channels as a colour and are not in it.
+constexpr bool GroupGreyInRed(std::string_view group) { return group == "CityRoad" || group == "CityTunnelRoad"; }
 
 constexpr uint32_t PackMaterialWord(uint32_t smoothness, uint32_t surface_class, uint32_t flags, uint32_t lit, uint32_t metal) {
   return (smoothness & 0xFFu) << kWordSmoothnessShift | (surface_class & kWordClassMask) << kWordClassShift | (flags & 7u) << kWordFlagsShift | (lit & 0xFFu) << kWordLitShift |
@@ -244,7 +258,8 @@ struct HitMaterial {
   uint16_t texture = kNoTexture;                       // index in the texture table (the diffuse)
   uint16_t layer = kNoTexture;                         // the second layer's texture (version 1: never written)
   float tint[3] = {1.0f, 1.0f, 1.0f};                  // linear, 0..kHitRgb10Max
-  float average[3] = {0.5f, 0.5f, 0.5f};               // tint x the diffuse texture's mean, linear, 0..kHitRgb10Max
+  float average[3] = {0.5f, 0.5f, 0.5f};               // tint x the diffuse texture's mean, linear, 0..kHitRgb10Max (a grey from the red channel where grey_in_red)
+  bool grey_in_red = false;                            // the diffuse is packed (grey, specular mask, nothing): the albedo is its red channel as a grey (word 3's bit 30; GroupGreyInRed)
   float emissive = 0.0f;
   uint8_t glow_kind = 0;                               // kGlow*: what the glow follows (word 2's bits 30..31); only meaningful where emissive > 0
   uint64_t key = 0;                                    // XXH3-64 of the diffuse texture's base level (0: none)

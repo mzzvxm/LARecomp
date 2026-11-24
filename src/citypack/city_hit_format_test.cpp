@@ -297,12 +297,14 @@ void RecordChecks() {
     m.emissive = i % 7 == 0 ? rng.Range(0.0f, 30.0f) : 0.0f;
     m.key = (uint64_t(rng.U32()) << 32) | rng.U32();
     m.shader_hash = rng.U32();
+    m.grey_in_red = i % 3 == 1;
     uint32_t words[8];
     m.Pack(words);
     const HitMaterial u = HitMaterial::Unpack(words);
-    bool ok = u.word == m.word && u.texture == m.texture && u.layer == m.layer && u.key == m.key && u.shader_hash == m.shader_hash && u.emissive == m.emissive;
+    bool ok = u.word == m.word && u.texture == m.texture && u.layer == m.layer && u.key == m.key && u.shader_hash == m.shader_hash && u.emissive == m.emissive && u.grey_in_red == m.grey_in_red;
     for (int c = 0; c < 3; ++c) ok = ok && NearlyEqual(u.tint[c], m.tint[c], 1.0 / 1023.0, 0) && NearlyEqual(u.average[c], m.average[c], 1.0 / 1023.0, 0);
-    ok = ok && (words[2] >> 30) == 0 && (words[3] >> 30) == 0;  // the two spare bits are zero
+    // the tint word's two spare bits are zero (a material that does not glow); the average word's bit 30 is the packed road's flag and bit 31 is zero (RT-GREEN-BAND)
+    ok = ok && (words[2] >> 30) == 0 && (words[3] >> 31) == 0 && ((words[3] >> kMaterialGreyInRedShift) & 1u) == (m.grey_in_red ? 1u : 0u);
     ByteWriter w;
     m.Write(w);
     ByteReader r(w.bytes().data(), w.size());
@@ -338,6 +340,45 @@ void RecordChecks() {
     }
     Check(wrong == 0, Num("the glow kind is in bits 30..31 of the tint word of a glowing material and nowhere else (%.0f wrong)", wrong));
     Check(kGlowNight == 0 && kGlowLens == 1 && kGlowAlways == 2 && kGlowKinds == 3 && kGlowShift == 30, "the glow kinds' numbers");
+  }
+  {
+    // RT-GREEN-BAND: the packed road's flag is bit 30 of the average word and changes nothing else in the record: the average's ten bit channels, the tint, the glow kind and every other word
+    // read the same with and without it
+    int wrong = 0;
+    Lcg grey_rng;
+    for (int i = 0; i < 2000; ++i) {
+      HitMaterial plain;
+      plain.word = PackMaterialWord(grey_rng.Below(256), grey_rng.Below(16), grey_rng.Below(8), grey_rng.Below(256), grey_rng.Below(256));
+      plain.texture = uint16_t(grey_rng.Below(1748));
+      for (int c = 0; c < 3; ++c) {
+        plain.tint[c] = grey_rng.Range(0.0f, 2.0f);
+        plain.average[c] = grey_rng.Range(0.0f, 2.0f);
+      }
+      plain.emissive = i % 4 == 0 ? grey_rng.Range(0.1f, 9.0f) : 0.0f;
+      plain.glow_kind = uint8_t(grey_rng.Below(3));
+      plain.key = (uint64_t(grey_rng.U32()) << 32) | grey_rng.U32();
+      plain.shader_hash = grey_rng.U32();
+      HitMaterial packed = plain;
+      packed.grey_in_red = true;
+      uint32_t a[8], b[8];
+      plain.Pack(a);
+      packed.Pack(b);
+      for (int k = 0; k < 8; ++k) {
+        const uint32_t want = k == 3 ? (a[3] | kMaterialGreyInRed) : a[k];
+        if (b[k] != want) ++wrong;
+      }
+      const HitMaterial ua = HitMaterial::Unpack(a), ub = HitMaterial::Unpack(b);
+      if (ua.grey_in_red || !ub.grey_in_red) ++wrong;
+      for (int c = 0; c < 3; ++c) {
+        if (ua.average[c] != ub.average[c] || ua.tint[c] != ub.tint[c]) ++wrong;
+      }
+      if (ua.glow_kind != ub.glow_kind || ua.word != ub.word || ua.emissive != ub.emissive) ++wrong;
+    }
+    Check(wrong == 0, Num("the packed road's flag (bit 30 of the average word) is the only word that differs, and the average and the tint read the same (%.0f wrong)", wrong));
+    Check(kMaterialGreyInRed == 0x40000000u && kMaterialGreyInRedShift == 30 && (kMaterialGreyInRed & kMaterialAverageMask) == 0, "the packed road's bit is outside the average's three ten bit fields");
+    Check(GroupGreyInRed("CityRoad") && GroupGreyInRed("CityTunnelRoad") && !GroupGreyInRed("CityRiverRoad") && !GroupGreyInRed("CityRoadStud") && !GroupGreyInRed("CityGarageFloor") && !GroupGreyInRed("CitySidewalk") &&
+              !GroupGreyInRed("CityDefault") && !GroupGreyInRed("") && !GroupGreyInRed("cityroad") && !GroupGreyInRed("xCityRoad"),
+          "only the two road groups whose pixel shaders read the diffuse's .xy (CityRoad, CityTunnelRoad) are packed");
   }
   {
     HitMaterial m;
@@ -889,6 +930,7 @@ void HlslDefinesChecks(const std::string& text) {
       {"CITY_HIT_GLOW_LENS", double(kGlowLens)},
       {"CITY_HIT_GLOW_ALWAYS", double(kGlowAlways)},
       {"CITY_HIT_GLOW_SHIFT", double(kGlowShift)},
+      {"CITY_HIT_GREY_IN_RED_SHIFT", double(kMaterialGreyInRedShift)},
   };
   Check(defines.size() == want.size(), Num("the .hlsli has %.0f CITY_HIT_ numeric defines (the test knows %.0f)", double(defines.size()), double(want.size())));
   for (const auto& [name, value] : want) {
@@ -932,6 +974,7 @@ void DecodeChecks() {
       hm.average[c] = rng.Range(0.0f, 1.5f);
     }
     hm.emissive = m % 6 == 0 ? rng.Range(0.5f, 20.0f) : 0.0f;
+    hm.grey_in_red = m % 5 == 2;  // RT-GREEN-BAND: the packed roads
     hm.Pack(&material_words[size_t(m) * 8]);
   }
   std::vector<HitTexture> texture_list(textures);
@@ -1110,7 +1153,8 @@ void DecodeChecks() {
       const bool material_ok = m.word == w && m.cls == WordClass(w) && m.flags == WordFlags(w) && NearlyEqual(m.smoothness, WordSmoothness(w) / 255.0, 1e-6, 0) && NearlyEqual(m.lit, WordLit(w) / 255.0, 1e-6, 0) &&
                                NearlyEqual(m.metal, WordMetal(w) / 255.0, 1e-6, 0) && m.textureIndex == hm.texture && m.layerIndex == kNoTexture && m.emissive == hm.emissive &&
                                NearlyEqual(m.tint.x, hm.tint[0], 1.0 / 1023.0, 0) && NearlyEqual(m.tint.y, hm.tint[1], 1.0 / 1023.0, 0) && NearlyEqual(m.tint.z, hm.tint[2], 1.0 / 1023.0, 0) &&
-                               NearlyEqual(m.average.x, hm.average[0], 1.0 / 1023.0, 0) && NearlyEqual(m.average.y, hm.average[1], 1.0 / 1023.0, 0) && NearlyEqual(m.average.z, hm.average[2], 1.0 / 1023.0, 0);
+                               NearlyEqual(m.average.x, hm.average[0], 1.0 / 1023.0, 0) && NearlyEqual(m.average.y, hm.average[1], 1.0 / 1023.0, 0) && NearlyEqual(m.average.z, hm.average[2], 1.0 / 1023.0, 0) &&
+                               m.greyInRed == hm.grey_in_red;  // and the flag in bit 30 of the average word leaves the average's channels alone
       if (!material_ok) ++shim_wrong;
       float un[3];
       UnpackRgb10(material_words[size_t(h.material) * 8 + 2], un);

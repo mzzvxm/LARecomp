@@ -828,6 +828,43 @@ void TestMaterials() {
   CHECK(FinalizeMaterials(set, &textures, &rows, &materials, &table, &with_rows, &error));
   CHECK(with_rows.rows_applied == 1 && WordClass(materials[2].word) == uint32_t(gb::SurfaceClass::kGlass) && WordMetal(materials[2].word) == 255 && WordClass(materials[1].word) == 1 &&
         WordClass(materials[4].word) == 1);  // another entry of another texture: untouched
+  // RT-GREEN-BAND: a road's diffuse is (grey, specular mask, nothing): the road shaders (CityRoad, CityTunnelRoad) read DiffuseSampler's .xy and the pixel shader's base colour is the red channel as a
+  // grey. Their materials carry the flag, their average is the tint x the RED mean as a grey (the mean of the three channels made the roads green or orange: the lime band on the lower half of the
+  // ray traced car paint), the other road-class groups read colours and are left alone, and the flag is part of a material's identity
+  {
+    const ShaderNames road = MakeNames("CityRoad", "CityRoad_Asphalt", {Tex("DiffuseSampler", "known_a.dds")});
+    const ShaderNames tunnel = MakeNames("CityTunnelRoad", "CityTunnelRoad", {Tex("DiffuseSampler", "known_a.dds"), Vec("DiffuseColor", 0.5f, 1.0f, 2.0f, 1.0f)});
+    const ShaderNames bare_road = MakeNames("CityRoad", "CityRoad_Asphalt", {});
+    CHECK(MaterialFromShader(&road, MaterialClass::kGround, nullptr).grey_in_red && MaterialFromShader(&tunnel, MaterialClass::kGround, nullptr).grey_in_red);
+    CHECK(!MaterialFromShader(&bare_road, MaterialClass::kGround, nullptr).grey_in_red);  // no texture: nothing to read as a grey
+    for (const char* group : {"CityRiverRoad", "CityRoadStud", "CityGarageFloor", "CitySidewalk", "CityBumpSpec", "CityDefault", "CityTerrain"}) {
+      const ShaderNames other = MakeNames(group, group, {Tex("DiffuseSampler", "known_a.dds")});
+      CHECK(!MaterialFromShader(&other, MaterialClass::kGround, nullptr).grey_in_red);
+    }
+    MaterialSet roads;
+    const uint32_t r_road = roads.Add(resolved(road, d3)), r_tunnel = roads.Add(resolved(tunnel, d3)), r_wall = roads.Add(resolved(wall_a, d3));
+    MaterialDef unflagged = resolved(road, d3);
+    unflagged.grey_in_red = false;
+    const uint32_t r_plain = roads.Add(unflagged);  // the same road without the flag: another material (the flag is part of the key)
+    CHECK(r_road == 1 && r_tunnel == 2 && r_wall == 3 && r_plain == 4 && roads.Add(resolved(road, d3)) == r_road);
+    std::vector<HitMaterial> road_materials;
+    std::vector<HitTexture> road_table;
+    FinalizeStats road_stats;
+    CHECK(FinalizeMaterials(roads, &textures, nullptr, &road_materials, &road_table, &road_stats, &error));
+    // the source's mean is (0.5, 0.25, 1.0): the road keeps the red as a grey, the wall and the unflagged road the colour
+    CHECK(road_materials[r_road].grey_in_red && Near(road_materials[r_road].average[0], 0.5f, 1e-6f) && Near(road_materials[r_road].average[1], 0.5f, 1e-6f) && Near(road_materials[r_road].average[2], 0.5f, 1e-6f));
+    CHECK(road_materials[r_tunnel].grey_in_red && Near(road_materials[r_tunnel].average[0], 0.25f, 1e-6f) && Near(road_materials[r_tunnel].average[1], 0.5f, 1e-6f) &&
+          Near(road_materials[r_tunnel].average[2], 1.0f, 1e-6f));  // the tint (0.5, 1, 2) times the grey 0.5
+    CHECK(!road_materials[r_wall].grey_in_red && Near(road_materials[r_wall].average[0], 0.5f, 1e-6f) && Near(road_materials[r_wall].average[1], 0.25f, 1e-6f) && Near(road_materials[r_wall].average[2], 1.0f, 1e-6f));
+    CHECK(!road_materials[r_plain].grey_in_red && Near(road_materials[r_plain].average[1], 0.25f, 1e-6f) && Near(road_materials[r_plain].average[2], 1.0f, 1e-6f));
+    CHECK(!road_materials[0].grey_in_red);  // the default surface
+    uint32_t road_words[8];
+    road_materials[r_road].Pack(road_words);
+    const HitMaterial road_round = HitMaterial::Unpack(road_words);
+    CHECK(road_round.grey_in_red && Near(road_round.average[1], 0.5f, 0.003f) && road_round.word == road_materials[r_road].word);
+    road_materials[r_wall].Pack(road_words);
+    CHECK(!HitMaterial::Unpack(road_words).grey_in_red);
+  }
   // R7: the glow of a material. The shader's group says what glows and what its glow follows (a lamp lens the street lamps' schedule, a traffic signal always, neon and the rest the night curve); a
   // GB-F2 row that says "lights itself" (a lit weight under 1) or "emissive" makes a texture glow (the lit windows of a night: the census tells which textures), one that gives a glowing material
   // another class takes its glow away

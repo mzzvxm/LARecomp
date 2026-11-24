@@ -20,7 +20,9 @@
 //   emissive    for the glowing class only: NeonIntensity, NightIntensity (CityNeonTint, CityStoreSign), 1 where it has neither; and for a material a GB-F2 row made glow (class=emissive, or a lit
 //               weight under 1: "lights itself": the lit windows of a night) 1 x (1 - the lit weight), the row's way of saying which textures are lit at night (R7)
 //   glow kind   what a glowing material's glow follows (city_hit_format.h kGlow*): a street lamp's lens the street lamps' schedule, a traffic signal always, everything else the night curve
-//   average     tint x the diffuse texture's mean colour where the texture resolved, tint x 0.5 where it has a texture that did not resolve, the tint alone where it has none
+//   average     tint x the diffuse texture's mean colour where the texture resolved, tint x 0.5 where it has a texture that did not resolve, the tint alone where it has none; a road's
+//               diffuse (GroupGreyInRed: CityRoad, CityTunnelRoad) is (grey, specular mask, nothing), so its average is tint x the mean RED as a grey (RT-GREEN-BAND: the mean of all three
+//               channels made a green or orange road, and the hit shading's lime band along the lower half of the ray traced car paint)
 //
 // The per-texture rows of GB-F2 (gbuffer_materials.h: class=, rough=, metal=, ssr=, lit= by `hash:<XXH3-64 of the base level>`) are applied by the same ApplyTextureRow the raster side
 // uses, when the builder is given the table files: by the texture's key, which the texture source gives. The records written WITHOUT rows are the F1 words; the runtime may apply the rows
@@ -52,6 +54,7 @@ struct MaterialDef {
   uint32_t picture = kNoTexture;  // the texture source's answer for `texture`: the picture (an index in its table); kNoTexture: none, or not found
   uint64_t texture_key = 0;       // ... and the guest key of the dictionary entry (HitMaterial::key)
   bool flat_colour = false;  // no texture and the tint is the colour of the surface
+  bool grey_in_red = false;  // the diffuse texture is packed (grey, specular mask): the road shaders (GroupGreyInRed); its albedo is the red channel as a grey (RT-GREEN-BAND)
   uint32_t shader_hash = 0;  // rage hash of "<group>/<preset>" (the pack's runs carry the same number)
 
   // The canonical text of every field above: two defs are one material when their keys are equal.

@@ -71,8 +71,8 @@ RowGlow GlowAfterRow(uint32_t word, float emissive_before, uint8_t kind_before) 
 
 std::string MaterialDef::Key() const {
   char head[176];
-  std::snprintf(head, sizeof(head), "w%08x|t%08x,%08x,%08x|e%08x,%u|s%08x|f%d|", word, FloatBits(tint[0]), FloatBits(tint[1]), FloatBits(tint[2]), FloatBits(emissive), unsigned(glow_kind), shader_hash,
-                flat_colour ? 1 : 0);
+  std::snprintf(head, sizeof(head), "w%08x|t%08x,%08x,%08x|e%08x,%u|s%08x|f%d|g%d|", word, FloatBits(tint[0]), FloatBits(tint[1]), FloatBits(tint[2]), FloatBits(emissive), unsigned(glow_kind), shader_hash,
+                flat_colour ? 1 : 0, grey_in_red ? 1 : 0);
   char picked[40];
   std::snprintf(picked, sizeof(picked), "p%08x,%08x,%08x|", picture, uint32_t(texture_key), uint32_t(texture_key >> 32));
   return std::string(head) + picked + texture;
@@ -123,6 +123,7 @@ MaterialDef MaterialFromShader(const ShaderNames* names, MaterialClass base_clas
   const bool found_tint = ReadColour(params, kParamDiffuseColor, def.tint) || ReadColour(params, kParamTintColor, def.tint) || ReadColour(params, kParamWindowTintColor, def.tint) ||
                           ReadColour(params, kParamNightColor, def.tint) || ReadColour(params, kParamDayColor, def.tint);
   def.flat_colour = found_tint && def.texture.empty();
+  def.grey_in_red = !def.texture.empty() && GroupGreyInRed(names->group);
   if (cls == gb::SurfaceClass::kEmissive) {
     def.emissive = 1.0f;
     def.glow_kind = uint8_t(GlowKindOfGroup(names->group));
@@ -167,6 +168,7 @@ bool FinalizeMaterials(const MaterialSet& set, const HitTextureSource* textures,
     m.emissive = def.emissive;
     m.glow_kind = def.glow_kind;
     m.shader_hash = def.shader_hash;
+    m.grey_in_red = def.grey_in_red;
     if (index != 0) {
       for (int k = 0; k < 3; ++k) {
         m.tint[k] = def.tint[k];
@@ -187,7 +189,8 @@ bool FinalizeMaterials(const MaterialSet& set, const HitTextureSource* textures,
         m.key = def.texture_key;
         float mean[3];
         if (textures != nullptr && textures->Average(def.picture, mean)) {
-          for (int k = 0; k < 3; ++k) m.average[k] = std::min(def.tint[k] * mean[k], kHitRgb10Max);
+          // a packed road diffuse is (grey, specular mask, nothing): its colour is the red mean as a grey (the mean of the three channels is a green or orange road)
+          for (int k = 0; k < 3; ++k) m.average[k] = std::min(def.tint[k] * (def.grey_in_red ? mean[0] : mean[k]), kHitRgb10Max);
         }
       } else {
         ++stats->materials_unresolved;

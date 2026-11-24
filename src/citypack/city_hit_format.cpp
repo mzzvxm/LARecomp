@@ -124,7 +124,7 @@ void HitMaterial::Pack(uint32_t words[8]) const {
   words[0] = word;
   words[1] = uint32_t(texture) | (uint32_t(layer) << 16);
   words[2] = PackRgb10(tint) | ((emissive > 0.0f && std::isfinite(emissive) ? uint32_t(glow_kind) & 3u : 0u) << kGlowShift);
-  words[3] = PackRgb10(average);
+  words[3] = PackRgb10(average) | (grey_in_red ? kMaterialGreyInRed : 0u);
   words[4] = std::bit_cast<uint32_t>(std::isfinite(emissive) && emissive > 0.0f ? emissive : 0.0f);
   words[5] = uint32_t(key);
   words[6] = uint32_t(key >> 32);
@@ -139,6 +139,7 @@ HitMaterial HitMaterial::Unpack(const uint32_t words[8]) {
   UnpackRgb10(words[2], m.tint);
   m.glow_kind = uint8_t(words[2] >> kGlowShift);
   UnpackRgb10(words[3], m.average);
+  m.grey_in_red = (words[3] & kMaterialGreyInRed) != 0;
   m.emissive = std::bit_cast<float>(words[4]);
   m.key = uint64_t(words[5]) | (uint64_t(words[6]) << 32);
   m.shader_hash = words[7];
