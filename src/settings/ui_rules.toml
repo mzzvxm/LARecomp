@@ -23,6 +23,7 @@ display_mode.cases = [
   { when = "s.fullscreen_exclusive && os.exclusive_fullscreen", value = "fullscreen" },
   { value = "borderless" },
 ]
+dlss_frame_gen_multiplier = "live.frame_generation_multiplier ?? min(max(s.mcla_gpu_frame_generation_multiplier, 2), features.frame_generation.dlss_multiplier_max)"
 frame_gen_on = "live.frame_generation_running ?? ((s.mcla_gpu_frame_generation == 'fsr31' && features.frame_generation.fsr31) || (s.mcla_gpu_frame_generation == 'dlss' && features.frame_generation.dlss))"
 hdr_on = "live.hdr_active ?? (s.mcla_gpu_hdr == 'on' || (s.mcla_gpu_hdr == 'auto' && features.hdr.windows_hdr_on))"
 ao_on = "resolved(s.mcla_gpu_ao) in ['high','ultra','rt']"
@@ -54,9 +55,10 @@ car_selfrefl_choice.cases = [
 ]
 car_rt_runs = "api.car_rt && (d.car_selfrefl_choice == 'ray_traced' || (d.car_selfrefl_choice == 'auto' && auto_of('mcla_gpu_car_selfrefl') == 'on'))"
 rt_city_wanted = "resolved(s.mcla_gpu_rt_reflections) in ['high','ultra']"
+renderer_choice = "live.renderer_choice ?? 'larecomp'"
 frame_gen_available = "live.frame_generation_choice_available ?? d.frame_gen_on"
 shown_per_rendered.cases = [
-  { when = "s.mcla_gpu_frame_generation == 'dlss'", value = { expr = "live.frame_generation_multiplier ?? min(max(s.mcla_gpu_frame_generation_multiplier, 2), features.frame_generation.dlss_multiplier_max)" } },
+  { when = "s.mcla_gpu_frame_generation == 'dlss'", value = { expr = "d.dlss_frame_gen_multiplier" } },
   { value = 2 },
 ]
 
@@ -91,7 +93,7 @@ states = [
   { when = "d.display_mode == 'borderless'", enabled = false, suffix = " (DISPLAY)" },
   { when = "os.window_size_fixed && d.display_mode == 'windowed' && known(live.output_size ?? null)", enabled = false, suffix = " ({live.output_size})" },
   { when = "os.window_size_fixed && d.display_mode == 'windowed'", enabled = false, suffix = " (FIXED)" },
-  { when = "os.window_size_fixed", enabled = false },
+  { when = "os.window_size_fixed", enabled = false, reason = "The window size is fixed." },
   { when = "d.display_mode == 'windowed' && !os.live_window_resize", enabled = true, suffix = " (RESTART)", needs_restart = true },
 ]
 
@@ -306,12 +308,12 @@ auto_label = true
 
 [rows.PM_RxGpuAoLevel]
 states = [
-  { when = "!d.ao_on", enabled = false },
+  { when = "!d.ao_on", enabled = false, reason = "Ambient occlusion is off." },
 ]
 
 [rows.PM_RxGpuLightShadows]
 states = [
-  { when = "resolved(s.mcla_gpu_headlights) != 'on'", enabled = false },
+  { when = "resolved(s.mcla_gpu_headlights) != 'on'", enabled = false, reason = "Headlights are off." },
 ]
 
 [rows.PM_RxGpuLightShadows.value."auto"]
@@ -322,7 +324,7 @@ states = [
   { when = "!api.city_rt_shadows", enabled = false, suffix = " (NO RT GPU)" },
   { when = "gpu.class == 'low'", enabled = false, suffix = " (GPU TOO SLOW)" },
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
-  { when = "!(resolved(s.mcla_gpu_contact_shadows) in ['high','ultra'])", enabled = false },
+  { when = "!(resolved(s.mcla_gpu_contact_shadows) in ['high','ultra'])", enabled = false, reason = "Contact shadows are off." },
 ]
 
 [rows.PM_RxGpuRtShadows.value."auto"]
@@ -334,7 +336,7 @@ label_rules = [
 [rows.PM_RxGpuSsgi]
 states = [
   { when = "!d.ao_on && (live.rt_gi_replaces_bounce ?? false)", enabled = false, suffix = " (REPLACED)" },
-  { when = "!d.ao_on", enabled = false },
+  { when = "!d.ao_on", enabled = false, reason = "Ambient occlusion is off." },
   { when = "live.rt_gi_replaces_bounce ?? false", enabled = true, suffix = " (REPLACED)" },
 ]
 
@@ -356,7 +358,7 @@ label_rules = [
 
 [rows.PM_RxGpuSsgiLevel]
 states = [
-  { when = "!d.bounce_on", enabled = false },
+  { when = "!d.bounce_on", enabled = false, reason = "Bounce Light and RT Bounce Light are off." },
 ]
 
 [rows.PM_RxGpuRtCityRefl]
@@ -491,7 +493,7 @@ states = [
   { when = "true", enabled = true, suffix = " (RESTART)", needs_restart = true },
 ]
 
-decode = "live.renderer_choice ?? 'larecomp'"
+decode = "d.renderer_choice"
 values = [
   { id = "larecomp", label = "NATIVE" },
   { id = "d3d12", label = "XENIA D3D12" },
@@ -526,6 +528,7 @@ values = [
 ]
 
 [rows.PM_RxGpuUpscMode]
+setting = "mcla_gpu_resolution_scale"
 
 [[rows.PM_RxGpuUpscMode.variants]]
 when = "renderer == 'xenia'"
@@ -546,7 +549,8 @@ fallback_values = [
 when = "d.shown_upscaler == 'fsr1'"
 label = "FSR 1 MODE"
 setting = "mcla_gpu_fsr_preset"
-values_from = { generator = "render_scale.fsr1_modes", args = {  } }
+# pause_only keeps the live list in the pause menu and publishes its fallback as a v1 list.
+values_from = { generator = "render_scale.fsr1_modes", pause_only = true }
 fallback_values = [
   { id = "custom", label = "CUSTOM", when = "s.mcla_gpu_fsr_preset == 'custom'" },
   { id = "ultra_quality", label = "ULTRA QUAL. (77%)" },
@@ -598,7 +602,7 @@ fallback_values = [
 
 [rows.PM_RxGpuUpscSharp]
 setting = "mcla_gpu_upscaler_sharpness"
-values_from = { generator = "upscaler.sharpness", args = { setting = "mcla_gpu_upscaler_sharpness" } }
+values_from = { generator = "upscaler.sharpness", pause_only = true, args = { setting = "mcla_gpu_upscaler_sharpness" } }
 fallback_values = [
   { id = "0", label = "OFF" },
   { id = "0.2", label = "0.2" },
@@ -614,19 +618,20 @@ states = [
 [[rows.PM_RxGpuUpscSharp.variants]]
 when = "d.shown_upscaler == 'fsr1'"
 setting = "mcla_gpu_fsr_sharpness"
-values_from = { generator = "upscaler.sharpness", args = { setting = "mcla_gpu_fsr_sharpness" } }
+values_from = { generator = "upscaler.sharpness", pause_only = true, args = { setting = "mcla_gpu_fsr_sharpness" } }
 fallback_values = [
   { id = "1.6", label = "0.2" },
   { id = "1.2", label = "0.4" },
   { id = "0.8", label = "0.6" },
   { id = "0.4", label = "0.8" },
+  { id = "0.2", label = "0.9", when = "s.mcla_gpu_fsr_sharpness == 0.2" },
   { id = "0", label = "1" },
 ]
 
 [rows.PM_RxGpuDenoiser]
 hidden_unless = "d.denoiser_vendor in ['amd','nvidia']"
 states = [
-  { when = "d.denoiser_state == 'hidden'", enabled = false },
+  { when = "d.denoiser_state == 'hidden'", enabled = false, reason = "This GPU cannot run DLSS Ray Reconstruction." },
   { when = "d.denoiser_state == 'needs_d3d12'", enabled = false, suffix = " (D3D12 ONLY)", label = "DLSS RR" },
   { when = "d.denoiser_state == 'unsupported'", enabled = false, suffix = " (N/A)", label = "DLSS RR" },
   { when = "d.denoiser_state == 'needs_dlss'", enabled = false, suffix = " (NEEDS DLSS)", label = "DLSS RR" },
@@ -641,7 +646,7 @@ states = [
 when = "d.denoiser_vendor == 'amd'"
 label = "AMD FSR RAY REGENERATION"
 states = [
-  { when = "d.denoiser_state == 'hidden'", enabled = false },
+  { when = "d.denoiser_state == 'hidden'", enabled = false, reason = "This GPU cannot run AMD FSR Ray Regeneration." },
   { when = "d.denoiser_state == 'needs_d3d12'", enabled = false, suffix = " (D3D12 ONLY)", label = "RAY REGEN" },
   { when = "d.denoiser_state == 'unsupported'", enabled = false, suffix = " (N/A)", label = "RAY REGEN" },
   { when = "d.denoiser_state == 'needs_dlss'", enabled = false, suffix = " (NEEDS DLSS)", label = "RAY REGEN" },
@@ -667,9 +672,9 @@ values = [
 [rows.PM_RxGpuFrameGenMult]
 hidden_unless = "live.frame_generation_multiplier_listed ?? (features.frame_generation.dlss_multiplier_max > 2)"
 states = [
-  { when = "s.mcla_gpu_frame_generation != 'dlss'", enabled = false },
+  { when = "s.mcla_gpu_frame_generation != 'dlss'", enabled = false, reason = "Choose DLSS frame generation to change the multiplier." },
 ]
-decode = "live.frame_generation_multiplier ?? min(max(s.mcla_gpu_frame_generation_multiplier, 2), features.frame_generation.dlss_multiplier_max)"
+decode = "d.dlss_frame_gen_multiplier"
 values = [
   { id = "2", label = "2X" },
   { id = "3", label = "3X", when = "features.frame_generation.dlss_multiplier_max >= 3" },
@@ -680,7 +685,7 @@ values = [
 format = "%.0f"
 hidden_unless = "(live.fsr_frame_generation_listed ?? features.frame_generation.fsr31) || (live.dlss_frame_generation_listed ?? features.frame_generation.dlss)"
 states = [
-  { when = "!d.frame_gen_available", enabled = false },
+  { when = "!d.frame_gen_available", enabled = false, reason = "Frame generation is off or unavailable." },
 ]
 
 [rows.PM_RxGpuFrameGenFps.value."-1"]

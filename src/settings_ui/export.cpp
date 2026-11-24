@@ -112,6 +112,17 @@ void OverlayRow(Table& target, const Table& source) {
     Overlay(target, source, "value");
 }
 
+// The pause menu can compute lists that contract v1 can only carry as static steps.
+void ExportValueList(Table& form) {
+    if (!form["values_from"]["pause_only"].value_or(false)) return;
+
+    auto* fallback = form["fallback_values"].as_array();
+    if (!fallback || fallback->empty()) throw std::runtime_error("a pause-only generator needs fallback values");
+    form.insert_or_assign("values", std::move(*fallback));
+    form.erase("values_from");
+    form.erase("fallback_values");
+}
+
 void OverlayValues(Table& row, const Table& overlay, const Table& sets, std::string_view id) {
     auto* values = row["values"].as_array();
     if (!values) values = row["fallback_values"].as_array();
@@ -203,6 +214,10 @@ Table Row(const ItemDef& item, const Table& settings, const Table& text, const T
     if (text_fields) {
         if (const auto* fields = (*text_fields)["value"].as_table()) OverlayValues(row, *fields, sets, item.key);
     }
+    ExportValueList(row);
+    if (auto* variants = row["variants"].as_array()) {
+        for (auto& variant : *variants) ExportValueList(*variant.as_table());
+    }
 
     const auto setting_name = Text(std::as_const(row)["setting"]);
     const auto setting = settings[setting_name];
@@ -211,7 +226,10 @@ Table Row(const ItemDef& item, const Table& settings, const Table& text, const T
     }
     if (setting.is_table()) {
         const auto fallback = Text(setting["default"]);
-        if (!row.contains("default") && !row.contains("values_from")) {
+        // A choice supplied entirely by variants uses the selected setting's default.
+        const bool variant_choices = kind == "choice" && row.contains("variants") &&
+                                     !row.contains("values") && !row.contains("values_ref");
+        if (!row.contains("default") && !row.contains("values_from") && !variant_choices) {
             row.insert("default", item.inverted ? (fallback == "true" ? "false" : "true") : fallback);
         }
         const auto life = Text(setting["life"]);

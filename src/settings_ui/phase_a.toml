@@ -51,18 +51,6 @@ values = [
   {id = "dlss", label = "DLSS", writes = [{setting = "mcla_gpu_fsr", value = "false"}, {setting = "mcla_gpu_upscaler", value = "dlss"}]},
 ]
 
-[rows.PM_RxGpuUpscMode]
-setting = "mcla_gpu_resolution_scale"
-values_from = {generator = "render_scale.shares", args = {renderer = "native"}}
-fallback_values = [{id = "0", label = "100%"}, {id = "1.5", label = "150%"}, {id = "2", label = "200%"}, {id = "3", label = "300%"}]
-variants = [
-  {when = "renderer == 'xenia'", setting = "resolution_scale", default = "1", apply = "restart", values_from = {generator = "render_scale.shares", args = {renderer = "xenia"}}, fallback_values = [
-    {id = "1", label = "1X (720P)"},
-    {id = "2", label = "2X (1440P)"},
-    {id = "3", label = "3X (4K)"},
-  ]},
-]
-
 [rows.PM_RxGpuUpscSharp]
 setting = "mcla_gpu_upscaler_sharpness"
 kind = "number"

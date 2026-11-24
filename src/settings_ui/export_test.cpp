@@ -10,6 +10,7 @@ using namespace larecomp::settings_ui;
 using namespace mcla_menu;
 using toml::table;
 
+// CHECK: compare the installed executable's dump with the source harness dump.
 int main(int argc, char** argv) {
     int checks = 0;
     int failed = 0;
@@ -41,7 +42,8 @@ int main(int argc, char** argv) {
             {Bool("PM_Enabled", "enabled", "ENABLED: ", true),
              NativeOnly(Str("PM_Filter", "mcla_gpu_shadow_filter", "FILTER: ", modes, labels, 4)),
              Dbl("PM_Range", "traffic_unspawn_dist", "RANGE: ", distance, 2, "%gM"),
-             Dbl("PM_Step", "step", "STEP: ", steps, 3, "%.1fX", " (NEXT START)", "STOCK")}},
+             Dbl("PM_Step", "step", "STEP: ", steps, 3, "%.1fX", " (NEXT START)", "STOCK"),
+             Str("PM_Mode", "step", "MODE: ", nullptr, nullptr, 0)}},
     };
     const Inputs input{
         "test", "0000000000000000000000000000000000000001", "test:id",
@@ -59,6 +61,8 @@ title = "Game's Own"
 help = "Sets traffic range."
 [rows.PM_Step]
 help = "Choose the step."
+[rows.PM_Mode]
+help = "Choose the mode."
 )",
         R"(
 [[tabs]]
@@ -87,6 +91,17 @@ values_ref = "filters"
 when = "features.pcss"
 [rows.PM_Range]
 states = [{when = "live.hdr_active ?? false", enabled = false, reason = "HDR controls this setting."}]
+values_from = {generator = "local.range", pause_only = true}
+fallback_values = [{id = "0", label = "AUTO"}, {id = "250.5", label = "250.5M"}]
+[[rows.PM_Mode.variants]]
+when = "renderer == 'native'"
+setting = "mcla_gpu_shadow_filter"
+values_from = {generator = "local.filter", pause_only = true}
+fallback_values = [{id = "game", label = "GAME", when = "features.pcss"}]
+[[rows.PM_Mode.variants]]
+when = "true"
+values_from = {generator = "render_scale.shares", args = {renderer = "xenia"}}
+fallback_values = [{id = "1", label = "100%"}]
 )",
         "",
     };
@@ -110,6 +125,26 @@ states = [{when = "live.hdr_active ?? false", enabled = false, reason = "HDR con
     check(rows[3]["values"][1]["label"].value_or("") == std::string_view("0.5X"), "pre-render numeric label");
     check(rows[3]["apply"].value_or("") == std::string_view("next_start"), "apply static suffix");
     check(rows[3]["states"][0]["suffix"].value_or("") == std::string_view(" (NEXT START)"), "retain the game's suffix");
+    check(!rows[2]["values_from"] && !rows[2]["fallback_values"], "omit a pause-only generator and its fallback fields");
+    check(!rows[4]["default"], "a variant-only list uses the selected setting's default");
+    const auto variants = rows[4]["variants"];
+    check(!variants[0]["values_from"] && !variants[0]["fallback_values"], "omit pause-only generator fields from variants");
+    check(variants[0]["values"][0]["id"].value_or("") == std::string_view("game") &&
+          variants[0]["values"][0]["when"].value_or("") == std::string_view("features.pcss"), "export conditional fallback values as static steps");
+    check(variants[1]["values_from"]["generator"].value_or("") == std::string_view("render_scale.shares") &&
+          variants[1]["fallback_values"][0]["id"].value_or("") == std::string_view("1"), "preserve a v1 generator and its fallback");
+    for (const char* fallback : {"", "fallback_values = []"}) {
+        const auto rules = std::string("[rows.PM_Range]\nvalues_from = {generator = \"local.range\", pause_only = true}\n") + fallback;
+        auto invalid = input;
+        invalid.rules = rules;
+        bool rejected = false;
+        try {
+            BuildDocument(catalog, menus, invalid);
+        } catch (const std::runtime_error& error) {
+            rejected = std::string_view(error.what()) == "a pause-only generator needs fallback values";
+        }
+        check(rejected, "reject a pause-only generator with no static steps");
+    }
     check(doc["tabs"][1]["sections"][0]["rows"][0]["apply"].value_or("") == std::string_view("restart"),
           "launcher-only row uses setting lifecycle");
     check(doc["settings"]["mcla_gpu_shadow_filter"]["auto"]["handheld"]["low"].value_or("") ==

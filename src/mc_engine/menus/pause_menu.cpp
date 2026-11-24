@@ -2376,7 +2376,7 @@ const ItemDef kExtrasHubItems[] = {
     NativeOnly(Bool("PM_RxTexMods", "texture_mods", "TEXTURE MODS: ")),
 #endif
     Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
-    Bool("PM_RxBigSession",  "net_lift_big_session_limits", "NO 8 PLAYER LIMITS: ", false,
+    Bool("PM_RxBigSession",  "net_lift_big_session_limits", "NO 8P LIMITS: ", false,
          " (NEXT HOST)"),
     // The car is moved once per session, when it first appears at Hollywood's door (map_warp.cpp
     // TickStartGarage), so a change shows the next time the game is started. NEXT START and not
