@@ -10,11 +10,14 @@
 #include "debug_menu.h"
 #include "debug_menu_pages.h"
 #include "display_menu.h"
+#include "mc_engine/display/display_mode.h"
 #include "frame_generation_menu.h"
 #include "menu_items.h"
 #include "pause_parity_rows.h"
 #include "pause_selfrefl_row.h"
-#include "row_dependency.h"
+#include "settings/ui_expr_auto.h"
+#include "settings/ui_expr_rules.h"
+#include "ui_expr_data.h"
 #include "upscaling_menu.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/modloader/modloader.h"
@@ -60,7 +63,6 @@
 #include "larecomp_guest.h"
 
 #if defined(LARECOMP_HAS_GPU)
-#include "gpu/car_mirror_setting.h"
 #include "gpu/car_shadow_map_rules.h"
 #include "gpu/city_refl_setting.h"
 #include "gpu/city_rt_rules.h"
@@ -1365,7 +1367,6 @@ using mcla_menu::ActionId;
 using mcla_menu::Bool;
 using mcla_menu::Carbon;
 using mcla_menu::Color;
-using mcla_menu::CvarWriter;
 using mcla_menu::Dbl;
 using mcla_menu::ItemDef;
 using mcla_menu::ItemKind;
@@ -1383,16 +1384,12 @@ using mcla_menu::kActionRestart;
 using mcla_menu::kActionRestartLater;
 using mcla_menu::kActionRestartNow;
 using mcla_menu::NativeOnly;
-using mcla_menu::RowDynamics;
 using mcla_menu::Str;
 using mcla_menu::Submenu;
-using mcla_menu::WithDynamics;
 using mcla_menu::XeniaOnly;
 
 // ── Value tables ───────────────────────────────────────────────────────
 
-constexpr const char* kGpuMsaaVals[]  = {"off", "2", "4", "8"};
-constexpr const char* kGpuMsaaNames[] = {"OFF", "2X", "4X", "8X"};
 
 constexpr double kCamSmoothVals[] = {0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0};
 
@@ -1400,7 +1397,7 @@ constexpr double kFovValues[] = {0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4,
                                  1.5, 1.6, 1.7, 1.8, 1.9, 2.0};
 // TRAFFIC LOD: AUTO (the cvar's 0: gpu/gpu_class.h kScales, 3X on a high-end graphics card), then the steps. The old 0.1 and 10 are not
 // steps (5 already keeps the most detailed model to 200 m): a value from an older larecomp.toml that is not a step gets an entry of its
-// own while the cvar holds it (RowDynamics::value_label).
+// own while the cvar holds it (the value rules).
 constexpr double kTrafficLodVals[] = {0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0};
 // 40, 45 and 50 sit between the console's 30 and 60: steady on hardware that can't hold 60, and
 // even divisors of 120 Hz (40), 90 Hz (45) and 100 Hz (50) displays.
@@ -1465,28 +1462,11 @@ constexpr double kRbDistVals[]     = {0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0};
 constexpr double kRbNitroScaleVals[] = {0.0, 0.5, 1.0, 2.0, 4.0, 8.0};
 constexpr double kRbNitroStartVals[] = {-1.0, 100.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0};
 
-std::string AiDiffLabel(double v) {
-    if (v < 0.0) return "STOCK";
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%.0f%%", v);
-    return buf;
-}
-std::string RbNitroStartLabel(double v) {
-    if (v < 0.0) return "STOCK";
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%.0fM", v);
-    return buf;
-}
-constexpr RowDynamics kAiDiffDynamics     = {.value_label = AiDiffLabel};
-constexpr RowDynamics kRbNitroStartDynamics = {.value_label = RbNitroStartLabel};
-
 constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0};
 
 constexpr double kImpulseStrengthVals[] = {25.0, 50.0, 75.0, 100.0};
 
 // DUALSENSE THROTTLE / BRAKE STRENGTH: 1 (LIGHT), 2 ... 7, 8 (FIRM) (pause_parity_rows.h).
-constexpr RowDynamics kTriggerStrengthDynamics = {
-    .value_label = mcla_menu::parity::TriggerStrengthLabel};
 
 #if defined(LARECOMP_HAS_GPU)
 // ── HDR ────────────────────────────────────────────────────────────────
@@ -1510,44 +1490,7 @@ constexpr double kHdrPeakVals[] = {0.0, 200.0, 400.0, 600.0, 800.0, 1000.0,
 // NORMAL, BRIGHT, BRIGHTER (the default), BRIGHTEST.
 constexpr double kHdrHighlightVals[] = {1.0, 1.5, 2.0, 3.0};
 
-bool HdrActive() { return mcla::gpu::HdrOutputActive(); }
-
 // "240 NITS", and for 0 "AUTO (240 NITS)": what AUTO is on this display.
-std::string HdrNitsLabel(double value, float automatic) {
-    char buf[32];
-    if (value <= 0.0) {
-        std::snprintf(buf, sizeof(buf), "AUTO (%.0f NITS)", double(automatic));
-    } else {
-        std::snprintf(buf, sizeof(buf), "%.0f NITS", value);
-    }
-    return buf;
-}
-std::string HdrPaperWhiteLabel(double value) {
-    return HdrNitsLabel(value, mcla::gpu::HdrAutoPaperWhiteNits());
-}
-std::string HdrPeakLabel(double value) {
-    return HdrNitsLabel(value, mcla::gpu::HdrAutoPeakNits());
-}
-
-const char* HdrLevelSuffix() { return HdrActive() ? "" : " (HDR OFF)"; }
-
-std::string HdrHighlightLabel(double value) {
-    if (value == 1.0) return "NORMAL";
-    if (value == 1.5) return "BRIGHT";
-    if (value == 2.0) return "BRIGHTER";
-    if (value == 3.0) return "BRIGHTEST";
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%g", value);  // set by hand between the steps
-    return buf;
-}
-
-constexpr RowDynamics kHdrPaperWhiteDynamics = {
-    .value_label = HdrPaperWhiteLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
-constexpr RowDynamics kHdrPeakDynamics = {
-    .value_label = HdrPeakLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
-constexpr RowDynamics kHdrTestDynamics = {.enabled = HdrActive, .suffix = HdrLevelSuffix};
-constexpr RowDynamics kHdrHighlightDynamics = {
-    .value_label = HdrHighlightLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
 #endif
 
 // ── Menu contents ──────────────────────────────────────────────────────
@@ -1556,7 +1499,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 // ── The graphics pages: one set for both renderers ─────────────────────
 //
 // GRAPHICS is a hub of five pages for both renderers (UPSCALING was a sixth: its rows are DISPLAY's since the owner's decision of 2026-11-23, upscaling belongs with display): a row has the same name and place on both and maps to the
-// running renderer's own mechanism underneath (RowDynamics::cvar and the row's own list). A choice the other
+// running renderer's own mechanism underneath (variant setting and the row's own list). A choice the other
 // renderer cannot run shows as its nearest there, and keeps its saved text, so it comes back when the renderer
 // is switched back. What only one renderer has is tagged XeniaOnly / NativeOnly and listed only for the renderer
 // this launch runs (MenuItemCount); a page with no row for it is not listed either (its hub row is tagged the
@@ -1589,35 +1532,6 @@ int FindStringIndex(const std::string& value, const char* const* vals, int count
 // anti-aliasing: upscaling_menu.cpp). XENIA: only the game's own switch, which the game reads at
 // start: OFF or 2X in disable_msaa, "(RESTART)". A saved 4X or 8X shows as 2X on XENIA.
 // Width: "MSAA (FSR 3.1 ON)" 17 at most ("MSAA (APPLYING)" 15), values 3.
-const char* MsaaCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_msaa" : "disable_msaa"; }
-int MsaaCount() { return mcla_menu::NativeRendererRuns() ? 4 : 2; }
-std::string MsaaLabel(int i) { return i >= 0 && i < MsaaCount() ? kGpuMsaaNames[i] : ""; }
-int MsaaIndex() {
-    if (mcla_menu::NativeRendererRuns()) return FindStringIndex(CvarGet("mcla_gpu_msaa"), kGpuMsaaVals, 4);
-    return CvarGetBool("disable_msaa") ? 0 : 1;
-}
-void MsaaSet(int i, CvarWriter write) {
-    if (mcla_menu::NativeRendererRuns()) {
-        if (i >= 0 && i < 4) write("mcla_gpu_msaa", kGpuMsaaVals[i]);
-    } else {
-        write("disable_msaa", i == 0 ? "true" : "false");
-    }
-}
-bool MsaaEnabled() {
-    return !mcla_menu::NativeRendererRuns() || !mcla_menu::kMsaaDynamics.enabled ||
-           mcla_menu::kMsaaDynamics.enabled();
-}
-const char* MsaaSuffix() {
-    if (!mcla_menu::NativeRendererRuns()) return " (RESTART)";
-    return mcla_menu::kMsaaDynamics.suffix ? mcla_menu::kMsaaDynamics.suffix() : "";
-}
-constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
-                                          .enabled = MsaaEnabled,
-                                          .suffix = MsaaSuffix,
-                                          .value_count = MsaaCount,
-                                          .value_index = MsaaIndex,
-                                          .set_value = MsaaSet,
-                                          .cvar = MsaaCvar};
 #endif
 
 // DISPLAY (GRAPHICS > DISPLAY): the window and how it is presented, in this order: DISPLAY MODE, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY
@@ -1632,10 +1546,8 @@ const ItemDef kVideoItems[] = {
     // DISPLAY MODE and RESOLUTION: the window's mode and its size, which is the output resolution
     // (display_menu.h, display_mode.h). Both are live (Windows; Linux through SDL, where gamescope
     // sets the size and the RESOLUTION row is grey).
-    WithDynamics(Str("PM_RxDisplayMode", "fullscreen", "DISPLAY MODE: ", nullptr, nullptr, 0),
-                 &mcla_menu::kDisplayModeDynamics),
-    WithDynamics(Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
-                 &mcla_menu::kResolutionDynamics),
+    Str("PM_RxDisplayMode", "fullscreen", "DISPLAY MODE: ", nullptr, nullptr, 0),
+    Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
 #if defined(LARECOMP_HAS_GPU)
     // ASPECT RATIO: the shape of the picture in the window (mc_engine/display/frame_fit.h, ultrawide.h). AUTO fills
     // the window at any shape (a wider one shows more at the sides, a taller one more above and below);
@@ -1657,9 +1569,8 @@ const ItemDef kVideoItems[] = {
 #endif
     // Grey with "(FRAME GEN)" while frame generation runs: the limiter then uses the row of its own
     // (frame_generation_menu.h) and counts rendered frames.
-    WithDynamics(Dbl("PM_RxFpsCap", "fps_limit", "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "",
+    Dbl("PM_RxFpsCap", "fps_limit", "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "",
                      "UNCAPPED"),
-                 &mcla_menu::kFpsLimitDynamics),
 };
 
 // (DISPLAY GAMMA is on the DISPLAY page now, kVideoItems; the controller rows are on the CONTROLLER
@@ -1716,14 +1627,12 @@ const ItemDef kControllerItems[] = {
     // are not greyed with it, as XBOX TRIGGER STRENGTH is not greyed with XBOX TRIGGER RUMBLE.
     // The launcher's DualSense Throttle / Brake Strength: same cvars, same steps. Width:
     // "DUALSENSE THROTTLE STRENGTH" 27 with "PLAYSTATION" 11 is 38 of 41.
-    WithDynamics(Dbl("PM_RxTrigThrottle", "trigger_throttle", "DUALSENSE THROTTLE STRENGTH: ",
+    Dbl("PM_RxTrigThrottle", "trigger_throttle", "DUALSENSE THROTTLE STRENGTH: ",
                      mcla_menu::parity::kTriggerStrengthSteps,
                      mcla_menu::parity::kTriggerStrengthStepCount, "%.0f"),
-                 &kTriggerStrengthDynamics),
-    WithDynamics(Dbl("PM_RxTrigBrake",    "trigger_brake",    "DUALSENSE BRAKE STRENGTH: ",
+    Dbl("PM_RxTrigBrake",    "trigger_brake",    "DUALSENSE BRAKE STRENGTH: ",
                      mcla_menu::parity::kTriggerStrengthSteps,
                      mcla_menu::parity::kTriggerStrengthStepCount, "%.0f"),
-                 &kTriggerStrengthDynamics),
     // Live. Xbox One and Series pads: the same slip, in the trigger motors.
     Bool("PM_RxImpulse",     "impulse_triggers",         "XBOX TRIGGER RUMBLE: "),
     Dbl ("PM_RxImpulseStr",  "impulse_trigger_strength", "XBOX TRIGGER STRENGTH: ",
@@ -1766,74 +1675,34 @@ const ItemDef kControllerItems[] = {
 // step (0.1, 5, 10) gets an entry of its own, shown as its number (value_label), and keeps working
 // until the player steps off it. Width: "CITY LOD" 8 with "AUTO (2X)" 9.
 constexpr double kCityLodVals[] = {0.0, 0.5, 1.0, 1.5, 2.0};
-std::string CityLodLabel(double v) {
-#if defined(LARECOMP_HAS_GPU)
-    return mcla::gpu::gpu_class::CityLodLabel(v);
-#else
-    if (!(v > 0.0)) return "AUTO (1X)";  // no GPU class without the native renderer
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%gX", v);
-    return buf;
-#endif
-}
-constexpr RowDynamics kCityLodDynamics = {.value_label = CityLodLabel};
-
 // The labels of the rows that have an AUTO (world_detail.h: the value the class gives, or the value itself).
-std::string TrafficRangeLabel(double v) {
-    return mcla::world_detail::Label(mcla::gpu::gpu_class::Scale::kTrafficRange, v);
-}
-std::string PedDensityLabel(double v) {
-    return mcla::world_detail::Label(mcla::gpu::gpu_class::Scale::kPedDensity, v);
-}
-std::string ParkedDensityLabel(double v) {
-    return mcla::world_detail::Label(mcla::gpu::gpu_class::Scale::kParkedDensity, v);
-}
-std::string TrafficLodLabel(double v) {
-    return mcla::world_detail::Label(mcla::gpu::gpu_class::Scale::kTrafficLod, v);
-}
-constexpr RowDynamics kTrafficRangeDynamics  = {.value_label = TrafficRangeLabel};
-constexpr RowDynamics kPedDensityDynamics    = {.value_label = PedDensityLabel};
-constexpr RowDynamics kParkedDensityDynamics = {.value_label = ParkedDensityLabel};
-constexpr RowDynamics kTrafficLodDynamics    = {.value_label = TrafficLodLabel};
-
 // 6 rows, no suffix. Width: the longest label is "PROP DRAW DIST" (14) and the longest value "AUTO (0.75X)" (12): 26 of the 41 a page can take.
 const ItemDef kWorldDetailItems[] = {
-    WithDynamics(Dbl("PM_RxUnspawn", "traffic_unspawn_dist", "TRAFFIC RANGE: ",
+    Dbl("PM_RxUnspawn", "traffic_unspawn_dist", "TRAFFIC RANGE: ",
                      kUnspawnVals, int(sizeof(kUnspawnVals) / sizeof(kUnspawnVals[0])), "%gM"),
-                 &kTrafficRangeDynamics),
-    WithDynamics(Dbl("PM_RxPedDensity", "ped_density_scale", "PEDESTRIANS: ",
+    Dbl("PM_RxPedDensity", "ped_density_scale", "PEDESTRIANS: ",
                      kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
-                 &kPedDensityDynamics),
-    WithDynamics(Dbl("PM_RxParkedCars", "parked_car_scale", "PARKED CARS: ",
+    Dbl("PM_RxParkedCars", "parked_car_scale", "PARKED CARS: ",
                      kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
-                 &kParkedDensityDynamics),
     Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DRAW DIST: ",
          kFragDrawDistVals, int(sizeof(kFragDrawDistVals) / sizeof(kFragDrawDistVals[0])),
          "%gM", "", "STOCK"),
-    WithDynamics(Dbl("PM_RxLodTraffic", "lod_traffic_scale", "TRAFFIC LOD: ", kTrafficLodVals,
+    Dbl("PM_RxLodTraffic", "lod_traffic_scale", "TRAFFIC LOD: ", kTrafficLodVals,
                      int(sizeof(kTrafficLodVals) / sizeof(kTrafficLodVals[0])), "%gX"),
-                 &kTrafficLodDynamics),
-    WithDynamics(Dbl("PM_RxLodCity", "lod_city_scale", "CITY LOD: ", kCityLodVals,
+    Dbl("PM_RxLodCity", "lod_city_scale", "CITY LOD: ", kCityLodVals,
                      int(sizeof(kCityLodVals) / sizeof(kCityLodVals[0])), "%gX"),
-                 &kCityLodDynamics),
 };
 
 // Rows that need SHADOWS (perf_no_shadows, the first row of LIGHTING AND SHADOWS, on both renderers): FOLIAGE SHADOWS (the far trees' baked
 // shadow silhouettes are drawn into the sun's cascades, which SHADOWS off clears), and on the NATIVE renderer SHADOW DETAIL, SHADOW FILTER and
 // TRAFFIC SHADOWS (they size, smooth and add to those same cascades). With SHADOWS off they do nothing, so they are shown grey and say why
-// ("SHADOW DETAIL (NO SHADOW)"); the value each had stays, and comes back with SHADOWS. The rule is mcla_menu::DependentRow (row_dependency.h:
-// grey while a function says no, the reason after the label), read live on every draw and poll. A grey row is the game's own disabled row: the
+// ("SHADOW DETAIL (NO SHADOW)"); the value each had stays, and comes back with SHADOWS. The rule in ui_rules.toml is read live on every draw and poll. A grey row is the game's own disabled row: the
 // cursor lands on it, A, left, right and a click do nothing (MenuFormAccept, PollNativeRows).
 // CHECK: with SHADOWS flipped OFF and ON in the open LIGHTING AND SHADOWS page the four rows grey and un-grey at once (also when SHADOWS is
 // changed from the F4 panel behind the menu), the label says "(NO SHADOW)" while grey and nothing after it otherwise, the cursor lands on a grey
 // row, A / left / right on it change nothing, and the page is not cut on the right (27 + 14 = 41 of 41 characters).
-bool ShadowsOn() { return !CvarGetBool("perf_no_shadows"); }
-constexpr RowDynamics NeedsShadows(RowDynamics own = {}) {
-    return mcla_menu::DependentRow<ShadowsOn, mcla_menu::kNeedsShadowsReason>(own);
-}
 // FOLIAGE SHADOWS (disable_imposter_shadows, row inverted: ON = the far trees' shadows are refreshed): live, the hook reads the cvar on every
 // pass (graphics.cpp). On both renderers.
-constexpr RowDynamics kFoliageDynamics = NeedsShadows();
 
 #if defined(LARECOMP_HAS_GPU)
 // POST AA (mcla_gpu_aa, the NATIVE renderer's post pass, M6c, live): FXAA or SMAA on the finished
@@ -1843,27 +1712,20 @@ constexpr RowDynamics kFoliageDynamics = NeedsShadows();
 // ON)", 20 characters).
 const char* const kPostAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
-// RAY TRACED keeps its saved value on every GPU. The label gives the fallback reason if the gate is shut.
+// Ambient occlusion (gpu/ao.h, gpu/rtao_setting.h, live): AUTO (the default), off, half resolution, full resolution, RAY TRACED. AUTO
+// says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on a
+// discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h), RT on a High class card that traces rays quickly (rt_tier.h kRtAo). Nothing in the graphics settings is called
+// low (owner, 2026-11-14): the stored values are the shown words, off / high / ultra / rt (a larecomp.toml that still says
+// low is ignored and the row is AUTO). RAY TRACED keeps its saved value on every GPU; the rules (ui_rules.toml) give the fallback reason when the gate is shut ("RT (NO RT GPU)", 14 characters).
+// The row is "AMBIENT OCCLUSION" (17 characters) with a value of at most 14 ("RT (NO RT GPU)"), 31 together, under the page's 41.
 // CHECK: confirm the 14-character "RT (NO RT GPU)" fits LIGHTING AND SHADOWS in the pause movie.
 namespace rtao_setting = mcla::gpu::rtao_setting;
 constexpr auto& kNativeAoVals = rtao_setting::kValues;
 constexpr auto& kNativeAoNames = rtao_setting::kNames;
-std::string AoLabel(int i) {
-    const auto choice = static_cast<rtao_setting::Choice>(i);
-    const auto d = rtao_setting::DecideFor(kNativeAoVals[i]);
-    return choice == rtao_setting::Choice::kAuto ? rtao_setting::AutoLabel(d)
-                                                : rtao_setting::ValueLabel(choice, d.gate);
-}
-constexpr RowDynamics kAoDynamics = {.str_label = AoLabel};
 // How strong it looks (mcla_gpu_ao_intensity, live), the row under it: grey while the occlusion is
 // off (what AUTO comes to counts). At most 21 characters with its longest value.
 const char* const kNativeAoLevelVals[]  = {"light", "default", "strong", "max"};
 const char* const kNativeAoLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "MAX"};
-bool AoOn() {
-    const auto d = rtao_setting::DecideFor(CvarGet("mcla_gpu_ao"));
-    return d.screen != mcla::gpu::host_plan::Level::kOff || d.rt;
-}
-constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 // Shadow filter (mcla_gpu_shadow_filter, gpu/shadow_filter.h, live): how the sun's shadows are smoothed, the
 // game's own four taps (GAME: the picture is the game's), more taps on a disk (SOFT) or that with contact
 // hardening (PCSS: a shadow is sharp where it touches what casts it and softer with the distance from it).
@@ -1874,30 +1736,12 @@ constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 // "PCSS (SOFT)").
 const char* const kNativeShadowFilterVals[]  = {"auto", "game", "soft", "pcss"};
 const char* const kNativeShadowFilterNames[] = {"AUTO", "GAME", "SOFT", "PCSS"};
-std::string ShadowFilterLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kShadowFilter);
-    case 1:  return "GAME";
-    case 2:  return "SOFT";
-    default: return mcla::gpu::shadow_filter::PcssRuns() ? "PCSS" : "PCSS (SOFT)";
-    }
-}
-constexpr RowDynamics kShadowFilterDynamics = NeedsShadows({.str_label = ShadowFilterLabel});
 // Contact shadows (gpu/ao.h, live): the short sun shadows the game does not draw. AUTO is the default
 // and says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on
 // a discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h). Stored values off / high / ultra, shown OFF / HIGH /
 // ULTRA, as the ambient occlusion's. The row is "CONTACT SHADOWS" (15 characters) with a value of at most 12 ("AUTO (ULTRA)").
 const char* const kNativeContactVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeContactNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-std::string ContactLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kContactShadows);
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
 // Ray traced shadows (mcla_gpu_rt_shadows, gpu/city_rt_rules.h, gpu/city_rt_shadow.h, live): the sun's shadows traced from the city's own triangles (the city pack the launcher or the
 // game builds from the game files) through the contact shadows' pass, so a shadow is sharp where it touches what casts it, softer the farther it falls, with no cascade seams and
 // the long shadows of the evening that the game does not draw. OFF is the game's own shadows; HIGH keeps the buildings within 300 m (150 m on a smaller card) and ULTRA within 600 m
@@ -1908,33 +1752,6 @@ constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
 // of at most 12 ("AUTO (ULTRA)"): the page's widest pair stays 39.
 const char* const kNativeRtShadowsVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeRtShadowsNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-std::string RtShadowsLabel(int i) {
-    namespace rt = mcla::gpu::city_rt;
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabelOf(
-                 rt::LevelName(rt::AutoLevelForRung(mcla::gpu::gpu_class::Current(), mcla::gpu::gpu_class::CurrentRtTier(), mcla::gpu::CityRtShadowsAvailable())));
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-bool ContactShadowsOn() {
-    const std::string mode = mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kContactShadows,
-                                                           CvarGet("mcla_gpu_contact_shadows"));
-    return mode == "high" || mode == "ultra";
-}
-bool RtShadowsRuns() {
-    // The ray tracing tier none (a card with no ray tracing units: it runs DXR in its shaders) runs nothing (city_rt_rules.h LevelForRung), as the integrated class does.
-    return mcla::gpu::CityRtShadowsAvailable() && mcla::gpu::gpu_class::Current() != mcla::gpu::gpu_class::GpuClass::kLow &&
-           mcla::gpu::gpu_class::CurrentRtTier() != mcla::gpu::gpu_class::RtTier::kNone;
-}
-bool RtShadowsEnabled() { return RtShadowsRuns() && ContactShadowsOn(); }
-const char* RtShadowsSuffix() {
-    if (!mcla::gpu::CityRtShadowsAvailable()) return " (NO RT GPU)";
-    if (mcla::gpu::gpu_class::Current() == mcla::gpu::gpu_class::GpuClass::kLow) return " (GPU TOO SLOW)";
-    return mcla::gpu::gpu_class::CurrentRtTier() == mcla::gpu::gpu_class::RtTier::kNone ? " (NO RT GPU)" : "";
-}
-constexpr RowDynamics kRtShadowsDynamics = {.str_label = RtShadowsLabel, .enabled = RtShadowsEnabled, .suffix = RtShadowsSuffix};
 // Traffic shadows (mcla_gpu_traffic_shadows, gpu/traffic_shadow.h, mc_engine/hooks/traffic_shadow.cpp, live): the other cars
 // (traffic and opponents) cast into the sun's shadow map like the player's car, which the game does alone, so the ground under
 // them is dark. AUTO says what it comes to on this GPU (NEAR on a discrete card, OFF on an integrated one); NEAR is the nearest
@@ -1942,15 +1759,6 @@ constexpr RowDynamics kRtShadowsDynamics = {.str_label = RtShadowsLabel, .enable
 // (15 characters) with a value of at most 11 ("AUTO (NEAR)").
 const char* const kNativeTrafficShadowsVals[]  = {"auto", "off", "near", "all"};
 const char* const kNativeTrafficShadowsNames[] = {"AUTO", "OFF", "NEAR", "ALL"};
-std::string TrafficShadowsLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kTrafficShadows);
-    case 1:  return "OFF";
-    case 2:  return "NEAR";
-    default: return "ALL";
-    }
-}
-constexpr RowDynamics kTrafficShadowsDynamics = NeedsShadows({.str_label = TrafficShadowsLabel});
 // Sun shafts (gpu/shafts.h, shafts_level.h, live): how strong they are. AUTO picks by the graphics card and
 // the row says what it comes to ("AUTO (DEFAULT)", "AUTO (OFF)" on integrated graphics); OFF is the game's own
 // picture; then LIGHT, DEFAULT, STRONG, STRONGER and STRONGEST (1x to 5x the built-in strength). The ray quality follows
@@ -1959,41 +1767,18 @@ constexpr RowDynamics kTrafficShadowsDynamics = NeedsShadows({.str_label = Traff
 // DEFAULT and this row, which does not list them, shows AUTO until it is stepped.
 const char* const kNativeShaftsVals[]  = {"auto", "off", "light", "default", "strong", "stronger", "strongest"};
 const char* const kNativeShaftsNames[] = {"AUTO", "OFF", "LIGHT", "DEFAULT", "STRONG", "STRONGER", "STRONGEST"};
-std::string ShaftsLabel(int i) {
-    if (i == 0) return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSunShafts);
-    return i > 0 && i < 7 ? kNativeShaftsNames[i] : "";
-}
-constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};
 // Headlights (mcla_gpu_headlights, gpu/headlight_rig.h, live): the cars' headlights light the road, the world and the other cars at night (the game's own
 // only glow): yours, the nearest opponents' and the nearest traffic cars', up to four at a time. One level, ON: AUTO says what it comes to on this GPU (ON
 // on a discrete card, OFF on an integrated one); OFF is the game's own night. The label is "HEADLIGHTS" (10 characters) with a value of at most 9
 // ("AUTO (OFF)").
 const char* const kNativeHeadlightsVals[]  = {"auto", "off", "on"};
 const char* const kNativeHeadlightsNames[] = {"AUTO", "OFF", "ON"};
-std::string HeadlightsLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kHeadlights);
-    case 1:  return "OFF";
-    default: return "ON";
-    }
-}
-constexpr RowDynamics kHeadlightsDynamics = {.str_label = HeadlightsLabel};
 // Volumetric light (gpu/volumetrics.h, volumetrics_level.h, live): beams of light under the street lamps and the cars' headlights, a haze that light
 // shows in, and the sun's shafts between trees and buildings. AUTO picks by the graphics card and the row says what it comes to ("AUTO (HIGH)", "AUTO
 // (OFF)" on integrated graphics: gpu/gpu_class.h); OFF is the game's own picture; then MEDIUM, HIGH and ULTRA (the volume's size and the lights it
 // lights). Nothing is called low. The row is "VOLUMETRIC LIGHT" (16 characters) with a value of at most 13 ("AUTO (MEDIUM)"): 31 of the 41 a page takes.
 const char* const kNativeVolumetricsVals[]  = {"auto", "off", "medium", "high", "ultra"};
 const char* const kNativeVolumetricsNames[] = {"AUTO", "OFF", "MEDIUM", "HIGH", "ULTRA"};
-std::string VolumetricsLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kVolumetrics);
-    case 1:  return "OFF";
-    case 2:  return "MEDIUM";
-    case 3:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-constexpr RowDynamics kVolumetricsDynamics = {.str_label = VolumetricsLabel};
 // Bounce light (mcla_gpu_ssgi, gpu/ao.h, live): the light a lit wall or the ground sends back onto what
 // stands beside it. AUTO says what it comes to on this GPU, as the rows above: OFF on every class for now,
 // until its cost is measured (gpu/gpu_class.h); or OFF, HIGH (a coarser search) or ULTRA (the full one): the stored values
@@ -2002,18 +1787,8 @@ constexpr RowDynamics kVolumetricsDynamics = {.str_label = VolumetricsLabel};
 // INTENSITY is. The row is "BOUNCE LIGHT" (12 characters) with a value of at most 12 ("AUTO (ULTRA)").
 const char* const kNativeSsgiVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeSsgiNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-std::string SsgiLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSsgi);
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
 // While the probe field stands and the screen-space bounce light is not built (RT BOUNCE LIGHT is on and its field is in the picture: gpu/gi_setting.h ReplacedBy, set once a frame by the renderer) the label
 // says " (REPLACED)": the row still sets what runs where the field does not (a cut, the first moments, the places it does not cover). "BOUNCE LIGHT (REPLACED)" is 23 characters, under the page's 27.
-const char* SsgiSuffix() { return mcla::gpu::RtGiReplacesBounceLight() ? mcla::gpu::gi_setting::kReplacedSuffix : ""; }
-constexpr RowDynamics kSsgiDynamics = {.str_label = SsgiLabel, .enabled = AoOn, .suffix = SsgiSuffix};
 // Ray traced bounce light (mcla_gpu_rt_gi, gpu/gi_setting.h, gpu/gi_integration.h, gpu/gi_field.h, gpu/gi_apply.h, live): the same light as BOUNCE LIGHT, worked out in a field of probes laid round the camera
 // from the city's own triangles instead of from the picture, so it knows what is behind the camera and what is not lit in this frame's picture: the sunlit street lights the shaded wall across it, a lamp's pool
 // lights the facades around it. Where it stands it takes the place of BOUNCE LIGHT (that row then says "(REPLACED)"), which stays for graphics cards that cannot ray trace and for the places the field does not
@@ -2023,24 +1798,6 @@ constexpr RowDynamics kSsgiDynamics = {.str_label = SsgiLabel, .enabled = AoOn, 
 // (15 characters, 27 with its longest suffix, like FOLIAGE SHADOWS (NO SHADOW)) with a value of at most 11 ("AUTO (HIGH)").
 const char* const kNativeRtGiVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeRtGiNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-mcla::gpu::gi_setting::Decision RtGiDecision() {
-    namespace gc = mcla::gpu::gpu_class;
-    return mcla::gpu::gi_setting::Decide(gc::Known() ? gc::Current() : gc::GpuClass::kLow, gc::CurrentRtTier(),
-                                         CvarGet("mcla_gpu_rt_gi"), mcla::gpu::RtGiUpdateBuilt());
-}
-std::string RtGiLabel(int i) {
-    namespace gc = mcla::gpu::gpu_class;
-    switch (i) {
-    case 0:  return mcla::gpu::gi_setting::AutoLabel(gc::Known() ? gc::Current() : gc::GpuClass::kLow,
-                                                     gc::CurrentRtTier(), mcla::gpu::RtGiUpdateBuilt());
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-bool RtGiEnabled() { return mcla::gpu::gi_setting::RowEnabled(RtGiDecision().gate); }
-const char* RtGiSuffix() { return mcla::gpu::gi_setting::RowSuffix(RtGiDecision().gate); }
-constexpr RowDynamics kRtGiDynamics = {.str_label = RtGiLabel, .enabled = RtGiEnabled, .suffix = RtGiSuffix};
 // How strong the bounce light looks (mcla_gpu_ssgi_intensity, gpu/ssgi_level.h, live), the row under them: grey
 // while no bounce light runs, as AO INTENSITY is while the occlusion is. The screen-space bounce light is off when the
 // occlusion is, or when BOUNCE LIGHT says OFF, or says AUTO and AUTO comes to OFF on this graphics card (gpu/gpu_class.h); the probe field's
@@ -2049,15 +1806,7 @@ constexpr RowDynamics kRtGiDynamics = {.str_label = RtGiLabel, .enabled = RtGiEn
 // characters) with a value of at most 9 ("STRONGEST"): 30 together, under the page's 41.
 const char* const kNativeSsgiLevelVals[]  = {"light", "default", "strong", "stronger", "strongest"};
 const char* const kNativeSsgiLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "STRONGER", "STRONGEST"};
-bool ScreenSpaceBounceOn() {
-    if (!AoOn()) return false;
-    const std::string mode = mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kSsgi,
-                                                           CvarGet("mcla_gpu_ssgi"));
-    return mode == "high" || mode == "ultra";
-}
 // Either bounce light runs: the screen-space one, or the probe field (RT BOUNCE LIGHT on and not gated shut).
-bool SsgiOn() { return mcla::gpu::gi_setting::AnyBounceLight(ScreenSpaceBounceOn(), RtGiDecision()); }
-constexpr RowDynamics kSsgiLevelDynamics = {.enabled = SsgiOn};
 // Road reflections (mcla_gpu_reflection_resolution, gpu/side_views.h, live): how sharp the mirror image
 // on wet roads, windows and water is, the game's own 256x256 stretched over the screen (GAME), 512x512
 // (HIGH) or 768x768 (ULTRA). AUTO says what it comes to on this GPU (the first value's label, like
@@ -2065,15 +1814,6 @@ constexpr RowDynamics kSsgiLevelDynamics = {.enabled = SsgiOn};
 // 27 together ("AUTO (ULTRA)" would make it 28), under the page's 40.
 const char* const kSideViewVals[]  = {"auto", "game", "high", "ultra"};
 const char* const kSideViewNames[] = {"AUTO", "GAME", "HIGH", "ULTRA"};
-std::string RoadReflectionLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::side_views::AutoLabel(mcla::gpu::SideView::kReflection);
-    case 1:  return "GAME";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-constexpr RowDynamics kRoadReflectionDynamics = {.str_label = RoadReflectionLabel};
 // Reflections on surfaces (mcla_gpu_ssr, gpu/ssr.h and ssr_rules.h, live; GB-J): sharp reflections of the scene on wet roads, wet sidewalks, glass, metal and
 // water, traced through the picture itself on top of the game's own reflections (a car's paint and chrome keep their own: CAR REFLECTIONS, CAR SELF-REFLECTIONS).
 // AUTO, OFF, HIGH (one ray a pixel at half the picture's size, up to 40 steps, about 10 frames of history) or ULTRA (two rays, up to 64 steps, about 12 frames).
@@ -2084,43 +1824,16 @@ constexpr RowDynamics kRoadReflectionDynamics = {.str_label = RoadReflectionLabe
 // its widest value over all its rows ("AUTO (RAY TRACED)", 17): 40 of the 41 a page can take.
 const char* const kNativeSsrVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeSsrNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-std::string SsrLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSsr);
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-constexpr RowDynamics kSsrDynamics = {.str_label = SsrLabel};
 // Shadow detail (mcla_gpu_shadow_resolution, gpu/side_views.h, live): how finely the sun's shadows are drawn,
 // the game's own four 640x640 maps in a 1280x1280 picture (GAME), 2560x2560 (HIGH) or 3840x3840 (ULTRA);
 // with SHADOW FILTER on SOFT the edge of a shadow is half and a third as wide. AUTO says what it comes to on
 // this GPU (the first value's label): GAME on an integrated GPU, HIGH on the rest. The same value names as
 // the road reflections'. The label is "SHADOW DETAIL" (13 characters) with a value of at most 11
 // ("AUTO (HIGH)").
-std::string ShadowDetailLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::side_views::AutoLabel(mcla::gpu::SideView::kShadow);
-    case 1:  return "GAME";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-constexpr RowDynamics kShadowDetailDynamics = NeedsShadows({.str_label = ShadowDetailLabel});
 // Car reflections (mcla_gpu_env_resolution, gpu/side_view_env.cpp, live): how sharp the world the paint,
 // windows and bonnet of the cars reflect is, the game's own 512x256 (GAME), 1024x512 (HIGH) or 1536x768
 // (ULTRA). The same values and the same label rule as the road reflections' row. Width: the label is 17
 // characters and the longest value "AUTO (HIGH)" 11, 28 together, under the page's 40.
-std::string CarReflectionLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::side_views::AutoLabel(mcla::gpu::SideView::kEnv);
-    case 1:  return "GAME";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-constexpr RowDynamics kCarReflectionDynamics = {.str_label = CarReflectionLabel};
 // Car shadows (mcla_gpu_car_shadow_map, gpu/car_shadow_map.h, live): your car casts a shadow of its real shape on itself and on the road beside
 // it (the game's own sun shadows draw it in a rough low-detail form, so the wing, the mirrors and the wheels cast none of their own): OFF, HIGH
 // (a 1024x1024 map fitted to the car) or ULTRA (2048x2048). AUTO says what it comes to on this GPU, like the other AUTO rows: ULTRA on a
@@ -2129,19 +1842,6 @@ constexpr RowDynamics kCarReflectionDynamics = {.str_label = CarReflectionLabel}
 // The label is "CAR SHADOWS" (11 characters) with a value of at most 12 ("AUTO (ULTRA)").
 const char* const kNativeCarShadowVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeCarShadowNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-std::string CarShadowLabel(int i) {
-    switch (i) {
-    case 0: {
-        namespace map = mcla::gpu::car_shadow_map;
-        return mcla::gpu::gpu_class::AutoLabelOf(
-            map::LevelName(map::AutoLevel(mcla::gpu::gpu_class::Current())));
-    }
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-constexpr RowDynamics kCarShadowDynamics = {.str_label = CarShadowLabel};
 // Light shadows (mcla_gpu_light_shadows, gpu/local_shadow.h, live; it was mcla_gpu_headlight_shadows, which stays as an alias): the local lights
 // cast shadows (the game has none from any light but the sun): the scene's opaque objects are drawn again from the lights into a small map the
 // lights' light reads. The row covers the headlights now and the street lamps later (owner, 2026-11-20: one row for every local light's shadows).
@@ -2170,32 +1870,14 @@ constexpr LightShadowWords MakeLightShadowWords() {
 constexpr LightShadowWords kLightShadowWords = MakeLightShadowWords();
 constexpr const char* const* kNativeLightShadowVals  = kLightShadowWords.vals;
 constexpr const char* const* kNativeLightShadowNames = kLightShadowWords.names;
-std::string LightShadowLabel(int i) {
-    if (i == 0) {
-        return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kLightShadows);
-    }
-    return (i > 0 && i < kLightShadowWords.count) ? kLightShadowWords.names[i] : "";
-}
 // Grey while HEADLIGHTS is off (what AUTO comes to counts): the shadows are the headlights' own for now (when the street lamps get shadows too,
 // the row is grey only while both the headlights and the lamps are off).
-bool HeadlightsOn() {
-    return mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kHeadlights, CvarGet("mcla_gpu_headlights")) == "on";
-}
-constexpr RowDynamics kLightShadowDynamics = {.str_label = LightShadowLabel, .enabled = HeadlightsOn};
 // Neon light (mcla_gpu_neon_light, gpu/neon_light.h, gpu/local_lights_sources.h, live): the neon underglow of a car lights the ground, the kerbs, the walls and the other cars near it, in the neon's own
 // colour and pulse (owner, 2026-11-21: ON by default where the light pass runs). One level, ON: AUTO says what it comes to on this GPU (ON on a discrete card, OFF on an integrated one); OFF leaves the neon
 // as the game has it. How many cars and lights the pass takes follows LIGHT SHADOWS (gpu/light_budget.h), and nothing is drawn while no car with a lit neon is in view. No other row it waits for. The label is
 // "NEON LIGHT" (10 characters) with a value of at most 9 ("AUTO (OFF)").
 const char* const kNativeNeonLightVals[]  = {"auto", "off", "on"};
 const char* const kNativeNeonLightNames[] = {"AUTO", "OFF", "ON"};
-std::string NeonLightLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kNeonLight);
-    case 1:  return "OFF";
-    default: return "ON";
-    }
-}
-constexpr RowDynamics kNeonLightDynamics = {.str_label = NeonLightLabel};
 // Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live, and mcla_gpu_car_selfrefl_rt, gpu/car_rt_refl.h, live): the player's car
 // paint reflects its own body, the wing in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One
 // level, ON (the stored word is `on`; the older low and high cost the same and are gone: a larecomp.toml that still says one of them is ignored and
@@ -2212,33 +1894,8 @@ constexpr RowDynamics kNeonLightDynamics = {.str_label = NeonLightLabel};
 // "CAR SELF-REFLECTIONS" (20 characters) with a value of at most 17 ("AUTO (RAY TRACED)").
 // CHECK: on an RTX card (D3D12 or Vulkan) the row steps AUTO (RAY TRACED) > OFF > ON > RAY TRACED and wraps; on a card without DXR 1.1 or Vulkan ray
 // queries it has three values and AUTO says "AUTO (ON)"; the log's "[car refl]" and "[car rt refl]" lines follow each step.
-constexpr const char* kCarSelfReflRtCvar = "mcla_gpu_car_selfrefl_rt";
-const char* const kNativeCarSelfReflVals[]  = {"auto"};  // the row's own list (the dynamics') has the values; this one names one so the row is a valid kStrCycle
+const char* const kNativeCarSelfReflVals[]  = {"auto"};  // the ordered choices are in ui_rules.toml
 const char* const kNativeCarSelfReflNames[] = {"AUTO"};
-bool CarSelfReflAutoIsOn() {
-    return mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kCarSelfRefl, "auto") == "on";
-}
-int CarSelfReflCount() {
-    return mcla_menu::selfrefl::Count(mcla::gpu::CarRtReflAvailable());
-}
-std::string CarSelfReflLabel(int i) {
-    return mcla_menu::selfrefl::LabelOf(mcla_menu::selfrefl::At(i), CarSelfReflAutoIsOn(),
-                                        mcla::gpu::CarRtReflAvailable());
-}
-int CarSelfReflIndex() {
-    return mcla_menu::selfrefl::IndexOf(mcla_menu::selfrefl::ChoiceOf(
-        CvarGet("mcla_gpu_car_selfrefl"), CvarGet(kCarSelfReflRtCvar), CarSelfReflAutoIsOn(),
-        mcla::gpu::CarRtReflAvailable()));
-}
-void CarSelfReflSet(int i, CvarWriter write) {
-    const mcla_menu::selfrefl::Writes w = mcla_menu::selfrefl::WritesOf(mcla_menu::selfrefl::At(i));
-    if (w.rt && CvarGet(kCarSelfReflRtCvar) != w.rt) write(kCarSelfReflRtCvar, w.rt);
-    if (w.selfrefl && CvarGet("mcla_gpu_car_selfrefl") != w.selfrefl) write("mcla_gpu_car_selfrefl", w.selfrefl);
-}
-constexpr RowDynamics kCarSelfReflDynamics = {.str_label = CarSelfReflLabel,
-                                              .value_count = CarSelfReflCount,
-                                              .value_index = CarSelfReflIndex,
-                                              .set_value = CarSelfReflSet};
 // RT city reflections (mcla_gpu_rt_reflections, gpu/city_refl_setting.h, gpu/city_refl.h, gpu/city_refl_rules.h, live): the player's car paint (and the other cars') reflects the REAL street, found by rays in the
 // city's own triangles: the building across the road, the lamp posts and lamp heads (small and sharp, not two glowing blobs), signs, the car beside you, with the sky where there is sky; the game's blurred
 // environment map stays for the sky and for where the data is not there. It rides on the car's own ray traced pass, so the row is right after CAR SELF-REFLECTIONS and is grey with " (NEEDS CAR RT)" until
@@ -2250,31 +1907,6 @@ constexpr RowDynamics kCarSelfReflDynamics = {.str_label = CarSelfReflLabel,
 // follow "RT CITY" (7), at most 23 as a label ("RT CITY (BUILDING DATA)"), so the page stays as wide as REFLECTIONS ON SURFACES makes it (23 + 17 = 40 of the 41).
 const char* const kNativeRtCityVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeRtCityNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-bool CarRtReflRunsNow() {
-    return mcla_menu::selfrefl::RayTracedRuns(CvarGet("mcla_gpu_car_selfrefl"), CvarGet(kCarSelfReflRtCvar),
-                                              CarSelfReflAutoIsOn(), mcla::gpu::CarRtReflAvailable());
-}
-mcla::gpu::city_refl_setting::Decision RtCityDecision() {
-    namespace gc = mcla::gpu::gpu_class;
-    return mcla::gpu::city_refl_setting::Decide(gc::Known() ? gc::Current() : gc::GpuClass::kLow, gc::CurrentRtTier(),
-                                                CvarGet("mcla_gpu_rt_reflections"), CarRtReflRunsNow(),
-                                                mcla::gpu::city_refl_setting::DataNow());
-}
-std::string RtCityValueLabel(int i) {
-    namespace gc = mcla::gpu::gpu_class;
-    switch (i) {
-    case 0:  return mcla::gpu::city_refl_setting::AutoLabel(gc::Known() ? gc::Current() : gc::GpuClass::kLow,
-                                                            gc::CurrentRtTier());
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-bool RtCityEnabled() { return mcla::gpu::city_refl_setting::RowEnabled(RtCityDecision().gate); }
-const char* RtCityLabel() { return mcla::gpu::city_refl_setting::RowLabel(RtCityDecision().gate); }
-const char* RtCitySuffix() { return mcla::gpu::city_refl_setting::RowSuffix(RtCityDecision().gate); }
-constexpr RowDynamics kRtCityDynamics = {.str_label = RtCityValueLabel, .enabled = RtCityEnabled, .suffix = RtCitySuffix,
-                                         .label = RtCityLabel};
 // Side mirrors without ray tracing (mcla_gpu_side_mirrors, gpu/mirror_setting.h, gpu/mirror_view.h, gpu/mirror_glass.h, live): the two side mirrors of your car show the street and the cars behind you, taken from the game's own rear
 // view mirror camera, drawn once into a small picture (also the HUD's rear view mirror's picture while it runs), on any graphics card. The pair of RT SIDE MIRRORS, as BOUNCE LIGHT is of RT BOUNCE LIGHT: where the traced mirrors
 // run they REPLACE this row, which then says " (REPLACED)" after its label (nothing of it runs, the word applies again the moment RT SIDE MIRRORS goes off); the row is never grey. Two levels, so the words are AUTO / OFF / HIGH / ULTRA
@@ -2283,16 +1915,6 @@ constexpr RowDynamics kRtCityDynamics = {.str_label = RtCityValueLabel, .enabled
 // CHECK: never seen in the game; the shared view and the glass overlay have not run on a device.
 const char* const kNativeSideMirrorsVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeSideMirrorsNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-std::string SideMirrorsLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSideMirrors);
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
-}
-const char* SideMirrorsSuffix() { return mcla::gpu::mirror_setting::RowSuffix(mcla::gpu::mirror_setting::Current().replaced); }
-constexpr RowDynamics kSideMirrorsDynamics = {.str_label = SideMirrorsLabel, .suffix = SideMirrorsSuffix};
 // RT side mirrors (mcla_gpu_car_mirror_rt, gpu/car_mirror_setting.h, gpu/car_mirror_rt.h, gpu/car_mirror_rt_rules.h, live): the two side mirrors of your car show the real view behind, found by rays
 // in the car's own triangles: the cars beside you, your own flank and rear, and the sky and street the game's environment map holds, instead of the game's blurred sky. It shows in the first
 // person cameras (cockpit, bumper), where the glass is big enough to read, and is not drawn in a frame without a mirror, in the pause and the garage views. One level, so the words are AUTO / OFF /
@@ -2303,24 +1925,6 @@ constexpr RowDynamics kSideMirrorsDynamics = {.str_label = SideMirrorsLabel, .su
 // CHECK: never seen in the game; the wording of the reasons is the width's.
 const char* const kNativeMirrorRtVals[]  = {"auto", "off", "on"};
 const char* const kNativeMirrorRtNames[] = {"AUTO", "OFF", "ON"};
-mcla::gpu::car_mirror_setting::Gate MirrorRtGate() {
-    namespace gc = mcla::gpu::gpu_class;
-    return mcla::gpu::car_mirror_setting::GateFor(gc::Known() ? gc::Current() : gc::GpuClass::kLow, gc::CurrentRtTier());
-}
-std::string MirrorRtValueLabel(int i) {
-    namespace gc = mcla::gpu::gpu_class;
-    switch (i) {
-    case 0:  return mcla::gpu::car_mirror_setting::AutoLabel(gc::Known() ? gc::Current() : gc::GpuClass::kLow,
-                                                             gc::CurrentRtTier());
-    case 1:  return "OFF";
-    default: return "ON";
-    }
-}
-bool MirrorRtEnabled() { return mcla::gpu::car_mirror_setting::RowEnabled(MirrorRtGate()); }
-const char* MirrorRtLabel() { return mcla::gpu::car_mirror_setting::RowLabel(MirrorRtGate()); }
-const char* MirrorRtSuffix() { return mcla::gpu::car_mirror_setting::RowSuffix(MirrorRtGate()); }
-constexpr RowDynamics kMirrorRtDynamics = {.str_label = MirrorRtValueLabel, .enabled = MirrorRtEnabled, .suffix = MirrorRtSuffix,
-                                           .label = MirrorRtLabel};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -2333,7 +1937,7 @@ const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "
 
 // IMAGE QUALITY (GRAPHICS > IMAGE QUALITY): how the picture is smoothed, filtered and focused, in this order: MSAA, POST AA, ANISOTROPIC,
 // DEPTH OF FIELD, MOTION BLUR, and then the two rows of the UI's own sharpness: SHARP UI and SHARP MINIMAP. One ANISOTROPIC row per renderer (the same
-// name and place), MSAA on both (the row's own mechanism per renderer, kMsaaRowDynamics); POST AA is the NATIVE renderer's. DEPTH OF FIELD and MOTION BLUR
+// name and place), MSAA on both (the row's own mechanism per renderer); POST AA is the NATIVE renderer's. DEPTH OF FIELD and MOTION BLUR
 // are the game's own switches (disable_dof, disable_motion_blur: picture preferences, which were on PERFORMANCE > RENDERING and GAMEPLAY > CAMERA) and are
 // on both renderers. SHARP UI (mcla_ui_sharp) reads the HUD's and the menus' bitmaps with a sharper filter, SHARP MINIMAP (mcla_ui_minimap_scale) draws
 // the minimap, the phone's screen and the menus' page at the render scale instead of the console's size (gpu/ui_sharp.h, side_view_ui_map.cpp). Both are
@@ -2341,11 +1945,9 @@ const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "
 // Width: the longest label is "POST AA (FSR 3.1 ON)" (20), then "SHARP MINIMAP" (13), and the longest value "SMAA" (4): 24 of the 41 a page can take.
 const ItemDef kImageQualityItems[] = {
 #if defined(LARECOMP_HAS_GPU)
-    WithDynamics(Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
-                 &kMsaaRowDynamics),
-    NativeOnly(WithDynamics(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "POST AA: ",
-                                 kPostAaVals, kPostAaNames, 3),
-                            &mcla_menu::kPostAaDynamics)),
+    Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
+    NativeOnly(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "POST AA: ",
+                                 kPostAaVals, kPostAaNames, 3)),
     NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
                     kNativeAnisoVals, kNativeAnisoNames, 6)),
 #endif
@@ -2376,63 +1978,47 @@ const ItemDef kImageQualityItems[] = {
 // grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes; it says " (REPLACED)" while RT BOUNCE LIGHT's field stands in its place), RT BOUNCE LIGHT where the graphics
 // card cannot ray trace (" (NO RT GPU)"), is too slow (" (TOO SLOW)") or the probe update is not built yet (" (NOT READY)"), BOUNCE LIGHT STRENGTH while neither bounce light runs
 // (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey
-// while SHADOWS is off and say so (ShadowsOn, NeedsShadows); HEADLIGHTS, NEON LIGHT and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
+// while SHADOWS is off and say so; HEADLIGHTS, NEON LIGHT and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
 // lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 18 rows of the 24 a page can hold (RT SHADOWS sits after CONTACT SHADOWS, which its pass needs; RT BOUNCE LIGHT after BOUNCE LIGHT, whose strength row it shares).
 // Width ("Page width" above ItemRowLabel): the longest label is "FOLIAGE SHADOWS (NO SHADOW)" and "TRAFFIC SHADOWS (NO SHADOW)" (27, the four
-// shadow rows' reason is at most 12 characters: row_dependency.h), then "BOUNCE LIGHT STRENGTH" (21) and "AMBIENT OCCLUSION" (17); the longest value
+// shadow rows' reason is at most 12 characters), then "BOUNCE LIGHT STRENGTH" (21) and "AMBIENT OCCLUSION" (17); the longest value
 // "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 41 of the 41 a page can take. Only those four rows, RT SHADOWS, RT BOUNCE LIGHT (27 with " (NO RT GPU)") and BOUNCE LIGHT ("BOUNCE LIGHT (REPLACED)" 23) have a suffix.
 const ItemDef kLightItems[] = {
     Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
-    WithDynamics(Bool("PM_RxFoliage", "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true), &kFoliageDynamics),
+    Bool("PM_RxFoliage", "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(WithDynamics(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
-                                "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
-                            &kShadowDetailDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuShadowFilter", "mcla_gpu_shadow_filter", "SHADOW FILTER: ",
-                                kNativeShadowFilterVals, kNativeShadowFilterNames, 4),
-                            &kShadowFilterDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ",
-                                kNativeContactVals, kNativeContactNames, 4),
-                            &kContactDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuRtShadows", "mcla_gpu_rt_shadows", "RT SHADOWS: ",
-                                kNativeRtShadowsVals, kNativeRtShadowsNames, 4),
-                            &kRtShadowsDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuTrafficShadows", "mcla_gpu_traffic_shadows", "TRAFFIC SHADOWS: ",
-                                kNativeTrafficShadowsVals, kNativeTrafficShadowsNames, 4),
-                            &kTrafficShadowsDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuCarShadowMap", "mcla_gpu_car_shadow_map", "CAR SHADOWS: ",
-                                kNativeCarShadowVals, kNativeCarShadowNames, 4),
-                            &kCarShadowDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION: ",
-                                kNativeAoVals, kNativeAoNames, 5),
-                            &kAoDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
-                                kNativeAoLevelVals, kNativeAoLevelNames, 4),
-                            &kAoIntensityDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",
-                                kNativeSsgiVals, kNativeSsgiNames, 4),
-                            &kSsgiDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuRtGi", "mcla_gpu_rt_gi", "RT BOUNCE LIGHT: ",
-                                kNativeRtGiVals, kNativeRtGiNames, 4),
-                            &kRtGiDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE LIGHT STRENGTH: ",
-                                kNativeSsgiLevelVals, kNativeSsgiLevelNames, 5),
-                            &kSsgiLevelDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
-                                kNativeShaftsVals, kNativeShaftsNames, 7),
-                            &kShaftsDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuHeadlights", "mcla_gpu_headlights", "HEADLIGHTS: ",
-                                kNativeHeadlightsVals, kNativeHeadlightsNames, 3),
-                            &kHeadlightsDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuLightShadows", "mcla_gpu_light_shadows", "LIGHT SHADOWS: ",
-                                kNativeLightShadowVals, kNativeLightShadowNames, kLightShadowWords.count),
-                            &kLightShadowDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuNeonLight", "mcla_gpu_neon_light", "NEON LIGHT: ",
-                                kNativeNeonLightVals, kNativeNeonLightNames, 3),
-                            &kNeonLightDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "VOLUMETRIC LIGHT: ",
-                                kNativeVolumetricsVals, kNativeVolumetricsNames, 5),
-                            &kVolumetricsDynamics)),
+    NativeOnly(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
+                                "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4)),
+    NativeOnly(Str("PM_RxGpuShadowFilter", "mcla_gpu_shadow_filter", "SHADOW FILTER: ",
+                                kNativeShadowFilterVals, kNativeShadowFilterNames, 4)),
+    NativeOnly(Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ",
+                                kNativeContactVals, kNativeContactNames, 4)),
+    NativeOnly(Str("PM_RxGpuRtShadows", "mcla_gpu_rt_shadows", "RT SHADOWS: ",
+                                kNativeRtShadowsVals, kNativeRtShadowsNames, 4)),
+    NativeOnly(Str("PM_RxGpuTrafficShadows", "mcla_gpu_traffic_shadows", "TRAFFIC SHADOWS: ",
+                                kNativeTrafficShadowsVals, kNativeTrafficShadowsNames, 4)),
+    NativeOnly(Str("PM_RxGpuCarShadowMap", "mcla_gpu_car_shadow_map", "CAR SHADOWS: ",
+                                kNativeCarShadowVals, kNativeCarShadowNames, 4)),
+    NativeOnly(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION: ",
+                                kNativeAoVals, kNativeAoNames, 5)),
+    NativeOnly(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
+                                kNativeAoLevelVals, kNativeAoLevelNames, 4)),
+    NativeOnly(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",
+                                kNativeSsgiVals, kNativeSsgiNames, 4)),
+    NativeOnly(Str("PM_RxGpuRtGi", "mcla_gpu_rt_gi", "RT BOUNCE LIGHT: ",
+                                kNativeRtGiVals, kNativeRtGiNames, 4)),
+    NativeOnly(Str("PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE LIGHT STRENGTH: ",
+                                kNativeSsgiLevelVals, kNativeSsgiLevelNames, 5)),
+    NativeOnly(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
+                                kNativeShaftsVals, kNativeShaftsNames, 7)),
+    NativeOnly(Str("PM_RxGpuHeadlights", "mcla_gpu_headlights", "HEADLIGHTS: ",
+                                kNativeHeadlightsVals, kNativeHeadlightsNames, 3)),
+    NativeOnly(Str("PM_RxGpuLightShadows", "mcla_gpu_light_shadows", "LIGHT SHADOWS: ",
+                                kNativeLightShadowVals, kNativeLightShadowNames, kLightShadowWords.count)),
+    NativeOnly(Str("PM_RxGpuNeonLight", "mcla_gpu_neon_light", "NEON LIGHT: ",
+                                kNativeNeonLightVals, kNativeNeonLightNames, 3)),
+    NativeOnly(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "VOLUMETRIC LIGHT: ",
+                                kNativeVolumetricsVals, kNativeVolumetricsNames, 5)),
 #endif
 };
 
@@ -2444,27 +2030,20 @@ const ItemDef kLightItems[] = {
 // screen-space reflections of wet roads, sidewalks, glass and metal). Every row is live and has an AUTO that follows the graphics
 // card. Width: the longest label is "REFLECTIONS ON SURFACES" (23; RT CITY REFLECTIONS is 19 and 23 at most with a reason), the longest value "AUTO (RAY TRACED)" (17): 40 of the 41 a page can take.
 const ItemDef kReflectionItems[] = {
-    NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
-                                "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
-                            &kRoadReflectionDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution",
-                                "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
-                            &kCarReflectionDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
-                                "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 1),
-                            &kCarSelfReflDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuRtCityRefl", "mcla_gpu_rt_reflections",
-                                "RT CITY REFLECTIONS: ", kNativeRtCityVals, kNativeRtCityNames, 4),
-                            &kRtCityDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuSideMirrors", "mcla_gpu_side_mirrors",
-                                "SIDE MIRRORS: ", kNativeSideMirrorsVals, kNativeSideMirrorsNames, 4),
-                            &kSideMirrorsDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuRtMirror", "mcla_gpu_car_mirror_rt",
-                                "RT SIDE MIRRORS: ", kNativeMirrorRtVals, kNativeMirrorRtNames, 3),
-                            &kMirrorRtDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuSsr", "mcla_gpu_ssr", "REFLECTIONS ON SURFACES: ",
-                                kNativeSsrVals, kNativeSsrNames, 4),
-                            &kSsrDynamics)),
+    NativeOnly(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
+                                "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4)),
+    NativeOnly(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution",
+                                "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4)),
+    NativeOnly(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
+                                "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 1)),
+    NativeOnly(Str("PM_RxGpuRtCityRefl", "mcla_gpu_rt_reflections",
+                                "RT CITY REFLECTIONS: ", kNativeRtCityVals, kNativeRtCityNames, 4)),
+    NativeOnly(Str("PM_RxGpuSideMirrors", "mcla_gpu_side_mirrors",
+                                "SIDE MIRRORS: ", kNativeSideMirrorsVals, kNativeSideMirrorsNames, 4)),
+    NativeOnly(Str("PM_RxGpuRtMirror", "mcla_gpu_car_mirror_rt",
+                                "RT SIDE MIRRORS: ", kNativeMirrorRtVals, kNativeMirrorRtNames, 3)),
+    NativeOnly(Str("PM_RxGpuSsr", "mcla_gpu_ssr", "REFLECTIONS ON SURFACES: ",
+                                kNativeSsrVals, kNativeSsrNames, 4)),
 };
 #endif
 
@@ -2473,18 +2052,14 @@ const ItemDef kReflectionItems[] = {
 const ItemDef kGpuHdrItems[] = {
     Str("PM_RxGpuHdr", "mcla_gpu_hdr", "HDR: ",
         kHdrModeVals, kHdrModeNames, 3),
-    WithDynamics(Dbl("PM_RxGpuHdrWhite", "mcla_gpu_hdr_paper_white_nits", "PAPER WHITE: ",
+    Dbl("PM_RxGpuHdrWhite", "mcla_gpu_hdr_paper_white_nits", "PAPER WHITE: ",
                      kHdrPaperWhiteVals, 11, "%.0f"),
-                 &kHdrPaperWhiteDynamics),
-    WithDynamics(Dbl("PM_RxGpuHdrPeak", "mcla_gpu_hdr_peak_nits", "PEAK BRIGHTNESS: ",
+    Dbl("PM_RxGpuHdrPeak", "mcla_gpu_hdr_peak_nits", "PEAK BRIGHTNESS: ",
                      kHdrPeakVals, 11, "%.0f"),
-                 &kHdrPeakDynamics),
     // How far lights, the sun, the dusk sky and the headlights go above paper white.
-    WithDynamics(Dbl("PM_RxGpuHdrHighlights", "mcla_gpu_hdr_highlights", "HIGHLIGHTS: ",
+    Dbl("PM_RxGpuHdrHighlights", "mcla_gpu_hdr_highlights", "HIGHLIGHTS: ",
                      kHdrHighlightVals, 4, "%g"),
-                 &kHdrHighlightDynamics),
-    WithDynamics(Bool("PM_RxGpuHdrTest", "mcla_gpu_hdr_test_pattern", "TEST PATTERN: "),
-                 &kHdrTestDynamics),
+    Bool("PM_RxGpuHdrTest", "mcla_gpu_hdr_test_pattern", "TEST PATTERN: "),
 };
 #endif
 
@@ -2497,66 +2072,30 @@ const ItemDef kGpuHdrItems[] = {
 const char* const kLowLatencyVals[]  = {"auto", "off", "on", "boost"};
 const char* const kLowLatencyNames[] = {"AUTO", "OFF", "ON", "ON + BOOST"};
 
-std::string LowLatencyLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::latency::AutoIsOn() ? "AUTO (ON)" : "AUTO (OFF)";
-    case 1:  return "OFF";
-    case 2:  return "ON";
-    default: return "ON + BOOST";
-    }
-}
-
 // Says why a reducer that is asked for is not working right now. While frame generation runs it is
 // forced on (latency.cpp): the row is grey and says so. The vendor's name is shortened while a reason shows, as the denoiser row's and
 // frame generation's are, so that DISPLAY's widest label stays at 24 (the page counts the widest label plus the widest value, 41 at most:
 // "AMD ANTI-LAG 2 (NOT WORKING)" was 28): "ANTI-LAG 2 (NOT WORKING)" 24, "REFLEX (NOT WORKING)" 20.
-const char* LowLatencySuffix() {
-    if (mcla_menu::LatencyRowLocked()) return " (FRAME GEN)";
-    switch (mcla::gpu::latency::CurrentHealth()) {
-    case mcla::gpu::latency::Health::kPaused: return " (PAUSED)";
-    case mcla::gpu::latency::Health::kFailed: return " (NOT WORKING)";
-    default:                                  return "";
-    }
-}
-
-bool LowLatencyFree() { return !mcla_menu::LatencyRowLocked(); }
-
-const char* ReflexLabel() { return LowLatencySuffix()[0] != '\0' ? "REFLEX" : "NVIDIA REFLEX"; }
-const char* AntiLagLabel() { return LowLatencySuffix()[0] != '\0' ? "ANTI-LAG 2" : "AMD ANTI-LAG 2"; }
-
-constexpr RowDynamics kReflexDynamics = {.str_label = LowLatencyLabel,
-                                         .enabled = LowLatencyFree,
-                                         .suffix = LowLatencySuffix,
-                                         .label = ReflexLabel};
-constexpr RowDynamics kAntiLagDynamics = {.str_label = LowLatencyLabel,
-                                          .enabled = LowLatencyFree,
-                                          .suffix = LowLatencySuffix,
-                                          .label = AntiLagLabel};
-
 const ItemDef kReflexRows[] = {
-    NativeOnly(WithDynamics(Str("PM_RxGpuReflex", "mcla_gpu_low_latency", "NVIDIA REFLEX: ",
-                                kLowLatencyVals, kLowLatencyNames, 4),
-                            &kReflexDynamics)),
+    NativeOnly(Str("PM_RxGpuReflex", "mcla_gpu_low_latency", "NVIDIA REFLEX: ",
+                                kLowLatencyVals, kLowLatencyNames, 4)),
 };
 const ItemDef kAntiLagRows[] = {
-    NativeOnly(WithDynamics(Str("PM_RxGpuAntiLag", "mcla_gpu_low_latency", "AMD ANTI-LAG 2: ",
-                                kLowLatencyVals, kLowLatencyNames, 3),
-                            &kAntiLagDynamics)),
+    NativeOnly(Str("PM_RxGpuAntiLag", "mcla_gpu_low_latency", "AMD ANTI-LAG 2: ",
+                                kLowLatencyVals, kLowLatencyNames, 3)),
 };
 #endif
 
 // The rows DISPLAY takes from the renderer (MenuDef::extra), after its own: the vendor's latency reducer, or none.
 const ItemDef* LowLatencyMenuRows(int& count) {
 #if defined(LARECOMP_HAS_GPU)
-    switch (mcla::gpu::latency::AvailableKind()) {
-    case mcla::gpu::latency::Kind::kReflex:
+    if (mcla_menu::PauseRowListed(kReflexRows[0])) {
         count = int(sizeof(kReflexRows) / sizeof(kReflexRows[0]));
         return kReflexRows;
-    case mcla::gpu::latency::Kind::kAntiLag:
+    }
+    if (mcla_menu::PauseRowListed(kAntiLagRows[0])) {
         count = int(sizeof(kAntiLagRows) / sizeof(kAntiLagRows[0]));
         return kAntiLagRows;
-    default:
-        break;
     }
 #endif
     count = 0;
@@ -2702,25 +2241,9 @@ const ItemDef kCarbonItems[] = {
 // saved pt that is not available shows as AUTO, which is what runs; the setting itself is not
 // touched. A change reloads the text at once, but the game reads its language in several places
 // at start, so the row says "(RESTART)" and leaving the menu offers RESTART NOW.
-int LangCount() { return PortugueseAvailable() ? kNumLangs : kNumLangs - 1; }
-std::string LangLabel(int i) { return i >= 0 && i < LangCount() ? kLangNames[i] : ""; }
-int LangIndex() {
-    const std::string value = CvarGet("language");
-    for (int i = 0; i < LangCount(); ++i)
-        if (value == kLangVals[i]) return i;
-    return 0;
-}
-void LangSet(int i, CvarWriter write) {
-    if (i >= 0 && i < LangCount()) write("language", kLangVals[i]);
-}
-constexpr RowDynamics kLangRowDynamics = {.str_label = LangLabel,
-                                          .value_count = LangCount,
-                                          .value_index = LangIndex,
-                                          .set_value = LangSet};
 const ItemDef kLangItems[] = {
-    WithDynamics(Str("PM_RxLanguage", "language", "LANGUAGE: ",
+    Str("PM_RxLanguage", "language", "LANGUAGE: ",
                      kLangVals, kLangNames, kNumLangs, " (RESTART)"),
-                 &kLangRowDynamics),
 };
 
 #if defined(LARECOMP_HAS_GPU)
@@ -2737,27 +2260,10 @@ constexpr bool kRendererOnWindows = true;
 #else
 constexpr bool kRendererOnWindows = false;
 #endif
-int RendererCount() { return mcla::gpu::kRendererPickCount; }
-std::string RendererLabel(int i) {
-    return i >= 0 && i < RendererCount() ? std::string(mcla::gpu::PickLabel(mcla::gpu::PickAt(i))) : std::string();
-}
-// The held choice if there is one, else what runs now.
-int RendererIndex() { return int(mcla::gpu::PickOfDriver(CvarGet(kRendererCvar), kRendererOnWindows)); }
-void RendererSet(int i, CvarWriter write) {
-    if (i < 0 || i >= RendererCount()) return;
-    const mcla::gpu::RendererPick pick = mcla::gpu::PickAt(i);
-    // Back on the renderer that runs now: its own word ("any" stays "any"), so the restart prompt sees no change.
-    const std::string live = larecomp::cvar::GetFlagByName(kRendererCvar);
-    const std::string value = mcla::gpu::PickOfDriver(live, kRendererOnWindows) == pick ? live
-                                                                                          : std::string(mcla::gpu::DriverOfPick(pick));
-    write(kRendererCvar, value.c_str());
-}
 bool RendererLaunchSets() {
     const larecomp::cvar::Source source = larecomp::cvar::GetFlagSource(kRendererCvar);
     return source == larecomp::cvar::Source::kCommandLine || source == larecomp::cvar::Source::kEnvironment;
 }
-bool RendererEnabled() { return !RendererLaunchSets(); }
-const char* RendererSuffix() { return RendererLaunchSets() ? " (LAUNCH OPTION)" : " (RESTART)"; }
 #endif
 
 // Cutscene gallery. One value row walking the whole table plus the button
@@ -2795,19 +2301,6 @@ void InitThemePalette() {
 // Width: "HUD WIDTH (16X9: NO EFFECT)" 27 (grey: no value), "HUD WIDTH" 9 with
 // "CENTERED" 8.
 constexpr double kHudWidthVals[] = {0, 50, 100};
-std::string HudWidthLabel(double v) {
-    if (v <= 0.0) return "CENTERED";
-    if (v == 50.0) return "WIDER";
-    if (v >= 100.0) return "FULL";
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%.0f", v);
-    return buf;
-}
-bool HudWidthEnabled() { return mc::ultrawide::Active(); }
-const char* HudWidthSuffix() { return HudWidthEnabled() ? "" : " (16X9: NO EFFECT)"; }
-constexpr RowDynamics kHudWidthDynamics = {.value_label = HudWidthLabel,
-                                           .enabled = HudWidthEnabled,
-                                           .suffix = HudWidthSuffix};
 #endif
 
 const ItemDef kUiItems[] = {
@@ -2818,9 +2311,8 @@ const ItemDef kUiItems[] = {
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
          kSpeedUnitVals, kSpeedUnitNames, 3),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(WithDynamics(Dbl("PM_RxHudWidth", "hud_width", "HUD WIDTH: ", kHudWidthVals,
-                                int(sizeof(kHudWidthVals) / sizeof(kHudWidthVals[0])), "%g"),
-                            &kHudWidthDynamics)),
+    NativeOnly(Dbl("PM_RxHudWidth", "hud_width", "HUD WIDTH: ", kHudWidthVals,
+                                int(sizeof(kHudWidthVals) / sizeof(kHudWidthVals[0])), "%g")),
 #endif
     // (BUTTON LAYOUT is on the CONTROLLER page now, kControllerItems.)
 };
@@ -2853,9 +2345,8 @@ const ItemDef kGameHubItems[] = {
 // (MinThrottle), is not a row any more: the scales below soften it.)
 const ItemDef kDiffItems[] = {
     Str("PM_RxDiffPreset", "difficulty_preset", "PRESET: ", kDiffPresetVals, kDiffPresetNames, 2),
-    WithDynamics(Dbl("PM_RxAiDiff", "ai_difficulty", "AI DIFFICULTY: ",
+    Dbl("PM_RxAiDiff", "ai_difficulty", "AI DIFFICULTY: ",
                      kAiDiffVals, int(sizeof(kAiDiffVals) / sizeof(kAiDiffVals[0])), "%g"),
-                 &kAiDiffDynamics),
     Dbl ("PM_RxRbCatchup",   "rubberband_catchup_scale", "CATCH-UP (AI BEHIND): ",
          kRbScaleVals, int(sizeof(kRbScaleVals) / sizeof(kRbScaleVals[0])), "%gX"),
     Dbl ("PM_RxRbHoldback",  "rubberband_holdback_scale", "HOLD-BACK (AI AHEAD): ",
@@ -2864,10 +2355,9 @@ const ItemDef kDiffItems[] = {
          kRbDistVals, int(sizeof(kRbDistVals) / sizeof(kRbDistVals[0])), "%gX"),
     Dbl ("PM_RxRbShortcut",  "rubberband_shortcut_scale", "AI SHORTCUTS WHEN BEHIND: ",
          kRbNitroScaleVals, int(sizeof(kRbNitroScaleVals) / sizeof(kRbNitroScaleVals[0])), "%gX"),
-    WithDynamics(Dbl("PM_RxRbNitroStart", "rubberband_nitro_start_dist", "NITRO FROM START: ",
+    Dbl("PM_RxRbNitroStart", "rubberband_nitro_start_dist", "NITRO FROM START: ",
                      kRbNitroStartVals,
                      int(sizeof(kRbNitroStartVals) / sizeof(kRbNitroStartVals[0])), "%g"),
-                 &kRbNitroStartDynamics),
     Dbl ("PM_RxRbNitroFin",  "rubberband_nitro_finish_scale", "NITRO NEAR FINISH: ",
          kRbNitroScaleVals, int(sizeof(kRbNitroScaleVals) / sizeof(kRbNitroScaleVals[0])), "%gX"),
     Dbl ("PM_RxRbNitroBeh",  "rubberband_nitro_behind_scale", "NITRO BEHIND YOU: ",
@@ -2987,6 +2477,332 @@ const ItemDef& MenuRawAt(const MenuDef& md, int i) {
     if (!tail || extra <= 0) return md.items[0];
     if (at >= extra) at = extra - 1;
     return tail[at];
+}
+
+// CHECK: verify the 41-column DISPLAY page, guest relabel, grey-row input,
+// restart prompts and probe-driven relayout on D3D12, Vulkan and Xenia.
+namespace expr = larecomp::uiexpr;
+
+const expr::RuleBook& PauseRules() {
+    static const larecomp::Immortal<expr::RuleBook> rules(kPauseMenuRulesToml);
+    return *rules;
+}
+
+class PauseRuleEnv final : public expr::Env {
+ public:
+    explicit PauseRuleEnv(bool unprobed_world_scale = false) : unprobed_world_scale_(unprobed_world_scale) {}
+
+    expr::Value Setting(std::string_view name) const override {
+        const std::string key(name);
+        const auto* setting = larecomp::settings::Find(name);
+        if (!setting) return {};
+        const auto text = expr::Value::String(CvarGet(key.c_str()));
+        using Type = rex::SettingType;
+        switch (setting->GetType()) {
+        case Type::kBool: return expr::TypedSetting("bool", text);
+        case Type::kString:
+        case Type::kPath: return text;
+        case Type::kF64: return expr::TypedSetting("number", text);
+        default: return expr::TypedSetting("int", text);
+        }
+    }
+
+    expr::Value Renderer() const override {
+        return expr::Value::String(mcla_menu::NativeRendererRuns() ? "native" : "xenia");
+    }
+    const expr::AutoDescriptor* Auto(std::string_view name) const override {
+        static const larecomp::Immortal<expr::AutoCatalog> descriptors(expr::MenuAutoDescriptors());
+        const auto it = descriptors->find(name);
+        return it == descriptors->end() ? nullptr : &it->second;
+    }
+    const expr::Def* DefOf(std::string_view name) const override {
+        return PauseRules().Definition(name);
+    }
+
+    expr::Value Fact(std::string_view path) const override {
+        using Value = expr::Value;
+        const auto text = [](std::string_view value) { return Value::String(std::string(value)); };
+        if (path == "os.exclusive_fullscreen") return Value::Bool(mcla::display::ExclusiveSupported());
+        if (path == "os.live_window_resize") return Value::Bool(mcla::display::LiveResize());
+        if (path == "os.window_size_fixed") return Value::Bool(mcla::display::WindowSizeFixed());
+        if (path == "display.primary.size" || path == "live.output_size") {
+            const auto size = path == "display.primary.size" ? mcla::display::DesktopSize() : mcla::display::OutputSize();
+            return size.empty() ? Value{} : Value::String(mcla::display::SizeLabel(size));
+        }
+        if (path == "install.portuguese_text") return Value::Bool(PortugueseAvailable());
+#if defined(LARECOMP_HAS_GPU)
+        namespace gpu = mcla::gpu;
+        namespace gc = gpu::gpu_class;
+        if (path == "gpu.class") return text(gc::ClassName(unprobed_world_scale_ ? gc::GpuClass::kLow : gc::Current()));
+        if (path == "live.rt_field_class") return text(gc::ClassName(gc::Known() ? gc::Current() : gc::GpuClass::kLow));
+        if (path == "gpu.handheld") return Value::Bool(gc::Handheld());
+        if (path == "gpu.rt_tier") return text(gc::RtTierName(gc::CurrentRtTier()));
+        if (path == "gpu.rt_rung") return text(gc::RtTierName(gc::RtRung(gc::Current(), gc::CurrentRtTier())));
+        if (path == "api.car_rt") return Value::Bool(gpu::CarRtReflAvailable());
+        if (path == "api.city_rt_shadows") return Value::Bool(gpu::CityRtShadowsAvailable());
+        if (path == "build.rt_gi_update_built") return Value::Bool(gpu::RtGiUpdateBuilt());
+        if (path == "features.pcss") return Value::Bool(gpu::shadow_filter::PcssRuns());
+        if (path == "live.hdr_active") return Value::Bool(gpu::HdrOutputActive());
+        if (path == "features.hdr.auto_paper_white_nits")
+            return Value::Number(std::nearbyint(gpu::HdrAutoPaperWhiteNits()));
+        if (path == "features.hdr.auto_peak_nits")
+            return Value::Number(std::nearbyint(gpu::HdrAutoPeakNits()));
+        if (path == "live.ultrawide_active") return Value::Bool(mc::ultrawide::Active());
+        if (path == "live.rt_gi_replaces_bounce") return Value::Bool(gpu::RtGiReplacesBounceLight());
+        if (path == "live.side_mirrors_replaced") return Value::Bool(gpu::mirror_setting::Current().replaced);
+        if (path == "live.rtao_pass_built") return Value::Bool(gpu::rtao_setting::PassBuilt());
+        if (path == "live.msaa_switching") return Value::Bool(gpu::MsaaSwitching());
+        if (path == "live.renderer_forced") return Value::Bool(RendererLaunchSets());
+        if (path == "live.renderer_choice")
+            return text(gpu::DriverOfPick(gpu::PickOfDriver(CvarGet(kRendererCvar), kRendererOnWindows)));
+        if (path == "features.denoiser.vendor") return text(mcla_menu::VendorDenoiserKind());
+        if (path == "live.denoiser_gate") return text(mcla_menu::VendorDenoiserState());
+        if (path == "live.fsr1_preset_custom") {
+            auto preset = gpu::FsrPreset::kCustom;
+            gpu::ParseFsrPreset(CvarGet("mcla_gpu_fsr_preset"), &preset);
+            return Value::Bool(preset == gpu::FsrPreset::kCustom);
+        }
+        if (path == "live.city_data") {
+            using Data = gpu::city_refl_setting::Data;
+            switch (gpu::city_refl_setting::DataNow()) {
+            case Data::kReady: return text("ready");
+            case Data::kBuilding: return text("building");
+            case Data::kUnavailable: return text("unavailable");
+            default: return {};
+            }
+        }
+        if (path == "features.latency.kind") {
+            using Kind = gpu::latency::Kind;
+            const auto kind = gpu::latency::AvailableKind();
+            return text(kind == Kind::kReflex ? "reflex" : kind == Kind::kAntiLag ? "antilag2" : "none");
+        }
+        if (path == "features.latency.auto_on") return Value::Bool(gpu::latency::AutoIsOn());
+        if (path == "live.latency_health") {
+            using Health = gpu::latency::Health;
+            const auto health = gpu::latency::CurrentHealth();
+            return text(health == Health::kPaused ? "paused" : health == Health::kFailed ? "failed" : "ok");
+        }
+        if (path == "live.frame_generation_running")
+            return Value::Bool(gpu::FrameGenerationRunning() || gpu::DlssFrameGenerationRunning());
+        if (path == "live.frame_generation_multiplier") return Value::Number(gpu::DlssFrameGenerationMultiplier());
+        if (path.starts_with("features.upscalers.") || path == "live.dlss_waits_for_restart" ||
+            path == "live.kept_upscaler" || path == "live.upscaler_state") {
+            const auto a = gpu::GetUpscalerAvailability();
+            if (path == "features.upscalers.fsr31") return Value::Bool(a.fsr31);
+            if (path == "features.upscalers.fsr4") return Value::Bool(a.fsr4);
+            if (path == "features.upscalers.dlss")
+                return text(a.dlss ? "ready" : a.dlss_needs_setup ? "needs_setup" :
+                            a.dlss_after_restart ? "after_restart" : "no");
+            if (path == "features.upscalers.dlss_modes_refused") {
+                std::vector<Value> refused;
+                for (int i = 0; i < int(gpu::UpscaleMode::kCount); ++i) {
+                    const auto mode = gpu::UpscaleMode(i);
+                    if (a.DlssModeRefused(mode)) refused.push_back(text(gpu::ModeInfoOf(gpu::Upscaler::kDlss, mode).cvar));
+                }
+                return Value::List(std::move(refused));
+            }
+            if (path == "live.dlss_waits_for_restart") return Value::Bool(a.dlss_after_restart && !a.dlss);
+            if (path == "live.kept_upscaler")
+                return text(a.kept == gpu::Upscaler::kFsr31 ? "fsr31" : a.kept == gpu::Upscaler::kFsr4 ? "fsr4" :
+                            a.kept == gpu::Upscaler::kDlss ? "dlss" : "off");
+            if (path == "live.upscaler_state") return text(a.no_room ? "no_room" : a.switching ? "switching" : "ok");
+        }
+        if (path.starts_with("features.frame_generation.") || path.starts_with("live.frame_generation_") ||
+            path.starts_with("live.fsr_frame_generation_") || path.starts_with("live.dlss_frame_generation_")) {
+            const auto fsr = gpu::GetFrameGenerationAvailability();
+            const auto dlss = gpu::GetDlssFrameGenerationAvailability();
+            if (path == "features.frame_generation.fsr31") return Value::Bool(fsr.available);
+            if (path == "features.frame_generation.dlss") return Value::Bool(dlss.supported);
+            if (path == "features.frame_generation.dlss_after_restart") return Value::Bool(dlss.after_restart);
+            if (path == "features.frame_generation.dlss_multiplier_max") return Value::Number(dlss.max_multiplier);
+            if (path == "live.fsr_frame_generation_listed") return Value::Bool(fsr.probed && (fsr.available || fsr.failed));
+            if (path == "live.dlss_frame_generation_listed") return Value::Bool(dlss.listed);
+            if (path == "live.frame_generation_multiplier_listed") return Value::Bool(dlss.listed && dlss.multiplier_choice);
+            if (path == "live.fsr_frame_generation_state")
+                return text(fsr.failed ? "failed" : fsr.no_room ? "no_room" : "ok");
+            if (path == "live.frame_generation_half_display") {
+                if (CvarGet("mcla_gpu_frame_generation") != "dlss") return Value::Number(fsr.half_display);
+                const uint32_t multiplier = gpu::DlssFrameGenerationMultiplier();
+                return Value::Number(dlss.refresh_hz >= 100 && multiplier >= 2 ?
+                                     uint32_t(0.97 * double(dlss.refresh_hz) / double(multiplier)) : 0);
+            }
+            const bool unsupported = dlss.probed && !dlss.supported && !dlss.after_restart;
+            if (path == "live.dlss_frame_generation_state")
+                return text(dlss.failed ? "failed" : unsupported ? "unsupported" : "ok");
+            const std::string selected = CvarGet("mcla_gpu_frame_generation");
+            if (path == "live.frame_generation_choice_available")
+                return Value::Bool(selected == "fsr31" ? fsr.available : selected == "dlss" && (dlss.supported || dlss.running));
+            if (path == "live.frame_generation_applying")
+                return Value::Bool(selected == "fsr31" ? !fsr.failed && !fsr.no_room && fsr.available && !fsr.running :
+                                   selected == "dlss" && !dlss.failed && !unsupported && !dlss.after_restart && !dlss.running);
+        }
+#else
+        if (path == "gpu.class") return text("low");
+        if (path == "live.frame_generation_running") return Value::Bool(false);
+#endif
+        return {};
+    }
+
+ private:
+    [[maybe_unused]] bool unprobed_world_scale_;
+};
+
+const expr::RowRules* ItemRules(const ItemDef& item) { return PauseRules().Row(item.key); }
+
+const toml::table* ItemState(const ItemDef& item) {
+    const auto* rule = ItemRules(item);
+    if (!rule) return nullptr;
+    const PauseRuleEnv env;
+    return expr::RuleView(*rule, env, &PauseRules()).State();
+}
+
+// A variant may replace the setting in the exported UI. In the guest menu a
+// compound row can leave it null so that it doesn't own a restart prompt.
+const char* VariantCvar(const ItemDef& item, const expr::RuleView& row) {
+    if (const auto* setting = row.Field("setting").as_string()) return setting->get().c_str();
+    return item.cvar;
+}
+
+bool HasRuleChoices(const ItemDef& item) {
+    const auto* rules = ItemRules(item);
+    if (item.kind != ItemKind::kStrCycle || !rules) return false;
+    const auto has_values = [](const expr::RuleFields& fields) {
+        return fields.data->contains("values") || fields.data->contains("values_from") || fields.data->contains("values_ref");
+    };
+    return has_values(rules->base) || std::any_of(rules->variants.begin(), rules->variants.end(),
+        [&](const auto& variant) { return has_values(variant.second); });
+}
+
+std::optional<mcla_menu::GeneratedChoices> GenerateRuleValues(const expr::RuleView& row, const expr::Env& env) {
+    const auto source = row.Field("values_from");
+    if (!source) return {};
+    const auto generator = source["generator"].value_or(std::string_view{});
+    const auto args = source["args"];
+    if (generator == "display.sizes") {
+        const auto mode = args["mode"].value_or(std::string_view{});
+        return mcla_menu::DisplaySizeChoices(expr::ValueText(expr::Evaluate(expr::Parse(mode), env)));
+    }
+    if (generator == "render_scale.shares")
+        return mcla_menu::RenderScaleChoices(args["renderer"].value_or(std::string_view{}));
+    if (generator == "render_scale.fsr1_modes") return mcla_menu::Fsr1ModeChoices();
+    if (generator == "upscaler.sharpness")
+        return mcla_menu::SharpnessChoices(args["setting"].value_or(std::string_view{}));
+    return {};
+}
+
+int RuleChoiceCount(const ItemDef& item) {
+    const PauseRuleEnv env;
+    const expr::RuleView row(*ItemRules(item), env, &PauseRules());
+    if (const auto values = GenerateRuleValues(row, env)) return int(values->entries.size());
+    return int(row.Choices().size());
+}
+
+int RuleChoiceIndex(const ItemDef& item) {
+    const PauseRuleEnv env;
+    const expr::RuleView row(*ItemRules(item), env, &PauseRules());
+    if (const auto values = GenerateRuleValues(row, env)) return values->current;
+    const auto values = row.Choices();
+    const auto& decode = row.Owner("decode").decode;
+    const char* setting = VariantCvar(item, row);
+    const std::string current = decode.expr || !decode.cases.empty() ? expr::ValueText(expr::Decode(decode, env)) :
+                                setting ? CvarGet(setting) : std::string{};
+    for (int i = 0; i < int(values.size()); ++i) {
+        if ((*values[i])["id"].value_or(std::string_view{}) == current) return i;
+    }
+    return 0;
+}
+
+std::string RuleChoiceLabel(const ItemDef& item, int i) {
+    const PauseRuleEnv env;
+    const expr::RuleView row(*ItemRules(item), env, &PauseRules());
+    if (const auto values = GenerateRuleValues(row, env))
+        return i >= 0 && i < int(values->entries.size()) ? values->entries[size_t(i)].label : std::string{};
+    const auto values = row.Choices();
+    if (i < 0 || i >= int(values.size())) return {};
+    const auto& value = *values[i];
+    const auto id = value["id"].value_or(std::string_view{});
+    const char* setting = VariantCvar(item, row);
+    return row.Label(id, &value, {}, setting ? setting : "").value_or(std::string(id));
+}
+
+void RuleChoiceWrite(const ItemDef& item, int i) {
+    const PauseRuleEnv env;
+    const expr::RuleView row(*ItemRules(item), env, &PauseRules());
+    if (const auto values = GenerateRuleValues(row, env)) {
+        if (i < 0 || i >= int(values->entries.size()) || !values->setting) return;
+        const auto& id = values->entries[size_t(i)].id;
+        const auto setting = std::string_view(values->setting);
+        const bool resize = setting == "resolution" || setting == "fullscreen_resolution";
+        if (!resize || CvarGet(values->setting) != id)
+            CvarSet(values->setting, id.c_str());
+        return;
+    }
+    const auto values = row.Choices();
+    if (i < 0 || i >= int(values.size())) return;
+    const auto& value = *values[i];
+    const auto id = value["id"].value_or(std::string{});
+    if (const auto* writes = value["writes"].as_array()) {
+        for (const auto& entry : *writes) {
+            const auto* write = entry.as_table();
+            if (!write) continue;
+            const auto setting = (*write)["setting"].value_or(std::string{});
+            auto next = (*write)["value"].value_or(std::string{});
+            if (next == "$id") next = id;
+            if (CvarGet(setting.c_str()) != next) CvarSet(setting.c_str(), next.c_str());
+        }
+    } else if (const char* setting = VariantCvar(item, row)) {
+#if defined(LARECOMP_HAS_GPU)
+        // Returning to the running renderer keeps the underlying driver alias
+        // (for example "any"), so the restart prompt sees no change.
+        if (std::string_view(setting) == kRendererCvar) {
+            const std::string live = larecomp::cvar::GetFlagByName(kRendererCvar);
+            const auto pick = mcla::gpu::PickOfDriver(live, kRendererOnWindows);
+            if (mcla::gpu::DriverOfPick(pick) == id) {
+                CvarSet(setting, live.c_str());
+                return;
+            }
+        }
+#endif
+        CvarSet(setting, id.c_str());
+    }
+}
+
+bool HasRuleNumberLabels(const ItemDef& item) {
+    const auto* row = ItemRules(item);
+    return item.kind == ItemKind::kDblCycle && row && row->base.data->contains("value");
+}
+
+std::string RuleNumberLabel(const ItemDef& item, double number) {
+    const auto* rules = ItemRules(item);
+#if defined(LARECOMP_HAS_GPU)
+    const PauseRuleEnv env(!mcla::gpu::gpu_class::Known());
+#else
+    const PauseRuleEnv env;
+#endif
+    const expr::RuleView row(*rules, env, &PauseRules());
+    namespace gc = mcla::gpu::gpu_class;
+    const std::string_view key(item.key);
+    double id = number;
+    for (int i = 0; i < gc::kScaleCount; ++i) {
+        const auto scale = gc::Scale(i);
+        const auto& info = gc::ScaleOf(scale);
+        if (info.cvar != item.cvar) continue;
+        id = gc::IsAutoValue(scale, number) ? (info.zero_is_auto ? 0.0 : -1.0) :
+             gc::ScaleFor(scale, false, gc::GpuClass::kLow, number);
+        break;
+    }
+    if (key == "PM_RxGpuFrameGenFps") {
+        if (number < 0.0) id = -1.0;
+        else if (number > 0.0) id = 30.0;  // all positive caps share the same label template
+    }
+    if (key == "PM_RxHudWidth") id = std::clamp(number, 0.0, 100.0);
+    if (key == "PM_RxGpuHdrWhite" || key == "PM_RxGpuHdrPeak") id = std::max(0.0, number);
+    if ((key == "PM_RxAiDiff" || key == "PM_RxRbNitroStart") && number < 0.0) id = -1.0;
+    if (key == "PM_RxTrigThrottle" || key == "PM_RxTrigBrake") id = std::round(number);
+    const auto* override = row.Field("format").as_string();
+    const char* format = override ? override->get().c_str() : item.dfmt;
+    const std::string fallback = item.zero_label && id == 0.0 ? item.zero_label : expr::FormatNumber(id, format);
+    return row.Label(expr::NumberId(id), nullptr, fallback, item.cvar, number, item.dfmt).value_or(fallback);
 }
 
 int MenuItemCount(const MenuDef& md) {
@@ -3248,53 +3064,57 @@ bool ItemIsLabelOnly(const ItemDef& it) {
 }
 
 // The setting a row reads and writes (a checkbox) and the "restart now?" prompt looks up: its own
-// `cvar`, or what RowDynamics::cvar says for the renderer this launch runs (VSYNC, MSAA and RENDER SCALE
+// `cvar`, or what variant setting says for the renderer this launch runs (VSYNC, MSAA and RENDER SCALE
 // are one row each, mapped to the running renderer's own setting). Null for a row that has none.
 const char* ItemCvar(const ItemDef& it) {
-    return it.dynamics && it.dynamics->cvar ? it.dynamics->cvar() : it.cvar;
+    const auto* rules = ItemRules(it);
+    if (!rules || rules->variants.empty()) return it.cvar;
+    const PauseRuleEnv env;
+    // Only the Xenia mode row owns a restart prompt. On native the
+    // UPSCALING selector owns the prompt when the DLSS mode waits.
+    if (!it.cvar && mcla_menu::NativeRendererRuns()) return nullptr;
+    return VariantCvar(it, expr::RuleView(*rules, env, &PauseRules()));
 }
 
-// RowDynamics::enabled; a row without one is always enabled (row_dependency.h: the same predicate the row dependency test runs).
-bool ItemEnabled(const ItemDef& it) { return mcla_menu::RowEnabled(it); }
+// A row without a matching disabled state is enabled.
+bool ItemEnabled(const ItemDef& it) {
+    if (const auto* state = ItemState(it)) return (*state)["enabled"].value_or(true);
+    return true;
+}
 
-// A kDblCycle row whose values are labeled by RowDynamics::value_label.
+std::string DblLabel(const ItemDef& it, double value) {
+    return RuleNumberLabel(it, value);
+}
+
+// A kDblCycle row whose values are labeled by the value rules.
 bool ItemLabelsValues(const ItemDef& it) {
-    return it.kind == ItemKind::kDblCycle && it.dynamics && it.dynamics->value_label;
+    return HasRuleNumberLabels(it);
 }
 
 // The values a kDblCycle row steps through: its table, and for a row that
 // labels its values, also the cvar's own value, in order, when it labels as
-// none of them (RowDynamics::value_label).
+// none of them (the value rules).
 std::vector<double> DblValues(const ItemDef& it) {
     std::vector<double> values(it.dvals, it.dvals + it.nvals);
     if (!ItemLabelsValues(it)) return values;
     const double current = CvarGetDouble(it.cvar);
-    const std::string label = it.dynamics->value_label(current);
+    const std::string label = DblLabel(it, current);
     for (const double v : values)
-        if (it.dynamics->value_label(v) == label) return values;
+        if (DblLabel(it, v) == label) return values;
     values.insert(std::upper_bound(values.begin(), values.end(), current), current);
     return values;
 }
 
-// A kStrCycle row with a list of its own (RowDynamics::value_count): how many values it has, which
-// one it is on and what stepping to one writes all come from the row, and the list can change between
-// two draws. The game's row never sees the count: it is given a three-value window (kRowWindow).
-bool ItemOwnsList(const ItemDef& it) {
-    return it.kind == ItemKind::kStrCycle && it.dynamics && it.dynamics->value_count &&
-           it.dynamics->value_index && it.dynamics->set_value;
-}
-
 // Rows whose entry the cvar sits on can differ from the one stepped to, because the list changes
 // under the step (an entry for a value the row does not list is dropped once the row leaves it).
-bool ItemListMoves(const ItemDef& it) { return ItemLabelsValues(it) || ItemOwnsList(it); }
+bool ItemListMoves(const ItemDef& it) { return ItemLabelsValues(it) || HasRuleChoices(it); }
 
 int ItemValueCount(const ItemDef& it) {
     switch (it.kind) {
     case ItemKind::kBool:
     case ItemKind::kCarbonBit: return 2;
     case ItemKind::kDblCycle:  return ItemLabelsValues(it) ? int(DblValues(it).size()) : it.nvals;
-    case ItemKind::kStrCycle:  return ItemOwnsList(it) ? std::max(it.dynamics->value_count(), 0)
-                                                       : it.nvals;
+    case ItemKind::kStrCycle:  return HasRuleChoices(it) ? RuleChoiceCount(it) : it.nvals;
     case ItemKind::kColor:     return it.nvals;
     case ItemKind::kAction:
     case ItemKind::kSubmenu:   return 0;
@@ -3307,12 +3127,17 @@ std::string ItemValueLabel(const ItemDef& it, int i) {
     case ItemKind::kBool:      return i ? "ON" : "OFF";
     case ItemKind::kCarbonBit: return i ? "CARBON" : "PAINT";
     case ItemKind::kStrCycle:
-        if (it.dynamics && it.dynamics->str_label) return it.dynamics->str_label(i);
+        if (HasRuleChoices(it)) return RuleChoiceLabel(it, i);
+        if (const auto* rules = ItemRules(it)) {
+            const PauseRuleEnv env;
+            return expr::RuleView(*rules, env, &PauseRules()).Label(it.svals[i], nullptr, it.slabels[i], it.cvar)
+                .value_or(it.slabels[i]);
+        }
         return it.slabels[i];
     case ItemKind::kDblCycle: {
         if (ItemLabelsValues(it)) {
             const std::vector<double> values = DblValues(it);
-            return (i >= 0 && i < int(values.size())) ? it.dynamics->value_label(values[i])
+            return (i >= 0 && i < int(values.size())) ? DblLabel(it, values[i])
                                                       : std::string();
         }
         if (it.zero_label && it.dvals[i] == 0.0) return it.zero_label;
@@ -3338,10 +3163,7 @@ int ItemValueIndex(const ItemDef& it) {
     case ItemKind::kCarbonBit:
         return (CarbonHaveCar() && CarbonHasGroup(uint8_t(it.nvals))) ? 1 : 0;
     case ItemKind::kStrCycle:
-        if (ItemOwnsList(it)) {
-            const int n = ItemValueCount(it);
-            return n > 0 ? std::clamp(it.dynamics->value_index(), 0, n - 1) : 0;
-        }
+        if (HasRuleChoices(it)) return RuleChoiceIndex(it);
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kColor:
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
@@ -3350,9 +3172,9 @@ int ItemValueIndex(const ItemDef& it) {
             return FindClosestIndex(CvarGetDouble(it.cvar), it.dvals, it.nvals);
         // The entry that labels as the cvar's value; DblValues lists one.
         const std::vector<double> values = DblValues(it);
-        const std::string label = it.dynamics->value_label(CvarGetDouble(it.cvar));
+        const std::string label = DblLabel(it, CvarGetDouble(it.cvar));
         for (int i = 0; i < int(values.size()); ++i)
-            if (it.dynamics->value_label(values[i]) == label) return i;
+            if (DblLabel(it, values[i]) == label) return i;
         return 0;
     }
     case ItemKind::kAction:
@@ -3374,8 +3196,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
         break;
     }
     case ItemKind::kStrCycle:
-        if (ItemOwnsList(it)) {
-            it.dynamics->set_value(i, CvarSet);
+        if (HasRuleChoices(it)) {
+            RuleChoiceWrite(it, i);
             g_settings_saved.store(false, std::memory_order_relaxed);
             break;
         }
@@ -3465,15 +3287,29 @@ std::string ItemRowLabel(const ItemDef& it) {
         return "";
     }
 
-    // A row named for what it sets now ("DLSS MODE", "RENDER SCALE") says so in RowDynamics::label.
-    std::string label = it.dynamics && it.dynamics->label ? it.dynamics->label() : it.prefix;
+    const PauseRuleEnv env;
+    std::string label = it.prefix;
+    std::string suffix = it.suffix;
+#if defined(LARECOMP_HAS_GPU)
+    if (std::string_view(it.key) == "PM_RxGpuUpsc")
+        mcla::gpu::NoteUpscalerInterest("the UPSCALING row is on screen");
+#endif
+    if (const auto* rules = ItemRules(it)) {
+        const expr::RuleView row(*rules, env, &PauseRules());
+        if (const auto text = row.Field("label").value<std::string_view>()) label = *text;
+        if (const auto* state = row.State()) {
+            if (const auto text = (*state)["label"].value<std::string_view>())
+                label = expr::ExpandTemplate(*text, env).value_or(label);
+            if (const auto text = (*state)["suffix"].value<std::string_view>())
+                suffix = expr::ExpandTemplate(*text, env).value_or(suffix);
+        }
+    }
     while (!label.empty() && (label.back() == ' ' || label.back() == ':'))
         label.pop_back();
 
     if (it.kind == ItemKind::kCarbonBit && !CarbonHaveCar())
         return label + " (NO CAR)";
-    if (it.dynamics && it.dynamics->suffix) return label + it.dynamics->suffix();
-    return label + it.suffix;
+    return label + suffix;
 }
 
 // dir is +1 for A / right and -1 for left. Each menu's list is a real
@@ -3486,7 +3322,7 @@ void ApplyItem(const ItemDef& it, int dir) {
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
     case ItemKind::kStrCycle: {
-        // Through the row's own list, which for a row with one (ItemOwnsList) is not the cvar's.
+        // Through the same choice list the row displays, including generated choices.
         const int n = ItemValueCount(it);
         if (n > 0) ItemSetValueIndex(it, ((ItemValueIndex(it) + dir) % n + n) % n);
         break;
@@ -3669,7 +3505,7 @@ void CentreRowWindow(NativeRows& nr, int i, const ItemDef& it, int idx) {
     WriteGuestBE32(nr.row[i] + kRowSelect, 1);
 }
 
-// The row's enabled state (RowDynamics::enabled) into the guest object: the
+// The row's enabled state  into the guest object: the
 // byte the game's own rows read (kRowValueEnabled), and for a checkbox also
 // the word its render reads (kRowEnabled). Label-only rows have none.
 void ApplyRowEnabled(NativeRows& nr, int i, const ItemDef& it) {
@@ -3856,7 +3692,7 @@ void PollNativeRows(int m) {
     //    steps, so a row above the one that moved is not a render behind.
     for (int i = 0; i < count; ++i) {
         const ItemDef& it = MenuItemAt(md, i);
-        if (!it.dynamics) continue;
+        if (!ItemRules(it)) continue;
         RelabelRow(nr, i, it);
         ApplyRowEnabled(nr, i, it);
         if (!ItemIsLabelOnly(it) && !ItemIsToggle(it))
@@ -4076,8 +3912,14 @@ bool SameCvarValue(const std::string& a, const std::string& b) {
 
 // Whether the row's label, as it is drawn now, says the setting needs a restart.
 bool RowSaysRestart(const ItemDef& it) {
-    const char* suffix = it.dynamics && it.dynamics->suffix ? it.dynamics->suffix() : it.suffix;
-    return suffix && std::strstr(suffix, "RESTART");
+    if (const auto* rules = ItemRules(it)) {
+        const PauseRuleEnv env;
+        const expr::RuleView row(*rules, env, &PauseRules());
+        if (const auto* state = row.State())
+            if (const auto restart = (*state)["needs_restart"].value<bool>()) return *restart;
+        if (const auto apply = row.Field("apply").value<std::string_view>()) return *apply == "restart";
+    }
+    return it.suffix && std::string_view(it.suffix) == " (RESTART)";
 }
 
 // Whether a row that sets `cvar` (in any menu this launch lists) says it needs a restart.
@@ -4362,15 +4204,13 @@ namespace mcla_menu {
 
 bool NativeRendererRuns() { return RunningRendererMask() == kRendNative; }
 
-#if defined(LARECOMP_HAS_GPU)
-// The RENDERER row of the hidden DEBUG menu (debug_menu_pages.cpp lists it; RendererSet and the rest are above, with the language row).
-extern const RowDynamics kDebugRendererDynamics = {.str_label = RendererLabel,
-                                                   .enabled = RendererEnabled,
-                                                   .suffix = RendererSuffix,
-                                                   .value_count = RendererCount,
-                                                   .value_index = RendererIndex,
-                                                   .set_value = RendererSet};
-#endif
+bool PauseRowListed(const ItemDef& item) {
+    const auto* rules = ItemRules(item);
+    if (!rules) return true;
+    const PauseRuleEnv env;
+    return expr::RuleView(*rules, env, &PauseRules()).IsListed();
+}
+
 
 }  // namespace mcla_menu
 
@@ -6078,14 +5918,14 @@ void HdrTestPatternTick() {
 }
 
 // The HDR menu's level rows (PAPER WHITE, PEAK BRIGHTNESS, HIGHLIGHTS, TEST PATTERN) are enabled while the swap chain IS HDR10
-// (HdrActive), not while the setting says HDR. A step on the HDR row changes the setting at once, but the render thread switches
+// (HdrOutputActive), not while the setting says HDR. A step on the HDR row changes the setting at once, but the render thread switches
 // the swap chain a few frames later, after the rows were drawn: they showed the state before the step ("(HDR OFF)" with HDR just
 // turned on, live values with it just turned off) until the next input (Mz, 2026-11-08). Watched here once per UI update: when the
 // output flips while the HDR menu is open, its rows are synced and the list drawn again, the way a row is after A.
 void HdrOutputWatchTick() {
 #if defined(LARECOMP_HAS_GPU)
     static bool last = false;  // guest thread only
-    const bool now = HdrActive();
+    const bool now = mcla::gpu::HdrOutputActive();
     if (now == last) return;
     last = now;
     const int m = MenuByKey("RxGpuHdrMenu");

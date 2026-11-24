@@ -95,14 +95,3 @@
 // which puts frame generation's after them): 3 rows, or 4 where this PC has the denoiser row. 0 and a null pointer without the Plume renderer's code in the build.
 // (The relayout hook of the page, UpscalingMenuRelayout, is in frame_generation_menu.h with the combined table it watches.)
 const mcla_menu::ItemDef* UpscalingMenuRows(int& count);
-
-namespace mcla_menu {
-
-// The POST AA row's dynamics: grey, "(FSR 3.1 ON)" (or FSR 4, DLSS), while a temporal upscaler
-// runs (FXAA and SMAA are held off then).
-extern const RowDynamics kPostAaDynamics;
-// The MSAA row's: grey while a temporal upscaler runs, with the upscaler named in the suffix; with
-// no upscaler the suffix says "(APPLYING)" while a new level is being prepared and is empty otherwise.
-extern const RowDynamics kMsaaDynamics;
-
-}  // namespace mcla_menu

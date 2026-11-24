@@ -622,11 +622,11 @@ void CheckWiring(const std::string& dir) {
   Check(Has(plan, "keeper_.Update(ContextWanted(plan_.why))") && Has(plan, "Instance().Request(0, 0, 0);") && Has(plan, "ProbeNow(*in.device, *in.frames);") && Has(plan, "DeviceVendor() == kVendorAmd") && Has(plan, "SelectRayRegen(pi)") &&
             Has(plan, "SignalModesOf(f, switch_ssr, switch_car_refl)") && Has(plan, "f.armed = true;"),
         "the planner: the plan is the rules', the context is made while it is on and freed after the hold, the runtime is opened only on a Radeon, the modes are the rules'");
-  // the row
-  Check(Has(menu, "bool AmdRow() { return DenoiserRowKind() == mcla::gpu::denoiser::VendorRow::kRayRegen; }") && Has(menu, "mcla::gpu::rayregen::RowLabel(AmdGate())") && Has(menu, "mcla::gpu::rayregen::RowSuffix(AmdGate())") &&
-            Has(menu, "mcla::gpu::rayregen::RowEnabled(AmdGate())") && Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())") &&
-            Has(menu, "mcla::gpu::denoiser::RowFor(mcla::gpu::rayregen::RowListed(),") && !Has(menu, "MenuNameOfRr") && !Has(menu, "kDenoiserVals"),
-        "the denoiser row on a Radeon RX 9000 on Windows 11: AMD FSR RAY REGENERATION, ON / OFF, the AMD gate, its suffix and its label; every other listed card keeps DLSS RAY RECONSTRUCTION's");
+  const std::string ui_rules = Read(dir, "../settings/ui_rules.toml");
+  Check(Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())") &&
+        Has(menu, "mcla::gpu::denoiser::RowFor(mcla::gpu::rayregen::RowListed(),") &&
+        Has(ui_rules, "\"AMD FSR RAY REGENERATION\"") && Has(ui_rules, "\" (D3D12 ONLY)\""),
+        "the Radeon denoiser row uses the AMD gate and declares its label and API reason");
   // the settings (the three generated files)
   Check(Has(manifest, "\"mcla_gpu_ray_regen_ssr\": {") && Has(header, "i32, mcla_gpu_ray_regen_ssr, 1, \"Debug (A/B, AMD FSR Ray Regeneration") && Has(header, "inline auto& mcla_gpu_ray_regen_ssr = g_gpu.mcla_gpu_ray_regen_ssr;") && Has(meta, "{\"mcla_gpu_ray_regen_ssr\", \"MCLA/GPU\"},"),
         "the A/B setting mcla_gpu_ray_regen_ssr is in the settings header, its alias, the manifest and the meta list");

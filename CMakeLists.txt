@@ -1064,6 +1064,12 @@ else()
         "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/tomlplusplus/include")
     target_link_libraries(larecomp PRIVATE larecomp_tomlplusplus)
 
+    # Embed the same rule overlays the settings UI exporter reads.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS src/settings/ui_rules.toml)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/settings/ui_rules.toml" LARECOMP_PAUSE_MENU_RULES)
+    configure_file(src/settings/ui_expr_data.h.in ui_expr_data.h @ONLY)
+    target_include_directories(larecomp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+
     # SDL3: LARecomp calls it itself (the controller list, the pad's rumble and hints). One SDL in the process, the SDK's.
     # The SDK has the target SDL3::SDL3-shared in both layouts, and it is what the SDK's own staging of SDL3 tests
     # (_rexglue_stage_sdl): a REXSDK_DIR build gets it from thirdparty/sdl3 (add_subdirectory), a package gets it from SDL3's own
@@ -1602,12 +1608,15 @@ else()
     # The CAR SELF-REFLECTIONS row's values and how it reads its two settings back (pause_selfrefl_row.h):
     # cmake --build <dir> --target larecomp_pause_selfrefl_test, then run it (exit 0 = passed).
     add_executable(larecomp_pause_selfrefl_test EXCLUDE_FROM_ALL src/mc_engine/menus/pause_selfrefl_row_test.cpp)
-    # The pause menu's "a row that depends on another row" rule (row_dependency.h: FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS grey
-    # while SHADOWS is off), the order of LIGHTING AND SHADOWS and WORLD DETAIL as pause_menu.cpp has them, the page width, and how the cursor, the mouse
-    # and A treat a grey row (needs no game; it reads pause_menu.cpp and the settings files beside it as text):
-    #   cmake --build <dir> --target larecomp_row_dependency_test, then run it (exit 0 = passed).
+    # Shared expression vectors, pause-menu rule parity, and native input gates.
+    add_executable(larecomp_ui_expr_test EXCLUDE_FROM_ALL src/settings/ui_expr_test.cpp)
+    target_include_directories(larecomp_ui_expr_test PRIVATE src)
+    target_link_libraries(larecomp_ui_expr_test PRIVATE larecomp_tomlplusplus)
+    add_executable(larecomp_ui_parity_test EXCLUDE_FROM_ALL src/settings/ui_parity_test.cpp)
+    target_include_directories(larecomp_ui_parity_test PRIVATE src)
+    target_link_libraries(larecomp_ui_parity_test PRIVATE larecomp_tomlplusplus)
     add_executable(larecomp_row_dependency_test EXCLUDE_FROM_ALL src/mc_engine/menus/row_dependency_test.cpp)
-    target_include_directories(larecomp_row_dependency_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine")
+    target_include_directories(larecomp_row_dependency_test PRIVATE src src/mc_engine)
     # The Discord presence switch (larecomp_discord_rpc, live: src/discord_rpc/rpc_toggle_rules.h) has a check that needs no game and no Discord; it
     # also reads the sources that use the rules, so it takes the src folder: cmake --build <dir> --target larecomp_rpc_toggle_test, then run
     # <dir>/larecomp_rpc_toggle_test <src folder> (exit 0 = passed).

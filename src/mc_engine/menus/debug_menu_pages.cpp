@@ -295,8 +295,8 @@ const ItemDef kDebugRenderingItems[] = {
     // launcher and the normal menus do not offer it). The choice is gpu.driver, which is read at start: the row HOLDS it, the next save
     // writes it to larecomp.toml (the one debug row that is kept) and leaving the menu offers RESTART NOW. Both renderers list it. Grey
     // while a command line option or an environment variable sets gpu.driver (it beats the file). Its words are pause_menu.cpp's
-    // (kDebugRendererDynamics); the mapping is gpu/renderer_choice.h.
-    WithDynamics(Str("PM_RxDbgRenderer", "gpu.driver", "RENDERER: ", nullptr, nullptr, 0), &kDebugRendererDynamics),
+    // (ui_rules.toml); the driver aliases are in gpu/renderer_choice.h.
+    Str("PM_RxDbgRenderer", "gpu.driver", "RENDERER: ", nullptr, nullptr, 0),
     NativeOnly(Str("PM_RxDbgAoView",     "mcla_gpu_ao_view",       "AO VIEW: ",
                    kAoViewVals, kAoViewNames, Len(kAoViewVals))),
     NativeOnly(Dbl("PM_RxDbgAoHistory",  "mcla_gpu_ao_history",    "AO HISTORY: ",

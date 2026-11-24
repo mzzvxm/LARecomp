@@ -31,7 +31,7 @@
 // While frame generation runs the FPS LIMIT row is grey ("FPS LIMIT (FRAME GEN)": the frame limiter
 // uses FRAME GEN FPS LIMIT instead) and the vendor's latency reducer row (DISPLAY, after FPS LIMIT) is
 // grey and on ("(FRAME GEN)": it is forced on, latency.h). Both rows are on DISPLAY, in pause_menu.cpp,
-// and read their state from here (kFpsLimitDynamics, LatencyRowLocked).
+// and read their state from here (ui_rules.toml).
 //
 // Width (pause_menu.cpp "Page width"): these rows are on DISPLAY, whose widest label is
 // "AMD FSR RAY REGENERATION" (24, the denoiser row on a Radeon: upscaling_menu.cpp) and whose widest value is 17
@@ -55,13 +55,3 @@ const mcla_menu::ItemDef* UpscalingPageRows(int& count);
 // The page's relayout hook (MenuDef::relayout). apply=true: the page is being built (or built again): the rows it is built with are the live ones from now on. apply=false: whether the live rows
 // (what this PC lists now: an upscaler's or frame generation's availability that was not known, or the denoiser row) are no longer those, so that the page is built again when it is opened next.
 bool UpscalingMenuRelayout(bool apply);
-
-namespace mcla_menu {
-
-// The FPS LIMIT row's: grey, with "(FRAME GEN)", while frame generation runs.
-extern const RowDynamics kFpsLimitDynamics;
-// Whether the vendor's latency reducer row is locked (frame generation runs and forces it on) and
-// the suffix it then carries.
-bool LatencyRowLocked();
-
-}  // namespace mcla_menu

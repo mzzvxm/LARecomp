@@ -1348,8 +1348,12 @@ void SourceChecks(const std::string& src) {
     const size_t neon = At(menu, "Str(\"PM_RxGpuNeonLight\", \"mcla_gpu_neon_light\", \"NEON LIGHT: \"");
     const size_t vol = At(menu, "Str(\"PM_RxGpuVolumetrics\"");
     Check(shadows != std::string::npos && neon != std::string::npos && vol != std::string::npos && shadows < neon && neon < vol, "the NEON LIGHT row is on the lighting page between LIGHT SHADOWS and VOLUMETRIC LIGHT");
-    Check(Has(menu, "kNativeNeonLightVals[]  = {\"auto\", \"off\", \"on\"};") && Has(menu, "gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kNeonLight)"), "its words are AUTO, OFF, ON and AUTO says what it comes to");
-    Check(Has(menu, "constexpr RowDynamics kNeonLightDynamics = {.str_label = NeonLightLabel};"), "no dependency: no .enabled");
+    const std::string rules = ReadFile(src + "/settings/ui_rules.toml");
+    Check(Has(menu, "kNativeNeonLightVals[]  = {\"auto\", \"off\", \"on\"};") &&
+          Has(rules, "[rows.PM_RxGpuNeonLight.value.\"auto\"]\nauto_label = true"),
+          "its words are AUTO, OFF, ON and AUTO says what it comes to");
+    Check(Has(rules, "[rows.PM_RxGpuNeonLight]\n\n[rows.PM_RxGpuNeonLight.value."),
+          "the neon row has no disabling state");
   }
   Check(Has(debug_menu, "\"mcla_gpu_neon_light_gain\"") && Has(debug_menu, "\"mcla_gpu_neon_light_reach\"") && Has(debug_menu, "\"mcla_gpu_neon_light_tuned\""), "the gain, the reach scale and the A/B of the retune have rows on the hidden debug menu");
   // the hook: the game's own update first, then the read; only while wanted

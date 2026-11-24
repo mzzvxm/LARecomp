@@ -348,9 +348,11 @@ void PageWidthChecks(const std::string& dir) {
   const std::string pause = ReadFile(dir + "/../mc_engine/menus/pause_menu.cpp");
   const std::string menu = ReadFile(dir + "/../mc_engine/menus/upscaling_menu.cpp");
   const std::string fg = ReadFile(dir + "/../mc_engine/menus/frame_generation_menu.cpp");
+  const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
   const std::string display = ReadFile(dir + "/../mc_engine/menus/display_menu.h");
   const auto source_of = [&](const char* where) -> const std::string& {
     const std::string w = where;
+    if (w == "ui_rules.toml") return rules;
     return w == "pause_menu.cpp" ? pause : (w == "upscaling_menu.cpp" ? menu : (w == "frame_generation_menu.cpp" ? fg : display));
   };
   // every label the page can show (NATIVE renderer)
@@ -362,28 +364,28 @@ void PageWidthChecks(const std::string& dir) {
       {"HDR", "pause_menu.cpp", "\"HDR\", \"RxGpuHdrMenu\""},
       {"DISPLAY GAMMA", "pause_menu.cpp", "\"DISPLAY GAMMA: \""},
       {"VSYNC", "pause_menu.cpp", "\"VSYNC: \""},
-      {"FPS LIMIT (FRAME GEN)", "frame_generation_menu.cpp", "\" (FRAME GEN)\""},
-      {"NVIDIA REFLEX", "pause_menu.cpp", "\"NVIDIA REFLEX\""},
-      {"REFLEX (NOT WORKING)", "pause_menu.cpp", "\" (NOT WORKING)\""},
-      {"REFLEX (FRAME GEN)", "pause_menu.cpp", "\" (FRAME GEN)\""},
-      {"REFLEX (PAUSED)", "pause_menu.cpp", "\" (PAUSED)\""},
-      {"AMD ANTI-LAG 2", "pause_menu.cpp", "\"AMD ANTI-LAG 2\""},
-      {"ANTI-LAG 2 (NOT WORKING)", "pause_menu.cpp", "\"ANTI-LAG 2\""},
-      {"ANTI-LAG 2 (FRAME GEN)", "pause_menu.cpp", "AntiLagLabel"},
-      {"ANTI-LAG 2 (PAUSED)", "pause_menu.cpp", "kAntiLagDynamics"},
-      {"UPSCALING (APPLYING)", "upscaling_menu.cpp", "\" (APPLYING)\""},
-      {"UPSCALING (RESTART)", "upscaling_menu.cpp", "\" (RESTART)\""},
-      {"UPSCALING (NO ROOM)", "upscaling_menu.cpp", "\" (NO ROOM)\""},
-      {"RENDER SCALE", "upscaling_menu.cpp", "\"RENDER SCALE\""},
-      {"FSR 1 MODE", "upscaling_menu.cpp", "\"FSR 1 MODE\""},
-      {"FSR 3.1 MODE", "upscaling_menu.cpp", "\"FSR 3.1 MODE\""},
-      {"FSR 4 MODE", "upscaling_menu.cpp", "\"FSR 4 MODE\""},
-      {"DLSS MODE (SETUP)", "upscaling_menu.cpp", "\" (SETUP)\""},
-      {"DLSS MODE (RESTART)", "upscaling_menu.cpp", "\"DLSS MODE\""},
-      {"SHARPNESS (FSR ONLY)", "upscaling_menu.cpp", "\" (FSR ONLY)\""},
-      {"FRAME GENERATION", "frame_generation_menu.cpp", "\"FRAME GENERATION\""},
-      {"FRAME GEN (APPLYING)", "frame_generation_menu.cpp", "\" (APPLYING)\""},
-      {"FRAME GEN (RESTART)", "frame_generation_menu.cpp", "\" (RESTART)\""},
+      {"FPS LIMIT (FRAME GEN)", "ui_rules.toml", " (FRAME GEN)"},
+      {"NVIDIA REFLEX", "pause_menu.cpp", "NVIDIA REFLEX: "},
+      {"REFLEX (NOT WORKING)", "ui_rules.toml", " (NOT WORKING)"},
+      {"REFLEX (FRAME GEN)", "ui_rules.toml", " (FRAME GEN)"},
+      {"REFLEX (PAUSED)", "ui_rules.toml", " (PAUSED)"},
+      {"AMD ANTI-LAG 2", "pause_menu.cpp", "AMD ANTI-LAG 2: "},
+      {"ANTI-LAG 2 (NOT WORKING)", "ui_rules.toml", "ANTI-LAG 2"},
+      {"ANTI-LAG 2 (FRAME GEN)", "ui_rules.toml", " (FRAME GEN)"},
+      {"ANTI-LAG 2 (PAUSED)", "ui_rules.toml", " (PAUSED)"},
+      {"UPSCALING (APPLYING)", "ui_rules.toml", " (APPLYING)"},
+      {"UPSCALING (RESTART)", "ui_rules.toml", " (RESTART)"},
+      {"UPSCALING (NO ROOM)", "ui_rules.toml", " (NO ROOM)"},
+      {"RENDER SCALE", "ui_rules.toml", "RENDER SCALE"},
+      {"FSR 1 MODE", "ui_rules.toml", "FSR 1 MODE"},
+      {"FSR 3.1 MODE", "ui_rules.toml", "FSR 3.1 MODE"},
+      {"FSR 4 MODE", "ui_rules.toml", "FSR 4 MODE"},
+      {"DLSS MODE (SETUP)", "ui_rules.toml", " (SETUP)"},
+      {"DLSS MODE (RESTART)", "ui_rules.toml", "DLSS MODE"},
+      {"SHARPNESS (FSR ONLY)", "ui_rules.toml", " (FSR ONLY)"},
+      {"FRAME GENERATION", "frame_generation_menu.cpp", "FRAME GENERATION: "},
+      {"FRAME GEN (APPLYING)", "ui_rules.toml", "live.frame_generation_applying"},
+      {"FRAME GEN (RESTART)", "ui_rules.toml", "features.frame_generation.dlss_after_restart"},
       {"FRAME GEN MULTIPLIER", "frame_generation_menu.cpp", "\"FRAME GEN MULTIPLIER: \""},
       {"FRAME GEN FPS LIMIT", "frame_generation_menu.cpp", "\"FRAME GEN FPS LIMIT: \""},
   };
@@ -391,29 +393,29 @@ void PageWidthChecks(const std::string& dir) {
   for (const dn::Gate g : kGates) labels.push_back({std::string(dn::RowLabel(g)) + dn::RowSuffix(g), "", ""});
   for (int g = 0; g < rg::kGateCount; ++g) labels.push_back({std::string(rg::RowLabel(rg::Gate(g))) + rg::RowSuffix(rg::Gate(g)), "", ""});
   std::vector<W> values = {
-      {"BORDERLESS", "display_menu.h", "\"BORDERLESS\""},
-      {"FULLSCREEN", "display_menu.h", "\"FULLSCREEN\""},
+      {"BORDERLESS", "ui_rules.toml", "BORDERLESS"},
+      {"FULLSCREEN", "ui_rules.toml", "FULLSCREEN"},
       {"10240X4320", "display_menu.h", "10 at five digits across"},
       {"CONSOLE", "pause_menu.cpp", "kDisplayGammaVals"},
       {"UNCAPPED", "pause_menu.cpp", "\"UNCAPPED\""},
       {"ON + BOOST", "pause_menu.cpp", "\"ON + BOOST\""},
-      {"AUTO (OFF)", "pause_menu.cpp", "\"AUTO (OFF)\""},
-      {"DLSS (SETUP)", "upscaling_menu.cpp", "\"DLSS (SETUP)\""},
-      {"NATIVE AA (100%)", "upscaling_menu.cpp", "NATIVE AA (100%)"},
-      {"PERFORMANCE (50%)", "upscaling_menu.cpp", "PERFORMANCE (50%)"},
-      {"PERFORMANCE (N/A)", "upscaling_menu.cpp", "PERFORMANCE (N/A)"},
-      {"ULTRA PERF. (33%)", "upscaling_menu.cpp", "\"ULTRA PERF.\""},
-      {"ULTRA QUAL. (77%)", "upscaling_menu.cpp", "\"ULTRA QUAL.\""},
+      {"AUTO (OFF)", "ui_rules.toml", "AUTO (OFF)"},
+      {"DLSS (SETUP)", "ui_rules.toml", "DLSS (SETUP)"},
+      {"NATIVE AA (100%)", "ui_rules.toml", "NATIVE AA (100%)"},
+      {"PERFORMANCE (50%)", "ui_rules.toml", "PERFORMANCE (50%)"},
+      {"PERFORMANCE (N/A)", "ui_rules.toml", "PERFORMANCE (N/A)"},
+      {"ULTRA PERF. (33%)", "ui_rules.toml", "ULTRA PERF. (33%)"},
+      {"ULTRA QUAL. (77%)", "ui_rules.toml", "ULTRA QUAL. (77%)"},
       {"LIMITED (300%)", "upscaling_menu.cpp", "\"LIMITED (\""},
       {"CUSTOM (300%)", "upscaling_menu.cpp", "\"CUSTOM (\""},
-      {"FSR 3.1 (NO ROOM)", "frame_generation_menu.cpp", "\"FSR 3.1 (NO ROOM)\""},
-      {"FSR 3.1 (FAILED)", "frame_generation_menu.cpp", "\"FSR 3.1 (FAILED)\""},
-      {"DLSS (FAILED)", "frame_generation_menu.cpp", "\"DLSS (FAILED)\""},
-      {"DLSS (N/A)", "frame_generation_menu.cpp", "\"DLSS (N/A)\""},
-      {"HALF DISPLAY 116", "frame_generation_menu.cpp", "\"HALF DISPLAY %u\""},
-      {"1/4 DISPLAY 130", "frame_generation_menu.cpp", "\"1/%u DISPLAY %u\""},
-      {"120 (480 SHOWN)", "frame_generation_menu.cpp", "(%.0f SHOWN)"},
-      {"USE FPS LIMIT", "frame_generation_menu.cpp", "\"USE FPS LIMIT\""},
+      {"FSR 3.1 (NO ROOM)", "ui_rules.toml", "FSR 3.1 (NO ROOM)"},
+      {"FSR 3.1 (FAILED)", "ui_rules.toml", "FSR 3.1 (FAILED)"},
+      {"DLSS (FAILED)", "ui_rules.toml", "DLSS (FAILED)"},
+      {"DLSS (N/A)", "ui_rules.toml", "DLSS (N/A)"},
+      {"HALF DISPLAY 116", "ui_rules.toml", "HALF DISPLAY {live.frame_generation_half_display}"},
+      {"1/4 DISPLAY 130", "ui_rules.toml", "1/{d.shown_per_rendered} DISPLAY"},
+      {"120 (480 SHOWN)", "ui_rules.toml", "{value*d.shown_per_rendered} SHOWN"},
+      {"USE FPS LIMIT", "ui_rules.toml", "USE FPS LIMIT"},
       {"ON", "", ""},
       {"OFF", "", ""},
   };
@@ -437,12 +439,11 @@ void PageWidthChecks(const std::string& dir) {
   // the denoiser rows' own words
   Check(std::string(rg::kMenuLabel) == "AMD FSR RAY REGENERATION" && std::string(rg::kMenuShortLabel) == "RAY REGEN" && Upper(rg::kLauncherName) == rg::kMenuLabel, "the Radeon row says AMD's name in capitals, RAY REGEN before a reason");
   // The pieces the page is made of (the words that are not in the headers) are in the sources: the rows' own tables
-  Check(Has(pause, "const char* ReflexLabel() { return LowLatencySuffix()[0] != '\\0' ? \"REFLEX\" : \"NVIDIA REFLEX\"; }") &&
-            Has(pause, "const char* AntiLagLabel() { return LowLatencySuffix()[0] != '\\0' ? \"ANTI-LAG 2\" : \"AMD ANTI-LAG 2\"; }"),
+  Check(Has(rules, "label = \"REFLEX\"") && Has(rules, "label = \"ANTI-LAG 2\""),
         "the latency row says its short name before a reason");
-  Check(Has(fg, "const char* FrameGenerationRowSuffix() {") && Has(fg, "return Applying() ? \" (APPLYING)\" : \"\";") &&
-            Has(fg, "const char* FrameGenerationRowLabel() { return FrameGenerationRowSuffix()[0] != '\\0' ? \"FRAME GEN\" : \"FRAME GENERATION\"; }") && !Has(fg, "return \"FSR 3.1 (APPLYING)\"") && !Has(fg, "return \"DLSS (APPLYING)\""),
-        "frame generation says APPLYING in its label, not in a value");
+  Check(Has(rules, "live.frame_generation_applying ?? false") && Has(rules, "label = \"FRAME GEN\"") &&
+            !Has(rules, "FSR 3.1 (APPLYING)") && !Has(rules, "DLSS (APPLYING)"),
+        "frame generation says APPLYING in its row label");
 }
 
 // What the plan reads. The row ON is rr, OFF is ours, and the debug chooser overrides it; the plan and the plugin request read the same word (denoiser_setting.cpp Setting).
@@ -492,22 +493,22 @@ void MenuChecks(const std::string& dir) {
   const std::string pause = ReadFile(dir + "/../mc_engine/menus/pause_menu.cpp");
   const std::string fg = ReadFile(dir + "/../mc_engine/menus/frame_generation_menu.cpp");
   const std::string fg_h = ReadFile(dir + "/../mc_engine/menus/frame_generation_menu.h");
+  const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
   const size_t sharp = At(menu, "Str(\"PM_RxGpuUpscSharp\",");
-  const size_t den = At(menu, "Bool(\"PM_RxGpuDenoiser\", \"mcla_gpu_vendor_denoiser\", \"DLSS RAY RECONSTRUCTION: \"),");
+  const size_t den = At(menu, "NativeOnly(Bool(\"PM_RxGpuDenoiser\", \"mcla_gpu_vendor_denoiser\", \"DLSS RAY RECONSTRUCTION: \"))");
   const size_t end = At(menu, "};", den == std::string::npos ? 0 : den);
-  Check(sharp != std::string::npos && den != std::string::npos && sharp < den && den < end, "the denoiser row is after SHARPNESS and LAST in the upscaler's own rows (DISPLAY page, before frame generation's)");
-  Check(den != std::string::npos && Has(menu.substr(den > 40 ? den - 40 : 0, 40), "NativeOnly(WithDynamics("), "the row is native only (the Xenia renderer has no upscalers)");
-  Check(Has(menu, "constexpr int kUpscalerRowCount = 3;") && Has(menu, "static_assert(sizeof(kRows) / sizeof(kRows[0]) == size_t(kUpscalerRowCount) + 1,") &&
-            Has(menu, "count = DenoiserListed() ? kUpscalerRowCount + 1 : kUpscalerRowCount;"),
-        "a PC without the denoiser row lists the other three rows (the same table, one row shorter)");
-  Check(Has(menu, "constexpr RowDynamics kDenoiserDynamics = {.enabled = DenoiserEnabled, .suffix = DenoiserSuffix, .label = DenoiserLabel};"), "the row's label, grey state and reason come from the gate");
-  Check(!Has(menu, "kDenoiserVals") && !Has(menu, "kDenoiserNames") && !Has(menu, "DenoiserValueLabel") && !Has(menu, "\"DENOISER: \""), "the three-way AUTO / DLSS RR / OURS row is gone");
-  Check(Has(menu, "mcla::gpu::denoiser::GateOf(DenoiserInputs())") && Has(menu, "mcla::gpu::denoiser::RowEnabled(DenoiserGate())") && Has(menu, "mcla::gpu::denoiser::RowSuffix(DenoiserGate())") &&
-            Has(menu, "mcla::gpu::denoiser::RowLabel(DenoiserGate())"),
-        "the menu asks denoiser_setting.h for the gate, the suffix and the label");
-  Check(Has(menu, "mcla::gpu::rayregen::RowLabel(AmdGate())") && Has(menu, "mcla::gpu::rayregen::RowEnabled(AmdGate())") && Has(menu, "mcla::gpu::rayregen::RowSuffix(AmdGate())") &&
-            Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())"),
-        "on a Radeon the same row asks ray_regen_rules.h for the gate, the suffix and the label");
+  Check(sharp != std::string::npos && den != std::string::npos && sharp < den && den < end,
+        "the native-only denoiser row is the last upscaling row, after SHARPNESS");
+  Check(Has(menu, "constexpr int kUpscalerRowCount = 3;") && Has(menu, "PauseRowListed(kRows[kUpscalerRowCount])"),
+        "the rule controls whether the fourth row is listed");
+  Check(Has(rules, "[rows.PM_RxGpuDenoiser]") && Has(rules, "d.denoiser_state") &&
+        Has(rules, "live.denoiser_gate ?? d.denoiser_fallback"),
+        "the row evaluates the vendor gate in the declarative states");
+  Check(!Has(menu, "kDenoiserVals") && !Has(menu, "kDenoiserNames") && !Has(menu, "\"DENOISER: \""),
+        "the three-way AUTO / DLSS RR / OURS row is gone");
+  Check(Has(menu, "mcla::gpu::denoiser::GateOf(DenoiserInputs())") &&
+        Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())"),
+        "each vendor uses its own backend gate");
   Check(Has(menu, "mcla::gpu::denoiser::RowFor(mcla::gpu::rayregen::RowListed(),") && Has(menu, "DlssListed(mcla::gpu::GetUpscalerAvailability()));") &&
             Has(menu, "bool AmdRow() { return DenoiserRowKind() == mcla::gpu::denoiser::VendorRow::kRayRegen; }"),
         "which row a PC has: the AMD one by the card's name and Windows, the DLSS one where DLSS is listed (an RTX card), none otherwise");

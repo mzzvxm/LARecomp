@@ -333,22 +333,22 @@ void MenuChecks(const std::string& dir) {
   const size_t items = At(menu, "const ItemDef kReflectionItems[] = {");
   const size_t items_end = items == std::string::npos ? std::string::npos : At(menu, "\n};", items);
   const std::string page = items == std::string::npos || items_end == std::string::npos ? "" : menu.substr(items, items_end - items);
-  Check(Has(page, "NativeOnly(WithDynamics(Str(\"PM_RxGpuSideMirrors\", \"mcla_gpu_side_mirrors\",") && Has(page, "\"SIDE MIRRORS: \", kNativeSideMirrorsVals, kNativeSideMirrorsNames, 4),") &&
-            Has(page, "&kSideMirrorsDynamics)),"),
-        "the row is a native-only cycle of mcla_gpu_side_mirrors with four values and its dynamics, on the REFLECTIONS page");
+  Check(Has(page, "NativeOnly(Str(\"PM_RxGpuSideMirrors\", \"mcla_gpu_side_mirrors\",") && Has(page, "\"SIDE MIRRORS: \", kNativeSideMirrorsVals, kNativeSideMirrorsNames, 4)),"),
+        "the row is a native-only cycle of mcla_gpu_side_mirrors with four values, on the REFLECTIONS page");
   Check(Before(page, "\"PM_RxGpuRtCityRefl\"", "\"PM_RxGpuSideMirrors\"") && Before(page, "\"PM_RxGpuSideMirrors\"", "\"PM_RxGpuRtMirror\"") && Before(page, "\"PM_RxGpuRtMirror\"", "\"PM_RxGpuSsr\""),
         "the row is after RT CITY REFLECTIONS and right before RT SIDE MIRRORS, which comes before REFLECTIONS ON SURFACES (the base row first, as BOUNCE LIGHT is before RT BOUNCE LIGHT)");
   Check(Has(menu, "kNativeSideMirrorsVals[]  = {\"auto\", \"off\", \"high\", \"ultra\"};") && Has(menu, "kNativeSideMirrorsNames[] = {\"AUTO\", \"OFF\", \"HIGH\", \"ULTRA\"};"),
         "the row's words are AUTO / OFF / HIGH / ULTRA (two levels; nothing is called low)");
-  const size_t dyn = At(menu, "constexpr RowDynamics kSideMirrorsDynamics");
-  const size_t dyn_end = dyn == std::string::npos ? 0 : menu.find(';', dyn);
-  const std::string init = dyn == std::string::npos ? "" : menu.substr(dyn, dyn_end - dyn);
-  Check(!init.empty() && Has(init, ".str_label = SideMirrorsLabel") && Has(init, ".suffix = SideMirrorsSuffix") && !Has(init, ".enabled"), "the dynamics give AUTO's label and the suffix, and never grey the row (it still sets what runs where the traced mirrors do not)");
-  Check(Has(menu, "mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSideMirrors)") && Has(menu, "mcla::gpu::mirror_setting::RowSuffix(mcla::gpu::mirror_setting::Current().replaced)"),
-        "AUTO's label is the class table's and the suffix is the setting's own answer");
+  // The row's AUTO label and its suffix are data now (src/settings/ui_rules.toml; ui_parity_test.cpp holds them against gpu_class.h and mirror_setting.h)
+  const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
+  const size_t begin = At(rules, "[rows.PM_RxGpuSideMirrors]");
+  const size_t next = At(rules, "[rows.PM_RxGpuRtMirror]", begin);
+  const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
+  Check(Has(row, "live.side_mirrors_replaced") && Has(row, "suffix = \" (REPLACED)\"") && Has(row, "enabled = true") && !Has(row, "enabled = false") && Has(row, "auto_label = true"),
+        "the rules give AUTO's label (the class table's) and the suffix, and never grey the row (it still sets what runs where the traced mirrors do not)");
+  Check(Has(menu, "case \"live.side_mirrors_replaced\"") || Has(menu, "path == \"live.side_mirrors_replaced\""), "the menu answers the rules' fact from the setting's own answer");
+  Check(Has(menu, "gpu::mirror_setting::Current().replaced"), "the fact is the setting's own answer (mirror_setting.h Current().replaced)");
   Check(Has(menu, "#include \"gpu/mirror_setting.h\""), "the menu includes the setting's rules");
-  Check(Before(menu, "constexpr RowDynamics kSideMirrorsDynamics", "constexpr RowDynamics kMirrorRtDynamics") && Before(menu, "constexpr RowDynamics kRtCityDynamics", "constexpr RowDynamics kSideMirrorsDynamics"),
-        "the helpers come after the city row's and before the traced mirrors' own");
   Check(Has(menu, "SIDE MIRRORS, RT SIDE MIRRORS, REFLECTIONS ON SURFACES (kReflectionItems)") && Has(menu, "REFLECTIONS (kReflectionItems, 7 rows)"), "the page's comments name the seventh row");
   Check(Has(menu, "\"Road, car, city, mirrors and surfaces.\""), "the tab's line names the mirrors already (RT SIDE MIRRORS)");
   Check(Has(menu, "RT SIDE MIRRORS (the real view in the car's side mirrors") || Has(menu, "RT SIDE MIRRORS (the same traced"), "the page's own comment says what the pair is");

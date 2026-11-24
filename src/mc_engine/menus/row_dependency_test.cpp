@@ -1,22 +1,5 @@
-// Check of the pause menu's "a row that depends on another row" rule (row_dependency.h) and of its first use: FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW
-// FILTER and TRAFFIC SHADOWS are grey while SHADOWS is off, and FOLIAGE SHADOWS sits right after SHADOWS on LIGHTING AND SHADOWS. A program of its own:
-// it needs no game, no ReXGlue and no GPU, and exits 0 when every check holds.
-//
-//   cmake --build <build dir> --target larecomp_row_dependency_test     (CMakeLists.txt)
-//   <build dir>/larecomp_row_dependency_test
-//
-// or, with no build directory (from the repo root):
-//   clang++ -std=c++20 -I src -I src/mc_engine src/mc_engine/menus/row_dependency_test.cpp -o row_dependency_test
-//
-// What it covers:
-//   1. the helper: grey and the reason follow the row it needs live (no copy, both ways, any number of rows, two masters at once), the row's own
-//      labels survive, and a row with no dependency is never grey;
-//   2. the page: the tables in pause_menu.cpp (read as text, as menu_mouse_test.cpp reads menu_mouse.cpp) have FOLIAGE SHADOWS second on LIGHTING AND
-//      SHADOWS and not on WORLD DETAIL, the four rows use NeedsShadows with ShadowsOn = !perf_no_shadows, FOLIAGE SHADOWS is on both renderers, the
-//      page stays within 41 characters with the reason, and the setting keeps its default (true) and has the new help text;
-//   3. the navigation rules, as pause_menu.cpp and menu_mouse_core.h state them: the cursor lands on a grey row (a move never skips a disabled one),
-//      the mouse hovers and clicks onto it, and A / left / right / a click then do nothing, because the menu asks RowEnabled first (the gate is
-//      in MenuFormAccept and PollNativeRows, found in the source text).
+// Pause-menu page order, width and input gates. The declarative greying
+// and captions themselves are checked by ui_parity_test.
 
 #include <algorithm>
 #include <cctype>
@@ -28,15 +11,11 @@
 #include <vector>
 
 #include "input/menu_mouse_core.h"
-#include "menus/row_dependency.h"
+#include "menus/menu_items.h"
 
 namespace {
 
-using mcla_menu::DependentRow;
 using mcla_menu::ItemDef;
-using mcla_menu::RowDynamics;
-using mcla_menu::RowEnabled;
-using mcla_menu::kNeedsShadowsReason;
 
 int g_checks = 0;
 int g_failed = 0;
@@ -49,97 +28,21 @@ void Check(bool ok, const std::string& what) {
   }
 }
 
-// ---- Fake settings the rows depend on (what CvarGetBool reads in the game) -----------------------------------------------------------------------
-
-bool g_perf_no_shadows = false;  // perf_no_shadows: true = SHADOWS is OFF
-bool g_other_on = true;          // a second master, to see two rows with two masters do not share a state
-
-bool ShadowsOn() { return !g_perf_no_shadows; }
-bool OtherOn() { return g_other_on; }
-
-constexpr char kOtherReason[] = " (NO OTHER)";
-
-constexpr RowDynamics NeedsShadows(RowDynamics own = {}) { return DependentRow<ShadowsOn, kNeedsShadowsReason>(own); }
-std::string DetailLabel(int i) { return i == 0 ? "AUTO (HIGH)" : "GAME"; }
-
-constexpr RowDynamics kFoliageDyn = NeedsShadows();
-constexpr RowDynamics kDetailDyn = NeedsShadows({.str_label = DetailLabel});
-constexpr RowDynamics kOtherDyn = DependentRow<OtherOn, kOtherReason>();
-
-// The page the real one is made of (pause_menu.cpp, kLightItems), with the same constructors: SHADOWS, FOLIAGE SHADOWS, SHADOW DETAIL, CONTACT SHADOWS.
-const char* const kVals[] = {"auto", "game"};
-const char* const kNames[] = {"AUTO", "GAME"};
-const ItemDef kPage[] = {
+// Model the native menu input gates with the old SHADOWS dependency.
+bool g_perf_no_shadows = false;
+constexpr char kNeedsShadowsReason[] = " (NO SHADOW)";
+constexpr ItemDef kPage[] = {
     mcla_menu::Bool("PM_RxNoShadows", "perf_no_shadows", "SHADOWS: ", true),
-    mcla_menu::WithDynamics(mcla_menu::Bool("PM_RxFoliage", "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true), &kFoliageDyn),
-    mcla_menu::WithDynamics(mcla_menu::Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution", "SHADOW DETAIL: ", kVals, kNames, 2), &kDetailDyn),
-    mcla_menu::Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ", kVals, kNames, 2),
-    mcla_menu::WithDynamics(mcla_menu::Bool("PM_RxOther", "other", "OTHER: "), &kOtherDyn),
+    mcla_menu::Bool("PM_RxFoliage", "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
+    mcla_menu::Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution", "SHADOW DETAIL: ", nullptr, nullptr, 0),
+    mcla_menu::Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ", nullptr, nullptr, 0),
 };
-constexpr int kPageRows = int(sizeof(kPage) / sizeof(kPage[0]));
+constexpr int kPageRows = int(std::size(kPage));
 
-// ItemRowLabel (pause_menu.cpp): the prefix without its trailing ": ", then the dynamic suffix.
-std::string RowLabel(const ItemDef& it) {
-  std::string label = it.prefix;
-  while (!label.empty() && (label.back() == ' ' || label.back() == ':')) label.pop_back();
-  if (it.dynamics && it.dynamics->suffix) return label + it.dynamics->suffix();
-  return label + it.suffix;
+bool RowEnabled(const ItemDef& row) {
+  const std::string_view key(row.key);
+  return !g_perf_no_shadows || (key != "PM_RxFoliage" && key != "PM_RxGpuShadowDetail");
 }
-
-// ---- 1. The helper -------------------------------------------------------------------------------------------------------------------------------
-
-void Helper() {
-  g_perf_no_shadows = false;
-  g_other_on = true;
-  for (int i : {1, 2}) {
-    Check(RowEnabled(kPage[i]), std::string(kPage[i].key) + " is enabled while SHADOWS is on");
-    Check(RowLabel(kPage[i]).find('(') == std::string::npos, std::string(kPage[i].key) + " has no reason while SHADOWS is on");
-  }
-
-  g_perf_no_shadows = true;  // SHADOWS: OFF
-  Check(!RowEnabled(kPage[1]), "FOLIAGE SHADOWS is grey while SHADOWS is off");
-  Check(!RowEnabled(kPage[2]), "SHADOW DETAIL is grey while SHADOWS is off");
-  Check(RowLabel(kPage[1]) == "FOLIAGE SHADOWS (NO SHADOW)", "FOLIAGE SHADOWS says why: " + RowLabel(kPage[1]));
-  Check(RowLabel(kPage[2]) == "SHADOW DETAIL (NO SHADOW)", "SHADOW DETAIL says why: " + RowLabel(kPage[2]));
-  Check(RowEnabled(kPage[0]), "SHADOWS itself is never grey");
-  Check(RowEnabled(kPage[3]), "CONTACT SHADOWS has no dependency on SHADOWS and stays enabled");
-  Check(RowLabel(kPage[3]) == "CONTACT SHADOWS", "CONTACT SHADOWS has no reason");
-
-  // Live, both ways, as often as the setting changes: nothing is cached.
-  for (int n = 0; n < 4; ++n) {
-    g_perf_no_shadows = (n % 2 == 0);
-    Check(RowEnabled(kPage[1]) == !g_perf_no_shadows, "FOLIAGE SHADOWS follows SHADOWS at flip " + std::to_string(n));
-    Check(RowEnabled(kPage[2]) == !g_perf_no_shadows, "SHADOW DETAIL follows SHADOWS at flip " + std::to_string(n));
-    Check(std::strlen(kPage[1].dynamics->suffix()) == (g_perf_no_shadows ? std::strlen(kNeedsShadowsReason) : 0u),
-          "the reason is there exactly while SHADOWS is off at flip " + std::to_string(n));
-  }
-
-  // Two masters do not share a state, and one row can have the other one's reason.
-  g_perf_no_shadows = false;
-  g_other_on = false;
-  Check(RowEnabled(kPage[1]) && !RowEnabled(kPage[4]), "the second master greys only its own row");
-  Check(RowLabel(kPage[4]) == "OTHER (NO OTHER)", "the second master has its own reason: " + RowLabel(kPage[4]));
-  g_perf_no_shadows = true;
-  g_other_on = true;
-  Check(!RowEnabled(kPage[1]) && RowEnabled(kPage[4]), "and the first greys only its rows");
-
-  // The row's own labels and list survive; only `enabled` and `suffix` are set.
-  Check(kDetailDyn.str_label == DetailLabel && kDetailDyn.str_label(0) == "AUTO (HIGH)", "the row's own value labels are kept");
-  Check(kFoliageDyn.str_label == nullptr && kFoliageDyn.value_label == nullptr && kFoliageDyn.value_count == nullptr,
-        "a row with nothing of its own gets nothing else");
-  Check(RowEnabled(mcla_menu::Bool("PM_x", "x", "X: ")), "a row with no dynamics at all is enabled");
-  const RowDynamics plain = {.str_label = DetailLabel};
-  const ItemDef no_enabled = mcla_menu::WithDynamics(mcla_menu::Bool("PM_y", "y", "Y: "), &plain);
-  Check(RowEnabled(no_enabled), "a row whose dynamics have no `enabled` is enabled");
-
-  // The reason is a short one: the same function is the page's width rule (below).
-  Check(std::strlen(kNeedsShadowsReason) <= 12, "the shadows reason is at most 12 characters");
-  Check(kNeedsShadowsReason[0] == ' ' && kNeedsShadowsReason[1] == '(' && kNeedsShadowsReason[std::strlen(kNeedsShadowsReason) - 1] == ')',
-        "the reason is ' (...)' like every other suffix");
-  g_perf_no_shadows = false;
-}
-
-// ---- 2. The page, read from the source -----------------------------------------------------------------------------------------------------------
 
 std::string Here() {
   std::string path = __FILE__;
@@ -212,11 +115,10 @@ std::string TableBody(const std::string& text, const std::string& name) {
 
 struct Row {
   std::string key;
-  std::string dynamics;   // the `&kXxxDynamics` the row names, "" when none
   bool native_only = false;
 };
 
-// The rows of a table in order: each starts at its "PM_Rx..." key; the dynamics are the `&k...Dynamics` before the next key.
+// The rows of a table in order, identified by their "PM_Rx..." keys.
 std::vector<Row> Rows(const std::string& body) {
   std::vector<Row> rows;
   std::vector<size_t> at;
@@ -229,14 +131,6 @@ std::vector<Row> Rows(const std::string& body) {
     Row r;
     const size_t end_key = body.find('"', at[i] + 1);
     r.key = body.substr(at[i] + 1, end_key - at[i] - 1);
-    const size_t next = i + 1 < at.size() ? at[i + 1] : body.size();
-    const std::string seg = body.substr(at[i], next - at[i]);
-    const size_t amp = seg.find("&k");
-    if (amp != std::string::npos) {
-      size_t e = amp + 1;
-      while (e < seg.size() && (std::isalnum(static_cast<unsigned char>(seg[e])) || seg[e] == '_')) ++e;
-      r.dynamics = seg.substr(amp + 1, e - amp - 1);
-    }
     // NativeOnly( is written before the row's constructor on the row's own first line, so it is in the line's text before the key.
     const size_t line_start = body.rfind('\n', at[i]);
     const std::string prefix = body.substr(line_start == std::string::npos ? 0 : line_start + 1,
@@ -251,15 +145,6 @@ std::vector<std::string> Keys(const std::vector<Row>& rows) {
   std::vector<std::string> keys;
   for (const Row& r : rows) keys.push_back(r.key);
   return keys;
-}
-
-// `constexpr RowDynamics <name> = <init>;` -> <init>.
-std::string DynamicsInit(const std::string& text, const std::string& name) {
-  const std::string head = "constexpr RowDynamics " + name + " =";
-  const size_t at = text.find(head);
-  if (at == std::string::npos) return "";
-  const size_t semi = text.find(';', at);
-  return semi == std::string::npos ? "" : text.substr(at + head.size(), semi - at - head.size());
 }
 
 bool Has(const std::string& text, const std::string& what) { return text.find(what) != std::string::npos; }
@@ -313,9 +198,6 @@ void PageWidthOfReflections(const std::vector<Row>& rows) {
   Check(Keys(rows) == expected, "REFLECTIONS has its seven rows in order, the city's right after the car's own ray traced reflection it rides on, then the side mirrors and the traced ones that replace them");
   for (const Row& r : rows) {
     Check(r.native_only, r.key + " is a native renderer row");
-    if (r.key == "PM_RxGpuRtCityRefl") Check(r.dynamics == "kRtCityDynamics", "RT CITY REFLECTIONS names its own dynamics (grey with a reason, by state)");
-    if (r.key == "PM_RxGpuRtMirror") Check(r.dynamics == "kMirrorRtDynamics", "RT SIDE MIRRORS names its own dynamics (grey with a reason, by state)");
-    if (r.key == "PM_RxGpuSideMirrors") Check(r.dynamics == "kSideMirrorsDynamics", "SIDE MIRRORS names its own dynamics (' (REPLACED)' while the traced mirrors run, never grey)");
   }
   Check(rows.size() <= 24, "REFLECTIONS has at most 24 rows");
 }
@@ -346,31 +228,12 @@ void Page(const std::string& dir) {
   // FOLIAGE SHADOWS is a plain checkbox of the setting it always was (key, cvar, inverted) on both renderers, with the shadows rule.
   Check(Has(code, "Bool(\"PM_RxFoliage\", \"disable_imposter_shadows\", \"FOLIAGE SHADOWS: \", true)"),
         "FOLIAGE SHADOWS keeps its key, its cvar and its inverted checkbox");
-  for (const Row& r : light)
-    if (r.key == "PM_RxFoliage")
-      Check(!r.native_only && r.dynamics == "kFoliageDynamics", "FOLIAGE SHADOWS is on both renderers and uses kFoliageDynamics");
-  for (const Row& r : light)
-    if (r.key == "PM_RxNoShadows") Check(!r.native_only && r.dynamics.empty(), "SHADOWS is on both renderers and depends on nothing");
-
-  // The four rows get their grey from NeedsShadows; the rows that must not depend on SHADOWS do not.
-  const std::string needs[] = {"kFoliageDynamics", "kShadowDetailDynamics", "kShadowFilterDynamics", "kTrafficShadowsDynamics"};
-  for (const std::string& name : needs)
-    Check(Has(DynamicsInit(code, name), "NeedsShadows("), name + " is made by NeedsShadows");
-  const std::string independent[] = {"kContactDynamics", "kCarShadowDynamics", "kAoDynamics", "kShaftsDynamics", "kHeadlightsDynamics", "kNeonLightDynamics",
-                                     "kVolumetricsDynamics", "kRoadReflectionDynamics", "kCarReflectionDynamics"};
-  for (const std::string& name : independent) {
-    const std::string init = DynamicsInit(code, name);
-    Check(!init.empty() && !Has(init, "NeedsShadows("), name + " does not depend on SHADOWS (the audit's rows 2 and 3 are only the four)");
+  for (const Row& row : light) {
+    if (row.key == "PM_RxFoliage" || row.key == "PM_RxNoShadows")
+      Check(!row.native_only, row.key + " is on both renderers");
   }
-  for (const Row& r : light) {
-    const bool four = r.key == "PM_RxFoliage" || r.key == "PM_RxGpuShadowDetail" || r.key == "PM_RxGpuShadowFilter" ||
-                      r.key == "PM_RxGpuTrafficShadows";
-    if (four) Check(Has(DynamicsInit(code, r.dynamics), "NeedsShadows("), r.key + " names a NeedsShadows dynamics");
-  }
-  Check(Has(code, "bool ShadowsOn() { return !CvarGetBool(\"perf_no_shadows\"); }"), "ShadowsOn is the inverse of perf_no_shadows");
-  Check(Has(code, "DependentRow<ShadowsOn, mcla_menu::kNeedsShadowsReason>(own)"), "NeedsShadows is DependentRow of ShadowsOn and the shared reason");
-  Check(Has(code, "bool ItemEnabled(const ItemDef& it) { return mcla_menu::RowEnabled(it); }"),
-        "the menu's enabled test is the helper's RowEnabled, the one this test runs");
+  Check(Has(code, "if (const auto* state = ItemState(it)) return (*state)[\"enabled\"].value_or(true);"),
+        "the menu's enabled test uses the rule state");
 
   // The menu's gates on a grey row: A, a click and a step all ask first.
   const size_t accept = code.find("bool MenuFormAccept(uint32_t form, int row) {");
@@ -436,7 +299,6 @@ bool WouldWrite(const ItemDef& it, larecomp::menumouse::Act press) {
 void Navigation() {
   using namespace larecomp::menumouse;
   g_perf_no_shadows = true;  // SHADOWS: OFF: rows 1 and 2 are grey
-  g_other_on = true;
 
   // Keyboard and pad (the same list keys): from SHADOWS, Down lands on the grey FOLIAGE SHADOWS, Down again on the grey SHADOW DETAIL, then on
   // CONTACT SHADOWS, which is not grey. Up walks back through them.
@@ -485,7 +347,6 @@ void Navigation() {
 }  // namespace
 
 int main() {
-  Helper();
   Page(Here());
   Navigation();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

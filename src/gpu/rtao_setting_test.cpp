@@ -118,7 +118,7 @@ void CheckReaders(const fs::path& src) {
   // Literal uses outside the setting and metadata must be one of these entry points.
   std::map<std::string, int> uses = {
       {"gpu/ao.cpp", 1}, {"gpu/effect_compare.h", 1}, {"gpu/rt_tier.h", 1}, {"gpu/gpu_class.h", 1},
-      {"mc_engine/display/effect_compare.cpp", 1}, {"mc_engine/menus/pause_menu.cpp", 3},
+      {"mc_engine/display/effect_compare.cpp", 1}, {"mc_engine/menus/pause_menu.cpp", 2},
   };
   for (const auto& entry : fs::recursive_directory_iterator(src)) {
     const auto& file = entry.path();
@@ -145,9 +145,15 @@ void CheckReaders(const fs::path& src) {
         "startup precache and frame mode use the live resolver");
   Check(contains("gpu/host_plan.h", "rtao_setting::Decide(cls, class_known, tier,"),
         "host plan delegates to the AO resolver");
-  Check(contains("mc_engine/menus/pause_menu.cpp", "rtao_setting::DecideFor(kNativeAoVals[i])") &&
-            contains("mc_engine/menus/pause_menu.cpp", "rtao_setting::DecideFor(CvarGet(\"mcla_gpu_ao\"))"),
-        "menu labels and AO intensity dependency use the resolver");
+  // The row's labels and AO INTENSITY's dependency are data now (settings/ui_rules.toml, the shared rules; settings/ui_parity_test.cpp holds them against this resolver
+  // for every class, tier, choice and readiness); the menu hands the rules the readiness (the fact live.rtao_pass_built) and the setting's own words.
+  Check(contains("mc_engine/menus/pause_menu.cpp", "constexpr auto& kNativeAoVals = rtao_setting::kValues;") &&
+            contains("mc_engine/menus/pause_menu.cpp", "constexpr auto& kNativeAoNames = rtao_setting::kNames;") &&
+            contains("mc_engine/menus/pause_menu.cpp", "\"live.rtao_pass_built\") return Value::Bool(gpu::rtao_setting::PassBuilt())"),
+        "the menu's words and the pass's readiness come from the resolver's header");
+  Check(contains("settings/ui_rules.toml", "resolved(s.mcla_gpu_ao) in ['high','ultra','rt']") && contains("settings/ui_rules.toml", "label = \"RT (NO RT GPU)\"") &&
+            contains("settings/ui_rules.toml", "label = \"RT (TOO SLOW)\"") && contains("settings/ui_rules.toml", "label = \"RT (NOT READY)\"") && contains("settings/ui_rules.toml", "label = \"AUTO (RT)\""),
+        "the rules name the ray traced choice's fallback reasons and AO INTENSITY's dependency counts it");
   Check(contains("gpu/effect_compare_rules.h", "rtao_setting::ParseChoice(saved.occlusion)") &&
             contains("gpu/effect_compare_rules.h", "rtao_setting::Decide(saved.cls,"),
         "comparison resolves the saved setting");

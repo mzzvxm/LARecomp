@@ -349,24 +349,22 @@ void MenuChecks(const std::string& dir) {
     last = at == std::string::npos ? last : at;
   }
   Check(ordered, "REFLECTIONS has ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, RT CITY REFLECTIONS, RT SIDE MIRRORS, REFLECTIONS ON SURFACES in that order (the city row right after the car pass it rides on)");
-  Check(Has(page, "NativeOnly(WithDynamics(Str(\"PM_RxGpuRtCityRefl\", \"mcla_gpu_rt_reflections\",") && Has(page, "\"RT CITY REFLECTIONS: \", kNativeRtCityVals, kNativeRtCityNames, 4),") && Has(page, "&kRtCityDynamics)),"),
-        "the row is a native-only cycle of mcla_gpu_rt_reflections with four values and its dynamics");
+  Check(Has(page, "NativeOnly(Str(\"PM_RxGpuRtCityRefl\", \"mcla_gpu_rt_reflections\",") &&
+          Has(page, "\"RT CITY REFLECTIONS: \", kNativeRtCityVals, kNativeRtCityNames, 4)"),
+        "the row is a native-only cycle of mcla_gpu_rt_reflections with four values");
   Check(Has(menu, "\"RT CITY REFLECTIONS: \"") && std::string(crs::kFullLabel) + ": " == "RT CITY REFLECTIONS: ", "the row's prefix is the header's whole label");
   Check(Has(menu, "kNativeRtCityVals[]  = {\"auto\", \"off\", \"high\", \"ultra\"};") && Has(menu, "kNativeRtCityNames[] = {\"AUTO\", \"OFF\", \"HIGH\", \"ULTRA\"};"), "the row's words are AUTO / OFF / HIGH / ULTRA (nothing is called low)");
-  Check(Has(menu, "constexpr RowDynamics kRtCityDynamics = {.str_label = RtCityValueLabel, .enabled = RtCityEnabled, .suffix = RtCitySuffix,\n                                         .label = RtCityLabel};"),
-        "the row's value labels, grey state, reason and label come from the four functions");
-  Check(Has(menu, "city_refl_setting::Decide(") && Has(menu, "city_refl_setting::DataNow()") && Has(menu, "city_refl_setting::RowEnabled(RtCityDecision().gate)") && Has(menu, "city_refl_setting::RowLabel(RtCityDecision().gate)") &&
-            Has(menu, "city_refl_setting::RowSuffix(RtCityDecision().gate)") && Has(menu, "city_refl_setting::AutoLabel("),
-        "the row's label, grey state and reason come from city_refl_setting.h, with the data's state");
-  Check(Has(menu, "mcla_menu::selfrefl::RayTracedRuns(CvarGet(\"mcla_gpu_car_selfrefl\"), CvarGet(kCarSelfReflRtCvar),\n                                              CarSelfReflAutoIsOn(), mcla::gpu::CarRtReflAvailable())"),
-        "the row asks the car row's own reading of its two settings whether the ray traced reflection runs");
-  Check(Before(menu, "constexpr RowDynamics kCarSelfReflDynamics", "bool CarRtReflRunsNow()") && Before(menu, "bool CarRtReflRunsNow()", "const ItemDef kReflectionItems[] = {"), "the helpers come after the car row's and before the page's table");
-  Check(Has(menu, "#include \"gpu/city_refl_setting.h\""), "the menu includes the setting's rules");
-  // the row depends on the car row, not on the shadows or the occlusion
-  const size_t dyn = At(menu, "constexpr RowDynamics kRtCityDynamics");
-  const size_t dyn_end = dyn == std::string::npos ? 0 : menu.find(';', dyn);
-  const std::string init = dyn == std::string::npos ? "" : menu.substr(dyn, dyn_end - dyn);
-  Check(!init.empty() && !Has(init, "NeedsShadows") && !Has(init, "AoOn") && !Has(init, "ContactShadowsOn"), "RT CITY REFLECTIONS has nothing to do with the shadows or the occlusion");
+  const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
+  const size_t begin = At(rules, "[rows.PM_RxGpuRtCityRefl]");
+  const size_t next = At(rules, "[rows.PM_RxGpuCarSelfRefl]", begin);
+  const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
+  Check(Has(row, "d.car_rt_runs") && Has(row, "live.city_data") && Has(row, "auto_label = true") &&
+            Has(menu, "city_refl_setting::DataNow()"),
+        "the row evaluates the car reflection and the live city-data facts");
+  Check(Has(rules, "car_rt_runs =") && Has(rules, "d.car_selfrefl_choice"),
+        "the city gate uses the same choice as the car self-reflections row");
+  Check(!row.empty() && !Has(row, "shadows") && !Has(row, "ao_on"),
+        "RT CITY REFLECTIONS is independent of shadows and occlusion");
   Check(Has(menu, "\"Road, car, city, mirrors and surfaces.\""), "the tab's line names the city's reflections and the mirrors (at most 40 characters, as the longest of the other tabs' lines)");
 }
 

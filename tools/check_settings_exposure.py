@@ -49,6 +49,7 @@ COMMAND = re.compile(r"\bREX_COMMAND\w*\s*\(")
 DEBUG_TRAIT = re.compile(r"\bkDebugOnly\b")
 RESTART_TRAIT = re.compile(r"\b(?:kRequiresRestart|kInitOnly|kLockedInGame|kRestart|kStartupOnly|kUntilLaunch)\b")
 ROW = re.compile(r'\b(Bool|Str|Dbl|Color)\s*\(\s*"PM_\w+"\s*,\s*(?:"(\w+)"|(\w+))')
+ROW_ID = re.compile(r'\b(?:Bool|Str|Dbl|Color)\s*\(\s*"(PM_\w+)"')
 TABLE = re.compile(r"\bItemDef\s+(\w+)\s*\[\s*\]\s*=\s*\{")
 CONST = re.compile(r'\bconstexpr\s+const\s+char\s*\*\s*(\w+)\s*=\s*"(\w+)"\s*;')
 CVAR_HELPER = re.compile(r"^[ \t]*(?:constexpr\s+)?const\s+char\s*\*\s*\w*Cvar\w*\s*(?:\(\s*\)\s*\{|=)(.*)$", re.M)
@@ -290,6 +291,7 @@ def console_commands(src):
 def rows_of(src, cfg, defined):
     """name -> list of (file, line, kind, debug) for every row. kind: 'row' (a constructor names it), 'dynamic' (a row writes it), 'virtual'."""
     rows = {}
+    row_debug = {}
     menus = cfg.get("menus", {})
     normal = menus.get("normal_files", [])
     dynamic = set(menus.get("dynamic_files", []))
@@ -321,6 +323,10 @@ def rows_of(src, cfg, defined):
                     current = tname
             return current
 
+        for m in ROW_ID.finditer(text):
+            tname = table_at(m.start())
+            row_debug[m.group(1)] = f in debug_files or bool(table_rx and tname and table_rx.search(tname))
+
         for m in ROW.finditer(text):
             key = m.group(2) or consts.get(m.group(3)) or None
             if key is None:
@@ -339,6 +345,29 @@ def rows_of(src, cfg, defined):
                 for nm in virtual.get(s.group(1), [s.group(1)]):
                     if nm in defined or s.group(1) in virtual:
                         add(nm, name_in_tree, line_of(text, m.start()), "dynamic", f in debug_files)
+    rules_path = os.path.join(src, "settings", "ui_rules.toml")
+    if os.path.isfile(rules_path):
+        def settings_written(rule):
+            if "setting" in rule:
+                yield rule["setting"]
+            for write in rule.get("writes", []):
+                yield write["setting"]
+            for item in rule.get("values", []):
+                yield from settings_written(item)
+            for item in rule.get("value", {}).values():
+                yield from settings_written(item)
+            for item in rule.get("variants", []):
+                yield from settings_written(item)
+
+        rule_rows = load_config(rules_path).get("rows", {})
+        rule_text = read(rules_path)
+        for row_id, rule in rule_rows.items():
+            if row_id not in row_debug:
+                continue
+            section = re.search(rf'^\[rows\.(?:"{row_id}"|{row_id})(?:\]|\.)', rule_text, re.M)
+            line = line_of(rule_text, section.start()) if section else 1
+            for name in sorted(set(settings_written(rule))):
+                add(name, rel(src, rules_path), line, "dynamic", row_debug[row_id])
     return rows
 
 

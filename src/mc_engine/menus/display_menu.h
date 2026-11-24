@@ -47,11 +47,4 @@
 // MODE greys and relabels RESOLUTION at once, and its value list changes length (a handful of sizes in
 // WINDOWED, about 20 modes in FULLSCREEN, one in BORDERLESS) without the row showing a stale text.
 
-#include "menu_items.h"
-
-namespace mcla_menu {
-
-extern const RowDynamics kDisplayModeDynamics;
-extern const RowDynamics kResolutionDynamics;
-
-}  // namespace mcla_menu
+#include "settings/ui_expr_menu.h"

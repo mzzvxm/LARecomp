@@ -380,17 +380,20 @@ void MenuChecks(const std::string& dir) {
   const size_t level = At(menu, "Str(\"PM_RxGpuSsgiLevel\",");
   Check(ssgi != std::string::npos && rt != std::string::npos && level != std::string::npos && ssgi < rt && rt < level, "the RT BOUNCE LIGHT row is after BOUNCE LIGHT and before its strength row, on LIGHTING AND SHADOWS");
   Check(Has(menu, "kNativeRtGiVals[]  = {\"auto\", \"off\", \"high\", \"ultra\"};") && Has(menu, "kNativeRtGiNames[] = {\"AUTO\", \"OFF\", \"HIGH\", \"ULTRA\"};"), "the row's words are AUTO / OFF / HIGH / ULTRA (nothing is called low)");
-  Check(Has(menu, "constexpr RowDynamics kRtGiDynamics = {.str_label = RtGiLabel, .enabled = RtGiEnabled, .suffix = RtGiSuffix};") && Has(menu, "gi_setting::AutoLabel(") && Has(menu, "gi_setting::RowSuffix(RtGiDecision().gate)") &&
-            Has(menu, "gi_setting::RowEnabled(RtGiDecision().gate)"),
-        "the row's label, grey state and reason come from gi_setting.h");
-  Check(Has(menu, "const char* SsgiSuffix() { return mcla::gpu::RtGiReplacesBounceLight() ? mcla::gpu::gi_setting::kReplacedSuffix : \"\"; }") && Has(menu, "kSsgiDynamics = {.str_label = SsgiLabel, .enabled = AoOn, .suffix = SsgiSuffix};"),
+  const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
+  const size_t begin = At(rules, "[rows.PM_RxGpuRtGi]");
+  const size_t next = At(rules, "[rows.PM_RxGpuSsgiLevel]", begin);
+  const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
+  Check(Has(row, "gpu.rt_tier") && Has(row, "d.rt_field_class") && Has(row, "build.rt_gi_update_built") &&
+            Has(row, "auto_label = true"),
+        "the RT BOUNCE LIGHT row uses the GPU, build and Auto rules");
+  Check(Has(rules, "live.rt_gi_replaces_bounce") && Has(rules, " (REPLACED)") &&
+            Has(menu, "gpu::RtGiReplacesBounceLight()"),
         "the BOUNCE LIGHT row reads (REPLACED) while the field stands");
-  Check(Has(menu, "bool SsgiOn() { return mcla::gpu::gi_setting::AnyBounceLight(ScreenSpaceBounceOn(), RtGiDecision()); }"), "BOUNCE LIGHT STRENGTH is on while either bounce light runs");
-  Check(Has(menu, "#include \"gpu/gi_setting.h\"") && Has(menu, "#include \"gpu/rt_tier.h\""), "the menu includes the setting's rules and the tier");
-  // the row does not depend on the ambient occlusion (the field is not made from its passes)
-  const size_t dyn = At(menu, "constexpr RowDynamics kRtGiDynamics");
-  const size_t dyn_end = dyn == std::string::npos ? 0 : menu.find(';', dyn);
-  Check(dyn != std::string::npos && dyn_end != std::string::npos && !Has(menu.substr(dyn, dyn_end - dyn), "AoOn"), "RT BOUNCE LIGHT is not grey while the ambient occlusion is off");
+  Check(Has(rules, "bounce_on =") && Has(rules, "resolved(s.mcla_gpu_ssgi)") && Has(rules, "resolved(s.mcla_gpu_rt_gi)"),
+        "BOUNCE LIGHT STRENGTH is on while either bounce light runs");
+  Check(!row.empty() && !Has(row, "d.ao_on"), "RT BOUNCE LIGHT is independent of the ambient occlusion");
+
 }
 
 void SettingsChecks(const std::string& dir) {

@@ -1,0 +1,21 @@
+{
+  "live.denoiser_gate": { "type": "string", "enum": ["ok", "hidden", "making", "restart", "needs_d3d12", "unsupported", "needs_dlss", "needs_setup", "failed", "not_needed"], "l0": false, "source": "The vendor denoiser's running backend and consumer gate" },
+  "live.dlss_waits_for_restart": { "type": "bool", "l0": false, "source": "UpscalerAvailability.dlss_after_restart when DLSS is unavailable" },
+  "live.kept_upscaler": { "type": "string", "enum": ["off", "fsr31", "fsr4", "dlss"], "l0": false, "source": "UpscalerAvailability.kept" },
+  "live.output_size": { "type": "string", "l0": false, "source": "The current compositor-controlled window size" },
+  "live.side_mirrors_replaced": { "type": "bool", "l0": false, "source": "mirror_setting::Current().replaced: the traced side mirrors run and replace the plain SIDE MIRRORS" },
+  "live.rtao_pass_built": { "type": "bool", "l0": false, "source": "rtao_setting::PassBuilt(): the renderer built the ray traced occlusion pass" },
+  "live.rt_field_class": { "type": "string", "enum": ["low", "mid", "high"], "l0": false, "source": "The GPU class used by the RT city and bounce light gates, low until class detection has completed" },
+  "live.renderer_forced": { "type": "bool", "l0": false, "source": "Whether the environment or command line set gpu.driver" },
+  "live.renderer_choice": { "type": "string", "enum": ["larecomp", "d3d12", "vulkan"], "l0": false, "source": "The live or deferred gpu.driver mapped through PickOfDriver" },
+  "live.fsr1_preset_custom": { "type": "bool", "l0": false, "source": "Whether the current FSR 1 preset parses as custom" },
+  "live.frame_generation_choice_available": { "type": "bool", "l0": false, "source": "Whether the saved frame generation choice is available or can still be running" },
+  "live.frame_generation_applying": { "type": "bool", "l0": false, "source": "Whether the saved frame generation choice is waiting for a live switch" },
+  "live.fsr_frame_generation_listed": { "type": "bool", "l0": false, "source": "FSR frame generation was probed and is available or failed" },
+  "live.dlss_frame_generation_listed": { "type": "bool", "l0": false, "source": "DlssFrameGenerationAvailability.listed" },
+  "live.frame_generation_multiplier_listed": { "type": "bool", "l0": false, "source": "DLSS frame generation is listed and offers a multiplier choice" },
+  "live.frame_generation_multiplier": { "type": "int", "l0": false, "source": "The effective DLSS frame generation multiplier" },
+  "live.frame_generation_half_display": { "type": "int", "l0": false, "source": "The current frame generation cap derived from the display refresh rate" },
+  "live.fsr_frame_generation_state": { "type": "string", "enum": ["ok", "failed", "no_room"], "l0": false, "source": "FSR frame generation failure or video memory pressure" },
+  "live.dlss_frame_generation_state": { "type": "string", "enum": ["ok", "failed", "unsupported"], "l0": false, "source": "The result of the DLSS frame generation runtime probe" }
+}

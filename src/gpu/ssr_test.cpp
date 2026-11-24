@@ -2274,7 +2274,7 @@ void TestSources(const std::string& dir) {
     const size_t items_end = items == std::string::npos ? std::string::npos : pause.find("\n};", items);
     const std::string reflection_page = items == std::string::npos || items_end == std::string::npos ? "" : pause.substr(items, items_end - items);
     Check(Has(reflection_page, "Str(\"PM_RxGpuSsr\", \"mcla_gpu_ssr\", \"REFLECTIONS ON SURFACES: \",") && Has(reflection_page, "kNativeSsrVals, kNativeSsrNames, 4") && Has(pause, "const char* const kNativeSsrVals[]  = {\"auto\", \"off\", \"high\", \"ultra\"};") &&
-              Has(pause, "case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSsr);"),
+              Has(Read(dir, "../settings/ui_rules.toml"), "[rows.PM_RxGpuSsr.value.\"auto\"]\nauto_label = true"),
           "GB-J: the row REFLECTIONS ON SURFACES is on the GRAPHICS > REFLECTIONS page: AUTO (what the class says), OFF, HIGH, ULTRA (nothing called low)");
     Check(!Has(pause, "\"mcla_gpu_local_lights\"") && !Has(pause, "LOCAL LIGHTS") && Has(debug_pages, "Bool(\"PM_RxDbgLocalLights\", \"mcla_gpu_local_lights\", \"LOCAL LIGHT PASS: \")") &&
               Has(debug_pages, "\"mcla_gpu_local_lights_sources\", \"LIGHT PASS SOURCES: \""),

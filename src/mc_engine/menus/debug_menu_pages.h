@@ -30,11 +30,6 @@
 
 namespace mcla_menu {
 
-#if defined(LARECOMP_HAS_GPU)
-// The RENDERER row's labels, list and write (pause_menu.cpp, next to the language row, which holds its choice the same way).
-extern const RowDynamics kDebugRendererDynamics;
-#endif
-
 // The rows of the DEBUG hub (one Submenu row per page) and of each page, for MenuDef::extra. The rows
 // that only one renderer has (the Plume renderer's views and logs) are tagged NativeOnly.
 const ItemDef* DebugHubRows(int& count);

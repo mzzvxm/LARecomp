@@ -187,23 +187,21 @@ void MenuChecks(const std::string& dir) {
   const size_t items = At(menu, "const ItemDef kReflectionItems[] = {");
   const size_t items_end = items == std::string::npos ? std::string::npos : At(menu, "\n};", items);
   const std::string page = items == std::string::npos || items_end == std::string::npos ? "" : menu.substr(items, items_end - items);
-  Check(Has(page, "NativeOnly(WithDynamics(Str(\"PM_RxGpuRtMirror\", \"mcla_gpu_car_mirror_rt\",") && Has(page, "\"RT SIDE MIRRORS: \", kNativeMirrorRtVals, kNativeMirrorRtNames, 3),") && Has(page, "&kMirrorRtDynamics)),"),
-        "the row is a native-only cycle of mcla_gpu_car_mirror_rt with three values and its dynamics, on the REFLECTIONS page");
+  Check(Has(page, "NativeOnly(Str(\"PM_RxGpuRtMirror\", \"mcla_gpu_car_mirror_rt\",") && Has(page, "\"RT SIDE MIRRORS: \", kNativeMirrorRtVals, kNativeMirrorRtNames, 3)),"),
+        "the row is a native-only cycle of mcla_gpu_car_mirror_rt with three values, on the REFLECTIONS page");
   Check(Before(page, "\"PM_RxGpuRtCityRefl\"", "\"PM_RxGpuRtMirror\"") && Before(page, "\"PM_RxGpuRtMirror\"", "\"PM_RxGpuSsr\""), "the row is after RT CITY REFLECTIONS and before REFLECTIONS ON SURFACES");
   Check(Has(menu, "kNativeMirrorRtVals[]  = {\"auto\", \"off\", \"on\"};") && Has(menu, "kNativeMirrorRtNames[] = {\"AUTO\", \"OFF\", \"ON\"};"), "the row's words are AUTO / OFF / ON (one level: On; nothing is called low)");
-  Check(Has(menu, "constexpr RowDynamics kMirrorRtDynamics = {.str_label = MirrorRtValueLabel, .enabled = MirrorRtEnabled, .suffix = MirrorRtSuffix,\n                                           .label = MirrorRtLabel};"),
-        "the row's value labels, grey state, reason and label come from the four functions");
-  Check(Has(menu, "car_mirror_setting::GateFor(gc::Known() ? gc::Current() : gc::GpuClass::kLow, gc::CurrentRtTier())") && Has(menu, "car_mirror_setting::AutoLabel(") && Has(menu, "car_mirror_setting::RowEnabled(MirrorRtGate())") &&
-            Has(menu, "car_mirror_setting::RowLabel(MirrorRtGate())") && Has(menu, "car_mirror_setting::RowSuffix(MirrorRtGate())"),
-        "the row's label, grey state and reason come from car_mirror_setting.h, from the class (as the other ray traced rows read it) and the ray tracing tier");
-  Check(Has(menu, "#include \"gpu/car_mirror_setting.h\""), "the menu includes the setting's rules");
+  // The row's greying, short label and reasons are data now (src/settings/ui_rules.toml, the shared rules; ui_parity_test.cpp holds them against car_mirror_setting.h for every class and tier).
+  const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
+  const size_t begin = At(rules, "[rows.PM_RxGpuRtMirror]");
+  const size_t next = At(rules, "[rows.PM_RxGpuCarSelfRefl]", begin);
+  const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
+  Check(Has(row, "gpu.rt_tier == 'none'") && Has(row, "\" (NO RT GPU)\"") && Has(row, "d.rt_field_class == 'low'") && Has(row, "\" (TOO SLOW)\"") && Has(row, "label = \"RT MIRRORS\"") &&
+            Has(row, "auto_label = true") && Has(row, "\"AUTO (OFF)\""),
+        "the row's grey states, reasons, short label and AUTO label are the gate's (car_mirror_setting.h GateFor: the ray tracing tier, then the Low class)");
   Check(std::string(cs::kFullLabel) + ": " == "RT SIDE MIRRORS: " && Has(menu, "\"RT SIDE MIRRORS: \""), "the row's prefix is the header's whole label");
   // the mirror asks for its structures itself: the row has nothing to do with the car row, the shadows or the occlusion
-  const size_t dyn = At(menu, "constexpr RowDynamics kMirrorRtDynamics");
-  const size_t dyn_end = dyn == std::string::npos ? 0 : menu.find(';', dyn);
-  const std::string init = dyn == std::string::npos ? "" : menu.substr(dyn, dyn_end - dyn);
-  Check(!init.empty() && !Has(init, "NeedsShadows") && !Has(init, "AoOn") && !Has(init, "ContactShadowsOn") && !Has(init, "CarRtReflRunsNow"), "RT SIDE MIRRORS has nothing to do with the car row, the shadows or the occlusion");
-  Check(Before(menu, "constexpr RowDynamics kRtCityDynamics", "constexpr RowDynamics kMirrorRtDynamics") && Before(menu, "constexpr RowDynamics kMirrorRtDynamics", "const ItemDef kReflectionItems[] = {"), "the helpers come after the city row's and before the page's table");
+  Check(!row.empty() && !Has(row, "car_rt_runs") && !Has(row, "shadows") && !Has(row, "ao_on"), "RT SIDE MIRRORS has nothing to do with the car row, the shadows or the occlusion");
   Check(Has(menu, "\"Road, car, city, mirrors and surfaces.\"") && std::strlen("Road, car, city, mirrors and surfaces.") <= 40, "the tab's line names the mirrors (at most 40 characters, the longest of the other tabs' lines)");
   Check(Has(menu, "RT SIDE MIRRORS, REFLECTIONS ON SURFACES (kReflectionItems)") && Has(menu, "REFLECTIONS (kReflectionItems, 7 rows)"), "the page's comments name the row (the seventh is SIDE MIRRORS, before this one)");
 }
