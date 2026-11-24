@@ -19,6 +19,7 @@
 #include "settings/ui_expr_rules.h"
 #include "ui_expr_data.h"
 #include "upscaling_menu.h"
+#include "settings_ui/menu_catalog.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/online/online_platform.h"
@@ -4199,6 +4200,31 @@ void EnsureControllerButtonRow(uint32_t list) {
 }
 
 }  // anonymous namespace
+
+std::vector<larecomp::settings_ui::Menu> larecomp::settings_ui::AllSettingsMenus() {
+    std::vector<Menu> menus;
+    for (const MenuDef& menu : kMenus) {
+        auto& exported = menus.emplace_back(menu.btn_key, menu.menu_key, menu.label, menu.desc, menu.debug_only,
+                                            std::vector<mcla_menu::ItemDef>{});
+        if (menu.num_items) {
+            exported.rows.assign(menu.items, menu.items + menu.num_items);
+        }
+        if (menu.extra == LowLatencyMenuRows) {
+#if defined(LARECOMP_HAS_GPU)
+            exported.rows.insert(exported.rows.end(), std::begin(kReflexRows), std::end(kReflexRows));
+            exported.rows.insert(exported.rows.end(), std::begin(kAntiLagRows), std::end(kAntiLagRows));
+#endif
+        } else if (menu.extra == UpscalingPageRows) {
+            AppendAllUpscalingPageRows(exported.rows);
+        } else if (menu.extra) {
+            // CameraLookMenuItems and the DEBUG accessors already return their full tables.
+            int count = 0;
+            const auto* rows = menu.extra(count);
+            if (count) exported.rows.insert(exported.rows.end(), rows, rows + count);
+        }
+    }
+    return menus;
+}
 
 namespace mcla_menu {
 

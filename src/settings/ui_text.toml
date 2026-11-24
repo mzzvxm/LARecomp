@@ -1,0 +1,586 @@
+﻿# Player-facing menu help and text overrides, keyed by the pause menu row ID.
+# Titles normally come from the reader’s Title Case rule.
+
+[tabs.RxRecompMenu]
+id = "recomp"
+
+[tabs.RxGfxMenu]
+id = "gfx"
+
+[tabs.RxGameMenu]
+id = "gameplay"
+
+[tabs.RxCtrlMenu]
+id = "controller"
+
+[tabs.RxIfaceMenu]
+id = "interface"
+
+[tabs.RxExtrasMenu]
+id = "extras"
+
+[tabs.RxDbgMenu]
+id = "debug"
+
+[sections.RxVideoMenu]
+id = "display"
+
+[sections.RxUpscalingMenu]
+id = "upscaling"
+
+[sections.RxImageQualityMenu]
+id = "image_quality"
+
+[sections.RxLightingMenu]
+id = "lighting"
+
+[sections.RxReflectionsMenu]
+id = "reflections"
+
+[sections.RxWorldDetailMenu]
+id = "world_detail"
+
+[sections.RxGpuHdrMenu]
+id = "hdr"
+
+[rows.PM_RxDisplayMode]
+native = "kDisplayModeDynamics"
+help = "Windowed is a normal window. Borderless fills the screen with a window that has no frame and leaves the display as it is. Fullscreen can also switch the display to the size chosen in Resolution."
+
+[rows.PM_RxResolution]
+native = "kResolutionDynamics"
+help = "Sets the window size. In exclusive fullscreen, the game uses the selected display mode."
+
+[rows.PM_RxAspect]
+help = "Shape of the picture: auto fills the window at any shape (a 21:9 or 32:9 window gets a wider view, a 16:10, 4:3 or taller one more above and below; the HUD stays 16:9 in the middle), or 16:9, 16:10, 21:9 or 32:9 whatever the window is, with black bars above and below where the window is narrower than that shape and at the sides where it is wider."
+
+[rows.PM_RxSubGpuHdr]
+help = "Open the hdr settings."
+
+[rows.PM_RxDisplayGamma]
+help = "Display gamma ramp."
+
+[rows.PM_RxVsync]
+help = "Present on vertical blank."
+
+[rows.PM_RxFpsCap]
+native = "kFpsLimitDynamics"
+help = "Caps how many frames the game draws a second. Unlimited removes the cap."
+value = { "0" = { "title" = "Unlimited" } }
+
+[rows.PM_RxHidePointer]
+help = "Hide the mouse pointer during play."
+
+[rows.PM_RxMenuMouse]
+help = "Use the mouse to point at and select pause-menu items."
+
+[rows.PM_RxIntroSpeed]
+apply_note = "The legal screens and logos play before the settings menu opens."
+help = "Present the start-up legal screens and logos 30 times a second, as the console does."
+
+[rows.PM_RxSkipIntro]
+help = "Skip the intro videos to prevent graphical issues."
+
+[rows.PM_RxVibration]
+help = "Controller vibration."
+
+[rows.PM_RxTrigResist]
+help = "DualSense trigger resistance: a throttle spring on R2 and brake resistance on L2 while a car is driven, slack everywhere else."
+
+[rows.PM_RxTrigVibrate]
+help = "DualSense trigger vibration: R2 vibrates while the driven wheels spin under power and L2 while the brakes lock the wheels, harder the more they slip."
+
+[rows.PM_RxTrigThrottle]
+native = "kTriggerStrengthDynamics"
+help = "R2 resistance at the end of its travel, 1 (light) to 8 (firm)."
+value = { "1" = { "label" = "1 (LIGHT)" }, "8" = { "label" = "8 (FIRM)" } }
+
+[rows.PM_RxTrigBrake]
+native = "kTriggerStrengthDynamics"
+help = "L2 resistance at the end of its travel, 1 (light) to 8 (firm)."
+value = { "1" = { "label" = "1 (LIGHT)" }, "8" = { "label" = "8 (FIRM)" } }
+
+[rows.PM_RxImpulse]
+help = "Xbox One and Xbox Series trigger rumble: the right trigger shakes while the driven wheels spin under power, the left while the brakes lock the wheels, harder the more they slip."
+
+[rows.PM_RxImpulseStr]
+help = "How strong the Xbox trigger rumble is, in percent of what the trigger motors can do (10 to 100)."
+
+[rows.PM_RxDeadzoneL]
+help = "Dead zone of the left stick, in percent of its range: a stick that rests off centre (drift) reads as centred inside it."
+
+[rows.PM_RxDeadzoneR]
+help = "Dead zone of the right stick, in percent of its range: a stick that rests off centre (drift) reads as centred inside it."
+
+[rows.PM_RxButtonLayout]
+help = "On-screen button glyphs."
+
+[rows.PM_RxUnspawn]
+native = "kTrafficRangeDynamics"
+help = "How far from you traffic cars are kept, in metres: a car further away is removed."
+
+[rows.PM_RxPedDensity]
+native = "kPedDensityDynamics"
+help = "How many people walk the streets, as a multiple of the game's own amount (0 = none, 1 = the game's)."
+
+[rows.PM_RxParkedCars]
+native = "kParkedDensityDynamics"
+help = "How many cars are parked along the roads, as a multiple of the game's own amount (0 = none, 1 = the game's)."
+
+[rows.PM_RxFragDist]
+help = "fragTuneStruct::GlobalMaxDrawingDistance — draw distance for breakable props (poles, signs, fences)."
+
+[rows.PM_RxLodTraffic]
+native = "kTrafficLodDynamics"
+help = "How far away traffic cars keep their detailed models, as a multiple of the original distance."
+
+[rows.PM_RxLodCity]
+native = "kCityLodDynamics"
+help = "How far away buildings and other city scenery keep their detail, as a multiple of the original distance."
+
+[rows.PM_RxMsaa]
+native = "kMsaaRowDynamics"
+help = "MSAA of the images of the screen the game multisamples (M6d.2): off (1 sample), 2 (the console's), 4 or 8 samples on the host."
+
+[rows.PM_RxGpuAa]
+native = "kPostAaDynamics"
+help = "Anti-aliasing of the composed scene, before the UI (M6c): off, fxaa (FXAA 3.11, Xenia's preset) or smaa (SMAA 1x, preset HIGH)."
+
+[rows.PM_RxGpuAniso]
+help = "Anisotropic texture filtering: game (the game's own fetch constants), off, 2, 4, 8 or 16."
+
+[rows.PM_RxXeAniso]
+help = "Sharpens textures seen at an angle, such as roads and pavements."
+
+[rows.PM_RxDof]
+help = "Disable Depth of Field (DoF) completely."
+
+[rows.PM_RxBlur]
+help = "Disable Motion Blur completely."
+
+[rows.PM_RxSharpUi]
+help = "Sharper HUD and menu art where the game's bitmaps are blown up (a render scale above 1.25x of the console's 720p picture: 1080p and 4K windows)."
+
+[rows.PM_RxSharpMinimap]
+help = "Draw the HUD's and the menus' small views (the minimap, the phone screen, and the page of the pause menu, the garage and the GPS map, which the game always draws at fixed sizes and the screen stretches) at the render scale, as the images of the screen are, so that the minimap and the menus' text come out as sharp as the rest of the picture at 1080p and 4K."
+
+[rows.PM_RxNoShadows]
+help = "Draws the game's real-time shadows. Off is the biggest speed-up, and the world loses its cast shadows."
+
+[rows.PM_RxFoliage]
+native = "kFoliageDynamics"
+help = "Far trees are drawn as flat cards, and each casts a baked shadow silhouette into the sun's shadows."
+
+[rows.PM_RxGpuShadowDetail]
+native = "kShadowDetailDynamics"
+help = "How sharp the edges of the sun's shadows can get. High draws them twice as big and Ultra three times, which costs a little speed and video memory."
+
+[rows.PM_RxGpuShadowFilter]
+native = "kShadowFilterDynamics"
+help = "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from pixel to pixel, a grainy edge), soft (more taps on a disk, a smooth edge without grain, of the same width as the game's, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with contact hardening: a shadow is sharp where it touches what casts it and softer with the distance from it, as the sun's own shadows are; an integrated graphics card gets soft)."
+
+[rows.PM_RxGpuContact]
+native = "kContactDynamics"
+help = "Contact shadows: the short sun shadows the game does not draw (under a car's sills, at the foot of a kerb or a wall, under props on the pavement), found from the picture's depth and put only on the sun's light, so they never darken what the game's own shadows already cover."
+
+[rows.PM_RxGpuRtShadows]
+native = "kRtShadowsDynamics"
+help = "Uses ray tracing to draw the sun’s shadows from buildings and other city geometry."
+
+[rows.PM_RxGpuTrafficShadows]
+native = "kTrafficShadowsDynamics"
+help = "Traffic and the other AI cars cast into the sun's shadow map like the player's car, so the ground under them is dark (the game only draws the player's car into it)."
+
+[rows.PM_RxGpuCarShadowMap]
+native = "kCarShadowDynamics"
+help = "Car shadow map: your car casts a shadow of its real shape on itself and on the road beside it."
+
+[rows.PM_RxGpuAo]
+native = "kAoDynamics"
+help = "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, from the picture's depth, only on the sky light and not on the sun's (the game's own constants say how much of a surface's light is which)."
+
+[rows.PM_RxGpuAoLevel]
+native = "kAoIntensityDynamics"
+help = "How strong ambient occlusion looks: light, default, strong or max."
+
+[rows.PM_RxGpuSsgi]
+native = "kSsgiDynamics"
+help = "Bounce light: the light a lit wall or the ground sends back onto the road, the sides of cars and the walls beside it, found from the picture, so a red wall tints the pavement by it and a street lamp's pool lights the wall next to it."
+
+[rows.PM_RxGpuRtGi]
+native = "kRtGiDynamics"
+help = "Uses rays to light surfaces with light bounced from the city around them."
+
+[rows.PM_RxGpuSsgiLevel]
+native = "kSsgiLevelDynamics"
+help = "How strong the bounce light looks: light, default, strong, stronger or strongest."
+
+[rows.PM_RxGpuSunShafts]
+native = "kShaftsDynamics"
+help = "Sun shafts: a low sun behind trees and buildings streams light across the scene, as light through a haze."
+
+[rows.PM_RxGpuHeadlights]
+native = "kHeadlightsDynamics"
+help = "Lets car headlights illuminate the street, nearby cars, and roadside objects."
+
+[rows.PM_RxGpuLightShadows]
+native = "kLightShadowDynamics"
+help = "Lets headlights and nearby lights cast shadows."
+
+[rows.PM_RxGpuNeonLight]
+native = "kNeonLightDynamics"
+help = "Makes cars with neon underglow light the ground beneath them."
+
+[rows.PM_RxGpuVolumetrics]
+native = "kVolumetricsDynamics"
+help = "Makes light beams from headlights and street lamps visible in the air."
+
+[rows.PM_RxGpuRoadRefl]
+native = "kRoadReflectionDynamics"
+help = "How sharp the road reflection is: the wet roads, the shop and building windows and the water show a mirror image of the city that the game draws at 256x256 and stretches over the whole screen, which is why it looks soft."
+
+[rows.PM_RxGpuCarRefl]
+native = "kCarReflectionDynamics"
+help = "How sharp the reflections in the paint, windows and bonnet of the cars are: the game draws the world around the car as a 512x256 picture for them to reflect, which is why the reflections look soft up close."
+
+[rows.PM_RxGpuCarSelfRefl]
+native = "kCarSelfReflDynamics"
+help = "Your car's paint reflects the car itself. On works from the picture on the screen; Ray Traced from the car's own shape, so a part the camera cannot see shows in the paint too."
+
+[rows.PM_RxGpuRtCityRefl]
+native = "kRtCityDynamics"
+help = "The car paint reflects the real street, found by rays in the city's own triangles: the building across the road, the lamp posts, signs, the car beside you."
+
+[rows.PM_RxGpuSsr]
+native = "kSsrDynamics"
+help = "Adds reflections to wet roads and glossy surfaces using detail from the current picture."
+
+[rows.PM_RxGpuHdr]
+help = "HDR output for an HDR10 display."
+
+[rows.PM_RxGpuHdrWhite]
+native = "kHdrPaperWhiteDynamics"
+help = "How bright the game's white is in HDR, in nits (Windows' own slider covers 80 to 480)."
+value = { "0" = { "label" = "AUTO" }, "80" = { "label" = "80 NITS" }, "100" = { "label" = "100 NITS" }, "120" = { "label" = "120 NITS" }, "160" = { "label" = "160 NITS" }, "200" = { "label" = "200 NITS" }, "240" = { "label" = "240 NITS" }, "280" = { "label" = "280 NITS" }, "320" = { "label" = "320 NITS" }, "400" = { "label" = "400 NITS" }, "480" = { "label" = "480 NITS" } }
+
+[rows.PM_RxGpuHdrPeak]
+native = "kHdrPeakDynamics"
+help = "The brightest level HDR output may reach, in nits (200 to 4000 covers most displays)."
+value = { "0" = { "label" = "AUTO" }, "200" = { "label" = "200 NITS" }, "400" = { "label" = "400 NITS" }, "600" = { "label" = "600 NITS" }, "800" = { "label" = "800 NITS" }, "1000" = { "label" = "1000 NITS" }, "1200" = { "label" = "1200 NITS" }, "1500" = { "label" = "1500 NITS" }, "2000" = { "label" = "2000 NITS" }, "3000" = { "label" = "3000 NITS" }, "4000" = { "label" = "4000 NITS" } }
+
+[rows.PM_RxGpuHdrHighlights]
+native = "kHdrHighlightDynamics"
+help = "HDR output: how far the game's lights, the sun, the sky at dusk and the headlights go above the game's white: 1 normal, 1.5 bright, 2 brighter, 3 brightest."
+value = { "1" = { "label" = "NORMAL" }, "1.5" = { "label" = "BRIGHT" }, "2" = { "label" = "BRIGHTER" }, "3" = { "label" = "BRIGHTEST" } }
+
+[rows.PM_RxGpuHdrTest]
+native = "kHdrTestDynamics"
+help = "In HDR, shows brightness bars instead of the game."
+surfaces = ["game"]
+
+[rows.PM_RxGpuReflex]
+native = "kLowLatencyDynamics"
+help = "The GPU vendor's latency reducer: NVIDIA Reflex on an NVIDIA GPU, AMD Anti-Lag 2 on an AMD one."
+
+[rows.PM_RxGpuAntiLag]
+native = "kLowLatencyDynamics"
+help = "The GPU vendor's latency reducer: NVIDIA Reflex on an NVIDIA GPU, AMD Anti-Lag 2 on an AMD one."
+
+[rows.PM_RxSubCamChase]
+help = "Open the chase camera settings."
+
+[rows.PM_RxSubCamFov]
+help = "Open the fov settings."
+
+[rows.PM_RxSubCamRear]
+help = "Open the rear view settings."
+
+[rows.PM_RxSubCamLook]
+help = "Open the look around settings."
+
+[rows.PM_RxSmoothFactor]
+help = "Chase camera boom smoothing factor multiplier (0.1 - 3.0)."
+
+[rows.PM_RxCamShake]
+help = "Camera shake intensity multiplier (0.0 = disabled, 0.6 = balanced PC rumble, 1.0 = full console shake)."
+
+[rows.PM_RxFov1P]
+help = "FOV scale — 1st person / cockpit (0.5 = narrower, 2.0 = wider)"
+
+[rows.PM_RxFov3P]
+help = "FOV scale — 3rd person / chase cam (0.5 = narrower, 2.0 = wider)"
+
+[rows.PM_RxRearView]
+help = "Show the rear view mirror at the top right of the screen (a feature the retail game ships switched off)."
+
+[rows.PM_RxRearViewPos]
+help = "Where the mirror sits: stock (under the race position, top right), left_top, middle_top, left_down, middle_footer or right_down."
+
+[rows.PM_RxRearViewFrm]
+help = "Draw the mirror's frame."
+
+[rows.PM_RxRearViewCars]
+help = "Show the racers' cars in the mirror."
+
+[rows.PM_RxMapMouse]
+help = "Drive the full map's cursor with the mouse."
+
+[rows.PM_RxMapMouseZoom]
+help = "Zoom the full map with the scroll wheel."
+
+[rows.PM_RxMapMouseHide]
+help = "Hide the OS pointer while the full map is up."
+
+[rows.PM_RxMapMouseMag]
+help = "Leave the map's cursor magnet alone."
+
+[rows.PM_RxTodReal]
+help = "Follow your computer's clock: the world sits at the real local hour and keeps up with it."
+
+[rows.PM_RxTodHold]
+help = "Freeze the world at time_of_day instead of letting the day cycle run."
+
+[rows.PM_RxTodHour]
+help = "Hour to hold the world at (0-24, fractional), applied while time_of_day_hold is on."
+
+[rows.PM_RxTodSpeed]
+help = "Multiplier on the day cycle speed."
+
+[rows.PM_RxWeather]
+help = "Force the weather."
+
+[rows.PM_RxCarbonHood]
+help = "Choose whether this car uses carbon fiber for its hood."
+
+[rows.PM_RxCarbonTrunk]
+help = "Choose whether this car uses carbon fiber for its trunk."
+
+[rows.PM_RxCarbonDoors]
+help = "Choose whether this car uses carbon fiber for its doors."
+
+[rows.PM_RxCarbonRoof]
+help = "Choose whether this car uses carbon fiber for its roof."
+
+[rows.PM_RxCarbonBumpers]
+help = "Choose whether this car uses carbon fiber for its bumpers."
+
+[rows.PM_RxCarbonBody]
+help = "Choose whether this car uses carbon fiber for its fenders & skirts."
+
+[rows.PM_RxCarbonSpoiler]
+help = "Choose whether this car uses carbon fiber for its spoiler."
+
+[rows.PM_RxCarbonExtras]
+help = "Choose whether this car uses carbon fiber for its grill & intercooler."
+
+[rows.PM_RxLanguage]
+native = "kLangRowDynamics"
+help = "Chooses the language of the game's text. Some screens use it after the next restart."
+apply_note = "The game reloads text now. Some screens and startup language settings update after a restart."
+
+[rows.PM_RxCutPick]
+surfaces = ["game"]
+help = "Which cutscene the pause menu's CUTSCENES tab replays."
+
+[rows.PM_RxCutPlay]
+label = "PLAY CUTSCENE"
+help = "Play the selected story cutscene."
+
+[rows.PM_RxUiAccent]
+help = "Replaces the blue/teal that every menu uses (selection bar, highlights, arrows) with this color, as RRGGBB hex."
+
+[rows.PM_RxUiTitle]
+help = "Replaces the yellow of the menu titles and the spinning globe, as RRGGBB hex."
+
+[rows.PM_RxUiFrame]
+help = "Replaces the gray of the menu frame, as RRGGBB hex."
+
+[rows.PM_RxSpeedUnits]
+help = "Speedometer / distance units."
+
+[rows.PM_RxHudWidth]
+native = "kHudWidthDynamics"
+help = "On a wide picture, how far the HUD's corner pieces (the minimap, speedometer, race position, lap and time, and the phone) move out toward the screen edges, in percent: 0 (Centered) keeps the whole HUD in the middle 16:9, 50 (Wider) is halfway, 100 (Full) puts each piece as far from its edge as on a 16:9 screen."
+value = { "0" = { "label" = "CENTERED" }, "50" = { "label" = "WIDER" }, "100" = { "label" = "FULL" } }
+
+[rows.PM_RxSubVideo]
+help = "Open the display settings."
+
+[rows.PM_RxSubUpscaling]
+help = "Open the upscaling settings."
+
+[rows.PM_RxSubImageQuality]
+help = "Open the image quality settings."
+
+[rows.PM_RxSubLighting]
+help = "Open the lighting and shadows settings."
+
+[rows.PM_RxSubReflections]
+help = "Open the reflections settings."
+
+[rows.PM_RxSubWorldDetail]
+help = "Open the world detail settings."
+
+[rows.PM_RxSubCam]
+help = "Open the camera settings."
+
+[rows.PM_RxSubTod]
+help = "Open the time of day settings."
+
+[rows.PM_RxSubCarbon]
+help = "Open the carbon fiber settings."
+
+[rows.PM_RxSubDiff]
+help = "Open the difficulty settings."
+
+[rows.PM_RxSubMap]
+help = "Open the map mouse settings."
+
+[rows.PM_RxDiffPreset]
+help = "Whose AI rules races use: complete = the Complete Edition's, as shipped; original = the launch build's (December 2008), before the title update that eased it: the AI keeps its nitrous closer to the finish, the home-stretch hold-back is shorter, and the career difficulty starts at 3 and climbs and falls within the launch limits."
+
+[rows.PM_RxAiDiff]
+native = "kAiDiffDynamics"
+help = "AI difficulty in percent: 0 = easiest, 100 = the game's hardest, each 10% one RubberBandTune level."
+value = { "-1" = { "label" = "STOCK" } }
+
+[rows.PM_RxRbCatchup]
+help = "Scales how hard the AI pulls when it is BEHIND: MaxThrottle, BehindMaxThrottle, HomeStretchBehindMaxThrottle, PlayerCloseMaxThrottle."
+
+[rows.PM_RxRbHoldback]
+help = "Scales MinThrottle, the throttle cap while the AI is AHEAD."
+
+[rows.PM_RxRbDist]
+help = "Scales the distance bands the rubberband reacts within: MinDist, MaxDist, BehindMinDist, BehindMaxDist."
+
+[rows.PM_RxRbShortcut]
+help = "Scales DistBehindBeforeTakingShortcuts: how far behind you the AI must fall before it takes a track's alternate (shortcut) path."
+
+[rows.PM_RxRbNitroStart]
+native = "kRbNitroStartDynamics"
+help = "UseNitroMinDistFromStart in world units: how far into the race the AI must be before it may touch nitrous."
+value = { "-1" = { "label" = "STOCK" } }
+
+[rows.PM_RxRbNitroFin]
+help = "Scales UseNitroMinDistFromFinish, the gate tied to the run-in to the finish."
+
+[rows.PM_RxRbNitroBeh]
+help = "Scales UseNitroMinDistBehindPlayer and UnlimitedNitroMinDistBehindPlayer — how far behind you the AI has to be before it spends nitrous, and before it gets unlimited."
+
+[rows.PM_RxSubUi]
+help = "Open the ui settings."
+
+[rows.PM_RxSubLang]
+help = "Open the languages settings."
+
+[rows.PM_RxSubCut]
+help = "Open the cutscenes settings."
+
+[rows.PM_RxTexMods]
+help = "Use the texture mods (<mods>/<Mod>/textures_replace/)."
+
+[rows.PM_RxVinylLayers]
+help = "Raise the front/rear BUMPER vinyl caps from 16 to 31 layers each (64/64/64/31/31)."
+
+[rows.PM_RxBigSession]
+apply_note = "The game reads this choice when you next host a session."
+help = "Sessions of more than 8 players keep damage, debris, world props and the default session settings that MCLA turns off above 8."
+
+[rows.PM_RxStartGarage]
+apply_note = "The game places the car at the selected garage on the next start."
+help = "Which district garage the car starts the session at: hollywood (what the game always does), beaches, sc, or last (the garage nearest the car when the game was closed)."
+
+[rows.PM_RxQuitNo]
+label = "NO"
+help = "Return to the pause menu."
+
+[rows.PM_RxQuitYes]
+label = "YES"
+help = "Close the game and return to the desktop."
+
+[rows.PM_RxQuitRestart]
+label = "RESTART GAME"
+help = "Restart the game to apply settings that take effect at startup."
+
+[rows.PM_RxRestartLater]
+label = "NOT NOW"
+help = "Keep playing and apply the pending settings at the next start."
+
+[rows.PM_RxRestartNow]
+label = "RESTART NOW"
+help = "Restart the game to apply the pending settings."
+
+[rows.PM_RxGpuUpsc]
+native = "kUpscalerDynamics"
+help = "Chooses the technology used to upscale the picture. Off draws it at the selected render scale."
+
+[rows.PM_RxGpuUpscMode]
+native = "kModeDynamics"
+help = "How small the game draws the 3D scene before it is built back up to the window's size: the share is in brackets."
+
+[rows.PM_RxGpuUpscSharp]
+native = "kSharpnessDynamics"
+help = "Adjusts edge sharpening when a FidelityFX upscaler is active."
+
+[rows.PM_RxGpuDenoiser]
+native = "kDenoiserDynamics"
+help = "Chooses how the game cleans up noise in screen-space and ray traced reflections."
+
+[rows.PM_RxGpuFrameGen]
+native = "kFrameGenerationDynamics"
+help = "Frame generation: off, fsr31 (AMD FSR 3.1 frame generation, on any graphics card, with or without an upscaler) or dlss (NVIDIA DLSS frame generation through Streamline, on an RTX 40 or 50 series card: 2x, and 3x or 4x on an RTX 50 with mcla_gpu_frame_generation_multiplier; Streamline presents the frames, and on Vulkan it applies from the next start)."
+
+[rows.PM_RxGpuFrameGenMult]
+native = "kMultiplierDynamics"
+help = "How many frames DLSS frame generation shows for each one the game renders (mcla_gpu_frame_generation = dlss): 2 makes one in between, 3 two, 4 three."
+
+[rows.PM_RxGpuFrameGenFps]
+native = "kFpsLimitValueDynamics"
+help = "The frame rate cap while frame generation runs, in frames the game RENDERS a second (twice as many are shown): -1 is HALF DISPLAY, the default, the floor of 97% of half of the display's refresh rate (116 at 240 Hz, 58 at 120 Hz), which fills the display; it is only offered on a display of 100 Hz or more, and where it is not the cap you chose (fps_limit) applies."
+value = { "-1" = { "label" = "USE FPS LIMIT" }, "0" = { "title" = "Unlimited" } }
+
+[rows.PM_RxDbgFixReset]
+label = "RESET DEBUG SETTINGS"
+
+[rows.PM_RxDbgRenderer]
+native = "kDebugRendererDynamics"
+surfaces = ["game"]
+
+[rows.PM_RxDbgTexDump]
+label = "DUMP SCENE TEXTURES"
+
+[rows.PM_RxDbgTexReload]
+label = "RELOAD TEXTURE MODS"
+
+[rows.PM_RxDbgOpenF4]
+label = "OPEN SETTINGS PANEL (F4)"
+
+[rows.PM_RxDbgTelemetry]
+label = "TELEMETRY CARD (F3)"
+
+[rows.PM_RxDbgShowChanged]
+label = "SHOW CHANGED SETTINGS"
+
+[rows.PM_RxDbgCopyArgs]
+label = "COPY LAUNCH ARGUMENTS"
+
+[rows.PM_RxDbgInfoReset]
+label = "RESET DEBUG SETTINGS"
+
+[rows.PM_RxFreeLook]
+help = "Mouse look on the gameplay camera."
+
+[rows.PM_RxFlSens]
+help = "Mouse look sensitivity: radians of view movement per count the mouse reports."
+
+[rows.PM_RxFlInvX]
+help = "Mirror the horizontal axis."
+
+[rows.PM_RxFlInvY]
+help = "Mirror the vertical axis."
+
+[rows.PM_RxFlDelay]
+help = "Seconds the mouse has to sit still before the view starts easing back behind the car."
+
+[rows.PM_RxFlRate]
+help = "How quickly the view eases back once the delay is up, as a fraction of the remaining angle per second."

@@ -11,6 +11,7 @@
 
 #include "bootprogress/city_pack_rules.h"
 #include "settings/larecomp_settings.h"
+#include "settings_ui/action.h"
 
 #include <cmath>
 #include <cstdint>
@@ -81,6 +82,16 @@ static int LarecompMain(LarecompApp& app, const rex::CLIArgList& args) {
     return LarecompApp::FinishProcess(app.Shutdown());
 }
 
-// wWinMain and main (the exe is a WIN32 program: wWinMain), a default-constructed LarecompApp.
-REX_TITLE_APP_MAIN(LarecompApp, LarecompMain)
+// GX: catalog collection runs without creating the title app, its window or the game-running marker.
+static int ReXTitleEntry(const rex::CLIArgList& args) {
+    constexpr auto dump_flag = larecomp::cli::kDumpSettingsUi;
+    if (args.Has(dump_flag)) return larecomp::settings_ui::DumpSettingsUi(args.Get(dump_flag));
+    if (!args.Has("build_shader_packs") && !args.Has("precache_pipelines") && !args.Has("build_city_pack") &&
+        !args.Has("build_city_hit") && !args.Has("check_city_hit")) {
+        larecomp::settings_ui::RefreshSettingsUi();
+    }
+    LarecompApp app;
+    return LarecompMain(app, args);
+}
+REX_DETAIL_ENTRY_POINTS(ReXTitleEntry)
 #endif // REXGLUE_HAS_XEO3_TARGET

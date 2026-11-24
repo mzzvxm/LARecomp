@@ -2,6 +2,7 @@
 
 #include "frame_generation_menu.h"
 #include "settings/immortal.h"
+#include "settings_ui/menu_catalog.h"
 
 #include <memory>
 #include <mutex>
@@ -106,6 +107,18 @@ const mcla_menu::ItemDef* g_built = nullptr;
 int g_built_count = 0;
 
 }  // namespace
+
+// Every row the DISPLAY page can ever list (the settings UI exporter walks the superset; UpscalingPageRows is what this PC lists now).
+void AppendAllUpscalingPageRows(std::vector<mcla_menu::ItemDef>& rows) {
+    int count = 0;
+    const auto* upscaling = AllUpscalingMenuRows(count);
+    if (count) rows.insert(rows.end(), upscaling, upscaling + count);
+#if defined(LARECOMP_HAS_GPU)
+    rows.push_back(kFrameGenerationRow);
+    rows.push_back(kMultiplierRow);
+    rows.push_back(kFpsLimitRow);
+#endif
+}
 
 const mcla_menu::ItemDef* UpscalingPageRows(int& count) {
     {

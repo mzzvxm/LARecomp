@@ -87,6 +87,9 @@ set_source_files_properties(thirdparty/monocypher/monocypher.c PROPERTIES LANGUA
 
 set(LARECOMP_SOURCES
     src/main.cpp
+    # GX: launcher settings catalog.
+    src/settings_ui/action.cpp
+    src/settings_ui/export.cpp
     src/larecomp_app.cpp
     src/spdlog_console.cpp
     # LARecomp's side of the rexglue settings: the owners, the aliases of the old names, the by-name API.
@@ -1069,6 +1072,45 @@ else()
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/settings/ui_rules.toml" LARECOMP_PAUSE_MENU_RULES)
     configure_file(src/settings/ui_expr_data.h.in ui_expr_data.h @ONLY)
     target_include_directories(larecomp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+
+    # GX: embed game-authored UI metadata so a staged executable can dump it on its own.
+    set(GX_UI_RULES "")
+    set(_gx_rules "${CMAKE_CURRENT_SOURCE_DIR}/src/settings/ui_rules.toml")
+    if(EXISTS "${_gx_rules}")
+        file(READ "${_gx_rules}" GX_UI_RULES)
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        src/settings/ui_text.toml src/settings/launcher_rows.toml src/settings_ui/phase_a.toml "${_gx_rules}")
+    file(READ src/settings/ui_text.toml GX_UI_TEXT)
+    file(READ src/settings/launcher_rows.toml GX_LAUNCHER_ROWS)
+    file(READ src/settings_ui/phase_a.toml GX_PHASE_A)
+    execute_process(COMMAND git rev-parse --verify HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE GX_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND git rev-parse --path-format=absolute --git-path HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _gx_git_head OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND git symbolic-ref --quiet HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _gx_git_ref OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_gx_git_ref)
+        execute_process(COMMAND git rev-parse --path-format=absolute --git-path "${_gx_git_ref}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _gx_git_ref_file OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+    foreach(_gx_git_file IN ITEMS "${_gx_git_head}" "${_gx_git_ref_file}")
+        if(EXISTS "${_gx_git_file}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_gx_git_file}")
+        endif()
+    endforeach()
+    configure_file(src/settings_ui/ui_data.h.in settings_ui_data.h @ONLY)
+    target_include_directories(larecomp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+
+    add_executable(larecomp_settings_ui_test EXCLUDE_FROM_ALL
+        src/settings_ui/export_test.cpp src/settings_ui/export.cpp src/citypack/file_replace.cpp)
+    target_compile_features(larecomp_settings_ui_test PRIVATE cxx_std_23)
+    target_include_directories(larecomp_settings_ui_test PRIVATE src)
+    target_link_libraries(larecomp_settings_ui_test PRIVATE larecomp_tomlplusplus)
 
     # SDL3: LARecomp calls it itself (the controller list, the pad's rumble and hints). One SDL in the process, the SDK's.
     # The SDK has the target SDL3::SDL3-shared in both layouts, and it is what the SDK's own staging of SDL3 tests

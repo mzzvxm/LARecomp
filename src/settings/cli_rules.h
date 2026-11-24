@@ -89,6 +89,9 @@ inline constexpr std::string_view kSdkFlags[] = {"modules",          "game_data_
 // LARecomp's own flags: read from the process's command line elsewhere (mc_engine/restart.cpp), no setting. Dropped silently.
 inline constexpr std::string_view kInternalFlags[] = {"larecomp_restart_wait_handle", "larecomp_restart_wait_pid"};
 
+// GX: dispatched before the title app is constructed, so the SDK never parses this action.
+inline constexpr std::string_view kDumpSettingsUi = "dump_settings_ui";
+
 enum class Route { kSdk, kInternal, kSetting };
 
 constexpr bool Contains(std::span<const std::string_view> names, std::string_view name) {

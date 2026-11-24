@@ -1,0 +1,91 @@
+﻿# Static launcher projections for rows whose live behavior is still in C++.
+# ui_rules.toml can replace these fields when the row migrates.
+
+[defs.display_mode]
+cases = [{when = "!s.fullscreen", value = "windowed"}, {when = "s.fullscreen_exclusive", value = "fullscreen"}, {value = "borderless"}]
+
+[rows.PM_RxDisplayMode]
+reads = ["fullscreen", "fullscreen_exclusive"]
+default = "borderless"
+apply = "live"
+decode = { cases = [{when = "!s.fullscreen", value = "windowed"}, {when = "s.fullscreen_exclusive", value = "fullscreen"}, {value = "borderless"}] }
+values = [
+  {id = "windowed", label = "WINDOWED", writes = [{setting = "fullscreen", value = "false"}]},
+  {id = "borderless", label = "BORDERLESS", writes = [{setting = "fullscreen_exclusive", value = "false"}, {setting = "fullscreen", value = "true"}]},
+  {id = "fullscreen", label = "FULLSCREEN", writes = [{setting = "fullscreen_exclusive", value = "true"}, {setting = "fullscreen", value = "true"}]},
+]
+
+[rows.PM_RxResolution]
+values_from = { generator = "display.sizes", args = {mode = "d.display_mode"} }
+fallback_values = [{id = "1280x720", label = "1280X720"}, {id = "1920x1080", label = "1920X1080"}, {id = "2560x1440", label = "2560X1440"}, {id = "3840x2160", label = "3840X2160"}]
+variants = [{when = "s.fullscreen && s.fullscreen_exclusive", setting = "fullscreen_resolution"}]
+
+[rows.PM_RxMsaa]
+values = [{id = "off", label = "OFF"}, {id = "2", label = "2X"}, {id = "4", label = "4X"}, {id = "8", label = "8X"}]
+variants = [
+  {when = "renderer == 'xenia'", setting = "disable_msaa", default = "false", apply = "restart", values = [{id = "true", label = "OFF"}, {id = "false", label = "2X"}]},
+]
+
+[rows.PM_RxGpuCarSelfRefl]
+reads = ["mcla_gpu_car_selfrefl", "mcla_gpu_car_selfrefl_rt"]
+default = "auto"
+apply = "live"
+decode = {cases = [{when = "s.mcla_gpu_car_selfrefl == 'on' && s.mcla_gpu_car_selfrefl_rt != 'off'", value = "ray_traced"}, {when = "s.mcla_gpu_car_selfrefl == 'on'", value = "on"}, {when = "s.mcla_gpu_car_selfrefl == 'off'", value = "off"}, {value = "auto"}]}
+values = [
+  {id = "auto", label = "AUTO", auto_label = true, writes = [{setting = "mcla_gpu_car_selfrefl", value = "auto"}, {setting = "mcla_gpu_car_selfrefl_rt", value = "auto"}]},
+  {id = "off", label = "OFF", writes = [{setting = "mcla_gpu_car_selfrefl", value = "off"}]},
+  {id = "on", label = "ON", writes = [{setting = "mcla_gpu_car_selfrefl", value = "on"}, {setting = "mcla_gpu_car_selfrefl_rt", value = "off"}]},
+  {id = "ray_traced", label = "RAY TRACED", writes = [{setting = "mcla_gpu_car_selfrefl", value = "on"}, {setting = "mcla_gpu_car_selfrefl_rt", value = "auto"}]},
+]
+
+[rows.PM_RxGpuUpsc]
+reads = ["mcla_gpu_upscaler", "mcla_gpu_fsr"]
+default = "off"
+apply = "live"
+decode = {cases = [{when = "s.mcla_gpu_upscaler == 'dlss'", value = "dlss"}, {when = "s.mcla_gpu_upscaler == 'fsr4'", value = "fsr4"}, {when = "s.mcla_gpu_upscaler == 'fsr31'", value = "fsr31"}, {when = "s.mcla_gpu_fsr", value = "fsr1"}, {value = "off"}]}
+values = [
+  {id = "off", label = "OFF", writes = [{setting = "mcla_gpu_fsr", value = "false"}, {setting = "mcla_gpu_upscaler", value = "off"}]},
+  {id = "fsr1", label = "FSR 1", writes = [{setting = "mcla_gpu_upscaler", value = "off"}, {setting = "mcla_gpu_fsr", value = "true"}]},
+  {id = "fsr31", label = "FSR 3.1", writes = [{setting = "mcla_gpu_fsr", value = "false"}, {setting = "mcla_gpu_upscaler", value = "fsr31"}]},
+  {id = "fsr4", label = "FSR 4", writes = [{setting = "mcla_gpu_fsr", value = "false"}, {setting = "mcla_gpu_upscaler", value = "fsr4"}]},
+  {id = "dlss", label = "DLSS", writes = [{setting = "mcla_gpu_fsr", value = "false"}, {setting = "mcla_gpu_upscaler", value = "dlss"}]},
+]
+
+[rows.PM_RxGpuUpscMode]
+setting = "mcla_gpu_resolution_scale"
+values_from = {generator = "render_scale.shares", args = {renderer = "native"}}
+fallback_values = [{id = "0", label = "100%"}, {id = "1.5", label = "150%"}, {id = "2", label = "200%"}, {id = "3", label = "300%"}]
+variants = [
+  {when = "renderer == 'xenia'", setting = "resolution_scale", default = "1", apply = "restart", values_from = {generator = "render_scale.shares", args = {renderer = "xenia"}}, fallback_values = [
+    {id = "1", label = "1X (720P)"},
+    {id = "2", label = "2X (1440P)"},
+    {id = "3", label = "3X (4K)"},
+  ]},
+]
+
+[rows.PM_RxGpuUpscSharp]
+setting = "mcla_gpu_upscaler_sharpness"
+kind = "number"
+values = [{id = "0", label = "OFF"}, {id = "0.2", label = "0.2"}, {id = "0.4", label = "0.4"}, {id = "0.6", label = "0.6"}, {id = "0.8", label = "0.8"}, {id = "1", label = "1"}]
+
+[rows.PM_RxGpuReflex]
+hidden_unless = "features.latency.kind == 'reflex'"
+
+[rows.PM_RxGpuAntiLag]
+hidden_unless = "features.latency.kind == 'antilag2'"
+
+[rows.PM_RxGpuFrameGen]
+hidden_unless = "features.frame_generation.fsr31 || features.frame_generation.dlss"
+values = [{id = "off", label = "OFF"}, {id = "fsr31", label = "FSR 3.1"}, {id = "dlss", label = "DLSS"}]
+
+[rows.PM_RxGpuFrameGenMult]
+hidden_unless = "features.frame_generation.dlss_multiplier_max > 2"
+values = [{id = "2", label = "2X"}, {id = "3", label = "3X"}, {id = "4", label = "4X"}]
+
+[rows.PM_RxGpuFrameGenFps]
+hidden_unless = "features.frame_generation.fsr31 || features.frame_generation.dlss"
+
+[rows.PM_RxDbgRenderer]
+setting = "sdk_gpu_driver"
+apply = "restart"
+values = [{id = "larecomp", label = "NATIVE"}, {id = "d3d12", label = "XENIA D3D12"}, {id = "vulkan", label = "XENIA VULKAN"}]
