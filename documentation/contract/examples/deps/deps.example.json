@@ -1,0 +1,21 @@
+{
+  "schema": "larecomp.deps",
+  "schema_version": 1,
+  "min_reader": 1,
+  "kits": {
+    "example": {
+      "version": "1.0",
+      "url": "https://example.invalid/v1.0/example.zip",
+      "zip_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "zip_size": 4096,
+      "groups": {
+        "core": {},
+        "frame_generation": { "when": "os.name == 'windows' && gpu.vendor == 'nvidia'" }
+      },
+      "files": [
+        { "path": "include/example.h", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "group": "core" },
+        { "path": "bin/example_fg.dll", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "group": "frame_generation" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://larecomp.invalid/contract/deps.schema.json",
+  "title": "LARecomp dependency kits",
+  "description": "Pinned third-party files. The URL is an archive when zip_sha256 is present and a base URL for individual files otherwise. Paths are relative to the kit root, and a missing group condition means the group can be used on any host.",
+  "type": "object",
+  "required": ["schema", "schema_version", "min_reader", "kits"],
+  "properties": {
+    "schema": { "const": "larecomp.deps" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "min_reader": { "type": "integer", "minimum": 1 },
+    "kits": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["version", "url", "groups", "files"],
+        "properties": {
+          "version": { "type": "string", "minLength": 1 },
+          "url": { "type": "string", "pattern": "^https://[^ ]+$" },
+          "zip_sha256": { "$ref": "#/$defs/sha256" },
+          "zip_size": { "type": "integer", "minimum": 1 },
+          "groups": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "object",
+              "properties": { "when": { "type": "string", "minLength": 1 } }
+            }
+          },
+          "files": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "required": ["path", "sha256", "group"],
+              "properties": {
+                "path": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$" },
+                "sha256": { "$ref": "#/$defs/sha256" },
+                "group": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+              }
+            }
+          }
+        },
+        "oneOf": [
+          { "required": ["zip_sha256", "zip_size"] },
+          { "allOf": [{ "not": { "required": ["zip_sha256"] } }, { "not": { "required": ["zip_size"] } }] }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "schema": "larecomp.deps",
+  "schema_version": 1,
+  "min_reader": 1,
+  "kits": {
+    "fidelityfx": {
+      "version": "2.4.0",
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7539ae8b6568ad29ed78a753404351daf3b5cca7",
+      "groups": {
+        "core": {
+          "when": "os.name == 'windows'"
+        },
+        "frame_generation": {
+          "when": "os.name == 'windows'"
+        },
+        "ray_reconstruction": {
+          "when": "os.name == 'windows'"
+        }
+      },
+      "files": [
+        { "path": "Kits/FidelityFX/signedbin/amd_fidelityfx_loader_dx12.dll", "sha256": "e2191d3c0828be45eb8affd4e3ec0378f2293adc345b772a7170edcf3b021ecb", "group": "core" },
+        { "path": "Kits/FidelityFX/signedbin/amd_fidelityfx_loader_vk.dll", "sha256": "38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9", "group": "core" },
+        { "path": "Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll", "sha256": "aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace", "group": "core" },
+        { "path": "Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_vk.dll", "sha256": "4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7", "group": "core" },
+        { "path": "Kits/FidelityFX/docs/license.md", "sha256": "32357259b965d6a8001e9e508ba60eda6034027c5923a7d226ffbaff813c2bfb", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/dx12/ffx_api_dx12.h", "sha256": "c9afbc3c4c673723e9e5369a666f0ff54560543b5a93537f8ff453bf1c3bf530", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/dx12/ffx_api_dx12.hpp", "sha256": "a4f02dcf86ed5c05f76b3cb83d8b3410f0b8c96f5d6042e48cca30dd25bac7f2", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/ffx_api.h", "sha256": "4d9dcf243ef5efbf03340a02f16b51a22053243a22e8a9a0b3ce91c26982b4bf", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/ffx_api.hpp", "sha256": "af441486342abfeb189c5672f3216a28446b582ad314ec4e754b81e20bb8a840", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/ffx_api_loader.h", "sha256": "18d1901dbbc881e8131b91c65ad44bb3b4a1de6c31435d5b75236f16727ba80e", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/ffx_api_matrix_helpers.h", "sha256": "f37055b1980562b75295ac0ee3f4b60dd314c8c2f21a41b7d71d9f9070858bd5", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/ffx_api_matrix_helpers.hpp", "sha256": "8f671dadf9e1267dd8a51d224e11b27656ddb9da51ef9524a177b89114548737", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/ffx_api_types.h", "sha256": "53f07c113a9ba493f297656e4481b6539aed0afc9f3cc8da682aa477d270c46c", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/vk/ffx_api_vk.h", "sha256": "09ac1855bc4c2f711243d6982909385072ca3f8d30db44d1a82ee5bd637832ad", "group": "core" },
+        { "path": "Kits/FidelityFX/api/include/vk/ffx_api_vk.hpp", "sha256": "7757c3ffa6b1e189bca5eec3b8c93aa8f802386642648a0dfeb8c2c52502e5ba", "group": "core" },
+        { "path": "Kits/FidelityFX/upscalers/include/ffx_upscale.h", "sha256": "13091e7fe5fd9c82b1fb7c044b9f08f664d9653f599d2ea500738709236fca4d", "group": "core" },
+        { "path": "Kits/FidelityFX/upscalers/include/ffx_upscale.hpp", "sha256": "52066379fd629080ed5c9a2821627cd7a3b972e6592565c7f3fa54a95404bac0", "group": "core" },
+        { "path": "Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h", "sha256": "bc78a18aa95f5157b4699b0602700592b624788c5bc55d1762cb46a1b6557ca1", "group": "frame_generation" },
+        { "path": "Kits/FidelityFX/framegeneration/include/ffx_framegeneration_api_types.h", "sha256": "396596af3df63310674e8036abd2ad0fcd061e61334e7a2c76653a2be3c686b4", "group": "frame_generation" },
+        { "path": "Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_dx12.dll", "sha256": "e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6", "group": "frame_generation" },
+        { "path": "Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_vk.dll", "sha256": "d002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4", "group": "frame_generation" },
+        { "path": "Kits/FidelityFX/denoisers/include/ffx_denoiser.h", "sha256": "64deddd5482a302903b06d1a319b83e66d1792f493447204a2356de2d48f3ca5", "group": "ray_reconstruction" },
+        { "path": "Kits/FidelityFX/signedbin/amd_fidelityfx_denoiser_dx12.dll", "sha256": "4ca5182d5c8a855441e0c82673716e4776f9afcfadfdb4225d2fc6113b0f853c", "group": "ray_reconstruction" }
+      ]
+    },
+    "streamline": {
+      "version": "2.14.16",
+      "url": "https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.14.16/streamline-sdk-v2.14.16.zip",
+      "zip_sha256": "32041e51db0cab709a271b72a352281b690c2abbd669a827809401a5dd23956b",
+      "zip_size": 276016170,
+      "groups": {
+        "core": {
+          "when": "os.name == 'windows' && gpu.vendor == 'nvidia'"
+        },
+        "frame_generation": {
+          "when": "os.name == 'windows' && gpu.vendor == 'nvidia'"
+        },
+        "ray_reconstruction": {
+          "when": "os.name == 'windows' && gpu.vendor == 'nvidia'"
+        }
+      },
+      "files": [
+        { "path": "include/sl.h", "sha256": "e1e81a7428d15b30db37587e9469bd68a56d630d820a4accec0aee3b17e157dd", "group": "core" },
+        { "path": "include/sl_appidentity.h", "sha256": "1337385ac9867d66fa6beb34c750e79aaf25a74a156a47e83f24937299dade87", "group": "core" },
+        { "path": "include/sl_consts.h", "sha256": "17de74afda2cb96204ff380464bed926f660d92015fe0304dff4e329509c88b9", "group": "core" },
+        { "path": "include/sl_core_api.h", "sha256": "328dc3a2c1dee579c200ca97e2d5b1ec38c893be4ba2745ef5ad506af7172e81", "group": "core" },
+        { "path": "include/sl_core_types.h", "sha256": "f420cb052ce14489fc9fa0d933c3ed81a010deb01fa13b1aa8d45da1c5ba3234", "group": "core" },
+        { "path": "include/sl_device_wrappers.h", "sha256": "af7741305b1a468c3a83efaa2005ecd53d2ffd7aadb8ec6868c9dcb4a8a8e3a1", "group": "core" },
+        { "path": "include/sl_dlss.h", "sha256": "d2c8c61fa71794c8ba424cebce5b3079ebfab8e47ed98b4b00cf8b257ecfd6b5", "group": "core" },
+        { "path": "include/sl_dlss_d.h", "sha256": "6e51cf9815301c597d0657970a668147e34a20db5a76d0af254ec11248f5c4fe", "group": "ray_reconstruction" },
+        { "path": "include/sl_dlss_g.h", "sha256": "1fc18cbe004e280df1f787276d08a1b28b8a8c4c65856fbaa659f56dff6a915d", "group": "frame_generation" },
+        { "path": "include/sl_pcl.h", "sha256": "f43c5135fc8d5349ccd345e424f8cf1f61953a9f17e9897204b0741a3ab7b0fb", "group": "frame_generation" },
+        { "path": "include/sl_reflex.h", "sha256": "3b623a1189e04a686384d224a58c4ad9974c4e6e3204077676f6ec529475164c", "group": "frame_generation" },
+        { "path": "include/sl_result.h", "sha256": "2a0f6c12863bdc00b38910a5ec85d1f083c5671ee817a920afe626ac2a9100f7", "group": "core" },
+        { "path": "include/sl_security.h", "sha256": "a36b1c20394402bee7ce738089a5a1305ff6e9dd9dd517566154ce834f7c32b4", "group": "core" },
+        { "path": "include/sl_struct.h", "sha256": "28deda67ea1a74371dd4f33ff4842b7db03b2db007001da6db06f6982297928d", "group": "core" },
+        { "path": "include/sl_version.h", "sha256": "2a43f565b45a07d4a4259dc61038ec93a7fb8ce7cb3509ea1fbeeb217f9a1ce8", "group": "core" },
+        { "path": "bin/x64/sl.interposer.dll", "sha256": "b1d7395aebd7b9722841d64dcf7433680020b6a8e421f851c16d5ba0c2182edf", "group": "core" },
+        { "path": "bin/x64/sl.common.dll", "sha256": "38eea3b4209afc455636ea372b5933d65fcc13becec6c84d101dcfc4d8648f75", "group": "core" },
+        { "path": "bin/x64/sl.dlss.dll", "sha256": "18871eea87c90345da97d8109faa81ea7d5840e8d99b51b55b0e46cfa177f84e", "group": "core" },
+        { "path": "bin/x64/nvngx_dlss.dll", "sha256": "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e", "group": "core" },
+        { "path": "bin/x64/sl.dlss_g.dll", "sha256": "3ed9538df724993bea8a050195a6a78b9c8c8a566d5b05ade477aab3c390e90f", "group": "frame_generation" },
+        { "path": "bin/x64/nvngx_dlssg.dll", "sha256": "8d59d49b36410dd6b62fef2503a5871d347415bd85d943fa0848563a95dd50c7", "group": "frame_generation" },
+        { "path": "bin/x64/sl.dlss_d.dll", "sha256": "8dff36fd063094eb1f659e8d4dcd52c7423859a9c4a3df3796084c48412d60ac", "group": "ray_reconstruction" },
+        { "path": "bin/x64/nvngx_dlssd.dll", "sha256": "b49435ae346f227feafe7bbe937d88277ea0ee7323975ec06488f377fdb46cee", "group": "ray_reconstruction" },
+        { "path": "bin/x64/sl.reflex.dll", "sha256": "443577e869352436ff7ec8f4d9c90418d3e95368436ce219261e0f4f07a38122", "group": "frame_generation" },
+        { "path": "bin/x64/sl.pcl.dll", "sha256": "5698c38e722318681f215c9fe68e45b9bedd51378acc699d8eee26e961e57770", "group": "frame_generation" },
+        { "path": "bin/x64/nvngx_dlss.license.txt", "sha256": "3027f23ca5a46dd9cb8183fbd522983a86f64d7daac5982912bf9f214671f294", "group": "core" },
+        { "path": "bin/x64/NvLowLatencyVk.dll", "sha256": "2a77dc3e1c724b7eea5755be0ae7423752e79a2459fae72181a9f00e3507e5d6", "group": "core" },
+        { "path": "bin/x64/reflex.license.txt", "sha256": "ebf83c07fb3b2939908c3795d887afde3161c89a28ba391724efc784ce1bdabe", "group": "core" },
+        { "path": "license.txt", "sha256": "7b6f23e7d6f3ad6292f9308d2b42cdc3d82ae4e9b2abb55f230279d83bedd43d", "group": "core" },
+        { "path": "3rd-party-licenses.md", "sha256": "cb251639994465f31d2178c16acedf1ff4f9cef1c370a09782ed36d4c86c1dca", "group": "core" }
+      ]
+    }
+  }
+}

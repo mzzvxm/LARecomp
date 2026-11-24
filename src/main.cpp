@@ -10,6 +10,7 @@
 #include "settings_ui/action.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 
 #if defined(_WIN32)
@@ -82,8 +83,17 @@ static int LarecompMain(LarecompApp& app, const rex::CLIArgList& args) {
     return LarecompApp::FinishProcess(app.Shutdown());
 }
 
+// BS-G: --describe is answered before the title app is constructed.
+namespace larecomp {
+extern const char kDescribeJson[];  // Generated when CMake writes the install manifest.
+}
+
 // GX: catalog collection runs without creating the title app, its window or the game-running marker.
 static int ReXTitleEntry(const rex::CLIArgList& args) {
+    if (args.Has("describe")) {
+        // CHECK: confirm the WIN32 executable sends the JSON to the launcher's stdout pipe.
+        return std::fputs(larecomp::kDescribeJson, stdout) >= 0 && std::fflush(stdout) == 0 ? 0 : 1;
+    }
     constexpr auto dump_flag = larecomp::cli::kDumpSettingsUi;
     if (args.Has(dump_flag)) return larecomp::settings_ui::DumpSettingsUi(args.Get(dump_flag));
     if (!args.Has("build_shader_packs") && !args.Has("precache_pipelines") && !args.Has("build_city_pack") &&
@@ -93,5 +103,6 @@ static int ReXTitleEntry(const rex::CLIArgList& args) {
     LarecompApp app;
     return LarecompMain(app, args);
 }
+
 REX_DETAIL_ENTRY_POINTS(ReXTitleEntry)
 #endif // REXGLUE_HAS_XEO3_TARGET

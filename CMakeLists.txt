@@ -1044,6 +1044,14 @@ else()
     set_property(SOURCE src/mc_engine/hooks/race_line.cpp APPEND PROPERTY
         OBJECT_DEPENDS "${_race_line_twin_dir}/race_line_twin.stamp")
 
+    # BS-G: Record the SDK's own runtime list and the files produced below.
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/InstallManifest.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReadDeps.cmake")
+    larecomp_read_kit(fidelityfx larecomp_fidelityfx_pins)
+    larecomp_read_kit(streamline larecomp_streamline_pins)
+    larecomp_stage(larecomp "$<TARGET_FILE_NAME:larecomp>" program)
+    larecomp_stage_sdk_runtime(larecomp)
+
     # Third-party code that rexglue 0.10 installed for every program and 0.11 keeps private. Each is a submodule of
     # LARecomp (.gitmodules), pinned to the commit the 0.11 SDK itself pins (o1heap: the one the 0.10 SDK pinned).
 
@@ -1176,15 +1184,13 @@ else()
     set_target_properties(larecomp_mspack PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
     target_include_directories(larecomp_mspack PRIVATE "${LARECOMP_MSPACK_DIR}")
     target_compile_options(larecomp_mspack PRIVATE -w)
+    # BS-G: The library and its notices are produced beside the executable.
+    larecomp_stage(larecomp_mspack "$<TARGET_FILE_NAME:larecomp_mspack>" dll)
     foreach(_larecomp_mspack_notice IN LISTS LARECOMP_MSPACK_NOTICES)
-        add_custom_command(TARGET larecomp_mspack POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/${_larecomp_mspack_notice}"
-                    "$<TARGET_FILE_DIR:larecomp_mspack>/${_larecomp_mspack_notice}"
-            COMMENT "Copying ${_larecomp_mspack_notice} next to larecomp_mspack")
+        larecomp_stage(larecomp_mspack "${_larecomp_mspack_notice}" licence
+            SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/${_larecomp_mspack_notice}"
+            LICENCE_FOR "$<TARGET_FILE_NAME:larecomp_mspack>")
     endforeach()
-    set_source_files_properties(src/mc_engine/modloader/xcompress.cpp PROPERTIES
-        INCLUDE_DIRECTORIES "${LARECOMP_MSPACK_DIR}")
     target_link_libraries(larecomp PRIVATE larecomp_mspack)
 
     # No GTK: the ISO installer and the save importer ask the SDK's file dialog (SDL3's: the xdg desktop portal, then zenity) on Linux and show a
@@ -1318,8 +1324,8 @@ else()
         set(LARECOMP_STREAMLINE_HAS_FRAMEGEN OFF)
         if(LARECOMP_STREAMLINE_KIT)
             set(_larecomp_sl_fg_ok ON)
-            foreach(_larecomp_sl_fg_file include/sl_dlss_g.h include/sl_reflex.h include/sl_pcl.h
-                    bin/x64/sl.dlss_g.dll bin/x64/nvngx_dlssg.dll bin/x64/sl.reflex.dll bin/x64/sl.pcl.dll)
+            larecomp_kit_group_files("${larecomp_streamline_pins}" frame_generation _larecomp_sl_fg_files)
+            foreach(_larecomp_sl_fg_file IN LISTS _larecomp_sl_fg_files)
                 if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_fg_file}")
                     set(_larecomp_sl_fg_ok OFF)
                 endif()
@@ -1338,7 +1344,8 @@ else()
         set(LARECOMP_STREAMLINE_HAS_RR OFF)
         if(LARECOMP_STREAMLINE_KIT)
             set(_larecomp_sl_rr_ok ON)
-            foreach(_larecomp_sl_rr_file include/sl_dlss_d.h bin/x64/sl.dlss_d.dll bin/x64/nvngx_dlssd.dll)
+            larecomp_kit_group_files("${larecomp_streamline_pins}" ray_reconstruction _larecomp_sl_rr_files)
+            foreach(_larecomp_sl_rr_file IN LISTS _larecomp_sl_rr_files)
                 if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_rr_file}")
                     set(_larecomp_sl_rr_ok OFF)
                 endif()
@@ -1470,6 +1477,7 @@ else()
             get_filename_component(_larecomp_compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
             find_program(LARECOMP_OBJCOPY NAMES llvm-objcopy objcopy HINTS "${_larecomp_compiler_dir}")
             if(LARECOMP_OBJCOPY)
+                larecomp_stage(larecomp "$<TARGET_FILE_NAME:larecomp>.debug" other OPTIONAL)
                 add_custom_command(TARGET larecomp POST_BUILD
                     COMMAND "${LARECOMP_OBJCOPY}" --only-keep-debug "$<TARGET_FILE:larecomp>" "$<TARGET_FILE:larecomp>.debug"
                     COMMAND "${LARECOMP_OBJCOPY}" --strip-all "$<TARGET_FILE:larecomp>"
@@ -1774,173 +1782,134 @@ else()
     target_compile_features(larecomp_shutdown_signals_test PRIVATE cxx_std_23)
     target_link_libraries(larecomp_shutdown_signals_test PRIVATE Threads::Threads)
 
+    # BS-G game runtime staging. Each copy records its output in the manifest.
+    # Enumerate source assets rather than staging the build's entire assets/
+    # folder, which can also contain the player's codegen inputs.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
-        add_custom_command(TARGET larecomp POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/assets"
-            "$<TARGET_FILE_DIR:larecomp>/assets"
-        )
+        file(GLOB_RECURSE _larecomp_assets LIST_DIRECTORIES FALSE CONFIGURE_DEPENDS
+            RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/src/assets" "${CMAKE_CURRENT_SOURCE_DIR}/src/assets/*")
+        foreach(_larecomp_asset IN LISTS _larecomp_assets)
+            larecomp_stage(larecomp "assets/${_larecomp_asset}" data
+                SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/assets/${_larecomp_asset}")
+        endforeach()
     endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/gamecontrollerdb.txt")
-        add_custom_command(TARGET larecomp POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/gamecontrollerdb.txt"
-                    "$<TARGET_FILE_DIR:larecomp>/gamecontrollerdb.txt"
-            COMMENT "Copying gamecontrollerdb.txt next to larecomp.exe")
+        larecomp_stage(larecomp gamecontrollerdb.txt data
+            SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/assets/gamecontrollerdb.txt")
     endif()
 
-    # The starter pipeline list, beside the shader pack (src/gpu/pipelines.h).
+    # The starter pipeline list (src/gpu/pipelines.h).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/mcla_pipelines.bin")
-        add_custom_command(TARGET larecomp POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:larecomp>/assets"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/mcla_pipelines.bin"
-                    "$<TARGET_FILE_DIR:larecomp>/assets/mcla_pipelines.bin"
-            COMMENT "Copying the starter pipeline list next to the shader pack")
+        larecomp_stage(larecomp assets/mcla_pipelines.bin data
+            SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/assets/mcla_pipelines.bin")
     endif()
 
-    # The FidelityFX runtime (when LARECOMP_FFX_SDK_DIR is set): the loader and the upscaler DLL of each
-    # API the build has, AMD-signed and unchanged, and the licence that must travel with them (its
-    # redistribution terms: binary form only, the notice reproduced). The renderer opens them by full
-    # path from this folder and nowhere else.
+    # The signed FidelityFX runtime for the APIs built here, and its licence.
     if(LARECOMP_FFX_KIT)
-        set(_larecomp_ffx_dlls "")
-        if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
-            list(APPEND _larecomp_ffx_dlls amd_fidelityfx_loader_dx12.dll amd_fidelityfx_upscaler_dx12.dll)
-        endif()
-        if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
-            list(APPEND _larecomp_ffx_dlls amd_fidelityfx_loader_vk.dll amd_fidelityfx_upscaler_vk.dll)
-        endif()
-        # The frame generation effect DLLs (the loader opens them by name from this folder).
+        set(_larecomp_ffx_groups core)
         if(LARECOMP_FFX_HAS_FRAMEGENERATION)
-            if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
-                list(APPEND _larecomp_ffx_dlls amd_fidelityfx_framegeneration_dx12.dll)
-            endif()
-            if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
-                list(APPEND _larecomp_ffx_dlls amd_fidelityfx_framegeneration_vk.dll)
-            endif()
+            list(APPEND _larecomp_ffx_groups frame_generation)
         endif()
-        # The Ray Regeneration effect DLL (Direct3D 12 only; the loader opens it by name from this folder, ray_regen.cpp by its full path).
         if(LARECOMP_FFX_HAS_DENOISER AND "D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
-            list(APPEND _larecomp_ffx_dlls amd_fidelityfx_denoiser_dx12.dll)
+            list(APPEND _larecomp_ffx_groups ray_reconstruction)
         endif()
-        foreach(_larecomp_ffx_dll IN LISTS _larecomp_ffx_dlls)
-            if(NOT EXISTS "${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll}")
-                message(WARNING "FidelityFX: ${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll} is missing")
-                continue()
-            endif()
-            add_custom_command(TARGET larecomp POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll}"
-                        "$<TARGET_FILE_DIR:larecomp>/${_larecomp_ffx_dll}"
-                COMMENT "Copying ${_larecomp_ffx_dll} next to larecomp.exe")
+        foreach(_larecomp_group IN LISTS _larecomp_ffx_groups)
+            larecomp_kit_group_files("${larecomp_fidelityfx_pins}" "${_larecomp_group}" _larecomp_ffx_files)
+            foreach(_larecomp_ffx_file IN LISTS _larecomp_ffx_files)
+                if(NOT _larecomp_ffx_file MATCHES "^Kits/FidelityFX/(signedbin/(.*)_(dx12|vk)\\.dll)$")
+                    continue()
+                endif()
+                set(_larecomp_ffx_rel "${CMAKE_MATCH_1}")
+                set(_larecomp_ffx_api "${CMAKE_MATCH_3}")
+                if((_larecomp_ffx_api STREQUAL "dx12" AND NOT "D3D12" IN_LIST LARECOMP_GPU_BACKENDS) OR
+                   (_larecomp_ffx_api STREQUAL "vk" AND NOT "VULKAN" IN_LIST LARECOMP_GPU_BACKENDS))
+                    continue()
+                endif()
+                if(NOT EXISTS "${LARECOMP_FFX_KIT}/${_larecomp_ffx_rel}")
+                    message(WARNING "FidelityFX: ${LARECOMP_FFX_KIT}/${_larecomp_ffx_rel} is missing")
+                    continue()
+                endif()
+                cmake_path(GET _larecomp_ffx_rel FILENAME _larecomp_ffx_dll)
+                larecomp_stage(larecomp "${_larecomp_ffx_dll}" dll OPTIONAL GROUP "${_larecomp_group}"
+                    SOURCE "${LARECOMP_FFX_KIT}/${_larecomp_ffx_rel}")
+            endforeach()
         endforeach()
         if(EXISTS "${LARECOMP_FFX_KIT}/docs/license.md")
-            add_custom_command(TARGET larecomp POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${LARECOMP_FFX_KIT}/docs/license.md"
-                        "$<TARGET_FILE_DIR:larecomp>/amd_fidelityfx_license.md"
-                COMMENT "Copying the FidelityFX licence next to larecomp.exe")
+            larecomp_stage(larecomp amd_fidelityfx_license.md licence OPTIONAL LICENCE_FOR "amd_fidelityfx_*.dll"
+                SOURCE "${LARECOMP_FFX_KIT}/docs/license.md")
         endif()
     endif()
 
-    # NVIDIA Streamline and DLSS (when LARECOMP_STREAMLINE_DIR is set): the production DLLs of Super
-    # Resolution, NVIDIA-signed and unchanged, and the licence texts that go with them. The renderer
-    # opens them by full path from this folder after checking their signature, and nowhere else.
-    # NvLowLatencyVk.dll is the Vulkan Reflex runtime that sl.common.dll loads by itself on Vulkan.
+    # The signed Streamline runtime for the built groups, including Reflex's
+    # Vulkan runtime (NvLowLatencyVk.dll), and the licences from the kit.
     if(LARECOMP_STREAMLINE_KIT)
-        set(_larecomp_sl_dlls sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll NvLowLatencyVk.dll)
+        set(_larecomp_sl_groups core)
         if(LARECOMP_STREAMLINE_HAS_FRAMEGEN)
-            # Frame generation and the two plugins it requires (Reflex and PC latency through Streamline).
-            list(APPEND _larecomp_sl_dlls sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll)
+            list(APPEND _larecomp_sl_groups frame_generation)
         endif()
         if(LARECOMP_STREAMLINE_HAS_RR)
-            # Ray Reconstruction: the plugin and its network (nvngx_dlssd.dll, 46 MB; opened by the plugin, checked by Streamline).
-            list(APPEND _larecomp_sl_dlls sl.dlss_d.dll nvngx_dlssd.dll)
+            list(APPEND _larecomp_sl_groups ray_reconstruction)
         endif()
-        foreach(_larecomp_sl_dll IN LISTS _larecomp_sl_dlls)
-            if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll}")
-                message(WARNING "Streamline: ${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll} is missing")
-                continue()
-            endif()
-            add_custom_command(TARGET larecomp POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll}"
-                        "$<TARGET_FILE_DIR:larecomp>/${_larecomp_sl_dll}"
-                COMMENT "Copying ${_larecomp_sl_dll} next to larecomp.exe")
+        foreach(_larecomp_group IN LISTS _larecomp_sl_groups)
+            larecomp_kit_group_files("${larecomp_streamline_pins}" "${_larecomp_group}" _larecomp_sl_files)
+            foreach(_larecomp_sl_file IN LISTS _larecomp_sl_files)
+                if(NOT _larecomp_sl_file MATCHES "^bin/x64/(.*\\.dll)$")
+                    continue()
+                endif()
+                set(_larecomp_sl_dll "${CMAKE_MATCH_1}")
+                if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_file}")
+                    message(WARNING "Streamline: ${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_file} is missing")
+                    continue()
+                endif()
+                larecomp_stage(larecomp "${_larecomp_sl_dll}" dll OPTIONAL GROUP "${_larecomp_group}"
+                    SOURCE "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_file}")
+            endforeach()
         endforeach()
         foreach(_larecomp_sl_notice
-                "bin/x64/nvngx_dlss.license.txt|nvngx_dlss_license.txt"
-                "bin/x64/reflex.license.txt|reflex_license.txt"
-                "license.txt|streamline_license.txt"
-                "3rd-party-licenses.md|streamline_third_party_licenses.md")
-            string(REPLACE "|" ";" _larecomp_sl_pair "${_larecomp_sl_notice}")
-            list(GET _larecomp_sl_pair 0 _larecomp_sl_from)
-            list(GET _larecomp_sl_pair 1 _larecomp_sl_to)
+                "bin/x64/nvngx_dlss.license.txt|nvngx_dlss_license.txt|nvngx_dlss.dll"
+                "bin/x64/reflex.license.txt|reflex_license.txt|NvLowLatencyVk.dll"
+                "license.txt|streamline_license.txt|sl.interposer.dll"
+                "3rd-party-licenses.md|streamline_third_party_licenses.md|sl.interposer.dll")
+            string(REPLACE "|" ";" _larecomp_sl_notice "${_larecomp_sl_notice}")
+            list(GET _larecomp_sl_notice 0 _larecomp_sl_from)
+            list(GET _larecomp_sl_notice 1 _larecomp_sl_to)
+            list(GET _larecomp_sl_notice 2 _larecomp_sl_licence_for)
             if(EXISTS "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_from}")
-                add_custom_command(TARGET larecomp POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                            "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_from}"
-                            "$<TARGET_FILE_DIR:larecomp>/${_larecomp_sl_to}"
-                    COMMENT "Copying ${_larecomp_sl_to} next to larecomp.exe")
+                larecomp_stage(larecomp "${_larecomp_sl_to}" licence OPTIONAL
+                    SOURCE "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_from}" LICENCE_FOR "${_larecomp_sl_licence_for}")
             endif()
         endforeach()
     endif()
 
     if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")
-        add_custom_command(TARGET larecomp POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12"
-                    "$<TARGET_FILE_DIR:larecomp>/D3D12"
-            COMMENT "Copying Agility SDK runtime binaries next to larecomp.exe")
+        larecomp_stage(larecomp D3D12 data DIRECTORY SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")
     endif()
 
     if(NOT WIN32 AND NOT APPLE)
-        # Linux. What a Windows executable carries inside it or in assets/D3D12 sits next to the
-        # executable instead.
-        #
-        # The shader compiler the shader pack builder loads, from <exe folder>/D3D12/ as on Windows
-        # (bootprogress/larecomp_shader_build.cpp): libdxcompiler.so, fetched and checked by
-        # cmake/FetchDxcLinux.cmake, with the licences that travel with it (the Windows DLLs of
-        # assets/D3D12 are not copied here).
+        # The shader pack builder loads the Linux compiler from the D3D12
+        # subdirectory as on Windows. The Windows DLLs are absent here.
         include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchDxcLinux.cmake")
         if(LARECOMP_DXC_LINUX_LIB)
-            add_custom_command(TARGET larecomp POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:larecomp>/D3D12"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${LARECOMP_DXC_LINUX_LIB}"
-                        "$<TARGET_FILE_DIR:larecomp>/D3D12/libdxcompiler.so"
-                COMMENT "Copying libdxcompiler.so next to larecomp")
+            larecomp_stage(larecomp D3D12/libdxcompiler.so dll SOURCE "${LARECOMP_DXC_LINUX_LIB}")
             if(LARECOMP_DXC_LINUX_LICENCE)
-                add_custom_command(TARGET larecomp POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                            "${LARECOMP_DXC_LINUX_LICENCE}"
-                            "$<TARGET_FILE_DIR:larecomp>/D3D12/LICENSE-LLVM.txt"
-                    COMMENT "Copying the DXC licence next to libdxcompiler.so")
+                larecomp_stage(larecomp D3D12/LICENSE-LLVM.txt licence LICENCE_FOR D3D12/libdxcompiler.so
+                    SOURCE "${LARECOMP_DXC_LINUX_LICENCE}")
             endif()
             if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12/LICENCE-MIT.txt")
-                add_custom_command(TARGET larecomp POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                            "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12/LICENCE-MIT.txt"
-                            "$<TARGET_FILE_DIR:larecomp>/D3D12/LICENCE-MIT.txt"
-                    COMMENT "Copying the DXC MIT licence next to libdxcompiler.so")
+                larecomp_stage(larecomp D3D12/LICENCE-MIT.txt licence LICENCE_FOR D3D12/libdxcompiler.so
+                    SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12/LICENCE-MIT.txt")
             endif()
         endif()
 
-        # Key caps (src/keycaps: RCDATA in the Windows executable) and the achievements' labels
-        # (src/achievements.toml: ACHIEVEMENTS_TOML in larecomp.rc), read from files here
-        # (mc_engine/keyboard_native.cpp ReadCapBytes, larecomp_app.h OnPostLoadXexImage).
-        add_custom_command(TARGET larecomp POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:larecomp>/assets"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CMAKE_CURRENT_SOURCE_DIR}/src/achievements.toml"
-                    "$<TARGET_FILE_DIR:larecomp>/assets/achievements.toml"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${CMAKE_CURRENT_SOURCE_DIR}/src/keycaps"
-                    "$<TARGET_FILE_DIR:larecomp>/keycaps"
-            COMMENT "Copying the key caps and the achievements file next to larecomp")
+        # The Windows executable embeds these as resources.
+        larecomp_stage(larecomp assets/achievements.toml data SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/achievements.toml")
+        larecomp_stage(larecomp keycaps data DIRECTORY SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/keycaps")
     endif()
+
+    larecomp_stage(larecomp "$<TARGET_FILE_NAME:larecomp_online_tool>" program)
+    larecomp_stage(larecomp install-manifest.json data)
+    larecomp_generate_install_manifest(larecomp)
 
     # Floating-point contraction and the CPU level, for the targets that hold the guest code and
     # the host code it calls: larecomp (the executable's own sources and the SDK's entry point
