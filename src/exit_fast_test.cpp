@@ -209,6 +209,19 @@ int RunLegacyFlush(const char* path) {
   return larecomp::exitfast::Finish(5);  // off: the code comes back, after the hook
 }
 
+// The off switch with the app's own note call (LarecompApp::FinishProcess): the note runs once, before the code comes back, however often it is asked.
+int RunLegacyNote(const char* path) {
+  g_order_path = path;
+  StartWatchdog();
+  larecomp::exitfast::AddFlush("one", &OrderFlush1);
+  larecomp::exitfast::SetNote(&OrderNote);
+  larecomp::exitfast::Arm(false);
+  const int code = larecomp::exitfast::Finish(6);
+  larecomp::exitfast::RunNote();
+  larecomp::exitfast::RunNote();
+  return code;
+}
+
 int RunQueued(bool with_hook, const char* path) {
   StartWatchdog();
   g_writer = new QueuedWriter();
@@ -313,6 +326,7 @@ int main(int argc, char** argv) {
   if (argc >= 3 && std::strcmp(argv[1], "code") == 0) return RunCode();
   if (argc >= 3 && std::strcmp(argv[1], "order") == 0) return RunOrder(argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "legacy-flush") == 0) return RunLegacyFlush(argv[2]);
+  if (argc >= 3 && std::strcmp(argv[1], "legacy-note") == 0) return RunLegacyNote(argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "hang-other") == 0) return RunHangOtherThread(argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "hang-helper") == 0) return RunHangInHelper(argv[2]);
   if (argc >= 3 && std::strcmp(argv[1], "queued-hook") == 0) return RunQueued(true, argv[2]);
@@ -355,6 +369,13 @@ int main(int argc, char** argv) {
   std::printf("off switch: status %d, text '%s'\n", legacy_flush_status, Strip(ReadAll(legacy_flush_path)).c_str());
   CHECK(legacy_flush_status == 5);
   CHECK(Strip(ReadAll(legacy_flush_path)) == "flush1\n");
+
+  // the off switch with RunNote (the app's path since 11-24): the note once, after the hook, and the code comes back
+  const std::string legacy_note_path = file("legacy-note.txt");
+  const int legacy_note_status = Spawn(argv[0], "legacy-note", legacy_note_path);
+  std::printf("off switch with the note: status %d, text '%s'\n", legacy_note_status, Strip(ReadAll(legacy_note_path)).c_str());
+  CHECK(legacy_note_status == 6);
+  CHECK(Strip(ReadAll(legacy_note_path)) == "flush1\nnote\n");
 
   // the watchdog: the hook the hung thread is inside is skipped, the ones behind it run, the status is the watchdog's own
   CHECK(larecomp::exitfast::kWatchdogExitCode != 0 && larecomp::exitfast::kWatchdogExitCode != 3 && larecomp::exitfast::kWatchdogExitCode != kMetDestroyed &&

@@ -103,6 +103,25 @@ inline void SetNote(Hook hook) {
   s.note = hook;
 }
 
+// Runs the note hook now, once (EndNow then skips it). The off switch's path (mcla_fast_exit=false) calls it before main returns: the SDK's
+// main wrapper ends its logger after main, so the C runtime's atexit handler could no longer write the line (EXIT-HARD 11-24: no "Process
+// exiting normally" line in the off runs of both APIs).
+inline void RunNote() {
+  detail::State& s = detail::S();
+  Hook note = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    note = s.note;
+    s.note = nullptr;
+  }
+  if (note) {
+    try {
+      note();
+    } catch (...) {
+    }
+  }
+}
+
 // The switch. On at the start (the default of mcla_fast_exit); the app sets it from the setting before the SDK shuts down.
 inline void Arm(bool on) { detail::S().armed.store(on, std::memory_order_release); }
 inline bool Armed() { return detail::S().armed.load(std::memory_order_acquire); }
@@ -144,7 +163,8 @@ inline Report RunFlushes() {
   Hook note = nullptr;
   {
     std::lock_guard<std::mutex> lock(s.mutex);
-    note = s.note;
+    note = s.note;  // null when RunNote already ran it
+    s.note = nullptr;
   }
   if (note) {
     try {

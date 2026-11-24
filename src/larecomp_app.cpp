@@ -1376,6 +1376,7 @@ int LarecompApp::FinishProcess(int code) {
     // writers that finished a file in their destructor (the state log, the free camera's recording): their hooks run in this mode too.
     LARECOMP_APP_INFO("[quit] mcla_fast_exit is off: the process ends through the C runtime's exit ({} flush hook(s) ran in {} ms{}); the exe's global objects are not destroyed in either mode",
                       report.ran, report.ms, report.threw > 0 ? ", some threw" : "");
+    larecomp::exitfast::RunNote();  // "Process exiting normally" while the logger still runs (the atexit handler comes after the SDK ended it)
     return code;
   }
   LARECOMP_APP_INFO("[quit] fast exit: the orderly shutdown is done ({} flush hook(s) in {} ms{}); the process ends now with code {}, without the static destructors (mcla_fast_exit)",
