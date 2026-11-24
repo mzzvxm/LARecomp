@@ -658,7 +658,7 @@ struct Def {
 
 struct PresetTable {                       // settings-ui.json presets (section 1.9), as far as the evaluator reads it
   std::vector<std::pair<std::shared_ptr<Program>, std::string>> class_to_preset;
-  std::map<std::string, std::map<std::string, Value>> values;   // preset name -> setting -> value
+  std::map<std::string, std::map<std::string, Value>> values;   // preset name -> setting -> value, TYPED by the setting's type like Setting() (the file holds text)
 };
 
 class Env {

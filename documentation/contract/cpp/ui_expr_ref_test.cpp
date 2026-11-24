@@ -160,7 +160,14 @@ class JsonEnv final : public Env {
       }
       if (const Json* items = presets->Find("items")) {
         for (const auto& kv : items->o) {
-          if (const Json* vals = kv.second.Find("values")) preset_table_.values[kv.first] = Cells(vals);
+          if (const Json* vals = kv.second.Find("values")) {
+            std::map<std::string, Value> typed;   // a preset's value is the file's text: typed by its setting, like Setting()
+            for (const auto& pv : vals->o) {
+              auto s = settings_.find(pv.first);
+              typed[pv.first] = s == settings_.end() ? Value::Null() : TypedSetting(s->second.type, ToValue(&pv.second));
+            }
+            preset_table_.values[kv.first] = std::move(typed);
+          }
         }
       }
       has_presets_ = true;

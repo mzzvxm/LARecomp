@@ -11,6 +11,7 @@
       "mcla_gpu_shadow_resolution": {"type": "string", "default": "auto", "auto": {"by": "class", "cells": {"low": "game", "mid": "high", "high": "high"}, "handheld": {"low": "high"}}},
       "mcla_gpu_traffic_range": {"type": "number", "default": "0", "auto": {"by": "class", "auto_value": 0, "cells": {"low": 150, "mid": 300, "high": 400}}},
       "mcla_gpu_example_preset": {"type": "string", "default": "auto", "auto": {"by": "preset"}},
+      "mcla_gpu_example_preset_num": {"type": "int", "default": "0", "auto": {"by": "preset", "auto_value": 0}},
       "mcla_gpu_example_preset_gap": {"type": "string", "default": "auto", "auto": {"by": "preset"}},
       "mcla_gpu_weird": {"type": "string", "default": "auto", "auto": {"by": "future_rule", "cells": {"low": "x"}}},
       "mcla_gpu_car_selfrefl": {"type": "string", "default": "auto", "auto": {"by": "class", "cells": {"low": "off", "mid": "on", "high": "on"}}},
@@ -41,7 +42,7 @@
       "null_when": {"cases": [{"when": "gpu.class == 'x'", "value": "skipped"}, {"value": "default"}]},
       "host_is_windows": "os.name == 'windows'"
     },
-    "presets": {"class_to_preset": [{"when": "gpu.class == 'high' && gpu.rt_tier == 'strong'", "preset": "enhanced_rt_ultra"}, {"when": "gpu.class == 'high'", "preset": "enhanced_ultra"}, {"when": "true", "preset": "vanilla"}], "items": {"vanilla": {"values": {"mcla_gpu_example_preset": "off"}}, "enhanced_ultra": {"values": {"mcla_gpu_example_preset": "high"}}, "enhanced_rt_ultra": {"values": {"mcla_gpu_example_preset": "ultra"}}}}
+    "presets": {"class_to_preset": [{"when": "gpu.class == 'high' && gpu.rt_tier == 'strong'", "preset": "enhanced_rt_ultra"}, {"when": "gpu.class == 'high'", "preset": "enhanced_ultra"}, {"when": "true", "preset": "vanilla"}], "items": {"vanilla": {"values": {"mcla_gpu_example_preset": "off", "mcla_gpu_example_preset_num": "1"}}, "enhanced_ultra": {"values": {"mcla_gpu_example_preset": "high", "mcla_gpu_example_preset_num": "2"}}, "enhanced_rt_ultra": {"values": {"mcla_gpu_example_preset": "ultra", "mcla_gpu_example_preset_num": "3"}}}}
   },
   "contexts": {
     "empty": {},
@@ -350,6 +351,9 @@
     {"id": "resolved.preset_high_without_rt", "ctx": {"base": "rtx5080", "facts": {"gpu": {"rt_tier": "none"}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "high"},
     {"id": "resolved.preset_mid_is_vanilla", "ctx": {"base": "rtx5080", "facts": {"gpu": {"class": "mid"}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "off"},
     {"id": "resolved.preset_unknown_class_is_vanilla", "ctx": {"base": "rtx5080", "facts": {"gpu": {"class": null}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "off", "note": "the last entry has when true: first start stays VANILLA"},
+    {"id": "resolved.preset_value_is_typed_by_the_setting", "ctx": "rtx5080", "expr": "resolved(s.mcla_gpu_example_preset_num)", "expect": 3, "note": "the preset holds the text 3; the setting is an int"},
+    {"id": "resolved.preset_numeric_vanilla", "ctx": {"base": "rtx5080", "facts": {"gpu": {"class": "mid"}}}, "expr": "resolved(s.mcla_gpu_example_preset_num)", "expect": 1},
+    {"id": "resolved.preset_numeric_not_auto", "ctx": {"base": "rtx5080", "config": {"mcla_gpu_example_preset_num": 5}}, "expr": "resolved(s.mcla_gpu_example_preset_num)", "expect": 5},
     {"id": "resolved.preset_value_missing_is_null", "ctx": "rtx5080", "expr": "resolved(s.mcla_gpu_example_preset_gap)", "expect": null},
     {"id": "resolved.preset_not_auto", "ctx": {"base": "rtx5080", "config": {"mcla_gpu_example_preset": "off"}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "off"},
     {"id": "resolved.preset_table_missing_is_null", "ctx": {"base": "rtx5080", "presets": {}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": null, "note": "a host without presets: null"},
