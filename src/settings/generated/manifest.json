@@ -675,6 +675,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_cabin_sun_shadow": {
+  "type": "i32",
+  "default": "2",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: cockpit sun shadow. 0 keeps original visibility, 1 exempts the car from its own screen-space blockers, 2 exempts its shadow map, 3 exempts its RT sun ray from its own body and tyres, 4 restores part of the combined sun loss. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_contact_shadows_car_map_march": {
   "type": "bool",
   "default": "false",

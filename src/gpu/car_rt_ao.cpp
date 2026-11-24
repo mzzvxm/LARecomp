@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- ambient occlusion and contact shadows around the player's car, ray traced. See car_rt_ao.h.
 
 #include "car_rt_ao.h"
+#include "hlsl/cabin_shadow_rules.hlsli"
 
 #include <algorithm>
 #include <array>
@@ -291,7 +292,7 @@ CarRtAo::Result CarRtAo::Record(plume::RenderCommandList* list, const Inputs& in
   push.slots[1] = in.depth->width;
   push.slots[2] = in.depth->height;
   push.slots[3] = (terms.occlusion ? rules::kPushOcclusion : 0u) | (sun ? rules::kPushSun : 0u) | (rays << rules::kPushRaysShift) |
-                  (others << rules::kPushBoxesShift);
+                  (others << rules::kPushBoxesShift) | (sun && in.cabin_sun ? cabin_shadow::kCabinRtFlag : 0u);
   push.rect[0] = rect.x0;
   push.rect[1] = rect.y0;
   push.rect[2] = rect.x1;

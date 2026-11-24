@@ -25,6 +25,7 @@
 
 #include "ao_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
+#include "cabin_shadow_rules.hlsli"
 #if AO_HIZ0
 #include "screen_hiz.hlsli"
 #endif
@@ -42,18 +43,18 @@ static const uint kLastVehicleId = 23u;
 static const float kHalfSurfaceShare = 0.04f;
 static const float kHalfSurfaceFloor = 0.02f;
 
-// Whether the depth target's pixel `p` (the guest's sample 0) belongs to a vehicle.
-bool IsVehiclePixel(int2 p) {
+// The depth target's stencil ID at `p` (the guest's sample 0).
+uint DepthVehicleId(int2 p) {
   const uint slot = g_push.slots.z;
   if (slot == 0xFFFFFFFFu) {
-    return false;
+    return 0u;
   }
 #if AO_DEPTH_MS
   const uint id = StencilOf(g_utextures_ms[slot].Load(p, g_push.slots.y)) >> 2;
 #else
   const uint id = StencilOf(g_utextures[slot].Load(int3(p, 0))) >> 2;
 #endif
-  return id >= kFirstVehicleId && id <= kLastVehicleId;
+  return id >= kFirstVehicleId && id <= kLastVehicleId ? id : 0u;
 }
 
 // The texel the pass writes (the depth with the vehicle mark and, with the G-buffer's normals, the source of the half size block's sample): one function for the plain pass and for the fused one (AO_HIZ0).
@@ -103,8 +104,11 @@ float AoDepthTexel(float2 position_xy) {
     source = min(pixel, last);
     t = AoLinearDepth(AoLoadStored(source));
   }
-  const float marked = AoSetVehicleBit(t, IsVehiclePixel(source));
-  return g_push.slots2.w != 0u ? AoGbSetSource(marked, source_index) : marked;
+  const uint id = DepthVehicleId(source);
+  float marked = AoSetVehicleBit(t, id != 0u);
+  marked = g_push.slots2.w != 0u ? AoGbSetSource(marked, source_index) : marked;
+  // In source-isolation modes, one more low depth bit marks the player, using the same sample as the vehicle tag.
+  return asfloat(CabinMarkDepth(asuint(marked), g_push.slots.w, id));
 }
 
 // AO_HIZ0 (SS-3, screen_shared.h): the same pass also writes the Hi-Z's level 0 into a second target (SV_Target1, R32_FLOAT, the same size): the texel it writes with the marks off

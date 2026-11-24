@@ -51,6 +51,9 @@ constexpr const char* kOffOnNames[] = {"OFF", "ON"};
 constexpr const char* kRaceLineVals[]  = {"0", "30", "60"};
 constexpr const char* kRaceLineNames[] = {"EVERY FRAME", "30 A SECOND", "60 A SECOND"};
 
+constexpr const char* kCabinSunVals[] = {"0", "1", "2", "3", "4"};
+constexpr const char* kCabinSunNames[] = {"OFF", "CONTACT", "CAR MAP", "CAR RT", "FILL"};
+
 constexpr const char* kFreecamVals[]  = {"off", "free"};
 constexpr const char* kFreecamNames[] = {"OFF", "ON"};
 constexpr double kCamSpeedVals[]      = {10.0, 20.0, 40.0, 80.0, 150.0, 300.0};
@@ -198,6 +201,8 @@ const ItemDef kDebugFixesItems[] = {
 // stochastic effects), each with the switch that turns it off. The rows were the second half of FIXES, which had 30 rows against the 24 a page can
 // hold. Every row is NativeOnly, so the hub lists the page only while the Plume renderer runs.
 const ItemDef kDebugPictureFixesItems[] = {
+    NativeOnly(Str("PM_RxDbgCabinSun", "mcla_gpu_cabin_sun_shadow", "CABIN SUN FIX: ",
+                   kCabinSunVals, kCabinSunNames, Len(kCabinSunVals))),
     NativeOnly(Bool("PM_RxDbgDither", "mcla_gpu_present_dither", "PRESENT DITHER: ")),
     NativeOnly(Bool("PM_RxDbgA2c",    "mcla_gpu_a2c_dither_all", "ALPHA TO MASK FIX: ")),
     // The glow of lights keeps its size above a render scale of 1x: the bloom's Gaussian taps follow the

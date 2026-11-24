@@ -20,6 +20,9 @@
 #include "ao_fast.h"
 #include "ao_halo.h"
 #include "ao_paint.h"
+#include "car_frame.h"
+#include "hlsl/cabin_shadow_rules.hlsli"
+#include "mc_engine/camera/camera_look.h"
 #include "ao_stable.h"
 #include "car_rt_ao.h"
 #include "noise_resolve.h"
@@ -1107,6 +1110,10 @@ void AmbientOcclusion::BeginFrame() {
   }
   mode_ = mode;
   contact_mode_ = contact;
+  cabin_shadow_mode_ = cabin_shadow::CabinMode(larecomp::settings::mcla_gpu_cabin_sun_shadow.Get());
+  if (car_frame_ && contact_mode_ != Mode::kOff && cabin_shadow_mode_ != 0u && CurrentCameraRig() == 1) {
+    car_frame_->Request();  // CarFrame collects next frame, including on GPUs with both car shadow producers off.
+  }
   gi_mode_ = gi_mode;
   const bool test = larecomp::settings::mcla_gpu_ssgi_test.Get();
   bool bounce_wanted = test || gi_mode_ != Mode::kOff;
@@ -2712,6 +2719,18 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   UpdateLook();
   Push base;
   FillPush(&base, summary, plan, have_light ? &light : nullptr);
+  if (contact && car_frame_ && summary.stencil_slot != kNoSlot) {
+    const auto& car = car_frame_->Current();
+    // CHECK: Verify the player stencil at guest sample 0 on hands, wheel and gauges across cars and APIs.
+    // CHECK: This stencil also covers any player body panels the cockpit shows, including the hood.
+    plan.cabin_player_id = cabin_shadow::CabinPlayerId(CurrentCameraRig(), trigger_pause_, car.valid, car.player_id);
+    if (plan.cabin_player_id != 0u) {
+      plan.cabin_shadow_mode = cabin_shadow_mode_;
+      if (cabin_shadow::CabinSourceMode(plan.cabin_shadow_mode) != 0u) {
+        base.slots[3] = plan.cabin_player_id;  // Depth resolve only, after which this lane goes back to zero.
+      }
+    }
+  }
   if (normals_.on) {
     // The slot of the image each kind of pass reads (ao_gbuffer.h ContactReads, ApplyReads): the traced size one for the occlusion's and the bounce light's passes, the contact
     // shadows' own size one beside a half size occlusion, and for the apply the picture's size one where there is one (else it takes the depth's normal, as before).
@@ -2779,6 +2798,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       DrawPass(list, DepthFull(), depth_pipeline, push);
     }
   }
+  base.slots[3] = 0u;
   if (normals_.on) {
     if (extract) {
       screen_->RecordNormals(list, chain, base, NormalRecipeFor(normals_));
@@ -2810,6 +2830,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     in.fade_end = base.extra[1];
     in.occlusion = plan.occlusion;  // the plain visibility pass and the bounce light's both take the traced term (hlsl/ao_main_ps.hlsl)
     in.contact = contact;
+    in.cabin_sun = plan.cabin_shadow_mode == cabin_shadow::kCabinRt;
     in.ultra = plan.mode == Mode::kUltra;
     for (int i = 0; i < 3; ++i) {
       in.to_sun[i] = base.light[i];
@@ -3132,6 +3153,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                       (mask_slot != kNoSlot ? kApplyMaskFlag : 0u);
     push.slots2[0] = contact_applied ? contact_slot : 0u;
     push.slots2[3] = mask_slot != kNoSlot ? mask_slot : 0u;
+    if (contact_applied && plan.cabin_shadow_mode == cabin_shadow::kCabinFill) {
+      push.slots[1] |= plan.cabin_player_id << cabin_shadow::kCabinApplyIdShift;
+      push.slots2[3] |= summary.stencil_slot << 16;
+    }
     // slots2.y: the bounce light's colour slot (low 16 bits, below) and, while the contact shadows keep the picture's size beside a half
     // size occlusion, the slot of their full size depth (high 16 bits); the apply reads neither otherwise (it was the frame number).
     push.slots2[1] = 0u;
@@ -3950,7 +3975,10 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   } else if (plan.contact.rt_view) {
     push.extra[1] = 0.0f;  // the debug view of the traced term in a frame without it: every pixel is white
   }
-  DrawPass(list, contact_raw, march, push);
+  // The march does not read the host sample. The denoise and history keep the original push.
+  Push march_push = push;
+  march_push.slots[1] = (push.slots[1] & 0xFFFF0000u) | cabin_shadow::CabinSourceMode(plan.cabin_shadow_mode);
+  DrawPass(list, contact_raw, march, march_push);
   push.slots[0] = base.slots[0];
   push.slots2[2] &= ~(car_rt_ao::kContactFlag | car_rt_ao::kContactViewFlag);
   push.shape[2] = base.shape[2];
@@ -4003,7 +4031,7 @@ AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseContactHistory(const Plan& 
     use.why = h.cut ? HistoryWhy::kCut : HistoryWhy::kFirst;
   } else if (h.frame + 1 != frame_) {
     use.why = HistoryWhy::kGap;
-  } else if (h.pause != trigger_pause_) {
+  } else if (h.pause != trigger_pause_ || h.cabin_source_mode != cabin_shadow::CabinSourceMode(plan.cabin_shadow_mode)) {
     use.why = HistoryWhy::kView;
   } else if (h.size[0] != plan.contact_size[0] || h.size[1] != plan.contact_size[1]) {
     use.why = HistoryWhy::kSize;
@@ -4092,6 +4120,7 @@ uint32_t AmbientOcclusion::RecordContactHistory(plume::RenderCommandList* list, 
   h.cut = false;
   h.frame = frame_;
   h.pause = trigger_pause_;
+  h.cabin_source_mode = cabin_shadow::CabinSourceMode(plan.cabin_shadow_mode);
   h.size[0] = plan.contact_size[0];
   h.size[1] = plan.contact_size[1];
   h.tan[0] = base.lens[0];

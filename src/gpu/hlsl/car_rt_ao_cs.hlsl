@@ -43,6 +43,7 @@
 #include "car_rt_common.hlsli"
 #include "car_rt_refl_common.hlsli"
 #include "car_rt_ao_noise.hlsli"
+#include "cabin_shadow_rules.hlsli"
 
 Texture2D<float4> g_textures[] : register(t0, space0);
 #ifdef __spirv__
@@ -169,7 +170,7 @@ bool RayMeetsBox(float3 origin, float3 direction, float3 bmin, float3 bmax, floa
 
 // One yes or no ray: does anything of the car's parts (the push's mask) lie within `t_max` of `origin` along `direction`? A first hit ends the search.
 // `own`: the origin is on the car (snapped): the instance and triangle it left, and a surface facing the way its normal does, are not blockers.
-bool Blocked(float3 origin, float3 direction, float t_max, bool own, uint own_instance, uint own_primitive, float3 own_normal)
+bool Blocked(float3 origin, float3 direction, float t_max, uint mask, bool own, uint own_instance, uint own_primitive, float3 own_normal)
 {
     RayDesc ray;
     ray.Origin = origin;
@@ -177,7 +178,7 @@ bool Blocked(float3 origin, float3 direction, float t_max, bool own, uint own_in
     ray.TMin = 0.0;
     ray.TMax = t_max;
     RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-    query.TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, g_push.noise.y, ray);
+    query.TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, mask, ray);
     while (query.Proceed())
     {
     }
@@ -366,7 +367,7 @@ float4 TracePixel(uint2 pixel, uint2 size)
             const float jitter = frac(noise.y * 5.0 + noise.x * 3.0 + float(k) * 0.4142135);
             const float u = (float((k * 3u + 1u + rotation) % rays) + min(jitter, 0.9999)) / float(rays);
             const float length_k = reach * (1.0 - sqrt(u));
-            if (Blocked(origin, d, length_k, own, own_instance, own_primitive, n))
+            if (Blocked(origin, d, length_k, g_push.noise.y, own, own_instance, own_primitive, n))
             {
                 blocked += 1.0;
             }
@@ -387,7 +388,8 @@ float4 TracePixel(uint2 pixel, uint2 size)
         const float radius = sqrt(u1) * g_push.light.w;
         const float disc_angle = kTwoPi * u2;
         const float3 direction = normalize(to_sun + sx * (radius * cos(disc_angle)) + sy * (radius * sin(disc_angle)));
-        if (Blocked(origin, direction, min(g_push.box_min.w, sun_exit + 0.05), own, own_instance, own_primitive, n))
+        const uint sun_mask = CabinSunMask(flags, asuint(raw), g_push.noise.y, CAR_RT_MASK_BODY | CAR_RT_MASK_TYRES);
+        if (Blocked(origin, direction, min(g_push.box_min.w, sun_exit + 0.05), sun_mask, own, own_instance, own_primitive, n))
         {
             open_sun = 0.0;
         }

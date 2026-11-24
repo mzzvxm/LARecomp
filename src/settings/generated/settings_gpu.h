@@ -640,6 +640,8 @@ class GPUSettings final : public rex::SettingOwner {
     "works at half that size). Costs graphics card time, ultra more than high. Also drawn behind the "
     "pause menu and on the map. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
+  REX_SETTING(i32, mcla_gpu_cabin_sun_shadow, 2, "Diagnostic: cockpit sun shadow. 0 keeps original visibility, 1 exempts the car from its own screen-space blockers, 2 exempts its shadow map, 3 exempts its RT sun ray from its own body and tyres, 4 restores part of the combined sun loss. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_contact_shadows_car_map_march, false, "Diagnostic: with the player's car's own sun shadow map in the frame (car_shadow_map.h), the short march that "
     "the car's own pixels (and any vehicle's) take also runs on the pixels the map covers, and the pixel gets the darker "
     "of the two. False: where the map holds a part of the car at a vehicle's pixel the map is the truth about the car's "
@@ -2067,6 +2069,7 @@ inline auto& mcla_gpu_class = g_gpu.mcla_gpu_class;
 inline auto& mcla_gpu_rt_tier = g_gpu.mcla_gpu_rt_tier;
 inline auto& mcla_gpu_rt_bench = g_gpu.mcla_gpu_rt_bench;
 inline auto& mcla_gpu_contact_shadows = g_gpu.mcla_gpu_contact_shadows;
+inline auto& mcla_gpu_cabin_sun_shadow = g_gpu.mcla_gpu_cabin_sun_shadow;
 inline auto& mcla_gpu_contact_shadows_car_map_march = g_gpu.mcla_gpu_contact_shadows_car_map_march;
 inline auto& mcla_gpu_contact_shadows_car_sun = g_gpu.mcla_gpu_contact_shadows_car_sun;
 inline auto& mcla_gpu_contact_shadows_fade = g_gpu.mcla_gpu_contact_shadows_fade;

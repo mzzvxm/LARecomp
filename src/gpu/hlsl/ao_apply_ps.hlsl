@@ -128,6 +128,7 @@
 // that 1.0 reads below the tone map's white.
 
 #include "ao_common.hlsli"
+#include "cabin_shadow_rules.hlsli"
 #include "host_pass_samplers.hlsli"
 #include "nan_guard.hlsli"
 #if AO_GI
@@ -405,7 +406,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     if (MaskOn()) {
       const float2 uv = (float2(pixel) + 0.5f) / size;
       sun_vis = saturate(g_push.shape.x *
-                         g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
+                         g_textures[g_push.slots2.w & 0xFFFFu].SampleLevel(g_samplers[kSamplerLinearClamp],
                                                                  uv, 0.0f).x);
       sun_vis_used = sun_vis;
     }
@@ -438,6 +439,18 @@ float4 main(float4 position : SV_Position) : SV_Target {
       cs = AoBilateralEdgeFolded(g_push.slots2.x, ContactDepthSlot(), pixel, ContactImageSize(), tc, pc, normal,
                                  float4(tl, tr, tt, tb));
     }
+    // Give back a share of the sun removed by the combined mask, after filtering and history.
+    const uint player_id = CabinApplyId(g_push.slots.y);
+    if (view == 0u && player_id != 0u) {
+      const uint stencil_slot = g_push.slots2.w >> 16;
+#if AO_DEPTH_MS
+      const uint stencil = StencilOf(g_utextures_ms[stencil_slot].Load(pixel, g_push.slots.y & 0xFFu));
+#else
+      const uint stencil = StencilOf(g_utextures[stencil_slot].Load(int3(pixel, 0)));
+#endif
+      // CHECK: Tune the alternate fill on gauges and skin by day, in shade and at night.
+      cs = CabinFillVisibility(cs, player_id, stencil >> 2);
+    }
     contact_factor = 1.0f - saturate(contact_weight * (1.0f - cs));
     const float3 share_rgb = SunShareRgb(ambient, g_push.extra.x, n_dot_l * sun_vis_used);
     contact_factor3 = 1.0f - saturate((g_push.extra.w * contact_fade * (1.0f - cs)) * share_rgb);
@@ -456,7 +469,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (MaskOn()) {
     const float2 gi_uv = (float2(pixel) + 0.5f) / size;
     gi_sun_vis = saturate(g_push.shape.x *
-                          g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
+                          g_textures[g_push.slots2.w & 0xFFFFu].SampleLevel(g_samplers[kSamplerLinearClamp],
                                                                   gi_uv, 0.0f).x);
   }
   if (MaskOn() || CarSunOn()) {

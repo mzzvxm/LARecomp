@@ -325,6 +325,7 @@ add_executable(larecomp_key_guard_test EXCLUDE_FROM_ALL key_guard_test.cpp)
 # ray's fade and steps, the filter weights, the cost model) likewise:
 #   cmake --build <dir> --target larecomp_contact_trace_test, then run src/gpu/larecomp_contact_trace_test [<src/gpu/hlsl dir>] (exit 0 = passed; given the shaders' folder it also compares their constants and texts with the header's, else it says it did not).
 add_executable(larecomp_contact_trace_test EXCLUDE_FROM_ALL contact_trace_test.cpp)
+add_executable(larecomp_cabin_shadow_test EXCLUDE_FROM_ALL cabin_shadow_test.cpp)
 # Which traffic cars cast into the sun's shadow cascades (traffic_shadow.h: the setting's words and its auto per class, the limits, the
 # candidates, the cutoff that picks the nearest cars, the census over a frame's phases, the cutoff the renderer is told) likewise:
 #   cmake --build <dir> --target larecomp_traffic_shadow_test, then run src/gpu/larecomp_traffic_shadow_test.

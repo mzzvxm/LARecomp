@@ -98,6 +98,7 @@ class CarRtAo {
     float tan_y = 0.0f;
     float fade_end = 160.0f;           // the distance beyond which nothing is computed
     bool occlusion = false;            // the occlusion term is wanted in this frame (the plain visibility pass runs)
+    bool cabin_sun = false;            // omit the player car from sun rays on its cockpit receivers
     bool contact = false;              // the contact shadows run in this frame (not gated off by a low sun or rain)
     bool ultra = false;                // the occlusion's level: 4 rays against 2
     float to_sun[3] = {0.0f, 0.0f, 0.0f};  // the direction to the sun in view space (unit; zero: none)

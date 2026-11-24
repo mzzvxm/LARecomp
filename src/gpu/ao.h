@@ -543,6 +543,7 @@ class AmbientOcclusion {
   // the car's own parts on the car and on the road near it (contact_trace.h "the player's car's own sun shadow map"). Not owned; may be
   // null (no map: the contact shadows are as they were). Render thread, before the first frame.
   void SetCarShadowMap(const CarShadowMap* map) { car_shadow_map_ = map; }
+  void SetCarFrame(CarFrame* car_frame) { car_frame_ = car_frame; }
 
   // The G-buffer (gbuffer.h; GB-E): the occlusion, the contact shadows and the bounce light ask it for the normal plane while they are on (GBuffer::Want, in BeginFrame) and, in a
   // frame that published one, make a normal image from it (see THE G-BUFFER'S NORMALS above). Not owned; null: the passes take the depth's normal, as they always did. Render thread,
@@ -871,6 +872,8 @@ class AmbientOcclusion {
     uint32_t render[2] = {};       // the main view, host pixels
     uint32_t ao[2] = {};           // the traced passes' size (the depth chain's level 0)
     uint32_t level[2][2] = {};     // the coarser levels' sizes
+    uint32_t cabin_player_id = 0;
+    uint32_t cabin_shadow_mode = 0;
     uint32_t contact_size[2] = {}; // the contact shadows' images: the picture's, or half of it where the old rule says so
     uint32_t view = 0;             // the debug view: 0 none, 1-6 the occlusion's, 8-11 the contact's
     ContactPlan contact;
@@ -1256,6 +1259,8 @@ class AmbientOcclusion {
   uint32_t contact_cost_logged_[4] = {};  // the size (x, y), the steps and the lever's state (bit 0 fast, bit 1 filter in the apply) the cost model line was last logged for
   bool mask_why_logged_ = false;
   bool contact_skip_logged_ = false;  // the skip under the game's own shadow was logged once
+  CarFrame* car_frame_ = nullptr;       // the current main view's player ID, as resolved by CarFrame
+  uint32_t cabin_shadow_mode_ = 0;
   const CarShadowMap* car_shadow_map_ = nullptr;  // the player's car's own sun shadow map (SetCarShadowMap), not owned
   bool car_map_logged_ = false;       // the first frame the contact march read the car's map was logged
   // The ray traced occlusion and sun term (car_rt_ao.h), made by InitializeCarRt where the device can trace the car. rt_contact_slot_ is the bindless slot of this
@@ -1358,6 +1363,7 @@ class AmbientOcclusion {
   HostImage contact_dn_;
   // NOISE-RESOLVE: the contact image's history (visibility, linear depth; R16G16_FLOAT at the contact image's size), two images that take turns, and what the next frame needs to know of it.
   struct ContactHistory {
+    uint32_t cabin_source_mode = 0;
     HostImage image[2];
     uint32_t index = 0;           // image[index] is the one written last
     bool valid = false;           // it holds a picture the next frame may lean on
