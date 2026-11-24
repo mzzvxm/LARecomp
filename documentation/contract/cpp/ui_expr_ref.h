@@ -563,9 +563,13 @@ class Parser {
           return nullptr;
         }
         Take();
-        static const std::map<std::string, size_t> kArity = {{"resolved", 1}, {"auto_of", 1}, {"known", 1}, {"contains", 2}, {"min", 2}, {"max", 2}};
-        auto it = kArity.find(n->name);
-        if (it == kArity.end() || it->second != n->kids.size()) unsupported = true;
+        // A constant table, not a static std::map: nothing here may need a destructor at exit (the exit audit).
+        struct Arity { const char* name; size_t args; };
+        static constexpr Arity kArity[] = {{"resolved", 1}, {"auto_of", 1}, {"known", 1}, {"contains", 2}, {"min", 2}, {"max", 2}};
+        bool known_call = false;
+        for (const Arity& a : kArity)
+          if (n->name == a.name) { known_call = (a.args == n->kids.size()); break; }
+        if (!known_call) unsupported = true;
         return n;
       }
       if (t.segs.size() > 1 && toks_[pos_ + 1].t == Tok::T::kPunct && toks_[pos_ + 1].text == "(") {
