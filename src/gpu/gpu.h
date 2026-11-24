@@ -321,10 +321,11 @@ void ArmUiLayer(bool armed);
 float UiAlpha();
 
 // UI thread, at app shutdown: stops the capture, disconnects the overlay passes,
-// stops the render thread (with a deadline), drains the GPU and releases every
-// GPU object, device last, then hands the retired fence back to the vblank
-// thread. Safe to call more than once.
-void Shutdown();
+// stops the render thread (with a deadline), drains the GPU and releases its objects,
+// then hands the retired fence back to the vblank thread. With fast_exit and the
+// opt-in setting, the process-lifetime renderer keeps its final GPU objects for OS cleanup.
+// Safe to call more than once.
+void Shutdown(bool fast_exit = false);
 
 // Where the renderer's Shutdown() is, for the close watchdog (larecomp_app.cpp, close_watchdog.h): any thread, no lock, never blocks.
 // A close whose renderer is moving, or is inside the driver's own teardown call, is slow, not hung. `quiet_ms` counts from the

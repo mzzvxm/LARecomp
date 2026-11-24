@@ -1261,6 +1261,8 @@ static void WatchdogDone(const larecomp::exitfast::Report& report) {
 // runs inside the delivery of the close event, on the UI thread, and the renderer stops with the UI loop still served (StopBeforeTitleEnds).
 void LarecompApp::FinishWindowCloseWork() {
   if (close_work_started_.exchange(true, std::memory_order_acq_rel)) return;
+  // CHECK: a slow close with either GPU teardown setting should have no frame watchdog report.
+  StopFreezeWatchdog();
   larecomp::RequestBootBuildCancel();
   const auto started = std::chrono::steady_clock::now();
   PauseMenuSavePendingSettings();  // a pause-menu change that the close interrupted (the QUIT and RESTART routes wrote it already: nothing happens)
@@ -1321,13 +1323,15 @@ void LarecompApp::FinishWindowCloseWork() {
 // thread (overlay.h: it posts a pass and takes the last frame), so joining it here cannot deadlock against a pass that never runs. It
 // stops BEFORE the title unloads: it reads the guest's memory and the GPU state the title owns. Latched (OnRun's end and OnShutdown
 // both call it).
-void LarecompApp::StopBeforeTitleEnds() {
+void LarecompApp::StopBeforeTitleEnds([[maybe_unused]] bool ran_title) {
   if (before_title_end_done_.exchange(true, std::memory_order_acq_rel)) return;
   mcla::gpu::fallback::Watch().Finish();  // the game closes by itself: that start did not crash (renderer_fallback.h StartWatch)
   FinishWindowCloseWork();
+  // Use one snapshot for the renderer's decision and FinishProcess, while settings still work.
+  larecomp::exitfast::Arm(ls::mcla_fast_exit.Get());
   mcla::ui::SetAchievementManager(nullptr);  // the manager goes with the title
 #if defined(LARECOMP_HAS_GPU)
-  mcla::gpu::Shutdown();  // the render thread stops, the GPU drains, the swap chain is given back
+  mcla::gpu::Shutdown(ran_title && larecomp::exitfast::Armed());
 #endif
 }
 
@@ -1340,14 +1344,12 @@ void LarecompApp::StopBeforeTitleEnds() {
 // window's close and look for a hang at exit (the 5 s watchdog in FinishWindowCloseWork would end the process with a log line).
 void LarecompApp::OnRun() {
   TitleApp::OnRun();
-  StopBeforeTitleEnds();
+  StopBeforeTitleEnds(true);
 }
 
 // After the title stopped, before the drivers shut down (logging and settings still work).
 void LarecompApp::OnShutdown() {
   g_termination_log_closed.store(true, std::memory_order_release);  // the signal helper thread (InstallTerminationSignals) stops logging
-  // The fast exit's switch is read here, while the settings still work (FinishProcess runs after the SDK has stopped, exit_fast.h).
-  larecomp::exitfast::Arm(ls::mcla_fast_exit.Get());
   // The UI system's event guard and the cached interface pointers go before rex::Stop takes the systems away.
   ui_listener_ = {};
   larecomp::sdk::Reset();

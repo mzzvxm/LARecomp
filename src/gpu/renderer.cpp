@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <format>
 #include <memory>
@@ -36,6 +37,7 @@
 #include "renderer_fallback.h"
 #include "rt_bench.h"
 #include "rt_tier.h"
+#include "shutdown_rules.h"
 #include "native_window.h"
 #include "ray_regen.h"
 #include "temporal_dlss.h"
@@ -476,6 +478,13 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     capture_.Initialize();
     census_.SetEnabled(larecomp::settings::mcla_gpu_memory_census.Get());
     validate_ = larecomp::settings::mcla_gpu_validate.Get();
+#ifndef NDEBUG
+    teardown_diagnostics_ = true;  // Debug Plume builds request the graphics API's validation layer.
+#else
+    teardown_diagnostics_ = validate_ || options.device.debug_layer ||
+        (ActiveBackend() == Backend::kVulkan &&
+         (std::getenv("VK_INSTANCE_LAYERS") || std::getenv("VK_LOADER_LAYERS_ENABLE")));
+#endif
     batch_draws_ = larecomp::settings::mcla_gpu_batch_draws.Get();
     profile_records_ = larecomp::settings::mcla_gpu_scene_profile.Get();
     release_early_ = larecomp::settings::mcla_gpu_present_release.Get();
@@ -624,7 +633,7 @@ void Renderer::BeginShutdown() {
   shutting_down_.store(true, std::memory_order_release);
 }
 
-void Renderer::Shutdown() {
+void Renderer::Shutdown(bool fast_exit) {
   BeginShutdown();
   if (!initialized_) {
     return;
@@ -752,19 +761,28 @@ void Renderer::Shutdown() {
   samplers_.Shutdown();
   shaders_.Shutdown();
   guest_layout_.Shutdown();
-  // 4. A component shut down above can still retire a release, such as a bindless slot its
-  //    images held (DLSS frame generation's, while it was generating). The release writes the
-  //    heap, so it runs here, before the heap goes; the GPU is idle, so nothing is waited for.
-  clock.Stage("the second idle wait");
-  frames_.WaitIdle();
-  clock.Stage("the bindless heap and the frames");
-  heap_.Shutdown();
-  frames_.Shutdown();
-  // The last stage is the driver's own: Device::Shutdown names its parts (the queue, the device with its memory allocator, the
-  // instance), each one call into the driver that returns by itself. It is where 1.4 to 4.7 s went in the slow closes of 11-20 to 11-22,
-  // with another game running (close_watchdog.h), so the close watchdog gives these calls more time than a stage of ours.
-  clock.Stage("the device (the driver's own teardown)", true);
-  device_.Shutdown([&clock](const char* part) { clock.Stage(part, true); });
+  if (ShouldSkipDeviceTeardown(larecomp::settings::mcla_skip_gpu_teardown.Get(), fast_exit,
+                               teardown_diagnostics_,
+                               [this] { return device_.CheckLost("final teardown"); })) {
+    // The process-lifetime renderer still owns the frames, pending GPU retirements, heap and
+    // device. Leave them together for OS cleanup after the SDK shutdown and exit flushes.
+    // CHECK: exit status, saved data and close time with three games sharing the GPU on both APIs.
+    REXLOG_INFO("[gpu] shutdown: leaving the final GPU objects for process exit (mcla_skip_gpu_teardown)");
+  } else {
+    // 4. A component shut down above can still retire a release, such as a bindless slot its
+    //    images held (DLSS frame generation's, while it was generating). The release writes the
+    //    heap, so it runs here, before the heap goes; the GPU is idle, so nothing is waited for.
+    clock.Stage("the second idle wait");
+    frames_.WaitIdle();
+    clock.Stage("the bindless heap and the frames");
+    heap_.Shutdown();
+    frames_.Shutdown();
+    // The last stage is the driver's own: Device::Shutdown names its parts (the queue, the device with its memory allocator, the
+    // instance), each one call into the driver that returns by itself. It is where 1.4 to 4.7 s went in the slow closes of 11-20 to 11-22,
+    // with another game running (close_watchdog.h), so the close watchdog gives these calls more time than a stage of ours.
+    clock.Stage("the device (the driver's own teardown)", true);
+    device_.Shutdown([&clock](const char* part) { clock.Stage(part, true); });
+  }
   clock.Done();
   overlay_host_.reset();
   REXLOG_INFO("[gpu] renderer shut down after {} presents ({} guest, {} idle, {} skipped)",
@@ -2611,7 +2629,7 @@ ShutdownProgress ReadShutdownProgress() {
   return progress;
 }
 
-void Shutdown() {
+void Shutdown(bool fast_exit) {
   // No new records; a guest thread inside a capture finishes against the
   // stream, which the render thread's Stop releases.
   if (GuestCapture* c = g_capture_active.exchange(nullptr, std::memory_order_acq_rel)) {
@@ -2624,7 +2642,7 @@ void Shutdown() {
   }
   Renderer* r = g_active.exchange(nullptr, std::memory_order_acq_rel);
   if (r) {
-    r->Shutdown();
+    r->Shutdown(fast_exit);
   }
   // After the render thread stopped (or was let go): the fence records still
   // queued were dropped with it, and a guest thread waiting on one of them is

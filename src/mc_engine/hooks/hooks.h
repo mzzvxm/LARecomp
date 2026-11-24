@@ -1,6 +1,7 @@
 #pragma once
 
 void InitHooks();
+void StopFreezeWatchdog();
 
 #include <rex/ppc/context.h>
 bool Patch_AspectRatio_82233EB4(PPCRegister& f0, PPCRegister& f30);

@@ -114,7 +114,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   void StartOverlays();              // OnInit: fonts, style, hotkeys, overlays
   void BeginSetupStep();
   void FinishWindowCloseWork();      // the pre-close work (saves, devices) that must precede the title's end
-  void StopBeforeTitleEnds();        // that work, the achievement manager's release and the renderer's stop: once, before the SDK unloads the title
+  void StopBeforeTitleEnds(bool ran_title = false);  // close work, achievement manager's release and renderer stop, once
   bool RunBootBuild(rex::kernel::TitleRuntime& title);
   void RunBatchMode();
   void SetXeniaHostDefaults();

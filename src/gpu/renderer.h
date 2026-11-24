@@ -164,8 +164,8 @@ class Renderer final : public RenderThread::Executor {
 
   // Any thread.
   void BeginShutdown();
-  // Lifecycle thread. Implies BeginShutdown.
-  void Shutdown();
+  // Lifecycle thread. Implies BeginShutdown. Pass fast_exit only for the process-lifetime renderer.
+  void Shutdown(bool fast_exit = false);
 
   // Where the guest capture writes. Valid after Initialize, for the life of
   // the renderer.
@@ -375,6 +375,7 @@ class Renderer final : public RenderThread::Executor {
   std::atomic<bool> resize_requested_{false};
   bool initialized_ = false;
   bool validate_ = false;       // mcla_gpu_validate, read at Initialize
+  bool teardown_diagnostics_ = false;
   uint32_t batch_draws_ = 0;    // mcla_gpu_batch_draws, read at Initialize
   bool profile_records_ = false;  // mcla_gpu_scene_profile: CPU per record type (thread_load.h)
   bool release_early_ = false;    // mcla_gpu_present_release, read at Initialize
