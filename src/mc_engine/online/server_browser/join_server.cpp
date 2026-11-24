@@ -13,6 +13,7 @@
 #include "discord_rpc/discord_rpc.h"  // RpcInFreeRoam: the game's state machine is in Cruising
 #include "mc_engine/input/synthetic_start.h"  // PressPadStart: the pause menu is opened the way a player does
 #include "mc_engine/keyboard_native.h"           // MenuScreenUp, CurrentMovieName: the pause menu is on screen
+#include "settings/immortal.h"
 #include "settings/larecomp_settings.h"
 #include "spdlog_console.h"  // LarecompLogFolder()
 
@@ -57,9 +58,9 @@ enum class Phase {
 
 // Guest thread only, except where a mutex says otherwise.
 Phase g_phase = Phase::kUnread;
-js::Target g_target;
+js::Target& g_target = larecomp::Leak<js::Target>();  // never destroyed: a guest thread may still read it during the exit (exit_audit)
 Clock::time_point g_started;
-js::Status g_status;
+js::Status& g_status = larecomp::Leak<js::Status>();
 bool g_status_known = false;
 bool g_open_browser = false;  // a failure: the browser opens with the sentence once the city is up
 js::QuietGate g_quiet;        // no message box on screen for a short while (the join waits for it, join_server_core.h)
@@ -71,7 +72,7 @@ int64_t g_probe_due_ms = 0;         // the next probe sample, in ms after g_join
 js::PauseOpener g_pause_opener;     // the pause menu is opened before the join is filed (join_server_core.h, PauseOpener)
 
 std::mutex g_failure_mutex;
-std::string g_failure_text;  // guarded
+std::string& g_failure_text = larecomp::Leak<std::string>();  // guarded
 
 // What the worker found out. It is written once, before `done` is set.
 struct Job {
@@ -83,7 +84,7 @@ struct Job {
     std::vector<Prop> props;
     std::string label;    // "Hoster @ Server name" / the server's name
 };
-std::shared_ptr<Job> g_job;
+std::shared_ptr<Job>& g_job = larecomp::Leak<std::shared_ptr<Job>>();
 Clock::time_point g_resolve_started;
 
 int64_t UnixSeconds() {
