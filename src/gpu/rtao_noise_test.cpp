@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -12,6 +13,13 @@ namespace hlsl_shim {
 int main() {
   using namespace hlsl_shim;
   int checks = 0, failed = 0;
+  const auto StarDiscrepancy = [](std::array<float, 16> values) {
+    std::sort(values.begin(), values.end());
+    double worst = 0.0;
+    for (size_t i = 0; i < values.size(); ++i)
+      worst = std::max({worst, std::abs(double(i + 1) / values.size() - values[i]), std::abs(values[i] - double(i) / values.size())});
+    return worst;
+  };
   const auto check = [&](bool ok, const char* what) {
     ++checks;
     if (!ok && ++failed <= 12) std::printf("FAIL: %s\n", what);
@@ -29,6 +37,17 @@ int main() {
         if (f != 0) check(noise.x != first.x && noise.y != first.y, "noise varies with frame");
       }
       for (int count : corner) check(count >= 2 && count <= 6, "16 frames cover the four corners");
+      // The noise guard's C2 (noise_vary_test.cpp in perf/scripts): the 16 values of a pixel are a low discrepancy set, 0.35 at most, in every lane
+      // and both channels. A lane in the low bits (frame x 8 + lane) steps 0.039 a frame and scores 0.41 here.
+      for (unsigned ray : {0u, 1u, 2u, 3u}) {
+        std::array<float, 16> u{}, v{};
+        for (unsigned f = 0; f < 16; ++f) {
+          const auto noise = RtAoRayNoise(x, y, f + 5, ray);
+          u[f] = noise.x;
+          v[f] = noise.y;
+        }
+        check(StarDiscrepancy(u) <= 0.35 && StarDiscrepancy(v) <= 0.35, "16 frames are a low discrepancy set");
+      }
       for (unsigned period : {64u, 128u, 256u, 512u, 1024u, 4096u}) {
         const auto later = RtAoRayNoise(x, y, period, 0);
         check(later.x != first.x && later.y != first.y, "no short period");
@@ -39,7 +58,8 @@ int main() {
       }
     }
   }
-  check(RtAoNoiseSample(1, 3) == 11 && RtAoNoiseSample(0x100000, 3) == 3, "eight lanes in a 20-bit frame");
+  check(RtAoNoiseSample(1, 3) == ((3u << 20) | 1u) && RtAoNoiseSample(0x100000, 3) == (3u << 20), "eight lanes above a 20-bit frame");
+  check(RtAoNoiseSample(41, 5) + 1 == RtAoNoiseSample(42, 5), "a lane steps one sample a frame");
   // Low-frequency peaks would draw broad stripes. Test both channels in two
   // frames, over the noise's unit-circle embedding, where it is periodic in value.
   for (const unsigned frame : {0u, 1237u}) {
