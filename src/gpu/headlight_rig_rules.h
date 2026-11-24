@@ -40,6 +40,16 @@
 
 namespace mcla::gpu::headlight_rules {
 
+// The geometry cache reports zero for a range whose changes it cannot track.
+struct LensBoxStamps {
+  uint64_t vertices = 0;
+  uint64_t indices = 0;
+
+  bool Matches(const LensBoxStamps& current) const {
+    return vertices != 0 && indices != 0 && vertices == current.vertices && indices == current.indices;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // the look
 // ---------------------------------------------------------------------------
