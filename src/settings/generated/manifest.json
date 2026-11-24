@@ -350,6 +350,39 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_noise_resolve_contact": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (NOISE-NA6): one effect's share of mcla_gpu_noise_resolve_no_upscaler, for the ghost check's arms: the contact shadows' march and the ray traced sun rays of the car and the city (the occlusion's own history over the contact image). \"\n    \"True (the default): it varies its noise every frame and resolves it with its own history, as the master switch says. False: it keeps the first fixes' fixed blue pattern while the others \"\n    \"go on as the master switch says. The master switch off wins (nothing varies). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_noise_resolve_shafts": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (NOISE-NA6): one effect's share of mcla_gpu_noise_resolve_no_upscaler, for the ghost check's arms: the sun shafts' ray starts (the blurred image's history). \"\n    \"True (the default): it varies its noise every frame and resolves it with its own history, as the master switch says. False: it keeps the first fixes' fixed blue pattern while the others \"\n    \"go on as the master switch says. The master switch off wins (nothing varies). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_noise_resolve_cone": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (NOISE-NA6): one effect's share of mcla_gpu_noise_resolve_no_upscaler, for the ghost check's arms: the car reflection cone's turn (the denoise's third pass). \"\n    \"True (the default): it varies its noise every frame and resolves it with its own history, as the master switch says. False: it keeps the first fixes' fixed blue pattern while the others \"\n    \"go on as the master switch says. The master switch off wins (nothing varies). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ao_history": {
   "type": "i32",
   "default": "12",

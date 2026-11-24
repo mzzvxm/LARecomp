@@ -35,6 +35,10 @@ constexpr uint32_t FrameTerm(bool temporal_upscaler, bool own_history, uint64_t 
   return Varies(temporal_upscaler, own_history) ? uint32_t(noise_index & mask) : 0u;
 }
 
+// NOISE-NA6: the ghost check's arms switch ONE effect's resolve on at a time (perf\scripts\chain-noise-all.ps1 -Stage ghost): an effect resolves while the master switch
+// (mcla_gpu_noise_resolve_no_upscaler) AND its own (mcla_gpu_noise_resolve_contact, _shafts, _cone, all on by default) are on; the master off wins, so OFF is still every effect's fixed pattern.
+constexpr bool ResolveOn(bool master, bool effect) { return master && effect; }
+
 // ---------------------------------------------------------------------------
 // the contact image's history: when its noise may move (stack review F6 against noise review S6, reconciled)
 // ---------------------------------------------------------------------------

@@ -1208,6 +1208,18 @@ class GPUSettings final : public rex::SettingOwner {
     "are not affected: they are drawn into coverage images with the same samples and averaged, so "
     "the two switches are independent. For A/B. Live (read at start too).", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_noise_resolve_contact, true, "Diagnostic (NOISE-NA6): one effect's share of mcla_gpu_noise_resolve_no_upscaler, for the ghost check's arms: the contact shadows' march and the ray traced sun rays of the car and the city (the occlusion's own history over the contact image). "
+    "True (the default): it varies its noise every frame and resolves it with its own history, as the master switch says. False: it keeps the first fixes' fixed blue pattern while the others "
+    "go on as the master switch says. The master switch off wins (nothing varies). Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_noise_resolve_shafts, true, "Diagnostic (NOISE-NA6): one effect's share of mcla_gpu_noise_resolve_no_upscaler, for the ghost check's arms: the sun shafts' ray starts (the blurred image's history). "
+    "True (the default): it varies its noise every frame and resolves it with its own history, as the master switch says. False: it keeps the first fixes' fixed blue pattern while the others "
+    "go on as the master switch says. The master switch off wins (nothing varies). Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_noise_resolve_cone, true, "Diagnostic (NOISE-NA6): one effect's share of mcla_gpu_noise_resolve_no_upscaler, for the ghost check's arms: the car reflection cone's turn (the denoise's third pass). "
+    "True (the default): it varies its noise every frame and resolves it with its own history, as the master switch says. False: it keeps the first fixes' fixed blue pattern while the others "
+    "go on as the master switch says. The master switch off wins (nothing varies). Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_noise_blue, true, "Diagnostic: the other stochastic passes' sampling noise (the ray traced car occlusion's and reflection cones' directions, the sun shafts' ray starts, "
     "the fog's sample offsets, the sun shadow filter's disk turn and the city reflections' sun and lamp samples) comes from the blue noise tile stepped "
     "along the R2 sequence every frame, so what the filters and the average over frames leave of it is a fine grain no pattern can be read from. False: the "
@@ -2259,6 +2271,9 @@ inline auto& mcla_gpu_mirror_view = g_gpu.mcla_gpu_mirror_view;
 inline auto& mcla_gpu_mirror_view_t0 = g_gpu.mcla_gpu_mirror_view_t0;
 inline auto& mcla_gpu_msaa = g_gpu.mcla_gpu_msaa;
 inline auto& mcla_gpu_msaa_with_upscaler = g_gpu.mcla_gpu_msaa_with_upscaler;
+inline auto& mcla_gpu_noise_resolve_contact = g_gpu.mcla_gpu_noise_resolve_contact;
+inline auto& mcla_gpu_noise_resolve_shafts = g_gpu.mcla_gpu_noise_resolve_shafts;
+inline auto& mcla_gpu_noise_resolve_cone = g_gpu.mcla_gpu_noise_resolve_cone;
 inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;
 inline auto& mcla_gpu_noise_held = g_gpu.mcla_gpu_noise_held;
 inline auto& mcla_gpu_noise_resolve_no_upscaler = g_gpu.mcla_gpu_noise_resolve_no_upscaler;

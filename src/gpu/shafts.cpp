@@ -926,9 +926,9 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   plan.decay = std::pow(kDecayAt64, 64.0f / float(plan.steps));
   plan.view = uint32_t(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_view.Get(), 0, 3));
   // The noise moves every frame while something averages it: a temporal upscaler, or (NOISE-RESOLVE) the history of the blurred image (RecordTemporal) while none runs; else a fixed pattern.
-  plan.history = !upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && plan.view == 0;
+  plan.history = !upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_shafts.Get()) && plan.view == 0;
   plan.noise_shift = float(noise_resolve::FrameTerm(upscaler_running, plan.history, scene_noise::NoiseIndex(frame_), 1023u));
-  plan.history_gap = upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && plan.view == 0;   // NOISE-FOLLOW: the images the history would use stay over an upscaler's frames
+  plan.history_gap = upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_shafts.Get()) && plan.view == 0;   // NOISE-FOLLOW: the images the history would use stay over an upscaler's frames
 
   if (!RecordSky(summary, list, plan)) {
     outcome_ = Outcome::kNotRecorded;

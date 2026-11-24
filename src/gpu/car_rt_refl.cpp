@@ -459,14 +459,14 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   }
   // NOISE-RESOLVE: with no temporal upscaler the cone's pattern changes every frame and the finished image is averaged with the last frame's result (the denoise's third pass); that needs the denoise
   // (it makes the image to average), its two images and the switch. Else the pattern stands still on the screen as the first fixes left it, and what the a-trous passes leave is all there is.
-  const bool resolve_history = denoise_passes > 0 && !info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && EnsureStableImages(history.width, history.height);
+  const bool resolve_history = denoise_passes > 0 && !info.upscaler && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get()) && EnsureStableImages(history.width, history.height);
   // NOISE-FOLLOW: the images stay over the frames a temporal upscaler takes (the plain frames of an upscaler session, a pause toggle, would make them again); `stable_valid_` / `stable_frame_` say what they hold is stale
   // (have_last below), and they go back after kHistoryKeepFrames frames of the cone's passes in a row without the resolve, with the setting off, or at another size.
   const bool stable_held = stable_[0].texture || stable_[1].texture;
   const bool stable_size_ok = stable_[0].width == history.width && stable_[0].height == history.height && stable_[1].width == history.width && stable_[1].height == history.height;
   // CHECK: not run on a device: with DLSS Ray Reconstruction on, a pause toggle should not make and free the two images.
   // (RR-4b: in a frame DLSS Ray Reconstruction takes the denoise passes are 0 because Ray Reconstruction is the denoiser, not because the setting turned them off: the setting's own count says the history would be wanted.)
-  const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get();
+  const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get());
   const noise_resolve::HistoryImages stable_keep = stable_life_.Frame(resolve_history, stable_gap, stable_held, stable_size_ok);
   if (!resolve_history && stable_held && stable_keep != noise_resolve::HistoryImages::kKeep) {
     ReleaseStable();

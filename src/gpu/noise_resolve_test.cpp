@@ -135,7 +135,7 @@ Image Filter(const Image& raw) {
 // The temporal pass: the history read at (x + sx, y + sy) (the reprojection of a plane under a camera that moved by (sx, sy) texels: exact), clamped to the 3 x 3 range of this frame's filtered value plus kClampMargin
 // (0.08), blended at `weight` (1 - 1 / min(age + 2, cap)). A pixel with no history (weight 0) takes the frame's own value (the contact image's flag mode: no wide blur).
 constexpr float kAoClampMargin = 0.08f;
-Image Accumulate(const Image& current, const Image* history, double weight, double sx, double sy) {
+Image Accumulate(const Image& current, const Image* history, double weight, double sx, double sy, float margin = kAoClampMargin) {
   Image out;
   for (int y = 0; y < kN; ++y) {
     for (int x = 0; x < kN; ++x) {
@@ -151,7 +151,7 @@ Image Accumulate(const Image& current, const Image* history, double weight, doub
           hi = std::max(hi, current.At(x + dx, y + dy));
         }
       }
-      const float h = std::clamp(history->Sample(double(x) + sx, double(y) + sy), lo - kAoClampMargin, hi + kAoClampMargin);
+      const float h = std::clamp(history->Sample(double(x) + sx, double(y) + sy), lo - margin, hi + margin);
       out.At(x, y) = float(std::clamp(double(c) + (double(h) - double(c)) * weight, 0.0, 1.0));
     }
   }
@@ -512,7 +512,7 @@ float Blur(int x, int y, double sun_u, double sun_v, double scene, double parall
   return float(total / variants);
 }
 
-Run RunShafts(bool vary, bool history, bool noise_free, int frames, double turn_u, double parallax_rate) {
+Run RunShafts(bool vary, bool history, bool noise_free, int frames, double turn_u, double parallax_rate, bool guards = true) {
   Run run;
   Image prev;
   bool have = false;
@@ -546,8 +546,8 @@ Run RunShafts(bool vary, bool history, bool noise_free, int frames, double turn_
           const bool inside = hx >= -0.5 && hx <= kN - 0.5 && hy >= -0.5 && hy <= kN - 0.5;
           if (keep && inside) {
             const float raw = prev.Sample(hx, hy);
-            const float h = std::clamp(raw, lo - nr::kShaftsClampMargin, hi + nr::kShaftsClampMargin);
-            const double kept = weight * double(nr::StaleKeep(std::fabs(raw - current.At(x, y)), nr::kShaftsStaleFrom, nr::kShaftsStaleTo));  // the shader's stale rule
+            const float h = guards ? std::clamp(raw, lo - nr::kShaftsClampMargin, hi + nr::kShaftsClampMargin) : raw;
+            const double kept = weight * (guards ? double(nr::StaleKeep(std::fabs(raw - current.At(x, y)), nr::kShaftsStaleFrom, nr::kShaftsStaleTo)) : 1.0);  // the shader's stale rule
             result.At(x, y) = float(double(current.At(x, y)) + (double(h) - double(current.At(x, y))) * kept);
           }
         }
@@ -770,7 +770,7 @@ Image Atrous(const Image& in, int step) {
   return out;
 }
 
-Run RunCone(bool vary, bool history, bool noise_free, int frames, double speed) {
+Run RunCone(bool vary, bool history, bool noise_free, int frames, double speed, bool stale_rule = true) {
   Run run;
   Image prev;
   prev.periodic = false;
@@ -801,7 +801,7 @@ Run RunCone(bool vary, bool history, bool noise_free, int frames, double speed) 
           }
           const float raw = prev.At(x, y);
           const float h = std::clamp(raw, lo - nr::kConeClampMargin, hi + nr::kConeClampMargin);
-          const double kept = keep * double(nr::StaleKeep(std::fabs(raw - finished.At(x, y)), nr::kConeStaleFrom, nr::kConeStaleTo));  // the shader's stale rule
+          const double kept = keep * (stale_rule ? double(nr::StaleKeep(std::fabs(raw - finished.At(x, y)), nr::kConeStaleFrom, nr::kConeStaleTo)) : 1.0);  // the shader's stale rule
           result.At(x, y) = float(double(finished.At(x, y)) + (double(h) - double(finished.At(x, y))) * kept);
         }
       }
@@ -884,6 +884,88 @@ void TestCone() {
                   std::fabs(trail), trail_unclamped, kBand, ghost));
   g_check(std::fabs(nr::ConeHistoryWeight(0) - 0.5f) < 1e-6 && nr::ConeHistoryWeight(1) < nr::ConeHistoryWeight(2) + 1e-6 && nr::ConeHistoryWeight(50) == nr::kConeHistoryWeight,
           "the cone history's weight ramps from the plain mean of two frames to its cap");
+}
+
+// ---------------------------------------------------------------------------
+// NOISE-NA6: the histories at pan and orbit speeds
+// ---------------------------------------------------------------------------
+// The ghost check's pan (the camera turns 2.5 degrees a frame: 45 to 100 pixels) and orbit (2.25 degrees a frame around the car: its reflections move a whole cone's width a frame) FAILED on 2026-11-23, and the cause
+// was not a history: the two takes were a half millisecond apart (noise_ghost_check.py). The twins above measure the ghosts at the speeds the histories were designed for (a texel a frame, 0.5 degrees); this test
+// measures them at the speeds of that pan and orbit, so that the claim "the clamp and the stale rule bound the ghost at ANY speed" is a number. Each effect also has a POSITIVE CONTROL: the same run with its guards off
+// trails by far more, so the test can see a ghost where there is one (a loosened clamp or a stale rule that never fires fails the bound).
+void TestFastMotion() {
+  // the cone: the ramp moves 2.4, 3.6, 5.4 and 6.4 texels a frame (12 texel band: the last is more than half the band a frame; 7 frames keep the ramp in the picture)
+  double worst_cone = 0.0, worst_trail = 0.0;
+  for (const double speed : {2.4, 3.6, 5.4, 6.4}) {
+    const Run history = RunCone(true, true, true, 7, speed);
+    const Run own = RunCone(true, false, true, 7, speed);
+    worst_cone = std::max(worst_cone, Worst(history, own));
+    worst_trail = std::max(worst_trail, std::fabs(Crossing(history) - Crossing(own)));
+  }
+  const Run no_stale = RunCone(true, true, true, 7, 2.4, false);
+  const Run own_slow = RunCone(true, false, true, 7, 2.4);
+  const double control_trail = std::fabs(Crossing(no_stale) - Crossing(own_slow));
+  if (g_check.print) {
+    std::printf("  cone at 2.4 to 6.4 texels a frame: worst difference %.4f of the weight, the 50%% point trails by %.2f texels at most | without the stale rule (2.4): %.2f texels\n", worst_cone, worst_trail, control_trail);
+  }
+  g_check(worst_cone < 0.03 && worst_trail < 0.1,
+          nc::Num("cone at pan and orbit speeds (2.4 to 6.4 texels a frame, a fifth to more than half of the 12 texel band): the history differs from the frame's own value by at most %.4f of the weight and the ramp's 50%% point trails by %.2f texels",
+                  worst_cone, worst_trail));
+  g_check(control_trail > 0.4 && control_trail > 4.0 * worst_trail,
+          nc::Num("(control) the same ramp at 2.4 texels a frame with the stale rule off is trailed by %.2f texels: the test sees a ghost where the rule is missing", control_trail));
+  // the contact shadows: an edge moves 3 and 6 texels a frame and the history is read at the WRONG place (no reprojection: the worst case of a reprojection that misses): the clamp's margin times the weight bounds the
+  // ghost; a margin of 1 does not
+  const auto edge_ghost = [](int speed, float margin) {
+    Image prev;
+    bool have = false;
+    int age = 0;
+    double worst_far = 0.0;
+    for (int f = 0; f < 8; ++f) {
+      Image raw;
+      raw.periodic = false;
+      const int edge = 12 + speed * f;
+      for (int y = 0; y < kN; ++y) {
+        for (int x = 0; x < kN; ++x) {
+          raw.At(x, y) = x < edge ? 0.0f : 1.0f;
+        }
+      }
+      Image filtered = Filter(raw);
+      filtered.periodic = false;
+      const double weight = have ? 1.0 - 1.0 / double(std::min(age + 2, 12)) : 0.0;
+      Image result = Accumulate(filtered, have ? &prev : nullptr, weight, 0.0, 0.0, margin);
+      result.periodic = false;
+      if (have) {
+        for (int x = 0; x < kN; ++x) {
+          if (std::abs(x - edge) >= 3) {
+            worst_far = std::max(worst_far, std::fabs(double(result.At(x, 32)) - double(filtered.At(x, 32))));
+          }
+        }
+      }
+      prev = result;
+      have = true;
+      age = std::min(age + 1, 12);
+    }
+    return worst_far;
+  };
+  const double contact_fast = std::max(edge_ghost(3, kAoClampMargin), edge_ghost(6, kAoClampMargin));
+  const double contact_control = edge_ghost(6, 1.0f);
+  if (g_check.print) {
+    std::printf("  contact edge at 3 and 6 texels a frame with a history read at the wrong place: ghost %.3f at most (bound %.3f) | margin 1: %.3f\n", contact_fast, (1.0 - 1.0 / 12.0) * double(kAoClampMargin), contact_control);
+  }
+  g_check(contact_fast <= (1.0 - 1.0 / 12.0) * double(kAoClampMargin) + 0.01,
+          nc::Num("contact shadows, an edge moving 3 and 6 texels a frame with no reprojection at all: the ghost is at most %.3f (the clamp's margin %.2f times the weight %.3f): a pan cannot make it more", contact_fast, double(kAoClampMargin),
+                  1.0 - 1.0 / 12.0));
+  g_check(contact_control > 0.5 && contact_control > 5.0 * contact_fast, nc::Num("(control) the same with a clamp margin of 1 leaves a ghost of %.3f: the test sees a ghost where the clamp is missing", contact_control));
+  // the shafts: the camera turns 0.06 of the picture a frame (about 4 degrees of a 70 degree picture) and a layer moves 0.02 of the picture a frame faster than the sun (the shift is the sun's, a texel far from the sun
+  // turns by more: rectilinear); the clamp's margin and the stale rule bound the trail; without them it is a ghost
+  const Run own_shafts = RunShafts(true, false, true, 7, 0.06, 0.02);
+  const double shafts_fast = Worst(RunShafts(true, true, true, 7, 0.06, 0.02), own_shafts);
+  const double shafts_control = Worst(RunShafts(true, true, true, 7, 0.06, 0.02, false), own_shafts);
+  if (g_check.print) {
+    std::printf("  shafts, the camera turning 0.06 of the picture a frame, a layer 0.02 faster: ghost %.4f of the brightness at most | guards off: %.4f\n", shafts_fast, shafts_control);
+  }
+  g_check(shafts_fast < 0.03, nc::Num("shafts at the speed of the pan (0.06 of the picture a frame, a layer 0.02 faster than the sun): the history trails it by at most %.4f of the brightness (the clamp's margin is %.2f)", shafts_fast, double(nr::kShaftsClampMargin)));
+  g_check(shafts_control > 0.08 && shafts_control > 3.0 * shafts_fast, nc::Num("(control) the same with the clamp and the stale rule off trails by %.4f: the test sees a ghost where the guards are missing", shafts_control));
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,6 +1173,16 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(settings, decl.c_str()) && nc::Has(settings, "inline auto& mcla_gpu_noise_resolve_no_upscaler = g_gpu.mcla_gpu_noise_resolve_no_upscaler;") && nc::Has(manifest, "\"mcla_gpu_noise_resolve_no_upscaler\": {") &&
               nc::Has(meta, "{\"mcla_gpu_noise_resolve_no_upscaler\", \"MCLA/GPU\"},") && nc::Has(pages, "NativeOnly(Bool(\"PM_RxDbgNoiseResolve\", \"mcla_gpu_noise_resolve_no_upscaler\""),
           "mcla_gpu_noise_resolve_no_upscaler: a live debug setting, on by default, in the settings header, its alias, the manifest, the meta list and the debug menu's FIXES page");
+  // NOISE-NA6: the ghost check's arms. One live debug setting for each effect, on by default, in the same four files (no row: a debug setting needs none), AND-ed with the master switch where the plan is made.
+  for (const char* effect : {"contact", "shafts", "cone"}) {
+    const std::string name = std::string("mcla_gpu_noise_resolve_") + effect;
+    const std::string def = std::string("REX_") + "SETTING(bool, " + name + ", true,";
+    g_check(nc::Has(settings, def.c_str()) && nc::Has(settings, ("inline auto& " + name + " = g_gpu." + name + ";").c_str()) && nc::Has(manifest, ("\"" + name + "\": {").c_str()) &&
+                nc::Has(meta, ("{\"" + name + "\", \"MCLA/GPU\"},").c_str()),
+            name + ": a live debug setting, on by default, in the settings header, its alias, the manifest and the meta list (the arms of the ghost check)");
+  }
+  g_check(nr::ResolveOn(true, true) && !nr::ResolveOn(true, false) && !nr::ResolveOn(false, true) && !nr::ResolveOn(false, false),
+          "ResolveOn: an effect resolves only while the master switch and its own are both on (the master off wins: OFF is still every effect's fixed pattern)");
   // REVIEW F6 against fix/noise-all-review 5d0c0cfc (S6), reconciled (7315e407): a missing stencil plane view does NOT stop the contact history (the pass reads no vehicle then); only a pass that cannot be recorded does,
   // and the noise holds on exactly those frames. Run's decision and the shaders' empty-slot answers are pinned in the block below (the first form of F6's clear, `plan.contact_history && summary.stencil_slot == kNoSlot`, is gone).
   g_check(!nr::Varies(false, false) && nr::FrameTerm(false, false, 77, 1023) == 0u && nr::FrameTerm(false, true, 77, 1023) == 77u && nr::FrameTerm(true, false, 77, 1023) == 77u,
@@ -1099,7 +1191,7 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(ao, "noise_resolve::Varies(plan.upscaler, plan.contact_history) ? base.slots2[1] : (base.slots2[1] & ao_stable::kBlueNoiseFlag)") &&
               nc::Has(ao, "in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;") && !nc::Has(ao, "plan.upscaler ? base.slots2[1]"),
           "ao.cpp: the contact march's and the car's sun ray's frame terms advance while an upscaler runs OR the contact history does (the old `plan.upscaler ? frame : 0` is gone)");
-  g_check(nc::Has(ao, "plan.contact_history = contact && !upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&") &&
+  g_check(nc::Has(ao, "plan.contact_history = contact && !upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_contact.Get()) &&\n                         larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&") &&
               nc::Has(ao_h, "bool ContactFilterInApply() const { return !contact_history && ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }"),
           "the contact history runs only with no temporal upscaler, the switch on, the occlusion's history length 2 or more and no contact debug picture; the filter is a pass of its own then");
   g_check(nc::Has(ao, "uint32_t AmbientOcclusion::RecordContactHistory(") && nc::Has(ao, "plume::RenderPipeline* accumulate = Pipeline(stencil_ms_ ? kVTemporalMs : kVTemporal);") &&
@@ -1126,7 +1218,7 @@ void TestSources(const std::string& dir) {
               nc::Has(ao, "kHistoryFlag = 1u << 20;"),
           "the shader's flag mode skips the wide blur and keeps the occlusion's clamp margin (0.08), plane test and weight: the same ghost as the occlusion's");
   // the shafts
-  g_check(nc::Has(shafts, "plan.history = !upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && plan.view == 0;") && nc::Has(shafts, "const HostImage* resolved = plan.history ? RecordTemporal(list, plan) : nullptr;") &&
+  g_check(nc::Has(shafts, "plan.history = !upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_shafts.Get()) && plan.view == 0;") && nc::Has(shafts, "const HostImage* resolved = plan.history ? RecordTemporal(list, plan) : nullptr;") &&
               nc::Has(shafts, "RecordAdd(list, *colour, plan, resolved ? *resolved : shaft_)") && nc::Has(shafts, "push.sun[2] = keep ? noise_resolve::ShaftsHistoryWeight(hist_frames_) : 0.0f;"),
           "shafts.cpp: the history runs with no upscaler and the switch on (not in a debug view), between the blur and the add pass, and the add pass reads its result");
   g_check(nc::Has(shafts_ps, "const float2 uv = (float2(pixel) + 0.5f) / size + g_push.tint.xy;") && nc::Has(shafts_ps, "const float held = clamp(history, lo - g_push.sun.w, hi + g_push.sun.w);") &&
@@ -1145,20 +1237,20 @@ void TestSources(const std::string& dir) {
               nc::Has(shafts, "push.sun[2] = keep ? noise_resolve::ShaftsHistoryWeight(hist_frames_) : 0.0f;") && nc::Has(shafts, "hist_frames_ = keep ? std::min(hist_frames_ + 1u, 64u) : 1u;"),
           "shafts.cpp (review F1): EnsureImages compares the history images' textures before and after making them and clears the history's counters; RecordTemporal's gate is the twin's and never reads an image that has no layout yet");
   // the cone
-  g_check(nc::Has(cone, "const bool resolve_history = denoise_passes > 0 && !info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && EnsureStableImages(history.width, history.height);") &&
+  g_check(nc::Has(cone, "const bool resolve_history = denoise_passes > 0 && !info.upscaler && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get()) && EnsureStableImages(history.width, history.height);") &&
               nc::Has(cone, "const uint32_t pattern_phase = noise_resolve::Varies(info.upscaler, resolve_history) ? info.pattern_phase : 0u;") && nc::Has(selfrefl, "info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 1023u);"),
           "the cone: the pattern's phase advances while an upscaler runs or the denoise's own history does; car_selfrefl.cpp hands the phase over every frame and car_rt_refl.cpp says where it is used");
   // NOISE-FOLLOW, CHECK 2: the three histories' images stay over the frames a temporal upscaler takes (HistoryLifetime, asked once a frame in the place that makes the images), and what they hold is stale across the gap
-  g_check(nc::Has(ao, "plan.contact_history_gap = contact && upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&") &&
+  g_check(nc::Has(ao, "plan.contact_history_gap = contact && upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_contact.Get()) &&\n                             larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&") &&
               nc::Has(ao, "plan.contact_history_keep = ContactHistoryKeep(plan);") && nc::Has(ao, "} else if (!plan.contact_history_keep) {") &&
               nc::Has(ao, "return contact_life_.Frame(plan.contact_history && plan.apply, plan.contact_history_gap && plan.apply, held, size_ok) == noise_resolve::HistoryImages::kKeep;") &&
               nc::Has(ao, "} else if (h.frame + 1 != frame_) {") && nc::Has(ao_h, "noise_resolve::HistoryLifetime contact_life_;"),
           "ao.cpp: the contact history's images are kept over an upscaler's frames (the gap rule `h.frame + 1 != frame_` says they are stale) and given back by the lifetime rule");
-  g_check(nc::Has(shafts, "plan.history_gap = upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && plan.view == 0;") &&
+  g_check(nc::Has(shafts, "plan.history_gap = upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_shafts.Get()) && plan.view == 0;") &&
               nc::Has(shafts, "const noise_resolve::HistoryImages hist_keep = hist_life_.Frame(plan.history, plan.history_gap, hist_held, hist_size_ok);") && nc::Has(shafts, "} else if (hist_held && hist_keep != noise_resolve::HistoryImages::kKeep) {") &&
               nc::Has(shafts, "hist_valid_ && hist_frame_ + 1 == frame_"),
           "shafts.cpp: the history's images are kept over an upscaler's frames (hist_frame_ + 1 == frame_ says they are stale) and given back by the lifetime rule");
-  g_check(nc::Has(cone, "const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get();") &&
+  g_check(nc::Has(cone, "const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get());") &&
               nc::Has(cone, "int denoise_passes = car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);"),
           "car_rt_refl.cpp (city line): the cone history's images stay over frames DLSS Ray Reconstruction takes too (the denoise passes are 0 there because it is the denoiser; the gap asks the setting's own count)");
   g_check(nc::Has(cone, "const noise_resolve::HistoryImages stable_keep = stable_life_.Frame(resolve_history, stable_gap, stable_held, stable_size_ok);") &&
@@ -1202,6 +1294,7 @@ int main(int argc, char** argv) {
   TestShafts();
   TestShaftsHistoryGate();
   TestCone();
+  TestFastMotion();
   TestJitter();
   TestLifetime();
   TestMemory();

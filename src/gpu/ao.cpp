@@ -1696,10 +1696,12 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   plan.upscaler = upscaler_running;
   // NOISE-RESOLVE: with no temporal upscaler the contact shadows' noise changes every frame and the contact image has a history of its own (ChooseContactHistory), as long as the occlusion's own
   // history length allows one (mcla_gpu_ao_history 2 and up) and no debug picture of the contact shadows is shown.
-  plan.contact_history = contact && !upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&
+  plan.contact_history = contact && !upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_contact.Get()) &&
+                         larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&
                          larecomp::settings::mcla_gpu_contact_shadows_view.Get() == 0;
   // NOISE-FOLLOW: the same conditions with the upscaler running: the frames the history's images are kept over (HistoryLifetime), not made again at every plain frame of an upscaler session.
-  plan.contact_history_gap = contact && upscaler_running && larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get() && larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&
+  plan.contact_history_gap = contact && upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_contact.Get()) &&
+                             larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&
                              larecomp::settings::mcla_gpu_contact_shadows_view.Get() == 0;
   plan.view = plan.occlusion ? uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_view.Get(), 0, 8)) : 0u;
   if (plan.view == 8u) {
