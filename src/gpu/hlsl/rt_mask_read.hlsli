@@ -9,6 +9,7 @@
 //                       takes no part), and the nearest texel where no tap counts. The weight of a tap is 1 / (1 + (dz / (sigma t))^2), sigma = the table's depth_sigma (0.05: five per cent of the pixel's distance).
 //                       The texel i stands for the traced pixel i x step, whose centre is at i x step + 0.5 traced pixels: the pixel's place is ((p + 0.5) x traced / picture - 0.5) / step texels.
 // A value that is not a number, or outside [0, 1], is cleaned (rt_lights_rules.h CleanVisibility): NaN and infinity are 1 (lit: they take nothing away), the rest is clamped.
+// The weighted mean is held between the smallest and the largest of the taps that carry weight (taps of one value read back as exactly that value, taps that are all 1 as exactly 1: the identity of check 1).
 //
 // THE SEAMS. The file DECLARES these two and the including shader DEFINES them, anywhere after the include (the pass reads the images through the heap's bindless set 0; the test through arrays):
 //     float4 RtmLoadMask(uint slot, int2 p);    one texel of a mask image at the traced size (the index is in range)
@@ -143,6 +144,8 @@ float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float rend
   float weights = 0.0f;
   float nearest = 1.0f;
   float nearest_weight = -1.0f;
+  float lo = 1.0f;   // the range of the taps that carry weight: a weighted mean lies inside it (see the division below)
+  float hi = 0.0f;
   for (int k = 0; k < 4; ++k) {
     int dx = k & 1;
     int dy = k >> 1;
@@ -157,13 +160,20 @@ float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float rend
     float wk = bilinear * depth_weight;
     sum += v * wk;
     weights += wk;
+    if (wk > 0.0f) {
+      lo = min(lo, v);
+      hi = max(hi, v);
+    }
     if (wk > nearest_weight) {
       nearest_weight = wk;
       nearest = v;
     }
   }
   if (weights > 1.0e-4f) {
-    return sum / weights;
+    // A weighted mean of the taps lies between the smallest and the largest of them, whatever the rounding does: the sum and the division are off by an ulp (a GPU's divide may be 1 ulp out, and
+    // taps of one value with unequal weights do not add back to that value exactly), and the identity the arm check 1 stands on is that taps that are all 1 read as exactly 1 (and a visibility never
+    // reads above its brightest tap, so it can only take light away).
+    return min(max(sum / weights, lo), hi);
   }
   return nearest;
 }

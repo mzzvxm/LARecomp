@@ -18,6 +18,7 @@
 //   - the NOISE (AGENT-RULE-NOISE): the numbers of a light's ray change every frame at every pixel, leave no gap, are uniform, take the same step at every pixel, and the error after an exponential
 //     average has no lattice; no two (light, slot) of a frame share a sample;
 //   - the mask read (hlsl/rt_mask_read.hlsli): the same size reads the texel, a smaller one a depth guided bilinear against a brute force, an edge in depth keeps the far side out, a bad texel is lit;
+//     (VERIFY-RTL: taps of one value, an all lit neighbourhood above all, read back as exactly that value, and a mean never leaves the range of its taps);
 //   - the shader's text (the numbers against the header's, no colour target, the shared noise) and, with the src folder, the host class, the settings and the wiring.
 
 #include <algorithm>
@@ -1319,6 +1320,90 @@ void TestMaskRead() {
     const float odd = hs::RtmVisibility(guided, 0, hs::int2(15, 4), 32.0f, 16.0f, 500.0f, false);
     CHECK(odd >= 0.1f - 1e-6f && odd <= 0.9f + 1e-6f);
   }
+
+  // THE IDENTITY OF CHECK 1 (VERIFY-RTL, 2026-11-24): taps that all hold one value read back as EXACTLY that value, at any place, size, step and guide, and a weighted mean never leaves the range of the taps
+  // that carry weight (so a visibility never reads above its brightest tap: the pass can only take light away, and check 1's 1s are 1). A weighted mean of equal taps is NOT exact in float by itself:
+  // sum(v w) / sum(w) with unequal weights lands an ulp off (and a GPU's divide may be an ulp out on top), which the clamp to the taps' range removes.
+  {
+    int off_value = 0;
+    int checked = 0;
+    for (int round = 0; round < 80; ++round) {
+      MaskWorld w;
+      const bool half = (round & 1) != 0;
+      if (half) {
+        w.dw = 8 + int(rng.Below(40));
+        w.dh = 8 + int(rng.Below(24));
+        w.tw = (w.dw + 1) / 2;
+        w.th = (w.dh + 1) / 2;
+      } else {
+        w.tw = 4 + int(rng.Below(24));
+        w.th = 4 + int(rng.Below(14));
+      }
+      static const float kValues[] = {1.0f, 0.0f, 0.3f, 0.7f, 0.999f, 0.0039215686f, 0.123456f, 0.9f, 0.5f, 1.0f};
+      const float value = round < 40 ? kValues[round % 10] : rng.F();
+      for (int c = 0; c < 9; ++c) {
+        w.value[c].assign(size_t(w.tw) * w.th, value);
+        w.raw[c].assign(size_t(w.tw) * w.th, value);
+      }
+      const int dw = half ? w.dw : w.tw, dh = half ? w.dh : w.th;
+      w.depth.resize(size_t(dw) * dh);
+      for (float& d : w.depth) {   // the guides vary (unequal weights): near, far, the sky, none, the vehicle bit
+        d = rng.Range(2.0f, 80.0f);
+        if (rng.Below(30) == 0) d = 60000.0f;
+        if (rng.Below(30) == 0) d = 0.0f;
+        uint32_t bits;
+        std::memcpy(&bits, &d, 4);
+        bits = (bits & ~1u) | (rng.Below(5) == 0 ? 1u : 0u);
+        std::memcpy(&d, &bits, 4);
+      }
+      Install(w);
+      const int images = 1 + int(rng.Below(3));
+      const int rw = dw * (1 + int(rng.Below(3))) + int(rng.Below(3)), rh = dh * (1 + int(rng.Below(3))) + int(rng.Below(3));
+      for (int guided = 0; guided < 2; ++guided) {
+        const hs::RtmTable tb = half ? MakeTable(images, w.tw, w.th, guided != 0, RTM_VALID, 2, w.dw, w.dh) : MakeTable(images, w.tw, w.th, guided != 0);
+        for (int i = 0; i < 120; ++i) {
+          const int px = int(rng.Below(uint32_t(rw))), py = int(rng.Below(uint32_t(rh)));
+          const int channel = int(rng.Below(uint32_t(images * 3)));
+          const double t = rng.Below(10) == 0 ? 0.0 : rng.Range(2.0f, 80.0f);
+          const float v = hs::RtmVisibility(tb, uint32_t(channel), hs::int2(px, py), float(rw), float(rh), float(t), rng.Below(4) == 0);
+          ++checked;
+          off_value += v == value ? 0 : 1;
+        }
+      }
+    }
+    CHECK(checked > 10000);
+    CHECK(off_value == 0);   // every read of an all equal neighbourhood is that value, exactly (an all lit one is exactly 1: check 1 is the identity)
+  }
+  // a mean never leaves its taps: random masks, the read is inside [the smallest tap, the largest tap] of the whole channel image, and 1 only where some tap is 1
+  {
+    for (int round = 0; round < 40; ++round) {
+      MaskWorld w;
+      w.tw = 4 + int(rng.Below(20));
+      w.th = 4 + int(rng.Below(14));
+      float lo = 1.0f, hi = 0.0f;
+      for (int c = 0; c < 9; ++c) {
+        w.value[c].resize(size_t(w.tw) * w.th);
+        w.raw[c].assign(size_t(w.tw) * w.th, 0.5f);
+        for (float& v : w.value[c]) {
+          v = rng.Range(0.2f, 0.8f);
+          if (c == 0) {
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+          }
+        }
+      }
+      w.depth.resize(size_t(w.tw) * w.th);
+      for (float& d : w.depth) d = rng.Range(2.0f, 80.0f);
+      Install(w);
+      const int rw = w.tw * (1 + int(rng.Below(3))) + int(rng.Below(3)), rh = w.th * (1 + int(rng.Below(3))) + int(rng.Below(3));
+      const hs::RtmTable tb = MakeTable(1, w.tw, w.th, true);
+      for (int i = 0; i < 200; ++i) {
+        const int px = int(rng.Below(uint32_t(rw))), py = int(rng.Below(uint32_t(rh)));
+        const float v = hs::RtmVisibility(tb, 0, hs::int2(px, py), float(rw), float(rh), rng.Range(2.0f, 80.0f), false);
+        CHECK(v >= lo && v <= hi && v < 1.0f);
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2010,6 +2095,14 @@ void TestShaderText(const std::string& src) {
   }
   // the light pass's reader: the seams
   CHECK(Has(read, "float4 RtmLoadMask(uint slot, int2 p);") && Has(read, "float RtmLoadDepth(uint slot, int2 p);") && Has(read, "float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float renderH, float t, bool raw)"));
+  // the weighted mean is held between its taps (check 1's identity on a GPU whose divide is an ulp out): the range is taken over the taps that carry weight and the result clamped to it, once
+  const auto times = [&](const std::string& needle) {
+    size_t n = 0;
+    for (size_t at = read.find(needle); at != std::string::npos; at = read.find(needle, at + needle.size())) ++n;
+    return n;
+  };
+  CHECK(times("return min(max(sum / weights, lo), hi);") == 1 && times("return sum / weights;") == 0 && times("lo = min(lo, v);") == 1 && times("hi = max(hi, v);") == 1 &&
+        Has(read, "if (wk > 0.0f) {\n      lo = min(lo, v);"));
 }
 
 // ---------------------------------------------------------------------------
