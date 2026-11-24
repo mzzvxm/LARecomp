@@ -4,14 +4,13 @@
 // ===========================================================================
 // The ray tracing world frame (rt_world_frame.h) needs the world's hour (the lamps' on hours and the night curve) and the sky's index (the weather): the renderer has no read of the guest's
 // lighting manager, so the time of day hook (src/mc_engine/gameplay/time_of_day.cpp Hook_TimeOfDay, which runs once a frame before the lighting update) publishes them here, the way it
-// already publishes the garage's light (menu_world.h SetGarageLighting): two relaxed stores, no guest access from the render thread. The values are the manager's at the START of the
-// frame's lighting update (a scene's or a menu shot's hour that the hook pins is written after: the render thread sees it one frame later, a few seconds of the day's clock at most).
+// already publishes the garage's light (menu_world.h SetGarageLighting): two relaxed stores, no guest access from the render thread. The values are the manager's at the start of the
+// frame's lighting update, after any requested hour was applied before the guest evaluated fog.
 // An unset clock (no hook yet, the XEO3 build) reads -1 and -1: the consumers then fall back to the world's sun colour.
 //
 // THE HOUR'S JUMPS (CITY-RT-REVIEW M4): the same call also tells a jump of the hour from its normal advance, for the probe field of the bounce light (gi_field_rules.h RelightDetector), which
-// must be relit when the light of the whole world changes at once. The hour is not set at one place: the Director's scene and a menu shot pin it in the hook (TimeOfDay_SceneHour,
-// TimeOfDay_RequestHour), the settings' hold and the real clock pin it there too, and the game's own mission starts, skips and garage changes move it inside the lighting update. Every one of
-// them leaves the same trace at the next call: the hour of this frame's start is far from the last frame's. So the step is tested here, where all of them pass, and counted (HourJumps).
+// must be relit when the light of the whole world changes at once. The pre-fog hook applies the Director's scene, a menu shot, the settings' hold or the real clock. The game's own mission
+// starts, skips and garage changes can also move the hour. The next publish sees a large step from the previous frame and counts it (HourJumps).
 //
 //   The largest step normal play makes in one frame: the game's stock rate is at most 0.00833 h/s (time_of_day.cpp: the midday rate, 2 minutes an hour), the day speed setting goes to 100
 //   (settings_world.h Range{0, 100}) = 0.833 h/s, and one frame's step of the game's clock is capped at 125 ms by default (frame_timing.cpp kStepCapCeilingMs; the setting's own ceiling is
