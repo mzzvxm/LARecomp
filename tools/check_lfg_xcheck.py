@@ -73,7 +73,7 @@ def main():
     code, text = compile_run("ui_expr_test", ["src/settings/ui_expr_test.cpp"], out, args, run_args=[os.path.join(ROOT, "documentation", "contract")])
     step("the evaluator against the shared vectors", code == 0 and "0 failed" in text, last_line(text))
 
-    code, text = compile_run("export_test", ["src/settings_ui/export.cpp", "src/settings_ui/export_test.cpp", "src/citypack/file_replace.cpp"], out, args,
+    code, text = compile_run("export_test", ["src/settings_ui/export.cpp", "src/settings_ui/export_test.cpp", "src/os/file_replace.cpp"], out, args,
                              run_args=[os.path.join(out, "export_test.json")])
     step("the exporter's test", code == 0 and "0 failed" in text, last_line(text))
 
@@ -91,7 +91,7 @@ def main():
     step("every setting the menu tables name is in the dump", code == 0, text.splitlines()[0][:200] if text else "")
 
     fleet_dir = os.path.join(out, "fleet")
-    code, text = compile_run("fleet_test", ["src/machine_facts/fleet_test.cpp", "src/machine_facts/document.cpp", "src/citypack/file_replace.cpp", *ONLINE], out, args,
+    code, text = compile_run("fleet_test", ["src/machine_facts/fleet_test.cpp", "src/machine_facts/document.cpp", "src/os/file_replace.cpp", *ONLINE], out, args,
                              extra=["-lws2_32", "-Isrc/machine_facts"], run_args=[fleet_dir])
     ok = code == 0 and "0 failed" in text
     if ok:

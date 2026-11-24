@@ -1,6 +1,6 @@
 // The test fleet for the launcher-follows-the-game cross-check: fake machine.json files, one per kind of PC the launcher has to render for.
 //
-//   clang++ -std=c++23 -Isrc src/machine_facts/fleet_test.cpp src/machine_facts/document.cpp src/citypack/file_replace.cpp  -o fleet_test
+//   clang++ -std=c++23 -Isrc src/machine_facts/fleet_test.cpp src/machine_facts/document.cpp src/os/file_replace.cpp  -o fleet_test
 //   fleet_test <folder>        writes <folder>/<id>.machine.json for every machine below and checks what it can
 //
 // Every file is made by the game's own writer (machine::Serialize) from the game's own rules for the two things a table decides: the GPU class (gpu_class.h

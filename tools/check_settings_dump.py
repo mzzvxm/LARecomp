@@ -166,7 +166,7 @@ def write_fixture(out):
 
 def build(out, args):
     cmd = [args.clang, "-fuse-ld=lld", "-std=c++23", "-Isrc", "-I" + out, "-isystem", args.toml, "-isystem", args.sdk + "/include",
-           "src/settings_ui/action.cpp", "src/settings_ui/export.cpp", "src/citypack/file_replace.cpp", "src/settings/larecomp_settings.cpp",
+           "src/settings_ui/action.cpp", "src/settings_ui/export.cpp", "src/os/file_replace.cpp", "src/settings/larecomp_settings.cpp",
            os.path.join(out, "fixture.cpp"), args.alloc, args.sdk + "/lib/rexbase.lib", "-o", os.path.join(out, "fixture.exe")]
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
