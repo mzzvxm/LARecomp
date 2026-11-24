@@ -104,7 +104,8 @@ void Lighting(Fixture& f) {
     constexpr const char* class_rows[] = {
         "PM_RxGpuShadowFilter", "PM_RxGpuShadowDetail", "PM_RxGpuCarRefl", "PM_RxGpuRoadRefl",
         "PM_RxGpuContact", "PM_RxGpuSunShafts", "PM_RxGpuSsgi", "PM_RxGpuTrafficShadows", nullptr,
-        "PM_RxGpuAo", "PM_RxGpuHeadlights", "PM_RxGpuLightShadows", "PM_RxGpuVolumetrics", nullptr,
+        nullptr /* the occlusion: its AUTO is the class cell or `rt` (rtao_setting.h), held below with the other labels */,
+        "PM_RxGpuHeadlights", "PM_RxGpuLightShadows", "PM_RxGpuVolumetrics", nullptr,
         "PM_RxGpuSsr", "PM_RxGpuNeonLight", "PM_RxGpuSideMirrors",
     };
     static_assert(std::size(class_rows) == gc::kEffectCount);
