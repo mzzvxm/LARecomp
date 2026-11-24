@@ -141,7 +141,9 @@
 // in pipelines_ takes no lock.
 // ===========================================================================
 
+#include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -151,6 +153,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -253,6 +256,71 @@ struct DepthBias {
   bool operator==(const DepthBias& o) const { return constant == o.constant && slope == o.slope; }
 };
 
+// The inputs BuildKey reads from the draw. Shader entries and layouts are
+// immutable for the session. The backend's bias capabilities are fixed at
+// Initialize. WantedFeatures is sampled once and passed to the full builder.
+struct PipelineBuildSignature {
+  const ShaderStore::Entry* vs = nullptr;
+  const ShaderStore::Entry* ps = nullptr;
+  const InputLayout* layout = nullptr;
+  uint32_t wanted_features = 0;
+  plume::RenderPrimitiveTopology topology{};
+  plume::RenderFormat depth_format{};
+  bool polygonal = false;
+  bool depth_bound = false;
+  xe::MSAASamples msaa{};
+  xe::DepthRenderTargetFormat guest_depth_format{};
+  struct Color {
+    plume::RenderFormat format{};
+    uint32_t blend = 0;
+    uint32_t write_mask = 0;
+    bool bound = false;
+    bool operator==(const Color&) const = default;
+  };
+  std::array<Color, kColorTargetCount> colors{};
+  uint32_t mode = 0;
+  uint32_t depth_control = 0;
+  uint32_t stencil = 0;
+  uint32_t stencil_bf = 0;
+  uint32_t color_control = 0;
+  uint32_t sc_mode = 0;
+  uint32_t clip = 0;
+  uint32_t alpha_ref = 0;
+  std::array<uint32_t, 4> poly_offset{};
+  bool operator==(const PipelineBuildSignature&) const = default;
+
+  static PipelineBuildSignature From(const XenosState& state, const PipelineInputs& inputs,
+                                     plume::RenderPrimitiveTopology topology, bool polygonal,
+                                     const plume::RenderFormat (&formats)[kColorTargetCount],
+                                     plume::RenderFormat depth_format, uint32_t wanted_features) {
+    PipelineBuildSignature key;
+    key.vs = inputs.vs;
+    key.ps = inputs.ps;
+    key.layout = inputs.input_layout;
+    key.wanted_features = wanted_features;
+    key.topology = topology;
+    key.depth_format = depth_format;
+    key.polygonal = polygonal;
+    key.depth_bound = state.depth_bound;
+    key.msaa = state.msaa;
+    key.guest_depth_format = state.depth_format;
+    for (uint32_t i = 0; i < kColorTargetCount; ++i) {
+      const ColorTargetState& color = state.color[i];
+      key.colors[i] = {formats[i], color.blend.value, color.write_mask, color.bound};
+    }
+    key.mode = uint32_t(state.mode.edram_mode);
+    key.depth_control = state.depth_control.value;
+    key.stencil = state.stencil.value;
+    key.stencil_bf = state.stencil_bf.value;
+    key.color_control = state.color_control.value;
+    key.sc_mode = state.sc_mode.value;
+    key.clip = uint32_t(state.clip.clip_disable);
+    key.alpha_ref = std::bit_cast<uint32_t>(state.alpha_ref);
+    key.poly_offset = std::bit_cast<std::array<uint32_t, 4>>(state.poly_offset);
+    return key;
+  }
+};
+
 // Why BuildKey refused a draw.
 enum class KeyResult : uint8_t {
   kOk,
@@ -311,8 +379,19 @@ class Pipelines {
   // Anything but kOk: the draw is skipped.
   KeyResult BuildKey(const XenosState& state, const PipelineInputs& inputs,
                      plume::RenderPrimitiveTopology topology, bool polygonal,
-                     const plume::RenderFormat color_formats[kColorTargetCount],
+                     const plume::RenderFormat (&color_formats)[kColorTargetCount],
                      plume::RenderFormat depth_format, PipelineKey& key, DepthBias& bias);
+
+  void SetDrawMemo(bool enabled) { draw_memo_enabled_ = enabled; }
+  struct DrawMemoProfile {
+    DrawMemoStats build_key;
+    DrawMemoStats get;
+  };
+  DrawMemoProfile TakeDrawMemoProfile() {
+    const DrawMemoProfile stats = draw_memo_profile_;
+    draw_memo_profile_ = {};
+    return stats;
+  }
 
   // True when every pipeline takes its depth bias from the command list.
   bool dynamic_depth_bias() const { return dynamic_depth_bias_; }
@@ -561,6 +640,19 @@ class Pipelines {
   ShaderStore* shaders_ = nullptr;
   std::unordered_map<PipelineKey, std::unique_ptr<plume::RenderPipeline>, PipelineKeyHash>
       pipelines_;
+  KeyResult BuildKeyUncached(const XenosState& state, const PipelineInputs& inputs,
+                             plume::RenderPrimitiveTopology topology, bool polygonal,
+                             const plume::RenderFormat (&color_formats)[kColorTargetCount],
+                             plume::RenderFormat depth_format, PipelineKey& key, DepthBias& bias,
+                             std::optional<uint32_t> wanted_features);
+  struct BuiltKey {
+    PipelineKey key;
+    DepthBias bias;
+  };
+  bool draw_memo_enabled_ = false;
+  DrawMemoProfile draw_memo_profile_;
+  TwoWayDrawMemo<PipelineBuildSignature, BuiltKey> build_key_memo_;
+  TwoWayDrawMemo<PipelineKey, plume::RenderPipeline*> pipeline_lookup_memo_;
   // Where kD24S8 is kept as D32 float (format::Depth24Unsupported): the shift that turns
   // the guest's constant offset in 2^-24 steps into the float buffer's steps; 0 otherwise.
   uint32_t depth24_bias_shift_ = 0;

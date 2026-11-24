@@ -779,6 +779,14 @@ target_link_libraries(larecomp_background_build_test PRIVATE Threads::Threads)
 #   cmake --build <dir> --target larecomp_render_cpu_test, then run src/gpu/larecomp_render_cpu_test [--bench] (exit 0 = passed).
 add_executable(larecomp_render_cpu_test EXCLUDE_FROM_ALL render_cpu_test.cpp)
 target_include_directories(larecomp_render_cpu_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# Render-thread target, layout and pipeline memo checks. No device or shader pack.
+add_executable(larecomp_render_draw_memo_test EXCLUDE_FROM_ALL render_draw_memo_test.cpp)
+target_include_directories(larecomp_render_draw_memo_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+foreach(_backend IN LISTS LARECOMP_GPU_BACKENDS)
+    target_compile_definitions(larecomp_render_draw_memo_test PRIVATE LARECOMP_GPU_HAS_${_backend}=1)
+endforeach()
+target_link_libraries(larecomp_render_draw_memo_test PRIVATE plume rex::sdk)
 # The HDR frame's compose in the present (hlsl/hdr_compose.hlsli, hdr_scene.h) has one too: the shared sum
 # compiled as C++, the float16 image and the display's table written out again, the older path against the new:
 #   cmake --build <dir> --target larecomp_hdr_compose_test, then run src/gpu/larecomp_hdr_compose_test (exit 0 = passed).

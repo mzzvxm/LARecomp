@@ -64,6 +64,7 @@
 
 #include "constants.h"
 #include "draw_census.h"
+#include "draw_target_memo.h"
 #include "edram.h"
 #include "frame_layers.h"
 #include "frame_order.h"
@@ -294,6 +295,8 @@ class Scene {
     // SizeBits; 0 when not known): what tells a class's use of an identity from another pass's
     // (EdramTargets::DepthLayer), so every place that makes the draw's depth key needs it.
     uint32_t target_size_bits = 0;
+    EdramKey memo_depth_key;
+    uint64_t memo_depth_serial = 0;
     // The UI layer split: what OnDraw does before recording the draw (the key's alpha blend was
     // already changed in Prepare when the draw joins the layer).
     FrameLayers::DrawAction ui_layer = FrameLayers::DrawAction::kNone;
@@ -346,6 +349,7 @@ class Scene {
   // draw that changes nothing.
   Skip Prepare(const DrawView& view, const ConstantBanks::Banks& banks, PreparedDraw& d,
                bool* no_effect, NoEffect* no_effect_reason, std::string* detail);
+  EdramKey DepthKey(const PreparedDraw& d) const;
   // The frames in a row a target must have been drawn into for a draw into it
   // to wait for a pipeline (~0.5 s at 60 FPS: past a loading screen, a menu or
   // a one-shot render to texture).
@@ -774,6 +778,9 @@ class Scene {
     uint32_t gbuffer_generation = 0;  // the sidecar the framebuffer has (GBuffer::generation), 0: none
   };
   TargetsMemo targets_memo_;
+  DrawTargetMemo draw_target_memo_;
+  bool target_sig_ = false;
+  bool layout_two_way_ = false;
   // The last draw's Xenos state and what Prepare made from it (
   // M6a.7). Three draws in four repeat the previous draw's window R and
   // surfaces byte for byte -- the bytes stand in for the dirty states reblue
@@ -804,10 +811,7 @@ class Scene {
     uint64_t draw_scale_serial = 0;
     uint32_t draw_scale_colors = 0;
     uint32_t draw_scale_depth_format = 0;
-    Scale draw_scale;
-    uint32_t draw_samples = 1;  // the targets' samples on the host (M6d.2)
-    uint32_t draw_msaa_guest = 0;  // the guest's, when they take the host's MSAA level (else 0)
-    bool draw_scene = false;    // the first target is the scene's, drawn at a scale of its own
+    DrawTargetScale draw_scale;
     bool constants_valid = false;
     bool ps_writes_depth = false;
     Scale scale;  // the targets' resolution scale the viewport was made for (24.45)
@@ -869,7 +873,7 @@ class Scene {
   uint64_t lap_ = 0;
   std::array<uint64_t, size_t(Stage::kCount)> stage_cycles_{};
   // How often each memo of the last draw answered (M6a.3), for the profile.
-  enum class Memo : uint8_t { kTargets, kPipeline, kVertexShader, kPixelShader, kState, kCount };
+  enum class Memo : uint8_t { kTargets, kPipeline, kVertexShader, kPixelShader, kState, kTargetSig, kCount };
   std::array<uint64_t, size_t(Memo::kCount)> memo_hits_{};
   std::array<uint64_t, size_t(Memo::kCount)> memo_tries_{};
   // mcla_gpu_ab_interleave (ab.h): each variant's prepare ns/draw summed

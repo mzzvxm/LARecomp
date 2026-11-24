@@ -348,6 +348,8 @@ Pipelines::~Pipelines() {
 }
 
 void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStore& shaders) {
+  build_key_memo_.Clear();
+  pipeline_lookup_memo_.Clear();
   device_ = &device;
   layout_ = &layout;
   shaders_ = &shaders;
@@ -569,6 +571,8 @@ void Pipelines::Shutdown() {
   if (persist_ && shaders_) {
     SaveRecords();
   }
+  build_key_memo_.Clear();
+  pipeline_lookup_memo_.Clear();
   pipelines_.clear();
   level_dependent_.clear();
   level_dependent_index_.clear();
@@ -1624,9 +1628,42 @@ void Pipelines::Report(uint32_t kind, const char* what) {
 
 KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inputs,
                               plume::RenderPrimitiveTopology topology, bool polygonal,
-                              const plume::RenderFormat color_formats[kColorTargetCount],
+                              const plume::RenderFormat (&color_formats)[kColorTargetCount],
                               plume::RenderFormat depth_format, PipelineKey& key,
                               DepthBias& bias) {
+  if (!draw_memo_enabled_) {
+    return BuildKeyUncached(state, inputs, topology, polygonal, color_formats, depth_format,
+                            key, bias, std::nullopt);
+  }
+  const ShaderStore::Entry* ps = inputs.ps;
+  const uint32_t wanted = ps && ps->features != 0 && state.mode.edram_mode == xe::EDRAMMode::kColorDepth
+                              ? WantedFeatures(*ps) : 0;
+  const auto signature = PipelineBuildSignature::From(state, inputs, topology, polygonal,
+                                                      color_formats, depth_format, wanted);
+  ++draw_memo_profile_.build_key.tries;
+  const BuiltKey* found = build_key_memo_.Find(signature);
+  if (!found) {
+    found = build_key_memo_.FindOther(signature);
+  }
+  if (found) {
+    ++draw_memo_profile_.build_key.hits;
+    key = found->key;
+    bias = found->bias;
+    return KeyResult::kOk;
+  }
+  const KeyResult result = BuildKeyUncached(state, inputs, topology, polygonal, color_formats,
+                                            depth_format, key, bias, wanted);
+  if (result == KeyResult::kOk) {
+    build_key_memo_.Put(signature, BuiltKey{key, bias});
+  }
+  return result;
+}
+
+KeyResult Pipelines::BuildKeyUncached(const XenosState& state, const PipelineInputs& inputs,
+                                      plume::RenderPrimitiveTopology topology, bool polygonal,
+                                      const plume::RenderFormat (&color_formats)[kColorTargetCount],
+                                      plume::RenderFormat depth_format, PipelineKey& key,
+                                      DepthBias& bias, std::optional<uint32_t> wanted_features) {
   key = PipelineKey{};
   bias = DepthBias{};
   const ShaderStore::Entry* vs = inputs.vs;
@@ -1671,8 +1708,8 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
   // features that the pack has for it (a composed shader, or a subset of the features), and the vertex shader's word when that one
   // reads a vertex stage's export. A draw that needs the alpha test (spec variant 1) takes a variant that has the twin, else it keeps
   // the main pack's shader.
-  if (ps && ps->features != 0) {
-    if (const uint32_t wanted = WantedFeatures(*ps)) {
+  if (ps && ps->features != 0 && shaders_) {
+    if (const uint32_t wanted = wanted_features ? *wanted_features : WantedFeatures(*ps)) {
       uint32_t vs_word = key.vs_variant;
       key.ps_variant = shaders_->ChooseVariant(*ps, wanted, key.ps_variant, vs, key.vs_variant, &vs_word);
       key.vs_variant = vs_word;
@@ -1918,9 +1955,25 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
   } else {
     deferral = nullptr;  // nowhere to say "pending": the draw may not wait
   }
+  if (draw_memo_enabled_) {
+    ++draw_memo_profile_.get.tries;
+    const auto* found = pipeline_lookup_memo_.Find(key);
+    if (!found) {
+      found = pipeline_lookup_memo_.FindOther(key);
+    }
+    if (found) {
+      ++draw_memo_profile_.get.hits;
+      return *found;
+    }
+  }
   const auto it = pipelines_.find(key);
   if (it != pipelines_.end()) {
-    return it->second.get();
+    plume::RenderPipeline* got = it->second.get();
+    if (draw_memo_enabled_ && got) {
+      // Only the owning map has precedence for the entire pipeline lifetime.
+      pipeline_lookup_memo_.Put(key, got);
+    }
+    return got;
   }
   if (const auto alias = aliases_.find(key); alias != aliases_.end()) {
     return alias->second;

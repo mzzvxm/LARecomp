@@ -2753,6 +2753,28 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_target_sig": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug A/B: memoize draw target scale, samples and depth layer using the target signature. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_layout_two_way": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug A/B: keep two recent input layouts, pipeline keys and ready pipelines. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_work_17oct": {
   "type": "bool",
   "default": "true",

@@ -107,43 +107,6 @@ const char* SkipName(uint32_t skip) {
   return skip < std::size(kNames) ? kNames[skip] : "?";
 }
 
-// The EDRAM identities a draw names (the same in Record and in the skip rule).
-EdramKey ColorEdramKey(const XenosState& s, uint32_t i) {
-  EdramKey key;
-  key.base_tiles = uint16_t(s.color[i].base_tiles);
-  key.pitch = uint16_t(s.surface_pitch);
-  key.depth = 0;
-  key.format = uint8_t(FoldColorFormat(uint32_t(s.color[i].format)));
-  key.samples = uint8_t(MsaaSampleCount(s.msaa));
-  return key;
-}
-
-EdramKey DepthEdramKey(const XenosState& s) {
-  EdramKey key;
-  key.base_tiles = uint16_t(s.depth_base_tiles);
-  key.pitch = uint16_t(s.surface_pitch);
-  key.depth = 1;
-  key.format = uint8_t(s.depth_format);
-  key.samples = uint8_t(MsaaSampleCount(s.msaa));
-  return key;
-}
-
-// The depth identity of a draw that has `color_count` colour targets, with its layer (the scene's
-// or the UI's, or another pass's use of a side view's depth: EdramTargets::DepthLayer).
-// `size_bits`: the declared size of the surface the draw's targets are bound through
-// (DrawRecord::target_size_bits, PreparedDraw::target_size_bits).
-EdramKey DrawDepthKey(EdramTargets& edram, const XenosState& s, uint32_t color_count,
-                      uint32_t size_bits) {
-  EdramKey key = DepthEdramKey(s);
-  if (color_count != 0) {
-    const EdramKey color0 = ColorEdramKey(s, 0);
-    key.reserved = edram.DepthLayer(key, &color0, size_bits);
-  } else {
-    key.reserved = edram.DepthLayer(key, nullptr, size_bits);
-  }
-  return key;
-}
-
 const char* DrawKindName(DrawKind kind) {
   switch (kind) {
     case DrawKind::kIndexed: return "indexed";
@@ -285,44 +248,6 @@ const char* ConversionName(uint32_t conversion) {
   static const char* const kNames[] = {"none",       "quad list", "quad strip", "fan/polygon",
                                        "rect list",  "line loop", "unsupported"};
   return conversion < std::size(kNames) ? kNames[conversion] : "?";
-}
-
-// The resolution scale of a draw's targets: its first identity's -- RT0, or
-// the depth target when it writes no colour -- or, before that target exists,
-// the one the declared size of the surface binding it gives (EdramTargets::
-// ScaleOf); Scene::Record makes the targets at it and checks that every other
-// target agrees. `*host_samples`: that identity's samples on the host
-// (EdramTargets::HostSamplesOf), which the pipeline and g_AlphaToMask take. `*scene`: that
-// identity is the scene's and the scene is drawn at a scale of its own (EdramTargets::SceneApart):
-// its textures are sampled with the scene's mip bias (Scene::SceneBias). `*msaa_guest`: that
-// identity takes the host's MSAA level (EdramTargets::HostSamplesFollowLevel), and the guest's
-// samples then; else 0.
-Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key,
-                uint32_t size_bits, uint32_t* host_samples, bool* scene, uint32_t* msaa_guest) {
-  *scene = false;
-  *msaa_guest = 0;
-  EdramKey first;
-  first.pitch = uint16_t(s.surface_pitch);
-  first.samples = uint8_t(MsaaSampleCount(s.msaa));
-  if (key.color_count) {
-    first.base_tiles = uint16_t(s.color[0].base_tiles);
-    first.depth = 0;
-    first.format = uint8_t(FoldColorFormat(uint32_t(s.color[0].format)));
-  } else if (key.depth_format != 0) {
-    first.base_tiles = uint16_t(s.depth_base_tiles);
-    first.depth = 1;
-    first.format = uint8_t(s.depth_format);
-    first.reserved = edram.DepthLayer(first, nullptr, size_bits);
-  } else {
-    *host_samples = first.samples;
-    return Scale{};
-  }
-  *host_samples = edram.HostSamplesOf(first, size_bits);
-  if (edram.HostSamplesFollowLevel(first, size_bits)) {
-    *msaa_guest = first.samples;
-  }
-  *scene = EdramTargets::IsSceneKey(first) && edram.SceneApart();
-  return edram.ScaleOf(first, size_bits);
 }
 
 // The pass a draw opens, for PassTiming: the targets' pitch and
@@ -725,6 +650,7 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   samplers_ = &samplers;
   geometry_ = &geometry;
   edram_ = &edram;
+  draw_target_memo_ = {};
   msaa_.Initialize(edram, pipelines);
   textures_ = &textures;
   resolve_ = &resolve;
@@ -795,7 +721,7 @@ void Scene::ReportProfile(const char* why, double frames, const ThreadLoad::Samp
     sum += ms;
     text += std::format("{}{} {:.3f}", text.empty() ? "" : ", ", kNames[i], ms);
   }
-  static const char* const kMemoNames[] = {"targets", "pipeline", "vs", "ps", "state"};
+  static const char* const kMemoNames[] = {"targets", "pipeline", "vs", "ps", "state", "target sig"};
   static_assert(std::size(kMemoNames) == size_t(Memo::kCount));
   std::string memos;
   for (size_t i = 0; i < memo_hits_.size(); ++i) {
@@ -804,7 +730,17 @@ void Scene::ReportProfile(const char* why, double frames, const ThreadLoad::Samp
   }
   const InputLayouts::MemoStats layouts = input_layouts_.TakeMemoStats();
   memos += std::format(", layout {:.1f}%",
-                       layouts.tries ? 100.0 * double(layouts.hits) / double(layouts.tries) : 0.0);
+                       layouts.first.tries ? 100.0 * double(layouts.first.hits) / double(layouts.first.tries) : 0.0);
+  const auto append_memo = [&](const char* name, DrawMemoStats stats) {
+    memos += std::format(", {} {}/{}", name, stats.hits, stats.tries);
+  };
+  append_memo("layout 2way", layouts.second);
+  if (pipelines_) {
+    const auto stats = pipelines_->TakeDrawMemoProfile();
+    append_memo("pipeline key 2way", stats.build_key);
+    append_memo("pipeline get 2way", stats.get);
+  }
+  // CHECK: compare memo hits and render-thread CPU on the three race affinities.
   REXLOG_INFO("[gpu] scene ({}): profile ms/frame: {} | sum {:.3f} | memo hits: {}", why, text,
               sum, memos);
   // The render thread's CPU by record type, and its loop (the rest).
@@ -836,6 +772,15 @@ void Scene::ResetListState() {
 void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   list_ = list;
   slot_ = slot;
+  const bool target_sig = larecomp::settings::mcla_gpu_target_sig.Get();
+  if (target_sig != target_sig_) {
+    state_memo_.draw_scale_valid = false;
+    target_sig_ = target_sig;
+  }
+  layout_two_way_ = larecomp::settings::mcla_gpu_layout_two_way.Get();
+  if (pipelines_) {
+    pipelines_->SetDrawMemo(layout_two_way_);
+  }
   scale_depth_bias_ = larecomp::settings::mcla_gpu_scale_depth_bias.Get() && larecomp::settings::mcla_gpu_work_17oct.Get();
   mirror_rect_ = mirror_draws::Current();
   mirror_class_ = larecomp::settings::mcla_gpu_mirror_class.Get();
@@ -1134,7 +1079,7 @@ void Scene::PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs,
     return;
   }
   const EdramKey color = ColorEdramKey(d.state, 0);
-  const EdramKey depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+  const EdramKey depth = DepthKey(d);
   const temporal::MainMatch match = temporal::MatchMainView(&color, &depth);
   if (!match || !temporal::IsPlaySamples(match.samples)) {
     return;  // another view's draw: not counted
@@ -1196,8 +1141,7 @@ void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* 
   const uint32_t height = uint32_t(std::lround(d.viewport.viewport.height));
   // The game's depth, as the draw just used it (Record moved it to DEPTH_WRITE): the second draw tests
   // against it and writes none (the pipeline's key), so what the game's draw left in it stays.
-  const EdramTargets::Target* depth =
-      edram_->Find(DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits));
+  const EdramTargets::Target* depth = edram_->Find(DepthKey(d));
   if (!depth || !depth->texture || depth->layout != plume::RenderTextureLayout::DEPTH_WRITE) {
     masks.Skipped(UpscalerMasks::Skip::kNoDepth);
     return;
@@ -1458,6 +1402,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
 Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& banks,
                            PreparedDraw& d, bool* no_effect, NoEffect* no_effect_reason,
                            std::string* detail) {
+  if (!edram_ || !pipelines_) {
+    return Skip::kDeviceLost;
+  }
   const DrawRecord& r = view.record();
   d.target_size_bits = r.target_size_bits;
   if (r.flags & kDrawVsUnreadable) return Skip::kVsUnreadable;
@@ -1605,7 +1552,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       }
     }
   }
-  d.input_layout = input_layouts_.Get(*d.vs, view.decl_records(), r.decl_count, strides);
+  d.input_layout = input_layouts_.Get(*d.vs, view.decl_records(), r.decl_count, strides,
+                                     layout_two_way_);
+  if (!d.input_layout) {
+    return Skip::kInputLayout;
+  }
   if (d.input_layout->problems != 0) {
     *detail = std::format("VS {:016X}, {} problem(s)", r.vs_identity, d.input_layout->problems);
     return Skip::kInputLayout;
@@ -1679,32 +1630,44 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // bias in its host pixels (M6b.3c): a host pixel is 1/scale of the guest's,
   // so is the depth slope across it -- Xenia multiplies the slope factor by
   // the scale. The constant part is in depth units and stays.
-  Scale scale;
-  uint32_t host_samples;
-  bool scene_draw;
-  uint32_t msaa_guest;
-  if (state_same && memo.draw_scale_valid && memo.draw_scale_serial == edram_->change_serial() &&
-      memo.draw_scale_colors == d.key.color_count &&
-      memo.draw_scale_depth_format == uint32_t(d.key.depth_format)) {
-    scale = memo.draw_scale;
-    host_samples = memo.draw_samples;
-    scene_draw = memo.draw_scene;
-    msaa_guest = memo.draw_msaa_guest;
+  const bool has_depth = d.key.depth_format != 0;
+  DrawTargetScale target_scale;
+  if (target_sig_) {
+    if (r.target_size_bits != 0 && edram_->DrawTargetMemoReady()) {
+      // CHECK: compare the two arms when a tiled draw changes its declared extent.
+      const uint64_t target_serial = edram_->change_serial();
+      bool hit;
+      const auto& target = draw_target_memo_.Get(*edram_, s, d.key.color_count, has_depth,
+                                                r.target_size_bits, hit);
+      ++memo_tries_[size_t(Memo::kTargetSig)];
+      memo_hits_[size_t(Memo::kTargetSig)] += hit;
+      target_scale = target.scale;
+      if (has_depth) {
+        d.memo_depth_serial = target_serial;
+        d.memo_depth_key = target.depth;
+      }
+    } else {
+      // Let startup discovery and the missing-size diagnostics run normally.
+      target_scale = DrawScale(*edram_, s, d.key.color_count, has_depth, r.target_size_bits);
+    }
+  } else if (state_same && memo.draw_scale_valid &&
+             memo.draw_scale_serial == edram_->change_serial() &&
+             memo.draw_scale_colors == d.key.color_count &&
+             memo.draw_scale_depth_format == uint32_t(d.key.depth_format)) {
+    target_scale = memo.draw_scale;
   } else {
-    scale = DrawScale(*edram_, s, d.key, r.target_size_bits, &host_samples, &scene_draw,
-                      &msaa_guest);
+    target_scale = DrawScale(*edram_, s, d.key.color_count, has_depth, r.target_size_bits);
     memo.draw_scale_valid = true;
     memo.draw_scale_serial = edram_->change_serial();
     memo.draw_scale_colors = d.key.color_count;
     memo.draw_scale_depth_format = uint32_t(d.key.depth_format);
-    memo.draw_scale = scale;
-    memo.draw_samples = host_samples;
-    memo.draw_scene = scene_draw;
-    memo.draw_msaa_guest = msaa_guest;
+    memo.draw_scale = target_scale;
   }
-  inputs.msaa_guest_samples = msaa_guest;  // Pipelines::Get remembers the pipeline for a level change
+  const Scale scale = target_scale.scale;
+  const uint32_t host_samples = target_scale.host_samples;
+  inputs.msaa_guest_samples = target_scale.msaa_guest;  // Pipelines::Get remembers the pipeline for a level change
   d.scale = scale;
-  d.scene = scene_draw;
+  d.scene = target_scale.scene;
   // The pipeline rasterizes at the targets' host samples (M6d.2).
   d.key.sample_count = host_samples;
   // The UI layer split (frame_layers.h): a draw into the UI target after the composite marker
@@ -1954,6 +1917,16 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   return Skip::kCount;
 }
 
+EdramKey Scene::DepthKey(const PreparedDraw& d) const {
+  if (!edram_) {
+    return {};
+  }
+  if (d.memo_depth_serial != 0 && d.memo_depth_serial == edram_->change_serial()) {
+    return d.memo_depth_key;
+  }
+  return DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+}
+
 bool Scene::MaySkipForPipeline(const void* context) {
   const SkipAsk& ask = *static_cast<const SkipAsk*>(context);
   const Scene& scene = *ask.scene;
@@ -1983,9 +1956,7 @@ bool Scene::MaySkipForPipeline(const void* context) {
     any = true;
   }
   if (d.key.depth_format != 0) {
-    if (!scene.edram_->DrawnEveryFrame(
-            DrawDepthKey(*scene.edram_, s, d.key.color_count, d.target_size_bits),
-            scene.frame_serial_, kPipelineSkipFrames)) {
+    if (!scene.edram_->DrawnEveryFrame(scene.DepthKey(d), scene.frame_serial_, kPipelineSkipFrames)) {
       return false;
     }
     any = true;
@@ -1999,8 +1970,7 @@ void Scene::NoteTargetsDrawn(const PreparedDraw& d) {
     edram_->NoteDrawn(ColorEdramKey(s, i), frame_serial_);
   }
   if (d.key.depth_format != 0) {
-    edram_->NoteDrawn(DrawDepthKey(*edram_, s, d.key.color_count, d.target_size_bits),
-                      frame_serial_);
+    edram_->NoteDrawn(DepthKey(d), frame_serial_);
   }
 }
 
@@ -2085,7 +2055,7 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     color0 = &color;
   }
   if (d.key.depth_format != 0) {
-    depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+    depth = DepthKey(d);
     depth0 = &depth;
   }
   AmbientOcclusion::MainDraw draw;
@@ -2166,7 +2136,7 @@ void Scene::NoteLocalShadow(const ConstantBanks::Banks& banks, const SharedConst
     color0 = &color;
   }
   if (d.key.depth_format != 0) {
-    depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+    depth = DepthKey(d);
     depth0 = &depth;
   }
   LocalShadow::MainDraw draw;
@@ -2202,7 +2172,7 @@ void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks
     f.color0 = &color;
   }
   if (d.key.depth_format != 0) {
-    depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+    depth = DepthKey(d);
     f.depth = &depth;
   }
   if (temporal_->OnDraw(f, shared)) {
@@ -3111,7 +3081,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   const bool has_depth = d.key.depth_format != 0;
   EdramKey depth_key;
   if (has_depth) {
-    depth_key = DrawDepthKey(*edram_, s, d.key.color_count, r.target_size_bits);
+    depth_key = DepthKey(d);
   }
   // The last draw's targets, while nothing they rest on changed (M6a.3).
   const TargetsMemo& memo = targets_memo_;

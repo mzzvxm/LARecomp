@@ -344,7 +344,7 @@ void CheckSource(const std::string& dir) {
   Check(Has(env, "key.reserved != 0") && Has(reflection, "key.reserved != 0"),
         "the rules match layer 0 only (a layer 2 depth is no class's)");
 
-  for (const char* file : {"scene.cpp", "resolve.cpp"}) {
+  for (const char* file : {"scene.cpp", "draw_target_memo.h", "resolve.cpp"}) {
     const std::string text = ReadFile(dir + "/" + file);
     Check(!text.empty(), std::string(file) + " is readable");
     int calls = 0;
