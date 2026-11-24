@@ -1194,6 +1194,8 @@ else()
             SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/${_larecomp_mspack_notice}"
             LICENCE_FOR "$<TARGET_FILE_NAME:larecomp_mspack>")
     endforeach()
+    set_source_files_properties(src/mc_engine/modloader/xcompress.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${LARECOMP_MSPACK_DIR}")
     target_link_libraries(larecomp PRIVATE larecomp_mspack)
 
     # No GTK: the ISO installer and the save importer ask the SDK's file dialog (SDL3's: the xdg desktop portal, then zenity) on Linux and show a
