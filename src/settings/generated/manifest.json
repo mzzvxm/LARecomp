@@ -296,9 +296,9 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, \"\n    \"from the picture's depth, only on the sky light and not on the sun's (the game's own \"\n    \"constants say how much of a surface's light is which). off, high (half resolution, 2 slices), \"\n    \"ultra (full resolution, 3 slices) or auto (the default): off on an integrated graphics card, \"\n    \"high on a discrete one with less than 5.5 GiB of video memory, ultra on the rest. The pause menu \"\n    \"and the launcher show the same words. A value that is none of these (the low of an older \"\n    \"larecomp.toml) is ignored and the setting runs as auto. \"\n    \"Costs graphics card time, ultra more than high. \"\n    \"Also drawn behind the pause menu and on the map, so a change made there shows at once. \"\n    \"Live.\"",
+  "help": "\"Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, \"\n    \"where nearby objects block sky light. off, high (half resolution, 2 slices), \"\n    \"ultra (full resolution, 3 slices), or rt: ray traced occlusion, from the real geometry of the \"\n    \"city and the cars, so what is off the screen or behind an edge still darkens. Needs a graphics \"\n    \"card that traces rays; on any other it runs as ultra. Auto (the default) is off on integrated \"\n    \"graphics, high on a mid-range card, ultra on a high-end card and ray traced on a high-end card \"\n    \"that traces rays quickly. The pause menu \"\n    \"and the launcher show the same words. A value that is none of these (the low of an older \"\n    \"larecomp.toml) is ignored and the setting runs as auto. \"\n    \"Costs graphics card time, ultra more than high. \"\n    \"Also drawn behind the pause menu and on the map, so a change made there shows at once. \"\n    \"Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\", \"rt\")"
   ],
   "comments": [],
   "pp_depth": 0

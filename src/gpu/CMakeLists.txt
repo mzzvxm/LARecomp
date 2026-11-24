@@ -426,6 +426,11 @@ add_executable(larecomp_gi_pixel_test EXCLUDE_FROM_ALL gi_pixel_test.cpp)
 # the CMake lines for the order and the wiring) likewise:
 #   cmake --build <dir> --target larecomp_gi_setting_test, then run src/gpu/larecomp_gi_setting_test [-v] [<src/gpu dir>] (exit 0 = passed; the folder defaults to the test's own, src/gpu).
 add_executable(larecomp_gi_setting_test EXCLUDE_FROM_ALL gi_setting_test.cpp)
+# RTAO-R3 begin
+target_sources(larecomp_gpu PRIVATE rtao_setting.cpp)
+# Check the Auto table, gate, labels and reader wiring, then run larecomp_rtao_setting_test [<src dir>].
+add_executable(larecomp_rtao_setting_test EXCLUDE_FROM_ALL rtao_setting_test.cpp)
+# RTAO-R3 end
 # The one light description (light_frame.h: Light, LightFrame, the 64 byte GpuLight and its bits; light_id.h: the ids, a street lamp's being the old LampKey / KeyOf; light_laws.h: the
 # headlight's, the game's lamp's and the volume's laws held to the rig's LampScale and the game's numbers; light_convert.h: the conversions from the headlight rig, the game's lamp
 # list, the shadow replay and into the volume's lamp; and it compiles hlsl/light_laws.hlsli as C++ and compares it with the twin) likewise:

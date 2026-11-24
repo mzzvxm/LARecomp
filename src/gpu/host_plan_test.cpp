@@ -70,14 +70,13 @@ Level LevelOf(const std::string& name) {
 }
 
 void CheckOcclusion() {
-  // The player's own values: the same on every class; a word that is not auto, off, high or ultra (the low of an older larecomp.toml
-  // is one) counts as `auto`, so it comes to the class's cell (`auto` itself: CheckAutoPasses).
+  // Explicit screen-space levels stay the same on every class. RT falls back to Ultra until it can run.
   const struct {
     const char* text;
     Level want;
   } rows[] = {
       {"off", Level::kOff},   {"high", Level::kHigh},  {"ultra", Level::kUltra},
-      {"Ultra", Level::kUltra}, {"HIGH", Level::kHigh},
+      {"Ultra", Level::kUltra}, {"HIGH", Level::kHigh}, {"rt", Level::kUltra},
   };
   for (int k = 0; k < 3; ++k) {
     for (const auto& row : rows) {
@@ -86,6 +85,7 @@ void CheckOcclusion() {
       Check(c.level == row.want, what + ": level");
       Check(!c.unknown, what + ": a value");
       Check(!c.automatic, what + ": never automatic");
+      Check(!c.rt, what + ": no RT pass on this adapter");
     }
     for (const char* junk : {"", "low", "hgih", "high ", "on", "Low"}) {
       const Choice c = Resolve(Pass::kOcclusion, kClasses[k], true, junk);
@@ -95,6 +95,16 @@ void CheckOcclusion() {
             what + ": the class's cell");
     }
   }
+  using mcla::gpu::gpu_class::RtTier;
+  const auto manual = Resolve(Pass::kOcclusion, GpuClass::kMid, true, "RT", RtTier::kWeak, true);
+  Check(manual.level == Level::kUltra && manual.rt && !manual.automatic && !manual.unknown,
+        "available manual RT keeps Ultra as the fallback");
+  const auto plan = Decide(GpuClass::kHigh, true, "auto", "off", "off", "high", "off", RtTier::kStrong, true);
+  Check(plan.of(Pass::kOcclusion).rt && plan.of(Pass::kOcclusion).automatic &&
+            plan.of(Pass::kOcclusion).level == Level::kUltra && plan.on(Pass::kBounce),
+        "strong Auto carries RT through the plan and keeps the bounce dependency satisfied");
+  const auto pending = Resolve(Pass::kOcclusion, GpuClass::kHigh, true, "auto", RtTier::kStrong, false);
+  Check(pending.level == Level::kUltra && !pending.rt && pending.automatic, "pending Auto plans Ultra");
 }
 
 void CheckAutoPasses() {

@@ -345,14 +345,14 @@ host_plan::Level ToLevel(AmbientOcclusion::Mode mode) {
   return host_plan::Level(uint8_t(mode));
 }
 
-// mcla_gpu_ao: auto (the class's cell), off, high or ultra (anything else counts as auto). host_plan.h has the rule, which the precache
-// uses too.
+// Draws and the startup precache use the same live AO decision.
 host_plan::Choice AoChoice() {
-  return host_plan::Resolve(host_plan::Pass::kOcclusion, gpu_class::Current(), true, AoSetting().Get());
+  const std::string text = AoSetting().Get();
+  return host_plan::OcclusionChoice(text, rtao_setting::DecideFor(text));
 }
 
-AmbientOcclusion::Mode ReadMode() {
-  return ToMode(AoChoice().level);
+AmbientOcclusion::Mode ReadMode(const rtao_setting::Decision& decision) {
+  return ToMode(decision.screen);
 }
 
 std::string Lower(std::string value) {
@@ -1050,15 +1050,24 @@ plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
 
 void AmbientOcclusion::BeginFrame() {
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_ao_census.Get()));
-  Mode mode = ReadMode();
+  const std::string ao_text = AoSetting().Get();
+  const auto ao_decision = rtao_setting::DecideFor(ao_text);
+  Mode mode = ReadMode(ao_decision);
   if (!ready_ && mode != Mode::kOff) {
     mode = Mode::kOff;  // the passes could not be made (Initialize said so)
   }
-  if (uint32_t(mode) != last_mode_logged_) {
+  const auto rt_gate = mode != Mode::kOff && ao_decision.chosen == rtao_setting::Choice::kRt
+                           ? std::optional(ao_decision.gate) : std::nullopt;
+  if (uint32_t(mode) != last_mode_logged_ || rt_gate != last_rtao_gate_logged_) {
     last_mode_logged_ = uint32_t(mode);
-    const std::string setting = Lower(AoSetting().Get());
-    REXLOG_INFO("[gpu] ao: ambient occlusion {}{} (mcla_gpu_ao {}, live)", ModeName(mode),
-                setting == "auto" ? " (auto on this GPU)" : "", setting);
+    last_rtao_gate_logged_ = rt_gate;
+    const std::string setting = Lower(ao_text);
+    std::string suffix = setting == "auto" ? " (auto on this GPU)" : "";
+    if (rt_gate && !ao_decision.rt) {
+      suffix = " (rt: " + std::string(rtao_setting::GateReason(*rt_gate)) + ")";
+    }
+    REXLOG_INFO("[gpu] ao: ambient occlusion {}{} (mcla_gpu_ao {}, live)",
+                rt_gate && ao_decision.rt ? "ray traced" : ModeName(mode), suffix, setting);
   }
   Mode contact = ReadContactMode();
   if (!ready_ || !resolve_) {

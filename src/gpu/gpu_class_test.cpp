@@ -141,12 +141,12 @@ void CheckTable() {
   }
 }
 
-// Ambient occlusion's `auto` (mcla_gpu_ao): off on shared memory, high on a small discrete card, ultra on
-// the rest; a value the player holds (off, high, ultra) is kept in every class.
+// Ambient occlusion's class-only `auto` (mcla_gpu_ao): off on shared memory, high on a small discrete card, ultra on
+// the rest; explicit values pass through for the AO resolver.
 void CheckAmbientOcclusion() {
   const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
   const char* const want[] = {"off", "high", "ultra"};
-  const char* const own[] = {"off", "high", "ultra"};
+  const char* const own[] = {"off", "high", "ultra", "rt"};
   const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
   int last = -1;
   for (int k = 0; k < 3; ++k) {

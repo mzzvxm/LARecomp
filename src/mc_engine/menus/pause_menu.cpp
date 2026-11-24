@@ -64,6 +64,7 @@
 #include "gpu/city_refl_setting.h"
 #include "gpu/city_rt_rules.h"
 #include "gpu/gi_setting.h"
+#include "gpu/rtao_setting.h"
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
 #include "gpu/mirror_setting.h"
@@ -1840,21 +1841,16 @@ constexpr RowDynamics kFoliageDynamics = NeedsShadows();
 // ON)", 20 characters).
 const char* const kPostAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
-// Ambient occlusion (gpu/ao.h, live): AUTO (the default), off, half resolution, full resolution. AUTO
-// says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on a
-// discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h). Nothing in the graphics settings is called
-// low (owner, 2026-11-14): the stored values are the shown words, off / high / ultra (a larecomp.toml that still says
-// low is ignored and the row is AUTO). The row is "AMBIENT OCCLUSION"
-// (17 characters) with a value of at most 12 ("AUTO (ULTRA)"), 29 together, under the page's 40.
-const char* const kNativeAoVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeAoNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+// RAY TRACED keeps its saved value on every GPU. The label gives the fallback reason if the gate is shut.
+// CHECK: confirm the 14-character "RT (NO RT GPU)" fits LIGHTING AND SHADOWS in the pause movie.
+namespace rtao_setting = mcla::gpu::rtao_setting;
+constexpr auto& kNativeAoVals = rtao_setting::kValues;
+constexpr auto& kNativeAoNames = rtao_setting::kNames;
 std::string AoLabel(int i) {
-    switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kAmbientOcclusion);
-    case 1:  return "OFF";
-    case 2:  return "HIGH";
-    default: return "ULTRA";
-    }
+    const auto choice = static_cast<rtao_setting::Choice>(i);
+    const auto d = rtao_setting::DecideFor(kNativeAoVals[i]);
+    return choice == rtao_setting::Choice::kAuto ? rtao_setting::AutoLabel(d)
+                                                : rtao_setting::ValueLabel(choice, d.gate);
 }
 constexpr RowDynamics kAoDynamics = {.str_label = AoLabel};
 // How strong it looks (mcla_gpu_ao_intensity, live), the row under it: grey while the occlusion is
@@ -1862,9 +1858,8 @@ constexpr RowDynamics kAoDynamics = {.str_label = AoLabel};
 const char* const kNativeAoLevelVals[]  = {"light", "default", "strong", "max"};
 const char* const kNativeAoLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "MAX"};
 bool AoOn() {
-    const std::string mode = mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kAmbientOcclusion,
-                                                           CvarGet("mcla_gpu_ao"));
-    return mode == "high" || mode == "ultra";
+    const auto d = rtao_setting::DecideFor(CvarGet("mcla_gpu_ao"));
+    return d.screen != mcla::gpu::host_plan::Level::kOff || d.rt;
 }
 constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 // Shadow filter (mcla_gpu_shadow_filter, gpu/shadow_filter.h, live): how the sun's shadows are smoothed, the
@@ -2407,7 +2402,7 @@ const ItemDef kLightItems[] = {
                                 kNativeCarShadowVals, kNativeCarShadowNames, 4),
                             &kCarShadowDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION: ",
-                                kNativeAoVals, kNativeAoNames, 4),
+                                kNativeAoVals, kNativeAoNames, 5),
                             &kAoDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
                                 kNativeAoLevelVals, kNativeAoLevelNames, 4),

@@ -74,6 +74,9 @@ names = ["graphics_backend"]
 # SX-G7 gave the pause menu rows for camera_shake_scale, rearview_cars, map_mouse, map_mouse_zoom, map_mouse_hide_cursor,
 # map_mouse_magnet, trigger_throttle, trigger_brake and skip_intro, so they left this list: they are rows of both surfaces now.
 
+# World AO uses the existing mcla_gpu_ao player row. Its diagnostics and A/B settings are debug-only
+# and live. The live_debug group in live_readers.toml checks those tags and readers as definitions land.
+
 # No [[pending]] list: SX-G5 took every DEBUG and REMOVE row out of the normal pause-menu tables, so a `.debug_only()` cvar that a
 # normal row names fails the check outright. (A row that names a key that is not a cvar, like the old RENDERER row, would be a
 # [[virtual_row]] entry: `rows` is the constructor's key, `names` the cvars it writes. None is left.)

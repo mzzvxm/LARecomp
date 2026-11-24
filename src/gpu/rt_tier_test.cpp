@@ -632,25 +632,27 @@ const CellRow kCells[] = {
     {RtEffect::kRtGi, "mcla_gpu_rt_gi", "off", "off", "high"},
     // The player's side mirrors traced: strong cards only (the car's structures are built in every frame for it; a weak card can set it by hand).
     {RtEffect::kCarMirrorRt, "mcla_gpu_car_mirror_rt", "off", "off", "on"},
+    {RtEffect::kRtAo, "mcla_gpu_ao", "", "", "rt"},
 };
 
-const char* const kOwnChoices[] = {"off", "on", "high", "ultra", "ao", "contact", "both", "", "Auto", "AUTO", "game", "auto " /* a space: not auto */};
+const char* const kOwnChoices[] = {"off", "on", "high", "ultra", "rt", "ao", "contact", "both", "", "Auto", "AUTO", "game", "auto " /* a space: not auto */};
 
 void CheckCells() {
   Check(sizeof(kCells) / sizeof(kCells[0]) == static_cast<std::size_t>(kRtEffectCount), "the test lists every ray traced effect");
+  Check(kRtEffects[5].cvar == "mcla_gpu_car_mirror_rt" && static_cast<int>(RtEffect::kCarMirrorRt) == 5 && static_cast<int>(RtEffect::kRtAo) == 6, "the side mirrors are the sixth effect (index 5), the occlusion the seventh (index 6)");
   Check(sizeof(kRtEffects) / sizeof(kRtEffects[0]) == static_cast<std::size_t>(kRtEffectCount), "kRtEffects has an entry for every effect");
   const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
   const RtTier tiers[] = {RtTier::kNone, RtTier::kWeak, RtTier::kStrong};
-  for (int i = 0; i < kRtEffectCount; ++i) {
+  for (std::size_t i = 0; i < sizeof(kCells) / sizeof(kCells[0]); ++i) {
     const CellRow& row = kCells[i];
     const std::string name = row.cvar;
-    Check(static_cast<int>(row.effect) == i, name + ": the test is in the order of the enum");
+    Check(static_cast<std::size_t>(row.effect) == i, name + ": the test is in the order of the enum");
     CheckEq(std::string(RtCvarName(row.effect)), name, name + ": cvar name");
     CheckEq(std::string(RtCell(row.effect, RtTier::kNone)), row.none, name + ": cell at none");
     CheckEq(std::string(RtCell(row.effect, RtTier::kWeak)), row.weak, name + ": cell at weak");
     CheckEq(std::string(RtCell(row.effect, RtTier::kStrong)), row.strong, name + ": cell at strong");
     // The rule a table's cells keep: a card with less ray tracing never gets MORE (none is off).
-    CheckEq(std::string(row.none), "off", name + ": none is off");
+    CheckEq(std::string(row.none), row.effect == RtEffect::kRtAo ? "" : "off", name + ": none is off or defers to the class");
 
     for (const GpuClass c : classes) {
       for (const RtTier t : tiers) {

@@ -24,7 +24,7 @@
 // What each setting's text can be, and what anything else means (the words are the ones the pause menu and the launcher show: no
 // graphics setting has a level called low, owner 2026-11-14; a word that is no value, such as the low of an older larecomp.toml,
 // counts as `auto`: the SDK already refuses it in a larecomp.toml, and a command line or an environment variable is not checked there):
-//   occlusion  mcla_gpu_ao            auto, off, high, ultra; anything else counts as `auto`
+//   occlusion  mcla_gpu_ao            auto, off, high, ultra, rt; anything else counts as `auto`
 //   contact    mcla_gpu_contact_shadows   auto, off, high, ultra; anything else counts as `auto`
 //   shafts     mcla_gpu_sun_shafts    auto, off, light, default, strong, stronger, strongest (a strength, shafts_level.h);
 //                                     the old low and high are read as default; anything else counts as `auto`.
@@ -42,15 +42,14 @@
 #include <string_view>
 
 #include "gpu_class.h"
+#include "host_plan_level.h"
+#include "rtao_setting.h"
 #include "shafts_level.h"
 
 namespace mcla::gpu::host_plan {
 
 enum class Pass : uint8_t { kOcclusion, kContact, kShafts, kBounce, kCarRefl };
 inline constexpr int kPassCount = 5;
-
-// The same three levels, in the same order, as the owners' own Mode enums.
-enum class Level : uint8_t { kOff, kHigh, kUltra };
 
 constexpr std::string_view PassName(Pass pass) {
   switch (pass) {
@@ -59,15 +58,6 @@ constexpr std::string_view PassName(Pass pass) {
     case Pass::kShafts: return "sun shafts";
     case Pass::kBounce: return "bounce light";
     case Pass::kCarRefl: return "car self-reflections";
-  }
-  return "?";
-}
-
-constexpr std::string_view LevelName(Level level) {
-  switch (level) {
-    case Level::kOff: return "off";
-    case Level::kHigh: return "high";
-    case Level::kUltra: return "ultra";
   }
   return "?";
 }
@@ -83,6 +73,7 @@ struct Choice {
   // class gives (high on Mid and Low, ultra on High), so `level != kOff` still says whether the pass is on.
   shafts_level::Level strength = shafts_level::Level::kOff;
   bool legacy = false;
+  bool rt = false;  // World ray traced occlusion. level is still the screen-space fallback.
 };
 
 // The graphics upgrade whose `auto` cell the pass reads (the occlusion's is the last cell of the class table: off on Low, high on
@@ -127,11 +118,23 @@ inline bool IsValueWord(Pass pass, std::string_view text) {
   return pass == Pass::kCarRefl ? text == "on" : (text == "high" || text == "ultra");
 }
 
+inline Choice OcclusionChoice(std::string_view saved, const rtao_setting::Decision& decision) {
+  const bool automatic = rtao_setting::ParseChoice(saved) == rtao_setting::Choice::kAuto;
+  return {.level = decision.screen,
+          .automatic = automatic,
+          .unknown = automatic && Lower(saved) != "auto",
+          .rt = decision.rt};
+}
+
 // The level `saved` (the setting's text, any case) comes to for `pass` on class `cls`. `class_known`:
-// the class is one the process really found (gpu_class::Known()); only the bounce light's `auto` looks at
-// it (it acts as on the weakest class until then, so a player is never given the strong class's cost
-// before it is known).
-inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std::string_view saved) {
+// the class is one the process really found (gpu_class::Known()). AO and bounce light Auto use the
+// weakest class until then.
+inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std::string_view saved,
+                      gpu_class::RtTier tier = gpu_class::RtTier::kNone, bool rtao_built = false) {
+  if (pass == Pass::kOcclusion) {
+    return OcclusionChoice(saved, rtao_setting::Decide(cls, class_known, tier,
+                                                       rtao_setting::ParseChoice(saved), rtao_built));
+  }
   Choice choice;
   if (pass == Pass::kShafts) {
     const shafts_level::Choice s = shafts_level::Resolve(cls, saved);
@@ -187,9 +190,10 @@ struct Plan {
 // self-reflections have no dependency (they make their own history pass), so they are on wherever their setting is.
 inline Plan Decide(gpu_class::GpuClass cls, bool class_known, std::string_view occlusion,
                    std::string_view contact, std::string_view shafts, std::string_view bounce,
-                   std::string_view car_refl = "off") {
+                   std::string_view car_refl = "off", gpu_class::RtTier tier = gpu_class::RtTier::kNone,
+                   bool rtao_built = false) {
   Plan plan;
-  plan.pass[static_cast<int>(Pass::kOcclusion)] = Resolve(Pass::kOcclusion, cls, class_known, occlusion);
+  plan.pass[static_cast<int>(Pass::kOcclusion)] = Resolve(Pass::kOcclusion, cls, class_known, occlusion, tier, rtao_built);
   plan.pass[static_cast<int>(Pass::kContact)] = Resolve(Pass::kContact, cls, class_known, contact);
   plan.pass[static_cast<int>(Pass::kShafts)] = Resolve(Pass::kShafts, cls, class_known, shafts);
   plan.pass[static_cast<int>(Pass::kBounce)] =
@@ -208,6 +212,8 @@ inline std::string Describe(Pass pass, const Choice& choice, gpu_class::GpuClass
     text += shafts_level::Name(choice.strength);
   } else if (pass == Pass::kCarRefl && choice.level == Level::kUltra) {
     text += "on";  // the one level of the setting (the stored word is `on`; the plan's level is ultra)
+  } else if (choice.rt) {
+    text += "ray traced";
   } else {
     text += LevelName(choice.level);
   }

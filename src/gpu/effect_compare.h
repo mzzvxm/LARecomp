@@ -15,7 +15,8 @@
 //                                      shafts, the bounce light and the car self-reflections
 //   shadow_filter::CurrentMode()       the sun shadow filter
 //   WantedFeatures() (pipelines)  the bloom size fix
-// and take `off` (or the text of an on value) while the flip says so. The flip is dropped as soon as the
+// and take `off` (or the text of an on value) while the flip says so. Ray traced AO compares with Ultra.
+// The flip is dropped as soon as the
 // setting it flips is changed (by the pause menu, F4 or the console), or another effect is selected.
 //
 // The rules that need the settings' texts (what is on now, what a press does, the label) are in

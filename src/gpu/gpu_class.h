@@ -90,7 +90,7 @@ enum class Effect : uint8_t {
   kSsgi,                  // mcla_gpu_ssgi               auto, off, high, ultra
   kTrafficShadows,        // mcla_gpu_traffic_shadows    auto, off, near, all (traffic_shadow.h)
   kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, on (car_selfrefl.h)
-  kAmbientOcclusion,      // mcla_gpu_ao                 auto, off, high, ultra
+  kAmbientOcclusion,      // mcla_gpu_ao: screen-space Auto cells; rtao_setting.h also handles rt
   kHeadlights,            // mcla_gpu_headlights         auto, off, on (headlight_rig.h)
   kLightShadows,          // mcla_gpu_light_shadows      auto, off, medium, high, ultra (local_shadow.h; was mcla_gpu_headlight_shadows)
   kVolumetrics,           // mcla_gpu_volumetrics        auto, off, medium, high, ultra (volumetrics_level.h)

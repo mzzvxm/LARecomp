@@ -517,8 +517,9 @@ enum class RtEffect : uint8_t {
   kRtReflections,  // mcla_gpu_rt_reflections    auto, off, high, ultra (CITY-RT-M2 R1 and R8: the city in the car's reflections; the pause row RT CITY REFLECTIONS, city_refl_setting.h)
   kRtGi,           // mcla_gpu_rt_gi             auto, off, high, ultra (CITY-RT-M3, not built yet: the probe field's bounce light)
   kCarMirrorRt,    // mcla_gpu_car_mirror_rt     auto, off, on          (car_mirror_rt.h, car_mirror_setting.h: the side mirrors' real view; the pause row RT SIDE MIRRORS)
+  kRtAo,           // mcla_gpu_ao                auto, off, high, ultra, rt (RTAO: the world's ambient occlusion; the seventh effect, after the side mirrors)
 };
-inline constexpr int kRtEffectCount = 6;
+inline constexpr int kRtEffectCount = 7;
 
 struct RtEffectInfo {
   std::string_view cvar;
@@ -545,6 +546,8 @@ inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
     // The player's side mirrors traced (car_mirror_rt.h): 0.03 to 0.1 ms on an RTX 5080 (estimated) and the car's ray tracing structures built in every frame, which a weak card keeps for
     // the car's own passes only, so `auto` is on a strong card alone (the owner's rule: a weaker card gets it off by itself); a weak card can switch it on by hand (the Mid class's smaller cap).
     {"mcla_gpu_car_mirror_rt", "off", "off", "on"},
+    // World ambient occlusion uses the class table unless a High-class card traces rays quickly.
+    {"mcla_gpu_ao", "", "", "rt"},
 };
 
 constexpr const RtEffectInfo& RtInfo(RtEffect effect) { return kRtEffects[static_cast<int>(effect)]; }

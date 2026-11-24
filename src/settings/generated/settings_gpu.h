@@ -100,15 +100,17 @@ class GPUSettings final : public rex::SettingOwner {
     "Applies to mipmapped textures whose min, mag and mip filters are all linear. Live.");
 
   REX_SETTING(std::string, mcla_gpu_ao, "auto", "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
-    "from the picture's depth, only on the sky light and not on the sun's (the game's own "
-    "constants say how much of a surface's light is which). off, high (half resolution, 2 slices), "
-    "ultra (full resolution, 3 slices) or auto (the default): off on an integrated graphics card, "
-    "high on a discrete one with less than 5.5 GiB of video memory, ultra on the rest. The pause menu "
+    "where nearby objects block sky light. off, high (half resolution, 2 slices), "
+    "ultra (full resolution, 3 slices), or rt: ray traced occlusion, from the real geometry of the "
+    "city and the cars, so what is off the screen or behind an edge still darkens. Needs a graphics "
+    "card that traces rays; on any other it runs as ultra. Auto (the default) is off on integrated "
+    "graphics, high on a mid-range card, ultra on a high-end card and ray traced on a high-end card "
+    "that traces rays quickly. The pause menu "
     "and the launcher show the same words. A value that is none of these (the low of an older "
     "larecomp.toml) is ignored and the setting runs as auto. "
     "Costs graphics card time, ultra more than high. "
     "Also drawn behind the pause menu and on the map, so a change made there shows at once. "
-    "Live.", rex::Allowed("auto", "off", "high", "ultra"));
+    "Live.", rex::Allowed("auto", "off", "high", "ultra", "rt"));
 
   REX_SETTING(f64, mcla_gpu_ao_car_reach, 0.4, "Diagnostic: how far what a car blocks of the sky light reaches on the road and the other things "
     "round it, as a share of the occlusion's radius (0.4 of the default 3 m is 1.2 m: the dark line "

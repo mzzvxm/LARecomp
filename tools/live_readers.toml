@@ -7,3 +7,13 @@
 [[next_use]]
 why = "read when a wheel calibration starts (wheel_ffb.cpp StartCalibration): the sign is part of the measurement being made"
 names = ["wheel_ffb_sign"]
+
+[[live_debug]]
+why = "RTAO diagnostics and A/B controls must apply during play as their trace and denoiser land"
+names = [
+  "mcla_gpu_rtao_rays", "mcla_gpu_rtao_reach", "mcla_gpu_rtao_range",
+  "mcla_gpu_rtao_scale", "mcla_gpu_rtao_alpha", "mcla_gpu_rtao_screen",
+  "mcla_gpu_rtao_interior", "mcla_gpu_rtao_check", "mcla_gpu_rtao_view",
+  "mcla_gpu_rtao_history", "mcla_gpu_rtao_denoise", "mcla_gpu_rtao_raw_scale",
+  "mcla_gpu_dlss_rr_rt_ao", "mcla_gpu_rtao_blend_car",
+]

@@ -261,6 +261,34 @@ void TestStanding() {
         "no effect is never on");
 }
 
+void TestRayTracedOcclusion() {
+  constexpr auto effect = Effect::kAmbientOcclusion;
+  using mcla::gpu::gpu_class::RtTier;
+  Saved saved = Make(GpuClass::kHigh, true, "rt", "off", "off", "high", "game", true);
+  saved.rt_tier = RtTier::kStrong;
+  saved.rtao_built = true;
+  for (const char* value : {"rt", "auto"}) {
+    saved.occlusion = value;
+    const Standing standing = StandingOf(effect, saved);
+    Check(standing.on && !standing.blocked && standing.rt_ao_state == "RAY TRACED", "RT AO is the starting arm");
+    const Press flip = PressOf(effect, Force::kNone, saved);
+    Check(flip.force == Force::kOn && Info(effect).on_text == "ultra" && flip.rt_ao_state == "ULTRA",
+          "RT AO compares against Ultra");
+    Check(LabelOf(effect, flip.shown_on, flip.blocked, flip.rt_ao_state).state == "ULTRA",
+          "the compare overlay shows the Ultra arm");
+    const Press restore = PressOf(effect, flip.force, saved);
+    Check(restore.force == Force::kNone && restore.rt_ao_state == "RAY TRACED",
+          "the second press restores the saved RT arm");
+    Check(saved.occlusion == value, "comparing AO preserves the saved word");
+  }
+  saved.occlusion = "rt";
+  saved.rtao_built = false;
+  Check(StandingOf(effect, saved).rt_ao_state == "ULTRA", "pending RT shows the Ultra fallback");
+  Check(!StandingOf(Effect::kBounceLight, saved).blocked, "the fallback still supports bounce light");
+  saved.occlusion = "ultra";
+  Check(PressOf(effect, Force::kNone, saved).force == Force::kOff, "the explicit Ultra level still compares against Off");
+}
+
 // ---- the text a flip forces on is an on value of its setting, on every class ------------------------------
 
 void TestForcedOnText() {
@@ -430,6 +458,7 @@ int main() {
   TestTable();
   TestState();
   TestStanding();
+  TestRayTracedOcclusion();
   TestForcedOnText();
   TestPress();
   TestLabel();

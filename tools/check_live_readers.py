@@ -10,8 +10,8 @@ the setting. This check looks for that code, so that a new setting that is read 
 
 Which settings: those that are not restart-only (no kRequiresRestart / kInitOnly / kLockedInGame, nor the old kRestart / kStartupOnly / kUntilLaunch) and are
 either not debug-only (a player's setting: a row, a launcher row or the exception list of tools\check_settings_exposure.py) or named by a row of the
-hidden debug menu (check_settings_exposure rule 3 already makes such a row live-only). A debug-only setting with no row is a launch argument and may be read
-when its feature starts: not checked.
+hidden debug menu (check_settings_exposure rule 3 already makes such a row live-only). Entries in the optional live_debug groups must be debug-only and live
+when their definitions are present, even without a row. Other debug-only settings without rows may be read when their feature starts.
 
 What counts as a live reader (any one is enough):
   * `LiveText name("setting")` (gpu/live_text.h: the change callback fills an atomic; the render thread reads that);
@@ -164,11 +164,14 @@ def scan(src, names):
     return res
 
 
-def candidates(src, cfg):
+def candidates(src, cfg, live_debug):
     defs = ex.definitions(src)
     rows = ex.rows_of(src, cfg, set(defs))
     out = {}
     for name, ds in defs.items():
+        if name in live_debug:
+            out[name] = ds
+            continue
         if any(d["restart"] for d in ds):
             continue
         tagged = any(d["tagged"] for d in ds)
@@ -191,13 +194,17 @@ def load(path):
 
 
 def verdicts(src, cfg, live_cfg, only=None):
-    cand = candidates(src, cfg)
+    live_debug = ex.names_of(live_cfg, "live_debug")
+    cand = candidates(src, cfg, live_debug)
     if only:
         cand = {n: d for n, d in cand.items() if n in only}
     res = scan(src, sorted(cand))
     next_use = ex.names_of(live_cfg, "next_use")
     out = []
     for name in sorted(cand):
+        if name in live_debug and any(d["restart"] or not d["tagged"] for d in cand[name]):
+            out.append((name, "bad_live_debug", live_debug[name]))
+            continue
         r = res[name]
         evidence = []
         if r["live_text"]:
@@ -208,7 +215,7 @@ def verdicts(src, cfg, live_cfg, only=None):
             evidence.append(f"read per use {r['live'][0][0]}:{r['live'][0][1]}")
         if evidence:
             out.append((name, "live", "; ".join(evidence)))
-        elif name in next_use:
+        elif name in next_use and name not in live_debug:
             out.append((name, "next_use", next_use[name]))
         elif r["once"]:
             out.append((name, "once", ", ".join(f"{f}:{l}" for f, l in r["once"][:3])))
@@ -229,6 +236,7 @@ def run(args):
     nxt = [r for r in res if r[1] == "next_use"]
     once = [r for r in res if r[1] == "once"]
     none = [r for r in res if r[1] == "none"]
+    bad_live_debug = [r for r in res if r[1] == "bad_live_debug"]
     print(f"check_live_readers: {src}")
     print(f"  {len(res)} settings promise to be live: {len(live)} have a live reader, {len(nxt)} are read when a feature starts by nature (live_readers.toml), "
           f"{len(once)} are READ ONCE, {len(none)} have no reader this scan can see")
@@ -241,10 +249,12 @@ def run(args):
         print(f"  READ ONCE  {n}: read only at start ({where}); make it follow the setting (a LiveText, a change callback, a per-frame read) or tag it kRequiresRestart")
     for n, _, _ in none:
         print(f"  NO READER  {n}: no `settings::{n}.Get()`, no by-name read and no watch found (read through a helper? then say so in live_readers.toml)")
+    for n, _, why in bad_live_debug:
+        print(f"  NOT LIVE DEBUG  {n}: needs a debug-only tag and a live lifecycle ({why})")
     for name in ex.names_of(live_cfg, "next_use"):
         if only is None and name not in {r[0] for r in res}:
             print(f"  warning: live_readers.toml names {name}, which is not a checked setting any more")
-    if once or (args.strict and none):
+    if once or bad_live_debug or (args.strict and none):
         return 1
     print("the settings that promise to be live all have a reader that follows them")
     return 0
@@ -268,6 +278,11 @@ class S final : public rex::SettingOwner {
   REX_SETTING(bool, never_read, false, "a");
   REX_SETTING(bool, restart_one, false, "a", rex::kRequiresRestart);
   REX_SETTING(bool, debug_launch_arg, false, "a", rex::kDebugOnly);
+  REX_SETTING(bool, debug_live, false, "a", rex::kDebugOnly);
+  REX_SETTING(bool, debug_read_once, false, "a", rex::kDebugOnly);
+  REX_SETTING(bool, debug_no_reader, false, "a", rex::kDebugOnly);
+  REX_SETTING(bool, debug_restart, false, "a", rex::kDebugOnly, rex::kRequiresRestart);
+  REX_SETTING(bool, debug_needs_tag, false, "a");
   REX_SETTING(bool, by_name, false, "a");
 };
 '''
@@ -282,6 +297,7 @@ void Setup() {
 
 void Renderer::BeginFrame() {
   const bool a = larecomp::settings::per_frame.Get();
+  const bool b = larecomp::settings::debug_live.Get();
   if (larecomp::settings::init_named_but_per_frame.Get()) Go();
 }
 
@@ -304,6 +320,7 @@ void Thing::Start() {
 void Recorder::Initialize() {
   larecomp::settings::next_use_by_nature.Get();
   larecomp::settings::debug_launch_arg.Get();
+  larecomp::settings::debug_read_once.Get();
 }
 
 bool Tick() { return larecomp::cvar::GetFlagByName("by_name") == "on"; }
@@ -356,6 +373,9 @@ def selftest():
         live_path = os.path.join(tmp, "live_readers.toml")
         with open(live_path, "w") as f:
             f.write('[[next_use]]\nwhy = "read when the recorder starts"\nnames = ["next_use_by_nature"]\n')
+            f.write('[[live_debug]]\nwhy = "test debug lifecycle"\n'
+                    'names = ["debug_live", "debug_read_once", "debug_no_reader", "debug_restart", '
+                    '"debug_needs_tag", "debug_not_landed"]\n')
         cfg = ex.load_config(cfg_path)
         got = {n: v for n, v, _ in verdicts(src, cfg, load(live_path))}
         want = {
@@ -369,20 +389,26 @@ def selftest():
             "next_use_by_nature": "next_use",
             "never_read": "none",
             "by_name": "live",
+            "debug_live": "live",
+            "debug_read_once": "once",
+            "debug_no_reader": "none",
+            "debug_restart": "bad_live_debug",
+            "debug_needs_tag": "bad_live_debug",
         }
         failed = 0
         for name, verdict in want.items():
             if got.get(name) != verdict:
                 failed += 1
                 print(f"FAILED: {name}: got {got.get(name)}, want {verdict}")
-        for name in ("restart_one", "debug_launch_arg"):
+        excluded = ("restart_one", "debug_launch_arg", "debug_not_landed")
+        for name in excluded:
             if name in got:
                 failed += 1
-                print(f"FAILED: {name} is not a checked setting (restart-only / a debug launch argument) but was checked: {got[name]}")
+                print(f"FAILED: {name} should be excluded but was checked: {got[name]}")
         if failed:
             print(f"check_live_readers --selftest: {failed} FAILED")
             return 1
-        print(f"check_live_readers --selftest: {len(want) + 2} checks passed")
+        print(f"check_live_readers --selftest: {len(want) + len(excluded)} checks passed")
         return 0
 
 

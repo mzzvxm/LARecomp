@@ -34,17 +34,31 @@ struct Saved {
   std::string filter;     // mcla_gpu_shadow_filter
   std::string car_refl = "off";  // mcla_gpu_car_selfrefl
   bool bloom = true;      // mcla_gpu_bloom_scale
+  gpu_class::RtTier rt_tier = gpu_class::RtTier::kNone;
+  bool rtao_built = false;
 };
 
 // What the saved settings come to for one effect.
 struct Standing {
   bool on = false;       // the saved setting shows the effect now
   bool blocked = false;  // a flip would show nothing: the bounce light is made from the occlusion's passes
+  std::string_view rt_ao_state;  // RAY TRACED or its ULTRA fallback when the RT level was selected
 };
 
 inline Standing StandingOf(Effect effect, const Saved& saved) {
+  if (effect == Effect::kAmbientOcclusion) {
+    const auto ao = rtao_setting::Decide(saved.cls, saved.class_known, saved.rt_tier,
+                                         rtao_setting::ParseChoice(saved.occlusion), saved.rtao_built);
+    Standing out;
+    out.on = ao.screen != host_plan::Level::kOff;
+    if (ao.chosen == rtao_setting::Choice::kRt) {
+      out.rt_ao_state = ao.rt ? "RAY TRACED" : "ULTRA";
+    }
+    return out;
+  }
   const host_plan::Plan plan = host_plan::Decide(saved.cls, saved.class_known, saved.occlusion,
-                                                 saved.contact, saved.shafts, saved.bounce, saved.car_refl);
+                                                 saved.contact, saved.shafts, saved.bounce, saved.car_refl,
+                                                 saved.rt_tier, saved.rtao_built);
   Standing out;
   switch (effect) {
     case Effect::kBounceLight:
@@ -58,7 +72,6 @@ inline Standing StandingOf(Effect effect, const Saved& saved) {
       out.on = plan.on(host_plan::Pass::kShafts);
       break;
     case Effect::kAmbientOcclusion:
-      out.on = plan.on(host_plan::Pass::kOcclusion);
       break;
     case Effect::kShadowFilter: {
       std::string text = host_plan::Lower(saved.filter);
@@ -85,10 +98,11 @@ struct Press {
   Force force = Force::kNone;  // the flip to set; kNone puts the saved setting back
   bool shown_on = false;       // what the picture shows from now on
   bool blocked = false;        // nothing to flip (see Standing::blocked); the flip is left as it was
+  std::string_view rt_ao_state;
 };
 
-// A press flips the effect away from what the saved setting shows (off if it is on, on if it is off); the
-// next press puts the saved setting back.
+// For the ray traced AO level, the comparison arm uses the existing forced-on text, Ultra.
+// Other levels flip off or on as usual. The next press restores the saved setting.
 inline Press PressOf(Effect effect, Force current, const Saved& saved) {
   const Standing standing = StandingOf(effect, saved);
   Press out;
@@ -96,6 +110,12 @@ inline Press PressOf(Effect effect, Force current, const Saved& saved) {
     out.force = current;
     out.shown_on = false;
     out.blocked = true;
+    return out;
+  }
+  if (!standing.rt_ao_state.empty()) {
+    out.force = current == Force::kNone ? Force::kOn : Force::kNone;
+    out.shown_on = true;
+    out.rt_ao_state = out.force == Force::kOn ? "ULTRA" : standing.rt_ao_state;
     return out;
   }
   out.force = current == Force::kNone ? (standing.on ? Force::kOff : Force::kOn) : Force::kNone;
@@ -119,20 +139,21 @@ struct Label {
   bool good = false;  // on: the label draws the state in the menu's teal, the rest in its yellow
 };
 
-inline Label LabelOf(Effect effect, bool shown_on, bool blocked) {
+inline Label LabelOf(Effect effect, bool shown_on, bool blocked, std::string_view rt_ao_state = {}) {
   Label label;
   if (effect == Effect::kNone) {
     return label;
   }
   label.name = std::string(Info(effect).label);
   label.state = blocked ? "NEEDS AMBIENT OCCLUSION" : shown_on ? "ON" : "OFF";
+  if (!rt_ao_state.empty()) label.state = rt_ao_state;
   label.good = !blocked && shown_on;
   return label;
 }
 
 // The note the select key shows: the effect now selected ("COMPARE: SUN SHAFTS") and what your setting shows of it ("ON").
-inline Label SelectedLabelOf(Effect effect, bool on, bool blocked) {
-  Label label = LabelOf(effect, on, blocked);
+inline Label SelectedLabelOf(Effect effect, bool on, bool blocked, std::string_view rt_ao_state = {}) {
+  Label label = LabelOf(effect, on, blocked, rt_ao_state);
   if (!label.name.empty()) {
     label.name = "COMPARE: " + label.name;
   }
@@ -140,8 +161,8 @@ inline Label SelectedLabelOf(Effect effect, bool on, bool blocked) {
 }
 
 // The same in one line, for the log: "BOUNCE LIGHT: OFF", "BOUNCE LIGHT NEEDS AMBIENT OCCLUSION".
-inline std::string LabelText(Effect effect, bool shown_on, bool blocked) {
-  const Label label = LabelOf(effect, shown_on, blocked);
+inline std::string LabelText(Effect effect, bool shown_on, bool blocked, std::string_view rt_ao_state = {}) {
+  const Label label = LabelOf(effect, shown_on, blocked, rt_ao_state);
   if (label.name.empty()) {
     return {};
   }

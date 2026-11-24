@@ -75,6 +75,10 @@ cmp::Saved ReadSaved() {
   saved.cls = gpu::gpu_class::Current();
   saved.class_known = gpu::gpu_class::Known();
   saved.handheld = gpu::gpu_class::Handheld();
+#if defined(LARECOMP_HAS_GPU)
+  saved.rt_tier = gpu::gpu_class::CurrentRtTier();
+  saved.rtao_built = gpu::rtao_setting::PassBuilt();
+#endif
   saved.occlusion = larecomp::cvar::GetFlagByName("mcla_gpu_ao");
   saved.contact = larecomp::cvar::GetFlagByName("mcla_gpu_contact_shadows");
   saved.shafts = larecomp::cvar::GetFlagByName("mcla_gpu_sun_shafts");
@@ -103,8 +107,8 @@ void OnKey() {
   if (!press.blocked) {
     state.Set(effect, press.force);
   }
-  Show(cmp::LabelOf(effect, press.shown_on, press.blocked));
-  MC_INFO("[compare] {} ({}; {} is not changed)", cmp::LabelText(effect, press.shown_on, press.blocked),
+  Show(cmp::LabelOf(effect, press.shown_on, press.blocked, press.rt_ao_state));
+  MC_INFO("[compare] {} ({}; {} is not changed)", cmp::LabelText(effect, press.shown_on, press.blocked, press.rt_ao_state),
           press.blocked                         ? "nothing to flip"
           : press.force == cmp::Force::kNone ? "back to your setting"
                                               : "for a look",
@@ -125,10 +129,11 @@ void OnSelectKey() {
   const cmp::Effect next = cmp::NextEffect(cmp::ParseEffect(larecomp::cvar::GetFlagByName(kSettingName)));
   larecomp::cvar::SetFlagByName(kSettingName, cmp::Info(next).choice);
   const cmp::Standing standing = cmp::StandingOf(next, ReadSaved());
-  Show(cmp::SelectedLabelOf(next, standing.on, standing.blocked));
+  Show(cmp::SelectedLabelOf(next, standing.on, standing.blocked, standing.rt_ao_state));
   MC_INFO("[compare] selected {} ({}={}; your setting shows it {})", std::string(cmp::Info(next).label), kSettingName,
           std::string(cmp::Info(next).choice),
-          standing.blocked ? "with nothing to flip: it needs the ambient occlusion" : standing.on ? "on" : "off");
+          standing.blocked ? "with nothing to flip: it needs the ambient occlusion"
+                           : !standing.rt_ao_state.empty() ? standing.rt_ao_state : standing.on ? "on" : "off");
 }
 
 // A setting that was flipped was changed (the pause menu, F4, the console): the flip goes, and with it the label.

@@ -372,8 +372,8 @@
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
 // read back from the GPU.
 //
-// Settings: mcla_gpu_ao (auto, off, high, ultra; live; the pause menu's AMBIENT OCCLUSION row; auto is off
-// on an integrated GPU, high on a discrete one with under 5.5 GiB, ultra on the rest; gpu_class.h),
+// Settings: mcla_gpu_ao (auto, off, high, ultra, rt; live; the pause menu's AMBIENT OCCLUSION row).
+// rtao_setting.h resolves Auto and supplies the screen-space quality for the RT level's fallback.
 // mcla_gpu_contact_shadows (auto, off, high, ultra; live; the CONTACT SHADOWS row; auto is off on an
 // integrated GPU, high on a discrete one with under 5.5 GiB, ultra on the rest; gpu_class.h) with the tuning cvars
 // mcla_gpu_contact_shadows_length / _strength / _thickness / _fade / _mask_gain / _view / _fast, and
@@ -403,6 +403,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -1489,6 +1490,7 @@ class AmbientOcclusion {
   bool pause_destination_logged_ = false;
   bool refused_target_logged_ = false;
   uint32_t last_mode_logged_ = ~0u;
+  std::optional<rtao_setting::Gate> last_rtao_gate_logged_;
   uint64_t runs_ = 0;
   uint64_t skipped_no_lens_ = 0;
   uint64_t pause_runs_ = 0;                // occlusion passes recorded in pause/map frames
