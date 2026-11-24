@@ -1,6 +1,6 @@
 #include "document.h"
 
-#include "citypack/file_replace.h"
+#include "os/file_replace.h"
 #include "mc_engine/online/online_tool/json_writer.h"
 
 #include <bit>
@@ -274,7 +274,7 @@ std::string Serialize(const Facts& facts, bool probe, std::string_view written_u
 }
 
 bool WriteDocument(const std::filesystem::path& path, std::string_view bytes, std::string& error) {
-  const auto temporary = citypack::TempPathFor(path);
+  const auto temporary = os::TempPathFor(path);
   std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
   output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   output.close();
@@ -284,8 +284,8 @@ bool WriteDocument(const std::filesystem::path& path, std::string_view bytes, st
     std::filesystem::remove(temporary, ignored);
     return false;
   }
-  return citypack::MoveIntoPlace(temporary, path, &error, {.max_attempts = 1}) !=
-         citypack::MoveResult::kFailed;
+  return os::MoveIntoPlace(temporary, path, &error, {.max_attempts = 1}) !=
+         os::MoveResult::kFailed;
 }
 
 }  // namespace larecomp::machine

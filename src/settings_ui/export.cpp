@@ -1,6 +1,6 @@
 ﻿#include "export.h"
 
-#include "citypack/file_replace.h"
+#include "os/file_replace.h"
 #include "gpu/gpu_class.h"
 #include "gpu/rt_tier.h"
 // CHECK: the contract parser's arity map has an exit-time destructor. GX calls it only at startup.
@@ -438,7 +438,7 @@ toml::table BuildDocument(Table settings, std::span<const Menu> menus, const Inp
 }
 
 void WriteDocument(const std::filesystem::path& path, std::string_view json) {
-    const auto temp = citypack::TempPathFor(path);
+    const auto temp = os::TempPathFor(path);
     std::ofstream file(temp, std::ios::binary);
     file.write(json.data(), static_cast<std::streamsize>(json.size()));
     file.close();
@@ -448,7 +448,7 @@ void WriteDocument(const std::filesystem::path& path, std::string_view json) {
         throw std::runtime_error("cannot write the temporary settings UI file");
     }
     std::string reason;
-    if (citypack::MoveIntoPlace(temp, path, &reason) == citypack::MoveResult::kFailed) {
+    if (os::MoveIntoPlace(temp, path, &reason) == os::MoveResult::kFailed) {
         throw std::runtime_error("cannot replace the settings UI file: " + reason);
     }
 }

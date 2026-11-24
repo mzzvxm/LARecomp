@@ -340,6 +340,16 @@ const mcla_menu::ItemDef* UpscalingMenuRows(int& count) {
 #endif
 }
 
+const mcla_menu::ItemDef* AllUpscalingMenuRows(int& count) {
+#if defined(LARECOMP_HAS_GPU)
+    count = int(sizeof(kRows) / sizeof(kRows[0]));
+    return kRows;
+#else
+    count = 0;
+    return nullptr;
+#endif
+}
+
 namespace mcla_menu {
 
 GeneratedChoices RenderScaleChoices([[maybe_unused]] std::string_view renderer) {

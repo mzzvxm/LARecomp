@@ -95,3 +95,5 @@
 // which puts frame generation's after them): 3 rows, or 4 where this PC has the denoiser row. 0 and a null pointer without the Plume renderer's code in the build.
 // (The relayout hook of the page, UpscalingMenuRelayout, is in frame_generation_menu.h with the combined table it watches.)
 const mcla_menu::ItemDef* UpscalingMenuRows(int& count);
+// Every row of the block, the denoiser row included whether or not this PC lists it (the settings UI exporter walks the superset).
+const mcla_menu::ItemDef* AllUpscalingMenuRows(int& count);

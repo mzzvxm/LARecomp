@@ -1044,6 +1044,9 @@ else()
     set_property(SOURCE src/mc_engine/hooks/race_line.cpp APPEND PROPERTY
         OBJECT_DEPENDS "${_race_line_twin_dir}/race_line_twin.stamp")
 
+    # XT: both actions exist on this branch (GX --dump_settings_ui, MF --probe_machine): the install manifest lists them.
+    set_target_properties(larecomp PROPERTIES LARECOMP_EXPORTS_SETTINGS_UI TRUE LARECOMP_PROBES_MACHINE TRUE)
+
     # BS-G: Record the SDK's own runtime list and the files produced below.
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/InstallManifest.cmake")
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReadDeps.cmake")
@@ -1118,7 +1121,7 @@ else()
     target_include_directories(larecomp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
     add_executable(larecomp_settings_ui_test EXCLUDE_FROM_ALL
-        src/settings_ui/export_test.cpp src/settings_ui/export.cpp src/citypack/file_replace.cpp)
+        src/settings_ui/export_test.cpp src/settings_ui/export.cpp src/os/file_replace.cpp)
     target_compile_features(larecomp_settings_ui_test PRIVATE cxx_std_23)
     target_include_directories(larecomp_settings_ui_test PRIVATE src)
     target_link_libraries(larecomp_settings_ui_test PRIVATE larecomp_tomlplusplus)
