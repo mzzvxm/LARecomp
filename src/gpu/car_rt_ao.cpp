@@ -335,7 +335,7 @@ CarRtAo::Result CarRtAo::Record(plume::RenderCommandList* list, const Inputs& in
   list->dispatch((image_.width + kGroup - 1) / kGroup, (image_.height + kGroup - 1) / kGroup, 1);
   {
     const plume::RenderTextureBarrier read(image_.texture.get(), Layout::SHADER_READ);
-    list->barriers(Stage::GRAPHICS, nullptr, 0, &read, 1);
+    list->barriers(in.compute_read ? Stage::GRAPHICS_AND_COMPUTE : Stage::GRAPHICS, nullptr, 0, &read, 1);
     image_.layout = Layout::SHADER_READ;
   }
 

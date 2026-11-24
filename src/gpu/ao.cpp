@@ -594,12 +594,9 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
 void AmbientOcclusion::InitializeRtAo(CarRtScene& scene, CityRtScene* city, RtSceneService& service) {
   if (!device_ || !frames_ || !heap_ || !passes_ || !pass_timing_)
     return;
-#if __has_include("rtao_setting.h")
+  // The pass is not built yet, so the process's own decision still says NOT READY: the precache is listed as if it were (the gate stays shut only until Initialize publishes it).
   const bool at_start = rtao_setting::Decide(gpu_class::Current(), gpu_class::Known(), gpu_class::CurrentRtTier(),
                                              rtao_setting::ParseChoice(AoSetting().Get()), true).rt;
-#else
-  const bool at_start = false;
-#endif
   rtao_scene_ = &scene;
   rtao_ = std::make_unique<RtAo>();
   rtao_->Initialize(*device_, *frames_, *heap_, *passes_, *pass_timing_, scene, city, service, at_start);
@@ -2911,9 +2908,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     in.tan_y = base.lens[1];
     in.fade_end = base.extra[1];
     const bool blend_car = rtao_ && rtao_->blend_car_;
-    // CHECK: the frozen compose frame has no slot for the car-only term. The
-    // debug arm retains its contribution to screen AO when that pass runs.
+    // An RTAO frame records the car pass's SUN TERM only (the world trace sees the same triangles from every pixel); the A/B arm mcla_gpu_rtao_blend_car also keeps its occlusion,
+    // which the screen-space pass (where it runs) and the compose (below, the car term) take the darker of.
     in.occlusion = car_rt_ao::OcclusionOn(plan.occlusion, rtao_runs, blend_car);
+    in.compute_read = rtao_runs && in.occlusion;
     in.contact = contact;
     in.cabin_sun = plan.cabin_shadow_mode == cabin_shadow::kCabinRt;
     in.ultra = plan.mode == Mode::kUltra;
@@ -3245,6 +3243,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         .screen_term_slot = compose_screen ? compose_screen->slot : kNoSlot,
         .bounce_slot = gi_bounce ? gi_bounce->slot : kNoSlot,
         .power = rtao_in.look_power, .floor = rtao_in.look_floor, .view = rtao_->view_,
+        .car_term_slot = rt.recorded && rt.occlusion && rtao_->blend_car_ ? rt.slot : kNoSlot,
     };
     rtao_slot = rtao_->RecordCompose(list, rtao_compose_in);
     if (rtao_slot != kNoSlot) {

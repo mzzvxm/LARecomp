@@ -31,8 +31,7 @@ bool Valid(const HostImage* image, const uint32_t (&size)[2]) {
 }
 
 uint64_t PipelineKey(bool bounce) {
-  // CHECK: R1 adds the named kRtAo owner at the frozen value 36.
-  return HostPrecache::Key(static_cast<HostPrecache::Owner>(36), bounce ? 3 : 2);
+  return HostPrecache::Key(HostPrecache::Owner::kRtAo, bounce ? 3 : 2);
 }
 }  // namespace
 

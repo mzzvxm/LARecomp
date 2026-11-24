@@ -106,9 +106,10 @@ const HostImage* RtAoDenoise::Record(const Frame& in, uint32_t history_limit) {
   push[kHistoryCap] = frame_cap;
   push[kRawSignal] = in.signal->slot;
 
-  // CHECK: validate the shared vehicle table's graphics-to-compute handoff
-  // and the "rtao denoise" timing span that RtAo::RecordFilter owns.
-  // Run the four NOISE-NA6 takes and compare the cockpit and exterior views.
+  // CHECK: validate the shared vehicle table's graphics-to-compute handoff (ao.cpp makes it
+  // compute-readable before the trace) in a play frame on both backends. The "rtao denoise"
+  // timing span is marked by RtAo::RecordFilter. Run the four NOISE-NA6 takes and compare the
+  // cockpit and exterior views.
   const HostImage* temporal = denoiser_.RecordTemporal(pass);
   if (!temporal) {
     ResetHistory();

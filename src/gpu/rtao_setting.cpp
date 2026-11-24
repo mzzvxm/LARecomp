@@ -5,7 +5,7 @@
 namespace mcla::gpu::rtao_setting {
 namespace {
 
-// CHECK: R1 publishes RtAo::available() here and clears it on shutdown. R3 uses Ultra until then.
+// RtAo::Initialize publishes RtAo::available() here and RtAo::Shutdown clears it; until then (and on a card that cannot build the pass) the row says NOT READY and the frame is Ultra.
 std::atomic<bool> g_pass_built{false};
 
 }  // namespace

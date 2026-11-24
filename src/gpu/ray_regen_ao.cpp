@@ -30,8 +30,7 @@ struct Push {
 static_assert(sizeof(Push) == 128);
 
 uint64_t PipelineKey() {
-  // CHECK: R1 adds the named kRayRegenAo owner at the frozen value 37.
-  return HostPrecache::Key(static_cast<HostPrecache::Owner>(37), 0);
+  return HostPrecache::Key(HostPrecache::Owner::kRayRegenAo, 0);
 }
 
 plume::RenderFormat FormatOf(rgd::Image image) {

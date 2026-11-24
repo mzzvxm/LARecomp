@@ -101,6 +101,7 @@ class CarRtAo {
     bool cabin_sun = false;            // omit the player car from sun rays on its cockpit receivers
     bool contact = false;              // the contact shadows run in this frame (not gated off by a low sun or rain)
     bool ultra = false;                // the occlusion's level: 4 rays against 2
+    bool compute_read = false;         // the image is also read by a compute pass (RTAO's compose, in the mcla_gpu_rtao_blend_car A/B frame): the barrier after the pass says so; false = the pixel passes' alone, as ever
     float to_sun[3] = {0.0f, 0.0f, 0.0f};  // the direction to the sun in view space (unit; zero: none)
     uint32_t noise_code = 0;           // what the main pass is given in slots2.y (ao_stable.h NoiseCode; its bit 29 says the blue noise tile, for the sun ray's too)
     uint32_t sun_frame = 0;            // the frame the sun ray's spread is shifted by (0: a fixed pattern)

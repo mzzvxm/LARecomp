@@ -955,8 +955,8 @@ struct RawModes {
   RawWhy ssr = RawWhy::kPlanOurs;
   RawWhy car_refl = RawWhy::kPlanOurs;
   RawWhy rt_gi = RawWhy::kPlanOurs;
-  RawWhy rt_lights = RawWhy::kPlanOurs;
-  RawWhy rt_ao = RawWhy::kPlanOurs;   // RT-LIGHTS-D1 part 2: the ray traced light visibility (mcla_gpu_dlss_rr_rt_lights is its switch)
+  RawWhy rt_lights = RawWhy::kPlanOurs;   // RT-LIGHTS-D1 part 2: the ray traced light visibility (mcla_gpu_dlss_rr_rt_lights is its switch)
+  RawWhy rt_ao = RawWhy::kPlanOurs;       // the world's ray traced ambient occlusion (mcla_gpu_dlss_rr_rt_ao is its switch)
   constexpr bool Ssr() const { return ssr == RawWhy::kRaw; }
   constexpr bool CarRefl() const { return car_refl == RawWhy::kRaw; }
   constexpr bool RtGi() const { return rt_gi == RawWhy::kRaw; }

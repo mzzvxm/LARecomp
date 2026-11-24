@@ -20,54 +20,8 @@
 #include "rt_scene_service.h"
 #include "settings/larecomp_settings.h"
 
-#if __has_include("rtao_denoise.h") && __has_include("rtao_compose.h")
 #include "rtao_compose.h"
 #include "rtao_denoise.h"
-#define MCLA_RTAO_CONSUMERS 1
-#else
-#define MCLA_RTAO_CONSUMERS 0
-namespace mcla::gpu {
-// STUB (R2 owns): the standalone trace branch has no compose pipeline.
-class RtAoDenoise {
- public:
-  void Initialize(Device&, FrameRing&, BindlessHeap&, HostPasses&) {}
-  void Shutdown() {}
-  bool available() const { return false; }
-  struct Frame {
-    plume::RenderCommandList* list;
-    HostImage *signal, *depth, *depth_prev, *normal, *id_share;
-    uint32_t traced[2];
-    float tan_x, tan_y, prev_tan_x, prev_tan_y, motion[12] = {};
-    uint32_t vehicle_table_slot, vehicle_ids;
-    bool history_valid;
-    uint64_t frame;
-  };
-  const HostImage* Record(const Frame&) { return nullptr; }
-  void ResetHistory() {}
-  float LastMeanLength() const { return 0.0f; }
-  void OnPresent() {}
-  uint64_t HeldBytes() const { return 0; }
-};
-
-class RtAoCompose {
- public:
-  void Initialize(Device&, FrameRing&, BindlessHeap&, HostPasses&) {}
-  void Shutdown() {}
-  bool available() const { return false; }
-  struct Frame {
-    plume::RenderCommandList* list;
-    const HostImage *filtered, *depth_guide, *depth_full;
-    uint32_t normal_slot, screen_term_slot, bounce_slot, traced[2], plan_ao[2];
-    float power, floor_;
-    bool blend_screen;
-    int view;
-  };
-  uint32_t Record(const Frame&) { return RtAo::kNoSlot; }
-  void ReleaseImage() {}
-  uint64_t HeldBytes() const { return 0; }
-};
-}  // namespace mcla::gpu
-#endif
 
 namespace mcla::gpu {
 namespace {
@@ -179,7 +133,7 @@ void RtAo::Shutdown() {
 }
 
 bool RtAo::available() const {
-  return MCLA_RTAO_CONSUMERS && layout_ && shader_[0] && shader_[1] && compose_ && denoise_;
+  return layout_ && shader_[0] && shader_[1] && compose_ && denoise_;
 }
 
 bool RtAo::PipelineReady(bool ms) {
@@ -240,9 +194,7 @@ void RtAo::BeginFrame(const rtao_setting::Decision& decision, bool play_view) {
     }
     service_->Want(rt_scene::Consumer::kRtAo, needs);
   }
-#if MCLA_RTAO_CONSUMERS
   denoiser::NoteConsumer(rr::Consumer::kRtAo, wanted_);
-#endif
 }
 
 rtao::Plan RtAo::PlanFrame(const Inputs& in, const CarRtView& top_level, bool bounce_light_on) {
@@ -274,13 +226,9 @@ rtao::Plan RtAo::PlanFrame(const Inputs& in, const CarRtView& top_level, bool bo
   if (facts.wanted && facts.play_view && available()) {
     const bool trace_ready = PipelineReady(in.stencil_ms);
     const bool compose_ready = compose_->available();
-#if MCLA_RTAO_CONSUMERS
     if (raw_)
       facts.scale = rtao_denoise::RawScale();
     const bool filter_ready = raw_ || !rtao_denoise::Enabled() || denoise_->available();
-#else
-    const bool filter_ready = denoise_->available();
-#endif
     facts.pipelines = trace_ready && compose_ready && filter_ready;
     facts.top_level = top_level.scene_valid && top_level.set;
     if (facts.pipelines && facts.top_level && city_ && city_->pack_ready()) {
@@ -366,6 +314,11 @@ bool RtAo::RecordTrace(plume::RenderCommandList* list, const Inputs& in) {
   tan_[1] = in.tan_y;
   depth_full_ = in.depth;
   normal_slot_ = in.normal_slot;
+  stencil_slot_ = in.stencil_slot;
+  stencil_sample_ = in.stencil_sample;
+  stencil_ms_ = in.stencil_ms;
+  render_[0] = in.render[0];
+  render_[1] = in.render[1];
   parity_ = uint32_t(frame_ & 1u);
   const bool probe = !readback_busy_ && interior_ && probe_due_;
   const bool sample = !readback_busy_ && passes_run_ >= next_sample_;
@@ -474,6 +427,8 @@ bool RtAo::RecordFilter(plume::RenderCommandList* list, const FilterInputs& in) 
     };
     if (in.camera.have_motion && !in.camera.motion_still)
       std::copy_n(in.camera.motion, 12, frame.motion);
+    // Everything recorded from here to the closing mark is the denoiser's: the temporal and the spatial passes (a raw frame has no such span).
+    timing_->Mark(list, "rtao denoise");
     if (const HostImage* filtered = denoise_->Record(frame)) {
       filtered_ = filtered;
       previous_ours_ = true;
@@ -483,7 +438,7 @@ bool RtAo::RecordFilter(plume::RenderCommandList* list, const FilterInputs& in) 
   std::copy_n(tan_, 2, previous_tan_);
   std::copy_n(plan_.traced, 2, previous_size_);
   FinishTraceTiming(list);
-  timing_->Mark(list, "after rtao");
+  CloseSpan(list);
   return previous_ours_;
 }
 
@@ -506,23 +461,31 @@ void RtAo::FinishTraceTiming(plume::RenderCommandList* list) {
 uint32_t RtAo::RecordCompose(plume::RenderCommandList* list, const ComposeInputs& in) {
   if (!recorded_)
     return kNoSlot;
-  // CHECK: the frozen compose frame has no raw signal, traced IDs, stencil,
-  // or car-term fields. R2's optional guide overload supplies those inputs.
+  timing_->Mark(list, "rtao compose");
   const RtAoCompose::Frame frame = {
       .list = list, .filtered = filtered_, .depth_guide = &depth_[parity_], .depth_full = depth_full_,
       .normal_slot = normal_slot_, .screen_term_slot = check_ == 1 ? kNoSlot : in.screen_term_slot,
       .bounce_slot = in.bounce_slot, .traced = {signal_.width, signal_.height}, .plan_ao = {in.plan_ao[0], in.plan_ao[1]},
       .power = in.power, .floor_ = in.floor, .blend_screen = screen_ == rtao::Screen::kOn && check_ != 1, .view = in.view,
   };
-  const uint32_t slot = compose_->Record(frame);
+  // The compose's optional inputs: the trace's own raw signal (coverage, the debug views), the vehicle IDs of the traced pixels, the depth target's stencil plane (the full size picture's
+  // vehicle IDs, so a car's edge takes only the car's taps) and the car pass's occlusion image of the A/B arm.
+  const RtAoCompose::Guides guides = {
+      .raw = &signal_, .id_share = &id_share_, .stencil_slot = stencil_slot_, .stencil_sample = stencil_sample_, .stencil_ms = stencil_ms_,
+      .render = {render_[0], render_[1]}, .car_term_slot = in.car_term_slot,
+  };
+  const uint32_t slot = compose_->Record(frame, guides);
+  CloseSpan(list);
   if (slot == kNoSlot) {
-    // CHECK: R2's frozen compose API acquires its term image at Record, after visibility.
-    // Verify the AO's Ultra retry when a compose allocation is rejected.
+    // The compose could not make its term image (or an input did not match): the AO's own term stands, and the Ultra frame is recorded after it (ao.cpp).
     NoteFallback(frame_, rtao::Fallback::kImagesFailed);
-  } else {
-    timing_->Mark(list, "after rtao");
   }
   return slot;
+}
+
+// The one closing mark of the RTAO span: what is recorded after it is not "rtao trace", "rtao denoise" or "rtao compose" (frame_order_test holds the three marks and this one to the table).
+void RtAo::CloseSpan(plume::RenderCommandList* list) {
+  timing_->Mark(list, "after rtao");
 }
 
 void RtAo::ReadStats(uint64_t frame, uint64_t epoch, bool probe) {

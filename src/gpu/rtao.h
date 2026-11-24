@@ -10,20 +10,7 @@
 #include "gi_pixel_rules.h"
 #include "host_passes.h"
 #include "rtao_rules.h"
-
-#if __has_include("rtao_setting.h")
 #include "rtao_setting.h"
-#else
-// STUB (R3 owns): the standalone trace branch keeps the setting gate shut.
-namespace mcla::gpu::rtao_setting {
-struct Decision {
-  bool rt = false;
-  gpu_class::RtTier rung = gpu_class::RtTier::kNone;
-};
-inline Decision DecideFor(std::string_view) { return {}; }
-inline void NotePassBuilt(bool) {}
-}
-#endif
 
 namespace mcla::gpu {
 
@@ -80,6 +67,8 @@ class RtAo {
     uint32_t bounce_slot = kNoSlot;
     float power = 3.6f, floor = 0.1f;
     int view = 0;
+    // The car pass's occlusion image (r = open share), only in the mcla_gpu_rtao_blend_car A/B frame: the compose takes the darker of it and the trace on a vehicle's pixels.
+    uint32_t car_term_slot = kNoSlot;
   };
   uint32_t RecordCompose(plume::RenderCommandList*, const ComposeInputs&);
   void OnPresent();
@@ -92,6 +81,7 @@ class RtAo {
   bool EnsureImages(uint32_t width, uint32_t height);
   void ReleaseImages();
   void FinishTraceTiming(plume::RenderCommandList*);
+  void CloseSpan(plume::RenderCommandList*);
   void ReadStats(uint64_t frame, uint64_t mesh_epoch, bool probe);
   void NoteFallback(uint64_t frame, rtao::Fallback);
 
@@ -118,6 +108,9 @@ class RtAo {
   const HostImage* filtered_ = nullptr;
   const HostImage* depth_full_ = nullptr;
   uint32_t normal_slot_ = kNoSlot, parity_ = 0;
+  // The trace's stencil plane, kept for the compose (it reads the vehicle IDs of the full size picture with it).
+  uint32_t stencil_slot_ = kNoSlot, stencil_sample_ = 0, render_[2] = {};
+  bool stencil_ms_ = false;
   uint32_t previous_size_[2] = {};
   float tan_[2] = {}, previous_tan_[2] = {};
   uint64_t frame_ = 0, previous_frame_ = 0;

@@ -1364,7 +1364,9 @@ larecomp_gpu_host_shader_rt(rt_lights_trace_cs cs_6_5)
 
 # RTAO-R1 begin
 target_sources(larecomp_gpu PRIVATE rtao.cpp)
-# larecomp_rtao_rules_test <src/gpu dir> checks the trace shader and frame-term pins.
+# The world ray traced ambient occlusion's rules (rtao_rules.h: the plan, the fallback ladder, the calibration, the memory and ray models) held to the trace shader's text and the frame term's statements, and its noise
+# (hlsl/rtao_noise.hlsli compiled as C++: the sub-pixel pick covers the corners, every lane is a low discrepancy set over 16 frames):
+#   cmake --build <dir> --target larecomp_rtao_rules_test, then run src/gpu/larecomp_rtao_rules_test [<src/gpu dir>] (exit 0 = passed); larecomp_rtao_noise_test takes no argument.
 add_executable(larecomp_rtao_rules_test EXCLUDE_FROM_ALL rtao_rules_test.cpp)
 add_executable(larecomp_rtao_noise_test EXCLUDE_FROM_ALL rtao_noise_test.cpp)
 larecomp_gpu_host_shader_rt(rtao_trace_cs cs_6_5 DEFINES RTAO_MS=0)
