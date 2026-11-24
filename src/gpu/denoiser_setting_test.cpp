@@ -666,7 +666,11 @@ void SettingsChecks(const std::string& dir) {
             Before(header, std::string("REX_SET") + "TING(std::string, mcla_gpu_denoiser, ", std::string("REX_SET") + "TING(std::string, mcla_gpu_dlss_rr, "),
         "the row's setting is defined before the chooser, which is before the debug switch that overrides both");
   // the help of the switch agrees with the rules' words
-  Check(Has(rrdef, "overrides the DENOISER row") && Has(rrdef, "auto (the default): the row decides") && Has(rrdef, "off: nothing of it exists whatever the row says"), "the debug switch's help says it overrides the row");
+  Check(Has(rrdef, "overrides the DLSS RAY RECONSTRUCTION row (mcla_gpu_vendor_denoiser, and the debug chooser mcla_gpu_denoiser)") && Has(rrdef, "auto (the default): the row decides") && Has(rrdef, "off: nothing of it exists whatever the row says") &&
+            !Has(rrdef, "DENOISER row"),
+        "the debug switch's help says it overrides the row and the chooser, and names no row that is gone");
+  const std::string regen = DefinitionOf(header, "mcla_gpu_ray_regen", "std::string") + DefinitionOf(header, "mcla_gpu_ray_regen_ssr", "i32");
+  Check(!regen.empty() && Has(regen, "the AMD FSR RAY REGENERATION row") && !Has(regen, "DENOISER row"), "the Ray Regeneration settings' help names the row by its name");
 }
 
 void BuildChecks(const std::string& dir) {
