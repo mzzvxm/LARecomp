@@ -1,0 +1,38 @@
+{
+  "schema": "larecomp.machine",
+  "schema_version": 1,
+  "min_reader": 1,
+  "source": "probe",
+  "final": false,
+  "written_by": { "game_version": "PATCH 11 - PREVIEW 1", "commit": "0000000000000000000000000000000000000000" },
+  "written_utc": "2026-11-24T10:12:44Z",
+  "hardware_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "gpu": {
+    "name": "NVIDIA GeForce GTX 1080", "vendor": "nvidia", "vendor_id": 4318, "device_id": 7040, "driver_version": "32.0.15.6094",
+    "vram_mb": 8192, "shared_memory": false, "software": false, "rtx": false, "rx9000": false,
+    "class": "mid", "class_why": "by memory", "handheld": false, "class_forced": null,
+    "rt_tier": "none", "rt_rung": "none", "rt_tier_why": "no ray tracing support", "rt_benchmarked": false,
+    "adapters": [ { "name": "NVIDIA GeForce GTX 1080", "vendor": "nvidia", "vram_mb": 8192, "class": "mid", "selected": true, "software": false } ]
+  },
+  "api": { "name": "vulkan", "version": "1.3", "dxr_1_1": false, "ray_query": false, "shader_model": null, "car_rt": false, "city_rt_shadows": false },
+  "features": {
+    "upscalers": { "fsr1": true, "fsr31": true, "fsr4": false, "dlss": null, "dlss_modes_refused": null },
+    "frame_generation": { "fsr31": true, "dlss": null, "dlss_multiplier_max": null, "dlss_after_restart": null },
+    "latency": { "kind": "none", "auto_on": false },
+    "denoiser": { "vendor": "none", "dlss_rr": null, "ray_regen": null },
+    "hdr": { "display_capable": false, "windows_hdr_on": false, "auto_paper_white_nits": null, "auto_peak_nits": null },
+    "pcss": true
+  },
+  "display": {
+    "primary": { "name": "Primary display", "width": 1920, "height": 1080, "refresh_hz": 60, "hdr": false, "size": "1920X1080" },
+    "windowed_sizes": [ [1280, 720], [1600, 900], [1920, 1080] ],
+    "exclusive_sizes": [ [1920, 1080, 60] ]
+  },
+  "os": {
+    "name": "windows", "build": 22631, "exclusive_fullscreen": true, "live_window_resize": true, "window_size_fixed": false,
+    "hdr_output": false, "real_weather": true, "mouse_look": true, "wheel_ffb": true, "frame_pacing_wake": true
+  },
+  "cpu": { "threads": 8, "level": "x86-64-v3" },
+  "build": { "rt_gi_update_built": true },
+  "install": { "portuguese_text": false, "fidelityfx_files": true, "streamline_files": false, "city_pack": "missing", "city_hit": "missing", "shader_pack": "current" }
+}

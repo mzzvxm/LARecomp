@@ -1,0 +1,8 @@
+{
+  "schema": "larecomp.describe",
+  "schema_version": 1,
+  "game_version": "PATCH 11 - PREVIEW 1",
+  "commit": "0000000000000000000000000000000000000000",
+  "contracts": { "settings_ui": 1, "machine": 1, "install_manifest": 1 },
+  "actions": ["build_shader_packs", "precache_pipelines", "build_city_pack", "build_city_hit", "check_city_hit", "dump_settings_ui", "probe_machine"]
+}

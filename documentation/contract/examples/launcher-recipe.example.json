@@ -1,0 +1,15 @@
+{
+  "schema": "larecomp.launcher-recipe",
+  "schema_version": 1,
+  "min_reader": 1,
+  "toolchain": { "cmake": ">=3.25", "clang": ">=20", "ninja": ">=1.11", "cxx": 23, "sdk": "0.11" },
+  "presets": { "windows": "win-amd64-release", "linux": "linux-amd64-release" },
+  "codegen": { "tool": "rexglue", "args": ["codegen", "larecomp_manifest.toml"], "inputs": ["default.xex"] },
+  "options": [
+    { "name": "LARECOMP_GPU", "value": "ON" },
+    { "name": "LARECOMP_CPU_LEVEL", "from": "launcher.cpu_level" },
+    { "name": "LARECOMP_DLSS_FETCH", "value": "OFF", "when": "gpu.vendor != 'nvidia'", "only_if_defined": true }
+  ],
+  "targets": ["larecomp", "larecomp_online_tool"],
+  "kits": "cmake/deps.json"
+}

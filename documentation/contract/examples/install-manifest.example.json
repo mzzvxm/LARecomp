@@ -1,0 +1,57 @@
+{
+  "schema": "larecomp.install-manifest",
+  "schema_version": 1,
+  "min_reader": 1,
+  "game_version": "PATCH 11 - PREVIEW 1",
+  "commit": "0000000000000000000000000000000000000000",
+  "contracts": { "settings_ui": 1, "machine": 1, "install_manifest": 1 },
+  "sdk": { "generation": "0.11" },
+  "features": ["gpu", "dlss", "dlss_frame_generation", "dlss_ray_reconstruction", "fidelityfx", "fidelityfx_frame_generation", "ray_regeneration", "online_tool", "join_server"],
+  "stage": [
+    { "from": "larecomp.exe", "to": "larecomp.exe", "kind": "program", "required": true },
+    { "from": "larecomp.exe.debug", "to": "larecomp.exe.debug", "kind": "other", "required": false },
+    { "from": "gamecontrollerdb.txt", "to": "gamecontrollerdb.txt", "kind": "data", "required": true },
+    { "from": "larecomp_online_tool.exe", "to": "larecomp_online_tool.exe", "kind": "program", "required": false, "os": ["windows"] },
+    { "from": "amd_fidelityfx_denoiser_dx12.dll", "to": "amd_fidelityfx_denoiser_dx12.dll", "kind": "dll", "os": ["windows"], "required": false, "group": "ray_reconstruction" },
+    { "from": "nvngx_dlss_license.txt", "to": "nvngx_dlss_license.txt", "kind": "licence", "licence_for": "nvngx_dlss.dll", "required": false },
+    { "from": "assets/**", "to": "assets/", "kind": "data", "required": true }
+  ],
+  "facts": {
+    "install.fidelityfx_files": { "any_of": ["amd_fidelityfx_*.dll"] },
+    "install.streamline_files": { "all_of": ["sl.interposer.dll", "sl.common.dll"] },
+    "install.streamline_frame_generation": { "all_of": ["sl.dlss_g.dll", "nvngx_dlssg.dll", "sl.reflex.dll", "sl.pcl.dll"] }
+  },
+  "actions": [
+    {
+      "id": "build_shader_packs", "flag": "--build_shader_packs", "force_flag": "--build_shader_packs_force", "args": ["--game_data_root={game_root}"],
+      "after": [], "when": "true", "stdout": { "prefix": "@shaderpack|", "grammar": 1 }, "exit": { "ok": [0], "fail": [1] },
+      "outputs": ["{shader_pack_dir}/mcla_shaders.v8.pack", "{shader_pack_dir}/mcla_shaders.stamp"], "never_fails_setup": true, "timeout_min": 25
+    },
+    {
+      "id": "precache_pipelines", "flag": "--precache_pipelines", "force_flag": "--precache_pipelines_force", "args": ["--game_data_root={game_root}"],
+      "after": ["build_shader_packs"], "when": "true", "stdout": { "prefix": "@pipelines|", "grammar": 1 }, "exit": { "ok": [0], "fail": [1] },
+      "outputs": ["{pipeline_cache_dir}/mcla_pipelines.bin"], "never_fails_setup": true, "timeout_min": 20
+    },
+    {
+      "id": "build_city_pack", "flag": "--build_city_pack", "args": ["--game_data_root={game_root}"], "after": ["build_shader_packs"],
+      "when": "gpu.rt_tier != 'none'", "stdout": { "prefix": "@citypack|", "grammar": 1 }, "exit": { "ok": [0], "fail": [1] }, "never_fails_setup": true
+    },
+    {
+      "id": "dump_settings_ui", "flag": "--dump_settings_ui", "args": [], "after": [], "when": "true", "stdout": { "prefix": "@settingsui|", "grammar": 1 },
+      "exit": { "ok": [0], "fail": [1] }, "outputs": ["{game_folder}/settings-ui.json"], "never_fails_setup": true, "timeout_min": 1
+    },
+    {
+      "id": "probe_machine", "flag": "--probe_machine", "args": [], "after": [], "when": "true", "stdout": { "prefix": "@machine|", "grammar": 1 },
+      "exit": { "ok": [0], "fail": [1] }, "outputs": ["{game_folder}/machine.json"], "never_fails_setup": true, "timeout_min": 1
+    }
+  ],
+  "game": {
+    "title_id": "545407F8",
+    "xex_sha256": ["c386f4001fa569e6ad4b982f441f67412f00b3f47c166134555cd4b59854a432"],
+    "required_files": ["default.xex"]
+  },
+  "layout": { "game_files_folder": "MCLA_Game_Files", "mod_roots": ["modloader", "mods", "models"], "textures": "textures_replace", "disabled": ".disabled", "saved_game": "mc4.sav" },
+  "files": { "online_tool": "larecomp_online_tool", "join_status": "logs/join_server.txt", "online_tables": "logs/online_tables.json" },
+  "exit_codes": { "cpu_level_refused": 19523 },
+  "markers": { "algo": "fnv1a64-lower-path", "version": 1 }
+}

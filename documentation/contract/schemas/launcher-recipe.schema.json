@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://larecomp.invalid/contract/launcher-recipe.schema.json",
+  "title": "launcher-recipe.json (LAUNCHER-FOLLOWS-GAME section 5.1)",
+  "description": "How to build the game, as data: the toolchain floor, the CMake preset per OS, the configure options and when each applies, the code generation step, the targets. Checked in at the game repo root next to larecomp_manifest.toml; the launcher reads it after the Sources step. The launcher keeps launcher.* values (the CPU level choice, jobs) and supplies them by name; tool pins, URLs and hashes stay in the launcher (a download must not be steerable by the repo). A when is an expression over the facts the launcher has before the first probe (the l0 facts of fact-dictionary.json).",
+  "type": "object",
+  "required": ["schema", "schema_version", "min_reader", "presets", "targets"],
+  "properties": {
+    "schema": { "const": "larecomp.launcher-recipe" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "min_reader": { "type": "integer", "minimum": 1 },
+    "toolchain": {
+      "type": "object",
+      "description": "the floor the recipe needs: the launcher fails a setup whose pinned tool is below it, and says to update the launcher",
+      "properties": {
+        "cmake": { "type": "string", "pattern": "^>=[0-9]+(\\.[0-9]+)*$" },
+        "clang": { "type": "string", "pattern": "^>=[0-9]+(\\.[0-9]+)*$" },
+        "ninja": { "type": "string", "pattern": "^>=[0-9]+(\\.[0-9]+)*$" },
+        "cxx": { "type": "integer", "minimum": 11 },
+        "sdk": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$" }
+      }
+    },
+    "presets": {
+      "type": "object",
+      "description": "the CMake preset to configure with, per OS",
+      "properties": { "windows": { "type": "string" }, "linux": { "type": "string" }, "macos": { "type": "string" } },
+      "minProperties": 1
+    },
+    "codegen": {
+      "type": "object",
+      "required": ["tool", "args"],
+      "properties": {
+        "tool": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "inputs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "description": "extra build steps, in order, when the default configure + build is not all",
+      "items": {
+        "type": "object",
+        "required": ["id", "tool"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "tool": { "type": "string" },
+          "args": { "type": "array", "items": { "type": "string" } },
+          "when": { "type": "string" }
+        }
+      }
+    },
+    "options": {
+      "type": "array",
+      "description": "configure options (-D<name>=<value>), each with the condition under which it applies",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "value": { "type": "string" },
+          "from": { "type": "string", "pattern": "^launcher\\.[a-z][a-z0-9_]*$", "description": "a value the launcher supplies by name" },
+          "when": { "type": "string" },
+          "only_if_defined": { "type": "boolean", "description": "pass it only when the sources' CMake defines the option (an older game does not)" }
+        }
+      }
+    },
+    "targets": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+    "kits": { "type": "string", "description": "the dependency pins file (cmake/deps.json)" }
+  }
+}

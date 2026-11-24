@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://larecomp.invalid/contract/settings-ui.schema.json",
+  "title": "settings-ui.json (LAUNCHER-FOLLOWS-GAME section 1)",
+  "description": "What the game says about its own settings menu: every setting, every row, the rules that grey, hide and relabel them, the presets. Written by larecomp.exe --dump_settings_ui, read by the launcher. This schema is for WRITERS (the exporter and its lint): it is strict about what the format says today. A READER ignores every property it does not know (section 3). What a schema cannot say (an expression parses, a setting named by a row exists, a preset covers what it should) is in validate_contract.py.",
+  "type": "object",
+  "required": ["schema", "schema_version", "min_reader", "expr_version", "settings", "tabs"],
+  "properties": {
+    "schema": { "const": "larecomp.settings-ui" },
+    "schema_version": { "type": "integer", "minimum": 1, "description": "this file's layout; only a breaking change raises it" },
+    "min_reader": { "type": "integer", "minimum": 1, "description": "the oldest reader that renders it correctly" },
+    "expr_version": { "type": "integer", "minimum": 1, "description": "the condition language the rules use" },
+    "generated": {
+      "type": "object",
+      "properties": {
+        "game_version": { "type": "string" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "tool": { "type": "string" },
+        "settings_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "exe_id": { "type": "string" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "file": { "type": "string" },
+        "style": { "enum": ["flat"] }
+      }
+    },
+    "value_sets": { "type": "object", "additionalProperties": { "type": "array", "items": { "$ref": "#/$defs/value" } } },
+    "defs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/def" } },
+    "settings": { "type": "object", "additionalProperties": { "$ref": "#/$defs/setting" } },
+    "tabs": { "type": "array", "items": { "$ref": "#/$defs/tab" } },
+    "presets": { "$ref": "#/$defs/presets" },
+    "facts_used": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^(gpu|api|features|os|display|cpu|build|install|live)(\\.[a-z0-9_]+)+$" },
+      "description": "every fact path any condition reads (gpu.* api.* features.* os.* display.* cpu.* build.* install.* live.*), sorted, no duplicates"
+    }
+  },
+  "$defs": {
+    "expression": { "type": "string", "minLength": 1, "description": "a condition of the language in documentation/contract/cpp/ui_expr_ref.h" },
+    "literal": { "type": ["string", "number", "boolean", "null"] },
+    "def": {
+      "oneOf": [
+        { "$ref": "#/$defs/expression" },
+        {
+          "type": "object",
+          "required": ["cases"],
+          "properties": {
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["value"],
+                "properties": {
+                  "when": { "$ref": "#/$defs/expression" },
+                  "value": {
+                    "oneOf": [
+                      { "$ref": "#/$defs/literal" },
+                      { "type": "object", "required": ["expr"], "properties": { "expr": { "$ref": "#/$defs/expression" } } }
+                    ]
+                  },
+                  "live_only": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "auto": {
+      "type": "object",
+      "required": ["by"],
+      "properties": {
+        "by": { "enum": ["class", "rt_rung", "preset"] },
+        "cells": { "type": "object", "additionalProperties": { "type": ["string", "number"] } },
+        "handheld": { "type": "object", "additionalProperties": { "type": ["string", "number"] } },
+        "auto_value": { "type": "number", "description": "numeric rows: the number that stands for auto (0 or -1); cells then hold numbers" }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "required": ["type", "default", "life"],
+      "properties": {
+        "full": { "type": "string", "description": "the registry name (larecomp.mcla_gpu_ao, ui.fullscreen)" },
+        "type": { "enum": ["bool", "int", "number", "string", "path"] },
+        "default": { "type": "string", "description": "the EFFECTIVE default as the text the file would hold: true, 60, auto" },
+        "declared_default": { "type": "string" },
+        "life": { "enum": ["live", "restart", "startup", "until_launch"] },
+        "allowed": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true },
+        "range": { "type": ["array", "null"], "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "no_save": { "type": "boolean" },
+        "debug": { "type": "boolean" },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "auto": { "$ref": "#/$defs/auto" },
+        "since": { "type": "string" },
+        "removed": { "type": "string" }
+      }
+    },
+    "tab": {
+      "type": "object",
+      "required": ["id", "label", "sections"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string" },
+        "title": { "type": "string" },
+        "blurb": { "type": "string" },
+        "debug": { "type": "boolean" },
+        "renderers": { "$ref": "#/$defs/renderers" },
+        "os": { "$ref": "#/$defs/os" },
+        "hidden_unless": { "$ref": "#/$defs/expression" },
+        "sections": { "type": "array", "items": { "$ref": "#/$defs/section" } }
+      }
+    },
+    "section": {
+      "type": "object",
+      "required": ["id", "label", "rows"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string" },
+        "title": { "type": "string" },
+        "blurb": { "type": "string" },
+        "source_menu": { "type": "string" },
+        "debug": { "type": "boolean" },
+        "renderers": { "$ref": "#/$defs/renderers" },
+        "os": { "$ref": "#/$defs/os" },
+        "hidden_unless": { "$ref": "#/$defs/expression" },
+        "rows": { "type": "array", "items": { "$ref": "#/$defs/row" } }
+      }
+    },
+    "renderers": { "type": "array", "items": { "enum": ["native", "xenia"] }, "minItems": 1, "uniqueItems": true },
+    "os": { "type": "array", "items": { "enum": ["windows", "linux", "macos"] }, "minItems": 1, "uniqueItems": true },
+    "rowBody": {
+      "type": "object",
+      "properties": {
+        "label": { "type": "string" },
+        "title": { "type": "string" },
+        "kind": { "type": "string", "minLength": 1, "description": "choice | bool | number | text | color | action | link | carbon | a kind a newer game adds (then fallback_kind says how to draw it)" },
+        "fallback_kind": { "type": "string" },
+        "surfaces": { "type": "array", "items": { "enum": ["game", "launcher"] }, "minItems": 1, "uniqueItems": true },
+        "setting": { "type": ["string", "null"] },
+        "reads": { "type": "array", "items": { "type": "string" } },
+        "inverted": { "type": "boolean" },
+        "default": { "type": "string" },
+        "values": { "type": "array", "items": { "$ref": "#/$defs/value" } },
+        "values_ref": { "type": "string" },
+        "values_from": {
+          "type": "object",
+          "required": ["generator"],
+          "properties": { "generator": { "type": "string" }, "args": { "type": "object" } }
+        },
+        "fallback_values": { "type": "array", "items": { "$ref": "#/$defs/value" } },
+        "decode": {
+          "oneOf": [
+            { "$ref": "#/$defs/expression" },
+            {
+              "type": "object",
+              "required": ["cases"],
+              "properties": {
+                "cases": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["value"],
+                    "properties": { "when": { "$ref": "#/$defs/expression" }, "value": { "type": "string" }, "live_only": { "type": "boolean" } }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "keep_unlisted": { "type": "boolean" },
+        "format": { "type": "string" },
+        "title_format": { "type": "string" },
+        "apply": { "enum": ["live", "restart", "next_start", "next_host", "on_reload"] },
+        "apply_note": { "type": "string" },
+        "help": { "type": "string" },
+        "help_more": { "type": "string" },
+        "renderers": { "$ref": "#/$defs/renderers" },
+        "os": { "$ref": "#/$defs/os" },
+        "api": { "type": "array", "items": { "enum": ["d3d12", "vulkan"] }, "minItems": 1, "uniqueItems": true },
+        "hidden_unless": { "$ref": "#/$defs/expression" },
+        "states": { "type": "array", "items": { "$ref": "#/$defs/state" } },
+        "variants": { "type": "array", "items": { "$ref": "#/$defs/variant" } },
+        "target": { "type": "string", "description": "kind link: the id of the section the row opens (it is drawn as that section)" },
+        "debug": { "type": "boolean" },
+        "since": { "type": "string" },
+        "needs_expr": { "type": "integer", "minimum": 1 },
+        "live_only": { "type": "boolean", "description": "every rule of this row is about the running game: the launcher ignores them" },
+        "native": { "type": "string", "description": "phase A only: this row's dynamics are still a C++ function (its name); the launcher draws the row plain" }
+      }
+    },
+    "row": {
+      "allOf": [
+        { "$ref": "#/$defs/rowBody" },
+        { "type": "object", "required": ["id", "label", "kind"], "properties": { "id": { "type": "string", "minLength": 1 } } }
+      ]
+    },
+    "variant": {
+      "allOf": [
+        { "$ref": "#/$defs/rowBody" },
+        { "type": "object", "required": ["when"], "properties": { "when": { "$ref": "#/$defs/expression" } }, "not": { "required": ["id"] } }
+      ]
+    },
+    "state": {
+      "type": "object",
+      "required": ["when"],
+      "properties": {
+        "when": { "$ref": "#/$defs/expression" },
+        "enabled": { "type": "boolean" },
+        "suffix": { "type": "string" },
+        "label": { "type": "string" },
+        "tag": { "type": "string" },
+        "reason": { "type": "string" },
+        "needs_restart": { "type": "boolean" },
+        "help_append": { "type": "string" },
+        "live_only": { "type": "boolean", "description": "the rule reads the running game only: the launcher ignores it (otherwise every live.* path needs a ?? fallback)" },
+        "needs_expr": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "write": {
+      "type": "object",
+      "required": ["setting", "value"],
+      "properties": {
+        "setting": { "type": "string" },
+        "value": { "type": "string", "description": "the text to write, $id (the value's id) or $previous" }
+      }
+    },
+    "value": {
+      "type": "object",
+      "required": ["id", "label"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "exactly the text the setting holds in larecomp.toml; never renamed" },
+        "label": { "type": "string" },
+        "title": { "type": "string" },
+        "when": { "$ref": "#/$defs/expression" },
+        "writes": { "type": "array", "items": { "$ref": "#/$defs/write" }, "minItems": 1 },
+        "auto_label": { "type": "boolean" },
+        "label_rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["when", "label"],
+            "properties": { "when": { "$ref": "#/$defs/expression" }, "label": { "type": "string" }, "live_only": { "type": "boolean" } }
+          }
+        },
+        "live_only": { "type": "boolean" },
+        "help": { "type": "string" }
+      }
+    },
+    "presets": {
+      "type": "object",
+      "required": ["setting", "order", "items", "class_to_preset"],
+      "properties": {
+        "setting": { "type": "string" },
+        "order": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true },
+        "first_start": { "type": "string" },
+        "scope": { "type": "array", "items": { "type": "string" }, "description": "ids of the sections whose rows presets cover" },
+        "items": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["label"],
+            "properties": {
+              "label": { "type": "string" },
+              "title": { "type": "string" },
+              "help": { "type": "string" },
+              "needs": { "type": ["string", "null"], "description": "an expression: the preset is offered only where it is true; null: always" },
+              "needs_reason": { "type": "string" },
+              "values": { "type": "object", "additionalProperties": { "type": "string" } }
+            }
+          }
+        },
+        "class_to_preset": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "object", "required": ["when", "preset"], "properties": { "when": { "$ref": "#/$defs/expression" }, "preset": { "type": "string" } } }
+        },
+        "covers": { "type": "array", "items": { "type": "string" } },
+        "flip": {
+          "type": "object",
+          "required": ["to"],
+          "properties": { "to": { "type": "string" }, "writes": { "type": "array", "items": { "$ref": "#/$defs/write" } } }
+        }
+      }
+    }
+  }
+}
