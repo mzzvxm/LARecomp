@@ -111,6 +111,7 @@
 {"input_probe", "MCLA/Diag"},
 {"input_test_pad_loss", "MCLA/Input"},
 {"intro_original_speed", "MCLA/Patches"},
+{"join_server", "MCLA/Multiplayer"},
 {"kb_drive_brake", "MCLA/Input/Keyboard - driving"},
 {"kb_drive_camera", "MCLA/Input/Keyboard - driving"},
 {"kb_drive_camera_keys", "MCLA/Input/Keyboard - driving"},

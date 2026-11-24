@@ -33,6 +33,7 @@
 #include "../system_link.h"
 #include "browser_client.h"
 #include "browser_join.h"
+#include "join_server.h"
 #include "../../modloader/modsbrowser/mod_browser_ui.h"
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "../identity/identity_ui.h"
@@ -261,6 +262,7 @@ protected:
                 ImGui::SetWindowFocus();
                 first_frame_ = false;
             }
+            DrawJoinServerFailure();
             DrawToolbar();
             ImGui::Separator();
             const float left_w = std::max(320.0f, ImGui::GetContentRegionAvail().x * 0.42f);
@@ -307,11 +309,23 @@ private:
         g_open.store(false);
         pad_block_.Set(false);
         client_.SetAutoRefresh(false);
+        br::JoinServerClearFailure();
         auto& io = ui_->GetImGuiIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
         ReleaseBrowserGamepad();
         LARECOMP_APP_INFO("[browser] closed");
+    }
+
+    // Why --join_server could not join (join_server.h): in red above the list until the player dismisses it or closes the window.
+    void DrawJoinServerFailure() {
+        const std::string failure = br::JoinServerFailureText();
+        if (failure.empty()) return;
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(mcla::ui::kColorBad, "Could not join: %s", failure.c_str());
+        ImGui::PopTextWrapPos();
+        if (ImGui::SmallButton("Dismiss")) br::JoinServerClearFailure();
+        ImGui::Separator();
     }
 
     // A new icon becomes a texture here, on the UI thread, in the draw (the ImGui context is current).

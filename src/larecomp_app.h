@@ -108,6 +108,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
 
   void ApplyStartupDefaults(rex::SettingsRegistry& settings);
   void ApplyCommandLineSettings(rex::SettingsRegistry& settings);  // OnConfigure: the setting options PrepareCommandLine kept back
+  void ApplyJoinServerLaunch(rex::SettingsRegistry& settings);     // OnConfigure: --join_server puts the game online on that server
   void ChooseUserFolder();           // OnConfigure: the default of app.user_root
   void MoveUserDataIfNeeded();       // OnInit: the side effects of that choice
   void StartOverlays();              // OnInit: fonts, style, hotkeys, overlays

@@ -81,3 +81,7 @@ void RpcOnRaceTick();
 // True while the game's own state machine is in its Cruising state (free roam, the last "Cruising" / "Racing" / "Garage" / "Loading" /
 // "Intro" activation: a pause menu in free roam is still free roam). The traffic probe's spawn test asks it.
 bool RpcInFreeRoam();
+
+// The activity the same activations say (Boot until the first one): the server browser's join refuses to start from a race or the
+// garage and waits for free roam in the others (online/server_browser/browser_join_core.h). A pause menu in free roam is FreeRoam.
+LarecompDiscordState RpcActivity();

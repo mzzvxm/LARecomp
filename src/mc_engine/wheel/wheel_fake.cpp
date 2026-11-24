@@ -64,6 +64,7 @@
 
 #include "../cinematic/freecam_runtime.h"
 #include "mc_engine/input/input_state.h"
+#include "mc_engine/input/synthetic_start.h"
 #include "../keyboard_native.h"
 #include "../hooks/hooks_internal.h"
 #include "larecomp_log.h"
@@ -270,6 +271,9 @@ extern "C" REX_FUNC(rex_sub_8275CB78) {
     const uint32_t state = ctx.r4.u32;
     // When this function ends (the SDK's state, the dead zones and any test pad done) a flying free camera takes the pad and clears the game's copy.
     mc::cinematic::FreecamPadScope freecam_pad(base, user, state, ctx.r3.u64);
+    // A press of Start that --join_server asked for (input/synthetic_start.h) goes into the state when this function ends. Constructed before the activity scope for the same reason as the
+    // steering ramp: a press the program made is not a controller's input, and the device state machine must not count it.
+    larecomp::input::SyntheticStartScope synthetic_start(base, user, state, ctx.r3.u64);
     // The keyboard's steering ramp goes into the left stick when this function ends (keyboard_native.h). Constructed before the activity scope, so that it runs after it: the ramp is the
     // keyboard, and the device state machine must not count it as a controller's stick.
     larecomp::keyboard::KeySteerScope key_steer(base, user, state, ctx.r3.u64);

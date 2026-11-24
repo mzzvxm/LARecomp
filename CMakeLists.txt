@@ -323,6 +323,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/server_browser/browser_client.cpp
     src/mc_engine/online/server_browser/browser_query.cpp
     src/mc_engine/online/server_browser/browser_join.cpp
+    src/mc_engine/online/server_browser/join_server.cpp
     src/mc_engine/online/server_browser/browser_ui.cpp
     # Online identity (F7): the key that owns the gamertag, its XUID, the
     # nick proof to relays that check, backup and recovery code.
@@ -631,6 +632,20 @@ add_executable(larecomp_mod_paths_test EXCLUDE_FROM_ALL
 add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
     src/settings/cli_rules_test.cpp)
 target_include_directories(larecomp_cli_rules_test PRIVATE src)
+
+# What a join of the server browser does about an open pause menu (src/mc_engine/online/server_browser/browser_join_core.h: it closes the menu
+# the way CONTINUE does and starts only when the game runs again) has a check that needs no game and no server:
+#   cmake --build <build dir> --target larecomp_browser_join_core_test, then run <build dir>/larecomp_browser_join_core_test (exit 0 = passed).
+add_executable(larecomp_browser_join_core_test EXCLUDE_FROM_ALL
+    src/mc_engine/online/server_browser/browser_join_core_test.cpp)
+target_include_directories(larecomp_browser_join_core_test PRIVATE src/mc_engine/online/server_browser)
+
+# The --join_server launch argument (src/mc_engine/online/server_browser/join_server_core.h: the grammar, the room match, the status file the
+# launcher reads) has a check that needs no game and no server:
+#   cmake --build <build dir> --target larecomp_join_server_test, then run <build dir>/larecomp_join_server_test (exit 0 = passed).
+add_executable(larecomp_join_server_test EXCLUDE_FROM_ALL
+    src/mc_engine/online/server_browser/join_server_core_test.cpp)
+target_include_directories(larecomp_join_server_test PRIVATE src/mc_engine/online/server_browser)
 
 # The table of change-callback guards (src/settings/watch_table.h) and the exit crash of 2026-11-21 (the exe's static destruction released a
 # guard of a setting the SDK had already destroyed, an access violation in Mtx_lock about every other run) have a check that needs no game, but
