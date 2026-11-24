@@ -72,6 +72,10 @@ struct ServerView {
 // "host" or "host:port" (port kept when absent or invalid).
 void SplitHostPort(const std::string& in, std::string& host, uint16_t& port);
 
+// `in` without the white space at both ends. A server list address (the online_master_server setting) is always read through this:
+// blank (empty, or only white space) means no list, and a stray space around an address is not part of it.
+std::string TrimAddress(const std::string& in);
+
 // The relay's answer to a target hint; false when it did not answer (an
 // older relay) or the query failed. Blocking, worker threads only.
 bool SendTargetHint(const std::string& host, uint16_t port, uint32_t host_vip, int timeout_ms);
@@ -144,9 +148,10 @@ MasterAnswer FetchMaster(const std::string& address, const Options& opts);
 // The lines of a master's list body ('\n'-separated; a '\r' stays on the line, AddTarget drops it).
 std::vector<std::string> SplitLines(const std::string& body);
 
-// Where to look. All three may be empty.
+// Where to look. All three may be blank (empty or only white space). A blank `master` means there is no server list:
+// it is not asked, and only the player's own addresses and the current relay are.
 struct Sources {
-    std::string master;     // "host[:port]" of the server list (port 31003 when absent)
+    std::string master;     // "host[:port]" of the server list (port 31003 when absent); blank (empty or only white space) = no list
     std::string favorites;  // comma-separated "host[:port]": the player's own
     std::string current;    // "host[:port]" of the relay the game is on
 };

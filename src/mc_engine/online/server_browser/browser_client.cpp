@@ -88,7 +88,9 @@ void Worker(std::shared_ptr<Client::State> st) {
         std::vector<ServerView>& results = got.servers;
         std::vector<std::vector<uint8_t>>& icons = got.icons;
         std::string master_status = got.master.text;
-        if (sources.master.empty() && !got.master.via_favorites)
+        // Blank (empty, or only spaces) is no list: the browser shows the saved servers and the current one. Collect decides, so the
+        // window and the online tool agree on what blank is.
+        if (got.master.state == MasterStatus::State::kNotSet && !got.master.via_favorites)
             master_status = "no server list set (online_master_server)";
 
         std::lock_guard<std::mutex> lk(st->mutex);

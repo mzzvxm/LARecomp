@@ -136,7 +136,7 @@ const char* UsageText() {
         "  larecomp_online_tool identity ...              the player's online identity (identity --help)\n"
         "\n"
         "servers options:\n"
-        "  --master H[:P]           the server list to read (port 31003 when absent); there is no built-in one\n"
+        "  --master H[:P]           the server list to read (port 31003 when absent); blank or left out = no list\n"
         "  --servers a,b            the player's own relays (host[:port], port 31000 when absent)\n"
         "  --current H[:P]          the relay the game is set to\n"
         "  --icons DIR              keep relay icons there as <crc>.png (fetched only when this is given)\n"
@@ -495,7 +495,7 @@ std::string RenderServers(const ServersReport& r, bool pretty) {
 ServersReport GatherServers(const Args& a) {
     const auto started = std::chrono::steady_clock::now();
     ServersReport rep;
-    rep.master_address = a.master;
+    rep.master_address = browser::TrimAddress(a.master);  // blank = no list: the document says null, as for no --master
 
     const bool want_icons = !a.icons_dir.empty();
     fs::path dir;
@@ -512,7 +512,7 @@ ServersReport GatherServers(const Args& a) {
     opts.have_icon = [&](uint32_t crc) { return want_icons && CachedIconOk(dir, crc); };
 
     browser::Sources src;
-    src.master = a.master;
+    src.master = rep.master_address;
     src.favorites = a.servers;
     src.current = a.current;
     rep.got = browser::Collect(src, opts, {});
