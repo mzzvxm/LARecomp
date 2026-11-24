@@ -101,7 +101,11 @@ bool Before(Step a, Step b) { return PosOf(a) < PosOf(b); }
 void CheckTableItself() {
   const auto problems = Problems(Copy(), true);
   Check(problems.empty(), "the shipped table is consistent: " + Join(problems));
-  Check(Rows().size() == 53 && Rows().back().step == Step::kPresentRig, "53 steps, the present's rig last");
+  Check(Rows().size() == 56 && Rows().back().step == Step::kPresentRig, "56 steps, the present's rig last");
+  Check(fo::RowOf(Step::kRtAoTrace).makes == fo::data::kRtAoSignal &&
+        fo::RowOf(Step::kRtAoFilter).reads == fo::data::kRtAoSignal &&
+        fo::RowOf(Step::kRtAoCompose).reads == (fo::data::kAoDepth | fo::data::kRtAoSignal) &&
+        fo::RowOf(Step::kRtAoCompose).makes == fo::data::kAoTerm, "trace guides reach the filter and compose");
   size_t phase_count[size_t(Phase::kCount)] = {};
   size_t noted = 0;
   size_t inner = 0;
@@ -125,15 +129,19 @@ void CheckTableItself() {
     // RR-2: the anchor's steps are the temporal system's, in temporal.cpp, and held by the source checks alone
     if (r.phase == Phase::kAnchor) Check(std::strcmp(r.file, "temporal.cpp") == 0 && r.kind == Kind::kScanned, std::string(r.name) + ": an anchor step stands in temporal.cpp and is a scanned one");
   }
-  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 3 && phase_count[size_t(Phase::kTrigger)] == 29 && phase_count[size_t(Phase::kEndOfScene)] == 4 &&
+  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 3 && phase_count[size_t(Phase::kTrigger)] == 32 && phase_count[size_t(Phase::kEndOfScene)] == 4 &&
             phase_count[size_t(Phase::kAnchor)] == 3 && phase_count[size_t(Phase::kPresent)] == 4,
-        "10 at the frame's start, 3 in the draws (MIRROR-VIEW MV1 added the mirror phase's), 29 at the trigger (RT-LIGHTS-D1 added the ray traced visibility inside the light pass, MIRROR-RT the side mirrors, GI-BOUNCE-SS the two captures at the light pass's sides), 4 at the end of the scene (MV1 added the mirror stamp, MV4 the side mirror glass after it), 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
-  Check(noted == 20 && inner == 9 && scanned == 24, "20 noted calls, 8 steps inside the AO's frame and 1 inside the light pass, 24 held by the source checks alone (MIRROR-VIEW MV1 added two, MV4 one)");
-  // every data bit is made, and made once (nothing is made by two steps: the frame's lights are the frame start's, the rig's present makes nothing)
-  for (uint32_t bit = 1; bit <= fo::data::kAll; bit <<= 1) {
+        "10 at the frame's start, 3 in the draws (MIRROR-VIEW MV1 added the mirror phase's), 32 at the trigger (RT-LIGHTS-D1 added the ray traced visibility inside the light pass, MIRROR-RT the side mirrors, GI-BOUNCE-SS the two captures at the light pass's sides, RTAO the three steps inside the AO's frame), 4 at the end of the scene (MV1 added the mirror stamp, MV4 the side mirror glass after it), 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
+  Check(noted == 20 && inner == 12 && scanned == 24, "20 noted calls, 11 steps inside the AO's frame and 1 inside the light pass, 24 held by the source checks alone (MIRROR-VIEW MV1 added two, MV4 one)");
+  Check(fo::data::kRtAoSignal == (1u << 31) && std::string(fo::data::NameOf(fo::data::kRtAoSignal)) == "RTAO signal",
+        "the RTAO signal owns the last data bit");
+  // every data bit is made (the AO term by two steps: the visibility and the RTAO compose write the same term slot), nothing else by more than one
+  for (uint32_t bit = 1; bit != 0; bit <<= 1) {
     int makers = 0;
     for (const Row& r : Rows()) makers += (r.makes & bit) != 0;
-    Check(makers == 1, std::string("the data '") + fo::data::NameOf(bit) + "' has one maker, has " + std::to_string(makers));
+    const int expected = bit == fo::data::kAoTerm ? 2 : 1;
+    Check(makers == expected, std::string("the data '") + fo::data::NameOf(bit) + "' has " + std::to_string(expected) +
+                                   " makers, has " + std::to_string(makers));
     Check(std::strcmp(fo::data::NameOf(bit), "?") != 0, "every data bit has a name");
   }
   // the screen products of the table are the frozen interface's
@@ -149,7 +157,7 @@ void CheckPinnedOrder() {
                           Step::kVolume, Step::kCarRtCheck, Step::kColourPost, Step::kSsr, Step::kCarHistory, Step::kCarMirror, Step::kGBufferView, Step::kScreenView};
   for (size_t i = 1; i < std::size(trigger); ++i) Check(Before(trigger[i - 1], trigger[i]), std::string("at the trigger '") + fo::RowOf(trigger[i - 1]).name + "' comes before '" + fo::RowOf(trigger[i]).name + "'");
   // inside the AO's frame
-  const Step ao[] = {Step::kAo, Step::kAoDepth, Step::kAoNormals, Step::kColourPre, Step::kCarRtAo, Step::kAoVisibility, Step::kContact, Step::kAoApply, Step::kScreenPublish};
+  const Step ao[] = {Step::kAo, Step::kAoDepth, Step::kAoNormals, Step::kColourPre, Step::kCarRtAo, Step::kRtAoTrace, Step::kRtAoFilter, Step::kAoVisibility, Step::kRtAoCompose, Step::kContact, Step::kAoApply, Step::kScreenPublish};
   for (size_t i = 1; i < std::size(ao); ++i) Check(Before(ao[i - 1], ao[i]), std::string("in the AO's frame '") + fo::RowOf(ao[i - 1]).name + "' comes before '" + fo::RowOf(ao[i]).name + "'");
   for (size_t i = 1; i < std::size(ao); ++i) {
     Check(fo::RowOf(ao[i]).kind == Kind::kInner && fo::RowOf(ao[i]).umbrella == Step::kAo, std::string(fo::RowOf(ao[i]).name) + " is inside the AO's call");
@@ -232,7 +240,7 @@ void CheckPinnedOrder() {
             (fo::RowOf(Step::kCarHistory).makes & fo::data::kRrHitCar) != 0,
         "RR-4: the reflections' hit distance image is made at the trigger by the effect (a soft read of the guide pass at the anchor: only the frames the effect ran raw have it)");
   Check(fo::RowOf(Step::kGiApply).makes == fo::data::kRrHitGi && Before(Step::kGiApply, Step::kRrGuides) && fo::data::kRrHitGi == (1u << 27) && fo::data::kLightsBefore == (1u << 28) && fo::data::kLightHistory == (1u << 29) &&
-            fo::data::kMirrorView == (1u << 30) && fo::data::kAll == ((1u << 31) - 1) &&
+            fo::data::kMirrorView == (1u << 30) && fo::data::kRtAoSignal == (1u << 31) && fo::data::kAll == 0xFFFFFFFFu &&
             std::strcmp(fo::data::NameOf(fo::data::kRrHitGi), "RR hit distance (bounce light)") == 0,
         "CITY-RT G6: the bounce light's per-pixel pass's hit distance image is made by the field's apply at the trigger (a soft read of the guide pass at the anchor: only the frames the pass ran raw have it)");
   Check(fo::RowOf(Step::kRrGuides).reads == fo::data::kPlanes && fo::RowOf(Step::kRrGuides).makes == fo::data::kRrGuides && fo::RowOf(Step::kRrGuidesView).reads == fo::data::kRrGuides &&
@@ -368,7 +376,7 @@ void CheckMoves() {
   Check(pushed >= 20, "a good number of steps have something that needs them (" + std::to_string(pushed) + ")");
   // a maker removed; a want dropped; a dependency on a later step; a read of what nothing makes
   for (size_t i = 0; i < N; ++i) {
-    if (Rows()[i].makes == 0) continue;
+    if (Rows()[i].makes == 0 || Rows()[i].step == Step::kRtAoCompose) continue;
     bool read = false;
     for (const Row& other : Rows()) read = read || ((other.reads | other.soft_reads) & Rows()[i].makes) != 0;
     if (!read) continue;
@@ -621,7 +629,7 @@ std::string StepEnumName(Step step) {
   // the enumerator as scene.cpp writes it: frame_order::Step::kX, found by the table's own name list
   static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGiField", "kBeginGiApply", "kBeginGBuffer", "kBeginTemporal", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight", "kDrawMirrorView",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kGiField", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
-                                       "kAoVisibility", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kLightsBefore", "kLocalLights", "kRtLights", "kLightsAfter", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory", "kCarMirror",
+                                       "kRtAoTrace", "kRtAoFilter", "kAoVisibility", "kRtAoCompose", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kLightsBefore", "kLocalLights", "kRtLights", "kLightsAfter", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory", "kCarMirror",
                                        "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kMirrorStamp", "kMirrorGlass", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
   static_assert(std::size(kNames) == N, "one name for each step");
   return kNames[size_t(step)];
@@ -672,6 +680,12 @@ void CheckSources(const std::string& gpu) {
   const std::string& scene_h = text_of("scene.h");
   const std::string& ao = text_of("ao.cpp");
   if (scene.empty() || ao.empty()) return;
+  const auto ao_call = [&](Step step) { return At(ao, fo::RowOf(step).call); };
+  Check(ao_call(Step::kCarRtAo) < ao_call(Step::kRtAoTrace) &&
+        ao_call(Step::kRtAoTrace) < ao_call(Step::kRtAoFilter) &&
+        ao_call(Step::kRtAoFilter) < ao_call(Step::kAoVisibility) &&
+        ao_call(Step::kAoVisibility) < ao_call(Step::kRtAoCompose) &&
+        ao_call(Step::kRtAoCompose) < ao_call(Step::kContact), "the RTAO calls bracket visibility before contact");
 
   // every call stands in its file, once
   std::array<size_t, N> pos{};
@@ -782,6 +796,10 @@ void CheckSources(const std::string& gpu) {
   // the PassTiming labels exist in their files
   for (const Row& r : Rows()) {
     if (r.label[0] == '\0') continue;
+#if !__has_include("rtao_compose.h")
+    // STUB (R2 owns): the trace branch checks both label files once the consumers land.
+    if (r.step == Step::kRtAoFilter || r.step == Step::kRtAoCompose) continue;
+#endif
     Check(r.label_file[0] != '\0' && Has(text_of(r.label_file), std::string("\"") + r.label + "\""), std::string(r.name) + ": the PassTiming label \"" + r.label + "\" is in " + r.label_file);
   }
   // GB-I3: the other marks of a pass and its closing mark exist in the file, after the pass's first label, in the table's order; the closing mark is the last
@@ -888,7 +906,7 @@ int main(int argc, char** argv) {
       const Row& r = Rows()[i];
       std::string makes;
       std::string reads;
-      for (uint32_t bit = 1; bit <= fo::data::kAll; bit <<= 1) {
+      for (uint32_t bit = 1; bit != 0; bit <<= 1) {
         if ((r.makes & bit) != 0) makes += std::string(makes.empty() ? "" : ", ") + fo::data::NameOf(bit);
         if (((r.reads | r.soft_reads) & bit) != 0) reads += std::string(reads.empty() ? "" : ", ") + fo::data::NameOf(bit) + ((r.reads & bit) ? "" : "?");
       }

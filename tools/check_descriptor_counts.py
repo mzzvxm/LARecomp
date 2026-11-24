@@ -1399,6 +1399,12 @@ CASES = [
     ("a member builder set from a parameter, wrong count", {"a.cpp": INIT % 3 + INIT_USE}, ["count"], 0, []),
     # the binding code
     ("binding: right", {"a.cpp": BASE + " s_->setTexture(0, t, l, v);\n s_->setBuffer(1, buf, 4);\n}\n"}, [], 0, []),
+    ("RTAO output set", {"a.cpp": "void F() {\n b.begin();\n b.addReadWriteTexture(0);\n b.addReadWriteTexture(1);\n"
+                                 " b.addReadWriteTexture(2);\n b.addReadWriteTexture(3);\n b.addReadWriteByteAddressBuffer(4);\n b.end();\n"
+                                 " s = d.CreateDescriptorSet(b, 5, 0, \"rtao\");\n}\n"}, [], 0, []),
+    ("RTAO output set missing counter view", {"a.cpp": "void F() {\n b.begin();\n b.addReadWriteTexture(0);\n b.addReadWriteTexture(1);\n"
+                                                      " b.addReadWriteTexture(2);\n b.addReadWriteTexture(3);\n b.addReadWriteByteAddressBuffer(4);\n b.end();\n"
+                                                      " s = d.CreateDescriptorSet(b, 4, 0, \"rtao\");\n}\n"}, ["count"], 0, []),
     ("binding: through the index variables", {"a.cpp": BASE + " s_->setTexture(a_, t, l, v);\n s_->setBuffer(c_, buf, 4);\n}\n"}, [], 0, []),
     ("binding: an index past the set", {"a.cpp": BASE + " s_->setTexture(0, t, l, v);\n s_->setBuffer(2, buf, 4);\n}\n"}, ["index"], 0, ["unwritten"]),
     ("binding: a buffer into a texture range", {"a.cpp": BASE + " s_->setBuffer(0, t, 4);\n s_->setBuffer(1, buf, 4);\n}\n"}, ["type"], 0, []),

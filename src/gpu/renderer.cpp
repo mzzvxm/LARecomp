@@ -347,6 +347,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       }
       city_rt_.SetHitScene(&city_hit_);
       rt_scene_.Initialize(&car_rt_, &city_rt_, &city_hit_);
+      ao_.InitializeRtAo(car_rt_, &city_rt_, rt_scene_);
       car_rt_refl_.SetSceneService(&rt_scene_);  // CITY-RT M2 R1/R2: the city in the car paint's reflections asks the service for the structures, the hit data and the textures (city_refl.h)
       // CITY-RT FRAME (rt_world_frame.h): the world's rows and the lamps of every frame that has a top level, car or no car, in t10 and t11 of the car scene's set (the scene's builder tells it the view and
       // binds the buffers; the scene writes them at the trigger). The AO's draw hook gives it the light, the car frame the sky and the environment map, the shared products the exposure, the pack the lamps.
@@ -480,6 +481,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); });
     vram_.AddHolder("probe update", [this] { return gi_update_.HeldBytes(); });
     vram_.AddHolder("per-pixel bounce light", [this] { return gi_pixel_.HeldBytes(); });
+    vram_.AddHolder("rtao", [this] { return ao_.RtAoHeldBytes(); });
     vram_.AddHolder("ray traced light visibility", [this] { return rt_lights_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.

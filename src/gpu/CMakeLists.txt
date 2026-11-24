@@ -1343,6 +1343,15 @@ larecomp_gpu_host_shader_rt(city_rt_shadow_cs cs_6_5)
 # The ray traced visibility of the top K lights (rt_lights.h, RT-LIGHTS-D1): one compute pass over the occlusion's linear depth, a ray a pixel to each light that reaches it, into the visibility images the
 # light pass reads. Shader Model 6.5 (wave intrinsics for the counters), SPIR-V 1.5 on Vulkan like the city shadows'.
 larecomp_gpu_host_shader_rt(rt_lights_trace_cs cs_6_5)
+
+# RTAO-R1 begin
+target_sources(larecomp_gpu PRIVATE rtao.cpp)
+# larecomp_rtao_rules_test <src/gpu dir> checks the trace shader and frame-term pins.
+add_executable(larecomp_rtao_rules_test EXCLUDE_FROM_ALL rtao_rules_test.cpp)
+add_executable(larecomp_rtao_noise_test EXCLUDE_FROM_ALL rtao_noise_test.cpp)
+larecomp_gpu_host_shader_rt(rtao_trace_cs cs_6_5 DEFINES RTAO_MS=0)
+larecomp_gpu_host_shader_rt(rtao_trace_ms_cs cs_6_5 SOURCE rtao_trace_cs DEFINES RTAO_MS=1)
+# RTAO-R1 end
 # The city hit data's probe (city_hit_probe.h, CITY-RT M2 H3): the pool and the tables read through the ray tracing set's t6..t9.
 larecomp_gpu_host_shader_rt(city_hit_probe_cs cs_6_5)
 # The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed storage image

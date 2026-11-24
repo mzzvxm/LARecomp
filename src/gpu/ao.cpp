@@ -25,6 +25,8 @@
 #include "mc_engine/camera/menu_camera.h"
 #include "ao_stable.h"
 #include "car_rt_ao.h"
+#include "car_rt_scene.h"
+#include "rtao.h"
 #include "noise_resolve.h"
 #include "scene_noise.h"
 #include "screen_shared.h"
@@ -589,6 +591,29 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
   ListPrecache(occlusion_at_start, contact_at_start_choice, bounce_at_start_choice);
 }
 
+void AmbientOcclusion::InitializeRtAo(CarRtScene& scene, CityRtScene* city, RtSceneService& service) {
+  if (!device_ || !frames_ || !heap_ || !passes_ || !pass_timing_)
+    return;
+#if __has_include("rtao_setting.h")
+  const bool at_start = rtao_setting::Decide(gpu_class::Current(), gpu_class::Known(), gpu_class::CurrentRtTier(),
+                                             rtao_setting::ParseChoice(AoSetting().Get()), true).rt;
+#else
+  const bool at_start = false;
+#endif
+  rtao_scene_ = &scene;
+  rtao_ = std::make_unique<RtAo>();
+  rtao_->Initialize(*device_, *frames_, *heap_, *passes_, *pass_timing_, scene, city, service, at_start);
+}
+
+bool AmbientOcclusion::rtao_wanted() const { return rtao_ && rtao_->wanted(); }
+
+void AmbientOcclusion::SetRtAoRawMode(bool raw) {
+  if (rtao_)
+    rtao_->SetRawMode(raw);
+}
+
+uint64_t AmbientOcclusion::RtAoHeldBytes() const { return rtao_ ? rtao_->HeldBytes() : 0; }
+
 void AmbientOcclusion::InitializeCarRt(CarRtScene* scene, const CarFrame* car_frame) {
   if (!ready_ || !device_ || !passes_) {
     return;  // the occlusion's own passes could not be made: there is nothing to trace for
@@ -639,6 +664,11 @@ void AmbientOcclusion::Shutdown() {
   // The host builder's functions name this object's layout and shaders: stop it first.
   if (passes_) {
     passes_->precache().Stop();
+  }
+  if (rtao_) {
+    rtao_->Shutdown();
+    rtao_.reset();
+    rtao_scene_ = nullptr;
   }
   if (rt_ao_) {
     rt_ao_->Shutdown();  // its layout, shader and image (the car's structures are the scene's)
@@ -1139,6 +1169,10 @@ void AmbientOcclusion::BeginFrame() {
     // (The contact shadows' gate is the last frame's judgment: a night's frame with the occlusion off builds nothing for a term that cannot run.)
     rt_ao_->BeginFrame(mode_ != Mode::kOff, contact_mode_ != Mode::kOff && contact_state_ != ContactState::kGated);
   }
+  if (rtao_) {
+    const auto d = rtao_setting::DecideFor(AoSetting().Get());
+    rtao_->BeginFrame(d, !have_previous_ || !previous_pause_);
+  }
   if (city_shadow_) {
     // === CITY-RT BLOCK (city_rt_shadow.h, CITY-RT M1): the city's ray traced sun shadows are read by the contact march, so they are wanted where it runs (the same last-frame gate as above).
     city_shadow_->BeginFrame(contact_mode_ != Mode::kOff && contact_state_ != ContactState::kGated);
@@ -1228,7 +1262,7 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   if (city_shadow_) {
     bytes += city_shadow_->HeldBytes();
   }
-  return bytes;
+  return bytes + RtAoHeldBytes();
 }
 
 void AmbientOcclusion::ReleaseImages() {
@@ -1845,7 +1879,8 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   const bool in_apply = plan.ContactFilterInApply();
   // The visibility passes' two images are read by the plain occlusion (the bounce light has its own images) and the contact shadows'
   // march and filter pass (the filter pass is not run where the apply does the filter): nothing else, so they are not held otherwise.
-  const bool ao_scratch = plan.apply && plan.occlusion && !plan.gi.on;
+  const bool screen_ao = plan.occlusion && plan.rtao.screen_pass;
+  const bool ao_scratch = plan.apply && screen_ao && !plan.gi.on;
   const bool raw_needed = ao_scratch || contact_scratch;
   const bool denoised_needed = ao_scratch || (contact_scratch && !in_apply);
   // The depth chain's images (level 0, the coarser levels while the occlusion or the probe runs, the contact shadows' full size depth beside a half size trace) are the shared screen products'
@@ -1899,7 +1934,7 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   }
   // The bounce light test keeps its own history (RGBA16F, EnsureGiImages) and the occlusion's is not made
   // while it runs: a frame that turns out not to have the test asks again with the test off (Run).
-  if (ok && plan.occlusion && !plan.gi.on) {
+  if (ok && screen_ao && !plan.gi.on) {
     ok = passes_->EnsureImage(history_[0], plan.ao[0], plan.ao[1],
                               plume::RenderFormat::R16G16_FLOAT, "ao history 0") &&
          passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1],
@@ -1917,10 +1952,10 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
     history_cut_ = false;
   }
   // The picture of debug view 6, made only while that view is shown.
-  if (ok && plan.occlusion && !plan.gi.on && plan.view == 6u) {
+  if (ok && screen_ao && !plan.gi.on && plan.view == 6u) {
     ok = passes_->EnsureImage(weight_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16G16_FLOAT,
                               "ao history weight");
-  } else if (weight_.texture) {
+  } else if (plan.rtao.screen_pass && weight_.texture) {
     passes_->ReleaseImage(weight_);
   }
   const uint32_t made_state = (split ? 1u : 0u) | (plan.low ? 2u : 0u);
@@ -2139,6 +2174,7 @@ const char* AmbientOcclusion::HistoryWhyName(HistoryWhy why) {
     case HistoryWhy::kSize: return "another image size";
     case HistoryWhy::kKind: return "the history of the other kind (the bounce light test switched)";
     case HistoryWhy::kCut: return "a cut of the camera";
+    case HistoryWhy::kRtAo: return "RTAO frame";
     case HistoryWhy::kCap: return "mcla_gpu_ao_history is 1";
     case HistoryWhy::kCount: break;
   }
@@ -2241,7 +2277,9 @@ AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) c
   HistoryUse use;
   use.cap = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_history.Get(), 1, 64));
   use.motion = temporal::Identity();
-  if (use.cap < 2) {
+  if (plan.rtao.on && !plan.rtao.screen_pass) {
+    use.why = HistoryWhy::kRtAo;
+  } else if (use.cap < 2) {
     use.why = HistoryWhy::kCap;
   } else if (!history_valid_) {
     use.why = history_cut_ ? HistoryWhy::kCut : HistoryWhy::kFirst;
@@ -2629,6 +2667,23 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   Plan plan = requested;
   EdramTargets::Target& depth_target = *summary.source;
   const bool ms = depth_target.host_samples > 1;
+  RtAo::Inputs rtao_in;
+  const bool plan_rtao = rtao_ && plan.occlusion && rtao_->selected_;
+  if (plan_rtao) {
+    UpdateLook();
+    const CarRtView& top_level = rtao_scene_->View();
+    const float camera[3] = {};
+    rtao_->play_view_ = trigger_world_ == menu_world::World::kPlay;
+    rtao_in.render[0] = plan.render[0];
+    rtao_in.render[1] = plan.render[1];
+    rtao_in.stencil_ms = ms;
+    rtao_in.fade_end = float(std::clamp(larecomp::settings::mcla_gpu_ao_fade_end.Get(), 20.0, 1000.0));
+    rtao_in.look_radius = look_.radius;
+    rtao_in.interior = rtao::InsideBox(camera, top_level.player_box, rtao::kCabinPad);
+    rtao_in.frame = frame_;
+    plan.rtao = rtao_->PlanFrame(rtao_in, top_level, plan.gi.on);
+  }
+  const bool screen_ao = plan.occlusion && plan.rtao.screen_pass;
   // Everything that can fail before anything is recorded. The coarser depth levels are the
   // occlusion's (and the census probe's); the contact shadows need the depth pass, their own march
   // and the denoise pass the occlusion uses.
@@ -2645,12 +2700,12 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   plume::RenderPipeline* denoise_pipeline = nullptr;
   plume::RenderPipeline* temporal_pipeline = nullptr;
   plume::RenderPipeline* contact_pipeline = nullptr;
-  if (plan.occlusion) {
+  if (screen_ao) {
     // The plain pass with the occlusion's own counts compiled in (also the frame whose bounce light cannot run, below).
     main_pipeline = Pipeline(MainVariant(plan.mode == Mode::kHigh));
     temporal_pipeline = Pipeline(ms ? kVTemporalMs : kVTemporal);
   }
-  if (plan.apply) {
+  if (plan.apply && (screen_ao || contact)) {
     denoise_pipeline = Pipeline(kVDenoise);
   }
   if (contact) {
@@ -2660,8 +2715,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   // depth target with no stencil plane view is not a reason (the pass reads no vehicle then), nor is a first frame, a gap or a size change (the pass runs with its history off): noise_resolve.h ContactHistoryRuns.
   plan.contact_history = noise_resolve::ContactHistoryRuns(plan.contact_history, Pipeline(ms ? kVTemporalMs : kVTemporal) != nullptr);
   if ((extract ? !screen_->ChainReady(screen::extract::KindsFor(true, levels, false, false, ms, false)) : (!depth_pipeline || (levels && !mip_pipeline))) ||
-      (plan.occlusion && (!main_pipeline || !temporal_pipeline)) ||
-      (plan.apply && !denoise_pipeline) || (contact && !contact_pipeline)) {
+      (screen_ao && (!main_pipeline || !temporal_pipeline)) ||
+      (plan.apply && (screen_ao || contact) && !denoise_pipeline) || (contact && !contact_pipeline)) {
     return false;
   }
   plan.contact_history_keep = ContactHistoryKeep(plan);
@@ -2692,6 +2747,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     } else {
       // This frame is the plain occlusion: its history is what EnsureImages left out for the test.
       plan.gi = GiPlan{};
+      if (plan_rtao && rtao_->play_view_) {
+        plan.rtao.screen_pass = rtao_->screen_ != rtao::Screen::kOff &&
+                               (!plan.rtao.on || rtao_->cabin_screen_ || rtao_->screen_ == rtao::Screen::kOn);
+      }
       if (gi_apply_) {
         gi_apply_->NoteSsgiRan(0.0f);  // the colour chain did not run after all: the probe field takes the frame's whole share
       }
@@ -2734,7 +2793,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   LightRaw light;
   uint32_t with_it = 0;
   const bool have_light = PickLight(&light, &with_it);
-  UpdateLook();
+  if (!plan_rtao)
+    UpdateLook();
   Push base;
   FillPush(&base, summary, plan, have_light ? &light : nullptr);
   if (contact && car_frame_ && summary.stencil_slot != kNoSlot) {
@@ -2759,8 +2819,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     normals_.contact_slot = ao_gbuffer::ContactReads(split) == ao_gbuffer::Which::kFull ? NormalFullImage().slot : NormalImage().slot;
     const ao_gbuffer::Which apply_reads = ao_gbuffer::ApplyReads(split, plan.low);
     normals_.apply_slot = apply_reads == ao_gbuffer::Which::kFull ? NormalFullImage().slot : (apply_reads == ao_gbuffer::Which::kAo ? NormalImage().slot : 0u);
-    normals_.depth_source_bits = plan.low;
   }
+  normals_.depth_source_bits = plan.low && (normals_.on || plan.rtao.on);
   // The bounce's a-trous passes: the setting's number at 720 lines, one more for each doubling of the image's height
   // (ssgi_stable.h), so that the filter reaches as much of the picture at 4K as at 720 lines.
   if (plan.gi.on && larecomp::settings::mcla_gpu_ao_stable.Get()) {
@@ -2842,13 +2902,18 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   // visibility pass (the plain one and the bounce light's) and the contact march read. Nothing recorded: they are as they were.
   CarRtAo::Result rt;
   rt_contact_slot_ = kNoSlot;
-  if (rt_ao_ && rt_ao_->wanted()) {
+  const auto record_car = [&](bool rtao_runs) {
+    if (!rt_ao_ || !rt_ao_->wanted())
+      return;
     CarRtAo::Inputs in;
     in.depth = &Depth(0);
     in.tan_x = base.lens[0];
     in.tan_y = base.lens[1];
     in.fade_end = base.extra[1];
-    in.occlusion = plan.occlusion;  // the plain visibility pass and the bounce light's both take the traced term (hlsl/ao_main_ps.hlsl)
+    const bool blend_car = rtao_ && rtao_->blend_car_;
+    // CHECK: the frozen compose frame has no slot for the car-only term. The
+    // debug arm retains its contribution to screen AO when that pass runs.
+    in.occlusion = car_rt_ao::OcclusionOn(plan.occlusion, rtao_runs, blend_car);
     in.contact = contact;
     in.cabin_sun = plan.cabin_shadow_mode == cabin_shadow::kCabinRt;
     in.ultra = plan.mode == Mode::kUltra;
@@ -2865,7 +2930,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     if (rt.recorded && rt.contact) {
       rt_contact_slot_ = rt.slot;
     }
-  }
+  };
+  record_car(plan.rtao.on);
   // === CITY-RT BLOCK (city_rt_shadow.h, CITY-RT M1): the sun's rays against the city's structures and the cars, over the whole picture, into an image of the car's layout; where the car's own
   // pass was recorded its g channel is combined (the darker). The contact march reads this image in place of the car's alone.
   if (city_shadow_ && city_shadow_->wanted() && contact) {
@@ -2887,6 +2953,49 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     }
   }
 
+  if (plan.rtao.on) {
+    rtao_in.depth = &Depth(0);
+    rtao_in.normal_slot = normals_.on ? normals_.ao_slot : kNoSlot;
+    rtao_in.stencil_slot = summary.stencil_slot;
+    rtao_in.stencil_sample = summary.host_sample;
+    rtao_in.tan_x = base.lens[0];
+    rtao_in.tan_y = base.lens[1];
+    rtao_in.look_power = base.shape[0];
+    rtao_in.look_floor = base.shape[1];
+    rtao_in.car_reach = look_.car_reach;
+    rtao_in.noise_index = scene_noise::NoiseIndex(frame_);
+    rtao_in.noise_code = ao_stable::NoiseCode(rtao_in.noise_index, larecomp::settings::mcla_gpu_ao_stable.Get(),
+                                               larecomp::settings::mcla_gpu_ao_blue_noise.Get());
+    RtAo::FilterInputs rtao_filter_in;
+    rtao_filter_in.ours = !rtao_->raw_frame();
+    if (rtao_filter_in.ours) {
+      FrameCameraNow(&rtao_filter_in.camera);
+      HistoryUse motion;
+      motion.on = FrameMotion(&motion.motion, &motion.pose, &rtao_filter_in.cut) && !rtao_filter_in.cut;
+      if (motion.on) {
+        uint32_t slot = kNoSlot;
+        RecordVehicleTable(list, motion, &slot);
+        if (VehicleTableNow(&rtao_filter_in.vehicles)) {
+          list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE,
+                         plume::RenderTextureBarrier(vehicle_table_.texture.get(), plume::RenderTextureLayout::SHADER_READ));
+        }
+      }
+    }
+    // CHECK: the stencil plane shares the target's layout and is read at the compute stage here.
+    const plume::RenderTextureBarrier trace_reads[] = {
+        {depth_target.texture.get(), plume::RenderTextureLayout::SHADER_READ},
+        {normals_.on ? NormalImage().texture.get() : depth_target.texture.get(), plume::RenderTextureLayout::SHADER_READ},
+    };
+    list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE, nullptr, 0, trace_reads, normals_.on ? 2u : 1u);
+    if (rtao_->RecordTrace(list, rtao_in)) {
+      rtao_->RecordFilter(list, rtao_filter_in);
+    }
+    if (!plan.rtao.screen_pass) {
+      NoteHistory(ChooseHistory(plan));
+      history_valid_ = false;
+    }
+  }
+
   // The visibility image the apply pass reads for the occlusion's term (the depth image stands in
   // while the term is off: the apply pass does not read it then).
   uint32_t ao_slot = Depth(0).slot;
@@ -2894,7 +3003,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   // filter (the history itself when there is no filtering).
   HostImage* gi_history = nullptr;
   HostImage* gi_bounce = nullptr;
-  if (plan.occlusion) {
+  const HostImage* screen_term = nullptr;
+  const auto record_visibility = [&] {
     // The visibility from the chain.
     pass_timing_->Mark(list, plan.gi.on ? "ssgi visibility" : "ao visibility");
     push = base;
@@ -3013,7 +3123,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // plane, depth or clamp test (the wide blur, ghosts held to the clamp's margin). The census's
     // "vehicles" line and the summary line count the pause frames that had vehicle IDs.
     uint32_t vehicle_slot = kNoSlot;
-    const uint32_t vehicle_rows = RecordVehicleTable(list, use, &vehicle_slot);
+    VehicleTableOut drawn_vehicles;
+    uint32_t vehicle_rows;
+    if (plan.rtao.on && use.on && VehicleTableNow(&drawn_vehicles)) {
+      vehicle_slot = drawn_vehicles.slot;
+      vehicle_rows = drawn_vehicles.ids;
+    } else {
+      vehicle_rows = RecordVehicleTable(list, use, &vehicle_slot);
+    }
     push.slots[0] = vehicle_slot;
     push.slots2[2] |= trigger_pause_ ? kVehiclesAsWorldFlag : 0u;
     if (use.on) {
@@ -3111,8 +3228,46 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         use.on ? std::min(use.age + 1, plan.gi.on ? std::max(use.cap, plan.gi.history) : use.cap)
                : 0u;
     history_gi_ = plan.gi.on;
-    ao_slot = (plan.view == 6u ? weight_image : history_out).slot;
+    screen_term = &(plan.view == 6u ? weight_image : history_out);
+    ao_slot = screen_term->slot;
+  };
+  if (plan.occlusion && plan.rtao.screen_pass)
+    record_visibility();
+  uint32_t rtao_slot = kNoSlot;
+  if (plan.rtao.on) {
+    const HostImage* compose_screen = rtao_->screen_ == rtao::Screen::kOff ? nullptr : gi_bounce ? gi_bounce : screen_term;
+    if (const HostImage* input = gi_bounce ? gi_bounce : compose_screen) {
+      list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE,
+                     plume::RenderTextureBarrier(input->texture.get(), plume::RenderTextureLayout::SHADER_READ));
+    }
+    const RtAo::ComposeInputs rtao_compose_in = {
+        .plan_ao = {plan.ao[0], plan.ao[1]},
+        .screen_term_slot = compose_screen ? compose_screen->slot : kNoSlot,
+        .bounce_slot = gi_bounce ? gi_bounce->slot : kNoSlot,
+        .power = rtao_in.look_power, .floor = rtao_in.look_floor, .view = rtao_->view_,
+    };
+    rtao_slot = rtao_->RecordCompose(list, rtao_compose_in);
+    if (rtao_slot != kNoSlot) {
+      ao_slot = rtao_slot;
+    } else if (!screen_term && rtao_->screen_ != rtao::Screen::kOff) {
+      // Record() may fail to acquire the compose image after the trace already
+      // succeeded. The Ultra passes were listed for the setting's fallback.
+      plan.rtao.on = false;
+      plan.rtao.screen_pass = true;
+      main_pipeline = Pipeline(MainVariant(plan.mode == Mode::kHigh));
+      temporal_pipeline = Pipeline(ms ? kVTemporalMs : kVTemporal);
+      denoise_pipeline = Pipeline(kVDenoise);
+      if (main_pipeline && temporal_pipeline && denoise_pipeline && EnsureImages(plan)) {
+        const uint32_t city_sun = rt_contact_slot_;
+        record_car(false);
+        if (city_sun != kNoSlot)
+          rt_contact_slot_ = city_sun;
+        record_visibility();
+      }
+    }
   }
+  const bool screen_disabled = plan_rtao && rtao_->play_view_ && rtao_->screen_ == rtao::Screen::kOff;
+  const bool has_ao_term = plan.occlusion && (rtao_slot != kNoSlot || (screen_term && !screen_disabled));
   // The contact shadows: their march and its filter, into the two scratch images the occlusion has
   // finished with.
   uint32_t contact_slot = kNoSlot;
@@ -3167,7 +3322,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.slots2[2] = (push.slots2[2] & ~ao_paint::kCodeMask) | (look_.paint_code << ao_paint::kCodeShift);
     // The contact filter's flag (bit 25) tells the apply that slots2.x is the march's own image and that it does the
     // 3x3 filter itself (mcla_gpu_contact_shadows_fast); without it the image is the denoise pass's output.
-    push.slots2[2] |= (plan.occlusion ? kApplyOcclusionFlag : 0u) |
+    push.slots2[2] |= (has_ao_term ? kApplyOcclusionFlag : 0u) |
                       (contact_applied ? kApplyContactFlag : 0u) |
                       (contact_applied && plan.ContactFilterInApply() ? kContactFilterFlag : 0u) |
                       (mask_slot != kNoSlot ? kApplyMaskFlag : 0u);
@@ -3195,7 +3350,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       // (x, as the history kept it) and the bounce, the colour chain's level 0 the pixel's own colour (and
       // whether it is a source of light); the strength rides in shape.y, the gain limit in the flags' bits 8-15 and
       // the cap (the ceiling) in bits 26-31.
-      push.slots[2] = gi_bounce->slot;
+      push.slots[2] = rtao_slot != kNoSlot ? rtao_slot : gi_bounce->slot;
       push.slots2[1] |= Colour(0).slot;
       push.shape[1] = plan.gi.strength;
       push.slots2[2] = (push.slots2[2] & ~(ssgi_light::kLimitMask | ssgi_light::kCapMask)) |
@@ -3235,8 +3390,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     occlusion_view_ = OcclusionView{};
     if (applied && plan.view == 0u && plan.gi.view == 0u && plan.gi.apply_view == 0u) {  // not under one of the occlusion's own debug pictures
       occlusion_view_.valid = true;
-      occlusion_view_.has_visibility = plan.occlusion;
-      occlusion_view_.visibility_slot = (plan.gi.apply && gi_bounce) ? gi_bounce->slot : ao_slot;
+      occlusion_view_.has_visibility = has_ao_term;
+      occlusion_view_.visibility_slot = rtao_slot != kNoSlot ? rtao_slot : (plan.gi.apply && gi_bounce) ? gi_bounce->slot : ao_slot;
       occlusion_view_.traced[0] = plan.ao[0];
       occlusion_view_.traced[1] = plan.ao[1];
       occlusion_view_.render[0] = plan.render[0];
@@ -4797,6 +4952,8 @@ void AmbientOcclusion::ProcessProbe(uint64_t frame, uint64_t generation, uint32_
 // ---------------------------------------------------------------------------
 
 void AmbientOcclusion::OnPresent() {
+  if (rtao_)
+    rtao_->OnPresent();
   pause_spell_ = pause_view_ && !play_view_ ? pause_spell_ + 1 : 0;
   if (frame_ % kVehicleLogEvery == 0 || (!vehicles_first_logged_ && vehicles_.table_frames != 0)) {
     vehicles_first_logged_ = vehicles_first_logged_ || vehicles_.table_frames != 0;
@@ -5138,6 +5295,11 @@ void AmbientOcclusion::Census() {
                 "frame; mcla_gpu_contact_shadows_car_sun {}); frames so far: {} with the image, {} with 1",
                 kPrefix, car_sun_frame_ == frame_ ? "came" : "did not come", larecomp::settings::mcla_gpu_contact_shadows_car_sun.Get(), car_sun_frames_,
                 car_sun_none_frames_);
+  }
+  if (rtao_) {
+    const std::string text = rtao_->CensusText();
+    if (!text.empty())
+      REXLOG_INFO("{}{}", kPrefix, text);
   }
   if (gi_active_ || gi_runs_ != 0) {
     REXLOG_INFO("{}   bounce light: {} (mcla_gpu_ssgi), the test {} (mcla_gpu_ssgi_test), frames recorded "

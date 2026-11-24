@@ -110,7 +110,9 @@ inline constexpr uint32_t kRrHitGi = 1u << 27;       // CITY-RT G6: the bounce l
 inline constexpr uint32_t kLightsBefore = 1u << 28;  // GI-BOUNCE-SS: the main colour before the deferred light pass (after the occlusion's apply and the probe field's apply), averaged over its host samples at the AO's traced size
 inline constexpr uint32_t kLightHistory = 1u << 29;  // GI-BOUNCE-SS: the pair (the colour before and after the light pass) a frame leaves for the NEXT frame's colour chain: their difference is the light the pass added, reprojected into that frame
 inline constexpr uint32_t kMirrorView = 1u << 30;    // MIRROR-VIEW MV1: the rear view mirror's picture (mirror_view.h): the phase's draws drawn into the view's image, the colour averaged into the picture the HUD stamp reads
-inline constexpr uint32_t kAll = (1u << 31) - 1;
+inline constexpr uint32_t kRtAoSignal = 1u << 31;  // the trace's open share and guides, read by the filter and compose
+inline constexpr uint32_t kAll = 0xFFFFFFFFu;
+// The next consumer of the table widens the data bits and Row::reads/makes to uint64_t.
 constexpr const char* NameOf(uint32_t bit) {
   switch (bit) {
     case kLinDepth: return "lin_depth";
@@ -144,6 +146,7 @@ constexpr const char* NameOf(uint32_t bit) {
     case kLightsBefore: return "colour before the light pass";
     case kLightHistory: return "lights history";
     case kMirrorView: return "mirror view";
+    case kRtAoSignal: return "RTAO signal";
     default: break;
   }
   return "?";
@@ -207,7 +210,10 @@ enum class Step : uint8_t {
   kAoNormals,
   kColourPre,
   kCarRtAo,
+  kRtAoTrace,
+  kRtAoFilter,
   kAoVisibility,
+  kRtAoCompose,
   kContact,
   kAoApply,
   kScreenPublish,
@@ -312,7 +318,8 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     {.step = Step::kBeginScreen, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "screen products read their wants, make the frame's plan", .call = "screen_->BeginFrame(frame_serial_)",
      .reads_wants = want::kScreen},
     {.step = Step::kBeginAo, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "AO declares its wants", .call = "ao_->BeginFrame()", .declares_for = Step::kAo,
-     .note = "after the screen owner's BeginFrame, which it needs: it asks the plan whether a consumer outside its family wants the depth chain"},
+       .note = "after the screen owner's BeginFrame, which it needs: it asks the plan whether a consumer outside its family wants the depth chain. "
+               "RtAo::BeginFrame declares the structures' want and the RR consumer here"},
     {.step = Step::kBeginCarRefl, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "car self-reflection declares its wants", .call = "car_refl_->BeginFrame()", .declares_for = Step::kCarHistory},
     {.step = Step::kBeginLights, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "light manager opens the frame's lights", .call = "light_manager_->BeginLights(frame_serial_, slot)",
      .makes = data::kLights, .reads_wants = want::kLights,
@@ -372,17 +379,30 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
              "(the pair of captures the last frame left: kLightHistory), reprojected with the AO's camera motion and depth history under the same cap, so neon, headlights and street lamps bounce; the lights of THIS "
              "frame come after the apply and are in the next frame's chain (perf/GI-BOUNCE.md). With no usable history (the first frame, a cut, a frame after one without a light pass) the chain is what it always was"},
     {.step = Step::kCarRtAo, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "ray traced occlusion and sun term of the cars", .file = "ao.cpp",
-     .call = "rt = rt_ao_->Record(list, in);", .label_file = "car_rt_ao.cpp", .label = "ao rt", .reads = data::kAoDepth, .soft_reads = data::kCarStructures, .makes = data::kRtOcclusion},
+       .call = "rt = rt_ao_->Record(list, in);", .label_file = "car_rt_ao.cpp", .label = "ao rt", .reads = data::kAoDepth, .soft_reads = data::kCarStructures, .makes = data::kRtOcclusion,
+       .note = "an RTAO frame traces the sun term only"},
+      {.step = Step::kRtAoTrace, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "RTAO: ray traced ambient occlusion of the city and the cars", .file = "ao.cpp",
+       .call = "rtao_->RecordTrace(list, rtao_in)", .label_file = "rtao.cpp", .label = "rtao trace", .reads = data::kAoDepth, .soft_reads = data::kAoNormal | data::kCarStructures, .makes = data::kRtAoSignal,
+       .note = "RTAO (perf/RTAO.md): ONLY in a frame whose AO level is rt, the pass is ready and the frame has its top level (the car structures' step built it: a soft read, the pass says why it did not run). "
+               "Half size, one ray a pixel, against the city's structures and the cars (mask 0x9D). Its sun-term sibling (kCarRtAo) is the car's alone."},
+      {.step = Step::kRtAoFilter, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "RTAO: the denoiser (ours, or Ray Regeneration's dispatch; none in a Ray Reconstruction raw frame)", .file = "ao.cpp",
+       .call = "rtao_->RecordFilter(list, rtao_filter_in)", .label_file = "rtao_denoise.cpp", .label = "rtao denoise", .reads = data::kRtAoSignal,
+       .note = "the history is the last frame's result by the camera's and the vehicles' motion (the AO's FrameMotion and vehicle table, made inside this frame by the AO's own history planning)"},
     {.step = Step::kAoVisibility, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "visibility, bounce, denoise, accumulation", .file = "ao.cpp",
      .call = "pass_timing_->Mark(list, plan.gi.on ? \"ssgi visibility\" : \"ao visibility\");", .label_file = "ao.cpp", .label = "ao visibility", .reads = data::kAoDepth,
      .soft_reads = data::kAoNormal | data::kColourChain | data::kRtOcclusion, .makes = data::kAoTerm},
+      {.step = Step::kRtAoCompose, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "RTAO: the AO term image (power, floor, upsample, the screen-space term where RTAO has no answer)", .file = "ao.cpp",
+       .call = "rtao_slot = rtao_->RecordCompose(list, rtao_compose_in)", .label_file = "rtao_compose.cpp", .label = "rtao compose", .reads = data::kAoDepth | data::kRtAoSignal,
+       .soft_reads = data::kAoTerm | data::kAoNormal, .makes = data::kAoTerm,
+       .deps = {{{Step::kAoVisibility, "the screen-space term (where it ran: fallback, cabin, bounce light) is whole before the compose takes it where RTAO has no answer"}}}},
     {.step = Step::kContact, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "contact shadows' march", .file = "ao.cpp",
      .call = "contact_slot = RecordContact(list, plan, base, contact_mask);", .label_file = "ao.cpp", .label = "ao contact", .reads = data::kAoDepth,
      .soft_reads = data::kAoNormal | data::kCarSunMap | data::kRtOcclusion, .makes = data::kContactTerm},
     {.step = Step::kAoApply, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "apply onto the main colour (multiplies)", .file = "ao.cpp",
      .call = "applied = RecordApply(list, summary, plan, push);", .label_file = "ao.cpp", .label = "ao apply", .reads = data::kAoDepth,
      .soft_reads = data::kAoTerm | data::kContactTerm | data::kAoNormal | data::kCarSunMap,
-     .deps = {{{Step::kColourPre, "the bounce light's colour is captured BEFORE the apply multiplies the occlusion into it"}}}},
+       .deps = {{{Step::kColourPre, "the bounce light's colour is captured BEFORE the apply multiplies the occlusion into it"},
+                 {Step::kRtAoCompose, "the apply reads the term the compose wrote"}}}},
     {.step = Step::kScreenPublish, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "screen frame published, Hi-Z made", .file = "ao.cpp",
      .call = "PublishScreen(list, summary, plan, base);", .label_file = "screen_shared.cpp", .label = "screen hiz", .reads = data::kAoDepth, .soft_reads = data::kAoNormal | data::kColourChain,
      .makes = data::kLinDepth | data::kLinDepthFull | data::kNormal | data::kColourPre | data::kHizMin,

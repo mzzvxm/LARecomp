@@ -54,6 +54,10 @@
 
 namespace mcla::gpu::car_rt_ao {
 
+constexpr bool OcclusionOn(bool occlusion_on, bool rtao_runs, bool blend_car) {
+  return occlusion_on && (!rtao_runs || blend_car);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The setting
 // ---------------------------------------------------------------------------------------------------------------------

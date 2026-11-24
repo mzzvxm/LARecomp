@@ -412,6 +412,7 @@
 #include "ao_gbuffer.h"
 #include "ao_push.h"
 #include "ao_size.h"
+#include "rtao_rules.h"
 #include "constants.h"
 #include "edram.h"
 #include "host_passes.h"
@@ -429,6 +430,9 @@ namespace mcla::gpu {
 
 class BindlessHeap;
 class CarFrame;      // car_frame.h: the player's car's draws and box of a frame (the ray traced pass's region)
+class RtAo;
+class RtSceneService;
+class CityRtScene;
 class CarRtAo;       // car_rt_ao.h: the ray traced occlusion and sun term around the player's car
 class CarRtScene;    // car_rt_scene.h: the player's car as ray tracing structures
 class CarShadowMap;  // car_shadow_map.h: the player's car's own sun shadow map; the contact march reads it
@@ -499,6 +503,10 @@ class AmbientOcclusion {
   // The ray traced occlusion and sun term around the player's car (car_rt_ao.h): after CarRtScene::Initialize (its descriptor set is in the pass's layout)
   // and before the host precache starts. Never fails the renderer: without it nothing is traced. `scene` and `car_frame` are not owned; null: none.
   void InitializeCarRt(CarRtScene* scene, const CarFrame* car_frame);
+  void InitializeRtAo(CarRtScene&, CityRtScene*, RtSceneService&);
+  bool rtao_wanted() const;
+  void SetRtAoRawMode(bool);
+  uint64_t RtAoHeldBytes() const;
 
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
@@ -861,6 +869,7 @@ class AmbientOcclusion {
     uint32_t FarStepsSent() const;
   };
   struct Plan {
+    rtao::Plan rtao;
     Mode mode = Mode::kUltra;      // the occlusion's own quality (slices, steps)
     bool probe = false;            // read the coarsest level back for the census
     bool apply = true;             // the apply pass runs (false: the census's probe only, or a frame for the shared screen products)
@@ -1099,6 +1108,7 @@ class AmbientOcclusion {
     kKind,   // the history of the other kind (the bounce light test turned on or off)
     kCut,    // the camera jumped or turned (the temporal system's cut rule)
     kCap,    // mcla_gpu_ao_history is 1
+    kRtAo,   // RTAO supplies the term this frame
     kCount,
   };
   // Where the camera's motion into the last frame came from.
@@ -1278,6 +1288,8 @@ class AmbientOcclusion {
   // The ray traced occlusion and sun term (car_rt_ao.h), made by InitializeCarRt where the device can trace the car. rt_contact_slot_ is the bindless slot of this
   // frame's traced image for the contact march (the sun ray was traced), 0xFFFFFFFF where none was.
   std::unique_ptr<CarRtAo> rt_ao_;
+  std::unique_ptr<RtAo> rtao_;
+  CarRtScene* rtao_scene_ = nullptr;
   CityRtShadow* city_shadow_ = nullptr;  // the city's ray traced sun shadows (SetCityRtShadow), not owned
   uint32_t rt_contact_slot_ = 0xFFFFFFFFu;
   bool rt_contact_logged_ = false;

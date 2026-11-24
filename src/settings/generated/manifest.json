@@ -428,6 +428,126 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rtao_rays": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Rays per traced AO pixel. 0 uses the GPU budget. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_reach": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Ray reach in metres. 0 takes the AO intensity radius share. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 2.5}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_range": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Maximum distance to a traced AO receiver in metres. 0 uses the scene's safe range up to 90 m. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 90.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_scale": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Traced AO size divisor. 1 renders full size, 2 half size, 4 quarter size, and 0 uses the governor. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_alpha": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: How traced AO handles cut-outs. Auto uses exact alpha on strong RT GPUs and stochastic alpha otherwise. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"exact\", \"stochastic\", \"opaque\", \"exclude\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_screen": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Screen-space contribution to traced AO. Auto uses it for fallback, off disables it, and on takes the darker term. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"off\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_interior": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Cockpit AO policy. Auto probes the cabin, screen keeps screen-space AO inside it, and rt always traces it. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"screen\", \"rt\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_check": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Traced AO identity check. 0 draws the result, 1 writes open visibility, and 2 writes fully occluded visibility. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Traced AO debug image. 0 is the result, 1 raw, 2 filtered, 3 coverage, 4 history length, 5 rays, and 6 vehicle IDs. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 6}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rtao_blend_car": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Keep the car pass's occlusion term in a traced AO frame for comparison. 0 combines only its sun term. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_rt_lights": {
   "type": "std::string",
   "default": "\"off\"",

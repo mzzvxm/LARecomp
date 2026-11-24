@@ -56,6 +56,8 @@
 #include "car_mirror_rt_cs.hlsl.dxil.h"
 #include "car_rt_ao_cs.hlsl.dxil.h"
 #include "city_rt_shadow_cs.hlsl.dxil.h"
+#include "rtao_trace_cs.hlsl.dxil.h"
+#include "rtao_trace_ms_cs.hlsl.dxil.h"
 #include "rt_lights_trace_cs.hlsl.dxil.h"
 #include "city_hit_probe_cs.hlsl.dxil.h"
 #include "car_rt_check_cs.hlsl.dxil.h"
@@ -205,6 +207,8 @@
 #include "car_mirror_rt_cs.hlsl.spirv.h"
 #include "car_rt_ao_cs.hlsl.spirv.h"
 #include "city_rt_shadow_cs.hlsl.spirv.h"
+#include "rtao_trace_cs.hlsl.spirv.h"
+#include "rtao_trace_ms_cs.hlsl.spirv.h"
 #include "rt_lights_trace_cs.hlsl.spirv.h"
 #include "city_hit_probe_cs.hlsl.spirv.h"
 #include "car_rt_check_cs.hlsl.spirv.h"
@@ -742,6 +746,10 @@ inline HostShaderBlob CarRtAoShader() {
 // The city's ray traced sun shadows (city_rt_shadow.h): inline ray queries against the car scene's top level, which holds the city's sectors beside the cars.
 inline HostShaderBlob CityRtShadowShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(city_rt_shadow_cs);
+}
+
+inline HostShaderBlob RtAoTraceShader(bool ms) {
+  return ms ? MCLA_GPU_HOST_SHADER_BLOB(rtao_trace_ms_cs) : MCLA_GPU_HOST_SHADER_BLOB(rtao_trace_cs);
 }
 
 // The ray traced visibility of the top K lights (rt_lights.h, RT-LIGHTS-D1): the rays' trace into the visibility images, over the occlusion's linear depth.

@@ -1971,6 +1971,13 @@ std::vector<Case> Cases() {
   c.push_back({"a member builder set from a parameter, wrong count", set_sources(InitWith(3) + kInitUse), {"count"}, 0, {}});
   // the binding code
   c.push_back({"binding: right", set_sources(kBase + " s_->setTexture(0, t, l, v);\n s_->setBuffer(1, buf, 4);\n}\n"), {}, 0, {}});
+  const std::string rtao_output =
+      "void F() {\n b.begin();\n b.addReadWriteTexture(0);\n b.addReadWriteTexture(1);\n"
+      " b.addReadWriteTexture(2);\n b.addReadWriteTexture(3);\n b.addReadWriteByteAddressBuffer(4);\n b.end();\n";
+  c.push_back({"RTAO counts four guide images and one counter buffer",
+               set_sources(rtao_output + " s = d.CreateDescriptorSet(b, 5, 0, \"rtao\");\n}\n"), {}, 0, {}});
+  c.push_back({"RTAO cannot leave the counter view out of the count",
+               set_sources(rtao_output + " s = d.CreateDescriptorSet(b, 4, 0, \"rtao\");\n}\n"), {"count"}, 0, {}});
   c.push_back({"binding: through the index variables", set_sources(kBase + " s_->setTexture(a_, t, l, v);\n s_->setBuffer(c_, buf, 4);\n}\n"), {}, 0, {}});
   c.push_back({"binding: an index past the set", set_sources(kBase + " s_->setTexture(0, t, l, v);\n s_->setBuffer(2, buf, 4);\n}\n"), {"index"}, 0, {"unwritten"}});
   c.push_back({"binding: a buffer into a texture range", set_sources(kBase + " s_->setBuffer(0, t, 4);\n s_->setBuffer(1, buf, 4);\n}\n"), {"type"}, 0, {}});

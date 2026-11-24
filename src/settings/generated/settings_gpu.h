@@ -1237,6 +1237,17 @@ class GPUSettings final : public rex::SettingOwner {
     "the sun shafts' ray starts and the car reflection cone's turn changed their noise every frame only while an upscaler averaged it; without one they held one pattern. "
     "True: the noise changes every frame here too, and each effect resolves it itself: the contact shadows and the sun rays through the occlusion's own history (reprojected by depth and the "
     "camera, 12 frames), the shafts and the reflection cone through a short history of their own. False: the first fixes' fixed blue pattern without an upscaler. Live.", rex::kDebugOnly);
+  REX_SETTING(i32, mcla_gpu_rtao_rays, 0, "Debug: Rays per traced AO pixel. 0 uses the GPU budget. Live.", rex::kDebugOnly, rex::Range{0, 4});
+  REX_SETTING(f64, mcla_gpu_rtao_reach, 0.0, "Debug: Ray reach in metres. 0 takes the AO intensity radius share. Live.", rex::kDebugOnly, rex::Range{0.0, 2.5});
+  REX_SETTING(f64, mcla_gpu_rtao_range, 0.0, "Debug: Maximum distance to a traced AO receiver in metres. 0 uses the scene's safe range up to 90 m. Live.", rex::kDebugOnly, rex::Range{0.0, 90.0});
+  REX_SETTING(i32, mcla_gpu_rtao_scale, 0, "Debug: Traced AO size divisor. 1 renders full size, 2 half size, 4 quarter size, and 0 uses the governor. Live.", rex::kDebugOnly, rex::Range{0, 4});
+  REX_SETTING(std::string, mcla_gpu_rtao_alpha, "auto", "Debug: How traced AO handles cut-outs. Auto uses exact alpha on strong RT GPUs and stochastic alpha otherwise. Live.", rex::kDebugOnly, rex::Allowed("auto", "exact", "stochastic", "opaque", "exclude"));
+  REX_SETTING(std::string, mcla_gpu_rtao_screen, "auto", "Debug: Screen-space contribution to traced AO. Auto uses it for fallback, off disables it, and on takes the darker term. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "on"));
+  REX_SETTING(std::string, mcla_gpu_rtao_interior, "auto", "Debug: Cockpit AO policy. Auto probes the cabin, screen keeps screen-space AO inside it, and rt always traces it. Live.", rex::kDebugOnly, rex::Allowed("auto", "screen", "rt"));
+  REX_SETTING(i32, mcla_gpu_rtao_check, 0, "Debug: Traced AO identity check. 0 draws the result, 1 writes open visibility, and 2 writes fully occluded visibility. Live.", rex::kDebugOnly, rex::Range{0, 2});
+  REX_SETTING(i32, mcla_gpu_rtao_view, 0, "Debug: Traced AO debug image. 0 is the result, 1 raw, 2 filtered, 3 coverage, 4 history length, 5 rays, and 6 vehicle IDs. Live.", rex::kDebugOnly, rex::Range{0, 6});
+  REX_SETTING(i32, mcla_gpu_rtao_blend_car, 0, "Debug: Keep the car pass's occlusion term in a traced AO frame for comparison. 0 combines only its sun term. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(std::string, mcla_gpu_rt_lights, "off", "Debug (RT-LIGHTS-D1, perf/RT-DIRECT-SURVEY.md): ray traced visibility of the lights the deferred light pass draws, for the top K (a car's headlights, neon, the "
     "nearest street lamps): one ray from every pixel to a point of the light's disc, against the city's structures and the cars, filtered by the renderer's own temporal "
     "and a-trous filter, read by the light pass as a second shadow beside the shadow atlas (the two multiply: neither knows every caster). A street lamp the game lights "
@@ -2279,6 +2290,16 @@ inline auto& mcla_gpu_noise_resolve_cone = g_gpu.mcla_gpu_noise_resolve_cone;
 inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;
 inline auto& mcla_gpu_noise_held = g_gpu.mcla_gpu_noise_held;
 inline auto& mcla_gpu_noise_resolve_no_upscaler = g_gpu.mcla_gpu_noise_resolve_no_upscaler;
+inline auto& mcla_gpu_rtao_rays = g_gpu.mcla_gpu_rtao_rays;
+inline auto& mcla_gpu_rtao_reach = g_gpu.mcla_gpu_rtao_reach;
+inline auto& mcla_gpu_rtao_range = g_gpu.mcla_gpu_rtao_range;
+inline auto& mcla_gpu_rtao_scale = g_gpu.mcla_gpu_rtao_scale;
+inline auto& mcla_gpu_rtao_alpha = g_gpu.mcla_gpu_rtao_alpha;
+inline auto& mcla_gpu_rtao_screen = g_gpu.mcla_gpu_rtao_screen;
+inline auto& mcla_gpu_rtao_interior = g_gpu.mcla_gpu_rtao_interior;
+inline auto& mcla_gpu_rtao_check = g_gpu.mcla_gpu_rtao_check;
+inline auto& mcla_gpu_rtao_view = g_gpu.mcla_gpu_rtao_view;
+inline auto& mcla_gpu_rtao_blend_car = g_gpu.mcla_gpu_rtao_blend_car;
 inline auto& mcla_gpu_rt_lights = g_gpu.mcla_gpu_rt_lights;
 inline auto& mcla_gpu_rt_lights_k = g_gpu.mcla_gpu_rt_lights_k;
 inline auto& mcla_gpu_rt_lights_radius = g_gpu.mcla_gpu_rt_lights_radius;

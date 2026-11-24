@@ -110,6 +110,8 @@ class HostPrecache {
     kGiUpdate = 33,           // GiUpdate: the probe update's trace and blend compute passes (gi_update.h Variant); 31 is the guide pass's and 32 RtDenoise's, which were free of it when the update was written
     kGiPixel = 34,            // GiPixel: the per-pixel detail pass's trace compute passes (gi_pixel.h Variant: plain and multisampled planes); the denoiser is RtDenoise's (instance 1)
     kRtLights = 35,           // RtLights: the ray traced visibility's trace compute pass (rt_lights.h); the denoisers are RtDenoise's (instances 2 to 4)
+    kRtAo = 36,              // trace, trace MS stencil, compose, compose with bounce
+    kRayRegenAo = 37,
     kCarMirrorRt = 40,      // CarMirrorRt: the side mirrors' ray traced compute pass (0) and its apply pass per sample count (1 to 4: 1, 2, 4, 8 samples) (car_mirror_rt.h)
     kMirrorView = 41,       // MirrorView: the average of the multisampled view (variant 0) and the HUD stamp per sample count of the main colour (1 to 4: 1, 2, 4, 8 samples) (mirror_view.h)
     kMirrorOverlay = 42,    // MirrorOverlay: the side mirrors' glass overlay, one pipeline per vertex format, sample count and depth test (mirror_overlay_rules.h Variant) (mirror_overlay.h)

@@ -44,6 +44,7 @@ class RtSceneService {
 
   // The merged wants of this frame and the last (what the structures and the pool are told, and what the plan below judges).
   rt_scene::Needs Needs() const { return board_.Now(); }
+  bool Wants(rt_scene::Consumer consumer) const { return board_.Wants(consumer); }
   bool CityWanted() const { return board_.Now().city != city_level_off(); }
 
   // The game's camera (scene.cpp, at the anchor draw): its pose of this frame. `cut`: the scene asked for a camera cut.
