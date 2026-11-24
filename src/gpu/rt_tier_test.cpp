@@ -490,6 +490,80 @@ void CheckBenchDecision() {
   }
 }
 
+// --- an integrated GPU at its defaults ---------------------------------------------------------------------------------------------------
+
+// VERIFY-PIPE-IGPU (2026-11-24). The test PC's iGPU (the 9800X3D's 2-CU RDNA 2, "AMD Radeon(TM) Graphics", device id 0x13C0) can trace rays (ray queries yes) and the logs of the
+// 11-23 runs said `class: low`, `ray tracing tier: weak (by adapter type: shares memory ...)` and every ray traced `auto` off. A verification row read the benchmark's own
+// `rt bench: not run` line as "ray tracing ran" and failed; the game was right. This holds the whole chain, from the adapter's facts to the cells, so that the day a link
+// turns a ray traced effect on for a card that shares memory (a tier row that says strong for an integrated chip, a class rule that lets one past Low) THIS fails, not a log reading.
+// The one exception to "Low" is kIntegratedMidTable (Strix Halo): it is Mid on purpose and gets the weak cells; the test below says so.
+void CheckIntegratedGpuDefaults() {
+  struct IntegratedCase {
+    const char* what;
+    uint32_t vendor;
+    const char* name;
+    uint32_t device_id;
+    bool uma;
+    bool integrated;
+  };
+  const IntegratedCase cases[] = {
+      {"the test PC's iGPU on D3D12 (UMA)", kVendorAmd, "AMD Radeon(TM) Graphics", 0x13C0, true, false},
+      {"the same on Vulkan (the integrated type and host visible local memory)", kVendorAmd, "AMD Radeon(TM) Graphics", 0x13C0, true, true},
+      {"the same on Vulkan where only the device type says integrated", kVendorAmd, "AMD Radeon(TM) Graphics", 0x13C0, false, true},
+      {"the same, the driver gave no device id", kVendorAmd, "AMD Radeon(TM) Graphics", 0, true, false},
+      {"the Steam Deck on RADV", kVendorAmd, "AMD Radeon Graphics (RADV VANGOGH)", 0, true, true},
+      {"an Intel UHD iGPU", kVendorIntel, "Intel(R) UHD Graphics 770", 0, true, false},
+      {"an Intel Arc iGPU (ray tracing units, a handful)", kVendorIntel, "Intel(R) Arc(TM) Graphics", 0, true, false},
+  };
+  for (const IntegratedCase& c : cases) {
+    const std::string what = c.what;
+    AdapterFacts adapter;
+    adapter.uma = c.uma;
+    adapter.integrated = c.integrated;
+    adapter.dedicated_bytes = 512ull << 20;
+    adapter.raytracing = true;
+    adapter.name = c.name;
+    adapter.vendor_id = c.vendor;
+    const Verdict cls = Classify(adapter);
+    Check(cls.cls == GpuClass::kLow, what + ": the class is Low");
+
+    RtFacts facts = Facts(c.vendor, c.name, c.device_id);
+    facts.uma = c.uma;
+    facts.integrated = c.integrated;
+    const RtVerdict tier = ClassifyRt(facts);
+    Check(tier.tier == RtTier::kWeak && tier.source == RtSource::kAdapterType, what + ": the tier is weak, by adapter type (the chip has ray tracing units, a handful)");
+
+    // The class gates the tier: Low is the rung none, and the budget class is Low (no ray tracing) whatever the tier says, a forced strong one included.
+    for (const RtTier t : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
+      Check(RtRung(cls.cls, t) == RtTier::kNone, what + ": the rung is none at tier " + T(t));
+      Check(RtClass(cls.cls, t) == GpuClass::kLow, what + ": the budget class is Low at tier " + T(t));
+      CheckEq(std::string(RtRowSuffix(cls.cls, t)), t == RtTier::kNone ? " (NO RT GPU)" : " (GPU TOO SLOW)", what + ": the pause rows are grey at tier " + T(t));
+    }
+    // Every ray traced effect: `auto` is off and the row says so (`both`, `contact`, `high`, `on` anywhere here is an effect running on shared memory).
+    for (int i = 0; i < kRtEffectCount; ++i) {
+      const RtEffect effect = static_cast<RtEffect>(i);
+      const std::string name = std::string(RtCvarName(effect)) + ": " + what;
+      CheckEq(ResolveRtFor(cls.cls, tier.tier, effect, "auto"), "off", name + ": auto is off");
+      CheckEq(AutoLabelRtFor(cls.cls, tier.tier, effect), "AUTO (OFF)", name + ": the pause row's label is AUTO (OFF)");
+      CheckEq(ResolveRtFor(cls.cls, RtTier::kStrong, effect, "auto"), "off", name + ": auto is off even when a test forces the tier strong");
+    }
+  }
+  // The named exception, so that nobody reads the loop above as "an integrated GPU is never Mid": Strix Halo (kIntegratedMidTable) is about an RTX 4060 and takes the weak cells.
+  {
+    AdapterFacts halo;
+    halo.uma = true;
+    halo.dedicated_bytes = 512ull << 20;
+    halo.raytracing = true;
+    halo.name = "AMD Radeon(TM) 8060S Graphics";
+    halo.vendor_id = kVendorAmd;
+    Check(Classify(halo).cls == GpuClass::kMid, "Strix Halo's Radeon 8060S: the class is Mid (kIntegratedMidTable)");
+    RtFacts facts = Facts(kVendorAmd, "AMD Radeon(TM) 8060S Graphics", 0);
+    facts.uma = true;
+    CheckEq(std::string(RtTierName(ClassifyRt(facts).tier)), "weak", "Strix Halo's Radeon 8060S: the tier is weak");
+    CheckEq(std::string(RtTierName(RtRung(GpuClass::kMid, RtTier::kWeak))), "weak", "Strix Halo's Radeon 8060S: the rung is weak (the lighter cells run)");
+  }
+}
+
 // --- the rungs, the budget class and the forced class ----------------------------------------------------------------------------------
 
 void CheckRungs() {
@@ -660,6 +734,7 @@ int main() {
   CheckDetection();
   CheckOwnerExample();
   CheckBenchDecision();
+  CheckIntegratedGpuDefaults();
   CheckRungs();
   CheckCells();
   CheckLauncher();
