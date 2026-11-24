@@ -32,6 +32,10 @@ tools/*
 # and the script that copies the game's recompiled helper functions out of a generated folder for the host helpers' unit test (hooks/host_helpers_test.cpp)
 !tools/host_helpers_extract.py
 !tools/check_rt_hit_identity.py
+# the settings UI dump lint (check_settings_ui.py) and the tool that makes the real dump from the sources (check_settings_dump.py), the drift report
+!tools/check_settings_ui.py
+!tools/check_settings_dump.py
+!tools/lfg_drift.py
 
 # Backup bundles belong next to the repository, never inside it.
 *.bundle
