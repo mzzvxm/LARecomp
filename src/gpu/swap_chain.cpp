@@ -184,7 +184,7 @@ bool SwapChain::empty() const {
 }
 
 bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) {
-  if (empty()) {
+  if (!image || empty()) {
     return false;
   }
   const ScopedGpuWait wait;  // may block for a free image
@@ -192,17 +192,27 @@ bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) 
   // thread that name it wait (latency.h).
   const latency::SwapChainUse use;
   const std::lock_guard lock(use_mutex_);
+  const ScopedGpuWaitDetail detail(GpuWaitKind::kAcquire);
   return swap_chain_->acquireTexture(signal, image);
 }
 
-bool SwapChain::Present(uint32_t image) {
-  plume::RenderCommandSemaphore* waits[] = {render_semaphores_[image].get()};
+PresentResult SwapChain::Present(uint32_t image, bool do_not_wait) {
+  if (!swap_chain_ || image >= render_semaphores_.size()) {
+    return PresentResult::kFailed;
+  }
   const ScopedGpuWait wait;  // may block on the queue of presents
   // Vulkan: the present needs the chain to itself, so the latency reducer's calls on the update
   // thread that name it wait (latency.h).
   const latency::SwapChainUse use;
   const std::lock_guard lock(use_mutex_);
-  return swap_chain_->present(image, waits, 1);
+  if (do_not_wait) {
+    return backend::PresentD3D12Nowait(swap_chain_.get());
+  }
+  plume::RenderCommandSemaphore* waits[] = {render_semaphores_[image].get()};
+  // Plume's call includes its own Vulkan queue lock. The frame fence, acquire,
+  // and optional present-slot wait are measured at their own call sites.
+  const ScopedGpuWaitDetail detail(GpuWaitKind::kPresentCall);
+  return swap_chain_->present(image, waits, 1) ? PresentResult::kPresented : PresentResult::kFailed;
 }
 
 void SwapChain::SetVsync(bool vsync) {
@@ -224,6 +234,7 @@ bool SwapChain::SetHdrMetadata(const plume::RenderHdrMetadata& metadata) {
 void SwapChain::WaitForPresentSlot() {
   if (present_wait_ && swap_chain_ && !swap_chain_->isEmpty()) {
     const ScopedGpuWait wait;
+    const ScopedGpuWaitDetail detail(GpuWaitKind::kPresentSlot);
     swap_chain_->wait();
   }
 }

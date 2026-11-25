@@ -1307,7 +1307,7 @@ int64_t FrameGeneration::PresentImage(HostImage& image, uint32_t lane_index, int
   if (latency_frame != 0) {
     latency::OnPresentBegin(latency_frame);
   }
-  const bool presented = swap_chain_->Present(back);
+  const bool presented = swap_chain_->Present(back) == PresentResult::kPresented;
   if (latency_frame != 0) {
     latency::OnPresentEnd(latency_frame);
   }

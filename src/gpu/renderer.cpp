@@ -478,6 +478,10 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     validate_ = larecomp::settings::mcla_gpu_validate.Get();
     batch_draws_ = larecomp::settings::mcla_gpu_batch_draws.Get();
     profile_records_ = larecomp::settings::mcla_gpu_scene_profile.Get();
+    if (larecomp::settings::debug_menu.Get() && larecomp::settings::mcla_test_present_nowait.Get()) {
+      present_nowait_ = ActiveBackend() == Backend::kD3D12;
+      REXLOG_INFO("[gpu] present nowait test: {}", present_nowait_ ? "enabled on D3D12" : "D3D12 only");
+    }
     release_early_ = larecomp::settings::mcla_gpu_present_release.Get();
     // The swap chain exists and the render thread, which marks the frames, has not started.
     latency::Initialize(device_, swap_chain_);
@@ -645,6 +649,7 @@ void Renderer::Shutdown() {
   clock.Stage("the frame generation pacer's stop");
   fg_.StopPacer();
   clock.Stage("the final reports and the first idle wait");
+  ReportDroppedPresents(present_drops_.TakePending());
   if (release_early_) {
     REXLOG_INFO("[gpu] present release: {} of {} guest presents released the guest early{}",
                 early_releases_, guest_presents_,
@@ -1113,13 +1118,22 @@ bool Renderer::RebuildSwapChain() {
 
 void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, int64_t due,
                           int64_t ready, uint64_t guest_present, uint64_t latency_frame) {
+  const bool nowait = present_nowait_ && !dlssg_.active();
   latency::OnPresentBegin(latency_frame);
-  const bool present_ok = swap_chain_.Present(image);
+  const PresentResult result = swap_chain_.Present(image, nowait);
   latency::OnPresentEnd(latency_frame);
+  if (nowait) {
+    ReportDroppedPresents(present_drops_.OnPresent(result, PresentDrops::Clock::now()));
+  }
+  if (result == PresentResult::kDropped) {
+    // The render submission and its fence still live in the ring. No image was
+    // queued for display, so there are no present statistics for this frame.
+    return;
+  }
   if (dlssg_.active()) {
     dlssg_.AfterPresent();  // Streamline's status now and then
   }
-  if (!present_ok) {
+  if (result == PresentResult::kFailed) {
     // DXGI and Vulkan both report a chain that no longer matches the window
     // here; anything else that fails here is the device.
     if (!device_.CheckLost("swap chain present")) {
@@ -1156,6 +1170,13 @@ void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, 
     observation.due_qpc = due;
     observation.ready_qpc = ready;
     observer(observation);
+  }
+}
+
+void Renderer::ReportDroppedPresents(uint64_t count) const {
+  if (count != 0) {
+    REXLOG_INFO("[gpu] present nowait: dropped_present_count={} dropped_present_total={}",
+                count, present_drops_.total());
   }
 }
 

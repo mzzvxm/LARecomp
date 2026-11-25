@@ -170,9 +170,13 @@ void FrameRing::WaitSlot(Slot& slot) {
   }
   // A removed device never signals: waiting would hang the render thread
   // forever (reblue and reeot skip the drain for the same reason).
-  if (!device_->CheckLost("fence wait")) {
+  auto* queue = device_ ? device_->queue() : nullptr;
+  if (queue && !device_->CheckLost("fence wait")) {
     const ScopedGpuWait wait;
-    device_->queue()->waitForCommandFence(slot.fence.get());
+    {
+      const ScopedGpuWaitDetail detail(GpuWaitKind::kFrameFence);
+      queue->waitForCommandFence(slot.fence.get());
+    }
     // A wait that met the loss returned without the work being done (Vulkan: VK_ERROR_DEVICE_LOST,
     // printed by Plume and otherwise silent): the submissions are not complete.
     if (!device_->CheckLost("after fence wait")) {
@@ -216,7 +220,8 @@ void FrameRing::WaitIdle() {
   if (!device_) {
     return;
   }
-  if (!device_->CheckLost("idle wait")) {
+  auto* queue = device_->queue();
+  if (queue && !device_->CheckLost("idle wait")) {
     // A slot fence covers its command lists, not what the queue runs after
     // them: the swap chain's present (and on D3D12 the wait on the render
     // semaphore before it) is queued after the frame's fence. Releasing back
@@ -228,9 +233,12 @@ void FrameRing::WaitIdle() {
     idle_list_->begin();
     idle_list_->end();
     const plume::RenderCommandList* lists[] = {idle_list_.get()};
-    device_->queue()->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, idle_fence_.get());
+    queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, idle_fence_.get());
     const ScopedGpuWait wait;
-    device_->queue()->waitForCommandFence(idle_fence_.get());
+    {
+      const ScopedGpuWaitDetail detail(GpuWaitKind::kFrameFence);
+      queue->waitForCommandFence(idle_fence_.get());
+    }
     // Every serial handed out so far belongs to a submission before the idle
     // one, so all of them are complete -- unless the wait met the loss.
     if (!device_->CheckLost("after idle wait")) {
