@@ -16,8 +16,11 @@
 #include "city_hit_scene.h"
 #include "city_refl_setting.h"
 #include "device.h"
+#include "hitch.h"
 #include "pass_timing.h"
 #include "rt_tier.h"
+#include "settings/larecomp_settings.h"
+#include "timing.h"
 #include "upload.h"
 
 namespace mcla::gpu {
@@ -37,12 +40,13 @@ uint64_t IndexBytes(const citypack::MeshData& m) { return AlignUp(uint64_t(m.ind
 
 CityRtScene::~CityRtScene() { StopWorker(); }
 
-bool CityRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& upload, PassTiming& pass_timing, const std::filesystem::path& pack_file,
+bool CityRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& upload, PassTiming& pass_timing, GpuTiming& timing, const std::filesystem::path& pack_file,
                              gpu_class::GpuClass cls) {
   device_ = &device;
   frames_ = &frames;
   upload_ = &upload;
   pass_timing_ = &pass_timing;
+  timing_ = &timing;
   pack_file_ = pack_file;
   class_ = cls;
   return true;
@@ -64,6 +68,8 @@ void CityRtScene::Shutdown() {
   frames_ = nullptr;
   upload_ = nullptr;
   pass_timing_ = nullptr;
+  timing_ = nullptr;
+  build_cost_ = {};
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +84,7 @@ bool CityRtScene::OpenPack() {
     return false;
   }
   pack_probe_frame_ = frame_ == 0 ? 1 : frame_;
+  const hitch::Scope open(hitch::Event::kIo);
   if (probe_) {
     // The app's verdict first (stat only): a pack that is missing or built from other files than the player's now is never opened; the game's shadows stand until the app has
     // built the right one (in the background: a minute at most on a slow PC), which the probe then reports as current.
@@ -185,6 +192,7 @@ void CityRtScene::WorkerMain() {
       request = requests_.front();
       requests_.pop_front();
     }
+    const hitch::WorkerScope read(hitch::Work::kCityRead);
     LoadResult result;
     result.request = request;
     const citypack::MeshKind kind = request.detail == city_rt::Detail::kHi ? citypack::MeshKind::kHi : citypack::MeshKind::kLod;
@@ -280,6 +288,10 @@ void CityRtScene::BeginFrame(city_rt::Level level, float radius_override) {
     }
   }
   if (level_ != city_rt::Level::kOff) {
+    if (larecomp::settings::mcla_gpu_city_rt_build_budget.Get()) {
+      // CHECK: compare build peaks, sector churn and LOD transitions with a driving A/B.
+      budget_ = build_cost_.Limit(budget_);
+    }
     last_wanted_frame_ = frame_;
     return;
   }
@@ -297,6 +309,7 @@ void CityRtScene::Release(uint32_t sector, city_rt::Detail detail) {
     hit_->Evict(sector, detail == city_rt::Detail::kLod);  // the row is cleared now; the range comes back when the GPU is done with the frames in flight
   }
   if (s.structure || s.buffer) {
+    hitch::Note(hitch::Event::kCityEvict, 0.0, s.bytes);
     structure_bytes_ -= std::min(structure_bytes_, s.bytes);
     counts_.triangles -= std::min<uint64_t>(counts_.triangles, s.triangles);
     // an instance of the frame being recorded may name it: it goes back after the GPU is done with the frames in flight
@@ -579,11 +592,13 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
   }
   std::vector<plume::RenderBufferBarrier> built;
   std::vector<uint32_t> done_staged;
+  uint64_t batch_triangles = 0;
   for (Job& j : jobs) {
     if (!j.structure || j.staged_index == size_t(-1)) {
       continue;
     }
     Staged& s = staged_[j.staged_index];
+    if (batch_triangles == 0 && timing_) timing_->BeginCityBuild(list, slot_index);
     list->barriers(plume::RenderBarrierStage::COMPUTE, plume::RenderBufferBarrier(res.scratch.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE));
     list->buildBottomLevelAS(j.structure.get(), plume::RenderBufferReference(res.scratch.get(), 0), j.info);
     built.emplace_back(j.buffer.get(), plume::RenderBufferAccess::READ);
@@ -592,6 +607,8 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     target.structure = std::move(j.structure);
     target.bytes = j.size;
     target.triangles = s.mesh.triangle_count();
+    batch_triangles += target.triangles;
+    hitch::Note(hitch::Event::kCityBuild, 0.0, j.size);
     structure_bytes_ += j.size;
     counts_.triangles += target.triangles;
     ++counts_.builds;
@@ -623,6 +640,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
   // The structures are read by the top level's build that follows in this list.
   if (!built.empty()) {
     list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE), built.data(), uint32_t(built.size()), nullptr, 0);
+    if (timing_) timing_->EndCityBuild(list, slot_index, batch_triangles);
     if (!first_build_logged_) {
       first_build_logged_ = true;
       REXLOG_INFO("{} the first city structures are built (frame {}): {} of them, {} triangles{}", kPrefix, frame_, built.size(), counts_.build_triangles,
@@ -650,9 +668,11 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
 uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list, uint32_t slot, std::vector<plume::RenderTopLevelASInstance>* instances) {
   recorded_ = false;
   instances_this_frame_ = 0;
-  if (!device_ || level_ == city_rt::Level::kOff || !budget_.on() || !list || slot >= kFramesInFlight) {
+  if (!device_ || !frames_ || !upload_ || !instances || level_ == city_rt::Level::kOff ||
+      !budget_.on() || !list || slot >= kFramesInFlight) {
     return 0;
   }
+  const hitch::Scope timing(hitch::Event::kCity);
   if (!OpenPack()) {
     return 0;
   }
@@ -669,11 +689,21 @@ uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::Re
   }
   camera_known_ = true;
 
-  pass_timing_->Mark(list, "city rt build");
+  if (pass_timing_) pass_timing_->Mark(list, "city rt build");
   if (hit_ != nullptr) {
     hit_->Record(list, slot);  // the material table, once
   }
   PollLoads();
+  if (budget_.trade_margin > 0.0f) {
+    std::erase_if(staged_, [&](const Staged& mesh) {
+      const auto& sector = sectors_[mesh.sector];
+      const float radius = mesh.detail == city_rt::Detail::kHi ? budget_.hi_radius : budget_.far_radius;
+      if (city_rt::DistanceToBox(camera_, sector.box_min, sector.box_max) <= city_rt::RetentionRadius(budget_, radius)) return false;
+      GiveBackForReread(mesh.sector, mesh.detail);
+      staged_bytes_ -= std::min(staged_bytes_, mesh.bytes);
+      return true;
+    });
+  }
   Plan(camera_);
   recorded_ = BuildStaged(list, slot);
   RefreshTexturePriorities();

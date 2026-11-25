@@ -36,11 +36,13 @@
 #include "effect_compare.h"
 #include "format.h"
 #include "headlight_rig.h"
+#include "hitch.h"
 #include "layout.h"
 #include "mc_engine/core/threading.h"
 #include "os/file_replace.h"
 #include "os/thread_priority.h"
 #include "pipeline_wait.h"
+#include "pipeline_warm_order.h"
 #include "shadow_filter.h"
 #include "side_views.h"
 #include "stencil_ref.h"
@@ -421,6 +423,7 @@ void Pipelines::StartPersistence(ShaderStore& shaders) {
 }
 
 void Pipelines::LoadPersistent() {
+  const hitch::WorkerScope read(hitch::Work::kPipelineIo);
   // The cache is <executable>/cache/mcla_gpu_pipelines_<api>.bin and the starter list
   // <executable>/assets/mcla_pipelines.bin, whichever folder the shader pack came from.
   const std::filesystem::path exe_folder = rex::platform::GetExecutableFolder();
@@ -587,6 +590,8 @@ void Pipelines::Shutdown() {
   prebuild_requests_.clear();
   prebuild_precached_.clear();
   records_.clear();
+  warm_costs_.clear();
+  warm_order_dirty_ = false;
   setup_copies_.clear();
   setup_copy_source_.clear();
   recorded_.clear();
@@ -1557,7 +1562,7 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   return added;
 }
 
-std::vector<uint8_t> Pipelines::SerializeRecords() const {
+std::vector<uint8_t> Pipelines::SerializeRecords(bool prioritize_slow) const {
   CacheHeader header;
   std::memcpy(header.magic, kCacheMagic, sizeof(kCacheMagic));
   header.version = kCacheVersion;
@@ -1573,10 +1578,19 @@ std::vector<uint8_t> Pipelines::SerializeRecords() const {
     SerializeLayout(s->elements.data(), s->elements.size(), s->slots.data(), s->slots.size(),
                     out);
   }
-  for (const Record& r : records_) {
+  const auto write_record = [&](const Record& r) {
     const uint8_t* key = reinterpret_cast<const uint8_t*>(&r.key);
     out.insert(out.end(), key, key + sizeof(r.key));
     Put32(out, r.layout);
+  };
+  if (!prioritize_slow || warm_costs_.empty()) {
+    for (const Record& r : records_) write_record(r);
+  } else {
+    const auto cost = [&](const Record& r) {
+      const auto it = warm_costs_.find(r.key);
+      return it == warm_costs_.end() ? uint64_t{0} : it->second;
+    };
+    for (const Record* r : pipeline_warm_order::Order(records_, cost)) write_record(*r);
   }
   return out;
 }
@@ -1600,10 +1614,11 @@ void Pipelines::WriteCacheFile(const std::vector<uint8_t>& bytes, size_t records
 void Pipelines::SaveRecords() {
   // Written even when an autosave holds everything already: one that failed
   // would otherwise lose the session's records.
-  if (records_.size() == own_file_records_) {
+  const bool prioritize_slow = larecomp::settings::mcla_gpu_pipeline_warm.Get();
+  if (records_.size() == own_file_records_ && (!prioritize_slow || warm_costs_.empty())) {
     return;  // nothing beyond what this API's file already holds
   }
-  WriteCacheFile(SerializeRecords(), records_.size(), stored_layouts_.size());
+  WriteCacheFile(SerializeRecords(prioritize_slow), records_.size(), stored_layouts_.size());
 }
 
 void Pipelines::JoinAutosave() {
@@ -1623,10 +1638,13 @@ void Pipelines::Autosave() {
                            precache_finished_.load() == precached_.size();
   constexpr auto kInterval = std::chrono::seconds(30);
   std::vector<uint8_t> bytes;
-  if (records_.size() != saved_records_) {
+  const bool prioritize_slow = larecomp::settings::mcla_gpu_pipeline_warm.Get();
+  if (records_.size() != saved_records_ || (prioritize_slow && warm_order_dirty_)) {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_save_ >= kInterval) {
-      bytes = SerializeRecords();
+      const hitch::Scope snapshot(hitch::Event::kCacheSnapshot);
+      bytes = SerializeRecords(prioritize_slow);
+      if (prioritize_slow) warm_order_dirty_ = false;
       last_save_ = now;
       saved_records_ = records_.size();
     }
@@ -1640,6 +1658,7 @@ void Pipelines::Autosave() {
   autosave_thread_ = std::thread(
       [this, save_vulkan, bytes = std::move(bytes), records = records_.size(),
        layouts = stored_layouts_.size()] {
+        const hitch::WorkerScope save(hitch::Work::kPipelineIo);
         if (save_vulkan) {
           device_->SaveVulkanPipelineCache();
         }
@@ -2299,9 +2318,27 @@ plume::RenderPipeline* Pipelines::Resolve(const PipelineKey& key, const Pipeline
   miss.deferral = deferral;
   const auto began = std::chrono::steady_clock::now();
   plume::RenderPipeline* got = ResolveMiss(key, inputs, miss, pending);
-  if (miss.held) {
+  if (miss.held && deferral) {
     // A capture is running (sync_builds.h): the draw was not left out; what it waited for is counted.
     NoteSyncWait(key, deferral->kind, began);
+  }
+  if (got && inputs.input_layout && persist_) {
+    const uint64_t elapsed = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - began).count());
+    if (pipeline_warm_order::Learn(larecomp::settings::mcla_gpu_pipeline_warm.Get(), elapsed, [&] {
+          return deferral && deferral->may_skip && deferral->may_skip(deferral->context);
+        })) {
+      // CHECK: compare warm-cache driving on both APIs. The exact shader/layout/state key is
+      // moved forward for the next start, keeping the draw's synchronous correctness fallback.
+      const uint32_t stored = StoreLayout(*inputs.input_layout);
+      if (stored != kNoLayout) {
+        auto& cost = warm_costs_[PersistentKey(key, stored)];
+        if (elapsed > cost) {
+          cost = elapsed;
+          warm_order_dirty_ = true;
+        }
+      }
+    }
   }
   return got;
 }
@@ -2349,6 +2386,7 @@ void Pipelines::LogSyncBuild(const PipelineKey& key, const Miss& miss, uint64_t 
 }
 
 void Pipelines::LogSyncWait(const PipelineKey& key, const char* source, uint64_t ns) {
+  hitch::NotePipeline(hitch::Event::kPipelineWait, double(ns) / 1e6, key.vs, key.ps);
   const uint64_t n = sync_log_.NoteWait(ns);
   if (sync_build_log::LogThis(n)) {
     REXLOG_INFO("{}", sync_build_log::FormatWait(n, frame_, ns, source, WordsOf(key)));
@@ -2461,6 +2499,7 @@ plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const Pipe
                                          std::chrono::steady_clock::now() - t0)
                                          .count());
   stats_.create_ns += built_ns;
+  hitch::NotePipeline(hitch::Event::kPipeline, double(built_ns) / 1e6, key.vs, key.ps);
   if (pipeline) {
     ++stats_.created;
     LogSyncBuild(key, miss, built_ns);  // the same builds as the window lines' "+N created"

@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include "settings/larecomp_settings.h"
 #include "render_wait_rules.h"
@@ -103,6 +104,7 @@ int64_t SteadyTicks() {
 }
 
 void WaitForPresentDeadline(int64_t due) {
+  const mcla::gpu::hitch::Scope timing(mcla::gpu::hitch::Event::kPace);
   if (mcla::gpu::render_wait::ShouldSpin(larecomp::settings::render_wait_mode.Get())) {
     mcla::gpu::WaitUntilQpc(due);
   } else {
@@ -198,6 +200,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // The app may hold the attach back: packs whose stamp is stale are rebuilt first, and a pack
     // that is mapped here could not be replaced.
     if (!g_shader_pack_gate || g_shader_pack_gate()) {
+      const hitch::WorkerScope attach(hitch::Work::kShaderPack);
       shaders_.AttachFirst(ShaderStore::SearchFolders(g_shader_pack_folder));
     } else {
       REXLOG_INFO("[gpu] shader pack: not attached at startup; the app checks and, where needed, "
@@ -344,7 +347,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // structures that join the car scene's top level, and the sun's shadows traced against them, read by the contact march. Both make nothing until the setting asks (mcla_gpu_rt_shadows;
     // auto is the High class), and nothing at all without ray queries.
     {
-      city_rt_.Initialize(device_, frames_, upload_, pass_timing_, CityPackFolder() / larecomp::citypack::kPackFileName, gpu_class::Current());
+      city_rt_.Initialize(device_, frames_, upload_, pass_timing_, timing_, CityPackFolder() / larecomp::citypack::kPackFileName, gpu_class::Current());
       if (g_city_pack_hooks.state) {
         // The app decides whether the pack in place is the player's (stat only) and builds it in the background when it is not; without hooks (a build with no app) the pack is opened as it is.
         city_rt_.SetPackProbe(g_city_pack_hooks.state, g_city_pack_hooks.request_build);
@@ -635,6 +638,7 @@ void Renderer::LoadShaderVariants() {
   if (!shaders_.attached() || shaders_.has_variants()) {
     return;
   }
+  const hitch::WorkerScope load(hitch::Work::kShaderPack);
   std::string why;
   if (!shaders_.LoadVariants(&why)) {
     REXLOG_INFO("[gpu] shader variants: the variant pack beside the main shader pack is not available "
@@ -663,8 +667,11 @@ bool Renderer::AttachShaderPacks(const std::filesystem::path& folder) {
     REXLOG_ERROR("[gpu] shader pack: cannot attach, the renderer is not running");
     return false;
   }
-  if (!shaders_.Attach(ShaderStore::BuildFolder(folder))) {
-    return false;
+  {
+    const hitch::WorkerScope attach(hitch::Work::kShaderPack);
+    if (!shaders_.Attach(ShaderStore::BuildFolder(folder))) {
+      return false;
+    }
   }
   OnShaderPackAttached();
   return true;
@@ -730,6 +737,7 @@ void Renderer::Shutdown(bool fast_exit) {
   //    while all the components they name are still alive. Skipped by
   //    FrameRing when the device is lost.
   frames_.WaitIdle();
+  for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) ReadCityTiming(slot);
   // 3. Reverse creation order; the GPU is idle, so components destroy their
   //    objects directly. Ordered teardown rather than reblue's deliberate leak:
   //    every Plume object here has a single owner destroyed before the device.
@@ -862,18 +870,21 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
   trace_.OnRecord(guest_frames_, header, payload);
   // Scene records open the guest frame's list; the present closes it.
   switch (header.type) {
-    case RecordType::kPresent:
+    case RecordType::kPresent: {
+      const auto& record = *reinterpret_cast<const PresentRecord*>(payload);
+      const GuestHitchTiming guest_timing = record.hitch;
+      const uint32_t slot = frames_.slot();
       ++guest_frames_;
       if (validate_) {
-        validator_.OnPresent(*reinterpret_cast<const PresentRecord*>(payload));
+        validator_.OnPresent(record);
       }
       scene_.OnPresent();
       census_.OnPresent();
-      present_.OnGuestPresent(*reinterpret_cast<const PresentRecord*>(payload));
+      present_.OnGuestPresent(record);
       // The guest waits for this record (kRecordSync); ReleaseGuest may let it go sooner.
       release_sequence_ = (header.flags & kRecordSync) != 0 ? header.sequence : 0;
-      present_target_ = reinterpret_cast<const PresentRecord*>(payload)->target_qpc;
-      present_tag_ = reinterpret_cast<const PresentRecord*>(payload)->tag;  // capture mode
+      present_target_ = record.target_qpc;
+      present_tag_ = record.tag;  // capture mode
       ExecutePresent(PresentSource::kGuest);
       present_tag_ = 0;
       present_target_ = 0;
@@ -882,7 +893,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
         GuestMemory::MarkReleased(false);
         released_accesses_ += GuestMemory::TakeReleasedAccesses();
       }
+      TraceHitch(guest_timing, slot);
       return;
+    }
     case RecordType::kDraw:
       if (validate_) {
         validator_.OnDraw(payload);
@@ -917,6 +930,7 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       }
       plume::RenderCommandList* list = OpenFrameList();
       PerfScope label(markers_, list, "Resolve", PerfMarkers::kEvent);
+      const hitch::Scope timing(hitch::Event::kResolve);
       scene_.OnResolve(record, list);
       return;
     }
@@ -933,7 +947,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       if (validate_) {
         validator_.OnTilingEnd(record);
       }
-      scene_.OnTilingEnd(record, OpenFrameList());
+      auto* list = OpenFrameList();
+      const hitch::Scope timing(hitch::Event::kResolve);
+      scene_.OnTilingEnd(record, list);
       return;
     }
     case RecordType::kFence:
@@ -1050,6 +1066,69 @@ void Renderer::PrefetchTextures(const RecordHeader& executing) {
   }
 }
 
+void Renderer::AdvanceFrame() {
+  frames_.Advance();
+  ReadCityTiming(frames_.slot());
+}
+
+void Renderer::ReadCityTiming(uint32_t slot) {
+  if (!timing_.CityBuildPending(slot)) return;
+  const auto sample = timing_.ReadCityBuild(slot, device_.IsLost());
+  city_rt_.ObserveBuildGpu(sample.ns, sample.triangles);
+  if (auto& pending = pending_hitches_[slot]; pending) {
+    hitch::Log(*pending, sample.ns, hitch_limit_.TakeSuppressed());
+    pending.reset();
+  }
+}
+
+void Renderer::TraceHitch(const GuestHitchTiming& timing, uint32_t slot) {
+  if (cycles::NsPerCycle() == 0.0) cycles::Measure();
+  const uint64_t now = cycles::Now();
+  const auto ms = [](uint64_t count) { return cycles::ToNs(count) / 1e6; };
+  const auto delta = [](uint64_t total, uint64_t& last) { return total - std::exchange(last, total); };
+  const auto& load = CurrentThreadLoad();
+  const double wall = hitch_last_cycles_ && now >= hitch_last_cycles_ ? ms(now - hitch_last_cycles_) : 0.0;
+  hitch_last_cycles_ = now;
+  const double idle = ms(delta(load.idle_total(), hitch_idle_cycles_));
+  const double wait = ms(delta(load.gpu_wait_total(), hitch_wait_cycles_));
+  const double present = ms(delta(load.gpu_wait_total(GpuWaitKind::kPresentCall), hitch_present_cycles_));
+  const auto events = hitch::Take();
+  auto io = hitch::ReadWorker(hitch::Work::kPipelineIo);
+  io.done_us = delta(io.done_us, hitch_io_us_);
+  auto pack = hitch::ReadWorker(hitch::Work::kShaderPack);
+  pack.done_us = delta(pack.done_us, hitch_shader_us_);
+  auto city = hitch::ReadWorker(hitch::Work::kCityRead);
+  city.done_us = delta(city.done_us, hitch_city_read_us_);
+  const double guest = ms(timing.swap_cycles);
+  const double guest_median = guest_cadence_.median_ms();
+  const double render_median = render_cadence_.median_ms();
+  const bool guest_hitch = guest_cadence_.Observe(guest);
+  const bool render_hitch = render_cadence_.Observe(wall);
+  if (!guest_hitch && !render_hitch && timing.step_ms <= 50.0) return;
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (!hitch_limit_.Allow(uint64_t(now_ms))) return;
+
+  const double pacing = events[size_t(hitch::Event::kPace)].ms;
+  const hitch::Frame sample{
+      .id = guest_frames_ - 1, .guest_ms = guest, .guest_step_ms = timing.step_ms,
+      .capped_ms = timing.capped_ms, .guest_present_wait_ms = ms(timing.previous_present_wait_cycles),
+      .guest_fence_wait_ms = double(timing.fence_wait_ns) / 1e6,
+      .guest_stream_wait_ms = ms(timing.stream_wait_cycles),
+      .render_ms = wall, .render_work_ms = std::max(0.0, wall - idle - wait - pacing),
+      .idle_ms = idle, .gpu_wait_ms = std::max(0.0, wait - present), .present_ms = present,
+      .guest_median_ms = guest_median, .render_median_ms = render_median,
+      .pipeline_io = io, .shader_pack = pack, .city_read = city, .events = events};
+  // CHECK: the render interval includes any earlier deferred present executed on this thread.
+  // A city build's GPU time belongs to this slot and is logged after its existing fence wait.
+  if (timing_.CityBuildPending(slot) &&
+      events[size_t(hitch::Event::kCityBuild)].count != 0) {
+    pending_hitches_[slot] = sample;
+  } else {
+    hitch::Log(sample, 0, hitch_limit_.TakeSuppressed());
+  }
+}
+
 plume::RenderCommandList* Renderer::OpenFrameList() {
   if (frames_.is_open()) {
     return frames_.list();
@@ -1122,7 +1201,7 @@ void Renderer::SubmitFrameWithoutPresent() {
     gi_pixel_.OnSubmitted(slot);
     latency::OnRenderSubmitted();
   }
-  frames_.Advance();
+  AdvanceFrame();
   // The slot about to be recorded had its fence waited by Advance.
   upload_.ResetSlot(frames_.slot());
   occlusion_.OnSlotReady(frames_.slot());
@@ -1304,6 +1383,7 @@ void Renderer::FlushDeferredPresent(bool wait) {
     // CHECK: verify presentation order when HDR or frame generation changes during a hold.
     WaitForPresentDeadline(d.due);
   }
+  const hitch::Scope timing(hitch::Event::kDeferredPresent);
   PresentNow(d.image, PresentSource::kGuest, d.target, d.due, d.ready, d.guest_present,
              d.latency_frame);
 }
@@ -1637,7 +1717,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   if (!frames_.Submit(waits, 1, signals, 1)) {
     // Device lost: the render semaphore will never be signalled, so presenting
     // would wait forever on Vulkan.
-    frames_.Advance();
+    AdvanceFrame();
     ++skipped_;
     return;
   }
@@ -1669,7 +1749,7 @@ void Renderer::ExecutePresent(PresentSource source) {
                latency_frame);
   }
   capture_.OnPresented();
-  frames_.Advance();
+  AdvanceFrame();
   // The slot about to be recorded had its fence waited by Advance.
   upload_.ResetSlot(frames_.slot());
   // What its previous round counted for the guest's occlusion queries is readable now.
@@ -1926,7 +2006,7 @@ void Renderer::ExecutePresentGenerated(PresentSource source) {
 
   if (!frames_.Submit(nullptr, 0, nullptr, 0)) {
     fg_.ReturnSlot(pair);
-    frames_.Advance();
+    AdvanceFrame();
     ++skipped_;
     return;
   }
@@ -1940,7 +2020,7 @@ void Renderer::ExecutePresentGenerated(PresentSource source) {
   const uint64_t latency_frame = latency::DetachRenderFrame();
   fg_.Submit(pair, has_generated, latency_frame, source == PresentSource::kGuest);
   capture_.OnPresented();
-  frames_.Advance();
+  AdvanceFrame();
   // The slot about to be recorded had its fence waited by Advance.
   upload_.ResetSlot(frames_.slot());
   occlusion_.OnSlotReady(frames_.slot());
@@ -2655,6 +2735,7 @@ void OnGuestGpuHangCheck(const uint8_t* base, uint32_t device) {
 }
 
 void NoteGuestFenceWait(uint64_t wait_ns) {
+  hitch::NoteGuestFence(wait_ns);
   g_fence_waits.fetch_add(1, std::memory_order_relaxed);
   g_fence_wait_ns.fetch_add(wait_ns, std::memory_order_relaxed);
 }

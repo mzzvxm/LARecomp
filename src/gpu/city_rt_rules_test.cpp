@@ -601,6 +601,62 @@ void TestAutoAndPackState() {
   }
 }
 
+void TestHitchBudget() {
+  const Budget base = BudgetFor(GpuClass::kHigh, Level::kHigh);
+  BuildCost build;
+  const Budget cold = build.Limit(base);
+  CHECK(cold.build_triangles == 40000);
+  CHECK(cold.upload_bytes == 2 * kMiB);
+  CHECK(cold.memory_cap == base.memory_cap && cold.loads_in_flight == base.loads_in_flight);
+  CHECK(cold.trade_margin == 30.0f);
+  CHECK(RetentionRadius(base, 2000.0f) == 2060.0f);
+  CHECK(RetentionRadius(cold, 2000.0f) == 2300.0f);
+  CHECK(RetentionRadius(cold, 300.0f) == 360.0f);
+  build.Observe(0, 40000);
+  build.Observe(5000000, 0);
+  CHECK(build.Limit(base).build_triangles == 40000);
+  build.Observe(4000000, 40000);
+  CHECK(build.Limit(base).build_triangles == 10000);
+  build.Observe(500000, 10000);
+  CHECK(build.Limit(base).build_triangles > 10000 && build.Limit(base).build_triangles < 20000);
+  build.Observe(100000000, 1);
+  CHECK(build.Limit(base).build_triangles == 1000);
+
+  const std::vector<BuildItem> items = {
+      {1000, 3 * kMiB, 0.0f}, {6000, kMiB, 1.0f}, {6000, kMiB, 2.0f}, {2000, kMiB, 3.0f}};
+  CHECK((PlanBuilds(items, cold.build_triangles, cold.upload_bytes) == std::vector<uint8_t>{1, 0, 0, 0}));
+  CHECK((PlanBuilds({items[1], items[2], items[3]}, 10000, cold.upload_bytes) == std::vector<uint8_t>{1, 0, 1}));
+  CHECK((PlanBuilds({items[1], items[2], items[3]}, cold.build_triangles, cold.upload_bytes) == std::vector<uint8_t>{1, 1, 0}));
+
+  PlanInput in;
+  in.budget = cold;
+  in.budget.memory_cap = EstimateStructureBytes(100);
+  in.budget.pool_cap = 80;
+  std::vector<SectorInfo> sectors(2);
+  std::vector<SectorState> states(2);
+  sectors[0].box_min[0] = sectors[0].box_max[0] = 60.0f;
+  sectors[0].hi_triangles = 100;
+  states[0].hi = Residency::kResident;
+  states[0].hi_bytes = EstimateStructureBytes(100);
+  states[0].hi_pool_held = 40;
+  sectors[1].box_min[0] = sectors[1].box_max[0] = 30.0f;
+  sectors[1].hi_triangles = 100;
+  const Plan equal = PlanStreaming(in, sectors, states);
+  CHECK(equal.evictions.empty() && equal.loads.empty());
+  sectors[1].box_min[0] = sectors[1].box_max[0] = 29.0f;
+  const Plan nearer = PlanStreaming(in, sectors, states);
+  CHECK(nearer.evictions.size() == 1 && nearer.loads.size() == 1);
+  sectors[1].hi_pool = 81;
+  const Plan too_big = PlanStreaming(in, sectors, states);
+  CHECK(too_big.evictions.empty() && too_big.loads.empty() && too_big.over_pool_cap);
+  sectors[1].hi_pool = 0;
+  sectors[1].hi_triangles = 101;
+  const Plan too_many_triangles = PlanStreaming(in, sectors, states);
+  CHECK(too_many_triangles.evictions.empty() && too_many_triangles.loads.empty() && too_many_triangles.over_cap);
+  in.budget.trade_margin = 0.0f;
+  CHECK(PlanStreaming(in, sectors, states).evictions.size() == 1);  // original policy
+}
+
 int main() {
   TestSettingAndBudgets();
   TestAutoAndPackState();
@@ -613,6 +669,7 @@ int main() {
   TestMemoryCap();
   TestDrive();
   TestBuildPlan();
+  TestHitchBudget();
   TestSafeRange();
   if (g_failures != 0) {
     std::fprintf(stderr, "city_rt_rules_test: %d of %d checks FAILED\n", g_failures, g_checks);

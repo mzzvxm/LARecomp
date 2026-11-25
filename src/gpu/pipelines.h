@@ -567,7 +567,7 @@ class Pipelines {
   // bias). Returns the records added.
   size_t LoadFile(const std::filesystem::path& path, Backend backend, bool zero_bias);
   // The file's bytes for the records as they are now. Empty: nothing to write.
-  std::vector<uint8_t> SerializeRecords() const;
+  std::vector<uint8_t> SerializeRecords(bool prioritize_slow) const;
   void WriteCacheFile(const std::vector<uint8_t>& bytes, size_t records, size_t layouts) const;
   void SaveRecords();
   void JoinAutosave();
@@ -680,6 +680,8 @@ class Pipelines {
   std::unordered_map<uint32_t, uint32_t> session_layouts_;      // InputLayout::id -> stored
   std::vector<Record> records_;
   std::unordered_set<PipelineKey, PipelineKeyHash> recorded_;
+  std::unordered_map<PipelineKey, uint64_t, PipelineKeyHash> warm_costs_;
+  bool warm_order_dirty_ = false;
   size_t loaded_records_ = 0;
   size_t own_file_records_ = 0;
   size_t saved_records_ = 0;  // what the file holds, or what the running autosave will leave in it

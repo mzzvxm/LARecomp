@@ -24,6 +24,7 @@
 #endif
 
 #include "cycles.h"
+#include "hitch.h"
 #include "draw_decode.h"
 #include "guest_memory.h"
 #include "native_gfx/guest/guest_fence.h"
@@ -1328,6 +1329,10 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
   if (!enabled()) {
     return;
   }
+  static thread_local uint64_t last_swap = 0;
+  static thread_local uint64_t previous_present_wait = 0;
+  const uint64_t swap = cycles::Now();
+  const hitch::Guest step = hitch::TakeGameStep();
   uint64_t sequence = 0;
   {
     const uint64_t t0 = cycles::Now();
@@ -1342,6 +1347,8 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
       r->front_buffer = front_buffer;
       r->target_qpc = target_qpc;
       r->tag = tag;
+      r->hitch = {last_swap && swap >= last_swap ? swap - last_swap : 0, previous_present_wait,
+                  step.fence_wait_ns, step.stream_wait_cycles, step.step_ms, step.capped_ms};
       if (front_buffer != 0 &&
           !CopyGuest(base, front_buffer, r->front_buffer_header, sizeof(r->front_buffer_header))) {
         r->flags |= kPresentFrontBufferUnreadable;
@@ -1367,7 +1374,10 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
       state->check_next = true;
     }
   }
+  last_swap = swap;
+  const uint64_t wait_start = cycles::Now();
   stream_.WaitExecuted(sequence);
+  previous_present_wait = cycles::Now() - wait_start;
 }
 
 // ---------------------------------------------------------------------------

@@ -1414,6 +1414,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_city_rt_build_budget": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_city_rt_radius": {
   "type": "f64",
   "default": "0.0",
@@ -2744,6 +2755,17 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_pipeline_warm": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Move costly pipelines that a draw had to wait for earlier in the next start's pipeline cache. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

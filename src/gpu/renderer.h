@@ -49,6 +49,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "ao.h"
@@ -82,6 +83,7 @@
 #include "frame_generation.h"
 #include "frame_layers.h"
 #include "frame_trace.h"
+#include "hitch.h"
 #include "geometry.h"
 #include "guest_memory.h"
 #include "hdr_scene.h"
@@ -231,6 +233,9 @@ class Renderer final : public RenderThread::Executor {
   // timestamps and the scene's frame) on the first scene record. Null when the
   // device is lost.
   plume::RenderCommandList* OpenFrameList();
+  void AdvanceFrame();
+  void ReadCityTiming(uint32_t slot);
+  void TraceHitch(const GuestHitchTiming& guest, uint32_t slot);
   // With mcla_gpu_batch_draws: submits the frame's list so far, unfenced, and
   // continues in a new one (frame.h).
   void MaybeFlushBatch();
@@ -460,6 +465,17 @@ class Renderer final : public RenderThread::Executor {
   uint64_t presented_ = 0;
   uint64_t guest_presents_ = 0;
   uint64_t guest_frames_ = 0;  // kPresent records executed, presented or skipped
+  hitch::Cadence guest_cadence_;
+  hitch::Cadence render_cadence_;
+  hitch::RateLimit hitch_limit_;
+  std::optional<hitch::Frame> pending_hitches_[kFramesInFlight];
+  uint64_t hitch_last_cycles_ = 0;
+  uint64_t hitch_idle_cycles_ = 0;
+  uint64_t hitch_wait_cycles_ = 0;
+  uint64_t hitch_present_cycles_ = 0;
+  uint64_t hitch_io_us_ = 0;
+  uint64_t hitch_shader_us_ = 0;
+  uint64_t hitch_city_read_us_ = 0;
   uint64_t idle_presents_ = 0;
   uint64_t skipped_ = 0;
   bool device_lost_reported_ = false;  // ReportDeviceLost has run

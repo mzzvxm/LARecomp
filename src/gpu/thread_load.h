@@ -51,6 +51,8 @@ class ThreadLoad {
     }
   }
   uint64_t gpu_wait_total() const { return totals_.gpu_wait_cycles; }
+  uint64_t idle_total() const { return totals_.idle_cycles; }
+  uint64_t gpu_wait_total(GpuWaitKind kind) const { return totals_.GpuWaitCycles(kind); }
 
   Sample Take() {
     const uint64_t now = cycles::Now();

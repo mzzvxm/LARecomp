@@ -104,6 +104,7 @@ struct Budget {
   uint32_t loads_in_flight = 0;     // pack reads being decoded at once
   uint64_t upload_bytes = 0;        // bytes staged for the structures' builds in one frame
   uint64_t pool_cap = 0;            // CITY-RT M2 H3: bytes of the hit data's pool (city_hit_pool_rules.h) the sectors may hold; 0 = no hit data, the pool is not counted
+  float trade_margin = 0.0f;       // a new sector must be this much nearer to displace a resident one
   bool on() const { return hi_radius > 0.0f; }
 };
 
@@ -130,6 +131,35 @@ constexpr Budget WithRadius(Budget budget, float radius) {
   budget.far_radius = std::max(budget.far_radius, budget.hi_radius * 4.0f);
   budget.hysteresis = std::max(15.0f, budget.hi_radius * 0.2f);
   return budget;
+}
+
+class BuildCost {
+ public:
+  static constexpr uint64_t kTargetNs = 1'000'000;
+  static constexpr uint64_t kUploadCap = 2 * kMiB;
+
+  void Observe(uint64_t ns, uint64_t triangles) {
+    if (ns == 0 || triangles == 0) return;
+    const double cost = std::clamp(double(ns) / double(triangles), 1.0, 1000.0);
+    // Back off immediately after a slow batch; restore throughput gradually.
+    ns_per_triangle_ = std::max(cost, 0.875 * ns_per_triangle_ + 0.125 * cost);
+  }
+
+  Budget Limit(Budget budget) const {
+    budget.build_triangles = std::min(budget.build_triangles, uint32_t(kTargetNs / ns_per_triangle_));
+    budget.upload_bytes = std::min(budget.upload_bytes, kUploadCap);
+    budget.trade_margin = std::max(25.0f, budget.hi_radius * 0.1f);
+    return budget;
+  }
+
+ private:
+  double ns_per_triangle_ = 25.0;  // starting estimate before the first measurement
+};
+
+constexpr float RetentionRadius(const Budget& budget, float radius) {
+  const float padding = budget.trade_margin > 0.0f ? std::max(budget.hysteresis, radius * 0.15f)
+                                                   : budget.hysteresis;
+  return radius + padding;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +326,7 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
     const float d = DistanceToBox(in.camera, s.box_min, s.box_max);
     const auto consider = [&](Detail detail, bool has, Residency residency, uint64_t bytes, uint64_t pool_held, uint64_t retry, uint32_t triangles, uint64_t pool_estimate, float radius) {
       const bool present = residency == Residency::kResident || residency == Residency::kLoading;
-      const bool wanted = has && d <= (present ? radius + b.hysteresis : radius);
+      const bool wanted = has && d <= (present ? RetentionRadius(b, radius) : radius);
       if (wanted) (detail == Detail::kHi ? plan.wanted_hi : plan.wanted_lod) += 1;
       if (present) {
         const uint64_t pool = pooled ? pool_held : 0;
@@ -343,16 +373,28 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
     for (const Candidate& c : list) {
       if (slots == 0) return;
       // Room: the structures' memory and, with hit data, the pool's. Either may be the one that is short; a victim gives back both.
-      const auto short_of_room = [&] { return held_bytes + c.bytes > b.memory_cap || (pooled && held_pool + c.pool > b.pool_cap); };
-      while (short_of_room() && next_tradable < tradable.size() && held[tradable[next_tradable]].distance > c.distance) {
-        const Candidate& victim = held[tradable[next_tradable++]];
-        plan.evictions.push_back({victim.sector, victim.detail, victim.distance});
-        held_bytes -= std::min(held_bytes, victim.bytes);
-        held_pool -= std::min(held_pool, victim.pool);
+      uint64_t bytes = held_bytes;
+      uint64_t pool = held_pool;
+      size_t end = next_tradable;
+      const auto short_of_room = [&] { return bytes + c.bytes > b.memory_cap || (pooled && pool + c.pool > b.pool_cap); };
+      while (short_of_room() && end < tradable.size() && held[tradable[end]].distance > c.distance + b.trade_margin) {
+        const Candidate& victim = held[tradable[end++]];
+        bytes -= std::min(bytes, victim.bytes);
+        pool -= std::min(pool, victim.pool);
       }
-      if (short_of_room()) {
+      const bool shortfall = short_of_room();
+      // With a trade margin, keep the residents if the replacement still would not fit.
+      if (!shortfall || b.trade_margin == 0.0f) {
+        for (; next_tradable < end; ++next_tradable) {
+          const Candidate& victim = held[tradable[next_tradable]];
+          plan.evictions.push_back({victim.sector, victim.detail, victim.distance});
+        }
+        held_bytes = bytes;
+        held_pool = pool;
+      }
+      if (shortfall) {
         plan.over_cap = true;
-        plan.over_pool_cap = plan.over_pool_cap || (pooled && held_pool + c.pool > b.pool_cap);
+        plan.over_pool_cap = plan.over_pool_cap || (pooled && pool + c.pool > b.pool_cap);
         continue;  // no room for this one; a smaller or nearer one behind it may still fit
       }
       plan.loads.push_back({c.sector, c.detail, c.distance});

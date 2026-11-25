@@ -25,6 +25,7 @@
 
 #include <rex/logging/log_category.h>
 
+#include "hitch.h"
 #include "mc_engine/core/threading.h"
 #include "present_schedule.h"
 
@@ -252,6 +253,7 @@ bool CommandStream::WaitForSpace(std::unique_lock<ProducerLock>& producer_lock, 
   if (end - head_.load(std::memory_order_acquire) <= capacity_) {
     return !stopped();
   }
+  const uint64_t start = cycles::Now();
   // Everything written so far must be visible, or the consumer could never
   // free the space this producer waits for.
   Publish(tail_);
@@ -265,6 +267,7 @@ bool CommandStream::WaitForSpace(std::unique_lock<ProducerLock>& producer_lock, 
     });
   }
   producer_waiting_.store(false, std::memory_order_seq_cst);
+  hitch::NoteGuestStreamWait(cycles::Now() - start);
   return !stopped();
 }
 
