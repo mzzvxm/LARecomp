@@ -91,6 +91,22 @@
         { "path": "license.txt", "sha256": "7b6f23e7d6f3ad6292f9308d2b42cdc3d82ae4e9b2abb55f230279d83bedd43d", "group": "core" },
         { "path": "3rd-party-licenses.md", "sha256": "cb251639994465f31d2178c16acedf1ff4f9cef1c370a09782ed36d4c86c1dca", "group": "core" }
       ]
+    },
+    "dxc_host": {
+      "version": "1.9.2609",
+      "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/dxc_2026_09_29.zip",
+      "zip_sha256": "ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1",
+      "zip_size": 32287592,
+      "groups": {
+        "core": {
+          "when": "os.name == 'windows'"
+        }
+      },
+      "files": [
+        { "path": "bin/x64/dxc.exe", "sha256": "aa7965b3763d9c710baaa5a28cedcc633449962a75d1391d161a85304a41b3e2", "group": "core" },
+        { "path": "bin/x64/dxcompiler.dll", "sha256": "0689e2fee0a1c9df8662a59680469f24e2a3ad7ce6bbbcc9284f7a83172bfc59", "group": "core" },
+        { "path": "bin/x64/dxil.dll", "sha256": "64be2368211d257a038a7d4ea6bb3e24c878eb8d588c7b8414fccf759b69c2ac", "group": "core" }
+      ]
     }
   }
 }
