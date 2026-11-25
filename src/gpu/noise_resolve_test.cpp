@@ -1254,9 +1254,11 @@ void TestSources(const std::string& dir) {
               nc::Has(cone, "int denoise_passes = car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);"),
           "car_rt_refl.cpp (city line): the cone history's images stay over frames DLSS Ray Reconstruction takes too (the denoise passes are 0 there because it is the denoiser; the gap asks the setting's own count)");
   g_check(nc::Has(cone, "const noise_resolve::HistoryImages stable_keep = stable_life_.Frame(resolve_history, stable_gap, stable_held, stable_size_ok);") &&
-              nc::Has(cone, "if (!resolve_history && stable_held && stable_keep != noise_resolve::HistoryImages::kKeep) {") && nc::Has(cone, "stable_valid_ && stable_frame_ + 1 == info.frame"),
-          "car_rt_refl.cpp: the cone history's images are kept over an upscaler's frames (stable_frame_ + 1 == info.frame says they are stale) and given back by the lifetime rule");
-  g_check(nc::Has(cone, "DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half, keep, stable_[stable_index_].slot);") &&
+              nc::Has(cone, "if (!resolve_history && stable_held && stable_keep != noise_resolve::HistoryImages::kKeep) {") &&
+              nc::Has(cone, "const bool have_last = stable_valid_ && stable_resolve_paint_ == resolve_paint && stable_frame_ + 1 == info.frame &&") &&
+              nc::Has(cone, "stable_resolve_paint_ = resolve_paint;"),
+          "car_rt_refl.cpp: the cone history's images are retained across upscaler frames by the lifetime rule, and the history is reused only for consecutive frames in the same paint resolve mode");
+  g_check(nc::Has(cone, "DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half, false, keep, stable_[stable_index_].slot);") &&
               nc::Has(denoise, "if (g_push.slots.w == 2u)") && nc::Has(denoise, "static const float kTemporalMargin = 0.05;") && nc::Has(denoise, "const float4 last = g_textures[uint(g_push.image.w + 0.5)].Load(int3(centre, 0));") &&
               nc::Has(cone, "const HostImage& result = result_in_stable_ ? stable_[stable_index_] : (result_in_scratch_ ? scratch_ : image_);"),
           "the denoise shader's third pass averages the finished image with the last result (slot in image.w), clamped to its 3x3 neighbourhood; the paint reads the history's image");
