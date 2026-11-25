@@ -189,6 +189,7 @@
 // The constants below are contact_trace.h's: change them there first.
 
 #include "ao_common.hlsli"
+#include "cabin_shadow_rules.hlsli"
 #include "host_pass_samplers.hlsli"
 
 // The depth tolerance, as a floor in metres plus footprints (the world size of one pixel of the
@@ -633,7 +634,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   // The car's own shadow map (THE CAR'S SHADOW MAP above): the shadow of the car's own parts, exact, and which pixels it is the truth for. A
   // surface this nearly edge-on to the sun gets no contact shadow whatever made it (the weight at the end is 0): the map is not read there.
-  const bool car_map = (flags & kCarMapFlag) != 0u;
+  const uint cabin_mode = g_push.slots.y & 0xFFFFu;
+  const bool skip_car_map = CabinSkipMap(cabin_mode, asuint(tc), (flags & kCarMapViewFlag) != 0u);
+  const bool car_map = (flags & kCarMapFlag) != 0u && !skip_car_map;
   float car_shadow = 0.0f;
   if (car_map) {
     bool covered = false;
@@ -668,6 +671,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // shadow: that term is exact and its edge stays crisp (THE MARK AND THE RAY TRACED TERM above). traced_shadow is 0 without the term, so the test is false then.
   const bool marked = AoIsVehicle(tc) && steps > 0u && traced_shadow < kRtUnmarkedShadow;
   // The ground under a vehicle is in its shadow before the ray looks (0 for everything else).
+  const bool skip_own_march = CabinCheckMarch(cabin_mode, asuint(tc));
   float shadow = Under(depth_slot, tc, pc, normal, to_sun, size, isize, footprint_unit, noise);
   for (uint i = 0u; i < steps; ++i) {
     if (shadow >= 0.99f) {
@@ -686,6 +690,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
       break;
     }
     const float td = AoLoadLinear(depth_slot, min(int2(uv * size), isize - 1));
+    if (skip_own_march && CabinMarkedDepth(asuint(td))) {
+      continue;
+    }
     // > 0: the surface at this pixel is in front of the step (it covers it from the camera).
     const float dz = p.z - td;
     const float footprint = footprint_unit * p.z;

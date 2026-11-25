@@ -4261,7 +4261,8 @@ void ShaderConstantsMatch(const std::string& dir) {
   Check(contact.find("if (facing > kSunFacingLow) {") != std::string::npos &&
             contact.find("if (covered && AoIsVehicle(tc) && (flags & kCarMapKeepMarchFlag) == 0u) {") != std::string::npos &&
             contact.find("steps = 0u;") != std::string::npos && contact.find("shadow = max(shadow, car_shadow);") != std::string::npos &&
-            contact.find("const bool car_map = (flags & kCarMapFlag) != 0u;") != std::string::npos &&
+            contact.find("const bool car_map = (flags & kCarMapFlag) != 0u && !skip_car_map;") != std::string::npos &&
+            contact.find("CabinSkipMap(cabin_mode, asuint(tc), (flags & kCarMapViewFlag) != 0u)") != std::string::npos &&
             contact.find("return float4(1.0f - car_shadow * smoothstep(kSunFacingLow, kSunFacingHigh, facing), 0.0f, 0.0f, 0.0f);") != std::string::npos,
         "the shader's use of the term is the twin's (not read at a grazing angle, no vehicle march where covered, the darker of the two, the debug view)");
   // The vehicle rule and the under term's two columns are written as the twin's (UnderVehicle, UnderProbe, March).

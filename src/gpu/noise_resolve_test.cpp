@@ -1118,8 +1118,9 @@ void TestSources(const std::string& dir) {
     g_check(run_at != std::string::npos && decide_at != std::string::npos && ensure_at != std::string::npos && decide_at < ensure_at && !nc::Has(run_text, "plan.contact_history = false;") &&
                 !nc::Has(run_text, "summary.stencil_slot == kNoSlot") && record_at != std::string::npos && guard_at != std::string::npos && nc::Has(ao, "push.slots2[3] = stencil_slot_;"),
             "ao.cpp: Run keeps the contact history exactly when its pass is made (ContactHistoryRuns, before EnsureImages) and neither it nor RecordContactHistory gives up for a missing stencil plane view");
-    g_check(nc::Has(temporal_cs, "const uint slot = g_push.slots2.w;\n  if (slot == kNoSlot) {\n    return 0u;\n  }") && nc::Has(depth_ps, "const uint slot = g_push.slots.z;\n  if (slot == 0xFFFFFFFFu) {\n    return false;\n  }"),
-            "the passes answer \"no vehicle\" for an empty stencil slot (ao_temporal_ps AoVehicleId, ao_depth_ps IsVehiclePixel): the history's pass and the depth chain run without the plane");
+    g_check(nc::Has(temporal_cs, "const uint slot = g_push.slots2.w;\n  if (slot == kNoSlot) {\n    return 0u;\n  }") &&
+                nc::Has(depth_ps, "uint DepthVehicleId(int2 p) {\n  const uint slot = g_push.slots.z;\n  if (slot == 0xFFFFFFFFu) {\n    return 0u;\n  }"),
+            "the passes answer \"no vehicle\" for an empty stencil slot (ao_temporal_ps AoVehicleId, ao_depth_ps DepthVehicleId): the history's pass and the depth chain run without the plane");
   }
   g_check(nc::Has(temporal_cs, "bool AoContactHistory() { return (g_push.slots2.z & (1u << 22)) != 0u; }") && nc::Has(temporal_cs, "if (confidence < 1.0f && !AoContactHistory()) {") && nc::Has(temporal_cs, "static const float kClampMargin = 0.08f;") &&
               nc::Has(ao, "kHistoryFlag = 1u << 20;"),

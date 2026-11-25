@@ -640,8 +640,10 @@ void SourceChecks(const std::string& gpu) {
   Check(Count(apply, "g_push.slots.w") == Count(apply, "g_push.slots.w >> 16") + Count(apply, "g_push.slots.w & 0xFFFFu"), "the apply never reads the whole of slots.w any more");
   // the facing of the bounce light
   Check(Has(main_ps, "AoGbFacingFromNormal("), "the bounce light's facing test reads the sample's normal");
-  // the depth pass: the vehicle mark's literal stays (ao_size_test), the source bits ride on the push's slots2.w
-  Check(Has(depth, "AoSetVehicleBit(t, IsVehiclePixel(source))") && Has(depth, "AoGbSetSource("), "the depth pass keeps the vehicle mark and writes the source index when asked");
+  // The depth pass uses the chosen sample's vehicle ID and packs its index when slots2.w is set.
+  Check(Has(depth, "const uint id = DepthVehicleId(source);\n  float marked = AoSetVehicleBit(t, id != 0u);") &&
+            Has(depth, "marked = g_push.slots2.w != 0u ? AoGbSetSource(marked, source_index) : marked;"),
+        "the depth pass keeps the vehicle mark and writes the source index when asked");
   // the new pass and its registration
   Check(Has(normal, "AoGbViewNormal(") && Has(normal, "AoNormalFromImage(") && Has(normal, "AoGbSourceOf("), "ao_normal_ps.hlsl: picks RT1's normal or the depth's, at the depth's source texel");
   Check(Has(cmake, "larecomp_gpu_host_shader(ao_normal_ps ps_6_0 DEFINES AO_NORMAL_MS=0)") && Has(cmake, "larecomp_gpu_host_shader(ao_normal_ms_ps ps_6_0 SOURCE ao_normal_ps DEFINES AO_NORMAL_MS=1)"),

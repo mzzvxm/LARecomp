@@ -403,6 +403,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetOcclusion(&occlusion_);
     scene_.SetTemporal(&temporal_);
     scene_.SetAmbientOcclusion(&ao_);
+    ao_.SetCarFrame(&car_frame_);
     ao_.SetCarShadowMap(&car_shadow_);  // the contact shadows read the car shadow map (car_shadow_map.h)
     ao_.SetGBuffer(&gbuffer_);  // the occlusion, the bounce light and the contact shadows ask for the G-buffer's normal plane and read it (ao.h, GB-E)
     ao_.SetScreenShared(&screen_);  // ... and hand their depth chain to the shared screen products (ao.h, screen_shared.h)

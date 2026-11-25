@@ -655,13 +655,15 @@ void SourceChecks(const std::string& gpu) {
     return;
   }
   // ---- the fused shaders are the old shaders with a define ----
-  Check(Has(depth_ps, "float AoDepthTexel(float2 position_xy) {") && Has(depth_ps, "return g_push.slots2.w != 0u ? AoGbSetSource(marked, source_index) : marked;"),
-        "ao_depth_ps.hlsl: the texel is one function (the old statements, the same return)");
+  Check(Has(depth_ps, "float AoDepthTexel(float2 position_xy) {") &&
+            Before(depth_ps, "marked = g_push.slots2.w != 0u ? AoGbSetSource(marked, source_index) : marked;", "return asfloat(CabinMarkDepth(asuint(marked), g_push.slots.w, id));"),
+        "ao_depth_ps.hlsl: the shared depth function packs the source index before returning the cockpit-tagged texel");
   Check(Has(depth_ps, "#if AO_HIZ0\n#include \"screen_hiz.hlsli\"\n#endif") && Has(depth_ps, "float4 main(float4 position : SV_Position) : SV_Target {\n  return float4(AoDepthTexel(position.xy), 0.0f, 0.0f, 0.0f);\n}"),
         "ao_depth_ps.hlsl: the plain pass is the function's value in the first target, as it was");
-  Check(Has(depth_ps, "o.depth = float4(stored, 0.0f, 0.0f, 0.0f);") && Has(depth_ps, "o.hiz = float4(ScreenHizStrip(stored), 0.0f, 0.0f, 0.0f);") && Has(depth_ps, "float4 depth : SV_Target0;") &&
-            Has(depth_ps, "float4 hiz : SV_Target1;"),
-        "ao_depth_ps.hlsl AO_HIZ0: SV_Target0 is the same value, SV_Target1 the Hi-Z's level 0 (the marks off)");
+  // CHECK: Both Hi-Z paths strip bits 0–2. The cockpit tag in bit 3 reaches Hi-Z and its in-game effect is unverified.
+  Check(Has(depth_ps, "const float stored = AoDepthTexel(position.xy);") && Has(depth_ps, "o.depth = float4(stored, 0.0f, 0.0f, 0.0f);") &&
+            Has(depth_ps, "o.hiz = float4(ScreenHizStrip(stored), 0.0f, 0.0f, 0.0f);") && Has(depth_ps, "float4 depth : SV_Target0;") && Has(depth_ps, "float4 hiz : SV_Target1;"),
+        "ao_depth_ps.hlsl AO_HIZ0: SV_Target0 is the shared depth, SV_Target1 applies the same strip as the separate Hi-Z pass");
   Check(Has(mip_h, "float AoMipMean4(float4 d, float range) {") && Has(mip_h, "const float far_d = max(max(d.x, d.y), max(d.z, d.w));") &&
             Has(mip_h, "const float4 w = saturate(1.0f - (far_d - d) / range);") && Has(mip_h, "return min(sum / max(weights, 1e-6f), kAoSky);"),
         "ao_mip.hlsli: the mean's statements are the old pass's");

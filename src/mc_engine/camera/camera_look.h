@@ -88,6 +88,10 @@ void TickCameraLook();
 // inside it and the free-fly camera works.
 void Hook_CameraSystem(PPCRegister& r20, PPCRegister& r24);
 
+// The camera rig Hook_CameraSystem saw last (r24 above): -1 until the first camera tick. 1 is the cockpit and 0 the bumper (the camera button cycles 3, 2, 1, 0).
+// One relaxed load, any thread. The rear view mirror's side-mirror need rule takes it (rear_view.cpp, gpu/mirror_view_link.h SideNeed).
+int32_t CurrentCameraRig();
+
 // sub_822C0320 @0x822C0970 -- the camera tick's single epilogue, r20 still the
 // camera system. Where the free look is actually applied.
 //

@@ -470,7 +470,7 @@ void CheckSources(const std::string& gpu) {
   Check(Has(cpp, "plan.OneSampleColour()") && Has(cpp, "push.slots2[0] = base.slots[1];"), "ao.cpp: the chain is told the depth's host sample");
   // The temporal pass follows the vehicle that the half size depth pass marked.
   Check(Has(temporal, "uint AoVehicleId(int2 pixel, float depth)") && Has(temporal, "if (!AoIsVehicle(depth))"), "ao_temporal_ps.hlsl: at half size a pixel is a vehicle where the depth pass marked it");
-  Check(Has(depth, "AoSetVehicleBit(t, IsVehiclePixel(source))"), "ao_depth_ps.hlsl: the mark is the chosen sample's");
+  Check(Has(depth, "const uint id = DepthVehicleId(source);\n  float marked = AoSetVehicleBit(t, id != 0u);"), "ao_depth_ps.hlsl: the mark is the chosen sample's");
   Check(Has(depth, "kHalfSurfaceShare = 0.04f") && Has(depth, "kHalfSurfaceFloor = 0.02f") && as::kHalfSurfaceShare == 0.04f && as::kHalfSurfaceFloor == 0.02f,
         "ao_depth_ps.hlsl: the half size depth's tolerance is the header's");
   Check(Has(depth, "if (spread <= kHalfSurfaceShare * mean + kHalfSurfaceFloor) {") && Has(depth, "t = mean;"), "ao_depth_ps.hlsl: one surface takes the mean");

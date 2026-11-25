@@ -1001,6 +1001,8 @@ void Hook_CameraSystem(PPCRegister& r20, PPCRegister& r24) {
         MC_INFO("[cam-probe] camera rig {} (r24 in sub_822C0320)", rig);
 }
 
+int32_t CurrentCameraRig() { return g_cam_rig.load(std::memory_order_relaxed); }
+
 namespace {
 
 // Shared by both hook sites; cam_look_phase picks which one is live.
@@ -1395,6 +1397,7 @@ void CameraProbeDump() {
 void CameraLookOnTuneField(const char*, uint32_t, uint32_t) {}
 void TickCameraLook() {}
 void Hook_CameraSystem(PPCRegister&, PPCRegister&) {}
+int32_t CurrentCameraRig() { return -1; }
 void Hook_CameraPostUpdate(PPCRegister&) {}
 void Hook_CameraPrePublish(PPCRegister&) {}
 void Hook_CameraMatrixPublish(PPCRegister&) {}
