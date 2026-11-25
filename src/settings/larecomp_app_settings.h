@@ -64,6 +64,11 @@ class AppSettings final : public rex::SettingOwner {
               "spin restores the previous polling behavior for A/B tests. Takes effect on the next wait.",
               rex::Allowed("auto", "wait", "spin"), rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_vk_present_pacing, true,
+              "On Windows, limit windowed and borderless NVIDIA Vulkan presents to the display refresh or 120 FPS, "
+              "whichever is lower (60 FPS if refresh is unknown). Lower frame limits still apply. Live within one second. "
+              "Turn off for A/B tests of the Windows compositor.", rex::kDebugOnly);
+
   REX_SETTING(rex::u32, cpu_limit_lp, 0,
               "At startup, restrict the game to the first N logical processors available in its affinity mask. "
               "0 leaves the affinity alone. For CPU scaling tests.",
@@ -96,6 +101,7 @@ inline auto& graphics_backend = g_app.graphics_backend;
 inline auto& debug_menu = g_app.debug_menu;
 inline auto& mcla_gpu_force_refusal = g_app.mcla_gpu_force_refusal;
 inline auto& render_wait_mode = g_app.render_wait_mode;
+inline auto& mcla_gpu_vk_present_pacing = g_app.mcla_gpu_vk_present_pacing;
 inline auto& cpu_limit_lp = g_app.cpu_limit_lp;
 inline auto& mcla_test_present_nowait = g_app.mcla_test_present_nowait;
 inline auto& frame_step_cap = g_app.frame_step_cap;

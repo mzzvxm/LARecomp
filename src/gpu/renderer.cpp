@@ -23,6 +23,7 @@
 
 #include "backend.h"
 #include "device_fault_format.h"
+#include "display_refresh.h"
 #include "gpu.h"
 #include "gi_setting.h"
 #include "citypack/pack_format.h"
@@ -44,6 +45,7 @@
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
+#include "mc_engine/display/display_mode.h"
 #include "mc_engine/display/ultrawide.h"
 #include "watch.h"
 
@@ -98,6 +100,14 @@ std::atomic<int64_t> g_shutdown_moved{0};  // steady_clock ticks of the last cha
 
 int64_t SteadyTicks() {
   return std::chrono::steady_clock::now().time_since_epoch().count();
+}
+
+void WaitForPresentDeadline(int64_t due) {
+  if (mcla::gpu::render_wait::ShouldSpin(larecomp::settings::render_wait_mode.Get())) {
+    mcla::gpu::WaitUntilQpc(due);
+  } else {
+    mcla::gpu::BlockUntilQpc(due);
+  }
 }
 
 class ShutdownClock {
@@ -511,6 +521,13 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // The swap chain exists and the render thread, which marks the frames, has not started.
     latency::Initialize(device_, swap_chain_);
     check_release_ = release_early_ && larecomp::settings::mcla_gpu_present_release_check.Get();
+#if defined(_WIN32)
+    const bool vulkan = ActiveBackend() == Backend::kVulkan;
+    const auto adapter = vulkan && device_.device() ? backend::QueryAdapterIds(device_.device())
+                                                    : backend::AdapterIds{};
+    may_use_composed_copy_ = render_wait::MayUseComposedCopy(true, vulkan, adapter.vendor_id);
+    UpdateComposedPresentCeiling();
+#endif
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
@@ -1166,10 +1183,54 @@ bool Renderer::RebuildSwapChain() {
   return true;
 }
 
+#if defined(_WIN32)
+void Renderer::UpdateComposedPresentCeiling() {
+  if (!may_use_composed_copy_) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (now < composed_monitor_poll_) {
+    return;
+  }
+  const bool first = composed_monitor_poll_ == std::chrono::steady_clock::time_point{};
+  composed_monitor_poll_ = now + std::chrono::seconds(1);
+  // Win32 Vulkan present modes do not report DWM's composition path. Assume copy on this
+  // adapter/window combination, based on 78 of 78 RTX traces in VK-PRESENT-GDI.md.
+  const bool exclusive = mcla::display::WantedMode() == mcla::display::Mode::kExclusive;
+  const bool enabled = larecomp::settings::mcla_gpu_vk_present_pacing.Get();
+  const auto window = swap_chain_.window();
+  const uint32_t refresh_hz = enabled && !exclusive && window ? ReadDisplayRefreshHz(window) : 0;
+  const uint32_t ceiling = render_wait::ComposedPresentCeiling(exclusive, enabled, refresh_hz);
+  const uint32_t previous = composed_present_ceiling_.exchange(ceiling, std::memory_order_relaxed);
+  if (first || previous != ceiling) {
+    REXLOG_INFO("[gpu] Vulkan composed present ceiling: {} FPS (refresh {} Hz, exclusive {}, switch {})",
+                ceiling, refresh_hz, exclusive, enabled);
+  }
+}
+#endif
+
 void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, int64_t due,
                           int64_t ready, uint64_t guest_present, uint64_t latency_frame) {
   const bool nowait = present_nowait_ && !dlssg_.active();
+#if defined(_WIN32)
+  const uint32_t ceiling = composed_present_ceiling();
+  const bool pace_present = ceiling != 0 && !dlssg_.active();
+  if (pace_present) {
+    // The game clock normally sets the cadence. Guard late, unscheduled and idle presents at the
+    // actual call too, before acquiring the swap chain lock, so catch-up cannot bunch presents.
+    const int64_t earliest = render_wait::ComposedPresentDue(last_composed_present_, QpcFrequency(), ceiling);
+    if (QpcNow() < earliest) {
+      WaitForPresentDeadline(earliest);
+      due = earliest;
+    }
+  }
+#endif
   latency::OnPresentBegin(latency_frame);
+#if defined(_WIN32)
+  if (pace_present) {
+    last_composed_present_ = QpcNow();
+  }
+#endif
   const PresentResult result = swap_chain_.Present(image, nowait);
   latency::OnPresentEnd(latency_frame);
   if (nowait) {
@@ -1241,11 +1302,7 @@ void Renderer::FlushDeferredPresent(bool wait) {
   }
   if (wait) {
     // CHECK: verify presentation order when HDR or frame generation changes during a hold.
-    if (render_wait::ShouldSpin(larecomp::settings::render_wait_mode.Get())) {
-      WaitUntilQpc(d.due);
-    } else {
-      BlockUntilQpc(d.due);
-    }
+    WaitForPresentDeadline(d.due);
   }
   PresentNow(d.image, PresentSource::kGuest, d.target, d.due, d.ready, d.guest_present,
              d.latency_frame);
@@ -1482,6 +1539,9 @@ void Renderer::ExecutePresent(PresentSource source) {
   } capture_scope{capture_readback_};
   // A held present goes first: its back buffer is the one ahead of this
   // frame's in the chain, and nothing else may touch the chain before it.
+#if defined(_WIN32)
+  UpdateComposedPresentCeiling();
+#endif
   FlushDeferredPresent(/*wait=*/true);
   tail_open_ = false;
   const latency::IdlePresentScope idle_scope(source == PresentSource::kIdle);
@@ -2507,6 +2567,21 @@ bool SchedulesPresents() {
 #else
   return false;
 #endif
+}
+
+int32_t LimitFrameRateForComposedPresents(int32_t limit) {
+#if defined(_WIN32)
+  const Renderer* renderer = g_active.load(std::memory_order_acquire);
+  const uint32_t ceiling = renderer ? renderer->composed_present_ceiling() : 0;
+  if (ceiling != 0) {
+    // The generation pacers issue extra presents outside PresentNow. Budget them in the
+    // rendered-frame limiter, using the active multiplier (FSR always generates one frame).
+    const uint32_t multiplier = DlssFrameGenerationRunning() ? DlssFrameGenerationMultiplier()
+                                : FrameGenerationRunning() ? 2u : 1u;
+    return render_wait::LimitRenderRateForPresents(limit, ceiling, multiplier);
+  }
+#endif
+  return limit;
 }
 
 void OnGuestFenceInserted(uint32_t device, uint32_t value) {

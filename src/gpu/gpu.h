@@ -214,6 +214,8 @@ void SetNextPresentTag(uint64_t tag);
 // succeeded) without mcla_gpu_vsync and without frame generation, on Windows.
 // Any thread.
 bool SchedulesPresents();
+// Apply the Windows NVIDIA Vulkan present ceiling to an existing rendered-frame limit. Any thread.
+int32_t LimitFrameRateForComposedPresents(int32_t limit);
 // What scheduled frames came to, oldest first, since the last call: per frame,
 // its target and how its readiness compared with it (ready minus target, QPC
 // ticks; negative when it was held), and -- with `on_screen`, D3D12 frame
