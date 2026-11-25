@@ -173,6 +173,9 @@ class ScreenReflections {
   // RR-4a: this frame's hit distance image (R16_FLOAT, the picture's size, readable) when the frame ran RAW and wrote it, else null. Valid until the next frame's trigger.
   const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
   const HostImage* CaptureSignal() const { return capture_signal_; }
+  const HostImage* CaptureHit() const { return capture_hit_ready_ ? &capture_hit_ : nullptr; }
+  static bool RoadViewDrawn(const EdramTargets& edram, uint32_t frame);
+  void SetCaptureHitWanted(bool wanted);
   // A guest present: the frame boundary (the history's ping-pong, the idle count).
   void OnPresent();
 
@@ -208,8 +211,10 @@ class ScreenReflections {
   bool RecordRegen(plume::RenderCommandList* list, const ssr::Push& base, const screen::ScreenFrame& sf, const RegenCameraRows* cam, bool motion_usable, const RegenAsk& ask, uint32_t width,
                    uint32_t height, const ssr::HistoryKey& now);
   void ReleaseImages();
-  // The trace pass with two targets (the trace image and the confidence image), the same sequence as DrawPass.
-  void DrawPassRt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline, const ssr::Push& push);
+  // The trace with confidence and/or capture IDs, in addition to radiance.
+  void DrawTraceMrt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline, const ssr::Push& push, bool rt, bool capture);
+  plume::RenderPipeline* PrepareCaptureHit(bool rt, bool ms);
+  void ReleaseCaptureHit();
 
   Device* device_ = nullptr;
   BindlessHeap* heap_ = nullptr;
@@ -227,6 +232,13 @@ class ScreenReflections {
   std::array<bool, kVariantCount> failed_{};
   bool ready_ = false;                // the layout and the shaders exist
   const HostImage* capture_signal_ = nullptr;
+  HostImage capture_hit_;
+  bool capture_hit_wanted_ = false;
+  bool capture_hit_ready_ = false;
+  std::array<std::unique_ptr<plume::RenderPipeline>, 4> capture_hit_pipelines_;
+  std::array<bool, 4> capture_hit_pipeline_failed_{};
+  std::unique_ptr<plume::RenderFramebuffer> capture_hit_framebuffer_;
+  std::array<uint64_t, 3> capture_hit_serials_{};
 
   // the settings of this frame
   ssr::Level level_ = ssr::Level::kOff;

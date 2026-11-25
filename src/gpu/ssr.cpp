@@ -41,6 +41,18 @@ constexpr plume::RenderFormat kFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
 // CITY-RT R4: the confidence target (r the class group, g the picture's share: ssr_rt_rules.h) and the trace image's flags in a frame the fallback follows (its compute passes read and write it).
 constexpr plume::RenderFormat kConfidenceFormat = plume::RenderFormat::R8G8_UNORM;
 constexpr plume::RenderTextureFlags kTraceRtFlags = plume::RenderTextureFlag::RENDER_TARGET | plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+constexpr plume::RenderFormat kCaptureHitFormat = plume::RenderFormat::R32_UINT;
+constexpr uint32_t kCapturePlanarBit = 0x20000000u;  // SSR_REFLHIT_PLANAR_BIT; outside PackRoadView's fields
+static_assert((ssr::PackRoadView(0xFFFFu, ssr::roadview::kMaxSamples, ssr::roadview::kMaxSide) & kCapturePlanarBit) == 0);
+
+EdramKey RoadViewKey() {
+  EdramKey key{};
+  key.base_tiles = uint16_t(ssr::roadview::kColorBase);
+  key.pitch = uint16_t(ssr::roadview::kPitch);
+  key.format = uint8_t(rex::xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT);
+  key.samples = uint8_t(ssr::roadview::kGuestSamples);
+  return key;
+}
 // RR-4a: the hit distance image of a raw frame (the guide pass's input: one float, the distance, in x).
 constexpr plume::RenderFormat kHitFormat = plume::RenderFormat::R16_FLOAT;
 constexpr uint8_t kWriteRgb = uint8_t(plume::RenderColorWriteEnable::RED) | uint8_t(plume::RenderColorWriteEnable::GREEN) | uint8_t(plume::RenderColorWriteEnable::BLUE);
@@ -130,12 +142,21 @@ void ScreenReflections::Shutdown() {
   for (auto& shader : shaders_) {
     shader.reset();
   }
+  rt_.Shutdown();   // output sets reference the trace and capture images
+  capture_hit_framebuffer_.reset();
+  capture_hit_.framebuffer.reset();
+  capture_hit_.view.reset();
+  capture_hit_.texture.reset();
+  capture_hit_ = {};
+  capture_hit_wanted_ = false;
+  capture_hit_ready_ = false;
+  capture_hit_pipeline_failed_.fill(false);
+  for (auto& pipeline : capture_hit_pipelines_) pipeline.reset();
   layout_.reset();
   trace_ = HostImage{};
   confidence_ = HostImage{};
   rt_framebuffer_.reset();
   rt_framebuffer_for_[0] = rt_framebuffer_for_[1] = nullptr;
-  rt_.Shutdown();   // its pipelines are the host builder's too (stopped above)
   denoise_.Shutdown();
   for (HostImage& image : accum_) {
     image = HostImage{};
@@ -279,17 +300,21 @@ void ScreenReflections::DrawPass(plume::RenderCommandList* list, HostImage& imag
   image.layout = plume::RenderTextureLayout::SHADER_READ;
 }
 
-void ScreenReflections::DrawPassRt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline, const ssr::Push& push) {
-  // The same sequence as DrawPass over two targets: both to colour targets (cleared on their first use: D3D12 debug layer id 1422), one triangle over all of them, both back to a shader read for graphics AND
-  // compute (the fallback's compute passes read the confidence image and read and write the trace image).
-  const bool first_use = trace_.layout == plume::RenderTextureLayout::UNKNOWN || confidence_.layout == plume::RenderTextureLayout::UNKNOWN;
-  const plume::RenderTextureBarrier to_write[2] = {{trace_.texture.get(), plume::RenderTextureLayout::COLOR_WRITE}, {confidence_.texture.get(), plume::RenderTextureLayout::COLOR_WRITE}};
-  list->barriers(plume::RenderBarrierStage::GRAPHICS, to_write, 2);
-  trace_.layout = confidence_.layout = plume::RenderTextureLayout::COLOR_WRITE;
-  list->setFramebuffer(rt_framebuffer_.get());
-  if (first_use) {
-    list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
-    list->clearColor(1, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+void ScreenReflections::DrawTraceMrt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline,
+                                    const ssr::Push& push, bool rt, bool capture) {
+  using Layout = plume::RenderTextureLayout;
+  const uint32_t count = 1u + uint32_t(rt) + uint32_t(capture);
+  HostImage* images[] = {&trace_, rt ? &confidence_ : &capture_hit_, &capture_hit_};
+  plume::RenderTextureBarrier barriers[3];
+  bool first_use[3]{};
+  for (uint32_t i = 0; i < count; ++i) {
+    first_use[i] = images[i]->layout == Layout::UNKNOWN;
+    barriers[i] = {images[i]->texture.get(), Layout::COLOR_WRITE};
+  }
+  list->barriers(plume::RenderBarrierStage::GRAPHICS, barriers, count);
+  list->setFramebuffer(capture ? capture_hit_framebuffer_.get() : rt_framebuffer_.get());
+  for (uint32_t i = 0; i < count; ++i) {
+    if (first_use[i]) list->clearColor(i, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
   }
   const plume::RenderViewport viewport{0.0f, 0.0f, float(trace_.width), float(trace_.height)};
   list->setViewports(&viewport, 1);
@@ -300,16 +325,62 @@ void ScreenReflections::DrawPassRt(plume::RenderCommandList* list, const plume::
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
   list->setFramebuffer(nullptr);
-  const plume::RenderTextureBarrier to_read[2] = {{trace_.texture.get(), plume::RenderTextureLayout::SHADER_READ}, {confidence_.texture.get(), plume::RenderTextureLayout::SHADER_READ}};
-  list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE, to_read, 2);
-  trace_.layout = confidence_.layout = plume::RenderTextureLayout::SHADER_READ;
+  for (uint32_t i = 0; i < count; ++i) {
+    barriers[i] = {images[i]->texture.get(), Layout::SHADER_READ};
+    images[i]->layout = Layout::SHADER_READ;
+  }
+  list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE, barriers, count);
+}
+
+plume::RenderPipeline* ScreenReflections::PrepareCaptureHit(bool rt, bool ms) {
+  if (!passes_ || !layout_ || !trace_.texture || (rt && !confidence_.texture)) return nullptr;
+  const uint32_t variant = 2u * uint32_t(rt) + uint32_t(ms);
+  auto& pipeline = capture_hit_pipelines_[variant];
+  if (!pipeline && !capture_hit_pipeline_failed_[variant]) {
+    const auto blob = ScreenReflectionsHitShader(rt, ms);
+    const auto shader = passes_->CreateShader(blob.data, blob.size, blob.name);
+    const plume::RenderFormat formats[] = {kFormat, rt ? kConfidenceFormat : kCaptureHitFormat, kCaptureHitFormat};
+    if (shader) pipeline = passes_->CreatePipeline(*layout_, *shader, formats, rt ? 3u : 2u, blob.name);
+    capture_hit_pipeline_failed_[variant] = !pipeline;
+  }
+  if (!pipeline) return nullptr;
+
+  const auto flags = rt ? kTraceRtFlags : plume::RenderTextureFlags(plume::RenderTextureFlag::RENDER_TARGET);
+  if (!passes_->EnsureImage(capture_hit_, trace_.width, trace_.height, kCaptureHitFormat, "reflection hit IDs", flags)) return nullptr;
+  const std::array serials{trace_.serial, rt ? confidence_.serial : uint64_t{0}, capture_hit_.serial};
+  if (!capture_hit_framebuffer_ || capture_hit_serials_ != serials) {
+    passes_->RetireFramebuffer(std::move(capture_hit_framebuffer_));
+    const auto* hit = capture_hit_.texture.get();
+    const plume::RenderTexture* attachments[] = {trace_.texture.get(), rt ? confidence_.texture.get() : hit, hit};
+    capture_hit_framebuffer_ = passes_->CreateMrtFramebuffer(attachments, rt ? 3u : 2u, "reflection hit capture");
+    capture_hit_serials_ = serials;
+  }
+  if (!capture_hit_framebuffer_ || (rt && !rt_.PrepareCaptureHit(trace_, capture_hit_, ms))) return nullptr;
+  return pipeline.get();
+}
+
+void ScreenReflections::ReleaseCaptureHit() {
+  if (!passes_ || !capture_hit_.texture) return;
+  rt_.ReleaseCaptureSet();
+  passes_->RetireFramebuffer(std::move(capture_hit_framebuffer_));
+  passes_->ReleaseImage(capture_hit_);
+  capture_hit_ready_ = false;
+}
+
+void ScreenReflections::SetCaptureHitWanted(bool wanted) {
+  if (!wanted && capture_hit_wanted_) ReleaseCaptureHit();
+  capture_hit_wanted_ = wanted;
 }
 
 bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt, bool raw, uint32_t render_width, uint32_t render_height) {
+  const auto trace_flags = rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET;
+  if (capture_hit_.texture && (trace_.width != width || trace_.height != height || trace_.flags != trace_flags)) {
+    ReleaseCaptureHit();  // retire the capture framebuffer and UAV set before their attachments
+  }
   const plume::RenderTexture* before[4] = {trace_.texture.get(), accum_[0].texture.get(), accum_[1].texture.get(), confidence_.texture.get()};
   // A frame the ray traced fallback follows: the trace image is also a storage image (its compute passes read and write it), and the confidence image exists. Otherwise the images are what they were.
   // A raw frame (RR-4a) has no accumulation: the trace and the hit distance image at the picture's size are all it needs (the accumulation's two go back after a spell of raw frames: Record's tail).
-  bool ok = passes_->EnsureImage(trace_, width, height, kFormat, "ssr trace", rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET);
+  bool ok = passes_->EnsureImage(trace_, width, height, kFormat, "ssr trace", trace_flags);
   if (raw) {
     ok = ok && passes_->EnsureImage(hit_, render_width, render_height, kHitFormat, "ssr hit distance");
   } else {
@@ -347,6 +418,7 @@ void ScreenReflections::ReleaseImages() {
     return;
   }
   hit_ready_ = false;
+  ReleaseCaptureHit();
   for (HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_}) {
     if (image->texture) {
       passes_->ReleaseImage(*image);
@@ -361,7 +433,7 @@ void ScreenReflections::ReleaseImages() {
 
 uint64_t ScreenReflections::HeldBytes() const {
   uint64_t bytes = regen_pass_.HeldBytes();   // RG-3: the signal, the guides and the denoised image while a regen frame ran lately
-  for (const HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_}) {
+  for (const HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_, &capture_hit_}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
@@ -437,8 +509,13 @@ void ScreenReflections::OnMainDraw(const temporal::MainMatch& match, const Const
   wet_votes_.Add(BankFloat(banks.vs.data(), kVsReflectionParams, 0), BankFloat(banks.vs.data(), kVsReflectionParams, 1));
 }
 
+bool ScreenReflections::RoadViewDrawn(const EdramTargets& edram, uint32_t frame) {
+  const auto* target = edram.Find(RoadViewKey());
+  return target && target->texture && target->side_view == SideView::kReflection && uint32_t(target->drawn_frame) == frame;
+}
+
 bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested, bool upscaler_running, const RegenAsk& ask) {
-  if (level_ == ssr::Level::kOff || trigger_done_ || !list || !summary.source || !screen_ || !gbuffer_ || !passes_) {
+  if (level_ == ssr::Level::kOff || trigger_done_ || !list || !summary.source || !screen_ || !gbuffer_ || !passes_ || !edram_) {
     return false;
   }
   trigger_done_ = true;  // once a frame, whatever comes of it
@@ -645,13 +722,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // game drew and resolved it before the roads that read it. Found by the identity (ssr_rules.h roadview::), accepted only when the side view classification made it and this frame drew into it.
   ssr::RoadViewFacts road;
   road.share = ssr::FallbackShare(fallback_setting_, wet_strength_);
-  EdramKey road_key;
-  road_key.base_tiles = uint16_t(ssr::roadview::kColorBase);
-  road_key.pitch = uint16_t(ssr::roadview::kPitch);
-  road_key.depth = 0;
-  road_key.format = uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT);
-  road_key.samples = uint8_t(ssr::roadview::kGuestSamples);
-  road_key.reserved = 0;
+  const EdramKey road_key = RoadViewKey();
   EdramTargets::Target* road_target = nullptr;
   uint32_t road_slot = screen::kNoSlot;
   if (road.share > 0.0f) {
@@ -754,17 +825,23 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // as published, the depth plane, the new images' first use), MSAA 1, 2, 4 and 8, and the cost: the trace is the pass that matters (the walk's iterations, the class gate's early out).
   ssr::Push trace_push = push;
   trace_push.Set(pk::kRoadView, road_word);
+  // CHECK: validate the ID attachment, first-use clear and source alignment with the SSR signal on both APIs.
+  auto* capture_pipeline = capture_hit_wanted_ && !debug_view ? PrepareCaptureHit(rt, ms) : nullptr;
+  if (capture_pipeline && RoadViewDrawn(*edram_, sf.frame_serial)) {
+    trace_push.Set(pk::kRoadView, road_word | kCapturePlanarBit);
+  }
   trace_push.SetFloat(pk::kFallback, road_why == ssr::RoadViewWhy::kUsed ? road.share : 0.0f);
   pass_timing_->Mark(list, "ssr trace");
   bool rt_recorded = false;   // the fallback's compute passes were recorded in this frame
   if (rt) {
-    DrawPassRt(list, trace_rt_pipeline, trace_push);
+    DrawTraceMrt(list, capture_pipeline ? capture_pipeline : trace_rt_pipeline, trace_push, true, capture_pipeline != nullptr);
     // the ray traced fallback: the pixels the picture could not speak for, traced into the city and added to the trace image (its two compute passes' time is the label 'ssr rt': it runs to the next mark)
     pass_timing_->Mark(list, "ssr rt");
     ScreenReflectionsRt::Frame rt_frame;
     rt_frame.list = list;
     rt_frame.trace = &trace_;
     rt_frame.confidence = &confidence_;
+    rt_frame.capture_hit = capture_pipeline ? &capture_hit_ : nullptr;
     rt_frame.push = trace_push;
     rt_frame.width = width;
     rt_frame.height = height;
@@ -773,6 +850,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     rt_frame.screen = sf.lin_depth_slot[0] != screen::kNoSlot;
     rt_frame.frame = frames_run_;
     rt_recorded = rt_.Record(rt_frame);   // false where the frame has no top level: the trace and the confidence image are the picture's alone
+  } else if (capture_pipeline) {
+    DrawTraceMrt(list, capture_pipeline, trace_push, false, true);
   } else {
     DrawPass(list, trace_, trace_pipeline, trace_push);
   }
@@ -915,6 +994,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     list->drawInstanced(3, 1, 0, 0);
     list->setFramebuffer(nullptr);
     capture_signal_ = raw ? &trace_ : regen_ok ? &regen_pass_.image(rgd::Image::kDenoised) : resolve_source;
+    capture_hit_ready_ = capture_pipeline != nullptr;
   }  // else the trace and the accumulation were recorded and there is no apply this frame: the next one starts from this history all the same
   if (raw) {
     // RR-4a: how far each of the reflections the resolve just added went, into the image the guide pass reads as the hit distance (hlsl/ssr_hit_ps.hlsl). It reads the trace like the resolve.
@@ -1096,6 +1176,7 @@ bool ScreenReflections::RecordRegen(plume::RenderCommandList* list, const ssr::P
 
 void ScreenReflections::OnPresent() {
   capture_signal_ = nullptr;
+  capture_hit_ready_ = false;
   rt_.OnPresent();
   denoise_.OnPresent();
   regen_pass_.OnFrame(regen_frame_);

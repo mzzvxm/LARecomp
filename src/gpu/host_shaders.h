@@ -82,6 +82,8 @@
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "gbuffer_view_ms_ps.hlsl.dxil.h"
 #include "gbuffer_view_ps.hlsl.dxil.h"
+#include "reflhit_native_ps.hlsl.dxil.h"
+#include "reflhit_native_ms_ps.hlsl.dxil.h"
 #include "gi_apply_lookup_ms_ps.hlsl.dxil.h"
 #include "gi_apply_lookup_ps.hlsl.dxil.h"
 #include "gi_apply_ms_ps.hlsl.dxil.h"
@@ -146,6 +148,12 @@
 #include "ssr_trace_ps.hlsl.dxil.h"
 #include "ssr_trace_rt_ms_ps.hlsl.dxil.h"
 #include "ssr_trace_rt_ps.hlsl.dxil.h"
+#include "ssr_trace_reflhit_ps.hlsl.dxil.h"
+#include "ssr_trace_reflhit_ms_ps.hlsl.dxil.h"
+#include "ssr_trace_rt_reflhit_ps.hlsl.dxil.h"
+#include "ssr_trace_rt_reflhit_ms_ps.hlsl.dxil.h"
+#include "ssr_rt_trace_reflhit_cs.hlsl.dxil.h"
+#include "ssr_rt_trace_reflhit_ms_cs.hlsl.dxil.h"
 #include "rr_guides_cs.hlsl.dxil.h"
 #include "rr_guides_ms_cs.hlsl.dxil.h"
 #include "rr_guides_view_cs.hlsl.dxil.h"
@@ -238,6 +246,8 @@
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "gbuffer_view_ms_ps.hlsl.spirv.h"
 #include "gbuffer_view_ps.hlsl.spirv.h"
+#include "reflhit_native_ps.hlsl.spirv.h"
+#include "reflhit_native_ms_ps.hlsl.spirv.h"
 #include "gi_apply_lookup_ms_ps.hlsl.spirv.h"
 #include "gi_apply_lookup_ps.hlsl.spirv.h"
 #include "gi_apply_ms_ps.hlsl.spirv.h"
@@ -302,6 +312,12 @@
 #include "ssr_trace_ps.hlsl.spirv.h"
 #include "ssr_trace_rt_ms_ps.hlsl.spirv.h"
 #include "ssr_trace_rt_ps.hlsl.spirv.h"
+#include "ssr_trace_reflhit_ps.hlsl.spirv.h"
+#include "ssr_trace_reflhit_ms_ps.hlsl.spirv.h"
+#include "ssr_trace_rt_reflhit_ps.hlsl.spirv.h"
+#include "ssr_trace_rt_reflhit_ms_ps.hlsl.spirv.h"
+#include "ssr_rt_trace_reflhit_cs.hlsl.spirv.h"
+#include "ssr_rt_trace_reflhit_ms_cs.hlsl.spirv.h"
 #include "rr_guides_cs.hlsl.spirv.h"
 #include "rr_guides_ms_cs.hlsl.spirv.h"
 #include "rr_guides_view_cs.hlsl.spirv.h"
@@ -401,6 +417,10 @@ inline HostShaderBlob FullscreenVertexShader() {
 // The G-buffer's debug view (gbuffer.h): the planes with one sample, or the host's MSAA level.
 inline HostShaderBlob GBufferViewPixelShader(bool multisampled) {
   return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ps);
+}
+
+inline HostShaderBlob NativeReflectionHitShader(bool multisampled) {
+  return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(reflhit_native_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(reflhit_native_ps);
 }
 
 // The probe field owner's passes (gi_field.h, CITY-RT M3 package G1): the reset of the probes a window move exposed and the weights pass (compute, Shader Model 6.0, typed RGBA16F /
@@ -504,6 +524,15 @@ inline HostShaderBlob ScreenReflectionsRtShader(uint32_t pass) {
     case 1: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_cs);
     default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_ms_cs);
   }
+}
+
+inline HostShaderBlob ScreenReflectionsHitShader(bool rt, bool ms) {
+  if (rt) return ms ? MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_reflhit_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_reflhit_ps);
+  return ms ? MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_reflhit_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_reflhit_ps);
+}
+
+inline HostShaderBlob ScreenReflectionsRtHitShader(bool ms) {
+  return ms ? MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_reflhit_ms_cs) : MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_reflhit_cs);
 }
 
 // RtDenoise (rt_denoise.h, CITY-RT R6): the screen-space reflections' spatial pass (hlsl/ssr_denoise_spatial_cs.hlsl over plain planes), and the plain-guide compiles of the two stages the other

@@ -34,6 +34,25 @@
 
 #include "ssr_pass.hlsli"
 #include "ssr_trace.hlsli"
+#if SSR_REFLHIT
+#include "reflhit.hlsli"
+static uint g_reflhit = 0u;
+
+uint SsrHitClass(int2 p, float z, bool vehicle) {
+  if (SsrFlag(SSR_FLAG_STUB)) return ReflHitScreen(GB_CLASS_NONE, 0u, vehicle);
+  if (!SsrFlag(SSR_FLAG_HZ)) {
+    const int2 last = SsrRender() - 1;
+    const int2 a = min(p * 2, last);
+    const int2 b = min(a + int2(1, 0), last);
+    const int2 c = min(a + int2(0, 1), last);
+    const int2 d = min(a + int2(1, 1), last);
+    const uint pick = SsrPickInBlock(SsrLinearAt(a), SsrLinearAt(b), SsrLinearAt(c), SsrLinearAt(d), z);
+    p = pick == 0u ? a : (pick == 1u ? b : (pick == 2u ? c : d));
+  }
+  const float2 material = SsrRt3At(p);
+  return ReflHitScreen(GbRt3Class(material), GbRt3Flags(material), vehicle);
+}
+#endif
 #if SSR_RT
 #include "ssr_rt_common.hlsli"
 static float2 g_confidence = float2(0.0f, 0.0f);   // the second target: left at 0 by every early return (nothing traced here)
@@ -64,6 +83,14 @@ float4 SsrTraceBody(float4 position) {
   const int2 mark = SsrFlag(SSR_FLAG_HZ) ? texel : pix;    // the depth chain's level 0 has the Hi-Z level 0's size
   const bool vehicle = SsrFlag(SSR_FLAG_STUB) && SsrVehicleAt(mark.x, mark.y);
   const SsrSurface surface = SsrSurfaceAt(texel, vehicle);
+#if SSR_REFLHIT
+  const bool planar = (SsrW(SSR_W_ROAD_VIEW) & SSR_REFLHIT_PLANAR_BIT) != 0u;
+  const uint native = ReflHitFallback(surface.cls, surface.flags, planar);
+  g_reflhit = ReflHitPack(native, kReflHitNone, kReflHitNone, native);
+  float screen_weight = 0.0f;
+  float best_fade = 0.0f;
+  uint screen_id = kReflHitNone;
+#endif
   const float gain = SsrClassGain(surface.cls, surface.flags);
   const float smoothness = SsrWetSmooth(surface.cls, surface.smoothness, SsrF(SSR_W_WET));
   if (!(gain > 0.0f) || smoothness < SsrF(SSR_W_MIN_SMOOTH)) {
@@ -154,6 +181,9 @@ float4 SsrTraceBody(float4 position) {
         conf = fade;
         is_vehicle = SsrVehicleAt(hx, hy);
         hit_vehicle = is_vehicle ? SsrVehicleIdAt(hx, hy) : 0u;
+#if SSR_REFLHIT
+        if (conf > best_fade) screen_id = SsrHitClass(int2(hx, hy), hit.surface_z, is_vehicle);
+#endif
       }
     } else if (hit.inside_end) {
       // the ray ended on the picture without meeting anything: where the end is sky, the sky's colour there is the sky of the ray's direction
@@ -164,9 +194,16 @@ float4 SsrTraceBody(float4 position) {
         const float fade = SsrEdgeFade(uv.x, uv.y) * SsrFacingFade(dir.z);
         radiance = SsrColour(uv, 0.0f) * fade;
         conf = fade;
+#if SSR_REFLHIT
+        if (conf > best_fade) screen_id = kReflHitSsrSky;
+#endif
       }
     }
     sum += radiance - fallback * conf;
+#if SSR_REFLHIT
+    best_fade = max(best_fade, conf);
+    screen_weight += conf;
+#endif
 #if SSR_RT
     conf_sum += conf;
 #endif
@@ -182,21 +219,39 @@ float4 SsrTraceBody(float4 position) {
     rgb *= cap / peak;
   }
   const float distance_out = clamp(travelled, 0.02f, 60000.0f);
+#if SSR_REFLHIT
+  const uint visible = ReflHitDominant(screen_id, screen_weight / float(rays), kReflHitNone, 0.0f, native);
+  g_reflhit = ReflHitPack(visible, kReflHitNone, screen_id, native);
+#endif
 #if SSR_RT
   g_confidence = float2(SsrRtGroupOut(rt_group), saturate(conf_sum / float(rays)));
 #endif
   return float4(rgb, SsrPackHit(distance_out, vehicle_hit, vehicle_id));
 }
 
-#if SSR_RT
+#if SSR_RT || SSR_REFLHIT
 struct SsrTraceOut {
   float4 trace : SV_Target0;
+#if SSR_RT
   float2 confidence : SV_Target1;
+#endif
+#if SSR_REFLHIT
+#if SSR_RT
+  uint reflhit : SV_Target2;
+#else
+  uint reflhit : SV_Target1;
+#endif
+#endif
 };
 SsrTraceOut main(float4 position : SV_Position) {
   SsrTraceOut o;
   o.trace = SsrTraceBody(position);
+#if SSR_RT
   o.confidence = g_confidence;
+#endif
+#if SSR_REFLHIT
+  o.reflhit = g_reflhit;
+#endif
   return o;
 }
 #else

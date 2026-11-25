@@ -68,6 +68,7 @@
 // GB-I2: the words the new parts use, each in a pass that does not read the word's first meaning (ssr_rules.h push::)
 #define SSR_W_ROAD_VIEW 2         // trace: the game's road reflection view (256x256 at the guest's size): its slot (bits 0-15, 0xFFFF none) | its host samples - 1 << 16 (3 bits) | its side in host pixels << 19 (10 bits)
 #define SSR_W_FALLBACK 26         // trace: float, the share of that view the effect takes out of the road where a ray finds a reflection (0 adds the reflection on top, as GB-I1)
+#define SSR_REFLHIT_PLANAR_BIT 0x20000000u  // capture only: the native side view was drawn, independent of the subtraction setting
 #define SSR_W_VEH_TABLE 1         // temporal: the AO's vehicle table (4 x 24 texels, a row an ID: three rows of the 3x4 motion, then a flag) in the low 16 bits, 0xFFFF none; the high 16 bits: SSR_TEMPORAL_* options
 #define SSR_TEMPORAL_FIRST_RESOLVE 1u   // bit 0 of the high half of SSR_W_VEH_TABLE: the first version's resolve (the trace's centre pixel alone, the clip takes the history to the box whole), for mcla_gpu_ssr_resolve false
 #define SSR_TEMPORAL_UPSCALER 2u        // bit 1: a temporal upscaler (FSR, DLSS) resolves this frame itself, so the clip has no floor by default

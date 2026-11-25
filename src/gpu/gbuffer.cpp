@@ -45,6 +45,14 @@ std::atomic<uint64_t> g_cutscene_ticks{0};
 
 double Mib(uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0); }
 
+std::array<uint32_t, 2> CaptureGrid(const gbuffer::GBufferFrame& frame, const HostImage* depth) {
+  // The EDRAM sidecar can include tile padding below the native scene rectangle.
+  if (depth && depth->texture && depth->width <= frame.width && depth->height <= frame.height) {
+    return {depth->width, depth->height};
+  }
+  return {frame.width, frame.height};
+}
+
 const char* NameOfPlane(gbuffer::Plane plane) {
   switch (plane) {
     case gbuffer::kPlaneNormal: return "gbuffer normal";
@@ -113,6 +121,12 @@ void GBuffer::Shutdown() {
   capture_class_.framebuffer.reset();
   capture_class_.view.reset();
   capture_class_.texture.reset();
+  capture_reflection_fallback_.framebuffer.reset();
+  capture_reflection_fallback_.view.reset();
+  capture_reflection_fallback_.texture.reset();
+  capture_reflection_fallback_ = {};
+  for (auto& pipeline : capture_reflection_pipelines_) pipeline.reset();
+  capture_reflection_pipeline_failed_.fill(false);
   for (HostImage& image : images_) {
     if (edram_ && image.texture) {
       edram_->DestroyFramebuffersWithExtra(image.texture.get());
@@ -567,13 +581,7 @@ bool GBuffer::DrawView(const ResolveCache::Summary& summary, plume::RenderComman
 const HostImage* GBuffer::DrawCaptureClass(plume::RenderCommandList* list, const HostImage* depth,
                                            const HostImage* ui, uint32_t ui_gap) {
   if (!list || !passes_ || !frame_.Has(gbuffer::kPlaneMaterial)) return nullptr;
-  uint32_t width = frame_.width;
-  uint32_t height = frame_.height;
-  // The EDRAM sidecar can include tile padding below the native scene rectangle.
-  if (depth && depth->texture && depth->width <= width && depth->height <= height) {
-    width = depth->width;
-    height = depth->height;
-  }
+  const auto [width, height] = CaptureGrid(frame_, depth);
   constexpr auto format = plume::RenderFormat::R8_UNORM;
   const auto* pipeline = ViewPipelineFor(format, 1, frame_.host_samples > 1);
   if (!pipeline || !passes_->EnsureImage(capture_class_, width, height, format, "capture class IDs")) return nullptr;
@@ -594,6 +602,30 @@ const HostImage* GBuffer::DrawCaptureClass(plume::RenderCommandList* list, const
 
 void GBuffer::ReleaseCaptureClass() {
   if (passes_ && capture_class_.texture) passes_->ReleaseImage(capture_class_);
+}
+
+const HostImage* GBuffer::DrawCaptureReflectionFallback(plume::RenderCommandList* list, const HostImage* depth, bool planar) {
+  if (!list || !passes_ || !frame_.Has(gbuffer::kPlaneMaterial)) return nullptr;
+  constexpr auto format = plume::RenderFormat::R32_UINT;
+  const bool ms = frame_.host_samples > 1;
+  auto& pipeline = capture_reflection_pipelines_[ms];
+  if (!pipeline && !capture_reflection_pipeline_failed_[ms]) {
+    const auto blob = NativeReflectionHitShader(ms);
+    const auto shader = passes_->CreateShader(blob.data, blob.size, blob.name);
+    if (shader) pipeline = passes_->CreatePipeline(*shader, format, blob.name);
+    capture_reflection_pipeline_failed_[ms] = !pipeline;
+  }
+  auto& image = capture_reflection_fallback_;
+  const auto [width, height] = CaptureGrid(frame_, depth);
+  if (!pipeline || !passes_->EnsureImage(image, width, height, format, "native reflection source IDs")) return nullptr;
+  const uint32_t push[] = {frame_.slot[gbuffer::kPlaneMaterial], frame_.sample0, uint32_t(planar)};
+  // CHECK: verify the native material grid and road-view freshness on both APIs.
+  passes_->DrawInto(list, image, pipeline.get(), push, sizeof(push));
+  return &image;
+}
+
+void GBuffer::ReleaseCaptureReflectionFallback() {
+  if (passes_ && capture_reflection_fallback_.texture) passes_->ReleaseImage(capture_reflection_fallback_);
 }
 
 void GBuffer::LogInterval() {

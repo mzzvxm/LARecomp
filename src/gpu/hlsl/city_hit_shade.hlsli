@@ -1080,7 +1080,11 @@ CityHitResolved CityHitResolve(CityHitParams p, RtHitFrame f, CityHitScreen s, C
         shaded = CityHitShadeHit(p, f, ray, inst, decoded);
     }
     result.normal = shaded.valid != 0u ? shaded.normal : normalHint;
+#if CITY_HIT_RESOLVE_MATERIAL_CLASS
+    result.cls = shaded.valid != 0u ? shaded.cls : CityHitLoadMaterial(decoded.material).cls;
+#else
     result.cls = shaded.cls;
+#endif
     result.ndl = shaded.ndl;
     result.visible = shaded.visible;
     result.glow = shaded.glow;
