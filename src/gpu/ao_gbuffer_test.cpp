@@ -544,6 +544,8 @@ void RuleChecks() {
   Check(without([](ag::FrameFacts& b) { b.setting = false; }) == ag::Why::kSettingOff, "the setting off: kSettingOff");
   Check(without([](ag::FrameFacts& b) { b.gbuffer_present = false; }) == ag::Why::kNoGBuffer, "no G-buffer object: kNoGBuffer");
   Check(without([](ag::FrameFacts& b) { b.play_view = false; }) == ag::Why::kPauseView, "the pause world: kPauseView");
+  Check(without([](ag::FrameFacts& b) { b.play_view = false; b.pause_fx = true; }) == ag::Why::kUsed,
+        "admitted pause and photo frames can use the plane");
   Check(without([](ag::FrameFacts& b) { b.frame_has_normal = false; }) == ag::Why::kNoNormalPlane, "no published normal plane: kNoNormalPlane");
   Check(without([](ag::FrameFacts& b) { b.plane_width = 1280; b.render_width = 1280; }) == ag::Why::kSizeDiffers, "a plane of another width than the depth target's: kSizeDiffers");
   Check(without([](ag::FrameFacts& b) { b.target_width = 1280; }) == ag::Why::kSizeDiffers, "a plane made at the last scale (the depth target is another width now): kSizeDiffers");

@@ -1320,6 +1320,8 @@ class GPUSettings final : public rex::SettingOwner {
     "there takes the camera's motion like the world (a car in the garage is still while the camera orbits it, and "
     "the game's slots for the vehicles are not trusted in those frames). Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_pause_world_fx, false, "Use screen-space reflections and G-buffer normals in the city behind the pause menu and in photo mode. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_perf_markers, false, "Name the frame's phases in the command lists for GPU profilers: PIX events on D3D12, "
     "debug utils labels on Vulkan; how deep, mcla_gpu_perf_markers_level. Nsight GPU "
     "Trace's multi-pass metrics need them. Off: no label is recorded. Read when a frame "
@@ -2367,6 +2369,7 @@ inline auto& mcla_gpu_rtao_raw_scale = g_gpu.mcla_gpu_rtao_raw_scale;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;
+inline auto& mcla_gpu_pause_world_fx = g_gpu.mcla_gpu_pause_world_fx;
 inline auto& mcla_gpu_perf_markers = g_gpu.mcla_gpu_perf_markers;
 inline auto& mcla_gpu_perf_markers_level = g_gpu.mcla_gpu_perf_markers_level;
 inline auto& mcla_gpu_pipeline_cache = g_gpu.mcla_gpu_pipeline_cache;

@@ -283,6 +283,7 @@ struct FrameFacts {
   bool setting = true;
   bool gbuffer_present = true;
   bool play_view = true;
+  bool pause_fx = false;
   bool frame_has_normal = false;   // GBufferFrame::Has(kPlaneNormal)
   uint32_t plane_width = 0;        // GBufferFrame::width / height
   uint32_t plane_height = 0;
@@ -295,7 +296,7 @@ struct FrameFacts {
 constexpr Why Decide(const FrameFacts& f) {
   if (!f.setting) return Why::kSettingOff;
   if (!f.gbuffer_present) return Why::kNoGBuffer;
-  if (!f.play_view) return Why::kPauseView;
+  if (!f.play_view && !f.pause_fx) return Why::kPauseView;
   if (!f.frame_has_normal) return Why::kNoNormalPlane;
   // The plane has the main colour target's size, not the picture's: the guest's target is 1280 x 736 and the picture (the resolve's rectangle) 1280 x 720 in its top left corner, so the plane is 1920 x 1104
   // at 1.5x where the picture is 1920 x 1080. A pixel of the picture is the plane's texel at the same place, whatever the plane's height. What is checked: the plane's width is the depth target's (a render

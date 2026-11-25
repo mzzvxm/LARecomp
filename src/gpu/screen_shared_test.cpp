@@ -968,7 +968,7 @@ void SourceChecks(const std::string& gpu) {
   Check(Has(ao_cpp, "screen_wants_ = ready_ && screen_->NeedsDepthChain() && EnsureScreenDepthPipelines();") && Has(ao_h, "|| screen_wants_ || world_light_wanted_;"), "the AO runs for the screen products only with its depth pipelines made");
   Check(Has(ao_cpp, "plan.screen = screen_wants_ && !plan.occlusion && !contact;") && Has(ao_cpp, "if (!plan.probe && !plan.screen) {"), "a frame for the screen products is the census's probe frame without the readback");
   Check(Has(ao_cpp, "if (mode_ == Mode::kOff && !contact_working && !screen_wants_) {"), "the AO does not give its images back while the screen products use them");
-  Check(Has(scene_cpp, "screen_->BeginFrame(frame_serial_)") && Before(scene_cpp, "screen_->BeginFrame(frame_serial_)", "ao_->BeginFrame();"), "the Scene starts the screen frame before the AO's, which declares its wants after it");
+  Check(Has(scene_cpp, "screen_->BeginFrame(frame_serial_)") && Before(scene_cpp, "screen_->BeginFrame(frame_serial_)", "ao_->BeginFrame("), "the Scene starts the screen frame before the AO's, which declares its wants after it");
   Check(Before(scene_cpp, "gbuffer_->DrawView(summary, list);", "screen_->DrawView(summary, list);"), "the Scene draws the screen view after the G-buffer's");
   Check(Has(scene_h, "SetScreenShared(ScreenShared* screen)"), "the Scene takes the owner");
   Check(Has(renderer, "screen_.Initialize(device_, heap_, passes_, edram_, pass_timing_)") && Has(renderer, "ao_.SetScreenShared(&screen_)") && Has(renderer, "scene_.SetScreenShared(&screen_)"), "the Renderer makes the owner and gives it to the AO and the Scene");

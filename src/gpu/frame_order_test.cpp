@@ -876,12 +876,12 @@ void CheckSources(const std::string& gpu) {
   }
   // the order the lag rests on: the owners read the wants at their BeginFrame, the consumers declare at theirs (frame start, above)
   Check(At(scene, "ssr_->BeginFrame()") < At(scene, "gbuffer_->BeginFrame(frame_serial_)") && At(scene, "ssr_->BeginFrame()") < At(scene, "screen_->BeginFrame(frame_serial_)") &&
-            At(scene, "local_lights_->BeginFrame()") < At(scene, "ssr_->BeginFrame()") && At(scene, "ssr_->BeginFrame()") < At(scene, "ao_->BeginFrame()"),
+            At(scene, "local_lights_->BeginFrame()") < At(scene, "ssr_->BeginFrame()") && At(scene, "ssr_->BeginFrame()") < At(scene, "ao_->BeginFrame("),
         "SSR declares after the light pass and before the G-buffer and the screen owner read (lag 0)");
   Check(Count(scene, "ssr_->BeginFrame()") == 1, "the reflections' frame start is called once");
   Check(At(scene, "ssr_->BeginFrame()") < At(scene, "gi_integration_->BeginFrame(frame_serial_)") && At(scene, "gi_integration_->BeginFrame(frame_serial_)") < At(scene, "gi_apply_->BeginFrame()") &&
             At(scene, "gi_apply_->BeginFrame()") < At(scene, "gbuffer_->BeginFrame(frame_serial_)") && At(scene, "gi_apply_->BeginFrame()") < At(scene, "screen_->BeginFrame(frame_serial_)") &&
-            At(scene, "gi_apply_->BeginFrame()") < At(scene, "ao_->BeginFrame()"),
+            At(scene, "gi_apply_->BeginFrame()") < At(scene, "ao_->BeginFrame("),
         "the probe field starts its frame before its apply declares, and the apply declares before the G-buffer and the screen owner read (lag 0)");
   Check(At(scene, "gi_integration_->OnResolve(summary, list, slot_)") < At(scene, "ao_->OnResolve(record, summary, list, UpscalerRunning())") &&
             At(scene, "ao_->OnResolve(record, summary, list, UpscalerRunning())") < At(scene, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_)"),

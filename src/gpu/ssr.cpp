@@ -453,12 +453,13 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   ssr::FrameFacts facts;
   facts.level = level_;
   facts.pause_view = (sf.flags & screen::kFramePause) != 0;
+  facts.pause_fx = facts.pause_view ? gbuffer_->published_pause_fx() : gbuffer::PauseFxView::kNone;
   facts.has_lens = (sf.camera.flags & screen::kCameraValid) != 0 && sf.camera.tan_half_fov[0] > 0.0f && sf.camera.tan_half_fov[1] > 0.0f && sf.camera.lin[0] != 0.0f;
   facts.has_hiz = sf.Has(screen::kHizMin);
   facts.hiz_levels = sf.hiz_levels;
   facts.has_colour = sf.Has(screen::kColourPost);
   facts.colour_levels = sf.colour_post_levels;
-  const bool gbuffer_current = gf.frame_serial == sf.frame_serial;
+  const bool gbuffer_current = gf.frame_serial == sf.frame_serial && facts.pause_view == gbuffer::IsPauseFx(gbuffer_->published_pause_fx());
   facts.has_rt1 = gbuffer_current && gf.Has(gbuffer::kPlaneNormal);
   facts.has_rt2 = gbuffer_current && gf.Has(gbuffer::kPlaneAlbedo);
   facts.has_rt3 = gbuffer_current && gf.Has(gbuffer::kPlaneMaterial) && !force_stub_;
@@ -515,7 +516,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // the one Ray Reconstruction takes, its radiance in the trace image and its hit distance in the alpha, which the hit pass turns into the guide): RtDenoise does not run in a raw frame, RR is the denoiser.
   plume::RenderPipeline* trace_rt_pipeline = nullptr;
   bool rt = false;
-  if (rt_.wanted() && !decision.stub) {
+  if (!facts.pause_view && rt_.wanted() && !decision.stub) {
     trace_rt_pipeline = Pipeline(ms ? kVTraceRtMs : kVTraceRt);
     rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);
   }
@@ -608,7 +609,10 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   now.frame = screen_->frame_count();
   now.size[0] = width;
   now.size[1] = height;
-  now.generation = sf.generation;
+  now.generation = facts.pause_view ? gf.generation : sf.generation;
+  now.pause_fx = facts.pause_fx;
+  // CHECK: on D3D12 and Vulkan at 1x and 2x host MSAA, hold and slowly pan
+  // the photo camera, then cut back to the menu and check for stale reflections.
   const float history_weight = history_override_ >= 0.0f ? history_override_ : numbers.history_weight;
   const bool use_history = ssr::HistoryUsable(last_key_, now, motion_known) && last_tan_[0] > 0.0f && last_tan_[1] > 0.0f && history_weight > 0.0f;
   if (!camera_logged_) {

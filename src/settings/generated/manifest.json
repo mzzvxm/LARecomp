@@ -4086,6 +4086,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_pause_world_fx": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Use screen-space reflections and G-buffer normals in the city behind the pause menu and in photo mode. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_temporal_jitter_hold": {
   "type": "bool",
   "default": "true",

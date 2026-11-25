@@ -304,6 +304,13 @@ void TestDecision() {
   f = GoodFacts();
   f.pause_view = true;
   Check(sr::Decide(f).why == sr::Why::kPause, "the pause world has no sidecar and no history");
+  for (auto view : {mcla::gpu::gbuffer::PauseFxView::kPause, mcla::gpu::gbuffer::PauseFxView::kPhoto}) {
+    f.pause_fx = view;
+    Check(sr::Decide(f).why == sr::Why::kUsed, "an admitted pause or photo frame can run SSR");
+    f.has_rt1 = false;
+    Check(sr::Decide(f).why == sr::Why::kNoNormals, "an admitted frame still needs its normal plane");
+    f.has_rt1 = true;
+  }
   f = GoodFacts();
   f.has_rt1 = false;
   Check(sr::Decide(f).why == sr::Why::kNoNormals, "no normal plane");
@@ -363,6 +370,17 @@ void TestHistory() {
   now.size[0] = 960;
   last.valid = false;
   Check(!sr::HistoryUsable(last, now, true), "no last frame");
+  last.valid = true;
+  using mcla::gpu::gbuffer::PauseFxView;
+  last.pause_fx = now.pause_fx = PauseFxView::kPhoto;
+  Check(sr::HistoryUsable(last, now, true), "a stationary or reprojectable photo camera keeps history");
+  now.pause_fx = PauseFxView::kPause;
+  Check(!sr::HistoryUsable(last, now, true), "the pause menu cannot use the photo camera's history");
+  now.pause_fx = PauseFxView::kNone;
+  Check(!sr::HistoryUsable(last, now, true), "play cannot use the photo camera's history");
+  now.pause_fx = PauseFxView::kPhoto;
+  ++now.generation;
+  Check(!sr::HistoryUsable(last, now, true), "photo history stops when the sidecar is replaced");
 }
 
 void TestWet() {
@@ -2481,7 +2499,8 @@ void TestSources(const std::string& dir) {
   TestRawSources(dir, rules, header, cpp, scene, cmake, shaders_h, pass, apply_ps, settings, manifest, meta);
 
   // the pause world and the effect's own gate are in the rules
-  Check(Has(rules, "d.why = Why::kPause;") && Has(trigger, "facts.pause_view = (sf.flags & screen::kFramePause) != 0;"), "the pause menu's, the garage's and the map's world are not reflected");
+  Check(Has(rules, "d.why = Why::kPause;") && Has(trigger, "facts.pause_view = (sf.flags & screen::kFramePause) != 0;") &&
+        Has(trigger, "facts.pause_view ? gbuffer_->published_pause_fx()"), "four-sample views need an explicitly published pause/photo sidecar");
   // the effect does not touch the colour capture or the history of the owner
   Check(!Has(cpp, "screen_->CapturePost(") && !Has(cpp, "screen::kHistory") && !Has(cpp, "screen_->Image("), "the effect only reads what the owner made (frame slots), it makes none of it");
 }

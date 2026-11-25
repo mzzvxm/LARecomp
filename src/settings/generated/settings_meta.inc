@@ -473,6 +473,7 @@
 {"mcla_gpu_object_names", "MCLA/GPU"},
 {"mcla_gpu_pass_timing", "MCLA/GPU"},
 {"mcla_gpu_pause_vehicle_vectors", "MCLA/GPU"},
+{"mcla_gpu_pause_world_fx", "MCLA/GPU"},
 {"mcla_gpu_perf_markers", "MCLA/GPU"},
 {"mcla_gpu_perf_markers_level", "MCLA/GPU"},
 {"mcla_gpu_pipeline_cache", "MCLA/GPU"},

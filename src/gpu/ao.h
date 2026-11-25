@@ -509,7 +509,7 @@ class AmbientOcclusion {
   uint64_t RtAoHeldBytes() const;
 
   // The Scene opened a frame's first list: reads the settings.
-  void BeginFrame();
+  void BeginFrame(gbuffer::PauseFxView pause_fx);
   // True while the draw hooks have anything to do (the occlusion or the contact shadows are on, or
   // the census).
   bool wants_draws() const {
@@ -1164,6 +1164,7 @@ class AmbientOcclusion {
   bool composite_seen_ = false;
   bool play_view_ = false;            // the frame had main view draws at the play samples
   bool pause_view_ = false;           // ... at the pause/map samples (4x)
+  gbuffer::PauseFxView pause_fx_ = gbuffer::PauseFxView::kNone;
   uint32_t pause_spell_ = 0;          // consecutive pause/map frames up to this one
   uint32_t qualifying_resolves_ = 0;  // resolves that passed every test but "the first"
   // The picture the frame's first qualifying resolve covered, and how many resolves of its other
