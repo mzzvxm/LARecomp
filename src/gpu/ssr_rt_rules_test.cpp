@@ -193,7 +193,15 @@ void TestConfidenceCodec() {
     Check(hs::SsrRtGroupIn(unorm8(hs::SsrRtGroupOut(g))) == g, Num("group %.0f survives the 8 bit target", g));
   }
   Check(hs::SsrRtGroupIn(0.0f) == 0 && hs::SsrRtGroupOut(0) == 0.0f, "a pixel nothing was traced for (cleared to 0) is group 0");
-  Check(Near(hs::SsrRtGroupOut(1), 1.0 / 3.0, 1e-6) && Near(hs::SsrRtGroupOut(2), 2.0 / 3.0, 1e-6), "the groups are written as thirds (the apply's debug reading and the notes say so)");
+  for (uint32_t g = 0; g < rt::kGroupCount; ++g) {
+    for (int bin = 0; bin <= 63; ++bin) {
+      const float p = float(bin) / 63.0f;
+      const float packed = unorm8(hs::SsrRtGroupOut(g, p));
+      Check(hs::SsrRtGroupIn(packed) == g, "every ray-share bin preserves the group");
+      Check(hs::SsrRtPickRay(packed, p) == 1u && (bin == 0 || hs::SsrRtPickRay(packed, p - 0.001f) == 0u),
+            "the packed share is the boundary for selecting the first ray");
+    }
+  }
   // the candidate rule: every group, mask and confidence against the twin
   const float thresholds[3] = {0.5f, rt::kConfidenceThreshold, 1.0f};
   bool all = true;
@@ -213,6 +221,36 @@ void TestConfidenceCodec() {
   Check(!rt::Candidate(rt::kGroupBright, 0.97f, 15, rt::kConfidenceThreshold) && rt::Candidate(rt::kGroupBright, 0.969f, 15, rt::kConfidenceThreshold), "the picture speaking for 97 percent or more is no candidate");
   Check(rt::ConfidenceImageBytes(960, 540) == 960ull * 540 * 2, "the confidence image is two bytes a pixel");
   Check(Near(hs::kSsrRtMinRamp, rt::kMinRamp, 0.0), "the ramp floor is the shader's");
+}
+
+void TestFallbackCoverage() {
+  const auto pick = [](float first, float second, float noise) {
+    return hs::SsrRtPickRay(hs::SsrRtGroupOut(2u, hs::SsrRtFirstRayShare(first, first + second, 2u)), noise);
+  };
+  Check(pick(1.0f, 0.0f, 0.0f) == 1u && pick(0.0f, 1.0f, 0.999f) == 0u, "a fully covered ray gives all work to the missing ray");
+  Check(pick(0.25f, 0.75f, 0.70f) == 0u && pick(0.25f, 0.75f, 0.80f) == 1u, "partial coverage selects rays in proportion to their deficits");
+  Check(hs::SsrRtFirstRayShare(1.0f, 2.0f, 2u) == 0.0f, "fully covered pixels encode a finite value");
+  for (int i = 0; i <= 16; ++i) {
+    for (int j = 0; j <= 16; ++j) {
+      const float first = i / 16.0f;
+      const float second = j / 16.0f;
+      const float confidence = (first + second) * 0.5f;
+      double combined = 0.0;
+      for (int sample = 0; sample < 256; ++sample) {
+        const float term = pick(first, second, (sample + 0.5f) / 256.0f) == 0u ? 1.0f : 4.0f;
+        combined += rt::Blend(0.0f, confidence, term, 1.0f);
+      }
+      const double exact = ((1.0 - first) + 4.0 * (1.0 - second)) * 0.5;
+      Check(Near(combined / 256.0, exact, 0.031), "single-ray mean matches the two per-ray deficits to quantization precision");
+    }
+  }
+  Check(hs::SsrRtSkyWeight(-0.5f, 0.0f) == 0.0f && hs::SsrRtSkyWeight(0.1f, 0.0f) == 0.0f, "downward and horizon misses keep the planar view");
+  Check(Near(hs::SsrRtSkyWeight(0.25f, 0.0f), 0.5, 1e-6) && Near(hs::SsrRtSkyWeight(0.7f, 0.25f), 0.75, 1e-6), "sky contribution fades at the horizon and at a distant hit");
+  Check(hs::SsrRtSkyWeight(1.0f, 1.0f) == 0.0f && hs::SsrRtSkyWeight(1.0f, 0.0f) == 1.0f, "a full city hit has no sky contribution and a clear skyward miss has full coverage");
+  Check(hs::SsrRtProxyWeight(0.5f) == 0.0f && hs::SsrRtProxyWeight(0.75f) == 0.5f && hs::SsrRtProxyWeight(1.0f) == 1.0f, "proxy recovery fades in above half raster confidence");
+  Check(hs::SsrRtNoDataReason(true, true, true, true) == rt::buf::kNoDataLod && hs::SsrRtNoDataReason(true, true, false, true) == rt::buf::kNoDataDefault &&
+            hs::SsrRtNoDataReason(false, true, false, true) == rt::buf::kNoDataMissing && hs::SsrRtNoDataReason(false, false, true, true) == rt::buf::kNoDataMissing,
+        "the census separates deliberate ground LOD rejection, valid placeholders and unavailable shading");
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +321,14 @@ void TestCap() {
   Check(rt::RayCap(rt::kHighCell, 1) == 125000 && rt::RayCap(rt::kHighCell, 2) == 62500 && rt::RayCap(rt::kHighCell, 3) == 31250 && rt::RayCap(rt::kHighCell, 9) == 31250, "each step halves the cap, three at most");
   Check(rt::RayCap(rt::kMidCell, 3) == 12500 && rt::RayCap(rt::Cell{0, 5000, 1, 1.0f, 1.0f}, 3) == 5000 && rt::RayCap(rt::Cell{}, 0) == 0, "a cap is never under kMinRays (a small cell keeps its own), and an empty cell has none");
   Check(rt::GroupsFor(500000) == 7813 && rt::GroupsFor(64) == 1 && rt::GroupsFor(65) == 2 && rt::GroupsFor(0) == 0, "groups of 64");
-  Check(rt::Capacity(rt::kUltraCell, 0) <= rt::kMaxListEntries && rt::kListBytes == 2000000, "the list holds the largest cell's pixels (2 MB)");
+  for (uint32_t step = 0; step <= rt::Governor::kMaxStep; ++step) {
+    const auto rays = rt::RaysUsed(rt::kUltraCell, 2, true);
+    const auto capacity = rt::CapacityFor(rt::kUltraCell, step, rays);
+    Check(rays == 1 && capacity == 2 * rt::Capacity(rt::kUltraCell, step) && capacity * rays == rt::RayCap(rt::kUltraCell, step),
+          "single-ray Ultra doubles pixel capacity at each step and preserves the ray cap");
+  }
+  Check(rt::RaysUsed(rt::kUltraCell, 2) == 2 && rt::RaysUsed(rt::kHighCell, 1, true) == 1, "default Ultra and one-ray High retain their sample counts");
+  Check(rt::CapacityFor(rt::kUltraCell, 0, 1) == rt::kMaxListEntries && rt::kListBytes == 4000000, "the list holds one million pixels (4 MB)");
 }
 
 // ---------------------------------------------------------------------------
@@ -623,7 +668,8 @@ void TestWords() {
   Check(rt::push::kConf == SSR_W_RT_CONF && rt::push::kCap == SSR_W_RT_CAP && rt::push::kReach == SSR_W_RT_REACH && rt::push::kThreshold == SSR_W_RT_THRESHOLD && rt::push::kFrame == SSR_W_RT_FRAME,
         "the push words are the shader's");
   Check(rt::push::kMaskShift == SSR_RT_CONF_MASK_SHIFT && rt::push::kRaysShift == SSR_RT_RAYS_SHIFT && rt::push::kFlagsShift == SSR_RT_FLAGS_SHIFT && rt::push::kFlagStats == SSR_RT_FLAG_STATS &&
-            rt::push::kFlagReset == SSR_RT_FLAG_RESET && rt::push::kFlagScreen == SSR_RT_FLAG_SCREEN,
+            rt::push::kFlagReset == SSR_RT_FLAG_RESET && rt::push::kFlagScreen == SSR_RT_FLAG_SCREEN && rt::push::kFlagSingleRay == SSR_RT_FLAG_SINGLE_RAY &&
+            rt::push::kFlagSkyMiss == SSR_RT_FLAG_SKY_MISS && rt::push::kFlagScreenProxy == SSR_RT_FLAG_SCREEN_PROXY && rt::push::kFlagProbeMisses == SSR_RT_FLAG_PROBE_MISSES,
         "the conf word's fields are the shader's");
   // the compute passes take the words the SSR passes read for their second meaning: none is one the compute passes read for the first
   const uint32_t reused[5] = {SSR_W_RT_CONF, SSR_W_RT_CAP, SSR_W_RT_REACH, SSR_W_RT_THRESHOLD, SSR_W_RT_FRAME};
@@ -648,8 +694,12 @@ void TestWords() {
   Check(rt::buf::kRays == SSR_RT_CENSUS_RAYS && rt::buf::kCity == SSR_RT_CENSUS_CITY && rt::buf::kCar == SSR_RT_CENSUS_CAR && rt::buf::kMiss == SSR_RT_CENSUS_MISS &&
             rt::buf::kNoData == SSR_RT_CENSUS_NO_DATA && rt::buf::kScreen == SSR_RT_CENSUS_SCREEN && rt::buf::kShaded == SSR_RT_CENSUS_SHADED && rt::buf::kFilled == SSR_RT_CENSUS_FILLED,
         "the census words are the shader's");
+  Check(rt::buf::kMissProbed == SSR_RT_CENSUS_MISS_PROBED && rt::buf::kMissBeyond == SSR_RT_CENSUS_MISS_BEYOND && rt::buf::kMissOpenUp == SSR_RT_CENSUS_MISS_OPEN_UP &&
+            rt::buf::kNoDataLod == SSR_RT_CENSUS_NO_DATA_LOD && rt::buf::kNoDataDefault == SSR_RT_CENSUS_NO_DATA_DEFAULT && rt::buf::kNoDataMissing == SSR_RT_CENSUS_NO_DATA_MISSING &&
+            rt::buf::kProxyRecovered == SSR_RT_CENSUS_PROXY_RECOVERED && rt::buf::kEnvMiss == SSR_RT_CENSUS_ENV_MISS,
+        "the miss and no-data details use the same counters on the CPU and GPU");
   Check(rt::buf::kStatCensus - rt::buf::kStatCal == mcla::gpu::rt_hit_cal::kStatsWords, "the calibration's region is the library's counters' size");
-  Check(rt::buf::kBytes == 288 && rt::HeldBytes(960, 540) == 960ull * 540 * 2 + 2000000 + 288, "the memory: the confidence image, the list, the control words");
+  Check(rt::buf::kBytes == 288 && rt::HeldBytes(960, 540) == 960ull * 540 * 2 + 4000000 + 288, "the memory: the confidence image, the list, the control words");
 }
 
 // ---------------------------------------------------------------------------
@@ -841,14 +891,17 @@ void TestShaderSources(const std::string& dir) {
             DefineOf(common, "SSR_W_RT_THRESHOLD") == rt::push::kThreshold && DefineOf(common, "SSR_W_RT_FRAME") == rt::push::kFrame && DefineOf(common, "SSR_RT_STAT_WORDS") == rt::buf::kStatWords,
         "the text of ssr_rt_common.hlsli holds the header's words");
   // one ray: the trace and the fallback take it from the same function
-  Check(Count(ssr_common, "float3 SsrSampleRay(") == 1 && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays)") && Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, rays)"),
+  Check(Count(ssr_common, "float3 SsrSampleRay(") == 1 && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays)") &&
+            Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, pattern_rays)") && Has(trace, "const uint pattern_rays = single_ray ? SsrRays() : rays;"),
         "the trace and the fallback regenerate the ray with the one function SsrSampleRay (the same pixel, frame, ray index and rays a pixel: the noise's sample number is frame * rays + ray)");
   Check(!Has(trace_ps, "SsrSampleReflection("), "the trace has no copy of the ray's formula left");
   // the identity of the plain compilations: the trace's plain entry and everything the confidence adds is under SSR_RT
   Check(Has(trace_ps, "#ifndef SSR_RT\n#define SSR_RT 0\n#endif") && Has(trace_ps, "float4 main(float4 position : SV_Position) : SV_Target {\n  return SsrTraceBody(position);\n}") && Count(trace_ps, "#if SSR_RT") == 5 &&
-            Count(trace_ps, "g_confidence") == 3 && Count(trace_ps, "conf_sum") == 3 && Count(trace_ps, "rt_group") == 2,
+            Count(trace_ps, "g_confidence") == 3 && Count(trace_ps, "conf_sum") == 4 && Count(trace_ps, "rt_group") == 2,
         "the confidence target's code is all under #if SSR_RT (the plain compilations hold none of it)");
-  Check(Has(trace_ps, "SV_Target0") && Has(trace_ps, "SV_Target1") && Has(trace_ps, "SsrRtGroupOut(rt_group), saturate(conf_sum / float(rays))"), "the confidence target is the trace's second target: the class group and the mean of the rays' fades");
+  Check(Has(trace_ps, "SV_Target0") && Has(trace_ps, "SV_Target1") &&
+            Has(trace_ps, "SsrRtGroupOut(rt_group, SsrRtFirstRayShare(first_confidence, conf_sum, rays)), saturate(conf_sum / float(rays))"),
+        "the confidence target holds the group and first ray's residual share in R, with mean confidence in G");
   // the select pass
   Check(Has(select, "SSR_RT_FLAG_RESET") && Has(select, "SsrRtTileOf(") && Has(select, "SsrRtKeep(capacity") && Has(select, "SsrRtThinHash(pix.x, pix.y, rt_frame, (SsrW(SSR_W_FRAME) & SSR_FRAME_LEGACY_NOISE) != 0u)") && Has(select, "InterlockedAdd(gs_total") && Has(select, "InterlockedAdd(gs_kept") &&
             Has(select, "(rt_frame + 2u) % 3u") && Has(select, "(rt_frame + 1u) % 3u"),
@@ -862,8 +915,11 @@ void TestShaderSources(const std::string& dir) {
   Check(Has(trace, "CityHitResolve(p, f, s, ray, hit.inst, require_detail)") && Has(trace, "CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask") && Has(trace, "RtWorldLoad()") && Has(trace, "RT_WORLD_VALID") && Has(trace, "CITY_HIT_GAIN(cls) RtWorldClassGain(cls)"),
         "the trace pass resolves its hits with the city hit library in the world frame's light, with the world frame's class gains");
   Check(Has(trace, "const bool require_detail = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;") &&
-            Has(trace, "if (res.source == CITY_HIT_SOURCE_NONE) {\n      SsrRtCount(stats, SSR_RT_CENSUS_NO_DATA);\n      continue;"),
-        "ground hits require detail, and rejected rays leave the radiance and hit distance alone");
+            Has(trace, "if (res.source == CITY_HIT_SOURCE_NONE) {") && Has(trace, "if (try_proxy && (lod || placeholder))") &&
+            Has(trace, "SsrRtCount(stats, SSR_RT_CENSUS_NO_DATA);\n      continue;"),
+        "ground hits require detail or an opted-in raster proxy, and rejected rays retain the original reflection");
+  Check(Has(trace, "&& has_planar && (f.flags & RT_HIT_FRAME_ENV) != 0u") && Has(trace, "confidence < 0.5f && nearest < kSsrMissLength"),
+        "replacing the planar view needs both sources, and environment misses do not replace the hit distance");
   Check(Has(trace, "NgFinite3(SsrRtBlend(current.xyz, confidence, sum / float(rays), weight))") && Has(trace, "SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u)"), "the result is the blend, and the hit distance goes into the trace's alpha packed as the trace's own");
   Check(Has(trace, "if (!CityHitIsCity(hit.inst.instanceId))") && Has(trace, "SSR_RT_CENSUS_CAR"), "a hit on a car is not shaded here (it is counted)");
   Check(Has(trace, "CITY_HIT_P_SUN_RAY | CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_CALIBRATE") && Has(trace, "CITY_HIT_STAT_ADD(word, value) g_ctl.InterlockedAdd((SSR_RT_STAT_CAL + (word)) * 4u, (value))"),
@@ -961,6 +1017,7 @@ int main(int argc, char** argv) {
   }
   TestGroups();
   TestConfidenceCodec();
+  TestFallbackCoverage();
   TestCap();
   TestRay();
   TestRayIsTheTraces();

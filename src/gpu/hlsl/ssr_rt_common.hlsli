@@ -1,8 +1,8 @@
 // MCLA GPU renderer -- the ray traced fallback of the screen-space reflections (CITY-RT package R4; src/gpu/ssr_rt_rules.h is the C++ twin and the design, src/gpu/ssr_rt.h the host): the pure functions
 // the three parts share, and the words of the compute passes' push block and buffers.
 //
-// THE HYBRID IN ONE PAGE. The trace (hlsl/ssr_trace_ps.hlsl compiled with SSR_RT 1) writes a second target, its CONFIDENCE: r the class group of a pixel it traced (0: nothing was traced, no ray tracing
-// wanted here), g how much of the pixel's reflection is the picture's (0 left the picture, hit nothing, or points back at the camera .. 1 a hit in full; the edge and facing fades are in it). A compute
+// THE HYBRID IN ONE PAGE. The trace (hlsl/ssr_trace_ps.hlsl compiled with SSR_RT 1) writes a second target: R holds the class group (0 means no ray tracing) and the first ray's share of missing
+// confidence. G holds the picture's share of the pixel's reflection averaged over the rays, including the edge and facing fades. A compute
 // pass over the candidates (a pixel whose group the level takes and whose confidence is under the threshold) regenerates the SAME GGX ray (SsrSampleRay: nothing is stored), traces it into the city's top
 // level and shades the hit with the city hit library (ResolveHit), and writes the result into the trace image: where the picture's share is c the term becomes
 //     trace + (1 - c) * weight * (the ray traced radiance - the road view the trace takes out of a road)
@@ -32,6 +32,10 @@
 #define SSR_RT_FLAG_STATS 1u     // a stats frame: the calibration's and the census's counters are added
 #define SSR_RT_FLAG_RESET 2u     // the first frame: the select pass only clears the control words
 #define SSR_RT_FLAG_SCREEN 4u    // the picture's colour may be taken where a hit is seen (CITY_HIT_P_SCREEN)
+#define SSR_RT_FLAG_SINGLE_RAY 8u
+#define SSR_RT_FLAG_SKY_MISS 16u
+#define SSR_RT_FLAG_SCREEN_PROXY 32u
+#define SSR_RT_FLAG_PROBE_MISSES 64u
 
 // ---- the control buffer (u1 of the output set: words) -------------------------------------------------------------------------------------------------------------------------------------------
 #define SSR_RT_CTL_TOTAL 0u      // 3 words, a frame each in rotation: the candidates counted BEFORE the thinning
@@ -48,6 +52,14 @@
 #define SSR_RT_CENSUS_SCREEN 5u
 #define SSR_RT_CENSUS_SHADED 6u
 #define SSR_RT_CENSUS_FILLED 7u
+#define SSR_RT_CENSUS_MISS_PROBED 8u
+#define SSR_RT_CENSUS_MISS_BEYOND 9u
+#define SSR_RT_CENSUS_MISS_OPEN_UP 10u
+#define SSR_RT_CENSUS_NO_DATA_LOD 11u
+#define SSR_RT_CENSUS_NO_DATA_DEFAULT 12u
+#define SSR_RT_CENSUS_NO_DATA_MISSING 13u
+#define SSR_RT_CENSUS_PROXY_RECOVERED 14u
+#define SSR_RT_CENSUS_ENV_MISS 15u
 
 // ---- numbers ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 static const uint kSsrRtGroupNone = 0u;       // nothing was traced, or a class no level takes
@@ -72,9 +84,34 @@ uint SsrRtGroupOf(uint cls) {
   return kSsrRtGroupNone;
 }
 
-// The confidence target's two channels (R8G8_UNORM): the group over three in r, the confidence in g. A group of 0 is no candidate whatever g says.
-float SsrRtGroupOut(uint group) { return float(group) * (1.0f / 3.0f); }
-uint SsrRtGroupIn(float r) { return uint(r * 3.0f + 0.5f); }
+// R8G8_UNORM: R stores the group in the low two bits and the first ray's share of the missing confidence in the high six.
+// G retains the mean screen confidence for selection and denoising.
+float SsrRtFirstRayShare(float first_confidence, float confidence_sum, uint screen_rays) {
+  const float missing = float(screen_rays) - confidence_sum;
+  return missing > 0.0f ? saturate((1.0f - first_confidence) / missing) : 0.0f;
+}
+float SsrRtGroupOut(uint group, float first_ray_share = 0.0f) {
+  const uint share = uint(saturate(first_ray_share) * 63.0f + 0.5f);
+  return float((share << 2u) | group) / 255.0f;
+}
+uint SsrRtGroupIn(float r) { return uint(r * 255.0f + 0.5f) & 3u; }
+uint SsrRtPickRay(float packed_group, float noise) {
+  const uint share = uint(packed_group * 255.0f + 0.5f) >> 2u;
+  return noise < float(share) / 63.0f ? 0u : 1u;
+}
+
+// Only the uncovered fraction of the ray can replace the game's planar view. Fade out near the horizon.
+float SsrRtSkyWeight(float up, float hit_fade) {
+  return saturate((up - 0.1f) / 0.3f) * (1.0f - hit_fade);
+}
+float SsrRtProxyWeight(float screen) {
+  return saturate(2.0f * screen - 1.0f);
+}
+uint SsrRtNoDataReason(bool valid, bool ground, bool lod, bool placeholder) {
+  if (ground && lod) return SSR_RT_CENSUS_NO_DATA_LOD;
+  if (valid && ground && placeholder) return SSR_RT_CENSUS_NO_DATA_DEFAULT;
+  return SSR_RT_CENSUS_NO_DATA_MISSING;
+}
 
 // Whether a pixel of the confidence target is a candidate: its group is one the level traces (`group_mask` has bit `group`) and the picture speaks for less than `threshold` of it.
 bool SsrRtCandidate(uint group, float confidence, uint group_mask, float threshold) {

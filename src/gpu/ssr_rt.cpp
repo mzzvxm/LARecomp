@@ -287,7 +287,7 @@ void ScreenReflectionsRt::RetireSet() {
 }
 
 bool ScreenReflectionsRt::Record(const Frame& in) {
-  if (!ready_ || !in.list || !in.trace || !in.trace->texture || !in.confidence || !in.confidence->texture || !wanted()) {
+  if (!ready_ || !in.list || !in.trace || !in.trace->texture || !in.confidence || !in.confidence->texture || !car_scene_ || !world_ || !wanted()) {
     return false;
   }
   plume::RenderCommandList* list = in.list;
@@ -325,7 +325,8 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
     REXLOG_INFO("{} the governor moves the cap to step {} of {} ({:.2f} ms average against {:.2f} ms): {} rays a frame", kPrefix, governor_.step(), ssr_rt::Governor::kMaxStep, governor_.ewma_ms(),
                 double(cell.budget_ms), ssr_rt::RayCap(cell, governor_.step()));
   }
-  const uint32_t rays = ssr_rt::RaysUsed(cell, std::max<uint32_t>(in.ssr_rays, 1));
+  const bool single_ray = larecomp::settings::mcla_gpu_ssr_rt_single_ray.Get();
+  const uint32_t rays = ssr_rt::RaysUsed(cell, std::max<uint32_t>(in.ssr_rays, 1), single_ray);
   const uint32_t capacity = ssr_rt::CapacityFor(cell, governor_.step(), rays);
   if (capacity == 0) {
     return false;
@@ -335,6 +336,10 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   ssr::Push push = in.push;
   namespace pk = ssr_rt::push;
   uint32_t flags = (stats ? pk::kFlagStats : 0u) | (in.screen ? pk::kFlagScreen : 0u);
+  if (single_ray) flags |= pk::kFlagSingleRay;
+  if (larecomp::settings::mcla_gpu_ssr_rt_sky_miss.Get()) flags |= pk::kFlagSkyMiss;
+  if (larecomp::settings::mcla_gpu_ssr_rt_screen_proxy.Get()) flags |= pk::kFlagScreenProxy;
+  if (stats && larecomp::settings::mcla_gpu_ssr_rt_probe_misses.Get()) flags |= pk::kFlagProbeMisses;
   push.Set(pk::kConf, ssr_rt::PackConf(in.confidence->slot, cell.group_mask, rays, flags));
   push.Set(pk::kCap, capacity);
   push.SetFloat(pk::kReach, cell.reach);
@@ -497,6 +502,11 @@ void ScreenReflectionsRt::ProcessReadback(uint64_t generation, uint32_t rt_frame
     last_log_frame_ = frame;
     have_line_ = true;
     REXLOG_INFO("{}", ssr_rt::FormatFrameLine(line));
+    using namespace ssr_rt::buf;
+    REXLOG_INFO("{} frame {} detail: no data LOD {} placeholder {} unavailable {}; raster proxy fills {} environment misses {}; "
+                "miss probes {} beyond reach to {:.0f} m {} open upward {}",
+                kPrefix, frame, census[kNoDataLod], census[kNoDataDefault], census[kNoDataMissing], census[kProxyRecovered], census[kEnvMiss], census[kMissProbed], 2.0f * line.reach,
+                census[kMissBeyond], census[kMissOpenUp]);
   }
   last_line_ = line;
 }
