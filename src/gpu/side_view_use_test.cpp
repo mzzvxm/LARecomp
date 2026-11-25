@@ -26,6 +26,7 @@
 #include <tuple>
 
 #include "setting_source.h"
+#include "side_view_ui_map.h"
 #include "side_views.h"
 
 using namespace mcla::gpu;
@@ -232,6 +233,35 @@ void FollowsTheScreenFromOnePointTwoFive() {
   Check(side_views::kFollowMinScale == 25, "the threshold is 1.25x in twentieths");
 }
 
+void QuickMap() {
+  struct Key {
+    uint16_t base_tiles;
+    uint16_t pitch;
+    uint8_t depth;
+    uint8_t format;
+    uint8_t samples;
+    uint8_t reserved;
+  };
+  using ui_map_views::Matches;
+  constexpr Key colour{0, 760, 0, kFormat8888, 4, 0};
+  constexpr uint32_t size = Size(749, 430);
+  Check(Matches(colour, size), "the logged 749x430 quick map belongs to the UI map views");
+  Check(Matches(colour, 0), "the quick map's key also matches when size is unavailable");
+  Check(!Matches(colour, Size(760, 430)), "pitch 760 is not the quick map's declared width");
+  Check(!Matches(colour, Size(749, 432)), "a different declared height uses the same key outside the class");
+  Check(!Matches(Key{0, 760, 1, kFormat8888, 4, 0}, size), "tile 0 depth cannot match even with the same format bits");
+  Check(!Matches(Key{0, 760, 1, kFormatD24FS8, 4, 0}, 0), "pitch 760 D24FS8 depth with no declared size is outside the class");
+  Check(!Matches(Key{0, 760, 0, kFormatFloat7e3, 4, 0}, size), "pitch 760 colour of a different format is outside the class");
+  Check(!Matches(Key{0, 760, 0, kFormat8888, 2, 0}, size), "a two-sample target is outside the class");
+  Check(!Matches(Key{0, 752, 0, kFormat8888, 4, 0}, size), "another pitch is outside the class");
+  Check(!Matches(Key{16, 760, 0, kFormat8888, 4, 0}, size), "another tile is outside the class");
+  Check(!Matches(Key{0, 760, 0, kFormat8888, 4, 1}, size), "a nonzero layer is outside the class");
+  Check(side_views::OutputScale(Scale{60}, false).unit(), "quick map off at 3x is made at 1x");
+  Check(side_views::OutputScale(Scale{24}, true).unit(), "quick map on below 1.25x is made at 1x");
+  Check(side_views::OutputScale(Scale{25}, true) == Scale{25}, "quick map on at 1.25x follows the render scale");
+  Check(side_views::OutputScale(Scale{60}, true) == Scale{60}, "quick map on at 3x follows the render scale");
+}
+
 void UnknownSizeAndOtherIdentities() {
   Table t;
   t.class_scale = 2;
@@ -368,21 +398,24 @@ void CheckSource(const std::string& dir) {
           "the scale disagreement's log line names every colour of the draw and the depth, each with its scale (the logged line named colour 0 and the depth, both at 3x)");
   }
 
-  // The HUD's and the menus' views (side_view_ui_map.cpp): the five identities of the 3x logs (colour k_8_8_8_8 at tile 224 pitch 160 and 280, tile 168 pitch 240;
+  // The HUD's and the menus' views (side_view_ui_map.h): the five identities of the 3x logs (colour k_8_8_8_8 at tile 224 pitch 160 and 280, tile 168 pitch 240;
   // depth kD24FS8 at tile 0 pitch 160 and 280; 4 samples; declared 128, 256 and 220) and, since round 3, the menus' page (colour at tile 960 pitch 960 and depth at tile 0
   // pitch 960, 2 samples, declared 960x640), the guest's samples at any scale, layer 0 only, and a class that follows the screen's scale: EdramTargets asks for the
   // output's scale (Wanted(resolution_scale_)) and every loop over the classes is the one list.
   const std::string ui_map = ReadFile(dir + "/side_view_ui_map.cpp");
+  const std::string identities = ReadFile(dir + "/side_view_ui_map.h");
   Check(!ui_map.empty(), "side_view_ui_map.cpp is readable");
-  Check(Has(ui_map, "{false, 224, 160, 4, 128, 128}") && Has(ui_map, "{true, 0, 160, 4, 128, 128}") && Has(ui_map, "{false, 224, 280, 4, 256, 256}") &&
-            Has(ui_map, "{true, 0, 280, 4, 256, 256}") && Has(ui_map, "{false, 168, 240, 4, 220, 220}"),
-        "side_view_ui_map.cpp has the five identities of the census, with their 4 samples");
-  Check(Has(ui_map, "{false, 288, 160, 4, 128, 128}"),
-        "side_view_ui_map.cpp has the 128x128 pass's second colour (k_8_8_8_8 at tile 288, pitch 160, 4 samples): every identity a pass binds is the class's (the rthit4 night log)");
-  Check(Has(ui_map, "{false, 960, 960, 2, 960, 640}") && Has(ui_map, "{true, 0, 960, 2, 960, 640}"),
-        "side_view_ui_map.cpp has the menus' page: colour at tile 960 and depth at tile 0, pitch 960, 2 samples, declared 960x640");
-  Check(Has(ui_map, "key.reserved != 0") && Has(ui_map, "return guest_samples;") && Has(ui_map, ".follows_output = true"),
-        "the UI map rule matches layer 0 only, keeps the guest's samples and follows the output");
+  Check(Has(identities, "{false, 224, 160, 4, 128, 128}") && Has(identities, "{true, 0, 160, 4, 128, 128}") && Has(identities, "{false, 224, 280, 4, 256, 256}") &&
+            Has(identities, "{true, 0, 280, 4, 256, 256}") && Has(identities, "{false, 168, 240, 4, 220, 220}"),
+        "side_view_ui_map.h has the five identities of the census, with their 4 samples");
+  Check(Has(identities, "{false, 288, 160, 4, 128, 128}"),
+        "side_view_ui_map.h has the 128x128 pass's second colour (k_8_8_8_8 at tile 288, pitch 160, 4 samples): every identity a pass binds is the class's (the rthit4 night log)");
+  Check(Has(identities, "{false, 960, 960, 2, 960, 640}") && Has(identities, "{true, 0, 960, 2, 960, 640}"),
+        "side_view_ui_map.h has the menus' page: colour at tile 960 and depth at tile 0, pitch 960, 2 samples, declared 960x640");
+  Check(Has(ui_map, ".matches = ui_map_views::Matches<EdramKey>") && Has(ui_map, "return guest_samples;") && Has(ui_map, ".follows_output = true"),
+        "the UI map rule uses the tested matcher, keeps the guest's samples and follows the output");
+  Check(Has(ui_map, ".enabled = Enabled") && Has(ui_map, "return larecomp::settings::mcla_ui_minimap_scale.Get();"),
+        "SHARP MINIMAP enables the UI map views live");
   // The setting is a REX_SETTING row of src/settings/generated (or, before the conversion, the REXCVAR_DEFINE call of side_view_ui_map.cpp): setting_source.h reads either form.
   const setting_source::Info minimap = setting_source::Find(dir, ui_map, "mcla_ui_minimap_scale");
   Check(setting_source::DefaultIsTrue(minimap) && !minimap.debug_only, "the setting is on by default and is no debug setting any more");
@@ -398,6 +431,7 @@ int main(int argc, char** argv) {
   LoggedFrame();
   EitherOrder();
   FollowsTheScreenFromOnePointTwoFive();
+  QuickMap();
   UnknownSizeAndOtherIdentities();
   SecondColourOfTheNightPass();
   if (argc > 1) {

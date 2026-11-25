@@ -1,4 +1,4 @@
-// MCLA GPU renderer -- the HUD's and the menus' render-to-texture views (the minimap, the phone's screen, the two views beside them, and the page of the pause menu,
+// MCLA GPU renderer -- the HUD's and the menus' render-to-texture views (the minimap, the quick map, the phone's screen, and the page of the pause menu,
 // the garage and the GPS map) as a side view class that follows the render scale: its identities and its setting. See side_views.h.
 //
 // What the game draws (VERIFIED in the 3x logs, ports\run\p10-4k-hdr "edram: ... made at 1x (the guest's size; declared ...)" and perf\out\GFXCENSUS2.txt;
@@ -9,6 +9,10 @@
 //     (an image of the screen; declared 128x128, first use 128 rows)", right after @224 and the depth; no such target in a day run) -- the same draws bind it as their second render target
 //   colour k_8_8_8_8 at tile 224, pitch 280, 4 samples + depth kD24FS8 at tile 0, pitch 280, 4 samples, declared 256x256   (about 37 draws a frame)
 //   colour k_8_8_8_8 at tile 168, pitch 240, 4 samples, no depth,                                       declared 220x220   (43 to 84 draws a frame)
+// The D-pad up quick map replaces the 220x220 minimap with a larger overlay:
+//   colour k_8_8_8_8 at tile   0, pitch 760, 4 samples, no depth,                                       declared 749x430   (216 draws a frame)
+// GFXCENSUS2 shows it under map-overlay and later roam/end tags. The 26 matching target creations in ports\run\*\larecomp.log all have this same
+// colour format, sample count and declared size. Other passes use tile 0 for depth at other pitches (e.g. 1280 for the scene, 520 for environment maps).
 // and in the menus that are drawn over a world (the pause menu and its pages, the race pause, the garage and the showroom, the GPS map: the tags pause-tab0, pause-rb0,
 // pause-rb1 and map-full of perf\out\GFXCENSUS2.txt, never free roam; p10-garage and p10-menu list the target):
 //   colour k_8_8_8_8 at tile 960, pitch 960, 2 samples + depth kD24FS8 at tile 0, pitch 960, 2 samples, declared 960x640   (57 to 103 draws a frame)
@@ -29,7 +33,7 @@
 // (UI-SHARP.md, lever C). The Flash draws INTO a member are themselves draws of the bitmaps the UI sharpening is for, at the member's scale: Scene::UiSharpContext
 // calls them UI draws too (ui_sharp.h Context::kMovie).
 //
-// The class: all seven identities, at the SCREEN's scale (the render scale the images of the screen are made at) when that is at least ui_sharp's kMinMagnification
+// The class: the identities in side_view_ui_map.h, at the SCREEN's scale (the render scale the images of the screen are made at) when that is at least ui_sharp's kMinMagnification
 // (1.25x of the console's picture: below it the class is at the guest's size, so 720p at a render scale of 1 is the game's own, target for target; side_views.h
 // OutputScale), with the guest's samples (4 or 2: the same pipelines as at 1x, no new sample count to build), moved live by mcla_ui_minimap_scale. Off the class is at 1x
 // and changes nothing: the game's own targets, shader for shader. Everything else is the reflection class's machinery (side_views.h): the viewport, scissor, clears and
@@ -40,6 +44,9 @@
 //  - The HUD's draw of the 220x220 product: PS_Textured with UV from the vertices (normalised): the finer product is read as it is, at any scale. The 256x256
 //    product by the 3D UI shaders: UV too. No shader of the census reads these textures with a texel size constant (xrage_im PS_Textured, xGloss and xUnlit shaders:
 //    one fetch each, the offset is float2(0, 0)). The 960x640 product is read by the same three shaders (xGloss, xUnlitRuntimeAlpha, xUnlitRuntimeColor: one bitmap fetch each).
+//  - The quick map is read after the marker by the same xrage_im PS_Textured (5CA2EECD341441FF, ports\run\r5c-high-ui-d3d12\larecomp.log):
+//    one normalized UV fetch, so it can use the product at its own scale. The logs show no lock write-back for the 749x430 texture at 06acd000.
+//    CHECK: confirm the scaled resolve survives the shared guest address and check for guest readback while the quick map is open. The guest-memory encode uses guest texels.
 //  - The views' own draws (the roads, the blips, the clipping quads, the page's text and panels) use the guest's viewport and scissor in guest pixels, which every target
 //    scale scales (ComputeViewport(state, depth, scale), Scale::Edge); lines and points whose width is set in guest pixels (RB/PA registers) would come out thinner against the
 //    map at a larger scale (CHECK: the minimap's road lines at 2.25x against 1x: sharper, not thinner or broken).
@@ -53,7 +60,7 @@
 //    at 1x: "targets of different resolution scales", all 25 draws a frame of the pass left out for the rest of the run (15,000 skipped draws every 600 frames in the log; CHECK: what the view
 //    shows on screen). On main too: any live change of the shadows', the reflections' or the road reflection's resolution at 1.25x and over, at night. Every identity that the pass binds is in the table.
 //  - The identities share EDRAM tiles with other passes (tile 224 is also the 8x8 target at pitch 80; tile 0 is the depth of several): the declared size tells the
-//    uses apart (Matches asks for 128, 256, 220 or 960x640 whenever it is known), and another pass's use of the depth identity is a foreign use with a target of its own.
+//    uses apart (Matches checks the declared size when known), and another pass's use of the depth identity is a foreign use with a target of its own.
 //  - Cost: 2.25x makes 288x288, 576x576 and 495x495 targets at 4 samples (a few MiB each) and a 2160x1440 page at 2 samples with its depth (about 50 MiB; 88 MiB at 3x),
 //    made when a menu first uses it; the draws a frame are the game's. A target that cannot be made steps the class down (ONE STEP FOR ALL).
 //
@@ -67,6 +74,7 @@
 //  4. A live off -> on -> off: no validation message, a few frames at most of a cleared view while the targets are remade ("the UI map views side view ... is now made at").
 //  5. What reads the 128x128 pair (the census of the same run: the log's resolve line names its product and the draws that read it).
 //  6. The 960x640 page at 2x and 3x on a small card (VRAM): the class steps down instead of failing; the log says so.
+//  7. CHECK: with the quick map open at 1080p and 4K, compare its roads and pins, position and clipping through off -> on -> off. Check the 749x430 product's logged scale on both APIs.
 
 #include <cstdint>
 #include <string>
@@ -75,6 +83,7 @@
 #include <rex/xenos/format.h>
 
 #include "edram.h"
+#include "side_view_ui_map.h"
 #include "side_views.h"
 #include "ui_sharp.h"
 
@@ -88,43 +97,8 @@ namespace xe = rex::xenos;
 static_assert(side_views::kFollowMinScale == uint32_t(ui_sharp::kMinMagnification * float(Scale::kDenominator) + 0.5f),
               "the UI map views follow the render scale from the scale at which the UI sharpening starts");
 
-// One identity of the class: the surface it is bound through is declared `width` x `height`, and the game draws it with `samples` samples.
-struct Identity {
-  bool depth;
-  uint16_t base_tiles;
-  uint16_t pitch;
-  uint8_t samples;
-  uint32_t width;
-  uint32_t height;
-};
-constexpr Identity kIdentities[] = {
-    {false, 224, 160, 4, 128, 128},  // colour k_8_8_8_8, with the depth below
-    {false, 288, 160, 4, 128, 128},  // the same pass's second colour (at night): a target of the pass is a member of the class, or the pass is left out after the next scale step (below)
-    {true, 0, 160, 4, 128, 128},     // depth kD24FS8
-    {false, 224, 280, 4, 256, 256},
-    {true, 0, 280, 4, 256, 256},
-    {false, 168, 240, 4, 220, 220},  // the minimap: colour only
-    {false, 960, 960, 2, 960, 640},  // the menus' page (the pause menu, the garage, the GPS map's panel), with the depth below
-    {true, 0, 960, 2, 960, 640},
-};
-
-bool Matches(const EdramKey& key, uint32_t size_bits) {
-  if (key.reserved != 0) {
-    return false;
-  }
-  for (const Identity& identity : kIdentities) {
-    if (key.samples != identity.samples || key.pitch != identity.pitch || key.base_tiles != identity.base_tiles ||
-        (key.depth != 0) != identity.depth) {
-      continue;
-    }
-    // The declared size, where it is known: any other size at these keys is another pass's use of them.
-    if (size_bits != 0 && !side_views::DeclaredSize(size_bits, identity.width, identity.height)) {
-      return false;
-    }
-    return key.format == (identity.depth ? uint8_t(xe::DepthRenderTargetFormat::kD24FS8) : uint8_t(xe::ColorRenderTargetFormat::k_8_8_8_8));
-  }
-  return false;
-}
+static_assert(ui_map_views::kColorFormat == uint8_t(xe::ColorRenderTargetFormat::k_8_8_8_8));
+static_assert(ui_map_views::kDepthFormat == uint8_t(xe::DepthRenderTargetFormat::kD24FS8));
 
 std::string Setting() {
   return larecomp::settings::mcla_ui_minimap_scale.Get() ? "on" : "off";
@@ -144,7 +118,7 @@ uint32_t HostSamples(Scale, uint32_t guest_samples) {
 const SideViewRule kUiMapRule = {
     .view = SideView::kUiMap,
     .name = "UI map views",
-    .matches = Matches,
+    .matches = ui_map_views::Matches<EdramKey>,
     .setting = Setting,
     .effect = gpu_class::Effect::kReflectionResolution,  // unused: the class has no `auto` row (follows_output)
     .test_scale = nullptr,

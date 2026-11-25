@@ -102,7 +102,7 @@ SideScales Wanted(Scale output) {
   for (const SideView view : kAllSideViews) {
     const SideViewRule& rule = Rule(view);
     if (rule.follows_output) {
-      out[view] = rule.enabled && rule.enabled() ? OutputScale(output) : Scale{};
+      out[view] = OutputScale(output, rule.enabled && rule.enabled());
       continue;
     }
     Scale scale = ScaleOfLevel(LevelOf(view));
@@ -122,7 +122,7 @@ SideScales FollowOutput(const SideScales& side, Scale output) {
   for (const SideView view : kAllSideViews) {
     const SideViewRule& rule = Rule(view);
     if (rule.follows_output) {
-      out[view] = rule.enabled && rule.enabled() ? OutputScale(output) : Scale{};
+      out[view] = OutputScale(output, rule.enabled && rule.enabled());
     }
   }
   return out;
