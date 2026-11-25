@@ -18,6 +18,7 @@
 // and that resolve.cpp takes its list and its conversion from the header and keeps no table of its own.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -209,6 +210,51 @@ void CheckListedCopies() {
   std::printf("listed copy pipelines (%zu): %s\n", list.size(), names.c_str());
 }
 
+void CheckTextureCopy() {
+  constexpr Variant rgba8{false, false, kRgba8};
+  Check(CanCopyRgba8(rgba8, kRgba8, 0, kModeUnorm8888, 1.0f, 0), "plain RGBA8 can copy");
+  Check(!CanCopyRgba8({true, false, kRgba8}, kRgba8, 0, kModeUnorm8888, 1.0f, 0),
+        "depth uses the shader");
+  Check(!CanCopyRgba8({false, true, kRgba8}, kRgba8, 0, kModeUnorm8888, 1.0f, 0),
+        "multisampling uses the shader");
+  Check(!CanCopyRgba8(rgba8, kRgba16F, 0, kModeUnorm8888, 1.0f, 0),
+        "float source uses the shader");
+  Check(!CanCopyRgba8({false, false, kRgba16F}, kRgba8, 0, kModeUnorm8888, 1.0f, 0),
+        "float destination uses the shader");
+  Check(!CanCopyRgba8(rgba8, kRgba8, 1, kModeUnorm8888, 1.0f, 0),
+        "higher mip uses the shader");
+  Check(!CanCopyRgba8(rgba8, kRgba8, 0, kModeDepthRaw8888, 1.0f, 0),
+        "raw depth conversion uses the shader");
+  Check(!CanCopyRgba8(rgba8, kRgba8, 0, kModeUnorm8888 | 0x100u, 1.0f, 0),
+        "conversion flags use the shader");
+  Check(!CanCopyRgba8(rgba8, kRgba8, 0, kModeUnorm8888, 0.5f, 0),
+        "exponent bias uses the shader");
+  Check(!CanCopyRgba8(rgba8, kRgba8, 0, kModeUnorm8888, 1.0f, 1),
+        "half-pixel fill uses the shader");
+
+  plume::RenderBox box;
+  Check(Rgba8CopyBox({10, 8, 30, 20}, -4, 6, 26, 26, box) && box.left == 6 &&
+            box.top == 14 && box.right == 26 && box.bottom == 26 &&
+            box.front == 0 && box.back == 1,
+        "offset partial copy can reach both source edges");
+  Check(Rgba8CopyBox({0, 0, 30, 20}, 0, 0, 30, 20, box) && box.left == 0 &&
+            box.top == 0 && box.right == 30 && box.bottom == 20,
+        "full-size copy includes the source origin");
+  Check(!Rgba8CopyBox({10, 8, 30, 20}, -11, 0, 40, 40, box), "source x underflow");
+  Check(!Rgba8CopyBox({10, 8, 30, 20}, 0, -9, 40, 40, box), "source y underflow");
+  Check(!Rgba8CopyBox({10, 8, 30, 20}, 0, 0, 29, 40, box), "source x overflow");
+  Check(!Rgba8CopyBox({10, 8, 30, 20}, 0, 0, 40, 19, box), "source y overflow");
+  Check(!Rgba8CopyBox({10, 8, 10, 20}, 0, 0, 40, 40, box), "empty width");
+  Check(!Rgba8CopyBox({10, 8, 30, 8}, 0, 0, 40, 40, box), "empty height");
+
+  // Compare the shader's XeQuantizeUNorm to copying the stored byte.
+  for (int byte = 0; byte < 256; ++byte) {
+    const float loaded = float(byte) / 255.0f;
+    const float quantized = std::floor(std::clamp(loaded, 0.0f, 1.0f) * 255.0f + 0.5f) / 255.0f;
+    Check(std::lround(quantized * 255.0f) == byte, "UNORM round trip of " + std::to_string(byte));
+  }
+}
+
 // ---- the sources ---------------------------------------------------------------------------------------------------
 
 std::string ReadFile(const std::string& path) {
@@ -251,6 +297,7 @@ int main(int argc, char** argv) {
   CheckConversionTable();
   CheckTableVariants();
   CheckListedCopies();
+  CheckTextureCopy();
   if (argc > 1) {
     CheckSources(argv[1]);
   } else {

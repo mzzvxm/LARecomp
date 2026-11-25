@@ -3048,6 +3048,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_resolve_texture_copy": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Use a GPU texture copy for matching single-sample RGBA8 resolves that need no conversion. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_resolve_7e3_ceiling": {
   "type": "bool",
   "default": "true",
