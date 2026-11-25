@@ -2039,10 +2039,9 @@ class GPUSettings final : public rex::SettingOwner {
     "(mcla_gpu_resolve_memory_encode_delay) and the encode batch counters. Off: as before "
     "that day. Hot reload.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_ui_minimap_scale, true, "Draw the HUD's and the menus' small views (the minimap, the phone screen, and the page of the pause menu, the garage and the GPS map, which the game always draws at "
-    "fixed sizes and the screen stretches) at the render scale, as the images of the screen are, so that the minimap and the menus' text come out as sharp as the rest of the "
-    "picture at 1080p and 4K. At 720p (render scale 1x) it is the game's own either way. Off: the game's own sizes. Costs video memory while a menu is up (about 50 MiB at "
-    "4K for the pause menu and the map). Live.");
+  REX_SETTING(bool, mcla_ui_minimap_scale, true, "Draw the minimap, the D-pad quick map, the phone screen and menu pages at the render scale from 1.25x. "
+    "This sharpens map roads and icons and menu text at 1080p and 4K. Turning it off keeps the game's original sizes. "
+    "Higher render scales use more video memory. Applies live.");
 
   REX_SETTING(bool, mcla_ui_sharp, true, "Sharper HUD and menu art where the game's bitmaps are blown up (a render scale above 1.25x of the console's 720p "
     "picture: 1080p and 4K windows). The game's buttons, icons, panels and text are bitmaps made for the console's "
