@@ -23,6 +23,7 @@
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "ray_regen_plan.h"
 #include "records.h"
 #include "screen_shared.h"
 #include "ssgi_level.h"
@@ -263,9 +264,6 @@ void GiApply::BeginFrame() {
   if (enabled_ && cabin_on_ && car_frame_ != nullptr) {
     car_frame_->Request();
   }
-  if (gbuffer_ != nullptr) {
-    gbuffer_->Want(gbuffer::Consumer::kRtBounce, enabled_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kRtBounce) : 0u);
-  }
   if (screen_ != nullptr) {
     screen_->Want(screen::Consumer::kRtBounce, enabled_ ? screen::ProductBit(screen::kLinDepth) : 0u);
   }
@@ -274,6 +272,15 @@ void GiApply::BeginFrame() {
   // boundary (frame_order.h kBeginGiApply before kBeginTemporal: no lag).
   pixel_wanted_ = enabled_ && pixel_ != nullptr && pixel_->available() && gi_pixel::ConsumerWanted(field_->fit().wanted);
   denoiser::NoteConsumer(rr::Consumer::kRtGi, pixel_wanted_);
+  if (gbuffer_ != nullptr) {
+    uint32_t planes = enabled_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kRtBounce) : 0u;
+    if (pixel_wanted_ && view_ == 0 && rayregen::BuildHas() && rayregen::RowListed() && ActiveBackend() == Backend::kD3D12 &&
+        rayregen::SiteSignals(rayregen::Site::kBounce, denoiser::Setting(), rayregen::ReadDebugSwitch(), rr::ConsumerBit(rr::Consumer::kRtGi)) != 0) {
+      const rayregen::Facts facts = rayregen::MenuFacts();
+      if (facts.supported && !facts.failed) planes |= gbuffer::PlaneBit(gbuffer::kPlaneMaterial);
+    }
+    gbuffer_->Want(gbuffer::Consumer::kRtBounce, planes);
+  }
   ssgi_ran_share_ = 0.0f;
   pixel_ran_frame_ = false;
   trigger_seen_ = false;
@@ -292,9 +299,9 @@ float GiApply::TakeSsgiShare() {
 
 float GiApply::LevelStrength() { return LevelNumbers().strength; }
 
-bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested) {
+bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter) {
   expect_add_ = false;
-  const bool recorded = OnTriggerImpl(summary, list, gbuffer_published, frame_slot, raw_requested);
+  const bool recorded = OnTriggerImpl(summary, list, gbuffer_published, frame_slot, raw_requested, regen_jitter);
   if (expect_add_) {
     starved_frames_ = recorded ? 0u : starved_frames_ + 1u;  // the watchdog (Starved): a frame the field stood for and the apply drew nothing
   }
@@ -309,7 +316,7 @@ const HostImage* GiApply::RawHitImage() const {
   return out.valid && out.frame == frame_ ? out.hit : nullptr;   // the pass's own frame is the apply's counter: a frame the trigger did not reach has none
 }
 
-bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested) {
+bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter) {
   if (!enabled_ || !list || trigger_seen_ || field_ == nullptr || gbuffer_ == nullptr || screen_ == nullptr || edram_ == nullptr || !summary.source) {
     return false;
   }
@@ -488,6 +495,14 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     pixel_in.sample0 = gb.sample0;
     pixel_in.multisampled = gb.host_samples > 1;
     pixel_in.raw = raw_requested;
+    if (regen_jitter && view_ == 0 && own_pose && gb.Has(gbuffer::kPlaneMaterial)) {
+      pixel_in.regen = true;
+      pixel_in.material_slot = gb.slot[gbuffer::kPlaneMaterial];
+      pixel_in.jitter[0] = regen_jitter[0];
+      pixel_in.jitter[1] = regen_jitter[1];
+      pixel_in.near_plane = sf.camera.near_plane;
+      pixel_in.far_plane = sf.camera.far_plane;
+    }
     if (pixel_->Begin(pixel_in)) {
       pass_timing_->Mark(list, "rt gi pixel");
       pixel_->RecordTrace(list);

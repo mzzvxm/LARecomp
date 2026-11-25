@@ -747,7 +747,7 @@ void SourceChecks() {
     const size_t at_guides = At(host_cpp, "const plume::RenderTextureBarrier reads[2]");
     Check(at_else != std::string::npos && at_signal > at_else && at_barrier > at_signal && at_graphics > at_barrier && at_guides > at_graphics && At(host_cpp, "if (plan_.denoise) {") < at_else,
           "RAW: a raw frame (the branch after the denoiser's own) publishes the 1 spp signal and puts it and the hit image in the read state of both stages, before the guides' barrier");
-    Check(Has(host_cpp, "signal_.layout = hit_.layout = Layout::SHADER_READ;") && Has(host_cpp, "params_.raw = plan.raw;") && Has(host_cpp, "have_prev_ = rules::KeepsHistory(plan_.raw);") && Has(host_cpp, "out.frame = frame_;") &&
+    Check(Has(host_cpp, "signal_.layout = hit_.layout = Layout::SHADER_READ;") && Has(host_cpp, "params_.raw = plan.raw;") && Has(host_cpp, "have_prev_ = rules::KeepsHistory(plan_.raw) && !regen_ok;") && Has(host_cpp, "out.frame = frame_;") &&
               Has(host_cpp, "if (plan_.raw != raw_logged_) {") && Has(host_cpp, "rules::RawLine(plan_.raw)") && Has(host_h, "uint64_t frame = 0;") && Has(host_h, "bool raw_logged_ = false;"),
           "RAW: the images' layouts are tracked, the apply's row carries the flag, the denoiser starts again after a raw frame, the output names its frame, and a change of state is one log line");
     Check(CountOf(host_cpp, "denoise_.RecordTemporal(") == 1 && CountOf(host_cpp, "denoise_.RecordSpatial(") == 1 && At(host_cpp, "denoise_.RecordTemporal(") < at_else && At(host_cpp, "denoise_.RecordSpatial(") < at_else,
@@ -758,9 +758,9 @@ void SourceChecks() {
     Check(Has(apply_ps, "row.raw != 0u ? GipRawWeight(d) : GipWeight(e.w, d)") && Has(apply_ps, "(row.raw != 0u ? GipRawWeight(1.0f) : GipWeight(lengthSum / wSum, 1.0f)) * saturate(cover)") &&
               Has(common, "float GipRawWeight(float depthGuide)") && Has(common, "#define GIP_RAW_WEIGHT 1.0f") && Has(gi_common, "p.raw = r.w & 1u;") && Has(gi_common, "    uint raw;\n};"),
           "RAW: the apply's two reads (nearest, and the four depth and normal weighted taps) take GipRawWeight where the row says raw, the history weight otherwise; the row's last word is the flag");
-    Check(Has(apply_cpp, "pixel_in.raw = raw_requested;") && Has(apply_cpp, "bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested)") &&
+    Check(Has(apply_cpp, "pixel_in.raw = raw_requested;") && Has(apply_cpp, "bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested,") &&
               Has(apply_cpp, "const HostImage* GiApply::RawHitImage() const {") && Has(apply_cpp, "return out.valid && out.frame == frame_ ? out.hit : nullptr;") && Has(apply_h, "bool pixel_pass_wanted() const { return pixel_wanted_; }") &&
-              Has(apply_h, "const HostImage* RawHitImage() const;") && Has(apply_h, "bool raw_requested = false);"),
+              Has(apply_h, "const HostImage* RawHitImage() const;") && Has(apply_h, "bool raw_requested = false,"),
           "RAW: GiApply hands the frame's raw flag to the pass, answers the guide pass with the hit image of THIS frame only (none where the pass did not run raw), and tells the Scene whether the pass is wanted");
     Check(Has(apply_cpp, "denoiser::NoteConsumer(rr::Consumer::kRtGi, pixel_wanted_);") && Has(apply_cpp, "gi_pixel::ConsumerWanted(field_->fit().wanted)") && Has(apply_cpp, "#include \"denoiser_setting.h\""),
           "RAW: the consumer is registered by GiApply::BeginFrame from the rules' word (the denoiser_setting test reads the order inside the function)");
@@ -773,7 +773,7 @@ void SourceChecks() {
                        Slurp(g_dir + "/rr_guides.cpp", &guides_cpp);
     Check(read2, "RAW: the Scene, the temporal system, the guide pass and the three generated settings files could be read");
     if (read2) {
-      Check(Has(scene_cpp, "const bool raw_gi = gi_apply_->pixel_pass_wanted() && temporal_ && temporal_->RawModes().RtGi();") && Has(scene_cpp, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);") &&
+      Check(Has(scene_cpp, "const bool raw_gi = gi_apply_->pixel_pass_wanted() && temporal_ && temporal_->RawModes().RtGi();") && Has(scene_cpp, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi,") &&
                 Has(scene_cpp, "temporal_->NoteRrBounceHit(gi_apply_ && rr::BounceHitWanted(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())) ? gi_apply_->RawHitImage() : nullptr);") &&
                 At(scene_cpp, "const bool raw_gi") < At(scene_cpp, "temporal_->NoteRrBounceHit(") && At(scene_cpp, "temporal_->NoteRrHit(") < At(scene_cpp, "temporal_->NoteRrBounceHit("),
             "RAW: the Scene asks the temporal system for a raw frame only while the pass is wanted, calls the apply with it, and hands the hit image over after the trigger's passes (the switch's value 2 leaves it out)");
@@ -805,7 +805,8 @@ void SourceChecks() {
         "HOST: no surface lights of the manager's frame (the emitters), the pipelines made in the background, the history only from the previous frame without a cut, the traced-to-picture scale");
   Check(Has(host_cpp, "rules::kSetViews, 0, \"gi pixel set\"") && Has(host_cpp, "plume::RenderFormat::R32_FLOAT") && Has(host_cpp, "plume::RenderFormat::R16G16_FLOAT") && Has(host_cpp, "signal_.slot <= 0xFFFEu") && CountOf(host_cpp, "->setTexture(") == 4,
         "HOST: six views in the pass set, the four image formats the shader declares, 16 bit slots for the denoiser's words");
-  Check(CountOf(host_cpp, "Mark(") == 0, "HOST: the marks are the apply's (the frame order's table holds them to gi_apply.cpp)");
+  Check(CountOf(host_cpp, "Mark(") == 2 && Has(host_cpp, "Mark(list, \"ray regen bounce denoise\")") && Has(host_cpp, "Mark(list, \"rt gi denoise\")"),
+        "HOST: the vendor dispatch has a nested timing span, then returns to the GI denoise label");
 
   // the build
   Check(Has(cmake, "    gi_pixel.cpp\n") && Has(cmake, "larecomp_gpu_host_shader_rt(gi_pixel_trace_cs cs_6_5 DEFINES GIP_MS=0)") && Has(cmake, "larecomp_gpu_host_shader_rt(gi_pixel_trace_ms_cs cs_6_5 SOURCE gi_pixel_trace_cs DEFINES GIP_MS=1)") &&

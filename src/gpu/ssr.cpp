@@ -538,9 +538,9 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     REXLOG_INFO("{} raw mode (DLSS Ray Reconstruction takes the frame): {} (logged when it changes)", kPrefix, ssr::RawWhyName(raw_why));
   }
   // RG-3, AMD FSR Ray Regeneration (ssr.h): asked for by the caller while the DENOISER row's AMD value takes the frame; one vendor, so never together with the raw mode. The context's size is the trace's.
-  rayregen::NoteSsrTraced(width, height);
+  rayregen::NoteTraced(rayregen::Site::kReflections, width, height);
   rgd::RegenFacts regen_facts;
-  regen_facts.asked = ask.asked && !raw;
+  regen_facts.asked = rayregen::ReflectionSignalWanted(ask.asked, ask.city, rt) && !raw;
   regen_facts.debug_view = debug_view;
   regen_facts.stub = decision.stub;
   regen_facts.host_samples = depth.host_samples;
@@ -551,7 +551,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   }
   const rgd::RegenWhy regen_why = rgd::DecideRegen(regen_facts);
   const bool regen = regen_why == rgd::RegenWhy::kRegen;
-  if (ask.asked) {
+  if (regen_facts.asked) {
     regen_ever_asked_ = true;
   }
   if (regen_ever_asked_ && uint32_t(regen_why) != regen_why_logged_) {
@@ -779,7 +779,10 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
 
   // RG-3: the signal and its guides, the runtime's dispatch. Refused (no camera rows, an image, the plan of the dispatch, the runtime): the effect's own accumulation runs below, this frame.
   bool regen_ok = false;
-  if (regen) {
+  // The city fallback has already put its blended radiance and hit distance
+  // in trace_. When only the city requested AMD, require that pass to run.
+  if (regen && rayregen::ReflectionSignalWanted(ask.asked, ask.city, rt_recorded)) {
+    if (regen_city_ != rt_recorded) regen_key_.valid = false;
     RegenCameraRows rows;
     const bool have_rows = have_camera && cam.have_rows && axes.ok;
     if (have_rows) {
@@ -939,6 +942,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   }
   if (regen_ok) {
     regen_key_ = now;
+    regen_city_ = rt_recorded;
     last_tan_[0] = sf.camera.tan_half_fov[0];
     last_tan_[1] = sf.camera.tan_half_fov[1];
   } else {
@@ -1069,7 +1073,7 @@ bool ScreenReflections::RecordRegen(plume::RenderCommandList* list, const ssr::P
   frame.linear_depth = regen_pass_.Tagged(rgd::Image::kDepth);
   frame.motion = regen_pass_.Tagged(rgd::Image::kMotion);
   frame.normals = regen_pass_.Tagged(rgd::Image::kNormals);
-  frame.specular_albedo = regen_pass_.Tagged(rgd::Image::kSpecular);
+  frame.specular_albedo = regen_pass_.Tagged(rgd::Image::kAlbedo);
   // The indirect specular signal alone: its albedo is the specular one (the diffuse albedo may stay empty: AMD's rule, ray_regen_rules.h NeedsDiffuseAlbedo).
   frame.signals[size_t(rayregen::Signal::kIndirectSpecular)] = {regen_pass_.Tagged(rgd::Image::kSignal), regen_pass_.Tagged(rgd::Image::kDenoised)};
   frame.dispatch_signals = rayregen::FlagOf(rayregen::Signal::kIndirectSpecular);

@@ -461,7 +461,7 @@ class TemporalSystem {
   // on, the runtime, the video memory; the context is made while the plan is on and freed after rr::kContextHoldFrames), and the effects ask at their trigger which of them are Ray Regeneration's this
   // frame: the twin of RawModes() (the effect's own debug switch is the A/B; no upscaled frame is needed). With the plan not Ray Regeneration (every PC but a Radeon RX 9000 with the row on its value) it
   // says "not Ray Regeneration's" for every effect and nothing else happens. The frame's jitter, render pixels +y down, is what the effect's guide pass takes the jitter out with.
-  rr::RawModes RegenModes();
+  rayregen::SignalModes RegenModes();
   void FrameJitter(float out[2]) const {
     out[0] = frame_.jitter[0];
     out[1] = frame_.jitter[1];

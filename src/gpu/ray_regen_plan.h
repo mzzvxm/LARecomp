@@ -11,9 +11,9 @@
 //                is what asks the runtime).
 //   the plan     Planner::Update, once a frame at the frame boundary: the plan (ray_regen_rules.h SelectRayRegen), the live probe when the row has left OURS, the video memory room, the context (made while
 //                the plan is on and for rr::kContextHoldFrames after, freed after: only while the option is selected), the choice beside DLSS Ray Reconstruction's plan, and the log lines. Modes()
-//                answers the reflections' trigger: this frame is Ray Regeneration's for the effect, or it keeps its own filter.
+//                answers the reflection and bounce passes. Each dispatch site has its own context, size and lifetime.
 //
-// Threading: Planner is for the render thread. The boards (NoteDevice, NoteSsrTraced) are atomics read from any thread (the pause menu's).
+// Threading: Planner and NoteTraced are render-thread only. The device board is also read by the pause menu.
 // ===========================================================================
 
 #include <cstdint>
@@ -51,8 +51,8 @@ Facts MenuFacts();
 // A context is asked for and not ready yet (the row says " (APPLYING)").
 bool ContextMaking();
 
-// The reflections' traced size of the last frame they ran (the size the context is made for).
-void NoteSsrTraced(uint32_t width, uint32_t height);
+// The latest trace size at each site (render thread).
+void NoteTraced(Site site, uint32_t width, uint32_t height);
 
 class Planner {
  public:
@@ -70,9 +70,7 @@ class Planner {
   const Plan& plan() const { return plan_; }
   DenoiserKind chosen() const { return chosen_; }
   // The frame's signal modes for the effects (the twin of rr::RawModes): `play_view` is the frame's main view. The effects' own debug switches are the A/B (1 takes the frame, 0 keeps the effect's filter).
-  rr::RawModes Modes(bool play_view, bool switch_ssr, bool switch_car_refl);
-  // The signals of the context asked for, and the traced size it was asked for.
-  uint32_t context_signals() const { return signals_; }
+  SignalModes Modes(bool play_view, bool switch_ssr);
   // The frame's counters, for the summary (the effect adds what it recorded).
   struct Counters {
     uint64_t frames_planned_on = 0;
@@ -81,26 +79,29 @@ class Planner {
   const Counters& counters() const { return counters_; }
 
  private:
-  bool RoomOk(Device* device, uint32_t signals, uint32_t w, uint32_t h);
+  bool RoomOk(Device* device, uint64_t need);
 
   Plan plan_;
   DenoiserKind chosen_ = DenoiserKind::kOurs;
-  rr::ContextKeeper keeper_;
-  uint32_t signals_ = 0;
-  uint32_t asked_size_[2] = {};
-  bool asked_ = false;                 // a context was asked for and not yet released
+  struct SitePlan {
+    rr::ContextKeeper keeper;
+    ContextRequest asked;
+    bool active = false;
+  };
+  std::array<SitePlan, kSiteCount> sites_;
   rr::DebugSwitch debug_ = rr::DebugSwitch::kRow;
   rr::Denoiser setting_ = rr::Denoiser::kAuto;
   bool plan_logged_ = false;
   Plan plan_last_;
   DenoiserKind chosen_last_ = DenoiserKind::kOurs;
   bool modes_logged_ = false;
-  rr::RawModes modes_last_;
+  SignalModes modes_last_;
   // The video memory room (asked once a second where the plan would be on, then less often while there is none).
   bool room_ok_ = true;
   bool room_refused_logged_ = false;
   uint64_t room_wait_ms_ = 0;
   uint64_t room_next_ms_ = 0;
+  uint64_t room_last_need_ = 0;
   Counters counters_;
 };
 

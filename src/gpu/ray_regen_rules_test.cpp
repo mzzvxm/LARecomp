@@ -89,7 +89,9 @@ void CheckConsumers() {
   Check(AnySignalBuilt(), "shipped: an effect writes a signal (the screen-space reflections)");
   for (size_t i = 0; i < rr::kConsumerCount; ++i) {
     Check(!kConsumers[i].auto_uses, "shipped cell " + std::to_string(i) + " is not trusted by AUTO (until a Radeon A/B)");
-    Check(kConsumers[i].signal_built == (i == size_t(rr::Consumer::kSsr)), "shipped cell " + std::to_string(i) + (i == 0 ? " has a signal writer" : " has none (the car's is not a fit, the others are not in this tree)"));
+    const auto c = rr::Consumer(i);
+    const bool built = c == rr::Consumer::kSsr || c == rr::Consumer::kCityRtReflections || c == rr::Consumer::kRtGi;
+    Check(kConsumers[i].signal_built == built, "shipped signal writer for consumer " + std::to_string(i));
   }
   Check(AnyConsumerOn(rr::kAllConsumers) && AnyConsumerOn(rr::ConsumerBit(rr::Consumer::kSsr)) && !AnyConsumerOn(rr::ConsumerBit(rr::Consumer::kCarRtReflections)) && !AnyConsumerOn(0) &&
             !AnyAutoConsumerOn(rr::kAllConsumers),
@@ -125,7 +127,34 @@ void CheckConsumers() {
   Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, all, mixed) == (FlagOf(Signal::kIndirectSpecular) | FlagOf(Signal::kIndirectDiffuse)), "the row's value: every built effect (specular and diffuse)");
   Check(ContextSignals(rr::Denoiser::kAuto, rr::DebugSwitch::kOn, all, mixed) == (FlagOf(Signal::kIndirectSpecular) | FlagOf(Signal::kIndirectDiffuse)), "the debug switch on stands for the row's value even over AUTO");
   Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, rr::ConsumerBit(rr::Consumer::kRtGi), mixed) == FlagOf(Signal::kIndirectDiffuse), "only the effects that are on");
-  Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, all) == FlagOf(Signal::kIndirectSpecular), "shipped table: the row's value makes a context for the reflections' indirect specular signal");
+  Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, all) == (FlagOf(Signal::kIndirectSpecular) | FlagOf(Signal::kIndirectDiffuse)),
+        "shipped table: the row's value selects both indirect signals");
+  Check(SiteSignals(Site::kReflections, rr::Denoiser::kRr, rr::DebugSwitch::kRow, all) == FlagOf(Signal::kIndirectSpecular) &&
+            SiteSignals(Site::kBounce, rr::Denoiser::kRr, rr::DebugSwitch::kRow, all) == FlagOf(Signal::kIndirectDiffuse),
+        "reflections and GI dispatch isolated signals with both effects enabled");
+  const auto city = rr::ConsumerBit(rr::Consumer::kCityRtReflections);
+  const auto bounce = rr::ConsumerBit(rr::Consumer::kRtGi);
+  const auto ssr = rr::ConsumerBit(rr::Consumer::kSsr);
+  Check(SiteSignals(Site::kReflections, rr::Denoiser::kRr, rr::DebugSwitch::kRow, city) == FlagOf(Signal::kIndirectSpecular) &&
+            SiteSignals(Site::kReflections, rr::Denoiser::kRr, rr::DebugSwitch::kRow, city | ssr) == FlagOf(Signal::kIndirectSpecular),
+        "city can request the shared site by itself and never adds a second specular channel");
+  Check(SiteSignals(Site::kBounce, rr::Denoiser::kRr, rr::DebugSwitch::kRow, city | ssr) == 0 &&
+            SiteSignals(Site::kReflections, rr::Denoiser::kRr, rr::DebugSwitch::kRow, bounce) == 0,
+        "neither site requests the other site's signals");
+  for (size_t i = 0; i < kSiteCount; ++i) {
+    const auto site = Site(i);
+    Check(SiteSignals(site, rr::Denoiser::kAuto, rr::DebugSwitch::kRow, all) == 0, "AUTO requests no AMD context at either site");
+    Check(SiteSignals(site, rr::Denoiser::kOurs, rr::DebugSwitch::kRow, all) == 0, "OURS requests no AMD context at either site");
+    Check(SiteSignals(site, rr::Denoiser::kRr, rr::DebugSwitch::kOff, all) == 0, "debug off requests no contexts");
+    Check(SiteSignals(site, rr::Denoiser::kRr, rr::DebugSwitch::kProbe, all) == 0, "probe requests no effect contexts");
+  }
+  Check(ReflectionSignalWanted(true, false, false) && ReflectionSignalWanted(false, true, true) &&
+            !ReflectionSignalWanted(false, true, false) && !ReflectionSignalWanted(false, false, true),
+        "a city-only request requires an actual city trace");
+  const ContextRequest requested{FlagOf(Signal::kIndirectDiffuse), 960, 540};
+  Check(requested.Covers({requested.signals, 960, 540}) && requested.Covers({requested.signals, 480, 270}), "GI reuses a context for smaller footprints");
+  Check(!requested.Covers({requested.signals, 961, 540}) && !requested.Covers({requested.signals, 960, 541}) &&
+            !requested.Covers({FlagOf(Signal::kIndirectSpecular), 960, 540}), "context matching checks both axes and the exact signal");
   Check(ContextSignals(rr::Denoiser::kAuto, rr::DebugSwitch::kRow, all) == 0, "shipped table: AUTO makes none (no effect is trusted yet)");
   Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, rr::ConsumerBit(rr::Consumer::kCarRtReflections)) == 0, "shipped table: the cars' reflections alone make none");
   Check(ContextSignals(rr::Denoiser::kRr, rr::DebugSwitch::kRow, 0) == 0, "no effect on: no context (it is freed after the hold)");
@@ -318,7 +347,7 @@ void CheckChoice() {
   Check(ChooseDenoiser(amd_on, nv_off) == DenoiserKind::kRayRegen, "AMD Ray Regeneration where it runs");
   Check(ChooseDenoiser(amd_off, nv_on) == DenoiserKind::kDlssRr, "else DLSS Ray Reconstruction");
   Check(ChooseDenoiser(amd_off, nv_off) == DenoiserKind::kOurs, "else ours");
-  Check(ChooseDenoiser(amd_on, nv_on) == DenoiserKind::kRayRegen, "the owner's order if both could run: AMD first (one adapter is one vendor, so it cannot happen today)");
+  Check(ChooseDenoiser(amd_on, nv_on) == DenoiserKind::kDlssRr, "DLSS Ray Reconstruction has priority when available");
   // On one PC the two plans cannot both be on: the AMD facts of an NVIDIA device say 'not this GPU', DLSS RR's facts of an AMD device say 'not supported' / 'no plugin'.
   PlanInputs nvidia_pc = Ready();
   nvidia_pc.facts.device = DeviceOk({0x10DE, true, 0x66});

@@ -56,6 +56,7 @@
 #include "gi_field.h"
 #include "gi_frame.h"
 #include "gi_pixel_rules.h"
+#include "ray_regen_guides.h"
 #include "host_passes.h"
 #include "rt_denoise.h"
 
@@ -85,6 +86,10 @@ class GiPixel {
     uint32_t sample0 = 0;                            // the host sample that is the guest's sample 0
     bool multisampled = false;
     bool raw = false;                                // G6: Ray Reconstruction takes this frame and the effect's switch is on (TemporalSystem::RawModes().RtGi()): no denoiser, the signal is handed on as it is
+    bool regen = false;
+    uint32_t material_slot = gi::kNoSlot;
+    float jitter[2] = {};
+    float near_plane = 5.0f, far_plane = 10000.0f;
   };
 
   GiPixel() = default;
@@ -128,6 +133,7 @@ class GiPixel {
   std::string CensusText() const;
 
  private:
+  const HostImage* RecordRegen(plume::RenderCommandList* list);
   enum Variant : uint32_t { kVPlain = 0, kVMs = 1, kVariantCount = 2 };
   static const char* VariantName(uint32_t variant);
   struct Slot {
@@ -174,6 +180,12 @@ class GiPixel {
   std::array<Slot, kFramesInFlight> slots_;
   bool stamps_ok_ = false;
   RtDenoise denoise_;
+  RayRegenRadiancePass regen_pass_;
+  bool regen_initialized_ = false;
+  bool regen_ran_ = false;
+  rgd::BounceHistoryKey regen_previous_;
+  rgd::BounceHistoryKey regen_now_;
+  bool regen_motion_ = false;
 
   // The images: the signal, the depth guide (two, by parity), the view normal guide, the hit image.
   HostImage signal_;

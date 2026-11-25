@@ -150,6 +150,7 @@
 #include "rr_guides_ms_cs.hlsl.dxil.h"
 #include "rr_guides_view_cs.hlsl.dxil.h"
 #include "ray_regen_ssr_cs.hlsl.dxil.h"
+#include "ray_regen_bounce_cs.hlsl.dxil.h"
 #include "rtao_denoise_spatial_cs.hlsl.dxil.h"
 #include "rtao_denoise_temporal_cs.hlsl.dxil.h"
 #include "rtao_compose_cs.hlsl.dxil.h"
@@ -306,6 +307,7 @@
 #include "rr_guides_ms_cs.hlsl.spirv.h"
 #include "rr_guides_view_cs.hlsl.spirv.h"
 #include "ray_regen_ssr_cs.hlsl.spirv.h"
+#include "ray_regen_bounce_cs.hlsl.spirv.h"
 #include "rtao_denoise_spatial_cs.hlsl.spirv.h"
 #include "rtao_denoise_temporal_cs.hlsl.spirv.h"
 #include "rtao_compose_cs.hlsl.spirv.h"
@@ -547,6 +549,10 @@ inline HostShaderBlob RayRegenAoShader() {
 
 inline HostShaderBlob RayRegenSsrShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(ray_regen_ssr_cs);
+}
+
+inline HostShaderBlob RayRegenBounceShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(ray_regen_bounce_cs);
 }
 
 inline HostShaderBlob PresentPixelShader() {

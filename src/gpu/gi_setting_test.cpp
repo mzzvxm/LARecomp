@@ -289,7 +289,7 @@ void SceneChecks(const std::string& dir) {
   // THE TRIGGER: the field's maintenance, update and weights before the occlusion plans (it asks for the screen-space bounce light's share), the apply after the occlusion's apply
   const std::string ao = "ao_->OnResolve(record, summary, list, UpscalerRunning());";
   Check(Before(scene, "gi_integration_->OnResolve(summary, list, slot_);", ao), "ORDER: the field is published before the occlusion plans its frame (scene.cpp OnResolve)");
-  Check(Before(scene, ao, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);"), "ORDER: ... and the apply still follows the occlusion's apply");
+  Check(Before(scene, ao, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi,"), "ORDER: ... and the apply still follows the occlusion's apply");
   // after the structures' build (the car scene's top level holds the city), which the probe update traces against
   Check(Before(scene, "car_rt_->OnResolve(record, summary, list, slot_);", "gi_integration_->OnResolve(summary, list, slot_);"), "ORDER: the field's trigger work comes after the ray tracing structures' (the top level the update traces)");
   Check(Count(scene, "gi_integration_->") == 3 && Has(scene, "void SetGiIntegration") == false, "scene.cpp calls the integration at the frame's start, at the trigger and (the game's camera cut) at the anchor, once each");

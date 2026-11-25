@@ -131,7 +131,7 @@ class GiApply {
   // At the trigger, after the occlusion's OnResolve and before the light pass. `gbuffer_published` is the G-buffer's own answer for this resolve. Records the pass and returns true (the caller's list
   // state is gone). `frame_slot` is the frame's slot of the upload ring. Once a frame.
   // G6: `raw_requested` = DLSS Ray Reconstruction takes this frame and the effect's switch is on (TemporalSystem::RawModes().RtGi()): the per-pixel pass (if it runs) then hands its 1 spp signal on unfiltered.
-  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested = false);
+  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested = false, const float* regen_jitter = nullptr);
   // G6: the per-pixel pass's hit distance image of THIS frame, null unless the pass ran raw in it (RG16F at its own size, the distance in x, in the read state): the guide pass's last-choice hit distance.
   // Valid after OnTrigger, until the next frame's.
   const HostImage* RawHitImage() const;
@@ -167,7 +167,7 @@ class GiApply {
     std::unique_ptr<plume::RenderPipeline> pipeline;
   };
 
-  bool OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested);
+  bool OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter);
   bool EnsureLayout();
   bool EnsureSlot(uint32_t frame_slot);
   plume::RenderShader* ShaderFor(uint32_t which);
