@@ -502,6 +502,12 @@ target_include_directories(larecomp_neon_pulse_test PRIVATE src/mc_engine/hooks)
 add_executable(larecomp_rear_view_cheap_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/rear_view_cheap_test.cpp)
 target_include_directories(larecomp_rear_view_cheap_test PRIVATE src/mc_engine/hooks)
+# The guest half of the shared rear view (src/mc_engine/hooks/rear_view_shared.h and src/gpu/mirror_view_link.h, the one link header: the three states of the mirror's phase, the markers' state machine, the mirror camera's
+# field and aspect, the cadence, the side mirrors' need rule and the packing of the link's blocks; perf/MIRROR-VIEW.md, package MV2) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_rear_view_shared_test, then run <build dir>/larecomp_rear_view_shared_test (exit 0 = passed).
+add_executable(larecomp_rear_view_shared_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/rear_view_shared_test.cpp)
+target_include_directories(larecomp_rear_view_shared_test PRIVATE src/mc_engine/hooks src)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).

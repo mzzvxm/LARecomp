@@ -31,9 +31,11 @@
 #include "local_lights.h"
 #include "local_shadow.h"
 #include "car_mirror_rt.h"
+#include "mirror_glass.h"
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
+#include "mirror_view.h"
 #include "cut_request.h"
 #include "cycles.h"
 #include "descriptors.h"
@@ -788,6 +790,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   geometry_->BeginFrame(slot);
   draw_sampler_.NextFrame();  // the statistic's timed draws move on by one each frame (render_cpu.h)
   edram_->BeginFrame(list, slot);
+  if (mirror_view_) {
+    mirror_view_->BeginFrame();  // reads mcla_gpu_mirror_view, closes a phase the last frame left open, gives the view's images back after their idle time (mirror_view.h)
+  }
   textures_->BeginFrame(slot);
   resolve_->BeginFrame(slot);
   if (samplers_->FrameSettingChanged()) {
@@ -852,6 +857,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   if (car_mirror_) {
     car_mirror_->BeginFrame();  // the side mirrors' setting; asks for the car's structures where the pass is wanted (car_mirror_rt.h)
+  }
+  if (mirror_glass_) {
+    mirror_glass_->BeginFrame();  // the side mirrors' glass finder (mirror_glass.h): reads its setting and asks CarFrame for the next frame's draws; BEFORE CarFrame::BeginFrame, which starts a requested frame
   }
   if (car_frame_) {
     car_frame_->BeginFrame();
@@ -1352,14 +1360,17 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       ++window_.prepared;
       // The rear view mirror's draws (mirror_draws.h) are told by their viewport. They are counted always; with mcla_gpu_mirror_class they also stay out of
       // the per-draw consumers of the main view, which would take a second camera's draw for the main view's.
-      mirror_draw = mirror_rect_.valid() &&
-                    mirror_draws::MatchesViewport(mirror_rect_, d.viewport.viewport.x, d.viewport.viewport.y, d.viewport.viewport.width,
-                                                  d.viewport.viewport.height, d.scale.n);
+      // Between the guest's two markers of a redirected phase (mirror_view.h) every draw is the mirror's, whatever its viewport.
+      const bool mirror_redirected = mirror_view_ && mirror_view_->redirecting();
+      mirror_draw = mirror_redirected ||
+                    (mirror_rect_.valid() &&
+                     mirror_draws::MatchesViewport(mirror_rect_, d.viewport.viewport.x, d.viewport.viewport.y, d.viewport.viewport.width,
+                                                   d.viewport.viewport.height, d.scale.n));
       if (mirror_draw) {
         ++window_.mirror_prepared;
         mirror_frame_seen_ = true;
       }
-      const bool consumers = !(mirror_draw && mirror_class_);
+      const bool consumers = !(mirror_draw && mirror_class_) && !mirror_redirected;  // a draw into the view is a second camera's: never the main view's effects' (whatever mcla_gpu_mirror_class says)
       if (!consumers) {
         ++window_.mirror_class_skips;
       }
@@ -1697,7 +1708,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   // The G-buffer (gbuffer.h): a main view draw in the frame's window whose pixel shader has the variant takes it and carries the sidecar as a second colour
   // target, which it writes. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
-  PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active()) ? GBufferKey(s, r, d) : d.key;  // not const: the headlight's pending-pipeline fallback below drops its feature from it
+  // A draw of the rear view mirror's phase that redirects (mirror_view.h) goes into a framebuffer of one colour and a depth: no planes, and none of the second draws below.
+  const bool mirror_redirect = mirror_view_ && mirror_view_->redirecting();
+  PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active() && !mirror_redirect) ? GBufferKey(s, r, d) : d.key;  // not const: the headlight's pending-pipeline fallback below drops its feature from it
   // The per-texture material row (gbuffer_materials.h) of the texture the draw's pixel shader takes its colour from (the material table's diffuse slot: slot 0 for almost every shader, the
   // windows', tiles' and metal props' second), looked up once per draw that writes the planes (a cache hit; empty at no cost unless a table file exists or the census is on).
   // CHECK: not compiled with the rest of Scene (no build in this package).
@@ -1847,12 +1860,12 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   Lap(Stage::kConstants);
   // HDR stage 3: the tone map, and what the game draws into its target before the marker, are drawn
   // again into the float scene image (hdr_tonemap.h).
-  if (hdr_tone_ && hdr_tone_->active() && d.key.color_count != 0 && hdr_tone_->Wants(d.ps)) {
+  if (hdr_tone_ && hdr_tone_->active() && d.key.color_count != 0 && !mirror_redirect && hdr_tone_->Wants(d.ps)) {
     PrepareHdrDraw(d, inputs, banks, host_samples);
   }
   // A car's shadow decal, a particle, a light volume or a piece of glass is drawn again into the
   // coverage image of the mask the upscaler takes (upscaler_masks.h).
-  if (d.key.color_count == 1 && UpscalerRunning() && larecomp::settings::mcla_gpu_upscaler_masks.Get()) {
+  if (d.key.color_count == 1 && !mirror_redirect && UpscalerRunning() && larecomp::settings::mcla_gpu_upscaler_masks.Get()) {
     const UpscalerMasks::Kind kind = UpscalerMasks::KindOf(r.vs_identity, r.ps_identity);
     if (kind != UpscalerMasks::Kind::kNone) {
       PrepareUpscalerMask(d, inputs, kind);
@@ -3067,6 +3080,9 @@ void Scene::CountSkip(Skip skip, const DrawRecord& r, const std::string& detail)
 Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list,
                           bool* no_effect, std::string* detail) {
   const XenosState& s = d.state;
+  if (mirror_view_ && mirror_view_->redirecting()) {
+    return RecordMirrorDraw(d, r, list, no_effect, detail);  // the rear view mirror's phase: the view's framebuffer, not the main target (mirror_view.h)
+  }
   // D3D's effective window scissor bounds every pixel the draw can touch.
   const uint32_t scissor_br_x = s.scissor_br & 0x7FFFu;
   const uint32_t scissor_br_y = (s.scissor_br >> 16) & 0x7FFFu;
@@ -3411,6 +3427,218 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   return Skip::kCount;
 }
 
+// ---------------------------------------------------------------------------
+// the rear view mirror's phase (mirror_view.h, perf/MIRROR-VIEW.md)
+// ---------------------------------------------------------------------------
+
+void Scene::OnMirrorMarker(uint32_t bucket, plume::RenderCommandList* list) {
+  if (!mirror_view_) {
+    return;
+  }
+  if (bucket == mirror_view::kMarkerBegin) {
+    // The rectangle is the one the guest published (TickRearView) before the phase ran.
+    if (mirror_view_->BeginPhase(mirror_draws::Current()) && list) {
+      // The phase's draws leave the main pass: nothing the frame has bound is the view's.
+      if (bound_.framebuffer) {
+        list->setFramebuffer(nullptr);
+        bound_.framebuffer = nullptr;
+      }
+      marked_framebuffer_ = nullptr;
+    }
+  } else if (bucket == mirror_view::kMarkerEnd) {
+    if (mirror_view_->EndPhase(list)) {
+      // The view's resolve bound its own layout, pipeline, viewport and scissor and left no framebuffer: the next draw binds everything again, the main target's pass starts anew.
+      ResetListState();
+      marked_framebuffer_ = nullptr;
+    }
+  }
+}
+
+Scene::Skip Scene::RecordMirrorDraw(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list, bool* no_effect, std::string* detail) {
+  (void)r;
+  const XenosState& s = d.state;
+  // Where the draw goes: only a draw of one colour and a depth, at the formats and samples of the phase's first, fits the view's framebuffer (its pipeline was made for them). Any other is left out and
+  // counted: it is never drawn into the main target, whose rectangle the stamp owns.
+  mirror_view::DrawFacts facts;
+  facts.color_count = d.key.color_count;
+  facts.has_depth = d.key.depth_format != 0;
+  facts.planes_attached = d.gbuffer_attached;
+  facts.color_format = d.key.color_format[0];
+  facts.depth_format = d.key.depth_format;
+  facts.samples = d.key.sample_count;
+  if (mirror_view_->RouteDraw(facts) != mirror_view::Route::kView) {
+    mirror_view_->NoteDrop();
+    *detail = std::format("mirror view: {} colour target{}, {}, format {} / depth {}, {} sample{}: not a draw the view's framebuffer takes", d.key.color_count, d.key.color_count == 1 ? "" : "s",
+                          facts.has_depth ? "with depth" : "no depth", facts.color_format, facts.depth_format, facts.samples, facts.samples == 1 ? "" : "s");
+    return Skip::kTarget;
+  }
+  // CHECK: a pixel shader of the phase that reads the pixel position (SV_Position / VPOS) sees view pixels here, not the main target's (the city and the racers should not read it).
+  // The scissor first: in host pixels of the main target (the draw's scale), mapped into the view. An empty one draws nothing.
+  const plume::RenderRect scissor = mirror_view_->MapScissor(ComputeScissor(s, EdramTargets::kMaxExtent, d.scale), d.scale.n);
+  if (scissor.right <= scissor.left || scissor.bottom <= scissor.top) {
+    *no_effect = true;
+    return Skip::kCount;
+  }
+  const MirrorView::Target target = mirror_view_->Use(list, plume::RenderFormat(d.key.color_format[0]), plume::RenderFormat(d.key.depth_format), d.key.sample_count);
+  if (!target.framebuffer) {
+    mirror_view_->NoteDrop();
+    *detail = "mirror view: its images could not be made";
+    return Skip::kTarget;
+  }
+  if (target.first) {
+    bound_.framebuffer = target.framebuffer;  // Use left the view's framebuffer bound after its clear
+  }
+  marked_framebuffer_ = target.framebuffer;  // Use wrote the pass mark
+  BindFramebuffer(list, target.framebuffer);
+  mirror_view_->NoteDraw();
+  Lap(Stage::kTargets);
+
+  if (!bound_.layout_bound) {
+    list->setGraphicsPipelineLayout(layout_->layout());
+    list->setGraphicsDescriptorSet(heap_->texture_set(), 0);
+    list->setGraphicsDescriptorSet(heap_->texture_set(), 1);
+    list->setGraphicsDescriptorSet(heap_->texture_set(), 2);
+    list->setGraphicsDescriptorSet(heap_->sampler_set(), 3);
+    bound_.layout_bound = true;
+    bound_.constants_bound = false;
+  }
+  if (bound_.pipeline != d.pipeline) {
+    list->setPipeline(d.pipeline);
+    bound_.pipeline = d.pipeline;
+  }
+  Lap(Stage::kBindPipeline);
+  const plume::RenderBufferReference constants[3] = {d.vs_constants.reference(), d.ps_constants.reference(), d.shared_constants.reference()};
+  bool constants_changed = !bound_.constants_bound;
+  for (uint32_t i = 0; i < 3 && !constants_changed; ++i) {
+    constants_changed = constants[i].ref != bound_.constants[i].ref || constants[i].offset != bound_.constants[i].offset;
+  }
+  if (constants_changed) {
+    if (ActiveBackend() == Backend::kD3D12) {
+      static constexpr uint32_t kRoots[3] = {GuestLayout::kVertexConstants, GuestLayout::kPixelConstants, GuestLayout::kSharedConstants};
+      for (uint32_t i = 0; i < 3; ++i) {
+        if (!bound_.constants_bound || constants[i].ref != bound_.constants[i].ref || constants[i].offset != bound_.constants[i].offset) {
+          list->setGraphicsRootDescriptor(constants[i], kRoots[i]);
+        }
+      }
+    } else {
+      const uint64_t addresses[3] = {d.vs_constants.device_address, d.ps_constants.device_address, d.shared_constants.device_address};
+      list->setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
+    }
+    for (uint32_t i = 0; i < 3; ++i) {
+      bound_.constants[i] = constants[i];
+    }
+    bound_.constants_bound = true;
+  }
+  Lap(Stage::kBindConstants);
+  // The viewport the draw's vertices are taken against, in the view's pixels: the rectangle is the whole view (the draw's own NDC and depth range are kept); the scissor is what cuts.
+  const plume::RenderViewport viewport = mirror_view_->MapViewport(d.viewport.viewport, d.scale.n);
+  if (!bound_.viewport_bound || !SameViewport(bound_.viewport, viewport)) {
+    list->setViewports(&viewport, 1);
+    bound_.viewport = viewport;
+    bound_.viewport_bound = true;
+  }
+  if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {
+    list->setScissors(&scissor, 1);
+    bound_.scissor = scissor;
+    bound_.scissor_bound = true;
+  }
+  if (pipelines_->dynamic_depth_bias() && (!bound_.depth_bias_bound || !(bound_.depth_bias == d.bias))) {
+    list->setDepthBias(float(d.bias.constant), 0.0f, d.bias.slope);
+    bound_.depth_bias = d.bias;
+    bound_.depth_bias_bound = true;
+  }
+  Lap(Stage::kBindState);
+  const DrawGeometry& g = d.geometry;
+  if (g.slot_count && !SameVertexBuffers(bound_.vertex_slot_count, bound_.vertex_views.data(), bound_.vertex_slots.data(), g, d.input_layout->slots.data())) {
+    list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count, d.input_layout->slots.data());
+    bound_.vertex_slot_count = g.slot_count;
+    for (uint32_t i = 0; i < g.slot_count; ++i) {
+      bound_.vertex_views[i] = g.vertex_views[i];
+      bound_.vertex_slots[i] = d.input_layout->slots[i];
+    }
+  }
+  // No coverage check, no occlusion query: the draw touches no EDRAM target, and the sun's glare asks about the main view.
+  if (g.indexed) {
+    if (!bound_.index_bound || !SameIndexBuffer(bound_.index_view, g.index_view)) {
+      list->setIndexBuffer(&g.index_view);
+      bound_.index_view = g.index_view;
+      bound_.index_bound = true;
+    }
+    Lap(Stage::kBindStreams);
+    list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
+  } else {
+    Lap(Stage::kBindStreams);
+    list->drawInstanced(g.count, 1, g.first, 0);
+  }
+  Lap(Stage::kDraw);
+  return Skip::kCount;
+}
+
+void Scene::ClearMirrorView(plume::RenderCommandList* list, uint32_t flags, const float color[4], float z, uint32_t stencil, int32_t x0, int32_t y0, int32_t x1, int32_t y1, const EdramKey& color_key,
+                            int32_t color_exp_bias, const EdramKey& depth_key) {
+  // The formats and the host samples are the main targets' (the draws that follow have their pipelines made for them).
+  const EdramTargets::Target* colour = edram_->Find(color_key);
+  const EdramTargets::Target* depth = edram_->Find(depth_key);
+  if (!colour || !colour->texture || !depth || !depth->texture) {
+    ++window_.clears_failed;
+    return;
+  }
+  const MirrorView::Target target = mirror_view_->Use(list, colour->format, depth->format, colour->host_samples);
+  if (!target.framebuffer) {
+    ++window_.clears_failed;
+    return;
+  }
+  float value[4] = {};
+  if ((flags & 1u) != 0) {
+    EncodeColorClear(color_key.format, color_exp_bias, color, value);  // what the hardware stores: the colour times 2^exp_bias, in the format (as the main target's clear)
+  }
+  // The rectangle is the guest's, in pixels of the main target (the clear's viewport and scissor already applied): mapped into the view at a scale of 1.
+  const plume::RenderRect rect = mirror_view_->MapScissor(plume::RenderRect(x0, y0, x1, y1), Scale::kDenominator);
+  mirror_view_->Clear(list, (flags & 1u) != 0 ? value : nullptr, (flags & 0x10u) != 0, (flags & 0x20u) != 0, z, stencil, rect);
+  bound_.framebuffer = target.framebuffer;  // Use and Clear left the view's framebuffer bound
+  marked_framebuffer_ = nullptr;
+  ++window_.clears_color;
+}
+
+bool Scene::RecordMirrorStamp(const ResolveRecord& record, plume::RenderCommandList* list) {
+  // The first copy of the main colour at the play view's samples (as the volumetric light finds its second point): colour 0, not a clear alone.
+  // CHECK: that this first copy after the end marker is the end-of-scene copy, i.e. that the trigger's host effects (AO, lights, SSR) have run on the main colour already (CHECK 4 of perf/MIRROR-VIEW.md).
+  EdramKey key;
+  if (record.flags & (kEventSurfaceUnreadable | kEventStackUnreadable)) {
+    return false;
+  }
+  if ((record.resolve_flags & 7) != 0 || (record.resolve_flags & 0x2000u) != 0) {
+    return false;
+  }
+  const RegisterWindow pre(record.state.pre, guest::kEventWindowBegin, guest::kEventWindowBytes);
+  const bool bound = pre.DeviceDword(guest::kDevColorSurfaces) != 0;
+  xreg::RB_SURFACE_INFO surface_info;
+  surface_info.value = pre.Register(guest::reg::kRbSurfaceInfo);
+  key.pitch = uint16_t(surface_info.surface_pitch);
+  key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+  xreg::RB_COLOR_INFO color_info;
+  color_info.value = bound ? LoadBe32(record.state.surfaces[0] + 0x1C) : pre.Register(guest::reg::kRbColorInfo);
+  key.base_tiles = uint16_t(color_info.color_base | (color_info.color_base_bit_11 << 11));
+  key.depth = 0;
+  key.format = uint8_t(FoldColorFormat(uint32_t(color_info.color_format)));
+  if (temporal::MainColorSamples(key) == 0 || temporal::ViewOfSamples(key.samples) != temporal::View::kPlay) {
+    return false;  // not a copy of the game view's colour: the stamp waits for the one that is
+  }
+  const EdramTargets::Target* found = edram_->Find(key);
+  if (!found || !found->texture) {
+    mirror_view_->DisarmStamp();
+    return false;
+  }
+  bool unset = false;
+  EdramTargets::Target* colour = edram_->Get(key, found->height, found->scale, 0, list, &unset);
+  if (!colour) {
+    mirror_view_->DisarmStamp();
+    return false;
+  }
+  const mirror_view::IRect host = mirror_view::HostRectOf(mirror_draws::Current(), colour->scale.n);
+  return mirror_view_->RecordStamp(list, *colour, host);
+}
+
 void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
   ++window_.clears;
   if (!list || (record.flags & kEventSurfaceUnreadable)) {
@@ -3554,6 +3782,36 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     first_key.reserved = edram_->DepthLayer(first_key, nullptr, declared_size);
   }
   const Scale clear_scale = edram_->ScaleOf(first_key, declared_size);
+  if (mirror_view_ && mirror_view_->redirecting()) {
+    // CHECK: that the guest's clear of the phase's rectangle (sub_82178C40 in sub_82308178) arrives here between the two markers; the view's census line counts the phases that had none.
+    // THE REAR VIEW MIRROR'S PHASE (mirror_view.h): the game's clear of the phase's rectangle clears the view, never the main target; nothing that follows the main target's clears hears of it (the float
+    // scene, the occlusion's depth clear value, the G-buffer's planes).
+    EdramKey color_key;
+    int32_t exp_bias = 0;
+    if (surfaces[0]) {
+      xreg::RB_COLOR_INFO color_info;
+      color_info.value = header_dword(0, 0x1C);
+      color_key.base_tiles = uint16_t(color_info.color_base | (color_info.color_base_bit_11 << 11));
+      color_key.pitch = uint16_t(surface_info.surface_pitch);
+      color_key.depth = 0;
+      color_key.format = uint8_t(FoldColorFormat(uint32_t(color_info.color_format)));
+      color_key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+      exp_bias = int32_t(color_info.color_exp_bias);
+    }
+    EdramKey depth_key;
+    if (surfaces[4]) {
+      xreg::RB_DEPTH_INFO depth_info;
+      depth_info.value = header_dword(4, 0x1C);
+      depth_key.base_tiles = uint16_t(depth_info.depth_base | (depth_info.depth_base_bit_11 << 11));
+      depth_key.pitch = uint16_t(surface_info.surface_pitch);
+      depth_key.depth = 1;
+      depth_key.format = uint8_t(depth_info.depth_format);
+      depth_key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+      depth_key.reserved = edram_->DepthLayer(depth_key, sized_surface == 0 ? &first_key : nullptr, declared_size);
+    }
+    ClearMirrorView(list, flags, color, record.z, record.stencil, x0, y0, x1, y1, color_key, exp_bias, depth_key);
+    return;
+  }
   // Growth copies sit outside a render pass.
   if (bound_.framebuffer) {
     list->setFramebuffer(nullptr);
@@ -3705,6 +3963,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // before the copy reads it.
     const bool shafts_composited = shafts_->BeforeResolve(record, list);
     order_.Note(frame_order::Step::kShaftsComposite, shafts_composited);
+  }
+  if (mirror_view_ && mirror_view_->StampArmed() && list && RecordMirrorStamp(record, list)) {
+    // The rear view mirror's picture (mirror_view.h) is stamped into the HUD's rectangle of the main colour at the first copy of it after the phase's end: after the volumetric light and the sun shafts
+    // have composited (the haze does not lie over the stamp) and before the copy reads the colour. Its own layout, pipeline, viewport and framebuffer: the list state is gone.
+    ResetListState();
+    marked_framebuffer_ = nullptr;
   }
   // A frame that can carry the HDR float scene keeps the range of a 7e3 colour (resolve.h).
   const bool float_scene =
@@ -4123,6 +4387,9 @@ void Scene::OnPresent() {
   }
   if (car_dump_) {
     car_dump_->OnPresent();  // the dump frame's census and OBJ
+  }
+  if (mirror_glass_) {
+    mirror_glass_->OnPresent();  // the glass finder evaluates the complete frame and publishes the need (mirror_glass_need.h); BEFORE CarFrame::OnPresent, which clears the frame
   }
   if (car_frame_) {
     car_frame_->OnPresent();  // the car draw list's frame boundary

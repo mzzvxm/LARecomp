@@ -263,6 +263,18 @@ void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t s
 // render thread.
 void OnGuestSceneComposited(uint32_t bucket);
 
+// --- the shared rear view (mirror_view.h, perf/MIRROR-VIEW.md) -----------------
+
+// The guest's two hooks around the rear view mirror's render phase (0x1000000): `begin` at the phase's
+// begin (the entry of sub_82308178, Patch_RearViewDiag), `!begin` at its end (0x822E68D8,
+// Patch_RearViewPhaseEnd, r30 = 0x1000000). Becomes a marker on the composite record's side channel
+// (mirror_view_link.h kMarkerBegin / kMarkerEnd) while mcla_gpu_mirror_view is on, in order with the
+// draws; an end is sent only for a begin that was. On a frame whose phase is held (the cadence) send
+// the two back to back: the host then stamps the held picture. Publish the rectangle first
+// (mirror_draws::Publish), also for a phase no HUD mirror asked for; mirror_view::SetStampWanted says whether the HUD mirror
+// is up. Guest render thread.
+void NoteMirrorPhase(bool begin);
+
 // --- occlusion queries (occlusion.h) --------------------------------------
 
 // sub_824302F0 (D3DQuery::Issue's sample count event: `query` the D3DQuery object,

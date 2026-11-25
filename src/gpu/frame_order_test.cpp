@@ -101,7 +101,7 @@ bool Before(Step a, Step b) { return PosOf(a) < PosOf(b); }
 void CheckTableItself() {
   const auto problems = Problems(Copy(), true);
   Check(problems.empty(), "the shipped table is consistent: " + Join(problems));
-  Check(Rows().size() == 50 && Rows().back().step == Step::kPresentRig, "50 steps, the present's rig last");
+  Check(Rows().size() == 52 && Rows().back().step == Step::kPresentRig, "52 steps, the present's rig last");
   size_t phase_count[size_t(Phase::kCount)] = {};
   size_t noted = 0;
   size_t inner = 0;
@@ -125,10 +125,10 @@ void CheckTableItself() {
     // RR-2: the anchor's steps are the temporal system's, in temporal.cpp, and held by the source checks alone
     if (r.phase == Phase::kAnchor) Check(std::strcmp(r.file, "temporal.cpp") == 0 && r.kind == Kind::kScanned, std::string(r.name) + ": an anchor step stands in temporal.cpp and is a scanned one");
   }
-  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 2 && phase_count[size_t(Phase::kTrigger)] == 29 && phase_count[size_t(Phase::kEndOfScene)] == 2 &&
+  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 3 && phase_count[size_t(Phase::kTrigger)] == 29 && phase_count[size_t(Phase::kEndOfScene)] == 3 &&
             phase_count[size_t(Phase::kAnchor)] == 3 && phase_count[size_t(Phase::kPresent)] == 4,
-        "10 at the frame's start, 2 in the draws, 29 at the trigger (RT-LIGHTS-D1 added the ray traced visibility inside the light pass, MIRROR-RT the side mirrors, GI-BOUNCE-SS the two captures at the light pass's sides), 2 at the end of the scene, 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
-  Check(noted == 20 && inner == 9 && scanned == 21, "20 noted calls, 8 steps inside the AO's frame and 1 inside the light pass, 21 held by the source checks alone");
+        "10 at the frame's start, 3 in the draws (MIRROR-VIEW MV1 added the mirror phase's), 29 at the trigger (RT-LIGHTS-D1 added the ray traced visibility inside the light pass, MIRROR-RT the side mirrors, GI-BOUNCE-SS the two captures at the light pass's sides), 3 at the end of the scene (MV1 added the mirror stamp), 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
+  Check(noted == 20 && inner == 9 && scanned == 23, "20 noted calls, 8 steps inside the AO's frame and 1 inside the light pass, 23 held by the source checks alone (MIRROR-VIEW MV1 added two)");
   // every data bit is made, and made once (nothing is made by two steps: the frame's lights are the frame start's, the rig's present makes nothing)
   for (uint32_t bit = 1; bit <= fo::data::kAll; bit <<= 1) {
     int makers = 0;
@@ -231,7 +231,8 @@ void CheckPinnedOrder() {
   Check(fo::RowOf(Step::kSsr).makes == fo::data::kRrHitSsr && fo::RowOf(Step::kRrGuides).soft_reads == (fo::data::kRrHitSsr | fo::data::kRrHitCar | fo::data::kRrHitGi) && Before(Step::kSsr, Step::kRrGuides) && Before(Step::kCarHistory, Step::kRrGuides) &&
             (fo::RowOf(Step::kCarHistory).makes & fo::data::kRrHitCar) != 0,
         "RR-4: the reflections' hit distance image is made at the trigger by the effect (a soft read of the guide pass at the anchor: only the frames the effect ran raw have it)");
-  Check(fo::RowOf(Step::kGiApply).makes == fo::data::kRrHitGi && Before(Step::kGiApply, Step::kRrGuides) && fo::data::kRrHitGi == (1u << 27) && fo::data::kAll == ((1u << 30) - 1) &&
+  Check(fo::RowOf(Step::kGiApply).makes == fo::data::kRrHitGi && Before(Step::kGiApply, Step::kRrGuides) && fo::data::kRrHitGi == (1u << 27) && fo::data::kLightsBefore == (1u << 28) && fo::data::kLightHistory == (1u << 29) &&
+            fo::data::kMirrorView == (1u << 30) && fo::data::kAll == ((1u << 31) - 1) &&
             std::strcmp(fo::data::NameOf(fo::data::kRrHitGi), "RR hit distance (bounce light)") == 0,
         "CITY-RT G6: the bounce light's per-pixel pass's hit distance image is made by the field's apply at the trigger (a soft read of the guide pass at the anchor: only the frames the pass ran raw have it)");
   Check(fo::RowOf(Step::kRrGuides).reads == fo::data::kPlanes && fo::RowOf(Step::kRrGuides).makes == fo::data::kRrGuides && fo::RowOf(Step::kRrGuidesView).reads == fo::data::kRrGuides &&
@@ -618,10 +619,10 @@ void CheckRecorder() {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------
 std::string StepEnumName(Step step) {
   // the enumerator as scene.cpp writes it: frame_order::Step::kX, found by the table's own name list
-  static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGiField", "kBeginGiApply", "kBeginGBuffer", "kBeginTemporal", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight",
+  static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGiField", "kBeginGiApply", "kBeginGBuffer", "kBeginTemporal", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight", "kDrawMirrorView",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kGiField", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
                                        "kAoVisibility", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kLightsBefore", "kLocalLights", "kRtLights", "kLightsAfter", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory", "kCarMirror",
-                                       "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
+                                       "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kMirrorStamp", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
   static_assert(std::size(kNames) == N, "one name for each step");
   return kNames[size_t(step)];
 }

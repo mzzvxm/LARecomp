@@ -109,7 +109,8 @@ inline constexpr uint32_t kRrHitCar = 1u << 26;      // RR-4b: the cars' ray tra
 inline constexpr uint32_t kRrHitGi = 1u << 27;       // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (RG16F at the pass's own size), written at the trigger in a frame DLSS Ray Reconstruction takes (raw mode), read by the guide pass as the last choice
 inline constexpr uint32_t kLightsBefore = 1u << 28;  // GI-BOUNCE-SS: the main colour before the deferred light pass (after the occlusion's apply and the probe field's apply), averaged over its host samples at the AO's traced size
 inline constexpr uint32_t kLightHistory = 1u << 29;  // GI-BOUNCE-SS: the pair (the colour before and after the light pass) a frame leaves for the NEXT frame's colour chain: their difference is the light the pass added, reprojected into that frame
-inline constexpr uint32_t kAll = (1u << 30) - 1;
+inline constexpr uint32_t kMirrorView = 1u << 30;    // MIRROR-VIEW MV1: the rear view mirror's picture (mirror_view.h): the phase's draws drawn into the view's image, the colour averaged into the picture the HUD stamp reads
+inline constexpr uint32_t kAll = (1u << 31) - 1;
 constexpr const char* NameOf(uint32_t bit) {
   switch (bit) {
     case kLinDepth: return "lin_depth";
@@ -142,6 +143,7 @@ constexpr const char* NameOf(uint32_t bit) {
     case kRrHitGi: return "RR hit distance (bounce light)";
     case kLightsBefore: return "colour before the light pass";
     case kLightHistory: return "lights history";
+    case kMirrorView: return "mirror view";
     default: break;
   }
   return "?";
@@ -192,6 +194,7 @@ enum class Step : uint8_t {
   // the draws
   kDrawSidecar,
   kDrawHeadlight,
+  kDrawMirrorView,
   // the trigger (Scene::OnResolve)
   kGBufferPublish,
   kCarSunMap,
@@ -225,6 +228,7 @@ enum class Step : uint8_t {
   // the end-of-scene copy (the same function, an earlier text: BeforeResolve)
   kVolumeComposite,
   kShaftsComposite,
+  kMirrorStamp,
   // the anchor (TemporalSystem::RecordUpscale, called from Scene::NoteTemporal at the game's motion blur draw)
   kRrGuides,
   kUpscale,
@@ -320,6 +324,12 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .reads = data::kLights, .reads_previous = data::kShadowAtlas,
      .note = "the block is this frame's lights, the maps are the LAST frame's (HP3 in local_lights.h: a moving car's shadow edge differs by a frame's motion from the light pass's); runs before the "
              "AO's apply, so the occlusion darkens it (HP11) and the bounce light's colour chain sees it"},
+    {.step = Step::kDrawMirrorView, .phase = Phase::kDraws, .kind = Kind::kScanned, .name = "the rear view mirror's phase draws into the view (mcla_gpu_mirror_view)", .call = "mirror_view_->BeginPhase(mirror_draws::Current())",
+     .label_file = "mirror_view.cpp", .label = "mirror view", .more_labels = {{"mirror view resolve"}}, .closing_label = "after mirror view", .makes = data::kMirrorView,
+     .note = "MIRROR-VIEW MV1 (mirror_view.h, perf/MIRROR-VIEW.md): between the guest's two markers (Scene::OnMirrorMarker) the draws and the begin clear of the mirror's phase go into the view's own colour and depth, "
+             "never into the main target: no G-buffer planes, none of the main view's effects hear of them (Scene::RecordMirrorDraw, OnClear). The end marker closes the pass and averages the samples into the picture. "
+             "It stands late in the draws (the phase runs after the world and the cars), before the trigger's resolve or after it: the game's own order decides, the stamp below waits for the copy of the colour. "
+             "Debug only (mcla_gpu_mirror_view, off by default); the labels 'mirror view' (the pass) and 'mirror view resolve' are its own time, 'after mirror view' closes the span"},
     // ======================================================== the trigger (Scene::OnResolve) =======================================================
     {.step = Step::kGBufferPublish, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "G-buffer publish", .call = "gbuffer_->OnResolve(record, summary, list)",
      .reads = data::kPlanesDrawn, .makes = data::kPlanes,
@@ -469,6 +479,12 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .note = "at the end-of-scene copy of the main colour, before that copy reads it; in the text of OnResolve it stands above the trigger's calls (the same function, a different resolve)"},
     {.step = Step::kShaftsComposite, .phase = Phase::kEndOfScene, .kind = Kind::kNoted, .name = "sun shafts' composite into the colour", .call = "shafts_->BeforeResolve(record, list)",
      .label_file = "shafts.cpp", .label = "shafts add", .soft_reads = data::kShafts, .deps = {{{Step::kVolumeComposite, "the shafts' light is added on top of the haze"}}}},
+    {.step = Step::kMirrorStamp, .phase = Phase::kEndOfScene, .kind = Kind::kScanned, .name = "the rear view mirror's picture stamped into the HUD's rectangle", .call = "mirror_view_->StampArmed() && list && RecordMirrorStamp(record, list)",
+     .label_file = "mirror_view.cpp", .label = "mirror stamp", .closing_label = "after mirror stamp", .reads = data::kMirrorView,
+     .deps = {{{Step::kShaftsComposite, "the haze and the shafts' light are composited first: they do not lie over the stamp (it is the picture of another camera)"}}},
+     .note = "MIRROR-VIEW MV1: one quad into the rectangle of the main colour at the first copy of the main colour after the phase's end marker (Scene::RecordMirrorStamp), before that copy reads the colour; a held frame "
+             "(the guest's every-Nth-frame cadence sends the two markers with no draws between) stamps the held picture. Scanned, not noted: it runs only while the view is on and a picture is whole. "
+             "CHECK (run): that the first copy of the main colour after the end marker is the end-of-scene copy (the effects of the trigger have run by then), CHECK 4 of the design"},
     // ======================================================== the anchor (TemporalSystem::RecordUpscale) ===========================================
     {.step = Step::kRrGuides, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "Ray Reconstruction's guide pass (diffuse and specular albedo, normals + roughness, hit distance, responsivity)",
      .file = "temporal.cpp", .call = "RecordRrGuides(list, kept, width, height)", .label_file = "rr_guides.cpp", .label = "rr guides", .closing_label = "after rr guides",

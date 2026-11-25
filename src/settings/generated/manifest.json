@@ -11029,6 +11029,29 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_mirror_glass": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug, the side mirrors without ray tracing (perf/MIRROR-VIEW.md MV3): finds the car's two mirror glasses among its draws by their shape (a small flat patch, a pair across the car at one height facing back and inward, as the ray traced side mirrors do) on any card, and publishes whether a side mirror is on the picture and wide enough to be worth a view. Nothing is drawn by it. While it is off nothing is read and nothing is published. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_mirror_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug, MIRROR-VIEW (perf/MIRROR-VIEW.md, package MV1): the rear view mirror's phase draws into a small view of its own instead of the 229x44 rectangle of the main picture, and the picture is stamped into the rectangle afterwards (the HUD mirror's look, with the world behind it left whole). 0 (the default): the game's own mirror. 1: on, the view's size is the graphics card's class (Low 384 wide, Mid 512, High 768). 2, 3, 4: on at the Low, Mid or High size, whatever the card. The draws of the phase that cannot go into the view (they carry the G-buffer's planes, or other formats) are left out and counted in the log's mirror view line. The markers that scope the phase come from the guest hooks of package MV2: without them nothing changes. Live.\"",
+  "traits": [
+   "rex::Range{0, 4}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_hit_shading": {
   "type": "bool",
   "default": "true",

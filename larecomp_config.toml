@@ -25430,8 +25430,8 @@ name = "Patch_RearViewCarPhase"
 registers = ["r3", "r4"]
 after_instruction = false
 
-# 0x82308178: entry of the mirror phase's begin (sub_82308178). Diagnostic only
-# (rearview_diag): logs what each render client holds when the phase starts.
+# 0x82308178: entry of the mirror phase's begin (sub_82308178). Sends the shared view's BEGIN marker (mcla_gpu_mirror_view, only for a phase that runs) and, with
+# rearview_diag, logs what each render client holds when the phase starts.
 [[midasm_hook]]
 address = 0x82308178
 name = "Patch_RearViewDiag"
@@ -25452,13 +25452,22 @@ after_instruction = false
 # few compares while its debug setting is off.
 #
 # 0x82308120: the `bl sub_8217D460` in sub_82307F28, the mirror's camera step (run from the phase callback sub_82306500 at phase 0x10000's begin): f1 = the
-# field of view ([pass+20]), f2 = the aspect (the stamp's w/h), f3 and f4 = the near and far planes (the main camera's), all set by the instructions before it. The hook
-# narrows f1 (rearview_fov_scale) and pulls in f4 (rearview_far); the camera's frustum, which the game's culling of the mirror's phase uses, is built from them.
+# field of view ([pass+20]: the vertical field in degrees), f2 = the aspect (the stamp's w/h), f3 and f4 = the near and far planes (the main camera's), all set by the
+# instructions before it. The hook narrows f1 (rearview_fov_scale) and pulls in f4 (rearview_far); with the shared view's guest half on (mcla_gpu_mirror_view) it sets f1 and
+# f2 to the field the host asks for and tells the host the game's own. The camera's frustum, which the game's culling of the mirror's phase uses, is built from them.
 [[midasm_hook]]
 address = 0x82308120
 name = "Patch_RearViewCamera"
-registers = ["f1", "f4"]
+registers = ["f1", "f2", "f4"]
 after_instruction = false
+
+# 0x82307F8C: the first `bl sub_82178C40` (a D3D Clear of the mirror's rectangle in the MAIN target: colour 0xFFFF0000, depth 0.0, stencil) in sub_82307F28, the mirror's camera step at the
+# colour pass's begin. True jumps to 0x82307F90, past the call: with the shared view's guest half on and the host redirecting the mirror's phase the rectangle is not the phase's any more
+# (the phase's own clear is the second sub_82178C40 call, in sub_82308178). Off, the game's own clear runs. hooks/rear_view.cpp.
+[[midasm_hook]]
+address = 0x82307F8C
+name = "Patch_RearViewCameraClear"
+jump_address_on_true = 0x82307F90
 
 # 0x822D5704: the `bl sub_822D7120` in the city's per-sector walk (sub_822D5618): f1 = the sector's hi detail radius (mcCity+36 x mcCity+24, set by the `fmuls`
 # before it). Inside the mirror's phase the hook cuts it (rearview_lod_distance), so a sector beyond it is the coarse one-model-a-sector city.
@@ -25478,7 +25487,7 @@ registers = ["r17", "r21", "r27"]
 after_instruction = false
 
 # 0x822E68D8: the `mr r4,r30` before the phase's end call (sub_822F7570) in sub_822E6408; reached for every phase, r30 = the phase. For the mirror's (0x1000000) it
-# ends the city radius cut and puts back the bit a held frame took out of renderer+364.
+# sends the shared view's END marker (for a BEGIN that was sent), ends the city radius cut and puts back the bit a held frame took out of renderer+364.
 [[midasm_hook]]
 address = 0x822E68D8
 name = "Patch_RearViewPhaseEnd"

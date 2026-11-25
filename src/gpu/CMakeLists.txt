@@ -32,11 +32,13 @@ add_library(larecomp_gpu OBJECT
     city_texture_set.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
+    mirror_view.cpp
     local_shadow.cpp
     car_rt_refl.cpp
     car_rt_glass_refl.cpp
     car_rt_opp_refl.cpp
     car_mirror_rt.cpp
+    mirror_glass.cpp
     city_refl.cpp
     city_refl_setting.cpp
     capture_readback.cpp
@@ -761,6 +763,19 @@ target_include_directories(larecomp_cut_request_test PRIVATE ${CMAKE_SOURCE_DIR}
 # The rear view mirror's draw class (mirror_draws.h: the rectangle the guest publishes and the viewport rule) likewise:
 #   cmake --build <dir> --target larecomp_mirror_draws_test, then run src/gpu/larecomp_mirror_draws_test (exit 0 = passed).
 add_executable(larecomp_mirror_draws_test EXCLUDE_FROM_ALL mirror_draws_test.cpp)
+# The shared rear view's rules (mirror_view_rules.h: the reflection and lookup of a side mirror pixel, the parallax error, the view's field and size, the viewport redirect, the HUD's crop, and MV1's markers, phase, route of a draw, life and maps into the view; perf/MIRROR-VIEW.md)
+# have a check that needs no renderer; `--table` prints the design's tables:
+#   cmake --build <dir> --target larecomp_mirror_view_rules_test, then run src/gpu/larecomp_mirror_view_rules_test (exit 0 = passed).
+add_executable(larecomp_mirror_view_rules_test EXCLUDE_FROM_ALL mirror_view_rules_test.cpp)
+# The side mirrors' glass found without ray tracing (mirror_glass_rules.h: the gate of the draws worth reading, the cache by mesh_key, the pair among synthetic cars, the need rule; mirror_glass_need.h: the flag
+# the guest reads and its hold; and that the listener, the setting, the scene's calls and these build lines are there; perf/MIRROR-VIEW.md MV3) likewise:
+#   cmake --build <dir> --target larecomp_mirror_glass_rules_test, then run src/gpu/larecomp_mirror_glass_rules_test [<src dir>] (exit 0 = passed); `--table` prints the pair's verdict for a few cameras.
+add_executable(larecomp_mirror_glass_rules_test EXCLUDE_FROM_ALL mirror_glass_rules_test.cpp)
+# The JOIN of the shared rear view's three halves (mirror_view_join_test.cpp: the one switch over the guest's rules and the host's, the request published once a frame with the finder's need and its hold,
+# the racers, and that the files hold one link header, one publisher and one switch; perf/MIRROR-VIEW.md section 12) likewise:
+#   cmake --build <dir> --target larecomp_mirror_view_join_test, then run src/gpu/larecomp_mirror_view_join_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_mirror_view_join_test EXCLUDE_FROM_ALL mirror_view_join_test.cpp)
+target_include_directories(larecomp_mirror_view_join_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # mc_engine/hooks/rear_view_shared.h
 # The HUD fade's alpha clamp and ramp (ui_fade.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_ui_fade_test, then run src/gpu/larecomp_ui_fade_test (exit 0 = passed).
 add_executable(larecomp_ui_fade_test EXCLUDE_FROM_ALL ui_fade_test.cpp)
@@ -1259,6 +1274,9 @@ larecomp_gpu_host_shader(car_history_ms_shared_ps ps_6_0 SOURCE car_history_ps D
 larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)
 larecomp_gpu_host_shader(car_shadow_matrix_ps ps_6_0)
 larecomp_gpu_host_shader(car_shadow_view_ps ps_6_0)
+# The shared rear view (mirror_view.h, perf/MIRROR-VIEW.md): the average of the multisampled view's samples into the picture the readers sample, and the HUD stamp's quad into the main colour.
+larecomp_gpu_host_shader(mirror_view_resolve_ps ps_6_0 SOURCE mirror_view_ps DEFINES MIRROR_RESOLVE=1)
+larecomp_gpu_host_shader(mirror_view_stamp_ps ps_6_0 SOURCE mirror_view_ps DEFINES MIRROR_RESOLVE=0)
 # The headlight shadow atlas's debug view (local_shadow.h): the atlas in a rectangle of the picture. The replay itself uses the game's own shaders.
 larecomp_gpu_host_shader(local_shadow_view_ps ps_6_0)
 # The player's car as ray tracing structures (car_rt_scene.h): the check pass (inline ray queries, Shader Model 6.5; SPIR-V 1.5 on Vulkan) and

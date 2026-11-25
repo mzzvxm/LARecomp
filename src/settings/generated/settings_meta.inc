@@ -440,6 +440,8 @@
 {"mcla_gpu_luminance_scale_fix", "MCLA/GPU"},
 {"mcla_gpu_memory_census", "MCLA/GPU"},
 {"mcla_gpu_mirror_class", "MCLA/GPU"},
+{"mcla_gpu_mirror_glass", "MCLA/GPU"},
+{"mcla_gpu_mirror_view", "MCLA/GPU"},
 {"mcla_gpu_msaa", "MCLA/GPU"},
 {"mcla_gpu_msaa_with_upscaler", "MCLA/GPU"},
 {"mcla_gpu_noise_blue", "MCLA/GPU"},

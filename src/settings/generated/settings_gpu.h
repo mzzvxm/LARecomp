@@ -1164,6 +1164,17 @@ class GPUSettings final : public rex::SettingOwner {
     "sun shafts, volumetric light, car reflections, the car dump and frame, the headlights, the light shadows), which would otherwise see "
     "a second camera's draws. The scene line of the log always counts them (mirror: N draws/frame), on or off. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_mirror_glass, false, "Debug, the side mirrors without ray tracing (perf/MIRROR-VIEW.md MV3): finds the car's two mirror glasses among its draws by their "
+    "shape (a small flat patch, a pair across the car at one height facing back and inward, as the ray traced side mirrors do) on any card, and publishes whether a side mirror is on the "
+    "picture and wide enough to be worth a view. Nothing is drawn by it. While it is off nothing is read and nothing is published. Live.", rex::kDebugOnly);
+
+  REX_SETTING(i32, mcla_gpu_mirror_view, 0, "Debug, MIRROR-VIEW (perf/MIRROR-VIEW.md, package MV1): the rear view mirror's phase draws into a small view of its own instead of the 229x44 rectangle "
+    "of the main picture, and the picture is stamped into the rectangle afterwards (the HUD mirror's look, with the world behind it left whole). 0 (the "
+    "default): the game's own mirror. 1: on, the view's size is the graphics card's class (Low 384 wide, Mid 512, High 768). 2, 3, 4: on at the Low, Mid or "
+    "High size, whatever the card. The draws of the phase that cannot go into the view (they carry the G-buffer's planes, or other formats) are left out "
+    "and counted in the log's mirror view line. The markers that scope the phase come from the guest hooks of package MV2: without them nothing changes. "
+    "Live.", rex::kDebugOnly, rex::Range{0, 4});
+
   REX_SETTING(std::string, mcla_gpu_msaa, "2", "MSAA of the images of the screen the game multisamples (M6d.2): off (1 sample), 2 (the "
     "console's), 4 or 8 samples on the host. The game itself always draws its own 2 sample "
     "layout; the host gives its images of the screen the samples chosen here, so its pause menu "
@@ -2208,6 +2219,8 @@ inline auto& mcla_gpu_low_latency = g_gpu.mcla_gpu_low_latency;
 inline auto& mcla_gpu_luminance_scale_fix = g_gpu.mcla_gpu_luminance_scale_fix;
 inline auto& mcla_gpu_memory_census = g_gpu.mcla_gpu_memory_census;
 inline auto& mcla_gpu_mirror_class = g_gpu.mcla_gpu_mirror_class;
+inline auto& mcla_gpu_mirror_glass = g_gpu.mcla_gpu_mirror_glass;
+inline auto& mcla_gpu_mirror_view = g_gpu.mcla_gpu_mirror_view;
 inline auto& mcla_gpu_msaa = g_gpu.mcla_gpu_msaa;
 inline auto& mcla_gpu_msaa_with_upscaler = g_gpu.mcla_gpu_msaa_with_upscaler;
 inline auto& mcla_gpu_noise_blue = g_gpu.mcla_gpu_noise_blue;

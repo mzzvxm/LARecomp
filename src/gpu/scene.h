@@ -110,10 +110,12 @@ class CarDump;
 class CarFrame;
 class HeadlightRig;
 class CarShadowMap;
+class MirrorView;
 class LocalShadow;
 class LightManager;
 class CarRtScene;
 class CarMirrorRt;
+class MirrorGlass;
 class GBuffer;
 class PostAa;
 class ResolveCache;
@@ -164,12 +166,18 @@ class Scene {
   // The player car's draws (car_frame.h): told of the main view's draws that write a vehicle ID in the frames a car effect asks for them,
   // and of the frame's start and its present. Null: none.
   void SetCarFrame(CarFrame* car_frame) { car_frame_ = car_frame; }
+  // The side mirrors' glass finder (mirror_glass.h, MIRROR-VIEW MV3): told of the frame's start (it asks CarFrame for the draws) and the present (it evaluates before the frame is cleared). Null: none.
+  void SetMirrorGlass(MirrorGlass* mirror_glass) { mirror_glass_ = mirror_glass; }
   // The cars' headlights (headlight_rig.h): told of the main view's lens draws, of the frame's start and its present; the draws of the lit shaders' headlight
   // variant (ShaderStore::kHeadlightVariant) take its block of lights as constants (Scene::FillVariantBlock). Null: none (the variant then is never chosen).
   void SetHeadlightRig(HeadlightRig* headlights) { headlights_ = headlights; }
   // The player car's sun shadow map (car_shadow_map.h): told of the frame boundary, the anchor, the composite marker and the mid-scene
   // depth copy, where it records its map BEFORE the ambient occlusion's passes. Null: none.
   void SetCarShadowMap(CarShadowMap* car_shadow) { car_shadow_ = car_shadow; }
+  // The shared rear view (mirror_view.h): told of the frame boundary and of the guest's two markers around the mirror's phase (OnMirrorMarker); while a phase redirects, the draws and the clear of the
+  // phase go into its image instead of the main target (RecordMirrorDraw, OnClear), and its picture is stamped into the HUD's rectangle at the first copy of the main colour after the phase (OnResolve).
+  // Null: none.
+  void SetMirrorView(MirrorView* mirror_view) { mirror_view_ = mirror_view; }
   // The headlight shadow maps (local_shadow.h): offered the main view's colour pass draws while they are on, told of the frame boundary, the
   // anchor and the composite marker, and run at the mid-scene depth copy (before the ambient occlusion's passes, as the car shadow map is). Null: none.
   void SetLocalShadow(LocalShadow* local_shadow) { local_shadow_ = local_shadow; }
@@ -237,6 +245,9 @@ class Scene {
   // (NoteUiPiece): its draws are moved toward the left or the right screen edge (the top or the bottom one
   // in a tall picture), all by the same amount, by the setting hud_width (UiShiftOf). Render thread.
   void OnUiMessage(uint32_t bucket);
+  // The guest's begin or end marker of the rear view mirror's phase (mirror_view_link.h kMarkerBegin / kMarkerEnd), in order with the draws around it. Unlike the UI messages it needs the open list: the
+  // begin moves the frame to the view's pass, the end closes it and resolves the picture. Render thread.
+  void OnMirrorMarker(uint32_t bucket, plume::RenderCommandList* list);
 
   // A guest present: the frame boundary of the statistics.
   void OnPresent();
@@ -385,6 +396,15 @@ class Scene {
   // not; *no_effect for an empty scissor.
   Skip Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list,
               bool* no_effect, std::string* detail);
+  // The same for a draw of the rear view mirror's phase while it redirects (MirrorView): into the view's framebuffer with the viewport and the scissor mapped into it, no EDRAM bookkeeping, no
+  // coverage check. kTarget when the draw cannot go into the view (it is left out, never drawn into the main target).
+  Skip RecordMirrorDraw(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list, bool* no_effect, std::string* detail);
+  // The guest's clear of the phase's rectangle while the phase redirects: into the view (the main target is not cleared, whatever happens here). `flags`, `color`, `z` and `stencil` as OnClear read them, the
+  // rectangle in guest pixels of the main target, the keys of the two surfaces the clear named (their EDRAM targets say the formats and the host samples), RT0's exponent bias.
+  void ClearMirrorView(plume::RenderCommandList* list, uint32_t flags, const float color[4], float z, uint32_t stencil, int32_t x0, int32_t y0, int32_t x1, int32_t y1, const EdramKey& color_key,
+                       int32_t color_exp_bias, const EdramKey& depth_key);
+  // The first copy of the main colour after the end marker: the stamp of the view's picture into the HUD's rectangle, before the copy reads the colour. True when it recorded.
+  bool RecordMirrorStamp(const ResolveRecord& record, plume::RenderCommandList* list);
   // EDRAM ownership (M5.2d): how the draw treats what its
   // targets' tiles held, noted in EdramTargets' tile map, and reported when
   // it depends on another identity's bytes.
@@ -531,8 +551,10 @@ class Scene {
   CarSelfRefl* car_refl_ = nullptr;
   CarDump* car_dump_ = nullptr;
   CarFrame* car_frame_ = nullptr;
+  MirrorGlass* mirror_glass_ = nullptr;
   HeadlightRig* headlights_ = nullptr;
   CarShadowMap* car_shadow_ = nullptr;
+  MirrorView* mirror_view_ = nullptr;
   LocalShadow* local_shadow_ = nullptr;
   LightManager* light_manager_ = nullptr;
   GBuffer* gbuffer_ = nullptr;

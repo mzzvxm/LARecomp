@@ -252,10 +252,12 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);
     car_frame_.Initialize(guest_memory_);  // and the player car's draws (car_frame.h), which the car effects ask for
+    mirror_glass_.Initialize(car_frame_);  // and the side mirrors' glass finder, a listener of the car's draws (mirror_glass.h; debug only, idle while mcla_gpu_mirror_glass is off)
     headlights_.Initialize(guest_memory_);  // and the cars' headlights (headlight_rig.h), which the lit shaders' variant reads
     car_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the player car's sun shadow map (car_shadow_map.h)
     car_shadow_.SetCarFrame(&car_frame_);
     car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
+    mirror_view_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the shared rear view (mirror_view.h): nothing is made until mcla_gpu_mirror_view is on
     // The headlight shadow maps (local_shadow.h): a second pass over the main view's opaque draws from the cars' lamps; makes nothing until a draw is seen.
     local_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, upload_, shaders_, guest_layout_);
     // The one shadow atlas (shadow_atlas.h): the replay is its first provider and the light manager reads its published form; both use it only with mcla_gpu_light_frame bit 8 (LU-5).
@@ -422,8 +424,10 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetCarSelfRefl(&car_refl_);
     scene_.SetCarDump(&car_dump_);
     scene_.SetCarFrame(&car_frame_);
+    scene_.SetMirrorGlass(&mirror_glass_);
     scene_.SetHeadlightRig(&headlights_);
     scene_.SetCarShadowMap(&car_shadow_);
+    scene_.SetMirrorView(&mirror_view_);
     scene_.SetLocalShadow(&local_shadow_);
     scene_.SetLightManager(&light_manager_);
     scene_.SetLocalLights(&local_lights_);
@@ -526,6 +530,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     local_shadow_.Shutdown();
     shadow_atlas_.Shutdown();  // after the replay, its provider
     gbuffer_.Shutdown();
+    mirror_view_.Shutdown();
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
     car_dump_.Shutdown();
@@ -536,6 +541,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_rt_refl_.Shutdown();
     car_mirror_.Shutdown();  // after the host builder was stopped (CarRtRefl::Shutdown): its functions name this object's layout and shaders
     car_rt_.Shutdown();
+    mirror_glass_.Shutdown();
     car_frame_.Shutdown();
     headlights_.Shutdown();
     flicker_probe_.Shutdown();
@@ -729,6 +735,7 @@ void Renderer::Shutdown(bool fast_exit) {
   local_shadow_.Shutdown();
   shadow_atlas_.Shutdown();  // after the replay, its provider
   gbuffer_.Shutdown();
+  mirror_view_.Shutdown();
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
   car_dump_.Shutdown();
@@ -739,6 +746,7 @@ void Renderer::Shutdown(bool fast_exit) {
   car_rt_refl_.Shutdown();
   car_mirror_.Shutdown();  // after the host builder was stopped (CarRtRefl::Shutdown): its functions name this object's layout and shaders
   car_rt_.Shutdown();
+  mirror_glass_.Shutdown();
   car_frame_.Shutdown();
   headlights_.Shutdown();
   flicker_probe_.Shutdown();
@@ -931,6 +939,14 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       // the HUD, use the composite record as a one-way message to the render thread
       // (mc_engine/display/ultrawide.h, IsUiMessage): not a composition, no list to open.
       const uint32_t bucket = reinterpret_cast<const CompositeRecord*>(payload)->bucket;
+      if (mirror_view::IsMarker(bucket)) {
+        // The rear view mirror's phase (mirror_view.h): the markers need the open list (the view's pass, its resolve), unlike the UI messages below, which only set flags. They are on the
+        // same side channel (top byte 0x7F), so they are told first.
+        plume::RenderCommandList* list = OpenFrameList();
+        PerfScope label(markers_, list, bucket == mirror_view::kMarkerBegin ? "MirrorViewBegin" : "MirrorViewEnd", PerfMarkers::kEvent);
+        scene_.OnMirrorMarker(bucket, list);
+        return;
+      }
       if (mc::ultrawide::IsUiMessage(bucket)) {
         scene_.OnUiMessage(bucket);
         return;
@@ -1964,6 +1980,7 @@ void Renderer::ReportFrameStats() {
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())
                                                          : std::string()) +
+                           (mirror_view_.HeldBytes() != 0 ? ", mirror view " + mib(mirror_view_.HeldBytes()) : std::string()) +
                            (local_shadow_.HeldBytes() != 0 ? ", headlight shadow atlas " + mib(local_shadow_.HeldBytes())
                                                            : std::string()) +
                            (car_rt_.HeldBytes() != 0 ? ", car ray tracing " + mib(car_rt_.HeldBytes())

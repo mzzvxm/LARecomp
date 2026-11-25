@@ -84,6 +84,21 @@
 // The host side (gpu/mirror_draws.h): TickRearView publishes the rectangle every frame the mirror is up;
 // the Scene counts the draws whose viewport is that rectangle ("mirror: N draws/frame" in the log) and,
 // with mcla_gpu_mirror_class, keeps them out of the main view's per-draw effects.
+//
+// THE SHARED VIEW, the guest half (perf/MIRROR-VIEW.md, package MV2, joined with the host half in section 12; rules and tests in rear_view_shared.h / rear_view_shared_test.cpp, the contract with the
+// host in gpu/mirror_view_link.h, the one link header). ONE SWITCH for both halves: the host's debug setting mcla_gpu_mirror_view (0, the default: every hook below does what it did before, and
+// nothing is sent; 1 to 4: the host redirects the phase into its view, and this half runs):
+//   markers          Patch_RearViewDiag (the entry of the phase's begin step, sub_82308178) sends a BEGIN and Patch_RearViewPhaseEnd (0x822E68D8, r30 = 0x1000000) an END through
+//                    the composite record's side channel, only for a phase that really runs (requested this frame, consumer active). The host sends the draws between them into
+//                    its own small view. A lost END is closed at the next frame's start (Patch_RearViewCadence). A held frame (the cadence) sends the two back to back, an empty phase:
+//                    the host stamps the picture it kept (MV1's rule).
+//   camera           Patch_RearViewCamera sets the mirror camera's field and aspect (f1 = the vertical field in degrees, f2 = w/h) to what the host asks for, and tells the host the
+//                    game's own field (the retail HUD mirror's), so the stamp can keep the retail look.
+//   three states     the HUD mirror on (as before), the phase run for the car's side mirrors with the HUD form hidden (the host's side_need: no frame, no stamp), off. The two visibility
+//                    hooks answer for the phase request, Patch_RearViewDrawAlpha keeps the frame hidden, TickRearView keeps the rectangle and the racers for the side-only case.
+//   the need rule's  TickRearView publishes the game's camera rig (camera_look.h CurrentCameraRig) with the other guest facts; the host decides the need (glass pair found, its size
+//   input            on the picture) and publishes it back.
+//   cadence          the view's rate is the larger of rearview_every and the host's (the class): a held frame keeps the host's last image (the picture IS held now).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
@@ -104,7 +119,13 @@
 #include "larecomp_guest.h"
 #include "gpu/car_model_walk_tap.h"
 #include "gpu/mirror_draws.h"
+#include "gpu/mirror_view_link.h"
+#include "mc_engine/camera/camera_look.h"
 #include "rear_view_cheap.h"
+#include "rear_view_shared.h"
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/gpu.h"
+#endif
 
 // Guest layout (see the file comment for where each was read).
 static constexpr uint32_t kHudManagerPtr    = 0x8286D8D4u;  // dword_8286D8D4
@@ -307,14 +328,83 @@ static bool MainEye(const uint8_t* base, uint32_t renderer, float eye[3]) {
     return true;
 }
 
-static void ApplyMirrorMembership(uint8_t* base, bool mirror_on) {
+// --- the shared view's guest half (the file comment says what it is; rules in rear_view_shared.h) -----------------------------------------------------------
+namespace shared = larecomp::rearview_shared;
+namespace vlink = mcla::gpu::mirror_view;  // the link header's namespace; not `link`: unistd.h declares a function of that name
+
+// The guest half runs only while the host's switch is on and with the Plume renderer (the markers go through its capture; the Xenia renderer has no host half). It is the host's own setting,
+// mcla_gpu_mirror_view, read live here: there is no second guest switch, so the guest cannot send markers to a host that is off (NoteMirrorPhase tests it again, gpu/mirror_view.cpp), and the host
+// does not redirect a phase the guest did not mark (it needs the markers).
+static bool SharedViewOn() {
+#if defined(LARECOMP_HAS_GPU)
+    return larecomp::settings::mcla_gpu_mirror_view.Get() != 0 && mcla::gpu::Enabled();
+#else
+    return false;
+#endif
+}
+
+// What decides the three states, read live where a hook runs. The host's request is read only while the guest half is on (off: a request nobody withdrew changes nothing). The side mirrors'
+// need is the request's: the host copies the glass finder's flag (MV3) into it once a frame (MirrorView::BeginFrame), so this half has one source for it.
+static shared::Mode CurrentMode() {
+    shared::Mode m;
+    m.shared = SharedViewOn();
+    m.hud = larecomp::settings::rearview.Get();
+    m.side_need = shared::EffectiveSideNeed(m.shared, vlink::CurrentRequest());
+    return m;
+}
+
+// A marker to the host, in order with the draws: the host's entry point (gpu.h NoteMirrorPhase: the composite record's side channel, ultrawide.h), which sends it only while mcla_gpu_mirror_view is
+// on and an END only for a BEGIN it sent. The tracker (rear_view_shared.h) decides when; 0 is nothing to send.
+static void SendMirrorMarker(uint32_t marker) {
+    if (marker == 0) return;
+#if defined(LARECOMP_HAS_GPU)
+    mcla::gpu::NoteMirrorPhase(marker == vlink::kMarkerBegin);
+#endif
+}
+
+// The phase loop's thread only (Patch_RearViewDiag, Patch_RearViewPhaseEnd, Patch_RearViewCadence, Patch_RearViewCamera run on it).
+static shared::MarkerTracker g_markers;
+static bool g_phase_requested = false;                // the mirror's bit was in r21 at this frame's start, after a held frame took it out (Patch_RearViewCadence)
+static bool g_frame_held = false;                     // this frame is a held one: the cadence took the mirror's phase out (the host keeps its picture; Patch_RearViewPhaseEnd sends the empty phase)
+// The guest's frame tick writes, the HUD draw's hook reads: is the HUD form visible (the game's own bit, mirrored into the widget while the HUD mirror is on)?
+static std::atomic<bool> g_form_visible{true};
+
+struct SharedStats {
+    uint64_t frames = 0;           // frames the mirror was up with the guest half on (the cadence hook's count: drawn or held)
+    uint64_t side_only = 0;        // ... for the side mirrors only
+    uint64_t camera_builds = 0;
+    uint64_t camera_applied = 0;   // builds where the host's field was used
+};
+static SharedStats g_shared_stats;
+static SharedStats g_shared_logged;
+
+// One line every 600 mirror frames with the guest half on, and one when it turns on or off.
+static void LogSharedState() {
+    static int last_on = 0;  // quiet while it has never been on: a player with the switch off sees nothing of this
+    const bool on = SharedViewOn();
+    if (int(on) != last_on) {
+        last_on = int(on);
+        LARECOMP_APP_INFO("[RearView] shared view, guest half: {}", on ? "on (markers, the host's field of view, the side mirrors' phase)" : "off");
+    }
+    if (!on) return;
+    const SharedStats& n = g_shared_stats;
+    const SharedStats& o = g_shared_logged;
+    if (n.frames - o.frames < 600) return;
+    LARECOMP_APP_INFO("[RearView] shared view ({} mirror frames, {} for the side mirrors only; camera builds {}, host field applied {}); markers so far: {} begin, {} end, "
+                      "{} closed late, {} nested, {} empty phases sent for held frames, {} begin steps that did not run the phase (not asked for, or inactive)",
+                      n.frames - o.frames, n.side_only - o.side_only, n.camera_builds - o.camera_builds, n.camera_applied - o.camera_applied, g_markers.begun(), g_markers.ended(),
+                      g_markers.closed_late(), g_markers.nested(), g_markers.held_pairs(), g_markers.not_run());
+    g_shared_logged = n;
+}
+
+static void ApplyMirrorMembership(uint8_t* base, bool mirror_on, const shared::Mode& mode) {
     const uint32_t renderer = ReadGuestU32(base, kRendererPtr);
     if (!PlausibleGuestPtr(renderer)) return;
 
     static constexpr MirrorClient kCars{7, 0x12E183F3u, "cars"};
     static constexpr MirrorClient kTraffic{9, 0x00118002u, "traffic"};
 
-    SetClientMirrorPhase(base, renderer, kCars, mirror_on && larecomp::settings::rearview_cars.Get());
+    SetClientMirrorPhase(base, renderer, kCars, mirror_on && shared::CarsInView(mode, larecomp::settings::rearview_cars.Get()));
     SetClientMirrorPhase(base, renderer, kTraffic, mirror_on && larecomp::settings::rearview_traffic.Get());
 }
 
@@ -322,21 +412,42 @@ void TickRearView() {
     auto* base = larecomp::guest::Membase();
     if (!base) return;
 
+    // The guest's facts for the host (gpu/mirror_view_link.h), published on every way out, the rig even when no phase runs. The stamp's flag goes through its own channel (SetStampWanted: the
+    // host reads that one). With the guest half off the blocks are kept all zero (nothing is read from the host either) and the stamp's flag is back at its default.
+    const shared::Mode mode = CurrentMode();
+    vlink::GuestFacts facts;
+    if (mode.shared) facts.rig = CurrentCameraRig();
+    const auto publish = [&](bool hud_stamp, bool phase) {
+        if (!mode.shared) return;
+        vlink::SetStampWanted(hud_stamp);
+        facts.phase_asked = phase;
+        facts.side_only = phase && shared::SideOnly(mode);
+        vlink::PublishGuest(facts);
+    };
+    if (!mode.shared) {
+        vlink::PublishGuest(vlink::GuestFacts{});
+        vlink::WithdrawCamera();
+        vlink::SetStampWanted(true);
+    }
+
     uint32_t form = 0, widget = 0;
     if (!FindRearView(base, form, widget)) {
         mcla::gpu::mirror_draws::Withdraw();  // no HUD: no mirror on the screen (the host counts nothing)
+        publish(false, false);
         return;
     }
 
-    const bool want = larecomp::settings::rearview.Get();
-    ApplyMirrorMembership(base, want);
+    // The HUD mirror (rearview), or the side mirrors' view while the guest half is on and the host asks for it: the phase is wanted. Both off: as it always was.
+    const bool want = shared::PhaseWanted(mode);
+    ApplyMirrorMembership(base, want, mode);
     const uint32_t widget_flags = ReadGuestU32(base, widget + kWidgetFlags);
 
-    static int last_state = -1;  // -1 unknown, 0 hidden, 1 shown
+    static int last_state = -1;  // -1 unknown, 0 hidden, 1 shown, 2 the side mirrors' view only
     if (!want) {
         // Nothing to write: the update and draw tests are overridden while off (see the
         // Patch_RearView* hooks below), whatever the bit says.
         mcla::gpu::mirror_draws::Withdraw();
+        publish(false, false);
         if (last_state != 0) {
             LARECOMP_APP_INFO("[RearView] hidden");
             last_state = 0;
@@ -344,24 +455,28 @@ void TickRearView() {
         return;
     }
 
-    // Follow the form's own visibility, so the mirror disappears with the HUD.
+    // Follow the form's own visibility, so the mirror disappears with the HUD. (The side mirrors' view, with the HUD mirror off, does not follow it: the car's mirrors work with the
+    // HUD hidden; the visibility hooks answer for it and the frame stays hidden.)
     const uint32_t form_flags = ReadGuestU32(base, form + kWidgetFlags);
-    const uint32_t next = (widget_flags & ~kWidgetVisible) | (form_flags & kWidgetVisible);
-    if (next != widget_flags) WriteGuestU32(base, widget + kWidgetFlags, next);
-
+    const bool form_visible = (form_flags & kWidgetVisible) != 0;
+    g_form_visible.store(form_visible, std::memory_order_relaxed);
     const RearViewPreset preset = ResolvePreset();
     const int shift_x = preset.x + larecomp::settings::rearview_shift_x.Get();
     const int shift_y = preset.y + larecomp::settings::rearview_shift_y.Get();
-
-    // Frame: x = screen_width - [+160], so moving it left means a larger value.
-    const float frame_x = kFrameDefaultX - float(shift_x);
+    const float frame_x = kFrameDefaultX - float(shift_x);  // Frame: x = screen_width - [+160], so moving it left means a larger value.
     const float frame_y = kFrameDefaultY + float(shift_y);
-    if (ReadGuestF32(base, widget + kFrameOffsetX) != frame_x)
-        WriteGuestF32(base, widget + kFrameOffsetX, frame_x);
-    if (ReadGuestF32(base, widget + kFrameOffsetY) != frame_y)
-        WriteGuestF32(base, widget + kFrameOffsetY, frame_y);
+    if (mode.hud) {
+        const uint32_t next = (widget_flags & ~kWidgetVisible) | (form_flags & kWidgetVisible);
+        if (next != widget_flags) WriteGuestU32(base, widget + kWidgetFlags, next);
 
-    // Scene viewport, into the mirror pass object.
+        if (ReadGuestF32(base, widget + kFrameOffsetX) != frame_x)
+            WriteGuestF32(base, widget + kFrameOffsetX, frame_x);
+        if (ReadGuestF32(base, widget + kFrameOffsetY) != frame_y)
+            WriteGuestF32(base, widget + kFrameOffsetY, frame_y);
+    }
+
+    // Scene viewport, into the mirror pass object. The side-only case gets the same rectangle (the HUD mirror's place): the phase's draws are redirected by the host and the camera's
+    // aspect is ours, so any valid rectangle will do, and this one keeps the host's "mirror draws" count and the retail field of view's meaning.
     const uint32_t pass = ReadGuestU32(base, kMirrorPassPtr);
     if (PlausibleGuestPtr(pass)) {
         const int w = larecomp::settings::rearview_window_w.Get();
@@ -383,12 +498,22 @@ void TickRearView() {
         mcla::gpu::mirror_draws::Withdraw();
     }
 
-    if (last_state != 1) {
-        LARECOMP_APP_INFO("[RearView] shown: viewport {},{} {}x{}, frame x offset {}",
-                          kWindowX + shift_x + larecomp::settings::rearview_window_dx.Get(),
-                          kWindowY + shift_y + larecomp::settings::rearview_window_dy.Get(),
-                          larecomp::settings::rearview_window_w.Get(), larecomp::settings::rearview_window_h.Get(), frame_x);
-        last_state = 1;
+    publish(shared::HudStamp(mode, form_visible), true);
+
+    const int state = shared::SideOnly(mode) ? 2 : 1;
+    if (last_state != state) {
+        if (state == 2) {
+            LARECOMP_APP_INFO("[RearView] side mirrors' view only (the HUD mirror is off): viewport {},{} {}x{}",
+                              kWindowX + shift_x + larecomp::settings::rearview_window_dx.Get(),
+                              kWindowY + shift_y + larecomp::settings::rearview_window_dy.Get(),
+                              larecomp::settings::rearview_window_w.Get(), larecomp::settings::rearview_window_h.Get());
+        } else {
+            LARECOMP_APP_INFO("[RearView] shown: viewport {},{} {}x{}, frame x offset {}",
+                              kWindowX + shift_x + larecomp::settings::rearview_window_dx.Get(),
+                              kWindowY + shift_y + larecomp::settings::rearview_window_dy.Get(),
+                              larecomp::settings::rearview_window_w.Get(), larecomp::settings::rearview_window_h.Get(), frame_x);
+        }
+        last_state = state;
     }
 }
 
@@ -480,7 +605,8 @@ void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {
         if (PlausibleGuestPtr(item)) RestoreCarVisibility(base, item);
         return;
     }
-    if (!larecomp::settings::rearview_cars.Get() || !PlausibleGuestPtr(item)) return;
+    // The racers: the player's setting (CARS IN REAR VIEW), or the side mirrors' view while the host asks for it (shared::CarsInView: a side mirror that never shows the car alongside is not a mirror).
+    if (!shared::CarsInView(CurrentMode(), larecomp::settings::rearview_cars.Get()) || !PlausibleGuestPtr(item)) return;
 
     auto* rt = REX_RUNTIME();
     PPCFunc* prep = rt->FindFunction(kCarVisibilityPrep).value_or(nullptr);
@@ -527,6 +653,14 @@ void Patch_RearViewDiag() {
     // force until Patch_RearViewPhaseEnd.
     g_car_budget.Reset();
     g_in_mirror_phase = true;
+    // The marker for the host: the draws from here to Patch_RearViewPhaseEnd are the phase's. This entry is reached on every frame the renderer's phase mask holds the mirror's bit, the
+    // HUD mirror up or not; the begin step does nothing unless the consumer is active (sub_82308178's first test, [pass + buffer + 32]), and the clients draw only a phase that was asked for
+    // (the bit in r21 at the frame's start, g_phase_requested), so the marker is sent only when both hold. CHECK: that a run shows one BEGIN and one END per mirror frame in the log's
+    // "markers so far" line, and none while the mirror is off.
+    {
+        auto* base = larecomp::guest::Membase();
+        SendMirrorMarker(g_markers.OnBegin(SharedViewOn(), g_phase_requested, base && MirrorConsumerActive(base)));
+    }
     if (!larecomp::settings::rearview_diag.Get()) return;
     static std::atomic<uint32_t> calls{0};
     if (calls.fetch_add(1, std::memory_order_relaxed) % 120 != 0) return;
@@ -553,31 +687,71 @@ void Patch_RearViewDiag() {
     LARECOMP_APP_INFO("[RearView] diag at mirror phase begin:{}", out);
 }
 
-// Hooked at 0x82308120, the `bl sub_8217D460` in sub_82307F28 (f1 = the camera's field of view, [pass+20]; f2 = the aspect, the stamp's w/h; f3 = the near plane
-// and f4 = the far plane, the main camera's). sub_82307F28 is the mirror's camera step, run from the phase callback sub_82306500 at the colour pass's begin
-// whenever the mirror is requested; sub_8217D460 stores the four into the camera (+696 .. +708) and builds its frustum, which is all the game's own culling of the
-// mirror's phase has to go by. rearview_fov_scale narrows the field of view and rearview_far pulls the far plane in (rear_view_cheap.h); both leave the registers
-// alone while off. The registers hold single floats as doubles.
+// Hooked at 0x82308120, the `bl sub_8217D460` in sub_82307F28 (f1 = the camera's field of view, [pass+20]: the VERTICAL field in DEGREES, as the main camera's call from sub_822E5E10
+// passes it; f2 = the aspect, the stamp's w/h, `fdivs f2,f10,f9` of the rectangle's ints [pass+8] / [pass+12]; f3 = the near plane and f4 = the far plane, the main camera's, `lfs f3/f4,704/708`
+// of the camera object at 0x82839704). sub_82307F28 is the mirror's camera step, run from the phase callback sub_82306500 at the colour pass's begin whenever the mirror is requested;
+// sub_8217D460 stores the four into the camera (+696 .. +708) and builds its frustum (sub_8217CB68: tan(f1 x half-angle constant) = the half height, x f2 = the half width), which is all the
+// game's own culling of the mirror's phase has to go by. The registers hold single floats as doubles.
 //
-// CHECK: that f1 is a field of view in radians that the projection halves (sub_8217CB68 multiplies it by a constant and takes its tangent), so a scale of it
-// narrows the view roughly in proportion; the log's "camera builds" counts the calls and the line "[RearView] cheap camera" says what was applied.
-void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f4) {
+// With the guest half on (mcla_gpu_mirror_view) the hook sets f1 and f2 to the field the host asks for (gpu/mirror_view_link.h Request: its view is drawn with that field, and the
+// host's lookup and crop math assume it) and publishes the game's own field first (CameraFacts::retail_hfov_deg: what the retail HUD mirror shows across, 2 atan(tan(f1/2) x f2), which
+// the host's HUD stamp keeps), then the field used. Without a request the game's own field stays (the retail look). rearview_fov_scale is then NOT applied to a field the host asked for
+// (it would break the host's math); rearview_far still is (it changes what is drawn, not the picture's geometry).
+// Without the guest half: rearview_fov_scale narrows f1 and rearview_far pulls in f4 (rear_view_cheap.h), and both leave the registers alone while off.
+//
+// CHECK: that f1 is the vertical field in DEGREES that sub_8217CB68 halves and takes the tangent of (the constant at 0x820086A8, read by `lfs f0,-31064(r11)`, should be pi / 360; the
+// main camera's field is in degrees by its callers' own notes: menu_camera.cpp, the Vert+ hook at 0x822E5E68), and that the factor between [cam+712] and [cam+716] is f2 times the constant at
+// 0x827D4390 (`lfs f0,17296(r10)`, should be 1.0); the log's "[RearView] camera" line says what the game's own field was and what was applied. The game's default field is the float at
+// 0x82007F9C that the pass object's constructor (sub_82307D68, `lfs f0,32668(r10)` then `stfs f0,20(r31)`) stores: its value is CHECK 11 of the design.
+void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f2, PPCRegister& f4) {
     const double fov_scale = larecomp::settings::rearview_fov_scale.Get();
     const double far_m = larecomp::settings::rearview_far.Get();
-    if (!(fov_scale < 1.0) && !(far_m > 0.0)) return;
+    const bool shared_on = SharedViewOn();
+    if (!shared_on && !(fov_scale < 1.0) && !(far_m > 0.0)) return;
     ++g_stats.camera_builds;
     const float fov_was = float(f1.f64);
+    const float aspect_was = float(f2.f64);
     const float far_was = float(f4.f64);
-    const float fov_now = cheap::FieldOfView(fov_was, fov_scale);
-    const float far_now = cheap::FarPlane(far_was, far_m);
-    f1.f64 = double(fov_now);
-    f4.f64 = double(far_now);
-    static float logged_fov = -1.0f, logged_far = -1.0f;
-    if (fov_now != logged_fov || far_now != logged_far) {
-        logged_fov = fov_now;
-        logged_far = far_now;
-        LARECOMP_APP_INFO("[RearView] cheap camera: field of view {:.3f} -> {:.3f}, far plane {:.0f} -> {:.0f} m", fov_was, fov_now, far_was, far_now);
+    const shared::CameraBuild cam = shared::BuildCamera(fov_was, aspect_was, far_was, shared_on, shared_on ? vlink::CurrentRequest() : vlink::Request{}, fov_scale, far_m);
+    if (shared_on) {
+        ++g_shared_stats.camera_builds;
+        if (cam.applied) ++g_shared_stats.camera_applied;
+        vlink::CameraFacts facts;
+        facts.retail_hfov_deg = shared::HorizontalFovDeg(fov_was, aspect_was);
+        facts.used_hfov_deg = shared::HorizontalFovDeg(cam.fov_deg, cam.aspect);
+        facts.used_vfov_deg = cam.fov_deg;
+        facts.seq = uint32_t(g_shared_stats.camera_builds & 0xFFu);
+        vlink::PublishCamera(facts);
+        static float logged_fov = -1.0f, logged_aspect = -1.0f, logged_used = -1.0f;
+        if (fov_was != logged_fov || aspect_was != logged_aspect || cam.fov_deg != logged_used) {
+            logged_fov = fov_was;
+            logged_aspect = aspect_was;
+            logged_used = cam.fov_deg;
+            LARECOMP_APP_INFO("[RearView] camera: the game's own field {:.2f} deg up, aspect {:.3f} ({:.1f} deg across); built with {:.2f} deg up, {:.1f} deg across{}", fov_was, aspect_was,
+                              facts.retail_hfov_deg, cam.fov_deg, facts.used_hfov_deg, cam.applied ? " (the host's request)" : " (the game's own)");
+        }
     }
+    f1.f64 = double(cam.fov_deg);
+    if (cam.applied) f2.f64 = double(cam.aspect);
+    f4.f64 = double(cam.far_m);
+    if (!shared_on) {
+        static float logged_fov = -1.0f, logged_far = -1.0f;
+        if (cam.fov_deg != logged_fov || cam.far_m != logged_far) {
+            logged_fov = cam.fov_deg;
+            logged_far = cam.far_m;
+            LARECOMP_APP_INFO("[RearView] cheap camera: field of view {:.3f} -> {:.3f}, far plane {:.0f} -> {:.0f} m", fov_was, cam.fov_deg, far_was, cam.far_m);
+        }
+    }
+}
+
+// Hooked at 0x82307F8C, the first `bl sub_82178C40` of sub_82307F28 (the mirror's camera step, called from the colour pass's begin): a D3D Clear(1, &rect, colour + depth + stencil flags) of
+// the rectangle at [pass+0..12] (r3 = x, r4 = y, r5 = w, r6 = h, flags r7 = 1, r9 = 1 and the stack byte 87 = 1, f1 = the depth 0.0 from `lfs f31,3796(r11)`, r8 = 0xFFFF0000) into the MAIN
+// target, before the main world draws. True jumps to 0x82307F90, past the call. The phase's own clear is the second sub_82178C40 call, in sub_82308178, with black and depth 1.0.
+// With the guest half on and the host redirecting the phase (SkipCameraClear) the call is skipped: the rectangle of the main target is not the phase's any more (the HUD stamp covers its
+// colour, and a clear left under it would leave depth 0 there for the host's effects; for the side mirrors' phase nothing covers it at all). Off or without a redirect: the game's own clear, as before.
+// CHECK: that this call is a Clear of the rectangle with those values (the design's CHECK 1 and 2), and that skipping it changes nothing but what is said here: the main world then draws in the rectangle.
+bool Patch_RearViewCameraClear() {
+    return shared::SkipCameraClear(SharedViewOn(), vlink::CurrentRequest());
 }
 
 // Hooked at 0x822D5704, the `bl sub_822D7120` in the city's per-sector walk (sub_822D5618; f1 = the sector's hi detail radius, mcCity+36 x mcCity+24, 300 m times the
@@ -604,10 +778,13 @@ void Patch_RearViewCityLod(PPCRegister& f1) {
 // turns are held: the mirror's bit leaves r17 and r21 (the clients' test) and renderer+364 (the begin steps' test, sub_82306500 for 0x10000 and 0x1000000), so no
 // part of the phase runs; Patch_RearViewPhaseEnd puts +364 back. A camera cut (the eye moved more than 20 m) draws the mirror at once.
 //
-// What this does NOT do is keep the picture: the stamp's pixels are the main view's on a held frame (the host has no copy to put back yet), so the switch measures
-// the saving, it does not show the finished feature. CHECK: that +364 is what the begin steps test and that nothing else re-derives the bit mid-frame.
-void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27) {
+// Without the guest half this does NOT keep the picture: the stamp's pixels are the main view's on a held frame (the host has no copy to put back yet), so the switch measures
+// the saving, it does not show the finished feature. With the guest half on the host keeps its last view image and both readers go on drawing from it, and the rate is the larger of
+// this setting's and the host's (rear_view_shared.h EffectiveEvery). The mirror is "up" for the cadence when the HUD mirror is on or the side mirrors ask for the view.
+// CHECK: that +364 is what the begin steps test and that nothing else re-derives the bit mid-frame.
+static void RearViewCadenceStep(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27) {
     g_in_mirror_phase = false;  // a new frame: the city's radius cut never carries over
+    g_frame_held = false;
     auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t renderer = r27.u32;
@@ -616,7 +793,9 @@ void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27)
         WriteGuestU32(base, g_masked_renderer + kRendererPhaseMask, now | kMirrorPhase);
         g_masked_renderer = 0;
     }
-    if ((r17.u32 & kMirrorPhase) == 0 || !larecomp::settings::rearview.Get() || !MirrorConsumerActive(base)) {
+    // The mirror is up when the HUD mirror is on or, with the guest half, the side mirrors ask for the view (a held frame is the view's too: the host keeps its image).
+    const shared::Mode mode = CurrentMode();
+    if ((r17.u32 & kMirrorPhase) == 0 || !shared::PhaseWanted(mode) || !MirrorConsumerActive(base)) {
         g_cadence.Reset();
         return;
     }
@@ -629,14 +808,21 @@ void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27)
     g_have_last_eye = have_eye;
 
     const uint64_t cut_before = g_cadence.cut_draws;
-    const bool draw = g_cadence.Decide(larecomp::settings::rearview_every.Get(), cut);
+    // The rate: the debug setting's, and with the guest half the host's (the class's cadence), whichever is larger.
+    const bool draw = g_cadence.Decide(shared::EffectiveEvery(larecomp::settings::rearview_every.Get(), mode.shared ? vlink::CurrentRequest() : vlink::Request{}, mode.shared), cut);
     ++g_stats.frames;
     g_stats.cut_draws += g_cadence.cut_draws - cut_before;
     if (!draw) ++g_stats.held;
+    if (mode.shared) {
+        ++g_shared_stats.frames;
+        if (shared::SideOnly(mode)) ++g_shared_stats.side_only;
+    }
     LogCheapState();
+    LogSharedState();
     if (draw) return;
 
     // A held frame: the phase is not asked for.
+    g_frame_held = true;
     r17.u64 &= ~uint64_t(kMirrorPhase);
     r21.u64 &= ~uint64_t(kMirrorPhase);
     const uint32_t mask = ReadGuestU32(base, renderer + kRendererPhaseMask);
@@ -646,11 +832,26 @@ void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27)
     }
 }
 
-// Hooked at 0x822E68D8, the `mr r4,r30` before the phase's end call (sub_822F7570) in the renderer's phase loop: reached for every phase, r30 = the phase. For the
-// mirror's it ends the city's radius cut and puts back the bit a held frame took out of renderer+364.
+// The hook proper: the frame's first look at the phase loop. A marker bracket still open lost its END (the end hook did not run): it is closed before anything else. Then the cadence;
+// then the frame's fact the markers need: whether the mirror's bit is still in r21, after a held frame took it out, i.e. whether the clients will draw the phase.
+void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27) {
+    SendMirrorMarker(g_markers.OnFrameStart());
+    RearViewCadenceStep(r17, r21, r27);
+    g_phase_requested = (r21.u32 & kMirrorPhase) != 0;
+}
+
+// Hooked at 0x822E68D8, the `mr r4,r30` before the phase's end call (sub_822F7570) in the renderer's phase loop (loc_822E68D8: reached for every phase whether or not its clients ran, r30 =
+// the phase). For the mirror's it sends the END marker for a BEGIN that was sent (rear_view_shared.h MarkerTracker), ends the city's radius cut and puts back the bit a held frame took
+// out of renderer+364.
 void Patch_RearViewPhaseEnd(PPCRegister& r30) {
     if (r30.u32 != kMirrorPhase) return;
     g_in_mirror_phase = false;
+    SendMirrorMarker(g_markers.OnEnd());  // the END of the draws the host redirects (one for every BEGIN sent; none for a phase that did not run)
+    if (g_markers.OnHeldFrame(SharedViewOn(), g_frame_held)) {  // a held frame: the phase was not run, the host stamps the picture it kept: BEGIN and END back to back, where the phase would have ended
+        SendMirrorMarker(vlink::kMarkerBegin);
+        SendMirrorMarker(vlink::kMarkerEnd);
+    }
+    g_frame_held = false;
     if (g_masked_renderer != 0) {
         auto* base = larecomp::guest::Membase();
         if (base) {
@@ -664,6 +865,10 @@ void Patch_RearViewPhaseEnd(PPCRegister& r30) {
 // What a switched-off mirror must never do is draw or request its phase, and both
 // follow from three tests the game makes itself (two in the update, one in the draw wrapper).
 // These hooks answer them while `rearview` is off and leave them alone while it is on.
+//
+// THE THREE STATES (MIRROR-VIEW.md 2.4, rear_view_shared.h PhaseVisible / FrameHidden): with the guest half on (mcla_gpu_mirror_view) the host's request for the side mirrors' view
+// makes both visibility answers "visible" whatever `rearview` and the HUD form say (the phase is asked for and the consumer active: the game draws the mirror's rear view), while the
+// draw hook keeps the frame hidden unless the HUD mirror is on and its form visible (no white frame, and the host draws no stamp). Off, nothing of this exists.
 //
 // mcRearView::update (sub_82233C18) asks the widget whether it is visible twice, through
 // vtbl+60 (flags+16 & 0x20), and uses only the low byte of r3 each time:
@@ -684,18 +889,24 @@ void Patch_RearViewPhaseEnd(PPCRegister& r30) {
 // rearview off should show the "saw the visible bit" line at the moments the mirror used
 // to pop up, and no mirror view or white frame at all.
 void Patch_RearViewUpdateVisible(PPCRegister& r3) {
-    if (larecomp::settings::rearview.Get()) return;
-    if (r3.u32 & 0xFFu) {
+    const shared::Mode mode = CurrentMode();
+    const bool game_visible = (r3.u32 & 0xFFu) != 0;
+    const bool visible = shared::PhaseVisible(mode, game_visible);
+    if (visible == game_visible) return;  // the HUD mirror on: the game's own answer; nothing to change
+    if (!visible && !mode.hud) {          // the HUD mirror off: the game's bit was found set (see above)
         static std::atomic<uint32_t> blocked{0};
         const uint32_t n = blocked.fetch_add(1, std::memory_order_relaxed) + 1;
         if ((n & (n - 1)) == 0)
             LARECOMP_APP_INFO("[RearView] mirror update saw the visible bit while off, answered hidden (#{})", n);
     }
-    r3.u64 = 0;
+    r3.u64 = visible ? 1 : 0;  // hidden, or (the guest half, the host's side mirror need) visible whatever the HUD form says
 }
 
 void Patch_RearViewUpdateActive(PPCRegister& r3) {
-    if (!larecomp::settings::rearview.Get()) r3.u64 = 0;
+    const shared::Mode mode = CurrentMode();
+    const bool game_visible = (r3.u32 & 0xFFu) != 0;
+    const bool visible = shared::PhaseVisible(mode, game_visible);
+    if (visible != game_visible) r3.u64 = visible ? 1 : 0;
 }
 
 // Hooked at 0x82234148, the `fcmpu cr6, f13, f0` of sub_82234128 (called from sub_82227428,
@@ -708,7 +919,7 @@ void Patch_RearViewUpdateActive(PPCRegister& r3) {
 // generated sub_82234128, not run); turning rearview off while the mirror is up should
 // drop the frame at once instead of fading it.
 void Patch_RearViewDrawAlpha(PPCRegister& f13) {
-    if (!larecomp::settings::rearview.Get()) f13.f64 = 0.0;
+    if (shared::FrameHidden(CurrentMode(), g_form_visible.load(std::memory_order_relaxed))) f13.f64 = 0.0;
 }
 
 // Hooked at 0x822340F4 in mcRearView::Draw (sub_82233E18): the `lwzx` that loads the
@@ -730,7 +941,8 @@ void Patch_RearViewDrawAlpha(PPCRegister& f13) {}
 void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {}
 void Patch_RearViewDiag() {}
 void Patch_RearViewCullBits(PPCRegister& r3) {}
-void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f4) {}
+void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f2, PPCRegister& f4) {}
+bool Patch_RearViewCameraClear() { return false; }
 void Patch_RearViewCityLod(PPCRegister& f1) {}
 void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27) {}
 void Patch_RearViewPhaseEnd(PPCRegister& r30) {}

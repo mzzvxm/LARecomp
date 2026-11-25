@@ -58,6 +58,7 @@
 #include "car_frame.h"
 #include "headlight_rig.h"
 #include "car_mirror_rt.h"
+#include "mirror_glass.h"
 #include "car_rt_scene.h"
 #include "car_rt_refl.h"
 #include "city_hit_scene.h"
@@ -67,6 +68,7 @@
 #include "rt_scene_service.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
+#include "mirror_view.h"
 #include "lamp_shadows.h"
 #include "local_shadow.h"
 #include "shadow_atlas.h"
@@ -327,6 +329,7 @@ class Renderer final : public RenderThread::Executor {
   CarSelfRefl car_refl_;      // render thread; the car paint's self-reflection history (car_selfrefl.h, a debug-only prototype)
   CarDump car_dump_;          // render thread; the debug dump of one frame's cars (car_dump.h)
   CarFrame car_frame_;        // render thread; the player car's draws of every frame a car effect asks for them (car_frame.h)
+  MirrorGlass mirror_glass_;  // render thread; the side mirrors' glass found among the car's draws on any card (mirror_glass.h, MIRROR-VIEW MV3, debug only); a listener of car_frame_: declared after it, gone before it
   HeadlightRig headlights_;   // render thread; the cars' headlights as lights for the lit shaders at night (headlight_rig.h)
   ShadowAtlas shadow_atlas_;  // render thread; the one shadow atlas (shadow_atlas.h, LIGHT-UNIFY U5): the headlight replay is its first provider (mcla_gpu_light_frame bit 8); before it: it outlives it
   LampShadows lamp_shadows_;  // render thread; the street lamps' shadows (lamp_shadows.h, mcla_gpu_lamp_shadows): a provider of the shared atlas, drawn by the replay, read by the deferred light pass
@@ -334,6 +337,7 @@ class Renderer final : public RenderThread::Executor {
   LocalLights local_lights_;  // render thread; the deferred local light pass (local_lights.h, mcla_gpu_local_lights): reads the G-buffer, the shared screen products, the AO's camera and the light manager
   LightManager light_manager_;  // render thread; the passive light manager (light_manager.h, mcla_gpu_lights_census): one frame of the lights, checked against the consumers'
   CarShadowMap car_shadow_;   // render thread; the player car's sun shadow map, recorded at the history trigger before the AO's passes (car_shadow_map.h)
+  MirrorView mirror_view_;    // render thread; the shared rear view (mirror_view.h, mcla_gpu_mirror_view, debug): the mirror phase's draws drawn into a small image of its own, stamped into the HUD's rectangle
   CarRtScene car_rt_;         // render thread; the player's car as ray tracing structures (car_rt_scene.h), where the device has them
   CarRtRefl car_rt_refl_;     // render thread; the player car's ray traced self-reflection pass (car_rt_refl.h), reads car_rt_ (car_rt_scene.h)
   CityRtScene city_rt_;       // render thread; the city's geometry as ray tracing structures (city_rt_scene.h; CITY-RT M1), joins car_rt_'s top level
