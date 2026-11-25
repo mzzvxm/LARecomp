@@ -4,8 +4,8 @@
 # include order and definitions: plume's headers (its Vulkan-Headers and VMA)
 # ahead of rex::sdk's, which arrive as system includes, and
 # LARECOMP_GPU_HAS_<backend> visible to these files only. larecomp links the
-# objects. Expects the caller to have added thirdparty/plume and
-# thirdparty/dxc-bin and to set LARECOMP_GPU_BACKENDS (D3D12 and/or VULKAN; the
+# objects. Expects the caller to have added thirdparty/plume, included
+# FetchDxcHost.cmake, and set LARECOMP_GPU_BACKENDS (D3D12 and/or VULKAN; the
 # one that runs is picked at startup).
 
 add_library(larecomp_gpu OBJECT
@@ -1030,15 +1030,15 @@ rexglue_apply_target_settings(larecomp_gpu)
 # ---------------------------------------------------------------------------
 # Host shaders: hlsl/<stem>.hlsl -> shaders/<stem>.hlsl.<dxil|spirv>.h with
 # g_<stem>_<dxil|spirv>, once per backend the build has. Rule as in reeot
-# cmake/host_shaders.cmake (BSD-3-Clause): dxc-bin's DIRECTX_DXC_TOOL is a
-# plain path on Windows and "VAR=value;<dxc>" elsewhere; the VAR=value parts go
-# through `cmake -E env` so the command works under every generator.
+# cmake/host_shaders.cmake (BSD-3-Clause): FetchDxcHost.cmake uses dxc-bin's
+# command format, a plain path on Windows and "VAR=value;<dxc>" elsewhere.
+# The VAR=value parts go through `cmake -E env` for every generator.
 # ---------------------------------------------------------------------------
-if(NOT DIRECTX_DXC_TOOL)
-    message(FATAL_ERROR "larecomp_gpu: DIRECTX_DXC_TOOL is not set (thirdparty/dxc-bin not added?)")
+if(NOT LARECOMP_DXC_HOST_TOOL)
+    message(FATAL_ERROR "larecomp_gpu: no host shader compiler (check FetchDxcHost.cmake and thirdparty/dxc-bin)")
 endif()
 set(LARECOMP_GPU_DXC "")
-foreach(_part IN LISTS DIRECTX_DXC_TOOL)
+foreach(_part IN LISTS LARECOMP_DXC_HOST_TOOL)
     if(_part MATCHES "^[A-Za-z_][A-Za-z0-9_]*=")
         list(APPEND LARECOMP_GPU_DXC "${CMAKE_COMMAND}" -E env "${_part}")
     else()

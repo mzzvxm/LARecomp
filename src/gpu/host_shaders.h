@@ -2,9 +2,10 @@
 // ===========================================================================
 // MCLA GPU renderer -- host shader blobs
 // ===========================================================================
-// The renderer's own shaders (src/gpu/hlsl), compiled at build time by the dxc
-// of thirdparty/dxc-bin once per backend the build has: DXIL for D3D12, SPIR-V
-// for Vulkan (src/gpu/CMakeLists.txt larecomp_gpu_host_shader). Each generated
+// The renderer's own shaders (src/gpu/hlsl), compiled at build time by DXC
+// (cmake/FetchDxcHost.cmake, with thirdparty/dxc-bin as a fallback) once per
+// backend the build has: DXIL for D3D12 and SPIR-V for Vulkan (see
+// larecomp_gpu_host_shader in src/gpu/CMakeLists.txt). Each generated
 // header defines one byte array, g_<stem>_<dxil|spirv>; they have internal
 // linkage, so this header is included by the one translation unit that creates
 // the shaders of a subsystem. The blob handed out is the active backend's

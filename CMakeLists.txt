@@ -1208,9 +1208,9 @@ else()
     # backend format. Plume itself is the submodule thirdparty/plume: the
     # project's fork (mzzvxm/plume, branch larecomp) of the zolaware revision
     # reblue ships (SDL3 Vulkan path, fill mode, R11G11B10/D24S8), plus the
-    # teardown leak fixes; the host shaders are compiled by
-    # the dxc of the submodule thirdparty/dxc-bin (renderbag, the revision reblue
-    # and reeot use). On Linux it renders through Vulkan.
+    # teardown leak fixes. FetchDxcHost.cmake selects the shader pack builder's
+    # DXC release for the host shaders, with thirdparty/dxc-bin as the fallback.
+    # On Linux it renders through Vulkan.
     option(LARECOMP_GPU "Build the Plume renderer (src/gpu)" ON)
     if(LARECOMP_GPU)
         # Metal is not wired.
@@ -1235,6 +1235,7 @@ else()
         if(NOT TARGET Microsoft::DirectXShaderCompiler)
             add_subdirectory(thirdparty/dxc-bin EXCLUDE_FROM_ALL)
         endif()
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchDxcHost.cmake")
         # AMD's FidelityFX SDK (2.4.0 or later, the folder that holds Kits/): the headers the temporal
         # upscaler's backend (src/gpu/temporal_ffx.h) is compiled with, and the signed DLLs and the
         # licence copied next to the exe below. By default the pinned 2.4.0 files are fetched into the
@@ -1894,7 +1895,9 @@ else()
     if(NOT WIN32 AND NOT APPLE)
         # The shader pack builder loads the Linux compiler from the D3D12
         # subdirectory as on Windows. The Windows DLLs are absent here.
-        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchDxcLinux.cmake")
+        if(NOT DEFINED LARECOMP_DXC_LINUX_LIB)
+            include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchDxcLinux.cmake")
+        endif()
         if(LARECOMP_DXC_LINUX_LIB)
             larecomp_stage(larecomp D3D12/libdxcompiler.so dll SOURCE "${LARECOMP_DXC_LINUX_LIB}")
             if(LARECOMP_DXC_LINUX_LICENCE)

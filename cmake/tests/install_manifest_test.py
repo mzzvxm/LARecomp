@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -74,11 +75,14 @@ set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/lfg/describe_json.cpp" 
 '''
 
 
-def run(args):
+def run(args, *, error=None):
     result = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', timeout=45)
-    if result.returncode:
-        raise AssertionError(result.stdout + result.stderr)
-    return result.stdout
+    output = result.stdout + result.stderr
+    if error is not None:
+        assert result.returncode and error in ' '.join(output.split()), output
+    elif result.returncode:
+        raise AssertionError(output)
+    return output
 
 
 def read(path):
@@ -214,11 +218,12 @@ def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=
 
 
 def check_fetchers(cmake, source, out, deps):
-    # The two readers use their normal cache validation with synthetic bytes.
-    readers = {'fidelityfx': 'fidelityfx-sdk', 'streamline': 'streamline'}
+    # The readers use their normal cache validation with synthetic bytes.
+    readers = {'fidelityfx': 'fidelityfx-sdk', 'streamline': 'streamline', 'dxc_host': 'dxc-host'}
+    deps['kits']['dxc_host']['version'] = 'fixture'
     for kit_id, kit in deps['kits'].items():
         if kit_id not in readers:
-            continue  # a kit with no CMake reader in this tree (dxc_host: cmake/FetchDxcHost.cmake comes with deps/dxc-unify)
+            continue  # A kit with no CMake reader in this tree.
         kit['url'] = (source / 'offline').as_uri()
         folder = readers[kit_id]
         for member in kit['files']:
@@ -234,10 +239,90 @@ if(NOT LARECOMP_FFX_SDK_DIR OR NOT LARECOMP_STREAMLINE_DIR)
     message(FATAL_ERROR "Both kits must recognize their caches")
 endif()
 ''')
-    # Run as a regular configure so ReadDeps records its configure dependency.
-    write(source / 'CMakeLists.txt', 'cmake_minimum_required(VERSION 3.25)\n'
-          'project(FetchFixture NONE)\ninclude(fetch-fixture.cmake)\n')
-    run([cmake, '-S', str(source), '-B', str(out), '-G', 'Ninja'])
+    write(source / 'CMakeLists.txt', '''
+cmake_minimum_required(VERSION 3.25)
+project(FetchFixture NONE)
+if(fixture_check_other_kits)
+    include(fetch-fixture.cmake)
+endif()
+set(CMAKE_HOST_WIN32 TRUE)
+set(CMAKE_HOST_SYSTEM_NAME Windows)
+set(CMAKE_HOST_SYSTEM_PROCESSOR AMD64)
+if(fixture_linux)
+    set(CMAKE_HOST_WIN32 FALSE)
+    set(CMAKE_HOST_SYSTEM_NAME Linux)
+    set(CMAKE_SYSTEM_NAME Linux)
+    set(CMAKE_HOST_SYSTEM_PROCESSOR x86_64)
+    set(CMAKE_SYSTEM_PROCESSOR x86_64)
+endif()
+set(DIRECTX_DXC_TOOL fixture-dxc-bin CACHE INTERNAL "")
+include(cmake/FetchDxcHost.cmake)
+if(NOT LARECOMP_DXC_HOST_TOOL STREQUAL fixture_dxc_tool OR NOT DIRECTX_DXC_TOOL STREQUAL "fixture-dxc-bin")
+    message(FATAL_ERROR "Expected ${fixture_dxc_tool}, got ${LARECOMP_DXC_HOST_TOOL}, dxc-bin=${DIRECTX_DXC_TOOL}")
+endif()
+if(fixture_linux AND NOT LARECOMP_DXC_LINUX_LIB STREQUAL "${LARECOMP_DXC_LINUX_DIR}/lib/libdxcompiler.so")
+    message(FATAL_ERROR "The Linux host lookup must also resolve the runtime library")
+endif()
+''')
+    configure_dxc(cmake, source, out, (out / '_deps/dxc-host-fixture/bin/x64/dxc.exe').as_posix(),
+                  '-Dfixture_check_other_kits=ON')
+
+
+def configure_dxc(cmake, source, out, expected, *options, error=None):
+    # Use a regular configure so ReadDeps records its configure dependency.
+    return run([cmake, '-S', str(source), '-B', str(out), '-G', 'Ninja',
+                f'-Dfixture_dxc_tool={expected}', *options], error=error)
+
+
+def check_dxc_host(cmake, source, out, deps):
+    kit = deps['kits']['dxc_host']
+    archive = source / 'fixture-dxc.zip'
+    with zipfile.ZipFile(archive, 'w') as zip_file:
+        for member in kit['files']:
+            zip_file.writestr(member['path'], b'fixture\n')
+        zip_file.writestr('LICENSE-LLVM.txt', 'fixture licence\n')
+    kit['url'] = archive.as_uri()
+    kit['zip_size'] = archive.stat().st_size
+    kit['zip_sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    write(source / 'cmake/deps.json', json.dumps(deps))
+
+    fallback = 'fixture-dxc-bin'
+    fetch_off = '-DLARECOMP_DXC_HOST_FETCH=OFF'
+    local_zip = f'-DLARECOMP_DXC_HOST_ARCHIVE={archive.as_posix()}'
+    local = out / 'local'
+    local_tool = local / '_deps/dxc-host-fixture/bin/x64/dxc.exe'
+    configure_dxc(cmake, source, local, local_tool.as_posix(), local_zip, fetch_off)
+    configure_dxc(cmake, source, local, fallback, '-DLARECOMP_DXC_HOST_ARCHIVE=')
+    configure_dxc(cmake, source, out / 'unpacked', (source / 'kit/bin/x64/dxc.exe').as_posix(),
+                  f'-DLARECOMP_DXC_HOST_DIR={(source / "kit").as_posix()}', fetch_off)
+
+    fetch = out / 'fetch'
+    fetched_root = fetch / '_deps/dxc-host-fixture'
+    fetched_tool = (fetched_root / 'bin/x64/dxc.exe').as_posix()
+    configure_dxc(cmake, source, fetch, fetched_tool)
+    write(fetched_root / 'bin/x64/dxcompiler.dll', 'corrupt cache')
+    configure_dxc(cmake, source, fetch, fetched_tool)
+    assert (fetched_root / 'bin/x64/dxcompiler.dll').read_bytes() == b'fixture\n'
+
+    linux_dir = (source / 'dxc-kit').as_posix()
+    linux_options = ('-Dfixture_linux=ON', f'-DLARECOMP_DXC_LINUX_DIR={linux_dir}')
+    write(source / 'dxc-kit/bin/dxc')
+    configure_dxc(cmake, source, out / 'linux', f'LD_LIBRARY_PATH={linux_dir}/lib;{linux_dir}/bin/dxc', *linux_options)
+    (source / 'dxc-kit/bin/dxc').unlink()
+    configure_dxc(cmake, source, out / 'linux', fallback, *linux_options)
+
+    valid_zip_sha = kit['zip_sha256']
+    kit['zip_sha256'] = '0' * 64
+    write(source / 'cmake/deps.json', json.dumps(deps))
+    configure_dxc(cmake, source, out / 'bad-zip', fallback, local_zip, error='does not match its SHA-256')
+    kit['zip_sha256'] = valid_zip_sha
+    kit['files'][-1]['sha256'] = '0' * 64
+    write(source / 'cmake/deps.json', json.dumps(deps))
+    configure_dxc(cmake, source, out / 'bad-file', fallback, local_zip, error='of the zip does not match its SHA-256')
+    archive.unlink()
+    offline = out / 'offline'
+    assert 'could not fetch' in configure_dxc(cmake, source, offline, fallback)
+    assert not (offline / '_deps/fixture-dxc.zip.part').exists()
 
 
 MUTATIONS = (
@@ -301,7 +386,9 @@ def main():
                     write(path, before)
             print(f'{len(MUTATIONS)} mutations caught')
         check_fetchers(args.cmake, source, temp / 'fetch-cache', deps)
-        print('2 kit caches checked, 2 dependency files and recipe validated')
+        print('3 kit caches checked, 2 dependency files and recipe validated')
+        check_dxc_host(args.cmake, source, temp / 'dxc-host', deps)
+        print('10 DXC host configure cases checked')
 
 
 if __name__ == '__main__':
