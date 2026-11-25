@@ -63,7 +63,7 @@ struct DispatchFrame {
   uint32_t dispatch_signals = 0;  // the signals above that are filled: exactly the context's
   float jitter[2] = {};           // the frame's own sub-pixel jitter in the dispatch's pixels (the draws' jitter at the dispatch's size: guides::JitterAtSize)
   float camera_position_delta[3] = {};  // previous minus current, world space
-  float view[16] = {};            // world to view, row-major, row vectors (ray_regen_guides_rules.h BuildCamera: the game's view space, the camera's rotation)
+  float view[16] = {};            // world to view, row-major, row vectors (ray_regen_guides_rules.h BuildCamera)
   float projection[16] = {};      // the unjittered view to projection, the same layout
   Bounds depth_bounds;
   bool motion_in_pixels = false;  // false: the motion image is PreviousUV - CurrentUV already (motionVectorScale 1); true: render pixels (scale 1 / size)
@@ -84,13 +84,11 @@ class RayRegen {
   // Opens the runtime on a worker thread when this device can run it (DeviceOk); a no-op otherwise, and on every later call. `frames` retires replaced contexts.
   void Probe(Device& device, FrameRing& frames);
   // Asks for a context with these signals for renders up to `max_w` x `max_h` (made in the background). 0 signals: the context is released after a hold (the plan's ContextKeeper decides when).
-  void Request(uint32_t signals, uint32_t max_w, uint32_t max_h);
+  void Request(uint32_t signals, uint32_t max_w, uint32_t max_h, Site site = Site::kReflections);
   // The context with exactly these signals exists and was made for at least this size (the render thread adopts a context the worker made here and in Request / Dispatch).
-  bool Ready(uint32_t signals, uint32_t w, uint32_t h);
+  bool Ready(uint32_t signals, uint32_t w, uint32_t h, Site site = Site::kReflections);
   // Records the dispatch on the render thread's list. False: nothing was recorded (the log says why once; three failures in a row drop Ray Regeneration for the session: Facts::failed).
-  bool Dispatch(plume::RenderCommandList* list, const DispatchFrame& frame);
-  // The next frame must not reuse this one's history (the view changed, a camera cut that the dispatch's own flag does not see).
-  void ForgetHistory();
+  bool Dispatch(plume::RenderCommandList* list, const DispatchFrame& frame, Site site = Site::kReflections);
   void Shutdown();
 
  private:
@@ -114,10 +112,9 @@ inline Published Current() {
 class RayRegen {
  public:
   void Probe(Device&, FrameRing&) {}
-  void Request(uint32_t, uint32_t, uint32_t) {}
-  bool Ready(uint32_t, uint32_t, uint32_t) { return false; }
-  bool Dispatch(plume::RenderCommandList*, const DispatchFrame&) { return false; }
-  void ForgetHistory() {}
+  void Request(uint32_t, uint32_t, uint32_t, Site = Site::kReflections) {}
+  bool Ready(uint32_t, uint32_t, uint32_t, Site = Site::kReflections) { return false; }
+  bool Dispatch(plume::RenderCommandList*, const DispatchFrame&, Site = Site::kReflections) { return false; }
   void Shutdown() {}
 };
 inline RayRegen& Instance() {

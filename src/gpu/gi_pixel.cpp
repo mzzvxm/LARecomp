@@ -21,6 +21,8 @@
 #include "host_precache.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
+#include "ray_regen.h"
+#include "ray_regen_plan.h"
 #include "rt_world_frame.h"
 
 namespace mcla::gpu {
@@ -151,6 +153,9 @@ void GiPixel::Shutdown() {
     passes_->precache().Stop();  // the host builder's functions name this object's layout and shaders: stop it first
   }
   denoise_.Shutdown();
+  regen_pass_.Shutdown();
+  regen_initialized_ = regen_ran_ = false;
+  regen_previous_ = {};
   // The GPU is idle: nothing is retired, the objects just go.
   for (Slot& s : slots_) {
     s = Slot{};
@@ -252,6 +257,7 @@ void GiPixel::ReleaseImages() {
   ++image_serial_;
   image_width_ = image_height_ = 0;
   have_prev_ = false;
+  regen_previous_ = {};
   history_frames_ = 0;
   denoise_.ResetHistory();
 }
@@ -312,7 +318,7 @@ bool GiPixel::EnsureSlot(uint32_t frame_slot) {
 }
 
 uint64_t GiPixel::HeldBytes() const {
-  uint64_t bytes = 0;
+  uint64_t bytes = regen_pass_.HeldBytes();
   if (signal_.texture) {
     bytes += uint64_t(image_width_) * image_height_ * 28u;   // signal 8, two depth guides 8, normal 8, hit 4
   }
@@ -394,6 +400,7 @@ bool GiPixel::Begin(const Inputs& in) {
   if (!plan.runs()) {
     return false;
   }
+  rayregen::NoteTraced(rayregen::Site::kBounce, image_width_, image_height_);
   Slot& slot = slots_[in.frame_slot];
   Harvest(slot);
 
@@ -428,6 +435,10 @@ bool GiPixel::Begin(const Inputs& in) {
   std::memcpy(words, in.rows->data(), sizeof(*in.rows));
   uint32_t* px = words + rules::kRowsOffsetBytes / 4;
   const uint32_t scale = (in.traced[0] != in.render[0] || in.traced[1] != in.render[1]) ? 2u : 1u;
+  if (in.regen) {
+    regen_now_ = {in.frame, image_width_, image_height_, in.render[0], in.render[1], divisor_ * scale};
+    regen_motion_ = rgd::KeepBounceHistory(regen_previous_, regen_now_, cut);
+  }
   px[0] = image_width_;
   px[1] = image_height_;
   px[2] = divisor_;
@@ -496,7 +507,13 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
   }
   Slot& slot = slots_[in_.frame_slot];
   const uint32_t prev = parity_ ^ 1u;
-  if (plan_.denoise) {
+  if (in_.regen && !plan_.raw && !in_.multisampled) {
+    result_ = RecordRegen(list);
+  }
+  const bool regen_ok = result_ != nullptr;
+  if (regen_ok) {
+    params_.raw = true;  // Use the original traced-depth mask. AMD alpha is hit distance, not history length.
+  } else if (plan_.denoise) {
     rules::DenoiseView v;
     v.signal_slot = signal_.slot;
     v.depth_slot = depth_[parity_].slot;
@@ -548,7 +565,9 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
     list->writeTimestamp(slot.stamps.get(), 1);
   }
   // This run is the next frame's history, unless it was a raw one: the denoiser's own history image was not written in it, so the next frame (raw or plain) starts the denoiser again.
-  have_prev_ = rules::KeepsHistory(plan_.raw);
+  have_prev_ = rules::KeepsHistory(plan_.raw) && !regen_ok;
+  regen_previous_ = regen_ok ? regen_now_ : rgd::BounceHistoryKey{};
+  regen_ran_ |= regen_ok;
   prev_frame_ = in_.frame;
   prev_pose_ = pose_;
   prev_tan_[0] = tan_[0];
@@ -578,6 +597,85 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
   }
 }
 
+const HostImage* GiPixel::RecordRegen(plume::RenderCommandList* list) {
+  constexpr auto site = rayregen::Site::kBounce;
+  constexpr auto signal = rayregen::Signal::kIndirectDiffuse;
+  constexpr uint32_t flags = rayregen::FlagOf(signal);
+  if (!list || !device_ || !frames_ || !heap_ || !passes_ || !pass_timing_ || !in_.camera ||
+      in_.material_slot == gi::kNoSlot || !rayregen::Instance().Ready(flags, image_width_, image_height_, site)) {
+    return nullptr;
+  }
+  if (!regen_initialized_) {
+    regen_pass_.Initialize(*device_, *frames_, *heap_, *passes_, *pass_timing_, site);
+    regen_initialized_ = true;
+  }
+  rgd::BouncePush push{};
+  push.signal = signal_.slot;
+  push.depth = depth_[parity_].slot;
+  push.hit = hit_.slot;
+  push.normal = in_.normal_slot;
+  push.albedo = in_.albedo_slot;
+  push.material = in_.material_slot;
+  push.width = image_width_;
+  push.height = image_height_;
+  push.render_width = in_.render[0];
+  push.render_height = in_.render[1];
+  push.step = regen_now_.step;
+  push.depth_sign = rgd::DepthSign();
+  push.tan_x = tan_[0];
+  push.tan_y = tan_[1];
+  push.prev_tan_x = prev_tan_[0];
+  push.prev_tan_y = prev_tan_[1];
+  push.jitter[0] = in_.jitter[0];
+  push.jitter[1] = in_.jitter[1];
+  push.have_motion = regen_motion_;
+  if (regen_motion_) rules::MotionRows(pose_, prev_pose_, push.motion);
+  // and check half-size jitter and the material boundaries on RX 9000.
+  if (!regen_pass_.RecordBounce(list, push, signal_, depth_[parity_], hit_)) return nullptr;
+  const HostImage& denoised = regen_pass_.image(rgd::Image::kDenoised);
+  if (!denoised.texture || denoised.slot > 0xFFFEu) return nullptr;
+
+  rgd::CameraInputs camera;
+  for (uint32_t a = 0; a < 3; ++a) {
+    camera.right[a] = float(pose_.right[a]);
+    camera.up[a] = float(pose_.up[a]);
+    camera.forward[a] = float(pose_.forward[a]);
+    camera.position[a] = float(pose_.position[a]);
+  }
+  std::memcpy(camera.lin, in_.camera->lin, sizeof(camera.lin));
+  std::memcpy(camera.motion, push.motion, sizeof(camera.motion));
+  camera.tan_half_fov[0] = tan_[0];
+  camera.tan_half_fov[1] = tan_[1];
+  camera.near_plane = in_.near_plane;
+  camera.far_plane = in_.far_plane;
+  camera.have_motion = regen_motion_;
+  const auto matrices = rgd::BuildCamera(camera);
+  rayregen::DispatchFrame frame;
+  frame.game_frame = in_.frame;
+  frame.force_reset = !regen_motion_;
+  frame.render_size[0] = image_width_;
+  frame.render_size[1] = image_height_;
+  frame.linear_depth = regen_pass_.Tagged(rgd::Image::kDepth);
+  frame.motion = regen_pass_.Tagged(rgd::Image::kMotion);
+  frame.normals = regen_pass_.Tagged(rgd::Image::kNormals);
+  frame.diffuse_albedo = regen_pass_.Tagged(rgd::Image::kAlbedo);
+  frame.signals[size_t(signal)] = {regen_pass_.Tagged(rgd::Image::kSignal), regen_pass_.Tagged(rgd::Image::kDenoised)};
+  frame.dispatch_signals = flags;
+  frame.jitter[0] = rgd::JitterAtSize(in_.jitter[0], in_.render[0], image_width_);
+  frame.jitter[1] = rgd::JitterAtSize(in_.jitter[1], in_.render[1], image_height_);
+  std::memcpy(frame.camera_position_delta, matrices.position_delta, sizeof(frame.camera_position_delta));
+  std::memcpy(frame.view, matrices.view, sizeof(frame.view));
+  std::memcpy(frame.projection, matrices.projection, sizeof(frame.projection));
+  frame.depth_bounds = matrices.bounds;
+  pass_timing_->Mark(list, "ray regen bounce denoise");
+  regen_pass_.PrepareDenoised(list);
+  const bool dispatched = rayregen::Instance().Dispatch(list, frame, site);
+  pass_timing_->Mark(list, "rt gi denoise");
+  if (!dispatched) return nullptr;
+  regen_pass_.ReadDenoised(list);
+  return &denoised;
+}
+
 bool GiPixel::Publish(gi::GiFrame* frame) const {
   if (!frame || !result_ || !result_->texture || result_->slot > 0xFFFEu || !plan_.runs() || ran_frame_ != frame_) {
     return false;
@@ -603,6 +701,8 @@ GiPixel::RawOutput GiPixel::raw_output() const {
 }
 
 void GiPixel::OnPresent() {
+  if (regen_initialized_) regen_pass_.OnFrame(regen_ran_);
+  regen_ran_ = false;
   if (ran_since_present_) {
     idle_frames_ = 0;
   } else if (signal_.texture && ++idle_frames_ >= kReleaseAfterFrames) {

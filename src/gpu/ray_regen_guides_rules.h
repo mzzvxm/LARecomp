@@ -41,7 +41,7 @@ enum class Image : uint8_t {
   kDepth,     // R32F: the signed view-space z
   kMotion,    // RGBA16F: PreviousUV - CurrentUV, the signed linear depth delta
   kNormals,   // RGBA16F: octahedral world normal, linear roughness, material type
-  kSpecular,  // RGBA16F: the Fresnel term (linear)
+  kAlbedo,    // RGBA16F: linear specular or diffuse albedo, depending on the site
   kDenoised,  // RGBA16F: the runtime's output (rgb denoised radiance, alpha the hit distance preserved)
   kCount,
 };
@@ -58,7 +58,7 @@ constexpr ImageSpec SpecOf(Image image) {
     case Image::kDepth: return {"ray regen linear depth", rr::Format::kR32Float, 4};
     case Image::kMotion: return {"ray regen motion", rr::Format::kRgba16Float, 8};
     case Image::kNormals: return {"ray regen normals", rr::Format::kRgba16Float, 8};
-    case Image::kSpecular: return {"ray regen specular albedo", rr::Format::kRgba16Float, 8};
+    case Image::kAlbedo: return {"ray regen albedo", rr::Format::kRgba16Float, 8};
     case Image::kDenoised: return {"ray regen denoised", rr::Format::kRgba16Float, 8};
     case Image::kCount: break;
   }
@@ -150,6 +150,7 @@ struct CameraInputs {
   float right[3] = {1, 0, 0};
   float up[3] = {0, 1, 0};
   float forward[3] = {0, 0, -1};     // the game's view looks along -z of its own view space; the world axes are what these are
+  float position[3] = {};            // the trigger supplies this where it has the world-space pose
   float motion[12] = {};             // three rows of the 3x4: previous view space = rows . (x, y, z, 1)
   bool have_motion = false;
   float lin[4] = {0, -1, 0, 0};      // P22 P23 P32 P33
@@ -158,7 +159,7 @@ struct CameraInputs {
   float far_plane = 10000.0f;
 };
 struct RegenCamera {
-  float view[16] = {};               // world to view, row-major, row vectors: a rotation only (RAY-REGEN.md C16)
+  float view[16] = {};               // world to view, row-major, row vectors
   float projection[16] = {};         // view to clip, unjittered
   float position_delta[3] = {};      // previous minus current, world space (0 when there is no motion)
   Bounds bounds;
@@ -192,6 +193,9 @@ inline RegenCamera BuildCamera(const CameraInputs& in, bool mirrored = kLinearDe
     cam.view[row * 4 + 1] = in.up[row];
     cam.view[row * 4 + 2] = back[row];
     cam.view[row * 4 + 3] = 0.0f;
+    cam.view[12] -= in.position[row] * in.right[row];
+    cam.view[13] -= in.position[row] * in.up[row];
+    cam.view[14] -= in.position[row] * back[row];
   }
   cam.view[15] = 1.0f;
   cam.projection[0] = 1.0f / tx;
@@ -201,7 +205,7 @@ inline RegenCamera BuildCamera(const CameraInputs& in, bool mirrored = kLinearDe
   cam.projection[14] = in.lin[2];
   cam.projection[15] = in.lin[3];
   if (mirrored) {
-    for (int row = 0; row < 3; ++row) cam.view[row * 4 + 2] = -cam.view[row * 4 + 2];   // V diag(1,1,-1,1): the third column
+    for (int row = 0; row < 4; ++row) cam.view[row * 4 + 2] = -cam.view[row * 4 + 2];   // V diag(1,1,-1,1): the third column
     for (int col = 0; col < 4; ++col) cam.projection[2 * 4 + col] = -cam.projection[2 * 4 + col];   // diag(1,1,-1,1) P: the third row
   }
   cam.bounds = LinearDepthBounds(in.near_plane, in.far_plane);
@@ -234,6 +238,30 @@ struct Push {
   std::array<uint32_t, push::kExtraWords> x{};
   void SetFloat(uint32_t word, float value) { std::memcpy(&x[word], &value, sizeof(value)); }
 };
+
+struct BouncePush {
+  uint32_t signal, depth, hit, normal;
+  uint32_t albedo, material, width, height;
+  uint32_t render_width, render_height, step;
+  float depth_sign;
+  float tan_x, tan_y, prev_tan_x, prev_tan_y;
+  float motion[12];
+  float jitter[2];
+  uint32_t have_motion, padding;
+};
+static_assert(sizeof(BouncePush) == 128);
+
+struct BounceHistoryKey {
+  uint64_t frame = 0;
+  uint32_t width = 0, height = 0;
+  uint32_t render_width = 0, render_height = 0;
+  uint32_t step = 0;
+};
+
+constexpr bool KeepBounceHistory(const BounceHistoryKey& prev, const BounceHistoryKey& now, bool cut) {
+  return !cut && prev.step != 0 && prev.frame + 1 == now.frame && prev.width == now.width && prev.height == now.height &&
+         prev.render_width == now.render_width && prev.render_height == now.render_height && prev.step == now.step;
+}
 static_assert(sizeof(Push) == 192, "48 words: the reflections' 32 and the 16 of the pass (hlsl/ray_regen_ssr_cs.hlsl SsrPush with SSR_REGEN_EXTRA); a Direct3D 12 pass, 48 of the 64 root dwords");
 
 constexpr float DepthSign(bool mirrored = kLinearDepthPositiveAhead) { return mirrored ? 1.0f : -1.0f; }

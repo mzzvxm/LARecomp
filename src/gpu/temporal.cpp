@@ -1942,10 +1942,10 @@ rr::RawModes TemporalSystem::RawModes() {
   return modes;
 }
 
-rr::RawModes TemporalSystem::RegenModes() {
+rayregen::SignalModes TemporalSystem::RegenModes() {
   // The frame's own view is known from its first main draw (OnMainView), as RawModes(): the pause, garage and map worlds are not ones the effects' guides exist for.
   const bool play_view = frame_.samples != 0 && frame_.view == temporal::View::kPlay;
-  return regen_.Modes(play_view, rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_ray_regen_ssr.Get())), false);   // the cars' reflections have no signal writer (ray_regen_rules.h kConsumers)
+  return regen_.Modes(play_view, rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_ray_regen_ssr.Get())));
 }
 
 void TemporalSystem::NoteRrDispatch(const rr::DispatchChoice& choice, bool used_rr, uint32_t width, uint32_t height, uint32_t out_width, uint32_t out_height) {

@@ -143,7 +143,23 @@ struct Context {
   ffxCreateContextDescDenoiser create{};
   ffxOverrideVersion override_version{};
   ffx_glue::BackendDesc backend;
+  FrameClock clock;
 };
+
+struct ContextSlot {
+  ContextRequest wanted;
+  uint64_t generation = 0;
+  bool pending = false;              // queued or being made by the worker
+  std::shared_ptr<Context> live;
+  std::shared_ptr<Context> fresh;
+  rr::FailureBook book;
+  uint64_t dispatches = 0;
+  bool refusal_logged = false;
+};
+
+bool Covers(const std::shared_ptr<Context>& context, ContextRequest wanted) {
+  return context && ContextRequest{context->signals, context->max_size[0], context->max_size[1]}.Covers(wanted);
+}
 
 }  // namespace
 
@@ -172,17 +188,9 @@ struct RayRegen::Impl {
   uint64_t version_id = 0;
   std::string version_name;
 
-  uint32_t want_signals = 0;
-  uint32_t want_size[2] = {};
-  bool want_changed = false;
-  std::shared_ptr<Context> ctx;                  // the live one (the render thread reads a copy)
-  std::shared_ptr<Context> fresh;                // made by the worker, adopted by the render thread (Adopt)
+  std::array<ContextSlot, kSiteCount> sites;
   std::vector<std::shared_ptr<Context>> doomed;  // retired, to be destroyed by the worker
   std::atomic<bool> failed{false};               // dropped for the session (any thread reads it)
-  rr::FailureBook book;                          // the render thread's count: three errors in a row drop it
-  FrameClock clock;                              // the render thread's
-  uint64_t dispatches = 0;
-  bool refusal_logged = false;
 
   void WorkerMain();
   bool Open(std::string* why);
@@ -190,7 +198,8 @@ struct RayRegen::Impl {
   std::shared_ptr<Context> MakeContext(uint32_t signals, uint32_t w, uint32_t h, std::string* why);
   void DestroyContext(Context& context);
   void Retire(std::shared_ptr<Context> old);
-  void Adopt();
+  void Adopt(ContextSlot& slot);
+  void PublishContexts();  // mu held
   void Fail(const std::string& why);
 };
 
@@ -420,19 +429,35 @@ void RayRegen::Impl::Retire(std::shared_ptr<Context> old) {
 }
 
 // The render thread takes a context the worker made: the one it replaces goes to Retire (frames may still name it), and the history starts again.
-void RayRegen::Impl::Adopt() {
+void RayRegen::Impl::Adopt(ContextSlot& slot) {
   std::shared_ptr<Context> previous;
   {
     std::lock_guard lock(mu);
-    if (!fresh) {
+    if (!slot.fresh) {
       return;
     }
-    previous = std::move(ctx);
-    ctx = std::move(fresh);
-    fresh.reset();
+    previous = std::move(slot.live);
+    slot.live = std::move(slot.fresh);
+    PublishContexts();
   }
-  clock.Forget();
   Retire(std::move(previous));
+}
+
+void RayRegen::Impl::PublishContexts() {
+  Publish([&](Published& p) {
+    p.context_bytes = 0;
+    p.context_signals = 0;
+    p.context_making = false;
+    for (const ContextSlot& slot : sites) {
+      p.context_making |= slot.pending && !failed.load();
+      for (const auto* context : {&slot.live, &slot.fresh}) {
+        if (*context) {
+          p.context_bytes += (*context)->bytes;
+          p.context_signals |= (*context)->signals;
+        }
+      }
+    }
+  });
 }
 
 void RayRegen::Impl::Fail(const std::string& why) {
@@ -472,40 +497,41 @@ void RayRegen::Impl::WorkerMain() {
     });
   }
   std::unique_lock lock(mu);
+  const auto pending = [&] { return std::find_if(sites.begin(), sites.end(), [](const ContextSlot& slot) { return slot.pending; }); };
   for (;;) {
-    cv.wait(lock, [this] { return stop || !doomed.empty() || want_changed; });
+    cv.wait(lock, [&] { return stop || !doomed.empty() || pending() != sites.end(); });
     std::vector<std::shared_ptr<Context>> gone;
     gone.swap(doomed);
-    const bool make = want_changed && facts.supported && !failed.load();
-    const uint32_t signals = want_signals;
-    const uint32_t size[2] = {want_size[0], want_size[1]};
-    want_changed = false;
     const bool leaving = stop;
+    auto next = pending();
+    const bool make = !leaving && next != sites.end() && facts.supported && !failed.load();
+    const ContextRequest wanted = make ? next->wanted : ContextRequest{};
+    const uint64_t generation = make ? next->generation : 0;
+    if (!make) {
+      for (ContextSlot& slot : sites) slot.pending = false;
+    }
     lock.unlock();
     for (std::shared_ptr<Context>& old : gone) {
       DestroyContext(*old);
     }
-    if (make && !leaving && signals != 0) {
+    if (make) {
       std::string make_why;
-      std::shared_ptr<Context> made = MakeContext(signals, size[0], size[1], &make_why);
-      if (made) {
-        std::shared_ptr<Context> unused;  // an earlier one the render thread never adopted: no frame named it, it can go at once
-        {
-          std::lock_guard guard(mu);
-          unused = std::move(fresh);
-          fresh = made;
+      std::shared_ptr<Context> made = MakeContext(wanted.signals, wanted.width, wanted.height, &make_why);
+      {
+        std::lock_guard guard(mu);
+        // A release or resize can overtake a worker request. Only publish
+        // a result that still belongs to this site and its latest request.
+        if (!stop && next->generation == generation) {
+          next->pending = false;
+          if (made) {
+            next->fresh.swap(made);
+          } else {
+            Fail(make_why);
+          }
+          PublishContexts();
         }
-        if (unused) {
-          DestroyContext(*unused);
-        }
-        Publish([&](Published& p) {
-          p.context_bytes = made->bytes;
-          p.context_signals = made->signals;
-          p.context_making = false;
-        });
-      } else {
-        Fail(make_why);
       }
+      if (made) DestroyContext(*made);
     }
     lock.lock();
     if (leaving) {
@@ -514,12 +540,15 @@ void RayRegen::Impl::WorkerMain() {
         DestroyContext(*old);
       }
       doomed.clear();
-      for (std::shared_ptr<Context>* c : {&ctx, &fresh}) {
-        if (*c) {
-          DestroyContext(**c);
-          c->reset();
+      for (ContextSlot& slot : sites) {
+        for (auto* context : {&slot.live, &slot.fresh}) {
+          if (*context) {
+            DestroyContext(**context);
+            context->reset();
+          }
         }
       }
+      PublishContexts();
       return;
     }
   }
@@ -529,74 +558,59 @@ void RayRegen::Impl::WorkerMain() {
 // contexts and the dispatch
 // ---------------------------------------------------------------------------
 
-void RayRegen::Request(uint32_t signals, uint32_t max_w, uint32_t max_h) {
+void RayRegen::Request(uint32_t signals, uint32_t max_w, uint32_t max_h, Site site) {
   Impl& i = *impl_;
-  i.Adopt();
+  ContextSlot& slot = i.sites[size_t(site)];
+  i.Adopt(slot);
   std::shared_ptr<Context> release;
   {
     std::lock_guard lock(i.mu);
-    if (!i.worker.joinable() || i.stop || i.failed.load()) {
+    if (!i.worker.joinable() || i.stop) {
       return;
     }
     if (signals == 0) {
       // Nothing is asked for: the live context goes (after the frames that may name it) and a pending one is forgotten.
-      i.want_changed = false;
-      i.want_signals = 0;
-      release = std::move(i.ctx);
-      if (!release) {
-        return;
-      }
+      ++slot.generation;
+      slot.pending = false;
+      slot.wanted = {};
+      release = std::move(slot.live);
+      if (slot.fresh) i.doomed.push_back(std::move(slot.fresh));
     } else {
-      const bool live = i.ctx && i.ctx->signals == signals && i.ctx->max_size[0] >= max_w && i.ctx->max_size[1] >= max_h;
-      const bool pending = i.want_changed && i.want_signals == signals && i.want_size[0] >= max_w && i.want_size[1] >= max_h;
-      if (live || pending) {
-        return;
-      }
-      i.want_signals = signals;
-      i.want_size[0] = max_w;
-      i.want_size[1] = max_h;
-      i.want_changed = true;
+      const ContextRequest wanted{signals, max_w, max_h};
+      if (i.failed.load() || Covers(slot.live, wanted) || Covers(slot.fresh, wanted) || (slot.pending && slot.wanted.Covers(wanted))) return;
+      ++slot.generation;
+      slot.wanted = wanted;
+      slot.pending = true;
     }
+    i.PublishContexts();
   }
-  if (release) {
-    i.clock.Forget();
-    i.Retire(std::move(release));
-    Publish([&](Published& p) {
-      p.context_bytes = 0;
-      p.context_signals = 0;
-      p.context_making = false;
-    });
-    return;
-  }
-  Publish([&](Published& p) { p.context_making = true; });
+  i.Retire(std::move(release));
   i.cv.notify_all();
 }
 
-bool RayRegen::Ready(uint32_t signals, uint32_t w, uint32_t h) {
+bool RayRegen::Ready(uint32_t signals, uint32_t w, uint32_t h, Site site) {
   Impl& i = *impl_;
-  i.Adopt();
+  ContextSlot& slot = i.sites[size_t(site)];
+  i.Adopt(slot);
   std::lock_guard lock(i.mu);
-  return i.ctx && i.ctx->handle && i.ctx->signals == signals && i.ctx->max_size[0] >= w && i.ctx->max_size[1] >= h && !i.failed.load();
+  return Covers(slot.live, {signals, w, h}) && slot.live->handle && !i.failed.load();
 }
 
-void RayRegen::ForgetHistory() {
-  impl_->clock.Forget();
-}
-
-bool RayRegen::Dispatch(plume::RenderCommandList* list, const DispatchFrame& frame) {
+bool RayRegen::Dispatch(plume::RenderCommandList* list, const DispatchFrame& frame, Site site) {
   Impl& i = *impl_;
-  i.Adopt();
+  ContextSlot& slot = i.sites[size_t(site)];
+  i.Adopt(slot);
   std::shared_ptr<Context> context;
   {
     std::lock_guard lock(i.mu);
-    context = i.ctx;
+    context = slot.live;
   }
   const auto refuse = [&](const std::string& why) {
-    if (!i.refusal_logged) {
-      i.refusal_logged = true;
+    if (!slot.refusal_logged) {
+      slot.refusal_logged = true;
       REXLOG_WARN("{} a dispatch was refused: {} (logged once; the effect keeps its own denoiser for the frame)", kPrefix, why);
     }
-    i.book.Note(rr::FailureBook::Event::kRefused);
+    slot.book.Note(rr::FailureBook::Event::kRefused);
     return false;
   };
   if (!context || !context->handle || i.failed.load()) {
@@ -647,7 +661,7 @@ bool RayRegen::Dispatch(plume::RenderCommandList* list, const DispatchFrame& fra
   std::memcpy(&d.projection, frame.projection, sizeof(d.projection));
   d.linearDepthBounds = {frame.depth_bounds.min, frame.depth_bounds.max};
   d.renderSize = {frame.render_size[0], frame.render_size[1]};
-  const FrameClock::Step step = i.clock.Next(frame.game_frame, frame.force_reset);
+  const FrameClock::Step step = context->clock.Next(frame.game_frame, frame.force_reset);
   d.frameIndex = step.index;
   d.flags = DispatchFlags(step.reset, frame.shared_linear_albedo);
 
@@ -706,17 +720,18 @@ bool RayRegen::Dispatch(plume::RenderCommandList* list, const DispatchFrame& fra
   // The runtime recorded commands of its own and may have bound heaps and root state: the host restores the list's state (the caller of an upscaler does the same).
   backend::InvalidateAfterExternalWork(list);
   if (rc != FFX_API_RETURN_OK) {
-    if (i.book.Note(rr::FailureBook::Event::kError)) {
+    context->clock.Forget();
+    if (slot.book.Note(rr::FailureBook::Event::kError)) {
       i.Fail(std::format("ffxDispatch returned {} ({}) three times in a row", rc, ReturnName(rc)));
     }
-    if (!i.refusal_logged) {
-      i.refusal_logged = true;
+    if (!slot.refusal_logged) {
+      slot.refusal_logged = true;
       REXLOG_WARN("{} ffxDispatch returned {} ({}) (logged once)", kPrefix, rc, ReturnName(rc));
     }
     return false;
   }
-  i.book.Note(rr::FailureBook::Event::kRan);
-  if (i.dispatches++ == 0) {
+  slot.book.Note(rr::FailureBook::Event::kRan);
+  if (slot.dispatches++ == 0) {
     REXLOG_INFO("{} first dispatch recorded: signals {:#x} at {}x{}, frame index {}, reset {}, jitter {:+.3f}, {:+.3f}, depth bounds {:.1f} .. {:.1f}, albedo {}", kPrefix, context->signals,
                 frame.render_size[0], frame.render_size[1], step.index, step.reset ? "yes" : "no", frame.jitter[0], frame.jitter[1], frame.depth_bounds.min, frame.depth_bounds.max,
                 frame.shared_linear_albedo ? "linear (non-encoded flag)" : "sqrt-encoded");

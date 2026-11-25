@@ -408,7 +408,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .makes = data::kLinDepth | data::kLinDepthFull | data::kNormal | data::kColourPre | data::kHizMin,
      .note = "ScreenShared::Publish at the END of the AO's frame (after the apply): every reader of the ScreenFrame comes after the whole AO. The Hi-Z is MADE by the depth step above when the passes are fused "
              "(SS-3: its first levels written by the depth chain's own draws) and here, by the Hi-Z's own passes, when they are not; the screen frame publishes it either way"},
-    {.step = Step::kGiApply, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's apply (additive, multiplied by the occlusion)", .call = "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi)",
+    {.step = Step::kGiApply, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's apply (additive, multiplied by the occlusion)", .call = "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi,",
      .label_file = "gi_apply.cpp", .label = "rt gi pixel", .more_labels = {{"rt gi denoise", "gi lookup"}}, .closing_label = "after gi apply", .reads = data::kPlanes | data::kLinDepth,
      .soft_reads = data::kProbeField | data::kAoTerm | data::kCarStructures | data::kLights, .makes = data::kRrHitGi,
      .wants_planes = detail::kNormalPlane | detail::kAlbedoPlane, .wants_screen = data::kLinDepth,

@@ -4164,6 +4164,13 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     const bool ao_ran = ao_->OnResolve(record, summary, list, UpscalerRunning());
     order_.Note(frame_order::Step::kAo, ao_ran);
   }
+  const rayregen::SignalModes regen_modes = temporal_ && rayregen::RowListed() ? temporal_->RegenModes() : rayregen::SignalModes{};
+  RegenAsk regen_ask;
+  if (temporal_ && (regen_modes.Ssr() || regen_modes.City() || regen_modes.Bounce())) {
+    regen_ask.asked = regen_modes.Ssr();
+    regen_ask.city = regen_modes.City();
+    temporal_->FrameJitter(regen_ask.jitter);
+  }
   if (gi_apply_ && gi_apply_->wants_draws()) {
     // The probe field's apply (gi_apply.h, CITY-RT M3 G3): the bounce light the field carries, added to the main colour from the G-buffer's normal and albedo and the main depth, multiplied by the
     // occlusion's visibility, right after the occlusion's apply (which has multiplied the colour) and before the lamps' direct light (which neither of them multiplies). Binds its own layout, pipeline and
@@ -4171,7 +4178,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // CITY-RT G6: while DLSS Ray Reconstruction takes the frame the per-pixel pass (ULTRA on a strong card) runs RAW (no filter of its own; its hit distance goes to the guide pass): TemporalSystem::RawModes,
     // false with the plan not RR, and asked only while the pass is wanted (the census counts the frames asked).
     const bool raw_gi = gi_apply_->pixel_pass_wanted() && temporal_ && temporal_->RawModes().RtGi();
-    const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);
+    const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi, regen_modes.Bounce() ? regen_ask.jitter : nullptr);
     order_.Note(frame_order::Step::kGiApply, gi_apply_ran);
   }
   if (local_lights_ && local_lights_->wants_draws()) {
@@ -4246,11 +4253,6 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     const bool raw_ssr = temporal_ && temporal_->RawModes().Ssr();
     // RG-3: while AMD FSR Ray Regeneration takes the frame (the DENOISER row's AMD value on a Radeon RX 9000: TemporalSystem::RegenModes, false on every other PC) the trace is the signal it denoises and the
     // resolve reads its output; a regen frame that is refused is the effect's own (ssr.h).
-    RegenAsk regen_ask;
-    if (temporal_ && temporal_->RegenModes().Ssr()) {
-      regen_ask.asked = true;
-      temporal_->FrameJitter(regen_ask.jitter);
-    }
     const bool ssr_ran = ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning(), regen_ask);
     order_.Note(frame_order::Step::kSsr, ssr_ran);
   }

@@ -415,6 +415,20 @@ void CheckCamera() {
   };
   Check(Near(det3(cam.view), 1.0, 1e-4) && Near(det3(mir.view), -1.0, 1e-4), "the view's rotation has determinant +1, the mirror's -1");
   Check(cam.view[12] == 0 && cam.view[13] == 0 && cam.view[14] == 0 && cam.view[15] == 1.0f, "the view has no translation (the position delta travels separately)");
+  auto placed = in;
+  placed.position[0] = float(pose.pos.x);
+  placed.position[1] = float(pose.pos.y);
+  placed.position[2] = float(pose.pos.z);
+  for (bool mirrored : {false, true}) {
+    const auto translated = gd::BuildCamera(placed, mirrored);
+    double world_point[3] = {pose.pos.x + offset.x, pose.pos.y + offset.y, pose.pos.z + offset.z};
+    double got[3] = {translated.view[12], translated.view[13], translated.view[14]};
+    for (int a = 0; a < 3; ++a) {
+      for (int r = 0; r < 3; ++r) got[a] += world_point[r] * translated.view[r * 4 + a];
+    }
+    Check(Near(got[0], 1.5, 1e-3) && Near(got[1], 0.8, 1e-3) && Near(got[2], mirrored ? 10.0 : -10.0, 1e-3),
+          "GI's translated view matches its signed depth in both conventions");
+  }
   // the bounds
   Check(cam.bounds.min == 5.0f && Near(cam.bounds.max, 9990.0, 0.01), "the bounds are the near plane and 0.999 of the far plane");
   // the position delta of a motion made from two poses is previous minus current
@@ -485,7 +499,7 @@ void CheckFrame() {
   in.linear_depth = gd::PlanImage(gd::Image::kDepth, w, h);
   in.motion = gd::PlanImage(gd::Image::kMotion, w, h);
   in.normals = gd::PlanImage(gd::Image::kNormals, w, h);
-  in.specular_albedo = gd::PlanImage(gd::Image::kSpecular, w, h);
+  in.specular_albedo = gd::PlanImage(gd::Image::kAlbedo, w, h);
   in.signal_in[size_t(rg::Signal::kIndirectSpecular)] = gd::PlanImage(gd::Image::kSignal, w, h);
   in.signal_out[size_t(rg::Signal::kIndirectSpecular)] = gd::PlanImage(gd::Image::kDenoised, w, h);
   in.render_size[0] = w;
@@ -542,7 +556,7 @@ void CheckSources(const std::string& dir) {
   // the five UAVs
   const char* vars[5] = {"g_signal", "g_depth", "g_motion", "g_normals", "g_specular"};
   const char* want_formats[5] = {"rgba16f", "r32f", "rgba16f", "rgba16f", "rgba16f"};
-  const gd::Image order[5] = {gd::Image::kSignal, gd::Image::kDepth, gd::Image::kMotion, gd::Image::kNormals, gd::Image::kSpecular};
+  const gd::Image order[5] = {gd::Image::kSignal, gd::Image::kDepth, gd::Image::kMotion, gd::Image::kNormals, gd::Image::kAlbedo};
   bool formats = true, spaces = true;
   for (int i = 0; i < 5; ++i) {
     const std::string f = FormatOfUav(cs, vars[i]);
@@ -573,6 +587,73 @@ void CheckSources(const std::string& dir) {
 }
 
 // The wiring: where the reflections, the scene, the temporal system, the menu and the settings hold the parts together (text checks, as the reflections' own test does).
+void CheckBounce(const std::string& dir) {
+  constexpr gd::BounceHistoryKey prev{18, 480, 270, 1919, 1079, 4};
+  gd::BounceHistoryKey now{19, 480, 270, 1919, 1079, 4};
+  Check(gd::KeepBounceHistory(prev, now, false), "bounce history accepts consecutive dispatches of the same footprint");
+  Check(!gd::KeepBounceHistory(prev, now, true), "camera cut or relight resets bounce history");
+  Check(!gd::KeepBounceHistory({}, now, false), "first bounce dispatch resets history");
+  Check(!gd::KeepBounceHistory({18, 480, 270, 1919, 1079, 0}, {19, 480, 270, 1919, 1079, 0}, false),
+        "an invalid footprint can never carry history");
+  for (auto member : {&gd::BounceHistoryKey::width, &gd::BounceHistoryKey::height, &gd::BounceHistoryKey::render_width, &gd::BounceHistoryKey::render_height, &gd::BounceHistoryKey::step}) {
+    auto changed = now;
+    ++(changed.*member);
+    Check(!gd::KeepBounceHistory(prev, changed, false), "changing any part of the footprint resets bounce history");
+  }
+  ++now.frame;
+  Check(!gd::KeepBounceHistory(prev, now, false), "a missed bounce dispatch resets history");
+  Check(sizeof(gd::BouncePush) == 128 && offsetof(gd::BouncePush, depth_sign) == 44 && offsetof(gd::BouncePush, motion) == 64 &&
+            offsetof(gd::BouncePush, jitter) == 112 && offsetof(gd::BouncePush, have_motion) == 120, "GI guide push matches the HLSL packing");
+
+  rr::Image signal = gd::PlanImage(gd::Image::kSignal, 480, 270);
+  const auto diffuse = rg::Signal::kIndirectDiffuse;
+  rg::Inputs in;
+  in.render_size[0] = 480;
+  in.render_size[1] = 270;
+  in.context_max_size[0] = 960;
+  in.context_max_size[1] = 540;
+  in.dispatch_signals = in.context_signals = rg::FlagOf(diffuse);
+  in.linear_depth = gd::PlanImage(gd::Image::kDepth, 480, 270);
+  in.motion = gd::PlanImage(gd::Image::kMotion, 480, 270);
+  in.normals = gd::PlanImage(gd::Image::kNormals, 480, 270);
+  in.diffuse_albedo = gd::PlanImage(gd::Image::kAlbedo, 480, 270);
+  in.signal_in[size_t(diffuse)] = in.signal_out[size_t(diffuse)] = signal;
+  Check(rg::PlanDispatch(in).verdict == rg::Verdict::kOk, "bounce guides and RGBA irradiance/hit signal meet the diffuse-only context's contract");
+  in.diffuse_albedo = {};
+  Check(rg::PlanDispatch(in).verdict == rg::Verdict::kMissingInput, "indirect diffuse requires its albedo even with a valid radiance signal");
+
+  const std::string shader = Read(dir, "hlsl/ray_regen_bounce_cs.hlsl");
+  const std::string gi = Read(dir, "gi_pixel.cpp");
+  const std::string apply = Read(dir, "gi_apply.cpp");
+  const std::string runtime = Read(dir, "ray_regen.cpp");
+  const std::string ssr = Read(dir, "ssr.cpp");
+  Check(Has(shader, "traced = hit.y > 0.0f && t > 0.0f && t < kRgNoDepth") &&
+            Has(shader, "g_depth[id.xy] = RgDepthTexel(traced, t, g_push.depth_sign)") && Has(shader, "g_signal[id.xy] = 0.0f"),
+        "untraced bounce texels carry a zero signal and an out-of-range signed depth");
+  Check(Has(shader, "Load(tap).xyz, hit.x, true") && Has(shader, "cls == GB_CLASS_METAL ? float3(0.0f, 0.0f, 0.0f) : albedo"),
+        "irradiance carries hit distance in alpha, with diffuse albedo zero on metal");
+  Check(Has(shader, "min(id.xy * g_push.render_step.z, render - 1u)") && Has(shader, "float2(pixel) + 0.5f - g_push.jitter") &&
+            Has(shader, "RgMotionTexel(uv, prev_uv.x, prev_uv.y, prev.z, t, true, g_push.depth_sign)"),
+        "the guide uses the trace footprint and unjittered UV/depth motion");
+  Check(FormatOfUav(shader, "g_diffuse") == "rgba16f" && Has(shader, "g_diffuse : register(u4, space5)") &&
+            Has(Read(dir, "CMakeLists.txt"), "larecomp_gpu_host_shader(ray_regen_bounce_cs cs_6_0)"), "GI binds the diffuse guide at the shared albedo slot and registers the shader");
+  Check(Has(gi, "if (in_.regen && !plan_.raw && !in_.multisampled)") && Has(apply, "regen_jitter && view_ == 0 && own_pose && gb.Has(gbuffer::kPlaneMaterial)") &&
+            Has(gi, "RecordBounce(list, push, signal_, depth_[parity_], hit_)"),
+        "AMD GI requires a plain play frame with material and camera guides and consumes the current trace");
+  Check(Has(gi, "frame.diffuse_albedo = regen_pass_.Tagged(rgd::Image::kAlbedo);") &&
+            Has(gi, "rayregen::Instance().Dispatch(list, frame, site);") && Has(gi, "if (!dispatched) return nullptr;"),
+        "GI dispatch sends the diffuse guide and only returns the vendor image on success");
+  Check(Has(gi, "if (regen_ok) {\n    params_.raw = true;") && Has(gi, "} else if (plan_.denoise) {") &&
+            Has(gi, "have_prev_ = rules::KeepsHistory(plan_.raw) && !regen_ok;"),
+        "the existing depth-mask compose reads successful AMD frames and the local filter keeps its fallback");
+  Check(Has(runtime, "ContextSlot& slot = i.sites[size_t(site)];") && Has(runtime, "context->clock.Next(frame.game_frame, frame.force_reset)") &&
+            Has(runtime, "!stop && next->generation == generation"), "contexts, clocks and worker completions are site-local");
+  Check(Has(ssr, "regen && rayregen::ReflectionSignalWanted(ask.asked, ask.city, rt_recorded)") &&
+            Has(ssr, "if (regen_city_ != rt_recorded) regen_key_.valid = false;") &&
+            ssr.find("rt_recorded = rt_.Record(rt_frame)") < ssr.find("regen_ok = RecordRegen(list, push, sf,"),
+        "the reflection dispatch reads the shared trace after the city had a chance to write it");
+}
+
 void CheckWiring(const std::string& dir) {
   const std::string ssr_cpp = Read(dir, "ssr.cpp");
   const std::string ssr_h = Read(dir, "ssr.h");
@@ -594,7 +675,7 @@ void CheckWiring(const std::string& dir) {
   const size_t temporal_at = ssr_cpp.find("pass_timing_->Mark(list, \"ssr temporal\");");
   Check(trace_at != std::string::npos && regen_at != std::string::npos && temporal_at != std::string::npos && trace_at < regen_at && regen_at < temporal_at,
         "the regen pass and the dispatch come after the trace and before the effect's own accumulation (which a refused regen frame then runs)");
-  Check(Has(ssr_cpp, "regen_facts.asked = ask.asked && !raw;") && Has(ssr_cpp, "if (rgd::RegenPossible(regen_facts)) {") && Has(ssr_cpp, "rgd::DecideRegen(regen_facts)") && Has(ssr_cpp, "regen_pass_.PipelineReady()"),
+  Check(Has(ssr_cpp, "regen_facts.asked = rayregen::ReflectionSignalWanted(ask.asked, ask.city, rt) && !raw;") && Has(ssr_cpp, "if (rgd::RegenPossible(regen_facts)) {") && Has(ssr_cpp, "rgd::DecideRegen(regen_facts)") && Has(ssr_cpp, "regen_pass_.PipelineReady()"),
         "the frame is Ray Regeneration's by the rules' decision, never together with the raw mode, and its pipelines are asked for only inside RegenPossible");
   Check(Has(ssr_cpp, "if (!raw && !regen_ok) {\n    // The accumulation.") && Has(ssr_cpp, "if (!regen_ok) {\n      ++regen_fallbacks_;"),
         "a regen frame whose pass or dispatch was refused runs the effect's own accumulation and resolve (counted), never nothing");
@@ -606,21 +687,21 @@ void CheckWiring(const std::string& dir) {
         "the output is made writable before the dispatch and readable after it, and a refused dispatch is reported as no regen");
   Check(Has(ssr_cpp, "frame.motion_in_pixels = false;") && Has(ssr_cpp, "frame.shared_linear_albedo = true;") && Has(ssr_cpp, "rgd::JitterAtSize(ask.jitter[0], sf.render[0], width)") && Has(ssr_cpp, "rgd::BuildCamera(camera)"),
         "the dispatch hands over UV motion, linear albedo, the jitter at the trace's size and the camera the rules build");
-  Check(Has(ssr_cpp, "rayregen::NoteSsrTraced(width, height);") && Has(ssr_cpp, "regen_pass_.Initialize(device, *frames, heap, passes, pass_timing);") && Has(ssr_cpp, "regen_pass_.Shutdown();") && Has(ssr_cpp, "uint64_t bytes = regen_pass_.HeldBytes();"),
+  Check(Has(ssr_cpp, "rayregen::NoteTraced(rayregen::Site::kReflections, width, height);") && Has(ssr_cpp, "regen_pass_.Initialize(device, *frames, heap, passes, pass_timing);") && Has(ssr_cpp, "regen_pass_.Shutdown();") && Has(ssr_cpp, "uint64_t bytes = regen_pass_.HeldBytes();"),
         "the pass is made with the effect, shut down with it, counted in its held bytes, and the size the context is made for is reported");
-  Check(Has(ssr_h, "const RegenAsk& regen = RegenAsk{}") && Has(ssr_h, "RayRegenSsrPass regen_pass_;") && Has(ssr_h, "FrameRing* frames = nullptr"), "the header: the ask, the pass, the frames that retire its sets");
+  Check(Has(ssr_h, "const RegenAsk& regen = RegenAsk{}") && Has(ssr_h, "RayRegenRadiancePass regen_pass_;") && Has(ssr_h, "FrameRing* frames = nullptr"), "the header: the ask, the pass, the frames that retire its sets");
   // the scene, the temporal system, the renderer
-  Check(Has(scene, "temporal_->RegenModes().Ssr()") && Has(scene, "temporal_->FrameJitter(regen_ask.jitter);") && Has(scene, "ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning(), regen_ask)"), "the scene asks the temporal system and hands the effect the ask");
+  Check(Has(scene, "temporal_->RegenModes()") && Has(scene, "temporal_->FrameJitter(regen_ask.jitter);") && Has(scene, "ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning(), regen_ask)"), "the scene asks the temporal system and hands the effect the ask");
   Check(Has(temporal, "denoiser::Publish(snapshot);\n  // RG-3") && Has(temporal, "regen_.Update(regen_in);") && Has(temporal, "regen_in.dlss_plan = rr_plan_;") && Has(temporal, "rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12, device.description().name, WindowsBuildNumber());") &&
-            Has(temporal, "rayregen::StopAll();") && Has(temporal_h, "rayregen::Planner regen_;") && Has(temporal_h, "rr::RawModes RegenModes();"),
+            Has(temporal, "rayregen::StopAll();") && Has(temporal_h, "rayregen::Planner regen_;") && Has(temporal_h, "rayregen::SignalModes RegenModes();"),
         "the plan is made at the frame boundary beside DLSS RR's, the vendor is noted at the start, the runtime stops with the system");
   Check(Has(renderer, "ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_, &frames_);") && Has(renderer, "rayregen::Current().context_bytes != 0 ? \", AMD FSR Ray Regeneration's context \""),
         "the renderer makes the pass with the effect and the existing VRAM line reports the runtime's context");
-  Check(Has(runtime, "frame.motion_in_pixels ? MotionScaleFor(frame.render_size[0], frame.render_size[1]) : MotionScale{}") && Has(runtime, "p.vendor_id = in.vendor_id;") && Has(runtime, "p.context_signals = made->signals;") &&
+  Check(Has(runtime, "frame.motion_in_pixels ? MotionScaleFor(frame.render_size[0], frame.render_size[1]) : MotionScale{}") && Has(runtime, "p.vendor_id = in.vendor_id;") && Has(runtime, "p.context_signals |= (*context)->signals;") &&
             Has(runtime, "void ProbeNow(Device& device, FrameRing& frames)") && Has(runtime_h, "#else  // no AMD denoiser header, or no Direct3D 12 backend: the same names, doing nothing"),
         "the runtime: UV motion has scale 1, the vendor and the signals are published, a row can open it live, and a build without it has the same names as no-ops");
-  Check(Has(plan, "keeper_.Update(ContextWanted(plan_.why))") && Has(plan, "Instance().Request(0, 0, 0);") && Has(plan, "ProbeNow(*in.device, *in.frames);") && Has(plan, "RowListed() && in.device && in.frames") && Has(plan, "SelectRayRegen(pi)") &&
-            Has(plan, "SignalModesOf(f, switch_ssr, switch_car_refl)") && Has(plan, "f.armed = true;"),
+  Check(Has(plan, "site.keeper.Update(site.active)") && Has(plan, "Instance().Request(0, 0, 0, Site(i));") && Has(plan, "ProbeNow(*in.device, *in.frames);") && Has(plan, "RowListed() && in.device && in.frames") && Has(plan, "SelectRayRegen(pi)") &&
+            Has(plan, "SignalModeOf(f, rr::Consumer::kSsr, switch_ssr)") && Has(plan, "f.context_ready = ready(Site::kBounce);"),
         "the planner: the plan is the rules', the context is made while it is on and freed after the hold, the runtime is opened only where the Radeon row can be listed, the modes are the rules'");
   Check(Has(plan, "if (!RowListed()) return {};"), "a previously published AMD runtime verdict cannot enable a hidden denoiser");
   const std::string ui_rules = Read(dir, "../settings/ui_rules.toml");
@@ -646,6 +727,7 @@ int main(int argc, char** argv) {
   CheckCamera();
   CheckFrame();
   CheckSources(dir);
+  CheckBounce(dir);
   CheckWiring(dir);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

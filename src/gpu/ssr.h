@@ -128,6 +128,7 @@ class ScreenShared;
 struct RegenAsk {
   bool asked = false;
   float jitter[2] = {0.0f, 0.0f};
+  bool city = false;
 };
 // The frame's own camera as the occlusion has it at the trigger (ao.h FrameCameraOut): the axes in the world and the 3x4 into the last frame's view space.
 struct RegenCameraRows {
@@ -251,8 +252,9 @@ class ScreenReflections {
   ssr_denoise::Totals denoise_totals_;
   uint32_t denoise_why_logged_ = ~0u;
   std::array<HostImage, 2> accum_;
-  RayRegenSsrPass regen_pass_;        // RG-3: the guide and signal pass (and its images: the signal, the guides, the denoised image)
+  RayRegenRadiancePass regen_pass_;        // RG-3: the guide and signal pass (and its images: the signal, the guides, the denoised image)
   ssr::HistoryKey regen_key_;         // the last frame that was a regen frame (its dispatch's history)
+  bool regen_city_ = false;           // city contributed to the previous AMD signal
   uint32_t regen_why_logged_ = ~0u;
   bool regen_ever_asked_ = false;
   bool regen_first_logged_ = false;

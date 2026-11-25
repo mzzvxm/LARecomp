@@ -17,8 +17,7 @@
 //
 //   Signals            the seven signals and which of our consumers (rr::Consumer) hands which one over.
 //   Support            the device's part of "can it run" (AMD, Direct3D 12, shader model 6.6), the runtime's part is the version query and a trial context (ray_regen.cpp).
-//   SelectRayRegen     the denoiser setting (the player's AMD FSR RAY REGENERATION row is ON = the vendor's value, OFF = OURS; the debug chooser also has AUTO) against what the PC and the frame have; ChooseDenoiser puts it beside DLSS RR's plan: AMD Ray Regeneration where it can
-//                      run, else DLSS RR, else ours (the owner's order, 2026-11-19, extended to AMD 2026-11-22).
+//   SelectRayRegen     the vendor toggle, hardware, and the effects with signal writers. ChooseDenoiser prefers DLSS RR, then AMD Ray Regeneration, then our own filters.
 //   SignalModes        which effects write their signal instead of adding their noise to the colour (the twin of rr::RawModesOf; no upscaled frame is needed).
 //   InputMap           each Ray Regeneration input against the Ray Reconstruction guide we already make (shared, converted, new) and the guides Ray Regeneration has no use for.
 //   PlanDispatch       the images of a dispatch against the context's signals: presence, sizes, formats (the twin of rr::PlanTags).
@@ -140,13 +139,12 @@ using ConsumerTable = std::array<ConsumerCell, rr::kConsumerCount>;
 // DLL costs 0.7 ms at 960x540 (the reflections' trace of a 1080p picture: the dispatch is at the trace's size) and 2.6 ms at 1080p (a 4K picture's) for one specular signal on an RX 9070 XT, against our own denoisers' 0.03 ms), so AUTO is ours on every PC.
 //   the cars' ray traced reflections: NOT a fit, so the cell stays false (RAY-REGEN.md section 4.2): their image is read by the NEXT frame's paint at the texels of the car's history image, with a weight
 //     code in the alpha that a hit distance has no room for, and a denoiser that costs the same for the whole picture (2.6 ms) would run for a car that fills a tenth of it, to replace a filter that costs 0.03 ms.
-//   the city's ray traced reflections, the ray traced bounce light, the lights' visibility: their effects are in the integrated tree (CITY-RT R6 / G6, RT-LIGHTS-D1) as DLSS RR consumers, but none has a
-//     writer of its Ray Regeneration signal (indirect specular / indirect diffuse / dominant light visibility) or a compose step yet; each flips its cell when it gets them.
+//   City reflections share SSR's combined trace. Per-pixel bounce light dispatches at its own site.
 inline constexpr ConsumerTable kConsumers = {{
     {true, false},   // screen-space reflections
     {false, false},  // ray traced car reflections
-    {false, false},  // ray traced city reflections
-    {false, false},  // ray traced bounce light
+    {true, false},   // ray traced city reflections
+    {true, false},   // ray traced per-pixel bounce light
     {false, false},  // ray traced light visibility (rr::Consumer::kRtLights, added by RT-LIGHTS-D1: the table follows rr::kConsumerCount)
     {false, false},  // CHECK (RG-7): an AO dispatch needs a context separate from the later SSR site.
 }};
@@ -171,6 +169,7 @@ constexpr bool AnyAutoConsumerOn(uint32_t on_mask, const ConsumerTable& table = 
 // Under AUTO only the effects with auto_uses are taken (an effect AUTO does not trust keeps its own filter and writes no signal), so a dispatch carries exactly their signals: the context is made for
 // those. The row's own value (and the debug switch's "on") takes every effect with a signal mode.
 constexpr uint32_t ContextSignals(rr::Denoiser setting, rr::DebugSwitch debug, uint32_t on_mask, const ConsumerTable& table = kConsumers) {
+  if (debug == rr::DebugSwitch::kOff || debug == rr::DebugSwitch::kProbe || (debug == rr::DebugSwitch::kRow && setting == rr::Denoiser::kOurs)) return 0;
   const bool auto_row = debug == rr::DebugSwitch::kRow && setting == rr::Denoiser::kAuto;
   uint32_t flags = 0;
   for (size_t i = 0; i < rr::kConsumerCount; ++i) {
@@ -180,6 +179,37 @@ constexpr uint32_t ContextSignals(rr::Denoiser setting, rr::DebugSwitch debug, u
   }
   return flags;
 }
+
+// Context identity follows the dispatch site. The two reflection consumers
+// write one image, while GI runs earlier and can use a different extent.
+enum class Site : uint8_t { kReflections, kBounce, kCount };
+inline constexpr size_t kSiteCount = size_t(Site::kCount);
+constexpr uint32_t SiteConsumers(Site site) {
+  switch (site) {
+    case Site::kReflections: return rr::ConsumerBit(rr::Consumer::kSsr) | rr::ConsumerBit(rr::Consumer::kCityRtReflections);
+    case Site::kBounce: return rr::ConsumerBit(rr::Consumer::kRtGi);
+    case Site::kCount: break;
+  }
+  return 0;
+}
+
+constexpr uint32_t SiteSignals(Site site, rr::Denoiser setting, rr::DebugSwitch debug, uint32_t consumers) {
+  return ContextSignals(setting, debug, consumers & SiteConsumers(site));
+}
+
+constexpr bool ReflectionSignalWanted(bool ssr, bool city, bool city_recorded) {
+  return ssr || (city && city_recorded);
+}
+
+struct ContextRequest {
+  uint32_t signals = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  constexpr bool Covers(ContextRequest other) const {
+    return signals == other.signals && width >= other.width && height >= other.height;
+  }
+  constexpr bool operator==(const ContextRequest&) const = default;
+};
 
 // Whether the runtime is opened at the start: the debug switch (mcla_gpu_ray_regen): off never, probe and on always (the device check inside Probe keeps every PC but a Radeon RX 9000 out), auto only where an
 // effect has a signal mode to hand it (ConsumerTable has a built cell) and the DENOISER row is not OURS (OURS opens nothing: no memory, no start time). A row that leaves OURS later opens it live (the plan
@@ -388,8 +418,8 @@ constexpr const char* DenoiserKindName(DenoiserKind b) {
   return "?";
 }
 constexpr DenoiserKind ChooseDenoiser(const Plan& amd, const rr::Plan& nvidia) {
-  if (amd.use) return DenoiserKind::kRayRegen;
   if (nvidia.use_rr) return DenoiserKind::kDlssRr;
+  if (amd.use) return DenoiserKind::kRayRegen;
   return DenoiserKind::kOurs;
 }
 
@@ -408,6 +438,20 @@ constexpr rr::RawWhy SignalWhyOf(rr::RawFrame f, bool switch_on, bool auto_uses,
   f.armed = true;
   return rr::RawWhyOf(f, switch_on, auto_uses);
 }
+constexpr rr::RawWhy SignalModeOf(rr::RawFrame f, rr::Consumer consumer, bool switch_on, const ConsumerTable& table = kConsumers) {
+  const ConsumerCell& cell = table[size_t(consumer)];
+  return SignalWhyOf(f, switch_on, cell.auto_uses, cell.signal_built);
+}
+
+struct SignalModes {
+  rr::RawWhy ssr = rr::RawWhy::kPlanOurs;
+  rr::RawWhy city = rr::RawWhy::kPlanOurs;
+  rr::RawWhy bounce = rr::RawWhy::kPlanOurs;
+  constexpr bool Ssr() const { return ssr == rr::RawWhy::kRaw; }
+  constexpr bool City() const { return city == rr::RawWhy::kRaw; }
+  constexpr bool Bounce() const { return bounce == rr::RawWhy::kRaw; }
+  constexpr bool operator==(const SignalModes&) const = default;
+};
 constexpr rr::RawModes SignalModesOf(const rr::RawFrame& f, bool switch_ssr, bool switch_car_refl, const ConsumerTable& table = kConsumers) {
   const ConsumerCell& ssr = table[size_t(rr::Consumer::kSsr)];
   const ConsumerCell& car = table[size_t(rr::Consumer::kCarRtReflections)];

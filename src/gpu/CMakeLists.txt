@@ -1252,6 +1252,7 @@ larecomp_gpu_host_shader(rr_guides_view_cs cs_6_0)
 # AMD FSR Ray Regeneration's guide and signal pass for the screen-space reflections (ray_regen_guides.h, RG-2 / RG-3): the trace's radiance as a signal and the five guides in AMD's formats at the trace's size, one compute
 # pass. Plain Shader Model 6.0 (the 6.6 AMD asks for is its own runtime's); run on Direct3D 12 only, built for both backends like every host shader.
 larecomp_gpu_host_shader(ray_regen_ssr_cs cs_6_0)
+larecomp_gpu_host_shader(ray_regen_bounce_cs cs_6_0)
 # RTAO-R2 begin
 target_sources(larecomp_gpu PRIVATE
     rtao_denoise.cpp

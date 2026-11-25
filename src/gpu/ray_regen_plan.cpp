@@ -25,8 +25,7 @@ constexpr const char* kPrefix = "[gpu] ray regen:";
 std::atomic<uint32_t> g_vendor{0};
 std::atomic<bool> g_d3d12{false};
 std::atomic<bool> g_row_listed{false};
-std::atomic<uint32_t> g_traced_w{0};
-std::atomic<uint32_t> g_traced_h{0};
+constinit std::array<ContextRequest, kSiteCount> g_traced{};
 
 double Mib(uint64_t bytes) { return double(bytes) / double(rr::kMiB); }
 
@@ -80,26 +79,20 @@ Facts MenuFacts() {
 
 bool ContextMaking() { return Current().context_making; }
 
-void NoteSsrTraced(uint32_t width, uint32_t height) {
-  g_traced_w.store(width, std::memory_order_relaxed);
-  g_traced_h.store(height, std::memory_order_relaxed);
+void NoteTraced(Site site, uint32_t width, uint32_t height) {
+  g_traced[size_t(site)] = {0, width, height};
 }
 
-bool Planner::RoomOk(Device* device, uint32_t signals, uint32_t w, uint32_t h) {
+bool Planner::RoomOk(Device* device, uint64_t need) {
   if (!device) {
     return true;
   }
   const uint64_t now_ms = NowMs();
-  if (asked_ && Current().context_bytes != 0) {
-    room_ok_ = true;   // the context exists: what it holds is in the adapter's use already
-    room_wait_ms_ = 0;
-    return true;
-  }
-  if (now_ms < room_next_ms_) {
+  if (need == room_last_need_ && now_ms < room_next_ms_) {
     return room_ok_;
   }
+  room_last_need_ = need;
   const backend::VideoMemory memory = device->QueryVideoMemory();
-  const uint64_t need = EstimateBytes(signals, w, h) + guides::BytesOf(w, h);
   const bool ok = vram_room::HasRoom(memory.used, memory.budget, need);
   if (ok) {
     room_ok_ = true;
@@ -115,9 +108,8 @@ bool Planner::RoomOk(Device* device, uint32_t signals, uint32_t w, uint32_t h) {
     room_next_ms_ = now_ms + room_wait_ms_;
     if (!room_refused_logged_) {
       room_refused_logged_ = true;
-      REXLOG_INFO("{} no room in video memory for the context (about {:.0f} MiB: the runtime's table {:.0f} and the guide images {:.0f}; {} of {} MiB in use, the line is {}%): the effects keep their own denoisers, "
-                  "and the context is asked for again in {} s, then less often, up to a minute",
-                  kPrefix, Mib(need), Mib(EstimateBytes(signals, w, h)), Mib(guides::BytesOf(w, h)), memory.used >> 20, memory.budget >> 20, vram_room::kHighPercent, room_wait_ms_ / 1000);
+      REXLOG_INFO("{} no room in video memory for new contexts and guides (about {:.0f} MiB; {} of {} MiB in use, the line is {}%); retry in {} s",
+                  kPrefix, Mib(need), memory.used >> 20, memory.budget >> 20, vram_room::kHighPercent, room_wait_ms_ / 1000);
     }
   }
   return room_ok_;
@@ -142,39 +134,53 @@ void Planner::Update(const Inputs& in) {
     ProbeNow(*in.device, *in.frames);
   }
   pi.facts = MenuFacts();
-  Plan plan = SelectRayRegen(pi);
-  const uint32_t w = g_traced_w.load(std::memory_order_relaxed);
-  const uint32_t h = g_traced_h.load(std::memory_order_relaxed);
-  const uint32_t signals = ContextSignals(in.setting, debug_, in.consumers_on);
-  if (plan.use && signals != 0 && w != 0 && h != 0) {
-    pi.room_ok = RoomOk(in.device, signals, w, h);   // asked only where Ray Regeneration would be the choice and the size is known
-    plan = SelectRayRegen(pi);
+  plan_ = SelectRayRegen(pi);
+  std::array<ContextRequest, kSiteCount> wanted = g_traced;
+  uint64_t need = 0;
+  bool needs_context = false;
+  bool has_context = false;
+  for (size_t i = 0; i < kSiteCount; ++i) {
+    SitePlan& site = sites_[i];
+    ContextRequest& request = wanted[i];
+    request.signals = plan_.use && !in.dlss_plan.use_rr ? SiteSignals(Site(i), in.setting, debug_, in.consumers_on) : 0;
+    site.active = request.signals != 0;
+    if (!site.active || request.width == 0 || request.height == 0) continue;
+    if (site.asked.Covers(request)) {
+      has_context = true;
+      if (Instance().Ready(request.signals, request.width, request.height, Site(i))) continue;
+    } else {
+      needs_context = true;
+      request.width = std::max(request.width, site.asked.width);
+      request.height = std::max(request.height, site.asked.height);
+    }
+    need += EstimateBytes(request.signals, request.width, request.height) + guides::BytesOf(request.width, request.height);
   }
-  plan_ = plan;
+  const bool room = !needs_context || RoomOk(in.device, need);
+  if (!room && !has_context) {
+    pi.room_ok = false;
+    plan_ = SelectRayRegen(pi);
+  }
   chosen_ = ChooseDenoiser(plan_, in.dlss_plan);
   if (plan_.use) {
     ++counters_.frames_planned_on;
   }
 
   // The context: made while the plan is on and kept for kContextHoldFrames after, then freed (only while the option is selected and an effect that uses it runs).
-  const bool keep = keeper_.Update(ContextWanted(plan_.why));
-  if (!keep) {
-    if (asked_) {
-      Instance().Request(0, 0, 0);
-      asked_ = false;
-      signals_ = 0;
-      REXLOG_INFO("{} the context is released ({} frames without Ray Regeneration wanted): its video memory is given back", kPrefix, rr::kContextHoldFrames);
+  for (size_t i = 0; i < kSiteCount; ++i) {
+    SitePlan& site = sites_[i];
+    const ContextRequest& request = wanted[i];
+    site.active = site.active && plan_.use;
+    if (!site.keeper.Update(site.active)) {
+      if (site.asked.signals != 0) {
+        Instance().Request(0, 0, 0, Site(i));
+        REXLOG_INFO("{} the context for signals {:#x} is released after {} idle frames", kPrefix, site.asked.signals, rr::kContextHoldFrames);
+        site.asked = {};
+      }
+    } else if (site.active && room && request.width != 0 && request.height != 0 && !site.asked.Covers(request)) {
+      REXLOG_INFO("{} making a context in the background (signals {:#x}, up to {}x{})", kPrefix, request.signals, request.width, request.height);
+      Instance().Request(request.signals, request.width, request.height, Site(i));
+      site.asked = request;
     }
-  } else if (plan_.use && signals != 0 && w != 0 && h != 0) {
-    if (!asked_ || signals != signals_ || w > asked_size_[0] || h > asked_size_[1]) {
-      REXLOG_INFO("{} {} its context (signals {:#x}, up to {}x{}: about {:.0f} MiB by the runtime's table) in the background; the effects keep their own denoisers until it is ready", kPrefix,
-                  asked_ ? "making again" : "making", signals, w, h, Mib(EstimateBytes(signals, w, h)));
-    }
-    Instance().Request(signals, w, h);
-    asked_ = true;
-    signals_ = signals;
-    asked_size_[0] = std::max(w, asked_ ? asked_size_[0] : 0u);
-    asked_size_[1] = std::max(h, asked_ ? asked_size_[1] : 0u);
   }
 
   if (!plan_logged_ || plan_.use != plan_last_.use || plan_.why != plan_last_.why || chosen_ != chosen_last_) {
@@ -185,22 +191,31 @@ void Planner::Update(const Inputs& in) {
   }
 }
 
-rr::RawModes Planner::Modes(bool play_view, bool switch_ssr, bool switch_car_refl) {
+SignalModes Planner::Modes(bool play_view, bool switch_ssr) {
+  if (!plan_.use && !modes_logged_) return {};
   rr::RawFrame f;
-  f.plan_rr = plan_.use;
-  f.failed = Current().facts.failed;
-  f.context_ready = plan_.use && asked_ && Instance().Ready(signals_, asked_size_[0], asked_size_[1]);
-  f.armed = true;   // Ray Regeneration needs no upscaled frame (SignalWhyOf)
+  f.plan_rr = chosen_ == DenoiserKind::kRayRegen;
+  f.failed = f.plan_rr && Current().facts.failed;
   f.play_view = play_view;
   f.row_auto = debug_ == rr::DebugSwitch::kRow && setting_ == rr::Denoiser::kAuto;
-  const rr::RawModes modes = SignalModesOf(f, switch_ssr, switch_car_refl);
+  const auto ready = [&](Site index) {
+    const SitePlan& site = sites_[size_t(index)];
+    const auto& size = g_traced[size_t(index)];
+    return f.plan_rr && site.active && site.asked.signals != 0 && Instance().Ready(site.asked.signals, size.width, size.height, index);
+  };
+  f.context_ready = ready(Site::kReflections);
+  SignalModes modes;
+  modes.ssr = SignalModeOf(f, rr::Consumer::kSsr, switch_ssr);
+  modes.city = SignalModeOf(f, rr::Consumer::kCityRtReflections, switch_ssr);
+  f.context_ready = ready(Site::kBounce);
+  modes.bounce = SignalModeOf(f, rr::Consumer::kRtGi, true);
   ++counters_.modes_asked;
   if (f.plan_rr || modes_logged_) {
     if (!modes_logged_ || !(modes == modes_last_)) {
       modes_logged_ = true;
       modes_last_ = modes;
-      REXLOG_INFO("{} modes for the effects: {}: {}; {}: {} (logged when it changes)", kPrefix, rr::RawEffectName(rr::RawEffect::kSsr), rr::RawWhyText(modes.ssr), rr::RawEffectName(rr::RawEffect::kCarRefl),
-                  rr::RawWhyText(modes.car_refl));
+      REXLOG_INFO("{} modes for the effects: SSR: {}; city RT reflections: {}; per-pixel bounce light: {} (logged when it changes)",
+                  kPrefix, rr::RawWhyText(modes.ssr), rr::RawWhyText(modes.city), rr::RawWhyText(modes.bounce));
     }
   }
   return modes;

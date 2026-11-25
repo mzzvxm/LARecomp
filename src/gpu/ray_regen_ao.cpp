@@ -165,7 +165,7 @@ const HostImage* RayRegenAoPass::Dispatch(plume::RenderCommandList* list, rayreg
   frame.linear_depth = Tagged(Image::kDepth);
   frame.motion = Tagged(Image::kMotion);
   frame.normals = Tagged(Image::kNormals);
-  frame.specular_albedo = Tagged(Image::kSpecular);
+  frame.specular_albedo = Tagged(Image::kAlbedo);
   frame.dispatch_signals = flags;
   frame.signals = {};
   frame.signals[size_t(signal)] = {Tagged(Image::kSignal), Tagged(Image::kDenoised)};

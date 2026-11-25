@@ -22,7 +22,6 @@ namespace mcla::gpu {
 namespace {
 
 constexpr const char* kPrefix = "[ray regen guides]";
-constexpr const char* kPipelineName = "ray regen ssr guides";
 constexpr plume::RenderTextureFlags kImageFlags = plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
 
 plume::RenderFormat FormatOf(rgd::Image image) {
@@ -36,22 +35,21 @@ plume::RenderFormat FormatOf(rgd::Image image) {
 
 double Mib(uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0); }
 
-uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kScreenReflections, 64); }
-
 }  // namespace
 
-RayRegenSsrPass::~RayRegenSsrPass() = default;
+RayRegenRadiancePass::~RayRegenRadiancePass() = default;
 
 // ---------------------------------------------------------------------------
 // start and end
 // ---------------------------------------------------------------------------
 
-void RayRegenSsrPass::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing) {
+void RayRegenRadiancePass::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, rayregen::Site site) {
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
   passes_ = &passes;
   pass_timing_ = &pass_timing;
+  site_ = site;
   listed_ = false;
   failed_ = false;
   ready_to_list_ = false;
@@ -60,11 +58,11 @@ void RayRegenSsrPass::Initialize(Device& device, FrameRing& frames, BindlessHeap
   }
   ready_to_list_ = MakeLayoutAndShader(device, heap);
   if (!ready_to_list_) {
-    REXLOG_ERROR("{} the layout or the shader could not be made: no AMD FSR Ray Regeneration for the reflections this session", kPrefix);
+    REXLOG_ERROR("{} the layout or the shader could not be made for {}", kPrefix, PipelineName());
   }
 }
 
-bool RayRegenSsrPass::MakeLayoutAndShader(Device& device, BindlessHeap& heap) {
+bool RayRegenRadiancePass::MakeLayoutAndShader(Device& device, BindlessHeap& heap) {
   outputs_builder_.begin();
   for (size_t i = 0; i < rgd::kPassImageCount; ++i) {
     outputs_builder_.addReadWriteTexture(uint32_t(i));  // u0 .. u4 (space 5)
@@ -79,22 +77,23 @@ bool RayRegenSsrPass::MakeLayoutAndShader(Device& device, BindlessHeap& heap) {
   }
   builder.addDescriptorSet(heap.sampler_set_builder());
   const uint32_t output_set = builder.addDescriptorSet(outputs_builder_);
-  builder.addPushConstant(0, kPushSpace, sizeof(rgd::Push), plume::RenderShaderStageFlag::COMPUTE);
+  const uint32_t push_size = site_ == rayregen::Site::kBounce ? sizeof(rgd::BouncePush) : sizeof(rgd::Push);
+  builder.addPushConstant(0, kPushSpace, push_size, plume::RenderShaderStageFlag::COMPUTE);
   builder.end();
   if (output_set != kOutputSet) {
     REXLOG_ERROR("{} the layout's output set is not at the index the shader declares", kPrefix);
     return false;
   }
-  layout_ = device.CreatePipelineLayout(builder, "ray regen ssr guides layout");
-  if (!layout_) {
+  layout_ = device.CreatePipelineLayout(builder, PipelineName());
+  if (!layout_ || !passes_) {
     return false;
   }
-  const HostShaderBlob blob = RayRegenSsrShader();
+  const HostShaderBlob blob = site_ == rayregen::Site::kBounce ? RayRegenBounceShader() : RayRegenSsrShader();
   shader_ = passes_->CreateShader(blob.data, blob.size, blob.name);
   return shader_ != nullptr;
 }
 
-void RayRegenSsrPass::Shutdown() {
+void RayRegenRadiancePass::Shutdown() {
   // The host builder's functions name this object's layout and shader: stop it first (the other owners do the same; stopping twice is safe).
   if (passes_) {
     passes_->precache().Stop();
@@ -123,14 +122,18 @@ void RayRegenSsrPass::Shutdown() {
 // the pipeline
 // ---------------------------------------------------------------------------
 
-std::unique_ptr<plume::RenderPipeline> RayRegenSsrPass::MakePipeline() {
+std::unique_ptr<plume::RenderPipeline> RayRegenRadiancePass::MakePipeline() {
   if (!layout_ || !shader_ || !device_) {
     return nullptr;
   }
-  return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(layout_.get(), shader_.get(), 8, 8, 1), kPipelineName);
+  return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(layout_.get(), shader_.get(), 8, 8, 1), PipelineName());
 }
 
-bool RayRegenSsrPass::PipelineReady() {
+const char* RayRegenRadiancePass::PipelineName() const {
+  return site_ == rayregen::Site::kBounce ? "ray regen bounce guides" : "ray regen ssr guides";
+}
+
+bool RayRegenRadiancePass::PipelineReady() {
   if (pipeline_) {
     return true;
   }
@@ -138,20 +141,21 @@ bool RayRegenSsrPass::PipelineReady() {
     return false;
   }
   HostPrecache& precache = passes_->precache();
+  const uint64_t key = HostPrecache::Key(site_ == rayregen::Site::kBounce ? HostPrecache::kGiPixel : HostPrecache::kScreenReflections, kVariant);
   if (!listed_) {
     listed_ = true;
     std::vector<HostPrecache::Item> items;
-    items.push_back({PipelineKey(), kPipelineName, [this] { return MakePipeline(); }});
+    items.push_back({key, PipelineName(), [this] { return MakePipeline(); }});
     precache.AddLive("AMD FSR Ray Regeneration guides", std::move(items));
-    REXLOG_INFO("{} the pass wanted its pipeline, which is not listed at the start: it is made in the background, and the reflections use Ray Regeneration from the frame it is done", kPrefix);
+    REXLOG_INFO("{} making the {} pipeline in the background", kPrefix, PipelineName());
   }
-  if (!precache.Ready(PipelineKey())) {
+  if (!precache.Ready(key)) {
     return false;
   }
-  pipeline_ = precache.Acquire(PipelineKey(), kPipelineName, [this] { return MakePipeline(); });
+  pipeline_ = precache.Acquire(key, PipelineName(), [this] { return MakePipeline(); });
   if (!pipeline_) {
     failed_ = true;
-    REXLOG_ERROR("{} the pipeline could not be made: no AMD FSR Ray Regeneration for the reflections this session", kPrefix);
+    REXLOG_ERROR("{} the {} pipeline could not be made", kPrefix, PipelineName());
   }
   return pipeline_ != nullptr;
 }
@@ -160,8 +164,17 @@ bool RayRegenSsrPass::PipelineReady() {
 // the frame
 // ---------------------------------------------------------------------------
 
-bool RayRegenSsrPass::Record(plume::RenderCommandList* list, const rgd::Push& push, HostImage& trace, uint32_t width, uint32_t height) {
-  if (!ready_to_list_ || !list || !trace.texture || width == 0 || height == 0 || !PipelineReady()) {
+bool RayRegenRadiancePass::Record(plume::RenderCommandList* list, const rgd::Push& push, HostImage& trace, uint32_t width, uint32_t height) {
+  return RecordGuides(list, &push, sizeof(push), {&trace}, width, height);
+}
+
+bool RayRegenRadiancePass::RecordBounce(plume::RenderCommandList* list, const rgd::BouncePush& push, HostImage& signal, HostImage& depth, HostImage& hit) {
+  return RecordGuides(list, &push, sizeof(push), {&signal, &depth, &hit}, push.width, push.height);
+}
+
+bool RayRegenRadiancePass::RecordGuides(plume::RenderCommandList* list, const void* push, uint32_t push_size,
+                                      std::initializer_list<HostImage*> sources, uint32_t width, uint32_t height) {
+  if (!ready_to_list_ || !list || !heap_ || !passes_ || !pass_timing_ || width == 0 || height == 0 || !PipelineReady()) {
     return false;
   }
   if (!EnsureImages(width, height) || !EnsureSet()) {
@@ -170,15 +183,18 @@ bool RayRegenSsrPass::Record(plume::RenderCommandList* list, const rgd::Push& pu
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
 
-  // The trace is a graphics target the draw before left readable by graphics; the pass and the resolve after it read it too.
-  list->barriers(Stage::GRAPHICS_AND_COMPUTE, plume::RenderTextureBarrier(trace.texture.get(), Layout::SHADER_READ));
-  trace.layout = Layout::SHADER_READ;
+  for (HostImage* source : sources) {
+    if (!source || !source->texture) return false;
+    list->barriers(Stage::GRAPHICS_AND_COMPUTE, plume::RenderTextureBarrier(source->texture.get(), Layout::SHADER_READ));
+    source->layout = Layout::SHADER_READ;
+  }
   plume::RenderTextureBarrier writes[rgd::kPassImageCount];
   for (size_t i = 0; i < rgd::kPassImageCount; ++i) {
     writes[i] = plume::RenderTextureBarrier(images_[i].texture.get(), Layout::GENERAL);
     images_[i].layout = Layout::GENERAL;
   }
-  pass_timing_->Mark(list, "ray regen guides");
+  const bool bounce = site_ == rayregen::Site::kBounce;
+  pass_timing_->Mark(list, bounce ? "ray regen bounce guides" : "ray regen guides");
   list->barriers(Stage::COMPUTE, writes, uint32_t(rgd::kPassImageCount));
   list->setComputePipelineLayout(layout_.get());
   for (uint32_t set = 0; set < 4; ++set) {
@@ -187,7 +203,7 @@ bool RayRegenSsrPass::Record(plume::RenderCommandList* list, const rgd::Push& pu
   list->setComputeDescriptorSet(heap_->sampler_set(), kSamplerSet);
   list->setComputeDescriptorSet(set_.get(), kOutputSet);
   list->setPipeline(pipeline_.get());
-  list->setComputePushConstants(0, &push, 0, sizeof(push));
+  list->setComputePushConstants(0, push, 0, push_size);
   list->dispatch(rgd::Groups(width), rgd::Groups(height), 1);
   // The five go to the read state the dispatch declares its inputs in (SHADER_READ at the compute stage: the runtime takes them back to it).
   plume::RenderTextureBarrier to_read[rgd::kPassImageCount];
@@ -196,18 +212,16 @@ bool RayRegenSsrPass::Record(plume::RenderCommandList* list, const rgd::Push& pu
     images_[i].layout = Layout::SHADER_READ;
   }
   list->barriers(Stage::COMPUTE, to_read, uint32_t(rgd::kPassImageCount));
-  pass_timing_->Mark(list, "after ray regen guides");
+  pass_timing_->Mark(list, bounce ? "after ray regen bounce guides" : "after ray regen guides");
   ++passes_run_;
   if (!first_logged_) {
     first_logged_ = true;
-    REXLOG_INFO("{} the first guide and signal pass: {}x{} (the reflections' trace size), six images {:.1f} MiB (signal, normals, motion and specular albedo R16G16B16A16_FLOAT, signed linear depth R32_FLOAT, "
-                "and the denoised signal); the dispatch is at that size, the resolve reads its output",
-                kPrefix, width, height, Mib(HeldBytes()));
+    REXLOG_INFO("{} the first guide and signal pass: {}x{} ({}), six images {:.1f} MiB", kPrefix, width, height, PipelineName(), Mib(HeldBytes()));
   }
   return true;
 }
 
-void RayRegenSsrPass::PrepareDenoised(plume::RenderCommandList* list) {
+void RayRegenRadiancePass::PrepareDenoised(plume::RenderCommandList* list) {
   HostImage& out = images_[size_t(rgd::Image::kDenoised)];
   if (!list || !out.texture) {
     return;
@@ -216,7 +230,7 @@ void RayRegenSsrPass::PrepareDenoised(plume::RenderCommandList* list) {
   out.layout = plume::RenderTextureLayout::GENERAL;
 }
 
-void RayRegenSsrPass::ReadDenoised(plume::RenderCommandList* list) {
+void RayRegenRadiancePass::ReadDenoised(plume::RenderCommandList* list) {
   HostImage& out = images_[size_t(rgd::Image::kDenoised)];
   if (!list || !out.texture) {
     return;
@@ -225,12 +239,12 @@ void RayRegenSsrPass::ReadDenoised(plume::RenderCommandList* list) {
   out.layout = plume::RenderTextureLayout::SHADER_READ;
 }
 
-TemporalImage RayRegenSsrPass::Tagged(rgd::Image which) const {
+TemporalImage RayRegenRadiancePass::Tagged(rgd::Image which) const {
   const HostImage& held = images_[size_t(which)];
   return {held.texture.get(), held.width, held.height, held.format, held.flags};
 }
 
-void RayRegenSsrPass::OnFrame(bool recorded) {
+void RayRegenRadiancePass::OnFrame(bool recorded) {
   if (recorded) {
     idle_frames_ = 0;
   } else if (idle_frames_ < rgd::kReleaseAfterFrames) {
@@ -244,7 +258,7 @@ void RayRegenSsrPass::OnFrame(bool recorded) {
 // the images and their set
 // ---------------------------------------------------------------------------
 
-bool RayRegenSsrPass::EnsureImages(uint32_t width, uint32_t height) {
+bool RayRegenRadiancePass::EnsureImages(uint32_t width, uint32_t height) {
   std::array<const plume::RenderTexture*, rgd::kPassImageCount> before{};
   for (size_t i = 0; i < rgd::kPassImageCount; ++i) {
     before[i] = images_[i].texture.get();
@@ -271,7 +285,8 @@ bool RayRegenSsrPass::EnsureImages(uint32_t width, uint32_t height) {
   return true;
 }
 
-bool RayRegenSsrPass::EnsureSet() {
+bool RayRegenRadiancePass::EnsureSet() {
+  if (!device_) return false;
   std::array<const plume::RenderTexture*, rgd::kPassImageCount> textures{};
   for (size_t i = 0; i < rgd::kPassImageCount; ++i) {
     textures[i] = images_[i].texture.get();
@@ -291,7 +306,7 @@ bool RayRegenSsrPass::EnsureSet() {
   return true;
 }
 
-void RayRegenSsrPass::RetireSet() {
+void RayRegenRadiancePass::RetireSet() {
   if (set_ && frames_) {
     frames_->Retire(std::move(set_));
   }
@@ -299,7 +314,7 @@ void RayRegenSsrPass::RetireSet() {
   set_textures_ = {};
 }
 
-void RayRegenSsrPass::ReleaseImages() {
+void RayRegenRadiancePass::ReleaseImages() {
   if (!passes_) {
     return;
   }
@@ -310,7 +325,7 @@ void RayRegenSsrPass::ReleaseImages() {
   image_for_[0] = image_for_[1] = 0;
 }
 
-uint64_t RayRegenSsrPass::HeldBytes() const {
+uint64_t RayRegenRadiancePass::HeldBytes() const {
   uint64_t bytes = 0;
   for (const HostImage& held : images_) {
     bytes += held.texture ? TextureBytes(held.width, held.height, 1, held.format) : 0;
