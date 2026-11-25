@@ -108,9 +108,19 @@ void WordChecks() {
     Check(dn::Effective(word, true) == rr::Denoiser::kRr && dn::Effective(word, false) == rr::Denoiser::kOurs, std::string("the row ON is rr and OFF is ours when the chooser says '") + word + "'");
   }
   Check(std::string(dn::kCvarName) == "mcla_gpu_denoiser" && std::string(dn::kVendorCvarName) == "mcla_gpu_vendor_denoiser", "the debug chooser's cvar keeps its name (the A/B chains set it) and the row has its own");
+  Check(dn::LegacyVendorPreference("rr") == true, "saved DLSS RR or FSR RAY REGEN migrates to ON");
+  Check(dn::LegacyVendorPreference("auto") == false, "saved AUTO migrates to OFF");
+  Check(dn::LegacyVendorPreference("ours") == false, "saved OURS migrates to OFF");
+  Check(!dn::LegacyVendorPreference("row") && !dn::LegacyVendorPreference(""), "the default chooser and absent values do not migrate");
+  Check(rr::NameLooksLikeRtx("NVIDIA GeForce RTX 5080") && rr::NameLooksLikeRtx("Quadro rTx 8000") &&
+        !rr::NameLooksLikeRtx("NVIDIA GeForce GTX 1080"), "only RTX adapter names get the NVIDIA toggle");
   // which PC has which row: an RTX card the DLSS one, a Radeon RX 9000 on Windows 11 the AMD one, every other card none
   Check(dn::RowFor(false, false) == dn::VendorRow::kNone && dn::RowFor(false, true) == dn::VendorRow::kDlssRr && dn::RowFor(true, false) == dn::VendorRow::kRayRegen && dn::RowFor(true, true) == dn::VendorRow::kRayRegen,
         "an RTX card has DLSS RAY RECONSTRUCTION, a Radeon RX 9000 AMD FSR RAY REGENERATION, any other card no row");
+  Check(std::string_view(dn::VendorName(dn::VendorRow::kNone)) == "none" &&
+        std::string_view(dn::VendorName(dn::VendorRow::kDlssRr)) == "nvidia" &&
+        std::string_view(dn::VendorName(dn::VendorRow::kRayRegen)) == "amd",
+        "the menu and machine export use the same names for each vendor row");
   // the row's labels: the feature's name in capitals while the row says nothing, NVIDIA's abbreviation before a reason
   Check(std::string(dn::kMenuLabel) == "DLSS RAY RECONSTRUCTION" && std::string(dn::kMenuShortLabel) == "DLSS RR", "the row says DLSS RAY RECONSTRUCTION, DLSS RR before a reason");
   Check(Upper(dn::kLauncherLabel) == dn::kMenuLabel, "the menu's label is the launcher's name in capitals");
@@ -147,7 +157,7 @@ void WordChecks() {
 dn::Gate Oracle(const dn::MenuInputs& m, const rr::ConsumerTable& table) {
   using dn::Gate;
   if (!m.dlss_listed) return Gate::kHidden;
-  if (m.debug == rr::DebugSwitch::kOff) return Gate::kNotAvailable;
+  if (m.dlss_unavailable || m.debug == rr::DebugSwitch::kOff) return Gate::kNotAvailable;
   if (m.dlss_chosen && m.dlss_waits_for_restart) return m.setting == rr::Denoiser::kOurs ? Gate::kRuns : Gate::kRestart;
   if (!m.dlss_chosen) return Gate::kNeedsDlss;
   if (m.dlss_needs_setup) return Gate::kSetup;
@@ -173,7 +183,7 @@ dn::Gate Oracle(const dn::MenuInputs& m, const rr::ConsumerTable& table) {
 }
 
 void GateTable(const rr::ConsumerTable& table, const char* which, long long* cases, long long counts[dn::kGateCount]) {
-  for (int bits = 0; bits < (1 << 4); ++bits) {
+  for (int bits = 0; bits < (1 << 5); ++bits) {
     for (int debug = 0; debug < 4; ++debug) {
       for (int setting = 0; setting < 3; ++setting) {
         for (int facts = 0; facts < (1 << 7); ++facts) {
@@ -184,6 +194,7 @@ void GateTable(const rr::ConsumerTable& table, const char* which, long long* cas
               m.dlss_chosen = (bits >> 1) & 1;
               m.dlss_waits_for_restart = (bits >> 2) & 1;
               m.dlss_needs_setup = (bits >> 3) & 1;
+              m.dlss_unavailable = (bits >> 4) & 1;
               m.debug = rr::DebugSwitch(debug);
               m.setting = rr::Denoiser(setting);
               m.facts.build_has_rr = facts & 1;
@@ -221,7 +232,7 @@ void GateChecks() {
     long long cases = 0;
     long long counts[dn::kGateCount] = {};
     GateTable(table, name, &cases, counts);
-    Check(cases == 16 * 4 * 3 * 128 * 2 * 2, std::string(name) + ": the table size");
+    Check(cases == 32 * 4 * 3 * 128 * 2 * 2, std::string(name) + ": the table size");
     // Every gate is reached by some input, in the shipped table too (the debug switch's states, the PC's own limits and NOT NEEDED).
     int reached = 0;
     for (int g = 0; g < dn::kGateCount; ++g) reached += counts[g] != 0;
@@ -509,16 +520,18 @@ void MenuChecks(const std::string& dir) {
   Check(Has(menu, "mcla::gpu::denoiser::GateOf(DenoiserInputs())") &&
         Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())"),
         "each vendor uses its own backend gate");
-  Check(Has(menu, "mcla::gpu::denoiser::RowFor(mcla::gpu::rayregen::RowListed(),") && Has(menu, "DlssListed(mcla::gpu::GetUpscalerAvailability()));") &&
+  Check(Has(menu, "gpu::denoiser::RowFor(gpu::rayregen::RowListed(), gpu::denoiser::RtxAdapter())") &&
             Has(menu, "bool AmdRow() { return DenoiserRowKind() == mcla::gpu::denoiser::VendorRow::kRayRegen; }"),
-        "which row a PC has: the AMD one by the card's name and Windows, the DLSS one where DLSS is listed (an RTX card), none otherwise");
+        "which row a PC has: the AMD one by the card's name and Windows, the DLSS one on RTX");
   Check(Has(menu, "#include \"gpu/denoiser_setting.h\"") && Has(menu, "#include \"gpu/ray_regen_plan.h\""), "the menu includes the rules");
-  Check(Has(menu, "m.dlss_chosen = Chosen() == Upscaler::kDlss;") && Has(menu, "m.dlss_waits_for_restart = DlssWaitsForRestart();") && Has(menu, "m.dlss_listed = DlssListed(a);") &&
+  Check(Has(menu, "m.dlss_chosen = Chosen() == Upscaler::kDlss;") && Has(menu, "m.dlss_waits_for_restart = DlssWaitsForRestart();") && Has(menu, "m.dlss_listed = DenoiserRowKind()") &&
             Has(menu, "m.setting = dn::Setting();") && !Has(menu, "\"mcla_gpu_denoiser\"") && Has(menu, "m.facts = snapshot.facts;"),
         "the menu's inputs: DLSS as listed, chosen and waiting for a restart, the effective setting (the row and the debug chooser), the renderer's facts");
   // the page: UPSCALING is not a page any more, DISPLAY has its rows
   Check(!Has(pause, "RxUpscalingMenu") && !Has(pause, "PM_RxSubUpscaling") && !Has(pause, "PM_RxTabUpscaling"), "UPSCALING is not a page or a hub row any more");
   Check(Has(pause, "     DisplayPageRows, false, UpscalingMenuRelayout},"), "DISPLAY takes its rows from DisplayPageRows and its relayout hook is the upscaling rows'");
+  Check(Before(pause, "Str(\"PM_RxDisplayMode\"", "Bool(\"PM_RxVsync\"") &&
+        Before(pause, "Bool(\"PM_RxVsync\"", "Str(\"PM_RxResolution\""), "DISPLAY places VSYNC between mode and resolution");
   const size_t latency_at = At(pause, "const ItemDef* latency = LowLatencyMenuRows(latency_count);");
   const size_t upscaling_at = At(pause, "const ItemDef* upscaling = UpscalingPageRows(upscaling_count);");
   const size_t push_latency = At(pause, "for (int i = 0; i < latency_count; ++i) made->rows.push_back(latency[i]);");
@@ -679,9 +692,22 @@ void BuildChecks(const std::string& dir) {
   Check(Has(cmake, "    denoiser_setting.cpp\n"), "the library builds denoiser_setting.cpp");
   Check(Has(cmake, "add_executable(larecomp_denoiser_setting_test EXCLUDE_FROM_ALL denoiser_setting_test.cpp)"), "the test has its CMake target");
   const std::string cpp = ReadFile(dir + "/denoiser_setting.cpp");
-  Check(Has(cpp, "LiveText text(\"mcla_gpu_denoiser\");") && Has(cpp, "rr::Denoiser Setting() { return Effective(Chooser().Get(), larecomp::settings::mcla_gpu_vendor_denoiser.Get()); }") && Has(cpp, "g_consumers.fetch_or(bit") &&
+  Check(Has(cpp, "LiveText text(\"mcla_gpu_denoiser\");") &&
+            Has(cpp, "ls::mcla_gpu_denoiser.GetLayer() >= rex::SettingLayer::kEnvironment") &&
+            Has(cpp, "Effective(debug_override ? Chooser().Get() : kChooserRow, ls::mcla_gpu_vendor_denoiser.Get())") && Has(cpp, "g_consumers.fetch_or(bit") &&
             Has(cpp, "g_consumers.fetch_and(~bit"),
         "the effective setting is the chooser (a LiveText) and the row's bool, and the board is atomic");
+  const std::string config = ReadFile(dir + "/../settings/larecomp_settings.cpp");
+  Check(Has(config, "dn::LegacyVendorPreference(text)") &&
+        Has(config, "put_title(mcla_gpu_vendor_denoiser.GetName(), *legacy ? \"true\" : \"false\")"),
+        "the file's legacy value seeds the toggle below the file layer so an explicit new value wins");
+  const std::string save = ReadFile(dir + "/../mc_engine/core/config_save.cpp");
+  Check(Has(save, "const bool unchanged = name != \"mcla_gpu_vendor_denoiser\" &&"),
+        "changing the toggle to OFF saves an explicit value even if the new key is absent");
+  const std::string facts = ReadFile(dir + "/../machine_facts/gpu_facts.cpp");
+  Check(Has(facts, "rayregen::RowListed(") &&
+        Has(facts, "out.denoiser = denoiser::VendorName(denoiser::RowFor(regen, rtx))"),
+        "the machine export uses row eligibility instead of the adapter vendor alone");
   const std::string h = ReadFile(dir + "/denoiser_setting.h");
   Check(Has(h, "void NoteConsumer(rr::Consumer consumer, bool on);") && Has(h, "void Publish(const Snapshot& snapshot);") && Has(h, "uint32_t ConsumersOn();") && Has(h, "rr::Denoiser Setting();"), "the header declares what the effects and the renderer call");
   Check(!Has(h, "#include <windows.h>") && !Has(h, "plume") && !Has(h, "sl.h"), "the header is pure (no Plume, no Streamline, no Windows)");

@@ -245,10 +245,16 @@ inline bool NameIsRx9000(std::string_view name) {
 struct ListInputs {
   uint32_t vendor_id = 0;
   std::string_view adapter_name;
-  uint32_t windows_build = 0;  // the Windows build number; 0 where it cannot be read or this is not Windows (Linux): the runtime's own answer decides there
+  uint32_t windows_build = 0;  // 0 when the Windows build could not be read
+  bool windows = true;
 };
+#if defined(_WIN32)
+inline constexpr bool kWindowsHost = true;
+#else
+inline constexpr bool kWindowsHost = false;
+#endif
 inline bool RowListed(const ListInputs& in) {
-  if (in.vendor_id != kVendorAmd) return false;
+  if (!in.windows || in.vendor_id != kVendorAmd) return false;
   if (!NameIsRx9000(in.adapter_name)) return false;
   return in.windows_build == 0 || in.windows_build >= windows_floor::kBuildWindows11;
 }

@@ -5,6 +5,9 @@
 #include <atomic>
 #include <mutex>
 
+#include "device.h"
+#include "gpu.h"
+#include "gpu_class.h"
 #include "live_text.h"
 #include "settings/larecomp_settings.h"
 
@@ -24,8 +27,19 @@ std::atomic<uint32_t> g_consumers{0};
 
 }  // namespace
 
-// The player's row is a bool setting (mcla_gpu_vendor_denoiser); the chooser, when it says auto, rr or ours, overrides it (Effective).
-rr::Denoiser Setting() { return Effective(Chooser().Get(), larecomp::settings::mcla_gpu_vendor_denoiser.Get()); }
+rr::Denoiser Setting() {
+  namespace ls = larecomp::settings;
+  // A saved chooser value is legacy player data. ApplyPlayerConfig maps it to the bool.
+  const bool debug_override = ls::mcla_gpu_denoiser.GetLayer() >= rex::SettingLayer::kEnvironment;
+  return Effective(debug_override ? Chooser().Get() : kChooserRow, ls::mcla_gpu_vendor_denoiser.Get());
+}
+
+bool RtxAdapter() {
+  const auto* device = MachineFactsDevice();
+  if (!device || !device->device()) return false;
+  const auto& adapter = device->description();
+  return uint32_t(adapter.vendor) == gpu_class::kVendorNvidia && rr::NameLooksLikeRtx(adapter.name);
+}
 
 void Publish(const Snapshot& snapshot) {
   std::lock_guard lock(g_mutex);

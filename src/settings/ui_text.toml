@@ -25,9 +25,6 @@ id = "debug"
 [sections.RxVideoMenu]
 id = "display"
 
-[sections.RxUpscalingMenu]
-id = "upscaling"
-
 [sections.RxImageQualityMenu]
 id = "image_quality"
 
@@ -412,9 +409,6 @@ value = { "0" = { "label" = "CENTERED" }, "50" = { "label" = "WIDER" }, "100" = 
 [rows.PM_RxSubVideo]
 help = "Open the display settings."
 
-[rows.PM_RxSubUpscaling]
-help = "Open the upscaling settings."
-
 [rows.PM_RxSubImageQuality]
 help = "Open the image quality settings."
 
@@ -530,7 +524,7 @@ help = "Adjusts edge sharpening when a FidelityFX upscaler is active."
 
 [rows.PM_RxGpuDenoiser]
 native = "kDenoiserDynamics"
-help = "Chooses how the game cleans up noise in screen-space and ray traced reflections."
+help = "On uses your GPU's denoiser for supported effects. Off uses LARecomp's denoisers and is the default. DLSS Ray Reconstruction also requires DLSS upscaling. AMD FSR Ray Regeneration requires Direct3D 12."
 
 [rows.PM_RxGpuFrameGen]
 native = "kFrameGenerationDynamics"

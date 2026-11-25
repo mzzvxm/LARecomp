@@ -287,16 +287,7 @@ bool SignaturesOk(const std::wstring& dir, std::string* why) {
 // its name. The runtime's own query (slIsFeatureSupported) is the final word whenever it can run.
 // Limitation: a card whose name lacks "RTX" is only found when DLSS is the saved choice (Streamline's
 // query runs at that start); the menu does not list it before.
-bool NameLooksLikeRtx(const std::string& name) {
-  for (size_t i = 0; i + 3 <= name.size(); ++i) {
-    if (std::toupper(static_cast<unsigned char>(name[i])) == 'R' &&
-        std::toupper(static_cast<unsigned char>(name[i + 1])) == 'T' &&
-        std::toupper(static_cast<unsigned char>(name[i + 2])) == 'X') {
-      return true;
-    }
-  }
-  return false;
-}
+using rr::NameLooksLikeRtx;
 
 // Whether Streamline is started with the frame generation plugins (InitLocked): where the player has
 // chosen DLSS frame generation, and on D3D12 for every card that can run it (the choice may come

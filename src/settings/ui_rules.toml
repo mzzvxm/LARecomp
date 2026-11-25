@@ -4,17 +4,21 @@
 
 [defs]
 denoiser_vendor.cases = [
-  { when = "known(features.denoiser.vendor)", value = { expr = "features.denoiser.vendor" } },
-  { when = "gpu.vendor == 'amd' && (gpu.rx9000 ?? true) && (os.name ?? 'windows') == 'windows'", value = "amd" },
-  { when = "gpu.vendor == 'nvidia' && (gpu.rtx ?? true)", value = "nvidia" },
-  { when = "known(gpu.vendor)", value = "none" },
+  { when = "features.denoiser.vendor == 'amd' && (gpu.rx9000 ?? true) && (os.name ?? 'windows') == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", value = "amd" },
+  { when = "features.denoiser.vendor == 'nvidia' && (gpu.rtx ?? true)", value = "nvidia" },
+  { when = "known(features.denoiser.vendor)", value = "none" },
+  { when = "gpu.vendor == 'amd' && gpu.rx9000 && os.name == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", value = "amd" },
+  { when = "gpu.vendor == 'nvidia' && gpu.rtx", value = "nvidia" },
+  { value = "none" },
 ]
 denoiser_fallback.cases = [
   { when = "d.denoiser_vendor == 'amd' && api.name == 'vulkan'", value = "needs_d3d12" },
+  { when = "d.denoiser_vendor == 'amd' && features.denoiser.ray_regen == 'unsupported'", value = "unsupported" },
+  { when = "d.denoiser_vendor == 'nvidia' && (features.upscalers.dlss == 'no' || features.denoiser.dlss_rr == 'unsupported')", value = "unsupported" },
   { when = "d.denoiser_vendor == 'nvidia' && s.mcla_gpu_upscaler != 'dlss'", value = "needs_dlss" },
-  { when = "features.upscalers.dlss == 'needs_setup' && d.denoiser_vendor == 'nvidia'", value = "needs_setup" },
-  { when = "features.denoiser.dlss_rr == 'unsupported' || features.denoiser.ray_regen == 'unsupported'", value = "unsupported" },
-  { when = "features.denoiser.dlss_rr == 'needs_setup' || features.denoiser.ray_regen == 'needs_setup'", value = "needs_setup" },
+  { when = "d.denoiser_vendor == 'nvidia' && (features.upscalers.dlss == 'needs_setup' || features.denoiser.dlss_rr == 'needs_setup')", value = "needs_setup" },
+  { when = "d.denoiser_vendor == 'amd' && features.denoiser.ray_regen == 'needs_setup'", value = "needs_setup" },
+  { when = "d.denoiser_vendor == 'nvidia' && s.mcla_gpu_vendor_denoiser && (features.upscalers.dlss == 'after_restart' || features.denoiser.dlss_rr == 'after_restart')", value = "restart" },
   { value = "ok" },
 ]
 denoiser_state = "live.denoiser_gate ?? d.denoiser_fallback"
@@ -629,7 +633,7 @@ fallback_values = [
 ]
 
 [rows.PM_RxGpuDenoiser]
-hidden_unless = "d.denoiser_vendor in ['amd','nvidia']"
+hidden_unless = "renderer == 'native' && d.denoiser_vendor in ['amd','nvidia']"
 states = [
   { when = "d.denoiser_state == 'hidden'", enabled = false, reason = "This GPU cannot run DLSS Ray Reconstruction." },
   { when = "d.denoiser_state == 'needs_d3d12'", enabled = false, suffix = " (D3D12 ONLY)", label = "DLSS RR" },

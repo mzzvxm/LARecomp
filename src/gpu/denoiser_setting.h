@@ -44,6 +44,7 @@
 // ===========================================================================
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -83,12 +84,25 @@ inline rr::Denoiser Effective(std::string_view chooser, bool vendor_row_on) {
   return vendor_row_on ? rr::Denoiser::kRr : rr::Denoiser::kOurs;
 }
 
-// Which vendor's row this PC shows (the Xenia renderer's page has none: the row is tagged NativeOnly). `regen_listed` is ray_regen_rules.h RowListed (a Radeon RX 9000 series card on Windows 11), `dlss_listed` is
-// the upscalers' answer that this PC can run DLSS at all (an RTX card: UpscalerAvailability dlss, needs setup or after restart). Any other PC has no row.
+// Both vendor labels in the old menu used the stored word "rr".
+inline std::optional<bool> LegacyVendorPreference(std::string_view saved) {
+  rr::Denoiser choice = rr::Denoiser::kOurs;
+  if (!rr::ParseDenoiser(saved, &choice)) return std::nullopt;
+  return choice == rr::Denoiser::kRr;
+}
+
+// Which vendor's row this PC shows. Xenia's page filters this native-only row.
 enum class VendorRow : uint8_t { kNone, kDlssRr, kRayRegen };
-constexpr VendorRow RowFor(bool regen_listed, bool dlss_listed) {
+constexpr VendorRow RowFor(bool regen_listed, bool rtx) {
   if (regen_listed) return VendorRow::kRayRegen;
-  return dlss_listed ? VendorRow::kDlssRr : VendorRow::kNone;
+  return rtx ? VendorRow::kDlssRr : VendorRow::kNone;
+}
+constexpr const char* VendorName(VendorRow row) {
+  switch (row) {
+    case VendorRow::kRayRegen: return "amd";
+    case VendorRow::kDlssRr: return "nvidia";
+    default: return "none";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +155,8 @@ constexpr const char* LauncherReason(Gate g) {
 
 // What the menu knows, and what the renderer published (denoiser_setting.cpp Snapshot).
 struct MenuInputs {
-  bool dlss_listed = false;            // the PC can run DLSS at all (UpscalerAvailability: dlss, needs setup or after restart: an NVIDIA RTX card)
+  bool dlss_listed = false;            // an NVIDIA RTX adapter
+  bool dlss_unavailable = false;       // the DLSS probe finished without an available or recoverable path
   bool dlss_chosen = false;            // DLSS is the saved upscaler
   bool dlss_waits_for_restart = false; // ... and the game can run it only from the next start (Vulkan)
   bool dlss_needs_setup = false;       // DLSS's own files are missing
@@ -156,7 +171,7 @@ struct MenuInputs {
 // never disagree about what the PC can do; then the one thing the rules cannot know here, whether an effect that uses RR is on.
 inline Gate GateOf(const MenuInputs& m, const rr::ConsumerTable& table = rr::kConsumers) {
   if (!m.dlss_listed) return Gate::kHidden;
-  if (m.debug == rr::DebugSwitch::kOff) return Gate::kNotAvailable;
+  if (m.dlss_unavailable || m.debug == rr::DebugSwitch::kOff) return Gate::kNotAvailable;
   // The saved upscaler is DLSS but the game runs it from the next start (Vulkan): the restart the UPSCALING row offers brings it, and the plugin with it. Said only where this row is not OFF.
   if (m.dlss_chosen && m.dlss_waits_for_restart) return m.setting == rr::Denoiser::kOurs ? Gate::kRuns : Gate::kRestart;
   if (!m.dlss_chosen) return Gate::kNeedsDlss;
@@ -218,9 +233,10 @@ struct Snapshot {
 };
 void Publish(const Snapshot& snapshot);
 Snapshot Current();
-// The EFFECTIVE setting as the render thread reads it: the debug chooser mcla_gpu_denoiser (a LiveText: the pause menu's thread writes the cvar) when it says auto, rr or ours, else the row
-// mcla_gpu_vendor_denoiser (ON is rr, OFF is ours).
+// The render thread reads the player toggle unless auto, rr or ours was set via the environment,
+// command line or a live debug override. ApplyPlayerConfig handles the old saved values.
 rr::Denoiser Setting();
+bool RtxAdapter();
 // The effects that are on and have a raw mode say it here, once a frame, from the render thread (RR-4's packages): `on` is whether the effect runs this frame.
 void NoteConsumer(rr::Consumer consumer, bool on);
 uint32_t ConsumersOn();

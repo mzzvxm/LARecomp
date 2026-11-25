@@ -452,14 +452,51 @@ void Denoiser(Fixture& f) {
     f.F("features.denoiser.vendor", "none");
     Check(!f.Row("PM_RxGpuDenoiser").IsListed(), "DENOISER", "listed");
 
+    constexpr auto id = "PM_RxGpuDenoiser";
+    f.native = false;
+    f.F("features.denoiser.vendor", "nvidia");
+    Check(!f.Row(id).IsListed(), "DENOISER", "hidden on Xenia");
+    f.native = true;
     f.facts.erase("features.denoiser.vendor");
     f.facts.erase("live.denoiser_gate");
     f.F("gpu.vendor", "intel");
-    Check(!f.Row("PM_RxGpuDenoiser").IsListed(), "DENOISER", "vendor fallback");
+    Check(!f.Row(id).IsListed(), "DENOISER", "hidden on Intel");
+    f.F("gpu.vendor", "nvidia");
+    Check(!f.Row(id).IsListed(), "DENOISER", "unknown NVIDIA generation");
+    f.B("gpu.rtx", false);
+    Check(!f.Row(id).IsListed(), "DENOISER", "hidden on GTX");
+    f.B("gpu.rtx", true);
+    Check(f.Row(id).IsListed(), "DENOISER", "RTX listed by hardware");
+    f.F("features.denoiser.dlss_rr", "unsupported");
+    f.S("mcla_gpu_upscaler", "off");
+    f.State(id, false, " (N/A)", "DLSS RR");
+    f.F("features.denoiser.dlss_rr", "after_restart");
+    f.F("features.upscalers.dlss", "ready");
+    f.S("mcla_gpu_upscaler", "dlss");
+    f.settings["mcla_gpu_vendor_denoiser"] = Value::Bool(false);
+    f.State(id, true);
+    f.settings["mcla_gpu_vendor_denoiser"] = Value::Bool(true);
+    f.State(id, true, " (RESTART)", "DLSS RR", true);
+
     f.F("gpu.vendor", "amd");
-    Check(f.Row("PM_RxGpuDenoiser").IsListed(), "DENOISER", "unknown Radeon generation");
+    f.F("os.name", "windows");
+    Check(!f.Row(id).IsListed(), "DENOISER", "unknown Radeon generation");
     f.B("gpu.rx9000", false);
-    Check(!f.Row("PM_RxGpuDenoiser").IsListed(), "DENOISER", "older Radeon");
+    Check(!f.Row(id).IsListed(), "DENOISER", "older Radeon");
+    f.F("features.denoiser.vendor", "amd");
+    Check(!f.Row(id).IsListed(), "DENOISER", "older machine report tagged all Radeon cards as AMD");
+    f.facts.erase("features.denoiser.vendor");
+    f.B("gpu.rx9000", true);
+    f.N("os.build", 19045);
+    Check(!f.Row(id).IsListed(), "DENOISER", "Windows 10");
+    f.N("os.build", 22000);
+    f.F("api.name", "vulkan");
+    Check(f.Row(id).IsListed(), "DENOISER", "RX 9000 listed on Windows 11");
+    f.State(id, false, " (D3D12 ONLY)", "RAY REGEN");
+    f.F("api.name", "d3d12");
+    f.State(id, true, "", "AMD FSR RAY REGENERATION");
+    f.F("os.name", "linux");
+    Check(!f.Row(id).IsListed(), "DENOISER", "native Linux");
 }
 }  // namespace
 

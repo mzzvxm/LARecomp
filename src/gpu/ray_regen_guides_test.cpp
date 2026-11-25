@@ -619,12 +619,13 @@ void CheckWiring(const std::string& dir) {
   Check(Has(runtime, "frame.motion_in_pixels ? MotionScaleFor(frame.render_size[0], frame.render_size[1]) : MotionScale{}") && Has(runtime, "p.vendor_id = in.vendor_id;") && Has(runtime, "p.context_signals = made->signals;") &&
             Has(runtime, "void ProbeNow(Device& device, FrameRing& frames)") && Has(runtime_h, "#else  // no AMD denoiser header, or no Direct3D 12 backend: the same names, doing nothing"),
         "the runtime: UV motion has scale 1, the vendor and the signals are published, a row can open it live, and a build without it has the same names as no-ops");
-  Check(Has(plan, "keeper_.Update(ContextWanted(plan_.why))") && Has(plan, "Instance().Request(0, 0, 0);") && Has(plan, "ProbeNow(*in.device, *in.frames);") && Has(plan, "DeviceVendor() == kVendorAmd") && Has(plan, "SelectRayRegen(pi)") &&
+  Check(Has(plan, "keeper_.Update(ContextWanted(plan_.why))") && Has(plan, "Instance().Request(0, 0, 0);") && Has(plan, "ProbeNow(*in.device, *in.frames);") && Has(plan, "RowListed() && in.device && in.frames") && Has(plan, "SelectRayRegen(pi)") &&
             Has(plan, "SignalModesOf(f, switch_ssr, switch_car_refl)") && Has(plan, "f.armed = true;"),
-        "the planner: the plan is the rules', the context is made while it is on and freed after the hold, the runtime is opened only on a Radeon, the modes are the rules'");
+        "the planner: the plan is the rules', the context is made while it is on and freed after the hold, the runtime is opened only where the Radeon row can be listed, the modes are the rules'");
+  Check(Has(plan, "if (!RowListed()) return {};"), "a previously published AMD runtime verdict cannot enable a hidden denoiser");
   const std::string ui_rules = Read(dir, "../settings/ui_rules.toml");
   Check(Has(menu, "rg::GateOf(rg::MenuFacts(), rg::ReadDebugSwitch(), mcla::gpu::denoiser::ConsumersOn(), rg::ContextMaking())") &&
-        Has(menu, "mcla::gpu::denoiser::RowFor(mcla::gpu::rayregen::RowListed(),") &&
+        Has(menu, "gpu::denoiser::RowFor(gpu::rayregen::RowListed(), gpu::denoiser::RtxAdapter())") &&
         Has(ui_rules, "\"AMD FSR RAY REGENERATION\"") && Has(ui_rules, "\" (D3D12 ONLY)\""),
         "the Radeon denoiser row uses the AMD gate and declares its label and API reason");
   // the settings (the three generated files)

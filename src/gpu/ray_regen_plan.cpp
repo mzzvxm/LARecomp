@@ -49,6 +49,7 @@ void NoteDevice(uint32_t vendor_id, bool d3d12, std::string_view adapter_name, u
   list.vendor_id = vendor_id;
   list.adapter_name = adapter_name;
   list.windows_build = windows_build;
+  list.windows = kWindowsHost;
   g_row_listed.store(mcla::gpu::rayregen::RowListed(list), std::memory_order_relaxed);
 }
 
@@ -57,6 +58,7 @@ uint32_t DeviceVendor() { return g_vendor.load(std::memory_order_relaxed); }
 bool RowListed() { return g_row_listed.load(std::memory_order_relaxed); }
 
 Facts MenuFacts() {
+  if (!RowListed()) return {};
   const Published pub = Current();
   if (pub.vendor_id != 0) {
     Facts facts = pub.facts;   // the runtime was asked (or the device alone said no): its own answer
@@ -121,8 +123,7 @@ bool Planner::RoomOk(Device* device, uint32_t signals, uint32_t w, uint32_t h) {
   return room_ok_;
 }
 
-// CHECK (not run): C26 the live probe (ProbeNow) from the render thread when the row leaves OURS: the worker opens AMD's DLLs while frames run (the effect keeps its own filter until the context is ready), and a
-// game started with the row on OURS shows no AMD line in the log until then.
+// On Vulkan the row should show (D3D12 ONLY). On older Radeons a saved ON should never start the worker.
 void Planner::Update(const Inputs& in) {
   debug_ = ReadDebugSwitch();
   setting_ = in.setting;
@@ -137,7 +138,7 @@ void Planner::Update(const Inputs& in) {
   // The runtime is opened live where the plan would want it and the card could run it (a start with the row on OURS opened nothing; Ray Regeneration needs no restart).
   const bool debug_asks = debug_ == rr::DebugSwitch::kOn || debug_ == rr::DebugSwitch::kProbe;
   const bool row_asks = (in.setting == rr::Denoiser::kRr && pi.consumers_any) || (in.setting == rr::Denoiser::kAuto && pi.consumers_active);
-  if (debug_ != rr::DebugSwitch::kOff && (debug_asks || row_asks) && DeviceVendor() == kVendorAmd && in.device && in.frames) {
+  if (debug_ != rr::DebugSwitch::kOff && (debug_asks || row_asks) && RowListed() && in.device && in.frames) {
     ProbeNow(*in.device, *in.frames);
   }
   pi.facts = MenuFacts();

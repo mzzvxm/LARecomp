@@ -1,6 +1,7 @@
 #include "gpu_facts.h"
 
 #include "gpu/car_rt_scene.h"
+#include "gpu/denoiser_setting.h"
 #include "gpu/device.h"
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
@@ -203,13 +204,12 @@ void ReadDevice(GpuFacts& out, const Device& device) {
     out.adapters.push_back(std::move(selected));
   }
   const Adapter& adapter = out.adapters[*out.selected];
-  const auto normalized = gc::NormalizeName(adapter.name);
-  unsigned rx = 0;
-  out.rtx = adapter.vendor_id == gc::kVendorNvidia &&
-            normalized.find("rtx") != std::string::npos;
-  out.rx9000 = adapter.vendor_id == gc::kVendorAmd &&
-               gc::speed_detail::SeriesNumber(normalized, "rx", &rx) && rx >= 9000 && rx < 10000;
-  out.denoiser = *out.rtx ? "nvidia" : adapter.vendor_id == gc::kVendorAmd ? "amd" : "none";
+  const bool rtx = adapter.vendor_id == gc::kVendorNvidia && rr::NameLooksLikeRtx(adapter.name);
+  out.rtx = rtx;
+  out.rx9000 = adapter.vendor_id == gc::kVendorAmd && rayregen::NameIsRx9000(adapter.name);
+  const bool regen = rayregen::RowListed(
+      {adapter.vendor_id, adapter.name, WindowsBuildNumber(), rayregen::kWindowsHost});
+  out.denoiser = denoiser::VendorName(denoiser::RowFor(regen, rtx));
   const bool can_trace = CarRtSupported(device.capabilities(), vulkan, device.wave_ops());
   const bool rt = can_trace && gc::CurrentRtRung() != gc::RtTier::kNone;
   out.car_rt = rt;

@@ -775,7 +775,7 @@ class GPUSettings final : public rex::SettingOwner {
     "Live.");
 
   REX_SETTING(std::string, mcla_gpu_denoiser, "row", "Debug (A/B): overrides the pause menu's DLSS RAY RECONSTRUCTION / AMD FSR RAY REGENERATION row (mcla_gpu_vendor_denoiser): who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light): NVIDIA's DLSS Ray Reconstruction (RTX cards), AMD FSR Ray Regeneration (Radeon RX 9000 series cards, Direct3D 12), or our own denoisers. "
-    "row (the default): the row decides (ON is the vendor's denoiser, OFF is ours). "
+    "row (the default): the row decides (ON is the vendor's denoiser, OFF is ours). Use launch arguments, the environment, or a live debug setting. File values are migrated to the player toggle. "
     "auto: the vendor's denoiser where an effect that is on looks better with it and this PC can run it (nothing is trusted to auto yet, so auto is our own denoisers today). "
     "rr (DLSS RR / FSR RAY REGEN in the old menu): the vendor's denoiser wherever it can run and an effect that it can clean is on. ours: our own denoisers only; Streamline is then started without the Ray Reconstruction plugin, "
     "so leaving ours needs a restart. DLSS Ray Reconstruction does the upscaling too, in place of DLSS Super Resolution, for the frames it takes (not the pause menu's world, the garage, the map or a cutscene); its context is made in the background "

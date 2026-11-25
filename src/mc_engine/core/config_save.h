@@ -103,7 +103,8 @@ bool RestoreCvarForScene(std::string_view name);
 // as it is: other lines, comments, keys of cvars this build does not have. Values
 // from the command line or the environment are not written. A changed value that
 // is back at its default, or at its startup value (NoteStartupCvar), only rewrites
-// a line the file already has. A cvar tagged .debug_only() is never written for a
+// a line the file already has, except the vendor denoiser toggle, whose explicit OFF
+// takes precedence over a legacy ON. A cvar tagged .debug_only() is never written for a
 // change made while the game runs (the DEBUG menu, the settings panel, the console),
 // and a line the file already has for it is left exactly as it is, so a tester's
 // hand-written value stays. A cvar a scene holds (SetCvarForScene) counts as what it was

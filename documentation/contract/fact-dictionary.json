@@ -42,7 +42,7 @@
     "features.frame_generation.dlss_after_restart": { "type": "bool", "l0": false, "source": "GetDlssFrameGenerationAvailability" },
     "features.latency.kind": { "type": "string", "enum": ["none", "reflex", "antilag2"], "l0": false, "source": "gpu/latency.h AvailableKind", "used_by": "NVIDIA Reflex, AMD Anti-Lag 2" },
     "features.latency.auto_on": { "type": "bool", "l0": false, "source": "gpu/latency.h AutoIsOn" },
-    "features.denoiser.vendor": { "type": "string", "enum": ["nvidia", "amd", "none"], "l0": false, "source": "denoiser_setting.h, ray_regen_plan.h RowVendor" },
+    "features.denoiser.vendor": { "type": "string", "enum": ["nvidia", "amd", "none"], "l0": false, "source": "denoiser_setting.h RowFor and ray_regen_rules.h RowListed" },
     "features.denoiser.dlss_rr": { "type": "string", "enum": ["no", "unsupported", "needs_setup", "after_restart", "ready"], "l0": false, "source": "denoiser_setting.h" },
     "features.denoiser.ray_regen": { "type": "string", "enum": ["no", "unsupported", "needs_setup", "after_restart", "ready"], "l0": false, "source": "ray_regen_plan.h" },
     "features.hdr.display_capable": { "type": "bool", "l0": false, "source": "HdrOutputActive" },
@@ -84,6 +84,7 @@
     "live.city_data": { "type": "string", "enum": ["ready", "building", "unavailable"], "l0": false, "source": "city_refl_setting::DataNow()", "used_by": "RT City Reflections" },
     "live.rt_gi_replaces_bounce": { "type": "bool", "l0": false, "source": "RtGiReplacesBounceLight()", "used_by": "Bounce Light" },
     "live.denoiser.state": { "type": "string", "enum": ["ok", "making", "failed", "restart"], "l0": false, "source": "denoiser::Snapshot / ray_regen::ContextMaking", "used_by": "Denoiser rows" },
+    "live.denoiser_gate": { "type": "string", "enum": ["ok", "hidden", "making", "restart", "needs_d3d12", "unsupported", "needs_dlss", "needs_setup", "failed", "not_needed"], "l0": false, "source": "The vendor denoiser's running backend and consumer gate" },
     "live.ultrawide_active": { "type": "bool", "l0": false, "source": "mc::ultrawide::Active()", "used_by": "HUD Width" }
   }
 }

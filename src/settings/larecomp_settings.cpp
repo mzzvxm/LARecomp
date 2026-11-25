@@ -14,6 +14,7 @@
 #include <rex/platform/process.h>
 #include <toml++/toml.hpp>
 
+#include "gpu/denoiser_setting.h"
 #include "settings/immortal.h"
 #include "settings/watch_table.h"
 
@@ -398,6 +399,18 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
   // --- everything else, key by key ----------------------------------------------------------------
   std::vector<std::pair<std::string, std::string>> leaves;
   CollectLeaves(table, {}, leaves);
+  // The old player row saved auto/rr/ours. Seed the new bool below the file layer so an explicit
+  // toggle wins. The renderer only treats the chooser as an override at the environment layer or
+  // above, including when the SDK reads the same legacy line again after OnConfigure.
+  namespace dn = mcla::gpu::denoiser;
+  const auto& chooser = mcla_gpu_denoiser;
+  for (const auto& [name, text] : leaves) {
+    if (name == dn::kCvarName || name == chooser.GetName()) {
+      if (const auto legacy = dn::LegacyVendorPreference(text)) {
+        put_title(mcla_gpu_vendor_denoiser.GetName(), *legacy ? "true" : "false");
+      }
+    }
+  }
   int refused = 0;
   for (const auto& [name, text] : leaves) {
     if (std::any_of(std::begin(kConvertedKeys), std::end(kConvertedKeys), [&](const char* k) { return name == k; })) {

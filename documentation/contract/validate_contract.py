@@ -1373,7 +1373,9 @@ def selftest():
     expect('a comparison of different kinds', lambda d: row(d, 'PM_RxFpsCap')['states'][0].update(when="gpu.class == 3"), 'always null')
     expect('a row without help', lambda d: row(d, 'PM_RxFpsCap').pop('help'), 'has help')
     expect('apply says restart for a live setting', lambda d: row(d, 'PM_RxFpsCap').update(apply='restart'), 'lint 4')
-    expect('a RESTART suffix without needs_restart', lambda d: row(d, 'PM_RxGpuRr')['states'][5].pop('needs_restart'), 'needs_restart')
+    expect('a RESTART suffix without needs_restart',
+           lambda d: next(s for s in row(d, 'PM_RxGpuDenoiser')['states'] if s.get('needs_restart')).pop('needs_restart'),
+           'needs_restart')
     expect('a preset that misses a covered setting', lambda d: d['presets']['items']['enhanced']['values'].pop('mcla_gpu_rt_reflections'), 'lint 6')
     expect('a preset that touches DISPLAY', lambda d: d['presets']['items']['enhanced']['values'].update(fps_limit='60'), 'DISPLAY or UPSCALING')
     expect('facts_used out of date', lambda d: d['facts_used'].pop(), 'facts_used')

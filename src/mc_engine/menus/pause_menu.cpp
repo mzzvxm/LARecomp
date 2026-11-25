@@ -1535,8 +1535,8 @@ int FindStringIndex(const std::string& value, const char* const* vals, int count
 // Width: "MSAA (FSR 3.1 ON)" 17 at most ("MSAA (APPLYING)" 15), values 3.
 #endif
 
-// DISPLAY (GRAPHICS > DISPLAY): the window and how it is presented, in this order: DISPLAY MODE, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY
-// GAMMA, VSYNC, FPS LIMIT (these seven are kVideoItems); and after them (MenuDef::extra, DisplayPageRows) NVIDIA REFLEX or AMD ANTI-LAG 2, which is not listed where the
+// DISPLAY (GRAPHICS > DISPLAY): DISPLAY MODE, VSYNC, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY GAMMA and FPS LIMIT
+// (kVideoItems); and after them (MenuDef::extra, DisplayPageRows) NVIDIA REFLEX or AMD ANTI-LAG 2, which is not listed where the
 // GPU, the driver or the graphics API has no latency reducer (LowLatencyMenuRows), and then the upscaling block (UpscalingPageRows: UPSCALING, its mode row, SHARPNESS, the
 // denoiser row where this PC has one, FRAME GENERATION and its two rows: the owner moved it here from the page of its own, 2026-11-23). Every row is one row for both renderers: DISPLAY MODE, RESOLUTION and FPS LIMIT
 // are live on both, and on XENIA the mode row (RENDER SCALE) is the one upscaling row. What only one renderer has (ASPECT RATIO, HDR, VSYNC, the latency row, the upscaler's rows) is tagged XeniaOnly / NativeOnly and listed only
@@ -1544,10 +1544,12 @@ int FindStringIndex(const std::string& value, const char* const* vals, int count
 // At most 15 rows (7, the latency row, 7 of the upscaling block; the cap is 24: tools/check_menu_rows.py counts them), so the page needs no split. Width ("Page width" above ItemRowLabel): the widest label is
 // "AMD FSR RAY REGENERATION" (24) and the widest value 17 ("PERFORMANCE (50%)", "FSR 3.1 (NO ROOM)"): 41 of 41 (the latency row, the denoiser row and frame generation's say a short name before a reason for it, "Page width").
 const ItemDef kVideoItems[] = {
-    // DISPLAY MODE and RESOLUTION: the window's mode and its size, which is the output resolution
-    // (display_menu.h, display_mode.h). Both are live (Windows; Linux through SDL, where gamescope
-    // sets the size and the RESOLUTION row is grey).
+    // The window mode and output resolution are live. Gamescope sets the size on Linux, where RESOLUTION is grey.
     Str("PM_RxDisplayMode", "fullscreen", "DISPLAY MODE: ", nullptr, nullptr, 0),
+#if defined(LARECOMP_HAS_GPU)
+    // Xenia's vsync only controls guest vblank, so it has a separate row under DEBUG > RENDERING.
+    NativeOnly(Bool("PM_RxVsync", "mcla_gpu_vsync", "VSYNC: ")),
+#endif
     Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
 #if defined(LARECOMP_HAS_GPU)
     // ASPECT RATIO: the shape of the picture in the window (mc_engine/display/frame_fit.h, ultrawide.h). AUTO fills
@@ -1562,12 +1564,6 @@ const ItemDef kVideoItems[] = {
     // (hooks/display_gamma.cpp). CONSOLE is the console's TV ramp, PC an sRGB one. Width: 13, values 7.
     Str ("PM_RxDisplayGamma", "display_gamma",           "DISPLAY GAMMA: ",
          kDisplayGammaVals, kDisplayGammaNames, 2),
-#if defined(LARECOMP_HAS_GPU)
-    // VSYNC is the native renderer's (mcla_gpu_vsync, live at the next present). The Xenia renderer's
-    // vsync only sets the guest's vblank interval and does not stop tearing (its presenter always
-    // presents with tearing allowed), so it is XENIA VSYNC on the debug RENDERING page instead.
-    NativeOnly(Bool("PM_RxVsync", "mcla_gpu_vsync", "VSYNC: ")),
-#endif
     // Grey with "(FRAME GEN)" while frame generation runs: the limiter then uses the row of its own
     // (frame_generation_menu.h) and counts rendered frames.
     Dbl("PM_RxFpsCap", "fps_limit", "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "",

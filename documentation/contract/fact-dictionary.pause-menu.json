@@ -1,5 +1,4 @@
 {
-  "live.denoiser_gate": { "type": "string", "enum": ["ok", "hidden", "making", "restart", "needs_d3d12", "unsupported", "needs_dlss", "needs_setup", "failed", "not_needed"], "l0": false, "source": "The vendor denoiser's running backend and consumer gate" },
   "live.dlss_waits_for_restart": { "type": "bool", "l0": false, "source": "UpscalerAvailability.dlss_after_restart when DLSS is unavailable" },
   "live.kept_upscaler": { "type": "string", "enum": ["off", "fsr31", "fsr4", "dlss"], "l0": false, "source": "UpscalerAvailability.kept" },
   "live.output_size": { "type": "string", "l0": false, "source": "The current compositor-controlled window size" },
