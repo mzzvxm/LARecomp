@@ -33,7 +33,10 @@
 // and `=mid`. What the three cells cost on a Deck is not measured (no hardware): the numbers are perf\COMPAT-AUDIT.md section 11.4.
 //
 // The `auto` table: for each effect, the value `auto` stands for in each class (kEffects below, the
-// table of GFX-UPGRADES-DESIGN.md section 9). An effect's package keeps its own cvar and its own
+// table of GFX-UPGRADES-DESIGN.md section 9). THE CELLS ARE NOT WRITTEN HERE ANY MORE (GFX-PRESETS, owner 2026-11-23): a class's `auto` is the
+// value of the preset the class maps to, and the presets are one table, gfx_preset.h kRows: Low is VANILLA's column, Mid ENHANCED's, High ENHANCED
+// ULTRA's (kEffects and kScales read them; rt_tier.h's kRtEffects reads the RT presets'). The comments below say why each effect's cells are what
+// they are; to change one, change its row in gfx_preset.h (gfx_preset_test.cpp pins today's values and lists the few that are not the table's). An effect's package keeps its own cvar and its own
 // values; at the place it reads the cvar it calls
 //     std::string mode = gpu_class::Resolve(gpu_class::Effect::kSunShafts, setting_text);
 // where setting_text is the cvar's text as the render thread may read it (live_text.h: LiveText; the
@@ -68,6 +71,8 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+
+#include "gfx_preset.h"
 
 namespace plume {
 struct RenderDeviceDescription;
@@ -106,37 +111,44 @@ struct EffectInfo {
   std::string_view cvar;
   std::string_view low, mid, high;
 };
+// One effect's cells from the preset table: Low is VANILLA's value, Mid ENHANCED's, High ENHANCED ULTRA's (gfx_preset.h).
+constexpr EffectInfo Derived(std::string_view cvar) {
+  const int row = gfx_preset::MustFindRow(cvar);
+  return {cvar, gfx_preset::CellAt(row, gfx_preset::Preset::kVanilla), gfx_preset::CellAt(row, gfx_preset::Preset::kEnhanced),
+          gfx_preset::CellAt(row, gfx_preset::Preset::kEnhancedUltra)};
+}
+
 inline constexpr EffectInfo kEffects[kEffectCount] = {
     // Contact hardening on Mid and High (owner, 2026-11-19: auto picks PCSS where the search runs; on Low it stays the game's own, and a hand set
     // pcss there is soft: shadow_filter.h PcssAvailable). Kept only if the cost of pcss against soft on Mid is small (the check plan measures it).
-    {"mcla_gpu_shadow_filter", "game", "pcss", "pcss"},
-    {"mcla_gpu_shadow_resolution", "game", "high", "high"},
-    {"mcla_gpu_env_resolution", "game", "game", "high"},
-    {"mcla_gpu_reflection_resolution", "game", "high", "high"},
-    {"mcla_gpu_contact_shadows", "off", "high", "ultra"},
-    {"mcla_gpu_sun_shafts", "off", "default", "default"},  // a strength, not a quality: DEFAULT where the GPU is not integrated
+    Derived("mcla_gpu_shadow_filter"),
+    Derived("mcla_gpu_shadow_resolution"),
+    Derived("mcla_gpu_env_resolution"),
+    Derived("mcla_gpu_reflection_resolution"),
+    Derived("mcla_gpu_contact_shadows"),
+    Derived("mcla_gpu_sun_shafts"),  // a strength, not a quality: DEFAULT where the GPU is not integrated
     // Bounce light: high on the High class only. Measured at half size above 1080 lines (perf/ao-half-size):
     // high (the one that was called low) costs about 0.75 ms and ultra about 1.1 ms at 4K on an RTX 5080. It was off on every
     // class until that cost was known (owner, 2026-11-13); the owner agreed on 2026-11-14 to high on High, off on Mid
     // and Low. This branch waits for the owner's look of the high level.
-    {"mcla_gpu_ssgi", "off", "off", "high"},
+    Derived("mcla_gpu_ssgi"),
     // Traffic and AI cars cast into the sun shadow cascades: the nearest few on a discrete GPU (each car adds cascade draws,
     // about 4 x a car's low-LOD draws, on the render thread), none on an integrated one (traffic_shadow.h).
-    {"mcla_gpu_traffic_shadows", "off", "near", "near"},
+    Derived("mcla_gpu_traffic_shadows"),
     // The player's car paint reflects its own car (the wing in the trunk lid, a mirror in the door). The cost at 3840x2160 on
     // an RTX 5080 is about 0.1 ms a frame (final cost runs, perf/out/FXCOST-B6.txt: +0.107 ms for the specular occlusion alone,
     // +0.095 ms for the occlusion and the reflection of the car's own colour: the same), so the setting has one level, `on`, and
     // every discrete card gets it; an integrated GPU does without.
-    {"mcla_gpu_car_selfrefl", "off", "on", "on"},
+    Derived("mcla_gpu_car_selfrefl"),
     // Ambient occlusion, from the costs in AO-DESIGN.md section 5 (measured 0.09 ms for ultra at 720p on
     // the RTX 5080, estimated 1.0 ms at 4K there): ultra is about 3 ms at 1080p on a GTX 1050-class
     // card (Mid), high about 1 ms, so Mid gets high and keeps a frame at 60 FPS; the Low class (shared
     // memory, 2-CU iGPU: the scene alone is 100+ ms at 2x) gets nothing, as every other effect does.
-    {"mcla_gpu_ao", "off", "high", "ultra"},
+    Derived("mcla_gpu_ao"),
     // The cars' headlights as real lights at night (headlight_rig.h): one extra term in the lit shaders of the pixels the beams reach (about 40 ALU there,
     // the early-out box keeps every other pixel to a few), so the setting has one level, `on`: every card but the integrated one (Low: the scene alone is
     // 100+ ms there) gets it. The cost is the owner's to measure (perf/HEADLIGHT-LIGHT-RUNPLAN.md), a cell is corrected from it.
-    {"mcla_gpu_headlights", "off", "on", "on"},
+    Derived("mcla_gpu_headlights"),
     // The local lights cast shadows (the headlights now, the street lamps later; local_shadow.h): the main view's opaque draws are drawn again, depth only, into a map of 768 (medium), 1024 (high)
     // or 1280 (ultra) texels a view (HL-SHADOW-QUALITY: a texel stays 1.3 to 1.9 cm in the world at 10 m from the lamps). THREE LEVELS (the three level shape, local_shadow_rules.h kThreeLevelShape, owner 2026-11-20, after the cost runs of perf/out/HL-PER-LAMP.txt): medium
     // shadows the player's car's headlights and the nearest other car's with one view for each car (2 views, 9 MiB); high gives the player's car a view for each HEADLAMP (a pole in front of
@@ -145,15 +157,17 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // (the size barely counts) and 0.05 to 0.1 ms of render thread time (a pass over the frame's draws), measured on the RTX 5080 (the headlights runs of 2026-11-20); a view for each lamp
     // instead of one for the car adds 0.05 to 0.15 ms of graphics card time and 0.04 to 0.16 ms of render thread time there, and a weaker PC pays several times that, so the lamps' views
     // are for the levels above Mid's cell.
-    {"mcla_gpu_light_shadows", "off", "medium", "ultra"},
+    Derived("mcla_gpu_light_shadows"),
     // Volumetric light (light beams under the lamps and headlights, fog and sun shafts: volumetrics.h; VOLUMETRICS-SURVEY.md section 4,
     // estimated 0.13 / 0.19 / 0.30 ms at 4K and 0.06 / 0.12 / 0.23 ms at 1080p on an RTX 5080 for medium / high / ultra, about 0.5 ms
     // for medium and 1.0 ms for high at 1080p on a GTX 1050-class card): medium on Mid, high on High, nothing on shared memory. Ultra is
     // a deliberate pick: its cost is not "no visible loss" for the weakest cards of the High class (6 GB GTX 1060-class).
-    {"mcla_gpu_volumetrics", "off", "medium", "high"},
+    Derived("mcla_gpu_volumetrics"),
     // Ray traced sun shadows from the city's own triangles (CITY-RT M1, city_rt_rules.h): high on the High class only (the sectors within 300 m, 120 to 180 MB of
     // structures, ray queries from the depth), off on Mid and Low. A Mid card (a ray tracing card under 5.5 GiB) may be given high or ultra by hand; the budget
     // for it is in city_rt_rules.h. The cell is a first guess for the owner's runs (perf/CITY-RT-M1-RUNPLAN.md): the cost is measured before it changes.
+    // NOT READ FROM THE PRESET TABLE: this class-only cell (city_rt_rules.h LevelFor) is older than the ray tracing rung's table, which decides (rt_tier.h kRtEffects: none off, weak high, strong
+    // high = gfx_preset.h's ENHANCED, ENHANCED RT and ENHANCED RT ULTRA cells of this row); a class has no RT presets of its own. Kept as it was until LevelFor reads the rung everywhere.
     {"mcla_gpu_rt_shadows", "off", "off", "high"},
     // Reflections on surfaces (screen-space reflections: wet roads, sidewalks, glass, metal; ssr.h, ssr_rules.h; GB-I1 + GB-I2): OFF ON EVERY CLASS UNTIL THE OWNER HAS SEEN THE PICTURES (owner,
     // 2026-11-21: the pictures of the SSR and of the light pass come first), so `auto` is off and the effect is off by default exactly as before the row existed. The cells are PREPARED (the cost limits are
@@ -168,17 +182,20 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // class cannot run it, and AUTO is what keeps weak cards off). Nothing here stops the effect from running: it asks for the G-buffer's three planes, the Hi-Z and colour_post with its mips and
     // three RGBA16F images, which on shared memory is the cost the player chose. The only hard limit is the sidecar's memory cap (gbuffer_rules.h kMaxSidecarBytes, 512 MiB: past it the frame
     // makes no sidecar, the effect does not run and the log says why once). The release notes say so.
+    // NOT READ FROM THE PRESET TABLE: `auto` is off on every class, the High class included (owner, 2026-11-24: the wet-road reflections flicker in motion, so the High class does not take
+    // them yet), while ENHANCED ULTRA and ENHANCED RT ULTRA hold the row's top level, ultra, as explicit maximum presets (gfx_preset.h). The recommended preset of a High card is one of those two,
+    // so this is the one effect whose `auto` is not its recommended preset's cell: when the final pass turns SSR on for a class, change this line to Derived("mcla_gpu_ssr").
     {"mcla_gpu_ssr", "off", "off", "off"},
     // A car's neon underglow lights the ground, the kerbs, the walls and the other cars near it (GB-NEON; neon_light.h; owner, 2026-11-21: ON BY DEFAULT where the light pass runs). One level, `on`: the
     // light pass draws a few small scissored lights (4 / 9 / 16 a frame at most, by the LIGHT SHADOWS level, only while a car with a neon is lit: its G-buffer planes are made only then), so every
     // card but the integrated one (Low: the scene alone is 100+ ms there) gets it. The cost is the owner's to measure (RUNPLAN-gb-neon.txt, the cost runs); a cell is corrected from it.
-    {"mcla_gpu_neon_light", "off", "on", "on"},
+    Derived("mcla_gpu_neon_light"),
     // The car's two side mirrors without ray tracing (MIRROR-VIEW.md, mirror_setting.h; owner plan 2026-11-22): the game's own rear view mirror phase drawn once into a small view of its own, which the glass of both
     // side mirrors and the HUD mirror read. Two levels, the view's size (MIRROR-VIEW.md 2.2): HIGH is 512 pixels wide and drawn every second frame, ULTRA 768 wide and every frame. The cost is the phase's draws (a
     // second walk of the city and the racers from the mirror camera, after the cuts), not the pixels [E, nothing measured: 0.4 to 1.1 ms of graphics card time for 300 to 1,000 draws on a Mid card, 0.15 to 0.35 ms on a
     // High card, 1 to 2.5 ms on the 2-CU iGPU; section 3.3]. So Low is OFF (the game's own mirrors: the stop rule of section 3.4 keeps the weakest card out), Mid HIGH, High ULTRA. Where RT SIDE MIRRORS runs it
     // replaces the row (mirror_setting.h Resolve). FIRST GUESSES: the cost chain (chain-mirror-view.ps1) corrects a cell, and the stop rule (over about 800 draws a frame on Mid) turns Mid off.
-    {"mcla_gpu_side_mirrors", "off", "high", "ultra"},
+    Derived("mcla_gpu_side_mirrors"),
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little
@@ -363,12 +380,20 @@ struct ScaleInfo {
   char unit;              // the row's suffix: 'X' (a multiple) or 'M' (metres)
 };
 
+// Mid and High read the preset table (ENHANCED's and ENHANCED ULTRA's cells, gfx_preset.h); the Low cell is VANILLA's for the city LOD (the game's own 1) and a literal for the other
+// four: VANILLA is the stock game (400 m, 1x, 1x, traffic LOD 1) but the Low class's `auto` has been below stock since the owner's 2026-11-20 LOD pass (a weak PC keeps the performance
+// values, and with no renderer class known, the Xenia renderer included, `auto` is the Low cell), which is not VANILLA's call to undo. Folding them in is a final pass decision.
+constexpr ScaleInfo DerivedScale(std::string_view cvar, double low, bool zero_is_auto, char unit) {
+  const int row = gfx_preset::MustFindRow(cvar);
+  return {cvar, low, gfx_preset::Number(gfx_preset::CellAt(row, gfx_preset::Preset::kEnhanced)),
+          gfx_preset::Number(gfx_preset::CellAt(row, gfx_preset::Preset::kEnhancedUltra)), zero_is_auto, unit};
+}
 inline constexpr ScaleInfo kScales[kScaleCount] = {
-    {"lod_city_scale", kCityLodAutoGame, kCityLodAutoFull, kCityLodAutoFull, true, 'X'},
-    {"lod_traffic_scale", 1.5, 2.0, 3.0, true, 'X'},
-    {"traffic_unspawn_dist", 250.0, 300.0, 400.0, true, 'M'},
-    {"ped_density_scale", 0.5, 0.75, 1.0, false, 'X'},
-    {"parked_car_scale", 0.5, 0.75, 1.0, false, 'X'},
+    DerivedScale("lod_city_scale", gfx_preset::Number(gfx_preset::CellOf("lod_city_scale", gfx_preset::Preset::kVanilla)), true, 'X'),
+    DerivedScale("lod_traffic_scale", 1.5, true, 'X'),
+    DerivedScale("traffic_unspawn_dist", 250.0, true, 'M'),
+    DerivedScale("ped_density_scale", 0.5, false, 'X'),
+    DerivedScale("parked_car_scale", 0.5, false, 'X'),
 };
 
 // The traffic range is held to the menu's range when it is set by hand (the setting accepts 0 to 600 so that 0 can be `auto`).

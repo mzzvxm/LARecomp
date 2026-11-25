@@ -383,8 +383,9 @@ void SettingsChecks(const std::string& dir) {
 
 void ClassTableChecks(const std::string& dir) {
   const std::string header = ReadFile(dir + "/gpu_class.h");
-  Check(Has(header, "kSideMirrors,           // mcla_gpu_side_mirrors") && Has(header, "inline constexpr int kEffectCount = 17;") && Has(header, "{\"mcla_gpu_side_mirrors\", \"off\", \"high\", \"ultra\"},"),
-        "gpu_class.h has the effect, last, with its cells");
+  Check(Has(header, "kSideMirrors,           // mcla_gpu_side_mirrors") && Has(header, "inline constexpr int kEffectCount = 17;") && Has(header, "Derived(\"mcla_gpu_side_mirrors\"),") &&
+            Has(ReadFile(dir + "/gfx_preset.h"), "{\"mcla_gpu_side_mirrors\", Page::kReflections, {\"off\", \"high\", \"ultra\", \"high\", \"ultra\"}},"),
+        "gpu_class.h has the effect, last, with its cells read from the preset table (gfx_preset.h: VANILLA off, ENHANCED high, ENHANCED ULTRA ultra)");
   const std::string test = ReadFile(dir + "/gpu_class_test.cpp");
   Check(Has(test, "{Effect::kSideMirrors, \"mcla_gpu_side_mirrors\", \"off\", \"high\", \"ultra\", \"AUTO (OFF)\", \"AUTO (HIGH)\", \"AUTO (ULTRA)\"},"), "the class test pins the cells and the labels");
   for (const char* other : {"/neon_light_test.cpp", "/ssr_test.cpp"}) {

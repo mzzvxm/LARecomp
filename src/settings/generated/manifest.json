@@ -2868,6 +2868,29 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_preset": {
+  "type": "std::string",
+  "default": "\"vanilla\"",
+  "category": "MCLA/GPU",
+  "help": "\"Graphics preset: the look of the four effect pages (IMAGE QUALITY, LIGHTING AND SHADOWS, REFLECTIONS, WORLD DETAIL) in one choice. \"\n    \"vanilla (the game as it shipped on the console; where a fresh install starts), enhanced, enhanced_ultra, enhanced_rt and \"\n    \"enhanced_rt_ultra (the last two need a graphics card that can ray trace), or custom (your own choices on those pages). While a preset \"\n    \"other than custom is chosen, its values are used for every row of those pages and are not written to larecomp.toml; changing any one of \"\n    \"those rows in the pause menu switches this to custom and keeps the values (mcla_gpu_preset_from remembers the preset they came from). \"\n    \"DISPLAY and UPSCALING are never changed by a preset. A larecomp.toml that has graphics values and no line for this setting (written \"\n    \"before presets) starts as custom, so nothing changes. A value for a single row on the command line or in the environment wins over \"\n    \"the preset and is never saved. Live.\"",
+  "traits": [
+   "rex::Allowed(\"vanilla\", \"enhanced\", \"enhanced_ultra\", \"enhanced_rt\", \"enhanced_rt_ultra\", \"custom\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_preset_from": {
+  "type": "std::string",
+  "default": "\"none\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the preset a custom set of rows started from (a named preset, or none): rows that larecomp.toml does not name take that preset's \"\n    \"value, so a row added in a later version follows the preset the player began with. Set by the game when a change in the pause menu \"\n    \"turns a preset into custom; none for a larecomp.toml written before presets. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"none\", \"vanilla\", \"enhanced\", \"enhanced_ultra\", \"enhanced_rt\", \"enhanced_rt_ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_adapter": {
   "type": "std::string",
   "default": "\"\"",

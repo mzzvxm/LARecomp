@@ -65,6 +65,7 @@
 #include <string>
 #include <string_view>
 
+#include "gfx_preset.h"
 #include "gpu_class.h"
 #include "rt_bench_rules.h"
 
@@ -492,6 +493,28 @@ constexpr GpuClass RtClass(GpuClass c, RtTier t) {
   }
 }
 
+// The preset the class and the ray tracing rung recommend (the "Recommended for this GPU" tag; gfx_preset.h kClassToPreset is the same rule as the settings-ui expressions): a strong
+// card ENHANCED RT ULTRA, a card at the weak rung ENHANCED RT, else the High class ENHANCED ULTRA, the Mid class ENHANCED and anything else (Low: shared memory, software, the
+// Steam Deck) VANILLA. The first start is VANILLA whatever this says.
+constexpr gfx_preset::Preset RecommendedPreset(GpuClass c, RtTier t) {
+  switch (RtRung(c, t)) {
+    case RtTier::kStrong:
+      return gfx_preset::Preset::kEnhancedRtUltra;
+    case RtTier::kWeak:
+      return gfx_preset::Preset::kEnhancedRt;
+    default:
+      break;
+  }
+  switch (c) {
+    case GpuClass::kHigh:
+      return gfx_preset::Preset::kEnhancedUltra;
+    case GpuClass::kMid:
+      return gfx_preset::Preset::kEnhanced;
+    default:
+      return gfx_preset::Preset::kVanilla;
+  }
+}
+
 // The tier a FORCED class stands for in a test (mcla_gpu_class): what the class's cells were meant to show. A card the API says cannot trace stays none.
 constexpr RtTier TierForForcedClass(GpuClass forced, bool api_rt) {
   if (!api_rt) {
@@ -526,28 +549,38 @@ struct RtEffectInfo {
   std::string_view none, weak, strong;  // what `auto` stands for at each rung
 };
 
+// The cells are READ FROM THE PRESET TABLE (gfx_preset.h, GFX-PRESETS): the none rung is ENHANCED's cell (the ray traced rows are off there), the weak rung ENHANCED RT's and the strong
+// rung ENHANCED RT ULTRA's. A card's rung and the preset it is recommended (RecommendedPreset below) are one rule.
+constexpr RtEffectInfo RtDerived(std::string_view cvar) {
+  const int row = gfx_preset::MustFindRow(cvar);
+  return {cvar, gfx_preset::Resolved(cvar, gfx_preset::CellAt(row, gfx_preset::Preset::kEnhanced)),
+          gfx_preset::Resolved(cvar, gfx_preset::CellAt(row, gfx_preset::Preset::kEnhancedRt)),
+          gfx_preset::Resolved(cvar, gfx_preset::CellAt(row, gfx_preset::Preset::kEnhancedRtUltra))};
+}
+
 inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
     // The car's own reflection traced: about 0.1 to 0.2 ms at 4K on an RTX 5080 (a small region of the picture); every card that traces gets it.
-    {"mcla_gpu_car_selfrefl_rt", "off", "on", "on"},
+    RtDerived("mcla_gpu_car_selfrefl_rt"),
     // The car's occlusion rays (2 or 4 a pixel by the occlusion's level) and its sun ray (one) in the box round the cars: 0.2 to 0.5 ms on an RTX 5080
     // (RT-AO-DESIGN.md), several times that on a weak card, so a weak card keeps only the sun ray, which is the cheaper term and the one the screen-space
     // passes cannot do (the car's own sun shadow); the strong card has both. "both" is the setting's auto behaviour (car_rt_ao_rules.h SettingOf).
-    {"mcla_gpu_ao_rt", "off", "contact", "both"},
+    RtDerived("mcla_gpu_ao_rt"),
     // The city's sun shadows (CITY-RT-M1): high where the card traces; a weak card runs it with the Mid budget (the sectors within 150 m, not 300), which is
     // the package's own table (city_rt_rules.h BudgetFor with RtClass). First guess; the cost run of perf/CITY-RT-M1-RUNPLAN.md decides.
-    {"mcla_gpu_rt_shadows", "off", "high", "high"},
+    RtDerived("mcla_gpu_rt_shadows"),
     // The city in the reflections (CITY-RT-M2, section 8): the owner's goal is a STRONG card's look (the city clearly identifiable in the paint, as in GT7), so `auto` is HIGH on a strong card and
     // off on a weak one (a weak card may still be set to high or ultra by hand and then runs the Mid class's cell, city_refl_rules.h CellFor: 60 m, 2 rays, no mirror). R1 (2026-11-21): was
     // high for the weak tier. Ultra for the strong tier is the cost pass's call (the design aims it at an RTX 4070 and up).
-    {"mcla_gpu_rt_reflections", "off", "off", "high"},
+    RtDerived("mcla_gpu_rt_reflections"),
     // The probe field's bounce light (CITY-RT-M3, section 6): +2.5 to 4 ms on an RTX 3060, so a weak card keeps the screen-space bounce light (mcla_gpu_ssgi,
     // which this replaces only where it runs); HIGH on a strong card.
-    {"mcla_gpu_rt_gi", "off", "off", "high"},
+    RtDerived("mcla_gpu_rt_gi"),
     // The player's side mirrors traced (car_mirror_rt.h): 0.03 to 0.1 ms on an RTX 5080 (estimated) and the car's ray tracing structures built in every frame, which a weak card keeps for
     // the car's own passes only, so `auto` is on a strong card alone (the owner's rule: a weaker card gets it off by itself); a weak card can switch it on by hand (the Mid class's smaller cap).
-    {"mcla_gpu_car_mirror_rt", "off", "off", "on"},
-    // World ambient occlusion uses the class table unless a High-class card traces rays quickly.
-    {"mcla_gpu_ao", "", "", "rt"},
+    RtDerived("mcla_gpu_car_mirror_rt"),
+    // World ambient occlusion uses the class table unless a High-class card traces rays quickly: the none and weak rungs say nothing (an empty cell: the class table decides), the strong rung
+    // is ENHANCED RT ULTRA's cell (`rt`).
+    {"mcla_gpu_ao", "", "", gfx_preset::CellOf("mcla_gpu_ao", gfx_preset::Preset::kEnhancedRtUltra)},
 };
 
 constexpr const RtEffectInfo& RtInfo(RtEffect effect) { return kRtEffects[static_cast<int>(effect)]; }

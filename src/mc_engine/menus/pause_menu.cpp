@@ -67,6 +67,7 @@
 #include "gpu/car_shadow_map_rules.h"
 #include "gpu/city_refl_setting.h"
 #include "gpu/city_rt_rules.h"
+#include "gpu/gfx_preset_apply.h"
 #include "gpu/gi_setting.h"
 #include "gpu/rtao_setting.h"
 #include "gpu/gpu.h"
@@ -940,6 +941,11 @@ std::atomic<bool> g_hdr_pattern_by_menu{false};
 void NoteMenuWrite(const char* name);
 
 void CvarSet(const char* name, const char* value) {
+#if defined(LARECOMP_HAS_GPU)
+    // A row of IMAGE QUALITY, LIGHTING AND SHADOWS, REFLECTIONS or WORLD DETAIL written for the player while a named graphics preset is held turns the preset into CUSTOM, with the rows as
+    // they are (gpu/gfx_preset_apply.h). Before the write, so that the value the player picked is the player's own and not one the preset holds. Any other write is none of its business.
+    mcla::gpu::gfx_preset::NoteRowWrite(name);
+#endif
     NoteMenuWrite(name);
     if (std::string_view(name) == kHdrTestPatternCvar)
         g_hdr_pattern_by_menu.store(std::string_view(value) == "true", std::memory_order_relaxed);
@@ -1499,7 +1505,7 @@ constexpr double kHdrHighlightVals[] = {1.0, 1.5, 2.0, 3.0};
 #if defined(LARECOMP_HAS_GPU)
 // ── The graphics pages: one set for both renderers ─────────────────────
 //
-// GRAPHICS is a hub of five pages for both renderers (UPSCALING was a sixth: its rows are DISPLAY's since the owner's decision of 2026-11-23, upscaling belongs with display): a row has the same name and place on both and maps to the
+// GRAPHICS is a hub of five pages for both renderers, with the PRESET row (NATIVE only: the one choice for the four effect pages below, gpu/gfx_preset.h) after DISPLAY (UPSCALING was a sixth: its rows are DISPLAY's since the owner's decision of 2026-11-23, upscaling belongs with display): a row has the same name and place on both and maps to the
 // running renderer's own mechanism underneath (variant setting and the row's own list). A choice the other
 // renderer cannot run shows as its nearest there, and keeps its saved text, so it comes back when the renderer
 // is switched back. What only one renderer has is tagged XeniaOnly / NativeOnly and listed only for the renderer
@@ -1929,6 +1935,10 @@ const char* const kNativeMirrorRtNames[] = {"AUTO", "OFF", "ON"};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
+// PRESET (gpu/gfx_preset.h kIds and kLabels, in this order: tools/check_gfx_presets.py compares them). The row's own list, with the RT presets left out where the card cannot trace rays, is
+// [rows.PM_RxGpuPreset] in ui_rules.toml; these are the words it stores and shows.
+const char* const kGfxPresetVals[]  = {"vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"};
+const char* const kGfxPresetNames[] = {"VANILLA", "ENHANCED", "ENHANCED ULTRA", "ENHANCED RT", "ENHANCED RT ULTRA", "CUSTOM"};
 #endif
 // The emulated GPU's anisotropic filtering (the SDK's anisotropic_override, which it reads for every
 // sampler it makes, so a change is live): -1 the game's own, 0 off, then 1 = 1x, 2 = 2x, 3 = 4x, 4 = 8x,
@@ -2321,10 +2331,17 @@ const ItemDef kUiItems[] = {
 // The SETTINGS tab holds a few pages of rows (RECOMP SETTINGS, CONTROLLER) and a handful of hubs,
 // each a list of Submenu rows. The hubs' children are ordinary menus below; a menu some row opens gets
 // no button of its own (MenuIsNested).
-// GRAPHICS (see "The graphics pages" above): five pages, REFLECTIONS on the NATIVE renderer only. (UPSCALING was the second one: its rows are DISPLAY's now, owner 2026-11-23.)
+// GRAPHICS (see "The graphics pages" above): five pages and, on the NATIVE renderer, the PRESET row after DISPLAY; REFLECTIONS on the NATIVE renderer only. (UPSCALING was the second one: its rows are DISPLAY's now, owner 2026-11-23.)
 // A hub row whose page has no row for the running renderer is not listed (the Submenu row carries the page's renderer mask). Width: "LIGHTING AND SHADOWS" (20), no values.
 const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubVideo",  "DISPLAY",     "RxVideoMenu"),
+#if defined(LARECOMP_HAS_GPU)
+    // PRESET: the four pages below in one choice (gpu/gfx_preset.h): VANILLA, ENHANCED, ENHANCED ULTRA, ENHANCED RT, ENHANCED RT ULTRA, CUSTOM. It never changes DISPLAY. Live, NATIVE only.
+    // Picking a preset holds its values over the rows of IMAGE QUALITY, LIGHTING AND SHADOWS, REFLECTIONS and WORLD DETAIL at once; changing one of those rows afterwards (CvarSet) makes it
+    // CUSTOM. The two RT presets are listed only where the card traces rays (the row's rules in ui_rules.toml say so, and " (NO RT GPU)" where a carried-over file holds one without).
+    // Width: "PRESET: " 8 and "ENHANCED RT ULTRA" 17, with " (NO RT GPU)" 12 or " (RECOMMENDED)" 14: 39 at most.
+    NativeOnly(Str("PM_RxGpuPreset", "mcla_gpu_preset", "PRESET: ", kGfxPresetVals, kGfxPresetNames, 6)),
+#endif
     Submenu("PM_RxSubImageQuality", "IMAGE QUALITY", "RxImageQualityMenu"),
     Submenu("PM_RxSubLighting", "LIGHTING AND SHADOWS", "RxLightingMenu"),
 #if defined(LARECOMP_HAS_GPU)

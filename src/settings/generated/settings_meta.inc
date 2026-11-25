@@ -478,6 +478,8 @@
 {"mcla_gpu_present_release", "MCLA/GPU"},
 {"mcla_gpu_present_release_check", "MCLA/GPU"},
 {"mcla_gpu_present_wait", "MCLA/GPU"},
+{"mcla_gpu_preset", "MCLA/GPU"},
+{"mcla_gpu_preset_from", "MCLA/GPU"},
 {"mcla_gpu_process_memory_log", "MCLA/GPU"},
 {"mcla_gpu_readable_cache", "MCLA/GPU"},
 {"mcla_gpu_readable_cache_check", "MCLA/GPU"},

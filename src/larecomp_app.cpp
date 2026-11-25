@@ -110,6 +110,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "gpu/renderer_fallback.h"  // the hidden way to the XENIA renderer; standard library only, so it is here in every build
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/choice_box.h"  // the two-button box that fits its labels (Windows; its code is in the gpu library)
+#include "gpu/gfx_preset_apply.h"  // the graphics presets at run time (the table and the rules: gpu/gfx_preset.h)
 #include "gpu/gpu.h"
 #include "gpu/native_window.h"
 #endif
@@ -777,6 +778,9 @@ rex::Result<void> LarecompApp::OnInit() {
       }
       return rex::Err(rex::ErrorCategory::kRuntime, "the Plume renderer could not start");
     }
+    // The graphics presets: the renderer has started (the GPU class and the ray tracing tier are found, CHECK: Device::Open has run by now) and the file, the environment and the command
+    // line are all applied, so a named preset is held over the rows now and a CUSTOM takes its base (gpu/gfx_preset_apply.h). The rows are live: a frame drawn before this one uses their own values.
+    mcla::gpu::gfx_preset::Start();
   }
 #endif
 

@@ -97,6 +97,9 @@ inline CvarSaveAction DecideCvarSave(const CvarSaveFacts& f) {
 // SaveCvarsToConfig leaves a held cvar's value out (DecideCvarSave).
 bool SetCvarForScene(std::string_view name, std::string_view value);
 bool RestoreCvarForScene(std::string_view name);
+// The hold is let go and the value stays: what the cvar has now is its own from here on (its source is "set at run time", so the next save writes it). The graphics presets use it when a
+// preset turns into CUSTOM (gpu/gfx_preset_apply.cpp): the values the preset gave the rows become the player's. False when nothing was held.
+bool ReleaseCvarFromScene(std::string_view name);
 
 // Merges into the file what the player changed while the game ran (cvars whose
 // last writer was SetFlagByName), plus `held`. Everything else in the file stays

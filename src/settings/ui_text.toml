@@ -409,6 +409,9 @@ native = "kHudWidthDynamics"
 help = "On a wide picture, how far the HUD's corner pieces (the minimap, speedometer, race position, lap and time, and the phone) move out toward the screen edges, in percent: 0 (Centered) keeps the whole HUD in the middle 16:9, 50 (Wider) is halfway, 100 (Full) puts each piece as far from its edge as on a 16:9 screen."
 value = { "0" = { "label" = "CENTERED" }, "50" = { "label" = "WIDER" }, "100" = { "label" = "FULL" } }
 
+[rows.PM_RxGpuPreset]
+help = "One choice for the four effect pages: image quality, lighting and shadows, reflections and world detail. Vanilla is the game as it shipped on the console. Enhanced adds the new effects at the settings that suit a mid-range card, Enhanced Ultra at the settings of a high-end one; the two RT presets also ray trace and need a graphics card that can. Display and upscaling are never changed. Changing a single effect afterwards switches this to Custom and keeps your values."
+
 [rows.PM_RxSubVideo]
 help = "Open the display settings."
 

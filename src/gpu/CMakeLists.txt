@@ -72,6 +72,7 @@ add_library(larecomp_gpu OBJECT
     gbuffer_materials.cpp
     geometry.cpp
     gpu_class.cpp
+    gfx_preset_apply.cpp
     host_passes.cpp
     host_precache.cpp
     guest_capture.cpp
@@ -266,6 +267,10 @@ add_executable(larecomp_descriptor_count_test EXCLUDE_FROM_ALL descriptor_count_
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+# The graphics presets' table and rules (gfx_preset.h: the cells of the six presets, VANILLA's values, the old `auto` tables that now read it, the recommendation, the first start and
+# the CUSTOM flip) have a check that needs no renderer; tools/check_gfx_presets.py is the half that reads the pause menu's pages:
+#   cmake --build <dir> --target larecomp_gfx_preset_test, then run src/gpu/larecomp_gfx_preset_test (exit 0 = passed).
+add_executable(larecomp_gfx_preset_test EXCLUDE_FROM_ALL gfx_preset_test.cpp)
 # The ray tracing tier beside it (rt_tier.h: the tables' every row, the detection's order, the benchmark's decision with synthetic rates, the rungs, the
 # `auto` table's cells, the launcher's words) and the benchmark's rules (rt_bench_rules.h: the synthetic scene, the plan, the rate, the cache record), likewise:
 #   cmake --build <dir> --target larecomp_rt_tier_test, then run src/gpu/larecomp_rt_tier_test (exit 0 = passed).
