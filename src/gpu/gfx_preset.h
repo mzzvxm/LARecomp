@@ -22,8 +22,9 @@
 // gfx_preset_test.cpp pins every one of them against the old literals. Two things follow, and the final pass decides both:
 //   * ENHANCED ULTRA is not literally "every row at its highest level": where the High class's `auto` is below the row's top level, the cell holds that (kBelowMax lists the rows).
 //     Raising them would raise the `auto` of every High card, which the owner's "nothing changes for Mz or the testers" does not allow before the cost pass has run.
-//     The one exception the other way is REFLECTIONS ON SURFACES: its `auto` is off on every class (the owner held it, 2026-11-24), and the two ULTRA presets, being the explicit maximum
-//     presets, hold its top level (ultra); gpu_class.h keeps that one class cell as a literal.
+//     REFLECTIONS ON SURFACES is off in EVERY preset, the two ULTRA ones included, and its `auto` is off on every class: the owner saw the wet-road reflections flicker and
+//     look unstable in motion (2026-11-24, run integ8-ssr-show-rain; perf/scripts/chain-ssr-motion.ps1 measures it). It is on the below-max list until that is fixed; gpu_class.h
+//     keeps its class cell as a literal.
 //   * A value a PRESET row holds is always a word or number the row accepts and never the `auto` of a quality (the one `auto` in the table is the ray traced half of CAR SELF-REFLECTIONS,
 //     whose setting has no `on`): a preset on a card that cannot do the effect is still clamped by the effect's own capability
 //     rules (no ray tracing hardware, the memory budgets, D3D12-only features). Those limits are outside the presets.
@@ -192,7 +193,7 @@ inline constexpr Row kRows[] = {
     {"mcla_gpu_car_mirror_rt", Page::kReflections, {"off", "off", "off", "off", "on"}},
     // REFLECTIONS ON SURFACES: `auto` is off on every class (gpu_class.h kEffects: the owner held it, 2026-11-24, the reflections flicker in motion), so VANILLA, ENHANCED and ENHANCED RT are
     // off; the two ULTRA presets are the explicit maximum presets and hold the top level.
-    {"mcla_gpu_ssr", Page::kReflections, {"off", "off", "ultra", "off", "ultra"}},
+    {"mcla_gpu_ssr", Page::kReflections, {"off", "off", "off", "off", "off"}},
 
     // --- WORLD DETAIL --- (VANILLA is the stock game: 400 m, one times the pedestrians and the parked cars, the original LOD distances and prop draw distance.)
     {"traffic_unspawn_dist", Page::kWorldDetail, {"400", "300", "400", "300", "400"}},
@@ -227,7 +228,7 @@ inline constexpr int kExemptCount = static_cast<int>(sizeof(kExempt) / sizeof(kE
 inline constexpr Note kBelowMax[] = {
     {"mcla_gpu_shadow_resolution", "ultra"}, {"mcla_gpu_env_resolution", "ultra"}, {"mcla_gpu_reflection_resolution", "ultra"},
     {"mcla_gpu_ssgi", "ultra"}, {"mcla_gpu_volumetrics", "ultra"}, {"mcla_gpu_traffic_shadows", "all"},
-    {"mcla_gpu_msaa", "8"},
+    {"mcla_gpu_msaa", "8"}, {"mcla_gpu_ssr", "ultra"},
 };
 inline constexpr int kBelowMaxCount = static_cast<int>(sizeof(kBelowMax) / sizeof(kBelowMax[0]));
 

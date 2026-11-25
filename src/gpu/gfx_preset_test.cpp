@@ -250,7 +250,7 @@ const OldEffect kOldEffects[] = {
     {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "medium", "ultra"},
     {Effect::kVolumetrics, "mcla_gpu_volumetrics", "off", "medium", "high"},
     {Effect::kRtShadows, "mcla_gpu_rt_shadows", "off", "off", "high"},  // the one class cell that is not read from the table (gpu_class.h)
-    {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off"},  // off on every class (held by the owner, 2026-11-24); the class cell is a literal, the ULTRA presets hold ultra
+    {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off"},  // off on every class and in every preset (held by the owner, 2026-11-24: unstable in motion); the class cell is a literal
     {Effect::kNeonLight, "mcla_gpu_neon_light", "off", "on", "on"},
     {Effect::kSideMirrors, "mcla_gpu_side_mirrors", "off", "high", "ultra"},
 };
@@ -323,8 +323,8 @@ void CheckAutoUnchanged() {
       CheckEq(gp::CellOf(old.cvar, Preset::kVanilla), "off", "SSR in VANILLA");
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhanced), "off", "SSR in ENHANCED (auto stays off on the Mid class)");
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), "off", "SSR in ENHANCED RT");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedUltra), "ultra", "SSR in ENHANCED ULTRA is the row's top level");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "ultra", "SSR in ENHANCED RT ULTRA is the row's top level");
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedUltra), "off", "SSR in ENHANCED ULTRA (held: unstable in motion, 2026-11-24)");
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "off", "SSR in ENHANCED RT ULTRA (held: unstable in motion, 2026-11-24)");
       continue;
     }
     // ENHANCED is the Mid class's `auto`, ENHANCED ULTRA the High class's, VANILLA the Low class's: the table and the `auto` cells are one thing.
@@ -357,11 +357,13 @@ void CheckAutoUnchanged() {
     CheckNum(gp::Number(gp::CellOf(old.cvar, Preset::kEnhanced)), old.mid, cvar + ": ENHANCED is today's Mid cell");
     CheckNum(gp::Number(gp::CellOf(old.cvar, Preset::kEnhancedUltra)), old.high, cvar + ": ENHANCED ULTRA is today's High cell");
   }
-  // The residue: VANILLA is the stock game, and four of the Low class's cells are below stock (a weak PC's performance values since the owner's 2026-11-20 LOD pass).
+  // The residue: VANILLA is the stock game, and four of the Low class's cells differ from stock (the owner's 2026-11-20 LOD pass): the traffic range and the two densities are
+  // below it (a weak PC's performance values), the traffic LOD multiple above it (1.5x the game's distances: a cheap detail gain kept for every class).
   CheckNum(ScaleCell(Scale::kCityLod, GpuClass::kLow), gp::Number(gp::CellOf("lod_city_scale", Preset::kVanilla)), "the city LOD's Low cell is VANILLA's (the game's own)");
   for (const Scale s : {Scale::kTrafficLod, Scale::kTrafficRange, Scale::kPedDensity, Scale::kParkedDensity}) {
-    Check(ScaleCell(s, GpuClass::kLow) < gp::Number(gp::CellOf(ScaleCvar(s), Preset::kVanilla)),
-          std::string(ScaleCvar(s)) + ": the Low class's `auto` stays below VANILLA's stock number (the one place the Low class is not VANILLA)");
+    const double low = ScaleCell(s, GpuClass::kLow), stock = gp::Number(gp::CellOf(ScaleCvar(s), Preset::kVanilla));
+    Check(s == Scale::kTrafficLod ? low > stock : low < stock,
+          std::string(ScaleCvar(s)) + ": the Low class's `auto` keeps its own number against VANILLA's stock one (the one place the Low class is not VANILLA)");
   }
   // The ray tracing rungs: none is ENHANCED's cell, weak ENHANCED RT's, strong ENHANCED RT ULTRA's.
   Check(sizeof(kOldRt) / sizeof(kOldRt[0]) == static_cast<std::size_t>(kRtEffectCount), "the old ray traced table is complete");
