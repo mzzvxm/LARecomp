@@ -14,6 +14,7 @@
 #include <string>
 
 #include "settings/larecomp_settings.h"
+#include "render_wait_rules.h"
 #include <rex/logging/log_category.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/platform/native_window.h>
@@ -1211,7 +1212,12 @@ void Renderer::FlushDeferredPresent(bool wait) {
     return;
   }
   if (wait) {
-    WaitUntilQpc(d.due);
+    // CHECK: verify presentation order when HDR or frame generation changes during a hold.
+    if (render_wait::ShouldSpin(larecomp::settings::render_wait_mode.Get())) {
+      WaitUntilQpc(d.due);
+    } else {
+      BlockUntilQpc(d.due);
+    }
   }
   PresentNow(d.image, PresentSource::kGuest, d.target, d.due, d.ready, d.guest_present,
              d.latency_frame);

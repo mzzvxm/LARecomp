@@ -11,10 +11,14 @@
 #include <rex/logging/log_category.h>
 #include <rex/platform/thread.h>
 
+#include <atomic>
+
 #include "cycles.h"
+#include "os/thread_name.h"
 #include "os/thread_qos.h"
 #include "present_schedule.h"
-#include "os/thread_name.h"
+#include "render_wait_rules.h"
+#include "settings/larecomp_app_settings.h"
 #include "thread_load.h"
 
 namespace mcla::gpu {
@@ -69,6 +73,10 @@ void RenderThread::Main() {
   if (const std::string qos_line = larecomp::os::TagCurrentThreadHighQos("larecomp gpu render"); !qos_line.empty()) {
     REXLOG_INFO("{}", qos_line);
   }
+  std::atomic<bool> spin_wait{false};
+  auto wait_mode = larecomp::settings::render_wait_mode.Bind([&](const std::string& mode) {
+    spin_wait.store(render_wait::ShouldSpin(mode), std::memory_order_relaxed);
+  });
   using Clock = std::chrono::steady_clock;
   auto next_idle = Clock::now() + idle_period_;
   // While records keep coming the idle deadline is checked every
@@ -100,24 +108,30 @@ void RenderThread::Main() {
       }
       records_since_clock = 0;
     } else if (due != 0) {
-      // Nothing to execute but the held present: sleep to a millisecond before
-      // it (a record arriving wakes the wait), then yield the rest away.
-      const int64_t per_ms = QpcFrequency() / 1000;
-      const int64_t remaining = due - QpcNow();
-      if (remaining > 2 * per_ms) {
+      if (spin_wait.load(std::memory_order_relaxed)) {
+        // Legacy A/B path: sleep to about a millisecond before the present, then yield.
+        const int64_t per_ms = QpcFrequency() / 1000;
+        const int64_t remaining = due - QpcNow();
+        if (remaining <= 2 * per_ms) {
+          std::this_thread::yield();
+          continue;
+        }
         const uint64_t idle_start = cycles::Now();
-        stream_.WaitForWork(std::chrono::milliseconds((remaining - per_ms) / per_ms));
+        stream_.WaitForWork(std::chrono::milliseconds((remaining - per_ms) / per_ms), true);
         load.AddIdle(cycles::Now() - idle_start);
       } else {
-        std::this_thread::yield();
+        const uint64_t idle_start = cycles::Now();
+        stream_.WaitForPresentWork(due);
+        load.AddIdle(cycles::Now() - idle_start);
       }
       continue;
     } else {
       const auto now = Clock::now();
       if (now < next_idle) {
         const uint64_t idle_start = cycles::Now();
-        stream_.WaitForWork(std::chrono::duration_cast<std::chrono::milliseconds>(next_idle - now) +
-                            std::chrono::milliseconds(1));
+        const auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(next_idle - now) +
+                             std::chrono::milliseconds(1);
+        stream_.WaitForWork(timeout, spin_wait.load(std::memory_order_relaxed));
         load.AddIdle(cycles::Now() - idle_start);
         continue;
       }

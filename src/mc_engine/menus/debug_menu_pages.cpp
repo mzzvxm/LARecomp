@@ -54,6 +54,9 @@ constexpr const char* kRaceLineNames[] = {"EVERY FRAME", "30 A SECOND", "60 A SE
 constexpr const char* kCabinSunVals[] = {"0", "1", "2", "3", "4"};
 constexpr const char* kCabinSunNames[] = {"OFF", "CONTACT", "CAR MAP", "CAR RT", "FILL"};
 
+constexpr const char* kRenderWaitVals[] = {"auto", "wait", "spin"};
+constexpr const char* kRenderWaitNames[] = {"AUTO", "WAIT", "SPIN"};
+
 constexpr const char* kFreecamVals[]  = {"off", "free"};
 constexpr const char* kFreecamNames[] = {"OFF", "ON"};
 constexpr double kCamSpeedVals[]      = {10.0, 20.0, 40.0, 80.0, 150.0, 300.0};
@@ -265,6 +268,8 @@ const ItemDef kDebugPerformanceItems[] = {
     // far more than it saves. Leave it ON, turn it OFF if the game stutters.
     Bool("PM_RxDbgFenceSpin",  "fence_spin_throttle",    "FENCE SPIN YIELD: "),
     Bool("PM_RxDbgLimitSpin",  "frame_limit_spin",       "FPS LIMIT SPIN: "),
+    NativeOnly(Str("PM_RxDbgRenderWait", "render_wait_mode", "RENDER THREAD WAIT: ",
+                   kRenderWaitVals, kRenderWaitNames, Len(kRenderWaitVals))),
     Bool("PM_RxDbgPumpWake",   "pump_wake_on_demand",    "FRAME PACING WAKE: "),
     // CHECK: flipped on after the game made its surfaces, are they past the 2048 EDRAM tiles
     // Patch_EdramLimit lets through only while this is on (graphics.cpp)? A live ON may misbehave.

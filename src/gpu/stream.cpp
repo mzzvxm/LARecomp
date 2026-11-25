@@ -6,15 +6,27 @@
 
 #include "stream.h"
 
+#include <algorithm>
 #include <thread>
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
 #endif
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include <rex/logging/log_category.h>
 
 #include "mc_engine/core/threading.h"
+#include "present_schedule.h"
 
 namespace mcla::gpu {
 
@@ -102,6 +114,12 @@ const char* RecordTypeName(RecordType type) {
   return "unknown";
 }
 
+CommandStream::~CommandStream() {
+#if defined(_WIN32)
+  if (present_wake_event_) CloseHandle(present_wake_event_);
+#endif
+}
+
 bool CommandStream::Initialize(uint32_t capacity) {
   if (capacity < 4 * kRecordAlignment || capacity % kRecordAlignment != 0) {
     REXLOG_ERROR("[gpu] command stream: capacity {} is not a usable multiple of {}", capacity,
@@ -128,16 +146,16 @@ bool CommandStream::Initialize(uint32_t capacity) {
   read_ = 0;
   read_offset_ = 0;
   released_ = 0;
+#if defined(_WIN32)
+  if (!present_wake_event_) present_wake_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+#endif
   stop_.store(false, std::memory_order_release);
   return true;
 }
 
 void CommandStream::Stop() {
   stop_.store(true, std::memory_order_seq_cst);
-  {
-    std::lock_guard lock(wake_mutex_);
-  }
-  work_cv_.notify_all();
+  WakeConsumer();
   space_cv_.notify_all();
   {
     std::lock_guard lock(done_mutex_);
@@ -255,14 +273,24 @@ void CommandStream::Publish(uint64_t tail) {
   unpublished_bytes_ = 0;
   published_tail_.store(tail, std::memory_order_seq_cst);
   if (consumer_sleeping_.load(std::memory_order_seq_cst)) {
-    {
-      std::lock_guard lock(wake_mutex_);
-    }
-    work_cv_.notify_one();
+    WakeConsumer();
     consumer_woken_ = true;
   } else {
     consumer_woken_ = false;
   }
+}
+
+void CommandStream::WakeConsumer() {
+  {
+    std::lock_guard lock(wake_mutex_);
+#if defined(_WIN32)
+    if (waiting_for_present_) {
+      SetEvent(present_wake_event_);
+      return;
+    }
+#endif
+  }
+  work_cv_.notify_one();
 }
 
 void CommandStream::WaitExecuted(uint64_t sequence) {
@@ -383,32 +411,70 @@ void CommandStream::ReleaseNow() {
   }
 }
 
-bool CommandStream::WaitForWork(std::chrono::milliseconds timeout) {
+bool CommandStream::WaitForWork(std::chrono::milliseconds timeout, bool spin) {
+  return WaitForWork(timeout, spin, 0);
+}
+
+bool CommandStream::WaitForPresentWork(int64_t due) {
+#if defined(_WIN32)
+  if (present_wake_event_) return WaitForWork({}, false, due);
+#endif
+  const int64_t remaining = std::max<int64_t>(0, due - QpcNow());
+  const int64_t frequency = QpcFrequency();
+  return WaitForWork(std::chrono::milliseconds((remaining * 1000 + frequency - 1) / frequency),
+                     false);
+}
+
+bool CommandStream::WaitForWork(std::chrono::milliseconds timeout, bool spin,
+                                [[maybe_unused]] int64_t present_due) {
   if (released_ != read_) {
     ReleaseNow();
   }
-  const auto spin_until = std::chrono::steady_clock::now() + SpinBeforeSleep();
-  for (;;) {
-    for (int i = 0; i < 64; ++i) {
-      if (stopped() || published_tail_.load(std::memory_order_acquire) != read_) {
-        return true;
+  if (spin) {
+    const auto spin_until = std::chrono::steady_clock::now() + SpinBeforeSleep();
+    for (;;) {
+      for (int i = 0; i < 64; ++i) {
+        if (stopped() || published_tail_.load(std::memory_order_acquire) != read_) {
+          return true;
+        }
+        CpuRelax();
       }
-      CpuRelax();
-    }
-    if (std::chrono::steady_clock::now() >= spin_until) {
-      break;
+      if (std::chrono::steady_clock::now() >= spin_until) {
+        break;
+      }
     }
   }
   consumer_sleeping_.store(true, std::memory_order_seq_cst);
   bool work;
   {
     std::unique_lock lock(wake_mutex_);
-    work = work_cv_.wait_for(lock, timeout, [&] {
+    const auto ready = [&] {
       return stop_.load(std::memory_order_seq_cst) ||
              published_tail_.load(std::memory_order_seq_cst) != read_;
-    });
+    };
+#if defined(_WIN32)
+    if (present_due != 0) {
+      // Reset before checking readiness. A publisher that stores after the check must take
+      // this same mutex before it signals, so it will see the registered waiter.
+      for (;;) {
+        ResetEvent(present_wake_event_);
+        if (ready()) break;
+        waiting_for_present_ = true;
+        lock.unlock();
+        const bool interrupted = BlockUntilQpc(present_due, present_wake_event_);
+        lock.lock();
+        waiting_for_present_ = false;
+        // A late notification from a record already consumed can also signal the event.
+        if (!interrupted) break;
+      }
+      work = ready();
+    } else
+#endif
+    {
+      work = work_cv_.wait_for(lock, timeout, ready);
+    }
+    consumer_sleeping_.store(false, std::memory_order_seq_cst);
   }
-  consumer_sleeping_.store(false, std::memory_order_seq_cst);
   if (work) {
     consumer_wakes_.fetch_add(1, std::memory_order_relaxed);
   }

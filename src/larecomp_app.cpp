@@ -22,6 +22,9 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include <thread>
 
 #include <rex/app/app.h>
+#if defined(__linux__)
+#include <rex/kernel/runtime_settings.h>
+#endif
 #include <rex/kernel/title_paths.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/title_exit.h>
@@ -660,6 +663,23 @@ rex::Result<void> LarecompApp::OnInit() {
     RunBatchMode();  // asks for a shutdown with the exit code; nothing else of the start-up happens
     return rex::Ok();
   }
+
+  // CHECK: verify the effective affinity and startup log from the command line at 6 and 8 LP.
+  const auto cpu_limit = larecomp::settings::cpu_limit_lp.Get();
+#if defined(__linux__)
+  if (cpu_limit != 0) {
+    // A guest thread can otherwise replace its inherited Linux affinity mask through the SDK.
+    auto& ignore_affinities = GetTitleRuntime().GetRuntimeSettings().ignore_thread_affinities;
+    if (auto locked = ignore_affinities.Lock(true); !locked) {
+      LARECOMP_APP_WARN("[threading] cpu_limit_lp={}: could not disable guest affinity ({})",
+                        cpu_limit, locked.error().GetDescription());
+    } else {
+      mc::LimitLogicalProcessors(cpu_limit);
+    }
+  }
+#else
+  mc::LimitLogicalProcessors(cpu_limit);
+#endif
 
   InstallTerminationSignals();  // Linux: from here on, before the long steps (the boot build pumps the frame loop and ends on a quit)
   MoveUserDataIfNeeded();

@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <format>
 #include <string>
+#include <thread>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -28,6 +30,20 @@ constexpr uint32_t kReports = 256;
 PresentReport g_reports[kReports];
 std::atomic<uint32_t> g_report_head{0};  // next to write
 std::atomic<uint32_t> g_report_tail{0};  // next to read
+
+#if defined(_WIN32)
+HANDLE QpcTimer() {
+  struct Timer {
+    HANDLE handle = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                           TIMER_MODIFY_STATE | SYNCHRONIZE);
+    ~Timer() {
+      if (handle) CloseHandle(handle);
+    }
+  };
+  static thread_local Timer timer;
+  return timer.handle;
+}
+#endif
 
 }  // namespace
 
@@ -64,8 +80,7 @@ void WaitUntilQpc(int64_t target) {
   // A high-resolution timer (Windows 10 1803 and later) wakes a fraction of a
   // millisecond late; it is set to wake that much early, and a spin covers the
   // rest. How early follows the lateness seen (a slowly decaying maximum).
-  static thread_local HANDLE timer = CreateWaitableTimerExW(
-      nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  const HANDLE timer = QpcTimer();
   static thread_local double late_us = 300.0;
   const int64_t slack = static_cast<int64_t>(std::clamp(late_us + 100.0, 150.0, 1000.0) *
                                              static_cast<double>(frequency) / 1e6);
@@ -88,6 +103,45 @@ void WaitUntilQpc(int64_t target) {
 #else
   (void)target;
 #endif
+}
+
+bool BlockUntilQpc(int64_t target, void* wake_event) {
+#if defined(_WIN32)
+  const HANDLE timer = QpcTimer();
+  const int64_t frequency = QpcFrequency();
+  // CHECK: measure how late the timer wakes at 16, 8 and 6 LP and compare present intervals.
+  for (int64_t remaining = target - QpcNow(); remaining > 0; remaining = target - QpcNow()) {
+    if (timer) {
+      LARGE_INTEGER due;
+      // Round up to a 100 ns tick so arming the timer always requests a positive relative wait.
+      due.QuadPart = -(remaining * 10000000 + frequency - 1) / frequency;
+      if (SetWaitableTimerEx(timer, &due, 0, nullptr, nullptr, nullptr, 0)) {
+        const HANDLE handles[] = {wake_event, timer};
+        const DWORD woke = wake_event ? WaitForMultipleObjects(2, handles, FALSE, INFINITE)
+                                      : WaitForSingleObject(timer, INFINITE);
+        if (wake_event && woke == WAIT_OBJECT_0) {
+          CancelWaitableTimer(timer);
+          return true;
+        }
+        if (woke == (wake_event ? WAIT_OBJECT_0 + 1 : WAIT_OBJECT_0)) {
+          continue;
+        }
+      }
+    }
+    // Keep the wait interruptible on Windows versions without high-resolution timers.
+    const auto ms = std::chrono::milliseconds((remaining * 1000 + frequency - 1) / frequency);
+    if (wake_event) {
+      const DWORD woke = WaitForSingleObject(wake_event, static_cast<DWORD>(ms.count()));
+      if (woke == WAIT_OBJECT_0) return true;
+      if (woke == WAIT_TIMEOUT) continue;
+    }
+    std::this_thread::sleep_for(ms);
+  }
+#else
+  (void)target;
+  (void)wake_event;
+#endif
+  return false;
 }
 
 int64_t PresentSchedule::Due(int64_t target, int64_t ready) {

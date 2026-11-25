@@ -38,6 +38,9 @@ int64_t QpcFrequency();
 // before, then a spin for the rest.
 void WaitUntilQpc(int64_t target);
 
+// Blocks to the same deadline. Returns true if the Windows wake event interrupted the wait.
+bool BlockUntilQpc(int64_t target, void* wake_event = nullptr);
+
 class PresentSchedule {
  public:
   // A scheduled guest frame, submitted and ready at `ready`, planned for

@@ -59,6 +59,16 @@ class AppSettings final : public rex::SettingOwner {
               "of starting. Read at start. Debug only: use it as a launch argument; it is never saved.",
               rex::kInitOnly, rex::kDebugOnly);
 
+  REX_SETTING(std::string, render_wait_mode, "auto",
+              "How the Plume render thread waits. auto (the default) and wait block until work or the present deadline. "
+              "spin restores the previous polling behavior for A/B tests. Takes effect on the next wait.",
+              rex::Allowed("auto", "wait", "spin"), rex::kDebugOnly);
+
+  REX_SETTING(rex::u32, cpu_limit_lp, 0,
+              "At startup, restrict the game to the first N logical processors available in its affinity mask. "
+              "0 leaves the affinity alone. For CPU scaling tests.",
+              rex::kInitOnly, rex::kDebugOnly);
+
   ValidatedString frame_step_cap{
       this, "frame_step_cap", "adaptive",
       "How far one frame may advance the game's clock after a stall (a texture-streaming hitch, a "
@@ -80,6 +90,8 @@ inline AppSettings& g_app = larecomp::Leak<AppSettings>();
 inline auto& graphics_backend = g_app.graphics_backend;
 inline auto& debug_menu = g_app.debug_menu;
 inline auto& mcla_gpu_force_refusal = g_app.mcla_gpu_force_refusal;
+inline auto& render_wait_mode = g_app.render_wait_mode;
+inline auto& cpu_limit_lp = g_app.cpu_limit_lp;
 inline auto& frame_step_cap = g_app.frame_step_cap;
 inline auto& rmr_server_port = g_app.rmr_server_port;
 

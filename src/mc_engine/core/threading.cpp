@@ -4,6 +4,7 @@
 #include "logging.h"
 
 #include "settings/larecomp_settings.h"
+#include "os/cpu_affinity_rules.h"
 #include "os/thread_yield.h"
 #include <rex/ppc/hook.h>
 #include <rex/kernel/object/kernel_thread.h>
@@ -25,6 +26,11 @@
 #elif defined(__linux__)
 #include <sched.h>
 #include <unistd.h>
+
+#include <cerrno>
+#include <charconv>
+#include <filesystem>
+#include <set>
 #endif
 
 namespace mc {
@@ -63,6 +69,80 @@ void DisableHighResTimer() {
 #if defined(_WIN32)
     timeEndPeriod(1);
     MC_INFO("[threading] high-res timer disabled");
+#endif
+}
+
+void LimitLogicalProcessors(unsigned requested) {
+    if (requested == 0) return;
+#if defined(_WIN32)
+    const HANDLE process = GetCurrentProcess();
+    DWORD_PTR allowed = 0, system = 0, mask = 0;
+    if (!GetProcessAffinityMask(process, &allowed, &system)) {
+        MC_WARN("[threading] cpu_limit_lp={}: GetProcessAffinityMask failed ({})",
+                requested, GetLastError());
+        return;
+    }
+    if (allowed == 0) {
+        MC_WARN("[threading] cpu_limit_lp={}: the process has no single-group affinity mask", requested);
+        return;
+    }
+    const unsigned selected = larecomp::os::SelectFirstLogicalProcessors(
+        requested, sizeof(allowed) * 8,
+        [&](unsigned cpu) { return (allowed & (DWORD_PTR{1} << cpu)) != 0; },
+        [&](unsigned cpu) { mask |= DWORD_PTR{1} << cpu; });
+    if (!SetProcessAffinityMask(process, mask)) {
+        MC_WARN("[threading] cpu_limit_lp={}: SetProcessAffinityMask failed ({})",
+                requested, GetLastError());
+        return;
+    }
+#elif defined(__linux__)
+    cpu_set_t allowed, mask;
+    CPU_ZERO(&mask);
+    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
+        MC_WARN("[threading] cpu_limit_lp={}: sched_getaffinity failed ({})", requested, errno);
+        return;
+    }
+    const unsigned selected = larecomp::os::SelectFirstLogicalProcessors(
+        requested, CPU_SETSIZE, [&](unsigned cpu) { return CPU_ISSET(cpu, &allowed); },
+        [&](unsigned cpu) { CPU_SET(cpu, &mask); });
+    if (sched_setaffinity(0, sizeof(mask), &mask) != 0) {
+        MC_WARN("[threading] cpu_limit_lp={}: sched_setaffinity failed ({})", requested, errno);
+        return;
+    }
+    // Linux applies affinity per thread. The startup thread's future children inherit its mask.
+    // Set it on existing SDK threads too, including any children they start during this pass.
+    // CHECK: verify every task's Cpus_allowed_list on Linux after startup with the cap enabled.
+    std::set<pid_t> seen;
+    std::error_code scan_error;
+    int affinity_error = 0;
+    bool found_new;
+    do {
+        found_new = false;
+        for (std::filesystem::directory_iterator it("/proc/self/task", scan_error), end;
+             !scan_error && it != end; it.increment(scan_error)) {
+            const auto name = it->path().filename().native();
+            const char* end_name = name.data() + name.size();
+            pid_t tid;
+            const auto parsed = std::from_chars(name.data(), end_name, tid);
+            if (parsed.ec != std::errc{} || parsed.ptr != end_name || !seen.insert(tid).second) continue;
+            found_new = true;
+            if (sched_setaffinity(tid, sizeof(mask), &mask) != 0 && errno != ESRCH) {
+                affinity_error = errno;
+            }
+        }
+    } while (found_new && !scan_error);
+    if (scan_error || affinity_error != 0) {
+        MC_WARN("[threading] cpu_limit_lp={}: startup thread limited to {} LP, some existing threads "
+                "could not be restricted (task scan {}, sched_setaffinity {})",
+                requested, selected, scan_error.value(), affinity_error);
+        return;
+    }
+#else
+    MC_WARN("[threading] cpu_limit_lp={}: process affinity is unavailable on this platform", requested);
+    return;
+#endif
+#if defined(_WIN32) || defined(__linux__)
+    MC_INFO("[threading] cpu_limit_lp={}: game limited to {} logical processors", requested, selected);
 #endif
 }
 

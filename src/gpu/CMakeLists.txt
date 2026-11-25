@@ -838,6 +838,8 @@ target_link_libraries(larecomp_background_build_test PRIVATE Threads::Threads)
 #   cmake --build <dir> --target larecomp_render_cpu_test, then run src/gpu/larecomp_render_cpu_test [--bench] (exit 0 = passed).
 add_executable(larecomp_render_cpu_test EXCLUDE_FROM_ALL render_cpu_test.cpp)
 target_include_directories(larecomp_render_cpu_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_executable(larecomp_render_wait_rules_test EXCLUDE_FROM_ALL render_wait_rules_test.cpp)
+target_include_directories(larecomp_render_wait_rules_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # Render-thread target, layout and pipeline memo checks. No device or shader pack.
 add_executable(larecomp_render_draw_memo_test EXCLUDE_FROM_ALL render_draw_memo_test.cpp)

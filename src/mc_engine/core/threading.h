@@ -5,6 +5,9 @@ namespace mc {
 void EnableHighResTimer();
 void DisableHighResTimer();
 
+// Restrict the process at game startup and log the result. 0 leaves the affinity alone.
+void LimitLogicalProcessors(unsigned requested);
+
 // The logical processors the game may run on: the process's affinity mask where it has one
 // (a game held to some cores by a job object, `start /affinity` or a tool like Process Lasso has
 // only those), else every active one. On a PC with more than 64 (several processor groups) the

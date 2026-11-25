@@ -56,6 +56,8 @@ struct CategoryRow {
 };
 constexpr CategoryRow kCategories[] = {
 #include "settings/generated/settings_meta.inc"
+    {"cpu_limit_lp", "MCLA/Performance"},
+    {"render_wait_mode", "MCLA/Performance"},
 };
 
 struct State {
