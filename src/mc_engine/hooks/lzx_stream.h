@@ -383,7 +383,10 @@ private:
                 if (pos + static_cast<uint32_t>(mlen) > kWindowSize) return false;  // would run over the window's end
                 const uint32_t from = (pos - off) & kWindowMask;
                 if (off >= static_cast<uint32_t>(mlen) && from + static_cast<uint32_t>(mlen) <= kWindowSize) {
-                    std::memcpy(window + pos, window + from, static_cast<size_t>(mlen));
+                    // memmove: a match from almost a full window back wraps to a source just AHEAD of pos and can overlap the
+                    // destination (ASan memcpy-param-overlap on the ROG, 11-25). With the source ahead, memmove gives the same
+                    // bytes as the forward loop below; the overlapping-backwards case (off < mlen) never takes this branch.
+                    std::memmove(window + pos, window + from, static_cast<size_t>(mlen));
                 } else {
                     for (int i = 0; i < mlen; ++i) window[pos + i] = window[(from + i) & kWindowMask];
                 }
