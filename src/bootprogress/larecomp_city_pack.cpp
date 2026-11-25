@@ -35,6 +35,7 @@
 #include "spdlog_console.h"  // LarecompLogFolder()
 #include "larecomp_version.h"
 #include "bootprogress/city_pack_rules.h"
+#include "bootprogress/pack_progress_rules.h"
 #include "citypack/builder.h"
 #include "citypack/hit_data.h"
 #include "mc_engine/modloader/xcompress.h"
@@ -413,7 +414,7 @@ int FinishCommand(FileLog& file, const char* tag, Status status, const std::stri
 #endif
 
 // CHECK: written without a build of larecomp (the library and the rules have unit tests; this file is only syntax checked). Run it: `larecomp.exe --build_city_pack` in the install's game
-// folder with the stdout piped; expect the folder, phase, step and result lines, exit 0 (1.7 s on 12 threads), logs/city_pack_build.txt, and then a second run that prints "up to date" at
+// folder with the stdout piped; expect the folder, phases, phase, step and result lines, exit 0 (1.7 s on 12 threads), logs/city_pack_build.txt, and then a second run that prints "up to date" at
 // once; a normal start with RT SHADOWS on must log "[city rt] the city pack is open" and no [city pack] build.
 int RunCommandLine(const std::filesystem::path& game_root) {
 #if defined(LARECOMP_HAS_GPU)
@@ -434,6 +435,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
   request.force = larecomp::settings::build_city_pack_force.Get();
   request.threads = uint32_t(std::max(0, larecomp::settings::shader_pack_threads.Get()));  // 0: every thread but one
 
+  Emit(pack_progress::kCityPhasesLine);
   const cp::BuildResult result = BuildGuarded(request, &sink);
   if (result.ok && result.up_to_date) {
     return finish(Status::kUpToDate, "The city pack in " + PathUtf8(folder) + " is up to date (its stamp matches the game files).");
@@ -455,6 +457,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
 // "city textures", "city texture files", "far level of detail" and "city hit sectors" with their steps, "@citypack|result|ok|built the hit data: ...", exit 0, logs/city_hit_build.txt, the two files
 // and mcla_city_hit.stamp in <shader pack folder>/city; then a second run that prints "up to date" at once (the stamp), and `--check_city_hit` (exit 0, "up to date"), with
 // `--check_city_hit_deep=true` the three "checking ..." phases and exit 0. Also: delete the texture file, `--check_city_hit` must say "not current" (exit 1) and the build must build both again.
+// CHECK: with current hit data, repeat `--build_city_hit` with `--build_city_hit_force` and with `--build_city_hit_force=true`. Both should rebuild.
 int RunBuildHitCommandLine(const std::filesystem::path& game_root) {
 #if defined(LARECOMP_HAS_GPU)
   const std::filesystem::path folder = mcla::gpu::CityPackFolder();

@@ -39,6 +39,7 @@
 #include "spdlog_console.h"  // LarecompLogFolder()
 #include "larecomp_version.h"
 #include "bootprogress/pack_folder_rules.h"
+#include "bootprogress/pack_progress_rules.h"
 #include "bootprogress/larecomp_boot_progress.h"
 #include "gpu/renderer_fallback.h"  // the words of the compatibility renderer offer (standard library only)
 #include "mc_engine/core/boot_progress.h"
@@ -443,6 +444,7 @@ namespace {
 // line starting with "@shaderpack|" (the console also carries the engine's own log lines, which are
 // not for it). Fields are separated by '|'; the last one is free text and may contain more of them.
 //   @shaderpack|folder|<where the packs go>                      once, first
+//   @shaderpack|phases|<name>:<weight>:<title>[;...]              before the first phase
 //   @shaderpack|phase|<steps, 0 when unknown>|<name>             a phase begins ("Compiling shaders")
 //   @shaderpack|step|<done>|<steps>|<item>                       progress in it, at most five a second
 //   @shaderpack|log|<info|warn|error>|<text>                     the build's own log lines
@@ -503,7 +505,7 @@ class CommandLineSink final : public AppSink {
 
 // CHECK: written without a build of larecomp (the xex image decoder was compiled and run on its own, the
 // rest only syntax checked). Run it: `larecomp.exe --build_shader_packs` in the install's game folder, with
-// the stdout piped; expect the folder, phase, step and result lines, exit 0, and then a normal start of the
+// the stdout piped; expect the folder, phases, phase, step and result lines, exit 0, and then a normal start of the
 // game that logs no shader build and shows no "preparing" popup (the stamp it wrote is current).
 int RunCommandLine(const std::filesystem::path& game_root) {
 #if defined(LARECOMP_HAS_GPU)
@@ -551,6 +553,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
   request.image.size = xex.data.size();
   request.image.base_address = sp::kGuestImageBase;
 
+  Emit(pack_progress::kShaderPhasesLine);
   const sp::BuildResult result = BuildGuarded(request);
   sink.Summary(result);
   mc::boot::EndPhase();

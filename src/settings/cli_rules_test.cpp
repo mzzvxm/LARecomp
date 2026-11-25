@@ -217,7 +217,11 @@ void TestLauncherFlags() {
   // ... and the hit data's (CITY-HIT-ACTION): --build_city_hit and --check_city_hit are actions the SDK keeps, their two switches settings that wait for OnConfigure
   CHECK(RouteOf("build_city_hit", setup_actions) == Route::kSdk && RouteOf("check_city_hit", setup_actions) == Route::kSdk);
   CHECK(RouteOf("build_city_hit_force", setup_actions) == Route::kSetting && RouteOf("check_city_hit_deep", setup_actions) == Route::kSetting);
-  CHECK(Run("build_city_hit_force", std::nullopt, kBatch).verdict == Verdict::kApply);
+  for (const auto& value : {std::optional<std::string>{}, std::optional<std::string>{"true"}}) {
+    const Decision force = Run("build_city_hit_force", value, kBatch);
+    CHECK(force.verdict == Verdict::kApply);
+    CHECK(force.set.size() == 1 && force.set[0].name == "build_city_hit_force" && force.set[0].value == "true");
+  }
   CHECK(Run("check_city_hit_deep", "true", kBatch).verdict == Verdict::kApply);
   CHECK(Run("check_city_hit_deep", std::nullopt, kBatch).verdict == Verdict::kApply);
   // Its "More options" box and the fork launcher's flags.
