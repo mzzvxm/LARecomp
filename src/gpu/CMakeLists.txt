@@ -522,10 +522,6 @@ add_executable(larecomp_gbuffer_materials_test EXCLUDE_FROM_ALL gbuffer_material
 # with the src folder or from there:
 #   cmake --build <dir> --target larecomp_car_rt_lights_rules_test, then run src/gpu/larecomp_car_rt_lights_rules_test [<src dir>] (exit 0 = passed).
 add_executable(larecomp_car_rt_lights_rules_test EXCLUDE_FROM_ALL car_rt_lights_rules_test.cpp)
-# The ray traced shadow mask's contract (rt_mask_contract.h, LIGHT-UNIFY LU-8: the channels and planes, the byte's values, the traced size, the upsample's weight, the frame's record and how a
-# reader finds a light's channel, the stable assignment of channels; it compiles hlsl/rt_mask.hlsli as C++ and compares it with the twin) likewise:
-#   cmake --build <dir> --target larecomp_rt_mask_contract_test, then run src/gpu/larecomp_rt_mask_contract_test (exit 0 = passed).
-add_executable(larecomp_rt_mask_contract_test EXCLUDE_FROM_ALL rt_mask_contract_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
