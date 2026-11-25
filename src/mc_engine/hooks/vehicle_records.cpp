@@ -57,6 +57,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "owned_cars.h"
+#include "../online/car_guard.h"
 
 REXCVAR_DEFINE_BOOL(vehicle_records_relocate, true, "MCLA/Patches",
     "Keep the parts bought for each car model in a table sized to the roster, so the game "
@@ -461,6 +462,7 @@ extern "C" REX_FUNC(rex_sub_822D2258) {
     __imp__rex_sub_822D2258(ctx, base);
     if (Enabled()) RestoreAfterLoad(base);
     owned_cars::AfterLoad(base, PartsRoom());
+    larecomp::car_guard::AfterSaveLoad(base);
 }
 
 // Each roster list read can grow the roster; the table keeps room for it.

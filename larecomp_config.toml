@@ -28267,3 +28267,13 @@ jump_address_on_true = 0x82293930
 address = 0x82291D7C
 name = "NetRace_82291D7C"
 registers = ["r28"]
+
+
+# car_guard.cpp: broken vinyl layers (NaN halves, shapes not in the catalog) in a
+# car that comes from outside. mcCarConfig::Import (sub_82390940) right after the
+# bitstream read (bl sub_82395A50): r30 = the CarConfig being filled.
+[[midasm_hook]]
+address = 0x82390984
+name = "Hook_CarGuardImport"
+registers = ["r30"]
+after_instruction = false

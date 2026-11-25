@@ -253,6 +253,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/online_toast.cpp
     src/mc_engine/online/xbox_live.cpp
     src/mc_engine/online/race_props.cpp
+    src/mc_engine/online/car_guard.cpp
     src/mc_engine/online/session_limits.cpp
     src/mc_engine/online/max_players.cpp
     src/mc_engine/online/net_sweep.cpp
