@@ -381,6 +381,15 @@ void TestHistory() {
   now.pause_fx = PauseFxView::kPhoto;
   ++now.generation;
   Check(!sr::HistoryUsable(last, now, true), "photo history stops when the sidecar is replaced");
+  now.generation = last.generation;
+  now.ray_traced = true;
+  Check(!sr::HistoryUsable(last, now, true), "starting the RT fallback drops the preceding SSR-only photo history");
+  last.ray_traced = true;
+  Check(sr::HistoryUsable(last, now, true), "the RT fallback accumulates in the same photo view");
+  now.ray_traced = false;
+  Check(!sr::HistoryUsable(last, now, true), "losing the RT fallback cannot reuse its photo history");
+  last.pause_fx = now.pause_fx = PauseFxView::kNone;
+  Check(sr::HistoryUsable(last, now, true), "play retains its accumulation rules as the RT fallback changes");
 }
 
 void TestWet() {
@@ -2501,6 +2510,10 @@ void TestSources(const std::string& dir) {
   // the pause world and the effect's own gate are in the rules
   Check(Has(rules, "d.why = Why::kPause;") && Has(trigger, "facts.pause_view = (sf.flags & screen::kFramePause) != 0;") &&
         Has(trigger, "facts.pause_view ? gbuffer_->published_pause_fx()"), "four-sample views need an explicitly published pause/photo sidecar");
+  const size_t rt_gate = trigger.find("if (rt_.wanted() && !decision.stub)");
+  Check(rt_gate != std::string::npos && trigger.find("const ssr::Decision decision = ssr::Decide(facts);") < rt_gate &&
+        Has(trigger, "now.ray_traced = rt_recorded;"),
+        "the RT fallback follows any admitted material view and supplies the accumulation key");
   // the effect does not touch the colour capture or the history of the owner
   Check(!Has(cpp, "screen_->CapturePost(") && !Has(cpp, "screen::kHistory") && !Has(cpp, "screen_->Image("), "the effect only reads what the owner made (frame slots), it makes none of it");
 }

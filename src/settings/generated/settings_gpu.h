@@ -1320,7 +1320,7 @@ class GPUSettings final : public rex::SettingOwner {
     "there takes the camera's motion like the world (a car in the garage is still while the camera orbits it, and "
     "the game's slots for the vehicles are not trusted in those frames). Live.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_pause_world_fx, false, "Use screen-space reflections and G-buffer normals in the city behind the pause menu and in photo mode. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_pause_world_fx, false, "Use the enabled lighting, volumetric and surface reflection effects in the city behind the pause menu and in photo mode. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_perf_markers, false, "Name the frame's phases in the command lists for GPU profilers: PIX events on D3D12, "
     "debug utils labels on Vulkan; how deep, mcla_gpu_perf_markers_level. Nsight GPU "

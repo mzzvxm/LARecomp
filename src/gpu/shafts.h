@@ -137,7 +137,7 @@ class SunShafts {
   void Shutdown();
 
   // The Scene opened a frame's first list: reads the settings.
-  void BeginFrame();
+  void BeginFrame(gbuffer::PauseFxView pause_fx);
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return level_ != Level::kOff; }
 
@@ -364,6 +364,7 @@ class SunShafts {
   // The camera: the previous frame's (the lens and the view of the sun's position), and whether the
   // vertex constants have been shown to hold a frame's own view (ao.h).
   temporal::Camera previous_;
+  gbuffer::PauseFxView pause_fx_ = gbuffer::PauseFxView::kNone;
   bool have_previous_ = false;
   bool previous_pause_ = false;  // ... and it came from a pause/map view's frame (4x samples)
   uint64_t previous_frame_ = 0;

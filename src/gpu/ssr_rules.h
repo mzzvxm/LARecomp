@@ -327,10 +327,12 @@ struct HistoryKey {
   uint32_t size[2] = {0, 0};
   uint32_t generation = 0;   // pause/photo uses the sidecar's generation to reject replaced images
   gbuffer::PauseFxView pause_fx = gbuffer::PauseFxView::kNone;
+  bool ray_traced = false;
 };
 constexpr bool HistoryUsable(const HistoryKey& last, const HistoryKey& now, bool camera_motion_known) {
   return camera_motion_known && last.valid && now.valid && last.frame + 1 == now.frame && last.size[0] == now.size[0] && last.size[1] == now.size[1] &&
-         last.pause_fx == now.pause_fx && (!gbuffer::IsPauseFx(now.pause_fx) || last.generation == now.generation);
+         last.pause_fx == now.pause_fx &&
+         (!gbuffer::IsPauseFx(now.pause_fx) || (last.generation == now.generation && last.ray_traced == now.ray_traced));
 }
 
 // ---------------------------------------------------------------------------

@@ -2206,6 +2206,8 @@ void TestSources(const std::string& src) {
   CHECK(begin != std::string::npos && append != std::string::npos && select != std::string::npos && plan != std::string::npos && trace != std::string::npos && denoise != std::string::npos &&
         build != std::string::npos && mask != std::string::npos && draws != std::string::npos);
   CHECK(append < select && select < plan && plan < trace && trace < denoise && denoise < mask && mask < build && build < draws);
+  CHECK(Has(ll_cpp, "rin.pause_fx = pause_fx;") && Has(host, "prev_pause_fx_ == in.pause_fx &&") &&
+        Has(host, "prev_pause_fx_ = in_.pause_fx;"));
   CHECK(Has(ll_cpp, "if (rt_lights_ != nullptr && rt_lights_->wanted()) {") && Count(ll_cpp, "rt_lights_->wanted()") == 3);   // BeginFrame's two uses and rt_lights_wanted()   // the lamps and the pick only while it is wanted: with it off the pass is what it was
   CHECK(Has(ll_cpp, "pass_timing_->Mark(list, \"rt lights\");") && Has(ll_cpp, "pass_timing_->Mark(list, \"rt lights denoise\");") && Has(ll_cpp, "pass_timing_->Mark(list, \"after rt lights\");"));
   // REVIEW (RTL-D1-REVIEW M1): the trace moves every signal image the pass set binds (EnsureSlot binds image_groups_ of them) to GENERAL, not only this frame's groups: K 6 -> 3 leaves a bound image in the read state

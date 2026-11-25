@@ -340,7 +340,16 @@ plume::RenderPipeline* SunShafts::Pipeline(uint32_t variant) {
   return pipelines_[variant].get();
 }
 
-void SunShafts::BeginFrame() {
+void SunShafts::BeginFrame(gbuffer::PauseFxView pause_fx) {
+  if (pause_fx_ != pause_fx) {
+    sky_have_ = false;
+  }
+  if (gbuffer::PauseFxCameraChanged(previous_pause_, pause_fx_, pause_fx)) {
+    have_previous_ = false;
+    vs_pose_trusted_ = false;
+    hist_valid_ = false;
+  }
+  pause_fx_ = pause_fx;
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_sun_shafts_census.Get()));
   Level level = ReadLevel();
   if (!ready_ && level != Level::kOff && !shaders_failed_ && MakeShaders()) {
@@ -554,13 +563,11 @@ void SunShafts::OnAnchor(const ConstantBanks::Banks& banks) {
   // view's rule that its lens must have been steady (the trigger works with the previous frame's lens).
   const bool same_kind = have_previous_ && previous_frame_ + 1 == frame_ && previous_pause_ == pause;
   if (same_kind) {
-    const auto rel = [](double a, double b) {
-      return std::fabs(a - b) / std::max(1e-30, std::fabs(b));
-    };
-    lens_step_ = std::max({rel(camera.fov_y, previous_.fov_y), rel(camera.aspect, previous_.aspect),
-                           rel(camera.near_plane, previous_.near_plane),
-                           rel(camera.far_plane, previous_.far_plane)});
+    lens_step_ = menu_world::LensStep(camera, previous_);
     lens_step_valid_ = std::isfinite(lens_step_);
+    if (pause && gbuffer::IsPauseFx(pause_fx_) && temporal::TestCut(camera, previous_, nullptr).fires) {
+      hist_valid_ = false;
+    }
   }
   // Whether the vertex constants of this frame's draws held this frame's view inverse: trusted once
   // they did in a frame the camera moved in, dropped as soon as they differ.
@@ -862,12 +869,13 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
     ++skipped_no_camera_;
     return false;
   }
-  // The world of the frame by that camera, and whether it has shafts: the pause menu's world and the garage
-  // when a sky draw of the frame told where the sun is, the map never.
+  // CHECK: when photo mode omits the sky draw, the depth mask and the
+  // world light's sun direction still place the shafts correctly.
   trigger_world_ = pause ? menu_world::Classify(true, menu_world::LensOf(&previous_),
                                                 menu_world::GarageLighting())
                          : menu_world::World::kPlay;
-  if (!menu_world::ShaftsRun(trigger_world_, sky_draws_ != 0)) {
+  if ((pause && gbuffer::IsPauseFx(pause_fx_) && (!pause_view_ || play_view_)) ||
+      !menu_world::ShaftsRun(trigger_world_, sky_draws_ != 0, pause_fx_)) {
     outcome_ = Outcome::kWorld;
     return false;
   }

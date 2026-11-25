@@ -32,6 +32,7 @@
 #include <string_view>
 
 #include "gbuffer_types.h"
+#include "pause_world_fx.h"
 
 namespace mcla::gpu::gbuffer {
 
@@ -527,17 +528,6 @@ class CutsceneGate {
 
 // The mid-scene depth copy of the main view where the consumers run (the AO's trigger: ao.h kTriggerDestination).
 inline constexpr uint32_t kTriggerDestination = 0x078B0000;
-
-enum class PauseFxView : uint8_t { kNone, kPause, kPhoto };
-
-constexpr PauseFxView PauseFxViewOf(bool enabled, std::string_view movie, bool garage_lighting) {
-  if (!enabled || garage_lighting) return PauseFxView::kNone;
-  if (movie == "PHOTOALBUMMOVIE") return PauseFxView::kPhoto;
-  if (movie == "PAUSEMOVIE") return PauseFxView::kPause;
-  return PauseFxView::kNone;
-}
-
-constexpr bool IsPauseFx(PauseFxView view) { return view != PauseFxView::kNone; }
 
 inline constexpr uint32_t kPauseGuestSamples = 4;
 constexpr bool IsPauseWorld(uint32_t guest_samples) { return guest_samples == kPauseGuestSamples; }

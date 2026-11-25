@@ -112,6 +112,7 @@ class GBuffer {
   void NoteDraw(gbuffer::Why why, uint64_t ps_identity, uint32_t main_samples);
   gbuffer::PauseFxView pause_fx_candidate() const { return pause_fx_candidate_; }
   bool tracks_pause_fx() const { return !suppressed_ && gbuffer::IsPauseFx(pause_fx_candidate_); }
+  bool has_pause_fx_camera() const { return pause_fx_ready_ && !suppressed_; }
   gbuffer::PauseFxView published_pause_fx() const { return published_pause_fx_; }
   bool AllowsMainSamples(uint32_t samples) const;
   bool CarriesPauseSidecar() const { return gbuffer::IsPauseWorld(window_samples_) && !tally_.mixed(); }

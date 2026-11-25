@@ -4090,7 +4090,7 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/GPU",
-  "help": "\"Use screen-space reflections and G-buffer normals in the city behind the pause menu and in photo mode. Live.\"",
+  "help": "\"Use the enabled lighting, volumetric and surface reflection effects in the city behind the pause menu and in photo mode. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

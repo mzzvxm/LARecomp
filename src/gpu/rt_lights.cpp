@@ -542,7 +542,8 @@ bool RtLights::Plan(const Inputs& in, ll::Selection* selection) {
   tan_[0] = in.tan_x;
   tan_[1] = in.tan_y;
   raw_frame_ = raw_requested_;   // Ray Reconstruction takes this frame (the switch is on): no filter, the light pass reads the signal
-  history_ok_ = have_prev_ && prev_frame_ + 1 == in.frame && prev_size_[0] == image_width_ && prev_size_[1] == image_height_ && prev_step_ == step_ &&
+  history_ok_ = have_prev_ && prev_frame_ + 1 == in.frame && prev_pause_fx_ == in.pause_fx &&
+                prev_size_[0] == image_width_ && prev_size_[1] == image_height_ && prev_step_ == step_ &&
                 !rt::CameraCut(prev_pose_.position, pose_.position, prev_pose_.forward, pose_.forward);
   if (!history_ok_) {
     for (RtDenoise& d : denoise_) {
@@ -746,6 +747,7 @@ void RtLights::RecordDenoise(plume::RenderCommandList* list) {
   // This run is the next frame's history.
   have_prev_ = true;
   prev_frame_ = in_.frame;
+  prev_pause_fx_ = in_.pause_fx;
   prev_pose_ = pose_;
   prev_tan_[0] = tan_[0];
   prev_tan_[1] = tan_[1];

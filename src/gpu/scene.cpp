@@ -852,11 +852,12 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (ao_) {
     ao_->BeginFrame(gbuffer_ ? gbuffer_->pause_fx_candidate() : gbuffer::PauseFxView::kNone);
   }
+  const auto pause_fx = gbuffer_ && gbuffer_->tracks_pause_fx() ? gbuffer_->pause_fx_candidate() : gbuffer::PauseFxView::kNone;
   if (shafts_) {
-    shafts_->BeginFrame();
+    shafts_->BeginFrame(pause_fx);
   }
   if (vol_) {
-    vol_->BeginFrame();
+    vol_->BeginFrame(pause_fx);
   }
   if (car_refl_) {
     car_refl_->BeginFrame();
@@ -880,7 +881,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     light_manager_->BeginLights(frame_serial_, slot);  // the frame's lights (light_manager.h): before the replay, which picks its cars from them when mcla_gpu_light_frame says so (LU-4c)
   }
   if (local_shadow_) {
-    local_shadow_->BeginFrame();
+    local_shadow_->BeginFrame(pause_fx, gbuffer_ && gbuffer_->has_pause_fx_camera());
   }
   if (light_manager_) {
     light_manager_->BeginFrame(frame_serial_, slot);  // the last trigger's maps (passive unless mcla_gpu_lights_census or mcla_gpu_light_frame is set); after the rig's and the replay's own

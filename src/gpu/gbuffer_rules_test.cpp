@@ -822,6 +822,20 @@ void PauseAndCameraChecks() {
   Check(gb::PauseFxViewOf(true, "GARAGEMOVIE", false) == PauseFxView::kNone &&
         gb::PauseFxViewOf(true, "NAVSYSMOVIE", false) == PauseFxView::kNone &&
         gb::PauseFxViewOf(true, "", false) == PauseFxView::kNone, "garage, map and unknown movies are excluded");
+  for (const auto view : {PauseFxView::kPause, PauseFxView::kPhoto}) {
+    Check(gb::MatchesPauseFxView(true, view) && !gb::MatchesPauseFxView(false, view),
+          "a published pause/photo sidecar belongs to the four-sample view");
+    Check(gb::PauseFxCameraChanged(true, PauseFxView::kNone, view) &&
+          gb::PauseFxCameraChanged(true, view, PauseFxView::kNone),
+          "toggling the switch in a menu invalidates the preceding menu camera");
+    Check(!gb::PauseFxCameraChanged(true, view, view) && !gb::PauseFxCameraChanged(false, PauseFxView::kNone, view),
+          "holding photo/pause keeps its camera and a movie cannot relabel a play camera");
+  }
+  Check(gb::MatchesPauseFxView(false, PauseFxView::kNone) && !gb::MatchesPauseFxView(true, PauseFxView::kNone),
+        "the legacy play sidecar is for play");
+  Check(gb::PauseFxCameraChanged(true, PauseFxView::kPause, PauseFxView::kPhoto) &&
+        gb::PauseFxCameraChanged(true, PauseFxView::kPhoto, PauseFxView::kPause),
+        "photo and pause start new camera histories in either direction");
   Check(gb::MainSamplesAllowed(4, 0, true) && gb::MainSamplesAllowed(4, 4, true), "pause can open a new window or reuse its own");
   Check(!gb::MainSamplesAllowed(4, 0, false) && !gb::MainSamplesAllowed(4, 2, true), "pause cannot open when disabled or reuse a play window");
   Check(gb::MainSamplesAllowed(2, 0, false) && gb::MainSamplesAllowed(2, 1, true) &&
