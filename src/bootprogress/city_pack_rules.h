@@ -18,7 +18,7 @@
 // THE COMMAND LINE'S OUTPUT (larecomp.exe --build_city_pack, what a launcher reads on stdout; every line starts with "@citypack|", fields are separated by '|', the last is free
 // text; the same shape as --build_shader_packs):
 //   @citypack|folder|<where the pack goes>                   once, first
-//   @citypack|phases|<name>:<weight>:<title>[;...]            before the first phase of --build_city_pack
+//   @citypack|phases|<name>:<weight>:<title>[;...]            once, after the archive check and before any phase
 //   @citypack|phase|<steps, 0 when unknown>|<name>           a phase begins ("far level of detail", "city sectors")
 //   @citypack|step|<done>|<steps>|<item>                     progress in it, at most five a second
 //   @citypack|log|<info|warn|error>|<text>                   the build's own log lines
@@ -43,7 +43,8 @@
 // builders print (a phase with 0 steps is "unknown"):
 //   build:   "city textures" (one step a dictionary, 441), "city texture files" (one a picture), "far level of detail" (1), "city hit sectors" (one a sector, 439)
 //   check:   "checking the city pack", "checking the city hit file", "checking the city textures" (deep only; one step each)
-// plus the log lines of the builders ("@citypack|log|info|the city hit data is built: ..."). One more status joins the set, for the two new answers (the old ones are unchanged):
+// The check advertises its deep phase table in both modes. A stamp-only check goes straight from the table to the result.
+// The builders also print log lines ("@citypack|log|info|the city hit data is built: ..."). The two hit actions add these statuses:
 //   @citypack|result|no pack|<text>        the hit data goes over the city pack and there is none (or it is damaged); exit 1
 //   @citypack|result|not current|<why>     --check_city_hit (stat only) found the hit data missing or built from other files; exit 1
 // and the results the old statuses give here: "ok" (built: text "built the hit data: 439 sectors, 85,422 runs, ..., in 12.3 s"), "up to date" (a build that found its stamp current, a stat
