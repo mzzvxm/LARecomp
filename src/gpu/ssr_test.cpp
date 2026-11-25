@@ -423,6 +423,13 @@ void TestPush() {
   Check(sr::UnpackLo(w) == 123 && sr::UnpackHi(w) == 4567 && hs::SsrLo(w) == 123 && hs::SsrHi(w) == 4567, "two slots to a word");
   const uint32_t none = sr::PackSlots(sc::kNoSlot, 9);
   Check(sr::UnpackLo(none) == 0xFFFFu && !hs::SsrHasSlot(hs::SsrLo(none)) && hs::SsrHasSlot(hs::SsrHi(none)), "none survives the pack");
+  Check(p::kTemporalFirstResolve == SSR_TEMPORAL_FIRST_RESOLVE && p::kTemporalUpscaler == SSR_TEMPORAL_UPSCALER &&
+            p::kTemporalSparkleResolve == SSR_TEMPORAL_SPARKLE_RESOLVE, "the temporal options match the shader");
+  Check(sr::PackTemporalWord(17, true, true, true) == sr::PackSlots(17, 6) &&
+            sr::PackTemporalWord(sc::kNoSlot, true, true, false) == sr::PackSlots(sc::kNoSlot, 2) &&
+            sr::PackTemporalWord(17, false, true, true) == sr::PackSlots(17, 3) &&
+            sr::PackTemporalWord(17, true, false, true) == sr::PackSlots(17, 0),
+        "the sparkle option requires the spatial resolve, a temporal upscaler and the debug switch");
   sr::FlagsIn f;
   f.sample0 = 3;
   f.hiz_levels = 7;
@@ -1323,7 +1330,7 @@ std::vector<float> ResolveTruth(const ResolveScene& sc) {
   return t;
 }
 // The images of `frames` frames of the pass; the lamp is on until frame `off_at` (a number past `frames`: never off).
-std::vector<std::vector<float>> ResolveRun(const ResolveScene& sc, bool resolve, int frames, int off_at, bool upscaler = false) {
+std::vector<std::vector<float>> ResolveRun(const ResolveScene& sc, bool resolve, int frames, int off_at, float keep) {
   const int N = kResolveN;
   std::vector<float> trace(size_t(N) * N), history(size_t(N) * N, 0.0f), out(size_t(N) * N, 0.0f);
   std::vector<std::vector<float>> all;
@@ -1357,7 +1364,7 @@ std::vector<std::vector<float>> ResolveRun(const ResolveScene& sc, bool resolve,
           const float mean = sum / count, sigma = std::sqrt(std::max(sum2 / count - mean * mean, 0.0f));
           const float bl = hs::SsrBoxLoChannel(mean, sigma, lo, hi), bh = hs::SsrBoxHiChannel(mean, sigma, lo, hi);
           const hs::float3 clipped = hs::SsrClipToBox(hs::float3(h, h, h), hs::float3(bl, bl, bl), hs::float3(bh, bh, bh));
-          const float kept = hs::SsrKeepClip(hs::float3(h, h, h), clipped, hs::SsrClipKeepFor(resolve, upscaler)).x;
+          const float kept = hs::SsrKeepClip(hs::float3(h, h, h), clipped, keep).x;
           o = value * (1.0f - 0.9f) + kept * 0.9f;
         }
         out[size_t(y) * N + size_t(x)] = o;
@@ -1370,13 +1377,15 @@ std::vector<std::vector<float>> ResolveRun(const ResolveScene& sc, bool resolve,
 }
 struct ResolveNumbers {
   double flicker = 0.0;   // the temporal std over the lamp's pixels, as a share of the truth there
+  double frame_delta = 0.0; // mean absolute change between consecutive frames over the lamp's pixels
   double energy = 0.0;    // the time mean of the output over the truth, over the lamp's pixels (1 = the right brightness)
   int fade_half = 0;      // frames after the lamp goes out until what is left is below half / a tenth of what the lamp added
   int fade_tenth = 0;
 };
-ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve, bool upscaler = false) {
+ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve, bool upscaler = false, bool sparkle_resolve = false) {
   const std::vector<float> truth = ResolveTruth(sc);
-  const std::vector<std::vector<float>> run = ResolveRun(sc, resolve, 240, 1000, upscaler);
+  const float keep = sparkle_resolve ? hs::SsrSparkleClipKeep(0.0f, 0.0f) : hs::SsrClipKeepFor(resolve, upscaler);
+  const std::vector<std::vector<float>> run = ResolveRun(sc, resolve, 240, 1000, keep);
   ResolveNumbers r;
   double flicker = 0.0, out_sum = 0.0, truth_sum = 0.0;
   int n = 0;
@@ -1386,6 +1395,7 @@ ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve, bool upscale
     for (int f = 120; f < 240; ++f) {
       m += run[size_t(f)][i];
       m2 += double(run[size_t(f)][i]) * run[size_t(f)][i];
+      r.frame_delta += std::abs(run[size_t(f)][i] - run[size_t(f - 1)][i]);
     }
     m /= 120.0;
     m2 /= 120.0;
@@ -1395,8 +1405,9 @@ ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve, bool upscale
     ++n;
   }
   r.flicker = flicker / std::max(n, 1);
+  r.frame_delta /= 120.0 * std::max(n, 1);
   r.energy = out_sum / std::max(truth_sum, 1e-9);
-  const std::vector<std::vector<float>> gone = ResolveRun(sc, resolve, 200, 100, upscaler);
+  const std::vector<std::vector<float>> gone = ResolveRun(sc, resolve, 200, 100, keep);
   const auto added = [&](int f) {
     double a = 0.0;
     for (size_t i = 0; i < truth.size(); ++i) {
@@ -1452,6 +1463,13 @@ void TestResolve() {
     Check(Near(floored.x, 10.0 * hs::kSsrClipKeep, 1e-5) && floored.y == 9.0f && Near(floored.z, 10.0 * hs::kSsrClipKeep, 1e-5) && upscaled.x == 1.0f && upscaled.y == 9.0f && upscaled.z == -4.0f && first.x == 1.0f && first.z == -4.0f,
           "with an upscaler the clip is whole (also where it goes negative: no floor to lift it), without one it is floored");
   }
+  Check(hs::SsrSparkleClipKeep(0.0f, 0.0f) == 0.75f && hs::SsrSparkleClipKeep(-0.5f, 1.0f) == 0.375f &&
+            hs::SsrSparkleClipKeep(-1.0f, 0.5f) == 0.375f && hs::SsrSparkleClipKeep(2.0f, 0.0f) == 0.0f &&
+            hs::SsrSparkleClipKeep(0.0f, -4.0f) == 0.0f, "the positive-history floor tapers with the largest reprojection displacement in SSR texels");
+  const hs::float3 dark(0.0f, 0.0f, 0.0f);
+  const hs::float3 last_bright(12.0f, 8.0f, -3.0f);
+  const hs::float3 after_miss = hs::SsrKeepClip(last_bright, dark, hs::SsrSparkleClipKeep(0.0f, 0.0f));
+  Check(after_miss.x == 9.0f && after_miss.y == 6.0f && after_miss.z == 0.0f, "an empty clip box retains some bright history and clips the signed road subtraction");
   // the reprojection's distance: the pixel's own when its ray found something, else the nearest hit round it
   Check(hs::SsrReprojectDistance(30.0f, 12.0f) == 30.0f && hs::SsrReprojectDistance(hs::kSsrMissLength, 40.0f) == 40.0f && hs::SsrReprojectDistance(hs::kSsrMissLength, hs::kSsrMissLength) == hs::kSsrMissLength &&
             hs::SsrReprojectDistance(hs::kSsrMissLength, 5.0f) == 5.0f,
@@ -1509,6 +1527,13 @@ void TestResolve() {
     Check(up.fade_half <= 2 && up.fade_tenth <= 3 && up.fade_tenth < now.fade_tenth, std::string(c.name) + Num(": with a temporal upscaler a lamp that goes out leaves half after %.0f frames and a tenth after %.0f (at most 2 and 3: no trail of ours; %.0f with the floor)", double(up.fade_half), double(up.fade_tenth), double(now.fade_tenth)));
     Check(up.flicker < 0.70 * then.flicker && up.energy >= then.energy - 0.04 && up.energy <= now.energy + 1e-3,
           std::string(c.name) + Num(": ... and its flicker is still %.0f%% of the first version's (the tent average alone; the upscaler averages the rest) at the first version's brightness within 0.04 (%.2f against %.2f; the floor adds %.2f on top, which is the price of the trail)", 100.0 * up.flicker / then.flicker, up.energy, then.energy, now.energy - up.energy));
+    const ResolveNumbers fixed = ResolveMeasure(c.scene, true, true, true);
+    if (g_print) {
+      std::printf("%s: upscaler mean frame delta %.3f before / %.3f after, energy %.3f after, fade %d / %d frames\n",
+                  c.name, up.frame_delta, fixed.frame_delta, fixed.energy, fixed.fade_half, fixed.fade_tenth);
+    }
+    Check(fixed.frame_delta < 0.92 * up.frame_delta, std::string(c.name) + ": the stationary floor reduces frame-to-frame changes with the same blue noise");
+    Check(fixed.fade_half <= 2 && fixed.fade_tenth <= 6, std::string(c.name) + ": the stationary floor bounds how long an extinguished highlight persists");
   }
 }
 
@@ -2406,7 +2431,9 @@ void TestSources(const std::string& dir) {
   const std::string table_accessor = FunctionText(ao_cpp, "bool AmbientOcclusion::VehicleTableNow(VehicleTableOut* out) const {");
   Check(!table_accessor.empty() && Has(ao_h, "bool VehicleTableNow(VehicleTableOut* out) const;") && Has(table_accessor, "vehicle_table_frame_ != frame_") && !Has(table_accessor, "list->") && Has(ao_cpp, "  vehicle_table_frame_ = frame_;\n  vehicle_table_ids_ = mask;"),
         "ao.h / ao.cpp: the vehicle table accessor is const, answers only for a table drawn in this frame and records nothing");
-  Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") && Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get(), upscaler_running));") &&
+  Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") &&
+            Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get(), upscaler_running,") &&
+            Has(trigger, "larecomp::settings::mcla_gpu_ssr_sparkle_resolve.Get()));") &&
             Has(trigger, "push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));"),
         "ssr.cpp: the vehicle table goes to the temporal pass, the stencil plane to the trace");
   // GB-I2: the road view: found by its identity, classified, drawn this frame, moved to a shader read before the trace, asked for only while the share is above 0; its numbers are the side view's own
@@ -2436,7 +2463,20 @@ void TestSources(const std::string& dir) {
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
   Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
-  Check(Has(temporal_ps, "const float3 clipped = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "history = SsrKeepClip(history, clipped, SsrClipKeepFor(resolve, upscaler));") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
+  Check(Has(temporal_ps, "const float3 clipped = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "history = SsrKeepClip(history, clipped, keep);") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
+  const std::string validated_history = FunctionText(temporal_ps, "if (stored > 0.0f && SsrSameSurface(stored, plain.z)) {");
+  Check(Has(temporal_ps, "float keep = SsrClipKeepFor(resolve, upscaler);") &&
+            Has(validated_history, "(temporal_options & SSR_TEMPORAL_SPARKLE_RESOLVE) != 0u && vehicle_scale != kSsrVehicleNoRowWeight") &&
+            Has(validated_history, "float2(image.u, image.v) * float2(ssr) - (float2(pix) + 0.5f)") &&
+            Has(validated_history, "keep = SsrSparkleClipKeep(motion.x, motion.y);"),
+        "the sparkle floor is opt-in, requires valid history and excludes vehicle hits without motion rows");
+  const std::string sparkle_setting = std::string("REX_") + "SETTING(bool, mcla_gpu_ssr_sparkle_resolve, false,";
+  const std::string debug_pages = Read(dir, "../mc_engine/menus/debug_menu_pages.cpp");
+  const size_t sparkle_at = settings.find(sparkle_setting);
+  Check(sparkle_at != std::string::npos && Has(settings.substr(sparkle_at, settings.find('\n', sparkle_at) - sparkle_at), "rex::kDebugOnly") &&
+            Has(debug_pages, "\"mcla_gpu_ssr_sparkle_resolve\"") && Has(manifest, "\"mcla_gpu_ssr_sparkle_resolve\": {") &&
+            Has(meta, "{\"mcla_gpu_ssr_sparkle_resolve\", \"MCLA/GPU\"}"),
+        "the sparkle resolve defaults off and is available as a debug setting");
 
   TestRawSources(dir, rules, header, cpp, scene, cmake, shaders_h, pass, apply_ps, settings, manifest, meta);
 

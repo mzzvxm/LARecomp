@@ -242,6 +242,7 @@ const ItemDef kDebugPictureFixesItems[] = {
     // The reflections' accumulation averages the trace's 3x3 of one surface and keeps a bright reflection through a frame whose rays all missed (hlsl/ssr_temporal_ps.hlsl): a lamp's or a tail light's
     // reflection flickered with the sparse hits. Off = the first version's resolve (the centre pixel alone, the clip whole). Read at each frame, so live.
     NativeOnly(Bool("PM_RxDbgSsrResolve", "mcla_gpu_ssr_resolve", "SPATIAL RESOLVE REFLECTIONS: ")),
+    NativeOnly(Bool("PM_RxDbgSsrSparkleResolve", "mcla_gpu_ssr_sparkle_resolve", "REFLECTION SPARKLE FIX: ")),
     // The ray traced bounce light's emitters (GI-BOUNCE-RT, perf/GI-BOUNCE.md, live): one row for each group of lights that bounce besides the world's own (the light pass's classes): ON bounces it, OFF does not: the A/B of
     // the pictures (a neon car by a wall at night, headlights in a tunnel, tail lamps on the road behind, a police bar).
     NativeOnly(Bool("PM_RxDbgGiBounceHeadlights", "mcla_gpu_gi_bounce_headlights", "RT BOUNCE HEADLIGHTS: ")),
