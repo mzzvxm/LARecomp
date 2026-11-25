@@ -208,7 +208,7 @@ void CaptureReadback::Record(plume::RenderCommandList* list, PresentPass& presen
   frames_->RetireAction([this, index, update, generation, record_ms] {
     Process(index, update, generation, record_ms);
   });
-  sync_pending_ = mc::cinematic::CaptureLag() == 0;
+  sync_pending_ = mc::cinematic::CaptureSyncReadback(update);
 }
 
 void CaptureReadback::AfterAdvance() {

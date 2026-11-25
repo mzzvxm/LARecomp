@@ -18,6 +18,7 @@
 //                                  measured alone), a pipe to ffmpeg (FFV1 in video.mkv by default), a pipe to ffmpeg that writes one PNG
 //                                  for every frame (frames/f000000.png ...) or a raw file of frames (video.bgra, rows packed, B8G8R8A8 as
 //                                  the swap chain has them). A scene's `sink` wins. Read when a take starts.
+//   mcla_capture_luma <crop>      for a PNG take, store a lossless luma stream instead (full or x,y,width,height). Empty: PNG.
 //   mcla_capture_statelog          a state.csv in the take (the scene's `statelog on` does the same).
 //   mcla_capture_ffmpeg <path>, mcla_capture_ffmpeg_args <text>   the program and its output options (the mkv sink's).
 //   mcla_capture_ring <n>          host buffers between the readback and the writer (2 to 8, 4 default); fewer when the memory cap says.
@@ -117,6 +118,8 @@ extern char** environ;
 
 #include "capture_audio.h"
 #include "capture_core.h"
+#include "capture_luma.h"
+#include "citypack/city_zstd.h"
 #include "director/png_writer.h"
 #include "larecomp_log.h"
 #include "larecomp_version.h"
@@ -184,12 +187,14 @@ struct Take {
     core::TakeLayout layout;
     std::string started_utc;
     core::SinkKind sink = core::SinkKind::kNone;
+    core::LumaCrop luma_crop;
     double fps = 60.0;
     uint64_t ticks = 0;
     double step_ms = 16.666;
     uint64_t first_update = 0;
     core::TakeSceneClock scene_clock;
     double end_scene_t = -1.0;  // the Director's exclusive end, when present
+    double luma_scene_duration = -1.0;
     bool scene_running = false;
     std::string scene_name, scene_source, scene_fnv;  // a copy of the file is in the folder when scene_fnv is set
     std::vector<std::pair<std::string, std::string>> cvars;  // the settings that differ from their defaults, at the start
@@ -487,11 +492,58 @@ struct Sink {
     core::HostRing ring;
     Pipe pipe;
     std::FILE* raw = nullptr;
+    core::LumaCrop luma_crop;
+    std::vector<uint8_t> luma_previous, luma_delta, luma_compressed;
+    uint64_t luma_frames = 0;
     core::SinkKind kind = core::SinkKind::kNone;
     std::atomic<uint64_t> bytes_written{0};
     int ffmpeg_exit = -2;
 };
 Sink& g_sink = *new Sink;  // never destroyed: the writer thread ends with its take, not with the process
+
+bool WriteLumaWord(std::FILE* file, uint32_t value) {
+    const auto word = core::LumaWord(value);
+    return file && std::fwrite(word.data(), 1, word.size(), file) == word.size();
+}
+
+bool WriteLumaFrame(Sink& s, uint64_t row, const uint8_t* data) {
+    if (!data || !s.raw || row != s.luma_frames) return false;
+    const bool key = row % core::kLumaKeyInterval == 0;
+    const auto predict = [&]<bool Bgra, bool Key>() {
+        core::PredictLuma<Bgra, Key>(data, s.format.width, s.luma_crop, s.luma_previous.data(), s.luma_delta.data());
+    };
+    if (s.format.bgra) {
+        if (key) predict.template operator()<true, true>();
+        else predict.template operator()<true, false>();
+    } else {
+        if (key) predict.template operator()<false, true>();
+        else predict.template operator()<false, false>();
+    }
+    if (!larecomp::citypack::ZstdCompress(s.luma_delta.data(), s.luma_delta.size(), 1, &s.luma_compressed) ||
+        !WriteLumaWord(s.raw, static_cast<uint32_t>(s.luma_compressed.size())) ||
+        std::fwrite(s.luma_compressed.data(), 1, s.luma_compressed.size(), s.raw) != s.luma_compressed.size()) return false;
+
+    if (core::LumaPreview(row)) {
+        // Keep the full view in three small color PNGs. Use the same channel order as the readback.
+        constexpr uint32_t step = 3;
+        const uint32_t w = (s.format.width + step - 1) / step, h = (s.format.height + step - 1) / step;
+        std::vector<uint8_t> preview(size_t(w) * h * 4);
+        for (uint32_t y = 0; y < h; ++y) {
+            for (uint32_t x = 0; x < w; ++x) {
+                const size_t pixel = size_t(y * step) * s.format.width + x * step;
+                std::memcpy(preview.data() + (size_t(y) * w + x) * 4, data + pixel * 4, 4);
+            }
+        }
+        const auto path = core::JoinPath(g_take.layout.frames_dir, core::FrameFileName(row));
+        std::string error;
+        if (!director::WritePngFile(path, preview.data(), w, h, 0, s.format.bgra, &error)) {
+            TakeFail("cannot write the luma preview: " + error);
+            return false;
+        }
+    }
+    ++s.luma_frames;
+    return true;
+}
 
 // The host ring's writer thread calls this for every frame, in order. Once a write has failed the frames are counted and dropped (the take
 // ends in error at its next gate, TakeFail).
@@ -526,6 +578,8 @@ bool WriteFrame(uint64_t row, const uint8_t* data, uint64_t bytes) {
     if (ok) {
         if (core::SinkUsesFfmpeg(s.kind)) {
             ok = s.pipe.Write(data, bytes);
+        } else if (s.kind == core::SinkKind::kLuma) {
+            ok = WriteLumaFrame(s, row, data);
         } else if (s.kind == core::SinkKind::kRaw && s.raw) {
             ok = std::fwrite(data, 1, static_cast<size_t>(bytes), s.raw) == bytes;
         }
@@ -556,7 +610,7 @@ bool OpenSink(const mc::cinematic::FrameFormat& f) {
     s.ffmpeg_exit = -2;
     const uint32_t ring = t.plan_made && t.plan.ok ? t.plan.ring : static_cast<uint32_t>(std::clamp(t.ring, 2, 8));
     std::error_code ec;
-    if (s.kind == core::SinkKind::kPng) {
+    if (s.kind == core::SinkKind::kPng || s.kind == core::SinkKind::kLuma) {
         std::filesystem::create_directories(Path(t.layout.frames_dir), ec);
         if (ec) {
             TakeFail("cannot make the folder " + t.layout.frames_dir + ": " + ec.message());
@@ -578,6 +632,24 @@ bool OpenSink(const mc::cinematic::FrameFormat& f) {
             return false;
         }
         LARECOMP_APP_INFO("[cap] ffmpeg: {}", cmd);
+    } else if (s.kind == core::SinkKind::kLuma) {
+        s.luma_crop = t.luma_crop.width ? t.luma_crop : core::LumaCrop{0, 0, f.width, f.height};
+        if (!s.luma_crop.Fits(f.width, f.height)) {
+            TakeFail("mcla_capture_luma crop is outside the readback");
+            return false;
+        }
+        const auto path = core::JoinPath(t.layout.folder, core::kLumaName);
+        s.raw = OpenWrite(path);
+        const auto& crop = s.luma_crop;
+        if (!s.raw || std::fwrite(core::kLumaMagic.data(), 1, core::kLumaMagic.size(), s.raw) != core::kLumaMagic.size() ||
+            !WriteLumaWord(s.raw, crop.x) || !WriteLumaWord(s.raw, crop.y) ||
+            !WriteLumaWord(s.raw, crop.width) || !WriteLumaWord(s.raw, crop.height)) {
+            TakeFail("cannot write the header of " + path);
+            return false;
+        }
+        s.luma_frames = 0;
+        s.luma_previous.resize(crop.Pixels());
+        s.luma_delta.resize(crop.Pixels());
     } else if (s.kind == core::SinkKind::kRaw) {
         s.raw = OpenWrite(t.layout.video_raw);
         if (!s.raw) {
@@ -606,8 +678,13 @@ void CloseSink() {
     s.ring.Close();  // writes everything that was handed over, joins the writer, frees the buffers
     if (s.pipe.started()) s.ffmpeg_exit = s.pipe.Close(180000);
     if (s.raw) {
-        std::fclose(s.raw);
+        if (std::fclose(s.raw) != 0 && s.kind == core::SinkKind::kLuma) TakeFail("cannot finish writing video.luma");
         s.raw = nullptr;
+    }
+    if (s.kind == core::SinkKind::kLuma) {
+        std::vector<uint8_t>().swap(s.luma_previous);
+        std::vector<uint8_t>().swap(s.luma_delta);
+        std::vector<uint8_t>().swap(s.luma_compressed);
     }
 }
 
@@ -747,6 +824,7 @@ const char* OutputName(core::SinkKind kind) {
         case core::SinkKind::kFfmpeg: return core::kVideoMkvName;
         case core::SinkKind::kRaw: return core::kVideoRawName;
         case core::SinkKind::kPng: return core::kFramePatternName;
+        case core::SinkKind::kLuma: return core::kLumaName;
         case core::SinkKind::kNone: break;
     }
     return "";
@@ -1033,6 +1111,15 @@ void BeginTake(uint64_t u0, double fps) {
     if (!core::ParseSinkKind(sink_text, &t.sink)) {
         LARECOMP_APP_ERROR("[cap] the sink '{}' is none, ffmpeg, png or raw: using none", sink_text);
     }
+    const auto& luma = larecomp::settings::mcla_capture_luma.Get();
+    if (t.sink == core::SinkKind::kPng && !luma.empty()) {
+        if (!core::ParseLumaCrop(luma, t.luma_crop)) {
+            RefuseTake("mcla_capture_luma needs full or x,y,width,height");
+            return;
+        }
+        t.sink = core::SinkKind::kLuma;
+        if (t.scene_running) t.luma_scene_duration = scene.duration;
+    }
     std::string why;
     if (!MakeTakeFolder(t, spec, &why)) {
         RefuseTake(why);
@@ -1118,6 +1205,14 @@ void EndTake(uint64_t u_end) {
         case core::SinkKind::kRaw:
             o.output_bytes = std::filesystem::exists(Path(t.layout.video_raw), ec) ? std::filesystem::file_size(Path(t.layout.video_raw), ec) : 0;
             break;
+        case core::SinkKind::kLuma: {
+            const auto bytes = std::filesystem::file_size(Path(core::JoinPath(t.layout.folder, core::kLumaName)), ec);
+            if (!ec) {
+                o.output_files = 1;
+                o.output_bytes = bytes;
+            }
+            break;
+        }
         case core::SinkKind::kPng:
             if (std::filesystem::is_directory(Path(t.layout.frames_dir), ec)) {
                 for (const auto& entry : std::filesystem::directory_iterator(Path(t.layout.frames_dir), ec)) {
@@ -1147,6 +1242,9 @@ void EndTake(uint64_t u_end) {
         const uint64_t good = t.rows.size() - t.book.Lost();
         if (error.empty() && t.sink == core::SinkKind::kPng && o.output_files != good) {
             error = std::to_string(o.output_files) + " pictures in frames/ for " + std::to_string(good) + " frames read back";
+        }
+        if (error.empty() && t.sink == core::SinkKind::kLuma && (o.output_files != 1 || g_sink.luma_frames != good)) {
+            error = "video.luma did not receive all " + std::to_string(good) + " frames read back";
         }
         if (error.empty() && t.sink == core::SinkKind::kRaw && o.output_bytes != good * g_sink.frame_bytes) {
             error = "video.bgra holds " + std::to_string(o.output_bytes) + " bytes for " + std::to_string(good) + " frames of " +
@@ -1607,6 +1705,14 @@ int CaptureLag() {
     return std::clamp<int>(larecomp::settings::mcla_capture_lag.Get(), 0, 2);
 }
 
+bool CaptureSyncReadback(uint64_t update) {
+    if (CaptureLag() == 0) return true;
+    if (!g_take_active.load(std::memory_order_acquire) || g_take.sink != core::SinkKind::kLuma) return false;
+    // scene's ending gate drains the sink. The earlier frames may overlap.
+    const Take& t = g_take;
+    return core::LumaLastFrame(t.scene_clock, update, t.first_update, t.end_scene_t, t.luma_scene_duration);
+}
+
 double CaptureDelayMs() {
     return larecomp::settings::mcla_capture_delay_ms.Get();
 }
@@ -1627,6 +1733,15 @@ MemoryGrant CaptureMemoryPlan(uint32_t width, uint32_t height, uint32_t gpu_max,
         r.available_bytes = AvailablePhysicalBytes();
         r.reserve_bytes = t.floor_bytes;
         r.fixed_bytes = core::SinkUsesFfmpeg(t.sink) ? (4ull << 20) : 0;  // the pipe's buffer (Pipe::Start)
+        if (t.sink == core::SinkKind::kLuma) {
+            const auto crop = t.luma_crop.width ? t.luma_crop : core::LumaCrop{0, 0, width, height};
+            if (!crop.Fits(width, height)) {
+                TakeFail("mcla_capture_luma crop is outside the readback");
+                return grant;
+            }
+            // Previous plane, predictor, compressor output/context and the occasional PNG.
+            r.fixed_bytes = 4ull * crop.Pixels() + 2ull * width * height + (4ull << 20);
+        }
         const core::MemoryPlan plan = core::PlanMemory(r);
         {
             std::lock_guard<std::mutex> lock(g_rows_mutex);
@@ -1836,6 +1951,7 @@ bool CaptureStillPoll(uint64_t, StillResult*) { return false; }
 void CaptureDirectorRequest(double, const CaptureSpec&) {}
 CaptureStatus CaptureGetStatus() { return CaptureStatus{}; }
 MemoryGrant CaptureMemoryPlan(uint32_t, uint32_t, uint32_t, uint32_t) { return MemoryGrant{}; }
+bool CaptureSyncReadback(uint64_t) { return false; }
 uint64_t FixedStepTicks() { return 0; }
 bool FixedStepActive() { return false; }
 uint64_t UpdateCount() { return 0; }

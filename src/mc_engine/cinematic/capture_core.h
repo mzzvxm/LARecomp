@@ -261,7 +261,7 @@ std::string FormatStat(const Stat& s);
 
 // ---------------------------------------------------------------------------------------------------------------- the sink
 
-enum class SinkKind : uint8_t { kNone, kFfmpeg, kRaw, kPng };
+enum class SinkKind : uint8_t { kNone, kFfmpeg, kRaw, kPng, kLuma };
 // "none", "ffmpeg", "raw" or "png"; false for anything else (and `*out` is kNone). A scene's `capture ... sink <name>` uses the same
 // four names (scene.cpp keeps its own copy of the list, so that it needs nothing else to build).
 bool ParseSinkKind(const std::string& text, SinkKind* out);
