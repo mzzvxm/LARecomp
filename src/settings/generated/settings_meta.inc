@@ -578,6 +578,7 @@
 {"mcla_gpu_vol_g_head", "MCLA/GPU"},
 {"mcla_gpu_vol_lamp_strength", "MCLA/GPU"},
 {"mcla_gpu_vol_head_strength", "MCLA/GPU"},
+{"mcla_gpu_vol_rain_scatter", "MCLA/GPU"},
 {"mcla_gpu_vol_sun_strength", "MCLA/GPU"},
 {"mcla_gpu_vol_extinction", "MCLA/GPU"},
 {"mcla_gpu_vol_far", "MCLA/GPU"},

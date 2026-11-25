@@ -1748,6 +1748,8 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_vol_head_strength, 1.0, "Diagnostic: a multiplier on the cars' headlights' light in the volumetric light. Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
 
+  REX_SETTING(std::string, mcla_gpu_vol_rain_scatter, "off", "Diagnostic: halve the rain contribution to volumetric headlight scatter. Live.", rex::kDebugOnly, rex::Allowed("off", "on"));
+
   REX_SETTING(f64, mcla_gpu_vol_sun_strength, 1.0, "Diagnostic: a multiplier on the sun's light in the volumetric light. Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
 
   REX_SETTING(f64, mcla_gpu_vol_extinction, 0.25, "Diagnostic: a multiplier on how much of the haze's own dimming the volumetric light applies to the picture (0.25: as the look has it; 0: it only adds "
@@ -2442,6 +2444,7 @@ inline auto& mcla_gpu_vol_g_lamp = g_gpu.mcla_gpu_vol_g_lamp;
 inline auto& mcla_gpu_vol_g_head = g_gpu.mcla_gpu_vol_g_head;
 inline auto& mcla_gpu_vol_lamp_strength = g_gpu.mcla_gpu_vol_lamp_strength;
 inline auto& mcla_gpu_vol_head_strength = g_gpu.mcla_gpu_vol_head_strength;
+inline auto& mcla_gpu_vol_rain_scatter = g_gpu.mcla_gpu_vol_rain_scatter;
 inline auto& mcla_gpu_vol_sun_strength = g_gpu.mcla_gpu_vol_sun_strength;
 inline auto& mcla_gpu_vol_extinction = g_gpu.mcla_gpu_vol_extinction;
 inline auto& mcla_gpu_vol_far = g_gpu.mcla_gpu_vol_far;

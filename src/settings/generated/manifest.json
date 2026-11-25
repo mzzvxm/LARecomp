@@ -3620,6 +3620,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_vol_rain_scatter": {
+  "type": "std::string",
+  "default": "\"off\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: halve the rain contribution to volumetric headlight scatter. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"off\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_vol_sun_strength": {
   "type": "f64",
   "default": "1.0",
