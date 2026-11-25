@@ -125,7 +125,29 @@ def check_deps():
                 for group, values in kit['groups'].items() if 'when' in values
             ]}, report, validator.FactTypes(validator.dictionary()), strict=True)
             assert not report.errors and not report.warnings, report
+            check_gpu_names(kit)
+    streamline = read(ROOT / 'cmake/deps.json')['kits']['streamline']['groups']
+    assert all('gpu_name' in streamline[group] and 'gpu_vendor' in streamline[group] for group in ('core', 'frame_generation'))
     return read(ROOT / 'cmake/deps.json')
+
+
+def check_gpu_names(kit):
+    # A group's `gpu_vendor` and `gpu_name` pattern give the answers the name tests of the game's code give; its `when` names the same vendor
+    # (src/gpu/dlss_card_table_test.cpp checks the same vectors against that code and evaluates the `when` itself).
+    vectors = read(CONTRACT / 'adapter-name-vectors.json')['vectors']
+    answers = {'core': 'rtx', 'frame_generation': 'dlss_card'}
+    for group, values in kit['groups'].items():
+        if 'gpu_name' not in values:
+            continue
+        pattern = values['gpu_name']
+        assert re.fullmatch(r'[A-Za-z0-9 |*+?\[\]-]{1,200}', pattern), pattern
+        assert group in answers, f'no vectors for the {group} group'
+        assert 'gpu_vendor' in values, f'the {group} group has a gpu_name and no gpu_vendor'
+        vendor = values['gpu_vendor']
+        assert f"gpu.vendor == '{vendor}'" in values['when'], '`when` and `gpu_vendor` of a group name the same vendor'
+        for vector in vectors:
+            applies = vector['vendor'] == vendor and re.search(pattern, vector['name'], re.IGNORECASE) is not None
+            assert applies == vector[answers[group]], (group, pattern, vector['name'])
 
 
 def prepare_tree(source, deps):
