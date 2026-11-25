@@ -7,7 +7,7 @@
 #include <plume_render_interface.h>
 #include <rex/logging/log_category.h>
 
-#include "citypack/file_replace.h"
+#include "os/file_replace.h"
 
 namespace mcla::gpu {
 
@@ -82,7 +82,7 @@ bool VulkanPipelineCache::Initialize(plume::RenderDevice& device) {
 
 bool VulkanPipelineCache::Save(plume::RenderDevice& device, bool lost) {
   namespace rules = vulkan_pipeline_cache;
-  namespace files = larecomp::citypack;
+  namespace files = larecomp::os;
   // Take the count before the snapshot. A creation concurrent with the snapshot remains
   // eligible for the exit save even if it finishes before vkGetPipelineCacheData returns.
   const uint64_t created = created_.load(std::memory_order_relaxed);
