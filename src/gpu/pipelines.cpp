@@ -162,6 +162,9 @@ uint32_t WantedFeatures(const ShaderStore::Entry& ps, bool startup = false) {
   if (has(sp::kFeatureLuminanceScale) && larecomp::settings::mcla_gpu_luminance_scale_fix.Get()) {
     want(sp::kFeatureLuminanceScale);
   }
+  if (has(sp::kFeatureRoadMirrorBlur) && larecomp::settings::mcla_gpu_road_mirror_blur.Get()) {
+    want(sp::kFeatureRoadMirrorBlur);
+  }
   // The cars' headlights in the city's lit shaders (headlight_rig.h): while the rig has a light this frame (at night, with the setting on). The shader
   // takes the word of the headlight feature (or the pair with the G-buffer's, when that stage is wanted too: variant_chain.h kFeatures composes_with).
   if (has(sp::kFeatureHeadlight) && headlight_rig::VariantSelected()) {

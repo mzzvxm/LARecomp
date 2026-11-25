@@ -107,6 +107,7 @@ add_library(larecomp_shaderpack STATIC
     variants/car_chrome.cpp
     variants/car_chrome_city.cpp
     variants/luminance_scale.cpp
+    variants/road_mirror_blur.cpp
     variants/ui_sharp.cpp
     variants/headlight.cpp
     variants/gbuffer.cpp
@@ -177,6 +178,16 @@ if(EXISTS "${_larecomp_gb_hlsli}")
 else()
     message(STATUS "larecomp_shaderpack: ${_larecomp_gb_hlsli} does not exist: no G-buffer variant")
 endif()
+
+# Embed the road filter so setup can compile variants without needing a source checkout.
+set(_larecomp_road_mirror_hlsli "${CMAKE_CURRENT_SOURCE_DIR}/variants/road_mirror_blur.hlsli")
+set(_larecomp_road_mirror_generated "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(READ "${_larecomp_road_mirror_hlsli}" _larecomp_road_mirror_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _larecomp_road_mirror_bytes "${_larecomp_road_mirror_hex}")
+file(GENERATE OUTPUT "${_larecomp_road_mirror_generated}/road_mirror_hlsli_bytes.inc"
+     CONTENT "${_larecomp_road_mirror_bytes}0x00\n")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_larecomp_road_mirror_hlsli}")
+target_include_directories(larecomp_shaderpack PRIVATE "${_larecomp_road_mirror_generated}")
 if(WIN32)
     target_compile_definitions(larecomp_shaderpack PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 else()
@@ -289,6 +300,20 @@ add_executable(larecomp_luminance_scale_test EXCLUDE_FROM_ALL
     variants/luminance_scale.cpp)
 target_compile_features(larecomp_luminance_scale_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_luminance_scale_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# Checks the filter and edits against a fixture. Optional arguments write the retail compositions for DXC.
+add_executable(larecomp_road_mirror_blur_test EXCLUDE_FROM_ALL
+    variants/road_mirror_blur_test.cpp
+    variants/road_mirror_blur.cpp
+    variants/gbuffer.cpp
+    variants/gbuffer_night.cpp
+    variants/gbuffer_day.cpp
+    variants/gbuffer_cars.cpp
+    variants/headlight.cpp
+    hash.cpp)
+target_compile_features(larecomp_road_mirror_blur_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_road_mirror_blur_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}" "${_larecomp_road_mirror_generated}")
 
 # The UI sharpening variant's text transform (variants/ui_sharp_test.cpp): cmake --build <dir> --target larecomp_ui_sharp_variant_test,
 # then run it [<translated xrage_im__PS_Textured.hlsl> [<folder for the transformed text>]] (exit 0 = passed).

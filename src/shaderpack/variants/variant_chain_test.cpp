@@ -72,7 +72,7 @@ void TestWord() {
 void TestTable_() {
   const char* why = nullptr;
   Check(chain::TableIsValid(chain::kFeatures, &why), std::string("the built-in table is valid ") + (why ? why : ""));
-  Check(chain::kFeatureCount == 13, "thirteen rows: nine built in this tree, the headlights' and the G-buffer's (their variants are in two other branches), the G-buffer's vertex stage (feature 12, variants/gbuffer_day.h) and the chrome's reflection of the city (feature 13, variants/car_chrome_city.h)");
+  Check(chain::kFeatureCount == 14, "fourteen built-in features");
   {
     const chain::FeatureInfo* city_row = chain::Find(sp::kFeatureCarChromeCity);
     Check(sp::kFeatureCarChromeCity == 13 && city_row && city_row->name == "car_chrome_city" && city_row->stage == chain::Stage::kPixel && city_row->constants_bytes == 0 && !city_row->spec_twin &&
@@ -113,20 +113,23 @@ void TestTable_() {
   } expect[] = {{sp::kFeatureHdrScene, 16, false},  {sp::kFeatureBloomGauss, 0, false}, {sp::kFeatureEnvMap, 0, false},  {sp::kFeatureShadowFilter, 16, false},
                 {sp::kFeatureGlowSoft, 0, false},   {sp::kFeatureCarSelfRefl, 112, false}, {sp::kFeatureLuminanceScale, 0, false},
                 {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 1072, true}, {sp::kFeatureGBuffer, 48, true},
-                {sp::kFeatureCarChromeCity, 0, false}};
+                {sp::kFeatureCarChromeCity, 0, false}, {sp::kFeatureRoadMirrorBlur, 0, true}};
   for (const auto& e : expect) {
     const chain::FeatureInfo* row = chain::Find(e.feature);
     Check(row && row->constants_bytes == e.bytes && row->spec_twin == e.twin && row->stage == chain::Stage::kPixel, "row of feature " + std::to_string(e.feature));
   }
-  // The G-buffer composes with the headlights (both edit PSMultiLight shaders) and with the two car variants (the car family's paint and chrome shaders: gbuffer_cars.h); nothing else composes; no
+  // The G-buffer composes with the headlights, road mirror blur and the car variants. No
   // pixel stage of the table needs a vertex stage (needs_vs): the G-buffer's pixel words read the vertex stage's export where it is and take a derivative normal where it is not.
   for (const chain::FeatureInfo& row : chain::kFeatures) {
     uint32_t partner = 0;
-    if (row.feature == sp::kFeatureHeadlight || row.feature == sp::kFeatureCarSelfRefl) partner = chain::FeatureBit(sp::kFeatureGBuffer);
+    if (row.feature == sp::kFeatureCarSelfRefl) partner = chain::FeatureBit(sp::kFeatureGBuffer);
+    if (row.feature == sp::kFeatureHeadlight) partner = chain::FeatureBit(sp::kFeatureGBuffer) | chain::FeatureBit(sp::kFeatureRoadMirrorBlur);
+    if (row.feature == sp::kFeatureRoadMirrorBlur) partner = chain::FeatureBit(sp::kFeatureGBuffer) | chain::FeatureBit(sp::kFeatureHeadlight);
     if (row.feature == sp::kFeatureCarChrome) partner = chain::FeatureBit(sp::kFeatureGBuffer) | chain::FeatureBit(sp::kFeatureCarChromeCity);
     if (row.feature == sp::kFeatureCarChromeCity) partner = chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureGBuffer);
     if (row.feature == sp::kFeatureGBuffer) {
-      partner = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureCarChrome) | chain::FeatureBit(sp::kFeatureCarChromeCity);
+      partner = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureCarSelfRefl) | chain::FeatureBit(sp::kFeatureCarChrome) |
+                chain::FeatureBit(sp::kFeatureCarChromeCity) | chain::FeatureBit(sp::kFeatureRoadMirrorBlur);
     }
     Check(row.composes_with == partner && row.needs_vs == 0, std::string(row.name) + (partner ? " composes with its partner(s) only" : " composes with nothing yet"));
   }
@@ -194,7 +197,7 @@ void TestLayout() {
   // Every subset of the built-in features: dense, in order, 16 byte aligned, never overlapping, total as the sum.
   bool all_disjoint = true;
   bool all_dense = true;
-  const uint32_t all = (1u << (sp::kFeatureCarChromeCity + 1)) - 1;  // every subset of the bits 0..13 (bit 11 is reserved and has no row)
+  const uint32_t all = (1u << (sp::kFeatureRoadMirrorBlur + 1)) - 1;  // every subset of the built-in feature bits (11 is reserved)
   for (uint32_t set = 0; set <= all; ++set) {
     const chain::ConstantsLayout layout = chain::LayoutConstants(set);
     all_disjoint &= Disjoint(layout);

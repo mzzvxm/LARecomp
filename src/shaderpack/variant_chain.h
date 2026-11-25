@@ -109,9 +109,9 @@ inline constexpr FeatureInfo kFeatures[] = {
     // headlight does not rewrite). Their variants are in feat/headlights (variants/headlight.cpp) and feat/gbuffer-spike (variants/gbuffer.cpp): a row whose variant is not in the
     // tree is harmless (nothing builds it, nothing picks it). 1072 bytes: src/gpu/headlight_rig_rules.h HeadlightConstants (672 until version 4 of the variant, HL-PER-LAMP: eight shadow
     // views and a second view of each light); 48 bytes: src/gpu/gbuffer_types.h GBufferConstants.
-    {kFeatureHeadlight, "headlight", Stage::kPixel, 1072, FeatureBit(kFeatureGBuffer), true, 0},
+    {kFeatureHeadlight, "headlight", Stage::kPixel, 1072, FeatureBit(kFeatureGBuffer) | FeatureBit(kFeatureRoadMirrorBlur), true, 0},
     {kFeatureGBuffer, "gbuffer", Stage::kPixel, 48,
-     FeatureBit(kFeatureHeadlight) | FeatureBit(kFeatureCarSelfRefl) | FeatureBit(kFeatureCarChrome) | FeatureBit(kFeatureCarChromeCity), true, 0},
+     FeatureBit(kFeatureHeadlight) | FeatureBit(kFeatureCarSelfRefl) | FeatureBit(kFeatureCarChrome) | FeatureBit(kFeatureCarChromeCity) | FeatureBit(kFeatureRoadMirrorBlur), true, 0},
     // The G-buffer's car family (variants/gbuffer_cars.h, GB-G1) also composes with the two car variants, which edit two shaders it edits: car_selfrefl the player's paint
     // (xCarPaintCustomizable::PS_CarPaint) and car_chrome the chrome (xChrome::PS_Chrome). The car variant's edits come first (the lower index) and its 112 bytes come first in the block, the
     // G-buffer's 48 after them (byte 720); neither car variant has the alpha test twin, so the composed pair has none either: an alpha tested draw of one of those two shaders takes the G-buffer's twin alone (and has no car variant).
@@ -125,6 +125,7 @@ inline constexpr FeatureInfo kFeatures[] = {
     // text as the game wrote it (there is no chrome stage in the text for it to rewrite; the pack keeps that entry so that the compositions are built, and nothing draws it: pipelines.cpp
     // wants this feature only together with the chrome's).
     {kFeatureCarChromeCity, "car_chrome_city", Stage::kPixel, 0, FeatureBit(kFeatureCarChrome) | FeatureBit(kFeatureGBuffer), false, 0},
+    {kFeatureRoadMirrorBlur, "road_mirror_blur", Stage::kPixel, 0, FeatureBit(kFeatureHeadlight) | FeatureBit(kFeatureGBuffer), true, 0},
 };
 
 constexpr size_t kFeatureCount = sizeof(kFeatures) / sizeof(kFeatures[0]);

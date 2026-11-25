@@ -19,11 +19,10 @@
 // fallback, and the draw already writes its stencil there. The headlight is missing from the car's beam and the planes keep an old
 // value for the few frames the build takes; the next frame that finds the build ready takes it.
 //
-// So the rule is not asked for these: a draw whose key carries the sidecar's planes or the headlight feature may wait for its pipeline
-// whatever the game's rule says (HasFallback), and a draw with neither keeps the game's rule. The ladder of keys a draw tries is the one
-// Scene::Prepare walks: the full key (planes and headlight), the key without the planes (the game's key: it may still carry the headlight),
-// the key without the headlight (the game's own shader, which is the end of the ladder and keeps the game's rule: a pipeline of the game's
-// own that nobody made is a gap of the starter list, not of the stack). While a take runs (sync_builds.h) nothing waits, as before: the
+// A key with the G-buffer's planes, the road mirror blur or the headlight may defer its pipeline build
+// whatever the game's rule says (HasFallback). Scene::Prepare walks these rungs in order: remove the planes,
+// then the road mirror blur, then the headlight. The final key keeps the game's rule: a pipeline of the game's
+// own that nobody made is a gap of the starter list. While a take runs (sync_builds.h) nothing waits, as before: the
 // lookup makes the pipeline or waits for the builder, and the wait is counted.
 //
 // A variant whose build FAILS (the driver refuses the extra colour targets' blend state, the pack's word does not compile) takes the same way down, for good: the
@@ -47,9 +46,10 @@ namespace mcla::gpu::variant_wait {
 struct Extras {
   bool planes = false;     // the G-buffer's planes are attached: extra colour targets, usually with the G-buffer's word
   bool headlight = false;  // the pixel word has the headlight feature
+  bool road_mirror_blur = false;
 };
 
-constexpr bool Any(const Extras& e) { return e.planes || e.headlight; }
+constexpr bool Any(const Extras& e) { return e.planes || e.headlight || e.road_mirror_blur; }
 
 // Whether a key with these extras has a fallback key that draws the same thing without them: then the lookup may be answered "pending" whatever the game's rule says.
 constexpr bool HasFallback(const Extras& e) { return Any(e); }
@@ -81,31 +81,39 @@ constexpr Next NextStep(const Extras& extras, bool have_pipeline, bool pending) 
   return pending ? Next::kWait : Next::kDrop;
 }
 
-// The pixel word of the fallback that drops the headlight (the pack's word for the other features the draw has when it has one, else the game's own
+// The pixel word of the fallback that drops a feature (the pack's word for the other features the draw has when it has one, else the game's own
 // shader in the draw's spec variant: the alpha test twin stays). `pack_has(word)` says whether the pixel shader has that word in the variant pack.
 template <class Has>
-constexpr uint32_t WordWithoutHeadlight(uint32_t word, Has&& pack_has) {
+constexpr uint32_t WordWithoutFeature(uint32_t word, uint32_t feature, Has&& pack_has) {
   namespace chain = larecomp::shaderpack::chain;
-  const uint32_t rest = chain::Word(chain::FeaturesOf(word) & ~chain::FeatureBit(larecomp::shaderpack::kFeatureHeadlight), chain::SpecOf(word));
+  const uint32_t rest = chain::Word(chain::FeaturesOf(word) & ~chain::FeatureBit(feature), chain::SpecOf(word));
   if (chain::FeaturesOf(rest) != 0 && !pack_has(rest)) {
     return chain::SpecOf(rest);
   }
   return rest;
 }
 
+template <class Has>
+constexpr uint32_t WordWithoutHeadlight(uint32_t word, Has&& pack_has) {
+  return WordWithoutFeature(word, larecomp::shaderpack::kFeatureHeadlight, pack_has);
+}
+
 constexpr bool HasHeadlight(uint32_t ps_word) {
   return larecomp::shaderpack::chain::HasFeature(ps_word, larecomp::shaderpack::kFeatureHeadlight);
 }
 
+constexpr bool HasRoadMirrorBlur(uint32_t ps_word) {
+  return larecomp::shaderpack::chain::HasFeature(ps_word, larecomp::shaderpack::kFeatureRoadMirrorBlur);
+}
+
 // The ladder of one draw: the rungs in the order Scene::Prepare asks for them, each with who answers "pending". `extras` are those of the full key
-// (planes attached, the headlight in its pixel word); the draw's own key (without the planes) has the headlight when the full key has it, and the last
-// rung has neither. A rung that would repeat the one above it is not on the ladder.
+// (planes attached, features in its pixel word). The final rung has no extras.
 struct Rung {
   Extras extras;
   Ask ask = Ask::kGameRule;
 };
 struct Ladder {
-  std::array<Rung, 3> rungs{};
+  std::array<Rung, 4> rungs{};
   size_t count = 0;
 };
 constexpr Ladder LadderOf(const Extras& full) {
@@ -116,9 +124,10 @@ constexpr Ladder LadderOf(const Extras& full) {
     if (!HasFallback(at)) {
       break;
     }
-    // Planes go first (the draw is the game's own key then), then the headlight.
     if (at.planes) {
       at.planes = false;
+    } else if (at.road_mirror_blur) {
+      at.road_mirror_blur = false;
     } else {
       at.headlight = false;
     }

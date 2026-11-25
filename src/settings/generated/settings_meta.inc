@@ -490,6 +490,7 @@
 {"mcla_gpu_resolve_fill_half_pixel", "MCLA/GPU"},
 {"mcla_gpu_resolve_memory_check", "MCLA/GPU"},
 {"mcla_gpu_resolve_memory_encode_delay", "MCLA/GPU"},
+{"mcla_gpu_road_mirror_blur", "MCLA/GPU"},
 {"mcla_gpu_road_reflection_cars_test", "MCLA/GPU"},
 {"mcla_gpu_scale_depth_bias", "MCLA/GPU"},
 {"mcla_gpu_scene_extra_bias", "MCLA/GPU"},

@@ -100,6 +100,19 @@ void TestLadders() {
   const vw::Ladder both = vw::LadderOf({true, true});
   Check(both.rungs[1].extras.headlight && !both.rungs[1].extras.planes, "second rung of planes + headlight: no planes, headlight kept");
   Check(!both.rungs[2].extras.headlight && !both.rungs[2].extras.planes, "third rung: neither");
+  const vw::Ladder road = vw::LadderOf({true, true, true});
+  Check(road.count == 4 && road.rungs[0].extras.planes && !road.rungs[1].extras.planes &&
+            road.rungs[1].extras.road_mirror_blur && !road.rungs[2].extras.road_mirror_blur &&
+            road.rungs[2].extras.headlight && road.rungs[3].ask == vw::Ask::kGameRule,
+        "road pipeline fallback keeps the headlight");
+  Check(vw::NextStep({false, false, true}, false, false) == vw::Next::kFallBack &&
+            vw::NextStep({false, false, true}, false, true) == vw::Next::kFallBack,
+        "a standalone road variant falls back whether pending or failed");
+  const uint32_t road_and_light = chain::Word(chain::FeatureBit(sp::kFeatureRoadMirrorBlur) | chain::FeatureBit(sp::kFeatureHeadlight), 1);
+  const uint32_t headlight_twin = chain::Word(chain::FeatureBit(sp::kFeatureHeadlight), 1);
+  Check(vw::HasRoadMirrorBlur(road_and_light) && !vw::HasRoadMirrorBlur(headlight_twin) &&
+            vw::WordWithoutFeature(road_and_light, sp::kFeatureRoadMirrorBlur, [&](uint32_t word) { return word == headlight_twin; }) == headlight_twin,
+        "removing the blur preserves the headlight and alpha test when the pack has that word");
 }
 
 void TestWordWithoutHeadlight() {
@@ -239,25 +252,27 @@ void SourceChecks(const std::string& gpu) {
   }
   const std::string lookup = scene.substr(begin, end - begin);
   Check(scene.find("#include \"variant_wait.h\"") != std::string::npos, "scene.cpp includes variant_wait.h");
-  Check(Count(lookup, "pipelines_->Get(") == 3, "the ladder has three lookups: the full key, the key without the planes, the key without the headlight");
-  Check(Count(lookup, "pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending)") == 3, "every lookup asks through ask_for, none asks the game's rule alone");
+  Check(Count(lookup, "pipelines_->Get(") == 4, "the ladder has four lookups including the road blur fallback");
+  Check(Count(lookup, "pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending)") == 4, "every lookup uses ask_for");
   // A lookup that ended with no pipeline takes the rung below when it was being made OR when its build failed: the rungs' conditions go through NextStep, none looks at `pending` alone.
   Check(lookup.find("const auto falls_back = [&]() { return variant_wait::NextStep(extras_of(pipeline_key), d.pipeline != nullptr, pending) == variant_wait::Next::kFallBack; };") != std::string::npos,
         "the rungs ask variant_wait::NextStep whether the lookup that just ended falls back (being made, or a failed build)");
-  Check(Count(lookup, "falls_back()") == 2 && Count(lookup, "!d.pipeline && pending") == 0, "both rungs fire on falls_back(), none on `no pipeline and pending` (that left a failed variant's draw out for good)");
-  Check(Count(lookup, "pipelines_->NoteVariantFailedDraw();") == 2, "a draw that fell back because the build failed is counted at both rungs");
+  Check(Count(lookup, "falls_back()") == 3 && Count(lookup, "!d.pipeline && pending") == 0, "the fallback rungs handle pending and failed pipelines");
+  Check(Count(lookup, "pipelines_->NoteVariantFailedDraw();") == 3, "a draw that fell back because the build failed is counted at every rung");
   Check(scene.find("pipeline_memo_ = d.pipeline;\n    } else if (pending) {", begin) != std::string::npos,
         "after the last rung only a build under way leaves the draw out for now (a failure of the game's own key is Skip::kPipeline)");
   Check(Count(lookup, "&deferral") == 1 && lookup.find("? &waits : &deferral;") != std::string::npos, "the game's rule is used in one place: ask_for's answer for a key with no extra");
   Check(lookup.find("const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw, true};") != std::string::npos,
         "the deferral of a key with a fallback always says pending, counts as a guest draw and says it has a fallback (a failed build is final for it)");
-  Check(lookup.find("variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant)}") != std::string::npos && lookup.find("variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways") != std::string::npos,
-        "ask_for reads the extras of the key being asked: the planes the draw carries, the headlight in the pixel word");
+  Check(lookup.find("variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant), variant_wait::HasRoadMirrorBlur(key.ps_variant)}") != std::string::npos &&
+            lookup.find("variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways") != std::string::npos,
+        "ask_for reads the planes and pixel features of the key being requested");
   const size_t first = lookup.find("pipelines_->Get(");
   const size_t planes = lookup.find("if (falls_back() && d.gbuffer_attached) {");
+  const size_t road = lookup.find("if (falls_back() && variant_wait::HasRoadMirrorBlur(pipeline_key.ps_variant)) {");
   const size_t headlight = lookup.find("if (falls_back() && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {");
-  Check(first != std::string::npos && planes != std::string::npos && headlight != std::string::npos && first < planes && planes < headlight,
-        "the ladder is the model's: the full key, then the key without the planes, then the key without the headlight");
+  Check(headlight != std::string::npos && first < planes && planes < road && road < headlight,
+        "the ladder tries the full key, then removes planes, blur and headlight in order");
   Check(lookup.find("variant_wait::WordWithoutHeadlight(pipeline_key.ps_variant,") != std::string::npos, "the headlight's fallback takes the word the header names");
   Check(scene.find("variant pipelines failed {} (draws that fell back {})") != std::string::npos && scene.find("ps.variant_failed, ps.variant_fallback_draws") != std::string::npos,
         "the scene interval line counts the variant builds that failed and the draws that took the game's own pipeline");
