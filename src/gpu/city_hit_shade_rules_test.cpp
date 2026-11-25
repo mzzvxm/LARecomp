@@ -1039,11 +1039,13 @@ void ResolveChecks(const City& city, Lcg& rng, int rounds, int* sources_seen) {
       if (weight < 1.0f || (k.p.flags & cs::kPCalibrate) != 0) {
         shaded = cs::Shade(k.p, k.frame, k.ray, k.inst, d.hit, d.material, d.texture, MakeReads(k), k.lamps.data());
       }
-      if (shaded.valid && (k.p.flags & cs::kPCalibrate) != 0 && cs::IsCalibrationSample(weight, cs::Luma(seen), cs::Luma(shaded.colour))) {
+      // the model is sampled with its class's gain in force (the host's residual is what is left to correct)
+      const float model_luma = shaded.valid ? cs::Luma(shaded.colour) * hlsl_shim::gGain[std::min(shaded.cls, 15u)] : 0.0f;
+      if (shaded.valid && (k.p.flags & cs::kPCalibrate) != 0 && cs::IsCalibrationSample(weight, cs::Luma(seen), model_luma)) {
         const uint32_t cls = std::min(shaded.cls, 15u);
         stats[hc::StatsWord(cls, hc::kCountWord)] += 1;
         stats[hc::StatsWord(cls, hc::kSeenWord)] += hc::FixedLog2(cs::Luma(seen));
-        stats[hc::StatsWord(cls, hc::kModelWord)] += hc::FixedLog2(cs::Luma(shaded.colour));
+        stats[hc::StatsWord(cls, hc::kModelWord)] += hc::FixedLog2(model_luma);
         ++calibrated;
       }
       tr = cs::Mix(weight, seen, shaded, shaded.valid ? hlsl_shim::gGain[std::min(shaded.cls, 15u)] : 1.0f);

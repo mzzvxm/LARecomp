@@ -1084,12 +1084,14 @@ CityHitResolved CityHitResolve(CityHitParams p, RtHitFrame f, CityHitScreen s, C
     {
         return result;
     }
-    // the calibration's sample: the picture speaks for the hit in full and both colours are over the floor
+    // the calibration's sample: the picture speaks for the hit in full and both colours are over the floor. The model is measured WITH its
+    // class's gain in force (as the car's census does), so the host's residual is what is left to correct (rt_hit_calibration.h); measured
+    // without it, every window added the whole ratio again and the gain ran to its limit (RT-LIGHTS-G3, 11-24: 3.00x on the parked pool).
     CITY_HIT_BRANCH
     if (shaded.valid != 0u && weight >= kCityHitScreenTrust && (p.flags & CITY_HIT_P_CALIBRATE) != 0u)
     {
         const float seenLuma = CityHitLuma(seen);
-        const float modelLuma = CityHitLuma(shaded.colour);
+        const float modelLuma = CityHitLuma(shaded.colour * CityHitGainOf(shaded.cls));
         if (seenLuma > kCityHitCalFloor && modelLuma > kCityHitCalFloor)
         {
 #ifdef CITY_HIT_STAT_ADD
