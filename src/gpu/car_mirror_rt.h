@@ -14,11 +14,14 @@
 // A mirror of a few pixels (a chase camera) shows the environment and asks for nothing: the city is traced and kept for a pass whose larger mirror covers kCityMinPixels (car_mirror_city_rules.h).
 //
 //   TRACE  one compute dispatch for each mirror over the rectangle its box covers on the picture, into one image of kImageWidth x kImageHeight (R16G16B16A16_FLOAT, 4 MiB, both rectangles side by side).
+//          A rectangle bigger than its slot of the image (kImageEdge each way) or the class's cap is traced at 1 / divisor of its size each way (car_mirror_rt_rules.h FitDivisor, 2 to 4: the driver's mirror
+//          of the R34's cockpit at 4K is 300 x 600 pixels and was left to the game, MIRROR-RT-GATE 2026-11-24) and the apply reads it back with a bilinear filter weighted by the texels' alpha.
 //   APPLY  one draw for each mirror into the main colour, scissored to the rectangle, blended SRC_ALPHA / INV_SRC_ALPHA on the colour channels (one pipeline per sample count of the target:
 //          1, 2, 4, 8), the colour target moved to a colour attachment for it and left there (the game's next draw moves things back itself, as the occlusion's apply does).
 //
 // ONLY WHERE IT SHOWS: nothing is recorded (and nothing is built beyond what the car's other effects build) in a frame with no mirror pair in the car's draws (CarRtView::mirror), a mirror off the
-// picture, too small or over the cap (Limits), the pause or garage view, or a pipeline not made yet; the frame goes on with the game's mirror and never waits for a compile.
+// picture, too small or over the cap (Limits: a rectangle that no divisor up to kMaxDivisor fits, or the whole picture), the pause or garage view, or a pipeline not made yet; the frame goes on with the game's
+// mirror and never waits for a compile.
 //
 // SETTINGS (mcla_gpu_car_mirror_rt, live): auto (the default: on where the device can ray trace the car and it is a strong card, the High class), off, on (any card that can ray trace the car and is not of the Low class; the Mid
 // class's cap). The player's row is RT SIDE MIRRORS on GRAPHICS > REFLECTIONS (car_mirror_setting.h). BeginFrame asks CarRtScene for the car's structures in every frame the pass is wanted (the car self-reflections ask for them anyway where they are on).
@@ -31,7 +34,8 @@
 // PIPELINES: the trace's and the one-, two- and four-sample applies' are listed with the start's precache (host_precache.h kCarMirrorRt: 0 the trace, 1 to 4 the applies of 1, 2, 4, 8 samples) where the
 // pass is wanted at the start, made in the background where it is wanted later (AddLive).
 //
-// LOG: "[car mirror]" lines: the first pass (the rectangles, the pair), a window every 300 passes (mirrors drawn, pixels, frames not run by reason). The times are the PassTiming rows
+// LOG: "[car mirror]" lines: the first pass (the rectangles, the pair), the first use of each divisor for each mirror, a window every 300 passes (mirrors drawn, texels traced, frames not run by reason, mirrors
+// drawn at a reduced size). The times are the PassTiming rows
 // "car mirror rt" and "car mirror apply".
 //
 // CHECK (nothing here was run: no game, no build): the layout (the bindless set, one storage image, the car's set, an 80-byte push block) on D3D12 and Vulkan with the validation layers; the image's
@@ -39,6 +43,10 @@
 // every sample); that the main colour at the trigger already holds the game's mirror glass (the glass is a draw "after the world", before the trigger: the car dump says every draw of the car is in);
 // that a mirror pair is found on a car other than the R34 (the first pair's log line); the units of the environment map against the colour target's (RtHitSample * 2^exp_bias, as the paint's
 // hit shading); the look: the mirror's size, brightness and edges in the cockpit and bumper cameras, the shaded car in it, the see-through window; the cost.
+// CHECK (MIRROR-RT-GATE 2026-11-24, from the log and the pictures of the first cockpit run, nothing run since): that the R34's driver mirror is the rectangle that was over the cap in every cockpit frame of that run
+// (the log said `off the picture` for the left mirror and `over the cap` for the right one; about 330 x 580 pixels at 4K is computed from the car dump's glass, an eye half a metre behind it and the picture, not measured):
+// the first run with the divisor prints `mirror 1 covers WxH pixels ... traced at 1/2 of its size`: a rectangle of a thousand pixels there would mean the pair is not the two glasses (the first-pass line names the pair of
+// the first frame, a far one); the apply's bilinear read at divisor 2 on both APIs (no seam at the texel borders, no dark edge on the glass: the weights carry the alpha); the cost of the traced texels at 4K (the pass timing rows).
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread.
 // ===========================================================================
@@ -94,16 +102,16 @@ class CarMirrorRt {
  private:
   // The trace's push block (hlsl/car_mirror_rt_cs.hlsl CarMirrorPush), 80 bytes.
   struct Push {
-    uint32_t rect[4];   // x, y the first pixel of the rectangle, z, w its size
+    uint32_t rect[4];   // x, y the first pixel of the rectangle, z, w its size in texels of the image (pixels where the divisor is 1)
     uint32_t image[4];  // x, y the rectangle's first texel in the image, z the primary ray's parts, w the mirror ray's parts
     float lens[4];      // tan x, tan y, the picture's width and height
     float tune[4];      // the strength, the cars' reach, the fade's start, the units
-    uint32_t city[4];   // MIRROR-CITY: x the flags (car_mirror_city_rules.h kFlag*), y the city's reach (m) and z the share of it up to which a hit weighs 1 (float bits), w reserved
+    uint32_t city[4];   // MIRROR-CITY: x the flags (car_mirror_city_rules.h kFlag*), y the city's reach (m) and z the share of it up to which a hit weighs 1 (float bits), w the divisor (picture pixels to a texel each way)
   };
   static_assert(sizeof(Push) == car_mirror_city::kPushBytes);
   // The apply's push block (hlsl/car_mirror_apply_ps.hlsl MirrorApplyPush), 32 bytes.
   struct ApplyPush {
-    uint32_t image[4];  // x the image's bindless slot, y, z the rectangle's first texel in the image
+    uint32_t image[4];  // x the image's bindless slot, y, z the rectangle's first texel in the image, w the divisor (picture pixels to a texel each way)
     uint32_t rect[4];   // x0, y0, x1, y1
   };
   static_assert(sizeof(ApplyPush) == 32);
@@ -129,7 +137,8 @@ class CarMirrorRt {
     uint64_t first_frame = 0;
     uint32_t passes = 0;
     uint64_t mirrors = 0;
-    uint64_t pixels = 0;
+    uint64_t pixels = 0;  // texels traced
+    uint32_t reduced = 0;  // mirrors drawn at a divisor over 1 (a rectangle bigger than the image's slot or the cap: car_mirror_rt_rules.h FitDivisor)
     uint32_t city_passes = 0;  // of the passes, those that traced the city (the rest showed the environment map)
     uint64_t not_run[size_t(car_mirror::Why::kCount)] = {};
     uint64_t rect_skipped[size_t(car_mirror::Why::kCount)] = {};
@@ -171,6 +180,7 @@ class CarMirrorRt {
   Window window_;
   bool first_logged_ = false;
   bool pair_logged_ = false;
+  uint32_t reduced_logged_[car_mirror::kMaxMirrors] = {};  // for each mirror, the divisors whose first use was logged (bit d)
   uint64_t passes_run_ = 0;
 };
 

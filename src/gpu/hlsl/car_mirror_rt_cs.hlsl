@@ -1,9 +1,10 @@
 // MCLA GPU renderer -- the player's side mirrors show the real view behind, ray traced (car_mirror_rt.h; src/gpu/car_mirror_rt_rules.h has the design, the numbers and the tests).
 //
 // Run at the car ray tracing's trigger (the game's mid-scene depth copy), right after this frame's top level was built (car_rt_scene.h: the player's car and the cars beside it, in the frame's VIEW
-// space, x right, y up, z forward: a ray from the origin through a pixel with the direction (ndc.x tanX, ndc.y tanY, 1) hits at RayT = the view z). One thread is one pixel of a mirror's
-// rectangle (the push's rect: first pixel and size, in render pixels). It writes the image (u0, the push's image.xy is the rectangle's first texel; R16G16B16A16_FLOAT): rgb the colour of what
-// the mirror shows in the scene colour's units, alpha the share of the game's glass it replaces (the coverage of the glass in the pixel times the strength; 0 off the glass).
+// space, x right, y up, z forward: a ray from the origin through a pixel with the direction (ndc.x tanX, ndc.y tanY, 1) hits at RayT = the view z). One thread is one TEXEL of a mirror's
+// rectangle (the push's rect: first pixel in render pixels and the size in texels): one pixel, or a square of divisor x divisor pixels (city.w) where the rectangle is bigger than the image's slot or
+// the cap (car_mirror_rt_rules.h FitDivisor: the driver's mirror of a cockpit at 4K). It writes the image (u0, the push's image.xy is the rectangle's first texel; R16G16B16A16_FLOAT): rgb the colour of
+// what the mirror shows in the scene colour's units, alpha the share of the game's glass it replaces (the coverage of the glass in the texel times the strength; 0 off the glass).
 //
 //   1. THE GLASS: four primary rays (a rotated grid inside the pixel) against the player's parts (the push's image.z). Each goes on through the panes of see-through glass (the car's windows:
 //      CAR_RT_FLAG_SEE_THROUGH in the instance's row), so a cockpit camera sees the mirror through the side window as it does in the game; the nearest other part decides. The share of the rays whose
@@ -38,7 +39,7 @@ RWTexture2D<float4> g_output : register(u0, space1);
 
 struct CarMirrorPush
 {
-    // x, y the first pixel of the rectangle in the picture, z, w its size in pixels
+    // x, y the first pixel of the rectangle in the picture, z, w its size in TEXELS of the image (pixels when city.w is 1)
     uint4 rect;
     // x, y the rectangle's first texel in the image, z the primary ray's parts (CAR_RT_MASK_*), w the mirror ray's parts
     uint4 image;
@@ -48,7 +49,7 @@ struct CarMirrorPush
     // w the units: the colour target's over the shaders' output, 2^exp_bias (16 at the game's bias of 4): a colour made from the materials' constants is multiplied by it
     float4 tune;
     // MIRROR-CITY (car_mirror_city_rules.h): x the flags (1 the city is traced, 2 the lamp term, 4 the world frame's light), y the city's reach in metres and z the share of it up to which a city hit weighs 1
-    // (float bits), w reserved. Flags 0: the city is not traced and the rest is not read.
+    // (float bits), w the divisor: picture pixels to a texel of the image, each way (0 or 1: one for one; car_mirror_rt_rules.h FitDivisor). Flags 0: the city is not traced and the rest is not read.
     uint4 city;
 };
 
@@ -106,6 +107,18 @@ static const float kMirrorAoMix = 0.5;           // the share of the baked verte
 static const float kMirrorNightFull = 3.0;       // the lamp schedule's fallback where the world rows are not valid (city_refl_rules.h LampSchedule)
 static const float kMirrorNightNone = 12.0;
 static const float kMirrorRadToDeg = 57.29577951308232;
+// The picture pixels a texel of the image covers each way (the push's city.w; 1 for a rectangle traced pixel for pixel).
+float MirrorDivisor()
+{
+    return max(float(g_push.city.w), 1.0);
+}
+
+// A texel's angle at the camera (tan, small angles): the pixel's times the divisor.
+float MirrorTexelAngle()
+{
+    return 2.0 * g_push.lens.y / max(g_push.lens.w, 1.0) * MirrorDivisor();
+}
+
 // the four taps: a rotated grid inside the pixel (offsets from the pixel's centre, in pixels)
 static const float2 kMirrorTap[4] = {float2(-0.125, -0.375), float2(0.375, -0.125), float2(0.125, 0.375), float2(-0.375, 0.125)};
 
@@ -283,7 +296,7 @@ bool MirrorCarHit(uint instanceIndex, uint primitiveIndex, float2 barycentrics, 
     }
     other = (CarRtInstanceMask(CarRtLoadInstance(instanceIndex)) & CAR_RT_MASK_OTHERS) != 0u;
     const float3 hitPoint = origin + mirror * t;
-    const float pixelAngle = 2.0 * g_push.lens.y / max(g_push.lens.w, 1.0);
+    const float pixelAngle = MirrorTexelAngle();
     const float footprint = max(pixelAngle * (glassT + t), 1e-3);
     return CarHitShade(instanceIndex, primitiveIndex, barycentrics, hitNormal, mirror, hitPoint, footprint, 0.0, g_push.tune.w, -1.0, shaded);
 }
@@ -296,7 +309,7 @@ bool MirrorCarHit(uint instanceIndex, uint primitiveIndex, float2 barycentrics, 
 //   - the car's own fade into the background is only where there is a background to fade into (the environment, or a city hit of full weight): else it weighs 1, as before (`(other && known)`)
 void MirrorCityRay(float3 origin, float3 mirror, float glassT, float reach, float3 world, bool worldKnown, inout float3 colour, inout bool shown)
 {
-    const float pixelAngle = 2.0 * g_push.lens.y / max(g_push.lens.w, 1.0);
+    const float pixelAngle = MirrorTexelAngle();
     const float footprint0 = pixelAngle * glassT;  // the cone's width at the glass: the pixel's, one pixel's angle at the glass's distance
     const float tanHalf = 0.5 * pixelAngle;
     const float cast = max(reach, asfloat(g_push.city.y));
@@ -357,10 +370,13 @@ void MirrorCityRay(float3 origin, float3 mirror, float glassT, float reach, floa
     }
 }
 
-// The pixel: rgb what the mirror shows, alpha the share of the game's glass it replaces (0 where the pixel is not mirror glass).
-float4 MirrorPixel(uint2 pixel)
+// The texel: rgb what the mirror shows, alpha the share of the game's glass it replaces (0 where the texel is not mirror glass). `texel` counts from the rectangle's first texel; the taps are a rotated
+// grid inside the texel's square of picture pixels (divisor 1: inside the pixel, as ever).
+float4 MirrorPixel(uint2 texel)
 {
     const float2 render = g_push.lens.zw;
+    const float divisor = MirrorDivisor();
+    const float2 centre = float2(g_push.rect.xy) + (float2(texel) + 0.5) * divisor;
     uint hits = 0u;
     bool have = false;
     CarRtHit glass = (CarRtHit)0;
@@ -368,7 +384,7 @@ float4 MirrorPixel(uint2 pixel)
     [unroll]
     for (uint k = 0u; k < kMirrorTaps; ++k)
     {
-        const float2 uv = (float2(pixel) + 0.5 + kMirrorTap[k]) / render;
+        const float2 uv = (centre + kMirrorTap[k] * divisor) / render;
         const float3 direction = float3((uv.x * 2.0 - 1.0) * g_push.lens.x, (1.0 - uv.y * 2.0) * g_push.lens.y, 1.0);
         CarRtHit h;
         uint flags;
@@ -441,5 +457,5 @@ void main(uint3 id : SV_DispatchThreadID)
     {
         return;
     }
-    g_output[id.xy + g_push.image.xy] = MirrorPixel(id.xy + g_push.rect.xy);
+    g_output[id.xy + g_push.image.xy] = MirrorPixel(id.xy);
 }

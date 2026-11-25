@@ -392,8 +392,9 @@ void CarMirrorRt::LogWindow() {
     }
   }
   const double n = double(std::max<uint32_t>(w.passes, 1));
-  REXLOG_INFO("{} frames {}..{}: {} passes ({} with the city, the rest with the environment map), {:.2f} mirrors a pass, {:.0f} pixels a pass; frames not run: {}; mirrors left to the game: {}", kPrefix,
-              w.first_frame, frame_, w.passes, w.city_passes, double(w.mirrors) / n, double(w.pixels) / n, reasons.empty() ? "none" : reasons, rects.empty() ? "none" : rects);
+  REXLOG_INFO("{} frames {}..{}: {} passes ({} with the city, the rest with the environment map), {:.2f} mirrors a pass, {:.0f} pixels a pass; frames not run: {}; mirrors left to the game: {}{}", kPrefix,
+              w.first_frame, frame_, w.passes, w.city_passes, double(w.mirrors) / n, double(w.pixels) / n, reasons.empty() ? "none" : reasons, rects.empty() ? "none" : rects,
+              w.reduced != 0 ? std::format("; mirrors drawn at a reduced size: {}", w.reduced) : std::string());
   window_ = Window{};
   window_.first_frame = frame_;
   next_log_frame_ = frame_ + kQuietLogFrames;
@@ -518,15 +519,27 @@ bool CarMirrorRt::OnResolve(const ResolveCache::Summary& summary, plume::RenderC
       continue;
     }
     const car_rt_opp_refl::TexelRect& r = rects[k].rect;
+    // a rectangle bigger than the image's slot or the cap is traced at 1 / divisor of its size each way (FitDivisor): the dispatch is over its texels
+    const uint32_t divisor = rects[k].divisor;
+    const car_rt_opp_refl::TexelRect texels{0, 0, int32_t(cm::TexelsAcross(uint32_t(r.Width()), divisor)), int32_t(cm::TexelsAcross(uint32_t(r.Height()), divisor))};
     push.rect[0] = uint32_t(r.x0);
     push.rect[1] = uint32_t(r.y0);
-    push.rect[2] = uint32_t(r.Width());
-    push.rect[3] = uint32_t(r.Height());
+    push.rect[2] = uint32_t(texels.Width());
+    push.rect[3] = uint32_t(texels.Height());
     push.image[0] = cm::ImageX(k);
     push.image[1] = 0;
+    push.city[3] = divisor;
     list->setComputePushConstants(0, &push, 0, sizeof(push));
-    list->dispatch(car_rt_opp_refl::GroupsX(r, cm::kGroup), car_rt_opp_refl::GroupsY(r, cm::kGroup), 1);
-    pixels += r.Area();
+    list->dispatch(car_rt_opp_refl::GroupsX(texels, cm::kGroup), car_rt_opp_refl::GroupsY(texels, cm::kGroup), 1);
+    pixels += texels.Area();
+    if (divisor > 1) {
+      ++window_.reduced;
+      if ((reduced_logged_[k] & (1u << divisor)) == 0) {
+        reduced_logged_[k] |= 1u << divisor;
+        REXLOG_INFO("{} mirror {} covers {}x{} pixels of the {}x{} picture, more than its {}x{} slot of the image or the cap of {} texels allows: traced at 1/{} of its size each way ({}x{} texels) and scaled up by the apply",
+                    kPrefix, k, r.Width(), r.Height(), render_w, render_h, cm::kImageEdge, cm::kImageEdge, limits.max_pixels, divisor, texels.Width(), texels.Height());
+      }
+    }
   }
 
   // THE APPLY: the image is written by the trace (storage) and read here as a texture; the main colour is a colour attachment in the middle of the frame (the occlusion's and the glass
@@ -557,6 +570,7 @@ bool CarMirrorRt::OnResolve(const ResolveCache::Summary& summary, plume::RenderC
     apply_push.image[0] = image_.slot;
     apply_push.image[1] = cm::ImageX(k);
     apply_push.image[2] = 0;
+    apply_push.image[3] = rects[k].divisor;
     apply_push.rect[0] = uint32_t(r.x0);
     apply_push.rect[1] = uint32_t(r.y0);
     apply_push.rect[2] = uint32_t(r.x1);

@@ -12,7 +12,9 @@
 //                    memory; the pair is chosen in the frame's view space in CarRtInstances::Build). Its table row gets CAR_RT_FLAG_MIRROR (car_rt_scene_rules.h kFlagMirror); the draws of see-through
 //                    glass (the windows) get CAR_RT_FLAG_SEE_THROUGH. The frame's pick travels in CarRtView::mirror.
 //   TRACE            (car_mirror_rt.cpp, hlsl/car_mirror_rt_cs.hlsl; at the car RT trigger, the game's mid-scene depth copy, right after the structures are built): one compute dispatch for each mirror over
-//                    the rectangle its box covers on the picture (at most kImageEdge pixels each way and Limits::max_pixels in all). A pixel casts four primary rays (a rotated grid inside it) against the
+//                    the rectangle its box covers on the picture. A rectangle of at most kImageEdge pixels each way and Limits::max_pixels in all is traced pixel for pixel; a bigger one (the driver's mirror in a
+//                    cockpit at 4K: 2026-11-24, MIRROR-RT-GATE) is traced at 1 / divisor of its size each way (FitDivisor: 2, 3 or 4) and the apply scales it up (a mirror is smooth: the car's outline and the
+//                    street's edges are the only detail); only a rectangle that no divisor fits is left to the game. A texel casts four primary rays (a rotated grid inside it) against the
 //                    car's opaque parts; the share that find a mirror glass first (through the windows) is the pixel's COVERAGE, and the first of them gives the glass's point and its smooth mesh normal (the
 //                    slightly convex glass: a wider view, like a real mirror). ONE mirror ray goes off it along reflect(view, normal) against the cars (the player's own flank and rear, the cars beside).
 //                    A car hit is shaded from its material and fades into the environment over the last quarter of the cars' reach (the scene holds cars only within that reach: a car is not cut off by
@@ -82,6 +84,7 @@ inline constexpr uint32_t kImageHeight = kImageEdge;
 inline constexpr uint32_t kGroup = 8;  // the shader's thread group is 8 x 8
 inline constexpr uint32_t kMaxMirrors = 2;
 inline constexpr int32_t kRectMargin = 2;  // pixels added round a mirror's rectangle
+inline constexpr uint32_t kMaxDivisor = 4;  // a rectangle bigger than the image's slot is traced at 1/2, 1/3 or 1/4 of its size each way, never less
 inline constexpr uint32_t kReleaseAfterFrames = 120;  // frames without a pass before the image is given back
 inline constexpr uint32_t kLogEveryPasses = 300;
 
@@ -212,12 +215,31 @@ inline const char* WhyName(Why w) {
 }
 
 struct RectResult {
-  car_rt_opp_refl::TexelRect rect;
+  car_rt_opp_refl::TexelRect rect;  // on the picture, margin included
   Why why = Why::kUsed;
+  uint32_t divisor = 1;  // picture pixels to a texel of the trace's image, each way (1: one for one; FitDivisor)
 };
 
-// The rectangle of pixels of the `render_w` x `render_h` picture a mirror's box (the frame's view space) covers, kRectMargin larger, and whether the pass may use it. A box that crosses the
-// camera's plane has the whole picture for a rectangle (BoxRect) and is over the cap.
+inline uint32_t TexelsAcross(uint32_t pixels, uint32_t divisor) { return divisor <= 1 ? pixels : (pixels + divisor - 1) / divisor; }
+
+// The smallest divisor, 1 to kMaxDivisor, at which a rectangle of `width` x `height` picture pixels fits the image's slot (kImageEdge texels each way) and `max_pixels` texels in all; 0 when none does (the
+// mirror is left to the game). The cap is the class's cost guard, so it counts the texels the trace casts rays for, not the pixels the apply covers.
+inline uint32_t FitDivisor(uint32_t width, uint32_t height, uint32_t max_pixels) {
+  if (width == 0 || height == 0) {
+    return 0;
+  }
+  for (uint32_t d = 1; d <= kMaxDivisor; ++d) {
+    const uint32_t w = TexelsAcross(width, d);
+    const uint32_t h = TexelsAcross(height, d);
+    if (w <= kImageEdge && h <= kImageEdge && uint64_t(w) * h <= max_pixels) {
+      return d;
+    }
+  }
+  return 0;
+}
+
+// The rectangle of pixels of the `render_w` x `render_h` picture a mirror's box (the frame's view space) covers, kRectMargin larger, and whether the pass may use it, and at which divisor. A box that
+// crosses the camera's plane has the whole picture for a rectangle (BoxRect): never a mirror, over the cap whatever a divisor would make of it.
 inline RectResult RectFor(const car_rt_instances::ViewBox& box, double tan_x, double tan_y, double render_w, double render_h, const Limits& limits) {
   RectResult out;
   if (!(render_w >= 1.0) || !(render_h >= 1.0)) {
@@ -230,7 +252,10 @@ inline RectResult RectFor(const car_rt_instances::ViewBox& box, double tan_x, do
     return out;
   }
   const uint64_t area = out.rect.Area();
-  if (out.rect.Width() > int32_t(kImageEdge) || out.rect.Height() > int32_t(kImageEdge) || area > limits.max_pixels) {
+  const bool whole_picture = out.rect.x0 <= 0 && out.rect.y0 <= 0 && out.rect.x1 >= int32_t(render_w) && out.rect.y1 >= int32_t(render_h);
+  out.divisor = whole_picture ? 0u : FitDivisor(uint32_t(out.rect.Width()), uint32_t(out.rect.Height()), limits.max_pixels);
+  if (out.divisor == 0) {
+    out.divisor = 1;
     out.why = Why::kOverCap;
     return out;
   }

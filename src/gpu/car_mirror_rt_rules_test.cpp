@@ -270,6 +270,21 @@ int main(int argc, char** argv) {
       }
     }
     Check(others == 0, "no other pair of the decoys is a pair");
+    // the decoy the far LOD's logs show (2026-11-24, MIRROR-RT-GATE: instance 103 beside the glass 51, 1.25 m from it, 0.0138 against 0.0165 m2): another small flat part at the glass's height that faces the way
+    // the left glass faces. By the loose rules it IS a pair with the left glass; the real twin must score higher, so the choice is the glasses whatever order the draws come in
+    {
+      const float hub_c[3] = {-0.34f, 0.93f, -0.35f}, hub_n[3] = {0.99f, 0.12f, 0.0f};
+      const cm::Candidate hub = PlaceStats(7, world, hub_c, hub_n, 0.0138f);
+      float hub_score = 0.0f, real_score = 0.0f;
+      Check(cm::IsMirrorPair(a, hub, up, &hub_score) && cm::IsMirrorPair(a, b, up, &real_score), "the part that faces the way the left glass does passes the loose rules, as the logs show");
+      Check(real_score > hub_score + 0.1f, "... and the real twin scores clearly higher (a mirrored pair, not two patches facing alike)");
+      const cm::Pick p1 = cm::ChoosePair({a, hub, b}, up);
+      const cm::Pick p2 = cm::ChoosePair({hub, b, a}, up);
+      const cm::Pick p3 = cm::ChoosePair({b, a, hub}, up);
+      auto real = [](const cm::Pick& p) { return p.count == 2 && p.item[0] + p.item[1] == 21 && p.item[0] != p.item[1]; };
+      Check(real(p1) && real(p2) && real(p3), "ChoosePair takes the two glasses in any order of the candidates");
+      Check(cm::ChoosePair({a, hub}, up).count == 2, "with the right glass missing from the frame the left one still pairs with what is there (the loose rules, as before)");
+    }
     Check(cm::ChoosePair({a}, up).count == 0, "one patch is never a pair");
     Check(cm::ChoosePair({}, up).count == 0, "no patch is no pair");
 
@@ -319,7 +334,9 @@ int main(int argc, char** argv) {
       const float lc[3] = {-0.34f, 0.97f, 0.90f}, ln[3] = {0.91f, 0.01f, -0.41f};
       const float rc[3] = {-0.38f, 0.97f, -0.88f}, rn[3] = {0.93f, 0.0f, 0.36f};
       const float plate_car_c[3] = {2.33f, 0.50f, -0.06f}, plate_car_n[3] = {1.0f, -0.06f, -0.02f};
-      std::vector<cm::Candidate> placed = {PlaceStats(0, pose, plate_car_c, plate_car_n, 0.044f), PlaceStats(1, pose, lc, ln, 0.0165f), PlaceStats(2, pose, rc, rn, 0.0165f)};
+      const float hub_car_c[3] = {-0.34f, 0.93f, -0.35f}, hub_car_n[3] = {0.99f, 0.12f, 0.0f};
+      std::vector<cm::Candidate> placed = {PlaceStats(0, pose, plate_car_c, plate_car_n, 0.044f), PlaceStats(1, pose, lc, ln, 0.0165f), PlaceStats(2, pose, rc, rn, 0.0165f),
+                                           PlaceStats(3, pose, hub_car_c, hub_car_n, 0.0138f)};
       // the world's up through the same pose: the pose carries (0,1,0) to its second column
       const float view_up[3] = {pose.m[0][1], pose.m[1][1], pose.m[2][1]};
       const cm::Pick p = cm::ChoosePair(placed, view_up);
@@ -452,15 +469,44 @@ int main(int argc, char** argv) {
     Check(cm::RectFor(box_at(0.0f, 0.0f, 0.0f, 1.0f), tx, ty, 1920.0, 1080.0, limits).why == cm::Why::kOverCap, "a box that crosses the camera's plane has the whole picture and is over the cap");
     Check(cm::RectFor(box_at(0.0f, 0.0f, 1000.0f, 0.1f), tx, ty, 1920.0, 1080.0, limits).why == cm::Why::kTooSmall, "a box a kilometre away is under a pixel: too small to be worth the pass");
     Check(cm::RectFor(box_at(0.0f, 0.0f, 12.0f, 0.1f), tx, ty, 1920.0, 1080.0, limits).why == cm::Why::kUsed, "a 20 cm box 12 m away (a mirror seen from a chase camera, about 17 pixels) is still drawn");
-    // the cap by area and by edge
+    // the cap by area and by edge: a rectangle that does not fit its slot of the image or the cap is traced at 1 / divisor of its size (MIRROR-RT-GATE: the driver's mirror of a cockpit at 4K), never left
+    // to the game while a divisor up to kMaxDivisor fits
     ci::ViewBox wide = box_at(0.0f, 0.0f, 1.0f, 0.1f);
     wide.min[0] = -0.7f;
     wide.max[0] = 0.7f;  // 1.4 m of a 2 m view: 1344 px across
-    Check(cm::RectFor(wide, tx, ty, 1920.0, 1080.0, limits).why == cm::Why::kOverCap, "a rectangle wider than the image's edge is over the cap");
+    const cm::RectResult wide_r = cm::RectFor(wide, tx, ty, 1920.0, 1080.0, limits);
+    Check(wide_r.why == cm::Why::kUsed && wide_r.rect.Width() > int32_t(cm::kImageEdge) * 2 && wide_r.divisor == 3, "a rectangle between two and three times the image's edge across is traced at a third of its size");
+    ci::ViewBox huge = wide;
+    huge.min[0] = -2.0f;
+    huge.max[0] = 2.0f;  // wider than the picture: clipped to its 1920 px, more than 3 x 512 across
+    const cm::RectResult huge_r = cm::RectFor(huge, tx, ty, 1920.0, 1080.0, limits);
+    Check(huge_r.why == cm::Why::kUsed && huge_r.divisor == 4 && cm::TexelsAcross(uint32_t(huge_r.rect.Width()), huge_r.divisor) <= cm::kImageEdge, "... a rectangle the whole picture's width across at a quarter");
+    Check(cm::RectFor(huge, tx, ty, 3840.0, 2160.0, limits).why == cm::Why::kOverCap && cm::RectFor(huge, tx, ty, 3840.0, 2160.0, limits).divisor == 1, "... and over four times the image's edge across it is left to the game (its divisor stays 1, never 0)");
     const cm::Limits tight = cm::LimitsFor(GpuClass::kHigh, 10);  // 10 k pixels
-    Check(cm::RectFor(box_at(0.0f, 0.0f, 1.0f, 0.1f), tx, ty, 1920.0, 1080.0, tight).why == cm::Why::kOverCap, "the debug cap of 10 k pixels refuses a 200 x 200 rectangle");
-    Check(cm::RectFor(box_at(0.0f, 0.0f, 1.0f, 0.05f), tx, ty, 3840.0, 2160.0, limits).why == cm::Why::kUsed, "at 4K a 10 cm box 1 m away (about 200 x 200 pixels) is inside the High class's cell");
-    Check(cm::RectFor(box_at(0.0f, 0.0f, 1.0f, 0.1f), tx, ty, 3840.0, 2160.0, limits).why == cm::Why::kOverCap, "at 4K a 20 cm box 1 m away is 400 x 400 pixels with its margin: over 160 k pixels");
+    const cm::RectResult tight_r = cm::RectFor(box_at(0.0f, 0.0f, 1.0f, 0.1f), tx, ty, 1920.0, 1080.0, tight);
+    Check(tight_r.why == cm::Why::kUsed && tight_r.divisor == 3 && uint64_t(cm::TexelsAcross(uint32_t(tight_r.rect.Width()), 3)) * cm::TexelsAcross(uint32_t(tight_r.rect.Height()), 3) <= 10000,
+          "the debug cap of 10 k pixels traces a 200 x 200 rectangle at a third of its size");
+    Check(cm::RectFor(box_at(0.0f, 0.0f, 1.0f, 0.1f), tx, ty, 1920.0, 1080.0, cm::LimitsFor(GpuClass::kHigh, 1)).why == cm::Why::kOverCap, "the debug cap of 1 k pixels is under what a quarter of a 200 x 200 rectangle holds: over the cap");
+    const cm::RectResult near_r = cm::RectFor(box_at(0.0f, 0.0f, 1.0f, 0.05f), tx, ty, 3840.0, 2160.0, limits);
+    Check(near_r.why == cm::Why::kUsed && near_r.divisor == 1, "at 4K a 10 cm box 1 m away (about 200 x 200 pixels) is inside the High class's cell, pixel for pixel");
+    const cm::RectResult big_r = cm::RectFor(box_at(0.0f, 0.0f, 1.0f, 0.1f), tx, ty, 3840.0, 2160.0, limits);
+    Check(big_r.why == cm::Why::kUsed && big_r.divisor == 2, "at 4K a 20 cm box 1 m away is 400 x 400 pixels with its margin: over 160 k pixels, traced at half the size (it was left to the game)");
+    // the whole picture is the answer for a box that crosses the camera's plane: no divisor makes a mirror of it (at 720p a quarter of it would fit the cell)
+    Check(cm::RectFor(box_at(0.0f, 0.0f, 0.0f, 1.0f), tx, ty, 1280.0, 720.0, limits).why == cm::Why::kOverCap && cm::RectFor(box_at(0.0f, 0.0f, 0.0f, 1.0f), tx, ty, 1280.0, 720.0, cm::LimitsFor(GpuClass::kMid, 0)).why == cm::Why::kOverCap,
+          "the whole picture (a box across the camera's plane) is over the cap at 720p too, whatever the class");
+    // the driver's mirror of the R34's cockpit at 4K, from the dump's glass (0.157 x 0.115 m, 0.061 m deep, turned 21 degrees) about 0.5 m ahead and 0.53 m to the side, a lens of 90 x 60 degrees:
+    // the view space's axis aligned box of the turned glass is 0.17 x 0.115 x 0.12 m, about 330 x 580 pixels at 4K (MIRROR-RT-GATE: the log's `over the cap` in every cockpit frame)
+    ci::ViewBox driver;
+    driver.min[0] = 0.45f;
+    driver.max[0] = 0.62f;
+    driver.min[1] = -0.2215f;
+    driver.max[1] = -0.1065f;
+    driver.min[2] = 0.44f;
+    driver.max[2] = 0.56f;
+    driver.valid = true;
+    const cm::RectResult driver_r = cm::RectFor(driver, 1.0, 0.5774, 3840.0, 2160.0, limits);
+    Check(driver_r.why == cm::Why::kUsed && driver_r.divisor == 2 && driver_r.rect.Height() > int32_t(cm::kImageEdge), "the cockpit's driver mirror at 4K is taller than its slot of the image and is traced at half the size");
+    Check(cm::RectFor(driver, 1.0, 0.5774, 1920.0, 1080.0, limits).why == cm::Why::kUsed && cm::RectFor(driver, 1.0, 0.5774, 1920.0, 1080.0, limits).divisor == 1, "... and at 1080p pixel for pixel");
   }
   {
     // the numbers of the cap: 4K cockpit mirror 130 x 90 is well inside the High class cell; the image holds two rectangles of the edge
@@ -468,6 +514,30 @@ int main(int argc, char** argv) {
     Check(130u * 90u < limits.max_pixels && cm::kImageEdge * cm::kImageEdge >= limits.max_pixels, "a cockpit mirror at 4K fits the cap and the cap fits the image's rectangle");
     Check(cm::kImageWidth == 2 * cm::kImageEdge && cm::kImageHeight == cm::kImageEdge && cm::ImageX(0) == 0 && cm::ImageX(1) == cm::kImageEdge, "the image holds two rectangles side by side");
     Check(cm::HeldBytes() == uint64_t(1024) * 512 * 8, "the image's size: 4 MiB of RGBA16F");
+    // FitDivisor: the smallest divisor at which a rectangle fits its slot (kImageEdge each way) and the cap; 0 when none up to kMaxDivisor does
+    const uint32_t cap = limits.max_pixels;
+    Check(cm::FitDivisor(300, 584, cap) == 2 && cm::FitDivisor(512, 512, 262144) == 1 && cm::FitDivisor(513, 100, cap) == 2 && cm::FitDivisor(400, 400, cap) == 1 && cm::FitDivisor(401, 400, cap) == 2,
+          "FitDivisor: a rectangle one pixel over the edge or the cap goes to half, one that fits goes pixel for pixel");
+    Check(cm::FitDivisor(2048, 2048, 262144) == 4 && cm::FitDivisor(2048, 2048, cap) == 0 && cm::FitDivisor(2049, 100, cap) == 0 && cm::FitDivisor(1536, 100, cap) == 3, "FitDivisor: four at most, the cap counts texels, 2049 across is too much");
+    Check(cm::FitDivisor(0, 10, cap) == 0 && cm::FitDivisor(10, 0, cap) == 0 && cm::FitDivisor(1, 1, 0) == 0, "FitDivisor: an empty rectangle or no cap fits nothing");
+    Check(cm::TexelsAcross(10, 1) == 10 && cm::TexelsAcross(10, 3) == 4 && cm::TexelsAcross(9, 3) == 3 && cm::TexelsAcross(1, 4) == 1 && cm::TexelsAcross(10, 0) == 10, "TexelsAcross rounds up (the last texel is a part of the rectangle)");
+    {
+      std::mt19937 fit_rng(11);
+      std::uniform_int_distribution<uint32_t> side(1, 2300), caps(1000, 262144);
+      int wrong = 0;
+      for (int trial = 0; trial < 4000; ++trial) {
+        const uint32_t w = side(fit_rng), h = side(fit_rng), c = caps(fit_rng);
+        const uint32_t d = cm::FitDivisor(w, h, c);
+        auto fits = [&](uint32_t k) { return cm::TexelsAcross(w, k) <= cm::kImageEdge && cm::TexelsAcross(h, k) <= cm::kImageEdge && uint64_t(cm::TexelsAcross(w, k)) * cm::TexelsAcross(h, k) <= c; };
+        bool any = false;
+        for (uint32_t k = 1; k <= cm::kMaxDivisor; ++k) {
+          any = any || fits(k);
+        }
+        const bool minimal = d == 0 ? !any : (d <= cm::kMaxDivisor && fits(d) && (d == 1 || !fits(d - 1)));
+        wrong += minimal ? 0 : 1;
+      }
+      Check(wrong == 0, "FitDivisor over 4000 random rectangles and caps: the answer fits, no smaller divisor does, 0 only when none fits");
+    }
   }
 
   // =========================================================================
@@ -554,7 +624,21 @@ int main(int argc, char** argv) {
       Check(Has(cs, "ConstantBuffer<CarMirrorPush> g_push : register(b0, space3);") && Has(cs, "#define CAR_RT_SPACE 2") && Has(cs, "RWTexture2D<float4> g_output : register(u0, space1);"), "the shader's sets: the push in space 3, the car's set 2, the image at u0 of space 1");
       // the apply's
       Check(Has(ps, "ConstantBuffer<MirrorApplyPush> g_push : register(b0, space4);") && Has(ps, "uint4 image;") && Has(ps, "uint4 rect;"), "the apply's push block");
-      Check(Has(ps, "Load(int3(p - lo + int2(g_push.image.yz), 0))"), "the apply reads one texel for the pixel, one for one");
+      Check(Has(ps, "Load(int3(p - lo + int2(g_push.image.yz), 0))"), "the apply reads one texel for the pixel, one for one (divisor 1)");
+      // MIRROR-RT-GATE: the rectangle traced at 1 / divisor of its size (FitDivisor): the trace's texel is a square of divisor x divisor pixels, the apply reads four texels weighted by distance and alpha
+      Check(Has(cs, "float MirrorDivisor()") && Has(cs, "return max(float(g_push.city.w), 1.0);") && Has(cs, "return 2.0 * g_push.lens.y / max(g_push.lens.w, 1.0) * MirrorDivisor();") &&
+                Has(cs, "const float pixelAngle = MirrorTexelAngle();"),
+            "the trace reads the divisor from the push's city.w (1 where it is 0) and a texel's angle is the pixel's times it");
+      Check(Has(cs, "const float2 centre = float2(g_push.rect.xy) + (float2(texel) + 0.5) * divisor;") && Has(cs, "const float2 uv = (centre + kMirrorTap[k] * divisor) / render;") && Has(cs, "g_output[id.xy + g_push.image.xy] = MirrorPixel(id.xy);") &&
+                Has(cs, "if (id.x >= g_push.rect.z || id.y >= g_push.rect.w)"),
+            "a thread is a texel: the centre of its square of pixels, the taps spread over it, the output at the texel");
+      Check(Has(ps, "const int divisor = int(max(g_push.image.w, 1u));") && Has(ps, "const int2 texels = (hi - lo + (divisor - 1)) / divisor;") && Has(ps, "const float2 at = (float2(p - lo) + 0.5) / float(divisor) - 0.5;") &&
+                Has(ps, "const float w = w2.x * w2.y * texel.a;") && Has(ps, "return float4(sum.rgb / max(sum.a, 1e-6), sum.a);") && Has(ps, "clamp(t0 + step, int2(0, 0), texels - 1)"),
+            "the apply's bilinear read: texel centres at half integers, clamped to the rectangle's texels, weighted by the distance and the alpha, the colour divided by the weight");
+      Check(Has(header, "uint32_t image[4];  // x the image's bindless slot, y, z the rectangle's first texel in the image, w the divisor") && Has(header, "w the divisor (picture pixels to a texel each way)"), "the host's blocks say what the shaders read in their w");
+      Check(Has(host, "push.city[3] = divisor;") && Has(host, "apply_push.image[3] = rects[k].divisor;") && Has(host, "cm::TexelsAcross(uint32_t(r.Width()), divisor)") && Has(host, "push.rect[2] = uint32_t(texels.Width());") &&
+                Has(host, "list->dispatch(car_rt_opp_refl::GroupsX(texels, cm::kGroup), car_rt_opp_refl::GroupsY(texels, cm::kGroup), 1);") && Has(host, "pixels += texels.Area();"),
+            "the host gives both shaders the divisor and dispatches over the texels");
       // the table's flags
       Check(Has(common, "#define CAR_RT_FLAG_MIRROR 0x200") && Has(common, "#define CAR_RT_FLAG_SEE_THROUGH 0x400") && Has(common, "#define CAR_RT_FLAG_AFTER_WORLD 0x100"), "the shader's flag bits");
       Check(rr::kFlagMirror == cm::kFlagMirror && rr::kFlagSeeThrough == cm::kFlagSeeThrough && rr::kFlagAfterWorld == 0x100 && (cm::kFlagMirror & 0xFFu) == 0 && (cm::kFlagSeeThrough & 0xFFu) == 0 && cm::kFlagMirror != cm::kFlagSeeThrough,

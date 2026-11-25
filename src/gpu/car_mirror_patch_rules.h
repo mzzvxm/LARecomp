@@ -224,7 +224,8 @@ inline Candidate Place(uint32_t item, const float transform[3][4], const PatchSt
 
 inline float Dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
-// Whether two candidates are a pair of mirrors; `up` is the world's up in view space (unit). On success `*score` ranks the pair (bigger: more alike).
+// Whether two candidates are a pair of mirrors; `up` is the world's up in view space (unit). On success `*score` ranks the pair (bigger: more alike as a mirrored pair: the same size, and the normals
+// mirror images of one another).
 inline bool IsMirrorPair(const Candidate& a, const Candidate& b, const float up[3], float* score = nullptr) {
   const float d[3] = {b.centre[0] - a.centre[0], b.centre[1] - a.centre[1], b.centre[2] - a.centre[2]};
   const float distance = std::sqrt(Dot3(d, d));
@@ -255,7 +256,12 @@ inline bool IsMirrorPair(const Candidate& a, const Candidate& b, const float up[
     return false;
   }
   if (score) {
-    *score = smaller / larger + same_way;
+    // How alike the two are as a MIRRORED PAIR, not as two patches that face the same way: the right glass is the left one reflected in the plane half way between them (perpendicular to the line
+    // from one to the other), so a's normal reflected in that plane is b's: 1 for twins. `same_way` ranked another small flat part of the R34 that faces the way a faces (the instance 103 the
+    // far LOD's logs name, 1.25 m from a, area 0.0138 against 0.0165, same_way 0.92) above the real twin, whose normal is a's tilted the other way across the car (same_way 0.70, score 1.70 against 1.76).
+    const float along = Dot3(a.normal, line);
+    const float reflected[3] = {a.normal[0] - 2.0f * along * line[0], a.normal[1] - 2.0f * along * line[1], a.normal[2] - 2.0f * along * line[2]};
+    *score = smaller / larger + Dot3(reflected, b.normal);
   }
   return true;
 }
