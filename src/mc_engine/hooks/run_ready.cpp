@@ -1,5 +1,7 @@
 #include "run_ready.h"
 
+#include "os/environment.h"
+
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
@@ -11,8 +13,8 @@ namespace {
 
 bool Enabled() {
     static const bool enabled = [] {
-        const char* value = std::getenv("LARECOMP_RUN_READY_V1");
-        return value && std::strcmp(value, "1") == 0;
+        // read through os::ReadEnvironment (a copy), like the other runtime readers (static analysis: getenv is not thread safe)
+        return larecomp::os::ReadEnvironment("LARECOMP_RUN_READY_V1").value_or("") == "1";
     }();
     return enabled;
 }
