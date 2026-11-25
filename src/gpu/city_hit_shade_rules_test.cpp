@@ -984,7 +984,7 @@ void NanChecks(const City& city, Lcg& rng) {
   Check(differ == 0, Num("the shaded colour is the twin's with NaN and infinite units too (%.0f cases differ)", differ));
 }
 
-void ResolveDetailChecks(const City& city, Lcg& rng) {
+void ResolveGroundChecks(const City& city, Lcg& rng) {
   Case k = RandomCase(rng, uint32_t(city.sectors.size()));
   k.frame.light.valid = true;
   k.p.mode = cs::kModeReflect;
@@ -998,13 +998,11 @@ void ResolveDetailChecks(const City& city, Lcg& rng) {
 
   k.sector = 0;  // textured wall
   const auto wall = ShaderInstance(k);
-  const auto resolve = [&](hlsl_shim::CityHitInstance instance, bool require_detail) {
-    return hlsl_shim::CityHitResolve(params, frame, screen, ray, instance, require_detail);
+  const auto resolve = [&](hlsl_shim::CityHitInstance instance, bool ground) {
+    return hlsl_shim::CityHitResolve(params, frame, screen, ray, instance, ground);
   };
-  const auto original = resolve(wall, false);
-  const auto detailed = resolve(wall, true);
-  CHECK(original.source == cs::kSourceShaded && detailed.source == original.source &&
-        Close(detailed.colour, {original.colour.x, original.colour.y, original.colour.z}));
+  CHECK(resolve(wall, false).source == cs::kSourceShaded);
+  CHECK(resolve(wall, true).source == cs::kSourceNone);
 
   auto lod = wall;
   lod.instanceId = kInstanceIdFlag | SectorRowOf(k.sector, true);
@@ -1017,7 +1015,7 @@ void ResolveDetailChecks(const City& city, Lcg& rng) {
   CHECK(resolve(placeholder, true).source == cs::kSourceNone);
 
   k.sector = 4;  // known material whose texture is not resident
-  CHECK(resolve(ShaderInstance(k), true).source == cs::kSourceShaded);
+  CHECK(resolve(ShaderInstance(k), true).source == cs::kSourceNone);
   k.sector = 11;  // missing hit data
   CHECK(resolve(ShaderInstance(k), true).source == cs::kSourceNone);
 }
@@ -1025,6 +1023,7 @@ void ResolveDetailChecks(const City& city, Lcg& rng) {
 // CityHitResolve against the twin's resolve.
 void ResolveChecks(const City& city, Lcg& rng, int rounds, int* sources_seen) {
   int wrong_source = 0, wrong_colour = 0, wrong_weight = 0, wrong_fields = 0, wrong_stats = 0, calibrated = 0;
+  int ground_screen = 0, ground_partial = 0, wrong_ground = 0;
   std::vector<hlsl_shim::uint4> frame_rows, lamp_rows;
   for (int round = 0; round < rounds; ++round) {
     Case k = RandomCase(rng, uint32_t(city.sectors.size()));
@@ -1057,6 +1056,12 @@ void ResolveChecks(const City& city, Lcg& rng, int rounds, int* sources_seen) {
     hlsl_shim::gLampCalls.clear();
     const hlsl_shim::RtHitFrame f = hlsl_shim::RtHitLoadFrame();
     const hlsl_shim::CityHitResolved s = hlsl_shim::CityHitResolve(ShaderParams(k), f, hs, ShaderRay(k), ShaderInstance(k));
+    const auto plain_stats = hlsl_shim::gStats;
+    const size_t sun_calls = hlsl_shim::gSunCalls.size();
+    const size_t lamp_calls = hlsl_shim::gLampCalls.size();
+    const auto instance = ShaderInstance(k);
+    const auto ground = hlsl_shim::CityHitResolve(ShaderParams(k), f, hs, ShaderRay(k), instance, true);
+    if (hlsl_shim::gStats != plain_stats || hlsl_shim::gSunCalls.size() != sun_calls || hlsl_shim::gLampCalls.size() != lamp_calls) ++wrong_ground;
 
     // the twin
     const Decoded d = DecodeCase(city, k);
@@ -1064,8 +1069,8 @@ void ResolveChecks(const City& city, Lcg& rng, int rounds, int* sources_seen) {
     float weight = 0.0f;
     std::vector<uint32_t> stats(48, 0);
     cs::Shaded shaded;
+    cs::V3 seen{};
     if (d.hit.valid) {
-      cs::V3 seen;
       const cs::V3 normal = cs::ViewNormal(d.hit.normal, k.inst, k.ray.direction);
       cs::ScreenAt at;
       if ((k.p.flags & cs::kPScreen) != 0) {
@@ -1090,6 +1095,13 @@ void ResolveChecks(const City& city, Lcg& rng, int rounds, int* sources_seen) {
       }
       tr = cs::Mix(weight, seen, shaded, shaded.valid ? hlsl_shim::gGain[std::min(shaded.cls, 15u)] : 1.0f);
     }
+    if (weight > 0.0f && d.hit.material != 0u && (instance.instanceId & 1u) == 0u) {
+      ++ground_screen;
+      if (weight < 1.0f) ++ground_partial;
+      if (ground.source != cs::kSourceScreen || !Near(ground.screen, weight, 2e-4) || !Close(ground.colour, seen, 5e-4)) ++wrong_ground;
+    } else if (ground.source != cs::kSourceNone) {
+      ++wrong_ground;
+    }
     if (s.source != tr.source) {
       ++wrong_source;
       continue;
@@ -1112,6 +1124,8 @@ void ResolveChecks(const City& city, Lcg& rng, int rounds, int* sources_seen) {
   Check(wrong_fields == 0, Num("the class, the sun and the normal of a shaded hit come through the resolve (%.0f wrong)", wrong_fields));
   Check(wrong_stats == 0, Num("the calibration's counters are the twin's: the class's count, the picture's summed log, the model's (%.0f cases differ)", wrong_stats));
   Check(calibrated > 40, Num("the calibration was exercised (%.0f samples)", calibrated));
+  Check(ground_screen > 0 && ground_partial > 0 && wrong_ground == 0,
+        Num("ground resolve uses raster colour at full or partial coverage and skips model lighting and calibration (%.0f wrong)", wrong_ground));
 }
 
 // the text of the library: what the host and the other passes rely on
@@ -1167,7 +1181,7 @@ int main(int argc, char** argv) {
         Num2("textured, sun-ray, lamp-ray, cascade, GI, glow and feedback cases were all exercised (textured %.0f, sun rays %.0f)", cov.textured_cases, cov.sun_rays));
   int sources[4] = {};
   ResolveChecks(city, rng, 6000, sources);
-  ResolveDetailChecks(city, rng);
+  ResolveGroundChecks(city, rng);
   Check(sources[cs::kSourceScreen] > 400 && sources[cs::kSourceShaded] > 400 && sources[cs::kSourceBlend] > 100 && sources[cs::kSourceNone] > 100,
         Num2("the resolve ended in the picture, the model, both and nothing (picture %.0f, model %.0f)", sources[cs::kSourceScreen], sources[cs::kSourceShaded]));
   LampTermChecks(city, rng, src);

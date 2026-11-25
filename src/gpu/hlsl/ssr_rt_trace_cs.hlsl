@@ -164,8 +164,11 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float lift = SsrRtLift(r.pc.z, 2.0f * tan_y / float(max(h0.y, 1)));
   const float3 origin = r.pc + r.n * lift;
   const float weight = SsrRtWeight(SsrRtKeep(capacity, g_ctl.Load((SSR_RT_CTL_TOTAL + (rt_frame + 2u) % 3u) * 4u)));
-  // The shared city mask admits far LOD. Ground reflections keep their SSR/planar answer where the closest hit is a proxy or uses the placeholder material.
-  const bool require_detail = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;
+  // Ground surfaces already have SSR and the game's planar view. Only replace their reflection where the detailed hit agrees with the rasterized view.
+  const bool ground = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;
+  if (ground && (flags & SSR_RT_FLAG_SCREEN) == 0u) {
+    return;
+  }
 
   // the road view the trace takes out of a road where it finds a reflection (the share the trace was given): taken out here for the ray traced one in the same way
   float3 fallback = float3(0.0f, 0.0f, 0.0f);
@@ -217,15 +220,18 @@ void main(uint3 id : SV_DispatchThreadID) {
     ray.direction = dir;
     ray.t = hit.t;
     ray.footprint = SsrRtFootprint(pixel_angle, receiver_distance, hit.t, cone_tan);
-    const CityHitResolved res = CityHitResolve(p, f, s, ray, hit.inst, require_detail);
-    if (res.source == CITY_HIT_SOURCE_NONE) {
+    const CityHitResolved res = CityHitResolve(p, f, s, ray, hit.inst, ground);
+    const float coverage = SsrRtHitCoverage(ground, res.screen);
+    if (res.source == CITY_HIT_SOURCE_NONE || coverage <= 0.0f) {
       SsrRtCount(stats, SSR_RT_CENSUS_NO_DATA);
       continue;   // keep the SSR/planar result for this ray, including its hit distance
     }
     SsrRtCount(stats, res.screen >= 0.5f ? SSR_RT_CENSUS_SCREEN : SSR_RT_CENSUS_SHADED);
-    const float fade = SsrRtReachFade(hit.t, reach);
+    const float fade = coverage * SsrRtReachFade(hit.t, reach);
     sum += (min(res.colour, float3(cap, cap, cap)) - fallback) * fade;
-    nearest = min(nearest, hit.t);
+    if (!ground || fade >= 0.5f) {
+      nearest = min(nearest, hit.t);
+    }
     any_hit = true;
   }
   if (!any_hit) {
@@ -237,7 +243,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     rgb *= cap / peak;
   }
   float alpha = current.w;
-  if (confidence < 0.5f) {
+  if (confidence < 0.5f && nearest < kSsrMissLength) {
     alpha = SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u);   // the reflection is the ray traced one's: its distance is the virtual image's
   }
   g_trace[pix] = float4(rgb, alpha);

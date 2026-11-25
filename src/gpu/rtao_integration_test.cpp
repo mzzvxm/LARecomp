@@ -112,9 +112,17 @@ void FrameChecks(Checks& checks, const fs::path& gpu) {
     checks.Expect(std::regex_search(code, std::regex(pattern)), what);
   };
   checks.Expect(denoise.contains("kSpatialResolve = 27;") &&
-                    denoise.contains("push[kSpatialResolve] = larecomp::settings::mcla_gpu_rtao_spatial_resolve.Get() ? 1u : 0u;") &&
+                    denoise.contains("const bool spatial_resolve = larecomp::settings::mcla_gpu_rtao_spatial_resolve.Get();") &&
+                    denoise.find("push[kSpatialResolve] = spatial_resolve ? 1u : 0u;") < denoise.find("denoiser_.RecordTemporal(pass)") &&
                     consumer.contains("RtAoSpatialResolve() { return RtDnW(27) != 0u; }"),
-                "host and spatial shader agree on the live resolve word");
+                "host sets the live resolve word before both dispatches");
+  checks.Expect(denoise.contains("spatial_resolve == previous_spatial_resolve_") && denoise.contains("previous_spatial_resolve_ = spatial_resolve;"),
+                "changing the resolve restarts temporal history");
+  checks.Expect(engine.contains("RtAoSpatialResolve() && c.vehicle == 0u && raw.z == 0.25f") &&
+                    engine.contains("if (resolve || h.length > 0.0f)") &&
+                    engine.contains("!RtAoAcceptTap(tap.z, c.z, tap.vehicle == 0u, dot(c.n, tap.n))") &&
+                    engine.contains("if (resolve) current = RtAoResolveCurrent(current, sum, count);"),
+                "single-ray world pixels gather compatible neighbours even when there is no history");
   checks.Expect(engine.contains("!(step == 2u && resolve)") &&
                     engine.contains("RtDnAmbientStep(radius, step, c.length, resolve, c.vehicle != 0u)"),
                 "the spatial shader runs the extra bilateral step only on eligible world pixels");

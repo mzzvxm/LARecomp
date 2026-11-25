@@ -323,6 +323,7 @@
 {"mcla_gpu_car_selfrefl_length", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_rt", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_rt_denoise", "MCLA/GPU"},
+{"mcla_gpu_car_selfrefl_rt_resolve", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_rt_gloss", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_rt_length", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_rt_parts", "MCLA/GPU"},
