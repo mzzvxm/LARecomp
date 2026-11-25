@@ -53,6 +53,7 @@ int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);
 std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device);
 std::string DescribeLossReporting(plume::RenderDevice* device, void* probe);
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
+PresentResult PresentNowait(plume::RenderSwapChain* swap_chain);
 std::string DefaultAdapterName();
 RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter);
 NativeDevice NativeDeviceOf(plume::RenderDevice* device);

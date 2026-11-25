@@ -49,6 +49,8 @@
 
 #include <plume_render_interface.h>
 
+#include "present_rules.h"
+
 namespace mcla::gpu {
 
 class Device;
@@ -124,8 +126,9 @@ class SwapChain {
   // retries once, and must not wait on `signal` after a failure (Vulkan does
   // not signal it then).
   bool Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image);
-  // Presents `image` once its render-finished semaphore is signalled.
-  bool Present(uint32_t image);
+  // Presents `image` once its render-finished semaphore is signalled. The D3D12
+  // headless test can drop the present when DXGI's queue is full.
+  PresentResult Present(uint32_t image, bool do_not_wait = false);
 
   void SetVsync(bool vsync);
   void WaitForPresentSlot();  // no-op unless present wait is active

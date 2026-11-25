@@ -84,6 +84,12 @@ The program keeps the XENIA renderer (the SDK's Xenia GPU emulation, with all th
 
 Where else a player can end up on it: the box "LARecomp could not start on this PC's graphics card" has the button **Use the compatibility renderer** (the first button and the default, Enter; **Close** is next to it, Esc; it writes the same line and starts the game again; with a launch option that sets `gpu.driver` it names the option instead; on Windows the box is LARecomp's own, `src/gpu/choice_box.h`, so the long label is not cut); the shader build's failure dialog has **COMPATIBILITY RENDERER** (the compatibility renderer needs no packs); and after two starts in a row of the native renderer that never presented 120 frames or closed by themselves (a crash, a kill: `logs/renderer_start.txt` holds the count, no file means none) the next start asks once. All three log `[renderer] the compatibility renderer is set (gpu.driver = "d3d12" in ...); starting the game again`. To go back: RENDERER > NATIVE, or `gpu.driver = "larecomp"` in `larecomp.toml`.
 
+## Headless present test
+
+Launch with `--debug_menu --mcla_test_present_nowait=true` for a locked or screenless D3D12 A/B. The switch defaults to off and is read at startup. Disable frame generation for these runs. When DXGI reports `DXGI_ERROR_WAS_STILL_DRAWING`, the rendered frame keeps its usual fence and the display skips the image. The log reports `dropped_present_count` and `dropped_present_total` at most once per second, with any pending count flushed at shutdown. Vulkan uses its usual present path because Plume exposes no nonblocking Vulkan present.
+
+The existing `[gpu] scene (interval)` line reports `present_call_ms`, `frame_fence_ms`, `acquire_ms` and `present_slot_ms` as milliseconds per frame alongside the total GPU waits. `present_call_ms` measures the Plume call on the regular path, including its internal Vulkan queue lock, and the DXGI call in D3D12 no-wait mode.
+
 ## Diagnostics that write to the log
 
 These only read: they change nothing in the game, they cost nothing while off, and each one is a line or two a tester can send. Switch one on from its row or with a launch argument; the log needs `log_level` info (the default). Why these and not the others of the old local test patches: `feature-parity/T4-DIAGNOSTICS.md`.

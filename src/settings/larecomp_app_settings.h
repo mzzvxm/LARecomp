@@ -69,6 +69,11 @@ class AppSettings final : public rex::SettingOwner {
               "0 leaves the affinity alone. For CPU scaling tests.",
               rex::kInitOnly, rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_test_present_nowait, false,
+              "Headless test only: drop D3D12 presents when DXGI would block. Requires debug_menu. "
+              "Read at startup.",
+              rex::kInitOnly, rex::kDebugOnly);
+
   ValidatedString frame_step_cap{
       this, "frame_step_cap", "adaptive",
       "How far one frame may advance the game's clock after a stall (a texture-streaming hitch, a "
@@ -92,6 +97,7 @@ inline auto& debug_menu = g_app.debug_menu;
 inline auto& mcla_gpu_force_refusal = g_app.mcla_gpu_force_refusal;
 inline auto& render_wait_mode = g_app.render_wait_mode;
 inline auto& cpu_limit_lp = g_app.cpu_limit_lp;
+inline auto& mcla_test_present_nowait = g_app.mcla_test_present_nowait;
 inline auto& frame_step_cap = g_app.frame_step_cap;
 inline auto& rmr_server_port = g_app.rmr_server_port;
 

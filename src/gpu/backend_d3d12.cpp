@@ -8,7 +8,9 @@
 
 #include "backend_impl.h"
 
+#include "present_rules.h"
 #include "temporal_dlss.h"
+#include "thread_load.h"
 #include "uma_budget.h"
 
 #include <algorithm>
@@ -534,6 +536,26 @@ bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistic
     out.sync_qpc = stats.SyncQPCTime.QuadPart;
   }
   return true;
+}
+
+PresentResult PresentNowait(plume::RenderSwapChain* swap_chain) {
+  auto* chain = static_cast<plume::D3D12SwapChain*>(swap_chain);
+  if (!chain || !chain->d3d) {
+    return PresentResult::kFailed;
+  }
+#if defined(LARECOMP_HAS_DLSS) && defined(LARECOMP_PLUME_D3D12_PRESENT_HOOK)
+  IDXGISwapChain1* current = chain->d3d;
+  UpgradeSwapChainAtPresent(nullptr, &current);
+  chain->d3d = static_cast<IDXGISwapChain3*>(current);
+#endif
+  // Match the pinned Plume's D3D12SwapChain::present sync interval and tearing flags.
+  const UINT interval = (chain->vsyncEnabled && !chain->desc.enablePresentWait) ? 1 : 0;
+  const bool tearing = !chain->vsyncEnabled &&
+                       (chain->swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
+  const UINT flags = DXGI_PRESENT_DO_NOT_WAIT | (tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+  static_assert(kDxgiWasStillDrawing == DXGI_ERROR_WAS_STILL_DRAWING);
+  const ScopedGpuWaitDetail detail(GpuWaitKind::kPresentCall);
+  return ClassifyDxgiPresentNowait(chain->d3d->Present(interval, flags));
 }
 
 namespace {

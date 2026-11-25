@@ -4577,6 +4577,9 @@ void Scene::Report(const char* why) {
   const uint64_t busy = load.total_cycles - std::min(load.total_cycles,
                                                     load.idle_cycles + load.gpu_wait_cycles);
   const double thread_cpu_ms = cycles::ToNs(busy) / frames / 1e6;
+  const auto wait_ms = [&](GpuWaitKind kind) {
+    return cycles::ToNs(load.GpuWaitCycles(kind)) / frames / 1e6;
+  };
   // The final report runs on the thread that shuts the renderer down, whose
   // load is not the render thread's.
   const std::string thread_text =
@@ -4585,6 +4588,14 @@ void Scene::Report(const char* why) {
                         cycles::ToNs(load.gpu_wait_cycles) / frames / 1e6,
                         cycles::ToNs(load.idle_cycles) / frames / 1e6)
           : std::string("thread time not on the render thread");
+  // The first interval has wait samples even though Take has no wall-clock baseline yet.
+  const std::string wait_text =
+      (load.total_cycles || load.gpu_wait_cycles)
+          ? std::format(" | present_call_ms={:.3f} frame_fence_ms={:.3f} acquire_ms={:.3f} "
+                        "present_slot_ms={:.3f}",
+                        wait_ms(GpuWaitKind::kPresentCall), wait_ms(GpuWaitKind::kFrameFence),
+                        wait_ms(GpuWaitKind::kAcquire), wait_ms(GpuWaitKind::kPresentSlot))
+          : std::string();
   std::string skips;
   for (size_t i = 0; i < w.skips.size(); ++i) {
     if (w.skips[i]) {
@@ -4626,7 +4637,7 @@ void Scene::Report(const char* why) {
       "| input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
       "MiB/frame ({} bank, {} shared uploads) | fetch memo {:.0f}% | clears {}, resolves {}, "
       "tiling {}/{} | variant pipelines failed {} (draws that fell back {}) | prepare "
-      "{:.2f} ms/frame | {}",
+      "{:.2f} ms/frame | {}{}",
       why, w.frames, double(w.draws) / frames, w.prepared, w.recorded,
       skips.empty() ? "none" : skips, geometry.empty() ? "ok" : geometry,
       w.no_effect[0] + w.no_effect[1] + w.no_effect[2] + w.no_effect[3], w.no_effect[0],
@@ -4649,7 +4660,7 @@ void Scene::Report(const char* why) {
           ? 100.0 * double(w.fetch_memo_hits) / double(w.fetches + w.fetch_not_texture)
           : 0.0,
       w.clears, w.resolves, w.tiling_begins, w.tiling_ends, ps.variant_failed, ps.variant_fallback_draws,
-      cycles::ToNs(w.prepare_cycles) / frames / 1e6, thread_text);
+      cycles::ToNs(w.prepare_cycles) / frames / 1e6, thread_text, wait_text);
   if (w.mirror_prepared != 0 || mirror_rect_.valid()) {
     // The rear view mirror's draws (mirror_draws.h), per frame of the window (every frame, not only the ones that drew it: a mirror that skips frames shows its
     // average), with the frames that drew it, what they cost to prepare and record, and whether they stay out of the main view's consumers. The cost chain

@@ -32,6 +32,8 @@
 
 namespace mcla::gpu {
 
+enum class PresentResult : uint8_t;
+
 enum class Backend : uint8_t { kD3D12, kVulkan };
 
 // Whether this build carries `backend`.
@@ -268,6 +270,9 @@ struct PresentStatistics {
   int64_t sync_qpc = 0;
 };
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
+
+// The D3D12 test present. The normal path uses RenderSwapChain::present.
+PresentResult PresentD3D12Nowait(plume::RenderSwapChain* swap_chain);
 
 // The PCI vendor id (0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel) of the GPU the renderer will use, as
 // DXGI lists it, for the adapter named `preferred_adapter` (mcla_gpu_adapter; empty: Windows' choice
