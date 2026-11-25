@@ -16,4 +16,16 @@ inline constexpr char kShaderPhasesLine[] =
 inline constexpr char kCityPhasesLine[] =
     "@citypack|phases|far level of detail:6:Build distant geometry;lamps:1:Build lamps;city sectors:93:Build city sectors";
 
+// CITY-RT-M3 act-hit-first-261121-123528/logs/city_hit_build.txt: phases start at
+// 0.1, 1.2, 1.5 and 1.7 s and finish at 6.7 s. Round the intervals to shares of 100.
+inline constexpr char kCityHitPhasesLine[] =
+    "@citypack|phases|city textures:17:Read city textures;city texture files:4:Write city textures;"
+    "far level of detail:3:Build distant geometry;city hit sectors:76:Build city hit sectors";
+
+// CITY-RT-M3 act-hit-deep-261121-123536/logs/city_hit_check.txt: phases start at
+// 0.0, 0.6 and 1.3 s and finish at 1.6 s. The stamp-only check has no phase events.
+inline constexpr char kCityHitCheckPhasesLine[] =
+    "@citypack|phases|checking the city pack:37:Check city pack;checking the city hit file:44:Check city hit file;"
+    "checking the city textures:19:Check city textures";
+
 }  // namespace larecomp::pack_progress

@@ -159,6 +159,17 @@ void TestPhaseLists() {
       {"lamps", 1, "Build lamps"},
       {"city sectors", 93, "Build city sectors"},
   }));
+  CHECK((ParsePhases(kCityHitPhasesLine, "@citypack|phases|") == std::vector<Phase>{
+      {"city textures", 17, "Read city textures"},
+      {"city texture files", 4, "Write city textures"},
+      {"far level of detail", 3, "Build distant geometry"},
+      {"city hit sectors", 76, "Build city hit sectors"},
+  }));
+  CHECK((ParsePhases(kCityHitCheckPhasesLine, "@citypack|phases|") == std::vector<Phase>{
+      {"checking the city pack", 37, "Check city pack"},
+      {"checking the city hit file", 44, "Check city hit file"},
+      {"checking the city textures", 19, "Check city textures"},
+  }));
 }
 
 // Which of the command line's actions run, and in which order (PlanActions: main.cpp reads the five flags from the arguments, the app runs the plan).

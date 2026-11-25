@@ -453,8 +453,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
 #endif
 }
 
-// CHECK: written without a build of larecomp. Run it in the install's game folder with the stdout piped, after --build_city_pack: `larecomp.exe --build_city_hit`; expect the folder line, the phases
-// "city textures", "city texture files", "far level of detail" and "city hit sectors" with their steps, "@citypack|result|ok|built the hit data: ...", exit 0, logs/city_hit_build.txt, the two files
+// "city textures", "city texture files", "far level of detail" and "city hit sectors" have steps, then "@citypack|result|ok|built the hit data: ...", exit 0, logs/city_hit_build.txt, the two files
 // and mcla_city_hit.stamp in <shader pack folder>/city; then a second run that prints "up to date" at once (the stamp), and `--check_city_hit` (exit 0, "up to date"), with
 // `--check_city_hit_deep=true` the three "checking ..." phases and exit 0. Also: delete the texture file, `--check_city_hit` must say "not current" (exit 1) and the build must build both again.
 // CHECK: with current hit data, repeat `--build_city_hit` with `--build_city_hit_force` and with `--build_city_hit_force=true`. Both should rebuild.
@@ -476,6 +475,7 @@ int RunBuildHitCommandLine(const std::filesystem::path& game_root) {
   base.force = larecomp::settings::build_city_hit_force.Get();
   base.threads = uint32_t(std::max(0, larecomp::settings::shader_pack_threads.Get()));  // 0: every thread but one
 
+  Emit(pack_progress::kCityHitPhasesLine);
   const cp::HitDataResult result = BuildHitGuarded(MakeHitRequest(base), &sink);
   if (result.ok && result.up_to_date) return finish(Status::kUpToDate, HitCurrentText(PathUtf8(folder)));
   if (result.ok) return finish(Status::kOk, BuiltHitText(result) + " (into " + PathUtf8(folder) + ")");
@@ -490,7 +490,6 @@ int RunBuildHitCommandLine(const std::filesystem::path& game_root) {
 #endif
 }
 
-// CHECK: written without a build of larecomp (see RunBuildHitCommandLine for the run to make).
 int RunCheckHitCommandLine(const std::filesystem::path& game_root, bool deep) {
 #if defined(LARECOMP_HAS_GPU)
   const std::filesystem::path folder = mcla::gpu::CityPackFolder();
@@ -505,6 +504,7 @@ int RunCheckHitCommandLine(const std::filesystem::path& game_root, bool deep) {
   if (!std::filesystem::exists(base.source_rpf, ec)) {
     return finish(Status::kNoArchive, PathUtf8(base.source_rpf) + " is not there: the game folder is not the one with the game files.");
   }
+  Emit(pack_progress::kCityHitCheckPhasesLine);
   // The stat check first, deep or not: files that are not for these game files and this city pack are not worth reading back.
   cp::StampCheck stamp;
   try {
