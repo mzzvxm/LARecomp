@@ -1391,6 +1391,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_reflection_scale, 0.0, "Diagnostic: the road reflection's size as a multiple of the game's 256x256 (any step of 0.05), "
     "instead of what mcla_gpu_reflection_resolution says. 0: the setting's. Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
+  REX_SETTING(bool, mcla_gpu_road_mirror_blur, false, "Soften the wet road's planar reflection and fade it with distance. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_resolution_scale, 0.0, "Render scale: every render target that is an image of the screen (the scene, the UI, the "
     "post-processing sized from the screen) is this many times the guest's in each direction, from "
@@ -2370,6 +2371,7 @@ inline auto& mcla_gpu_readable_cache = g_gpu.mcla_gpu_readable_cache;
 inline auto& mcla_gpu_readable_cache_check = g_gpu.mcla_gpu_readable_cache_check;
 inline auto& mcla_gpu_reflection_resolution = g_gpu.mcla_gpu_reflection_resolution;
 inline auto& mcla_gpu_reflection_scale = g_gpu.mcla_gpu_reflection_scale;
+inline auto& mcla_gpu_road_mirror_blur = g_gpu.mcla_gpu_road_mirror_blur;
 inline auto& mcla_gpu_resolution_scale = g_gpu.mcla_gpu_resolution_scale;
 inline auto& mcla_gpu_resolve_7e3_ceiling = g_gpu.mcla_gpu_resolve_7e3_ceiling;
 inline auto& mcla_gpu_resolve_fill_half_pixel = g_gpu.mcla_gpu_resolve_fill_half_pixel;

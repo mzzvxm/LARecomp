@@ -1756,7 +1756,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     // thread never makes them (variant_wait.h: the ladder of keys below). Only the game's own key at the end of the ladder keeps the game's rule. A take still waits (sync_builds.h).
     // A variant whose build FAILS takes the same way down, for good (the failed key is remembered: pipelines.h, Deferral::has_fallback); only the game's own key failing drops the draw.
     const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw, true};
-    const auto extras_of = [&](const PipelineKey& key) { return variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant)}; };
+    const auto extras_of = [&](const PipelineKey& key) {
+      return variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant), variant_wait::HasRoadMirrorBlur(key.ps_variant)};
+    };
     const auto ask_for = [&](const PipelineKey& key) -> const Deferral* {
       return variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways ? &waits : &deferral;
     };
@@ -1779,6 +1781,16 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       d.gbuffer_mode = gbuffer::PlaneMode::kNone;
       pending = false;
       gbuffer_->NoteFallbackDraw();
+      d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
+    }
+    if (falls_back() && variant_wait::HasRoadMirrorBlur(pipeline_key.ps_variant)) {
+      // Keep drawing the road while its filter pipeline is being built or if the driver rejects it.
+      if (!pending) {
+        pipelines_->NoteVariantFailedDraw();
+      }
+      pipeline_key.ps_variant = variant_wait::WordWithoutFeature(pipeline_key.ps_variant, larecomp::shaderpack::kFeatureRoadMirrorBlur,
+                                                                [&](uint32_t rest) { return d.ps && d.ps->HasWord(rest); });
+      pending = false;
       d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
     }
     if (falls_back() && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {

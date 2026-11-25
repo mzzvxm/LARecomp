@@ -178,6 +178,7 @@ inline constexpr uint32_t kFeatureGBufferVs = 12;
 // reads the colour of the ray traced image (the city, the cars beside the player) where the chrome variant reads its weight alone. It has no constants of its own (it reads the chrome's
 // block) and composes with the chrome's stage and the G-buffer's; the chrome's own words are not touched, so a frame that does not want it draws the chrome of every version before it.
 inline constexpr uint32_t kFeatureCarChromeCity = 13;
+inline constexpr uint32_t kFeatureRoadMirrorBlur = 14;  // the road's planar reflection lookup and blend
 // The next free index is 14: a new feature takes the next one, with its row in variant_chain.h's table.
 
 // Entry flags of the variant pack (the entry's `flags`).

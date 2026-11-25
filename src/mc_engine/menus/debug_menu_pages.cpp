@@ -216,6 +216,7 @@ const ItemDef kDebugPictureFixesItems[] = {
     // The auto-exposure measures the same screen area above a render scale of 1x as at 1x (its sample pass's
     // taps follow the scale). Read at each draw, so the row is live; no change at a render scale of 1x.
     NativeOnly(Bool("PM_RxDbgLumScale", "mcla_gpu_luminance_scale_fix", "EXPOSURE SAMPLE FIX: ")),
+    NativeOnly(Bool("PM_RxDbgRoadMirror", "mcla_gpu_road_mirror_blur", "ROAD MIRROR BLUR: ")),
     // How hard the UI sharpening works (gpu/ui_sharp.h): the SHARP UI row on GRAPHICS > IMAGE QUALITY turns it on and off (mcla_ui_sharp, on by default,
     // and SHARP MINIMAP is mcla_ui_minimap_scale); this is the strength for tuning, 1 the default, 2 a harder alpha edge. Read at each UI draw, so live.
     NativeOnly(Dbl("PM_RxDbgUiSharp", "mcla_ui_sharp_strength", "UI SHARP STRENGTH: ",

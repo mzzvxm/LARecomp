@@ -3398,6 +3398,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_road_mirror_blur": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Soften the wet road's planar reflection and fade it with distance. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_shadow_resolution": {
   "type": "std::string",
   "default": "\"auto\"",
