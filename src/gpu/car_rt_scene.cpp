@@ -222,6 +222,7 @@ void CarRtScene::Shutdown() {
   walked_keys_.clear();
   walked_set_.Clear();
   walked_present_.clear();
+  parked_seen_.clear();
   positions_ = Shared{};
   normals_ = Shared{};
   uvs_ = Shared{};
@@ -1229,7 +1230,7 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
     walked_traffic_placed_ = 0;
     return;
   }
-  const car_model_walk::ProofReport proof = walker.Resolve(frame.view, flip_z);
+  const car_model_walk::ProofReport proof = walker.Resolve(frame.view, flip_z, &frame.other_cars);
   const std::vector<car_model_walk::WalkedCar>& walked = walker.walked();
   const car_rt_instances::Limits& limits = car_frame_->other_limits();
   ++walked_stats_.walk_frames;
@@ -1244,6 +1245,7 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
     info.is_player = car.is_player;
     info.drawn = car.drawn;
     info.visible = car.visible;
+    info.unclaimed = car.unclaimed;
     info.traffic = car.traffic;
     info.distance = car.distance;
     info.paint = car.paint;
@@ -1307,6 +1309,7 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
   std::string entered;
   std::unordered_map<uint32_t, car_model_parts::Composition> resident_by_car;
   uint32_t traffic_placed = 0, racers_placed = 0, parts_body = 0, parts_tyres = 0, parts_rims = 0, parts_model = 0, parts_wheels_held = 0;
+  uint32_t parked_placed = 0, parked_instances = 0;  // RT-PARKED-CARS: placed cars the main view shows (no draw is theirs)
   for (const uint32_t index : placed) {
     const car_model_walk::WalkedCar& car = walked[index];
     car_rt_instances::OtherCar other;
@@ -1355,6 +1358,15 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
     }
     present.insert(car.vehicle);
     instances += resident;
+    if (car.traffic && car.visible) {
+      ++parked_placed;
+      parked_instances += resident;
+      if (parked_logged_ < 8 && parked_seen_.insert(car.vehicle).second) {
+        ++parked_logged_;
+        REXLOG_INFO("{} frame {}: parked car {:#010x} ({:.1f} m from the player) is shown by the main view and no draw is its: placed in the top level from its model data, {} of {} parts (RT-PARKED-CARS)", kPrefix,
+                    frame_, car.vehicle, car.distance, resident, car.parts.size());
+      }
+    }
     extra_cars_.push_back(other);
     entered += std::format("{}{:#010x} at {:.1f} m: {} of {} parts, paint {}", entered.empty() ? "" : "; ", car.vehicle, car.distance, resident, car.parts.size(), crt::Describe(paint));
     ++slot;
@@ -1383,6 +1395,7 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
   walked_stats_.most_built_triangles = std::max(walked_stats_.most_built_triangles, walked_build_triangles_frame_);
   walked_traffic_placed_ = traffic_placed;
   NotePartsKinds(walker, walked, resident_by_car, present, traffic_placed, racers_placed, parts_body, parts_tyres, parts_rims, parts_model, parts_wheels_held, proof);
+  NoteParkedCars(proof, parked_placed, parked_instances);
 
   // the log: a car comes or goes, and the totals every few hundred frames
   if (present != walked_present_) {
@@ -1531,6 +1544,37 @@ void CarRtScene::NotePartsKinds(car_model_walk::Walker& walker, const std::vecto
   }
 }
 
+// RT-PARKED-CARS: the window line. A traffic car the main view shows is the draw path's when a draw of the frame is its or the draw path keeps a car at its place; the rest are UNCLAIMED (a parked
+// car writes no vehicle stencil ID) and the walk places them like hidden cars, within the traffic count and radius. The line says how many there were and how many entered the top level.
+void CarRtScene::NoteParkedCars(const car_model_walk::ProofReport& proof, uint32_t placed, uint32_t instances) {
+  ParkedStats& s = parked_stats_;
+  ++s.frames;
+  s.shown_sum += proof.traffic_shown;
+  s.unclaimed_sum += proof.traffic_unclaimed;
+  s.by_place_sum += proof.traffic_by_place;
+  s.shown_max = std::max(s.shown_max, proof.traffic_shown);
+  s.unclaimed_max = std::max(s.unclaimed_max, proof.traffic_unclaimed);
+  if (placed != 0) {
+    ++s.placed_frames;
+    s.placed_sum += placed;
+    s.instances_sum += instances;
+    s.placed_max = std::max(s.placed_max, placed);
+  }
+  if (parked_log_frame_ == 0) {
+    parked_log_frame_ = frame_;
+  }
+  if (frame_ >= parked_log_frame_ + 300) {
+    const double n = double(std::max<uint64_t>(s.frames, 1));
+    const double placed_n = double(std::max<uint64_t>(s.placed_frames, 1));
+    REXLOG_INFO("{} parked cars (RT-PARKED-CARS), frames {}..{}: traffic cars the main view shows {:.2f} a frame (at most {}), of them claimed by a draw {:.2f} (of those {:.2f} by the draw path's car at their place) and UNCLAIMED "
+                "{:.2f} (at most {}); unclaimed cars placed in the top level in {} frames ({:.2f} a frame, at most {}, {:.1f} instances a frame); mcla_gpu_car_rt_cars_parked {}",
+                kPrefix, parked_log_frame_, frame_, double(s.shown_sum) / n, s.shown_max, double(s.shown_sum - s.unclaimed_sum) / n, double(s.by_place_sum) / n, double(s.unclaimed_sum) / n, s.unclaimed_max,
+                s.placed_frames, double(s.placed_sum) / placed_n, s.placed_max, double(s.instances_sum) / placed_n, larecomp::settings::mcla_gpu_car_rt_cars_parked.Get() ? "on" : "off");
+    parked_stats_ = ParkedStats{};
+    parked_log_frame_ = frame_;
+  }
+}
+
 bool CarRtScene::OnAfterOcclusion(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot, const AmbientOcclusion* ao) {
   if (!check_due_ || !ready_ || !list || slot >= kFramesInFlight || !view_.valid) {
     return false;
@@ -1619,6 +1663,7 @@ void CarRtScene::ReleaseAll(const char* why) {
   walked_keys_.clear();
   walked_set_.Clear();
   walked_present_.clear();
+  parked_seen_.clear();
   resident_bytes_ = 0;
   resident_triangles_ = 0;
   for (Shared* shared : {&positions_, &normals_, &uvs_, &indices_}) {

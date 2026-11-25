@@ -295,6 +295,10 @@ class GPUSettings final : public rex::SettingOwner {
     "matrices, steer and spin included), not the body and the parts alone. The wheels are placed only after their placement has been checked against the draws of the cars the "
     "camera sees. off: no wheels. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_car_rt_cars_parked, true, "Debug (the fix's own switch): a traffic or PARKED car that the camera sees but no draw claims (the game gives a vehicle stencil ID to a car that moves; a parked car has none, so the draw path "
+    "never takes it) is built into the ray traced car scene from its own model data like a car the camera does not see, so the player's reflections show the parked cars in front of the camera as well as the ones behind it. "
+    "Within the traffic count of mcla_gpu_car_rt_cars_traffic and the radius of the graphics class, nearest first. Needs mcla_gpu_car_rt_cars_model. off: a car the camera sees is left to the draw path, as before. Live.", rex::kDebugOnly);
+
   REX_SETTING(std::string, mcla_gpu_rt_shadows, "auto", "Ray traced sun shadows from the city's own triangles (the city pack, built from your game files by the launcher's setup or, "
     "if it is missing, by the game in the background). Rays go from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp "
     "where it touches what casts it and softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows "
@@ -2067,6 +2071,7 @@ inline auto& mcla_gpu_car_rt_cars = g_gpu.mcla_gpu_car_rt_cars;
 inline auto& mcla_gpu_car_rt_cars_match = g_gpu.mcla_gpu_car_rt_cars_match;
 inline auto& mcla_gpu_car_rt_cars_memory = g_gpu.mcla_gpu_car_rt_cars_memory;
 inline auto& mcla_gpu_car_rt_cars_model = g_gpu.mcla_gpu_car_rt_cars_model;
+inline auto& mcla_gpu_car_rt_cars_parked = g_gpu.mcla_gpu_car_rt_cars_parked;
 inline auto& mcla_gpu_car_rt_cars_radius = g_gpu.mcla_gpu_car_rt_cars_radius;
 inline auto& mcla_gpu_car_rt_cars_traffic = g_gpu.mcla_gpu_car_rt_cars_traffic;
 inline auto& mcla_gpu_car_rt_cars_wheels = g_gpu.mcla_gpu_car_rt_cars_wheels;

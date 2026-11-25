@@ -80,6 +80,7 @@ struct WalkedCar {
   bool visible = false;       // the game's +116 at the walk: the main view shows it
   bool drawn = false;         // Resolve: a draw of the frame is one of its geometries
   bool traffic = false;       // a traffic or parked car: `vehicle` is its render item (the walker's key), `walk` the one drawable of its model
+  bool unclaimed = false;     // RT-PARKED-CARS: the main view shows it and no draw is its (a parked car writes no vehicle stencil ID): walked, staged and placed like a hidden car
   bool staging = false;       // the scene is to stage this car's meshes: near, not visible, within the class's count (and a spare)
   double position[3] = {};    // the entity's world matrix row 3
   double distance = 0.0;      // from the player's vehicle, metres
@@ -127,6 +128,11 @@ struct ProofReport {
   double traffic_mean = 0.0, traffic_worst = 0.0;
   uint32_t traffic_walked = 0;    // traffic cars in this frame's walk
   uint32_t traffic_drawn = 0;     // ... that the frame draws
+  // RT-PARKED-CARS: the traffic cars the main view shows, how many of them nothing claimed (no draw of the frame is theirs and the draw path keeps no car at their place), and how many
+  // the draw path's car at their place claimed although no draw matched their geometries (the same model's moving car beside them).
+  uint32_t traffic_shown = 0;
+  uint32_t traffic_unclaimed = 0;
+  uint32_t traffic_by_place = 0;
 };
 
 // How the game's paint colours are made into the colour another car shows in the reflection (the settings mcla_gpu_car_rt_paint_gamma and mcla_gpu_car_rt_paint_lit, car_model_rt_rules.h
@@ -166,7 +172,9 @@ class Walker {
   const MeshSource& mesh_source() const;
   // The history trigger: marks the walked cars the frame draws, calibrates the pose against the draws of the cars the camera sees (the player's included) and
   // checks the chosen pose in the view space of the top level (`view`, `flip_z` as the scene's instances take them). The scene reads walked() after it.
-  ProofReport Resolve(const temporal::Mat4& view, bool flip_z);
+  // RT-PARKED-CARS: `kept` are the cars the draw path kept in this frame (CarFrame's other cars): a shown traffic car with a kept car at its place is claimed, and so is one a draw matched; a shown
+  // traffic car nothing claims is `unclaimed` in the next frames (car_model_rt_rules.h UnclaimedTracker). Null: the draws alone say.
+  ProofReport Resolve(const temporal::Mat4& view, bool flip_z, const std::vector<car_rt_instances::OtherCar>* kept = nullptr);
   // The pose the placements are made with, and how it was chosen.
   car_model_rt::Pose pose() const { return calibration_.decided() ? calibration_.chosen() : car_model_rt::kDefaultPose; }
   const car_model_rt::PoseCalibration& calibration() const { return calibration_; }
@@ -181,6 +189,7 @@ class Walker {
     uint32_t in_range = 0;      // ... whose car is within the scan radius
     uint32_t rejected = 0;      // ... of those the draw would not take (disabled, flags) or whose car has no pose
     uint32_t visible = 0;       // ... of those the main view shows (the item's lod is not negative)
+    uint32_t unclaimed = 0;     // ... of those shown, the ones nothing claimed in the last frames: walked like a hidden car (RT-PARKED-CARS)
     uint32_t block_missing = 0; // near cars the main view does not show whose bone block could not be read
     uint32_t self_checked = 0;  // cars placed by the check against the car's own matrix (no draw has confirmed the pose; car_model_parts_rt_rules.h TrafficSelfCheck)
   };
@@ -246,6 +255,8 @@ class Walker {
   car_model_parts::WheelCalibration wheel_calibration_;
   car_model_parts::TrafficCalibration traffic_calibration_;
   TrafficScan traffic_scan_;
+  car_model_rt::UnclaimedTracker claims_;  // RT-PARKED-CARS: which shown traffic cars no draw claims
+  bool parked_on_ = true;                  // mcla_gpu_car_rt_parked_cars, latched once a frame
   uint64_t wheel_proof_log_frame_ = 0, traffic_proof_log_frame_ = 0;
   uint32_t wheel_proof_logs_ = 0, traffic_proof_logs_ = 0;
   uint64_t traffic_selfcheck_log_frame_ = 0;

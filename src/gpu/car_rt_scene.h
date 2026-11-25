@@ -387,6 +387,9 @@ class CarRtScene final : public car_frame::Listener {
   void NotePartsKinds(car_model_walk::Walker& walker, const std::vector<car_model_walk::WalkedCar>& walked,
                       const std::unordered_map<uint32_t, car_model_parts::Composition>& resident_by_car, const std::unordered_set<uint32_t>& present, uint32_t traffic_placed,
                       uint32_t racers_placed, uint32_t body, uint32_t tyres, uint32_t rims, uint32_t model, uint32_t wheels_held, const car_model_walk::ProofReport& proof);
+  // RT-PARKED-CARS: the traffic cars the main view shows that no draw claims are placed from their model data like a hidden car (car_model_rt_rules.h UnclaimedTracker): counted per frame
+  // (`placed` of them in the top level with `instances` instances) and logged as a window line.
+  void NoteParkedCars(const car_model_walk::ProofReport& proof, uint32_t placed, uint32_t instances);
   // Gives a walked mesh back (resident or staged).
   void GiveBack(uint64_t key);
 
@@ -526,6 +529,17 @@ class CarRtScene final : public car_frame::Listener {
   };
   std::unordered_map<uint32_t, CompositionState> walked_composition_;
   uint32_t walked_traffic_placed_ = 0;              // traffic cars placed this frame: the instance list's count of cars is raised by it
+  // RT-PARKED-CARS: what the walk found of the traffic cars the main view shows, and how many of them nothing claimed and the scene placed.
+  struct ParkedStats {
+    uint64_t frames = 0;                            // walk frames in the window
+    uint64_t shown_sum = 0, unclaimed_sum = 0, by_place_sum = 0;
+    uint32_t shown_max = 0, unclaimed_max = 0;
+    uint64_t placed_frames = 0, placed_sum = 0, instances_sum = 0;
+    uint32_t placed_max = 0;
+  } parked_stats_;
+  uint64_t parked_log_frame_ = 0;
+  uint32_t parked_logged_ = 0;                      // lines of the first cars logged
+  std::unordered_set<uint32_t> parked_seen_;        // the render items logged as placed unclaimed cars
   uint64_t parts_log_frame_ = 0;
   uint64_t memory_log_frame_ = 0;
   bool memory_kit_logged_ = false;

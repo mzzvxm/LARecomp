@@ -294,6 +294,7 @@ void Walker::StartFrame(uint64_t guest_frame, bool collecting) {
   production_walked_ = false;
   fresh_ = false;
   walked_cars_.clear();
+  parked_on_ = larecomp::settings::mcla_gpu_car_rt_cars_parked.Get();  // RT-PARKED-CARS: live, read once a frame
   // The parts' pose is calibrated against the draws every kCalibrateEveryFrames and until it is decided; the wheels' and the traffic's hypotheses, which only some frames can
   // test (a drawn traffic car, a wheel draw), are tried every few frames until they are decided (the reading of the poses costs the render thread a little).
   const bool wheels_undecided = production_frame_ && production_now_.wheels && !(wheel_calibration_.decided(false) && wheel_calibration_.decided(true));
@@ -322,6 +323,7 @@ void Walker::Shutdown() {
   production_frame_ = false;
   production_walked_ = false;
   production_next_ = Production{};
+  claims_.Clear();
   walked_cars_.clear();
   cache_.clear();
   draws_.clear();
@@ -845,6 +847,7 @@ void Walker::RunProduction() {
     info.vehicle = car.vehicle;
     info.is_player = car.is_player;
     info.visible = car.visible;
+    info.unclaimed = car.unclaimed;
     info.traffic = car.traffic;
     info.distance = car.distance;
     info.parts = uint32_t(car.parts.size());
@@ -871,6 +874,8 @@ void Walker::RunProduction() {
 // of the player. The model's one drawable is walked at the reflection's lod (the game's own lod where the main view shows the car: its draws are then the same geometry),
 // cached per item; the pose data (the root and the bones of the item's block, the car's render-copy matrix) is read here, in the draw's call, in the frames that place the car or
 // calibrate; a car the main view does not show is placed by the traffic calibration's hypothesis once one fits the draws of the traffic cars the camera sees.
+// RT-PARKED-CARS: a car the main view shows that no draw claims (a parked car writes no vehicle stencil ID, so the draw path never takes it: car_model_rt_rules.h UnclaimedTracker) is
+// walked, posed and placed like a hidden one, and the pose and the parts are read for the NEAREST cars only (TrafficPartsCap: a street has dozens of parked cars).
 void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double scan, uint32_t min_indices, uint32_t per_car) {
   cw::AmbientScan list;
   const std::vector<uint32_t> items = cw::ListAmbientItems(mem, &list);
@@ -878,17 +883,28 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
   traffic_scan_.client = list.client;
   traffic_scan_.models = list.models;
   traffic_scan_.items = uint32_t(items.size());
-  (void)prod;
+  // the car's position first: the cars far from the player are left alone (an item list has up to a few hundred); the near ones are taken nearest first
+  struct NearItem {
+    uint32_t item;
+    double distance;
+  };
+  std::vector<NearItem> near_items;
   for (const uint32_t item : items) {
-    // the car's position first: the cars far from the player are left alone (an item list has up to a few hundred)
     double at[3];
     if (!cw::ReadAmbientPosition(mem, item, at)) {
       ++traffic_scan_.unreadable;
       continue;
     }
-    if (!(Distance(at, player_position_) <= scan)) {
+    const double distance = Distance(at, player_position_);
+    if (!(distance <= scan)) {
       continue;
     }
+    near_items.push_back({item, distance});
+  }
+  std::stable_sort(near_items.begin(), near_items.end(), [](const NearItem& a, const NearItem& b) { return a.distance < b.distance; });
+  uint32_t parts_left = crt::TrafficPartsCap(prod.traffic_cars);
+  for (const NearItem& near_item : near_items) {
+    const uint32_t item = near_item.item;
     ++traffic_scan_.in_range;
     const cw::AmbientItem info = cw::ReadAmbientItem(mem, item);
     if (!info.ok) {
@@ -908,9 +924,13 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
     car.distance = Distance(car.position, player_position_);
     car.visible = info.Visible();
     traffic_scan_.visible += car.visible ? 1u : 0u;
+    // RT-PARKED-CARS: shown by the main view and no draw claimed it in the last frames (a parked car): the walk's, as a hidden car is
+    car.unclaimed = parked_on_ && car.visible && claims_.Unclaimed(item);
+    traffic_scan_.unclaimed += car.unclaimed ? 1u : 0u;
+    const bool draw_path = crt::LeftToDrawPath(car.visible, car.unclaimed);
     car.item_lod = info.lod;
     car.car_type = info.type;
-    car.min_lod = car.visible ? 0 : 1;
+    car.min_lod = draw_path ? 0 : 1;
 
     crt::WalkSignature sig;
     sig.model_set = info.model;
@@ -929,7 +949,7 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
       cw::WalkAmbient(mem, info, options, walk.get());
       cached.walk = std::move(walk);
       cached.signature = sig;
-      cached.picks = cached.walk->ok ? crt::PickGeometries(*cached.walk, min_indices, car.visible ? 0u : per_car) : std::vector<uint32_t>();
+      cached.picks = cached.walk->ok ? crt::PickGeometries(*cached.walk, min_indices, draw_path ? 0u : per_car) : std::vector<uint32_t>();
       cached.colour = cw::ReadAmbientColour(mem, info);
     }
     cached.last_frame = frame_;
@@ -940,8 +960,10 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
     car.walk = cached.walk;
     car.colour = cached.colour;
 
-    // this frame's placements: a car the main view shows is not placed (its draws are the draw path's), but its pose is read in the frames that calibrate
-    const bool want_parts = !car.visible;
+    // this frame's placements: a car the main view shows is not placed (its draws are the draw path's), but its pose is read in the frames that calibrate; an unclaimed one is placed
+    // like a hidden one, and the parts are read for the nearest cars only (TrafficPartsCap)
+    const bool want_parts = !draw_path && parts_left != 0;
+    parts_left -= want_parts ? 1u : 0u;
     if (want_parts || calibrating_) {
       car.traffic_pose = cw::ReadTrafficPose(mem, info, cw::BonesNeeded(walk));
       car.pose_read = true;
@@ -989,7 +1011,7 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
 }
 
 // The history trigger: which walked cars the frame draws, the calibration of the pose, and the placement of the chosen pose against the draws in the view space.
-ProofReport Walker::Resolve(const temporal::Mat4& view, bool flip_z) {
+ProofReport Walker::Resolve(const temporal::Mat4& view, bool flip_z, const std::vector<car_rt_instances::OtherCar>* kept) {
   namespace crt = car_model_rt;
   ProofReport report;
   if (!production_frame_ || !production_walked_) {
@@ -1017,12 +1039,34 @@ ProofReport Walker::Resolve(const temporal::Mat4& view, bool flip_z) {
     positions.push_back({walked_cars_[i].position[0], walked_cars_[i].position[1], walked_cars_[i].position[2]});
   }
   const crt::Assignment assigned = crt::AssignDraws(usable, positions, draws_);
+  static const std::vector<car_rt_instances::OtherCar> kNoCars;
+  const std::vector<car_rt_instances::OtherCar>& draw_path = kept ? *kept : kNoCars;
   for (uint32_t u = 0; u < usable.size(); ++u) {
     WalkedCar& car = walked_cars_[index_of[u]];
     car.drawn = assigned.drawn[u] != 0;
+    // RT-PARKED-CARS: a traffic car the main view shows is the draw path's also when the draw path keeps a car at its place: the draws of a moving car beside a parked one of the same
+    // model name the same buffers, which AssignDraws cannot tell apart where the draws have no model-to-world, and then gives them to neither.
+    if (car.traffic && car.visible) {
+      const bool claimed = crt::ClaimedThisFrame(car.drawn, draw_path, car.position);
+      report.traffic_by_place += (claimed && !car.drawn) ? 1u : 0u;
+      car.drawn = claimed;
+    }
     report.drawn_cars += car.drawn ? 1u : 0u;
     report.traffic_drawn += (car.drawn && car.traffic) ? 1u : 0u;
   }
+  // The verdicts of the shown traffic cars, for the next frames' walks (the pose reads and the staging are made before the draws are known): a car nothing claims for a few frames in a
+  // row is unclaimed (car_model_rt_rules.h UnclaimedTracker).
+  for (const WalkedCar& car : walked_cars_) {
+    if (!car.traffic) {
+      continue;
+    }
+    claims_.Note(car.vehicle, car.visible, car.drawn, frame_);
+    if (car.visible) {
+      ++report.traffic_shown;
+      report.traffic_unclaimed += car.drawn ? 0u : 1u;
+    }
+  }
+  claims_.Expire(frame_);
 
   // the pairs: a matched (geometry, draw) whose placements were made this frame, and the draw's own matrix known
   struct Pair {

@@ -713,6 +713,7 @@ struct CarInfo {
   bool is_player = false;
   bool drawn = false;            // some draw of the frame is one of its geometries
   bool visible = false;          // the game's own flag (+116): the main view shows it
+  bool unclaimed = false;        // RT-PARKED-CARS: shown by the main view, and no draw of the frame is its (a parked car writes no vehicle stencil ID): the walk treats it as hidden
   bool traffic = false;          // a traffic or parked car (car_model_traffic_rules.h), not a racer's vehicle (RT-MODEL-PARTS)
   double position[3] = {};
   double distance = 0.0;         // metres from the player's vehicle
@@ -721,13 +722,14 @@ struct CarInfo {
 };
 
 // The cars a frame stages (reads the triangles of): near the player (the radius and the class's count plus a spare), not the player's, and not shown by the
-// main view this frame (the game's visibility flag): the draw path covers the ones it draws. Nearest first. `traffic` picks the cars of that kind (the racers' and the traffic's
+// main view this frame (the game's visibility flag): the draw path covers the ones it draws. A car the main view shows but no draw is the car's (CarInfo::unclaimed:
+// a parked car) is staged like a hidden one (RT-PARKED-CARS). Nearest first. `traffic` picks the cars of that kind (the racers' and the traffic's
 // are chosen apart, each within its own count: `cap`, 0 = the class's count; car_model_parts_rt_rules.h ChooseStagedAll merges them).
 inline std::vector<uint32_t> ChooseStaged(const std::vector<CarInfo>& cars, const ci::Limits& limits, bool traffic = false, uint32_t cap = 0) {
   std::vector<uint32_t> order;
   for (uint32_t i = 0; i < cars.size(); ++i) {
     const CarInfo& c = cars[i];
-    if (!c.is_player && !c.visible && !c.drawn && c.traffic == traffic && c.parts != 0 && std::isfinite(c.distance) && c.distance <= limits.radius) {
+    if (!c.is_player && (!c.visible || c.unclaimed) && !c.drawn && c.traffic == traffic && c.parts != 0 && std::isfinite(c.distance) && c.distance <= limits.radius) {
       order.push_back(i);
     }
   }
@@ -794,6 +796,83 @@ inline std::vector<uint32_t> RememberedCovered(const std::vector<ci::OtherCar>& 
   }
   return drop;
 }
+
+// ---------------------------------------------------------------------------
+// the cars the main view shows and no draw claims (RT-PARKED-CARS)
+// ---------------------------------------------------------------------------
+// WHAT A DRAW CLAIMS. A car the camera sees is in the ray traced scene through the DRAW PATH (car_frame.cpp OnMainDraw) when its draws write a vehicle stencil ID, and everything else
+// that reflects cars is keyed on that ID too: the history image of the car reflections, the paint variant's constants, the opponents' pass (perf/CAR-RT-PARKED.md). The game gives
+// the ID to a car that MOVES (feature-parity/GHOSTING-DESIGN.md section 9: 1 to 15 IDs a frame in draw order, a driving traffic car carries one, a car that stands still 0.03 to 0.3
+// of the time). A PARKED car is shown by the main view all the same (the item's lod is not negative), writes none, and so was in the top level neither through the draw path nor
+// through the walk, which left every car the main view shows to the draw path: it was missing from the player's own reflections while a parked car behind the camera was there.
+// Such a car is UNCLAIMED, and the walk places it from its model data like a hidden one (staged, placed, within the same count and radius).
+//
+// WHEN. The pose reads and the staging happen in the frame's first vehicle draw, before the frame's draws are known, so what they use is the last frames' verdict: a traffic car the main
+// view shows and nothing claims for kUnclaimedFrames frames in a row is unclaimed (UnclaimedTracker); one frame in which a draw of the frame is its, or the draw path keeps a car at its place,
+// clears it. The placement itself uses the frame's own verdict (a claimed car is `drawn`, which ChoosePlaced leaves to the draw path): a car that starts driving leaves the walk the
+// frame it gets its ID, so no car is in the top level twice.
+inline constexpr uint32_t kUnclaimedFrames = 3;
+// A car the walk has not seen for this many frames loses its verdict (a car's number is its render item's address: it can be another car's later).
+inline constexpr uint64_t kUnclaimedKeepFrames = 1800;
+
+// Whether the draw path keeps a car at `position` (a walked car's root): the centre of one of the cars the frame's draws gave (OtherCar::Centre less ci::kCentreRise) within kSameCarMetres,
+// the rule the remembered cars use for "the same car". `kept` are the draw path's cars only (a remembered or walked car is no draw's).
+inline bool DrawPathHas(const std::vector<ci::OtherCar>& kept, const double position[3]) {
+  for (const ci::OtherCar& c : kept) {
+    double centre[3];
+    if (c.remembered || !c.Centre(centre)) {
+      continue;
+    }
+    centre[1] -= ci::kCentreRise;
+    if (car_rt_memory::Distance(centre, position) <= kSameCarMetres) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The frame's verdict on a traffic car: claimed when a draw of the frame is one of its geometries (AssignDraws: `drawn`) or the draw path keeps a car at its place.
+inline bool ClaimedThisFrame(bool drawn, const std::vector<ci::OtherCar>& kept, const double position[3]) { return drawn || DrawPathHas(kept, position); }
+
+// Whether the walk leaves a traffic car to the draw path: the main view shows it and it is not unclaimed. A car that is not shown, or is shown and unclaimed, is the walk's.
+inline bool LeftToDrawPath(bool visible, bool unclaimed) { return visible && !unclaimed; }
+
+// How many traffic cars the walk reads the pose and the parts of in one frame, the NEAREST ones (the bone block and the placement of every part cost the render thread some microseconds
+// a car, and a street has dozens of parked cars): the count the scene stages (its count and a spare) and one more for a car that turns out to be claimed. 0 traffic cars: none.
+inline uint32_t TrafficPartsCap(uint32_t traffic_cars) { return traffic_cars == 0 ? 0u : std::min<uint32_t>(traffic_cars + kStageSpareCars + 1u, kMaxWalkedCars); }
+
+// The verdicts of the cars the walk saw shown: `Note` once a frame per traffic car (at the history trigger, when the draws are known), `Unclaimed` in the next frame's walk.
+class UnclaimedTracker {
+ public:
+  // `shown`: the main view shows the car this frame; `claimed`: ClaimedThisFrame. Only a shown car changes its streak (a hidden car keeps its verdict: a parked car that comes back into
+  // view is unclaimed at once, a moving car's streak stays 0).
+  void Note(uint32_t vehicle, bool shown, bool claimed, uint64_t frame) {
+    Entry& e = cars_[vehicle];
+    e.last = frame;
+    if (shown) {
+      e.streak = claimed ? 0u : std::min<uint32_t>(e.streak + 1u, kUnclaimedFrames);
+    }
+  }
+  bool Unclaimed(uint32_t vehicle) const {
+    const auto it = cars_.find(vehicle);
+    return it != cars_.end() && it->second.streak >= kUnclaimedFrames;
+  }
+  // Drops the cars not noted for kUnclaimedKeepFrames.
+  void Expire(uint64_t frame) {
+    for (auto it = cars_.begin(); it != cars_.end();) {
+      it = frame > it->second.last + kUnclaimedKeepFrames ? cars_.erase(it) : std::next(it);
+    }
+  }
+  void Clear() { cars_.clear(); }
+  size_t size() const { return cars_.size(); }
+
+ private:
+  struct Entry {
+    uint32_t streak = 0;
+    uint64_t last = 0;
+  };
+  std::unordered_map<uint32_t, Entry> cars_;
+};
 
 // The paint of a remembered car (the kit places the draws of a car that was seen once: its colour is not in the history now): the nearest walked car within
 // kSameCarMetres, if its paint is known.

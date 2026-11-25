@@ -11317,5 +11317,16 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_cars_parked": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): a traffic or PARKED car that the camera sees but no draw claims (the game gives a vehicle stencil ID to a car that moves; a parked car has none, so the draw path never takes it) is built into the ray traced \"\n    \"car scene from its own model data like a car the camera does not see, so the player's reflections show the parked cars in front of the camera as well as the ones behind it. \"\n    \"Within the traffic count of mcla_gpu_car_rt_cars_traffic and the radius of the graphics class, nearest first. Needs mcla_gpu_car_rt_cars_model. off: a car the camera sees is left to the draw path, as before. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

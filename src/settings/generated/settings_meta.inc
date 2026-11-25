@@ -264,6 +264,7 @@
 {"mcla_gpu_car_rt_cars_match", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars_memory", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars_model", "MCLA/GPU"},
+{"mcla_gpu_car_rt_cars_parked", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars_radius", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars_traffic", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars_wheels", "MCLA/GPU"},
