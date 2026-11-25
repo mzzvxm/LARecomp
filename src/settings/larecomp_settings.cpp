@@ -402,8 +402,7 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
   int refused = 0;
   mcla::gpu::gfx_preset::FileFacts preset_facts;  // what the file says about the graphics presets (gpu/gfx_preset.h DecideInitial)
   for (const auto& [name, text] : leaves) {
-    if (name == mcla::gpu::gfx_preset::kPresetSetting) preset_facts.has_preset_key = true;
-    if (mcla::gpu::gfx_preset::IsKnownRow(name)) preset_facts.has_covered_key = true;
+    preset_facts.NoteKey(name);
     if (std::any_of(std::begin(kConvertedKeys), std::end(kConvertedKeys), [&](const char* k) { return name == k; })) {
       continue;
     }
@@ -421,8 +420,8 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
       REXLOG_WARN("larecomp.toml: {} = {} was not used ({}); the default stays", name, text, result.error().GetDescription());
     }
   }
-  // A file written before the graphics presets (graphics values in it, no mcla_gpu_preset line) is CUSTOM, so that nothing changes for it; no file, or one without graphics values, starts on
-  // the setting's default, VANILLA. A line of the file's own (or the command line's) beats this: it is LARecomp's default for this file, the title layer, and is not written back.
+  // A file with a covered value and no preset line starts on CUSTOM. Otherwise the setting defaults to VANILLA.
+  // The title-layer default stays below the file and command line layers and is never written back.
   if (mcla::gpu::gfx_preset::DecideInitial(preset_facts) == mcla::gpu::gfx_preset::Preset::kCustom) {
     put_title("larecomp.mcla_gpu_preset", std::string(mcla::gpu::gfx_preset::Id(mcla::gpu::gfx_preset::Preset::kCustom)));
   }

@@ -1,6 +1,7 @@
 ﻿#include "export.h"
 #include "sha256.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -177,8 +178,16 @@ fallback_values = [{id = "1", label = "100%"}]
     check(presets["items"]["enhanced_rt"]["needs"].value_or("") == std::string_view("gpu.rt_tier != 'none'") && presets["items"]["enhanced_rt"]["needs_reason"] &&
           !presets["items"]["enhanced"]["needs"], "only the RT presets need a ray tracing tier, and say why");
     check(!presets["items"]["custom"]["values"], "CUSTOM has no values of its own");
-    check(presets["covers"].as_array() && presets["covers"].as_array()->size() == 37 && !presets["items"]["vanilla"]["values"]["mcla_gpu_ao_rt"],
-          "37 covered settings, and the support row is not one");
+    const auto* covers = presets["covers"].as_array();
+    check(covers && covers->size() == 37, "37 covered settings");
+    const auto covered = [covers](std::string_view key) {
+        return covers && std::ranges::any_of(*covers, [key](const toml::node& node) {
+            return node.value_or(std::string_view{}) == key;
+        });
+    };
+    check(covered("mcla_gpu_ao"), "a saved AO setting triggers the exported legacy preset");
+    check(!covered("mcla_gpu_ao_rt") && !presets["items"]["vanilla"]["values"]["mcla_gpu_ao_rt"],
+          "the AO support setting alone leaves the exported first-start preset in force");
     check(!presets["items"]["vanilla"]["values"]["fps_limit"] && !presets["items"]["vanilla"]["values"]["mcla_gpu_upscaler"], "a preset names no DISPLAY or UPSCALING setting");
     check(presets["class_to_preset"].as_array() && presets["class_to_preset"].as_array()->size() == 5 && presets["class_to_preset"][4]["when"].value_or("") == std::string_view("true"),
           "the last recommendation rule always holds");

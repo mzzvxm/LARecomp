@@ -106,7 +106,7 @@ Table BuildPresets() {
     Table items;
     Array covers;
     for (const auto& row : gp::kRows) {
-        if (row.page != gp::Page::kSupport) covers.push_back(std::string(row.cvar));
+        if (gp::IsCovered(row.cvar)) covers.push_back(std::string(row.cvar));
     }
     for (int index = 0; index < gp::kPresetCount; ++index) {
         const auto preset = static_cast<gp::Preset>(index);
@@ -119,7 +119,7 @@ Table BuildPresets() {
         if (gp::IsNamed(preset)) {
             Table values;
             for (const auto& row : gp::kRows) {
-                if (row.page != gp::Page::kSupport) values.insert(std::string(row.cvar), std::string(row.cell[gp::Col(preset)]));
+                if (gp::IsCovered(row.cvar)) values.insert(std::string(row.cvar), std::string(row.cell[gp::Col(preset)]));
             }
             item.insert("values", std::move(values));
         }

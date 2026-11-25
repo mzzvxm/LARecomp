@@ -276,7 +276,7 @@ constexpr bool IsCovered(std::string_view cvar) {
   const int row = FindRow(cvar);
   return row >= 0 && kRows[row].page != Page::kSupport;
 }
-// A row of the table at all (a larecomp.toml that names one holds a graphics value).
+// Any row of the table, including inputs to the Auto rules.
 constexpr bool IsKnownRow(std::string_view cvar) { return FindRow(cvar) >= 0; }
 
 constexpr bool IsExempt(std::string_view cvar) {
@@ -338,9 +338,14 @@ inline constexpr int kClassRuleCount = static_cast<int>(sizeof(kClassToPreset) /
 // What a larecomp.toml says about presets, from the keys it has.
 struct FileFacts {
   bool has_preset_key = false;  // a mcla_gpu_preset line
-  bool has_covered_key = false;  // a line for any row of the table
+  bool has_covered_key = false;  // a line for a setting a preset applies
+
+  constexpr void NoteKey(std::string_view name) {
+    if (name == kPresetSetting) has_preset_key = true;
+    if (IsCovered(name)) has_covered_key = true;
+  }
 };
-// The preset a start without a line of its own begins on: VANILLA, unless the file already holds graphics values (written before presets): then CUSTOM, with no preset to start from.
+// Start on VANILLA unless a file without a preset line already holds a covered value. Then start on CUSTOM with no base preset.
 constexpr Preset DecideInitial(const FileFacts& file) {
   return (!file.has_preset_key && file.has_covered_key) ? Preset::kCustom : kFirstStart;
 }

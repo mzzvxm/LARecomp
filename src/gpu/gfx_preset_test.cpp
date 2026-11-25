@@ -584,23 +584,29 @@ void CheckRecommendation() {
 // --- first start, an older file, the CUSTOM flip, picking a preset ------------------------------------------------------------------------------------------------------------
 void CheckFirstStart() {
   gp::FileFacts none;
-  Check(gp::DecideInitial(none) == Preset::kVanilla, "no larecomp.toml, or one with no graphics value: VANILLA (a fresh install, a migrated fork)");
+  Check(gp::DecideInitial(none) == Preset::kVanilla, "no saved keys: VANILLA");
   gp::FileFacts older;
-  older.has_covered_key = true;
-  Check(gp::DecideInitial(older) == Preset::kCustom, "a larecomp.toml with graphics values and no preset line (written before presets): CUSTOM, so nothing changes");
-  gp::FileFacts named;
-  named.has_preset_key = true;
-  named.has_covered_key = true;
-  Check(gp::DecideInitial(named) == Preset::kVanilla, "a file that has the preset line: the line decides (the default is only what a missing one means)");
+  older.NoteKey("mcla_gpu_ao");
+  older.NoteKey("mcla_gpu_ao_rt");
+  Check(gp::DecideInitial(older) == Preset::kCustom, "a covered setting followed by a support setting still starts on CUSTOM");
+  older.NoteKey("mcla_gpu_preset");
+  Check(gp::DecideInitial(older) == Preset::kVanilla, "an explicit preset suppresses the CUSTOM migration");
   gp::FileFacts only_preset;
-  only_preset.has_preset_key = true;
+  only_preset.NoteKey("mcla_gpu_preset");
   Check(gp::DecideInitial(only_preset) == Preset::kVanilla, "a file with only the preset line: the line decides");
-  // Every row of the table counts as a graphics value (the file keys the migration looks for).
+  only_preset.NoteKey("mcla_gpu_ao");
+  Check(gp::DecideInitial(only_preset) == Preset::kVanilla, "an explicit preset suppresses migration even before a covered key");
   for (const gp::Row& row : gp::kRows) {
-    Check(gp::IsKnownRow(row.cvar), std::string(row.cvar) + ": a line for it is a graphics value");
+    gp::FileFacts facts;
+    facts.NoteKey(row.cvar);
+    const auto expected = row.page == gp::Page::kSupport ? Preset::kVanilla : Preset::kCustom;
+    Check(gp::DecideInitial(facts) == expected, std::string(row.cvar) + ": only a covered key triggers legacy CUSTOM");
   }
-  Check(!gp::IsKnownRow("fullscreen") && !gp::IsKnownRow("mcla_gpu_upscaler") && !gp::IsKnownRow("language") && !gp::IsKnownRow("mcla_gpu_preset"),
-        "display, upscaling, language and the preset line itself are not graphics values");
+  for (const auto key : {"fullscreen", "mcla_gpu_upscaler", "language"}) {
+    gp::FileFacts facts;
+    facts.NoteKey(key);
+    Check(gp::DecideInitial(facts) == Preset::kVanilla, std::string(key) + ": outside preset coverage");
+  }
 }
 
 void CheckFlip() {
