@@ -683,6 +683,12 @@ add_executable(larecomp_car_rt_ao_rules_test EXCLUDE_FROM_ALL car_rt_ao_rules_te
 # the mirrors' rectangles, the pixel's arithmetic; and that hlsl/car_mirror_rt_cs.hlsl, hlsl/car_mirror_apply_ps.hlsl, car_rt_common.hlsli and the host hold the headers' numbers) likewise:
 #   cmake --build <dir> --target larecomp_car_mirror_rt_rules_test, then run src/gpu/larecomp_car_mirror_rt_rules_test [<src dir>] (exit 0 = passed).
 add_executable(larecomp_car_mirror_rt_rules_test EXCLUDE_FROM_ALL car_mirror_rt_rules_test.cpp)
+# The city in the side mirrors (MIRROR-CITY, car_mirror_city_rules.h: the mirror's world setting and what it comes to by class, tier and data, the scene service's wants, the mirror's view as a reflected camera, the
+# pixel's layers, the fallback to the environment; and that hlsl/car_mirror_rt_cs.hlsl, the host, the settings and the scene service hold the header's numbers):
+#   cmake --build <dir> --target larecomp_car_mirror_city_rules_test, then run src/gpu/larecomp_car_mirror_city_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_mirror_city_rules_test EXCLUDE_FROM_ALL car_mirror_city_rules_test.cpp)
+target_include_directories(larecomp_car_mirror_city_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_car_mirror_city_rules_test PRIVATE cxx_std_23)
 # The side mirrors' setting and its pause row (car_mirror_setting.h, MIRROR-ROW: what each word comes to on every class and ray tracing tier and that it is the pass's own Wanted, the gate that greys the row and
 # what it says, the page width, AUTO's label and the launcher's line; it also reads pause_menu.cpp, the settings, the exposure list and the CMake lines for the wiring) likewise:
 #   cmake --build <dir> --target larecomp_car_mirror_setting_test, then run src/gpu/larecomp_car_mirror_setting_test [-v] [<src/gpu dir>] (exit 0 = passed; the folder defaults to the test's own, src/gpu).

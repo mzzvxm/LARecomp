@@ -358,6 +358,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       }
       car_rt_.SetCityScene(&city_rt_);
       car_rt_.SetService(&rt_scene_, &city_hit_);
+      car_mirror_.SetService(&rt_scene_);  // MIRROR-CITY: the side mirrors' wants of the city (car_mirror_rt.h, Consumer::kCityMirror)
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);
       ao_.SetCityRtShadow(&city_shadow_);
       // CITY-RT R4: the screen-space reflections' ray traced fallback (ssr_rt.h): the SSR host pass layout with the output set and this scene's ray tracing set; nothing is made where the device cannot trace.

@@ -259,6 +259,7 @@
 {"mcla_gpu_car_mirror_rt", "MCLA/GPU"},
 {"mcla_gpu_car_mirror_rt_pixels", "MCLA/GPU"},
 {"mcla_gpu_car_mirror_rt_strength", "MCLA/GPU"},
+{"mcla_gpu_car_mirror_rt_world", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars_match", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars_memory", "MCLA/GPU"},

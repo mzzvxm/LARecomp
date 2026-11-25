@@ -574,7 +574,7 @@ int main(int argc, char** argv) {
         Check(Has(ReadFile(gpu + "/car_rt_material_rules.h"), hex), std::string("a see-through shader ") + hex + " is in the material table");
       }
       // the host
-      Check(Has(host, "static_assert(sizeof(Push) == 64);") || Has(header, "static_assert(sizeof(Push) == 64);"), "the trace's push block is 64 bytes");
+      Check(Has(host, "static_assert(sizeof(Push) == car_mirror_city::kPushBytes);") || Has(header, "static_assert(sizeof(Push) == car_mirror_city::kPushBytes);"), "the trace's push block is the city's 80 bytes (MIRROR-CITY: the old 64 and the city's 16)");
       Check(Has(header, "static_assert(sizeof(ApplyPush) == 32);"), "the apply's push block is 32 bytes");
       Check(Has(host, "HostPrecache::Key(HostPrecache::kCarMirrorRt, 0)") && Has(host, "HostPrecache::Key(HostPrecache::kCarMirrorRt, 1 + index)") && Has(precache, "kCarMirrorRt = 40,"), "the precache keys");
       Check(Has(host, "blend.srcBlend = plume::RenderBlend::SRC_ALPHA;") && Has(host, "blend.dstBlend = plume::RenderBlend::INV_SRC_ALPHA;") && Has(host, "blend.renderTargetWriteMask = kWriteRgb;"), "the apply's blend is SRC_ALPHA / INV_SRC_ALPHA on the colour channels");

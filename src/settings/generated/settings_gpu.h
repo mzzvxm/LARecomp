@@ -505,6 +505,11 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_car_mirror_rt_strength, 0.92, "Debug: the share of the game's own mirror glass the ray traced side mirrors replace (0.92, the default; 1 is all of it, 0 nothing). Live.", rex::kDebugOnly, rex::Range{0.0, 1.0});
 
+  REX_SETTING(std::string, mcla_gpu_car_mirror_rt_world, "auto", "Debug: what the ray traced side mirrors (mcla_gpu_car_mirror_rt) show where their ray finds none of the cars: auto (the default) is the city behind your car - the street, the buildings, the lamps, "
+    "shaded like the city in the car's paint reflections - where RT CITY REFLECTIONS is on (its auto is on a graphics card that traces quickly) and the game's environment map where it is off; env is the environment map only "
+    "(the mirrors as they were); city is the city on any card that can ray trace, whatever RT CITY REFLECTIONS says (a weaker card gets the smaller reach). The mirrors show the environment map until the city's data is ready, and "
+    "a mirror of a few pixels (a chase camera) always shows it. Live.", rex::Allowed("auto", "env", "city"), rex::kDebugOnly);
+
   REX_SETTING(i32, mcla_gpu_car_selfrefl_rt_denoise, 2, "Diagnostic: the passes of the filter that takes the grain out of the soft edge of a part of your car reflected in another (the ray traced car "
     "self-reflection) before the paint reads it: 2 (the default) two passes, 1 one pass, 0 none (the raw trace, to compare with). Each pass is "
     "applied only where the soft edge is wide enough to have grain, so a sharp edge stays sharp; there is none for a gloss of 0. Live.", rex::kDebugOnly, rex::Range{0, 2});
@@ -2066,6 +2071,7 @@ inline auto& mcla_gpu_car_selfrefl_rt = g_gpu.mcla_gpu_car_selfrefl_rt;
 inline auto& mcla_gpu_car_mirror_rt = g_gpu.mcla_gpu_car_mirror_rt;
 inline auto& mcla_gpu_car_mirror_rt_pixels = g_gpu.mcla_gpu_car_mirror_rt_pixels;
 inline auto& mcla_gpu_car_mirror_rt_strength = g_gpu.mcla_gpu_car_mirror_rt_strength;
+inline auto& mcla_gpu_car_mirror_rt_world = g_gpu.mcla_gpu_car_mirror_rt_world;
 inline auto& mcla_gpu_car_selfrefl_rt_denoise = g_gpu.mcla_gpu_car_selfrefl_rt_denoise;
 inline auto& mcla_gpu_car_selfrefl_rt_gloss = g_gpu.mcla_gpu_car_selfrefl_rt_gloss;
 inline auto& mcla_gpu_car_selfrefl_rt_length = g_gpu.mcla_gpu_car_selfrefl_rt_length;

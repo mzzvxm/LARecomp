@@ -1026,6 +1026,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_mirror_rt_world": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: what the ray traced side mirrors (mcla_gpu_car_mirror_rt) show where their ray finds none of the cars: auto (the default) is the city behind your car - the street, the buildings, the lamps, \"\n    \"shaded like the city in the car's paint reflections - where RT CITY REFLECTIONS is on (its auto is on a graphics card that traces quickly) and the game's environment map where it is off; env is the environment map only \"\n    \"(the mirrors as they were); city is the city on any card that can ray trace, whatever RT CITY REFLECTIONS says (a weaker card gets the smaller reach). The mirrors show the environment map until the city's data is ready, and \"\n    \"a mirror of a few pixels (a chase camera) always shows it. Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"env\", \"city\")",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_selfrefl_rt_length": {
   "type": "f64",
   "default": "4.0",

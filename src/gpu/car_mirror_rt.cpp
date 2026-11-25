@@ -13,6 +13,7 @@
 
 #include "car_rt_scene.h"
 #include "car_selfrefl_rules.h"
+#include "city_refl_setting.h"
 #include "descriptors.h"
 #include "device.h"
 #include "draw_decode.h"
@@ -22,12 +23,14 @@
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "rt_scene_service.h"
 #include "rt_tier.h"
 #include "temporal_identities.h"
 
 namespace mcla::gpu {
 
 namespace cm = car_mirror;
+namespace cmc = car_mirror_city;
 
 namespace {
 
@@ -41,6 +44,19 @@ constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
 
 LiveText& Setting() {
   static LiveText text("mcla_gpu_car_mirror_rt");
+  return text;
+}
+
+// MIRROR-CITY: what the mirror ray shows where it finds none of the cars (auto, env, city).
+LiveText& WorldSetting() {
+  static LiveText text("mcla_gpu_car_mirror_rt_world");
+  return text;
+}
+
+// MIRROR-CITY: the player's RT CITY REFLECTIONS word (auto, off, high, ultra), which the mirror's `auto` follows. A string cvar the pause menu's thread writes: the render thread reads it through a LiveText
+// (live_text.h), as city_refl.cpp does, never with the cvar's own Get().
+LiveText& PaintWordSetting() {
+  static LiveText text("mcla_gpu_rt_reflections");
   return text;
 }
 
@@ -158,6 +174,11 @@ void CarMirrorRt::Shutdown() {
   pass_timing_ = nullptr;
   edram_ = nullptr;
   scene_ = nullptr;
+  service_ = nullptr;
+  world_ = cmc::Decision{};
+  last_world_state_ = -1;
+  city_seen_ = false;
+  city_seen_frame_ = 0;
 }
 
 std::unique_ptr<plume::RenderPipeline> CarMirrorRt::MakePipeline() {
@@ -296,6 +317,7 @@ uint64_t CarMirrorRt::HeldBytes() const { return image_.texture ? cm::HeldBytes(
 void CarMirrorRt::BeginFrame() {
   active_ = false;
   recorded_this_frame_ = false;
+  world_ = cmc::Decision{};  // the environment map, until the setting and the card say otherwise (an off frame asks for nothing of the city)
   if (!ready_ || !scene_) {
     return;
   }
@@ -310,6 +332,25 @@ void CarMirrorRt::BeginFrame() {
   active_ = true;
   // The scene builds a frame's structures only for a frame that asked in the one before (as CarFrame): ask in every frame this is on.
   scene_->Request();
+  UpdateWorld();
+}
+
+// MIRROR-CITY: what the mirror's world is this frame (car_mirror_city_rules.h Decide: the reflections' own level rule with this setting's word, the class's cell, the data's state), and the wants of the
+// city's structures, hit data and textures that go out to the scene service whether or not the data stands yet (it is the want that makes the app build the data). Only the pass waits for the data: until it
+// does the mirror shows the environment map, as it did before this package.
+void CarMirrorRt::UpdateWorld() {
+  const cmc::World word = cmc::WorldOf(WorldSetting().Get());
+  world_ = cmc::Decide(word, PaintWordSetting().Get(), gpu_class::Current(), gpu_class::CurrentRtTier(), gpu_class::CurrentRtClass(), city_refl_setting::DataNow());
+  const int state = int(world_.why) * 16 + int(world_.data) * 4 + int(world_.level);
+  if (state != last_world_state_) {
+    last_world_state_ = state;
+    REXLOG_INFO("{} the mirror's world (mcla_gpu_car_mirror_rt_world = {}): {} (the city's data is {}); level {}, reach {:.0f} m", kPrefix, cmc::WorldName(word), cmc::WhyName(world_.why),
+                std::string(city_refl_setting::DataName(world_.data)), std::string(city_rt::LevelName(world_.wanted)), double(world_.cell.reach));
+  }
+  // The wants only while a mirror big enough to show the city has been seen lately (cmc::CityHeld): no structures, hit data or textures are kept for a mirror of a few pixels.
+  if (world_.wanted != cmc::Level::kOff && service_ != nullptr && cmc::CityHeld(frame_, city_seen_, city_seen_frame_)) {
+    service_->Want(rt_scene::Consumer::kCityMirror, cmc::NeedsFor(world_));
+  }
 }
 
 bool CarMirrorRt::NotRun(cm::Why why) {
@@ -351,8 +392,8 @@ void CarMirrorRt::LogWindow() {
     }
   }
   const double n = double(std::max<uint32_t>(w.passes, 1));
-  REXLOG_INFO("{} frames {}..{}: {} passes, {:.2f} mirrors a pass, {:.0f} pixels a pass; frames not run: {}; mirrors left to the game: {}", kPrefix, w.first_frame, frame_, w.passes,
-              double(w.mirrors) / n, double(w.pixels) / n, reasons.empty() ? "none" : reasons, rects.empty() ? "none" : rects);
+  REXLOG_INFO("{} frames {}..{}: {} passes ({} with the city, the rest with the environment map), {:.2f} mirrors a pass, {:.0f} pixels a pass; frames not run: {}; mirrors left to the game: {}", kPrefix,
+              w.first_frame, frame_, w.passes, w.city_passes, double(w.mirrors) / n, double(w.pixels) / n, reasons.empty() ? "none" : reasons, rects.empty() ? "none" : rects);
   window_ = Window{};
   window_.first_frame = frame_;
   next_log_frame_ = frame_ + kQuietLogFrames;
@@ -404,6 +445,18 @@ bool CarMirrorRt::OnResolve(const ResolveCache::Summary& summary, plume::RenderC
   if (used == 0) {
     return NotRun(first_reason);
   }
+  // MIRROR-CITY: is the larger mirror big enough to show the city? Then the city is traced in this pass and its wants are kept for the next kCityHoldFrames frames (UpdateWorld).
+  uint64_t largest = 0;
+  for (uint32_t k = 0; k < cm::kMaxMirrors; ++k) {
+    if (rects[k].why == cm::Why::kUsed) {
+      largest = std::max<uint64_t>(largest, rects[k].rect.Area());
+    }
+  }
+  const bool big_enough = cmc::BigEnough(largest);
+  if (big_enough) {
+    city_seen_ = true;
+    city_seen_frame_ = frame_;
+  }
 
   // the pipelines and the targets
   uint32_t apply_index = 0;
@@ -446,6 +499,10 @@ bool CarMirrorRt::OnResolve(const ResolveCache::Summary& summary, plume::RenderC
   push.tune[1] = limits.reach;
   push.tune[2] = cm::kFadeFrom;
   push.tune[3] = car_selfrefl::ExpBiasUnits(exp_bias);
+  // MIRROR-CITY: the city is traced where this frame's world says so; the lamp term and the world frame's light follow the reflections' own two debug switches (the same city hit, lit the same way)
+  push.city[0] = cmc::FlagsFor(world_, big_enough, larecomp::settings::mcla_gpu_city_refl_lamps.Get(), larecomp::settings::mcla_gpu_city_refl_world_light.Get());
+  std::memcpy(&push.city[1], &world_.cell.reach, sizeof(float));
+  std::memcpy(&push.city[2], &world_.cell.fade_from, sizeof(float));
   const plume::RenderTextureBarrier to_write(image_.texture.get(), plume::RenderTextureLayout::GENERAL);
   pass_timing_->Mark(list, "car mirror rt");
   list->barriers(plume::RenderBarrierStage::COMPUTE, nullptr, 0, &to_write, 1);
@@ -518,6 +575,7 @@ bool CarMirrorRt::OnResolve(const ResolveCache::Summary& summary, plume::RenderC
   ++window_.passes;
   window_.mirrors += used;
   window_.pixels += pixels;
+  window_.city_passes += push.city[0] != 0 ? 1u : 0u;
   if (!pair_logged_) {
     pair_logged_ = true;
     const car_rt_instances::ViewBox& a = view.mirror_box[0];
@@ -530,9 +588,9 @@ bool CarMirrorRt::OnResolve(const ResolveCache::Summary& summary, plume::RenderC
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first pass, frame {}: {} of the 2 mirrors drawn, rectangles ({}x{} and {}x{} pixels) of the {}x{} picture, the cars' reach {:.0f} m, strength {:.2f}, cap {} pixels a mirror, "
-                "main colour of {} host samples; timed as 'car mirror rt' and 'car mirror apply'",
+                "main colour of {} host samples, the world {}; timed as 'car mirror rt' and 'car mirror apply'",
                 kPrefix, frame_, used, rects[0].rect.Width(), rects[0].rect.Height(), rects[1].rect.Width(), rects[1].rect.Height(), render_w, render_h, double(limits.reach),
-                double(push.tune[0]), limits.max_pixels, depth.host_samples);
+                double(push.tune[0]), limits.max_pixels, depth.host_samples, push.city[0] != 0 ? "the city" : "the environment map (the city: not asked, not ready or the mirror too small)");
   }
   if (window_.passes >= cm::kLogEveryPasses) {
     LogWindow();
