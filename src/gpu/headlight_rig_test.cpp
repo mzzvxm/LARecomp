@@ -2011,6 +2011,12 @@ void CheckSoftShadow() {
 }
 
 int main() {
+  const hr::LensBoxStamps stamps{7, 11};
+  Check(stamps.Matches({7, 11}), "unchanged vertex and index ranges reuse the lens box");
+  Check(!stamps.Matches({8, 11}), "a vertex write invalidates the lens box");
+  Check(!stamps.Matches({7, 12}), "an index write invalidates the lens box");
+  Check(!hr::LensBoxStamps{0, 11}.Matches({0, 11}), "an untracked vertex range cannot reuse a lens box");
+  Check(!hr::LensBoxStamps{7, 0}.Matches({7, 0}), "an untracked index range cannot reuse a lens box");
   // LU-3: every check that goes through a Tracker runs twice, once with the unified picker (light_pick.h, the default) and once with the legacy code of the old tracker (mcla_gpu_light_pick =
   // legacy): the same suite, the same numbers, through both.
   for (const mcla::gpu::light_pick::PickMode mode : {mcla::gpu::light_pick::PickMode::kUnified, mcla::gpu::light_pick::PickMode::kLegacy}) {

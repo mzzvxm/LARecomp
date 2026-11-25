@@ -129,6 +129,8 @@ void SetLocalShadows(const larecomp::gpu::LocalShadowFrame* frame, uint32_t atla
 
 }  // namespace headlight_rig
 
+class GeometryCache;
+
 class HeadlightRig {
  public:
   // One prepared main-view draw (Scene::NoteAmbientOcclusion): everything it is read from stays valid for the call.
@@ -137,6 +139,7 @@ class HeadlightRig {
     const ConstantBanks::Banks* banks = nullptr;
     const XenosState* state = nullptr;
     const ShaderStore::Entry* vs = nullptr;
+    const GeometryCache* geometry = nullptr;
     HostPrimitive primitive;
     uint32_t stencil_ids = 0;  // vehicle_motion.h StencilIdsWritten
   };
@@ -193,12 +196,13 @@ class HeadlightRig {
     headlight_rules::Pose pose;
     std::vector<std::array<double, 3>> lenses;
   };
-  // The model-space box of a lens mesh, by the mesh's address (kept while it is seen).
+  // The model-space box of a lens mesh, valid while its guest ranges are unchanged.
   struct LensBox {
     float lo[3] = {};
     float hi[3] = {};
     bool valid = false;
     uint64_t seen = 0;
+    headlight_rules::LensBoxStamps stamps;
   };
 
   void ReadSettings();

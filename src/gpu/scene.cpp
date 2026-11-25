@@ -1362,7 +1362,8 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       car_refl_->OnAnchor(banks);  // ... and the next frame's car paint reprojects into this frame's history by it
     }
     if (car_dump_ && car_dump_->frame_open()) {
-      car_dump_->OnAnchor(banks);  // ... and the car dump projects the frame's triangles by it
+      const bool lens_agrees = !anchor_cut_ && screen_ && screen_->Cameras().LensAgrees(screen_->frame_count());
+      car_dump_->OnAnchor(banks, lens_agrees);  // ... and the car dump projects the frame's triangles by it
     }
     if (car_shadow_) {
       car_shadow_->OnAnchor();  // ... and a depth copy after it is not the car shadow map's trigger
@@ -2150,6 +2151,7 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     lens.banks = &banks;
     lens.state = &d.state;
     lens.vs = d.vs;
+    lens.geometry = geometry_;
     lens.primitive = d.primitive;
     lens.stencil_ids = draw.stencil_ids;
     headlights_->OnMainDraw(lens);

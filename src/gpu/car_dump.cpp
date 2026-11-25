@@ -13,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -92,9 +93,8 @@ void CarDump::Initialize(Device& device, FrameRing& frames, GuestMemory& memory)
 }
 
 void CarDump::Shutdown() {
-  readback_.reset();
-  readback_bytes_ = 0;
   Release();
+  open_ = false;
   wants_ = false;
   device_ = nullptr;
   frames_ = nullptr;
@@ -115,6 +115,7 @@ void CarDump::Release() {
   draws_.shrink_to_fit();
   history_ = History{};
   finished_ = false;
+  anchor_seen_ = false;
   camera_valid_ = false;
 }
 
@@ -134,6 +135,9 @@ void CarDump::Open() {
 }
 
 void CarDump::OnMainDraw(const MainDraw& draw) {
+  if (!wants_ || !memory_ || !draw.view || !draw.banks || !draw.state) {
+    return;
+  }
   const uint32_t mask = draw.stencil_ids & ~1u & ((1u << temporal::kVehicleIds) - 1u);
   if (mask == 0) {
     ++world_draws_;
@@ -151,6 +155,10 @@ void CarDump::OnMainDraw(const MainDraw& draw) {
   out.ps = r.ps_identity;
   out.world_before = world_draws_;
   Expand(draw, &out);
+  // The mid-scene image cannot check geometry that was drawn after its copy.
+  if (history_.requested && out.triangles != 0 && out.role != car_dump::Role::kProxy) {
+    history_.later_geometry = true;
+  }
 }
 
 void CarDump::Expand(const MainDraw& d, Draw* out) {
@@ -203,10 +211,12 @@ bool CarDump::SkinDraw(const MainDraw& d, uint32_t first, uint32_t span, Draw* o
                                  &out->skin_note);
 }
 
-void CarDump::OnAnchor(const ConstantBanks::Banks& banks) {
+void CarDump::OnAnchor(const ConstantBanks::Banks& banks, bool history_lens_agrees) {
   if (!open_) {
     return;
   }
+  const bool repeated_anchor = std::exchange(anchor_seen_, true);
+  history_.camera_agrees = false;
   // The frame's camera, as car_selfrefl.cpp OnAnchor reads it (the frame size in c62, the view, view-projection and view inverse in
   // c4-c15 of the anchor's pixel bank).
   const uint8_t* ps = banks.ps.data();
@@ -218,6 +228,7 @@ void CarDump::OnAnchor(const ConstantBanks::Banks& banks) {
   }
   camera_valid_ = temporal::ExtractCamera(ps, uint32_t(width + 0.5f), uint32_t(height + 0.5f), dump_frame_, &camera_) ==
                   temporal::Reject::kNone;
+  history_.camera_agrees = camera_valid_ && history_.requested && history_lens_agrees && !repeated_anchor;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,18 +246,16 @@ void CarDump::OnHistoryImage(plume::RenderCommandList* list, HostImage& image, u
   const uint32_t height = image.height;
   const uint32_t row_bytes = (width * 8 + 255) / 256 * 256;  // rows 256-aligned
   const uint64_t bytes = uint64_t(row_bytes) * height;
-  if (!readback_ || readback_bytes_ < bytes) {
-    readback_ = device_->CreateBuffer(plume::RenderBufferDesc::ReadbackBuffer(bytes), "car dump readback");
-    readback_bytes_ = readback_ ? bytes : 0;
-    if (!readback_) {
-      REXLOG_ERROR("{} the history image's readback buffer could not be made: no check", kPrefix);
-      return;
-    }
+  std::shared_ptr<plume::RenderBuffer> readback(
+      device_->CreateBuffer(plume::RenderBufferDesc::ReadbackBuffer(bytes), "car dump readback"));
+  if (!readback) {
+    REXLOG_ERROR("{} the history image's readback buffer could not be made: no check", kPrefix);
+    return;
   }
   list->barriers(plume::RenderBarrierStage::COPY,
                  plume::RenderTextureBarrier(image.texture.get(), plume::RenderTextureLayout::COPY_SOURCE));
   list->copyTextureRegion(
-      plume::RenderTextureCopyLocation::PlacedFootprint(readback_.get(), plume::RenderFormat::R16G16B16A16_FLOAT, width, height, 1,
+      plume::RenderTextureCopyLocation::PlacedFootprint(readback.get(), plume::RenderFormat::R16G16B16A16_FLOAT, width, height, 1,
                                                         row_bytes / 8, 0),
       plume::RenderTextureCopyLocation::Subresource(image.texture.get()));
   // The next frame's paint draws read the image as a texture: back to where the history pass left it.
@@ -259,19 +268,26 @@ void CarDump::OnHistoryImage(plume::RenderCommandList* list, HostImage& image, u
   history_.divisor = divisor;
   history_.lens = lens;
   const uint64_t frame = dump_frame_;
-  frames_->RetireAction([this, frame, width, height, row_bytes] { ProcessHistory(frame, width, height, row_bytes); });
+  // The copy owns its buffer until retirement, including when a new request supersedes this dump.
+  frames_->RetireAction([this, readback = std::move(readback), frame, row_bytes] { ProcessHistory(*readback, frame, row_bytes); });
 }
 
-void CarDump::ProcessHistory(uint64_t frame, uint32_t width, uint32_t height, uint32_t row_bytes) {
-  if (frame != dump_frame_ || !history_.requested || history_.ready || !readback_) {
+void CarDump::ProcessHistory(plume::RenderBuffer& readback, uint64_t frame, uint32_t row_bytes) {
+  if (frame != dump_frame_ || !history_.requested || history_.ready || !device_ || device_->IsLost()) {
     return;
   }
-  const void* mapped = readback_->map();
+  const void* mapped = readback.map();
   if (!mapped) {
     REXLOG_ERROR("{} the history image of frame {} could not be mapped: no check", kPrefix, frame);
+    history_.requested = false;
+    if (finished_) {
+      Release();
+    }
     return;
   }
   const uint8_t* source = static_cast<const uint8_t*>(mapped);
+  const uint32_t width = history_.width;
+  const uint32_t height = history_.height;
   history_.distance.assign(size_t(width) * height, 0.0f);
   for (uint32_t y = 0; y < height; ++y) {
     const uint8_t* row = source + size_t(y) * row_bytes;
@@ -282,7 +298,7 @@ void CarDump::ProcessHistory(uint64_t frame, uint32_t width, uint32_t height, ui
       history_.distance[size_t(y) * width + x] = (std::isfinite(value) && value > 0.0f) ? value : 0.0f;
     }
   }
-  readback_->unmap();
+  readback.unmap();
   history_.ready = true;
   TryCheck();
 }
@@ -570,7 +586,7 @@ void CarDump::WriteObj(uint32_t chosen, car_dump::Role role) const {
     return;
   }
   const auto written = [&](const Draw& d) {
-    return d.id == chosen && d.role == role && d.triangles != 0 && d.PositionCount() != 0;
+    return d.id == chosen && d.role == role && d.matrices.finite && d.triangles != 0 && d.PositionCount() != 0;
   };
   if (std::none_of(draws_.begin(), draws_.end(), written)) {
     return;
@@ -654,6 +670,11 @@ void CarDump::RunCheck() {
   if (!camera_valid_) {
     REXLOG_WARN("{} check of frame {}: no camera for the frame (the anchor draw's constants), so the triangles cannot be projected",
                 kPrefix, dump_frame_);
+    return;
+  }
+  if (!history_.camera_agrees || history_.later_geometry) {
+    REXLOG_WARN("{} check of frame {}: history and geometry could not be paired (camera agreement {}, geometry after copy {}); "
+                "nothing to compare", kPrefix, dump_frame_, history_.camera_agrees, history_.later_geometry);
     return;
   }
   const uint32_t width = history_.width;

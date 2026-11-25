@@ -9,8 +9,7 @@
 // already makes of the cars.
 //
 //   mcla_gpu_car_dump      0 off (the default); N: dump the first frame at or after guest frame N that has a draw writing a
-//                          vehicle ID (the car draws before the world, so every vehicle draw of the frame comes before the
-//                          history pass; the dump frame ends at the guest's present). Hot: a new value dumps again.
+//                          vehicle ID (the dump frame ends at the guest's present). Hot: a new value dumps again.
 //   mcla_gpu_car_dump_id   the stencil ID the OBJ and the first check are made for; 0: the player's car, found as car_dump_rules.h
 //                          ChoosePlayerId does (the ID whose gWorld is nearest to the player's vehicle in the game's memory, else the
 //                          nearest ID with a paint draw, else the one with the most body draws); the log says which rule chose it.
@@ -38,7 +37,7 @@
 // body: what a shadow or a reflection of the car needs) and written to a second file and a second check line.
 //
 // WHEN GUEST MEMORY IS READ: in the dump frame only, in the draw's own call (OnMainDraw), as the geometry cache reads it for the
-// same draw (the guest is held back then); before the dump frame and after it a main-view draw costs a flag read, and the
+// same draw; before the dump frame and after it a main-view draw costs a flag read, and the
 // frame's draws before the first vehicle draw a counter. The cvar is read once a frame.
 //
 // WHAT IT WRITES (the log lines are prefixed "[car dump]"; car_dump_<frame>.obj goes next to the executable):
@@ -113,7 +112,7 @@ class CarDump {
   void Shutdown();
 
   // True while a main-view draw has anything to tell (the request is on and no dump has been made for it): the frame's own answer,
-  // read from the cvar at the frame boundary, so a draw costs a flag read. Any thread.
+  // read from the cvar at the frame boundary, so a draw costs a flag read. Render thread only.
   bool wants_draws() const { return wants_; }
   // The frame being dumped has a vehicle draw: the anchor and the history image are wanted.
   bool frame_open() const { return open_; }
@@ -121,7 +120,7 @@ class CarDump {
   // A prepared main-view draw (temporal_identities.h MatchMainView), with the vehicle IDs it writes into the stencil.
   void OnMainDraw(const MainDraw& draw);
   // The game's motion blur draw: this frame's camera (the same read as car_selfrefl.h OnAnchor makes).
-  void OnAnchor(const ConstantBanks::Banks& banks);
+  void OnAnchor(const ConstantBanks::Banks& banks, bool history_lens_agrees);
   // The car self-reflection's history image was just drawn (car_selfrefl.h RecordHistory, `lens` the projection it was linearised
   // with, `divisor` its size against the render size): in the dump frame, copies it to a readback buffer and leaves it readable.
   void OnHistoryImage(plume::RenderCommandList* list, HostImage& image, uint32_t divisor, const temporal::Mat4& lens);
@@ -167,6 +166,8 @@ class CarDump {
   struct History {
     bool requested = false;
     bool ready = false;
+    bool camera_agrees = false;
+    bool later_geometry = false;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t divisor = 1;
@@ -184,7 +185,7 @@ class CarDump {
   car_dump::Pick ChoosePlayer(const car_dump::IdSummary (&ids)[car_dump::kIdSlots]) const;
   void Census(uint32_t chosen, const car_dump::IdSummary (&ids)[car_dump::kIdSlots]);
   void WriteObj(uint32_t chosen, car_dump::Role role) const;
-  void ProcessHistory(uint64_t frame, uint32_t width, uint32_t height, uint32_t row_bytes);
+  void ProcessHistory(plume::RenderBuffer& readback, uint64_t frame, uint32_t row_bytes);
   void TryCheck();
   void RunCheck();
   void Release();
@@ -200,6 +201,7 @@ class CarDump {
   uint64_t dump_frame_ = 0;
   uint32_t world_draws_ = 0;  // main-view draws with no vehicle ID so far this frame
   std::vector<Draw> draws_;
+  bool anchor_seen_ = false;
   bool camera_valid_ = false;
   temporal::Camera camera_;
   bool finished_ = false;     // the census is written; the check waits for the image
@@ -217,8 +219,6 @@ class CarDump {
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
   GuestMemory* memory_ = nullptr;
-  std::unique_ptr<plume::RenderBuffer> readback_;
-  uint64_t readback_bytes_ = 0;
 };
 
 }  // namespace mcla::gpu

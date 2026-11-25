@@ -16,6 +16,7 @@
 #include <rex/logging/log_category.h>
 
 #include "car_frame_rules.h"
+#include "geometry.h"
 #include "gpu_class.h"
 #include "guest_memory.h"
 #include "light_text.h"
@@ -27,7 +28,7 @@ namespace mcla::gpu {
 namespace {
 
 constexpr const char* kPrefix = "[headlights]";
-// Meshes read for their box in one frame (a lens mesh is a few hundred triangles; a car has a handful of lenses, read once and kept).
+// Meshes read for their box in one frame (a lens mesh is a few hundred triangles; a car has a handful of lenses).
 constexpr uint32_t kBoxBudget = 4;
 // Frames a lens mesh's box is kept after it was last seen.
 constexpr uint64_t kBoxKeepFrames = 900;
@@ -279,7 +280,7 @@ void HeadlightRig::ReadFrameFacts(const uint8_t* vs_bank, const car_dump::CarMat
   car_mesh::ReadPlayerVehicle(&player_, false);
 }
 
-// The world position of a lens draw's mesh: the centre of its model-space box (read once from guest memory and kept by the mesh's address) through the
+// The world position of a lens draw's mesh: the centre of its model-space box (read from guest memory when its ranges change) through the
 // draw's own bone matrix and gWorld. The bone's origin where the box cannot be had (an inline mesh, an unreadable one: best effort). False when the box is
 // still to be read (the frame's budget of reads is used up): the lens is left out of this frame, a wrong centre would put the car's lamp at its root.
 bool HeadlightRig::LensCentre(const MainDraw& d, const car_dump::CarMatrices& m, double out[3]) {
@@ -308,8 +309,24 @@ bool HeadlightRig::LensCentre(const MainDraw& d, const car_dump::CarMatrices& m,
   key = car_frame_rules::Mix(key, uint64_t(r.index_address));
   key = car_frame_rules::Mix(key, (uint64_t(r.start) << 32) | uint64_t(r.count));
   key = car_frame_rules::Mix(key, uint64_t(uint32_t(r.base_vertex)));
+  key = car_frame_rules::Mix(key, (uint64_t(stream.stride) << 32) | element.offset);
+  key = car_frame_rules::Mix(key, (uint64_t(element.type) << 32) | r.index_dword0);
+  key = car_frame_rules::Mix(key, (uint64_t(r.kind) << 32) | r.primitive);
+  if (d.state->sc_mode.multi_prim_ib_ena) {
+    key = car_frame_rules::Mix(key, d.state->reset_index);
+  }
+  headlight_rules::LensBoxStamps stamps;
+  if (d.geometry && r.count <= car_mesh::kMaxIndices) {
+    stamps.vertices = d.geometry->RangeStamp(stream.address, stream.size);
+    stamps.indices = stamps.vertices;  // an auto draw has only a vertex range
+    if (r.kind == DrawKind::kIndexed) {
+      const uint32_t index_size = (r.index_dword0 & 0x80000000u) != 0 ? 4u : 2u;
+      const uint32_t address = GuestMemory::ToPhysical(r.index_address) + r.start * index_size;
+      stamps.indices = d.geometry->RangeStamp(address, r.count * index_size);
+    }
+  }
   auto found = boxes_.find(key);
-  if (found == boxes_.end()) {
+  if (found == boxes_.end() || !found->second.valid || !found->second.stamps.Matches(stamps)) {
     if (boxes_read_ >= kBoxBudget) {
       return false;
     }
@@ -321,6 +338,7 @@ bool HeadlightRig::LensCentre(const MainDraw& d, const car_dump::CarMatrices& m,
     inputs.primitive = d.primitive;
     car_mesh::ReadTriangles(*memory_, inputs, scratch_, &mesh_);
     LensBox box;
+    box.stamps = stamps;
     if (mesh_.problem == car_mesh::Problem::kNone) {
       box.valid = car_frame_rules::BoxOfMesh(mesh_.local.data(), mesh_.local.size() / 3, mesh_.tri.data(), mesh_.tri.size(), box.lo, box.hi);
     }
@@ -330,7 +348,7 @@ bool HeadlightRig::LensCentre(const MainDraw& d, const car_dump::CarMatrices& m,
     } else {
       ++boxes_unreadable_[std::min<size_t>(size_t(mesh_.problem), boxes_unreadable_.size() - 1)];
     }
-    found = boxes_.emplace(key, box).first;
+    found = boxes_.insert_or_assign(key, box).first;
   }
   LensBox& box = found->second;
   box.seen = frame_;
