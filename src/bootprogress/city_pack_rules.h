@@ -18,6 +18,7 @@
 // THE COMMAND LINE'S OUTPUT (larecomp.exe --build_city_pack, what a launcher reads on stdout; every line starts with "@citypack|", fields are separated by '|', the last is free
 // text; the same shape as --build_shader_packs):
 //   @citypack|folder|<where the pack goes>                   once, first
+//   @citypack|phases|<name>:<weight>:<title>[;...]            before the first phase of --build_city_pack
 //   @citypack|phase|<steps, 0 when unknown>|<name>           a phase begins ("far level of detail", "city sectors")
 //   @citypack|step|<done>|<steps>|<item>                     progress in it, at most five a second
 //   @citypack|log|<info|warn|error>|<text>                   the build's own log lines

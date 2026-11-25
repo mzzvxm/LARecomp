@@ -3,10 +3,16 @@
 // the words of its build and check. Build: cmake --build <build dir> --target larecomp_city_pack_rules_test, then run it (exit 0 = passed);
 // or standalone: clang++ -std=c++23 -I src src/bootprogress/city_pack_rules_test.cpp
 
+#include <charconv>
 #include <cstdio>
+#include <ranges>
 #include <string>
+#include <string_view>
+#include <tuple>
+#include <vector>
 
 #include "bootprogress/city_pack_rules.h"
+#include "bootprogress/pack_progress_rules.h"
 
 using namespace larecomp::citypackbuild;
 using mcla::gpu::city_rt::PackState;
@@ -114,6 +120,45 @@ void TestLines() {
   size_t bars = 0;
   for (const char c : line) bars += c == '|';
   CHECK(bars == 3);
+}
+
+using Phase = std::tuple<std::string_view, int, std::string_view>;
+
+std::vector<Phase> ParsePhases(std::string_view line, std::string_view prefix) {
+  if (!line.starts_with(prefix) || line.find_first_of("|\r\n\t", prefix.size()) != line.npos) return {};
+  line.remove_prefix(prefix.size());
+  std::vector<Phase> phases;
+  for (const auto entry : line | std::views::split(';')) {
+    const std::string_view phase(entry.begin(), entry.end());
+    const size_t name_end = phase.find(':');
+    if (name_end == 0 || name_end == phase.npos) return {};
+    const size_t weight_end = phase.find(':', name_end + 1);
+    if (weight_end == phase.npos) return {};
+    const std::string_view title = phase.substr(weight_end + 1);
+    if (title.empty() || title.find(':') != title.npos) return {};
+    int weight = 0;
+    const char* end = phase.data() + weight_end;
+    const auto parsed = std::from_chars(phase.data() + name_end + 1, end, weight);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || weight <= 0) return {};
+    phases.emplace_back(phase.substr(0, name_end), weight, title);
+  }
+  return phases;
+}
+
+void TestPhaseLists() {
+  using namespace larecomp::pack_progress;
+  CHECK((ParsePhases(kShaderPhasesLine, "@shaderpack|phases|") == std::vector<Phase>{
+      {"Reading game files", 1, "Read game files"},
+      {"Compiling shaders", 25, "Compile shaders"},
+      {"Writing the shader pack", 1, "Write shader pack"},
+      {"Preparing the shader variants", 69, "Prepare shader variants"},
+      {"Composing the shader variants", 4, "Combine shader variants"},
+  }));
+  CHECK((ParsePhases(kCityPhasesLine, "@citypack|phases|") == std::vector<Phase>{
+      {"far level of detail", 6, "Build distant geometry"},
+      {"lamps", 1, "Build lamps"},
+      {"city sectors", 93, "Build city sectors"},
+  }));
 }
 
 // Which of the command line's actions run, and in which order (PlanActions: main.cpp reads the five flags from the arguments, the app runs the plan).
@@ -239,6 +284,7 @@ int main() {
   TestWorkers();
   TestWords();
   TestLines();
+  TestPhaseLists();
   TestActionPlan();
   TestHitStates();
   TestHitWords();
