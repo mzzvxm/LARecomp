@@ -199,6 +199,7 @@ const char* SinkKindName(SinkKind kind) {
         case SinkKind::kFfmpeg: return "ffmpeg";
         case SinkKind::kRaw: return "raw";
         case SinkKind::kPng: return "png";
+        case SinkKind::kLuma: return "luma";
     }
     return "none";
 }

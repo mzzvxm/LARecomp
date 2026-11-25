@@ -194,6 +194,7 @@
 {"mcla_capture_gate_timeout_ms", "MCLA/Cinematic"},
 {"mcla_capture_lag", "MCLA/Cinematic"},
 {"mcla_capture_log_every", "MCLA/Cinematic"},
+{"mcla_capture_luma", "MCLA/Cinematic"},
 {"mcla_capture_memory_mb", "MCLA/Cinematic"},
 {"mcla_capture_name", "MCLA/Cinematic"},
 {"mcla_capture_out", "MCLA/Cinematic"},

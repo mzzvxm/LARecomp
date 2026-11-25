@@ -194,6 +194,8 @@ void CaptureFrameDone(const HostBuffer& buffer, const FrameCosts& costs);
 void CaptureFrameLost(uint64_t update, const char* why);
 // The ring's lag setting: 0 = the game waits for each frame's readback before the next update (lock-step).
 int CaptureLag();
+// Lock-step waits every frame. Pipelined luma scenes also wait at their authored tail.
+bool CaptureSyncReadback(uint64_t update);
 // Extra milliseconds the render thread sleeps per captured frame (emulates a slow capture: mcla_capture_delay_ms).
 double CaptureDelayMs();
 

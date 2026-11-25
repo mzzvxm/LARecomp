@@ -572,6 +572,8 @@ add_executable(larecomp_take_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/take_folder.cpp
     src/mc_engine/cinematic/capture_core.cpp)
 target_include_directories(larecomp_take_test PRIVATE src src/mc_engine/cinematic)
+add_executable(larecomp_capture_luma_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/capture_luma_test.cpp)
 # A take's sound (src/mc_engine/cinematic/capture_audio_core.h): the samples a number of video frames owns, the mixer frames that cover them, the books of what
 # was released, arrived, given up and written, and the WAV file. A check that needs no game:
 #   cmake --build <build dir> --target larecomp_capture_audio_test, then run <build dir>/larecomp_capture_audio_test (exit 0 = passed).
