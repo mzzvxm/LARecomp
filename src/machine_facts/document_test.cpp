@@ -1,4 +1,5 @@
 #include "document.h"
+#include "../../documentation/contract/cpp/mini_json.h"
 
 #include <fstream>
 #include <iostream>
@@ -6,6 +7,7 @@
 
 namespace {
 namespace machine = larecomp::machine;
+namespace json = larecomp::minijson;
 
 int checks = 0;
 int failures = 0;
@@ -21,6 +23,28 @@ void Check(bool ok, const char* description) {
 std::string Read(const std::filesystem::path& path) {
   std::ifstream file(path, std::ios::binary);
   return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+
+json::Json Parse(std::string_view text) {
+  json::Json doc;
+  Check(json::Parse(text, &doc), "valid machine JSON");
+  return doc;
+}
+
+void CheckApi(const json::Json& doc, std::string_view api, std::optional<bool> car_rt,
+              const char* rt_tier, const char* ray_regen) {
+  const std::string path = "api.by_api." + std::string(api);
+  const auto* car = doc.Path(path + ".car_rt");
+  const auto* tier = doc.Path(path + ".rt_tier");
+  const auto* regen = doc.Path(path + ".ray_regen");
+  Check(car && (car_rt ? car->IsBool() && car->b == *car_rt : car->IsNull()), "per-API car RT");
+  Check(tier && (rt_tier ? tier->IsString() && tier->s == rt_tier : tier->IsNull()), "per-API RT tier");
+  Check(regen && (ray_regen ? regen->IsString() && regen->s == ray_regen : regen->IsNull()), "per-API Ray Regeneration");
+}
+
+void CheckDlssCard(const json::Json& doc, std::optional<bool> expected) {
+  const auto* card = doc.Path("features.frame_generation.dlss_card");
+  Check(card && (expected ? card->IsBool() && card->b == *expected : card->IsNull()), "DLSS FG card eligibility");
 }
 }  // namespace
 
@@ -65,6 +89,7 @@ int main(int argc, char** argv) {
        .shared_memory = false, .class_why = "by memory"},
   };
   gpu.selected = 1;
+  gpu.d3d12_compiled = gpu.vulkan_compiled = gpu.ray_regen_built = true;
   const auto& adapter = gpu.adapters[1];
   const std::string id = machine::HardwareId(adapter, facts.os_build);
   Check(id == "7a3802f39715c93b3b93a2d5933dc90d29941c4ab92426d426671a5986b2a08b",
@@ -102,6 +127,10 @@ int main(int argc, char** argv) {
   Check(one_selected(probe) && contains(probe, "\"selected\": false"), "exactly one selected adapter");
   Check(contains(probe, "\"dlss\": null") && contains(probe, "\"dlss_modes_refused\": null"),
         "probe leaves unobserved DLSS facts unknown");
+  const auto probe_doc = Parse(probe);
+  CheckDlssCard(probe_doc, true);
+  CheckApi(probe_doc, "d3d12", true, "strong", nullptr);
+  CheckApi(probe_doc, "vulkan", std::nullopt, nullptr, "unsupported");
   Check(contains(probe, "Primary \\\"HDR\\\" monitor"), "strings are JSON escaped");
   Check(contains(probe, "\"size\": \"3840X2160\""), "display size is a contract label");
   Check(!machine::IsFinal(false, gpu), "game waits for started probes");
@@ -134,6 +163,9 @@ int main(int argc, char** argv) {
   const auto final = machine::Serialize(facts, false);
   Check(contains(final, "\"source\": \"game\"") && contains(final, "\"final\": true"), "final game envelope");
   Check(contains(final, "\"hardware_id\": \"" + id + "\""), "runtime results do not change hardware ID");
+  const auto game_doc = Parse(final);
+  CheckDlssCard(game_doc, true);
+  CheckApi(game_doc, "d3d12", true, "weak", "no");
   Check(publisher.Changed(final), "completed probes update the document");
   publisher.NoteSuccess(final);
   gpu.class_forced = "low";
@@ -147,7 +179,69 @@ int main(int argc, char** argv) {
   Check(!contains(missing, "\"hardware_id\"") && !contains(missing, "\"selected\": true"),
         "unresolved selection cannot select the wrong adapter");
   Check(contains(missing, "\"adapters\": []"), "unresolved selection has no generated adapter choices");
+  CheckDlssCard(Parse(missing), std::nullopt);
   gpu.selected = 1;
+
+  machine::Facts device_free;
+  auto& offline = device_free.gpu;
+  offline.adapters = gpu.adapters;
+  offline.adapters.push_back({.name = adapter.name, .software = true});
+  Check(!machine::SelectProbeAdapter(offline.adapters, ""), "multiple hardware adapters without a preference are ambiguous");
+  Check(machine::SelectProbeAdapter(offline.adapters, offline.adapters[0].name) == 0,
+        "the matching hardware adapter wins even when another follows it");
+  offline.selected = machine::SelectProbeAdapter(offline.adapters, adapter.name);
+  Check(offline.selected == 1, "a unique preferred hardware adapter wins over a matching software adapter");
+  offline.adapters.pop_back();
+  offline.adapters.push_back(adapter);
+  Check(!machine::SelectProbeAdapter(offline.adapters, adapter.name), "duplicate hardware names stay ambiguous");
+  offline.adapters.pop_back();
+  offline.d3d12_compiled = offline.vulkan_compiled = offline.ray_regen_built = true;
+  offline.streamline_files = offline.dlss_fg = false;
+  const auto offline_doc = Parse(machine::Serialize(device_free, true));
+  CheckDlssCard(offline_doc, true);
+  CheckApi(offline_doc, "d3d12", std::nullopt, nullptr, nullptr);
+  CheckApi(offline_doc, "vulkan", std::nullopt, nullptr, "unsupported");
+  offline.adapters = {adapter};
+  offline.selected = machine::SelectProbeAdapter(offline.adapters, "");
+  Check(offline.selected == 0, "the only enumerated hardware adapter is selected");
+  offline.adapters[0].name = "nvidia geforce rtx 4070";
+  CheckDlssCard(Parse(machine::Serialize(device_free, true)), true);
+  offline.adapters[0].name = "NVIDIA RTX PRO 6000 Blackwell";
+  CheckDlssCard(Parse(machine::Serialize(device_free, true)), true);
+  offline.adapters[0].name = "NVIDIA RTX 2000 Ada";
+  CheckDlssCard(Parse(machine::Serialize(device_free, true)), true);
+  offline.adapters[0].name = "NVIDIA GeForce RTX 3060";
+  CheckDlssCard(Parse(machine::Serialize(device_free, true)), false);
+  offline.adapters[0].name = "NVIDIA GeForce GTX 1080";
+  CheckDlssCard(Parse(machine::Serialize(device_free, true)), false);
+  offline.adapters[0].name = "NVIDIA GeForce RTX 4070";
+  offline.adapters[0].vendor_id = gpu.adapters[0].vendor_id;
+  CheckDlssCard(Parse(machine::Serialize(device_free, true)), false);
+  offline.adapters[0].vendor_id = 0;
+  CheckDlssCard(Parse(machine::Serialize(device_free, true)), std::nullopt);
+  offline.adapters[0].vendor_id = adapter.vendor_id;
+  offline.adapters[0].name.clear();
+  CheckDlssCard(Parse(machine::Serialize(device_free, true)), std::nullopt);
+
+  offline.api = "vulkan";
+  offline.car_rt = true;
+  offline.rt_tier = "weak";
+  offline.ray_regen = "unsupported";
+  offline.ray_regen_built = false;
+  const auto vulkan_doc = Parse(machine::Serialize(device_free, false));
+  CheckApi(vulkan_doc, "d3d12", std::nullopt, nullptr, "unsupported");
+  CheckApi(vulkan_doc, "vulkan", true, "weak", "unsupported");
+  offline.d3d12_compiled = false;
+  CheckApi(Parse(machine::Serialize(device_free, false)), "d3d12", false, "none", "unsupported");
+  offline.api = "d3d12";
+  offline.d3d12_compiled = true;
+  offline.vulkan_compiled = false;
+  offline.car_rt = false;
+  offline.rt_tier = "none";
+  offline.ray_regen = "needs_setup";
+  const auto d3d_doc = Parse(machine::Serialize(device_free, false));
+  CheckApi(d3d_doc, "d3d12", false, "none", "needs_setup");
+  CheckApi(d3d_doc, "vulkan", false, "none", "unsupported");
 
   if (argc == 2) {
     const std::filesystem::path output = argv[1];

@@ -73,12 +73,20 @@
         }
       }
     },
+    "launch": {
+      "type": "object",
+      "required": ["game_root", "debug_menu"],
+      "properties": {
+        "game_root": { "type": "string", "minLength": 1, "description": "One argument with the {game_root} placeholder for the game data directory" },
+        "debug_menu": { "type": "string", "minLength": 1, "description": "One argument to enable the debug menu when requested" }
+      }
+    },
     "game": {
       "type": "object",
       "properties": {
         "title_id": { "type": "string", "pattern": "^[0-9A-F]{8}$" },
         "xex_sha256": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "minItems": 1 },
-        "size": { "type": "integer", "minimum": 0 },
+        "size": { "type": "integer", "minimum": 0, "description": "Byte length of the supported default.xex identified by xex_sha256" },
         "required_files": { "type": "array", "items": { "type": "string" } }
       }
     },

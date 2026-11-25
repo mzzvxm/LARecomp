@@ -110,6 +110,15 @@ Crash diagnostics go into the main log, not a separate file. The SEH and SIGABRT
 
 ---
 
+## Launcher contract
+
+The [schemas and examples](contract/) describe the JSON files the game exports for the launcher.
+
+- `machine.json` is written on startup and by `--probe_machine[=<file>]`. `features.frame_generation.dlss_card` applies the game's NVIDIA adapter name rule. It is independent of the graphics API, driver support, installed files, and runtime failures. It is `null` when the adapter cannot be identified. The headless probe can still identify a card by enumeration after a device open fails.
+- `api.by_api.d3d12` and `api.by_api.vulkan` each contain `car_rt`, `rt_tier`, and `ray_regen`. The current API repeats `api.car_rt`, `gpu.rt_tier`, and `features.denoiser.ray_regen`. An unopened API leaves device-dependent values `null`. A backend absent from the build reports `false` and `"none"` for its RT facts. Ray Regeneration reports `"unsupported"` for an unopened Vulkan backend or a build without the D3D12 provider.
+- `install-manifest.json` provides `launch.game_root` and `launch.debug_menu` as individual arguments. Substitute the game data directory for `{game_root}` and pass the debug argument when the user enables it. `game.size` gives the byte length of the supported `default.xex` identified by `game.xex_sha256`.
+- `settings-ui.json` from `--dump_settings_ui` provides `presets.legacy_file_preset` for a `larecomp.toml` that contains any key in `presets.covers` and omits `presets.setting`. The current value is `"custom"`, which preserves the saved values. Use `presets.first_start` if the file omits both the preset key and all covered keys.
+
 ## City data actions (for the launcher's setup)
 
 The ray tracing effects read files built on the player's PC from their own game files, in `<shader pack folder>\city`: the city pack (`mcla_city.v1.pack`), and the hit data beside it, the hit file (`mcla_city_hit.v1.pack`) and the texture file (`mcla_city_tex.v1.pack`) with one stamp (`mcla_city_hit.stamp`). The release ships `larecomp.exe` only, so it builds and checks all of them. Each action runs without a window and ends the process; the game builds the same files itself in the background when they are missing and an effect wants them, so none of this is required.

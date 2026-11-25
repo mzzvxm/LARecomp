@@ -47,7 +47,19 @@
     "dxr_1_1": null,
     "ray_query": null,
     "car_rt": null,
-    "city_rt_shadows": null
+    "city_rt_shadows": null,
+    "by_api": {
+      "d3d12": {
+        "car_rt": null,
+        "rt_tier": null,
+        "ray_regen": null
+      },
+      "vulkan": {
+        "car_rt": null,
+        "rt_tier": null,
+        "ray_regen": "unsupported"
+      }
+    }
   },
   "features": {
     "upscalers": {
@@ -60,6 +72,7 @@
     "frame_generation": {
       "fsr31": null,
       "dlss": null,
+      "dlss_card": true,
       "dlss_multiplier_max": null,
       "dlss_after_restart": null
     },

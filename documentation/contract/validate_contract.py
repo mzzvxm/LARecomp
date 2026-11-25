@@ -1065,6 +1065,12 @@ def lint_presets(doc, rep, ec, row_section, sections_by_id, settings, value_sets
             rep.error(w, f'{name!r} is in items but not in order')
     if 'first_start' in pr and pr['first_start'] not in order:
         rep.error(w, 'first_start is not in order')
+    if 'legacy_file_preset' in pr:
+        legacy = pr['legacy_file_preset']
+        if legacy not in order or legacy not in items:
+            rep.error(f'{w}.legacy_file_preset', 'must name a preset in order and items')
+        elif items[legacy].get('values'):
+            rep.error(f'{w}.legacy_file_preset', 'must preserve the covered settings already in the file')
     flip_to = pr.get('flip', {}).get('to')
     if pr.get('flip') and flip_to not in order:
         rep.error(w, f'flip.to {flip_to!r} is not in order')
@@ -1161,6 +1167,14 @@ def lint_machine(doc, rep, facts, strict=False):
         rep.warn('final', 'a file written by a start says whether the last asynchronous probe has landed')
     if gpu.get('rt_tier') and gpu.get('rt_rung') and gpu['rt_tier'] != gpu['rt_rung']:
         rep.info('gpu.rt_rung', 'differs from rt_tier (allowed: the rung is what the Auto cells read)')
+    api = doc.get('api', {})
+    name = api.get('name')
+    by_api = api.get('by_api', {})
+    if name in ('d3d12', 'vulkan') and name in by_api:
+        for key, value in (('car_rt', api.get('car_rt')), ('rt_tier', gpu.get('rt_tier')),
+                           ('ray_regen', doc.get('features', {}).get('denoiser', {}).get('ray_regen'))):
+            if by_api[name][key] != value:
+                rep.error(f'api.by_api.{name}.{key}', 'must match the corresponding active API fact')
 
 
 # ---- install-manifest.json ----------------------------------------------------------------------------------------------------------------
@@ -1169,6 +1183,12 @@ _PLACEHOLDER = re.compile(r'\{([^{}]*)\}')
 
 
 def lint_manifest(doc, rep, facts, strict=False):
+    if 'launch' in doc:
+        launch = doc['launch']
+        if not re.fullmatch(r'--[a-z][a-z0-9_]*=\{game_root\}', launch['game_root']):
+            rep.error('launch.game_root', 'expected one flag with the {game_root} placeholder as its value')
+        if not re.fullmatch(r'--[a-z][a-z0-9_]*=true', launch['debug_menu']):
+            rep.error('launch.debug_menu', 'expected one flag with true as its value')
     ids = [a['id'] for a in doc.get('actions', [])]
     for i, a in enumerate(doc.get('actions', [])):
         w = f'actions[{a["id"]}]'
@@ -1376,6 +1396,8 @@ def selftest():
     expect('a RESTART suffix without needs_restart', lambda d: row(d, 'PM_RxGpuRr')['states'][5].pop('needs_restart'), 'needs_restart')
     expect('a preset that misses a covered setting', lambda d: d['presets']['items']['enhanced']['values'].pop('mcla_gpu_rt_reflections'), 'lint 6')
     expect('a preset that touches DISPLAY', lambda d: d['presets']['items']['enhanced']['values'].update(fps_limit='60'), 'DISPLAY or UPSCALING')
+    expect('an unknown legacy preset', lambda d: d['presets'].update(legacy_file_preset='missing'), 'must name a preset')
+    expect('a legacy preset that overwrites saved values', lambda d: d['presets'].update(legacy_file_preset='vanilla'), 'preserve the covered settings')
     expect('facts_used out of date', lambda d: d['facts_used'].pop(), 'facts_used')
     expect('a duplicate row id', lambda d: row(d, 'PM_RxFpsCap').update(id='PM_RxDisplayMode'), 'used twice')
     expect('a def loop', lambda d: d['defs'].update(loop_a='d.loop_b', loop_b='d.loop_a'), 'loop')
@@ -1390,6 +1412,10 @@ def selftest():
         ('machine: a class the dictionary does not know', lambda d: d['gpu'].update(**{'class': 'ultra'}), 'is not one of'),
         ('machine: a bool as text', lambda d: d['api'].update(car_rt='yes'), 'expected boolean'),
         ('machine: two selected adapters', lambda d: d['gpu']['adapters'][1].update(selected=True), 'exactly one adapter'),
+        ('machine: card support as text', lambda d: d['features']['frame_generation'].update(dlss_card='yes'), 'expected boolean'),
+        ('machine: a contradictory API fact', lambda d: d['api']['by_api']['d3d12'].update(car_rt=False), 'corresponding active API fact'),
+        ('machine: an invalid API tier', lambda d: d['api']['by_api']['vulkan'].update(rt_tier='high'), 'api.by_api.vulkan.rt_tier'),
+        ('machine: an impossible Vulkan provider', lambda d: d['api']['by_api']['vulkan'].update(ray_regen='ready'), 'api.by_api.vulkan.ray_regen'),
     ]:
         d = copy.deepcopy(mdoc)
         fn(d)
@@ -1402,6 +1428,9 @@ def selftest():
         ('manifest: a stage path with ..', lambda d: d['stage'][0].update(to='../x.exe'), 'relative path'),
         ('manifest: a when with a setting', lambda d: d['actions'][2].update(when="s.fps_limit == 60"), 'settings are not readable'),
         ('manifest: a fact not install.*', lambda d: d['facts'].update(**{'gpu.foo': {'any_of': ['a']}}), 'install.* fact'),
+        ('manifest: launch without a game root placeholder', lambda d: d['launch'].update(game_root='--game_data_root=.'), 'expected one flag'),
+        ('manifest: debug launch with an extra flag', lambda d: d['launch'].update(debug_menu='--debug_menu=true --other=true'), 'expected one flag'),
+        ('manifest: negative XEX bytes', lambda d: d['game'].update(size=-1), 'game.size'),
     ]:
         d = copy.deepcopy(idoc)
         fn(d)

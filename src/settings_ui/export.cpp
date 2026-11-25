@@ -127,6 +127,7 @@ Table BuildPresets() {
     }
     presets.insert("order", std::move(order));
     presets.insert("first_start", std::string(gp::Id(gp::kFirstStart)));
+    presets.insert("legacy_file_preset", std::string(gp::Id(gp::DecideInitial({.has_covered_key = true}))));
     presets.insert("scope", Array{"image_quality", "lighting", "reflections", "world_detail"});
     presets.insert("items", std::move(items));
     Array rules;

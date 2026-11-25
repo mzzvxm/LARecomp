@@ -1,5 +1,6 @@
 #include "gpu_facts.h"
 
+#include "gpu/backend_impl.h"
 #include "gpu/car_rt_scene.h"
 #include "gpu/device.h"
 #include "gpu/gpu.h"
@@ -125,8 +126,8 @@ void ReadD3dCaps(GpuFacts& out, ID3D12Device& device) {
 #endif
 
 #if defined(LARECOMP_GPU_HAS_VULKAN)
-void ReadVulkanAdapters(GpuFacts& out, const plume::VulkanDevice& device) {
-  const auto instance = device.renderInterface->instance;
+void ReadVulkanAdapters(GpuFacts& out, VkInstance instance, VkPhysicalDevice selected) {
+  if (!instance) return;
   uint32_t count = 0;
   if (vkEnumeratePhysicalDevices(instance, &count, nullptr) != VK_SUCCESS || count == 0) return;
   std::vector<VkPhysicalDevice> adapters(count);
@@ -151,11 +152,28 @@ void ReadVulkanAdapters(GpuFacts& out, const plume::VulkanDevice& device) {
         }
       }
     }
-    if (adapter == device.physicalDevice) out.selected = out.adapters.size();
+    if (adapter == selected) out.selected = out.adapters.size();
     out.adapters.push_back(DescribeAdapter(facts, props.deviceID, std::to_string(props.driverVersion)));
   }
 }
 #endif
+
+void ReadProbeAdapters(GpuFacts& out, const Device::Options& options) {
+  // No logical device is needed here (the failed-device path: the adapter by enumeration).
+#if defined(LARECOMP_GPU_HAS_VULKAN)
+  if (options.backend == Backend::kVulkan) {
+    const auto render_interface = backend::vulkan::CreateInterface();
+    if (render_interface) {
+      const auto& native = static_cast<const plume::VulkanInterface&>(*render_interface);
+      ReadVulkanAdapters(out, native.instance, VK_NULL_HANDLE);
+    }
+  }
+#endif
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (out.adapters.empty()) ReadDxgiAdapters(out, 0, /*read_uma=*/false);
+#endif
+  out.selected = SelectProbeAdapter(out.adapters, options.preferred_adapter);
+}
 
 void ReadDevice(GpuFacts& out, const Device& device) {
   const bool vulkan = ActiveBackend() == Backend::kVulkan;
@@ -165,11 +183,14 @@ void ReadDevice(GpuFacts& out, const Device& device) {
   Adapter selected = DescribeAdapter(facts, ids.device_id, {});
 #if defined(LARECOMP_GPU_HAS_VULKAN)
   if (vulkan) {
-    const auto& native = *static_cast<plume::VulkanDevice*>(device.device());
-    ReadVulkanAdapters(out, native);
-    const uint32_t api = native.physicalDeviceProperties.apiVersion;
-    out.api_version = std::format("{}.{}.{}", VK_API_VERSION_MAJOR(api), VK_API_VERSION_MINOR(api),
-                                  VK_API_VERSION_PATCH(api));
+    if (const auto* native = static_cast<const plume::VulkanDevice*>(device.device())) {
+      if (native->renderInterface) {
+        ReadVulkanAdapters(out, native->renderInterface->instance, native->physicalDevice);
+      }
+      const uint32_t api = native->physicalDeviceProperties.apiVersion;
+      out.api_version = std::format("{}.{}.{}", VK_API_VERSION_MAJOR(api), VK_API_VERSION_MINOR(api),
+                                    VK_API_VERSION_PATCH(api));
+    }
     out.dxr_1_1 = false;
     out.ray_query = device.capabilities().rayQuery;
     selected.driver_version = std::to_string(device.description().driverVersion);
@@ -281,10 +302,15 @@ void ReadTier(GpuFacts& out) {
 
 GpuFacts ReadGpuFacts(bool probe, const std::filesystem::path& folder) {
   GpuFacts out;
+  out.d3d12_compiled = BackendCompiled(Backend::kD3D12);
+  out.vulkan_compiled = BackendCompiled(Backend::kVulkan);
+  out.ray_regen_built = rayregen::BuildHas();
   if (probe) {
     // CHECK: both backends should open without a window, shader pack or guest runtime.
+    const auto options = ProbeOptions();
     Device device;
-    if (device.Initialize(ProbeOptions())) ReadDevice(out, device);
+    if (device.Initialize(options)) ReadDevice(out, device);
+    else ReadProbeAdapters(out, options);
     ReadTier(out);
   } else if (const Device* device = MachineFactsDevice()) {
     ReadDevice(out, *device);

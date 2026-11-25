@@ -187,6 +187,9 @@ machine::Facts MakeFacts(const Spec& s, std::string* class_name, std::string* ti
   facts.frame_pacing_wake = !linux_os;
 
   machine::GpuFacts& gpu = facts.gpu;
+  gpu.d3d12_compiled = !linux_os;
+  gpu.vulkan_compiled = true;
+  gpu.ray_regen_built = !linux_os;
   machine::Adapter adapter;
   adapter.name = s.adapter;
   adapter.vendor_id = s.vendor_id;

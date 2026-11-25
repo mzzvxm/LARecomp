@@ -17,6 +17,7 @@ CONTRACT = ROOT / 'documentation/contract'
 VALIDATOR = CONTRACT / 'validate_contract.py'
 CONSTANT_SOURCES = (
     'larecomp_manifest.toml', 'src/cpu_level.cpp', 'src/larecomp_version.h',
+    'src/settings/larecomp_app_settings.h',
     'src/isoinstaller/larecomp_iso_installer.cpp', 'src/saveporter/larecomp_save_porter.cpp',
     'src/mc_engine/online/online_tables_core.h', 'src/shaderpack/pack_format.h',
     'src/citypack/pack_format.h', 'src/citypack/city_hit_format.h', 'src/gpu/pipelines.cpp',
@@ -165,6 +166,8 @@ def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=
     assert ('settings_ui' in manifest['contracts']) == exports
     assert ('machine' in manifest['contracts']) == exports
     assert manifest['exit_codes']['cpu_level_refused'] == 0x4C43
+    assert manifest['launch'] == {'game_root': '--game_data_root={game_root}', 'debug_menu': '--debug_menu=true'}
+    assert manifest['game']['size'] == 9252864
     assert manifest['game']['required_files'] == [
         'default.xex', 'xarchive_audio.rpf', 'xarchive_audlo.rpf', 'xarchive_cache.rpf',
     ]
@@ -196,6 +199,7 @@ def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=
         'sl.dlss_g.dll', 'nvngx_dlssg.dll', 'sl.reflex.dll', 'sl.pcl.dll',
     }
     assert action['build_shader_packs']['when'] == ('true' if gpu else 'false')
+    assert action['build_shader_packs']['args'] == [manifest['launch']['game_root']]
     assert action['build_city_pack']['when'] == ("true" if gpu else "false") + " && gpu.rt_tier != 'none'"
     assert action['build_city_pack']['after'] == ['build_shader_packs'] + (['probe_machine'] if exports else [])
     assert action['build_city_hit']['after'] == ['build_city_pack']
@@ -246,6 +250,9 @@ MUTATIONS = (
     ('cmake/InstallManifest.cmake', "gpu.rt_tier != 'none'", "gpu.rt_tier == 'none'"),
     ('cmake/InstallManifest.cmake', 'OUTPUTS ${shader_outputs}', 'OUTPUTS "{shader_pack_dir}/mcla_shaders.v8.pack"'),
     ('cmake/InstallManifest.cmake', '"actions": @describe_actions@', '"actions": []'),
+    ('cmake/InstallManifest.cmake', '"game_root": "@game_root@"', '"game_root": "--other_root={game_root}"'),
+    ('cmake/InstallManifest.cmake', '--@debug_menu@=true', '--other_debug=true'),
+    ('cmake/InstallManifest.cmake', '"size": 9252864', '"size": 9252865'),
 )
 
 

@@ -169,6 +169,8 @@ fallback_values = [{id = "1", label = "100%"}]
     check(presets["order"].as_array() && presets["order"].as_array()->size() == 6 && presets["order"][0].value_or("") == std::string_view("vanilla") &&
           presets["order"][5].value_or("") == std::string_view("custom"), "six presets, VANILLA first, CUSTOM last");
     check(presets["first_start"].value_or("") == std::string_view("vanilla"), "a first start is VANILLA");
+    check(presets["legacy_file_preset"].value_or("") == std::string_view("custom"),
+          "a file with a covered setting and no preset starts as CUSTOM");
     check(presets["items"]["vanilla"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("off") &&
           presets["items"]["enhanced"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("high") &&
           presets["items"]["enhanced_rt_ultra"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("rt"), "the values are the table's");

@@ -39,8 +39,14 @@ struct GpuFacts {
   std::optional<bool> latency_auto, pcss;
   std::optional<uint32_t> paper_white, peak_nits;
   std::optional<bool> gi_update, fidelityfx_files, streamline_files;
+  bool d3d12_compiled = false, vulkan_compiled = false, ray_regen_built = false;
   bool pending = false;
 };
+
+// After a failed headless device open, a matching hardware adapter or the sole
+// hardware adapter can still identify the card. An ambiguous list stays unknown.
+std::optional<size_t> SelectProbeAdapter(const std::vector<Adapter>& adapters,
+                                         std::string_view preferred_name);
 
 struct Display {
   std::string name;

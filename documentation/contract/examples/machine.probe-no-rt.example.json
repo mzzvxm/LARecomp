@@ -14,12 +14,14 @@
     "rt_tier": "none", "rt_rung": "none", "rt_tier_why": "no ray tracing support", "rt_benchmarked": false,
     "adapters": [ { "name": "NVIDIA GeForce GTX 1080", "vendor": "nvidia", "vram_mb": 8192, "class": "mid", "selected": true, "software": false } ]
   },
-  "api": { "name": "vulkan", "version": "1.3", "dxr_1_1": false, "ray_query": false, "shader_model": null, "car_rt": false, "city_rt_shadows": false },
+  "api": { "name": "vulkan", "version": "1.3", "dxr_1_1": false, "ray_query": false, "shader_model": null, "car_rt": false, "city_rt_shadows": false,
+           "by_api": { "d3d12": { "car_rt": null, "rt_tier": null, "ray_regen": null },
+                       "vulkan": { "car_rt": false, "rt_tier": "none", "ray_regen": "no" } } },
   "features": {
     "upscalers": { "fsr1": true, "fsr31": true, "fsr4": false, "dlss": null, "dlss_modes_refused": null },
-    "frame_generation": { "fsr31": true, "dlss": null, "dlss_multiplier_max": null, "dlss_after_restart": null },
+    "frame_generation": { "fsr31": true, "dlss": null, "dlss_card": false, "dlss_multiplier_max": null, "dlss_after_restart": null },
     "latency": { "kind": "none", "auto_on": false },
-    "denoiser": { "vendor": "none", "dlss_rr": null, "ray_regen": null },
+    "denoiser": { "vendor": "none", "dlss_rr": null, "ray_regen": "no" },
     "hdr": { "display_capable": false, "windows_hdr_on": false, "auto_paper_white_nits": null, "auto_peak_nits": null },
     "pcss": true
   },

@@ -1,5 +1,7 @@
 #include "document.h"
 
+#include "gpu/dlss_fg_card.h"
+#include "gpu/gpu_class.h"
 #include "os/file_replace.h"
 #include "mc_engine/online/online_tool/json_writer.h"
 
@@ -65,6 +67,26 @@ void Sizes(JsonWriter& out, const std::vector<std::array<uint32_t, Count>>& size
   out.EndArray();
 }
 
+void WriteApiFacts(JsonWriter& out, const GpuFacts& gpu, std::string_view api, bool compiled) {
+  out.Key(api).BeginObject();
+  if (gpu.api == api) {
+    Field(out, "car_rt", gpu.car_rt);
+    Field(out, "rt_tier", gpu.rt_tier);
+    Field(out, "ray_regen", gpu.ray_regen);
+  } else {
+    // Another API's device may select a different adapter. Only publish
+    // build-wide limits until that API has been opened.
+    if (compiled) {
+      out.Key("car_rt").Null().Key("rt_tier").Null();
+    } else {
+      out.Field("car_rt", false).Field("rt_tier", "none");
+    }
+    if (compiled && api == "d3d12" && gpu.ray_regen_built) out.Key("ray_regen").Null();
+    else out.Field("ray_regen", "unsupported");
+  }
+  out.EndObject();
+}
+
 void WriteGpu(JsonWriter& out, const GpuFacts& gpu, const Adapter* selected) {
   out.Key("gpu").BeginObject();
   if (selected) {
@@ -106,10 +128,13 @@ void WriteGpu(JsonWriter& out, const GpuFacts& gpu, const Adapter* selected) {
   Field(out, "ray_query", gpu.ray_query);
   Field(out, "car_rt", gpu.car_rt);
   Field(out, "city_rt_shadows", gpu.city_rt_shadows);
-  out.EndObject();
+  out.Key("by_api").BeginObject();
+  WriteApiFacts(out, gpu, "d3d12", gpu.d3d12_compiled);
+  WriteApiFacts(out, gpu, "vulkan", gpu.vulkan_compiled);
+  out.EndObject().EndObject();
 }
 
-void WriteFeatures(JsonWriter& out, const Facts& facts) {
+void WriteFeatures(JsonWriter& out, const Facts& facts, const Adapter* selected) {
   const GpuFacts& gpu = facts.gpu;
   out.Key("features").BeginObject().Key("upscalers").BeginObject();
   Field(out, "fsr1", gpu.fsr1);
@@ -127,6 +152,12 @@ void WriteFeatures(JsonWriter& out, const Facts& facts) {
   out.EndObject().Key("frame_generation").BeginObject();
   Field(out, "fsr31", gpu.fsr31_fg);
   Field(out, "dlss", gpu.dlss_fg);
+  if (selected && selected->vendor_id && !selected->name.empty()) {
+    out.Field("dlss_card", selected->vendor_id == mcla::gpu::gpu_class::kVendorNvidia &&
+                          mcla::gpu::dlss::NameLooksLikeFrameGeneration(selected->name));
+  } else {
+    out.Key("dlss_card").Null();
+  }
   Field(out, "dlss_multiplier_max", gpu.dlss_multiplier);
   Field(out, "dlss_after_restart", gpu.dlss_after_restart);
   out.EndObject().Key("latency").BeginObject();
@@ -229,6 +260,25 @@ bool IsFinal(bool probe, const GpuFacts& gpu) {
   return !probe && !gpu.pending;
 }
 
+std::optional<size_t> SelectProbeAdapter(const std::vector<Adapter>& adapters,
+                                         std::string_view preferred_name) {
+  std::optional<size_t> sole;
+  std::optional<size_t> preferred;
+  size_t hardware_count = 0;
+  for (size_t i = 0; i < adapters.size(); ++i) {
+    const auto& adapter = adapters[i];
+    if (adapter.software) continue;
+    sole = i;
+    ++hardware_count;
+    if (!preferred_name.empty() && adapter.name == preferred_name) {
+      if (preferred) return std::nullopt;
+      preferred = i;
+    }
+  }
+  if (preferred) return preferred;
+  return hardware_count == 1 ? sole : std::nullopt;
+}
+
 std::string Serialize(const Facts& facts, bool probe, std::string_view written_utc) {
   const GpuFacts& gpu = facts.gpu;
   const Adapter* selected = gpu.selected && *gpu.selected < gpu.adapters.size()
@@ -243,7 +293,7 @@ std::string Serialize(const Facts& facts, bool probe, std::string_view written_u
   if (!written_utc.empty()) out.Field("written_utc", written_utc);
   if (selected) out.Field("hardware_id", HardwareId(*selected, facts.os_build));
   WriteGpu(out, gpu, selected);
-  WriteFeatures(out, facts);
+  WriteFeatures(out, facts, selected);
 
   out.Key("display").BeginObject();
   if (!facts.displays.empty()) WriteDisplay(out.Key("primary"), facts.displays.front());
