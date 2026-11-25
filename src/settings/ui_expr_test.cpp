@@ -429,6 +429,9 @@ void RunRowCases(const Json& tests) {
         const bool variant = c.StringOr("list", "states") == "variants";
         const auto* match = variant ? view.SelectedVariant() : view.State();
         const auto* list = data[variant ? "variants" : "states"].as_array();
+        // A selected variant that has a state list of its own (the denoiser row's AMD variant) owns the states: the index is its place in that list.
+        if (!variant)
+          if (const auto* selected = view.SelectedVariant(); selected && selected->contains("states")) list = (*selected)["states"].as_array();
         int index = -1;
         if (list && match)
           for (size_t i = 0; i < list->size(); ++i)
