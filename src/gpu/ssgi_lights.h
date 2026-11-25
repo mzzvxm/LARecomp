@@ -28,6 +28,17 @@
 // part of the lights' luma that fits under the room the capped colour leaves, soft-clipped to it (SoftClip: linear to half the room, then bending to it), hue kept. Nothing above the cap, so the apply's ceiling and
 // its gain limit see what they have always seen; a source of light (the texel's own source share) takes none of the lights' share (it is the lamp, not the wall).
 //
+// THE LIGHTS' OWN CAP FLOOR (GI-BOUNCE-SS-2, mcla_gpu_ssgi_lights_floor). At night the cap is the floor 0.5 (kCapFloor: 0.38 of a white wall in full sun, whose luma is ambient 0.3 + sun 1.0 = 1.3 in these units), so
+// a neon pool or a headlight's wall, whose light is as bright as such a wall or brighter, was cut to 0.5 minus what the texel already held: the lights' share was crushed exactly where it is the only light. The
+// lights' share is now held under max(cap, kFloorDefault): a second, separate floor for the lights alone (the colour chain's own cap, the source start and the apply's ceiling keep kCapFloor: nothing but
+// the lights' room changes). 1.3 is one white wall in full sun: a lamp's pool may bounce as brightly as the sun-lit wall of the day, not more (the cap's own reason, ssgi_light.h), and it is under the least
+// cap a day has (the LIGHT strength level's 1.5 x 1.3 = 1.95; an overcast noon of ambient 0.3 + sun 0.6 still 1.35), so wherever the frame's own cap is at or over the floor the rule is max(cap, floor) = cap and the
+// frame is bit for bit what it was: noon, sun or overcast, is today's picture. Only a frame whose cap sits under the floor (dusk, night) has more room for the lights: there the room is the floor's (at the default
+// strength level that is a frame whose ambient + sun is under 0.65).
+// A floor of 0 (or any under the frame's cap) is the rule as it was (the A/B). Not raised: the apply's gain limit, a multiple of the pixel's own colour (4.5 at DEFAULT): near a neon it binds first (a dark
+// ground's second bounce is limited by its own colour, whatever the radiance), so the floor matters for the far reach, where the carried radiance is small; and the apply's ceiling (the 0.5 floor) is the pixel's
+// own total, not the radiance.
+//
 // Written once here so that ssgi_lights_test.cpp can check the rules and that the shader's constants are these; hlsl/ao_color_ps.hlsl and hlsl/ssgi_common.hlsli repeat the numbers. Includes nothing of Plume.
 // ===========================================================================
 
@@ -44,6 +55,9 @@ using ssgi_light::Rgb;
 // The colour chain's level 0 pass adds the lights' share when this bit of the flags (slots2.z) is set (hlsl/ao_color_ps.hlsl AoLights). Bits 0-7 are the debug view, 8-15 the slices and steps, 16 low, 17-19 the
 // denoise radius and 21 the one-sample flag: the frame block FillPush makes sets nothing above 19, so the bit is the pass's alone.
 inline constexpr uint32_t kFlag = 1u << 23;
+// GI-BOUNCE-JOIN: the chain runs LIGHTS-ONLY (flags bit 24 of the same word, level 0 only): where the probe field stands it carries everything but the moving lights, so the colour chain's radiance is the lights'
+// share alone (hlsl/ao_color_ps.hlsl AoLightsOnly; ChainColour below). Set with or without kFlag: with no usable history the chain is black (a frame of the hold, below).
+inline constexpr uint32_t kFlagOnly = 1u << 24;
 // The normal image's slot rides in the high half of slots.y (the low bits are the colour target's host samples), as in the accumulation pass (ao_gbuffer.h kSlotShift).
 inline constexpr uint32_t kNormalShift = 16;
 inline constexpr uint32_t kHostSamplesMask = 0xFFu;
@@ -66,6 +80,20 @@ inline constexpr float kGainMax = 8.0f;
 inline float GainOf(double setting) {
   if (!(setting == setting)) return kGainDefault;
   return float(std::min(std::max(setting, double(kGainMin)), double(kGainMax)));
+}
+
+// The lights' own cap floor (mcla_gpu_ssgi_lights_floor, debug only, live; the header comment above has the reasons): the room the lights' share has under max(the chain's cap, this), in luma, in the scene colour's units.
+// 0 is the rule as it was; kFloorMax is where a floor of its own stops meaning anything (the cap's own largest multiple of a white wall in full sun is 3.5 x 1.3 = 4.55).
+inline constexpr float kFloorDefault = 1.3f;
+inline constexpr float kFloorMin = 0.0f;
+inline constexpr float kFloorMax = 4.0f;
+inline float FloorOf(double setting) {
+  if (!(setting == setting)) return kFloorDefault;
+  return float(std::min(std::max(setting, double(kFloorMin)), double(kFloorMax)));
+}
+// The cap the lights' share is held under (hlsl/ssgi_common.hlsli SsgiLightsCap): the chain's own cap, or the floor where that is higher. Equal to `cap` to the bit wherever cap >= floor.
+inline float LightsCap(float cap, float floor_luma) {
+  return std::max(cap, floor_luma);
 }
 
 // A colour channel a half float image keeps and a light is never negative: the difference of the two captures, where the lights added, is >= 0; rounding in a half float can make it a hair under 0 and a NaN is none.
@@ -210,21 +238,40 @@ inline Rgb CarryLights(const Rgb& pre, const Rgb& delta, float gain, float cap, 
   return {pre.r + d.r * scale, pre.g + d.g * scale, pre.b + d.b * scale};
 }
 
+// The colour chain's level 0 texel: the old chain (`pre` + the lights' share) or, LIGHTS-ONLY, the lights' share alone on black (`delta` is what the history found: zero with no usable history).
+// `pre` is the cleaned and capped colour of the texel. A lights-only texel never holds `pre`.
+inline Rgb ChainColour(const Rgb& pre, const Rgb& delta, float gain, float cap, float source_share, bool lights, bool only) {
+  if (only) {
+    return lights ? CarryLights(Rgb{}, delta, gain, cap, source_share) : Rgb{};
+  }
+  return lights ? CarryLights(pre, delta, gain, cap, source_share) : pre;
+}
+
 // ---------------------------------------------------------------------------
 // the history's validity (screen_shared.h LightHistory; the host side of the frame)
 // ---------------------------------------------------------------------------
+
+// WHICH LIGHTS the pair holds (GI-BOUNCE-JOIN, gi_bounce_carrier.h): kAll the whole light pass (no field stands: every light is the screen-space bounce's), kResidual only the lights the probe field and the
+// per-pixel pass do not carry (the field stands: a moving car's lights at HIGH). A pair is used by a chain of its own kind only: a frame that changes kind has no history for one frame.
+enum class Partition : uint8_t { kAll = 0, kResidual = 1 };
 
 struct Key {
   bool valid = false;        // both captures were made in `frame`
   uint64_t frame = 0;        // the owner's frame count of the capture
   bool pause = false;        // the pause menu's, the garage's or the map's world
   uint32_t size[2] = {};     // the traced size both images are
+  Partition partition = Partition::kAll;  // which lights the pair holds
 };
 
-// The history is usable in frame `frame` (of the view kind `pause`, traced size w x h) when the captures were made in the frame before it, of the same kind of view and at the same size, and the AO's own history
-// holds this frame (its camera pair is known and no cut: `ao_history`), since the motion the reprojection uses is the AO's.
-constexpr bool Usable(const Key& last, uint64_t frame, bool pause, uint32_t w, uint32_t h, bool ao_history) {
-  return ao_history && last.valid && last.frame + 1 == frame && last.pause == pause && last.size[0] == w && last.size[1] == h && w != 0 && h != 0;
+// The history is usable in frame `frame` (of the view kind `pause`, traced size w x h, the partition the chain wants) when the captures were made in the frame before it, of the same kind of view and at the same
+// size, with the same partition of the lights, and the AO's own history holds this frame (its camera pair is known and no cut: `ao_history`), since the motion the reprojection uses is the AO's.
+constexpr bool Usable(const Key& last, uint64_t frame, bool pause, uint32_t w, uint32_t h, bool ao_history, Partition partition = Partition::kAll) {
+  return ao_history && last.valid && last.frame + 1 == frame && last.pause == pause && last.size[0] == w && last.size[1] == h && w != 0 && h != 0 && last.partition == partition;
+}
+
+// A residual pair made in the frame before `frame` (the chain of a frame where the field stands runs lights-only on it: ao.cpp PlanGi asks before the sizes are known, Usable asks again with them).
+constexpr bool ResidualReady(const Key& last, uint64_t frame) {
+  return last.valid && last.frame + 1 == frame && last.partition == Partition::kResidual;
 }
 
 // The two captures are made in a frame that ran the bounce light (the colour chain this frame), after the light pass was drawn or not: with no light pass in the frame nothing was added and the images are not
@@ -241,5 +288,37 @@ constexpr bool CaptureBefore(bool wanted, bool chain_made, bool light_pass_wante
 constexpr bool Wanted(bool bounce_light_on, bool setting, bool extracting) {
   return bounce_light_on && setting && extracting;
 }
+
+// ---------------------------------------------------------------------------
+// the lights-only chain's hold (ao.cpp PlanGi; gi_bounce_carrier.h has the rule for who carries which light)
+// ---------------------------------------------------------------------------
+
+// Where the field stands the screen-space chain runs LIGHTS-ONLY, in the frames whose last frame had lights in the pair. A frame switches the occlusion between its plain passes and the bounce light's (the
+// bounce light's images, the occlusion's history given back), so the chain is kept for kHoldFrames after the last frame that needed it: a car passing out of view and the next one coming in do not
+// switch the occlusion back and forth. It starts only with a pair to use (a frame with no light in the pair costs nothing) and never while the lights' share is off.
+class OnlyHold {
+ public:
+  static constexpr uint32_t kHoldFrames = 90;  // 1.5 s at 60 fps
+  // `wanted`: the field stands and the lights' share is wanted; `ready`: the last frame left a pair made for this partition. True: this frame runs the chain lights-only.
+  bool Step(bool wanted, bool ready) {
+    if (!wanted) {
+      left_ = 0;
+      return false;
+    }
+    if (ready) {
+      left_ = kHoldFrames;
+      return true;
+    }
+    if (left_ > 0) {
+      --left_;
+      return true;
+    }
+    return false;
+  }
+  uint32_t left() const { return left_; }
+
+ private:
+  uint32_t left_ = 0;
+};
 
 }  // namespace mcla::gpu::ssgi_lights

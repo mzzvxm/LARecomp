@@ -4,14 +4,15 @@
 // ===========================================================================
 // WHAT IT IS. At ULTRA on a strong ray tracing card (gi_frame.h PixelPassAllowed: the extended layout) the probe field (2 m probes, a 2 s memory) gets a detail layer: one cosine weighted ray a pixel
 // at the occlusion's TRACED size (half the picture's above 1080 lines), from the G-buffer's position and normal, 12 m long, into the city and the cars. What it adds that the field cannot carry:
-// contact scale below the probes' spacing, the cars as occluders, and the HEADLIGHTS' bounce (they move 36 m/s against a 2 s field: the light manager's surface lights are added at the hit, no shadow ray).
+// contact scale below the probes' spacing, the cars as occluders, and the bounce of the cars' own LAMPS (neon, headlights, tail lamps: they move 36 m/s against a 2 s field, so the probes only carry the ones
+// that stand still: the world frame's emitters, GI-BOUNCE-RT, rt_emitters_rules.h, are all lit at the hit here, one of them with a shadow ray).
 //
 //   THE RAY     a pixel with a normal, an albedo, a lit weight and a depth (the apply's own conditions, gi_apply_rules.h) that is not a vehicle's: the direction is cosine weighted about the normal,
 //               from a per-pixel offset that steps along the R2 low discrepancy sequence each frame (so successive frames sample new directions and the temporal stage converges to the integral), and it
 //               goes at most kReachM (THE 12 m RULE) from the surface. Mask: the city (0x80) and the cars' parts (0x7F).
 //   THE HIT     the city library's GI mode (hlsl/city_hit_shade.hlsli CityHitShadeHit, the SAME call the probes' rays make, so the two estimates are of one thing): the hit's average colour times the
-//               frame's ambient, the sun by N.L with a shadow ray, ONE of the nearest lamps by the world frame's grid with a shadow ray (R7), the glow of what glows, the headlights of the frame's
-//               surface lights (CITY_HIT_AMBIENT: no shadow ray), and the field one frame old as the second bounce (bounce weight, as the probes'). A car's hit is a neutral diffuse (kCarAlbedo) in the
+//               frame's ambient, the sun by N.L with a shadow ray, ONE of the nearest lamps by the world frame's grid with a shadow ray (R7), the glow of what glows, the emitters of the world frame (a car's
+//               neon, headlights, tail lamps, police bars: ALL of them, the moving ones too; one with a shadow ray against the city), and the field one frame old as the second bounce (bounce weight, as the probes'). A car's hit is a neutral diffuse (kCarAlbedo) in the
 //               frame's light: an occluder, not yet a painted emitter. The picture's colour (ResolveHit's screen term) is NOT used: this pass runs at the apply, before the light pass and before colour_post.
 //   A MISS      a ray that finds nothing within the reach carries the FIELD's irradiance at the pixel (kMissShare): the long range is the field's, so a pixel with nothing near it is the field's value
 //               exactly (the pixel term is the field's where it has nothing to say) and a pixel with geometry near it is a mix of the near hits and the field. The estimate's expectation counts the
@@ -37,8 +38,8 @@
 //   G5-c  the picture's colour (ResolveHit's screen term) is not read: this pass is before colour_post and the light pass; the previous frame's colour_post would need the camera's motion. NEEDS: if the
 //         owner wants "seen colour where it is seen" the apply's pass order has to move the pixel pass after CapturePost (one frame of lag for the bounce) or read history_colour_slot.
 //   G5-d  a car's hit is a grey (kCarAlbedo) lit by the frame's ambient and the sun without a shadow ray; no paint colour, no glow of its lamps (the car scene's instance table is the way in).
-//   G5-e  the headlights' units: LightFrame colours are shader output units (the paint's, no exposure), so the term is added at units 1 like the field's; the deferred light pass multiplies by night,
-//         height and gain calibrations (local_lights_rules.h): a mismatch that depends on the hour is those.
+//   G5-e  the emitters' units: a light's colour is a shader output unit (the paint's, no exposure) times the night factor and the pass's gain (rt_emitters_rules.h), so the term is added at units 1 like the
+//         field's; the deferred light pass also multiplies by the height factor (local_lights_rules.h), which the bounce leaves out: a mismatch that depends on the height is that.
 //   G5-f  the timestamps: two a frame slot around the trace and the denoise (GpuTiming's rule); without them the governor stays at the full size.
 // ===========================================================================
 
@@ -51,7 +52,6 @@
 #include <string>
 
 #include "gi_frame.h"
-#include "light_frame.h"
 #include "rt_denoise_rules.h"
 
 namespace mcla::gpu::gi_pixel {
@@ -67,8 +67,6 @@ inline constexpr float kReachM = 12.0f;             // THE 12 m RULE (CHECK G5-a
 inline constexpr float kMaxRadiance = 32.0f;        // a ray carries at most this (the probes' record's, gi_update_rules.h kMaxRadiance): a firefly's guard (neon, a sun glint)
 inline constexpr float kCarAlbedo = 0.12f;          // a car's hit: a neutral diffuse (CHECK G5-d)
 inline constexpr float kMissShare = 1.0f;           // the share of the field's irradiance a ray with no hit carries (CHECK G5-b)
-inline constexpr float kHeadlightGain = 1.0f;       // the surface lights' term at a hit (CHECK G5-e)
-inline constexpr uint32_t kLightsMax = 6;           // the surface lights the pass reads at a hit (two headlamps of three cars)
 inline constexpr float kFullLength = 4.0f;          // the denoiser's history length (frames) at which the pixel term replaces the field in full
 inline constexpr float kMaxWeight = 1.0f;           // the most the pixel term replaces of the field (1: all)
 inline constexpr float kRawWeight = 1.0f;           // a RAW frame's weight of the 1 spp pixel term where the pass traced (Ray Reconstruction is the history and the filter: nothing to wait for)
@@ -87,7 +85,6 @@ struct Cell {
   uint32_t rays_per_pixel = 0;       // 1: one cosine ray a pixel at the pass's size
   float reach_m = 0.0f;
   uint32_t denoise_iterations = 0;   // a-trous iterations at most (steps 1, 2, 4)
-  uint32_t lights = 0;               // surface lights read at a hit
   float cap_ms = 0.0f;               // the governor's cap on the pass (trace + denoise) at the traced 1080 lines; est. 5080: trace 1.0 to 1.5, denoise 0.3 to 0.6
   float est_ms_lo = 0.0f, est_ms_hi = 0.0f;
 };
@@ -97,7 +94,7 @@ constexpr Cell CellFor(gi::Rung rung, gi::Level level) {
   const gi::Layout layout = gi::LayoutFor(rung, level);
   const gi::Budget& budget = gi::BudgetOf(layout);
   if (!gi::PixelPassAllowed(rung, layout) || budget.pixel_rays_per_pixel == 0) return Cell{};
-  return Cell{true, budget.pixel_rays_per_pixel, kReachM, rt_denoise::kMaxIterations, kLightsMax, 2.2f, 1.3f, 2.1f};
+  return Cell{true, budget.pixel_rays_per_pixel, kReachM, rt_denoise::kMaxIterations, 2.2f, 1.3f, 2.1f};
 }
 
 // What the pass holds in video memory at a size: the signal, the two depth guides (ping-pong: the temporal stage reads the last frame's), the view normal, the hit image, and RtDenoise's own four
@@ -306,26 +303,6 @@ inline gi::Vec3 Mix(gi::Vec3 e_field, gi::Vec3 e_pixel, float w) {
 }
 
 // ---------------------------------------------------------------------------
-// the surface lights (the headlights' term at a hit)
-// ---------------------------------------------------------------------------
-
-// The frame's surface lights the pass reads: the surface ranking's first lights that are not the game's own lamps (those add light in the game's shaders: kLightFlagGameLit) and have a range, at most
-// `max`, best first; written as GpuLight rows. Returns the count.
-inline uint32_t PickLights(const larecomp::gpu::LightFrame& frame, uint32_t max, larecomp::gpu::GpuLight* out) {
-  using namespace larecomp::gpu;
-  uint32_t n = 0;
-  const uint32_t wanted = frame.role_count[uint32_t(LightRole::kSurface)];
-  for (uint32_t i = 0; i < wanted && i < larecomp::gpu::kMaxLights && n < max; ++i) {
-    const uint32_t slot = frame.order[uint32_t(LightRole::kSurface)][i];
-    if (slot >= frame.count) continue;
-    const Light& l = frame.lights[slot];
-    if (l.id == kNoLightId || !(l.range > 0.0f) || (l.roles & kRoleMaskSurface) == 0 || (l.flags & kLightFlagGameLit) != 0) continue;
-    out[n++] = PackGpuLight(l);
-  }
-  return n;
-}
-
-// ---------------------------------------------------------------------------
 // the passes' layout (the compute layout, the rows, the push, the images)
 // ---------------------------------------------------------------------------
 
@@ -339,14 +316,13 @@ constexpr uint32_t Groups(uint32_t extent) { return (extent + kGroup - 1) / kGro
 
 // The rows the trace reads (a ByteAddressBuffer, 16 bytes a row): the apply's buffer first (the field's 20 rows then its 9, gi_apply_rules.h MakeBuffer, 464 bytes), then these:
 //   row 0  uint   pixel image width, height, divisor, traced-to-picture scale (1 or 2)
-//   row 1  uint   frame serial, flags (kFlag*), the surface lights in the rows, the sample count of the planes (informational)
-//   row 2  float  the ray's reach (m), the probes' bounce weight, the light gain, the pixel's angle (rad)
-//   row 3..  the surface lights as GpuLight rows (four rows each)
+//   row 1  uint   frame serial, flags (kFlag*), 0 (the surface lights of the light manager's frame were here: the world frame's emitters replaced them), the sample count of the planes (informational)
+//   row 2  float  the ray's reach (m), the probes' bounce weight, 0 (the light gain), the pixel's angle (rad)
 inline constexpr uint32_t kRowsOffsetBytes = 464;                 // gi_apply::kBufferBytes
-inline constexpr uint32_t kPixelRows = 3 + 4 * kLightsMax;
-inline constexpr uint32_t kBufferBytes = kRowsOffsetBytes + kPixelRows * 16;   // 464 + 27 x 16 = 896
-inline constexpr uint32_t kBufferAlloc = 1024;
-static_assert(kBufferBytes == 896 && kBufferBytes <= kBufferAlloc, "the rows: the apply's buffer and the pixel pass's own");
+inline constexpr uint32_t kPixelRows = 3;
+inline constexpr uint32_t kBufferBytes = kRowsOffsetBytes + kPixelRows * 16;   // 464 + 3 x 16 = 512
+inline constexpr uint32_t kBufferAlloc = 512;
+static_assert(kBufferBytes == 512 && kBufferBytes <= kBufferAlloc, "the rows: the apply's buffer and the pixel pass's own");
 inline constexpr uint32_t kFlagStats = 1u;   // a census frame (the counters are added to)
 inline constexpr uint32_t kFlagMs = 2u;      // informational: the planes are multisampled (the shader variant says it)
 
@@ -371,10 +347,10 @@ inline constexpr uint32_t kStatBytes = kStatWords * 4;
 inline constexpr float kRoughness = 1.0f;
 
 // The census's text, the first line and the interval (what the chain reads: the lines start with '[gi pixel]').
-inline std::string FirstLine(uint32_t frame, uint32_t width, uint32_t height, uint32_t divisor, uint32_t lights, float reach) {
+inline std::string FirstLine(uint32_t frame, uint32_t width, uint32_t height, uint32_t divisor, uint32_t emitters, float reach) {
   char buf[400];
-  std::snprintf(buf, sizeof(buf), "frame %u: the per-pixel pass runs: %ux%u pixels (traced size / %u), 1 ray a pixel, reach %.1f m, %u surface light(s), RtDenoise diffuse profile", frame, width, height, divisor, double(reach),
-                lights);
+  std::snprintf(buf, sizeof(buf), "frame %u: the per-pixel pass runs: %ux%u pixels (traced size / %u), 1 ray a pixel, reach %.1f m, %u emitter(s) of the world frame, RtDenoise diffuse profile", frame, width, height, divisor, double(reach),
+                emitters);
   return buf;
 }
 
@@ -434,7 +410,7 @@ inline void MotionRows(const CameraPose& cur, const CameraPose& prev, float out[
 // The history length the spatial pass assumes after `frames` frames of history (the kernel shrinks as it grows, rt_denoise_rules.h LengthScale).
 constexpr float AssumedLength(uint32_t frames) { return float(std::min(frames + 1u, uint32_t(rt_denoise::kMaxLength))); }
 
-static_assert(kReachM == 12.0f && kLightsMax == 6 && kLightsMax * 4 + 3 == kPixelRows, "the cell's numbers");
+static_assert(kReachM == 12.0f && kPixelRows == 3, "the cell's numbers");
 static_assert(!CellFor(gi::Rung::kNone, gi::Level::kUltra).runs && !CellFor(gi::Rung::kWeak, gi::Level::kUltra).runs && !CellFor(gi::Rung::kStrong, gi::Level::kHigh).runs && !CellFor(gi::Rung::kStrong, gi::Level::kOff).runs &&
                   CellFor(gi::Rung::kStrong, gi::Level::kUltra).runs,
               "only the strong rung at ULTRA runs the per-pixel pass: every other cell is the identity");

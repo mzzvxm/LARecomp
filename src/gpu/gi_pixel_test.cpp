@@ -106,14 +106,14 @@ void CellChecks() {
       const bool expect = rung == gi::Rung::kStrong && level == gi::Level::kUltra;
       Check(c.runs == expect, std::string("CELL: ") + std::string(gi::RungName(rung)) + " " + std::string(gi::LevelName(level)) + (expect ? " runs the pass" : " is the identity"));
       if (!c.runs) {
-        Check(c.rays_per_pixel == 0 && c.reach_m == 0.0f && c.denoise_iterations == 0 && c.lights == 0 && c.cap_ms == 0.0f, std::string("CELL: a cell without the pass holds no numbers: ") + std::string(gi::RungName(rung)) + " " + std::string(gi::LevelName(level)));
+        Check(c.rays_per_pixel == 0 && c.reach_m == 0.0f && c.denoise_iterations == 0 && c.cap_ms == 0.0f, std::string("CELL: a cell without the pass holds no numbers: ") + std::string(gi::RungName(rung)) + " " + std::string(gi::LevelName(level)));
       }
       running += c.runs ? 1 : 0;
     }
   }
   Check(running == 1, "CELL: exactly one of the nine cells runs the pass (strong, ULTRA)");
   const gp::Cell u = gp::CellFor(gi::Rung::kStrong, gi::Level::kUltra);
-  Check(u.rays_per_pixel == 1 && u.reach_m == 12.0f && u.denoise_iterations == 3 && u.lights == 6 && u.cap_ms > u.est_ms_hi && u.est_ms_lo < u.est_ms_hi, "CELL: 1 ray a pixel, 12 m, 3 iterations, 6 lights, a cap over the estimate");
+  Check(u.rays_per_pixel == 1 && u.reach_m == 12.0f && u.denoise_iterations == 3 && u.cap_ms > u.est_ms_hi && u.est_ms_lo < u.est_ms_hi, "CELL: 1 ray a pixel, 12 m, 3 iterations, a cap over the estimate");
   Check(gi::BudgetOf(gi::Layout::kExtended).pixel_rays_per_pixel == u.rays_per_pixel && gi::BudgetOf(gi::Layout::kStandard).pixel_rays_per_pixel == 0 && gi::BudgetOf(gi::Layout::kLean).pixel_rays_per_pixel == 0,
         "CELL: the cell's rays are the field's budget's (gi_frame.h): only the extended layout has the pass");
   // the memory: the doc's 190 MiB at ULTRA holds the pass's images at a traced 1080 lines (2.07 M pixels) beside the field's 79
@@ -382,56 +382,6 @@ void EstimatorChecks() {
 }
 
 // ---------------------------------------------------------------------------
-// the surface lights
-// ---------------------------------------------------------------------------
-
-lf::Light MakeLight(uint64_t id, float range, uint8_t roles, uint32_t flags, lf::LightSource source, float x) {
-  lf::Light l;
-  l.id = id;
-  l.range = range;
-  l.roles = roles;
-  l.flags = flags;
-  l.source = source;
-  l.law = source == lf::LightSource::kHeadlight ? lf::LightLaw::kHeadlight : lf::LightLaw::kGameLamp;
-  l.pos[0] = x;
-  l.color[0] = l.color[1] = l.color[2] = 1.5f;
-  l.cos_outer = 0.5f;
-  l.cos_inner = 0.9f;
-  return l;
-}
-
-void LightChecks() {
-  lf::LightFrame frame;
-  using lf::LightRole;
-  frame.lights[0] = MakeLight(11, 60.0f, lf::kRoleMaskAll, lf::kLightFlagPlayer, lf::LightSource::kHeadlight, 1.0f);       // the player's headlamp
-  frame.lights[1] = MakeLight(12, 80.0f, lf::kRoleMaskVolume | lf::kRoleMaskShadow, lf::kLightFlagGameLit, lf::LightSource::kLamp, 2.0f);   // a street lamp: game lit, no surface role
-  frame.lights[2] = MakeLight(13, 0.0f, lf::kRoleMaskAll, 0, lf::LightSource::kHeadlight, 3.0f);                          // off (no range)
-  frame.lights[3] = MakeLight(lf::kNoLightId, 40.0f, lf::kRoleMaskAll, 0, lf::LightSource::kHeadlight, 4.0f);              // a hole
-  frame.lights[4] = MakeLight(15, 50.0f, lf::kRoleMaskSurface, 0, lf::LightSource::kPolice, 5.0f);                        // a police light
-  frame.lights[5] = MakeLight(16, 90.0f, lf::kRoleMaskAll, lf::kLightFlagGameLit, lf::LightSource::kLamp, 6.0f);           // game lit: skipped
-  frame.lights[6] = MakeLight(17, 55.0f, lf::kRoleMaskAll, 0, lf::LightSource::kHeadlight, 7.0f);                         // another car's headlamp
-  frame.count = 7;
-  const uint32_t order[] = {4, 0, 6, 1, 2, 3, 5};
-  for (uint32_t i = 0; i < 7; ++i) frame.order[uint32_t(LightRole::kSurface)][i] = uint8_t(order[i]);
-  frame.role_count[uint32_t(LightRole::kSurface)] = 7;
-  lf::GpuLight out[gp::kLightsMax] = {};
-  const uint32_t n = gp::PickLights(frame, gp::kLightsMax, out);
-  Check(n == 3, Num("LIGHTS: the police light and the two headlamps are picked (%.0f): the game's own lamps, the off one and the hole are not", double(n)));
-  Check(n == 3 && out[0].row0[0] == 5.0f && out[1].row0[0] == 1.0f && out[2].row0[0] == 7.0f, "LIGHTS: in the surface ranking's order, best first");
-  bool round_trip = n == 3;
-  for (uint32_t i = 0; i < n && round_trip; ++i) {
-    const lf::Light back = lf::UnpackGpuLight(out[i]);
-    round_trip = back.range > 0.0f && (back.roles & lf::kRoleMaskSurface) != 0 && (back.flags & lf::kLightFlagGameLit) == 0;
-  }
-  Check(round_trip, "LIGHTS: each is the manager's own GpuLight record (the same rows the deferred light pass reads)");
-  Check(gp::PickLights(frame, 2, out) == 2 && gp::PickLights(frame, 0, out) == 0, "LIGHTS: no more than the pass's room");
-  frame.role_count[uint32_t(LightRole::kSurface)] = 1;
-  Check(gp::PickLights(frame, gp::kLightsMax, out) == 1, "LIGHTS: only the prefix of the ranking the frame wants");
-  lf::LightFrame empty;
-  Check(gp::PickLights(empty, gp::kLightsMax, out) == 0, "LIGHTS: an empty frame holds none");
-}
-
-// ---------------------------------------------------------------------------
 // the denoiser's push block, the camera's motion, the layout, the field's row
 // ---------------------------------------------------------------------------
 
@@ -529,7 +479,7 @@ void MotionChecks() {
 void LayoutChecks() {
   Check(gp::kRowsOffsetBytes == ga::kBufferBytes && gp::kBufferBytes == ga::kBufferBytes + gp::kPixelRows * 16 && gp::kBufferAlloc >= gp::kBufferBytes && gp::kBufferAlloc % 256 == 0,
         "LAYOUT: the pixel rows follow the apply's buffer (the field's 20 rows and its 9) and fit the upload buffer");
-  Check(gp::kPixelRows == 3 + 4 * gp::kLightsMax && sizeof(lf::GpuLight) == 64, "LAYOUT: three rows and four rows a surface light (a GpuLight is 64 bytes)");
+  Check(gp::kPixelRows == 3 && gp::kBufferBytes == 512 && gp::kBufferAlloc == 512, "LAYOUT: three rows after the apply's 29 (the surface lights' rows are gone: the world frame's emitters are the cars' lamps)");
   Check(sizeof(gp::Push) == sizeof(ga::Push) && sizeof(gp::Push) == 32 && gp::kPushSpace == 5, "LAYOUT: the push block is the apply's shape, 32 bytes, at space 5");
   const std::set<uint32_t> binds = {gp::kBindRows, gp::kBindSignal, gp::kBindDepth, gp::kBindNormal, gp::kBindHit, gp::kBindStats};
   Check(binds.size() == 6 && gp::kSetViews == 6, "LAYOUT: six distinct registers in the pass set, and D3D12 is told six views");
@@ -661,7 +611,7 @@ void RawChecks() {
 void TwinChecks() {
   Check(GIP_FORMAT_VERSION == int(gp::kFormatVersion) && GIP_REACH_M == gp::kReachM && GIP_MAX_RADIANCE == gp::kMaxRadiance && GIP_CAR_ALBEDO == gp::kCarAlbedo && GIP_MISS_SHARE == gp::kMissShare &&
             GIP_FULL_LENGTH == gp::kFullLength && GIP_MAX_WEIGHT == gp::kMaxWeight && GIP_RAW_WEIGHT == gp::kRawWeight && GIP_MISS_DISTANCE == gp::kMissDistance && GIP_COSINE_FLOOR == gp::kCosineFloor && GIP_R2_A1 == gp::kR2A1 && GIP_R2_A2 == gp::kR2A2 &&
-            GIP_TWO_PI == gp::kTwoPi && GIP_LIGHTS_MAX == gp::kLightsMax && GIP_FLAG_STATS == gp::kFlagStats && GIP_MIN_TAP_WEIGHT == gp::kMinTapWeight && GIP_STAT_PIXELS == gp::kStatPixels &&
+            GIP_TWO_PI == gp::kTwoPi && GIP_FLAG_STATS == gp::kFlagStats && GIP_MIN_TAP_WEIGHT == gp::kMinTapWeight && GIP_STAT_PIXELS == gp::kStatPixels &&
             GIP_STAT_HITS == gp::kStatHits && GIP_STAT_CAR_HITS == gp::kStatCarHits && GIP_STAT_MISSES == gp::kStatMisses && GIP_STAT_SKIPPED == gp::kStatSkipped && GIP_STAT_NO_DATA == gp::kStatNoData,
         "TWIN: every #define of the .hlsli is the header's number");
   Lcg rng;
@@ -758,10 +708,11 @@ void SourceChecks() {
         "SHADER: the registers are the layout's (the bindless set, its multisampled twin, the samplers, the pass set 3, the ray tracing set 4, the push block at space 5)");
   Check(Has(trace, "[numthreads(8, 8, 1)]") && Has(trace, "0x80u | CAR_RT_MASK_ALL") && Has(trace, "#define CITY_HIT_LAMP_GRID") && Has(trace, "CityHitShadeHit(params, f, ray, hit.inst, decoded)") &&
             Has(trace, "CITY_HIT_MODE_GI") && Has(trace, "CITY_HIT_P_SUN_RAY | CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_LAMPS | CITY_HIT_P_LAMP_SHADOW") && Has(trace, "#define CITY_HIT_FEEDBACK(P, N) GipFeedback((P), (N))") &&
-            Has(trace, "#define CITY_HIT_AMBIENT(P, N, ambient) ((ambient) + GipLights((P), (N)))") && Has(trace, "#define CITY_HIT_GLOW_FACTOR(kind) RtWorldGlowFactor(kind)"),
-        "SHADER: one cosine ray into the city and the cars, shaded by the library's GI mode (the sun, one lamp of the world frame's grid with its shadow ray, the glow, the headlights, the field's second bounce), as the probes' rays are");
-  Check(Has(trace, "#include \"light_laws.hlsli\"") && Has(trace, "LlLightTerm(LlUnpack(g), pw, nw, 1.0f)") && Has(trace, "GipLights(") && Has(trace, "GIP_ROW(3u + 4u * i)"),
-        "SHADER: the headlights are the light manager's GpuLight rows through the laws (no shadow ray)");
+            Has(trace, "#define CITY_HIT_EMITTER_COUNT (g_world.emitterCount)") && Has(trace, "#define CITY_HIT_GLOW_FACTOR(kind) RtWorldGlowFactor(kind)"),
+        "SHADER: one cosine ray into the city and the cars, shaded by the library's GI mode (the sun, one lamp of the world frame's grid with its shadow ray, the glow, the world frame's emitters, the field's second bounce), as the probes' rays are");
+  Check(Has(trace, "#include \"light_laws.hlsli\"") && Has(trace, "#include \"rt_emitters.hlsli\"") && Has(trace, "params.flags = params.flags | CITY_HIT_P_EMITTERS | CITY_HIT_P_EMITTER_SHADOW;") && !Has(trace, "GipLights(") &&
+            !Has(trace, "GIP_ROW(3u + 4u * i)") && !Has(trace, "g_lightCount"),
+        "SHADER: the cars' lamps are the world frame's emitters through the laws with one shadow ray (the pass's own headlight rows are gone)");
   Check(Has(trace, "(asuint(g_textures[g_push.slots.w].Load(int3(tex, 0)).x) & 1u) == 0u") && Has(trace, "GbRt1Valid(rt1)") && Has(trace, "rt2.w > 0.0f") && Has(trace, "GiaLinearDepth(stored, fr.lin)"),
         "SHADER: a pixel is signal where the apply would light it (a normal, an albedo, a lit weight, geometry) and is not a vehicle's");
   Check(Has(trace, "const GiSample s = GiLookup(pos, n);") && Has(trace, "GipMissRadiance(s.irradiance)") && Has(trace, "GipCarRadiance(") && Has(trace, "CarRtHitNormal("),
@@ -849,9 +800,9 @@ void SourceChecks() {
   const size_t at_spatial = At(host_cpp, "denoise_.RecordSpatial(stage)"), at_reads = At(host_cpp, "const plume::RenderTextureBarrier reads[2]");
   Check(at_spatial != std::string::npos && at_reads != std::string::npos && at_spatial < at_reads && Has(host_cpp, "list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, reads, 2);"),
         "DENOISER: the guides get the read state of both stages AFTER the denoiser's own compute-only barriers (D3D12 keeps the last state)");
-  Check(Has(host_cpp, "rules::PickLights(lights_->Frame(), rules::kLightsMax, lights.data())") && Has(host_cpp, "HostPrecache::kGiPixel") && Has(host_cpp, "AddLive(") && Has(host_cpp, "history_ok_ = have_prev_ && prev_frame_ + 1 == in.frame") &&
+  Check(!Has(host_cpp, "PickLights") && !Has(host_cpp, "lights_") && Has(host_cpp, "world_->current().decoded.emitter_count") && Has(host_cpp, "HostPrecache::kGiPixel") && Has(host_cpp, "AddLive(") && Has(host_cpp, "history_ok_ = have_prev_ && prev_frame_ + 1 == in.frame") &&
             Has(host_cpp, "move.cut || move.relight") && Has(host_cpp, "const uint32_t scale = (in.traced[0] != in.render[0] || in.traced[1] != in.render[1]) ? 2u : 1u;"),
-        "HOST: the surface lights of the manager's frame, the pipelines made in the background, the history only from the previous frame without a cut, the traced-to-picture scale");
+        "HOST: no surface lights of the manager's frame (the emitters), the pipelines made in the background, the history only from the previous frame without a cut, the traced-to-picture scale");
   Check(Has(host_cpp, "rules::kSetViews, 0, \"gi pixel set\"") && Has(host_cpp, "plume::RenderFormat::R32_FLOAT") && Has(host_cpp, "plume::RenderFormat::R16G16_FLOAT") && Has(host_cpp, "signal_.slot <= 0xFFFEu") && CountOf(host_cpp, "->setTexture(") == 4,
         "HOST: six views in the pass set, the four image formats the shader declares, 16 bit slots for the denoiser's words");
   Check(CountOf(host_cpp, "Mark(") == 0, "HOST: the marks are the apply's (the frame order's table holds them to gi_apply.cpp)");
@@ -880,7 +831,7 @@ void SourceChecks() {
   }
   Check(Has(order_h, ".label = \"rt gi pixel\", .more_labels = {{\"rt gi denoise\", \"gi lookup\"}}, .closing_label = \"after gi apply\"") && Has(order_h, "data::kCarStructures | data::kLights"),
         "ORDER: the frame order's row for the apply starts with 'rt gi pixel', then 'rt gi denoise' and 'gi lookup', and soft-reads the car structures and the lights");
-  Check(Has(renderer_cpp, "gi_pixel_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_world_, &light_manager_);") && Has(renderer_cpp, "gi_apply_.SetGiPixel(&gi_pixel_);") &&
+  Check(Has(renderer_cpp, "gi_pixel_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_world_);") && Has(renderer_cpp, "gi_apply_.SetGiPixel(&gi_pixel_);") &&
             Has(renderer_h, "GiPixel gi_pixel_;") && CountOf(renderer_cpp, "gi_pixel_.OnSubmitted(slot);") == CountOf(renderer_cpp, "gi_update_.OnSubmitted(slot);") && Has(renderer_cpp, "gi_pixel_.CensusText()") &&
             Has(renderer_cpp, "vram_.AddHolder(\"per-pixel bounce light\""),
         "RENDERER: made after the probe update, given to the apply, submitted where the update is, counted in the census and the memory holders");
@@ -926,7 +877,6 @@ int main(int argc, char** argv) {
   SizeChecks();
   RayChecks();
   EstimatorChecks();
-  LightChecks();
   PushChecks();
   MotionChecks();
   LayoutChecks();

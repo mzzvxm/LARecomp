@@ -933,11 +933,13 @@ inline bool MergesWithin(const Light& head, const Light& next) {
 
 // The draws of a selection, in order: runs of consecutive lights that MergesWithin (at most kMaxDrawLights) when the merge is on, else one draw a light (the pass's way before GB-NEON-COST).
 // `rects` are the lights' rectangles (ScissorOfLight); a draw whose lights are all off the picture is left out. Returns how many draws were written to `out` (kMaxPassLights at most).
-inline uint32_t PlanDraws(const Selection& selection, const PixelRect* rects, uint32_t cost_off, PassDraw* out) {
+// GI-BOUNCE-JOIN: `begin` / `last` plan only the lights [begin, last) of the selection (the light pass draws the lights outside the screen-space bounce's pair and the pair's own as two runs; a draw never reaches across
+// the border, whatever the lights' own merge rule says). The defaults are the whole selection.
+inline uint32_t PlanDraws(const Selection& selection, const PixelRect* rects, uint32_t cost_off, PassDraw* out, uint32_t begin = 0, uint32_t last = kMaxPassLights) {
   const bool merge = (cost_off & kCostOffMerge) == 0;
-  const uint32_t count = std::min(selection.count, kMaxPassLights);
+  const uint32_t count = std::min(std::min(selection.count, kMaxPassLights), last);
   uint32_t drawn = 0;
-  uint32_t i = 0;
+  uint32_t i = begin;
   while (i < count) {
     uint32_t end = i + 1;
     while (merge && end < count && end - i < kMaxDrawLights && MergesWithin(selection.lights[i], selection.lights[end])) {

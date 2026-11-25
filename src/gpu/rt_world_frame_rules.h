@@ -30,7 +30,9 @@
 //   38  x lamps uploaded (uint)   y lamps in the window before the budget cut (uint)   z cells (nx x nz)   w lamps the game's live list gave this frame
 //   39  x 1 in a calibration frame (the shader sets CITY_HIT_P_CALIBRATE)   y calibration windows closed so far   z reserved   w the world kind (0 none, 1 play, 2 pause, 3 garage, 4 map)
 //   40..43  the class gains, 16 floats, class c in row 40 + c / 4 component c % 4 (rt_hit_calibration.h ClassGains::Table; 1 until a window has moved one; the glowing class' range is wider)
-//   44..46  reserved (zero)
+//   44  x the EMITTERS uploaded (uint)   y the row of gRtLamps the first one is at (uint)   z how many of them are static (the first z: the probe field reads only these)   w the groups' mask (rt_emitters_rules.h)
+//       [GI-BOUNCE-RT]: the cars' lamps and the other lights of the light pass's classes, as GpuLight rows (four a light, WORLD space) after the lamps' rows of gRtLamps; 0 emitters: no row is read
+//   45..46  reserved (zero)
 //   47  x the street lamps' schedule (float 0..1: what a lamp lens glows by, kGlowLens)   y the fill lights' night factor (float 0..1: what neon, signs and lit windows glow by, kGlowNight)
 //       z the game's live lamp list's lamps that shine now (uint)   w flags (kEvidence*: the live list was read as evidence of the lamps being on or off)    [CITY-RT R7]
 // The hit frame's flags (row 0 w: kFrameShade ...) say what of the light is valid; kWorldValid says the rows were filled this frame at all. A consumer reads kWorldValid first: clear, and
@@ -60,7 +62,8 @@
 //   where its term is 1 per cent, a street lamp of 70 reaches 84 m, of 100 reaches 100 m: a radius of 100 takes every lamp that matters at the cost of 16 cells instead of 9.
 //   THE BUDGET (BudgetFor): the nearest `max_lamps` to the camera are kept when more shine (High 512 lamps in 320 m, Ultra 1024 in 448 m, the smallest 256 in 192 m).
 // gRtLamps layout (rows): 0 {lamps uploaded, cells, the row the lamps start at, serial}; 1.. the cell table, two cells a row: row 1 + c / 2 holds (first, count) of cell 2 (c / 2) in x, y
-// and of cell 2 (c / 2) + 1 in z, w, where `first` is a LAMP index and cells run row by row (c = cz * nx + cx, window relative); then lamp i at rows base + 3 i .. base + 3 i + 2.
+// and of cell 2 (c / 2) + 1 in z, w, where `first` is a LAMP index and cells run row by row (c = cz * nx + cx, window relative); then lamp i at rows base + 3 i .. base + 3 i + 2; then the EMITTERS
+// (row 44 of gRtWorld says where): emitter i at rows e + 4 i .. e + 4 i + 3, a GpuLight each (light_frame.h; the static ones first).
 //
 // This header includes nothing of the renderer.
 // ===========================================================================
@@ -101,6 +104,7 @@ inline constexpr uint32_t kRowWindow = 37;
 inline constexpr uint32_t kRowCounts = 38;
 inline constexpr uint32_t kRowCalibration = 39;
 inline constexpr uint32_t kRowGains = 40;  // 40..43
+inline constexpr uint32_t kRowEmitters = 44;  // GI-BOUNCE-RT: the emitters' count, row, static count, groups
 inline constexpr uint32_t kRowSchedule = 47;  // R7: the street lamps' and the fill lights' schedules, the live evidence
 inline constexpr uint32_t kTotalRows = 48;
 inline constexpr uint32_t kRowBytes = 16;
@@ -135,6 +139,8 @@ inline constexpr float kMaxLookupCells = 2.0f;                      // the radiu
 inline constexpr uint32_t kCellRowsMax = kMaxWindowCells / 2;       // two cells a row
 inline constexpr uint32_t kLampRowsEach = 3;
 inline constexpr uint32_t kMaxLampsHard = 2048;                     // the buffer's room (the budgets stay below)
+inline constexpr uint32_t kEmitterRows = 4;                         // GI-BOUNCE-RT: a GpuLight (rt_emitters_rules.h kRowsEach)
+inline constexpr uint32_t kMaxEmitters = 32;                        // ... and the most of them (rt_emitters_rules.h kMaxEmitters; a test holds them equal)
 
 // the calibration's cadence: one frame in this many is a stats frame (rt_hit_calibration.h: the counters are atomics)
 inline constexpr uint32_t kStatsPeriod = 20;
@@ -346,14 +352,34 @@ struct LampFrame {
   uint32_t lamp_row_base = 1;
   LampStats stats;
   std::vector<uint32_t> words;  // 4 per row
+  // GI-BOUNCE-RT: the emitters appended after the lamps' rows (AppendEmitters): how many, the row the first is at, how many of them are static
+  uint32_t emitter_count = 0;
+  uint32_t emitter_row_base = 0;
+  uint32_t emitter_static = 0;
+  uint32_t emitter_groups = 0;
 
   uint32_t cells() const { return nx * nz; }
   uint32_t rows() const { return uint32_t(words.size() / 4); }
 };
 
+// Appends the emitters (`count` GpuLights as kEmitterRows x 4 words each, the first `static_count` of them static) after the rows the lamps end at. More than kMaxEmitters are cut. The lamps' rows are not touched
+// (a lamp's row is found by the cell table, so the rows after the last lamp are free): the emitters' row is where the words ended.
+inline void AppendEmitters(LampFrame* f, const uint32_t* words, uint32_t count, uint32_t static_count, uint32_t groups) {
+  count = std::min(count, kMaxEmitters);
+  f->emitter_count = count;
+  f->emitter_static = std::min(static_count, count);
+  f->emitter_groups = groups;
+  f->emitter_row_base = 0;
+  if (count == 0) {
+    return;
+  }
+  f->emitter_row_base = f->rows();
+  f->words.insert(f->words.end(), words, words + size_t(count) * kEmitterRows * 4u);
+}
+
 inline constexpr uint32_t CellRowsFor(uint32_t cells) { return (cells + 1) / 2; }
 inline constexpr uint32_t MaxLampRows(uint32_t max_lamps) { return 1 + kCellRowsMax + kLampRowsEach * max_lamps; }
-inline constexpr uint32_t kLampBufferBytes = MaxLampRows(kMaxLampsHard) * kRowBytes;
+inline constexpr uint32_t kLampBufferBytes = (MaxLampRows(kMaxLampsHard) + kEmitterRows * kMaxEmitters) * kRowBytes;
 
 inline int32_t CellIndexOf(float v) { return int32_t(std::floor(double(v) / double(kCellMetres))); }
 
@@ -555,6 +581,8 @@ struct WorldInput {
   Schedule schedule;
   uint32_t live_shining = 0;                  // the game's live list's lamps that shine (LiveEvidence::shining)
   const LampFrame* lamps = nullptr;           // null: no lamp window (kWorldLamps clear)
+  // GI-BOUNCE-RT: the emitters (row 44); independent of the lamp window (a car's headlights shine by day, in a frame with no lamp)
+  uint32_t emitter_count = 0, emitter_row_base = 0, emitter_static = 0, emitter_groups = 0;
   float gains[kClasses] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 };
 
@@ -611,6 +639,12 @@ inline void MakeWorldRows(const WorldInput& in, uint32_t rows[kTotalRows][4]) {
   for (uint32_t c = 0; c < kClasses; ++c) {
     rows[kRowGains + c / 4][c % 4] = rt_hit::Bits(in.gains[c]);
   }
+  if (in.emitter_count != 0) {
+    rows[kRowEmitters][0] = in.emitter_count;
+    rows[kRowEmitters][1] = in.emitter_row_base;
+    rows[kRowEmitters][2] = std::min(in.emitter_static, in.emitter_count);
+    rows[kRowEmitters][3] = in.emitter_groups;
+  }
   rows[kRowSchedule][0] = rt_hit::Bits(std::clamp(in.schedule.street, 0.0f, 1.0f));
   rows[kRowSchedule][1] = rt_hit::Bits(std::clamp(in.schedule.fill, 0.0f, 1.0f));
   rows[kRowSchedule][2] = in.live_shining;
@@ -635,6 +669,7 @@ struct WorldDecoded {
   float gains[kClasses] = {};
   float street = 0.0f, fill = 0.0f;           // row 47: the street lamps' and the fill lights' schedules
   uint32_t live_shining = 0, evidence = 0;
+  uint32_t emitter_count = 0, emitter_row_base = 0, emitter_static = 0, emitter_groups = 0;   // row 44
   bool Valid() const { return (flags & kWorldValid) != 0; }
   // What a glowing material of this kind glows by (the twin of hlsl RtWorldGlowFactor): a lamp lens by the street lamps' schedule, a traffic signal always, everything else (neon, signs, lit windows,
   // interiors) by the fill lights'.
@@ -677,6 +712,10 @@ inline WorldDecoded DecodeWorldRows(const uint32_t rows[kTotalRows][4]) {
   d.fill = rt_hit::FromBits(rows[kRowSchedule][1]);
   d.live_shining = rows[kRowSchedule][2];
   d.evidence = rows[kRowSchedule][3];
+  d.emitter_count = rows[kRowEmitters][0];
+  d.emitter_row_base = rows[kRowEmitters][1];
+  d.emitter_static = rows[kRowEmitters][2];
+  d.emitter_groups = rows[kRowEmitters][3];
   return d;
 }
 

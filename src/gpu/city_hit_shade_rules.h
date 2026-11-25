@@ -26,6 +26,10 @@
 // luminance at kLampSumCap (LampsCapped), or ONE lamp chosen with a shadow ray (LampPickCapped) with the same cap; and what a
 // glowing material glows by follows its kind (a lamp lens the street lamps' schedule, neon, signs, lit windows the fill lights', a traffic signal always: Reads::glow_factor, the world rows' row 47).
 //
+// GI-BOUNCE-RT: the EMITTERS (rt_emitters_rules.h: a car's neon, headlights, tail lamps, police bars, a mod's lamps) light a hit as the lamps do, from the includer's own list: Emitters sums the ones that reach
+// the hit, caps the sum's luminance at kEmitterSumCap, and with the shadow flag chooses ONE by its brightness (a number made of the params' noise: EmitterNoise) and casts one ray against the city toward it
+// (EmittersPick, the lamps' estimator). A hit no emitter reaches casts nothing. The law of each is the includer's (hlsl/rt_emitters.hlsli over light_laws.hlsli), Reads::emitters_at stands for it here.
+//
 // THE LAMPS (src/citypack/lamp_table.h, the game's own laws read from the lit shaders and sub_822FD2C8): term = colour x saturate(I / d^2) x cone x N.L x the schedule: a lamp lights with its
 // full colour out to d = sqrt(I) and falls as I / d^2 beyond (a fill light of 20 reaches 44.7 m where the term is 1 percent); the cone is a ramp in the cosine, full at cos(inner) and zero at
 // cos(outer) (LampConeCosines); an omni light has none (cosOuter -2). Without the shadow flag the light of a hit is the SUM of the lamps in the range; with it ONE lamp is chosen with the
@@ -86,6 +90,7 @@ inline float Smoothstep(float lo, float hi, float x) {
 inline constexpr uint32_t kModeReflect = 0;
 inline constexpr uint32_t kModeGi = 1;
 inline constexpr uint32_t kPSunRay = 1, kPSunCascade = 2, kPLamps = 4, kPLampShadow = 8, kPEmissive = 16, kPCalibrate = 32, kPScreen = 64;
+inline constexpr uint32_t kPEmitters = 128, kPEmitterShadow = 256;   // GI-BOUNCE-RT
 inline constexpr uint32_t kSourceNone = 0, kSourceScreen = 1, kSourceShaded = 2, kSourceBlend = 3;
 inline constexpr uint32_t kClassCount = 16;  // gbuffer_types.h SurfaceClass: none, world, road, wet road, sidewalk, terrain, lod, foliage, paint, chrome, metal, glass, skin, emissive, interior, water
 inline constexpr uint32_t kClassRoad = 2, kClassWetRoad = 3, kClassSidewalk = 4;
@@ -110,6 +115,10 @@ inline constexpr uint32_t kLampMax = 96;          // R7: the lamps of a lookup t
 inline constexpr uint32_t kLampWalkMax = 3 * kLampMax;  // R7: the lamps the walk visits at most, reaching or not (the shader's kCityHitLampWalkMax: the bound on the time)
 inline constexpr float kLampSumCap = 6.0f;        // R7: the lamp light's luminance is capped at this
 inline constexpr float kLampLookup = 64.0f;       // R7: the lookup's radius where the world rows give none
+inline constexpr uint32_t kEmitterMax = 32;       // GI-BOUNCE-RT: the emitters examined at most (the shader's kCityHitEmitterMax)
+inline constexpr float kEmitterSumCap = 8.0f;     // ... the emitters' light's luminance cap
+inline constexpr float kEmitterEnd = 0.3f;        // ... the shadow ray stops this short of the emitter (m)
+inline constexpr uint32_t kEmitterMask = 0x80;    // ... the ray sees the city only (the shader's kCityHitCityMask)
 inline constexpr uint32_t kGlowNight = ch::kGlowNight, kGlowLens = ch::kGlowLens, kGlowAlways = ch::kGlowAlways;
 // the counters of the lamp term and the glow (the shader's CITY_HIT_CENSUS_*)
 inline constexpr uint32_t kCensusLookups = 0, kCensusExamined = 1, kCensusLit = 2, kCensusCapCount = 3, kCensusCapSum = 4, kCensusGlowNight = 5, kCensusWords = 8;
@@ -337,6 +346,82 @@ inline LampLight LampPickCapped(float lamp_factor, const Lamp* lamps, uint32_t c
   t.light = blocked(origin, to_chosen, std::max(distance - kLampEnd, 0.0f)) ? V3{} : chosen * (keep * weight_sum / weight);
   return t;
 }
+// ---------------------------------------------------------------------------
+// the emitters (GI-BOUNCE-RT)
+// ---------------------------------------------------------------------------
+
+// The number the choice of the one emitter is made with (hlsl CityHitEmitterNoise): frac(3 z + 7 y) of the params' noise (whole number factors: exactly uniform given z and given y).
+inline float EmitterNoise(float noise_y, float noise_z) {
+  const float v = noise_z * 3.0f + noise_y * 7.0f;
+  return v - std::floor(v);
+}
+struct EmitterLight {
+  V3 light;
+  uint32_t reaching = 0;      // the emitters whose light at the hit is not 0
+  bool cast = false;          // a ray was cast toward the chosen one
+  bool cap_sum = false;       // the sum was over the cap
+  uint32_t chosen = 0;        // the emitter the ray went to
+};
+inline float EmitterKeep(float weight_sum) { return weight_sum > kEmitterSumCap ? kEmitterSumCap / weight_sum : 1.0f; }
+// The sum of the emitters' light at a hit, capped in luminance (kEmitterSumCap) with the colours' ratios kept: `radiance(i)` the unshadowed light of emitter i at the hit (the includer's law), 0 where it does not
+// reach. Nothing casts.
+inline EmitterLight Emitters(uint32_t count, const std::function<V3(uint32_t)>& radiance) {
+  EmitterLight t;
+  count = std::min(count, kEmitterMax);
+  float weight_sum = 0.0f;
+  V3 sum;
+  for (uint32_t i = 0; i < count; ++i) {
+    const V3 r = radiance(i);
+    const float luma = Luma(r);
+    sum = sum + r;
+    weight_sum += luma;
+    t.reaching += luma > 0.0f ? 1u : 0u;
+  }
+  t.cap_sum = weight_sum > kEmitterSumCap;
+  t.light = sum * EmitterKeep(weight_sum);
+  return t;
+}
+// The same with ONE emitter chosen by its unshadowed brightness (`noise` is EmitterNoise's) and a ray against the city toward it, `to(i)` the vector from the hit to emitter i, `blocked(origin, direction, reach)` the
+// ray: its light times sum / its own times the cap's factor, or nothing where the ray is blocked. A hit no emitter reaches casts nothing (t.cast stays false).
+inline EmitterLight EmittersPick(uint32_t count, const std::function<V3(uint32_t)>& radiance, const std::function<V3(uint32_t)>& to, V3 position, V3 normal, float noise, float view_z,
+                                 const std::function<bool(V3, V3, float)>& blocked) {
+  EmitterLight t = Emitters(count, radiance);
+  count = std::min(count, kEmitterMax);
+  float weight_sum = 0.0f;
+  for (uint32_t i = 0; i < count; ++i) weight_sum += Luma(radiance(i));
+  if (!(weight_sum > 0.0f)) {
+    return t;
+  }
+  const float keep = EmitterKeep(weight_sum);
+  const float pick = noise * weight_sum;
+  float running = 0.0f;
+  V3 chosen;
+  uint32_t chosen_at = 0, seen = 0;
+  float weight = 0.0f;
+  for (uint32_t j = 0; j < count && weight <= 0.0f; ++j) {
+    const V3 r = radiance(j);
+    const float luma = Luma(r);
+    running += luma;
+    seen += luma > 0.0f ? 1u : 0u;
+    if (luma > 0.0f && (running >= pick || seen == t.reaching)) {
+      chosen = r;
+      chosen_at = j;
+      weight = luma;
+    }
+  }
+  if (!(weight > 0.0f)) {
+    t.light = V3{};
+    return t;
+  }
+  const V3 d = to(chosen_at);
+  const float distance = std::sqrt(std::max(Dot(d, d), 1e-12f));
+  const V3 origin = position + normal * Lift(view_z);
+  t.cast = true;
+  t.chosen = chosen_at;
+  t.light = blocked(origin, d * (1.0f / distance), std::max(distance - kEmitterEnd, 0.0f)) ? V3{} : chosen * (keep * weight_sum / weight);
+  return t;
+}
+
 // What a glow kind glows by when the includer gives no schedule: a traffic signal always, the rest by the params' lamp factor (hlsl CityHitGlowFactor); a kind that is not one reads as the night curve.
 inline uint32_t GlowKindOf(uint32_t kind) { return kind == kGlowLens ? kGlowLens : (kind == kGlowAlways ? kGlowAlways : kGlowNight); }
 inline float GlowFactorDefault(uint32_t kind, float lamp_factor) { return GlowKindOf(kind) == kGlowAlways ? 1.0f : Saturate(lamp_factor); }
@@ -416,6 +501,8 @@ struct Reads {
   std::function<float(uint32_t)> glow_factor;
   // R7: the counters (the census words kCensus*) of the pass: called with (word, value); null: not counted
   std::function<void(uint32_t, uint32_t)> census;
+  // GI-BOUNCE-RT: the emitters' light at a hit (view-space point, unit normal, the shadow flag, the params' noise y and z, the footprint): the shader's CityHitEmitters. Null: no emitters.
+  std::function<V3(V3, V3, bool, float, float, float)> emitters_at;
 };
 
 struct Params {
@@ -528,6 +615,9 @@ inline Shaded Shade(const Params& p, const rt_hit::FrameInput& frame, const Ray&
   } else if (lamps && (p.flags & kPLamps) != 0 && p.lamp_count != 0 && p.lamp_factor > 0.0f) {
     light = light + ((p.flags & kPLampShadow) != 0 ? LampPick(p.lamp_factor, lamps + p.lamp_first, p.lamp_count, hit, normal, p.noise[2], hit.z, reads.lamp_blocked)
                                                     : LampsSum(p.lamp_factor, lamps + p.lamp_first, p.lamp_count, hit, normal));
+  }
+  if (reads.emitters_at && (p.flags & kPEmitters) != 0) {
+    light = light + reads.emitters_at(hit, normal, (p.flags & kPEmitterShadow) != 0, p.noise[1], p.noise[2], ray.footprint);
   }
   if (p.mode == kModeGi && p.bounce > 0.0f && reads.feedback) {
     light = light + reads.feedback(hit, normal) * p.bounce;

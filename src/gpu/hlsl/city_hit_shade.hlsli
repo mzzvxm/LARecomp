@@ -32,11 +32,17 @@
 //                                               schedule, neon, signs and lit windows by the fill lights', a traffic signal always); without it kind ALWAYS is 1 and everything else saturate(p.lampFactor)
 //   CITY_HIT_CENSUS_ADD(word, value)            optional (R7): the lamp term's and the glow's counters (CITY_HIT_CENSUS_*: words 0..7 of a counter buffer of the includer's choosing: place them beside the calibration's
 //                                               or in a buffer of their own), counted only in a stats frame (CITY_HIT_P_CALIBRATE); src/gpu/rt_world_frame_rules.h LampCensus reads them
+//   CITY_HIT_EMITTER_COUNT, CITY_HIT_EMITTER_RADIANCE(i, P, N), CITY_HIT_EMITTER_TO(i, P)
+//                                               optional (GI-BOUNCE-RT, all three or none; hlsl/rt_emitters.hlsli makes them over the world frame's emitter rows): the lights that are not the world's own and light a hit
+//                                               (a car's neon, headlights, tail lamps, police bars, a mod's lamps), by the same GpuLight laws as the light pass. COUNT is the number of emitters the includer reads (a uint
+//                                               expression), RADIANCE(i, P, N) the unshadowed light emitter i sends to the view space point P (N the unit normal facing the viewer): a float3 in the paint's units, the law,
+//                                               N.L and the colour in it, 0 where it does not reach; TO(i, P) the vector from P to emitter i in view space (its length is the distance), asked for the one emitter a
+//                                               shadow ray goes to. With CITY_HIT_P_EMITTERS the sum of the emitters is added to the hit's light (CityHitEmitters)
 //   CITY_HIT_AMBIENT(P, N, ambient)             optional: replaces the frame's hemisphere ambient at a point with something better (the GI's probe field), given the default
 //   CITY_HIT_FEEDBACK(P, N)                     optional: the GI field's irradiance at a point, a float3, for the hit's bounce (the second bounce of a probe ray)
 //   CITY_HIT_HAZE(colour, distance)             optional: the air between the camera and the hit (the game's distance fog) on a shaded colour, given the colour (picture's units) and the distance in
 //                                               metres; the picture's own colour has it already
-//   CITY_HIT_SHADE_NO_RAYQUERY                  no ray queries (the test compiles this file as C++): the includer then declares CityHitSunRay and CityHitLampRay itself
+//   CITY_HIT_SHADE_NO_RAYQUERY                  no ray queries (the test compiles this file as C++): the includer then declares CityHitSunRay, CityHitLampRay and CityHitEmitterRay itself
 // src/gpu/city_hit_shade_rules_test.cpp compiles THIS FILE as C++ (through a shim of the HLSL types and the buffers, with CITY_HIT_SHADE_NO_RAYQUERY) and checks it against city_hit_shade_rules.h
 // on thousands of random hits, and compares every number below with the header's; that is why the text keeps to a subset both languages read: scalar and vector arithmetic, no out
 // parameters (a function returns a struct), the intrinsics abs sqrt saturate clamp min max lerp pow log2 exp2 floor frac dot cross normalize smoothstep, CITY_HIT_BRANCH for [branch].
@@ -82,6 +88,8 @@
 #define CITY_HIT_P_EMISSIVE 16u     // lamp lenses, neon and lit windows glow by the lamp schedule
 #define CITY_HIT_P_CALIBRATE 32u    // this is a stats frame: the resolve adds its samples to the calibration's counters
 #define CITY_HIT_P_SCREEN 64u       // the resolve may take the picture's colour
+#define CITY_HIT_P_EMITTERS 128u    // GI-BOUNCE-RT: the emitters' light at the hit (needs CITY_HIT_EMITTER_RADIANCE): a car's neon, headlights, tail lamps ...
+#define CITY_HIT_P_EMITTER_SHADOW 256u  // ... with ONE shadow ray against the city toward one emitter chosen by its brightness (else the sum, no ray)
 
 #define CITY_HIT_SOURCE_NONE 0u     // no data: the caller keeps what it had (the environment map)
 #define CITY_HIT_SOURCE_SCREEN 1u   // the picture's colour
@@ -132,6 +140,10 @@ static const uint kCityHitLampMax = 96u;           // R7: the lamps of the world
 static const uint kCityHitLampWalkMax = 288u;      // R7: the lamps the walk visits at most, whether they reach the hit or not (3 x kCityHitLampMax: only the lamps that reach count against kCityHitLampMax, this bounds the time)
 static const float kCityHitLampSumCap = 6.0;       // R7: the lamp light's luminance is capped at this (a lamp's term is at most 1: six lamps at full strength; a cluster of omni lights is not a sun)
 static const float kCityHitLampLookup = 64.0;      // R7: the lookup's radius where the world rows give none (m)
+static const uint kCityHitEmitterMax = 32u;        // GI-BOUNCE-RT: the emitters examined at most (the list's own limit, rt_emitters_rules.h kMaxEmitters)
+static const float kCityHitEmitterSumCap = 8.0;    // ... the emitters' light's luminance is capped at this (a lamp is at most 2 at a metre: four cars' lamps, no more)
+static const float kCityHitEmitterEnd = 0.3;       // ... the shadow ray stops this short of the emitter (m): a neon tube sits under its car, a lens in its housing
+static const uint kCityHitCityMask = 0x80u;        // ... the ray sees the CITY only: the car that carries a light must not shadow it (its tube is inside the car's bounds), and cars are no occluders of the field's rays either
 
 // R7: the lamp term's and the glow's counters (CITY_HIT_CENSUS_ADD word numbers)
 #define CITY_HIT_CENSUS_LOOKUPS 0u      // hits whose lamp light was looked up
@@ -318,8 +330,8 @@ CityHitTraceResult CityHitTrace(float3 origin, float3 direction, float tMin, flo
     return r;
 }
 
-// One yes or no ray for the hit's light: does anything of the city or the cars lie within tMax of origin along direction? The cut-outs' candidates are decided as CityHitTrace does.
-bool CityHitBlocked(float3 origin, float3 direction, float tMax, float footprint0, float tanHalf)
+// One yes or no ray for the hit's light: does anything of the instances whose mask meets `mask` lie within tMax of origin along direction? The cut-outs' candidates are decided as CityHitTrace does.
+bool CityHitBlockedBy(float3 origin, float3 direction, float tMax, float footprint0, float tanHalf, uint mask)
 {
     RayDesc ray;
     ray.Origin = origin;
@@ -327,7 +339,7 @@ bool CityHitBlocked(float3 origin, float3 direction, float tMax, float footprint
     ray.TMin = 0.0;
     ray.TMax = tMax;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-    query.TraceRayInline(RT_HIT_TLAS, RAY_FLAG_NONE, 0xFFu, ray);
+    query.TraceRayInline(RT_HIT_TLAS, RAY_FLAG_NONE, mask, ray);
     while (query.Proceed())
     {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
@@ -349,6 +361,12 @@ bool CityHitBlocked(float3 origin, float3 direction, float tMax, float footprint
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
+// The city and the cars (the sun's and the lamps' rays).
+bool CityHitBlocked(float3 origin, float3 direction, float tMax, float footprint0, float tanHalf)
+{
+    return CityHitBlockedBy(origin, direction, tMax, footprint0, tanHalf, 0xFFu);
+}
+
 bool CityHitSunRay(float3 origin, float3 direction, float reach, float footprint, float sunTan)
 {
     return CityHitBlocked(origin, direction, reach, footprint, sunTan);
@@ -357,6 +375,12 @@ bool CityHitSunRay(float3 origin, float3 direction, float reach, float footprint
 bool CityHitLampRay(float3 origin, float3 direction, float reach, float footprint)
 {
     return CityHitBlocked(origin, direction, reach, footprint, 0.0);
+}
+
+// The emitters' ray: the city alone (kCityHitCityMask).
+bool CityHitEmitterRay(float3 origin, float3 direction, float reach, float footprint)
+{
+    return CityHitBlockedBy(origin, direction, reach, footprint, 0.0, kCityHitCityMask);
 }
 #endif  // CITY_HIT_SHADE_NO_RAYQUERY
 
@@ -695,6 +719,76 @@ float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footp
 }
 #endif
 
+// ---- the emitters -----------------------------------------------------------------------------------------------------------------------------
+
+#if defined(CITY_HIT_EMITTER_RADIANCE)
+// The number the choice of the one emitter is made with: from the params' noise, but not the lamps' own (z) nor the sun's disc (x, y) alone: frac(3 z + 7 y). With whole number factors it is exactly uniform given z
+// and given y (the other one spans whole periods), so it is as uniform as either and independent of each; a factor that is not a whole number would not be (frac(2.7 z) over-weights the low values).
+float CityHitEmitterNoise(CityHitParams p)
+{
+    return frac(p.noise.z * 3.0 + p.noise.y * 7.0);
+}
+
+// The light of the includer's emitters at a hit (GI-BOUNCE-RT): the sum of the ones that reach it, its luminance capped at kCityHitEmitterSumCap with the colours' ratios kept; with CITY_HIT_P_EMITTER_SHADOW
+// ONE of them is chosen by its unshadowed brightness (the noise over the sum), a ray against the city goes toward it, and its light times sum / its own is the estimate of the lit emitters' sum (the expectation is
+// the sum of the ones that are not blocked: the lamps' estimator, CityHitLamps). THE BUDGET IS COUNTED AFTER THE REACH: a hit no emitter reaches (nearly every hit away from a car) casts nothing, and the
+// loops are over at most kCityHitEmitterMax records whose first load rejects the ones out of range.
+float3 CityHitEmitters(CityHitParams p, float3 position, float3 normal, float footprint)
+{
+    const uint count = min(uint(CITY_HIT_EMITTER_COUNT), kCityHitEmitterMax);
+    float3 sum = float3(0.0, 0.0, 0.0);
+    float weightSum = 0.0;
+    uint reaching = 0u;
+    CITY_HIT_LOOP
+    for (uint i = 0u; i < count; ++i)
+    {
+        const float3 radiance = CITY_HIT_EMITTER_RADIANCE(i, position, normal);
+        const float luma = CityHitLuma(radiance);
+        sum += radiance;
+        weightSum += luma;
+        reaching += luma > 0.0 ? 1u : 0u;
+    }
+    if (!(weightSum > 0.0))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const float keep = weightSum > kCityHitEmitterSumCap ? kCityHitEmitterSumCap / weightSum : 1.0;
+    if ((p.flags & CITY_HIT_P_EMITTER_SHADOW) == 0u)
+    {
+        return sum * keep;
+    }
+    const float pick = CityHitEmitterNoise(p) * weightSum;
+    float running = 0.0;
+    float3 chosen = float3(0.0, 0.0, 0.0);
+    uint chosenAt = 0u;
+    float weightChosen = 0.0;
+    uint seen = 0u;
+    CITY_HIT_LOOP
+    for (uint j = 0u; j < count && weightChosen <= 0.0; ++j)
+    {
+        const float3 radiance = CITY_HIT_EMITTER_RADIANCE(j, position, normal);
+        const float luma = CityHitLuma(radiance);
+        running += luma;
+        seen += luma > 0.0 ? 1u : 0u;
+        if (luma > 0.0 && (running >= pick || seen == reaching))
+        {
+            chosen = radiance;
+            chosenAt = j;
+            weightChosen = luma;
+        }
+    }
+    if (!(weightChosen > 0.0))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const float3 to = CITY_HIT_EMITTER_TO(chosenAt, position);
+    const float distance = sqrt(max(dot(to, to), 1e-12));
+    const float3 origin = position + normal * CityHitLift(position.z);
+    const bool blocked = CityHitEmitterRay(origin, to * (1.0 / distance), max(distance - kCityHitEmitterEnd, 0.0), footprint);
+    return blocked ? float3(0.0, 0.0, 0.0) : chosen * (keep * weightSum / weightChosen);
+}
+#endif
+
 // ---- the shading ------------------------------------------------------------------------------------------------------------------------------
 
 float CityHitSchlick(float f0, float nv)
@@ -787,6 +881,13 @@ CityHitShaded CityHitShadeHit(CityHitParams p, RtHitFrame f, CityHitRay ray, Cit
     if ((p.flags & CITY_HIT_P_LAMPS) != 0u && p.lampCount != 0u && p.lampFactor > 0.0)
     {
         light += CityHitLamps(p, hit, normal, ray.footprint);
+    }
+#endif
+#if defined(CITY_HIT_EMITTER_RADIANCE)
+    CITY_HIT_BRANCH
+    if ((p.flags & CITY_HIT_P_EMITTERS) != 0u)
+    {
+        light += CityHitEmitters(p, hit, normal, ray.footprint);   // the cars' lamps (GI-BOUNCE-RT): their own luminance, not the field's
     }
 #endif
 #ifdef CITY_HIT_FEEDBACK

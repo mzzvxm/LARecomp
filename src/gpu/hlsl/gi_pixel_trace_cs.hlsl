@@ -5,8 +5,9 @@
 // the occlusion's linear depth is not signal (guides 0). For the others it sends ONE cosine weighted ray (the R2 sequence per pixel and frame) at most GIP_REACH_M metres into the top level, the city (mask
 // 0x80) and the cars' parts, and the result is
 //   a hit on the city   the library's GI mode (hlsl/city_hit_shade.hlsli CityHitShadeHit: the SAME call the probes' rays make): the average colour times the ambient, the sun with a shadow ray (the disc
-//                       jittered, the temporal stage averages it), ONE of the lamps of the world frame's grid with a shadow ray (R7: CITY_HIT_LAMP_GRID), the glow of what glows, the HEADLIGHTS of the frame's
-//                       surface lights (CITY_HIT_AMBIENT: no shadow ray) and the field one frame old as the second bounce (CITY_HIT_FEEDBACK);
+//                       jittered, the temporal stage averages it), ONE of the lamps of the world frame's grid with a shadow ray (R7: CITY_HIT_LAMP_GRID), the glow of what glows, the EMITTERS of the world frame (the
+//                       cars' neon, headlights, tail lamps, police bars: GI-BOUNCE-RT, ALL of them, the moving ones too: this pass has no history longer than a few frames; one of them with a shadow ray) and the
+//                       field one frame old as the second bounce (CITY_HIT_FEEDBACK);
 //   a hit on a car      a neutral diffuse in the frame's ambient and the sun (an occluder: CHECK G5-d);
 //   nothing in reach    the field's irradiance at the pixel (the long range is the field's: gi_pixel_rules.h MISS).
 // in the paint's units (params.units = 1), the field's. The signal image takes the sample's radiance, the guides the denoiser (hlsl/rt_denoise_plain_consumer.hlsli) wants: the depth along the view axis, the view
@@ -66,12 +67,11 @@ ConstantBuffer<GipPush> g_push : register(b0, space5);
 #include "gi_pixel_common.hlsli"
 #include "light_laws.hlsli"
 #include "rt_world_frame.hlsli"
+#include "rt_emitters.hlsli"
 
 #define GIP_ROW(i) GI_FRAME_ROW(GIP_ROW_BASE + (i))
 
 static RtWorld g_world;
-static uint g_lightCount;
-static float g_lightGain;
 
 // The field's irradiance at a hit (view space point and unit normal), the hit's bounce: the surfaces' light only, times the confidence (the probes' feedback, gi_update_trace_cs.hlsl GiuFeedback).
 float3 GipFeedback(float3 viewPoint, float3 viewNormal)
@@ -82,40 +82,15 @@ float3 GipFeedback(float3 viewPoint, float3 viewNormal)
     return s.irradiance * s.confidence;
 }
 
-// The frame's surface lights (the headlights) at a hit: the sum of their terms in the world, by their laws (hlsl/light_laws.hlsli), no shadow ray, times the gain. The rows hold them as GpuLight rows.
-float3 GipLights(float3 viewPoint, float3 viewNormal)
-{
-    if (g_lightCount == 0u)
-    {
-        return float3(0.0f, 0.0f, 0.0f);
-    }
-    float3 pw = RtWorldPoint(g_world, viewPoint);
-    float3 nw = float3(dot(viewNormal, g_world.axisX), dot(viewNormal, g_world.axisY), dot(viewNormal, g_world.axisZ));
-    float3 sum = float3(0.0f, 0.0f, 0.0f);
-    for (uint i = 0u; i < g_lightCount; ++i)
-    {
-        uint4 a = GIP_ROW(3u + 4u * i);
-        uint4 b = GIP_ROW(4u + 4u * i);
-        uint4 c = GIP_ROW(5u + 4u * i);
-        uint4 d = GIP_ROW(6u + 4u * i);
-        LlGpuLight g;
-        g.row0 = float4(asfloat(a.x), asfloat(a.y), asfloat(a.z), asfloat(a.w));
-        g.row1 = float4(asfloat(b.x), asfloat(b.y), asfloat(b.z), asfloat(b.w));
-        g.row2 = float4(asfloat(c.x), asfloat(c.y), asfloat(c.z), asfloat(c.w));
-        g.packed0 = d.x;
-        g.law_a = asfloat(d.y);
-        g.packed1 = d.z;
-        g.shadow_weight = asfloat(d.w);
-        sum += LlLightTerm(LlUnpack(g), pw, nw, 1.0f);
-    }
-    return sum * g_lightGain;
-}
-
 #define RT_HIT_TLAS gCarRtTlas
 #define CITY_HIT_LAMP_GRID
 #define CITY_HIT_GLOW_FACTOR(kind) RtWorldGlowFactor(kind)
 #define CITY_HIT_FEEDBACK(P, N) GipFeedback((P), (N))
-#define CITY_HIT_AMBIENT(P, N, ambient) ((ambient) + GipLights((P), (N)))
+// GI-BOUNCE-RT: the world frame's emitters (a car's neon, headlights, tail lamps, police bars, a mod's lamps), all of them, by the light pass's own laws and with one shadow ray (the library's CityHitEmitters). They
+// replace the frame's headlights this pass took from the light manager's frame by itself (no shadow ray, and only while something else made the manager run).
+#define CITY_HIT_EMITTER_COUNT (g_world.emitterCount)
+#define CITY_HIT_EMITTER_RADIANCE(i, P, N) RtEmitterRadiance(g_world, (i), (P), (N))
+#define CITY_HIT_EMITTER_TO(i, P) RtEmitterTo(g_world, (i), (P))
 #include "city_hit_shade.hlsli"
 
 float4 GipLoadPlane(uint slot, int2 p)
@@ -148,9 +123,7 @@ void main(uint3 id : SV_DispatchThreadID)
     const uint4 r2u = GIP_ROW(2u);
     const float reach = asfloat(r2u.x);
     const float bounce = asfloat(r2u.y);
-    g_lightGain = asfloat(r2u.z);
     const float pixelAngle = asfloat(r2u.w);
-    g_lightCount = min(r1.z, GIP_LIGHTS_MAX);
     const bool stats = (r1.y & GIP_FLAG_STATS) != 0u;
 
     const GiaFrame fr = GiaLoadFrame();
@@ -235,6 +208,10 @@ void main(uint3 id : SV_DispatchThreadID)
                 if (g_world.lampFactor > 0.0f && (g_world.flags & RT_WORLD_LAMPS) != 0u)
                 {
                     params.flags = params.flags | CITY_HIT_P_LAMPS | CITY_HIT_P_LAMP_SHADOW;
+                }
+                if (g_world.emitterCount != 0u)
+                {
+                    params.flags = params.flags | CITY_HIT_P_EMITTERS | CITY_HIT_P_EMITTER_SHADOW;
                 }
                 const uint h = GipHash(uint(p.x) * 0x9E3779B1u + uint(p.y) * 0x85EBCA6Bu + r1.x * 0x27d4eb2fu);
                 params.noise = float3(GipUnit(h), GipUnit(GipHash(h)), GipUnit(GipHash(h ^ 0x68E31DA4u)));

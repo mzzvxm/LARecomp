@@ -1,5 +1,6 @@
 // MCLA GPU renderer -- the shared screen products: the lights' share of the bounce light's radiance (GI-BOUNCE-SS). See screen_shared.h, ssgi_lights.h and perf/GI-BOUNCE.md.
 //
+// (GI-BOUNCE-JOIN: the two sides are those of the lights the screen-space bounce carries: the light pass draws the lights the probe field and the per-pixel pass carry first, outside the pair: gi_bounce_carrier.h.)
 // Two plain captures of the main colour at the two sides of the deferred light pass (neon, headlights, street lamps), at the AO's traced size, the MSAA samples averaged (the colour_post capture's shader and
 // pipelines: hlsl/screen_colour_ps.hlsl): the colour BEFORE the pass (after the occlusion's apply and the probe field's apply) and the colour AFTER it. The next frame's colour chain (hlsl/ao_color_ps.hlsl)
 // reprojects them with the AO's own camera motion and takes their difference as the last frame's light. Nothing here reads a depth and nothing writes the main colour.
@@ -29,12 +30,12 @@ constexpr uint32_t kLightsMinRenderSize = 64;
 
 }  // namespace
 
-ScreenShared::LightHistory ScreenShared::LightHistoryFor(bool pause, uint32_t width, uint32_t height, bool ao_history) const {
+ScreenShared::LightHistory ScreenShared::LightHistoryFor(bool pause, uint32_t width, uint32_t height, bool ao_history, ssgi_lights::Partition partition) const {
   LightHistory out;
   if (!lights_pre_.texture || !lights_post_.texture) {
     return out;
   }
-  out.usable = ssgi_lights::Usable(lights_key_, frame_count_, pause, width, height, ao_history);
+  out.usable = ssgi_lights::Usable(lights_key_, frame_count_, pause, width, height, ao_history, partition);
   if (out.usable) {
     out.post_slot = lights_post_.slot;
     out.pre_slot = lights_pre_.slot;
@@ -69,8 +70,8 @@ void ScreenShared::LightsBeginFrame() {
 
 bool ScreenShared::CaptureLightsInto(HostImage& image, const char* label, const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool* pause_out) {
   (void)record;
-  if (!list || !passes_ || !edram_ || !summary.source || !published_ || !pre_made_) {
-    return false;  // no AO frame with the bounce light ran at this trigger
+  if (!list || !passes_ || !edram_ || !summary.source || !LightsFrameMade()) {
+    return false;  // no AO frame with the bounce light ran at this trigger (or, for a residual pair, no screen frame)
   }
   const uint32_t width = frame_.traced[0];
   const uint32_t height = frame_.traced[1];
@@ -130,7 +131,7 @@ bool ScreenShared::CaptureLightsInto(HostImage& image, const char* label, const 
 }
 
 bool ScreenShared::CaptureLightsBefore(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
-  if (!ssgi_lights::CaptureBefore(lights_wanted_, pre_made_ && published_, true) || lights_before_done_) {
+  if (!ssgi_lights::CaptureBefore(lights_wanted_, LightsFrameMade(), true) || lights_before_done_) {
     return false;
   }
   bool pause = false;
@@ -143,7 +144,7 @@ bool ScreenShared::CaptureLightsBefore(const ResolveRecord& record, const Resolv
 }
 
 bool ScreenShared::CaptureLightsAfter(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
-  if (!ssgi_lights::CaptureAfter(lights_wanted_, pre_made_ && published_, lights_before_done_, true) || lights_after_done_) {
+  if (!ssgi_lights::CaptureAfter(lights_wanted_, LightsFrameMade(), lights_before_done_, true) || lights_after_done_) {
     return false;
   }
   bool pause = false;
@@ -155,6 +156,7 @@ bool ScreenShared::CaptureLightsAfter(const ResolveRecord& record, const Resolve
   lights_key_.valid = true;
   lights_key_.frame = frame_count_;
   lights_key_.pause = pause;
+  lights_key_.partition = lights_partition_;
   lights_key_.size[0] = lights_pre_.width;
   lights_key_.size[1] = lights_pre_.height;
   if (!lights_first_logged_) {

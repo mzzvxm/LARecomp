@@ -28,6 +28,7 @@
 
 #include "hlsl_cpp_shim.h"
 #include "city_refl_rules.h"  // REFL-LAMPS: the reflection passes' lamp term, checked against the world frame's numbers (TestSources)
+#include "rt_emitters_rules.h"  // GI-BOUNCE-RT: the emitters' list holds the same limits as the buffer's layout (TestEmitters)
 #include "rt_world_frame_rules.h"
 #include "world_clock.h"
 
@@ -206,6 +207,9 @@ void TestNumbers(const std::string& hlsl) {
   CHECK(number("RT_WORLD_ROW_CALIBRATION") == rw::kRowCalibration);
   CHECK(number("RT_WORLD_ROW_GAINS") == rw::kRowGains);
   CHECK(number("RT_WORLD_ROW_SCHEDULE") == rw::kRowSchedule && rw::kRowSchedule == 47 && rw::kRowSchedule < rw::kTotalRows);
+  // GI-BOUNCE-RT: the emitters' row, their records and the limit (rt_emitters_rules.h holds kMaxEmitters and kRowsEach equal: rt_emitters_rules_test)
+  CHECK(number("RT_WORLD_ROW_EMITTERS") == rw::kRowEmitters && rw::kRowEmitters == 44 && rw::kRowEmitters < rw::kRowSchedule && rw::kRowEmitters >= rw::kRowGains + rw::kClasses / 4);
+  CHECK(number("RT_WORLD_EMITTER_ROWS") == rw::kEmitterRows && rw::kEmitterRows == 4 && number("RT_WORLD_MAX_EMITTERS") == rw::kMaxEmitters && rw::kMaxEmitters == 32);
   CHECK(number("RT_WORLD_EVIDENCE_ON") == rw::kEvidenceOn && number("RT_WORLD_EVIDENCE_OFF") == rw::kEvidenceOff);
   CHECK(number("RT_WORLD_GLOW_NIGHT") == ch::kGlowNight && number("RT_WORLD_GLOW_LENS") == ch::kGlowLens && number("RT_WORLD_GLOW_ALWAYS") == ch::kGlowAlways);
   CHECK(number("RT_WORLD_TOTAL_ROWS") == rw::kTotalRows);
@@ -237,7 +241,7 @@ void TestNumbers(const std::string& hlsl) {
   CHECK(rw::kWorldBytes == 768);
   CHECK(rw::kWorldRegister == 10 && rw::kLampsRegister == 11 && rw::kBindingCount == 2);
   CHECK(rw::kMaxWindowCells == 256 && rw::kCellRowsMax == 128);
-  CHECK(rw::kLampBufferBytes == (1 + 128 + 3 * 2048) * 16);
+  CHECK(rw::kLampBufferBytes == (1 + 128 + 3 * 2048 + 4 * 32) * 16);  // the lamps' rows at the budget's hard limit, then the emitters' (GI-BOUNCE-RT)
   // the registers in the shader
   CHECK(Has(hlsl, "gRtWorld : register(t10, RT_WORLD_SPACE_NAME)"));
   CHECK(Has(hlsl, "gRtLamps : register(t11, RT_WORLD_SPACE_NAME)"));
@@ -730,6 +734,12 @@ rw::WorldInput RandomWorld(Lcg& rng, const rw::LampFrame* lamps) {
   in.schedule = rw::ScheduleAt(ch::LampHours{}, rng.Below(6) == 0 ? -1.0f : in.hour, rng.Range(0.0f, 1.0f));
   in.schedule.evidence = rng.Below(4) == 0 ? rng.Below(3) : 0u;
   in.live_shining = rng.Below(3) == 0 ? rng.Below(90) : 0u;
+  if (rng.Below(3) == 0) {  // GI-BOUNCE-RT: emitters (row 44)
+    in.emitter_count = 1 + rng.Below(rw::kMaxEmitters);
+    in.emitter_row_base = 100 + rng.Below(6000);
+    in.emitter_static = rng.Below(in.emitter_count + 3);
+    in.emitter_groups = 1 + rng.Below(15);
+  }
   in.lamps = lamps;
   for (uint32_t c = 0; c < rw::kClasses; ++c) in.gains[c] = rng.Range(0.5f, 3.0f);
   return in;
@@ -752,8 +762,14 @@ void TestWorldRows() {
     CHECK(std::memcmp(rows, hit_rows, sizeof(hit_rows)) == 0);
     // the reserved rows are zero
     bool zero = true;
-    for (uint32_t r = 44; r < rw::kRowSchedule; ++r) for (int c = 0; c < 4; ++c) zero = zero && rows[r][c] == 0;
+    for (uint32_t r = 45; r < rw::kRowSchedule; ++r) for (int c = 0; c < 4; ++c) zero = zero && rows[r][c] == 0;
     CHECK(zero);
+    // GI-BOUNCE-RT: row 44 is the emitters' (count, row, static count capped at the count, groups) or all zero with none
+    {
+      const bool any = in.emitter_count != 0;
+      CHECK(rows[rw::kRowEmitters][0] == in.emitter_count && rows[rw::kRowEmitters][1] == (any ? in.emitter_row_base : 0u) && rows[rw::kRowEmitters][2] == (any ? std::min(in.emitter_static, in.emitter_count) : 0u) &&
+            rows[rw::kRowEmitters][3] == (any ? in.emitter_groups : 0u));
+    }
     rw::WorldDecoded d = rw::DecodeWorldRows(rows);
     CHECK(d.Valid());
     CHECK(d.serial == uint32_t(in.frame & 0xFFFFFFFFu));
@@ -785,6 +801,7 @@ void TestWorldRows() {
     }
     CHECK(d.stats_frame == (in.stats_frame ? 1u : 0u) && d.windows == in.calibration_windows && d.world_kind == in.world_kind);
     for (uint32_t c = 0; c < rw::kClasses; ++c) CHECK(d.gains[c] == in.gains[c]);
+    CHECK(d.emitter_count == in.emitter_count && d.emitter_row_base == rows[rw::kRowEmitters][1] && d.emitter_static == rows[rw::kRowEmitters][2] && d.emitter_groups == rows[rw::kRowEmitters][3]);
 
     // the shader's loader over the same rows
     hlsl_shim::StructuredBuffer<hlsl_shim::uint4> buffer;
@@ -803,6 +820,7 @@ void TestWorldRows() {
     CHECK(w.lampCount == d.lamp_count && w.lampsInWindow == d.lamps_in_window && w.cells == d.cells && w.liveCount == d.live_count);
     CHECK(w.statsFrame == d.stats_frame && w.windows == d.windows && w.worldKind == d.world_kind);
     CHECK(w.street == d.street && w.fill == d.fill && w.liveShining == d.live_shining && w.evidence == d.evidence);
+    CHECK(w.emitterCount == d.emitter_count && w.emitterBase == d.emitter_row_base && w.emitterStatic == d.emitter_static && w.emitterGroups == d.emitter_groups);
     for (uint32_t kind = 0; kind < 4; ++kind) CHECK(hlsl_shim::RtWorldGlowFactor(kind) == d.GlowFactor(kind));
     CHECK(w.axisX.x == in.hit.world_axes_view[0][0] && w.axisX.y == in.hit.world_axes_view[0][1] && w.axisX.z == in.hit.world_axes_view[0][2]);
     CHECK(w.axisY.x == in.hit.world_axes_view[1][0] && w.axisZ.z == in.hit.world_axes_view[2][2]);
@@ -841,6 +859,84 @@ void TestWorldRows() {
     lb.count = no_lamps.size();
     hlsl_shim::gRtLamps = lb;
     CHECK(hlsl_shim::RtLampBegin(w, hlsl_shim::float3(1.0f, 2.0f, 3.0f), 64.0f).done == 1u);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the emitters (GI-BOUNCE-RT): appended after the lamps' rows, found by row 44
+// ---------------------------------------------------------------------------
+
+void TestEmitters() {
+  Lcg rng;
+  const std::vector<ch::Lamp> all = MakeLamps(rng, 300, 100, 300.0f, true);
+  const ch::LampTable table = ch::LampTable::Build(all);
+  rw::LampFrame base;
+  rw::BuildLampFrame(NightInput(&table, nullptr, false, 0.0, 0.0, 22.0f, rw::Tier::kHigh), &base);
+  CHECK(base.lamp_count > 0 && base.emitter_count == 0 && base.emitter_row_base == 0 && base.emitter_static == 0);
+  // the list's limits are the layout's (rt_emitters_rules.h builds the words, rt_world_frame_rules.h holds them)
+  CHECK(mcla::gpu::rt_emitters::kMaxEmitters == rw::kMaxEmitters && mcla::gpu::rt_emitters::kRowsEach == rw::kEmitterRows && mcla::gpu::rt_emitters::kMaxEmitterRows == rw::kMaxEmitters * rw::kEmitterRows);
+  const uint32_t lamp_rows = base.rows();
+  std::vector<uint32_t> words(size_t(40) * rw::kEmitterRows * 4);
+  for (size_t i = 0; i < words.size(); ++i) words[i] = uint32_t(0x1000u + i * 7u);
+  // five emitters, three of them static: after the lamps' last row, the lamps' words untouched
+  {
+    rw::LampFrame f = base;
+    rw::AppendEmitters(&f, words.data(), 5, 3, 0xB);
+    CHECK(f.emitter_count == 5 && f.emitter_static == 3 && f.emitter_groups == 0xB && f.emitter_row_base == lamp_rows && f.rows() == lamp_rows + 5 * rw::kEmitterRows);
+    CHECK(std::equal(base.words.begin(), base.words.end(), f.words.begin()));
+    CHECK(std::equal(words.begin(), words.begin() + 5 * 16, f.words.begin() + size_t(lamp_rows) * 4));
+    // the world rows say where, and the shader reads emitter i's row k from there
+    rw::WorldInput in;
+    in.lamps = &f;
+    in.emitter_count = f.emitter_count;
+    in.emitter_row_base = f.emitter_row_base;
+    in.emitter_static = f.emitter_static;
+    in.emitter_groups = f.emitter_groups;
+    uint32_t rows[rw::kTotalRows][4];
+    rw::MakeWorldRows(in, rows);
+    std::vector<hlsl_shim::uint4> world(rw::kTotalRows), lamps(f.words.size() / 4);
+    for (uint32_t r = 0; r < rw::kTotalRows; ++r) world[r] = hlsl_shim::uint4(rows[r][0], rows[r][1], rows[r][2], rows[r][3]);
+    for (size_t i = 0; i < lamps.size(); ++i) lamps[i] = hlsl_shim::uint4(f.words[4 * i], f.words[4 * i + 1], f.words[4 * i + 2], f.words[4 * i + 3]);
+    hlsl_shim::StructuredBuffer<hlsl_shim::uint4> wb, lb;
+    wb.data = world.data();
+    wb.count = world.size();
+    lb.data = lamps.data();
+    lb.count = lamps.size();
+    hlsl_shim::gRtWorld = wb;
+    hlsl_shim::gRtLamps = lb;
+    const hlsl_shim::RtWorld w = hlsl_shim::RtWorldLoad();
+    CHECK(w.emitterCount == 5 && w.emitterStatic == 3 && w.emitterGroups == 0xB && w.emitterBase == lamp_rows);
+    for (uint32_t i = 0; i < 5; ++i) {
+      for (uint32_t k = 0; k < 4; ++k) {
+        const hlsl_shim::uint4 r = hlsl_shim::RtEmitterRow(w, i, k);
+        const size_t at = size_t(i) * 16 + size_t(k) * 4;
+        CHECK(r.x == words[at] && r.y == words[at + 1] && r.z == words[at + 2] && r.w == words[at + 3]);
+      }
+    }
+    // the lamps' own rows are where they were: the cursor still finds lamp 0's three rows
+    CHECK(hlsl_shim::RtLampRow(w, 0, 0).x == f.words[size_t(f.lamp_row_base) * 4]);
+    CHECK(hlsl_shim::gRtLamps.errors == 0 && hlsl_shim::gRtWorld.errors == 0);
+  }
+  // the static count never passes the count; more than the limit are cut; none changes nothing
+  {
+    rw::LampFrame f = base;
+    rw::AppendEmitters(&f, words.data(), 4, 9, 1);
+    CHECK(f.emitter_count == 4 && f.emitter_static == 4);
+    rw::LampFrame g = base;
+    rw::AppendEmitters(&g, words.data(), 40, 40, 15);
+    CHECK(g.emitter_count == rw::kMaxEmitters && g.emitter_static == rw::kMaxEmitters && g.rows() == lamp_rows + rw::kMaxEmitters * rw::kEmitterRows);
+    rw::LampFrame h = base;
+    rw::AppendEmitters(&h, words.data(), 0, 0, 15);
+    CHECK(h.emitter_count == 0 && h.emitter_row_base == 0 && h.words == base.words);
+  }
+  // the buffer's room: the most lamps the budget lets through plus the most emitters fit the allocation
+  CHECK((rw::MaxLampRows(rw::kMaxLampsHard) + rw::kMaxEmitters * rw::kEmitterRows) * rw::kRowBytes == rw::kLampBufferBytes);
+  {
+    rw::LampFrame f;
+    f.lamp_row_base = 1 + rw::CellRowsFor(rw::kMaxWindowCells);
+    f.words.assign(size_t(f.lamp_row_base + rw::kLampRowsEach * rw::kMaxLampsHard) * 4u, 0u);
+    rw::AppendEmitters(&f, words.data(), 40, 0, 0);
+    CHECK(f.words.size() * sizeof(uint32_t) <= rw::kLampBufferBytes);
   }
 }
 
@@ -1437,6 +1533,19 @@ void TestSources(const std::string& src) {
     CHECK(Has(cpp, "rt_world::EvidenceOf(live_fresh_, live_, 0)") && Has(cpp, "table->NearSphere(eye, rt_world::kLiveListReach, &near_table)") &&
           Has(cpp, "schedule_ = rt_world::ApplyLiveEvidence(schedule_, evidence);") && Has(cpp, "in.live_shining = evidence.shining;") && Has(cpp, "rt_world::LampCensusText(lamp_census_)"));
     CHECK(Has(ReadFile(src + "/gpu/rt_world_frame.h"), "void AddLampCensus(const uint32_t words[city_hit_shade::kCensusWords]) { lamp_census_.Add(words); }"));
+    // GI-BOUNCE-RT: the emitters are built after the lamps, appended after their words and said in row 44 (the world rows are made after); only while the bounce light wants them; the light manager is asked to run
+    // only for the groups that need it, and let go when the world frame shuts down
+    {
+      const size_t lamps_at = cpp.find("rt_world::BuildLampFrame(li, &lamp_frame_);"), build_at = cpp.find("BuildEmitters(&in, camera);"), rows_at = cpp.find("rt_world::MakeWorldRows(in, rows);");
+      CHECK(lamps_at != std::string::npos && build_at != std::string::npos && rows_at != std::string::npos && lamps_at < build_at && build_at < rows_at);
+      CHECK(Has(cpp, "if (emitters_ != nullptr && in.camera_known) {") && Has(cpp, "rt_world::AppendEmitters(&lamp_frame_, e.words.data(), uint32_t(e.result.list.size()), e.result.static_count(), e.result.census.groups);"));
+      CHECK(Has(cpp, "if (!e.wanted) {\n    e.motion.Clear();") && Has(cpp, "const bool ask = wanted && (EmitterGroupsNow() & ~rt_emitters::kGroupNeon) != 0;") && Has(cpp, "src_.lights->WantRt(ask);") && Has(cpp, "src_.lights->WantRt(false);"));
+      CHECK(Has(cpp, "if (src_.lights != nullptr && src_.lights->active()) {") && Has(cpp, "bi.night = schedule_.fill;") && Has(cpp, "mcla_gpu_gi_bounce_headlights.Get()") && Has(cpp, "mcla_gpu_gi_bounce_neon.Get()") &&
+            Has(cpp, "mcla_gpu_gi_bounce_rear.Get()") && Has(cpp, "mcla_gpu_gi_bounce_other.Get()"));
+      CHECK(Has(header, "void WantEmitters(bool wanted, bool ultra, bool weak);") && Has(header, "LightManager* lights = nullptr;"));
+      CHECK(Has(ReadFile(src + "/gpu/gi_update.cpp"), "world_->WantEmitters(ready_ && service_ != nullptr && level != gi::Level::kOff, level == gi::Level::kUltra, gi_setting::Current().rung == gi::Rung::kWeak);"));
+      CHECK(Has(ReadFile(src + "/gpu/renderer.cpp"), "world_sources.lights = &light_manager_;"));
+    }
   }
   // REFL-LAMPS: the car reflection passes (the player's paint, the opponents' variant, the glass: one shader file) are consumers of the world frame through the car scene's set, which they all bind as set 2
   // (scene.SetDesc()) and which holds t10 and t11 since the frame package: no layout of theirs gained a binding and no D3D12 descriptor count changed (recounted here: the car scene's set 12 views, the
@@ -1508,6 +1617,7 @@ int main(int argc, char** argv) {
   TestRecords();
   TestLampFrame();
   TestWorldRows();
+  TestEmitters();
   TestLookup();
   TestLampLight();
   TestLiveEvidence();

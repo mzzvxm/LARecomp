@@ -250,7 +250,13 @@ void CityReflCalAdd(uint word, uint value)
 // car_rt_hit_shade.hlsli before this file), the world frame's rows are read for the lamps, the schedule and the glow only.
 #define RT_WORLD_SPACE CAR_RT_SPACE
 #include "rt_world_frame.hlsli"
+#include "light_laws.hlsli"
+#include "rt_emitters.hlsli"
 #include "city_refl_noise.hlsli"
+
+// GI-BOUNCE-RT: the world frame's emitters (the cars' neon, headlights, tail lamps, police bars) light a city hit too, all of them, with one shadow ray against the city (the library's CityHitEmitters). The world rows
+// are loaded for a hit only where the lamps' row says the world frame is valid AND row 44 says it has emitters (no emitters: nothing is loaded, nothing is cast).
+static RtWorld gCityEmitWorld;
 
 // What a glowing material glows by while this hit is shaded: the world rows' schedule (gCityGlowWorld), or the sun's elevation's (gCityGlowOld, the lamp factor of old).
 static bool gCityGlowWorld = false;
@@ -283,6 +289,9 @@ void CityReflLampCensus(uint word, uint value)
 #define CITY_HIT_LAMP_GRID
 #define CITY_HIT_GLOW_FACTOR(kind) CityReflGlowFactor(kind)
 #define CITY_HIT_CENSUS_ADD(word, value) CityReflLampCensus(word, value)
+#define CITY_HIT_EMITTER_COUNT (gCityEmitWorld.emitterCount)
+#define CITY_HIT_EMITTER_RADIANCE(i, P, N) RtEmitterRadiance(gCityEmitWorld, (i), (P), (N))
+#define CITY_HIT_EMITTER_TO(i, P) RtEmitterTo(gCityEmitWorld, (i), (P))
 #endif
 #include "city_hit_shade.hlsli"
 
@@ -366,6 +375,11 @@ bool CityReflHit(float3 origin, float3 direction, CityHitTraceResult h, float co
     gCityGlowWorld = lampsWorld;
     gCityGlowOld = lampFactor;
     p.lampFactor = lampFactor;
+    if (lampsWorld && RtEmittersUploaded() != 0u)
+    {
+        gCityEmitWorld = RtWorldLoad();
+        p.flags = p.flags | CITY_HIT_P_EMITTERS | CITY_HIT_P_EMITTER_SHADOW;
+    }
 #endif
     p.wet = c.wet;
     p.aoMix = c.aoMix;

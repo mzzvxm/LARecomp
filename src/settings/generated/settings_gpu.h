@@ -1486,6 +1486,8 @@ class GPUSettings final : public rex::SettingOwner {
     "(the bounce light as it was), 2 twice as much. It is held under the same cap as every radiance the bounce takes (mcla_gpu_ssgi_test_clamp), so a "
     "larger gain mostly makes a dim lamp's light count as much as a bright one's. Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
 
+  REX_SETTING(f64, mcla_gpu_ssgi_lights_floor, 1.3, "Diagnostic: the room the bounce light's lights' share (mcla_gpu_ssgi_lights) has under the cap, as a luma floor in the scene colour's units (a white wall in full sun is about 1.3). At night the radiance cap is its own floor of 0.5, which cut a neon pool or a headlight's wall to a third of a sun-lit white wall before the bounce took it: the lights' share is now held under the larger of that cap and this floor, and by day, where the cap is over it, nothing changes to the bit. 0 is the cap alone (the A/B), the default 1.3 is one white wall in full sun, 4 the most. The colour chain's own cap, the source start and the apply's ceiling keep their floor. Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
+
   REX_SETTING(std::string, mcla_gpu_ssgi_intensity, "default", "How strong the bounce light looks: light, default, strong, stronger or strongest. Each is a set of four "
     "numbers: how much of the light the surroundings send back the picture gets, the most it may add to a pixel "
     "(a guard against noise in the dark), how far it looks for lit surfaces (5 to 16 metres, past the ambient "
@@ -1752,6 +1754,14 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_lamp_shadows_cache, 1, "Diagnostic (the street lamps' shadows): 1 (the default) gives each lamp two tiles, a static one for the world that does not move (drawn when the lamp takes its tile and added to, kept) and a live one "
     "for the cars and people (drawn every frame), which costs one more tile of video memory a lamp and saves the world's draws. 0: one tile a lamp, everything drawn every frame. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(bool, mcla_gpu_gi_bounce_headlights, true, "Diagnostic (the ray traced bounce light's emitters, GI-BOUNCE-RT, perf/GI-BOUNCE.md, the A/B of one source group): on (the default) the light of the frame's surface lights (the headlight rig's lights of the cars it lights) and the head lamps of the cars it does not also bounces: what a ray of the RT bounce light hits (the probe field's rays for the lights that stand still, the per-pixel pass's for all of them, the reflections' city hits) is lit by it, by the same laws and units as the deferred light pass lights the picture with. Off: this group is not gathered and does not bounce through ray tracing. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_gi_bounce_neon, true, "Diagnostic (the ray traced bounce light's emitters, GI-BOUNCE-RT, perf/GI-BOUNCE.md, the A/B of one source group): on (the default) the light of the cars' neon underglow tubes (it also needs NEON LIGHT on, which is what makes the game's neon table fill) also bounces: what a ray of the RT bounce light hits (the probe field's rays for the lights that stand still, the per-pixel pass's for all of them, the reflections' city hits) is lit by it, by the same laws and units as the deferred light pass lights the picture with. Off: this group is not gathered and does not bounce through ray tracing. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_gi_bounce_rear, true, "Diagnostic (the ray traced bounce light's emitters, GI-BOUNCE-RT, perf/GI-BOUNCE.md, the A/B of one source group): on (the default) the light of the cars' brake, tail, turn signal and reverse lamps also bounces: what a ray of the RT bounce light hits (the probe field's rays for the lights that stand still, the per-pixel pass's for all of them, the reflections' city hits) is lit by it, by the same laws and units as the deferred light pass lights the picture with. Off: this group is not gathered and does not bounce through ray tracing. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_gi_bounce_other, true, "Diagnostic (the ray traced bounce light's emitters, GI-BOUNCE-RT, perf/GI-BOUNCE.md, the A/B of one source group): on (the default) the light of the police light bars and the mods' lamps outside their grid also bounces: what a ray of the RT bounce light hits (the probe field's rays for the lights that stand still, the per-pixel pass's for all of them, the reflections' city hits) is lit by it, by the same laws and units as the deferred light pass lights the picture with. Off: this group is not gathered and does not bounce through ray tracing. Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_headlight_pass, "forward", "Diagnostic (the forward headlight stage against the deferred local light pass, GB-H2, the A/B): which of the two lights the cars' headlights. forward (the default): the lit shaders' headlight variant lights, as the game has always had it. "
     "pass: the deferred local light pass lights the headlights of the same cars with their shadows from the atlas (it also reaches the lit shaders the variant leaves out, the cars' paint and the pedestrians; needs the G-buffer's planes, which it asks for while HEADLIGHTS is on, and runs whatever mcla_gpu_local_lights says), and the variant stays only on the draws the pass does not light (mcla_gpu_headlight_pass_keep_forward). "
@@ -2276,6 +2286,7 @@ inline auto& mcla_gpu_ssgi_far_steps = g_gpu.mcla_gpu_ssgi_far_steps;
 inline auto& mcla_gpu_ssgi_half = g_gpu.mcla_gpu_ssgi_half;
 inline auto& mcla_gpu_ssgi_lights = g_gpu.mcla_gpu_ssgi_lights;
 inline auto& mcla_gpu_ssgi_lights_gain = g_gpu.mcla_gpu_ssgi_lights_gain;
+inline auto& mcla_gpu_ssgi_lights_floor = g_gpu.mcla_gpu_ssgi_lights_floor;
 inline auto& mcla_gpu_ssgi_intensity = g_gpu.mcla_gpu_ssgi_intensity;
 inline auto& mcla_gpu_ssgi_low = g_gpu.mcla_gpu_ssgi_low;
 inline auto& mcla_gpu_ssgi_radius = g_gpu.mcla_gpu_ssgi_radius;
@@ -2336,6 +2347,10 @@ inline auto& mcla_gpu_neon_light_reach = g_gpu.mcla_gpu_neon_light_reach;
 inline auto& mcla_gpu_neon_light_tuned = g_gpu.mcla_gpu_neon_light_tuned;
 inline auto& mcla_gpu_local_lights_cost_off = g_gpu.mcla_gpu_local_lights_cost_off;
 inline auto& mcla_gpu_neon_contact = g_gpu.mcla_gpu_neon_contact;
+inline auto& mcla_gpu_gi_bounce_headlights = g_gpu.mcla_gpu_gi_bounce_headlights;
+inline auto& mcla_gpu_gi_bounce_neon = g_gpu.mcla_gpu_gi_bounce_neon;
+inline auto& mcla_gpu_gi_bounce_rear = g_gpu.mcla_gpu_gi_bounce_rear;
+inline auto& mcla_gpu_gi_bounce_other = g_gpu.mcla_gpu_gi_bounce_other;
 inline auto& mcla_gpu_lamp_shadows = g_gpu.mcla_gpu_lamp_shadows;
 inline auto& mcla_gpu_lamp_shadows_mode = g_gpu.mcla_gpu_lamp_shadows_mode;
 inline auto& mcla_gpu_lamp_shadows_view = g_gpu.mcla_gpu_lamp_shadows_view;

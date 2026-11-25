@@ -48,6 +48,7 @@
 #define RT_WORLD_ROW_COUNTS 38u
 #define RT_WORLD_ROW_CALIBRATION 39u
 #define RT_WORLD_ROW_GAINS 40u
+#define RT_WORLD_ROW_EMITTERS 44u
 #define RT_WORLD_ROW_SCHEDULE 47u
 #define RT_WORLD_TOTAL_ROWS 48u
 #define RT_WORLD_CLASSES 16u
@@ -73,6 +74,8 @@
 #define RT_WORLD_LOOKUP_CELLS 25u
 #define RT_WORLD_LOOKUP_MAX_CELLS 2.0 // the radius is clamped to this many cell sides
 #define RT_WORLD_LAMP_ROWS 3u
+#define RT_WORLD_EMITTER_ROWS 4u    // GI-BOUNCE-RT: an emitter is a GpuLight (rt_emitters_rules.h)
+#define RT_WORLD_MAX_EMITTERS 32u
 
 #ifndef RT_WORLD_NO_RESOURCES
 #ifndef RT_WORLD_SPACE
@@ -125,6 +128,10 @@ struct RtWorld
     float fill;         // the fill lights' night factor 0..1: what neon, signs and lit windows glow by
     uint liveShining;   // the game's live lamp list's lamps that shine now
     uint evidence;      // RT_WORLD_EVIDENCE_*
+    uint emitterCount;  // GI-BOUNCE-RT (row 44): the emitters uploaded (the cars' lamps: gRtLamps rows emitterBase + 4 i ..)
+    uint emitterBase;   // the row of gRtLamps the first emitter is at
+    uint emitterStatic; // the first this many are static (the probe field reads only these)
+    uint emitterGroups; // the groups' mask
     float3 axisX;       // the world's axes in view space
     float3 axisY;
     float3 axisZ;
@@ -175,6 +182,11 @@ RtWorld RtWorldLoad()
     w.fill = asfloat(r8.y);
     w.liveShining = r8.z;
     w.evidence = r8.w;
+    const uint4 r9 = gRtWorld[RT_WORLD_ROW_EMITTERS];
+    w.emitterCount = min(r9.x, RT_WORLD_MAX_EMITTERS);
+    w.emitterBase = r9.y;
+    w.emitterStatic = min(r9.z, w.emitterCount);
+    w.emitterGroups = r9.w;
     return w;
 }
 
@@ -235,6 +247,12 @@ float3 RtWorldPoint(RtWorld w, float3 view)
 uint4 RtLampRow(RtWorld w, uint lamp, uint k)
 {
     return gRtLamps[1u + (w.cells + 1u) / 2u + RT_WORLD_LAMP_ROWS * lamp + k];
+}
+
+// Row k (0..3) of emitter `emitter` (a GpuLight: light_frame.h, world space; hlsl/rt_emitters.hlsli unpacks it).
+uint4 RtEmitterRow(RtWorld w, uint emitter, uint k)
+{
+    return gRtLamps[w.emitterBase + RT_WORLD_EMITTER_ROWS * emitter + k];
 }
 
 struct RtLampCell

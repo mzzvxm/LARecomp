@@ -117,6 +117,8 @@ using namespace flat;
 // R7: the same library again, in a namespace of its own, with the world frame's grid for its lamps and the world rows' schedule for its glow (city_hit_lamp_term_lib.inc; the checks are in
 // city_hit_lamp_term_checks.inc)
 #include "city_hit_lamp_term_lib.inc"
+// GI-BOUNCE-RT: and a third time with the emitters' hooks (city_hit_emitter_lib.inc; the checks are in city_hit_emitter_checks.inc)
+#include "city_hit_emitter_lib.inc"
 
 namespace {
 
@@ -1100,6 +1102,7 @@ void TextChecks(const std::string& src) {
 }
 
 #include "city_hit_lamp_term_checks.inc"
+#include "city_hit_emitter_checks.inc"
 
 }  // namespace
 
@@ -1125,6 +1128,7 @@ int main(int argc, char** argv) {
   Check(sources[cs::kSourceScreen] > 400 && sources[cs::kSourceShaded] > 400 && sources[cs::kSourceBlend] > 100 && sources[cs::kSourceNone] > 100,
         Num2("the resolve ended in the picture, the model, both and nothing (picture %.0f, model %.0f)", sources[cs::kSourceScreen], sources[cs::kSourceShaded]));
   LampTermChecks(city, rng, src);
+  EmitterChecks(city, rng, src);
   TextChecks(src);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

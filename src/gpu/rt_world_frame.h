@@ -94,6 +94,7 @@ class AmbientOcclusion;
 class CarFrame;
 class CityRtScene;
 class Device;
+class LightManager;
 class RtSceneService;
 class ScreenShared;
 
@@ -115,7 +116,7 @@ class RtWorldFrame {
   // Adds the two bindings to a set's builder (before its end()); the registers default to the RT set's.
   static Bindings AddBindings(plume::RenderDescriptorSetBuilder& builder, uint32_t world_register = kWorldRegister, uint32_t lamps_register = kLampsRegister);
 
-  RtWorldFrame() = default;
+  RtWorldFrame();   // (declared here, made in the .cpp where the emitters' state is complete: a unique_ptr to it is a member)
   ~RtWorldFrame();
   RtWorldFrame(const RtWorldFrame&) = delete;
   RtWorldFrame& operator=(const RtWorldFrame&) = delete;
@@ -127,6 +128,7 @@ class RtWorldFrame {
     const ScreenShared* screen = nullptr; // the exposure
     const CityRtScene* city = nullptr;    // the open pack (the lamp table)
     const RtSceneService* service = nullptr;  // the merged city level (the lamp budget), whether anything wants the scene
+    LightManager* lights = nullptr;       // GI-BOUNCE-RT: the headlights of the frame and the cars' lamps (the emitters); the manager is asked to run while the emitters are wanted
   };
   bool Initialize(Device& device, FrameRing& frames, const Sources& sources);
   // GPU idle and the FrameRing drained.
@@ -158,6 +160,16 @@ class RtWorldFrame {
   // Replaces the static lamp table (a table with the street lamps merged in: lamp_merge.h MergeLive); null: the pack's own again.
   void SetStaticLamps(std::shared_ptr<const larecomp::citypack::LampTable> table);
 
+  // ---- the emitters (GI-BOUNCE-RT, rt_emitters_rules.h) ----
+  // The ray traced bounce light asks for the cars' lamps (neon, headlights, tail lamps, police bars, the mods' outside lamps) every frame it runs (GiUpdate::OnWant, before the frame's trigger); `ultra` and `weak`
+  // choose the budget table's tier (rt_emitters::TierFor). They are made at OnTrigger, as GpuLight rows in the lamp buffer after the lamps (row 44 of the world rows says where), for every consumer of the
+  // world frame: the probe field reads the static ones, the per-pixel pass and the reflections all of them. Not wanted: no list, no rows, and the light manager is not asked to run for it.
+  void WantEmitters(bool wanted, bool ultra, bool weak);
+  // GI-BOUNCE-JOIN (gi_bounce_carrier.h): what THIS frame's list says about a light of the deferred light pass, by the light's id: not in the list (not wanted, too far, over the budget, dark, a hole, a frame the
+  // world frame was not filled in), a STATIC emitter (the probe field carries its bounce) or a MOVING one (the per-pixel pass does, at ULTRA). The light pass asks it for every light it draws, after OnTrigger.
+  enum class EmitterMotion : uint8_t { kNotListed = 0, kStatic = 1, kMoving = 2 };
+  EmitterMotion EmitterMotionOf(uint64_t light_id) const;
+
   // ---- the calibration ----
   // True in a stats frame (rt_world::kStatsPeriod): a pass sets CITY_HIT_P_CALIBRATE (the rows' flag says the same).
   bool StatsFrame() const { return rt_world::StatsFrameDue(frame_); }
@@ -183,6 +195,7 @@ class RtWorldFrame {
   std::unique_ptr<plume::RenderBuffer> MakeUpload(uint64_t bytes, uint8_t** cpu, const char* name);
   void LoadStaticLamps();
   void RefreshLiveList();
+  void BuildEmitters(rt_world::WorldInput* in, const double camera[3]);
   void Wanted(bool on);
   void Log(const rt_world::WorldInput& in, const rt_world::LampFrame& lamps, float radius_m);
 
@@ -219,6 +232,10 @@ class RtWorldFrame {
   std::array<uint32_t, rt_world::kTotalRows * 4> rows_{};
   rt_world::WorldDecoded decoded_;
   rt_world::Schedule schedule_;
+
+  // the emitters (GI-BOUNCE-RT): the state lives in the .cpp (rt_emitters_rules.h is not light)
+  struct EmitterState;
+  std::unique_ptr<EmitterState> emitters_;
 
   // calibration
   rt_hit_cal::ClassGains gains_;

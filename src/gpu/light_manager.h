@@ -145,7 +145,16 @@ class LightManager {
   // A consumer of Frame() (the deferred local light pass, local_lights.h) asks for the frame while it is on: the manager then runs although mcla_gpu_lights_census is 0 (it collects, checks and
   // keeps the frame; no census line and no GPU upload, which the census's own run adds) and polls the cars' light points for it. Sticky: set it when the consumer's setting changes. Read at the
   // next BeginLights.
-  void Want(bool wanted) { wanted_ = wanted; }
+  void Want(bool wanted) {
+    want_pass_ = wanted;
+    wanted_ = want_pass_ || want_rt_;
+  }
+  // GI-BOUNCE-RT (rt_emitters_rules.h): the ray traced bounce light's emitters read the same frame (the headlights) and the cars' lamps. A flag of its own, so that the light pass's Want(false) of a frame in which its
+  // pass is off does not take the manager away from the ray traced bounce light (the two are separate consumers and set their flags at different places). Sticky, read at the next BeginLights.
+  void WantRt(bool wanted) {
+    want_rt_ = wanted;
+    wanted_ = want_pass_ || want_rt_;
+  }
   // Whether the manager is running (the census, a flip or a consumer was on at the last BeginLights): the volume asks before it hands its inputs over.
   bool active() const { return active_; }
   // LU-4: whether the consumer of this flip (light_project.h kFlip*) is to read the frame now: the flip is set, the manager runs and the frame is open. False otherwise: the consumer
@@ -203,7 +212,9 @@ class LightManager {
   larecomp::gpu::light_manager::SelfCheck check_;
 
   int every_ = 0;
-  bool wanted_ = false;        // a consumer of the frame asked for it (Want)
+  bool wanted_ = false;        // a consumer of the frame asked for it (Want or WantRt: either of the two flags below)
+  bool want_pass_ = false;     // the deferred light pass's
+  bool want_rt_ = false;       // the ray traced bounce light's emitters'
   uint32_t flips_ = 0;         // mcla_gpu_light_frame as read at the last BeginLights (light_project.h kFlip*)
   bool active_ = false;
   bool begun_ = false;         // a frame has been opened and not yet presented

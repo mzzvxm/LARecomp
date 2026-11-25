@@ -20,7 +20,6 @@
 #include "frame.h"
 #include "host_precache.h"
 #include "host_shaders.h"
-#include "light_manager.h"
 #include "pass_timing.h"
 #include "rt_world_frame.h"
 
@@ -51,7 +50,7 @@ const char* GiPixel::VariantName(uint32_t variant) { return variant == kVPlain ?
 // ---------------------------------------------------------------------------
 
 void GiPixel::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, GiField& field, CarRtScene& car_scene, CityRtScene& city_scene,
-                         CityHitScene& hit_scene, RtWorldFrame& world, const LightManager* lights) {
+                         CityHitScene& hit_scene, RtWorldFrame& world) {
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -62,7 +61,6 @@ void GiPixel::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
   city_scene_ = &city_scene;
   hit_scene_ = &hit_scene;
   world_ = &world;
-  lights_ = lights;
   ready_ = false;
   pipeline_failed_ = {};
   listed_ = {};
@@ -185,7 +183,6 @@ void GiPixel::Shutdown() {
   city_scene_ = nullptr;
   hit_scene_ = nullptr;
   world_ = nullptr;
-  lights_ = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,9 +423,7 @@ bool GiPixel::Begin(const Inputs& in) {
   params_.raw = plan.raw;   // the apply weighs a raw frame's image by RawWeight (its alpha is no history length)
   stats_frame_ = in.frame % kStatsEvery == 0;
 
-  // THE ROWS: the apply's buffer, the pixel rows, the frame's surface lights.
-  std::array<larecomp::gpu::GpuLight, rules::kLightsMax> lights = {};
-  lights_in_rows_ = lights_ ? rules::PickLights(lights_->Frame(), rules::kLightsMax, lights.data()) : 0u;
+  // THE ROWS: the apply's buffer, the pixel rows. (The cars' lamps are the world frame's emitters: rows of its own buffer, GI-BOUNCE-RT.)
   uint32_t words[rules::kBufferAlloc / 4] = {};
   std::memcpy(words, in.rows->data(), sizeof(*in.rows));
   uint32_t* px = words + rules::kRowsOffsetBytes / 4;
@@ -439,16 +434,13 @@ bool GiPixel::Begin(const Inputs& in) {
   px[3] = scale;
   px[4] = uint32_t(in.frame);
   px[5] = stats_frame_ ? rules::kFlagStats : 0u;
-  px[6] = lights_in_rows_;
+  px[6] = 0u;
   px[7] = in.multisampled ? 1u : 0u;
   const float pixel_angle = in.render[1] > 0 ? 2.0f * cam.tan_y / float(in.render[1]) * float(scale * divisor_) : 0.0f;
   px[8] = std::bit_cast<uint32_t>(rules::kReachM);
   px[9] = std::bit_cast<uint32_t>(in.field->bounce_weight);
-  px[10] = std::bit_cast<uint32_t>(rules::kHeadlightGain);
+  px[10] = 0u;
   px[11] = std::bit_cast<uint32_t>(pixel_angle);
-  if (lights_in_rows_ != 0) {
-    std::memcpy(px + 12, lights.data(), size_t(lights_in_rows_) * sizeof(larecomp::gpu::GpuLight));
-  }
   void* mapped = slot.rows->map();
   if (!mapped) {
     plan_.why = gi_pixel::Why::kResources;
@@ -570,7 +562,7 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
   frames_reduced_ += divisor_ > 1 ? 1u : 0u;
   if (!first_logged_) {
     first_logged_ = true;
-    REXLOG_INFO("{} {}", kPrefix, rules::FirstLine(uint32_t(in_.frame), image_width_, image_height_, divisor_, lights_in_rows_, rules::kReachM));
+    REXLOG_INFO("{} {}", kPrefix, rules::FirstLine(uint32_t(in_.frame), image_width_, image_height_, divisor_, world_ != nullptr ? world_->current().decoded.emitter_count : 0u, rules::kReachM));
   }
   if (plan_.raw != raw_logged_) {
     raw_logged_ = plan_.raw;

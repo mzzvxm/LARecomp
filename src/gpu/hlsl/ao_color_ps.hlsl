@@ -38,9 +38,11 @@
 // camera motion and the depth history (the tests of ao_temporal_ps.hlsl: the tangent plane, the depth within 8%, a vehicle or a sky texel of the history rejected, the confidence smoothstep), takes the
 // difference of the two captures there (>= 0) and adds the part of its luma that fits under the cap, soft-clipped to the room the capped colour leaves (SsgiCarryLights). A vehicle's own texel takes none (its own
 // neon is no radiance for the road a frame behind it), nor a texel that is a source of light. Without the flag, or with no light in the last frame, the texel is what it was, to the bit.
+// LIGHTS-ONLY (GI-BOUNCE-JOIN, flags bit 24): where the probe field stands the chain's radiance is this share alone (the texel's own colour is dropped: the field carries it), see ssgi_lights.h kFlagOnly.
 //   push fields with the flag: slots.y high 16 bits the normal image's slot (0: none: the depth's normal), slots.z the last frame's colour AFTER the lights, slots.w the colour BEFORE them, slots2.y this frame's
 //   linear depth (level 0 of the depth chain, with the vehicle mark), slots2.w the last frame's (the depth history), lens.xy this frame's tan half field of view (as the other passes; lens.zw the last frame's),
-//   lin / light / extra the three rows of the 3x4 that moves this frame's view space into the last frame's (the AO's accumulation pass's matrix), shape.z the gain of the lights' share.
+//   lin / light / extra the three rows of the 3x4 that moves this frame's view space into the last frame's (the AO's accumulation pass's matrix), shape.z the gain of the lights' share, shape.w the lights' own
+//   cap floor (the share is held under max(shape.x, shape.w): at night shape.x is its own floor of 0.5 and the lights would be crushed to it; by day shape.x is over it and nothing changes: SsgiLightsCap).
 //
 // Push block (ao_common.hlsli AoPush), the fields of these passes:
 //   pass 0   slots.x the colour plane's bindless slot, slots.y its host samples, sizes.xy this image's
@@ -97,6 +99,8 @@ bool AoOneSample() { return (g_push.slots2.z & (1u << 21)) != 0u; }
 
 // THE LIGHTS' SHARE (the header above): flags bit 23.
 bool AoLights() { return (g_push.slots2.z & (1u << 23)) != 0u; }
+// GI-BOUNCE-JOIN, LIGHTS-ONLY: flags bit 24 (ssgi_lights.h kFlagOnly). The probe field stands and carries the whole bounce but the moving cars' lights: the chain's radiance is the lights' share alone, on black.
+bool AoLightsOnly() { return (g_push.slots2.z & (1u << 24)) != 0u; }
 
 // The last frame's light at the place the texel `pixel` was: rgb the light (the difference of the two captures at the texel, held >= 0, the confidence applied), 0 where the texel takes none (the sky, a vehicle, no
 // place in the history) or where nothing agrees. The reprojection is ao_temporal_ps.hlsl's: the position in this frame's view space moved into the last frame's by the 3x4 (lin, light, extra), the four texels round
@@ -179,8 +183,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
   float4 result = sum / float(uint(across * across) * samples);
-  if (AoLights()) {
-    result.rgb = SsgiCarryLights(result.rgb, LightsHistory(int2(position.xy)), g_push.shape.z, max(g_push.shape.x, 1e-3f), result.a);
+  if (AoLightsOnly()) {
+    // (alpha, the source share, stays the texel's own: a lamp's own texel takes none of the lights' share and the apply gives a source no bounce.) No usable history: black.
+    result.rgb = AoLights() ? SsgiCarryLights(float3(0.0f, 0.0f, 0.0f), LightsHistory(int2(position.xy)), g_push.shape.z, SsgiLightsCap(max(g_push.shape.x, 1e-3f), g_push.shape.w), result.a)
+                            : float3(0.0f, 0.0f, 0.0f);
+  } else if (AoLights()) {
+    result.rgb = SsgiCarryLights(result.rgb, LightsHistory(int2(position.xy)), g_push.shape.z, SsgiLightsCap(max(g_push.shape.x, 1e-3f), g_push.shape.w), result.a);
   }
   return result;
 }

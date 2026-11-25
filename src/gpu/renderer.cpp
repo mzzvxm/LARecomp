@@ -355,6 +355,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
         world_sources.screen = &screen_;
         world_sources.city = &city_rt_;
         world_sources.service = &rt_scene_;
+        world_sources.lights = &light_manager_;  // GI-BOUNCE-RT: the headlights of the frame and the cars' lamps, for the emitters
         rt_world_.Initialize(device_, frames_, world_sources);
         car_rt_.SetWorldFrame(&rt_world_);
       }
@@ -378,7 +379,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
                                     [this](gi::Level level) { gi_update_.OnWant(level); });
         }
         // The per-pixel detail pass (gi_pixel.h, CITY-RT M3 G5): the apply runs it, at ULTRA on a strong card only. Its pipelines are made in the background the first time it is wanted; nothing is made now.
-        gi_pixel_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_world_, &light_manager_);
+        gi_pixel_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_world_);
         if (gi_pixel_.available()) {
           gi_apply_.SetGiPixel(&gi_pixel_);
         }

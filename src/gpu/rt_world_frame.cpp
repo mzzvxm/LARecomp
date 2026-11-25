@@ -17,7 +17,9 @@
 #include "car_rt_instances_rules.h"
 #include "city_rt_scene.h"
 #include "device.h"
+#include "light_manager.h"
 #include "mc_engine/cinematic/capture_mode.h"
+#include "rt_emitters_rules.h"
 #include "rt_scene_service.h"
 #include "screen_shared.h"
 #include "settings/larecomp_settings.h"
@@ -38,6 +40,21 @@ uint64_t AlignUp(uint64_t value, uint64_t alignment) { return (value + alignment
 
 }  // namespace
 
+// GI-BOUNCE-RT: what the emitters keep from frame to frame (the motion of each light by its id), what the bounce light asked for, and the last list for the log.
+struct RtWorldFrame::EmitterState {
+  bool wanted = false;
+  bool ultra = false;
+  bool weak = false;
+  bool manager_asked = false;
+  rt_emitters::MotionTracker motion;
+  rt_emitters::BuildResult result;
+  std::vector<rt_emitters::nl::NeonCar> neon_cars;
+  std::vector<uint32_t> words;
+  uint64_t frames_with = 0;  // frames with at least one emitter
+  uint64_t last_log_frame = 0;
+  bool logged_first = false;
+};
+
 RtWorldFrame::Bindings RtWorldFrame::AddBindings(plume::RenderDescriptorSetBuilder& builder, uint32_t world_register, uint32_t lamps_register) {
   Bindings out;
   out.world = builder.addStructuredBuffer(world_register);
@@ -45,12 +62,14 @@ RtWorldFrame::Bindings RtWorldFrame::AddBindings(plume::RenderDescriptorSetBuild
   return out;
 }
 
+RtWorldFrame::RtWorldFrame() = default;
 RtWorldFrame::~RtWorldFrame() = default;
 
 bool RtWorldFrame::Initialize(Device& device, FrameRing& frames, const Sources& sources) {
   device_ = &device;
   frames_ = &frames;
   src_ = sources;
+  emitters_ = std::make_unique<EmitterState>();
   gains_ = rt_hit_cal::ClassGains{};
   frame_ = 0;
   filled_frame_ = kNoFrame;
@@ -69,6 +88,10 @@ void RtWorldFrame::Shutdown() {
     if (s.lamps && s.lamps_cpu) s.lamps->unmap(0, nullptr);
     s = Slot{};
   }
+  if (emitters_ != nullptr && emitters_->manager_asked && src_.lights != nullptr) {
+    src_.lights->WantRt(false);
+  }
+  emitters_.reset();
   table_.reset();
   table_given_.reset();
   live_.clear();
@@ -139,6 +162,94 @@ uint64_t RtWorldFrame::HeldBytes() const {
     bytes += (s.world ? AlignUp(rt_world::kWorldBytes, 256) : 0) + (s.lamps ? AlignUp(rt_world::kLampBufferBytes, 256) : 0);
   }
   return bytes;
+}
+
+namespace {
+// The four debug switches of the groups (perf/GI-BOUNCE.md), read where they are used: live.
+uint32_t EmitterGroupsNow() {
+  namespace st = larecomp::settings;
+  rt_emitters::Switches s;
+  s.headlights = st::mcla_gpu_gi_bounce_headlights.Get();
+  s.neon = st::mcla_gpu_gi_bounce_neon.Get();
+  s.rear = st::mcla_gpu_gi_bounce_rear.Get();
+  s.other = st::mcla_gpu_gi_bounce_other.Get();
+  return rt_emitters::MaskOf(s);
+}
+float GainSetting(double value) { return float(std::clamp(std::isfinite(value) ? value : 1.0, 0.0, 16.0)); }
+}  // namespace
+
+void RtWorldFrame::WantEmitters(bool wanted, bool ultra, bool weak) {
+  if (emitters_ == nullptr) {
+    return;
+  }
+  EmitterState& e = *emitters_;
+  e.wanted = wanted;
+  e.ultra = ultra;
+  e.weak = weak;
+  // The light manager collects the headlights and polls the cars' light points only while a consumer asks (it is passive otherwise): the neon and the mods' lamps need neither.
+  const bool ask = wanted && (EmitterGroupsNow() & ~rt_emitters::kGroupNeon) != 0;
+  if (src_.lights != nullptr && ask != e.manager_asked) {
+    src_.lights->WantRt(ask);
+    e.manager_asked = ask;
+  }
+}
+
+RtWorldFrame::EmitterMotion RtWorldFrame::EmitterMotionOf(uint64_t light_id) const {
+  if (emitters_ == nullptr || !emitters_->wanted || !Valid() || light_id == larecomp::gpu::kNoLightId) {
+    return EmitterMotion::kNotListed;
+  }
+  for (const rt_emitters::Emitter& e : emitters_->result.list) {
+    if (e.light.id == light_id) {
+      return e.moving ? EmitterMotion::kMoving : EmitterMotion::kStatic;
+    }
+  }
+  return EmitterMotion::kNotListed;
+}
+
+void RtWorldFrame::BuildEmitters(rt_world::WorldInput* in, const double camera[3]) {
+  namespace re = rt_emitters;
+  namespace st = larecomp::settings;
+  EmitterState& e = *emitters_;
+  e.result = re::BuildResult{};
+  e.words.clear();
+  if (!e.wanted) {
+    e.motion.Clear();  // nobody asked: a light that comes back later has no speed to read
+    return;
+  }
+  re::BuildInputs bi;
+  if (src_.lights != nullptr && src_.lights->active()) {
+    bi.frame = &src_.lights->Frame();
+    bi.cars = &src_.lights->Cars();
+  }
+  re::nl::Global().Recent(&e.neon_cars);  // empty while NEON LIGHT is off: the hook reads nothing then
+  bi.neon = &e.neon_cars;
+  bi.built = re::mls::Global().Built();
+  const std::shared_ptr<const re::mls::Set> active_mod = re::mls::Global().Current();
+  bi.active_mod = active_mod.get();
+  bi.groups = EmitterGroupsNow();
+  bi.tier = re::TierFor(e.ultra, e.weak);
+  for (int i = 0; i < 3; ++i) {
+    bi.camera[i] = float(camera[i]);
+  }
+  bi.night = schedule_.fill;
+  bi.gain = GainSetting(st::mcla_gpu_local_lights_gain.Get());
+  bi.car_gain = GainSetting(st::mcla_gpu_local_lights_car_gain.Get());
+  bi.neon_gain = GainSetting(st::mcla_gpu_neon_light_gain.Get());
+  bi.now_s = mc::cinematic::SceneClockNowMs(frame_) * 1.0e-3;
+  re::Build(bi, &e.motion, &e.result);
+  re::PackWords(e.result.list, &e.words);
+  rt_world::AppendEmitters(&lamp_frame_, e.words.data(), uint32_t(e.result.list.size()), e.result.static_count(), e.result.census.groups);
+  in->emitter_count = lamp_frame_.emitter_count;
+  in->emitter_row_base = lamp_frame_.emitter_row_base;
+  in->emitter_static = lamp_frame_.emitter_static;
+  in->emitter_groups = lamp_frame_.emitter_groups;
+  const bool any = lamp_frame_.emitter_count != 0;
+  e.frames_with += any ? 1u : 0u;
+  if (any && (!e.logged_first || frame_ >= e.last_log_frame + kLogEveryFrames)) {
+    REXLOG_INFO("{} frame {}: the bounce light's {}{} (mcla_gpu_gi_bounce_* switch the groups; the light pass's own units: night {:.2f})", kPrefix, frame_, re::CensusText(e.result.census), e.logged_first ? "" : " (first)", bi.night);
+    e.logged_first = true;
+    e.last_log_frame = frame_;
+  }
 }
 
 void RtWorldFrame::BeginFrame(uint64_t frame) {
@@ -413,6 +524,9 @@ bool RtWorldFrame::OnTrigger(uint32_t slot_index) {
   li.budget = rt_world::BudgetFor(level == rt_scene::Level::kUltra ? rt_world::Tier::kUltra : (level == rt_scene::Level::kHigh ? rt_world::Tier::kHigh : rt_world::Tier::kMid));
   rt_world::BuildLampFrame(li, &lamp_frame_);
   in.lamps = &lamp_frame_;
+  if (emitters_ != nullptr && in.camera_known) {
+    BuildEmitters(&in, camera);  // GI-BOUNCE-RT: after the lamps (their words end where the emitters' begin), before the rows that say where
+  }
 
   // the words, into the slot's buffers
   uint32_t(*rows)[4] = reinterpret_cast<uint32_t(*)[4]>(rows_.data());

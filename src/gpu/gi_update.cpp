@@ -19,6 +19,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "frame.h"
+#include "gi_setting.h"
 #include "host_precache.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
@@ -333,6 +334,10 @@ bool GiUpdate::EnsureSlot(uint32_t frame_slot, const rules::Budget& budget) {
 // ---------------------------------------------------------------------------
 
 void GiUpdate::OnWant(gi::Level level) {
+  if (world_ != nullptr) {
+    // GI-BOUNCE-RT: the cars' lamps (neon, headlights, tail lamps ...) are lit surfaces' light too: the world frame makes the emitters while the bounce light runs, at the tier its level and rung say.
+    world_->WantEmitters(ready_ && service_ != nullptr && level != gi::Level::kOff, level == gi::Level::kUltra, gi_setting::Current().rung == gi::Rung::kWeak);
+  }
   if (!ready_ || !service_ || level == gi::Level::kOff) {
     return;
   }

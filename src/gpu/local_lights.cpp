@@ -16,6 +16,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "gbuffer.h"
+#include "gi_bounce_carrier.h"
 #include "gpu_class.h"
 #include "headlight_rig.h"
 #include "lamp_shadows.h"
@@ -385,6 +386,8 @@ void LocalLights::OnMainDraw(const ConstantBanks::Banks& banks, bool colour) {
 
 bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot) {
   (void)record;
+  const gi_bounce::Pair* const pair = pair_;  // GI-BOUNCE-JOIN: for this call only
+  pair_ = nullptr;
   if (!planes_wanted_ || !list || trigger_seen_ || !gbuffer_published || gbuffer_ == nullptr || screen_ == nullptr || edram_ == nullptr || !summary.source) {
     return false;
   }
@@ -585,6 +588,28 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   in.rt_mask = (rt_ran && rt_lights_ != nullptr && rt_lights_->Masks().valid) ? &rt_lights_->Masks() : nullptr;
   in.kernel_word = larecomp::gpu::shadow_filter::PackParams(larecomp::gpu::shadow_filter::MakeParams(0.01 * larecomp::settings::mcla_gpu_headlight_shadow_lamp_cm.Get(),
                                                                        int(larecomp::settings::mcla_gpu_headlight_shadow_kernel.Get())));  // HSQ-PCSS: live
+  // GI-BOUNCE-JOIN (gi_bounce_carrier.h): while the screen-space bounce light wants the pair of captures around the lights IT carries, the lights it does not carry (the probe field's and the per-pixel pass's, the
+  // switched-off groups', the ones too dark to light anything) are put first, outside the pair, and the pair's last: the lights are additive, so the order changes no picture. `outside` lights are drawn, then the
+  // "before" capture is made, then the pair's. Without a pair given nothing moves.
+  uint32_t outside = 0;
+  if (pair != nullptr) {
+    std::array<bool, ll::kMaxPassLights> in_pair{};
+    for (uint32_t i = 0; i < selection.count; ++i) {
+      const larecomp::gpu::Light& l = selection.lights[i];
+      const gi_bounce::Listed listed = pair->frame.field_stands && pair->listed && !gi_bounce::IsWorldLamp(l) ? pair->listed(l.id) : gi_bounce::Listed::kNo;
+      in_pair[i] = rects[i].Empty() ? false : gi_bounce::InPair(pair->frame, l, listed, in.units.night, in.units.gain);
+    }
+    std::array<uint32_t, ll::kMaxPassLights> order{};
+    outside = gi_bounce::PartitionOrder(in_pair, selection.count, &order);
+    ll::Selection moved = selection;
+    std::array<ll::PixelRect, ll::kMaxPassLights> moved_rects = rects;
+    for (uint32_t slot = 0; slot < selection.count; ++slot) {
+      moved.lights[slot] = selection.lights[order[slot]];
+      moved_rects[slot] = rects[order[slot]];
+    }
+    selection = moved;
+    rects = moved_rects;
+  }
   const bool lamp_table = ll::LampTableNeeded(selection, in.lamp_shadow);
   const bool shadow_table = ll::ShadowTableNeeded(selection, in.shadow);
   ll::BuildBuffer(in, selection, scratch_.data());
@@ -604,6 +629,21 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     Count(Skip::kNoTarget);
     return false;
   }
+  // GI-BOUNCE-JOIN: the draws are planned in two runs where the screen-space bounce light wants its pair (the lights outside it, then its own): no draw reaches across the border.
+  std::array<ll::PassDraw, ll::kMaxPassLights> plan;
+  uint32_t draws_outside = 0;
+  uint32_t draws_pair = 0;
+  if (pair != nullptr) {
+    draws_outside = ll::PlanDraws(selection, rects.data(), cost_off_, plan.data(), 0, outside);
+    draws_pair = ll::PlanDraws(selection, rects.data(), cost_off_, plan.data() + draws_outside, outside, selection.count);
+  } else {
+    draws_outside = ll::PlanDraws(selection, rects.data(), cost_off_, plan.data());
+  }
+  // The "before" capture is made only for a pair with a light in the picture (a frame without one makes no pair and costs nothing), and only through the Scene's hook.
+  const bool bracket = pair != nullptr && draws_pair != 0 && static_cast<bool>(pair->capture_before);
+  if (bracket && draws_outside == 0) {
+    pair->capture_before();  // nothing is drawn outside the pair: the capture stands just ahead of the pass, as it did before the partition
+  }
   edram_->Transition(list, depth, plume::RenderTextureLayout::SHADER_READ);
   edram_->Transition(list, *colour, plume::RenderTextureLayout::COLOR_WRITE);
   EdramTargets::Target* only[1] = {colour};
@@ -612,16 +652,19 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     Count(Skip::kNoTarget);
     return false;
   }
-  pass_timing_->Mark(list, "local lights");
-  list->setFramebuffer(framebuffer);
   const plume::RenderViewport viewport{0.0f, 0.0f, float(gb.width), float(gb.height)};
-  list->setViewports(&viewport, 1);
-  list->setGraphicsPipelineLayout(layout_.get());
-  for (uint32_t set = 0; set < 4; ++set) {
-    list->setGraphicsDescriptorSet(heap_->texture_set(), set);
-  }
-  list->setGraphicsDescriptorSet(slot.set.get(), 4);
-  list->setPipeline(pipeline);
+  const auto begin_run = [&]() {
+    pass_timing_->Mark(list, "local lights");
+    list->setFramebuffer(framebuffer);
+    list->setViewports(&viewport, 1);
+    list->setGraphicsPipelineLayout(layout_.get());
+    for (uint32_t set = 0; set < 4; ++set) {
+      list->setGraphicsDescriptorSet(heap_->texture_set(), set);
+    }
+    list->setGraphicsDescriptorSet(slot.set.get(), 4);
+    list->setPipeline(pipeline);
+  };
+  begin_run();
   ll::PassPush push = {};
   push.slots[0] = summary.sample_slot;
   push.slots[1] = gb.slot[gbuffer::kPlaneNormal];
@@ -632,23 +675,32 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   // shader sums; the flags tell the shader whether to test the reach before it reads the planes.
   // GB-NEON-CONTACT: and whether the contact term runs at all (mcla_gpu_neon_contact), and whether it marches for every light of a tube (its cap off).
   push.info[3] = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) | ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact);
-  std::array<ll::PassDraw, ll::kMaxPassLights> plan;
-  const uint32_t draws = ll::PlanDraws(selection, rects.data(), cost_off_, plan.data());
   uint32_t drawn = 0;
-  for (uint32_t d = 0; d < draws; ++d) {
-    const ll::PassDraw& draw = plan[d];
-    const plume::RenderRect scissor(draw.rect.x0, draw.rect.y0, draw.rect.x1, draw.rect.y1);
-    list->setScissors(&scissor, 1);
-    push.info[0] = draw.first;
-    push.info[1] = draw.count;
-    list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
-    list->drawInstanced(3, 1, 0, 0);
-    for (uint32_t k = draw.first; k < draw.first + draw.count; ++k) {
-      drawn += rects[k].Empty() ? 0u : 1u;
+  const auto run = [&](uint32_t from, uint32_t to) {
+    for (uint32_t d = from; d < to; ++d) {
+      const ll::PassDraw& draw = plan[d];
+      const plume::RenderRect scissor(draw.rect.x0, draw.rect.y0, draw.rect.x1, draw.rect.y1);
+      list->setScissors(&scissor, 1);
+      push.info[0] = draw.first;
+      push.info[1] = draw.count;
+      list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+      list->drawInstanced(3, 1, 0, 0);
+      for (uint32_t k = draw.first; k < draw.first + draw.count; ++k) {
+        drawn += rects[k].Empty() ? 0u : 1u;
+      }
+      ++draws_;
+      pixels_scissored_ += draw.rect.Area();
     }
-    ++draws_;
-    pixels_scissored_ += draw.rect.Area();
+  };
+  run(0, draws_outside);
+  if (bracket && draws_outside > 0) {
+    // The lights outside the pair are in the colour: close the pass, capture it ("before"), and start the pair's run the way the first one started (the capture leaves its own target, layout and pipeline bound).
+    list->setFramebuffer(nullptr);
+    pair->capture_before();
+    edram_->Transition(list, *colour, plume::RenderTextureLayout::COLOR_WRITE);
+    begin_run();
   }
+  run(draws_outside, draws_outside + draws_pair);
   list->setFramebuffer(nullptr);
   pass_timing_->Mark(list, "after local lights");
 

@@ -489,6 +489,18 @@ add_executable(larecomp_local_lights_sources_test EXCLUDE_FROM_ALL local_lights_
 #   cmake --build <dir> --target larecomp_neon_light_test, then run src/gpu/larecomp_neon_light_test <src dir> (exit 0 = passed).
 add_executable(larecomp_neon_light_test EXCLUDE_FROM_ALL neon_light_test.cpp)
 target_include_directories(larecomp_neon_light_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+# The emitters of the ray traced bounce light (rt_emitters_rules.h, GI-BOUNCE-RT, perf/GI-BOUNCE.md: the cars' lamps and the other lights of the light pass's classes that light what a bounce ray hits: the groups and
+# their switches, the light pass's own gathers and budgets, the night factor and the gains, the lights too far or with no colour taken out before the budgets, static first with the motion of each light by its id,
+# the GpuLight rows; it compiles hlsl/rt_emitters.hlsli as C++ over the world rows' emitter records and holds RtEmitterRadiance to light_laws.h's LightTerm and RtEmitterTo to the geometry, and reads the sources
+# it is given): no citypack sources
+#   cmake --build <dir> --target larecomp_rt_emitters_rules_test, then run src/gpu/larecomp_rt_emitters_rules_test <src dir> (exit 0 = passed).
+add_executable(larecomp_rt_emitters_rules_test EXCLUDE_FROM_ALL rt_emitters_rules_test.cpp)
+target_include_directories(larecomp_rt_emitters_rules_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+# The rule that joins the screen-space and the ray traced halves of the lights that bounce (gi_bounce_carrier.h, GI-BOUNCE-JOIN: who carries a light's bounce at RT off / HIGH / ULTRA, with every group switch, so each light
+# bounces exactly once; the partition of the light pass's draws; the lights-only chain's plan; given the src/gpu folder it also checks the text of the places that wire it, mutation-checked):
+#   cmake --build <dir> --target larecomp_gi_bounce_carrier_test, then run src/gpu/larecomp_gi_bounce_carrier_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_gi_bounce_carrier_test EXCLUDE_FROM_ALL gi_bounce_carrier_test.cpp)
+target_include_directories(larecomp_gi_bounce_carrier_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # The forward headlight stage against the deferred pass (headlight_pass_rules.h, GB-H2: the switch mcla_gpu_headlight_pass and what each route does, the retail census of the stage, the
 # picture-identity rule and the retirement gate on made-up pictures, and the PIXEL IDENTITY: the pass's light, the one law and the one shadow lookup, equals the forward stage's CPU twins on random
 # lights, surfaces and maps at all three levels of LIGHT SHADOWS; it also reads the sources it is given: the route's wiring in the rig, the pass and the pipelines, the setting, the debug row):

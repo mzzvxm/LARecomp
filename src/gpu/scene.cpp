@@ -27,8 +27,10 @@
 #include "headlight_rig.h"
 #include "light_manager.h"
 #include "gi_apply.h"
+#include "gi_bounce_settings.h"
 #include "gi_integration.h"
 #include "local_lights.h"
+#include "rt_world_frame.h"
 #include "local_shadow.h"
 #include "car_mirror_rt.h"
 #include "mirror_glass.h"
@@ -4073,11 +4075,33 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // RT-LIGHTS-D1 part 2: while DLSS Ray Reconstruction takes the frame the ray traced light visibility runs RAW (no filter; the light pass reads the 1 spp signal): TemporalSystem::RawModes, false with the plan not
     // RR, and asked only while the effect is wanted (the census counts the frames asked).
     local_lights_->SetRtRawMode(local_lights_->rt_lights_wanted() && temporal_ && temporal_->RawModes().RtLights());
-    // GI-BOUNCE-SS (ssgi_lights.h, perf/GI-BOUNCE.md): the bounce light takes the light this pass adds in the NEXT frame's colour chain: the main colour is captured right before it and right after it (only in a
-    // frame whose AO ran the bounce light with the lights' share; screen_shared.h CaptureLightsBefore / After), and the chain adds their difference, reprojected, to its radiance. Nothing here writes the main colour.
-    const bool lights_before = screen_ && screen_->CaptureLightsBefore(record, summary, list);
-    order_.Note(frame_order::Step::kLightsBefore, lights_before);
+    // GI-BOUNCE-SS (ssgi_lights.h, perf/GI-BOUNCE.md): the bounce light takes the light this pass adds in the NEXT frame's colour chain: the main colour is captured before the lights it carries and right after them (only in a
+    // frame whose AO wanted the lights' pair; screen_shared.h CaptureLightsBefore / After), and the chain adds their difference, reprojected, to its radiance. Nothing here writes the main colour.
+    // GI-BOUNCE-JOIN (gi_bounce_carrier.h): the light pass draws the lights the probe field and the per-pixel pass carry (and the switched-off groups') OUTSIDE the pair and makes the "before" capture itself, between its
+    // two runs of draws (through the hook below); with the field not standing the pair is the whole pass, as it was.
+    gi_bounce::Pair lights_pair;
+    bool lights_before = false;
+    const bool want_pair = screen_ && screen_->lights_wanted();
+    if (want_pair) {
+      lights_pair.frame.groups = gi_bounce::GroupsNow();
+      lights_pair.frame.field_stands = screen_->lights_partition() == ssgi_lights::Partition::kResidual;
+      lights_pair.frame.pixel_pass = gi_apply_ && gi_apply_->pixel_pass_ran();
+      lights_pair.listed = [this](uint64_t id) {
+        switch (rt_world_ ? rt_world_->EmitterMotionOf(id) : RtWorldFrame::EmitterMotion::kNotListed) {
+          case RtWorldFrame::EmitterMotion::kStatic: return gi_bounce::Listed::kStatic;
+          case RtWorldFrame::EmitterMotion::kMoving: return gi_bounce::Listed::kMoving;
+          case RtWorldFrame::EmitterMotion::kNotListed: break;
+        }
+        return gi_bounce::Listed::kNo;
+      };
+      lights_pair.capture_before = [&]() {
+        lights_before = screen_->CaptureLightsBefore(record, summary, list);
+        return lights_before;
+      };
+    }
+    local_lights_->SetLightsPair(want_pair ? &lights_pair : nullptr);
     const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);
+    order_.Note(frame_order::Step::kLightsBefore, lights_before);
     order_.Note(frame_order::Step::kLocalLights, local_lights_ran);
     if (lights_before && local_lights_ran) {
       const bool lights_after = screen_->CaptureLightsAfter(record, summary, list);

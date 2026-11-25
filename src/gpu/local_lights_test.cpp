@@ -1855,7 +1855,9 @@ void SourceChecks(const std::string& src) {
   // GB-NEON-CONTACT: the setting is read live, with its A/B
   Check(Has(cpp, "const bool contact_on = st::mcla_gpu_neon_contact.Get();") && Has(cpp, "contact_on_ = contact_on;"), "the pass reads mcla_gpu_neon_contact live (the A/B of the contact term)");
   // GB-NEON-COST: the pass makes its draws from the plan (a car's tube is one) and reads the A/B's setting live
-  Check(Has(cpp, "ll::PlanDraws(selection, rects.data(), cost_off_, plan.data())") && Has(cpp, "st::mcla_gpu_local_lights_cost_off.Get()") && Has(cpp, "for (uint32_t d = 0; d < draws; ++d) {"),
+  Check(Has(cpp, "ll::PlanDraws(selection, rects.data(), cost_off_, plan.data())") && Has(cpp, "st::mcla_gpu_local_lights_cost_off.Get()") &&
+            Has(cpp, "for (uint32_t d = from; d < to; ++d) {") && Has(cpp, "const ll::PassDraw& draw = plan[d];") &&
+            Has(cpp, "run(0, draws_outside);") && Has(cpp, "run(draws_outside, draws_outside + draws_pair);"),
         "the pass draws what PlanDraws plans, with the setting's bits");
   Check(Has(ps, "const uint count = clamp(g_push.info.y, 1u, uint(LP_MAX_DRAW_LIGHTS));") && Has(ps, "(g_push.info.w & uint(LP_PUSH_LATE_REACH)) == 0u") && Has(ps, "LpAnyReaches(first, count, world)") &&
             Has(ps, "bool LpAnyReaches(uint first, uint count, float3 world)") && Has(ps, "LpReaches(float3(row0.x, row0.y, row0.z), row0.w, world)"),

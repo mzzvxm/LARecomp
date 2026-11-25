@@ -115,6 +115,9 @@ class GiApply {
   float TakeSsgiShare();
   // The occlusion tells that its bounce light ran with this share after all (0: it did not: the colour chain could not be made).
   void NoteSsgiRan(float share) { ssgi_ran_share_ = share; }
+  // GI-BOUNCE-JOIN (gi_bounce_carrier.h): the per-pixel pass made its image in THIS frame's trigger (it carries the listed moving emitters' bounce); valid from OnTrigger until the next BeginFrame. The light
+  // pass, which runs after this, draws a moving light outside the screen-space pair only in a frame where it is true.
+  bool pixel_pass_ran() const { return pixel_ran_frame_; }
 
   // At the trigger, after the occlusion's OnResolve and before the light pass. `gbuffer_published` is the G-buffer's own answer for this resolve. Records the pass and returns true (the caller's list
   // state is gone). `frame_slot` is the frame's slot of the upload ring. Once a frame.
@@ -188,6 +191,7 @@ class GiApply {
 
   // the frame
   bool enabled_ = false;
+  bool pixel_ran_frame_ = false;   // GI-BOUNCE-JOIN: the per-pixel pass published its image in this trigger (BeginFrame clears it)
   bool pixel_wanted_ = false;      // G6: the field runs, the layout has the per-pixel pass and it is made (BeginFrame: the DENOISER board's word for the bounce light)
   uint32_t view_ = 0;
   float ssgi_ran_share_ = 0.0f;

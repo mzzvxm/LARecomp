@@ -9,8 +9,8 @@
 //   WHEN      GiApply::OnTrigger calls Begin / RecordTrace / RecordDenoise / Publish BEFORE its lookup (the lookup reads the image), at the mid-scene depth copy after the occlusion's apply, outside any
 //             render pass, in the list the frame's top level was built in. The marks are the apply's ('rt gi pixel' before the trace, 'rt gi denoise' before the temporal stage: gi_apply.cpp): the frame
 //             order's table holds them to that file. A frame that does not run the pass records nothing and marks nothing.
-//   WHAT      Begin decides (gi_pixel_rules.h Decide: the layout, the field, the top level, the world rows, the hit data, the pipelines, the images), writes the rows (the apply's buffer, the pixel rows, the
-//             surface lights of the light manager's frame) and keeps the frame's numbers. RecordTrace: one dispatch, the signal and the three guides written as storage images. RecordDenoise: RtDenoise's
+//   WHAT      Begin decides (gi_pixel_rules.h Decide: the layout, the field, the top level, the world rows, the hit data, the pipelines, the images), writes the rows (the apply's buffer, the pixel rows)
+//             and keeps the frame's numbers (the cars' lamps are the world frame's emitters: GI-BOUNCE-RT). RecordTrace: one dispatch, the signal and the three guides written as storage images. RecordDenoise: RtDenoise's
 //             temporal stage (the last frame's result by the camera's motion; this class keeps the last pose, the guides' ping-pong and the history's count) then up to three spatial iterations, and the
 //             barriers that let the apply's pixel stage read the result and the guides. Publish puts the image's slot, the guides' slots and the flag in the apply's copy of the field's frame.
 //   GOVERNOR  two timestamps a frame slot around the trace and the denoiser feed gi_pixel_rules.h Governor, which takes the pass from the traced size to half of it on each axis (a quarter of the pixels)
@@ -67,7 +67,6 @@ class CityHitScene;
 class CityRtScene;
 class Device;
 class FrameRing;
-class LightManager;
 class PassTiming;
 class RtWorldFrame;
 
@@ -94,9 +93,9 @@ class GiPixel {
   GiPixel& operator=(const GiPixel&) = delete;
 
   // After the car scene's own Initialize (its descriptor set exists) and the world frame's, before the host precache starts. Never fails the renderer: where the device cannot trace, or a layout, a shader or
-  // RtDenoise cannot be made, available() stays false and the apply never asks. `lights` may be null (no surface lights: the headlights' bounce is off).
+  // RtDenoise cannot be made, available() stays false and the apply never asks.
   void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, GiField& field, CarRtScene& car_scene, CityRtScene& city_scene,
-                  CityHitScene& hit_scene, RtWorldFrame& world, const LightManager* lights);
+                  CityHitScene& hit_scene, RtWorldFrame& world);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
   bool available() const { return ready_; }
@@ -163,7 +162,6 @@ class GiPixel {
   CityRtScene* city_scene_ = nullptr;
   CityHitScene* hit_scene_ = nullptr;
   RtWorldFrame* world_ = nullptr;
-  const LightManager* lights_ = nullptr;
 
   bool ready_ = false;
   std::array<bool, kVariantCount> pipeline_failed_ = {};
@@ -200,7 +198,6 @@ class GiPixel {
   gi::PixelParams params_;
   uint32_t divisor_ = 1;
   uint32_t parity_ = 0;                // the depth guide this frame's trace writes
-  uint32_t lights_in_rows_ = 0;
   bool stats_frame_ = false;
   bool history_ok_ = false;            // this frame may read the last frame's result (Begin: the previous frame at this size, no cut)
   bool ran_since_present_ = false;     // a run since the last guest present (OnPresent counts the frames without one)

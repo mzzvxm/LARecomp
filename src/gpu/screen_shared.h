@@ -213,8 +213,18 @@ class ScreenShared {
   // --- the lights' share of the bounce light's radiance (GI-BOUNCE-SS: ssgi_lights.h, screen_lights.cpp, perf/GI-BOUNCE.md) ------------------------------------------------------------------
   // The AO says, once a frame in which its bounce light runs with the lights' share (Plan::GiPlan::lights), that the colour before and after the deferred light pass is wanted. Per frame, not sticky: the
   // images go back after a couple of seconds without it.
-  void WantLights(bool on) { lights_wanted_ = on; }
+  // GI-BOUNCE-JOIN: `partition` says which lights the pair is of (ssgi_lights.h Partition): kAll the whole light pass, kResidual only the lights the probe field and the per-pixel pass do not carry (the field stands:
+  // the light pass draws the others OUTSIDE the pair, local_lights.cpp). A residual pair is made in a frame with no colour chain too (the field stands and nothing moving was lit in the last frame).
+  void WantLights(bool on, ssgi_lights::Partition partition = ssgi_lights::Partition::kAll) {
+    lights_wanted_ = on;
+    lights_partition_ = partition;
+  }
   bool lights_wanted() const { return lights_wanted_; }
+  ssgi_lights::Partition lights_partition() const { return lights_partition_; }
+  // True when the last frame left a residual pair (a frame where the field stood and a moving light was lit): this frame's AO may run its chain lights-only on it (ao.cpp PlanGi).
+  bool LightsResidualReady() const { return ssgi_lights::ResidualReady(lights_key_, frame_count_); }
+  // True once this frame's "before" capture was made (the light pass makes it between its own two runs of draws: Scene reads it to note the step).
+  bool lights_before_done() const { return lights_before_done_; }
   // The last frame's two captures for the colour chain of THIS frame (the owner's frame count), in a view of kind `pause`, at the traced size width x height, when the AO's own history holds this frame
   // (`ao_history`: its camera motion is the one the reprojection uses): the bindless slots of the colour after and before the light pass. Not usable: the first frame, a cut, another kind of view or size, and
   // any frame after one that had no light pass (the chain is then today's).
@@ -223,9 +233,10 @@ class ScreenShared {
     uint32_t post_slot = screen::kNoSlot;
     uint32_t pre_slot = screen::kNoSlot;
   };
-  LightHistory LightHistoryFor(bool pause, uint32_t width, uint32_t height, bool ao_history) const;
-  // BEFORE the deferred light pass (the Scene calls it just ahead of it, only while the pass will be asked): the main colour averaged over its host samples into the "before" image, at the traced size. True
-  // when recorded (the caller's list state is gone). Once a frame; only in a frame whose AO ran the bounce light (the colour chain was recorded) and wanted the lights.
+  LightHistory LightHistoryFor(bool pause, uint32_t width, uint32_t height, bool ao_history, ssgi_lights::Partition partition = ssgi_lights::Partition::kAll) const;
+  // BEFORE the lights of the pair (GI-BOUNCE-JOIN: the light pass calls it itself, between its draws of the lights outside the pair and the pair's: local_lights.cpp OnResolve; with no light outside it is
+  // just ahead of the pass as it was): the main colour averaged over its host samples into the "before" image, at the traced size. True when recorded (the caller's list state is gone). Once a frame; only in
+  // a frame whose AO ran the bounce light (the colour chain was recorded) or, for a residual pair, published its screen frame, and wanted the lights.
   bool CaptureLightsBefore(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list);
   // RIGHT AFTER the light pass, when it recorded: the same into the "after" image. Makes the pair the next frame's history. True when recorded. Once a frame.
   bool CaptureLightsAfter(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list);
@@ -393,6 +404,9 @@ class ScreenShared {
   HostImage lights_post_;
   ssgi_lights::Key lights_key_;      // the frame that made both, and the view kind and size they are
   bool lights_wanted_ = false;       // the AO's want of this frame (BeginFrame turns it into the idle count)
+  ssgi_lights::Partition lights_partition_ = ssgi_lights::Partition::kAll;  // which lights this frame's pair is of (GI-BOUNCE-JOIN)
+  // True in a frame whose captures may be made: the screen frame is published and the colour chain ran (the whole-pass pair) or the pair is a residual one (no chain needed).
+  bool LightsFrameMade() const { return published_ && (pre_made_ || lights_partition_ == ssgi_lights::Partition::kResidual); }
   bool lights_before_done_ = false;  // this frame's captures
   bool lights_after_done_ = false;
   bool lights_pause_ = false;

@@ -264,6 +264,7 @@ void GiApply::BeginFrame() {
   pixel_wanted_ = enabled_ && pixel_ != nullptr && pixel_->available() && gi_pixel::ConsumerWanted(field_->fit().wanted);
   denoiser::NoteConsumer(rr::Consumer::kRtGi, pixel_wanted_);
   ssgi_ran_share_ = 0.0f;
+  pixel_ran_frame_ = false;
   trigger_seen_ = false;
   ran_this_frame_ = false;
 }
@@ -469,6 +470,7 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
       pixel_ran = pixel_->Publish(&shown);
     }
   }
+  pixel_ran_frame_ = pixel_ran;
   // The frame's rows: the field's own as published, or (with the pixel pass's image in it) as the apply's copy says.
   const ga::Buffer buffer = pixel_ran ? ga::MakeBuffer(gi::MakeGpuFrame(shown), fr) : base_rows;
   void* mapped = slot.buffer->map();

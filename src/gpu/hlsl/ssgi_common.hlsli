@@ -61,6 +61,12 @@ static const float kSsgiLightsConfidenceHigh = 0.75f;
 static const float kSsgiLightsNearest = 0.05f;
 static const float3 kSsgiLuma = float3(0.2126f, 0.7152f, 0.0722f);
 
+// The cap the lights' share is held under (ssgi_lights.h LightsCap; GI-BOUNCE-SS-2): the chain's cap, or the lights' own floor (push shape.w, mcla_gpu_ssgi_lights_floor) where that is higher: the same as `cap` to the bit
+// wherever the cap is at or over the floor (the day), the floor at night, where the cap is its own floor of 0.5.
+float SsgiLightsCap(float cap, float floor_luma) {
+  return max(cap, floor_luma);
+}
+
 // The chain's colour for a texel whose cleaned and capped colour is `pre` (luma under `cap`) and whose last frame's light is `delta`: the part of the lights' luma (times `gain`, times what is not a source of light)
 // that fits under the cap, soft-clipped to the room the capped colour leaves, hue kept. No light or a gain of 0 is `pre` to the bit.
 float3 SsgiCarryLights(float3 pre, float3 delta, float gain, float cap, float source_share) {

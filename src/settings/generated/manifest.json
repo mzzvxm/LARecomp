@@ -580,6 +580,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ssgi_lights_floor": {
+  "type": "f64",
+  "default": "1.3",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the room the bounce light's lights' share (mcla_gpu_ssgi_lights) has under the cap, as a luma floor in the scene colour's units (a white wall in full sun is about 1.3). At night the radiance cap is its own floor of 0.5, which cut a neon pool or a headlight's wall to a third of a sun-lit white wall before the bounce took it: the lights' share is now held under the larger of that cap and this floor, and by day, where the cap is over it, nothing changes to the bit. 0 is the cap alone (the A/B), the default 1.3 is one white wall in full sun, 4 the most. The colour chain's own cap, the source start and the apply's ceiling keep their floor. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_contact_shadows": {
   "type": "std::string",
   "default": "\"auto\"",
@@ -3641,6 +3653,50 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-BLEED, the A/B): on (the default) a neon light is shut out of the car's own panels on a vehicle pixel: the light's way to the pixel is looked up in the picture's own depth for 0.8 m and a point behind a visible surface by a shell's thickness is inside something, so the vents, the lip, the cabin and the wheels' dish that face the light through a body get none of it. \"\n    \"Off: the law's N.L alone (the neon shows through the other car's panels). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_gi_bounce_headlights": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the ray traced bounce light's emitters, GI-BOUNCE-RT, perf/GI-BOUNCE.md, the A/B of one source group): on (the default) the light of the frame's surface lights (the headlight rig's lights of the cars it lights) and the head lamps of the cars it does not also bounces: what a ray of the RT bounce light hits (the probe field's rays for the lights that stand still, the per-pixel pass's for all of them, the reflections' city hits) is lit by it, by the same laws and units as the deferred light pass lights the picture with. Off: this group is not gathered and does not bounce through ray tracing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_gi_bounce_neon": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the ray traced bounce light's emitters, GI-BOUNCE-RT, perf/GI-BOUNCE.md, the A/B of one source group): on (the default) the light of the cars' neon underglow tubes (it also needs NEON LIGHT on, which is what makes the game's neon table fill) also bounces: what a ray of the RT bounce light hits (the probe field's rays for the lights that stand still, the per-pixel pass's for all of them, the reflections' city hits) is lit by it, by the same laws and units as the deferred light pass lights the picture with. Off: this group is not gathered and does not bounce through ray tracing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_gi_bounce_rear": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the ray traced bounce light's emitters, GI-BOUNCE-RT, perf/GI-BOUNCE.md, the A/B of one source group): on (the default) the light of the cars' brake, tail, turn signal and reverse lamps also bounces: what a ray of the RT bounce light hits (the probe field's rays for the lights that stand still, the per-pixel pass's for all of them, the reflections' city hits) is lit by it, by the same laws and units as the deferred light pass lights the picture with. Off: this group is not gathered and does not bounce through ray tracing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_gi_bounce_other": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the ray traced bounce light's emitters, GI-BOUNCE-RT, perf/GI-BOUNCE.md, the A/B of one source group): on (the default) the light of the police light bars and the mods' lamps outside their grid also bounces: what a ray of the RT bounce light hits (the probe field's rays for the lights that stand still, the per-pixel pass's for all of them, the reflections' city hits) is lit by it, by the same laws and units as the deferred light pass lights the picture with. Off: this group is not gathered and does not bounce through ray tracing. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

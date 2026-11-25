@@ -57,6 +57,8 @@ ConstantBuffer<GiuPush> g_push : register(b0, space4);
 #include "gi_field_common.hlsli"
 #include "gi_update_common.hlsli"
 #include "rt_world_frame.hlsli"
+#include "light_laws.hlsli"
+#include "rt_emitters.hlsli"
 
 // This thread's world rows, and the lamps the hit being shaded is lit by (the nearest eight by their unshadowed brightness at it, picked from the world frame's grid; the library's lamp loops
 // read them through CITY_HIT_LAMP_LOAD).
@@ -76,6 +78,11 @@ float3 GiuFeedback(float3 viewPoint, float3 viewNormal)
 #define RT_HIT_TLAS gCarRtTlas
 #define CITY_HIT_FEEDBACK(P, N) GiuFeedback((P), (N))
 #define CITY_HIT_LAMP_LOAD(i) CityHitLampFromRows(RtLampRow(g_world, g_lampIndex[(i)], 0u), RtLampRow(g_world, g_lampIndex[(i)], 1u), RtLampRow(g_world, g_lampIndex[(i)], 2u))
+// GI-BOUNCE-RT: the cars' lamps (neon, headlights, tail lamps ...) that light a hit: the STATIC emitters only, the first emitterStatic of the world frame's list. The probes are fixed to the world and blend 33 updates, so a
+// light that moves at the speed of a car would leave a smear of its colour along its path; the per-pixel pass (no history to speak of) and the reflections take the moving ones too.
+#define CITY_HIT_EMITTER_COUNT (g_world.emitterStatic)
+#define CITY_HIT_EMITTER_RADIANCE(i, P, N) RtEmitterRadiance(g_world, (i), (P), (N))
+#define CITY_HIT_EMITTER_TO(i, P) RtEmitterTo(g_world, (i), (P))
 #include "city_hit_shade.hlsli"
 
 // The first probe of cascade c in the state buffer (the probes of the cascades before it).
@@ -208,6 +215,10 @@ void main(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
                     p.bounce = g_push.tune.x;
                     p.lampFirst = 0u;
                     p.lampCount = 0u;
+                    if (g_world.emitterStatic != 0u)
+                    {
+                        p.flags |= CITY_HIT_P_EMITTERS | CITY_HIT_P_EMITTER_SHADOW;
+                    }
                     const uint h = GiuHash(GiuSeed(frame, cascade, index) + ray * 0x9E3779B1u);
                     p.noise = float3(GiuUnit(h), GiuUnit(GiuHash(h)), GiuUnit(GiuHash(h ^ 0x68E31DA4u)));
                     const float3 hitView = origin + direction * hit.t;
