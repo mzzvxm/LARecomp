@@ -188,6 +188,7 @@ file(GENERATE OUTPUT "${_larecomp_road_mirror_generated}/road_mirror_hlsli_bytes
      CONTENT "${_larecomp_road_mirror_bytes}0x00\n")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_larecomp_road_mirror_hlsli}")
 target_include_directories(larecomp_shaderpack PRIVATE "${_larecomp_road_mirror_generated}")
+target_compile_definitions(larecomp_shaderpack PRIVATE LARECOMP_ROAD_MIRROR_HLSLI_EMBEDDED=1)
 if(WIN32)
     target_compile_definitions(larecomp_shaderpack PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 else()
@@ -314,6 +315,7 @@ add_executable(larecomp_road_mirror_blur_test EXCLUDE_FROM_ALL
 target_compile_features(larecomp_road_mirror_blur_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_road_mirror_blur_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}" "${_larecomp_road_mirror_generated}")
+target_compile_definitions(larecomp_road_mirror_blur_test PRIVATE LARECOMP_ROAD_MIRROR_HLSLI_EMBEDDED=1)
 
 # The UI sharpening variant's text transform (variants/ui_sharp_test.cpp): cmake --build <dir> --target larecomp_ui_sharp_variant_test,
 # then run it [<translated xrage_im__PS_Textured.hlsl> [<folder for the transformed text>]] (exit 0 = passed).

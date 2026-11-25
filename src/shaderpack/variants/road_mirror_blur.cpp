@@ -1,7 +1,9 @@
 #include "shaderpack/variants/road_mirror_blur.h"
 
 #include <algorithm>
+#include <fstream>
 #include <iterator>
+#include <sstream>
 
 #include "shaderpack/hash.h"
 #include "shaderpack/variants/text_edit.h"
@@ -71,15 +73,24 @@ VariantTransformResult Transform(const VariantShader& shader, std::string_view h
 }  // namespace
 
 VariantDef MakeRoadMirrorBlurVariant() {
+#ifdef LARECOMP_ROAD_MIRROR_HLSLI_EMBEDDED
+  // road_mirror_blur.hlsli, turned into bytes by CMake (src/shaderpack/CMakeLists.txt), with a closing 0 that is not part of the file.
   static constexpr char helper[] = {
 #include "road_mirror_hlsli_bytes.inc"
   };
+  std::string text = textedit::NormalizeNewlines(std::string_view(helper, sizeof(helper) - 1));
+#else
+  // A compile without CMake's generated file (the unit runner builds a test with the compiler alone): the helper is the file beside this source.
+  std::ifstream in(std::string(__FILE__).substr(0, std::string(__FILE__).find_last_of("/\\") + 1) + "road_mirror_blur.hlsli", std::ios::binary);
+  std::ostringstream file;
+  file << in.rdbuf();
+  std::string text = textedit::NormalizeNewlines(file.str());
+#endif
   VariantDef def;
   def.feature = kFeatureRoadMirrorBlur;
   def.name = "road_mirror_blur";
   def.version = kRoadMirrorBlurVariantVersion;
   def.needs_rpf = true;
-  std::string text = textedit::NormalizeNewlines(std::string_view(helper, sizeof(helper) - 1));
   def.input_xxh3 = Xxh3(text);
   for (const RoadShader& road : kRoadShaders) {
     def.pixel_shaders.push_back(road.shader);
