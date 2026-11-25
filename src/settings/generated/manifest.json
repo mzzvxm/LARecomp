@@ -2310,6 +2310,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ssr_sparkle_resolve": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"A/B for screen-space reflections with temporal upscaling. Preserve more of a slow reflection across sparse ray hits. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ghost_log_interval": {
   "type": "u32",
   "default": "0",

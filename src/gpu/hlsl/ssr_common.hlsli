@@ -70,7 +70,8 @@
 #define SSR_W_FALLBACK 26         // trace: float, the share of that view the effect takes out of the road where a ray finds a reflection (0 adds the reflection on top, as GB-I1)
 #define SSR_W_VEH_TABLE 1         // temporal: the AO's vehicle table (4 x 24 texels, a row an ID: three rows of the 3x4 motion, then a flag) in the low 16 bits, 0xFFFF none; the high 16 bits: SSR_TEMPORAL_* options
 #define SSR_TEMPORAL_FIRST_RESOLVE 1u   // bit 0 of the high half of SSR_W_VEH_TABLE: the first version's resolve (the trace's centre pixel alone, the clip takes the history to the box whole), for mcla_gpu_ssr_resolve false
-#define SSR_TEMPORAL_UPSCALER 2u        // bit 1: a temporal upscaler (FSR, DLSS) resolves this frame itself: the clip's floor (kSsrClipKeep) is not applied, the history trails no longer than the first version's (NOISE-FOLLOW)
+#define SSR_TEMPORAL_UPSCALER 2u        // bit 1: a temporal upscaler (FSR, DLSS) resolves this frame itself, so the clip has no floor by default
+#define SSR_TEMPORAL_SPARKLE_RESOLVE 4u // bit 2: retain positive history on slow reflections under temporal upscaling
 #define SSR_W_STENCIL 11          // trace: the high 16 bits of SSR_W_LIN0: the depth target's stencil plane (0xFFFF none)
 #define SSR_W_ROAD_VIEW_APPLY 3   // apply: the same word as SSR_W_ROAD_VIEW, for the debug view that draws the road view (the apply reads no Hi-Z)
 
@@ -397,7 +398,7 @@ bool SsrHistoryInside(float u, float v, float width, float height) {
 // Both are the first version's behaviour when SSR_TEMPORAL_FIRST_RESOLVE is set. THE FLOOR ONLY WHERE OUR RESOLVE IS THE ONLY TEMPORAL FILTER (NOISE-FOLLOW, 2026-11-22): with a temporal upscaler the upscaler's own
 // history averages what is left, and cannot reject a reflection that moved (its vectors describe the surface the reflection is on, not the mirror image): a floor on top of it is a trail of 6 frames at 60 fps
 // (a tenth of a second) on a moving lamp or a pedestrian's light. SsrClipKeepFor gives the floor 0 with an upscaler (SSR_TEMPORAL_UPSCALER): the clip is whole there and the history trails as the first version's did.
-// The tent average (1) stays on in both.
+// The tent average (1) stays on in both. The sparkle resolve can restore a motion-tapered floor under the upscaler.
 float SsrTapKernel(int dx, int dy) {
   return (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
 }
@@ -410,6 +411,10 @@ bool SsrTapSameSurface(float z_tap, float z_centre) {
 // none with the first version's resolve.
 float SsrClipKeepFor(bool resolve, bool upscaler) {
   return resolve ? (upscaler ? kSsrClipKeepUpscaler : kSsrClipKeep) : 0.0f;
+}
+// A noisy 3x3 can miss a small bright reflection for a frame. Keep a fraction of its positive history and taper the floor as the image moves.
+float SsrSparkleClipKeep(float dx, float dy) {
+  return kSsrClipKeep * saturate(1.0f - 0.5f * max(abs(dx), abs(dy)));
 }
 // One channel of the history after the clip: the clip's own result, except that a positive history is not taken below `keep` of itself (a history that is raised, or is not positive, is the clip's; keep 0: the clip's).
 float SsrKeepChannel(float history, float clipped, float keep) {

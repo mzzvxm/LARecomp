@@ -13,8 +13,8 @@
 // THE RESOLVE (2026-11-22). The trace's 3x3 is read first: its centre-weighted average over the pixels of the same surface (ssr_common.hlsli SsrTapKernel, SsrTapSameSurface) is the pixel's
 // current value (nine rays of one lobe are nearer its mean than one), and where the centre's own ray found nothing, the nearest hit of those pixels gives the distance of the virtual image
 // (SsrReprojectDistance: the history round a reflection is looked up with the reflection's parallax, not the sky's, whatever the noise did to this pixel's ray). After the clip the history keeps
-// kSsrClipKeep of itself at least (SsrKeepClip), except under a temporal upscaler (SSR_TEMPORAL_UPSCALER: SsrClipKeepFor, the floor would only be a trail on top of the upscaler's own history). SSR_TEMPORAL_FIRST_RESOLVE (the high
-// half of SSR_W_VEH_TABLE, mcla_gpu_ssr_resolve false) is the first version: the centre pixel alone, the clip whole.
+// kSsrClipKeep of itself at least (SsrKeepClip), except under a temporal upscaler (SSR_TEMPORAL_UPSCALER). The sparkle A/B restores that floor with a motion taper on validated history
+// (SSR_TEMPORAL_SPARKLE_RESOLVE). SSR_TEMPORAL_FIRST_RESOLVE (mcla_gpu_ssr_resolve false) is the first version: the centre pixel alone, the clip whole.
 //
 // WHAT IS KEPT. Only where the receiver itself was the same surface: its own reprojection (the plain position, not the image) must land on a history texel whose stored depth agrees within 8% (a car
 // that passed, a wall that came into view, an edge: no history), and the image's position must be more than a texel inside the picture (GB-I2: the clamped sample of an edge smears it). The history
@@ -52,8 +52,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float tan_x = SsrF(SSR_W_TAN_X);
   const float tan_y = SsrF(SSR_W_TAN_Y);
   const float3 receiver = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(ssr.x), float(ssr.y), z_block, tan_x, tan_y);
-  const bool resolve = (SsrHi(SsrW(SSR_W_VEH_TABLE)) & SSR_TEMPORAL_FIRST_RESOLVE) == 0u;
-  const bool upscaler = (SsrHi(SsrW(SSR_W_VEH_TABLE)) & SSR_TEMPORAL_UPSCALER) != 0u;
+  const uint temporal_options = SsrHi(SsrW(SSR_W_VEH_TABLE));
+  const bool resolve = (temporal_options & SSR_TEMPORAL_FIRST_RESOLVE) == 0u;
+  const bool upscaler = (temporal_options & SSR_TEMPORAL_UPSCALER) != 0u;
 
   // the trace's 3x3, once: the clip's box (the mean, the deviation and the range of the pixels that were traced) and the resolve (the tent's average of the pixels of the same surface, and the
   // nearest hit among them); with the first version's resolve only the centre joins the average
@@ -93,6 +94,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   float weight = 0.0f;
   float3 history = float3(0.0f, 0.0f, 0.0f);
+  float keep = SsrClipKeepFor(resolve, upscaler);
   if (SsrFlag(SSR_FLAG_HISTORY)) {
     const float4 m0 = float4(SsrF(SSR_W_MOTION + 0u), SsrF(SSR_W_MOTION + 1u), SsrF(SSR_W_MOTION + 2u), SsrF(SSR_W_MOTION + 3u));
     const float4 m1 = float4(SsrF(SSR_W_MOTION + 4u), SsrF(SSR_W_MOTION + 5u), SsrF(SSR_W_MOTION + 6u), SsrF(SSR_W_MOTION + 7u));
@@ -121,6 +123,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
       if (stored > 0.0f && SsrSameSurface(stored, plain.z)) {
         weight = SsrF(SSR_W_HISTORY_WEIGHT) * vehicle_scale;
         history = NgFinite3(g_textures[history_slot].SampleLevel(g_samplers[kSamplerLinearClamp], float2(image.u, image.v), 0.0f).rgb);   // (a NaN texel in the bilinear footprint is no history)
+        if ((temporal_options & SSR_TEMPORAL_SPARKLE_RESOLVE) != 0u && vehicle_scale != kSsrVehicleNoRowWeight) {
+          const float2 motion = float2(image.u, image.v) * float2(ssr) - (float2(pix) + 0.5f);
+          keep = SsrSparkleClipKeep(motion.x, motion.y);
+        }
       }
     }
   }
@@ -131,7 +137,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float3 box_lo = float3(SsrBoxLoChannel(mean.x, sigma.x, lo.x, hi.x), SsrBoxLoChannel(mean.y, sigma.y, lo.y, hi.y), SsrBoxLoChannel(mean.z, sigma.z, lo.z, hi.z));
     const float3 box_hi = float3(SsrBoxHiChannel(mean.x, sigma.x, lo.x, hi.x), SsrBoxHiChannel(mean.y, sigma.y, lo.y, hi.y), SsrBoxHiChannel(mean.z, sigma.z, lo.z, hi.z));
     const float3 clipped = SsrClipToBox(history, box_lo, box_hi);
-    history = SsrKeepClip(history, clipped, SsrClipKeepFor(resolve, upscaler));
+    history = SsrKeepClip(history, clipped, keep);
   }
   return float4(NgFinite3(lerp(value, history, weight)), z_block);   // (what is kept for the next frame is always a number)
 }
