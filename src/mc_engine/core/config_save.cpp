@@ -294,6 +294,12 @@ bool RestoreCvarForScene(std::string_view name) {
   return ok;
 }
 
+bool ReleaseCvarFromScene(std::string_view name) {
+  const std::string key(name);
+  std::lock_guard<std::mutex> lock(g_scene_mutex);
+  return SceneHolds().erase(key) != 0;
+}
+
 bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held) {
   Edits edits;
   // Only cvars whose last writer was SetFlagByName: a menu, the settings panel,

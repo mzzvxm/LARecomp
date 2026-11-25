@@ -1353,6 +1353,19 @@ class GPUSettings final : public rex::SettingOwner {
     "VK_KHR_present_wait) when the device has it. On D3D12 Plume then presents with sync "
     "interval 0 and the wait alone paces the frame, so measure before turning it on.", rex::kDebugOnly, rex::kRequiresRestart);
 
+  REX_SETTING(std::string, mcla_gpu_preset, "vanilla", "Graphics preset: the look of the four effect pages (IMAGE QUALITY, LIGHTING AND SHADOWS, REFLECTIONS, WORLD DETAIL) in one choice. "
+    "vanilla (the game as it shipped on the console; where a fresh install starts), enhanced, enhanced_ultra, enhanced_rt and "
+    "enhanced_rt_ultra (the last two need a graphics card that can ray trace), or custom (your own choices on those pages). While a preset "
+    "other than custom is chosen, its values are used for every row of those pages and are not written to larecomp.toml; changing any one of "
+    "those rows in the pause menu switches this to custom and keeps the values (mcla_gpu_preset_from remembers the preset they came from). "
+    "DISPLAY and UPSCALING are never changed by a preset. A larecomp.toml that has graphics values and no line for this setting (written "
+    "before presets) starts as custom, so nothing changes. A value for a single row on the command line or in the environment wins over "
+    "the preset and is never saved. Live.", rex::Allowed("vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"));
+
+  REX_SETTING(std::string, mcla_gpu_preset_from, "none", "Diagnostic: the preset a custom set of rows started from (a named preset, or none): rows that larecomp.toml does not name take that preset's "
+    "value, so a row added in a later version follows the preset the player began with. Set by the game when a change in the pause menu "
+    "turns a preset into custom; none for a larecomp.toml written before presets. Live.", rex::kDebugOnly, rex::Allowed("none", "vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra"));
+
   REX_SETTING(u32, mcla_gpu_process_memory_log, 0, "Diagnostic: every this many frames, log what the process's memory is made of (the commit "
     "charge and working set, the committed address space by kind, the private regions by size, "
     "the process heaps, the biggest regions). It walks the whole address space, which takes "
@@ -2351,6 +2364,8 @@ inline auto& mcla_gpu_present_dither = g_gpu.mcla_gpu_present_dither;
 inline auto& mcla_gpu_present_release = g_gpu.mcla_gpu_present_release;
 inline auto& mcla_gpu_present_release_check = g_gpu.mcla_gpu_present_release_check;
 inline auto& mcla_gpu_present_wait = g_gpu.mcla_gpu_present_wait;
+inline auto& mcla_gpu_preset = g_gpu.mcla_gpu_preset;
+inline auto& mcla_gpu_preset_from = g_gpu.mcla_gpu_preset_from;
 inline auto& mcla_gpu_process_memory_log = g_gpu.mcla_gpu_process_memory_log;
 inline auto& mcla_gpu_readable_cache = g_gpu.mcla_gpu_readable_cache;
 inline auto& mcla_gpu_readable_cache_check = g_gpu.mcla_gpu_readable_cache_check;

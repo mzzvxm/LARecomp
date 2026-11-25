@@ -47,7 +47,19 @@
     "dxr_1_1": false,
     "ray_query": false,
     "car_rt": false,
-    "city_rt_shadows": false
+    "city_rt_shadows": false,
+    "by_api": {
+      "d3d12": {
+        "car_rt": null,
+        "rt_tier": null,
+        "ray_regen": null
+      },
+      "vulkan": {
+        "car_rt": false,
+        "rt_tier": "none",
+        "ray_regen": "no"
+      }
+    }
   },
   "features": {
     "upscalers": {
@@ -60,6 +72,7 @@
     "frame_generation": {
       "fsr31": true,
       "dlss": false,
+      "dlss_card": false,
       "dlss_multiplier_max": 0,
       "dlss_after_restart": false
     },

@@ -64,7 +64,15 @@
         "ray_query": { "type": ["boolean", "null"] },
         "shader_model": { "type": ["string", "null"] },
         "car_rt": { "type": ["boolean", "null"] },
-        "city_rt_shadows": { "type": ["boolean", "null"] }
+        "city_rt_shadows": { "type": ["boolean", "null"] },
+        "by_api": {
+          "type": "object",
+          "required": ["d3d12", "vulkan"],
+          "properties": {
+            "d3d12": { "$ref": "#/$defs/api_facts" },
+            "vulkan": { "$ref": "#/$defs/api_facts" }
+          }
+        }
       }
     },
     "features": {
@@ -85,6 +93,7 @@
           "properties": {
             "fsr31": { "type": ["boolean", "null"] },
             "dlss": { "type": ["boolean", "null"] },
+            "dlss_card": { "type": ["boolean", "null"] },
             "dlss_multiplier_max": { "type": ["integer", "null"] },
             "dlss_after_restart": { "type": ["boolean", "null"] }
           }
@@ -172,6 +181,17 @@
         "strings_replace": { "type": "string" },
         "title_id": { "type": "string" },
         "profile_id": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "api_facts": {
+      "type": "object",
+      "required": ["car_rt", "rt_tier", "ray_regen"],
+      "properties": {
+        "car_rt": { "type": ["boolean", "null"] },
+        "rt_tier": { "enum": ["none", "weak", "strong", null] },
+        "ray_regen": { "enum": ["no", "unsupported", "needs_setup", "after_restart", "ready", null] }
       }
     }
   }

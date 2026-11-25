@@ -631,6 +631,7 @@
     "setting": "mcla_gpu_preset",
     "order": ["vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"],
     "first_start": "vanilla",
+    "legacy_file_preset": "custom",
     "scope": ["lighting", "reflections"],
     "items": {
       "vanilla": {

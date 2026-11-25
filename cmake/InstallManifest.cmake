@@ -156,8 +156,7 @@ function(larecomp_generate_install_manifest target)
     math(EXPR cpu_refused "${cpu_refused}")
 
     # Read the same required files checked by IsGameInstalled. The codegen
-    # manifest names the XEX; the hash below comes from the contract.
-    # CHECK: confirm the release metadata supplies the optional XEX size.
+    # manifest names the XEX; the hash and size below identify the supported disc release.
     set(installer "${CMAKE_CURRENT_SOURCE_DIR}/src/isoinstaller/larecomp_iso_installer.cpp")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${installer}")
     file(READ "${installer}" install_source)
@@ -228,6 +227,8 @@ function(larecomp_generate_install_manifest target)
 
     set(rt_when "${gpu_when} && gpu.rt_tier != 'none'")
     set(game_root "--game_data_root={game_root}")
+    larecomp_manifest_literal(debug_menu src/settings/larecomp_app_settings.h
+        [=[^  REX_SETTING\(bool, (debug_menu), false,]=])
     larecomp_manifest_pack_outputs(shader_outputs src/shaderpack/pack_format.h "{shader_pack_dir}"
         kPackFileName kStampFileName)
     larecomp_manifest_pack_outputs(city_outputs src/citypack/pack_format.h "{shader_pack_dir}/city"
@@ -286,9 +287,11 @@ function(larecomp_generate_install_manifest target)
   "actions": [
     @actions@
   ],
+  "launch": { "game_root": "@game_root@", "debug_menu": "--@debug_menu@=true" },
   "game": {
     "title_id": "@title_id@",
     "xex_sha256": ["c386f4001fa569e6ad4b982f441f67412f00b3f47c166134555cd4b59854a432"],
+    "size": 9252864,
     "required_files": [@required_files@]
   },
   "layout": {

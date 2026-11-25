@@ -17,10 +17,12 @@
       { "name": "AMD Radeon(TM) Graphics", "vendor": "amd", "vram_mb": 2048, "class": "low", "selected": false, "software": false }
     ]
   },
-  "api": { "name": "d3d12", "version": "12_2", "dxr_1_1": true, "ray_query": true, "shader_model": "6.7", "car_rt": true, "city_rt_shadows": true },
+  "api": { "name": "d3d12", "version": "12_2", "dxr_1_1": true, "ray_query": true, "shader_model": "6.7", "car_rt": true, "city_rt_shadows": true,
+           "by_api": { "d3d12": { "car_rt": true, "rt_tier": "strong", "ray_regen": "no" },
+                       "vulkan": { "car_rt": null, "rt_tier": null, "ray_regen": "unsupported" } } },
   "features": {
     "upscalers": { "fsr1": true, "fsr31": true, "fsr4": false, "dlss": "ready", "dlss_modes_refused": [] },
-    "frame_generation": { "fsr31": true, "dlss": true, "dlss_multiplier_max": 4, "dlss_after_restart": false },
+    "frame_generation": { "fsr31": true, "dlss": true, "dlss_card": true, "dlss_multiplier_max": 4, "dlss_after_restart": false },
     "latency": { "kind": "reflex", "auto_on": true },
     "denoiser": { "vendor": "nvidia", "dlss_rr": "ready", "ray_regen": "no" },
     "hdr": { "display_capable": true, "windows_hdr_on": true, "auto_paper_white_nits": 240, "auto_peak_nits": 1000 },

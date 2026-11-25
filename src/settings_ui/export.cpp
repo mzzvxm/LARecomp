@@ -1,6 +1,7 @@
 ﻿#include "export.h"
 
 #include "os/file_replace.h"
+#include "gpu/gfx_preset.h"
 #include "gpu/gpu_class.h"
 #include "gpu/rt_tier.h"
 // CHECK: the contract parser's arity map has an exit-time destructor. GX calls it only at startup.
@@ -93,6 +94,51 @@ void AddAuto(Table& settings) {
                 {"by", "rt_rung"}, {"cells", Table{{"none", effect.none}, {"weak", effect.weak}, {"strong", effect.strong}}}});
         }
     }
+}
+
+// The graphics presets (LAUNCHER-FOLLOWS-GAME.md 1.9): the table the game applies (gpu/gfx_preset.h), as the launcher reads it. Written from that header, never from a copy: the values of every
+// preset, what each needs, the recommendation rule and the sections they cover. The effect pages' ids are the section ids of ui_text.toml; the DISPLAY and UPSCALING sections are not among them.
+Table BuildPresets() {
+    namespace gp = mcla::gpu::gfx_preset;
+    Table presets;
+    presets.insert("setting", std::string(gp::kPresetSetting));
+    Array order;
+    Table items;
+    Array covers;
+    for (const auto& row : gp::kRows) {
+        if (gp::IsCovered(row.cvar)) covers.push_back(std::string(row.cvar));
+    }
+    for (int index = 0; index < gp::kPresetCount; ++index) {
+        const auto preset = static_cast<gp::Preset>(index);
+        order.push_back(std::string(gp::Id(preset)));
+        Table item{{"label", std::string(gp::Label(preset))}, {"help", std::string(gp::Help(preset))}};
+        if (gp::NeedsRt(preset)) {
+            item.insert("needs", std::string(gp::Needs(preset)));
+            item.insert("needs_reason", std::string(gp::kNeedsRtReason));
+        }
+        if (gp::IsNamed(preset)) {
+            Table values;
+            for (const auto& row : gp::kRows) {
+                if (gp::IsCovered(row.cvar)) values.insert(std::string(row.cvar), std::string(row.cell[gp::Col(preset)]));
+            }
+            item.insert("values", std::move(values));
+        }
+        items.insert(std::string(gp::Id(preset)), std::move(item));
+    }
+    presets.insert("order", std::move(order));
+    presets.insert("first_start", std::string(gp::Id(gp::kFirstStart)));
+    presets.insert("legacy_file_preset", std::string(gp::Id(gp::DecideInitial({.has_covered_key = true}))));
+    presets.insert("scope", Array{"image_quality", "lighting", "reflections", "world_detail"});
+    presets.insert("items", std::move(items));
+    Array rules;
+    for (const auto& rule : gp::kClassToPreset) {
+        rules.push_back(Table{{"when", std::string(rule.when)}, {"preset", std::string(gp::Id(rule.preset))}});
+    }
+    presets.insert("class_to_preset", std::move(rules));
+    presets.insert("covers", std::move(covers));
+    presets.insert("flip", Table{{"to", std::string(gp::Id(gp::Preset::kCustom))},
+                                 {"writes", Array{Table{{"setting", std::string(gp::kFromSetting)}, {"value", "$previous"}}}}});
+    return presets;
 }
 
 void Overlay(Table& target, const Table& source, std::string_view excluded = {}) {
@@ -364,7 +410,8 @@ toml::table BuildDocument(Table settings, std::span<const Menu> menus, const Inp
         {"value_sets", sets}, {"defs", defs}
     };
     if (!inputs.commit.empty()) doc["generated"].as_table()->insert("commit", inputs.commit);
-    if (const auto* presets = rules.get("presets")) doc.insert("presets", *presets);
+    // The presets come from the game's own table (gpu/gfx_preset.h) wherever the setting that holds the choice is a setting of this catalog.
+    if (settings.contains(std::string_view(mcla::gpu::gfx_preset::kPresetSetting))) doc.insert("presets", BuildPresets());
 
     std::map<std::string_view, std::string_view> ids;
     std::map<std::string_view, const Menu*> by_key;

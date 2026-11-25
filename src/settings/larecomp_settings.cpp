@@ -14,6 +14,7 @@
 #include <rex/platform/process.h>
 #include <toml++/toml.hpp>
 
+#include "gpu/gfx_preset.h"
 #include "settings/immortal.h"
 #include "settings/watch_table.h"
 
@@ -399,7 +400,9 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
   std::vector<std::pair<std::string, std::string>> leaves;
   CollectLeaves(table, {}, leaves);
   int refused = 0;
+  mcla::gpu::gfx_preset::FileFacts preset_facts;  // what the file says about the graphics presets (gpu/gfx_preset.h DecideInitial)
   for (const auto& [name, text] : leaves) {
+    preset_facts.NoteKey(name);
     if (std::any_of(std::begin(kConvertedKeys), std::end(kConvertedKeys), [&](const char* k) { return name == k; })) {
       continue;
     }
@@ -416,6 +419,11 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
       ++refused;
       REXLOG_WARN("larecomp.toml: {} = {} was not used ({}); the default stays", name, text, result.error().GetDescription());
     }
+  }
+  // A file with a covered value and no preset line starts on CUSTOM. Otherwise the setting defaults to VANILLA.
+  // The title-layer default stays below the file and command line layers and is never written back.
+  if (mcla::gpu::gfx_preset::DecideInitial(preset_facts) == mcla::gpu::gfx_preset::Preset::kCustom) {
+    put_title("larecomp.mcla_gpu_preset", std::string(mcla::gpu::gfx_preset::Id(mcla::gpu::gfx_preset::Preset::kCustom)));
   }
   if (refused > 0) {
     REXLOG_WARN("larecomp.toml: {} value(s) refused; every other line was applied. The SDK will report the file as not "

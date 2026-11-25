@@ -1,6 +1,7 @@
 ﻿#include "export.h"
 #include "sha256.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -159,6 +160,43 @@ fallback_values = [{id = "1", label = "100%"}]
     for (size_t i = 0; i < std::size(paths); ++i) {
         check(doc["facts_used"][i].value_or("") == paths[i], "sorted parsed fact");
     }
+    // The graphics presets are the game's own table (gpu/gfx_preset.h), exported where the catalog has the setting that holds the choice.
+    check(!doc.contains("presets"), "no presets block where the catalog has no preset setting");
+    auto with_presets = catalog;
+    with_presets.insert("mcla_gpu_preset", metadata("string", "vanilla"));
+    const auto preset_doc = BuildDocument(with_presets, menus, input);
+    const auto presets = preset_doc["presets"];
+    check(presets["setting"].value_or("") == std::string_view("mcla_gpu_preset"), "the presets name their setting");
+    check(presets["order"].as_array() && presets["order"].as_array()->size() == 6 && presets["order"][0].value_or("") == std::string_view("vanilla") &&
+          presets["order"][5].value_or("") == std::string_view("custom"), "six presets, VANILLA first, CUSTOM last");
+    check(presets["first_start"].value_or("") == std::string_view("vanilla"), "a first start is VANILLA");
+    check(presets["legacy_file_preset"].value_or("") == std::string_view("custom"),
+          "a file with a covered setting and no preset starts as CUSTOM");
+    check(presets["items"]["vanilla"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("off") &&
+          presets["items"]["enhanced"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("high") &&
+          presets["items"]["enhanced_rt_ultra"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("rt"), "the values are the table's");
+    check(presets["items"]["enhanced_rt"]["needs"].value_or("") == std::string_view("gpu.rt_tier != 'none'") && presets["items"]["enhanced_rt"]["needs_reason"] &&
+          !presets["items"]["enhanced"]["needs"], "only the RT presets need a ray tracing tier, and say why");
+    check(!presets["items"]["custom"]["values"], "CUSTOM has no values of its own");
+    const auto* covers = presets["covers"].as_array();
+    check(covers && covers->size() == 37, "37 covered settings");
+    const auto covered = [covers](std::string_view key) {
+        return covers && std::ranges::any_of(*covers, [key](const toml::node& node) {
+            return node.value_or(std::string_view{}) == key;
+        });
+    };
+    check(covered("mcla_gpu_ao"), "a saved AO setting triggers the exported legacy preset");
+    check(!covered("mcla_gpu_ao_rt") && !presets["items"]["vanilla"]["values"]["mcla_gpu_ao_rt"],
+          "the AO support setting alone leaves the exported first-start preset in force");
+    check(!presets["items"]["vanilla"]["values"]["fps_limit"] && !presets["items"]["vanilla"]["values"]["mcla_gpu_upscaler"], "a preset names no DISPLAY or UPSCALING setting");
+    check(presets["class_to_preset"].as_array() && presets["class_to_preset"].as_array()->size() == 5 && presets["class_to_preset"][4]["when"].value_or("") == std::string_view("true"),
+          "the last recommendation rule always holds");
+    check(presets["flip"]["to"].value_or("") == std::string_view("custom") && presets["flip"]["writes"][0]["setting"].value_or("") == std::string_view("mcla_gpu_preset_from"),
+          "a change of a covered row flips to CUSTOM and remembers where it started");
+    bool rung = false;
+    for (const auto& fact : *preset_doc["facts_used"].as_array()) rung = rung || fact.value_or("") == std::string_view("gpu.rt_rung");
+    check(rung, "the recommendation's facts are in facts_used");
+    check(Json(preset_doc) == Json(BuildDocument(with_presets, menus, input)), "the presets are deterministic");
     auto changed = catalog;
     changed["step"].as_table()->insert_or_assign("default", "1");
     check(SettingsHash(catalog) != SettingsHash(changed), "default contributes to hash");

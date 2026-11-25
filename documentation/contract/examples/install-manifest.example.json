@@ -45,9 +45,11 @@
       "exit": { "ok": [0], "fail": [1] }, "outputs": ["{game_folder}/machine.json"], "never_fails_setup": true, "timeout_min": 1
     }
   ],
+  "launch": { "game_root": "--game_data_root={game_root}", "debug_menu": "--debug_menu=true" },
   "game": {
     "title_id": "545407F8",
     "xex_sha256": ["c386f4001fa569e6ad4b982f441f67412f00b3f47c166134555cd4b59854a432"],
+    "size": 9252864,
     "required_files": ["default.xex"]
   },
   "layout": { "game_files_folder": "MCLA_Game_Files", "mod_roots": ["modloader", "mods", "models"], "textures": "textures_replace", "disabled": ".disabled", "saved_game": "mc4.sav" },

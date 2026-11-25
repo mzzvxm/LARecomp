@@ -256,6 +256,7 @@
         "setting": { "type": "string" },
         "order": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true },
         "first_start": { "type": "string" },
+        "legacy_file_preset": { "type": "string", "description": "Initial preset when the config contains a covered key and omits the preset setting" },
         "scope": { "type": "array", "items": { "type": "string" }, "description": "ids of the sections whose rows presets cover" },
         "items": {
           "type": "object",

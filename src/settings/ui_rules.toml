@@ -61,6 +61,14 @@ shown_per_rendered.cases = [
   { when = "s.mcla_gpu_frame_generation == 'dlss'", value = { expr = "d.dlss_frame_gen_multiplier" } },
   { value = 2 },
 ]
+# The preset this GPU is recommended: the same rule as presets.class_to_preset in the dump (gpu/gfx_preset.h kClassToPreset, rt_tier.h RecommendedPreset; tools/check_gfx_presets.py compares them).
+recommended_preset.cases = [
+  { when = "gpu.rt_rung == 'strong'", value = "enhanced_rt_ultra" },
+  { when = "gpu.rt_rung == 'weak'", value = "enhanced_rt" },
+  { when = "gpu.class == 'high'", value = "enhanced_ultra" },
+  { when = "gpu.class == 'mid'", value = "enhanced" },
+  { value = "vanilla" },
+]
 
 [value_sets.fsr_modes]
 values = [
@@ -104,6 +112,22 @@ setting = "fullscreen_resolution"
 [rows.PM_RxFpsCap]
 states = [
   { when = "d.frame_gen_on", enabled = false, suffix = " (FRAME GEN)" },
+]
+
+# PRESET (gpu/gfx_preset.h). The two RT presets are listed where the card traces rays, and for the one that is in force (a larecomp.toml carried to a PC without ray tracing keeps showing its
+# own preset, with the reason). The recommended preset says so after its name where it is the one in force.
+[rows.PM_RxGpuPreset]
+values = [
+  { id = "vanilla", label = "VANILLA" },
+  { id = "enhanced", label = "ENHANCED" },
+  { id = "enhanced_ultra", label = "ENHANCED ULTRA" },
+  { id = "enhanced_rt", label = "ENHANCED RT", when = "gpu.rt_tier != 'none' || s.mcla_gpu_preset == 'enhanced_rt'" },
+  { id = "enhanced_rt_ultra", label = "ENHANCED RT ULTRA", when = "gpu.rt_tier != 'none' || s.mcla_gpu_preset == 'enhanced_rt_ultra'" },
+  { id = "custom", label = "CUSTOM" },
+]
+states = [
+  { when = "gpu.rt_tier == 'none' && s.mcla_gpu_preset in ['enhanced_rt', 'enhanced_rt_ultra']", enabled = true, suffix = " (NO RT GPU)", reason = "Needs a graphics card that can ray trace." },
+  { when = "s.mcla_gpu_preset == d.recommended_preset", enabled = true, suffix = " (RECOMMENDED)" },
 ]
 
 [rows.PM_RxGpuReflex]
