@@ -183,6 +183,7 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgCpFade",     "mcla_fix_checkpoint_fade",  "CHECKPOINT SMOKE: "),
     // The process ends right after the orderly shutdown, without the destructors of the exit (exit_fast.h); read when the game closes.
     Bool("PM_RxDbgFastExit",   "mcla_fast_exit",           "FAST EXIT: "),
+    Bool("PM_RxDbgSkipGpuTear", "mcla_skip_gpu_teardown",   "SKIP GPU TEARDOWN: "),
     // The native keyboard (keyboard_native.cpp) is always on; this turns it off to tell whether a bug is its (off = the keyboard does nothing).
     Bool("PM_RxDbgNativeKb",   "keyboard_native",           "NATIVE KEYBOARD: "),
     // Button prompts follow the device in use on every screen (hooks/ui.cpp, keyboard_native.cpp): the glyph bitmaps are painted, the movies' platform flag stays on Xbox. Off = the

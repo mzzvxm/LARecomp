@@ -86,6 +86,9 @@ class PatchesSettings final : public rex::SettingOwner {
     "destroyed, and the game crashed a few milliseconds after it said it was exiting (about once in 1400 exits). On: "
     "the process ends at once, with the same exit code. Off: the old end through the C runtime's exit.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_skip_gpu_teardown, true, "Leave the final GPU objects for the OS to reclaim at process exit. Requires mcla_fast_exit. "
+    "GPU validation, debug builds and device loss use full teardown. Read at quit.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_fix_checkpoint_fade, true, "Fix: the smoke of a closed race checkpoint dissipates over about half a second at every frame "
     "rate. The game fades it by dt x 25 at every update, which is 0.83 per update on the console's 30 updates a "
     "second but 0.42 at 60 FPS and 0.17 at 144 FPS, so above 30 FPS the smoke vanished with the checkpoint. On: the "
@@ -149,6 +152,7 @@ inline auto& garage_tire_offset = g_patches.garage_tire_offset;
 inline auto& hud_width = g_patches.hud_width;
 inline auto& intro_original_speed = g_patches.intro_original_speed;
 inline auto& mcla_fast_exit = g_patches.mcla_fast_exit;
+inline auto& mcla_skip_gpu_teardown = g_patches.mcla_skip_gpu_teardown;
 inline auto& mcla_fix_checkpoint_fade = g_patches.mcla_fix_checkpoint_fade;
 inline auto& mcla_fix_neon_30hz = g_patches.mcla_fix_neon_30hz;
 inline auto& mcla_fix_neon_pulse_pin = g_patches.mcla_fix_neon_pulse_pin;

@@ -4,12 +4,14 @@
 // that reports which phase a hang stopped in.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
+#include "settings/immortal.h"
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -172,13 +174,33 @@ void ApplyRenderPhaseMask() {
 // renderer+356 is the phase bit sub_822E6408 was on when it stopped advancing.
 static constexpr uint32_t kPhaseCurrent = 356u;
 
+struct FreezeWatchdogState {
+    std::mutex mutex;
+    bool stopped = false;
+};
+
+static FreezeWatchdogState& FreezeWatchdog() {
+    static larecomp::Immortal<FreezeWatchdogState> state;
+    return *state;
+}
+
+void StopFreezeWatchdog() {
+    auto& watchdog = FreezeWatchdog();
+    // Wait out any report already reading guest memory before shutdown can unload it.
+    const std::lock_guard lock(watchdog.mutex);
+    watchdog.stopped = true;
+}
+
 void StartFreezeWatchdog() {
     std::thread([] {
+        auto& watchdog = FreezeWatchdog();
         uint64_t last = 0;
         int stalled = 0;
         bool reported = false;
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
+            const std::lock_guard lock(watchdog.mutex);
+            if (watchdog.stopped) return;
             const uint64_t now = g_frame_heartbeat.load(std::memory_order_relaxed);
             if (now != last) {
                 last = now;
@@ -265,5 +287,6 @@ void LogRenderPhaseMaskOnce() {
 
 #include <rex/ppc/context.h>
 
+void StopFreezeWatchdog() {}
 bool Patch_ImpostorShadowGuard(PPCRegister& r3) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

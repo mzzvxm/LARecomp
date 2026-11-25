@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "exit_fast.h"
+#include "gpu/shutdown_rules.h"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -318,6 +319,23 @@ void CheckTable() {
   CHECK(Armed());
 }
 
+void CheckDeviceTeardown() {
+  using mcla::gpu::ShouldSkipDeviceTeardown;
+  int probes = 0;
+  const auto healthy = [&] { ++probes; return false; };
+  const auto lost = [&] { ++probes; return true; };
+
+  CHECK(!ShouldSkipDeviceTeardown(false, true, false, healthy));  // default
+  CHECK(!ShouldSkipDeviceTeardown(true, false, false, healthy));  // CRT exit or startup cleanup
+  CHECK(!ShouldSkipDeviceTeardown(true, true, true, healthy));  // validation and debug runs
+  CHECK(probes == 0);  // those paths leave the loss check to the orderly teardown
+
+  CHECK(!ShouldSkipDeviceTeardown(true, true, false, lost));
+  CHECK(probes == 1);
+  CHECK(ShouldSkipDeviceTeardown(true, true, false, healthy));
+  CHECK(probes == 2);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -335,6 +353,7 @@ int main(int argc, char** argv) {
   if (argc >= 3 && std::strcmp(argv[1], "stdio-raw") == 0) return RunStdio(false, argv[2]);
 
   CheckTable();
+  CheckDeviceTeardown();
 
   std::error_code ec;
   const std::filesystem::path dir = std::filesystem::temp_directory_path(ec) / ("larecomp_exit_fast_test_" + std::to_string(static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count())));
