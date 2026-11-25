@@ -559,6 +559,65 @@ void AoAndUpsampleChecks() {
   Check(ga::NormalWeight({0, 1, 0}, tilted) > 0.8f, "UPSAMPLE: a gently curved surface keeps its neighbours");
 }
 
+void DaylightChecks() {
+  gi::GiFrame f{};
+  f.sun_rgb[0] = f.sun_rgb[1] = f.sun_rgb[2] = 1.0f;
+  f.sun_sin_elevation = 1.0f;
+  f.ground_albedo = 0.2f;
+  const gi::Vec3 wall{1, 0, 0}, ground{0, 1, 0}, ceiling{0, -1, 0};
+  ga::Frame fr{};
+  fr.scene_units = 16.0f;
+  fr.daylight_recovery = 0.0625f;
+  const auto run = [&](gi::Sample s, gi::Vec3 n) {
+    const ga::Buffer buffer = ga::MakeBuffer(gi::MakeGpuFrame(f), fr);
+    hlsl_shim::g_rows.resize(gi::kGpuFrameRows + ga::kApplyRows);
+    for (size_t i = 0; i < hlsl_shim::g_rows.size(); ++i) {
+      hlsl_shim::g_rows[i] = {buffer[i * 4], buffer[i * 4 + 1], buffer[i * 4 + 2], buffer[i * 4 + 3]};
+    }
+    const hlsl_shim::GiSample hs{H3(s.irradiance), s.sky_visibility, s.confidence};
+    const gi::Vec3 expected = ga::DaylightNet(f, s, n, fr);
+    Check(NearV(C3(hlsl_shim::GiaLookupNet(hs, H3(n), hlsl_shim::GiaLoadFrame())), expected, 1e-6), "daylight lookup matches shader");
+    return expected;
+  };
+  const gi::Sample shade{{0.084f, 0.044f, 0.024f}, 0.05f, 0.5f};
+  Check(NearV(run(shade, wall), {0.040f, 0.020f, 0.010f}, 1e-6), "shaded wall recovers colour removed by the baseline and keeps confidence and dead band");
+  gi::Sample s = shade;
+  s.sky_visibility = 0.20f;
+  Check(NearV(run(s, wall), {0.020f, 0.010f, 0.005f}, 1e-6), "sky deficit ramp has a half-weight midpoint");
+  s.sky_visibility = 0.36f;
+  Check(NearV(run(s, wall), {}, 0), "small sky deficit leaves the original wall residual");
+  s.sky_visibility = 0.275f;
+  Check(NearV(run(s, wall), {0.00625f, 0.003125f, 0.0015625f}, 1e-6), "sky deficit uses cubic smoothing away from the midpoint");
+  s = shade;
+  s.irradiance = {0.124f, 0.044f, 0.024f};
+  Check(NearV(run(s, wall), {0.210f, 0.020f, 0.010f}, 1e-6), "scene units amplify the surviving residual while recovering the bounded fraction");
+  fr.daylight_recovery = 0.0f;
+  Check(NearV(run(s, wall), {0.160f, 0, 0}, 1e-6), "units-only mode leaves the baseline subtracted");
+  fr.daylight_recovery = -1.0f;
+  Check(NearV(run(s, wall), ga::LookupNet(f, s, wall, fr.dead_band), 0), "legacy mode exactly matches the old apply");
+  fr.daylight_recovery = 0.0625f;
+  s = {{0.024f, 0.014f, 0.009f}, 0.50f, 0.5f};
+  Check(NearV(run(s, ground), {0.16f, 0.08f, 0.04f}, 1e-6), "covered ground can gain from valid probes");
+  s.sky_visibility = 1.0f;
+  Check(NearV(run(s, ground), ga::LookupNet(f, s, ground, fr.dead_band), 0), "open ground receives no extra gain even with a positive residual");
+  for (const gi::Vec3 n : {wall, ground, ceiling}) {
+    s = {gi::GroundBaseline(f, n), 0.5f * (1.0f + n.y), 1.0f};
+    Check(NearV(run(s, n), {}, 0), "an ideal open plane adds zero at every tested normal");
+  }
+  s = shade;
+  s.confidence = 0.0f;
+  Check(NearV(run(s, wall), {}, 0), "zero confidence rejects recovered light too");
+  s = shade;
+  s.irradiance = {};
+  Check(NearV(run(s, wall), {}, 0), "a covered receiver with no incoming irradiance stays dark");
+  f.sun_sin_elevation = 0.20f;
+  fr.daylight_recovery = 0.0f;
+  Check(NearV(run(shade, ground), ga::LookupNet(f, shade, ground, fr.dead_band) * 8.5f, 1e-6), "daylight correction is half strength at 0.20 sun elevation sine");
+  f.sun_sin_elevation = -0.1f;
+  fr.daylight_recovery = 0.0625f;
+  Check(NearV(run(shade, wall), ga::LookupNet(f, shade, wall, fr.dead_band), 0), "night lamps use the existing apply");
+}
+
 // ---------------------------------------------------------------------------
 // the SSGI switch
 // ---------------------------------------------------------------------------
@@ -621,7 +680,8 @@ void LayoutChecks() {
   fr.position[2] = -40.0f;
   fr.ao_strength = 0.75f;
   fr.dead_band = 0.04f;
-  fr.view_gain = 3.0f;
+  fr.scene_units = 16.0f;
+  fr.daylight_recovery = 0.0625f;
   const gi::GpuGiFrame gpu = gi::MakeGpuFrame(fld.frame);
   const ga::Buffer buf = ga::MakeBuffer(gpu, fr);
   Check(sizeof(buf) == 464 && ga::kBufferBytes == 464 && ga::kRowsOffsetBytes == 320 && ga::kBufferAlloc == 512, "BUFFER: the field's 20 rows then 9 more: 464 bytes in a 512 byte upload buffer");
@@ -634,7 +694,7 @@ void LayoutChecks() {
                   h.position.x == fr.position[0] && h.position.y == fr.position[1] && h.position.z == fr.position[2] && h.strength == fr.strength && h.lin.z == fr.lin[2] && h.render.x == fr.render[0] &&
                   h.render.y == fr.render[1] && h.traced.x == fr.traced[0] && h.traced.y == fr.traced[1] && h.sunDir.x == fr.sun_dir[0] && h.sunDir.y == fr.sun_dir[1] && h.sunDir.z == fr.sun_dir[2] &&
                   h.ambient == fr.ambient && h.sunLuma == fr.sun && h.cap == fr.cap && h.aoStrength == fr.ao_strength && h.aoFadeEnd == fr.ao_fade_end && h.deadBand == fr.dead_band &&
-                  h.paintPower == fr.paint_power && h.viewGain == fr.view_gain;
+                  h.paintPower == fr.paint_power && h.sceneUnits == fr.scene_units && h.daylightRecovery == fr.daylight_recovery;
   Check(ok, "BUFFER: the shader's GiaLoadFrame reads back every number the host wrote");
   Check(hlsl_shim::GiFade() == fld.frame.fade && hlsl_shim::GiCascadeCount() == 2, "BUFFER: and the field's own rows are where gi_common.hlsli reads them");
   // the push block's last word
@@ -760,8 +820,11 @@ void TwinChecks() {
     const gi::Vec3 n = rng.Direction();
     const gi::Sample s = gi::Lookup(fld.frame, fld.atlas, p, n);
     const hlsl_shim::GiSample hs = hlsl_shim::GiLookup(H3(p), H3(n));
-    const gi::Vec3 twin = ga::LookupNet(fld.frame, s, n, fr.dead_band);
-    const gi::Vec3 hlsl = C3(hlsl_shim::GiaLookupNet(hs, H3(n), fr.dead_band));
+    hlsl_shim::GiaFrame h = hlsl_shim::GiaLoadFrame();
+    h.sceneUnits = fr.scene_units = rng.Range(1.0f, 16.0f);
+    h.daylightRecovery = fr.daylight_recovery = rng.Range(-0.0625f, 0.125f);
+    const gi::Vec3 twin = ga::DaylightNet(fld.frame, s, n, fr);
+    const gi::Vec3 hlsl = C3(hlsl_shim::GiaLookupNet(hs, H3(n), h));
     if (!NearV(twin, hlsl, 1e-4, 1e-4)) ++net_bad;
     const hlsl_shim::float3 net = hlsl_shim::GiaNetIrradiance(H3(s.irradiance), H3(n), fr.dead_band);
     if (!NearV(C3(net), ga::NetIrradiance(fld.frame, s.irradiance, n, fr.dead_band), 1e-5, 1e-5)) ++net_bad;
@@ -914,6 +977,10 @@ void TextChecks(const std::string& dir) {
   const std::string manifest = ReadFile(dir + "/../settings/generated/manifest.json");
   Check(Has(manifest, "\"mcla_gpu_rt_gi_view\"") && Has(ReadFile(dir + "/../settings/generated/settings_gpu.h"), "mcla_gpu_rt_gi_view") && Has(ReadFile(dir + "/../settings/generated/settings_meta.inc"), "mcla_gpu_rt_gi_view"),
         "the debug view's setting (mcla_gpu_rt_gi_view) is in the manifest, the header and the meta list");
+  Check(Has(cpp, "fr.scene_units = std::clamp(sf.camera.exposure_bias, 1.0f, 16.0f);") && Has(cpp, "fr.daylight_recovery = float(larecomp::settings::mcla_gpu_rt_gi_daylight_recovery.Get());"),
+        "DAYLIGHT: the live setting and the resolved main colour target's exposure reach the apply rows");
+  Check(Has(ps, "GiaLookupNet(s, n, fr)") && Has(ps, "GiaLookupNetMixed(s, n, fr, GiaPixelTerm(p, t, n, fr))") && Has(ps, "GiaLookupNetMixed(s, n, fr, GiaPixelTerm(pixel, t, n, fr))"),
+        "DAYLIGHT: inline, half-size and mixed Ultra lookups use the same rules");
 }
 
 std::string DirOfThisFile() {
@@ -937,6 +1004,7 @@ int main(int argc, char** argv) {
   IdentityChecks();
   RuleChecks();
   AoAndUpsampleChecks();
+  DaylightChecks();
   SwitchChecks();
   LayoutChecks();
   LeakChecks();

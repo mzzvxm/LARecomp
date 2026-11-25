@@ -162,14 +162,15 @@ struct Frame {
   float ao_fade_end = 100.0f;                                                                        // the occlusion's distance fade's end, metres
   float paint_power = 1.0f;                                                                          // the paint's visibility power (ao_paint.h); 1 = off
   float dead_band = kDeadBand;
-  float view_gain = 1.0f;
+  float scene_units = 1.0f;
+  float daylight_recovery = -1.0f;
 };
 
 // The buffer the shader reads: the field's 20 rows (gi_frame.h GpuGiFrame) and then these 9 rows of 16 bytes.
 //   row 0  right xyz, tan_x             row 5  render w, h, traced w, h
 //   row 1  up xyz, tan_y                row 6  sun direction xyz (toward the sun), ambient luma
 //   row 2  forward xyz, field share     row 7  sun luma, cap, ao strength, ao fade end
-//   row 3  position xyz, strength       row 8  dead band, paint power, view gain, 0
+//   row 3  position xyz, strength       row 8  dead band, paint power, scene units, daylight recovery
 //   row 4  lin (P22, P23, P32, P33)
 inline constexpr uint32_t kApplyRows = 9;
 inline constexpr uint32_t kRowsOffsetBytes = gi::kGpuFrameBytes;  // 320
@@ -198,7 +199,7 @@ inline Buffer MakeBuffer(const gi::GpuGiFrame& field, const Frame& fr) {
   put(5, fr.render[0], fr.render[1], fr.traced[0], fr.traced[1]);
   put(6, fr.sun_dir[0], fr.sun_dir[1], fr.sun_dir[2], fr.ambient);
   put(7, fr.sun, fr.cap, fr.ao_strength, fr.ao_fade_end);
-  put(8, fr.dead_band, fr.paint_power, fr.view_gain, 0.0f);
+  put(8, fr.dead_band, fr.paint_power, fr.scene_units, fr.daylight_recovery);
   return b;
 }
 
@@ -283,6 +284,23 @@ inline gi::Vec3 NetIrradiance(const gi::GiFrame& f, gi::Vec3 e_surf, gi::Vec3 n,
 
 // The lookup image's texel: E_net x the lookup's confidence (the field's own certainty about this pixel).
 inline gi::Vec3 LookupNet(const gi::GiFrame& f, const gi::Sample& s, gi::Vec3 n, float dead_band) { return NetIrradiance(f, s.irradiance, n, dead_band) * s.confidence; }
+
+// A flat, unobstructed plane has a directional sky share of (1 + n.y) / 2. A sustained deficit enables the daylight correction.
+inline gi::Vec3 DaylightNet(const gi::GiFrame& f, const gi::Sample& s, gi::Vec3 n, const Frame& fr) {
+  const gi::Vec3 net = NetIrradiance(f, s.irradiance, n, fr.dead_band);
+  const float deficit = 0.5f * (1.0f + n.y) - s.sky_visibility;
+  const float x = std::clamp((deficit - 0.15f) / 0.30f, 0.0f, 1.0f);
+  const float shade = x * x * (3.0f - 2.0f * x);
+  const float daylight = std::clamp((f.sun_sin_elevation - 0.10f) * 5.0f, 0.0f, 1.0f);
+  const float weight = shade * daylight;
+  if (fr.daylight_recovery < 0.0f || !(weight > 0.0f)) {
+    return net * s.confidence;
+  }
+  const gi::Vec3 band = gi::GroundBaseline(f, {0.0f, -1.0f, 0.0f}) * fr.dead_band;
+  const gi::Vec3 recovered = gi::NetIrradiance(s.irradiance, band) - net;
+  const gi::Vec3 extra = net * (fr.scene_units - 1.0f) + recovered * (fr.scene_units * fr.daylight_recovery);
+  return (net + extra * weight) * s.confidence;
+}
 
 // The occlusion's term the bounce is multiplied by (the apply's ao_factor with the ambient share at 1: the bounce is all indirect light): lerp(1, ao_seen, saturate(strength x fade)),
 // ao_seen = ao, and on a vehicle's pixel (over half of its neighbourhood) ao raised to the paint power; fade = 1 up to half the fade's end, smoothstep to 0 at it.

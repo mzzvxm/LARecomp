@@ -437,7 +437,10 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     fr.ao_fade_end = ov.fade_end;
     fr.paint_power = ov.paint_power;
   }
-  fr.view_gain = 1.0f;
+  // The probes and the pixel rays use units=1. Limit the daylight correction to the main colour target's usual conversion (bias 4).
+  // CHECK: compare legacy and units-only at the same scene clock, including the upsampled path and the presented tone map.
+  fr.scene_units = std::clamp(sf.camera.exposure_bias, 1.0f, 16.0f);
+  fr.daylight_recovery = float(larecomp::settings::mcla_gpu_rt_gi_daylight_recovery.Get());
   // THE CABIN (gi_cabin_rules.h): the camera inside a roofed car shields the cabin's own surfaces from the street the probes see through the roof. Off (share 1) unless the setting is on, the car's box is
   // known, the camera is in it under a roof and the frame has the material plane; the shader then reads nothing of it. `closed` is 1: nothing tells us a convertible from a coupe yet (CHECK C3 there).
   gi_cabin::Rows cabin = gi_cabin::OffRows();

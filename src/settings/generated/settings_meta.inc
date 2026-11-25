@@ -406,6 +406,7 @@
 {"mcla_gpu_ssr_view", "MCLA/GPU"},
 {"mcla_gpu_rt_gi", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_view", "MCLA/GPU"},
+{"mcla_gpu_rt_gi_daylight_recovery", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_bounces", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_dry_run", "MCLA/GPU"},
 {"mcla_gpu_gi_cabin", "MCLA/GPU"},

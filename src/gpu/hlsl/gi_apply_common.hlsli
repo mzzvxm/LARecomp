@@ -64,7 +64,8 @@ struct GiaFrame
     float aoFadeEnd;
     float deadBand;
     float paintPower;
-    float viewGain;
+    float sceneUnits;
+    float daylightRecovery;
 };
 
 GiaFrame GiaLoadFrame()
@@ -98,7 +99,8 @@ GiaFrame GiaLoadFrame()
     fr.aoFadeEnd = h.w;
     fr.deadBand = i.x;
     fr.paintPower = i.y;
-    fr.viewGain = i.z;
+    fr.sceneUnits = i.z;
+    fr.daylightRecovery = i.w;
     return fr;
 }
 
@@ -180,9 +182,24 @@ float3 GiaNetIrradiance(float3 eSurf, float3 n, float deadBand)
 }
 
 // The lookup image's texel: E_net x the lookup's confidence.
-float3 GiaLookupNet(GiSample s, float3 n, float deadBand)
+float3 GiaLookupNet(GiSample s, float3 n, GiaFrame fr)
 {
-    return GiaNetIrradiance(s.irradiance, n, deadBand) * s.confidence;
+    const float3 net = GiaNetIrradiance(s.irradiance, n, fr.deadBand);
+    // Compare with the sky share a flat, open plane would have for the same normal. A downward normal has no open sky in its lobe.
+    // CHECK: the sky deficit ramp and recovery fraction need the open lawn, canyon, and portal leak captures on both APIs.
+    const float deficit = 0.5f * (1.0f + n.y) - s.skyVisibility;
+    const float x = saturate((deficit - 0.15f) / 0.30f);
+    const float shade = x * x * (3.0f - 2.0f * x);
+    const float daylight = saturate((GiSunSinElevation() - 0.10f) * 5.0f);
+    const float weight = shade * daylight;
+    if (fr.daylightRecovery < 0.0f || !(weight > 0.0f))
+    {
+        return net * s.confidence;
+    }
+    const float3 band = GiGroundBaseline(float3(0.0f, -1.0f, 0.0f)) * fr.deadBand;
+    const float3 recovered = GiNetIrradiance(s.irradiance, band) - net;
+    const float3 extra = net * (fr.sceneUnits - 1.0f) + recovered * (fr.sceneUnits * fr.daylightRecovery);
+    return (net + extra * weight) * s.confidence;
 }
 
 // ---- the occlusion's term, the pixel's add ------------------------------------------------------------------------------------------------------

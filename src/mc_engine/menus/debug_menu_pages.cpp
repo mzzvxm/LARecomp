@@ -85,6 +85,7 @@ constexpr SlotTable kMenuCamSlots = MakeSlotTable();
 // frame and is only useful for narrowing a phase down. (These lists were rows of the normal
 // PERFORMANCE pages until SX-G5.)
 constexpr const char* kShadowBitVals[]  = {"0x61E0", "0x400", "0x65E0", "0x7DF0"};
+constexpr double kGiDaylightRecovery[] = {-1.0, 0.0, 0.03125, 0.0625, 0.125};
 constexpr const char* kShadowBitNames[] = {"STOCK", "BLEND ONLY", "STOCK+BLEND", "ALL (BREAKS)"};
 constexpr double kBreakFpsVals[]        = {0.0, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0};
 // Capture mode (the trailer toolkit): frames a second of the fixed step and of a take; 0 is off.
@@ -251,6 +252,8 @@ const ItemDef kDebugPictureFixesItems[] = {
     // irradiance as if the car had no roof; with this on (the default) their share is cut to 30%, the glass's share, while the camera is in the car (gpu/gi_cabin_rules.h, INTERIOR-CAM-FIX). Off = the field's light as
     // it was: the A/B of the cockpit pictures. Read at each frame, so live.
     NativeOnly(Bool("PM_RxDbgGiCabin", "mcla_gpu_gi_cabin", "CABIN BOUNCE SHIELD: ")),
+    NativeOnly(Dbl("PM_RxDbgGiDaylight", "mcla_gpu_rt_gi_daylight_recovery", "RT BOUNCE DAYLIGHT RECOVERY: ",
+                   kGiDaylightRecovery, Len(kGiDaylightRecovery), "%g", "", "UNITS ONLY")),
 };
 #endif
 

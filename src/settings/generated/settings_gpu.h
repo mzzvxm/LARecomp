@@ -1022,8 +1022,9 @@ class GPUSettings final : public rex::SettingOwner {
     "or two, 3 and 6 m apart on a weaker card. ultra adds a fourth cascade, 16 m apart, and refreshes the probes twice as often. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, or Vulkan with ray queries) "
     "and the city pack; without them the screen-space bounce light stands. The pause menu's RT BOUNCE LIGHT row (GRAPHICS > LIGHTING AND SHADOWS). Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
-  REX_SETTING(i32, mcla_gpu_rt_gi_view, 0, "Diagnostic (ray traced bounce light, the probe field's apply): draws one picture over the main view in place of the bounce light's add, at the trigger where the field runs: 1 the irradiance the field holds at the pixel, 2 the confidence (red the field has nothing there, green it stands), 3 the sky visibility (dark blue closed, white open), 5 the ground baseline the field's irradiance is reduced by, 6 the leak test (green no probe is hidden from the point by geometry, red all of them are), 9 the light the pass adds (alone on black, four times as bright), 10 the net irradiance after the baseline, the dead band and the cap, 11 the occlusion's term the bounce is multiplied by. 4, 7 and 8 are the field's own pictures (the probes as spheres). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 11});
+  REX_SETTING(i32, mcla_gpu_rt_gi_view, 0, "Diagnostic (ray traced bounce light, the probe field's apply): draws one picture over the main view in place of the bounce light's add, at the trigger where the field runs: 1 the irradiance the field holds at the pixel, 2 the confidence (red the field has nothing there, green it stands), 3 the sky visibility (dark blue closed, white open), 5 the ground baseline the field's irradiance is reduced by, 6 the leak test (green no probe is hidden from the point by geometry, red all of them are), 9 the light the pass adds (alone on black, four times as bright), 10 the net irradiance after the baseline, dead band, daylight correction and lookup confidence, 11 the occlusion's term the bounce is multiplied by. 4, 7 and 8 are the field's own pictures (the probes as spheres). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 11});
 
+  REX_SETTING(f64, mcla_gpu_rt_gi_daylight_recovery, -1.0, "Diagnostic: adjusts ray traced bounce where the probe field sees less sky than open ground. -1 uses the old apply, 0 enables the scene-colour gain, and positive values also recover that fraction of irradiance removed by the ground baseline. Live.", rex::kDebugOnly, rex::Range{-1.0, 0.125});
   REX_SETTING(f64, mcla_gpu_rt_gi_bounces, 0.5, "Diagnostic (ray traced bounce light): how much of the field's own light the probes take back in when they are updated, which is the second bounce and the ones after it for free: "
     "0 is strictly one bounce, 0.5 (the default) is about two, with brighter canyons; 0.95 at most, so that the loop cannot grow. Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
 
@@ -2268,6 +2269,7 @@ inline auto& mcla_gpu_ssr = g_gpu.mcla_gpu_ssr;
 inline auto& mcla_gpu_ssr_view = g_gpu.mcla_gpu_ssr_view;
 inline auto& mcla_gpu_rt_gi = g_gpu.mcla_gpu_rt_gi;
 inline auto& mcla_gpu_rt_gi_view = g_gpu.mcla_gpu_rt_gi_view;
+inline auto& mcla_gpu_rt_gi_daylight_recovery = g_gpu.mcla_gpu_rt_gi_daylight_recovery;
 inline auto& mcla_gpu_rt_gi_bounces = g_gpu.mcla_gpu_rt_gi_bounces;
 inline auto& mcla_gpu_rt_gi_dry_run = g_gpu.mcla_gpu_rt_gi_dry_run;
 inline auto& mcla_gpu_gi_cabin = g_gpu.mcla_gpu_gi_cabin;

@@ -12,7 +12,7 @@
 //               in a frame whose camera is in a roofed car, the field's share is multiplied by the cabin's (the probes cannot see the car's roof: gi_cabin_common.hlsli). Two rows after the apply's 9 and
 //               the material plane's slot in the push block's last word (bits 16-31); a frame with no rule has share 1 in the first row and reads nothing.
 // A debug view (push.info.w bits 8-15, gi_apply_rules.h): the same pass in a pipeline whose blend is SRC_ALPHA / INV_SRC_ALPHA, drawing a colour with alpha 1 where there is something to show and
-// alpha 0 where there is not (a pixel with no normal, the sky): 1 E_surf, 2 the confidence, 3 the sky visibility, 5 the baseline, 6 the leak test, 9 the bounce added (alone on black, 4x), 10 E_net, 11 the
+// alpha 0 where there is not (a pixel with no normal, the sky): 1 E_surf, 2 the confidence, 3 the sky visibility, 5 the baseline, 6 the leak test, 9 the bounce added (alone on black, 4x), 10 tuned E_net, 11 the
 // occlusion's term. The views 1, 2, 3, 5 and 6 look the field up at the picture's size.
 //
 // MSAA (GIA_MS 1): the depth plane and the G-buffer's planes are Texture2DMS read at the guest's sample 0 (push.info.z); the pass runs once a pixel and the add goes to every sample of the pixel.
@@ -121,10 +121,10 @@ float4 GiaPixelTerm(int2 c, float t, float3 n, GiaFrame fr)
 }
 
 // The lookup's net irradiance with the per-pixel term mixed into the field's irradiance first (GipMix; a weight of 0 is the field's exactly).
-float3 GiaLookupNetMixed(GiSample s, float3 n, float deadBand, float4 pixelTerm)
+float3 GiaLookupNetMixed(GiSample s, float3 n, GiaFrame fr, float4 pixelTerm)
 {
     s.irradiance = GipMix(s.irradiance, float3(pixelTerm.x, pixelTerm.y, pixelTerm.z), pixelTerm.w);
-    return GiaLookupNet(s, n, deadBand);
+    return GiaLookupNet(s, n, fr);
 }
 
 float4 GiaLoadPlane(uint slot, int2 p)
@@ -195,7 +195,7 @@ float4 main(float4 position : SV_Position) : SV_Target
     float3 n = GbRt1Decode(rt1);
     float3 pos = GiaWorldPosition(fr, (float)r.x + 0.5f, (float)r.y + 0.5f, fr.render.x, fr.render.y, t);
     GiSample s = GiLookup(pos, n);
-    float3 e = GiaLookupNetMixed(s, n, fr.deadBand, GiaPixelTerm(p, t, n, fr));
+    float3 e = GiaLookupNetMixed(s, n, fr, GiaPixelTerm(p, t, n, fr));
     return float4(e.x, e.y, e.z, t);
 }
 
@@ -252,7 +252,7 @@ float4 main(float4 position : SV_Position) : SV_Target
         float3 colour = float3(1.0f, 0.0f, 1.0f);
         if (view == 1u)
         {
-            colour = GiaTone(s.irradiance * fr.viewGain);
+            colour = GiaTone(s.irradiance);
         }
         else if (view == 2u)
         {
@@ -265,7 +265,7 @@ float4 main(float4 position : SV_Position) : SV_Target
         }
         else if (view == 5u)
         {
-            colour = GiaTone(GiGroundBaseline(n) * fr.viewGain);
+            colour = GiaTone(GiGroundBaseline(n));
         }
         else
         {
@@ -322,7 +322,7 @@ float4 main(float4 position : SV_Position) : SV_Target
 #else
     {
         GiSample s = GiLookup(pos, n);
-        eNet = GiaLookupNetMixed(s, n, fr.deadBand, GiaPixelTerm(pixel, t, n, fr));
+        eNet = GiaLookupNetMixed(s, n, fr, GiaPixelTerm(pixel, t, n, fr));
         vehicle = GiaVehicleMark(g_textures[g_push.slots.w].Load(int3(pixel, 0)).x);
         if (GiaHasVisibility())
         {
@@ -352,7 +352,7 @@ float4 main(float4 position : SV_Position) : SV_Target
     }
     if (view == 10u)
     {
-        return float4(GiaTone(eNet * fr.viewGain), 1.0f);
+        return float4(GiaTone(eNet), 1.0f);
     }
     if (view == 11u)
     {
