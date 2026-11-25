@@ -120,8 +120,9 @@ bool GlowSoftSelected() {
 // draw and the picture stays the game's (the environment map's variant is the same arithmetic at the game's size, but that is not
 // asked). The cars' headlights (kFeatureHeadlight, headlight_rig.h) are wanted while the rig has a light this frame. A feature that
 // composes with another (variant_chain.h kFeatures composes_with) adds its line here like the others: it says whether ITS setting
-// is on, and nothing about the others.
-uint32_t WantedFeatures(const ShaderStore::Entry& ps) {
+// is on, and nothing about the others. At startup, use the saved settings for self-reflection, before there is a
+// latched frame. The city stage needs a ready city scene and the headlight stage needs the frame's light rig.
+uint32_t WantedFeatures(const ShaderStore::Entry& ps, bool startup = false) {
   namespace sp = larecomp::shaderpack;
   uint32_t wanted = 0;
   const auto has = [&](uint32_t feature) { return (ps.features & ShaderStore::FeatureBit(feature)) != 0; };
@@ -143,12 +144,14 @@ uint32_t WantedFeatures(const ShaderStore::Entry& ps) {
   // frame's BeginFrame decided. The paint is in this feature alone: the shadow filter's transform leaves it out (it reads no
   // shadow atlas) and the others name other shaders; the pack step warns when a shader lands in two features that the chain does
   // not compose (variant_pack.cpp), because only one of them would ever draw.
-  if (has(sp::kFeatureCarSelfRefl) && CarSelfRefl::Selected()) {
+  const bool car_refl = (has(sp::kFeatureCarSelfRefl) || has(sp::kFeatureCarChrome)) &&
+                        (startup ? CarSelfRefl::WantedAtStartup() : CarSelfRefl::Selected());
+  if (has(sp::kFeatureCarSelfRefl) && car_refl) {
     want(sp::kFeatureCarSelfRefl);
   }
   // The car's chrome (the tailpipes, the rims): the same history image and constants as the paint's, a shader of its own (the pack step
   // warns when a shader lands in two features that are not composed, and the chrome is in this one alone). The debug-only switch is its A/B.
-  if (has(sp::kFeatureCarChrome) && CarSelfRefl::Selected() && larecomp::settings::mcla_gpu_car_chrome_occlusion.Get()) {
+  if (has(sp::kFeatureCarChrome) && car_refl && larecomp::settings::mcla_gpu_car_chrome_occlusion.Get()) {
     want(sp::kFeatureCarChrome);
     // CITY-RT M2 R3a: the chrome's reflection of the city, a stage on top of the chrome's (kFeatureCarChromeCity, shaderpack/variants/car_chrome_city.h), wanted only with it and only while the city is in the
     // reflections (city_refl.h CityReflChromeWanted: a level above off and mcla_gpu_city_refl_chrome). Not wanted, the chrome's own words draw: the stage never touched them.
@@ -163,6 +166,10 @@ uint32_t WantedFeatures(const ShaderStore::Entry& ps) {
   // takes the word of the headlight feature (or the pair with the G-buffer's, when that stage is wanted too: variant_chain.h kFeatures composes_with).
   if (has(sp::kFeatureHeadlight) && headlight_rig::VariantSelected()) {
     want(sp::kFeatureHeadlight);
+  }
+  if (startup) {
+    // Before the first frame there is no city scene and no light rig: those two stages stay with the draw-time choice.
+    wanted &= ~(ShaderStore::FeatureBit(sp::kFeatureCarChromeCity) | ShaderStore::FeatureBit(sp::kFeatureHeadlight));
   }
   return wanted;
 }
@@ -390,20 +397,14 @@ void Pipelines::StartPersistence(ShaderStore& shaders) {
   const bool persist = larecomp::settings::mcla_gpu_pipeline_cache.Get();
   if (persist) {
     LoadPersistent();
-    // The list holds each multisampled pipeline at the count it was recorded with; this start
-    // draws the images of the screen at its own (as the command line prebuild makes them).
-    // CHECK: written without a build or a run. Expected on a first start with --msaa 4 or off, or
-    // an upscaler: this line, the precache line after it with the copies counted, and far fewer
-    // "made at draw time" / pending pipelines than before; the copies nobody draws are held in
-    // memory like the unused part of the list (about 85 KB each on D3D12, more on Vulkan).
     const std::vector<uint32_t> samples = StartSampleCounts(*device_);
-    MakeLevelCopies(samples);
+    MakeStartupCopies(samples);
     std::string text;
     for (const uint32_t count : samples) {
       text += (text.empty() ? "" : ",") + std::to_string(count);
     }
     REXLOG_INFO("[gpu] pipelines: the start draws the multisampled images at {} sample(s): {} "
-                "copies of the {} listed pipelines at those counts are precached too",
+                "copies of the {} listed pipelines cover those counts and startup shader variants",
                 text, setup_copies_.size(), records_.size());
   }
   // The workers run without a cache file too: they make what the render
@@ -430,7 +431,7 @@ void Pipelines::LoadPersistent() {
 }
 
 uint64_t Pipelines::HashRecords() const {
-  // The persistent keys in list order, the level copies after them: the same files in the same
+  // The persistent keys in list order, the startup copies after them: the same files in the same
   // state give the same hash.
   std::vector<uint8_t> bytes;
   bytes.reserve((records_.size() + setup_copies_.size()) * sizeof(PipelineKey));
@@ -443,35 +444,37 @@ uint64_t Pipelines::HashRecords() const {
   return uint64_t(XXH3_64bits(bytes.data(), bytes.size()));
 }
 
-void Pipelines::MakeLevelCopies(const std::vector<uint32_t>& samples) {
-  // A pipeline whose key has more than one sample is one of a draw into a target the guest
-  // multisamples: the main view's (2 samples) and the pause menu's and the map's (4). Those
-  // targets are images of the screen and take the host's MSAA level (EdramTargets::HostSamplesAt),
-  // which is what the start draws with: the copy at the level's count is the pipeline the first
-  // draws ask for when it is not the count they were recorded at. (A multisampled target that is
-  // not an image of the screen would get a copy nobody asks for: it costs a compile, nothing else.)
-  setup_copies_.clear();
-  setup_copy_source_.clear();
+void Pipelines::MakeStartupCopies(const std::vector<uint32_t>& samples) {
+  // Multisampled screen targets take the host's MSAA level (EdramTargets::HostSamplesAt).
+  // A base record also supplies the render state for the variant selected from the loaded pack.
+  // Scene-dependent choices (city reflections, headlights, UI and sidecar targets) still use
+  // the recorded keys or the draw-time paths that know the scene and targets.
   start_samples_ = samples;
-  std::unordered_set<PipelineKey, PipelineKeyHash> seen;
-  for (size_t source = 0; source < records_.size(); ++source) {
-    const Record& r = records_[source];
-    if (r.key.sample_count <= 1) {
-      continue;
-    }
-    for (const uint32_t count : samples) {
-      if (count == 0 || count == r.key.sample_count) {
-        continue;
-      }
-      Record copy = r;
-      copy.key.sample_count = count;
-      if (recorded_.count(copy.key) != 0 || !seen.insert(copy.key).second) {
-        continue;  // a record has it, or another record's copy is the same pipeline
-      }
-      setup_copies_.push_back(copy);
-      setup_copy_source_.push_back(uint32_t(source));
-    }
+  if (!shaders_) {
+    return;
   }
+  const ShaderStore& shaders = *shaders_;
+  const auto select_variant = [&shaders](PipelineKey& key) {
+    const ShaderStore::Entry* ps = shaders.Find(key.ps);
+    if (!ps) {
+      return;
+    }
+    const uint32_t wanted = WantedFeatures(*ps, true);
+    if (wanted == 0) {
+      return;
+    }
+    const ShaderStore::Entry* vs = shaders.Find(key.vs);
+    if (vs) {
+      uint32_t vs_word = key.vs_variant;
+      key.ps_variant = shaders.ChooseVariant(*ps, wanted, key.ps_variant, vs, key.vs_variant, &vs_word);
+      key.vs_variant = vs_word;
+    }
+  };
+  const size_t variants = precache_queue::MakeCopies(records_, recorded_, samples, select_variant,
+                                                      setup_copies_, setup_copy_source_);
+  // CHECK: cold D3D12 and Vulkan starts with traffic paint in the pack should take its 0x40
+  // key from precache without a sync build or a long wait at the first paint draw.
+  REXLOG_INFO("[gpu] pipelines: {} missing startup shader variants queued at their recorded sample counts", variants);
 }
 
 Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
@@ -488,7 +491,7 @@ Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
     return result;
   }
   LoadPersistent();
-  MakeLevelCopies(options.level_samples);
+  MakeStartupCopies(options.level_samples);
   result.list.records = records_.size();
   result.list.copies = setup_copies_.size();
   result.list.hash = HashRecords();
@@ -714,9 +717,9 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
     precached_by_key_.emplace(r.key, p.get());
     precached_.push_back(std::move(p));
   };
-  // The level copies (MakeLevelCopies) each follow the record they were made from, so the list
+  // The startup copies (MakeStartupCopies) each follow the record they were made from, so the list
   // stays in the order it was first needed in (the render thread's claims follow it, boot mode).
-  // A draw takes a copy like a record; no record has the key of a copy (MakeLevelCopies).
+  // A draw takes a copy like a record; no record has the key of a copy.
   //
   // A start that draws the images of the screen at another count than the default 2 (a saved MSAA of
   // 4 or off, an upscaler: start_samples_) never asks for the multisampled entries at the other
@@ -784,19 +787,18 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
   }
   if (setup_threads != 0) {
     REXLOG_INFO("[gpu] pipelines: command line prebuild: precaching {} pipelines ({} of them copies "
-                "at other sample counts) on {} threads at normal priority ({} usable processors)",
+                "for startup settings) on {} threads at normal priority ({} usable processors)",
                 precached_.size(), setup_copies_.size(), count, usable);
   } else if (precached_.empty()) {
     REXLOG_INFO("[gpu] pipelines: nothing to precache; {} threads for background builds", count);
   } else if (boot) {
-    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies at other sample "
-                "counts) on {} threads; boot mode on {} usable processors: normal priority until "
+    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies for startup settings) "
+                "on {} threads; boot mode on {} usable processors: normal priority until "
                 "the list is done or {} s have passed, then {} threads at below normal",
                 precached_.size(), setup_copies_.size(), count, usable, kBootSeconds.count(),
                 steady_workers_);
   } else {
-    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies at other sample "
-                "counts) on {} threads",
+    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies for startup settings) on {} threads",
                 precached_.size(), setup_copies_.size(), count);
   }
 }

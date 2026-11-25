@@ -288,7 +288,7 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
   setup.threads = options.threads;
   setup.level_samples = Pipelines::StartSampleCounts(parts.device);
   log(0, "the start draws the multisampled images at " + JoinCounts(setup.level_samples) +
-             " sample(s): copies of the listed pipelines are made for those counts too");
+             " sample(s): copies of the listed pipelines cover those counts and startup shader variants");
   setup.wanted = [&](const Pipelines::SetupList& list) {
     expected = StampText(parts, list, setup.level_samples);
     stamp_path = parts.pipelines.cache_path();
@@ -361,7 +361,7 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
   std::string text = std::format("Prepared {} pipelines for {} ({}) in {:.0f} s.", run.ready,
                                  result.adapter, result.backend, run.seconds);
   if (run.list.copies != 0) {
-    text += std::format(" {} of them are copies at the MSAA level the game starts with.",
+    text += std::format(" {} of them are copies for the game's startup shader variants and MSAA settings.",
                         run.list.copies);
   }
   if (run.failed != 0) {

@@ -102,6 +102,7 @@ car_selfrefl::Tuning ReadTuning() {
 }  // namespace
 
 bool CarSelfRefl::Selected() { return g_selected.load(std::memory_order_relaxed); }
+bool CarSelfRefl::WantedAtStartup() { return ReadMode() != Mode::kOff; }
 
 const char* CarSelfRefl::PassName(uint32_t pass) {
   switch (pass) {

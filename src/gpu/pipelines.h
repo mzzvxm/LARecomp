@@ -107,7 +107,7 @@
 // Level seeds (level_seeds.h): the copies above are for pipelines the session has drawn. A pipeline it has
 // not drawn yet (the map, a race, a shop when the player changed the setting in free roam) first
 // appeared at the new level with no copy, and was made when its draw asked (10 to 50 ms cold). So the same
-// call also converts the records of the saved lists with more than one sample (MakeLevelCopies' rule)
+// call also converts the records of the saved lists with more than one sample (the startup MSAA rule)
 // to the new level's sample count and hands them to the builder threads as seeds: after the urgent work,
 // the copies above and the precache list (seed_), on all the steady workers but one, never in boot mode,
 // and never waited for by the switch. A draw takes a seed like a precache entry (TakePrecached through
@@ -123,10 +123,10 @@
 // form in its own cache on disk, which is the point), and the records are written back at the end.
 // It also makes a copy of every multisampled record at the sample counts the start's MSAA level
 // asks for (SetupOptions::level_samples: the setting's level, 1 under an upscaler), which is what
-// PrebuildForLevel would hand the builders at runtime; the copies are made, not recorded.
+// PrebuildForLevel would hand the builders at runtime. The loaded base keys also supply the
+// render state for shader variants selected by the startup settings. These copies are made, not recorded.
 //
-// Level copies at the game's own start: StartPersistence makes the same copies
-// (StartSampleCounts) and the precache workers make them in the list's order, each right after
+// StartPersistence queues the same copies and the precache workers make them in the list's order, each right after
 // the record it was made from. A draw takes one like any other entry; a copy that a draw took is
 // recorded then (RecordStored), so a level the player never draws with leaves nothing in the cache
 // file. Without them a first start at another level than the list's (MSAA 4 or off, an upscaler's
@@ -299,7 +299,7 @@ class Pipelines {
   // (EdramTargets::HostSamplesAt): the MSAA setting's level within what the device can do, and 1
   // when an upscaler is the saved choice (whether this PC can run it is the game's probe's to say,
   // so both are listed). StartPersistence and the command line prebuild make a copy of every
-  // multisampled record at these counts (MakeLevelCopies).
+  // multisampled record at these counts (MakeStartupCopies).
   static std::vector<uint32_t> StartSampleCounts(Device& device);
   // The GPU must be idle.
   void Shutdown();
@@ -405,7 +405,7 @@ class Pipelines {
   // list that the pack has the shaders for, and a hash of their keys (what a stamp binds).
   struct SetupList {
     size_t records = 0;
-    size_t copies = 0;   // the level copies on top of them (SetupOptions::level_samples)
+    size_t copies = 0;   // derived keys for startup shader variants and sample counts
     uint64_t hash = 0;   // of the records' keys, then the copies'
   };
   struct SetupOptions {
@@ -415,7 +415,7 @@ class Pipelines {
     // draws with (EdramTargets::HostSamplesAt: the MSAA setting's level, and 1 when an upscaler
     // is the saved choice). For every record whose key has more than one sample, a copy at each
     // of these counts that no record has is made too (what PrebuildForLevel makes at runtime when
-    // the level changes); the cache file does not get them. Empty: the records as they are.
+    // the level changes); the cache file does not get the copies. Empty: no additional sample counts.
     std::vector<uint32_t> level_samples;
     // Called once with the list, before any pipeline is made; false: nothing to do (the cache is
     // complete for this driver and pack). May be empty (always build).
@@ -513,7 +513,7 @@ class Pipelines {
   void LoadPersistent();
   uint64_t HashRecords() const;
   // StartPersistence and PrecacheForSetup: fills setup_copies_ (see SetupOptions::level_samples).
-  void MakeLevelCopies(const std::vector<uint32_t>& samples);
+  void MakeStartupCopies(const std::vector<uint32_t>& samples);
   void PrecacheWorker(uint32_t index);
 
   // How a lookup that gave no pipeline ended: nothing is known of the key
@@ -670,13 +670,13 @@ class Pipelines {
   // The command line prebuild: set before the workers start, not changed while they run. Its
   // workers run at normal priority and drop each pipeline once it is made.
   bool setup_mode_ = false;
-  // The copies of records at other sample counts (MakeLevelCopies), in the order of the records
+  // The copies of records for startup shader variants and sample counts, in the order of the records
   // they were made from; setup_copy_source_[i] is the index in records_ of setup_copies_[i]'s
   // record. StartPrecache puts each right after its record; a draw takes one like a record, and
   // it is recorded only then (TakePrecached). Both are set before the workers start.
   std::vector<Record> setup_copies_;
   std::vector<uint32_t> setup_copy_source_;
-  // The counts MakeLevelCopies was given (what this start draws the images of the screen at,
+  // The counts MakeStartupCopies was given (what this start draws the images of the screen at,
   // StartSampleCounts); StartPrecache orders the queue by them. Set before the workers start.
   std::vector<uint32_t> start_samples_;
   uint32_t steady_workers_ = 0;           // the workers that stay: indices below it

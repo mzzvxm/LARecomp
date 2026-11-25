@@ -2,7 +2,7 @@
 // ===========================================================================
 // MCLA GPU renderer -- the precache queue: its order, and where the workers go next (pure rules)
 // ===========================================================================
-// Pipelines::StartPrecache turns the starter list (records_ and the level copies, setup_copies_) into the
+// Pipelines::StartPrecache turns the starter list (records_ and the startup copies, setup_copies_) into the
 // queue the precache workers make from, and the render thread's claims move the workers within it. This file
 // holds those rules without a renderer, a device or a GPU, so that precache_queue_test.cpp checks them alone:
 //
@@ -35,7 +35,57 @@
 #include <deque>
 #include <vector>
 
+#include "../shaderpack/pack_format.h"
+
 namespace mcla::gpu::precache_queue {
+
+// Derive each missing startup variant and its MSAA copies from the same record. The selector
+// changes the shader words only, using the main pack's spec words as input. Existing packed
+// records still get MSAA copies, but may already describe a draw with different targets.
+template <class Record, class KeySet, class SelectVariant>
+size_t MakeCopies(const std::vector<Record>& records, const KeySet& recorded,
+                  const std::vector<uint32_t>& samples, SelectVariant select_variant,
+                  std::vector<Record>& copies, std::vector<uint32_t>& copy_source) {
+  using larecomp::shaderpack::kFirstPackedVariant;
+  copies.clear();
+  copy_source.clear();
+  KeySet seen;
+  size_t variants = 0;
+  for (size_t source = 0; source < records.size(); ++source) {
+    const Record& record = records[source];
+    const auto add = [&](const Record& copy) {
+      if (recorded.contains(copy.key) || !seen.insert(copy.key).second) {
+        return false;
+      }
+      copies.push_back(copy);
+      copy_source.push_back(uint32_t(source));
+      return true;
+    };
+    const auto add_levels = [&](Record copy) {
+      if (record.key.sample_count <= 1) {
+        return;
+      }
+      for (uint32_t count : samples) {
+        if (count != 0 && count != record.key.sample_count) {
+          copy.key.sample_count = count;
+          add(copy);
+        }
+      }
+    };
+    add_levels(record);
+    if (record.key.ps == 0 || record.key.ps_variant >= kFirstPackedVariant ||
+        record.key.vs_variant >= kFirstPackedVariant) {
+      continue;
+    }
+    Record variant = record;
+    select_variant(variant.key);
+    if (variant.key.ps_variant >= kFirstPackedVariant) {
+      variants += add(variant);
+      add_levels(variant);
+    }
+  }
+  return variants;
+}
 
 // The entries after a claim that the workers make first: what 3 workers make in 0.4 s (9 ms an entry; 6 workers
 // 0.2 s), more than twice the 48 entries a first draw burst asked for in one block (sr3v-vk-high-menus: 46 claims
@@ -55,7 +105,7 @@ inline uint32_t DeferTarget(bool prebuild, const std::vector<uint32_t>& start_sa
   return (!prebuild && target != 0 && target != default_samples) ? target : 0u;
 }
 
-// The queue: every record in the list's order, each level copy right after the record it was made from
+// The queue: every record in the list's order, each copy right after the record it was made from
 // (`copy_source[i]` is the index in `records` of `copies[i]`'s record, ascending), except that with a
 // `defer_target` (DeferTarget) the entries with more than one sample whose count is not that target go after
 // all the others in their old order. Both lists are returned as pointers into the arguments; each entry once.
