@@ -22,7 +22,8 @@
 //   trigger    G-buffer publish | car sun map | car ray tracing structures | headlight shadow replay | light manager takes this frame's maps | PROBE FIELD'S FRAME (maintenance, update, weights:
 //              published BEFORE the AO plans, which asks whether the screen-space bounce light may be skipped) |
 //              THE AO'S FRAME: depth chain, normals, colour_pre capture, ray traced occlusion, visibility, contact march, APPLY, screen publish (lin_depth, normal, colour_pre, Hi-Z) |
-//              probe field's apply (additive, after the AO's apply) | deferred local lights (additive, after both) | sun shafts | volumetric light (inject, integrate) | car ray tracing check |
+//              probe field's apply (additive, after the AO's apply) | colour before the light pass (GI-BOUNCE-SS) | deferred local lights (additive, after both) | colour after the light pass (GI-BOUNCE-SS: the pair
+//              is the NEXT frame's colour chain's history of the lights) | sun shafts | volumetric light (inject, integrate) | car ray tracing check |
 //              colour_post capture (after the apply and the lights) | SSR (additive, after the capture: the last pass that adds to the colour here but one) | car history + ray traced reflections (+ the
 //              player's windows' additive reflection of the city, CITY-RT M2 R3b: the very last add) | debug views
 //   end of scene   the volumetric composite, the sun shafts' composite
@@ -106,7 +107,9 @@ inline constexpr uint32_t kRrGuides = 1u << 24;      // DLSS Ray Reconstruction'
 inline constexpr uint32_t kRrHitSsr = 1u << 25;      // RR-4a: the screen-space reflections' hit distance image (R16_FLOAT, the picture's size), written at the trigger in a frame DLSS Ray Reconstruction takes (raw mode), read by the guide pass
 inline constexpr uint32_t kRrHitCar = 1u << 26;      // RR-4b: the cars' ray traced reflections' hit distance image (R16_FLOAT, the picture's size), written with the ray traced pass in a frame DLSS Ray Reconstruction takes, read by the guide pass
 inline constexpr uint32_t kRrHitGi = 1u << 27;       // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (RG16F at the pass's own size), written at the trigger in a frame DLSS Ray Reconstruction takes (raw mode), read by the guide pass as the last choice
-inline constexpr uint32_t kAll = (1u << 28) - 1;
+inline constexpr uint32_t kLightsBefore = 1u << 28;  // GI-BOUNCE-SS: the main colour before the deferred light pass (after the occlusion's apply and the probe field's apply), averaged over its host samples at the AO's traced size
+inline constexpr uint32_t kLightHistory = 1u << 29;  // GI-BOUNCE-SS: the pair (the colour before and after the light pass) a frame leaves for the NEXT frame's colour chain: their difference is the light the pass added, reprojected into that frame
+inline constexpr uint32_t kAll = (1u << 30) - 1;
 constexpr const char* NameOf(uint32_t bit) {
   switch (bit) {
     case kLinDepth: return "lin_depth";
@@ -137,6 +140,8 @@ constexpr const char* NameOf(uint32_t bit) {
     case kRrHitSsr: return "RR hit distance (SSR)";
     case kRrHitCar: return "RR hit distance (car reflections)";
     case kRrHitGi: return "RR hit distance (bounce light)";
+    case kLightsBefore: return "colour before the light pass";
+    case kLightHistory: return "lights history";
     default: break;
   }
   return "?";
@@ -204,8 +209,10 @@ enum class Step : uint8_t {
   kAoApply,
   kScreenPublish,
   kGiApply,
+  kLightsBefore,
   kLocalLights,
   kRtLights,    // inside the light pass: the ray traced visibility of the top K lights, traced and filtered before the pass's draws (RT-LIGHTS-D1)
+  kLightsAfter,
   kShafts,
   kVolume,
   kCarRtCheck,
@@ -349,8 +356,10 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .makes = data::kAoNormal},
     {.step = Step::kColourPre, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "colour_pre capture (capped, only while the bounce light is on)", .file = "ao.cpp",
      .call = "screen_->RecordColourPre(list, chain, base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot));", .label_file = "screen_extract.cpp", .label = "ssgi colour chain",
-     .makes = data::kColourChain,
-     .note = "the main colour BEFORE the apply: the bounce light must see the colour the occlusion has not multiplied yet"},
+     .reads_previous = data::kLightHistory, .makes = data::kColourChain,
+     .note = "the main colour BEFORE the apply: the bounce light must see the colour the occlusion has not multiplied yet. GI-BOUNCE-SS: its level 0 also takes what the deferred light pass added in the LAST frame "
+             "(the pair of captures the last frame left: kLightHistory), reprojected with the AO's camera motion and depth history under the same cap, so neon, headlights and street lamps bounce; the lights of THIS "
+             "frame come after the apply and are in the next frame's chain (perf/GI-BOUNCE.md). With no usable history (the first frame, a cut, a frame after one without a light pass) the chain is what it always was"},
     {.step = Step::kCarRtAo, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "ray traced occlusion and sun term of the cars", .file = "ao.cpp",
      .call = "rt = rt_ao_->Record(list, in);", .label_file = "car_rt_ao.cpp", .label = "ao rt", .reads = data::kAoDepth, .soft_reads = data::kCarStructures, .makes = data::kRtOcclusion},
     {.step = Step::kAoVisibility, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "visibility, bounce, denoise, accumulation", .file = "ao.cpp",
@@ -379,12 +388,18 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
              "pass runs first, inside this step: 'rt gi pixel' (the trace) and 'rt gi denoise' (RtDenoise's temporal and spatial stages) are marked only in a frame that runs it, before the lookup. "
              "CITY-RT G6: in a frame DLSS Ray Reconstruction takes (TemporalSystem::RawModes().RtGi()) the denoiser does not run, the lookup mixes the 1 spp signal itself, and the pass's hit distance image "
              "(kRrHitGi) goes to the guide pass through TemporalSystem::NoteRrBounceHit. The lamps' direct light comes after it"},
+    {.step = Step::kLightsBefore, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "colour before the light pass (the bounce light's lights, capture 1 of 2)", .call = "screen_->CaptureLightsBefore(record, summary, list)",
+     .label_file = "screen_lights.cpp", .label = "ssgi lights before", .soft_reads = data::kColourChain, .makes = data::kLightsBefore,
+     .deps = {{{Step::kAoApply, "the colour as the occlusion's apply left it: the light pass adds to this"}, {Step::kGiApply, "... and as the probe field's apply left it: the field's light is not the lights' share"}}},
+     .note = "(GI-BOUNCE-SS, screen_lights.cpp) only in a frame whose AO ran the bounce light with the lights' share (the colour chain was recorded) and the light pass will be asked: the main colour averaged over its host "
+             "samples at the AO's traced size (the colour_post capture's shader and pipelines). It writes nothing to the main colour. The pair of captures is the next frame's colour chain's history of the lights"},
     {.step = Step::kLocalLights, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "deferred local lights (additive)", .call = "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_)",
      .label_file = "local_lights.cpp", .label = "local lights", .closing_label = "after local lights", .reads = data::kPlanes | data::kLinDepth | data::kLights,
      .soft_reads = data::kLightMaps | data::kShadowAtlas,
      .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kLinDepth, .wants_lights = true,
-     .deps = {{{Step::kAoApply, "added AFTER the occlusion's apply: nothing darkens the light (HP11), the bounce light does not see it (C10)"},
-               {Step::kGiApply, "added AFTER the probe field's apply: the lamps' direct light is not multiplied by the occlusion nor bounced by the field"}}},
+     .deps = {{{Step::kAoApply, "added AFTER the occlusion's apply: nothing darkens the light (HP11); this frame's bounce light does not see it (C10: it sees the last frame's, kLightHistory)"},
+               {Step::kGiApply, "added AFTER the probe field's apply: the lamps' direct light is not multiplied by the occlusion nor bounced by the field"},
+               {Step::kLightsBefore, "the capture of the colour before the lights is made right ahead of them (GI-BOUNCE-SS)"}}},
      .note = "the headlights read this frame's maps from the atlas through the one lookup; before the sun shafts, the volume and the game's own light volumes and glows"},
     {.step = Step::kRtLights, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kLocalLights, .name = "ray traced visibility of the top K lights (debug)", .file = "local_lights.cpp",
      .call = "rt_lights_->RecordTrace(list);", .label_file = "local_lights.cpp", .label = "rt lights", .more_labels = {{"rt lights denoise"}}, .closing_label = "after rt lights", .reads = data::kLinDepth,
@@ -392,6 +407,11 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .note = "(RT-LIGHTS-D1, rt_lights.h) only while mcla_gpu_rt_lights wants it and the light pass runs: a compute pass over the occlusion's linear depth (published with the screen frame) with a ray from every pixel to "
              "each light of the top K in the car scene's top level, then RtDenoise's temporal and spatial stages for each group of three lights; the light pass's pixel shader reads the images in its draws, right after. "
              "It runs INSIDE the light pass's call, before its draws, so it is a step of its own for the table's order and its labels ('rt lights', 'rt lights denoise', closed by 'after rt lights') but is not noted at run time"},
+    {.step = Step::kLightsAfter, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "colour after the light pass (the bounce light's lights, capture 2 of 2)", .call = "screen_->CaptureLightsAfter(record, summary, list)",
+     .label_file = "screen_lights.cpp", .label = "ssgi lights after", .reads = data::kLightsBefore, .makes = data::kLightHistory,
+     .deps = {{{Step::kLocalLights, "the colour with the lights in it: only when the light pass recorded (else nothing was added and the pair is not made, so the next frame's chain is today's)"}}},
+     .note = "(GI-BOUNCE-SS, screen_lights.cpp) the same capture as the one before the pass, into the second image; the pair is made valid for the next frame only when both were recorded in this frame (ssgi_lights.h Key). "
+             "The difference of the two is what the light pass added; it is taken where the next frame's colour chain reads them (hlsl/ao_color_ps.hlsl LightsHistory). Nothing here is read by this frame"},
     {.step = Step::kShafts, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "sun shafts' pass", .call = "shafts_->OnResolve(record, summary, list, UpscalerRunning())",
      .label_file = "shafts.cpp", .label = "shafts sky", .makes = data::kShafts,
      .note = "sky pass into an image of its own, no data dependency on the steps around it: in the play view its composite is at the end-of-scene copy (after SSR). The design (LIGHT-UNIFY 5.3) lists it after "

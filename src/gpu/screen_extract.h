@@ -28,6 +28,7 @@
 #include "ao_push.h"
 #include "screen_frame.h"
 #include "screen_rules.h"
+#include "ssgi_lights.h"
 
 namespace mcla::gpu::screen::extract {
 
@@ -178,6 +179,20 @@ struct ColourRecipe {
   float source_start = 0.0f;     // shape.y
   bool one_sample = false;
   uint32_t sample = 0;           // the depth's host sample (base.slots[1]), used when one_sample
+  // GI-BOUNCE-SS (ssgi_lights.h, hlsl/ao_color_ps.hlsl LightsHistory): the last frame's light, added to the level 0 texels. Off unless the frame has a usable light history; then the push block carries what the pass
+  // reprojects with and the flag, and nothing else of the block changes.
+  struct Lights {
+    bool on = false;
+    uint32_t post_slot = 0;       // the last frame's colour after the deferred light pass (RGBA16F at the traced size) -> slots.z
+    uint32_t pre_slot = 0;        // ... and before it -> slots.w
+    uint32_t depth_slot = 0;      // this frame's linear depth, level 0 -> slots2.y
+    uint32_t depth_prev_slot = 0; // the last frame's (the depth history) -> slots2.w
+    uint32_t normal_slot = 0;     // the normal image's (0: none) -> the high half of slots.y
+    float motion[12] = {};        // the 3x4 that moves this frame's view space into the last frame's, row by row -> lin, light, extra
+    float tan_prev[2] = {};       // the last frame's tan half field of view -> lens.zw
+    float gain = 1.0f;            // shape.z
+  };
+  Lights lights;
 };
 
 inline AoPush ColourLevel0Push(const AoPush& base, const Frame& f, const ColourRecipe& c) {
@@ -195,6 +210,23 @@ inline AoPush ColourLevel0Push(const AoPush& base, const Frame& f, const ColourR
     // Half size (above 1080 lines): the texel is the mean of the 2x2 pixels' one sample each, the depth's own host sample.
     push.slots2[2] |= kColourOneSampleFlag;
     push.slots2[0] = c.sample;
+  }
+  if (c.lights.on) {
+    // GI-BOUNCE-SS: the fields the lights' share reads (the pass reads none of them otherwise: ssgi_lights.h kFlag, hlsl/ao_color_ps.hlsl).
+    push.slots2[2] |= ssgi_lights::kFlag;
+    push.slots[1] = (c.host_samples & ssgi_lights::kHostSamplesMask) | (c.lights.normal_slot << ssgi_lights::kNormalShift);
+    push.slots[2] = c.lights.post_slot;
+    push.slots[3] = c.lights.pre_slot;
+    push.slots2[1] = c.lights.depth_slot;
+    push.slots2[3] = c.lights.depth_prev_slot;
+    push.lens[2] = c.lights.tan_prev[0];
+    push.lens[3] = c.lights.tan_prev[1];
+    for (int k = 0; k < 4; ++k) {
+      push.lin[k] = c.lights.motion[k];
+      push.light[k] = c.lights.motion[4 + k];
+      push.extra[k] = c.lights.motion[8 + k];
+    }
+    push.shape[2] = c.lights.gain;
   }
   return push;
 }

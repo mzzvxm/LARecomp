@@ -132,6 +132,9 @@ void ScreenShared::Shutdown() {
     image = HostImage{};
   }
   ShutdownChain();
+  lights_pre_ = HostImage{};
+  lights_post_ = HostImage{};
+  lights_key_ = ssgi_lights::Key{};
   history_ = HostImage{};
   post_images_ = 0;
   last_capture_ = screen::CaptureKey{};
@@ -158,6 +161,7 @@ void ScreenShared::BeginFrame(uint64_t frame_serial) {
     return;
   }
   frame_serial_ = frame_serial;
+  LightsBeginFrame();  // GI-BOUNCE-SS: this frame's lights captures are not made yet; the images go back after a while without the AO's want
   extract_ = larecomp::settings::mcla_gpu_screen_extract.Get();  // live: the A/B between the owner's recording and the AO's own (screen_shared.h)
   hiz_fused_ = larecomp::settings::mcla_gpu_screen_hiz_fused.Get();  // live: the A/B between the fused Hi-Z and the separate passes (SS-3)
   hiz_made_ = 0;
@@ -456,6 +460,8 @@ uint64_t ScreenShared::HeldBytes() const {
     add(image);
   }
   add(history_);
+  add(lights_pre_);   // GI-BOUNCE-SS: the colour before and after the light pass
+  add(lights_post_);
   return bytes;
 }
 

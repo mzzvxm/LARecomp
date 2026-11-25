@@ -1464,6 +1464,17 @@ class GPUSettings final : public rex::SettingOwner {
     "quarter of the memory. 1080 lines and below are as they were. False: the sizes and the chain as before "
     "(mcla_gpu_ssgi_low says the old half size choice). Live; the first frame after the change makes the images again.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_ssgi_lights, true, "Diagnostic: the bounce light also takes the light the deferred light pass added in the last frame (neon, headlights, street lamps) as part of the "
+    "radiance it gathers, reprojected into this frame with the camera's motion and the depth history, so a wall beside a neon car picks up its colour and a "
+    "garage's wall lit by the headlights lights the floor. It needs the bounce light (mcla_gpu_ssgi) on and the extracted screen products "
+    "(mcla_gpu_screen_extract). False: the colour chain as it was before, which sees the colour before the light pass only (the A/B). Costs two captures of "
+    "the main colour at the bounce light's size (the colour before and after the light pass, only in a frame whose light pass ran) and a few more reads in "
+    "the colour chain. Live.", rex::kDebugOnly);
+
+  REX_SETTING(f64, mcla_gpu_ssgi_lights_gain, 1.0, "Diagnostic: how much of the last frame's light (mcla_gpu_ssgi_lights) the bounce light takes as radiance, 0 to 8: 1 the light as it was lit, 0 none "
+    "(the bounce light as it was), 2 twice as much. It is held under the same cap as every radiance the bounce takes (mcla_gpu_ssgi_test_clamp), so a "
+    "larger gain mostly makes a dim lamp's light count as much as a bright one's. Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
+
   REX_SETTING(std::string, mcla_gpu_ssgi_intensity, "default", "How strong the bounce light looks: light, default, strong, stronger or strongest. Each is a set of four "
     "numbers: how much of the light the surroundings send back the picture gets, the most it may add to a pixel "
     "(a guard against noise in the dark), how far it looks for lit surfaces (5 to 16 metres, past the ambient "
@@ -2250,6 +2261,8 @@ inline auto& mcla_gpu_ssgi = g_gpu.mcla_gpu_ssgi;
 inline auto& mcla_gpu_ssgi_clamp = g_gpu.mcla_gpu_ssgi_clamp;
 inline auto& mcla_gpu_ssgi_far_steps = g_gpu.mcla_gpu_ssgi_far_steps;
 inline auto& mcla_gpu_ssgi_half = g_gpu.mcla_gpu_ssgi_half;
+inline auto& mcla_gpu_ssgi_lights = g_gpu.mcla_gpu_ssgi_lights;
+inline auto& mcla_gpu_ssgi_lights_gain = g_gpu.mcla_gpu_ssgi_lights_gain;
 inline auto& mcla_gpu_ssgi_intensity = g_gpu.mcla_gpu_ssgi_intensity;
 inline auto& mcla_gpu_ssgi_low = g_gpu.mcla_gpu_ssgi_low;
 inline auto& mcla_gpu_ssgi_radius = g_gpu.mcla_gpu_ssgi_radius;

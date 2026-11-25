@@ -111,6 +111,7 @@ add_library(larecomp_gpu OBJECT
     samplers.cpp
     scene.cpp
     screen_extract.cpp
+    screen_lights.cpp
     screen_shared.cpp
     ssr.cpp
     ssr_rt.cpp
@@ -307,6 +308,10 @@ add_executable(larecomp_shafts_image_test EXCLUDE_FROM_ALL shafts_image_test.cpp
 # checks that the shaders' constants are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ssgi_test, then run src/gpu/larecomp_ssgi_test [<src/gpu/hlsl dir>].
 add_executable(larecomp_ssgi_test EXCLUDE_FROM_ALL ssgi_test.cpp)
+# The bounce light's lights' share (ssgi_lights.h, GI-BOUNCE-SS: the last frame's light reprojected into the colour chain: the C++ twin of hlsl/ao_color_ps.hlsl LightsHistory and SsgiCarryLights, its rejection rules, the energy
+# cap, the history's validity, mutation-checked; given the src/gpu folder it also checks the shaders', the push block's, the frame order's and the scene's text) likewise:
+#   cmake --build <dir> --target larecomp_ssgi_lights_test, then run src/gpu/larecomp_ssgi_lights_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_ssgi_lights_test EXCLUDE_FROM_ALL ssgi_lights_test.cpp)
 # Which host passes a start makes pipelines for (host_plan.h: the class against the settings, the plan, the words of the log line) likewise:
 #   cmake --build <dir> --target larecomp_host_plan_test, then run src/gpu/larecomp_host_plan_test.
 add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)

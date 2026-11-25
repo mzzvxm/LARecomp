@@ -32,6 +32,16 @@
 // more than a source starts at when the cap is high. The apply pass (ao_apply_ps.hlsl, AO_GI) gives such a
 // pixel no bounce, as it has no albedo to estimate.
 //
+// THE LIGHTS' SHARE (GI-BOUNCE-SS, flags bit 23, pass 0 only; ssgi_lights.h has the reasons and the C++ twin, perf/GI-BOUNCE.md the design). This chain is made at the trigger BEFORE the deferred light pass of the
+// same frame (neon, headlights, street lamps), so it never held their light. With the flag the texel also takes what that pass added in the LAST frame at the place the texel was: the host captured the colour
+// before and after the light pass (screen_shared.h CaptureLightsBefore / After, RGBA16F at this image's size, the MSAA samples averaged) and this pass reprojects the texel into the last frame with the AO's own
+// camera motion and the depth history (the tests of ao_temporal_ps.hlsl: the tangent plane, the depth within 8%, a vehicle or a sky texel of the history rejected, the confidence smoothstep), takes the
+// difference of the two captures there (>= 0) and adds the part of its luma that fits under the cap, soft-clipped to the room the capped colour leaves (SsgiCarryLights). A vehicle's own texel takes none (its own
+// neon is no radiance for the road a frame behind it), nor a texel that is a source of light. Without the flag, or with no light in the last frame, the texel is what it was, to the bit.
+//   push fields with the flag: slots.y high 16 bits the normal image's slot (0: none: the depth's normal), slots.z the last frame's colour AFTER the lights, slots.w the colour BEFORE them, slots2.y this frame's
+//   linear depth (level 0 of the depth chain, with the vehicle mark), slots2.w the last frame's (the depth history), lens.xy this frame's tan half field of view (as the other passes; lens.zw the last frame's),
+//   lin / light / extra the three rows of the 3x4 that moves this frame's view space into the last frame's (the AO's accumulation pass's matrix), shape.z the gain of the lights' share.
+//
 // Push block (ao_common.hlsli AoPush), the fields of these passes:
 //   pass 0   slots.x the colour plane's bindless slot, slots.y its host samples, sizes.xy this image's
 //            size, sizes.zw the colour plane's size (the picture), shape.x the cap (luma), shape.y where a
@@ -85,13 +95,73 @@ float4 TakeColour(int2 p, uint s) {
 // the bounce's denoise, history and a-trous passes blur over many pixels after this, and the colour target's reads are halved at MSAA 2.
 bool AoOneSample() { return (g_push.slots2.z & (1u << 21)) != 0u; }
 
+// THE LIGHTS' SHARE (the header above): flags bit 23.
+bool AoLights() { return (g_push.slots2.z & (1u << 23)) != 0u; }
+
+// The last frame's light at the place the texel `pixel` was: rgb the light (the difference of the two captures at the texel, held >= 0, the confidence applied), 0 where the texel takes none (the sky, a vehicle, no
+// place in the history) or where nothing agrees. The reprojection is ao_temporal_ps.hlsl's: the position in this frame's view space moved into the last frame's by the 3x4 (lin, light, extra), the four texels round
+// where it lands, each by its bilinear weight times its agreement with this texel's tangent plane and depth.
+float3 LightsHistory(int2 pixel) {
+  const float2 size = g_push.sizes.xy;
+  const int2 isize = int2(size);
+  const uint depth_slot = g_push.slots2.y;
+  const uint prev_depth_slot = g_push.slots2.w;
+  const uint post_slot = g_push.slots.z;
+  const uint pre_slot = g_push.slots.w;
+  const float tc = AoLoadLinear(depth_slot, pixel);
+  if (tc >= kAoSky * 0.5f || AoIsVehicle(tc)) {
+    return float3(0.0f, 0.0f, 0.0f);
+  }
+  const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
+  const float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc);
+  const float4 q = float4(pc, 1.0f);
+  const float3 pe = float3(dot(g_push.lin, q), dot(g_push.light, q), dot(g_push.extra, q));
+  const float3 ne = float3(dot(g_push.lin.xyz, normal), dot(g_push.light.xyz, normal), dot(g_push.extra.xyz, normal));
+  if (!(pe.z > kSsgiLightsNearest)) {
+    return float3(0.0f, 0.0f, 0.0f);
+  }
+  const float2 tan_half = g_push.lens.zw;
+  const float2 uv = float2(0.5f + 0.5f * pe.x / (pe.z * tan_half.x), 0.5f - 0.5f * pe.y / (pe.z * tan_half.y));
+  const float2 hp = clamp(uv * size - 0.5f, float2(-2.0f, -2.0f), size + 2.0f);
+  const int2 h0 = int2(floor(hp));
+  const float2 f = hp - float2(h0);
+  const float sigma = kSsgiLightsPlaneShare * pe.z + kSsgiLightsPlaneFloor;
+  float3 sum = float3(0.0f, 0.0f, 0.0f);
+  float weight = 0.0f;
+  for (int j = 0; j < 2; ++j) {
+    for (int i = 0; i < 2; ++i) {
+      const int2 t = h0 + int2(i, j);
+      if (t.x < 0 || t.y < 0 || t.x >= isize.x || t.y >= isize.y) {
+        continue;
+      }
+      const float texel_depth = AoLoadLinear(prev_depth_slot, t);
+      if (texel_depth >= kAoSky * 0.5f || AoIsVehicle(texel_depth)) {
+        continue;  // the sky, or a car a frame ago: the light on it was the car's own
+      }
+      const float2 centre = float2(t) + 0.5f;
+      const float2 tuv = centre / size;
+      const float3 ph = float3((tuv.x * 2.0f - 1.0f) * tan_half.x * texel_depth, (1.0f - tuv.y * 2.0f) * tan_half.y * texel_depth, texel_depth);
+      const float off_plane = dot(ne, ph - pe) / sigma;
+      float w = exp(-0.5f * off_plane * off_plane);
+      w *= abs(texel_depth - pe.z) < kSsgiLightsDepthShare * pe.z + kSsgiLightsDepthFloor ? 1.0f : 0.0f;
+      w *= (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
+      const float3 post = g_textures[post_slot].Load(int3(t, 0)).rgb;
+      const float3 pre = g_textures[pre_slot].Load(int3(t, 0)).rgb;
+      sum += max(post - pre, 0.0f) * w;
+      weight += w;
+    }
+  }
+  const float confidence = smoothstep(kSsgiLightsConfidenceLow, kSsgiLightsConfidenceHigh, weight);
+  return sum * (confidence / max(weight, 1e-4f));
+}
+
 float4 main(float4 position : SV_Position) : SV_Target {
   const bool low = AoLow();
   const int2 base = int2(position.xy) * (low ? 2 : 1);
   const int2 last = int2(g_push.sizes.zw) - 1;
   const int across = low ? 2 : 1;
 #if AO_COLOR_MS
-  const uint host_samples = max(g_push.slots.y, 1u);
+  const uint host_samples = max(g_push.slots.y & 0xFFu, 1u);  // (the high half is the lights' normal image slot: AoLights)
   const bool one = AoOneSample();
   const uint samples = one ? 1u : host_samples;
   const uint first = one ? min(g_push.slots2.x, host_samples - 1u) : 0u;
@@ -108,7 +178,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
       }
     }
   }
-  return sum / float(uint(across * across) * samples);
+  float4 result = sum / float(uint(across * across) * samples);
+  if (AoLights()) {
+    result.rgb = SsgiCarryLights(result.rgb, LightsHistory(int2(position.xy)), g_push.shape.z, max(g_push.shape.x, 1e-3f), result.a);
+  }
+  return result;
 }
 
 #elif AO_COLOR_PASS == 1

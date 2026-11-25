@@ -45,6 +45,7 @@
 #include "split.h"
 #include "ssgi_level.h"
 #include "ssgi_light.h"
+#include "ssgi_lights.h"
 #include "ssgi_stable.h"
 #include "texture_bytes.h"
 #include "traffic_shadow.h"
@@ -2691,6 +2692,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // that a visit to the map does not make them again.
     ReleaseGiImages();
   }
+  if (screen_) {
+    // GI-BOUNCE-SS: the owner captures the colour before and after the deferred light pass in the frames that run the bounce light with the lights' share (screen_shared.h CaptureLightsBefore / After).
+    screen_->WantLights(plan.gi.on && plan.gi.lights);
+  }
   // The G-buffer's normal plane (GB-E): whether this frame's passes read the normal image, and the images it needs. Without it every push below carries no slot and every pass
   // takes the depth's normal as it did.
   normals_ = NormalPlan{};
@@ -4312,6 +4317,9 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   g.fewer = gi_test_ ? plan->mode == Mode::kHigh : (g.mode == Mode::kHigh && low_how != 1);
   g.half = !gi_test_ && g.mode == Mode::kHigh && low_how >= 1;
   g.half_above = larecomp::settings::mcla_gpu_ssgi_half.Get();  // above 1080 lines, every quality (ao_size.h)
+  // GI-BOUNCE-SS: the lights' share of the radiance (ssgi_lights.h): on wherever the bounce light runs, from the owner's extraction; the debug switch is the chain as it was (live).
+  g.lights = ssgi_lights::Wanted(true, larecomp::settings::mcla_gpu_ssgi_lights.Get(), Extracting());
+  g.lights_gain = ssgi_lights::GainOf(larecomp::settings::mcla_gpu_ssgi_lights_gain.Get());
   // The numbers of the strength level (mcla_gpu_ssgi_intensity), each one replaced by its debug cvar when that
   // is set (ssgi_level.h).
   const ssgi_level::Level level = ReadSsgiLevel();
@@ -4535,6 +4543,38 @@ screen::extract::ColourRecipe AmbientOcclusion::ColourRecipeFor(const Plan& plan
   // filtered over many pixels after this; half the colour target's reads).
   recipe.one_sample = colour.host_samples > 1 && plan.OneSampleColour();
   recipe.sample = base.slots[1];
+  // GI-BOUNCE-SS (ssgi_lights.h): with a usable history (the AO's own: the same camera motion, the same depth history) and the last frame's two light captures, the level 0 pass also takes the last frame's light.
+  // The history is chosen here as the accumulation pass chooses it below (ChooseHistory is a pure function of the frame's state, so the two agree).
+  if (plan.gi.on && plan.gi.lights && screen_ && Extracting() && DepthPrev().texture) {
+    const HistoryUse use = ChooseHistory(plan);
+    const ScreenShared::LightHistory last = screen_->LightHistoryFor(trigger_pause_, plan.ao[0], plan.ao[1], use.on);
+    if (last.usable) {
+      screen::extract::ColourRecipe::Lights& lights = recipe.lights;
+      lights.on = true;
+      lights.post_slot = last.post_slot;
+      lights.pre_slot = last.pre_slot;
+      lights.depth_slot = Depth(0).slot;
+      lights.depth_prev_slot = DepthPrev().slot;
+      lights.normal_slot = normals_.on ? normals_.ao_slot : 0u;
+      // The camera's motion into the last frame in this renderer's view space (x right, y up, z forward: S G S with S = diag(1, 1, -1, 1)), the three rows of the 3x4 as the accumulation pass is given them
+      // (FillPush's lin, shape, light there; lin, light, extra in the colour pass).
+      for (int k = 0; k < 4; ++k) {
+        for (int j = 0; j < 3; ++j) {
+          const double sign = ((k == 2) != (j == 2)) ? -1.0 : 1.0;
+          lights.motion[j * 4 + k] = float(sign * use.motion.m[k][j]);
+        }
+      }
+      lights.tan_prev[0] = history_tan_[0];
+      lights.tan_prev[1] = history_tan_[1];
+      lights.gain = plan.gi.lights_gain;
+      if (!lights_logged_) {
+        lights_logged_ = true;
+        REXLOG_INFO("[gpu] ssgi: the first colour chain that took the last frame's light (the deferred light pass: neon, headlights, street lamps) as part of the bounce light's radiance, reprojected with "
+                    "the camera's motion from {} (mcla_gpu_ssgi_lights, gain {:.3g}; reported once)",
+                    PoseName(use.pose), double(plan.gi.lights_gain));
+      }
+    }
+  }
   return recipe;
 }
 

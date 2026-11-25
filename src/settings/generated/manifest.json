@@ -557,6 +557,29 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ssgi_lights": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the bounce light also takes the light the deferred light pass added in the last frame (neon, headlights, street lamps) as part of the \"\n    \"radiance it gathers, reprojected into this frame with the camera's motion and the depth history, so a wall beside a neon car picks up its colour and a \"\n    \"garage's wall lit by the headlights lights the floor. It needs the bounce light (mcla_gpu_ssgi) on and the extracted screen products \"\n    \"(mcla_gpu_screen_extract). False: the colour chain as it was before, which sees the colour before the light pass only (the A/B). Costs two captures of \"\n    \"the main colour at the bounce light's size (the colour before and after the light pass, only in a frame whose light pass ran) and a few more reads in \"\n    \"the colour chain. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssgi_lights_gain": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how much of the last frame's light (mcla_gpu_ssgi_lights) the bounce light takes as radiance, 0 to 8: 1 the light as it was lit, 0 none \"\n    \"(the bounce light as it was), 2 twice as much. It is held under the same cap as every radiance the bounce takes (mcla_gpu_ssgi_test_clamp), so a \"\n    \"larger gain mostly makes a dim lamp's light count as much as a bright one's. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_contact_shadows": {
   "type": "std::string",
   "default": "\"auto\"",

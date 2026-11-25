@@ -837,6 +837,10 @@ class AmbientOcclusion {
     bool half_above = true;        // mcla_gpu_ssgi_half: half size above 1080 lines at every quality (ao_size.h), and then one MSAA sample
                                    // in the colour chain (Plan::OneSampleColour)
     bool apply = false;            // the apply pass with the bounce runs (else the plain apply reads the visibility)
+    // GI-BOUNCE-SS (ssgi_lights.h, perf/GI-BOUNCE.md): the colour chain also takes the light the deferred light pass added in the LAST frame (neon, headlights, street lamps), reprojected into this one, under the
+    // same cap. On wherever the bounce light runs from the owner's extraction (mcla_gpu_ssgi_lights, debug only: false is the chain as it was); the frame still has to have a usable history (the colour chain's recipe).
+    bool lights = false;
+    float lights_gain = 1.0f;      // mcla_gpu_ssgi_lights_gain
     // The numbers of the strength level (mcla_gpu_ssgi_intensity; ssgi_level.h) with the debug cvars' overrides:
     float strength = 1.25f;        // the bounce's gain; 0 runs the passes and adds nothing
     float limit = 2.5f;            // the most it may add to a pixel, as a multiple of the pixel's own colour (a soft guard)
@@ -1433,6 +1437,7 @@ class AmbientOcclusion {
   bool images_failed_logged_ = false;
   // The SSGI test. What the log says once: why a frame had none; and the frames it ran.
   bool gi_failed_logged_ = false;
+  mutable bool lights_logged_ = false;  // GI-BOUNCE-SS: the first colour chain that took the last frame's lights was logged
   uint32_t last_gi_logged_ = ~0u;
   uint32_t gi_level_logged_ = ~0u;  // the strength level (and whether a debug cvar changed it) the log last said
   bool gi_light_logged_[5] = {};   // per menu_world::World: the light constants the bounce light first ran with there were logged

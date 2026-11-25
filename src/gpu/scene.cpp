@@ -3809,8 +3809,16 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // RT-LIGHTS-D1 part 2: while DLSS Ray Reconstruction takes the frame the ray traced light visibility runs RAW (no filter; the light pass reads the 1 spp signal): TemporalSystem::RawModes, false with the plan not
     // RR, and asked only while the effect is wanted (the census counts the frames asked).
     local_lights_->SetRtRawMode(local_lights_->rt_lights_wanted() && temporal_ && temporal_->RawModes().RtLights());
+    // GI-BOUNCE-SS (ssgi_lights.h, perf/GI-BOUNCE.md): the bounce light takes the light this pass adds in the NEXT frame's colour chain: the main colour is captured right before it and right after it (only in a
+    // frame whose AO ran the bounce light with the lights' share; screen_shared.h CaptureLightsBefore / After), and the chain adds their difference, reprojected, to its radiance. Nothing here writes the main colour.
+    const bool lights_before = screen_ && screen_->CaptureLightsBefore(record, summary, list);
+    order_.Note(frame_order::Step::kLightsBefore, lights_before);
     const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);
     order_.Note(frame_order::Step::kLocalLights, local_lights_ran);
+    if (lights_before && local_lights_ran) {
+      const bool lights_after = screen_->CaptureLightsAfter(record, summary, list);
+      order_.Note(frame_order::Step::kLightsAfter, lights_after);
+    }
   }
   if (shafts_ && shafts_->wants_draws()) {
     // At the same mid-scene depth copy the sun shafts take the sky's brightness (their own passes and

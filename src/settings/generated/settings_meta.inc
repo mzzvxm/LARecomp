@@ -493,6 +493,8 @@
 {"mcla_gpu_ssgi_clamp", "MCLA/GPU"},
 {"mcla_gpu_ssgi_far_steps", "MCLA/GPU"},
 {"mcla_gpu_ssgi_half", "MCLA/GPU"},
+{"mcla_gpu_ssgi_lights", "MCLA/GPU"},
+{"mcla_gpu_ssgi_lights_gain", "MCLA/GPU"},
 {"mcla_gpu_ssgi_intensity", "MCLA/GPU"},
 {"mcla_gpu_ssgi_low", "MCLA/GPU"},
 {"mcla_gpu_ssgi_radius", "MCLA/GPU"},

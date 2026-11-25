@@ -74,6 +74,7 @@
 #include "screen_frame.h"
 #include "screen_history.h"
 #include "screen_rules.h"
+#include "ssgi_lights.h"
 #include "temporal_identities.h"
 
 namespace mcla::gpu {
@@ -209,6 +210,26 @@ class ScreenShared {
   // True while a capture is planned and not made yet this frame (the Scene calls CapturePost only then).
   bool capture_wanted() const { return !post_done_ && (plan_.make & screen::ProductBit(screen::kColourPost)) != 0; }
 
+  // --- the lights' share of the bounce light's radiance (GI-BOUNCE-SS: ssgi_lights.h, screen_lights.cpp, perf/GI-BOUNCE.md) ------------------------------------------------------------------
+  // The AO says, once a frame in which its bounce light runs with the lights' share (Plan::GiPlan::lights), that the colour before and after the deferred light pass is wanted. Per frame, not sticky: the
+  // images go back after a couple of seconds without it.
+  void WantLights(bool on) { lights_wanted_ = on; }
+  bool lights_wanted() const { return lights_wanted_; }
+  // The last frame's two captures for the colour chain of THIS frame (the owner's frame count), in a view of kind `pause`, at the traced size width x height, when the AO's own history holds this frame
+  // (`ao_history`: its camera motion is the one the reprojection uses): the bindless slots of the colour after and before the light pass. Not usable: the first frame, a cut, another kind of view or size, and
+  // any frame after one that had no light pass (the chain is then today's).
+  struct LightHistory {
+    bool usable = false;
+    uint32_t post_slot = screen::kNoSlot;
+    uint32_t pre_slot = screen::kNoSlot;
+  };
+  LightHistory LightHistoryFor(bool pause, uint32_t width, uint32_t height, bool ao_history) const;
+  // BEFORE the deferred light pass (the Scene calls it just ahead of it, only while the pass will be asked): the main colour averaged over its host samples into the "before" image, at the traced size. True
+  // when recorded (the caller's list state is gone). Once a frame; only in a frame whose AO ran the bounce light (the colour chain was recorded) and wanted the lights.
+  bool CaptureLightsBefore(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list);
+  // RIGHT AFTER the light pass, when it recorded: the same into the "after" image. Makes the pair the next frame's history. True when recorded. Once a frame.
+  bool CaptureLightsAfter(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list);
+
   // What a consumer reads: valid from the trigger to the frame's end (BeginFrame empties it).
   const screen::ScreenFrame& Frame() const { return frame_; }
   // The exposure factor of the main colour target as the last tracked draw saw it (2^exp_bias: the shaders' output times this is what colour_post holds; the game's bias is 4: 16), 1 where no draw has
@@ -287,6 +308,10 @@ class ScreenShared {
   std::unique_ptr<plume::RenderPipeline> MakeColourPipeline(uint32_t pass);
   bool ColourPipelinesReady();
   void ReleaseColourPost();
+  // The lights' share (screen_lights.cpp): the frame's start (the wants, the idle count), the images' release, and the capture both sides of the light pass share.
+  void LightsBeginFrame();
+  void ReleaseLights();
+  bool CaptureLightsInto(HostImage& image, const char* label, const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool* pause_out);
   plume::RenderPipeline* ViewPipelineFor(plume::RenderFormat format, uint32_t samples);
   void LogWants();
   // The frame as the inputs say, with the generation of the last sealed frame; Seal gives it its own (once the frame's last product is in).
@@ -361,6 +386,19 @@ class ScreenShared {
   bool post_first_logged_ = false;
   uint64_t post_captures_ = 0;
   uint32_t post_logged_size_[2] = {};
+
+  // the lights' share of the bounce light's radiance (screen_lights.cpp): the colour before and after the deferred light pass at the traced size. Each frame's pair is the next frame's history (the AO's colour chain
+  // reads it before this frame's captures overwrite it, in command order), so one pair is enough: no trade.
+  HostImage lights_pre_;
+  HostImage lights_post_;
+  ssgi_lights::Key lights_key_;      // the frame that made both, and the view kind and size they are
+  bool lights_wanted_ = false;       // the AO's want of this frame (BeginFrame turns it into the idle count)
+  bool lights_before_done_ = false;  // this frame's captures
+  bool lights_after_done_ = false;
+  bool lights_pause_ = false;
+  uint32_t lights_idle_frames_ = 0;
+  bool lights_failed_logged_ = false;
+  bool lights_first_logged_ = false;
 
   // the camera history and the frame's own draws
   screen::CameraHistory cameras_;
