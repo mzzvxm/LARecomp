@@ -232,6 +232,23 @@ class CameraSettings final : public rex::SettingOwner {
   // BadassBaboon's Recomp Adjustments: Continuous exponential camera boom smoothing at 60 FPS
   REX_SETTING(bool, smooth_chase_cam, true, "Fix: Smooth chase camera boom interpolation at 60 FPS using continuous-time exponential decay.", rex::kDebugOnly);
 
+  REX_SETTING(bool, cam_freelook_boom, false, "Turn the mouse look inside the gameplay cameras' own update (camBoomCS, 0x82320EA0) instead of "
+    "on the finished view matrix: the chase cameras orbit the car's middle at their own distance, "
+    "the bumper and cockpit turn in place, and the game's camera collision then keeps the view "
+    "out of walls. Off: the old look, which orbits a point guessed 7.5 units along the view line. "
+    "Cameras that are not camBoomCS (cinematics, replays) keep the old look either way.");
+
+  REX_SETTING(f64, cam_freelook_inplace_dist, 3.0, "With cam_freelook_boom: a camera closer than this to the car's middle, measured flat, is "
+    "mounted on the car (bumper, cockpit) and turns in place instead of orbiting. The game's own "
+    "mounted flag (cs+668) counts too.", rex::Range{0.0, 20.0}, rex::kDebugOnly);
+
+  REX_SETTING(bool, cam_orbit_record, false, "Write every gameplay camera update while the mouse look is engaged to <exe>/cam_orbit.csv "
+    "(camera, look-at target, the game's pivot, the angles), old look or new, for "
+    "`larecomp_camera_orbit_test cam_orbit.csv` to check offline. At most 36000 rows a run.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mouse_menu_drag, true, "Off the road (the garage, the pause menu, the photo mode), hold a mouse button and drag to move the right stick: it turns the "
+    "garage's camera, enters the photo mode from the pause menu (drag sideways) and moves the photo camera, as the controller's right stick does.");
+
 };
 
 inline CameraSettings& g_camera = larecomp::Leak<CameraSettings>();
@@ -274,5 +291,9 @@ inline auto& mouse_look_log = g_camera.mouse_look_log;
 inline auto& scale_camera_shake = g_camera.scale_camera_shake;
 inline auto& smooth_camera_transitions = g_camera.smooth_camera_transitions;
 inline auto& smooth_chase_cam = g_camera.smooth_chase_cam;
+inline auto& cam_freelook_boom = g_camera.cam_freelook_boom;
+inline auto& cam_freelook_inplace_dist = g_camera.cam_freelook_inplace_dist;
+inline auto& cam_orbit_record = g_camera.cam_orbit_record;
+inline auto& mouse_menu_drag = g_camera.mouse_menu_drag;
 
 }  // namespace larecomp::settings

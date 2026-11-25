@@ -66,6 +66,9 @@ class DiagnosticsSettings final : public rex::SettingOwner {
   REX_SETTING(bool, warp_transition_trace, false, "Log every frame the warper spends waiting on a cinematic warp transition: the "
     "transition's time, duration, active flag and the frame delta.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mouse_drag_diag, false, "Log, once a second, which of the game's raw right-stick readers ran and what the game's pad records hold "
+    "(for the mouse drag in the garage and the menus).", rex::kDebugOnly);
+
 };
 
 inline DiagnosticsSettings& g_diagnostics = larecomp::Leak<DiagnosticsSettings>();
@@ -83,5 +86,6 @@ inline auto& tune_field_probe = g_diagnostics.tune_field_probe;
 inline auto& ui_color_log = g_diagnostics.ui_color_log;
 inline auto& warp_transition_test_miss = g_diagnostics.warp_transition_test_miss;
 inline auto& warp_transition_trace = g_diagnostics.warp_transition_trace;
+inline auto& mouse_drag_diag = g_diagnostics.mouse_drag_diag;
 
 }  // namespace larecomp::settings

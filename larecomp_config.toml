@@ -27360,6 +27360,21 @@ address = 0x8231CEB0
 name = "Hook_CameraStateUpdate"
 registers = ["r31"]
 
+# Gameplay camera: the mouse look inside camBoomCS::Update (sub_82320298), about the game's own pivot.
+#
+# 0x82321274 is `addi r11, r30, 0x30`, just after the rate limit has stored the camera position (v127 -> cs+416) and the
+# look-at target (v62 -> cs+432). Both are still live in v127 and v62 (and at r1+0x70 / r1+0x80) and nothing has read them
+# yet: next come the transform by the car frame at cs+256 into cs+64, sub_82202EC0 (the view matrix) and sub_8231FD60 (the
+# camera collision). Turning both registers about the car here gives the orbit the car's real middle (*(car+368)+32, or the
+# camera itself when cs+668 says the boom is mounted) and the boom's real distance, leaves the collision to the game, and keeps
+# the turn out of the rate limit: the limiter compares against cs+416, which stays the game's own unturned camera, so a fast
+# mouse is not slowed down to the limiter's speed nor dragged on a straight line through the car.
+# r31 = the boom (`mr r31, r3` in the prologue).
+[[midasm_hook]]
+address = 0x82321274
+name = "Hook_CameraBoomLook"
+registers = ["r1", "r31", "v127", "v62"]
+
 # Camera transition smoothing: eliminate wrap discontinuity & jitter
 #
 # sub_8271F438 (cameraTransition::Update) decomposes the source and destination
@@ -27885,6 +27900,536 @@ address = 0x8236076C
 name = "Hook_RoadReflCarsPlane"
 registers = ["f0"]
 after_instruction = true
+
+# Owned cars past 30 (owned_cars.cpp, owned_cars_sites.inc; owned_cars_limit = 30 makes every
+# hook below do nothing). Each site moves the register the instruction at `address` just wrote
+# into the block that holds the owned cars, their damage or their plate bytes.
+
+[[midasm_hook]]
+address = 0x8226DA54
+name = "OwnedCars_8226DA54"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82276200
+name = "OwnedCars_82276200"
+registers = ["r31"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8228192C
+name = "OwnedCars_8228192C"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x822821B0
+name = "OwnedCars_822821B0"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x822855B0
+name = "OwnedCars_822855B0"
+registers = ["r4"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8228831C
+name = "OwnedCars_8228831C"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8228A0D8
+name = "OwnedCars_8228A0D8"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82290F1C
+name = "OwnedCars_82290F1C"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x822AABC4
+name = "OwnedCars_822AABC4"
+registers = ["r4"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x822CF838
+name = "OwnedCars_822CF838"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238AA68
+name = "OwnedCars_8238AA68"
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238AAB0
+name = "OwnedCars_8238AAB0"
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238AC04
+name = "OwnedCars_8238AC04"
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238AC3C
+name = "OwnedCars_8238AC3C"
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238AF10
+name = "OwnedCars_8238AF10"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238B600
+name = "OwnedCars_8238B600"
+registers = ["r25"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238B720
+name = "OwnedCars_8238B720"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C670
+name = "OwnedCars_8238C670"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238CB58
+name = "OwnedCars_8238CB58"
+registers = ["r11"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238CBA4
+name = "OwnedCars_8238CBA4"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269E020
+name = "OwnedCars_8269E020"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A4744
+name = "OwnedCars_826A4744"
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A724C
+name = "OwnedCars_826A724C"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A7DFC
+name = "OwnedCars_826A7DFC"
+registers = ["r24"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9918
+name = "OwnedCars_826A9918"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9AC0
+name = "OwnedCars_826A9AC0"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9DB0
+name = "OwnedCars_826A9DB0"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AA45C
+name = "OwnedCars_826AA45C"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AA9A4
+name = "OwnedCars_826AA9A4"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AE7E8
+name = "OwnedCars_826AE7E8"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AFF60
+name = "OwnedCars_826AFF60"
+registers = ["r8"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826B2098
+name = "OwnedCars_826B2098"
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826B2CBC
+name = "OwnedCars_826B2CBC"
+registers = ["r4"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826B9E2C
+name = "OwnedCars_826B9E2C"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826BA1C8
+name = "OwnedCars_826BA1C8"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82275ED4
+name = "OwnedCars_82275ED4"
+registers = ["r11"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82285C8C
+name = "OwnedCars_82285C8C"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8228B0C0
+name = "OwnedCars_8228B0C0"
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269A174
+name = "OwnedCars_8269A174"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A736C
+name = "OwnedCars_826A736C"
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238AB74
+name = "OwnedCars_8238AB74"
+registers = ["r31"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238AF40
+name = "OwnedCars_8238AF40"
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238B440
+name = "OwnedCars_8238B440"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238B4D0
+name = "OwnedCars_8238B4D0"
+registers = ["r11"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238B624
+name = "OwnedCars_8238B624"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238BC74
+name = "OwnedCars_8238BC74"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238BD04
+name = "OwnedCars_8238BD04"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C2C4
+name = "OwnedCars_8238C2C4"
+registers = ["r28"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C898
+name = "OwnedCars_8238C898"
+registers = ["r31"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238ACF4
+name = "OwnedCars_8238ACF4"
+registers = ["r11"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238AD34
+name = "OwnedCars_8238AD34"
+registers = ["r8"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238B790
+name = "OwnedCars_8238B790"
+registers = ["r7"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A7FBC
+name = "OwnedCars_826A7FBC"
+registers = ["r8"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82275ECC
+name = "OwnedCars_82275ECC"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82276218
+name = "OwnedCars_82276218"
+registers = ["r10", "r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826B2CD8
+name = "OwnedCars_826B2CD8"
+registers = ["r7", "r11"]
+after_instruction = true
+
+# The `cmpwi 30` on the owned count before a car is added. The hook runs before the compare and,
+# with room in the block, jumps where the game goes with fewer than 30 cars; otherwise the
+# compare runs as the game has it. The new-game loop's compare (0x8238C2D8) keeps its 30.
+# sub_8238B6E8 AddCar: r30 = count, the new slot (fall-through past bge)
+[[midasm_hook]]
+address = 0x8238B714
+name = "OwnedCars_Gate_8238B714"
+registers = ["r30"]
+jump_address_on_true = 0x8238B71C
+
+# sub_826AB520 case 149: showroom purchase check (blt target)
+[[midasm_hook]]
+address = 0x826AFA70
+name = "OwnedCars_Gate_826AFA70"
+registers = ["r11"]
+jump_address_on_true = 0x826AFAC4
+
+# sub_826AB520 case 150: purchase with trade-in check (blt target)
+[[midasm_hook]]
+address = 0x826AF660
+name = "OwnedCars_Gate_826AF660"
+registers = ["r11"]
+jump_address_on_true = 0x826AF6B4
+
+# sub_826A9A88: finish a trade-in purchase (fall-through past bge)
+[[midasm_hook]]
+address = 0x826A9AA4
+name = "OwnedCars_Gate_826A9AA4"
+registers = ["r11"]
+jump_address_on_true = 0x826A9AAC
+
+# sub_826A9C60: finish a showroom purchase (fall-through past bge)
+[[midasm_hook]]
+address = 0x826A9C7C
+name = "OwnedCars_Gate_826A9C7C"
+registers = ["r11"]
+jump_address_on_true = 0x826A9C84
+
+# sub_826AFFD8: Rate My Ride purchase (blt target)
+[[midasm_hook]]
+address = 0x826B00DC
+name = "OwnedCars_Gate_826B00DC"
+registers = ["r11"]
+jump_address_on_true = 0x826B00F0
+
+# `addi r21,r28,108` in mcGarage::ListOwnedVehicles (sub_826A7170): the pointer into the garage's
+# name pool the loop walks, moved to a block of its own when the owned-car cap passes 120
+# (owned_cars_ui.cpp). The owned lists' row counts are raised from ShowroomRows_8269381C.
+[[midasm_hook]]
+address = 0x826A72E8
+name = "OwnedCarsUi_826A72E8"
+registers = ["r21"]
+after_instruction = true
+
+# Host MaxPlayers 2..31 through the game's own host menu (src/mc_engine/online/max_players.cpp).
+# Every hook is a no-op while net_max_players = 16.
+[[midasm_hook]]
+address = 0x8227D3D4
+name = "MaxPlayers_8227D3D4"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8265A68C
+name = "MaxPlayers_8265A68C"
+registers = ["r4", "r5", "r29"]
+
+[[midasm_hook]]
+address = 0x826586F4
+name = "MaxPlayers_826586F4"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x82656AA8
+name = "MaxPlayers_82656AA8"
+registers = ["r4"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82656AC0
+name = "MaxPlayers_82656AC0"
+registers = ["r10"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8265DEA4
+name = "MaxPlayers_8265DEA4"
+registers = ["r8"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8265DFB0
+name = "MaxPlayers_8265DFB0"
+registers = ["r7", "r9"]
+
+[[midasm_hook]]
+address = 0x822859BC
+name = "MaxPlayers_822859BC"
+registers = ["r11"]
+
+[[midasm_hook]]
+address = 0x82631B1C
+name = "MaxPlayers_82631B1C"
+registers = ["r3", "r30", "r31"]
+
+# Lobby gamer list row budget and post-race standings above 16 players
+# (src/mc_engine/online/net_sweep.cpp). Every hook is a no-op while net_max_players = 16.
+[[midasm_hook]]
+address = 0x82286CCC
+name = "NetSweep_82286CCC"
+registers = ["r7"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82286D14
+name = "NetSweep_82286D14"
+registers = ["r7"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82286D40
+name = "NetSweep_82286D40"
+registers = ["r9"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826750CC
+name = "NetSweep_826750CC"
+registers = ["r25"]
+jump_address_on_true = 0x826750D0
+
+
+# Remote-gamer item pool sized for MaxPlayers (src/mc_engine/online/net_pool.cpp).
+# Every hook is a no-op while net_max_players = 16.
+[[midasm_hook]]
+address = 0x82279D50
+name = "NetPool_82279D50"
+registers = ["r4"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82279D58
+name = "NetPool_82279D58"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x8227CD50
+name = "NetPool_8227CD50"
+registers = ["r31"]
+jump_address_on_true = 0x8227CD6C
+
+
+# Online races keep at most 16 racers when the session holds more players
+# (src/mc_engine/online/net_race.cpp). Every hook is a no-op while net_max_players = 16.
+[[midasm_hook]]
+address = 0x82282904
+name = "NetRace_82282904"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x82291AB0
+name = "NetRace_82291AB0"
+registers = ["r3", "r10"]
+
+[[midasm_hook]]
+address = 0x82291B1C
+name = "NetRace_82291B1C"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x82293904
+name = "NetRace_82293904"
+registers = ["r28"]
+jump_address_on_true = 0x82293930
+
+[[midasm_hook]]
+address = 0x82291D7C
+name = "NetRace_82291D7C"
+registers = ["r28"]
+
+
+# car_guard.cpp: broken vinyl layers (NaN halves, shapes not in the catalog) in a
+# car that comes from outside. mcCarConfig::Import (sub_82390940) right after the
+# bitstream read (bl sub_82395A50): r30 = the CarConfig being filled.
+[[midasm_hook]]
+address = 0x82390984
+name = "Hook_CarGuardImport"
+registers = ["r30"]
+after_instruction = false
 
 # The disc error handler (sub_82130678, 0x18 bytes) does nothing here: the game files are on the host disk.
 # It used to be replaced at start-up with a no-op through the function table (SetFunction); the hook with

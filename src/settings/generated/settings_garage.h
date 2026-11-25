@@ -54,6 +54,16 @@ class GarageSettings final : public rex::SettingOwner {
     "(garage entry / edits) so decals appear everywhere, while keeping readback "
     "OFF during racing for full performance. Leave ON.", rex::kDebugOnly);
 
+  REX_SETTING(i32, vinyl_layers_per_frame, 32, "How many car vinyl layers the garage may draw in one frame while it builds "
+    "a car's vinyl (MANAGE VEHICLES, Vinyl Editor). The game draws one a frame, "
+    "so a car with 200+ layers takes several seconds to show its vinyl; with 32 "
+    "it takes a handful of frames. 1 = the game's own pace.", rex::Range{1, 224});
+
+  REX_SETTING(i32, vinyl_shape_prefetch, 16, "While a car's vinyl is being built, keep this many of the vinyl shapes the "
+    "remaining layers use loaded ahead of time, so each shape is loaded once "
+    "instead of every time the layers come back to it. Each shape is ~0.4 MB of "
+    "streaming memory. 0 = the game's own loading (one shape at a time).", rex::Range{0, 64});
+
 };
 
 inline GarageSettings& g_garage = larecomp::Leak<GarageSettings>();
@@ -65,5 +75,7 @@ inline auto& extra_vinyl_layers = g_garage.extra_vinyl_layers;
 inline auto& import_vinyl = g_garage.import_vinyl;
 inline auto& mod_bodykits = g_garage.mod_bodykits;
 inline auto& vinyl_auto_readback = g_garage.vinyl_auto_readback;
+inline auto& vinyl_layers_per_frame = g_garage.vinyl_layers_per_frame;
+inline auto& vinyl_shape_prefetch = g_garage.vinyl_shape_prefetch;
 
 }  // namespace larecomp::settings

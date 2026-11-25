@@ -38,6 +38,10 @@ constexpr int64_t kWantFreshMs = 250;
 constexpr int kMaxModeLines = 400;
 
 std::atomic<int64_t> g_want_ms[2] = {{0}, {0}};  // when each client last asked
+std::atomic<bool> g_drag_on{false};   // the gate is on because of a menu drag: the deltas are the drag's, not the look's
+std::atomic<int32_t> g_drag_axes{0};  // rx in the low 16 bits, ry in the high ones
+DragStick g_drag_stick;               // game thread
+int64_t g_drag_last_ms = 0;
 
 Gate g_gate;  // game thread only
 bool g_logged_want = false;
@@ -68,7 +72,10 @@ bool OverlayWantsMouse() {
 
 void Want(Client client) { g_want_ms[static_cast<int>(client)].store(NowMs(), std::memory_order_relaxed); }
 
+void MenuDragDiagTick();  // menu_drag_diag.cpp
+
 void Tick() {
+  MenuDragDiagTick();
   rex::ui::IUISystem* ui = larecomp::sdk::UI();
   rex::hid::IInputSystem* input = larecomp::sdk::Input();
   if (!ui || !input || !ui->HasWindow()) return;
@@ -90,8 +97,25 @@ void Tick() {
     f.menu = larecomp::keyboard::MenuScreenUp();
     f.phone = larecomp::keyboard::PhoneScreenUp();
     f.map = MapMouseWantsPointer();
+    f.drag = larecomp::settings::mouse_menu_drag.Get() && larecomp::keyboard::MouseDragButtonHeld() && (f.menu || !f.driving);
   }
   const bool want = g_gate.Step(f, now);
+  const bool drag = want && g_gate.why() == Why::Drag;
+  g_drag_on.store(drag, std::memory_order_relaxed);
+  {
+    const float dt = g_drag_last_ms ? float(now - g_drag_last_ms) / 1000.0f : 0.0f;
+    g_drag_last_ms = now;
+    float dx = 0.0f, dy = 0.0f;
+    const bool live = drag && Engaged();
+    if (live) {
+      const rex::PointerDelta motion = input->TakeMotion();
+      dx = motion.dx;
+      dy = motion.dy;
+    }
+    StepDrag(g_drag_stick, live, dx, dy, dt, DragParams{});
+    const int16_t rx = SteerToAxis(g_drag_stick.x), ry = SteerToAxis(g_drag_stick.y);
+    g_drag_axes.store(int32_t(uint32_t(uint16_t(rx)) | (uint32_t(uint16_t(ry)) << 16)), std::memory_order_relaxed);
+  }
 
   if (want != g_logged_want) {
     g_logged_want = want;
@@ -115,6 +139,7 @@ bool Take(Client client, float& dx, float& dy) {
   dy = 0.0f;
   rex::hid::IInputSystem* input = larecomp::sdk::Input();
   if (!input || !Engaged()) return false;
+  if (g_drag_on.load(std::memory_order_relaxed)) return false;  // a menu drag owns the motion
   if (Owner(NowMs()) != client) return false;
   const rex::PointerDelta motion = input->TakeMotion();
   dx = motion.dx;
@@ -132,6 +157,13 @@ bool Engaged() {
   return input && input->GetPointerModeToApply() == rex::PointerMode::kLocked;
 }
 
+bool MenuDragAxes(int16_t& rx, int16_t& ry) {
+  const uint32_t v = uint32_t(g_drag_axes.load(std::memory_order_relaxed));
+  rx = int16_t(uint16_t(v & 0xFFFF));
+  ry = int16_t(uint16_t(v >> 16));
+  return v != 0;
+}
+
 }  // namespace larecomp::mouselook
 
 #else  // REXGLUE_HAS_XEO3_TARGET
@@ -146,6 +178,10 @@ bool Take(Client, float& dx, float& dy) {
   return false;
 }
 bool Engaged() { return false; }
+bool MenuDragAxes(int16_t& rx, int16_t& ry) {
+  rx = ry = 0;
+  return false;
+}
 
 }  // namespace larecomp::mouselook
 

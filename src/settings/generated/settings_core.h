@@ -18,8 +18,8 @@ class CoreSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_controller_toast, true, "Show the MCLA-styled toast when a controller connects or disconnects. Its corner follows "
     "controller_toast_position.");
 
-  REX_SETTING(bool, profile_auto_select, false, "Start with the save named by user_name and never show the save picker, even when several "
-    "saves exist. The picker's 'Always use this save' box sets it; hold Shift while the game "
+  REX_SETTING(bool, profile_auto_select, false, "Start with the save named by user_name and never show the save picker. Off by default: "
+    "the picker shows at every start, even with a single save. The picker's 'Always use this save' box sets it; hold Shift while the game "
     "starts to see the picker once anyway.");
 
   REX_SETTING(bool, skip_save_import, false, "Skip the save import wizard shown on first launch and start with no save. "

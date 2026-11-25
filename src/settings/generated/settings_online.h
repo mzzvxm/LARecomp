@@ -19,10 +19,14 @@ class OnlineSettings final : public rex::SettingOwner {
     "default session settings that MCLA turns off above 8. Applies to the next "
     "session you host.");
 
+  REX_SETTING(i32, net_max_players, 31, "Largest MaxPlayers the host menu offers (2..31). 16 is the game's own limit; above 16 "
+    "the menu lists 2, 4, ... and the odd value itself as the last entry.", rex::kRequiresRestart);
+
 };
 
 inline OnlineSettings& g_online = larecomp::Leak<OnlineSettings>();
 
 inline auto& net_lift_big_session_limits = g_online.net_lift_big_session_limits;
+inline auto& net_max_players = g_online.net_max_players;
 
 }  // namespace larecomp::settings

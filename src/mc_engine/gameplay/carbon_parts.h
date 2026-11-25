@@ -53,5 +53,10 @@ const char* CarbonPresetNameAt(int index);
 uint8_t CarbonPresetMaskAt(int index);
 void CarbonApplyPresetIndex(int index);
 
+// Copy `size` bytes at `offset` of a live CustomData into the owned car's save
+// record and mark the profile dirty. Does nothing when the config is not the
+// current owned car's.
+void CustomDataStoreInOwnedRecord(uint32_t custom, uint32_t offset, uint32_t size);
+
 // Group bit for a part slot (0 = slot never gets carbon).
 uint8_t CarbonBitForSlot(int slot);

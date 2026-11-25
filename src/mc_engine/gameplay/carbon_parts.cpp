@@ -1,6 +1,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "carbon_parts.h"
 #include "larecomp_log.h"
+#include "mc_engine/hooks/owned_cars.h"
 
 #include <atomic>
 #include <cstdint>
@@ -53,7 +54,8 @@
 // Where the byte lives per car:
 //   The 0x898 byte belongs to a CarConfig (8176 bytes). Every owned car has
 //   its own CarConfig in the LocalOptions save block (0x8288E920 + 1360 +
-//   8176 * index; +1340 owned count, +1344 current index, +254032 dirty), and
+//   8176 * index; +1340 owned count, +1344 current index, +254032 dirty; past
+//   30 owned cars the configs live in owned_cars.cpp's block), and
 //   the game moves the WHOLE config, carbon included, both ways:
 //     slot -> live   LoadOwnedVehicle sub_826A4718 -> sub_822AAE48 stages a
 //                    copy, sub_822AAA18 copies it into the live config once
@@ -94,10 +96,7 @@ constexpr uint32_t kPlayerVehicle = 0x8288DCF8;
 constexpr uint32_t kLocalOptions = 0x8288E920;
 constexpr uint32_t kLoOwnedCount = 1340;
 constexpr uint32_t kLoCurrentIndex = 1344;
-constexpr uint32_t kLoCarConfigs = 1360;
 constexpr uint32_t kLoDirty = 254032;
-constexpr uint32_t kCarConfigSize = 8176;
-constexpr int kMaxOwnedCars = 30;
 // CarConfig vehicle name, char[32]. sub_8238AB50 matches owned cars by it.
 constexpr uint32_t kCarConfigName = 8109;
 constexpr uint32_t kCarConfigNameLen = 32;
@@ -237,37 +236,39 @@ void WriteGuestBE32(uint8_t* base, uint32_t ea, uint32_t v) {
 // is set; a showroom or test car falls through to "not owned".
 constexpr uint32_t kCarConfigOwned = 8100;
 
-// Copy the mask into the save record of the car the live config belongs to:
+// Copy bytes of the live config into the save record of the car it belongs to:
 // the current owned slot, and only when that slot really holds the same car.
 // Same condition LeaveGarage uses, plus the name check, because right after a
 // swap the current index already points at the next car while the live config
 // still holds the previous one until it streams in (sub_822AAA18).
-void StoreInOwnedRecord(uint8_t* base, uint32_t custom, uint8_t mask) {
+void StoreInOwnedRecord(uint8_t* base, uint32_t custom, uint32_t offset,
+                        uint32_t size) {
     if (ReadGuestBE32(base, custom + kCarConfigOwned) == 0) return;
 
     const int32_t count =
         static_cast<int32_t>(ReadGuestBE32(base, kLocalOptions + kLoOwnedCount));
     const int32_t index =
         static_cast<int32_t>(ReadGuestBE32(base, kLocalOptions + kLoCurrentIndex));
-    if (count <= 0 || count > kMaxOwnedCars || index < 0 || index >= count)
+    if (count <= 0 || count > static_cast<int32_t>(owned_cars::Cap()) || index < 0 ||
+        index >= count)
         return;
 
-    const uint32_t record =
-        kLocalOptions + kLoCarConfigs + kCarConfigSize * uint32_t(index);
-    if (record == custom) return;  // the live config is the record itself
+    // The slot's config: in the profile, or in the owned cars' own block.
+    const uint32_t record = owned_cars::CarAddress(uint32_t(index));
+    if (!record || record == custom) return;  // the live config is the record itself
 
     const char* live_name =
         reinterpret_cast<const char*>(base + custom + kCarConfigName);
     const char* slot_name =
         reinterpret_cast<const char*>(base + record + kCarConfigName);
     if (std::strncmp(live_name, slot_name, kCarConfigNameLen) != 0) {
-        LARECOMP_APP_INFO("[Carbon] slot {} holds another car, mask left in the live config",
+        LARECOMP_APP_INFO("[Carbon] slot {} holds another car, change left in the live config",
                           index);
         return;
     }
 
-    if (base[record + kCustomCarbonMask] != mask) {
-        base[record + kCustomCarbonMask] = mask;
+    if (std::memcmp(base + record + offset, base + custom + offset, size) != 0) {
+        std::memcpy(base + record + offset, base + custom + offset, size);
         base[kLocalOptions + kLoDirty] = 1;
     }
 }
@@ -305,6 +306,12 @@ bool SlotWantsCarbon(uint8_t* base, uint32_t sp, int slot, uint32_t veh) {
 
 }  // namespace
 
+void CustomDataStoreInOwnedRecord(uint32_t custom, uint32_t offset, uint32_t size) {
+    uint8_t* base = GetMembase();
+    if (base && IsPlausibleGuestPtr(custom))
+        StoreInOwnedRecord(base, custom, offset, size);
+}
+
 uint8_t CarbonBitForSlot(int slot) {
     if (slot < 0 || slot >= int(sizeof(kSlotGroup))) return 0;
     return kSlotGroup[slot];
@@ -332,7 +339,7 @@ void CarbonSetMask(uint8_t mask) {
 
     // Live config for the renderer, owned record for the save.
     base[custom + kCustomCarbonMask] = mask;
-    StoreInOwnedRecord(base, custom, mask);
+    StoreInOwnedRecord(base, custom, kCustomCarbonMask, 1);
     LARECOMP_APP_INFO("[Carbon] mask 0x{:02X} on car 0x{:08X}", mask, car);
 }
 
@@ -433,7 +440,7 @@ bool Hook_CarbonToggle(PPCRegister& r11) {
     }
     const int next = (idx + 1) % kNumPresets;
     *field = kPresets[next];
-    StoreInOwnedRecord(base, refl - 0x40, kPresets[next]);
+    StoreInOwnedRecord(base, refl - 0x40, kCustomCarbonMask, 1);
 
     LARECOMP_APP_INFO("[Carbon] preset {} -> 0x{:02X} ({})", next,
                       kPresets[next], kPresetNames[next]);
@@ -447,6 +454,7 @@ bool Hook_CarbonToggle(PPCRegister& r11) {
 bool Hook_CarbonPartPush(PPCRegister& r1, PPCRegister& r27, PPCRegister& r31) { return false; }
 bool Hook_CarbonPartPop(PPCRegister& r1, PPCRegister& r27, PPCRegister& r31) { return false; }
 bool Hook_CarbonToggle(PPCRegister& r11) { return false; }
+void CustomDataStoreInOwnedRecord(uint32_t, uint32_t, uint32_t) {}
 uint8_t CarbonBitForSlot(int slot) { return 0; }
 bool CarbonHaveCar() { return false; }
 uint8_t CarbonGetMask() { return 0; }

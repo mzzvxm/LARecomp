@@ -10959,7 +10959,7 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA",
-  "help": "\"Start with the save named by user_name and never show the save picker, even when several \"\n    \"saves exist. The picker's 'Always use this save' box sets it; hold Shift while the game \"\n    \"starts to see the picker once anyway.\"",
+  "help": "\"Start with the save named by user_name and never show the save picker. Off by default: \"\n    \"the picker shows at every start, even with a single save. The picker's 'Always use this save' box sets it; hold Shift while the game \"\n    \"starts to see the picker once anyway.\"",
   "traits": [],
   "comments": [],
   "pp_depth": 0
@@ -11739,6 +11739,207 @@
   "help": "\"Debug (the fix's own switch): the PARKED cars' own ray traced paint reflections. A parked car writes no vehicle stencil ID, so its paint kept the game's reflections \"\n    \"while the player's paint reflected it. With this on, the car's texels in the car history image are marked by its box and depth (a negative distance), its parts carry the traffic paint's bit, and its paint draw is \"\n    \"given the constants of a still car, so the opponents' ray traced pass traces the parked car's paint like a moving traffic car's and the player's reflections show its exact colour. Within the traffic count of \"\n    \"mcla_gpu_car_rt_cars_traffic and the share of mcla_gpu_car_rt_traffic_refl; needs mcla_gpu_car_rt_cars_parked. off: a parked car is reflected but keeps the game's paint, as before. Live.\"",
   "traits": [
    "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "cam_freelook_boom": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Camera",
+  "help": "\"Turn the mouse look inside the gameplay cameras' own update (camBoomCS, 0x82320EA0) instead of \"\n    \"on the finished view matrix: the chase cameras orbit the car's middle at their own distance, \"\n    \"the bumper and cockpit turn in place, and the game's camera collision then keeps the view \"\n    \"out of walls. Off: the old look, which orbits a point guessed 7.5 units along the view line. \"\n    \"Cameras that are not camBoomCS (cinematics, replays) keep the old look either way.\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "cam_freelook_inplace_dist": {
+  "type": "f64",
+  "default": "3.0",
+  "category": "MCLA/Camera",
+  "help": "\"With cam_freelook_boom: a camera closer than this to the car's middle, measured flat, is \"\n    \"mounted on the car (bumper, cockpit) and turns in place instead of orbiting. The game's own \"\n    \"mounted flag (cs+668) counts too.\"",
+  "traits": [
+   "rex::Range{0.0, 20.0}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "cam_orbit_record": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Camera",
+  "help": "\"Write every gameplay camera update while the mouse look is engaged to <exe>/cam_orbit.csv \"\n    \"(camera, look-at target, the game's pivot, the angles), old look or new, for \"\n    \"`larecomp_camera_orbit_test cam_orbit.csv` to check offline. At most 36000 rows a run.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "car_mesh_fixes": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Fix car part models the game ships broken: the Impala 64's second rear \"\n    \"bumper, which sits lower than the others.\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "garage_camber": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Adds a CAMBER row to the garage wheel dimensions screen, editing the \"\n    \"per-car Camber0/1 floats retail saves but was not found to use.\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "garage_menu_fixes": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Fix garage tune files the game ships broken: the low riders' side \"\n    \"exhausts, the CLK63 AMG's missing 3rd and 4th parts, and the city bus's \"\n    \"missing performance list.\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "garage_unlock_parts": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Patches",
+  "help": "\"For testing: every entry of the garage part menus can be picked, whatever \"\n    \"the career has unlocked. Parts bought with it on stay bought.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "kb_latency_log": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Input",
+  "help": "\"Diagnostic: for every key press, log how long it took from the OS (a low-level keyboard hook) to the window's \"\n    \"listener and from there to the game's input poll; every 5 s, how many polls ran and the longest gap between two.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mouse_drag_diag": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Diagnostics",
+  "help": "\"Log, once a second, which of the game's raw right-stick readers ran and what the game's pad records hold \"\n    \"(for the mouse drag in the garage and the menus).\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mouse_menu_drag": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Camera",
+  "help": "\"Off the road (the garage, the pause menu, the photo mode), hold a mouse button and drag to move the right stick: it turns the \"\n    \"garage's camera, enters the photo mode from the pause menu (drag sideways) and moves the photo camera, as the controller's right stick does.\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "net_max_players": {
+  "type": "i32",
+  "default": "31",
+  "category": "MCLA/Online",
+  "help": "\"Largest MaxPlayers the host menu offers (2..31). 16 is the game's own limit; above 16 \"\n    \"the menu lists 2, 4, ... and the odd value itself as the last entry.\"",
+  "traits": [
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "online_car_guard_notice": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Multiplayer",
+  "help": "\"Show a message box when a rigged car was fixed (broken vinyl layers, or \"\n    \"tuning values the game cannot produce) -- another player's, a Rate My \"\n    \"Ride ride or your own garage car once you drive it. The car is fixed \"\n    \"either way.\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "owned_cars_keep_all_generations": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Patches",
+  "help": "\"Keep every set-aside owned-car file, also those a later load proved the save on disk \"\n    \"does not use.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "owned_cars_limit": {
+  "type": "i32",
+  "default": "30",
+  "category": "MCLA/Patches",
+  "help": "\"How many cars a save can own (30 to 255). 30 = the game's own limit and its own storage; \"\n    \"above 30 the cars past the 30th are kept in mc4_owned_cars.bin beside the save, \"\n    \"and a build without this option shows only the first 30. Saving while it is 30 (or with \"\n    \"a build without it) leaves the cars past the 30th out of that save; they stay on disk \"\n    \"and come back with owned_cars_recover_unmatched.\"",
+  "traits": [
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "owned_cars_poison_static": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Patches",
+  "help": "\"Test: fill the profile's own 30 car slots with a pattern while the moved block \"\n    \"is in use, so a read that still goes to them shows at once.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "owned_cars_recover_unmatched": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Patches",
+  "help": "\"For one start: when no owned-car file matches the save loaded and the save owns exactly 30 \"\n    \"cars, add the cars past the 30th from the newest such file beside it (for a save made \"\n    \"while owned_cars_limit was 30). Turn it off again afterwards.\"",
+  "traits": [
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "owned_cars_test_fill": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/Patches",
+  "help": "\"Test: after a load, copy the current car until the save owns this many cars.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "vinyl_layers_per_frame": {
+  "type": "i32",
+  "default": "32",
+  "category": "MCLA/Garage",
+  "help": "\"How many car vinyl layers the garage may draw in one frame while it builds \"\n    \"a car's vinyl (MANAGE VEHICLES, Vinyl Editor). The game draws one a frame, \"\n    \"so a car with 200+ layers takes several seconds to show its vinyl; with 32 \"\n    \"it takes a handful of frames. 1 = the game's own pace.\"",
+  "traits": [
+   "rex::Range{1, 224}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "vinyl_shape_prefetch": {
+  "type": "i32",
+  "default": "16",
+  "category": "MCLA/Garage",
+  "help": "\"While a car's vinyl is being built, keep this many of the vinyl shapes the \"\n    \"remaining layers use loaded ahead of time, so each shape is loaded once \"\n    \"instead of every time the layers come back to it. Each shape is ~0.4 MB of \"\n    \"streaming memory. 0 = the game's own loading (one shape at a time).\"",
+  "traits": [
+   "rex::Range{0, 64}"
   ],
   "comments": [],
   "pp_depth": 0

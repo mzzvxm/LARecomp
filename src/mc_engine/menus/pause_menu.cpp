@@ -4,6 +4,7 @@
 #include "mc_engine/core/world_detail.h"
 #include "pause_menu.h"
 #include "mc_engine/gameplay/carbon_parts.h"
+#include "mc_engine/gameplay/tire_camber.h"
 #include "mc_engine/camera/camera_look.h"
 #include "mc_engine/core/config_save.h"
 #include "mc_engine/gameplay/cutscene_gallery.h"
@@ -35,6 +36,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <cstdint>
@@ -5660,6 +5662,156 @@ static bool TireOffsetOnStateActivate(const char* name) {
     return true;
 }
 
+// ── Garage camber row ───────────────────────────────────────────────────
+//
+// Same shape as the tire offset row, same axle chooser. The value is the car's
+// Camber0/1 (see CamberDegrees in tire_camber.h), written to the live config
+// and to the owned car's save record.
+constexpr const char* kCamberName = "RxCamber";
+constexpr int kCamberMin   = -15;
+constexpr int kCamberMax   = 5;
+constexpr int kCamberCount = kCamberMax - kCamberMin + 1;
+constexpr uint32_t kReflCamberOff = 2032;  // f32, +0 front, +4 rear
+constexpr uint32_t kCustomCamberOff = 64 + kReflCamberOff;
+
+static std::atomic<uint32_t> g_camber_state{0};
+
+// The notch the row shows for an axle: the stored angle, rounded and limited to
+// what the row can display.
+static int CamberGet(int axle) {
+    const uint32_t refl = GarageReflBase();
+    if (!refl) return 0;
+    const uint32_t bits = ReadGuestBE32(refl + kReflCamberOff + uint32_t(axle) * 4);
+    float stored;
+    std::memcpy(&stored, &bits, sizeof(stored));
+    const int value = int(std::lround(CamberDegrees(stored, axle)));
+    if (value < kCamberMin) return kCamberMin;
+    return value > kCamberMax ? kCamberMax : value;
+}
+
+static void CamberSet(int selection, int value) {
+    const uint32_t refl = GarageReflBase();
+    if (!refl) return;
+
+    for (int axle = 0; axle < 2; ++axle) {
+        if (selection != 2 && selection != axle) continue;
+        float stored = float(value);
+        if (value == 0) {
+            stored = kStockCamber[axle];
+        } else if (stored == kStockCamber[axle]) {
+            stored -= 0.01f;  // a real angle must not read as the stock mark
+        }
+        uint32_t bits;
+        std::memcpy(&bits, &stored, sizeof(bits));
+        WriteGuestBE32(refl + kReflCamberOff + uint32_t(axle) * 4, bits);
+    }
+    WriteGuestBE32(refl + kReflDirtyFlags,
+                   ReadGuestBE32(refl + kReflDirtyFlags) | 0x81u);
+    CustomDataStoreInOwnedRecord(refl - 64, kCustomCamberOff, 8);
+}
+
+static const char* CamberChildName(int i) {
+    static char buf[kCamberCount][32];
+    std::snprintf(buf[i], sizeof(buf[0]), "%s.s%d", kCamberName, i);
+    return buf[i];
+}
+
+static void RefreshCamberLabel() {
+    EnsureStringTableText(kCamberName, "CAMBER");
+    const uint32_t item = g_camber_state.load(std::memory_order_relaxed);
+    if (!item) return;
+    const int value = CamberGet(GarageAxleSelection() == 1 ? 1 : 0);
+    WriteGuestBE32(item + kStateActiveChild, uint32_t(value - kCamberMin));
+}
+
+static void EnsureCamberEntry() {
+    if (!CvarGetBool("garage_camber")) return;
+
+    static uint32_t axle_name = 0;
+    if (!axle_name) axle_name = AllocGuestString("Axle_Menu");
+    const uint32_t axle = axle_name ? CallGuestFn1(kFindUIObjectFn, axle_name) : 0;
+    const uint32_t parent = axle ? ReadGuestBE32(axle + 32) : 0;
+    if (!parent) return;
+
+    const uint32_t cached = g_camber_state.load(std::memory_order_relaxed);
+    if (cached) {
+        uint8_t* base = GetMembase();
+        const uint32_t name_ptr = base ? ReadGuestBE32(cached + 20) : 0;
+        if (name_ptr && ReadGuestBE32(cached + 32) == parent &&
+            std::strcmp(reinterpret_cast<const char*>(base + name_ptr),
+                        kCamberName) == 0) {
+            RefreshCamberLabel();
+            return;
+        }
+        g_camber_state.store(0, std::memory_order_relaxed);
+    }
+
+    const uint32_t item = CreateNewMenuState(kCamberName);
+    if (!item) return;
+
+    GuestAppendMenuItem(parent, item);
+    WriteGuestBE32(item + 16, 0x42);
+
+    for (int i = 0; i < kCamberCount; ++i) {
+        const char* key = CamberChildName(i);
+        const uint32_t child = CreateNewMenuState(key);
+        if (!child) continue;
+        GuestAppendMenuItem(item, child);
+        WriteGuestBE32(child + 16, 0x42);
+
+        char value[16];
+        std::snprintf(value, sizeof(value), "%+d", i + kCamberMin);
+        EnsureStringTableText(key, value);
+    }
+
+    g_camber_state.store(item, std::memory_order_relaxed);
+    RefreshCamberLabel();
+    MC_INFO("[camber] row 0x{:08X} + {} values under 0x{:08X}", item,
+            kCamberCount, parent);
+}
+
+static bool CamberOnStateActivate(const char* name) {
+    if (!name) return false;
+
+    if (std::strcmp(name, "DimensionMenu") == 0) {
+        EnsureCamberEntry();
+        return false;
+    }
+
+    if (!g_camber_state.load(std::memory_order_relaxed)) return false;
+
+    if (std::strcmp(name, "Front_Axle") == 0 ||
+        std::strcmp(name, "Rear_Axle") == 0 ||
+        std::strcmp(name, "Both_Axle") == 0) {
+        RefreshCamberLabel();
+        return false;
+    }
+
+    const size_t len = std::strlen(kCamberName);
+    if (std::strncmp(name, kCamberName, len) != 0) return false;
+
+    if (name[len] == '\0') {
+        RefreshCamberLabel();
+        return true;
+    }
+
+    if (name[len] != '.' || name[len + 1] != 's') return false;
+    const int index = std::atoi(name + len + 2);
+    if (index < 0 || index >= kCamberCount) return true;
+
+    const int value = index + kCamberMin;
+    const int selection = GarageAxleSelection();
+    // The value already on the row also activates when the highlight lands on
+    // it. Writing then would round a hand-edited angle, and on BOTH would copy
+    // the front over the rear.
+    if (value == CamberGet(selection == 1 ? 1 : 0)) return true;
+
+    CamberSet(selection, value);
+    RefreshCamberLabel();
+    MC_INFO("[camber] axle {} -> {:+d}", selection, value);
+    return true;
+}
+
 void CarbonOnStateActivate(const char* name, uint32_t state) {
     if (const uint32_t lan = g_lan_state.load(std::memory_order_relaxed); lan && state)
         g_lan_active.store(state == lan || ReadGuestBE32(state + 32) == lan,
@@ -5687,6 +5839,7 @@ void CarbonOnStateActivate(const char* name, uint32_t state) {
     }
 
     if (TireOffsetOnStateActivate(name)) return;
+    if (CamberOnStateActivate(name)) return;
 
     if (!name || !g_garage_carbon_state.load(std::memory_order_relaxed)) return;
 

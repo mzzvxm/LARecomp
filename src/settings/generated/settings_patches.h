@@ -135,6 +135,37 @@ class PatchesSettings final : public rex::SettingOwner {
     "frame early from a duration measured at a fixed 1/30 s step, and real, varying "
     "frame times slip past that prediction.", rex::kDebugOnly);
 
+  REX_SETTING(bool, car_mesh_fixes, true, "Fix car part models the game ships broken: the Impala 64's second rear "
+    "bumper, which sits lower than the others.");
+
+  REX_SETTING(bool, garage_camber, true, "Adds a CAMBER row to the garage wheel dimensions screen, editing the "
+    "per-car Camber0/1 floats retail saves but was not found to use.");
+
+  REX_SETTING(bool, garage_menu_fixes, true, "Fix garage tune files the game ships broken: the low riders' side "
+    "exhausts, the CLK63 AMG's missing 3rd and 4th parts, and the city bus's "
+    "missing performance list.");
+
+  REX_SETTING(bool, garage_unlock_parts, false, "For testing: every entry of the garage part menus can be picked, whatever "
+    "the career has unlocked. Parts bought with it on stay bought.", rex::kDebugOnly);
+
+  REX_SETTING(bool, owned_cars_keep_all_generations, false, "Keep every set-aside owned-car file, also those a later load proved the save on disk "
+    "does not use.", rex::kDebugOnly, rex::kRequiresRestart);
+
+  REX_SETTING(i32, owned_cars_limit, 30, "How many cars a save can own (30 to 255). 30 = the game's own limit and its own storage; "
+    "above 30 the cars past the 30th are kept in mc4_owned_cars.bin beside the save, "
+    "and a build without this option shows only the first 30. Saving while it is 30 (or with "
+    "a build without it) leaves the cars past the 30th out of that save; they stay on disk "
+    "and come back with owned_cars_recover_unmatched.", rex::kRequiresRestart);
+
+  REX_SETTING(bool, owned_cars_poison_static, false, "Test: fill the profile's own 30 car slots with a pattern while the moved block "
+    "is in use, so a read that still goes to them shows at once.", rex::kDebugOnly, rex::kRequiresRestart);
+
+  REX_SETTING(bool, owned_cars_recover_unmatched, false, "For one start: when no owned-car file matches the save loaded and the save owns exactly 30 "
+    "cars, add the cars past the 30th from the newest such file beside it (for a save made "
+    "while owned_cars_limit was 30). Turn it off again afterwards.", rex::kRequiresRestart);
+
+  REX_SETTING(i32, owned_cars_test_fill, 0, "Test: after a load, copy the current car until the save owns this many cars.", rex::kDebugOnly, rex::kRequiresRestart);
+
 };
 
 inline PatchesSettings& g_patches = larecomp::Leak<PatchesSettings>();
@@ -165,5 +196,14 @@ inline auto& unlock_ride_height = g_patches.unlock_ride_height;
 inline auto& unlock_wheel_fit = g_patches.unlock_wheel_fit;
 inline auto& vehicle_records_relocate = g_patches.vehicle_records_relocate;
 inline auto& warp_transition_fix = g_patches.warp_transition_fix;
+inline auto& car_mesh_fixes = g_patches.car_mesh_fixes;
+inline auto& garage_camber = g_patches.garage_camber;
+inline auto& garage_menu_fixes = g_patches.garage_menu_fixes;
+inline auto& garage_unlock_parts = g_patches.garage_unlock_parts;
+inline auto& owned_cars_keep_all_generations = g_patches.owned_cars_keep_all_generations;
+inline auto& owned_cars_limit = g_patches.owned_cars_limit;
+inline auto& owned_cars_poison_static = g_patches.owned_cars_poison_static;
+inline auto& owned_cars_recover_unmatched = g_patches.owned_cars_recover_unmatched;
+inline auto& owned_cars_test_fill = g_patches.owned_cars_test_fill;
 
 }  // namespace larecomp::settings

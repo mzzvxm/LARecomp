@@ -6,6 +6,7 @@
 #include "mc_engine/input/map_mouse.h"
 #include "mc_engine/input/mouse_look.h"
 #include "mc_engine/input/mouse_look_core.h"
+#include "mc_engine/camera/camera_orbit_core.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mc_engine/core/logging.h"
@@ -13,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -29,7 +31,6 @@
 #include <Windows.h>
 #include "imgui.h"
 #endif
-
 
 namespace {
 
@@ -991,7 +992,6 @@ void Hook_CameraSystem(PPCRegister& r20, PPCRegister& r24) {
 
     UpdateLookAngles();
 
-
     // r24 is the camera rig the system settled on this frame -- 1 is the
     // cockpit view and 2 a static one, per the note on Patch_DebugCam. If this
     // moves when the player looks around, the on-screen angles are whole rig
@@ -1240,6 +1240,136 @@ void Hook_CameraStateUpdate(PPCRegister& r31) {
     }
 }
 
+// ── The gameplay cameras' own pivot (camBoomCS) ─────────────────────────
+//
+// sub_82320298 @0x82321274, r31 = the boom, r1 = its frame (camera_orbit_core.h has the why). Read from the IDB:
+//
+//     v127 / r1+0x70   camera position, after the rate limit (0x82321254 stored it to cs+416)
+//     v62  / r1+0x80   look-at target, after the rate limit (0x82321270 stored it to cs+432)
+//     both in the car's frame; 0x82321288.. transforms them by cs+256 into cs+64, then sub_82202EC0 (view matrix) and sub_8231FD60 (collision)
+//     cs+668    mounted: the boom sits on the car, the camera itself is the pivot
+//     cs+192 -> +8 = the car; *(car+368) + 32 = the car's middle in that same frame (recorded: a constant (0, 0.645, 0))
+//
+// The first version turned the points at 0x82320EA0, before the rate limit (cs+656, cap tune+128 units/s against cs+416). The limiter then
+// dragged the turned camera there at its own speed and in a straight line: seconds to arrive, and through the car on a half turn. Here
+// cs+416/432 have been stored unturned, so the limiter only ever sees the game's own motion.
+namespace {
+
+constexpr uint32_t kBoomStackPos = 0x70;
+constexpr uint32_t kBoomStackLook = 0x80;
+constexpr uint32_t kBoomFollow = 192;
+constexpr uint32_t kBoomMounted = 668;
+constexpr uint32_t kCarPivotObj = 368;
+constexpr uint32_t kCarPivotVec = 32;
+
+std::ofstream g_orbit_csv;
+uint32_t g_orbit_rows = 0;
+constexpr uint32_t kOrbitMaxRows = 36000;
+
+void RecordOrbitFrame(float yaw, float pitch, const larecomp::camorbit::In& in) {
+    if (g_orbit_rows >= kOrbitMaxRows) return;
+    static const auto t0 = std::chrono::steady_clock::now();
+    if (!g_orbit_csv.is_open()) {
+        std::error_code ec;
+        g_orbit_csv.open(std::filesystem::current_path(ec) / "cam_orbit.csv", std::ios::trunc);
+        if (!g_orbit_csv) {
+            static std::atomic<bool> told{false};
+            if (!told.exchange(true)) MC_ERROR("[cam-look] cannot open cam_orbit.csv");
+            return;
+        }
+        g_orbit_csv << "t,yaw,pitch,flag668,px,py,pz,lx,ly,lz,cx,cy,cz\n";
+        MC_INFO("[cam-look] recording the gameplay camera to cam_orbit.csv");
+    }
+    const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    char row[256];
+    std::snprintf(row, sizeof(row), "%.4f,%.5f,%.5f,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n", t, yaw, pitch, in.mounted_flag ? 1 : 0,
+                  in.pos.x, in.pos.y, in.pos.z, in.look.x, in.look.y, in.look.z, in.pivot.x, in.pivot.y, in.pivot.z);
+    g_orbit_csv << row;
+    if (++g_orbit_rows % 600 == 0) g_orbit_csv.flush();
+    if (g_orbit_rows == kOrbitMaxRows) {
+        g_orbit_csv.flush();
+        MC_INFO("[cam-look] cam_orbit.csv is full ({} rows)", kOrbitMaxRows);
+    }
+}
+
+larecomp::camorbit::V3 ToOrbit(const Vec3& v) { return {v.x, v.y, v.z}; }
+Vec3 FromOrbit(const larecomp::camorbit::V3& v) { return {v.x, v.y, v.z}; }
+
+// lvx/stvx load a vector byte-reversed (VectorMaskL), so memory element i lives in lane 3 - i.
+Vec3 FromLanes(const PPCVRegister& v) { return {v.f32[3], v.f32[2], v.f32[1]}; }
+void ToLanes(PPCVRegister& v, const Vec3& p) {
+    v.f32[3] = p.x;
+    v.f32[2] = p.y;
+    v.f32[1] = p.z;
+}
+bool Close(const Vec3& a, const Vec3& b) { return std::fabs(a.x - b.x) + std::fabs(a.y - b.y) + std::fabs(a.z - b.z) < 1.0e-3f; }
+
+}  // namespace
+
+void Hook_CameraBoomLook(PPCRegister& r1, PPCRegister& r31, PPCVRegister& v127, PPCVRegister& v62) {
+    const uint32_t cs = r31.u32;
+    const uint32_t sp = r1.u32;
+    if (!cs || !sp) return;
+
+    static std::atomic<bool> announced{false};
+    if (!announced.exchange(true)) MC_INFO("[cam-look] camBoomCS hook is live, boom=0x{:08X}", cs);
+
+    const bool use = larecomp::settings::cam_freelook_boom.Get();
+    const bool record = larecomp::settings::cam_orbit_record.Get();
+    if (!use && !record) return;
+    if (!g_look_active.load(std::memory_order_relaxed)) return;
+    const float yaw = g_yaw, pitch = g_pitch;
+
+    const Vec3 pos = FromLanes(v127), look = FromLanes(v62);
+    // Both registers were loaded from (or stored to) these slots a few instructions back; if they disagree the lane order or the site is wrong.
+    if (!Close(pos, ReadVec3(sp + kBoomStackPos)) || !Close(look, ReadVec3(sp + kBoomStackLook))) {
+        static std::atomic<bool> told{false};
+        if (!told.exchange(true)) MC_ERROR("[cam-look] camBoomCS: v127/v62 do not match r1+0x70/0x80, mouse look off on this camera");
+        return;
+    }
+
+    larecomp::camorbit::In in;
+    in.pos = ToOrbit(pos);
+    in.look = ToOrbit(look);
+    uint8_t mounted = 0;
+    SafeReadGuest(cs + kBoomMounted, 1, &mounted);
+    in.mounted_flag = mounted != 0;
+    in.pivot = {NAN, NAN, NAN};
+    const uint32_t follow = ReadGuestU32(cs + kBoomFollow);
+    const uint32_t car = follow ? ReadGuestU32(follow + 8) : 0;
+    const uint32_t pobj = car ? ReadGuestU32(car + kCarPivotObj) : 0;
+    if (pobj && PlausibleGuestPtr(pobj, 0)) in.pivot = ToOrbit(ReadVec3(pobj + kCarPivotVec));
+
+    if (record) RecordOrbitFrame(yaw, pitch, in);
+    if (!use || (yaw == 0.0f && pitch == 0.0f)) return;
+
+    larecomp::camorbit::Params params;
+    params.min_elev = float(larecomp::settings::cam_freelook_min_elev.Get());
+    params.max_elev = float(larecomp::settings::cam_freelook_max_elev.Get());
+    params.inplace_dist = float(larecomp::settings::cam_freelook_inplace_dist.Get());
+    const larecomp::camorbit::Out out = larecomp::camorbit::Apply(in, yaw, pitch, params);
+    if (out.mode == larecomp::camorbit::Mode::Skipped) return;
+
+    ToLanes(v127, FromOrbit(out.pos));
+    ToLanes(v62, FromOrbit(out.look));
+    WriteVec3(sp + kBoomStackPos, FromOrbit(out.pos));
+    WriteVec3(sp + kBoomStackLook, FromOrbit(out.look));
+    // The publish site turns the finished matrix for every other camera; this frame's view is already turned.
+    g_cs_applied.store(1, std::memory_order_relaxed);
+
+    if (larecomp::settings::cam_freelook_diag.Get()) {
+        static int throttle = 0;
+        if (--throttle <= 0) {
+            throttle = 60;
+            const larecomp::camorbit::V3 arm = larecomp::camorbit::Sub(in.pos, in.pivot);
+            MC_INFO("[cam-look] boom 0x{:08X} {} mounted={} yaw={:.3f} pitch={:.3f} (used {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) "
+                    "pivot=({:.1f}, {:.1f}, {:.1f}) flat={:.2f} up={:.2f} look=({:.1f}, {:.1f}, {:.1f})",
+                    cs, larecomp::camorbit::ModeName(out.mode), int(mounted), yaw, pitch, out.pitch_used, in.pos.x, in.pos.y, in.pos.z,
+                    in.pivot.x, in.pivot.y, in.pivot.z, larecomp::camorbit::HorizLen(arm), arm.y, in.look.x, in.look.y, in.look.z);
+        }
+    }
+}
+
 // ── The DEBUG CAMERA rows ──────────────────────────────────────────────
 //
 // The camera's pause-menu rows live here rather than in pause_menu.cpp, so the
@@ -1402,6 +1532,7 @@ void Hook_CameraPostUpdate(PPCRegister&) {}
 void Hook_CameraPrePublish(PPCRegister&) {}
 void Hook_CameraMatrixPublish(PPCRegister&) {}
 void Hook_CameraStateUpdate(PPCRegister&) {}
+void Hook_CameraBoomLook(PPCRegister&, PPCRegister&, PPCVRegister&, PPCVRegister&) {}
 void CameraProbeMark() {}
 void CameraProbeDump() {}
 void CameraProbeRun() {}

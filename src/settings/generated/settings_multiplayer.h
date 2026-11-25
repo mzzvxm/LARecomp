@@ -64,6 +64,11 @@ class MultiplayerSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, server_browser_show_icons, true, "Server browser: show each server's icon.");
 
+  REX_SETTING(bool, online_car_guard_notice, true, "Show a message box when a rigged car was fixed (broken vinyl layers, or "
+    "tuning values the game cannot produce) -- another player's, a Rate My "
+    "Ride ride or your own garage car once you drive it. The car is fixed "
+    "either way.");
+
 };
 
 inline MultiplayerSettings& g_multiplayer = larecomp::Leak<MultiplayerSettings>();
@@ -82,5 +87,6 @@ inline auto& rmr_server = g_multiplayer.rmr_server;
 inline auto& server_browser_pending = g_multiplayer.server_browser_pending;
 inline auto& server_browser_servers = g_multiplayer.server_browser_servers;
 inline auto& server_browser_show_icons = g_multiplayer.server_browser_show_icons;
+inline auto& online_car_guard_notice = g_multiplayer.online_car_guard_notice;
 
 }  // namespace larecomp::settings

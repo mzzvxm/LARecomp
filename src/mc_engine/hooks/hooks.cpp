@@ -31,6 +31,7 @@
 #include "../modloader/modloader.h"
 #include "../mp3custom/mp3custom.h"
 #include "../online/race_props.h"
+#include "../online/car_guard.h"
 #include "../online/online_tables.h"
 #include "mc_engine/display/ultrawide.h"
 
@@ -176,6 +177,7 @@ void Patch_DeltaTimePre() {
     TickModGlows();             // guest scratch for the mods' light glows
     TickModBreakables();        // mods' breakable sector props: knock-over on a hard hit
     TickRaceProps();            // online race props: the watched owner word, if any
+    larecomp::car_guard::Tick();  // rigged-car notice: shows a queued one, restores the dialog text
     larecomp::online_tables::Tick();  // online_tables.json: the game's stats views + session property names, once (a launcher reads it)
     TickCameraLook();           // cam_freelook: mouse -> gameplay camera lookaround
     TickRearView();             // rearview: the mirror's visible bit + placement, live

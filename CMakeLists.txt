@@ -158,9 +158,13 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/vehicle.cpp
     src/mc_engine/hooks/vehicle_records.cpp
     src/mc_engine/hooks/showroom.cpp
+    src/mc_engine/hooks/player_limits.cpp
+    src/mc_engine/hooks/owned_cars.cpp
+    src/mc_engine/hooks/owned_cars_ui.cpp
     src/mc_engine/hooks/rubberband.cpp
     src/mc_engine/hooks/vinyl.cpp
     src/mc_engine/hooks/vinyl_shapes.cpp
+    src/mc_engine/hooks/vinyl_batch.cpp
     src/mc_engine/hooks/pump_wake.cpp
     src/mc_engine/hooks/photo_mode.cpp
     src/mc_engine/hooks/readback_window.cpp
@@ -210,6 +214,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/input/cursor_hide.cpp
     src/mc_engine/input/input_state.cpp
     src/mc_engine/input/mouse_look.cpp
+    src/mc_engine/input/menu_drag_diag.cpp
     src/mc_engine/camera/camera_look.cpp
     src/mc_engine/camera/camera_trace.cpp
     src/mc_engine/menus/display_menu.cpp
@@ -282,6 +287,11 @@ set(LARECOMP_SOURCES
     src/mc_engine/gameplay/map_warp.cpp
     src/mc_engine/gameplay/real_weather.cpp
     src/mc_engine/gameplay/squash_stretch.cpp
+    src/mc_engine/gameplay/garage_fixes.cpp
+    src/mc_engine/gameplay/garage_fixes_open.cpp
+    src/mc_engine/gameplay/garage_part_unlock.cpp
+    src/mc_engine/gameplay/car_mesh_fixes.cpp
+    src/mc_engine/gameplay/tire_camber.cpp
     src/mc_engine/gameplay/tire_offset.cpp
     src/mc_engine/gameplay/hud_units.cpp
     src/mc_engine/input/adaptive_triggers.cpp
@@ -338,7 +348,12 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/online_toast.cpp
     src/mc_engine/online/xbox_live.cpp
     src/mc_engine/online/race_props.cpp
+    src/mc_engine/online/car_guard.cpp
     src/mc_engine/online/session_limits.cpp
+    src/mc_engine/online/max_players.cpp
+    src/mc_engine/online/net_sweep.cpp
+    src/mc_engine/online/net_pool.cpp
+    src/mc_engine/online/net_race.cpp
     # online_tables.json: the stats views + session property names the game holds in memory, for the launcher.
     src/mc_engine/online/online_tables.cpp
     src/mc_engine/online/online_tables_core.cpp
@@ -892,6 +907,13 @@ target_include_directories(larecomp_mouse_look_test PRIVATE src src/mc_engine)
 if(Threads_FOUND)
     target_link_libraries(larecomp_mouse_look_test PRIVATE Threads::Threads)
 endif()
+# The gameplay cameras' mouse look geometry (src/mc_engine/camera/camera_orbit_core.h, header only: the orbit about the car's middle, the mounted cameras turning
+# in place, the elevation limits) has a check that needs no game, and replays a recording made with cam_orbit_record:
+#   cmake --build <build dir> --target larecomp_camera_orbit_test, then run <build dir>/larecomp_camera_orbit_test [cam_orbit.csv] (exit 0 = passed).
+add_executable(larecomp_camera_orbit_test EXCLUDE_FROM_ALL
+    src/mc_engine/camera/camera_orbit_test.cpp)
+target_include_directories(larecomp_camera_orbit_test PRIVATE src src/mc_engine)
+
 # The mouse in the menus' pure part (src/mc_engine/input/menu_mouse_core.h, header only: the window -> stage mapping, the instance matrices, the row boxes and their hit test, the settings rows'
 # arrow zones, the click / hover / wheel plans, the press pacing, the highlight walk) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_menu_mouse_test, then run <build dir>/larecomp_menu_mouse_test (exit 0 = passed).

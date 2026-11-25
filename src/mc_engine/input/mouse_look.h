@@ -24,6 +24,8 @@
 // tick); the pointer mode is applied by the UI system on the UI thread.
 //
 
+#include <cstdint>
+
 namespace larecomp::mouselook {
 
 // Who asks for the raw deltas. Look = the gameplay camera's mouse look (camera_look.cpp). DebugCam = the debug free-fly camera (hooks/camera.cpp; debug_cam = free):
@@ -41,5 +43,10 @@ bool Take(Client client, float& dx, float& dy);
 
 // Relative mouse mode is on (any thread). The pointer is then SDL's to hide: cursor_hide.cpp stands down.
 bool Engaged();
+
+// Off the road (the garage, the pause menu, the photo mode, any menu) a held mouse button turns the mouse into the right stick: those screens
+// steer their cameras with it, and the pause menu's way into the photo mode is that stick pushed sideways (mouse_menu_drag, mouse_look_core.h
+// StepDrag). The deflection worked out by the last Tick, as the pad's axes (positive = right / up); false while no drag is on. Any thread.
+bool MenuDragAxes(int16_t& rx, int16_t& ry);
 
 }  // namespace larecomp::mouselook

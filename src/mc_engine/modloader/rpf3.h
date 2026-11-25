@@ -171,6 +171,10 @@ class Rpf3Writer {
     // Replaces that payload and its flag; an entry copied from disk is held in
     // memory from then on. False when there is nothing to replace.
     bool Replace(std::string_view path, std::vector<uint8_t> data, uint32_t flag);
+    // Write refuses the whole archive when two entries share a path, so this
+    // keeps the first entry of every path (compared without regard to case)
+    // and drops the later ones, returning the paths it dropped.
+    std::vector<std::string> DropRepeats();
 
  private:
     uint64_t Fingerprint() const;

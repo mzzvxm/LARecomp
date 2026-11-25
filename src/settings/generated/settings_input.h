@@ -163,6 +163,9 @@ class InputSettings final : public rex::SettingOwner {
   REX_SETTING(bool, trigger_vibration, true, "DualSense trigger vibration: R2 vibrates while the driven wheels spin under power and L2 while "
     "the brakes lock the wheels, harder the more they slip. Other controllers are not touched.");
 
+  REX_SETTING(bool, kb_latency_log, false, "Diagnostic: for every key press, log how long it took from the OS (a low-level keyboard hook) to the window's "
+    "listener and from there to the game's input poll; every 5 s, how many polls ran and the longest gap between two.", rex::kDebugOnly);
+
 };
 
 inline InputSettings& g_input = larecomp::Leak<InputSettings>();
@@ -204,5 +207,6 @@ inline auto& trigger_resistance = g_input.trigger_resistance;
 inline auto& trigger_slip_log = g_input.trigger_slip_log;
 inline auto& trigger_throttle = g_input.trigger_throttle;
 inline auto& trigger_vibration = g_input.trigger_vibration;
+inline auto& kb_latency_log = g_input.kb_latency_log;
 
 }  // namespace larecomp::settings

@@ -14,6 +14,7 @@
 #include <rex/kernel/title_runtime.h>
 
 #include "mc_engine/hooks/hooks.h"
+#include "mc_engine/hooks/owned_cars.h"
 #include "mc_engine/hooks/run_ready.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/menus/pause_menu.h"
@@ -46,14 +47,13 @@ bool IsGuestPtr(uint32_t ea) {
 
 // LocalOptions global: 0x8288E920
 // +0x540: current vehicle profile index (uint32)
-// +0x550: start of vehicle profile array
+// +0x550: start of vehicle profile array (owned_cars::CarAddress: past 30 owned
+//         cars the profiles live in a block of their own)
 // Each profile: 8176 (0x1FF0) bytes
 //   +0x1FAD: TypeName  (32-byte C string, internal ID)
 //   +0x1FCD: ProfileName (34-byte C string, display name)
 constexpr uint32_t kLocalOptions = 0x8288E920;
 constexpr uint32_t kProfileIndexOff = 0x540;
-constexpr uint32_t kProfileArrayOff = 0x550;
-constexpr uint32_t kProfileSize = 0x1FF0;
 constexpr uint32_t kProfileNameOff = 0x1FCD;
 constexpr uint32_t kTypeNameOff = 0x1FAD;
 
@@ -77,7 +77,11 @@ const char* RaceSubtypeLabel(const char* state_name) {
 void GetCurrentVehicleName(char* out, size_t out_size) {
   auto base = GetMembase();
   uint32_t index = ReadGuestBE32(kLocalOptions + kProfileIndexOff);
-  uint32_t profile = kLocalOptions + kProfileArrayOff + kProfileSize * index;
+  uint32_t profile = owned_cars::CarAddress(index);
+  if (!profile) {
+    out[0] = '\0';
+    return;
+  }
 
   const char* profile_name =
       reinterpret_cast<const char*>(base + profile + kProfileNameOff);
