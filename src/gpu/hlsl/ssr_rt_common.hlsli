@@ -120,6 +120,12 @@ float SsrRtReachFade(float t, float reach) {
   const float s = clamp((t - start) / max(reach - start, 1.0e-6f), 0.0f, 1.0f);
   return 1.0f - s * s * (3.0f - 2.0f * s);
 }
+// Ground rays fade in only when the hit has strong support from the rasterized view.
+float SsrRtHitCoverage(bool ground, float screen) {
+  if (!ground) return 1.0f;
+  const float t = saturate(2.0f * screen - 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
 // The ray's footprint at its hit (the cone's width, metres): the pixel's angular size over the UNFOLDED path (the receiver's distance from the camera plus the ray's length: the virtual image) plus
 // the lobe's two half widths.
 float SsrRtFootprint(float pixel_angle, float receiver_distance, float t, float cone_tan) {

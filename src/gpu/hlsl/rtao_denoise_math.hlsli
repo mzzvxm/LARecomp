@@ -20,6 +20,11 @@ float RtAoClip(float history, float mean, float sigma, float lo, float hi) {
   return clamp(history, max(mean - radius, lo - padding), min(mean + radius, hi + padding));
 }
 
+// A one-ray sample is binary. Keep half the receiver's own sample to preserve local contact detail.
+float RtAoResolveCurrent(float current, float sum, float weight) {
+  return weight > 0.0f ? lerp(current, sum / weight, 0.5f) : current;
+}
+
 float RtAoBlend(float history, float current, float length) {
   return lerp(history, current, 1.0f / (length + 1.0f));
 }

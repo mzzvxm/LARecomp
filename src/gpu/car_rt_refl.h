@@ -338,8 +338,8 @@ class CarRtRefl {
   void ReleaseScratch();
   // One compute dispatch of the denoise: `input` filtered into the image `output` names, `pass` 0 or 1; pass 2 (NOISE-RESOLVE) averages `input` with the image in bindless slot `previous_slot` at the weight `keep`.
   void DispatchDenoise(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, uint32_t history_slot, const HostImage& input,
-                       const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length, float tan_half, float keep = 0.0f,
-                       uint32_t previous_slot = 0);
+                       const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length, float tan_half,
+                       bool resolve_paint = false, float keep = 0.0f, uint32_t previous_slot = 0);
   // NOISE-RESOLVE: the history's two images (the finished image averaged with the last frame's, hlsl/car_rt_refl_denoise_cs.hlsl pass 2), made while the pass's own history runs.
   bool EnsureStableImages(uint32_t width, uint32_t height);
   void ReleaseStable();
@@ -398,6 +398,7 @@ class CarRtRefl {
   noise_resolve::HistoryLifetime stable_life_;   // NOISE-FOLLOW: how long the two images stay while an upscaler runs (noise_resolve::kHistoryKeepFrames)
   uint32_t stable_index_ = 0;
   bool stable_valid_ = false;     // stable_[stable_index_] holds the result of `stable_frame_`
+  bool stable_resolve_paint_ = false;
   uint64_t stable_frame_ = 0;
   uint32_t stable_frames_ = 0;    // frames of history the last result holds
   bool result_in_stable_ = false; // the paint reads stable_[stable_index_] for the frame `recorded_frame_`

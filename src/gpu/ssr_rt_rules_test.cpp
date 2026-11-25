@@ -313,6 +313,10 @@ void TestRay() {
     same = same && Near(f, rt::ReachFade(t, 150.0f), 1e-6);
   }
   Check(monotone && same, "the fade falls smoothly and is the twin's");
+  Check(hs::SsrRtHitCoverage(false, 0.0f) == 1.0f && hs::SsrRtHitCoverage(true, 0.0f) == 0.0f &&
+            hs::SsrRtHitCoverage(true, 0.5f) == 0.0f && hs::SsrRtHitCoverage(true, 0.625f) == 0.15625f &&
+            hs::SsrRtHitCoverage(true, 1.0f) == 1.0f,
+        "ground requires strong screen support and fades in smoothly; other groups keep their full hit weight");
   Check(Near(hs::SsrRtFootprint(0.002f, 10.0f, 40.0f, 0.05f), rt::Footprint(0.002f, 10.0f, 40.0f, 0.05f), 1e-6) && Near(rt::Footprint(0.002f, 10.0f, 40.0f, 0.05f), 0.002 * 50.0 + 2.0 * 0.05 * 40.0, 1e-6),
         "the footprint: the pixel's angle over the unfolded path plus the lobe's two half widths");
   // the blend
@@ -859,11 +863,15 @@ void TestShaderSources(const std::string& dir) {
   Check(Has(trace, "#define CAR_RT_SPACE 6") && Has(trace, "#define RT_WORLD_SPACE 6") && Has(trace, "#define CITY_HIT_SPACE 6") && Has(trace, "register(u0, space5)") && Has(trace, "register(u1, space5)") &&
             Has(trace, "register(u2, space5)") && Has(select, "register(u1, space5)") && Has(select, "register(u2, space5)"),
         "the layout's spaces: the textures 0 to 3, the samplers and the push block 4, the output set 5, the ray tracing set 6");
-  Check(Has(trace, "CityHitResolve(p, f, s, ray, hit.inst, require_detail)") && Has(trace, "CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask") && Has(trace, "RtWorldLoad()") && Has(trace, "RT_WORLD_VALID") && Has(trace, "CITY_HIT_GAIN(cls) RtWorldClassGain(cls)"),
+  Check(Has(trace, "CityHitResolve(p, f, s, ray, hit.inst, ground)") && Has(trace, "CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask") && Has(trace, "RtWorldLoad()") && Has(trace, "RT_WORLD_VALID") && Has(trace, "CITY_HIT_GAIN(cls) RtWorldClassGain(cls)"),
         "the trace pass resolves its hits with the city hit library in the world frame's light, with the world frame's class gains");
-  Check(Has(trace, "const bool require_detail = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;") &&
-            Has(trace, "if (res.source == CITY_HIT_SOURCE_NONE) {\n      SsrRtCount(stats, SSR_RT_CENSUS_NO_DATA);\n      continue;"),
-        "ground hits require detail, and rejected rays leave the radiance and hit distance alone");
+  Check(Has(trace, "const bool ground = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;") &&
+            Has(trace, "if (ground && (flags & SSR_RT_FLAG_SCREEN) == 0u)") &&
+            Has(trace, "if (res.source == CITY_HIT_SOURCE_NONE || coverage <= 0.0f) {\n      SsrRtCount(stats, SSR_RT_CENSUS_NO_DATA);\n      continue;"),
+        "ground hits require screen support, and rejected rays leave the radiance and hit distance alone");
+  Check(Has(trace, "SsrRtHitCoverage(ground, res.screen)") && Has(trace, "coverage * SsrRtReachFade(hit.t, reach)") &&
+            Has(trace, "if (!ground || fade >= 0.5f)") && Has(trace, "confidence < 0.5f && nearest < kSsrMissLength"),
+        "fade replaces both ground radiance and the matching planar share; weak hits keep the old distance");
   Check(Has(trace, "NgFinite3(SsrRtBlend(current.xyz, confidence, sum / float(rays), weight))") && Has(trace, "SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u)"), "the result is the blend, and the hit distance goes into the trace's alpha packed as the trace's own");
   Check(Has(trace, "if (!CityHitIsCity(hit.inst.instanceId))") && Has(trace, "SSR_RT_CENSUS_CAR"), "a hit on a car is not shaded here (it is counted)");
   Check(Has(trace, "CITY_HIT_P_SUN_RAY | CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_CALIBRATE") && Has(trace, "CITY_HIT_STAT_ADD(word, value) g_ctl.InterlockedAdd((SSR_RT_STAT_CAL + (word)) * 4u, (value))"),

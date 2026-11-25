@@ -524,6 +524,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_car_selfrefl_rt_denoise, 2, "Diagnostic: the passes of the filter that takes the grain out of the soft edge of a part of your car reflected in another (the ray traced car "
     "self-reflection) before the paint reads it: 2 (the default) two passes, 1 one pass, 0 none (the raw trace, to compare with). Each pass is "
     "applied only where the soft edge is wide enough to have grain, so a sharp edge stays sharp; there is none for a gloss of 0. Live.", rex::kDebugOnly, rex::Range{0, 2});
+  REX_SETTING(bool, mcla_gpu_car_selfrefl_rt_resolve, false, "Debug: trace the full glossy cone and filter narrower reflections on player paint when the built-in filter runs. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_car_selfrefl_rt_gloss, 2.5, "Diagnostic: the half angle, in degrees, of the cone the ray traced car self-reflection casts its rays over: the paint's gloss. A part of "
     "your car reflected in another has an edge as soft as the cone is wide at its distance (2.5 degrees: about a hand's width at 1 m); 0 is a perfect "
@@ -1298,7 +1299,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_rtao_history, 32, "Debug: ray traced ambient occlusion history cap in frames. 1 disables temporal accumulation. Live.", rex::kDebugOnly, rex::Range{1, 64});
 
   REX_SETTING(std::string, mcla_gpu_rtao_denoise, "auto", "Debug: auto and ours use the built-in denoiser. Off sends the raw ray traced ambient occlusion signal to compose. Live.", rex::kDebugOnly, rex::Allowed("auto", "ours", "off"));
-  REX_SETTING(bool, mcla_gpu_rtao_spatial_resolve, false, "Debug: apply a wider bilateral resolve to ray traced ambient occlusion on world surfaces. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rtao_spatial_resolve, false, "Debug: prefilter one-ray ambient occlusion samples and apply a wider bilateral resolve to mature world surfaces. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_rtao_raw_scale, 2, "Debug: ray traced ambient occlusion trace divisor for DLSS Ray Reconstruction raw frames. 2 is half size, 1 is full size. Live.", rex::kDebugOnly, rex::Range{1, 2});
 
@@ -2201,6 +2202,7 @@ inline auto& mcla_gpu_car_mirror_rt_pixels = g_gpu.mcla_gpu_car_mirror_rt_pixels
 inline auto& mcla_gpu_car_mirror_rt_strength = g_gpu.mcla_gpu_car_mirror_rt_strength;
 inline auto& mcla_gpu_car_mirror_rt_world = g_gpu.mcla_gpu_car_mirror_rt_world;
 inline auto& mcla_gpu_car_selfrefl_rt_denoise = g_gpu.mcla_gpu_car_selfrefl_rt_denoise;
+inline auto& mcla_gpu_car_selfrefl_rt_resolve = g_gpu.mcla_gpu_car_selfrefl_rt_resolve;
 inline auto& mcla_gpu_car_selfrefl_rt_gloss = g_gpu.mcla_gpu_car_selfrefl_rt_gloss;
 inline auto& mcla_gpu_car_selfrefl_rt_length = g_gpu.mcla_gpu_car_selfrefl_rt_length;
 inline auto& mcla_gpu_car_selfrefl_rt_parts = g_gpu.mcla_gpu_car_selfrefl_rt_parts;

@@ -672,7 +672,7 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/GPU",
-  "help": "\"Debug: apply a wider bilateral resolve to ray traced ambient occlusion on world surfaces. Live.\"",
+  "help": "\"Debug: prefilter one-ray ambient occlusion samples and apply a wider bilateral resolve to mature world surfaces. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -1305,6 +1305,17 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_selfrefl_rt_resolve": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: trace the full glossy cone and filter narrower reflections on player paint when the built-in filter runs. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

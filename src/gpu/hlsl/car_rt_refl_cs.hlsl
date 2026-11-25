@@ -147,6 +147,7 @@ ConstantBuffer<CarRtReflPush> g_push : register(b0, space4);
 
 static const uint kStatsFlag = 65536u;  // slots.w bit 16: this is a stats frame
 static const uint kConeBlueFlag = 131072u;  // slots.w bit 17: the cone's turn is the blue noise tile's (mcla_gpu_noise_blue; car_rt_refl_rules.h kConeBlueFlag), else the first version's gradient noise
+static const uint kFullConeFlag = 1u << 28;  // player paint resolve: trace the inner pair even after two misses
 static const uint kStatTexels = 0u;
 static const uint kStatRays = 1u;
 static const uint kStatOwn = 2u;
@@ -916,6 +917,7 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     bool other[4] = {false, false, false, false};  // the ray hit another car: `hidden` is its colour for the part the history does not show
     bool car[4] = {false, false, false, false};    // the ray hit a vehicle other than the pixel's own (TraceRay's `car`): the code's sign and the mirror's rule
     bool found = coatHit;  // the mirror ray found a part: the cone's inner pair is cast too
+    const bool fullCone = (g_push.slots.w & kFullConeFlag) != 0u;
     [unroll]
     for (int slot = 0; slot < 4; ++slot)
     {
@@ -927,7 +929,7 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
         {
             break;  // the level's rays
         }
-        if (slot == 2 && !found)
+        if (!fullCone && slot == 2 && !found)
         {
             break;  // the outer pair found nothing: the inner two are not cast
         }

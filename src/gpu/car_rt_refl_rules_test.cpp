@@ -105,7 +105,7 @@ struct Image {
 };
 
 // One pass over the image as hlsl/car_rt_refl_denoise_cs.hlsl makes it: a texel with data is filtered, the others are copied; the result goes through a half float.
-Image DenoisePass(const Image& in, int pass, float tan_half) {
+Image DenoisePass(const Image& in, int pass, float tan_half, bool resolve = false) {
   const int step = rt::DenoiseStep(pass);
   Image out = in;
   rt::DenoiseSetup setup;
@@ -114,6 +114,7 @@ Image DenoisePass(const Image& in, int pass, float tan_half) {
   setup.tan_half = tan_half;
   setup.reach = kReach;
   setup.pass = pass;
+  setup.resolve = resolve;
   for (int y = 0; y < in.h; ++y) {
     for (int x = 0; x < in.w; ++x) {
       const size_t i = in.At(x, y);
@@ -166,7 +167,7 @@ Image MakeEdgeScene(int w, int h, float edge, float radius, float hit_distance, 
       const float turns = rt::ConeRotation(uint32_t(x + 100), uint32_t(y), phase);
       int hits = 0;
       for (int slot = 0; slot < 4; ++slot) {
-        if (early_out && slot == 2 && hits == 0) {
+        if (rt::SkipInnerCone(!early_out, slot, hits != 0)) {
           break;
         }
         if (float(x) + rt::ConeDisc(rt::ConeOrder(slot), turns).x * radius < edge) {
@@ -373,6 +374,19 @@ void RawChecks(const std::string& dir) {
                     denoise = Read(dir, "hlsl/car_rt_refl_denoise_cs.hlsl"), cmake = Read(dir, "CMakeLists.txt"), shaders = Read(dir, "host_shaders.h"), self_cpp = Read(dir, "car_selfrefl.cpp"),
                     self_h = Read(dir, "car_selfrefl.h"), scene = Read(dir, "scene.cpp"), settings = Read(dir, "../settings/generated/settings_gpu.h"), manifest = Read(dir, "../settings/generated/manifest.json"),
                     meta = Read(dir, "../settings/generated/settings_meta.inc"), opp = Read(dir, "car_rt_opp_refl.cpp");
+  const std::string trace = Read(dir, "hlsl/car_rt_refl_cs.hlsl");
+  Check(Has(settings, std::string("REX_") + "SETTING(bool, mcla_gpu_car_selfrefl_rt_resolve, false,") &&
+            Has(cpp, "denoise_passes > 0 && larecomp::settings::mcla_gpu_car_selfrefl_rt_resolve.Get()") &&
+            Has(cpp, "resolve_paint ? car_rt_refl::kFullConeFlag : 0u") &&
+            Has(trace, "kFullConeFlag = 1u << 28") && Has(trace, "(g_push.slots.w & kFullConeFlag) != 0u") &&
+            Has(trace, "if (!fullCone && slot == 2 && !found)"),
+        "the live paint resolve is off by default and only takes the full cone with our denoiser");
+  Check(Has(cpp, "first_set_, 0, history.width, history.height, float(info.tan_y), length, tan_half, resolve_paint") &&
+            Has(cpp, "FirstDenoiseRange(resolve_paint)") && Has(cpp, "push.tune[0] = first_range.from;") &&
+            Has(cpp, "push.tune[1] = first_range.to;") && Has(denoise, "smoothstep(g_push.tune.x, g_push.tune.y, footprint)"),
+        "the first spatial pass consumes the selected paint footprint range");
+  Check(Has(cpp, "stable_resolve_paint_ == resolve_paint") && Has(cpp, "stable_resolve_paint_ = resolve_paint;"),
+        "changing paint resolve discards the previous filter's accumulated image");
   // the shader: what the C++ twin says
   Check(Has(hit, "const int divisor = int(max(g_push.lens.y, 1.0));") && Has(hit, "const int2 texel = min(pixel / divisor, texels - 1);") && Has(hit, "if (aux.w > 0.5)") &&
             Has(hit, "result = aux.x > 0.0 ? aux.x * aux.x * g_push.lens.x : g_push.lens.z;") && Has(hit, "g_output[pixel] = result;") && Has(hit, "[[vk::image_format(\"r16f\")]]") &&
@@ -1145,6 +1159,18 @@ int main(int argc, char** argv) {
     // the cone's half width in texels -> the hit distance (metres) that gives it at the panel's distance: width = 2 d tan / texel
     const float texel_m = rt::PixelMeters(kPanelDistance, kTanY, kImageHeight);
     const float edge = 48.37f;  // not on a texel's boundary (a boundary makes every texel's pattern a half-half split: no grain at all)
+    Check(rt::kFullConeFlag == (1u << 28) && rt::SkipInnerCone(false, 2, false) &&
+              !rt::SkipInnerCone(false, 2, true) && !rt::SkipInnerCone(false, 1, false) &&
+              !rt::SkipInnerCone(true, 2, false), "the full cone samples inner hits that the outer-pair shortcut lost");
+    Check(rt::DenoiseStrength(0.25f, 0, true) == 0.0f && rt::DenoiseStrength(1.5f, 0, true) == 1.0f &&
+              rt::DenoiseStrength(1.5f, 0) < 0.7f && rt::DenoiseStrength(4.0f, 1, true) == 0.0f,
+          "paint resolve acts sooner on the first pass and keeps the second-pass threshold");
+    const Image narrow = MakeEdgeScene(96, 64, edge, 0.75f, 0.75f * texel_m / tan_half, 0, false);
+    const EdgeStats legacy = MeasureEdge(DenoisePass(narrow, 0, tan_half), edge, 0.75f);
+    const EdgeStats resolved = MeasureEdge(DenoisePass(narrow, 0, tan_half, true), edge, 0.75f);
+    std::printf("  narrow paint edge grain %.5f -> %.5f\n", legacy.grain, resolved.grain);
+    Check(resolved.grain < 0.85 * legacy.grain && std::fabs(resolved.crossing - legacy.crossing) < 0.12,
+          "the first paint resolve reduces narrow-cone grain and keeps the centre of the edge");
     for (float radius : {0.15f, 1.0f, 2.0f, 4.0f, 6.0f, 9.6f}) {
       const float width = 2.0f * radius;
       const float hit_distance = width * texel_m / (2.0f * tan_half);

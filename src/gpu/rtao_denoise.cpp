@@ -78,9 +78,11 @@ const HostImage* RtAoDenoise::Record(const Frame& in, uint32_t history_limit) {
   }
   const uint32_t cap = rtao_denoise::HistoryCap(larecomp::settings::mcla_gpu_rtao_history.Get());
   const uint32_t frame_cap = std::clamp(history_limit, 1u, cap);
+  const bool spatial_resolve = larecomp::settings::mcla_gpu_rtao_spatial_resolve.Get();
   const bool lenses_valid = std::isfinite(in.prev_tan_x) && std::isfinite(in.prev_tan_y) && in.prev_tan_x > 0.0f && in.prev_tan_y > 0.0f;
   const bool guides_valid = in.history_valid && lenses_valid && Matches(in.depth_prev, in.traced);
-  const bool read_history = frame_cap > 1 && rtao_denoise::CanReadHistory(guides_valid, recorded_, in.frame, previous_frame_, cap, previous_cap_);
+  const bool read_history = frame_cap > 1 && spatial_resolve == previous_spatial_resolve_ &&
+                            rtao_denoise::CanReadHistory(guides_valid, recorded_, in.frame, previous_frame_, cap, previous_cap_);
   if (!read_history && recorded_) ResetHistory();
   const uint32_t table_slot = in.vehicle_table_slot < kBindlessTextureCount ? in.vehicle_table_slot : 0;
   RtDenoise::Frame pass;
@@ -106,6 +108,7 @@ const HostImage* RtAoDenoise::Record(const Frame& in, uint32_t history_limit) {
   push[kVehicleSlotHigh] = table_slot >> 8u;
   push[kHistoryCap] = frame_cap;
   push[kRawSignal] = in.signal->slot;
+  push[kSpatialResolve] = spatial_resolve ? 1u : 0u;
 
   // CHECK: validate the shared vehicle table's graphics-to-compute handoff (ao.cpp makes it
   // compute-readable before the trace) in a play frame on both backends. The "rtao denoise"
@@ -119,7 +122,6 @@ const HostImage* RtAoDenoise::Record(const Frame& in, uint32_t history_limit) {
   pass.signal = const_cast<HostImage*>(temporal);
   pass.reads[3] = in.signal;
   pass.iterations = rt_denoise::kMaxIterations;
-  push[kSpatialResolve] = larecomp::settings::mcla_gpu_rtao_spatial_resolve.Get() ? 1u : 0u;
   const HostImage* result = denoiser_.RecordSpatial(pass);
   if (!result) {
     ResetHistory();
@@ -127,6 +129,7 @@ const HostImage* RtAoDenoise::Record(const Frame& in, uint32_t history_limit) {
   }
   previous_frame_ = in.frame;
   previous_cap_ = cap;
+  previous_spatial_resolve_ = spatial_resolve;
   recorded_ = true;
   if (!denoiser_.last_history_read()) mean_length_ = 1.0f;
   if (denoiser_.temporal_passes() % 600 == 4) SampleHistory(in.list, *result);

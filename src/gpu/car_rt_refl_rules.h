@@ -305,6 +305,11 @@ inline Disc ConeDisc(int ray, float turns) {
 }
 // slots.w bit 17 of the pass's push: the cone's turn is the blue noise tile's (mcla_gpu_noise_blue), else the first version's gradient noise (hlsl/car_rt_refl_cs.hlsl kConeBlueFlag).
 inline constexpr uint32_t kConeBlueFlag = 1u << 17;
+inline constexpr uint32_t kFullConeFlag = 1u << 28;  // above car_rt_hit::PackPhaseRays's phase field
+
+constexpr bool SkipInnerCone(bool full_cone, int slot, bool found) {
+  return !full_cone && slot == kFirstRays && !found;
+}
 // The first version's turn: an interleaved gradient noise of the texel's coordinates (Jimenez 2014) plus the golden step per phase. It is a lattice (a linear phase of the position: a few sharp spatial
 // frequencies), which the denoise's 3x3 passes leave as thin diagonal lines on a panel; kept for mcla_gpu_noise_blue false.
 inline float ConeRotationLegacy(uint32_t texel_x, uint32_t texel_y, uint32_t phase) {
@@ -607,6 +612,15 @@ inline constexpr float kDenoiseFootprintTo = 2.5f;     // texels: from this widt
 inline constexpr float kDenoiseSecondFrom = 4.0f;      // texels: the second pass (step 2) is left out under this width ...
 inline constexpr float kDenoiseSecondTo = 10.0f;       // texels: ... and applied in full from this one
 
+struct DenoiseFootprintRange {
+  float from, to;
+};
+
+constexpr DenoiseFootprintRange FirstDenoiseRange(bool resolve) {
+  return resolve ? DenoiseFootprintRange{0.25f, 1.5f}
+                 : DenoiseFootprintRange{kDenoiseFootprintFrom, kDenoiseFootprintTo};
+}
+
 // The passes made for the setting `setting` (0 .. kDenoisePasses) and the cone's half angle's tangent: a mirror (one ray) has no noise.
 inline int DenoisePassCount(int setting, float tan_half) {
   return tan_half > 0.0f ? std::clamp(setting, 0, kDenoisePasses) : 0;
@@ -652,8 +666,9 @@ inline float ConeFootprint(float hit_distance, float tan_half, float texel_m) {
 }
 // How much of pass `pass` (0, 1) is applied at a texel whose cone is `footprint` texels wide at its hit: the first pass from kDenoiseFootprintFrom to
 // kDenoiseFootprintTo, the second (the wider kernel: more noise out, more blur in) only from kDenoiseSecondFrom to kDenoiseSecondTo.
-inline float DenoiseStrength(float footprint, int pass) {
-  return pass <= 0 ? car_selfrefl::SmoothStep(kDenoiseFootprintFrom, kDenoiseFootprintTo, footprint)
+inline float DenoiseStrength(float footprint, int pass, bool resolve = false) {
+  const auto first = FirstDenoiseRange(resolve);
+  return pass <= 0 ? car_selfrefl::SmoothStep(first.from, first.to, footprint)
                    : car_selfrefl::SmoothStep(kDenoiseSecondFrom, kDenoiseSecondTo, footprint);
 }
 // The 3x3 kernel (1 2 1 / 2 4 2 / 1 2 1) at the tap's offset (-1, 0, 1 in each axis).
@@ -674,6 +689,7 @@ struct DenoiseSetup {
   float tan_half = 0.0f;      // the tangent of the cone's half angle
   float reach = 4.0f;         // the reflection ray's length (the aux's hit distance is a share of it)
   int pass = 0;               // 0: taps one texel apart, 1: two texels apart (DenoiseStep)
+  bool resolve = false;
 };
 struct DenoiseOut {
   float rgb[3] = {};
@@ -716,7 +732,7 @@ inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, 
                                                     PixelMeters(tap.history_distance, setup.tan_y, setup.image_height)));
     }
   }
-  const float strength = DenoiseStrength(footprint, setup.pass);
+  const float strength = DenoiseStrength(footprint, setup.pass, setup.resolve);
   DenoiseOut out;
   if (!(strength > 0.0f)) {
     // No cone wide enough around to have noise: the texel is exactly what the trace made it.

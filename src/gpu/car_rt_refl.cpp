@@ -474,6 +474,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
       ReleaseScratch();  // not needed while the denoise is off or cannot run
     }
   }
+  const bool resolve_paint = denoise_passes > 0 && larecomp::settings::mcla_gpu_car_selfrefl_rt_resolve.Get();
   // NOISE-RESOLVE: with no temporal upscaler the cone's pattern changes every frame and the finished image is averaged with the last frame's result (the denoise's third pass); that needs the denoise
   // (it makes the image to average), its two images and the switch. Else the pattern stands still on the screen as the first fixes left it, and what the a-trous passes leave is all there is.
   const bool resolve_history = denoise_passes > 0 && !info.upscaler && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get()) && EnsureStableImages(history.width, history.height);
@@ -501,7 +502,8 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   // The cone's turn is the blue noise tile's (the first version's gradient noise is a lattice the denoise leaves as thin diagonal lines: car_rt_refl_rules.h ConeRotation) unless
   // mcla_gpu_noise_blue is off, for the A/B.
   push.slots[3] = car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(pattern_phase, cone_rays), stats_frame) |
-                  (larecomp::settings::mcla_gpu_noise_blue.Get() ? car_rt_refl::kConeBlueFlag : 0u);
+                  (larecomp::settings::mcla_gpu_noise_blue.Get() ? car_rt_refl::kConeBlueFlag : 0u) |
+                  (resolve_paint ? car_rt_refl::kFullConeFlag : 0u);
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
   push.image[2] = float(info.render_width);
@@ -631,7 +633,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     // written again. One pass leaves its result in the scratch image.
     pass_timing_->Mark(list, "car rt denoise");
     transition(Stage::COMPUTE, {{&image_, Layout::SHADER_READ}, {&aux_, Layout::SHADER_READ}, {&scratch_, Layout::GENERAL}});
-    DispatchDenoise(list, denoise, history.slot, image_, first_set_, 0, history.width, history.height, float(info.tan_y), length, tan_half);
+    DispatchDenoise(list, denoise, history.slot, image_, first_set_, 0, history.width, history.height, float(info.tan_y), length, tan_half, resolve_paint);
     if (denoise_passes >= 2) {
       transition(Stage::COMPUTE, {{&scratch_, Layout::SHADER_READ}, {&image_, Layout::GENERAL}});
       DispatchDenoise(list, denoise, history.slot, scratch_, final_set_, 1, history.width, history.height, float(info.tan_y), length, tan_half);
@@ -643,16 +645,18 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     if (resolve_history) {
       // The third pass: the finished image (the trace's after two passes, the scratch after one) averaged with the last frame's result into the other stable image, which the paint reads. The history is the
       // frame before's (consecutive guest frames, the same size); without one the pass copies the finished image (weight 0) and the next frame has a history.
-      const bool have_last = stable_valid_ && stable_frame_ + 1 == info.frame && stable_[0].width == history.width && stable_[0].height == history.height;
+      const bool have_last = stable_valid_ && stable_resolve_paint_ == resolve_paint && stable_frame_ + 1 == info.frame &&
+                             stable_[0].width == history.width && stable_[0].height == history.height;
       const float keep = have_last ? noise_resolve::ConeHistoryWeight(stable_frames_) : 0.0f;
       const uint32_t out = 1 - stable_index_;
       HostImage& finished = result_in_scratch_ ? scratch_ : image_;
       pass_timing_->Mark(list, "car rt temporal");
       transition(Stage::COMPUTE, {{&finished, Layout::SHADER_READ}, {&stable_[stable_index_], Layout::SHADER_READ}, {&stable_[out], Layout::GENERAL}});
-      DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half, keep, stable_[stable_index_].slot);
+      DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half, false, keep, stable_[stable_index_].slot);
       transition(Stage::GRAPHICS, {{&stable_[out], Layout::SHADER_READ}});
       stable_index_ = out;
       stable_valid_ = true;
+      stable_resolve_paint_ = resolve_paint;
       stable_frame_ = info.frame;
       stable_frames_ = have_last ? std::min(stable_frames_ + 1u, 64u) : 0u;
       result_in_stable_ = true;
@@ -738,7 +742,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
 
 void CarRtRefl::DispatchDenoise(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, uint32_t history_slot, const HostImage& input,
                                 const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length,
-                                float tan_half, float keep, uint32_t previous_slot) {
+                                float tan_half, bool resolve_paint, float keep, uint32_t previous_slot) {
   DenoisePush push = {};
   push.slots[0] = history_slot;
   push.slots[1] = input.slot;
@@ -751,8 +755,9 @@ void CarRtRefl::DispatchDenoise(plume::RenderCommandList* list, plume::RenderPip
   push.lens[0] = tan_y;
   push.lens[1] = length;
   push.lens[2] = tan_half;
-  push.tune[0] = car_rt_refl::kDenoiseFootprintFrom;
-  push.tune[1] = car_rt_refl::kDenoiseFootprintTo;
+  const auto first_range = car_rt_refl::FirstDenoiseRange(resolve_paint);
+  push.tune[0] = first_range.from;
+  push.tune[1] = first_range.to;
   push.tune[2] = car_rt_refl::kDenoiseSecondFrom;
   push.tune[3] = car_rt_refl::kDenoiseSecondTo;
   list->setComputePipelineLayout(denoise_layout_.get());

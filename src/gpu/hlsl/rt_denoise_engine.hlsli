@@ -167,33 +167,53 @@ void RtAoTemporalMain(uint3 id) {
   if (any(p >= size)) return;
 
   const RtDnPixel c = RtDnLoad(p);
-  const float raw = RtDnSignal(p).x;
-  const float current = RtDnIsNumber(raw) ? saturate(raw) : 1.0f;
+  const float4 raw = RtDnSignal(p);
+  float current = RtDnIsNumber(raw.x) ? saturate(raw.x) : 1.0f;
   if (!RtDnGuidesOk(c)) {
     g_dn_out[p] = float4(current, 0.0f, 0.0f, 0.0f);
     return;
   }
   const RtAoHistory h = RtAoReproject(p, c);
+  const bool resolve = RtAoSpatialResolve() && c.vehicle == 0u && raw.z == 0.25f;
   float open = current;
-  if (h.length > 0.0f) {
+  if (resolve || h.length > 0.0f) {
     float lo = current, hi = current;
     float sum = 0.0f, sum2 = 0.0f, count = 0.0f;
     [unroll] for (int y = -1; y <= 1; ++y) {
       [unroll] for (int x = -1; x <= 1; ++x) {
-        const float4 t = RtDnColourAt(clamp(p + int2(x, y), int2(0, 0), size - 1));
-        if (t.w > 0.0f && RtDnIsNumber(t.x)) {
-          lo = min(lo, t.x);
-          hi = max(hi, t.x);
-          sum += t.x;
-          sum2 += t.x * t.x;
-          count += 1.0f;
+        const int2 at = p + int2(x, y);
+        if (resolve && (any(at < 0) || any(at >= size))) continue;
+        const int2 q = clamp(at, int2(0, 0), size - 1);
+        float visibility;
+        float w = 1.0f;
+        if (resolve) {
+          const RtDnPixel tap = RtDnLoad(q);
+          if (!RtDnGuidesOk(tap) || !RtAoAcceptTap(tap.z, c.z, tap.vehicle == 0u, dot(c.n, tap.n))) continue;
+          visibility = tap.colour.x;
+          const float plane = abs(dot(c.n, tap.pos - c.pos));
+          w = (x == 0 ? 2.0f : 1.0f) * (y == 0 ? 2.0f : 1.0f) *
+              RtDnDepthWeight(plane, c.z, RtDnDepthSigma(RT_DN_PROFILE_AMBIENT));
+        } else {
+          const float4 tap = RtDnColourAt(q);
+          if (tap.w <= 0.0f) continue;
+          visibility = tap.x;
         }
+        if (!RtDnIsNumber(visibility)) continue;
+        lo = min(lo, visibility);
+        hi = max(hi, visibility);
+        sum += visibility * w;
+        sum2 += visibility * visibility * w;
+        count += w;
       }
     }
-    const float mean = sum / max(count, 1.0f);
-    const float sigma = sqrt(RtDnVariance(sum, sum2, count));
-    const float history = RtAoClip(h.open, mean, sigma, lo, hi);
-    open = RtAoBlend(history, current, h.length);
+    if (resolve) current = RtAoResolveCurrent(current, sum, count);
+    open = current;
+    if (h.length > 0.0f) {
+      const float mean = sum / max(count, 1.0f);
+      const float sigma = sqrt(RtDnVariance(sum, sum2, count));
+      const float history = RtAoClip(h.open, mean, sigma, lo, hi);
+      open = RtAoBlend(history, current, h.length);
+    }
   }
   g_dn_out[p] = float4(saturate(open), GbOctEncode(c.n), RtAoNextLength(h.length, h.cap));
 }

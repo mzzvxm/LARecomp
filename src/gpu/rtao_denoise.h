@@ -44,6 +44,7 @@ class RtAoDenoise {
   uint64_t previous_frame_ = 0;
   uint64_t history_generation_ = 0;
   uint32_t previous_cap_ = 0;
+  bool previous_spatial_resolve_ = false;
   bool recorded_ = false;
   float mean_length_ = 0.0f;
 };

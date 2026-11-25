@@ -43,6 +43,34 @@ void Check(bool passed, const char* description) {
 }
 bool Near(float a, float b, float tolerance = 1.0e-5f) { return std::abs(a - b) <= tolerance; }
 
+void CheckSingleRayPrefilter() {
+  Check(shader::RtAoResolveCurrent(0.8f, 0.0f, 0.0f) == 0.8f, "a missing neighbourhood keeps the centre");
+  Check(shader::RtAoResolveCurrent(0.0f, 12.0f, 16.0f) == 0.375f, "keep half the centre and half the weighted estimate");
+  Check(shader::RtAoResolveCurrent(1.0f, 4.0f, 4.0f) == 1.0f &&
+            shader::RtAoResolveCurrent(0.0f, 0.0f, 4.0f) == 0.0f, "isolated lit and occluded surfaces keep their values");
+
+  constexpr float truth = 0.72f;
+  constexpr uint32_t frames = 1024;
+  float resolved_sum = 0.0f, raw_error = 0.0f, resolved_error = 0.0f;
+  for (uint32_t frame = 0; frame < frames; ++frame) {
+    float sum = 0.0f, current = 0.0f;
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        const float value = shader::RtAoRayNoise(15 + x, 27 + y, frame, 0).y < truth ? 1.0f : 0.0f;
+        sum += value * float((x == 0 ? 2 : 1) * (y == 0 ? 2 : 1));
+        if (x == 0 && y == 0) current = value;
+      }
+    }
+    const float resolved = shader::RtAoResolveCurrent(current, sum, 16.0f);
+    resolved_sum += resolved;
+    raw_error += (current - truth) * (current - truth);
+    resolved_error += (resolved - truth) * (resolved - truth);
+  }
+  std::printf("one-ray flat world MSE %.5f -> %.5f\n", double(raw_error / frames), double(resolved_error / frames));
+  Check(resolved_error < 0.65f * raw_error, "the fresh world estimate cuts one-ray variance without temporal history");
+  Check(Near(resolved_sum / frames, truth, 0.01f), "prefiltering preserves mean visibility on a flat surface");
+}
+
 void CheckMath() {
   Check(ao::HistoryCap(-1) == 1 && ao::HistoryCap(15) == 15 && ao::HistoryCap(100) == 64, "history cvar bounds");
   for (uint32_t slot : {1u, 255u, 256u, 32767u}) {
@@ -409,6 +437,7 @@ void CheckContactFringe() {
 
 int main() {
   CheckMath();
+  CheckSingleRayPrefilter();
   CheckCompose();
   CheckScenes(false);
   CheckScenes(true);
