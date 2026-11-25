@@ -207,6 +207,15 @@ class CarRtScene final : public car_frame::Listener {
   // The game's sun cascades of this frame (Volumetrics::SunCascadesForOthers: the shadow collector's constants and the atlas), given before OnResolve in every frame: the frame's rows
   // carry them to the reflection pass, whose shaded hits read the sun's visibility from them (car_rt_hit_rules.h). A frame that is not told has none (the cars' ray alone).
   void SetSunCascades(const car_rt_material::SunCascades& cascades) { sun_cascades_ = cascades; }
+  // The WORLD's sun of this frame (RT-NEXT-DAY: AmbientOcclusion::SunDirection, the unit direction toward the sun in the world; null: none), given before OnResolve in every frame. The frame's rows carry it
+  // (car_rt_material_rules.h PickFrameSun): the cars' own draws' light direction is not the world's sun (it read -5 degrees at noon), so with no world sun the frame has none.
+  void SetWorldSun(const double* to_sun) {
+    const car_rt_material::PickedSun picked = car_rt_material::PickFrameSun(to_sun);
+    world_sun_known_ = picked.known;
+    for (int c = 0; c < 3; ++c) {
+      world_sun_[c] = picked.to_sun[c];
+    }
+  }
   // The exposure of the shaded colours in stops (CarRtRefl::HitStops: measured against the history's own colours, car_rt_hit_rules.h census::): the frame's gain is multiplied by 2^stops.
   void SetHitStops(float stops) { hit_stops_ = stops; }
 
@@ -569,6 +578,8 @@ class CarRtScene final : public car_frame::Listener {
   // RT-HIT-SHADING: the texture cache, the textures asked of it in this frame (by the fetch's dwords), and what the materials were (the window's totals and the log's firsts).
   TextureCache* textures_ = nullptr;
   car_rt_material::SunCascades sun_cascades_;
+  bool world_sun_known_ = false;  // SetWorldSun: this frame's world sun (unit, toward the sun)
+  double world_sun_[3] = {0.0, 0.0, 0.0};
   float hit_stops_ = 0.0f;
   std::unordered_map<uint64_t, uint32_t> diffuse_slots_;
   struct MaterialStats {

@@ -16,6 +16,7 @@
 
 #include "car_dump.h"
 #include "car_rt_hit_rules.h"
+#include "car_rt_instances_rules.h"
 #include "car_rt_refl.h"
 #include "denoiser_setting.h"
 #include "descriptors.h"
@@ -603,7 +604,7 @@ const HostImage* CarSelfRefl::SharedColour(uint32_t render_width, uint32_t rende
 // the draws of the paint
 // ---------------------------------------------------------------------------
 
-void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
+void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running, uint64_t ps_identity,
                                 car_selfrefl::CarSelfReflConstants* out) {
   *out = car_selfrefl::OffConstants();
   upscaler_running_ = upscaler_running;  // the ray traced pass's pattern turns with the frame while an upscaler works (car_rt_refl.h)
@@ -621,10 +622,13 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
   }
   // The vehicle this draw belongs to: the ID its stencil write names (4 ID + {0, 1}).
   const uint32_t ids = temporal::StencilIdsWritten(state) & ~1u & ((1u << temporal::kVehicleIds) - 1u);
+  const bool traffic_paint = car_rt_instances::PaintKindOf(ps_identity) == car_rt_instances::PaintKind::kTraffic;
   if (ids == 0) {
     ++paint_no_id_;
+    traffic_no_id_ += traffic_paint ? 1u : 0u;
     return;
   }
+  traffic_with_id_ += traffic_paint ? 1u : 0u;
   const uint32_t id = uint32_t(std::countr_zero(ids));
   // The play view: the vehicle's own motion of the last anchor. The pause view's worlds: the car is still (OnAnchor says why).
   const temporal::Mat4* motion = nullptr;
@@ -727,11 +731,12 @@ void CarSelfRefl::Census() {
   REXLOG_INFO("{} frame {}: {} view, mode {}, history {}; paint draws in the last {} frames: {}, {} with a history ({} of "
               "them in the pause view's worlds); since the start: {} triggers ({} history passes, {} of them from the shared colour, {} with no paint draw in "
               "the frame, {} without the previous frame's camera, {} lens changes, {} in a world with no effect), {} paint draws, {} with a history ({} with "
-              "the vehicle's motion, {} without a stencil ID, {} with the ray traced image); {:.1f} MiB{}",
+              "the vehicle's motion, {} without a stencil ID, {} with the ray traced image); traffic paint draws since the start: {} with a stencil ID, {} without ({}); {:.1f} MiB{}",
               kPrefix, frame_, pause_view_ ? "pause/map" : "play", ModeName(mode_), history_valid_ ? "valid" : "none",
               kCensusFrames, paint_draws_ - census_paint_, paint_with_history_ - census_with_history_,
               paint_pause_ - census_pause_, triggers_, passes_run_, passes_shared_, skipped_no_car_, no_camera_, lens_changed_, world_skipped_,
-              paint_draws_, paint_with_history_, paint_motion_, paint_no_id_, paint_with_rt_, double(HeldBytes()) / (1024.0 * 1024.0),
+              paint_draws_, paint_with_history_, paint_motion_, paint_no_id_, paint_with_rt_, traffic_with_id_, traffic_no_id_,
+              car_rt_instances::NoStencilNote(traffic_with_id_, traffic_no_id_), double(HeldBytes()) / (1024.0 * 1024.0),
               rt_ ? rt_->CensusText() : std::string());
   census_paint_ = paint_draws_;
   census_with_history_ = paint_with_history_;

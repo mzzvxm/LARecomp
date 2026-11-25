@@ -225,6 +225,23 @@ inline PaintKind PaintKindOf(uint64_t ps_identity) {
   return ps_identity == car_dump::kCarPaintPs ? PaintKind::kCustom : (ps_identity == kTrafficPaintPs ? PaintKind::kTraffic : PaintKind::kNone);
 }
 
+// What a census of the traffic paint's draws says about the vehicle stencil ID (RT-NEXT-DAY). The history image of the car reflections holds only the pixels whose stencil byte says a vehicle (ID 1
+// to 23, hlsl/car_history_ps.hlsl), the ray traced scene's draw path takes only draws that write such an ID (car_frame.cpp OnMainDraw), and the paint variant's constants are the game's without one
+// (car_selfrefl.cpp FillConstants). A MOVING traffic car carries an ID; a PARKED one (and the toolkit's `car <id> ambient`, a layout car that "stands still where it is put") carries none, so its paint is
+// not reflected and it is no instance with a paint bit: RT-NEXT's traffic scene, which spawns a layout car, found 0 traffic paint instances. The words of the log's census.
+inline std::string NoStencilNote(uint64_t with_id, uint64_t without_id) {
+  if (with_id == 0 && without_id == 0) {
+    return "no traffic car's paint reached the test yet";
+  }
+  if (without_id == 0) {
+    return "every traffic car carried a vehicle stencil ID";
+  }
+  if (with_id == 0) {
+    return "NONE carried a vehicle stencil ID: a parked car has none, so it has no pixel in the history image, no draw in the ray traced scene and no read of the traced reflection";
+  }
+  return "some carried none: a parked car has none, so its paint keeps the game's reads";
+}
+
 // The mask of the instance of another car's draw: every part of another car has kMaskOthers (what the reflection's, the occlusion's and the
 // check's rays hit); a draw of the chrome's shader also has kMaskOtherChrome, so that the reflection pass's primary ray can find another car's chrome at a
 // pixel and the chrome's occlusion be traced for it (car_chrome_rt_rules.h), and a draw of the paint's shader has kMaskOtherPaint, so that the opponents' reflection

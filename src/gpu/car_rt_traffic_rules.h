@@ -58,7 +58,11 @@
 //      the variant (mcla_gpu_car_selfrefl_debug 4) is all red if they are not;
 //   3. that the cars of the traffic are in the history image (the vehicle stencil IDs 1 to 23 hold them) and in the scene's top level within the class's count of cars and radius: the log's
 //      "[car rt]" lines count other cars; traffic cars beyond the class's count have no triangle and no paint bit (the scene holds High 4 cars within 20 m, Mid 2 within 14 m, and the walked
-//      traffic cars besides, which have no paint bit);
+//      traffic cars besides, which have no paint bit). ANSWERED (RT-NEXT-DAY, from the RT-NEXT run): only a car that WRITES a vehicle stencil ID is in the history image, in the scene's draw path
+//      and under the paint variant's constants. A moving traffic car does (the race run admitted traffic cars); a PARKED one does not, and neither does the toolkit's `car <id> ambient` (a layout car
+//      that stands still), which the RT-NEXT traffic scene used: 0 traffic paint instances, 0 rays. The walker (car_model_walk.cpp AddTraffic) leaves a car the main view shows to the draw path, so such a
+//      visible parked car is in no top level at all. The log's census now counts the traffic paint's draws with and without an ID (car_rt_instances_rules.h NoStencilNote). Reflecting parked cars needs
+//      their pixels marked another way (their boxes, tested against the depth) and the walker to place a shown car the draw path never claimed: a follow-up, not this file's rule;
 //   4. the cost against the estimate, and that the share keeps a crowded street's pass under the budget (the log's frames at 4 / 2 / 1 rays);
 //   5. the starter list of pipelines (tools/pipelines/pipeline_list.py): the traffic paint's new variant word has no entry, so the pipeline of its first draw is made when it is drawn (a
 //      one-time hitch the first frame a traffic car is in view) unless the list is regenerated.

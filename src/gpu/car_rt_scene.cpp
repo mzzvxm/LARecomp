@@ -1058,9 +1058,10 @@ void CarRtScene::BuildMaterialRows(const car_frame::Frame& frame, bool flip_z, c
       }
     }
   }
-  const double sun_length = std::sqrt(frame.to_sun[0] * frame.to_sun[0] + frame.to_sun[1] * frame.to_sun[1] + frame.to_sun[2] * frame.to_sun[2]);
-  if (sun_length > 0.5 && std::isfinite(sun_length)) {
-    in.sun_known = car_rt_instances::ViewVector(frame.view, flip_z, frame.to_sun, in.to_sun_view);
+  // The sun is the WORLD's (SetWorldSun), not the cars' own draws' light direction (Frame::to_sun): that one read -5 degrees at noon, so the hour from the sun's height said night by day (RT-NEXT-DAY,
+  // car_rt_material_rules.h PickFrameSun). No world sun this frame: no sun, the shading by daylight.
+  if (world_sun_known_) {
+    in.sun_known = car_rt_instances::ViewVector(frame.view, flip_z, world_sun_, in.to_sun_view);
   }
   for (int axis = 0; axis < 3; ++axis) {
     const double unit[3] = {axis == 0 ? 1.0 : 0.0, axis == 1 ? 1.0 : 0.0, axis == 2 ? 1.0 : 0.0};
@@ -1089,7 +1090,7 @@ void CarRtScene::NoteMaterials(const car_rt_instances::List& list, const std::ve
   ++m.frames;
   m.light_frames += frame.light.valid ? 1u : 0u;
   m.env_frames += frame.light.env_sharp != 0 ? 1u : 0u;
-  m.sun_frames += (frame.to_sun[0] != 0.0 || frame.to_sun[1] != 0.0 || frame.to_sun[2] != 0.0) ? 1u : 0u;
+  m.sun_frames += world_sun_known_ ? 1u : 0u;
   m.cascade_frames += (words.size() > 3 && (words[3] & crm::kFrameCascade) != 0u) ? 1u : 0u;
   lens_stats_.glowing += list.stats.lens_glowing;
   lens_stats_.dark += list.stats.lens_dark;
@@ -1127,10 +1128,18 @@ void CarRtScene::NoteMaterials(const car_rt_instances::List& list, const std::ve
   }
   if (!material_frame_logged_ && frame.light.valid) {
     material_frame_logged_ = true;
+    crm::PickedSun world_sun;
+    world_sun.known = world_sun_known_;
+    for (int c = 0; c < 3; ++c) {
+      world_sun.to_sun[c] = world_sun_[c];
+    }
     REXLOG_INFO("{} frame {}: the cars' light as their draws saw it: sun ({:.3f} {:.3f} {:.3f}), ambient ({:.3f} {:.3f} {:.3f}), sky ({:.3f} {:.3f} {:.3f}), night factor {:.2f} (by the sun's height; by the colour {:.2f}), "
-                "the environment map's slots {:#x} and {:#x}, the sun's direction in the view space ({:.2f} {:.2f} {:.2f}), shading {}", kPrefix, frame_, frame.light.sun[0], frame.light.sun[1],
-                frame.light.sun[2], frame.light.ambient[0], frame.light.ambient[1], frame.light.ambient[2], frame.light.sky[0], frame.light.sky[1], frame.light.sky[2],
-                crm::FromBits(words[3 * 4 + 2]), crm::NightFactor(frame.light.sun), frame.light.env_sharp, frame.light.env_blur, crm::FromBits(words[0]), crm::FromBits(words[1]), crm::FromBits(words[2]),
+                "the environment map's slots {:#x} and {:#x}, the sun's direction in the view space ({:.2f} {:.2f} {:.2f}), the sun: {} (the cars' own draws' light direction read {:.1f} degrees: not the world's), shading {}",
+                kPrefix, frame_, frame.light.sun[0], frame.light.sun[1], frame.light.sun[2], frame.light.ambient[0], frame.light.ambient[1], frame.light.ambient[2], frame.light.sky[0], frame.light.sky[1],
+                frame.light.sky[2], crm::FromBits(words[3 * 4 + 2]), crm::NightFactor(frame.light.sun), frame.light.env_sharp, frame.light.env_blur, crm::FromBits(words[0]), crm::FromBits(words[1]),
+                crm::FromBits(words[2]),
+                world_sun.known ? std::format("the world's, {:.1f} degrees over the horizon", crm::SunElevationDegrees(world_sun)) : std::string("none this frame (no world light: the shading is by daylight)"),
+                std::asin(std::clamp(frame.to_sun[1], -1.0, 1.0)) * (180.0 / 3.14159265358979323846),
                 larecomp::settings::mcla_gpu_car_rt_hit_shading.Get() ? "on" : "off (today's stand-in)");
   }
   if (frame_ >= m.first_frame + kMaterialLogFrames && m.frames != 0) {

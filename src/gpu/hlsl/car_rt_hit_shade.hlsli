@@ -280,7 +280,7 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     gCarHitClass = m.cls;
     gCarHitNdl = ndl * daySun;  // at night the sun does not reach anything: "facing away" in the census
     gCarHitVisible = visible;
-    const float glowNight = m.glowDriven ? 1.0 : f.night;  // a lens the game's lamps drive glows by its lamps' level alone
+    const float glowNight = m.glowDriven ? 1.0 : night;  // a lens the game's lamps drive glows by its lamps' level alone; any other by the hour, and the hour is only known with the sun (night is 0 without it, as for the light above)
     gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? m.emissive * glowNight : 0.0;
 
     // the reflection: the environment map at the reflected direction, by the fresnel

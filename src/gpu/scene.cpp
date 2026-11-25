@@ -2514,7 +2514,7 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
       static_assert(sizeof(car_selfrefl::CarSelfReflConstants) == sp::chain::Find(sp::kFeatureCarChrome)->constants_bytes);
       car_selfrefl::CarSelfReflConstants block = car_selfrefl::OffConstants();
       if (car_refl_) {
-        car_refl_->FillConstants(d.state, UpscalerRunning(), &block);
+        car_refl_->FillConstants(d.state, UpscalerRunning(), d.ps ? d.ps->key : 0, &block);
       }
       std::memcpy(out, &block, sizeof(block));
       return;
@@ -4086,6 +4086,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
       }
     }
     car_rt_->SetSunCascades(cascades);
+    // The WORLD's sun, from the occlusion's pick of the main view's draws (the headlight rig's, the car shadow map's, the world frame's): the cars' own draws' light direction is not the sun
+    // (-5 degrees at noon), so the hour of the reflected cars' shading came out as night by day (RT-NEXT-DAY, car_rt_material_rules.h PickFrameSun).
+    double world_to_sun[3];
+    car_rt_->SetWorldSun(ao_ && ao_->SunDirection(world_to_sun) ? world_to_sun : nullptr);
     if (rt_world_) {
       rt_world_->SetSunCascades(cascades);  // the world frame's hit rows hold the same cascades (CITY-RT FRAME)
     }

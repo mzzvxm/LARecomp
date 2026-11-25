@@ -220,7 +220,8 @@ class CarSelfRefl {
 
   // The 112 bytes a draw of the paint variant reads (Scene::FillVariantBlock): the game's paint (mode 0) when
   // there is no history for this frame. `upscaler_running` only turns the ray traced pass's cone pattern by the frame (the march has no noise, since version 3).
-  void FillConstants(const XenosState& state, bool upscaler_running, car_selfrefl::CarSelfReflConstants* out);
+  // `ps_identity` is the draw's pixel shader (the census of the traffic paint's draws with and without a vehicle stencil ID, RT-NEXT-DAY).
+  void FillConstants(const XenosState& state, bool upscaler_running, uint64_t ps_identity, car_selfrefl::CarSelfReflConstants* out);
 
   // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force ("off", "on", or
   // "occlusion" for the debug test level), for the scene's one line per change of world.
@@ -336,6 +337,8 @@ class CarSelfRefl {
   uint64_t paint_draws_ = 0;
   uint64_t paint_with_history_ = 0;
   uint64_t paint_no_id_ = 0;
+  uint64_t traffic_with_id_ = 0;  // RT-NEXT-DAY: draws of the TRAFFIC paint (car_rt_instances_rules.h kTrafficPaintPs) that reached the ID test, with a vehicle stencil ID ...
+  uint64_t traffic_no_id_ = 0;    // ... and without one: a parked car carries none, and the history image, the ray traced scene's draw path and this variant are all keyed on it
   uint64_t paint_motion_ = 0;
   uint64_t paint_pause_ = 0;  // paint draws with a history in the pause view's worlds (the car taken as still)
   uint64_t paint_with_rt_ = 0;  // paint draws given the ray traced image (car_rt_refl.h)

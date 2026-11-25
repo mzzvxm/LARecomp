@@ -325,6 +325,39 @@ int main(int argc, char** argv) {
     Check(Near(driven[0], 0.5 * 0.6 * crm::kEmissiveGain) && undriven[0] < 1e-6, "a driven lens glows by albedo x scale x the glow's gain at any hour; an undriven one by day not at all");
   }
 
+  // ---- RT-NEXT-DAY: a lens no lamp drives glows by the hour, and the hour needs the sun ------------------------------------------
+  {
+    // the rule itself
+    Check(crm::GlowNight(true, true, 0.0f) == 1.0f && crm::GlowNight(true, false, 0.97f) == 1.0f, "a driven lens is multiplied by 1, with a sun or without");
+    Check(crm::GlowNight(false, true, 0.3f) == 0.3f && crm::GlowNight(false, true, 1.0f) == 1.0f && crm::GlowNight(false, true, 0.0f) == 0.0f, "an undriven lens with a sun glows by the frame's night factor");
+    Check(crm::GlowNight(false, false, 0.97f) == 0.0f && crm::GlowNight(false, false, 1.0f) == 0.0f, "an undriven lens with NO sun does not glow: the colour's 0.97 (which reads the same at 14 h and 23 h) is no hour");
+    // through the shading reference: a frame that has no sun direction carries the colour's guess in `night` (rt_hit_frame.h MakeFrameRows): 0.97 by day
+    crm::ShadeInput in;
+    in.cls = crm::Class::kLight;
+    in.tint_a[0] = in.tint_a[1] = in.tint_a[2] = 0.5f;
+    in.tint_b[0] = in.tint_b[1] = in.tint_b[2] = 0.5f;
+    in.light.valid = true;
+    in.light.ambient[0] = in.light.ambient[1] = in.light.ambient[2] = 0.0f;
+    in.light.sun[0] = in.light.sun[1] = in.light.sun[2] = 0.0f;
+    in.env_known = true;
+    in.sun_visible = 0.0f;
+    in.emissive = 0.6f;
+    in.night = 0.97f;
+    in.glow_driven = false;
+    float no_sun[3], with_sun[3], driven[3];
+    in.sun_known = false;
+    crm::ShadeReference(in, no_sun);
+    in.sun_known = true;
+    in.night = 1.0f;
+    crm::ShadeReference(in, with_sun);
+    in.sun_known = false;
+    in.night = 0.97f;
+    in.glow_driven = true;
+    crm::ShadeReference(in, driven);
+    Check(no_sun[0] < 1e-6 && Near(with_sun[0], 0.5 * 0.6 * crm::kEmissiveGain) && Near(driven[0], 0.5 * 0.6 * crm::kEmissiveGain),
+          "by day with no sun an undriven lens is dark (the colour's guess is not used); at night with a sun it glows; a driven lens glows in both");
+  }
+
   // ---- the instance list ----------------------------------------------------------------------------------------------------
   {
     // Two cars' draws: a drawn car's lens (a draw of the lens shader: class light, emissive) and a walked car's taillight part (no shader); each with a mesh box of 0.4 x 0.2 x 0.2 m.
@@ -435,7 +468,7 @@ int main(int argc, char** argv) {
     const std::string inst_h = ReadFile(src + "/gpu/car_rt_instances.h");
     const std::string cmake = ReadFile(src + "/gpu/CMakeLists.txt");
     Check(!hlsli.empty() && !scene.empty() && !inst.empty() && !cmake.empty(), "the sources were read (give the src folder as the first argument)");
-    Check(Has(hlsli, "static const uint kMatGlowDriven = 1u;") && Has(hlsli, "m.glowDriven = (r1.w & kMatGlowDriven) != 0u;") && Has(hlsli, "const float glowNight = m.glowDriven ? 1.0 : f.night;") &&
+    Check(Has(hlsli, "static const uint kMatGlowDriven = 1u;") && Has(hlsli, "m.glowDriven = (r1.w & kMatGlowDriven) != 0u;") && Has(hlsli, "const float glowNight = m.glowDriven ? 1.0 : night;") && !Has(hlsli, "m.glowDriven ? 1.0 : f.night") &&
               Has(hlsli, "result += albedo * (m.emissive * kRtHitEmissiveGain * glowNight);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? m.emissive * glowNight : 0.0;"),
           "the shader reads the driven bit of the record's row 1 w and does not multiply a driven lens's scale by the night factor");
     Check(Has(scene, "void CarRtScene::UpdateLamps(") && Has(scene, "UpdateLamps(frame, build_limits.On());") && Has(scene, "lights_source_.Poll(kNoFrames,") && Has(scene, "car_rt_lights::MakeLampSet(lights, &lamp_set_);") &&

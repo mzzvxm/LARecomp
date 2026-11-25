@@ -915,6 +915,47 @@ inline void Albedo(const ShadeInput& in, float nv, float out[3]) {
   }
 }
 
+// What the glow of a lens is multiplied by (the shader's glowNight): a lens the game's lamps drive glows by its lamps' level alone (1); any other lens (the old rule's every lens, a lens no lamp stands
+// in) glows by the frame's HOUR, and the hour is only known with the sun (the frame's `night` is then the sun's height's; without a sun direction it is the colour's guess, which read 0.97 at 14 h and
+// 23 h alike): the light's own rule (`night` is 0 where the sun is not known), so that nothing glows by day for want of a sun (RT-NEXT-DAY: it used the raw factor, 0.97 by day).
+inline float GlowNight(bool glow_driven, bool sun_known, float night) {
+  return glow_driven ? 1.0f : (sun_known ? night : 0.0f);
+}
+
+// The sun of a frame's rows (RT-NEXT-DAY).
+// WHAT WAS WRONG. The frame's rows took the sun's direction from the cars' OWN draws (car_frame.h Frame::to_sun: VS c16 of the player's car draws, minus the direction the light travels). That is a
+// light of the car's own, not the world's: headlight_rig.h measured it at -5 degrees at noon (the headlights' run of 2026-11-20), and car_shadow_map.cpp already takes the world's sun from the occlusion
+// instead. With it the hour from the sun's height (NightFromSunHeight) read NIGHT at 14 h: by day every reflected car was shaded as at night (the census: "the sun: 0 lit, 0 in shadow, N facing away"
+// in every day run, the race at 12 h included), its sun term was off, its lamp glints and its night fill were on, and the lenses that no lamp drives (and every lens under the old rule) glowed by day.
+// WHAT THIS DECIDES. The sun a frame's rows carry is the WORLD's: the unit direction TOWARD the sun that the Scene reads from the occlusion's pick of the main view's draws
+// (AmbientOcclusion::SunDirection, the one the headlight rig, the car shadow map and the city's world frame use). The cars' own c16 is never the sun here. Where the Scene gives none (the occlusion's
+// draw hooks are off: no effect wants the draws) the frame has none: the shading is by daylight (sun_known false: the light's night factor is 0, and so is the glow of a lens no lamp drives).
+struct PickedSun {
+  bool known = false;
+  double to_sun[3] = {0.0, 0.0, 0.0};  // unit, in the world
+};
+
+inline PickedSun PickFrameSun(const double* world_to_sun) {
+  PickedSun out;
+  if (world_to_sun == nullptr) {
+    return out;
+  }
+  const double length = std::sqrt(world_to_sun[0] * world_to_sun[0] + world_to_sun[1] * world_to_sun[1] + world_to_sun[2] * world_to_sun[2]);
+  if (!std::isfinite(length) || length < 0.5) {
+    return out;
+  }
+  out.known = true;
+  for (int c = 0; c < 3; ++c) {
+    out.to_sun[c] = world_to_sun[c] / length;
+  }
+  return out;
+}
+
+// The sun's height over the horizon in degrees (the world's up is +y), for the log line that says what the frame's hour was made from; 0 for a frame with no sun.
+inline double SunElevationDegrees(const PickedSun& sun) {
+  return sun.known ? std::asin(std::clamp(sun.to_sun[1], -1.0, 1.0)) * (180.0 / 3.14159265358979323846) : 0.0;
+}
+
 // The colour of the hit in the paint's units (the pass multiplies it by 2^exp_bias).
 inline void ShadeReference(const ShadeInput& in, float out[3]) {
   const ClassDefaults& d = DefaultsOf(in.cls);
@@ -926,7 +967,7 @@ inline void ShadeReference(const ShadeInput& in, float out[3]) {
   const float hemisphere = std::clamp(0.6f + 0.4f * Dot3(in.normal, in.up), 0.2f, 1.0f);
   const float night = in.sun_known ? in.night : 0.0f;  // the sun's end, the night fill and the lamps' images need the hour from the sun's height
   const float day_sun = 1.0f - night;
-  const float glow_night = in.glow_driven ? 1.0f : in.night;  // a lens the game's lamps drive glows by its lamps' level alone (the shader's glowNight)
+  const float glow_night = GlowNight(in.glow_driven, in.sun_known, in.night);  // the shader's glowNight
   const float ndl = std::clamp(Dot3(in.normal, in.to_sun), 0.0f, 1.0f);
   float reflected[3];
   const float twice = 2.0f * Dot3(in.normal, in.ray);

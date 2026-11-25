@@ -377,6 +377,24 @@ int main(int argc, char** argv) {
     Check(sw.found && sw.debug_only && sw.live && sw.default_text == "-1" && sw.has_range && sw.range_lo == -1.0 && sw.range_hi == 100.0, "the switch is a live, debug-only integer, -1 by default, from -1 to 100");
   }
 
+  // ---- RT-NEXT-DAY: the stencil census of the traffic paint -----------------------------------------------------------------------
+  {
+    const std::string none = ci::NoStencilNote(0, 0), all = ci::NoStencilNote(7, 0), nothing = ci::NoStencilNote(0, 9), some = ci::NoStencilNote(3, 5);
+    Check(none.find("no traffic car's paint reached") != std::string::npos && all.find("every traffic car carried") != std::string::npos, "the census note says when nothing was drawn and when every car had an ID");
+    Check(nothing.find("NONE carried a vehicle stencil ID") != std::string::npos && nothing.find("parked car has none") != std::string::npos && nothing.find("no draw in the ray traced scene") != std::string::npos,
+          "the census note says that a parked car (no ID at all) has no pixel in the history, no draw in the scene and no read of the reflection");
+    Check(some.find("some carried none") != std::string::npos && some != nothing && some != all && none != all, "the four cases have four notes");
+    const std::string selfrefl = ReadFile(src + "/gpu/car_selfrefl.cpp");
+    const std::string selfrefl_h = ReadFile(src + "/gpu/car_selfrefl.h");
+    const std::string main_scene = ReadFile(src + "/gpu/scene.cpp");
+    Check(!selfrefl.empty() && !selfrefl_h.empty() && !main_scene.empty(), "the sources were read (give the src folder as the first argument)");
+    Check(Has(selfrefl, "car_rt_instances::PaintKindOf(ps_identity) == car_rt_instances::PaintKind::kTraffic") && Has(selfrefl, "traffic_no_id_ += traffic_paint ? 1u : 0u;") && Has(selfrefl, "traffic_with_id_ += traffic_paint ? 1u : 0u;") &&
+              Has(selfrefl, "traffic paint draws since the start: {} with a stencil ID, {} without ({})") && Has(selfrefl, "car_rt_instances::NoStencilNote(traffic_with_id_, traffic_no_id_)"),
+          "the paint variant counts the traffic paint's draws with and without a stencil ID and the census line says so");
+    Check(Has(selfrefl_h, "uint64_t ps_identity, car_selfrefl::CarSelfReflConstants* out);") && Has(main_scene, "car_refl_->FillConstants(d.state, UpscalerRunning(), d.ps ? d.ps->key : 0, &block);"),
+          "the scene gives the draw's pixel shader to the paint variant's constants");
+  }
+
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

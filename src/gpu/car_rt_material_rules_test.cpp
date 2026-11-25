@@ -1595,6 +1595,44 @@ int main(int argc, char** argv) {
     }
   }
 
+  // ---- RT-NEXT-DAY: the sun of the frame's rows is the world's -------------------------------------------------------------------
+  {
+    const double up[3] = {0.0, 1.0, 0.0};
+    const double zero[3] = {0.0, 0.0, 0.0};
+    const double nan3[3] = {std::nan(""), 0.0, 1.0};
+    const double high[3] = {0.0, 2.0, 0.0};  // not unit: normalised
+    const crm::PickedSun none = crm::PickFrameSun(nullptr);
+    const crm::PickedSun straight = crm::PickFrameSun(up);
+    const crm::PickedSun scaled = crm::PickFrameSun(high);
+    Check(!none.known && !crm::PickFrameSun(zero).known && !crm::PickFrameSun(nan3).known, "no world sun, a zero vector and a NaN are no sun");
+    Check(straight.known && std::fabs(straight.to_sun[1] - 1.0) < 1e-12 && scaled.known && std::fabs(scaled.to_sun[1] - 1.0) < 1e-12, "a world sun is kept, unit length");
+    Check(std::fabs(crm::SunElevationDegrees(straight) - 90.0) < 1e-9 && crm::SunElevationDegrees(none) == 0.0, "the elevation of the sun straight up is 90 degrees, of no sun 0");
+    const double dusk[3] = {std::cos(0.1), -std::sin(0.1), 0.0};  // 5.7 degrees under the horizon
+    const double noon[3] = {std::cos(1.0), std::sin(1.0), 0.0};   // 57 degrees over it
+    Check(crm::SunElevationDegrees(crm::PickFrameSun(dusk)) < -5.0 && crm::SunElevationDegrees(crm::PickFrameSun(noon)) > 56.0, "the elevation follows the y component");
+    // the hour that follows from the world's sun: night under the horizon, day at noon (the cars' own light read -5 degrees at noon: night 1 by day)
+    const float night_by_world = crm::NightFromSunHeight(float(noon[1]));
+    const float night_by_car_light = crm::NightFromSunHeight(float(std::sin(-5.0 * 3.14159265358979323846 / 180.0)));
+    Check(night_by_world == 0.0f && night_by_car_light > 0.85f, "the hour from the world's noon sun is day; from the cars' own -5 degrees it was night");
+
+    const std::string scene = ReadFile(src + "/gpu/car_rt_scene.cpp");
+    const std::string scene_h = ReadFile(src + "/gpu/car_rt_scene.h");
+    const std::string main_scene = ReadFile(src + "/gpu/scene.cpp");
+    Check(!scene.empty() && !scene_h.empty() && !main_scene.empty(), "the sources were read (give the src folder as the first argument)");
+    // the rows' sun is the world's: BuildMaterialRows does not read the cars' own light direction any more, and the Scene gives the world's before the trigger
+    const size_t build = scene.find("void CarRtScene::BuildMaterialRows(");
+    const size_t build_end = build == std::string::npos ? std::string::npos : scene.find("crm::MakeFrameRows(in, rows);", build);
+    const std::string body = build != std::string::npos && build_end != std::string::npos ? scene.substr(build, build_end - build) : std::string();
+    Check(!body.empty() && body.find("world_sun_known_") != std::string::npos && body.find("ViewVector(frame.view, flip_z, world_sun_, in.to_sun_view)") != std::string::npos &&
+              body.find("frame.to_sun") == std::string::npos,
+          "BuildMaterialRows carries the world's sun and never the cars' own draws' light direction");
+    Check(scene_h.find("void SetWorldSun(const double* to_sun)") != std::string::npos && scene_h.find("car_rt_material::PickFrameSun(to_sun)") != std::string::npos,
+          "the scene's SetWorldSun goes through PickFrameSun");
+    const size_t give = main_scene.find("car_rt_->SetWorldSun(ao_ && ao_->SunDirection(world_to_sun) ? world_to_sun : nullptr);");
+    const size_t resolve = main_scene.find("const bool car_structures = car_rt_->OnResolve(record, summary, list, slot_);");
+    Check(give != std::string::npos && resolve != std::string::npos && give < resolve, "the Scene gives the occlusion's world sun to the car scene before OnResolve builds the frame's rows");
+  }
+
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }
