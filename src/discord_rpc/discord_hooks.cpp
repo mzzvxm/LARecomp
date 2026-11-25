@@ -5,6 +5,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "discord_rpc/discord_rpc.h"
 
+#include <bit>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -13,8 +14,10 @@
 #include <rex/kernel/title_runtime.h>
 
 #include "mc_engine/hooks/hooks.h"
+#include "mc_engine/hooks/run_ready.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/menus/pause_menu.h"
+#include "mc_engine/online/server_browser/browser_join.h"
 
 namespace {
 
@@ -526,6 +529,22 @@ void RpcOnDistrictChanged(int district_idx) {
 void RpcOnRaceTick() {
 #ifndef REXGLUE_HAS_XEO3_TARGET
   LARECOMP_Discord_Poll();  // larecomp_discord_rpc is live: a change made since the last frame
+  using mc::run_ready::Event;
+  if (mc::run_ready::Pending(Event::Roam) && mc::run_ready::Entered() && RpcInFreeRoam() &&
+      larecomp::browser::WorldReady() && !larecomp::browser::ModalMessageUp()) {
+    mc::run_ready::Note(Event::Roam);
+  }
+  if (mc::run_ready::Pending(Event::Race)) {
+    static mc::run_ready::RaceClock clock;
+    const auto* base = GetMembase();
+    const uint32_t race = base && g_activity == LarecompDiscordState::Race ? ReadGuestBE32(kCurrentRace) : 0;
+    constexpr uint32_t kModeTimer = 0x827D7510;
+    if (IsGuestPtr(race) && clock.Tick(race, std::bit_cast<float>(ReadGuestBE32(kModeTimer)))) {
+      mc::run_ready::Note(Event::Race);
+    } else if (!IsGuestPtr(race)) {
+      clock.Tick(0, 0.0f);
+    }
+  }
   if (g_activity != LarecompDiscordState::Race) return;
 
   static int countdown = 0;

@@ -2,6 +2,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "ultrawide.h"
+#include "mc_engine/hooks/run_ready.h"
 #include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
@@ -483,7 +484,7 @@ std::atomic<bool> g_title_prompt_logged{false};
 // `instance` is PROMPTMOVIE's `screen` (the root's child that holds the whole bar: the player draws a movie's
 // root's children through sub_825FB348, not the root itself) and the game has not been entered yet.
 bool IsTitlePrompt(const uint8_t* base, uint32_t instance) {
-  if (g_game_entered.load(std::memory_order_relaxed) ||
+  if (!PlausibleEa(instance) || g_game_entered.load(std::memory_order_relaxed) ||
       !GuestNameIs(base, ReadGuestU32(base, instance + kInstName), "screen")) {
     return false;
   }
@@ -498,6 +499,7 @@ bool IsTitlePrompt(const uint8_t* base, uint32_t instance) {
 }  // namespace
 
 void NoteGameEntered() {
+  if (run_ready::Pending(run_ready::Event::Roam)) run_ready::NoteEntered();
   if (!g_game_entered.exchange(true, std::memory_order_relaxed) &&
       g_title_prompt_logged.load(std::memory_order_relaxed)) {
     LARECOMP_APP_INFO("ultrawide: the game is entered: the prompt bar stays in the middle from now on");
@@ -505,6 +507,13 @@ void NoteGameEntered() {
 }
 
 void NoteUiPiece(uint32_t instance, bool begin) {
+  if (!begin && run_ready::Pending(run_ready::Event::Title)) {
+    const uint8_t* base = GuestBase();
+    if (base && IsTitlePrompt(base, instance) && !run_ready::Entered()) {
+      const uint32_t prompts = FindChildNamed(base, instance, "allprompts");
+      if (prompts && base[instance + kInstAlpha] && base[prompts + kInstAlpha]) run_ready::NoteTitleDraw();
+    }
+  }
 #if defined(LARECOMP_HAS_GPU)
   if (!begin) {
     // The end is sent even if the picture has stopped being wide, or the setting is 0, in between (a

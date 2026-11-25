@@ -57,6 +57,7 @@
 
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "run_ready.h"
 #include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_8238C9B0);  // LocalOptions reset
@@ -422,6 +423,7 @@ extern "C" REX_FUNC(rex_sub_822D20D8) {
 extern "C" REX_FUNC(rex_sub_822D2258) {
     __imp__rex_sub_822D2258(ctx, base);
     if (Enabled()) RestoreAfterLoad(base);
+    if (base) mc::run_ready::Note(mc::run_ready::Event::Save);
 }
 
 // Each roster list read can grow the roster; the table keeps room for it.
