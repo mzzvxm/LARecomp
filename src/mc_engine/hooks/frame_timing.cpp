@@ -233,13 +233,14 @@ static void EnforceFrameLimit() {
     int32_t limit = (env_limit >= 0) ? env_limit : larecomp::settings::fps_limit.Get();
 #if defined(LARECOMP_HAS_GPU)
     // With frame generation running the cap is its own, in rendered frames (the frames shown are twice
-    // as many): HALF DISPLAY by default. MCLA_FPS_CAP stays the override of everything.
+    // as many): HALF DISPLAY by default. MCLA_FPS_CAP overrides the chosen rendered-frame limit.
     if (env_limit < 0) {
         limit = mcla::gpu::FrameGenerationFpsLimit(limit);
         // DLSS frame generation's cap (the same setting; HALF DISPLAY is the display's rate over its
         // multiplier). Only one of the two runs.
         limit = mcla::gpu::DlssFrameGenerationFpsLimit(limit);
     }
+    limit = mcla::gpu::LimitFrameRateForComposedPresents(limit);
 #endif
     if (limit <= 0) {
         next_us = 0;

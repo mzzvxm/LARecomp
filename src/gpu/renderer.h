@@ -150,6 +150,11 @@ class Renderer final : public RenderThread::Executor {
 
   Renderer() : validator_(shaders_), scene_(shaders_), census_(guest_memory_) {}
   const Device& device() const { return device_; }
+#if defined(_WIN32)
+  uint32_t composed_present_ceiling() const {
+    return composed_present_ceiling_.load(std::memory_order_relaxed);
+  }
+#endif
   ~Renderer() override;
   Renderer(const Renderer&) = delete;
   Renderer& operator=(const Renderer&) = delete;
@@ -234,6 +239,9 @@ class Renderer final : public RenderThread::Executor {
   void SubmitFrameWithoutPresent();
   void ExecutePresent(PresentSource source);
   bool RebuildSwapChain();
+#if defined(_WIN32)
+  void UpdateComposedPresentCeiling();
+#endif
   // HDR10 only, once per present: this frame's levels to the present pass and the overlay, and the
   // display's metadata when the peak moved.
   void UpdateHdr();
@@ -441,6 +449,12 @@ class Renderer final : public RenderThread::Executor {
   };
   DeferredPresent deferred_;
   PresentSchedule schedule_;
+#if defined(_WIN32)
+  bool may_use_composed_copy_ = false;
+  std::chrono::steady_clock::time_point composed_monitor_poll_{};
+  std::atomic<uint32_t> composed_present_ceiling_{0};
+  int64_t last_composed_present_ = 0;
+#endif
   uint64_t early_releases_ = 0;
   uint64_t released_accesses_ = 0;  // check_release_: guest memory accesses after the release
   uint64_t presented_ = 0;

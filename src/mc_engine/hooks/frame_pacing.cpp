@@ -276,7 +276,10 @@ int64_t PlanFrame(int64_t now) {
     Learn();
     LogPlan(now);
 
-    const int32_t limit = FpsLimit();
+    int32_t limit = FpsLimit();
+#if defined(LARECOMP_HAS_GPU)
+    limit = mcla::gpu::LimitFrameRateForComposedPresents(limit);
+#endif
     // No limit: at least a millisecond apart.
     const int64_t period = static_cast<int64_t>(limit > 0 ? 1000.0 * ms / limit : ms);
     int64_t target = now + static_cast<int64_t>(g_plan.latency);

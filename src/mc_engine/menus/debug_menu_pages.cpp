@@ -279,6 +279,9 @@ const ItemDef kDebugPerformanceItems[] = {
     Bool("PM_RxDbgLimitSpin",  "frame_limit_spin",       "FPS LIMIT SPIN: "),
     NativeOnly(Str("PM_RxDbgRenderWait", "render_wait_mode", "RENDER THREAD WAIT: ",
                    kRenderWaitVals, kRenderWaitNames, Len(kRenderWaitVals))),
+#if defined(_WIN32)
+    NativeOnly(Bool("PM_RxDbgVkPresentPacing", "mcla_gpu_vk_present_pacing", "VULKAN PRESENT PACING: ")),
+#endif
     Bool("PM_RxDbgPumpWake",   "pump_wake_on_demand",    "FRAME PACING WAKE: "),
     // CHECK: flipped on after the game made its surfaces, are they past the 2048 EDRAM tiles
     // Patch_EdramLimit lets through only while this is on (graphics.cpp)? A live ON may misbehave.
