@@ -5,6 +5,7 @@
 //   Or by hand:  clang++ -std=c++23 -I src src/os/appimage_env_test.cpp src/os/appimage_env.cpp
 
 #include "os/appimage_env.h"
+#include "os/environment.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -49,6 +50,30 @@ void TestRule() {
   CHECK(!os::ProgramIsInsideMount("/", "/home/deck/larecomp"));
   CHECK(!os::ProgramIsInsideMount("//", "/home/deck/larecomp"));
   CHECK(!os::ProgramIsInsideMount("tmp/.mount_x", "tmp/.mount_x/larecomp"));
+}
+
+void TestReadEnvironment() {
+  constexpr char kName[] = "LARECOMP_TEST_READ_ENVIRONMENT";
+  const auto set = [&](const char* value) {
+#if defined(_WIN32)
+    return _putenv_s(kName, value) == 0;
+#else
+    return setenv(kName, value, 1) == 0;
+#endif
+  };
+  CHECK(set("first"));
+  const auto first = os::ReadEnvironment(kName);
+  CHECK(first && *first == "first");
+  CHECK(set("second"));
+  CHECK(os::ReadEnvironment(kName) == "second");
+  CHECK(first && *first == "first");
+  CHECK(set(""));
+#if !defined(_WIN32)
+  const auto empty = os::ReadEnvironment(kName);
+  CHECK(empty && empty->empty());
+  CHECK(unsetenv(kName) == 0);
+#endif
+  CHECK(!os::ReadEnvironment(kName));
 }
 
 #if defined(__linux__)
@@ -149,6 +174,7 @@ void TestLive() {
 
 int main() {
   TestRule();
+  TestReadEnvironment();
   TestLive();
   std::printf("%s: %d checks, %d failed\n", g_failed == 0 ? "PASS" : "FAIL", g_checked, g_failed);
   return g_failed == 0 ? 0 : 1;

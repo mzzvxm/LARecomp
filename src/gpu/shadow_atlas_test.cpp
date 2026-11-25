@@ -393,6 +393,10 @@ void TestClears() {
   p = sa::MakeClearPlan(with_static);
   Check(!p.whole_target && p.rect_count == 2, "with a static pool: rectangles, the static pool is left");
   const int static_pool = with_static.FindPool(sa::ProviderId::kLamps, sa::PoolRole::kStatic);
+  if (static_pool < 0) {
+    Check(false, "the static lamp pool exists");
+    return;
+  }
   bool has_static = false;
   for (uint32_t i = 0; i < p.rect_count; ++i) {
     has_static = has_static || int(p.pools[i]) == static_pool;
@@ -1164,6 +1168,7 @@ void TestHlslTwin(const std::string& hlsli_path) {
       Check(std::memcmp(&want, &got, sizeof(float)) == 0, "the twin's light lookup is the reference's, bit for bit");
       ++checked;
     }
+    shim_state::atlas = nullptr;
   }
   Check(checked == 40000, "every random light was looked up in both modes");
   // THE KERNEL WORD (HSQ-PCSS): G x G gathers and the lamp's radius from the table's header; the twin against light_shadow_filter.h's ViewLit with the Params the word unpacks to, bit for bit
@@ -1200,6 +1205,7 @@ void TestHlslTwin(const std::string& hlsli_path) {
     ++wide_checked;
     wide_dark += want < 0.001f ? 1 : 0;
     wide_part += (want > 0.001f && want < 0.999f) ? 1 : 0;
+    shim_state::atlas = nullptr;
   }
   shim_state::kernel_word = 0;
   Check(wide_checked == 12000 && wide_part > 300, "the wide lookups were made, and a good share of them are in a penumbra (" + std::to_string(wide_part) + " partly lit, " + std::to_string(wide_dark) + " dark)");
@@ -1229,6 +1235,7 @@ void TestHlslTwin(const std::string& hlsli_path) {
       wrong += std::memcmp(&want, &got, sizeof(float)) != 0 ? 1 : 0;
     }
     shim_state::kernel_word = 0;
+    shim_state::atlas = nullptr;
     Check(wrong == 0, "the kernel word's decoding (defaults for 0, gathers held to 2..4) is the same in the twin and the reference");
   }
   // a light with no atlas views, or none counted, is lit
@@ -1237,6 +1244,7 @@ void TestHlslTwin(const std::string& hlsli_path) {
   Check(hlsl_shim::LslLightLit(uint32_t(lg::ShadowKind::kRtMask), 0, 2, 1.0f, 0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 0u, 0u) == 1.0f &&
             hlsl_shim::LslLightLit(uint32_t(lg::ShadowKind::kAtlas), 0, 0, 1.0f, 0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 0u, 0u) == 1.0f,
         "a light with no atlas views is lit");
+  shim_state::atlas = nullptr;
   // the header's two bits an entry
   Check(hlsl_shim::LslLayerBits(0b100100u, 1) == 1u && hlsl_shim::LslLayerBits(0b100100u, 2) == 2u && hlsl_shim::LslLayerBits(0b100100u, 0) == 0u, "two bits an entry");
 }

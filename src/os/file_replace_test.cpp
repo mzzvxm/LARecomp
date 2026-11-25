@@ -629,7 +629,7 @@ void TestLibraryFile() {
     CHECK(o.kind == lf::Kind::kSealed);
     CHECK(o.blob_size == blob.size());
     CHECK(o.blob == reinterpret_cast<const uint8_t*>(sealed.data()) + lf::kHeaderBytes);
-    CHECK(o.blob_size == blob.size() && std::memcmp(o.blob, blob.data(), blob.size()) == 0);
+    CHECK(o.blob && o.blob_size == blob.size() && std::memcmp(o.blob, blob.data(), blob.size()) == 0);
   }
   // an older build's file has no header: the whole file is the library, as it always was
   {

@@ -1098,7 +1098,6 @@ void TestHlslTwin(const std::string& gpu_dir) {
     for (size_t k = 0; k < atlas.d.size(); k += 1 + rng.Int(7)) {
       atlas.d[k] = rng.Next() < 0.5f ? 1.0f : rng.Range(0.0f, 1.0f);  // a scatter of casters
     }
-    shim_state::atlas = &atlas;
     lg::BuildGpuLampTable(w.frame, &shim_state::table);
     for (auto& e : shim_state::views) {
       e = hlsl_shim::LslView{};
@@ -1119,6 +1118,7 @@ void TestHlslTwin(const std::string& gpu_dir) {
     for (float& c : nrm) {
       c /= nlen;
     }
+    shim_state::atlas = &atlas;
     for (const sl::Mode mode : {sl::Mode::kSurface, sl::Mode::kAir}) {
       const auto depth = [&](int x, int y) { return atlas.At(x, y); };
       const float want = sl::LampLit(w.frame, ref, lp, p, nrm, mode, depth);
@@ -1126,6 +1126,7 @@ void TestHlslTwin(const std::string& gpu_dir) {
       Check(std::memcmp(&want, &got, sizeof(float)) == 0, "the twin's lamp lookup is the reference's, bit for bit");
       ++checked;
     }
+    shim_state::atlas = nullptr;
   }
   Check(checked > 3000, "most random lamps were looked up in both modes");
   // the table's layer bits: entry e of the frame at bits 2e of lo (e < 16) or hi
