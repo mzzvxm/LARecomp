@@ -16,12 +16,13 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / 'documentation/contract'
 VALIDATOR = CONTRACT / 'validate_contract.py'
+PIPELINE_PREBUILD = 'src/gpu/pipeline_prebuild.cpp'
 CONSTANT_SOURCES = (
     'larecomp_manifest.toml', 'src/cpu_level.cpp', 'src/larecomp_version.h',
     'src/settings/larecomp_app_settings.h',
     'src/isoinstaller/larecomp_iso_installer.cpp', 'src/saveporter/larecomp_save_porter.cpp',
     'src/mc_engine/online/online_tables_core.h', 'src/shaderpack/pack_format.h',
-    'src/citypack/pack_format.h', 'src/citypack/city_hit_format.h', 'src/gpu/pipelines.cpp',
+    'src/citypack/pack_format.h', 'src/citypack/city_hit_format.h', 'src/gpu/pipelines.cpp', PIPELINE_PREBUILD,
 )
 FIXTURE = '''
 cmake_minimum_required(VERSION 3.25)
@@ -87,6 +88,16 @@ def run(args, *, error=None):
 
 def read(path):
     return json.loads(path.read_text(encoding='utf-8'))
+
+
+def pipeline_key_settings(source):
+    settings = []
+    for line in (source / PIPELINE_PREBUILD).read_text(encoding='utf-8').splitlines():
+        if line.strip().startswith('LARECOMP_PIPELINE_KEY_LINE('):
+            names = line.split('(', 2)[2].split(')', 1)[0]
+            settings.extend(name.strip() for name in names.split(','))
+    assert settings
+    return list(dict.fromkeys(settings))
 
 
 def write(path, contents='fixture\n'):
@@ -169,6 +180,17 @@ def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=
         assert manifest[field] == describe[field]
     assert ('settings_ui' in manifest['contracts']) == exports
     assert ('machine' in manifest['contracts']) == exports
+    assert manifest['pipeline_key_settings'] == pipeline_key_settings(ROOT)
+    # In the fixture this source is only an input of the configure-time exporter.
+    assert PIPELINE_PREBUILD in (out / 'build.ninja').read_text(encoding='utf-8').replace('\\', '/')
+    budgets = {
+        'build_shader_packs': (25, 260), 'precache_pipelines': (20, 130),
+        'build_city_pack': (25, 300), 'build_city_hit': (25, 260), 'check_city_hit': (5, 0),
+    }
+    if exports:
+        budgets.update(dump_settings_ui=(1, 1), probe_machine=(1, 1))
+    assert {name: (entry['timeout_min'], entry['estimated_disk_mib'])
+            for name, entry in action.items()} == budgets
     assert manifest['exit_codes']['cpu_level_refused'] == 0x4C43
     assert manifest['launch'] == {'game_root': '--game_data_root={game_root}', 'debug_menu': '--debug_menu=true'}
     assert manifest['game']['size'] == 9252864
@@ -215,6 +237,21 @@ def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=
     assert action['build_city_hit']['outputs'][-1] == '{shader_pack_dir}/city/mcla_city_hit.stamp'
     copies = (out / 'copies.txt').read_text(encoding='utf-8')
     assert re.search(r'copy_if_different;[^;]+/src/assets/fake\.own;\$<TARGET_FILE_DIR:larecomp>/assets/fake\.own;', copies)
+
+
+def check_pipeline_key_export(cmake, source, out):
+    # A new setting in the stamp source must flow into the manifest without changing CMake.
+    path = source / PIPELINE_PREBUILD
+    original = path.read_text(encoding='utf-8')
+    updated, count = re.subn(r'(?m)^(\s*LARECOMP_PIPELINE_KEY_LINE\(samples, \([^\n)]+)\)',
+                              r'\1, fixture_setting, graphics_backend)', original)
+    assert count == 1
+    write(path, updated)
+    try:
+        manifest, _ = configure(cmake, source, out, windows=True)
+        assert manifest['pipeline_key_settings'] == pipeline_key_settings(ROOT) + ['fixture_setting']
+    finally:
+        write(path, original)
 
 
 def check_fetchers(cmake, source, out, deps):
@@ -341,6 +378,12 @@ MUTATIONS = (
     ('cmake/InstallManifest.cmake', '"game_root": "@game_root@"', '"game_root": "--other_root={game_root}"'),
     ('cmake/InstallManifest.cmake', '--@debug_menu@=true', '--other_debug=true'),
     ('cmake/InstallManifest.cmake', '"size": 9252864', '"size": 9252865'),
+    ('cmake/InstallManifest.cmake', '\\"estimated_disk_mib\\": ${disk_mib}', '\\"estimated_disk_mib\\": 0'),
+    ('cmake/InstallManifest.cmake', '\\"timeout_min\\": ${timeout}', '\\"timeout_min\\": 1'),
+    ('cmake/InstallManifest.cmake', '  "pipeline_key_settings": @pipeline_key_settings@,', '  "pipeline_key_settings": [],'),
+    ('cmake/InstallManifest.cmake', 'set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}")', ''),
+    ('cmake/InstallManifest.cmake', 'list(REMOVE_DUPLICATES settings)', ''),
+    (PIPELINE_PREBUILD, '(mcla_gpu_msaa, mcla_gpu_upscaler)', '(mcla_gpu_msaa)'),
 )
 
 
@@ -369,6 +412,8 @@ def main():
         for i, case in enumerate(cases):
             check_runtime(args.cmake, source, temp / f'build-{i}', **case)
         print(f'{len(cases)} runtime configurations and their describe output validated')
+        check_pipeline_key_export(args.cmake, source, temp / 'pipeline-key-changed')
+        print('pipeline key additions and deduplication checked')
         if args.mutations:
             for i, (name, old, new) in enumerate(MUTATIONS):
                 path = source / name
@@ -378,6 +423,7 @@ def main():
                 try:
                     for j, case in enumerate(cases):
                         check_runtime(args.cmake, source, temp / f'mutant-{i}-{j}', **case)
+                    check_pipeline_key_export(args.cmake, source, temp / f'mutant-{i}-changed')
                 except (AssertionError, KeyError):
                     pass
                 else:

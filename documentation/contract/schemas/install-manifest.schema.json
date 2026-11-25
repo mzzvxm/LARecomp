@@ -68,10 +68,17 @@
           },
           "outputs": { "type": "array", "items": { "type": "string" } },
           "never_fails_setup": { "type": "boolean" },
-          "timeout_min": { "type": "integer", "minimum": 1 },
+          "timeout_min": { "type": "integer", "minimum": 1, "description": "Wall-clock limit in minutes for running this action" },
+          "estimated_disk_mib": { "type": "integer", "minimum": 0, "description": "Estimated additional free space in MiB for the action's game-owned output and temporary files. Zero means no setup output. Driver-managed caches and logs are excluded." },
           "produces": { "type": "array", "items": { "type": "string" } }
         }
       }
+    },
+    "pipeline_key_settings": {
+      "type": "array",
+      "description": "Saved setting names that feed the pipeline prebuild stamp. A change to any of them is a reason to rerun the precache action and let the game check its stamp.",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+      "uniqueItems": true
     },
     "launch": {
       "type": "object",

@@ -1447,6 +1447,13 @@ def selftest():
         rep = validate(d)
         check(any(fragment in m for m in rep.errors), f'mutation "{name}" not reported: {rep.errors[:2]}')
     idoc = load_json(os.path.join(ex_dir, 'install-manifest.example.json'))
+    legacy = copy.deepcopy(idoc)
+    legacy.pop('pipeline_key_settings')
+    for action in legacy['actions']:
+        action.pop('estimated_disk_mib')
+        action.pop('timeout_min')
+    rep = validate(legacy, strict=True)
+    check(not rep.errors and not rep.warnings, 'manifest: the setup estimates and pipeline keys are optional')
     for name, fn, fragment in [
         ('manifest: an action after a missing one', lambda d: d['actions'][1].update(after=['nope']), 'not an action'),
         ('manifest: after loops', lambda d: (d['actions'][0].update(after=['precache_pipelines'])), 'after loops'),
@@ -1456,6 +1463,12 @@ def selftest():
         ('manifest: launch without a game root placeholder', lambda d: d['launch'].update(game_root='--game_data_root=.'), 'expected one flag'),
         ('manifest: debug launch with an extra flag', lambda d: d['launch'].update(debug_menu='--debug_menu=true --other=true'), 'expected one flag'),
         ('manifest: negative XEX bytes', lambda d: d['game'].update(size=-1), 'game.size'),
+        ('manifest: negative disk estimate', lambda d: d['actions'][0].update(estimated_disk_mib=-1), 'estimated_disk_mib: -1 is below 0'),
+        ('manifest: fractional disk estimate', lambda d: d['actions'][0].update(estimated_disk_mib=0.5), 'estimated_disk_mib: is float, expected integer'),
+        ('manifest: zero timeout', lambda d: d['actions'][0].update(timeout_min=0), 'timeout_min: 0 is below 1'),
+        ('manifest: pipeline keys as text', lambda d: d.update(pipeline_key_settings='graphics_backend'), 'pipeline_key_settings: is str, expected array'),
+        ('manifest: invalid pipeline key name', lambda d: d.update(pipeline_key_settings=['--graphics_backend']), 'does not match'),
+        ('manifest: duplicate pipeline key', lambda d: d['pipeline_key_settings'].append('graphics_backend'), 'is listed twice'),
     ]:
         d = copy.deepcopy(idoc)
         fn(d)
