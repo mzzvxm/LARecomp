@@ -115,9 +115,9 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
         merged_cars_.insert(merged_cars_.end(), extra_cars->begin(), extra_cars->end());
         merged_draws_.insert(merged_draws_.end(), extra_draws->begin(), extra_draws->end());
       }
-      ci::AppendOthers(&list_, merged_draws_, merged_cars_, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars, paint_gamma);
+      ci::AppendOthers(&list_, merged_draws_, merged_cars_, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars, paint_gamma, lamps_);
     } else {
-      ci::AppendOthers(&list_, frame.other_draws, frame.other_cars, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars, paint_gamma);
+      ci::AppendOthers(&list_, frame.other_draws, frame.other_cars, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars, paint_gamma, lamps_);
     }
   }
   car_rt_opp_refl::AppendPlayerRecord(&list_, paints);  // the player's record for the opponents' reflection (car_rt_opp_refl_rules.h)

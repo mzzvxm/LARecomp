@@ -11085,5 +11085,28 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_lamps": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): the lenses of the other cars in a ray traced reflection (the tail lights of the car beside yours, the headlights of the car behind) glow as the game's own lamps say: \"\n    \"each lamp's light point (19 kinds a car: head, brake, tail, turn, reverse, police) says whether it is on and how strongly, and the lens it stands in glows by it, so a brake lamp, a lamp that is off and \"\n    \"a turn signal's dark half-period are told apart, and nothing glows by day. A lens no lamp stands in keeps the old guess from the colour of the sun. Off: every lens at that guess. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_traffic_refl": {
+  "type": "i32",
+  "default": "-1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): the paint of the TRAFFIC and parked cars (the cars of the city's streets, drawn with the game's cheap ambient paint) reflects the cars and the street round it in a ray traced \"\n    \"reflection from their real shape, as the opponents' paint does: the car beside yours at a red light shows yours in its door. -1 (the default): by the graphics card's class (on the High class with 40 percent of the \"\n    \"opponents' ray budget and cars up to 45 m away, on the Mid class with 25 percent and 30 m, off where there is no ray tracing); 0: off, the traffic's paint keeps the game's reads; 1 to 100: on at that percent of the \"\n    \"budget (a car beside the player is always traced). Needs the ray traced opponents' reflection (mcla_gpu_car_rt_opp_refl). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 100}"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

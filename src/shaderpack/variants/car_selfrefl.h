@@ -71,6 +71,19 @@
 //   every texel, which at 4K with the half size image showed as two pixel stair-steps at the edge of a reflected part; the B-spline's have
 //   none. Nothing else of the paint's text changes: the agreement test with the history's distance, the half-of-the-matching-texels
 //   rule and the codes of the image are version 5's.
+// Version 7 (RT-TRAFFIC-REFL, src/gpu/car_rt_traffic_rules.h): the TRAFFIC paint (xAmbientCarPaint::PSAmbientCarPaint, identity 9A6BE351ED46662D: the cheap paint of the moving and parked cars of the
+//   city, the family of the `xAmbient*` shaders the night probe saw in traffic) gets the same edit, with its own text's anchors: the sharp read `r4.xyz = tfetch2D(dpFrontSampler_...).xyz;` (once, no gradient) is
+//   followed by the trace (the world position iTexCoord0.xyz, the normal iTexCoord1.xyz, the view vector iTexCoord4.xyz, read from xAmbientCarPaint__VSAmbientCarPaint.hlsl, not seen at run
+//   time) and the apply at full weight, the blurred read `r0.xyz = tfetch2D(dpSpecFrontSampler_...).xyz;` (once) by the apply at half weight, `oC0.xyzw = max(r1.xyzw, r1.xyzw);` (once) by the
+//   debug view (no baked AO in this paint: 1). The traffic paint takes the host's ray traced image ALONE: the helper's copy in its text returns at once when the frame has no image (the
+//   constants' flag, g_CarReflC.w bit 0) and returns where the customisable paint's screen-space march would begin, so wherever the image has no answer (a device that cannot trace, a
+//   car the pass did not trace, a texel it has no data for) the paint is the game's, bit for bit, and a device without ray tracing pays one constant read a traffic pixel; the exponent bias the
+//   debug view scales by (gInvColorExpBias, c27, packoffset in DXIL and +432 in SPIR-V) is declared after the shader's last
+//   own pixel constant (DL4), in both backends. The helper, the constants and the host's image are the paint's: a draw of the traffic paint with a stencil ID gets the same block. The
+//   opponents' ray traced pass (src/gpu/car_rt_opp_refl.h) finds a traffic car's paint by the mask of its instance (car_rt_traffic_rules.h) and writes the image this variant reads.
+//   CHECK (pack step, nothing was built): the stamp says variants_car_selfrefl_shaders=439b193a3f675533,9a6be351ed46662d and the translated text takes the edit (the test on the retail folder);
+//   CHECK in a run: the traffic paint draws have no alpha test or alpha to coverage (else they keep the game's shader: the census of the first run says how many traffic draws took the variant),
+//   and the vehicle stencil ID of the draw (4 ID + {0, 1}) is set for an ambient car (the constants' block is off for a draw with none).
 // The constants (112 bytes at byte 608 of the draw's SharedConstants block, src/gpu/constants.h CarSelfReflConstants):
 //   float4 g_CarReflM0..M3   world to the history frame's clip space (rows of a row-vector matrix: clip = p.x M0 + p.y M1 + p.z M2 + M3)
 //   float4 g_CarReflA        x mode (0: the game's paint, 1: occlusion, 2: occlusion and self-reflection), y ray length (m),
@@ -103,15 +116,22 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line variants_car_selfrefl_version).
-inline constexpr uint32_t kCarSelfReflVariantVersion = 9;  // 2: the hit's colour is a point read of an image whose rgb is 0 outside the vehicles; 3: no per-pixel noise, weights that ramp, hidden-face and thin-part floors; 4: the ray is a chain of segments with a continuous cover, the outline of a part found by halving; 5: the paint reads the host's ray traced image of the car's reflection of itself in place of the march where it has data (constants g_CarReflC.zw), debug view 5; 6: the ray traced image is read with a 3x3 quadratic B-spline of texels (the cone's weights, no stair-steps); 7: the image's sign is "mostly on another car" and the paint adds the clear coat's layer for it (constants g_CarReflC.w bit 1), debug views 6 and 7; 9: no double precision in the DXIL (the ternaries of bare literals take an f suffix): a GPU without it (the Intel iGPUs on D3D12) could not create the paint's pipelines of this variant
+inline constexpr uint32_t kCarSelfReflVariantVersion = 10;  // 10: no double precision in the DXIL (the ternaries of bare literals take an f suffix): a GPU without it (the Intel iGPUs on D3D12) could not create the paint's pipelines of this variant; 9: the traffic paint (xAmbientCarPaint::PSAmbientCarPaint) has the same trace (RT-TRAFFIC-REFL; the customisable paint's text is version 8's); 2: the hit's colour is a point read of an image whose rgb is 0 outside the vehicles; 3: no per-pixel noise, weights that ramp, hidden-face and thin-part floors; 4: the ray is a chain of segments with a continuous cover, the outline of a part found by halving; 5: the paint reads the host's ray traced image of the car's reflection of itself in place of the march where it has data (constants g_CarReflC.zw), debug view 5; 6: the ray traced image is read with a 3x3 quadratic B-spline of texels (the cone's weights, no stair-steps); 7: the image's sign is "mostly on another car" and the paint adds the clear coat's layer for it (constants g_CarReflC.w bit 1), debug views 6 and 7
 
 // The identity on the retail game (the runtime's own: FNV-1a 64 of the microcode) and the name the translator gives it.
 inline constexpr VariantShader kCarPaint = {"xCarPaintCustomizable__PS_CarPaint", 0x439B193A3F675533ull};
+// The traffic's and the parked cars' paint (version 9, RT-TRAFFIC-REFL): the same trace and apply, with the shader's own interpolants (iTexCoord0 the world position, iTexCoord1 the normal, iTexCoord4
+// the view vector) and its own environment reads (r4 the sharp one, r0 the blurred one). The identity is the runtime's own (perf/out/night-probe-ids.txt: 9a6be351ed46662d carpaint
+// xAmbientCarPaint__PSAmbientCarPaint).
+inline constexpr VariantShader kTrafficPaint = {"xAmbientCarPaint__PSAmbientCarPaint", 0x9A6BE351ED46662Dull};
 
 VariantDef MakeCarSelfReflVariant();
 
 // The text transform alone (pure; public for tests).
 VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std::string_view hlsl,
                                                 const StageContext& ctx = SoloContext(kFeatureCarSelfRefl));
+// ... and the traffic paint's (version 9).
+VariantTransformResult TransformCarSelfReflTrafficHlsl(const VariantShader& shader, std::string_view hlsl,
+                                                       const StageContext& ctx = SoloContext(kFeatureCarSelfRefl));
 
 }  // namespace larecomp::shaderpack

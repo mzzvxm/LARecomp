@@ -470,7 +470,11 @@ int main(int argc, char** argv) {
       const std::vector<sp::VariantDef> pair = {moved, TestStage(20, "test_stage", tag)};
       const uint32_t set = chain::FeatureBit(20) | chain::FeatureBit(real_feature);
       const std::string label = c.variant + " + the test stage on " + c.stem + (real_first ? " (real stage first)" : " (real stage second)");
-      const sp::VariantShader named{c.stem, 0};
+      // The variant's own entry for this stem: a variant with two shaders (car_selfrefl: the customisable paint and the traffic paint) tells them apart by the key.
+      sp::VariantShader named{c.stem, 0};
+      for (const sp::VariantShader& p : real->pixel_shaders) {
+        if (p.name == c.stem) named = p;
+      }
       const sp::VariantTransformResult composed = sp::ComposeStages(pair, set, named, text, table);
       Check(composed.ok, label + ": composes (" + composed.error + ")");
       if (!composed.ok) continue;

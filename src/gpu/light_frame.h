@@ -111,7 +111,7 @@ inline constexpr uint32_t kNoLightSlot = 0xFFFFFFFFu;  // a bindless slot that i
 // ---------------------------------------------------------------------------
 
 // Where a light's visibility comes from. `kAtlas`: the entries [first_view, first_view + view_count) of ShadowFrame (consecutive, at most two: one per headlamp, or a static +
-// live pair); `kRtMask`: the ray traced shadows' channel `mask_channel`; `kNone`: unshadowed. THE ONE COMBINE RULE (light_laws.h CombineShadow): the views of a light are
+// live pair); `kRtMask`: the ray traced shadows' channel `mask_channel` (rt_mask_contract.h: the planes, the values, the assignment and the reader's checks); `kNone`: unshadowed. THE ONE COMBINE RULE (light_laws.h CombineShadow): the views of a light are
 // AVERAGED (each is one lamp of a car: a pole both lamps light casts two half-dark shadows), the layers of a view are MULTIPLIED (static x live), and the result is blended by
 // the weight: lit = lerp(1, visibility, weight).
 struct ShadowRef {

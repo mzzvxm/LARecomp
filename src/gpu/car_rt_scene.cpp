@@ -210,6 +210,9 @@ bool CarRtScene::MakeCheck(HostPasses& passes) {
 void CarRtScene::Shutdown() {
   // The GPU is idle and the FrameRing drained (the deferred frees ran): everything goes at once.
   ++generation_;
+  lights_source_.SetEnabled(false);  // the hook notes no kind for this consumer any more (LU-8)
+  lamp_set_.Clear();
+  instances_.SetLamps(nullptr);
   view_ = CarRtView{};
   meshes_.clear();
   staged_.clear();
@@ -716,6 +719,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // The traffic cars the walk placed have a count of their own (car_model_parts_rt_rules.h TrafficCarsFor): the list keeps the class's count of cars and these besides.
   car_rt_instances::Limits build_limits = car_frame_->other_limits();
   build_limits.cars = std::min<uint32_t>(build_limits.cars + walked_traffic_placed_, car_rt_instances::kMaxCars);
+  UpdateLamps(frame, build_limits.On());  // LU-8: the game's lamps of this frame, for the other cars' lenses
   const car_rt_instances::List& cars = instances_.Build(
       frame, build_limits, flip_z, glass_rule, [&](uint64_t key, car_rt_instances::MeshRef* ref) {
         const auto it = meshes_.find(key);
@@ -869,6 +873,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.records = cars.records;
     view_.player_box = cars.player_box;
     view_.other_paint_instances = cars.other_paint_instances;
+    view_.traffic_paint_instances = cars.traffic_paint_instances;
     view_.player_row = cars.player_row;
     {
       const double world_up[3] = {0.0, 1.0, 0.0};
@@ -959,6 +964,37 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
 }
 
 // ---------------------------------------------------------------------------
+// LU-8: the game's lamps for the other cars' lenses
+// ---------------------------------------------------------------------------
+
+// The light points' source is on while the setting is and other cars are in the scene (the hook then notes every kind of every car: light_points.h Want, the ray traced scene's own
+// consumer), polled once a frame before the instance list is built (the points of the last 100 ms become cars, car_lights.h Build) and flattened into the lamp set the list reads
+// (car_rt_lights_rules.h MakeLampSet). Cars are ranked by the distance to the player's vehicle, the player's own first (the lamps of cars the scene does not hold are of no use here, and
+// the table holds at most light_frame.h kMaxCars). With the setting off, or no other cars, the set is empty and every lens keeps the night factor's guess.
+void CarRtScene::UpdateLamps(const car_frame::Frame& frame, bool others_on) {
+  namespace cl = larecomp::gpu::car_lights;
+  const bool want = others_on && larecomp::settings::mcla_gpu_car_rt_lamps.Get();
+  if (want != lights_source_.enabled()) {
+    lights_source_.SetEnabled(want);
+    if (want && !lamps_logged_) {
+      lamps_logged_ = true;
+      REXLOG_INFO("{} the other cars' lenses follow the game's own lamps (the light points of every car, 19 kinds, polled once a frame: LIGHT-UNIFY LU-8); a lens no lamp stands in keeps the night "
+                  "factor's guess; mcla_gpu_car_rt_lamps (debug) is the switch", kPrefix);
+    }
+  }
+  if (!want) {
+    lamp_set_.Clear();
+    instances_.SetLamps(nullptr);
+    return;
+  }
+  static const std::vector<cl::FrameIn> kNoFrames;
+  const cl::CarLightsFrame& lights = lights_source_.Poll(kNoFrames, frame.player_vehicle_known ? frame.player_vehicle : nullptr);
+  car_rt_lights::MakeLampSet(lights, &lamp_set_);
+  lens_stats_.NoteFrame(lamp_set_);
+  instances_.SetLamps(lamp_set_.Valid() ? &lamp_set_ : nullptr);
+}
+
+// ---------------------------------------------------------------------------
 // RT-HIT-SHADING: the frame's material rows
 // ---------------------------------------------------------------------------
 
@@ -1043,6 +1079,11 @@ void CarRtScene::NoteMaterials(const car_rt_instances::List& list, const std::ve
   m.env_frames += frame.light.env_sharp != 0 ? 1u : 0u;
   m.sun_frames += (frame.to_sun[0] != 0.0 || frame.to_sun[1] != 0.0 || frame.to_sun[2] != 0.0) ? 1u : 0u;
   m.cascade_frames += (words.size() > 3 && (words[3] & crm::kFrameCascade) != 0u) ? 1u : 0u;
+  lens_stats_.glowing += list.stats.lens_glowing;
+  lens_stats_.dark += list.stats.lens_dark;
+  lens_stats_.undriven += list.stats.lens_undriven;
+  lens_stats_.lenses += list.stats.lens_glowing + list.stats.lens_dark + list.stats.lens_undriven;
+  lens_stats_.level_max = std::max(lens_stats_.level_max, list.stats.lens_level_max);
   for (size_t i = 0; i < list.items.size(); ++i) {
     const uint32_t* row = words.data() + (size_t(crm::kFrameRows) + i * crm::kMaterialRows) * 4u;
     const crm::RowsDecoded decoded = crm::DecodeRows(reinterpret_cast<const uint32_t(*)[4]>(row));
@@ -1091,6 +1132,10 @@ void CarRtScene::NoteMaterials(const car_rt_instances::List& list, const std::ve
                 "cars' draws in {} frames, the environment map's slot in {}, the sun's direction in {}, the game's sun cascades (the sun's shadow at a shaded hit) in {}; meshes read with texture coordinates {}, without {}",
                 kPrefix, m.first_frame, frame_, m.frames, classes.empty() ? std::string("none") : classes, double(m.textured) / double(m.frames),
                 m.textured != 0 ? 100.0 * double(m.resolved) / double(m.textured) : 100.0, m.unresolved, m.light_frames, m.env_frames, m.sun_frames, m.cascade_frames, m.uv_meshes_read, m.no_uv_meshes_read);
+    if (lens_stats_.frames != 0) {
+      REXLOG_INFO("{} lamps, frames {}..{}: {}", kPrefix, m.first_frame, frame_, car_rt_lights::Text(lens_stats_));
+      lens_stats_ = car_rt_lights::LensStats{};
+    }
     const uint64_t first = frame_;
     material_stats_ = MaterialStats{};
     material_stats_.first_frame = first;

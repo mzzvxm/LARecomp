@@ -41,7 +41,8 @@
 //                works in view space), row 5's w the hit's detail (RT-HIT-SHADING-5)
 //   instance rows 0 x class | flags << 4 | fresnel min (8 bits) << 8 | fresnel max << 16 | fresnel power x 16 << 24, y the diffuse texture's bindless slot (0xFFFFFFFF none;
 //                bit 31 the gamma bit), z paint colour A (R10G10B10, 0..2), w paint colour B; 1 x the paint's flop exponent (float bits), y the mip bias of the texture at
-//                the mesh's texel density (float bits), z the emissive scale (float bits), w 0
+//                the mesh's texel density (float bits), z the emissive scale (float bits), w the glow's flags (bit 0, kRecordGlowDriven: the scale is the game's own lamps' for this lens, and the
+//                night factor does not multiply it: car_rt_lights_rules.h, LU-8; 0: the scale is the lens class's 1 and the frame's night factor multiplies it)
 //   class 0 (kNone) is the answer "this draw's shader is not one the table knows": the pass keeps today's stand-in for it. Every record is rebuilt every frame (a few hundred
 //   instances x 32 bytes = 27 KiB), so a changed paint, a texture that came or went, a car that left cost nothing to keep right.
 //
@@ -575,12 +576,17 @@ inline void UnpackUv(uint32_t packed, float* u, float* v) {
 
 
 inline constexpr uint32_t kMaterialRows = 2;
+// Word w of an instance's second row: bit 0 says the emissive scale in word z is the game's lamps' (car_rt_lights_rules.h kGlowDrivenBit): no night factor on it.
+inline constexpr uint32_t kRecordGlowDriven = 1u;
 
 // What the host adds to a draw's material for one instance: the mesh's texture coordinates and their density.
 struct InstanceMaterial {
   Material material;
   bool has_uv = false;
   float uv_density = 0.0f;  // texture units a metre of the mesh (MeshUvDensity)
+  // LU-8 (car_rt_lights_rules.h): a lens whose lamps the game's light points say. `glow_driven`: `glow` (0..1) replaces the material's emissive scale and the night factor does not multiply it.
+  bool glow_driven = false;
+  float glow = 0.0f;
 };
 
 inline uint32_t Byte01(float v, float scale) { return uint32_t(std::clamp(std::lround(std::clamp(v, 0.0f, scale) / scale * 255.0f), 0L, 255L)); }
@@ -620,8 +626,8 @@ inline void MakeRows(const InstanceMaterial& im, uint32_t slot, uint32_t rows[kM
   const uint32_t edge = std::max<uint32_t>(m.diffuse.width, m.diffuse.height);
   rows[1][0] = Bits(m.flop);
   rows[1][1] = Bits(slot != kNoSlot && im.has_uv ? LodBase(im.uv_density, edge) : 0.0f);
-  rows[1][2] = Bits(m.emissive);
-  rows[1][3] = 0;
+  rows[1][2] = Bits(im.glow_driven ? std::clamp(im.glow, 0.0f, 1.0f) : m.emissive);
+  rows[1][3] = im.glow_driven ? kRecordGlowDriven : 0u;
 }
 
 // The record read back (what the shader decodes): for the unit test.
@@ -632,6 +638,7 @@ struct RowsDecoded {
   uint32_t slot = kNoSlot;
   float tint_a[3] = {}, tint_b[3] = {};
   float flop = 0.0f, lod_base = 0.0f, emissive = 0.0f;
+  bool glow_driven = false;
 };
 inline RowsDecoded DecodeRows(const uint32_t rows[kMaterialRows][4]) {
   RowsDecoded d;
@@ -646,6 +653,7 @@ inline RowsDecoded DecodeRows(const uint32_t rows[kMaterialRows][4]) {
   d.flop = FromBits(rows[1][0]);
   d.lod_base = FromBits(rows[1][1]);
   d.emissive = FromBits(rows[1][2]);
+  d.glow_driven = (rows[1][3] & kRecordGlowDriven) != 0;
   return d;
 }
 
@@ -868,7 +876,8 @@ struct ShadeInput {
   float env[3] = {0, 0, 0};         // the environment map's colour at the reflected direction
   bool env_known = true;
   FrameLight light;
-  float night = 0.0f;               // the frame's night factor (the lamps' glow; with sun_known also the sun's end and the sky's night fill)
+  float night = 0.0f;               // the frame's night factor (the lamps' glow unless `glow_driven`; with sun_known also the sun's end and the sky's night fill)
+  bool glow_driven = false;         // LU-8 (car_rt_lights_rules.h): the lens's record is glow-driven: `emissive` is the game's lamps' scale and the night factor does not multiply it (the shader's glowNight is 1)
   bool sun_known = true;            // the frame knows the sun's direction (and so the hour: `night` is the sun's height's)
   float open = 1.0f;                // RT-HIT-SHADING-5: the sky's openness at the hit (the sky ray's answer: 0 closed in, 1 open or not asked)
   float height = -1.0f;             // metres over the ground of the hit's car; under 0: not known
@@ -917,6 +926,7 @@ inline void ShadeReference(const ShadeInput& in, float out[3]) {
   const float hemisphere = std::clamp(0.6f + 0.4f * Dot3(in.normal, in.up), 0.2f, 1.0f);
   const float night = in.sun_known ? in.night : 0.0f;  // the sun's end, the night fill and the lamps' images need the hour from the sun's height
   const float day_sun = 1.0f - night;
+  const float glow_night = in.glow_driven ? 1.0f : in.night;  // a lens the game's lamps drive glows by its lamps' level alone (the shader's glowNight)
   const float ndl = std::clamp(Dot3(in.normal, in.to_sun), 0.0f, 1.0f);
   float reflected[3];
   const float twice = 2.0f * Dot3(in.normal, in.ray);
@@ -940,7 +950,7 @@ inline void ShadeReference(const ShadeInput& in, float out[3]) {
     const float tint = in.cls == Class::kChrome ? albedo[c] : 1.0f;
     float colour = albedo[c] * light * d.diffuse_gain + env * fresnel * d.spec_gain * in.tuning.spec * tint * ground;
     colour += in.light.sun[c] * (kSunRadiance * sun_lobe * in.sun_visible * day_sun + kLampRadiance * lamp_lobe * night * in.open) * glint_gain * tint;
-    colour += albedo[c] * in.emissive * kEmissiveGain * in.night;
+    colour += albedo[c] * in.emissive * kEmissiveGain * glow_night;
     out[c] = std::max(colour, 0.0f) * in.tuning.gain;
   }
 }

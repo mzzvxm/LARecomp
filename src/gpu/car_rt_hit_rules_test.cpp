@@ -600,7 +600,7 @@ int main(int argc, char** argv) {
                   Has(refl, "if (gCarHitClass == CAR_MAT_CLASS_PAINT)") && Has(refl, "CensusShaded(seenShare, shaded);") && Has(refl, "StatAdd(kStatDropped, 1u);") && Has(refl, "StatAdd(kStatStandIn, 1u);"),
               "the exposure's samples are hits on another car's parts the history shows in full (the player's own car in the opponents' pass is no sample), the paint's drive the gain; every outcome is counted");
         Check(Near(Constant(hlsli, "static const float kRtHitFillShare"), crm::kFillShare) && Has(hlsli, "const float3 fill = max(f.ambient, f.sun * lerp(kRtHitFillShare, kNightFillShare, night));") &&
-                  Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;"),
+                  Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere * classAmbient * ground) + f.sun * (ndl * visible * daySun + lampLight);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? m.emissive * glowNight : 0.0;"),
               "the shader's sky fill is ShadeReference's");
         Check(Has(host, "output_builder_.addReadWriteByteAddressBuffer(2);") && Has(host, "bool CarRtRefl::MakeStatsBuffers(Device& device) {") &&
                   Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(pattern_phase, cone_rays), stats_frame) |") &&

@@ -44,6 +44,9 @@ class CarRtInstances {
   bool WheelsOn() const;
   // How near the mean of a drawn car's draws must be to a vehicle of the game's list to be that vehicle (mcla_gpu_car_rt_cars_match; 0: the rules' default).
   double MatchMetres() const;
+  // LU-8: the game's lamps of this frame (car_rt_lights_rules.h), for the lens instances' glow in the next Build; null (the default): none, every lens keeps the night factor's guess. The
+  // set must live until the Build is done (the scene owns it).
+  void SetLamps(const car_rt_lights::LampSet* lamps) { lamps_ = lamps; }
 
   // This frame's list. `flip_z` and `glass_rule` as the scene decided them for the player's car (the other cars' instances all take the mask
   // CAR_RT_MASK_OTHERS, and CAR_RT_MASK_OTHER_CHROME as well for a draw of the chrome's shader; flagged when drawn after the world). `find(key, &ref)` says whether a mesh has a structure and where its indices and
@@ -95,6 +98,7 @@ class CarRtInstances {
   bool first_cars_logged_ = false;
   bool first_remembered_logged_ = false;
   uint32_t drawn_painted_ = 0;
+  const car_rt_lights::LampSet* lamps_ = nullptr;
 };
 
 }  // namespace mcla::gpu

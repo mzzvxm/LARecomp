@@ -22,10 +22,10 @@
 // head = max of the head, hi-beam and fog lamps, brake = the brake family, tail/turn = the taillights and the turn signals, police = the three police kinds; reverse has its bit only.
 //
 // WHAT THE CONSUMERS TAKE
-//   RT hit shading (feat/rt-hit-shading's emissive scale, LU-8): per RT car instance the bits and levels of its `CarLights`, joined by `vehicle` (a racer or the player: the instance's vehicle
-//     address) or, for traffic, by place (FindByPlace on the instance's world position): the lens classes of car_rt_material_rules.h map head -> level[kCarLevelHead] (class 11), taillight ->
-//     the brake and tail levels (classes 12 and 13), the turn lenses -> the bits kCarLightTurnL / R, the reverse lens -> kCarLightReverse; per LAMP, Car::lamps has the kind, side and car-space
-//     place of each, to pick a lens by its place when a car's lens meshes are not told apart by class. The scale replaces the night factor's guess of the whole car.
+//   RT hit shading (feat/rt-hit-shading's emissive scale, LU-8, DONE: car_rt_lights_rules.h): per LENS instance of another car, the lamps of `Car::lamps` (their kind, family, level, on, and place in the
+//     WORLD) that stand in the lens mesh's box give its glow (the lamp's world place taken into the lens mesh's own space by the inverse of the draw's matrix): no car join is needed, the lamps of
+//     another car are metres from the lens, so a racer (owned light object), a traffic car (none) and a car placed from memory or model data all join the same way. The scale replaces the night
+//     factor's guess for that lens; a lens no lamp stands in keeps the guess. The ray traced scene has a CarLightsSource of its own (consumer kRt), so its switching does not touch the manager's.
 //   per-headlight views (hl-per-lamp's two views per car): Car::lamps with kind 3 (index 0 the left lamp, 1 the right: `side` and `local[0]` say it), their `world` places and `emit` axes; the rig
 //     keeps its own tracking for now (it matches lens lamps to headlight_points.h's table) and takes the lamp pair from here when the manager owns the cars (LU-3).
 //   the picker (LU-3) and the deferred pass (GB-H3): MakePointLights.
@@ -533,10 +533,14 @@ inline std::string FormatCensus(const Car& car) {
 
 class CarLightsSource {
  public:
-  // The manager's switch: while it is on the hook notes every kind. Off: the hook costs one relaxed load.
+  // `consumer` names who asks the hook for the kinds (light_points.h Want: one mask a consumer, the hook notes the union): the manager's source is kManager, the ray traced car
+  // scene's (car_rt_lights_rules.h, LU-8) kRt, so that one switching off does not take the kinds the other still reads.
+  explicit CarLightsSource(lp::Consumer consumer = lp::Consumer::kManager) : consumer_(consumer) {}
+
+  // The owner's switch: while it is on the hook notes every kind. Off: the hook costs one relaxed load.
   void SetEnabled(bool enabled) {
     enabled_ = enabled;
-    lp::Want(lp::Consumer::kManager, enabled ? lp::kAllKinds : 0u);
+    lp::Want(consumer_, enabled ? lp::kAllKinds : 0u);
     if (!enabled) frame_ = CarLightsFrame{};
   }
   bool enabled() const { return enabled_; }
@@ -552,6 +556,7 @@ class CarLightsSource {
   const CarLightsFrame& Frame() const { return frame_; }
 
  private:
+  lp::Consumer consumer_;
   bool enabled_ = false;
   std::vector<lp::Point> points_;
   CarLightsFrame frame_;

@@ -6,7 +6,9 @@
 // rays goes from there. The cars driving beside it are in the same top level (car_rt_scene.h, car_rt_instances_rules.h) and show in the player's paint, but their own
 // paint kept the screen-space march. This is the same thing for them (car_rt_opp_refl.h is the pass, hlsl/car_rt_refl_opp.hlsli its shader).
 //
-// WHICH PIXELS. The pixels the paint variant (shaderpack/variants/car_selfrefl.cpp, versions 5 and 6) reads: a draw of xCarPaintCustomizable::PS_CarPaint of ANOTHER car.
+// WHICH PIXELS. The pixels the paint variant (shaderpack/variants/car_selfrefl.cpp, versions 5 and 6) reads: a draw of xCarPaintCustomizable::PS_CarPaint of ANOTHER car (and, since version 7,
+// RT-TRAFFIC-REFL, of the TRAFFIC paint xAmbientCarPaint::PSAmbientCarPaint: its instances carry the same bit, and car_rt_traffic_rules.h says which of those cars the pass traces and with how
+// much of the budget).
 // The instance of such a draw carries kMaskOtherPaint (0x40, car_rt_scene_rules.h) beside kMaskOthers (OtherMask); the pass's primary ray has that bit alone, in the
 // window around the history's distance, so it finds an opponent's paint at a texel and nothing else (glass, tyres, lights, chrome, traffic's own shaders are not
 // found: they keep their march, the chrome its own ray traced texel). The CARS are the ones the scene already holds: the selection by stencil ID and distance from the
@@ -334,20 +336,30 @@ inline uint32_t CountPaintInstances(const ci::List& list) {
   }
   return n;
 }
+// ... of which are of the traffic paint.
+inline uint32_t CountTrafficPaintInstances(const ci::List& list) {
+  uint32_t n = 0;
+  for (const ci::Item& item : list.items) {
+    n += ((item.mask & rr::kMaskOtherPaint) != 0 && item.paint_kind == ci::PaintKind::kTraffic) ? 1u : 0u;
+  }
+  return n;
+}
 
 // Says which of the list's boxes (one a listed other car that has an instance, nearest first: AppendOthers) are of a car that has an instance of another car's paint draw, in
-// ViewBox::paint. The cars' records follow the instances' rows, kCarRows each, in the order of the boxes (a car with no instance has a record and no box), and an instance of another car
+// ViewBox::paint, and which of those are a TRAFFIC car's (every paint draw of the car is the traffic paint's: ViewBox::traffic). The cars' records follow the instances' rows, kCarRows each, in
+// the order of the boxes (a car with no instance has a record and no box), and an instance of another car
 // names its car's first row in `draw`: so box j is the j-th car with an instance. A list with no other car, or whose boxes do not match its cars, marks none.
 inline void MarkPaintBoxes(ci::List* list) {
   for (ci::ViewBox& b : list->boxes) {
     b.paint = false;
+    b.traffic = false;
   }
   if (list->box_row == 0 || list->box_row < list->items.size() || list->box_row > list->rows.size()) {
     return;
   }
   const uint32_t first_record = uint32_t(list->items.size());
   const uint32_t cars = (list->box_row - first_record) / ci::kCarRows;
-  std::vector<uint8_t> has_instance(cars, 0), has_paint(cars, 0);
+  std::vector<uint8_t> has_instance(cars, 0), has_paint(cars, 0), has_custom(cars, 0);
   for (size_t i = 0; i < list->items.size() && i < list->rows.size(); ++i) {
     if ((list->items[i].mask & rr::kMaskOthers) == 0) {
       continue;  // the player's own instance: its `draw` is a place in the car frame's draws
@@ -359,6 +371,7 @@ inline void MarkPaintBoxes(ci::List* list) {
     const size_t car = (row - first_record) / ci::kCarRows;
     has_instance[car] = 1;
     has_paint[car] |= (list->items[i].mask & rr::kMaskOtherPaint) != 0 ? 1 : 0;
+    has_custom[car] |= list->items[i].paint_kind == ci::PaintKind::kCustom ? 1 : 0;
   }
   size_t box = 0;
   for (uint32_t car = 0; car < cars; ++car) {
@@ -367,6 +380,7 @@ inline void MarkPaintBoxes(ci::List* list) {
     }
     if (box < list->boxes.size()) {
       list->boxes[box].paint = has_paint[car] != 0;
+      list->boxes[box].traffic = has_paint[car] != 0 && has_custom[car] == 0;
     }
     ++box;
   }
@@ -376,6 +390,7 @@ inline void MarkPaintBoxes(ci::List* list) {
 // instances (List::other_paint_instances). `paints` the walk's cars (null: no paint known).
 inline void AppendPlayerRecord(ci::List* list, const std::vector<car_model_rt::CarInfo>* paints) {
   list->other_paint_instances = CountPaintInstances(*list);
+  list->traffic_paint_instances = CountTrafficPaintInstances(*list);
   list->player_row = 0;
   MarkPaintBoxes(list);
   if (list->other_paint_instances == 0) {

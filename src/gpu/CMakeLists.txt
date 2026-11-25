@@ -351,6 +351,10 @@ add_executable(larecomp_car_rt_refl_rules_test EXCLUDE_FROM_ALL car_rt_refl_rule
 # the decision for a hit on the player's car; and that hlsl/car_rt_refl_opp.hlsli, car_rt_refl_cs.hlsl and the host hold the header's numbers) likewise; run it with the src folder or from there:
 #   cmake --build <dir> --target larecomp_car_rt_opp_refl_rules_test, then run src/gpu/larecomp_car_rt_opp_refl_rules_test [<src dir>] (exit 0 = passed).
 add_executable(larecomp_car_rt_opp_refl_rules_test EXCLUDE_FROM_ALL car_rt_opp_refl_rules_test.cpp)
+# The traffic and parked cars' ray traced reflection (car_rt_traffic_rules.h, RT-TRAFFIC-REFL: the traffic paint's identity and mask, which boxes are a traffic car's, the class levels, the plan with the
+# traffic's share of the budget against the opponents' own plan on random scenes, the cost estimate; and that the variant, the host and the settings hold the header's numbers) likewise:
+#   cmake --build <dir> --target larecomp_car_rt_traffic_rules_test, then run src/gpu/larecomp_car_rt_traffic_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_rt_traffic_rules_test EXCLUDE_FROM_ALL car_rt_traffic_rules_test.cpp)
 # The ray traced car scene's materials (car_rt_material_rules.h: the table of the cars' shaders, a draw's material from its pixel constants, a walked part's class, the packed
 # texture coordinates, the records the shaders read, a mesh's texel density, the environment map's mapping, the reference of the shading; and that
 # hlsl/car_rt_hit_shade.hlsli, hlsl/car_rt_refl_cs.hlsl, the host and the settings hold the header's numbers) likewise:
@@ -512,6 +516,15 @@ add_executable(larecomp_car_lights_test EXCLUDE_FROM_ALL car_lights_test.cpp)
 # with tools/gbuffer_materials/sample_table.txt (the file the Python tools' tests also read) it checks that the sample parses:
 #   cmake --build <dir> --target larecomp_gbuffer_materials_test, then run src/gpu/larecomp_gbuffer_materials_test [<tools/gbuffer_materials/sample_table.txt>] (exit 0 = passed).
 add_executable(larecomp_gbuffer_materials_test EXCLUDE_FROM_ALL gbuffer_materials_test.cpp)
+# The other cars' lamps in a ray traced reflection (car_rt_lights_rules.h, LIGHT-UNIFY LU-8: the glow law of each lamp family, the lamp set, the lens's glow from the lamps that stand in its mesh's
+# box, the record's driven bit, AppendOthers' use of the lamps, the light points' consumers; and that hlsl/car_rt_hit_shade.hlsli, the host and the settings hold the header's numbers) likewise; run it
+# with the src folder or from there:
+#   cmake --build <dir> --target larecomp_car_rt_lights_rules_test, then run src/gpu/larecomp_car_rt_lights_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_rt_lights_rules_test EXCLUDE_FROM_ALL car_rt_lights_rules_test.cpp)
+# The ray traced shadow mask's contract (rt_mask_contract.h, LIGHT-UNIFY LU-8: the channels and planes, the byte's values, the traced size, the upsample's weight, the frame's record and how a
+# reader finds a light's channel, the stable assignment of channels; it compiles hlsl/rt_mask.hlsli as C++ and compares it with the twin) likewise:
+#   cmake --build <dir> --target larecomp_rt_mask_contract_test, then run src/gpu/larecomp_rt_mask_contract_test (exit 0 = passed).
+add_executable(larecomp_rt_mask_contract_test EXCLUDE_FROM_ALL rt_mask_contract_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).

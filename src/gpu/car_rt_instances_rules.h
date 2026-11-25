@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "car_dump_rules.h"
+#include "car_rt_lights_rules.h"
 #include "car_rt_material_rules.h"
 #include "car_rt_scene_rules.h"
 #include "gpu_class.h"
@@ -212,13 +213,25 @@ inline constexpr uint32_t kIdSpace = CarSelector::kSlots + kRememberedIds;
 // The identity of xChrome::PS_Chrome on the retail game (the runtime's own: FNV-1a 64 of the microcode; shaderpack/variants/car_chrome.h kChrome has the
 // same number and car_chrome_rt_rules_test.cpp checks that it does): the pixel shader of the tailpipes, the badges and the chrome trim of EVERY car.
 inline constexpr uint64_t kChromePs = 0x2D8CA0430FF88ED7ull;
+// The identity of xAmbientCarPaint::PSAmbientCarPaint (the runtime's own, perf/out/night-probe-ids.txt; shaderpack/variants/car_selfrefl.h kTrafficPaint has the same number and
+// car_rt_traffic_rules_test.cpp checks that it does): the cheap paint of the traffic and the parked cars (RT-TRAFFIC-REFL).
+inline constexpr uint64_t kTrafficPaintPs = 0x9A6BE351ED46662Dull;
+
+// Whose paint a draw is: the customisable paint of the player, the racers and the dressed cars (car_dump::kCarPaintPs), or the traffic's own (kTrafficPaintPs). Both carry kMaskOtherPaint in
+// another car's instance (OtherMask): the pass that traces another car's reflection finds them by it; the kind is the pass's class rule (car_rt_traffic_rules.h).
+enum class PaintKind : uint8_t { kNone = 0, kCustom = 1, kTraffic = 2 };
+inline PaintKind PaintKindOf(uint64_t ps_identity) {
+  return ps_identity == car_dump::kCarPaintPs ? PaintKind::kCustom : (ps_identity == kTrafficPaintPs ? PaintKind::kTraffic : PaintKind::kNone);
+}
 
 // The mask of the instance of another car's draw: every part of another car has kMaskOthers (what the reflection's, the occlusion's and the
 // check's rays hit); a draw of the chrome's shader also has kMaskOtherChrome, so that the reflection pass's primary ray can find another car's chrome at a
 // pixel and the chrome's occlusion be traced for it (car_chrome_rt_rules.h), and a draw of the paint's shader has kMaskOtherPaint, so that the opponents' reflection
-// pass finds the pixels the paint variant reads (car_rt_opp_refl.h). The player's own chrome is a body part (kMaskBody) as before.
+// pass finds the pixels the paint variant reads (car_rt_opp_refl.h). The player's own chrome is a body part (kMaskBody) as before. A draw of the TRAFFIC paint's shader has kMaskOtherPaint too
+// (RT-TRAFFIC-REFL: the paint variant's second shader, shaderpack/variants/car_selfrefl.h version 7): the pass finds a traffic car's paint at a pixel as it finds an opponent's, and the class
+// rule (car_rt_traffic_rules.h) says whether it traces it.
 inline uint32_t OtherMask(uint64_t ps_identity) {
-  return rr::kMaskOthers | (ps_identity == kChromePs ? rr::kMaskOtherChrome : 0u) | (ps_identity == car_dump::kCarPaintPs ? rr::kMaskOtherPaint : 0u);
+  return rr::kMaskOthers | (ps_identity == kChromePs ? rr::kMaskOtherChrome : 0u) | (PaintKindOf(ps_identity) != PaintKind::kNone ? rr::kMaskOtherPaint : 0u);
 }
 
 // One draw of another car, as the car frame lists it: no host geometry (only the player's car is drawn again by the car shadow map), nothing
@@ -409,6 +422,8 @@ struct ViewBox {
   bool valid = false;
   // Some instance of the car this box is of is another car's draw of the paint's shader (car_rt_opp_refl_rules.h MarkPaintBoxes): the opponents' reflection pass looks at the box.
   bool paint = false;
+  // ... and the car's paint draws are the TRAFFIC paint's (no draw of the customisable paint): the pass's class rule treats the box as a traffic car's (car_rt_traffic_rules.h).
+  bool traffic = false;
   void Add(const float p[3]) {
     for (int c = 0; c < 3; ++c) {
       if (!valid) {
@@ -471,6 +486,7 @@ struct Item {
   uint64_t mesh_key = 0;
   float transform[3][4] = {};
   uint32_t mask = 0;
+  PaintKind paint_kind = PaintKind::kNone;  // another car's draw of a paint shader: whose (kMaskOtherPaint is set with it); kNone for every other instance
 };
 
 struct ListStats {
@@ -484,6 +500,12 @@ struct ListStats {
   uint32_t walked_cars = 0;           // ... of `cars` (and of the remembered ones): built from the car's own model data (car_model_rt_rules.h)
   uint32_t walked_instances = 0;
   uint32_t painted_cars = 0;          // cars whose record carries a paint colour
+  // LU-8 (car_rt_lights_rules.h): the lens instances of other cars (class light, emissive) and what the game's lamps said of them: a lamp that is on in the lens (glowing), lamps in it that are all
+  // off (dark), no lamp in it (the night factor's guess stays). All 0 where the frame had no lamps.
+  uint32_t lens_glowing = 0;
+  uint32_t lens_dark = 0;
+  uint32_t lens_undriven = 0;
+  float lens_level_max = 0.0f;        // the largest level a glowing lens read
   uint32_t missing_mesh = 0;     // draws left out: their mesh has no structure yet
   uint32_t bad_matrix = 0;
   uint32_t distinct_meshes = 0;  // distinct mesh keys over all instances (one structure each, shared by every instance of it)
@@ -526,6 +548,7 @@ struct List {
   // PLAYER's own car's record (a CarRow and a CarPaintRow, as another car's) in `rows`, after the boxes' rows: what a reflection from another car's paint that hits the
   // player's car shows where the history has no colour of it. 0: no such record this frame (CarRtOppRefl asks for it only with paint instances in the list).
   uint32_t other_paint_instances = 0;
+  uint32_t traffic_paint_instances = 0;  // ... of them the traffic paint's (RT-TRAFFIC-REFL); the rest are the customisable paint's
   uint32_t player_row = 0;
   ListStats stats;
   void Clear() {
@@ -538,6 +561,7 @@ struct List {
     records.clear();
     player_box = ViewBox{};
     other_paint_instances = 0;
+    traffic_paint_instances = 0;
     player_row = 0;
     stats = ListStats{};
   }
@@ -574,10 +598,12 @@ inline std::vector<uint32_t> PlanCars(const std::vector<OtherCar>& cars, uint32_
 // Appends the other cars to `list` (which already holds the player's instances): the nearest whole cars within `budget_instances`, each of their
 // draws whose mesh `find(mesh_key, &ref)` knows, in the draws' order, placed in the frame's view space with the mask OtherMask(draw.ps) (kMaskOthers, and kMaskOtherChrome for a draw of the chrome's shader); then a row for
 // every car listed. `max_total` is the top level's own cap on instances (the player's and these). The instance of a car's draw keeps the car's row in
-// its `draw` field.
+// its `draw` field. `lamps` (LU-8, car_rt_lights_rules.h; null: none): the game's lamps of the frame, so that a LENS of another car (class light, emissive) glows by the lamps that stand in
+// it instead of the night factor's guess.
 template <typename Find>
 inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const std::vector<OtherCar>& cars, const temporal::Mat4& view,
-                         bool flip_z, uint32_t budget_instances, uint32_t max_total, Find&& find, uint32_t max_cars = 0, float paint_gamma = car_rt_material::kWalkedPaintGamma) {
+                         bool flip_z, uint32_t budget_instances, uint32_t max_total, Find&& find, uint32_t max_cars = 0, float paint_gamma = car_rt_material::kWalkedPaintGamma,
+                         const car_rt_lights::LampSet* lamps = nullptr) {
   const uint32_t have = uint32_t(list->items.size());
   const uint32_t room = max_total > have ? max_total - have : 0;
   uint32_t cut = 0;
@@ -610,8 +636,10 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
     Item item;
     item.mesh_key = draw.mesh_key;
     item.mask = OtherMask(draw.ps);
+    item.paint_kind = PaintKindOf(draw.ps);
     if (cars[plan[size_t(slot)]].remembered) {
       item.mask &= ~rr::kMaskOtherPaint;  // a car the camera does not draw has no pixel in the history: nothing for the opponents' reflection pass to find (car_rt_opp_refl_rules.h)
+      item.paint_kind = PaintKind::kNone;
     }
     if (!rr::PackInstanceTransform(draw.model_to_world, view, flip_z, item.transform)) {
       ++list->stats.bad_matrix;
@@ -630,6 +658,21 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
       }
       im.has_uv = ref.has_uv;
       im.uv_density = ref.uv_density;
+      if (lamps && lamps->Valid() && im.material.cls == car_rt_material::Class::kLight && (im.material.flags & car_rt_material::kFlagEmissive) != 0) {
+        const car_rt_lights::Glow glow = car_rt_lights::LensGlow(draw.model_to_world, ref.bounds_min, ref.bounds_max, ref.has_bounds, draw.part, *lamps);
+        if (!glow.driven) {
+          ++list->stats.lens_undriven;
+        } else if (glow.scale > 0.0f) {
+          ++list->stats.lens_glowing;
+          list->stats.lens_level_max = std::max(list->stats.lens_level_max, glow.level);
+        } else {
+          ++list->stats.lens_dark;
+        }
+        if (glow.driven) {
+          im.glow_driven = true;
+          im.glow = glow.scale;
+        }
+      }
       list->materials.push_back(im);
     }
     GrowBox(&car_boxes[size_t(slot)], item.transform, ref);

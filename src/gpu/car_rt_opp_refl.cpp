@@ -12,6 +12,7 @@
 #include <rex/logging/log_category.h>
 
 #include "car_rt_scene.h"
+#include "car_rt_traffic_rules.h"
 #include "descriptors.h"
 #include "device.h"
 #include "gpu_class.h"
@@ -25,6 +26,7 @@
 namespace mcla::gpu {
 
 namespace opp = car_rt_opp_refl;
+namespace traffic = car_rt_traffic;
 
 namespace {
 
@@ -151,8 +153,13 @@ bool CarRtOppRefl::Record(const Frame& f) {
   if (!view.valid || !view.set || !f.city || !f.city->set) {
     return false;
   }
-  if (view.other_paint_instances == 0) {
-    ++window_.no_paint;  // no other car's paint in the list: nothing to find (traffic, cars not drawn this frame, no other car)
+  // The traffic cars' paint (RT-TRAFFIC-REFL) is paint to find where the class rule is on; with it off a frame with only traffic paint has nothing to do.
+  // The class is the ray tracing tier's (rt_tier.h: a weak card of the High class is Mid, none is Low), as the pass's own budget below and the structures' counts are: the GPU class would give a
+  // weak card the traffic share of a strong one.
+  const traffic::Level traffic_level = traffic::LevelWith(traffic::LevelFor(gpu_class::CurrentRtClass()), int(larecomp::settings::mcla_gpu_car_rt_traffic_refl.Get()));
+  const uint32_t traffic_paint = std::min(view.traffic_paint_instances, view.other_paint_instances);
+  if (view.other_paint_instances - traffic_paint == 0 && (!traffic_level.on || traffic_paint == 0)) {
+    ++window_.no_paint;  // no other car's paint in the list: nothing to find (cars not drawn this frame, no other car, traffic paint with the traffic off)
     return false;
   }
   // CITY-RT M2 R2: with the city in the reflections the budget is the smaller of the class's and the level's cell's (city_refl_rules.h OppBudget), and a texel casts at most the cell's rays (OppRays).
@@ -170,16 +177,22 @@ bool CarRtOppRefl::Record(const Frame& f) {
   }
 
   // where to look: the screen rectangle of each other car's box
-  std::vector<opp::TexelRect> rects;
+  std::vector<traffic::CarRect> rects;
   rects.reserve(view.box_count);
   for (uint32_t i = 0; i < view.box_count && view.boxes; ++i) {
     if (!view.boxes[i].paint) {
-      continue;  // a car with no draw of the paint's shader this frame (traffic, a car placed from memory): no pixel of it to find
+      continue;  // a car with no draw of a paint shader this frame (a car placed from memory): no pixel of it to find
     }
-    rects.push_back(opp::BoxRect(view.boxes[i], f.tan_x, f.tan_y, double(f.render_width), double(f.render_height), double(std::max<uint32_t>(f.divisor, 1)),
-                                 int32_t(f.image_width), int32_t(f.image_height)));
+    traffic::CarRect car;
+    car.rect = opp::BoxRect(view.boxes[i], f.tan_x, f.tan_y, double(f.render_width), double(f.render_height), double(std::max<uint32_t>(f.divisor, 1)), int32_t(f.image_width),
+                            int32_t(f.image_height));
+    car.traffic = view.boxes[i].traffic;
+    car.near_depth = traffic::NearDepth(view.boxes[i]);
+    rects.push_back(car);
   }
-  const opp::Plan plan = opp::PlanDispatches(rects, budget, uint32_t(std::clamp<int32_t>(larecomp::settings::mcla_gpu_car_rt_opp_refl_rays.Get(), 0, 4)));
+  const traffic::TrafficPlan traffic_plan =
+      traffic::PlanDispatches(rects, budget, traffic_level, uint32_t(std::clamp<int32_t>(larecomp::settings::mcla_gpu_car_rt_opp_refl_rays.Get(), 0, 4)));
+  const opp::Plan& plan = traffic_plan.plan;
   if (plan.dispatches.empty()) {
     ++window_.no_rect;  // the boxes are off the picture
     return false;
@@ -225,21 +238,29 @@ bool CarRtOppRefl::Record(const Frame& f) {
   w.admitted += plan.admitted;
   w.skipped += plan.skipped;
   w.counted += plan.texels;
+  w.traffic_cars += traffic_plan.traffic_cars;
+  w.traffic_admitted += traffic_plan.traffic_admitted;
+  w.traffic_far += traffic_plan.traffic_far;
+  w.traffic_over += traffic_plan.traffic_over;
+  w.traffic_texels += traffic_plan.traffic_texels;
   w.covered += plan.covered;
   w.most_covered = std::max<uint64_t>(w.most_covered, plan.covered);
   ++w.frames_at_rays[plan.rays >= opp::kRaysFull ? 0 : plan.rays >= opp::kRaysReduced ? 1 : 2];
   if (!first_logged_) {
     first_logged_ = true;
-    REXLOG_INFO("{} opponents: the first pass, frame {}: {} ({} paint instances of other cars in the top level, the player's record at row {}); budget {} texels; the history image {}x{} for "
-                "a {}x{} picture (divisor {}); the pass is timed as 'car rt refl opp'",
-                kPrefix, f.frame, opp::Describe(plan), view.other_paint_instances, view.player_row, budget, f.image_width, f.image_height, f.render_width, f.render_height, f.divisor);
+    REXLOG_INFO("{} opponents: the first pass, frame {}: {} ({} paint instances of other cars in the top level, {} of them the traffic paint's; the player's record at row {}); budget {} texels; "
+                "traffic: {} ({}); the history image {}x{} for a {}x{} picture (divisor {}); the pass is timed as 'car rt refl opp'",
+                kPrefix, f.frame, opp::Describe(plan), view.other_paint_instances, view.traffic_paint_instances, view.player_row, budget, traffic_level.on ? "on" : "off",
+                traffic::Describe(traffic_plan), f.image_width, f.image_height, f.render_width, f.render_height, f.divisor);
   }
   if (w.passes >= kWindowPasses) {
     const double n = double(w.passes);
     REXLOG_INFO("{} opponents, frames {}..{}: {} passes ({} dispatches, {:.1f} cars admitted of {:.1f} with a rectangle, {:.2f} over the budget), rectangles counted {:.0f} texels, covered {:.0f} "
-                "(most {}); frames at 4 / 2 / 1 rays: {} / {} / {}; frames not run: no paint instance {}, boxes off the picture {}, pipeline not ready {}, off or no budget {}; budget {} texels",
+                "(most {}); frames at 4 / 2 / 1 rays: {} / {} / {}; frames not run: no paint instance {}, boxes off the picture {}, pipeline not ready {}, off or no budget {}; budget {} texels; "
+                "traffic cars a pass (RT-TRAFFIC-REFL): {:.2f} with a rectangle, {:.2f} admitted ({:.0f} texels), {:.2f} too far or small, {:.2f} over the share",
                 kPrefix, w.first_frame, f.frame, w.passes, w.dispatches, double(w.admitted) / n, double(w.cars) / n, double(w.skipped) / n, double(w.counted) / n,
-                double(w.covered) / n, w.most_covered, w.frames_at_rays[0], w.frames_at_rays[1], w.frames_at_rays[2], w.no_paint, w.no_rect, w.not_ready, w.off, budget);
+                double(w.covered) / n, w.most_covered, w.frames_at_rays[0], w.frames_at_rays[1], w.frames_at_rays[2], w.no_paint, w.no_rect, w.not_ready, w.off, budget,
+                double(w.traffic_cars) / n, double(w.traffic_admitted) / n, double(w.traffic_texels) / n, double(w.traffic_far) / n, double(w.traffic_over) / n);
     window_ = Window{};
   }
   return true;

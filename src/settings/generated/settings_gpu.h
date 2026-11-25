@@ -446,6 +446,15 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_car_rt_hit_cascade, true, "Debug: the shaded hit on another car also reads the game's own sun shadow map (its cascades) at the point, so that the reflected car stands in the light of the scene: the shade of buildings, trees "
     "and bridges falls on it as it falls on the road. Off: only the cars' own shadows (mcla_gpu_car_rt_hit_shadow). Needs the volumetric light on (it reads the cascades the game draws). Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_car_rt_lamps, true, "Debug (the fix's own switch): the lenses of the other cars in a ray traced reflection (the tail lights of the car beside yours, the headlights of the car behind) glow as the game's own lamps say: "
+    "each lamp's light point (19 kinds a car: head, brake, tail, turn, reverse, police) says whether it is on and how strongly, and the lens it stands in glows by it, so a brake lamp, a lamp that is off and "
+    "a turn signal's dark half-period are told apart, and nothing glows by day. A lens no lamp stands in keeps the old guess from the colour of the sun. Off: every lens at that guess. Live.", rex::kDebugOnly);
+
+  REX_SETTING(i32, mcla_gpu_car_rt_traffic_refl, -1, "Debug (the fix's own switch): the paint of the TRAFFIC and parked cars (the cars of the city's streets, drawn with the game's cheap ambient paint) reflects the cars and the street round it in a ray traced "
+    "reflection from their real shape, as the opponents' paint does: the car beside yours at a red light shows yours in its door. -1 (the default): by the graphics card's class (on the High class with 40 percent of the "
+    "opponents' ray budget and cars up to 45 m away, on the Mid class with 25 percent and 30 m, off where there is no ray tracing); 0: off, the traffic's paint keeps the game's reads; 1 to 100: on at that percent of the "
+    "budget (a car beside the player is always traced). Needs the ray traced opponents' reflection (mcla_gpu_car_rt_opp_refl). Live.", rex::kDebugOnly, rex::Range{-1, 100});
+
   REX_SETTING(f64, mcla_gpu_car_rt_paint_gamma, 2.0, "Debug: the game's paint colours (what the player picks: an orange is 0.90, 0.49, 0.20) are raised to this power to be the colour the paint's light makes of them, for the "
     "colour another car shows in the ray traced reflection where the camera does not see the car (its paint, from the game's customisation record). 2: about what the "
     "game's own paint does (a car of colour 0.22 is black). 1: the colours as they are (paler, more grey). Live.", rex::kDebugOnly, rex::Range{1.0, 3.5});
@@ -2007,6 +2016,8 @@ inline auto& mcla_gpu_car_rt_clearcoat = g_gpu.mcla_gpu_car_rt_clearcoat;
 inline auto& mcla_gpu_car_rt_coat_layer = g_gpu.mcla_gpu_car_rt_coat_layer;
 inline auto& mcla_gpu_car_rt_hit_calibrate = g_gpu.mcla_gpu_car_rt_hit_calibrate;
 inline auto& mcla_gpu_car_rt_hit_cascade = g_gpu.mcla_gpu_car_rt_hit_cascade;
+inline auto& mcla_gpu_car_rt_lamps = g_gpu.mcla_gpu_car_rt_lamps;
+inline auto& mcla_gpu_car_rt_traffic_refl = g_gpu.mcla_gpu_car_rt_traffic_refl;
 inline auto& mcla_gpu_car_rt_masks = g_gpu.mcla_gpu_car_rt_masks;
 inline auto& mcla_gpu_rt_shadows = g_gpu.mcla_gpu_rt_shadows;
 inline auto& mcla_gpu_city_rt_sun = g_gpu.mcla_gpu_city_rt_sun;

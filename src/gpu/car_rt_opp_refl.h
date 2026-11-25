@@ -21,12 +21,15 @@
 //     is not ready goes on without it (the opponents' paint takes the march), it is never waited for.
 //   - the frame: the rectangles of the other cars' boxes (CarRtView::boxes, the scene's view-space boxes) projected into the image with the history's lens (BoxRect), the budget's plan
 //     (PlanDispatches), a UAV barrier on the two images (the player's dispatch wrote them; a texel the opponents' dispatch finds is overwritten), one dispatch per merged rectangle with a barrier
-//     between. No dispatch when no instance of another car's paint is in the list (CarRtView::other_paint_instances): traffic, cars not drawn this frame and a frame with no other car cost nothing.
+//     between. No dispatch when no instance of another car's paint is in the list (CarRtView::other_paint_instances): cars not drawn this frame and a frame with no other car cost nothing. The
+//     TRAFFIC cars' paint (the ambient paint, RT-TRAFFIC-REFL) counts as paint too: the plan is car_rt_traffic_rules.h's (the opponents first, the traffic a share of the budget of its own,
+//     the first traffic car always, none too far or too small), and a frame with only traffic paint and the traffic switched off has no dispatch.
 //
 // SETTINGS (all debug-only; the player's own are mcla_gpu_car_selfrefl_rt, the RAY TRACED row of the REFLECTIONS page, and the car self-reflection's):
 //   mcla_gpu_car_rt_opp_refl          true (the default): on wherever the car ray tracing runs and other cars are in the scene. false: the opponents' paint takes the march, as before. Live.
 //   mcla_gpu_car_rt_opp_refl_texels   0 (the default): the class's budget (500k texels High, 200k Mid, in thousands here); N: that many thousand. Live.
 //   mcla_gpu_car_rt_opp_refl_rays     0 (the default): by the budget (4, 2 or 1 rays a texel); 1, 2 or 4: forced. Live.
+//   mcla_gpu_car_rt_traffic_refl      -1 (the default): the class's level for the traffic cars (car_rt_traffic_rules.h); 0 off; 1..100: that percent of the budget. Live.
 //
 // LOG: "[car rt refl] opponents" lines: the first dispatch (cars, rectangles, rays), then a window every 300 passes: dispatches, cars admitted, texels counted and covered, frames at each
 // number of rays, cars over the budget, the passes with no pipeline or no paint instance. The pass time is the PassTiming row "car rt refl opp" (mcla_gpu_pass_timing).
@@ -127,6 +130,7 @@ class CarRtOppRefl {
     uint64_t first_frame = 0;
     uint32_t passes = 0;
     uint64_t dispatches = 0, cars = 0, admitted = 0, skipped = 0, counted = 0, covered = 0;
+    uint64_t traffic_cars = 0, traffic_admitted = 0, traffic_far = 0, traffic_over = 0, traffic_texels = 0;  // RT-TRAFFIC-REFL
     uint64_t most_covered = 0;
     uint32_t frames_at_rays[3] = {};  // 4, 2, 1
     uint32_t no_paint = 0, no_rect = 0, not_ready = 0, off = 0;

@@ -55,6 +55,7 @@ static const float kCarHitMaxColour = 60000.0;   // a hit's colour in the histor
 #define CAR_MAT_FLAG_EMISSIVE 8
 
 static const uint kMatRows = 2;
+static const uint kMatGlowDriven = 1u;  // word w of an instance's second row, bit 0 (car_rt_material_rules.h kRecordGlowDriven)
 // RT-HIT-SHADING-5 (car_rt_material_rules.h has each number and says what it is)
 static const float kNightFillShare = 0.4;
 static const float kLampDiffuse = 0.6;  // RT-HIT-SHADING-6 (car_rt_material_rules.h kLampDiffuse): the street lamp's light on a surface that faces up, at night
@@ -103,6 +104,7 @@ struct CarMat
     float flop;
     float lodBase;
     float emissive;
+    bool glowDriven;   // the emissive scale is the game's lamps' (car_rt_lights_rules.h): the night factor does not multiply it
 };
 
 CarMat CarMatLoad(uint instance)
@@ -122,6 +124,7 @@ CarMat CarMatLoad(uint instance)
     m.flop = asfloat(r1.x);
     m.lodBase = asfloat(r1.y);
     m.emissive = asfloat(r1.z);
+    m.glowDriven = (r1.w & kMatGlowDriven) != 0u;
     return m;
 }
 
@@ -277,7 +280,8 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     gCarHitClass = m.cls;
     gCarHitNdl = ndl * daySun;  // at night the sun does not reach anything: "facing away" in the census
     gCarHitVisible = visible;
-    gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;
+    const float glowNight = m.glowDriven ? 1.0 : f.night;  // a lens the game's lamps drive glows by its lamps' level alone
+    gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? m.emissive * glowNight : 0.0;
 
     // the reflection: the environment map at the reflected direction, by the fresnel
     const float3 reflected = reflect(direction, normal);
@@ -308,7 +312,7 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     }
     if ((m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u)
     {
-        result += albedo * (m.emissive * kRtHitEmissiveGain * f.night);
+        result += albedo * (m.emissive * kRtHitEmissiveGain * glowNight);
     }
     // not negative, at most what a half float keeps (the reflection pass's kMaxColour), a NaN black: decided by the bits (nan_guard.hlsli), for max(NaN, 0) is 0 on D3D12 only
     colour = NgHeld3(result * (f.gain * units), kCarHitMaxColour);

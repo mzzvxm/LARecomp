@@ -105,7 +105,9 @@
 #include "topology.h"
 #include "car_frame.h"
 #include "car_model_rt_rules.h"
+#include "car_lights.h"
 #include "car_rt_instances.h"
+#include "car_rt_lights_rules.h"
 #include "car_rt_memory_rules.h"
 #include "car_rt_scene_rules.h"
 #include "city_hit_scene.h"
@@ -165,6 +167,7 @@ struct CarRtView {
   // The opponents' reflection pass (car_rt_opp_refl.h): the instances of other cars' draws of the paint's shader in this top level (car_rt_scene_rules.h kMaskOtherPaint), and the row of
   // the player's car's record in binding 1's table (0: none; the record is added when there are such instances).
   uint32_t other_paint_instances = 0;
+  uint32_t traffic_paint_instances = 0;  // ... of them the TRAFFIC paint's (RT-TRAFFIC-REFL, car_rt_traffic_rules.h); the boxes' `traffic` flags say which cars
   uint32_t player_row = 0;
 };
 
@@ -396,6 +399,9 @@ class CarRtScene final : public car_frame::Listener {
   void BuildMaterialRows(const car_frame::Frame& frame, bool flip_z, const car_rt_instances::List& list, std::vector<uint32_t>* words);
   uint32_t DiffuseSlot(const car_rt_material::FetchInfo& fetch);
   void NoteMaterials(const car_rt_instances::List& list, const std::vector<uint32_t>& words);
+  // LU-8 (car_rt_lights_rules.h): the game's lamps of this frame for the other cars' lenses. Switches the light points' source on and off with the setting and the other cars, polls it once a
+  // frame (before the instance list is built) and makes the flat lamp set the list reads.
+  void UpdateLamps(const car_frame::Frame& frame, bool others_on);
   void LogTotals(const char* why);
   // The cars-from-memory lines of the log: the first kit, a vehicle list that cannot be read, and a line every few hundred frames.
   void LogMemory(const car_frame::Frame& frame);
@@ -443,6 +449,11 @@ class CarRtScene final : public car_frame::Listener {
   RtWorldFrame* world_ = nullptr;  // t10 and t11 of the set (SetWorldFrame), not owned
   RtWorldFrame::Bindings world_bindings_;
   std::unique_ptr<plume::RenderBuffer> standin_;  // zeroed, 256 bytes: what a binding of the set names where the car meshes that fill it do not exist (a city-only top level)
+  // LU-8: the game's lamps. The source asks the guest hook for every kind of light point as the ray tracing scene's consumer (light_points.h Consumer::kRt), polled once a frame.
+  larecomp::gpu::car_lights::CarLightsSource lights_source_{larecomp::gpu::light_points::Consumer::kRt};
+  car_rt_lights::LampSet lamp_set_;
+  car_rt_lights::LensStats lens_stats_;
+  bool lamps_logged_ = false;
   // The cars the camera does not see (car_rt_memory_rules.h): the kits of the cars that were drawn, and this frame's placements.
   car_rt_memory::CarMemory memory_;
   car_rt_memory::CarMemory::Output remembered_;
