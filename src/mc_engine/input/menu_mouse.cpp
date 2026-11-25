@@ -736,11 +736,24 @@ int ReadSlotClips(const uint8_t* b, const larecomp::swf::Movie& mv, const mm::St
 
 // ── reading the menu ────────────────────────────────────────────────────
 
-bool IsValueRow(const uint8_t* b, uint32_t list, int row) {
+// A word that can be loaded without faulting. HeapLike only says the number is in the heap's range, which text passes too.
+bool ReadableWord(uint32_t ea) {
+    if (!HeapLike(ea) || (ea & 3u) != 0) return false;
+    auto* memory = larecomp::guest::AddressSpace();
+    auto* heap = memory ? memory->LookupHeap(ea) : nullptr;
+    uint32_t protect = 0;
+    return heap && heap->QueryProtect(ea, &protect) && (protect & rex::kernel::kMemoryProtectRead) != 0;
+}
+
+// `row_count` is the rows the list has: a slot clip can show more slots than that, and the row array holds nothing meaningful past it. Not every list keeps its row objects there,
+// so both pointers are also checked before they are followed.
+bool IsValueRow(const uint8_t* b, uint32_t list, int row, int row_count) {
+    if (row < 0 || row >= row_count || row >= 64) return false;
     const uint32_t rows = R32(b, list + kListRows);
-    if (!HeapLike(rows) || row < 0 || row >= 64) return false;
-    const uint32_t obj = R32(b, rows + 4u * uint32_t(row));
-    if (!HeapLike(obj)) return false;
+    const uint32_t entry = rows + 4u * uint32_t(row);
+    if (!HeapLike(rows) || !ReadableWord(entry)) return false;
+    const uint32_t obj = R32(b, entry);
+    if (!ReadableWord(obj)) return false;
     const uint32_t vt = R32(b, obj);
     for (uint32_t v : kValueRowVtables)
         if (vt == v) return true;
@@ -896,12 +909,13 @@ mm::Layout LayoutOfList(const uint8_t* b, uint32_t list, bool pause_movie, const
         // No prompt bar found: nothing to hang the card from, and the display state's scale is not the card's: no layout (the model takes over).
         if (!sl.anchor.ok) return mm::Layout{};
         mm::CardSlot cs[kMaxSlots];
+        const int row_count = RowCountOf(b, list);
         for (int k = 0; k < sl.found; ++k) {
             cs[k].row = shifted[k].row;
             cs[k].x = shifted[k].mx;
             cs[k].y = shifted[k].my;
             cs[k].visible = shifted[k].visible;
-            if (cs[k].visible && IsValueRow(b, list, cs[k].row)) *wide = true;
+            if (cs[k].visible && IsValueRow(b, list, cs[k].row, row_count)) *wide = true;
         }
         *card = true;
         return mm::CardLayout(cs, sl.found, sl.anchor.y, *wide, float(larecomp::settings::menu_mouse_row_offset.Get()));
@@ -1131,7 +1145,7 @@ void ReadMenuRaw(const uint8_t* b, MenuView& view) {
         int first = 0, end = 0;
         mm::ListWindow(model_list.count, model_list.scrolls, model_list.scroll, model_list.max_rows, &first, &end);
         bool values = false;
-        for (int r = first; r < end && r < first + mm::kMaxRows; ++r) values = values || IsValueRow(b, model_obj, r);
+        for (int r = first; r < end && r < first + mm::kMaxRows; ++r) values = values || IsValueRow(b, model_obj, r, model_list.count);
         const mm::ModelPage page = values ? mm::ModelPage::Settings : mm::ModelPage::Hub;
         const mm::Layout lay = mm::ModelLayout(first, end - first, page);
         if (mm::Plausible(lay)) {
@@ -1494,7 +1508,7 @@ void DumpMenu(const uint8_t* b, const MenuView& view) {
             const float xa = garage ? 900.0f : 250.0f, xb = garage ? 1000.0f : 300.0f, xc = garage ? 1100.0f : 444.0f;
             MC_INFO("[menu-mouse] dump:     card row {}: v {:.1f} (band {:.1f}..{:.1f}), stage y at x {:.0f} / {:.0f} / {:.0f} = {:.1f} / {:.1f} / {:.1f}, x {:.0f}..{:.0f}, {} row", r.row, vm, r.v0, r.v1, xa, xb, xc,
                 mm::CardY(view.layout.map, xa, vm) + view.layout.shift, mm::CardY(view.layout.map, xb, vm) + view.layout.shift,
-                mm::CardY(view.layout.map, xc, vm) + view.layout.shift, r.x0, r.x1, view.kind == Kind::List && IsValueRow(b, view.obj, r.row) ? "a value" : "a plain");
+                mm::CardY(view.layout.map, xc, vm) + view.layout.shift, r.x0, r.x1, view.kind == Kind::List && IsValueRow(b, view.obj, r.row, view.count) ? "a value" : "a plain");
         }
     }
 }
@@ -1636,7 +1650,7 @@ void Tick(uint8_t* b) {
         mm::Zone zone = mm::Zone::Label;
         bool value_row = false;
         if (rows_known && hit >= 0) {
-            value_row = view.kind == Kind::List && IsValueRow(b, view.obj, hit);
+            value_row = view.kind == Kind::List && IsValueRow(b, view.obj, hit, view.count);
             if (const mm::RowBox* box = mm::BoxOfRow(view.layout, hit)) zone = mm::ZoneOf(view.layout, *box, csx, value_row);
         }
         const mm::ClickPlan plan = mm::PlanLeftClick(rows_known, hit, zone, value_row);
