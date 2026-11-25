@@ -18,7 +18,7 @@
 //   * The file stays FLAT. LARecomp's own writer (config_save.cpp, profiles::EditConfig) keeps writing and updating
 //     `name = value` lines, with FlatName() as the key, so a downgrade or the launcher still reads the file.
 //     The SDK's own tables ([gpu], [ui], ...) are read as usual.
-//   * Where a value, not only a name, changed meaning (the renderer choice, input_backend, resolution_scale) the
+//   * Where a value, not only a name, changed meaning (renderer choice, input_backend, resolution_scale, denoiser) the
 //     migration is ApplyPlayerConfig(): it reads the file once, before the SDK does, and sets the new
 //     settings at the title layer, which the file's own new-style values still override.
 //   * LARecomp's start-up defaults (the old SetFlag calls) are written with SetDefault(): the TITLE layer, so a

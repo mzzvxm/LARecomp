@@ -93,6 +93,21 @@
         "no_save": { "type": "boolean" },
         "debug": { "type": "boolean" },
         "aliases": { "type": "array", "items": { "type": "string" } },
+        "legacy_from": {
+          "type": "object",
+          "description": "A valid explicit value for this setting wins. Otherwise match the saved legacy value and use its mapped value, or use the default on a missing or unmapped legacy value.",
+          "required": ["setting", "map"],
+          "additionalProperties": false,
+          "properties": {
+            "setting": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "The flat TOML key to read from the saved file. It may have been removed from the catalog." },
+            "map": {
+              "type": "object",
+              "minProperties": 1,
+              "description": "Keys are legacy scalar values as text without TOML quotes. Values use the destination setting's JSON type.",
+              "additionalProperties": { "type": ["boolean", "number", "string"] }
+            }
+          }
+        },
         "auto": { "$ref": "#/$defs/auto" },
         "since": { "type": "string" },
         "removed": { "type": "string" }

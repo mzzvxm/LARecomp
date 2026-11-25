@@ -95,7 +95,25 @@
     },
     "car_rt_runs": "api.car_rt && (d.car_selfrefl_choice == 'ray_traced' || (d.car_selfrefl_choice == 'auto' && auto_of('mcla_gpu_car_selfrefl') == 'on'))",
     "rt_city_wanted": "resolved(s.mcla_gpu_rt_reflections) != 'off'",
-    "rt_denoise_consumers_on": "resolved(s.mcla_gpu_rt_reflections) in ['high', 'ultra'] || resolved(s.mcla_gpu_rt_bounce_light) in ['high', 'ultra']"
+    "denoiser_vendor": { "cases": [
+      {"when": "features.denoiser.vendor == 'amd' && (gpu.rx9000 ?? true) && (os.name ?? 'windows') == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", "value": "amd"},
+      {"when": "features.denoiser.vendor == 'nvidia' && (gpu.rtx ?? true)", "value": "nvidia"},
+      {"when": "known(features.denoiser.vendor)", "value": "none"},
+      {"when": "gpu.vendor == 'amd' && gpu.rx9000 && os.name == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", "value": "amd"},
+      {"when": "gpu.vendor == 'nvidia' && gpu.rtx", "value": "nvidia"},
+      {"value": "none"}
+    ] },
+    "denoiser_fallback": { "cases": [
+      {"when": "d.denoiser_vendor == 'amd' && api.name == 'vulkan'", "value": "needs_d3d12"},
+      {"when": "d.denoiser_vendor == 'amd' && features.denoiser.ray_regen == 'unsupported'", "value": "unsupported"},
+      {"when": "d.denoiser_vendor == 'nvidia' && (features.upscalers.dlss == 'no' || features.denoiser.dlss_rr == 'unsupported')", "value": "unsupported"},
+      {"when": "d.denoiser_vendor == 'nvidia' && s.mcla_gpu_upscaler != 'dlss'", "value": "needs_dlss"},
+      {"when": "d.denoiser_vendor == 'nvidia' && (features.upscalers.dlss == 'needs_setup' || features.denoiser.dlss_rr == 'needs_setup')", "value": "needs_setup"},
+      {"when": "d.denoiser_vendor == 'amd' && features.denoiser.ray_regen == 'needs_setup'", "value": "needs_setup"},
+      {"when": "d.denoiser_vendor == 'nvidia' && s.mcla_gpu_vendor_denoiser && (features.upscalers.dlss == 'after_restart' || features.denoiser.dlss_rr == 'after_restart')", "value": "restart"},
+      {"value": "ok"}
+    ] },
+    "denoiser_state": "live.denoiser_gate ?? d.denoiser_fallback"
   },
   "settings": {
     "perf_no_shadows": {"full": "larecomp.perf_no_shadows", "type": "bool", "default": "false", "life": "live", "debug": false},
@@ -185,7 +203,18 @@
     "fps_limit": {"full": "larecomp.fps_limit", "type": "int", "default": "60", "life": "live", "debug": false, "range": [0, 360]},
     "fullscreen": {"full": "ui.fullscreen", "type": "bool", "default": "true", "life": "live", "debug": false},
     "fullscreen_exclusive": {"full": "larecomp.fullscreen_exclusive", "type": "bool", "default": "false", "life": "live", "debug": false},
-    "mcla_gpu_denoise_rr": {"full": "larecomp.mcla_gpu_denoise_rr", "type": "bool", "default": "true", "life": "live", "debug": false},
+    "mcla_gpu_vendor_denoiser": {
+      "full": "larecomp.mcla_gpu_vendor_denoiser",
+      "type": "bool",
+      "default": "false",
+      "life": "live",
+      "debug": false,
+      "legacy_from": {
+        "setting": "mcla_gpu_denoiser",
+        "map": {"rr": true, "auto": false, "ours": false}
+      }
+    },
+    "mcla_gpu_denoiser": {"full": "larecomp.mcla_gpu_denoiser", "type": "string", "default": "row", "life": "live", "debug": true, "allowed": ["row", "auto", "rr", "ours"]},
     "mcla_gpu_rt_bounce_light": {
       "full": "larecomp.mcla_gpu_rt_bounce_light",
       "type": "string",
@@ -389,6 +418,46 @@
                 }
               ],
               "help": "How small the game draws the 3D scene before it is built back up to the window's size: the share is in brackets."
+            },
+            {
+              "id": "PM_RxGpuDenoiser",
+              "label": "DLSS RAY RECONSTRUCTION",
+              "title": "DLSS Ray Reconstruction",
+              "kind": "bool",
+              "setting": "mcla_gpu_vendor_denoiser",
+              "default": "false",
+              "apply": "live",
+              "renderers": ["native"],
+              "hidden_unless": "renderer == 'native' && d.denoiser_vendor in ['amd','nvidia']",
+              "states": [
+                { "when": "d.denoiser_state == 'hidden'", "enabled": false, "reason": "This GPU cannot run DLSS Ray Reconstruction." },
+                { "when": "d.denoiser_state == 'needs_d3d12'", "enabled": false, "suffix": " (D3D12 ONLY)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'unsupported'", "enabled": false, "suffix": " (N/A)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'needs_dlss'", "enabled": false, "suffix": " (NEEDS DLSS)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'needs_setup'", "enabled": false, "suffix": " (SETUP)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'failed'", "enabled": false, "suffix": " (FAILED)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'not_needed'", "enabled": false, "suffix": " (NOT NEEDED)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'making'", "enabled": true, "suffix": " (APPLYING)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'restart'", "enabled": true, "suffix": " (RESTART)", "label": "DLSS RR", "needs_restart": true }
+              ],
+              "variants": [
+                {
+                  "when": "d.denoiser_vendor == 'amd'",
+                  "label": "AMD FSR RAY REGENERATION",
+                  "states": [
+                    { "when": "d.denoiser_state == 'hidden'", "enabled": false, "reason": "This GPU cannot run AMD FSR Ray Regeneration." },
+                    { "when": "d.denoiser_state == 'needs_d3d12'", "enabled": false, "suffix": " (D3D12 ONLY)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'unsupported'", "enabled": false, "suffix": " (N/A)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'needs_dlss'", "enabled": false, "suffix": " (NEEDS DLSS)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'needs_setup'", "enabled": false, "suffix": " (SETUP)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'failed'", "enabled": false, "suffix": " (FAILED)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'not_needed'", "enabled": false, "suffix": " (NOT NEEDED)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'making'", "enabled": true, "suffix": " (APPLYING)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'restart'", "enabled": true, "suffix": " (RESTART)", "label": "RAY REGEN", "needs_restart": true }
+                  ]
+                }
+              ],
+              "help": "On uses the GPU's denoiser for supported effects. Off uses LARecomp's denoisers."
             }
           ]
         },
@@ -530,76 +599,6 @@
                 }
               ],
               "help": "Your car's paint reflects the car itself. On works from the picture on the screen; Ray Traced from the car's own shape, so a part the camera cannot see shows in the paint too."
-            },
-            {
-              "id": "PM_RxGpuRr",
-              "label": "DLSS RAY RECONSTRUCTION",
-              "title": "DLSS Ray Reconstruction",
-              "kind": "bool",
-              "setting": "mcla_gpu_denoise_rr",
-              "apply": "live",
-              "hidden_unless": "renderer == 'native' && gpu.vendor == 'nvidia' && gpu.rtx",
-              "states": [
-                {
-                  "when": "features.denoiser.dlss_rr == 'unsupported'",
-                  "enabled": false,
-                  "suffix": " (N/A)",
-                  "tag": "Not supported",
-                  "reason": "This driver cannot run Ray Reconstruction."
-                },
-                {
-                  "when": "s.mcla_gpu_upscaler != 'dlss'",
-                  "enabled": false,
-                  "suffix": " (NEEDS DLSS)",
-                  "tag": "Needs DLSS",
-                  "reason": "Ray Reconstruction does the upscaling too: turn DLSS on first."
-                },
-                {"when": "features.upscalers.dlss == 'needs_setup'", "enabled": false, "suffix": " (SETUP)", "tag": "Needs setup"},
-                {
-                  "when": "!d.rt_denoise_consumers_on",
-                  "enabled": false,
-                  "suffix": " (NOT NEEDED)",
-                  "tag": "Not needed",
-                  "reason": "No ray traced or reflection effect is on."
-                },
-                {"when": "live.denoiser.state == 'failed'", "live_only": true, "enabled": false, "suffix": " (FAILED)", "tag": "Failed"},
-                {
-                  "when": "live.denoiser.state == 'restart'",
-                  "live_only": true,
-                  "enabled": false,
-                  "suffix": " (RESTART)",
-                  "needs_restart": true,
-                  "tag": "Restart needed"
-                },
-                {"when": "live.denoiser.state == 'making'", "live_only": true, "enabled": false, "suffix": " (APPLYING)", "tag": "Applying"}
-              ],
-              "help": "Cleans up the noise of the ray traced effects with NVIDIA's own denoiser and upscales the picture in the same step."
-            },
-            {
-              "id": "PM_RxGpuRayRegen",
-              "label": "AMD FSR RAY REGENERATION",
-              "title": "AMD FSR Ray Regeneration",
-              "kind": "bool",
-              "setting": "mcla_gpu_denoise_rr",
-              "apply": "live",
-              "hidden_unless": "renderer == 'native' && gpu.vendor == 'amd' && (gpu.rx9000 ?? true) && os.name == 'windows'",
-              "states": [
-                {
-                  "when": "api.name == 'vulkan'",
-                  "enabled": false,
-                  "suffix": " (D3D12 ONLY)",
-                  "tag": "D3D12 only",
-                  "reason": "Ray Regeneration has no Vulkan provider."
-                },
-                {
-                  "when": "!d.rt_denoise_consumers_on",
-                  "enabled": false,
-                  "suffix": " (NOT NEEDED)",
-                  "tag": "Not needed",
-                  "reason": "No ray traced or reflection effect is on."
-                }
-              ],
-              "help": "Cleans up the noise of the ray traced effects with AMD's own denoiser."
             }
           ]
         }
@@ -610,6 +609,8 @@
     "api.car_rt",
     "api.name",
     "features.denoiser.dlss_rr",
+    "features.denoiser.ray_regen",
+    "features.denoiser.vendor",
     "features.frame_generation.dlss",
     "features.frame_generation.fsr31",
     "features.upscalers.dlss",
@@ -622,8 +623,9 @@
     "gpu.rx9000",
     "gpu.vendor",
     "live.city_data",
-    "live.denoiser.state",
+    "live.denoiser_gate",
     "live.frame_generation_running",
+    "os.build",
     "os.exclusive_fullscreen",
     "os.name"
   ],

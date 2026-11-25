@@ -135,7 +135,32 @@
           "states": [
             { "when": "d.frame_gen_on", "enabled": false, "suffix": " (FRAME GEN)", "tag": "Frame gen on",
               "reason": "Frame generation has its own limit (Frame Gen FPS Limit) while it runs, so this one waits." } ],
-          "help": "Caps how many frames the game draws a second. Unlimited removes the cap." } ] },
+          "help": "Caps how many frames the game draws a second. Unlimited removes the cap." },
+
+        { "id": "PM_RxGpuUpscMode", "label": "RENDER SCALE", "title": "Render Scale", "kind": "choice", "setting": "mcla_gpu_resolution_scale", "apply": "live",
+          "variants": [
+            { "when": "renderer == 'xenia'", "label": "RENDER SCALE", "setting": "resolution_scale", "apply": "restart",
+              "values_from": { "generator": "render_scale.shares", "args": { "renderer": "xenia" } },
+              "fallback_values": [
+                { "id": "1", "label": "1X (720P)", "title": "1x (720p)" },
+                { "id": "2", "label": "2X (1440P)", "title": "2x (1440p)" },
+                { "id": "3", "label": "3X (4K)", "title": "3x (4K)" } ] },
+            { "when": "d.shown_upscaler == 'fsr1'", "label": "FSR 1 MODE", "title": "FSR 1 Mode", "setting": "mcla_gpu_fsr_preset", "values_ref": "fsr1_modes" },
+            { "when": "d.shown_upscaler == 'fsr31'", "label": "FSR 3.1 MODE", "title": "FSR 3.1 Mode", "setting": "mcla_gpu_fsr31_mode", "values_ref": "fsr_modes" },
+            { "when": "d.shown_upscaler == 'fsr4'", "label": "FSR 4 MODE", "title": "FSR 4 Mode", "setting": "mcla_gpu_fsr4_mode", "values_ref": "fsr_modes" },
+            { "when": "d.shown_upscaler == 'dlss'", "label": "DLSS MODE", "title": "DLSS Mode", "setting": "mcla_gpu_dlss_mode", "values_ref": "dlss_modes",
+              "states": [
+                { "when": "features.upscalers.dlss == 'needs_setup'", "enabled": false, "suffix": " (SETUP)", "tag": "Needs setup",
+                  "reason": "DLSS needs its files first: this install does not have them yet." },
+                { "when": "features.upscalers.dlss == 'after_restart'", "enabled": false, "suffix": " (RESTART)", "needs_restart": true, "tag": "Restart needed" } ] },
+            { "when": "true", "label": "RENDER SCALE", "setting": "mcla_gpu_resolution_scale",
+              "values_from": { "generator": "render_scale.shares", "args": { "renderer": "native" } },
+              "fallback_values": [
+                { "id": "0", "label": "100%", "title": "100% (window size)" },
+                { "id": "1.5", "label": "150%" },
+                { "id": "2", "label": "200%" },
+                { "id": "3", "label": "300%" } ] } ],
+          "help": "How small the game draws the 3D scene before it is built back up to the window's size: the share is in brackets." } ] },
 
       { "id": "lighting", "label": "LIGHTING AND SHADOWS", "title": "Lighting and Shadows", "source_menu": "RxLightingMenu", "rows": [
 
@@ -182,34 +207,7 @@
               "writes": [ { "setting": "mcla_gpu_car_selfrefl", "value": "on" }, { "setting": "mcla_gpu_car_selfrefl_rt", "value": "off" } ] },
             { "id": "ray_traced", "label": "RAY TRACED", "title": "Ray Traced", "when": "api.car_rt",
               "writes": [ { "setting": "mcla_gpu_car_selfrefl", "value": "on" }, { "setting": "mcla_gpu_car_selfrefl_rt", "value": "auto" } ] } ],
-          "help": "Your car's paint reflects the car itself. On works from the picture on the screen; Ray Traced from the car's own shape, so a part the camera cannot see shows in the paint too." } ] },
-
-      { "id": "upscaling", "label": "UPSCALING", "title": "Upscaling", "source_menu": "RxUpscalingMenu", "rows": [
-
-        { "id": "PM_RxGpuUpscMode", "label": "RENDER SCALE", "title": "Render Scale", "kind": "choice", "setting": "mcla_gpu_resolution_scale", "apply": "live",
-          "variants": [
-            { "when": "renderer == 'xenia'", "label": "RENDER SCALE", "setting": "resolution_scale", "apply": "restart",
-              "values_from": { "generator": "render_scale.shares", "args": { "renderer": "xenia" } },
-              "fallback_values": [
-                { "id": "1", "label": "1X (720P)", "title": "1x (720p)" },
-                { "id": "2", "label": "2X (1440P)", "title": "2x (1440p)" },
-                { "id": "3", "label": "3X (4K)", "title": "3x (4K)" } ] },
-            { "when": "d.shown_upscaler == 'fsr1'", "label": "FSR 1 MODE", "title": "FSR 1 Mode", "setting": "mcla_gpu_fsr_preset", "values_ref": "fsr1_modes" },
-            { "when": "d.shown_upscaler == 'fsr31'", "label": "FSR 3.1 MODE", "title": "FSR 3.1 Mode", "setting": "mcla_gpu_fsr31_mode", "values_ref": "fsr_modes" },
-            { "when": "d.shown_upscaler == 'fsr4'", "label": "FSR 4 MODE", "title": "FSR 4 Mode", "setting": "mcla_gpu_fsr4_mode", "values_ref": "fsr_modes" },
-            { "when": "d.shown_upscaler == 'dlss'", "label": "DLSS MODE", "title": "DLSS Mode", "setting": "mcla_gpu_dlss_mode", "values_ref": "dlss_modes",
-              "states": [
-                { "when": "features.upscalers.dlss == 'needs_setup'", "enabled": false, "suffix": " (SETUP)", "tag": "Needs setup",
-                  "reason": "DLSS needs its files first: this install does not have them yet." },
-                { "when": "features.upscalers.dlss == 'after_restart'", "enabled": false, "suffix": " (RESTART)", "needs_restart": true, "tag": "Restart needed" } ] },
-            { "when": "true", "label": "RENDER SCALE", "setting": "mcla_gpu_resolution_scale",
-              "values_from": { "generator": "render_scale.shares", "args": { "renderer": "native" } },
-              "fallback_values": [
-                { "id": "0", "label": "100%", "title": "100% (window size)" },
-                { "id": "1.5", "label": "150%" },
-                { "id": "2", "label": "200%" },
-                { "id": "3", "label": "300%" } ] } ],
-          "help": "How small the game draws the 3D scene before it is built back up to the window's size: the share is in brackets." } ] }
+          "help": "Your car's paint reflects the car itself. On works from the picture on the screen; Ray Traced from the car's own shape, so a part the camera cannot see shows in the paint too." } ] }
 
     ] }
   ],

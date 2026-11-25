@@ -2,6 +2,7 @@
 
 #include "os/file_replace.h"
 #include "gpu/gfx_preset.h"
+#include "gpu/denoiser_setting.h"
 #include "gpu/gpu_class.h"
 #include "gpu/rt_tier.h"
 // CHECK: the contract parser's arity map has an exit-time destructor. GX calls it only at startup.
@@ -402,6 +403,16 @@ toml::table BuildDocument(Table settings, std::span<const Menu> menus, const Inp
     Overlay(defs, table_or_empty(rules["defs"]));
 
     AddAuto(settings);
+    namespace dn = mcla::gpu::denoiser;
+    if (auto* vendor = settings[dn::kVendorCvarName].as_table()) {
+        Table map;
+        for (const auto word : dn::kWords) {
+            if (const auto value = dn::LegacyVendorPreference(word)) {
+                map.insert(word, *value);
+            }
+        }
+        vendor->insert("legacy_from", Table{{"setting", dn::kCvarName}, {"map", std::move(map)}});
+    }
     Table doc{
         {"schema", "larecomp.settings-ui"}, {"schema_version", 1}, {"min_reader", 1}, {"expr_version", 1},
         {"generated", Table{{"game_version", inputs.game_version}, {"tool", "larecomp.exe --dump_settings_ui"},

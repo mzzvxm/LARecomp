@@ -756,7 +756,10 @@ void CheckRowListed() {
   l.windows_build = 19045;
   Check(!RowListed(l), "... not on Windows 10");
   l.windows_build = 0;
-  Check(RowListed(l), "... a Windows build that cannot be read (Linux) leaves it to the runtime's own answer");
+  Check(RowListed(l), "... an unknown Windows build leaves the driver verdict to the runtime");
+  l.windows = false;
+  Check(!RowListed(l), "native Linux has no AMD row");
+  l.windows = true;
   l.windows_build = 26100;
   l.vendor_id = 0x10DEu;
   Check(!RowListed(l), "an NVIDIA card has no AMD row, whatever its name says");

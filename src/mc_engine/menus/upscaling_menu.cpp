@@ -254,8 +254,8 @@ List SharpnessList(bool fsr1) {
 // it says nothing ("DLSS RAY RECONSTRUCTION" 23, "AMD FSR RAY REGENERATION" 24) and its short name in front of a reason ("DLSS RR (NEEDS DLSS)" 20, "RAY REGEN (D3D12 ONLY)" 22).
 
 mcla::gpu::denoiser::VendorRow DenoiserRowKind() {
-    return mcla::gpu::denoiser::RowFor(mcla::gpu::rayregen::RowListed(),
-                                       DlssListed(mcla::gpu::GetUpscalerAvailability()));
+    namespace gpu = mcla::gpu;
+    return gpu::denoiser::RowFor(gpu::rayregen::RowListed(), gpu::denoiser::RtxAdapter());
 }
 // Whether this PC has the row at all: an RTX card, or a Radeon RX 9000 series card on Windows 11.
 bool AmdRow() { return DenoiserRowKind() == mcla::gpu::denoiser::VendorRow::kRayRegen; }
@@ -265,11 +265,12 @@ mcla::gpu::denoiser::MenuInputs DenoiserInputs() {
     const UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
     const dn::Snapshot snapshot = dn::Current();
     dn::MenuInputs m;
-    m.dlss_listed = DlssListed(a);
+    m.facts = snapshot.facts;
+    m.dlss_listed = DenoiserRowKind() == dn::VendorRow::kDlssRr;
+    m.dlss_unavailable = (a.dlss_probed && !DlssListed(a)) || (snapshot.valid && !m.facts.build_has_rr);
     m.dlss_chosen = Chosen() == Upscaler::kDlss;
     m.dlss_waits_for_restart = DlssWaitsForRestart();
     m.dlss_needs_setup = a.dlss_needs_setup && !a.dlss;
-    m.facts = snapshot.facts;
     m.debug = snapshot.valid ? snapshot.debug : mcla::gpu::rr::DebugSwitch::kRow;
     m.setting = dn::Setting();  // the effective one: the row, or the debug chooser when it says auto, rr or ours (no cvar named here: the chooser is debug-only)
     m.consumers_on = dn::ConsumersOn();
@@ -378,14 +379,10 @@ GeneratedChoices SharpnessChoices([[maybe_unused]] std::string_view setting) {
 
 std::string_view VendorDenoiserKind() {
 #if defined(LARECOMP_HAS_GPU)
-    using Vendor = mcla::gpu::denoiser::VendorRow;
-    switch (DenoiserRowKind()) {
-    case Vendor::kRayRegen: return "amd";
-    case Vendor::kDlssRr: return "nvidia";
-    default: break;
-    }
-#endif
+    return mcla::gpu::denoiser::VendorName(DenoiserRowKind());
+#else
     return "none";
+#endif
 }
 
 std::string_view VendorDenoiserState() {

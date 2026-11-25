@@ -340,7 +340,10 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
     }
     const std::string value =
         action == CvarSaveAction::kWriteBeforeScene ? hold->second.value : info->getter();
-    const bool unchanged = value == info->default_value || AtStartupValue(name, value);
+    // Save an explicit OFF even if this is the first write of the new toggle. A legacy "rr"
+    // line can still supply the startup value until the file contains the new key.
+    const bool unchanged = name != "mcla_gpu_vendor_denoiser" &&
+                           (value == info->default_value || AtStartupValue(name, value));
     Put(edits, name, CvarTomlValue(name, value), unchanged);
   }
   for (const auto& [name, value] : held) {
