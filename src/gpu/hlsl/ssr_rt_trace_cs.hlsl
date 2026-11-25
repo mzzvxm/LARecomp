@@ -3,8 +3,9 @@
 // One thread per pixel the select pass listed. For its pixel it
 //   1. sets the receiver up exactly as the trace did (hlsl/ssr_trace_ps.hlsl: the Hi-Z's depth, the block's own pixel for the class, the smoothness and the normal, the GGX alpha),
 //   2. regenerates the SAME ray (ssr_common.hlsli SsrSampleRay: the trace's ray for this pixel and frame, nothing was stored; at two rays a pixel every ray),
-//   3. traces it into the top level (the city's structures, mask 0x80, and the cars' parts: a hit on a car is not this pass's to shade) and shades the closest city hit with the city hit library's
+//   3. traces it into the top level (the city's structures, mask 0x80, and the cars' parts) and shades the closest city hit with the city hit library's
 //      ResolveHit (hlsl/city_hit_shade.hlsli: "the picture where the hit is seen, the model where it is not": the world frame's light, the sun's ray, the glow of lamps and neon, the class's gain),
+//      or shades a car's material on road receivers when car hits are enabled,
 //   4. adds what the picture could not give to the trace image: trace + (1 - confidence) * weight * mean over the rays of (the hit's radiance x its distance fade - the road view the trace takes out of a
 //      road, x that fade), the trace's alpha (the hit distance the accumulation reprojects the virtual image by, and Ray Reconstruction takes as its hit distance guide) becoming the ray traced hit's
 //      where the picture's share is under a half. Optional routes replace the planar road view on upward misses or recover a rejected proxy from raster colour.
@@ -35,13 +36,15 @@ RWByteAddressBuffer g_ctl : register(u1, space5);
 RWByteAddressBuffer g_list : register(u2, space5);
 
 // The library's hooks (hlsl/city_hit_shade.hlsli lists them): the top level, the picture (lin_depth level 0 and colour_post's mip chain, the trace's own images), the class gains, the calibration's counters.
-// No lamp list (R7's), no haze, no probe field.
+// Car hits use a bounded walk of the world lamp grid.
 #define RT_HIT_TLAS gCarRtTlas
 #define CITY_HIT_SCREEN_DEPTH(texel) g_textures[SsrLo(SsrW(SSR_W_LIN0))].Load(int3(texel, 0)).x
 #define CITY_HIT_SCREEN_COLOUR(uv, mip) SsrColour(uv, max((mip) - (SsrFlag(SSR_FLAG_COL_HALF) ? 1.0f : 0.0f), 0.0f))
 #define CITY_HIT_GAIN(cls) RtWorldClassGain(cls)
 #define CITY_HIT_STAT_ADD(word, value) g_ctl.InterlockedAdd((SSR_RT_STAT_CAL + (word)) * 4u, (value))
+#define CITY_HIT_LAMP_GRID 1
 #include "city_hit_shade.hlsli"
+#include "car_rt_hit_material.hlsli"
 
 // The instance mask of the rays: the city's bit and every part of a car.
 static const uint kSsrRtCityMask = 0x80u;
@@ -80,6 +83,62 @@ float3 SsrRtEnvironmentTerm(RtHitFrame f, float3 dir, float alpha, float units, 
   const float lod = clamp(0.5f + 3.0f * alpha, 0.5f, 3.0f);
   const float3 colour = min(NgFinite3(RtHitEnvAt(f, dir, lod) * units), float3(cap, cap, cap));
   return colour - fallback;
+}
+
+float3 SsrRtCarLamps(CityHitParams p, RtWorld w, float3 position, float3 normal) {
+  float3 sum = 0.0f;
+  if (p.lampFactor > 0.0f) {
+    RtLampCursor cursor = RtLampBegin(w, position, kSsrRtCarLampRadius);
+    [loop] for (uint i = 0u; i < kSsrRtCarLampVisits && cursor.done == 0u; ++i) {
+      const CityHitLampEval lamp = CityHitLampAtIndex(p, w, cursor.index, position, normal);
+      sum += lamp.radiance * SsrRtCarLampWeight(lamp.distance);
+      cursor = RtLampStep(w, cursor);
+    }
+  }
+  return sum * (kCityHitLampSumCap / max(CityHitLuma(sum), kCityHitLampSumCap));
+}
+
+// CHECK: compare the material, glass, lamp coverage and history in moving 4K wet-road captures on both APIs.
+// CHECK: measure the enabled Ultra fallback against its 1.8 ms governor budget.
+// Use the world frame's cascades and local lamp list so a car hit needs no secondary rays.
+bool SsrRtShadeCar(CityHitParams p, RtWorld w, RtHitFrame f, CityHitTraceResult hit, float3 position,
+                   float3 direction, float footprint, float cone_tan, out float3 colour) {
+  colour = 0.0f;
+  if ((f.flags & RT_HIT_FRAME_SHADE) == 0u) {
+    return false;
+  }
+  const CarMat m = CarMatLoad(hit.instanceIndex);
+  if (m.cls == CAR_MAT_CLASS_NONE || m.cls > CAR_MAT_CLASS_OTHER) {
+    return false;
+  }
+  const float3x4 transform = float3x4(float4(hit.inst.row0, 0.0f), float4(hit.inst.row1, 0.0f), float4(hit.inst.row2, 0.0f));
+  const float3 normal = CarRtHitNormal(hit.instanceIndex, hit.inst.primitiveIndex, hit.inst.barycentrics, transform, direction);
+  const float nv = saturate(-dot(normal, direction));
+  const float3 albedo = CarMatAlbedo(m, hit.instanceIndex, hit.inst.primitiveIndex, hit.inst.barycentrics, footprint, nv);
+
+  const bool sun_known = (f.flags & RT_HIT_FRAME_SUN) != 0u;
+  const float3 to_sun = sun_known ? f.toSun : f.axisY;
+  const float sun = saturate(dot(normal, to_sun)) * (sun_known ? 1.0f - f.night : 1.0f);
+  float visible = 1.0f;
+  [branch] if (sun > 0.0f && (f.flags & RT_HIT_FRAME_CASCADE) != 0u) {
+    visible = RtHitCascadeVisible(f, position, normal);
+  }
+  const float3 light = RtHitAmbientLight(f, RtHitHemisphere(f, normal)) + f.sun * (sun * visible) + SsrRtCarLamps(p, w, position, normal);
+  float3 result = albedo * light * kClassDiffuseGain[m.cls];
+
+  const float3 reflected = reflect(direction, normal);
+  float3 env = f.ambient * (0.6f + 0.4f * dot(reflected, f.axisY));
+  [branch] if ((f.flags & RT_HIT_FRAME_ENV) != 0u) {
+    const float lod = kClassEnvLod[m.cls] + log2(1.0f + kRtHitConeLodScale * cone_tan);
+    env = RtHitEnvAt(f, reflected, lod);
+  }
+  const float3 tint = m.cls == CAR_MAT_CLASS_CHROME ? albedo : float3(1.0f, 1.0f, 1.0f);
+  result += env * (CarMatFresnel(m, nv) * kClassSpecGain[m.cls] * f.specGain) * tint;
+  if ((m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u) {
+    result += albedo * (m.emissive * kRtHitEmissiveGain * CarMatGlowScale(m, w.lampFactor));
+  }
+  colour = NgHeld3(result * p.units, kCityHitMaxColour);
+  return true;
 }
 
 // The receiver of an SSR pixel, set up as ssr_trace_ps.hlsl sets it up (change one, change the other: the ray is the trace's own).
@@ -216,6 +275,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   p.aoMix = kSsrRtAoMix;
   p.lodBias = 0.0f;
   p.bounce = 0.0f;
+  p.noise = 0.0f;
   p.lampFirst = 0u;
   p.lampCount = 0u;
   CityHitScreen s;
@@ -224,6 +284,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   s.cap = 0.0f;
   const RtHitFrame f = RtHitLoadFrame();
   const bool sky_miss = (flags & SSR_RT_FLAG_SKY_MISS) != 0u && has_planar && (f.flags & RT_HIT_FRAME_ENV) != 0u;
+  const bool shade_cars = SsrRtCarReceiver(flags, r.cls);
 
   float3 sum = float3(0.0f, 0.0f, 0.0f);
   float nearest = kSsrMissLength;
@@ -258,7 +319,22 @@ void main(uint3 id : SV_DispatchThreadID) {
     }
     if (!CityHitIsCity(hit.inst.instanceId)) {
       SsrRtCount(stats, SSR_RT_CENSUS_CAR);
-      continue;   // a car's part: its own passes shade it
+      [branch] if (shade_cars) {
+        const float fade = SsrRtReachFade(hit.t, reach);
+        const float footprint = SsrRtFootprint(pixel_angle, receiver_distance, hit.t, cone_tan);
+        float3 colour;
+        if (fade > 0.0f && SsrRtShadeCar(p, w, f, hit, origin + dir * hit.t, dir, footprint, cone_tan, colour)) {
+          sum += (min(colour, float3(cap, cap, cap)) - fallback) * fade;
+          const float sky_weight = sky_miss ? SsrRtSkyWeight(up, fade) : 0.0f;
+          if (sky_weight > 0.0f) {
+            sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * sky_weight;
+          }
+          nearest = min(nearest, hit.t);
+          filled = true;
+          SsrRtCount(stats, SSR_RT_CENSUS_CAR_SHADED);
+        }
+      }
+      continue;
     }
     SsrRtCount(stats, SSR_RT_CENSUS_CITY);
     p.noise = float3(SsrNoise1(pix.x, pix.y, frame, k + 4u, pattern_rays), SsrNoise2(pix.x, pix.y, frame, k + 4u, pattern_rays), SsrNoise1(pix.y, pix.x, frame, k + 6u, pattern_rays));

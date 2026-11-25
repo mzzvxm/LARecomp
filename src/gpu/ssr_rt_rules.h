@@ -148,10 +148,15 @@ constexpr uint32_t RaysUsed(const Cell& cell, uint32_t rays_walked, bool single_
 constexpr uint32_t CapacityFor(const Cell& cell, uint32_t step, uint32_t rays) { return rays == 0 ? 0 : RayCap(cell, step) / rays; }
 constexpr uint32_t Capacity(const Cell& cell, uint32_t step) { return CapacityFor(cell, step, cell.rays); }
 
-// The scene service's need (rt_scene_rules.h Needs): the structures and the hit data at the level's city level, every texture (a hit is shaded from its diffuse). The cars are not wanted by this pass.
+constexpr bool CarHitsEnabled(const Cell& cell, bool enabled) {
+  return enabled && (cell.group_mask & GroupBit(kGroupGround)) != 0;
+}
+
+// Ask for the car scene when road receivers can shade cars, including when the car reflection passes are off.
 constexpr city_rt::Level CityLevelOf(Level level) { return level == Level::kUltra ? city_rt::Level::kUltra : (level == Level::kHigh ? city_rt::Level::kHigh : city_rt::Level::kOff); }
-constexpr rt_scene::Needs NeedsFor(Level level) {
+constexpr rt_scene::Needs NeedsFor(Level level, bool cars = false) {
   rt_scene::Needs n;
+  n.cars = level != Level::kOff && cars;
   n.city = CityLevelOf(level);
   n.hit = CityLevelOf(level);
   n.textures = level == Level::kOff ? TextureScope::kNone : TextureScope::kAll;
@@ -264,6 +269,7 @@ inline constexpr uint32_t kFlagSingleRay = 8;
 inline constexpr uint32_t kFlagSkyMiss = 16;
 inline constexpr uint32_t kFlagScreenProxy = 32;
 inline constexpr uint32_t kFlagProbeMisses = 64;
+inline constexpr uint32_t kFlagCars = 128;
 }  // namespace push
 // The conf word: the confidence image's slot (16 bits), the groups the level traces (4), the rays a pixel less one (2), the flags (8).
 constexpr uint32_t PackConf(uint32_t slot, uint32_t group_mask, uint32_t rays, uint32_t flags) {
@@ -276,8 +282,8 @@ inline constexpr uint32_t kCtlListed = 3;     // 3 words
 inline constexpr uint32_t kCtlWords = 8;
 inline constexpr uint32_t kStatCal = 8;       // rt_hit_calibration.h kStatsWords words
 inline constexpr uint32_t kStatCensus = 56;
-inline constexpr uint32_t kCensusWords = 16;
-inline constexpr uint32_t kStatWords = 72;
+inline constexpr uint32_t kCensusWords = 17;
+inline constexpr uint32_t kStatWords = 73;
 inline constexpr uint64_t kBytes = uint64_t(kStatWords) * 4;
 // the census words (offsets from kStatCensus)
 inline constexpr uint32_t kRays = 0;
@@ -296,6 +302,7 @@ inline constexpr uint32_t kNoDataDefault = 12;
 inline constexpr uint32_t kNoDataMissing = 13;
 inline constexpr uint32_t kProxyRecovered = 14;
 inline constexpr uint32_t kEnvMiss = 15;
+inline constexpr uint32_t kCarShaded = 16;
 }  // namespace buf
 static_assert(buf::kStatCensus + buf::kCensusWords <= buf::kStatWords && buf::kStatCal + 48 == buf::kStatCensus && buf::kCtlWords == buf::kStatCal, "the control buffer's regions follow one another");
 

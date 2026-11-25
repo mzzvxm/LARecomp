@@ -231,6 +231,7 @@ void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level) {
   ran_ = false;
   if (!ready_) {
     resolved_ = ssr_rt::Resolved{};
+    shade_cars_ = false;
     return;
   }
   const ssr_rt::Resolved now = ssr_rt::Resolve({ssr_level, ssr_rt::ParseChoice(Setting().Get()), gpu_class::CurrentRtRung()});
@@ -240,6 +241,7 @@ void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level) {
     logged_step_ = 0;
   }
   resolved_ = now;
+  shade_cars_ = ssr_rt::CarHitsEnabled(now.cell, larecomp::settings::mcla_gpu_ssr_rt_cars.Get());
   if (!logged_level_once_ || now.level != logged_level_) {
     logged_level_once_ = true;
     logged_level_ = now.level;
@@ -253,10 +255,10 @@ void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level) {
                   double(now.cell.budget_ms));
     }
   }
-  if (wanted()) {
+  if (wanted() && service_) {
     // The structures, the hit data and every texture at the level's city level, in EVERY frame the fallback is on (a want counts for its frame and the next: the top level of the trigger is built from the
     // wants of the frame before and this one), while the pipelines are still being made.
-    service_->Want(rt_scene::Consumer::kSsrFallback, ssr_rt::NeedsFor(resolved_.level));
+    service_->Want(rt_scene::Consumer::kSsrFallback, ssr_rt::NeedsFor(resolved_.level, shade_cars_));
   }
 }
 
@@ -340,6 +342,7 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   if (larecomp::settings::mcla_gpu_ssr_rt_sky_miss.Get()) flags |= pk::kFlagSkyMiss;
   if (larecomp::settings::mcla_gpu_ssr_rt_screen_proxy.Get()) flags |= pk::kFlagScreenProxy;
   if (stats && larecomp::settings::mcla_gpu_ssr_rt_probe_misses.Get()) flags |= pk::kFlagProbeMisses;
+  if (shade_cars_) flags |= pk::kFlagCars;
   push.Set(pk::kConf, ssr_rt::PackConf(in.confidence->slot, cell.group_mask, rays, flags));
   push.Set(pk::kCap, capacity);
   push.SetFloat(pk::kReach, cell.reach);
@@ -503,9 +506,9 @@ void ScreenReflectionsRt::ProcessReadback(uint64_t generation, uint32_t rt_frame
     have_line_ = true;
     REXLOG_INFO("{}", ssr_rt::FormatFrameLine(line));
     using namespace ssr_rt::buf;
-    REXLOG_INFO("{} frame {} detail: no data LOD {} placeholder {} unavailable {}; raster proxy fills {} environment misses {}; "
+    REXLOG_INFO("{} frame {} detail: car hits shaded {}; no data LOD {} placeholder {} unavailable {}; raster proxy fills {} environment misses {}; "
                 "miss probes {} beyond reach to {:.0f} m {} open upward {}",
-                kPrefix, frame, census[kNoDataLod], census[kNoDataDefault], census[kNoDataMissing], census[kProxyRecovered], census[kEnvMiss], census[kMissProbed], 2.0f * line.reach,
+                kPrefix, frame, census[kCarShaded], census[kNoDataLod], census[kNoDataDefault], census[kNoDataMissing], census[kProxyRecovered], census[kEnvMiss], census[kMissProbed], 2.0f * line.reach,
                 census[kMissBeyond], census[kMissOpenUp]);
   }
   last_line_ = line;

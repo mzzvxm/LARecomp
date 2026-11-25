@@ -36,14 +36,15 @@
 #define SSR_RT_FLAG_SKY_MISS 16u
 #define SSR_RT_FLAG_SCREEN_PROXY 32u
 #define SSR_RT_FLAG_PROBE_MISSES 64u
+#define SSR_RT_FLAG_CARS 128u
 
 // ---- the control buffer (u1 of the output set: words) -------------------------------------------------------------------------------------------------------------------------------------------
 #define SSR_RT_CTL_TOTAL 0u      // 3 words, a frame each in rotation: the candidates counted BEFORE the thinning
 #define SSR_RT_CTL_LISTED 3u     // 3 words: the candidates listed
 #define SSR_RT_CTL_WORDS 8u      // (two spare)
 #define SSR_RT_STAT_CAL 8u       // 48 words: the library's calibration counters (rt_hit_calibration.h kStatsWords), never cleared (the host takes differences)
-#define SSR_RT_STAT_CENSUS 56u   // 16 words: the census's counters (ssr_rt_rules.h Stat*), never cleared
-#define SSR_RT_STAT_WORDS 72u
+#define SSR_RT_STAT_CENSUS 56u   // 17 words: the census's counters (ssr_rt_rules.h Stat*), never cleared
+#define SSR_RT_STAT_WORDS 73u
 #define SSR_RT_CENSUS_RAYS 0u
 #define SSR_RT_CENSUS_CITY 1u
 #define SSR_RT_CENSUS_CAR 2u
@@ -60,6 +61,7 @@
 #define SSR_RT_CENSUS_NO_DATA_MISSING 13u
 #define SSR_RT_CENSUS_PROXY_RECOVERED 14u
 #define SSR_RT_CENSUS_ENV_MISS 15u
+#define SSR_RT_CENSUS_CAR_SHADED 16u
 
 // ---- numbers ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 static const uint kSsrRtGroupNone = 0u;       // nothing was traced, or a class no level takes
@@ -72,6 +74,17 @@ static const float kSsrRtFadeStart = 0.75f;   // a hit fades out from this share
 static const float kSsrRtLiftFloor = 0.006f;  // the ray's origin is lifted off the depth's surface as the city's sun rays are (city_rt_shadow_rules.h Lift)
 static const float kSsrRtLiftPixels = 3.0f;
 static const float kSsrRtLiftCap = 0.4f;
+static const uint kSsrRtCarLampVisits = 8u;
+static const float kSsrRtCarLampRadius = 24.0f;
+
+bool SsrRtCarReceiver(uint flags, uint cls) {
+  return (flags & SSR_RT_FLAG_CARS) != 0u && (cls == uint(GB_CLASS_ROAD) || cls == uint(GB_CLASS_WET_ROAD));
+}
+
+float SsrRtCarLampWeight(float distance) {
+  const float t = saturate((distance - 16.0f) / (kSsrRtCarLampRadius - 16.0f));
+  return 1.0f - t * t * (3.0f - 2.0f * t);
+}
 
 // ---- the class group and the confidence target -----------------------------------------------------------------------------------------------------------------------------------
 uint SsrRtGroupOf(uint cls) {

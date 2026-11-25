@@ -422,6 +422,7 @@
 {"mcla_gpu_ssr_rt_sky_miss", "MCLA/GPU"},
 {"mcla_gpu_ssr_rt_screen_proxy", "MCLA/GPU"},
 {"mcla_gpu_ssr_rt_probe_misses", "MCLA/GPU"},
+{"mcla_gpu_ssr_rt_cars", "MCLA/GPU"},
 {"mcla_gpu_rt_denoise", "MCLA/GPU"},
 {"mcla_gpu_ssr_blue_noise", "MCLA/GPU"},
 {"mcla_gpu_ssr_resolve", "MCLA/GPU"},

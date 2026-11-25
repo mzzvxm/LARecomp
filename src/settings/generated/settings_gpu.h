@@ -1064,6 +1064,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_ssr_rt_sky_miss, false, "Use the environment map for upward RT reflection misses on roads with a planar reflection. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_rt_screen_proxy, false, "Recover RT reflection hits on city proxies when their geometry agrees with the rasterized picture. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_rt_probe_misses, false, "Sample RT reflection misses at twice the reach on statistics frames. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_rt_cars, false, "Shade cars hit by the RT fallback in road reflections when the fallback covers roads. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_rt_denoise, -1, "Diagnostic (screen-space reflections, the ray traced fallback): RtDenoise, the filter that cleans the fallback's noise where DLSS Ray Reconstruction does not (a bilateral a-trous on the pixels the fallback made: the kernel follows the reflection, wide for a rough surface and a far hit, narrow for a near mirror, and stops at edges of depth, normal, roughness, brightness and hit distance). -1 (the default): the level of REFLECTIONS ON SURFACES gives the number of iterations (high 2, ultra 3); 0: off (the comparison); 1 to 3: that many iterations (steps of 1, 2 and 4 pixels of the half size image). Skipped by itself in a frame Ray Reconstruction takes. Live.", rex::kDebugOnly, rex::Range{-1, 3});
 
@@ -2311,6 +2312,7 @@ inline auto& mcla_gpu_ssr_rt_single_ray = g_gpu.mcla_gpu_ssr_rt_single_ray;
 inline auto& mcla_gpu_ssr_rt_sky_miss = g_gpu.mcla_gpu_ssr_rt_sky_miss;
 inline auto& mcla_gpu_ssr_rt_screen_proxy = g_gpu.mcla_gpu_ssr_rt_screen_proxy;
 inline auto& mcla_gpu_ssr_rt_probe_misses = g_gpu.mcla_gpu_ssr_rt_probe_misses;
+inline auto& mcla_gpu_ssr_rt_cars = g_gpu.mcla_gpu_ssr_rt_cars;
 inline auto& mcla_gpu_rt_denoise = g_gpu.mcla_gpu_rt_denoise;
 inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;
 inline auto& mcla_gpu_ssr_resolve = g_gpu.mcla_gpu_ssr_resolve;
