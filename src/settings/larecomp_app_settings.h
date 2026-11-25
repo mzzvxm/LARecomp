@@ -64,7 +64,7 @@ class AppSettings final : public rex::SettingOwner {
               "spin restores the previous polling behavior for A/B tests. Takes effect on the next wait.",
               rex::Allowed("auto", "wait", "spin"), rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_vk_present_pacing, true,
+  REX_SETTING(bool, mcla_gpu_vk_present_pacing, false,
               "On Windows, limit windowed and borderless NVIDIA Vulkan presents to the display refresh or 120 FPS, "
               "whichever is lower (60 FPS if refresh is unknown). Lower frame limits still apply. Live within one second. "
               "Turn off for A/B tests of the Windows compositor.", rex::kDebugOnly);
