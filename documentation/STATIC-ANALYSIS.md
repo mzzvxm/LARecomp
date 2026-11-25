@@ -24,6 +24,7 @@ The exact lists are `CHECKS` and `WARNINGS` at the top of the script.
   It stops with a message if it finds none, or finds an older LLVM (the Clang that Visual Studio ships is older).
 - **A configured and built build directory** of this checkout (see the README). The check reads that directory's compile commands and generated headers and builds nothing. It uses the only directory under `out/build` (or the only `-relwithdebinfo` one); otherwise pass `--build out/build/<name>`.
 - Python 3.11 or newer. On Windows a normal PowerShell is enough: the Visual Studio headers are found without a Developer prompt.
+- Windows is the tested platform. Linux and macOS are untested: the coverage check may list Windows-only sources as missing there.
 
 ## Any new findings?
 
