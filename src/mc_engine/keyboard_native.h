@@ -97,12 +97,15 @@ namespace larecomp::keyboard {
 // PhoneScreenUp: the Sidekick phone is the current movie (it is the road's, not a menu: the driving keys work with it up).
 bool MenuScreenUp();
 bool PhoneScreenUp();
+// The left or the right mouse button is held (the window's events; any thread): off the road that drag turns the mouse into the right stick
+// (mouse_look.h MenuDragAxes).
+bool MouseDragButtonHeld();
 
 // Keyboard steering with a ramp (kb_steer_ramp, kb_steer_rise, kb_steer_return; mouse_look_core.h StepSteer): the input poll works out the ramped value of the steering
 // keys (left and right of kb_drive_steer_*, any key of a list counts); this object, on the stack of the XamInputGetState wrapper (wheel/wheel_fake.cpp), puts it into the left
 // stick's X axis of the state the game is about to read when the wrapper returns (the larger magnitude of the key and the stick wins; a wheel, a failed call, user other than 0
 // and a ramp at rest leave the state alone). It must be constructed BEFORE input_state.h's InputActivityScope, so that it runs after it: the ramp is the keyboard, and the
-// device state machine must not count it as a controller's stick.
+// device state machine must not count it as a controller's stick. The mouse's drag off the road (mouse_look.h MenuDragAxes) goes into the right stick the same way.
 class KeySteerScope {
  public:
   KeySteerScope(uint8_t* base, uint32_t user, uint32_t state, uint64_t& result) : base_(base), user_(user), state_(state), result_(result) {}

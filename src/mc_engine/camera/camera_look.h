@@ -165,6 +165,14 @@ void Hook_CameraMatrixPublish(PPCRegister& r30);
 //     cs+672  the smoothed orbit distance the collision maintains
 void Hook_CameraStateUpdate(PPCRegister& r31);
 
+// sub_82320298 (camBoomCS::Update, the gameplay cameras: bumper, POV, the chase booms, reverse) @0x82321274 -- r31 is the boom, r1 its frame,
+// v127 the camera position and v62 the look-at target, both in the car's frame and both just stored to cs+416 / cs+432 by the rate limit.
+// What follows is the transform into the world (cs+256), the view matrix (sub_82202EC0) and the camera collision (sub_8231FD60). The mouse
+// turns both points about the car's middle *(car+368)+32 here, or about the camera itself when cs+668 says the boom is mounted, so the
+// chase cameras orbit the car at their own distance, the mounted ones turn in place, and the rate limit never sees the turn (camera_orbit_core.h).
+// Behind cam_freelook_boom; cam_orbit_record writes the frames to cam_orbit.csv for larecomp_camera_orbit_test.
+void Hook_CameraBoomLook(PPCRegister& r1, PPCRegister& r31, PPCVRegister& v127, PPCVRegister& v62);
+
 // ── Finding what the look actually moves ────────────────────────────────
 //
 // The Limit-pinning above is a hypothesis and behaves like one: it bites for a

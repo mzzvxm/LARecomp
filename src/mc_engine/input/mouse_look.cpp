@@ -31,6 +31,11 @@ REXCVAR_DEFINE_BOOL(mouse_look_log, false, "MCLA/Camera",
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mouse_menu_drag, true, "MCLA/Camera",
+    "Off the road (the garage, the pause menu, the photo mode), hold a mouse button and drag to move the right stick: it turns the "
+    "garage's camera, enters the photo mode from the pause menu (drag sideways) and moves the photo camera, as the controller's right stick does.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace larecomp::mouselook {
 namespace {
 
@@ -54,6 +59,10 @@ std::atomic<bool> g_pending{false};          // a change is queued for the UI th
 std::atomic<int64_t> g_fail_until_ms{0};     // the last attempt failed: no new one before this time
 std::atomic<rex::ui::Window*> g_window{nullptr};
 std::atomic<bool> g_listener_posted{false};
+std::atomic<bool> g_drag_on{false};   // the gate is on because of a menu drag: the deltas are the drag's, not the look's
+std::atomic<int32_t> g_drag_axes{0};  // rx in the low 16 bits, ry in the high ones
+DragStick g_drag_stick;               // game thread
+int64_t g_drag_last_ms = 0;
 
 Gate g_gate;  // game thread only
 bool g_logged_want = false;
@@ -134,7 +143,10 @@ bool OverlayWantsMouse() {
 
 void Want(Client client) { g_want_ms[static_cast<int>(client)].store(NowMs(), std::memory_order_relaxed); }
 
+void MenuDragDiagTick();  // menu_drag_diag.cpp
+
 void Tick() {
+  MenuDragDiagTick();
   rex::ui::Window* window = GameWindow();
   if (!window) return;
   EnsureListener(window);
@@ -156,8 +168,21 @@ void Tick() {
     f.menu = larecomp::keyboard::MenuScreenUp();
     f.phone = larecomp::keyboard::PhoneScreenUp();
     f.map = MapMouseWantsPointer();
+    f.drag = REXCVAR_GET(mouse_menu_drag) && larecomp::keyboard::MouseDragButtonHeld() && (f.menu || !f.driving);
   }
   const bool want = g_gate.Step(f, now);
+  const bool drag = want && g_gate.why() == Why::Drag;
+  g_drag_on.store(drag, std::memory_order_relaxed);
+  {
+    const float dt = g_drag_last_ms ? float(now - g_drag_last_ms) / 1000.0f : 0.0f;
+    g_drag_last_ms = now;
+    float dx = 0.0f, dy = 0.0f;
+    const bool live = drag && g_relative_on.load(std::memory_order_relaxed);
+    if (live) g_sum.Take(dx, dy);
+    StepDrag(g_drag_stick, live, dx, dy, dt, DragParams{});
+    const int16_t rx = SteerToAxis(g_drag_stick.x), ry = SteerToAxis(g_drag_stick.y);
+    g_drag_axes.store(int32_t(uint32_t(uint16_t(rx)) | (uint32_t(uint16_t(ry)) << 16)), std::memory_order_relaxed);
+  }
 
   if (want != g_logged_want) {
     g_logged_want = want;
@@ -178,12 +203,20 @@ bool Take(Client client, float& dx, float& dy) {
   dx = 0.0f;
   dy = 0.0f;
   if (!g_relative_on.load(std::memory_order_relaxed)) return false;
+  if (g_drag_on.load(std::memory_order_relaxed)) return false;  // a menu drag owns the motion
   if (Owner(NowMs()) != client) return false;
   g_sum.Take(dx, dy);
   return true;
 }
 
 bool Engaged() { return g_relative_on.load(std::memory_order_relaxed); }
+
+bool MenuDragAxes(int16_t& rx, int16_t& ry) {
+  const uint32_t v = uint32_t(g_drag_axes.load(std::memory_order_relaxed));
+  rx = int16_t(uint16_t(v & 0xFFFF));
+  ry = int16_t(uint16_t(v >> 16));
+  return v != 0;
+}
 
 }  // namespace larecomp::mouselook
 
@@ -199,6 +232,10 @@ bool Take(Client, float& dx, float& dy) {
   return false;
 }
 bool Engaged() { return false; }
+bool MenuDragAxes(int16_t& rx, int16_t& ry) {
+  rx = ry = 0;
+  return false;
+}
 
 }  // namespace larecomp::mouselook
 

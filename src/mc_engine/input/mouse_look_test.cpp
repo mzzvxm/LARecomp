@@ -135,12 +135,24 @@ void TestLookAngles() {
     StepLook(u, true, 100.0f, -50.0f, 1.0f / 60.0f, inv);
     CHECK(Near(u.yaw, -0.35, 1e-5) && Near(u.pitch, 0.175, 1e-5));
 
-    // The limits: yaw at pi, pitch at 0.7, either way.
+    // The limits: pitch at 0.7 either way; a yaw limit under pi clamps, at pi the view keeps turning and wraps into [-pi, pi].
     LookState big;
     StepLook(big, true, 100000.0f, 100000.0f, 1.0f / 60.0f, p);
-    CHECK(big.yaw == p.yaw_limit && big.pitch == p.pitch_limit);
+    CHECK(big.pitch == p.pitch_limit && std::fabs(big.yaw) <= 3.1416f);
     StepLook(big, true, -1000000.0f, -1000000.0f, 1.0f / 60.0f, p);
-    CHECK(big.yaw == -p.yaw_limit && big.pitch == -p.pitch_limit);
+    CHECK(big.pitch == -p.pitch_limit && std::fabs(big.yaw) <= 3.1416f);
+    LookParams capped = p;
+    capped.yaw_limit = 1.5f;
+    LookState c;
+    StepLook(c, true, 100000.0f, 0.0f, 1.0f / 60.0f, capped);
+    CHECK(c.yaw == capped.yaw_limit);
+    StepLook(c, true, -1000000.0f, 0.0f, 1.0f / 60.0f, capped);
+    CHECK(c.yaw == -capped.yaw_limit);
+    // Turning on past the back: 3.0 rad plus 0.35 lands on the other side at 3.35 - 2 pi, no stop at pi.
+    LookState spin;
+    spin.yaw = 3.0f;
+    StepLook(spin, true, 100.0f, 0.0f, 1.0f / 60.0f, p);
+    CHECK(Near(spin.yaw, 3.35 - 2.0 * 3.14159265358979, 1e-4));
 
     // A single count is real motion (a raw sensor does not jitter): it resets the idle clock. Under half a count (a fractional leftover) is not.
     LookState idle;
@@ -367,6 +379,77 @@ float Run(float value, int dir, float seconds, float dt, const SteerParams& p) {
     return value;
 }
 
+void TestMenuDrag() {
+    // The gate: a drag off the road turns relative mode on at once, without a look being wanted, a car or the engage delay.
+    Facts menu;
+    menu.keyboard_mouse = true;
+    menu.focused = true;
+    menu.menu = true;
+    CHECK(Decide(menu) == Why::Off);
+    menu.drag = true;
+    CHECK(Decide(menu) == Why::Drag);
+    Gate g;
+    CHECK(g.Step(menu, 1000));                    // the same frame, no 150 ms wait
+    Facts let_go = menu;
+    let_go.drag = false;
+    let_go.wanted = true;
+    CHECK(!g.Step(let_go, 1016));                 // released: back to "a menu is up", off at once
+    // The hard reasons still win.
+    for (int i = 0; i < 5; ++i) {
+        Facts f = menu;
+        if (i == 0) f.overlay = true;
+        if (i == 1) f.focused = false;
+        if (i == 2) f.keyboard_mouse = false;
+        if (i == 3) f.map = true;
+        if (i == 4) f.phone = true;
+        CHECK(Decide(f) != Why::Drag && Decide(f) != Why::On);
+    }
+    CHECK(WhyText(Why::Drag) != nullptr);
+
+    // The stick: still = centred; any motion clears the dead zones; fast = full lock; up on the desk = up on the stick; let go = centred at once.
+    DragParams p;
+    const float dt = 1.0f / 60.0f;
+    DragStick s;
+    for (int i = 0; i < 30; ++i) StepDrag(s, true, 0.0f, 0.0f, dt, p);
+    CHECK(s.x == 0.0f && s.y == 0.0f);
+    for (int i = 0; i < 30; ++i) StepDrag(s, true, 1.0f, 0.0f, dt, p);   // 60 counts/s, a crawl
+    CHECK(s.x > 0.55f && s.x < 0.62f && s.y == 0.0f);
+    // ... and it is enough for the garage: 0.3 dead zone rescaled (sub_8260C5C8), then more than 0.1 of that (sub_82251FD0).
+    CHECK((s.x - 0.3f) / 0.7f > 0.1f);
+    for (int i = 0; i < 30; ++i) StepDrag(s, true, -100.0f, 0.0f, dt, p);  // 6000 counts/s
+    CHECK(Near(s.x, -1.0, 1e-3));
+    for (int i = 0; i < 30; ++i) StepDrag(s, true, 0.0f, -10.0f, dt, p);   // the mouse pushed away = up
+    CHECK(s.y > 0.5f && s.x == 0.0f);
+    StepDrag(s, false, 50.0f, 50.0f, dt, p);
+    CHECK(s.x == 0.0f && s.y == 0.0f);
+    // The same drag reads the same at any frame rate.
+    for (float fdt : {1.0f / 30.0f, 1.0f / 144.0f}) {
+        DragStick t;
+        for (int i = 0; i < int(1.0f / fdt); ++i) StepDrag(t, true, 600.0f * fdt, 0.0f, fdt, p);  // 600 counts/s
+        CHECK(Near(t.x, 0.55 + 0.45 * 600.0 / 900.0, 0.02));
+    }
+    // A 125 Hz mouse at 240 fps: motion in about every other frame. The gaps do not pull the stick back under the garage's threshold.
+    {
+        const float fdt = 1.0f / 240.0f;
+        DragStick t;
+        float lowest = 1.0f;
+        for (int i = 0; i < 240; ++i) {
+            StepDrag(t, true, (i % 2 == 0) ? 1.0f : 0.0f, 0.0f, fdt, p);  // 120 counts/s, a slow drag
+            if (i > 60) lowest = std::min(lowest, t.x);
+        }
+        CHECK((lowest - 0.3f) / 0.7f > 0.1f);
+        // Stopping: centred within a tenth of a second.
+        for (int i = 0; i < 24; ++i) StepDrag(t, true, 0.0f, 0.0f, fdt, p);
+        CHECK(t.x == 0.0f);
+    }
+    DragParams inv = p;
+    inv.invert_x = true;
+    inv.invert_y = true;
+    DragStick u;
+    for (int i = 0; i < 30; ++i) StepDrag(u, true, 10.0f, 10.0f, dt, inv);
+    CHECK(u.x < 0.0f && u.y > 0.0f);
+}
+
 void TestSteerRamp() {
     SteerParams p;  // 0.40 s up, 0.25 s back
     CHECK(Near(p.rise_s, 0.40, 1e-6) && Near(p.return_s, 0.25, 1e-6));
@@ -476,6 +559,7 @@ int main() {
     TestLookAngles();
     TestRecentre();
     TestDecide();
+    TestMenuDrag();
     TestGate();
     TestSteerRamp();
     TestSteerAxis();

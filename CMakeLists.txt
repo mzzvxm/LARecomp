@@ -153,6 +153,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/input/cursor_hide.cpp
     src/mc_engine/input/input_state.cpp
     src/mc_engine/input/mouse_look.cpp
+    src/mc_engine/input/menu_drag_diag.cpp
     src/mc_engine/camera/camera_look.cpp
     src/mc_engine/camera/camera_trace.cpp
     src/mc_engine/menus/display_menu.cpp
@@ -512,6 +513,12 @@ target_include_directories(larecomp_mouse_look_test PRIVATE src src/mc_engine)
 if(Threads_FOUND)
     target_link_libraries(larecomp_mouse_look_test PRIVATE Threads::Threads)
 endif()
+# The gameplay cameras' mouse look geometry (src/mc_engine/camera/camera_orbit_core.h, header only: the orbit about the car's middle, the mounted cameras turning
+# in place, the elevation limits) has a check that needs no game, and replays a recording made with cam_orbit_record:
+#   cmake --build <build dir> --target larecomp_camera_orbit_test, then run <build dir>/larecomp_camera_orbit_test [cam_orbit.csv] (exit 0 = passed).
+add_executable(larecomp_camera_orbit_test EXCLUDE_FROM_ALL
+    src/mc_engine/camera/camera_orbit_test.cpp)
+target_include_directories(larecomp_camera_orbit_test PRIVATE src src/mc_engine)
 # The live button prompts' pure part (src/mc_engine/input/prompt_glyphs.h, header only: the slot tables, the menu / road context, which art each glyph family shows, the PlayStation sources and
 # their override, the reading back of the game's DXT5 bitmaps) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_prompt_glyphs_test, then run <build dir>/larecomp_prompt_glyphs_test (exit 0 = passed).

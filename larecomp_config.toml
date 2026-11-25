@@ -27226,6 +27226,20 @@ address = 0x8231CEB0
 name = "Hook_CameraStateUpdate"
 registers = ["r31"]
 
+# Gameplay camera: the mouse look inside camBoomCS::Update (sub_82320298), about the game's own pivot.
+#
+# 0x82321274 is `addi r11, r30, 0x30`, just after the rate limit has stored the camera position (v127 -> cs+416) and the
+# look-at target (v62 -> cs+432). Both are still live in v127 and v62 (and at r1+0x70 / r1+0x80) and nothing has read them
+# yet: next come the transform by the car frame at cs+256 into cs+64, sub_82202EC0 (the view matrix) and sub_8231FD60 (the
+# camera collision). Turning both registers about the car here gives the orbit the car's real middle (*(car+368)+32, or the
+# camera itself when cs+668 says the boom is mounted) and the boom's real distance, leaves the collision to the game, and keeps
+# the turn out of the rate limit: the limiter compares against cs+416, which stays the game's own unturned camera, so a fast
+# mouse is not slowed down to the limiter's speed nor dragged on a straight line through the car.
+# r31 = the boom (`mr r31, r3` in the prologue).
+[[midasm_hook]]
+address = 0x82321274
+name = "Hook_CameraBoomLook"
+registers = ["r1", "r31", "v127", "v62"]
 
 # Camera transition smoothing: eliminate wrap discontinuity & jitter
 #

@@ -5,17 +5,20 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -39,6 +42,7 @@
 #include "mc_engine/input/kbm_input.h"
 #include "mc_engine/core/logging.h"
 #include "modloader/texture.h"
+#include "mc_engine/input/mouse_look.h"
 #include "mc_engine/input/mouse_look_core.h"
 #include "mc_engine/input/prompt_glyphs.h"
 #include "native_gfx/guest/texture_format.h"
@@ -58,6 +62,12 @@ REXCVAR_DEFINE_BOOL(keyboard_native, true, "MCLA/Input",
     "input layer (rage ioMapper) from the window's key events: menus and driving get separate key sets, "
     "so Enter can be 'accept' in a menu and Pause on the road without ever being both. A debug switch "
     "to tell whether a bug comes from it (off = the keyboard does nothing).")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(kb_latency_log, false, "MCLA/Input",
+    "Diagnostic: for every key press, log how long it took from the OS (a low-level keyboard hook) to the window's "
+    "listener and from there to the game's input poll; every 5 s, how many polls ran and the longest gap between two.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -279,6 +289,100 @@ larecomp::kbm::KeyLatch g_keys;
 // The mouse is over one of the ImGui overlays (F4, the browsers): a click or a wheel turn there is not the game's.
 bool MouseOverOverlay() { return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse; }
 
+// ── the latency probe (kb_latency_log) ──────────────────────────────────
+// Three times per key press: the OS saw it (a low-level keyboard hook on a thread of its own, Windows only), the window's listener got it
+// (UI thread), the input poll first saw it in the latch (game thread). One line per press, at most kLatLines.
+namespace lat {
+using LatClock = std::chrono::steady_clock;
+int64_t NowUs() {
+    static const LatClock::time_point start = LatClock::now();
+    return std::chrono::duration_cast<std::chrono::microseconds>(LatClock::now() - start).count();
+}
+std::atomic<bool> g_on{false};
+std::array<std::atomic<int64_t>, 256> g_os_us{};
+std::array<std::atomic<int64_t>, 256> g_win_us{};
+constexpr int kLatLines = 400;
+int g_lines = 0;
+larecomp::kbm::KeySnapshot g_prev;
+int64_t g_last_poll_us = 0;
+int64_t g_poll_gap_max_us = 0;
+int g_polls = 0;
+int64_t g_window_us = 0;
+
+#if defined(_WIN32)
+std::atomic<bool> g_hook_started{false};
+bool g_os_down[256] = {};  // hook thread only
+LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION) {
+        const auto* k = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lp);
+        const uint32_t vk = k->vkCode & 0xFF;
+        if (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN) {
+            if (!g_os_down[vk]) {
+                g_os_down[vk] = true;
+                g_os_us[vk].store(NowUs(), std::memory_order_release);
+            }
+        } else if (wp == WM_KEYUP || wp == WM_SYSKEYUP) {
+            g_os_down[vk] = false;
+        }
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+void StartHook() {
+    if (g_hook_started.exchange(true)) return;
+    std::thread([] {
+        HHOOK hook = SetWindowsHookExW(WH_KEYBOARD_LL, &LowLevelKeyboard, GetModuleHandleW(nullptr), 0);
+        if (!hook) {
+            MC_WARN("[kbnative] latency probe: SetWindowsHookEx failed ({}); only the window -> poll time is measured", GetLastError());
+            return;
+        }
+        MSG msg;
+        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        }
+    }).detach();
+}
+#else
+void StartHook() {}
+#endif
+
+void OnWindowKeyDown(int id) {
+    if (!g_on.load(std::memory_order_relaxed) || id <= 0 || id > 255) return;
+    g_win_us[size_t(id)].store(NowUs(), std::memory_order_release);
+}
+
+// Game thread, once per poll, with this poll's snapshot.
+void OnPoll(const larecomp::kbm::KeySnapshot& keys) {
+    const bool on = REXCVAR_GET(kb_latency_log);
+    g_on.store(on, std::memory_order_relaxed);
+    if (!on) return;
+    StartHook();
+    const int64_t now = NowUs();
+    if (g_last_poll_us && now - g_last_poll_us > g_poll_gap_max_us) g_poll_gap_max_us = now - g_last_poll_us;
+    g_last_poll_us = now;
+    ++g_polls;
+    if (g_window_us == 0) g_window_us = now;
+    keys.ForEach([&](int id) {
+        if (g_prev.Test(id) || g_lines >= kLatLines) return;
+        const int64_t win = g_win_us[size_t(id)].load(std::memory_order_acquire);
+        const int64_t os = g_os_us[size_t(id)].load(std::memory_order_acquire);
+        if (!win || now - win > 10'000'000) return;  // not a key press this probe saw (a mouse button, an old one)
+        ++g_lines;
+        const bool os_ok = os && win >= os && win - os < 10'000'000;
+        char os_text[32] = "?";
+        if (os_ok) std::snprintf(os_text, sizeof(os_text), "%.1f", double(win - os) / 1000.0);
+        MC_INFO("[kbnative] lat vk=0x{:02X}: OS -> window {} ms, window -> poll {:.1f} ms (poll at {:.3f} s)", unsigned(id),
+                os_text, double(now - win) / 1000.0, double(now) / 1e6);
+    });
+    g_prev = keys;
+    if (now - g_window_us >= 5'000'000) {
+        MC_INFO("[kbnative] lat polls: {} in {:.2f} s, longest gap {:.1f} ms", g_polls, double(now - g_window_us) / 1e6,
+                double(g_poll_gap_max_us) / 1000.0);
+        g_window_us = now;
+        g_polls = 0;
+        g_poll_gap_max_us = 0;
+    }
+}
+}  // namespace lat
+
 // Layer 0 like the pointer's and the map's listeners (cursor_hide.cpp, map_mouse.cpp): it never marks an event handled, and what an
 // overlay or a hotkey (F4 ...) handles first never reaches it.
 class KeyEventListener final : public rex::ui::WindowInputListener, public rex::ui::WindowListener {
@@ -300,8 +404,12 @@ private:
     static void Key(rex::ui::KeyEvent& e, bool down) {
         const int id = static_cast<int>(e.virtual_key());
         if (id <= 0 || id > 254) return;
-        if (down) g_keys.Down(id, e.prev_state());
-        else g_keys.Up(id);
+        if (down) {
+            if (!e.prev_state()) lat::OnWindowKeyDown(id);
+            g_keys.Down(id, e.prev_state());
+        } else {
+            g_keys.Up(id);
+        }
     }
     static void Button(rex::ui::MouseEvent& e, bool down) {
         int id = 0;
@@ -1983,6 +2091,7 @@ void Hook_KeyboardFeed() {
     g_overlay_had_keys = overlay;
     larecomp::kbm::KeySnapshot keys = g_keys.Poll();
     if (overlay) keys = {};
+    lat::OnPoll(keys);
 
     const bool keyboard = REXCVAR_GET(keyboard_native);
     if (keyboard) FeedKeys(b, keys);
@@ -2008,20 +2117,33 @@ namespace larecomp::keyboard {
 
 bool MenuScreenUp() { return g_screen_menu.load(std::memory_order_relaxed); }
 bool PhoneScreenUp() { return g_screen_phone.load(std::memory_order_relaxed); }
+bool MouseDragButtonHeld() { return g_keys.Held(0x01) || g_keys.Held(0x02); }  // LMB, RMB (kbm_input.h kMouseKeys)
 
 // The XamInputGetState wrapper has finished (the SDK's state, the dead zones, the device state machine's look at it): the keyboard's steering goes into the left stick's X axis.
+namespace {
+// One be16 stick axis of the state the game reads: the larger magnitude of the pad's and ours wins.
+void MergeStateAxis(uint8_t* p, int16_t value) {
+    const int16_t stick = static_cast<int16_t>((uint16_t(p[0]) << 8) | p[1]);
+    const int16_t merged = larecomp::mouselook::MergeAxis(stick, value);
+    p[0] = static_cast<uint8_t>(uint16_t(merged) >> 8);
+    p[1] = static_cast<uint8_t>(uint16_t(merged));
+}
+}  // namespace
+
 KeySteerScope::~KeySteerScope() {
     const int32_t key = g_key_steer.load(std::memory_order_relaxed);
-    if (key == 0 || !base_ || state_ == 0) return;
+    int16_t rx = 0, ry = 0;
+    const bool drag = larecomp::mouselook::MenuDragAxes(rx, ry);
+    if ((key == 0 && !drag) || !base_ || state_ == 0) return;
     const uint32_t u = user_ & 0xFF;
     if (u != 0 && u != 0xFF) return;
     if ((result_ & 0xFFFFFFFFull) != 0) return;  // no pad answered (a lost controller's "not connected", a failed call)
-    if (larecomp::wheel::WheelPresent()) return;  // a wheel owns the axis
-    uint8_t* p = base_ + state_ + 8;              // X_INPUT_STATE: be32 packet, be16 buttons, u8 LT, u8 RT, then be16 LX
-    const int16_t stick = static_cast<int16_t>((uint16_t(p[0]) << 8) | p[1]);
-    const int16_t merged = larecomp::mouselook::MergeAxis(stick, static_cast<int16_t>(key));
-    p[0] = static_cast<uint8_t>(uint16_t(merged) >> 8);
-    p[1] = static_cast<uint8_t>(uint16_t(merged));
+    uint8_t* p = base_ + state_ + 8;              // X_INPUT_STATE: be32 packet, be16 buttons, u8 LT, u8 RT, then be16 LX, LY, RX, RY
+    if (drag) {
+        MergeStateAxis(p + 4, rx);
+        MergeStateAxis(p + 6, ry);
+    }
+    if (key != 0 && !larecomp::wheel::WheelPresent()) MergeStateAxis(p, static_cast<int16_t>(key));  // a wheel owns the left stick's X
 }
 
 }  // namespace larecomp::keyboard
@@ -2047,6 +2169,7 @@ extern "C" REX_FUNC(rex_sub_822A4B80) {
 namespace larecomp::keyboard {
 bool MenuScreenUp() { return true; }
 bool PhoneScreenUp() { return false; }
+bool MouseDragButtonHeld() { return false; }
 KeySteerScope::~KeySteerScope() {}
 }  // namespace larecomp::keyboard
 

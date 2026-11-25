@@ -78,12 +78,15 @@ struct Facts {
   bool phone = false;           // the Sidekick phone is up
   bool map = false;             // the full map has the pointer
   bool overlay = false;         // an overlay (F4, a browser) wants the mouse
+  bool drag = false;            // off the road (a menu, the garage, the pause menu, the photo mode) with a mouse button held: the mouse is the right stick
 };
 
-enum class Why : uint8_t { On = 0, Off, Overlay, NoFocus, PadInUse, Menu, Map, Phone, NotDriving };
+enum class Why : uint8_t { On = 0, Off, Overlay, NoFocus, PadInUse, Menu, Map, Phone, NotDriving, Drag };
 
 // The first reason that says no (hard reasons first, NotDriving last: it is the soft one).
+// A drag off the road needs no look to be wanted and no car: only the hard reasons (an overlay, the focus, a controller, the map, the phone) stop it.
 inline Why Decide(const Facts& f) {
+  if (f.drag && f.focused && f.keyboard_mouse && !f.overlay && !f.map && !f.phone) return Why::Drag;
   if (!f.wanted) return Why::Off;
   if (f.overlay) return Why::Overlay;
   if (!f.focused) return Why::NoFocus;
@@ -106,6 +109,7 @@ inline const char* WhyText(Why w) {
     case Why::Map: return "the map has the pointer";
     case Why::Phone: return "the Sidekick phone is up";
     case Why::NotDriving: return "no car is being driven";
+    case Why::Drag: return "a mouse button is held off the road: the mouse drags the right stick";
   }
   return "?";
 }
@@ -119,6 +123,13 @@ class Gate {
   // Once per frame with the facts and a monotonic clock in milliseconds. Returns whether relative mode should be on.
   bool Step(const Facts& f, int64_t now_ms) {
     why_ = Decide(f);
+    if (why_ == Why::Drag) {
+      // A drag starts with the button: no delay, or the first stretch of it would be lost.
+      soft_since_ = -1;
+      want_since_ = -1;
+      on_ = true;
+      return true;
+    }
     if (why_ == Why::On) {
       soft_since_ = -1;
       if (!on_) {
@@ -165,6 +176,10 @@ struct LookState {
   float idle = 0.0f;  // seconds since the mouse last moved
 };
 
+// A yaw limit this close to pi means no limit at all: the view spins freely instead of stopping behind the car.
+constexpr double kPiD = 3.14159265358979323846;
+constexpr float kYawAllRound = 3.14f;
+
 // Motion under this many counts in a frame is not "the player is looking around": a raw sensor does not jitter, so one count is real motion.
 constexpr float kMoveCounts = 0.5f;
 
@@ -196,8 +211,78 @@ inline void StepLook(LookState& s, bool engaged, float dx, float dy, float dt, c
       if (std::fabs(s.pitch) < 0.001f) s.pitch = 0.0f;
     }
   }
-  s.yaw = std::clamp(s.yaw, -p.yaw_limit, p.yaw_limit);
+  if (p.yaw_limit >= kYawAllRound) {
+    // All the way round: keep turning, past the back and on; the angle stays in [-pi, pi] so the return eases back the short way.
+    s.yaw = float(std::remainder(double(s.yaw), 2.0 * kPiD));
+  } else {
+    s.yaw = std::clamp(s.yaw, -p.yaw_limit, p.yaw_limit);
+  }
   s.pitch = std::clamp(s.pitch, -p.pitch_limit, p.pitch_limit);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// The mouse as the right stick, off the road
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// The garage's turntable camera, the pause menu's way into the photo mode (the right stick pushed sideways: PHOTO_CAM_MOVE_LT / _RT) and the
+// photo mode's own camera all read the RIGHT STICK, which a keyboard player does not have. While a mouse button is held there, the mouse's
+// speed becomes a stick deflection: still = centred, `full_counts_s` raw counts per second = full lock, and anything that moves starts at
+// `start` so that it clears the game's own dead zones. The garage's camera (sub_82251FD0) is the strictest reader measured: a 0.3 dead zone
+// rescaled to 0..1 (sub_8260C5C8), and then anything at or under 0.1 of that counts as still -- so a stick under about 0.37 does nothing at
+// all there. `start` = 0.55 lands a crawl at about 0.36 after that rescale.
+// The mouse's events do not arrive in every frame (a 125 Hz mouse against a 144 Hz screen), so a frame without motion keeps the last target
+// for `hold_s` before it counts as still; the value eases towards the target with time constant `smooth_s`.
+struct DragParams {
+  float full_counts_s = 900.0f;  // raw counts per second for full lock (about 3 cm/s at 800 DPI)
+  float start = 0.55f;           // the deflection of the slightest motion
+  float smooth_s = 0.04f;        // easing time constant
+  float hold_s = 0.06f;          // a gap between mouse events this short is not a stop
+  bool invert_x = false;
+  bool invert_y = false;
+};
+
+struct DragStick {
+  float x = 0.0f;   // -1 .. 1, positive is right
+  float y = 0.0f;   // -1 .. 1, positive is UP (the pad's convention; the mouse's dy grows downwards)
+  float tx = 0.0f;  // the last target, held across a short gap between events
+  float ty = 0.0f;
+  float idle = 0.0f;  // seconds since the last motion
+};
+
+inline float DragTarget(float counts, float dt, const DragParams& p) {
+  if (!(dt > 0.0f) || counts == 0.0f) return 0.0f;
+  const float speed = std::fabs(counts) / dt;
+  const float m = std::min(1.0f, p.start + (1.0f - p.start) * speed / std::max(p.full_counts_s, 1.0f));
+  return counts > 0.0f ? m : -m;
+}
+
+// One frame. `held` = the drag is on (a button is down, relative mode is on); off, the stick is centred at once, so a released button never
+// leaves the camera turning.
+inline void StepDrag(DragStick& s, bool held, float dx, float dy, float dt, const DragParams& p) {
+  if (!held) {
+    s = DragStick{};
+    return;
+  }
+  dt = std::clamp(dt, 0.0f, 0.1f);
+  if (p.invert_x) dx = -dx;
+  if (p.invert_y) dy = -dy;
+  if (dx != 0.0f || dy != 0.0f) {
+    s.idle = 0.0f;
+    s.tx = DragTarget(dx, dt, p);
+    s.ty = DragTarget(-dy, dt, p);
+  } else {
+    s.idle += dt;
+    if (s.idle > p.hold_s) {
+      // A stop is a stop: centred at once, so the camera does not drift on after the hand has.
+      s = DragStick{};
+      s.idle = p.hold_s;
+      return;
+    }
+  }
+  const float a = p.smooth_s > 0.0f ? 1.0f - std::exp(-dt / p.smooth_s) : 1.0f;
+  s.x += (s.tx - s.x) * a;
+  s.y += (s.ty - s.y) * a;
+  if (std::fabs(s.x) < 0.02f) s.x = 0.0f;
+  if (std::fabs(s.y) < 0.02f) s.y = 0.0f;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
