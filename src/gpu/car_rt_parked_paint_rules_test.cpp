@@ -445,9 +445,9 @@ void WiringTests(const std::string& src) {
   const size_t at = manifest.find("\"mcla_gpu_car_rt_parked_paint\": {");
   Check(at != std::string::npos && manifest.find("\"default\": \"true\"", at) < manifest.find("}", at) && manifest.find("rex::kDebugOnly", at) < manifest.find("}", at), "the manifest holds the switch: default true, debug only");
   // the variant
-  Check(Has(variant_h, "inline constexpr uint32_t kCarSelfReflVariantVersion = 10;") && Has(variant, "const float ownDistance = ((slots.w & 4u) != 0u) ? abs(own.a) : own.a;") &&
+  Check(Has(variant_h, "inline constexpr uint32_t kCarSelfReflVariantVersion = 11;") && Has(variant, "const float ownDistance = ((slots.w & 4u) != 0u) ? abs(own.a) : own.a;") &&
             Has(variant, "const float texelDistance = ((flags & 4u) != 0u) ? abs(h.a) : h.a;") && Has(variant, "slots.z, slots.w);"),
-        "the variant: version 10 reads the history's distance as abs(a) for a draw with the parked flag, in the self-test and in the read of the ray traced image");
+        "the variant: version 10 reads the history's distance as abs(a) for a draw with the parked flag, in the self-test and in the read of the ray traced image (11 is the batch's number: the no double precision edit joined it)");
   Check(Has(selfrefl_rules, "inline constexpr uint32_t kParkedFlag = 4u;") && Has(selfrefl_rules, "(flags & kParkedFlag) != 0u ? std::fabs(alpha) : alpha"), "the constants' flag is bit 2 in the rules header too");
 }
 
