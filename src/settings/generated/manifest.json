@@ -2760,6 +2760,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_vulkan_pipeline_cache": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Load and save Plume's compiled Vulkan pipeline cache. \"\n    \"Turn off for timing comparisons with a fresh Plume cache each run. Read when the device opens.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_bloom_scale": {
   "type": "bool",
   "default": "true",
