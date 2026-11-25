@@ -86,8 +86,8 @@ inline float Radius(Profile profile, float cone_tan, float hit, float z, float p
   return std::min(base * LengthScale(history_length), kMaxRadius);
 }
 constexpr bool StepTaken(float radius, uint32_t step) { return radius >= kStepReach * float(step); }
-constexpr bool AmbientStep(float radius, uint32_t step, float length) {
-  return (step == 1u || length < kMatureLength) && StepTaken(radius, step);
+constexpr bool AmbientStep(float radius, uint32_t step, float length, bool resolve, bool vehicle) {
+  return (step == 1u || length < kMatureLength || (step == 2u && resolve && !vehicle)) && StepTaken(radius, step);
 }
 constexpr float Mix(float share) { return share < kMinShare ? 0.0f : Saturate(share); }
 // The iterations a radius takes (steps 1, 2, 4 in turn: the ones from the first whose step it reaches).

@@ -50,6 +50,9 @@ constexpr float Blend(float history, float current, float length) {
 constexpr float NextLength(float length, float cap) {
   return std::min(length + 1.0f, cap);
 }
+inline float ResolveEdgeWeight(float centre, float tap) {
+  return std::clamp(1.0f - std::abs(centre - tap) * 4.0f, 0.0f, 1.0f);
+}
 inline float UpsampleWeight(float bilinear, float depth, float receiver, bool same_surface) {
   if (!same_surface) return 0.0f;
   const float dz = (depth - receiver) / std::max(0.02f * receiver, 0.05f);

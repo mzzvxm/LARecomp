@@ -87,8 +87,8 @@ bool RtDnStepTaken(float radius, uint step) {
   return radius >= kRtDnStepReach * float(step);
 }
 #ifdef MCLA_RT_DENOISE_AO_CONSUMER_HLSLI
-bool RtDnAmbientStep(float radius, uint step, float length) {
-  return (step == 1u || length < kRtDnMatureLength) && RtDnStepTaken(radius, step);
+bool RtDnAmbientStep(float radius, uint step, float length, bool resolve, bool vehicle) {
+  return (step == 1u || length < kRtDnMatureLength || (step == 2u && resolve && !vehicle)) && RtDnStepTaken(radius, step);
 }
 #endif
 // How much of the filtered value a pixel takes: its signal share, 0 under kRtDnMinShare (a pixel the signal hardly made is not touched).

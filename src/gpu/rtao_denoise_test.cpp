@@ -17,6 +17,7 @@ using std::exp2;
 using std::log2;
 using std::pow;
 #include "hlsl/blue_noise_frame.hlsli"
+#include "hlsl/rtao_noise.hlsli"
 #define MCLA_RT_DENOISE_AO_CONSUMER_HLSLI
 #include "hlsl/rt_denoise_common.hlsli"
 #undef MCLA_RT_DENOISE_AO_CONSUMER_HLSLI
@@ -73,7 +74,16 @@ void CheckMath() {
   Check(shader::RtAoNextLength(0, 4) == 1 && shader::RtAoNextLength(4, 4) == 4 && ao::NextLength(4, 4) == 4, "history length starts at one and stays capped");
   const auto profile = dn::Profile::kAmbient;
   Check(Near(dn::Radius(profile, 1, 1, 1, 1, 1), 5) && Near(dn::Radius(profile, 1, 1, 1, 1, 12), 2), "kernel shrinks with maturity");
-  Check(dn::AmbientStep(4.0f, 4, 3.99f) && !dn::AmbientStep(2, 2, 12) && dn::AmbientStep(2, 1, 12), "young pixels take three stages, mature pixels take one");
+  Check(dn::AmbientStep(4.0f, 4, 3.99f, false, false) && !dn::AmbientStep(2, 2, 12, false, false) &&
+            dn::AmbientStep(2, 1, 12, false, false), "young pixels take three stages, mature pixels take one by default");
+  Check(shader::RtDnAmbientStep(2, 2, 32, true, false), "spatial resolve filters mature world pixels at step two");
+  Check(!shader::RtDnAmbientStep(2, 2, 32, false, false) && !shader::RtDnAmbientStep(2, 2, 32, true, true),
+        "step two still passes through mature vehicles and the default path");
+  Check(!shader::RtDnAmbientStep(5, 4, 32, true, false) && !shader::RtDnAmbientStep(1.49f, 2, 32, true, false),
+        "spatial resolve adds only step two within the existing radius rule");
+  Check(Near(shader::RtAoResolveEdgeWeight(0.5f, 0.5f), 1) && Near(shader::RtAoResolveEdgeWeight(0.5f, 0.375f), 0.5f) &&
+            Near(shader::RtAoResolveEdgeWeight(0.375f, 0.5f), 0.5f) && Near(shader::RtAoResolveEdgeWeight(0.25f, 0.8f), 0),
+        "extra taps keep small variation and stop across strong shadow edges on the same surface");
   Check(Near(dn::DepthSigma(profile), 0.03f) && Near(dn::NormalPower(profile), 16), "AO-specific plane and normal weights");
   Check(Near(shader::RtDnDepthSigma(RT_DN_PROFILE_AMBIENT), dn::DepthSigma(profile)) &&
             Near(shader::RtDnNormalPower(RT_DN_PROFILE_AMBIENT), dn::NormalPower(profile)), "AO weight shader twins");
@@ -87,12 +97,17 @@ void CheckMath() {
     Check(Near(ao::MotionCap(a * 12, 16), shader::RtAoMotionCap(a * 12, 16)), "motion cap shader twin");
     Check(Near(ao::HistoryLength(15 * a, a, 12), shader::RtAoHistoryLength(15 * a, a, 12)), "length shader twin");
     Check(Near(ao::Clip(a, 0.6f, b, 0.2f, 0.75f), shader::RtAoClip(a, 0.6f, b, 0.2f, 0.75f)), "clip shader twin");
+    Check(Near(ao::ResolveEdgeWeight(a, b), shader::RtAoResolveEdgeWeight(a, b)), "resolve weight shader twin");
     Check(Near(ao::UpsampleWeight(a, tap, depth, b > 0.4f), shader::RtAoUpsampleWeight(a, tap, depth, b > 0.4f)), "upsampling shader twin");
     Check(Near(ao::Term(a, b, 0.8f, 3.6f, 0.1f, i % 2), shader::Term(a, b, 0.8f, 3.6f, 0.1f, i % 2)), "compose shader twin");
     const float length = a * 32.0f;
     const float radius = dn::Radius(profile, 1, 0, 10, 0.01f, length);
     Check(Near(radius, shader::RtDnRadius(RT_DN_PROFILE_AMBIENT, 1, 0, 10, 0.01f, length)), "radius shader twin");
-    Check(dn::AmbientStep(radius, 2, length) == shader::RtDnAmbientStep(radius, 2, length), "iteration shader twin");
+    for (const uint32_t step : {1u, 2u, 4u})
+      for (const bool resolve : {false, true})
+        for (const bool vehicle : {false, true})
+          Check(dn::AmbientStep(radius, step, length, resolve, vehicle) == shader::RtDnAmbientStep(radius, step, length, resolve, vehicle),
+                "iteration shader twin");
   }
 }
 
@@ -201,7 +216,7 @@ HistoryImage Temporal(const Field& current, const Field& previous, const History
   return out;
 }
 
-HistoryImage Spatial(const Field& guides, HistoryImage input) {
+HistoryImage Spatial(const Field& guides, HistoryImage input, bool resolve) {
   for (int step : {1, 2, 4}) {
     HistoryImage out = input;
     for (int y = 0; y < kExtent; ++y) {
@@ -210,7 +225,7 @@ HistoryImage Spatial(const Field& guides, HistoryImage input) {
         const auto& c = guides[i];
         const float len = input[i].length;
         const float radius = dn::Radius(dn::Profile::kAmbient, 1, 0, c.depth, 0.01f, len);
-        if (!c.judged || !dn::AmbientStep(radius, step, len)) continue;
+        if (!c.judged || !dn::AmbientStep(radius, step, len, resolve, c.surface != 0)) continue;
         float sum = 0, sum2 = 0, count = 0;
         for (int dy = -1; dy <= 1; ++dy) {
           for (int dx = -1; dx <= 1; ++dx) {
@@ -229,8 +244,9 @@ HistoryImage Spatial(const Field& guides, HistoryImage input) {
             const size_t j = At(x + dx * step, y + dy * step);
             const auto& q = guides[j];
             if (!q.judged || c.surface != q.surface) continue;
-            const float w = dn::Kernel1(dx) * dn::Kernel1(dy) * dn::DepthWeight(std::abs(q.depth - c.depth), c.depth, 0.03f) *
-                            dn::NormalWeight(std::cos(c.normal - q.normal), 16.0f) * dn::LumaWeight(input[i].open, input[j].open, variance, 4);
+            float w = dn::Kernel1(dx) * dn::Kernel1(dy) * dn::DepthWeight(std::abs(q.depth - c.depth), c.depth, 0.03f) *
+                      dn::NormalWeight(std::cos(c.normal - q.normal), 16.0f) * dn::LumaWeight(input[i].open, input[j].open, variance, 4);
+            if (step == 2 && len >= dn::kMatureLength) w *= ao::ResolveEdgeWeight(input[i].open, input[j].open);
             weights += w;
             total += input[j].open * w;
           }
@@ -282,7 +298,7 @@ Field MakeField(Scene scene, int frame) {
   return field;
 }
 
-void CheckScenes() {
+void CheckScenes(bool resolve) {
   for (Scene scene : {Scene::kStill, Scene::kRacer, Scene::kPan, Scene::kOrbit, Scene::kDisocclusion, Scene::kScreenEdge}) {
     Field previous;
     HistoryImage history;
@@ -291,7 +307,7 @@ void CheckScenes() {
     for (int f = 0; f < frames; ++f) {
       Field current = MakeField(scene, f);
       history = Temporal(current, previous, history, f != 0);
-      const HistoryImage filtered = Spatial(current, history);
+      const HistoryImage filtered = Spatial(current, history, resolve);
       previous = std::move(current);
       if (scene == Scene::kRacer && f > kRacerWarmup) {
         const int edge = 16 + (f - kRacerWarmup) * 5;
@@ -303,7 +319,7 @@ void CheckScenes() {
       double sum2 = 0;
       for (size_t i = 0; i < filtered.size(); ++i) sum2 += std::pow(filtered[i].open - previous[i].truth, 2);
       const double rms = std::sqrt(sum2 / filtered.size());
-      std::printf("scene %d rms %.5f\n", int(scene), rms);
+      std::printf("resolve %d, scene %d rms %.5f\n", int(resolve), int(scene), rms);
       if (scene == Scene::kStill) Check(rms < 0.03, "STILL: below .03 RMS after 32 frames");
       if (scene == Scene::kRacer) {
         std::printf("racer trail %.5f\n", double(trail));
@@ -340,20 +356,63 @@ void CheckScenes() {
   for (int y = 0; y < kExtent; ++y) {
     for (int x = 0; x < kExtent; ++x) {
       guides[At(x, y)].surface = x < 64 ? 0 : (x < 72 ? 2 : 3);
-      history[At(x, y)] = {x < 64 ? 1.0f : (x < 72 ? 0.0f : 0.5f), 1.0f};
+      history[At(x, y)] = {x < 64 ? 1.0f : (x < 72 ? 0.0f : 0.5f), 32.0f};
     }
   }
-  const auto filtered = Spatial(guides, history);
+  const auto filtered = Spatial(guides, history, resolve);
   Check(Near(filtered[At(63, 63)].open, 1) && Near(filtered[At(64, 63)].open, 0) &&
             Near(filtered[At(71, 63)].open, 0) && Near(filtered[At(72, 63)].open, 0.5f),
         "spatial taps stop at the world and vehicle boundaries and between IDs");
+}
+
+void CheckContactFringe() {
+  Field previous;
+  HistoryImage history;
+  for (int frame = 0; frame < 32; ++frame) {
+    Field current(kExtent * kExtent);
+    for (int y = 0; y < kExtent; ++y) {
+      for (int x = 0; x < kExtent; ++x) {
+        auto& pixel = current[At(x, y)];
+        pixel.x_prev = float(x);
+        pixel.y_prev = float(y);
+        pixel.truth = std::clamp(0.75f + (float(y) - 64.0f) / 80.0f, 0.3f, 1.0f);
+        pixel.raw = shader::RtAoRayNoise(x, y, uint32_t(frame), 0).x < pixel.truth ? 1.0f : 0.0f;
+      }
+    }
+    history = Temporal(current, previous, history, frame != 0);
+    previous = std::move(current);
+  }
+  const auto original = Spatial(previous, history, false);
+  const auto resolved = Spatial(previous, history, true);
+  const auto metrics = [](const HistoryImage& filtered) {
+    float energy = 0.0f, mean = 0.0f;
+    for (int y = 52; y < 76; ++y) {
+      for (int x = 8; x < kExtent - 8; ++x) {
+        const float open = filtered[At(x, y)].open;
+        const float hp = open - 0.25f * (filtered[At(x - 2, y)].open + filtered[At(x + 2, y)].open +
+                                         filtered[At(x, y - 2)].open + filtered[At(x, y + 2)].open);
+        energy += hp * hp;
+        mean += open;
+      }
+    }
+    constexpr int pixels = 24 * (kExtent - 16);
+    return std::array{std::sqrt(energy / pixels), mean / pixels};
+  };
+  const auto [original_rms, original_mean] = metrics(original);
+  const auto [resolved_rms, resolved_mean] = metrics(resolved);
+  std::printf("contact fringe: high-pass RMS %.5f -> %.5f, mean %.5f -> %.5f\n",
+              original_rms, resolved_rms, original_mean, resolved_mean);
+  Check(resolved_rms < original_rms * 0.75f, "mature world resolve reduces high-frequency contact grain");
+  Check(Near(original_mean, resolved_mean, 0.01f), "mature world resolve keeps the mean contact visibility");
 }
 }  // namespace
 
 int main() {
   CheckMath();
   CheckCompose();
-  CheckScenes();
+  CheckScenes(false);
+  CheckScenes(true);
+  CheckContactFringe();
   std::printf("rtao_denoise_test: %d checks, %d failures\n", checks, failures);
   return failures != 0;
 }
