@@ -19,6 +19,8 @@
 //                                  for every frame (frames/f000000.png ...) or a raw file of frames (video.bgra, rows packed, B8G8R8A8 as
 //                                  the swap chain has them). A scene's `sink` wins. Read when a take starts.
 //   mcla_capture_luma <crop>      for a PNG take, store a lossless luma stream instead (full or x,y,width,height). Empty: PNG.
+//   mcla_capture_buffers         optional raw visual comparison streams (documentation/VISUAL-CAPTURE.md).
+//   mcla_capture_buffer_every, mcla_capture_buffer_region   take-relative sampling interval and full/scene rectangle mode.
 //   mcla_capture_statelog          a state.csv in the take (the scene's `statelog on` does the same).
 //   mcla_capture_ffmpeg <path>, mcla_capture_ffmpeg_args <text>   the program and its output options (the mkv sink's).
 //   mcla_capture_ring <n>          host buffers between the readback and the writer (2 to 8, 4 default); fewer when the memory cap says.
@@ -149,6 +151,10 @@ double SteadyMs() {
 // ---------------------------------------------------------------------------------------------------------------------
 std::atomic<uint64_t> g_updates{0};         // updates that passed the gate (the game thread writes it)
 std::atomic<bool> g_take_active{false};
+std::atomic<uint32_t> g_visual_mask{0};
+std::atomic<bool> g_visual_drain{false};
+std::mutex g_visual_mutex;
+VisualCaptureOptions g_visual_config;
 std::atomic<uint64_t> g_take_first{0};      // the take's first update
 std::atomic<uint64_t> g_take_ticks{0};      // the take's step in the game's ticks
 std::atomic<double> g_scene_fps{0.0};       // the scene's request (the capture applier)
@@ -188,6 +194,7 @@ struct Take {
     std::string started_utc;
     core::SinkKind sink = core::SinkKind::kNone;
     core::LumaCrop luma_crop;
+    VisualCaptureOptions visual;
     double fps = 60.0;
     uint64_t ticks = 0;
     double step_ms = 16.666;
@@ -489,6 +496,7 @@ struct Sink {
     std::atomic<bool> open{false};
     std::atomic<bool> sink_failed{false};  // a write failed: from then on frames are counted and dropped
     uint64_t frame_bytes = 0;
+    core::visual::Writer visual;
     core::HostRing ring;
     Pipe pipe;
     std::FILE* raw = nullptr;
@@ -575,13 +583,26 @@ bool WriteFrame(uint64_t row, const uint8_t* data, uint64_t bytes) {
         return ok;
     }
     bool ok = !s.sink_failed.load(std::memory_order_relaxed);
+    if (ok && g_take.visual.mask) {
+        core::visual::Frame frame;
+        const uint64_t at = s.frame_bytes + sizeof(frame);
+        if (data && at <= bytes) {
+            std::memcpy(&frame, data + s.frame_bytes, sizeof(frame));
+            std::string why;
+            ok = s.visual.Write(frame, std::span(data + at, size_t(bytes - at)), why);
+            if (!ok) TakeFail(why);
+        } else {
+            TakeFail("the host buffer cannot hold the visual capture header");
+            ok = false;
+        }
+    }
     if (ok) {
         if (core::SinkUsesFfmpeg(s.kind)) {
-            ok = s.pipe.Write(data, bytes);
+            ok = s.pipe.Write(data, s.frame_bytes);
         } else if (s.kind == core::SinkKind::kLuma) {
             ok = WriteLumaFrame(s, row, data);
         } else if (s.kind == core::SinkKind::kRaw && s.raw) {
-            ok = std::fwrite(data, 1, static_cast<size_t>(bytes), s.raw) == bytes;
+            ok = std::fwrite(data, 1, static_cast<size_t>(s.frame_bytes), s.raw) == s.frame_bytes;
         }
     }
     const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -603,7 +624,8 @@ bool OpenSink(const mc::cinematic::FrameFormat& f) {
     Sink& s = g_sink;
     Take& t = g_take;
     s.format = f;
-    s.frame_bytes = uint64_t(f.width) * f.height * 4;
+    s.frame_bytes = t.visual.legacy ? uint64_t(f.width) * f.height * 4 : 0;
+    if (t.visual.mask) s.visual.Reset(Path(t.layout.folder));
     s.kind = t.sink;
     s.sink_failed = false;
     s.bytes_written = 0;
@@ -658,13 +680,14 @@ bool OpenSink(const mc::cinematic::FrameFormat& f) {
         }
         std::setvbuf(s.raw, nullptr, _IONBF, 0);
     }
-    if (!s.ring.Open(ring, s.frame_bytes, &WriteFrame)) {
-        TakeFail("could not allocate the ring: " + std::to_string(ring) + " host buffers of " + core::FormatMib(s.frame_bytes) + " (" +
+    const uint64_t slot_bytes = t.plan_made ? t.plan.host_frame_bytes : s.frame_bytes;
+    if (!s.ring.Open(ring, slot_bytes, &WriteFrame)) {
+        TakeFail("could not allocate the ring: " + std::to_string(ring) + " host buffers of " + core::FormatMib(slot_bytes) + " (" +
                  std::to_string(f.width) + "x" + std::to_string(f.height) + ")");
         return false;
     }
     LARECOMP_APP_INFO("[cap] ring: {} host buffers of {} (back-pressure: the render thread waits for a free one, nothing is queued beyond them)",
-                      ring, core::FormatMib(s.frame_bytes));
+                      ring, core::FormatMib(slot_bytes));
     s.open.store(true, std::memory_order_release);
     return true;
 }
@@ -676,6 +699,11 @@ void CloseSink() {
     // A writer that is stuck on a pipe nobody reads is not waited for: ending ffmpeg unblocks the write, and the writer thread can finish.
     if (g_sink_stuck.load(std::memory_order_acquire) && s.pipe.started()) s.pipe.Kill();
     s.ring.Close();  // writes everything that was handed over, joins the writer, frees the buffers
+    if (g_take.visual.mask) {
+        std::string why;
+        if (!s.visual.Finish(why)) TakeFail(why);
+        s.visual.Reset({});
+    }
     if (s.pipe.started()) s.ffmpeg_exit = s.pipe.Close(180000);
     if (s.raw) {
         if (std::fclose(s.raw) != 0 && s.kind == core::SinkKind::kLuma) TakeFail("cannot finish writing video.luma");
@@ -1120,6 +1148,22 @@ void BeginTake(uint64_t u0, double fps) {
         t.sink = core::SinkKind::kLuma;
         if (t.scene_running) t.luma_scene_duration = scene.duration;
     }
+    if (!core::visual::ParseBuffers(larecomp::settings::mcla_capture_buffers.Get(), t.visual.mask)) {
+        RefuseTake("mcla_capture_buffers needs off, all or a comma-separated list of buffer names");
+        return;
+    }
+    if (t.visual.mask) {
+        t.visual.every = static_cast<uint32_t>(larecomp::settings::mcla_capture_buffer_every.Get());
+        t.visual.first = u0;
+        t.visual.legacy = t.sink != core::SinkKind::kNone;
+        const auto& region = larecomp::settings::mcla_capture_buffer_region.Get();
+        if (region != "full" && (region != "rects" ||
+                                !core::visual::ParseRects(spec.visual_rects, t.visual.crop))) {
+            RefuseTake("mcla_capture_buffer_region needs full, or rects with rectangles on the scene capture key");
+            return;
+        }
+        if (t.scene_running) t.luma_scene_duration = scene.duration;
+    }
     std::string why;
     if (!MakeTakeFolder(t, spec, &why)) {
         RefuseTake(why);
@@ -1159,6 +1203,11 @@ void BeginTake(uint64_t u0, double fps) {
     g_take_ticks.store(t.ticks, std::memory_order_release);
     g_state_log_on.store(t.state_log, std::memory_order_release);
     g_take_active.store(true, std::memory_order_release);
+    if (t.visual.mask) {
+        std::lock_guard lock(g_visual_mutex);
+        g_visual_config = t.visual;
+        g_visual_mask.store(t.visual.mask, std::memory_order_release);
+    }
 #if defined(LARECOMP_HAS_GPU)
     // No draw is left out for a pipeline that is still being made while the take runs (gpu/sync_builds.h, M2d): the renderer waits for it.
     ::mcla::gpu::sync_builds::SetCaptureActive(true);
@@ -1179,6 +1228,12 @@ void EndTake(uint64_t u_end) {
     o.wall_s = std::chrono::duration<double>(Clock::now() - t.t0).count();
     o.end_update = u_end;
     o.handed = g_handover.Handed();
+    if (t.visual.mask) {
+        std::lock_guard lock(g_visual_mutex);
+        g_visual_config = {};
+        g_visual_mask.store(0, std::memory_order_release);
+        g_visual_drain.store(false, std::memory_order_release);
+    }
     g_take_active.store(false, std::memory_order_release);
     g_state_log_on.store(false, std::memory_order_release);
 #if defined(LARECOMP_HAS_GPU)
@@ -1387,6 +1442,7 @@ void GateInTake(uint64_t u, double want_fps) {
     const double duration = t.scene_running ? GetSceneTransport().duration : -1.0;
     const bool at_end = t.scene_running && t.scene_clock.PastEnd(u - t.first_update, t.end_scene_t, duration);
     const bool ending = t.still || !(want_fps > 0.0) || failed || at_end;
+    if (ending && t.visual.mask) g_visual_drain.store(true, std::memory_order_release);
     if (!ending && std::fabs(want_fps - t.fps) > 1e-9 && !t.announced_rate_change) {
         t.announced_rate_change = true;  // a take keeps its rate: the log says so once
         LARECOMP_APP_WARN("[cap] a take of {:g} fps is running: the request for {:g} is ignored until it ends", t.fps, want_fps);
@@ -1707,7 +1763,8 @@ int CaptureLag() {
 
 bool CaptureSyncReadback(uint64_t update) {
     if (CaptureLag() == 0) return true;
-    if (!g_take_active.load(std::memory_order_acquire) || g_take.sink != core::SinkKind::kLuma) return false;
+    if (!g_take_active.load(std::memory_order_acquire) ||
+        (g_take.sink != core::SinkKind::kLuma && !g_take.visual.mask)) return false;
     // scene's ending gate drains the sink. The earlier frames may overlap.
     const Take& t = g_take;
     return core::LumaLastFrame(t.scene_clock, update, t.first_update, t.end_scene_t, t.luma_scene_duration);
@@ -1717,7 +1774,19 @@ double CaptureDelayMs() {
     return larecomp::settings::mcla_capture_delay_ms.Get();
 }
 
-MemoryGrant CaptureMemoryPlan(uint32_t width, uint32_t height, uint32_t gpu_max, uint32_t gpu_min) {
+uint32_t CaptureVisualMask() { return g_visual_mask.load(std::memory_order_acquire); }
+
+VisualCaptureOptions CaptureVisualConfig() {
+    if (!CaptureVisualMask()) return {};
+    std::lock_guard lock(g_visual_mutex);
+    return g_visual_config;
+}
+
+bool CaptureVisualDrainRequested() { return g_visual_drain.load(std::memory_order_acquire); }
+void CaptureVisualFail(const char* reason) { if (reason) TakeFail(reason); }
+
+MemoryGrant CaptureMemoryPlan(uint32_t width, uint32_t height, uint32_t gpu_max, uint32_t gpu_min,
+                              bool legacy, uint64_t visual_bytes, uint64_t visual_scratch) {
     MemoryGrant grant;
     if (!g_take_active.load(std::memory_order_acquire) || g_take_failed.load(std::memory_order_acquire)) return grant;
     Take& t = g_take;
@@ -1742,6 +1811,10 @@ MemoryGrant CaptureMemoryPlan(uint32_t width, uint32_t height, uint32_t gpu_max,
             // Previous plane, predictor, compressor output/context and the occasional PNG.
             r.fixed_bytes = 4ull * crop.Pixels() + 2ull * width * height + (4ull << 20);
         }
+        r.legacy_frame = legacy;
+        r.extra_gpu_frame_bytes = visual_bytes;
+        r.extra_host_frame_bytes = visual_bytes ? visual_bytes + sizeof(core::visual::Frame) : 0;
+        r.fixed_bytes += visual_scratch;
         const core::MemoryPlan plan = core::PlanMemory(r);
         {
             std::lock_guard<std::mutex> lock(g_rows_mutex);
@@ -1889,6 +1962,7 @@ void ApplierBegin(const Scene& scene) {
     CaptureSpec spec;
     spec.name = scene.capture_name;
     spec.sink = scene.capture_sink;
+    spec.visual_rects = scene.capture_rects;
     spec.state_log = scene.capture_state_log;
     spec.request_scene_t = scene.capture_from;
     CaptureSceneSpec(spec);
@@ -1950,7 +2024,11 @@ bool CaptureStillRequest(const StillRequest&, std::string* why) {
 bool CaptureStillPoll(uint64_t, StillResult*) { return false; }
 void CaptureDirectorRequest(double, const CaptureSpec&) {}
 CaptureStatus CaptureGetStatus() { return CaptureStatus{}; }
-MemoryGrant CaptureMemoryPlan(uint32_t, uint32_t, uint32_t, uint32_t) { return MemoryGrant{}; }
+uint32_t CaptureVisualMask() { return 0; }
+VisualCaptureOptions CaptureVisualConfig() { return {}; }
+bool CaptureVisualDrainRequested() { return false; }
+void CaptureVisualFail(const char*) {}
+MemoryGrant CaptureMemoryPlan(uint32_t, uint32_t, uint32_t, uint32_t, bool, uint64_t, uint64_t) { return MemoryGrant{}; }
 bool CaptureSyncReadback(uint64_t) { return false; }
 uint64_t FixedStepTicks() { return 0; }
 bool FixedStepActive() { return false; }

@@ -110,6 +110,9 @@ void GBuffer::Shutdown() {
   // objects go in the order that they name each other: the framebuffers, then each image's framebuffer, view and texture.
   view_pipelines_.clear();
   view_shaders_ = {};
+  capture_class_.framebuffer.reset();
+  capture_class_.view.reset();
+  capture_class_.texture.reset();
   for (HostImage& image : images_) {
     if (edram_ && image.texture) {
       edram_->DestroyFramebuffersWithExtra(image.texture.get());
@@ -468,18 +471,19 @@ bool GBuffer::OnResolve(const ResolveRecord& record, const ResolveCache::Summary
   return true;
 }
 
-plume::RenderPipeline* GBuffer::ViewPipelineFor(plume::RenderFormat format, uint32_t samples) {
+plume::RenderPipeline* GBuffer::ViewPipelineFor(plume::RenderFormat format, uint32_t samples, bool source_ms) {
   for (ViewPipeline& v : view_pipelines_) {
-    if (v.format == format && v.samples == samples) {
+    if (v.format == format && v.samples == samples && v.source_ms == source_ms) {
       return v.pipeline.get();
     }
   }
-  if (view_shaders_failed_) {
+  const bool class_pipeline = format == plume::RenderFormat::R8_UNORM;
+  if (view_shaders_failed_ || (class_pipeline && capture_class_failed_)) {
     return nullptr;
   }
-  const size_t slot = samples > 1 ? 1 : 0;
+  const size_t slot = source_ms ? 1 : 0;
   if (!view_shaders_[slot]) {
-    const HostShaderBlob blob = GBufferViewPixelShader(samples > 1);
+    const HostShaderBlob blob = GBufferViewPixelShader(source_ms);
     view_shaders_[slot] = passes_->CreateShader(blob.data, blob.size, blob.name);
     if (!view_shaders_[slot]) {
       view_shaders_failed_ = true;
@@ -490,10 +494,16 @@ plume::RenderPipeline* GBuffer::ViewPipelineFor(plume::RenderFormat format, uint
   ViewPipeline v;
   v.format = format;
   v.samples = samples;
+  v.source_ms = source_ms;
   v.pipeline = passes_->CreatePipeline(passes_->layout(), *view_shaders_[slot], format, plume::RenderBlendDesc::Copy(), samples, "gbuffer view");
   if (!v.pipeline) {
-    view_shaders_failed_ = true;
-    REXLOG_ERROR("{} the debug view's pipeline could not be made: no debug view (reported once)", kPrefix);
+    if (class_pipeline) {
+      capture_class_failed_ = true;
+      REXLOG_ERROR("{} the capture class pipeline could not be made", kPrefix);
+    } else {
+      view_shaders_failed_ = true;
+      REXLOG_ERROR("{} the debug view's pipeline could not be made: no debug view (reported once)", kPrefix);
+    }
     return nullptr;
   }
   plume::RenderPipeline* raw = v.pipeline.get();
@@ -517,7 +527,7 @@ bool GBuffer::DrawView(const ResolveCache::Summary& summary, plume::RenderComman
       found->scale.Edge(found->height) != frame_.height) {
     return false;
   }
-  plume::RenderPipeline* pipeline = ViewPipelineFor(found->format, found->host_samples);
+  plume::RenderPipeline* pipeline = ViewPipelineFor(found->format, found->host_samples, frame_.host_samples > 1);
   if (!pipeline) {
     return false;
   }
@@ -552,6 +562,38 @@ bool GBuffer::DrawView(const ResolveCache::Summary& summary, plume::RenderComman
   list->drawInstanced(3, 1, 0, 0);
   list->setFramebuffer(nullptr);
   return true;
+}
+
+const HostImage* GBuffer::DrawCaptureClass(plume::RenderCommandList* list, const HostImage* depth,
+                                           const HostImage* ui, uint32_t ui_gap) {
+  if (!list || !passes_ || !frame_.Has(gbuffer::kPlaneMaterial)) return nullptr;
+  uint32_t width = frame_.width;
+  uint32_t height = frame_.height;
+  // The EDRAM sidecar can include tile padding below the native scene rectangle.
+  if (depth && depth->texture && depth->width <= width && depth->height <= height) {
+    width = depth->width;
+    height = depth->height;
+  }
+  constexpr auto format = plume::RenderFormat::R8_UNORM;
+  const auto* pipeline = ViewPipelineFor(format, 1, frame_.host_samples > 1);
+  if (!pipeline || !passes_->EnsureImage(capture_class_, width, height, format, "capture class IDs")) return nullptr;
+  const auto slot = [width, height](const HostImage* image) {
+    return image && image->texture && image->width == width && image->height == height
+               ? image->slot : gbuffer::kNoSlot;
+  };
+  ViewPush push{};
+  push.slots[2] = frame_.slot[gbuffer::kPlaneMaterial];
+  push.slots[3] = 8;
+  push.info[0] = frame_.sample0;
+  push.info[1] = ui_gap;
+  push.info[2] = slot(depth);
+  push.info[3] = slot(ui);
+  passes_->DrawInto(list, capture_class_, pipeline, &push, sizeof(push));
+  return &capture_class_;
+}
+
+void GBuffer::ReleaseCaptureClass() {
+  if (passes_ && capture_class_.texture) passes_->ReleaseImage(capture_class_);
 }
 
 void GBuffer::LogInterval() {

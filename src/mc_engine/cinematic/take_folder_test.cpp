@@ -217,6 +217,15 @@ void TestMemory() {
     MemoryRequest fx = r;
     fx.fixed_bytes = 4 * kMiB;
     CheckU(PlanMemory(fx).total_bytes, 8 * 33177600ull + 4 * kMiB, "the pipe's buffer is in the total");
+    fx.legacy_frame = false;
+    fx.extra_gpu_frame_bytes = 5 * kMiB;
+    fx.extra_host_frame_bytes = 6 * kMiB;
+    p = PlanMemory(fx);
+    CheckU(p.gpu_frame_bytes, 5 * kMiB, "visual-only GPU slots omit the legacy picture");
+    CheckU(p.host_frame_bytes, 6 * kMiB, "visual-only host slots omit the legacy picture");
+    CheckU(p.total_bytes, 48 * kMiB, "visual-only slots count towards the memory cap");
+    fx.legacy_frame = true;
+    CheckU(PlanMemory(fx).total_bytes, 8 * 33177600ull + 48 * kMiB, "mixed slots keep both payloads");
 
     // the bound as a property: for any size and limit, an ok plan fits the limit and never exceeds what was asked, and a plan that is not ok
     // does not fit even at the minimums

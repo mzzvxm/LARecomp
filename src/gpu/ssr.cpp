@@ -914,6 +914,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     list->setGraphicsPushConstants(0, &apply, 0, sizeof(apply));
     list->drawInstanced(3, 1, 0, 0);
     list->setFramebuffer(nullptr);
+    capture_signal_ = raw ? &trace_ : regen_ok ? &regen_pass_.image(rgd::Image::kDenoised) : resolve_source;
   }  // else the trace and the accumulation were recorded and there is no apply this frame: the next one starts from this history all the same
   if (raw) {
     // RR-4a: how far each of the reflections the resolve just added went, into the image the guide pass reads as the hit distance (hlsl/ssr_hit_ps.hlsl). It reads the trace like the resolve.
@@ -1094,6 +1095,7 @@ bool ScreenReflections::RecordRegen(plume::RenderCommandList* list, const ssr::P
 }
 
 void ScreenReflections::OnPresent() {
+  capture_signal_ = nullptr;
   rt_.OnPresent();
   denoise_.OnPresent();
   regen_pass_.OnFrame(regen_frame_);

@@ -36,12 +36,33 @@
 #include <plume_render_interface.h>
 
 #include "frame.h"
+#include "mc_engine/cinematic/capture_visual.h"
 
 namespace mcla::gpu {
 
 class Device;
+class FrameLayers;
+class GBuffer;
 class PassTiming;
 class PresentPass;
+struct HostImage;
+
+namespace vis = mc::cinematic::capture::visual;
+
+struct VisualSource {
+  plume::RenderTexture* texture = nullptr;
+  plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
+  plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
+  uint32_t width = 0, height = 0, channel_offset = 0;
+  bool swap_rb = false;
+  bool alternate = false;
+
+  static VisualSource Image(const HostImage* image, uint32_t channel_offset = 0);
+};
+struct VisualSources {
+  std::array<VisualSource, vis::kCount> images;
+  const HostImage* depth = nullptr;
+};
 
 class CaptureReadback {
  public:
@@ -64,7 +85,9 @@ class CaptureReadback {
   void EndPresent();
 
   // Outside any render pass, after PresentPass::Prepare of the guest present BeginPresent named.
-  void Record(plume::RenderCommandList* list, PresentPass& present);
+  void Record(plume::RenderCommandList* list, PresentPass& present, GBuffer& gbuffer,
+              const FrameLayers& layers);
+  VisualSources& visual_sources() { return visual_sources_; }
 
   // Right after FrameRing::Advance: in lock-step, waits for the frame just submitted so that its readback is done.
   void AfterAdvance();
@@ -77,12 +100,14 @@ class CaptureReadback {
   };
 
   // `buffers`: the readback buffers to have (2 to kReadbacks), the take's plan.
-  bool EnsureTarget(uint32_t width, uint32_t height, uint32_t buffers);
+  bool EnsureTarget(uint32_t width, uint32_t height, uint32_t buffers, bool legacy,
+                    uint64_t visual_capacity, bool final);
   // Everything made goes after the frames that use it; a copy still in flight is dropped when it lands.
   void ReleaseTarget();
   void Lost(const char* why);
   // A retire action: the copy into `readback` has run.
-  void Process(uint32_t readback, uint64_t update, uint64_t generation, double record_ms);
+  void Process(uint32_t readback, uint64_t update, uint64_t generation, double record_ms,
+               const vis::Frame& visual_frame, uint64_t visual_used);
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
@@ -95,6 +120,12 @@ class CaptureReadback {
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   uint32_t row_pitch_ = 0;  // bytes; a multiple of 256 (D3D12 placed footprints)
+  bool legacy_ = true;
+  uint64_t visual_base_ = 0, visual_capacity_ = 0;
+  uint64_t visual_take_ = 0;
+  uint32_t missing_streams_ = 0;
+  uint32_t logged_streams_ = 0;
+  VisualSources visual_sources_{};
   uint64_t generation_ = 0;
   std::unique_ptr<plume::RenderTexture> target_;
   std::unique_ptr<plume::RenderFramebuffer> framebuffer_;

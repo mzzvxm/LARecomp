@@ -139,6 +139,7 @@ struct Event {
 
     std::string name;                // cvar name; mark name; car id; capture fps: the take's name
     std::string text;                // cvar value; label text; capture fps: the sink
+    std::string capture_rects;       // capture fps: authored display-pixel rectangles
     std::string side;                // label side
     double fade = 0.0;               // label fade, seconds
     std::vector<std::string> words;  // camera, cut, hud, car, start: the words after the verb, in the file's spelling
@@ -157,6 +158,7 @@ struct Scene {
     std::string capture_name;
     std::string capture_sink;
     bool capture_state_log = false;
+    std::string capture_rects;
     std::vector<Event> events;  // in time order; the file's order within one time
 
     // When the last key and everything it started (a ramp, a label) is over. 0 for no events.

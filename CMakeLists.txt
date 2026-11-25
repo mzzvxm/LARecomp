@@ -211,6 +211,7 @@ set(LARECOMP_SOURCES
     # Trailer toolkit capture mode: the fixed step, the frame gate and the scene clock (maths in capture_core), and the take folder (names, memory plan,
     # host ring, take.json in take_folder). Inert unless a scene's capture key or one of the debug cvars mcla_capture_fps / mcla_fixed_step_fps asks.
     src/mc_engine/cinematic/capture_core.cpp
+    src/mc_engine/cinematic/capture_visual.cpp
     src/mc_engine/cinematic/take_folder.cpp
     src/mc_engine/cinematic/capture_mode.cpp
 
@@ -574,6 +575,9 @@ add_executable(larecomp_take_test EXCLUDE_FROM_ALL
 target_include_directories(larecomp_take_test PRIVATE src src/mc_engine/cinematic)
 add_executable(larecomp_capture_luma_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/capture_luma_test.cpp)
+add_executable(larecomp_capture_visual_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/capture_visual_test.cpp
+    src/mc_engine/cinematic/capture_visual.cpp)
 # A take's sound (src/mc_engine/cinematic/capture_audio_core.h): the samples a number of video frames owns, the mixer frames that cover them, the books of what
 # was released, arrived, given up and written, and the WAV file. A check that needs no game:
 #   cmake --build <build dir> --target larecomp_capture_audio_test, then run <build dir>/larecomp_capture_audio_test (exit 0 = passed).

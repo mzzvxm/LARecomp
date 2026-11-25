@@ -172,6 +172,7 @@ class ScreenReflections {
   bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false, const RegenAsk& regen = RegenAsk{});
   // RR-4a: this frame's hit distance image (R16_FLOAT, the picture's size, readable) when the frame ran RAW and wrote it, else null. Valid until the next frame's trigger.
   const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
+  const HostImage* CaptureSignal() const { return capture_signal_; }
   // A guest present: the frame boundary (the history's ping-pong, the idle count).
   void OnPresent();
 
@@ -225,6 +226,7 @@ class ScreenReflections {
   std::array<bool, kVariantCount> listed_{};
   std::array<bool, kVariantCount> failed_{};
   bool ready_ = false;                // the layout and the shaders exist
+  const HostImage* capture_signal_ = nullptr;
 
   // the settings of this frame
   ssr::Level level_ = ssr::Level::kOff;

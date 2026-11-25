@@ -4,6 +4,8 @@
 
 #include "scene.h"
 
+#include "capture_visual.h"
+
 #include "car_verbs.h"
 #include "spots.h"
 
@@ -842,7 +844,16 @@ class Parser {
                 e.index = v == "on" ? 1 : 0;
                 return true;
             }
-            Error(line, "capture: unknown option '" + key + "' (fps, step, name, sink, statelog)");
+            if (key == "rects") {
+                capture::LumaCrop bounds;
+                if (!capture::visual::ParseRects(value, bounds)) {
+                    Error(line, "capture rects needs x,y,width,height or a semicolon-separated list");
+                    return false;
+                }
+                e.capture_rects = value;
+                return true;
+            }
+            Error(line, "capture: unknown option '" + key + "' (fps, step, name, sink, statelog, rects)");
             return false;
         });
         if (!ok) return;
@@ -977,6 +988,7 @@ class Parser {
             scene.capture_name = cap_start->name;
             scene.capture_sink = cap_start->text;
             scene.capture_state_log = cap_start->index == 1;
+            scene.capture_rects = cap_start->capture_rects;
             scene.capture_from = cap_start->t;
             scene.capture_to = cap_stop ? cap_stop->t : scene.end;
             if (scene.fps > 0.0 && std::fabs(scene.fps - scene.capture_fps) > 1e-6) {

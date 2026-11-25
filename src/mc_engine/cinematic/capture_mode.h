@@ -30,6 +30,8 @@
 #include <cstdint>
 #include <string>
 
+#include "capture_visual.h"
+
 namespace mc::cinematic {
 
 inline constexpr uint64_t kNoClockFrame = ~0ull;
@@ -71,6 +73,7 @@ void CaptureSceneRequest(double fps);
 // ffmpeg, png, raw), and whether state.csv is written. Empty / false: the debug settings (mcla_capture_name, mcla_capture_sink,
 // mcla_capture_statelog) and the scene's own name decide.
 struct CaptureSpec {
+    std::string visual_rects;
     std::string name;
     std::string sink;
     bool state_log = false;
@@ -180,7 +183,22 @@ struct MemoryGrant {
     uint32_t gpu_buffers = 0;
     uint32_t ring = 0;
 };
-MemoryGrant CaptureMemoryPlan(uint32_t width, uint32_t height, uint32_t gpu_max, uint32_t gpu_min);
+struct VisualCaptureOptions {
+    uint32_t mask = 0;
+    uint32_t every = 1;
+    uint64_t first = 0;
+    capture::LumaCrop crop;
+    bool legacy = true;
+    bool Samples(uint64_t update) const {
+        return mask && capture::visual::Selected(update, first, every);
+    }
+};
+uint32_t CaptureVisualMask();
+VisualCaptureOptions CaptureVisualConfig();
+bool CaptureVisualDrainRequested();
+void CaptureVisualFail(const char* reason);
+MemoryGrant CaptureMemoryPlan(uint32_t width, uint32_t height, uint32_t gpu_max, uint32_t gpu_min,
+                              bool legacy = true, uint64_t visual_bytes = 0, uint64_t visual_scratch = 0);
 // Render thread, at the first frame of a take (and after, cheap): opens the sink for this frame size. False: no take is running
 // or no sink could be made (logged); the frame is then reported lost, so the gate does not wait for it.
 bool CaptureSinkOpen(const FrameFormat& format);

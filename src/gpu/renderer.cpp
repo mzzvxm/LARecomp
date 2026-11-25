@@ -2,6 +2,8 @@
 // renderer.h and gpu.h.
 
 #include "renderer.h"
+
+#include "mc_engine/cinematic/capture_mode.h"
 #include "settings/immortal.h"
 
 #include <algorithm>
@@ -867,13 +869,17 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       if (validate_) {
         validator_.OnPresent(*reinterpret_cast<const PresentRecord*>(payload));
       }
+      present_tag_ = reinterpret_cast<const PresentRecord*>(payload)->tag;
+      if ((present_tag_ & mc::cinematic::capture::kTagCapture) && frames_.is_open() &&
+          mc::cinematic::CaptureVisualConfig().Samples(present_tag_ & mc::cinematic::capture::kTagUpdateMask)) {
+        scene_.CollectVisualSources(capture_readback_.visual_sources());
+      }
       scene_.OnPresent();
       census_.OnPresent();
       present_.OnGuestPresent(*reinterpret_cast<const PresentRecord*>(payload));
       // The guest waits for this record (kRecordSync); ReleaseGuest may let it go sooner.
       release_sequence_ = (header.flags & kRecordSync) != 0 ? header.sequence : 0;
       present_target_ = reinterpret_cast<const PresentRecord*>(payload)->target_qpc;
-      present_tag_ = reinterpret_cast<const PresentRecord*>(payload)->tag;  // capture mode
       ExecutePresent(PresentSource::kGuest);
       present_tag_ = 0;
       present_target_ = 0;
@@ -1133,6 +1139,7 @@ void Renderer::OnIdle() {
     ReportDeviceLost();
     return;
   }
+  if (mc::cinematic::CaptureVisualDrainRequested()) frames_.WaitPreviousFrame();
   if (guest_has_presented_ &&
       std::chrono::steady_clock::now() - last_guest_present_ < kGuestActiveWindow) {
     // The guest is swapping; its presents carry the overlay.
@@ -1990,7 +1997,7 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
     // buffer: the probe records 8-bit SDR, and a live HDR switch can turn the chain HDR10 under it.)
     flicker_probe_.Record(list, present_, guest_presents_ + 1);
   }
-  capture_readback_.Record(list, present_);  // a no-op unless the present is a frame of the take
+  capture_readback_.Record(list, present_, gbuffer_, layers_);  // a no-op unless tagged
   ReleaseGuest();
   plume::RenderTexture* back = swap_chain_.texture(image);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,

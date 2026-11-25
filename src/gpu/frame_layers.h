@@ -166,6 +166,7 @@ class FrameLayers {
     kRequesterDlssFrameGeneration = 1u << 2,
     // The HUD fade (ui_fade.h): the UI layer shown at an alpha below 1, or armed for a fade to come.
     kRequesterUiFade = 1u << 3,
+    kRequesterVisualCapture = 1u << 4,
   };
 
   // What the Scene does for a draw it asked about.

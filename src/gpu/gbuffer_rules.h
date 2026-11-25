@@ -396,6 +396,7 @@ enum class Consumer : uint8_t {
   kDecals,
   kRtBounce,          // the probe field's apply (gi_apply.h, CITY-RT M3 G3): RT1 (the world normal) and RT2 (the true albedo and the lit weight)
   kRayReconstruction, // DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): RT1, RT2, RT3, while the plan wants the guides or a guide view is on
+  kVisualCapture,
   kCount,
 };
 constexpr const char* ConsumerName(Consumer consumer) {
@@ -407,6 +408,7 @@ constexpr const char* ConsumerName(Consumer consumer) {
     case Consumer::kDecals: return "decals";
     case Consumer::kRtBounce: return "ray traced bounce light";
     case Consumer::kRayReconstruction: return "ray reconstruction";
+    case Consumer::kVisualCapture: return "visual capture";
     case Consumer::kCount: break;
   }
   return "?";
@@ -429,6 +431,7 @@ constexpr uint32_t ConsumerPlanes(Consumer consumer) {
     case Consumer::kReflections: return kAllPlanes;
     case Consumer::kRtBounce: return PlaneBit(kPlaneNormal) | PlaneBit(kPlaneAlbedo);
     case Consumer::kRayReconstruction: return kAllPlanes;
+    case Consumer::kVisualCapture: return PlaneBit(kPlaneMaterial);
     case Consumer::kDecals:
     case Consumer::kCount: break;
   }

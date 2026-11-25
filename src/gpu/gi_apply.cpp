@@ -278,6 +278,7 @@ void GiApply::BeginFrame() {
   pixel_ran_frame_ = false;
   trigger_seen_ = false;
   ran_this_frame_ = false;
+  capture_lookup_ = false;
 }
 
 float GiApply::TakeSsgiShare() {
@@ -565,6 +566,7 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   Count(ga::Skip::kRecorded);
   ++frames_run_;
   ran_this_frame_ = true;
+  capture_lookup_ = up && !view_run;
   frames_upsampled_ += up ? 1u : 0u;
   frames_with_visibility_ += has_visibility ? 1u : 0u;
   if (!first_logged_) {

@@ -120,8 +120,8 @@ std::string FormatMib(uint64_t bytes) {
 MemoryPlan PlanMemory(const MemoryRequest& r) {
     MemoryPlan p;
     const uint64_t row_pitch = (static_cast<uint64_t>(r.width) * 4 + 255) / 256 * 256;
-    p.gpu_frame_bytes = row_pitch * r.height;
-    p.host_frame_bytes = static_cast<uint64_t>(r.width) * r.height * 4;
+    p.gpu_frame_bytes = (r.legacy_frame ? row_pitch * r.height : 0) + r.extra_gpu_frame_bytes;
+    p.host_frame_bytes = (r.legacy_frame ? static_cast<uint64_t>(r.width) * r.height * 4 : 0) + r.extra_host_frame_bytes;
     const uint32_t gpu_min = std::max<uint32_t>(1, r.gpu_min);
     const uint32_t ring_min = std::max<uint32_t>(1, r.ring_min);
     uint32_t gpu = std::max(gpu_min, r.gpu_max);

@@ -6439,6 +6439,40 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_capture_buffers": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "MCLA/Cinematic",
+  "help": "\"Visual comparison buffers to write during a take: all or comma-separated final,hdr,ao,refl,gi,class,motion. Empty or off disables buffer capture.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_capture_buffer_every": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/Cinematic",
+  "help": "\"Visual comparison buffers: record the first take frame and every Nth frame after it.\"",
+  "traits": [
+   "rex::Range{1, 10000}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_capture_buffer_region": {
+  "type": "std::string",
+  "default": "\"full\"",
+  "category": "MCLA/Cinematic",
+  "help": "\"Visual comparison buffers: full or rects (the bounding rectangle of the scene capture key's rects option).\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_freecam": {
   "type": "bool",
   "default": "false",

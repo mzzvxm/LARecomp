@@ -162,6 +162,9 @@ class ResolveCache {
   // What one Execute did that a caller outside this file may want to see: the ambient occlusion
   // (ao.h) runs at the game's mid-scene depth copy and reads the very target the copy read.
   struct Summary {
+    const Product* visual_scene = nullptr;
+    uint32_t visual_y0 = 0, visual_y1 = 0;
+    bool visual_swap_rb = false;
     // A copy of an EDRAM depth target was recorded: the fields below are valid.
     bool depth_copy = false;
     EdramTargets::Target* source = nullptr;  // the target it read; valid until the next change
@@ -188,7 +191,7 @@ class ResolveCache {
   // float scene (HdrToneMap::FloatSceneLikely), which wants the range of a 7e3 colour above the
   // console's, so a 7e3 source is not clamped to it (kFlagSourceCeiling7e3).
   Summary Execute(const ResolveRecord& record, plume::RenderCommandList* list,
-                  bool float_scene);
+                  bool float_scene, bool capture_hdr = false);
 
   // Takes the write notifications (TextureCache::Sync calls it once per draw).
   void Sync() { DrainInvalidations(); }

@@ -93,6 +93,8 @@
 
 namespace mcla::gpu {
 
+struct VisualSources;
+
 class AmbientOcclusion;
 class BindlessHeap;
 class GuestLayout;
@@ -222,6 +224,7 @@ class Scene {
   // (the geometry's promotions are recorded into it); null: the frame is
   // abandoned.
   void EndFrame(plume::RenderCommandList* list);
+  void CollectVisualSources(VisualSources& sources) const;
   // Before a batch flush ends `list`: closes the render pass.
   void BeforeFlush(plume::RenderCommandList* list);
   // A batch flush replaced the open list: everything is bound again.
@@ -570,6 +573,10 @@ class Scene {
   LocalShadow* local_shadow_ = nullptr;
   LightManager* light_manager_ = nullptr;
   GBuffer* gbuffer_ = nullptr;
+  uint32_t visual_mask_ = 0;
+  TextureKey visual_hdr_key_{};
+  uint32_t visual_hdr_rows_ = 0;
+  bool visual_hdr_swap_rb_ = false;
   ScreenShared* screen_ = nullptr;
   LocalLights* local_lights_ = nullptr;
   ScreenReflections* ssr_ = nullptr;

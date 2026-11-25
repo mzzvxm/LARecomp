@@ -385,6 +385,7 @@ class TemporalSystem {
   // The same for DLSS frame generation (dlss_frame_generation.h), which runs instead of the FSR one
   // and asks every frame of its own: the system is on for the vectors while either wants them.
   void RequestVectorsForDlssFrameGeneration(bool wanted) { vectors_wanted_dlssg_ = wanted; }
+  void RequestCaptureVectors(bool wanted) { vectors_wanted_capture_ = wanted; }
 
   // The passes of step 1b (temporal_mv.h) need the device; nothing is made until the first anchor.
   // `textures` and `resolve`: the stand-in for the scene colour and the product it replaces.
@@ -584,6 +585,7 @@ class TemporalSystem {
   bool enabled_ = false;
   bool vectors_wanted_ = false;  // RequestVectors
   bool vectors_wanted_dlssg_ = false;  // RequestVectorsForDlssFrameGeneration
+  bool vectors_wanted_capture_ = false;
   bool vectors_on_ = false;      // SyncVectors acted on it
   bool frame_open_ = false;  // BeginFrame ran and no present has ended the frame yet
   uint64_t frame_number_ = 0;

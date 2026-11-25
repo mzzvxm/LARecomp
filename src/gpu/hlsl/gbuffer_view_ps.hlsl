@@ -20,6 +20,7 @@
 
 #include "host_pass_common.hlsli"
 #include "gbuffer_common.hlsli"
+#include "visual_class.hlsli"
 
 #ifndef GB_VIEW_MS
 #define GB_VIEW_MS 0
@@ -66,6 +67,15 @@ float3 ClassColour(uint cls) {
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 p = int2(position.xy);
   const uint view = g_push.slots.w;
+  if (view == 8u) {  // capture class IDs into a single-sample R8_UNORM target
+    const uint material = uint(LoadPlane(g_push.slots.z, p).y * 255.0f + 0.5f);
+    const bool sky = g_push.info.z != 0xFFFFFFFFu &&
+                     g_textures[g_push.info.z].Load(int3(p, 0)).x == 0.0f;
+    const int gap = int(g_push.info.y);
+    const bool ui = g_push.info.w != 0xFFFFFFFFu &&
+                    g_textures[g_push.info.w].Load(int3(max(p, int2(gap, gap)), 0)).a > 0.0f;
+    return float4(float(VisualClass(material, sky, ui)) / 255.0f, 0.0f, 0.0f, 1.0f);
+  }
   const bool have_normal = (g_push.info.y & 1u) != 0u;
   const bool have_albedo = (g_push.info.y & 2u) != 0u;
   const bool have_material = (g_push.info.y & 4u) != 0u;
