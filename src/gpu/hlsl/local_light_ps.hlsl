@@ -207,18 +207,22 @@ uint LslKernelWord() {
 
 // The stored depth of the main view's depth plane at the guest's sample 0, and from it the pixel's world position. False for the sky (stored depth 0, or a distance the linearisation cannot
 // place), and for a pixel outside the plane: such a pixel takes nothing.
-bool LpWorldAt(LpGlobals g, int2 p, out float3 world) {
+bool LpWorldAtDepth(LpGlobals g, int2 p, float far_depth, out float3 world) {
   world = float3(0.0f, 0.0f, 0.0f);
   const float stored = LpStoredDepth(p.x, p.y);
   if (!(stored > 0.0f)) {
     return false;  // the sky
   }
   const float t = LpLinearDepth(stored, g.lin);
-  if (!(t < LP_SKY)) {
+  if (!(t < LP_SKY) || (far_depth > 0.0f && t > far_depth)) {
     return false;
   }
   world = LpWorldPosition(g, float(p.x) + 0.5f, float(p.y) + 0.5f, t);
   return true;
+}
+
+bool LpWorldAt(LpGlobals g, int2 p, out float3 world) {
+  return LpWorldAtDepth(g, p, 0.0f, world);
 }
 
 // The surface's GEOMETRIC unit normal at pixel p, turned to the camera: the lit shaders' rule (headlight.cpp HeadlightLight: cross(ddy(world), ddx(world)) of the pixel's 2 x 2 quad) taken
@@ -432,7 +436,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const bool reach_first = (g_push.info.w & uint(LP_PUSH_LATE_REACH)) == 0u;
   float3 world = float3(0.0f, 0.0f, 0.0f);
   if (reach_first) {
-    if (!LpWorldAt(g, p, world)) {
+    const float far_depth = float(g_push.info.w >> LP_PUSH_FAR_DEPTH_SHIFT) * (1.0f / 16.0f);
+    if (!LpWorldAtDepth(g, p, far_depth, world)) {
       discard;
     }
     if (!LpAnyReaches(first, count, world)) {

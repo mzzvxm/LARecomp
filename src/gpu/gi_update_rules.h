@@ -346,6 +346,7 @@ struct PlanInputs {
   float safe_range_m = 0.0f;     // M1's SafeRange: a probe beyond it is not traced
   float governor_scale = 1.0f;   // the governor's, for the cascades after the finest
   float warmup_scale = 1.0f;     // gi_field_rules.h FieldState::BudgetScale
+  bool reuse_coarse = false;
 };
 
 struct Plan {
@@ -462,9 +463,10 @@ class Scheduler {
           ++plan.stale_taken[c];
         }
       }
-      // then the round robin over the cascade's slots, the rest of the share
+      // Reuse the coarse atlases longer once warm. New and stale probes above still get the full quota.
+      const uint32_t refresh_limit = in.reuse_coarse && c != 0 && in.warmup_scale == 1.0f ? (want + 1u) / 2u : want;
       uint32_t examined = 0;
-      while (chosen < want && examined < d.Probes()) {
+      while (chosen < refresh_limit && examined < d.Probes()) {
         const uint32_t index = cursor_[c];
         cursor_[c] = cursor_[c] + 1 >= d.Probes() ? 0 : cursor_[c] + 1;
         ++examined;

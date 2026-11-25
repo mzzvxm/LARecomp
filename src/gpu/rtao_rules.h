@@ -13,6 +13,10 @@ namespace mcla::gpu::rtao {
 constexpr uint32_t TracedExtent(uint32_t render) { return render / 2 + render % 2; }
 constexpr bool UpsampleNeeded(uint32_t plan_ao_height, uint32_t traced_height) { return plan_ao_height > traced_height; }
 
+constexpr bool UseQuarterAt4k(bool enabled, uint32_t render_height, bool auto_governed, bool raw, bool interior) {
+  return enabled && render_height >= 2160 && auto_governed && !raw && !interior;
+}
+
 struct Budget {
   uint32_t rays;
   bool boost;

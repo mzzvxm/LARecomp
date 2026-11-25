@@ -25,6 +25,7 @@
 #include "pass_timing.h"
 #include "rt_scene_service.h"
 #include "rt_world_frame.h"
+#include "settings/larecomp_settings.h"
 
 namespace mcla::gpu {
 
@@ -460,6 +461,8 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
   in.safe_range_m = uf.safe_range_m;
   in.governor_scale = governor_.scale();
   in.warmup_scale = field_->budget_scale();
+  // CHECK: measure probe refresh during a fast drive, a sector load and a lighting change.
+  in.reuse_coarse = larecomp::settings::mcla_gpu_rt_gi_reuse_coarse_probes.Get();
   const rules::Plan plan = scheduler_.Make(field_->scheduler(), in, budget.max_probes);
   if (plan.Total() == 0) {
     return;

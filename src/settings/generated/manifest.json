@@ -476,6 +476,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rtao_quarter_at_4k": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies to automatic scale on strong RT hardware. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_rtao_alpha": {
   "type": "std::string",
   "default": "\"auto\"",
@@ -751,6 +762,17 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Diagnostic: above 1080 lines of render height the bounce light (every quality, high and ultra) runs at half the \"\n    \"picture's size, like mcla_gpu_ao_half_above_1080 does the occlusion, and its colour chain takes one of the \"\n    \"colour target's MSAA samples a pixel (the four pixels of a 2x2 block give the texel) instead of all of them: the \"\n    \"bounce light is the lowest frequency signal of the picture (it gathers 5 to 16 metres and is filtered over up to \"\n    \"30 pixels), so the picture is the same to within a thin edge and its passes cost a quarter and the images a \"\n    \"quarter of the memory. 1080 lines and below are as they were. False: the sizes and the chain as before \"\n    \"(mcla_gpu_ssgi_low says the old half size choice). Live; the first frame after the change makes the images again.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssgi_residual_short_filter": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: omit one size-dependent spatial filter pass when screen-space bounce carries only residual local lights at 2160 render lines and above. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -2165,6 +2187,17 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 0.95}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_gi_reuse_coarse_probes": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: refresh half as many already populated coarse RT bounce probes after warm-up. New and stale probes keep priority. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -3947,6 +3980,28 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 7}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_local_lights_depth_bound": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: reject pixels beyond the reach of every light in a deferred draw before reconstructing their world positions. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_local_lights_sphere_scissor": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: use tighter screen bounds for deferred local lights. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

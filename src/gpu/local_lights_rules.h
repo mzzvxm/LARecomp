@@ -180,6 +180,7 @@ inline constexpr uint32_t kPushLateReach = 1u << 0;
 // term as it was before the cap), bit 2 the term itself (mcla_gpu_neon_contact off: no neon light is shut out of the car it lights).
 inline constexpr uint32_t kPushFullContact = 1u << 1;
 inline constexpr uint32_t kPushNoContact = 1u << 2;
+inline constexpr uint32_t kPushFarDepthShift = 3;
 // mcla_gpu_local_lights_cost_off, a sum of the savings to switch OFF (0, the default: every one on; the picture is the same either way, so the setting is the A/B of the cost, except the third,
 // which trades a little of the contact term's accuracy for its reads: ContactDonors): the reach test before the planes are read (the pixel shader's order), one draw for a car's neon tube (its
 // lights are summed in the shader), the cap of the contact term's marches (two a pixel, not one for each light of the tube).
@@ -908,6 +909,46 @@ inline PixelRect ScissorOfLight(const Light& l, const Rows& rows, float tan_x, f
   return rect;
 }
 
+// Project the same bounding sphere using its tangent planes. For a tangent of slope s,
+// the centre is radius away from the plane with normal axis - s * forward.
+inline PixelRect SphereScissorOfLight(const Light& l, const Rows& rows, float tan_x, float tan_y, uint32_t width, uint32_t height) {
+  const PixelRect full{0, 0, int32_t(width), int32_t(height)};
+  if (!(tan_x > 0.0f && tan_y > 0.0f && std::isfinite(tan_x) && std::isfinite(tan_y))) return full;
+  const auto dot = [](const auto& a, const auto& b) { return double(a[0]) * b[0] + double(a[1]) * b[1] + double(a[2]) * b[2]; };
+  const double forward_length_sq = dot(rows.forward, rows.forward);
+  // The shader reconstructs world positions by combining these axes. Use the old scissor
+  // if the dot-product projection and that reconstruction disagree appreciably.
+  const double axis_error = std::max({std::abs(dot(rows.right, rows.up)), std::abs(dot(rows.right, rows.forward)), std::abs(dot(rows.up, rows.forward)),
+                                     std::abs(dot(rows.right, rows.right) - 1.0), std::abs(dot(rows.up, rows.up) - 1.0), std::abs(forward_length_sq - 1.0)});
+  if (axis_error > 1.0e-4) return ScissorOfLight(l, rows, tan_x, tan_y, width, height);
+  float centre[3], radius;
+  BoundingSphere(l, centre, &radius);
+  const double relative[3] = {double(centre[0]) - rows.position[0], double(centre[1]) - rows.position[1], double(centre[2]) - rows.position[2]};
+  const double depth = dot(relative, rows.forward);
+  // Keep a world-space margin for the float world-position reconstruction in the pixel shader.
+  const double r = double(radius) + 0.02;
+  const double depth_radius = r * std::sqrt(forward_length_sq);
+  if (depth + depth_radius <= 0.0) return {};
+  if (!(depth - depth_radius > kScissorNear)) return full;
+
+  const double r2 = r * r;
+  const double a = depth * depth - r2 * forward_length_sq;
+  const auto bounds = [&](const float (&axis)[3], double tangent, int32_t extent, bool invert) {
+    const double x = dot(relative, axis);
+    const double b = x * depth - r2 * dot(axis, rows.forward);
+    const double c = x * x - r2 * dot(axis, axis);
+    const double root = std::sqrt(std::max(0.0, b * b - a * c));
+    const double scale = 0.5 * extent / (a * tangent);
+    const double midpoint = 0.5 * extent + (invert ? -b : b) * scale;
+    const double half_width = root * scale;
+    const auto clamped = [extent](double px) { return int32_t(std::clamp(px, 0.0, double(extent))); };
+    return std::array{clamped(std::floor(midpoint - half_width) - kScissorMargin), clamped(std::ceil(midpoint + half_width) + kScissorMargin)};
+  };
+  const auto x = bounds(rows.right, tan_x, full.x1, false);
+  const auto y = bounds(rows.up, tan_y, full.y1, true);
+  return {x[0], y[0], x[1], y[1]};
+}
+
 // ---------------------------------------------------------------------------
 // the draws (GB-NEON-COST)
 // ---------------------------------------------------------------------------
@@ -923,6 +964,31 @@ struct PassDraw {
   uint32_t count = 0;  // the consecutive lights the draw sums (1 .. kMaxDrawLights)
   PixelRect rect;      // the union of the rectangles of those of its lights that have one
 };
+
+// A draw's maximum view depth in sixteenths of a metre, packed above the push flags.
+// The dual of the camera's forward axis extracts depth from the shader's world position
+// even when the right, up and forward axes are slightly skewed.
+inline uint32_t FarDepthBits(const Selection& selection, const PassDraw& draw, const Rows& rows) {
+  const double z[3] = {double(rows.right[1]) * rows.up[2] - double(rows.right[2]) * rows.up[1],
+                       double(rows.right[2]) * rows.up[0] - double(rows.right[0]) * rows.up[2],
+                       double(rows.right[0]) * rows.up[1] - double(rows.right[1]) * rows.up[0]};
+  const double det = z[0] * rows.forward[0] + z[1] * rows.forward[1] + z[2] * rows.forward[2];
+  if (!std::isfinite(det) || std::abs(det) < 0.5) return 0;
+  const double axis_length = std::sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]) / std::abs(det);
+  double far_depth = 0.0;
+  for (uint32_t i = draw.first; i < draw.first + draw.count; ++i) {
+    const Light& light = selection.lights[i];
+    const double dx = double(light.pos[0]) - rows.position[0];
+    const double dy = double(light.pos[1]) - rows.position[1];
+    const double dz = double(light.pos[2]) - rows.position[2];
+    const double edge = (dx * z[0] + dy * z[1] + dz * z[2]) / det + double(light.range) * axis_length;
+    if (!std::isfinite(edge)) return 0;
+    far_depth = std::max(far_depth, edge);
+  }
+  // Round up with room for floating-point reconstruction at large world coordinates.
+  const double units = std::ceil((far_depth + 0.0625) * 16.0);
+  return units < double(kSky) * 16.0 ? uint32_t(units) << kPushFarDepthShift : 0u;
+}
 
 // Whether the light `next` goes into the draw that `head` opens: the cars' underglow only (the lights of one car's tube: the same source, the same non-zero car key), neither with views of the
 // shadow atlas (the shader looks a shadow up for each light of a draw, but nothing of the neon has one: kept apart so that a shadowed light stays a draw of its own).

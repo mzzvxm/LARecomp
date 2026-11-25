@@ -86,12 +86,13 @@ inline constexpr int kMaxAtrous = 5;  // taps 1, 2, 4, 8, 16 pixels apart
 
 // The passes of the filter for a bounce image `ao_height` lines high, `base` being the setting's number at 720 lines
 // (mcla_gpu_ssgi_test_atrous, 0 to 3; 0 is no filter at any size): one more for each doubling of the height.
-inline int AtrousIterations(int base, uint32_t ao_height) {
+inline int AtrousIterations(int base, uint32_t ao_height, bool trim_height_pass = false) {
   if (base <= 0) {
     return 0;
   }
   const double doublings = std::log2(std::max(double(ao_height), 1.0) / double(ao_stable::kReferenceHeight));
-  return std::min(base + std::max(int(std::lround(doublings)), 0), kMaxAtrous);
+  const int passes = std::min(base + std::max(int(std::lround(doublings)), 0), kMaxAtrous);
+  return trim_height_pass && passes > base ? passes - 1 : passes;
 }
 
 // How far `iterations` passes of the 5x5 kernel reach, in pixels: 2 * (1 + 2 + 4 + ...).

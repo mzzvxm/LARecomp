@@ -88,6 +88,10 @@ void CheckClip() {
 // ---------------------------------------------------------------------------
 
 void CheckAtrous() {
+  Check(AtrousIterations(2, 1080, true) == 2, "residual bounce can omit the extra pass at 1080 traced lines");
+  Check(AtrousIterations(2, 2160, true) == 3, "residual bounce omits exactly one extra pass at full 4K");
+  Check(AtrousIterations(2, 720, true) == 2 && AtrousIterations(0, 2160, true) == 0,
+        "the short filter retains the user-selected base and honours an explicitly disabled filter");
   const struct {
     int base;
     uint32_t height;
@@ -173,7 +177,9 @@ void CheckShaders(const std::string& gpu_dir) {
   Check(setting_source::DefaultIs(clamp, double(kClipWidth)), "mcla_gpu_ssgi_test_history_clamp: the setting's default is kClipWidth");
   Check(has(cpp, "ssgi_stable::kFirstClipWidth") && has(cpp, "ssgi_stable::kFirstClipHistoryShare") && has(cpp, "ssgi_stable::kClipHistoryShare"),
         "ao.cpp: the switch and the plan use the header's widths and shares");
-  Check(has(cpp, "ssgi_stable::AtrousIterations(int(plan.gi.atrous), plan.ao[1])"), "ao.cpp: the a-trous passes follow the image's height");
+  Check(has(cpp, "ssgi_stable::AtrousIterations(int(plan.gi.atrous), plan.ao[1], trim_height_pass)"), "ao.cpp: the a-trous passes follow the image's height");
+  Check(has(cpp, "plan.gi.lights_only && plan.render[1] >= 2160 &&") && has(cpp, "mcla_gpu_ssgi_residual_short_filter.Get()"),
+        "ao.cpp: only 4K residual local-light bounce can opt into the short filter");
   Check(has(cpp, "ssgi_stable::ClipHistoryCode(plan.gi.clip_history) << ssgi_stable::kClipHistoryShift"), "ao.cpp: the share goes into the temporal pass's flags by the header's code");
 }
 
