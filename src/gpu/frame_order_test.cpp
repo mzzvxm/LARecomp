@@ -757,7 +757,7 @@ void CheckSources(const std::string& gpu) {
   Check(At(scene, "light_manager_->BeginFrame(frame_serial_, slot)") > At(scene, "local_shadow_->BeginFrame()"), "... and the manager's second call (the last trigger's maps) after it");
   // the end-of-scene composites stand above the trigger's calls: the same function, an earlier text, a later resolve
   {
-    const size_t execute = At(scene, "resolve_->Execute(record, list, float_scene)");
+    const size_t execute = At(scene, "resolve_->Execute(record, list, float_scene");
     const size_t composite = pos[PosOf(Step::kShaftsComposite)];
     const size_t first_trigger = pos[PosOf(Step::kGBufferPublish)];
     Check(execute != std::string::npos && composite < execute && execute < first_trigger, "the composites are called before the resolve's copy runs, the trigger's passes after it");

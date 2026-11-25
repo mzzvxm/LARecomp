@@ -1022,7 +1022,7 @@ void TestFiles(const std::string& src) {
   // the scene
   const size_t stamp = At(scene, "RecordMirrorStamp(record, list)) {\n    // The rear view mirror's picture");
   const size_t glass = At(scene, "RecordMirrorGlass(record, list)) {");
-  const size_t execute = At(scene, "resolve_->Execute(record, list, float_scene)");
+  const size_t execute = At(scene, "resolve_->Execute(record, list, float_scene");
   Check(stamp != std::string::npos && glass != std::string::npos && execute != std::string::npos && stamp < glass && glass < execute, "scene.cpp draws the glass after the stamp and before the copy reads the colour");
   Check(Has(scene, "mirror_overlay_ && mirror_overlay_->wanted() && mirror_view_ && mirror_view_->OverlayArmed() && list && RecordMirrorGlass(record, list)"), "the overlay runs only while it is wanted and the view armed it");
   Check(Has(scene, "in.rt_mirrors_on = car_mirror_ && car_mirror_->active();"), "the hand-off with the ray traced side mirrors reads CarMirrorRt::active()");
