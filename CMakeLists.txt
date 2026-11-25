@@ -1999,3 +1999,23 @@ else()
         include(cmake/LarecompAsan.cmake)
     endif()
 endif()
+
+# Every test executable (larecomp_*_test, any directory) gets src/ as its LAST include directory: shared headers include
+# "settings/immortal.h" and similar from src/, and tests that list only their own folder or a stubs folder stopped building when they
+# did (found 11-25 when the landing build started building every test target). Folders listed earlier (stubs) still win.
+function(larecomp_tests_include_src dir)
+  get_property(_targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(_t IN LISTS _targets)
+    if(_t MATCHES "^larecomp_.*_test$")
+      get_target_property(_type ${_t} TYPE)
+      if(_type STREQUAL "EXECUTABLE")
+        target_include_directories(${_t} PRIVATE "${CMAKE_SOURCE_DIR}/src")
+      endif()
+    endif()
+  endforeach()
+  get_property(_subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+  foreach(_s IN LISTS _subdirs)
+    larecomp_tests_include_src("${_s}")
+  endforeach()
+endfunction()
+larecomp_tests_include_src("${CMAKE_SOURCE_DIR}")
